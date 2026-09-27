@@ -67,6 +67,8 @@ public:
      * @return Result indicating success or failure
      */
     Result<void> load_instruments();
+    Result<void> load_equity_instruments(const std::vector<std::string>& symbols,
+        const std::string& exchange_lookup_path = "");
 
     /**
      * @brief Get all loaded instruments

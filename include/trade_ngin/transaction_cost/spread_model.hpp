@@ -8,6 +8,7 @@
 #include <vector>
 
 #include "trade_ngin/transaction_cost/asset_cost_config.hpp"
+#include "trade_ngin/transaction_cost/consumption.hpp"
 
 namespace trade_ngin {
 namespace transaction_cost {
@@ -53,7 +54,8 @@ public:
      */
     double calculate_spread_price_impact(
         const AssetCostConfig& config,
-        double volatility_multiplier) const;
+        double volatility_multiplier,
+        SpreadPriceObservation* observation = nullptr) const;
 
     /**
      * @brief Calculate volatility multiplier from log returns
@@ -68,7 +70,8 @@ public:
      *   z = clip((sigma - mean_sigma) / stdev_sigma, -2, 2)
      *   vol_mult = clip(1 + lambda * z, min_mult, max_mult)
      */
-    double calculate_volatility_multiplier(const std::vector<double>& log_returns) const;
+    double calculate_volatility_multiplier(const std::vector<double>& log_returns,
+                                           VolatilityObservation* observation = nullptr) const;
 
     /**
      * @brief Update rolling log returns for a symbol
@@ -78,7 +81,8 @@ public:
      * @param symbol Instrument symbol
      * @param log_return Today's log return: ln(close_t / close_t-1)
      */
-    void update_log_returns(const std::string& symbol, double log_return);
+    void update_log_returns(const std::string& symbol, double log_return,
+                            SpreadHistoryObservation* observation = nullptr);
 
     /**
      * @brief Get volatility multiplier for a symbol using stored returns
@@ -86,7 +90,8 @@ public:
      * @param symbol Instrument symbol
      * @return Volatility multiplier (1.0 if insufficient data)
      */
-    double get_volatility_multiplier(const std::string& symbol) const;
+    double get_volatility_multiplier(const std::string& symbol,
+                                     VolatilityObservation* observation = nullptr) const;
 
     /**
      * @brief Clear stored data for a symbol

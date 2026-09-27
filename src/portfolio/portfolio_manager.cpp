@@ -1,5 +1,6 @@
 // src/portfolio/portfolio_manager.cpp
 #include "trade_ngin/portfolio/portfolio_manager.hpp"
+#include "trade_ngin/optimization/annualized_sample_covariance.hpp"
 #include <algorithm>
 #include <climits>
 #include <cmath>
@@ -7,6 +8,22 @@
 #include <sstream>
 
 namespace trade_ngin {
+
+namespace {
+template <typename T>
+T observe_portfolio_read(T value, std::optional<T>* observation) {
+    if (observation) *observation = value;
+    return value;
+}
+
+bool observe_strategy_gate(bool enabled, PortfolioOptimizationHelperTrace* consumption,
+                           PortfolioOptimizationStage stage, const std::string& id) {
+    if (consumption) {
+        consumption->strategies[static_cast<size_t>(stage)][id].enabled = enabled;
+    }
+    return enabled;
+}
+}  // namespace
 
 PortfolioManager::PortfolioManager(PortfolioConfig config, std::string id,
                                    std::shared_ptr<InstrumentRegistry> registry)
@@ -55,9 +72,29 @@ PortfolioManager::PortfolioManager(PortfolioConfig config, std::string id,
         throw std::runtime_error(register_result.error()->what());
     }
 
+    // Preserve the ignored state-update result, but finish potentially throwing
+    // bookkeeping before publishing this object through the bus.
+    (void)StateManager::instance().update_state("PORTFOLIO_MANAGER", ComponentState::RUNNING);
+
     // Subscribe to market data and position updates
     MarketDataCallback callback = [this](const MarketDataEvent& event) {
         if (event.type == MarketDataEventType::POSITION_UPDATE) {
+            // Lock order: bus mutex (already held by the publisher for the
+            // duration of this callback), then mutex_ -- never the reverse,
+            // matching the BAR branch below via process_market_data(). No
+            // production code publishes POSITION_UPDATE: the sole production
+            // publisher, postgres_database.cpp, emits BAR only (see
+            // market-data-bus-sync-report.md). This branch is hardened
+            // defensively and is exercised only by tests.
+            std::unique_lock<std::mutex> lock(mutex_, std::defer_lock);
+            if (auto hook = position_update_contention_hook_.load(std::memory_order_acquire)) {
+                if (!lock.try_lock()) {
+                    hook();  // Private, inert unless armed by the synchronized test peer.
+                    lock.lock();
+                }
+            } else {
+                lock.lock();
+            }
             // Handle position updates
             std::string strategy_id = event.string_fields.at("strategy_id");
             auto it = strategies_.find(strategy_id);
@@ -93,20 +130,27 @@ PortfolioManager::PortfolioManager(PortfolioConfig config, std::string id,
                             {},  // Subscribe to all symbols
                             callback};
 
-    auto subscribe_result = MarketDataBus::instance().subscribe(sub_info);
+    auto subscribe_result = MarketDataBus::instance().subscribe_scoped(sub_info, market_data_subscription_);
     if (subscribe_result.is_error()) {
         throw std::runtime_error(subscribe_result.error()->what());
     }
+}
 
-    (void)StateManager::instance().update_state("PORTFOLIO_MANAGER", ComponentState::RUNNING);
+PortfolioManager::~PortfolioManager() noexcept {
+    // No callback-visible member may be touched before this quiescent reset.
+    market_data_subscription_.reset();
 }
 
 Result<void> PortfolioManager::add_strategy(std::shared_ptr<StrategyInterface> strategy,
                                             double initial_allocation, bool use_optimization,
-                                            bool use_risk_management) {
+                                            bool use_risk_management,
+                                            PortfolioRegistrationTrace* consumption) {
+    if (consumption) *consumption = {};
+    if (consumption) consumption->outcome = PortfolioCallOutcome::InProgress;
     std::lock_guard<std::mutex> lock(mutex_);
 
     if (!strategy) {
+        if (consumption) consumption->outcome = PortfolioCallOutcome::ReturnedError;
         return make_error<void>(ErrorCode::INVALID_ARGUMENT, "Strategy cannot be null",
                                 "PortfolioManager");
     }
@@ -114,13 +158,21 @@ Result<void> PortfolioManager::add_strategy(std::shared_ptr<StrategyInterface> s
     const auto& metadata = strategy->get_metadata();
 
     if (strategies_.find(metadata.id) != strategies_.end()) {
+        if (consumption) consumption->outcome = PortfolioCallOutcome::ReturnedError;
         return make_error<void>(ErrorCode::INVALID_ARGUMENT,
                                 "Strategy with ID " + metadata.id + " already exists",
                                 "PortfolioManager");
     }
 
-    if (initial_allocation < config_.min_strategy_allocation ||
-        initial_allocation > config_.max_strategy_allocation) {
+    if (observe_portfolio_read(initial_allocation,
+                               consumption ? &consumption->initial_allocation : nullptr) <
+            observe_portfolio_read(config_.min_strategy_allocation,
+                                   consumption ? &consumption->min_allocation : nullptr) ||
+        observe_portfolio_read(initial_allocation,
+                               consumption ? &consumption->initial_allocation : nullptr) >
+            observe_portfolio_read(config_.max_strategy_allocation,
+                                   consumption ? &consumption->max_allocation : nullptr)) {
+        if (consumption) consumption->outcome = PortfolioCallOutcome::ReturnedError;
         return make_error<void>(ErrorCode::INVALID_ARGUMENT, "Initial allocation out of bounds",
                                 "PortfolioManager");
     }
@@ -131,7 +183,12 @@ Result<void> PortfolioManager::add_strategy(std::shared_ptr<StrategyInterface> s
         total_allocation += info.allocation;
     }
 
+    if (consumption) {
+        consumption->total_allocation = total_allocation;
+        consumption->total_within_limit = !(total_allocation > 1.0);
+    }
     if (total_allocation > 1.0) {
+        if (consumption) consumption->outcome = PortfolioCallOutcome::ReturnedError;
         return make_error<void>(ErrorCode::INVALID_ARGUMENT, "Total allocation would exceed 1.0",
                                 "PortfolioManager");
     }
@@ -140,23 +197,39 @@ Result<void> PortfolioManager::add_strategy(std::shared_ptr<StrategyInterface> s
     StrategyInfo info{
         strategy,
         initial_allocation,
-        use_optimization && config_.use_optimization,
-        use_risk_management && config_.use_risk_management,
+        observe_portfolio_read(use_optimization,
+                               consumption ? &consumption->requested_optimization : nullptr) &&
+            observe_portfolio_read(config_.use_optimization,
+                                   consumption ? &consumption->portfolio_optimization : nullptr),
+        observe_portfolio_read(use_risk_management,
+                               consumption ? &consumption->requested_risk : nullptr) &&
+            observe_portfolio_read(config_.use_risk_management,
+                                   consumption ? &consumption->portfolio_risk : nullptr),
         {},  // current positions
         {}   // target positions
     };
+
+    if (consumption) {
+        consumption->stored_allocation = info.allocation;
+        consumption->stored_optimization = info.use_optimization;
+        consumption->stored_risk = info.use_risk_management;
+    }
 
     strategies_[metadata.id] = std::move(info);
 
     INFO("Added strategy " + metadata.id + " with allocation " +
          std::to_string(initial_allocation));
 
+    if (consumption) consumption->outcome = PortfolioCallOutcome::ReturnedOk;
     return Result<void>();
 }
 
 Result<void> PortfolioManager::process_market_data(const std::vector<Bar>& data,
                                                    bool skip_execution_generation,
-                                                   std::optional<Timestamp> current_timestamp) {
+                                                   std::optional<Timestamp> current_timestamp,
+                                                   PortfolioConsumptionTrace* consumption) {
+    if (consumption) *consumption = {};
+    if (consumption) consumption->outcome = PortfolioCallOutcome::InProgress;
     std::vector<std::string> processed_strategies;
 
     try {
@@ -172,6 +245,7 @@ Result<void> PortfolioManager::process_market_data(const std::vector<Bar>& data,
             // Validate market data
             if (data.empty()) {
                 ERROR("Empty market data provided");
+                if (consumption) consumption->outcome = PortfolioCallOutcome::ReturnedError;
                 return make_error<void>(ErrorCode::MARKET_DATA_ERROR, "Empty market data provided",
                                         "PortfolioManager");
             }
@@ -197,6 +271,7 @@ Result<void> PortfolioManager::process_market_data(const std::vector<Bar>& data,
                 Logger::register_component(info.strategy->get_metadata().name);
                 if (!info.strategy) {
                     ERROR("Null strategy pointer found for ID: " + id);
+                    if (consumption) consumption->outcome = PortfolioCallOutcome::ReturnedError;
                     return make_error<void>(ErrorCode::INVALID_ARGUMENT,
                                             "Null strategy pointer found for ID: " + id,
                                             "PortfolioManager");
@@ -212,7 +287,17 @@ Result<void> PortfolioManager::process_market_data(const std::vector<Bar>& data,
                     DEBUG("Current positions for strategy " + id + ": " + oss.str());
 
                     // Process market data through strategy
-                    auto result = info.strategy->on_data(data);
+                    PortfolioStrategyInvocation* invocation = nullptr;
+                    if (consumption) {
+                        consumption->strategies.push_back({});
+                        invocation = &consumption->strategies.back();
+                        invocation->strategy_id = id;
+                        invocation->outcome = PortfolioCallOutcome::InProgress;
+                    }
+                    auto result = info.strategy->on_data(
+                        data, invocation ? &invocation->strategy : nullptr);
+                    if (invocation) invocation->outcome = result.is_error()
+                        ? PortfolioCallOutcome::ReturnedError : PortfolioCallOutcome::ReturnedOk;
                     if (result.is_error()) {
                         ERROR("Error processing data for strategy " + id + ": " +
                               result.error()->what());
@@ -247,6 +332,10 @@ Result<void> PortfolioManager::process_market_data(const std::vector<Bar>& data,
                     processed_strategies.push_back(id);
 
                 } catch (const std::exception& e) {
+                    if (consumption && !consumption->strategies.empty() &&
+                        consumption->strategies.back().strategy_id == id &&
+                        consumption->strategies.back().outcome == PortfolioCallOutcome::InProgress)
+                        consumption->strategies.back().outcome = PortfolioCallOutcome::Threw;
                     ERROR("Exception processing strategy " + id + ": " + std::string(e.what()));
                     continue;
                 }
@@ -266,12 +355,20 @@ Result<void> PortfolioManager::process_market_data(const std::vector<Bar>& data,
 
         while (!done && iteration++ < max_iterations) {
             INFO("Iteration " + std::to_string(iteration) + " of dynamic optimization + risk loop");
+            PortfolioPassConsumption* pass = nullptr;
+            if (consumption) {
+                pass = &consumption->passes[consumption->pass_count++];
+            }
 
             // Dynamic Optimization step
-            if (config_.use_optimization && optimizer_) {
+            if (observe_portfolio_read(config_.use_optimization,
+                                       pass ? &pass->use_optimization : nullptr) && optimizer_) {
                 try {
                     Logger::register_component("DynamicOptimizer");
-                    auto opt_result = optimize_positions();
+                    if (pass) pass->optimization_helper = PortfolioCallOutcome::InProgress;
+                    auto opt_result = optimize_positions(pass ? &pass->optimization : nullptr);
+                    if (pass) pass->optimization_helper = opt_result.is_error()
+                        ? PortfolioCallOutcome::ReturnedError : PortfolioCallOutcome::ReturnedOk;
                     if (opt_result.is_error()) {
                         WARN("Portfolio optimization failed in iteration " +
                              std::to_string(iteration) + ": " +
@@ -279,6 +376,8 @@ Result<void> PortfolioManager::process_market_data(const std::vector<Bar>& data,
                              ", continuing without optimization");
                     }
                 } catch (const std::exception& e) {
+                    if (pass && pass->optimization_helper == PortfolioCallOutcome::InProgress)
+                        pass->optimization_helper = PortfolioCallOutcome::Threw;
                     WARN("Exception during portfolio optimization in iteration " +
                          std::to_string(iteration) + ": " + std::string(e.what()) +
                          ", continuing without optimization");
@@ -297,10 +396,14 @@ Result<void> PortfolioManager::process_market_data(const std::vector<Bar>& data,
             // Risk Management step
             bool has_risk_manager =
                 (external_risk_manager_ != nullptr) || (risk_manager_ != nullptr);
-            if (config_.use_risk_management && has_risk_manager) {
+            if (observe_portfolio_read(config_.use_risk_management,
+                                       pass ? &pass->use_risk_management : nullptr) && has_risk_manager) {
                 try {
                     Logger::register_component("RiskManager");
-                    auto risk_result = apply_risk_management(data);
+                    if (pass) pass->risk_helper = PortfolioCallOutcome::InProgress;
+                    auto risk_result = apply_risk_management(data, pass ? &pass->risk : nullptr);
+                    if (pass) pass->risk_helper = risk_result.is_error()
+                        ? PortfolioCallOutcome::ReturnedError : PortfolioCallOutcome::ReturnedOk;
                     if (risk_result.is_error()) {
                         WARN("Portfolio risk management failed in iteration " +
                              std::to_string(iteration) + ": " +
@@ -311,6 +414,8 @@ Result<void> PortfolioManager::process_market_data(const std::vector<Bar>& data,
                              std::to_string(iteration));
                     }
                 } catch (const std::exception& e) {
+                    if (pass && pass->risk_helper == PortfolioCallOutcome::InProgress)
+                        pass->risk_helper = PortfolioCallOutcome::Threw;
                     WARN("Exception during risk management in iteration " +
                          std::to_string(iteration) + ": " + std::string(e.what()) +
                          ", continuing without risk management");
@@ -322,7 +427,7 @@ Result<void> PortfolioManager::process_market_data(const std::vector<Bar>& data,
 
             // Check for partial contracts in final positions
             bool partials_found = false;
-            {
+            if(!config_.allow_fractional_positions) {
                 std::lock_guard<std::mutex> lock(mutex_);
                 for (const auto& [id, info] : strategies_) {
                     for (const auto& [symbol, pos] : info.target_positions) {
@@ -342,7 +447,10 @@ Result<void> PortfolioManager::process_market_data(const std::vector<Bar>& data,
             }
 
             if (!partials_found) {
-                INFO("No partial contracts after iteration " + std::to_string(iteration) +
+                if(config_.allow_fractional_positions) {
+                    INFO("Fractional positions permitted; accepting iteration " + std::to_string(iteration) +
+                         " output as final (risk scale applied once). Converged!");
+                } else INFO("No partial contracts after iteration " + std::to_string(iteration) +
                      ". Converged!");
                 done = true;
             }
@@ -376,7 +484,7 @@ Result<void> PortfolioManager::process_market_data(const std::vector<Bar>& data,
         // Final verification of all positions for partial contracts
         {
             std::lock_guard<std::mutex> lock(mutex_);
-            for (const auto& [id, info] : strategies_) {
+            if(!config_.allow_fractional_positions) for (const auto& [id, info] : strategies_) {
                 for (const auto& [symbol, pos] : info.target_positions) {
                     double fractional = std::abs(static_cast<double>(pos.quantity) -
                                                  std::round(static_cast<double>(pos.quantity)));
@@ -454,6 +562,7 @@ Result<void> PortfolioManager::process_market_data(const std::vector<Bar>& data,
 
             // Skip execution generation during warmup to prevent warmup executions from being
             // created
+            if (consumption) consumption->skip_execution_generation = skip_execution_generation;
             if (!skip_execution_generation) {
                 // Check if this is first post-warmup day for portfolio-level executions
                 // (check BEFORE generating strategy executions)
@@ -552,8 +661,25 @@ Result<void> PortfolioManager::process_market_data(const std::vector<Bar>& data,
                                                  : (data.empty() ? std::chrono::system_clock::now()
                                                                  : data[0].timestamp);
                             // Calculate transaction costs using TransactionCostManager
-                            auto cost_result = cost_manager_.calculate_costs(
-                                symbol, std::abs(trade_size), latest_price);
+                            PortfolioExecutionCharge* charge = nullptr;
+                            if (consumption) {
+                                consumption->strategy_charges.push_back({});
+                                charge = &consumption->strategy_charges.back();
+                                charge->purpose = PortfolioChargePurpose::PerStrategy;
+                                charge->strategy_id = strategy_id;
+                                charge->symbol = symbol;
+                                charge->charge_call = PortfolioCallOutcome::InProgress;
+                            }
+                            transaction_cost::TransactionCostResult cost_result;
+                            try {
+                                cost_result = cost_manager_.calculate_costs(
+                                    symbol, std::abs(trade_size), latest_price,
+                                    charge ? &charge->charge : nullptr);
+                                if (charge) charge->charge_call = PortfolioCallOutcome::ReturnedOk;
+                            } catch (...) {
+                                if (charge) charge->charge_call = PortfolioCallOutcome::Threw;
+                                throw;
+                            }
                             exec.commissions_fees = Decimal(cost_result.commissions_fees);
                             exec.implicit_price_impact = Decimal(cost_result.implicit_price_impact);
                             exec.slippage_market_impact =
@@ -638,8 +764,24 @@ Result<void> PortfolioManager::process_market_data(const std::vector<Bar>& data,
                                              : (data.empty() ? std::chrono::system_clock::now()
                                                              : data[0].timestamp);
                         // Calculate transaction costs using TransactionCostManager
-                        auto cost_result = cost_manager_.calculate_costs(
-                            symbol, std::abs(trade_size), latest_price);
+                        PortfolioExecutionCharge* charge = nullptr;
+                        if (consumption) {
+                            consumption->compatibility_charges.push_back({});
+                            charge = &consumption->compatibility_charges.back();
+                            charge->purpose = PortfolioChargePurpose::Compatibility;
+                            charge->symbol = symbol;
+                            charge->charge_call = PortfolioCallOutcome::InProgress;
+                        }
+                        transaction_cost::TransactionCostResult cost_result;
+                        try {
+                            cost_result = cost_manager_.calculate_costs(
+                                symbol, std::abs(trade_size), latest_price,
+                                charge ? &charge->charge : nullptr);
+                            if (charge) charge->charge_call = PortfolioCallOutcome::ReturnedOk;
+                        } catch (...) {
+                            if (charge) charge->charge_call = PortfolioCallOutcome::Threw;
+                            throw;
+                        }
                         exec.commissions_fees = Decimal(cost_result.commissions_fees);
                         exec.implicit_price_impact = Decimal(cost_result.implicit_price_impact);
                         exec.slippage_market_impact = Decimal(cost_result.slippage_market_impact);
@@ -652,9 +794,11 @@ Result<void> PortfolioManager::process_market_data(const std::vector<Bar>& data,
                 }
             }  // End of if (!skip_execution_generation) block
         }
+        if (consumption) consumption->outcome = PortfolioCallOutcome::ReturnedOk;
         return Result<void>();
 
     } catch (const std::exception& e) {
+        if (consumption) consumption->outcome = PortfolioCallOutcome::ReturnedError;
         return make_error<void>(ErrorCode::UNKNOWN_ERROR,
                                 std::string("Error processing market data: ") + e.what(),
                                 "PortfolioManager");
@@ -705,35 +849,45 @@ std::vector<double> PortfolioManager::calculate_weights_per_contract(
 }
 
 std::vector<double> PortfolioManager::calculate_trading_costs(
-    const std::vector<std::string>& symbols, double capital) const {
+    const std::vector<std::string>& symbols, double capital,
+    std::vector<PortfolioCostEstimate>* consumption) const {
+    if (consumption) consumption->clear();
     std::vector<double> costs(symbols.size(), 0.0);
 
-    // Collect all trading data once
-    std::unordered_map<std::string, const InstrumentData*> all_trading_data;
+    // Collect copied cost references once per strategy for this estimate.
+    std::unordered_map<std::string, double> all_trading_data;
     for (const auto& [strategy_id, info] : strategies_) {
-        auto trend_strategy = std::dynamic_pointer_cast<TrendFollowingStrategy>(info.strategy);
-        if (trend_strategy) {
-            const auto& strategy_data = trend_strategy->get_all_instrument_data();
-            for (const auto& [symbol, data] : strategy_data) {
-                all_trading_data[symbol] = &data;
-            }
+        auto strategy_data = info.strategy->get_portfolio_cost_reference_prices();
+        for (const auto& [symbol, price] : strategy_data) {
+            all_trading_data[symbol] = price;
         }
     }
 
     for (size_t i = 0; i < symbols.size(); ++i) {
         const std::string& symbol = symbols[i];
 
-        // Get contract size and price for this symbol
+        PortfolioCostEstimate* estimate = nullptr;
+        if (consumption) {
+            consumption->push_back({});
+            estimate = &consumption->back();
+            estimate->symbol_index = i;
+            estimate->symbol = symbol;
+        }
+
+        // Get the copied reference price for this symbol.
         auto it = all_trading_data.find(symbol);
         if (it != all_trading_data.end()) {
-            const auto& data = *(it->second);
-            double contract_size = data.contract_size;
-            double price = data.price_history.empty() ? 1.0 : data.price_history.back();
-            double fx_rate = 1.0;  // Default exchange rate
-
-            // Calculate notional per contract
-            [[maybe_unused]] double notional_per_contract = contract_size * price * fx_rate;
-            auto cost_result = cost_manager_.calculate_costs(symbol, 1.0, price);
+            double price = it->second;
+            if (estimate) estimate->charge_call = PortfolioCallOutcome::InProgress;
+            transaction_cost::TransactionCostResult cost_result;
+            try {
+                cost_result = cost_manager_.calculate_costs(
+                    symbol, 1.0, price, estimate ? &estimate->charge : nullptr);
+                if (estimate) estimate->charge_call = PortfolioCallOutcome::ReturnedOk;
+            } catch (...) {
+                if (estimate) estimate->charge_call = PortfolioCallOutcome::Threw;
+                throw;
+            }
             double cost_per_contract = cost_result.total_transaction_costs;
             costs[i] = (capital > 0.0) ? (cost_per_contract / capital) : 0.0;
         } else {
@@ -885,43 +1039,15 @@ std::vector<std::vector<double>> PortfolioManager::calculate_covariance_matrix(
         }
     }
 
-    // Calculate means for each asset using aligned returns
-    std::vector<double> means(num_assets, 0.0);
-    for (size_t i = 0; i < num_assets; ++i) {
-        for (size_t t = 0; t < min_periods; ++t) {
-            means[i] += aligned_returns[t][i];
-        }
-        means[i] /= min_periods;
-    }
-
-    // Calculate covariance matrix
-    std::vector<std::vector<double>> covariance(num_assets, std::vector<double>(num_assets, 0.0));
-
-    // Avoid division by zero when min_periods == 1
-    double divisor = (min_periods > 1) ? (min_periods - 1) : 1.0;
-
-    for (size_t i = 0; i < num_assets; ++i) {
-        for (size_t j = 0; j < num_assets; ++j) {
-            double cov_sum = 0.0;
-            for (size_t t = 0; t < min_periods; ++t) {
-                cov_sum += (aligned_returns[t][i] - means[i]) * (aligned_returns[t][j] - means[j]);
-            }
-
-            covariance[i][j] = cov_sum / divisor;
-
-            // Annualize the covariance (assuming daily data with 252 trading days)
-            covariance[i][j] *= 252.0;
-        }
-    }
-
-    return covariance;
+    return detail::annualized_sample_covariance(aligned_returns);
 }
 
-Result<void> PortfolioManager::optimize_positions() {
+Result<void> PortfolioManager::optimize_positions(PortfolioOptimizationHelperTrace* consumption) {
+    if (consumption) *consumption = {};
     try {
         // Get unique symbols across all strategies and collect data under lock
         std::vector<std::string> symbols;
-        std::unordered_map<std::string, const InstrumentData*> all_trading_data;
+        std::unordered_map<std::string, PortfolioOptimizerInputs> all_trading_data;
         std::vector<double> current_weights;
         std::vector<double> target_weights;
         std::vector<double> weights_per_contract;
@@ -938,8 +1064,9 @@ Result<void> PortfolioManager::optimize_positions() {
 
             // First collect all potential symbols
             std::vector<std::string> all_symbols;
-            for (const auto& [_, info] : strategies_) {
-                if (!info.use_optimization)
+            for (const auto& [id, info] : strategies_) {
+                if (!observe_strategy_gate(info.use_optimization, consumption,
+                                           PortfolioOptimizationStage::SymbolCollection, id))
                     continue;
 
                 for (const auto& [symbol, _] : info.target_positions) {
@@ -953,6 +1080,7 @@ Result<void> PortfolioManager::optimize_positions() {
                               all_symbols.end());
 
             if (all_symbols.empty()) {
+                if (consumption) consumption->skip = PortfolioHelperSkip::NoEligibleSymbols;
                 INFO("No symbols found for optimization, skipping");
                 return Result<void>();
             }
@@ -973,19 +1101,16 @@ Result<void> PortfolioManager::optimize_positions() {
             }
 
             if (symbols.empty()) {
+                if (consumption) consumption->skip = PortfolioHelperSkip::InsufficientHistory;
                 INFO("No symbols have sufficient historical data for optimization, skipping");
                 return Result<void>();
             }
 
-            // Collect all instrument data
+            // Collect copied optimizer metadata; the last provider wins per symbol.
             for (const auto& [id, info] : strategies_) {
-                auto trend_strategy =
-                    std::dynamic_pointer_cast<TrendFollowingStrategy>(info.strategy);
-                if (trend_strategy) {
-                    const auto& strategy_data = trend_strategy->get_all_instrument_data();
-                    for (const auto& [symbol, data] : strategy_data) {
-                        all_trading_data[symbol] = &data;
-                    }
+                const auto strategy_data = info.strategy->get_portfolio_optimizer_inputs();
+                for (const auto& [symbol, data] : strategy_data) {
+                    all_trading_data[symbol] = data;
                 }
             }
 
@@ -996,15 +1121,17 @@ Result<void> PortfolioManager::optimize_positions() {
                 // Get contract size and price for this symbol
                 auto it = all_trading_data.find(symbol);
                 if (it != all_trading_data.end()) {
-                    const auto& data = *(it->second);
+                    const auto& data = it->second;
                     double contract_size = data.contract_size;
-                    double price = data.price_history.empty() ? 1.0 : data.price_history.back();
+                    double price = data.reference_price;
                     double fx_rate = 1.0;  // Default exchange rate
 
                     // Calculate notional per contract
                     double notional_per_contract = contract_size * price * fx_rate;
                     weights_per_contract.push_back(notional_per_contract /
-                                                   static_cast<double>(config_.total_capital));
+                                                    static_cast<double>(observe_portfolio_read(
+                                                        config_.total_capital,
+                                                        consumption ? &consumption->total_capital : nullptr)));
                 } else {
                     WARN("Symbol " + symbol + " not found in trading data, using default weight");
                     weights_per_contract.push_back(0.01);  // Reasonable default
@@ -1033,10 +1160,16 @@ Result<void> PortfolioManager::optimize_positions() {
 
                 // Aggregate across strategies
                 for (const auto& [strat_id, info] : strategies_) {
-                    if (!info.use_optimization)
+                    if (!observe_strategy_gate(info.use_optimization, consumption,
+                                               PortfolioOptimizationStage::NumericAggregation,
+                                               strat_id))
                         continue;
 
-                    double allocation = info.allocation;
+                    double allocation = observe_portfolio_read(
+                        info.allocation,
+                        consumption ? &consumption->strategies[
+                            static_cast<size_t>(PortfolioOptimizationStage::NumericAggregation)]
+                            [strat_id].allocation : nullptr);
                     if (info.current_positions.count(symbol)) {
                         current_weights[i] +=
                             static_cast<double>(info.current_positions.at(symbol).quantity) *
@@ -1057,7 +1190,9 @@ Result<void> PortfolioManager::optimize_positions() {
             }
 
             // Calculate trading costs (inside lock since it accesses strategies_)
-            costs = calculate_trading_costs(symbols, static_cast<double>(config_.total_capital));
+            costs = calculate_trading_costs(symbols, static_cast<double>(observe_portfolio_read(
+                config_.total_capital, consumption ? &consumption->total_capital : nullptr)),
+                consumption ? &consumption->estimates : nullptr);
         }  // End of mutex lock scope
 
         // Use cached covariance if valid, otherwise compute and cache
@@ -1079,13 +1214,18 @@ Result<void> PortfolioManager::optimize_positions() {
 
         // Call the optimizer
         if (!optimizer_) {
+            if (consumption) consumption->skip = PortfolioHelperSkip::AbsentOptimizer;
             ERROR("Optimizer not initialized");
             return make_error<void>(ErrorCode::NOT_INITIALIZED, "Optimizer not initialized",
                                     "PortfolioManager");
         }
 
+        if (consumption) consumption->optimizer_call = PortfolioCallOutcome::InProgress;
         auto result = optimizer_->optimize(current_weights, target_weights, costs,
-                                           weights_per_contract, covariance);
+                                            weights_per_contract, covariance,
+                                            consumption ? &consumption->optimizer : nullptr);
+        if (consumption) consumption->optimizer_call = result.is_error()
+            ? PortfolioCallOutcome::ReturnedError : PortfolioCallOutcome::ReturnedOk;
 
         if (result.is_error()) {
             return make_error<void>(result.error()->code(),
@@ -1117,7 +1257,9 @@ Result<void> PortfolioManager::optimize_positions() {
                 double total_original = total_contribs[symbol];
 
                 for (auto& [strat_id, info] : strategies_) {
-                    if (!info.use_optimization)
+                    if (!observe_strategy_gate(info.use_optimization, consumption,
+                                               PortfolioOptimizationStage::Redistribution,
+                                               strat_id))
                         continue;
                     if (!info.target_positions.count(symbol))
                         continue;
@@ -1130,9 +1272,24 @@ Result<void> PortfolioManager::optimize_positions() {
 
                     // Distribute proportionally, then undo allocation scaling for storage
                     // Strategy gets: (optimized_contracts * share) / allocation
-                    double strategy_contracts = rounded_contracts * share / info.allocation;
+                    double strategy_contracts = rounded_contracts * share /
+                        observe_portfolio_read(
+                            info.allocation,
+                            consumption ? &consumption->strategies[
+                                static_cast<size_t>(PortfolioOptimizationStage::Redistribution)]
+                                [strat_id].allocation : nullptr);
                     info.target_positions[symbol].quantity =
                         static_cast<Decimal>(std::round(strategy_contracts));
+                }
+            }
+
+            // Read raw diagnostic values only after optimizer execution and redistribution.
+            // The first provider in strategies_ order wins for each symbol.
+            std::unordered_map<std::string, double> first_raw_positions;
+            for (const auto& [_, info] : strategies_) {
+                const auto strategy_data = info.strategy->get_portfolio_optimizer_inputs();
+                for (const auto& [symbol, data] : strategy_data) {
+                    first_raw_positions.emplace(symbol, data.final_position);
                 }
             }
 
@@ -1152,19 +1309,9 @@ Result<void> PortfolioManager::optimize_positions() {
                     }
                 }
 
-                // Get original position from before optimization (stored in your trading data)
-                for (const auto& [_, info] : strategies_) {
-                    auto trend_strategy =
-                        std::dynamic_pointer_cast<TrendFollowingStrategy>(info.strategy);
-                    if (trend_strategy) {
-                        const auto& data = trend_strategy->get_all_instrument_data();
-                        auto it = data.find(symbol);
-                        if (it != data.end()) {
-                            original_position = it->second.final_position;
-                            break;
-                        }
-                    }
-                }
+                auto raw_it = first_raw_positions.find(symbol);
+                if (raw_it != first_raw_positions.end())
+                    original_position = raw_it->second;
 
                 INFO("Symbol " + symbol + ": raw=" + std::to_string(original_position) +
                      ", optimized=" + std::to_string(optimized_position) +
@@ -1176,6 +1323,8 @@ Result<void> PortfolioManager::optimize_positions() {
         return Result<void>();
 
     } catch (const std::exception& e) {
+        if (consumption && consumption->optimizer_call == PortfolioCallOutcome::InProgress)
+            consumption->optimizer_call = PortfolioCallOutcome::Threw;
         ERROR("Error during optimization: " + std::string(e.what()));
         return make_error<void>(ErrorCode::UNKNOWN_ERROR,
                                 std::string("Error during optimization: ") + e.what(),
@@ -1183,13 +1332,21 @@ Result<void> PortfolioManager::optimize_positions() {
     }
 }
 
-Result<void> PortfolioManager::apply_risk_management(const std::vector<Bar>& data) {
+Result<void> PortfolioManager::apply_risk_management(const std::vector<Bar>& data,
+                                                      PortfolioRiskHelperTrace* consumption) {
+    if (consumption) *consumption = {};
     Logger::register_component("RiskManager");
     // Use external risk manager if available, otherwise use internal manager
     RiskManager* active_manager =
         external_risk_manager_ ? external_risk_manager_.get() : risk_manager_.get();
+    if (consumption) {
+        consumption->source = !active_manager ? PortfolioRiskManagerSource::Absent
+            : external_risk_manager_ ? PortfolioRiskManagerSource::External
+                                     : PortfolioRiskManagerSource::Internal;
+    }
 
     if (!active_manager) {
+        if (consumption) consumption->skip = PortfolioHelperSkip::AbsentRiskManager;
         WARN("Risk manager not initialized, skipping risk management");
         return Result<void>();
     } else {
@@ -1200,7 +1357,9 @@ Result<void> PortfolioManager::apply_risk_management(const std::vector<Bar>& dat
         for (auto const& bar : data) {
             risk_history_.push_back(bar);
         }
-        size_t lookback = config_.risk_config.lookback_period;
+        size_t lookback = observe_portfolio_read(
+            config_.risk_config.lookback_period,
+            consumption ? &consumption->lookback_period : nullptr);
         if (risk_history_.size() > lookback) {
             // keep only the last 'lookback' bars
             risk_history_.erase(risk_history_.begin(),
@@ -1231,29 +1390,18 @@ Result<void> PortfolioManager::apply_risk_management(const std::vector<Bar>& dat
 
         // Check if we have positions to process
         if (portfolio_positions.empty()) {
+            if (consumption) consumption->skip = PortfolioHelperSkip::NoPositions;
             INFO("No positions to apply risk management to");
             return Result<void>();
         }
 
-        // Collect volatility from strategies under lock
-        std::unordered_map<std::string, double> volatilities;
-        {
-            std::lock_guard<std::mutex> lock(mutex_);
-            for (const auto& [id, info] : strategies_) {
-                auto trend_strategy =
-                    std::dynamic_pointer_cast<TrendFollowingStrategy>(info.strategy);
-                if (trend_strategy) {
-                    const auto& trading_data = trend_strategy->get_all_instrument_data();
-                    for (const auto& [symbol, data] : trading_data) {
-                        volatilities[symbol] = data.current_volatility;
-                    }
-                }
-            }
-        }
-
         // Apply risk management with proper error handling
         try {
-            auto result = active_manager->process_positions(portfolio_positions, market_data, {});
+            if (consumption) consumption->risk_call = PortfolioCallOutcome::InProgress;
+            auto result = active_manager->process_positions(
+                portfolio_positions, market_data, {}, consumption ? &consumption->risk : nullptr);
+            if (consumption) consumption->risk_call = result.is_error()
+                ? PortfolioCallOutcome::ReturnedError : PortfolioCallOutcome::ReturnedOk;
             if (result.is_error()) {
                 ERROR("Risk management calculation failed: " + std::string(result.error()->what()));
                 return Result<void>();  // Don't fail the entire operation
@@ -1300,6 +1448,8 @@ Result<void> PortfolioManager::apply_risk_management(const std::vector<Bar>& dat
                 INFO("Risk limits not exceeded, no scaling needed");
             }
         } catch (const std::exception& e) {
+            if (consumption && consumption->risk_call == PortfolioCallOutcome::InProgress)
+                consumption->risk_call = PortfolioCallOutcome::Threw;
             ERROR("Exception during risk management: " + std::string(e.what()));
             return Result<void>();  // Don't fail the entire operation
         }
@@ -1439,8 +1589,10 @@ void PortfolioManager::clear_all_executions() {
 
 void PortfolioManager::update_cost_manager_market_data(const std::string& symbol, double volume,
                                                        double close_price,
-                                                       double prev_close_price) {
-    cost_manager_.update_market_data(symbol, volume, close_price, prev_close_price);
+                                                       double prev_close_price,
+                                                       transaction_cost::MarketDataObservation* consumption) {
+    if (consumption) *consumption = {};
+    cost_manager_.update_market_data(symbol, volume, close_price, prev_close_price, consumption);
 }
 
 std::vector<std::shared_ptr<StrategyInterface>> PortfolioManager::get_strategies() const {

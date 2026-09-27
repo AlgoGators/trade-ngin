@@ -1,0 +1,2260 @@
+{
+  "version": 2,
+  "stages": [
+    "setup",
+    "market_input",
+    "cost_history",
+    "preparation",
+    "primary",
+    "execution",
+    "diagnostics",
+    "control_flow"
+  ],
+  "statuses": {
+    "complete": [
+      "none"
+    ],
+    "skipped": [
+      "non_trading_day"
+    ],
+    "partial": [
+      "nonfatal_error",
+      "incomplete_call",
+      "unsupported_consumer",
+      "instrumentation_missing"
+    ],
+    "unavailable": [
+      "instrumentation_missing",
+      "unsupported_consumer",
+      "capacity_exceeded",
+      "invalid_observed_value",
+      "invalid_observed_identity"
+    ]
+  },
+  "global_statuses": {
+    "complete": [
+      "none"
+    ],
+    "partial": [
+      "nonfatal_error",
+      "incomplete_call",
+      "unsupported_consumer",
+      "instrumentation_missing"
+    ],
+    "unavailable": [
+      "instrumentation_missing",
+      "unsupported_consumer",
+      "capacity_exceeded",
+      "invalid_observed_value",
+      "invalid_observed_identity"
+    ]
+  },
+  "limits": {
+    "bytes": 2097152,
+    "nodes": 4096,
+    "reads_total": 16384,
+    "reads_per_node": 4096,
+    "strategies": 32,
+    "symbols": 1024,
+    "collection_entries": 2048,
+    "passes": 5,
+    "pairs_per_read": 128,
+    "pairs_total": 8192,
+    "chain_depth": 6,
+    "identity_length": 64,
+    "string_length": 96,
+    "json_depth": 10,
+    "number_token_bytes": 25
+  },
+  "identity": {
+    "strategy": "[A-Za-z0-9][A-Za-z0-9_.:-]{0,63}",
+    "symbol": "[A-Za-z0-9][A-Za-z0-9_.:/-]{0,63}"
+  },
+  "consumers": [
+    {
+      "name": "setup.selector",
+      "kind": "call",
+      "stage": "setup",
+      "parents": [
+        "ROOT"
+      ],
+      "dimensions": []
+    },
+    {
+      "name": "setup.controlled_validation",
+      "kind": "scope",
+      "stage": "setup",
+      "parents": [
+        "setup.selector"
+      ],
+      "dimensions": []
+    },
+    {
+      "name": "setup.ordinary_selection",
+      "kind": "scope",
+      "stage": "setup",
+      "parents": [
+        "setup.selector"
+      ],
+      "dimensions": []
+    },
+    {
+      "name": "setup.selection_entry",
+      "kind": "scope",
+      "stage": "setup",
+      "parents": [
+        "setup.controlled_validation",
+        "setup.ordinary_selection"
+      ],
+      "dimensions": [
+        "strategy"
+      ]
+    },
+    {
+      "name": "setup.factory",
+      "kind": "call",
+      "stage": "setup",
+      "parents": [
+        "ROOT"
+      ],
+      "dimensions": []
+    },
+    {
+      "name": "setup.factory_entry",
+      "kind": "scope",
+      "stage": "setup",
+      "parents": [
+        "setup.factory"
+      ],
+      "dimensions": [
+        "strategy"
+      ]
+    },
+    {
+      "name": "portfolio.registration",
+      "kind": "call",
+      "stage": "setup",
+      "parents": [
+        "ROOT"
+      ],
+      "dimensions": [
+        "strategy"
+      ]
+    },
+    {
+      "name": "runner.market_window",
+      "kind": "scope",
+      "stage": "market_input",
+      "parents": [
+        "ROOT"
+      ],
+      "dimensions": []
+    },
+    {
+      "name": "runner.market_fetch",
+      "kind": "call",
+      "stage": "market_input",
+      "parents": [
+        "ROOT"
+      ],
+      "dimensions": []
+    },
+    {
+      "name": "execution.history_update",
+      "kind": "call",
+      "stage": "cost_history",
+      "parents": [
+        "ROOT"
+      ],
+      "dimensions": [
+        "symbol"
+      ]
+    },
+    {
+      "name": "cost.history",
+      "kind": "scope",
+      "stage": "cost_history",
+      "parents": [
+        "execution.history_update"
+      ],
+      "dimensions": []
+    },
+    {
+      "name": "strategy.preparation",
+      "kind": "call",
+      "stage": "preparation",
+      "parents": [
+        "ROOT"
+      ],
+      "dimensions": [
+        "strategy"
+      ]
+    },
+    {
+      "name": "portfolio.primary",
+      "kind": "call",
+      "stage": "primary",
+      "parents": [
+        "ROOT"
+      ],
+      "dimensions": []
+    },
+    {
+      "name": "strategy.primary",
+      "kind": "call",
+      "stage": "primary",
+      "parents": [
+        "portfolio.primary"
+      ],
+      "dimensions": [
+        "strategy"
+      ]
+    },
+    {
+      "name": "strategy.history",
+      "kind": "scope",
+      "stage": "inherited",
+      "parents": [
+        "strategy.preparation",
+        "strategy.primary"
+      ],
+      "dimensions": []
+    },
+    {
+      "name": "strategy.volatility",
+      "kind": "scope",
+      "stage": "inherited",
+      "parents": [
+        "strategy.preparation",
+        "strategy.primary"
+      ],
+      "dimensions": []
+    },
+    {
+      "name": "strategy.forecast",
+      "kind": "scope",
+      "stage": "inherited",
+      "parents": [
+        "strategy.preparation",
+        "strategy.primary"
+      ],
+      "dimensions": []
+    },
+    {
+      "name": "strategy.regime",
+      "kind": "scope",
+      "stage": "inherited",
+      "parents": [
+        "strategy.preparation",
+        "strategy.primary"
+      ],
+      "dimensions": []
+    },
+    {
+      "name": "strategy.sizing",
+      "kind": "scope",
+      "stage": "inherited",
+      "parents": [
+        "strategy.preparation",
+        "strategy.primary"
+      ],
+      "dimensions": []
+    },
+    {
+      "name": "strategy.buffering",
+      "kind": "scope",
+      "stage": "inherited",
+      "parents": [
+        "strategy.preparation",
+        "strategy.primary"
+      ],
+      "dimensions": []
+    },
+    {
+      "name": "strategy.base_risk",
+      "kind": "scope",
+      "stage": "inherited",
+      "parents": [
+        "strategy.preparation",
+        "strategy.primary"
+      ],
+      "dimensions": []
+    },
+    {
+      "name": "strategy.position_limits",
+      "kind": "scope",
+      "stage": "inherited",
+      "parents": [
+        "strategy.preparation",
+        "strategy.primary"
+      ],
+      "dimensions": []
+    },
+    {
+      "name": "portfolio.pass",
+      "kind": "scope",
+      "stage": "primary",
+      "parents": [
+        "portfolio.primary"
+      ],
+      "dimensions": [
+        "index"
+      ]
+    },
+    {
+      "name": "portfolio.optimization",
+      "kind": "call",
+      "stage": "primary",
+      "parents": [
+        "portfolio.pass"
+      ],
+      "dimensions": []
+    },
+    {
+      "name": "portfolio.symbol_collection",
+      "kind": "scope",
+      "stage": "primary",
+      "parents": [
+        "portfolio.optimization"
+      ],
+      "dimensions": []
+    },
+    {
+      "name": "portfolio.numeric_aggregation",
+      "kind": "scope",
+      "stage": "primary",
+      "parents": [
+        "portfolio.optimization"
+      ],
+      "dimensions": []
+    },
+    {
+      "name": "portfolio.redistribution",
+      "kind": "scope",
+      "stage": "primary",
+      "parents": [
+        "portfolio.optimization"
+      ],
+      "dimensions": []
+    },
+    {
+      "name": "portfolio.optimization_strategy",
+      "kind": "scope",
+      "stage": "primary",
+      "parents": [
+        "portfolio.symbol_collection",
+        "portfolio.numeric_aggregation",
+        "portfolio.redistribution"
+      ],
+      "dimensions": [
+        "strategy"
+      ]
+    },
+    {
+      "name": "portfolio.estimate",
+      "kind": "scope",
+      "stage": "primary",
+      "parents": [
+        "portfolio.optimization"
+      ],
+      "dimensions": [
+        "symbol",
+        "index"
+      ]
+    },
+    {
+      "name": "cost.estimate",
+      "kind": "call",
+      "stage": "primary",
+      "parents": [
+        "portfolio.estimate"
+      ],
+      "dimensions": []
+    },
+    {
+      "name": "optimizer.primary",
+      "kind": "call",
+      "stage": "primary",
+      "parents": [
+        "portfolio.optimization"
+      ],
+      "dimensions": []
+    },
+    {
+      "name": "portfolio.risk",
+      "kind": "call",
+      "stage": "primary",
+      "parents": [
+        "portfolio.pass"
+      ],
+      "dimensions": []
+    },
+    {
+      "name": "risk.primary",
+      "kind": "call",
+      "stage": "primary",
+      "parents": [
+        "portfolio.risk"
+      ],
+      "dimensions": []
+    },
+    {
+      "name": "cost.strategy_execution",
+      "kind": "call",
+      "stage": "primary",
+      "parents": [
+        "portfolio.primary"
+      ],
+      "dimensions": [
+        "strategy",
+        "symbol"
+      ]
+    },
+    {
+      "name": "cost.compatibility_execution",
+      "kind": "call",
+      "stage": "primary",
+      "parents": [
+        "portfolio.primary"
+      ],
+      "dimensions": [
+        "symbol"
+      ]
+    },
+    {
+      "name": "execution.batch",
+      "kind": "call",
+      "stage": "execution",
+      "parents": [
+        "ROOT"
+      ],
+      "dimensions": [
+        "strategy"
+      ]
+    },
+    {
+      "name": "execution.attempt",
+      "kind": "call",
+      "stage": "execution",
+      "parents": [
+        "execution.batch"
+      ],
+      "dimensions": [
+        "symbol",
+        "index"
+      ]
+    },
+    {
+      "name": "cost.execution",
+      "kind": "scope",
+      "stage": "execution",
+      "parents": [
+        "execution.attempt"
+      ],
+      "dimensions": []
+    },
+    {
+      "name": "runner.pnl_finalization",
+      "kind": "call",
+      "stage": "diagnostics",
+      "parents": [
+        "ROOT"
+      ],
+      "dimensions": [
+        "strategy"
+      ]
+    },
+    {
+      "name": "risk.diagnostics",
+      "kind": "call",
+      "stage": "diagnostics",
+      "parents": [
+        "ROOT"
+      ],
+      "dimensions": []
+    },
+    {
+      "name": "runner.non_trading_day",
+      "kind": "scope",
+      "stage": "control_flow",
+      "parents": [
+        "ROOT"
+      ],
+      "dimensions": []
+    },
+    {
+      "name": "runner.benchmark",
+      "kind": "scope",
+      "stage": "control_flow",
+      "parents": [
+        "ROOT"
+      ],
+      "dimensions": []
+    }
+  ],
+  "metadata": [
+    {
+      "consumer": "setup.selector",
+      "key": "mode",
+      "type": "enum:ordinary,controlled",
+      "required": true
+    },
+    {
+      "consumer": "setup.ordinary_selection",
+      "key": "normalized",
+      "type": "bool",
+      "required": false
+    },
+    {
+      "consumer": "setup.selection_entry",
+      "key": "enabled_live_read",
+      "type": "bool",
+      "required": true
+    },
+    {
+      "consumer": "setup.selection_entry",
+      "key": "allocation_read",
+      "type": "bool",
+      "required": true
+    },
+    {
+      "consumer": "setup.selection_entry",
+      "key": "enabled_live_present",
+      "type": "bool",
+      "required": false
+    },
+    {
+      "consumer": "setup.selection_entry",
+      "key": "enabled_live_defaulted",
+      "type": "bool",
+      "required": false
+    },
+    {
+      "consumer": "setup.selection_entry",
+      "key": "allocation_defaulted",
+      "type": "bool",
+      "required": false
+    },
+    {
+      "consumer": "setup.factory_entry",
+      "key": "type_defaulted",
+      "type": "bool",
+      "required": false
+    },
+    {
+      "consumer": "setup.factory_entry",
+      "key": "profile",
+      "type": "enum:standard,fast,slow,unsupported",
+      "required": false
+    },
+    {
+      "consumer": "setup.factory_entry",
+      "key": "construction",
+      "type": "enum:not_reached,attempted,succeeded,failed",
+      "required": true
+    },
+    {
+      "consumer": "setup.factory_entry",
+      "key": "initialize",
+      "type": "enum:not_reached,attempted,succeeded,failed",
+      "required": true
+    },
+    {
+      "consumer": "setup.factory_entry",
+      "key": "start",
+      "type": "enum:not_reached,attempted,succeeded,failed",
+      "required": true
+    },
+    {
+      "consumer": "portfolio.registration",
+      "key": "total_within_limit",
+      "type": "bool",
+      "required": false
+    },
+    {
+      "consumer": "execution.history_update",
+      "key": "cost_model_reached",
+      "type": "bool",
+      "required": true
+    },
+    {
+      "consumer": "execution.history_update",
+      "key": "previous_close_source",
+      "type": "enum:initial_current_close,stored_previous_close",
+      "required": false
+    },
+    {
+      "consumer": "strategy.preparation",
+      "key": "profile",
+      "type": "enum:unsupported,base,standard,fast,slow",
+      "required": true
+    },
+    {
+      "consumer": "strategy.primary",
+      "key": "profile",
+      "type": "enum:unsupported,base,standard,fast,slow",
+      "required": true
+    },
+    {
+      "consumer": "strategy.base_risk",
+      "key": "supported",
+      "type": "bool",
+      "required": true
+    },
+    {
+      "consumer": "strategy.position_limits",
+      "key": "supported",
+      "type": "bool",
+      "required": true
+    },
+    {
+      "consumer": "portfolio.primary",
+      "key": "skip_execution_generation",
+      "type": "bool",
+      "required": false
+    },
+    {
+      "consumer": "portfolio.optimization",
+      "key": "skip",
+      "type": "enum:none,no_eligible_symbols,insufficient_history,absent_optimizer",
+      "required": true
+    },
+    {
+      "consumer": "portfolio.risk",
+      "key": "skip",
+      "type": "enum:none,absent_risk_manager,no_positions",
+      "required": true
+    },
+    {
+      "consumer": "portfolio.risk",
+      "key": "manager_source",
+      "type": "enum:absent,internal,external",
+      "required": false
+    },
+    {
+      "consumer": "optimizer.primary",
+      "key": "buffer_branch",
+      "type": "enum:not_reached,disabled,returned_prior,applied,failed",
+      "required": true
+    },
+    {
+      "consumer": "cost.estimate",
+      "key": "input_source",
+      "type": "enum:internally_tracked,explicit_values",
+      "required": false
+    },
+    {
+      "consumer": "cost.estimate",
+      "key": "asset_lookup",
+      "type": "enum:exact_symbol,pre_dot_root,fallback",
+      "required": false
+    },
+    {
+      "consumer": "cost.strategy_execution",
+      "key": "input_source",
+      "type": "enum:internally_tracked,explicit_values",
+      "required": false
+    },
+    {
+      "consumer": "cost.strategy_execution",
+      "key": "asset_lookup",
+      "type": "enum:exact_symbol,pre_dot_root,fallback",
+      "required": false
+    },
+    {
+      "consumer": "cost.compatibility_execution",
+      "key": "input_source",
+      "type": "enum:internally_tracked,explicit_values",
+      "required": false
+    },
+    {
+      "consumer": "cost.compatibility_execution",
+      "key": "asset_lookup",
+      "type": "enum:exact_symbol,pre_dot_root,fallback",
+      "required": false
+    },
+    {
+      "consumer": "cost.execution",
+      "key": "input_source",
+      "type": "enum:internally_tracked,explicit_values",
+      "required": false
+    },
+    {
+      "consumer": "cost.execution",
+      "key": "asset_lookup",
+      "type": "enum:exact_symbol,pre_dot_root,fallback",
+      "required": false
+    },
+    {
+      "consumer": "execution.batch",
+      "key": "state",
+      "type": "enum:entered,rejected_stream,returned,invalid_argument",
+      "required": true
+    },
+    {
+      "consumer": "execution.attempt",
+      "key": "state",
+      "type": "enum:entered,rejected_stream,rejected_id,cost_call_reached,returned",
+      "required": true
+    },
+    {
+      "consumer": "execution.attempt",
+      "key": "branch",
+      "type": "enum:current_position,removed_position",
+      "required": true
+    },
+    {
+      "consumer": "execution.attempt",
+      "key": "price_source",
+      "type": "enum:market_prices,current_average_price,previous_average_price",
+      "required": true
+    },
+    {
+      "consumer": "execution.attempt",
+      "key": "returned",
+      "type": "bool",
+      "required": true
+    },
+    {
+      "consumer": "runner.pnl_finalization",
+      "key": "allocation_lookup",
+      "type": "enum:hit,fallback",
+      "required": false
+    },
+    {
+      "consumer": "runner.non_trading_day",
+      "key": "skip_strategy_processing",
+      "type": "bool",
+      "required": true
+    },
+    {
+      "consumer": "runner.benchmark",
+      "key": "branch",
+      "type": "enum:not_reached,attempted,succeeded,failed",
+      "required": true
+    }
+  ],
+  "fields": [
+    {
+      "consumer": "setup.selection_entry",
+      "field": "setup.selection.enabled_live",
+      "type": "bool",
+      "origins": [
+        "configured_strategy_leaf",
+        "code_default"
+      ]
+    },
+    {
+      "consumer": "setup.selection_entry",
+      "field": "setup.selection.default_allocation",
+      "type": "number",
+      "origins": [
+        "configured_strategy_leaf",
+        "code_default"
+      ]
+    },
+    {
+      "consumer": "setup.selection_entry",
+      "field": "setup.selection.effective_allocation",
+      "type": "number",
+      "origins": [
+        "derived"
+      ]
+    },
+    {
+      "consumer": "setup.controlled_validation",
+      "field": "setup.selection.sum",
+      "type": "number",
+      "origins": [
+        "derived"
+      ]
+    },
+    {
+      "consumer": "setup.ordinary_selection",
+      "field": "setup.selection.sum",
+      "type": "number",
+      "origins": [
+        "derived"
+      ]
+    },
+    {
+      "consumer": "setup.factory_entry",
+      "field": "setup.factory.effective_allocation",
+      "type": "number",
+      "origins": [
+        "selected_allocation"
+      ]
+    },
+    {
+      "consumer": "setup.factory_entry",
+      "field": "setup.factory.initial_capital",
+      "type": "number",
+      "origins": [
+        "app_config_effective",
+        "runtime_effective"
+      ]
+    },
+    {
+      "consumer": "setup.factory_entry",
+      "field": "setup.factory.allocated_capital",
+      "type": "number",
+      "origins": [
+        "derived"
+      ]
+    },
+    {
+      "consumer": "portfolio.registration",
+      "field": "portfolio.registration.initial_allocation",
+      "type": "number",
+      "origins": [
+        "selected_allocation"
+      ]
+    },
+    {
+      "consumer": "portfolio.registration",
+      "field": "portfolio.registration.min_allocation",
+      "type": "number",
+      "origins": [
+        "app_config_effective",
+        "runtime_effective"
+      ]
+    },
+    {
+      "consumer": "portfolio.registration",
+      "field": "portfolio.registration.max_allocation",
+      "type": "number",
+      "origins": [
+        "app_config_effective",
+        "runtime_effective"
+      ]
+    },
+    {
+      "consumer": "portfolio.registration",
+      "field": "portfolio.registration.total_allocation",
+      "type": "number",
+      "origins": [
+        "derived"
+      ]
+    },
+    {
+      "consumer": "portfolio.registration",
+      "field": "portfolio.registration.requested_optimization",
+      "type": "bool",
+      "origins": [
+        "app_config_effective",
+        "runtime_effective"
+      ]
+    },
+    {
+      "consumer": "portfolio.registration",
+      "field": "portfolio.registration.portfolio_optimization",
+      "type": "bool",
+      "origins": [
+        "app_config_effective",
+        "runtime_effective"
+      ]
+    },
+    {
+      "consumer": "portfolio.registration",
+      "field": "portfolio.registration.requested_risk",
+      "type": "bool",
+      "origins": [
+        "app_config_effective",
+        "runtime_effective"
+      ]
+    },
+    {
+      "consumer": "portfolio.registration",
+      "field": "portfolio.registration.portfolio_risk",
+      "type": "bool",
+      "origins": [
+        "app_config_effective",
+        "runtime_effective"
+      ]
+    },
+    {
+      "consumer": "portfolio.registration",
+      "field": "portfolio.registration.stored_allocation",
+      "type": "number",
+      "origins": [
+        "selected_allocation"
+      ]
+    },
+    {
+      "consumer": "portfolio.registration",
+      "field": "portfolio.registration.stored_optimization",
+      "type": "bool",
+      "origins": [
+        "derived"
+      ]
+    },
+    {
+      "consumer": "portfolio.registration",
+      "field": "portfolio.registration.stored_risk",
+      "type": "bool",
+      "origins": [
+        "derived"
+      ]
+    },
+    {
+      "consumer": "runner.market_window",
+      "field": "runner.market_input.historical_days",
+      "type": "int32",
+      "origins": [
+        "app_config_effective",
+        "runtime_effective"
+      ]
+    },
+    {
+      "consumer": "runner.benchmark",
+      "field": "runner.benchmark.mode",
+      "type": "benchmark_mode",
+      "origins": [
+        "app_config_effective",
+        "runtime_effective"
+      ]
+    },
+    {
+      "consumer": "runner.pnl_finalization",
+      "field": "runner.pnl_finalization.strategy_allocation",
+      "type": "number",
+      "origins": [
+        "selected_allocation",
+        "code_default"
+      ]
+    },
+    {
+      "consumer": "runner.pnl_finalization",
+      "field": "runner.pnl_finalization.initial_capital",
+      "type": "number",
+      "origins": [
+        "app_config_effective",
+        "runtime_effective"
+      ]
+    },
+    {
+      "consumer": "runner.pnl_finalization",
+      "field": "runner.pnl_finalization.strategy_capital",
+      "type": "number",
+      "origins": [
+        "derived"
+      ]
+    },
+    {
+      "consumer": "strategy.history",
+      "field": "strategy.history.max_history_size",
+      "type": "uint53",
+      "origins": [
+        "constructor_effective",
+        "runtime_effective"
+      ]
+    },
+    {
+      "consumer": "strategy.history",
+      "field": "strategy.history.ema_windows",
+      "type": "int32_pairs",
+      "origins": [
+        "constructor_effective",
+        "runtime_effective"
+      ]
+    },
+    {
+      "consumer": "strategy.volatility",
+      "field": "strategy.volatility.vol_lookback_short",
+      "type": "int32",
+      "origins": [
+        "constructor_effective",
+        "runtime_effective"
+      ]
+    },
+    {
+      "consumer": "strategy.volatility",
+      "field": "strategy.volatility.max_history_size",
+      "type": "uint53",
+      "origins": [
+        "constructor_effective",
+        "runtime_effective"
+      ]
+    },
+    {
+      "consumer": "strategy.forecast",
+      "field": "strategy.forecast.ema_windows",
+      "type": "int32_pairs",
+      "origins": [
+        "constructor_effective",
+        "runtime_effective"
+      ]
+    },
+    {
+      "consumer": "strategy.forecast",
+      "field": "strategy.forecast.vol_lookback_short",
+      "type": "int32",
+      "origins": [
+        "constructor_effective",
+        "runtime_effective"
+      ]
+    },
+    {
+      "consumer": "strategy.forecast",
+      "field": "strategy.forecast.fdm",
+      "type": "int32_number_pairs",
+      "origins": [
+        "constructor_effective",
+        "runtime_effective"
+      ]
+    },
+    {
+      "consumer": "strategy.regime",
+      "field": "strategy.regime.vol_lookback_long",
+      "type": "int32",
+      "origins": [
+        "constructor_effective",
+        "runtime_effective"
+      ]
+    },
+    {
+      "consumer": "strategy.sizing",
+      "field": "strategy.sizing.capital_allocation",
+      "type": "number",
+      "origins": [
+        "derived",
+        "runtime_effective"
+      ]
+    },
+    {
+      "consumer": "strategy.sizing",
+      "field": "strategy.sizing.max_leverage",
+      "type": "number",
+      "origins": [
+        "constructor_effective",
+        "runtime_effective"
+      ]
+    },
+    {
+      "consumer": "strategy.sizing",
+      "field": "strategy.sizing.idm",
+      "type": "number",
+      "origins": [
+        "constructor_effective",
+        "runtime_effective"
+      ]
+    },
+    {
+      "consumer": "strategy.sizing",
+      "field": "strategy.sizing.risk_target",
+      "type": "number",
+      "origins": [
+        "constructor_effective",
+        "runtime_effective"
+      ]
+    },
+    {
+      "consumer": "strategy.sizing",
+      "field": "strategy.sizing.fx_rate",
+      "type": "number",
+      "origins": [
+        "constructor_effective",
+        "runtime_effective"
+      ]
+    },
+    {
+      "consumer": "strategy.sizing",
+      "field": "strategy.sizing.max_symbol_concentration",
+      "type": "number",
+      "origins": [
+        "constructor_effective",
+        "runtime_effective"
+      ]
+    },
+    {
+      "consumer": "strategy.sizing",
+      "field": "strategy.sizing.symbol_limit.symbol.present",
+      "type": "bool",
+      "origins": [
+        "runtime_effective"
+      ]
+    },
+    {
+      "consumer": "strategy.sizing",
+      "field": "strategy.sizing.symbol_limit.symbol.value",
+      "type": "number",
+      "origins": [
+        "derived",
+        "runtime_effective"
+      ]
+    },
+    {
+      "consumer": "strategy.buffering",
+      "field": "strategy.buffering.use_position_buffering",
+      "type": "bool",
+      "origins": [
+        "constructor_effective",
+        "runtime_effective"
+      ]
+    },
+    {
+      "consumer": "strategy.buffering",
+      "field": "strategy.buffering.weight",
+      "type": "number",
+      "origins": [
+        "constructor_effective",
+        "runtime_effective"
+      ]
+    },
+    {
+      "consumer": "strategy.buffering",
+      "field": "strategy.buffering.idm",
+      "type": "number",
+      "origins": [
+        "constructor_effective",
+        "runtime_effective"
+      ]
+    },
+    {
+      "consumer": "strategy.buffering",
+      "field": "strategy.buffering.risk_target",
+      "type": "number",
+      "origins": [
+        "constructor_effective",
+        "runtime_effective"
+      ]
+    },
+    {
+      "consumer": "strategy.buffering",
+      "field": "strategy.buffering.fx_rate",
+      "type": "number",
+      "origins": [
+        "constructor_effective",
+        "runtime_effective"
+      ]
+    },
+    {
+      "consumer": "strategy.buffering",
+      "field": "strategy.buffering.carver_buffer_floor",
+      "type": "number",
+      "origins": [
+        "constructor_effective",
+        "runtime_effective"
+      ]
+    },
+    {
+      "consumer": "strategy.buffering",
+      "field": "strategy.buffering.carver_buffer_position_factor",
+      "type": "number",
+      "origins": [
+        "constructor_effective",
+        "runtime_effective"
+      ]
+    },
+    {
+      "consumer": "strategy.buffering",
+      "field": "strategy.buffering.capital_allocation",
+      "type": "number",
+      "origins": [
+        "derived",
+        "runtime_effective"
+      ]
+    },
+    {
+      "consumer": "strategy.buffering",
+      "field": "strategy.buffering.symbol_limit.symbol.present",
+      "type": "bool",
+      "origins": [
+        "runtime_effective"
+      ]
+    },
+    {
+      "consumer": "strategy.buffering",
+      "field": "strategy.buffering.symbol_limit.symbol.value",
+      "type": "number",
+      "origins": [
+        "derived",
+        "runtime_effective"
+      ]
+    },
+    {
+      "consumer": "strategy.base_risk",
+      "field": "strategy.base_risk.capital_allocation",
+      "type": "number",
+      "origins": [
+        "derived",
+        "runtime_effective"
+      ]
+    },
+    {
+      "consumer": "strategy.base_risk",
+      "field": "strategy.base_risk.risk_max_leverage",
+      "type": "fixed_decimal8",
+      "origins": [
+        "runtime_effective"
+      ]
+    },
+    {
+      "consumer": "strategy.base_risk",
+      "field": "strategy.base_risk.risk_max_drawdown",
+      "type": "fixed_decimal8",
+      "origins": [
+        "runtime_effective"
+      ]
+    },
+    {
+      "consumer": "strategy.base_risk",
+      "field": "strategy.base_risk.fallback_config_max_leverage",
+      "type": "number",
+      "origins": [
+        "constructor_effective",
+        "runtime_effective"
+      ]
+    },
+    {
+      "consumer": "strategy.base_risk",
+      "field": "strategy.base_risk.trading_multiplier.symbol.present",
+      "type": "bool",
+      "origins": [
+        "runtime_effective"
+      ]
+    },
+    {
+      "consumer": "strategy.base_risk",
+      "field": "strategy.base_risk.trading_multiplier.symbol.value",
+      "type": "number",
+      "origins": [
+        "runtime_effective"
+      ]
+    },
+    {
+      "consumer": "strategy.position_limits",
+      "field": "strategy.position_limits.symbol.present",
+      "type": "bool",
+      "origins": [
+        "runtime_effective"
+      ]
+    },
+    {
+      "consumer": "strategy.position_limits",
+      "field": "strategy.position_limits.symbol.value",
+      "type": "number",
+      "origins": [
+        "derived",
+        "runtime_effective"
+      ]
+    },
+    {
+      "consumer": "portfolio.pass",
+      "field": "portfolio.pass.use_optimization",
+      "type": "bool",
+      "origins": [
+        "app_config_effective",
+        "runtime_effective"
+      ]
+    },
+    {
+      "consumer": "portfolio.pass",
+      "field": "portfolio.pass.use_risk_management",
+      "type": "bool",
+      "origins": [
+        "app_config_effective",
+        "runtime_effective"
+      ]
+    },
+    {
+      "consumer": "portfolio.optimization",
+      "field": "portfolio.optimization.total_capital",
+      "type": "fixed_decimal8",
+      "origins": [
+        "derived",
+        "runtime_effective"
+      ]
+    },
+    {
+      "consumer": "portfolio.optimization_strategy",
+      "field": "portfolio.optimization.strategy.enabled",
+      "type": "bool",
+      "origins": [
+        "derived"
+      ]
+    },
+    {
+      "consumer": "portfolio.optimization_strategy",
+      "field": "portfolio.optimization.strategy.allocation",
+      "type": "number",
+      "origins": [
+        "selected_allocation",
+        "runtime_effective"
+      ]
+    },
+    {
+      "consumer": "portfolio.risk",
+      "field": "portfolio.risk.lookback_period",
+      "type": "int32",
+      "origins": [
+        "app_config_effective",
+        "runtime_effective"
+      ]
+    },
+    {
+      "consumer": "optimizer.primary",
+      "field": "optimizer.cost_penalty_scalar",
+      "type": "number",
+      "origins": [
+        "app_config_effective",
+        "runtime_effective"
+      ]
+    },
+    {
+      "consumer": "optimizer.primary",
+      "field": "optimizer.convergence_threshold",
+      "type": "number",
+      "origins": [
+        "app_config_effective",
+        "runtime_effective"
+      ]
+    },
+    {
+      "consumer": "optimizer.primary",
+      "field": "optimizer.tau",
+      "type": "number",
+      "origins": [
+        "app_config_effective",
+        "runtime_effective"
+      ]
+    },
+    {
+      "consumer": "optimizer.primary",
+      "field": "optimizer.buffer_size_factor",
+      "type": "number",
+      "origins": [
+        "app_config_effective",
+        "runtime_effective"
+      ]
+    },
+    {
+      "consumer": "optimizer.primary",
+      "field": "optimizer.max_iterations",
+      "type": "int32",
+      "origins": [
+        "app_config_effective",
+        "runtime_effective"
+      ]
+    },
+    {
+      "consumer": "optimizer.primary",
+      "field": "optimizer.use_buffering",
+      "type": "bool",
+      "origins": [
+        "app_config_effective",
+        "runtime_effective"
+      ]
+    },
+    {
+      "consumer": "risk.primary",
+      "field": "risk.var_limit",
+      "type": "number",
+      "origins": [
+        "app_config_effective",
+        "runtime_effective"
+      ]
+    },
+    {
+      "consumer": "risk.primary",
+      "field": "risk.jump_risk_limit",
+      "type": "number",
+      "origins": [
+        "app_config_effective",
+        "runtime_effective"
+      ]
+    },
+    {
+      "consumer": "risk.primary",
+      "field": "risk.max_correlation",
+      "type": "number",
+      "origins": [
+        "app_config_effective",
+        "runtime_effective"
+      ]
+    },
+    {
+      "consumer": "risk.primary",
+      "field": "risk.max_gross_leverage",
+      "type": "number",
+      "origins": [
+        "app_config_effective",
+        "runtime_effective"
+      ]
+    },
+    {
+      "consumer": "risk.primary",
+      "field": "risk.max_net_leverage",
+      "type": "number",
+      "origins": [
+        "app_config_effective",
+        "runtime_effective"
+      ]
+    },
+    {
+      "consumer": "risk.primary",
+      "field": "risk.confidence_level",
+      "type": "number",
+      "origins": [
+        "app_config_effective",
+        "runtime_effective"
+      ]
+    },
+    {
+      "consumer": "risk.diagnostics",
+      "field": "risk.var_limit",
+      "type": "number",
+      "origins": [
+        "app_config_effective",
+        "runtime_effective"
+      ]
+    },
+    {
+      "consumer": "risk.diagnostics",
+      "field": "risk.jump_risk_limit",
+      "type": "number",
+      "origins": [
+        "app_config_effective",
+        "runtime_effective"
+      ]
+    },
+    {
+      "consumer": "risk.diagnostics",
+      "field": "risk.max_correlation",
+      "type": "number",
+      "origins": [
+        "app_config_effective",
+        "runtime_effective"
+      ]
+    },
+    {
+      "consumer": "risk.diagnostics",
+      "field": "risk.max_gross_leverage",
+      "type": "number",
+      "origins": [
+        "app_config_effective",
+        "runtime_effective"
+      ]
+    },
+    {
+      "consumer": "risk.diagnostics",
+      "field": "risk.max_net_leverage",
+      "type": "number",
+      "origins": [
+        "app_config_effective",
+        "runtime_effective"
+      ]
+    },
+    {
+      "consumer": "risk.diagnostics",
+      "field": "risk.confidence_level",
+      "type": "number",
+      "origins": [
+        "app_config_effective",
+        "runtime_effective"
+      ]
+    },
+    {
+      "consumer": "risk.primary",
+      "field": "risk.capital",
+      "type": "fixed_decimal8",
+      "origins": [
+        "derived",
+        "runtime_effective"
+      ]
+    },
+    {
+      "consumer": "risk.diagnostics",
+      "field": "risk.capital",
+      "type": "fixed_decimal8",
+      "origins": [
+        "derived",
+        "runtime_effective"
+      ]
+    },
+    {
+      "consumer": "cost.estimate",
+      "field": "cost.spread.baseline_spread_ticks",
+      "type": "number",
+      "origins": [
+        "runtime_effective"
+      ]
+    },
+    {
+      "consumer": "cost.estimate",
+      "field": "cost.spread.min_spread_ticks",
+      "type": "number",
+      "origins": [
+        "runtime_effective"
+      ]
+    },
+    {
+      "consumer": "cost.estimate",
+      "field": "cost.spread.max_spread_ticks",
+      "type": "number",
+      "origins": [
+        "runtime_effective"
+      ]
+    },
+    {
+      "consumer": "cost.estimate",
+      "field": "cost.spread.spread_cost_multiplier",
+      "type": "number",
+      "origins": [
+        "runtime_effective"
+      ]
+    },
+    {
+      "consumer": "cost.estimate",
+      "field": "cost.spread.tick_size",
+      "type": "number",
+      "origins": [
+        "runtime_effective"
+      ]
+    },
+    {
+      "consumer": "cost.strategy_execution",
+      "field": "cost.spread.baseline_spread_ticks",
+      "type": "number",
+      "origins": [
+        "runtime_effective"
+      ]
+    },
+    {
+      "consumer": "cost.strategy_execution",
+      "field": "cost.spread.min_spread_ticks",
+      "type": "number",
+      "origins": [
+        "runtime_effective"
+      ]
+    },
+    {
+      "consumer": "cost.strategy_execution",
+      "field": "cost.spread.max_spread_ticks",
+      "type": "number",
+      "origins": [
+        "runtime_effective"
+      ]
+    },
+    {
+      "consumer": "cost.strategy_execution",
+      "field": "cost.spread.spread_cost_multiplier",
+      "type": "number",
+      "origins": [
+        "runtime_effective"
+      ]
+    },
+    {
+      "consumer": "cost.strategy_execution",
+      "field": "cost.spread.tick_size",
+      "type": "number",
+      "origins": [
+        "runtime_effective"
+      ]
+    },
+    {
+      "consumer": "cost.compatibility_execution",
+      "field": "cost.spread.baseline_spread_ticks",
+      "type": "number",
+      "origins": [
+        "runtime_effective"
+      ]
+    },
+    {
+      "consumer": "cost.compatibility_execution",
+      "field": "cost.spread.min_spread_ticks",
+      "type": "number",
+      "origins": [
+        "runtime_effective"
+      ]
+    },
+    {
+      "consumer": "cost.compatibility_execution",
+      "field": "cost.spread.max_spread_ticks",
+      "type": "number",
+      "origins": [
+        "runtime_effective"
+      ]
+    },
+    {
+      "consumer": "cost.compatibility_execution",
+      "field": "cost.spread.spread_cost_multiplier",
+      "type": "number",
+      "origins": [
+        "runtime_effective"
+      ]
+    },
+    {
+      "consumer": "cost.compatibility_execution",
+      "field": "cost.spread.tick_size",
+      "type": "number",
+      "origins": [
+        "runtime_effective"
+      ]
+    },
+    {
+      "consumer": "cost.execution",
+      "field": "cost.spread.baseline_spread_ticks",
+      "type": "number",
+      "origins": [
+        "runtime_effective"
+      ]
+    },
+    {
+      "consumer": "cost.execution",
+      "field": "cost.spread.min_spread_ticks",
+      "type": "number",
+      "origins": [
+        "runtime_effective"
+      ]
+    },
+    {
+      "consumer": "cost.execution",
+      "field": "cost.spread.max_spread_ticks",
+      "type": "number",
+      "origins": [
+        "runtime_effective"
+      ]
+    },
+    {
+      "consumer": "cost.execution",
+      "field": "cost.spread.spread_cost_multiplier",
+      "type": "number",
+      "origins": [
+        "runtime_effective"
+      ]
+    },
+    {
+      "consumer": "cost.execution",
+      "field": "cost.spread.tick_size",
+      "type": "number",
+      "origins": [
+        "runtime_effective"
+      ]
+    },
+    {
+      "consumer": "cost.estimate",
+      "field": "cost.volatility.lambda",
+      "type": "number",
+      "origins": [
+        "runtime_effective"
+      ]
+    },
+    {
+      "consumer": "cost.estimate",
+      "field": "cost.volatility.min_multiplier",
+      "type": "number",
+      "origins": [
+        "runtime_effective"
+      ]
+    },
+    {
+      "consumer": "cost.estimate",
+      "field": "cost.volatility.max_multiplier",
+      "type": "number",
+      "origins": [
+        "runtime_effective"
+      ]
+    },
+    {
+      "consumer": "cost.strategy_execution",
+      "field": "cost.volatility.lambda",
+      "type": "number",
+      "origins": [
+        "runtime_effective"
+      ]
+    },
+    {
+      "consumer": "cost.strategy_execution",
+      "field": "cost.volatility.min_multiplier",
+      "type": "number",
+      "origins": [
+        "runtime_effective"
+      ]
+    },
+    {
+      "consumer": "cost.strategy_execution",
+      "field": "cost.volatility.max_multiplier",
+      "type": "number",
+      "origins": [
+        "runtime_effective"
+      ]
+    },
+    {
+      "consumer": "cost.compatibility_execution",
+      "field": "cost.volatility.lambda",
+      "type": "number",
+      "origins": [
+        "runtime_effective"
+      ]
+    },
+    {
+      "consumer": "cost.compatibility_execution",
+      "field": "cost.volatility.min_multiplier",
+      "type": "number",
+      "origins": [
+        "runtime_effective"
+      ]
+    },
+    {
+      "consumer": "cost.compatibility_execution",
+      "field": "cost.volatility.max_multiplier",
+      "type": "number",
+      "origins": [
+        "runtime_effective"
+      ]
+    },
+    {
+      "consumer": "cost.execution",
+      "field": "cost.volatility.lambda",
+      "type": "number",
+      "origins": [
+        "runtime_effective"
+      ]
+    },
+    {
+      "consumer": "cost.execution",
+      "field": "cost.volatility.min_multiplier",
+      "type": "number",
+      "origins": [
+        "runtime_effective"
+      ]
+    },
+    {
+      "consumer": "cost.execution",
+      "field": "cost.volatility.max_multiplier",
+      "type": "number",
+      "origins": [
+        "runtime_effective"
+      ]
+    },
+    {
+      "consumer": "cost.estimate",
+      "field": "cost.impact.min_adv",
+      "type": "number",
+      "origins": [
+        "runtime_effective"
+      ]
+    },
+    {
+      "consumer": "cost.estimate",
+      "field": "cost.impact.min_participation",
+      "type": "number",
+      "origins": [
+        "runtime_effective"
+      ]
+    },
+    {
+      "consumer": "cost.estimate",
+      "field": "cost.impact.max_participation",
+      "type": "number",
+      "origins": [
+        "runtime_effective"
+      ]
+    },
+    {
+      "consumer": "cost.estimate",
+      "field": "cost.impact.max_impact_bps",
+      "type": "number",
+      "origins": [
+        "runtime_effective"
+      ]
+    },
+    {
+      "consumer": "cost.strategy_execution",
+      "field": "cost.impact.min_adv",
+      "type": "number",
+      "origins": [
+        "runtime_effective"
+      ]
+    },
+    {
+      "consumer": "cost.strategy_execution",
+      "field": "cost.impact.min_participation",
+      "type": "number",
+      "origins": [
+        "runtime_effective"
+      ]
+    },
+    {
+      "consumer": "cost.strategy_execution",
+      "field": "cost.impact.max_participation",
+      "type": "number",
+      "origins": [
+        "runtime_effective"
+      ]
+    },
+    {
+      "consumer": "cost.strategy_execution",
+      "field": "cost.impact.max_impact_bps",
+      "type": "number",
+      "origins": [
+        "runtime_effective"
+      ]
+    },
+    {
+      "consumer": "cost.compatibility_execution",
+      "field": "cost.impact.min_adv",
+      "type": "number",
+      "origins": [
+        "runtime_effective"
+      ]
+    },
+    {
+      "consumer": "cost.compatibility_execution",
+      "field": "cost.impact.min_participation",
+      "type": "number",
+      "origins": [
+        "runtime_effective"
+      ]
+    },
+    {
+      "consumer": "cost.compatibility_execution",
+      "field": "cost.impact.max_participation",
+      "type": "number",
+      "origins": [
+        "runtime_effective"
+      ]
+    },
+    {
+      "consumer": "cost.compatibility_execution",
+      "field": "cost.impact.max_impact_bps",
+      "type": "number",
+      "origins": [
+        "runtime_effective"
+      ]
+    },
+    {
+      "consumer": "cost.execution",
+      "field": "cost.impact.min_adv",
+      "type": "number",
+      "origins": [
+        "runtime_effective"
+      ]
+    },
+    {
+      "consumer": "cost.execution",
+      "field": "cost.impact.min_participation",
+      "type": "number",
+      "origins": [
+        "runtime_effective"
+      ]
+    },
+    {
+      "consumer": "cost.execution",
+      "field": "cost.impact.max_participation",
+      "type": "number",
+      "origins": [
+        "runtime_effective"
+      ]
+    },
+    {
+      "consumer": "cost.execution",
+      "field": "cost.impact.max_impact_bps",
+      "type": "number",
+      "origins": [
+        "runtime_effective"
+      ]
+    },
+    {
+      "consumer": "cost.estimate",
+      "field": "cost.charge.explicit_fee_per_contract",
+      "type": "number",
+      "origins": [
+        "runtime_effective"
+      ]
+    },
+    {
+      "consumer": "cost.estimate",
+      "field": "cost.charge.point_value",
+      "type": "number",
+      "origins": [
+        "runtime_effective"
+      ]
+    },
+    {
+      "consumer": "cost.strategy_execution",
+      "field": "cost.charge.explicit_fee_per_contract",
+      "type": "number",
+      "origins": [
+        "runtime_effective"
+      ]
+    },
+    {
+      "consumer": "cost.strategy_execution",
+      "field": "cost.charge.point_value",
+      "type": "number",
+      "origins": [
+        "runtime_effective"
+      ]
+    },
+    {
+      "consumer": "cost.compatibility_execution",
+      "field": "cost.charge.explicit_fee_per_contract",
+      "type": "number",
+      "origins": [
+        "runtime_effective"
+      ]
+    },
+    {
+      "consumer": "cost.compatibility_execution",
+      "field": "cost.charge.point_value",
+      "type": "number",
+      "origins": [
+        "runtime_effective"
+      ]
+    },
+    {
+      "consumer": "cost.execution",
+      "field": "cost.charge.explicit_fee_per_contract",
+      "type": "number",
+      "origins": [
+        "runtime_effective"
+      ]
+    },
+    {
+      "consumer": "cost.execution",
+      "field": "cost.charge.point_value",
+      "type": "number",
+      "origins": [
+        "runtime_effective"
+      ]
+    },
+    {
+      "consumer": "cost.history",
+      "field": "cost.impact_history.adv_lookback_days",
+      "type": "uint53",
+      "origins": [
+        "runtime_effective"
+      ]
+    },
+    {
+      "consumer": "cost.history",
+      "field": "cost.spread_history.lookback_days",
+      "type": "uint53",
+      "origins": [
+        "runtime_effective"
+      ]
+    },
+    {
+      "consumer": "cost.estimate",
+      "field": "cost.spread.tick_constrained",
+      "type": "bool",
+      "origins": [
+        "runtime_effective"
+      ]
+    },
+    {
+      "consumer": "cost.estimate",
+      "field": "cost.charge.commission_per_unit",
+      "type": "number",
+      "origins": [
+        "runtime_effective"
+      ]
+    },
+    {
+      "consumer": "cost.estimate",
+      "field": "cost.charge.max_commission_pct",
+      "type": "number",
+      "origins": [
+        "runtime_effective"
+      ]
+    },
+    {
+      "consumer": "cost.estimate",
+      "field": "cost.charge.max_commission_per_order",
+      "type": "number",
+      "origins": [
+        "runtime_effective"
+      ]
+    },
+    {
+      "consumer": "cost.estimate",
+      "field": "cost.charge.min_commission_per_order",
+      "type": "number",
+      "origins": [
+        "runtime_effective"
+      ]
+    },
+    {
+      "consumer": "cost.estimate",
+      "field": "cost.charge.apply_regulatory_fees",
+      "type": "bool",
+      "origins": [
+        "runtime_effective"
+      ]
+    },
+    {
+      "consumer": "cost.estimate",
+      "field": "cost.charge.sec_fee_per_million",
+      "type": "number",
+      "origins": [
+        "runtime_effective"
+      ]
+    },
+    {
+      "consumer": "cost.estimate",
+      "field": "cost.charge.finra_taf_per_share",
+      "type": "number",
+      "origins": [
+        "runtime_effective"
+      ]
+    },
+    {
+      "consumer": "cost.estimate",
+      "field": "cost.charge.finra_taf_cap_per_trade",
+      "type": "number",
+      "origins": [
+        "runtime_effective"
+      ]
+    },
+    {
+      "consumer": "cost.estimate",
+      "field": "cost.charge.max_total_implicit_bps",
+      "type": "number",
+      "origins": [
+        "runtime_effective"
+      ]
+    },
+    {
+      "consumer": "cost.strategy_execution",
+      "field": "cost.spread.tick_constrained",
+      "type": "bool",
+      "origins": [
+        "runtime_effective"
+      ]
+    },
+    {
+      "consumer": "cost.strategy_execution",
+      "field": "cost.charge.commission_per_unit",
+      "type": "number",
+      "origins": [
+        "runtime_effective"
+      ]
+    },
+    {
+      "consumer": "cost.strategy_execution",
+      "field": "cost.charge.max_commission_pct",
+      "type": "number",
+      "origins": [
+        "runtime_effective"
+      ]
+    },
+    {
+      "consumer": "cost.strategy_execution",
+      "field": "cost.charge.max_commission_per_order",
+      "type": "number",
+      "origins": [
+        "runtime_effective"
+      ]
+    },
+    {
+      "consumer": "cost.strategy_execution",
+      "field": "cost.charge.min_commission_per_order",
+      "type": "number",
+      "origins": [
+        "runtime_effective"
+      ]
+    },
+    {
+      "consumer": "cost.strategy_execution",
+      "field": "cost.charge.apply_regulatory_fees",
+      "type": "bool",
+      "origins": [
+        "runtime_effective"
+      ]
+    },
+    {
+      "consumer": "cost.strategy_execution",
+      "field": "cost.charge.sec_fee_per_million",
+      "type": "number",
+      "origins": [
+        "runtime_effective"
+      ]
+    },
+    {
+      "consumer": "cost.strategy_execution",
+      "field": "cost.charge.finra_taf_per_share",
+      "type": "number",
+      "origins": [
+        "runtime_effective"
+      ]
+    },
+    {
+      "consumer": "cost.strategy_execution",
+      "field": "cost.charge.finra_taf_cap_per_trade",
+      "type": "number",
+      "origins": [
+        "runtime_effective"
+      ]
+    },
+    {
+      "consumer": "cost.strategy_execution",
+      "field": "cost.charge.max_total_implicit_bps",
+      "type": "number",
+      "origins": [
+        "runtime_effective"
+      ]
+    },
+    {
+      "consumer": "cost.compatibility_execution",
+      "field": "cost.spread.tick_constrained",
+      "type": "bool",
+      "origins": [
+        "runtime_effective"
+      ]
+    },
+    {
+      "consumer": "cost.compatibility_execution",
+      "field": "cost.charge.commission_per_unit",
+      "type": "number",
+      "origins": [
+        "runtime_effective"
+      ]
+    },
+    {
+      "consumer": "cost.compatibility_execution",
+      "field": "cost.charge.max_commission_pct",
+      "type": "number",
+      "origins": [
+        "runtime_effective"
+      ]
+    },
+    {
+      "consumer": "cost.compatibility_execution",
+      "field": "cost.charge.max_commission_per_order",
+      "type": "number",
+      "origins": [
+        "runtime_effective"
+      ]
+    },
+    {
+      "consumer": "cost.compatibility_execution",
+      "field": "cost.charge.min_commission_per_order",
+      "type": "number",
+      "origins": [
+        "runtime_effective"
+      ]
+    },
+    {
+      "consumer": "cost.compatibility_execution",
+      "field": "cost.charge.apply_regulatory_fees",
+      "type": "bool",
+      "origins": [
+        "runtime_effective"
+      ]
+    },
+    {
+      "consumer": "cost.compatibility_execution",
+      "field": "cost.charge.sec_fee_per_million",
+      "type": "number",
+      "origins": [
+        "runtime_effective"
+      ]
+    },
+    {
+      "consumer": "cost.compatibility_execution",
+      "field": "cost.charge.finra_taf_per_share",
+      "type": "number",
+      "origins": [
+        "runtime_effective"
+      ]
+    },
+    {
+      "consumer": "cost.compatibility_execution",
+      "field": "cost.charge.finra_taf_cap_per_trade",
+      "type": "number",
+      "origins": [
+        "runtime_effective"
+      ]
+    },
+    {
+      "consumer": "cost.compatibility_execution",
+      "field": "cost.charge.max_total_implicit_bps",
+      "type": "number",
+      "origins": [
+        "runtime_effective"
+      ]
+    },
+    {
+      "consumer": "cost.execution",
+      "field": "cost.spread.tick_constrained",
+      "type": "bool",
+      "origins": [
+        "runtime_effective"
+      ]
+    },
+    {
+      "consumer": "cost.execution",
+      "field": "cost.charge.commission_per_unit",
+      "type": "number",
+      "origins": [
+        "runtime_effective"
+      ]
+    },
+    {
+      "consumer": "cost.execution",
+      "field": "cost.charge.max_commission_pct",
+      "type": "number",
+      "origins": [
+        "runtime_effective"
+      ]
+    },
+    {
+      "consumer": "cost.execution",
+      "field": "cost.charge.max_commission_per_order",
+      "type": "number",
+      "origins": [
+        "runtime_effective"
+      ]
+    },
+    {
+      "consumer": "cost.execution",
+      "field": "cost.charge.min_commission_per_order",
+      "type": "number",
+      "origins": [
+        "runtime_effective"
+      ]
+    },
+    {
+      "consumer": "cost.execution",
+      "field": "cost.charge.apply_regulatory_fees",
+      "type": "bool",
+      "origins": [
+        "runtime_effective"
+      ]
+    },
+    {
+      "consumer": "cost.execution",
+      "field": "cost.charge.sec_fee_per_million",
+      "type": "number",
+      "origins": [
+        "runtime_effective"
+      ]
+    },
+    {
+      "consumer": "cost.execution",
+      "field": "cost.charge.finra_taf_per_share",
+      "type": "number",
+      "origins": [
+        "runtime_effective"
+      ]
+    },
+    {
+      "consumer": "cost.execution",
+      "field": "cost.charge.finra_taf_cap_per_trade",
+      "type": "number",
+      "origins": [
+        "runtime_effective"
+      ]
+    },
+    {
+      "consumer": "cost.execution",
+      "field": "cost.charge.max_total_implicit_bps",
+      "type": "number",
+      "origins": [
+        "runtime_effective"
+      ]
+    }
+  ]
+}

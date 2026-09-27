@@ -1,5 +1,6 @@
 // src/data/conversion_utils.cpp
 #include "trade_ngin/data/conversion_utils.hpp"
+#include <cmath>
 #include <arrow/type_traits.h>
 
 namespace trade_ngin {
@@ -174,6 +175,59 @@ Result<std::string> DataConversionUtils::extract_string(const std::shared_ptr<ar
                                        std::string("Error extracting string: ") + e.what(),
                                        "DataConversionUtils");
     }
+}
+
+Result<double> DataConversionUtils::safe_get_double(
+    const std::shared_ptr<arrow::ChunkedArray>& column,int64_t row,const std::string& name) {
+    if(!column || row<0 || row>=column->length())
+        return make_error<double>(ErrorCode::INVALID_ARGUMENT,"invalid_numeric_cell:"+name);
+    int64_t offset=row;
+    for(const auto& chunk:column->chunks()) {
+        if(offset>=chunk->length()) {offset-=chunk->length();continue;}
+        if(chunk->IsNull(offset))
+            return make_error<double>(ErrorCode::INVALID_DATA,"null_numeric_cell:"+name);
+        try {
+            double value;
+            switch(chunk->type_id()) {
+                case arrow::Type::DOUBLE:value=static_cast<const arrow::DoubleArray*>(chunk.get())->Value(offset);break;
+                case arrow::Type::FLOAT:value=static_cast<const arrow::FloatArray*>(chunk.get())->Value(offset);break;
+                case arrow::Type::INT64:value=static_cast<double>(static_cast<const arrow::Int64Array*>(chunk.get())->Value(offset));break;
+                case arrow::Type::INT32:value=static_cast<const arrow::Int32Array*>(chunk.get())->Value(offset);break;
+                case arrow::Type::STRING:
+                case arrow::Type::LARGE_STRING: {
+                    const auto text=chunk->type_id()==arrow::Type::STRING
+                        ?static_cast<const arrow::StringArray*>(chunk.get())->GetString(offset)
+                        :static_cast<const arrow::LargeStringArray*>(chunk.get())->GetString(offset);
+                    size_t consumed=0;value=std::stod(text,&consumed);
+                    if(consumed!=text.size())throw std::invalid_argument("trailing_numeric_text");
+                    break;
+                }
+                default:return make_error<double>(ErrorCode::CONVERSION_ERROR,"unsupported_numeric_cell:"+name);
+            }
+            if(!std::isfinite(value))throw std::invalid_argument("nonfinite_numeric_cell");
+            return Result<double>(value);
+        } catch(const std::exception&) {
+            return make_error<double>(ErrorCode::CONVERSION_ERROR,"invalid_numeric_cell:"+name);
+        }
+    }
+    return make_error<double>(ErrorCode::INVALID_ARGUMENT,"invalid_numeric_cell:"+name);
+}
+
+Result<std::string> DataConversionUtils::safe_get_string(
+    const std::shared_ptr<arrow::ChunkedArray>& column,int64_t row,const std::string& name) {
+    if(!column || row<0 || row>=column->length())
+        return make_error<std::string>(ErrorCode::INVALID_ARGUMENT,"invalid_string_cell:"+name);
+    int64_t offset=row;
+    for(const auto& chunk:column->chunks()) {
+        if(offset>=chunk->length()) {offset-=chunk->length();continue;}
+        if(chunk->IsNull(offset))return make_error<std::string>(ErrorCode::INVALID_DATA,"null_string_cell:"+name);
+        if(chunk->type_id()==arrow::Type::STRING)
+            return Result<std::string>(static_cast<const arrow::StringArray*>(chunk.get())->GetString(offset));
+        if(chunk->type_id()==arrow::Type::LARGE_STRING)
+            return Result<std::string>(static_cast<const arrow::LargeStringArray*>(chunk.get())->GetString(offset));
+        return make_error<std::string>(ErrorCode::CONVERSION_ERROR,"unsupported_string_cell:"+name);
+    }
+    return make_error<std::string>(ErrorCode::INVALID_ARGUMENT,"invalid_string_cell:"+name);
 }
 
 }  // namespace trade_ngin

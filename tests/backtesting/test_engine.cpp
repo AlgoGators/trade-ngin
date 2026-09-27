@@ -68,7 +68,9 @@ public:
     }
 
     // Data processing with customizable behavior
-    Result<void> on_data(const std::vector<Bar>& data) override {
+    Result<void> on_data(const std::vector<Bar>& data,
+                         StrategyConsumptionTrace* trace = nullptr) override {
+        if (trace) *trace = {};
         if (fail_on_data_) {
             return make_error<void>(ErrorCode::STRATEGY_ERROR, "Simulated data failure");
         }
@@ -199,6 +201,29 @@ private:
     int executions_received_ = 0;
     int signals_received_ = 0;
 };
+
+TEST(StrategyConsumptionVirtualDispatch, BacktestingDoubleResetsUnsupportedTrace) {
+    MockStrategy strategy;
+    ASSERT_TRUE(strategy.initialize().is_ok());
+    ASSERT_TRUE(strategy.start().is_ok());
+    StrategyInterface& selected = strategy;
+    StrategyConsumptionTrace trace;
+    trace.profile = StrategyConsumptionProfile::Standard;
+    trace.history.max_history_size = 999;
+    ASSERT_TRUE(selected.on_data({}, &trace).is_ok());
+    EXPECT_EQ(trace.profile, StrategyConsumptionProfile::Unsupported);
+    EXPECT_FALSE(trace.history.max_history_size.has_value());
+    EXPECT_FALSE(trace.base_risk.supported);
+
+    trace.profile = StrategyConsumptionProfile::Slow;
+    trace.base_risk.supported = true;
+    strategy.set_fail_on_data(true);
+    auto result = selected.on_data({}, &trace);
+    ASSERT_TRUE(result.is_error());
+    EXPECT_EQ(result.error()->code(), ErrorCode::STRATEGY_ERROR);
+    EXPECT_EQ(trace.profile, StrategyConsumptionProfile::Unsupported);
+    EXPECT_FALSE(trace.base_risk.supported);
+}
 
 class BacktestEngineTest : public ::testing::Test {
 protected:

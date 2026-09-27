@@ -2,10 +2,13 @@
 #pragma once
 
 #include <iostream>
+#include <array>
+#include <atomic>
 #include <memory>
 #include <mutex>
 #include <nlohmann/json.hpp>
 #include <numeric>
+#include <optional>
 #include <unordered_map>
 #include "trade_ngin/core/config_base.hpp"
 #include "trade_ngin/core/error.hpp"
@@ -35,6 +38,7 @@ struct PortfolioConfig : public ConfigBase {
     double min_strategy_allocation{
         0.0};  // Minimum allocation to any strategy (keep as double - it's a ratio)
     bool use_optimization{false};     // Whether to use position optimization
+    bool allow_fractional_positions{false};  // Explicit equity opt-in; futures default stays whole.
     bool use_risk_management{false};  // Whether to use risk management
     DynamicOptConfig opt_config;      // Optimization configuration
     RiskConfig risk_config;           // Risk management configuration
@@ -61,6 +65,7 @@ struct PortfolioConfig : public ConfigBase {
         j["max_strategy_allocation"] = max_strategy_allocation;
         j["min_strategy_allocation"] = min_strategy_allocation;
         j["use_optimization"] = use_optimization;
+        if(allow_fractional_positions) j["allow_fractional_positions"] = true;
         j["use_risk_management"] = use_risk_management;
         j["benchmark_mode"] = benchmark_mode;
         j["opt_config"] = opt_config.to_json();
@@ -80,6 +85,8 @@ struct PortfolioConfig : public ConfigBase {
         if (j.contains("min_strategy_allocation")) {
             min_strategy_allocation = j.at("min_strategy_allocation").get<double>();
         }
+        if(j.contains("allow_fractional_positions"))
+            allow_fractional_positions=j.at("allow_fractional_positions").get<bool>();
         if (j.contains("use_optimization")) {
             use_optimization = j.at("use_optimization").get<bool>();
         }
@@ -98,6 +105,93 @@ struct PortfolioConfig : public ConfigBase {
     }
 };
 
+enum class PortfolioCallOutcome { NotCalled, InProgress, ReturnedOk, ReturnedError, Threw };
+enum class PortfolioHelperSkip { None, NoEligibleSymbols, InsufficientHistory,
+                                 AbsentOptimizer, AbsentRiskManager, NoPositions };
+enum class PortfolioRiskManagerSource { Absent, Internal, External };
+enum class PortfolioOptimizationStage { SymbolCollection, NumericAggregation, Redistribution };
+
+struct PortfolioRegistrationTrace {
+    std::optional<double> initial_allocation;
+    std::optional<double> min_allocation;
+    std::optional<double> max_allocation;
+    std::optional<double> total_allocation;
+    std::optional<bool> total_within_limit;
+    std::optional<bool> requested_optimization;
+    std::optional<bool> portfolio_optimization;
+    std::optional<bool> requested_risk;
+    std::optional<bool> portfolio_risk;
+    std::optional<double> stored_allocation;
+    std::optional<bool> stored_optimization;
+    std::optional<bool> stored_risk;
+    PortfolioCallOutcome outcome{PortfolioCallOutcome::NotCalled};
+};
+
+struct PortfolioStrategyInvocation {
+    std::string strategy_id;
+    PortfolioCallOutcome outcome{PortfolioCallOutcome::NotCalled};
+    StrategyConsumptionTrace strategy;
+};
+
+struct PortfolioCostEstimate {
+    size_t symbol_index{0};
+    std::string symbol;
+    PortfolioCallOutcome charge_call{PortfolioCallOutcome::NotCalled};
+    transaction_cost::CostChargeObservation charge;
+};
+
+enum class PortfolioChargePurpose { PerStrategy, Compatibility };
+
+struct PortfolioExecutionCharge {
+    PortfolioChargePurpose purpose{PortfolioChargePurpose::PerStrategy};
+    std::string strategy_id;  // Empty for the portfolio compatibility view.
+    std::string symbol;
+    PortfolioCallOutcome charge_call{PortfolioCallOutcome::NotCalled};
+    transaction_cost::CostChargeObservation charge;
+};
+
+struct PortfolioStrategyOptimizationRead {
+    bool enabled{false};
+    std::optional<double> allocation;
+};
+
+struct PortfolioOptimizationHelperTrace {
+    PortfolioCallOutcome optimizer_call{PortfolioCallOutcome::NotCalled};
+    PortfolioHelperSkip skip{PortfolioHelperSkip::None};
+    std::optional<Decimal> total_capital;
+    std::array<std::unordered_map<std::string, PortfolioStrategyOptimizationRead>, 3> strategies;
+    OptimizationTrace optimizer;
+    std::vector<PortfolioCostEstimate> estimates;
+};
+
+struct PortfolioRiskHelperTrace {
+    PortfolioCallOutcome risk_call{PortfolioCallOutcome::NotCalled};
+    PortfolioHelperSkip skip{PortfolioHelperSkip::None};
+    std::optional<PortfolioRiskManagerSource> source;
+    std::optional<int> lookback_period;
+    RiskConfigConsumption risk;
+};
+
+struct PortfolioPassConsumption {
+    std::optional<bool> use_optimization;
+    std::optional<bool> use_risk_management;
+    PortfolioCallOutcome optimization_helper{PortfolioCallOutcome::NotCalled};
+    PortfolioCallOutcome risk_helper{PortfolioCallOutcome::NotCalled};
+    PortfolioOptimizationHelperTrace optimization;
+    PortfolioRiskHelperTrace risk;
+};
+
+// Invocation-scoped partial evidence. It does not establish publication or a full run.
+struct PortfolioConsumptionTrace {
+    std::array<PortfolioPassConsumption, 5> passes;
+    size_t pass_count{0};
+    PortfolioCallOutcome outcome{PortfolioCallOutcome::NotCalled};
+    std::optional<bool> skip_execution_generation;
+    std::vector<PortfolioStrategyInvocation> strategies;
+    std::vector<PortfolioExecutionCharge> strategy_charges;
+    std::vector<PortfolioExecutionCharge> compatibility_charges;
+};
+
 /**
  * @brief Manages multiple strategies and their allocations
  * Optionally applies optimization and risk management
@@ -111,6 +205,7 @@ public:
      */
     explicit PortfolioManager(PortfolioConfig config, std::string id = "PORTFOLIO_MANAGER",
                               std::shared_ptr<InstrumentRegistry> registry = nullptr);
+    ~PortfolioManager() noexcept;
 
     /**
      * @brief Add a strategy to the portfolio
@@ -122,7 +217,8 @@ public:
      */
     Result<void> add_strategy(std::shared_ptr<StrategyInterface> strategy,
                               double initial_allocation, bool use_optimization = false,
-                              bool use_risk_management = false);
+                              bool use_risk_management = false,
+                              PortfolioRegistrationTrace* consumption = nullptr);
 
     /**
      * @brief Process new market data
@@ -132,7 +228,8 @@ public:
      * @return Result indicating success or failure
      */
     Result<void> process_market_data(const std::vector<Bar>& data, bool skip_execution_generation = false, 
-                                     std::optional<Timestamp> current_timestamp = std::nullopt);
+                                     std::optional<Timestamp> current_timestamp = std::nullopt,
+                                     PortfolioConsumptionTrace* consumption = nullptr);
 
     /**
      * @brief Update strategy allocations
@@ -192,7 +289,8 @@ public:
      * @param prev_close_price Previous close price
      */
     void update_cost_manager_market_data(const std::string& symbol, double volume,
-                                         double close_price, double prev_close_price);
+                                         double close_price, double prev_close_price,
+                                         transaction_cost::MarketDataObservation* consumption = nullptr);
 
     /**
      * @brief Get all strategies managed by this portfolio
@@ -247,6 +345,8 @@ public:
     }
 
 private:
+    friend class PortfolioManagerTestPeer;
+
     PortfolioConfig config_;
     std::string id_;
 
@@ -272,6 +372,10 @@ private:
     std::unordered_map<std::string, double> previous_day_close_prices_;
 
     mutable std::mutex mutex_;
+    // Test-only witness for genuine mutex_ contention in the POSITION_UPDATE
+    // callback branch. Inert (nullptr) in production; armed only by the
+    // synchronized test peer. Mirrors MarketDataBus::scoped_reset_contention_hook_.
+    std::atomic<void (*)() noexcept> position_update_contention_hook_{nullptr};
     const std::string instance_id_;
 
     std::unordered_map<std::string, std::vector<double>> price_history_;
@@ -288,6 +392,8 @@ private:
 
     // Transaction cost manager for calculating execution costs
     transaction_cost::TransactionCostManager cost_manager_;
+    // Final member: construction unwind disconnects before callback-visible members die.
+    MarketDataBus::ScopedSubscription market_data_subscription_;
 
     /**
      * @brief Calculate weights per contract for each symbol
@@ -305,7 +411,8 @@ private:
      * @return Vector of trading costs for each symbol
      */
     std::vector<double> calculate_trading_costs(const std::vector<std::string>& symbols,
-                                                double capital) const;
+                                                double capital,
+                                                std::vector<PortfolioCostEstimate>* consumption = nullptr) const;
 
     /**
      * @brief Update historical returns for all symbols
@@ -325,13 +432,14 @@ private:
      * @brief Optimize positions for strategies that use optimization
      * @return Result indicating success or failure
      */
-    Result<void> optimize_positions();
+    Result<void> optimize_positions(PortfolioOptimizationHelperTrace* consumption = nullptr);
 
     /**
      * @brief Apply risk management to positions
      * @return Result indicating success or failure
      */
-    Result<void> apply_risk_management(const std::vector<Bar>& data);
+    Result<void> apply_risk_management(const std::vector<Bar>& data,
+                                       PortfolioRiskHelperTrace* consumption = nullptr);
 
     /**
      * @brief Validate allocations sum to 1

@@ -36,6 +36,8 @@ struct TrendFollowingSlowConfig {
                                             {4, 1.13}, {5, 1.19}, {6, 1.26}};
 };
 
+void normalize_constructor_trend_config(TrendFollowingSlowConfig& config);
+
 /**
  * @brief Data structure for storing instrument data (internal to TrendFollowingSlowStrategy)
  */
@@ -85,7 +87,8 @@ public:
      * @param data Vector of price bars
      * @return Result indicating success or failure
      */
-    Result<void> on_data(const std::vector<Bar>& data) override;
+    Result<void> on_data(const std::vector<Bar>& data,
+                         StrategyConsumptionTrace* trace = nullptr) override;
 
     /**
      * @brief Initialize strategy
@@ -250,7 +253,8 @@ private:
      * @return Vector of crossover signals
      */
     std::vector<double> get_raw_forecast(const std::vector<double>& prices, int short_window,
-                                         int long_window) const;
+                                         int long_window,
+                                         StrategyConsumptionTrace* trace = nullptr) const;
 
     /**
      * @brief Scale raw forecasts by volatility
@@ -266,7 +270,8 @@ private:
      * @param prices Price history
      * @return Vector of raw forecasts
      */
-    std::vector<double> get_raw_combined_forecast(const std::vector<double>& prices) const;
+    std::vector<double> get_raw_combined_forecast(
+        const std::vector<double>& prices, StrategyConsumptionTrace* trace = nullptr) const;
 
     /**
      * @brief Calculate absolute value of a vector
@@ -281,7 +286,8 @@ private:
      * @return Scaled forecast values
      */
     std::vector<double> get_scaled_combined_forecast(
-        const std::vector<double>& raw_combined_forecast) const;
+        const std::vector<double>& raw_combined_forecast,
+        StrategyConsumptionTrace* trace = nullptr) const;
 
     /**
      * @brief Get weights for position sizing
@@ -299,7 +305,7 @@ private:
      * @return Target position
      */
     double calculate_position(const std::string& symbol, double forecast, double price,
-                              double volatility) const;
+                              double volatility, StrategyConsumptionTrace* trace = nullptr) const;
 
     /**
      * @brief Apply position buffering
@@ -310,7 +316,7 @@ private:
      * @return Buffered position
      */
     double apply_position_buffer(const std::string& symbol, double raw_position, double price,
-                                 double volatility) const;
+                                 double volatility, StrategyConsumptionTrace* trace = nullptr) const;
 
     /**
      * @brief Calculate volatility regime multiplier
@@ -319,7 +325,8 @@ private:
      * @return Volatility regime multiplier
      */
     double calculate_vol_regime_multiplier(const std::vector<double>& prices,
-                                           const std::vector<double>& volatility) const;
+                                           const std::vector<double>& volatility,
+                                           StrategyConsumptionTrace* trace = nullptr) const;
 };
 
 }  // namespace trade_ngin

@@ -57,6 +57,7 @@ find_package(NLopt REQUIRED)
 
 # Find curl for email functionality
 find_package(CURL REQUIRED)
+find_package(OpenSSL REQUIRED COMPONENTS Crypto)
 
 # Prefer a package-provided CMake target when available. This selects the
 # libpqxx API version the project was built against (including pqxx::params).
@@ -140,12 +141,47 @@ set(TRADE_NGIN_SOURCES
     src/core/config_base.cpp
     src/core/config_loader.cpp
     src/apps/live_portfolio_helpers.cpp
+    src/apps/qt_report_quantity_projection.cpp
+    src/apps/book_tail.cpp
+    src/apps/book_execution_phase.cpp
+    src/apps/qt_book_tail.cpp
+    src/apps/qt_processed_report.cpp
+    src/apps/qt_desk_cycle.cpp
+    src/apps/qt_prior_finalization.cpp
+    src/apps/qt_equity_position_transition.cpp
+    src/apps/qt_equity_desk_cycle.cpp
+    src/apps/qt_equity_cost_consumption.cpp
+    src/apps/qt_equity_accounting_output.cpp
+    src/apps/qt_equity_prior_finalization.cpp
+    src/live/execution_price_resolver.cpp
+    src/live/corporate_actions_applier.cpp
+    src/data/qt_desk_upstream.cpp
+    src/data/qt_equity_desk_accounting.cpp
+    src/data/qt_equity_desk_finalization.cpp
+    src/data/qt_desk_market_capture.cpp
+    src/apps/qt_desk_diagnostics.cpp
+    src/apps/qt_investor_report_loader.cpp
+    src/apps/consumption_projection.cpp
     src/core/logger.cpp
+    src/core/qt_sha256.cpp
     src/core/email_sender.cpp
     src/core/chart_generator.cpp
     src/core/run_id_generator.cpp
     src/data/postgres_database.cpp
     src/data/postgres_database_extensions.cpp
+    src/data/postgres_runtime.cpp
+    src/apps/qt_empty_owner_report.cpp
+    src/data/qt_seed_publication.cpp
+    src/data/qt_empty_model_owner_publication.cpp
+    src/data/qt_empty_model_owner_reference.cpp
+    src/data/qt_empty_model_owner_storage.cpp
+    src/data/qt_model_publication.cpp
+    src/data/qt_desk_publication.cpp
+    src/data/qt_desk_read_set.cpp
+    src/data/qt_desk_current_facts.cpp
+    src/data/qt_desk_processor.cpp
+    src/data/qt_desk_accounting.cpp
+    src/data/postgres_qt_report.cpp
     src/data/market_data_bus.cpp
     src/data/conversion_utils.cpp
     src/data/credential_store.cpp
@@ -158,8 +194,20 @@ set(TRADE_NGIN_SOURCES
     src/order/order_manager.cpp
     src/risk/risk_manager.cpp
     src/optimization/dynamic_optimizer.cpp
+    src/optimization/annualized_sample_covariance.cpp
     src/execution/execution_engine.cpp
     src/portfolio/portfolio_manager.cpp
+    src/portfolio/component_book.cpp
+    src/portfolio/qt_wire.cpp
+    src/portfolio/qt_equity_proof.cpp
+    src/portfolio/qt_eval_wire.cpp
+    src/portfolio/qt_eval_serialize.cpp
+    src/portfolio/qt_component_cost.cpp
+    src/portfolio/qt_evaluation.cpp
+    src/portfolio/component_risk_evaluator.cpp
+    src/portfolio/component_optimizer_evaluator.cpp
+    src/portfolio/quantity_rule.cpp
+    src/portfolio/component_quantity_normalization.cpp
     src/backtest/transaction_cost_analysis.cpp
     src/backtest/backtest_pnl_manager.cpp
     src/backtest/backtest_price_manager.cpp
@@ -233,6 +281,7 @@ target_link_libraries(trade_ngin
         CURL::libcurl
         Eigen3::Eigen
         NLopt::nlopt
+        OpenSSL::Crypto
 )
 
 # Windows-specific settings
@@ -266,3 +315,71 @@ add_subdirectory(apps)
 
 # Add benchmarks subdirectory (separate from tests; not in default test run)
 add_subdirectory(benchmarks)
+
+
+# Reviewed nonempty equity MODEL entry and focused acceptance targets.
+target_sources(trade_ngin PRIVATE
+    src/apps/equity_execution_consumption.cpp
+    src/apps/equity_model_prior.cpp
+    src/apps/equity_model_action_frame.cpp
+    src/apps/equity_model_action_source.cpp
+    src/apps/equity_portfolio_consumption.cpp
+    src/apps/equity_run_consumption.cpp
+    src/apps/equity_strategy_consumption.cpp
+    src/data/market_data_utils.cpp
+    src/live/broker_frame.cpp
+    src/live/corporate_actions_audit_log.cpp
+    src/live/corporate_actions_classification.cpp
+    src/live/corporate_actions_lifecycle.cpp
+    src/strategy/mean_reversion.cpp
+)
+
+add_executable(live_equity_mean_reversion
+    apps/strategies/live_equity_mean_reversion.cpp)
+target_link_libraries(live_equity_mean_reversion PRIVATE trade_ngin)
+target_include_directories(live_equity_mean_reversion PRIVATE
+    "${CMAKE_BINARY_DIR}/include")
+set_target_properties(live_equity_mean_reversion PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin/${CMAKE_BUILD_TYPE}"
+    RUNTIME_OUTPUT_DIRECTORY_DEBUG "${CMAKE_BINARY_DIR}/bin/Debug"
+    RUNTIME_OUTPUT_DIRECTORY_RELEASE "${CMAKE_BINARY_DIR}/bin/Release")
+
+add_executable(equity_model_entry_unit
+    tests/test_equity_model_compatibility.cpp
+    tests/test_equity_model_v4.cpp
+    tests/test_equity_model_v5.cpp
+    tests/test_equity_model_numeric_history.cpp
+    tests/test_equity_mean_reversion_consumption.cpp
+    tests/test_equity_model_prior_arguments.cpp
+    tests/apps/test_equity_model_action_frame.cpp
+    tests/apps/test_equity_action_run_consumption.cpp
+    tests/test_equity_run_consumption.cpp)
+target_link_libraries(equity_model_entry_unit PRIVATE
+    trade_ngin GTest::gtest GTest::gtest_main)
+target_compile_definitions(equity_model_entry_unit PRIVATE TESTING USE_DIRECT_DB_CONNECTION)
+set_target_properties(equity_model_entry_unit PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin/${CMAKE_BUILD_TYPE}"
+    RUNTIME_OUTPUT_DIRECTORY_DEBUG "${CMAKE_BINARY_DIR}/bin/Debug"
+    RUNTIME_OUTPUT_DIRECTORY_RELEASE "${CMAKE_BINARY_DIR}/bin/Release")
+
+foreach(probe IN ITEMS
+    equity_model_database_probe equity_model_v4_probe equity_event_utc_probe
+    equity_utc_readers_probe equity_model_prior_probe equity_prior_publication_probe equity_model_config_probe)
+    add_executable(${probe} tests/${probe}.cpp)
+    target_link_libraries(${probe} PRIVATE trade_ngin)
+    target_compile_definitions(${probe} PRIVATE TESTING USE_DIRECT_DB_CONNECTION)
+    set_target_properties(${probe} PROPERTIES
+        RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin/${CMAKE_BUILD_TYPE}"
+    RUNTIME_OUTPUT_DIRECTORY_DEBUG "${CMAKE_BINARY_DIR}/bin/Debug"
+    RUNTIME_OUTPUT_DIRECTORY_RELEASE "${CMAKE_BINARY_DIR}/bin/Release")
+endforeach()
+
+
+# Isolated pre-fix projector behavior against the same coherent library/headers.
+add_executable(equity_run_consumption_baseline_red
+    tests/test_equity_run_consumption.cpp
+    tests/equity_model_baseline_v4/equity_run_consumption.cpp
+    tests/equity_model_baseline_v4/equity_portfolio_consumption.cpp)
+target_link_libraries(equity_run_consumption_baseline_red PRIVATE
+    trade_ngin GTest::gtest GTest::gtest_main)
+target_compile_definitions(equity_run_consumption_baseline_red PRIVATE TESTING USE_DIRECT_DB_CONNECTION)

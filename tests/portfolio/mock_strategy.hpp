@@ -18,7 +18,9 @@ public:
         metadata_.win_rate = 0.6;
     }
 
-    Result<void> on_data(const std::vector<Bar>& data) override {
+    Result<void> on_data(const std::vector<Bar>& data,
+                         StrategyConsumptionTrace* trace = nullptr) override {
+        if (trace) *trace = {};
         auto base_result = BaseStrategy::on_data(data);
         if (base_result.is_error())
             return base_result;
@@ -88,7 +90,8 @@ public:
         }
     }
 
-    Result<void> check_risk_limits() override {
+    Result<void> check_risk_limits(StrategyRiskConsumption* consumption = nullptr) override {
+        if (consumption) *consumption = {};
         // Calculate total exposure for risk checks
         double total_exposure = 0.0;
         double max_position_size = 0.0;

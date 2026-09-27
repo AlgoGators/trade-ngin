@@ -109,13 +109,14 @@ public:
     Result<void> store_executions(const std::vector<ExecutionReport>& executions,
                                   const std::string& strategy_id, const std::string& strategy_name,
                                   const std::string& portfolio_id,
-                                  const std::string& table_name) override {
+                                  const std::string& table_name, const std::string& portfolio_type = "system") override {
         (void)executions; (void)strategy_id; (void)strategy_name; (void)portfolio_id;
         if (!connected_)
             return make_error<void>(ErrorCode::DATABASE_ERROR, "Not connected");
         if (table_name != "trading.executions") {
             return make_error<void>(ErrorCode::DATABASE_ERROR, "Invalid table");
         }
+        stream_calls["store_executions"]={strategy_id,portfolio_id,portfolio_type};
         return record_call("store_executions");
     }
 
@@ -138,6 +139,7 @@ public:
         }
         mock_positions_ = positions;
         simulate_error_ = false;
+        stream_calls["store_positions"]={strategy_id,portfolio_id,portfolio_type};
         return record_call("store_positions");
     }
 
@@ -272,14 +274,16 @@ public:
                                             const std::string& portfolio_type = "system") override {
         (void)strategy_id; (void)timestamp; (void)equity;
         (void)portfolio_id; (void)table_name; (void)portfolio_type;
+        stream_calls["store_trading_equity_curve"]={strategy_id,portfolio_id,portfolio_type};
         return record_call("store_trading_equity_curve");
     }
 
     Result<void> store_trading_equity_curve_batch(
         const std::string& strategy_id,
         const std::vector<std::pair<Timestamp, double>>& equity_points,
-        const std::string& portfolio_id, const std::string& table_name) override {
+        const std::string& portfolio_id, const std::string& table_name, const std::string& portfolio_type = "system") override {
         (void)strategy_id; (void)equity_points; (void)portfolio_id; (void)table_name;
+        stream_calls["store_trading_equity_curve_batch"]={strategy_id,portfolio_id,portfolio_type};
         return record_call("store_trading_equity_curve_batch");
     }
 
@@ -353,25 +357,35 @@ public:
     Result<void> delete_live_results(
         const std::string& strategy_id, const Timestamp& date,
         const std::string& portfolio_id,
-        const std::string& table_name = "trading.live_results") override {
+        const std::string& table_name = "trading.live_results", const std::string& portfolio_type = "system") override {
         (void)strategy_id; (void)date; (void)portfolio_id; (void)table_name;
+        stream_calls["delete_live_results"]={strategy_id,portfolio_id,portfolio_type};
         return record_call("delete_live_results");
     }
 
     Result<void> delete_live_equity_curve(
         const std::string& strategy_id, const Timestamp& date,
         const std::string& portfolio_id,
-        const std::string& table_name = "trading.equity_curve") override {
+        const std::string& table_name = "trading.equity_curve", const std::string& portfolio_type = "system") override {
         (void)strategy_id; (void)date; (void)portfolio_id; (void)table_name;
+        stream_calls["delete_live_equity_curve"]={strategy_id,portfolio_id,portfolio_type};
         return record_call("delete_live_equity_curve");
     }
 
     Result<void> delete_stale_executions(
         const std::vector<std::string>& order_ids, const Timestamp& date,
         const std::string& strategy_name,
-        const std::string& table_name = "trading.executions") override {
-        (void)order_ids; (void)date; (void)strategy_name; (void)table_name;
+        const std::string& table_name = "trading.executions", const std::string& portfolio_type = "system") override {
+        (void)order_ids; (void)date; (void)strategy_name; (void)table_name; (void)portfolio_type;
         return record_call("delete_stale_executions");
+    }
+
+    Result<void> delete_stale_executions_scoped(
+        const std::vector<std::string>& order_ids,const Timestamp& date,
+        const std::string& strategy_id,const std::string& strategy_name,const std::string& portfolio_id,
+        const std::string& table_name="trading.executions",const std::string& portfolio_type="system") override {
+        stream_calls["delete_stale_executions_scoped"]={strategy_id,portfolio_id,portfolio_type,strategy_name};
+        return delete_stale_executions(order_ids,date,strategy_name,table_name,portfolio_type);
     }
 
     Result<void> store_live_results_complete(
@@ -380,9 +394,10 @@ public:
         const std::unordered_map<std::string, int>& int_metrics,
         const nlohmann::json& config,
         const std::string& portfolio_id = "BASE_PORTFOLIO",
-        const std::string& table_name = "trading.live_results") override {
+        const std::string& table_name = "trading.live_results", const std::string& portfolio_type = "system") override {
         (void)strategy_id; (void)date; (void)metrics; (void)int_metrics; (void)config;
         (void)portfolio_id; (void)table_name;
+        stream_calls["store_live_results_complete"]={strategy_id,portfolio_id,portfolio_type};
         return record_call("store_live_results_complete");
     }
 
@@ -390,18 +405,20 @@ public:
         const std::string& strategy_id, const Timestamp& date,
         const std::unordered_map<std::string, double>& updates,
         const std::string& portfolio_id,
-        const std::string& table_name = "trading.live_results") override {
+        const std::string& table_name = "trading.live_results", const std::string& portfolio_type = "system") override {
         (void)strategy_id; (void)date; (void)updates;
         (void)portfolio_id; (void)table_name;
+        stream_calls["update_live_results"]={strategy_id,portfolio_id,portfolio_type};
         return record_call("update_live_results");
     }
 
     Result<void> update_live_equity_curve(
         const std::string& strategy_id, const Timestamp& date, double equity,
         const std::string& portfolio_id,
-        const std::string& table_name = "trading.equity_curve") override {
+        const std::string& table_name = "trading.equity_curve", const std::string& portfolio_type = "system") override {
         (void)strategy_id; (void)date; (void)equity;
         (void)portfolio_id; (void)table_name;
+        stream_calls["update_live_equity_curve"]={strategy_id,portfolio_id,portfolio_type};
         return record_call("update_live_equity_curve");
     }
 
@@ -416,6 +433,7 @@ public:
     }
 
     // ===== Test hooks =====
+    std::unordered_map<std::string,std::vector<std::string>> stream_calls;
 
     /// Read the number of times the named method has been invoked.
     int call_count(const std::string& method) const {

@@ -1,6 +1,8 @@
 // include/trade_ngin/instruments/equity.hpp
 #pragma once
 
+#include <memory>
+#include "trade_ngin/core/holiday_checker.hpp"
 #include <string>
 #include <vector>
 #include "trade_ngin/instruments/instrument.hpp"
@@ -17,6 +19,8 @@ struct DividendInfo {
 /**
  * @brief Stock specification
  */
+enum class EquityAccountMode { CASH, REG_T };
+
 struct EquitySpec {
     std::string exchange;                      // Exchange code
     std::string currency;                      // Trading currency
@@ -30,6 +34,10 @@ struct EquitySpec {
     std::string industry;                      // Specific industry
     std::string trading_hours{"09:30-16:00"};  // Default NYSE hours
     std::vector<DividendInfo> dividends;       // Upcoming dividends
+    EquityAccountMode account_mode{EquityAccountMode::CASH};
+    bool short_selling_allowed{false};
+    double borrow_rate_override{-1.0};
+    bool is_easy_to_borrow{true};
 };
 
 /**
@@ -131,9 +139,18 @@ public:
      */
     std::optional<DividendInfo> get_next_dividend(const Timestamp& from) const;
 
+    EquityAccountMode get_account_mode() const { return spec_.account_mode; }
+    bool is_short_allowed() const {
+        return spec_.account_mode == EquityAccountMode::REG_T && spec_.short_selling_allowed;
+    }
+    const EquitySpec& get_spec() const { return spec_; }
+    static void set_holiday_checker(std::shared_ptr<HolidayChecker> checker);
+    static std::shared_ptr<HolidayChecker> get_holiday_checker();
+
 private:
     std::string symbol_;
     EquitySpec spec_;
+    static std::shared_ptr<HolidayChecker> holiday_checker_;
 };
 
 }  // namespace trade_ngin

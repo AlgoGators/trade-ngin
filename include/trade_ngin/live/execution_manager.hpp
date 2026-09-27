@@ -3,6 +3,7 @@
 #include "trade_ngin/core/types.hpp"
 #include "trade_ngin/core/error.hpp"
 #include "trade_ngin/transaction_cost/transaction_cost_manager.hpp"
+#include "trade_ngin/live/execution_consumption.hpp"
 #include <vector>
 #include <unordered_map>
 #include <string>
@@ -20,6 +21,8 @@ namespace trade_ngin {
  *
  * Extracted from live_trend.cpp lines 717-833 as part of Phase 3 refactoring
  */
+enum class PricingPolicy { MARK_FALLBACK, STRICT };
+
 class ExecutionManager {
 private:
     // Transaction cost model (single source of truth)
@@ -29,6 +32,17 @@ private:
     std::unordered_map<std::string, double> prev_close_prices_;
 
 public:
+    // Explicit equity compatibility overload. Existing stream/default overload is unchanged.
+    Result<std::vector<ExecutionReport>> generate_daily_executions(
+        const std::unordered_map<std::string, Position>& current_positions,
+        const std::unordered_map<std::string, Position>& previous_positions,
+        const std::unordered_map<std::string, double>& market_prices,
+        const Timestamp& timestamp, PricingPolicy pricing,
+        std::vector<std::string>* unpriced_out = nullptr,
+        DailyExecutionObservation* observation = nullptr);
+    ExecutionReport generate_equity_execution(const std::string& symbol,
+        double quantity_change, double market_price, const Timestamp& timestamp,
+        size_t exec_sequence, ExecutionCallObservation* observation = nullptr);
     /**
      * Constructor with optional TransactionCostManager config
      */
@@ -50,7 +64,8 @@ public:
         const std::unordered_map<std::string, Position>& current_positions,
         const std::unordered_map<std::string, Position>& previous_positions,
         const std::unordered_map<std::string, double>& market_prices,
-        const Timestamp& timestamp);
+        const Timestamp& timestamp, const std::string& portfolio_type = "system",
+        DailyExecutionObservation* observation = nullptr);
 
     /**
      * Generate a single execution report
@@ -67,7 +82,8 @@ public:
         double quantity_change,
         double market_price,
         const Timestamp& timestamp,
-        size_t exec_sequence);
+        size_t exec_sequence, const std::string& portfolio_type = "system",
+        ExecutionCallObservation* observation = nullptr);
 
     /**
      * Update market data for TransactionCostManager (ADV and volatility tracking)
@@ -77,7 +93,8 @@ public:
      * @param volume Daily volume for the symbol
      * @param close_price Daily close price for the symbol
      */
-    void update_market_data(const std::string& symbol, double volume, double close_price);
+    void update_market_data(const std::string& symbol, double volume, double close_price,
+                            ExecutionMarketDataObservation* observation = nullptr);
 
     /**
      * Generate date string for order IDs

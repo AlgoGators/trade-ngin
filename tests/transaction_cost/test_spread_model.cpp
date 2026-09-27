@@ -175,3 +175,64 @@ TEST_F(SpreadModelTest, MultipleSymbolsTrackedIndependently) {
     double nq = model_.get_volatility_multiplier("NQ");
     EXPECT_GE(nq, es);  // NQ has more vol, multiplier should be ≥ ES's
 }
+
+TEST_F(SpreadModelTest, ObservesSpreadReadsAndClearsReusedOutput) {
+    auto cfg = default_asset();
+    cfg.baseline_spread_ticks = 2.0;
+    cfg.min_spread_ticks = 0.5;
+    cfg.max_spread_ticks = 4.0;
+    cfg.spread_cost_multiplier = 0.3;
+    cfg.tick_size = 1.25;
+    SpreadPriceObservation used;
+    EXPECT_DOUBLE_EQ(model_.calculate_spread_price_impact(cfg, 2.0, &used), 1.5);
+    EXPECT_EQ(used.baseline_spread_ticks, 2.0);
+    EXPECT_EQ(used.min_spread_ticks, 0.5);
+    EXPECT_EQ(used.max_spread_ticks, 4.0);
+    EXPECT_EQ(used.spread_cost_multiplier, 0.3);
+    EXPECT_EQ(used.tick_size, 1.25);
+    cfg.tick_size = 0.25;
+    EXPECT_DOUBLE_EQ(model_.calculate_spread_price_impact(cfg, 1.0, &used), 0.15);
+    EXPECT_EQ(used.tick_size, 0.25);
+}
+
+TEST_F(SpreadModelTest, VolatilityReadsOnlyAfterGuardAndHistoryWindowIsObserved) {
+    SpreadModel::VolatilityConfig vc;
+    vc.lambda = 0.4;
+    vc.min_multiplier = 0.65;
+    vc.max_multiplier = 1.2;
+    vc.lookback_days = 2;
+    SpreadModel m(vc);
+    VolatilityObservation used;
+    EXPECT_DOUBLE_EQ(m.calculate_volatility_multiplier({0.1, -0.1}, &used), 1.2);
+    EXPECT_EQ(used.lambda, 0.4);
+    EXPECT_EQ(used.min_multiplier, 0.65);
+    EXPECT_EQ(used.max_multiplier, 1.2);
+    EXPECT_DOUBLE_EQ(m.calculate_volatility_multiplier({}, &used), 1.0);
+    EXPECT_FALSE(used.lambda.has_value());
+    SpreadHistoryObservation history;
+    m.update_log_returns("ES", 0.1, &history);
+    EXPECT_EQ(history.lookback_days, 2u);
+    m.update_log_returns("ES", -0.1, &history);
+    m.update_log_returns("ES", 0.0, &history);
+    EXPECT_EQ(history.lookback_days, 2u);
+    EXPECT_NEAR(m.get_volatility_multiplier("ES", &used), 1.2, 1e-12);
+    EXPECT_EQ(used.lambda, 0.4);
+    EXPECT_DOUBLE_EQ(m.calculate_volatility_multiplier({0.0001, 0.0001}, &used), 0.65);
+    EXPECT_EQ(used.lambda, 0.4);
+    EXPECT_EQ(used.min_multiplier, 0.65);
+    EXPECT_EQ(used.max_multiplier, 1.2);
+    EXPECT_DOUBLE_EQ(m.get_volatility_multiplier("missing", &used), 1.0);
+    EXPECT_FALSE(used.lambda.has_value());
+}
+
+TEST_F(SpreadModelTest, ZeroDayReturnWindowKeepsNoHistory) {
+    SpreadModel::VolatilityConfig vc;
+    vc.lookback_days = 0;
+    SpreadModel m(vc);
+    SpreadHistoryObservation history;
+    m.update_log_returns("ES", 0.1, &history);
+    EXPECT_EQ(history.lookback_days, 0u);
+    VolatilityObservation used;
+    EXPECT_DOUBLE_EQ(m.get_volatility_multiplier("ES", &used), 1.0);
+    EXPECT_FALSE(used.lambda.has_value());
+}

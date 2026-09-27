@@ -123,6 +123,98 @@ TEST_F(PortfolioManagerExtendedTest, AddStrategyRejectsNullPointer) {
     EXPECT_TRUE(r.is_error());
 }
 
+TEST_F(PortfolioManagerExtendedTest, RegistrationEvidenceFollowsValidationAndResets) {
+    PortfolioRegistrationTrace trace;
+    auto invalid = manager_->add_strategy(nullptr, 0.3, true, true, &trace);
+    ASSERT_TRUE(invalid.is_error());
+    EXPECT_EQ(trace.outcome, PortfolioCallOutcome::ReturnedError);
+    EXPECT_FALSE(trace.initial_allocation.has_value());
+    EXPECT_EQ(invalid.error()->code(), ErrorCode::INVALID_ARGUMENT);
+    EXPECT_STREQ(invalid.error()->what(), "Strategy cannot be null");
+
+    auto a = make_strategy("OBS_A");
+    auto low = manager_->add_strategy(a.strategy, 0.01, true, true, &trace);
+    ASSERT_TRUE(low.is_error());
+    EXPECT_EQ(trace.initial_allocation, 0.01);
+    EXPECT_EQ(trace.min_allocation, 0.05);
+    EXPECT_FALSE(trace.max_allocation.has_value());
+    EXPECT_FALSE(trace.total_allocation.has_value());
+    EXPECT_EQ(low.error()->code(), ErrorCode::INVALID_ARGUMENT);
+    EXPECT_STREQ(low.error()->what(), "Initial allocation out of bounds");
+    EXPECT_STREQ(low.error()->what(),
+                 manager_->add_strategy(a.strategy, 0.01).error()->what());
+
+    auto high = manager_->add_strategy(a.strategy, 0.7, false, false, &trace);
+    ASSERT_TRUE(high.is_error());
+    EXPECT_EQ(trace.max_allocation, 0.6);
+    EXPECT_FALSE(trace.total_allocation.has_value());
+    EXPECT_EQ(high.error()->code(), ErrorCode::INVALID_ARGUMENT);
+    EXPECT_STREQ(high.error()->what(), "Initial allocation out of bounds");
+
+    auto ok = manager_->add_strategy(a.strategy, 0.4, false, true, &trace);
+    ASSERT_TRUE(ok.is_ok());
+    EXPECT_EQ(trace.outcome, PortfolioCallOutcome::ReturnedOk);
+    EXPECT_EQ(trace.total_allocation, 0.4);
+    EXPECT_EQ(trace.stored_allocation, 0.4);
+    EXPECT_EQ(trace.requested_optimization, false);
+    EXPECT_FALSE(trace.portfolio_optimization.has_value());
+    EXPECT_EQ(trace.stored_optimization, false);
+    EXPECT_EQ(trace.requested_risk, true);
+    EXPECT_EQ(trace.portfolio_risk, false);
+    EXPECT_EQ(trace.stored_risk, false);
+
+    auto duplicate = manager_->add_strategy(a.strategy, 0.2, true, true, &trace);
+    ASSERT_TRUE(duplicate.is_error());
+    EXPECT_EQ(trace.outcome, PortfolioCallOutcome::ReturnedError);
+    EXPECT_FALSE(trace.initial_allocation.has_value());
+    EXPECT_EQ(duplicate.error()->code(), ErrorCode::INVALID_ARGUMENT);
+    EXPECT_STREQ(duplicate.error()->what(),
+                 ("Strategy with ID " + a.id + " already exists").c_str());
+
+    ASSERT_TRUE(manager_->add_strategy(make_strategy("OBS_B").strategy, 0.4).is_ok());
+    auto total = manager_->add_strategy(make_strategy("OBS_C").strategy,
+                                        0.4, true, true, &trace);
+    ASSERT_TRUE(total.is_error());
+    ASSERT_TRUE(trace.total_allocation.has_value());
+    EXPECT_DOUBLE_EQ(*trace.total_allocation, 1.2);
+    EXPECT_EQ(trace.total_within_limit, false);
+    EXPECT_FALSE(trace.requested_optimization.has_value());
+    EXPECT_EQ(total.error()->code(), ErrorCode::INVALID_ARGUMENT);
+    EXPECT_STREQ(total.error()->what(), "Total allocation would exceed 1.0");
+    EXPECT_STREQ(total.error()->what(),
+                 manager_->add_strategy(make_strategy("OBS_D").strategy,
+                                        0.4).error()->what());
+}
+
+TEST_F(PortfolioManagerExtendedTest, RegistrationStoresEnabledParticipationWhenBothSidesTrue) {
+    PortfolioManager enabled(default_config(true, true), manager_id_ + "_ENABLED");
+    auto strategy = make_strategy("ENABLED");
+    PortfolioRegistrationTrace trace;
+    ASSERT_TRUE(enabled.add_strategy(strategy.strategy, 0.3, true, true, &trace).is_ok());
+    EXPECT_EQ(trace.total_within_limit, true);
+    EXPECT_EQ(trace.portfolio_optimization, true);
+    EXPECT_EQ(trace.portfolio_risk, true);
+    EXPECT_EQ(trace.stored_optimization, true);
+    EXPECT_EQ(trace.stored_risk, true);
+}
+
+TEST_F(PortfolioManagerExtendedTest, ExplicitCostHistoryUpdateForwardsOnlyItsOwnReads) {
+    transaction_cost::MarketDataObservation trace;
+    manager_->update_cost_manager_market_data("AAPL", 1000, 105, 100, &trace);
+    ASSERT_TRUE(trace.volume.adv_lookback_days.has_value());
+    EXPECT_TRUE(trace.log_returns.lookback_days.has_value());
+    auto t0 = std::chrono::system_clock::now() - std::chrono::hours(24);
+    ASSERT_TRUE(manager_->process_market_data(make_bars("AAPL", 2, t0), true).is_ok());
+    transaction_cost::MarketDataObservation fresh;
+    manager_->update_cost_manager_market_data("MSFT", 1000, 0, 0, &fresh);
+    EXPECT_TRUE(fresh.volume.adv_lookback_days.has_value());
+    EXPECT_FALSE(fresh.log_returns.lookback_days.has_value());
+    EXPECT_TRUE(trace.log_returns.lookback_days.has_value());
+    manager_->update_cost_manager_market_data("MSFT", 1000, 0, 0, &trace);
+    EXPECT_TRUE(trace.volume.adv_lookback_days.has_value());
+    EXPECT_FALSE(trace.log_returns.lookback_days.has_value());
+}
+
 TEST_F(PortfolioManagerExtendedTest, AddStrategyRejectsAllocationAboveMax) {
     auto strat = make_strategy("S");
     // max_strategy_allocation = 0.6 → 0.7 rejected

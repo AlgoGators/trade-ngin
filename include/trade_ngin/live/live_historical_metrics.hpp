@@ -2,6 +2,8 @@
 
 #include <optional>
 #include <vector>
+#include <string>
+#include <unordered_map>
 
 namespace trade_ngin {
 
@@ -91,6 +93,10 @@ private:
                                                           double target = 0.0);
     static double calculate_max_drawdown_from_equity(const std::vector<double>& equity_values);
 };
+
+std::unordered_map<std::string,double> historical_metrics_double_columns(const HistoricalMetrics&);
+std::unordered_map<std::string,int> historical_metrics_int_columns(const HistoricalMetrics&);
+std::vector<std::string> historical_metrics_null_columns(const HistoricalMetrics&);
 
 }  // namespace trade_ngin
 

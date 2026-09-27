@@ -12,6 +12,7 @@
 #include <nlohmann/json.hpp>
 #include <sstream>
 #include <string>
+#include <thread>
 #include <unordered_map>
 #include "trade_ngin/core/config_base.hpp"
 #include "trade_ngin/core/types.hpp"
@@ -36,7 +37,8 @@ enum class LogLevel {
 enum class LogDestination {
     CONSOLE,  // Standard output
     FILE,     // File output
-    BOTH      // Both console and file
+    BOTH,     // Both console and file
+    NONE      // Structured tools return diagnostics in their response instead
 };
 
 inline std::string level_to_string(LogLevel level) {
@@ -66,6 +68,8 @@ inline std::string log_destination_to_string(LogDestination dest) {
             return "FILE";
         case LogDestination::BOTH:
             return "BOTH";
+        case LogDestination::NONE:
+            return "NONE";
         default:
             return "UNKNOWN";
     }
@@ -78,6 +82,7 @@ struct LoggerConfig : public ConfigBase {
     LogLevel min_level{LogLevel::INFO};  // Minimum level to log
     LogDestination destination{LogDestination::CONSOLE};
     std::string log_directory{"logs"};          // Directory for log files
+    std::string log_subdirectory{};  // Empty keeps the existing MODEL directory.
     std::string filename_prefix{"trade_ngin"};  // Prefix for log files
     bool include_timestamp{true};               // Include timestamp in logs
     bool include_level{true};                   // Include log level in logs
@@ -93,6 +98,7 @@ struct LoggerConfig : public ConfigBase {
         j["min_level"] = level_to_string(min_level);
         j["destination"] = log_destination_to_string(destination);
         j["log_directory"] = log_directory;
+        if (!log_subdirectory.empty()) j["log_subdirectory"] = log_subdirectory;
         j["filename_prefix"] = filename_prefix;
         j["include_timestamp"] = include_timestamp;
         j["include_level"] = include_level;
@@ -127,9 +133,13 @@ struct LoggerConfig : public ConfigBase {
                 destination = LogDestination::FILE;
             else if (dest_str == "BOTH")
                 destination = LogDestination::BOTH;
+            else if (dest_str == "NONE")
+                destination = LogDestination::NONE;
         }
         if (j.contains("log_directory"))
             log_directory = j.at("log_directory").get<std::string>();
+        if (j.contains("log_subdirectory"))
+            log_subdirectory = j.at("log_subdirectory").get<std::string>();
         if (j.contains("filename_prefix"))
             filename_prefix = j.at("filename_prefix").get<std::string>();
         if (j.contains("include_timestamp"))
@@ -208,9 +218,7 @@ public:
         return initialized_.load(std::memory_order_acquire);
     }
 
-    static void register_component(const std::string& component) {
-        current_component_ = component;
-    }
+    static void register_component(const std::string& component);
 
 private:
     Logger() = default;
@@ -234,11 +242,21 @@ private:
     std::ofstream log_file_;
     std::atomic<bool> initialized_{false};
     [[maybe_unused]] bool locked_initialization_{false};  // Prevent re-initialization after first call
-    static thread_local std::string current_component_;  // Thread-local component name
+    struct ComponentContext {
+        std::string name;
+    };
+    // Trivial TLS survives nontrivial TLS teardown. Logger owns the name
+    // through static shutdown; the context is never owned by this pointer.
+    static thread_local ComponentContext* current_component_context_;
 
     // New members for improved file naming
     std::string current_session_timestamp_;  // Format: YYYYMMDD_HHMMSS
     int current_part_number_{1};             // Current part number for this session
+
+    // Contexts are reclaimed with Logger, which the runner initializes
+    // before other logging singletons. A reused thread id replaces its
+    // retired context only when the new thread first registers a name.
+    std::unordered_map<std::thread::id, std::unique_ptr<ComponentContext>> component_contexts_;
 };
 
 /**

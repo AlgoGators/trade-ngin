@@ -9,8 +9,8 @@
 
 namespace trade_ngin {
 
-// Thread-local variable to store the current component name
-thread_local std::string Logger::current_component_;
+// This pointer has no TLS destructor. Its pointee is owned by Logger.
+thread_local Logger::ComponentContext* Logger::current_component_context_ = nullptr;
 
 // Helper function to generate formatted timestamp
 std::string generate_session_timestamp() {
@@ -30,6 +30,22 @@ Logger& Logger::instance() {
     return instance;
 }
 
+void Logger::register_component(const std::string& component) {
+    auto& logger = instance();
+    std::lock_guard<std::mutex> lock(logger.mutex_);
+    if (!current_component_context_) {
+        auto context = std::make_unique<ComponentContext>();
+        context->name = component;
+        // New threads have a null TLS pointer, even when an id is reused.
+        // A pointer is published only after ownership is established.
+        auto& owned = logger.component_contexts_[std::this_thread::get_id()];
+        owned = std::move(context);
+        current_component_context_ = owned.get();
+    } else {
+        current_component_context_->name = component;
+    }
+}
+
 void Logger::initialize(const LoggerConfig& config) {
     std::lock_guard<std::mutex> lock(mutex_);
     config_ = config;
@@ -38,6 +54,7 @@ void Logger::initialize(const LoggerConfig& config) {
         config_.destination == LogDestination::BOTH) {
         // Create full path if it doesn't exist
         std::filesystem::path log_dir = std::filesystem::absolute(config_.log_directory);
+        if (!config_.log_subdirectory.empty()) log_dir /= config_.log_subdirectory;
         std::filesystem::create_directories(log_dir);
 
         // Enforce retention before creating a new file so total never exceeds max_files
@@ -136,8 +153,8 @@ std::string Logger::format_message(LogLevel level, const std::string& message) {
     }
 
     // Add component name if available
-    if (!current_component_.empty()) {
-        ss << "[" << current_component_ << "] ";
+    if (current_component_context_ && !current_component_context_->name.empty()) {
+        ss << "[" << current_component_context_->name << "] ";
     }
 
     // Add the actual message
@@ -179,6 +196,7 @@ void Logger::rotate_log_files() {
     log_file_.close();  // Explicitly close before handling files
 
     std::filesystem::path log_dir = std::filesystem::absolute(config_.log_directory);
+        if (!config_.log_subdirectory.empty()) log_dir /= config_.log_subdirectory;
 
     std::vector<std::filesystem::path> log_files;
     for (const auto& entry : std::filesystem::directory_iterator(log_dir)) {

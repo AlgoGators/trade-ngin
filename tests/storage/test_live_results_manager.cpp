@@ -182,3 +182,34 @@ TEST_F(LiveResultsManagerTest, NotConnectedDbCausesError) {
     auto r = mgr_->save_positions_snapshot(date_at(2026, 3, 15));
     EXPECT_TRUE(r.is_error());
 }
+
+TEST_F(LiveResultsManagerTest, QtFailureIsNotReportedAsSuccessfulPublication) {
+    LiveResultsManager qt(db_,true,"STRAT_X","PORT_Y","qt");
+    qt.set_metrics({{"total_return",0.05}});
+    db_->fail_on_call("store_live_results_complete");
+    EXPECT_TRUE(qt.save_all_results("QT",date_at(2026,3,15)).is_error());
+}
+
+TEST_F(LiveResultsManagerTest, QtSignalsNeverReachModelOwnedSignalWriter) {
+    LiveResultsManager qt(db_,true,"STRAT_X","PORT_Y","qt");
+    EXPECT_TRUE(qt.save_signals_snapshot(date_at(2026,3,15)).is_ok());
+    qt.set_signals({{"ES",0.5}});
+    EXPECT_TRUE(qt.save_signals_snapshot(date_at(2026,3,15)).is_error());
+    EXPECT_EQ(db_->call_count("store_signals"),0);
+}
+
+TEST_F(LiveResultsManagerTest, EveryQtManagerOperationCarriesBookEngineAndStream) {
+    LiveResultsManager qt(db_,true,"STRAT_X","PORT_Y","qt");
+    qt.set_positions({make_pos("ES",2)});qt.set_executions({make_exec("ES",2,100)});
+    qt.set_metrics({{"total_pnl",42}});qt.set_equity(4200);
+    ASSERT_TRUE(qt.save_all_results("QT",date_at(2026,3,15)).is_ok());
+    ASSERT_TRUE(qt.update_live_results(date_at(2026,3,15),{{"total_pnl",43}}).is_ok());
+    ASSERT_TRUE(qt.update_equity_curve(date_at(2026,3,15),4300).is_ok());
+    for(const auto& method:{"store_positions","store_executions","delete_live_results",
+        "delete_live_equity_curve","store_live_results_complete","store_trading_equity_curve",
+        "update_live_results","update_live_equity_curve"}) {
+        EXPECT_EQ(db_->stream_calls[method],(std::vector<std::string>{"STRAT_X","PORT_Y","qt"}))<<method;
+    }
+    EXPECT_EQ(db_->stream_calls["delete_stale_executions_scoped"],
+        (std::vector<std::string>{"STRAT_X","PORT_Y","qt","STRAT_X"}));
+}

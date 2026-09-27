@@ -9,12 +9,13 @@ namespace trade_ngin {
 
 ResultsManagerBase::ResultsManagerBase(std::shared_ptr<PostgresDatabase> db, bool store_enabled,
                                        const std::string& schema, const std::string& strategy_id,
-                                       const std::string& portfolio_id)
+                                       const std::string& portfolio_id, const std::string& portfolio_type)
     : db_(db),
       store_enabled_(store_enabled),
       schema_(schema),
       strategy_id_(strategy_id),
       portfolio_id_(portfolio_id),
+      portfolio_type_(portfolio_type),
       component_id_("ResultsManager_" + schema) {
     INFO("Initialized " + component_id_ + " for strategy: " + strategy_id +
          ", portfolio: " + portfolio_id + ", storage " + (store_enabled ? "enabled" : "disabled"));
@@ -85,7 +86,7 @@ Result<void> ResultsManagerBase::save_positions(const std::vector<Position>& pos
     } else {
         // For live trading, use regular store_positions
         return db_->store_positions(positions, strategy_id_, strategy_id_, portfolio_id_,
-                                    table_name);
+                                    table_name,portfolio_type_);
     }
 }
 
@@ -120,7 +121,7 @@ Result<void> ResultsManagerBase::save_executions(const std::vector<ExecutionRepo
         return db_->store_backtest_executions(executions, run_id, "BASE_PORTFOLIO", table_name);
     } else {
         return db_->store_executions(executions, strategy_id_, strategy_id_, portfolio_id_,
-                                     table_name);
+                                     table_name,portfolio_type_);
     }
 }
 
@@ -155,6 +156,8 @@ Result<void> ResultsManagerBase::save_signals(
         return db_->store_backtest_signals(signals, strategy_id_, run_id, date, "BASE_PORTFOLIO",
                                            table_name);
     } else {
+        if (portfolio_type_ != "system")
+            return make_error<void>(ErrorCode::INVALID_ARGUMENT,"qt_signals_unsupported");
         return db_->store_signals(signals, strategy_id_, strategy_id_, portfolio_id_, date,
                                   table_name);
     }

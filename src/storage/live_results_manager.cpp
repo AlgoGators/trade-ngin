@@ -13,8 +13,8 @@ namespace trade_ngin {
 
 LiveResultsManager::LiveResultsManager(std::shared_ptr<PostgresDatabase> db, bool store_enabled,
                                        const std::string& strategy_id,
-                                       const std::string& portfolio_id)
-    : ResultsManagerBase(db, store_enabled, "trading", strategy_id, portfolio_id),
+                                       const std::string& portfolio_id, const std::string& portfolio_type)
+    : ResultsManagerBase(db, store_enabled, "trading", strategy_id, portfolio_id,portfolio_type),
       current_equity_(0.0),
       has_equity_update_(false) {
     INFO("Initialized LiveResultsManager for strategy: " + strategy_id +
@@ -49,10 +49,13 @@ Result<void> LiveResultsManager::save_all_results(const std::string& run_id,
 
     INFO("Saving all live trading results for date: " +
          std::to_string(std::chrono::system_clock::to_time_t(date)));
+    if(portfolio_type_ != "system" && !signals_.empty())
+        return make_error<void>(ErrorCode::INVALID_ARGUMENT,"qt_signals_unsupported");
 
     // 1. First delete any stale data from previous runs on the same day
     auto result = delete_stale_data(date);
     if (result.is_error()) {
+        if (portfolio_type_ != "system" || !explicit_strategy_name_.empty()) return result;
         WARN("Failed to delete stale data: " + std::string(result.error()->what()));
         // Non-fatal, continue
     }
@@ -60,6 +63,7 @@ Result<void> LiveResultsManager::save_all_results(const std::string& run_id,
     // 2. Save positions
     result = save_positions_snapshot(date);
     if (result.is_error()) {
+        if (portfolio_type_ != "system" || !explicit_strategy_name_.empty()) return result;
         ERROR("Failed to save positions: " + std::string(result.error()->what()));
         // Continue with other saves
     }
@@ -67,6 +71,7 @@ Result<void> LiveResultsManager::save_all_results(const std::string& run_id,
     // 3. Save executions
     result = save_executions_batch(date);
     if (result.is_error()) {
+        if (portfolio_type_ != "system" || !explicit_strategy_name_.empty()) return result;
         ERROR("Failed to save executions: " + std::string(result.error()->what()));
         // Continue
     }
@@ -74,6 +79,7 @@ Result<void> LiveResultsManager::save_all_results(const std::string& run_id,
     // 4. Save signals
     result = save_signals_snapshot(date);
     if (result.is_error()) {
+        if (portfolio_type_ != "system" || !explicit_strategy_name_.empty()) return result;
         ERROR("Failed to save signals: " + std::string(result.error()->what()));
         // Continue
     }
@@ -81,6 +87,7 @@ Result<void> LiveResultsManager::save_all_results(const std::string& run_id,
     // 5. Save live results (metrics)
     result = save_live_results(date);
     if (result.is_error()) {
+        if (portfolio_type_ != "system" || !explicit_strategy_name_.empty()) return result;
         ERROR("Failed to save live results: " + std::string(result.error()->what()));
         // Continue
     }
@@ -89,6 +96,7 @@ Result<void> LiveResultsManager::save_all_results(const std::string& run_id,
     if (has_equity_update_) {
         result = save_equity_curve(date);
         if (result.is_error()) {
+        if (portfolio_type_ != "system" || !explicit_strategy_name_.empty()) return result;
             ERROR("Failed to save equity curve: " + std::string(result.error()->what()));
             // Non-fatal
         }
@@ -110,15 +118,17 @@ Result<void> LiveResultsManager::delete_stale_data(const Timestamp& date) {
 
     // Delete stale live results for re-runs
     auto result =
-        db_->delete_live_results(strategy_id_, date, portfolio_id_, "trading.live_results");
+        db_->delete_live_results(strategy_id_, date, portfolio_id_, "trading.live_results",portfolio_type_);
     if (result.is_error()) {
+        if (portfolio_type_ != "system" || !explicit_strategy_name_.empty()) return result;
         WARN("Failed to delete stale live results: " + std::string(result.error()->what()));
     }
 
     // Delete stale equity curve entries
     result =
-        db_->delete_live_equity_curve(strategy_id_, date, portfolio_id_, "trading.equity_curve");
+        db_->delete_live_equity_curve(strategy_id_, date, portfolio_id_, "trading.equity_curve",portfolio_type_);
     if (result.is_error()) {
+        if (portfolio_type_ != "system" || !explicit_strategy_name_.empty()) return result;
         WARN("Failed to delete stale equity curve: " + std::string(result.error()->what()));
     }
 
@@ -129,8 +139,10 @@ Result<void> LiveResultsManager::delete_stale_data(const Timestamp& date) {
             order_ids.push_back(exec.order_id);
         }
 
-        result = db_->delete_stale_executions(order_ids, date, strategy_id_, "trading.executions");
+        result = db_->delete_stale_executions_scoped(order_ids,date,strategy_id_,explicit_strategy_name_.empty()?strategy_id_:explicit_strategy_name_,
+            portfolio_id_,"trading.executions",portfolio_type_);
         if (result.is_error()) {
+        if (portfolio_type_ != "system" || !explicit_strategy_name_.empty()) return result;
             WARN("Failed to delete stale executions: " + std::string(result.error()->what()));
         }
     }
@@ -152,6 +164,11 @@ Result<void> LiveResultsManager::save_positions_snapshot(const Timestamp& date) 
     INFO("Saving " + std::to_string(positions_.size()) + " positions");
 
     // Use base class method which routes to appropriate storage
+    if(!explicit_strategy_name_.empty()) {
+        auto rows=positions_;
+        for(auto& row:rows) row.last_update=date;
+        return db_->store_positions(rows,strategy_id_,explicit_strategy_name_,portfolio_id_,"trading.positions",portfolio_type_);
+    }
     return save_positions(positions_, strategy_id_, date);
 }
 
@@ -169,6 +186,8 @@ Result<void> LiveResultsManager::save_executions_batch(const Timestamp& date) {
     INFO("Saving " + std::to_string(executions_.size()) + " executions");
 
     // Use base class method which routes to appropriate storage
+    if(!explicit_strategy_name_.empty())
+        return db_->store_executions(executions_,strategy_id_,explicit_strategy_name_,portfolio_id_,"trading.executions",portfolio_type_);
     return save_executions(executions_, strategy_id_, date);
 }
 
@@ -186,6 +205,8 @@ Result<void> LiveResultsManager::save_signals_snapshot(const Timestamp& date) {
     INFO("Saving " + std::to_string(signals_.size()) + " signals");
 
     // Use base class method which routes to appropriate storage
+    if(!explicit_strategy_name_.empty())
+        return db_->store_signals(signals_,strategy_id_,explicit_strategy_name_,portfolio_id_,date,"trading.signals");
     return save_signals(signals_, strategy_id_, date);
 }
 
@@ -214,8 +235,9 @@ Result<void> LiveResultsManager::save_live_results(const Timestamp& date) {
     // Use the new database extension method - pass portfolio_id_ for proper storage
     auto result =
         db_->store_live_results_complete(strategy_id_, date, double_metrics_, int_metrics_, config_,
-                                         portfolio_id_, "trading.live_results");
+                                         portfolio_id_, "trading.live_results",portfolio_type_);
     if (result.is_error()) {
+        if (portfolio_type_ != "system" || !explicit_strategy_name_.empty()) return result;
         ERROR("store_live_results_complete FAILED: " + std::string(result.error()->what()));
     } else {
         INFO("store_live_results_complete succeeded for " + strategy_id_);
@@ -244,31 +266,59 @@ Result<void> LiveResultsManager::save_equity_curve(const Timestamp& date) {
              "value");
 
         // Try to get the most recent valid equity value (>= 1000) for THIS PORTFOLIO
+        auto quoted = [](const std::string& value) {
+            std::string out="'";
+            for(char c:value) { if(c=='\'') out+='\''; out+=c; }
+            return out+"'";
+        };
+        const auto date_time = std::chrono::system_clock::to_time_t(date);
+        std::ostringstream day;
+        day << std::put_time(std::gmtime(&date_time),"%Y-%m-%d %H:%M:%S");
+        // Only the new explicit EQ owner path uses a UTC instant. The old
+        // default MODEL lookup retains its exact historical string semantics.
+        auto cutoff=day.str();
+        if(!explicit_strategy_name_.empty()) cutoff += "+00";
         std::string get_prev_equity_query =
             "SELECT equity FROM trading.equity_curve "
-            "WHERE strategy_id = '" +
-            strategy_id_ + "' AND portfolio_id = '" + portfolio_id_ +
-            "' "
+            "WHERE strategy_id = " + quoted(strategy_id_) +
+            " AND portfolio_id = " + quoted(portfolio_id_) +
+            " AND portfolio_type = " + quoted(portfolio_type_) +
+            " AND timestamp <= " + quoted(cutoff) + "::timestamptz " +
             "AND equity >= 1000.0 "
             "ORDER BY timestamp DESC LIMIT 1";
 
         auto prev_result = db_->execute_query(get_prev_equity_query);
         if (prev_result.is_ok() && prev_result.value()->num_rows() > 0) {
             auto table = prev_result.value();
-            auto array = std::static_pointer_cast<arrow::DoubleArray>(table->column(0)->chunk(0));
-            equity_to_save = array->Value(0);
+            auto scalar = table->column(0)->GetScalar(0);
+            if (!scalar.ok() || !scalar.ValueOrDie()->is_valid)
+                return make_error<void>(ErrorCode::INVALID_DATA,"invalid_equity_history");
+            try {
+                size_t consumed=0;
+                const auto text=scalar.ValueOrDie()->ToString();
+                equity_to_save=std::stod(text,&consumed);
+                if(consumed!=text.size() || !std::isfinite(equity_to_save) || equity_to_save<1000)
+                    return make_error<void>(ErrorCode::INVALID_DATA,"invalid_equity_history");
+            } catch(const std::exception&) {
+                return make_error<void>(ErrorCode::INVALID_DATA,"invalid_equity_history");
+            }
             INFO("Using previous equity value: " + std::to_string(equity_to_save));
         } else {
             ERROR("Cannot save equity curve: equity is invalid (" +
                   std::to_string(current_equity_) + ") and no previous valid value found");
+            if (portfolio_type_ != "system" || !explicit_strategy_name_.empty())
+                return make_error<void>(ErrorCode::INVALID_DATA,"qt_equity_history_missing");
             return Result<void>();  // Don't save invalid values
         }
     }
 
     INFO("Saving equity curve point: " + std::to_string(equity_to_save));
 
+    if(!explicit_strategy_name_.empty())
+        return db_->store_equity_trading_equity_curve(strategy_id_,date,equity_to_save,portfolio_id_);
+
     auto result = db_->store_trading_equity_curve(strategy_id_, date, equity_to_save, portfolio_id_,
-                                                  "trading.equity_curve");
+                                                  "trading.equity_curve",portfolio_type_);
 
     return result;
 }
@@ -286,7 +336,7 @@ Result<void> LiveResultsManager::update_live_results(
     INFO("Updating live results with " + std::to_string(updates.size()) + " fields");
 
     return db_->update_live_results(strategy_id_, date, updates, portfolio_id_,
-                                    "trading.live_results");
+                                    "trading.live_results",portfolio_type_);
 }
 
 Result<void> LiveResultsManager::update_equity_curve(const Timestamp& date, double equity) {
@@ -297,7 +347,7 @@ Result<void> LiveResultsManager::update_equity_curve(const Timestamp& date, doub
     INFO("Updating equity curve: " + std::to_string(equity));
 
     return db_->update_live_equity_curve(strategy_id_, date, equity, portfolio_id_,
-                                         "trading.equity_curve");
+                                         "trading.equity_curve",portfolio_type_);
 }
 
 bool LiveResultsManager::needs_finalization(const Timestamp& current_date,
@@ -311,6 +361,23 @@ bool LiveResultsManager::needs_finalization(const Timestamp& current_date,
 
     return (curr_tm.tm_year != prev_tm.tm_year || curr_tm.tm_mon != prev_tm.tm_mon ||
             curr_tm.tm_mday != prev_tm.tm_mday);
+}
+
+LiveResultsManager::LiveResultsManager(std::shared_ptr<PostgresDatabase> db,bool store_enabled,
+    const std::string& strategy_id,const std::string& portfolio_id,
+    const std::string& portfolio_type,const std::string& strategy_name)
+    :LiveResultsManager(std::move(db),store_enabled,strategy_id,portfolio_id,portfolio_type) {
+    if(portfolio_type!="system" || strategy_name.empty())
+        throw std::invalid_argument("explicit_equity_owner_requires_system_stream_and_name");
+    explicit_strategy_name_=strategy_name;
+}
+
+Result<void> LiveResultsManager::update_live_results_nullable(const Timestamp& date,
+    const std::unordered_map<std::string,double>& updates,const std::vector<std::string>& null_columns) {
+    if(!store_enabled_) return Result<void>();
+    if(explicit_strategy_name_.empty() || portfolio_type_!="system")
+        return make_error<void>(ErrorCode::INVALID_ARGUMENT,"explicit_equity_owner_required");
+    return db_->update_equity_historical_metrics(strategy_id_,portfolio_id_,date,updates,null_columns);
 }
 
 }  // namespace trade_ngin

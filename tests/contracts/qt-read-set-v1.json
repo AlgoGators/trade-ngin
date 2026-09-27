@@ -1,0 +1,555 @@
+{
+  "schema": "qt-read-set-test-v1",
+  "cases": [
+    {
+      "name": "complete_unavailable",
+      "payload": {
+        "schema_version": "qt-read-set/v1",
+        "book_id": "synthetic-book-A",
+        "source_day": "2026-09-25",
+        "source_rows": [
+          {
+            "key": {
+              "portfolio_id": "synthetic-book-A",
+              "strategy_id": "component-1",
+              "strategy_name": "synthetic-alpha",
+              "date": "2026-09-25",
+              "symbol": "SYN",
+              "portfolio_type": "qt_proposal"
+            },
+            "quantity_exact": "4",
+            "average_price_exact": "100",
+            "position_revision": null
+          }
+        ],
+        "saved_rows": [
+          {
+            "key": {
+              "portfolio_id": "synthetic-book-A",
+              "strategy_id": "component-1",
+              "strategy_name": "synthetic-alpha",
+              "date": "2026-09-25",
+              "symbol": "SYN",
+              "portfolio_type": "qt"
+            },
+            "quantity_exact": "0",
+            "average_price_exact": "100"
+          }
+        ],
+        "saved_accounting": [
+          {
+            "key": {
+              "portfolio_id": "synthetic-book-A",
+              "strategy_id": "component-1",
+              "strategy_name": "synthetic-alpha",
+              "date": "2026-09-25",
+              "symbol": "SYN",
+              "portfolio_type": "qt"
+            },
+            "quantity_exact": "0",
+            "average_price_exact": "100",
+            "daily_unrealized_pnl_exact": "1.25",
+            "daily_realized_pnl_exact": "-0.5",
+            "last_update": "2026-09-25T11:59:00Z"
+          }
+        ],
+        "system_rows": [
+          {
+            "key": {
+              "portfolio_id": "synthetic-book-A",
+              "strategy_id": "component-1",
+              "strategy_name": "synthetic-alpha",
+              "date": "2026-09-25",
+              "symbol": "SYN",
+              "portfolio_type": "system"
+            },
+            "quantity_exact": "4",
+            "average_price_exact": "100"
+          }
+        ],
+        "publication_refs": [
+          {
+            "publication_id": "10000000-0000-4000-8000-000000000001",
+            "strategy_id": "component-1",
+            "publication_version": 1,
+            "seed_digest": "a6c33d6973d6cca994a5a08a2e98a69638abb68c2d6d835803e32b25bcea6ef8",
+            "proposal_manifest_digest": "3333333333333333333333333333333333333333333333333333333333333333",
+            "producer_version": "synthetic-build-1"
+          }
+        ],
+        "audit_refs": [],
+        "draft": {
+          "status": "absent",
+          "draft_id": null,
+          "revision": 0,
+          "digest": null
+        },
+        "registry": [
+          {
+            "id": "ui-component-1",
+            "strategy_type": "component-1",
+            "portfolio_id": "synthetic-book-A",
+            "is_active": true,
+            "lifecycle": "live",
+            "updated_at": "2026-09-25T11:00:00Z"
+          }
+        ],
+        "memberships": [
+          {
+            "strategy_id": "component-1",
+            "portfolio_id": "synthetic-book-A"
+          }
+        ],
+        "capability": {
+          "status": "present",
+          "enabled": true,
+          "version": 1
+        },
+        "grants": [
+          {
+            "user_id": "101",
+            "capability": "qt_submit",
+            "active": true,
+            "version": 1
+          }
+        ],
+        "risk_limits": {
+          "status": "absent",
+          "id": null,
+          "published_at": null,
+          "content_digest": null
+        },
+        "risk_inventory": [],
+        "portfolio_inputs": {
+          "status": "absent",
+          "source_id": null,
+          "source_day": null,
+          "capital_exact": null,
+          "content_digest": null
+        },
+        "external_sources": [
+          {
+            "name": "mark",
+            "status": "unavailable",
+            "source_id": null,
+            "version": null,
+            "as_of": null,
+            "valid_until": null,
+            "digest": null,
+            "reason": "no_authoritative_versioned_source"
+          },
+          {
+            "name": "history",
+            "status": "unavailable",
+            "source_id": null,
+            "version": null,
+            "as_of": null,
+            "valid_until": null,
+            "digest": null,
+            "reason": "no_authoritative_versioned_source"
+          },
+          {
+            "name": "cost",
+            "status": "unavailable",
+            "source_id": null,
+            "version": null,
+            "as_of": null,
+            "valid_until": null,
+            "digest": null,
+            "reason": "no_authoritative_versioned_source"
+          },
+          {
+            "name": "multiplier",
+            "status": "unavailable",
+            "source_id": null,
+            "version": null,
+            "as_of": null,
+            "valid_until": null,
+            "digest": null,
+            "reason": "no_authoritative_versioned_source"
+          },
+          {
+            "name": "universe",
+            "status": "unavailable",
+            "source_id": null,
+            "version": null,
+            "as_of": null,
+            "valid_until": null,
+            "digest": null,
+            "reason": "no_authoritative_versioned_source"
+          },
+          {
+            "name": "instrument_type",
+            "status": "unavailable",
+            "source_id": null,
+            "version": null,
+            "as_of": null,
+            "valid_until": null,
+            "digest": null,
+            "reason": "no_authoritative_versioned_source"
+          },
+          {
+            "name": "quantity_rule",
+            "status": "unavailable",
+            "source_id": null,
+            "version": null,
+            "as_of": null,
+            "valid_until": null,
+            "digest": null,
+            "reason": "no_authoritative_versioned_source"
+          },
+          {
+            "name": "evaluator_policy",
+            "status": "unavailable",
+            "source_id": null,
+            "version": null,
+            "as_of": null,
+            "valid_until": null,
+            "digest": null,
+            "reason": "no_authoritative_versioned_source"
+          }
+        ],
+        "evaluator": {
+          "status": "unavailable",
+          "build": null,
+          "policy_version": null
+        },
+        "provenance": {
+          "status": "provenance_unresolved",
+          "source_digest": null,
+          "chain_digest": null,
+          "seed_digest": "a6c33d6973d6cca994a5a08a2e98a69638abb68c2d6d835803e32b25bcea6ef8"
+        }
+      },
+      "canonical_utf8": "{\"audit_refs\":[],\"book_id\":\"synthetic-book-A\",\"capability\":{\"enabled\":true,\"status\":\"present\",\"version\":1},\"draft\":{\"digest\":null,\"draft_id\":null,\"revision\":0,\"status\":\"absent\"},\"evaluator\":{\"build\":null,\"policy_version\":null,\"status\":\"unavailable\"},\"external_sources\":[{\"as_of\":null,\"digest\":null,\"name\":\"cost\",\"reason\":\"no_authoritative_versioned_source\",\"source_id\":null,\"status\":\"unavailable\",\"valid_until\":null,\"version\":null},{\"as_of\":null,\"digest\":null,\"name\":\"evaluator_policy\",\"reason\":\"no_authoritative_versioned_source\",\"source_id\":null,\"status\":\"unavailable\",\"valid_until\":null,\"version\":null},{\"as_of\":null,\"digest\":null,\"name\":\"history\",\"reason\":\"no_authoritative_versioned_source\",\"source_id\":null,\"status\":\"unavailable\",\"valid_until\":null,\"version\":null},{\"as_of\":null,\"digest\":null,\"name\":\"instrument_type\",\"reason\":\"no_authoritative_versioned_source\",\"source_id\":null,\"status\":\"unavailable\",\"valid_until\":null,\"version\":null},{\"as_of\":null,\"digest\":null,\"name\":\"mark\",\"reason\":\"no_authoritative_versioned_source\",\"source_id\":null,\"status\":\"unavailable\",\"valid_until\":null,\"version\":null},{\"as_of\":null,\"digest\":null,\"name\":\"multiplier\",\"reason\":\"no_authoritative_versioned_source\",\"source_id\":null,\"status\":\"unavailable\",\"valid_until\":null,\"version\":null},{\"as_of\":null,\"digest\":null,\"name\":\"quantity_rule\",\"reason\":\"no_authoritative_versioned_source\",\"source_id\":null,\"status\":\"unavailable\",\"valid_until\":null,\"version\":null},{\"as_of\":null,\"digest\":null,\"name\":\"universe\",\"reason\":\"no_authoritative_versioned_source\",\"source_id\":null,\"status\":\"unavailable\",\"valid_until\":null,\"version\":null}],\"grants\":[{\"active\":true,\"capability\":\"qt_submit\",\"user_id\":\"101\",\"version\":1}],\"memberships\":[{\"portfolio_id\":\"synthetic-book-A\",\"strategy_id\":\"component-1\"}],\"portfolio_inputs\":{\"capital_exact\":null,\"content_digest\":null,\"source_day\":null,\"source_id\":null,\"status\":\"absent\"},\"provenance\":{\"chain_digest\":null,\"seed_digest\":\"a6c33d6973d6cca994a5a08a2e98a69638abb68c2d6d835803e32b25bcea6ef8\",\"source_digest\":null,\"status\":\"provenance_unresolved\"},\"publication_refs\":[{\"producer_version\":\"synthetic-build-1\",\"proposal_manifest_digest\":\"3333333333333333333333333333333333333333333333333333333333333333\",\"publication_id\":\"10000000-0000-4000-8000-000000000001\",\"publication_version\":1,\"seed_digest\":\"a6c33d6973d6cca994a5a08a2e98a69638abb68c2d6d835803e32b25bcea6ef8\",\"strategy_id\":\"component-1\"}],\"registry\":[{\"id\":\"ui-component-1\",\"is_active\":true,\"lifecycle\":\"live\",\"portfolio_id\":\"synthetic-book-A\",\"strategy_type\":\"component-1\",\"updated_at\":\"2026-09-25T11:00:00Z\"}],\"risk_inventory\":[],\"risk_limits\":{\"content_digest\":null,\"id\":null,\"published_at\":null,\"status\":\"absent\"},\"saved_accounting\":[{\"average_price_exact\":\"100\",\"daily_realized_pnl_exact\":\"-0.5\",\"daily_unrealized_pnl_exact\":\"1.25\",\"key\":{\"date\":\"2026-09-25\",\"portfolio_id\":\"synthetic-book-A\",\"portfolio_type\":\"qt\",\"strategy_id\":\"component-1\",\"strategy_name\":\"synthetic-alpha\",\"symbol\":\"SYN\"},\"last_update\":\"2026-09-25T11:59:00Z\",\"quantity_exact\":\"0\"}],\"saved_rows\":[{\"average_price_exact\":\"100\",\"key\":{\"date\":\"2026-09-25\",\"portfolio_id\":\"synthetic-book-A\",\"portfolio_type\":\"qt\",\"strategy_id\":\"component-1\",\"strategy_name\":\"synthetic-alpha\",\"symbol\":\"SYN\"},\"quantity_exact\":\"0\"}],\"schema_version\":\"qt-read-set/v1\",\"source_day\":\"2026-09-25\",\"source_rows\":[{\"average_price_exact\":\"100\",\"key\":{\"date\":\"2026-09-25\",\"portfolio_id\":\"synthetic-book-A\",\"portfolio_type\":\"qt_proposal\",\"strategy_id\":\"component-1\",\"strategy_name\":\"synthetic-alpha\",\"symbol\":\"SYN\"},\"position_revision\":null,\"quantity_exact\":\"4\"}],\"system_rows\":[{\"average_price_exact\":\"100\",\"key\":{\"date\":\"2026-09-25\",\"portfolio_id\":\"synthetic-book-A\",\"portfolio_type\":\"system\",\"strategy_id\":\"component-1\",\"strategy_name\":\"synthetic-alpha\",\"symbol\":\"SYN\"},\"quantity_exact\":\"4\"}]}",
+      "sha256": "abd42e349353343706b54bfae9d2c7e6d5c9b0029ab1c98d08c82ba31493d938",
+      "byte_count": 3804
+    },
+    {
+      "name": "complete_available",
+      "payload": {
+        "schema_version": "qt-read-set/v1",
+        "book_id": "synthetic-book-A",
+        "source_day": "2026-09-25",
+        "source_rows": [
+          {
+            "key": {
+              "portfolio_id": "synthetic-book-A",
+              "strategy_id": "component-1",
+              "strategy_name": "synthetic-alpha",
+              "date": "2026-09-25",
+              "symbol": "SYN",
+              "portfolio_type": "qt_proposal"
+            },
+            "quantity_exact": "4",
+            "average_price_exact": "100",
+            "position_revision": "10000000-0000-4000-8000-000000000009"
+          },
+          {
+            "key": {
+              "portfolio_id": "synthetic-book-A",
+              "strategy_id": "component-2",
+              "strategy_name": "策略 α",
+              "date": "2026-09-25",
+              "symbol": "ÉQ",
+              "portfolio_type": "qt_proposal"
+            },
+            "quantity_exact": "-1.125",
+            "average_price_exact": "9.00000001",
+            "position_revision": "10000000-0000-4000-8000-000000000009"
+          }
+        ],
+        "saved_rows": [
+          {
+            "key": {
+              "portfolio_id": "synthetic-book-A",
+              "strategy_id": "component-1",
+              "strategy_name": "synthetic-alpha",
+              "date": "2026-09-25",
+              "symbol": "SYN",
+              "portfolio_type": "qt"
+            },
+            "quantity_exact": "0",
+            "average_price_exact": "100"
+          },
+          {
+            "key": {
+              "portfolio_id": "synthetic-book-A",
+              "strategy_id": "component-2",
+              "strategy_name": "策略 α",
+              "date": "2026-09-25",
+              "symbol": "ÉQ",
+              "portfolio_type": "qt"
+            },
+            "quantity_exact": "-1.125",
+            "average_price_exact": "9.00000001"
+          }
+        ],
+        "saved_accounting": [
+          {
+            "key": {
+              "portfolio_id": "synthetic-book-A",
+              "strategy_id": "component-1",
+              "strategy_name": "synthetic-alpha",
+              "date": "2026-09-25",
+              "symbol": "SYN",
+              "portfolio_type": "qt"
+            },
+            "quantity_exact": "0",
+            "average_price_exact": "100",
+            "daily_unrealized_pnl_exact": "1.25",
+            "daily_realized_pnl_exact": "-0.5",
+            "last_update": "2026-09-25T11:59:00Z"
+          },
+          {
+            "key": {
+              "portfolio_id": "synthetic-book-A",
+              "strategy_id": "component-2",
+              "strategy_name": "策略 α",
+              "date": "2026-09-25",
+              "symbol": "ÉQ",
+              "portfolio_type": "qt"
+            },
+            "quantity_exact": "-1.125",
+            "average_price_exact": "9.00000001",
+            "daily_unrealized_pnl_exact": "1.25",
+            "daily_realized_pnl_exact": "-0.5",
+            "last_update": "2026-09-25T11:59:00Z"
+          }
+        ],
+        "system_rows": [
+          {
+            "key": {
+              "portfolio_id": "synthetic-book-A",
+              "strategy_id": "component-1",
+              "strategy_name": "synthetic-alpha",
+              "date": "2026-09-25",
+              "symbol": "SYN",
+              "portfolio_type": "system"
+            },
+            "quantity_exact": "4",
+            "average_price_exact": "100"
+          },
+          {
+            "key": {
+              "portfolio_id": "synthetic-book-A",
+              "strategy_id": "component-2",
+              "strategy_name": "策略 α",
+              "date": "2026-09-25",
+              "symbol": "ÉQ",
+              "portfolio_type": "system"
+            },
+            "quantity_exact": "-1.125",
+            "average_price_exact": "9.00000001"
+          }
+        ],
+        "publication_refs": [
+          {
+            "publication_id": "10000000-0000-4000-8000-000000000001",
+            "strategy_id": "component-1",
+            "publication_version": 1,
+            "seed_digest": "a6c33d6973d6cca994a5a08a2e98a69638abb68c2d6d835803e32b25bcea6ef8",
+            "proposal_manifest_digest": "3333333333333333333333333333333333333333333333333333333333333333",
+            "producer_version": "synthetic-build-1"
+          }
+        ],
+        "audit_refs": [
+          {
+            "id": 2,
+            "user_id": "103",
+            "source_app": "algolens",
+            "strategy_id": "component-1",
+            "symbol": "SYN",
+            "before_digest": "5555555555555555555555555555555555555555555555555555555555555555",
+            "after_digest": "6666666666666666666666666666666666666666666666666666666666666666"
+          },
+          {
+            "id": 1,
+            "user_id": "102",
+            "source_app": "algolens",
+            "strategy_id": "component-1",
+            "symbol": "SYN",
+            "before_digest": "5555555555555555555555555555555555555555555555555555555555555555",
+            "after_digest": "6666666666666666666666666666666666666666666666666666666666666666"
+          }
+        ],
+        "draft": {
+          "status": "present",
+          "draft_id": "10000000-0000-4000-8000-000000000010",
+          "revision": 2,
+          "digest": "4444444444444444444444444444444444444444444444444444444444444444"
+        },
+        "registry": [
+          {
+            "id": "ui-component-1",
+            "strategy_type": "component-1",
+            "portfolio_id": "synthetic-book-A",
+            "is_active": true,
+            "lifecycle": "live",
+            "updated_at": "2026-09-25T11:00:00Z"
+          },
+          {
+            "id": "ui-component-2",
+            "strategy_type": "component-2",
+            "portfolio_id": "synthetic-book-A",
+            "is_active": true,
+            "lifecycle": "live",
+            "updated_at": "2026-09-25T11:00:00.123456Z"
+          }
+        ],
+        "memberships": [
+          {
+            "strategy_id": "component-1",
+            "portfolio_id": "synthetic-book-A"
+          },
+          {
+            "strategy_id": "component-2",
+            "portfolio_id": "synthetic-book-A"
+          }
+        ],
+        "capability": {
+          "status": "present",
+          "enabled": true,
+          "version": 1
+        },
+        "grants": [
+          {
+            "user_id": "101",
+            "capability": "qt_submit",
+            "active": true,
+            "version": 1
+          },
+          {
+            "user_id": "202",
+            "capability": "qt_approve",
+            "active": true,
+            "version": 2
+          }
+        ],
+        "risk_limits": {
+          "status": "present",
+          "id": 9,
+          "published_at": "2026-09-25T11:59:00.000001Z",
+          "content_digest": "7777777777777777777777777777777777777777777777777777777777777777"
+        },
+        "risk_inventory": [
+          {
+            "id": 10,
+            "strategy_id": "component-1",
+            "published_at": "2026-09-25T11:59:00Z",
+            "content_digest": "8888888888888888888888888888888888888888888888888888888888888888"
+          },
+          {
+            "id": 9,
+            "strategy_id": "component-1",
+            "published_at": "2026-09-25T11:59:00Z",
+            "content_digest": "8888888888888888888888888888888888888888888888888888888888888888"
+          }
+        ],
+        "portfolio_inputs": {
+          "status": "present",
+          "source_id": "qt_evaluation_snapshots:9",
+          "source_day": "2026-09-25",
+          "capital_exact": "1000000.25",
+          "content_digest": "9999999999999999999999999999999999999999999999999999999999999999"
+        },
+        "external_sources": [
+          {
+            "name": "mark",
+            "status": "available",
+            "source_id": "qt_evaluation_snapshots:9",
+            "version": "source-v2",
+            "as_of": "2026-09-25T11:59:00.000001Z",
+            "valid_until": "2026-09-25T12:01:00Z",
+            "digest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "reason": null
+          },
+          {
+            "name": "history",
+            "status": "available",
+            "source_id": "qt_evaluation_snapshots:9",
+            "version": "source-v2",
+            "as_of": "2026-09-25T11:59:00.000001Z",
+            "valid_until": "2026-09-25T12:01:00Z",
+            "digest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "reason": null
+          },
+          {
+            "name": "cost",
+            "status": "available",
+            "source_id": "qt_evaluation_snapshots:9",
+            "version": "source-v2",
+            "as_of": "2026-09-25T11:59:00.000001Z",
+            "valid_until": "2026-09-25T12:01:00Z",
+            "digest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "reason": null
+          },
+          {
+            "name": "multiplier",
+            "status": "available",
+            "source_id": "qt_evaluation_snapshots:9",
+            "version": "source-v2",
+            "as_of": "2026-09-25T11:59:00.000001Z",
+            "valid_until": "2026-09-25T12:01:00Z",
+            "digest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "reason": null
+          },
+          {
+            "name": "universe",
+            "status": "available",
+            "source_id": "qt_evaluation_snapshots:9",
+            "version": "source-v2",
+            "as_of": "2026-09-25T11:59:00.000001Z",
+            "valid_until": "2026-09-25T12:01:00Z",
+            "digest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "reason": null
+          },
+          {
+            "name": "instrument_type",
+            "status": "available",
+            "source_id": "qt_evaluation_snapshots:9",
+            "version": "source-v2",
+            "as_of": "2026-09-25T11:59:00.000001Z",
+            "valid_until": "2026-09-25T12:01:00Z",
+            "digest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "reason": null
+          },
+          {
+            "name": "quantity_rule",
+            "status": "available",
+            "source_id": "qt_evaluation_snapshots:9",
+            "version": "source-v2",
+            "as_of": "2026-09-25T11:59:00.000001Z",
+            "valid_until": "2026-09-25T12:01:00Z",
+            "digest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "reason": null
+          },
+          {
+            "name": "evaluator_policy",
+            "status": "available",
+            "source_id": "qt_evaluation_snapshots:9",
+            "version": "source-v2",
+            "as_of": "2026-09-25T11:59:00.000001Z",
+            "valid_until": "2026-09-25T12:01:00Z",
+            "digest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "reason": null
+          }
+        ],
+        "evaluator": {
+          "status": "available",
+          "build": "synthetic-build-α",
+          "policy_version": "policy-v2"
+        },
+        "provenance": {
+          "status": "ready",
+          "source_digest": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "chain_digest": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+          "seed_digest": "a6c33d6973d6cca994a5a08a2e98a69638abb68c2d6d835803e32b25bcea6ef8"
+        }
+      },
+      "canonical_utf8": "{\"audit_refs\":[{\"after_digest\":\"6666666666666666666666666666666666666666666666666666666666666666\",\"before_digest\":\"5555555555555555555555555555555555555555555555555555555555555555\",\"id\":1,\"source_app\":\"algolens\",\"strategy_id\":\"component-1\",\"symbol\":\"SYN\",\"user_id\":\"102\"},{\"after_digest\":\"6666666666666666666666666666666666666666666666666666666666666666\",\"before_digest\":\"5555555555555555555555555555555555555555555555555555555555555555\",\"id\":2,\"source_app\":\"algolens\",\"strategy_id\":\"component-1\",\"symbol\":\"SYN\",\"user_id\":\"103\"}],\"book_id\":\"synthetic-book-A\",\"capability\":{\"enabled\":true,\"status\":\"present\",\"version\":1},\"draft\":{\"digest\":\"4444444444444444444444444444444444444444444444444444444444444444\",\"draft_id\":\"10000000-0000-4000-8000-000000000010\",\"revision\":2,\"status\":\"present\"},\"evaluator\":{\"build\":\"synthetic-build-α\",\"policy_version\":\"policy-v2\",\"status\":\"available\"},\"external_sources\":[{\"as_of\":\"2026-09-25T11:59:00.000001Z\",\"digest\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"name\":\"cost\",\"reason\":null,\"source_id\":\"qt_evaluation_snapshots:9\",\"status\":\"available\",\"valid_until\":\"2026-09-25T12:01:00Z\",\"version\":\"source-v2\"},{\"as_of\":\"2026-09-25T11:59:00.000001Z\",\"digest\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"name\":\"evaluator_policy\",\"reason\":null,\"source_id\":\"qt_evaluation_snapshots:9\",\"status\":\"available\",\"valid_until\":\"2026-09-25T12:01:00Z\",\"version\":\"source-v2\"},{\"as_of\":\"2026-09-25T11:59:00.000001Z\",\"digest\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"name\":\"history\",\"reason\":null,\"source_id\":\"qt_evaluation_snapshots:9\",\"status\":\"available\",\"valid_until\":\"2026-09-25T12:01:00Z\",\"version\":\"source-v2\"},{\"as_of\":\"2026-09-25T11:59:00.000001Z\",\"digest\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"name\":\"instrument_type\",\"reason\":null,\"source_id\":\"qt_evaluation_snapshots:9\",\"status\":\"available\",\"valid_until\":\"2026-09-25T12:01:00Z\",\"version\":\"source-v2\"},{\"as_of\":\"2026-09-25T11:59:00.000001Z\",\"digest\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"name\":\"mark\",\"reason\":null,\"source_id\":\"qt_evaluation_snapshots:9\",\"status\":\"available\",\"valid_until\":\"2026-09-25T12:01:00Z\",\"version\":\"source-v2\"},{\"as_of\":\"2026-09-25T11:59:00.000001Z\",\"digest\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"name\":\"multiplier\",\"reason\":null,\"source_id\":\"qt_evaluation_snapshots:9\",\"status\":\"available\",\"valid_until\":\"2026-09-25T12:01:00Z\",\"version\":\"source-v2\"},{\"as_of\":\"2026-09-25T11:59:00.000001Z\",\"digest\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"name\":\"quantity_rule\",\"reason\":null,\"source_id\":\"qt_evaluation_snapshots:9\",\"status\":\"available\",\"valid_until\":\"2026-09-25T12:01:00Z\",\"version\":\"source-v2\"},{\"as_of\":\"2026-09-25T11:59:00.000001Z\",\"digest\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"name\":\"universe\",\"reason\":null,\"source_id\":\"qt_evaluation_snapshots:9\",\"status\":\"available\",\"valid_until\":\"2026-09-25T12:01:00Z\",\"version\":\"source-v2\"}],\"grants\":[{\"active\":true,\"capability\":\"qt_submit\",\"user_id\":\"101\",\"version\":1},{\"active\":true,\"capability\":\"qt_approve\",\"user_id\":\"202\",\"version\":2}],\"memberships\":[{\"portfolio_id\":\"synthetic-book-A\",\"strategy_id\":\"component-1\"},{\"portfolio_id\":\"synthetic-book-A\",\"strategy_id\":\"component-2\"}],\"portfolio_inputs\":{\"capital_exact\":\"1000000.25\",\"content_digest\":\"9999999999999999999999999999999999999999999999999999999999999999\",\"source_day\":\"2026-09-25\",\"source_id\":\"qt_evaluation_snapshots:9\",\"status\":\"present\"},\"provenance\":{\"chain_digest\":\"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc\",\"seed_digest\":\"a6c33d6973d6cca994a5a08a2e98a69638abb68c2d6d835803e32b25bcea6ef8\",\"source_digest\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"status\":\"ready\"},\"publication_refs\":[{\"producer_version\":\"synthetic-build-1\",\"proposal_manifest_digest\":\"3333333333333333333333333333333333333333333333333333333333333333\",\"publication_id\":\"10000000-0000-4000-8000-000000000001\",\"publication_version\":1,\"seed_digest\":\"a6c33d6973d6cca994a5a08a2e98a69638abb68c2d6d835803e32b25bcea6ef8\",\"strategy_id\":\"component-1\"}],\"registry\":[{\"id\":\"ui-component-1\",\"is_active\":true,\"lifecycle\":\"live\",\"portfolio_id\":\"synthetic-book-A\",\"strategy_type\":\"component-1\",\"updated_at\":\"2026-09-25T11:00:00Z\"},{\"id\":\"ui-component-2\",\"is_active\":true,\"lifecycle\":\"live\",\"portfolio_id\":\"synthetic-book-A\",\"strategy_type\":\"component-2\",\"updated_at\":\"2026-09-25T11:00:00.123456Z\"}],\"risk_inventory\":[{\"content_digest\":\"8888888888888888888888888888888888888888888888888888888888888888\",\"id\":9,\"published_at\":\"2026-09-25T11:59:00Z\",\"strategy_id\":\"component-1\"},{\"content_digest\":\"8888888888888888888888888888888888888888888888888888888888888888\",\"id\":10,\"published_at\":\"2026-09-25T11:59:00Z\",\"strategy_id\":\"component-1\"}],\"risk_limits\":{\"content_digest\":\"7777777777777777777777777777777777777777777777777777777777777777\",\"id\":9,\"published_at\":\"2026-09-25T11:59:00.000001Z\",\"status\":\"present\"},\"saved_accounting\":[{\"average_price_exact\":\"100\",\"daily_realized_pnl_exact\":\"-0.5\",\"daily_unrealized_pnl_exact\":\"1.25\",\"key\":{\"date\":\"2026-09-25\",\"portfolio_id\":\"synthetic-book-A\",\"portfolio_type\":\"qt\",\"strategy_id\":\"component-1\",\"strategy_name\":\"synthetic-alpha\",\"symbol\":\"SYN\"},\"last_update\":\"2026-09-25T11:59:00Z\",\"quantity_exact\":\"0\"},{\"average_price_exact\":\"9.00000001\",\"daily_realized_pnl_exact\":\"-0.5\",\"daily_unrealized_pnl_exact\":\"1.25\",\"key\":{\"date\":\"2026-09-25\",\"portfolio_id\":\"synthetic-book-A\",\"portfolio_type\":\"qt\",\"strategy_id\":\"component-2\",\"strategy_name\":\"策略 α\",\"symbol\":\"ÉQ\"},\"last_update\":\"2026-09-25T11:59:00Z\",\"quantity_exact\":\"-1.125\"}],\"saved_rows\":[{\"average_price_exact\":\"100\",\"key\":{\"date\":\"2026-09-25\",\"portfolio_id\":\"synthetic-book-A\",\"portfolio_type\":\"qt\",\"strategy_id\":\"component-1\",\"strategy_name\":\"synthetic-alpha\",\"symbol\":\"SYN\"},\"quantity_exact\":\"0\"},{\"average_price_exact\":\"9.00000001\",\"key\":{\"date\":\"2026-09-25\",\"portfolio_id\":\"synthetic-book-A\",\"portfolio_type\":\"qt\",\"strategy_id\":\"component-2\",\"strategy_name\":\"策略 α\",\"symbol\":\"ÉQ\"},\"quantity_exact\":\"-1.125\"}],\"schema_version\":\"qt-read-set/v1\",\"source_day\":\"2026-09-25\",\"source_rows\":[{\"average_price_exact\":\"100\",\"key\":{\"date\":\"2026-09-25\",\"portfolio_id\":\"synthetic-book-A\",\"portfolio_type\":\"qt_proposal\",\"strategy_id\":\"component-1\",\"strategy_name\":\"synthetic-alpha\",\"symbol\":\"SYN\"},\"position_revision\":\"10000000-0000-4000-8000-000000000009\",\"quantity_exact\":\"4\"},{\"average_price_exact\":\"9.00000001\",\"key\":{\"date\":\"2026-09-25\",\"portfolio_id\":\"synthetic-book-A\",\"portfolio_type\":\"qt_proposal\",\"strategy_id\":\"component-2\",\"strategy_name\":\"策略 α\",\"symbol\":\"ÉQ\"},\"position_revision\":\"10000000-0000-4000-8000-000000000009\",\"quantity_exact\":\"-1.125\"}],\"system_rows\":[{\"average_price_exact\":\"100\",\"key\":{\"date\":\"2026-09-25\",\"portfolio_id\":\"synthetic-book-A\",\"portfolio_type\":\"system\",\"strategy_id\":\"component-1\",\"strategy_name\":\"synthetic-alpha\",\"symbol\":\"SYN\"},\"quantity_exact\":\"4\"},{\"average_price_exact\":\"9.00000001\",\"key\":{\"date\":\"2026-09-25\",\"portfolio_id\":\"synthetic-book-A\",\"portfolio_type\":\"system\",\"strategy_id\":\"component-2\",\"strategy_name\":\"策略 α\",\"symbol\":\"ÉQ\"},\"quantity_exact\":\"-1.125\"}]}",
+      "sha256": "8e2984bf7a3f44865cfacb69cad237d5933b53ed21668bfeab14ce8363bd4d87",
+      "byte_count": 7250
+    }
+  ]
+}

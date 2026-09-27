@@ -237,6 +237,11 @@ public:
                                                             const std::string& portfolio_id,
                                                             const Timestamp& date);
 
+    // Full owner/UTC-day/system scope is mandatory for actual equity commission reporting.
+    Result<std::unordered_map<std::string,double>> load_commissions_by_symbol(
+        const std::string& strategy_id,const std::string& strategy_name,
+        const std::string& portfolio_id,const Timestamp& date);
+
     // ========== Commission Methods ==========
 
     // Note: load_commissions_by_symbol was deleted - it was dead code that referenced

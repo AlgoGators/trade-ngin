@@ -8,10 +8,58 @@
 #include <gtest/gtest.h>
 #include <chrono>
 #include <memory>
+#include <limits>
 #include "trade_ngin/data/postgres_database.hpp"
 #include "trade_ngin/live/live_data_loader.hpp"
 
 using namespace trade_ngin;
+
+namespace {
+class QueryResultDb : public PostgresDatabase {
+public:
+    std::shared_ptr<arrow::Table> table;
+    QueryResultDb():PostgresDatabase("mock://query-result") {}
+    bool is_connected() const override {return true;}
+    Result<std::shared_ptr<arrow::Table>> execute_query(const std::string&) override {return table;}
+};
+std::shared_ptr<arrow::Table> string_cell(const std::string& value,bool null=false) {
+    arrow::StringBuilder builder;
+    if(null) EXPECT_TRUE(builder.AppendNull().ok()); else EXPECT_TRUE(builder.Append(value).ok());
+    std::shared_ptr<arrow::Array> values; EXPECT_TRUE(builder.Finish(&values).ok());
+    return arrow::Table::Make(arrow::schema({arrow::field("value",arrow::utf8())}),{values});
+}
+}
+
+TEST(LiveDataLoaderConversions, SqlUtf8AndTypedNumericValuesAreReadWithoutBufferReinterpretation) {
+    auto db=std::make_shared<QueryResultDb>();LiveDataLoader loader(db);
+    db->table=string_cell("1");
+    auto count=loader.load_total_trades_count("S","B",Timestamp{});
+    ASSERT_TRUE(count.is_ok());EXPECT_EQ(count.value(),1);
+    arrow::DoubleBuilder builder;ASSERT_TRUE(builder.Append(1234.5).ok());
+    std::shared_ptr<arrow::Array> values;ASSERT_TRUE(builder.Finish(&values).ok());
+    db->table=arrow::Table::Make(arrow::schema({arrow::field("value",arrow::float64())}),{values});
+    auto equity=loader.load_portfolio_value("S","B",Timestamp{});
+    ASSERT_TRUE(equity.is_ok());EXPECT_DOUBLE_EQ(equity.value(),1234.5);
+    db->table=string_cell("",true);
+    equity=loader.load_portfolio_value("S","B",Timestamp{});
+    ASSERT_TRUE(equity.is_ok());EXPECT_DOUBLE_EQ(equity.value(),0);
+}
+
+TEST(LiveDataLoaderConversions, MalformedNonfiniteAndInvalidCountsAreErrorsNotValidNumbers) {
+    auto db=std::make_shared<QueryResultDb>();LiveDataLoader loader(db);
+    for(const auto& value:{"garbage","12oops","NaN","Infinity","-Infinity"}) {
+        db->table=string_cell(value);
+        EXPECT_TRUE(loader.load_portfolio_value("S","B",Timestamp{}).is_error())<<value;
+        EXPECT_TRUE(loader.load_total_trades_count("S","B",Timestamp{}).is_error())<<value;
+        EXPECT_TRUE(loader.load_daily_returns_history("S","B",Timestamp{}).is_error())<<value;
+        EXPECT_TRUE(loader.load_daily_pnl_history("S","B",Timestamp{}).is_error())<<value;
+        EXPECT_TRUE(loader.load_equity_curve_history("S","B",Timestamp{}).is_error())<<value;
+    }
+    for(const auto& value:{"-1","1.5","2147483648"}) {
+        db->table=string_cell(value);
+        EXPECT_TRUE(loader.get_live_results_count("S","B").is_error())<<value;
+    }
+}
 
 class LiveDataLoaderTest : public ::testing::Test {
 protected:

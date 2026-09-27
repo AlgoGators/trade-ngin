@@ -120,6 +120,8 @@ If migration fails before commit, verify transaction rollback and keep the prior
 
 ## Task 3: Report readiness — separate from migration success
 
+The [QT-to-investor-email certification plan](2026-09-21-qt-investor-email-certification.md) expands this gate into authenticated UI/API, snapshot/CSV/HTML/MIME, data-freshness, runtime-identity, and delivery evidence. It preserves the current production-read-only restriction and distinguishes migration success from verified report content and recipient delivery.
+
 - [ ] Verify a staging edit changes only its selected book, commits history atomically, survives reseeding, and renders the intended quantity/zero closure in CSV and email HTML without sending investor mail.
 - [ ] Re-audit intended production report scopes read-only for current system/QT positions, published risk envelopes, registry membership, live-result and market/metadata dependencies.
 - [ ] Record separate outcomes: migration applied, application deployed, and reporting ready/not ready. Never infer one from another.

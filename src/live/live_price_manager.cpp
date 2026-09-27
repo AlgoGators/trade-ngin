@@ -207,4 +207,127 @@ Result<std::unordered_map<std::string, double>> LivePriceManager::get_prices(
     return Result<std::unordered_map<std::string, double>>(prices);
 }
 
+Result<void> LivePriceManager::update_from_bars(const std::vector<Bar>& bars,
+                                                const Timestamp& reference_date,
+                                                std::optional<Timestamp> t1_date) {
+    // Group bars by symbol and sort by timestamp to extract T-1 and T-2 prices
+    std::unordered_map<std::string, std::vector<Bar>> bars_by_symbol;
+    for (const auto& bar : bars) {
+        bars_by_symbol[bar.symbol].push_back(bar);
+    }
+
+    // Clear previous prices before updating
+    previous_day_prices_.clear();
+    two_days_ago_prices_.clear();
+    latest_prices_.clear();
+
+    // Calculate expected T-1 date.
+    //
+    // E2-F14: when the caller supplies t1_date it is authoritative -- it is the SAME
+    // resolved trading day the caller used to load the position book, so the price lookup
+    // and the book cannot name different days. Omitted, this is `reference_date - 24h`,
+    // which is what both futures runners compute for their own book
+    // (live_portfolio.cpp:1047, live_portfolio_conservative.cpp:1061) and therefore leaves
+    // the futures path unchanged. See the header for why a fallback here would instead
+    // double-count futures.
+    auto expected_t1_date = t1_date.has_value() ? *t1_date
+                                                : reference_date - std::chrono::hours(24);
+    auto expected_t1_date_only = std::chrono::floor<std::chrono::days>(expected_t1_date);
+
+    for (auto& [symbol, symbol_bars] : bars_by_symbol) {
+        if (!symbol_bars.empty()) {
+            // Sort by timestamp to ensure proper ordering
+            std::sort(symbol_bars.begin(), symbol_bars.end(),
+                     [](const Bar& a, const Bar& b) { return a.timestamp < b.timestamp; });
+
+            if (t1_date.has_value()) {
+                // ---- Caller-resolved T-1 (equities) -------------------------------
+                // SEARCH for the bar on the resolved trading day rather than testing
+                // back() alone. On a live run the vendor may already have posted today's
+                // bar, and a back()-only test would then reject a perfectly good Friday.
+                // T-2 is the bar immediately preceding the T-1 bar, so the pair is always
+                // two consecutive sessions of THIS symbol.
+                std::size_t t1_idx = symbol_bars.size();
+                for (std::size_t i = symbol_bars.size(); i-- > 0;) {
+                    auto d = std::chrono::floor<std::chrono::days>(symbol_bars[i].timestamp);
+                    if (d == expected_t1_date_only) { t1_idx = i; break; }
+                    if (d < expected_t1_date_only) break;  // sorted ascending: gone past it
+                }
+
+                if (t1_idx < symbol_bars.size()) {
+                    double yesterday_close = static_cast<double>(symbol_bars[t1_idx].close);
+                    previous_day_prices_[symbol] = yesterday_close;
+                    latest_prices_[symbol] = yesterday_close;
+                    DEBUG("Day T-1 close for " + symbol + ": " + std::to_string(yesterday_close) +
+                          " (caller-resolved trading day)");
+
+                    if (t1_idx >= 1) {
+                        two_days_ago_prices_[symbol] =
+                            static_cast<double>(symbol_bars[t1_idx - 1].close);
+                    } else {
+                        WARN("No T-2 bar available for " + symbol +
+                             " - T-1 is the earliest bar in the window");
+                    }
+                } else {
+                    // A genuine data gap on a real trading day, not a weekend artifact.
+                    WARN("No bar for " + symbol +
+                         " on the resolved Day T-1 trading date - finalization will skip it");
+                    latest_prices_[symbol] = static_cast<double>(symbol_bars.back().close);
+                    if (symbol_bars.size() >= 2) {
+                        two_days_ago_prices_[symbol] =
+                            static_cast<double>(symbol_bars[symbol_bars.size() - 2].close);
+                    }
+                }
+                continue;  // futures block below is deliberately not shared
+            }
+
+            // ---- Default path (futures): UNCHANGED -------------------------------
+            // CRITICAL FIX: Only use last bar as T-1 if it's ACTUALLY from Day T-1
+            // Do NOT fall back to older data - if no T-1 data exists, symbol should be skipped in finalization
+            auto last_bar_date_only = std::chrono::floor<std::chrono::days>(symbol_bars.back().timestamp);
+            if (last_bar_date_only == expected_t1_date_only) {
+                // Last bar IS from Day T-1 - use it
+                double yesterday_close = static_cast<double>(symbol_bars.back().close);
+                previous_day_prices_[symbol] = yesterday_close;
+                latest_prices_[symbol] = yesterday_close;
+
+                auto last_bar_time = std::chrono::system_clock::to_time_t(symbol_bars.back().timestamp);
+                DEBUG("Day T-1 close for " + symbol + ": " + std::to_string(yesterday_close) +
+                      " (from " + std::to_string(last_bar_time) + ")");
+            } else {
+                // Last bar is NOT from Day T-1 (e.g., agriculture futures with no Sunday trading)
+                // Do NOT add to previous_day_prices_ - this will cause finalization to skip this symbol
+                auto last_bar_time = std::chrono::system_clock::to_time_t(symbol_bars.back().timestamp);
+                WARN("Skipping T-1 price for " + symbol + " - last bar is from " +
+                     std::to_string(last_bar_time) + ", not from Day T-1 (no trading data for yesterday)");
+
+                // Still set latest_prices_ for other uses, just not previous_day_prices_
+                double latest_close = static_cast<double>(symbol_bars.back().close);
+                latest_prices_[symbol] = latest_close;
+            }
+
+            // T-2 prices can fall back to last available - this is OK because we're calculating
+            // T-1's PnL which may span multiple days if there was no T-2 trading (e.g., weekends)
+            if (symbol_bars.size() >= 2) {
+                double two_days_ago_close = static_cast<double>(symbol_bars[symbol_bars.size() - 2].close);
+                two_days_ago_prices_[symbol] = two_days_ago_close;
+                auto second_last_bar_time = std::chrono::system_clock::to_time_t(symbol_bars[symbol_bars.size() - 2].timestamp);
+                DEBUG("Day T-2 close for " + symbol + ": " + std::to_string(two_days_ago_close) +
+                      " (from " + std::to_string(second_last_bar_time) + ")");
+            } else {
+                WARN("No T-2 bar available for " + symbol + " - only " +
+                     std::to_string(symbol_bars.size()) + " bars");
+            }
+        } else {
+            WARN("No bars data available for symbol: " + symbol);
+        }
+    }
+
+    INFO("Updated prices from bars: " + std::to_string(previous_day_prices_.size()) + " Day T-1, " +
+         std::to_string(two_days_ago_prices_.size()) + " Day T-2");
+    INFO("Note: T-1 prices REQUIRE actual Day T-1 data (no fallback). T-2 prices can fall back for weekend/holiday gaps.");
+
+    return Result<void>();
+}
+
 } // namespace trade_ngin

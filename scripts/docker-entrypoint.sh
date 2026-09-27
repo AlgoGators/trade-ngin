@@ -19,7 +19,7 @@
 
 set -euo pipefail
 
-CRON_ENV=/app/.cron_env
+CRON_ENV="${CRON_ENV:-/app/.cron_env}"
 
 : > "$CRON_ENV"
 chmod 600 "$CRON_ENV"
@@ -27,7 +27,7 @@ chmod 600 "$CRON_ENV"
 # Only export what the job legitimately needs -- not the whole environment.
 while IFS='=' read -r -d '' name value; do
     case "$name" in
-        TRADING_* | DB_* | PG* | TZ | LD_LIBRARY_PATH)
+        TRADING_* | DB_* | PG* | TZ | LD_LIBRARY_PATH | QT_EMAIL_DELIVERY_ENABLED | QT_RUNTIME_CONTROL_ENABLED)
             printf 'export %s=%q\n' "$name" "$value" >> "$CRON_ENV"
             ;;
     esac

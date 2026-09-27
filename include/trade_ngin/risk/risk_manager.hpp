@@ -5,6 +5,7 @@
 #include <memory>
 #include <mutex>
 #include <nlohmann/json.hpp>
+#include <optional>
 #include <unordered_map>
 #include <vector>
 #include "trade_ngin/core/config_base.hpp"
@@ -110,6 +111,18 @@ struct RiskResult {
     double jump_multiplier{1.0};         // Jump risk multiplier
     double correlation_multiplier{1.0};  // Correlation multiplier
     double leverage_multiplier{1.0};     // Leverage multiplier
+    double portfolio_var_gate{0.0};  // Dollar-notional volatility used by the VaR gate
+};
+
+// Values read by operational risk calculations during one invocation.
+struct RiskConfigConsumption {
+    std::optional<double> var_limit;
+    std::optional<double> jump_risk_limit;
+    std::optional<double> max_correlation;
+    std::optional<double> max_gross_leverage;
+    std::optional<double> max_net_leverage;
+    std::optional<double> confidence_level;
+    std::optional<Decimal> capital;
 };
 
 /**
@@ -120,6 +133,36 @@ struct MarketData {
     std::vector<std::vector<double>> covariance;
     std::unordered_map<std::string, size_t> symbol_indices;
     std::vector<std::string> ordered_symbols;
+};
+
+// Opaque within one snapshot; no symbol parsing or registry lookup is implied.
+using RiskCalculationId = std::string;
+
+struct RiskValuationInput {
+    RiskCalculationId calculation_id;
+    double mark;
+    double price_multiplier;
+};
+
+struct RiskCloseInput {
+    RiskCalculationId calculation_id;
+    Timestamp timestamp;
+    double close;
+};
+
+class FrozenRiskSnapshot final {
+public:
+    FrozenRiskSnapshot(const FrozenRiskSnapshot&) = delete;
+    FrozenRiskSnapshot& operator=(const FrozenRiskSnapshot&) = delete;
+    ~FrozenRiskSnapshot() = default;
+
+private:
+    friend class RiskManager;
+    FrozenRiskSnapshot() = default;
+    Timestamp valuation_time_;
+    std::vector<Timestamp> observation_times_;
+    std::map<RiskCalculationId, RiskValuationInput> valuations_;
+    MarketData market_data_;
 };
 
 /**
@@ -136,7 +179,22 @@ public:
      */
     Result<RiskResult> process_positions(const std::unordered_map<std::string, Position>& positions,
                                          const MarketData& market_data,
-                                         const std::unordered_map<std::string, double>& current_prices = {});
+                                         const std::unordered_map<std::string, double>& current_prices = {},
+                                         RiskConfigConsumption* consumed_config = nullptr);
+
+    // No synthetic observations or permissive general empty-book fallback.
+    Result<RiskResult> process_empty_owner_book();
+
+    Result<std::shared_ptr<const FrozenRiskSnapshot>> make_frozen_snapshot(
+        Timestamp valuation_time,
+        const std::vector<RiskValuationInput>& valuations,
+        const std::vector<Timestamp>& expected_observation_times,
+        const std::vector<RiskCloseInput>& closes);
+
+    Result<RiskResult> process_positions_frozen(
+        const std::unordered_map<RiskCalculationId, Quantity>& quantities,
+        const FrozenRiskSnapshot& snapshot,
+        RiskConfigConsumption* consumed_config = nullptr);
 
     /**
      * @brief Update risk configuration
@@ -163,6 +221,18 @@ public:
 private:
     RiskConfig config_;
 
+    Result<void> validate_frozen_market_data(
+        const MarketData& data,
+        const std::vector<RiskCalculationId>& expected_ids,
+        size_t expected_return_rows) const;
+
+    RiskResult calculate_from_position_values(
+        const MarketData& market_data,
+        const std::vector<double>& position_values,
+        const std::vector<double>& position_values_no_multiplier,
+        double total_value,
+        RiskConfigConsumption* consumed_config = nullptr) const;
+
     /**
      * @brief Calculate position weights
      * @param positions Portfolio positions
@@ -180,7 +250,8 @@ private:
      */
     double calculate_portfolio_multiplier(const MarketData& market_data,
                                           const std::vector<double>& weights,
-                                          RiskResult& result) const;
+                                          RiskResult& result,
+                                          RiskConfigConsumption* consumed_config = nullptr) const;
 
     /**
      * @brief Calculate the jump multiplier based on position weights
@@ -190,7 +261,8 @@ private:
      * @return Jump multiplier
      */
     double calculate_jump_multiplier(const MarketData& market_data,
-                                     const std::vector<double>& weights, RiskResult& result) const;
+                                     const std::vector<double>& weights, RiskResult& result,
+                                     RiskConfigConsumption* consumed_config = nullptr) const;
 
     /**
      * @brief Calculate the correlation multiplier based on position weights
@@ -201,7 +273,8 @@ private:
      */
     double calculate_correlation_multiplier(const MarketData& market_data,
                                             const std::vector<double>& weights,
-                                            RiskResult& result) const;
+                                            RiskResult& result,
+                                            RiskConfigConsumption* consumed_config = nullptr) const;
 
     // ── Version A (ALTERNATIVE, not called) — Carver shock-portfolio multipliers ──
     // Compiled but never invoked from process_positions(). Preserved so the design
@@ -226,7 +299,8 @@ private:
     double calculate_leverage_multiplier(const MarketData& market_data,
                                          const std::vector<double>& weights, 
                                          const std::vector<double>& position_values,
-                                         double total_value, RiskResult& result) const;
+                                         double total_value, RiskResult& result,
+                                         RiskConfigConsumption* consumed_config = nullptr) const;
 
     /**
      * @brief Calculate historical returns from market data
@@ -257,7 +331,9 @@ private:
      * @param data Vector of values
      * @return Calculated percentile value
      */
-    double calculate_99th_percentile(const std::vector<double>& data) const;
+    double calculate_99th_percentile(
+        const std::vector<double>& data,
+        RiskConfigConsumption* consumed_config = nullptr) const;
 };
 
 }  // namespace trade_ngin

@@ -24,8 +24,24 @@ private:
 
     // Reference to instrument registry for point values
     InstrumentRegistry& registry_;
+    AssetType asset_type_{AssetType::FUTURE};
+    std::unordered_map<std::string,double> position_unrealized_pnl_;
 
 public:
+    enum class UnrealizedPolicy { SETTLED, MARK_TO_MARKET };
+    void set_asset_type(AssetType type) { asset_type_ = type; }
+    AssetType get_asset_type() const { return asset_type_; }
+    // Cost basis helpers used only when explicitly requested by the equity caller.
+    static double unrealized_from_cost_basis(double quantity, double average_price,
+                                             double mark_price, double point_value = 1.0) {
+        if (quantity == 0.0 || average_price <= 0.0) return 0.0;
+        return quantity * (mark_price - average_price) * point_value;
+    }
+    static double resolve_day_t_cost_basis(double strategy_basis, double carried_basis) {
+        if (strategy_basis > 0.0) return strategy_basis;
+        if (carried_basis > 0.0) return carried_basis;
+        return 0.0;
+    }
     /**
      * Constructor
      * @param initial_capital Starting capital
@@ -42,6 +58,7 @@ public:
         double finalized_portfolio_value = 0.0;
         std::unordered_map<std::string, double> position_realized_pnl;
         std::vector<Position> finalized_positions;
+        double finalized_unrealized_pnl = 0.0;
         bool success = false;
     };
 
@@ -56,6 +73,12 @@ public:
         const std::unordered_map<std::string, double>& t2_close_prices,
         double previous_portfolio_value,
         double commissions = 0.0);
+    Result<FinalizationResult> finalize_previous_day(
+        const std::vector<Position>& previous_positions,
+        const std::unordered_map<std::string,double>& t1_close_prices,
+        const std::unordered_map<std::string,double>& t2_close_prices,
+        double previous_portfolio_value, double commissions, UnrealizedPolicy policy);
+
 
     /**
      * Calculate PnL for current day positions
@@ -108,6 +131,7 @@ public:
      */
     void reset_daily_tracking() {
         position_daily_pnl_.clear();
+        position_unrealized_pnl_.clear();
         position_realized_pnl_.clear();
         cumulative_daily_pnl_ = 0.0;
     }
@@ -130,6 +154,10 @@ private:
      * Get fallback multiplier for known symbols
      * These are calculated as: minimum_price_fluctuation / tick_size
      */
+    Result<void> calculate_equity_position_pnls(const std::vector<Position>& positions,
+        const std::unordered_map<std::string,double>& current_prices,
+        const std::unordered_map<std::string,double>& previous_prices);
+
     double get_fallback_multiplier(const std::string& symbol) const;
 };
 

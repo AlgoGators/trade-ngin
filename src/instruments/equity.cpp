@@ -7,6 +7,19 @@
 
 namespace trade_ngin {
 
+std::shared_ptr<HolidayChecker> EquityInstrument::holiday_checker_ = nullptr;
+
+void EquityInstrument::set_holiday_checker(std::shared_ptr<HolidayChecker> checker) {
+    // atomic_store handles the racing-with-reads case (Phase 6 §6b).
+    std::atomic_store(&holiday_checker_, std::move(checker));
+}
+
+std::shared_ptr<HolidayChecker> EquityInstrument::get_holiday_checker() {
+    return std::atomic_load(&holiday_checker_);
+}
+
+
+
 EquityInstrument::EquityInstrument(std::string symbol, EquitySpec spec)
     : symbol_(std::move(symbol)), spec_(std::move(spec)) {}
 
@@ -26,6 +39,12 @@ bool EquityInstrument::is_market_open(const Timestamp& timestamp) const {
         // Check for weekdays only
         if (local_time->tm_wday == 0 || local_time->tm_wday == 6) {
             return false;
+        }
+
+        if (auto checker = get_holiday_checker()) {
+            char date_buf[11];
+            std::strftime(date_buf, sizeof(date_buf), "%Y-%m-%d", local_time);
+            if (checker->is_holiday(std::string(date_buf))) return false;
         }
 
         // Parse trading hours (format: "HH:MM-HH:MM")

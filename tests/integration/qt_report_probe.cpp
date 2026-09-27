@@ -17,15 +17,20 @@
 #include <unordered_set>
 #include <vector>
 
+#ifndef _WIN32
+#include <sys/stat.h>
+#endif
+
 #include <nlohmann/json.hpp>
 
-#include "trade_ngin/apps/live_portfolio_helpers.hpp"
 #include "trade_ngin/core/email_sender.hpp"
 #include "trade_ngin/data/postgres_database.hpp"
 #define private public
 #include "trade_ngin/instruments/instrument_registry.hpp"
 #include "trade_ngin/strategy/trend_following.hpp"
 #undef private
+// Include the helper after the test-only access seam: it includes both headers transitively.
+#include "trade_ngin/apps/live_portfolio_helpers.hpp"
 #include "trade_ngin/live/csv_exporter.hpp"
 
 namespace {
@@ -39,6 +44,22 @@ void fail(const std::string& message) {
 bool loopback(std::string host) {
     if (host.size() > 1 && host.front() == '[' && host.back() == ']') host = host.substr(1, host.size() - 2);
     return host == "127.0.0.1" || host == "localhost" || host == "::1";
+}
+
+bool owned_socket(const std::string& host, const std::string& database) {
+    constexpr const char* prefix = "/tmp/qt_pipeline_test_";
+    constexpr const char* suffix = "/socket";
+    if (host.rfind(prefix, 0) != 0 || host.size() <= std::char_traits<char>::length(prefix) +
+        std::char_traits<char>::length(suffix) ||
+        host.compare(host.size() - std::char_traits<char>::length(suffix),
+                     std::char_traits<char>::length(suffix), suffix) != 0) return false;
+    const auto id = host.substr(std::char_traits<char>::length(prefix),
+        host.size() - std::char_traits<char>::length(prefix) -
+        std::char_traits<char>::length(suffix));
+    if (id.size() != 12 || !std::all_of(id.begin(), id.end(), [](unsigned char c) {
+            return std::isdigit(c) || (c >= 'a' && c <= 'f');
+        })) return false;
+    return database == std::string("qt_pipeline_test_") + id;
 }
 
 std::unordered_map<std::string, std::string> conninfo_fields(const std::string& text) {
@@ -83,12 +104,17 @@ bool safe_test_dsn(const std::string& dsn, std::string& reason) {
     const auto host = fields.find("host");
     const auto hostaddr = fields.find("hostaddr");
     if (host == fields.end() && hostaddr == fields.end()) {
-        reason = "QT_PIPELINE_TEST_DSN needs an explicit loopback host";
+        reason = "QT_PIPELINE_TEST_DSN needs an explicit disposable endpoint";
         return false;
     }
-    if ((host != fields.end() && !loopback(host->second)) ||
-        (hostaddr != fields.end() && !loopback(hostaddr->second))) {
-        reason = "QT_PIPELINE_TEST_DSN endpoint must be loopback";
+    const bool unix_socket = host != fields.end() && owned_socket(host->second, database->second);
+    if (unix_socket && hostaddr != fields.end()) {
+        reason = "QT_PIPELINE_TEST_DSN Unix socket mode forbids hostaddr";
+        return false;
+    }
+    if (!unix_socket && ((host != fields.end() && !loopback(host->second)) ||
+        (hostaddr != fields.end() && !loopback(hostaddr->second)))) {
+        reason = "QT_PIPELINE_TEST_DSN endpoint must be loopback or the exact owned Unix socket";
         return false;
     }
     const auto port = fields.find("port");
@@ -96,6 +122,10 @@ bool safe_test_dsn(const std::string& dsn, std::string& reason) {
         !std::all_of(port->second.begin(), port->second.end(),
                      [](unsigned char c) { return std::isdigit(c); })) {
         reason = "QT_PIPELINE_TEST_DSN must specify a numeric loopback port";
+        return false;
+    }
+    if (unix_socket && port->second != "5432") {
+        reason = "QT_PIPELINE_TEST_DSN owned Unix socket must use port 5432";
         return false;
     }
     return true;
@@ -112,6 +142,56 @@ nlohmann::json quantities(const std::unordered_map<std::string, trade_ngin::Posi
     nlohmann::json output = nlohmann::json::object();
     for (const auto& [symbol, position] : rows) output[symbol] = position.quantity.as_double();
     return output;
+}
+
+bool snapshot_barrier(const std::filesystem::path& output_dir, std::string& reason) {
+#ifdef _WIN32
+    reason = "snapshot barrier requires POSIX FIFOs";
+    return false;
+#else
+    const char* ready_raw = std::getenv("QT_PIPELINE_READY_FIFO");
+    const char* release_raw = std::getenv("QT_PIPELINE_RELEASE_FIFO");
+    if (ready_raw == nullptr || release_raw == nullptr) {
+        reason = "snapshot barrier FIFO environment is required";
+        return false;
+    }
+    const auto safe_fifo = [&](const char* raw, const char* label)
+        -> std::optional<std::filesystem::path> {
+        const std::filesystem::path candidate(raw);
+        std::error_code error;
+        const auto parent = std::filesystem::weakly_canonical(candidate.parent_path(), error);
+        const auto expected = std::filesystem::weakly_canonical(output_dir, error);
+        if (error || parent != expected) {
+            reason = std::string(label) + " FIFO must be directly inside the output directory";
+            return std::nullopt;
+        }
+        struct stat metadata {};
+        if (::stat(candidate.c_str(), &metadata) != 0 || !S_ISFIFO(metadata.st_mode)) {
+            reason = std::string(label) + " path must be an existing POSIX FIFO";
+            return std::nullopt;
+        }
+        return candidate;
+    };
+    const auto ready = safe_fifo(ready_raw, "ready");
+    const auto release = safe_fifo(release_raw, "release");
+    if (!ready || !release) return false;
+
+    // Opening/writing the ready FIFO is the deterministic proof that the
+    // snapshot has been captured. Reading the release FIFO blocks rendering
+    // until the Python harness commits its concurrent update. No polling or
+    // sleeps are involved.
+    std::ofstream ready_stream(*ready);
+    if (!ready_stream) { reason = "could not open ready FIFO"; return false; }
+    ready_stream << "snapshot-loaded\n";
+    ready_stream.close();
+    std::ifstream release_stream(*release);
+    std::string command;
+    if (!release_stream || !std::getline(release_stream, command) || command != "render") {
+        reason = "snapshot barrier release was invalid";
+        return false;
+    }
+    return true;
+#endif
 }
 
 std::string utc_date(trade_ngin::Timestamp timestamp) {
@@ -166,9 +246,14 @@ int probe(const std::string& mode, const std::string& portfolio, const std::stri
     if (!safe_test_dsn(raw_dsn, reason)) { fail(reason); return 2; }
     if (!std::filesystem::is_directory(output_dir)) { fail("output directory does not exist"); return 2; }
 
-    // An explicit hostaddr defeats PGHOST/PGHOSTADDR environment defaults.  It is
-    // appended after validation so libpq resolves the final hostaddr to loopback.
-    const std::string constrained_dsn = std::string(raw_dsn) + " hostaddr=127.0.0.1";
+    // An explicit hostaddr defeats PGHOST/PGHOSTADDR defaults in loopback mode.
+    // Unix-socket mode forbids hostaddr and already has an exact owned path.
+    const auto fields = conninfo_fields(raw_dsn);
+    const bool unix_socket = fields.contains("host") &&
+        owned_socket(fields.at("host"), fields.at("dbname"));
+    const std::string constrained_dsn = unix_socket
+        ? std::string(raw_dsn)
+        : std::string(raw_dsn) + " hostaddr=127.0.0.1";
     trade_ngin::PostgresDatabase db(constrained_dsn);
     if (const auto connected = db.connect(); connected.is_error()) {
         fail("disposable database connection failed: " + std::string(connected.error()->what()));
@@ -192,6 +277,13 @@ int probe(const std::string& mode, const std::string& portfolio, const std::stri
     const auto snapshot = trade_ngin::load_qt_report_position_snapshot(
         db, strategy_id, strategy_names, portfolio, timestamp, system_rows);
     if (snapshot.is_error()) { fail("QT snapshot failed: " + std::string(snapshot.error()->what())); return 6; }
+    if (mode == "snapshot-barrier") {
+        std::string barrier_error;
+        if (!snapshot_barrier(output_dir, barrier_error)) {
+            fail("snapshot barrier failed: " + barrier_error);
+            return 6;
+        }
+    }
 
     const std::unordered_map<std::string, double> prices{
         {"ES.v.0", 5000.0}, {"NG.v.0", 3.0}, {"NQ.v.0", 18000.0}};
@@ -213,7 +305,8 @@ int probe(const std::string& mode, const std::string& portfolio, const std::stri
     if (!html_file) { fail("failed to write HTML output"); return 8; }
 
     std::cout << kResultTag << nlohmann::json{{"mode", mode}, {"portfolio_id", portfolio},
-        {"strategy_id", strategy_id}, {"strategy_names", strategy_names}, {"portfolio_type", "qt"},
+        {"strategy_id", strategy_id}, {"strategy_names", strategy_names},
+        {"report_date", utc_date(timestamp)}, {"portfolio_type", "qt"},
         {"by_strategy", quantities(snapshot.value().by_strategy)},
         {"combined", quantities(snapshot.value().combined)}, {"csv_path", csv.value()},
         {"email_path", html_path.string()}}.dump() << '\n';
@@ -222,9 +315,12 @@ int probe(const std::string& mode, const std::string& portfolio, const std::stri
 }  // namespace
 
 int main(int argc, char* argv[]) {
-    if (argc < 7) { fail("usage: qt_report_probe <seed|snapshot> <portfolio> <combined-strategy> <utc-epoch-seconds> <output-dir> <strategy-name>..."); return 2; }
+    if (argc < 7) { fail("usage: qt_report_probe <seed|snapshot|snapshot-barrier> <portfolio> <combined-strategy> <utc-epoch-seconds> <output-dir> <strategy-name>..."); return 2; }
     const std::string mode = argv[1];
-    if (mode != "seed" && mode != "snapshot") { fail("mode must be seed or snapshot"); return 2; }
+    if (mode != "seed" && mode != "snapshot" && mode != "snapshot-barrier") {
+        fail("mode must be seed, snapshot, or snapshot-barrier");
+        return 2;
+    }
     trade_ngin::Timestamp timestamp;
     try {
         std::size_t parsed = 0;

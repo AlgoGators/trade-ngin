@@ -7,6 +7,18 @@
 
 namespace trade_ngin {
 
+namespace {
+
+template <typename T>
+T observe_config_read(T value, std::optional<T>* observation) {
+    if (observation) {
+        *observation = value;
+    }
+    return value;
+}
+
+}  // namespace
+
 DynamicOptimizer::DynamicOptimizer(DynamicOptConfig config) : config_(std::move(config)) {
     Logger::register_component("DynamicOptimizer");
 }
@@ -46,15 +58,35 @@ Result<void> DynamicOptimizer::validate_inputs(
 Result<OptimizationResult> DynamicOptimizer::optimize(
     const std::vector<double>& current_positions, const std::vector<double>& target_positions,
     const std::vector<double>& costs, const std::vector<double>& weights_per_contract,
-    const std::vector<std::vector<double>>& covariance) const {
+    const std::vector<std::vector<double>>& covariance,
+    OptimizationTrace* trace) const {
+    if (trace) {
+        *trace = {};
+    }
+
     // First perform standard optimization
+    int performed_iterations=0;
     auto result = optimize_single_period(current_positions, target_positions, costs,
-                                         weights_per_contract, covariance);
+                                         weights_per_contract, covariance,
+                                         trace ? &trace->consumed_config : nullptr,
+                                         trace ? &performed_iterations : nullptr);
+
+    if (trace && result.is_ok()) {
+        trace->solver_positions = result.value().positions;
+        trace->solver_iterations = performed_iterations;
+    }
 
     // Apply buffering if enabled
-    if (config_.use_buffering && result.is_ok()) {
+    if (observe_config_read(config_.use_buffering,
+                            trace ? &trace->consumed_config.use_buffering : nullptr) &&
+        result.is_ok()) {
+        if (trace) {
+            trace->buffer_branch = OptimizationBufferBranch::Failed;
+        }
         result = apply_buffering(current_positions, result.value().positions, target_positions,
-                                 costs, weights_per_contract, covariance);
+                                 costs, weights_per_contract, covariance, trace);
+    } else if (trace && result.is_ok()) {
+        trace->buffer_branch = OptimizationBufferBranch::Disabled;
     }
 
     return result;
@@ -63,7 +95,12 @@ Result<OptimizationResult> DynamicOptimizer::optimize(
 Result<OptimizationResult> DynamicOptimizer::optimize_single_period(
     const std::vector<double>& current_positions, const std::vector<double>& target_positions,
     const std::vector<double>& costs, const std::vector<double>& weights_per_contract,
-    const std::vector<std::vector<double>>& covariance) const {
+    const std::vector<std::vector<double>>& covariance,
+    OptimizationConfigConsumption* consumed_config,int* performed_iterations) const {
+    if(performed_iterations)*performed_iterations=0;
+    if (consumed_config) {
+        *consumed_config = {};
+    }
     // Validate inputs
     auto validation = validate_inputs(current_positions, target_positions, costs,
                                       weights_per_contract, covariance);
@@ -115,7 +152,9 @@ Result<OptimizationResult> DynamicOptimizer::optimize_single_period(
         // Cost penalty (vectorized)
         Eigen::VectorXd trade_diff = current_best - actual_eigen;
         double cost_penalty = (trade_diff.cwiseAbs().array() * costs_eigen.array()).sum() *
-                              config_.cost_penalty_scalar;
+                              observe_config_read(config_.cost_penalty_scalar,
+                                                  consumed_config ? &consumed_config->cost_penalty_scalar
+                                                                  : nullptr);
 
         double best_tracking_error = pure_tracking_error + cost_penalty;
 
@@ -126,7 +165,11 @@ Result<OptimizationResult> DynamicOptimizer::optimize_single_period(
         Eigen::VectorXd cov_diag = cov.diagonal();
 
         // Main optimization loop - greedy coordinate descent with rank-1 updates
-        while (improved && iteration++ < config_.max_iterations) {
+        while (improved && iteration++ <
+                               observe_config_read(config_.max_iterations,
+                                                   consumed_config ? &consumed_config->max_iterations
+                                                                   : nullptr)) {
+            if(performed_iterations)++*performed_iterations;
             improved = false;
 
             // Pre-compute rank-1 base values for this iteration: O(N^2) + O(N)
@@ -137,7 +180,9 @@ Result<OptimizationResult> DynamicOptimizer::optimize_single_period(
             // Pre-compute base cost for current_best: O(N)
             trade_diff = current_best - actual_eigen;
             double base_cost = (trade_diff.cwiseAbs().array() * costs_eigen.array()).sum() *
-                               config_.cost_penalty_scalar;
+                               observe_config_read(config_.cost_penalty_scalar,
+                                                   consumed_config ? &consumed_config->cost_penalty_scalar
+                                                                   : nullptr);
 
             double proposed_err = best_tracking_error;
             int best_i = -1;
@@ -162,11 +207,16 @@ Result<OptimizationResult> DynamicOptimizer::optimize_single_period(
                 double new_trade_i = std::abs(current_best(i) + step - actual_eigen(i));
                 double new_cost =
                     base_cost + (new_trade_i - old_trade_i) * costs_eigen(i) *
-                                    config_.cost_penalty_scalar;
+                                    observe_config_read(
+                                        config_.cost_penalty_scalar,
+                                        consumed_config ? &consumed_config->cost_penalty_scalar : nullptr);
 
                 double total_err = new_pure_te + new_cost;
 
-                if (total_err + config_.convergence_threshold < proposed_err) {
+                if (total_err + observe_config_read(
+                                    config_.convergence_threshold,
+                                    consumed_config ? &consumed_config->convergence_threshold : nullptr) <
+                    proposed_err) {
                     best_i = static_cast<int>(i);
                     best_step = step;
                     proposed_err = total_err;
@@ -174,7 +224,11 @@ Result<OptimizationResult> DynamicOptimizer::optimize_single_period(
             }
 
             // If the best candidate from this pass is better than our overall best, adopt it
-            if (best_i >= 0 && proposed_err + config_.convergence_threshold < best_tracking_error) {
+            if (best_i >= 0 &&
+                proposed_err + observe_config_read(
+                                   config_.convergence_threshold,
+                                   consumed_config ? &consumed_config->convergence_threshold : nullptr) <
+                    best_tracking_error) {
                 current_best(best_i) += best_step;
                 best_tracking_error = proposed_err;
                 improved = true;
@@ -188,7 +242,9 @@ Result<OptimizationResult> DynamicOptimizer::optimize_single_period(
 
         Eigen::VectorXd final_trade_diff = current_best - actual_eigen;
         double final_cost = (final_trade_diff.cwiseAbs().array() * costs_eigen.array()).sum() *
-                            config_.cost_penalty_scalar;
+                            observe_config_read(config_.cost_penalty_scalar,
+                                                consumed_config ? &consumed_config->cost_penalty_scalar
+                                                                : nullptr);
 
         double final_err = final_pure_te + final_cost;
 
@@ -217,10 +273,14 @@ Result<OptimizationResult> DynamicOptimizer::apply_buffering(
     const std::vector<double>& current_positions, const std::vector<double>& optimized_positions,
     const std::vector<double>& target_positions, const std::vector<double>& costs,
     const std::vector<double>& weights_per_contract,
-    const std::vector<std::vector<double>>& covariance) const {
+    const std::vector<std::vector<double>>& covariance,
+    OptimizationTrace* trace) const {
     try {
         // Calculate buffer size based on risk target
-        double buffer_size = config_.buffer_size_factor * config_.tau;
+        double buffer_size =
+            observe_config_read(config_.buffer_size_factor,
+                                trace ? &trace->consumed_config.buffer_size_factor : nullptr) *
+            observe_config_read(config_.tau, trace ? &trace->consumed_config.tau : nullptr);
 
         // Calculate tracking error between current and optimized positions (pure, without costs)
         double tracking_error =
@@ -238,6 +298,10 @@ Result<OptimizationResult> DynamicOptimizer::apply_buffering(
                                                             covariance, current_cost);
 
             OptimizationResult result{current_positions, current_error, current_cost, 0, true};
+
+            if (trace) {
+                trace->buffer_branch = OptimizationBufferBranch::ReturnedPrior;
+            }
 
             return Result<OptimizationResult>(result);
         }
@@ -257,6 +321,10 @@ Result<OptimizationResult> DynamicOptimizer::apply_buffering(
             buffered_positions[i] = current_positions[i] + required_trade;
         }
 
+        if (trace) {
+            trace->continuous_buffered_positions = buffered_positions;
+        }
+
         // Convert to contract units and round to integers
         std::vector<double> final_positions(buffered_positions.size());
         for (size_t i = 0; i < buffered_positions.size(); ++i) {
@@ -272,6 +340,10 @@ Result<OptimizationResult> DynamicOptimizer::apply_buffering(
             }
         }
 
+        if (trace) {
+            trace->rounded_buffered_positions = final_positions;
+        }
+
         // Calculate final metrics
         double final_cost = calculate_cost_penalty(current_positions, final_positions, costs);
         double final_error =
@@ -280,6 +352,10 @@ Result<OptimizationResult> DynamicOptimizer::apply_buffering(
         OptimizationResult result{final_positions, final_error, final_cost,
                                   0,  // No iterations for buffering
                                   true};
+
+        if (trace) {
+            trace->buffer_branch = OptimizationBufferBranch::Applied;
+        }
 
         return Result<OptimizationResult>(result);
 

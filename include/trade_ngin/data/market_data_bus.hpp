@@ -2,6 +2,7 @@
 #pragma once
 
 #include <functional>
+#include <atomic>
 #include <memory>
 #include <mutex>
 #include <unordered_map>
@@ -54,7 +55,32 @@ struct SubscriberInfo {
  * @brief Market data event bus for distributing data to components
  */
 class MarketDataBus {
+    struct RegistrationIdentity;
 public:
+    class ScopedSubscription {
+    public:
+        // The bus must outlive its handles. Concurrent operations on one handle
+        // and callback-initiated reset/destruction are unsupported.
+        ScopedSubscription() noexcept = default;
+        ~ScopedSubscription() noexcept;
+        ScopedSubscription(ScopedSubscription&& other) noexcept;
+        ScopedSubscription& operator=(ScopedSubscription&& other) noexcept;
+        ScopedSubscription(const ScopedSubscription&) = delete;
+        ScopedSubscription& operator=(const ScopedSubscription&) = delete;
+
+        void reset() noexcept;
+        bool empty() const noexcept { return bus_ == nullptr; }
+
+    private:
+        friend class MarketDataBus;
+        MarketDataBus* bus_{nullptr};
+        std::string id_;
+        std::shared_ptr<const RegistrationIdentity> identity_;
+    };
+
+    Result<void> subscribe_scoped(const SubscriberInfo& subscriber_info,
+                                  ScopedSubscription& empty_output);
+
     /**
      * @brief Subscribe to market data events
      * @param subscriber_info Subscriber configuration
@@ -80,13 +106,13 @@ public:
      * @param enabled True to enable, false to disable
      * @note Use this during backtest data loading to prevent duplicate processing
      */
-    void set_publish_enabled(bool enabled) { publish_enabled_ = enabled; }
+    void set_publish_enabled(bool enabled) { publish_enabled_.store(enabled, std::memory_order_release); }
 
     /**
      * @brief Check if publishing is enabled
      * @return True if publishing is enabled
      */
-    bool is_publish_enabled() const { return publish_enabled_; }
+    bool is_publish_enabled() const { return publish_enabled_.load(std::memory_order_acquire); }
 
     /**
      * @brief Get singleton instance
@@ -97,18 +123,21 @@ public:
     }
 
 private:
+    friend class MarketDataBusTestPeer;
     MarketDataBus() = default;
-    bool publish_enabled_{true};  // Can be disabled during backtest data loading
+    std::atomic<bool> publish_enabled_{true};  // Can be disabled during backtest data loading
 
     struct Subscription {
         std::vector<MarketDataEventType> event_types;
         std::vector<std::string> symbols;
         MarketDataCallback callback;
         bool active{true};
+        std::shared_ptr<const RegistrationIdentity> identity;
     };
 
     std::unordered_map<std::string, Subscription> subscriptions_;
     mutable std::mutex mutex_;
+    std::atomic<void (*)() noexcept> scoped_reset_contention_hook_{nullptr};
 
     bool should_notify(const Subscription& sub, const MarketDataEvent& event) const;
 };

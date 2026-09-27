@@ -42,8 +42,13 @@ Result<void> LiveTradingCoordinator::initialize() {
         metrics_calculator_ = std::make_unique<LiveMetricsCalculator>();
 
         // Initialize LiveResultsManager
-        results_manager_ = std::make_unique<LiveResultsManager>(
-            db_, config_.store_results, config_.strategy_id, config_.portfolio_id);
+        if(config_.strategy_name.empty()) {
+            results_manager_ = std::make_unique<LiveResultsManager>(
+                db_, config_.store_results, config_.strategy_id, config_.portfolio_id);
+        } else {
+            results_manager_ = std::make_unique<LiveResultsManager>(
+                db_,config_.store_results,config_.strategy_id,config_.portfolio_id,"system",config_.strategy_name);
+        }
 
         // Initialize LivePriceManager
         price_manager_ = std::make_unique<LivePriceManager>(db_);

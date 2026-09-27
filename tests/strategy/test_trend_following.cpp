@@ -17,12 +17,62 @@
 // (no public API to add instruments without a real DB connection)
 #define private public
 #include "trade_ngin/instruments/instrument_registry.hpp"
-#undef private
-
 #include "trade_ngin/strategy/trend_following.hpp"
+#undef private
+#include "consumption_test_helpers.hpp"
 
 using namespace trade_ngin;
 using namespace trade_ngin::testing;
+
+TEST(OriginalTrendConstructorConfig, StandardNormalizesOnlyLookbacksAndHistoryAfterConstruction) {
+    TrendFollowingConfig config;
+    config.weight = 0.07;
+    config.risk_target = -0.2;
+    config.fx_rate = 1.4;
+    config.idm = 3.1;
+    config.max_symbol_concentration = 0.27;
+    config.use_position_buffering = false;
+    config.carver_buffer_floor = 0.64;
+    config.carver_buffer_position_factor = 0.13;
+    config.ema_windows = {{3, 12}, {3, 12}};
+    config.vol_lookback_short = 0;
+    config.vol_lookback_long = 0;
+    config.max_history_size = 0;
+    config.fdm = {{7, 1.7}};
+    StrategyConfig base;
+    base.capital_allocation = 100000.0;
+    base.max_leverage = 10.0;
+    base.max_drawdown = 0.5;
+    TrendFollowingStrategy strategy("STANDARD_CHARACTERIZATION", base, config, nullptr);
+    const auto& actual = strategy.trend_config_;
+    EXPECT_DOUBLE_EQ(actual.weight, 0.07);
+    EXPECT_DOUBLE_EQ(actual.risk_target, -0.2);
+    EXPECT_DOUBLE_EQ(actual.fx_rate, 1.4);
+    EXPECT_DOUBLE_EQ(actual.idm, 3.1);
+    EXPECT_DOUBLE_EQ(actual.max_symbol_concentration, 0.27);
+    EXPECT_FALSE(actual.use_position_buffering);
+    EXPECT_DOUBLE_EQ(actual.carver_buffer_floor, 0.64);
+    EXPECT_DOUBLE_EQ(actual.carver_buffer_position_factor, 0.13);
+    EXPECT_EQ(actual.ema_windows, (std::vector<std::pair<int, int>>{{3, 12}, {3, 12}}));
+    EXPECT_EQ(actual.vol_lookback_short, 22);
+    EXPECT_EQ(actual.vol_lookback_long, 88);
+    EXPECT_EQ(actual.max_history_size, 756u);
+    EXPECT_EQ(actual.fdm, (std::vector<std::pair<int, double>>{{7, 1.7}}));
+    auto initialized = strategy.initialize();
+    ASSERT_TRUE(initialized.is_error());
+    EXPECT_NE(std::string(initialized.error()->what()).find("Risk target"), std::string::npos);
+}
+
+TEST(ConstructorTrendConfigResolution, StandardPureNormalizerMatchesOriginalConstructor) {
+    TrendFollowingConfig config;
+    config.vol_lookback_short = 0;
+    config.vol_lookback_long = 0;
+    config.max_history_size = 0;
+    normalize_constructor_trend_config(config);
+    EXPECT_EQ(config.vol_lookback_short, 22);
+    EXPECT_EQ(config.vol_lookback_long, 88);
+    EXPECT_EQ(config.max_history_size, 756u);
+}
 
 class TrendFollowingTest : public TestBase {
 protected:
@@ -392,6 +442,130 @@ TEST_F(TrendFollowingTest, InvalidConfiguration) {
 }
 
 // Test signal generation and error handling for edge cases
+TEST_F(TrendFollowingTest, ConsumptionShortHistoryAndReuseThroughInterface) {
+    ASSERT_TRUE(strategy_->start().is_ok());
+    StrategyInterface& selected = *strategy_;
+    StrategyConsumptionTrace trace;
+    ASSERT_TRUE(selected.on_data(create_test_data("ES", 10, 4000.0), &trace).is_ok());
+    EXPECT_EQ(trace.profile, StrategyConsumptionProfile::Standard);
+    ASSERT_TRUE(trace.history.max_history_size.has_value());
+    EXPECT_EQ(*trace.history.max_history_size, size_t{756});
+    EXPECT_EQ(*trace.history.ema_windows, trend_config_.ema_windows);
+    EXPECT_TRUE(trace.base_risk.supported);
+    EXPECT_FALSE(trace.forecast.fdm.has_value());
+    EXPECT_FALSE(trace.sizing.risk_target.has_value());
+    EXPECT_FALSE(trace.buffering.use_position_buffering.has_value());
+
+    ASSERT_TRUE(selected.on_data({}, &trace).is_ok());
+    EXPECT_EQ(trace.profile, StrategyConsumptionProfile::Standard);
+    EXPECT_FALSE(trace.history.max_history_size.has_value());
+    EXPECT_FALSE(trace.base_risk.supported);
+}
+
+TEST_F(TrendFollowingTest, ConsumptionFullCalculationReadsNormalizedInputs) {
+    auto custom = trend_config_;
+    set_nondefault_trend_inputs(custom);
+    auto registry_ptr = std::shared_ptr<InstrumentRegistry>(&InstrumentRegistry::instance(),
+                                                            [](InstrumentRegistry*) {});
+    SignalInspectableStrategy<TrendFollowingStrategy> selected_strategy(
+        "STANDARD_CONSUMPTION", strategy_config_, custom, db_, registry_ptr);
+    SignalInspectableStrategy<TrendFollowingStrategy> plain_strategy(
+        "STANDARD_PLAIN", strategy_config_, custom, db_, registry_ptr);
+    ASSERT_TRUE(selected_strategy.initialize().is_ok());
+    ASSERT_TRUE(plain_strategy.initialize().is_ok());
+    RiskLimits live_limits = risk_limits_;
+    live_limits.max_leverage = Decimal(3.25);
+    live_limits.max_drawdown = Decimal(0.45);
+    ASSERT_TRUE(selected_strategy.update_risk_limits(live_limits).is_ok());
+    ASSERT_TRUE(plain_strategy.update_risk_limits(live_limits).is_ok());
+    ASSERT_TRUE(selected_strategy.start().is_ok());
+    ASSERT_TRUE(plain_strategy.start().is_ok());
+    StrategyInterface& selected = selected_strategy;
+    StrategyConsumptionTrace trace;
+    auto bars = create_test_data("ES", 300, 4000.0);
+    ASSERT_TRUE(selected.on_data(bars, &trace).is_ok());
+    ASSERT_TRUE(plain_strategy.on_data(bars).is_ok());
+    expect_full_strategy_consumption(trace, StrategyConsumptionProfile::Standard, 22, 88);
+    EXPECT_DOUBLE_EQ(selected_strategy.get_forecast("ES"), plain_strategy.get_forecast("ES"));
+    EXPECT_DOUBLE_EQ(selected_strategy.get_position("ES"), plain_strategy.get_position("ES"));
+    EXPECT_DOUBLE_EQ(static_cast<double>(selected_strategy.get_positions().at("ES").quantity),
+                     static_cast<double>(plain_strategy.get_positions().at("ES").quantity));
+    expect_signal_and_metrics_parity(selected_strategy, plain_strategy, "ES");
+    expect_malformed_bar_error_parity(selected, plain_strategy, bars, trace);
+    expect_safe_helper_early_returns(selected_strategy);
+    expect_full_to_short_empty_error_reset(selected, create_test_data("NQ", 5, 15000.0),
+                                           StrategyConsumptionProfile::Standard);
+}
+
+TEST_F(TrendFollowingTest, ConsumptionDisabledBufferAndMalformedReset) {
+    auto custom = trend_config_;
+    set_nondefault_trend_inputs(custom);
+    custom.use_position_buffering = false;
+    auto registry_ptr = std::shared_ptr<InstrumentRegistry>(&InstrumentRegistry::instance(),
+                                                            [](InstrumentRegistry*) {});
+    TrendFollowingStrategy selected_strategy("STANDARD_NO_BUFFER", strategy_config_, custom,
+                                             db_, registry_ptr);
+    ASSERT_TRUE(selected_strategy.initialize().is_ok());
+    ASSERT_TRUE(selected_strategy.start().is_ok());
+    StrategyInterface& selected = selected_strategy;
+    auto bars = create_test_data("ES", 100, 4000.0);
+    StrategyConsumptionTrace trace;
+    ASSERT_TRUE(selected.on_data(bars, &trace).is_ok());
+    ASSERT_TRUE(trace.buffering.use_position_buffering.has_value());
+    EXPECT_FALSE(*trace.buffering.use_position_buffering);
+    EXPECT_FALSE(trace.buffering.weight.has_value());
+    EXPECT_FALSE(trace.buffering.carver_buffer_floor.has_value());
+    EXPECT_TRUE(trace.sizing.risk_target.has_value());
+    bars.front().open = Decimal(0.0);
+    EXPECT_TRUE(selected.on_data(bars, &trace).is_error());
+    EXPECT_EQ(trace.profile, StrategyConsumptionProfile::Standard);
+    EXPECT_FALSE(trace.history.max_history_size.has_value());
+    EXPECT_FALSE(trace.base_risk.supported);
+    EXPECT_FALSE(trace.buffering.use_position_buffering.has_value());
+}
+
+TEST_F(TrendFollowingTest, ConsumptionMissingSymbolLimitRemainsAbsentAtEachReachedStage) {
+    auto custom = trend_config_;
+    set_nondefault_trend_inputs(custom);
+    auto config = strategy_config_;
+    config.position_limits.erase("ES");
+    auto registry_ptr = std::shared_ptr<InstrumentRegistry>(&InstrumentRegistry::instance(),
+                                                            [](InstrumentRegistry*) {});
+    TrendFollowingStrategy strategy("STANDARD_NO_LIMIT", config, custom, db_, registry_ptr);
+    ASSERT_TRUE(strategy.initialize().is_ok());
+    ASSERT_TRUE(strategy.start().is_ok());
+    StrategyConsumptionTrace trace;
+    ASSERT_TRUE(strategy.on_data(create_test_data("ES", 100, 4000.0), &trace).is_ok());
+    expect_missing_symbol_limit(trace);
+}
+
+TEST_F(TrendFollowingTest, ConsumptionSymbolCapsRemainKeyedThroughSizingBufferAndUpdate) {
+    auto custom = trend_config_;
+    set_nondefault_trend_inputs(custom);
+    auto config = strategy_config_;
+    config.position_limits["ES"] = 7.0;
+    config.position_limits["NQ"] = 13.0;
+    auto registry_ptr = std::shared_ptr<InstrumentRegistry>(&InstrumentRegistry::instance(),
+                                                            [](InstrumentRegistry*) {});
+    TrendFollowingStrategy strategy("STANDARD_TWO_CAPS", config, custom, db_, registry_ptr);
+    ASSERT_TRUE(strategy.initialize().is_ok());
+    ASSERT_TRUE(strategy.start().is_ok());
+    auto bars = create_test_data("ES", 100, 4000.0);
+    auto nq = create_test_data("NQ", 100, 15000.0);
+    bars.insert(bars.end(), nq.begin(), nq.end());
+    StrategyConsumptionTrace trace;
+    ASSERT_TRUE(strategy.on_data(bars, &trace).is_ok());
+    ASSERT_EQ(trace.sizing.symbol_limits.size(), size_t{2});
+    EXPECT_DOUBLE_EQ(*trace.sizing.symbol_limits.at("ES").value, 7.0);
+    EXPECT_DOUBLE_EQ(*trace.sizing.symbol_limits.at("NQ").value, 13.0);
+    ASSERT_EQ(trace.buffering.symbol_limits.size(), size_t{2});
+    EXPECT_DOUBLE_EQ(*trace.buffering.symbol_limits.at("ES").value, 7.0);
+    EXPECT_DOUBLE_EQ(*trace.buffering.symbol_limits.at("NQ").value, 13.0);
+    ASSERT_EQ(trace.position_limits.symbols.size(), size_t{2});
+    EXPECT_DOUBLE_EQ(*trace.position_limits.symbols.at("ES").value, 7.0);
+    EXPECT_DOUBLE_EQ(*trace.position_limits.symbols.at("NQ").value, 13.0);
+}
+
 TEST_F(TrendFollowingTest, SignalGeneration) {
     auto test_data = create_test_data("ES", 300, 4000.0);
 

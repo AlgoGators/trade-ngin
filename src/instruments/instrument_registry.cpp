@@ -2,6 +2,7 @@
 #include "trade_ngin/instruments/instrument_registry.hpp"
 #include "trade_ngin/instruments/contract_multiplier.hpp"
 #include <arrow/api.h>
+#include <fstream>
 #include "trade_ngin/core/logger.hpp"
 
 namespace trade_ngin {
@@ -444,6 +445,78 @@ AssetType InstrumentRegistry::string_to_asset_type(const std::string& asset_type
     } else {
         return AssetType::NONE;
     }
+}
+
+Result<void> InstrumentRegistry::load_equity_instruments(
+    const std::vector<std::string>& symbols,
+    const std::string& exchange_lookup_path) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (!initialized_) {
+        return make_error<void>(ErrorCode::NOT_INITIALIZED, "InstrumentRegistry not initialized",
+                                "InstrumentRegistry");
+    }
+
+    for(const auto& symbol:symbols) {
+        if(symbol.empty() || symbol.size()>20) return make_error<void>(ErrorCode::INVALID_ARGUMENT,"invalid equity symbol");
+        for(unsigned char c:symbol)
+            if(!std::isalnum(c) && c!='_' && c!='.' && c!='-')
+                return make_error<void>(ErrorCode::INVALID_ARGUMENT,"invalid equity symbol");
+    }
+    // Load exchange lookup table from JSON if provided
+    std::unordered_map<std::string, std::string> exchange_map;
+    if (!exchange_lookup_path.empty()) {
+        try {
+            std::ifstream file(exchange_lookup_path);
+            if (file.is_open()) {
+                nlohmann::json j;
+                file >> j;
+                for (auto& [exchange, symbols_array] : j.items()) {
+                    if (exchange.empty()) throw std::runtime_error("empty exchange lookup key");
+                    if (exchange.front() == '_') continue;  // Skip comment fields
+                    for (const auto& sym : symbols_array) {
+                        exchange_map[sym.get<std::string>()] = exchange;
+                    }
+                }
+                INFO("Loaded exchange lookup with " + std::to_string(exchange_map.size()) +
+                     " symbols from " + exchange_lookup_path);
+            } else {
+                WARN("Could not open exchange lookup file: " + exchange_lookup_path +
+                     " -- falling back to NYSE");
+            }
+        } catch (const std::exception& e) {
+            WARN("Error loading exchange lookup: " + std::string(e.what()) +
+                 " -- falling back to NYSE");
+        }
+    }
+
+    int registered = 0;
+    for (const auto& symbol : symbols) {
+        if (equities_.find(symbol)!=equities_.end()) {
+            continue;
+        }
+
+        EquitySpec spec;
+        // Determine exchange from lookup table, default to NYSE
+        auto ex_it = exchange_map.find(symbol);
+        spec.exchange = (ex_it != exchange_map.end()) ? ex_it->second : "NYSE";
+        spec.currency = "USD";
+        spec.tick_size = 0.01;
+        // Match IBKR Pro default (also used by AssetCostConfigRegistry::get_equity_default_config).
+        // Production cost path is TransactionCostManager; this default keeps the
+        // instrument-level commission accessor consistent for callers that query it.
+        spec.commission_per_share = 0.005;
+
+        auto instrument=std::make_shared<EquityInstrument>(symbol,std::move(spec));
+        equities_[symbol]=instrument;
+        instruments_[symbol]=instrument;  // Existing generic priority prefers equity; futures_ is preserved.
+        registered++;
+    }
+
+    INFO("Registered " + std::to_string(registered) + " equity instruments (" +
+         std::to_string(symbols.size()) + " total symbols, " +
+         std::to_string(symbols.size() - registered) + " already existed)");
+
+    return Result<void>();
 }
 
 }  // namespace trade_ngin

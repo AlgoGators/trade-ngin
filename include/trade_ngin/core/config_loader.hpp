@@ -163,17 +163,36 @@ struct BacktestSpecificConfig {
  */
 struct LiveSpecificConfig {
     int historical_days{300};
+    int data_staleness_tolerance_days{4};
+    int execution_price_max_staleness_days{5};
+    std::string spinoff_child_policy{"liquidate_at_first_close"};
 
+    // The actual equity entry opts in to a complete policy snapshot. Default
+    // futures callers retain their existing JSON bytes and financial behavior.
+    void record_equity_policy_snapshot() { record_equity_policy_=true; }
     nlohmann::json to_json() const {
-        nlohmann::json j;
-        j["historical_days"] = historical_days;
+        nlohmann::json j;j["historical_days"]=historical_days;
+        if(record_equity_policy_) {
+            j["data_staleness_tolerance_days"]=data_staleness_tolerance_days;
+            j["execution_price_max_staleness_days"]=execution_price_max_staleness_days;
+            j["spinoff_child_policy"]=spinoff_child_policy;
+        }
         return j;
     }
-
     void from_json(const nlohmann::json& j) {
-        if (j.contains("historical_days"))
-            historical_days = j.at("historical_days").get<int>();
+        if(j.contains("historical_days")) historical_days=j.at("historical_days").get<int>();
+        if(j.contains("data_staleness_tolerance_days")) {
+            data_staleness_tolerance_days=j.at("data_staleness_tolerance_days").get<int>();record_equity_policy_=true;
+        }
+        if(j.contains("execution_price_max_staleness_days")) {
+            execution_price_max_staleness_days=j.at("execution_price_max_staleness_days").get<int>();record_equity_policy_=true;
+        }
+        if(j.contains("spinoff_child_policy")) {
+            spinoff_child_policy=j.at("spinoff_child_policy").get<std::string>();record_equity_policy_=true;
+        }
     }
+private:
+    bool record_equity_policy_{false};
 };
 
 /**
@@ -280,7 +299,25 @@ struct AppConfig {
     nlohmann::json strategies_config;
 
     /**
-     * @brief Convert config to JSON for serialization
+     * @brief Read-only JSON pointers for a future live config editor.
+     *
+     * These paths address the full internal to_json() representation, which
+     * contains credentials and is not safe to send to an editor. A live editor
+     * must use a credential-redacted projection and enforce these prefixes;
+     * each path covers its descendants.
+     */
+    static const std::vector<std::string>& live_read_only_paths() {
+        static const std::vector<std::string> paths = {
+            "/portfolio_id", "/optimization/capital", "/optimization/version",
+            "/risk/capital", "/risk/version", "/backtest"};
+        return paths;
+    }
+
+    /**
+     * @brief Convert the full internal config to JSON for serialization.
+     *
+     * This includes database and email credentials; callers must not use it as
+     * a dashboard payload or public runtime snapshot.
      */
     nlohmann::json to_json() const {
         nlohmann::json j;
@@ -291,9 +328,16 @@ struct AppConfig {
         j["database"] = database.to_json();
         j["execution"] = execution.to_json();
         j["optimization"] = opt_config.to_json();
-        j["risk"] = risk_config.to_json();
-        j["max_drawdown"] = max_drawdown;
-        j["max_leverage"] = max_leverage;
+        auto risk = risk_config.to_json();
+        risk.erase("confidence_level");
+        risk.erase("lookback_period");
+        risk.erase("max_correlation");
+        risk["max_drawdown"] = max_drawdown;
+        risk["max_leverage"] = max_leverage;
+        j["risk"] = std::move(risk);
+        j["risk_defaults"] = {{"confidence_level", risk_config.confidence_level},
+                              {"lookback_period", risk_config.lookback_period},
+                              {"max_correlation", risk_config.max_correlation}};
         j["backtest"] = backtest.to_json();
         j["live"] = live.to_json();
         j["strategy_defaults"] = strategy_defaults.to_json();
@@ -302,6 +346,12 @@ struct AppConfig {
         return j;
     }
 };
+
+/** Credential-free inspection of typed live settings and known strategy inputs. */
+Result<nlohmann::json> project_live_config_fields(const AppConfig& config);
+
+/** Validate a pending publication projection against the projector's own catalog. */
+bool validate_live_config_projection_for_publication(const nlohmann::json& projection);
 
 /**
  * @brief Configuration loader for the new modular config system

@@ -4,10 +4,443 @@
 
 #include <fstream>
 #include <iostream>
+#include <algorithm>
+#include <cmath>
+#include <limits>
+#include <map>
+#include <new>
+#include <optional>
+#include <set>
+#include <string_view>
 
 #include "trade_ngin/core/logger.hpp"
 
 namespace trade_ngin {
+
+namespace {
+
+struct InvalidProjectionField {};
+
+using Json = nlohmann::json;
+
+Json finite_number(double value) {
+    if (!std::isfinite(value)) throw InvalidProjectionField{};
+    return value;
+}
+
+Json typed_integer(const Json& value) {
+    if (!value.is_number_integer()) throw InvalidProjectionField{};
+    if (value.is_number_unsigned()) {
+        const auto n = value.get<std::uint64_t>();
+        if (n > static_cast<std::uint64_t>(std::numeric_limits<int>::max()))
+            throw InvalidProjectionField{};
+        return static_cast<int>(n);
+    }
+    const auto n = value.get<std::int64_t>();
+    if (n < std::numeric_limits<int>::min() || n > std::numeric_limits<int>::max())
+        throw InvalidProjectionField{};
+    return static_cast<int>(n);
+}
+
+Json typed_pairs(const Json& value, bool second_integer) {
+    if (!value.is_array()) throw InvalidProjectionField{};
+    Json result = Json::array();
+    for (const auto& pair : value) {
+        if (!pair.is_array() || pair.size() != 2) throw InvalidProjectionField{};
+        Json second;
+        if (second_integer) {
+            second = typed_integer(pair.at(1));
+        } else {
+            if (!pair.at(1).is_number()) throw InvalidProjectionField{};
+            second = finite_number(pair.at(1).get<double>());
+        }
+        result.push_back(Json::array({typed_integer(pair.at(0)), second}));
+    }
+    return result;
+}
+
+std::optional<Json> supplied(const Json* source, std::string_view key,
+                             std::string_view value_type) {
+    if (source == nullptr) return std::nullopt;
+    const auto it = source->find(std::string(key));
+    if (it == source->end()) return std::nullopt;
+    const auto& value = *it;
+    if (value_type == "number") {
+        if (!value.is_number()) throw InvalidProjectionField{};
+        return finite_number(value.get<double>());
+    }
+    if (value_type == "integer") return typed_integer(value);
+    if (value_type == "boolean") {
+        if (!value.is_boolean()) throw InvalidProjectionField{};
+        return value.get<bool>();
+    }
+    if (value_type == "enum_string") {
+        if (!value.is_string()) throw InvalidProjectionField{};
+        return value.get<std::string>();
+    }
+    if (value_type == "integer_pairs" || value_type == "integer_number_pairs")
+        return typed_pairs(value, value_type == "integer_pairs");
+    throw InvalidProjectionField{};
+}
+
+void add_field(Json& fields, const std::string& path, const char* classification,
+               const char* reason, const char* condition, const char* value_type,
+               const char* unit, const char* origin, const char* state,
+               std::optional<Json> value = std::nullopt) {
+    Json field = {{"path", path}, {"scope", "exact"},
+                  {"classification", classification}, {"reason", reason},
+                  {"condition", condition}, {"value_type", value_type},
+                  {"unit", unit}, {"value_origin", origin},
+                  {"value_state", state}};
+    if (value) field["value"] = std::move(*value);
+    fields.push_back(std::move(field));
+}
+
+void member(Json& fields, const char* path, const char* classification,
+            const char* reason, const char* condition, const char* value_type,
+            const char* unit, Json value) {
+    add_field(fields, path, classification, reason, condition, value_type, unit,
+              "app_config_member", "included", std::move(value));
+}
+
+void descriptor(Json& fields, const char* path, const char* classification,
+                const char* reason, const char* condition, const char* value_type,
+                const char* unit) {
+    add_field(fields, path, classification, reason, condition, value_type, unit,
+              "not_projected", "omitted");
+}
+
+void strategy_leaf(Json& fields, const std::string& root, const Json* source,
+                   const char* key, const char* classification, const char* reason,
+                   const char* condition, const char* value_type, const char* unit) {
+    auto value = supplied(source, key, value_type);
+    add_field(fields, root + key, classification, reason, condition, value_type,
+              unit, "configured_strategy_leaf", value ? "included" : "absent_in_input",
+              std::move(value));
+}
+
+bool valid_strategy_id(const std::string& id) {
+    if (id.empty() || id.size() > 128) return false;
+    return std::all_of(id.begin(), id.end(), [](unsigned char ch) {
+        return (ch >= 'A' && ch <= 'Z') || (ch >= 'a' && ch <= 'z') ||
+               (ch >= '0' && ch <= '9') || ch == '_' || ch == '-';
+    });
+}
+
+bool known_strategy_type(const std::string& type) {
+    return type == "TrendFollowingStrategy" ||
+           type == "TrendFollowingFastStrategy" ||
+           type == "TrendFollowingSlowStrategy";
+}
+
+void add_strategy(Json& fields, const std::string& id, const Json& definition) {
+    if (!valid_strategy_id(id) || !definition.is_object()) throw InvalidProjectionField{};
+    const std::string root = "/strategies/" + id + "/";
+    const Json* params = nullptr;
+    const auto config_it = definition.find("config");
+    if (config_it != definition.end()) {
+        if (!config_it->is_object()) throw InvalidProjectionField{};
+        params = &*config_it;
+    }
+    strategy_leaf(fields, root, &definition, "enabled_live", "source_supported_config_input",
+                  "source_reader", "strategy_selection", "boolean", "flag");
+    strategy_leaf(fields, root, &definition, "default_allocation", "source_supported_config_input",
+                  "source_reader", "strategy_selection", "number", "fraction");
+    strategy_leaf(fields, root, &definition, "enabled_backtest", "unsupported_in_profile",
+                  "backtest_only", "no_active_profile_reader", "boolean", "flag");
+    auto type = supplied(&definition, "type", "enum_string");
+    if (type && !known_strategy_type(type->get<std::string>())) {
+        add_field(fields, root + "type", "unsupported_in_profile", "unknown_strategy_type",
+                  "no_active_profile_reader", "enum_string", "strategy_type",
+                  "not_projected", "omitted");
+        return;
+    }
+    add_field(fields, root + "type", "source_supported_config_input", "source_reader",
+              "strategy_dispatch", "enum_string", "strategy_type",
+              "configured_strategy_leaf", type ? "included" : "absent_in_input",
+              std::move(type));
+    const std::string cfg = root + "config/";
+    strategy_leaf(fields, cfg, params, "weight", "source_supported_config_input", "source_reader",
+                  "selected_known_strategy_buffering_enabled", "number", "multiplier");
+    strategy_leaf(fields, cfg, params, "risk_target", "source_supported_config_input",
+                  "source_reader", "selected_known_strategy", "number",
+                  "annualized_volatility_fraction");
+    strategy_leaf(fields, cfg, params, "idm", "source_supported_config_input", "source_reader",
+                  "selected_known_strategy", "number", "multiplier");
+    strategy_leaf(fields, cfg, params, "max_symbol_concentration", "source_supported_config_input",
+                  "source_reader", "selected_known_strategy", "number", "fraction");
+    strategy_leaf(fields, cfg, params, "use_position_buffering", "source_supported_config_input",
+                  "source_reader", "selected_known_strategy", "boolean", "flag");
+    strategy_leaf(fields, cfg, params, "carver_buffer_floor", "source_supported_config_input",
+                  "source_reader", "selected_known_strategy_buffering_enabled", "number", "contracts");
+    strategy_leaf(fields, cfg, params, "carver_buffer_position_factor",
+                  "source_supported_config_input", "source_reader",
+                  "selected_known_strategy_buffering_enabled", "number", "fraction");
+    strategy_leaf(fields, cfg, params, "ema_windows", "source_supported_config_input",
+                  "source_reader", "selected_known_strategy", "integer_pairs", "short_long_bar_pairs");
+    strategy_leaf(fields, cfg, params, "vol_lookback_short", "source_supported_config_input",
+                  "source_reader", "selected_known_strategy", "integer", "bar_windows");
+    strategy_leaf(fields, cfg, params, "vol_lookback_long", "source_supported_config_input",
+                  "source_reader", "selected_known_strategy", "integer", "bar_windows");
+    add_field(fields, cfg + "fx_rate", "unsupported_in_profile", "typed_member_not_input_wired",
+              "no_active_profile_reader", "number", "currency_ratio", "not_projected", "omitted");
+    add_field(fields, cfg + "max_history_size", "unsupported_in_profile",
+              "typed_member_not_input_wired", "no_active_profile_reader", "integer",
+              "bar_records", "not_projected", "omitted");
+    add_field(fields, cfg + "fdm", "unsupported_in_profile", "typed_member_not_input_wired",
+              "no_active_profile_reader", "integer_number_pairs", "rule_count_multiplier_pairs",
+              "not_projected", "omitted");
+}
+
+}  // namespace
+
+Result<nlohmann::json> project_live_config_fields(const AppConfig& config) {
+    try {
+        Json fields = Json::array();
+        descriptor(fields, "/portfolio_id", "read_only_metadata", "identity_metadata",
+                   "metadata_only", "string", "identity");
+        member(fields, "/initial_capital", "source_supported_config_input", "source_reader",
+               "source_path", "number", "account_currency", finite_number(config.initial_capital));
+        member(fields, "/reserve_capital_pct", "unsupported_in_profile", "stored_metadata_only",
+               "no_active_profile_reader", "number", "fraction",
+               finite_number(config.reserve_capital_pct));
+        if (config.benchmark_mode != "live" && config.benchmark_mode != "deferred")
+            throw InvalidProjectionField{};
+        member(fields, "/benchmark_mode", "source_supported_config_input", "source_reader",
+               "benchmark_stage", "enum_string", "mode", config.benchmark_mode);
+
+        member(fields, "/execution/commission_rate", "unsupported_in_profile",
+               "not_wired_to_futures_cost_model", "no_active_profile_reader", "number",
+               "unverified_rate", finite_number(config.execution.commission_rate));
+        member(fields, "/execution/slippage_bps", "unsupported_in_profile",
+               "not_wired_to_futures_cost_model", "no_active_profile_reader", "number",
+               "basis_points", finite_number(config.execution.slippage_bps));
+        member(fields, "/execution/position_limit_backtest", "unsupported_in_profile",
+               "backtest_only", "no_active_profile_reader", "number", "contracts",
+               finite_number(config.execution.position_limit_backtest));
+        member(fields, "/execution/position_limit_live", "source_supported_config_input",
+               "source_reader", "base_position_validation", "number", "contracts",
+               finite_number(config.execution.position_limit_live));
+
+        member(fields, "/optimization/tau", "source_supported_config_input", "source_reader",
+               "optimizer_succeeded_and_buffering_enabled", "number", "risk_scale",
+               finite_number(config.opt_config.tau));
+        member(fields, "/optimization/capital", "read_only_metadata", "derived_alias",
+               "metadata_only", "number", "account_currency", finite_number(config.opt_config.capital));
+        member(fields, "/optimization/cost_penalty_scalar", "source_supported_config_input",
+               "source_reader", "optimizer_enabled", "number", "multiplier",
+               finite_number(config.opt_config.cost_penalty_scalar));
+        member(fields, "/optimization/asymmetric_risk_buffer", "unsupported_in_profile",
+               "no_active_reader", "no_active_profile_reader", "number", "unverified_buffer_fraction",
+               finite_number(config.opt_config.asymmetric_risk_buffer));
+        member(fields, "/optimization/max_iterations", "source_supported_config_input",
+               "source_reader", "optimizer_enabled", "integer", "iterations",
+               config.opt_config.max_iterations);
+        member(fields, "/optimization/convergence_threshold", "source_supported_config_input",
+               "source_reader", "optimizer_enabled", "number", "objective_difference",
+               finite_number(config.opt_config.convergence_threshold));
+        member(fields, "/optimization/use_buffering", "source_supported_config_input",
+               "source_reader", "optimizer_enabled", "boolean", "flag", config.opt_config.use_buffering);
+        member(fields, "/optimization/buffer_size_factor", "source_supported_config_input",
+               "source_reader", "optimizer_succeeded_and_buffering_enabled", "number", "multiplier",
+               finite_number(config.opt_config.buffer_size_factor));
+        descriptor(fields, "/optimization/version", "read_only_metadata", "version_metadata",
+                   "metadata_only", "string", "config_version");
+
+        member(fields, "/risk/var_limit", "source_supported_config_input", "source_reader",
+               "risk_enabled", "number", "annualized_volatility_fraction",
+               finite_number(config.risk_config.var_limit));
+        member(fields, "/risk/jump_risk_limit", "source_supported_config_input", "source_reader",
+               "risk_enabled", "number", "fraction", finite_number(config.risk_config.jump_risk_limit));
+        member(fields, "/risk/corr_shock_threshold", "unsupported_in_profile", "inactive_alternative",
+               "no_active_profile_reader", "number", "annualized_volatility_fraction",
+               finite_number(config.risk_config.corr_shock_threshold));
+        member(fields, "/risk/jump_shock_threshold", "unsupported_in_profile", "inactive_alternative",
+               "no_active_profile_reader", "number", "annualized_volatility_fraction",
+               finite_number(config.risk_config.jump_shock_threshold));
+        member(fields, "/risk/max_gross_leverage", "source_supported_config_input", "source_reader",
+               "risk_enabled", "number", "leverage_multiple",
+               finite_number(config.risk_config.max_gross_leverage));
+        member(fields, "/risk/max_net_leverage", "source_supported_config_input", "source_reader",
+               "risk_enabled", "number", "leverage_multiple",
+               finite_number(config.risk_config.max_net_leverage));
+        member(fields, "/risk/capital", "read_only_metadata", "derived_alias", "metadata_only",
+               "number", "account_currency", finite_number(static_cast<double>(config.risk_config.capital)));
+        descriptor(fields, "/risk/version", "read_only_metadata", "version_metadata",
+                   "metadata_only", "string", "config_version");
+        member(fields, "/risk/max_drawdown", "source_supported_config_input", "source_reader",
+               "base_strategy_risk_check", "number", "fraction", finite_number(config.max_drawdown));
+        member(fields, "/risk/max_leverage", "source_supported_config_input", "diagnostic_reader",
+               "base_strategy_risk_check", "number", "leverage_multiple", finite_number(config.max_leverage));
+        member(fields, "/risk_defaults/confidence_level", "source_supported_config_input",
+               "source_reader", "risk_enabled", "number", "probability",
+               finite_number(config.risk_config.confidence_level));
+        member(fields, "/risk_defaults/lookback_period", "source_supported_config_input",
+               "source_reader", "risk_enabled", "integer", "bar_records",
+               config.risk_config.lookback_period);
+        member(fields, "/risk_defaults/max_correlation", "source_supported_config_input",
+               "source_reader", "risk_enabled", "number", "absolute_correlation",
+               finite_number(config.risk_config.max_correlation));
+
+        member(fields, "/backtest/lookback_years", "unsupported_in_profile", "backtest_only",
+               "no_active_profile_reader", "integer", "years", config.backtest.lookback_years);
+        member(fields, "/backtest/store_trade_details", "unsupported_in_profile", "backtest_only",
+               "no_active_profile_reader", "boolean", "flag", config.backtest.store_trade_details);
+        member(fields, "/live/historical_days", "source_supported_config_input", "source_reader",
+               "source_path", "integer", "calendar_days", config.live.historical_days);
+
+        Json fdm = Json::array();
+        for (const auto& [count, multiplier] : config.strategy_defaults.fdm)
+            fdm.push_back(Json::array({count, finite_number(multiplier)}));
+        member(fields, "/strategy_defaults/fdm", "unsupported_in_profile", "blocked_default_fallback",
+               "no_active_profile_reader", "integer_number_pairs", "rule_count_multiplier_pairs",
+               std::move(fdm));
+        member(fields, "/strategy_defaults/max_strategy_allocation", "source_supported_config_input",
+               "source_reader", "allocation_validation", "number", "fraction",
+               finite_number(config.strategy_defaults.max_strategy_allocation));
+        member(fields, "/strategy_defaults/min_strategy_allocation", "source_supported_config_input",
+               "source_reader", "allocation_validation", "number", "fraction",
+               finite_number(config.strategy_defaults.min_strategy_allocation));
+        member(fields, "/strategy_defaults/use_optimization", "source_supported_config_input",
+               "source_reader", "source_path", "boolean", "flag",
+               config.strategy_defaults.use_optimization);
+        member(fields, "/strategy_defaults/use_risk_management", "source_supported_config_input",
+               "source_reader", "source_path", "boolean", "flag",
+               config.strategy_defaults.use_risk_management);
+        member(fields, "/strategy_defaults/carver_buffer_floor", "source_supported_config_input",
+               "source_reader", "strategy_config_present_leaf_absent_and_buffering_enabled",
+               "number", "contracts", finite_number(config.strategy_defaults.carver_buffer_floor));
+        member(fields, "/strategy_defaults/carver_buffer_position_factor",
+               "source_supported_config_input", "source_reader",
+               "strategy_config_present_leaf_absent_and_buffering_enabled", "number", "fraction",
+               finite_number(config.strategy_defaults.carver_buffer_position_factor));
+
+        if (config.strategies_config.is_object()) {
+            for (auto it = config.strategies_config.begin(); it != config.strategies_config.end(); ++it)
+                add_strategy(fields, it.key(), it.value());
+        } else if (!config.strategies_config.is_null()) {
+            throw InvalidProjectionField{};
+        }
+        std::sort(fields.begin(), fields.end(), [](const Json& a, const Json& b) {
+            return a.at("path").get_ref<const std::string&>() <
+                   b.at("path").get_ref<const std::string&>();
+        });
+        for (std::size_t i = 1; i < fields.size(); ++i) {
+            if (fields[i - 1].at("path") == fields[i].at("path"))
+                throw InvalidProjectionField{};
+        }
+        return Json{{"projection_version", 1},
+                    {"profile", "live_portfolio_runner_futures"},
+                    {"coverage", "current_typed_fields_and_known_strategy_leaves"},
+                    {"authority", "inspection_only"},
+                    {"consumption_evidence", "not_collected"},
+                    {"fields", std::move(fields)}};
+    } catch (const std::bad_alloc&) {
+        throw;
+    } catch (...) {
+        return make_error<nlohmann::json>(ErrorCode::INVALID_DATA,
+                                          "config_projection_invalid_field",
+                                          "ConfigFieldProjection");
+    }
+}
+
+bool validate_live_config_projection_for_publication(const nlohmann::json& projection) {
+    try {
+        if (!projection.is_object() || projection.size() != 6 ||
+            !projection.at("projection_version").is_number_integer() ||
+            projection.at("projection_version") != 1 ||
+            projection.at("profile") != "live_portfolio_runner_futures" ||
+            projection.at("coverage") != "current_typed_fields_and_known_strategy_leaves" ||
+            projection.at("authority") != "inspection_only" ||
+            projection.at("consumption_evidence") != "not_collected" ||
+            !projection.at("fields").is_array() ||
+            projection.dump().size() > 2u * 1024u * 1024u) return false;
+
+        const auto& fields = projection.at("fields");
+        if (fields.size() > 20000) return false;
+        std::map<std::string, const Json*> by_path;
+        std::set<std::string> strategy_ids;
+        std::string prior;
+        for (const auto& field : fields) {
+            if (!field.is_object() || !field.contains("path") ||
+                !field.at("path").is_string()) return false;
+            const auto& path = field.at("path").get_ref<const std::string&>();
+            if (!prior.empty() && path <= prior) return false;
+            prior = path;
+            by_path.emplace(path, &field);
+            if (path.rfind("/strategies/", 0) == 0) {
+                const auto slash = path.find('/', 12);
+                if (slash == std::string::npos ||
+                    !valid_strategy_id(path.substr(12, slash - 12))) return false;
+                strategy_ids.insert(path.substr(12, slash - 12));
+                if (strategy_ids.size() > 1024) return false;
+            }
+        }
+
+        // Only descriptors come from this safe synthetic input. Its values are
+        // never compared with, substituted for, or used to resolve the capture.
+        AppConfig catalog_input;
+        catalog_input.strategies_config = Json::object();
+        for (const auto& id : strategy_ids) {
+            const auto type = by_path.find("/strategies/" + id + "/type");
+            if (type == by_path.end() || !type->second->contains("reason") ||
+                !type->second->at("reason").is_string()) return false;
+            const bool unknown = type->second->at("reason") == "unknown_strategy_type";
+            catalog_input.strategies_config[id] = {
+                {"type", unknown ? "UnknownSynthetic" : "TrendFollowingStrategy"}};
+        }
+        const auto projected_catalog = project_live_config_fields(catalog_input);
+        if (projected_catalog.is_error()) return false;
+        const auto& catalog = projected_catalog.value().at("fields");
+        if (fields.size() != catalog.size()) return false;
+        for (std::size_t index = 0; index < fields.size(); ++index) {
+            const auto& field = fields[index];
+            const auto& expected = catalog[index];
+            for (const char* key : {"path", "scope", "classification", "reason",
+                                    "condition", "value_type", "unit", "value_origin"})
+                if (!field.contains(key) || field.at(key) != expected.at(key)) return false;
+            if (!field.contains("value_state") || !field.at("value_state").is_string())
+                return false;
+            const auto& state = field.at("value_state").get_ref<const std::string&>();
+            const auto& origin = expected.at("value_origin").get_ref<const std::string&>();
+            const bool included = state == "included";
+            if (origin == "not_projected") {
+                if (state != "omitted") return false;
+            } else if (origin == "app_config_member") {
+                if (!included) return false;
+            } else if (origin == "configured_strategy_leaf") {
+                if (!included && state != "absent_in_input") return false;
+            } else return false;
+            if (field.size() != (included ? 10u : 9u) ||
+                field.contains("value") != included) return false;
+            if (!included) continue;
+
+            const auto& value = field.at("value");
+            const auto& type = expected.at("value_type").get_ref<const std::string&>();
+            if (type == "number") {
+                if (!value.is_number() || !std::isfinite(value.get<double>())) return false;
+            } else if (type == "integer") {
+                (void)typed_integer(value);
+            } else if (type == "boolean") {
+                if (!value.is_boolean()) return false;
+            } else if (type == "enum_string") {
+                if (!value.is_string()) return false;
+                if (field.at("path") == "/benchmark_mode") {
+                    if (value != "live" && value != "deferred") return false;
+                } else if (!known_strategy_type(value.get<std::string>())) return false;
+            } else if (type == "integer_pairs" || type == "integer_number_pairs") {
+                (void)typed_pairs(value, type == "integer_pairs");
+            } else return false;
+        }
+        return true;
+    } catch (const std::bad_alloc&) {
+        throw;
+    } catch (const std::exception&) {
+        return false;
+    } catch (const InvalidProjectionField&) {
+        return false;
+    }
+}
 
 Result<nlohmann::json> ConfigLoader::load_json_file(const std::filesystem::path& file_path) {
     std::ifstream file(file_path);
@@ -112,15 +545,26 @@ Result<AppConfig> ConfigLoader::extract_config(const nlohmann::json& merged) {
         }
 
         if (merged.contains("risk")) {
-            config.risk_config.from_json(merged.at("risk"));
-
-            // Additional risk limits
             const auto& risk = merged.at("risk");
+            config.risk_config.from_json(risk);
+
+            // Canonical nested limits take precedence over legacy top-level input.
             if (risk.contains("max_drawdown")) {
                 config.max_drawdown = risk.at("max_drawdown").get<double>();
+            } else if (merged.contains("max_drawdown")) {
+                config.max_drawdown = merged.at("max_drawdown").get<double>();
             }
             if (risk.contains("max_leverage")) {
                 config.max_leverage = risk.at("max_leverage").get<double>();
+            } else if (merged.contains("max_leverage")) {
+                config.max_leverage = merged.at("max_leverage").get<double>();
+            }
+        } else {
+            if (merged.contains("max_drawdown")) {
+                config.max_drawdown = merged.at("max_drawdown").get<double>();
+            }
+            if (merged.contains("max_leverage")) {
+                config.max_leverage = merged.at("max_leverage").get<double>();
             }
         }
         // Set capital in risk_config

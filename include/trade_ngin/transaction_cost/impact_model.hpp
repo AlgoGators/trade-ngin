@@ -6,6 +6,7 @@
 #include <string>
 
 #include "trade_ngin/transaction_cost/asset_cost_config.hpp"
+#include "trade_ngin/transaction_cost/consumption.hpp"
 
 namespace trade_ngin {
 namespace transaction_cost {
@@ -58,7 +59,8 @@ public:
         double quantity,
         double reference_price,
         double adv,
-        const AssetCostConfig& asset_config) const;
+        const AssetCostConfig& asset_config,
+        ImpactPriceObservation* observation = nullptr) const;
 
     /**
      * @brief Get impact coefficient based on ADV bucket
@@ -83,7 +85,8 @@ public:
      * @param symbol Instrument symbol
      * @param volume Today's trading volume
      */
-    void update_volume(const std::string& symbol, double volume);
+    void update_volume(const std::string& symbol, double volume,
+                       ImpactHistoryObservation* observation = nullptr);
 
     /**
      * @brief Get current ADV for a symbol

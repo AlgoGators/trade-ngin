@@ -1,0 +1,58 @@
+{
+  "selected_book": {
+    "schema": "qt-eval/v1", "operation": "selected_book", "evaluator_build": "local-qt-controlled",
+    "context_fingerprint": "1111111111111111111111111111111111111111111111111111111111111111",
+    "risk_config_source_id": "synthetic-risk-policy-v1",
+    "context": {
+      "portfolio_id": "synthetic-book-A", "date": "2026-09-25", "portfolio_type": "qt_proposal", "revision": "synthetic-revision-1",
+      "slots": [
+        {"key": {"portfolio_id": "synthetic-book-A", "strategy_id": "component-1", "strategy_name": "synthetic-alpha", "date": "2026-09-25", "symbol": "SYN", "portfolio_type": "qt_proposal"},
+         "instrument": {"instrument_type": "EQUITY", "symbol": "SYN"}, "editable": true,
+         "previous": {"symbol": "SYN", "quantity_exact": "4", "average_price_exact": "100", "unrealized_pnl_exact": "0", "realized_pnl_exact": "0", "last_update": "2026-09-25T12:00:00Z"}},
+        {"key": {"portfolio_id": "synthetic-book-A", "strategy_id": "component-2", "strategy_name": "synthetic-beta", "date": "2026-09-25", "symbol": "SYN", "portfolio_type": "qt_proposal"},
+         "instrument": {"instrument_type": "EQUITY", "symbol": "SYN"}, "editable": true,
+         "previous": {"symbol": "SYN", "quantity_exact": "2", "average_price_exact": "100", "unrealized_pnl_exact": "0", "realized_pnl_exact": "0", "last_update": "2026-09-25T12:00:00Z"}}
+      ]
+    },
+    "proposal": {
+      "expected_portfolio_id": "synthetic-book-A", "expected_date": "2026-09-25", "expected_portfolio_type": "qt_proposal", "expected_revision": "synthetic-revision-1",
+      "quantities": [
+        {"key": {"portfolio_id": "synthetic-book-A", "strategy_id": "component-1", "strategy_name": "synthetic-alpha", "date": "2026-09-25", "symbol": "SYN", "portfolio_type": "qt_proposal"}, "quantity_exact": "5"},
+        {"key": {"portfolio_id": "synthetic-book-A", "strategy_id": "component-2", "strategy_name": "synthetic-beta", "date": "2026-09-25", "symbol": "SYN", "portfolio_type": "qt_proposal"}, "quantity_exact": "1"}
+      ]
+    },
+    "risk_inputs": {
+      "expected_portfolio_id": "synthetic-book-A", "expected_date": "2026-09-25", "expected_portfolio_type": "qt_proposal", "expected_revision": "synthetic-revision-1",
+      "market_snapshot_id": "synthetic-market-v1", "valuation_time": "2026-09-25T12:00:00.123456Z", "capital_currency": "USD",
+      "valuations": [{"instrument": {"instrument_type": "EQUITY", "symbol": "SYN"}, "mark_as_of": "2026-09-25T12:00:00.123456Z", "mark": "100", "price_multiplier": "1", "quote_currency": "USD"}],
+      "expected_observation_times": ["2026-09-22T12:00:00Z", "2026-09-23T12:00:00Z", "2026-09-24T12:00:00Z"],
+      "closes": [
+        {"instrument": {"instrument_type": "EQUITY", "symbol": "SYN"}, "timestamp": "2026-09-22T12:00:00Z", "close": "98"},
+        {"instrument": {"instrument_type": "EQUITY", "symbol": "SYN"}, "timestamp": "2026-09-23T12:00:00Z", "close": "99"},
+        {"instrument": {"instrument_type": "EQUITY", "symbol": "SYN"}, "timestamp": "2026-09-24T12:00:00Z", "close": "100"}
+      ]
+    },
+    "risk_config": {"var_limit": "0.15", "jump_risk_limit": "0.1", "max_correlation": "0.7", "corr_shock_threshold": "0.65", "jump_shock_threshold": "0.75", "max_gross_leverage": "4", "max_net_leverage": "2", "confidence_level": "0.99", "lookback_period": 3, "capital_exact": "1000000", "version": "synthetic-risk-config-v1"},
+    "quantity_rules": [{"instrument": {"instrument_type": "EQUITY", "symbol": "SYN"}, "increment_exact": "0.00000001", "mode": "reject_off_increment", "minimum_exact": "-1000000", "maximum_exact": "1000000"}],
+    "component_cost_inputs": [
+      {"key": {"portfolio_id": "synthetic-book-A", "strategy_id": "component-1", "strategy_name": "synthetic-alpha", "date": "2026-09-25", "symbol": "SYN", "portfolio_type": "qt_proposal"}, "instrument": {"instrument_type": "EQUITY", "symbol": "SYN"}, "calculation_increment_exact": "1", "cash_cost_per_increment_exact": "0.01", "approved_model_id": "linear-cash-per-increment-v1", "source_id": "synthetic-cost-source-v1", "currency": "USD"},
+      {"key": {"portfolio_id": "synthetic-book-A", "strategy_id": "component-2", "strategy_name": "synthetic-beta", "date": "2026-09-25", "symbol": "SYN", "portfolio_type": "qt_proposal"}, "instrument": {"instrument_type": "EQUITY", "symbol": "SYN"}, "calculation_increment_exact": "1", "cash_cost_per_increment_exact": "0.01", "approved_model_id": "linear-cash-per-increment-v1", "source_id": "synthetic-cost-source-v1", "currency": "USD"}
+    ]
+  },
+  "draft_diagnostic": {
+    "schema": "qt-eval/v1", "operation": "draft_diagnostic", "evaluator_build": "local-qt-controlled",
+    "context_fingerprint": "2222222222222222222222222222222222222222222222222222222222222222",
+    "risk_config_source_id": "synthetic-risk-policy-v1", "optimizer_policy": {"enabled": true, "config_source_id": "synthetic-optimizer-policy-v1"},
+    "context": {
+      "portfolio_id": "synthetic-book-B", "date": "2026-09-25", "portfolio_type": "qt_proposal", "revision": "synthetic-revision-1",
+      "slots": [{"key": {"portfolio_id": "synthetic-book-B", "strategy_id": "component-1", "strategy_name": "synthetic-alpha", "date": "2026-09-25", "symbol": "SYN", "portfolio_type": "qt_proposal"}, "instrument": {"instrument_type": "EQUITY", "symbol": "SYN"}, "editable": true, "previous": {"symbol": "SYN", "quantity_exact": "4", "average_price_exact": "100", "unrealized_pnl_exact": "0", "realized_pnl_exact": "0", "last_update": "2026-09-25T12:00:00Z"}}]
+    },
+    "proposal": {"expected_portfolio_id": "synthetic-book-B", "expected_date": "2026-09-25", "expected_portfolio_type": "qt_proposal", "expected_revision": "synthetic-revision-1", "quantities": [{"key": {"portfolio_id": "synthetic-book-B", "strategy_id": "component-1", "strategy_name": "synthetic-alpha", "date": "2026-09-25", "symbol": "SYN", "portfolio_type": "qt_proposal"}, "quantity_exact": "5"}]},
+    "risk_inputs": {"expected_portfolio_id": "synthetic-book-B", "expected_date": "2026-09-25", "expected_portfolio_type": "qt_proposal", "expected_revision": "synthetic-revision-1", "market_snapshot_id": "synthetic-market-v1", "valuation_time": "2026-09-25T12:00:00Z", "capital_currency": "USD", "valuations": [{"instrument": {"instrument_type": "EQUITY", "symbol": "SYN"}, "mark_as_of": "2026-09-25T12:00:00Z", "mark": "100", "price_multiplier": "1", "quote_currency": "USD"}], "expected_observation_times": ["2026-09-22T12:00:00Z", "2026-09-23T12:00:00Z", "2026-09-24T12:00:00Z"], "closes": [{"instrument": {"instrument_type": "EQUITY", "symbol": "SYN"}, "timestamp": "2026-09-22T12:00:00Z", "close": "98"}, {"instrument": {"instrument_type": "EQUITY", "symbol": "SYN"}, "timestamp": "2026-09-23T12:00:00Z", "close": "99"}, {"instrument": {"instrument_type": "EQUITY", "symbol": "SYN"}, "timestamp": "2026-09-24T12:00:00Z", "close": "100"}]},
+    "risk_config": {"var_limit": "0.15", "jump_risk_limit": "0.1", "max_correlation": "0.7", "corr_shock_threshold": "0.65", "jump_shock_threshold": "0.75", "max_gross_leverage": "4", "max_net_leverage": "2", "confidence_level": "0.99", "lookback_period": 3, "capital_exact": "1000000", "version": "synthetic-risk-config-v1"},
+    "quantity_rules": [{"instrument": {"instrument_type": "EQUITY", "symbol": "SYN"}, "increment_exact": "0.00000001", "mode": "reject_off_increment", "minimum_exact": "-1000000", "maximum_exact": "1000000"}],
+    "component_cost_inputs": [{"key": {"portfolio_id": "synthetic-book-B", "strategy_id": "component-1", "strategy_name": "synthetic-alpha", "date": "2026-09-25", "symbol": "SYN", "portfolio_type": "qt_proposal"}, "instrument": {"instrument_type": "EQUITY", "symbol": "SYN"}, "calculation_increment_exact": "1", "cash_cost_per_increment_exact": "0.01", "approved_model_id": "linear-cash-per-increment-v1", "source_id": "synthetic-cost-source-v1", "currency": "USD"}],
+    "optimizer_inputs": {"expected_portfolio_id": "synthetic-book-B", "expected_date": "2026-09-25", "expected_portfolio_type": "qt_proposal", "expected_revision": "synthetic-revision-1", "market_snapshot_id": "synthetic-market-v1", "valuation_time": "2026-09-25T12:00:00Z", "capital_currency": "USD", "instruments": [{"instrument": {"instrument_type": "EQUITY", "symbol": "SYN"}, "mark_as_of": "2026-09-25T12:00:00Z", "mark": "100", "price_multiplier": "1", "quote_currency": "USD", "calculation_increment_exact": "1", "cash_cost_per_increment": "0.01", "cost_currency": "USD", "increment_source_id": "synthetic-increment-v1", "cost_source_id": "synthetic-cost-source-v1"}], "expected_observation_times": ["2026-09-22T12:00:00Z", "2026-09-23T12:00:00Z", "2026-09-24T12:00:00Z"], "closes": [{"instrument": {"instrument_type": "EQUITY", "symbol": "SYN"}, "timestamp": "2026-09-22T12:00:00Z", "close": "98"}, {"instrument": {"instrument_type": "EQUITY", "symbol": "SYN"}, "timestamp": "2026-09-23T12:00:00Z", "close": "99"}, {"instrument": {"instrument_type": "EQUITY", "symbol": "SYN"}, "timestamp": "2026-09-24T12:00:00Z", "close": "100"}]},
+    "optimizer_config": {"tau": "1", "capital": "1000000", "cost_penalty_scalar": "50", "asymmetric_risk_buffer": "0.1", "max_iterations": 100, "convergence_threshold": "1e-6", "use_buffering": true, "buffer_size_factor": "0.05", "version": "synthetic-optimizer-config-v1"}
+  }
+}

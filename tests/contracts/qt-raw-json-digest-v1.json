@@ -1,0 +1,74 @@
+{
+  "schema": "qt-raw-json-digest-test/v1",
+  "cases": [
+    {
+      "name": "raw_json_0",
+      "payload": {},
+      "canonical_utf8": "{}",
+      "sha256": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a"
+    },
+    {
+      "name": "raw_json_1",
+      "payload": {
+        "value": 1.0,
+        "zero": -0.0
+      },
+      "canonical_utf8": "{\"value\":1.0,\"zero\":-0.0}",
+      "sha256": "9d5fba296353706ba54ca73ba2388fb34f30977d14230763a28cda88359af76f"
+    },
+    {
+      "name": "raw_json_2",
+      "payload": {
+        "low": 1e-07,
+        "cutoff": 0.0001,
+        "small": 1e-05
+      },
+      "canonical_utf8": "{\"cutoff\":0.0001,\"low\":1e-07,\"small\":1e-05}",
+      "sha256": "02903a791ebfa409b09fdb2a1b8cd3f00241302bf338f353a0b62ffa8ab54069"
+    },
+    {
+      "name": "raw_json_3",
+      "payload": {
+        "n15": 1000000000000000.0,
+        "n16": 1e+16,
+        "n20": 1e+20,
+        "tiny": 5e-324,
+        "huge": 1.7976931348623157e+308
+      },
+      "canonical_utf8": "{\"huge\":1.7976931348623157e+308,\"n15\":1000000000000000.0,\"n16\":1e+16,\"n20\":1e+20,\"tiny\":5e-324}",
+      "sha256": "e3f79451c9a7be5c0ea42bd1bc600f8cb40926bb10f1bb19e9d677b9e1d6cc8b"
+    },
+    {
+      "name": "raw_json_4",
+      "payload": {
+        "unicode": "策略 α",
+        "nested": [
+          true,
+          null,
+          0,
+          1234567890123456789,
+          0.15,
+          0.30000000000000004
+        ]
+      },
+      "canonical_utf8": "{\"nested\":[true,null,0,1234567890123456789,0.15,0.30000000000000004],\"unicode\":\"策略 α\"}",
+      "sha256": "22355271e2d9137ff03389350a15198793a29ea4a3af6efd22f42a747e1995e5"
+    },
+    {
+      "name": "raw_json_5",
+      "payload": {
+        "before": {
+          "quantity": 5.0,
+          "average_price": 100.125,
+          "unrealized_pnl": -3.14
+        },
+        "after": {
+          "quantity": 7.0,
+          "average_price": 101.0
+        }
+      },
+      "canonical_utf8": "{\"after\":{\"average_price\":101.0,\"quantity\":7.0},\"before\":{\"average_price\":100.125,\"quantity\":5.0,\"unrealized_pnl\":-3.14}}",
+      "sha256": "9bd9d10b3508e5535bf8daebf2910d379fdfae9c39dabff2c786cd738542d11d"
+    }
+  ]
+}

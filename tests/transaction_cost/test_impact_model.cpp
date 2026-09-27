@@ -163,3 +163,42 @@ TEST_F(ImpactModelTest, ClearAllResetsAllSymbols) {
     EXPECT_DOUBLE_EQ(model_.get_adv("ES"), 0.0);
     EXPECT_DOUBLE_EQ(model_.get_adv("NQ"), 0.0);
 }
+
+TEST_F(ImpactModelTest, ObservesFloorParticipationAndNonbindingCap) {
+    ImpactModel::Config c;
+    c.min_adv = 150.5;
+    c.min_participation = 0.02;
+    c.max_participation = 0.08;
+    ImpactModel m(c);
+    auto asset = default_asset();
+    asset.max_impact_bps = 90.0;
+    ImpactPriceObservation used;
+    EXPECT_NEAR(m.calculate_market_impact(4, 125, 20000, asset, &used),
+                0.1414213562373095, 1e-12);
+    EXPECT_EQ(used.min_adv, 150.5);
+    EXPECT_EQ(used.min_participation, 0.02);
+    EXPECT_EQ(used.max_participation, 0.08);
+    EXPECT_EQ(used.max_impact_bps, 90.0);
+    EXPECT_EQ(used.selected_k_bps, 80.0);
+    EXPECT_NEAR(m.calculate_market_impact(0, 125, 0, asset, &used),
+                0.1414213562373095, 1e-12);
+    EXPECT_EQ(used.min_adv, 150.5);
+    EXPECT_EQ(used.selected_k_bps, 80.0);
+}
+
+TEST_F(ImpactModelTest, ObservesVolumeWindowAndPreservesZeroDayBehavior) {
+    ImpactModel::Config c;
+    c.adv_lookback_days = 2;
+    ImpactModel m(c);
+    ImpactHistoryObservation history;
+    m.update_volume("ES", 100, &history);
+    m.update_volume("ES", 200, &history);
+    m.update_volume("ES", 300, &history);
+    EXPECT_EQ(history.adv_lookback_days, 2u);
+    EXPECT_DOUBLE_EQ(m.get_adv("ES"), 250.0);
+    c.adv_lookback_days = 0;
+    ImpactModel zero(c);
+    zero.update_volume("ES", 100, &history);
+    EXPECT_EQ(history.adv_lookback_days, 0u);
+    EXPECT_DOUBLE_EQ(zero.get_adv("ES"), 0.0);
+}

@@ -14,6 +14,7 @@
 #include "trade_ngin/risk/risk_manager.hpp"
 
 namespace trade_ngin {
+struct CurrentReportQuantityProjection;
 
 // Type alias for per-strategy positions map
 using StrategyPositionsMap = std::unordered_map<std::string, std::unordered_map<std::string, Position>>;
@@ -49,6 +50,7 @@ public:
      * @param config Email sender configuration
      */
     explicit EmailSender(const EmailSenderConfig& config);
+    virtual ~EmailSender() = default;
 
     /**
      * @brief Initialize email configuration from credential store
@@ -75,6 +77,23 @@ public:
      * @param is_daily_strategy Flag indicating if this is a daily strategy
      * @return HTML email body
      */
+    std::string generate_trading_report_body(
+        const std::unordered_map<std::string, Position>& positions,
+        const std::optional<RiskResult>& risk_metrics,
+        const std::map<std::string, double>& strategy_metrics,
+        const std::vector<ExecutionReport>& executions,
+        const std::string& date,
+        bool is_daily_strategy,
+        const std::unordered_map<std::string, double>& current_prices,
+        std::shared_ptr<DatabaseInterface> db,
+        const std::unordered_map<std::string, Position>& yesterday_positions,
+        const std::unordered_map<std::string, double>& yesterday_close_prices,
+        const std::unordered_map<std::string, double>& two_days_ago_close_prices,
+        const std::map<std::string, double>& yesterday_daily_metrics,
+        const std::string& chart_strategy_id,
+        const std::string& chart_portfolio_id
+    );
+
     std::string generate_trading_report_body(
         const std::unordered_map<std::string, Position>& positions,
         const std::optional<RiskResult>& risk_metrics,
@@ -116,7 +135,8 @@ public:
         const StrategyPositionsMap& yesterday_strategy_positions = {},
         const std::unordered_map<std::string, double>& yesterday_close_prices = {},
         const std::unordered_map<std::string, double>& two_days_ago_close_prices = {},
-        const std::map<std::string, double>& yesterday_daily_metrics = {}
+        const std::map<std::string, double>& yesterday_daily_metrics = {},
+        const CurrentReportQuantityProjection* display = nullptr
     );
 
     /**
@@ -130,6 +150,17 @@ public:
         std::shared_ptr<DatabaseInterface> db,
         const std::string& strategy_id,
         const std::string& date
+    );
+
+protected:
+    /**
+     * @brief Perform the configured email transport after delivery policy approval
+     */
+    virtual Result<void> deliver_email(
+        const std::string& subject,
+        const std::string& body,
+        bool is_html,
+        const std::vector<std::string>& attachment_paths
     );
 
 private:
@@ -259,7 +290,8 @@ private:
     std::string format_strategy_positions_tables(
         const StrategyPositionsMap& strategy_positions,
         const std::unordered_map<std::string, double>& current_prices,
-        const std::map<std::string, double>& strategy_metrics
+        const std::map<std::string, double>& strategy_metrics,
+        const CurrentReportQuantityProjection* display = nullptr
     );
 
     /**
@@ -272,7 +304,8 @@ private:
     std::string format_single_strategy_table(
         const std::string& strategy_name,
         const std::unordered_map<std::string, Position>& positions,
-        const std::unordered_map<std::string, double>& current_prices
+        const std::unordered_map<std::string, double>& current_prices,
+        const CurrentReportQuantityProjection* display = nullptr
     );
 
     /**

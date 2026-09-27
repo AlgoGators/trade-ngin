@@ -19,6 +19,12 @@ public:
      */
     static Result<std::vector<Bar>> arrow_table_to_bars(const std::shared_ptr<arrow::Table>& table);
 
+    // Strict typed scalar dispatch across all chunks; absent values stay absent.
+    static Result<double> safe_get_double(const std::shared_ptr<arrow::ChunkedArray>& column,
+        int64_t row,const std::string& column_name);
+    static Result<std::string> safe_get_string(const std::shared_ptr<arrow::ChunkedArray>& column,
+        int64_t row,const std::string& column_name);
+
 private:
     /**
      * @brief Extract timestamp from Arrow array

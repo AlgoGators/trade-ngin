@@ -1,8 +1,17 @@
 #include <gtest/gtest.h>
+#include <atomic>
+#include <condition_variable>
+#include <cstring>
+#include <exception>
+#include <memory>
+#include <mutex>
 #include <thread>
+#include "../data/market_data_bus_test_peer.hpp"
 #include "../data/test_db_utils.hpp"
+#include "../sync_test_deadline.hpp"
 #include "../order/test_utils.hpp"
 #include "mock_strategy.hpp"
+#include "portfolio_manager_test_peer.hpp"
 #include "trade_ngin/portfolio/portfolio_manager.hpp"
 
 using namespace trade_ngin;
@@ -11,6 +20,10 @@ using namespace trade_ngin::testing;
 class PortfolioManagerTest : public TestBase {
 protected:
     void SetUp() override {
+        if (std::strcmp(::testing::UnitTest::GetInstance()->current_test_info()->name(),
+                        "PositionUpdateCallbackSyncBlocksUntilManagerMutexReleased") == 0) {
+            sync_deadline_ = std::make_unique<SyncTestDeadline>(std::chrono::seconds(15));
+        }
         TestBase::SetUp();
 
         // Reset state manager
@@ -130,6 +143,7 @@ protected:
     std::unique_ptr<PortfolioManager> manager_;
     std::shared_ptr<DatabaseInterface> db_;
     std::string manager_id_;
+    std::unique_ptr<SyncTestDeadline> sync_deadline_;
 };
 
 TEST_F(PortfolioManagerTest, AddStrategy) {
@@ -358,4 +372,194 @@ TEST_F(PortfolioManagerTest, StressTest) {
     } catch (const std::exception& e) {
         FAIL() << "Unexpected exception: " << e.what();
     }
+}
+
+namespace {
+class PortfolioLifetimeBusCleanup {
+public:
+    ~PortfolioLifetimeBusCleanup() { (void)MarketDataBus::instance().unsubscribe("PORTFOLIO_MANAGER"); }
+};
+
+class CountingLifetimeStrategy : public MockStrategy {
+public:
+    using MockStrategy::MockStrategy;
+    int calls{0};
+    Result<void> on_data(const std::vector<Bar>& bars,
+                         StrategyConsumptionTrace* trace = nullptr) override {
+        ++calls;
+        return MockStrategy::on_data(bars, trace);
+    }
+};
+
+PortfolioConfig lifetime_portfolio_config() {
+    return {1000000.0, 100000.0, 1.0, 0.0, false, false};
+}
+
+std::shared_ptr<CountingLifetimeStrategy> lifetime_strategy(
+    const std::string& id, const std::shared_ptr<DatabaseInterface>& db) {
+    StrategyConfig config;
+    config.capital_allocation = 1000000.0;
+    config.max_leverage = 2.0;
+    config.asset_classes = {AssetClass::EQUITIES};
+    config.frequencies = {DataFrequency::DAILY};
+    config.trading_params["AAPL"] = 1.0;
+    config.position_limits["AAPL"] = 10000.0;
+    auto strategy = std::make_shared<CountingLifetimeStrategy>(id, config, db);
+    if (strategy->initialize().is_error() || strategy->start().is_error())
+        throw std::runtime_error("Unable to start counting lifetime strategy");
+    return strategy;
+}
+
+MarketDataEvent lifetime_portfolio_bar() {
+    return {MarketDataEventType::BAR, "AAPL", std::chrono::system_clock::now(),
+            {{"open", 100.0}, {"high", 101.0}, {"low", 99.0},
+             {"close", 100.5}, {"volume", 10000.0}}, {}};
+}
+}  // namespace
+
+TEST_F(PortfolioManagerTest, LifetimeLiveCallbackStopsAfterManagerDestruction) {
+    PortfolioLifetimeBusCleanup cleanup;
+    auto strategy = lifetime_strategy("LIFETIME_SINGLE", db_);
+    ASSERT_TRUE(manager_->add_strategy(strategy, 0.3).is_ok());
+    MarketDataBus::instance().publish(lifetime_portfolio_bar());
+    ASSERT_EQ(strategy->calls, 1);
+    manager_.reset();
+    ASSERT_FALSE(MarketDataBusTestPeer::is_active(MarketDataBus::instance(), "PORTFOLIO_MANAGER"))
+        << "Do not publish toward a destroyed manager on the RED build";
+    MarketDataBus::instance().publish(lifetime_portfolio_bar());
+    EXPECT_EQ(strategy->calls, 1);
+}
+
+TEST_F(PortfolioManagerTest, LifetimeOlderManagerDestructionPreservesNewer) {
+    PortfolioLifetimeBusCleanup cleanup;
+    auto old_strategy = lifetime_strategy("LIFETIME_OLD_FIRST_A", db_);
+    ASSERT_TRUE(manager_->add_strategy(old_strategy, 0.3).is_ok());
+    auto newer = std::make_unique<PortfolioManager>(lifetime_portfolio_config(), "LIFETIME_OLD_FIRST_B");
+    auto new_strategy = lifetime_strategy("LIFETIME_OLD_FIRST_B_STRATEGY", db_);
+    ASSERT_TRUE(newer->add_strategy(new_strategy, 0.3).is_ok());
+    MarketDataBus::instance().publish(lifetime_portfolio_bar());
+    EXPECT_EQ(old_strategy->calls, 0);
+    EXPECT_EQ(new_strategy->calls, 1);
+    manager_.reset();
+    ASSERT_TRUE(MarketDataBusTestPeer::is_active(MarketDataBus::instance(), "PORTFOLIO_MANAGER"));
+    MarketDataBus::instance().publish(lifetime_portfolio_bar());
+    EXPECT_EQ(old_strategy->calls, 0);
+    EXPECT_EQ(new_strategy->calls, 2);
+    newer.reset();
+    ASSERT_FALSE(MarketDataBusTestPeer::is_active(MarketDataBus::instance(), "PORTFOLIO_MANAGER"))
+        << "Do not publish toward a destroyed manager on the RED build";
+    MarketDataBus::instance().publish(lifetime_portfolio_bar());
+    EXPECT_EQ(new_strategy->calls, 2);
+}
+
+TEST_F(PortfolioManagerTest, LifetimeNewerManagerDestructionDoesNotReviveOlder) {
+    PortfolioLifetimeBusCleanup cleanup;
+    auto old_strategy = lifetime_strategy("LIFETIME_NEW_FIRST_A", db_);
+    ASSERT_TRUE(manager_->add_strategy(old_strategy, 0.3).is_ok());
+    auto newer = std::make_unique<PortfolioManager>(lifetime_portfolio_config(), "LIFETIME_NEW_FIRST_B");
+    auto new_strategy = lifetime_strategy("LIFETIME_NEW_FIRST_B_STRATEGY", db_);
+    ASSERT_TRUE(newer->add_strategy(new_strategy, 0.3).is_ok());
+    MarketDataBus::instance().publish(lifetime_portfolio_bar());
+    EXPECT_EQ(old_strategy->calls, 0);
+    EXPECT_EQ(new_strategy->calls, 1);
+    newer.reset();
+    ASSERT_FALSE(MarketDataBusTestPeer::is_active(MarketDataBus::instance(), "PORTFOLIO_MANAGER"))
+        << "Do not publish toward a destroyed manager on the RED build";
+    MarketDataBus::instance().publish(lifetime_portfolio_bar());
+    EXPECT_EQ(old_strategy->calls, 0);
+    EXPECT_EQ(new_strategy->calls, 1);
+    manager_.reset();
+    EXPECT_FALSE(MarketDataBusTestPeer::is_active(MarketDataBus::instance(), "PORTFOLIO_MANAGER"));
+}
+
+namespace {
+std::atomic<bool>* sync_contention_flag = nullptr;
+std::condition_variable* sync_contention_cv = nullptr;
+void signal_position_update_contention() noexcept {
+    sync_contention_flag->store(true, std::memory_order_release);
+    sync_contention_cv->notify_all();
+}
+
+MarketDataEvent sync_position_update_event(const std::string& strategy_id) {
+    MarketDataEvent event;
+    event.type = MarketDataEventType::POSITION_UPDATE;
+    event.symbol = "AAPL";
+    event.timestamp = std::chrono::system_clock::now();
+    event.numeric_fields = {{"quantity", 10.0}, {"price", 101.5}};
+    event.string_fields = {{"strategy_id", strategy_id}};
+    return event;
+}
+}  // namespace
+
+// market-data-bus-sync-brief.md defect 2: the POSITION_UPDATE callback branch
+// reads strategies_ and writes current_positions and must take mutex_ for its
+// whole read-modify-write, in the same lock order the BAR branch already
+// establishes (bus mutex -- already held by the publisher for the callback's
+// duration -- then mutex_). This test holds mutex_ on the main thread through
+// the test peer, publishes a POSITION_UPDATE from another thread, and requires
+// a witnessed try-lock failure on mutex_ before the callback may proceed.
+// Against the original unlocked branch (with inert test scaffolding) the hook never
+// fires, "witnessed" stays false, and the callback completes immediately even
+// though the test holds mutex_: this test fails deterministically (after its
+// 5s observation wait). It passes once the branch takes mutex_ for the RMW.
+TEST_F(PortfolioManagerTest, PositionUpdateCallbackSyncBlocksUntilManagerMutexReleased) {
+    auto strategy = create_test_strategy("SYNC_TARGET", {"AAPL"});
+    ASSERT_TRUE(manager_->add_strategy(strategy, 0.3).is_ok());
+    const std::string strategy_id = strategy->get_metadata().id;
+    const MarketDataEvent event = sync_position_update_event(strategy_id);
+
+    std::mutex wait_mutex;
+    std::condition_variable contention_cv;
+    std::atomic<bool> contended{false};
+    std::atomic<bool> callback_returned{false};
+
+    std::exception_ptr publish_error;
+    std::unique_lock<std::mutex> manager_lock;
+    std::thread publisher;
+    auto cleanup = sync_test_scope_exit([&] {
+        if (manager_lock.owns_lock()) manager_lock.unlock();
+        if (publisher.joinable()) publisher.join();
+        PortfolioManagerTestPeer::set_position_update_contention_hook(*manager_, nullptr);
+        sync_contention_flag = nullptr;
+        sync_contention_cv = nullptr;
+    });
+
+    sync_contention_flag = &contended;
+    sync_contention_cv = &contention_cv;
+    PortfolioManagerTestPeer::set_position_update_contention_hook(
+        *manager_, signal_position_update_contention);
+    manager_lock = PortfolioManagerTestPeer::lock_manager_mutex(*manager_);
+
+    publisher = std::thread([&] {
+        try {
+            MarketDataBus::instance().publish(event);
+            callback_returned.store(true, std::memory_order_release);
+        } catch (...) {
+            publish_error = std::current_exception();
+        }
+    });
+
+    bool witnessed;
+    {
+        std::unique_lock<std::mutex> lock(wait_mutex);
+        witnessed = contention_cv.wait_for(
+            lock, std::chrono::seconds(5),
+            [&] { return contended.load(std::memory_order_acquire); });
+    }
+    const bool returned_before_release = callback_returned.load(std::memory_order_acquire);
+
+    manager_lock.unlock();
+    publisher.join();
+
+    PortfolioManagerTestPeer::set_position_update_contention_hook(*manager_, nullptr);
+    sync_contention_flag = nullptr;
+    sync_contention_cv = nullptr;
+    if (publish_error) std::rethrow_exception(publish_error);
+
+    EXPECT_TRUE(witnessed)
+        << "publish() never contended on the manager's mutex_ -- the "
+           "POSITION_UPDATE branch is not (still) holding it for its RMW";
+    EXPECT_FALSE(returned_before_release)
+        << "Callback completed while the test held mutex_";
+    EXPECT_TRUE(callback_returned.load(std::memory_order_acquire));
 }

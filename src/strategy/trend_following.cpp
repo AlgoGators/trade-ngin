@@ -9,6 +9,24 @@
 
 namespace trade_ngin {
 
+void normalize_constructor_trend_config(TrendFollowingConfig& config) {
+    // Verify lengths of lookback periods
+    if (config.vol_lookback_short <= 0) {
+        config.vol_lookback_short = 22;
+    }
+    if (config.vol_lookback_long <= config.vol_lookback_short) {
+        config.vol_lookback_long = config.vol_lookback_short * 4;
+    }
+
+    // Compute memory cap: must hold enough data for the longest lookback
+    if (config.max_history_size == 0) {
+        config.max_history_size = std::max(
+            static_cast<size_t>(config.vol_lookback_long),
+            size_t{756}
+        );
+    }
+}
+
 TrendFollowingStrategy::TrendFollowingStrategy(std::string id, StrategyConfig config,
                                                TrendFollowingConfig trend_config,
                                                std::shared_ptr<PostgresDatabase> db,
@@ -18,21 +36,7 @@ TrendFollowingStrategy::TrendFollowingStrategy(std::string id, StrategyConfig co
       registry_(registry) {
     Logger::register_component("TrendFollowing");
 
-    // Verify lengths of lookback periods
-    if (trend_config_.vol_lookback_short <= 0) {
-        trend_config_.vol_lookback_short = 22;
-    }
-    if (trend_config_.vol_lookback_long <= trend_config_.vol_lookback_short) {
-        trend_config_.vol_lookback_long = trend_config_.vol_lookback_short * 4;
-    }
-
-    // Compute memory cap: must hold enough data for the longest lookback
-    if (trend_config_.max_history_size == 0) {
-        trend_config_.max_history_size = std::max(
-            static_cast<size_t>(trend_config_.vol_lookback_long),
-            size_t{756}
-        );
-    }
+    normalize_constructor_trend_config(trend_config_);
 
     // Initialize metadata
     metadata_.name = "Trend Following Strategy";
@@ -114,7 +118,12 @@ Result<void> TrendFollowingStrategy::on_execution(const ExecutionReport& report)
     return Result<void>();
 }
 
-Result<void> TrendFollowingStrategy::on_data(const std::vector<Bar>& data) {
+Result<void> TrendFollowingStrategy::on_data(const std::vector<Bar>& data,
+                                              StrategyConsumptionTrace* trace) {
+    if (trace) {
+        *trace = {};
+        trace->profile = StrategyConsumptionProfile::Standard;
+    }
     // Validate data
     if (data.empty()) {
         return Result<void>();
@@ -193,6 +202,7 @@ Result<void> TrendFollowingStrategy::on_data(const std::vector<Bar>& data) {
                 }
 
                 // MEMORY FIX: Limit price history to maximum needed lookback
+                if (trace) trace->history.max_history_size = trend_config_.max_history_size;
                 if (instrument_data.price_history.size() > trend_config_.max_history_size) {
                     instrument_data.price_history.pop_front();
                 }
@@ -206,12 +216,13 @@ Result<void> TrendFollowingStrategy::on_data(const std::vector<Bar>& data) {
 
     // Call base class data processing (leverage checks, etc.)
     // If this fails due to leverage, price history is already updated above
-    auto base_result = BaseStrategy::on_data(data);
+    auto base_result = process_base_data(data, trace ? &trace->base_risk : nullptr);
     if (base_result.is_error())
         return base_result;
 
     // Get longest window in ema pairs
     int max_window = 0;
+    if (trace) trace->history.ema_windows = trend_config_.ema_windows;
     for (const auto& window_pair : trend_config_.ema_windows) {
         max_window = std::max(max_window, window_pair.second);
     }
@@ -249,6 +260,7 @@ Result<void> TrendFollowingStrategy::on_data(const std::vector<Bar>& data) {
             // Calculate volatility
             std::vector<double> volatility;
             try {
+                if (trace) trace->volatility.vol_lookback_short = trend_config_.vol_lookback_short;
                 volatility = blended_ewma_stddev(prices, trend_config_.vol_lookback_short);
                 if (volatility.empty()) {
                     // If volatility calculation fails, use a default value
@@ -277,6 +289,7 @@ Result<void> TrendFollowingStrategy::on_data(const std::vector<Bar>& data) {
             instrument_data.current_volatility = volatility.back();
 
             // MEMORY FIX: Limit volatility history to prevent unbounded growth
+            if (trace) trace->volatility.max_history_size = trend_config_.max_history_size;
             while (instrument_data.volatility_history.size() > trend_config_.max_history_size) {
                 instrument_data.volatility_history.pop_front();
             }
@@ -284,7 +297,7 @@ Result<void> TrendFollowingStrategy::on_data(const std::vector<Bar>& data) {
             // Get raw combined forecast
             std::vector<double> raw_forecasts;
             try {
-                raw_forecasts = get_raw_combined_forecast(prices);
+                raw_forecasts = get_raw_combined_forecast(prices, trace);
                 if (raw_forecasts.empty()) {
                     WARN("Empty raw forecast for " + symbol);
                     // Resize to avoid issues
@@ -311,7 +324,7 @@ Result<void> TrendFollowingStrategy::on_data(const std::vector<Bar>& data) {
             // Get scaled forecast
             std::vector<double> scaled_forecasts;
             try {
-                scaled_forecasts = get_scaled_combined_forecast(raw_forecasts);
+                scaled_forecasts = get_scaled_combined_forecast(raw_forecasts, trace);
                 if (scaled_forecasts.empty()) {
                     WARN("Empty scaled forecast for " + symbol);
                     scaled_forecasts.resize(raw_forecasts.size(), 0.0);
@@ -385,7 +398,8 @@ Result<void> TrendFollowingStrategy::on_data(const std::vector<Bar>& data) {
                 double latest_price = prices.back();
 
                 raw_position =
-                    calculate_position(symbol, latest_forecast, latest_price, latest_volatility);
+                    calculate_position(symbol, latest_forecast, latest_price, latest_volatility,
+                                       trace);
             } catch (const std::exception& e) {
                 WARN("Position calculation exception for " + symbol + ": " + e.what());
                 raw_position = 0.0;
@@ -397,9 +411,12 @@ Result<void> TrendFollowingStrategy::on_data(const std::vector<Bar>& data) {
             double final_position = 0.0;
             try {
                 double latest_price = prices.back();
+                if (trace) trace->buffering.use_position_buffering =
+                    trend_config_.use_position_buffering;
                 if (trend_config_.use_position_buffering) {
                     final_position = apply_position_buffer(symbol, raw_position, latest_price,
-                                                           instrument_data.current_volatility);
+                                                           instrument_data.current_volatility,
+                                                           trace);
                 } else {
                     final_position = raw_position;
                 }
@@ -584,7 +601,13 @@ Result<void> TrendFollowingStrategy::on_data(const std::vector<Bar>& data) {
                  " stored_realized_pnl=" + std::to_string(static_cast<double>(pos.realized_pnl)) +
                  " backtest_mode=" + std::string(is_backtest_mode() ? "true" : "false"));
 
-            auto pos_result = update_position(symbol, pos);
+            StrategyPositionLimitConsumption update_read;
+            auto pos_result = update_position(symbol, pos, trace ? &update_read : nullptr);
+            if (trace && update_read.supported) {
+                trace->position_limits.supported = true;
+                trace->position_limits.symbols.insert(update_read.symbols.begin(),
+                                                       update_read.symbols.end());
+            }
             if (pos_result.is_error()) {
                 WARN("Failed to update position for " + symbol + ": " + pos_result.error()->what());
                 // Continue processing despite position update failure
@@ -834,7 +857,8 @@ std::vector<double> TrendFollowingStrategy::blended_ewma_stddev(const std::vecto
 
 std::vector<double> TrendFollowingStrategy::get_raw_forecast(const std::vector<double>& prices,
                                                              int short_window,
-                                                             int long_window) const {
+                                                             int long_window,
+                                                             StrategyConsumptionTrace* trace) const {
     // Validation
     if (prices.size() < static_cast<size_t>(std::max(short_window, long_window))) {
         ERROR("Not enough price data for raw forecast");
@@ -863,11 +887,12 @@ std::vector<double> TrendFollowingStrategy::get_raw_forecast(const std::vector<d
     double vol_multiplier = 1.0;  // Default value
 
     try {
+        if (trace) trace->forecast.vol_lookback_short = trend_config_.vol_lookback_short;
         blended_stddev = blended_ewma_stddev(prices, trend_config_.vol_lookback_short);
 
         // Only calculate vol_multiplier if we have sufficient data
         if (prices.size() >= 252) {
-            vol_multiplier = calculate_vol_regime_multiplier(prices, blended_stddev);
+            vol_multiplier = calculate_vol_regime_multiplier(prices, blended_stddev, trace);
             // Ensure vol_multiplier is valid
             if (std::isnan(vol_multiplier) || std::isinf(vol_multiplier)) {
                 vol_multiplier = 1.0;
@@ -927,11 +952,12 @@ std::vector<double> TrendFollowingStrategy::get_scaled_forecast(
 }
 
 std::vector<double> TrendFollowingStrategy::get_raw_combined_forecast(
-    const std::vector<double>& prices) const {
+    const std::vector<double>& prices, StrategyConsumptionTrace* trace) const {
     if (prices.size() < 2) {
         WARN("Not enough price data for combined forecast");
         return std::vector<double>(prices.size(), 0.0);  // Return neutral forecast
     }
+    if (trace) trace->forecast.ema_windows = trend_config_.ema_windows;
     if (trend_config_.ema_windows.empty()) {
         WARN("No EMA windows specified for combined forecast");
         return std::vector<double>(prices.size(), 0.0);  // Return neutral forecast
@@ -946,7 +972,7 @@ std::vector<double> TrendFollowingStrategy::get_raw_combined_forecast(
         try {
             // Calculate raw forecast for this window pair
             std::vector<double> raw_forecast =
-                get_raw_forecast(prices, window_pair.first, window_pair.second);
+                get_raw_forecast(prices, window_pair.first, window_pair.second, trace);
             // Skip if invalid
             if (raw_forecast.empty() || raw_forecast.size() != prices.size()) {
                 WARN("Invalid raw forecast for window pair (" + std::to_string(window_pair.first) +
@@ -995,13 +1021,15 @@ std::vector<double> TrendFollowingStrategy::get_raw_combined_forecast(
 }
 
 std::vector<double> TrendFollowingStrategy::get_scaled_combined_forecast(
-    const std::vector<double>& raw_combined_forecast) const {
+    const std::vector<double>& raw_combined_forecast, StrategyConsumptionTrace* trace) const {
     if (raw_combined_forecast.empty())
         return {};
 
     // Get FDM from trend_config_ based on the number of rules
+    if (trace) trace->forecast.ema_windows = trend_config_.ema_windows;
     size_t num_rules = trend_config_.ema_windows.size();
     double fdm = 1.0;  // Default if not found
+    if (trace) trace->forecast.fdm = trend_config_.fdm;
     for (const auto& fdm_pair : trend_config_.fdm) {
         if (fdm_pair.first == static_cast<int>(num_rules)) {
             fdm = fdm_pair.second;
@@ -1156,7 +1184,8 @@ std::unordered_map<std::string, double> TrendFollowingStrategy::get_weights() co
 }
 
 double TrendFollowingStrategy::calculate_position(const std::string& symbol, double forecast,
-                                                  double price, double volatility) const {
+                                                  double price, double volatility,
+                                                  StrategyConsumptionTrace* trace) const {
     // Validation
     if (std::isnan(forecast) || std::isinf(forecast) || std::abs(forecast) > 20.0) {
         WARN("Invalid forecast in position calculation for " + symbol + ", using 0.0");
@@ -1188,9 +1217,13 @@ double TrendFollowingStrategy::calculate_position(const std::string& symbol, dou
         // Use cached values
         double contract_size = data.contract_size;
         double weight = data.weight;
+        if (trace) trace->sizing.capital_allocation = config_.capital_allocation;
         double capital = std::max(1000.0, config_.capital_allocation);
+        if (trace) trace->sizing.idm = trend_config_.idm;
         double idm = std::max(0.1, trend_config_.idm);
+        if (trace) trace->sizing.risk_target = trend_config_.risk_target;
         double risk_target = std::max(0.01, std::min(0.5, trend_config_.risk_target));
+        if (trace) trace->sizing.fx_rate = trend_config_.fx_rate;
         double fx_rate = std::max(0.1, trend_config_.fx_rate);
 
         // Apply minimum value to volatility to avoid division by very small values
@@ -1221,14 +1254,20 @@ double TrendFollowingStrategy::calculate_position(const std::string& symbol, dou
 
         // 1. First apply contract-based limit (legacy safeguard)
         double position_limit = 1000.0;
-        if (config_.position_limits.count(symbol) > 0) {
+        const bool has_limit = config_.position_limits.count(symbol) > 0;
+        if (trace) trace->sizing.symbol_limits[symbol].present = has_limit;
+        if (has_limit) {
             position_limit = config_.position_limits.at(symbol);
+            if (trace) trace->sizing.symbol_limits[symbol].value = position_limit;
         }
         final_position = std::clamp(final_position, -position_limit, position_limit);
 
         // 2. Apply notional-based limit (concentration control)
         // Calculate target gross exposure based on max leverage
+        if (trace) trace->sizing.max_leverage = config_.max_leverage;
         double target_gross_exposure = capital * config_.max_leverage;
+        if (trace) trace->sizing.max_symbol_concentration =
+            trend_config_.max_symbol_concentration;
         double max_notional_per_symbol = target_gross_exposure * trend_config_.max_symbol_concentration;
 
         double actual_notional = std::abs(final_position) * contract_size * price;
@@ -1264,7 +1303,9 @@ double TrendFollowingStrategy::calculate_position(const std::string& symbol, dou
 }
 
 double TrendFollowingStrategy::apply_position_buffer(const std::string& symbol, double raw_position,
-                                                     double price, double volatility) const {
+                                                     double price, double volatility,
+                                                     StrategyConsumptionTrace* trace) const {
+    if (trace) trace->buffering.use_position_buffering = trend_config_.use_position_buffering;
     if (!trend_config_.use_position_buffering) {
         return raw_position;
     }
@@ -1298,6 +1339,7 @@ double TrendFollowingStrategy::apply_position_buffer(const std::string& symbol, 
         }
     }
 
+    if (trace) trace->buffering.weight = trend_config_.weight;
     double weight = std::max(0.0, trend_config_.weight);
 
     // Get contract size from instrument registry (use cached value if available)
@@ -1332,11 +1374,20 @@ double TrendFollowingStrategy::apply_position_buffer(const std::string& symbol, 
     // CURRENT position, not raw, to create inertia for held positions: bigger held position →
     // wider tolerance for raw drift. When current=0, position_term=0 and floor controls entry
     // threshold (preserves small-natural instruments).
+    if (trace) {
+        trace->buffering.capital_allocation = config_.capital_allocation;
+        trace->buffering.idm = trend_config_.idm;
+        trace->buffering.risk_target = trend_config_.risk_target;
+        trace->buffering.fx_rate = trend_config_.fx_rate;
+    }
     double raw_buffer_width = 0.1 * config_.capital_allocation * trend_config_.idm *
                               trend_config_.risk_target * weight /
                               (contract_size * price * trend_config_.fx_rate * volatility);
+    if (trace) trace->buffering.carver_buffer_position_factor =
+        trend_config_.carver_buffer_position_factor;
     double position_term =
         trend_config_.carver_buffer_position_factor * std::abs(current_position);
+    if (trace) trace->buffering.carver_buffer_floor = trend_config_.carver_buffer_floor;
     double buffer_width = std::max(
         {trend_config_.carver_buffer_floor, raw_buffer_width, position_term});
 
@@ -1383,8 +1434,11 @@ double TrendFollowingStrategy::apply_position_buffer(const std::string& symbol, 
 
     // Final safety check - cap positions to configured limits
     double position_limit = 1000.0;
-    if (config_.position_limits.count(symbol) > 0) {
+    const bool has_limit = config_.position_limits.count(symbol) > 0;
+    if (trace) trace->buffering.symbol_limits[symbol].present = has_limit;
+    if (has_limit) {
         position_limit = config_.position_limits.at(symbol);
+        if (trace) trace->buffering.symbol_limits[symbol].value = position_limit;
     }
 
     double final_position = std::max(-position_limit, std::min(position_limit, new_position));
@@ -1398,7 +1452,8 @@ double TrendFollowingStrategy::apply_position_buffer(const std::string& symbol, 
 }
 
 double TrendFollowingStrategy::calculate_vol_regime_multiplier(
-    const std::vector<double>& prices, const std::vector<double>& volatility) const {
+    const std::vector<double>& prices, const std::vector<double>& volatility,
+    StrategyConsumptionTrace* trace) const {
     if (prices.size() < 252) {  // Need at least 1 year of data
         return (2.0 / 3.0);     // Default multiplier if insufficient data
     }
@@ -1407,6 +1462,7 @@ double TrendFollowingStrategy::calculate_vol_regime_multiplier(
     double current_vol = volatility.back();
 
     // Calculate lookback period for long-run average
+    if (trace) trace->regime.vol_lookback_long = trend_config_.vol_lookback_long;
     size_t max_lookback = static_cast<size_t>(trend_config_.vol_lookback_long);
     size_t available_days = prices.size();
     size_t lookback = std::min(available_days, max_lookback);

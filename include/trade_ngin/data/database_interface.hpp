@@ -64,7 +64,7 @@ public:
                                           const std::string& strategy_id,
                                           const std::string& strategy_name,
                                           const std::string& portfolio_id,
-                                          const std::string& table_name = "trading.executions") = 0;
+                                          const std::string& table_name = "trading.executions", const std::string& portfolio_type = "system") = 0;
 
     /**
      * @brief Store position data
@@ -269,7 +269,7 @@ public:
         double margin_leverage, double margin_cushion, double max_correlation, double jump_risk,
         double risk_scale, double gross_notional, double net_notional, int active_positions,
         double total_transaction_costs, double margin_posted, double cash_available,
-        const nlohmann::json& config, const std::string& table_name = "trading.live_results") = 0;
+        const nlohmann::json& config, const std::string& table_name = "trading.live_results", const std::string& portfolio_id = "BASE_PORTFOLIO", const std::string& portfolio_type = "system") = 0;
 
     /**
      * @brief Fetch previous day's cumulative aggregates from live_results
@@ -282,7 +282,7 @@ public:
      */
     virtual Result<std::tuple<double, double, double>> get_previous_live_aggregates(
         const std::string& strategy_id, const std::string& portfolio_id, const Timestamp& date,
-        const std::string& table_name = "trading.live_results") = 0;
+        const std::string& table_name = "trading.live_results", const std::string& portfolio_type = "system") = 0;
 
     /**
      * @brief Store live trading equity curve point
@@ -311,7 +311,7 @@ public:
         const std::string& strategy_id,
         const std::vector<std::pair<Timestamp, double>>& equity_points,
         const std::string& portfolio_id,
-        const std::string& table_name = "trading.equity_curve") = 0;
+        const std::string& table_name = "trading.equity_curve", const std::string& portfolio_type = "system") = 0;
 
 protected:
     /**

@@ -13,6 +13,8 @@ protected:
     void SetUp() override {
         // Reset logger first to close any existing file handles
         Logger::reset_for_tests();
+        // Own the thread component as well as the log sink.
+        Logger::register_component("");
 
         // Redirect cout to capture console output
         original_cout = std::cout.rdbuf();

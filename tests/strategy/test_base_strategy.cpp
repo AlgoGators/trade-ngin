@@ -63,7 +63,7 @@ public:
     Result<void> store_executions(const std::vector<ExecutionReport>& executions,
                                   const std::string& strategy_id, const std::string& strategy_name,
                                   const std::string& portfolio_id,
-                                  const std::string& table_name) override {
+                                  const std::string& table_name, const std::string& portfolio_type = "system") override {
         (void)strategy_id;
         (void)strategy_name;
         (void)portfolio_id;
@@ -308,6 +308,175 @@ TEST_F(BaseStrategyTest, CheckRiskLimits_FailsOnMaxDrawdown) {
     auto result = strategy->check_risk_limits();
     ASSERT_TRUE(result.is_error());
     EXPECT_EQ(result.error()->code(), ErrorCode::RISK_LIMIT_EXCEEDED);
+}
+
+TEST_F(BaseStrategyTest, ConsumptionTraceResetsOnEmptyVirtualCallAndReadsLiveRiskLimits) {
+    StrategyConfig config;
+    config.capital_allocation = 200000.0;
+    config.max_leverage = 6.0;
+    config.trading_params["AAPL"] = 12.5;
+    auto strategy = createRunningStrategy(config);
+    RiskLimits limits;
+    limits.max_leverage = Decimal::from_raw(175123456);
+    limits.max_drawdown = Decimal::from_raw(40123456);
+    ASSERT_TRUE(strategy->update_risk_limits(limits).is_ok());
+    Position position = createPosition(2.0, 100.0);
+    ASSERT_TRUE(strategy->update_position("AAPL", position).is_ok());
+
+    StrategyConsumptionTrace trace;
+    StrategyInterface& selected = *strategy;
+    Bar bar;
+    bar.symbol = "AAPL";
+    bar.timestamp = std::chrono::system_clock::now();
+    bar.close = Decimal(101.0);
+    ASSERT_TRUE(selected.on_data({bar}, &trace).is_ok());
+    EXPECT_EQ(trace.profile, StrategyConsumptionProfile::Base);
+    ASSERT_TRUE(trace.base_risk.risk_max_leverage.has_value());
+    EXPECT_EQ(trace.base_risk.risk_max_leverage->raw_value(), int64_t{175123456});
+    EXPECT_DOUBLE_EQ(static_cast<double>(*trace.base_risk.risk_max_leverage), 1.75123456);
+    ASSERT_TRUE(trace.base_risk.risk_max_drawdown.has_value());
+    EXPECT_EQ(trace.base_risk.risk_max_drawdown->raw_value(), int64_t{40123456});
+    EXPECT_DOUBLE_EQ(static_cast<double>(*trace.base_risk.risk_max_drawdown), 0.40123456);
+    EXPECT_DOUBLE_EQ(*trace.base_risk.capital_allocation, 200000.0);
+    EXPECT_DOUBLE_EQ(*trace.base_risk.trading_multipliers.at("AAPL").value, 12.5);
+    EXPECT_FALSE(trace.base_risk.fallback_config_max_leverage.has_value());
+
+    ASSERT_TRUE(selected.on_data({}, &trace).is_ok());
+    EXPECT_EQ(trace.profile, StrategyConsumptionProfile::Base);
+    EXPECT_FALSE(trace.base_risk.risk_max_leverage.has_value());
+    EXPECT_TRUE(trace.base_risk.trading_multipliers.empty());
+}
+
+TEST_F(BaseStrategyTest, PositionLimitReadSurvivesRejectionAndClearsForMissingSymbol) {
+    StrategyConfig config;
+    config.position_limits["AAPL"] = 100.0;
+    auto strategy = createRunningStrategy(config);
+    ASSERT_TRUE(strategy->update_position("AAPL", createPosition(50.0, 100.0)).is_ok());
+    StrategyPositionLimitConsumption read;
+    auto rejected = strategy->update_position("AAPL", createPosition(200.0, 100.0), &read);
+    ASSERT_TRUE(rejected.is_error());
+    EXPECT_EQ(rejected.error()->code(), ErrorCode::POSITION_LIMIT_EXCEEDED);
+    EXPECT_STREQ(rejected.error()->what(), "Position exceeds limit for AAPL");
+    EXPECT_DOUBLE_EQ(static_cast<double>(strategy->get_positions().at("AAPL").quantity), 50.0);
+    EXPECT_TRUE(read.supported);
+    ASSERT_TRUE(read.symbols.at("AAPL").value.has_value());
+    EXPECT_DOUBLE_EQ(*read.symbols.at("AAPL").value, 100.0);
+
+    ASSERT_TRUE(strategy->update_position("MSFT", createPosition(1.0, 200.0), &read).is_ok());
+    EXPECT_EQ(read.symbols.size(), size_t{1});
+    EXPECT_FALSE(read.symbols.at("MSFT").present);
+    EXPECT_FALSE(read.symbols.at("MSFT").value.has_value());
+}
+
+TEST_F(BaseStrategyTest, RiskReadUsesConfiguredFallbackOnlyWhenLiveLimitIsInvalid) {
+    StrategyConfig config;
+    config.capital_allocation = 200000.0;
+    config.max_leverage = 6.0;
+    auto strategy = createRunningStrategy(config);
+    ASSERT_TRUE(strategy->update_position("AAPL", createPosition(2.0, 100.0)).is_ok());
+    RiskLimits limits;
+    limits.max_leverage = Decimal(0.0);
+    limits.max_drawdown = Decimal(0.35);
+    ASSERT_TRUE(strategy->update_risk_limits(limits).is_ok());
+    StrategyRiskConsumption risk;
+    ASSERT_TRUE(strategy->check_risk_limits(&risk).is_ok());
+    EXPECT_TRUE(risk.supported);
+    ASSERT_TRUE(risk.risk_max_leverage.has_value());
+    EXPECT_DOUBLE_EQ(static_cast<double>(*risk.risk_max_leverage), 0.0);
+    ASSERT_TRUE(risk.fallback_config_max_leverage.has_value());
+    EXPECT_DOUBLE_EQ(*risk.fallback_config_max_leverage, 6.0);
+    EXPECT_FALSE(risk.trading_multipliers.at("AAPL").present);
+    EXPECT_FALSE(risk.trading_multipliers.at("AAPL").value.has_value());
+}
+
+TEST_F(BaseStrategyTest, RiskMultiplierReadsRemainSymbolKeyedAndReset) {
+    StrategyConfig config;
+    config.capital_allocation = 1'000'000.0;
+    config.max_leverage = 20.0;
+    config.trading_params["AAPL"] = 2.25;
+    config.trading_params["GOOG"] = 7.5;
+    auto strategy = createRunningStrategy(config);
+    ASSERT_TRUE(strategy->update_position("AAPL", createPosition(2.0, 100.0)).is_ok());
+    ASSERT_TRUE(strategy->update_position("GOOG", createPosition(3.0, 200.0)).is_ok());
+    StrategyRiskConsumption risk;
+    ASSERT_TRUE(strategy->check_risk_limits(&risk).is_ok());
+    ASSERT_EQ(risk.trading_multipliers.size(), size_t{2});
+    EXPECT_DOUBLE_EQ(*risk.trading_multipliers.at("AAPL").value, 2.25);
+    EXPECT_DOUBLE_EQ(*risk.trading_multipliers.at("GOOG").value, 7.5);
+
+    ASSERT_TRUE(strategy->seed_positions({}).is_ok());
+    ASSERT_TRUE(strategy->check_risk_limits(&risk).is_ok());
+    EXPECT_TRUE(risk.trading_multipliers.empty());
+}
+
+TEST_F(BaseStrategyTest, DrawdownErrorRetainsOnlyReachedReads) {
+    StrategyConfig config;
+    config.capital_allocation = 100000.0;
+    auto strategy = createRunningStrategy(config);
+    ASSERT_TRUE(strategy->on_execution(createExecution(Side::SELL, "AAPL", 1000, 50.0)).is_ok());
+    ASSERT_TRUE(strategy->on_execution(createExecution(Side::BUY, "AAPL", 1000, 200.0)).is_ok());
+    RiskLimits limits;
+    limits.max_leverage = Decimal(5.0);
+    limits.max_drawdown = Decimal(0.5);
+    ASSERT_TRUE(strategy->update_risk_limits(limits).is_error());
+    Bar bar;
+    bar.symbol = "AAPL";
+    bar.timestamp = std::chrono::system_clock::now();
+    bar.close = Decimal(100.0);
+    StrategyConsumptionTrace trace;
+    auto result = strategy->on_data({bar}, &trace);
+    ASSERT_TRUE(result.is_error());
+    EXPECT_EQ(result.error()->code(), ErrorCode::RISK_LIMIT_EXCEEDED);
+    EXPECT_EQ(trace.profile, StrategyConsumptionProfile::Base);
+    EXPECT_TRUE(trace.base_risk.supported);
+    EXPECT_DOUBLE_EQ(*trace.base_risk.capital_allocation, 100000.0);
+    EXPECT_DOUBLE_EQ(static_cast<double>(*trace.base_risk.risk_max_drawdown), 0.5);
+    EXPECT_FALSE(trace.base_risk.fallback_config_max_leverage.has_value());
+
+    bar.symbol.clear();
+    result = strategy->on_data({bar}, &trace);
+    ASSERT_TRUE(result.is_error());
+    EXPECT_EQ(result.error()->code(), ErrorCode::INVALID_DATA);
+    EXPECT_FALSE(trace.base_risk.supported);
+    EXPECT_FALSE(trace.base_risk.capital_allocation.has_value());
+}
+
+class RiskOverrideProbe : public BaseStrategy {
+public:
+    using BaseStrategy::BaseStrategy;
+
+    Result<void> check_risk_limits(StrategyRiskConsumption* consumption = nullptr) override {
+        ++calls;
+        if (consumption) *consumption = {};
+        return make_error<void>(ErrorCode::RISK_LIMIT_EXCEEDED, "Custom risk rejected",
+                                "RiskOverrideProbe");
+    }
+
+    int calls{0};
+};
+
+TEST(StrategyConsumptionVirtualDispatch, BaseDataInvokesCustomRiskOverride) {
+    StrategyConfig config;
+    config.capital_allocation = 100000.0;
+    config.max_leverage = 4.0;
+    auto db = std::make_shared<MockPostgresDatabase>();
+    RiskOverrideProbe strategy("RISK_OVERRIDE", config, db);
+    ASSERT_TRUE(strategy.initialize().is_ok());
+    ASSERT_TRUE(strategy.start().is_ok());
+    Bar bar;
+    bar.symbol = "AAPL";
+    bar.timestamp = std::chrono::system_clock::now();
+    bar.close = Decimal(100.0);
+    StrategyInterface& selected = strategy;
+    StrategyConsumptionTrace trace;
+    auto result = selected.on_data({bar}, &trace);
+    ASSERT_TRUE(result.is_error());
+    EXPECT_EQ(result.error()->code(), ErrorCode::RISK_LIMIT_EXCEEDED);
+    EXPECT_STREQ(result.error()->what(), "Custom risk rejected");
+    EXPECT_EQ(strategy.calls, 1);
+    EXPECT_EQ(trace.profile, StrategyConsumptionProfile::Base);
+    EXPECT_FALSE(trace.base_risk.supported);
+    EXPECT_FALSE(trace.base_risk.capital_allocation.has_value());
 }
 
 // --- Concurrency ---
