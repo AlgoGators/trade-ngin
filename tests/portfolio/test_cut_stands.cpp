@@ -420,15 +420,24 @@ TEST(CutStandsRunnerSource, BothFuturesRunnersPassTheNonSessionSymbolsBeforeTheR
         "book_gate_holds.insert(symbol);\n"
         "                }\n"
         "                portfolio->set_book_gate_holds(std::move(book_gate_holds));\n"
-        "            }\n"
-        "            auto port_process_result = portfolio->process_market_data(strategy_feed_bars);";
+        "            }\n";
+    // T-7b-3 (c) R-3 puts the rebalance behind the sizing hold (sizing_hold ? Result<void>() :
+    // portfolio->process_market_data(...)); the holds are still handed over right before it: the
+    // first process_market_data call after the block is the rebalance, with no other call between.
+    const std::string rebalance = "portfolio->process_market_data(strategy_feed_bars)";
     for (const char* runner : {"apps/strategies/live_portfolio_conservative.cpp",
                                "apps/strategies/live_portfolio.cpp"}) {
         SCOPED_TRACE(runner);
         const std::string src = stands_read_source(runner);
         if (src.empty()) GTEST_SKIP() << "runner source not found from the test working directory";
-        EXPECT_NE(src.find(block), std::string::npos)
+        const size_t at = src.find(block);
+        ASSERT_NE(at, std::string::npos)
             << "the runner must set the BOOK_GATE holds right before process_market_data";
+        const size_t next = src.find(rebalance, at + block.size());
+        ASSERT_NE(next, std::string::npos) << "no rebalance after the holds are set";
+        const std::string between = src.substr(at + block.size(), next - (at + block.size()));
+        EXPECT_EQ(between.find(';'), std::string::npos)
+            << "a statement sits between the holds and the rebalance: " << between;
     }
     const std::string eq = stands_read_source("apps/strategies/live_equity_mean_reversion.cpp");
     if (!eq.empty()) {
