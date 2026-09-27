@@ -242,11 +242,12 @@ Result<void> TrendFollowingFastStrategy::on_data(const std::vector<Bar>& data) {
                 prices.assign(full_prices.begin(), full_prices.end());
             }
 
-            // Calculate volatility, annualised by sqrt(bars a year) counted over the bars the
-            // estimator reads (a series with a Sunday session row has about 313 a year, not
-            // 256); the blend weights and history cap are the defaults, unchanged
+            // Calculate volatility, annualised by sqrt(bars a year) counted over the trailing 256
+            // bars the estimator has, or all of them when it has fewer (a series with a Sunday
+            // session row has about 313 a year, not 256; HD ruling 11: the same count in every
+            // engine); the blend weights and history cap are the defaults, unchanged
             const VolAnnualisation annualisation =
-                vol_annualisation(instrument_data.bar_timestamps, prices.size());
+                trailing_vol_annualisation(instrument_data.bar_timestamps, prices.size());
             DEBUG("Symbol " + symbol + " vol annualisation: bars=" +
                   std::to_string(annualisation.bars) +
                   " span_days=" + std::to_string(annualisation.span_days) +

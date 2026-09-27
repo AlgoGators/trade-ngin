@@ -21,7 +21,8 @@ namespace trade_ngin {
  * has about 5.9 bars a week (about 307 a year), and 16 understates its annual vol by about
  * 8.6 percent. The rule counts the bars the series actually has:
  *
- *   window        the last `window` timestamps (the same bars the estimator reads)
+ *   window        the last `window` timestamps (the strategies pass the trailing
+ *                 kVolAnnualisationWindowBars bars; see trailing_vol_annualisation below)
  *   span_days     (last - first) in days, fractional
  *   bars_per_year (bars - 1) / (span_days / 365.25), the returns per calendar year
  *   factor        sqrt(bars_per_year)
@@ -68,6 +69,35 @@ inline VolAnnualisation vol_annualisation(const std::deque<Timestamp>& timestamp
     out.factor = std::sqrt(out.bars_per_year);
     out.fallback = false;
     return out;
+}
+
+/**
+ * @brief The count window of the strategies' annualisation (HD ruling 11, T-7b-3, review R-4).
+ *
+ * The bars a year are counted over the trailing 256 bars the estimator has for the symbol as of
+ * the signal bar, never over the whole loaded history. The whole history differs by engine (live
+ * loads 730 calendar days, about 600 bars; the backtest's history grows from its 256-bar warm-up to
+ * the 756-bar cap; a 5-year and a 2-year backtest hold different histories on the same date), so a
+ * count over it gave each engine its own factor on the same bars. Over the trailing 256 bars every
+ * engine holding the same bars counts the same bars and gets the same factor.
+ *
+ * A series with fewer than 256 bars counts over what it has (all its bars; the VOL_ANNUALISATION
+ * line then shows bars < 256), and fewer than two bars fall back to 16 as before.
+ *
+ * 256 is a literal, not read from a strategy parameter: it is the bar count HD ruled, the year of
+ * daily bars behind Carver's 16 = sqrt(256), and it must be the same for every trend class (Fast's
+ * longest EMA is 64, Slow's 512; vol_lookback_long is 252), which no per-strategy parameter is.
+ */
+inline constexpr size_t kVolAnnualisationWindowBars = 256;
+
+/**
+ * @brief The strategies' annualisation: vol_annualisation over the trailing
+ * min(kVolAnnualisationWindowBars, estimator_bars) timestamps, where `estimator_bars` is the
+ * number of bars the estimator reads (`prices.size()`).
+ */
+inline VolAnnualisation trailing_vol_annualisation(const std::deque<Timestamp>& timestamps,
+                                                   size_t estimator_bars) {
+    return vol_annualisation(timestamps, std::min(kVolAnnualisationWindowBars, estimator_bars));
 }
 
 /**

@@ -167,7 +167,7 @@ protected:
     }
 
     // Production shape: vol_lookback_long 252, so the history holds 756 bars.
-    void make_strategy() {
+    void make_strategy(const std::vector<std::pair<int, int>>& ema_windows = {}) {
         StrategyConfig sc;
         sc.capital_allocation = 1'000'000.0;
         sc.max_leverage = 100.0;
@@ -183,6 +183,9 @@ protected:
         tc.use_position_buffering = false;
         tc.vol_lookback_short = Traits<S>::kVolSpan;
         tc.vol_lookback_long = 252;
+        if (!ema_windows.empty()) {
+            tc.ema_windows = ema_windows;
+        }
 
         static int id = 0;
         strategy_id_ = "TEST_VOL_ANN_" + std::to_string(++id);
@@ -233,6 +236,32 @@ protected:
         ::testing::internal::CaptureStdout();
         feed(bars);
         return ::testing::internal::GetCapturedStdout();
+    }
+
+    // A fresh strategy fed bars[from, to): the first `bulk` of them in one call (a bulk load,
+    // which clears the history), the rest one a day. Returns the VOL_ANNUALISATION lines printed.
+    std::vector<std::map<std::string, std::string>> run_engine(
+        const std::vector<Bar>& bars, size_t from, size_t to, size_t bulk,
+        const std::vector<std::pair<int, int>>& ema_windows = {}) {
+        LoggerConfig lc;
+        lc.destination = LogDestination::CONSOLE;
+        lc.min_level = LogLevel::INFO;
+        lc.include_timestamp = false;
+        Logger::instance().initialize(lc);
+        if (strategy_) {
+            strategy_->stop();
+            strategy_.reset();
+        }
+        make_strategy(ema_windows);
+        ::testing::internal::CaptureStdout();
+        const size_t head = std::min(to, from + bulk);
+        bool ok = strategy_->on_data(std::vector<Bar>(bars.begin() + from, bars.begin() + head)).is_ok();
+        for (size_t k = head; k < to && ok; ++k) {
+            ok = strategy_->on_data({bars[k]}).is_ok();
+        }
+        const std::string log = ::testing::internal::GetCapturedStdout();
+        EXPECT_TRUE(ok);
+        return vol_annualisation_lines(log);
     }
 
     std::shared_ptr<MockPostgresDatabase> db_;
@@ -293,9 +322,9 @@ TYPED_TEST(VolAnnualisationTest, ForecastDoesNotDependOnTheCalendar) {
 // must be the ones the estimator was scaled by.
 //
 // Six-bar calendar of 997 bars: the first 900 in one call, then 97 daily calls, so 98 lines. The
-// history holds 756 bars. The bulk call counts bars 144..899 (2021-06-20..2023-11-17, 880 days);
-// the last daily call counts bars 241..996 (2021-10-11..2024-03-10, 881 days): 755 returns x
-// 365.25 / 881 = 313.0122 bars a year.
+// count is over the trailing 256 bars (HD ruling 11, T-7b-3). The bulk call counts bars 644..899
+// (2023-01-24..2023-11-17, 297 days); the last daily call counts bars 741..996
+// (2023-05-17..2024-03-10, 298 days): 255 returns x 365.25 / 298 = 312.5420 bars a year.
 TYPED_TEST(VolAnnualisationTest, LogLineCarriesTheWindowAndTheFactorUsed) {
     const std::string log6 = this->feed_and_capture(alternating_bars(calendar(997, 6)));
     const double vol6 = this->strategy_->get_instrument_data(kSym)->current_volatility;
@@ -307,22 +336,22 @@ TYPED_TEST(VolAnnualisationTest, LogLineCarriesTheWindowAndTheFactorUsed) {
         EXPECT_EQ(l.at("strategy"), this->strategy_id_);
         EXPECT_EQ(l.at("symbol"), kSym);
         EXPECT_EQ(l.at("signal_bar"), l.at("last"));
-        EXPECT_EQ(l.at("bars"), "756");
+        EXPECT_EQ(l.at("bars"), "256");
         EXPECT_EQ(l.at("fallback"), "0");
     }
 
     const auto& bulk = lines6.front();
-    EXPECT_EQ(bulk.at("first"), "2021-06-20");
+    EXPECT_EQ(bulk.at("first"), "2023-01-24");
     EXPECT_EQ(bulk.at("last"), "2023-11-17");
-    EXPECT_NEAR(std::stod(bulk.at("span_days")), 880.0, 1e-9);
-    EXPECT_NEAR(std::stod(bulk.at("bars_per_year")), 755.0 * kDaysPerYear / 880.0, 1e-9);
+    EXPECT_NEAR(std::stod(bulk.at("span_days")), 297.0, 1e-9);
+    EXPECT_NEAR(std::stod(bulk.at("bars_per_year")), 255.0 * kDaysPerYear / 297.0, 1e-9);
 
     const auto& last6 = lines6.back();
     EXPECT_EQ(last6.at("signal_bar"), "2024-03-10");
-    EXPECT_EQ(last6.at("first"), "2021-10-11");
+    EXPECT_EQ(last6.at("first"), "2023-05-17");
     EXPECT_EQ(last6.at("last"), "2024-03-10");
-    EXPECT_NEAR(std::stod(last6.at("span_days")), 881.0, 1e-9);
-    const double bpy = 755.0 * kDaysPerYear / 881.0;
+    EXPECT_NEAR(std::stod(last6.at("span_days")), 298.0, 1e-9);
+    const double bpy = 255.0 * kDaysPerYear / 298.0;
     EXPECT_NEAR(std::stod(last6.at("bars_per_year")), bpy, 1e-9);
     EXPECT_NEAR(std::stod(last6.at("factor")), std::sqrt(bpy), 1e-9);
 
@@ -336,12 +365,109 @@ TYPED_TEST(VolAnnualisationTest, LogLineCarriesTheWindowAndTheFactorUsed) {
     const auto lines5 = vol_annualisation_lines(log5);
     ASSERT_EQ(lines5.size(), 98u);
     const auto& last5 = lines5.back();
-    EXPECT_EQ(last5.at("first"), "2021-12-07");
+    EXPECT_EQ(last5.at("first"), "2023-11-07");
     EXPECT_EQ(last5.at("last"), "2024-10-29");
-    EXPECT_NEAR(std::stod(last5.at("factor")), std::sqrt(755.0 * kDaysPerYear / 1057.0), 1e-9);
+    EXPECT_NEAR(std::stod(last5.at("factor")), std::sqrt(255.0 * kDaysPerYear / 357.0), 1e-9);
     EXPECT_NEAR((vol6 / vol5) / (std::stod(last6.at("factor")) / std::stod(last5.at("factor"))),
                 1.0, 1e-9)
         << "vol6=" << vol6 << " vol5=" << vol5;
+}
+
+// HD ruling 11 (T-7b-3): the factor is counted over the trailing 256 bars the estimator has, so the
+// engines agree on the same bars whatever history each loaded.
+//
+// The calendar changes density: 500 bars of five-bar weeks (2021-01-04..2022-12-02), then 600
+// bars of six-bar weeks with a Sunday session row (2022-12-04..2024-11-15), 1,100 bars in all.
+// A count over the whole loaded history would differ between a 600-bar load and a 756-bar one
+// because the longer one reaches back into the five-bar weeks; the trailing 256 bars (1024 bars in:
+// 2023-12-18 onward) are six-bar weeks in every engine.
+namespace {
+std::vector<Timestamp> mixed_calendar() {
+    auto ts = calendar(500, 5);                    // weeks 0..99
+    const auto six = calendar(600, 6, 7 * 100);    // weeks 100..199
+    ts.insert(ts.end(), six.begin(), six.end());
+    return ts;
+}
+
+std::string ymd_of(const Timestamp& t) { return core::format_utc_date(t); }
+}  // namespace
+
+// (i) A live-shaped history (the last 620 bars in one bulk call, as live loads 730 calendar days)
+// and a backtest-shaped one (256 bars of warm-up in one call, then one bar a day, the history
+// growing to its 756-bar cap) that end on the same bar print the same factor to the last digit.
+TYPED_TEST(VolAnnualisationTest, LiveAndBacktestShapedHistoriesGiveTheSameFactorOnTheSameBars) {
+    const auto ts = mixed_calendar();
+    const auto bars = alternating_bars(ts);
+    const size_t n = bars.size();
+
+    const auto live = this->run_engine(bars, n - 620, n, 620);
+    ASSERT_EQ(live.size(), 1u) << "one bulk call, one signal computation";
+    const auto bt = this->run_engine(bars, 0, n, 256);
+    ASSERT_FALSE(bt.empty());
+    const auto& b = bt.back();
+    const auto& l = live.front();
+
+    ASSERT_EQ(l.at("signal_bar"), ymd_of(ts[n - 1]));
+    ASSERT_EQ(b.at("signal_bar"), ymd_of(ts[n - 1]));
+    EXPECT_EQ(l.at("bars"), "256");
+    EXPECT_EQ(b.at("bars"), "256");
+    EXPECT_EQ(l.at("first"), ymd_of(ts[n - 256]));
+    EXPECT_EQ(b.at("first"), ymd_of(ts[n - 256]));
+    EXPECT_EQ(l.at("span_days"), b.at("span_days"));
+    EXPECT_EQ(l.at("bars_per_year"), b.at("bars_per_year"));
+    EXPECT_EQ(l.at("factor"), b.at("factor")) << "live and backtest on the same bars";
+    const double span =
+        std::chrono::duration<double>(ts[n - 1] - ts[n - 256]).count() / 86400.0;
+    EXPECT_NEAR(std::stod(l.at("factor")), std::sqrt(255.0 * kDaysPerYear / span), 1e-9);
+}
+
+// (ii) A 5-year-shaped backtest (from bar 0, capped at 756 bars) and a 2-year-shaped one (from bar
+// 500) give the same factor on every shared signal bar where both computed.
+TYPED_TEST(VolAnnualisationTest, FiveYearAndTwoYearWindowsGiveTheSameFactorOnASharedDate) {
+    const auto ts = mixed_calendar();
+    const auto bars = alternating_bars(ts);
+    const size_t n = bars.size();
+
+    const auto y5 = this->run_engine(bars, 0, n, 256);
+    const auto y2 = this->run_engine(bars, 500, n, 256);
+    std::map<std::string, std::map<std::string, std::string>> by_bar5;
+    for (const auto& l : y5) by_bar5[l.at("signal_bar")] = l;
+    size_t shared = 0;
+    for (const auto& l2 : y2) {
+        const auto it = by_bar5.find(l2.at("signal_bar"));
+        if (it == by_bar5.end()) continue;
+        ++shared;
+        EXPECT_EQ(l2.at("bars"), "256") << l2.at("signal_bar");
+        EXPECT_EQ(it->second.at("bars"), "256") << l2.at("signal_bar");
+        EXPECT_EQ(l2.at("first"), it->second.at("first")) << l2.at("signal_bar");
+        EXPECT_EQ(l2.at("factor"), it->second.at("factor")) << l2.at("signal_bar");
+    }
+    // Every 2-year line has a 5-year twin (the 5-year run computes on every day from bar 256).
+    EXPECT_EQ(shared, y2.size());
+    EXPECT_GT(shared, 80u);
+}
+
+// (iii) A series with fewer than 256 bars counts over what it has: with EMA windows up to 16 the
+// strategy computes from 150 bars (one bulk call), and the count is min(256, bars held) on every
+// day after, 256 once the history passes 256.
+TYPED_TEST(VolAnnualisationTest, FewerThan256BarsCountsOverWhatItHas) {
+    const auto ts = calendar(300, 6);
+    const auto bars = alternating_bars(ts);
+    const auto lines = this->run_engine(bars, 0, 300, 150, {{2, 8}, {4, 16}});
+    ASSERT_EQ(lines.size(), 151u);
+    for (size_t j = 0; j < lines.size(); ++j) {
+        const size_t held = 150 + j;
+        const size_t counted = std::min<size_t>(256, held);
+        const auto& l = lines[j];
+        ASSERT_EQ(l.at("bars"), std::to_string(counted)) << "held " << held;
+        EXPECT_EQ(l.at("first"), ymd_of(ts[held - counted])) << "held " << held;
+        EXPECT_EQ(l.at("last"), ymd_of(ts[held - 1])) << "held " << held;
+        const double span =
+            std::chrono::duration<double>(ts[held - 1] - ts[held - counted]).count() / 86400.0;
+        EXPECT_NEAR(std::stod(l.at("factor")),
+                    std::sqrt((counted - 1.0) * kDaysPerYear / span), 1e-9)
+            << "held " << held;
+    }
 }
 
 // The counting rule itself.
