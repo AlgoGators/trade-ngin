@@ -253,6 +253,8 @@ Result<void> TrendFollowingSlowStrategy::on_data(const std::vector<Bar>& data) {
                   " bars_per_year=" + std::to_string(annualisation.bars_per_year) +
                   " factor=" + std::to_string(annualisation.factor) +
                   (annualisation.fallback ? " fallback=16" : ""));
+            INFO(vol_annualisation_log_line("TrendFollowingSlow", id_, symbol,
+                                            symbol_bars.back().timestamp, annualisation));
             std::vector<double> volatility;
             try {
                 volatility = blended_ewma_stddev(prices, trend_config_.vol_lookback_short, 0.7,

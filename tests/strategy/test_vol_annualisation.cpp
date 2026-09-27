@@ -12,7 +12,10 @@
 #include <chrono>
 #include <cmath>
 #include <deque>
+#include <map>
 #include <memory>
+#include <regex>
+#include <sstream>
 #include <string>
 #include <vector>
 #include "../core/test_base.hpp"
@@ -86,17 +89,39 @@ template <>
 struct Traits<TrendFollowingStrategy> {
     using Config = TrendFollowingConfig;
     static constexpr int kVolSpan = 32;
+    static constexpr const char* kClass = "TrendFollowing";
 };
 template <>
 struct Traits<TrendFollowingFastStrategy> {
     using Config = TrendFollowingFastConfig;
     static constexpr int kVolSpan = 16;
+    static constexpr const char* kClass = "TrendFollowingFast";
 };
 template <>
 struct Traits<TrendFollowingSlowStrategy> {
     using Config = TrendFollowingSlowConfig;
     static constexpr int kVolSpan = 64;
+    static constexpr const char* kClass = "TrendFollowingSlow";
 };
+
+// The key=value fields of every VOL_ANNUALISATION line in a captured log, in order.
+std::vector<std::map<std::string, std::string>> vol_annualisation_lines(const std::string& log) {
+    std::vector<std::map<std::string, std::string>> out;
+    std::istringstream in(log);
+    std::string line;
+    static const std::regex kv("([a-z_]+)=(\\S+)");
+    while (std::getline(in, line)) {
+        const auto at = line.find("VOL_ANNUALISATION ");
+        if (at == std::string::npos) continue;
+        std::map<std::string, std::string> fields;
+        const std::string rest = line.substr(at);
+        for (std::sregex_iterator it(rest.begin(), rest.end(), kv), end; it != end; ++it) {
+            fields[(*it)[1]] = (*it)[2];
+        }
+        out.push_back(fields);
+    }
+    return out;
+}
 
 }  // namespace
 
@@ -160,8 +185,8 @@ protected:
         tc.vol_lookback_long = 252;
 
         static int id = 0;
-        strategy_ = std::make_unique<S>("TEST_VOL_ANN_" + std::to_string(++id), sc, tc, db_,
-                                        registry_);
+        strategy_id_ = "TEST_VOL_ANN_" + std::to_string(++id);
+        strategy_ = std::make_unique<S>(strategy_id_, sc, tc, db_, registry_);
         ASSERT_TRUE(strategy_->initialize().is_ok());
         RiskLimits rl;
         rl.max_position_size = 1000.0;
@@ -197,9 +222,23 @@ protected:
         return strategy_->get_forecast(kSym);
     }
 
+    // Runs the feed with the console logger at INFO and returns what it printed.
+    std::string feed_and_capture(const std::vector<Bar>& bars) {
+        LoggerConfig lc;
+        lc.destination = LogDestination::CONSOLE;
+        lc.min_level = LogLevel::INFO;
+        lc.include_timestamp = false;
+        Logger::instance().initialize(lc);
+        make_strategy();
+        ::testing::internal::CaptureStdout();
+        feed(bars);
+        return ::testing::internal::GetCapturedStdout();
+    }
+
     std::shared_ptr<MockPostgresDatabase> db_;
     std::shared_ptr<InstrumentRegistry> registry_;
     std::unique_ptr<S> strategy_;
+    std::string strategy_id_;
 };
 
 using TrendStrategies =
@@ -247,6 +286,62 @@ TYPED_TEST(VolAnnualisationTest, ForecastDoesNotDependOnTheCalendar) {
     this->strategy_.reset();
     const double f5 = this->forecast_after(alternating_bars(calendar(997, 5)));
     EXPECT_EQ(f6, f5);
+}
+
+// R-4 (T-7b-3): the factor is written to the log, per symbol per signal computation, with the
+// window it was counted over, so the live and backtest factors can be compared. The line's numbers
+// must be the ones the estimator was scaled by.
+//
+// Six-bar calendar of 997 bars: the first 900 in one call, then 97 daily calls, so 98 lines. The
+// history holds 756 bars. The bulk call counts bars 144..899 (2021-06-20..2023-11-17, 880 days);
+// the last daily call counts bars 241..996 (2021-10-11..2024-03-10, 881 days): 755 returns x
+// 365.25 / 881 = 313.0122 bars a year.
+TYPED_TEST(VolAnnualisationTest, LogLineCarriesTheWindowAndTheFactorUsed) {
+    const std::string log6 = this->feed_and_capture(alternating_bars(calendar(997, 6)));
+    const double vol6 = this->strategy_->get_instrument_data(kSym)->current_volatility;
+    const auto lines6 = vol_annualisation_lines(log6);
+    ASSERT_EQ(lines6.size(), 98u) << "one VOL_ANNUALISATION line per signal computation\n"
+                                  << log6.substr(0, 2000);
+    for (const auto& l : lines6) {
+        EXPECT_EQ(l.at("class"), Traits<TypeParam>::kClass);
+        EXPECT_EQ(l.at("strategy"), this->strategy_id_);
+        EXPECT_EQ(l.at("symbol"), kSym);
+        EXPECT_EQ(l.at("signal_bar"), l.at("last"));
+        EXPECT_EQ(l.at("bars"), "756");
+        EXPECT_EQ(l.at("fallback"), "0");
+    }
+
+    const auto& bulk = lines6.front();
+    EXPECT_EQ(bulk.at("first"), "2021-06-20");
+    EXPECT_EQ(bulk.at("last"), "2023-11-17");
+    EXPECT_NEAR(std::stod(bulk.at("span_days")), 880.0, 1e-9);
+    EXPECT_NEAR(std::stod(bulk.at("bars_per_year")), 755.0 * kDaysPerYear / 880.0, 1e-9);
+
+    const auto& last6 = lines6.back();
+    EXPECT_EQ(last6.at("signal_bar"), "2024-03-10");
+    EXPECT_EQ(last6.at("first"), "2021-10-11");
+    EXPECT_EQ(last6.at("last"), "2024-03-10");
+    EXPECT_NEAR(std::stod(last6.at("span_days")), 881.0, 1e-9);
+    const double bpy = 755.0 * kDaysPerYear / 881.0;
+    EXPECT_NEAR(std::stod(last6.at("bars_per_year")), bpy, 1e-9);
+    EXPECT_NEAR(std::stod(last6.at("factor")), std::sqrt(bpy), 1e-9);
+
+    // The same prices on a five-bar calendar: the per-bar vol is the same, so the two strategies'
+    // annual vols differ by exactly the ratio of the factors they used. The printed factors must
+    // reproduce that ratio.
+    this->strategy_->stop();
+    this->strategy_.reset();
+    const std::string log5 = this->feed_and_capture(alternating_bars(calendar(997, 5)));
+    const double vol5 = this->strategy_->get_instrument_data(kSym)->current_volatility;
+    const auto lines5 = vol_annualisation_lines(log5);
+    ASSERT_EQ(lines5.size(), 98u);
+    const auto& last5 = lines5.back();
+    EXPECT_EQ(last5.at("first"), "2021-12-07");
+    EXPECT_EQ(last5.at("last"), "2024-10-29");
+    EXPECT_NEAR(std::stod(last5.at("factor")), std::sqrt(755.0 * kDaysPerYear / 1057.0), 1e-9);
+    EXPECT_NEAR((vol6 / vol5) / (std::stod(last6.at("factor")) / std::stod(last5.at("factor"))),
+                1.0, 1e-9)
+        << "vol6=" << vol6 << " vol5=" << vol5;
 }
 
 // The counting rule itself.
