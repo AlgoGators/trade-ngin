@@ -342,6 +342,15 @@ Result<void> PortfolioManager::process_market_data(const std::vector<Bar>& data,
                     if (info.strategy->get_state() != StrategyState::RUNNING) {
                         WARN("Strategy " + id + " is not RUNNING; it takes no part in this "
                              "cycle and its target positions are not read");
+                        // Not reading the targets is not enough: the map this manager keeps for
+                        // the sleeve still holds the previous rebalance's targets, and everything
+                        // after this loop in the same call reads it (the optimizer, the risk
+                        // steps, the rounding, the book copy and execution generation). Empty it,
+                        // so the stopped sleeve contributes no target (ledger row
+                        // DA96324A-stopped-sleeve-map). Unreachable in every runner today: each
+                        // starts its strategies before the first call and stops them after the
+                        // last.
+                        info.target_positions.clear();
                         continue;
                     }
 
