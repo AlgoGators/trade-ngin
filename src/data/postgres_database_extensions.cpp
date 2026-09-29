@@ -291,8 +291,7 @@ Result<void> PostgresDatabase::store_backtest_positions(const std::vector<Positi
             // (LiveDailyCycle::is_dead_row): dead means no quantity AND no realized.
             // Futures leave the flag false and keep the original unconditional filter.
             if (std::abs(static_cast<double>(pos.quantity)) < 1e-10) {
-                if (!keep_closed_rows ||
-                    std::abs(static_cast<double>(pos.realized_pnl)) < 1e-10) {
+                if (!keep_closed_rows || std::abs(static_cast<double>(pos.realized_pnl)) < 1e-10) {
                     continue;
                 }
             }

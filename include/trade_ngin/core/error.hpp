@@ -60,6 +60,9 @@ enum class ErrorCode {
     ENCRYPTION_ERROR = 24,
     DECRYPTION_ERROR = 25,
 
+    // Deprecation
+    DEPRECATED_FUNCTION = 26,
+
     // Custom error range
     CUSTOM_ERROR_START = 1000
 };

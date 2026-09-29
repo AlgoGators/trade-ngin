@@ -71,17 +71,23 @@ public:
     Result<void> commit();
 
     /// True once commit() has succeeded. False means the destructor will roll back.
-    bool committed() const { return committed_; }
+    bool committed() const {
+        return committed_;
+    }
 
     /// True when the scope holds a live transaction (false after a move).
-    bool valid() const { return txn_ != nullptr; }
+    bool valid() const {
+        return txn_ != nullptr;
+    }
 
 private:
     friend class PostgresDatabase;
 
     explicit DbTransaction(pqxx::connection& conn);
 
-    pqxx::work& work() { return *txn_; }
+    pqxx::work& work() {
+        return *txn_;
+    }
 
     std::unique_ptr<pqxx::work> txn_;
     bool committed_{false};
@@ -196,24 +202,6 @@ public:
                                  const std::string& strategy_id, const std::string& strategy_name,
                                  const std::string& portfolio_id,
                                  const std::string& table_name) override;
-
-    /**
-     * @brief Open a scope in which several writes commit or roll back together.
-     *
-     * Pass the returned scope to the overloads that accept a DbTransaction, then
-     * call commit(). Errors if the connection is unavailable.
-     */
-    Result<std::unique_ptr<DbTransaction>> begin_unit_of_work();
-
-    /**
-     * @brief Store positions inside a caller-owned unit of work.
-     *
-     * Same statements as the single-write overload; the caller commits. Use when
-     * the positions must land together with another write.
-     */
-    Result<void> store_positions(DbTransaction& txn, const std::vector<Position>& positions,
-                                 const std::string& strategy_id, const std::string& strategy_name,
-                                 const std::string& portfolio_id, const std::string& table_name);
 
     /**
      * @brief Store signals in the database
@@ -367,9 +355,9 @@ public:
         const std::string& strategy_id, const Timestamp& date, double total_return,
         double volatility, double total_pnl, double unrealized_pnl, double realized_pnl,
         double current_portfolio_value, double daily_realized_pnl, double daily_unrealized_pnl,
-        double portfolio_var, double net_leverage, double gross_leverage,
-        double margin_leverage, double margin_cushion, double max_correlation, double jump_risk,
-        double risk_scale, double gross_notional, double net_notional, int active_positions,
+        double portfolio_var, double net_leverage, double gross_leverage, double margin_leverage,
+        double margin_cushion, double max_correlation, double jump_risk, double risk_scale,
+        double gross_notional, double net_notional, int active_positions,
         double total_transaction_costs, double margin_posted, double cash_available,
         const nlohmann::json& config,
         const std::string& table_name = "trading.live_results") override;
@@ -436,11 +424,10 @@ public:
      * why portfolio_id is required rather than defaulted. A default would let a caller be
      * silently re-armed by omission.
      */
-    virtual Result<void> delete_stale_executions(const std::vector<std::string>& order_ids,
-                                                  const Timestamp& date,
-                                                  const std::string& strategy_name,
-                                                  const std::string& portfolio_id,
-                                                  const std::string& table_name = "trading.executions");
+    virtual Result<void> delete_stale_executions(
+        const std::vector<std::string>& order_ids, const Timestamp& date,
+        const std::string& strategy_name, const std::string& portfolio_id,
+        const std::string& table_name = "trading.executions");
 
     /**
      * @brief Store backtest summary results (replaces raw SQL INSERT)
@@ -486,8 +473,7 @@ public:
     virtual Result<void> store_backtest_positions(
         const std::vector<Position>& positions, const std::string& run_id,
         const std::string& portfolio_id = "BASE_PORTFOLIO",
-        const std::string& table_name = "backtest.final_positions",
-        bool keep_closed_rows = false);
+        const std::string& table_name = "backtest.final_positions", bool keep_closed_rows = false);
 
     // Multi-strategy version: store positions with strategy_id
     virtual Result<void> store_backtest_positions_with_strategy(
@@ -506,8 +492,7 @@ public:
      */
     virtual Result<void> update_live_results(
         const std::string& strategy_id, const Timestamp& date,
-        const std::unordered_map<std::string, double>& updates,
-        const std::string& portfolio_id,
+        const std::unordered_map<std::string, double>& updates, const std::string& portfolio_id,
         const std::string& table_name = "trading.live_results");
 
     /**
@@ -521,8 +506,7 @@ public:
      */
     virtual Result<void> update_live_equity_curve(
         const std::string& strategy_id, const Timestamp& date, double equity,
-        const std::string& portfolio_id,
-        const std::string& table_name = "trading.equity_curve");
+        const std::string& portfolio_id, const std::string& table_name = "trading.equity_curve");
 
     /**
      * @brief Delete existing live results for a date (replaces raw SQL DELETE)
@@ -533,8 +517,7 @@ public:
      * @return Result indicating success or failure
      */
     virtual Result<void> delete_live_results(
-        const std::string& strategy_id, const Timestamp& date,
-        const std::string& portfolio_id,
+        const std::string& strategy_id, const Timestamp& date, const std::string& portfolio_id,
         const std::string& table_name = "trading.live_results");
 
     /**
@@ -546,8 +529,7 @@ public:
      * @return Result indicating success or failure
      */
     virtual Result<void> delete_live_equity_curve(
-        const std::string& strategy_id, const Timestamp& date,
-        const std::string& portfolio_id,
+        const std::string& strategy_id, const Timestamp& date, const std::string& portfolio_id,
         const std::string& table_name = "trading.equity_curve");
 
     /**
@@ -628,8 +610,7 @@ public:
      * @return Sorted by (date, ticker, action); empty result is not an error.
      */
     Result<std::vector<CorpActionRow>> get_corporate_actions(
-        const std::vector<std::string>& tickers,
-        const std::string& start_date,
+        const std::vector<std::string>& tickers, const std::string& start_date,
         const std::string& end_date,
         const std::vector<std::string>& actions = {"split", "dividend", "adrratiosplit"});
 
@@ -668,8 +649,7 @@ public:
      * @return Sorted by (date, ticker, action); empty result is not an error.
      */
     virtual Result<std::vector<CorpActionRow>> get_per_bar_corporate_actions(
-        const std::vector<std::string>& tickers,
-        const std::string& start_date,
+        const std::vector<std::string>& tickers, const std::string& start_date,
         const std::string& end_date);
 
     /** @brief One equities_data.ticker_aliases row (SERIES_CONTINUITY source). */
@@ -732,10 +712,8 @@ public:
      *         with no history are absent.
      */
     virtual Result<std::unordered_map<std::string, std::string>> get_position_inception_dates(
-        const std::string& strategy_id,
-        const std::string& strategy_name,
-        const std::string& portfolio_id,
-        const std::vector<std::string>& symbols,
+        const std::string& strategy_id, const std::string& strategy_name,
+        const std::string& portfolio_id, const std::vector<std::string>& symbols,
         const std::string& table_name = "trading.positions");
 
     /**
@@ -773,12 +751,9 @@ public:
      *         row after the last flat row are ABSENT, and class 2 skips them.
      */
     virtual Result<std::unordered_map<std::string, std::string>> get_current_holding_start_dates(
-        const std::string& strategy_id,
-        const std::string& strategy_name,
-        const std::string& portfolio_id,
-        const std::vector<std::string>& symbols,
-        const std::string& on_or_before = {},
-        const std::string& table_name = "trading.positions");
+        const std::string& strategy_id, const std::string& strategy_name,
+        const std::string& portfolio_id, const std::vector<std::string>& symbols,
+        const std::string& on_or_before = {}, const std::string& table_name = "trading.positions");
 
     /**
      * @brief Latest date this strategy BOUGHT each symbol, on or after `on_or_after`.
@@ -804,12 +779,9 @@ public:
      * @return symbol -> YYYY-MM-DD of the most recent qualifying BUY.
      */
     virtual Result<std::unordered_map<std::string, std::string>> get_last_buy_dates(
-        const std::string& strategy_id,
-        const std::string& strategy_name,
-        const std::string& portfolio_id,
-        const std::vector<std::string>& symbols,
-        const std::string& on_or_after,
-        const std::string& on_or_before,
+        const std::string& strategy_id, const std::string& strategy_name,
+        const std::string& portfolio_id, const std::vector<std::string>& symbols,
+        const std::string& on_or_after, const std::string& on_or_before,
         const std::string& table_name = "trading.executions");
 
     /**
@@ -827,8 +799,7 @@ public:
      * @return symbol -> (YYYY-MM-DD -> close).
      */
     virtual Result<std::unordered_map<std::string, std::map<std::string, double>>>
-    get_historical_closes(const std::vector<std::string>& symbols,
-                          const std::string& start_date,
+    get_historical_closes(const std::vector<std::string>& symbols, const std::string& start_date,
                           const std::string& end_date);
 
     /**
@@ -872,51 +843,6 @@ public:
         double basis_ratio{1.0};
         bool basis_ratio_known{false};
     };
-
-    /**
-     * @brief Load every corp action already applied for one portfolio+strategy+name.
-     *
-     * Durable replacement for the applied_corp_actions.json state file, which
-     * lived under a container path with no volume and so was lost on redeploy.
-     * Loading everything is deliberate: the record is the strategy's lifetime
-     * dedup set and is small (order thousands of rows even at full universe
-     * scale), and cumulative dividend income is summed from it.
-     *
-     * strategy_name is part of the key, not decoration: one strategy_id can
-     * carry several names (the live runners build a combined id, so
-     * LIVE_TREND_FOLLOWING_TREND_FOLLOWING_FAST holds both TREND_FOLLOWING and
-     * TREND_FOLLOWING_FAST rows). Reading without it hands one strategy's
-     * applied events to another, which then skips its own adjustment and
-     * carries a permanently wrong cost basis, and sums dividend income across
-     * every name under the id.
-     */
-    virtual Result<std::vector<AppliedCorpActionRow>> load_applied_corp_actions(
-        const std::string& portfolio_id, const std::string& strategy_id,
-        const std::string& strategy_name);
-
-    /**
-     * @brief Record corp actions as applied. Idempotent per natural key.
-     *
-     * ON CONFLICT DO NOTHING against
-     * (portfolio_id, strategy_id, strategy_name, symbol, action_type, ex_date):
-     * re-recording an event is a no-op rather than an error, so a partially
-     * completed run is safe to repeat.
-     */
-    virtual Result<void> store_applied_corp_actions(
-        const std::string& portfolio_id, const std::string& strategy_id,
-        const std::string& strategy_name,
-        const std::vector<AppliedCorpActionRow>& rows);
-
-    /**
-     * @brief Record applied corp actions inside a caller-owned unit of work.
-     *
-     * Composed with store_positions(DbTransaction&, ...) so an adjusted position
-     * and the dedup row that protects it cannot be separated by a failure.
-     */
-    virtual Result<void> store_applied_corp_actions(
-        DbTransaction& txn, const std::string& portfolio_id, const std::string& strategy_id,
-        const std::string& strategy_name,
-        const std::vector<AppliedCorpActionRow>& rows);
 
     /**
      * @brief Convert asset class to string for database queries
@@ -992,8 +918,7 @@ private:
     Result<void> store_positions_in(pqxx::work& txn, const std::vector<Position>& positions,
                                     const std::string& strategy_id,
                                     const std::string& strategy_name,
-                                    const std::string& portfolio_id,
-                                    const std::string& table_name);
+                                    const std::string& portfolio_id, const std::string& table_name);
 
     /**
      * @brief Dedup-write statements, executed in a transaction that is NOT
