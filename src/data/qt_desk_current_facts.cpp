@@ -2,6 +2,7 @@
 #include "trade_ngin/data/qt_desk_current_facts.hpp"
 #include "trade_ngin/data/qt_model_publication.hpp"
 #include "trade_ngin/data/qt_desk_accounting.hpp"
+#include "trade_ngin/data/qt_desk_owner_scope.hpp"
 #include "trade_ngin/core/qt_sha256.hpp"
 #include "trade_ngin/portfolio/qt_wire.hpp"
 #include <charconv>
@@ -206,8 +207,8 @@ Json collect(pqxx::work& tx,const std::string& book,const std::string& day,int64
         if(capital.is_error()||!capital.value().is_positive())reject();
         const auto registry_id=row.at("registry_id").get<std::string>();
         auto registry=query_one(tx,"SELECT to_jsonb(r) FROM trading.strategy_registry r WHERE id="+tx.quote(registry_id)+" FOR SHARE");
-        if(registry.at("strategy_type")!=row.at("strategy_id")||registry.at("runtime_revision")!=row.at("registry_revision")||
-           registry.at("lifecycle")!="live"||registry.at("is_active")!=true)reject();
+        // Live-only (the desk never admits an incubating owner); pinned in test_qt_desk_owner_scope.cpp.
+        if(!qt_desk_empty_owner_registry_eligible(registry,row.at("strategy_id"),row.at("registry_revision")))reject();
         auto members=query_rows(tx,"SELECT to_jsonb(m) FROM trading.strategy_book_memberships m WHERE strategy_id="+tx.quote(registry_id)+" ORDER BY portfolio_id");
         bool member=members.empty()&&registry.at("portfolio_id")==book;
         for(const auto& m:members)if(m.at("portfolio_id")==book)member=true;

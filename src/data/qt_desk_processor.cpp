@@ -196,10 +196,10 @@ void validate_owner_scope(pqxx::work& tx,const Json& d,const Json& p,const Json&
             }
             require(drafted);
         }
-        if(row.at("editable")==false)continue;
-        require(qt_desk_owner_authorized(registry,memberships,
-            text(key.at("strategy_id")),text(d.at("book_id"))));
     }
+    // N5 r2 (F2): every engine in the selection (editable or carried) needs a live owner.
+    require(qt_desk_selection_owners_authorized(registry,memberships,
+        p.at("payload").at("selection_rows"),text(d.at("book_id"))));
     for(const auto& key:actual)require(selected.contains(key));
 }
 

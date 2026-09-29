@@ -450,7 +450,7 @@ def test_a_failure_after_first_position_write_rolls_back_every_output(desk):
 
 
 @pytest.mark.parametrize("desk", ["zero"], indirect=True)
-def test_closing_to_zero_persists_complete_key_and_unavailable_row_mapping(desk):
+def test_closing_to_zero_persists_complete_key_and_closed_row_mapping(desk):
     conn, _ = desk
     result = run()
     assert result.returncode == 0, result.stdout + result.stderr
@@ -458,9 +458,12 @@ def test_closing_to_zero_persists_complete_key_and_unavailable_row_mapping(desk)
         cur.execute("SELECT quantity::text FROM trading.positions "
                     "WHERE portfolio_type='qt' AND strategy_name='synthetic-beta'")
         assert cur.fetchone() == ("0.00000000",)
-        cur.execute("SELECT report_eligibility_status,publication_payload FROM trading.qt_desk_receipts")
-        status, publication = cur.fetchone()
-        assert status == "unavailable"
+        cur.execute("SELECT report_eligibility_status,report_reason_codes,row_manifest_digest,publication_payload "
+                    "FROM trading.qt_desk_receipts")
+        status, reasons, digest, publication = cur.fetchone()
+        assert status == "eligible"
+        assert reasons == []
+        assert isinstance(digest, str) and len(digest) == 64 and set(digest) <= set("0123456789abcdef")
         assert len(publication["after_accounting"]) == 2
         assert publication["after_accounting"][1]["quantity_exact"] == "0"
 
@@ -639,9 +642,12 @@ def test_actual_new_editable_key_uses_observed_basis_and_null_before_audit(desk)
         assert before is None
         assert after["quantity_exact"] == "3" and after["average_price_exact"] == "101"
         assert reference["schema_version"] == "qt-desk-audit/v1" and reference["decision_id"] == DECISION
-        cur.execute("SELECT report_eligibility_status,publication_payload FROM trading.qt_desk_receipts")
-        status, publication = cur.fetchone()
-        assert status == "unavailable"
+        cur.execute("SELECT report_eligibility_status,report_reason_codes,row_manifest_digest,publication_payload "
+                    "FROM trading.qt_desk_receipts")
+        status, reasons, digest, publication = cur.fetchone()
+        assert status == "eligible"
+        assert reasons == []
+        assert isinstance(digest, str) and len(digest) == 64 and set(digest) <= set("0123456789abcdef")
         assert len(publication["before_accounting"]) == 1 and len(publication["after_accounting"]) == 2
     assert report_proof(conn).returncode == 0
 

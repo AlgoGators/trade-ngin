@@ -4,6 +4,8 @@
 #include <stdexcept>
 #include "trade_ngin/portfolio/qt_wire.hpp"
 #include "trade_ngin/data/qt_empty_model_owner_storage.hpp"
+#include "trade_ngin/data/qt_equity_model_prior_binding.hpp"
+#include <optional>
 
 namespace trade_ngin {
 namespace {
@@ -13,6 +15,14 @@ std::string canonical_book(std::string book) {
     book = book.substr(first, book.find_last_not_of(" \t\r\n") - first + 1);
     std::transform(book.begin(), book.end(), book.begin(), [](unsigned char c) { return std::toupper(c); });
     return book;
+}
+// Model (system-stream) publication admits a live or an incubating scope: incubating
+// strategies run the same model on mock capital (AlgoLens migration 002). Retired and
+// any other lifecycle stay closed, and every caller still requires is_active and the
+// revision checks. Desk ownership stays live-only (qt_desk_owner_scope.hpp,
+// qt_desk_current_facts.cpp). Migration 025 applies the same rule in the database.
+bool publishes_model(const std::string& lifecycle) {
+    return lifecycle == "live" || lifecycle == "incubating";
 }
 }
 
@@ -303,7 +313,7 @@ void PostgresDatabase::fence_live_write(pqxx::work& txn, const std::string& stra
             "FROM trading.strategy_registry WHERE id=$1 FOR UPDATE",
             pqxx::params{pending_publication_->registry_id});
         if (registry.size()!=1 || registry[0][0].as<long long>() != pending_publication_->registry_revision ||
-            registry[0][1].as<std::string>() != "live" || !registry[0][2].as<bool>() ||
+            !publishes_model(registry[0][1].as<std::string>()) || !registry[0][2].as<bool>() ||
             registry[0][3].as<std::string>() != pending_publication_->strategy_id)
             throw std::runtime_error("runtime_scope_changed");
     }
@@ -373,7 +383,7 @@ Result<bool> PostgresDatabase::begin_live_publication(const std::string& strateg
             if(intent.size()!=1) throw std::runtime_error("runtime_approval_unavailable");
             scope->intent_id = intent[0][0].as<long long>();
             stopped = intent[0][1].as<std::string>() == "stop";
-            if (stopped ? lifecycle != "retired" : lifecycle != "live" || !active)
+            if (stopped ? lifecycle != "retired" : !publishes_model(lifecycle) || !active)
                 throw std::runtime_error("runtime_scope_ineligible");
             scope->attempt_id = txn.exec("SELECT gen_random_uuid()::text")[0][0].as<std::string>();
             scope->publication_id = scope->attempt_id;
@@ -388,7 +398,7 @@ Result<bool> PostgresDatabase::begin_live_publication(const std::string& strateg
                 txn.exec("UPDATE trading.runtime_attempts SET status='applied',outcome='stopped',"
                          "finished_at=now() WHERE id=$1",pqxx::params{scope->attempt_id});
             }
-        } else if (lifecycle != "live" || !active || scope->registry_revision != 0) {
+        } else if (!publishes_model(lifecycle) || !active || scope->registry_revision != 0) {
             throw std::runtime_error("runtime_scope_ineligible");
         }
         txn.commit();
@@ -645,10 +655,12 @@ Result<void> PostgresDatabase::publish_live_publication() {
             "FROM trading.strategy_registry WHERE id=$1 FOR UPDATE",
             pqxx::params{pending_publication_->registry_id});
         if(registry.size()!=1 || registry[0][0].as<long long>() != pending_publication_->registry_revision ||
-           registry[0][1].as<std::string>() != "live" || !registry[0][2].as<bool>() ||
+           !publishes_model(registry[0][1].as<std::string>()) || !registry[0][2].as<bool>() ||
            registry[0][3].as<std::string>() != pending_publication_->strategy_id)
             throw std::runtime_error("runtime_scope_changed");
         fence_live_write(txn,pending_publication_->strategy_id,pending_publication_->portfolio_id);
+        // VerifiedEquity only: the prior re-proved in THIS transaction, kept for the binding row.
+        std::optional<VerifiedEquityModelPrior> reproved_prior;
         if (pending_publication_->prior_requirement == PublicationPriorRequirement::VerifiedEquity) {
             const auto& captured=*pending_publication_->equity_prior;
             auto current=load_verified_equity_model_prior(txn,captured.selection,captured.owner);
@@ -657,6 +669,7 @@ Result<void> PostgresDatabase::publish_live_publication() {
                 current.value().financial != captured.observed.financial ||
                 current.value().basis_positions != captured.observed.basis_positions)
                 throw std::runtime_error("runtime_prior_changed");
+            reproved_prior.emplace(current.value());
         }
         if (pending_publication_->intent_id) {
             auto approved = txn.exec("SELECT id FROM trading.runtime_intents WHERE id=$1 AND status='approved' "
@@ -713,6 +726,15 @@ Result<void> PostgresDatabase::publish_live_publication() {
         seed.seed_digest = seed_digest.value();
         if (record_qt_model_seed_publication(seed).is_error())
             throw std::runtime_error("runtime_model_seed_record_failed");
+        // Migration 024: the immutable MODEL -> verified-prior binding for this
+        // publication, in the same transaction. Every other mode writes nothing here.
+        if (pending_publication_->prior_requirement == PublicationPriorRequirement::VerifiedEquity) {
+            if (!reproved_prior) throw std::runtime_error("runtime_prior_changed");
+            auto binding=derive_qt_equity_model_prior_binding(seed.publication_id,seed.portfolio_id,
+                seed.source_day,reproved_prior->replay_reference);
+            if (binding.is_error() || record_qt_equity_model_prior_binding(txn,binding.value()).is_error())
+                throw std::runtime_error("runtime_model_prior_binding_failed");
+        }
         if (!pending_publication_->attempt_id.empty()) {
             auto updated = txn.exec("UPDATE trading.runtime_attempts SET status='applied',"
                 "outcome='published',publication_id=id,finished_at=now() WHERE id=$1 AND status='running'",

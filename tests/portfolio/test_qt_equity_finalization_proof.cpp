@@ -63,3 +63,17 @@ TEST(QtEquityFinalizationProof, RehashedMissingOriginalOutputFieldIsRejected) {
  r["original_output_json"]=bytes(out);r["provenance"]["original_run_result_digest"]=digest(out);fingerprint(r);
  EXPECT_TRUE(recompute_qt_equity_finalization_proof(r).is_error());
 }
+// Equity day 2, lane N2: the wire recompute accepts the finalization-only market
+// (no model) exactly as the native finalizer does, and nothing more.
+TEST(QtEquityFinalizationProof, FinalizationOnlyMarketRecomputesTheSameSuccessorWithoutAModel) {
+ auto r=fixture();auto bound=calculated(r);
+ r["market_payload"]["schema_version"]="qt-equity-finalization-market/v1";r["market_payload"]["model_publication_id"]=nullptr;
+ r["provenance"]["market_source_digest"]=digest(r["market_payload"]);fingerprint(r);
+ auto proof=recompute_qt_equity_finalization_proof(r);ASSERT_TRUE(proof.is_ok());EXPECT_EQ(proof.value()["market_digest"],digest(r["market_payload"]));
+ auto actual=calculated(r);EXPECT_EQ(proof.value()["successor_digest"],digest(actual));
+ actual["market_source_digest"]=bound["market_source_digest"];EXPECT_EQ(actual,bound);
+}
+TEST(QtEquityFinalizationProof, FinalizationOnlyMarketNamingAModelIsRejected) {
+ auto r=fixture();r["market_payload"]["schema_version"]="qt-equity-finalization-market/v1";
+ r["provenance"]["market_source_digest"]=digest(r["market_payload"]);fingerprint(r);EXPECT_TRUE(recompute_qt_equity_finalization_proof(r).is_error());
+}

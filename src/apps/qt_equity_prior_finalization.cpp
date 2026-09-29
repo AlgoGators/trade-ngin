@@ -47,7 +47,9 @@ Result<J> produce_qt_equity_prior_finalization(const J& d,const J& in,const J& o
   const auto stamp=valuation_day+"T00:00:00Z";need(market.at("valuation_time")==stamp&&market.at("previous_day")==source_day&&market.at("book_id")==book);
   shape(market,{"schema_version","calculation_version","book_id","source_day","model_publication_id","previous_day","valuation_time","day_mode","currency","cost_config","instruments","actions_source_id","actions_source_digest"});
   const bool empty_owner=in.at("schema_version")=="qt-equity-accounting-input-empty-owner/v2";
-  need(market.at("schema_version")==(empty_owner?"qt-equity-accounting-market-empty-owner/v2":"qt-equity-accounting-market/v1")&&market.at("calculation_version")=="qt-equity-main08b15c/v1"&&market.at("day_mode")=="open"&&market.at("currency")=="USD");uuid(market.at("model_publication_id"));
+  // The finalization-only market binds no model; it is not enabled for empty-owner books.
+  const bool finalization_only=!empty_owner&&market.at("schema_version")=="qt-equity-finalization-market/v1";
+  need((finalization_only||market.at("schema_version")==(empty_owner?"qt-equity-accounting-market-empty-owner/v2":"qt-equity-accounting-market/v1"))&&market.at("calculation_version")=="qt-equity-main08b15c/v1"&&market.at("day_mode")=="open"&&market.at("currency")=="USD");if(finalization_only)need(market.at("model_publication_id").is_null());else uuid(market.at("model_publication_id"));
   need(in.at("schema_version")==(empty_owner?"qt-equity-accounting-input-empty-owner/v2":"qt-equity-accounting-input/v1")&&in.at("calculation_version")==market.at("calculation_version")&&in.at("currency")==market.at("currency")&&in.at("day_mode")=="open"&&in.at("timestamp")==source_day+"T00:00:00Z");
   need(out.at("schema_version")==(empty_owner?"qt-equity-accounting-empty-owner/v2":"qt-equity-accounting/v1")&&out.at("calculation_version")==in.at("calculation_version"));
   const auto& observed=out.at("observation");need(observed.at("schema_version")=="qt-execution/v2");for(auto f:{"decision_id","book_id","source_day"})need(in.at(f)==d.at(f)&&observed.at(f)==d.at(f));
@@ -107,5 +109,21 @@ Result<J> produce_qt_equity_prior_finalization(const J& d,const J& in,const J& o
   J result={{"schema_version",empty_owner?"qt-equity-desk-finalization-empty-owner/v2":"qt-equity-desk-finalization/v1"},{"calculation_version","equity-prior-close-mark/v1"},{"decision_id",d.at("decision_id")},{"book_id",book},{"source_day",source_day},{"valuation_day",valuation_day},{"valuation_time",stamp},{"currency","USD"},{"components",components},{"engine_totals",totals},{"before_financial",{{"positions",original_positions},{"live_results",out.at("live_results")},{"equity_curve",expected_curve}}},{"after_financial",{{"positions",after_positions},{"live_results",after_live},{"equity_curve",after_curve}}}};
   for(auto it=provenance.begin();it!=provenance.end();++it)result[it.key()]=it.value();return result;
  }catch(const std::exception&){return make_error<J>(ErrorCode::INVALID_DATA,"qt_equity_finalization_unavailable","qt_equity_prior_finalization");}
+}
+bool qt_equity_market_schema_admitted(const J& market,QtEquityMarketRole role) noexcept{
+ try{
+  const auto& schema=market.at("schema_version");
+  if(schema=="qt-equity-accounting-market/v1"||schema=="qt-equity-accounting-market-empty-owner/v2")return true;
+  return role==QtEquityMarketRole::Finalization&&schema=="qt-equity-finalization-market/v1";
+ }catch(const std::exception&){return false;}
+}
+bool qt_equity_finalization_only_market_row(const J& row) noexcept{
+ try{
+  need(row.is_object());const auto& p=row.at("payload");
+  shape(p,{"schema_version","calculation_version","book_id","source_day","model_publication_id","previous_day","valuation_time","day_mode","currency","cost_config","instruments","actions_source_id","actions_source_digest"});
+  need(p.at("schema_version")=="qt-equity-finalization-market/v1"&&row.at("model_publication_id").is_null()&&p.at("model_publication_id").is_null());
+  for(auto f:{"book_id","source_day"}){text(p.at(f));need(row.at(f)==p.at(f));}
+  return true;
+ }catch(const std::exception&){return false;}
 }
 }

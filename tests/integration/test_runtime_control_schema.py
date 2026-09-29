@@ -80,6 +80,95 @@ def prepare_exact_publication_schema(connection):
           "migrations/016_qt_exact_precision_and_seed_provenance.sql")
 
 
+# N5: model (system-stream) publication admits an incubating, active scope (migration 025).
+MODEL_INCUBATING = Path(__file__).parents[2] / "migrations/025_runtime_scope_model_incubating.sql"
+MODEL_INCUBATING_ROLLBACK = Path(__file__).parents[2] / "migrations/025_runtime_scope_model_incubating_rollback.sql"
+LOCK_013_MD5 = "bdda022b058f416faf198fe4e4fae95d"
+LOCK_025_MD5 = "0bd1e0badb6bee13c329268ded8f0e03"
+FENCE_013_MD5 = "a469e2b5cfd77d447383ae1fb78d5e7a"
+FENCE_015_MD5 = "419771cec97836560ae952c120aac4d1"
+FENCED_TABLES = ("positions", "risk_limits", "live_results", "equity_curve",
+                 "executions", "signals", "live_run_metadata", "run_inputs")
+# One minimal row per fenced relation; works on the 013 fixture and on the normalized 015 shape.
+FENCED_ROW = {
+    "positions": ("INSERT INTO trading.positions (strategy_id,portfolio_id,portfolio_type,strategy_name,date,"
+                  "symbol,quantity,average_price,daily_unrealized_pnl,daily_realized_pnl,last_update) "
+                  "VALUES (%s,%s,%s,'MODEL','2026-09-22',%s,1,100,0,0,'2026-09-22')", True),
+    "risk_limits": ("INSERT INTO trading.risk_limits (strategy_id,portfolio_id,limits) VALUES (%s,%s,'{}')", False),
+    "live_results": ("INSERT INTO trading.live_results (strategy_id,portfolio_id,portfolio_type,date) "
+                     "VALUES (%s,%s,%s,'2026-09-22')", True),
+    "equity_curve": ("INSERT INTO trading.equity_curve (strategy_id,portfolio_id,portfolio_type,timestamp,equity) "
+                     "VALUES (%s,%s,%s,'2026-09-22',1)", True),
+    "executions": ("INSERT INTO trading.executions (strategy_id,portfolio_id,portfolio_type) VALUES (%s,%s,%s)", True),
+    "signals": ("INSERT INTO trading.signals (strategy_id,portfolio_id) VALUES (%s,%s)", False),
+    "live_run_metadata": ("INSERT INTO trading.live_run_metadata (strategy_id,portfolio_id,date) "
+                          "VALUES (%s,%s,'2026-09-22')", False),
+    "run_inputs": ("INSERT INTO trading.run_inputs (strategy_id,portfolio_id,date) VALUES (%s,%s,'2026-09-22')", False),
+}
+
+
+def apply_model_incubating(connection, path=MODEL_INCUBATING):
+    with connection.cursor() as cur:
+        cur.execute(path.read_text())
+
+
+def register(connection, registry_id, engine, book, lifecycle, active):
+    # INSERT never bumps runtime_revision: the row starts at revision 0, like a pre-013 registry row.
+    with connection.cursor() as cur:
+        cur.execute("INSERT INTO trading.strategy_registry (id,strategy_type,portfolio_id,lifecycle,is_active) "
+                    "VALUES (%s,%s,%s,%s,%s)", (registry_id, engine, book, lifecycle, active))
+
+
+def write_fenced(connection, table, engine, book, stream="system", symbol="SYN"):
+    """Returns 'ok' or the PostgreSQL message of the refusal (each statement is its own transaction)."""
+    sql, streamed = FENCED_ROW[table]
+    if table == "positions":
+        params = (engine, book, stream, symbol)
+    else:
+        params = (engine, book, stream) if streamed else (engine, book)
+    try:
+        with connection.cursor() as cur:
+            cur.execute(sql, params)
+        return "ok"
+    except psycopg2.Error as error:
+        return error.diag.message_primary
+
+
+def mutate_fenced(connection, table, engine, book, statement):
+    target = f"trading.{table}"
+    sql = (f"UPDATE {target} SET portfolio_id=portfolio_id WHERE strategy_id=%s AND portfolio_id=%s"
+           if statement == "update" else f"DELETE FROM {target} WHERE strategy_id=%s AND portfolio_id=%s")
+    try:
+        with connection.cursor() as cur:
+            cur.execute(sql, (engine, book))
+            return cur.rowcount
+    except psycopg2.Error as error:
+        return error.diag.message_primary
+
+
+def function_md5(connection, signature):
+    with connection.cursor() as cur:
+        cur.execute("SELECT md5(prosrc) FROM pg_proc WHERE oid=to_regprocedure(%s)", (signature,))
+        return cur.fetchone()[0]
+
+
+def lock_md5(connection):
+    return function_md5(connection, "trading.lock_runtime_scope(text,text,boolean)")
+
+
+def fence_md5(connection):
+    return function_md5(connection, "trading.fence_runtime_publication_row()")
+
+
+def reincubate_at_revision_zero(connection, active=True):
+    # The synthetic 'trend' row, recreated as an incubating registry row that never changed
+    # after 013 (revision 0), like production's inc_meanrev/inc_tf_fast rows.
+    with connection.cursor() as cur:
+        cur.execute("DELETE FROM trading.strategy_registry WHERE id='trend'")
+        cur.execute("INSERT INTO trading.strategy_registry (id,strategy_type,portfolio_id,lifecycle,is_active) "
+                    "VALUES ('trend','LIVE_TREND','BOOK','incubating',%s)", (active,))
+
+
 def test_runtime_schema_tracks_control_generation_and_keeps_snapshot_immutable(connection):
     with connection.cursor() as cur:
         cur.execute("SELECT to_regclass('trading.runtime_intents')")
@@ -173,12 +262,35 @@ def test_migration_is_repeatable_and_refuses_incomplete_writer_prerequisites(con
                                  "legacy_changed", "membership", "stop_controlled",
                                  "missing_member", "missing_member_stale", "stale_inputs",
                                  "publish_disabled_intent", "historical_valid", "historical_aba",
-                                 "historical_aba_controlled", "historical_superseded_controlled"])
+                                 "historical_aba_controlled", "historical_superseded_controlled",
+                                 # N5: incubating model publication (decisions 1-3) and its refusals.
+                                 "publish_incubating", "historical_valid_incubating",
+                                 "publish_incubating_controlled", "incubating_inactive",
+                                 "incubating_changed", "incubating_inactive_controlled",
+                                 "run_retired_controlled"])
 def test_cpp_publication_is_atomic_and_captures_values(connection, mode):
     probe = Path("/home/devcontainers/qt-validation-20260921/bin/Debug/runtime_publication_probe")
     assert probe.exists(), "runtime publication probe has not been built"
-    if mode in ("publish", "publish_controlled", "publish_disabled_intent", "historical_valid"):
+    if mode in ("publish", "publish_controlled", "publish_disabled_intent", "historical_valid",
+                "publish_incubating", "historical_valid_incubating", "publish_incubating_controlled"):
         prepare_exact_publication_schema(connection)
+    n5 = "incubating" in mode or mode == "run_retired_controlled"
+    if n5:
+        # The production database layer for these modes is 013 + 025.
+        apply_model_incubating(connection)
+        assert lock_md5(connection) == LOCK_025_MD5
+        if mode in ("publish_incubating", "historical_valid_incubating", "incubating_inactive"):
+            reincubate_at_revision_zero(connection, active=mode != "incubating_inactive")
+        with connection.cursor() as cur:
+            if mode in ("incubating_changed", "publish_incubating_controlled"):
+                cur.execute("UPDATE trading.strategy_registry SET lifecycle='incubating' WHERE id='trend'")
+            if mode == "incubating_inactive_controlled":
+                cur.execute("UPDATE trading.strategy_registry SET lifecycle='incubating',is_active=false "
+                            "WHERE id='trend'")
+            if mode == "run_retired_controlled":
+                cur.execute("UPDATE trading.strategy_registry SET lifecycle='retired' WHERE id='trend'")
+            cur.execute("SELECT lifecycle,is_active,runtime_revision FROM trading.strategy_registry WHERE id='trend'")
+            registry_before = cur.fetchone()
     with connection.cursor() as cur:
         if mode.startswith("historical_"):
             cur.execute("""INSERT INTO trading.positions
@@ -232,6 +344,32 @@ def test_cpp_publication_is_atomic_and_captures_values(connection, mode):
             assert cur.fetchone() == ("applied","stopped")
             cur.execute("SELECT count(*) FROM trading.positions")
             assert cur.fetchone()[0] == 0
+    if n5:
+        with connection.cursor() as cur:
+            # The scope itself is never changed by a publication or a refusal.
+            cur.execute("SELECT lifecycle,is_active,runtime_revision FROM trading.strategy_registry WHERE id='trend'")
+            assert cur.fetchone() == registry_before
+            assert registry_before[:2] == {"run_retired_controlled": ("retired", True),
+                                           "incubating_inactive": ("incubating", False),
+                                           "incubating_inactive_controlled": ("incubating", False)
+                                           }.get(mode, ("incubating", True))
+            assert registry_before[2] == (0 if mode in ("publish_incubating", "historical_valid_incubating",
+                                                         "incubating_inactive") else 1)
+            cur.execute("SELECT status,outcome FROM trading.runtime_attempts ORDER BY started_at")
+            attempts = cur.fetchall()
+            cur.execute("SELECT count(*) FROM trading.positions WHERE portfolio_type='system' "
+                        "AND strategy_name='TREND' AND date='2026-09-22'")
+            published_rows = cur.fetchone()[0]
+        if mode in ("publish_incubating", "publish_incubating_controlled"):
+            assert published_rows == 1
+            assert attempts == ([("applied", "published")] if mode.endswith("_controlled") else [])
+        elif mode == "historical_valid_incubating":
+            with connection.cursor() as cur:
+                cur.execute("SELECT quantity FROM trading.positions WHERE date='2026-09-21'")
+                assert [float(row[0]) for row in cur.fetchall()] == [99.0]
+        else:
+            # Refused at admission: no attempt, no row, and nothing to acknowledge.
+            assert published_rows == 0 and attempts == []
 
 
 @pytest.mark.parametrize("mode,expected_reason", [
@@ -1359,3 +1497,260 @@ def test_real_qt_api_and_cpp_publisher_serialize_in_both_orders(connection, monk
             process.kill()
             process.communicate(timeout=5)
         pool.shutdown(wait=True)
+
+
+# ---- N5 (migration 025): model publication admits an incubating, active scope --------------------------
+
+
+def test_model_incubating_013_alone_refuses_incubating_active_rows_on_every_fenced_table(connection):
+    """The database layer before 025 (why a C++-only change cannot publish an incubating model)."""
+    register(connection, "inc", "LIVE_INC", "INCBOOK", "incubating", True)
+    assert lock_md5(connection) == LOCK_013_MD5
+    assert {table: write_fenced(connection, table, "LIVE_INC", "INCBOOK") for table in FENCED_TABLES} == \
+        {table: "runtime_scope_ineligible" for table in FENCED_TABLES}
+
+
+def test_model_incubating_025_admits_incubating_active_rows_on_every_fenced_table(connection):
+    register(connection, "inc", "LIVE_INC", "INCBOOK", "incubating", True)
+    apply_model_incubating(connection)
+    assert (lock_md5(connection), fence_md5(connection)) == (LOCK_025_MD5, FENCE_013_MD5)
+    assert {table: write_fenced(connection, table, "LIVE_INC", "INCBOOK") for table in FENCED_TABLES} == \
+        {table: "ok" for table in FENCED_TABLES}
+    # Book matching stays canonical (trimmed, case-insensitive), as in 013.
+    assert write_fenced(connection, "risk_limits", "LIVE_INC", " incbook ") == "ok"
+    assert {table: mutate_fenced(connection, table, "LIVE_INC", "INCBOOK", "update") for table in FENCED_TABLES} == \
+        {table: 1 for table in FENCED_TABLES}
+    with connection.cursor() as cur:
+        cur.execute("SELECT * FROM trading.lock_runtime_scope('LIVE_INC','INCBOOK')")
+        assert cur.fetchall() == [("inc", 0)]
+        cur.execute("SELECT lifecycle,is_active,runtime_revision FROM trading.strategy_registry WHERE id='inc'")
+        assert cur.fetchone() == ("incubating", True, 0)
+        # Retirement closes the scope again, including updates and deletes of the rows it wrote.
+        cur.execute("UPDATE trading.strategy_registry SET lifecycle='retired' WHERE id='inc'")
+    assert {table: mutate_fenced(connection, table, "LIVE_INC", "INCBOOK", "update") for table in FENCED_TABLES} == \
+        {table: "runtime_scope_ineligible" for table in FENCED_TABLES}
+    assert {table: mutate_fenced(connection, table, "LIVE_INC", "INCBOOK", "delete") for table in FENCED_TABLES} == \
+        {table: "runtime_scope_ineligible" for table in FENCED_TABLES}
+    with connection.cursor() as cur:
+        cur.execute("UPDATE trading.strategy_registry SET lifecycle='incubating' WHERE id='inc'")
+    assert {table: mutate_fenced(connection, table, "LIVE_INC", "INCBOOK", "delete") for table in FENCED_TABLES} == \
+        {table: 1 for table in FENCED_TABLES}
+
+
+@pytest.mark.parametrize("lifecycle,active", [("incubating", False), ("retired", True),
+                                              ("retired", False), ("live", False)])
+def test_model_incubating_025_refuses_inactive_or_retired_rows_on_every_fenced_table(connection, lifecycle, active):
+    register(connection, "closed", "LIVE_CLOSED", "CLOSEDBOOK", lifecycle, active)
+    apply_model_incubating(connection)
+    assert {table: write_fenced(connection, table, "LIVE_CLOSED", "CLOSEDBOOK") for table in FENCED_TABLES} == \
+        {table: "runtime_scope_ineligible" for table in FENCED_TABLES}
+
+
+@pytest.mark.parametrize("case", ["unregistered", "ambiguous", "blank_book"])
+def test_model_incubating_025_keeps_unregistered_scopes_unsupported(connection, case):
+    """Decision 4: the 013 protection for strategies that are not (uniquely) registered is unchanged."""
+    engine, book = "LIVE_UNREGISTERED", "UNREGISTERED_BOOK"
+    if case == "ambiguous":
+        # Two eligible registry rows claim the same engine/book (primary + membership).
+        engine, book = "LIVE_AMBIGUOUS", "AMBIGUOUS_BOOK"
+        register(connection, "amb-1", engine, book, "live", True)
+        register(connection, "amb-2", engine, "OTHER", "live", True)
+        with connection.cursor() as cur:
+            cur.execute("INSERT INTO trading.strategy_book_memberships VALUES ('amb-2','AMBIGUOUS_BOOK')")
+    if case == "blank_book":
+        engine, book = "LIVE_TREND", " "
+    expected = {table: "runtime_scope_unsupported" for table in FENCED_TABLES}
+    before ={table: write_fenced(connection, table, engine, book, symbol="PRE") for table in FENCED_TABLES}
+    apply_model_incubating(connection)
+    after = {table: write_fenced(connection, table, engine, book, symbol="POST") for table in FENCED_TABLES}
+    assert before == after == expected
+
+
+def test_model_incubating_025_keeps_qt_and_qt_proposal_position_rules(connection):
+    """Positions qt/qt_proposal (allow_incubating) keep the 013 rule; only the model rule changes."""
+    from test_proposal_storage_migration import MIGRATION as PROPOSAL_MIGRATION, apply, normalize_positions_shape
+    normalize_positions_shape(connection)
+    apply(connection, PROPOSAL_MIGRATION)
+    scopes = [(lifecycle, active) for lifecycle in ("live", "incubating", "retired") for active in (True, False)]
+    for lifecycle, active in scopes:
+        register(connection, f"q-{lifecycle}-{active}", f"LIVE_Q_{lifecycle}_{active}".upper(),
+                 f"QBOOK_{lifecycle}_{active}".upper(), lifecycle, active)
+
+    def matrix(symbol):
+        result = {}
+        for lifecycle, active in scopes:
+            engine, book = f"LIVE_Q_{lifecycle}_{active}".upper(), f"QBOOK_{lifecycle}_{active}".upper()
+            for stream in ("qt", "qt_proposal", "system"):
+                result[(lifecycle, active, stream)] = write_fenced(connection, "positions", engine, book, stream, symbol)
+            result[(lifecycle, active, "equity_curve/qt")] = write_fenced(connection, "equity_curve", engine, book, "qt")
+        return result
+
+    assert fence_md5(connection) == FENCE_015_MD5
+    before = matrix("PRE")
+    with connection.cursor() as cur:  # equity_curve is unique per (book,strategy,timestamp,stream)
+        cur.execute("DELETE FROM trading.equity_curve WHERE portfolio_type='qt' AND strategy_id='LIVE_Q_LIVE_TRUE'")
+        assert cur.rowcount == 1
+    apply_model_incubating(connection)
+    assert (lock_md5(connection), fence_md5(connection)) == (LOCK_025_MD5, FENCE_015_MD5)
+    after = matrix("POST")
+    open_scope = lambda lifecycle: lifecycle in ("live", "incubating")
+    for (lifecycle, active, stream), outcome in after.items():
+        if stream in ("qt", "qt_proposal"):
+            # Unchanged: the desk/proposal streams on positions never required is_active.
+            expected = "ok" if open_scope(lifecycle) else "runtime_scope_ineligible"
+            assert before[(lifecycle, active, stream)] == outcome == expected, (lifecycle, active, stream)
+        elif stream == "system":
+            assert before[(lifecycle, active, stream)] == (
+                "ok" if lifecycle == "live" and active else "runtime_scope_ineligible")
+            assert outcome == ("ok" if open_scope(lifecycle) and active else "runtime_scope_ineligible")
+        else:
+            # Documented tradeoff: the function cannot see the stream, so a qt row of the other
+            # fenced tables follows the model rule too (the desk stays live-only in both apps).
+            if (lifecycle, active) == ("live", True):
+                assert before[(lifecycle, active, stream)] == "ok" and outcome == "ok"
+            else:
+                assert before[(lifecycle, active, stream)] == "runtime_scope_ineligible"
+                assert outcome == ("ok" if open_scope(lifecycle) and active else "runtime_scope_ineligible")
+
+
+def test_model_incubating_025_is_repeatable_and_its_rollback_restores_013(connection):
+    register(connection, "inc", "LIVE_INC", "INCBOOK", "incubating", True)
+    assert (lock_md5(connection), fence_md5(connection)) == (LOCK_013_MD5, FENCE_013_MD5)
+    apply_model_incubating(connection)
+    apply_model_incubating(connection)
+    assert (lock_md5(connection), fence_md5(connection)) == (LOCK_025_MD5, FENCE_013_MD5)
+    assert write_fenced(connection, "signals", "LIVE_INC", "INCBOOK") == "ok"
+    apply_model_incubating(connection, MODEL_INCUBATING_ROLLBACK)
+    apply_model_incubating(connection, MODEL_INCUBATING_ROLLBACK)
+    assert (lock_md5(connection), fence_md5(connection)) == (LOCK_013_MD5, FENCE_013_MD5)
+    assert write_fenced(connection, "signals", "LIVE_INC", "INCBOOK") == "runtime_scope_ineligible"
+    with connection.cursor() as cur:  # the rollback discards nothing
+        cur.execute("SELECT count(*) FROM trading.signals WHERE strategy_id='LIVE_INC'")
+        assert cur.fetchone()[0] == 1
+    with connection.cursor() as cur:  # 013 is repeatable and restores its own body over 025
+        apply_model_incubating(connection)
+        cur.execute((Path(__file__).parents[2] / "migrations/013_runtime_control.sql").read_text())
+    assert lock_md5(connection) == LOCK_013_MD5
+    # Also on top of 015's fence (the production chain).
+    from test_proposal_storage_migration import MIGRATION as PROPOSAL_MIGRATION, apply, normalize_positions_shape
+    normalize_positions_shape(connection)
+    apply(connection, PROPOSAL_MIGRATION)
+    apply_model_incubating(connection)
+    assert (lock_md5(connection), fence_md5(connection)) == (LOCK_025_MD5, FENCE_015_MD5)
+    apply_model_incubating(connection, MODEL_INCUBATING_ROLLBACK)
+    assert (lock_md5(connection), fence_md5(connection)) == (LOCK_013_MD5, FENCE_015_MD5)
+
+
+def _refused_without_change(connection, path):
+    before = (lock_md5(connection), fence_md5(connection))
+    with pytest.raises(psycopg2.Error):
+        apply_model_incubating(connection, path)
+    with connection.cursor() as cur:
+        cur.execute("ROLLBACK")
+    assert (lock_md5(connection), fence_md5(connection)) == before
+
+
+@pytest.mark.parametrize("damage", ["lock_body", "lock_overload", "fence_body", "missing_trigger",
+                                    "disabled_trigger", "registry_column", "nullable_is_active"])
+@pytest.mark.parametrize("script", ["upgrade", "rollback"])
+def test_model_incubating_preflight_refuses_unknown_predecessor_without_changes(connection, damage, script):
+    if script == "rollback":
+        apply_model_incubating(connection)
+    with connection.cursor() as cur:
+        if damage == "lock_body":
+            cur.execute("""CREATE OR REPLACE FUNCTION trading.lock_runtime_scope(engine_id text, book text,
+                  allow_incubating boolean DEFAULT false)
+                RETURNS TABLE(registry_id text, registry_revision bigint) LANGUAGE plpgsql AS $$
+                BEGIN registry_id := 'any'; registry_revision := 0; RETURN NEXT; END $$""")
+        elif damage == "lock_overload":
+            cur.execute("""CREATE FUNCTION trading.lock_runtime_scope(engine_id text, book text)
+                RETURNS void LANGUAGE sql AS 'SELECT NULL::void'""")
+        elif damage == "fence_body":
+            cur.execute("""CREATE OR REPLACE FUNCTION trading.fence_runtime_publication_row()
+                RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RETURN NEW; END $$""")
+        elif damage == "missing_trigger":
+            cur.execute("DROP TRIGGER runtime_publication_fence ON trading.signals")
+        elif damage == "disabled_trigger":
+            cur.execute("ALTER TABLE trading.live_results DISABLE TRIGGER runtime_publication_fence")
+        elif damage == "nullable_is_active":
+            # N5 r2 (F7): the predicate needs NOT NULL lifecycle/is_active.
+            cur.execute("ALTER TABLE trading.strategy_registry ALTER COLUMN is_active DROP NOT NULL")
+        else:
+            cur.execute("ALTER TABLE trading.strategy_registry RENAME COLUMN is_active TO active_flag")
+    if damage in ("missing_trigger", "disabled_trigger", "registry_column", "nullable_is_active") and script == "rollback":
+        # The rollback only restores the function body; it does not own the trigger set or registry shape.
+        apply_model_incubating(connection, MODEL_INCUBATING_ROLLBACK)
+        assert lock_md5(connection) == LOCK_013_MD5
+        return
+    _refused_without_change(connection, MODEL_INCUBATING if script == "upgrade" else MODEL_INCUBATING_ROLLBACK)
+
+
+def test_model_incubating_real_http_approval_publishes_incubating_model(connection, monkeypatch, tmp_path):
+    """Decision 2 across both apps: an AlgoLens-approved run of an incubating scope (revision bumped by the
+    lifecycle change, so the uncontrolled revision-0 path is closed) is published by the C++ controlled path."""
+    prepare_exact_publication_schema(connection)
+    apply_model_incubating(connection)
+    with connection.cursor() as cur:
+        cur.execute("UPDATE trading.strategy_registry SET lifecycle='incubating' WHERE id='trend'")
+        cur.execute("SELECT lifecycle,is_active,runtime_revision FROM trading.strategy_registry WHERE id='trend'")
+        assert cur.fetchone() == ("incubating", True, 1)
+    from flask import Flask
+    from flask_jwt_extended import JWTManager, create_access_token, get_csrf_token
+    from psycopg2.extras import RealDictCursor
+    from algolens.adapters.http import portfolio as portfolio_http
+    from algolens.adapters.http import runtime_control as runtime_http
+    from algolens.application.runtime_control import RuntimeControlService
+    from algolens.infrastructure.config.runtime_control import RuntimeControlConfig
+    from algolens.infrastructure.portfolio.runtime_control import PostgresRuntimeControlRepository
+    from tests.conftest import InMemoryCurrentUsers
+
+    probe = "/home/devcontainers/qt-validation-20260921/bin/Debug/runtime_publication_probe"
+    exported = subprocess.run([probe, "snapshot"], capture_output=True, text=True, check=True)
+    snapshot = json.loads(exported.stdout.split("RUNTIME_SNAPSHOT=", 1)[1])
+    manifest = tmp_path / "reviewed-synthetic-config.json"
+    manifest.write_text(json.dumps({"version": 1, "scopes": [{
+        "registry_id": "trend", "portfolio_id": "BOOK", "engine_strategy_id": "LIVE_TREND",
+        "config_snapshot": snapshot}]}))
+    config = RuntimeControlConfig({"QT_RUNTIME_CONTROL_ENABLED": "true",
+        "QT_RUNTIME_APPROVER_IDS": "8", "QT_RUNTIME_CONFIG_MANIFEST": str(manifest)})
+    repository = PostgresRuntimeControlRepository(lambda: psycopg2.connect(
+        os.environ["ALGOLENS_TEST_DB"], cursor_factory=RealDictCursor))
+    monkeypatch.setattr(runtime_http, "_service", lambda: RuntimeControlService(repository, config))
+    users = InMemoryCurrentUsers()
+    monkeypatch.setattr(portfolio_http, "create_identity_dependencies", lambda: (users, object(), object()))
+    app = Flask(__name__)
+    app.config.update(TESTING=True, JWT_SECRET_KEY="synthetic-runtime-test-secret-only-2026",
+        JWT_TOKEN_LOCATION=["cookies"], JWT_COOKIE_CSRF_PROTECT=True)
+    JWTManager(app)
+    app.register_blueprint(runtime_http.runtime_control_bp, url_prefix="/portfolio")
+    client = app.test_client()
+
+    def login(identity, role):
+        users.set(identity, role=role)
+        with app.app_context():
+            token = create_access_token(identity=identity)
+            csrf = get_csrf_token(token)
+        client.set_cookie("access_token_cookie", token)
+        return {"X-CSRF-TOKEN": csrf}
+    base = "/portfolio/strategies/trend/runtime"
+    response = client.post(base + "/requests", json={"action": "run", "portfolio_id": "BOOK", "reason": "Review"},
+                           headers=login("7", "general_member"))
+    assert response.status_code == 201, response.json
+    assert response.json["intent"]["registry_revision"] == 1
+    intent = response.json["intent"]["id"]
+    response = client.post(f"{base}/requests/{intent}/approve", json={"reason": "Incubation capital reviewed"},
+                           headers=login("8", "admin"))
+    assert response.status_code == 200, response.json
+    result = subprocess.run([probe, "publish_incubating_controlled"], capture_output=True, text=True, timeout=30)
+    assert result.returncode == 0, result.stdout[-1000:] + result.stderr[-500:]
+    status = client.get(base + "?portfolio_id=BOOK")
+    assert status.status_code == 200, status.json
+    assert status.json["registry_lifecycle"] == "incubating"
+    assert status.json["latest_attempt"]["status"] == "applied"
+    assert status.json["latest_attempt"]["outcome"] == "published"
+    # A retired scope still cannot be requested to run.
+    with connection.cursor() as cur:
+        cur.execute("UPDATE trading.strategy_registry SET lifecycle='retired' WHERE id='trend'")
+    response = client.post(base + "/requests", json={"action": "run", "portfolio_id": "BOOK", "reason": "Review"},
+                           headers=login("7", "general_member"))
+    assert response.status_code == 409 and response.json["code"] == "runtime_lifecycle_conflict", response.json

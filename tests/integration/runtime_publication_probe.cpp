@@ -294,6 +294,13 @@ int main(int argc, char** argv) {
             return 2;
         ReentrantAttachDatabase db(dsn);
         if (db.connect().is_error()) return 3;
+        if (mode.find("incubating") != std::string::npos) {
+            // N5: an incubating mode runs only against an incubating registry row, never vacuously live.
+            pqxx::connection check_connection(dsn);
+            pqxx::read_transaction check(check_connection);
+            const auto lifecycle = check.exec("SELECT lifecycle FROM trading.strategy_registry WHERE id='trend'");
+            if (lifecycle.size() != 1 || lifecycle[0][0].as<std::string>() != "incubating") return 52;
+        }
         if (case_mode == "required_no_active_attach") {
             if (db.attach_live_consumption(PublicationEvidenceToken{},
                     ConsumptionProjection::unavailable(
@@ -352,7 +359,11 @@ int main(int argc, char** argv) {
             std::cout << "RUNTIME_PUBLICATION_OK=" << mode << '\n';
             return 0;
         }
-        if (mode == "legacy_changed" || mode == "membership") {
+        // N5 refusals: an inactive incubating scope, an uncontrolled incubating scope whose revision
+        // moved (the revision-0 rule is unchanged), and a run intent for a retired scope.
+        if (mode == "legacy_changed" || mode == "membership" || mode == "incubating_inactive" ||
+            mode == "incubating_changed" || mode == "incubating_inactive_controlled" ||
+            mode == "run_retired_controlled") {
             if (!started.is_error()) return 20;
             std::cout << "RUNTIME_PUBLICATION_OK=" << mode << '\n';
             return 0;
@@ -585,7 +596,7 @@ int main(int argc, char** argv) {
             std::vector<Position> previous{Position("ES",Quantity(99),Price(100),Decimal(0),Decimal(0),
                 date-std::chrono::hours(24))};
             auto typed_result = db.store_positions(previous,engine,"TREND","BOOK","trading.positions");
-            const bool allowed = mode == "historical_valid";
+            const bool allowed = mode == "historical_valid" || mode == "historical_valid_incubating";
             if (raw_result.is_ok() != allowed || typed_result.is_ok() != allowed) return 23;
             pqxx::read_transaction observer(other);
             // Exact NUMERIC(28,8) returns scale even for these small integers.

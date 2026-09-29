@@ -98,3 +98,67 @@ TEST(QtEquityPriorFinalization, ChangedOriginalExecutionDigestRefuses) {auto c=m
 TEST(QtEquityPriorFinalization, SameDayOrBackwardValuationRefuses) {auto c=make();c.market["source_day"]="2026-09-25";c.market["valuation_time"]="2026-09-25T00:00:00Z";refused(c);}
 TEST(QtEquityPriorFinalization, FinalizerCannotClaimAnotherBuildAgainstOriginalCapturedAuthority) {auto c=make();c.provenance["finalizer_authority"]["evaluator_build"]="unadmitted-build";refused(c);}
 TEST(QtEquityPriorFinalization, FinalizerCannotClaimAnotherBundleAgainstOriginalCapturedAuthority) {auto c=make();c.provenance["finalizer_authority"]["evaluator_bundle_sha256"]=std::string(64,'0');refused(c);}
+// Equity day 2, lane N2: the finalization-only market (qt-equity-finalization-market/v1)
+// has the v1 key set, binds no model (JSON null), and keeps every finalizer rule.
+namespace {
+void finalization_only(Case& c){c.market["schema_version"]="qt-equity-finalization-market/v1";c.market["model_publication_id"]=nullptr;bind_changed_sources(c);}
+J all(const Case& c){return J::array({c.d,c.in,c.out,c.market,c.actions,c.before,c.provenance});}
+}
+TEST(QtEquityPriorFinalization, FinalizationOnlyMarketBindsNoModelAndMarksTheSameSuccessor) {
+ auto bound=make();auto expected=invoke(bound);ASSERT_TRUE(expected.is_ok());
+ auto c=make();finalization_only(c);const auto frozen=all(c);auto r=invoke(c);ASSERT_TRUE(r.is_ok());EXPECT_EQ(all(c),frozen);
+ auto actual=r.value();EXPECT_EQ(actual.at("schema_version"),"qt-equity-desk-finalization/v1");
+ EXPECT_EQ(actual.at("market_source_digest"),hash(c.market));EXPECT_NE(actual.at("market_source_digest"),expected.value().at("market_source_digest"));
+ actual["market_source_digest"]=expected.value().at("market_source_digest");EXPECT_EQ(actual,expected.value());
+}
+TEST(QtEquityPriorFinalization, FinalizationOnlyMarketKeepsTheAlreadyAppliedSFrame) {
+ auto c=make("split");finalization_only(c);auto r=invoke(c);ASSERT_TRUE(r.is_ok());const auto& after=r.value().at("after_financial");
+ EXPECT_EQ(after["positions"][0]["quantity_exact"],"3");EXPECT_EQ(after["positions"][0]["average_price_exact"],"5");EXPECT_EQ(after["live_results"][0]["current_portfolio_value_exact"],"1032");
+}
+TEST(QtEquityPriorFinalization, FinalizationOnlyMarketCannotNameAModel) {auto c=make();finalization_only(c);c.market["model_publication_id"]="a0000000-0000-4000-8000-000000000001";bind_changed_sources(c);refused(c);}
+TEST(QtEquityPriorFinalization, FinalizationOnlyMarketCannotDropTheModelKey) {auto c=make();finalization_only(c);c.market.erase("model_publication_id");bind_changed_sources(c);refused(c);}
+TEST(QtEquityPriorFinalization, FinalizationOnlyMarketCannotAddAKey) {auto c=make();finalization_only(c);c.market["model_seed_digest"]=std::string(64,'a');bind_changed_sources(c);refused(c);}
+TEST(QtEquityPriorFinalization, FinalizationOnlyMarketCannotCarryADAction) {auto c=make();finalization_only(c);c.actions["events"].push_back(new_action(c,"2026-09-26"));bind_changed_sources(c);refused(c);}
+TEST(QtEquityPriorFinalization, FinalizationOnlyMarketCannotCarryAnSAction) {auto c=make();finalization_only(c);c.actions["events"].push_back(new_action(c,"2026-09-25"));bind_changed_sources(c);refused(c);}
+TEST(QtEquityPriorFinalization, FinalizationOnlyMarketCannotUsePostActionFrameMarks) {auto c=make();finalization_only(c);c.market["instruments"][0]["mark"]["price_frame_id"]="unproved-new-frame";bind_changed_sources(c);refused(c);}
+TEST(QtEquityPriorFinalization, FinalizationOnlyMarketCannotUseDDatedMarks) {auto c=make();finalization_only(c);c.market["instruments"][0]["mark"]["date"]="2026-09-26";bind_changed_sources(c);refused(c);}
+TEST(QtEquityPriorFinalization, AccountingMarketStillRequiresItsModel) {auto c=make();c.market["model_publication_id"]=nullptr;bind_changed_sources(c);refused(c);}
+// The market-row seams used by market() (finalization) and reconstructed() (D accounting input).
+namespace {
+J market_row(const J& payload){return {{"source_id","a0000000-0000-4000-8000-000000000003"},{"book_id",payload.at("book_id")},{"source_day",payload.at("source_day")},
+ {"model_publication_id",payload.contains("model_publication_id")?payload.at("model_publication_id"):J(nullptr)},{"producer_id","owned-execution"},{"policy_version","owned-policy"},{"policy_revision",1},
+ {"source_version","owned-market/v1"},{"as_of","2026-09-26T00:00:00Z"},{"valid_until","2026-09-27T00:00:00Z"},{"content_digest",hash(payload)},{"payload",payload},{"created_at","2026-09-26T00:00:01Z"}};}
+J schema(const J& value){return {{"schema_version",value}};}
+}
+TEST(QtEquityFinalizationMarket, OnlyTheFinalizationRoleAdmitsTheFinalizationOnlySchema) {
+ for(auto s:{"qt-equity-accounting-market/v1","qt-equity-accounting-market-empty-owner/v2"}){
+  EXPECT_TRUE(qt_equity_market_schema_admitted(schema(s),QtEquityMarketRole::Finalization))<<s;
+  EXPECT_TRUE(qt_equity_market_schema_admitted(schema(s),QtEquityMarketRole::AccountingInput))<<s;
+ }
+ EXPECT_TRUE(qt_equity_market_schema_admitted(schema("qt-equity-finalization-market/v1"),QtEquityMarketRole::Finalization));
+ // reconstructed() gates its D input market with this role: a finalization-only market is never a D input.
+ EXPECT_FALSE(qt_equity_market_schema_admitted(schema("qt-equity-finalization-market/v1"),QtEquityMarketRole::AccountingInput));
+ for(const J& bad:{J("qt-accounting-market/v1"),J("qt-equity-finalization-market/v2"),J("QT-EQUITY-FINALIZATION-MARKET/V1"),J(""),J(nullptr),J(1),J::array()})
+  for(auto role:{QtEquityMarketRole::Finalization,QtEquityMarketRole::AccountingInput})EXPECT_FALSE(qt_equity_market_schema_admitted(schema(bad),role))<<bad.dump();
+ for(const J& bad:{J::object(),J::array(),J(nullptr),J("qt-equity-finalization-market/v1")})
+  for(auto role:{QtEquityMarketRole::Finalization,QtEquityMarketRole::AccountingInput})EXPECT_FALSE(qt_equity_market_schema_admitted(bad,role))<<bad.dump();
+}
+TEST(QtEquityFinalizationMarket, FinalizationOnlyRowBindsNoModelOnEitherSide) {
+ auto c=make();finalization_only(c);const auto row=market_row(c.market);ASSERT_TRUE(row.at("model_publication_id").is_null());
+ EXPECT_TRUE(qt_equity_finalization_only_market_row(row));
+ const std::string model="a0000000-0000-4000-8000-000000000001";
+ {auto r=row;r["model_publication_id"]=model;EXPECT_FALSE(qt_equity_finalization_only_market_row(r));}
+ {auto r=row;r["payload"]["model_publication_id"]=model;EXPECT_FALSE(qt_equity_finalization_only_market_row(r));}
+ {auto r=row;r["model_publication_id"]=model;r["payload"]["model_publication_id"]=model;EXPECT_FALSE(qt_equity_finalization_only_market_row(r));}
+ {auto r=row;r.erase("model_publication_id");EXPECT_FALSE(qt_equity_finalization_only_market_row(r));}
+ {auto r=row;r["payload"].erase("model_publication_id");EXPECT_FALSE(qt_equity_finalization_only_market_row(r));}
+ {auto r=row;r["payload"]["extra"]=true;EXPECT_FALSE(qt_equity_finalization_only_market_row(r));}
+ {auto r=row;r["book_id"]="OTHER";EXPECT_FALSE(qt_equity_finalization_only_market_row(r));}
+ {auto r=row;r["source_day"]="2026-09-25";EXPECT_FALSE(qt_equity_finalization_only_market_row(r));}
+ {auto r=row;r["payload"]["book_id"]="";r["book_id"]="";EXPECT_FALSE(qt_equity_finalization_only_market_row(r));}
+ {auto r=row;r.erase("payload");EXPECT_FALSE(qt_equity_finalization_only_market_row(r));}
+ EXPECT_FALSE(qt_equity_finalization_only_market_row(J::array()));
+ // The model-bound schemas are never finalization-only, even with a null model.
+ auto v1=make();EXPECT_FALSE(qt_equity_finalization_only_market_row(market_row(v1.market)));
+ for(auto s:{"qt-equity-accounting-market/v1","qt-equity-accounting-market-empty-owner/v2"}){auto r=row;r["payload"]["schema_version"]=s;EXPECT_FALSE(qt_equity_finalization_only_market_row(r))<<s;}
+}

@@ -133,3 +133,78 @@ def test_borrowed_uow_joins_confirmation_book_lock_before_mutating(ledger):
         if child is not None and child.poll() is None:
             child.kill();child.communicate(timeout=5)
         blocker.rollback();blocker.close();contender.rollback();contender.close()
+
+# ---- N5: an equity MODEL-only publication for an inc_meanrev-shaped registry row -------------------
+# The actual native publisher (equity_prior_binding_probe: PublicationPriorRequirement::None, the
+# system-reference prior, RequiredFinalObservations) against LIVE_EQUITY_MEAN_REVERSION/EQUITY_MR_PORTFOLIO.
+# The database layer is 013 + 015 + 016 + 025 (this tree's migrations). The MODEL payload is synthetic.
+BINDING_PROBE=Path('/home/devcontainers/qt-validation-20260921/bin/Debug/equity_prior_binding_probe')
+MODEL_INCUBATING=Path(__file__).resolve().parents[1]/'migrations/025_runtime_scope_model_incubating.sql'
+EQ_BOOK,EQ_PRIOR_DAY,EQ_DAY='EQUITY_MR_PORTFOLIO','2026-09-21','2026-09-22'
+EQ_UNUSED_DECISION,EQ_UNUSED_FINALIZATION='40000000-0000-4000-8000-000000000001','40000000-0000-4000-8000-000000000002'
+
+def eq_probe(mode):
+    # A missing binary raises FileNotFoundError here: a setup failure, never a refusal.
+    return subprocess.run([str(BINDING_PROBE),mode,EQ_UNUSED_DECISION,EQ_UNUSED_FINALIZATION,EQ_BOOK,EQ_PRIOR_DAY,EQ_DAY],
+        env=os.environ.copy(),text=True,capture_output=True,timeout=60)
+
+def inc_meanrev(connection,lifecycle,active=True):
+    from test_runtime_control_schema import prepare_exact_publication_schema
+    prepare_exact_publication_schema(connection)
+    with connection.cursor() as cur:
+        cur.execute(MODEL_INCUBATING.read_text())
+        # Production's inc_meanrev: incubating since 2025-07-15, never changed after 013 (revision 0).
+        cur.execute("INSERT INTO trading.strategy_registry (id,strategy_type,portfolio_id,lifecycle,is_active,"
+            "mock_capital) VALUES ('inc_meanrev','LIVE_EQUITY_MEAN_REVERSION',%s,%s,%s,100000)",(EQ_BOOK,lifecycle,active))
+        cur.execute("SELECT lifecycle,is_active,runtime_revision FROM trading.strategy_registry WHERE id='inc_meanrev'")
+        assert cur.fetchone()==(lifecycle,active,0)
+
+def eq_model_rows(connection):
+    with connection.cursor() as cur:
+        cur.execute("SELECT portfolio_type,symbol,quantity::text FROM trading.positions WHERE portfolio_id=%s AND "
+            "strategy_id='LIVE_EQUITY_MEAN_REVERSION' AND strategy_name='EQUITY_MEAN_REVERSION' AND date=%s "
+            "ORDER BY portfolio_type",(EQ_BOOK,EQ_DAY))
+        positions=[(stream,symbol,float(quantity)) for stream,symbol,quantity in cur.fetchall()]
+        cur.execute("SELECT count(*) FROM trading.qt_model_seed_publications WHERE portfolio_id=%s AND "
+            "strategy_id='LIVE_EQUITY_MEAN_REVERSION' AND source_day=%s",(EQ_BOOK,EQ_DAY))
+        seeds=cur.fetchone()[0]
+        cur.execute("SELECT count(*) FROM trading.live_results WHERE portfolio_id=%s",(EQ_BOOK,))
+        results=cur.fetchone()[0]
+        cur.execute("SELECT status,outcome FROM trading.runtime_attempts")
+        return positions,seeds,results,cur.fetchall()
+
+def approve_model_run(connection):
+    snapshot=eq_probe('snapshot');assert snapshot.returncode==0,snapshot.stdout+snapshot.stderr
+    rows=[line for line in snapshot.stdout.splitlines() if line.startswith('{')];assert len(rows)==1
+    with connection.cursor() as cur:
+        cur.execute("INSERT INTO trading.runtime_intents(registry_id,portfolio_id,engine_strategy_id,action,"
+            "registry_revision,config_snapshot,status,requested_by,request_reason,approved_by,approval_reason,approved_at) "
+            "SELECT id,%s,'LIVE_EQUITY_MEAN_REVERSION','run',runtime_revision,%s::jsonb,'approved','1',"
+            "'synthetic model run','2','synthetic approval',now() FROM trading.strategy_registry WHERE id='inc_meanrev'",
+            (EQ_BOOK,rows[0]))
+
+@pytest.mark.parametrize('lifecycle,controlled',[('incubating',False),('incubating',True),('live',False)])
+def test_equity_model_only_publication_admits_inc_meanrev_shaped_scope(connection,lifecycle,controlled):
+    """N5 (c): incubating + active + revision 0 publishes the MODEL (system) stream; 'live' is the control."""
+    inc_meanrev(connection,lifecycle)
+    if controlled:
+        approve_model_run(connection)
+    result=eq_probe('system_reference_publish' if controlled else 'model_only_uncontrolled')
+    assert result.returncode==0,result.stdout+result.stderr+' exit=%d'%result.returncode
+    assert 'EQ_PUBLICATION_COMMITTED=1' in result.stdout
+    positions,seeds,results,attempts=eq_model_rows(connection)
+    assert positions==[('qt','SYN',12.0),('system','SYN',12.0)]
+    assert seeds==1 and results==1
+    assert attempts==([('applied','published')] if controlled else [])
+    with connection.cursor() as cur:
+        cur.execute("SELECT lifecycle,is_active,runtime_revision FROM trading.strategy_registry WHERE id='inc_meanrev'")
+        assert cur.fetchone()==(lifecycle,True,0)
+
+@pytest.mark.parametrize('lifecycle,active',[('incubating',False),('retired',True)])
+def test_equity_model_only_publication_still_refuses_inactive_or_retired_scope(connection,lifecycle,active):
+    inc_meanrev(connection,lifecycle,active)
+    before=eq_model_rows(connection)
+    result=eq_probe('model_only_uncontrolled')
+    assert result.returncode==69,result.stdout+result.stderr+' exit=%d'%result.returncode  # admission refused
+    assert 'EQ_PUBLICATION_COMMITTED=1' not in result.stdout
+    assert eq_model_rows(connection)==before==([],0,0,[])

@@ -158,6 +158,8 @@ set(TRADE_NGIN_SOURCES
     src/data/qt_desk_upstream.cpp
     src/data/qt_equity_desk_accounting.cpp
     src/data/qt_equity_desk_finalization.cpp
+    src/apps/qt_equity_prior_continuation.cpp
+    src/data/qt_equity_prior_continuation_db.cpp
     src/data/qt_desk_market_capture.cpp
     src/apps/qt_desk_diagnostics.cpp
     src/apps/qt_investor_report_loader.cpp
@@ -175,6 +177,7 @@ set(TRADE_NGIN_SOURCES
     src/data/qt_empty_model_owner_publication.cpp
     src/data/qt_empty_model_owner_reference.cpp
     src/data/qt_empty_model_owner_storage.cpp
+    src/data/qt_equity_model_prior_binding.cpp
     src/data/qt_model_publication.cpp
     src/data/qt_desk_publication.cpp
     src/data/qt_desk_read_set.cpp
@@ -364,7 +367,8 @@ set_target_properties(equity_model_entry_unit PROPERTIES
 
 foreach(probe IN ITEMS
     equity_model_database_probe equity_model_v4_probe equity_event_utc_probe
-    equity_utc_readers_probe equity_model_prior_probe equity_prior_publication_probe equity_model_config_probe)
+    equity_utc_readers_probe equity_model_prior_probe equity_prior_publication_probe equity_model_config_probe
+    equity_prior_binding_probe)
     add_executable(${probe} tests/${probe}.cpp)
     target_link_libraries(${probe} PRIVATE trade_ngin)
     target_compile_definitions(${probe} PRIVATE TESTING USE_DIRECT_DB_CONNECTION)

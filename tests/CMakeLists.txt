@@ -3,6 +3,7 @@ set(TEST_SOURCES
     data/test_qt_desk_owner_scope.cpp
     data/test_qt_empty_model_owner_publication.cpp
     data/test_qt_empty_model_owner_reference.cpp
+    data/test_qt_equity_model_prior_binding.cpp
     portfolio/test_qt_empty_owner_evaluation.cpp
     apps/test_qt_empty_owner_accounting.cpp
     apps/test_qt_empty_owner_report.cpp
@@ -31,6 +32,7 @@ set(TEST_SOURCES
     apps/test_qt_equity_desk_cycle.cpp
     apps/test_qt_book_tail.cpp
     apps/test_qt_equity_prior_finalization.cpp
+    apps/test_qt_equity_prior_continuation.cpp
     apps/test_qt_equity_cost_consumption.cpp
     portfolio/test_qt_equity_proof.cpp
     portfolio/test_qt_offline_legacy_capacity.cpp
@@ -249,6 +251,19 @@ add_executable(qt_equity_prior_finalization_tests EXCLUDE_FROM_ALL apps/test_qt_
 target_include_directories(qt_equity_prior_finalization_tests PRIVATE ${CMAKE_SOURCE_DIR}/include)
 target_link_libraries(qt_equity_prior_finalization_tests PRIVATE trade_ngin GTest::gtest GTest::gtest_main)
 set_target_properties(qt_equity_prior_finalization_tests PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin/Debug"
+    RUNTIME_OUTPUT_DIRECTORY_DEBUG "${CMAKE_BINARY_DIR}/bin/Debug")
+add_executable(qt_equity_prior_continuation_tests EXCLUDE_FROM_ALL apps/test_qt_equity_prior_continuation.cpp)
+target_include_directories(qt_equity_prior_continuation_tests PRIVATE ${CMAKE_SOURCE_DIR}/include)
+target_link_libraries(qt_equity_prior_continuation_tests PRIVATE trade_ngin GTest::gtest GTest::gtest_main)
+set_target_properties(qt_equity_prior_continuation_tests PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin/Debug"
+    RUNTIME_OUTPUT_DIRECTORY_DEBUG "${CMAKE_BINARY_DIR}/bin/Debug")
+# Needs its owned network-none PostgreSQL (QT_N4_TEST_DSN); never part of trade_ngin_tests.
+add_executable(qt_equity_prior_continuation_pg_tests EXCLUDE_FROM_ALL data/test_qt_equity_prior_continuation_pg.cpp)
+target_include_directories(qt_equity_prior_continuation_pg_tests PRIVATE ${CMAKE_SOURCE_DIR}/include)
+target_link_libraries(qt_equity_prior_continuation_pg_tests PRIVATE trade_ngin GTest::gtest GTest::gtest_main)
+set_target_properties(qt_equity_prior_continuation_pg_tests PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin/Debug"
     RUNTIME_OUTPUT_DIRECTORY_DEBUG "${CMAKE_BINARY_DIR}/bin/Debug")
 add_executable(qt_equity_finalization_probe EXCLUDE_FROM_ALL integration/qt_equity_finalization_probe.cpp)

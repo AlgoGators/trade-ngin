@@ -73,6 +73,7 @@ TEST(QtEmptyOwnerFinalization, ChangedAuthorityRefuses){auto f=fixture();f["prov
 TEST(QtEmptyOwnerFinalization, NewActionCannotInventIncome){auto f=fixture();f["actions"]["events"].push_back(J::object());f["market"]["actions_source_digest"]=hash(f.at("actions"));f["provenance"]["actions_source_digest"]=hash(f.at("actions"));f["provenance"]["market_source_digest"]=hash(f.at("market"));EXPECT_TRUE(finalize(f).is_error());}
 TEST(QtEmptyOwnerFinalization, ChangedFinancialRowsEvenAfterRehashRefuse){auto f=fixture();f["out"]["live_results"][0]["current_portfolio_value_exact"]="100001";f["before"]["live_results"]=f.at("out").at("live_results");f["provenance"]["original_run_result_digest"]=hash(f.at("out"),true);EXPECT_TRUE(finalize(f).is_error());}
 TEST(QtEmptyOwnerFinalization, UntaggedEmptyOriginalRemainsUnsupported){auto f=fixture();f["in"]["schema_version"]="qt-equity-accounting-input/v1";f["out"]["schema_version"]="qt-equity-accounting/v1";f["market"]["schema_version"]="qt-equity-accounting-market/v1";EXPECT_TRUE(finalize(f).is_error());}
+TEST(QtEmptyOwnerFinalization, FinalizationOnlyMarketIsNotEnabledForEmptyOwnerBooks){auto f=fixture();f["market"]["schema_version"]="qt-equity-finalization-market/v1";f["market"]["model_publication_id"]=nullptr;f["provenance"]["market_source_digest"]=hash(f.at("market"));EXPECT_TRUE(finalize(f).is_error());}
 
 J accounting_wire(const J& f){
  auto d=f.at("d");d.erase("model_publication_id");

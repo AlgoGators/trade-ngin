@@ -14,7 +14,7 @@
 #include <stdexcept>
 #include <string_view>
 #include "trade_ngin/data/qt_seed_publication.hpp"
-
+#include "trade_ngin/apps/qt_equity_prior_finalization.hpp"
 namespace trade_ngin { namespace {
 using J=nlohmann::json;
 void need(bool ok){if(!ok)throw std::invalid_argument("qt_equity_accounting_unavailable");}
@@ -77,7 +77,7 @@ J reconstructed(pqxx::work& tx,const J& d,const J& selection,const std::string& 
     need(!empty_owner||a.at("schema_version")=="qt-equity-finalized-accounting/v1"||empty_derived);
     if(derived)shape(a,{"schema_version","calculation_version","book_id","source_day","currency","policy_revision","previous_positions","previous_totals","finalization_id","finalization_digest"});
     else shape(a,{"schema_version","calculation_version","book_id","source_day","currency","policy_revision","previous_positions","previous_totals"});
-    need((empty_owner||m.at("schema_version")=="qt-equity-accounting-market/v1")&&(derived||a.at("schema_version")=="qt-equity-finalized-accounting/v1")&&m.at("calculation_version")=="qt-equity-main08b15c/v1"&&a.at("calculation_version")==m.at("calculation_version"));
+    need(qt_equity_market_schema_admitted(m,QtEquityMarketRole::AccountingInput)&&(derived||a.at("schema_version")=="qt-equity-finalized-accounting/v1")&&m.at("calculation_version")=="qt-equity-main08b15c/v1"&&a.at("calculation_version")==m.at("calculation_version"));
     for(auto f:{"book_id","source_day","model_publication_id"})need(m.at(f)==d.at(f)&&market.at(f)==d.at(f));
     need(final.at("book_id")==d.at("book_id")&&a.at("book_id")==d.at("book_id")&&a.at("source_day")==m.at("previous_day")&&final.at("source_day")==m.at("previous_day")&&a.at("currency")==m.at("currency"));
     need(text(final.at("source_id")).size()==52&&text(final.at("source_id")).rfind("qt-finalization/",0)==0&&final.at("source_version")==final.at("source_id"));
