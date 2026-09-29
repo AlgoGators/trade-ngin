@@ -9,6 +9,8 @@
 #include "trade_ngin/data/market_data_utils.hpp"
 
 namespace {
+
+// Helper function to join strings with a delimiter
 std::string join(const std::vector<std::string>& elements, const std::string& delimiter) {
     std::ostringstream os;
     if (!elements.empty()) {
@@ -19,7 +21,9 @@ std::string join(const std::vector<std::string>& elements, const std::string& de
     }
     return os.str();
 }
+
 }  // namespace
+
 #include "trade_ngin/data/market_data_bus.hpp"
 
 namespace trade_ngin {
@@ -149,9 +153,8 @@ Result<std::shared_ptr<arrow::Table>> PostgresDatabase::get_market_data(
                 if (it != prev_close.end() && it->second > 0.0) {
                     double change = std::abs(close - it->second) / it->second;
                     if (change > 0.25) {
-                        WARN("Suspicious price change for " + symbol +
-                             ": " + std::to_string(change * 100.0) +
-                             "% - check for corporate action");
+                        WARN("Suspicious price change for " + symbol + ": " +
+                             std::to_string(change * 100.0) + "% - check for corporate action");
                     }
                 }
                 prev_close[symbol] = close;
@@ -265,31 +268,33 @@ Result<void> PostgresDatabase::store_executions(const std::vector<ExecutionRepor
             const std::string exec_date = trade_ngin::core::format_utc_date(exec.fill_time);
 
             // Updated INSERT to include all 4 cost breakdown fields
-            std::string query = "INSERT INTO " + table_name +
-                                " (exec_id, order_id, symbol, side, quantity, price, "
-                                "execution_time, commissions_fees, implicit_price_impact, "
-                                "slippage_market_impact, total_transaction_costs, is_partial, "
-                                "strategy_id, strategy_name, date, portfolio_id) VALUES "
-                                "($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)";
+            std::string query =
+                "INSERT INTO " + table_name +
+                " (exec_id, order_id, symbol, side, quantity, price, "
+                "execution_time, commissions_fees, implicit_price_impact, "
+                "slippage_market_impact, total_transaction_costs, is_partial, "
+                "strategy_id, strategy_name, date, portfolio_id) VALUES "
+                "($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)";
 
             std::cout << "DEBUG: About to execute SQL query" << std::endl;
             std::cout << "DEBUG: Query: " << query << std::endl;
 
             // Updated exec to include all 4 cost fields
             txn.exec(
-                query, pqxx::params{
-                exec.exec_id, exec.order_id, exec.symbol, side_to_string(exec.side),
-                static_cast<double>(exec.filled_quantity), static_cast<double>(exec.fill_price),
-                format_timestamp(exec.fill_time),
-                static_cast<double>(exec.commissions_fees),         // $8
-                static_cast<double>(exec.implicit_price_impact),    // $9
-                static_cast<double>(exec.slippage_market_impact),   // $10
-                static_cast<double>(exec.total_transaction_costs),  // $11
-                exec.is_partial,                                    // $12
-                strategy_id,    // $13 - combined (e.g., LIVE_TREND_FOLLOWING_TREND_FOLLOWING_FAST)
-                strategy_name,  // $14 - individual (e.g., TREND_FOLLOWING)
-                exec_date,      // $15
-                portfolio_id}); // $16 - portfolio identifier
+                query,
+                pqxx::params{exec.exec_id, exec.order_id, exec.symbol, side_to_string(exec.side),
+                             static_cast<double>(exec.filled_quantity),
+                             static_cast<double>(exec.fill_price), format_timestamp(exec.fill_time),
+                             static_cast<double>(exec.commissions_fees),         // $8
+                             static_cast<double>(exec.implicit_price_impact),    // $9
+                             static_cast<double>(exec.slippage_market_impact),   // $10
+                             static_cast<double>(exec.total_transaction_costs),  // $11
+                             exec.is_partial,                                    // $12
+                             strategy_id,     // $13 - combined (e.g.,
+                                              // LIVE_TREND_FOLLOWING_TREND_FOLLOWING_FAST)
+                             strategy_name,   // $14 - individual (e.g., TREND_FOLLOWING)
+                             exec_date,       // $15
+                             portfolio_id});  // $16 - portfolio identifier
 
             std::cout << "DEBUG: SQL executed successfully for " << exec.symbol << std::endl;
         }
@@ -350,21 +355,6 @@ Result<void> PostgresDatabase::store_positions(const std::vector<Position>& posi
     }
 }
 
-Result<void> PostgresDatabase::store_positions(DbTransaction& txn,
-                                               const std::vector<Position>& positions,
-                                               const std::string& strategy_id,
-                                               const std::string& strategy_name,
-                                               const std::string& portfolio_id,
-                                               const std::string& table_name) {
-    if (!txn.valid()) {
-        return make_error<void>(ErrorCode::DATABASE_ERROR,
-                                "store_positions called with a moved-from unit of work",
-                                "PostgresDatabase");
-    }
-    return store_positions_in(txn.work(), positions, strategy_id, strategy_name, portfolio_id,
-                              table_name);
-}
-
 Result<void> PostgresDatabase::store_positions_in(pqxx::work& txn,
                                                   const std::vector<Position>& positions,
                                                   const std::string& strategy_id,
@@ -381,9 +371,12 @@ Result<void> PostgresDatabase::store_positions_in(pqxx::work& txn,
         // that flow into SQL via concatenation (positions VALUES tuple is
         // built with single-quoted concat below; we rely on the allowlist
         // here to ensure the values can't contain an unescaped quote).
-        if (auto sv = validate_strategy_id(strategy_id); sv.is_error()) return sv;
-        if (auto sn = validate_strategy_id(strategy_name); sn.is_error()) return sn;
-        if (auto pv = validate_strategy_id(portfolio_id); pv.is_error()) return pv;
+        if (auto sv = validate_strategy_id(strategy_id); sv.is_error())
+            return sv;
+        if (auto sn = validate_strategy_id(strategy_name); sn.is_error())
+            return sn;
+        if (auto pv = validate_strategy_id(portfolio_id); pv.is_error())
+            return pv;
 
         // Clear existing positions for this strategy (by strategy_id AND strategy_name)
         // and the date of the positions being inserted.
@@ -429,15 +422,18 @@ Result<void> PostgresDatabase::store_positions_in(pqxx::work& txn,
             // once, not something to silently absorb on every run at the cost of an
             // unscoped delete. Aborting loses nothing: the transaction is not committed,
             // so the book on disk is whatever the last good run wrote.
-            ERROR("store_positions failed while deleting existing rows for " + table_name +
-                  ": " + std::string(e.what()));
-            ERROR("Refusing to fall back to an unscoped DELETE across all strategies and "
-                  "portfolios. If " + table_name + " is genuinely missing strategy_id / "
-                  "strategy_name / portfolio_id, fix the schema -- do not let a transient "
-                  "SQL error destroy another book's positions.");
+            ERROR("store_positions failed while deleting existing rows for " + table_name + ": " +
+                  std::string(e.what()));
+            ERROR(
+                "Refusing to fall back to an unscoped DELETE across all strategies and "
+                "portfolios. If " +
+                table_name +
+                " is genuinely missing strategy_id / "
+                "strategy_name / portfolio_id, fix the schema -- do not let a transient "
+                "SQL error destroy another book's positions.");
             return make_error<void>(ErrorCode::DATABASE_ERROR,
-                                    "Failed to delete existing positions for " + table_name +
-                                        ": " + std::string(e.what()),
+                                    "Failed to delete existing positions for " + table_name + ": " +
+                                        std::string(e.what()),
                                     "PostgresDatabase");
         }
 
@@ -466,8 +462,7 @@ Result<void> PostgresDatabase::store_positions_in(pqxx::work& txn,
             ss << std::setprecision(17);  // Double precision
 
             // Phase 5 §5c: UTC date-string contract.
-            const std::string position_date =
-                trade_ngin::core::format_utc_date(pos.last_update);
+            const std::string position_date = trade_ngin::core::format_utc_date(pos.last_update);
 
             ss << "('" << pos.symbol << "', " << static_cast<double>(pos.quantity) << ", "
                << static_cast<double>(pos.average_price) << ", "
@@ -584,7 +579,7 @@ Result<void> PostgresDatabase::store_signals(const std::unordered_map<std::strin
                 "DO UPDATE SET signal_value = EXCLUDED.signal_value";
 
             txn.exec(query, pqxx::params{strategy_id, symbol, signal, format_timestamp(timestamp),
-                            portfolio_id, strategy_name});
+                                         portfolio_id, strategy_name});
         }
 
         txn.commit();
@@ -745,8 +740,8 @@ Result<std::unordered_map<std::string, Position>> PostgresDatabase::load_positio
             DEBUG("Querying positions for strategy_id: " + strategy_id + ", strategy_name: " +
                   strategy_name + ", portfolio_id: " + actual_portfolio_id + ", date: " + date_str);
             DEBUG("Full query: " + query);
-            result =
-                txn.exec(query, pqxx::params{strategy_id, strategy_name, actual_portfolio_id, date_str});
+            result = txn.exec(
+                query, pqxx::params{strategy_id, strategy_name, actual_portfolio_id, date_str});
         } else {
             // If strategy_name is empty, filter by strategy_id and portfolio_id (for aggregate
             // loading)
@@ -951,9 +946,8 @@ Result<pqxx::result> PostgresDatabase::execute_market_data_query(
         std::string query =
             (asset_class == AssetClass::EQUITIES)
                 ? market_data_utils::build_equity_adjusted_query(full_table_name, false)
-                : "SELECT " + market_data_utils::get_market_data_columns(asset_class) +
-                      " FROM " + full_table_name +
-                      " WHERE time BETWEEN $1 AND $2 ORDER BY time, symbol";
+                : "SELECT " + market_data_utils::get_market_data_columns(asset_class) + " FROM " +
+                      full_table_name + " WHERE time BETWEEN $1 AND $2 ORDER BY time, symbol";
         try {
             return Result<pqxx::result>(txn.exec(query, pqxx::params{start_ts, end_ts}));
         } catch (const std::exception& e) {
@@ -971,8 +965,8 @@ Result<pqxx::result> PostgresDatabase::execute_market_data_query(
         std::string query =
             (asset_class == AssetClass::EQUITIES)
                 ? market_data_utils::build_equity_adjusted_query(full_table_name, true)
-                : "SELECT " + market_data_utils::get_market_data_columns(asset_class) +
-                      " FROM " + full_table_name +
+                : "SELECT " + market_data_utils::get_market_data_columns(asset_class) + " FROM " +
+                      full_table_name +
                       " WHERE time BETWEEN $1 AND $2 AND symbol = ANY($3)"
                       " ORDER BY time, symbol";
 
@@ -1725,8 +1719,7 @@ Result<void> PostgresDatabase::validate_identifier(const std::string& identifier
     // semicolons, quotes, whitespace, and any non-ASCII are forbidden.
     if (identifier.empty() || identifier.size() > 64) {
         return make_error<void>(ErrorCode::INVALID_ARGUMENT,
-                                "Invalid identifier: must be 1-64 characters",
-                                "PostgresDatabase");
+                                "Invalid identifier: must be 1-64 characters", "PostgresDatabase");
     }
     const char first = identifier.front();
     if (!std::isalpha(static_cast<unsigned char>(first)) && first != '_') {
@@ -1776,7 +1769,8 @@ Result<void> PostgresDatabase::validate_execution_report(const ExecutionReport& 
                                 "PostgresDatabase");
     }
 
-    if (exec.total_transaction_costs.is_negative() || static_cast<double>(exec.total_transaction_costs) > 1e12) {
+    if (exec.total_transaction_costs.is_negative() ||
+        static_cast<double>(exec.total_transaction_costs) > 1e12) {
         return make_error<void>(ErrorCode::INVALID_ARGUMENT,
                                 "Invalid total_transaction_costs: must be between 0 and 1e12",
                                 "PostgresDatabase");
@@ -1873,16 +1867,14 @@ Result<void> PostgresDatabase::store_backtest_executions(
             // so insert in chunks of whole rows.
             constexpr std::size_t kColumns = 14;
             constexpr std::size_t kMaxRowsPerStatement = 65535 / kColumns;
-            const std::string prefix =
-                "INSERT INTO " + table_name +
-                " (run_id, portfolio_id, execution_id, order_id, timestamp, "
-                "symbol, side, quantity, price, commissions_fees, "
-                "implicit_price_impact, slippage_market_impact, "
-                "total_transaction_costs, is_partial) VALUES ";
+            const std::string prefix = "INSERT INTO " + table_name +
+                                       " (run_id, portfolio_id, execution_id, order_id, timestamp, "
+                                       "symbol, side, quantity, price, commissions_fees, "
+                                       "implicit_price_impact, slippage_market_impact, "
+                                       "total_transaction_costs, is_partial) VALUES ";
 
             for (std::size_t start = 0; start < executions.size(); start += kMaxRowsPerStatement) {
-                const std::size_t end =
-                    std::min(executions.size(), start + kMaxRowsPerStatement);
+                const std::size_t end = std::min(executions.size(), start + kMaxRowsPerStatement);
                 std::string query = prefix;
                 pqxx::params batch;
                 std::size_t next_placeholder = 1;
@@ -1917,22 +1909,24 @@ Result<void> PostgresDatabase::store_backtest_executions(
         } else {
             // Use parameterized queries for smaller batches
             for (const auto& exec : executions) {
-                std::string query = "INSERT INTO " + table_name +
-                                    " (run_id, portfolio_id, execution_id, order_id, timestamp, "
-                                    "symbol, side, quantity, price, commissions_fees, "
-                                    "implicit_price_impact, slippage_market_impact, "
-                                    "total_transaction_costs, is_partial) "
-                                    "VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)";
+                std::string query =
+                    "INSERT INTO " + table_name +
+                    " (run_id, portfolio_id, execution_id, order_id, timestamp, "
+                    "symbol, side, quantity, price, commissions_fees, "
+                    "implicit_price_impact, slippage_market_impact, "
+                    "total_transaction_costs, is_partial) "
+                    "VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)";
 
-                txn.exec(
-                    query, pqxx::params{
-                    run_id, actual_portfolio_id, exec.exec_id, exec.order_id,
-                    format_timestamp(exec.fill_time), exec.symbol, side_to_string(exec.side),
-                    static_cast<double>(exec.filled_quantity), static_cast<double>(exec.fill_price),
-                    static_cast<double>(exec.commissions_fees),
-                    static_cast<double>(exec.implicit_price_impact),
-                    static_cast<double>(exec.slippage_market_impact),
-                    static_cast<double>(exec.total_transaction_costs), exec.is_partial});
+                txn.exec(query, pqxx::params{run_id, actual_portfolio_id, exec.exec_id,
+                                             exec.order_id, format_timestamp(exec.fill_time),
+                                             exec.symbol, side_to_string(exec.side),
+                                             static_cast<double>(exec.filled_quantity),
+                                             static_cast<double>(exec.fill_price),
+                                             static_cast<double>(exec.commissions_fees),
+                                             static_cast<double>(exec.implicit_price_impact),
+                                             static_cast<double>(exec.slippage_market_impact),
+                                             static_cast<double>(exec.total_transaction_costs),
+                                             exec.is_partial});
             }
         }
 
@@ -1986,8 +1980,7 @@ Result<void> PostgresDatabase::store_backtest_executions_with_strategy(
                 "slippage_market_impact, total_transaction_costs, is_partial) VALUES ";
 
             for (std::size_t start = 0; start < executions.size(); start += kMaxRowsPerStatement) {
-                const std::size_t end =
-                    std::min(executions.size(), start + kMaxRowsPerStatement);
+                const std::size_t end = std::min(executions.size(), start + kMaxRowsPerStatement);
                 std::string query = prefix;
                 pqxx::params batch;
                 std::size_t next_placeholder = 1;
@@ -2030,15 +2023,16 @@ Result<void> PostgresDatabase::store_backtest_executions_with_strategy(
                     "slippage_market_impact, total_transaction_costs, is_partial) "
                     "VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)";
 
-                txn.exec(
-                    query, pqxx::params{
-                    run_id, actual_portfolio_id, strategy_id, exec.exec_id, exec.order_id,
-                    format_timestamp(exec.fill_time), exec.symbol, side_to_string(exec.side),
-                    static_cast<double>(exec.filled_quantity), static_cast<double>(exec.fill_price),
-                    static_cast<double>(exec.commissions_fees),
-                    static_cast<double>(exec.implicit_price_impact),
-                    static_cast<double>(exec.slippage_market_impact),
-                    static_cast<double>(exec.total_transaction_costs), exec.is_partial});
+                txn.exec(query, pqxx::params{run_id, actual_portfolio_id, strategy_id, exec.exec_id,
+                                             exec.order_id, format_timestamp(exec.fill_time),
+                                             exec.symbol, side_to_string(exec.side),
+                                             static_cast<double>(exec.filled_quantity),
+                                             static_cast<double>(exec.fill_price),
+                                             static_cast<double>(exec.commissions_fees),
+                                             static_cast<double>(exec.implicit_price_impact),
+                                             static_cast<double>(exec.slippage_market_impact),
+                                             static_cast<double>(exec.total_transaction_costs),
+                                             exec.is_partial});
             }
         }
 
@@ -2083,7 +2077,7 @@ Result<void> PostgresDatabase::store_backtest_signals(
                         "DO UPDATE SET signal_value = EXCLUDED.signal_value, portfolio_id = "
                         "EXCLUDED.portfolio_id, portfolio_run_id = EXCLUDED.portfolio_run_id";
                 txn.exec(query, pqxx::params{run_id, actual_portfolio_id, strategy_id, symbol,
-                                signal_value, format_timestamp(timestamp), run_id});
+                                             signal_value, format_timestamp(timestamp), run_id});
             } else {
                 // Single strategy run or other table: include portfolio_id
                 query = "INSERT INTO " + table_name +
@@ -2093,7 +2087,7 @@ Result<void> PostgresDatabase::store_backtest_signals(
                         "DO UPDATE SET signal_value = EXCLUDED.signal_value, portfolio_id = "
                         "EXCLUDED.portfolio_id";
                 txn.exec(query, pqxx::params{run_id, actual_portfolio_id, strategy_id, symbol,
-                                signal_value, format_timestamp(timestamp)});
+                                             signal_value, format_timestamp(timestamp)});
             }
         }
 
@@ -2138,9 +2132,9 @@ Result<void> PostgresDatabase::store_backtest_metadata_with_portfolio(
             "hyperparameters = EXCLUDED.hyperparameters";
 
         txn.exec(query, pqxx::params{run_id, actual_portfolio_id, portfolio_run_id, strategy_id,
-                        strategy_allocation, portfolio_config.dump(), name, description,
-                        format_timestamp(start_date), format_timestamp(end_date),
-                        hyperparameters.dump()});
+                                     strategy_allocation, portfolio_config.dump(), name,
+                                     description, format_timestamp(start_date),
+                                     format_timestamp(end_date), hyperparameters.dump()});
 
         txn.commit();
         INFO("Successfully stored backtest metadata with portfolio for run: " + run_id +
@@ -2193,11 +2187,28 @@ Result<void> PostgresDatabase::store_trading_results(
             "cvar_95 = EXCLUDED.cvar_95, beta = EXCLUDED.beta, correlation = EXCLUDED.correlation, "
             "downside_volatility = EXCLUDED.downside_volatility, config = EXCLUDED.config";
 
-        txn.exec(query, pqxx::params{strategy_id, format_timestamp(date), total_return, sharpe_ratio,
-                        sortino_ratio, max_drawdown, calmar_ratio, volatility, total_trades,
-                        win_rate, profit_factor, avg_win, avg_loss, max_win, max_loss,
-                        avg_holding_period, var_95, cvar_95, beta, correlation, downside_volatility,
-                        config.dump()});
+        txn.exec(query, pqxx::params{strategy_id,
+                                     format_timestamp(date),
+                                     total_return,
+                                     sharpe_ratio,
+                                     sortino_ratio,
+                                     max_drawdown,
+                                     calmar_ratio,
+                                     volatility,
+                                     total_trades,
+                                     win_rate,
+                                     profit_factor,
+                                     avg_win,
+                                     avg_loss,
+                                     max_win,
+                                     max_loss,
+                                     avg_holding_period,
+                                     var_95,
+                                     cvar_95,
+                                     beta,
+                                     correlation,
+                                     downside_volatility,
+                                     config.dump()});
 
         txn.commit();
         INFO("Successfully stored trading results for strategy: " + strategy_id + " on " +
@@ -2214,11 +2225,10 @@ Result<void> PostgresDatabase::store_live_results(
     const std::string& strategy_id, const Timestamp& date, double total_return, double volatility,
     double total_pnl, double unrealized_pnl, double realized_pnl, double current_portfolio_value,
     double daily_realized_pnl, double daily_unrealized_pnl, double portfolio_var,
-    double net_leverage, double gross_leverage, double margin_leverage,
-    double margin_cushion, double max_correlation, double jump_risk, double risk_scale,
-    double gross_notional, double net_notional, int active_positions, double total_transaction_costs,
-    double margin_posted, double cash_available, const nlohmann::json& config,
-    const std::string& table_name) {
+    double net_leverage, double gross_leverage, double margin_leverage, double margin_cushion,
+    double max_correlation, double jump_risk, double risk_scale, double gross_notional,
+    double net_notional, int active_positions, double total_transaction_costs, double margin_posted,
+    double cash_available, const nlohmann::json& config, const std::string& table_name) {
     auto validation = validate_connection();
     if (validation.is_error())
         return validation;
@@ -2263,13 +2273,19 @@ Result<void> PostgresDatabase::store_live_results(
             "EXCLUDED.margin_posted, cash_available = EXCLUDED.cash_available, config = "
             "EXCLUDED.config";
 
-        txn.exec(query, pqxx::params{strategy_id, format_timestamp(date), total_return, volatility,
-                        total_pnl, unrealized_pnl, realized_pnl, current_portfolio_value,
-                        daily_realized_pnl, daily_unrealized_pnl, portfolio_var,
-                        net_leverage, gross_leverage, margin_leverage, margin_cushion,
-                        max_correlation, jump_risk, risk_scale, gross_notional, net_notional,
-                        active_positions, total_transaction_costs, margin_posted, cash_available,
-                        config.dump()});
+        txn.exec(query, pqxx::params{strategy_id,        format_timestamp(date),
+                                     total_return,       volatility,
+                                     total_pnl,          unrealized_pnl,
+                                     realized_pnl,       current_portfolio_value,
+                                     daily_realized_pnl, daily_unrealized_pnl,
+                                     portfolio_var,      net_leverage,
+                                     gross_leverage,     margin_leverage,
+                                     margin_cushion,     max_correlation,
+                                     jump_risk,          risk_scale,
+                                     gross_notional,     net_notional,
+                                     active_positions,   total_transaction_costs,
+                                     margin_posted,      cash_available,
+                                     config.dump()});
 
         txn.commit();
         INFO("Successfully stored live results for strategy: " + strategy_id + " on " +
@@ -2371,7 +2387,8 @@ Result<void> PostgresDatabase::store_trading_equity_curve(const std::string& str
                             "ON CONFLICT (portfolio_id, strategy_id, timestamp, portfolio_type) "
                             "DO UPDATE SET equity = EXCLUDED.equity";
 
-        txn.exec(query, pqxx::params{strategy_id, format_timestamp(timestamp), equity, portfolio_id});
+        txn.exec(query,
+                 pqxx::params{strategy_id, format_timestamp(timestamp), equity, portfolio_id});
 
         txn.commit();
         return Result<void>();
@@ -2399,13 +2416,15 @@ Result<void> PostgresDatabase::store_trading_equity_curve_batch(
         }
 
         for (const auto& [timestamp, equity] : equity_points) {
-            std::string query = "INSERT INTO " + table_name +
-                                " (strategy_id, timestamp, equity, portfolio_id) "
-                                "VALUES ($1, $2, $3, $4) "
-                                "ON CONFLICT (portfolio_id, strategy_id, timestamp, portfolio_type) "
-                                "DO UPDATE SET equity = EXCLUDED.equity";
+            std::string query =
+                "INSERT INTO " + table_name +
+                " (strategy_id, timestamp, equity, portfolio_id) "
+                "VALUES ($1, $2, $3, $4) "
+                "ON CONFLICT (portfolio_id, strategy_id, timestamp, portfolio_type) "
+                "DO UPDATE SET equity = EXCLUDED.equity";
 
-            txn.exec(query, pqxx::params{strategy_id, format_timestamp(timestamp), equity, portfolio_id});
+            txn.exec(query,
+                     pqxx::params{strategy_id, format_timestamp(timestamp), equity, portfolio_id});
         }
 
         txn.commit();
@@ -2494,329 +2513,351 @@ Result<std::shared_ptr<arrow::Table>> PostgresDatabase::convert_generic_to_arrow
     }
 }
 
-Result<std::vector<PostgresDatabase::CorpActionRow>>
-PostgresDatabase::get_corporate_actions(
-    const std::vector<std::string>& tickers,
-    const std::string& start_date,
-    const std::string& end_date,
-    const std::vector<std::string>& actions) {
+[[deprecated("Hard-coded queries")]]
+Result<std::vector<PostgresDatabase::CorpActionRow>> PostgresDatabase::get_corporate_actions(
+    const std::vector<std::string>& tickers, const std::string& start_date,
+    const std::string& end_date, const std::vector<std::string>& actions) {
+    // Suppress unused parameter warnings for now, since this function is deprecated
+    (void)tickers;
+    (void)start_date;
+    (void)end_date;
+    (void)actions;
 
-    auto validation = validate_connection();
-    if (validation.is_error()) {
-        return make_error<std::vector<CorpActionRow>>(
-            validation.error()->code(), validation.error()->what());
-    }
-    if (tickers.empty() || actions.empty()) {
-        return Result<std::vector<CorpActionRow>>(std::vector<CorpActionRow>{});
-    }
+    return make_error<std::vector<CorpActionRow>>(ErrorCode::DEPRECATED_FUNCTION,
+                                                  "Deprecated because of hard-coded queries");
 
-    try {
-        pqxx::work txn(*connection_);
-
-        // Parameter arrays rather than concatenated IN-lists: at the full
-        // 852-symbol universe the string form built a 5 kB literal per call.
-        //
-        // G6-4: equities_data.corporate_action stores `date` as TEXT, and this
-        // compared it as `date::date BETWEEN $3::date AND $4::date`. The cast
-        // is evaluated per row and throws on the first value that is not a
-        // parseable date, taking the whole query -- and the run -- with it; it
-        // also makes the predicate non-sargable, so the (ticker, date) index
-        // covers only the ticker side. Every value in the column is a 10-char
-        // ISO-8601 date (verified: 0 of 627,169 rows fail
-        // '^[0-9]{4}-[0-9]{2}-[0-9]{2}$'), and ISO-8601 sorts lexicographically,
-        // so a plain text comparison selects exactly the same rows, index-native
-        // and with no cast to fail. The ISO precondition is pinned by
-        // tests/live/corp_actions/test_corp_action_query_bounds_db.cpp.
-        const std::string query =
-            "SELECT date, action, ticker, value, contraticker, contraname, name "
-            "FROM equities_data.corporate_action "
-            "WHERE ticker = ANY($1) "
-            "  AND action = ANY($2) "
-            "  AND date >= $3 AND date <= $4 "
-            "ORDER BY date, ticker, action";
-
-        auto result = txn.exec(query, pqxx::params{tickers, actions, start_date, end_date});
-        std::vector<CorpActionRow> rows;
-        rows.reserve(result.size());
-
-        for (const auto& row : result) {
-            CorpActionRow ca;
-            ca.date_str = row["date"].c_str();
-            ca.action = row["action"].c_str();
-            ca.ticker = row["ticker"].c_str();
-            // value is stored as text in the source schema; parse defensively.
-            const std::string val_str = row["value"].is_null() ? "" : row["value"].c_str();
-            try {
-                ca.value = val_str.empty() ? 0.0 : std::stod(val_str);
-            } catch (const std::exception&) {
-                // A TERMINATION row legitimately carries no numeric value
-                // (a delisting has no ratio); only price-restating rows need
-                // one, and those are sourced per-bar now.
-                ca.value = 0.0;
-            }
-            ca.contra_ticker = row["contraticker"].is_null() ? "" : row["contraticker"].c_str();
-            ca.contra_name = row["contraname"].is_null() ? "" : row["contraname"].c_str();
-            ca.name = row["name"].is_null() ? "" : row["name"].c_str();
-            rows.push_back(std::move(ca));
-        }
-
-        txn.commit();
-        return Result<std::vector<CorpActionRow>>(std::move(rows));
-
-    } catch (const std::exception& e) {
-        return make_error<std::vector<CorpActionRow>>(
-            ErrorCode::DATABASE_ERROR,
-            "Failed to fetch corporate actions: " + std::string(e.what()),
-            "PostgresDatabase");
-    }
+    // auto validation = validate_connection();
+    // if (validation.is_error()) {
+    //     return make_error<std::vector<CorpActionRow>>(validation.error()->code(),
+    //                                                   validation.error()->what());
+    // }
+    // if (tickers.empty() || actions.empty()) {
+    //     return Result<std::vector<CorpActionRow>>(std::vector<CorpActionRow>{});
+    // }
+    //
+    // try {
+    //     pqxx::work txn(*connection_);
+    //
+    //     // Parameter arrays rather than concatenated IN-lists: at the full
+    //     // 852-symbol universe the string form built a 5 kB literal per call.
+    //     //
+    //     // G6-4: equities_data.corporate_action stores `date` as TEXT, and this
+    //     // compared it as `date::date BETWEEN $3::date AND $4::date`. The cast
+    //     // is evaluated per row and throws on the first value that is not a
+    //     // parseable date, taking the whole query -- and the run -- with it; it
+    //     // also makes the predicate non-sargable, so the (ticker, date) index
+    //     // covers only the ticker side. Every value in the column is a 10-char
+    //     // ISO-8601 date (verified: 0 of 627,169 rows fail
+    //     // '^[0-9]{4}-[0-9]{2}-[0-9]{2}$'), and ISO-8601 sorts lexicographically,
+    //     // so a plain text comparison selects exactly the same rows, index-native
+    //     // and with no cast to fail. The ISO precondition is pinned by
+    //     // tests/live/corp_actions/test_corp_action_query_bounds_db.cpp.
+    //     const std::string query =
+    //         "SELECT date, action, ticker, value, contraticker, contraname, name "
+    //         "FROM equities_data.corporate_action "
+    //         "WHERE ticker = ANY($1) "
+    //         "  AND action = ANY($2) "
+    //         "  AND date >= $3 AND date <= $4 "
+    //         "ORDER BY date, ticker, action";
+    //
+    //     auto result = txn.exec(query, pqxx::params{tickers, actions, start_date, end_date});
+    //     std::vector<CorpActionRow> rows;
+    //     rows.reserve(result.size());
+    //
+    //     for (const auto& row : result) {
+    //         CorpActionRow ca;
+    //         ca.date_str = row["date"].c_str();
+    //         ca.action = row["action"].c_str();
+    //         ca.ticker = row["ticker"].c_str();
+    //         // value is stored as text in the source schema; parse defensively.
+    //         const std::string val_str = row["value"].is_null() ? "" : row["value"].c_str();
+    //         try {
+    //             ca.value = val_str.empty() ? 0.0 : std::stod(val_str);
+    //         } catch (const std::exception&) {
+    //             // A TERMINATION row legitimately carries no numeric value
+    //             // (a delisting has no ratio); only price-restating rows need
+    //             // one, and those are sourced per-bar now.
+    //             ca.value = 0.0;
+    //         }
+    //         ca.contra_ticker = row["contraticker"].is_null() ? "" : row["contraticker"].c_str();
+    //         ca.contra_name = row["contraname"].is_null() ? "" : row["contraname"].c_str();
+    //         ca.name = row["name"].is_null() ? "" : row["name"].c_str();
+    //         rows.push_back(std::move(ca));
+    //     }
+    //
+    //     txn.commit();
+    //     return Result<std::vector<CorpActionRow>>(std::move(rows));
+    //
+    // } catch (const std::exception& e) {
+    //     return make_error<std::vector<CorpActionRow>>(
+    //         ErrorCode::DATABASE_ERROR,
+    //         "Failed to fetch corporate actions: " + std::string(e.what()), "PostgresDatabase");
+    // }
 }
 
+[[deprecated("Hard-coded queries")]]
 Result<std::string> PostgresDatabase::get_corp_action_feed_last_date(
     const std::string& as_of_date) {
+    // Suppress unused parameter warning for now, since this function is deprecated
+    (void)as_of_date;
 
-    auto validation = validate_connection();
-    if (validation.is_error()) {
-        return make_error<std::string>(validation.error()->code(), validation.error()->what());
-    }
-
-    try {
-        pqxx::work txn(*connection_);
-        // Text comparison for the same reason get_corporate_actions uses one:
-        // the column is TEXT holding ISO-8601, so max() and the bound are both
-        // lexicographic and index-friendly, and no row can throw on a cast.
-        pqxx::result r =
-            as_of_date.empty()
-                ? txn.exec("SELECT COALESCE(max(date), '') FROM equities_data.corporate_action")
-                : txn.exec_params(
-                      "SELECT COALESCE(max(date), '') FROM equities_data.corporate_action "
-                      "WHERE date <= $1",
-                      as_of_date);
-        std::string last;
-        if (!r.empty() && !r[0][0].is_null()) last = r[0][0].c_str();
-        txn.commit();
-        return Result<std::string>(std::move(last));
-
-    } catch (const std::exception& e) {
-        return make_error<std::string>(
-            ErrorCode::DATABASE_ERROR,
-            "Failed to read the corporate-action feed's last row date: " + std::string(e.what()),
-            "PostgresDatabase");
-    }
+    return make_error<std::vector<CorpActionRow>>(ErrorCode::DEPRECATED_FUNCTION,
+                                                  "Deprecated because of hard-coded queries");
+    // auto validation = validate_connection();
+    // if (validation.is_error()) {
+    //     return make_error<std::string>(validation.error()->code(), validation.error()->what());
+    // }
+    //
+    // try {
+    //     pqxx::work txn(*connection_);
+    //     // Text comparison for the same reason get_corporate_actions uses one:
+    //     // the column is TEXT holding ISO-8601, so max() and the bound are both
+    //     // lexicographic and index-friendly, and no row can throw on a cast.
+    //     pqxx::result r =
+    //         as_of_date.empty()
+    //             ? txn.exec("SELECT COALESCE(max(date), '') FROM equities_data.corporate_action")
+    //             : txn.exec_params(
+    //                   "SELECT COALESCE(max(date), '') FROM equities_data.corporate_action "
+    //                   "WHERE date <= $1",
+    //                   as_of_date);
+    //     std::string last;
+    //     if (!r.empty() && !r[0][0].is_null())
+    //         last = r[0][0].c_str();
+    //     txn.commit();
+    //     return Result<std::string>(std::move(last));
+    //
+    // } catch (const std::exception& e) {
+    //     return make_error<std::string>(
+    //         ErrorCode::DATABASE_ERROR,
+    //         "Failed to read the corporate-action feed's last row date: " + std::string(e.what()),
+    //         "PostgresDatabase");
+    // }
 }
 
+[[deprecated("Hard-coded queries")]]
 Result<std::vector<PostgresDatabase::CorpActionRow>>
-PostgresDatabase::get_per_bar_corporate_actions(
-    const std::vector<std::string>& tickers,
-    const std::string& start_date,
-    const std::string& end_date) {
+PostgresDatabase::get_per_bar_corporate_actions(const std::vector<std::string>& tickers,
+                                                const std::string& start_date,
+                                                const std::string& end_date) {
+    // Suppress unused parameter warnings for now, since this function is deprecated
+    (void)tickers;
+    (void)start_date;
+    (void)end_date;
 
-    auto validation = validate_connection();
-    if (validation.is_error()) {
-        return make_error<std::vector<CorpActionRow>>(
-            validation.error()->code(), validation.error()->what());
-    }
-    if (tickers.empty()) {
-        return Result<std::vector<CorpActionRow>>(std::vector<CorpActionRow>{});
-    }
-
-    try {
-        pqxx::work txn(*connection_);
-
-        // div_cash and split_factor are written on the bar the event goes ex
-        // and are never restated, so this window is exact. split_factor = 1
-        // and div_cash = 0 are the no-event values; NULLs are treated the
-        // same way. The vendor also encodes ADR-ratio changes and spin-offs
-        // in split_factor, so all three surface here as "split".
-        //
-        // Half-open UTC timestamp range rather than `time::date BETWEEN`:
-        // casting the indexed column makes the predicate non-sargable, so the
-        // planner abandoned the (symbol, time) index and seq-scanned the whole
-        // 936 MB table -- 4.57 M rows read to return 89, on every live run.
-        // Measured at the full 852-symbol universe: 12,342 ms -> 107 ms.
-        //
-        // The range is [start 00:00 UTC, end+1 00:00 UTC), which selects exactly
-        // the same bars the date cast did on a UTC host. That equivalence is the
-        // reason this ships with the timezone fix rather than separately: on a
-        // TZ=America/New_York host the old cast silently selected a
-        // day-shifted set.
-        //
-        // Symbols bind as a parameter array, matching the adjustment query,
-        // instead of a 5 kB quoted IN-list built by string concatenation.
-        const std::string query =
-            "SELECT time::date AS ex_date, symbol, "
-            "       COALESCE(div_cash, 0) AS div_cash, "
-            "       COALESCE(split_factor, 1) AS split_factor "
-            "FROM equities_data.ohlcv_1d "
-            "WHERE symbol = ANY($1) "
-            "  AND time >= $2::date "
-            "  AND time <  ($3::date + INTERVAL '1 day') "
-            "  AND (COALESCE(div_cash, 0) <> 0 "
-            "       OR COALESCE(split_factor, 1) NOT IN (0, 1)) "
-            "ORDER BY ex_date, symbol";
-
-        auto result = txn.exec(query, pqxx::params{tickers, start_date, end_date});
-        std::vector<CorpActionRow> rows;
-        rows.reserve(result.size() * 2);
-
-        for (const auto& row : result) {
-            const std::string ex_date = row["ex_date"].c_str();
-            const std::string symbol = row["symbol"].c_str();
-            const double div_cash = row["div_cash"].as<double>(0.0);
-            const double split_factor = row["split_factor"].as<double>(1.0);
-
-            // A bar can carry both (e.g. a spin-off dividend alongside a
-            // ratio change); emit each as its own event. Splits first: the
-            // applier scales quantity before the dividend rescales basis, so
-            // the per-share amount lands on the post-split share count.
-            if (split_factor != 0.0 && split_factor != 1.0) {
-                CorpActionRow ca;
-                ca.ticker = symbol;
-                ca.date_str = ex_date;
-                ca.action = "split";
-                ca.value = split_factor;
-                rows.push_back(std::move(ca));
-            }
-            if (div_cash != 0.0) {
-                CorpActionRow ca;
-                ca.ticker = symbol;
-                ca.date_str = ex_date;
-                ca.action = "dividend";
-                ca.value = div_cash;
-                rows.push_back(std::move(ca));
-            }
-        }
-
-        txn.commit();
-        return Result<std::vector<CorpActionRow>>(std::move(rows));
-
-    } catch (const std::exception& e) {
-        return make_error<std::vector<CorpActionRow>>(
-            ErrorCode::DATABASE_ERROR,
-            "Failed to fetch per-bar corporate actions: " + std::string(e.what()),
-            "PostgresDatabase");
-    }
+    return make_error<std::vector<CorpActionRow>>(ErrorCode::DEPRECATED_FUNCTION,
+                                                  "Deprecated because of hard-coded queries");
+    // auto validation = validate_connection();
+    // if (validation.is_error()) {
+    //     return make_error<std::vector<CorpActionRow>>(validation.error()->code(),
+    //                                                   validation.error()->what());
+    // }
+    // if (tickers.empty()) {
+    //     return Result<std::vector<CorpActionRow>>(std::vector<CorpActionRow>{});
+    // }
+    //
+    // try {
+    //     pqxx::work txn(*connection_);
+    //
+    //     // div_cash and split_factor are written on the bar the event goes ex
+    //     // and are never restated, so this window is exact. split_factor = 1
+    //     // and div_cash = 0 are the no-event values; NULLs are treated the
+    //     // same way. The vendor also encodes ADR-ratio changes and spin-offs
+    //     // in split_factor, so all three surface here as "split".
+    //     //
+    //     // Half-open UTC timestamp range rather than `time::date BETWEEN`:
+    //     // casting the indexed column makes the predicate non-sargable, so the
+    //     // planner abandoned the (symbol, time) index and seq-scanned the whole
+    //     // 936 MB table -- 4.57 M rows read to return 89, on every live run.
+    //     // Measured at the full 852-symbol universe: 12,342 ms -> 107 ms.
+    //     //
+    //     // The range is [start 00:00 UTC, end+1 00:00 UTC), which selects exactly
+    //     // the same bars the date cast did on a UTC host. That equivalence is the
+    //     // reason this ships with the timezone fix rather than separately: on a
+    //     // TZ=America/New_York host the old cast silently selected a
+    //     // day-shifted set.
+    //     //
+    //     // Symbols bind as a parameter array, matching the adjustment query,
+    //     // instead of a 5 kB quoted IN-list built by string concatenation.
+    //     const std::string query =
+    //         "SELECT time::date AS ex_date, symbol, "
+    //         "       COALESCE(div_cash, 0) AS div_cash, "
+    //         "       COALESCE(split_factor, 1) AS split_factor "
+    //         "FROM equities_data.ohlcv_1d "
+    //         "WHERE symbol = ANY($1) "
+    //         "  AND time >= $2::date "
+    //         "  AND time <  ($3::date + INTERVAL '1 day') "
+    //         "  AND (COALESCE(div_cash, 0) <> 0 "
+    //         "       OR COALESCE(split_factor, 1) NOT IN (0, 1)) "
+    //         "ORDER BY ex_date, symbol";
+    //
+    //     auto result = txn.exec(query, pqxx::params{tickers, start_date, end_date});
+    //     std::vector<CorpActionRow> rows;
+    //     rows.reserve(result.size() * 2);
+    //
+    //     for (const auto& row : result) {
+    //         const std::string ex_date = row["ex_date"].c_str();
+    //         const std::string symbol = row["symbol"].c_str();
+    //         const double div_cash = row["div_cash"].as<double>(0.0);
+    //         const double split_factor = row["split_factor"].as<double>(1.0);
+    //
+    //         // A bar can carry both (e.g. a spin-off dividend alongside a
+    //         // ratio change); emit each as its own event. Splits first: the
+    //         // applier scales quantity before the dividend rescales basis, so
+    //         // the per-share amount lands on the post-split share count.
+    //         if (split_factor != 0.0 && split_factor != 1.0) {
+    //             CorpActionRow ca;
+    //             ca.ticker = symbol;
+    //             ca.date_str = ex_date;
+    //             ca.action = "split";
+    //             ca.value = split_factor;
+    //             rows.push_back(std::move(ca));
+    //         }
+    //         if (div_cash != 0.0) {
+    //             CorpActionRow ca;
+    //             ca.ticker = symbol;
+    //             ca.date_str = ex_date;
+    //             ca.action = "dividend";
+    //             ca.value = div_cash;
+    //             rows.push_back(std::move(ca));
+    //         }
+    //     }
+    //
+    //     txn.commit();
+    //     return Result<std::vector<CorpActionRow>>(std::move(rows));
+    //
+    // } catch (const std::exception& e) {
+    //     return make_error<std::vector<CorpActionRow>>(
+    //         ErrorCode::DATABASE_ERROR,
+    //         "Failed to fetch per-bar corporate actions: " + std::string(e.what()),
+    //         "PostgresDatabase");
+    // }
 }
 
-Result<std::vector<PostgresDatabase::TickerAliasRow>>
-PostgresDatabase::get_ticker_aliases() {
-    auto validation = validate_connection();
-    if (validation.is_error()) {
-        return make_error<std::vector<TickerAliasRow>>(
-            validation.error()->code(), validation.error()->what());
-    }
-
-    try {
-        pqxx::work txn(*connection_);
-        auto result = txn.exec(
-            "SELECT historical_ticker, current_symbol, effective_until, note "
-            "FROM equities_data.ticker_aliases "
-            "ORDER BY historical_ticker");
-
-        std::vector<TickerAliasRow> rows;
-        rows.reserve(result.size());
-        for (const auto& row : result) {
-            TickerAliasRow a;
-            a.historical_ticker = row["historical_ticker"].is_null()
-                                      ? "" : row["historical_ticker"].c_str();
-            a.current_symbol = row["current_symbol"].is_null()
-                                   ? "" : row["current_symbol"].c_str();
-            a.effective_until = row["effective_until"].is_null()
-                                    ? "" : row["effective_until"].c_str();
-            a.note = row["note"].is_null() ? "" : row["note"].c_str();
-            if (a.historical_ticker.empty() || a.current_symbol.empty()) continue;
-            rows.push_back(std::move(a));
-        }
-
-        txn.commit();
-        return Result<std::vector<TickerAliasRow>>(std::move(rows));
-
-    } catch (const std::exception& e) {
-        return make_error<std::vector<TickerAliasRow>>(
-            ErrorCode::DATABASE_ERROR,
-            "Failed to fetch ticker aliases: " + std::string(e.what()),
-            "PostgresDatabase");
-    }
+Result<std::vector<PostgresDatabase::TickerAliasRow>> PostgresDatabase::get_ticker_aliases() {
+    return make_error<std::vector<CorpActionRow>>(ErrorCode::DEPRECATED_FUNCTION,
+                                                  "Deprecated because of hard-coded queries");
+    // auto validation = validate_connection();
+    // if (validation.is_error()) {
+    //     return make_error<std::vector<TickerAliasRow>>(validation.error()->code(),
+    //                                                    validation.error()->what());
+    // }
+    //
+    // try {
+    //     pqxx::work txn(*connection_);
+    //     auto result = txn.exec(
+    //         "SELECT historical_ticker, current_symbol, effective_until, note "
+    //         "FROM equities_data.ticker_aliases "
+    //         "ORDER BY historical_ticker");
+    //
+    //     std::vector<TickerAliasRow> rows;
+    //     rows.reserve(result.size());
+    //     for (const auto& row : result) {
+    //         TickerAliasRow a;
+    //         a.historical_ticker =
+    //             row["historical_ticker"].is_null() ? "" : row["historical_ticker"].c_str();
+    //         a.current_symbol = row["current_symbol"].is_null() ? "" :
+    //         row["current_symbol"].c_str(); a.effective_until =
+    //             row["effective_until"].is_null() ? "" : row["effective_until"].c_str();
+    //         a.note = row["note"].is_null() ? "" : row["note"].c_str();
+    //         if (a.historical_ticker.empty() || a.current_symbol.empty())
+    //             continue;
+    //         rows.push_back(std::move(a));
+    //     }
+    //
+    //     txn.commit();
+    //     return Result<std::vector<TickerAliasRow>>(std::move(rows));
+    //
+    // } catch (const std::exception& e) {
+    //     return make_error<std::vector<TickerAliasRow>>(
+    //         ErrorCode::DATABASE_ERROR, "Failed to fetch ticker aliases: " +
+    //         std::string(e.what()), "PostgresDatabase");
+    // }
 }
 
-Result<std::unordered_map<std::string, std::string>>
-PostgresDatabase::get_delisting_dates(const std::vector<std::string>& tickers,
-                                     const std::string& from_date) {
+[[deprecated("Hard-coded queries")]]
+Result<std::unordered_map<std::string, std::string>> PostgresDatabase::get_delisting_dates(
+    const std::vector<std::string>& tickers, const std::string& from_date) {
+    // Suppress unused parameter warnings for now, since this function is deprecated
+    (void)tickers;
+    (void)from_date;
+
+    return make_error<std::vector<CorpActionRow>>(ErrorCode::DEPRECATED_FUNCTION,
+                                                  "Deprecated because of hard-coded queries");
+    // using Map = std::unordered_map<std::string, std::string>;
+    //
+    // auto validation = validate_connection();
+    // if (validation.is_error()) {
+    //     return make_error<Map>(validation.error()->code(), validation.error()->what());
+    // }
+    // if (tickers.empty()) {
+    //     return Result<Map>(Map{});
+    // }
+    //
+    // try {
+    //     pqxx::work txn(*connection_);
+    //
+    //     // Parameter array, matching the other equity readers. The partial index
+    //     // idx_ohlcv_1d_delisting (migration 003) covers the IS NOT NULL
+    //     // predicate, which is what took this from 14.1 s to 1.9 s at 852
+    //     // symbols.
+    //     // BA-8: bound the row by date. Without a floor this returns
+    //     // max(delisting_date) over the symbol's ENTIRE history, so a reused
+    //     // ticker inherits a dead company's delisting (HPC 2008-11-24, MER
+    //     // 2008-12-31) and a held position is exited at a stale price. The
+    //     // runner's bars-contradict guard cannot cover this on its own:
+    //     // delisting_is_stale() is false when last_bar_date is empty, which is
+    //     // exactly the symbol that stopped printing.
+    //     //
+    //     // Compared as text -- delisting_date is a date column and the bound is
+    //     // ISO, which orders lexicographically; cast the bound, not the column,
+    //     // so the partial index idx_ohlcv_1d_delisting still applies.
+    //     pqxx::result result;
+    //     if (from_date.empty()) {
+    //         result = txn.exec(
+    //             "SELECT symbol, max(delisting_date)::text AS delisting_date "
+    //             "FROM equities_data.ohlcv_1d "
+    //             "WHERE symbol = ANY($1) AND delisting_date IS NOT NULL "
+    //             "GROUP BY symbol",
+    //             pqxx::params{tickers});
+    //     } else {
+    //         result = txn.exec(
+    //             "SELECT symbol, max(delisting_date)::text AS delisting_date "
+    //             "FROM equities_data.ohlcv_1d "
+    //             "WHERE symbol = ANY($1) AND delisting_date IS NOT NULL "
+    //             "  AND delisting_date >= $2::date "
+    //             "GROUP BY symbol",
+    //             pqxx::params{tickers, from_date});
+    //     }
+    //
+    //     Map out;
+    //     for (const auto& row : result) {
+    //         if (row["delisting_date"].is_null())
+    //             continue;
+    //         out.emplace(row["symbol"].c_str(), row["delisting_date"].c_str());
+    //     }
+    //
+    //     txn.commit();
+    //     return Result<Map>(std::move(out));
+    //
+    // } catch (const std::exception& e) {
+    //     return make_error<Map>(ErrorCode::DATABASE_ERROR,
+    //                            "Failed to fetch delisting dates: " + std::string(e.what()),
+    //                            "PostgresDatabase");
+    // }
+}
+
+Result<std::unordered_map<std::string, std::string>> PostgresDatabase::get_position_inception_dates(
+    const std::string& strategy_id, const std::string& strategy_name,
+    const std::string& portfolio_id, const std::vector<std::string>& symbols,
+    const std::string& table_name) {
     using Map = std::unordered_map<std::string, std::string>;
 
     auto validation = validate_connection();
     if (validation.is_error()) {
         return make_error<Map>(validation.error()->code(), validation.error()->what());
     }
-    if (tickers.empty()) {
+    if (symbols.empty())
         return Result<Map>(Map{});
-    }
-
-    try {
-        pqxx::work txn(*connection_);
-
-        // Parameter array, matching the other equity readers. The partial index
-        // idx_ohlcv_1d_delisting (migration 003) covers the IS NOT NULL
-        // predicate, which is what took this from 14.1 s to 1.9 s at 852
-        // symbols.
-        // BA-8: bound the row by date. Without a floor this returns
-        // max(delisting_date) over the symbol's ENTIRE history, so a reused
-        // ticker inherits a dead company's delisting (HPC 2008-11-24, MER
-        // 2008-12-31) and a held position is exited at a stale price. The
-        // runner's bars-contradict guard cannot cover this on its own:
-        // delisting_is_stale() is false when last_bar_date is empty, which is
-        // exactly the symbol that stopped printing.
-        //
-        // Compared as text -- delisting_date is a date column and the bound is
-        // ISO, which orders lexicographically; cast the bound, not the column,
-        // so the partial index idx_ohlcv_1d_delisting still applies.
-        pqxx::result result;
-        if (from_date.empty()) {
-            result = txn.exec(
-                "SELECT symbol, max(delisting_date)::text AS delisting_date "
-                "FROM equities_data.ohlcv_1d "
-                "WHERE symbol = ANY($1) AND delisting_date IS NOT NULL "
-                "GROUP BY symbol",
-                pqxx::params{tickers});
-        } else {
-            result = txn.exec(
-                "SELECT symbol, max(delisting_date)::text AS delisting_date "
-                "FROM equities_data.ohlcv_1d "
-                "WHERE symbol = ANY($1) AND delisting_date IS NOT NULL "
-                "  AND delisting_date >= $2::date "
-                "GROUP BY symbol",
-                pqxx::params{tickers, from_date});
-        }
-
-        Map out;
-        for (const auto& row : result) {
-            if (row["delisting_date"].is_null()) continue;
-            out.emplace(row["symbol"].c_str(), row["delisting_date"].c_str());
-        }
-
-        txn.commit();
-        return Result<Map>(std::move(out));
-
-    } catch (const std::exception& e) {
-        return make_error<Map>(
-            ErrorCode::DATABASE_ERROR,
-            "Failed to fetch delisting dates: " + std::string(e.what()),
-            "PostgresDatabase");
-    }
-}
-
-Result<std::unordered_map<std::string, std::string>>
-PostgresDatabase::get_position_inception_dates(const std::string& strategy_id,
-                                               const std::string& strategy_name,
-                                               const std::string& portfolio_id,
-                                               const std::vector<std::string>& symbols,
-                                               const std::string& table_name) {
-    using Map = std::unordered_map<std::string, std::string>;
-
-    auto validation = validate_connection();
-    if (validation.is_error()) {
-        return make_error<Map>(validation.error()->code(), validation.error()->what());
-    }
-    if (symbols.empty()) return Result<Map>(Map{});
 
     // table_name is an internal default (trading.positions), never user input --
     // same contract as load_positions_by_date, which interpolates it likewise.
@@ -2831,7 +2872,8 @@ PostgresDatabase::get_position_inception_dates(const std::string& strategy_id,
         // permanently.
         auto result = txn.exec(
             "SELECT symbol, min(date)::text AS inception "
-            "FROM " + table_name +
+            "FROM " +
+                table_name +
                 " WHERE strategy_id = $1 AND strategy_name = $2 AND portfolio_id = $3 "
                 "  AND symbol = ANY($4) AND quantity <> 0 "
                 "GROUP BY symbol",
@@ -2839,7 +2881,8 @@ PostgresDatabase::get_position_inception_dates(const std::string& strategy_id,
 
         Map out;
         for (const auto& row : result) {
-            if (row["inception"].is_null()) continue;
+            if (row["inception"].is_null())
+                continue;
             out.emplace(row["symbol"].c_str(), row["inception"].c_str());
         }
 
@@ -2847,10 +2890,9 @@ PostgresDatabase::get_position_inception_dates(const std::string& strategy_id,
         return Result<Map>(std::move(out));
 
     } catch (const std::exception& e) {
-        return make_error<Map>(
-            ErrorCode::DATABASE_ERROR,
-            "Failed to fetch position inception dates: " + std::string(e.what()),
-            "PostgresDatabase");
+        return make_error<Map>(ErrorCode::DATABASE_ERROR,
+                               "Failed to fetch position inception dates: " + std::string(e.what()),
+                               "PostgresDatabase");
     }
 }
 
@@ -2867,7 +2909,8 @@ PostgresDatabase::get_current_holding_start_dates(const std::string& strategy_id
     if (validation.is_error()) {
         return make_error<Map>(validation.error()->code(), validation.error()->what());
     }
-    if (symbols.empty()) return Result<Map>(Map{});
+    if (symbols.empty())
+        return Result<Map>(Map{});
 
     // table_name is an internal default (trading.positions), never user input --
     // same contract as load_positions_by_date, which interpolates it likewise.
@@ -2894,12 +2937,16 @@ PostgresDatabase::get_current_holding_start_dates(const std::string& strategy_id
         const bool bounded = !on_or_before.empty();
         auto result = txn.exec(
             "SELECT symbol, min(date)::text AS holding_start "
-            "FROM " + table_name + " p "
+            "FROM " +
+                table_name +
+                " p "
                 " WHERE strategy_id = $1 AND strategy_name = $2 AND portfolio_id = $3 "
                 "  AND symbol = ANY($4) AND quantity <> 0 "
                 "  AND ($5::date IS NULL OR date <= $5::date) "
                 "  AND date > COALESCE(("
-                "        SELECT max(z.date) FROM " + table_name + " z "
+                "        SELECT max(z.date) FROM " +
+                table_name +
+                " z "
                 "         WHERE z.strategy_id = p.strategy_id "
                 "           AND z.strategy_name = p.strategy_name "
                 "           AND z.portfolio_id = p.portfolio_id "
@@ -2907,13 +2954,14 @@ PostgresDatabase::get_current_holding_start_dates(const std::string& strategy_id
                 "           AND ($5::date IS NULL OR z.date <= $5::date)), "
                 "      DATE '1900-01-01') "
                 "GROUP BY symbol",
-            pqxx::params{strategy_id, strategy_name, portfolio_id, symbols,
-                         bounded ? std::optional<std::string>(on_or_before)
-                                 : std::optional<std::string>{}});
+            pqxx::params{
+                strategy_id, strategy_name, portfolio_id, symbols,
+                bounded ? std::optional<std::string>(on_or_before) : std::optional<std::string>{}});
 
         Map out;
         for (const auto& row : result) {
-            if (row["holding_start"].is_null()) continue;
+            if (row["holding_start"].is_null())
+                continue;
             out.emplace(row["symbol"].c_str(), row["holding_start"].c_str());
         }
 
@@ -2928,21 +2976,19 @@ PostgresDatabase::get_current_holding_start_dates(const std::string& strategy_id
     }
 }
 
-Result<std::unordered_map<std::string, std::string>>
-PostgresDatabase::get_last_buy_dates(const std::string& strategy_id,
-                                     const std::string& strategy_name,
-                                     const std::string& portfolio_id,
-                                     const std::vector<std::string>& symbols,
-                                     const std::string& on_or_after,
-                                     const std::string& on_or_before,
-                                     const std::string& table_name) {
+Result<std::unordered_map<std::string, std::string>> PostgresDatabase::get_last_buy_dates(
+    const std::string& strategy_id, const std::string& strategy_name,
+    const std::string& portfolio_id, const std::vector<std::string>& symbols,
+    const std::string& on_or_after, const std::string& on_or_before,
+    const std::string& table_name) {
     using Map = std::unordered_map<std::string, std::string>;
 
     auto validation = validate_connection();
     if (validation.is_error()) {
         return make_error<Map>(validation.error()->code(), validation.error()->what());
     }
-    if (symbols.empty()) return Result<Map>(Map{});
+    if (symbols.empty())
+        return Result<Map>(Map{});
 
     // table_name is an internal default (trading.executions), never user input --
     // same contract as get_position_inception_dates above.
@@ -2955,17 +3001,19 @@ PostgresDatabase::get_last_buy_dates(const std::string& strategy_id,
         // information about the basis frame.
         auto result = txn.exec(
             "SELECT symbol, max(date)::text AS last_buy "
-            "FROM " + table_name +
+            "FROM " +
+                table_name +
                 " WHERE strategy_id = $1 AND strategy_name = $2 AND portfolio_id = $3 "
                 "  AND symbol = ANY($4) AND side = 'BUY' "
                 "  AND date >= $5 AND date <= $6 "
                 "GROUP BY symbol",
-            pqxx::params{strategy_id, strategy_name, portfolio_id, symbols,
-                         on_or_after, on_or_before});
+            pqxx::params{strategy_id, strategy_name, portfolio_id, symbols, on_or_after,
+                         on_or_before});
 
         Map out;
         for (const auto& row : result) {
-            if (row["last_buy"].is_null()) continue;
+            if (row["last_buy"].is_null())
+                continue;
             out.emplace(row["symbol"].c_str(), row["last_buy"].c_str());
         }
 
@@ -2973,169 +3021,67 @@ PostgresDatabase::get_last_buy_dates(const std::string& strategy_id,
         return Result<Map>(std::move(out));
 
     } catch (const std::exception& e) {
-        return make_error<Map>(
-            ErrorCode::DATABASE_ERROR,
-            "Failed to fetch last BUY dates: " + std::string(e.what()),
-            "PostgresDatabase");
+        return make_error<Map>(ErrorCode::DATABASE_ERROR,
+                               "Failed to fetch last BUY dates: " + std::string(e.what()),
+                               "PostgresDatabase");
     }
 }
 
+[[deprecated("Hard-coded queries")]]
 Result<std::unordered_map<std::string, std::map<std::string, double>>>
 PostgresDatabase::get_historical_closes(const std::vector<std::string>& symbols,
                                         const std::string& start_date,
                                         const std::string& end_date) {
-    using Map = std::unordered_map<std::string, std::map<std::string, double>>;
+    // Suppress unused parameter warnings for now, since this function is deprecated
+    (void)symbols;
+    (void)start_date;
+    (void)end_date;
 
-    auto validation = validate_connection();
-    if (validation.is_error()) {
-        return make_error<Map>(validation.error()->code(), validation.error()->what());
-    }
-    if (symbols.empty()) return Result<Map>(Map{});
-
-    try {
-        pqxx::work txn(*connection_);
-
-        // Half-open timestamp range so the (symbol, time) primary key is usable;
-        // a time::date cast here would be non-sargable, which is what made the
-        // per-bar event query 14.3 s before migration 003.
-        auto result = txn.exec(
-            "SELECT symbol, time::date::text AS bar_date, close "
-            "FROM equities_data.ohlcv_1d "
-            "WHERE symbol = ANY($1) AND time >= $2::date AND time < ($3::date + 1) "
-            "  AND close IS NOT NULL "
-            "ORDER BY symbol, time",
-            pqxx::params{symbols, start_date, end_date});
-
-        Map out;
-        for (const auto& row : result) {
-            out[row["symbol"].c_str()][row["bar_date"].c_str()] =
-                row["close"].as<double>();
-        }
-
-        txn.commit();
-        return Result<Map>(std::move(out));
-
-    } catch (const std::exception& e) {
-        return make_error<Map>(
-            ErrorCode::DATABASE_ERROR,
-            "Failed to fetch historical closes: " + std::string(e.what()),
-            "PostgresDatabase");
-    }
-}
-
-Result<std::vector<PostgresDatabase::AppliedCorpActionRow>>
-PostgresDatabase::load_applied_corp_actions(const std::string& portfolio_id,
-                                            const std::string& strategy_id,
-                                            const std::string& strategy_name) {
-    using Rows = std::vector<AppliedCorpActionRow>;
-
-    auto validation = validate_connection();
-    if (validation.is_error()) {
-        return make_error<Rows>(validation.error()->code(), validation.error()->what());
-    }
-
-    try {
-        pqxx::work txn(*connection_);
-        // Whole-history load: this is the strategy's lifetime dedup set and the
-        // source for cumulative dividend income. Parameterised, and the PK
-        // (portfolio_id, strategy_id, strategy_name, ...) serves the prefix
-        // scan directly. strategy_name must match the write key: one
-        // strategy_id spans several names, and dropping it returns another
-        // strategy's applied events as if they were this one's.
-        pqxx::result result = txn.exec_params(
-            "SELECT symbol, action_type, ex_date::text AS ex_date, "
-            "COALESCE(qty_held, 0) AS qty_held, "
-            "COALESCE(dividend_per_share, 0) AS dividend_per_share, "
-            "COALESCE(total_cash, 0) AS total_cash, "
-            // E2-F23 / migration 005. Empty string for a legacy row, which the
-            // caller reads as "unknown" and accepts -- refusing every row written
-            // before the column existed would make the next run unstartable.
-            "COALESCE(run_date::text, '') AS run_date, "
-            // F-8 / migration 006. NULL means the ratio was never recorded, which
-            // is NOT the same as "the event moved no basis" -- the two are
-            // separated here rather than collapsed into a 1.0 the caller cannot
-            // tell from a real one.
-            "basis_ratio IS NOT NULL AS basis_ratio_known, "
-            "COALESCE(basis_ratio, 1) AS basis_ratio "
-            "FROM trading.corp_action_applied "
-            "WHERE portfolio_id = $1 AND strategy_id = $2 AND strategy_name = $3",
-            portfolio_id, strategy_id, strategy_name);
-
-        Rows out;
-        out.reserve(result.size());
-        for (const auto& row : result) {
-            AppliedCorpActionRow r;
-            r.symbol = row["symbol"].c_str();
-            r.action_type = row["action_type"].c_str();
-            r.ex_date = row["ex_date"].c_str();
-            r.qty_held = row["qty_held"].as<double>();
-            r.dividend_per_share = row["dividend_per_share"].as<double>();
-            r.total_cash = row["total_cash"].as<double>();
-            r.run_date = row["run_date"].c_str();
-            r.basis_ratio_known = row["basis_ratio_known"].as<bool>();
-            r.basis_ratio = row["basis_ratio"].as<double>();
-            out.push_back(std::move(r));
-        }
-
-        txn.commit();
-        return Result<Rows>(std::move(out));
-
-    } catch (const std::exception& e) {
-        return make_error<Rows>(
-            ErrorCode::DATABASE_ERROR,
-            "Failed to load applied corp actions: " + std::string(e.what()),
-            "PostgresDatabase");
-    }
-}
-
-Result<void> PostgresDatabase::store_applied_corp_actions(
-    const std::string& portfolio_id, const std::string& strategy_id,
-    const std::string& strategy_name,
-    const std::vector<AppliedCorpActionRow>& rows) {
-    if (rows.empty()) return Result<void>();
-
-    auto validation = validate_connection();
-    if (validation.is_error()) {
-        return make_error<void>(validation.error()->code(), validation.error()->what());
-    }
-
-    try {
-        pqxx::work txn(*connection_);
-        auto stored =
-            store_applied_corp_actions_in(txn, portfolio_id, strategy_id, strategy_name, rows);
-        if (stored.is_error())
-            return stored;
-        txn.commit();
-        return Result<void>();
-
-    } catch (const std::exception& e) {
-        return make_error<void>(
-            ErrorCode::DATABASE_ERROR,
-            "Failed to store applied corp actions: " + std::string(e.what()),
-            "PostgresDatabase");
-    }
-}
-
-Result<void> PostgresDatabase::store_applied_corp_actions(
-    DbTransaction& txn, const std::string& portfolio_id, const std::string& strategy_id,
-    const std::string& strategy_name,
-    const std::vector<AppliedCorpActionRow>& rows) {
-    if (rows.empty()) return Result<void>();
-    if (!txn.valid()) {
-        return make_error<void>(
-            ErrorCode::DATABASE_ERROR,
-            "store_applied_corp_actions called with a moved-from unit of work",
-            "PostgresDatabase");
-    }
-    return store_applied_corp_actions_in(txn.work(), portfolio_id, strategy_id, strategy_name,
-                                         rows);
+    return make_error<std::vector<CorpActionRow>>(ErrorCode::DEPRECATED_FUNCTION,
+                                                  "Deprecated because of hard-coded queries");
+    // using Map = std::unordered_map<std::string, std::map<std::string, double>>;
+    //
+    // auto validation = validate_connection();
+    // if (validation.is_error()) {
+    //     return make_error<Map>(validation.error()->code(), validation.error()->what());
+    // }
+    // if (symbols.empty())
+    //     return Result<Map>(Map{});
+    //
+    // try {
+    //     pqxx::work txn(*connection_);
+    //
+    //     // Half-open timestamp range so the (symbol, time) primary key is usable;
+    //     // a time::date cast here would be non-sargable, which is what made the
+    //     // per-bar event query 14.3 s before migration 003.
+    //     auto result = txn.exec(
+    //         "SELECT symbol, time::date::text AS bar_date, close "
+    //         "FROM equities_data.ohlcv_1d "
+    //         "WHERE symbol = ANY($1) AND time >= $2::date AND time < ($3::date + 1) "
+    //         "  AND close IS NOT NULL "
+    //         "ORDER BY symbol, time",
+    //         pqxx::params{symbols, start_date, end_date});
+    //
+    //     Map out;
+    //     for (const auto& row : result) {
+    //         out[row["symbol"].c_str()][row["bar_date"].c_str()] = row["close"].as<double>();
+    //     }
+    //
+    //     txn.commit();
+    //     return Result<Map>(std::move(out));
+    //
+    // } catch (const std::exception& e) {
+    //     return make_error<Map>(ErrorCode::DATABASE_ERROR,
+    //                            "Failed to fetch historical closes: " + std::string(e.what()),
+    //                            "PostgresDatabase");
+    // }
 }
 
 Result<void> PostgresDatabase::store_applied_corp_actions_in(
     pqxx::work& txn, const std::string& portfolio_id, const std::string& strategy_id,
-    const std::string& strategy_name,
-    const std::vector<AppliedCorpActionRow>& rows) {
-    if (rows.empty()) return Result<void>();
+    const std::string& strategy_name, const std::vector<AppliedCorpActionRow>& rows) {
+    if (rows.empty())
+        return Result<void>();
 
     try {
         // DO NOTHING rather than DO UPDATE: the first application is the
@@ -3156,8 +3102,8 @@ Result<void> PostgresDatabase::store_applied_corp_actions_in(
                 "        NULLIF($10, '')::date, $11) "
                 "ON CONFLICT (portfolio_id, strategy_id, strategy_name, symbol, "
                 "             action_type, ex_date) DO NOTHING",
-                portfolio_id, strategy_id, strategy_name, r.symbol, r.action_type,
-                r.ex_date, r.qty_held, r.dividend_per_share, r.total_cash, r.run_date,
+                portfolio_id, strategy_id, strategy_name, r.symbol, r.action_type, r.ex_date,
+                r.qty_held, r.dividend_per_share, r.total_cash, r.run_date,
                 // F-8 / migration 006: NULL when the caller had no ratio to record
                 // (a TERMINATION restates nothing), so an absent ratio stays
                 // honestly absent rather than becoming an identity factor.
@@ -3167,15 +3113,13 @@ Result<void> PostgresDatabase::store_applied_corp_actions_in(
         return Result<void>();
 
     } catch (const std::exception& e) {
-        return make_error<void>(
-            ErrorCode::DATABASE_ERROR,
-            "Failed to store applied corp actions: " + std::string(e.what()),
-            "PostgresDatabase");
+        return make_error<void>(ErrorCode::DATABASE_ERROR,
+                                "Failed to store applied corp actions: " + std::string(e.what()),
+                                "PostgresDatabase");
     }
 }
 
-DbTransaction::DbTransaction(pqxx::connection& conn)
-    : txn_(std::make_unique<pqxx::work>(conn)) {}
+DbTransaction::DbTransaction(pqxx::connection& conn) : txn_(std::make_unique<pqxx::work>(conn)) {}
 
 DbTransaction::DbTransaction(DbTransaction&& other) noexcept
     : txn_(std::move(other.txn_)), committed_(other.committed_) {
@@ -3211,8 +3155,8 @@ Result<void> DbTransaction::commit() {
                                 "commit called on a moved-from unit of work", "DbTransaction");
     }
     if (committed_) {
-        return make_error<void>(ErrorCode::DATABASE_ERROR,
-                                "unit of work already committed", "DbTransaction");
+        return make_error<void>(ErrorCode::DATABASE_ERROR, "unit of work already committed",
+                                "DbTransaction");
     }
     try {
         txn_->commit();
@@ -3222,25 +3166,6 @@ Result<void> DbTransaction::commit() {
         return make_error<void>(ErrorCode::DATABASE_ERROR,
                                 "Failed to commit unit of work: " + std::string(e.what()),
                                 "DbTransaction");
-    }
-}
-
-Result<std::unique_ptr<DbTransaction>> PostgresDatabase::begin_unit_of_work() {
-    using Scope = std::unique_ptr<DbTransaction>;
-
-    auto validation = validate_connection();
-    if (validation.is_error()) {
-        return make_error<Scope>(validation.error()->code(), validation.error()->what(),
-                                 "PostgresDatabase");
-    }
-    try {
-        // `new` rather than make_unique: the constructor is private to keep
-        // pqxx out of caller code, and make_unique is not a friend.
-        return Result<Scope>(Scope(new DbTransaction(*connection_)));
-    } catch (const std::exception& e) {
-        return make_error<Scope>(ErrorCode::DATABASE_ERROR,
-                                 "Failed to begin unit of work: " + std::string(e.what()),
-                                 "PostgresDatabase");
     }
 }
 
