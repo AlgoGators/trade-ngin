@@ -3090,8 +3090,9 @@ std::string EmailSender::format_single_strategy_table(
     std::vector<std::tuple<std::string, std::string, double, double, double>> position_data;
 
     for (const auto& [symbol, position] : positions) {
-        if (position.quantity.as_double() != 0.0) {
-            active_positions++;
+        const bool listed = display && display->quantity_exact.contains({strategy_name, symbol});
+        if (position.quantity.as_double() != 0.0 || listed) {
+            if (position.quantity.as_double() != 0.0) active_positions++;
 
             double contract_multiplier = 1.0;
             double notional = 0.0;
@@ -3236,8 +3237,9 @@ std::string EmailSender::format_strategy_positions_tables(
 
         // Skip empty strategies
         bool has_active_positions = false;
-        for (const auto& [_, pos] : positions) {
-            if (pos.quantity.as_double() != 0.0) {
+        for (const auto& [symbol, pos] : positions) {
+            if (pos.quantity.as_double() != 0.0 ||
+                (display && display->quantity_exact.contains({strategy_name, symbol}))) {
                 has_active_positions = true;
                 break;
             }

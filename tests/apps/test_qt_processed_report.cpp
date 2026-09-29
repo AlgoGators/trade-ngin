@@ -2,8 +2,11 @@
 #include "trade_ngin/portfolio/qt_wire.hpp"
 #include "trade_ngin/data/postgres_database.hpp"
 #include <gtest/gtest.h>
+#include <algorithm>
+#include <cstdint>
 #include <filesystem>
 #include <fstream>
+#include <tuple>
 
 namespace trade_ngin {
 namespace {
@@ -18,20 +21,39 @@ void same_publisher(Json& value) {
         else same_publisher(it.value());
     } else if(value.is_array()) for(auto& item:value) same_publisher(item);
 }
-Json evidence() {
+// One selection row per leg; the default legs reproduce the fixture's two rows exactly.
+// PLAN14: before == absent means the key had no row before processing (a brand-new key).
+constexpr const char* absent="absent";
+struct Leg {std::string strategy,symbol,before,after;};
+Json evidence(const std::vector<Leg>& legs={{"synthetic-alpha","SYN","4","5"},{"synthetic-beta","SYN","2","1"}}) {
     const auto path=std::filesystem::path(__FILE__).parent_path().parent_path()/"contracts"/"qt-workflow-v1.json";
     std::ifstream input(path);if(!input.good()) throw std::runtime_error("fixture missing");
     auto payload=Json::parse(input).at("preview_clean");same_publisher(payload);
+    const auto row=payload["selection_rows"][0];auto& costs=payload["evaluation"]["selected_costs"];
+    const auto cost=costs["by_component"][0];payload["selection_rows"]=Json::array();costs["by_component"]=Json::array();
     Json quantities=Json::array(),keys=Json::array(),before=Json::array(),after=Json::array();
-    for(size_t i=0;i<2;++i) {
-        auto key=payload["selection_rows"][i]["key"];key["portfolio_type"]="qt";keys.push_back(key);
-        quantities.push_back({{"key",key},{"quantity_exact",payload["selection_rows"][i]["quantity_exact"]}});
-        Json accounting={{"key",key},{"quantity_exact",i==0?"4":"2"},{"average_price_exact","100"},
+    for(const auto& leg:legs) {
+        auto selection=row;selection["key"]["strategy_name"]=leg.strategy;selection["key"]["symbol"]=leg.symbol;
+        selection["quantity_exact"]=leg.after;payload["selection_rows"].push_back(selection);
+        const bool had_row=leg.before!=absent;const std::string prior=had_row?leg.before:"0";
+        auto component=cost;component["key"]=selection["key"];component["prior_quantity_exact"]=prior;
+        component["selected_quantity_exact"]=leg.after;costs["by_component"].push_back(component);
+        auto key=selection["key"];key["portfolio_type"]="qt";
+        if(prior!="0"||leg.after!="0")keys.push_back(key); // shown rows only
+        quantities.push_back({{"key",key},{"quantity_exact",leg.after}});
+        Json accounting={{"key",key},{"quantity_exact",prior},{"average_price_exact","100"},
             {"daily_unrealized_pnl_exact","2"},{"daily_realized_pnl_exact","3"},
             {"last_update","2026-09-25T12:00:00Z"}};
-        before.push_back(accounting);accounting["quantity_exact"]=payload["selection_rows"][i]["quantity_exact"];
+        if(had_row)before.push_back(accounting);
+        accounting["quantity_exact"]=leg.after;
         accounting["average_price_exact"]="111";accounting["daily_realized_pnl_exact"]="9";after.push_back(accounting);
     }
+    costs["total_exact"]=Quantity::from_raw(1000000*static_cast<int64_t>(legs.size())).to_string(); // 0.01 per leg
+    std::sort(keys.begin(),keys.end(),[](const Json& a,const Json& b){
+        const auto tuple=[](const Json& k){return std::make_tuple(k.at("portfolio_id").get<std::string>(),
+            k.at("strategy_id").get<std::string>(),k.at("strategy_name").get<std::string>(),k.at("date").get<std::string>(),
+            k.at("symbol").get<std::string>(),k.at("portfolio_type").get<std::string>());};
+        return tuple(a)<tuple(b);});
     const auto digest=qt_digest_v1({{"selection_rows",quantities}}).value();
     payload["selected_book_digest"]=digest;
     payload["evaluation"]["selected_risk"]["evaluated_book_digest"]=digest;
@@ -73,16 +95,112 @@ Result<QtInvestorReportSnapshot> project(const Json& value, const StrategyPositi
     return project_processed_qt_report_evidence(value,"component-1",{"synthetic-alpha","synthetic-beta"},
         "synthetic-book-A",report_day(),current);
 }
-TEST(QtProcessedReportTest, UsesActualBeforeAccountingOnlyForCalculationsAndAfterOnlyForDisplay) {
+TEST(QtProcessedReportTest, UsesSavedAccountingForCalculationsAndDisplay) {
     auto result=project(evidence());ASSERT_TRUE(result.is_ok())<<result.error()->what();
     const auto& view=result.value();ASSERT_TRUE(view.display);
-    EXPECT_EQ(view.calculations.by_strategy.at("synthetic-alpha").at("SYN").quantity.to_string(),"4");
-    EXPECT_EQ(view.calculations.by_strategy.at("synthetic-beta").at("SYN").quantity.to_string(),"2");
+    EXPECT_EQ(view.calculations.by_strategy.at("synthetic-alpha").at("SYN").quantity.to_string(),"5");
+    EXPECT_EQ(view.calculations.by_strategy.at("synthetic-beta").at("SYN").quantity.to_string(),"1");
     EXPECT_EQ(view.calculations.combined.at("SYN").quantity.to_string(),"6");
-    EXPECT_EQ(view.calculations.combined.at("SYN").average_price.to_string(),"100");
-    EXPECT_EQ(view.calculations.combined.at("SYN").realized_pnl.to_string(),"3");
+    EXPECT_EQ(view.calculations.combined.at("SYN").average_price.to_string(),"111");
+    EXPECT_EQ(view.calculations.combined.at("SYN").realized_pnl.to_string(),"9");
     EXPECT_EQ(view.display->quantity_exact.at({"synthetic-alpha","SYN"}),"5");
     EXPECT_EQ(view.display->quantity_exact.at({"synthetic-beta","SYN"}),"1");
+}
+TEST(QtProcessedReportTest, ChangedAndOpenedRowsComeFromSavedPositions) {
+    auto result=project(evidence({{"synthetic-alpha","SYN","5","7"},{"synthetic-beta","NEW","0","2"}}));
+    ASSERT_TRUE(result.is_ok())<<result.error()->what();
+    const auto& view=result.value();ASSERT_TRUE(view.display);
+    EXPECT_EQ(view.calculations.by_strategy.at("synthetic-alpha").at("SYN").quantity.to_string(),"7");
+    ASSERT_TRUE(view.calculations.by_strategy.at("synthetic-beta").contains("NEW"));
+    EXPECT_EQ(view.calculations.by_strategy.at("synthetic-beta").at("NEW").quantity.to_string(),"2");
+    EXPECT_EQ(view.calculations.combined.at("SYN").quantity.to_string(),"7");
+    EXPECT_EQ(view.calculations.combined.at("NEW").quantity.to_string(),"2");
+    EXPECT_EQ(view.display->quantity_exact.at({"synthetic-alpha","SYN"}),"7");
+    EXPECT_EQ(view.display->quantity_exact.at({"synthetic-beta","NEW"}),"2");
+    EXPECT_EQ(view.display->quantity_exact.size(),2u);
+}
+// PLAN14 (F3): a key with no row before processing gets its own row and does not hold the report back.
+TEST(QtProcessedReportTest, NewKeyWithNoBeforeRowGetsItsOwnRow) {
+    const auto value=evidence({{"synthetic-alpha","SYN","4","5"},{"synthetic-beta","NEW",absent,"2"}});
+    ASSERT_EQ(value["receipt"]["publication_payload"]["before_accounting"].size(),1u);
+    ASSERT_EQ(value["receipt"]["publication_payload"]["after_accounting"].size(),2u);
+    auto result=project(value);ASSERT_TRUE(result.is_ok())<<result.error()->what();
+    const auto& view=result.value();ASSERT_TRUE(view.display);
+    EXPECT_EQ(view.calculations.by_strategy.at("synthetic-beta").at("NEW").quantity.to_string(),"2");
+    EXPECT_EQ(view.calculations.by_strategy.at("synthetic-beta").at("NEW").average_price.to_string(),"111");
+    EXPECT_EQ(view.calculations.combined.at("NEW").quantity.to_string(),"2");
+    EXPECT_EQ(view.calculations.combined.at("SYN").quantity.to_string(),"5");
+    EXPECT_EQ(view.calculations.evidence_counts.at("synthetic-beta"),0u); // counts stay before-row counts
+    EXPECT_EQ(view.display->quantity_exact.at({"synthetic-beta","NEW"}),"2");
+    EXPECT_EQ(view.display->quantity_exact.size(),2u);
+}
+TEST(QtProcessedReportTest, NewKeyLeftAtZeroIsNotShown) {
+    auto result=project(evidence({{"synthetic-alpha","SYN","4","5"},{"synthetic-beta","NEW",absent,"0"}}));
+    ASSERT_TRUE(result.is_ok())<<result.error()->what();
+    const auto& view=result.value();ASSERT_TRUE(view.display);
+    EXPECT_TRUE(view.calculations.by_strategy.at("synthetic-beta").empty());
+    EXPECT_FALSE(view.calculations.combined.contains("NEW"));
+    EXPECT_EQ(view.display->quantity_exact.size(),1u);
+}
+TEST(QtProcessedReportTest, PositionClosedTodayKeepsItsRowAtZero) {
+    auto result=project(evidence({{"synthetic-alpha","SYN","4","0"},{"synthetic-beta","SYN","2","1"}}));
+    ASSERT_TRUE(result.is_ok())<<result.error()->what();
+    const auto& view=result.value();ASSERT_TRUE(view.display);
+    EXPECT_TRUE(view.calculations.by_strategy.at("synthetic-alpha").at("SYN").quantity.is_zero());
+    EXPECT_EQ(view.display->quantity_exact.at({"synthetic-alpha","SYN"}),"0");
+    EXPECT_EQ(view.display->quantity_exact.at({"synthetic-beta","SYN"}),"1");
+    EXPECT_EQ(view.calculations.combined.at("SYN").quantity.to_string(),"1"); // closed row leaves the combined map
+}
+// PLAN14 r2 (review finding 3): on this path the saved rows must equal the selected rows exactly
+// (qt_processed_report.cpp: after quantities vs selected_rows), so dropping a saved row is refused there,
+// before the builder or projection runs.
+TEST(QtProcessedReportTest, SavedRowsMissingABeforeKeyStayRefused) {
+    auto value=evidence({{"synthetic-alpha","SYN","4","5"},{"synthetic-beta","SYN","2","1"}});
+    auto& publication=value["receipt"]["publication_payload"];
+    publication["after_accounting"].erase(1);
+    EXPECT_TRUE(project(value).is_error());
+}
+// The realistic superset violation: the selection itself (and so the saved rows) omits a key that had a
+// before row. Before rows are typed from the selection, so this path refuses the untyped before row; it
+// cannot reach the superset rule, which is proven directly in QtReportProjectionTest
+// (HandBuiltSnapshotBeforeKeyMissingFromAfterRefused, VectorBeforeKeyMissingFromAfterReachesTheSupersetRule).
+TEST(QtProcessedReportTest, SelectionOmittingABeforeKeyIsRefused) {
+    auto value=evidence({{"synthetic-alpha","SYN","4","5"}});
+    const auto control=project(value);ASSERT_TRUE(control.is_ok())<<control.error()->what();
+    auto extra=value["receipt"]["publication_payload"]["before_accounting"][0];
+    extra["key"]["strategy_name"]="synthetic-beta";extra["quantity_exact"]="2";
+    value["receipt"]["publication_payload"]["before_accounting"].push_back(extra);
+    value["preview"]["read_set_payload"]["saved_accounting"].push_back(extra); // publication before == read-set before
+    EXPECT_TRUE(project(value).is_error());
+}
+// PLAN14 r2 (review finding 5): a book's first position, with no before rows at all.
+TEST(QtProcessedReportTest, FirstPositionOfABookWithNoBeforeRows) {
+    const auto value=evidence({{"synthetic-alpha","NQ",absent,"2"}});
+    ASSERT_TRUE(value["receipt"]["publication_payload"]["before_accounting"].empty());
+    ASSERT_TRUE(value["preview"]["read_set_payload"]["saved_accounting"].empty());
+    auto result=project(value);ASSERT_TRUE(result.is_ok())<<result.error()->what();
+    const auto& view=result.value();ASSERT_TRUE(view.display);
+    EXPECT_EQ(view.calculations.by_strategy.at("synthetic-alpha").at("NQ").quantity.to_string(),"2");
+    EXPECT_TRUE(view.calculations.by_strategy.at("synthetic-beta").empty());
+    EXPECT_EQ(view.calculations.combined.at("NQ").quantity.to_string(),"2");
+    EXPECT_EQ(view.calculations.evidence_counts.at("synthetic-alpha"),0u);
+    EXPECT_EQ(view.display->quantity_exact.at({"synthetic-alpha","NQ"}),"2");
+    EXPECT_EQ(view.display->quantity_exact.size(),1u);
+}
+TEST(QtProcessedReportTest, EveryKeyNewInBothStrategiesGetsRows) {
+    auto result=project(evidence({{"synthetic-alpha","SYN",absent,"5"},{"synthetic-beta","NEW",absent,"-2"}}));
+    ASSERT_TRUE(result.is_ok())<<result.error()->what();
+    const auto& view=result.value();ASSERT_TRUE(view.display);
+    EXPECT_EQ(view.display->quantity_exact.at({"synthetic-alpha","SYN"}),"5");
+    EXPECT_EQ(view.display->quantity_exact.at({"synthetic-beta","NEW"}),"-2");
+    EXPECT_EQ(view.calculations.combined.size(),2u);
+}
+TEST(QtProcessedReportTest, FirstSelectionLeftAtZeroIsEligibleWithNoRows) {
+    auto result=project(evidence({{"synthetic-alpha","NQ",absent,"0"}}));
+    ASSERT_TRUE(result.is_ok())<<result.error()->what();
+    const auto& view=result.value();ASSERT_TRUE(view.display);
+    EXPECT_TRUE(view.display->quantity_exact.empty());
+    EXPECT_TRUE(view.calculations.combined.empty());
 }
 TEST(QtProcessedReportTest, RefusesMissingFailedStaleTamperedOrDifferentScopeEvidence) {
     for(int change=0;change<10;++change) {

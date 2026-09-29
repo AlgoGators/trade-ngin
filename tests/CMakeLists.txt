@@ -423,3 +423,13 @@ set_target_properties(qt_empty_owner_finalization_tests PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin"
     RUNTIME_OUTPUT_DIRECTORY_DEBUG "${CMAKE_BINARY_DIR}/bin/Debug"
     RUNTIME_OUTPUT_DIRECTORY_RELEASE "${CMAKE_BINARY_DIR}/bin/Release")
+
+# PLAN14 r2: test-only seam for qt_desk_processor.cpp report(). The test compiles that production
+# translation unit into this executable only; libtrade_ngin and every other target are unchanged.
+add_executable(qt_desk_report_scope_tests EXCLUDE_FROM_ALL data/test_qt_desk_report_scope.cpp)
+target_include_directories(qt_desk_report_scope_tests PRIVATE ${CMAKE_SOURCE_DIR}/include)
+target_link_libraries(qt_desk_report_scope_tests PRIVATE trade_ngin GTest::gtest GTest::gtest_main)
+set_target_properties(qt_desk_report_scope_tests PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin"
+    RUNTIME_OUTPUT_DIRECTORY_DEBUG "${CMAKE_BINARY_DIR}/bin/Debug"
+    RUNTIME_OUTPUT_DIRECTORY_RELEASE "${CMAKE_BINARY_DIR}/bin/Release")

@@ -109,25 +109,18 @@ Result<QtInvestorReportSnapshot> project_processed_qt_report_evidence(
         if(quantities.size()!=selected.value().selected_rows.size())reject();
         for(const auto& row:selected.value().selected_rows)
             if(!quantities.contains(row.key)||quantities.at(row.key)!=row.quantity)reject();
-        StrategyPositionRows grouped;std::unordered_map<std::string,Position> combined;
-        std::unordered_map<std::string,size_t> counts;std::set<std::string> names;
-        std::set<CurrentReportRowKey> raw_rows;
-        for(const auto& name:strategy_names){if(name.empty()||!names.insert(name).second)reject();grouped[name];counts[name]=0;}
+        std::set<std::string> names;std::set<CurrentReportRowKey> raw_rows;
+        for(const auto& name:strategy_names){if(name.empty()||!names.insert(name).second)reject();}
         for(const auto& row:before){
             if(!names.contains(row.key.strategy_name)||row.key.portfolio_id!=portfolio_id||row.key.strategy_id!=strategy_id||
                 row.key.date!=utc_day(report_date)||!raw_rows.insert({row.key.strategy_name,row.key.symbol}).second)reject();
-            ++counts[row.key.strategy_name];
-            if(!row.position.quantity.is_zero())grouped.at(row.key.strategy_name).emplace(row.key.symbol,row.position);
         }
         for(const auto& [name,rows]:current_system_rows){
             if(!names.contains(name))reject();
             for(const auto& [symbol,position]:rows)
                 if(position.symbol!=symbol||(!position.quantity.is_zero()&&!raw_rows.contains({name,symbol})))reject();
         }
-        for(const auto& name:strategy_names)for(const auto& [symbol,position]:grouped.at(name)){
-            auto [entry,inserted]=combined.emplace(symbol,position);if(!inserted)entry->second.quantity+=position.quantity;
-        }
-        ReportPositionSnapshot snapshot{std::move(grouped),std::move(combined),portfolio_id,strategy_id,strategy_names,"qt",report_date,std::move(counts)};
+        ReportPositionSnapshot snapshot=build_qt_saved_report_snapshot(before,after,strategy_names,portfolio_id,strategy_id,report_date);
         if(empty_owner){
             if(!before.empty()||!after.empty()||!selected.value().selected_rows.empty())reject();
             for(const auto& [name,rows]:current_system_rows)if(!rows.empty())reject();

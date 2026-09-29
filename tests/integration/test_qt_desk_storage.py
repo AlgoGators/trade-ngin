@@ -39,6 +39,16 @@ OBSERVATION = "60000000-0000-4000-8000-000000000001"
 BINARY = Path("/home/devcontainers/qt-validation-20260921/bin/Debug/qt_desk_storage_probe")
 EVALUATOR = BINARY.with_name("qt_evaluator")
 BOOK = "BOOK"
+API_007 = API / "migrations/007_strategy_registry_asset_class.sql"
+API_007_SHA256 = "908b03d741d9324f655101de04e738d61af1c93934fcabed8b84c08c0eec4d52"
+
+
+def apply_registry_asset_class(conn, asset_class):
+    """Apply the installed API 007 (hash-pinned) and declare the fixture registry's asset class."""
+    assert sha256(API_007.read_bytes()).hexdigest() == API_007_SHA256
+    apply(conn, API_007)
+    with conn.cursor() as cur:
+        cur.execute("UPDATE trading.strategy_registry SET asset_class=%s", (asset_class,))
 
 
 def exact(value):
@@ -100,6 +110,7 @@ def desk(connection, request):
     apply(conn, API / "migrations/003_qt_decision_workflow.sql")
     apply(conn, API / "migrations/004_qt_governed_sources.sql")
     apply(conn, API / "migrations/005_qt_evaluator_bundle.sql")
+    apply_registry_asset_class(conn, "FUTURE" if scenario == "futures" else "EQUITY")
     with conn.cursor() as cur:
         cur.execute("SELECT clock_timestamp()")
         now = cur.fetchone()[0].astimezone(timezone.utc)
@@ -118,8 +129,8 @@ def desk(connection, request):
         keys[1] = {**keys[0],"strategy_id":"IMMUTABLE","strategy_name":"held-component","symbol":"IMM"}
         chosen = ("5","8")
         with conn.cursor() as cur:
-            cur.execute("INSERT INTO trading.strategy_registry(id,strategy_type,portfolio_id,is_active,lifecycle) "
-                        "VALUES('IMMUTABLE','IMMUTABLE','BOOK',true,'live')")
+            cur.execute("INSERT INTO trading.strategy_registry(id,strategy_type,portfolio_id,is_active,lifecycle,asset_class) "
+                        "VALUES('IMMUTABLE','IMMUTABLE','BOOK',true,'live','EQUITY')")
             cur.execute("INSERT INTO trading.positions(portfolio_id,strategy_id,strategy_name,date,symbol,portfolio_type,"
                         "quantity,average_price,daily_unrealized_pnl,daily_realized_pnl,last_update) "
                         "VALUES('BOOK','IMMUTABLE','held-component',%s,'IMM','qt',8,25,1.25,-0.5,%s)",(day,now))

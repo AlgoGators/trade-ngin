@@ -24,11 +24,21 @@ struct QtReportEligibility {
     std::optional<std::string> row_manifest_digest;
     std::optional<CurrentReportQuantityProjection> projection;
 };
+// Saved (after) keys must cover every before key; a saved key with no before row is treated as
+// before = 0 and must satisfy the same scope, type and whole-FUTURE checks as every other row.
 QtReportEligibility build_qt_report_quantity_projection(
     const std::vector<ComponentPositionCandidate>& before_qt,
     const std::vector<ComponentPositionCandidate>& after_qt,
-    const ReportPositionSnapshot& legacy_calculation_snapshot,
+    const ReportPositionSnapshot& saved_report_snapshot,
     std::string_view decision_id, std::string_view published_book_digest);
+// Report snapshot from QT's saved positions: every nonzero saved row (including keys that had no
+// row before), plus rows closed today (nonzero before, zero after) at 0; the combined map sums
+// nonzero rows by symbol.
+ReportPositionSnapshot build_qt_saved_report_snapshot(
+    const std::vector<ComponentPositionCandidate>& before_qt,
+    const std::vector<ComponentPositionCandidate>& after_qt,
+    const std::vector<std::string>& strategy_names, const std::string& portfolio_id,
+    const std::string& strategy_id, Timestamp report_date);
 // Final local renderer guard: validate complete display coverage before output.
 bool valid_qt_report_display_rows(
     const std::unordered_map<std::string,std::unordered_map<std::string,Position>>& rows,

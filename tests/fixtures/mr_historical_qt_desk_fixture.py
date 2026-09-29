@@ -18,7 +18,7 @@ import pytest
 from test_runtime_control_schema import connection
 from test_proposal_storage_migration import normalize_positions_shape, apply
 
-from test_qt_desk_storage import ROOT, API
+from test_qt_desk_storage import ROOT, API, apply_registry_asset_class
 sys.path.insert(0, str(API))
 from algolens.domain.portfolio.qt_canonical import qt_digest_v1, qt_book_digest_v1
 from algolens.infrastructure.portfolio.qt_read_set import (
@@ -100,6 +100,7 @@ def desk(connection, request, eod_clock):
     apply(conn, API / "migrations/003_qt_decision_workflow.sql")
     apply(conn, API / "migrations/004_qt_governed_sources.sql")
     apply(conn, API / "migrations/005_qt_evaluator_bundle.sql")
+    apply_registry_asset_class(conn, "FUTURE" if scenario == "futures" else "EQUITY")
     with conn.cursor() as cur:
         cur.execute("SELECT clock_timestamp()")
         now = cur.fetchone()[0].astimezone(timezone.utc)
@@ -118,8 +119,8 @@ def desk(connection, request, eod_clock):
         keys[1] = {**keys[0],"strategy_id":"IMMUTABLE","strategy_name":"held-component","symbol":"IMM"}
         chosen = ("5","8")
         with conn.cursor() as cur:
-            cur.execute("INSERT INTO trading.strategy_registry(id,strategy_type,portfolio_id,is_active,lifecycle) "
-                        "VALUES('IMMUTABLE','IMMUTABLE','EQUITY_MR_PORTFOLIO',true,'live')")
+            cur.execute("INSERT INTO trading.strategy_registry(id,strategy_type,portfolio_id,is_active,lifecycle,asset_class) "
+                        "VALUES('IMMUTABLE','IMMUTABLE','EQUITY_MR_PORTFOLIO',true,'live','EQUITY')")
             cur.execute("INSERT INTO trading.positions(portfolio_id,strategy_id,strategy_name,date,symbol,portfolio_type,"
                         "quantity,average_price,daily_unrealized_pnl,daily_realized_pnl,last_update) "
                         "VALUES('EQUITY_MR_PORTFOLIO','IMMUTABLE','held-component',%s,'IMM','qt',8,25,1.25,-0.5,%s)",(day,now))

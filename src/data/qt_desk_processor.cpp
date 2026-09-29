@@ -315,11 +315,14 @@ QtReportEligibility report(const Json& before,const Json& after,const Json& prev
             ReportPositionSnapshot snapshot{{{name,{}}},{},book,"LIVE_EQUITY_MEAN_REVERSION",{name},"qt",timestamp(day+"T00:00:00Z"),{{name,0}}};
             return build_qt_empty_owner_report_quantity_projection(*empty_owner,snapshot,id,published);
         }
-        if(before.empty())return unavailable;
+        // Saved keys cover every before key (checked by the projection); a saved key with no before
+        // row is a newly opened position and gets its own row, so the scope comes from both sides.
+        if(after.empty())return unavailable;
         std::set<std::string> ids,names;
-        for(auto& row:before){ids.insert(text(row.at("key").at("strategy_id")));names.insert(text(row.at("key").at("strategy_name")));}
+        for(const auto* side:{&before,&after})for(auto& row:*side){
+            ids.insert(text(row.at("key").at("strategy_id")));names.insert(text(row.at("key").at("strategy_name")));}
         if(ids.size()!=1)return unavailable;
-        auto book=text(before[0].at("key").at("portfolio_id")),day=text(before[0].at("key").at("date"));
+        auto book=text(after[0].at("key").at("portfolio_id")),day=text(after[0].at("key").at("date"));
         scope={{"portfolio_id",book},{"strategy_id",*ids.begin()},{"strategy_names",names},{"portfolio_type","qt"},{"date",day}};
         std::map<std::string,AssetType> types;
         for(auto& row:preview.at("payload").at("selection_rows")){
@@ -334,16 +337,8 @@ QtReportEligibility report(const Json& before,const Json& after,const Json& prev
                 result.push_back({k,{types.at(key_id(row.at("key"))),k.symbol},true,std::nullopt,position,false});
             }return result;
         };
-        auto old=candidates(before),saved=candidates(after);StrategyPositionRows grouped;
-        std::unordered_map<std::string,Position> combined;std::unordered_map<std::string,size_t> counts;
-        for(auto& name:names){grouped[name]={};counts[name]=0;}
-        for(auto& row:old){
-            ++counts[row.key.strategy_name];if(row.position.quantity.is_zero())continue;
-            require(grouped[row.key.strategy_name].emplace(row.key.symbol,row.position).second);
-            auto [entry,inserted]=combined.emplace(row.key.symbol,row.position);
-            if(!inserted)entry->second.quantity=Quantity::from_raw(add(entry->second.quantity.raw_value(),row.position.quantity.raw_value()));
-        }
-        ReportPositionSnapshot snapshot{grouped,combined,book,*ids.begin(),{names.begin(),names.end()},"qt",timestamp(day+"T00:00:00Z"),counts};
+        auto old=candidates(before),saved=candidates(after);
+        const auto snapshot=build_qt_saved_report_snapshot(old,saved,{names.begin(),names.end()},book,*ids.begin(),timestamp(day+"T00:00:00Z"));
         return build_qt_report_quantity_projection(old,saved,snapshot,id,published);
     }catch(const std::exception&){return unavailable;}
 }

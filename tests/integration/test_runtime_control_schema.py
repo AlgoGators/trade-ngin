@@ -1237,6 +1237,11 @@ def test_real_qt_api_and_cpp_publisher_serialize_in_both_orders(connection, monk
                     "INSERT INTO auth.users VALUES (8,'admin') ON CONFLICT(id) DO UPDATE SET role='admin'")
         api_migration = Path(__file__).parents[3] / "algolens-qt/algolens-api/migrations/003_qt_decision_workflow.sql"
         cur.execute(api_migration.read_text())
+        # The legacy-write guard locks registry rows, which now selects asset_class (installed API 007).
+        asset_class = api_migration.with_name("007_strategy_registry_asset_class.sql")
+        assert hashlib.sha256(asset_class.read_bytes()).hexdigest() == \
+            "908b03d741d9324f655101de04e738d61af1c93934fcabed8b84c08c0eec4d52"
+        cur.execute(asset_class.read_text())
         cur.execute("INSERT INTO trading.qt_workflow_capabilities (book_id,enabled,version) "
                     "VALUES ('BOOK',false,1)")
         cur.execute('CREATE SCHEMA IF NOT EXISTS metadata; '
