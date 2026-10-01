@@ -111,6 +111,7 @@ set(TEST_SOURCES
     live/test_live_metrics_calculator.cpp
     live/test_live_pnl_manager.cpp
     live/test_live_data_loader.cpp
+    live/test_equity_sleeve_netting.cpp
     live/test_csv_exporter.cpp
     live/test_csv_exporter_desk.cpp
     live/test_csv_exporter_context.cpp

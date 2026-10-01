@@ -3992,15 +3992,30 @@ Result<void> PostgresDatabase::store_positions(DbTransaction& scope,
 
 namespace trade_ngin {
 Result<std::unordered_map<std::string,Position>> PostgresDatabase::load_equity_model_system_positions(
-    const std::string& portfolio_id,const Timestamp& date) {try {
-    if(portfolio_id.empty() || portfolio_id.size()>100)throw std::invalid_argument("equity_system_owner_invalid");
+    const std::string& portfolio_id,const Timestamp& date) {
+    return load_equity_system_positions_by_owner(
+        "LIVE_EQUITY_MEAN_REVERSION", "EQUITY_MEAN_REVERSION", portfolio_id, date);
+}
+
+Result<std::unordered_map<std::string,Position>>
+PostgresDatabase::load_equity_system_positions_by_owner(
+    const std::string& strategy_id, const std::string& strategy_name,
+    const std::string& portfolio_id, const Timestamp& date) {try {
+    if(portfolio_id.empty() || portfolio_id.size()>100 || strategy_id.empty() ||
+       strategy_name.empty())throw std::invalid_argument("equity_system_owner_invalid");
+    for(const auto& id:{strategy_id,strategy_name,portfolio_id}) {
+        auto id_valid=validate_strategy_id(id);
+        if(id_valid.is_error())throw std::invalid_argument("equity_system_owner_invalid");
+    }
+    auto stream_valid=validate_operational_stream(portfolio_id,"system");
+    if(stream_valid.is_error())throw std::invalid_argument("equity_system_owner_invalid");
     auto valid=validate_connection();if(valid.is_error())return make_error<std::unordered_map<std::string,Position>>(valid.error()->code(),valid.error()->what());
     PublicationTransaction tx(*connection_,publication_transaction_);
     const auto rows=tx.exec("SELECT symbol,quantity::text,average_price::text,daily_unrealized_pnl::text,daily_realized_pnl::text,"
         "to_char(last_update AT TIME ZONE 'UTC','YYYY-MM-DD\"T\"HH24:MI:SS.US\"Z\"') "
-        "FROM trading.positions WHERE strategy_id='LIVE_EQUITY_MEAN_REVERSION' AND strategy_name='EQUITY_MEAN_REVERSION' "
-        "AND portfolio_id=$1 AND portfolio_type='system' AND date=$2::date ORDER BY symbol",
-        pqxx::params{portfolio_id,core::format_utc_date(date)});
+        "FROM trading.positions WHERE strategy_id=$1 AND strategy_name=$2 "
+        "AND portfolio_id=$3 AND portfolio_type='system' AND date=$4::date ORDER BY symbol",
+        pqxx::params{strategy_id,strategy_name,portfolio_id,core::format_utc_date(date)});
     if(rows.size()>4096)throw std::invalid_argument("equity_system_capacity");
     std::unordered_map<std::string,Position> result;
     for(const auto& row:rows){for(std::size_t i=0;i<6;++i)if(row[i].is_null())throw std::invalid_argument("equity_system_null");

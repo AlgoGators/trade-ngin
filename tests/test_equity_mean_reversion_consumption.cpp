@@ -120,3 +120,81 @@ TEST(EquityStrategyBuilder, BacktestSnapshotContainsEveryEnabledSleeve) {
     EXPECT_DOUBLE_EQ(snapshot["strategies"]["FIRST"]["allocation"], 0.7);
     EXPECT_DOUBLE_EQ(snapshot["strategies"]["SECOND"]["allocation"], 0.3);
 }
+
+TEST(EquityStrategyBuilder, LiveBookPreservesLegacySingleSleeveIdentityExactly) {
+    const nlohmann::json definition = {
+        {"type", "MeanReversionStrategy"},
+        {"symbols", {"MSFT", "AAPL", "MSFT"}},
+        {"config", {{"allow_fractional_shares", true}}}};
+    const std::vector<apps::EquityStrategyEntry> entries = {
+        {"MEAN_REVERSION", "MeanReversionStrategy", 0.25, definition}};
+
+    auto result = apps::build_equity_live_book_plan(entries);
+
+    ASSERT_TRUE(result.is_ok());
+    const auto& plan = result.value();
+    EXPECT_TRUE(plan.legacy_single);
+    EXPECT_EQ(plan.combined_strategy_id, "LIVE_EQUITY_MEAN_REVERSION");
+    ASSERT_EQ(plan.sleeves.size(), 1u);
+    EXPECT_EQ(plan.sleeves[0].source_id, "MEAN_REVERSION");
+    EXPECT_EQ(plan.sleeves[0].strategy_name, "EQUITY_MEAN_REVERSION");
+    EXPECT_DOUBLE_EQ(plan.sleeves[0].allocation, 1.0);
+    EXPECT_EQ(plan.symbols, (std::vector<std::string>{"AAPL", "MSFT"}));
+    EXPECT_TRUE(plan.allow_fractional_shares);
+}
+
+TEST(EquityStrategyBuilder, LiveBookBuildsDeterministicMultiSleeveIdentityAndUnion) {
+    const nlohmann::json alpha = {
+        {"type", "MeanReversionStrategy"}, {"symbols", {"MSFT", "AAPL"}},
+        {"config", {{"allow_fractional_shares", true}}}};
+    const nlohmann::json beta = {
+        {"type", "MeanReversionStrategy"}, {"symbols", {"GOOGL", "AAPL"}},
+        {"config", {{"allow_fractional_shares", true}}}};
+    const std::vector<apps::EquityStrategyEntry> entries = {
+        {"BETA", "MeanReversionStrategy", 3.0, beta},
+        {"ALPHA", "MeanReversionStrategy", 1.0, alpha}};
+
+    auto result = apps::build_equity_live_book_plan(entries);
+
+    ASSERT_TRUE(result.is_ok());
+    const auto& plan = result.value();
+    EXPECT_FALSE(plan.legacy_single);
+    EXPECT_EQ(plan.combined_strategy_id, "LIVE_EQUITY_ALPHA_BETA");
+    ASSERT_EQ(plan.sleeves.size(), 2u);
+    EXPECT_EQ(plan.sleeves[0].strategy_name, "ALPHA");
+    EXPECT_EQ(plan.sleeves[1].strategy_name, "BETA");
+    EXPECT_DOUBLE_EQ(plan.sleeves[0].allocation, 0.25);
+    EXPECT_DOUBLE_EQ(plan.sleeves[1].allocation, 0.75);
+    EXPECT_EQ(plan.symbols,
+              (std::vector<std::string>{"AAPL", "GOOGL", "MSFT"}));
+}
+
+TEST(EquityStrategyBuilder, SingleNonLegacyKeyUsesCombinedEquityIdentity) {
+    const nlohmann::json definition = {
+        {"type", "MeanReversionStrategy"},
+        {"config", {{"allow_fractional_shares", true}}}};
+
+    auto result = apps::build_equity_live_book_plan(
+        {{"ALPHA", "MeanReversionStrategy", 1.0, definition}});
+
+    ASSERT_TRUE(result.is_ok());
+    EXPECT_FALSE(result.value().legacy_single);
+    EXPECT_EQ(result.value().combined_strategy_id, "LIVE_EQUITY_ALPHA");
+    ASSERT_EQ(result.value().sleeves.size(), 1u);
+    EXPECT_EQ(result.value().sleeves[0].strategy_name, "ALPHA");
+}
+
+TEST(EquityStrategyBuilder, LiveBookRejectsMixedFractionalPolicyAndInvalidAllocation) {
+    const nlohmann::json fractional = {
+        {"type", "MeanReversionStrategy"},
+        {"config", {{"allow_fractional_shares", true}}}};
+    const nlohmann::json whole = {
+        {"type", "MeanReversionStrategy"},
+        {"config", {{"allow_fractional_shares", false}}}};
+
+    EXPECT_TRUE(apps::build_equity_live_book_plan({
+        {"A", "MeanReversionStrategy", 0.5, fractional},
+        {"B", "MeanReversionStrategy", 0.5, whole}}).is_error());
+    EXPECT_TRUE(apps::build_equity_live_book_plan({
+        {"A", "MeanReversionStrategy", 0.0, fractional}}).is_error());
+}

@@ -79,6 +79,50 @@ protected:
     std::unique_ptr<PostgresDatabase> db_;
 };
 
+TEST_F(BacktestPositionReplacePg, EquityOwnerReadIsExactAcrossSleevesAndPortfolios) {
+    pqxx::connection connection(dsn_);
+    pqxx::work transaction(connection);
+    transaction.exec("CREATE SCHEMA IF NOT EXISTS trading");
+    transaction.exec("DROP TABLE IF EXISTS trading.positions");
+    transaction.exec(R"SQL(
+        CREATE TABLE trading.positions (
+            strategy_id text NOT NULL,
+            strategy_name text NOT NULL,
+            portfolio_id text NOT NULL,
+            portfolio_type text NOT NULL,
+            date date NOT NULL,
+            symbol text NOT NULL,
+            quantity double precision NOT NULL,
+            average_price double precision NOT NULL,
+            daily_unrealized_pnl double precision NOT NULL,
+            daily_realized_pnl double precision NOT NULL,
+            last_update timestamptz NOT NULL
+        )
+    )SQL");
+    transaction.exec(R"SQL(
+        INSERT INTO trading.positions VALUES
+          ('LIVE_ALPHA_BETA','ALPHA','BOOK_A','system','2026-01-01','AAA',7,100,2,1,'2026-01-01T00:00:00Z'),
+          ('LIVE_ALPHA_BETA','BETA','BOOK_A','system','2026-01-01','AAA',-3,90,4,5,'2026-01-01T00:00:00Z'),
+          ('LIVE_ALPHA_BETA','ALPHA','BOOK_B','system','2026-01-01','AAA',99,80,0,0,'2026-01-01T00:00:00Z'),
+          ('LIVE_ALPHA_BETA','ALPHA','BOOK_A','qt','2026-01-01','AAA',88,70,0,0,'2026-01-01T00:00:00Z')
+    )SQL");
+    transaction.commit();
+
+    auto alpha = db_->load_equity_system_positions_by_owner(
+        "LIVE_ALPHA_BETA", "ALPHA", "BOOK_A", day());
+    auto beta = db_->load_equity_system_positions_by_owner(
+        "LIVE_ALPHA_BETA", "BETA", "BOOK_A", day());
+
+    ASSERT_TRUE(alpha.is_ok());
+    ASSERT_TRUE(beta.is_ok());
+    ASSERT_EQ(alpha.value().size(), 1u);
+    ASSERT_EQ(beta.value().size(), 1u);
+    EXPECT_DOUBLE_EQ(alpha.value().at("AAA").quantity.as_double(), 7.0);
+    EXPECT_DOUBLE_EQ(beta.value().at("AAA").quantity.as_double(), -3.0);
+    EXPECT_TRUE(db_->load_equity_system_positions_by_owner(
+        "LIVE_ALPHA_BETA", "ALPHA", "", day()).is_error());
+}
+
 TEST_F(BacktestPositionReplacePg, EmptyReplacementDeletesStaleRows) {
     ASSERT_TRUE(db_->replace_backtest_positions_for_date(
         {position("AAA", 5.0)}, "RUN", "SLEEVE", "BOOK", day()).is_ok());

@@ -55,6 +55,26 @@ struct EquityStrategyEntry {
     nlohmann::json def;   // the full strategy definition
 };
 
+struct EquityLiveSleevePlan {
+    std::string source_id;
+    std::string strategy_name;
+    double allocation;
+    std::vector<std::string> symbols;
+    bool uses_database_symbol_fallback{false};
+    nlohmann::json definition;
+};
+
+struct EquityLiveBookPlan {
+    std::string combined_strategy_id;
+    bool legacy_single{false};
+    bool allow_fractional_shares{false};
+    std::vector<EquityLiveSleevePlan> sleeves;
+    std::vector<std::string> symbols;
+};
+
+Result<EquityLiveBookPlan> build_equity_live_book_plan(
+    const std::vector<EquityStrategyEntry>& entries);
+
 inline nlohmann::json build_equity_backtest_config_snapshot(
     const std::vector<EquityStrategyEntry>& entries,
     const std::unordered_map<std::string, double>& normalized_allocations) {

@@ -141,6 +141,7 @@ set(TRADE_NGIN_SOURCES
     src/core/config_base.cpp
     src/core/config_loader.cpp
     src/apps/live_portfolio_helpers.cpp
+    src/apps/equity_live_book.cpp
     src/apps/qt_report_quantity_projection.cpp
     src/apps/book_tail.cpp
     src/apps/book_execution_phase.cpp
@@ -154,6 +155,7 @@ set(TRADE_NGIN_SOURCES
     src/apps/qt_equity_accounting_output.cpp
     src/apps/qt_equity_prior_finalization.cpp
     src/live/execution_price_resolver.cpp
+    src/live/equity_sleeve_netting.cpp
     src/live/corporate_actions_applier.cpp
     src/data/qt_desk_upstream.cpp
     src/data/qt_equity_desk_accounting.cpp

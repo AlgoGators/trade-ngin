@@ -432,6 +432,9 @@ public:
         PublicationPriorRequirement prior_requirement = PublicationPriorRequirement::None);
     Result<std::unordered_map<std::string,Position>> load_equity_model_system_positions(
         const std::string& portfolio_id,const Timestamp& date);
+    Result<std::unordered_map<std::string,Position>> load_equity_system_positions_by_owner(
+        const std::string& strategy_id, const std::string& strategy_name,
+        const std::string& portfolio_id, const Timestamp& date);
     Result<void> store_model_position_batch(const QtModelPositionBatch&);
     Result<void> clear_equity_model_current_positions(const std::string& portfolio_id, const Timestamp& date);
     Result<VerifiedEquityModelPrior> capture_equity_model_prior(
