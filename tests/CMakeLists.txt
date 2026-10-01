@@ -191,7 +191,9 @@ set_target_properties(qt_workflow_tests PROPERTIES
 
 # Enable test discovery for the complete suite.
 include(GoogleTest)
-gtest_discover_tests(trade_ngin_tests)
+gtest_discover_tests(trade_ngin_tests
+  WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+)
 
 add_test(
     NAME email_delivery_script_policy
