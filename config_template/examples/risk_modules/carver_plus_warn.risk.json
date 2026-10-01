@@ -1,0 +1,40 @@
+{
+  "_description": "EXAMPLE, placeholder values. Two modules at one scope, evaluated in order. Rule C1 makes risk_reporting's seven fields equal the carver module's while one is assigned, so the figure the run publishes is the figure the book was held to.",
+  "schema": 2,
+  "modules": [
+    {
+      "id": "carver",
+      "type": "carver",
+      "var_limit": 0.2,
+      "jump_risk_limit": 0.1,
+      "max_correlation": 0.7,
+      "max_gross_leverage": 2.0,
+      "max_net_leverage": 1.0,
+      "confidence_level": 0.99,
+      "lookback_period": 252,
+      "lookback_unit": "dates",
+      "min_gate_dates": 21,
+      "missing_symbol_policy": "ignore",
+      "_missing_symbol_policy_reason": "PLACEHOLDER: say why a configured symbol with no bar in the window may be skipped rather than refused."
+    },
+    {
+      "id": "late_lap_warning",
+      "type": "warn",
+      "condition": { "kind": "lap_at_least", "threshold": 4 },
+      "reason": "PLACEHOLDER: the loop is still cutting on the fourth lap"
+    }
+  ],
+  "risk_reporting": {
+    "type": "carver",
+    "window": "all_bars",
+    "var_limit": 0.2,
+    "jump_risk_limit": 0.1,
+    "max_correlation": 0.7,
+    "max_gross_leverage": 2.0,
+    "max_net_leverage": 1.0,
+    "confidence_level": 0.99,
+    "lookback_period": 252
+  },
+  "max_drawdown": 0.3,
+  "max_leverage": 2.0
+}

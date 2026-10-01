@@ -887,7 +887,9 @@ TEST_F(RiskManagerExtendedTest, FrozenRejectsUnderflowThatErasesNonzeroExposure)
 
 TEST_F(RiskManagerExtendedTest, FrozenAndModelUseIdenticalNumericalTailForCompleteValues) {
     ScopedDiagnosticInstruments instruments;
-    RiskManager mgr(diagnostic_config(0.15));
+    const auto config = diagnostic_config(0.15);
+    RiskManager frozen_manager(config);
+    RiskManager model_manager(config);
     const auto times = frozen_times();
     auto valuations = frozen_valuations();
     valuations[0].calculation_id = "DIAG_FUTURE";
@@ -896,7 +898,7 @@ TEST_F(RiskManagerExtendedTest, FrozenAndModelUseIdenticalNumericalTailForComple
     for (auto& item : closes) {
         item.calculation_id = item.calculation_id == "risk:0" ? "DIAG_FUTURE" : "DIAG_EQUITY";
     }
-    auto frozen = mgr.make_frozen_snapshot(times.back(), valuations, times, closes);
+    auto frozen = frozen_manager.make_frozen_snapshot(times.back(), valuations, times, closes);
     ASSERT_TRUE(frozen.is_ok());
     LoggerConfig log_config;
     log_config.min_level = LogLevel::DEBUG;
@@ -904,14 +906,15 @@ TEST_F(RiskManagerExtendedTest, FrozenAndModelUseIdenticalNumericalTailForComple
     log_config.include_timestamp = false;
     Logger::instance().initialize(log_config);
     ::testing::internal::CaptureStdout();
-    auto strict = mgr.process_positions_frozen(
+    auto strict = frozen_manager.process_positions_frozen(
         {{"DIAG_FUTURE", Quantity(1)}, {"DIAG_EQUITY", Quantity(1)}}, *frozen.value());
     const std::string strict_logs = ::testing::internal::GetCapturedStdout();
     ASSERT_TRUE(strict.is_ok());
     auto original_positions = diagnostic_positions();
     ::testing::internal::CaptureStdout();
-    auto model = mgr.process_positions(original_positions, frozen.value()->market_data_,
-                                       {{"DIAG_FUTURE", 100.0}, {"DIAG_EQUITY", 100.0}});
+    auto model = model_manager.process_positions(
+        original_positions, frozen.value()->market_data_,
+        {{"DIAG_FUTURE", 100.0}, {"DIAG_EQUITY", 100.0}});
     const std::string model_logs = ::testing::internal::GetCapturedStdout();
     ASSERT_TRUE(model.is_ok());
     expect_all_risk_fields(strict.value(), model.value());

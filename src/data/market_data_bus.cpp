@@ -79,6 +79,9 @@ Result<void> MarketDataBus::subscribe_scoped(const SubscriberInfo& info,
         output.identity_ = std::move(identity);
         output.bus_ = this;
     }
+    INFO("Added subscription for " + info.id + " with " +
+         std::to_string(info.event_types.size()) + " event types and " +
+         std::to_string(info.symbols.size()) + " symbols");
     return Result<void>();
 }
 

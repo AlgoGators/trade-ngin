@@ -641,8 +641,11 @@ int trade_ngin::run_live_portfolio(const LivePortfolioConfig& portfolio_cfg, int
             app_config.strategy_defaults.max_strategy_allocation;
         portfolio_config.min_strategy_allocation =
             app_config.strategy_defaults.min_strategy_allocation;
-        portfolio_config.use_optimization = app_config.strategy_defaults.use_optimization;
-        portfolio_config.use_risk_management = app_config.strategy_defaults.use_risk_management;
+        portfolio_config.use_optimization = app_config.use_optimization;
+        portfolio_config.covariance_history_prices = app_config.covariance_history_prices;
+        portfolio_config.risk_modules = app_config.risk_schema.portfolio;
+        portfolio_config.sleeve_risk_modules = app_config.risk_schema.sleeves;
+        portfolio_config.use_risk_management = !app_config.risk_schema.is_none();
         portfolio_config.benchmark_mode = app_config.benchmark_mode;
         portfolio_config.opt_config = opt_config;
         portfolio_config.risk_config = risk_config;

@@ -1,0 +1,29 @@
+{
+  "_description": "EXAMPLE, placeholder values. A warning: the book passes untouched and the portfolio manager logs the reason. Condition kinds: always, never, lap_at_least, nonzero_positions_above, max_abs_quantity_above.",
+  "schema": 2,
+  "_ruled_by_note": "R10: no module of this book is a \"carver\", so nothing here can cut it. That has to be a decision somebody signed, not an omission, and the loader refuses the file without the two keys below.",
+  "_ruled_reason": "PLACEHOLDER: say why this book is only WARNED about and never cut.",
+  "_ruled_by": "PLACEHOLDER: who decided",
+  "_ruled_on": "2026-01-01",
+  "modules": [
+    {
+      "id": "too_many_names",
+      "type": "warn",
+      "condition": { "kind": "nonzero_positions_above", "threshold": 30 },
+      "reason": "PLACEHOLDER: more open positions than this book was sized for"
+    }
+  ],
+  "risk_reporting": {
+    "type": "carver",
+    "window": "all_bars",
+    "var_limit": 0.2,
+    "jump_risk_limit": 0.1,
+    "max_correlation": 0.7,
+    "max_gross_leverage": 2.0,
+    "max_net_leverage": 1.0,
+    "confidence_level": 0.99,
+    "lookback_period": 252
+  },
+  "max_drawdown": 0.3,
+  "max_leverage": 2.0
+}

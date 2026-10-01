@@ -102,5 +102,14 @@ inline Result<std::vector<EquityStrategyEntry>> collect_enabled_equity_strategie
     return Result<std::vector<EquityStrategyEntry>>(std::move(entries));
 }
 
+inline Result<void> refuse_if_optimizer_requested(bool config_use_optimization) {
+    if (!config_use_optimization) return Result<void>();
+    return make_error<void>(
+        ErrorCode::INVALID_DATA,
+        "Refusing to start: portfolio.json sets use_optimization=true, but the equity runners "
+        "do not run the optimizer (HD 2026-09-01; see the runner configuration).",
+        "equity_strategy_builder");
+}
+
 }  // namespace apps
 }  // namespace trade_ngin

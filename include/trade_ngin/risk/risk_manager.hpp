@@ -21,17 +21,15 @@ struct RiskConfig : public ConfigBase {
     // Risk limits
     double var_limit{0.15};          // Value at Risk limit (15%)
 
-    // ── Version B (PRODUCTION) — pair-wise correlation cap + per-bar 99th-pct jump cap ──
+    // ── Pair-wise correlation cap + per-bar 99th-pct jump cap ──
     double jump_risk_limit{0.10};    // Per-bar 99th-pct |w·r| cap (used by calculate_jump_multiplier)
     double max_correlation{0.7};     // Pair-wise |ρ| cap (used by calculate_correlation_multiplier)
 
-    // ── Version A (ALTERNATIVE — kept for documentation, not called) ──
-    // Carver shock-portfolio thresholds per Advanced Futures Trading Strategies p.607-614.
-    // Used by calculate_*_carver_shock() private methods. At our retail capital scale,
-    // long/short cancellation keeps the shocked portfolio σ below these thresholds, so
-    // the multiplier essentially never fires.
-    double corr_shock_threshold{0.65};   // 3.25 × risk_target(0.20) per p.610
-    double jump_shock_threshold{0.75};   // 3.75 × risk_target(0.20) per p.608
+    // Legacy alternatives remain inspectable by the continuation branch's configuration
+    // projection, but schema-2 modules never use them as gating inputs.
+    double corr_shock_threshold{0.65};
+    double jump_shock_threshold{0.75};
+
     double max_gross_leverage{4.0};  // Maximum gross leverage
     double max_net_leverage{2.0};     // Maximum net leverage
 
@@ -218,6 +216,25 @@ public:
      */
     MarketData create_market_data(const std::vector<Bar>& data);
 
+    /// Gross and net leverage of a book and the leverage multiplier the gate would give it,
+    /// valued exactly as process_positions values it (average price x contract multiplier, over
+    /// the holdings the window maps), logging nothing of its own and touching no state. The one
+    /// exception is the registry's: a symbol it does not know makes InstrumentRegistry log its
+    /// own "Instrument not found" ERROR, exactly as it does inside process_positions (0 such
+    /// lines on every futures run of the gate). For reading a book the gate did not see -- the
+    /// one shipped after rounding.
+    struct LeverageReading {
+        double gross_leverage{0.0};
+        double net_leverage{0.0};  ///< signed
+        double multiplier{1.0};    ///< min(1, max_gross / gross, max_net / |net|)
+    };
+    LeverageReading leverage_of(const std::unordered_map<std::string, Position>& positions,
+                                const MarketData& market_data) const;
+
+    /// The InstrumentRegistry's contract multiplier for a symbol (variant suffix stripped), 1.0
+    /// when the registry has none. The one lookup process_positions and leverage_of share.
+    static double contract_multiplier_for(const std::string& symbol);
+
 private:
     RiskConfig config_;
 
@@ -232,6 +249,13 @@ private:
         const std::vector<double>& position_values_no_multiplier,
         double total_value,
         RiskConfigConsumption* consumed_config = nullptr) const;
+
+    // POSGUARD's per-run state. process_positions filters out any holding whose symbol has no
+    // bar in the gate's window, silently; the guard reports that once per run rather than once
+    // per call (it was 19.5 % of the live equity log as a per-call line), and again whenever a
+    // later call drops MORE non-zero holdings than any before it.
+    mutable size_t posguard_high_water_{0};
+    mutable bool posguard_reported_{false};
 
     /**
      * @brief Calculate position weights
@@ -275,18 +299,6 @@ private:
                                             const std::vector<double>& weights,
                                             RiskResult& result,
                                             RiskConfigConsumption* consumed_config = nullptr) const;
-
-    // ── Version A (ALTERNATIVE, not called) — Carver shock-portfolio multipliers ──
-    // Compiled but never invoked from process_positions(). Preserved so the design
-    // alternative is visible and switchable without git archaeology. To switch back to
-    // Version A: in process_positions(), call these *_carver_shock variants instead of
-    // calculate_correlation_multiplier / calculate_jump_multiplier.
-    double calculate_jump_multiplier_carver_shock(const MarketData& market_data,
-                                                  const std::vector<double>& weights,
-                                                  RiskResult& result) const;
-    double calculate_correlation_multiplier_carver_shock(const MarketData& market_data,
-                                                         const std::vector<double>& weights,
-                                                         RiskResult& result) const;
 
     /**
      * @brief Calculate the leverage multiplier based on position weights

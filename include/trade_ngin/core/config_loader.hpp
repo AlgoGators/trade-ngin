@@ -11,6 +11,7 @@
 #include "trade_ngin/core/types.hpp"
 #include "trade_ngin/optimization/dynamic_optimizer.hpp"
 #include "trade_ngin/risk/risk_manager.hpp"
+#include "trade_ngin/risk/risk_module_config.hpp"
 
 namespace trade_ngin {
 
@@ -148,10 +149,40 @@ struct BacktestSpecificConfig {
     int lookback_years{2};
     bool store_trade_details{true};
 
+    // M-12. TEST-ONLY. Freezes the backtest window's right-hand edge at this
+    // date instead of wall-clock now(), so two runs of the same binary hours
+    // apart cover the same days.
+    //
+    // Why it has to exist. Every bt runner sets end_date = now() and
+    // start_date = now() - lookback_years. That window slides with the clock,
+    // so a line-by-line A/B of two backtests is only tight for about six hours
+    // after the baseline is taken; past that the two runs are reading different
+    // days and every downstream number legitimately differs. The sentinel-drift
+    // memory records this, and it is why the merge-time futures cross-regression
+    // never got a same-day baseline.
+    //
+    // How it stays out of production. The key is absent from
+    // config_template/defaults.json and from the deployed config/defaults.json.
+    // Absent means empty, and empty means the runner takes the now() path it
+    // takes today, instruction for instruction. A run only freezes its window
+    // when a config that explicitly carries the key is pointed at, which is the
+    // "read it only when explicitly passed" requirement: there is no CLI flag,
+    // no environment variable and no default that can turn this on by accident.
+    // Every runner that honours it says so on a WARN line, so a frozen run can
+    // never be mistaken for a production one in a log.
+    //
+    // Format: "YYYY-MM-DD", interpreted at 00:00:00 LOCAL time, which is the
+    // same frame std::mktime gives the now() path it replaces.
+    std::string frozen_end_date{};
+
     nlohmann::json to_json() const {
         nlohmann::json j;
         j["lookback_years"] = lookback_years;
         j["store_trade_details"] = store_trade_details;
+        // Only serialised when set, so a round-trip of a production config does
+        // not introduce the key.
+        if (!frozen_end_date.empty())
+            j["frozen_end_date"] = frozen_end_date;
         return j;
     }
 
@@ -160,6 +191,8 @@ struct BacktestSpecificConfig {
             lookback_years = j.at("lookback_years").get<int>();
         if (j.contains("store_trade_details"))
             store_trade_details = j.at("store_trade_details").get<bool>();
+        if (j.contains("frozen_end_date"))
+            frozen_end_date = j.at("frozen_end_date").get<std::string>();
     }
 };
 
@@ -168,8 +201,22 @@ struct BacktestSpecificConfig {
  */
 struct LiveSpecificConfig {
     int historical_days{300};
+    // Max age (calendar days) of the latest OHLCV bar before a live run is treated
+    // as running on stale data. WARNs in historical-replay mode, ERRORs in true-live
+    // mode (review T2.9). Default absorbs a weekend plus a holiday.
     int data_staleness_tolerance_days{4};
+    // How old (calendar days) a substituted close may be when a symbol has no T-1
+    // print and is about to trade. Five covers every ordinary session gap -- a
+    // three-day weekend plus a further holiday reaches Wednesday -- so anything
+    // beyond it means the symbol is halted or missing from the feed, not merely
+    // between sessions. Symbols exceeding the bound are not traded.
     int execution_price_max_staleness_days{5};
+    // E2-F31. What to do with a company a spinoff hands you that you never chose to own:
+    // "liquidate_at_first_close" (default) books the child and sells it at its first close;
+    // "hold" keeps it, which is only safe when the child is itself in the configured
+    // universe -- otherwise no bars are loaded for it and the next run reports "Missing T-1
+    // price for symbol with a non-zero position" and rolls the target back forever (F-4).
+    // Unrecognised text takes the default; the runner logs which policy is in force.
     std::string spinoff_child_policy{"liquidate_at_first_close"};
 
     // The actual equity entry opts in to a complete policy snapshot. Default
@@ -208,8 +255,12 @@ struct StrategyDefaultsConfig {
                                              {4, 1.13}, {5, 1.19}, {6, 1.26}};
     double max_strategy_allocation{1.0};
     double min_strategy_allocation{0.1};
-    bool use_optimization{true};
-    bool use_risk_management{true};
+    // use_optimization moved to portfolio.json's top level in schema 2 (AppConfig::
+    // use_optimization) and use_risk_management was deleted with the boolean risk gate:
+    // both are load errors here now, so a leftover key cannot go on being read from a
+    // block that no longer owns it.
+    bool use_optimization{false};
+    bool use_risk_management{false};
     double carver_buffer_floor{0.5};
     double carver_buffer_position_factor{0.0};
 
@@ -222,8 +273,6 @@ struct StrategyDefaultsConfig {
         j["fdm"] = fdm_array;
         j["max_strategy_allocation"] = max_strategy_allocation;
         j["min_strategy_allocation"] = min_strategy_allocation;
-        j["use_optimization"] = use_optimization;
-        j["use_risk_management"] = use_risk_management;
         j["carver_buffer_floor"] = carver_buffer_floor;
         j["carver_buffer_position_factor"] = carver_buffer_position_factor;
         return j;
@@ -240,10 +289,6 @@ struct StrategyDefaultsConfig {
             max_strategy_allocation = j.at("max_strategy_allocation").get<double>();
         if (j.contains("min_strategy_allocation"))
             min_strategy_allocation = j.at("min_strategy_allocation").get<double>();
-        if (j.contains("use_optimization"))
-            use_optimization = j.at("use_optimization").get<bool>();
-        if (j.contains("use_risk_management"))
-            use_risk_management = j.at("use_risk_management").get<bool>();
         if (j.contains("carver_buffer_floor"))
             carver_buffer_floor = j.at("carver_buffer_floor").get<double>();
         if (j.contains("carver_buffer_position_factor"))
@@ -281,12 +326,30 @@ struct AppConfig {
     // Optimization configuration
     DynamicOptConfig opt_config;
 
-    // Risk configuration
+    // Risk configuration. Back-filled from risk.json's `risk_reporting` block, which is
+    // the reporting RiskManager the live runners snapshot the book with and the value the
+    // equity start-up leverage guard reads. It is NOT the gate: the gate's numbers live
+    // on the module list below, and rule C1 keeps the two equal while a carver module is
+    // assigned.
     RiskConfig risk_config;
+
+    // The book's risk module assignment, portfolio scope and sleeve scope.
+    RiskSchema risk_schema;
 
     // Additional risk limits from portfolio
     double max_drawdown{0.4};
     double max_leverage{4.0};
+
+    // portfolio.json's top-level use_optimization (schema 2; required, no default).
+    // Initialised false so that no path on which load() fails can leave an optimizer
+    // switched on by a value nobody wrote.
+    bool use_optimization{false};
+
+    // portfolio.json's top-level covariance_history_prices: how many daily closes per symbol
+    // the PortfolioManager keeps for the optimiser's covariance (PortfolioConfig::
+    // covariance_history_prices). Absent means 756; a value that is not a whole number of at
+    // least 2 is a load error.
+    size_t covariance_history_prices{756};
 
     // Backtest settings
     BacktestSpecificConfig backtest;
@@ -314,7 +377,8 @@ struct AppConfig {
     static const std::vector<std::string>& live_read_only_paths() {
         static const std::vector<std::string> paths = {
             "/portfolio_id", "/optimization/capital", "/optimization/version",
-            "/risk/capital", "/risk/version", "/backtest"};
+            "/risk/capital", "/risk/version", "/max_drawdown", "/max_leverage",
+            "/backtest"};
         return paths;
     }
 
@@ -333,16 +397,15 @@ struct AppConfig {
         j["database"] = database.to_json();
         j["execution"] = execution.to_json();
         j["optimization"] = opt_config.to_json();
-        auto risk = risk_config.to_json();
-        risk.erase("confidence_level");
-        risk.erase("lookback_period");
-        risk.erase("max_correlation");
-        risk["max_drawdown"] = max_drawdown;
-        risk["max_leverage"] = max_leverage;
-        j["risk"] = std::move(risk);
-        j["risk_defaults"] = {{"confidence_level", risk_config.confidence_level},
-                              {"lookback_period", risk_config.lookback_period},
-                              {"max_correlation", risk_config.max_correlation}};
+        // The schema-2 risk object, not the resolved RiskConfig: a DB override is merged
+        // back through extract_config (PR #60), and a flat schema-1 risk block would now
+        // be rejected there and the whole override discarded with a WARN.
+        j["risk"] = risk_schema.to_json();
+        j["sleeve_risk_modules"] = risk_schema.sleeves_to_json();
+        j["use_optimization"] = use_optimization;
+        j["covariance_history_prices"] = covariance_history_prices;
+        j["max_drawdown"] = max_drawdown;
+        j["max_leverage"] = max_leverage;
         j["backtest"] = backtest.to_json();
         j["live"] = live.to_json();
         j["strategy_defaults"] = strategy_defaults.to_json();
@@ -389,6 +452,32 @@ public:
      * during the migration period.
      */
     static Result<AppConfig> load_legacy(const std::filesystem::path& config_file_path);
+
+    /**
+     * @brief Resolve a backtest's [start_date, end_date] window from config (M-12).
+     *
+     * Single place the three bt runners agree on, so the frozen-window escape
+     * hatch cannot be honoured by one runner and ignored by another.
+     *
+     * With `backtest.frozen_end_date` EMPTY -- which is the deployed state, the
+     * key being absent from config_template/defaults.json -- this reproduces
+     * exactly what the runners did inline: end = now(), start = the same local
+     * broken-down time with tm_year reduced by lookback_years, normalised
+     * through std::mktime. Same call, same frame, same result.
+     *
+     * With the key SET (test configs only) the same arithmetic is applied to
+     * 00:00:00 local on that date instead of to now(), so repeated runs cover
+     * identical days and a line-by-line A/B stays tight indefinitely.
+     *
+     * @param backtest    the config's backtest block
+     * @param now         wall clock, passed in so callers and tests share one clock
+     * @param froze       set true when the frozen window was used (caller WARNs)
+     * @return {start_date, end_date}
+     */
+    static std::pair<Timestamp, Timestamp> resolve_backtest_window(
+        const BacktestSpecificConfig& backtest,
+        Timestamp now,
+        bool* froze = nullptr);
 
 private:
     /**

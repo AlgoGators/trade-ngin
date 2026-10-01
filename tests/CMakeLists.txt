@@ -61,6 +61,8 @@ set(TEST_SOURCES
     instruments/test_contract_multiplier.cpp
     risk/test_risk_manager.cpp
     risk/test_risk_manager_extended.cpp
+    risk/test_risk_modules.cpp
+    risk/test_risk_module_config.cpp
     optimization/test_dynamic_optimizer.cpp
     optimization/test_dynamic_optimizer_extended.cpp
     backtesting/test_transaction_cost_analysis.cpp
@@ -84,6 +86,12 @@ set(TEST_SOURCES
     portfolio/test_portfolio_aggregation.cpp
     portfolio/test_portfolio_manager_extended.cpp
     portfolio/test_portfolio_manager_internals.cpp
+    portfolio/test_fractional_position_convergence.cpp
+    portfolio/test_price_history_ordering.cpp
+    portfolio/test_pm_own_price_history.cpp
+    portfolio/test_risk_loop_log_golden.cpp
+    portfolio/test_risk_module_loop.cpp
+    portfolio/test_risk_fail_closed.cpp
     portfolio/test_component_book.cpp
     portfolio/test_qt_wire.cpp
     portfolio/test_qt_workflow_parity.cpp

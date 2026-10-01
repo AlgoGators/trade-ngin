@@ -196,6 +196,10 @@ set(TRADE_NGIN_SOURCES
     src/instruments/contract_multiplier.cpp
     src/order/order_manager.cpp
     src/risk/risk_manager.cpp
+    src/risk/risk_module.cpp
+    src/risk/carver_risk_module.cpp
+    src/risk/basic_risk_modules.cpp
+    src/risk/risk_module_config.cpp
     src/optimization/dynamic_optimizer.cpp
     src/optimization/annualized_sample_covariance.cpp
     src/execution/execution_engine.cpp

@@ -477,11 +477,7 @@ nlohmann::json minimal_defaults() {
         {"live", {{"historical_days", 300}}},
         {"strategy_defaults", {{"max_strategy_allocation", 1.0},
                                 {"min_strategy_allocation", 0.1},
-                                {"use_optimization", true},
-                                {"use_risk_management", true},
                                 {"fdm", nlohmann::json::array({{1, 1.0}, {2, 1.03}})}}},
-        {"risk_defaults", {{"confidence_level", 0.99}, {"lookback_period", 252},
-                           {"max_correlation", 0.7}}},
     };
 }
 
@@ -492,17 +488,51 @@ nlohmann::json minimal_portfolio() {
         {"reserve_capital_pct", 0.10},
         {"max_drawdown", 0.4},
         {"max_leverage", 4.0},
+        {"use_optimization", true},
         // Validation requires at least one strategy entry.
         {"strategies", {{"TREND_FOLLOWING", {{"weight", 1.0}, {"allocation", 1.0}}}}},
     };
 }
 
-nlohmann::json minimal_risk() {
+nlohmann::json carver_module(const char* id = "carver") {
     return {
+        {"id", id},
+        {"type", "carver"},
         {"var_limit", 0.15},
         {"jump_risk_limit", 0.10},
+        {"max_correlation", 0.7},
         {"max_gross_leverage", 4.0},
         {"max_net_leverage", 2.0},
+        {"confidence_level", 0.99},
+        {"lookback_period", 252},
+        {"lookback_unit", "dates"},
+        {"min_gate_dates", 21},
+        {"missing_symbol_policy", "ignore"},
+        {"_missing_symbol_policy_reason", "unit test"},
+    };
+}
+
+nlohmann::json reporting_block() {
+    return {
+        {"type", "carver"},
+        {"window", "all_bars"},
+        {"var_limit", 0.15},
+        {"jump_risk_limit", 0.10},
+        {"max_correlation", 0.7},
+        {"max_gross_leverage", 4.0},
+        {"max_net_leverage", 2.0},
+        {"confidence_level", 0.99},
+        {"lookback_period", 252},
+    };
+}
+
+nlohmann::json minimal_risk() {
+    return {
+        {"schema", 2},
+        {"modules", nlohmann::json::array({carver_module()})},
+        {"risk_reporting", reporting_block()},
+        {"max_drawdown", 0.4},
+        {"max_leverage", 4.0},
     };
 }
 
@@ -686,6 +716,12 @@ TEST_F(ConfigLoaderTest, SerializedEditableLeavesSurviveMergeAndExtraction) {
     ASSERT_GT(paths.size(), 30u);
 
     for (const auto& path : paths) {
+        const std::vector<std::string> structural = {
+            "/risk/schema", "/risk/modules/0/id", "/risk/modules/0/type",
+            "/risk/modules/0/lookback_unit", "/risk/modules/0/missing_symbol_policy",
+            "/risk/risk_reporting/type", "/risk/risk_reporting/window",
+            "/sleeve_risk_modules"};
+        if (std::find(structural.begin(), structural.end(), path) != structural.end()) continue;
         bool derived = false;
         for (const auto& prefix : read_only) {
             if (path == prefix || path.rfind(prefix + "/", 0) == 0) {
@@ -698,6 +734,20 @@ TEST_F(ConfigLoaderTest, SerializedEditableLeavesSurviveMergeAndExtraction) {
         const nlohmann::json::json_pointer pointer(path);
         auto edited = serialized;
         edited[pointer] = distinguishable_edit(serialized.at(pointer), path);
+        const std::string module_prefix = "/risk/modules/0/";
+        const std::string reporting_prefix = "/risk/risk_reporting/";
+        const std::vector<std::string> mirrored = {
+            "var_limit", "jump_risk_limit", "max_correlation", "max_gross_leverage",
+            "max_net_leverage", "confidence_level", "lookback_period"};
+        if (path.rfind(module_prefix, 0) == 0) {
+            const auto field = path.substr(module_prefix.size());
+            if (std::find(mirrored.begin(), mirrored.end(), field) != mirrored.end())
+                edited[nlohmann::json::json_pointer(reporting_prefix + field)] = edited[pointer];
+        } else if (path.rfind(reporting_prefix, 0) == 0) {
+            const auto field = path.substr(reporting_prefix.size());
+            if (std::find(mirrored.begin(), mirrored.end(), field) != mirrored.end())
+                edited[nlohmann::json::json_pointer(module_prefix + field)] = edited[pointer];
+        }
         ASSERT_NE(edited.at(pointer), serialized.at(pointer)) << path;
         auto merged = serialized;
         ConfigLoader::merge_json(merged, edited);
@@ -711,13 +761,14 @@ TEST_F(ConfigLoaderTest, LiveReadOnlyPathsIdentifyDerivedAndBacktestValues) {
     const auto& paths = AppConfig::live_read_only_paths();
     const std::vector<std::string> required = {
         "/portfolio_id", "/optimization/capital", "/optimization/version",
-        "/risk/capital", "/risk/version", "/backtest"};
+        "/risk/capital", "/risk/version", "/max_drawdown", "/max_leverage",
+        "/backtest"};
     for (const auto& path : required) {
         EXPECT_NE(std::find(paths.begin(), paths.end(), path), paths.end()) << path;
     }
 }
 
-TEST_F(ConfigLoaderTest, CanonicalRiskLimitsUseNestedRiskAndAcceptLegacyFallback) {
+TEST_F(ConfigLoaderTest, CanonicalRiskLimitsRequireSchema2RiskBlock) {
     write_full_set("conservative", {}, {{"max_drawdown", 0.55}, {"max_leverage", 5.0}});
     auto risk = minimal_risk();
     risk["max_drawdown"] = 0.15;
@@ -726,8 +777,8 @@ TEST_F(ConfigLoaderTest, CanonicalRiskLimitsUseNestedRiskAndAcceptLegacyFallback
     auto loaded = ConfigLoader::load(base_, "conservative");
     ASSERT_TRUE(loaded.is_ok());
     auto serialized = loaded.value().to_json();
-    EXPECT_FALSE(serialized.contains("max_drawdown"));
-    EXPECT_FALSE(serialized.contains("max_leverage"));
+    EXPECT_DOUBLE_EQ(serialized.at("max_drawdown").get<double>(), 0.15);
+    EXPECT_DOUBLE_EQ(serialized.at("max_leverage").get<double>(), 4.0);
     EXPECT_DOUBLE_EQ(serialized.at("risk").at("max_drawdown").get<double>(), 0.15);
     EXPECT_DOUBLE_EQ(serialized.at("risk").at("max_leverage").get<double>(), 4.0);
 
@@ -741,18 +792,18 @@ TEST_F(ConfigLoaderTest, CanonicalRiskLimitsUseNestedRiskAndAcceptLegacyFallback
     serialized["risk"].erase("max_drawdown");
     serialized["risk"].erase("max_leverage");
     auto legacy_only = ConfigLoader::extract_config(serialized);
-    ASSERT_TRUE(legacy_only.is_ok());
-    EXPECT_DOUBLE_EQ(legacy_only.value().max_drawdown, 0.55);
-    EXPECT_DOUBLE_EQ(legacy_only.value().max_leverage, 5.0);
+    EXPECT_TRUE(legacy_only.is_error());
 }
 
-TEST_F(ConfigLoaderTest, LegacyConservativeLimitsSurviveUnrelatedOverrideAndRoundTrip) {
+TEST_F(ConfigLoaderTest, TopLevelLegacyRiskLimitsCannotSubstituteForSchema2) {
     auto merged = minimal_defaults();
     auto portfolio = minimal_portfolio();
     portfolio["max_drawdown"] = 0.3;
     portfolio["max_leverage"] = 2.0;
     ConfigLoader::merge_json(merged, portfolio);
-    merged["risk"] = minimal_risk();  // Legacy limits exist only at the top level.
+    merged["risk"] = minimal_risk();
+    merged["risk"].erase("max_drawdown");
+    merged["risk"].erase("max_leverage");
     ASSERT_FALSE(merged.at("risk").contains("max_drawdown"));
     ASSERT_FALSE(merged.at("risk").contains("max_leverage"));
 
@@ -761,44 +812,30 @@ TEST_F(ConfigLoaderTest, LegacyConservativeLimitsSurviveUnrelatedOverrideAndRoun
         {"strategies", {{"TREND_FOLLOWING", {{"weight", 0.75}}}}},
     };
     ConfigLoader::merge_json(merged, unrelated_override);
-    auto extracted = ConfigLoader::extract_config(merged);
-    ASSERT_TRUE(extracted.is_ok());
-    EXPECT_DOUBLE_EQ(extracted.value().max_drawdown, 0.3);
-    EXPECT_DOUBLE_EQ(extracted.value().max_leverage, 2.0);
-
-    const auto serialized = extracted.value().to_json();
-    EXPECT_FALSE(serialized.contains("max_drawdown"));
-    EXPECT_FALSE(serialized.contains("max_leverage"));
-    EXPECT_DOUBLE_EQ(serialized.at("risk").at("max_drawdown").get<double>(), 0.3);
-    EXPECT_DOUBLE_EQ(serialized.at("risk").at("max_leverage").get<double>(), 2.0);
-    EXPECT_EQ(serialized.at("live").at("historical_days"), 450);
-    EXPECT_DOUBLE_EQ(serialized.at("strategies").at("TREND_FOLLOWING")
-                         .at("weight").get<double>(), 0.75);
-
-    auto restored = ConfigLoader::extract_config(serialized);
-    ASSERT_TRUE(restored.is_ok());
-    EXPECT_DOUBLE_EQ(restored.value().max_drawdown, 0.3);
-    EXPECT_DOUBLE_EQ(restored.value().max_leverage, 2.0);
+    EXPECT_TRUE(ConfigLoader::extract_config(merged).is_error());
 }
 
-TEST_F(ConfigLoaderTest, RiskDefaultsAreSerializedOnceAndRemainEditable) {
+TEST_F(ConfigLoaderTest, ReportingRiskFieldsRemainCoupledAndEditable) {
     write_full_set("base");
     auto loaded = ConfigLoader::load(base_, "base");
     ASSERT_TRUE(loaded.is_ok());
     auto serialized = loaded.value().to_json();
-    ASSERT_TRUE(serialized.contains("risk_defaults"));
-    EXPECT_FALSE(serialized.at("risk").contains("confidence_level"));
-    EXPECT_FALSE(serialized.at("risk").contains("lookback_period"));
-    EXPECT_FALSE(serialized.at("risk").contains("max_correlation"));
+    EXPECT_FALSE(serialized.contains("risk_defaults"));
+    auto& reporting = serialized["risk"]["risk_reporting"];
+    auto& carver = serialized["risk"]["modules"][0];
 
-    auto edited = serialized;
-    edited["risk_defaults"]["confidence_level"] = 0.975;
-    edited["risk_defaults"]["lookback_period"] = 199;
-    edited["risk_defaults"]["max_correlation"] = 0.65;
-    ConfigLoader::merge_json(serialized, edited);
+    for (auto* field : {"confidence_level", "lookback_period", "max_correlation"}) {
+        const nlohmann::json value = std::string(field) == "confidence_level" ? nlohmann::json(0.975)
+            : std::string(field) == "lookback_period" ? nlohmann::json(199)
+                                                       : nlohmann::json(0.65);
+        reporting[field] = value;
+        carver[field] = value;
+    }
     auto extracted = ConfigLoader::extract_config(serialized);
     ASSERT_TRUE(extracted.is_ok());
-    EXPECT_EQ(extracted.value().to_json().at("risk_defaults"), edited.at("risk_defaults"));
+    const auto round_trip = extracted.value().to_json().at("risk");
+    EXPECT_EQ(round_trip.at("risk_reporting"), reporting);
+    EXPECT_EQ(round_trip.at("modules").at(0), carver);
 }
 
 TEST_F(ConfigLoaderTest, FractionalCostPenaltyScalarSurvivesParsing) {
@@ -933,15 +970,14 @@ TEST_F(ConfigLoaderTest, StrategyDefaultsConfigJsonRoundTrip) {
     s.fdm = {{1, 1.0}, {2, 1.5}, {3, 2.0}};
     s.max_strategy_allocation = 0.5;
     s.min_strategy_allocation = 0.1;
-    s.use_optimization = false;
-    s.use_risk_management = true;
     StrategyDefaultsConfig r;
-    r.from_json(s.to_json());
+    const auto j = s.to_json();
+    r.from_json(j);
     EXPECT_EQ(r.fdm.size(), 3u);
     EXPECT_DOUBLE_EQ(r.fdm[2].second, 2.0);
     EXPECT_DOUBLE_EQ(r.max_strategy_allocation, 0.5);
-    EXPECT_FALSE(r.use_optimization);
-    EXPECT_TRUE(r.use_risk_management);
+    EXPECT_FALSE(j.contains("use_optimization"));
+    EXPECT_FALSE(j.contains("use_risk_management"));
 }
 
 TEST_F(ConfigLoaderTest, DatabaseConfigJsonRoundTrip) {

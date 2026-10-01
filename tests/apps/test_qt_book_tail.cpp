@@ -40,7 +40,7 @@ TEST_P(QtFuturesBookTail, ExactChoiceIsNotReplacedByPreviousBook) {
     const J d={{"decision_id","decision"},{"book_id","BOOK"},{"source_day","2026-09-26"}};
     const auto selection=futures_selection(GetParam()),input=futures_input();
     auto r=run_book_tail(QtFuturesBookTailInputs{d,selection,input});
-    ASSERT_TRUE(r.is_ok());
+    ASSERT_TRUE(r.is_ok()) << (r.error() ? r.error()->what() : "missing error");
     EXPECT_EQ(r.value().at("observation").at("fills")[0].at("selected_quantity_exact"),GetParam());
     if(std::string(GetParam())=="5")EXPECT_TRUE(r.value().at("executions").empty());
     else {
@@ -68,7 +68,7 @@ TEST(QtBookTail, EquityUsesOriginalFractionalDecisionAndActualAccounting) {
     }
     const auto before=selection;
     auto r=run_book_tail(QtEquityBookTailInputs{decision,selection,input,original.at("producer_authority")});
-    ASSERT_TRUE(r.is_ok());
+    ASSERT_TRUE(r.is_ok()) << (r.error() ? r.error()->what() : "missing error");
     EXPECT_EQ(r.value(),original);
     EXPECT_EQ(selection,before);
 }

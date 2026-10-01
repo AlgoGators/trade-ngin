@@ -1,6 +1,7 @@
 #include <gtest/gtest.h>
 #include <limits>
 #include "trade_ngin/apps/equity_strategy_consumption.hpp"
+#include "trade_ngin/strategy/equity_strategy_builder.hpp"
 #include "trade_ngin/strategy/mean_reversion.hpp"
 
 using namespace trade_ngin;
@@ -94,4 +95,9 @@ TEST(EquityMeanReversionConsumption, UnconfiguredBarsDoNotCreatePhantomConsumerS
     EXPECT_TRUE(trace.mean_reversion.symbols.empty());
     EXPECT_TRUE(strategy.get_price_history().count("SYN"));
     EXPECT_FALSE(strategy.get_price_history().count("FOREIGN"));
+}
+
+TEST(EquityStrategyBuilder, OptimizerContradictionFailsClosed) {
+    EXPECT_TRUE(apps::refuse_if_optimizer_requested(true).is_error());
+    EXPECT_TRUE(apps::refuse_if_optimizer_requested(false).is_ok());
 }

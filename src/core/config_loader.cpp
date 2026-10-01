@@ -2,9 +2,12 @@
 
 #include "trade_ngin/core/config_loader.hpp"
 
-#include <fstream>
-#include <iostream>
 #include <algorithm>
+#include <cctype>
+#include <ctime>
+#include <fstream>
+#include <iomanip>
+#include <iostream>
 #include <cmath>
 #include <limits>
 #include <map>
@@ -12,6 +15,8 @@
 #include <optional>
 #include <set>
 #include <string_view>
+#include <stdexcept>
+#include <string>
 
 #include "trade_ngin/core/logger.hpp"
 
@@ -516,6 +521,87 @@ void ConfigLoader::merge_json(nlohmann::json& target, const nlohmann::json& sour
     }
 }
 
+namespace {
+
+/// Walks every object below `node` looking for one key, and names where it found it.
+/// Only the PATH is ever reported, never a value: the same tree carries the database
+/// and email passwords.
+bool find_key(const nlohmann::json& node, const std::string& key, const std::string& path,
+              std::string* found) {
+    if (node.is_object()) {
+        for (const auto& item : node.items()) {
+            const std::string child = path.empty() ? item.key() : path + "." + item.key();
+            if (item.key() == key) {
+                *found = child;
+                return true;
+            }
+            if (find_key(item.value(), key, child, found)) return true;
+        }
+    } else if (node.is_array()) {
+        for (size_t i = 0; i < node.size(); ++i) {
+            if (find_key(node.at(i), key, path + "[" + std::to_string(i) + "]", found)) return true;
+        }
+    }
+    return false;
+}
+
+/**
+ * @brief S7 -- the keys schema 2 removed are load ERRORS, not ignored leftovers.
+ *
+ * Ignoring them is what makes a migration silently half-applied: a `use_risk_management:
+ * false` left behind in a file nobody re-read would read as "risk is off" to a human and
+ * as nothing at all to the loader, and the book would gate while its config says it does
+ * not. Each message names the key's path and what replaced it.
+ *
+ * removed-key guard: delete after the first production run on schema 2 (the lead names
+ * the release; LEAD_RULINGS_C7 item 15 records it as an open question for HD).
+ */
+Result<void> check_removed_keys(const nlohmann::json& merged, const std::string& portfolio_id) {
+    const std::string config_prefix = "config for " + portfolio_id + ": ";
+    std::string where;
+    if (find_key(merged, "use_risk_management", "", &where)) {
+        return make_error<void>(
+            ErrorCode::INVALID_DATA,
+            config_prefix + where +
+                " (use_risk_management) was removed in schema 2; risk is assigned by risk.json "
+                "\"modules\". Delete the key (a leftover false would silently turn risk back on, "
+                "T-RISK-ARCH_ADVERSARIAL E2)",
+            "ConfigLoader");
+    }
+    if (merged.contains("risk_defaults")) {
+        return make_error<void>(
+            ErrorCode::INVALID_DATA,
+            config_prefix +
+                "risk_defaults was removed in schema 2; every gating value is written literally "
+                "in each portfolio's risk.json (run scripts/migrate_risk_json.py)",
+            "ConfigLoader");
+    }
+    if (merged.contains("strategy_defaults") && merged.at("strategy_defaults").is_object() &&
+        merged.at("strategy_defaults").contains("use_optimization")) {
+        return make_error<void>(
+            ErrorCode::INVALID_DATA,
+            config_prefix +
+                "strategy_defaults.use_optimization moved to portfolio.json \"use_optimization\" "
+                "in schema 2",
+            "ConfigLoader");
+    }
+    if (merged.contains("risk")) {
+        for (const char* key : {"corr_shock_threshold", "jump_shock_threshold"}) {
+            if (find_key(merged.at("risk"), key, "risk", &where)) {
+                return make_error<void>(
+                    ErrorCode::INVALID_DATA,
+                    "risk config for " + portfolio_id + ": " + where +
+                        " has had no reader since the carver_shock methods were deleted; delete "
+                        "it",
+                    "ConfigLoader");
+            }
+        }
+    }
+    return Result<void>();
+}
+
+}  // namespace
+
 Result<AppConfig> ConfigLoader::extract_config(const nlohmann::json& merged) {
     try {
         AppConfig config;
@@ -562,45 +648,78 @@ Result<AppConfig> ConfigLoader::extract_config(const nlohmann::json& merged) {
         // Set capital in opt_config
         config.opt_config.capital = config.initial_capital;
 
-        // Risk configuration - from risk_defaults and risk section
-        if (merged.contains("risk_defaults")) {
-            const auto& risk_defaults = merged.at("risk_defaults");
-            if (risk_defaults.contains("confidence_level")) {
-                config.risk_config.confidence_level =
-                    risk_defaults.at("confidence_level").get<double>();
+        // Risk configuration - schema 2. Named first, so an unmigrated production box
+        // is told what to run instead of being told about a key it never wrote.
+        {
+            auto schema1 = check_not_schema1(merged.value("risk", nlohmann::json::object()),
+                                             config.portfolio_id);
+            if (schema1.is_error()) {
+                return make_error<AppConfig>(ErrorCode::INVALID_DATA, schema1.error()->what(),
+                                             "ConfigLoader");
             }
-            if (risk_defaults.contains("lookback_period")) {
-                config.risk_config.lookback_period =
-                    risk_defaults.at("lookback_period").get<int>();
-            }
-            if (risk_defaults.contains("max_correlation")) {
-                config.risk_config.max_correlation =
-                    risk_defaults.at("max_correlation").get<double>();
+            auto removed = check_removed_keys(merged, config.portfolio_id);
+            if (removed.is_error()) {
+                return make_error<AppConfig>(ErrorCode::INVALID_DATA, removed.error()->what(),
+                                             "ConfigLoader");
             }
         }
 
-        if (merged.contains("risk")) {
-            const auto& risk = merged.at("risk");
-            config.risk_config.from_json(risk);
+        // P1: portfolio.json owns use_optimization now. Required and boolean; there is no
+        // default, because a default is how an optimizer gets switched on for a book
+        // nobody decided to switch it on for.
+        if (!merged.contains("use_optimization") || !merged.at("use_optimization").is_boolean()) {
+            return make_error<AppConfig>(
+                ErrorCode::INVALID_DATA,
+                "config for " + config.portfolio_id +
+                    ": portfolio.json must set \"use_optimization\" (true or false) at its top "
+                    "level; schema 2 has no default",
+                "ConfigLoader");
+        }
+        config.use_optimization = merged.at("use_optimization").get<bool>();
 
-            // Canonical nested limits take precedence over legacy top-level input.
-            if (risk.contains("max_drawdown")) {
-                config.max_drawdown = risk.at("max_drawdown").get<double>();
-            } else if (merged.contains("max_drawdown")) {
-                config.max_drawdown = merged.at("max_drawdown").get<double>();
+        // T-6c commit B: the PortfolioManager's covariance history length, in prices per
+        // symbol. Optional; absent means 756 (the trend sleeve's own history cap). A value
+        // that is not a whole number of at least 2 is refused: one price gives no return.
+        if (merged.contains("covariance_history_prices")) {
+            const auto& v = merged.at("covariance_history_prices");
+            if (!v.is_number_integer() || v.get<int64_t>() < 2) {
+                return make_error<AppConfig>(
+                    ErrorCode::INVALID_DATA,
+                    "config for " + config.portfolio_id +
+                        ": portfolio.json \"covariance_history_prices\" must be a whole number "
+                        "of at least 2 (prices per symbol kept for the optimiser's covariance; "
+                        "absent means 756), got " + v.dump(),
+                    "ConfigLoader");
             }
-            if (risk.contains("max_leverage")) {
-                config.max_leverage = risk.at("max_leverage").get<double>();
-            } else if (merged.contains("max_leverage")) {
-                config.max_leverage = merged.at("max_leverage").get<double>();
-            }
-        } else {
-            if (merged.contains("max_drawdown")) {
-                config.max_drawdown = merged.at("max_drawdown").get<double>();
-            }
-            if (merged.contains("max_leverage")) {
-                config.max_leverage = merged.at("max_leverage").get<double>();
-            }
+            config.covariance_history_prices = v.get<size_t>();
+        }
+
+        if (!merged.contains("risk")) {
+            return make_error<AppConfig>(ErrorCode::INVALID_DATA,
+                                         "risk config for " + config.portfolio_id +
+                                             ": risk.json is required",
+                                         "ConfigLoader");
+        }
+        auto schema = parse_risk_schema(
+            merged.at("risk"), merged.value("sleeve_risk_modules", nlohmann::json()),
+            merged.value("strategies", nlohmann::json::object()), config.portfolio_id);
+        if (schema.is_error()) {
+            return make_error<AppConfig>(ErrorCode::INVALID_DATA, schema.error()->what(),
+                                         "ConfigLoader");
+        }
+        config.risk_schema = schema.value();
+        // The reporting block is the single source of AppConfig::risk_config: every
+        // snapshot RiskManager and both equity start-up guards read it, and it survives a
+        // book whose gate becomes `none`.
+        config.risk_config = config.risk_schema.reporting.to_risk_config();
+
+        // Additional risk limits
+        const auto& risk = merged.at("risk");
+        if (risk.contains("max_drawdown")) {
+            config.max_drawdown = risk.at("max_drawdown").get<double>();
+        }
+        if (risk.contains("max_leverage")) {
+            config.max_leverage = risk.at("max_leverage").get<double>();
         }
         // Set capital in risk_config
         config.risk_config.capital = Decimal(config.initial_capital);
@@ -665,7 +784,154 @@ Result<void> ConfigLoader::validate_config(const AppConfig& config) {
                                 "strategies configuration is missing or empty",
                                 "ConfigLoader");
     }
+
+    // G-03: the lookback window has to be long enough for the strategies that
+    // read it, and nothing checked that it was.
+    //
+    // config_template/defaults.json states the coupling in a COMMENT -- "Must
+    // match backtest.lookback_years (2 yrs = 730 days). Strategy needs 256+
+    // trading days for longest EMA and 252 for vol_lookback_long" -- and a
+    // comment is not a check. A short window does not fail: the longest EMA
+    // never warms up and emits a signal that looks exactly like a real one.
+    //
+    // The requirement is DERIVED from the enabled strategies' own ema_windows
+    // rather than hardcoded, because the strategies do not agree on it:
+    // TrendFollowing tops out at 256, Fast at 64, and Slow carries a {128, 512}
+    // pair. A single constant would either nag every run of a book that does not
+    // enable Slow, or miss the case of a book that does. The template's own
+    // "256+" note is understated for exactly that reason.
+    //
+    // WARN ONLY, deliberately: a refusal would abort runs that work today, which
+    // is a behaviour change and not this batch's business. The point is that a
+    // short window now says so in the log instead of being invisible.
+    {
+        constexpr int kTradingDaysPerYear = 252;
+        // Documented floor, used when a strategy does not spell out its windows.
+        constexpr int kDefaultLongestEma = 256;
+
+        int required = 0;
+        std::string driver;
+        for (const auto& entry : config.strategies_config.items()) {
+            const auto& def = entry.value();
+            // A documentation key such as "_description" is a string, not a
+            // strategy definition. value() would throw on it; the runners
+            // themselves use contains() and skip such entries, so do the same.
+            if (!def.is_object()) continue;
+            const auto flag = [&](const char* key) {
+                return def.contains(key) && def.at(key).is_boolean() && def.at(key).get<bool>();
+            };
+            const bool enabled = flag("enabled_backtest") || flag("enabled_live");
+            if (!enabled) continue;
+
+            int longest = kDefaultLongestEma;
+            if (def.contains("config") && def.at("config").contains("ema_windows")) {
+                longest = 0;
+                for (const auto& pair : def.at("config").at("ema_windows")) {
+                    if (pair.is_array() && pair.size() == 2 && pair.at(1).is_number_integer()) {
+                        longest = std::max(longest, pair.at(1).get<int>());
+                    }
+                }
+                if (longest == 0) longest = kDefaultLongestEma;
+            }
+            if (longest > required) {
+                required = longest;
+                driver = entry.key();
+            }
+        }
+        if (required == 0) required = kDefaultLongestEma;
+
+        const int available = config.backtest.lookback_years * kTradingDaysPerYear;
+        if (available < required) {
+            WARN("backtest.lookback_years=" + std::to_string(config.backtest.lookback_years) +
+                 " gives about " + std::to_string(available) + " trading days, fewer than the " +
+                 std::to_string(required) + " the longest EMA window of enabled strategy " +
+                 driver + " needs. That EMA will not be warmed up and its signal will be "
+                 "meaningless rather than absent (G-03).");
+        }
+
+        // The live side reads the same history through a CALENDAR-day setting,
+        // so the two must be put in the same units before they can be compared.
+        // 365/252 is the ratio the template's own "2 yrs = 730 days" note uses.
+        const int live_trading_days =
+            static_cast<int>(config.live.historical_days * kTradingDaysPerYear / 365.0);
+        if (live_trading_days < required) {
+            WARN("live.historical_days=" + std::to_string(config.live.historical_days) +
+                 " is about " + std::to_string(live_trading_days) +
+                 " trading days, fewer than the " + std::to_string(required) +
+                 " the longest EMA window of enabled strategy " + driver + " needs (G-03).");
+        }
+        if (live_trading_days < available) {
+            WARN("live.historical_days (" + std::to_string(live_trading_days) +
+                 " trading days) is shorter than backtest.lookback_years (" +
+                 std::to_string(available) +
+                 " trading days), so the live book warms up on less history than the "
+                 "backtest it is compared against (G-03).");
+        }
+    }
+
     return Result<void>();
+}
+
+std::pair<Timestamp, Timestamp> ConfigLoader::resolve_backtest_window(
+    const BacktestSpecificConfig& backtest, Timestamp now, bool* froze) {
+    if (froze) *froze = false;
+
+    // The now() path, byte-for-byte what the three bt runners did inline.
+    auto now_time_t = std::chrono::system_clock::to_time_t(now);
+    std::tm anchor_tm{};
+    std::tm* local_tm = std::localtime(&now_time_t);
+    if (local_tm != nullptr) anchor_tm = *local_tm;
+    Timestamp end_date = now;
+
+    // M-12: the frozen window, taken only when a config explicitly carries the
+    // key. Anything unparseable is refused rather than silently ignored -- a
+    // typo in a test config that quietly reverted to now() would reintroduce the
+    // very drift this exists to remove, and it would do it invisibly.
+    if (!backtest.frozen_end_date.empty()) {
+        // Parsed by hand rather than with std::get_time: libc++'s "%Y-%m-%d"
+        // accepts "03-05-2026" (year 3) and stops happily at "2026-05" without
+        // setting failbit, so a typo would be taken as a real date and the run
+        // would be frozen to the wrong window while looking fine.
+        const std::string& fd = backtest.frozen_end_date;
+        auto all_digits = [&fd](size_t off, size_t n) {
+            for (size_t k = 0; k < n; ++k) {
+                if (!std::isdigit(static_cast<unsigned char>(fd[off + k]))) return false;
+            }
+            return true;
+        };
+        if (fd.size() != 10 || fd[4] != '-' || fd[7] != '-' || !all_digits(0, 4) ||
+            !all_digits(5, 2) || !all_digits(8, 2)) {
+            throw std::runtime_error(
+                "backtest.frozen_end_date is not YYYY-MM-DD: '" + fd + "'");
+        }
+        const int fy = std::stoi(fd.substr(0, 4));
+        const int fm = std::stoi(fd.substr(5, 2));
+        const int fdy = std::stoi(fd.substr(8, 2));
+        if (fm < 1 || fm > 12 || fdy < 1 || fdy > 31) {
+            throw std::runtime_error(
+                "backtest.frozen_end_date is not a real calendar date: '" + fd + "'");
+        }
+        std::tm frozen_tm{};
+        frozen_tm.tm_year = fy - 1900;
+        frozen_tm.tm_mon = fm - 1;
+        frozen_tm.tm_mday = fdy;
+        frozen_tm.tm_hour = 0;
+        frozen_tm.tm_min = 0;
+        frozen_tm.tm_sec = 0;
+        frozen_tm.tm_isdst = -1;  // let mktime resolve DST for that local date
+        std::tm normalise = frozen_tm;
+        auto frozen_time_t = std::mktime(&normalise);
+        end_date = std::chrono::system_clock::from_time_t(frozen_time_t);
+        anchor_tm = frozen_tm;
+        if (froze) *froze = true;
+    }
+
+    std::tm start_tm = anchor_tm;
+    start_tm.tm_year -= backtest.lookback_years;
+    auto start_time_t = std::mktime(&start_tm);
+    Timestamp start_date = std::chrono::system_clock::from_time_t(start_time_t);
+
+    return {start_date, end_date};
 }
 
 void ConfigLoader::log_config_summary(const AppConfig& config) {
