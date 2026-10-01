@@ -120,6 +120,10 @@ TEST(PostgresDatabaseInvestorBooks, InvalidOnboardingFailsBeforeConnection) {
     EXPECT_EQ(disconnected.onboard_investor_book(request).error()->code(),
               ErrorCode::INVALID_ARGUMENT);
     request.config_key = "investor_alpha";
+    request.portfolio_id = "investor_alpha";
+    EXPECT_EQ(disconnected.onboard_investor_book(request).error()->code(),
+              ErrorCode::INVALID_ARGUMENT);
+    request.portfolio_id = "INVESTOR_ALPHA";
     request.initial_capital = 0.0;
     EXPECT_EQ(disconnected.onboard_investor_book(request).error()->code(),
               ErrorCode::INVALID_ARGUMENT);

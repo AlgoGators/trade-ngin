@@ -2547,6 +2547,12 @@ Result<int> PostgresDatabase::seed_qt_positions_from_system(const std::string& s
                                                            const std::string& portfolio_id,
                                                            const std::string& date,
                                                            const std::string& table_name) {
+    if (pending_publication_ &&
+        pending_publication_->mode == LivePublicationMode::SystemInvestor) {
+        pending_publication_->invalid_payload = true;
+        return make_error<int>(ErrorCode::INVALID_ARGUMENT,
+                               "investor_publication_qt_seed_forbidden");
+    }
     if (pending_publication_ && pending_publication_->date == date &&
         defer_live_write([this,strategy_id,strategy_name,portfolio_id,date,table_name]() {
             auto seeded = seed_qt_positions_from_system(strategy_id,strategy_name,portfolio_id,date,table_name);
@@ -2620,6 +2626,12 @@ Result<int> PostgresDatabase::seed_qt_positions_from_system(const std::string& s
 Result<int> PostgresDatabase::seed_qt_proposal_positions_from_system(
     const std::string& strategy_id, const std::string& strategy_name,
     const std::string& portfolio_id, const std::string& date) {
+    if (pending_publication_ &&
+        pending_publication_->mode == LivePublicationMode::SystemInvestor) {
+        pending_publication_->invalid_payload = true;
+        return make_error<int>(ErrorCode::INVALID_ARGUMENT,
+                               "investor_publication_qt_proposal_forbidden");
+    }
     if (!nonblank_proposal_identity(strategy_id) ||
         !nonblank_proposal_identity(strategy_name) ||
         !nonblank_proposal_identity(portfolio_id) || !valid_proposal_day(date)) {

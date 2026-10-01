@@ -25,12 +25,30 @@ CREATE TABLE trading.strategy_trading_days_metadata (
     strategy_id varchar(100) PRIMARY KEY,
     live_start_date date NOT NULL
 );
+CREATE TABLE trading.positions (
+    portfolio_id text NOT NULL,
+    strategy_id text NOT NULL,
+    strategy_name text NOT NULL,
+    date date NOT NULL,
+    symbol text NOT NULL,
+    quantity numeric NOT NULL,
+    average_price numeric NOT NULL,
+    portfolio_type text NOT NULL,
+    updated_at timestamptz NOT NULL DEFAULT now(),
+    PRIMARY KEY (portfolio_id, strategy_id, strategy_name, date, symbol, portfolio_type)
+);
 INSERT INTO trading.strategy_trading_days_metadata
 VALUES ('LIVE_TREND_FOLLOWING', '2025-01-01');
 SQL
 
 "${psql_bin}" "${INVESTOR_BOOK_TEST_DSN}" -Xv ON_ERROR_STOP=1 \
     -f "${root}/026_investor_books_and_publications.sql" >/dev/null
+
+"${psql_bin}" "${INVESTOR_BOOK_TEST_DSN}" -Xv ON_ERROR_STOP=1 <<'SQL'
+CREATE TRIGGER runtime_publication_fence
+BEFORE INSERT OR UPDATE OR DELETE ON trading.positions
+FOR EACH ROW EXECUTE FUNCTION trading.fence_runtime_publication_row();
+SQL
 
 "${psql_bin}" "${INVESTOR_BOOK_TEST_DSN}" -Xv ON_ERROR_STOP=1 <<'SQL'
 DO $$
@@ -108,6 +126,48 @@ BEGIN
     END IF;
     IF (SELECT count(*) FROM trading.investor_books WHERE model_stream <> 'system') <> 0 THEN
         RAISE EXCEPTION 'non-system investor stream exists';
+    END IF;
+
+    INSERT INTO trading.positions
+        (portfolio_id,strategy_id,strategy_name,date,symbol,quantity,average_price,portfolio_type)
+    VALUES
+        ('INVESTOR_BETA','LIVE_TREND_FOLLOWING','Trend','2026-10-15','ES',2,6000,'system');
+    BEGIN
+        INSERT INTO trading.positions
+            (portfolio_id,strategy_id,strategy_name,date,symbol,quantity,average_price,portfolio_type)
+        VALUES
+            ('INVESTOR_BETA','LIVE_TREND_FOLLOWING','Trend','2026-10-15','NQ',1,20000,'qt');
+        RAISE EXCEPTION 'investor qt row was accepted';
+    EXCEPTION WHEN OTHERS THEN
+        IF SQLERRM = 'investor qt row was accepted' THEN RAISE; END IF;
+    END;
+    first_id := trading.publish_system_investor_day(
+        'INVESTOR_BETA','LIVE_TREND_FOLLOWING','2026-10-15','migration-test-v1');
+    replay_id := trading.publish_system_investor_day(
+        'INVESTOR_BETA','LIVE_TREND_FOLLOWING','2026-10-15','migration-test-v2');
+    IF first_id IS DISTINCT FROM replay_id THEN
+        RAISE EXCEPTION 'identical publication replay changed identity';
+    END IF;
+    BEGIN
+        UPDATE trading.investor_book_publications SET content_digest = repeat('0',64)
+         WHERE publication_id = first_id;
+        RAISE EXCEPTION 'publication mutation was accepted';
+    EXCEPTION WHEN OTHERS THEN
+        IF SQLERRM = 'publication mutation was accepted' THEN RAISE; END IF;
+    END;
+    UPDATE trading.positions SET quantity=3
+     WHERE portfolio_id='INVESTOR_BETA' AND strategy_id='LIVE_TREND_FOLLOWING'
+       AND date='2026-10-15' AND portfolio_type='system';
+    BEGIN
+        PERFORM trading.publish_system_investor_day(
+            'INVESTOR_BETA','LIVE_TREND_FOLLOWING','2026-10-15','migration-test-v3');
+        RAISE EXCEPTION 'conflicting publication replay was accepted';
+    EXCEPTION WHEN OTHERS THEN
+        IF SQLERRM = 'conflicting publication replay was accepted' THEN RAISE; END IF;
+    END;
+    IF (SELECT count(*) FROM trading.investor_book_publications
+         WHERE portfolio_id='INVESTOR_BETA' AND source_day='2026-10-15') <> 1 THEN
+        RAISE EXCEPTION 'publication replay was not atomic';
     END IF;
 END $$;
 SQL

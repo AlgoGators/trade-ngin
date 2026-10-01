@@ -86,6 +86,8 @@ int trade_ngin::run_book_tail(BookTailInputs& inputs, BookTailCallbacks& callbac
     auto& run_consumption = inputs.run_consumption;
     auto& evidence_token = inputs.evidence_token;
     const char* const QT_STREAM = inputs.qt_stream;
+    const bool system_investor_publication =
+        db->live_publication_mode() == LivePublicationMode::SystemInvestor;
         // Load previous day positions for PnL calculation
         INFO("Loading previous day positions for PnL calculation...");
         auto previous_date = now - std::chrono::hours(24);
@@ -802,19 +804,25 @@ int trade_ngin::run_book_tail(BookTailInputs& inputs, BookTailCallbacks& callbac
              std::to_string(total_positions_saved));
 
         // Register QT draft seeds against the pending MODEL publication.
-        auto proposal_seed_result = seed_qt_proposal_positions(
-            *db, combined_strategy_id, strategy_names, portfolio_id, now);
-        if (proposal_seed_result.is_error()) {
-            ERROR("MODEL_PUBLICATION_BLOCKED: " + std::string(proposal_seed_result.error()->what()));
-            return 1;
+        Result<void> proposal_seed_result;
+        if (!system_investor_publication) {
+            proposal_seed_result = seed_qt_proposal_positions(
+                *db, combined_strategy_id, strategy_names, portfolio_id, now);
+            if (proposal_seed_result.is_error()) {
+                ERROR("MODEL_PUBLICATION_BLOCKED: " + std::string(proposal_seed_result.error()->what()));
+                return 1;
+            }
         }
 
         // Carry QT state even when a strategy's system book has become flat.
         // A failed seed blocks distribution below, including apparently flat reports.
-        auto qt_seed_result = seed_qt_report_positions(
-            *db, combined_strategy_id, strategy_names, portfolio_id, now);
-        if (qt_seed_result.is_error()) {
-            ERROR("INVESTOR_REPORT_BLOCKED: " + std::string(qt_seed_result.error()->what()));
+        Result<void> qt_seed_result;
+        if (!system_investor_publication) {
+            qt_seed_result = seed_qt_report_positions(
+                *db, combined_strategy_id, strategy_names, portfolio_id, now);
+            if (qt_seed_result.is_error()) {
+                ERROR("INVESTOR_REPORT_BLOCKED: " + std::string(qt_seed_result.error()->what()));
+            }
         }
 
         // Record the non-secret immutable replay snapshot with the final publication.
@@ -1991,6 +1999,11 @@ int trade_ngin::run_book_tail(BookTailInputs& inputs, BookTailCallbacks& callbac
         if (db->publish_live_publication().is_error()) {
             ERROR("Current-day publication rolled back; investor report blocked");
             return 1;
+        }
+        if (system_investor_publication) {
+            callbacks.stop_primary_strategy();
+            INFO("System investor day published atomically; QT report generation skipped");
+            return 0;
         }
 
         StrategyPositionRows report_strategy_positions;

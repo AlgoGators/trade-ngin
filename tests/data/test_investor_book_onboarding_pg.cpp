@@ -7,6 +7,7 @@
 #include <pqxx/pqxx>
 
 #include "trade_ngin/data/postgres_database.hpp"
+#include "trade_ngin/core/time_utils.hpp"
 
 using namespace trade_ngin;
 
@@ -66,6 +67,27 @@ TEST_F(InvestorBookOnboardingPg, IdenticalReplayIsStableAndConflictIsAtomic) {
                      "WHERE portfolio_id='INVESTOR_GAMMA' AND live_start_date='2026-11-01'"), 2);
     EXPECT_EQ(scalar("SELECT count(*) FROM trading.investor_books "
                      "WHERE portfolio_id='INVESTOR_GAMMA' AND model_stream='system'"), 1);
+}
+
+TEST_F(InvestorBookOnboardingPg, RegisteredBookAutomaticallyUsesSystemOnlyMode) {
+    Timestamp source_day;
+    ASSERT_TRUE(core::parse_utc_date("2026-11-02", source_day));
+    const nlohmann::json snapshot = {
+        {"strategies", {{"Trend", {{"enabled_live", true}}}}}
+    };
+    auto begun = db_->begin_live_publication(
+        "LIVE_TREND_FOLLOWING", "INVESTOR_GAMMA", source_day,
+        snapshot, true, "cpp-pg-test-version");
+    ASSERT_TRUE(begun.is_ok()) << (begun.is_error() ? begun.error()->what() : "");
+    EXPECT_FALSE(begun.value());
+    ASSERT_TRUE(db_->live_publication_mode().has_value());
+    EXPECT_EQ(*db_->live_publication_mode(), LivePublicationMode::SystemInvestor);
+
+    auto qt_seed = db_->seed_qt_positions_from_system(
+        "LIVE_TREND_FOLLOWING", "Trend", "INVESTOR_GAMMA", "2026-11-02");
+    ASSERT_TRUE(qt_seed.is_error());
+    EXPECT_EQ(qt_seed.error()->code(), ErrorCode::INVALID_ARGUMENT);
+    db_->abandon_live_publication("test_complete");
 }
 
 }  // namespace

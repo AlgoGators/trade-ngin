@@ -64,6 +64,8 @@ Result<std::string> PostgresDatabase::onboard_investor_book(
     };
     if (!valid_key(request.config_key, 64, true) ||
         !valid_key(request.portfolio_id, 100, false) ||
+        std::any_of(request.portfolio_id.begin(), request.portfolio_id.end(),
+                    [](unsigned char ch) { return ch >= 'a' && ch <= 'z'; }) ||
         !std::isfinite(request.initial_capital) || request.initial_capital <= 0.0 ||
         request.created_by.empty() || request.created_by.size() > 200 ||
         request.created_by.find_first_not_of(" \t\r\n") == std::string::npos ||
@@ -170,7 +172,9 @@ void PostgresDatabase::require_proposal_capability(pqxx::work& txn) {
         AND EXISTS (SELECT 1 FROM pg_proc f JOIN pg_language l ON l.oid=f.prolang
           WHERE f.oid=to_regprocedure('trading.fence_runtime_publication_row()')
             AND f.prorettype='pg_catalog.trigger'::regtype AND f.pronargs=0
-            AND l.lanname='plpgsql' AND md5(f.prosrc)='419771cec97836560ae952c120aac4d1')
+            AND l.lanname='plpgsql' AND md5(f.prosrc) IN
+              ('419771cec97836560ae952c120aac4d1',
+               '78714a77bd21b136a8e54a9ddf6e4bbb'))
         AND EXISTS (SELECT 1 FROM pg_trigger t
           WHERE t.tgrelid='trading.positions'::regclass
             AND t.tgname='runtime_publication_fence' AND t.tgenabled='O'
@@ -391,6 +395,14 @@ void PostgresDatabase::fence_live_write(pqxx::work& txn, const std::string& stra
     if (stream != "system" && stream != "qt" &&
         !(stream == "qt_proposal" && proposal_seed_operation))
         throw std::runtime_error("runtime_stream_unsupported");
+    if (pending_publication_ &&
+        pending_publication_->mode == LivePublicationMode::SystemInvestor) {
+        if (stream != "system")
+            throw std::runtime_error("investor_publication_requires_system_stream");
+        txn.exec("SELECT trading.lock_investor_publication_scope($1,$2)",
+                 pqxx::params{strategy_id,book});
+        return;
+    }
     // Historical corrections commit separately during computation, but they
     // still belong to this captured run. Protect against retire/promote ABA
     // before taking the same canonical book lock as the final publisher.
@@ -446,6 +458,30 @@ Result<bool> PostgresDatabase::begin_live_publication(const std::string& strateg
         scope->producer_version = version;
         scope->snapshot = snapshot;
         pqxx::work txn(*connection_);
+        auto investor_schema = txn.exec(
+            "SELECT to_regclass('trading.investor_books') IS NOT NULL AND "
+            "to_regclass('trading.investor_book_strategies') IS NOT NULL");
+        if (investor_schema[0][0].as<bool>()) {
+            auto investor = txn.exec(
+                "SELECT b.book_id::text,b.is_active,b.model_stream,b.opening_date::text,"
+                "EXISTS (SELECT 1 FROM trading.investor_book_strategies s "
+                "WHERE s.portfolio_id=b.portfolio_id AND s.strategy_id=$2) "
+                "FROM trading.investor_books b WHERE b.portfolio_id=$1 FOR UPDATE",
+                pqxx::params{scope->portfolio_id,strategy_id});
+            if (!investor.empty()) {
+                if (investor.size()!=1 || !investor[0][1].as<bool>() ||
+                    investor[0][2].as<std::string>()!="system" ||
+                    !investor[0][4].as<bool>() || scope->date < investor[0][3].as<std::string>() ||
+                    scope->producer_version.empty() ||
+                    prior_requirement != PublicationPriorRequirement::None)
+                    throw std::runtime_error("investor_publication_scope_ineligible");
+                scope->mode = LivePublicationMode::SystemInvestor;
+                txn.commit();
+                pending_publication_ = std::move(scope);
+                if (token_out) *token_out = std::move(token);
+                return false;
+            }
+        }
         auto registry = txn.exec(
             "SELECT r.id,r.runtime_revision,r.lifecycle,r.is_active FROM trading.strategy_registry r "
             "WHERE r.strategy_type=$1 AND (upper(btrim(r.portfolio_id))=$2 OR EXISTS ("
@@ -496,6 +532,11 @@ Result<bool> PostgresDatabase::begin_live_publication(const std::string& strateg
     } catch(const std::exception&) {
         return make_error<bool>(ErrorCode::DATABASE_ERROR,"runtime_start_refused");
     }
+}
+
+std::optional<LivePublicationMode> PostgresDatabase::live_publication_mode() const noexcept {
+    if (!pending_publication_) return std::nullopt;
+    return pending_publication_->mode;
 }
 
 Result<void> PostgresDatabase::store_model_position_batch(const QtModelPositionBatch& batch) {
@@ -714,7 +755,12 @@ Result<void> PostgresDatabase::attach_live_consumption(
 Result<void> PostgresDatabase::publish_live_publication() {
     if (!pending_publication_ || publication_transaction_)
         return make_error<void>(ErrorCode::INVALID_ARGUMENT,"runtime_publication_not_started");
-    if (pending_publication_->parts != CompletePublication || pending_publication_->invalid_payload ||
+    const bool system_investor =
+        pending_publication_->mode == LivePublicationMode::SystemInvestor;
+    const unsigned required_parts = system_investor
+        ? static_cast<unsigned>(SystemCompletePublication)
+        : static_cast<unsigned>(CompletePublication);
+    if (pending_publication_->parts != required_parts || pending_publication_->invalid_payload ||
         (pending_publication_->evidence_requirement ==
              PublicationEvidenceRequirement::RequiredFinalObservations &&
          (!pending_publication_->inspection_capture_queued ||
@@ -737,13 +783,19 @@ Result<void> PostgresDatabase::publish_live_publication() {
         if (expected_members.empty() || expected_members != fresh_members)
             throw std::runtime_error("runtime_scope_fresh_positions_incomplete");
         pqxx::work txn(*connection_);
-        auto registry = txn.exec("SELECT runtime_revision,lifecycle,is_active,strategy_type "
-            "FROM trading.strategy_registry WHERE id=$1 FOR UPDATE",
-            pqxx::params{pending_publication_->registry_id});
-        if(registry.size()!=1 || registry[0][0].as<long long>() != pending_publication_->registry_revision ||
-           !publishes_model(registry[0][1].as<std::string>()) || !registry[0][2].as<bool>() ||
-           registry[0][3].as<std::string>() != pending_publication_->strategy_id)
-            throw std::runtime_error("runtime_scope_changed");
+        if (system_investor) {
+            txn.exec("SELECT trading.lock_investor_publication_scope($1,$2)",
+                     pqxx::params{pending_publication_->strategy_id,
+                                  pending_publication_->portfolio_id});
+        } else {
+            auto registry = txn.exec("SELECT runtime_revision,lifecycle,is_active,strategy_type "
+                "FROM trading.strategy_registry WHERE id=$1 FOR UPDATE",
+                pqxx::params{pending_publication_->registry_id});
+            if(registry.size()!=1 || registry[0][0].as<long long>() != pending_publication_->registry_revision ||
+               !publishes_model(registry[0][1].as<std::string>()) || !registry[0][2].as<bool>() ||
+               registry[0][3].as<std::string>() != pending_publication_->strategy_id)
+                throw std::runtime_error("runtime_scope_changed");
+        }
         fence_live_write(txn,pending_publication_->strategy_id,pending_publication_->portfolio_id);
         // VerifiedEquity only: the prior re-proved in THIS transaction, kept for the binding row.
         std::optional<VerifiedEquityModelPrior> reproved_prior;
@@ -776,23 +828,34 @@ Result<void> PostgresDatabase::publish_live_publication() {
                 throw std::runtime_error("runtime_publication_write_failed");
         }
         // A composite scope is only complete when every configured member has
-        // current system and effective-QT evidence, including explicit zeros.
+        // current system evidence. House mode additionally requires effective
+        // QT evidence; an investor book is forbidden from depending on it.
         for (const auto& [name,definition] : pending_publication_->snapshot.at("strategies").items()) {
             if (!definition.value("enabled_live",false)) continue;
-            auto coverage = txn.exec("SELECT count(DISTINCT portfolio_type) FROM trading.positions "
+            auto coverage = txn.exec("SELECT count(*) FROM trading.positions "
                 "WHERE portfolio_id=$1 AND strategy_id=$2 AND date=$3::date AND strategy_name=$4 "
-                "AND portfolio_type IN ('system','qt')",
+                "AND portfolio_type='system'",
                 pqxx::params{pending_publication_->portfolio_id,pending_publication_->strategy_id,
                              pending_publication_->date,name});
-            const bool empty_owner=pending_publication_->strategy_id=="LIVE_EQUITY_MEAN_REVERSION" &&
-                pending_publication_->fresh_system_components.empty() &&
-                pending_publication_->fresh_empty_batches.size()==expected_members.size();
-            if(!empty_owner && coverage[0][0].as<int>() != 2)
+            const bool empty_owner=std::any_of(
+                pending_publication_->fresh_empty_batches.begin(),
+                pending_publication_->fresh_empty_batches.end(),
+                [&](const QtModelEmptyBatchScope& scope) {
+                    return scope.strategy_name == name;
+                });
+            if(!empty_owner && coverage[0][0].as<long long>() == 0)
                 throw std::runtime_error("runtime_scope_positions_incomplete");
-            if(empty_owner) {
-                auto count=txn.exec("SELECT count(*) FROM trading.positions WHERE portfolio_id=$1 AND date=$2::date AND portfolio_type='system'",
-                    pqxx::params{pending_publication_->portfolio_id,pending_publication_->date});
-                if(count[0][0].as<long long>()!=0)throw std::runtime_error("runtime_empty_owner_system_changed");
+            if(empty_owner && coverage[0][0].as<long long>()!=0)
+                throw std::runtime_error("runtime_empty_owner_system_changed");
+            if (!system_investor) {
+                auto qt_coverage = txn.exec("SELECT count(*) FROM trading.positions "
+                    "WHERE portfolio_id=$1 AND strategy_id=$2 AND date=$3::date "
+                    "AND strategy_name=$4 AND portfolio_type='qt'",
+                    pqxx::params{pending_publication_->portfolio_id,
+                                 pending_publication_->strategy_id,
+                                 pending_publication_->date,name});
+                if(!empty_owner && qt_coverage[0][0].as<long long>() == 0)
+                    throw std::runtime_error("runtime_scope_positions_incomplete");
             }
         }
         // Uncontrolled legacy publications have no runtime_attempts row. Give
@@ -800,26 +863,38 @@ Result<void> PostgresDatabase::publish_live_publication() {
         if (pending_publication_->publication_id.empty())
             pending_publication_->publication_id =
                 txn.exec("SELECT gen_random_uuid()::text")[0][0].as<std::string>();
-        QtModelSeedPublication seed{pending_publication_->publication_id,
-            pending_publication_->portfolio_id,pending_publication_->strategy_id,
-            pending_publication_->date,pending_publication_->fresh_system_components,
-            {},pending_publication_->producer_version,{}};
-        const bool empty_owner=seed.strategy_id=="LIVE_EQUITY_MEAN_REVERSION" && seed.system_components.empty() &&
-            pending_publication_->fresh_empty_batches.size()==expected_members.size();
-        const auto seed_digest = empty_owner ? qt_digest_v1(nlohmann::json{{"seed_rows",nlohmann::json::array()}}) : qt_model_seed_digest(seed);
-        if (seed_digest.is_error())
-            throw std::runtime_error("runtime_model_seed_digest_invalid");
-        seed.seed_digest = seed_digest.value();
-        if (record_qt_model_seed_publication(seed).is_error())
-            throw std::runtime_error("runtime_model_seed_record_failed");
-        // Migration 024: the immutable MODEL -> verified-prior binding for this
-        // publication, in the same transaction. Every other mode writes nothing here.
-        if (pending_publication_->prior_requirement == PublicationPriorRequirement::VerifiedEquity) {
-            if (!reproved_prior) throw std::runtime_error("runtime_prior_changed");
-            auto binding=derive_qt_equity_model_prior_binding(seed.publication_id,seed.portfolio_id,
-                seed.source_day,reproved_prior->replay_reference);
-            if (binding.is_error() || record_qt_equity_model_prior_binding(txn,binding.value()).is_error())
-                throw std::runtime_error("runtime_model_prior_binding_failed");
+        if (system_investor) {
+            auto publication = txn.exec(
+                "SELECT trading.publish_system_investor_day($1,$2,$3::date,$4)::text",
+                pqxx::params{pending_publication_->portfolio_id,
+                             pending_publication_->strategy_id,
+                             pending_publication_->date,
+                             pending_publication_->producer_version});
+            if (publication.size()!=1 || publication[0][0].is_null())
+                throw std::runtime_error("investor_publication_record_failed");
+            pending_publication_->publication_id = publication[0][0].as<std::string>();
+        } else {
+            QtModelSeedPublication seed{pending_publication_->publication_id,
+                pending_publication_->portfolio_id,pending_publication_->strategy_id,
+                pending_publication_->date,pending_publication_->fresh_system_components,
+                {},pending_publication_->producer_version,{}};
+            const bool empty_owner=seed.strategy_id=="LIVE_EQUITY_MEAN_REVERSION" && seed.system_components.empty() &&
+                pending_publication_->fresh_empty_batches.size()==expected_members.size();
+            const auto seed_digest = empty_owner ? qt_digest_v1(nlohmann::json{{"seed_rows",nlohmann::json::array()}}) : qt_model_seed_digest(seed);
+            if (seed_digest.is_error())
+                throw std::runtime_error("runtime_model_seed_digest_invalid");
+            seed.seed_digest = seed_digest.value();
+            if (record_qt_model_seed_publication(seed).is_error())
+                throw std::runtime_error("runtime_model_seed_record_failed");
+            // Migration 024: the immutable MODEL -> verified-prior binding for this
+            // publication, in the same transaction. Every other mode writes nothing here.
+            if (pending_publication_->prior_requirement == PublicationPriorRequirement::VerifiedEquity) {
+                if (!reproved_prior) throw std::runtime_error("runtime_prior_changed");
+                auto binding=derive_qt_equity_model_prior_binding(seed.publication_id,seed.portfolio_id,
+                    seed.source_day,reproved_prior->replay_reference);
+                if (binding.is_error() || record_qt_equity_model_prior_binding(txn,binding.value()).is_error())
+                    throw std::runtime_error("runtime_model_prior_binding_failed");
+            }
         }
         if (!pending_publication_->attempt_id.empty()) {
             auto updated = txn.exec("UPDATE trading.runtime_attempts SET status='applied',"

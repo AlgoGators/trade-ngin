@@ -6197,8 +6197,12 @@ int main(int argc, char* argv[]) {
         std::unordered_map<std::string,double> published_limits={{"max_gross_leverage",risk_config.max_gross_leverage},
             {"max_net_leverage",risk_config.max_net_leverage}};
         if(db->store_risk_limits(kEquityStrategyId,portfolio_id,published_limits).is_error())return 1;
-        if(seed_qt_proposal_positions(*db,kEquityStrategyId,{kEquityStrategyName},portfolio_id,now).is_error())return 1;
-        if(seed_qt_report_positions(*db,kEquityStrategyId,{kEquityStrategyName},portfolio_id,now).is_error())return 1;
+        const bool system_investor_publication =
+            db->live_publication_mode() == LivePublicationMode::SystemInvestor;
+        if(!system_investor_publication &&
+           seed_qt_proposal_positions(*db,kEquityStrategyId,{kEquityStrategyName},portfolio_id,now).is_error())return 1;
+        if(!system_investor_publication &&
+           seed_qt_report_positions(*db,kEquityStrategyId,{kEquityStrategyName},portfolio_id,now).is_error())return 1;
         auto inputs=build_run_inputs_row(TRADE_NGIN_GIT_SHA,trading_snapshot.value(),symbols,all_bars,
             portfolio_config.benchmark_mode,start_date,end_date);
         inputs["engine_flags"]["equity_strategy_source_key"]=strat_entry.id;

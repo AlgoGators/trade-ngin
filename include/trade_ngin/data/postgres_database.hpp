@@ -75,6 +75,11 @@ private:
 
 enum class PublicationPriorRequirement { None, VerifiedEquity };
 
+// House publications produce the governed QT continuation stream. Registered
+// investor books are deliberately separate: their only operational model is
+// the system stream and publication is automatic with the daily transaction.
+enum class LivePublicationMode { QtHouse, SystemInvestor };
+
 enum class PublicationEvidenceRequirement {
     LegacyNotCollected,
     RequiredFinalObservations,
@@ -452,6 +457,7 @@ public:
     Result<void> attach_live_consumption(const PublicationEvidenceToken& token,
         const ConsumptionProjection& projection);
     Result<void> publish_live_publication();
+    std::optional<LivePublicationMode> live_publication_mode() const noexcept;
     Result<void> record_qt_model_seed_publication(const QtModelSeedPublication& publication);
     void abandon_live_publication(const std::string& failure_code = "computation_failed");
     Result<void> store_live_run_inputs(const std::string& strategy_id,
@@ -1083,7 +1089,8 @@ public:
 private:
     enum PublicationPart : unsigned {
         PositionsPart=1, LimitsPart=2, ResultsPart=4, InputsPart=8,
-        QtSeedPart=16, MetadataPart=32, EquityPart=64, CompletePublication=127
+        QtSeedPart=16, MetadataPart=32, EquityPart=64,
+        SystemCompletePublication=111, CompletePublication=127
     };
     struct CapturedEquityModelPrior {
         EquityModelPriorSelection selection;
@@ -1107,6 +1114,7 @@ private:
         std::optional<ConsumptionProjection> final_consumption;
         std::optional<EquityRunProjection> equity_final_consumption;
         PublicationPriorRequirement prior_requirement = PublicationPriorRequirement::None;
+        LivePublicationMode mode = LivePublicationMode::QtHouse;
         std::optional<CapturedEquityModelPrior> equity_prior;
         bool invalid_payload = false;
         bool inspection_capture_queued = false;
