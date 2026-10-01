@@ -1925,9 +1925,11 @@ Result<void> PostgresDatabase::validate_symbols(const std::vector<std::string>& 
 }
 
 Result<void> PostgresDatabase::validate_strategy_id(const std::string& strategy_id) const {
-    if (strategy_id.empty() || strategy_id.size() > 50) {
+    static constexpr std::size_t kMaxStrategyIdLength = 100;
+    if (strategy_id.empty() || strategy_id.size() > kMaxStrategyIdLength) {
         return make_error<void>(ErrorCode::INVALID_ARGUMENT,
-                                "Invalid strategy_id: must be 1-50 characters", "PostgresDatabase");
+                                "Invalid strategy_id: must be 1-100 characters",
+                                "PostgresDatabase");
     }
 
     // Allow alphanumeric, underscore, and dash

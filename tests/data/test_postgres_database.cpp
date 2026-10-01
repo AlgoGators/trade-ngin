@@ -95,6 +95,17 @@ TEST(PostgresDatabaseExecutionValidation, NettingAdjustmentMayBeNegativeButNever
     EXPECT_EQ(unbounded.error()->code(), ErrorCode::INVALID_ARGUMENT);
 }
 
+TEST(PostgresDatabaseIdentityValidation, CombinedStrategyIdsUseTheSchemaWidth) {
+    PostgresDatabase disconnected("host=invalid port=1 user=u dbname=d");
+    const std::string three_sleeve_id =
+        "LIVE_TREND_FOLLOWING_TREND_FOLLOWING_FAST_TREND_FOLLOWING_SLOW";
+    ASSERT_GT(three_sleeve_id.size(), 50u);
+    ASSERT_LE(three_sleeve_id.size(), 100u);
+    EXPECT_TRUE(disconnected.validate_strategy_id(three_sleeve_id).is_ok());
+    EXPECT_TRUE(disconnected.validate_strategy_id(std::string(100, 'A')).is_ok());
+    EXPECT_TRUE(disconnected.validate_strategy_id(std::string(101, 'A')).is_error());
+}
+
 TEST_F(PostgresDatabaseTest, ConnectionLifecycle) {
     EXPECT_FALSE(db->is_connected());
 

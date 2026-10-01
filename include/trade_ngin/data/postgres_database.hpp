@@ -559,6 +559,7 @@ public:
      * @return Result indicating success or failure
      */
     Result<void> validate_portfolio_id(const std::string& portfolio_id) const;
+    Result<void> validate_strategy_id(const std::string& strategy_id) const;
     Result<void> validate_operational_stream(const std::string& portfolio_id,
                                              const std::string& portfolio_type);
     Result<void> validate_execution_report(const ExecutionReport& exec) const;
@@ -1178,13 +1179,6 @@ private:
      * @return Result indicating success or failure
      */
     static Result<void> validate_symbols(const std::vector<std::string>& symbols);
-
-    /**
-     * @brief Validate strategy ID for SQL injection prevention
-     * @param strategy_id Strategy ID to validate
-     * @return Result indicating success or failure
-     */
-    Result<void> validate_strategy_id(const std::string& strategy_id) const;
 
     /**
      * @brief Validate position data

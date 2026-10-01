@@ -114,6 +114,13 @@ nlohmann::json two_sleeves() {
              {{"enabled_live", true}, {"type", "TrendFollowingFastStrategy"}}}};
 }
 
+nlohmann::json two_equity_sleeves() {
+    return {{"MEAN_REVERSION_LONG",
+             {{"enabled_live", true}, {"type", "MeanReversionStrategy"}}},
+            {"MEAN_REVERSION_SHORT",
+             {{"enabled_live", true}, {"type", "MeanReversionStrategy"}}}};
+}
+
 /// The error text, or "" when the config parsed.
 std::string parse_error(const nlohmann::json& risk,
                         const nlohmann::json& sleeves = nlohmann::json(),
@@ -750,6 +757,34 @@ TEST(RiskSchemaRulesT6b, CarverIsRefusedAtSleeveScope) {
 
 TEST(RiskSchemaRulesT6b, CarverIsAcceptedAtPortfolioScope) {
     EXPECT_EQ(parse_error(risk_with({carver()})), "");
+}
+
+TEST(RiskSchemaRulesT6b, EquitySleevesAcceptWarnAndConstantScaleAssignments) {
+    const nlohmann::json sleeves = {
+        {"MEAN_REVERSION_LONG", nlohmann::json::array({warn_module("long_warn")})},
+        {"MEAN_REVERSION_SHORT",
+         nlohmann::json::array({constant_scale_module("short_scale")})}};
+    auto parsed = parse_risk_schema(risk_with({carver()}), sleeves,
+                                    two_equity_sleeves(), "EQUITY_MULTI");
+    ASSERT_TRUE(parsed.is_ok()) << (parsed.is_error() ? parsed.error()->what() : "");
+    ASSERT_EQ(parsed.value().sleeves.size(), 2u);
+    ASSERT_EQ(parsed.value().sleeves.at("MEAN_REVERSION_LONG").size(), 1u);
+    ASSERT_EQ(parsed.value().sleeves.at("MEAN_REVERSION_SHORT").size(), 1u);
+    EXPECT_EQ(parsed.value().sleeves.at("MEAN_REVERSION_LONG").front().type, "warn");
+    EXPECT_EQ(parsed.value().sleeves.at("MEAN_REVERSION_SHORT").front().type,
+              "constant_scale");
+}
+
+TEST(RiskSchemaRulesT6b, EquitySleevesRejectPortfolioOnlyAndNoRiskAssignments) {
+    const nlohmann::json carver_sleeve = {
+        {"MEAN_REVERSION_LONG", nlohmann::json::array({carver("sleeve_carver")})}};
+    EXPECT_TRUE(parse_risk_schema(risk_with({carver()}), carver_sleeve,
+                                  two_equity_sleeves(), "EQUITY_MULTI").is_error());
+
+    const nlohmann::json none_sleeve = {
+        {"MEAN_REVERSION_SHORT", nlohmann::json::array({none_module("sleeve_none")})}};
+    EXPECT_TRUE(parse_risk_schema(risk_with({carver()}), none_sleeve,
+                                  two_equity_sleeves(), "EQUITY_MULTI").is_error());
 }
 
 // R10. S3 ties attribution to the literal type "none", so a book whose only module is a WARN

@@ -248,13 +248,17 @@ TEST_F(PortfolioAggregationTest, AgreementDaySumMatchesBroker) {
 
 TEST_F(PortfolioAggregationTest,
        DeterministicEquitySleevesKeepGrossBooksAndNetOnlyAtAccountLayer) {
+    const std::vector<std::string> symbols = {
+        "AAPL", "AMZN", "GOOGL", "META", "MSFT", "NVDA"};
     StrategyConfig config;
     config.capital_allocation = 500'000.0;
     config.max_leverage = 4.0;
     config.asset_classes = {AssetClass::EQUITIES};
     config.frequencies = {DataFrequency::DAILY};
-    config.trading_params["AAPL"] = 1.0;
-    config.position_limits["AAPL"] = 10'000.0;
+    for (const auto& symbol : symbols) {
+        config.trading_params[symbol] = 1.0;
+        config.position_limits[symbol] = 10'000.0;
+    }
 
     auto long_sleeve =
         std::make_shared<DeterministicEquitySleeve>("EQUITY_LONG", config, db_, 7.0);
@@ -267,39 +271,49 @@ TEST_F(PortfolioAggregationTest,
     ASSERT_TRUE(manager_->add_strategy(long_sleeve, 0.5, false, false).is_ok());
     ASSERT_TRUE(manager_->add_strategy(short_sleeve, 0.5, false, false).is_ok());
 
-    Bar bar;
-    bar.symbol = "AAPL";
-    bar.timestamp = std::chrono::system_clock::now();
-    bar.open = bar.high = bar.low = bar.close = Price(100.0);
-    bar.volume = 1'000'000.0;
-    ASSERT_TRUE(manager_->process_market_data({bar}).is_ok());
+    std::vector<Bar> bars;
+    for (const auto& symbol : symbols) {
+        Bar bar;
+        bar.symbol = symbol;
+        bar.timestamp = std::chrono::system_clock::now();
+        bar.open = bar.high = bar.low = bar.close = Price(100.0);
+        bar.volume = 1'000'000.0;
+        bars.push_back(bar);
+    }
+    ASSERT_TRUE(manager_->process_market_data(bars).is_ok());
 
     const auto positions = manager_->get_strategy_positions();
     ASSERT_EQ(positions.size(), 2u);
-    EXPECT_DOUBLE_EQ(positions.at("EQUITY_LONG").at("AAPL").quantity.as_double(), 7.0);
-    EXPECT_DOUBLE_EQ(positions.at("EQUITY_SHORT").at("AAPL").quantity.as_double(), -3.0);
+    for (const auto& symbol : symbols) {
+        EXPECT_DOUBLE_EQ(positions.at("EQUITY_LONG").at(symbol).quantity.as_double(), 7.0);
+        EXPECT_DOUBLE_EQ(positions.at("EQUITY_SHORT").at(symbol).quantity.as_double(), -3.0);
+    }
 
     const auto executions = manager_->get_strategy_executions();
-    ASSERT_EQ(executions.at("EQUITY_LONG").size(), 1u);
-    ASSERT_EQ(executions.at("EQUITY_SHORT").size(), 1u);
-    const auto& long_fill = executions.at("EQUITY_LONG").front();
-    const auto& short_fill = executions.at("EQUITY_SHORT").front();
-    EXPECT_DOUBLE_EQ(signed_quantity(long_fill), 7.0);
-    EXPECT_DOUBLE_EQ(signed_quantity(short_fill), -3.0);
-    EXPECT_GE(long_fill.total_transaction_costs.as_double(), 0.0);
-    EXPECT_GE(short_fill.total_transaction_costs.as_double(), 0.0);
-
-    std::vector<backtest::OwnedExecutionReport> owned = {
-        {"EQUITY_LONG", long_fill}, {"EQUITY_SHORT", short_fill}};
+    ASSERT_EQ(executions.at("EQUITY_LONG").size(), symbols.size());
+    ASSERT_EQ(executions.at("EQUITY_SHORT").size(), symbols.size());
+    std::unordered_map<std::string, double> account_net;
+    std::unordered_map<std::string, double> gross_traded;
+    std::vector<backtest::OwnedExecutionReport> owned;
+    for (const auto& report : executions.at("EQUITY_LONG")) {
+        EXPECT_DOUBLE_EQ(signed_quantity(report), 7.0);
+        EXPECT_GE(report.total_transaction_costs.as_double(), 0.0);
+        account_net[report.symbol] += signed_quantity(report);
+        gross_traded[report.symbol] += report.filled_quantity.as_double();
+        owned.push_back({"EQUITY_LONG", report});
+    }
+    for (const auto& report : executions.at("EQUITY_SHORT")) {
+        EXPECT_DOUBLE_EQ(signed_quantity(report), -3.0);
+        EXPECT_GE(report.total_transaction_costs.as_double(), 0.0);
+        account_net[report.symbol] += signed_quantity(report);
+        gross_traded[report.symbol] += report.filled_quantity.as_double();
+        owned.push_back({"EQUITY_SHORT", report});
+    }
     ASSERT_TRUE(backtest::deliver_owned_executions(owned, {long_sleeve, short_sleeve}).is_ok());
-    ASSERT_EQ(long_sleeve->received.size(), 1u);
-    ASSERT_EQ(short_sleeve->received.size(), 1u);
-    EXPECT_EQ(long_sleeve->received.front().exec_id, long_fill.exec_id);
-    EXPECT_EQ(short_sleeve->received.front().exec_id, short_fill.exec_id);
-
-    const double account_net = signed_quantity(long_fill) + signed_quantity(short_fill);
-    EXPECT_DOUBLE_EQ(account_net, 4.0);
-    EXPECT_DOUBLE_EQ(long_fill.filled_quantity.as_double() +
-                         short_fill.filled_quantity.as_double(),
-                     10.0);
+    ASSERT_EQ(long_sleeve->received.size(), symbols.size());
+    ASSERT_EQ(short_sleeve->received.size(), symbols.size());
+    for (const auto& symbol : symbols) {
+        EXPECT_DOUBLE_EQ(account_net.at(symbol), 4.0);
+        EXPECT_DOUBLE_EQ(gross_traded.at(symbol), 10.0);
+    }
 }
