@@ -2,6 +2,7 @@
 
 #include <cmath>
 
+#include "trade_ngin/live/corporate_actions_audit_log.hpp"
 #include "trade_ngin/live/equity_sleeve_netting.hpp"
 
 using namespace trade_ngin::live;
@@ -130,4 +131,16 @@ TEST(EquitySleeveNetting, FailsClosedWhenExternalExecutionDoesNotMatchPlan) {
                     {{"ALPHA", "AAPL", 7.0, 0.07},
                      {"BETA", "AAPL", -3.0, 0.03}}, {})
                     .is_error());
+}
+
+TEST(EquityCorporateActionsIsolation, LegacyFileImportIsRestrictedToOriginalHouseOwner) {
+    EXPECT_TRUE(trade_ngin::allows_legacy_corp_action_import(
+        "EQUITY_MR_PORTFOLIO", "LIVE_EQUITY_MEAN_REVERSION",
+        "EQUITY_MEAN_REVERSION"));
+    EXPECT_FALSE(trade_ngin::allows_legacy_corp_action_import(
+        "INVESTOR_A", "LIVE_EQUITY_MEAN_REVERSION", "EQUITY_MEAN_REVERSION"));
+    EXPECT_FALSE(trade_ngin::allows_legacy_corp_action_import(
+        "EQUITY_MR_PORTFOLIO", "LIVE_EQUITY_ALPHA_BETA", "ALPHA"));
+    EXPECT_FALSE(trade_ngin::allows_legacy_corp_action_import(
+        "EQUITY_MR_PORTFOLIO", "LIVE_EQUITY_MEAN_REVERSION", "ALPHA"));
 }

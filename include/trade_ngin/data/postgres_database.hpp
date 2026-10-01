@@ -558,6 +558,7 @@ public:
      * @param table_name Name of the table to store data
      * @return Result indicating success or failure
      */
+    Result<void> validate_portfolio_id(const std::string& portfolio_id) const;
     Result<void> validate_operational_stream(const std::string& portfolio_id,
                                              const std::string& portfolio_type);
 

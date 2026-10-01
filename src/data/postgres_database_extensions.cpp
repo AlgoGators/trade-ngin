@@ -332,6 +332,8 @@ Result<void> PostgresDatabase::store_backtest_summary(
     const std::string& table_name) {
     std::lock_guard<std::mutex> lock(mutex_);
 
+    auto portfolio_validation = validate_portfolio_id(portfolio_id);
+    if (portfolio_validation.is_error()) return portfolio_validation;
     // Validate connection
     auto validation = validate_connection();
     if (validation.is_error()) {
@@ -347,7 +349,7 @@ Result<void> PostgresDatabase::store_backtest_summary(
     try {
         PublicationTransaction txn(*connection_, publication_transaction_);
 
-        std::string actual_portfolio_id = portfolio_id.empty() ? "BASE_PORTFOLIO" : portfolio_id;
+        const std::string& actual_portfolio_id = portfolio_id;
 
         // Build INSERT query with all metrics
         std::string query =
@@ -402,6 +404,8 @@ Result<void> PostgresDatabase::store_backtest_equity_curve_batch(
     const std::string& portfolio_id, const std::string& table_name) {
     std::lock_guard<std::mutex> lock(mutex_);
 
+    auto portfolio_validation = validate_portfolio_id(portfolio_id);
+    if (portfolio_validation.is_error()) return portfolio_validation;
     // Validate connection
     auto validation = validate_connection();
     if (validation.is_error()) {
@@ -421,7 +425,7 @@ Result<void> PostgresDatabase::store_backtest_equity_curve_batch(
     try {
         PublicationTransaction txn(*connection_, publication_transaction_);
 
-        std::string actual_portfolio_id = portfolio_id.empty() ? "BASE_PORTFOLIO" : portfolio_id;
+        const std::string& actual_portfolio_id = portfolio_id;
 
         // Build batch INSERT query
         std::string query =
@@ -455,6 +459,8 @@ Result<void> PostgresDatabase::store_backtest_positions(const std::vector<Positi
                                                         const std::string& table_name) {
     std::lock_guard<std::mutex> lock(mutex_);
 
+    auto portfolio_validation = validate_portfolio_id(portfolio_id);
+    if (portfolio_validation.is_error()) return portfolio_validation;
     // Validate connection
     auto validation = validate_connection();
     if (validation.is_error()) {
@@ -519,7 +525,7 @@ Result<void> PostgresDatabase::store_backtest_positions(const std::vector<Positi
             }
         }
 
-        std::string actual_portfolio_id = portfolio_id.empty() ? "BASE_PORTFOLIO" : portfolio_id;
+        const std::string& actual_portfolio_id = portfolio_id;
 
         // Build batch INSERT query with all required columns for daily storage
         // Try new schema first (with date, last_update, unrealized_pnl, realized_pnl)
@@ -681,6 +687,8 @@ Result<void> PostgresDatabase::store_backtest_positions_with_strategy(
     const std::string& table_name) {
     std::lock_guard<std::mutex> lock(mutex_);
 
+    auto portfolio_validation = validate_portfolio_id(portfolio_id);
+    if (portfolio_validation.is_error()) return portfolio_validation;
     // Validate connection
     auto validation = validate_connection();
     if (validation.is_error()) {
@@ -700,7 +708,7 @@ Result<void> PostgresDatabase::store_backtest_positions_with_strategy(
     try {
         PublicationTransaction txn(*connection_, publication_transaction_);
 
-        std::string actual_portfolio_id = portfolio_id.empty() ? "BASE_PORTFOLIO" : portfolio_id;
+        const std::string& actual_portfolio_id = portfolio_id;
 
         // Build batch INSERT query with strategy_id and all required columns
         // Schema requires: run_id, portfolio_id, strategy_id, date, symbol, quantity,
@@ -800,7 +808,7 @@ Result<void> PostgresDatabase::update_live_results(
 
 
         // Use actual portfolio_id or default to BASE_PORTFOLIO for backward compatibility
-        std::string actual_portfolio_id = portfolio_id.empty() ? "BASE_PORTFOLIO" : portfolio_id;
+        const std::string& actual_portfolio_id = portfolio_id;
 
         // Column names can't be bound as $n parameters -- only values can -- so every
         // column is checked against a strict identifier whitelist before it reaches the
@@ -896,7 +904,7 @@ Result<void> PostgresDatabase::update_live_equity_curve(const std::string& strat
 
 
         // Use actual portfolio_id or default to BASE_PORTFOLIO for backward compatibility
-        std::string actual_portfolio_id = portfolio_id.empty() ? "BASE_PORTFOLIO" : portfolio_id;
+        const std::string& actual_portfolio_id = portfolio_id;
 
         std::string query = "UPDATE " + table_name + " SET equity = " + std::to_string(equity) +
                             " WHERE strategy_id = " + txn.quote(strategy_id) +
@@ -953,7 +961,7 @@ Result<void> PostgresDatabase::delete_live_results(const std::string& strategy_i
 
 
         // Use actual portfolio_id or default to BASE_PORTFOLIO for backward compatibility
-        std::string actual_portfolio_id = portfolio_id.empty() ? "BASE_PORTFOLIO" : portfolio_id;
+        const std::string& actual_portfolio_id = portfolio_id;
 
         std::string query = "DELETE FROM " + table_name +
                             " WHERE strategy_id = " + txn.quote(strategy_id) +
@@ -1011,7 +1019,7 @@ Result<void> PostgresDatabase::delete_live_equity_curve(const std::string& strat
 
 
         // Use actual portfolio_id or default to BASE_PORTFOLIO for backward compatibility
-        std::string actual_portfolio_id = portfolio_id.empty() ? "BASE_PORTFOLIO" : portfolio_id;
+        const std::string& actual_portfolio_id = portfolio_id;
 
         std::string query = "DELETE FROM " + table_name +
                             " WHERE strategy_id = " + txn.quote(strategy_id) +
@@ -1070,7 +1078,7 @@ Result<void> PostgresDatabase::store_live_results_complete(
 
 
         // Use provided portfolio_id or default to BASE_PORTFOLIO
-        std::string actual_portfolio_id = portfolio_id.empty() ? "BASE_PORTFOLIO" : portfolio_id;
+        const std::string& actual_portfolio_id = portfolio_id;
 
         // Column names can't be bound as $n parameters -- validate against the same
         // identifier whitelist as update_live_results before either map touches the query.
@@ -1184,6 +1192,8 @@ Result<void> PostgresDatabase::store_live_run_metadata(
     std::lock_guard<std::mutex> lock(mutex_);
 
     // Validate connection
+    auto portfolio_validation = validate_portfolio_id(portfolio_id);
+    if (portfolio_validation.is_error()) return portfolio_validation;
     auto validation = validate_connection();
     if (validation.is_error()) {
         return validation;
@@ -1317,7 +1327,7 @@ Result<void> PostgresDatabase::store_live_run_metadata(
         // Format date as YYYY-MM-DD
         std::string date_str = format_timestamp(date).substr(0, 10);
 
-        std::string actual_portfolio_id = portfolio_id.empty() ? "BASE_PORTFOLIO" : portfolio_id;
+        const std::string& actual_portfolio_id = portfolio_id;
 
         // Build INSERT with ON CONFLICT UPDATE
         // Unique constraint: (date, strategy_id, portfolio_id)

@@ -77,13 +77,12 @@ TEST_F(BacktestResultsManagerTest, ConstructorSetsAccessors) {
     EXPECT_TRUE(mgr_->is_storage_enabled());
     EXPECT_EQ(mgr_->get_schema(), "backtest");
     EXPECT_EQ(mgr_->get_strategy_id(), "TEST_STRAT");
-    // FIXME: production bug — BacktestResultsManager declares its own
-    // `portfolio_id_` member that shadows the one on ResultsManagerBase. The
-    // constructor stores the supplied portfolio_id into the derived class's
-    // shadow, while get_portfolio_id() (defined on the base) reads the base's
-    // member, which keeps its default "BASE_PORTFOLIO". Capture observed
-    // behavior so this test fires if/when the shadow is removed.
-    EXPECT_EQ(mgr_->get_portfolio_id(), "BASE_PORTFOLIO");
+    EXPECT_EQ(mgr_->get_portfolio_id(), "TEST_PORTFOLIO");
+}
+
+TEST_F(BacktestResultsManagerTest, ConstructorRejectsEmptyPortfolioIdentity) {
+    EXPECT_THROW(BacktestResultsManager(db_, true, "TEST_STRAT", ""),
+                 std::invalid_argument);
 }
 
 TEST_F(BacktestResultsManagerTest, SetStorageEnabledFlipsFlag) {

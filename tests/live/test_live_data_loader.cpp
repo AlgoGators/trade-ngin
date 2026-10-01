@@ -126,3 +126,32 @@ TEST_F(LiveDataLoaderTest, LoadDailyPnLHistoryDisconnectedErrors) {
     LiveDataLoader l(make_disconnected_db(), "trading");
     ASSERT_DB_ERROR(l.load_daily_pnl_history("S", "P", now()));
 }
+
+#define ASSERT_EMPTY_PORTFOLIO_ERROR(expr)                                    \
+    do {                                                                       \
+        auto __r = (expr);                                                     \
+        ASSERT_TRUE(__r.is_error());                                           \
+        EXPECT_EQ(__r.error()->code(), ErrorCode::INVALID_ARGUMENT);           \
+    } while (0)
+
+TEST_F(LiveDataLoaderTest, EveryPortfolioScopedReadRejectsEmptyIdentity) {
+    LiveDataLoader loader(make_disconnected_db(), "trading");
+    const auto date = now();
+    ASSERT_EMPTY_PORTFOLIO_ERROR(loader.load_previous_portfolio_value("S", "", date));
+    ASSERT_EMPTY_PORTFOLIO_ERROR(loader.load_portfolio_value("S", "", date));
+    ASSERT_EMPTY_PORTFOLIO_ERROR(loader.load_live_results("S", "", date));
+    ASSERT_EMPTY_PORTFOLIO_ERROR(loader.load_previous_day_data("S", "", date));
+    ASSERT_EMPTY_PORTFOLIO_ERROR(loader.has_live_results("S", "", date));
+    ASSERT_EMPTY_PORTFOLIO_ERROR(loader.get_live_results_count("S", ""));
+    ASSERT_EMPTY_PORTFOLIO_ERROR(loader.load_daily_returns_history("S", "", date));
+    ASSERT_EMPTY_PORTFOLIO_ERROR(loader.load_daily_pnl_history("S", "", date));
+    ASSERT_EMPTY_PORTFOLIO_ERROR(loader.load_equity_curve_history("S", "", date));
+    ASSERT_EMPTY_PORTFOLIO_ERROR(loader.load_total_trades_count("S", "", date));
+    ASSERT_EMPTY_PORTFOLIO_ERROR(loader.load_positions("S", "", date));
+    ASSERT_EMPTY_PORTFOLIO_ERROR(loader.load_positions_for_export("S", "", date));
+    ASSERT_EMPTY_PORTFOLIO_ERROR(loader.load_daily_transaction_costs("S", "", date));
+    ASSERT_EMPTY_PORTFOLIO_ERROR(loader.load_margin_metrics("S", "", date));
+    ASSERT_EMPTY_PORTFOLIO_ERROR(loader.load_daily_metrics_for_email("S", "", date));
+    ASSERT_EMPTY_PORTFOLIO_ERROR(
+        loader.load_commissions_by_symbol("S", "OWNER", "", date));
+}

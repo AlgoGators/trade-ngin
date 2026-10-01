@@ -102,6 +102,7 @@ private:
 
     // Helper method to check database connection
     Result<void> validate_connection() const;
+    Result<void> validate_portfolio_connection(const std::string& portfolio_id) const;
 
 public:
     /**

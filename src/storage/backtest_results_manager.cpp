@@ -15,10 +15,14 @@ BacktestResultsManager::BacktestResultsManager(std::shared_ptr<PostgresDatabase>
                                              bool store_enabled,
                                              const std::string& strategy_id,
                                              const std::string& portfolio_id)
-    : ResultsManagerBase(db, store_enabled, "backtest", strategy_id),
+    : ResultsManagerBase(db, store_enabled, "backtest", strategy_id,
+                         portfolio_id),
       start_date_(std::chrono::system_clock::now()),
-      end_date_(std::chrono::system_clock::now()),
-      portfolio_id_(portfolio_id.empty() ? "BASE_PORTFOLIO" : portfolio_id) {
+      end_date_(std::chrono::system_clock::now()) {
+
+    if (portfolio_id.empty()) {
+        throw std::invalid_argument("portfolio_id must not be empty");
+    }
 
     INFO("Initialized BacktestResultsManager for strategy: " + strategy_id + ", portfolio: " + portfolio_id_);
 }

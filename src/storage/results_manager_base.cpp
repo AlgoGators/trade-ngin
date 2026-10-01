@@ -79,9 +79,7 @@ Result<void> ResultsManagerBase::save_positions(const std::vector<Position>& pos
         for (auto& pos : positions_with_date) {
             pos.last_update = date;  // Set timestamp to the date being processed
         }
-        // Note: portfolio_id not available in base class, will be passed as empty string
-        // BacktestResultsManager should override this method to pass portfolio_id
-        return db_->store_backtest_positions(positions_with_date, run_id, "BASE_PORTFOLIO",
+        return db_->store_backtest_positions(positions_with_date, run_id, portfolio_id_,
                                              table_name);
     } else {
         // For live trading, use regular store_positions
@@ -116,9 +114,7 @@ Result<void> ResultsManagerBase::save_executions(const std::vector<ExecutionRepo
 
     // Use appropriate storage method based on schema
     if (schema_ == "backtest") {
-        // Note: portfolio_id not available in base class, will default to BASE_PORTFOLIO
-        // BacktestResultsManager should override this method to pass portfolio_id
-        return db_->store_backtest_executions(executions, run_id, "BASE_PORTFOLIO", table_name);
+        return db_->store_backtest_executions(executions, run_id, portfolio_id_, table_name);
     } else {
         return db_->store_executions(executions, strategy_id_, strategy_id_, portfolio_id_,
                                      table_name,portfolio_type_);
@@ -151,9 +147,7 @@ Result<void> ResultsManagerBase::save_signals(
 
     // Use appropriate storage method based on schema
     if (schema_ == "backtest") {
-        // Note: portfolio_id not available in base class, will default to BASE_PORTFOLIO
-        // BacktestResultsManager should override this method to pass portfolio_id
-        return db_->store_backtest_signals(signals, strategy_id_, run_id, date, "BASE_PORTFOLIO",
+        return db_->store_backtest_signals(signals, strategy_id_, run_id, date, portfolio_id_,
                                            table_name);
     } else {
         if (portfolio_type_ != "system")

@@ -34,14 +34,25 @@ bool PostgresDatabase::defer_live_write(const Timestamp& date, std::function<Res
     return true;
 }
 
+Result<void> PostgresDatabase::validate_portfolio_id(
+    const std::string& portfolio_id) const {
+    if (portfolio_id.empty() ||
+        portfolio_id.find_first_not_of(" \t\r\n") == std::string::npos) {
+        return make_error<void>(ErrorCode::INVALID_ARGUMENT,
+                                "portfolio_id must not be empty");
+    }
+    return Result<void>();
+}
+
 Result<void> PostgresDatabase::validate_operational_stream(const std::string& portfolio_id,
                                                          const std::string& stream) {
+    auto portfolio_validation = validate_portfolio_id(portfolio_id);
+    if (portfolio_validation.is_error()) return portfolio_validation;
     if (stream == "qt_proposal") {
         poison_proposal_refusal();
         return make_error<void>(ErrorCode::INVALID_ARGUMENT,"proposal_operational_stream_unsupported");
     }
-    if ((stream != "system" && stream != "qt") ||
-        (stream == "qt" && portfolio_id.find_first_not_of(" \t\r\n") == std::string::npos))
+    if (stream != "system" && stream != "qt")
         return make_error<void>(ErrorCode::INVALID_ARGUMENT,"operational_stream_scope_invalid");
     // Configuration approval is not authorization for a desk publication.
     if (pending_publication_ && stream != "system") {
@@ -290,10 +301,11 @@ bool PostgresDatabase::defer_live_write(std::function<Result<void>()> write, uns
 void PostgresDatabase::fence_live_write(pqxx::work& txn, const std::string& strategy_id,
                                        const std::string& portfolio_id, const std::string& stream,
                                        bool proposal_seed_operation) {
-    if ((stream == "qt" || stream == "qt_proposal") &&
-        portfolio_id.find_first_not_of(" \t\r\n") == std::string::npos)
-        throw std::runtime_error("qt_book_required");
-    const auto book = canonical_book(portfolio_id.empty() ? "BASE_PORTFOLIO" : portfolio_id);
+    if (portfolio_id.empty() ||
+        portfolio_id.find_first_not_of(" \t\r\n") == std::string::npos) {
+        throw std::runtime_error("portfolio_id_required");
+    }
+    const auto book = canonical_book(portfolio_id);
     if (pending_publication_ &&
         (pending_publication_->strategy_id != strategy_id || pending_publication_->portfolio_id != book))
         throw std::runtime_error("runtime_publication_scope_mismatch");

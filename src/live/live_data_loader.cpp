@@ -66,6 +66,15 @@ Result<void> LiveDataLoader::validate_connection() const {
     return Result<void>();
 }
 
+Result<void> LiveDataLoader::validate_portfolio_connection(
+    const std::string& portfolio_id) const {
+    if (portfolio_id.empty()) {
+        return make_error<void>(ErrorCode::INVALID_ARGUMENT,
+                                "portfolio_id must not be empty", "LiveDataLoader");
+    }
+    return validate_connection();
+}
+
 bool LiveDataLoader::is_connected() const {
     return db_ && db_->is_connected();
 }
@@ -75,9 +84,9 @@ bool LiveDataLoader::is_connected() const {
 Result<double> LiveDataLoader::load_previous_portfolio_value(const std::string& strategy_id,
                                                              const std::string& portfolio_id,
                                                              const Timestamp& date) {
-    auto validation = validate_connection();
+    auto validation = validate_portfolio_connection(portfolio_id);
     if (validation.is_error()) {
-        return make_error<double>(ErrorCode::DATABASE_ERROR, validation.error()->what(),
+        return make_error<double>(validation.error()->code(), validation.error()->what(),
                                   "LiveDataLoader");
     }
 
@@ -86,7 +95,7 @@ Result<double> LiveDataLoader::load_previous_portfolio_value(const std::string& 
     std::stringstream date_ss;
     date_ss << std::put_time(std::gmtime(&time_t), "%Y-%m-%d");
 
-    std::string actual_portfolio_id = portfolio_id.empty() ? "BASE_PORTFOLIO" : portfolio_id;
+    const std::string& actual_portfolio_id = portfolio_id;
 
     std::string query =
         "SELECT COALESCE(current_portfolio_value, 0.0) "
@@ -131,9 +140,9 @@ Result<double> LiveDataLoader::load_previous_portfolio_value(const std::string& 
 Result<double> LiveDataLoader::load_portfolio_value(const std::string& strategy_id,
                                                     const std::string& portfolio_id,
                                                     const Timestamp& date) {
-    auto validation = validate_connection();
+    auto validation = validate_portfolio_connection(portfolio_id);
     if (validation.is_error()) {
-        return make_error<double>(ErrorCode::DATABASE_ERROR, validation.error()->what(),
+        return make_error<double>(validation.error()->code(), validation.error()->what(),
                                   "LiveDataLoader");
     }
 
@@ -141,7 +150,7 @@ Result<double> LiveDataLoader::load_portfolio_value(const std::string& strategy_
     std::stringstream date_ss;
     date_ss << std::put_time(std::gmtime(&time_t), "%Y-%m-%d");
 
-    std::string actual_portfolio_id = portfolio_id.empty() ? "BASE_PORTFOLIO" : portfolio_id;
+    const std::string& actual_portfolio_id = portfolio_id;
 
     std::string query =
         "SELECT COALESCE(current_portfolio_value, 0.0) "
@@ -186,9 +195,9 @@ Result<double> LiveDataLoader::load_portfolio_value(const std::string& strategy_
 Result<LiveResultsRow> LiveDataLoader::load_live_results(const std::string& strategy_id,
                                                          const std::string& portfolio_id,
                                                          const Timestamp& date) {
-    auto validation = validate_connection();
+    auto validation = validate_portfolio_connection(portfolio_id);
     if (validation.is_error()) {
-        return make_error<LiveResultsRow>(ErrorCode::DATABASE_ERROR, validation.error()->what(),
+        return make_error<LiveResultsRow>(validation.error()->code(), validation.error()->what(),
                                           "LiveDataLoader");
     }
 
@@ -196,7 +205,7 @@ Result<LiveResultsRow> LiveDataLoader::load_live_results(const std::string& stra
     std::stringstream date_ss;
     date_ss << std::put_time(std::gmtime(&time_t), "%Y-%m-%d");
 
-    std::string actual_portfolio_id = portfolio_id.empty() ? "BASE_PORTFOLIO" : portfolio_id;
+    const std::string& actual_portfolio_id = portfolio_id;
 
     std::string query =
         "SELECT "
@@ -330,9 +339,9 @@ Result<LiveResultsRow> LiveDataLoader::load_live_results(const std::string& stra
 Result<PreviousDayData> LiveDataLoader::load_previous_day_data(const std::string& strategy_id,
                                                                const std::string& portfolio_id,
                                                                const Timestamp& date) {
-    auto validation = validate_connection();
+    auto validation = validate_portfolio_connection(portfolio_id);
     if (validation.is_error()) {
-        return make_error<PreviousDayData>(ErrorCode::DATABASE_ERROR, validation.error()->what(),
+        return make_error<PreviousDayData>(validation.error()->code(), validation.error()->what(),
                                            "LiveDataLoader");
     }
 
@@ -340,7 +349,7 @@ Result<PreviousDayData> LiveDataLoader::load_previous_day_data(const std::string
     std::stringstream date_ss;
     date_ss << std::put_time(std::gmtime(&time_t), "%Y-%m-%d");
 
-    std::string actual_portfolio_id = portfolio_id.empty() ? "BASE_PORTFOLIO" : portfolio_id;
+    const std::string& actual_portfolio_id = portfolio_id;
 
     std::string query =
         "SELECT "
@@ -407,9 +416,9 @@ Result<PreviousDayData> LiveDataLoader::load_previous_day_data(const std::string
 Result<bool> LiveDataLoader::has_live_results(const std::string& strategy_id,
                                               const std::string& portfolio_id,
                                               const Timestamp& date) {
-    auto validation = validate_connection();
+    auto validation = validate_portfolio_connection(portfolio_id);
     if (validation.is_error()) {
-        return make_error<bool>(ErrorCode::DATABASE_ERROR, validation.error()->what(),
+        return make_error<bool>(validation.error()->code(), validation.error()->what(),
                                 "LiveDataLoader");
     }
 
@@ -417,7 +426,7 @@ Result<bool> LiveDataLoader::has_live_results(const std::string& strategy_id,
     std::stringstream date_ss;
     date_ss << std::put_time(std::gmtime(&time_t), "%Y-%m-%d");
 
-    std::string actual_portfolio_id = portfolio_id.empty() ? "BASE_PORTFOLIO" : portfolio_id;
+    const std::string& actual_portfolio_id = portfolio_id;
 
     std::string query = "SELECT COUNT(*) FROM " + schema_ +
                         ".live_results "
@@ -452,13 +461,13 @@ Result<bool> LiveDataLoader::has_live_results(const std::string& strategy_id,
 
 Result<int> LiveDataLoader::get_live_results_count(const std::string& strategy_id,
                                                    const std::string& portfolio_id) {
-    auto validation = validate_connection();
+    auto validation = validate_portfolio_connection(portfolio_id);
     if (validation.is_error()) {
-        return make_error<int>(ErrorCode::DATABASE_ERROR, validation.error()->what(),
+        return make_error<int>(validation.error()->code(), validation.error()->what(),
                                "LiveDataLoader");
     }
 
-    std::string actual_portfolio_id = portfolio_id.empty() ? "BASE_PORTFOLIO" : portfolio_id;
+    const std::string& actual_portfolio_id = portfolio_id;
 
     std::string query = "SELECT COUNT(*) FROM " + schema_ +
                         ".live_results "
@@ -492,9 +501,9 @@ Result<int> LiveDataLoader::get_live_results_count(const std::string& strategy_i
 
 Result<std::vector<double>> LiveDataLoader::load_daily_returns_history(
     const std::string& strategy_id, const std::string& portfolio_id, const Timestamp& as_of_date) {
-    auto validation = validate_connection();
+    auto validation = validate_portfolio_connection(portfolio_id);
     if (validation.is_error()) {
-        return make_error<std::vector<double>>(ErrorCode::DATABASE_ERROR,
+        return make_error<std::vector<double>>(validation.error()->code(),
                                                validation.error()->what(), "LiveDataLoader");
     }
 
@@ -502,7 +511,7 @@ Result<std::vector<double>> LiveDataLoader::load_daily_returns_history(
     std::stringstream date_ss;
     date_ss << std::put_time(std::gmtime(&time_t), "%Y-%m-%d");
 
-    std::string actual_portfolio_id = portfolio_id.empty() ? "BASE_PORTFOLIO" : portfolio_id;
+    const std::string& actual_portfolio_id = portfolio_id;
 
     std::string query =
         "SELECT daily_return::double precision as daily_return "
@@ -549,9 +558,9 @@ Result<std::vector<double>> LiveDataLoader::load_daily_returns_history(
 Result<std::vector<double>> LiveDataLoader::load_daily_pnl_history(const std::string& strategy_id,
                                                                    const std::string& portfolio_id,
                                                                    const Timestamp& as_of_date) {
-    auto validation = validate_connection();
+    auto validation = validate_portfolio_connection(portfolio_id);
     if (validation.is_error()) {
-        return make_error<std::vector<double>>(ErrorCode::DATABASE_ERROR,
+        return make_error<std::vector<double>>(validation.error()->code(),
                                                validation.error()->what(), "LiveDataLoader");
     }
 
@@ -559,7 +568,7 @@ Result<std::vector<double>> LiveDataLoader::load_daily_pnl_history(const std::st
     std::stringstream date_ss;
     date_ss << std::put_time(std::gmtime(&time_t), "%Y-%m-%d");
 
-    std::string actual_portfolio_id = portfolio_id.empty() ? "BASE_PORTFOLIO" : portfolio_id;
+    const std::string& actual_portfolio_id = portfolio_id;
 
     std::string query =
         "SELECT daily_pnl::double precision as daily_pnl "
@@ -605,9 +614,9 @@ Result<std::vector<double>> LiveDataLoader::load_daily_pnl_history(const std::st
 
 Result<std::vector<double>> LiveDataLoader::load_equity_curve_history(
     const std::string& strategy_id, const std::string& portfolio_id, const Timestamp& as_of_date) {
-    auto validation = validate_connection();
+    auto validation = validate_portfolio_connection(portfolio_id);
     if (validation.is_error()) {
-        return make_error<std::vector<double>>(ErrorCode::DATABASE_ERROR,
+        return make_error<std::vector<double>>(validation.error()->code(),
                                                validation.error()->what(), "LiveDataLoader");
     }
 
@@ -615,7 +624,7 @@ Result<std::vector<double>> LiveDataLoader::load_equity_curve_history(
     std::stringstream date_ss;
     date_ss << std::put_time(std::gmtime(&time_t), "%Y-%m-%d");
 
-    std::string actual_portfolio_id = portfolio_id.empty() ? "BASE_PORTFOLIO" : portfolio_id;
+    const std::string& actual_portfolio_id = portfolio_id;
 
     std::string query =
         "SELECT equity "
@@ -662,9 +671,9 @@ Result<std::vector<double>> LiveDataLoader::load_equity_curve_history(
 Result<int> LiveDataLoader::load_total_trades_count(const std::string& strategy_id,
                                                     const std::string& portfolio_id,
                                                     const Timestamp& as_of_date) {
-    auto validation = validate_connection();
+    auto validation = validate_portfolio_connection(portfolio_id);
     if (validation.is_error()) {
-        return make_error<int>(ErrorCode::DATABASE_ERROR, validation.error()->what(),
+        return make_error<int>(validation.error()->code(), validation.error()->what(),
                                "LiveDataLoader");
     }
 
@@ -672,7 +681,7 @@ Result<int> LiveDataLoader::load_total_trades_count(const std::string& strategy_
     std::stringstream date_ss;
     date_ss << std::put_time(std::gmtime(&time_t), "%Y-%m-%d");
 
-    std::string actual_portfolio_id = portfolio_id.empty() ? "BASE_PORTFOLIO" : portfolio_id;
+    const std::string& actual_portfolio_id = portfolio_id;
 
     std::string query =
         "SELECT COUNT(*) "
@@ -715,9 +724,9 @@ Result<int> LiveDataLoader::load_total_trades_count(const std::string& strategy_
 Result<std::vector<Position>> LiveDataLoader::load_positions(const std::string& strategy_id,
                                                              const std::string& portfolio_id,
                                                              const Timestamp& date) {
-    auto validation = validate_connection();
+    auto validation = validate_portfolio_connection(portfolio_id);
     if (validation.is_error()) {
-        return make_error<std::vector<Position>>(ErrorCode::DATABASE_ERROR,
+        return make_error<std::vector<Position>>(validation.error()->code(),
                                                  validation.error()->what(), "LiveDataLoader");
     }
 
@@ -725,7 +734,7 @@ Result<std::vector<Position>> LiveDataLoader::load_positions(const std::string& 
     std::stringstream date_ss;
     date_ss << std::put_time(std::gmtime(&time_t), "%Y-%m-%d");
 
-    std::string actual_portfolio_id = portfolio_id.empty() ? "BASE_PORTFOLIO" : portfolio_id;
+    const std::string& actual_portfolio_id = portfolio_id;
 
     std::string query =
         "SELECT symbol, quantity, average_price, "
@@ -802,9 +811,9 @@ Result<std::vector<Position>> LiveDataLoader::load_positions_for_export(
 Result<double> LiveDataLoader::load_daily_transaction_costs(const std::string& strategy_id,
                                                             const std::string& portfolio_id,
                                                             const Timestamp& date) {
-    auto validation = validate_connection();
+    auto validation = validate_portfolio_connection(portfolio_id);
     if (validation.is_error()) {
-        return make_error<double>(ErrorCode::DATABASE_ERROR, validation.error()->what(),
+        return make_error<double>(validation.error()->code(), validation.error()->what(),
                                   "LiveDataLoader");
     }
 
@@ -812,7 +821,7 @@ Result<double> LiveDataLoader::load_daily_transaction_costs(const std::string& s
     std::stringstream date_ss;
     date_ss << std::put_time(std::gmtime(&time_t), "%Y-%m-%d");
 
-    std::string actual_portfolio_id = portfolio_id.empty() ? "BASE_PORTFOLIO" : portfolio_id;
+    const std::string& actual_portfolio_id = portfolio_id;
 
     std::string query =
         "SELECT COALESCE(daily_transaction_costs, 0.0) "
@@ -856,9 +865,9 @@ Result<double> LiveDataLoader::load_daily_transaction_costs(const std::string& s
 Result<MarginMetrics> LiveDataLoader::load_margin_metrics(const std::string& strategy_id,
                                                           const std::string& portfolio_id,
                                                           const Timestamp& date) {
-    auto validation = validate_connection();
+    auto validation = validate_portfolio_connection(portfolio_id);
     if (validation.is_error()) {
-        return make_error<MarginMetrics>(ErrorCode::DATABASE_ERROR, validation.error()->what(),
+        return make_error<MarginMetrics>(validation.error()->code(), validation.error()->what(),
                                          "LiveDataLoader");
     }
 
@@ -866,7 +875,7 @@ Result<MarginMetrics> LiveDataLoader::load_margin_metrics(const std::string& str
     std::stringstream date_ss;
     date_ss << std::put_time(std::gmtime(&time_t), "%Y-%m-%d");
 
-    std::string actual_portfolio_id = portfolio_id.empty() ? "BASE_PORTFOLIO" : portfolio_id;
+    const std::string& actual_portfolio_id = portfolio_id;
 
     std::string query =
         "SELECT portfolio_leverage, equity_to_margin_ratio, "
@@ -924,17 +933,17 @@ Result<MarginMetrics> LiveDataLoader::load_margin_metrics(const std::string& str
 
 Result<std::unordered_map<std::string, double>> LiveDataLoader::load_daily_metrics_for_email(
     const std::string& strategy_id, const std::string& portfolio_id, const Timestamp& date) {
-    auto validation = validate_connection();
+    auto validation = validate_portfolio_connection(portfolio_id);
     if (validation.is_error()) {
         return make_error<std::unordered_map<std::string, double>>(
-            ErrorCode::DATABASE_ERROR, validation.error()->what(), "LiveDataLoader");
+            validation.error()->code(), validation.error()->what(), "LiveDataLoader");
     }
 
     auto time_t = std::chrono::system_clock::to_time_t(date);
     std::stringstream date_ss;
     date_ss << std::put_time(std::gmtime(&time_t), "%Y-%m-%d");
 
-    std::string actual_portfolio_id = portfolio_id.empty() ? "BASE_PORTFOLIO" : portfolio_id;
+    const std::string& actual_portfolio_id = portfolio_id;
 
     std::string query =
         "SELECT daily_return, daily_unrealized_pnl, daily_realized_pnl, daily_pnl, "

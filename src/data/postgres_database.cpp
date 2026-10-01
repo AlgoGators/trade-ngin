@@ -429,6 +429,8 @@ Result<void> PostgresDatabase::store_positions(const std::vector<Position>& posi
         poison_proposal_refusal();
         return make_error<void>(ErrorCode::INVALID_ARGUMENT,"proposal_positions_require_specialized_api");
     }
+    auto stream_validation = validate_operational_stream(portfolio_id, portfolio_type);
+    if (stream_validation.is_error()) return stream_validation;
     if (pending_publication_ && !publication_transaction_ && !positions.empty()) {
         const auto day = format_timestamp(positions.front().last_update).substr(0,10);
         bool valid_batch = true;
@@ -646,6 +648,8 @@ Result<void> PostgresDatabase::store_signals(const std::unordered_map<std::strin
                                              const std::string& portfolio_id,
                                              const Timestamp& timestamp,
                                              const std::string& table_name) {
+    auto stream_validation = validate_operational_stream(portfolio_id, "system");
+    if (stream_validation.is_error()) return stream_validation;
     if (defer_live_write(timestamp,[this,signals,strategy_id,strategy_name,portfolio_id,timestamp,table_name]() {
         return store_signals(signals,strategy_id,strategy_name,portfolio_id,timestamp,table_name);
     })) return Result<void>();
@@ -817,6 +821,11 @@ Result<std::unordered_map<std::string, Position>> PostgresDatabase::load_positio
         return make_error<std::unordered_map<std::string,Position>>(
             ErrorCode::INVALID_ARGUMENT,"proposal_positions_require_specialized_reader");
     }
+    auto portfolio_validation = validate_portfolio_id(portfolio_id);
+    if (portfolio_validation.is_error()) {
+        return make_error<std::unordered_map<std::string, Position>>(
+            portfolio_validation.error()->code(), portfolio_validation.error()->what());
+    }
     auto validation = validate_connection();
     if (validation.is_error()) {
         return make_error<std::unordered_map<std::string, Position>>(validation.error()->code(),
@@ -835,8 +844,7 @@ Result<std::unordered_map<std::string, Position>> PostgresDatabase::load_positio
         std::string date_str = format_timestamp(date);
         pqxx::result result;
 
-        // Use actual portfolio_id or default to BASE_PORTFOLIO for backward compatibility
-        std::string actual_portfolio_id = portfolio_id.empty() ? "BASE_PORTFOLIO" : portfolio_id;
+        const std::string& actual_portfolio_id = portfolio_id;
 
         // Query to get positions for a specific strategy, portfolio, and date
         // If strategy_name is provided, filter by strategy_id, strategy_name, AND portfolio_id
@@ -2032,6 +2040,8 @@ Result<void> PostgresDatabase::validate_signal_data(const std::string& symbol,
 Result<void> PostgresDatabase::store_backtest_executions(
     const std::vector<ExecutionReport>& executions, const std::string& run_id,
     const std::string& portfolio_id, const std::string& table_name) {
+    auto portfolio_validation = validate_portfolio_id(portfolio_id);
+    if (portfolio_validation.is_error()) return portfolio_validation;
     auto validation = validate_connection();
     if (validation.is_error())
         return validation;
@@ -2045,7 +2055,7 @@ Result<void> PostgresDatabase::store_backtest_executions(
             return table_validation;
         }
 
-        std::string actual_portfolio_id = portfolio_id.empty() ? "BASE_PORTFOLIO" : portfolio_id;
+        const std::string& actual_portfolio_id = portfolio_id;
 
         // Chunked, fully-parameterized batch insert: every value is bound, never
         // concatenated. Chunk size keeps rows*cols comfortably under Postgres's
@@ -2101,6 +2111,8 @@ Result<void> PostgresDatabase::store_backtest_executions_with_strategy(
     const std::vector<ExecutionReport>& executions, const std::string& run_id,
     const std::string& strategy_id, const std::string& portfolio_id,
     const std::string& table_name) {
+    auto portfolio_validation = validate_portfolio_id(portfolio_id);
+    if (portfolio_validation.is_error()) return portfolio_validation;
     auto validation = validate_connection();
     if (validation.is_error())
         return validation;
@@ -2114,7 +2126,7 @@ Result<void> PostgresDatabase::store_backtest_executions_with_strategy(
             return table_validation;
         }
 
-        std::string actual_portfolio_id = portfolio_id.empty() ? "BASE_PORTFOLIO" : portfolio_id;
+        const std::string& actual_portfolio_id = portfolio_id;
 
         // Chunked, fully-parameterized batch insert -- see store_backtest_executions above
         // for why chunking (not one unbounded query) is required.
@@ -2170,6 +2182,8 @@ Result<void> PostgresDatabase::store_backtest_signals(
     const std::unordered_map<std::string, double>& signals, const std::string& strategy_id,
     const std::string& run_id, const Timestamp& timestamp, const std::string& portfolio_id,
     const std::string& table_name) {
+    auto portfolio_validation = validate_portfolio_id(portfolio_id);
+    if (portfolio_validation.is_error()) return portfolio_validation;
     auto validation = validate_connection();
     if (validation.is_error())
         return validation;
@@ -2177,7 +2191,7 @@ Result<void> PostgresDatabase::store_backtest_signals(
     try {
         PublicationTransaction txn(*connection_, publication_transaction_);
 
-        std::string actual_portfolio_id = portfolio_id.empty() ? "BASE_PORTFOLIO" : portfolio_id;
+        const std::string& actual_portfolio_id = portfolio_id;
 
         for (const auto& [symbol, signal_value] : signals) {
             // For backtest.signals, include portfolio_run_id if run_id looks like a portfolio
@@ -2224,6 +2238,8 @@ Result<void> PostgresDatabase::store_backtest_metadata(
     const std::string& run_id, const std::string& name, const std::string& description,
     const Timestamp& start_date, const Timestamp& end_date, const nlohmann::json& hyperparameters,
     const std::string& portfolio_id, const std::string& table_name) {
+    auto portfolio_validation = validate_portfolio_id(portfolio_id);
+    if (portfolio_validation.is_error()) return portfolio_validation;
     auto validation = validate_connection();
     if (validation.is_error())
         return validation;
@@ -2231,7 +2247,7 @@ Result<void> PostgresDatabase::store_backtest_metadata(
     try {
         PublicationTransaction txn(*connection_, publication_transaction_);
 
-        std::string actual_portfolio_id = portfolio_id.empty() ? "BASE_PORTFOLIO" : portfolio_id;
+        const std::string& actual_portfolio_id = portfolio_id;
 
         std::string query =
             "INSERT INTO " + table_name +
@@ -2263,6 +2279,8 @@ Result<void> PostgresDatabase::store_backtest_metadata_with_portfolio(
     const std::string& description, const Timestamp& start_date, const Timestamp& end_date,
     const nlohmann::json& hyperparameters, const std::string& portfolio_id,
     const std::string& table_name) {
+    auto portfolio_validation = validate_portfolio_id(portfolio_id);
+    if (portfolio_validation.is_error()) return portfolio_validation;
     auto validation = validate_connection();
     if (validation.is_error())
         return validation;
@@ -2270,7 +2288,7 @@ Result<void> PostgresDatabase::store_backtest_metadata_with_portfolio(
     try {
         PublicationTransaction txn(*connection_, publication_transaction_);
 
-        std::string actual_portfolio_id = portfolio_id.empty() ? "BASE_PORTFOLIO" : portfolio_id;
+        const std::string& actual_portfolio_id = portfolio_id;
 
         std::string query =
             "INSERT INTO " + table_name +
@@ -2441,6 +2459,11 @@ Result<std::tuple<double, double, double>> PostgresDatabase::get_previous_live_a
     const std::string& strategy_id, const std::string& portfolio_id, const Timestamp& date,
     const std::string& table_name, const std::string& portfolio_type) {
     if (portfolio_type == "qt_proposal") poison_proposal_refusal();
+    auto portfolio_validation = validate_portfolio_id(portfolio_id);
+    if (portfolio_validation.is_error()) {
+        return make_error<std::tuple<double, double, double>>(
+            portfolio_validation.error()->code(), portfolio_validation.error()->what());
+    }
     if (portfolio_type != "system" && portfolio_type != "qt")
         return make_error<std::tuple<double,double,double>>(ErrorCode::INVALID_ARGUMENT,"unsupported_stream");
     auto validation = validate_connection();
@@ -2459,8 +2482,7 @@ Result<std::tuple<double, double, double>> PostgresDatabase::get_previous_live_a
                                                                   table_validation.error()->what());
         }
 
-        // Use actual portfolio_id or default to BASE_PORTFOLIO for backward compatibility
-        std::string actual_portfolio_id = portfolio_id.empty() ? "BASE_PORTFOLIO" : portfolio_id;
+        const std::string& actual_portfolio_id = portfolio_id;
 
         // Build query for the most recent previous record before the current date
         // Instead of strict "1 day ago", we look for the latest record with date < current_date

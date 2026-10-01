@@ -25,6 +25,56 @@ protected:
     std::unique_ptr<PostgresDatabase> db;
 };
 
+#define EXPECT_INVALID_PORTFOLIO(expr)                                        \
+    do {                                                                       \
+        auto __result = (expr);                                                \
+        ASSERT_TRUE(__result.is_error());                                      \
+        EXPECT_EQ(__result.error()->code(), ErrorCode::INVALID_ARGUMENT);      \
+    } while (0)
+
+TEST(PostgresDatabasePortfolioScope, EmptyIdentityFailsBeforeConnection) {
+    PostgresDatabase disconnected("host=invalid port=1 user=u dbname=d");
+    const Timestamp date{};
+    const std::vector<ExecutionReport> executions;
+    const std::vector<Position> positions;
+    const std::unordered_map<std::string, double> signals;
+    const std::unordered_map<std::string, double> metrics;
+
+    EXPECT_INVALID_PORTFOLIO(disconnected.validate_portfolio_id(""));
+    EXPECT_INVALID_PORTFOLIO(disconnected.validate_operational_stream("", "system"));
+    EXPECT_INVALID_PORTFOLIO(disconnected.store_executions(
+        executions, "S", "OWNER", "", "trading.executions"));
+    EXPECT_INVALID_PORTFOLIO(disconnected.store_positions(
+        positions, "S", "OWNER", "", "trading.positions"));
+    EXPECT_INVALID_PORTFOLIO(disconnected.store_signals(
+        signals, "S", "OWNER", "", date, "trading.signals"));
+    EXPECT_INVALID_PORTFOLIO(disconnected.load_positions_by_date(
+        "S", "OWNER", "", date, "trading.positions", "system"));
+    EXPECT_INVALID_PORTFOLIO(disconnected.store_backtest_executions(
+        executions, "RUN", "", "backtest.executions"));
+    EXPECT_INVALID_PORTFOLIO(disconnected.store_backtest_executions_with_strategy(
+        executions, "RUN", "S", "", "backtest.executions"));
+    EXPECT_INVALID_PORTFOLIO(disconnected.store_backtest_signals(
+        signals, "S", "RUN", date, "", "backtest.signals"));
+    EXPECT_INVALID_PORTFOLIO(disconnected.store_backtest_metadata(
+        "RUN", "name", "description", date, date, nlohmann::json::object(), "",
+        "backtest.run_metadata"));
+    EXPECT_INVALID_PORTFOLIO(disconnected.store_backtest_metadata_with_portfolio(
+        "RUN", "PORTFOLIO_RUN", "S", 1.0, nlohmann::json::object(), "name",
+        "description", date, date, nlohmann::json::object(), "",
+        "backtest.run_metadata"));
+    EXPECT_INVALID_PORTFOLIO(disconnected.store_backtest_summary(
+        "RUN", date, date, metrics, "", "backtest.results"));
+    EXPECT_INVALID_PORTFOLIO(disconnected.store_backtest_equity_curve_batch(
+        "RUN", {}, "", "backtest.equity_curve"));
+    EXPECT_INVALID_PORTFOLIO(disconnected.store_backtest_positions(
+        positions, "RUN", "", "backtest.final_positions"));
+    EXPECT_INVALID_PORTFOLIO(disconnected.store_backtest_positions_with_strategy(
+        positions, "RUN", "S", "", "backtest.final_positions"));
+    EXPECT_INVALID_PORTFOLIO(disconnected.get_previous_live_aggregates(
+        "S", "", date, "trading.live_results", "system"));
+}
+
 TEST_F(PostgresDatabaseTest, ConnectionLifecycle) {
     EXPECT_FALSE(db->is_connected());
 
