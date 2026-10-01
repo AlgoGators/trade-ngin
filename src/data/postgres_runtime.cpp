@@ -1,10 +1,12 @@
 #include "trade_ngin/data/postgres_database.hpp"
 #include <algorithm>
 #include <cctype>
+#include <cmath>
 #include <stdexcept>
 #include "trade_ngin/portfolio/qt_wire.hpp"
 #include "trade_ngin/data/qt_empty_model_owner_storage.hpp"
 #include "trade_ngin/data/qt_equity_model_prior_binding.hpp"
+#include "trade_ngin/core/time_utils.hpp"
 #include <optional>
 
 namespace trade_ngin {
@@ -42,6 +44,78 @@ Result<void> PostgresDatabase::validate_portfolio_id(
                                 "portfolio_id must not be empty");
     }
     return Result<void>();
+}
+
+Result<std::string> PostgresDatabase::onboard_investor_book(
+    const InvestorBookOnboarding& request) {
+    const auto valid_key = [](const std::string& value, std::size_t maximum,
+                              bool lowercase_only) {
+        if (value.empty() || value.size() > maximum ||
+            !std::isalnum(static_cast<unsigned char>(value.front()))) {
+            return false;
+        }
+        return std::all_of(value.begin(), value.end(), [lowercase_only](unsigned char ch) {
+            if (lowercase_only) {
+                return (ch >= 'a' && ch <= 'z') || (ch >= '0' && ch <= '9') ||
+                       ch == '_' || ch == '-';
+            }
+            return std::isalnum(ch) != 0 || ch == '_' || ch == '-';
+        });
+    };
+    if (!valid_key(request.config_key, 64, true) ||
+        !valid_key(request.portfolio_id, 100, false) ||
+        !std::isfinite(request.initial_capital) || request.initial_capital <= 0.0 ||
+        request.created_by.empty() || request.created_by.size() > 200 ||
+        request.created_by.find_first_not_of(" \t\r\n") == std::string::npos ||
+        request.strategy_ids.empty()) {
+        return make_error<std::string>(ErrorCode::INVALID_ARGUMENT,
+                                       "investor_book_onboarding_input_invalid");
+    }
+    Timestamp parsed_opening_date;
+    if (!core::parse_utc_date(request.opening_date, parsed_opening_date)) {
+        return make_error<std::string>(ErrorCode::INVALID_ARGUMENT,
+                                       "investor_book_onboarding_input_invalid");
+    }
+    std::set<std::string> unique_strategies;
+    for (const auto& strategy_id : request.strategy_ids) {
+        auto valid = validate_strategy_id(strategy_id);
+        if (valid.is_error() || !unique_strategies.insert(strategy_id).second) {
+            return make_error<std::string>(ErrorCode::INVALID_ARGUMENT,
+                                           "investor_book_strategy_ids_invalid");
+        }
+    }
+    auto connection_validation = validate_connection();
+    if (connection_validation.is_error()) {
+        return make_error<std::string>(connection_validation.error()->code(),
+                                       connection_validation.error()->what());
+    }
+    try {
+        pqxx::work transaction(*connection_);
+        nlohmann::json strategies = nlohmann::json::array();
+        for (const auto& strategy_id : request.strategy_ids) {
+            strategies.push_back(strategy_id);
+        }
+        auto result = transaction.exec(
+            "SELECT trading.onboard_investor_book($1,$2,$3,$4::date,$5::jsonb,$6)::text",
+            pqxx::params{request.config_key, request.portfolio_id, request.initial_capital,
+                         request.opening_date, strategies.dump(), request.created_by});
+        if (result.size() != 1 || result[0][0].is_null()) {
+            return make_error<std::string>(ErrorCode::DATABASE_ERROR,
+                                           "investor_book_onboarding_result_invalid");
+        }
+        const std::string book_id = result[0][0].as<std::string>();
+        transaction.commit();
+        return Result<std::string>(book_id);
+    } catch (const pqxx::sql_error& error) {
+        const std::string message = error.what();
+        const auto code = message.find("investor_book_") != std::string::npos
+                              ? ErrorCode::INVALID_ARGUMENT
+                              : ErrorCode::DATABASE_ERROR;
+        return make_error<std::string>(code, message, "PostgresDatabase");
+    } catch (const std::exception& error) {
+        return make_error<std::string>(ErrorCode::DATABASE_ERROR, error.what(),
+                                       "PostgresDatabase");
+    }
 }
 
 Result<void> PostgresDatabase::validate_operational_stream(const std::string& portfolio_id,

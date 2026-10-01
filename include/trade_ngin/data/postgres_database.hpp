@@ -31,6 +31,15 @@ struct QtModelPositionBatch {
     std::string portfolio_id,strategy_id,strategy_name,source_day;
     std::vector<Position> positions;
 };
+
+struct InvestorBookOnboarding {
+    std::string config_key;
+    std::string portfolio_id;
+    double initial_capital{0.0};
+    std::string opening_date;
+    std::vector<std::string> strategy_ids;
+    std::string created_by;
+};
 class DbTransaction {
 public:
     ~DbTransaction();
@@ -563,6 +572,11 @@ public:
     Result<void> validate_operational_stream(const std::string& portfolio_id,
                                              const std::string& portfolio_type);
     Result<void> validate_execution_report(const ExecutionReport& exec) const;
+
+    // Creates an immutable system-stream investor book and all annualization
+    // anchors in one database transaction. An identical replay returns the
+    // existing book_id; any conflicting replay fails without partial rows.
+    Result<std::string> onboard_investor_book(const InvestorBookOnboarding& request);
 
     Result<void> store_executions(const std::vector<ExecutionReport>& executions,
                                   const std::string& strategy_id, const std::string& strategy_name,

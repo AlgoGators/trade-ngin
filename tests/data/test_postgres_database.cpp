@@ -106,6 +106,29 @@ TEST(PostgresDatabaseIdentityValidation, CombinedStrategyIdsUseTheSchemaWidth) {
     EXPECT_TRUE(disconnected.validate_strategy_id(std::string(101, 'A')).is_error());
 }
 
+TEST(PostgresDatabaseInvestorBooks, InvalidOnboardingFailsBeforeConnection) {
+    PostgresDatabase disconnected("host=invalid port=1 user=u dbname=d");
+    InvestorBookOnboarding request{
+        "investor_alpha", "INVESTOR_ALPHA", 1'000'000.0, "2026-10-01",
+        {"LIVE_TREND_FOLLOWING"}, "unit-test"};
+
+    auto valid_but_disconnected = disconnected.onboard_investor_book(request);
+    ASSERT_TRUE(valid_but_disconnected.is_error());
+    EXPECT_NE(valid_but_disconnected.error()->code(), ErrorCode::INVALID_ARGUMENT);
+
+    request.config_key = "../escape";
+    EXPECT_EQ(disconnected.onboard_investor_book(request).error()->code(),
+              ErrorCode::INVALID_ARGUMENT);
+    request.config_key = "investor_alpha";
+    request.initial_capital = 0.0;
+    EXPECT_EQ(disconnected.onboard_investor_book(request).error()->code(),
+              ErrorCode::INVALID_ARGUMENT);
+    request.initial_capital = 1'000'000.0;
+    request.strategy_ids.push_back("LIVE_TREND_FOLLOWING");
+    EXPECT_EQ(disconnected.onboard_investor_book(request).error()->code(),
+              ErrorCode::INVALID_ARGUMENT);
+}
+
 TEST_F(PostgresDatabaseTest, ConnectionLifecycle) {
     EXPECT_FALSE(db->is_connected());
 

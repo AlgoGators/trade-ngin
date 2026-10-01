@@ -282,6 +282,12 @@ add_executable(backtest_position_replace_pg_tests EXCLUDE_FROM_ALL
 target_include_directories(backtest_position_replace_pg_tests PRIVATE ${CMAKE_SOURCE_DIR}/include)
 target_link_libraries(backtest_position_replace_pg_tests PRIVATE
     trade_ngin GTest::gtest GTest::gtest_main)
+
+add_executable(investor_book_onboarding_pg_tests EXCLUDE_FROM_ALL
+    data/test_investor_book_onboarding_pg.cpp)
+target_include_directories(investor_book_onboarding_pg_tests PRIVATE ${CMAKE_SOURCE_DIR}/include)
+target_link_libraries(investor_book_onboarding_pg_tests PRIVATE
+    trade_ngin GTest::gtest GTest::gtest_main)
 set_target_properties(backtest_position_replace_pg_tests PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin/Debug"
     RUNTIME_OUTPUT_DIRECTORY_DEBUG "${CMAKE_BINARY_DIR}/bin/Debug")
