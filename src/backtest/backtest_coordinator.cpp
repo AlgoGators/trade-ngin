@@ -13,6 +13,31 @@
 namespace trade_ngin {
 namespace backtest {
 
+Result<void> deliver_owned_executions(
+    const std::vector<OwnedExecutionReport>& executions,
+    const std::vector<std::shared_ptr<StrategyInterface>>& strategies) {
+    std::unordered_map<std::string, std::shared_ptr<StrategyInterface>> by_id;
+    for (const auto& strategy : strategies) {
+        if (!strategy || strategy->get_metadata().id.empty() ||
+            !by_id.emplace(strategy->get_metadata().id, strategy).second) {
+            return make_error<void>(ErrorCode::INVALID_DATA,
+                                    "Backtest strategy ownership map is invalid",
+                                    "BacktestCoordinator");
+        }
+    }
+    for (const auto& owned : executions) {
+        auto owner = by_id.find(owned.strategy_id);
+        if (owner == by_id.end()) {
+            return make_error<void>(ErrorCode::INVALID_DATA,
+                                    "Execution owner is not registered: " + owned.strategy_id,
+                                    "BacktestCoordinator");
+        }
+        auto result = owner->second->on_execution(owned.report);
+        if (result.is_error()) return result;
+    }
+    return Result<void>();
+}
+
 BacktestCoordinator::BacktestCoordinator(std::shared_ptr<PostgresDatabase> db,
                                          InstrumentRegistry* registry,
                                          const BacktestCoordinatorConfig& config)
@@ -558,7 +583,7 @@ Result<void> BacktestCoordinator::process_portfolio_day(
         }
 
         // POST-WARMUP: Normal trading logic
-        std::vector<ExecutionReport> period_executions;
+        std::vector<OwnedExecutionReport> period_executions;
 
         if (had_previous_bars) {
             try {
@@ -571,7 +596,7 @@ Result<void> BacktestCoordinator::process_portfolio_day(
                                             ? strategy_exec_counts_before.at(strategy_id)
                                             : 0;
                     for (size_t i = prev_count; i < strat_execs.size(); ++i) {
-                        period_executions.push_back(strat_execs[i]);
+                        period_executions.push_back({strategy_id, strat_execs[i]});
                     }
                 }
             } catch (const std::exception& e) {
@@ -581,8 +606,9 @@ Result<void> BacktestCoordinator::process_portfolio_day(
         }
 
         // Apply transaction costs to executions
-        for (auto& exec : period_executions) {
+        for (auto& owned : period_executions) {
             try {
+                auto& exec = owned.report;
                 exec.fill_time = timestamp;
 
                 // TransactionCostManager is the single source of truth.
@@ -600,24 +626,18 @@ Result<void> BacktestCoordinator::process_portfolio_day(
 
                 executions.push_back(exec);
             } catch (const std::exception& e) {
-                WARN("Exception processing execution for " + exec.symbol + ": " +
+                WARN("Exception processing execution for " + owned.report.symbol + ": " +
                      std::string(e.what()));
             }
         }
 
         // Feed executions back to strategies
-        for (const auto& exec : period_executions) {
-            try {
-                for (auto strategy_ptr : portfolio->get_strategies()) {
-                    auto execution_result = strategy_ptr->on_execution(exec);
-                    if (execution_result.is_error()) {
-                        WARN("Failed to process execution for strategy: " +
-                             execution_result.error()->to_string());
-                    }
-                }
-            } catch (const std::exception& e) {
-                WARN("Exception feeding execution to strategies: " + std::string(e.what()));
-            }
+        auto delivery = deliver_owned_executions(period_executions, portfolio->get_strategies());
+        if (delivery.is_error()) {
+            return make_error<void>(delivery.error()->code(),
+                                    "Failed to deliver owned execution: " +
+                                        std::string(delivery.error()->what()),
+                                    "BacktestCoordinator");
         }
 
         // PNL CALCULATION (SINGLE SOURCE OF TRUTH via pnl_manager_)
@@ -896,10 +916,6 @@ Result<void> BacktestCoordinator::save_daily_positions(std::shared_ptr<Portfolio
     int strategies_with_positions = 0;
 
     for (const auto& [strategy_id, positions_map] : strategy_positions) {
-        if (positions_map.empty()) {
-            continue;
-        }
-
         std::vector<Position> positions_vec;
         positions_vec.reserve(positions_map.size());
 
@@ -916,10 +932,10 @@ Result<void> BacktestCoordinator::save_daily_positions(std::shared_ptr<Portfolio
             }
         }
 
-        if (!positions_vec.empty()) {
-            std::string composite_run_id = run_id + "|" + strategy_id;
-            auto save_result = db_->store_backtest_positions(
-                positions_vec, composite_run_id, config_.portfolio_id, "backtest.final_positions");
+        {
+            auto save_result = db_->replace_backtest_positions_for_date(
+                positions_vec, run_id, strategy_id, config_.portfolio_id, timestamp,
+                "backtest.final_positions");
 
             if (save_result.is_error()) {
                 WARN("Failed to save daily positions for strategy " + strategy_id +

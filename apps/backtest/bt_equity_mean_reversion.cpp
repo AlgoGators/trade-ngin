@@ -426,21 +426,9 @@ int main(int argc, char* argv[]) {
                 strategy_allocations[entry.id] = entry.allocation / total_allocation;
             }
 
-            nlohmann::json config_json;
-            config_json["strategy_type"] = "MeanReversionStrategy";
-            config_json["asset_class"] = "EQUITIES";
-            {
-                auto mr = trade_ngin::apps::build_mean_reversion_config(
-                    strat_entries.front().def["config"]);
-                config_json["mean_reversion"] = {
-                    {"lookback_period", mr.lookback_period},
-                    {"entry_threshold", mr.entry_threshold},
-                    {"exit_threshold", mr.exit_threshold},
-                    {"risk_target", mr.risk_target},
-                    {"position_size", mr.position_size},
-                    {"vol_lookback", mr.vol_lookback},
-                    {"allow_fractional_shares", mr.allow_fractional_shares}};
-            }
+            nlohmann::json config_json =
+                trade_ngin::apps::build_equity_backtest_config_snapshot(
+                    strat_entries, strategy_allocations);
 
             auto save_result = coordinator->save_portfolio_results_to_db(
                 backtest_results, strategy_names, strategy_allocations, portfolio, config_json);

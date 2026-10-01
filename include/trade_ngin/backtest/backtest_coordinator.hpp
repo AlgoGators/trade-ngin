@@ -29,6 +29,15 @@ class InstrumentRegistry;
 
 namespace backtest {
 
+struct OwnedExecutionReport {
+    std::string strategy_id;
+    ExecutionReport report;
+};
+
+Result<void> deliver_owned_executions(
+    const std::vector<OwnedExecutionReport>& executions,
+    const std::vector<std::shared_ptr<StrategyInterface>>& strategies);
+
 /**
  * @brief Configuration for BacktestCoordinator
  */

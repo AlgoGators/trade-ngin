@@ -870,6 +870,12 @@ public:
         const std::string& portfolio_id = "BASE_PORTFOLIO",
         const std::string& table_name = "backtest.final_positions");
 
+    virtual Result<void> replace_backtest_positions_for_date(
+        const std::vector<Position>& positions, const std::string& run_id,
+        const std::string& strategy_id, const std::string& portfolio_id,
+        const Timestamp& date,
+        const std::string& table_name = "backtest.final_positions");
+
     // Multi-strategy version: store positions with strategy_id
     virtual Result<void> store_backtest_positions_with_strategy(
         const std::vector<Position>& positions, const std::string& run_id,

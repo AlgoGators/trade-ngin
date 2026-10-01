@@ -101,3 +101,22 @@ TEST(EquityStrategyBuilder, OptimizerContradictionFailsClosed) {
     EXPECT_TRUE(apps::refuse_if_optimizer_requested(true).is_error());
     EXPECT_TRUE(apps::refuse_if_optimizer_requested(false).is_ok());
 }
+
+TEST(EquityStrategyBuilder, BacktestSnapshotContainsEveryEnabledSleeve) {
+    const nlohmann::json first = {
+        {"type", "MeanReversionStrategy"}, {"config", {{"lookback_period", 10}}}};
+    const nlohmann::json second = {
+        {"type", "MeanReversionStrategy"}, {"config", {{"lookback_period", 20}}}};
+    const std::vector<apps::EquityStrategyEntry> entries = {
+        {"FIRST", "MeanReversionStrategy", 0.7, first},
+        {"SECOND", "MeanReversionStrategy", 0.3, second}};
+
+    auto snapshot = apps::build_equity_backtest_config_snapshot(
+        entries, {{"FIRST", 0.7}, {"SECOND", 0.3}});
+
+    ASSERT_EQ(snapshot.at("strategies").size(), 2u);
+    EXPECT_EQ(snapshot["strategies"]["FIRST"]["config"]["lookback_period"], 10);
+    EXPECT_EQ(snapshot["strategies"]["SECOND"]["config"]["lookback_period"], 20);
+    EXPECT_DOUBLE_EQ(snapshot["strategies"]["FIRST"]["allocation"], 0.7);
+    EXPECT_DOUBLE_EQ(snapshot["strategies"]["SECOND"]["allocation"], 0.3);
+}

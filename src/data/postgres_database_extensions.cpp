@@ -625,6 +625,56 @@ Result<void> PostgresDatabase::store_backtest_positions(const std::vector<Positi
     }
 }
 
+Result<void> PostgresDatabase::replace_backtest_positions_for_date(
+    const std::vector<Position>& positions, const std::string& run_id,
+    const std::string& strategy_id, const std::string& portfolio_id,
+    const Timestamp& date, const std::string& table_name) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    auto validation = validate_connection();
+    if (validation.is_error()) return validation;
+    auto table_validation = validate_table_name(table_name);
+    if (table_validation.is_error()) return table_validation;
+    if (run_id.empty() || strategy_id.empty() || portfolio_id.empty()) {
+        return make_error<void>(ErrorCode::INVALID_ARGUMENT,
+                                "Backtest position replacement requires non-empty run, strategy, and portfolio ids",
+                                "PostgresDatabase");
+    }
+
+    try {
+        PublicationTransaction txn(*connection_, publication_transaction_);
+        const auto time = std::chrono::system_clock::to_time_t(date);
+        std::tm utc{};
+        trade_ngin::core::safe_gmtime(&time, &utc);
+        std::ostringstream day_stream;
+        day_stream << std::put_time(&utc, "%Y-%m-%d");
+        const std::string day = day_stream.str();
+
+        txn.exec("DELETE FROM " + table_name +
+                     " WHERE run_id=$1 AND portfolio_id=$2 AND strategy_id=$3 AND date=$4::date",
+                 pqxx::params{run_id, portfolio_id, strategy_id, day});
+
+        const std::string insert =
+            "INSERT INTO " + table_name +
+            " (run_id, portfolio_id, strategy_id, date, symbol, quantity, average_price, "
+            "unrealized_pnl, realized_pnl, last_update, updated_at) "
+            "VALUES ($1,$2,$3,$4::date,$5,$6,$7,$8,$9,$10::timestamp,$10::timestamp)";
+        for (const auto& position : positions) {
+            if (std::abs(position.quantity.as_double()) < 1e-10) continue;
+            txn.exec(insert, pqxx::params{
+                run_id, portfolio_id, strategy_id, day, position.symbol,
+                position.quantity.as_double(), position.average_price.as_double(),
+                position.unrealized_pnl.as_double(), position.realized_pnl.as_double(),
+                format_timestamp(position.last_update)});
+        }
+        txn.commit();
+        return Result<void>();
+    } catch (const std::exception& e) {
+        return make_error<void>(ErrorCode::DATABASE_ERROR,
+                                "Failed to replace backtest positions: " + std::string(e.what()),
+                                "PostgresDatabase");
+    }
+}
+
 Result<void> PostgresDatabase::store_backtest_positions_with_strategy(
     const std::vector<Position>& positions, const std::string& run_id,
     const std::string& strategy_id, const std::string& portfolio_id,

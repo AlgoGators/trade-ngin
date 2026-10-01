@@ -15,6 +15,7 @@
 #include "trade_ngin/portfolio/portfolio_manager.hpp"
 #include "trade_ngin/strategy/trend_following.hpp"
 #include "trade_ngin/strategy/trend_following_fast.hpp"
+#include "trade_ngin/strategy/trend_following_slow.hpp"
 
 using namespace trade_ngin;
 using namespace trade_ngin::backtest;
@@ -376,6 +377,39 @@ int main() {
                 }
 
                 strategy = std::make_shared<trade_ngin::TrendFollowingFastStrategy>(
+                    strategy_id, base_strategy_config, trend_config, db, registry_ptr);
+
+            } else if (strategy_type == "TrendFollowingSlowStrategy") {
+                trade_ngin::TrendFollowingSlowConfig trend_config;
+                if (strategy_def.contains("config")) {
+                    const auto& cfg = strategy_def["config"];
+                    trend_config.weight = cfg.value("weight", 0.03);
+                    trend_config.risk_target = cfg.value("risk_target", 0.15);
+                    trend_config.idm = cfg.value("idm", 2.5);
+                    trend_config.max_symbol_concentration =
+                        cfg.value("max_symbol_concentration", 0.15);
+                    trend_config.use_position_buffering =
+                        cfg.value("use_position_buffering", true);
+                    trend_config.carver_buffer_floor = cfg.value(
+                        "carver_buffer_floor", app_config.strategy_defaults.carver_buffer_floor);
+                    trend_config.carver_buffer_position_factor = cfg.value(
+                        "carver_buffer_position_factor",
+                        app_config.strategy_defaults.carver_buffer_position_factor);
+                    if (cfg.contains("ema_windows")) {
+                        trend_config.ema_windows.clear();
+                        for (const auto& window : cfg["ema_windows"]) {
+                            trend_config.ema_windows.push_back(
+                                {window[0].get<int>(), window[1].get<int>()});
+                        }
+                    }
+                    trend_config.vol_lookback_short = cfg.value("vol_lookback_short", 64);
+                    trend_config.vol_lookback_long = cfg.value("vol_lookback_long", 252);
+                }
+                if (trend_config.fdm.empty()) {
+                    trend_config.fdm = app_config.strategy_defaults.fdm;
+                }
+
+                strategy = std::make_shared<trade_ngin::TrendFollowingSlowStrategy>(
                     strategy_id, base_strategy_config, trend_config, db, registry_ptr);
 
             } else {

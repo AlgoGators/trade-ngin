@@ -169,3 +169,37 @@ TEST_F(BacktestCoordinatorTest, IsInitializedFlagFlipsAfterInitialize) {
     ASSERT_TRUE(coord.initialize().is_ok());
     EXPECT_TRUE(coord.is_initialized());
 }
+
+namespace {
+class ExecutionRecorder final : public MockStrategy {
+public:
+    using MockStrategy::MockStrategy;
+    Result<void> on_execution(const ExecutionReport& report) override {
+        received.push_back(report.exec_id);
+        return Result<void>();
+    }
+    std::vector<std::string> received;
+};
+}
+
+TEST_F(BacktestCoordinatorTest, ExecutionIsDeliveredOnlyToItsOwningStrategy) {
+    auto owner = std::make_shared<ExecutionRecorder>("OWNER", StrategyConfig{}, db_);
+    auto foreign = std::make_shared<ExecutionRecorder>("FOREIGN", StrategyConfig{}, db_);
+    ExecutionReport report;
+    report.exec_id = "EXEC-1";
+
+    auto result = deliver_owned_executions(
+        {{"OWNER", report}}, {owner, foreign});
+
+    ASSERT_TRUE(result.is_ok());
+    EXPECT_EQ(owner->received, std::vector<std::string>{"EXEC-1"});
+    EXPECT_TRUE(foreign->received.empty());
+}
+
+TEST_F(BacktestCoordinatorTest, ExecutionWithUnknownOwnerFailsClosed) {
+    auto owner = std::make_shared<ExecutionRecorder>("OWNER", StrategyConfig{}, db_);
+    ExecutionReport report;
+    report.exec_id = "EXEC-1";
+    EXPECT_TRUE(deliver_owned_executions({{"MISSING", report}}, {owner}).is_error());
+    EXPECT_TRUE(owner->received.empty());
+}

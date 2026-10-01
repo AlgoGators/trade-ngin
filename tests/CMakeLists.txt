@@ -276,6 +276,14 @@ target_link_libraries(qt_equity_prior_continuation_pg_tests PRIVATE trade_ngin G
 set_target_properties(qt_equity_prior_continuation_pg_tests PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin/Debug"
     RUNTIME_OUTPUT_DIRECTORY_DEBUG "${CMAKE_BINARY_DIR}/bin/Debug")
+add_executable(backtest_position_replace_pg_tests EXCLUDE_FROM_ALL
+    data/test_backtest_position_replace_pg.cpp)
+target_include_directories(backtest_position_replace_pg_tests PRIVATE ${CMAKE_SOURCE_DIR}/include)
+target_link_libraries(backtest_position_replace_pg_tests PRIVATE
+    trade_ngin GTest::gtest GTest::gtest_main)
+set_target_properties(backtest_position_replace_pg_tests PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin/Debug"
+    RUNTIME_OUTPUT_DIRECTORY_DEBUG "${CMAKE_BINARY_DIR}/bin/Debug")
 add_executable(qt_equity_finalization_probe EXCLUDE_FROM_ALL integration/qt_equity_finalization_probe.cpp)
 target_include_directories(qt_equity_finalization_probe PRIVATE ${CMAKE_SOURCE_DIR}/include)
 target_link_libraries(qt_equity_finalization_probe PRIVATE trade_ngin)

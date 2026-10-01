@@ -16,10 +16,53 @@
 #include "../data/test_db_utils.hpp"
 #include "../order/test_utils.hpp"
 #include "mock_strategy.hpp"
+#include "trade_ngin/backtest/backtest_coordinator.hpp"
 #include "trade_ngin/portfolio/portfolio_manager.hpp"
 
 using namespace trade_ngin;
 using namespace trade_ngin::testing;
+
+namespace {
+
+class DeterministicEquitySleeve final : public BaseStrategy {
+public:
+    DeterministicEquitySleeve(std::string id, StrategyConfig config,
+                              std::shared_ptr<PostgresDatabase> db, double target)
+        : BaseStrategy(std::move(id), std::move(config), std::move(db)), target_(target) {
+        metadata_.name = "Deterministic equity test sleeve";
+    }
+
+    Result<void> on_data(const std::vector<Bar>& data,
+                         StrategyConsumptionTrace* trace = nullptr) override {
+        if (trace) *trace = {};
+        for (const auto& bar : data) {
+            Position position;
+            position.symbol = bar.symbol;
+            position.quantity = Quantity(target_);
+            position.average_price = bar.close;
+            position.last_update = bar.timestamp;
+            positions_[bar.symbol] = position;
+        }
+        return Result<void>();
+    }
+
+    Result<void> on_execution(const ExecutionReport& report) override {
+        received.push_back(report);
+        return Result<void>();
+    }
+
+    std::vector<ExecutionReport> received;
+
+private:
+    double target_;
+};
+
+double signed_quantity(const ExecutionReport& report) {
+    const double magnitude = report.filled_quantity.as_double();
+    return report.side == Side::BUY ? magnitude : -magnitude;
+}
+
+}  // namespace
 
 class PortfolioAggregationTest : public TestBase {
 protected:
@@ -201,4 +244,62 @@ TEST_F(PortfolioAggregationTest, AgreementDaySumMatchesBroker) {
     // pattern: 0.58 × 10 = 5.8).
     auto agg = manager_->get_portfolio_positions();
     EXPECT_NEAR(static_cast<double>(agg["AAPL"].quantity), 5.8, 1e-9);
+}
+
+TEST_F(PortfolioAggregationTest,
+       DeterministicEquitySleevesKeepGrossBooksAndNetOnlyAtAccountLayer) {
+    StrategyConfig config;
+    config.capital_allocation = 500'000.0;
+    config.max_leverage = 4.0;
+    config.asset_classes = {AssetClass::EQUITIES};
+    config.frequencies = {DataFrequency::DAILY};
+    config.trading_params["AAPL"] = 1.0;
+    config.position_limits["AAPL"] = 10'000.0;
+
+    auto long_sleeve =
+        std::make_shared<DeterministicEquitySleeve>("EQUITY_LONG", config, db_, 7.0);
+    auto short_sleeve =
+        std::make_shared<DeterministicEquitySleeve>("EQUITY_SHORT", config, db_, -3.0);
+    ASSERT_TRUE(long_sleeve->initialize().is_ok());
+    ASSERT_TRUE(short_sleeve->initialize().is_ok());
+    ASSERT_TRUE(long_sleeve->start().is_ok());
+    ASSERT_TRUE(short_sleeve->start().is_ok());
+    ASSERT_TRUE(manager_->add_strategy(long_sleeve, 0.5, false, false).is_ok());
+    ASSERT_TRUE(manager_->add_strategy(short_sleeve, 0.5, false, false).is_ok());
+
+    Bar bar;
+    bar.symbol = "AAPL";
+    bar.timestamp = std::chrono::system_clock::now();
+    bar.open = bar.high = bar.low = bar.close = Price(100.0);
+    bar.volume = 1'000'000.0;
+    ASSERT_TRUE(manager_->process_market_data({bar}).is_ok());
+
+    const auto positions = manager_->get_strategy_positions();
+    ASSERT_EQ(positions.size(), 2u);
+    EXPECT_DOUBLE_EQ(positions.at("EQUITY_LONG").at("AAPL").quantity.as_double(), 7.0);
+    EXPECT_DOUBLE_EQ(positions.at("EQUITY_SHORT").at("AAPL").quantity.as_double(), -3.0);
+
+    const auto executions = manager_->get_strategy_executions();
+    ASSERT_EQ(executions.at("EQUITY_LONG").size(), 1u);
+    ASSERT_EQ(executions.at("EQUITY_SHORT").size(), 1u);
+    const auto& long_fill = executions.at("EQUITY_LONG").front();
+    const auto& short_fill = executions.at("EQUITY_SHORT").front();
+    EXPECT_DOUBLE_EQ(signed_quantity(long_fill), 7.0);
+    EXPECT_DOUBLE_EQ(signed_quantity(short_fill), -3.0);
+    EXPECT_GE(long_fill.total_transaction_costs.as_double(), 0.0);
+    EXPECT_GE(short_fill.total_transaction_costs.as_double(), 0.0);
+
+    std::vector<backtest::OwnedExecutionReport> owned = {
+        {"EQUITY_LONG", long_fill}, {"EQUITY_SHORT", short_fill}};
+    ASSERT_TRUE(backtest::deliver_owned_executions(owned, {long_sleeve, short_sleeve}).is_ok());
+    ASSERT_EQ(long_sleeve->received.size(), 1u);
+    ASSERT_EQ(short_sleeve->received.size(), 1u);
+    EXPECT_EQ(long_sleeve->received.front().exec_id, long_fill.exec_id);
+    EXPECT_EQ(short_sleeve->received.front().exec_id, short_fill.exec_id);
+
+    const double account_net = signed_quantity(long_fill) + signed_quantity(short_fill);
+    EXPECT_DOUBLE_EQ(account_net, 4.0);
+    EXPECT_DOUBLE_EQ(long_fill.filled_quantity.as_double() +
+                         short_fill.filled_quantity.as_double(),
+                     10.0);
 }
