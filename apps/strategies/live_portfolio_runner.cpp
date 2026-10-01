@@ -10,6 +10,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cstdlib>
 #include <ctime>
 #include <filesystem>
 #include <fstream>
@@ -287,14 +288,28 @@ private:
 
 int trade_ngin::run_live_portfolio(const LivePortfolioConfig& portfolio_cfg, int argc, char* argv[]) {
     try {
+        std::vector<std::string> raw_arguments;
+        for (int index = 1; index < argc; ++index) raw_arguments.emplace_back(argv[index]);
+        std::optional<std::string> environment_portfolio;
+        if (const char* value = std::getenv("TRADE_NGIN_PORTFOLIO")) {
+            environment_portfolio = value;
+        }
+        auto portfolio_selection = resolve_portfolio_selection(
+            raw_arguments, environment_portfolio, portfolio_cfg.config_name);
+        if (portfolio_selection.is_error()) {
+            std::cerr << portfolio_selection.error()->what() << std::endl;
+            std::cerr << "Usage: " << argv[0]
+                      << " [YYYY-MM-DD] [--send-email] [--portfolio NAME]" << std::endl;
+            return 1;
+        }
+
         // Parse command-line arguments for date override and email flag
         std::chrono::system_clock::time_point target_date;
         bool use_override_date = false;
         bool send_email = false;  // Default to false for historical runs
 
         // Parse command-line arguments
-        for (int i = 1; i < argc; i++) {
-            std::string arg = argv[i];
+        for (const auto& arg : portfolio_selection.value().runner_arguments) {
 
             // Check for email flag
             if (arg == "--send-email") {
@@ -312,8 +327,10 @@ int trade_ngin::run_live_portfolio(const LivePortfolioConfig& portfolio_cfg, int
                 std::cout << "Running for historical date: " << arg << std::endl;
             } else if (arg != "--send-email") {
                 std::cerr << "Invalid argument: " << arg << std::endl;
-                std::cerr << "Usage: " << argv[0] << " [YYYY-MM-DD] [--send-email]" << std::endl;
-                std::cerr << "Example: " << argv[0] << " 2025-01-01 --send-email" << std::endl;
+                std::cerr << "Usage: " << argv[0]
+                          << " [YYYY-MM-DD] [--send-email] [--portfolio NAME]" << std::endl;
+                std::cerr << "Example: " << argv[0]
+                          << " 2025-01-01 --send-email --portfolio base" << std::endl;
                 return 1;
             }
         }
@@ -350,9 +367,10 @@ int trade_ngin::run_live_portfolio(const LivePortfolioConfig& portfolio_cfg, int
         // ========================================
         // LOAD CONFIGURATION FROM MODULAR CONFIG FILES
         // ========================================
-        INFO("Loading configuration from config/portfolios/" + portfolio_cfg.config_name +
+        const auto& config_name = portfolio_selection.value().config_name;
+        INFO("Loading configuration from config/portfolios/" + config_name +
              "...");
-        auto app_config_result = ConfigLoader::load("./config", portfolio_cfg.config_name);
+        auto app_config_result = ConfigLoader::load("./config", config_name);
         if (app_config_result.is_error()) {
             ERROR("Failed to load configuration: " +
                   std::string(app_config_result.error()->what()));

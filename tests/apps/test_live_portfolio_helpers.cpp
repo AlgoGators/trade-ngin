@@ -27,6 +27,61 @@
 
 using namespace trade_ngin;
 
+TEST(PortfolioSelectionTest, DefaultsAndPreservesDateAndEmailArguments) {
+    auto selected = resolve_portfolio_selection(
+        {"2026-09-30", "--send-email"}, std::nullopt, "base");
+    ASSERT_TRUE(selected.is_ok());
+    EXPECT_EQ(selected.value().config_name, "base");
+    EXPECT_EQ(selected.value().runner_arguments,
+              (std::vector<std::string>{"2026-09-30", "--send-email"}));
+}
+
+TEST(PortfolioSelectionTest, CliOverridesEnvironmentAndKeepsGovernedPriorArguments) {
+    const std::vector<std::string> arguments = {
+        "--verified-desk-prior", "--prior-decision", "a0000000-0000-4000-8000-000000000001",
+        "--portfolio", "investor-7", "--prior-finalization",
+        "b0000000-0000-4000-8000-000000000001", "2026-09-30"};
+    auto selected = resolve_portfolio_selection(arguments, "equity_mr", "base");
+    ASSERT_TRUE(selected.is_ok());
+    EXPECT_EQ(selected.value().config_name, "investor-7");
+    EXPECT_EQ(selected.value().runner_arguments,
+              (std::vector<std::string>{"--verified-desk-prior", "--prior-decision",
+                  "a0000000-0000-4000-8000-000000000001", "--prior-finalization",
+                  "b0000000-0000-4000-8000-000000000001", "2026-09-30"}));
+}
+
+TEST(PortfolioSelectionTest, EnvironmentOverridesDefault) {
+    auto selected = resolve_portfolio_selection({}, "investor_a", "base");
+    ASSERT_TRUE(selected.is_ok());
+    EXPECT_EQ(selected.value().config_name, "investor_a");
+    EXPECT_TRUE(selected.value().runner_arguments.empty());
+}
+
+TEST(PortfolioSelectionTest, DuplicateMissingAndUnknownFlagsFailClosed) {
+    EXPECT_TRUE(resolve_portfolio_selection(
+        {"--portfolio", "base", "--portfolio", "base"}, std::nullopt, "base").is_error());
+    EXPECT_TRUE(resolve_portfolio_selection(
+        {"--portfolio"}, std::nullopt, "base").is_error());
+    EXPECT_TRUE(resolve_portfolio_selection(
+        {"--send-emali"}, std::nullopt, "base").is_error());
+}
+
+TEST(PortfolioSelectionTest, UnsafeAndOversizedKeysFailClosedAtEveryPrecedenceLevel) {
+    const std::vector<std::string> invalid = {
+        "", "/tmp/book", "../book", "book/name", "book.name", "UPPER", "_hidden",
+        std::string(65, 'a')};
+    for (const auto& key : invalid) {
+        EXPECT_TRUE(resolve_portfolio_selection(
+            {"--portfolio", key}, std::nullopt, "base").is_error()) << key;
+        EXPECT_TRUE(resolve_portfolio_selection({}, key, "base").is_error()) << key;
+        EXPECT_TRUE(resolve_portfolio_selection({}, std::nullopt, key).is_error()) << key;
+    }
+    auto boundary = resolve_portfolio_selection(
+        {"--portfolio", "a" + std::string(63, '-')}, std::nullopt, "base");
+    ASSERT_TRUE(boundary.is_ok());
+    EXPECT_EQ(boundary.value().config_name.size(), 64u);
+}
+
 TEST(LiveRuntimeControl, ControlledSelectionRefusesCapitalRedistribution) {
     nlohmann::json configured = {
         {"TREND", {{"enabled_live", true}, {"default_allocation", 0.7}}},

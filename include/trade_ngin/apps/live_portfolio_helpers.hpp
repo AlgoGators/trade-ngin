@@ -30,6 +30,19 @@ namespace trade_ngin {
 class PostgresDatabase;
 class InstrumentRegistry;
 
+struct PortfolioSelection {
+    std::string config_name;
+    std::vector<std::string> runner_arguments;
+};
+
+// Resolve one portfolio config key with CLI > TRADE_NGIN_PORTFOLIO > default
+// precedence. The portfolio flag is removed while existing runner arguments
+// retain their original order.
+Result<PortfolioSelection> resolve_portfolio_selection(
+    const std::vector<std::string>& arguments,
+    const std::optional<std::string>& environment_portfolio,
+    const std::string& default_name);
+
 bool runtime_control_enabled(const char* value);
 Result<nlohmann::json> build_runtime_trading_snapshot(const AppConfig& config);
 

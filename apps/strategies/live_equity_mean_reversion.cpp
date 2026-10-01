@@ -92,7 +92,17 @@ int main(int argc, char* argv[]) {
     try {
         std::vector<std::string> raw_arguments;
         for(int i=1;i<argc;++i)raw_arguments.emplace_back(argv[i]);
-        auto prior_arguments=parse_equity_model_prior_arguments(raw_arguments);
+        std::optional<std::string> environment_portfolio;
+        if(const char* value=std::getenv("TRADE_NGIN_PORTFOLIO"))environment_portfolio=value;
+        auto portfolio_selection=resolve_portfolio_selection(
+            raw_arguments,environment_portfolio,"equity_mr");
+        if(portfolio_selection.is_error()){
+            std::cerr<<portfolio_selection.error()->what()<<"\nUsage: "<<argv[0]
+                     <<" [YYYY-MM-DD] [--send-email] [--portfolio NAME]\n";
+            return 1;
+        }
+        auto prior_arguments=parse_equity_model_prior_arguments(
+            portfolio_selection.value().runner_arguments);
         if(prior_arguments.is_error()){std::cerr<<"Invalid governed equity prior arguments\n";return 1;}
         const auto prior_selection=prior_arguments.value();
         const bool verified_desk_prior=prior_selection.mode==EquityModelPriorMode::VerifiedDeskPrior;
@@ -121,8 +131,10 @@ int main(int argc, char* argv[]) {
                 std::cout << "Running for historical date: " << arg << std::endl;
             } else if (arg != "--send-email") {
                 std::cerr << "Invalid argument: " << arg << std::endl;
-                std::cerr << "Usage: " << argv[0] << " [YYYY-MM-DD] [--send-email]" << std::endl;
-                std::cerr << "Example: " << argv[0] << " 2025-01-01 --send-email" << std::endl;
+                std::cerr << "Usage: " << argv[0]
+                          << " [YYYY-MM-DD] [--send-email] [--portfolio NAME]" << std::endl;
+                std::cerr << "Example: " << argv[0]
+                          << " 2025-01-01 --send-email --portfolio equity_mr" << std::endl;
                 return 1;
             }
         }
@@ -170,10 +182,11 @@ int main(int argc, char* argv[]) {
         // ========================================
         // LOAD CONFIGURATION FROM MODULAR CONFIG FILES
         // ========================================
-        INFO("Loading configuration from config/portfolios/equity_mr...");
-        auto app_config_result = ConfigLoader::load("./config", "equity_mr");
+        const auto& config_name=portfolio_selection.value().config_name;
+        INFO("Loading configuration from config/portfolios/"+config_name+"...");
+        auto app_config_result = ConfigLoader::load("./config", config_name);
         if (app_config_result.is_error()) {
-            ERROR("Failed to load equity_mr configuration: " +
+            ERROR("Failed to load " + config_name + " configuration: " +
                   std::string(app_config_result.error()->what()));
             return 1;
         }

@@ -31,6 +31,46 @@ std::string report_date_string(const Timestamp& date) {
 }
 }
 
+Result<PortfolioSelection> resolve_portfolio_selection(
+    const std::vector<std::string>& arguments,
+    const std::optional<std::string>& environment_portfolio,
+    const std::string& default_name) {
+    std::optional<std::string> cli_portfolio;
+    std::vector<std::string> runner_arguments;
+    runner_arguments.reserve(arguments.size());
+
+    for (std::size_t index = 0; index < arguments.size(); ++index) {
+        const auto& argument = arguments[index];
+        if (argument == "--portfolio") {
+            if (cli_portfolio.has_value() || index + 1 >= arguments.size()) {
+                return make_error<PortfolioSelection>(
+                    ErrorCode::INVALID_ARGUMENT, "Portfolio flag is duplicated or missing a value",
+                    "resolve_portfolio_selection");
+            }
+            cli_portfolio = arguments[++index];
+            continue;
+        }
+        if (argument.starts_with("--") && argument != "--send-email" &&
+            argument != "--verified-desk-prior" && argument != "--prior-decision" &&
+            argument != "--prior-finalization") {
+            return make_error<PortfolioSelection>(
+                ErrorCode::INVALID_ARGUMENT, "Unknown live runner flag: " + argument,
+                "resolve_portfolio_selection");
+        }
+        runner_arguments.push_back(argument);
+    }
+
+    const std::string selected = cli_portfolio.has_value()
+        ? *cli_portfolio
+        : environment_portfolio.has_value() ? *environment_portfolio : default_name;
+    if (!is_valid_portfolio_config_key(selected)) {
+        return make_error<PortfolioSelection>(
+            ErrorCode::INVALID_ARGUMENT, "Invalid portfolio config key",
+            "resolve_portfolio_selection");
+    }
+    return PortfolioSelection{selected, std::move(runner_arguments)};
+}
+
 Result<void> seed_qt_report_positions(
     PostgresDatabase& db, const std::string& strategy_id,
     const std::vector<std::string>& strategy_names, const std::string& portfolio_id,

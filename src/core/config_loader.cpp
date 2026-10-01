@@ -17,6 +17,41 @@
 
 namespace trade_ngin {
 
+bool is_valid_portfolio_config_key(std::string_view name) {
+    if (name.empty() || name.size() > 64) return false;
+    const auto alphanumeric = [](char value) {
+        return (value >= 'a' && value <= 'z') || (value >= '0' && value <= '9');
+    };
+    if (!alphanumeric(name.front())) return false;
+    return std::all_of(name.begin() + 1, name.end(), [&](char value) {
+        return alphanumeric(value) || value == '_' || value == '-';
+    });
+}
+
+Result<std::filesystem::path> resolve_portfolio_config_directory(
+    const std::filesystem::path& config_base_path, std::string_view portfolio_name) {
+    if (!is_valid_portfolio_config_key(portfolio_name)) {
+        return make_error<std::filesystem::path>(
+            ErrorCode::INVALID_ARGUMENT, "Invalid portfolio config key", "ConfigLoader");
+    }
+
+    std::error_code error;
+    const auto root = std::filesystem::weakly_canonical(
+        config_base_path / "portfolios", error);
+    if (error) {
+        return make_error<std::filesystem::path>(
+            ErrorCode::INVALID_ARGUMENT, "Portfolio config root is unavailable", "ConfigLoader");
+    }
+    const auto candidate = std::filesystem::weakly_canonical(
+        root / std::string(portfolio_name), error);
+    if (error || candidate.parent_path() != root) {
+        return make_error<std::filesystem::path>(
+            ErrorCode::INVALID_ARGUMENT, "Portfolio config path escapes portfolios root",
+            "ConfigLoader");
+    }
+    return candidate;
+}
+
 namespace {
 
 struct InvalidProjectionField {};
@@ -651,6 +686,13 @@ void ConfigLoader::log_config_summary(const AppConfig& config) {
 
 Result<AppConfig> ConfigLoader::load(const std::filesystem::path& config_base_path,
                                      const std::string& portfolio_name) {
+    auto portfolio_path_result =
+        resolve_portfolio_config_directory(config_base_path, portfolio_name);
+    if (portfolio_path_result.is_error()) {
+        return make_error<AppConfig>(portfolio_path_result.error()->code(),
+                                     portfolio_path_result.error()->what(), "ConfigLoader");
+    }
+
     // 1. Load defaults.json
     auto defaults_path = config_base_path / "defaults.json";
     auto defaults_result = load_json_file(defaults_path);
@@ -663,7 +705,7 @@ Result<AppConfig> ConfigLoader::load(const std::filesystem::path& config_base_pa
     nlohmann::json merged = defaults_result.value();
 
     // 2. Load portfolio-specific configs
-    auto portfolio_path = config_base_path / "portfolios" / portfolio_name;
+    const auto& portfolio_path = portfolio_path_result.value();
 
     // Load portfolio.json
     auto portfolio_json_path = portfolio_path / "portfolio.json";

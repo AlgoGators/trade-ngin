@@ -5,6 +5,7 @@
 #include <filesystem>
 #include <nlohmann/json.hpp>
 #include <string>
+#include <string_view>
 #include <vector>
 #include "trade_ngin/core/error.hpp"
 #include "trade_ngin/core/types.hpp"
@@ -12,6 +13,10 @@
 #include "trade_ngin/risk/risk_manager.hpp"
 
 namespace trade_ngin {
+
+bool is_valid_portfolio_config_key(std::string_view name);
+Result<std::filesystem::path> resolve_portfolio_config_directory(
+    const std::filesystem::path& config_base_path, std::string_view portfolio_name);
 
 /**
  * @brief Email configuration

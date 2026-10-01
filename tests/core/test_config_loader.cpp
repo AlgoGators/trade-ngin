@@ -619,6 +619,36 @@ TEST_F(ConfigLoaderTest, LoadValidConfigPopulatesAllFields) {
     EXPECT_EQ(c.email.smtp_host, "smtp.test.com");
 }
 
+TEST_F(ConfigLoaderTest, RejectsTraversalEvenWhenEscapedFilesAreComplete) {
+    write_json(base_ / "defaults.json", minimal_defaults());
+    write_json(base_ / "outside" / "portfolio.json", minimal_portfolio());
+    write_json(base_ / "outside" / "risk.json", minimal_risk());
+    write_json(base_ / "outside" / "email.json", minimal_email());
+    EXPECT_TRUE(ConfigLoader::load(base_, "../outside").is_error());
+}
+
+TEST_F(ConfigLoaderTest, RejectsPortfolioDirectorySymlinkOutsidePortfoliosRoot) {
+    write_json(base_ / "defaults.json", minimal_defaults());
+    write_json(base_ / "outside" / "portfolio.json", minimal_portfolio());
+    write_json(base_ / "outside" / "risk.json", minimal_risk());
+    write_json(base_ / "outside" / "email.json", minimal_email());
+    std::filesystem::create_directories(base_ / "portfolios");
+    std::filesystem::create_directory_symlink(base_ / "outside", base_ / "portfolios" / "escape");
+    EXPECT_TRUE(ConfigLoader::load(base_, "escape").is_error());
+}
+
+TEST(PortfolioConfigKeyTest, ExactGrammarIsLowercaseAsciiAndSingleComponent) {
+    for (const auto& key : {"a", "7", "equity_mr", "investor-7", "a0_-"}) {
+        EXPECT_TRUE(is_valid_portfolio_config_key(key)) << key;
+    }
+    for (const auto& key : {"", "_book", "-book", "Book", "book.name", "book/name",
+                            "../book", "/book"}) {
+        EXPECT_FALSE(is_valid_portfolio_config_key(key)) << key;
+    }
+    EXPECT_TRUE(is_valid_portfolio_config_key(std::string(64, 'a')));
+    EXPECT_FALSE(is_valid_portfolio_config_key(std::string(65, 'a')));
+}
+
 TEST_F(ConfigLoaderTest, PortfolioFileOverridesDefaults) {
     // Use a portfolio-level override on a top-level field that's not on the
     // required-validation list (initial_capital).
