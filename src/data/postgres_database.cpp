@@ -341,13 +341,14 @@ Result<void> PostgresDatabase::store_executions(const std::vector<ExecutionRepor
             date_ss << std::put_time(std::gmtime(&fill_time_t), "%Y-%m-%d");
             std::string exec_date = date_ss.str();
 
-            // Updated INSERT to include all 4 cost breakdown fields
+            // Keep the sleeve's gross/as-if cost and its account-netting
+            // adjustment separately. The derived net cost is their difference.
             std::string query = "INSERT INTO " + table_name +
                                 " (exec_id, order_id, symbol, side, quantity, price, "
                                 "execution_time, commissions_fees, implicit_price_impact, "
-                                "slippage_market_impact, total_transaction_costs, is_partial, "
+                                "slippage_market_impact, total_transaction_costs, netting_adjustment, is_partial, "
                                 "strategy_id, strategy_name, date, portfolio_id, portfolio_type) VALUES "
-                                "($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)";
+                                "($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)";
 
             std::cout << "DEBUG: About to execute SQL query" << std::endl;
             std::cout << "DEBUG: Query: " << query << std::endl;
@@ -362,10 +363,11 @@ Result<void> PostgresDatabase::store_executions(const std::vector<ExecutionRepor
                 static_cast<double>(exec.implicit_price_impact),    // $9
                 static_cast<double>(exec.slippage_market_impact),   // $10
                 static_cast<double>(exec.total_transaction_costs),  // $11
-                exec.is_partial,                                    // $12
-                strategy_id,    // $13 - combined (e.g., LIVE_TREND_FOLLOWING_TREND_FOLLOWING_FAST)
-                strategy_name,  // $14 - individual (e.g., TREND_FOLLOWING)
-                exec_date,      // $15
+                static_cast<double>(exec.netting_adjustment),       // $12
+                exec.is_partial,                                    // $13
+                strategy_id,    // $14 - combined (e.g., LIVE_TREND_FOLLOWING_TREND_FOLLOWING_FAST)
+                strategy_name,  // $15 - individual (e.g., TREND_FOLLOWING)
+                exec_date,      // $16
                 portfolio_id,portfolio_type});
 
             std::cout << "DEBUG: SQL executed successfully for " << exec.symbol << std::endl;
@@ -1975,6 +1977,16 @@ Result<void> PostgresDatabase::validate_execution_report(const ExecutionReport& 
         return make_error<void>(ErrorCode::INVALID_ARGUMENT,
                                 "Invalid total_transaction_costs: must be between 0 and 1e12",
                                 "PostgresDatabase");
+    }
+
+    constexpr double kMaxNettingAdjustment = 1.0e9;
+    const double adjustment = static_cast<double>(exec.netting_adjustment);
+    const double net_cost = static_cast<double>(exec.net_transaction_costs());
+    if (std::abs(adjustment) > kMaxNettingAdjustment || net_cost < 0.0 || net_cost > 1e12) {
+        return make_error<void>(
+            ErrorCode::INVALID_ARGUMENT,
+            "Invalid netting_adjustment: absolute value must be at most 1e9 and derived net cost must be non-negative",
+            "PostgresDatabase");
     }
 
     return Result<void>();

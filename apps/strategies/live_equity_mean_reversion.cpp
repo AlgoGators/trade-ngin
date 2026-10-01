@@ -4653,7 +4653,7 @@ int main(int argc, char* argv[]) {
         // implicit_price_impact is the per-share intermediate, already inside slippage, and
         // must not be added again.
         for (const auto& exec : daily_executions) {
-            total_daily_commissions += exec.total_transaction_costs.as_double();
+            total_daily_commissions += exec.net_transaction_costs().as_double();
         }
         INFO("Total daily commissions: $" + std::to_string(total_daily_commissions));
 

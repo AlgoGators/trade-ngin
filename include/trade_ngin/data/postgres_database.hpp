@@ -561,6 +561,7 @@ public:
     Result<void> validate_portfolio_id(const std::string& portfolio_id) const;
     Result<void> validate_operational_stream(const std::string& portfolio_id,
                                              const std::string& portfolio_type);
+    Result<void> validate_execution_report(const ExecutionReport& exec) const;
 
     Result<void> store_executions(const std::vector<ExecutionReport>& executions,
                                   const std::string& strategy_id, const std::string& strategy_name,
@@ -1184,13 +1185,6 @@ private:
      * @return Result indicating success or failure
      */
     Result<void> validate_strategy_id(const std::string& strategy_id) const;
-
-    /**
-     * @brief Validate execution report data
-     * @param exec Execution report to validate
-     * @return Result indicating success or failure
-     */
-    Result<void> validate_execution_report(const ExecutionReport& exec) const;
 
     /**
      * @brief Validate position data

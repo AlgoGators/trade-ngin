@@ -278,6 +278,19 @@ TEST_F(BaseStrategyTest, OnExecution_UpdatesPositionAndMetrics) {
     EXPECT_DOUBLE_EQ(positions.at("AAPL").average_price.as_double(), 150.0);
 }
 
+TEST_F(BaseStrategyTest, OnExecutionChargesNetCostAfterSleeveNettingAdjustment) {
+    auto strategy = createRunningStrategy();
+    auto report = createExecution(Side::BUY, "AAPL", 100, 150.0);
+    report.total_transaction_costs = Decimal(1.0);
+    report.netting_adjustment = Decimal(0.6);
+
+    ASSERT_TRUE(strategy->on_execution(report).is_ok());
+    const auto& position = strategy->get_positions().at("AAPL");
+    EXPECT_DOUBLE_EQ(position.realized_pnl.as_double(), -0.4);
+    EXPECT_DOUBLE_EQ(strategy->get_metrics().realized_pnl, -0.4);
+    EXPECT_DOUBLE_EQ(strategy->get_metrics().total_pnl, -0.4);
+}
+
 // --- Position & Risk Limits ---
 TEST_F(BaseStrategyTest, UpdatePosition_FailsIfExceedsLimit) {
     StrategyConfig config;

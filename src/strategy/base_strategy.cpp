@@ -268,7 +268,7 @@ Result<void> BaseStrategy::on_execution(const ExecutionReport& report) {
 
         // Always subtract transaction costs from realized PnL (for all trades, not just closing)
         // This ensures transaction costs are accounted for in opening positions too
-        double transaction_cost = static_cast<double>(report.total_transaction_costs);
+        double transaction_cost = static_cast<double>(report.net_transaction_costs());
         pos.realized_pnl -= Decimal(transaction_cost);
         metrics_.realized_pnl -= transaction_cost;
         metrics_.total_pnl -= transaction_cost;
@@ -662,7 +662,7 @@ Result<void> BaseStrategy::process_equity_execution(const ExecutionReport& repor
         // metrics_.total_pnl feeds the drawdown gate in check_risk_limits(); making that
         // gross would quietly loosen a risk limit, which is outside this fix. The asymmetry
         // is intentional: metrics_ is a risk input, pos.realized_pnl is a reported figure.
-        double transaction_cost = static_cast<double>(report.total_transaction_costs);
+        double transaction_cost = static_cast<double>(report.net_transaction_costs());
         metrics_.realized_pnl -= transaction_cost;
         metrics_.total_pnl -= transaction_cost;
 

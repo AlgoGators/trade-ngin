@@ -889,7 +889,7 @@ int main(int argc, char* argv[]) {
                         double qty = exec.filled_quantity.as_double();
                         if (exec.side == Side::SELL) qty = -qty;
                         positions[exec.symbol] += qty;
-                        day_txn_costs += exec.total_transaction_costs.as_double();
+                        day_txn_costs += exec.net_transaction_costs().as_double();
                     }
                 }
 

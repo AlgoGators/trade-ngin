@@ -980,7 +980,7 @@ std::string EmailSender::format_executions_table(const std::vector<ExecutionRepo
         double notional =
             exec.filled_quantity.as_double() * exec.fill_price.as_double() * contract_multiplier;
         total_notional_traded += notional;
-        total_transaction_cost += exec.total_transaction_costs.as_double();
+        total_transaction_cost += exec.net_transaction_costs().as_double();
 
         std::string side_str = exec.side == Side::BUY ? "BUY" : "SELL";
         std::string side_class = exec.side == Side::BUY ? "positive" : "negative";
@@ -994,7 +994,7 @@ std::string EmailSender::format_executions_table(const std::vector<ExecutionRepo
              << "</td>\n";
         html << "<td>$" << std::fixed << std::setprecision(2) << notional << "</td>\n";
         html << "<td>$" << std::fixed << std::setprecision(2)
-             << exec.total_transaction_costs.as_double() << "</td>\n";
+             << exec.net_transaction_costs().as_double() << "</td>\n";
         html << "</tr>\n";
     }
 
@@ -3388,7 +3388,7 @@ std::string EmailSender::format_single_strategy_executions_table(
         double notional =
             exec.filled_quantity.as_double() * exec.fill_price.as_double() * contract_multiplier;
         total_notional_traded += notional;
-        total_transaction_costs += exec.total_transaction_costs.as_double();
+        total_transaction_costs += exec.net_transaction_costs().as_double();
 
         std::string side_str = exec.side == Side::BUY ? "BUY" : "SELL";
         std::string side_class = exec.side == Side::BUY ? "positive" : "negative";
@@ -3402,7 +3402,7 @@ std::string EmailSender::format_single_strategy_executions_table(
              << "</td>\n";
         html << "<td>$" << format_with_commas(notional) << "</td>\n";
         html << "<td>$" << std::fixed << std::setprecision(2)
-             << exec.total_transaction_costs.as_double() << "</td>\n";
+             << exec.net_transaction_costs().as_double() << "</td>\n";
         html << "</tr>\n";
     }
 
@@ -3500,7 +3500,7 @@ std::string EmailSender::format_strategy_executions_tables(
             double notional = exec.filled_quantity.as_double() * exec.fill_price.as_double() *
                               contract_multiplier;
             portfolio_total_notional += notional;
-            portfolio_total_transaction_costs += exec.total_transaction_costs.as_double();
+            portfolio_total_transaction_costs += exec.net_transaction_costs().as_double();
         }
     }
 

@@ -495,7 +495,7 @@ int trade_ngin::run_book_tail(BookTailInputs& inputs, BookTailCallbacks& callbac
                          std::to_string(exec.fill_price) + " commission=$" +
                          std::to_string(exec.total_transaction_costs.as_double()));
 
-                    total_daily_transaction_costs += exec.total_transaction_costs.as_double();
+                    total_daily_transaction_costs += exec.net_transaction_costs().as_double();
                 }
 
                 all_strategy_executions[strategy_name] = strategy_executions;

@@ -968,7 +968,7 @@ double BacktestCoordinator::calculate_period_transaction_costs(
 
         // Get only the new executions (those added after count_before)
         for (size_t i = count_before; i < execs.size(); ++i) {
-            total_transaction_costs += static_cast<double>(execs[i].total_transaction_costs);
+            total_transaction_costs += static_cast<double>(execs[i].net_transaction_costs());
         }
     }
 

@@ -75,6 +75,26 @@ TEST(PostgresDatabasePortfolioScope, EmptyIdentityFailsBeforeConnection) {
         "S", "", date, "trading.live_results", "system"));
 }
 
+TEST(PostgresDatabaseExecutionValidation, NettingAdjustmentMayBeNegativeButNeverCreatesNegativeNetCost) {
+    PostgresDatabase disconnected("host=invalid port=1 user=u dbname=d");
+    auto execution = create_test_executions().front();
+    execution.total_transaction_costs = Decimal(0.8);
+
+    execution.netting_adjustment = Decimal(-1.2);
+    EXPECT_TRUE(disconnected.validate_execution_report(execution).is_ok());
+    EXPECT_DOUBLE_EQ(execution.net_transaction_costs().as_double(), 2.0);
+
+    execution.netting_adjustment = Decimal(0.81);
+    auto negative_net = disconnected.validate_execution_report(execution);
+    ASSERT_TRUE(negative_net.is_error());
+    EXPECT_EQ(negative_net.error()->code(), ErrorCode::INVALID_ARGUMENT);
+
+    execution.netting_adjustment = Decimal(-1.0e10);
+    auto unbounded = disconnected.validate_execution_report(execution);
+    ASSERT_TRUE(unbounded.is_error());
+    EXPECT_EQ(unbounded.error()->code(), ErrorCode::INVALID_ARGUMENT);
+}
+
 TEST_F(PostgresDatabaseTest, ConnectionLifecycle) {
     EXPECT_FALSE(db->is_connected());
 
