@@ -208,6 +208,10 @@ add_test(
     NAME email_delivery_script_policy
     COMMAND bash ${CMAKE_CURRENT_SOURCE_DIR}/scripts/test_email_delivery_policy.sh
 )
+add_test(
+    NAME multi_book_scheduler
+    COMMAND bash ${CMAKE_CURRENT_SOURCE_DIR}/scripts/test_multi_book_scheduler.sh
+)
 
 # Explicitly-built only: the disposable PostgreSQL QT pipeline probe must not
 # join the monolithic unit-test executable or its test discovery.

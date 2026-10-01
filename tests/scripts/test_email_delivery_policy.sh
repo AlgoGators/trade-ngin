@@ -65,11 +65,13 @@ run_scheduler_case() {
 
     mapfile -t args < "$ARGS_FILE"
     [[ "${args[0]:-}" == "2026-09-22" ]] || fail "$label passed wrong fixed date"
+    [[ "${args[1]:-}" == "--portfolio" && "${args[2]:-}" == "conservative" ]] ||
+        fail "$label did not pass the fallback portfolio explicitly"
     if [[ "$expected_flag" == "yes" ]]; then
-        [[ "${#args[@]}" -eq 2 && "${args[1]}" == "--send-email" ]] ||
+        [[ "${#args[@]}" -eq 4 && "${args[3]}" == "--send-email" ]] ||
             fail "$label did not pass exactly one --send-email flag"
     else
-        [[ "${#args[@]}" -eq 1 ]] || fail "$label unexpectedly passed --send-email"
+        [[ "${#args[@]}" -eq 3 ]] || fail "$label unexpectedly passed --send-email"
     fi
 }
 
