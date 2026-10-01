@@ -37,6 +37,10 @@ CREATE TABLE trading.positions (
     updated_at timestamptz NOT NULL DEFAULT now(),
     PRIMARY KEY (portfolio_id, strategy_id, strategy_name, date, symbol, portfolio_type)
 );
+CREATE OR REPLACE FUNCTION trading.lock_runtime_scope(
+    engine_id text, book text, allow_incubating boolean DEFAULT false)
+RETURNS TABLE(registry_id text, registry_revision bigint)
+LANGUAGE SQL AS $$ SELECT engine_id, 0::bigint $$;
 INSERT INTO trading.strategy_trading_days_metadata
 VALUES ('LIVE_TREND_FOLLOWING', '2025-01-01');
 SQL
@@ -132,6 +136,13 @@ BEGIN
         (portfolio_id,strategy_id,strategy_name,date,symbol,quantity,average_price,portfolio_type)
     VALUES
         ('INVESTOR_BETA','LIVE_TREND_FOLLOWING','Trend','2026-10-15','ES',2,6000,'system');
+
+    -- Migration 026 extends the existing house fence; it must not erase the
+    -- qt_proposal exception installed by migration 015.
+    INSERT INTO trading.positions
+        (portfolio_id,strategy_id,strategy_name,date,symbol,quantity,average_price,portfolio_type)
+    VALUES
+        ('HOUSE_BOOK','LIVE_HOUSE','House','2026-10-15','ES',1,6000,'qt_proposal');
     BEGIN
         INSERT INTO trading.positions
             (portfolio_id,strategy_id,strategy_name,date,symbol,quantity,average_price,portfolio_type)
@@ -140,6 +151,15 @@ BEGIN
         RAISE EXCEPTION 'investor qt row was accepted';
     EXCEPTION WHEN OTHERS THEN
         IF SQLERRM = 'investor qt row was accepted' THEN RAISE; END IF;
+    END;
+    BEGIN
+        INSERT INTO trading.positions
+            (portfolio_id,strategy_id,strategy_name,date,symbol,quantity,average_price,portfolio_type)
+        VALUES
+            ('INVESTOR_BETA','LIVE_TREND_FOLLOWING','Trend','2026-10-15','YM',1,45000,'qt_proposal');
+        RAISE EXCEPTION 'investor qt proposal row was accepted';
+    EXCEPTION WHEN OTHERS THEN
+        IF SQLERRM = 'investor qt proposal row was accepted' THEN RAISE; END IF;
     END;
     first_id := trading.publish_system_investor_day(
         'INVESTOR_BETA','LIVE_TREND_FOLLOWING','2026-10-15','migration-test-v1');

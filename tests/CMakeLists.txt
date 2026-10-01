@@ -292,6 +292,24 @@ add_executable(investor_book_onboarding_pg_tests EXCLUDE_FROM_ALL
 target_include_directories(investor_book_onboarding_pg_tests PRIVATE ${CMAKE_SOURCE_DIR}/include)
 target_link_libraries(investor_book_onboarding_pg_tests PRIVATE
     trade_ngin GTest::gtest GTest::gtest_main)
+add_executable(equity_multi_live_pg_tests EXCLUDE_FROM_ALL
+    data/test_equity_multi_live_pg.cpp)
+target_include_directories(equity_multi_live_pg_tests PRIVATE ${CMAKE_SOURCE_DIR}/include)
+target_link_libraries(equity_multi_live_pg_tests PRIVATE
+    trade_ngin GTest::gtest GTest::gtest_main)
+target_compile_definitions(equity_multi_live_pg_tests PRIVATE
+    TRADE_NGIN_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
+set_target_properties(equity_multi_live_pg_tests PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin/Debug"
+    RUNTIME_OUTPUT_DIRECTORY_DEBUG "${CMAKE_BINARY_DIR}/bin/Debug")
+add_executable(equity_multi_backtest_pg_tests EXCLUDE_FROM_ALL
+    data/test_equity_multi_backtest_pg.cpp)
+target_include_directories(equity_multi_backtest_pg_tests PRIVATE ${CMAKE_SOURCE_DIR}/include)
+target_link_libraries(equity_multi_backtest_pg_tests PRIVATE
+    trade_ngin GTest::gtest GTest::gtest_main)
+set_target_properties(equity_multi_backtest_pg_tests PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin/Debug"
+    RUNTIME_OUTPUT_DIRECTORY_DEBUG "${CMAKE_BINARY_DIR}/bin/Debug")
 set_target_properties(backtest_position_replace_pg_tests PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin/Debug"
     RUNTIME_OUTPUT_DIRECTORY_DEBUG "${CMAKE_BINARY_DIR}/bin/Debug")

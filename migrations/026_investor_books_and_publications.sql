@@ -117,7 +117,9 @@ BEGIN
         RAISE EXCEPTION 'runtime_scope_move_unsupported';
     END IF;
     IF stream IS NOT NULL AND stream NOT IN
-       ('system','qt','benchmark','benchmark_rebench','benchmark_frozen_shadow') THEN
+       ('system','qt','benchmark','benchmark_rebench','benchmark_frozen_shadow')
+       AND NOT (TG_TABLE_SCHEMA = 'trading' AND TG_TABLE_NAME = 'positions'
+                AND stream = 'qt_proposal') THEN
         RAISE EXCEPTION 'runtime_stream_unsupported';
     END IF;
     SELECT EXISTS (
@@ -138,14 +140,15 @@ BEGIN
     ELSE
         PERFORM trading.lock_runtime_scope(
             row_value->>'strategy_id', row_value->>'portfolio_id',
-            TG_TABLE_NAME = 'positions' AND stream = 'qt');
+            TG_TABLE_NAME = 'positions' AND stream IN ('qt','qt_proposal'));
     END IF;
     IF TG_OP = 'DELETE' THEN RETURN OLD; END IF;
     RETURN NEW;
 END $$;
 
 -- A stable digest of every durable daily system row. Volatile insertion/update
--- timestamps are removed; economically meaningful event timestamps remain.
+-- timestamps and storage-generated surrogate ids are removed; economically
+-- meaningful event identities and timestamps remain.
 CREATE OR REPLACE FUNCTION trading.compute_system_investor_digest(
     p_portfolio_id text, p_strategy_id text, p_source_day date
 ) RETURNS text LANGUAGE plpgsql AS $$
@@ -173,7 +176,7 @@ BEGIN
         IF to_regclass('trading.' || relation_name) IS NOT NULL THEN
             EXECUTE format(
                 'SELECT coalesce(jsonb_agg(row_json ORDER BY row_json::text), ''[]''::jsonb) '
-                'FROM (SELECT to_jsonb(t) - ARRAY[''updated_at'',''created_at'',''recorded_at''] '
+                'FROM (SELECT to_jsonb(t) - ARRAY[''id'',''updated_at'',''created_at'',''recorded_at''] '
                 'AS row_json FROM trading.%I t WHERE %s) stable_rows',
                 relation_name, predicate)
             INTO rows_payload USING p_portfolio_id, p_strategy_id, p_source_day;

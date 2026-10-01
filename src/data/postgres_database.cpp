@@ -508,52 +508,33 @@ Result<void> PostgresDatabase::store_positions(const std::vector<Position>& posi
         // and the date of the positions being inserted.
         // CRITICAL: Must filter by BOTH strategy_id and strategy_name, otherwise positions from
         // other strategies with the same combined strategy_id will be deleted!
-        try {
-            // Get the date from the first position being inserted (all positions should be from the
-            // same date)
-            if (!positions.empty()) {
-                auto time_t = std::chrono::system_clock::to_time_t(positions[0].last_update);
-                std::stringstream ss;
-                ss << std::put_time(std::gmtime(&time_t), "%Y-%m-%d");
-                std::string position_date = ss.str();
+        // Get the date from the first position being inserted (all positions should be from the
+        // same date). A schema mismatch must abort and roll back; never broaden this delete or
+        // substitute a different portfolio identity as a compatibility fallback.
+        if (!positions.empty()) {
+            auto time_t = std::chrono::system_clock::to_time_t(positions[0].last_update);
+            std::stringstream ss;
+            ss << std::put_time(std::gmtime(&time_t), "%Y-%m-%d");
+            std::string position_date = ss.str();
 
-                // EQUALLY CRITICAL: scope the delete to this stream. Without the portfolio_type
-                // predicate, rewriting the system stream would delete that day's qt positions --
-                // silently destroying QT's decisions every time the engine ran.
-                std::string delete_query = "DELETE FROM " + table_name +
-                                           " WHERE strategy_id = $1 AND strategy_name = $2"
-                                           " AND portfolio_id = $3 AND DATE(last_update) = $4";
-                if (has_portfolio_type) {
-                    delete_query += " AND portfolio_type = $5";
-                }
-                DEBUG("Deleting existing positions for strategy_id=" + strategy_id +
-                      " strategy_name=" + strategy_name + " portfolio_id=" + portfolio_id +
-                      " date=" + position_date + " portfolio_type=" + portfolio_type);
-                if (has_portfolio_type) {
-                    txn.exec(delete_query, pqxx::params{strategy_id, strategy_name, portfolio_id,
-                                                        position_date, portfolio_type});
-                } else {
-                    txn.exec(delete_query,
-                             pqxx::params{strategy_id, strategy_name, portfolio_id, position_date});
-                }
+            // EQUALLY CRITICAL: scope the delete to this stream. Without the portfolio_type
+            // predicate, rewriting the system stream would delete that day's qt positions --
+            // silently destroying QT's decisions every time the engine ran.
+            std::string delete_query = "DELETE FROM " + table_name +
+                                       " WHERE strategy_id = $1 AND strategy_name = $2"
+                                       " AND portfolio_id = $3 AND DATE(last_update) = $4";
+            if (has_portfolio_type) {
+                delete_query += " AND portfolio_type = $5";
             }
-        } catch (const std::exception& e) {
-            // If strategy_id/strategy_name columns don't exist, clear all positions for the
-            // position date only
-            WARN(
-                "strategy_id/strategy_name columns may not exist, clearing all positions for "
-                "position date: " +
-                std::string(e.what()));
-
-            if (!positions.empty()) {
-                auto time_t = std::chrono::system_clock::to_time_t(positions[0].last_update);
-                std::stringstream ss;
-                ss << std::put_time(std::gmtime(&time_t), "%Y-%m-%d");
-                std::string position_date = ss.str();
-
-                std::string delete_query =
-                    "DELETE FROM " + table_name + " WHERE DATE(last_update) = $1";
-                txn.exec(delete_query, pqxx::params{position_date});
+            DEBUG("Deleting existing positions for strategy_id=" + strategy_id +
+                  " strategy_name=" + strategy_name + " portfolio_id=" + portfolio_id +
+                  " date=" + position_date + " portfolio_type=" + portfolio_type);
+            if (has_portfolio_type) {
+                txn.exec(delete_query, pqxx::params{strategy_id, strategy_name, portfolio_id,
+                                                    position_date, portfolio_type});
+            } else {
+                txn.exec(delete_query,
+                         pqxx::params{strategy_id, strategy_name, portfolio_id, position_date});
             }
         }
 
@@ -583,53 +564,30 @@ Result<void> PostgresDatabase::store_positions(const std::vector<Position>& posi
         }
 
         if (!rows.empty()) {
-            // Try with strategy_id/strategy_name columns first; every value bound as a parameter.
-            try {
-                std::string query =
-                    "INSERT INTO " + table_name +
-                    " (symbol, quantity, average_price, daily_unrealized_pnl, "
-                    "daily_realized_pnl, last_update, updated_at, strategy_id, "
-                    "strategy_name, date, portfolio_id" +
-                    std::string(has_portfolio_type ? ", portfolio_type" : "") +
-                    ") VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11" +
-                    std::string(has_portfolio_type ? ", $12" : "") + ")";
-                for (const auto& [position_date, pos] : rows) {
-                    pqxx::params p{pos->symbol,
-                                   static_cast<double>(pos->quantity),
-                                   static_cast<double>(pos->average_price),
-                                   static_cast<double>(pos->unrealized_pnl),
-                                   static_cast<double>(pos->realized_pnl),
-                                   format_timestamp(pos->last_update),
-                                   format_timestamp(pos->last_update),
-                                   strategy_id,
-                                   strategy_name,
-                                   position_date,
-                                   portfolio_id};
-                    if (has_portfolio_type) {
-                        p.append(portfolio_type);
-                    }
-                    txn.exec(query, p);
+            std::string query =
+                "INSERT INTO " + table_name +
+                " (symbol, quantity, average_price, daily_unrealized_pnl, "
+                "daily_realized_pnl, last_update, updated_at, strategy_id, "
+                "strategy_name, date, portfolio_id" +
+                std::string(has_portfolio_type ? ", portfolio_type" : "") +
+                ") VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11" +
+                std::string(has_portfolio_type ? ", $12" : "") + ")";
+            for (const auto& [position_date, pos] : rows) {
+                pqxx::params p{pos->symbol,
+                               static_cast<double>(pos->quantity),
+                               static_cast<double>(pos->average_price),
+                               static_cast<double>(pos->unrealized_pnl),
+                               static_cast<double>(pos->realized_pnl),
+                               format_timestamp(pos->last_update),
+                               format_timestamp(pos->last_update),
+                               strategy_id,
+                               strategy_name,
+                               position_date,
+                               portfolio_id};
+                if (has_portfolio_type) {
+                    p.append(portfolio_type);
                 }
-            } catch (const std::exception& e) {
-                // If strategy_id column doesn't exist, retry the whole batch without it.
-                WARN("strategy_id column may not exist, trying without it: " +
-                     std::string(e.what()));
-
-                std::string query =
-                    "INSERT INTO " + table_name +
-                    " (symbol, quantity, average_price, daily_unrealized_pnl, "
-                    "daily_realized_pnl, last_update, updated_at, strategy_id, "
-                    "strategy_name, date, portfolio_id) VALUES "
-                    "($1, $2, $3, $4, $5, $6, $7, '', '', $8, 'BASE_PORTFOLIO')";
-                for (const auto& [position_date, pos] : rows) {
-                    txn.exec(query, pqxx::params{pos->symbol, static_cast<double>(pos->quantity),
-                                                 static_cast<double>(pos->average_price),
-                                                 static_cast<double>(pos->unrealized_pnl),
-                                                 static_cast<double>(pos->realized_pnl),
-                                                 format_timestamp(pos->last_update),
-                                                 format_timestamp(pos->last_update),
-                                                 position_date});
-                }
+                txn.exec(query, p);
             }
         }
 
@@ -2542,6 +2500,140 @@ Result<std::tuple<double, double, double>> PostgresDatabase::get_previous_live_a
     }
 }
 
+Result<LiveAccountingContext> PostgresDatabase::get_live_accounting_context(
+    const std::string& strategy_id, const std::string& portfolio_id,
+    const Timestamp& date, const std::string& portfolio_type) {
+    auto portfolio_validation = validate_portfolio_id(portfolio_id);
+    if (portfolio_validation.is_error()) {
+        return make_error<LiveAccountingContext>(
+            portfolio_validation.error()->code(),
+            portfolio_validation.error()->what(), "PostgresDatabase");
+    }
+    auto strategy_validation = validate_strategy_id(strategy_id);
+    if (strategy_validation.is_error()) {
+        return make_error<LiveAccountingContext>(
+            strategy_validation.error()->code(),
+            strategy_validation.error()->what(), "PostgresDatabase");
+    }
+    if (portfolio_type != "system") {
+        return make_error<LiveAccountingContext>(
+            ErrorCode::INVALID_ARGUMENT,
+            "live_accounting_context_requires_system_stream",
+            "PostgresDatabase");
+    }
+    auto connection_validation = validate_connection();
+    if (connection_validation.is_error()) {
+        return make_error<LiveAccountingContext>(
+            connection_validation.error()->code(),
+            connection_validation.error()->what(), "PostgresDatabase");
+    }
+
+    try {
+        pqxx::read_transaction transaction(*connection_);
+        const std::string source_day = format_timestamp(date).substr(0, 10);
+        const auto prior = transaction.exec(
+            "WITH ordered AS ("
+            " SELECT DATE(date)::text AS source_day,current_portfolio_value,"
+            "        total_pnl,total_realized_pnl,total_unrealized_pnl,"
+            "        total_transaction_costs,daily_realized_pnl,"
+            "        daily_transaction_costs,gross_notional,net_notional,"
+            "        margin_posted,"
+            "        row_number() OVER (ORDER BY date DESC) AS row_number "
+            " FROM trading.live_results "
+            " WHERE strategy_id=$1 AND portfolio_id=$2 AND portfolio_type=$3 "
+            "   AND DATE(date)<$4::date"
+            ") "
+            "SELECT p.source_day,p.current_portfolio_value,p.total_pnl,"
+            "       p.total_realized_pnl,p.total_unrealized_pnl,"
+            "       p.total_transaction_costs,p.daily_realized_pnl,"
+            "       p.daily_transaction_costs,p.gross_notional,p.net_notional,"
+            "       p.margin_posted,o.current_portfolio_value,o.total_pnl,"
+            "       o.total_realized_pnl,o.total_unrealized_pnl,"
+            "       o.total_transaction_costs "
+            "FROM ordered p LEFT JOIN ordered o ON o.row_number=2 "
+            "WHERE p.row_number=1",
+            pqxx::params{strategy_id, portfolio_id, portfolio_type, source_day});
+        const auto day_count = transaction.exec(
+            "SELECT trading.get_trading_days($1::varchar,$2::date,$3::varchar,"
+            "$4::varchar)",
+            pqxx::params{strategy_id, source_day, portfolio_id, portfolio_type});
+        if (day_count.empty() || day_count[0][0].is_null()) {
+            return make_error<LiveAccountingContext>(
+                ErrorCode::DATABASE_ERROR,
+                "live_accounting_trading_days_missing", "PostgresDatabase");
+        }
+
+        LiveAccountingContext context;
+        context.trading_days = day_count[0][0].as<int>();
+        if (context.trading_days <= 0) {
+            return make_error<LiveAccountingContext>(
+                ErrorCode::INVALID_DATA,
+                "live_accounting_trading_days_invalid", "PostgresDatabase");
+        }
+        if (!prior.empty()) {
+            const auto& row = prior[0];
+            context.previous_found = true;
+            if (!row[0].is_null()) context.previous_source_day = row[0].as<std::string>();
+            if (!row[1].is_null())
+                context.previous_current_portfolio_value = row[1].as<double>();
+            if (!row[2].is_null())
+                context.previous_total_pnl = row[2].as<double>();
+            if (!row[3].is_null())
+                context.previous_total_realized_pnl = row[3].as<double>();
+            if (!row[4].is_null())
+                context.previous_total_unrealized_pnl = row[4].as<double>();
+            if (!row[5].is_null())
+                context.previous_total_transaction_costs = row[5].as<double>();
+            if (!row[6].is_null())
+                context.previous_daily_realized_pnl = row[6].as<double>();
+            if (!row[7].is_null())
+                context.previous_daily_transaction_costs = row[7].as<double>();
+            if (!row[8].is_null())
+                context.previous_gross_notional = row[8].as<double>();
+            if (!row[9].is_null())
+                context.previous_net_notional = row[9].as<double>();
+            if (!row[10].is_null())
+                context.previous_margin_posted = row[10].as<double>();
+            context.preceding_found = !row[11].is_null();
+            if (!row[11].is_null())
+                context.preceding_current_portfolio_value = row[11].as<double>();
+            if (!row[12].is_null())
+                context.preceding_total_pnl = row[12].as<double>();
+            if (!row[13].is_null())
+                context.preceding_total_realized_pnl = row[13].as<double>();
+            if (!row[14].is_null())
+                context.preceding_total_unrealized_pnl = row[14].as<double>();
+            if (!row[15].is_null())
+                context.preceding_total_transaction_costs = row[15].as<double>();
+            const auto prior_day_count = transaction.exec(
+                "SELECT trading.get_trading_days($1::varchar,$2::date,"
+                "$3::varchar,$4::varchar)",
+                pqxx::params{strategy_id, context.previous_source_day,
+                             portfolio_id, portfolio_type});
+            if (prior_day_count.empty() || prior_day_count[0][0].is_null()) {
+                return make_error<LiveAccountingContext>(
+                    ErrorCode::DATABASE_ERROR,
+                    "live_accounting_previous_trading_days_missing",
+                    "PostgresDatabase");
+            }
+            context.previous_trading_days = prior_day_count[0][0].as<int>();
+            if (context.previous_trading_days <= 0) {
+                return make_error<LiveAccountingContext>(
+                    ErrorCode::INVALID_DATA,
+                    "live_accounting_previous_trading_days_invalid",
+                    "PostgresDatabase");
+            }
+        }
+        return Result<LiveAccountingContext>(std::move(context));
+    } catch (const std::exception& error) {
+        return make_error<LiveAccountingContext>(
+            ErrorCode::DATABASE_ERROR,
+            "Failed to load live accounting context: " +
+                std::string(error.what()),
+            "PostgresDatabase");
+    }
+}
+
 Result<int> PostgresDatabase::seed_qt_positions_from_system(const std::string& strategy_id,
                                                            const std::string& strategy_name,
                                                            const std::string& portfolio_id,
@@ -3262,13 +3354,35 @@ Result<void> PostgresDatabase::store_applied_corp_actions(
     const std::vector<AppliedCorpActionRow>& rows) {
     if (rows.empty()) return Result<void>();
 
+    if (pending_publication_ && !publication_transaction_) {
+        bool valid_scope =
+            pending_publication_->portfolio_id == portfolio_id &&
+            pending_publication_->strategy_id == strategy_id;
+        for (const auto& row : rows)
+            valid_scope = valid_scope && row.run_date == pending_publication_->date;
+        if (!valid_scope) {
+            pending_publication_->invalid_payload = true;
+            return make_error<void>(
+                ErrorCode::INVALID_ARGUMENT,
+                "corporate_action_publication_scope_invalid",
+                "PostgresDatabase");
+        }
+        if (defer_live_write(
+                [this, portfolio_id, strategy_id, strategy_name, rows]() {
+                    return store_applied_corp_actions(
+                        portfolio_id, strategy_id, strategy_name, rows);
+                })) {
+            return Result<void>();
+        }
+    }
+
     auto validation = validate_connection();
     if (validation.is_error()) {
         return make_error<void>(validation.error()->code(), validation.error()->what());
     }
 
     try {
-        pqxx::work txn(*connection_);
+        PublicationTransaction txn(*connection_, publication_transaction_);
         auto stored =
             store_applied_corp_actions_in(txn, portfolio_id, strategy_id, strategy_name, rows);
         if (stored.is_error())

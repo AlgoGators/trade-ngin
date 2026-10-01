@@ -41,6 +41,7 @@
 #include "trade_ngin/portfolio/portfolio_manager.hpp"
 #include "trade_ngin/strategy/mean_reversion.hpp"
 #include "trade_ngin/strategy/equity_strategy_builder.hpp"
+#include "trade_ngin/apps/equity_multi_live_runner.hpp"
 #include "trade_ngin/core/email_sender.hpp"
 #include "trade_ngin/storage/live_results_manager.hpp"
 #include "trade_ngin/live/live_data_loader.hpp"
@@ -305,13 +306,28 @@ int main(int argc, char* argv[]) {
             return 1;
         }
         const auto& strat_entries = strat_entries_result.value();
-        // The live runner's storage layer is keyed to a single strategy id today
-        // (LIVE_EQUITY_MEAN_REVERSION, used at ~20 storage/query sites), so require
-        // exactly one enabled strategy rather than silently running only the first.
-        if (strat_entries.size() != 1) {
-            ERROR("Live equity runner supports exactly one enabled strategy today; found " +
-                  std::to_string(strat_entries.size()));
+        auto book_plan_result =
+            trade_ngin::apps::build_equity_live_book_plan(strat_entries);
+        if (book_plan_result.is_error()) {
+            ERROR(std::string(book_plan_result.error()->what()));
             return 1;
+        }
+        const auto& book_plan = book_plan_result.value();
+        if (!book_plan.legacy_single) {
+            if (verified_desk_prior) {
+                ERROR("Verified desk prior is defined only for the legacy single-sleeve "
+                      "equity owner; refusing a composite multi-sleeve replay.");
+                return 1;
+            }
+            auto multi = trade_ngin::apps::run_multi_sleeve_equity_live_day(
+                app_config, book_plan, db, registry, *holiday_checker_ptr, now,
+                start_date, end_date, use_override_date);
+            if (multi.is_error()) {
+                ERROR("Multi-sleeve equity run refused: " +
+                      std::string(multi.error()->what()));
+                return 1;
+            }
+            return 0;
         }
         const auto& strat_entry = strat_entries.front();
         if(strat_entry.type!="MeanReversionStrategy")throw std::invalid_argument("equity_model_profile_invalid");
@@ -6199,16 +6215,33 @@ int main(int argc, char* argv[]) {
         if(db->store_risk_limits(kEquityStrategyId,portfolio_id,published_limits).is_error())return 1;
         const bool system_investor_publication =
             db->live_publication_mode() == LivePublicationMode::SystemInvestor;
-        if(!system_investor_publication &&
-           seed_qt_proposal_positions(*db,kEquityStrategyId,{kEquityStrategyName},portfolio_id,now).is_error())return 1;
-        if(!system_investor_publication &&
-           seed_qt_report_positions(*db,kEquityStrategyId,{kEquityStrategyName},portfolio_id,now).is_error())return 1;
+        if(!system_investor_publication) {
+            auto proposal_seed = seed_qt_proposal_positions(
+                *db,kEquityStrategyId,{kEquityStrategyName},portfolio_id,now);
+            if(proposal_seed.is_error()) {
+                ERROR("QT proposal seed failed: " +
+                      std::string(proposal_seed.error()->what()));
+                return 1;
+            }
+            auto report_seed = seed_qt_report_positions(
+                *db,kEquityStrategyId,{kEquityStrategyName},portfolio_id,now);
+            if(report_seed.is_error()) {
+                ERROR("QT report seed failed: " +
+                      std::string(report_seed.error()->what()));
+                return 1;
+            }
+        }
         auto inputs=build_run_inputs_row(TRADE_NGIN_GIT_SHA,trading_snapshot.value(),symbols,all_bars,
             portfolio_config.benchmark_mode,start_date,end_date);
         inputs["engine_flags"]["equity_strategy_source_key"]=strat_entry.id;
         if(governed_prior)inputs["engine_flags"]["equity_model_prior"]=governed_prior->replay_reference;
         if(db->store_live_run_inputs(kEquityStrategyId,portfolio_id,now,inputs).is_error())return 1;
-        if(db->publish_live_publication().is_error())return 1;
+        auto publication = db->publish_live_publication();
+        if(publication.is_error()) {
+            ERROR("Live publication failed: " +
+                  std::string(publication.error()->what()));
+            return 1;
+        }
 
         // Stop the strategy
         INFO("Stopping strategy...");

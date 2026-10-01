@@ -142,6 +142,7 @@ set(TRADE_NGIN_SOURCES
     src/core/config_loader.cpp
     src/apps/live_portfolio_helpers.cpp
     src/apps/equity_live_book.cpp
+    src/apps/equity_multi_live_runner.cpp
     src/apps/qt_report_quantity_projection.cpp
     src/apps/book_tail.cpp
     src/apps/book_execution_phase.cpp
@@ -360,6 +361,7 @@ add_executable(equity_model_entry_unit
     tests/test_equity_model_numeric_history.cpp
     tests/test_equity_mean_reversion_consumption.cpp
     tests/test_equity_model_prior_arguments.cpp
+    tests/apps/test_equity_multi_live_accounting.cpp
     tests/apps/test_equity_model_action_frame.cpp
     tests/apps/test_equity_action_run_consumption.cpp
     tests/test_equity_run_consumption.cpp)

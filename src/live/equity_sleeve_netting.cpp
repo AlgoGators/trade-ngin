@@ -5,6 +5,8 @@
 #include <set>
 #include <unordered_map>
 
+#include "trade_ngin/live/execution_manager.hpp"
+
 namespace trade_ngin::live {
 namespace {
 
@@ -251,6 +253,80 @@ Result<std::vector<EquitySleeveLogicalFill>> reconcile_equity_sleeve_costs(
         }
     }
     return Result<std::vector<EquitySleeveLogicalFill>>(std::move(attributed));
+}
+
+Result<EquitySleeveExecutionPlan> generate_equity_sleeve_executions(
+    ExecutionManager& manager, const EquitySleeveNettingPlan& plan,
+    const Timestamp& timestamp) {
+    try {
+        std::vector<EquitySleeveAsIfCost> sleeve_costs;
+        std::vector<EquityAccountExecutionCost> account_costs;
+        EquitySleeveExecutionPlan generated;
+        sleeve_costs.reserve(plan.logical_fills.size());
+        generated.sleeve_executions.reserve(plan.logical_fills.size());
+
+        std::size_t sequence = 0;
+        for (const auto& fill : plan.logical_fills) {
+            if (!valid_owner(fill.strategy_name) || fill.symbol.empty() ||
+                direction(fill.signed_quantity) == 0 ||
+                !std::isfinite(fill.reference_price) || fill.reference_price <= 0.0) {
+                return invalid<EquitySleeveExecutionPlan>(
+                    "Logical sleeve fill is invalid");
+            }
+            auto execution = manager.generate_equity_execution(
+                fill.symbol, fill.signed_quantity, fill.reference_price,
+                timestamp, sequence++);
+            sleeve_costs.push_back(
+                {fill.strategy_name, fill.symbol, fill.signed_quantity,
+                 execution.total_transaction_costs.as_double()});
+            generated.sleeve_executions.push_back(
+                {fill.strategy_name, std::move(execution)});
+        }
+
+        generated.account_executions.reserve(plan.account_orders.size());
+        account_costs.reserve(plan.account_orders.size());
+        sequence = 0;
+        for (const auto& order : plan.account_orders) {
+            if (order.symbol.empty() || direction(order.signed_quantity) == 0 ||
+                !std::isfinite(order.reference_price) || order.reference_price <= 0.0) {
+                return invalid<EquitySleeveExecutionPlan>(
+                    "Net account order is invalid");
+            }
+            auto execution = manager.generate_equity_execution(
+                order.symbol, order.signed_quantity, order.reference_price,
+                timestamp, sequence++);
+            account_costs.push_back(
+                {order.symbol, order.signed_quantity,
+                 execution.total_transaction_costs.as_double()});
+            generated.account_executions.push_back(std::move(execution));
+        }
+
+        auto attributed = reconcile_equity_sleeve_costs(
+            plan, sleeve_costs, account_costs);
+        if (attributed.is_error()) {
+            return make_error<EquitySleeveExecutionPlan>(
+                attributed.error()->code(), attributed.error()->what(),
+                "equity_sleeve_netting");
+        }
+        if (attributed.value().size() != generated.sleeve_executions.size()) {
+            return invalid<EquitySleeveExecutionPlan>(
+                "Attributed sleeve execution count changed");
+        }
+        for (std::size_t index = 0; index < attributed.value().size(); ++index) {
+            const auto& cost = attributed.value()[index];
+            auto& owned = generated.sleeve_executions[index];
+            if (owned.strategy_name != cost.strategy_name ||
+                owned.execution.symbol != cost.symbol) {
+                return invalid<EquitySleeveExecutionPlan>(
+                    "Attributed sleeve execution identity changed");
+            }
+            owned.execution.netting_adjustment = Decimal(cost.netting_adjustment);
+        }
+        return Result<EquitySleeveExecutionPlan>(std::move(generated));
+    } catch (const std::exception& error) {
+        return make_error<EquitySleeveExecutionPlan>(
+            ErrorCode::INVALID_DATA, error.what(), "equity_sleeve_netting");
+    }
 }
 
 }  // namespace trade_ngin::live

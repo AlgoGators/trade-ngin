@@ -26,10 +26,42 @@
 
 namespace trade_ngin {
 
+struct LiveAccountingContext {
+    bool previous_found{false};
+    std::string previous_source_day;
+    double previous_current_portfolio_value{0.0};
+    double previous_total_pnl{0.0};
+    double previous_total_realized_pnl{0.0};
+    double previous_total_unrealized_pnl{0.0};
+    double previous_total_transaction_costs{0.0};
+    double previous_daily_realized_pnl{0.0};
+    double previous_daily_transaction_costs{0.0};
+    double previous_gross_notional{0.0};
+    double previous_net_notional{0.0};
+    double previous_margin_posted{0.0};
+    bool preceding_found{false};
+    double preceding_current_portfolio_value{0.0};
+    double preceding_total_pnl{0.0};
+    double preceding_total_realized_pnl{0.0};
+    double preceding_total_unrealized_pnl{0.0};
+    double preceding_total_transaction_costs{0.0};
+    int previous_trading_days{0};
+    int trading_days{0};
+};
+
 // Explicitly dated completed MODEL position batch; never infers an empty day.
 struct QtModelPositionBatch {
     std::string portfolio_id,strategy_id,strategy_name,source_day;
     std::vector<Position> positions;
+};
+
+struct EquityPreviousDayFinalization {
+    std::string portfolio_id;
+    std::string strategy_id;
+    Timestamp source_date{};
+    std::vector<QtModelPositionBatch> owner_batches;
+    std::unordered_map<std::string, double> live_result_updates;
+    double equity{0.0};
 };
 
 struct InvestorBookOnboarding {
@@ -783,6 +815,19 @@ public:
     Result<std::tuple<double, double, double>> get_previous_live_aggregates(
         const std::string& strategy_id, const std::string& portfolio_id, const Timestamp& date,
         const std::string& table_name = "trading.live_results", const std::string& portfolio_type = "system") override;
+
+    // Complete cumulative frame used by the multi-sleeve equity daily
+    // accounting identity. The prior row and portfolio-scoped trading-day
+    // count are captured in one read transaction.
+    Result<LiveAccountingContext> get_live_accounting_context(
+        const std::string& strategy_id, const std::string& portfolio_id,
+        const Timestamp& date, const std::string& portfolio_type = "system");
+
+    // Queue the complete T-1 cash-equity finalization behind the current
+    // publication. Owner rows, the combined result row, and the equity curve
+    // commit in the same transaction as day T or all roll back together.
+    Result<void> stage_equity_previous_day_finalization(
+        const EquityPreviousDayFinalization& finalization);
 
     /**
      * @brief Store live trading equity curve point

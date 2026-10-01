@@ -430,6 +430,18 @@ TEST_F(PortfolioManagerTest, LifetimeLiveCallbackStopsAfterManagerDestruction) {
     EXPECT_EQ(strategy->calls, 1);
 }
 
+TEST_F(PortfolioManagerTest, LifetimeDefaultIdentityCanBeReusedAfterDestruction) {
+    PortfolioLifetimeBusCleanup cleanup;
+    manager_.reset();
+    EXPECT_TRUE(StateManager::instance().get_state("PORTFOLIO_MANAGER").is_error());
+
+    EXPECT_NO_THROW({
+        auto next = std::make_unique<PortfolioManager>(lifetime_portfolio_config());
+        EXPECT_TRUE(StateManager::instance().get_state("PORTFOLIO_MANAGER").is_ok());
+    });
+    EXPECT_TRUE(StateManager::instance().get_state("PORTFOLIO_MANAGER").is_error());
+}
+
 TEST_F(PortfolioManagerTest, LifetimeOlderManagerDestructionPreservesNewer) {
     PortfolioLifetimeBusCleanup cleanup;
     auto old_strategy = lifetime_strategy("LIFETIME_OLD_FIRST_A", db_);

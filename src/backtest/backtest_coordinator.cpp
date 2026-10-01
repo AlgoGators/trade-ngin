@@ -909,7 +909,14 @@ void BacktestCoordinator::reset_portfolio_state() {
 
 std::string BacktestCoordinator::generate_portfolio_run_id(
     const std::vector<std::string>& strategy_names, const Timestamp& end_date) {
-    return RunIdGenerator::generate_portfolio_run_id(strategy_names, end_date);
+    const std::string legacy_id =
+        RunIdGenerator::generate_portfolio_run_id(strategy_names, end_date);
+    // Keep the established one-sleeve equity house identifier byte-for-byte
+    // compatible. Every selectable non-house book must include its immutable
+    // portfolio scope, otherwise two books using the same strategies and end
+    // date overwrite/collide in the globally keyed backtest tables.
+    if (config_.portfolio_id == "EQUITY_MR_PORTFOLIO") return legacy_id;
+    return config_.portfolio_id + "__" + legacy_id;
 }
 
 Result<void> BacktestCoordinator::save_daily_positions(std::shared_ptr<PortfolioManager> portfolio,

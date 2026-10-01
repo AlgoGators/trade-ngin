@@ -10,6 +10,10 @@ namespace {
 void need(bool yes){if(!yes)throw std::runtime_error("qt_empty_owner_storage_unsupported");}
 }
 bool require_qt_empty_owner_storage_capability(pqxx::work& tx){
+    // Catalog rendering is search-path-sensitive: a harmless application
+    // function named now() makes pg_get_expr render the valid built-in default
+    // as pg_catalog.now(). Validate under a fixed catalog path instead.
+    tx.exec("SET LOCAL search_path = pg_catalog");
     const auto relations=tx.exec("SELECT to_regclass('trading.qt_empty_model_owner_publications') IS NOT NULL,"
         "to_regclass('trading.qt_storage_capabilities') IS NOT NULL");
     need(relations.size()==1);

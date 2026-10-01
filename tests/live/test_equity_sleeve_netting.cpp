@@ -4,6 +4,7 @@
 
 #include "trade_ngin/live/corporate_actions_audit_log.hpp"
 #include "trade_ngin/live/equity_sleeve_netting.hpp"
+#include "trade_ngin/live/execution_manager.hpp"
 
 using namespace trade_ngin::live;
 
@@ -131,6 +132,35 @@ TEST(EquitySleeveNetting, FailsClosedWhenExternalExecutionDoesNotMatchPlan) {
                     {{"ALPHA", "AAPL", 7.0, 0.07},
                      {"BETA", "AAPL", -3.0, 0.03}}, {})
                     .is_error());
+}
+
+TEST(EquitySleeveNetting, GeneratesGrossOwnerExecutionsAndOneNetAccountExecution) {
+    auto netting = build_equity_sleeve_netting_plan(
+        {sleeve("ALPHA", 7.0), sleeve("BETA", -3.0)});
+    ASSERT_TRUE(netting.is_ok());
+
+    trade_ngin::ExecutionManager manager;
+    auto generated = generate_equity_sleeve_executions(
+        manager, netting.value(), trade_ngin::Timestamp{});
+    ASSERT_TRUE(generated.is_ok()) << generated.error()->what();
+    ASSERT_EQ(generated.value().sleeve_executions.size(), 2u);
+    ASSERT_EQ(generated.value().account_executions.size(), 1u);
+
+    const auto& alpha = generated.value().sleeve_executions[0];
+    const auto& beta = generated.value().sleeve_executions[1];
+    EXPECT_EQ(alpha.strategy_name, "ALPHA");
+    EXPECT_EQ(alpha.execution.side, trade_ngin::Side::BUY);
+    EXPECT_DOUBLE_EQ(alpha.execution.filled_quantity.as_double(), 7.0);
+    EXPECT_EQ(beta.strategy_name, "BETA");
+    EXPECT_EQ(beta.execution.side, trade_ngin::Side::SELL);
+    EXPECT_DOUBLE_EQ(beta.execution.filled_quantity.as_double(), 3.0);
+
+    const auto& account = generated.value().account_executions.front();
+    EXPECT_EQ(account.side, trade_ngin::Side::BUY);
+    EXPECT_DOUBLE_EQ(account.filled_quantity.as_double(), 4.0);
+    EXPECT_NEAR(alpha.execution.net_transaction_costs().as_double() +
+                    beta.execution.net_transaction_costs().as_double(),
+                account.total_transaction_costs.as_double(), 1e-5);
 }
 
 TEST(EquityCorporateActionsIsolation, LegacyFileImportIsRestrictedToOriginalHouseOwner) {

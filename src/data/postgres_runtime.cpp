@@ -174,7 +174,7 @@ void PostgresDatabase::require_proposal_capability(pqxx::work& txn) {
             AND f.prorettype='pg_catalog.trigger'::regtype AND f.pronargs=0
             AND l.lanname='plpgsql' AND md5(f.prosrc) IN
               ('419771cec97836560ae952c120aac4d1',
-               '78714a77bd21b136a8e54a9ddf6e4bbb'))
+               '308ea677e129181a224d3322e1cab9ef'))
         AND EXISTS (SELECT 1 FROM pg_trigger t
           WHERE t.tgrelid='trading.positions'::regclass
             AND t.tgname='runtime_publication_fence' AND t.tgenabled='O'
@@ -475,6 +475,31 @@ Result<bool> PostgresDatabase::begin_live_publication(const std::string& strateg
                     scope->producer_version.empty() ||
                     prior_requirement != PublicationPriorRequirement::None)
                     throw std::runtime_error("investor_publication_scope_ineligible");
+                // An immutable investor day is a completed idempotency record. A
+                // byte-equivalent rerun should stop before replaying corporate
+                // actions against its already-finalized T-1 book; a changed
+                // config, binary, or durable digest must fail closed instead.
+                auto published = txn.exec(
+                    "SELECT p.strategy_id,p.model_stream,p.producer_version,"
+                    "p.content_digest=trading.compute_system_investor_digest("
+                    "p.portfolio_id,p.strategy_id,p.source_day) AS digest_current,"
+                    "i.config_snapshot=$3::jsonb AS snapshot_current "
+                    "FROM trading.investor_book_publications p "
+                    "LEFT JOIN trading.run_inputs i ON i.portfolio_id=p.portfolio_id "
+                    "AND i.strategy_id=p.strategy_id AND i.date=p.source_day "
+                    "WHERE p.portfolio_id=$1 AND p.source_day=$2::date FOR UPDATE OF p",
+                    pqxx::params{scope->portfolio_id, scope->date,
+                                 snapshot.dump()});
+                if (!published.empty()) {
+                    if (published.size()!=1 || published[0][0].as<std::string>()!=strategy_id ||
+                        published[0][1].as<std::string>()!="system" ||
+                        published[0][2].as<std::string>()!=scope->producer_version ||
+                        published[0][3].is_null() || !published[0][3].as<bool>() ||
+                        published[0][4].is_null() || !published[0][4].as<bool>())
+                        throw std::runtime_error("investor_publication_conflict");
+                    txn.commit();
+                    return true;
+                }
                 scope->mode = LivePublicationMode::SystemInvestor;
                 txn.commit();
                 pending_publication_ = std::move(scope);
@@ -542,7 +567,7 @@ std::optional<LivePublicationMode> PostgresDatabase::live_publication_mode() con
 Result<void> PostgresDatabase::store_model_position_batch(const QtModelPositionBatch& batch) {
     try {
     if(!pending_publication_ || publication_transaction_ || pending_publication_->invalid_payload ||
-        pending_publication_->strategy_id!="LIVE_EQUITY_MEAN_REVERSION" ||
+        !pending_publication_->strategy_id.starts_with("LIVE_EQUITY_") ||
         batch.strategy_id!=pending_publication_->strategy_id || batch.portfolio_id!=pending_publication_->portfolio_id ||
         batch.source_day!=pending_publication_->date || batch.strategy_name.empty()) {
         poison_proposal_refusal();return make_error<void>(ErrorCode::INVALID_ARGUMENT,"runtime_model_batch_scope_invalid");
@@ -884,8 +909,10 @@ Result<void> PostgresDatabase::publish_live_publication() {
             if (seed_digest.is_error())
                 throw std::runtime_error("runtime_model_seed_digest_invalid");
             seed.seed_digest = seed_digest.value();
-            if (record_qt_model_seed_publication(seed).is_error())
-                throw std::runtime_error("runtime_model_seed_record_failed");
+            auto recorded_seed = record_qt_model_seed_publication(seed);
+            if (recorded_seed.is_error())
+                throw std::runtime_error("runtime_model_seed_record_failed: " +
+                    std::string(recorded_seed.error()->what()));
             // Migration 024: the immutable MODEL -> verified-prior binding for this
             // publication, in the same transaction. Every other mode writes nothing here.
             if (pending_publication_->prior_requirement == PublicationPriorRequirement::VerifiedEquity) {
@@ -906,10 +933,11 @@ Result<void> PostgresDatabase::publish_live_publication() {
         txn.commit();
         pending_publication_.reset();
         return Result<void>();
-    } catch(const std::exception&) {
+    } catch(const std::exception& error) {
         publication_transaction_ = nullptr;
         abandon_live_publication("publication_failed");
-        return make_error<void>(ErrorCode::DATABASE_ERROR,"runtime_publication_failed");
+        return make_error<void>(ErrorCode::DATABASE_ERROR,
+            "runtime_publication_failed: " + std::string(error.what()));
     }
 }
 
@@ -979,5 +1007,107 @@ Result<void> PostgresDatabase::execute_scoped_live_update(const std::string& que
         txn.commit();
         return Result<void>();
     } catch (...) { return make_error<void>(ErrorCode::DATABASE_ERROR,"runtime_scoped_update_failed"); }
+}
+
+Result<void> PostgresDatabase::stage_equity_previous_day_finalization(
+    const EquityPreviousDayFinalization& finalization) {
+    const std::string source_day = format_timestamp(finalization.source_date).substr(0, 10);
+    const bool basic_valid = pending_publication_ && !publication_transaction_ &&
+        finalization.portfolio_id == pending_publication_->portfolio_id &&
+        finalization.strategy_id == pending_publication_->strategy_id &&
+        source_day < pending_publication_->date &&
+        !finalization.owner_batches.empty() && std::isfinite(finalization.equity);
+    if (!basic_valid) {
+        if (pending_publication_) pending_publication_->invalid_payload = true;
+        return make_error<void>(ErrorCode::INVALID_ARGUMENT,
+                                "equity_previous_day_finalization_scope_invalid");
+    }
+    const auto& configured = pending_publication_->snapshot.at("strategies");
+    std::set<std::string> owners;
+    for (const auto& batch : finalization.owner_batches) {
+        const bool owner_valid =
+            batch.portfolio_id == finalization.portfolio_id &&
+            batch.strategy_id == finalization.strategy_id &&
+            batch.source_day == source_day && configured.contains(batch.strategy_name) &&
+            configured.at(batch.strategy_name).value("enabled_live", false) &&
+            owners.insert(batch.strategy_name).second;
+        if (!owner_valid) {
+            pending_publication_->invalid_payload = true;
+            return make_error<void>(ErrorCode::INVALID_ARGUMENT,
+                                    "equity_previous_day_owner_batch_invalid");
+        }
+        for (const auto& position : batch.positions) {
+            if (format_timestamp(position.last_update).substr(0, 10) != source_day) {
+                pending_publication_->invalid_payload = true;
+                return make_error<void>(ErrorCode::INVALID_ARGUMENT,
+                                        "equity_previous_day_position_date_invalid");
+            }
+        }
+    }
+    if (owners.size() != configured.size()) {
+        pending_publication_->invalid_payload = true;
+        return make_error<void>(ErrorCode::INVALID_ARGUMENT,
+                                "equity_previous_day_owner_coverage_invalid");
+    }
+    static const std::set<std::string> kFinalizationMetrics{
+        "total_cumulative_return", "total_annualized_return", "total_pnl",
+        "total_unrealized_pnl", "total_realized_pnl",
+        "current_portfolio_value", "net_leverage", "portfolio_leverage",
+        "gross_notional", "net_notional", "daily_return", "daily_pnl",
+        "total_transaction_costs", "daily_realized_pnl",
+        "daily_unrealized_pnl", "daily_transaction_costs", "margin_posted",
+        "cash_available"};
+    for (const auto& [column, value] : finalization.live_result_updates) {
+        if (!kFinalizationMetrics.contains(column) || !std::isfinite(value)) {
+            pending_publication_->invalid_payload = true;
+            return make_error<void>(ErrorCode::INVALID_ARGUMENT,
+                                    "equity_previous_day_metric_invalid");
+        }
+    }
+
+    const bool staged = defer_live_write(
+        [this, finalization, source_day]() -> Result<void> {
+            for (const auto& batch : finalization.owner_batches) {
+                if (batch.positions.empty()) {
+                    try {
+                        PublicationTransaction txn(*connection_, publication_transaction_);
+                        fence_live_write(txn, finalization.strategy_id,
+                                         finalization.portfolio_id, "system");
+                        txn.exec(
+                            "DELETE FROM trading.positions WHERE portfolio_id=$1 "
+                            "AND strategy_id=$2 AND strategy_name=$3 "
+                            "AND date=$4::date AND portfolio_type='system'",
+                            pqxx::params{finalization.portfolio_id,
+                                         finalization.strategy_id,
+                                         batch.strategy_name, source_day});
+                        txn.commit();
+                    } catch (const std::exception& error) {
+                        return make_error<void>(ErrorCode::DATABASE_ERROR,
+                                                error.what(), "PostgresDatabase");
+                    }
+                    continue;
+                }
+                auto stored = store_positions(
+                    batch.positions, finalization.strategy_id,
+                    batch.strategy_name, finalization.portfolio_id,
+                    "trading.positions", "system");
+                if (stored.is_error()) return stored;
+            }
+            auto updated = update_live_results(
+                finalization.strategy_id, finalization.source_date,
+                finalization.live_result_updates, finalization.portfolio_id,
+                "trading.live_results", "system");
+            if (updated.is_error()) return updated;
+            return update_live_equity_curve(
+                finalization.strategy_id, finalization.source_date,
+                finalization.equity, finalization.portfolio_id,
+                "trading.equity_curve", "system");
+        });
+    if (!staged) {
+        pending_publication_->invalid_payload = true;
+        return make_error<void>(ErrorCode::INVALID_ARGUMENT,
+                                "equity_previous_day_finalization_not_staged");
+    }
+    return Result<void>();
 }
 }  // namespace trade_ngin

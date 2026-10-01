@@ -259,6 +259,11 @@ PortfolioManager::PortfolioManager(PortfolioConfig config, std::string id,
 PortfolioManager::~PortfolioManager() noexcept {
     // No callback-visible member may be touched before this quiescent reset.
     market_data_subscription_.reset();
+    // StateManager owns process-lifetime component identities, so a daily runner
+    // that destroys one book and constructs the next must release the exact id it
+    // registered. Leaving the default PORTFOLIO_MANAGER row behind made the
+    // second investor book in the same process fail before it could publish.
+    (void)StateManager::instance().unregister_component(id_);
 }
 
 Result<void> PortfolioManager::add_strategy(std::shared_ptr<StrategyInterface> strategy,
