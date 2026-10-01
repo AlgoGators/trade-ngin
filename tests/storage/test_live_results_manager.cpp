@@ -60,6 +60,11 @@ TEST_F(LiveResultsManagerTest, ConstructorSetsBaseAccessors) {
     EXPECT_EQ(mgr_->get_strategy_id(), "STRAT_X");
 }
 
+TEST_F(LiveResultsManagerTest, ConstructorRejectsMissingPortfolioOwnership) {
+    EXPECT_THROW((LiveResultsManager(db_, true, "STRAT_X", "")), std::invalid_argument);
+    EXPECT_THROW((LiveResultsManager(db_, true, "STRAT_X", "  \t")), std::invalid_argument);
+}
+
 TEST_F(LiveResultsManagerTest, GenerateRunIdEncodesStrategyAndDate) {
     auto id = LiveResultsManager::generate_run_id("STRAT_X", date_at(2026, 3, 15));
     EXPECT_NE(id.find("STRAT_X"), std::string::npos);

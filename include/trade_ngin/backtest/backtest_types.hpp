@@ -156,7 +156,7 @@ struct BacktestConfig : public ConfigBase {
     std::string results_db_schema = "backtest";
     bool store_trade_details = true;
     std::string csv_output_path = "apps/backtest/results";
-    std::string portfolio_id{"BASE_PORTFOLIO"};  // Portfolio identifier for multiple portfolios
+    std::string portfolio_id;  // Required portfolio identifier for multiple portfolios
 
     // Configuration metadata
     std::string version{"1.0.0"};

@@ -41,7 +41,7 @@ protected:
 public:
     ResultsManagerBase(std::shared_ptr<PostgresDatabase> db, bool store_enabled,
                        const std::string& schema, const std::string& strategy_id,
-                       const std::string& portfolio_id = "BASE_PORTFOLIO",
+                       const std::string& portfolio_id,
                        const std::string& portfolio_type = "system");
 
     virtual ~ResultsManagerBase() = default;

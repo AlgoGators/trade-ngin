@@ -4,6 +4,8 @@
 #include "trade_ngin/storage/results_manager_base.hpp"
 #include "trade_ngin/core/logger.hpp"
 #include "trade_ngin/core/types.hpp"
+#include <algorithm>
+#include <cctype>
 
 namespace trade_ngin {
 
@@ -17,6 +19,12 @@ ResultsManagerBase::ResultsManagerBase(std::shared_ptr<PostgresDatabase> db, boo
       portfolio_id_(portfolio_id),
       portfolio_type_(portfolio_type),
       component_id_("ResultsManager_" + schema) {
+    if (portfolio_id.empty() ||
+        std::all_of(portfolio_id.begin(), portfolio_id.end(), [](unsigned char ch) {
+            return std::isspace(ch) != 0;
+        })) {
+        throw std::invalid_argument("portfolio_id must not be empty");
+    }
     INFO("Initialized " + component_id_ + " for strategy: " + strategy_id +
          ", portfolio: " + portfolio_id + ", storage " + (store_enabled ? "enabled" : "disabled"));
 }

@@ -9,6 +9,7 @@
 #include "trade_ngin/storage/backtest_results_manager.hpp"
 #include "trade_ngin/strategy/trend_following.hpp"
 #include "trade_ngin/strategy/trend_following_fast.hpp"
+#include <cctype>
 
 namespace trade_ngin {
 namespace backtest {
@@ -44,7 +45,13 @@ BacktestCoordinator::BacktestCoordinator(std::shared_ptr<PostgresDatabase> db,
     : config_(config),
       db_(std::move(db)),
       registry_(registry),
-      current_portfolio_value_(config.initial_capital) {}
+      current_portfolio_value_(config.initial_capital) {
+    if (config_.portfolio_id.empty() ||
+        std::all_of(config_.portfolio_id.begin(), config_.portfolio_id.end(),
+                    [](unsigned char ch) { return std::isspace(ch) != 0; })) {
+        throw std::invalid_argument("portfolio_id must not be empty");
+    }
+}
 
 BacktestCoordinator::~BacktestCoordinator() = default;
 

@@ -49,7 +49,7 @@ struct BacktestCoordinatorConfig {
     int warmup_days = 0;
     std::string results_schema = "backtest";
     bool store_trade_details = true;
-    std::string portfolio_id = "BASE_PORTFOLIO";
+    std::string portfolio_id;
     std::string csv_output_path = "apps/backtest/results";
 };
 

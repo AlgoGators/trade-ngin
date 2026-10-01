@@ -172,7 +172,7 @@ public:
      * @return Row count or error
      */
     Result<int> get_live_results_count(const std::string& strategy_id,
-                                       const std::string& portfolio_id = "BASE_PORTFOLIO");
+                                       const std::string& portfolio_id);
 
     // ========== Historical Series Methods (since inception, as-of date) ==========
 

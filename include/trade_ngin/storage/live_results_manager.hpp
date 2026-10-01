@@ -34,7 +34,7 @@ private:
 public:
     LiveResultsManager(std::shared_ptr<PostgresDatabase> db, bool store_enabled,
                        const std::string& strategy_id,
-                       const std::string& portfolio_id = "BASE_PORTFOLIO",
+                       const std::string& portfolio_id,
                        const std::string& portfolio_type = "system");
 
     // Mandatory stream and name avoid ambiguity with the existing fifth stream argument.

@@ -73,6 +73,14 @@ TEST_F(BacktestCoordinatorTest, ConstructorStoresInitialCapitalAsPortfolioValue)
     EXPECT_TRUE(coord.get_current_positions().empty());
 }
 
+TEST_F(BacktestCoordinatorTest, ConstructorRejectsMissingPortfolioOwnership) {
+    auto cfg = default_config();
+    cfg.portfolio_id.clear();
+    EXPECT_THROW((BacktestCoordinator(db_, registry_, cfg)), std::invalid_argument);
+    cfg.portfolio_id = " \t";
+    EXPECT_THROW((BacktestCoordinator(db_, registry_, cfg)), std::invalid_argument);
+}
+
 TEST_F(BacktestCoordinatorTest, ComponentGettersAreNullBeforeInitialize) {
     BacktestCoordinator coord(db_, registry_, default_config());
     EXPECT_EQ(coord.get_data_loader(), nullptr);

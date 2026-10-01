@@ -10,6 +10,8 @@
 #include "trade_ngin/live/live_pnl_manager.hpp"
 #include "trade_ngin/live/live_price_manager.hpp"
 #include "trade_ngin/storage/live_results_manager.hpp"
+#include <algorithm>
+#include <cctype>
 
 namespace trade_ngin {
 
@@ -19,6 +21,11 @@ LiveTradingCoordinator::LiveTradingCoordinator(std::shared_ptr<PostgresDatabase>
     : config_(config), db_(db), registry_(&registry) {
     if (!db_) {
         throw std::invalid_argument("Database connection cannot be null");
+    }
+    if (config_.portfolio_id.empty() ||
+        std::all_of(config_.portfolio_id.begin(), config_.portfolio_id.end(),
+                    [](unsigned char ch) { return std::isspace(ch) != 0; })) {
+        throw std::invalid_argument("portfolio_id must not be empty");
     }
 }
 
@@ -256,7 +263,7 @@ Result<int> LiveTradingCoordinator::get_trading_days_count() const {
                                "LiveTradingCoordinator");
     }
 
-    return data_loader_->get_live_results_count(config_.strategy_id);
+    return data_loader_->get_live_results_count(config_.strategy_id, config_.portfolio_id);
 }
 
 Result<void> LiveTradingCoordinator::validate_connection() const {
