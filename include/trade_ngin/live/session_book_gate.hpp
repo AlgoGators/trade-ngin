@@ -4,6 +4,8 @@
 #include <algorithm>
 #include <cmath>
 #include <ctime>
+#include <map>
+#include <unordered_set>
 #include <set>
 #include <string>
 #include <unordered_map>
@@ -12,6 +14,7 @@
 #include "trade_ngin/core/error.hpp"
 #include "trade_ngin/core/logger.hpp"
 #include "trade_ngin/core/types.hpp"
+#include "trade_ngin/data/roll_series.hpp"
 #include "trade_ngin/data/session_classifier.hpp"
 #include "trade_ngin/live/execution_manager.hpp"
 
@@ -171,6 +174,48 @@ inline std::string local_ymd(const Timestamp& t) {
  */
 inline bool run_date_is_host_date(const Timestamp& run_now, const Timestamp& host_now) {
     return local_ymd(run_now) == local_ymd(host_now);
+}
+
+// ------------------------------------------------------------------------------------------------
+// 4b. The T-1 settlement on the consumed bars (T-ROLLX-FIX; LOOP_SPEC v6.1 sections 2.1, 6.6)
+// ------------------------------------------------------------------------------------------------
+
+struct ConsumedT1Settlement {
+    /// Symbols whose T-1 bar books no move: a change bar (a roll's switch day or either bar of a
+    /// flip) or a WITHHELD bar (K-01).
+    std::unordered_set<std::string> zero_pnl_symbols;
+    /// The close each symbol's T-1 move is booked against: its previous CONSUMED bar's close when its
+    /// last consumed bar is dated T-1 (a withheld bar in between is skipped); otherwise the raw T-2
+    /// close passed in (unused: no consumed T-1 bar books no move).
+    std::unordered_map<std::string, double> t2_close_prices;
+};
+
+/**
+ * @brief The live T-1 finalize's inputs on the consumed bars. `consumed` is the window without the
+ *        withheld bars (k01_consumed_bars), `t1_date` the run's T-1, `roll_status` the status of
+ *        each symbol's last consumed bar (roll_series::roll_status_of(consumed)),
+ *        `withheld_t1_symbols` the symbols whose T-1 bar was withheld, `raw_t2` the price manager's
+ *        T-2 map.
+ */
+inline ConsumedT1Settlement consumed_t1_settlement(
+    const std::vector<Bar>& consumed, const std::string& t1_date,
+    const std::unordered_map<std::string, roll_series::RollTracker::Status>& roll_status,
+    const std::vector<std::string>& withheld_t1_symbols,
+    const std::unordered_map<std::string, double>& raw_t2) {
+    ConsumedT1Settlement out;
+    out.zero_pnl_symbols.insert(withheld_t1_symbols.begin(), withheld_t1_symbols.end());
+    out.t2_close_prices = raw_t2;
+    std::map<std::string, std::vector<const Bar*>> by_symbol;
+    for (const auto& bar : consumed) by_symbol[bar.symbol].push_back(&bar);
+    for (auto& [symbol, seq] : by_symbol) {
+        std::stable_sort(seq.begin(), seq.end(),
+                         [](const Bar* a, const Bar* b) { return a->timestamp < b->timestamp; });
+        if (SessionClassifier::ymd(SessionClassifier::day_of(seq.back()->timestamp)) != t1_date) continue;
+        if (seq.size() >= 2) out.t2_close_prices[symbol] = static_cast<double>(seq[seq.size() - 2]->close);
+        const auto rs = roll_status.find(symbol);
+        if (rs != roll_status.end() && rs->second.change) out.zero_pnl_symbols.insert(symbol);
+    }
+    return out;
 }
 
 // ------------------------------------------------------------------------------------------------

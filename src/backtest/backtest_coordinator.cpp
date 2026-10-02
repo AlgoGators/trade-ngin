@@ -600,6 +600,18 @@ Result<void> BacktestCoordinator::process_portfolio_day(
         // classified later (as the signal group) against strictly earlier bars only.
         if (session_hold_enabled_) session_classifier_.add_bars(bars);
 
+        // T-ROLLX-FIX (LOOP_SPEC v6.1 sections 2.1, 6.6): this cycle's bar group as the marks
+        // consume it. A WITHHELD bar (K-01) books no P&L and does not move the symbol's previous
+        // close, so its next consumed bar books against the last consumed close. Its verdict reads
+        // no later bar, so it is the verdict the next cycle's signal feed acts on.
+        mark_withheld_.clear();
+        mark_change_.clear();
+        if (session_hold_enabled_) {
+            for (const auto& v : classify_bar_group(session_classifier_, bars)) {
+                if (v.k01_withheld()) mark_withheld_.insert(v.symbol);
+            }
+        }
+
         // K1 (T-7b-2 8c; T-4b BT-cost-tier-warmup): before this group reaches the cost models or
         // the PortfolioManager, both cost managers are re-tiered from the 20 bars ending at the
         // PREVIOUS group, the signal bar whose close prices this cycle's fills (live re-tiers on
@@ -887,9 +899,11 @@ Result<void> BacktestCoordinator::process_portfolio_day(
             // Clear any executions that might have been generated
             portfolio->clear_all_executions();
 
-            // Update previous close prices for first post-warmup day
+            // Update previous close prices for first post-warmup day (a withheld bar is never
+            // a previous close: K-01)
             std::unordered_map<std::string, double> warmup_closes;
             for (const auto& bar : bars) {
+                if (mark_withheld_.count(bar.symbol)) continue;
                 warmup_closes[bar.symbol] = static_cast<double>(bar.close);
             }
             pnl_manager_->update_previous_closes(warmup_closes);
@@ -982,6 +996,40 @@ Result<void> BacktestCoordinator::process_portfolio_day(
         std::unordered_map<std::string, double> current_close_prices;
         for (const auto& bar : bars) {
             current_close_prices[bar.symbol] = static_cast<double>(bar.close);
+        }
+
+        // T-ROLLX-FIX (LOOP_SPEC v6.1 sections 2.2, 6.6, 7): each consumed bar of this group read
+        // against its symbol's roll status (the trackers hold every consumed bar before it: the
+        // signal feed walked them above), without moving the tracker (the next cycle's signal
+        // feed walks this bar). A change bar (a roll's switch day or either bar of a flip) books
+        // no P&L: the move onto it is the splice's price gap, not the held contract's move. Every
+        // row stored for this cycle carries the contract held after this bar (no-bar and withheld
+        // rows: after the symbol's last consumed bar).
+        if (session_hold_enabled_) {
+            row_held_id_.clear();
+            for (const auto& [symbol, tracker] : roll_trackers_) row_held_id_[symbol] = tracker.held_id();
+            for (const auto& bar : bars) {
+                if (mark_withheld_.count(bar.symbol)) continue;
+                roll_series::RollTracker probe = roll_trackers_[bar.symbol];
+                const auto st = probe.add(bar.instrument_id, static_cast<double>(bar.close));
+                if (st.change) mark_change_.insert(bar.symbol);
+                row_held_id_[bar.symbol] = st.held_id;
+            }
+            if (consumed_record_.enabled()) {
+                std::vector<ConsumedSeriesRecord::FinalMark> marks;
+                for (const auto& bar : bars) {
+                    ConsumedSeriesRecord::FinalMark m;
+                    m.symbol = bar.symbol;
+                    m.date = SessionClassifier::ymd(SessionClassifier::day_of(bar.timestamp));
+                    m.close = static_cast<double>(bar.close);
+                    m.instrument_id = bar.instrument_id;
+                    m.withheld = mark_withheld_.count(bar.symbol) > 0;
+                    m.change = mark_change_.count(bar.symbol) > 0;
+                    m.held_id = row_held_id_[bar.symbol];
+                    marks.push_back(std::move(m));
+                }
+                consumed_record_.set_final_marks(std::move(marks));
+            }
         }
 
         // Calculate transaction costs from per-strategy executions
@@ -1112,9 +1160,9 @@ Result<void> BacktestCoordinator::process_portfolio_day(
                 }
                 double current_close = curr_it->second;
 
-                // Check if we have previous close
+                // Check if we have previous close (a withheld bar never becomes one: K-01)
                 if (!pnl_manager_->has_previous_close(symbol)) {
-                    pnl_manager_->set_previous_close(symbol, current_close);
+                    if (!mark_withheld_.count(symbol)) pnl_manager_->set_previous_close(symbol, current_close);
                     continue;
                 }
 
@@ -1123,6 +1171,12 @@ Result<void> BacktestCoordinator::process_portfolio_day(
                 // Calculate PnL using BacktestPnLManager
                 auto pnl_result =
                     pnl_manager_->calculate_position_pnl(symbol, qty, prev_close, current_close);
+                // T-ROLLX-FIX (sections 2.1, 6.6): no P&L on a withheld bar (never consumed) or on a
+                // change bar (the splice's gap).
+                if (pnl_result.valid &&
+                    (mark_withheld_.count(symbol) || mark_change_.count(symbol))) {
+                    pnl_result.daily_pnl = 0.0;
+                }
 
                 if (pnl_result.valid) {
                     // Update this strategy's position with calculated PnL
@@ -1219,8 +1273,12 @@ Result<void> BacktestCoordinator::process_portfolio_day(
             }
         }
 
-        // Update previous closes for next iteration
-        pnl_manager_->update_previous_closes(current_close_prices);
+        // Update previous closes for next iteration (not from a withheld bar: K-01)
+        {
+            std::unordered_map<std::string, double> consumed_closes = current_close_prices;
+            for (const auto& symbol : mark_withheld_) consumed_closes.erase(symbol);
+            pnl_manager_->update_previous_closes(consumed_closes);
+        }
 
         // Phase 2 §3.2: accrue overnight borrow fees on open short equity
         // positions. Per-strategy attribution: iterate strategy_positions,
@@ -1445,6 +1503,9 @@ void BacktestCoordinator::reset_portfolio_state() {
     session_hold_enabled_ = false;
     roll_trackers_.clear();
     signal_roll_status_.clear();
+    mark_withheld_.clear();
+    mark_change_.clear();
+    row_held_id_.clear();
     risk_scale_report_enabled_ = false;
     size_on_equity_enabled_ = false;
     equity_cost_retier_enabled_ = false;
@@ -1565,6 +1626,10 @@ Result<void> BacktestCoordinator::save_daily_positions(std::shared_ptr<Portfolio
         for (const auto& [symbol, pos] : positions_map) {
             Position pos_with_date = pos;
             pos_with_date.last_update = timestamp;
+            // T-ROLLX-FIX (section 7, migration 016): the contract held after this cycle's bar.
+            if (const auto held = row_held_id_.find(symbol); held != row_held_id_.end()) {
+                pos_with_date.instrument_id = held->second;
+            }
             positions_vec.push_back(pos_with_date);
         }
 

@@ -32,6 +32,9 @@ namespace backtest {
  * roll_series::build_series and writes series.csv: one row per consumed bar with the raw close, the
  * vendor id, the flags, the held id, the adjusted level A (anchored on the symbol's last consumed
  * bar) and the adjusted return r (0 on the symbol's first consumed bar).
+ * T-ROLLX-FIX commit 2: the last MARKED group (the window's last bar group is marked but never a
+ * signal group) is written to final_marks.csv with the marks' own reading of each bar: withheld,
+ * change, the contract held after it.
  */
 class ConsumedSeriesRecord {
 public:
@@ -52,7 +55,17 @@ public:
         for (const auto& b : fed) consumed_[b.symbol].push_back(b);
     }
 
-    /// Writes the four files into the directory; returns false when one cannot be opened.
+    struct FinalMark {
+        std::string symbol, date, instrument_id, held_id;
+        double close{0.0};
+        bool withheld{false}, change{false};
+    };
+    /// The marks' reading of the cycle's own bar group; the last call before write() is kept.
+    void set_final_marks(std::vector<FinalMark> marks) {
+        if (enabled()) final_marks_ = std::move(marks);
+    }
+
+    /// Writes the files into the directory; returns false when one cannot be opened.
     bool write() const {
         if (!enabled()) return true;
         std::ofstream cal(dir_ + "/calendar.csv"), hold(dir_ + "/hold.csv"),
@@ -84,7 +97,14 @@ public:
                     << num(s.adjusted[t]) << "," << num(t == 0 ? 0.0 : s.returns[t - 1]) << "\n";
             }
         }
-        return static_cast<bool>(ser);
+        std::ofstream fm(dir_ + "/final_marks.csv");
+        if (!fm) return false;
+        fm << "symbol,date,close,instrument_id,withheld,change,held_id\n";
+        for (const auto& m : final_marks_) {
+            fm << m.symbol << "," << m.date << "," << num(m.close) << "," << m.instrument_id << ","
+               << int(m.withheld) << "," << int(m.change) << "," << m.held_id << "\n";
+        }
+        return static_cast<bool>(ser) && static_cast<bool>(fm);
     }
 
 private:
@@ -99,6 +119,7 @@ private:
     std::vector<std::pair<std::string, std::string>> hold_;
     std::vector<std::pair<std::string, std::string>> withheld_;
     std::map<std::string, std::vector<Bar>> consumed_;
+    std::vector<FinalMark> final_marks_;
 };
 
 }  // namespace backtest

@@ -279,7 +279,7 @@ Result<void> PostgresDatabase::store_backtest_positions(const std::vector<Positi
         std::string query =
             "INSERT INTO " + table_name +
             " (run_id, portfolio_id, strategy_id, date, symbol, quantity, average_price, "
-            "unrealized_pnl, realized_pnl, last_update, updated_at) VALUES ";
+            "unrealized_pnl, realized_pnl, last_update, updated_at, instrument_id) VALUES ";
 
         [[maybe_unused]] bool first = true;
         std::vector<std::string> position_values;
@@ -329,8 +329,9 @@ Result<void> PostgresDatabase::store_backtest_positions(const std::vector<Positi
                      << std::to_string(static_cast<double>(pos.unrealized_pnl)) << ", "
                      << std::to_string(static_cast<double>(pos.realized_pnl)) << ", "
                      << "'" << last_update_str << "', "
-                     << "'" << last_update_str << "'"
-                     << ")";
+                     << "'" << last_update_str << "', "
+                     << (pos.instrument_id.empty() ? std::string("NULL") : txn.quote(pos.instrument_id))
+                     << ")";  // instrument_id (016)
 
             position_values.push_back(value_ss.str());
         }
@@ -419,7 +420,7 @@ Result<void> PostgresDatabase::store_backtest_positions_with_strategy(
         std::string query =
             "INSERT INTO " + table_name +
             " (run_id, portfolio_id, strategy_id, date, symbol, quantity, average_price, "
-            "unrealized_pnl, realized_pnl, last_update, updated_at) VALUES ";
+            "unrealized_pnl, realized_pnl, last_update, updated_at, instrument_id) VALUES ";
 
         bool first = true;
         for (const auto& pos : positions) {
@@ -452,8 +453,9 @@ Result<void> PostgresDatabase::store_backtest_positions_with_strategy(
                      std::to_string(static_cast<double>(pos.unrealized_pnl)) + ", " +
                      std::to_string(static_cast<double>(pos.realized_pnl)) + ", " + "'" +
                      last_update_str + "', " +      // last_update
-                     "'" + last_update_str + "'" +  // updated_at (same as last_update)
-                     ")";
+                     "'" + last_update_str + "', " +  // updated_at (same as last_update)
+                     (pos.instrument_id.empty() ? std::string("NULL") : txn.quote(pos.instrument_id)) +
+                     ")";  // instrument_id (016)
         }
 
         if (!first) {  // Only execute if we have non-zero positions

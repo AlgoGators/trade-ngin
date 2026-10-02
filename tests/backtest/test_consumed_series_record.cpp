@@ -111,3 +111,32 @@ TEST(ConsumedSeriesRecord, TheFourFilesCarryTheCyclesAndTheSeriesOfTheFedBarsOnl
     EXPECT_DOUBLE_EQ(std::stod(field(s[4], 10)), 1.0 / 110.0);
     std::filesystem::remove_all(dir);
 }
+
+// T-ROLLX-FIX commit 2: the last marked group (never a signal group) is written with the marks' own
+// reading: withheld, change, the contract held after the bar.
+TEST(ConsumedSeriesRecord, TheFinalMarkedGroupIsWrittenWithTheMarksReading) {
+    const auto dir = std::filesystem::temp_directory_path() / "tngin_csr_final";
+    std::filesystem::remove_all(dir);
+    std::filesystem::create_directories(dir);
+    ConsumedSeriesRecord r;
+    r.enable(dir.string());
+    ConsumedSeriesRecord::FinalMark a;
+    a.symbol = "XA";
+    a.date = "2026-01-09";
+    a.close = 111.0;
+    a.instrument_id = "B";
+    a.change = true;
+    a.held_id = "A";
+    ConsumedSeriesRecord::FinalMark b = a;
+    b.symbol = "XB";
+    b.change = false;
+    b.withheld = true;
+    b.held_id = "Z";
+    r.set_final_marks({a});
+    r.set_final_marks({a, b});  // the last call is kept
+    ASSERT_TRUE(r.write());
+    EXPECT_EQ(lines(dir / "final_marks.csv"),
+              (std::vector<std::string>{"symbol,date,close,instrument_id,withheld,change,held_id",
+                                        "XA,2026-01-09,111,B,0,1,A", "XB,2026-01-09,111,B,1,0,Z"}));
+    std::filesystem::remove_all(dir);
+}

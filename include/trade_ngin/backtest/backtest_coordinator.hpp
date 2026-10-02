@@ -4,6 +4,7 @@
 #include <map>
 #include <optional>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 #include <nlohmann/json.hpp>
 #include "trade_ngin/core/error.hpp"
@@ -105,6 +106,13 @@ private:
     /// the symbol's next consumed bar.
     std::unordered_map<std::string, roll_series::RollTracker> roll_trackers_;
     std::map<std::string, roll_series::RollTracker::Status> signal_roll_status_;
+    /// T-ROLLX-FIX (LOOP_SPEC v6.1 sections 2.1, 6.6, 7): this cycle's own bar group as the marks
+    /// consume it: the symbols whose bar is WITHHELD (K-01: no P&L, no previous close moved), the
+    /// symbols whose bar is a change bar (no P&L), and the contract each symbol is held in after
+    /// this cycle's bar (final_positions.instrument_id, every row of a futures symbol).
+    std::unordered_set<std::string> mark_withheld_;
+    std::unordered_set<std::string> mark_change_;
+    std::unordered_map<std::string, std::string> row_held_id_;
     /// T-7b-1 C7 (RA-01): one RISK_SCALE_REPORT line per post-warmup rebalance. Futures only
     /// (run_portfolio with AssetClass::FUTURES), like the session hold; the equity backtest's log
     /// is untouched.

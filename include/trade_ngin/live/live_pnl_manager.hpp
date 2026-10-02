@@ -5,6 +5,8 @@
 #include "trade_ngin/instruments/instrument_registry.hpp"
 #include <memory>
 #include <functional>
+#include <string>
+#include <unordered_set>
 
 namespace trade_ngin {
 
@@ -163,6 +165,13 @@ public:
      * Finalize previous day (T-1) positions
      * This is unique to live trading and handles the settlement process
      * Replaces the finalization logic in live_trend.cpp (lines ~600-700)
+     *
+     * T-ROLLX-FIX (LOOP_SPEC v6.1 sections 2.1, 6.6): `zero_pnl_symbols` names the symbols whose T-1
+     * bar books NO settlement move: a change bar (its contract id differs from the previous consumed
+     * bar's: a roll's switch day or either bar of a flip pair; the move is the splice's price gap,
+     * not the held contract's) and a WITHHELD bar (K-01: a JUNK bar or a thin first print is never
+     * consumed). Their row is kept with realized 0; the caller passes as T-2 the close of the
+     * symbol's previous CONSUMED bar, so the next consumed bar books against the last consumed close.
      */
     Result<FinalizationResult> finalize_previous_day(
         const std::vector<Position>& previous_positions,
@@ -170,7 +179,8 @@ public:
         const std::unordered_map<std::string, double>& t2_close_prices,
         double previous_portfolio_value,
         double commissions = 0.0,
-        UnrealizedPolicy unrealized_policy = UnrealizedPolicy::SETTLED);
+        UnrealizedPolicy unrealized_policy = UnrealizedPolicy::SETTLED,
+        const std::unordered_set<std::string>& zero_pnl_symbols = {});
 
     /**
      * Calculate PnL for current day positions

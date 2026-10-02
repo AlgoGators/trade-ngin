@@ -379,6 +379,11 @@ struct Position {
     Decimal unrealized_pnl;
     Decimal realized_pnl;
     Timestamp last_update;
+    /// The vendor's contract id the futures position is held in (positions.instrument_id,
+    /// final_positions.instrument_id, migration 016; T-ROLLX): the confirmed id of the symbol's
+    /// consumed sequence (roll_series.hpp), still the old contract on a pending change bar.
+    /// Empty (stored NULL) when unknown and on every equity row.
+    std::string instrument_id;
     // Note: previous_price and contract_size fields removed
 
     // Constructors

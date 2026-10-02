@@ -157,7 +157,8 @@ protected:
                        " (symbol text, quantity double precision, average_price double precision,"
                        "  daily_unrealized_pnl double precision, daily_realized_pnl double precision,"
                        "  last_update timestamptz, updated_at timestamptz, strategy_id text,"
-                       "  strategy_name text, date date, portfolio_id text)");
+                       "  strategy_name text, date date, portfolio_id text,"
+                       "  instrument_id text)");  // 016 (T-ROLLX): the positions writer names it
     }
 
     void drop_scratch_table() { run_raw(std::string("DROP TABLE IF EXISTS ") + kScratchTable); }

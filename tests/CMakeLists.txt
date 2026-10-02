@@ -44,6 +44,7 @@ set(TEST_SOURCES
     data/test_session_classifier_instrument_id.cpp
     data/test_roll_series.cpp
     data/test_futures_bar_instrument_id_db.cpp
+    data/test_positions_instrument_id_db.cpp
     order/test_order_manager.cpp
     order/test_utils.cpp
     instruments/test_futures.cpp
@@ -104,6 +105,7 @@ set(TEST_SOURCES
     backtest/test_backtest_junk_signal_feed.cpp
     backtest/test_backtest_k01_feed.cpp
     backtest/test_backtest_change_bar_hold.cpp
+    backtest/test_backtest_change_bar_pnl.cpp
     backtest/test_consumed_series_record.cpp
     backtest/test_backtest_equity_cost_retier.cpp
     backtest/test_backtest_futures_cost_feed.cpp
@@ -164,6 +166,7 @@ set(TEST_SOURCES
     live/test_cost_model_feed.cpp
     live/test_futures_cost_feed.cpp
     live/test_cost_feed_adjusted_returns.cpp
+    live/test_change_bar_pnl.cpp
     live/test_execution_price_integrity.cpp
     live/test_margin_manager.cpp
     live/test_live_metrics_calculator.cpp

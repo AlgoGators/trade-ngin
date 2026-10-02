@@ -1858,6 +1858,21 @@ int main(int argc, char* argv[]) {
 
         double aggregate_yesterday_total_pnl = 0.0;
 
+        // T-ROLLX-FIX (LOOP_SPEC v6.1 sections 2.1, 6.6): the T-1 settlement on the CONSUMED bars. A
+        // symbol whose T-1 bar is a change bar (a roll's switch day or either bar of a flip) or a
+        // WITHHELD bar (K-01) books no move for T-1; every other symbol books T-1 against the close of
+        // its previous CONSUMED bar (a withheld bar between them is skipped), which is the T-2 close
+        // whenever no bar was withheld.
+        const ConsumedT1Settlement t1_settlement =
+            consumed_t1_settlement(strategy_feed_bars, t1_classification.t1_date, roll_status,
+                                   withheld_junk_bars, two_days_ago_close_prices);
+        const auto& t1_zero_pnl_symbols = t1_settlement.zero_pnl_symbols;
+        const auto& t2_consumed_close_prices = t1_settlement.t2_close_prices;
+
+        // T-ROLLX-FIX (sections 6.5, 6.6): a T-1 whose only held moves were settled at 0 (change or
+        // withheld bars) has a zero aggregate but WAS finalized; the live_results update below must
+        // not skip it.
+        bool t1_finalized_any = false;
         if (!two_days_ago_close_prices.empty() && pnl_manager) {
             INFO("Finalizing Day T-1 positions per-strategy...");
 
@@ -1908,10 +1923,11 @@ int main(int argc, char* argv[]) {
                 auto finalization_result =
                     pnl_manager->finalize_previous_day(prev_positions_vec,
                                                        previous_day_close_prices,  // T-1 prices
-                                                       two_days_ago_close_prices,  // T-2 prices
+                                                       t2_consumed_close_prices,  // T-2 prices
                                                        strategy_capital,
-                                                       0.0  // Commissions (will be handled later)
-                    );
+                                                       0.0,  // Commissions (will be handled later)
+                                                       LivePnLManager::UnrealizedPolicy::SETTLED,
+                                                       t1_zero_pnl_symbols);
 
                 if (finalization_result.is_ok()) {
                     auto& result = finalization_result.value();
@@ -1927,10 +1943,20 @@ int main(int argc, char* argv[]) {
                               " finalized PnL: $" + std::to_string(pnl));
                     }
 
+                    // T-ROLLX-FIX (LOOP_SPEC v6.1 section 7, code review D4): the T-1 row carries
+                    // the contract held AFTER the T-1 bar, as the backtest's row of that date
+                    // does: on the confirming bar's row, the incoming contract.
+                    std::vector<Position> finalized_positions = result.finalized_positions;
+                    for (auto& finalized_pos : finalized_positions) {
+                        const auto rs = roll_status.find(finalized_pos.symbol);
+                        if (rs != roll_status.end()) finalized_pos.instrument_id = rs->second.held_id;
+                    }
+
                     // Store updated positions for yesterday (Day T-1) in database FOR THIS STRATEGY
-                    if (!result.finalized_positions.empty()) {
+                    if (!finalized_positions.empty()) {
+                        t1_finalized_any = true;
                         auto update_result =
-                            db->store_positions(result.finalized_positions,
+                            db->store_positions(finalized_positions,
                                                 combined_strategy_id,  // Combined strategy_id
                                                 strategy_name,         // Individual strategy_name
                                                 portfolio_id,          // Portfolio identifier
@@ -2352,6 +2378,11 @@ int main(int argc, char* argv[]) {
                 validated_position.realized_pnl =
                     Decimal(0.0);  // PLACEHOLDER - will be finalized tomorrow
                 validated_position.unrealized_pnl = Decimal(0.0);  // Always 0 for futures
+                // T-ROLLX-FIX (section 7, migration 016): the contract held after the symbol's last
+                // consumed bar; tomorrow's T-1 finalize re-writes it after this day's bar.
+                if (const auto rs = roll_status.find(symbol); rs != roll_status.end()) {
+                    validated_position.instrument_id = rs->second.held_id;
+                }
 
                 // For Day T positions, average_price should be Day T-1 close (entry price)
                 // This is the price at which positions were "executed" (opened at yesterday's
@@ -2520,7 +2551,9 @@ int main(int argc, char* argv[]) {
         double yesterday_realized_pnl_for_email = 0.0;
         double yesterday_unrealized_pnl_for_email = 0.0;
 
-        if (!two_days_ago_close_prices.empty() && aggregate_yesterday_total_pnl != 0.0 &&
+        if (!two_days_ago_close_prices.empty() &&
+            (aggregate_yesterday_total_pnl != 0.0 ||
+             (!t1_zero_pnl_symbols.empty() && t1_finalized_any)) &&
             !is_first_trading_day) {
             INFO("STEP 4: Updating Day T-1 live_results with finalized PnL: $" +
                  std::to_string(aggregate_yesterday_total_pnl));

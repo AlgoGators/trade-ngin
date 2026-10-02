@@ -571,7 +571,10 @@ Result<void> PostgresDatabase::store_positions_in(pqxx::work& txn,
                << "'" << strategy_id << "', "                        // strategy_id (combined)
                << "'" << strategy_name << "', "                      // strategy_name (individual)
                << "'" << position_date << "', "                      // date
-               << "'" << portfolio_id << "')";                       // portfolio_id
+               << "'" << portfolio_id << "', "                       // portfolio_id
+               << (pos.instrument_id.empty() ? std::string("NULL")
+                                             : txn.quote(pos.instrument_id))
+               << ")";  // instrument_id (016; NULL when unknown or not a futures row)
 
             position_values.push_back(ss.str());
         }
@@ -582,7 +585,7 @@ Result<void> PostgresDatabase::store_positions_in(pqxx::work& txn,
                 std::string query = "INSERT INTO " + table_name +
                                     " (symbol, quantity, average_price, daily_unrealized_pnl, "
                                     "daily_realized_pnl, last_update, updated_at, strategy_id, "
-                                    "strategy_name, date, portfolio_id) VALUES " +
+                                    "strategy_name, date, portfolio_id, instrument_id) VALUES " +
                                     join(position_values, ", ");
 
                 DEBUG("Executing position insert query: " + query);
@@ -892,7 +895,7 @@ Result<std::unordered_map<std::string, Position>> PostgresDatabase::load_positio
         if (!strategy_name.empty()) {
             std::string query =
                 "SELECT symbol, quantity, average_price, daily_unrealized_pnl, daily_realized_pnl, "
-                "last_update "
+                "last_update, instrument_id "
                 "FROM " +
                 table_name +
                 " "
@@ -909,7 +912,7 @@ Result<std::unordered_map<std::string, Position>> PostgresDatabase::load_positio
             // loading)
             std::string query =
                 "SELECT symbol, quantity, average_price, daily_unrealized_pnl, daily_realized_pnl, "
-                "last_update "
+                "last_update, instrument_id "
                 "FROM " +
                 table_name +
                 " "
@@ -959,6 +962,7 @@ Result<std::unordered_map<std::string, Position>> PostgresDatabase::load_positio
             pos.unrealized_pnl = Decimal(unrealized_pnl);
             pos.realized_pnl = Decimal(realized_pnl);
             pos.last_update = last_update;
+            if (!row[6].is_null()) pos.instrument_id = row[6].as<std::string>();  // 016
 
             positions[symbol] = pos;
         }
