@@ -410,35 +410,42 @@ TEST_F(CutStands, TheLiveSetterHoldsForTheNextCallOnly) {
                                                           << trace;
 }
 
-// Both futures runners hand the PM every symbol whose T-1 verdict is not SESSION right before the
-// rebalance, with the same block; the equity runner does not.
+// Both futures runners hand the PM every symbol whose T-1 verdict is not SESSION, and (T-ROLLX-FIX,
+// D37) every symbol whose last consumed bar is pending, right before the rebalance, with the same
+// block; the equity runner does not.
 TEST(CutStandsRunnerSource, BothFuturesRunnersPassTheNonSessionSymbolsBeforeTheRebalance) {
-    const std::string block =
-        "                std::unordered_set<std::string> book_gate_holds;\n"
-        "                for (const auto& symbol : symbols) {\n"
-        "                    if (!t1_classification.is_session(symbol)) "
-        "book_gate_holds.insert(symbol);\n"
-        "                }\n"
-        "                portfolio->set_book_gate_holds(std::move(book_gate_holds));\n"
-        "            }\n";
+    const std::string open = "                std::unordered_set<std::string> book_gate_holds;\n";
+    const std::string hand = "                portfolio->set_book_gate_holds(std::move(book_gate_holds));\n"
+                             "            }\n";
     // T-7b-3 (c) R-3 puts the rebalance behind the sizing hold (sizing_hold ? Result<void>() :
     // portfolio->process_market_data(...)); the holds are still handed over right before it: the
     // first process_market_data call after the block is the rebalance, with no other call between.
     const std::string rebalance = "portfolio->process_market_data(strategy_feed_bars)";
+    std::vector<std::string> blocks;
     for (const char* runner : {"apps/strategies/live_portfolio_conservative.cpp",
                                "apps/strategies/live_portfolio.cpp"}) {
         SCOPED_TRACE(runner);
         const std::string src = stands_read_source(runner);
         if (src.empty()) GTEST_SKIP() << "runner source not found from the test working directory";
-        const size_t at = src.find(block);
-        ASSERT_NE(at, std::string::npos)
-            << "the runner must set the BOOK_GATE holds right before process_market_data";
-        const size_t next = src.find(rebalance, at + block.size());
+        const size_t at = src.find(open);
+        ASSERT_NE(at, std::string::npos) << "the runner must build the BOOK_GATE holds";
+        const size_t end = src.find(hand, at);
+        ASSERT_NE(end, std::string::npos) << "the holds must be handed to the PM";
+        const std::string block = src.substr(at, end + hand.size() - at);
+        EXPECT_NE(block.find("if (!t1_classification.is_session(symbol)) book_gate_holds.insert(symbol);"),
+                  std::string::npos)
+            << "a symbol whose T-1 verdict is not SESSION is held";
+        EXPECT_NE(block.find("!rs->second.holds()"), std::string::npos)
+            << "a symbol whose last consumed bar is pending is held (D37, change or pending)";
+        const size_t next = src.find(rebalance, end + hand.size());
         ASSERT_NE(next, std::string::npos) << "no rebalance after the holds are set";
-        const std::string between = src.substr(at + block.size(), next - (at + block.size()));
+        const std::string between = src.substr(end + hand.size(), next - (end + hand.size()));
         EXPECT_EQ(between.find(';'), std::string::npos)
             << "a statement sits between the holds and the rebalance: " << between;
+        blocks.push_back(block);
     }
+    ASSERT_EQ(blocks.size(), 2u);
+    EXPECT_EQ(blocks[0], blocks[1]) << "the twins carry the same block";
     const std::string eq = stands_read_source("apps/strategies/live_equity_mean_reversion.cpp");
     if (!eq.empty()) {
         EXPECT_EQ(eq.find("set_book_gate_holds"), std::string::npos);
@@ -613,4 +620,21 @@ TEST(CutStandsMark, TheOverLimitByHoldMarkKeepsTheRowAndNamesTheHolds) {
     EXPECT_DOUBLE_EQ(m.at("cut_book").get<double>(), 405524.75);
     EXPECT_EQ(m.at("lap").get<int>(), 1);
     EXPECT_FALSE(m.at("reason").get<std::string>().empty());
+}
+
+// K-01 in the live roll status (the T-ROLLX break, live form): both runners walk the roll status
+// over the CONSUMED feed (the window without the withheld bars), never over the loaded window.
+TEST(CutStandsRunnerSource, BothFuturesRunnersTakeTheRollStatusOfTheConsumedBars) {
+    for (const char* runner : {"apps/strategies/live_portfolio_conservative.cpp",
+                               "apps/strategies/live_portfolio.cpp"}) {
+        SCOPED_TRACE(runner);
+        const std::string src = stands_read_source(runner);
+        if (src.empty()) GTEST_SKIP() << "runner source not found from the test working directory";
+        const size_t feed = src.find("k01_consumed_bars(session_classifier, all_bars, &k01_withheld)");
+        const size_t status = src.find("roll_series::roll_status_of(strategy_feed_bars)");
+        ASSERT_NE(feed, std::string::npos);
+        ASSERT_NE(status, std::string::npos);
+        EXPECT_LT(feed, status) << "the status is taken after the withholding";
+        EXPECT_EQ(src.find("roll_status_of(all_bars)"), std::string::npos);
+    }
 }

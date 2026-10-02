@@ -42,6 +42,8 @@ set(TEST_SOURCES
     data/test_futures_bar_dedup_db.cpp
     data/test_session_classifier.cpp
     data/test_session_classifier_instrument_id.cpp
+    data/test_roll_series.cpp
+    data/test_futures_bar_instrument_id_db.cpp
     order/test_order_manager.cpp
     order/test_utils.cpp
     instruments/test_futures.cpp
@@ -49,6 +51,7 @@ set(TEST_SOURCES
     instruments/test_option.cpp
     instruments/test_instrument_registry.cpp
     risk/test_risk_manager.cpp
+    risk/test_risk_adjusted_returns.cpp
     risk/test_risk_modules.cpp
     risk/test_risk_module_config.cpp
     risk/test_risk_scale_report.cpp
@@ -99,6 +102,9 @@ set(TEST_SOURCES
     backtest/test_backtest_unrealized_accounting.cpp
     backtest/test_equity_cost_warmup.cpp
     backtest/test_backtest_junk_signal_feed.cpp
+    backtest/test_backtest_k01_feed.cpp
+    backtest/test_backtest_change_bar_hold.cpp
+    backtest/test_consumed_series_record.cpp
     backtest/test_backtest_equity_cost_retier.cpp
     backtest/test_backtest_futures_cost_feed.cpp
     backtest/test_backtest_netting_one_model.cpp
@@ -133,6 +139,7 @@ set(TEST_SOURCES
     portfolio/test_allocation_distribution.cpp
     portfolio/test_optimizer_cost_vector.cpp
     portfolio/test_covariance_date_alignment.cpp
+    portfolio/test_covariance_adjusted_returns.cpp
     portfolio/test_covariance_participants.cpp
     portfolio/test_pm_session_hold.cpp
     portfolio/test_delivered_cut.cpp
@@ -156,6 +163,7 @@ set(TEST_SOURCES
     live/test_live_runner_small_fixes.cpp
     live/test_cost_model_feed.cpp
     live/test_futures_cost_feed.cpp
+    live/test_cost_feed_adjusted_returns.cpp
     live/test_execution_price_integrity.cpp
     live/test_margin_manager.cpp
     live/test_live_metrics_calculator.cpp
@@ -179,6 +187,7 @@ set(TEST_SOURCES
     strategy/test_signals_publication.cpp
     strategy/test_volatility_size_1_nan_guard.cpp
     strategy/test_vol_annualisation.cpp
+    strategy/test_trend_adjusted_series.cpp
     strategy/test_stale_unrealized_pnl_zero_avg_price.cpp
     strategy/test_live_daily_cycle_seeding.cpp
     strategy/test_penny_stock_lifecycle.cpp

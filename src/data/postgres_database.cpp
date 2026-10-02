@@ -1224,6 +1224,14 @@ Result<std::shared_ptr<arrow::Table>> PostgresDatabase::convert_to_arrow_table(
     arrow::DoubleBuilder low_builder(pool);
     arrow::DoubleBuilder close_builder(pool);
     arrow::DoubleBuilder volume_builder(pool);
+    // T-ROLLX: the futures bar query carries the kept print's vendor instrument_id (NULL when the
+    // raw table has no such print); an equity or plain query has no such column and the table
+    // keeps its seven columns.
+    bool has_instrument_id = false;
+    for (pqxx::row::size_type c = 0; c < result.columns(); ++c) {
+        if (std::string(result.column_name(c)) == "instrument_id") has_instrument_id = true;
+    }
+    arrow::StringBuilder instrument_id_builder(pool);
 
     // Helpers for error handling
     auto handle_builder_error = [](const std::string& operation) {
@@ -1267,6 +1275,15 @@ Result<std::shared_ptr<arrow::Table>> PostgresDatabase::convert_to_arrow_table(
                 volume_builder.Append(row["volume"].as<double>()) != arrow::Status::OK()) {
                 return handle_builder_error("append");
             }
+            if (has_instrument_id) {
+                const auto id_field = row["instrument_id"];
+                const arrow::Status id_status =
+                    id_field.is_null() ? instrument_id_builder.AppendNull()
+                                       : instrument_id_builder.Append(id_field.as<std::string>());
+                if (id_status != arrow::Status::OK()) {
+                    return handle_builder_error("append");
+                }
+            }
         }
 
         // Finish arrays
@@ -1284,15 +1301,26 @@ Result<std::shared_ptr<arrow::Table>> PostgresDatabase::convert_to_arrow_table(
         }
 
         // Create schema
-        auto schema = arrow::schema(
-            {arrow::field("time", arrow::timestamp(arrow::TimeUnit::SECOND)),
-             arrow::field("symbol", arrow::utf8()), arrow::field("open", arrow::float64()),
-             arrow::field("high", arrow::float64()), arrow::field("low", arrow::float64()),
-             arrow::field("close", arrow::float64()), arrow::field("volume", arrow::float64())});
+        std::vector<std::shared_ptr<arrow::Field>> fields = {
+            arrow::field("time", arrow::timestamp(arrow::TimeUnit::SECOND)),
+            arrow::field("symbol", arrow::utf8()), arrow::field("open", arrow::float64()),
+            arrow::field("high", arrow::float64()), arrow::field("low", arrow::float64()),
+            arrow::field("close", arrow::float64()), arrow::field("volume", arrow::float64())};
+        std::vector<std::shared_ptr<arrow::Array>> arrays = {
+            timestamp_array, symbol_array, open_array, high_array,
+            low_array,       close_array,  volume_array};
+        if (has_instrument_id) {
+            std::shared_ptr<arrow::Array> instrument_id_array;
+            if (instrument_id_builder.Finish(&instrument_id_array) != arrow::Status::OK()) {
+                return handle_builder_error("finish");
+            }
+            fields.push_back(arrow::field("instrument_id", arrow::utf8()));
+            arrays.push_back(instrument_id_array);
+        }
+        auto schema = arrow::schema(fields);
 
         // Create and return table
-        auto table = arrow::Table::Make(schema, {timestamp_array, symbol_array, open_array,
-                                                 high_array, low_array, close_array, volume_array});
+        auto table = arrow::Table::Make(schema, arrays);
 
         return Result<std::shared_ptr<arrow::Table>>(table);
 

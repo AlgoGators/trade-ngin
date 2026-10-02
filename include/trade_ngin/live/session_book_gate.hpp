@@ -29,9 +29,10 @@ namespace trade_ngin {
  *      run_date_is_host_date);
  *   3. the book-level rule stays the T-1 price map's `.empty()`: carry the whole book when no
  *      symbol printed; there is no abort arm any more (log_whole_book_carry names the reason);
- *   4. the JUNK symbols' T-1 bars are withheld from the strategy and portfolio feed
- *      (withhold_junk_t1_bars): their signal is not updated today. They stay in the T-1 price map,
- *      so they are marked at their bar's close;
+ *   4. LOOP_SPEC v6.1 section 2.1 (K-01): every WITHHELD bar of the window (a JUNK bar or a thin
+ *      first print, SymbolDayVerdict::k01_withheld) is kept out of the strategy and portfolio feed
+ *      on every run (k01_consumed_bars, session_classifier.hpp), so a withheld T-1 bar's signal is
+ *      not updated today and the bar is never fed later. The price manager is not given that feed;
  *   5. every symbol whose verdict is not SESSION is held at its stored T-1 quantity on EVERY
  *      per-strategy book (hold_non_session_symbols). The key is the verdict, never membership of
  *      the price map: a JUNK symbol HAS a T-1 price and would otherwise trade at the junk print;
@@ -170,37 +171,6 @@ inline std::string local_ymd(const Timestamp& t) {
  */
 inline bool run_date_is_host_date(const Timestamp& run_now, const Timestamp& host_now) {
     return local_ymd(run_now) == local_ymd(host_now);
-}
-
-// ------------------------------------------------------------------------------------------------
-// 4. JUNK bars withheld from the feed
-// ------------------------------------------------------------------------------------------------
-
-/**
- * @brief The bars with every JUNK symbol's T-1 bar removed. The strategy and the portfolio stage
- *        therefore compute that symbol from its history through T-2: its signal is not updated
- *        today (on the next run the bar is T-2 and part of the history again; a one-day deferral,
- *        T-CLASSIFIER_ADVERSARIAL D4). The price manager is NOT given this vector: the mark
- *        uses every bar received.
- */
-inline std::vector<Bar> withhold_junk_t1_bars(const std::vector<Bar>& bars,
-                                              const T1Classification& t1,
-                                              std::vector<std::string>* withheld = nullptr) {
-    if (withheld) withheld->clear();
-    if (t1.junk_symbols.empty()) return bars;
-    const std::set<std::string> junk(t1.junk_symbols.begin(), t1.junk_symbols.end());
-    std::vector<Bar> out;
-    out.reserve(bars.size());
-    for (const auto& b : bars) {
-        if (junk.count(b.symbol) && SessionClassifier::ymd(SessionClassifier::day_of(b.timestamp)) ==
-                                        t1.t1_date) {
-            if (withheld) withheld->push_back(b.symbol);
-            continue;
-        }
-        out.push_back(b);
-    }
-    if (withheld) std::sort(withheld->begin(), withheld->end());
-    return out;
 }
 
 // ------------------------------------------------------------------------------------------------

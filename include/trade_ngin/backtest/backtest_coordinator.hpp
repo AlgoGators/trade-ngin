@@ -14,6 +14,7 @@
 #include "trade_ngin/portfolio/portfolio_manager.hpp"
 // Include component headers for unique_ptr (need complete types)
 #include "trade_ngin/backtest/backtest_data_loader.hpp"
+#include "trade_ngin/backtest/consumed_series_record.hpp"
 #include "trade_ngin/backtest/backtest_metrics_calculator.hpp"
 #include "trade_ngin/backtest/backtest_price_manager.hpp"
 #include "trade_ngin/backtest/backtest_pnl_manager.hpp"
@@ -95,9 +96,15 @@ private:
     /// (run_portfolio with AssetClass::FUTURES); the equity backtest is untouched.
     SessionClassifier session_classifier_;
     bool session_hold_enabled_ = false;
-    /// T-7b-1 7a: the JUNK signal-group bars withheld from the strategies and the PM on the last
-    /// cycle, fed on the next one ahead of their symbol's next bar (junk_signal_feed.hpp).
-    std::vector<Bar> withheld_junk_signal_bars_;
+    /// T-ROLLX-FIX: the oracle acceptance's record of the consumed bars (consumed_series_record.hpp);
+    /// enabled only when TRADE_NGIN_SERIES_DUMP_DIR is set, never in production.
+    ConsumedSeriesRecord consumed_record_;
+    /// T-ROLLX-FIX (LOOP_SPEC v6.1 sections 2.1, 2.2, D37): each futures symbol's roll status on its
+    /// CONSUMED sequence (the bars fed to the strategies; a withheld bar never walks it), and the
+    /// status of its last consumed bar, which decides the change-bar hold of every rebalance until
+    /// the symbol's next consumed bar.
+    std::unordered_map<std::string, roll_series::RollTracker> roll_trackers_;
+    std::map<std::string, roll_series::RollTracker::Status> signal_roll_status_;
     /// T-7b-1 C7 (RA-01): one RISK_SCALE_REPORT line per post-warmup rebalance. Futures only
     /// (run_portfolio with AssetClass::FUTURES), like the session hold; the equity backtest's log
     /// is untouched.

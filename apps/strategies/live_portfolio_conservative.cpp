@@ -17,6 +17,7 @@
 #include "trade_ngin/data/database_pooling.hpp"
 #include "trade_ngin/data/market_data_bus.hpp"
 #include "trade_ngin/data/postgres_database.hpp"
+#include "trade_ngin/data/roll_series.hpp"
 #include "trade_ngin/data/session_classifier.hpp"
 #include "trade_ngin/instruments/futures.hpp"
 #include "trade_ngin/instruments/instrument_registry.hpp"
@@ -1318,21 +1319,35 @@ int main(int argc, char* argv[]) {
         }
 
         // ========================================
-        // THE STRATEGY FEED (T-7a C4; built here by T-7b-1 C7b R10)
-        // Every bar except the JUNK symbols' T-1 bars. The strategies and the PortfolioManager
-        // are fed it below, and so is the execution manager's cost manager (T-7a_CODE_REVIEW
-        // R10: a junk print must not enter the volume and volatility the cost model reads; K2
-        // reads this feed). A JUNK symbol is held on every book today, so it has no fill to cost.
-        // On a whole-book carry no symbol printed, so the feed is every bar.
+        // THE STRATEGY FEED (T-7a C4; built here by T-7b-1 C7b R10; LOOP_SPEC v6.1 section 2.1, K-01)
+        // Every bar of the window except the WITHHELD ones: a JUNK bar or a thin first print, on any
+        // date of the window, is never consumed and never fed (K-01 retires the earlier rule, which
+        // withheld only the T-1 bar and fed it as T-2 on the next run). An unconfirmed instrument-id
+        // change the classifier holds is consumed: it is the change bar, held under D37. The
+        // strategies and the PortfolioManager are fed it below, and so are both cost managers
+        // (T-7a_CODE_REVIEW R10: a junk print must not enter the volume and volatility the cost model
+        // reads; K2 reads this feed) and the snapshot risk reader. A non-SESSION symbol is held on
+        // every book today, so it has no fill to cost.
         // ========================================
-        std::vector<std::string> withheld_junk_bars;
-        std::vector<Bar> junk_filtered_bars;
-        if (!t1_classification.junk_symbols.empty()) {
-            junk_filtered_bars =
-                withhold_junk_t1_bars(all_bars, t1_classification, &withheld_junk_bars);
+        std::vector<SymbolDayVerdict> k01_withheld;
+        const std::vector<Bar> k01_feed =
+            k01_consumed_bars(session_classifier, all_bars, &k01_withheld);
+        const std::vector<Bar>& strategy_feed_bars = k01_feed;
+        std::vector<std::string> withheld_junk_bars;  // the symbols whose T-1 bar is withheld
+        for (const auto& v : k01_withheld) {
+            if (v.date == t1_classification.t1_date) withheld_junk_bars.push_back(v.symbol);
         }
-        const std::vector<Bar>& strategy_feed_bars =
-            t1_classification.junk_symbols.empty() ? all_bars : junk_filtered_bars;
+        std::sort(withheld_junk_bars.begin(), withheld_junk_bars.end());
+        // LOOP_SPEC v6.1 sections 2.1, 2.2 (D37): each symbol's roll status on the window's CONSUMED
+        // bars (k01_feed: a withheld bar never walks it), evaluated bar by bar, so a run that consumes
+        // several bars of a symbol (a catch-up after a missed run) reads the status of its LAST one.
+        const auto roll_status = roll_series::roll_status_of(strategy_feed_bars);
+        std::unordered_map<std::string, std::string> last_consumed_date;
+        for (const auto& bar : strategy_feed_bars) {
+            const std::string d = core::format_utc_date(bar.timestamp);
+            auto& last = last_consumed_date[bar.symbol];
+            if (d > last) last = d;
+        }
 
         // ========================================
         // UPDATE TRANSACTION COST MANAGER WITH MARKET DATA
@@ -1446,11 +1461,11 @@ int main(int argc, char* argv[]) {
             // Disable MarketDataBus to prevent duplicate processing during explicit data feed
             MarketDataBus::instance().set_publish_enabled(false);
             INFO("MarketDataBus publishing DISABLED before process_market_data");
-            // JUNK (T-7a C4): a JUNK symbol's T-1 bar is withheld from the strategy and the
-            // portfolio stage, so its signal is not updated today (it is back in the history as
-            // T-2 on the next run). The price manager already has every bar: the mark uses it.
+            // JUNK (T-7a C4): a withheld T-1 bar (K-01) is kept out of the strategy and the
+            // portfolio stage, so its signal is not updated today, and it is never fed on a later
+            // run either. The price manager already has every bar: the mark uses it.
             // The feed (strategy_feed_bars) is built above the cost feed (T-7b-1 C7b R10).
-            if (!t1_classification.junk_symbols.empty()) {
+            if (!withheld_junk_bars.empty()) {
                 std::string withheld_list;
                 for (const auto& s : withheld_junk_bars) {
                     withheld_list += (withheld_list.empty() ? "" : ", ") + s;
@@ -1466,6 +1481,29 @@ int main(int argc, char* argv[]) {
                 std::unordered_set<std::string> book_gate_holds;
                 for (const auto& symbol : symbols) {
                     if (!t1_classification.is_session(symbol)) book_gate_holds.insert(symbol);
+                    // D37 (sections 2.1, 2.2): a symbol whose last consumed bar is pending (a change
+                    // bar, either bar of a flip, an id-less bar inside a pending roll; code review
+                    // D2) is held at its stored T-1 quantity on every book until its next consumed
+                    // bar, whatever that bar's date.
+                    const auto rs = roll_status.find(symbol);
+                    if (rs == roll_status.end() || !rs->second.holds()) continue;
+                    book_gate_holds.insert(symbol);
+                    INFO("CHANGE_BAR_HOLD " + symbol + " date=" + core::format_utc_date(now) +
+                         " kind=" +
+                         (rs->second.flip ? "flip_revert"
+                                          : rs->second.change ? "pending_change" : "idless_pending") +
+                         " held_id=" + rs->second.held_id +
+                         ": the last consumed bar is pending; held at the stored T-1 quantity, no "
+                         "order today");
+                    const auto lc = last_consumed_date.find(symbol);
+                    if (rs->second.flip && lc != last_consumed_date.end() &&
+                        lc->second == t1_classification.t1_date) {
+                        INFO("FLIP_PAIR " + symbol + " date=" + t1_classification.t1_date +
+                             " held_id=" + rs->second.held_id +
+                             " bars=" + std::to_string(rs->second.bars_pending + 1) +
+                             ": the id returned to the held contract; no legs, every bar of it held "
+                             "and its returns excluded");
+                    }
                 }
                 portfolio->set_book_gate_holds(std::move(book_gate_holds));
             }
@@ -2398,7 +2436,8 @@ int main(int argc, char* argv[]) {
         RiskConfig snapshot_risk_config = risk_config;
         snapshot_risk_config.capital = Decimal(portfolio->sizing_capital());
         trade_ngin::RiskManager snapshot_rm(snapshot_risk_config);
-        auto market_data_snapshot = snapshot_rm.create_market_data(all_bars);
+        // K-01: the snapshot reads the consumed bars, as every return consumer does.
+        auto market_data_snapshot = snapshot_rm.create_market_data(strategy_feed_bars);
         auto risk_eval = snapshot_rm.process_positions(positions, market_data_snapshot);
 
         std::cout << "\n======= Strategy Metrics =======" << std::endl;

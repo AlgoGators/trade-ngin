@@ -303,6 +303,10 @@ struct Bar {
     Price close;
     double volume;  // Keep as double for now since volume is typically not a financial calculation
     std::string symbol;
+    /// The vendor's contract id behind a futures bar (futures_data.ohlcv_1d_raw.instrument_id,
+    /// joined to the kept bar by the loader, T-ROLLX); empty when unknown and on every equity bar.
+    /// A bar whose id differs from the previous consumed bar's is a change bar (roll_series.hpp).
+    std::string instrument_id;
 
     Bar() = default;
     Bar(Timestamp ts, Price o, Price h, Price l, Price c, double v, std::string s)

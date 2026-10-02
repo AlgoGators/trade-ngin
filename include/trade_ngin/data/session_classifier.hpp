@@ -111,8 +111,23 @@ struct SymbolDayVerdict {
     /// T-7b-2 C10a: set when the PREVIOUS bar was an unconfirmed id change; this bar confirms it
     /// a roll (the id stayed) or a one-day flip (the id reverted), in words.
     std::string id_note;
+    /// T-ROLLX-FIX: set when the JUNK verdict was decided by the instrument-id continuity limb (an
+    /// unconfirmed thin id change). That bar is the change bar of LOOP_SPEC v6.1 section 2.2, held
+    /// under D37 like any non-SESSION verdict but CONSUMED, never withheld (section 2.1, K-01).
+    bool id_change_hold{false};
 
     bool is_session() const { return verdict == SessionVerdict::SESSION; }
+    /**
+     * @brief LOOP_SPEC v6.1 section 2.1 (K-01): a JUNK bar (a corrupt or locked print, the absolute
+     *        floor) and a thin first print (the floor with no norm yet) are WITHHELD: never consumed
+     *        by any consumer (the roll status, the series, the strategy feed, the PortfolioManager's
+     *        history, the cost model, the risk readings) and never fed later. Every other verdict
+     *        with a bar (SESSION, and the id-change hold above) is consumed. A verdict without a bar
+     *        has nothing to withhold.
+     */
+    bool k01_withheld() const {
+        return has_bar && verdict == SessionVerdict::JUNK && !id_change_hold;
+    }
 };
 
 /**
@@ -304,6 +319,17 @@ T1Classification classify_t1(const SessionClassifier& classifier,
 std::vector<SymbolDayVerdict> classify_bar_group(const SessionClassifier& classifier,
                                                  const std::vector<Bar>& group,
                                                  const HolidayLookup& holidays = {});
+
+/**
+ * @brief LOOP_SPEC v6.1 section 2.1 (K-01): the bars of `bars` a consumer may read, in their order:
+ *        every bar whose own verdict (classify_symbol_day at its own date, which reads no later bar)
+ *        is not k01_withheld(). The verdicts of the withheld bars are appended to `withheld`, in the
+ *        bars' order. The live runners apply it to their whole window on every run, so a withheld
+ *        bar is never fed on that run nor on any later one; a bar the classifier does not hold is
+ *        kept. The backtest applies the same predicate to each signal group (k01_signal_feed).
+ */
+std::vector<Bar> k01_consumed_bars(const SessionClassifier& classifier, const std::vector<Bar>& bars,
+                                   std::vector<SymbolDayVerdict>* withheld = nullptr);
 
 /**
  * @brief T-7b-2 C10a: the instrument ids the live runners and the backtest feed the classifier,

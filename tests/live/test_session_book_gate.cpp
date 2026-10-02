@@ -7,7 +7,8 @@
 //     JUNK symbol has a T-1 price); a held symbol absent from today's target is re-inserted;
 //   * executions are generated with PricingPolicy::STRICT, an unpriced symbol is rolled back to its
 //     stored row, and no book change may be left without a price;
-//   * a JUNK symbol's T-1 bar is withheld from the strategy feed (its signal is not updated);
+//   * K-01: every withheld bar of the window (JUNK, a thin first print) is kept out of the strategy
+//     feed on every run, and an unconfirmed id change the classifier holds is consumed;
 //   * a HELD symbol's feed hole older than the tolerance refuses a true-live run (the run date is
 //     the host's date) and only warns on a replay;
 //   * in the runners: the abort arm is gone, the Monday agricultural block is gone, the gate and
@@ -305,17 +306,52 @@ TEST(SessionBookGate, StrictRollsAnUnpricedChangeBackToTheStoredRow) {
 // The JUNK feed and the feed-hole refusal
 // =============================================================================================
 
-TEST(SessionBookGate, OnlyTheJunkSymbolsT1BarIsWithheldFromTheFeed) {
-    const auto t1 = april_t1();
-    std::vector<Bar> bars = {bar_on("6L.v.0", "2026-04-22", 0.1990, 17000),
-                             bar_on("6L.v.0", "2026-04-23", 0.1992, 107),
-                             bar_on("MES.v.0", "2026-04-23", 7150.0, 1400000)};
-    std::vector<std::string> withheld;
-    const auto feed = withhold_junk_t1_bars(bars, t1, &withheld);
-    ASSERT_EQ(feed.size(), 2u);
-    EXPECT_EQ(withheld, std::vector<std::string>{"6L.v.0"});
-    EXPECT_EQ(feed[0].symbol, "6L.v.0");  // its T-2 bar stays: history, not today's print
-    EXPECT_EQ(feed[1].symbol, "MES.v.0");
+// LOOP_SPEC v6.1 section 2.1 (K-01): the runners feed the window's CONSUMED bars. A JUNK bar is
+// withheld on whatever date of the window it sits (the parent withheld only the T-1 bar and fed an
+// older one as history), a thin first print likewise, and an unconfirmed id change the classifier
+// holds is consumed (the change bar, held under D37).
+TEST(SessionBookGate, EveryWithheldBarOfTheWindowIsKeptOutOfTheFeed) {
+    SessionClassifier c;
+    weekday_history(c, "6L.v.0", "2026-04-15", 0.199, 17000);
+    weekday_history(c, "MES.v.0", "2026-04-23", 7100.0, 1500000);
+    std::vector<Bar> bars = {bar_on("6L.v.0", "2026-04-14", 0.1985, 16000),
+                             bar_on("6L.v.0", "2026-04-15", 0.1990, 107),    // JUNK, an old date
+                             bar_on("6L.v.0", "2026-04-16", 0.1991, 18000),
+                             bar_on("6L.v.0", "2026-04-23", 0.1992, 107),    // JUNK, T-1
+                             bar_on("MES.v.0", "2026-04-23", 7150.0, 1400000),
+                             bar_on("ZT.v.0", "2026-04-23", 104.1, 10)};     // thin first print
+    c.add_bars(bars);
+    std::vector<SymbolDayVerdict> withheld;
+    const auto feed = k01_consumed_bars(c, bars, &withheld);
+    ASSERT_EQ(feed.size(), 3u);
+    EXPECT_EQ(feed[0].symbol, "6L.v.0");
+    EXPECT_EQ(SessionClassifier::ymd(SessionClassifier::day_of(feed[0].timestamp)), "2026-04-14");
+    EXPECT_EQ(SessionClassifier::ymd(SessionClassifier::day_of(feed[1].timestamp)), "2026-04-16");
+    EXPECT_EQ(feed[2].symbol, "MES.v.0");
+    ASSERT_EQ(withheld.size(), 3u);
+    EXPECT_EQ(withheld[0].symbol + " " + withheld[0].date, "6L.v.0 2026-04-15");
+    EXPECT_EQ(withheld[1].symbol + " " + withheld[1].date, "6L.v.0 2026-04-23");
+    EXPECT_EQ(withheld[2].symbol + " " + withheld[2].date, "ZT.v.0 2026-04-23");
+    for (const auto& v : withheld) EXPECT_TRUE(v.k01_withheld()) << v.symbol << " " << v.reason;
+}
+
+TEST(SessionBookGate, AnIdChangeHoldIsConsumedNotWithheld) {
+    SessionClassifier c;
+    weekday_history(c, "NG.v.0", "2026-04-23", 3.3, 200000);
+    for (Day d = ymd_day("2026-03-01"); d < ymd_day("2026-04-23"); d += std::chrono::days{1}) {
+        c.add_instrument_id("NG.v.0", d, "864");
+    }
+    const Bar change = bar_on("NG.v.0", "2026-04-23", 3.9, 9000);  // thin on a new id
+    c.add_bar(change);
+    c.add_instrument_id("NG.v.0", ymd_day("2026-04-23"), "863");
+    std::vector<SymbolDayVerdict> withheld;
+    const auto feed = k01_consumed_bars(c, {change}, &withheld);
+    const auto v = c.classify_symbol_day("NG.v.0", ymd_day("2026-04-23"), kNoHolidays);
+    ASSERT_EQ(v.verdict, SessionVerdict::JUNK) << v.reason;
+    EXPECT_TRUE(v.id_change_hold);
+    EXPECT_FALSE(v.k01_withheld());
+    EXPECT_EQ(feed.size(), 1u) << "the change bar is consumed (and held: its verdict is not SESSION)";
+    EXPECT_TRUE(withheld.empty());
 }
 
 TEST(SessionBookGate, TheFeedHoleRefusalKeysOnAHeldSymbolPastTheTolerance) {

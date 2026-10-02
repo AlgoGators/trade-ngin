@@ -140,12 +140,26 @@ public:
         return config_;
     }
 
+    /// Per symbol, the adjusted level at each bar timestamp (roll_series::adjusted_levels on the
+    /// symbol's bars in time order): the raw close plus the later contract-switch steps.
+    using AdjustedLevels = std::unordered_map<std::string, std::map<Timestamp, double>>;
+
     /**
      * @brief Create market data object from bar data
      * @param data Bar data to convert
+     * @param adjusted T-ROLLX (LOOP_SPEC v6.1 section 2.3): the adjusted levels the return rows
+     *        read, r = (A_t - A_prev) / P_prev over consecutive timestamps of `data`; when null
+     *        they are built from `data`'s own bars (each bar's instrument_id). The gate passes the
+     *        levels of its whole window so a switch on a date its F5 filter drops is still a
+     *        step, not a return (adjusted_levels_of).
      * @return MarketData object
      */
-    MarketData create_market_data(const std::vector<Bar>& data);
+    MarketData create_market_data(const std::vector<Bar>& data,
+                                  const AdjustedLevels* adjusted = nullptr);
+
+    /// The adjusted levels of every symbol's bars in `data` (one level per (symbol, timestamp);
+    /// a repeated timestamp keeps the last bar, as create_market_data's price map does).
+    static AdjustedLevels adjusted_levels_of(const std::vector<Bar>& data);
 
     /// Gross and net leverage of a book and the leverage multiplier the gate would give it,
     /// valued exactly as process_positions values it (average price x contract multiplier, over

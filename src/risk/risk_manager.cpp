@@ -1,3 +1,4 @@
+#include "trade_ngin/data/roll_series.hpp"
 #include "trade_ngin/risk/risk_manager.hpp"
 #include <Eigen/Dense>
 #include <algorithm>
@@ -587,7 +588,44 @@ Result<void> RiskManager::update_config(const RiskConfig& config) {
     return Result<void>();
 }
 
-MarketData RiskManager::create_market_data(const std::vector<Bar>& data) {
+RiskManager::AdjustedLevels RiskManager::adjusted_levels_of(const std::vector<Bar>& data) {
+    // T-ROLLX (LOOP_SPEC v6.1 sections 2.1-2.3): each symbol's bars in time order (one per
+    // timestamp, the last fed copy kept) are its consumed sequence here; a bar whose contract id
+    // differs from the previous one's is a change bar, and the adjusted level is the raw close
+    // plus the later steps, anchored on the symbol's latest bar.
+    std::map<std::string, std::map<Timestamp, std::pair<double, std::string>>> by_symbol;
+    for (const auto& bar : data) {
+        by_symbol[bar.symbol][bar.timestamp] = {static_cast<double>(bar.close), bar.instrument_id};
+    }
+    AdjustedLevels out;
+    for (const auto& [symbol, bars] : by_symbol) {
+        std::vector<double> raw;
+        std::vector<std::string> ids;
+        raw.reserve(bars.size());
+        ids.reserve(bars.size());
+        for (const auto& [ts, bar] : bars) {
+            raw.push_back(bar.first);
+            ids.push_back(bar.second);
+        }
+        const std::vector<double> adjusted = roll_series::adjusted_levels(
+            raw, roll_series::classify_instrument_changes(ids).change);
+        auto& levels = out[symbol];
+        size_t i = 0;
+        for (const auto& [ts, bar] : bars) levels[ts] = adjusted[i++];
+    }
+    return out;
+}
+
+MarketData RiskManager::create_market_data(const std::vector<Bar>& data,
+                                           const AdjustedLevels* adjusted) {
+    const AdjustedLevels own_levels = adjusted ? AdjustedLevels{} : adjusted_levels_of(data);
+    const AdjustedLevels& levels = adjusted ? *adjusted : own_levels;
+    auto adjusted_level = [&levels](const std::string& symbol, const Timestamp& ts, double raw) {
+        auto s = levels.find(symbol);
+        if (s == levels.end()) return raw;
+        auto t = s->second.find(ts);
+        return t == s->second.end() ? raw : t->second;
+    };
     MarketData market_data;
 
     // Collect Unique Symbols and Order Them
@@ -627,8 +665,12 @@ MarketData RiskManager::create_market_data(const std::vector<Bar>& data) {
             for (size_t i = 0; i < market_data.ordered_symbols.size(); ++i) {
                 const std::string& symbol = market_data.ordered_symbols[i];
                 if (it->second.count(symbol) && prev->second.count(symbol)) {
+                    // T-ROLLX: the adjusted change over the RAW previous close (section 2.4).
+                    const double prev_raw = prev->second.at(symbol);
                     daily_returns[i] =
-                        (it->second.at(symbol) - prev->second.at(symbol)) / prev->second.at(symbol);
+                        (adjusted_level(symbol, it->first, it->second.at(symbol)) -
+                         adjusted_level(symbol, prev->first, prev_raw)) /
+                        prev_raw;
                 }
             }
             market_data.returns.push_back(daily_returns);
@@ -672,6 +714,7 @@ MarketData RiskManager::create_market_data(const std::vector<Bar>& data) {
 
 std::vector<std::vector<double>> RiskManager::calculate_returns(
     const std::vector<Bar>& data) const {
+    const AdjustedLevels levels = adjusted_levels_of(data);  // T-ROLLX: returns adjusted
     std::map<std::string, std::map<Timestamp, double>> prices_by_symbol;
 
     // Organize data by symbol and timestamp
@@ -700,7 +743,9 @@ std::vector<std::vector<double>> RiskManager::calculate_returns(
             for (const auto& [symbol, price] : it->second) {
                 if (prev->second.count(symbol)) {
                     double prev_price = prev->second.at(symbol);
-                    daily_returns.push_back((price - prev_price) / prev_price);
+                    const auto& symbol_levels = levels.at(symbol);
+                    daily_returns.push_back(
+                        (symbol_levels.at(it->first) - symbol_levels.at(prev->first)) / prev_price);
                 } else {
                     daily_returns.push_back(0.0);
                 }

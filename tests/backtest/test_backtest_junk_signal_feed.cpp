@@ -1,23 +1,11 @@
 // tests/backtest/test_backtest_junk_signal_feed.cpp
 //
-// T-7b-1 commit 7a (HD 2026-09-24; T-7a_CODE_REVIEW R1, T-7a ADVERSARY F4). The futures backtest
-// withholds a JUNK signal-group bar from the strategies and the PortfolioManager's feed exactly as
-// the live runners do.
-//
-// Live (live_portfolio_conservative.cpp / live_portfolio.cpp, the "JUNK (T-7a C4)" block before
-// process_market_data): each run is a fresh process that feeds the whole 730-day window; a JUNK
-// symbol's T-1 bar is removed from that feed (withhold_junk_t1_bars), so its signal is not updated
-// today, and on the NEXT run the same bar is T-2 and is fed with the rest of the history, in date
-// order. The backtest used to feed the whole signal group and hold only the fill and the book.
-//
-// The backtest's equivalent is a ONE-CYCLE DELAYED FEED: on the cycle whose signal group holds a
-// JUNK bar for X, X's bar is withheld from process_market_data (every other symbol's bar is fed as
-// before); on the next cycle X's withheld bar is fed ahead of X's next bar, in date order (if that
-// bar is JUNK too it is withheld in turn). The hold of X's fill and book is unchanged.
-//
-// The per-symbol state the delayed feed leaves (the trend sleeve's price history, volatility and
-// forecast; the PortfolioManager's date-keyed history and returns) equals feeding every bar in
-// order, which is what live's next run computes from its window: pinned below as controls.
+// The futures backtest's signal feed under LOOP_SPEC v6.1 section 2.1, K-01 (LOCKED; T-ROLLX-FIX
+// commit 1; it supersedes T-7b-1 commit 7a's one-cycle delayed feed): a JUNK bar and a thin first
+// print of the signal group are withheld from the strategies, the PortfolioManager and the cost
+// models and are never fed later (k01_signal_feed). The coordinator's behaviour is pinned in
+// test_backtest_k01_feed.cpp; this file pins the pure helper and, as controls, the PortfolioManager's
+// fill price when one feed carries two bars of a symbol (C7a amended): it is the latest-dated bar's.
 
 #include <gtest/gtest.h>
 #include "../risk/risk_module_test_helpers.hpp"
@@ -89,51 +77,33 @@ using Keys = std::vector<std::string>;
 // The rule, on the pure helper
 // ------------------------------------------------------------------------------------------------
 
-TEST(JunkDelayedSignalFeed, AJunkBarIsWithheldAndEveryOtherBarIsFedInItsOrder) {
-    const auto f = junk_delayed_signal_feed({bar("AA", 1, 10), bar("XX", 1, 20, true), bar("BB", 1, 30)},
-                                            {"XX"}, {});
+TEST(K01SignalFeed, AWithheldSymbolsBarLeavesTheFeedAndEveryOtherBarKeepsItsOrder) {
+    const auto f = k01_signal_feed({bar("AA", 1, 10), bar("XX", 1, 20, true), bar("BB", 1, 30)},
+                                   {"XX"});
     EXPECT_EQ(keys(f.feed), (Keys{"AA@1", "BB@1"}));
     EXPECT_EQ(keys(f.withheld), (Keys{"XX@1"}));
-    EXPECT_TRUE(f.released.empty());
 }
 
-TEST(JunkDelayedSignalFeed, TheWithheldBarIsFedOnTheNextCycleAheadOfTheSymbolsNewBar) {
-    const auto f = junk_delayed_signal_feed({bar("AA", 2, 11), bar("XX", 2, 21), bar("BB", 2, 31)}, {},
-                                            {bar("XX", 1, 20, true)});
-    EXPECT_EQ(keys(f.feed), (Keys{"AA@2", "XX@1", "XX@2", "BB@2"}))
-        << "the old bar right before the symbol's new one, in date order; the others untouched";
-    EXPECT_EQ(keys(f.released), (Keys{"XX@1"}));
-    EXPECT_TRUE(f.withheld.empty());
+TEST(K01SignalFeed, NothingIsCarriedToTheNextCycle) {
+    // The helper has no carried input at all: the next cycle's feed is that cycle's own group.
+    const auto day1 = k01_signal_feed({bar("AA", 1, 10), bar("XX", 1, 20, true)}, {"XX"});
+    const auto day2 = k01_signal_feed({bar("AA", 2, 11), bar("XX", 2, 21)}, {});
+    EXPECT_EQ(keys(day1.feed), (Keys{"AA@1"}));
+    EXPECT_EQ(keys(day2.feed), (Keys{"AA@2", "XX@2"}));
+    EXPECT_TRUE(day2.withheld.empty());
 }
 
-TEST(JunkDelayedSignalFeed, AJunkBarAgainWithholdsTheNewBarWhileTheOlderOneIsFed) {
-    const auto f = junk_delayed_signal_feed({bar("AA", 2, 11), bar("XX", 2, 21, true)}, {"XX"},
-                                            {bar("XX", 1, 20, true)});
-    EXPECT_EQ(keys(f.feed), (Keys{"AA@2", "XX@1"}));
-    EXPECT_EQ(keys(f.withheld), (Keys{"XX@2"}));
-    EXPECT_EQ(keys(f.released), (Keys{"XX@1"}));
-}
-
-TEST(JunkDelayedSignalFeed, ACarriedBarWhoseSymbolHasNoBarInTheGroupIsStillFed) {
-    // Live's next run feeds the junk bar with the history whether or not the symbol printed again.
-    const auto f = junk_delayed_signal_feed({bar("AA", 2, 11), bar("BB", 2, 31)}, {},
-                                            {bar("XX", 1, 20, true)});
-    EXPECT_EQ(keys(f.feed), (Keys{"AA@2", "BB@2", "XX@1"}));
-    EXPECT_EQ(keys(f.released), (Keys{"XX@1"}));
-}
-
-TEST(JunkDelayedSignalFeed, AnAllJunkGroupGivesAnEmptyFeed) {
-    const auto f = junk_delayed_signal_feed({bar("XX", 1, 20, true)}, {"XX"}, {});
+TEST(K01SignalFeed, AnAllWithheldGroupGivesAnEmptyFeed) {
+    const auto f = k01_signal_feed({bar("XX", 1, 20, true)}, {"XX"});
     EXPECT_TRUE(f.feed.empty());
     EXPECT_EQ(keys(f.withheld), (Keys{"XX@1"}));
 }
 
-// Control (passes on the parent too): with no JUNK bar and nothing carried the feed is the group.
-TEST(JunkDelayedSignalFeed, NoJunkAndNothingCarriedFeedsTheGroupUnchanged) {
-    const auto f = junk_delayed_signal_feed({bar("BB", 1, 30), bar("AA", 1, 10)}, {}, {});
+// Control (passes on the parent's helper too): nothing withheld feeds the group unchanged.
+TEST(K01SignalFeed, NothingWithheldFeedsTheGroupUnchanged) {
+    const auto f = k01_signal_feed({bar("BB", 1, 30), bar("AA", 1, 10)}, {});
     EXPECT_EQ(keys(f.feed), (Keys{"BB@1", "AA@1"}));
     EXPECT_TRUE(f.withheld.empty());
-    EXPECT_TRUE(f.released.empty());
 }
 
 // ------------------------------------------------------------------------------------------------
@@ -231,207 +201,14 @@ protected:
     std::vector<RiskResult> risk_;
 };
 
-TEST_F(BacktestJunkSignalFeedTest, TheCoordinatorFeedsAJunkBarOneCycleLateInDateOrder) {
-    make(true);
-    run_four_groups(false);
-    ASSERT_EQ(strat_->calls.size(), 3u);
-    EXPECT_EQ(strat_->calls[0], (Keys{"AA@0", "XX@0"}));
-    EXPECT_EQ(strat_->calls[1], (Keys{"AA@1"})) << "XX's JUNK bar is withheld on its own cycle";
-    EXPECT_EQ(strat_->calls[2], (Keys{"AA@2", "XX@1", "XX@2"}))
-        << "and fed on the next cycle, ahead of XX's next bar";
-    EXPECT_EQ(pm_->closes_by_date_.at("XX").size(), 3u) << "the PM's own history has day 1 again";
-}
-
-TEST_F(BacktestJunkSignalFeedTest, TheRuleAppliesDuringWarmUp) {
-    make(true);
-    run_four_groups(true);
-    ASSERT_EQ(strat_->calls.size(), 3u);
-    EXPECT_EQ(strat_->calls[1], (Keys{"AA@1"}));
-    EXPECT_EQ(strat_->calls[2], (Keys{"AA@2", "XX@1", "XX@2"}));
-}
-
-// Control (passes on the parent too): the equity backtest (no session hold) feeds the full group.
-TEST_F(BacktestJunkSignalFeedTest, WithoutTheSessionHoldTheFullGroupIsFed) {
-    make(false);
-    run_four_groups(false);
-    ASSERT_EQ(strat_->calls.size(), 3u);
-    EXPECT_EQ(strat_->calls[1], (Keys{"AA@1", "XX@1"}));
-    EXPECT_EQ(strat_->calls[2], (Keys{"AA@2", "XX@2"}));
-}
-
-TEST_F(BacktestJunkSignalFeedTest, AnAllJunkSignalGroupFeedsNothingAndTheCycleCompletes) {
-    make(true);
-    cycle(0, {bar("XX", 0, 20)}, false);
-    cycle(1, {bar("XX", 1, 21, true)}, false);
-    cycle(2, {bar("XX", 2, 22)}, false);  // signal group {XX@1}: all junk, nothing to feed
-    cycle(3, {bar("XX", 3, 23)}, false);
-    ASSERT_EQ(strat_->calls.size(), 2u) << "no strategy call on the all-junk cycle";
-    EXPECT_EQ(strat_->calls[0], (Keys{"XX@0"}));
-    EXPECT_EQ(strat_->calls[1], (Keys{"XX@1", "XX@2"}));
-    EXPECT_EQ(equity_.size(), 4u) << "every cycle still books its equity point";
-}
-
 // ------------------------------------------------------------------------------------------------
-// Controls: the delayed feed leaves the same per-symbol state as feeding every bar in order
-// ------------------------------------------------------------------------------------------------
-
-namespace {
-
-double close_of(const std::string& symbol, int d) {
-    const double phase = symbol == "ES" ? 0.0 : 1.3;
-    return 4000.0 * (1.0 + 0.03 * std::sin(0.11 * d + phase) + 0.0004 * d);
-}
-
-}  // namespace
-
-class JunkFeedStateEqualityTest : public TestBase {
-protected:
-    void SetUp() override {
-        TestBase::SetUp();
-        StateManager::reset_instance();
-        db_ = std::make_shared<MockPostgresDatabase>("mock://testdb");
-        ASSERT_TRUE(db_->connect().is_ok());
-        auto& registry = InstrumentRegistry::instance();
-        for (const auto& symbol : {"MES", "MNQ"}) {
-            FuturesSpec spec;
-            spec.root_symbol = symbol;
-            spec.exchange = "CME";
-            spec.currency = "USD";
-            spec.multiplier = 5.0;
-            spec.tick_size = 0.25;
-            spec.commission_per_contract = 2.0;
-            spec.initial_margin = 10000.0;
-            spec.maintenance_margin = 8000.0;
-            spec.weight = 1.0;
-            spec.trading_hours = "09:30-16:00";
-            registry.instruments_[symbol] = std::make_shared<FuturesInstrument>(symbol, spec);
-        }
-        registry.initialized_ = true;
-    }
-    void TearDown() override {
-        auto& registry = InstrumentRegistry::instance();
-        registry.instruments_.clear();
-        registry.initialized_ = false;
-        db_.reset();
-        StateManager::reset_instance();
-        TestBase::TearDown();
-    }
-
-    std::shared_ptr<TrendFollowingStrategy> make_trend() {
-        static int n = 0;
-        StrategyConfig sc;
-        sc.capital_allocation = 1'000'000.0;
-        sc.max_leverage = 100.0;
-        sc.asset_classes = {AssetClass::FUTURES};
-        sc.frequencies = {DataFrequency::DAILY};
-        for (const auto& s : {"ES", "NQ"}) {
-            sc.trading_params[s] = 5.0;
-            sc.position_limits[s] = 1000.0;
-        }
-        TrendFollowingConfig tc;
-        tc.weight = 1.0 / 30.0;
-        tc.risk_target = 0.2;
-        tc.idm = 2.5;
-        tc.use_position_buffering = true;
-        tc.ema_windows = {{2, 8}, {4, 16}, {8, 32}, {16, 64}, {32, 128}};
-        tc.vol_lookback_short = 32;
-        tc.vol_lookback_long = 252;
-        tc.fdm = {{1, 1.0}, {2, 1.03}, {3, 1.08}, {4, 1.13}, {5, 1.19}, {6, 1.26}};
-        auto& registry = InstrumentRegistry::instance();
-        auto registry_ptr = std::shared_ptr<InstrumentRegistry>(&registry, [](InstrumentRegistry*) {});
-        auto s = std::make_shared<TrendFollowingStrategy>("JF_TREND_" + std::to_string(++n), sc, tc,
-                                                          db_, registry_ptr);
-        EXPECT_TRUE(s->initialize().is_ok());
-        RiskLimits limits;
-        limits.max_position_size = 1000.0;
-        limits.max_notional_value = 1e9;
-        limits.max_drawdown = 0.9;
-        limits.max_leverage = 100.0;
-        EXPECT_TRUE(s->update_risk_limits(limits).is_ok());
-        EXPECT_TRUE(s->start().is_ok());
-        return s;
-    }
-
-    std::shared_ptr<MockPostgresDatabase> db_;
-};
-
-// The trend sleeve: ES's day-J bar withheld and fed with day J+1 ends in the same price history,
-// volatility and forecast for ES as feeding it on its own day; NQ (fed normally) is untouched.
-TEST_F(JunkFeedStateEqualityTest, TheTrendSleevesStateAfterTheDelayedFeedEqualsInOrderFeeding) {
-    auto in_order = make_trend();
-    auto delayed = make_trend();
-    const int J = 280, LAST = 282;
-    for (int d = 0; d <= LAST; ++d) {
-        const Bar es = bar("ES", d, close_of("ES", d));
-        const Bar nq = bar("NQ", d, close_of("NQ", d));
-        ASSERT_TRUE(in_order->on_data({es, nq}).is_ok());
-        if (d == J) {
-            ASSERT_TRUE(delayed->on_data({nq}).is_ok());  // ES withheld
-        } else if (d == J + 1) {
-            ASSERT_TRUE(delayed->on_data({bar("ES", J, close_of("ES", J)), es, nq}).is_ok());
-        } else {
-            ASSERT_TRUE(delayed->on_data({es, nq}).is_ok());
-        }
-    }
-    for (const std::string sym : {"ES", "NQ"}) {
-        const auto* a = in_order->get_instrument_data(sym);
-        const auto* b = delayed->get_instrument_data(sym);
-        ASSERT_NE(a, nullptr);
-        ASSERT_NE(b, nullptr);
-        EXPECT_EQ(std::vector<double>(a->price_history.begin(), a->price_history.end()),
-                  std::vector<double>(b->price_history.begin(), b->price_history.end()))
-            << sym;
-        EXPECT_EQ(a->current_volatility, b->current_volatility) << sym;
-        EXPECT_EQ(a->current_raw_forecast, b->current_raw_forecast) << sym;
-        EXPECT_EQ(a->current_forecast, b->current_forecast) << sym;
-    }
-}
-
-// The PortfolioManager's own history (T-6c commit B, one close per symbol per date, 756 cap):
-// the same closes and returns either way; on the withholding cycle the date intersection (S3)
-// loses the junk date for every symbol, as live's does (adversary F4), and gets it back next cycle.
-TEST_F(JunkFeedStateEqualityTest, ThePmHistoryAfterTheDelayedFeedEqualsInOrderFeeding) {
-    PortfolioManager in_order(plain_config(), "PM_JF_IN_ORDER");
-    PortfolioManager delayed(plain_config(), "PM_JF_DELAYED");
-    auto s1 = make_trend();
-    auto s2 = make_trend();
-    ASSERT_TRUE(in_order.add_strategy(s1, 1.0, false).is_ok());
-    ASSERT_TRUE(delayed.add_strategy(s2, 1.0, false).is_ok());
-    const int J = 30, LAST = 32;
-    for (int d = 0; d <= LAST; ++d) {
-        const Bar es = bar("ES", d, close_of("ES", d));
-        const Bar nq = bar("NQ", d, close_of("NQ", d));
-        ASSERT_TRUE(in_order.process_market_data({es, nq}).is_ok());
-        if (d == J) {
-            ASSERT_TRUE(delayed.process_market_data({nq}).is_ok());
-            const auto aligned = delayed.date_aligned_returns(delayed.closes_by_date_);
-            EXPECT_EQ(aligned.at("ES").size(), static_cast<size_t>(J - 1))
-                << "the junk date leaves the intersection for every symbol";
-            EXPECT_EQ(aligned.at("NQ").size(), static_cast<size_t>(J - 1));
-        } else if (d == J + 1) {
-            ASSERT_TRUE(
-                delayed.process_market_data({bar("ES", J, close_of("ES", J)), es, nq}).is_ok());
-        } else {
-            ASSERT_TRUE(delayed.process_market_data({es, nq}).is_ok());
-        }
-    }
-    EXPECT_EQ(in_order.closes_by_date_, delayed.closes_by_date_);
-    EXPECT_EQ(in_order.historical_returns_, delayed.historical_returns_);
-    const auto a = in_order.date_aligned_returns(in_order.closes_by_date_);
-    const auto b = delayed.date_aligned_returns(delayed.closes_by_date_);
-    EXPECT_EQ(a, b);
-    EXPECT_EQ(b.at("ES").size(), static_cast<size_t>(LAST));
-}
-
-// ------------------------------------------------------------------------------------------------
-// The fill price on a release cycle (C7a amended, lead ruling C7a_HALT option 1)
+// Controls: the fill price when one feed carries two bars of a symbol (C7a amended, lead ruling
+// C7a_HALT option 1)
 // ------------------------------------------------------------------------------------------------
 //
-// On a release cycle the PM is fed a symbol's withheld JUNK bar ahead of its new bar, in date
-// order. A fill of that symbol is priced at its LATEST-dated bar in the feed (the signal group's
-// close), never at the older released junk bar. Before the fix the PM took the FIRST bar of the
-// symbol in the vector, which on C7a's feed was the junk close (btfut: 6L 2025-03-25 at 0.17455,
-// 2025-07-15 at 0.17915; M2K and MYM 2025-12-30).
+// K-01 retired the release cycle that fed a withheld bar ahead of its symbol's new bar, but the
+// PortfolioManager's rule stands for any feed with two bars of a symbol (a live window, a catch-up):
+// a fill is priced at the symbol's LATEST-dated bar, never at an older bar in the vector.
 
 namespace {
 

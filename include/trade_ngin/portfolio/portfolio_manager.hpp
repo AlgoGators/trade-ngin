@@ -500,6 +500,9 @@ private:
     // config_.covariance_history_prices dates per symbol, oldest dropped first. A symbol that
     // leaves the feed keeps its series, which stops growing. No strategy's history is read.
     std::unordered_map<std::string, std::map<int64_t, double>> closes_by_date_;
+    /// T-ROLLX: each stored close's vendor instrument id (empty when unknown), the same keys as
+    /// closes_by_date_, so the optimizer's covariance reads the ADJUSTED returns (roll_series.hpp).
+    std::unordered_map<std::string, std::map<int64_t, std::string>> ids_by_date_;
     std::unordered_map<std::string, std::vector<double>> historical_returns_;
     MarketData current_market_data_;
 
@@ -556,6 +559,26 @@ private:
      *         COVARIANCE_DATE_ALIGNED line.
      */
     std::unordered_map<std::string, std::vector<double>> date_aligned_returns(
+        const std::unordered_map<std::string, std::map<int64_t, double>>& closes_by_symbol) const;
+
+    /**
+     * @brief date_aligned_returns on the ADJUSTED series (T-ROLLX; LOOP_SPEC v6.1 section 2.3)
+     * @param closes_by_symbol The raw closes (the usable dates and the return's denominator)
+     * @param adjusted_by_symbol Per symbol, the adjusted level at each of the same dates (the raw
+     *        close plus the later contract-switch steps, roll_series::adjusted_levels); a symbol
+     *        absent here reads its raw closes
+     * @return As above, with r_t = (A(D[t]) - A(D[t-1])) / c(D[t-1]): a switch's step between two
+     *         intersection dates is not a return. With adjusted == raw this is the function above.
+     */
+    std::unordered_map<std::string, std::vector<double>> date_aligned_returns(
+        const std::unordered_map<std::string, std::map<int64_t, double>>& closes_by_symbol,
+        const std::unordered_map<std::string, std::map<int64_t, double>>& adjusted_by_symbol) const;
+
+    /**
+     * @brief The adjusted level of every stored close of the given symbols (closes_by_date_ and
+     *        ids_by_date_ in date order, anchored on each symbol's latest stored close).
+     */
+    std::unordered_map<std::string, std::map<int64_t, double>> adjusted_closes_by_symbol(
         const std::unordered_map<std::string, std::map<int64_t, double>>& closes_by_symbol) const;
 
     /**

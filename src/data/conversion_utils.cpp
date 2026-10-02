@@ -116,6 +116,12 @@ Result<std::vector<Bar>> DataConversionUtils::arrow_table_to_bars(
         auto low_array = table->GetColumnByName("low")->chunk(0);
         auto close_array = table->GetColumnByName("close")->chunk(0);
         auto volume_array = table->GetColumnByName("volume")->chunk(0);
+        // T-ROLLX: the futures loader's eighth column, the kept print's vendor instrument id;
+        // absent on an equity table, NULL where the raw table has no such print (both: empty).
+        std::shared_ptr<arrow::Array> instrument_id_array;
+        if (auto id_column = table->GetColumnByName("instrument_id"); id_column != nullptr) {
+            instrument_id_array = id_column->chunk(0);
+        }
 
         // Prepare result vector
         std::vector<Bar> bars;
@@ -157,6 +163,15 @@ Result<std::vector<Bar>> DataConversionUtils::arrow_table_to_bars(
             // Create and add bar
             Bar bar(ts_result.value(), open_result.value(), high_result.value(), low_result.value(),
                     close_result.value(), volume_result.value(), symbol_result.value());
+            if (instrument_id_array && !instrument_id_array->IsNull(i)) {
+                auto id_result = extract_string(instrument_id_array, i);
+                if (id_result.is_error()) {
+                    return make_error<std::vector<Bar>>(id_result.error()->code(),
+                                                        id_result.error()->what(),
+                                                        "DataConversionUtils");
+                }
+                bar.instrument_id = id_result.value();
+            }
 
             bars.push_back(bar);
         }

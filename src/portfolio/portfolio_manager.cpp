@@ -1,4 +1,5 @@
 // src/portfolio/portfolio_manager.cpp
+#include "trade_ngin/data/roll_series.hpp"
 #include "trade_ngin/portfolio/portfolio_manager.hpp"
 #include "trade_ngin/portfolio/allocation_split.hpp"
 #include "trade_ngin/portfolio/cut_delivery.hpp"
@@ -1346,11 +1347,14 @@ void PortfolioManager::update_historical_returns(const std::vector<Bar>& data) {
                  ": a stored date's close was overwritten");
         }
         series[day] = close;
+        ids_by_date_[bar.symbol][day] = bar.instrument_id;  // T-ROLLX: the kept bar's contract id
         touched.insert(bar.symbol);
     }
     for (const auto& symbol : touched) {
         auto& series = closes_by_date_.at(symbol);
+        auto& ids = ids_by_date_[symbol];
         while (series.size() > max_prices) {
+            ids.erase(series.begin()->first);
             series.erase(series.begin());
         }
     }
@@ -1362,6 +1366,19 @@ void PortfolioManager::update_historical_returns(const std::vector<Bar>& data) {
         for (const auto& [day, close] : series) {
             prices.push_back(close);
         }
+        // T-ROLLX (LOOP_SPEC v6.1 section 2.3): a bar whose contract id differs from the previous
+        // stored bar's is a change bar; its return is 0 (the splice step is not a return).
+        std::vector<std::string> ids;
+        ids.reserve(series.size());
+        if (auto id_series = ids_by_date_.find(symbol); id_series != ids_by_date_.end()) {
+            for (const auto& [day, close] : series) {
+                auto id = id_series->second.find(day);
+                ids.push_back(id == id_series->second.end() ? std::string() : id->second);
+            }
+        } else {
+            ids.assign(series.size(), std::string());
+        }
+        const roll_series::ChangeFlags flags = roll_series::classify_instrument_changes(ids);
 
         // Clear previous returns for this symbol BEFORE the two-price guard, so a symbol
         // whose history dropped below two prices loses its stale returns instead of keeping
@@ -1388,7 +1405,7 @@ void PortfolioManager::update_historical_returns(const std::vector<Bar>& data) {
             if (prev_price <= 0.0)
                 continue;
 
-            double ret = (curr_price - prev_price) / prev_price;
+            double ret = flags.change[i] ? 0.0 : (curr_price - prev_price) / prev_price;
 
             if (std::isfinite(ret)) {
                 historical_returns_[symbol].push_back(ret);
@@ -1468,6 +1485,41 @@ std::string covariance_rho_text(double v) { return v < 0.0 ? std::string("-") : 
 
 std::unordered_map<std::string, std::vector<double>> PortfolioManager::date_aligned_returns(
     const std::unordered_map<std::string, std::map<int64_t, double>>& closes_by_symbol) const {
+    return date_aligned_returns(closes_by_symbol, {});
+}
+
+std::unordered_map<std::string, std::map<int64_t, double>> PortfolioManager::adjusted_closes_by_symbol(
+    const std::unordered_map<std::string, std::map<int64_t, double>>& closes_by_symbol) const {
+    // T-ROLLX (LOOP_SPEC v6.1 section 2.3): the adjusted level of each stored close, from the closes
+    // and the contract ids recorded together in update_historical_returns, in date order, anchored
+    // on the symbol's latest stored close. A symbol with no recorded ids reads its raw closes.
+    std::unordered_map<std::string, std::map<int64_t, double>> out;
+    for (const auto& [symbol, closes] : closes_by_symbol) {
+        auto id_series = ids_by_date_.find(symbol);
+        if (id_series == ids_by_date_.end() || closes.empty()) continue;
+        std::vector<int64_t> days;
+        std::vector<double> raw;
+        std::vector<std::string> ids;
+        days.reserve(closes.size());
+        raw.reserve(closes.size());
+        ids.reserve(closes.size());
+        for (const auto& [day, close] : closes) {
+            days.push_back(day);
+            raw.push_back(close);
+            auto id = id_series->second.find(day);
+            ids.push_back(id == id_series->second.end() ? std::string() : id->second);
+        }
+        const roll_series::ChangeFlags flags = roll_series::classify_instrument_changes(ids);
+        const std::vector<double> adjusted = roll_series::adjusted_levels(raw, flags.change);
+        auto& levels = out[symbol];
+        for (size_t i = 0; i < days.size(); ++i) levels[days[i]] = adjusted[i];
+    }
+    return out;
+}
+
+std::unordered_map<std::string, std::vector<double>> PortfolioManager::date_aligned_returns(
+    const std::unordered_map<std::string, std::map<int64_t, double>>& closes_by_symbol,
+    const std::unordered_map<std::string, std::map<int64_t, double>>& adjusted_by_symbol) const {
     // T-7a INSERT S3 (ledger PM-covariance-count-aligned). The covariance used to pair each
     // symbol's k-th-last return with every other symbol's k-th-last return: by COUNT. A symbol
     // whose date set differs (a feed gap, a Sunday-stamped bar, MBT's weekend bars from
@@ -1639,12 +1691,23 @@ std::unordered_map<std::string, std::vector<double>> PortfolioManager::date_alig
     if (dates.size() >= 2) {
         for (const auto& symbol : participants) {
             const auto& closes = closes_by_symbol.at(symbol);
+            // T-ROLLX: the numerator reads the ADJUSTED level (the raw close plus the later
+            // contract-switch steps) so a switch between two intersection dates is not a return;
+            // the denominator stays the RAW previous close (LOOP_SPEC v6.1 section 2.4).
+            auto adjusted = adjusted_by_symbol.find(symbol);
+            const std::map<int64_t, double>* levels =
+                adjusted != adjusted_by_symbol.end() ? &adjusted->second : &closes;
             auto& series = out[symbol];
             series.reserve(dates.size() - 1);
             for (size_t t = 1; t < dates.size(); ++t) {
                 const double prev_price = closes.at(dates[t - 1]);
-                const double curr_price = closes.at(dates[t]);
-                series.push_back((curr_price - prev_price) / prev_price);
+                auto prev_level = levels->find(dates[t - 1]);
+                auto curr_level = levels->find(dates[t]);
+                const double prev_adjusted =
+                    prev_level != levels->end() ? prev_level->second : prev_price;
+                const double curr_adjusted =
+                    curr_level != levels->end() ? curr_level->second : closes.at(dates[t]);
+                series.push_back((curr_adjusted - prev_adjusted) / prev_price);
             }
         }
         returns = dates.size() - 1;
@@ -2382,7 +2445,8 @@ Result<void> PortfolioManager::optimize_positions() {
             DEBUG("Using cached covariance matrix for convergence iteration");
         } else {
             // Compute covariance matrix (first iteration or symbols changed)
-            covariance = calculate_covariance_matrix(date_aligned_returns(closes_by_symbol));
+            covariance = calculate_covariance_matrix(date_aligned_returns(
+                closes_by_symbol, adjusted_closes_by_symbol(closes_by_symbol)));
             // Cache for subsequent iterations
             cached_symbols_ = symbols;
             cached_covariance_ = covariance;

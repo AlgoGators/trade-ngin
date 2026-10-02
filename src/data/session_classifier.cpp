@@ -343,6 +343,7 @@ SymbolDayVerdict SessionClassifier::classify_symbol_day(const std::string& symbo
                 is_unconfirmed_id_change(symbol, *series, bit, &from, &established) &&
                 holds_id_change(b, v.norm)) {
                 v.verdict = SessionVerdict::JUNK;
+                v.id_change_hold = true;
                 v.reason = "instrument id change (" + from + " -> " + v.instrument_id +
                            ", established " + established +
                            ") not confirmed until the next session: a roll if the next bar keeps " +
@@ -464,6 +465,22 @@ std::vector<SymbolDayVerdict> classify_bar_group(const SessionClassifier& classi
     out.reserve(days.size());
     for (const auto& [symbol, day] : days) {
         out.push_back(classifier.classify_symbol_day(symbol, day, holidays));
+    }
+    return out;
+}
+
+std::vector<Bar> k01_consumed_bars(const SessionClassifier& classifier, const std::vector<Bar>& bars,
+                                   std::vector<SymbolDayVerdict>* withheld) {
+    std::vector<Bar> out;
+    out.reserve(bars.size());
+    for (const auto& bar : bars) {
+        SymbolDayVerdict v =
+            classifier.classify_symbol_day(bar.symbol, SessionClassifier::day_of(bar.timestamp), {});
+        if (v.k01_withheld()) {
+            if (withheld) withheld->push_back(std::move(v));
+            continue;
+        }
+        out.push_back(bar);
     }
     return out;
 }
