@@ -78,6 +78,90 @@ Result<void> PostgresDatabase::delete_stale_executions(const std::vector<std::st
     }
 }
 
+Result<void> PostgresDatabase::delete_roll_executions(const Timestamp& date,
+                                                      const std::string& strategy_name,
+                                                      const std::string& portfolio_id,
+                                                      const std::string& table_name) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    auto validation = validate_connection();
+    if (validation.is_error()) return validation;
+    auto table_validation = validate_table_name(table_name);
+    if (table_validation.is_error()) return table_validation;
+    try {
+        pqxx::work txn(*connection_);
+        const std::string day = trade_ngin::core::format_utc_date(date);
+        const auto r = txn.exec("DELETE FROM " + table_name +
+                                    " WHERE strategy_name = $1 AND portfolio_id = $2 AND date = $3::date"
+                                    " AND execution_type = 'ROLL'",
+                                pqxx::params{strategy_name, portfolio_id, day});
+        txn.commit();
+        (void)r;  // the sweep writes no log line: its rows are re-stored right after (section 7)
+        return Result<void>();
+    } catch (const std::exception& e) {
+        ERROR("Failed to delete the day's ROLL executions: " + std::string(e.what()));
+        return make_error<void>(ErrorCode::DATABASE_ERROR, e.what(), component_id_);
+    }
+}
+
+Result<double> PostgresDatabase::get_previous_total_roll_costs(const std::string& strategy_id,
+                                                               const std::string& portfolio_id,
+                                                               const Timestamp& date,
+                                                               const std::string& table_name) {
+    auto validation = validate_connection();
+    if (validation.is_error()) {
+        return make_error<double>(validation.error()->code(), validation.error()->what());
+    }
+    try {
+        pqxx::work txn(*connection_);
+        auto table_validation = validate_table_name(table_name);
+        if (table_validation.is_error()) {
+            return make_error<double>(table_validation.error()->code(), table_validation.error()->what());
+        }
+        const std::string actual_portfolio_id = portfolio_id.empty() ? "BASE_PORTFOLIO" : portfolio_id;
+        auto result = txn.exec("SELECT COALESCE(total_roll_costs, 0) FROM " + table_name +
+                                   " WHERE strategy_id = $1 AND portfolio_id = $2 AND DATE(date) < DATE($3)"
+                                   " ORDER BY date DESC, created_at DESC LIMIT 1",
+                               pqxx::params{strategy_id, actual_portfolio_id, format_timestamp(date)});
+        txn.commit();
+        if (result.empty()) return Result<double>(0.0);
+        return Result<double>(result[0][0].as<double>());
+    } catch (const std::exception& e) {
+        return make_error<double>(ErrorCode::DATABASE_ERROR,
+                                  "Failed to read the previous total_roll_costs: " + std::string(e.what()),
+                                  "PostgresDatabase");
+    }
+}
+
+Result<std::string> PostgresDatabase::get_previous_book_date(const std::string& strategy_id,
+                                                             const std::string& portfolio_id,
+                                                             const Timestamp& date,
+                                                             const std::string& table_name) {
+    auto validation = validate_connection();
+    if (validation.is_error()) {
+        return make_error<std::string>(validation.error()->code(), validation.error()->what());
+    }
+    try {
+        pqxx::work txn(*connection_);
+        auto table_validation = validate_table_name(table_name);
+        if (table_validation.is_error()) {
+            return make_error<std::string>(table_validation.error()->code(),
+                                           table_validation.error()->what());
+        }
+        const std::string actual_portfolio_id = portfolio_id.empty() ? "BASE_PORTFOLIO" : portfolio_id;
+        auto result = txn.exec("SELECT to_char(MAX(DATE(date)), 'YYYY-MM-DD') FROM " + table_name +
+                                   " WHERE strategy_id = $1 AND portfolio_id = $2 AND DATE(date) < DATE($3)",
+                               pqxx::params{strategy_id, actual_portfolio_id, format_timestamp(date)});
+        txn.commit();
+        if (result.empty() || result[0][0].is_null()) return Result<std::string>(std::string());
+        return Result<std::string>(result[0][0].as<std::string>());
+    } catch (const std::exception& e) {
+        return make_error<std::string>(ErrorCode::DATABASE_ERROR,
+                                       "Failed to read the previous book date: " +
+                                           std::string(e.what()),
+                                       "PostgresDatabase");
+    }
+}
+
 Result<void> PostgresDatabase::store_backtest_summary(
     const std::string& run_id, const Timestamp& start_date, const Timestamp& end_date,
     const std::unordered_map<std::string, double>& metrics, const std::string& portfolio_id,
@@ -109,7 +193,8 @@ Result<void> PostgresDatabase::store_backtest_summary(
             "sortino_ratio, "
             "max_drawdown, calmar_ratio, volatility, total_trades, win_rate, profit_factor, "
             "avg_win, avg_loss, max_win, max_loss, avg_holding_period, var_95, cvar_95, "
-            "beta, correlation, downside_volatility) VALUES (";
+            "beta, correlation, downside_volatility, transaction_costs, roll_costs, "
+            "total_roll_fills) VALUES (";
 
         // Add parameters
         query += txn.quote(run_id) + ", ";
@@ -122,7 +207,8 @@ Result<void> PostgresDatabase::store_backtest_summary(
             "total_return", "sharpe_ratio", "sortino_ratio", "max_drawdown",       "calmar_ratio",
             "volatility",   "total_trades", "win_rate",      "profit_factor",      "avg_win",
             "avg_loss",     "max_win",      "max_loss",      "avg_holding_period", "var_95",
-            "cvar_95",      "beta",         "correlation",   "downside_volatility"};
+            "cvar_95",      "beta",         "correlation",   "downside_volatility",
+            "transaction_costs", "roll_costs", "total_roll_fills"};  // 018 (T-ROLLX)
 
         for (size_t i = 0; i < metric_names.size(); ++i) {
             if (i > 0)

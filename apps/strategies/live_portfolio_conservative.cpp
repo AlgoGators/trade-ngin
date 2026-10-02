@@ -31,6 +31,7 @@
 #include "trade_ngin/live/live_metrics_calculator.hpp"
 #include "trade_ngin/live/live_pnl_manager.hpp"
 #include "trade_ngin/live/live_price_manager.hpp"
+#include "trade_ngin/live/live_roll_legs.hpp"
 #include "trade_ngin/live/live_sizing_read.hpp"
 #include "trade_ngin/live/live_trading_coordinator.hpp"
 #include "trade_ngin/live/book_exposure.hpp"
@@ -1348,6 +1349,35 @@ int main(int argc, char* argv[]) {
             auto& last = last_consumed_date[bar.symbol];
             if (d > last) last = d;
         }
+        // LOOP_SPEC v6.1 section 6.5 (L-09, D3): this run books the legs of every roll a CONSUMED bar
+        // CONFIRMED after the previous run's T-1, up to its own T-1: one bar a symbol on a daily
+        // chain, several after missed runs. The previous run is the latest date before today with
+        // the book's positions stored: a run stores its legs before its positions, so a run whose
+        // live_results write failed (the run-gap guard above lets the next day run on its stored
+        // book) booked its legs and is a run here. Each roll is booked once; a re-run of today
+        // re-books today's (the sweep below clears them).
+        std::vector<ConfirmedRoll> confirmed_rolls;
+        {
+            auto prev_run = db->get_previous_book_date(combined_strategy_id, portfolio_id, now,
+                                                       "trading.positions");
+            if (prev_run.is_error()) {
+                ERROR("ROLL_LEG STOP: the previous run's date is unreadable (" +
+                      std::string(prev_run.error()->what()) +
+                      "); refusing to run: the rolls to book cannot be bounded");
+                return 1;
+            }
+            const std::string legs_since =
+                live_legs_since(prev_run.value(), t1_classification.t1_date);
+            confirmed_rolls =
+                rolls_confirmed_in(strategy_feed_bars, legs_since, t1_classification.t1_date);
+            for (const auto& r : confirmed_rolls) {
+                INFO("ROLL_CONFIRMED " + r.symbol + " date=" + r.confirm_date + " " + r.outgoing_id +
+                     "->" + r.incoming_id + " closing_px=" + std::to_string(r.closing_price) +
+                     " opening_px=" + std::to_string(r.opening_price) +
+                     " change_bars=" + std::to_string(r.change_bars) +
+                     ": the next consumed bar kept the new id; the legs are booked on this run");
+            }
+        }
 
         // ========================================
         // UPDATE TRANSACTION COST MANAGER WITH MARKET DATA
@@ -1991,6 +2021,7 @@ int main(int argc, char* argv[]) {
         INFO("STEP 2: Creating Day T positions with zero PnL (placeholders)...");
 
         double total_daily_transaction_costs = 0.0;  // Will be calculated from executions
+        double total_daily_roll_costs = 0.0;  // migration 017: the ROLL subset of the above
 
         // Update all current positions to have:
         // - average_price = Day T-1 close (execution price)
@@ -2057,6 +2088,71 @@ int main(int argc, char* argv[]) {
                     strict_rolled_back.push_back(s);
                 }
                 std::vector<ExecutionReport> strategy_executions = exec_result.value().executions;
+
+                // LOOP_SPEC v6.1 section 6.5: the two ROLL legs of every roll confirmed in this
+                // run's span, per symbol this sleeve holds (the stored T-1 book: no fill happened
+                // between the confirming bar and this run), ahead of the day's fills (closing leg,
+                // opening leg, then STRATEGY), priced by the execution manager's cost model, STRICT
+                // (a leg without a usable close refuses the run), ids EXEC_<symbol>_<confirming
+                // bar YYYYMMDD>_RC / _RO (D3); realised 0; outside netting; the cost in both totals.
+                {
+                    std::vector<ExecutionReport> roll_legs;
+                    const std::string run_date = trade_ngin::core::format_utc_date(now);
+                    // The cost model's inputs on each ROLL_LEG line (ADV, volatility multiplier), so
+                    // a reader can recompute the leg's implicit cost.
+                    auto& roll_cost_model = execution_manager->get_transaction_cost_manager();
+                    auto model_input = [](double x) {
+                        std::ostringstream o;
+                        o << std::setprecision(12) << x;
+                        return o.str();
+                    };
+                    for (const auto& r : confirmed_rolls) {
+                        const auto held = prev_positions_map.find(r.symbol);
+                        if (held == prev_positions_map.end()) continue;
+                        const double q = held->second.quantity.as_double();
+                        if (std::abs(q) < 1e-9) continue;
+                        const std::string tag = r.symbol + "_" + compact_date(r.confirm_date);
+                        std::vector<ExecutionReport> legs;
+                        try {
+                            legs = roll_series::make_roll_legs(
+                                r.symbol, q, r.closing_price, r.opening_price, r.outgoing_id,
+                                r.incoming_id, now, "EXEC_" + tag + "_RC", "ROLL_" + tag + "_RC",
+                                "EXEC_" + tag + "_RO", "ROLL_" + tag + "_RO",
+                                [&](const std::string& s, double signed_q, double px) {
+                                    const auto c = roll_cost_model.calculate_costs(s, signed_q, px);
+                                    return roll_series::RollLegCost{c.commissions_fees,
+                                                                    c.implicit_price_impact,
+                                                                    c.slippage_market_impact,
+                                                                    c.total_transaction_costs};
+                                });
+                        } catch (const std::exception& e) {
+                            ERROR(std::string("ROLL_LEG STOP ") + r.symbol + " (" + strategy_name +
+                                  "): " + e.what() + ". Refusing to run: a leg without a usable close");
+                            std::cerr << "ROLL_LEG STOP " << r.symbol << ": " << e.what() << std::endl;
+                            return 1;
+                        }
+                        for (const auto& leg : legs) {
+                            const bool closing = leg.exec_id == "EXEC_" + tag + "_RC";
+                            INFO("ROLL_LEG " + strategy_name + " " + r.symbol + " " +
+                                 (closing ? "RC" : "RO") + " " +
+                                 (leg.side == Side::BUY ? "BUY" : "SELL") + " qty=" +
+                                 std::to_string(leg.filled_quantity.as_double()) + " px=" +
+                                 std::to_string(leg.fill_price.as_double()) + " instrument=" +
+                                 leg.instrument_id + " cost=" +
+                                 std::to_string(leg.total_transaction_costs.as_double()) + " adv=" +
+                                 model_input(roll_cost_model.get_adv(r.symbol)) + " vol_mult=" +
+                                 model_input(roll_cost_model.get_volatility_multiplier(r.symbol)) +
+                                 " date=" + run_date + " confirmed=" + r.confirm_date +
+                                 " (an upper bound: two outright legs; realised 0; outside netting)");
+                            total_daily_roll_costs += leg.total_transaction_costs.as_double();
+                        }
+                        roll_legs.insert(roll_legs.end(), legs.begin(), legs.end());
+                    }
+                    if (!roll_legs.empty()) {
+                        strategy_executions.insert(strategy_executions.begin(), roll_legs.begin(),
+                                                   roll_legs.end());
+                    }
+                }
 
                 INFO("DEBUG PHASE 4: Strategy '" + strategy_name + "' generated " +
                      std::to_string(strategy_executions.size()) + " executions");
@@ -2146,7 +2242,12 @@ int main(int argc, char* argv[]) {
         {
             std::vector<transaction_cost::SleeveExecution> sleeve_rows;
             for (auto& [netting_sleeve, netting_execs] : all_strategy_executions) {
-                for (auto& e : netting_execs) sleeve_rows.push_back({netting_sleeve, &e});
+                for (auto& e : netting_execs) {
+                    // Section 6.5: ROLL legs never enter the netting (two legs at two prices would
+                    // read as a mixed-price cross); their adjustment stays 0.
+                    if (e.execution_type != ExecutionType::STRATEGY) continue;
+                    sleeve_rows.push_back({netting_sleeve, &e});
+                }
             }
             const auto netting = transaction_cost::apply_netting_adjustments(
                 sleeve_rows, [&](const std::string& s, double q, double px) {
@@ -2161,6 +2262,19 @@ int main(int argc, char* argv[]) {
              std::to_string(total_executions));
         INFO("PHASE 4: Total daily transaction costs: $" +
              std::to_string(total_daily_transaction_costs));
+
+        // Section 6.5: the re-run sweep by type. Every sleeve's ROLL rows dated today are deleted
+        // before this run's legs are stored, so a re-run that no longer rolls leaves none.
+        for (const auto& strategy_name_rl : strategy_names) {
+            auto sweep = db->delete_roll_executions(now, strategy_name_rl, portfolio_id,
+                                                    "trading.executions");
+            if (sweep.is_error()) {
+                ERROR("ROLL_LEG STOP: today's ROLL executions of " + strategy_name_rl +
+                      " could not be swept (" + std::string(sweep.error()->what()) +
+                      "); refusing to run: a re-run would store them twice");
+                return 1;
+            }
+        }
 
         // Store executions for each strategy
         for (const auto& [strategy_name, executions] : all_strategy_executions) {
@@ -3292,6 +3406,16 @@ int main(int argc, char* argv[]) {
         double daily_pnl = daily_pnl_for_today;  // Only transaction costs on Day T
         double total_transaction_costs_cumulative =
             previous_total_transaction_costs + total_daily_transaction_costs;
+        // Migration 017: the ROLL subset, cumulative (the previous row's total plus today's).
+        auto previous_roll_costs = db->get_previous_total_roll_costs(
+            combined_strategy_id, portfolio_id, now, "trading.live_results");
+        if (previous_roll_costs.is_error()) {
+            ERROR("ROLL_LEG STOP: the previous total_roll_costs is unreadable (" +
+                  std::string(previous_roll_costs.error()->what()) + "); refusing to run");
+            return 1;
+        }
+        const double total_roll_costs_cumulative =
+            previous_roll_costs.value() + total_daily_roll_costs;
 
         // Since it's futures, all PnL is realized
         // total_realized_pnl = total_pnl + total_transaction_costs (GROSS)
@@ -3652,6 +3776,8 @@ int main(int argc, char* argv[]) {
                 {"daily_realized_pnl", daily_realized_pnl},
                 {"daily_unrealized_pnl", daily_unrealized_pnl},
                 {"daily_transaction_costs", total_daily_transaction_costs},
+                {"daily_roll_costs", total_daily_roll_costs},        // migration 017
+                {"total_roll_costs", total_roll_costs_cumulative},  // migration 017
                 {"margin_posted", total_posted_margin},
                 {"cash_available", current_portfolio_value - total_posted_margin}};
 
@@ -3919,7 +4045,7 @@ int main(int argc, char* argv[]) {
                         // Load yesterday's daily metrics from database for accurate display
                         std::string yesterday_metrics_query =
                             "SELECT daily_return, daily_unrealized_pnl, daily_realized_pnl, "
-                            "daily_pnl, daily_transaction_costs "
+                            "daily_pnl, daily_transaction_costs, COALESCE(daily_roll_costs, 0) "
                             "FROM trading.live_results "
                             "WHERE strategy_id = '" +
                             combined_strategy_id + "' AND portfolio_id = '" +
@@ -3950,6 +4076,9 @@ int main(int argc, char* argv[]) {
                             auto daily_commissions_arr =
                                 std::static_pointer_cast<arrow::StringArray>(
                                     metrics_table->column(4)->chunk(0));
+                            auto daily_roll_costs_arr =  // migration 017, appended
+                                std::static_pointer_cast<arrow::StringArray>(
+                                    metrics_table->column(5)->chunk(0));
 
                             if (!daily_return_arr->IsNull(0)) {
                                 yesterday_daily_metrics_final["Daily Return"] =
@@ -3977,6 +4106,10 @@ int main(int argc, char* argv[]) {
                                     std::stod(daily_commissions_arr->GetString(0));
                                 INFO("Daily Transaction Costs: " +
                                      daily_commissions_arr->GetString(0));
+                            }
+                            if (!daily_roll_costs_arr->IsNull(0)) {
+                                yesterday_daily_metrics_final["Daily Roll Costs"] =
+                                    std::stod(daily_roll_costs_arr->GetString(0));
                             }
 
                             INFO("Successfully loaded yesterday's daily metrics from live_results");
@@ -4072,6 +4205,8 @@ int main(int argc, char* argv[]) {
                     }
                     strategy_metrics["Total Transaction Costs"] =
                         total_transaction_costs_cumulative;
+                    strategy_metrics["Total Roll Costs"] = total_roll_costs_cumulative;  // 017
+                    strategy_metrics["Daily Roll Costs"] = total_daily_roll_costs;
                     strategy_metrics["Current Portfolio Value"] = current_portfolio_value;
 
                     // Leverage Metrics - Calculate values from position analysis

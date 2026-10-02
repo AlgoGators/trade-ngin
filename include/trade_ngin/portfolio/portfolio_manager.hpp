@@ -266,6 +266,13 @@ public:
      * timestamps, and cost fields. Idempotent at the per-call level; not
      * deduped across calls.
      */
+    /// T-ROLLX (section 6.5): inserts the ROLL legs of a confirming bar AHEAD of that bar's
+    /// STRATEGY fills (at `index`, the sleeve's execution count before the bar) so the stored
+    /// order is closing leg, opening leg, then the day's fills; returns the index used.
+    size_t insert_executions_at(const std::string& strategy_id, size_t index,
+                                const std::vector<ExecutionReport>& execs);
+    /// How many ROLL legs the sleeve has booked so far (the RL-<sid>-<n> counter).
+    size_t roll_leg_count(const std::string& strategy_id) const;
     void append_synthetic_execution(const std::string& strategy_id,
                                     const ExecutionReport& exec);
 

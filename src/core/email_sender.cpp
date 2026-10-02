@@ -869,6 +869,41 @@ std::string EmailSender::generate_trading_report_body(
     return html.str();
 }
 
+
+// T-ROLLX (LOOP_SPEC v6.1 section 6.5): the ROLL legs of a day as their own block (the two contract
+// ids, the price of each leg, the cost: an upper bound, two outright legs), never inside the
+// strategy's trade count or its traded notional; their cost inside every cost total.
+static std::string format_roll_legs_block(const std::vector<ExecutionReport>& executions) {
+    std::ostringstream html;
+    double roll_cost = 0.0;
+    int legs = 0;
+    for (const auto& exec : executions) {
+        if (exec.execution_type != ExecutionType::ROLL) continue;
+        if (legs == 0) {
+            html << "<table>\n";
+            html << "<tr><th>Roll Leg</th><th>Symbol</th><th>Side</th><th>Quantity</th><th>Price</th>"
+                    "<th>Contract</th><th>Cost (upper bound)</th></tr>\n";
+        }
+        ++legs;
+        roll_cost += exec.total_transaction_costs.as_double();
+        const bool closing = exec.exec_id.size() >= 2 &&
+                             exec.exec_id.compare(exec.exec_id.size() - 2, 2, "RC") == 0;
+        html << "<tr><td>" << (closing ? "closing" : "opening") << "</td><td>" << exec.symbol
+             << "</td><td>" << (exec.side == Side::BUY ? "BUY" : "SELL") << "</td><td>" << std::fixed
+             << std::setprecision(0) << exec.filled_quantity.as_double() << "</td><td>$" << std::fixed
+             << std::setprecision(4) << exec.fill_price.as_double() << "</td><td>" << exec.instrument_id
+             << "</td><td>$" << std::fixed << std::setprecision(2)
+             << exec.total_transaction_costs.as_double() << "</td></tr>\n";
+    }
+    if (legs > 0) {
+        html << "</table>\n";
+        html << "<div class=\"summary-stats\"><strong>Roll Fills:</strong> " << legs
+             << " | <strong>Roll Costs (upper bound):</strong> $" << std::fixed << std::setprecision(2)
+             << roll_cost << "</div>\n";
+    }
+    return html.str();
+}
+
 std::string EmailSender::format_executions_table(const std::vector<ExecutionReport>& executions) {
     std::ostringstream html;
 
@@ -883,8 +918,14 @@ std::string EmailSender::format_executions_table(const std::vector<ExecutionRepo
 
     double total_transaction_cost = 0.0;
     double total_notional_traded = 0.0;
+    size_t strategy_trades = 0;
 
     for (const auto& exec : executions) {
+        // T-ROLLX: every row's cost counts; a ROLL leg is listed in its own block below, never
+        // as a trade and never in the traded notional.
+        total_transaction_cost += exec.total_transaction_costs.as_double();
+        if (exec.execution_type != ExecutionType::STRATEGY) continue;
+        ++strategy_trades;
         // Get contract multiplier for proper notional calculation
         double contract_multiplier = 1.0;
         bool has_multiplier = true;
@@ -921,7 +962,6 @@ std::string EmailSender::format_executions_table(const std::vector<ExecutionRepo
                                                exec.fill_price.as_double() * contract_multiplier
                                          : 0.0;
         total_notional_traded += notional;
-        total_transaction_cost += exec.total_transaction_costs.as_double();
 
         std::string side_str = exec.side == Side::BUY ? "BUY" : "SELL";
         std::string side_class = exec.side == Side::BUY ? "positive" : "negative";
@@ -944,6 +984,7 @@ std::string EmailSender::format_executions_table(const std::vector<ExecutionRepo
     }
 
     html << "</table>\n";
+    html << format_roll_legs_block(executions);
 
     // Helper to format numbers with commas
     auto format_with_commas = [](double value) -> std::string {
@@ -969,7 +1010,7 @@ std::string EmailSender::format_executions_table(const std::vector<ExecutionRepo
     };
 
     html << "<div class=\"summary-stats\">\n";
-    html << "<strong>Trades:</strong> " << executions.size() << "<br>\n";
+    html << "<strong>Trades:</strong> " << strategy_trades << "<br>\n";
     html << "<strong>Notional Traded:</strong> $" << format_with_commas(total_notional_traded)
          << "<br>\n";
     html << "<strong>Transaction Costs:</strong> $" << format_with_commas(total_transaction_cost)
@@ -1394,6 +1435,12 @@ std::string EmailSender::format_yesterday_finalized_positions_table(
             html << "<div class=\"metric\"><strong>Daily Transaction Costs:</strong> <span>"
                  << formatted_transaction_cost << "</span></div>\n";
         }
+        auto daily_roll_costs_it = strategy_metrics.find("Daily Roll Costs");  // T-ROLLX (017)
+        if (daily_roll_costs_it != strategy_metrics.end()) {
+            html << "<div class=\"metric\"><strong>Daily Roll Costs (upper bound, inside the "
+                    "transaction costs):</strong> <span>$"
+                 << format_with_commas(std::abs(daily_roll_costs_it->second), 2) << "</span></div>\n";
+        }
 
         auto daily_total_it = strategy_metrics.find("Daily Total PnL");
         if (daily_total_it != strategy_metrics.end()) {
@@ -1717,6 +1764,7 @@ std::string EmailSender::format_strategy_metrics(
             key.find("Cash Available") != std::string::npos ||
             key.find("Margin Posted") != std::string::npos ||
             key.find("Transaction Costs") != std::string::npos ||
+            key.find("Roll Costs") != std::string::npos ||
             key.find("Gross Profit") != std::string::npos ||
             key.find("Gross Loss") != std::string::npos) {
             formatted_value = "$" + format_with_commas(value);
@@ -1838,6 +1886,11 @@ std::string EmailSender::format_strategy_metrics(
     auto total_comm = strategy_metrics.find("Total Transaction Costs");
     if (total_comm != strategy_metrics.end()) {
         html << format_metric("Total Transaction Costs", total_comm->second);
+    }
+    auto total_roll = strategy_metrics.find("Total Roll Costs");  // T-ROLLX (017)
+    if (total_roll != strategy_metrics.end()) {
+        html << format_metric("Total Roll Costs (upper bound, inside the transaction costs)",
+                              total_roll->second);
     }
 
     auto total_pnl = strategy_metrics.find("Total PnL");
@@ -3412,8 +3465,12 @@ std::string EmailSender::format_single_strategy_executions_table(
 
     double total_transaction_costs = 0.0;
     double total_notional_traded = 0.0;
+    size_t strategy_trades = 0;
 
     for (const auto& exec : executions) {
+        total_transaction_costs += exec.total_transaction_costs.as_double();  // every row's cost
+        if (exec.execution_type != ExecutionType::STRATEGY) continue;        // T-ROLLX
+        ++strategy_trades;
         double contract_multiplier = 1.0;
         bool has_multiplier = true;
 
@@ -3448,7 +3505,6 @@ std::string EmailSender::format_single_strategy_executions_table(
                                                exec.fill_price.as_double() * contract_multiplier
                                          : 0.0;
         total_notional_traded += notional;
-        total_transaction_costs += exec.total_transaction_costs.as_double();
 
         std::string side_str = exec.side == Side::BUY ? "BUY" : "SELL";
         std::string side_class = exec.side == Side::BUY ? "positive" : "negative";
@@ -3471,11 +3527,12 @@ std::string EmailSender::format_single_strategy_executions_table(
     }
 
     html << "</table>\n";
+    html << format_roll_legs_block(executions);
 
     // Compact strategy-level summary
     html << "<div style=\"font-size: 13px; color: #666; margin: 8px 0 20px 0; padding-left: "
             "16px;\">\n";
-    html << "<strong>Trades:</strong> " << executions.size() << " | <strong>Notional:</strong> $"
+    html << "<strong>Trades:</strong> " << strategy_trades << " | <strong>Notional:</strong> $"
          << format_with_commas(total_notional_traded) << " | <strong>Transaction Costs:</strong> $"
          << format_with_commas(total_transaction_costs) << "\n";
     html << "</div>\n";
@@ -3528,6 +3585,8 @@ std::string EmailSender::format_strategy_executions_tables(
     int portfolio_total_trades = 0;
     double portfolio_total_notional = 0.0;
     double portfolio_total_transaction_costs = 0.0;
+    double portfolio_total_roll_costs = 0.0;  // T-ROLLX
+    int portfolio_total_roll_fills = 0;
 
     // Generate table for each strategy
     for (const auto& strategy_name : strategy_names) {
@@ -3539,9 +3598,16 @@ std::string EmailSender::format_strategy_executions_tables(
 
         html << format_single_strategy_executions_table(strategy_name, executions);
 
-        // Accumulate portfolio totals
-        portfolio_total_trades += executions.size();
+        // Accumulate portfolio totals (T-ROLLX: trades and notional over STRATEGY rows; costs over
+        // every row, the ROLL part shown beside)
         for (const auto& exec : executions) {
+            portfolio_total_transaction_costs += exec.total_transaction_costs.as_double();
+            if (exec.execution_type == ExecutionType::ROLL) {
+                portfolio_total_roll_costs += exec.total_transaction_costs.as_double();
+                ++portfolio_total_roll_fills;
+            }
+            if (exec.execution_type != ExecutionType::STRATEGY) continue;
+            ++portfolio_total_trades;
             double contract_multiplier = 1.0;
             try {
                 auto& registry = InstrumentRegistry::instance();
@@ -3564,7 +3630,6 @@ std::string EmailSender::format_strategy_executions_tables(
             double notional = exec.filled_quantity.as_double() * exec.fill_price.as_double() *
                               contract_multiplier;
             portfolio_total_notional += notional;
-            portfolio_total_transaction_costs += exec.total_transaction_costs.as_double();
         }
     }
 
@@ -3577,6 +3642,11 @@ std::string EmailSender::format_strategy_executions_tables(
          << format_with_commas(portfolio_total_notional) << "</div>\n";
     html << "<div class=\"metric\"><strong>Total Transaction Costs:</strong> $"
          << format_with_commas(portfolio_total_transaction_costs) << "</div>\n";
+    if (portfolio_total_roll_fills > 0) {
+        html << "<div class=\"metric\"><strong>Roll Fills:</strong> " << portfolio_total_roll_fills
+             << " | <strong>Roll Costs (upper bound):</strong> $"
+             << format_with_commas(portfolio_total_roll_costs) << "</div>\n";
+    }
     html << "</div>\n";
 
     return html.str();

@@ -892,8 +892,13 @@ Result<void> PortfolioManager::process_market_data(const std::vector<Bar>& data,
                 // This allows accurate per-strategy execution tracking
                 for (auto& [strategy_id, info] : strategies_) {
                     auto& strategy_execs = strategy_executions_[strategy_id];
-                    // Start counter from current size to ensure unique IDs across all periods
-                    int exec_counter = static_cast<int>(strategy_execs.size());
+                    // Start counter from current size to ensure unique IDs across all periods.
+                    // T-ROLLX: the ROLL legs (RL-<sid>-<n>, inserted ahead of a bar's fills) are
+                    // not counted, so the EX-<sid>-<n> sequence of the STRATEGY fills is unchanged.
+                    int exec_counter = static_cast<int>(std::count_if(
+                        strategy_execs.begin(), strategy_execs.end(), [](const ExecutionReport& e) {
+                            return e.execution_type != ExecutionType::ROLL;
+                        }));
 
                     INFO(
                         "Generating executions for strategy " + strategy_id +
@@ -1964,7 +1969,9 @@ SleeveDistribution distribute_optimizer_contracts(double optimizer_contracts,
     }
 
     for (const auto& s : sleeves) {
-        const double share = total > 1e-8 ? s.contribution / total : 0.0;
+        // D9 (LOOP_SPEC v6.1 section 5.4, T-ROLLX): a sleeve's share is computed on any non-zero
+        // total; the test that zeroed a single-sign negative total (and so every short) is removed.
+        const double share = std::abs(total) > 1e-8 ? s.contribution / total : 0.0;
         // A sleeve with no share has a quota of 0.
         const double quota = share == 0.0 ? 0.0 : optimizer_contracts * share;
         quotas.push_back({s.strategy_id, quota});
@@ -3760,6 +3767,24 @@ void PortfolioManager::append_synthetic_execution(const std::string& strategy_id
                                                   const ExecutionReport& exec) {
     std::lock_guard<std::mutex> lock(mutex_);
     strategy_executions_[strategy_id].push_back(exec);
+}
+
+size_t PortfolioManager::insert_executions_at(const std::string& strategy_id, size_t index,
+                                              const std::vector<ExecutionReport>& execs) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    auto& v = strategy_executions_[strategy_id];
+    const size_t at = std::min(index, v.size());
+    v.insert(v.begin() + static_cast<std::ptrdiff_t>(at), execs.begin(), execs.end());
+    return at;
+}
+
+size_t PortfolioManager::roll_leg_count(const std::string& strategy_id) const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    auto it = strategy_executions_.find(strategy_id);
+    if (it == strategy_executions_.end()) return 0;
+    return static_cast<size_t>(std::count_if(it->second.begin(), it->second.end(), [](const ExecutionReport& e) {
+        return e.execution_type == ExecutionType::ROLL;
+    }));
 }
 
 void PortfolioManager::clear_execution_history() {

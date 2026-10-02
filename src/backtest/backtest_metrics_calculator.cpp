@@ -1,4 +1,5 @@
 #include "trade_ngin/backtest/backtest_metrics_calculator.hpp"
+#include <map>
 #include "trade_ngin/backtest/backtest_types.hpp"
 #include "trade_ngin/core/time_utils.hpp"
 #include <algorithm>
@@ -261,6 +262,7 @@ BacktestMetricsCalculator::TradeStatistics BacktestMetricsCalculator::calculate_
     TradeStatistics stats;
 
     std::unordered_map<std::string, double> positions;   // symbol -> net position
+    std::map<std::pair<std::string, Timestamp>, int> roll_legs_seen;  // ROLL legs per symbol-bar
     std::unordered_map<std::string, double> avg_prices;  // symbol -> average entry price
     std::map<std::string, Timestamp> open_times;         // symbol -> first trade time
     std::vector<double> holding_periods;
@@ -275,6 +277,26 @@ BacktestMetricsCalculator::TradeStatistics BacktestMetricsCalculator::calculate_
         double signed_qty = (exec.side == Side::BUY) ? quantity : -quantity;
 
         double current_pos = positions[symbol];
+
+        // T-ROLLX-FIX (LOOP_SPEC v6.1 section 6.5; code review D1): a ROLL leg is mechanical. It
+        // never moves the tracked position (the pair nets to 0 per sleeve), scores no trade and
+        // leaves the open time; the OPENING leg of each pair (the second, as stored: closing, then
+        // opening, per sleeve) re-anchors the average at its price, the new contract's. The tracker
+        // is keyed by symbol over every sleeve, so the re-anchor must not wait for the summed
+        // position to pass through 0 (two sleeves holding the symbol never take it there). Its cost
+        // goes to the roll total, never into a trade.
+        if (exec.execution_type == ExecutionType::ROLL) {
+            if (++roll_legs_seen[{symbol, exec.fill_time}] % 2 == 0) {
+                avg_prices[symbol] = fill_price;  // the opening leg: the new contract's price
+            }
+            stats.roll_fills++;
+            stats.roll_costs += commission;
+            continue;
+        }
+        // X-4: a BORROW row (quantity 0) is a cost on an open short, not a trade: it moves no
+        // position, opens nothing and scores no trade.
+        if (exec.execution_type == ExecutionType::BORROW) continue;
+
         double trade_pnl = -commission;
 
         if (current_pos == 0.0) {
@@ -360,6 +382,7 @@ BacktestMetricsCalculator::TradeStatistics BacktestMetricsCalculator::calculate_
 std::map<std::string, double> BacktestMetricsCalculator::calculate_symbol_pnl(
     const std::vector<ExecutionReport>& executions) const {
     std::unordered_map<std::string, double> positions;
+    std::map<std::pair<std::string, Timestamp>, int> roll_legs_seen;  // ROLL legs per symbol-bar
     std::unordered_map<std::string, double> avg_prices;
     std::map<std::string, double> symbol_pnl_map;
 
@@ -372,6 +395,21 @@ std::map<std::string, double> BacktestMetricsCalculator::calculate_symbol_pnl(
         double signed_qty = (exec.side == Side::BUY) ? quantity : -quantity;
 
         double current_pos = positions[symbol];
+
+        // T-ROLLX-FIX: a ROLL leg re-anchors the tracker exactly as in calculate_trade_statistics
+        // (the opening leg of each pair, the position untouched) and its cost is charged to the
+        // symbol; no trade P&L is scored on it.
+        if (exec.execution_type == ExecutionType::ROLL) {
+            if (++roll_legs_seen[{symbol, exec.fill_time}] % 2 == 0) avg_prices[symbol] = fill_price;
+            symbol_pnl_map[symbol] -= commission;
+            continue;
+        }
+        // X-4: a BORROW row charges its cost to the symbol and moves no position.
+        if (exec.execution_type == ExecutionType::BORROW) {
+            symbol_pnl_map[symbol] -= commission;
+            continue;
+        }
+
         double trade_pnl = -commission;
 
         if (current_pos == 0.0) {

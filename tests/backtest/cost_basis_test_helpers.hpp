@@ -53,6 +53,7 @@ struct Row {
     double volume;
     bool locked = false;  ///< high == low: the session classifier's JUNK
     int weekend_before = 0;  ///< 0: the bar is trading day `day`; 1 / 2: the Sunday / Saturday before it
+    std::string instrument_id;  ///< T-ROLLX: the vendor contract id; empty = unknown (the column is omitted when every row's is)
 };
 
 /// A row's instant: trading day `day`, or the Sunday (1) or Saturday (2) before it.
@@ -67,10 +68,24 @@ inline std::shared_ptr<arrow::Table> to_table(const std::vector<Row>& rows) {
          arrow::field("symbol", arrow::utf8()), arrow::field("open", arrow::float64()),
          arrow::field("high", arrow::float64()), arrow::field("low", arrow::float64()),
          arrow::field("close", arrow::float64()), arrow::field("volume", arrow::float64())});
+    const bool with_ids = std::any_of(rows.begin(), rows.end(),
+                                      [](const Row& r) { return !r.instrument_id.empty(); });
+    if (with_ids) {
+        schema = arrow::schema(
+            {arrow::field("time", arrow::timestamp(arrow::TimeUnit::SECOND)),
+             arrow::field("symbol", arrow::utf8()), arrow::field("open", arrow::float64()),
+             arrow::field("high", arrow::float64()), arrow::field("low", arrow::float64()),
+             arrow::field("close", arrow::float64()), arrow::field("volume", arrow::float64()),
+             arrow::field("instrument_id", arrow::utf8())});
+    }
     arrow::TimestampBuilder t(arrow::timestamp(arrow::TimeUnit::SECOND), pool);
-    arrow::StringBuilder s(pool);
+    arrow::StringBuilder s(pool), ids(pool);
     arrow::DoubleBuilder o(pool), h(pool), l(pool), c(pool), v(pool);
     for (const auto& r : rows) {
+        if (with_ids) {
+            if (r.instrument_id.empty()) ARROW_CHECK_OK(ids.AppendNull());
+            else ARROW_CHECK_OK(ids.Append(r.instrument_id));
+        }
         const auto secs = std::chrono::duration_cast<std::chrono::seconds>(
                               row_time(r).time_since_epoch())
                               .count();
@@ -90,6 +105,11 @@ inline std::shared_ptr<arrow::Table> to_table(const std::vector<Row>& rows) {
     ARROW_CHECK_OK(l.Finish(&la));
     ARROW_CHECK_OK(c.Finish(&ca));
     ARROW_CHECK_OK(v.Finish(&va));
+    if (with_ids) {
+        std::shared_ptr<arrow::Array> ia;
+        ARROW_CHECK_OK(ids.Finish(&ia));
+        return arrow::Table::Make(schema, {ta, sa, oa, ha, la, ca, va, ia});
+    }
     return arrow::Table::Make(schema, {ta, sa, oa, ha, la, ca, va});
 }
 

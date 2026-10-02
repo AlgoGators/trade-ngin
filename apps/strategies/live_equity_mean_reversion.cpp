@@ -3991,6 +3991,9 @@ int main(int argc, char* argv[]) {
         // it. The realized P&L these exits lock in reaches the aggregate through
         // corp_action_realized_total instead, which is the correct route.
         for (const auto& exec : daily_executions) {
+            // T-ROLLX (section 6.5): a non-STRATEGY row (a ROLL leg; none on this book today) never
+            // reaches on_execution, as the corp-action exit below does not.
+            if (exec.execution_type != ExecutionType::STRATEGY) continue;
             if (exec.order_id.rfind("CORPACTION_", 0) == 0) {
                 DEBUG("Skipping on_execution for corp-action exit " + exec.symbol +
                       " (synthetic entry; realized P&L booked via the day-T aggregate)");

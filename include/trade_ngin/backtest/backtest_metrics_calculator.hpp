@@ -179,6 +179,8 @@ public:
         double max_loss = 0.0;
         double avg_holding_period = 0.0;
         std::vector<ExecutionReport> actual_trades;  // Position-closing trades only
+        int roll_fills{0};          ///< T-ROLLX-FIX: ROLL legs seen (not trades)
+        double roll_costs{0.0};     ///< T-ROLLX-FIX: their cost (never inside a trade's P&L)
     };
 
     /**

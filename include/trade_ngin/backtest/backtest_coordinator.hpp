@@ -113,6 +113,10 @@ private:
     std::unordered_set<std::string> mark_withheld_;
     std::unordered_set<std::string> mark_change_;
     std::unordered_map<std::string, std::string> row_held_id_;
+    /// T-ROLLX-FIX (LOOP_SPEC v6.1 section 6.5): the ROLL legs booked so far per sleeve (the RL-
+    /// ids' sequence numbers); a ROLL_LEG STOP fails the run (code review X-3).
+    std::unordered_map<std::string, size_t> roll_leg_seq_;
+    bool roll_leg_stop_ = false;
     /// T-7b-1 C7 (RA-01): one RISK_SCALE_REPORT line per post-warmup rebalance. Futures only
     /// (run_portfolio with AssetClass::FUTURES), like the session hold; the equity backtest's log
     /// is untouched.

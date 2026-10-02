@@ -101,7 +101,9 @@ Result<void> TrendFollowingStrategy::initialize() {
 }
 
 Result<void> TrendFollowingStrategy::on_execution(const ExecutionReport& report) {
-    (void)report;
+    // T-ROLLX (LOOP_SPEC v6.1 section 6.5): a ROLL leg (or a BORROW row) is not a trade of the
+    // strategy; nothing is counted on it.
+    if (report.execution_type != ExecutionType::STRATEGY) return Result<void>();
     // Override base class to prevent PnL corruption.
     // TrendFollowingStrategy calculates PnL in on_data() with proper point_value multiplier.
     // The base class on_execution() calculates PnL without point_value, which would corrupt

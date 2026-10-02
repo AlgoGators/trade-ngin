@@ -643,6 +643,7 @@ ChartData ChartGenerator::fetch_cumulative_transaction_costs_data(
             "LEFT JOIN ( "
             "    SELECT DATE(execution_time) as trade_date, COUNT(*) as num_trades "
             "    FROM trading.executions "
+            "    WHERE execution_type = 'STRATEGY' "  // T-ROLLX: ROLL legs are not trades
             "    GROUP BY DATE(execution_time) "
             ") trade_counts ON DATE(lr.date) = trade_counts.trade_date "
             "WHERE lr.strategy_id = '" + strategy_id + "' "

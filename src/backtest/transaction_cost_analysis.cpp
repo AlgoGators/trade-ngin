@@ -65,7 +65,13 @@ Result<TransactionCostMetrics> TransactionCostAnalyzer::analyze_trade(
 }
 
 Result<TransactionCostMetrics> TransactionCostAnalyzer::analyze_trade_sequence(
-    const std::vector<ExecutionReport>& executions, const std::vector<Bar>& market_data) const {
+    const std::vector<ExecutionReport>& all_executions, const std::vector<Bar>& market_data) const {
+    // T-ROLLX (LOOP_SPEC v6.1 section 6.5): the analysis reads STRATEGY fills only (a ROLL pair
+    // nets to zero quantity and would corrupt the unfilled measure; a BORROW row is no fill).
+    std::vector<ExecutionReport> executions;
+    for (const auto& e : all_executions) {
+        if (e.execution_type == ExecutionType::STRATEGY) executions.push_back(e);
+    }
     try {
         TransactionCostMetrics aggregate_metrics;
         double total_value = 0.0;

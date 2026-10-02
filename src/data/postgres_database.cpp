@@ -2,6 +2,7 @@
 
 #include "trade_ngin/data/postgres_database.hpp"
 #include <algorithm>
+#include <optional>
 #include <cctype>
 #include <iomanip>
 #include <sstream>
@@ -320,9 +321,9 @@ Result<void> PostgresDatabase::store_executions(const std::vector<ExecutionRepor
                                 "execution_time, commissions_fees, implicit_price_impact, "
                                 "slippage_market_impact, total_transaction_costs, is_partial, "
                                 "strategy_id, strategy_name, date, portfolio_id, "
-                                "netting_adjustment) VALUES "
+                                "netting_adjustment, execution_type, instrument_id) VALUES "
                                 "($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, "
-                                "$15, $16, $17)";
+                                "$15, $16, $17, $18, $19)";
 
             std::cout << "DEBUG: About to execute SQL query" << std::endl;
             std::cout << "DEBUG: Query: " << query << std::endl;
@@ -342,7 +343,10 @@ Result<void> PostgresDatabase::store_executions(const std::vector<ExecutionRepor
                 strategy_name,  // $14 - individual (e.g., TREND_FOLLOWING)
                 exec_date,      // $15
                 portfolio_id,   // $16 - portfolio identifier
-                static_cast<double>(exec.netting_adjustment)});  // $17 - K3, migration 013
+                static_cast<double>(exec.netting_adjustment),  // $17 - K3, migration 013
+                std::string(to_string(exec.execution_type)),   // $18 - migration 015 (T-ROLLX)
+                exec.instrument_id.empty() ? std::optional<std::string>{}
+                                           : std::optional<std::string>{exec.instrument_id}});  // $19
 
             std::cout << "DEBUG: SQL executed successfully for " << exec.symbol << std::endl;
         }
@@ -2177,14 +2181,15 @@ Result<void> PostgresDatabase::store_backtest_executions(
         if (executions.size() > 100) {
             // Bind every value: Postgres caps a statement at 65535 parameters,
             // so insert in chunks of whole rows.
-            constexpr std::size_t kColumns = 15;
+            constexpr std::size_t kColumns = 17;  // T-ROLLX: + execution_type, instrument_id
             constexpr std::size_t kMaxRowsPerStatement = 65535 / kColumns;
             const std::string prefix =
                 "INSERT INTO " + table_name +
                 " (run_id, portfolio_id, execution_id, order_id, timestamp, "
                 "symbol, side, quantity, price, commissions_fees, "
                 "implicit_price_impact, slippage_market_impact, "
-                "total_transaction_costs, is_partial, netting_adjustment) VALUES ";
+                "total_transaction_costs, is_partial, netting_adjustment, execution_type, "
+                "instrument_id) VALUES ";
 
             for (std::size_t start = 0; start < executions.size(); start += kMaxRowsPerStatement) {
                 const std::size_t end =
@@ -2218,6 +2223,9 @@ Result<void> PostgresDatabase::store_backtest_executions(
                     batch.append(static_cast<double>(exec.total_transaction_costs));
                     batch.append(exec.is_partial);
                     batch.append(static_cast<double>(exec.netting_adjustment));
+                    batch.append(std::string(to_string(exec.execution_type)));  // 015 (T-ROLLX)
+                    batch.append(exec.instrument_id.empty() ? std::optional<std::string>{}
+                                                            : std::optional<std::string>{exec.instrument_id});
                 }
                 txn.exec(query, batch);
             }
@@ -2228,9 +2236,10 @@ Result<void> PostgresDatabase::store_backtest_executions(
                                     " (run_id, portfolio_id, execution_id, order_id, timestamp, "
                                     "symbol, side, quantity, price, commissions_fees, "
                                     "implicit_price_impact, slippage_market_impact, "
-                                    "total_transaction_costs, is_partial, netting_adjustment) "
+                                    "total_transaction_costs, is_partial, netting_adjustment, "
+                                    "execution_type, instrument_id) "
                                     "VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, "
-                                    "$13, $14, $15)";
+                                    "$13, $14, $15, $16, $17)";
 
                 txn.exec(
                     query, pqxx::params{
@@ -2241,7 +2250,10 @@ Result<void> PostgresDatabase::store_backtest_executions(
                     static_cast<double>(exec.implicit_price_impact),
                     static_cast<double>(exec.slippage_market_impact),
                     static_cast<double>(exec.total_transaction_costs), exec.is_partial,
-                    static_cast<double>(exec.netting_adjustment)});
+                    static_cast<double>(exec.netting_adjustment),
+                    std::string(to_string(exec.execution_type)),  // 015 (T-ROLLX)
+                    exec.instrument_id.empty() ? std::optional<std::string>{}
+                                               : std::optional<std::string>{exec.instrument_id}});
             }
         }
 
@@ -2286,14 +2298,14 @@ Result<void> PostgresDatabase::store_backtest_executions_with_strategy(
         if (executions.size() > 100) {
             // Bind every value: Postgres caps a statement at 65535 parameters,
             // so insert in chunks of whole rows.
-            constexpr std::size_t kColumns = 16;
+            constexpr std::size_t kColumns = 18;  // T-ROLLX: + execution_type, instrument_id
             constexpr std::size_t kMaxRowsPerStatement = 65535 / kColumns;
             const std::string prefix =
                 "INSERT INTO " + table_name +
                 " (run_id, portfolio_id, strategy_id, execution_id, order_id, timestamp, symbol, "
                 "side, quantity, price, commissions_fees, implicit_price_impact, "
                 "slippage_market_impact, total_transaction_costs, is_partial, "
-                "netting_adjustment) VALUES ";
+                "netting_adjustment, execution_type, instrument_id) VALUES ";
 
             for (std::size_t start = 0; start < executions.size(); start += kMaxRowsPerStatement) {
                 const std::size_t end =
@@ -2328,6 +2340,9 @@ Result<void> PostgresDatabase::store_backtest_executions_with_strategy(
                     batch.append(static_cast<double>(exec.total_transaction_costs));
                     batch.append(exec.is_partial);
                     batch.append(static_cast<double>(exec.netting_adjustment));
+                    batch.append(std::string(to_string(exec.execution_type)));  // 015 (T-ROLLX)
+                    batch.append(exec.instrument_id.empty() ? std::optional<std::string>{}
+                                                            : std::optional<std::string>{exec.instrument_id});
                 }
                 txn.exec(query, batch);
             }
@@ -2339,9 +2354,9 @@ Result<void> PostgresDatabase::store_backtest_executions_with_strategy(
                     " (run_id, portfolio_id, strategy_id, execution_id, order_id, timestamp, "
                     "symbol, side, quantity, price, commissions_fees, implicit_price_impact, "
                     "slippage_market_impact, total_transaction_costs, is_partial, "
-                    "netting_adjustment) "
+                    "netting_adjustment, execution_type, instrument_id) "
                     "VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, "
-                    "$16)";
+                    "$16, $17, $18)";
 
                 txn.exec(
                     query, pqxx::params{
@@ -2352,7 +2367,10 @@ Result<void> PostgresDatabase::store_backtest_executions_with_strategy(
                     static_cast<double>(exec.implicit_price_impact),
                     static_cast<double>(exec.slippage_market_impact),
                     static_cast<double>(exec.total_transaction_costs), exec.is_partial,
-                    static_cast<double>(exec.netting_adjustment)});
+                    static_cast<double>(exec.netting_adjustment),
+                    std::string(to_string(exec.execution_type)),  // 015 (T-ROLLX)
+                    exec.instrument_id.empty() ? std::optional<std::string>{}
+                                               : std::optional<std::string>{exec.instrument_id}});
             }
         }
 
@@ -3210,7 +3228,7 @@ PostgresDatabase::get_last_buy_dates(const std::string& strategy_id,
             "SELECT symbol, max(date)::text AS last_buy "
             "FROM " + table_name +
                 " WHERE strategy_id = $1 AND strategy_name = $2 AND portfolio_id = $3 "
-                "  AND symbol = ANY($4) AND side = 'BUY' "
+                "  AND symbol = ANY($4) AND side = 'BUY' AND execution_type = 'STRATEGY' "
                 "  AND date >= $5 AND date <= $6 "
                 "GROUP BY symbol",
             pqxx::params{strategy_id, strategy_name, portfolio_id, symbols,

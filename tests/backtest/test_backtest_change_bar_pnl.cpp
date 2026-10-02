@@ -146,20 +146,35 @@ TEST_F(BacktestChangeBarPnlTest, ChangeAndWithheldBarsBookNothingAndRowsCarryThe
     const std::vector<Bar> xa = {bar(0, 100, "A"), bar(1, 101, "A"), bar(2, 103, "A"), bar(3, 110, "B"),
                                  bar(4, 111, "B"), bar(5, 112, "B"), bar(6, 50, "B", true), bar(7, 113, "B")};
     std::vector<double> move;
+    std::vector<double> roll_cost;
     std::vector<std::string> held;
     for (int d = 0; d < static_cast<int>(xa.size()); ++d) {
         auto r = coord_->process_portfolio_day(wday(d), {xa[d]}, pm_, execs_, equity_, risk_, false,
                                                1'000'000.0);
         ASSERT_TRUE(r.is_ok()) << r.error()->what();
         if (d < 2) continue;
-        move.push_back(equity_.back().second - equity_[equity_.size() - 2].second);
+        // The equity move is the cycle's P&L less its costs; the only cost after cycle 1 is the
+        // confirmed roll's two ROLL legs (section 6.5), booked on the cycle consuming d4.
+        double cost = 0.0;
+        for (const auto& e : execs_) {
+            if (e.fill_time == wday(d) && e.execution_type == ExecutionType::ROLL) {
+                cost += static_cast<double>(e.total_transaction_costs);
+            }
+        }
+        roll_cost.push_back(cost);
+        move.push_back(equity_.back().second - equity_[equity_.size() - 2].second + cost);
         held.push_back(coord_->row_held_id_["XA"]);
     }
-    // The book is 2 contracts from cycle 1 on and never trades again (no cost after cycle 1), so each
-    // cycle's equity move is its P&L: d2 2 x (103 - 101) x 50; d3 the change bar 0 (the parent booked
+    EXPECT_GT(roll_cost[3], 0.0) << "the legs are booked on the cycle that consumes the confirming bar";
+    roll_cost[3] = 0.0;
+    EXPECT_EQ(roll_cost, std::vector<double>(roll_cost.size(), 0.0));
+    // The book is 2 contracts from cycle 1 on and never trades again, so each cycle's equity move plus
+    // its roll cost is its P&L: d2 2 x (103 - 101) x 50; d3 the change bar 0 (the parent booked
     // 2 x 7 x 50 = 700); d4 against the change bar's close 110; d5 100; d6 withheld 0 (the parent
     // booked 2 x (50 - 112) x 50); d7 against d5's 112, the last CONSUMED close (not d6's 50).
-    EXPECT_EQ(move, (std::vector<double>{200.0, 0.0, 100.0, 100.0, 0.0, 100.0}));
+    const std::vector<double> want{200.0, 0.0, 100.0, 100.0, 0.0, 100.0};
+    ASSERT_EQ(move.size(), want.size());
+    for (size_t i = 0; i < want.size(); ++i) EXPECT_NEAR(move[i], want[i], 1e-6) << "cycle " << i + 2;
     EXPECT_EQ(held, (std::vector<std::string>{"A", "A", "B", "B", "B", "B"}))
         << "the change bar's row is held in the outgoing contract, the confirming bar's in the new one";
 }

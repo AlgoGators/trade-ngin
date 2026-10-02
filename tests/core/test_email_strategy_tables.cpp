@@ -303,3 +303,60 @@ TEST_F(EmailStrategyTablesTest, AnExecutionOfARegisteredContractKeepsItsNotional
         sender_.format_single_strategy_executions_table("TREND_FOLLOWING", execs);
     EXPECT_NE(per_strategy.find("$10,000.00"), std::string::npos) << per_strategy;  // 2 x 100 x 50
 }
+
+// T-ROLLX (LOOP_SPEC v6.1 section 6.5): the email's trade counts and traded notional are STRATEGY
+// rows only; the ROLL legs are their own block with the two contract ids; every cost total keeps
+// both. (ZFGOOD is a registered future with multiplier 50.)
+namespace {
+ExecutionReport typed(const std::string& symbol, Side side, double qty, double price, double cost,
+                      ExecutionType type, const std::string& exec_id, const std::string& id) {
+    ExecutionReport e;
+    e.symbol = symbol;
+    e.side = side;
+    e.filled_quantity = Quantity(qty);
+    e.fill_price = Price(price);
+    e.total_transaction_costs = Decimal(cost);
+    e.execution_type = type;
+    e.exec_id = exec_id;
+    e.instrument_id = id;
+    return e;
+}
+}  // namespace
+
+TEST_F(EmailStrategyTablesTest, RollLegsAreTheirOwnBlockNotTradesAndTheirCostIsInTheTotal) {
+    const std::vector<ExecutionReport> execs = {
+        typed("ZFGOOD.v.0", Side::SELL, 2.0, 100.0, 4.0, ExecutionType::ROLL, "EXEC_ZFGOOD.v.0_20251028_RC", "864"),
+        typed("ZFGOOD.v.0", Side::BUY, 2.0, 103.0, 4.0, ExecutionType::ROLL, "EXEC_ZFGOOD.v.0_20251028_RO", "863"),
+        typed("ZFGOOD.v.0", Side::BUY, 1.0, 103.0, 3.0, ExecutionType::STRATEGY, "EXEC_ZFGOOD.v.0_20251028", ""),
+    };
+    const std::string single = sender_.format_executions_table(execs);
+    EXPECT_NE(single.find("<strong>Trades:</strong> 1<br>"), std::string::npos) << single;
+    EXPECT_NE(single.find("<strong>Roll Fills:</strong> 2"), std::string::npos) << single;
+    EXPECT_NE(single.find("Roll Costs (upper bound):</strong> $8.00"), std::string::npos) << single;
+    EXPECT_NE(single.find("<strong>Transaction Costs:</strong> $11.00"), std::string::npos) << single;
+    EXPECT_NE(single.find("<strong>Notional Traded:</strong> $5,150.00"), std::string::npos)
+        << "1 x 103 x 50, the STRATEGY fill alone: " << single;
+    EXPECT_NE(single.find("<td>864</td>"), std::string::npos) << single;
+    EXPECT_NE(single.find("<td>863</td>"), std::string::npos) << single;
+
+    const std::string per = sender_.format_single_strategy_executions_table("TREND_FOLLOWING", execs);
+    EXPECT_NE(per.find("<strong>Trades:</strong> 1 |"), std::string::npos) << per;
+    EXPECT_NE(per.find("<strong>Roll Fills:</strong> 2"), std::string::npos) << per;
+    EXPECT_NE(per.find("<strong>Transaction Costs:</strong> $11.00"), std::string::npos) << per;
+
+    std::unordered_map<std::string, std::vector<ExecutionReport>> by_sleeve{{"TREND_FOLLOWING", execs}};
+    const std::string all = sender_.format_strategy_executions_tables(by_sleeve);
+    EXPECT_NE(all.find("<strong>Total Trades:</strong> 1<"), std::string::npos) << all;
+    EXPECT_NE(all.find("<strong>Total Notional Traded:</strong> $5,150.00"), std::string::npos) << all;
+    EXPECT_NE(all.find("<strong>Total Transaction Costs:</strong> $11.00"), std::string::npos) << all;
+    EXPECT_NE(all.find("<strong>Roll Fills:</strong> 2 | <strong>Roll Costs (upper bound):</strong> $8.00"), std::string::npos) << all;
+}
+
+TEST_F(EmailStrategyTablesTest, WithoutRollLegsTheTablesAreAsBefore) {
+    const std::vector<ExecutionReport> execs = {
+        typed("ZFGOOD.v.0", Side::BUY, 1.0, 103.0, 3.0, ExecutionType::STRATEGY, "EXEC_ZFGOOD.v.0_20251028", ""),
+    };
+    const std::string single = sender_.format_executions_table(execs);
+    EXPECT_NE(single.find("<strong>Trades:</strong> 1<br>"), std::string::npos);
+    EXPECT_EQ(single.find("Roll Fills"), std::string::npos) << "no roll block without legs";
+}

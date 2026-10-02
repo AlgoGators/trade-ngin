@@ -438,6 +438,35 @@ public:
                                                   const std::string& table_name = "trading.executions");
 
     /**
+     * @brief T-ROLLX (LOOP_SPEC v6.1 section 6.5): the re-run sweep of a day's ROLL legs by type.
+     *        Deletes every execution_type = 'ROLL' row of the sleeve and portfolio dated `date`
+     *        (the row's UTC run date), so a re-run that no longer rolls leaves no orphan leg.
+     */
+    virtual Result<void> delete_roll_executions(const Timestamp& date, const std::string& strategy_name,
+                                                const std::string& portfolio_id,
+                                                const std::string& table_name = "trading.executions");
+
+    /**
+     * @brief T-ROLLX (migration 017): the latest total_roll_costs stored before `date` (the same
+     *        row get_previous_live_aggregates reads); 0 when no row exists.
+     */
+    virtual Result<double> get_previous_total_roll_costs(const std::string& strategy_id,
+                                                         const std::string& portfolio_id,
+                                                         const Timestamp& date,
+                                                         const std::string& table_name = "trading.live_results");
+
+    /**
+     * @brief T-ROLLX-FIX (LOOP_SPEC v6.1 sections 2.1, 6.5, L-09): the date of the latest positions
+     *        row of the book stored before `date` ("YYYY-MM-DD"; empty when none exists): the previous
+     *        run that wrote its book. A run stores its executions (its ROLL legs among them) before its
+     *        positions, so a run whose live_results write failed (the one missed-run form the run-gap
+     *        guard accepts) still counts as a run here and its legs are never booked again.
+     */
+    virtual Result<std::string> get_previous_book_date(
+        const std::string& strategy_id, const std::string& portfolio_id, const Timestamp& date,
+        const std::string& table_name = "trading.positions");
+
+    /**
      * @brief Store backtest summary results (replaces raw SQL INSERT)
      * @param run_id Backtest run identifier
      * @param start_date Start date of backtest

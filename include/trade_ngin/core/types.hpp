@@ -260,6 +260,23 @@ enum class Side {
 };
 
 /**
+ * @brief The class of an execution row (executions.execution_type, migration 015; LOOP_SPEC
+ *        v6.1 sections 6.5 and 7, T-ROLLX): STRATEGY = the day's fill against the target; ROLL =
+ *        one leg of a contract roll (mechanical, outside every strategy trade measure, inside the
+ *        costs and the equity curve); BORROW = the backtest's synthetic overnight borrow-fee row
+ *        on a short equity position (quantity 0).
+ */
+enum class ExecutionType { STRATEGY, ROLL, BORROW };
+
+inline const char* to_string(ExecutionType t) {
+    switch (t) {
+        case ExecutionType::ROLL: return "ROLL";
+        case ExecutionType::BORROW: return "BORROW";
+        default: return "STRATEGY";
+    }
+}
+
+/**
  * @brief Order type enumeration
  */
 enum class OrderType { MARKET, LIMIT, STOP, STOP_LIMIT, NONE };
@@ -448,6 +465,12 @@ struct ExecutionReport {
     Decimal netting_adjustment;
 
     bool is_partial{false};
+    /// T-ROLLX (migration 015): STRATEGY, ROLL or BORROW (see ExecutionType); and the vendor
+    /// contract id a ROLL leg traded (the outgoing contract on the closing leg, the incoming on
+    /// the opening leg), empty (stored NULL) on every other row. Last, so every positional
+    /// initialiser of the older fields stays as it is.
+    ExecutionType execution_type{ExecutionType::STRATEGY};
+    std::string instrument_id;
 };
 
 /**

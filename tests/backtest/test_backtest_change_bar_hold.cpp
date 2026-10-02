@@ -124,7 +124,8 @@ protected:
     }
 
     // Feeds XX's bars one group a day (day 0 first) and returns the contracts filled on each cycle
-    // after the first (cycle d's fills sit on day d's timestamp).
+    // after the first (cycle d's fills sit on day d's timestamp): the STRATEGY fills only (a
+    // confirmed roll's two ROLL legs are not the strategy's trading).
     std::vector<double> run(const std::vector<Bar>& xx) {
         std::vector<double> filled;
         for (size_t d = 0; d < xx.size(); ++d) {
@@ -136,7 +137,9 @@ protected:
             double q = 0.0;
             for (const auto& [sid, ex] : pm_->get_strategy_executions()) {
                 for (size_t i = 0; i < ex.size(); ++i) {
-                    if (i >= before) q += static_cast<double>(ex[i].filled_quantity);
+                    if (i >= before && ex[i].execution_type == ExecutionType::STRATEGY) {
+                        q += static_cast<double>(ex[i].filled_quantity);
+                    }
                 }
             }
             if (d > 0) filled.push_back(q);

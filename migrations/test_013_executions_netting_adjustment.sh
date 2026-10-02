@@ -122,6 +122,8 @@ CREATE TABLE trading.executions (
     implicit_price_impact   NUMERIC      DEFAULT 0.0,
     slippage_market_impact  NUMERIC      DEFAULT 0.0,
     total_transaction_costs NUMERIC      DEFAULT 0.0,
+    execution_type          TEXT         NOT NULL DEFAULT 'STRATEGY',  -- 015 (T-ROLLX)
+    instrument_id           TEXT,                                      -- 015 (T-ROLLX)
     CONSTRAINT executions_pkey PRIMARY KEY (portfolio_id, strategy_id, strategy_name, date, exec_id),
     CONSTRAINT chk_executions_quantity CHECK (quantity > (0)::numeric),
     CONSTRAINT chk_executions_side CHECK (side IN ('BUY','SELL'))
@@ -151,6 +153,8 @@ CREATE TABLE backtest.executions (
     implicit_price_impact   DOUBLE PRECISION DEFAULT 0.0,
     slippage_market_impact  DOUBLE PRECISION DEFAULT 0.0,
     total_transaction_costs DOUBLE PRECISION DEFAULT 0.0,
+    execution_type          TEXT         NOT NULL DEFAULT 'STRATEGY',  -- 015 (T-ROLLX)
+    instrument_id           TEXT,                                      -- 015 (T-ROLLX)
     CONSTRAINT executions_pkey PRIMARY KEY (run_id, strategy_id, execution_id)
 );
 CREATE INDEX idx_backtest_executions_order_id ON backtest.executions (order_id);

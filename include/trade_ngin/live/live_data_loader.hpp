@@ -54,6 +54,8 @@ struct LiveResultsRow {
     double margin_posted = 0.0;
     double cash_available = 0.0;
     double daily_transaction_costs = 0.0;
+    double daily_roll_costs = 0.0;  // T-ROLLX (017): the ROLL subset of daily_transaction_costs
+    double total_roll_costs = 0.0;  // T-ROLLX (017): cumulative
     Timestamp date;
     std::string strategy_id;
 

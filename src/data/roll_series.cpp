@@ -1,6 +1,7 @@
 // src/data/roll_series.cpp
 #include "trade_ngin/data/roll_series.hpp"
 
+#include <cmath>
 #include <map>
 #include <stdexcept>
 
@@ -165,6 +166,46 @@ RollTracker::Status RollTracker::add(const std::string& id, double close) {
     st.held_id = held_;
     last_close_ = close;
     return st;
+}
+
+std::vector<ExecutionReport> make_roll_legs(
+    const std::string& symbol, double q_held, double closing_price, double opening_price,
+    const std::string& outgoing_id, const std::string& incoming_id, const Timestamp& fill_time,
+    const std::string& exec_id_close, const std::string& order_id_close,
+    const std::string& exec_id_open, const std::string& order_id_open,
+    const std::function<RollLegCost(const std::string&, double, double)>& cost_of) {
+    std::vector<ExecutionReport> legs;
+    if (q_held == 0.0) return legs;
+    if (!(closing_price > 0.0) || !(opening_price > 0.0)) {
+        throw std::invalid_argument("roll_series::make_roll_legs: a leg without a usable close (" +
+                                    symbol + ")");
+    }
+    const double qty = std::abs(q_held);
+    auto leg = [&](bool closing) {
+        ExecutionReport e;
+        e.symbol = symbol;
+        e.execution_type = ExecutionType::ROLL;
+        // The closing leg trades against the position, the opening leg with it.
+        const double signed_qty = closing ? -q_held : q_held;
+        e.side = signed_qty > 0 ? Side::BUY : Side::SELL;
+        e.filled_quantity = Decimal(qty);
+        e.fill_price = Decimal(closing ? closing_price : opening_price);
+        e.fill_time = fill_time;
+        e.exec_id = closing ? exec_id_close : exec_id_open;
+        e.order_id = closing ? order_id_close : order_id_open;
+        e.instrument_id = closing ? outgoing_id : incoming_id;
+        const RollLegCost c = cost_of(symbol, signed_qty, closing ? closing_price : opening_price);
+        e.commissions_fees = Decimal(c.commissions_fees);
+        e.implicit_price_impact = Decimal(c.implicit_price_impact);
+        e.slippage_market_impact = Decimal(c.slippage_market_impact);
+        e.total_transaction_costs = Decimal(c.total_transaction_costs);
+        e.netting_adjustment = Decimal();
+        e.is_partial = false;
+        return e;
+    };
+    legs.push_back(leg(true));
+    legs.push_back(leg(false));
+    return legs;
 }
 
 std::unordered_map<std::string, RollTracker::Status> roll_status_of(const std::vector<Bar>& bars) {

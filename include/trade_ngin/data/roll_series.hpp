@@ -1,6 +1,7 @@
 // include/trade_ngin/data/roll_series.hpp
 #pragma once
 
+#include <functional>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -127,6 +128,31 @@ private:
     std::vector<Pending> pending_;
     double close_before_pending_{0.0};
 };
+
+/**
+ * @brief The two ROLL fills of one sleeve's held position on the CONFIRMING bar (section 6.5):
+ *        the closing leg at the last pre-change consumed close (the outgoing contract), the opening
+ *        leg at the change bar's close (the incoming contract), both |q_held| contracts, the
+ *        closing leg on the side opposite to the position, realised 0 on both, each costed by
+ *        `cost_of(symbol, signed quantity, price)` (an upper bound: rolls trade as spreads),
+ *        execution_type ROLL, netting_adjustment 0, in the stored order (closing, opening).
+ *        `exec_id_close` / `exec_id_open` and the order ids are the caller's (live:
+ *        EXEC_<symbol>_<YYYYMMDD>_RC / _RO; backtest: RL-<sid>-<n>). An empty vector when
+ *        q_held is 0. A non-positive leg price is refused by the caller (STRICT: a leg without
+ *        a usable close is a STOP, not a default), so this function requires both positive.
+ */
+struct RollLegCost {
+    double commissions_fees{0.0};
+    double implicit_price_impact{0.0};
+    double slippage_market_impact{0.0};
+    double total_transaction_costs{0.0};
+};
+std::vector<ExecutionReport> make_roll_legs(
+    const std::string& symbol, double q_held, double closing_price, double opening_price,
+    const std::string& outgoing_id, const std::string& incoming_id, const Timestamp& fill_time,
+    const std::string& exec_id_close, const std::string& order_id_close,
+    const std::string& exec_id_open, const std::string& order_id_open,
+    const std::function<RollLegCost(const std::string&, double, double)>& cost_of);
 
 /// The status of each symbol's LAST bar in `bars`, every bar of the symbol taken in time order
 /// through a RollTracker (a catch-up is evaluated bar by bar), keyed by symbol. `bars` must be the
