@@ -3,6 +3,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cmath>
 #include <ctime>
 #include <map>
 #include <string>
@@ -55,22 +56,91 @@ struct ConfirmedRoll {
 
 /**
  * @brief The move a run books for a symbol whose roll it legs LATE (a confirming bar dated before
- *        T-1): the consumed bars after the stored state that no earlier run consumed. The T-1 row
- *        books them all: `settle_to` - `settle_from` in price points per contract, the sum of each
- *        such bar's move against its previous consumed close, 0 on a change bar (section 6.6).
+ *        T-1): the moves of the consumed bars after the stored state that no earlier run booked.
+ *        The T-1 row books them all: `settle_to` - `settle_from` in price points per contract.
  *
- *        Which bars an earlier run consumed: an id-carrying bar after the pending change would have
- *        confirmed, reverted or extended it on its own run, so none of those was consumed. A bar
- *        with NO id is not judged (section 2.2): an earlier run can consume it, book its move and
- *        leave the roll pending. Every id-less bar after the stored state and dated before T-1 is
- *        therefore taken as consumed on its own run, its move booked against that run's previous
- *        consumed close, and is left out of the late sum (commit 5, finding 4: with the confirming
- *        bar back-filled BEHIND such a bar the sum booked its move twice).
+ *        live_rolls_by_state gives the WHOLE sum: every consumed bar after the stored state, each
+ *        against its previous consumed close, 0 on a change bar (section 6.6); `booked_after` is the
+ *        date of the bar the stored book stands at. What earlier runs already booked of it is not in
+ *        the bars: a bar with no instrument id is not judged (section 2.2), so a run can consume it,
+ *        book its move and leave the roll pending, and the same bar back-filled later was consumed
+ *        by no run. It is in the STORED rows (T-ROLLX-FIX commit 6, the lead's ruling on finding
+ *        4): a run that consumed a bar booked its move on the positions row dated that bar, a run
+ *        that saw a hole booked 0. The caller reads the rows dated after `booked_after` and before
+ *        T-1 and adds late_booked_points to `settle_from`, so the T-1 row books the whole sum less
+ *        what is already stored, to the cent, whatever each earlier run saw.
  */
 struct LateRollSettlement {
     double settle_to{0.0};    ///< the symbol's last consumed close (dated T-1 or earlier)
-    double settle_from{0.0};  ///< settle_to less the unbooked moves
+    double settle_from{0.0};  ///< settle_to less the moves to book
+    std::string booked_after; ///< YYYY-MM-DD: the bar the stored book stands at
 };
+
+/// What earlier runs booked of a late roll's sum, in price points per contract.
+struct LateBooked {
+    double points{0.0};
+    std::vector<std::string> dates;  ///< the row dates that carry a booked move
+    /// Non-empty: the stored rows cannot decide (the caller refuses the run with this text).
+    std::string undecided;
+};
+
+/**
+ * @brief The moves the stored rows of `symbol` dated strictly after `after_date` and strictly
+ *        before `t1_date` already carry, per contract: for each such date, the row's
+ *        daily realised P&L over (its quantity x the point value). A row that books 0 adds
+ *        nothing: its run saw a hole, a change bar or a bar that did not move, and a consumed bar
+ *        whose move was exactly 0 therefore reads as unconsumed and adds 0 to the late sum, which
+ *        is the same number. A date with no row booked nothing.
+ *
+ *        The rows cannot decide, and `undecided` says why, when a row books a P&L on a zero
+ *        quantity, when the point value is not positive, or when two sleeves' rows of one date
+ *        book different moves per contract (one settlement is booked for every sleeve of the
+ *        symbol, so the sleeves must have been booked the same bars).
+ */
+inline LateBooked late_booked_points(const std::string& symbol, const std::string& after_date,
+                                     const std::string& t1_date,
+                                     const std::vector<StoredRealisedRow>& rows, double point_value) {
+    LateBooked out;
+    std::map<std::string, std::vector<const StoredRealisedRow*>> by_date;
+    for (const auto& row : rows) {
+        if (row.symbol != symbol || !(row.date > after_date) || !(row.date < t1_date)) continue;
+        by_date[row.date].push_back(&row);
+    }
+    for (const auto& [date, day_rows] : by_date) {
+        bool any = false, booked = false, unbooked_holder = false;
+        double points = 0.0;
+        for (const StoredRealisedRow* row : day_rows) {
+            if (row->realised == 0.0) {
+                if (row->quantity != 0.0) unbooked_holder = true;
+                continue;
+            }
+            if (row->quantity == 0.0 || !(point_value > 0.0)) {
+                out.undecided = "the " + row->sleeve + " row dated " + date + " books " +
+                                std::to_string(row->realised) + " on a quantity of " +
+                                std::to_string(row->quantity) + " (point value " +
+                                std::to_string(point_value) + ")";
+                return out;
+            }
+            const double p = row->realised / (row->quantity * point_value);
+            // The stored P&L carries six decimals: a tenth of a cent a contract tells two moves apart.
+            if (any && std::abs(p - points) * point_value > 1e-3) {
+                out.undecided = "the sleeves' rows dated " + date + " book different moves per contract";
+                return out;
+            }
+            points = p;
+            any = booked = true;
+        }
+        if (booked && unbooked_holder) {
+            out.undecided = "of the sleeves holding it on " + date + " one booked a move and another booked 0";
+            return out;
+        }
+        if (booked) {
+            out.points += points;
+            out.dates.push_back(date);
+        }
+    }
+    return out;
+}
 
 struct LiveRollState {
     std::vector<ConfirmedRoll> rolls;  ///< every roll this run legs, by symbol then date
@@ -93,7 +163,6 @@ inline LiveRollState live_rolls_by_state(
         struct Step {
             std::string date;
             double close;
-            bool idless;
             roll_series::RollTracker::Status status;
         };
         std::vector<Step> steps;
@@ -101,7 +170,7 @@ inline LiveRollState live_rolls_by_state(
         for (const auto& [ts, bar] : series) {
             const std::string d = core::format_utc_date(ts);
             if (d > t1_date) break;
-            steps.push_back({d, static_cast<double>(bar->close), bar->instrument_id.empty(),
+            steps.push_back({d, static_cast<double>(bar->close),
                              tracker.add(bar->instrument_id, static_cast<double>(bar->close))});
         }
         const auto rec = recorded_contract.find(symbol);
@@ -142,15 +211,13 @@ inline LiveRollState live_rolls_by_state(
                                  st.last_close_before_change, st.change_bar_close, st.bars_pending});
         }
         if (late) {
-            double unbooked = 0.0;
-            // The last bar after the stored state an earlier run consumed (see LateRollSettlement).
-            int booked_to = stands;
+            // The whole sum after the stored state; the caller takes off what the stored rows
+            // dated after it already booked (see LateRollSettlement).
+            double moves = 0.0;
             for (int i = stands + 1; i < static_cast<int>(steps.size()); ++i) {
-                if (!steps[i].status.change) unbooked += steps[i].close - steps[i - 1].close;
-                if (steps[i].idless && steps[i].date < t1_date) booked_to = i;
+                if (!steps[i].status.change) moves += steps[i].close - steps[i - 1].close;
             }
-            unbooked -= steps[booked_to].close - steps[stands].close;
-            out.late[symbol] = {steps.back().close, steps.back().close - unbooked};
+            out.late[symbol] = {steps.back().close, steps.back().close - moves, steps[stands].date};
         }
     }
     return out;

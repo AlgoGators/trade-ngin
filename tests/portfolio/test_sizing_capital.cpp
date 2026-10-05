@@ -572,7 +572,7 @@ TEST_F(LiveSizingCapital, TheBookIsSizedOnTheConsumedSettlementPhase5Finalises) 
     const std::unordered_map<std::string, double> raw_t1{{"MES.v.0", 7252.50}, {"ZN.v.0", 110.703125}};
     const std::unordered_map<std::string, double> raw_t2{{"MES.v.0", 7230.00}, {"ZN.v.0", 111.500000}};
     const auto status = roll_series::roll_status_of(consumed);
-    const auto settlement = consumed_t1_settlement(consumed, "2026-05-01", status, {}, raw_t2, raw_t1);
+    const auto settlement = consumed_t1_settlement(consumed, "2026-05-01", status, {}, raw_t2, raw_t1, {});
     ASSERT_TRUE(settlement.zero_pnl_symbols.count("MES.v.0")) << "the change bar books no move";
     const std::vector<std::unordered_map<std::string, Position>> books = {
         {{"MES.v.0", held("MES.v.0", 2.0)}}, {{"ZN.v.0", held("ZN.v.0", 1.0)}}};

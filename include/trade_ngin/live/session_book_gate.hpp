@@ -208,7 +208,7 @@ inline ConsumedT1Settlement consumed_t1_settlement(
     const std::vector<std::string>& withheld_t1_symbols,
     const std::unordered_map<std::string, double>& raw_t2,
     const std::unordered_map<std::string, double>& raw_t1,
-    const std::unordered_map<std::string, LateRollSettlement>& late_rolls = {}) {
+    const std::unordered_map<std::string, LateRollSettlement>& late_rolls) {
     ConsumedT1Settlement out;
     out.zero_pnl_symbols.insert(withheld_t1_symbols.begin(), withheld_t1_symbols.end());
     out.t2_close_prices = raw_t2;

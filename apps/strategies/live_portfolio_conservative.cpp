@@ -1276,6 +1276,63 @@ int main(int argc, char* argv[]) {
                       "confirms. Every run refuses until then.");
                 return 1;
             }
+            // T-ROLLX-FIX commit 6 (section 6.5, finding 4): a roll legged LATE books the moves of
+            // every consumed bar after the stored state, LESS what earlier runs already booked of
+            // them. That is read from the stored rows, never guessed from the bars: a run that
+            // consumed a bar booked its move on the row dated that bar, a run that saw a hole
+            // booked 0 (live/live_roll_legs.hpp, late_booked_points).
+            if (!roll_state.late.empty()) {
+                std::vector<std::string> late_symbols;
+                std::string booked_after;
+                for (const auto& [symbol, late] : roll_state.late) {
+                    late_symbols.push_back(symbol);
+                    if (booked_after.empty() || late.booked_after < booked_after) {
+                        booked_after = late.booked_after;
+                    }
+                }
+                std::sort(late_symbols.begin(), late_symbols.end());
+                auto stored_rows = db->get_stored_realised_rows(
+                    combined_strategy_id, portfolio_id, booked_after, t1_classification.t1_date,
+                    "trading.positions");
+                if (stored_rows.is_error()) {
+                    ERROR("ROLL_LEG STOP: the stored rows after " + booked_after +
+                          " are unreadable (" + std::string(stored_rows.error()->what()) +
+                          "); refusing to run: what earlier runs booked of the late roll's moves "
+                          "cannot be told");
+                    std::cerr << "ROLL_LEG STOP: the stored rows of a late roll are unreadable"
+                              << std::endl;
+                    return 1;
+                }
+                for (const auto& symbol : late_symbols) {
+                    auto& late = roll_state.late[symbol];
+                    const LateBooked booked = late_booked_points(
+                        symbol, late.booked_after, t1_classification.t1_date, stored_rows.value(),
+                        pnl_manager->get_point_value(symbol));
+                    if (!booked.undecided.empty()) {
+                        ERROR("ROLL_LEG STOP " + symbol + ": the stored rows cannot tell what "
+                              "earlier runs booked of its late roll's moves: " + booked.undecided +
+                              "; refusing to run. Remedy: correct daily_realized_pnl on the "
+                              "symbol's trading.positions rows dated after " + late.booked_after +
+                              " and before " + t1_classification.t1_date +
+                              " so that every sleeve's row of a date books the same move per "
+                              "contract (0 where no run consumed a bar), then run this date "
+                              "again. Every run refuses until then.");
+                        std::cerr << "ROLL_LEG STOP " << symbol
+                                  << ": the stored rows cannot decide a late roll's settlement"
+                                  << std::endl;
+                        return 1;
+                    }
+                    std::string booked_dates;
+                    for (const auto& d : booked.dates) booked_dates += (booked_dates.empty() ? "" : ",") + d;
+                    INFO("ROLL_LEG late " + symbol + ": the consumed bars after " + late.booked_after +
+                         " moved " + std::to_string(late.settle_to - late.settle_from) +
+                         " points; the stored rows already book " + std::to_string(booked.points) +
+                         " (" + (booked_dates.empty() ? std::string("none") : booked_dates) +
+                         "); the Day T-1 row books " +
+                         std::to_string(late.settle_to - late.settle_from - booked.points));
+                    late.settle_from += booked.points;
+                }
+            }
         }
         const std::vector<ConfirmedRoll>& confirmed_rolls = roll_state.rolls;
         // T-ROLLX-FIX (LOOP_SPEC v6.2 sections 2.1, 6.6): the T-1 settlement on the CONSUMED bars. A
@@ -2374,6 +2431,48 @@ int main(int argc, char* argv[]) {
                 return e.execution_type == ExecutionType::ROLL;
             });
         };
+        // T-ROLLX-FIX commits 5 and 6 (section 6.5): the sleeves with ROLL legs are stored FIRST, in
+        // name order, ALL in ONE transaction (per sleeve the ROLL sweep, the stale-order-id delete,
+        // the insert), and a failure is a STOP before any execution, position or result of ANY
+        // sleeve is written: the legs' costs are in today's totals and the Day T-1 rows below would
+        // move the state the legs are owed from.
+        {
+            std::vector<std::pair<std::string, std::vector<ExecutionReport>>> leg_sleeves;
+            for (const auto& [strategy_name, executions] : all_strategy_executions) {
+                if (roll_legs_of(strategy_name) > 0) leg_sleeves.emplace_back(strategy_name, executions);
+            }
+            std::sort(leg_sleeves.begin(), leg_sleeves.end(),
+                      [](const auto& a, const auto& b) { return a.first < b.first; });
+            if (!leg_sleeves.empty()) {
+                std::ptrdiff_t roll_legs_owed = 0;
+                for (const auto& [strategy_name, executions] : leg_sleeves) {
+                    const auto roll_legs = roll_legs_of(strategy_name);
+                    roll_legs_owed += roll_legs;
+                    INFO("ROLL_LEG store " + strategy_name + ": " + std::to_string(executions.size()) +
+                         " executions (" + std::to_string(roll_legs) +
+                         " ROLL legs) replace the sleeve's ROLL rows of the day and its rows of the "
+                         "same order ids in one transaction, before the Day T-1 rows are re-written");
+                }
+                auto replaced = db->replace_roll_day_executions(
+                    leg_sleeves, combined_strategy_id, portfolio_id, now, "trading.executions");
+                if (replaced.is_error()) {
+                    ERROR("ROLL_LEG STOP: the day's executions could not be stored (" +
+                          std::string(replaced.error()->what()) + ") and " +
+                          std::to_string(roll_legs_owed) +
+                          " ROLL legs are owed. Refusing to run: no execution, no position and no "
+                          "result is written; the stored state is the state before this run, so "
+                          "running this date again legs the same rolls");
+                    std::cerr << "ROLL_LEG STOP: the day's executions could not be stored"
+                              << std::endl;
+                    return 1;
+                }
+                for (const auto& [strategy_name, executions] : leg_sleeves) {
+                    INFO("Successfully stored " + std::to_string(executions.size()) +
+                         " executions for strategy: " + strategy_name);
+                }
+            }
+        }
+
         for (const auto& strategy_name_rl : strategy_names) {
             if (roll_legs_of(strategy_name_rl) > 0) continue;
             auto sweep = db->delete_roll_executions(now, strategy_name_rl, portfolio_id,
@@ -2386,35 +2485,9 @@ int main(int argc, char* argv[]) {
             }
         }
 
-        // Store executions for each strategy
+        // Store executions for each strategy without ROLL legs
         for (const auto& [strategy_name, executions] : all_strategy_executions) {
-            // T-ROLLX-FIX commit 5 (section 6.5): a sleeve with ROLL legs. Its rows replace the
-            // day's in ONE transaction (the ROLL sweep, the stale-order-id delete, the insert), and
-            // a failure is a STOP before any position or result is written: the legs' costs are in
-            // today's totals and the Day T-1 rows below would move the state the legs are owed from.
-            if (const auto roll_legs = roll_legs_of(strategy_name); roll_legs > 0) {
-                INFO("ROLL_LEG store " + strategy_name + ": " + std::to_string(executions.size()) +
-                     " executions (" + std::to_string(roll_legs) +
-                     " ROLL legs) replace the sleeve's ROLL rows of the day and its rows of the "
-                     "same order ids in one transaction, before the Day T-1 rows are re-written");
-                auto replaced = db->replace_roll_day_executions(
-                    executions, combined_strategy_id, strategy_name, portfolio_id, now,
-                    "trading.executions");
-                if (replaced.is_error()) {
-                    ERROR("ROLL_LEG STOP " + strategy_name + ": the day's executions could not be "
-                          "stored (" + std::string(replaced.error()->what()) + ") and " +
-                          std::to_string(roll_legs) +
-                          " ROLL legs are owed. Refusing to run: no position and no result is "
-                          "written; the stored state is the state before this run, so running "
-                          "this date again legs the same rolls");
-                    std::cerr << "ROLL_LEG STOP " << strategy_name
-                              << ": the day's executions could not be stored" << std::endl;
-                    return 1;
-                }
-                INFO("Successfully stored " + std::to_string(executions.size()) +
-                     " executions for strategy: " + strategy_name);
-                continue;
-            }
+            if (roll_legs_of(strategy_name) > 0) continue;  // stored above
             if (!executions.empty()) {
                 // Before inserting, delete any stale executions for today with the same order_ids
                 try {

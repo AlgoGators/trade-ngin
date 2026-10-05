@@ -168,7 +168,7 @@ TEST_F(RollStateDbTest, AReplaceStoresTheRunsRowsAndSweepsTheDaysOtherRollRows) 
         report("EXEC_ZM.v.0_20260427_RC", "ZM.v.0", Side::SELL, 332.20, ExecutionType::ROLL, "42282755", 8.08),
         report("EXEC_ZM.v.0_20260427_RO", "ZM.v.0", Side::BUY, 321.10, ExecutionType::ROLL, "748931", 8.06),
         report("EXEC_6A.v.0_20260428", "6A.v.0", Side::BUY, 0.71, ExecutionType::STRATEGY, "", 2.0)};
-    auto replaced = db_->replace_roll_day_executions(rerun, kId, "TREND_FOLLOWING", kPortfolio,
+    auto replaced = db_->replace_roll_day_executions({{"TREND_FOLLOWING", rerun}}, kId, kPortfolio,
                                                      utc(2026, 4, 29), "trading.executions");
     ASSERT_TRUE(replaced.is_ok()) << replaced.error()->what();
     pqxx::connection conn(conn_);
@@ -200,7 +200,7 @@ TEST_F(RollStateDbTest, AFailedReplaceLeavesTheLegsTheRunBeforeStored) {
         report("EXEC_ZM.v.0_20260427_RC", "ZM.v.0", Side::SELL, 332.20, ExecutionType::ROLL, "42282755", 8.08),
         report("EXEC_ZM.v.0_20260427_RO", "ZM.v.0", Side::BUY, 321.10, ExecutionType::ROLL, "748931", 8.06),
         report(std::string(60, 'X'), "6A.v.0", Side::BUY, 0.71, ExecutionType::STRATEGY, "", 2.0)};
-    auto replaced = db_->replace_roll_day_executions(rerun, kId, "TREND_FOLLOWING", kPortfolio,
+    auto replaced = db_->replace_roll_day_executions({{"TREND_FOLLOWING", rerun}}, kId, kPortfolio,
                                                      utc(2026, 4, 29), "trading.executions");
     EXPECT_TRUE(replaced.is_error()) << "an exec_id of 60 characters is refused";
     auto got = db_->get_stored_roll_contracts(kId, kPortfolio, utc(2026, 4, 29), "trading.executions");
@@ -240,4 +240,87 @@ TEST(K01HistoryDbTest, ABarRangeWithNoRowIsAnEmptyHistory) {
             std::_Exit(bars.is_ok() && bars.value().empty() ? 0 : 5);
         },
         ::testing::ExitedWithCode(0), "");
+}
+
+// C6 (the lead's fix B): every sleeve with ROLL legs is stored in the SAME transaction. Two sleeves
+// roll on the run; the second one's store is refused. No row of either sleeve is committed: the
+// state is the state before the run, for every sleeve. (One transaction a sleeve left the first
+// sleeve's rows behind a run that then stopped.)
+TEST_F(RollStateDbTest, AFailedReplaceLeavesNoRowOfAnySleeve) {
+    const std::vector<ExecutionReport> first = {
+        report("EXEC_ZM.v.0_20260427_RC", "ZM.v.0", Side::SELL, 332.20, ExecutionType::ROLL, "42282755", 8.08),
+        report("EXEC_ZM.v.0_20260427_RO", "ZM.v.0", Side::BUY, 321.10, ExecutionType::ROLL, "748931", 8.06)};
+    const std::vector<ExecutionReport> second = {
+        report("EXEC_ZS.v.0_20260428_RC", "ZS.v.0", Side::SELL, 1040.0, ExecutionType::ROLL, "S1", 4.0),
+        report(std::string(60, 'X'), "ZS.v.0", Side::BUY, 1050.0, ExecutionType::ROLL, "S2", 4.0)};
+    auto replaced = db_->replace_roll_day_executions(
+        {{"TREND_FOLLOWING", first}, {"TREND_FOLLOWING_FAST", second}}, kId, kPortfolio, utc(2026, 4, 29),
+        "trading.executions");
+    EXPECT_TRUE(replaced.is_error());
+    {
+        pqxx::connection conn(conn_);
+        pqxx::work w(conn);
+        EXPECT_EQ(w.query_value<int>("SELECT count(*) FROM trading.executions WHERE strategy_id = " +
+                                     w.quote(kId)),
+                  0)
+            << "a sleeve's rows were committed by a store that failed";
+    }
+    // With both sleeves' rows valid the same call stores all four.
+    auto good = second;
+    good[1].exec_id = good[1].order_id = "EXEC_ZS.v.0_20260428_RO";
+    ASSERT_TRUE(db_->replace_roll_day_executions({{"TREND_FOLLOWING", first}, {"TREND_FOLLOWING_FAST", good}}, kId,
+                                                 kPortfolio, utc(2026, 4, 29), "trading.executions")
+                    .is_ok());
+    pqxx::connection conn(conn_);
+    pqxx::work w(conn);
+    EXPECT_EQ(w.query_value<int>("SELECT count(*) FROM trading.executions WHERE strategy_id = " + w.quote(kId)), 4);
+}
+
+// C6 (finding 4): the stored rows a late roll's settlement reads. Every sleeve's rows of the book
+// dated strictly after the first date and strictly before the second, with their quantity and
+// daily realised P&L; other books, other dates and the two bounds are not read.
+TEST_F(RollStateDbTest, TheStoredRealisedRowsBetweenTwoDatesAreRead) {
+    {
+        pqxx::connection conn(conn_);
+        pqxx::work w(conn);
+        w.exec("DELETE FROM trading.positions WHERE strategy_id = '" + kId + "'");
+        auto row = [&](const std::string& date, const std::string& symbol, const std::string& sleeve, double q,
+                       double pnl, const std::string& portfolio) {
+            w.exec("INSERT INTO trading.positions (symbol, quantity, average_price, daily_unrealized_pnl, "
+                   "daily_realized_pnl, last_update, updated_at, strategy_id, strategy_name, date, portfolio_id) "
+                   "VALUES ($1, $2, 100, 0, $3, $4::timestamptz, now(), $5, $6, $4::date, $7)",
+                   pqxx::params{symbol, q, pnl, date, kId, sleeve, portfolio});
+        };
+        row("2026-04-20", "ZM.v.0", "TREND_FOLLOWING", 1, 11.0, kPortfolio);       // the lower bound
+        row("2026-04-27", "ZM.v.0", "TREND_FOLLOWING", 1, 0.0, kPortfolio);
+        row("2026-04-28", "ZM.v.0", "TREND_FOLLOWING", 1, 770.0, kPortfolio);
+        row("2026-04-28", "ZM.v.0", "TREND_FOLLOWING_FAST", -2, -1540.0, kPortfolio);
+        row("2026-04-28", "ZS.v.0", "TREND_FOLLOWING", 3, 45.5, kPortfolio);
+        row("2026-04-28", "ZM.v.0", "TREND_FOLLOWING", 1, 5.0, "TROLLX_OTHER_PORTFOLIO");
+        row("2026-04-29", "ZM.v.0", "TREND_FOLLOWING", 1, 22.0, kPortfolio);       // the upper bound
+        w.commit();
+    }
+    auto got = db_->get_stored_realised_rows(kId, kPortfolio, "2026-04-20", "2026-04-29", "trading.positions");
+    {
+        pqxx::connection conn(conn_);
+        pqxx::work w(conn);
+        w.exec("DELETE FROM trading.positions WHERE strategy_id = '" + kId + "'");
+        w.commit();
+    }
+    ASSERT_TRUE(got.is_ok()) << got.error()->what();
+    std::vector<std::string> rows;
+    for (const auto& r : got.value()) {
+        rows.push_back(r.date + " " + r.symbol + " " + r.sleeve + " " + std::to_string(r.quantity) + " " +
+                       std::to_string(r.realised));
+    }
+    const std::vector<std::string> want = {
+        "2026-04-27 ZM.v.0 TREND_FOLLOWING 1.000000 0.000000",
+        "2026-04-28 ZM.v.0 TREND_FOLLOWING 1.000000 770.000000",
+        "2026-04-28 ZM.v.0 TREND_FOLLOWING_FAST -2.000000 -1540.000000",
+        "2026-04-28 ZS.v.0 TREND_FOLLOWING 3.000000 45.500000",
+    };
+    EXPECT_EQ(rows, want);
+    EXPECT_TRUE(db_->get_stored_realised_rows(kId, kPortfolio, "2026-04-20", "2026-04-29", "trading.positions; --")
+                    .is_error())
+        << "the table name is validated";
 }

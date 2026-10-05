@@ -377,8 +377,8 @@ Result<void> PostgresDatabase::insert_executions_in(pqxx::work& txn,
 }
 
 Result<void> PostgresDatabase::replace_roll_day_executions(
-    const std::vector<ExecutionReport>& executions, const std::string& strategy_id,
-    const std::string& strategy_name, const std::string& portfolio_id, const Timestamp& date,
+    const std::vector<std::pair<std::string, std::vector<ExecutionReport>>>& sleeves,
+    const std::string& strategy_id, const std::string& portfolio_id, const Timestamp& date,
     const std::string& table_name) {
     std::lock_guard<std::mutex> lock(mutex_);
     auto validation = validate_connection();
@@ -386,42 +386,84 @@ Result<void> PostgresDatabase::replace_roll_day_executions(
     auto table_validation = validate_table_name(table_name);
     if (table_validation.is_error()) return table_validation;
     if (auto sv = validate_strategy_id(strategy_id); sv.is_error()) return sv;
-    if (auto sn = validate_strategy_id(strategy_name); sn.is_error()) return sn;
     if (auto pv = validate_strategy_id(portfolio_id); pv.is_error()) return pv;
+    for (const auto& sleeve : sleeves) {
+        if (auto sn = validate_strategy_id(sleeve.first); sn.is_error()) return sn;
+    }
     try {
-        // ONE transaction: the sweep of the sleeve's ROLL rows of the day, the delete of the rows
-        // carrying this run's order ids, and the insert. Nothing is committed unless all three are.
+        // ONE transaction over every sleeve: the sweep of the sleeve's ROLL rows of the day, the
+        // delete of the rows carrying this run's order ids, and the insert. Nothing is committed
+        // unless all of it is.
         pqxx::work txn(*connection_);
-        txn.exec("DELETE FROM " + table_name +
-                     " WHERE strategy_name = $1 AND portfolio_id = $2 AND date = $3::date"
-                     " AND execution_type = 'ROLL'",
-                 pqxx::params{strategy_name, portfolio_id, trade_ngin::core::format_utc_date(date)});
-        std::vector<std::string> order_ids;
-        order_ids.reserve(executions.size());
-        for (const auto& e : executions) order_ids.push_back(e.order_id);
-        std::sort(order_ids.begin(), order_ids.end());
-        order_ids.erase(std::unique(order_ids.begin(), order_ids.end()), order_ids.end());
-        if (!order_ids.empty()) {
-            std::string in_list;
-            for (size_t i = 0; i < order_ids.size(); ++i) {
-                if (i > 0) in_list += ", ";
-                in_list += txn.quote(order_ids[i]);
-            }
-            // The same predicate as delete_stale_executions (E2-F4, F-C): by portfolio, sleeve
-            // and order id, no calendar date.
+        for (const auto& [strategy_name, executions] : sleeves) {
             txn.exec("DELETE FROM " + table_name +
-                         " WHERE strategy_name = $1 AND portfolio_id = $2 AND order_id IN (" +
-                         in_list + ")",
-                     pqxx::params{strategy_name, portfolio_id});
+                         " WHERE strategy_name = $1 AND portfolio_id = $2 AND date = $3::date"
+                         " AND execution_type = 'ROLL'",
+                     pqxx::params{strategy_name, portfolio_id,
+                                  trade_ngin::core::format_utc_date(date)});
+            std::vector<std::string> order_ids;
+            order_ids.reserve(executions.size());
+            for (const auto& e : executions) order_ids.push_back(e.order_id);
+            std::sort(order_ids.begin(), order_ids.end());
+            order_ids.erase(std::unique(order_ids.begin(), order_ids.end()), order_ids.end());
+            if (!order_ids.empty()) {
+                std::string in_list;
+                for (size_t i = 0; i < order_ids.size(); ++i) {
+                    if (i > 0) in_list += ", ";
+                    in_list += txn.quote(order_ids[i]);
+                }
+                // The same predicate as delete_stale_executions (E2-F4, F-C): by portfolio, sleeve
+                // and order id, no calendar date.
+                txn.exec("DELETE FROM " + table_name +
+                             " WHERE strategy_name = $1 AND portfolio_id = $2 AND order_id IN (" +
+                             in_list + ")",
+                         pqxx::params{strategy_name, portfolio_id});
+            }
+            auto inserted = insert_executions_in(txn, executions, strategy_id, strategy_name,
+                                                 portfolio_id, table_name);
+            if (inserted.is_error()) return inserted;
         }
-        auto inserted =
-            insert_executions_in(txn, executions, strategy_id, strategy_name, portfolio_id, table_name);
-        if (inserted.is_error()) return inserted;
         txn.commit();
         return Result<void>();
     } catch (const std::exception& e) {
         return make_error<void>(ErrorCode::DATABASE_ERROR,
                                 "Failed to replace the day's executions: " + std::string(e.what()),
+                                "PostgresDatabase");
+    }
+}
+
+Result<std::vector<StoredRealisedRow>> PostgresDatabase::get_stored_realised_rows(
+    const std::string& strategy_id, const std::string& portfolio_id, const std::string& after_date,
+    const std::string& before_date, const std::string& table_name) {
+    using Rows = std::vector<StoredRealisedRow>;
+    auto validation = validate_connection();
+    if (validation.is_error()) {
+        return make_error<Rows>(validation.error()->code(), validation.error()->what());
+    }
+    auto table_validation = validate_table_name(table_name);
+    if (table_validation.is_error()) {
+        return make_error<Rows>(table_validation.error()->code(), table_validation.error()->what());
+    }
+    try {
+        pqxx::work txn(*connection_);
+        const std::string actual_portfolio_id = portfolio_id.empty() ? "BASE_PORTFOLIO" : portfolio_id;
+        auto result = txn.exec(
+            "SELECT symbol, COALESCE(strategy_name, ''), date::text, quantity,"
+            " COALESCE(daily_realized_pnl, 0) FROM " + table_name +
+                " WHERE strategy_id = $1 AND portfolio_id = $2 AND date > $3::date AND date < $4::date"
+                " ORDER BY date, symbol, strategy_name",
+            pqxx::params{strategy_id, actual_portfolio_id, after_date, before_date});
+        txn.commit();
+        Rows out;
+        out.reserve(result.size());
+        for (const auto& row : result) {
+            out.push_back({row[0].as<std::string>(), row[1].as<std::string>(),
+                           row[2].as<std::string>(), row[3].as<double>(), row[4].as<double>()});
+        }
+        return Result<Rows>(out);
+    } catch (const std::exception& e) {
+        return make_error<Rows>(ErrorCode::DATABASE_ERROR,
+                                "Failed to read the stored realised rows: " + std::string(e.what()),
                                 "PostgresDatabase");
     }
 }

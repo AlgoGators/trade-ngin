@@ -152,7 +152,7 @@ TEST_F(ChangeBarPnlTest, TheT1SettlementSkipsAWithheldBarAndZeroesChangeAndWithh
     const std::unordered_map<std::string, double> raw_t2{
         {"ES.v.0", 4999.0 /* the withheld day 3 print */}, {"NG.v.0", 3.33}, {"6B.v.0", 1.303}, {"ZN.v.0", 112.0}};
     const std::unordered_map<std::string, double> raw_t1{{"ES.v.0", 5040.0}, {"NG.v.0", 3.34}, {"6B.v.0", 1.25}};
-    const auto s = consumed_t1_settlement(consumed, t1, status, {"6B.v.0"}, raw_t2, raw_t1);
+    const auto s = consumed_t1_settlement(consumed, t1, status, {"6B.v.0"}, raw_t2, raw_t1, {});
     EXPECT_DOUBLE_EQ(s.t2_close_prices.at("ES.v.0"), 5020.0) << "day 2's close, the last consumed before T-1";
     EXPECT_DOUBLE_EQ(s.t2_close_prices.at("NG.v.0"), 3.33);
     EXPECT_EQ(s.zero_pnl_symbols, (std::unordered_set<std::string>{"NG.v.0", "6B.v.0"}));

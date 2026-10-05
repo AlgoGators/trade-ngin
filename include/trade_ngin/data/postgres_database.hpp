@@ -447,21 +447,32 @@ public:
                                                 const std::string& table_name = "trading.executions");
 
     /**
-     * @brief T-ROLLX-FIX commit 5 (LOOP_SPEC v6.2 section 6.5): a sleeve's executions of a day on
-     *        which it books ROLL legs, replaced in ONE transaction: the sweep of its ROLL rows dated
-     *        `date` (delete_roll_executions' predicate), the delete of the rows carrying this run's
-     *        order ids (delete_stale_executions' predicate) and the insert (store_executions'
-     *        columns). The live runners store a run's legs BEFORE they re-write the Day T-1
-     *        positions rows, and a re-run reads the contract its stored legs rolled out of; a
-     *        sweep committed apart from the insert left, on a re-run stopped between the two, a
-     *        re-written T-1 row and no leg. Committed whole or not at all.
+     * @brief T-ROLLX-FIX commits 5 and 6 (LOOP_SPEC v6.2 section 6.5): the executions of every
+     *        sleeve that books ROLL legs on a run, replaced in ONE transaction: per sleeve, the
+     *        sweep of its ROLL rows dated `date` (delete_roll_executions' predicate), the delete of
+     *        the rows carrying this run's order ids (delete_stale_executions' predicate) and the
+     *        insert (store_executions' columns). The live runners store a run's legs BEFORE they
+     *        re-write the Day T-1 positions rows, and a re-run reads the contract its stored legs
+     *        rolled out of; a sweep committed apart from the insert left, on a re-run stopped
+     *        between the two, a re-written T-1 row and no leg. Committed whole or not at all: a
+     *        failure leaves no row of any of these sleeves. `sleeves`: (sleeve name, its rows).
      */
-    virtual Result<void> replace_roll_day_executions(const std::vector<ExecutionReport>& executions,
-                                                     const std::string& strategy_id,
-                                                     const std::string& strategy_name,
-                                                     const std::string& portfolio_id,
-                                                     const Timestamp& date,
-                                                     const std::string& table_name);
+    virtual Result<void> replace_roll_day_executions(
+        const std::vector<std::pair<std::string, std::vector<ExecutionReport>>>& sleeves,
+        const std::string& strategy_id, const std::string& portfolio_id, const Timestamp& date,
+        const std::string& table_name);
+
+    /**
+     * @brief T-ROLLX-FIX commit 6 (section 6.5, a late roll's settlement): the stored positions
+     *        rows of the book dated strictly after `after_date` and strictly before `before_date`
+     *        (YYYY-MM-DD), every sleeve: symbol, sleeve, date, quantity, daily realised P&L, ordered
+     *        by date, symbol, sleeve. One parameterised SELECT; the table name is validated.
+     *        live_roll_legs.hpp (late_booked_points) reads what earlier runs booked from them.
+     */
+    virtual Result<std::vector<StoredRealisedRow>> get_stored_realised_rows(
+        const std::string& strategy_id, const std::string& portfolio_id,
+        const std::string& after_date, const std::string& before_date,
+        const std::string& table_name);
 
     /**
      * @brief T-ROLLX (migration 017): the cumulative ROLL cost of the book before `date`: the latest

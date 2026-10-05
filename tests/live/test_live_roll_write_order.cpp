@@ -10,7 +10,8 @@
 //       re-written: the stored row's contract is the state the legs are booked from, so a run
 //       stopped anywhere leaves either that state or the legs a re-run reads;
 //   3   a failed executions store while ROLL legs are owed is a ROLL_LEG STOP, exit 1, before any
-//       position or result is written;
+//       position or result is written, and (commit 6) before any execution row of any sleeve;
+//   4   (commit 6) what earlier runs booked of a late roll's moves is read from the stored rows;
 //   7   the unplaced-contract refusal names its remedy and says that it repeats;
 //   8   a stored book that cannot be read refuses the run (it was skipped silently);
 //   10  the backtest's exception paths stop on an owed roll as its error return does;
@@ -31,6 +32,7 @@
 #include <vector>
 
 #include "trade_ngin/live/live_data_loader.hpp"
+#include "trade_ngin/live/live_roll_legs.hpp"
 #include "trade_ngin/live/live_sizing_read.hpp"
 #include "trade_ngin/live/session_book_gate.hpp"
 #include "trade_ngin/portfolio/sizing_capital.hpp"
@@ -126,36 +128,102 @@ TEST(LiveRollWriteOrder, TheDaysExecutionsAreStoredBeforeTheDayT1RowsAreReWritte
     }
 }
 
-// 3. In both runners: the replace of a sleeve with ROLL legs that fails is a ROLL_LEG STOP that
-// returns 1 before the Day T-1 rows, the Day T rows and the results.
+// 3. In both runners: the replace of the sleeves with ROLL legs that fails is a ROLL_LEG STOP that
+// returns 1 before the Day T-1 rows, the Day T rows and the results. Commit 6 (the lead's fix B): the
+// sleeves with legs are stored FIRST, in name order, all in one transaction, so the STOP leaves no
+// execution row of ANY sleeve of the run; the sweep and the stores of the sleeves without legs come
+// after it. (The STOP returned from inside a loop over an unordered map of sleeves: a sleeve
+// without legs iterated earlier had already committed its executions.)
 TEST(LiveRollWriteOrder, AFailedExecutionsStoreWithRollLegsOwedStopsBeforePositionsAndResults) {
     for (const char* runner : kRunners) {
         const std::string src = read_source(runner);
         ASSERT_FALSE(src.empty()) << runner;
+        const auto replace_at = src.find("db->replace_roll_day_executions(");
+        ASSERT_NE(replace_at, npos) << runner;
+        EXPECT_EQ(src.find("db->replace_roll_day_executions(", replace_at + 1), npos)
+            << runner << ": one call, one transaction, for every sleeve with legs";
         const std::string leg_store = between(src, "db->replace_roll_day_executions(",
-                                              "if (!executions.empty()) {");
-        ASSERT_FALSE(leg_store.empty()) << runner;
+                                              "db->delete_roll_executions(now, strategy_name_rl, portfolio_id,");
+        ASSERT_FALSE(leg_store.empty()) << runner << ": the legs are stored before the other sleeves are swept";
+        EXPECT_EQ(leg_store.find("leg_sleeves, combined_strategy_id, portfolio_id, now, \"trading.executions\");"),
+                  leg_store.find("leg_sleeves,"))
+            << runner;
+        EXPECT_NE(leg_store.find("leg_sleeves,"), npos) << runner;
         const auto failed_at = leg_store.find("if (replaced.is_error()) {");
-        const auto stop_at = leg_store.find("ERROR(\"ROLL_LEG STOP \" + strategy_name + \": the day's "
-                                            "executions could not be \"");
+        const auto stop_at = leg_store.find("ERROR(\"ROLL_LEG STOP: the day's executions could not be stored (\"");
         const auto exit_at = leg_store.find("return 1;");
         ASSERT_NE(failed_at, npos) << runner;
         ASSERT_NE(stop_at, npos) << runner;
         ASSERT_NE(exit_at, npos) << runner;
         EXPECT_LT(failed_at, stop_at) << runner;
         EXPECT_LT(stop_at, exit_at) << runner;
-        EXPECT_NE(leg_store.find("ROLL legs are owed. Refusing to run: no position and no result is"), npos)
+        EXPECT_NE(leg_store.find("ROLL legs are owed. Refusing to run: no execution, no position and no"), npos)
             << runner;
-        // Only a sleeve with legs takes this path: the guard is the leg count.
-        const auto guard_at = src.find("if (const auto roll_legs = roll_legs_of(strategy_name); roll_legs > 0) {");
-        ASSERT_NE(guard_at, npos) << runner;
-        EXPECT_LT(guard_at, src.find("db->replace_roll_day_executions(")) << runner;
-        EXPECT_LT(src.find("db->replace_roll_day_executions("),
-                  src.find("db->store_positions(finalized_positions,"))
+        // The batch: every sleeve with legs, sorted by name.
+        const std::string batch = between(src, "std::vector<std::pair<std::string, std::vector<ExecutionReport>>> leg_sleeves;",
+                                          "db->replace_roll_day_executions(");
+        ASSERT_FALSE(batch.empty()) << runner;
+        EXPECT_NE(batch.find("if (roll_legs_of(strategy_name) > 0) leg_sleeves.emplace_back(strategy_name, executions);"),
+                  npos)
             << runner;
-        EXPECT_LT(src.find("db->replace_roll_day_executions("),
+        EXPECT_NE(batch.find("std::sort(leg_sleeves.begin(), leg_sleeves.end(),"), npos) << runner;
+        EXPECT_NE(batch.find("return a.first < b.first;"), npos) << runner;
+        // Every other execution write of the run comes after the legs' store, and skips those sleeves.
+        const auto other_at = src.find("db->store_executions(executions,");
+        const auto stale_at = src.find("db->delete_stale_executions(");
+        const auto sweep_at = src.find("db->delete_roll_executions(now, strategy_name_rl, portfolio_id,");
+        ASSERT_NE(other_at, npos) << runner;
+        ASSERT_NE(stale_at, npos) << runner;
+        EXPECT_LT(replace_at, sweep_at) << runner;
+        EXPECT_LT(replace_at, stale_at) << runner;
+        EXPECT_LT(replace_at, other_at) << runner;
+        const std::string others = between(src, "// Store executions for each strategy without ROLL legs",
+                                           "if (!executions.empty()) {");
+        EXPECT_NE(others.find("if (roll_legs_of(strategy_name) > 0) continue;"), npos) << runner;
+        EXPECT_LT(replace_at, src.find("db->store_positions(finalized_positions,")) << runner;
+        EXPECT_LT(replace_at,
                   src.find("// STEP 4: UPDATE Day T-1 live_results AND equity_curve WITH FINALIZED PnL"))
             << runner;
+    }
+}
+
+// Finding 4 (commit 6, the lead's ruling): what earlier runs booked of a late roll's moves is read
+// from the stored rows, in both runners, above the sizing read: one read of the rows dated after the
+// stored state, late_booked_points per late symbol, the booked points added to settle_from. A
+// failed read and rows that cannot decide are each a ROLL_LEG STOP that returns 1 (above the
+// live_run_metadata row: nothing written), the second with its remedy.
+TEST(LiveRollWriteOrder, ALateRollsBookedMovesAreReadFromTheStoredRows) {
+    for (const char* runner : kRunners) {
+        const std::string src = read_source(runner);
+        ASSERT_FALSE(src.empty()) << runner;
+        const std::string late = between(src, "if (!roll_state.late.empty()) {",
+                                         "const std::vector<ConfirmedRoll>& confirmed_rolls");
+        ASSERT_FALSE(late.empty()) << runner << ": the late sum is not read against the stored rows";
+        const auto read_at = late.find("db->get_stored_realised_rows(");
+        ASSERT_NE(read_at, npos) << runner;
+        EXPECT_EQ(late.find("db->get_stored_realised_rows(", read_at + 1), npos) << runner << ": one read";
+        EXPECT_NE(late.find("combined_strategy_id, portfolio_id, booked_after, t1_classification.t1_date,"), npos)
+            << runner;
+        const auto unreadable_at = late.find("if (stored_rows.is_error()) {");
+        ASSERT_NE(unreadable_at, npos) << runner;
+        EXPECT_NE(late.find("ERROR(\"ROLL_LEG STOP: the stored rows after \" + booked_after +", unreadable_at), npos)
+            << runner;
+        EXPECT_LT(late.find("return 1;", unreadable_at), late.find("late_booked_points(")) << runner;
+        const auto undecided_at = late.find("if (!booked.undecided.empty()) {");
+        ASSERT_NE(undecided_at, npos) << runner;
+        EXPECT_NE(late.find("ERROR(\"ROLL_LEG STOP \" + symbol + \": the stored rows cannot tell what \"", undecided_at),
+                  npos)
+            << runner;
+        EXPECT_NE(late.find("Remedy: correct daily_realized_pnl on the", undecided_at), npos) << runner;
+        EXPECT_NE(late.find("Every run refuses until then.", undecided_at), npos) << runner;
+        const auto applied_at = late.find("late.settle_from += booked.points;");
+        ASSERT_NE(applied_at, npos) << runner;
+        EXPECT_LT(late.find("return 1;", undecided_at), applied_at) << runner;
+        EXPECT_NE(late.find("pnl_manager->get_point_value(symbol)"), npos) << runner;
+        EXPECT_LT(src.find("late.settle_from += booked.points;"),
+                  src.find("const ConsumedT1Settlement t1_settlement = consumed_t1_settlement("))
+            << runner << ": the settlement, and the sizing read after it, take the corrected sum";
+        EXPECT_LT(src.find("late.settle_from += booked.points;"), src.find("// STORE LIVE RUN METADATA")) << runner;
     }
 }
 
@@ -280,9 +348,12 @@ TEST(NoSilentDefaults, TheSettlementSizingAndHoldInputsAreRequired) {
     using Bars = const std::vector<Bar>&;
     using Status = const std::unordered_map<std::string, roll_series::RollTracker::Status>&;
     using Names = const std::vector<std::string>&;
+    using Late = const std::unordered_map<std::string, LateRollSettlement>&;
     EXPECT_FALSE((kSettles<Bars, const std::string&, Status, Names, Closes>))
         << "consumed_t1_settlement compiles without the raw T-1 map";
-    EXPECT_TRUE((kSettles<Bars, const std::string&, Status, Names, Closes, Closes>));
+    EXPECT_FALSE((kSettles<Bars, const std::string&, Status, Names, Closes, Closes>))
+        << "consumed_t1_settlement compiles without the late rolls (commit 6)";
+    EXPECT_TRUE((kSettles<Bars, const std::string&, Status, Names, Closes, Closes, Late>));
 
     EXPECT_FALSE((kHolds<StrategyBooks&, const StrategyBooks&, const T1Classification&, const Timestamp&>))
         << "hold_non_session_symbols compiles without the change-bar set";

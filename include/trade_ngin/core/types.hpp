@@ -473,6 +473,16 @@ struct ExecutionReport {
     std::string instrument_id;
 };
 
+/// One stored positions row's realised P&L, as PostgresDatabase::get_stored_realised_rows reads it
+/// (T-ROLLX-FIX commit 6: what earlier runs booked of a late roll's moves, live_roll_legs.hpp).
+struct StoredRealisedRow {
+    std::string symbol;
+    std::string sleeve;
+    std::string date;  ///< YYYY-MM-DD, the row's date
+    double quantity{0.0};
+    double realised{0.0};
+};
+
 /**
  * @brief Market state enumeration for regime detection
  */
