@@ -279,7 +279,7 @@ Result<LiveResultsRow> LiveDataLoader::load_live_results(const std::string& stra
     static bool warned_narrow_result = false;
     if (n_cols < kLiveResultsColumns && !warned_narrow_result) {
         warned_narrow_result = true;
-        WARN("load_live_results: the live_results row carries " + std::to_string(n_cols) + " of " +
+        WARN("ROLL_LEG load_live_results: the live_results row carries " + std::to_string(n_cols) + " of " +
              std::to_string(kLiveResultsColumns) +
              " columns; daily_roll_costs and total_roll_costs (migration 017) are absent and read as "
              "0");

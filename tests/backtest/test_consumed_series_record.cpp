@@ -78,7 +78,8 @@ TEST(ConsumedSeriesRecord, TheFourFilesCarryTheCyclesAndTheSeriesOfTheFedBarsOnl
               (std::vector<std::string>{"date", "2026-01-05", "2026-01-06", "2026-01-07", "2026-01-08",
                                         "2026-01-09"}));
     EXPECT_EQ(lines(dir / "withheld.csv"), (std::vector<std::string>{"date,symbol", "2026-01-07,XA"}));
-    EXPECT_EQ(lines(dir / "hold.csv"), (std::vector<std::string>{"date,symbol", "2026-01-07,XA"}));
+    // L-07 (F-5): a withheld date is a hold without a hold-set row.
+    EXPECT_EQ(lines(dir / "hold.csv"), (std::vector<std::string>{"date,symbol"}));
     const auto s = lines(dir / "series.csv");
     ASSERT_EQ(s.size(), 5u) << "a header and the four FED bars";
     EXPECT_EQ(s[0], "symbol,date,close,instrument_id,change,confirm,flip,pending,held_id,A,r");

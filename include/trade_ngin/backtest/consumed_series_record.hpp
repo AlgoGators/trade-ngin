@@ -24,7 +24,8 @@ namespace backtest {
  * Enabled only when the environment names a directory (TRADE_NGIN_SERIES_DUMP_DIR); a production
  * run never sets it, and a disabled record does nothing. Every cycle with a signal group adds:
  *   - its signal date to the calendar (calendar.csv);
- *   - every non-SESSION verdict of the group to the hold set (hold.csv);
+ *   - every non-SESSION verdict of the group that is not withheld to the hold set (hold.csv; a
+ *     withheld date is a hold without a hold-set row, L-07);
  *   - every bar it WITHHELD under K-01 to the withheld set (withheld.csv);
  *   - every bar it FED to the strategies and the PortfolioManager to that symbol's consumed
  *     sequence.
@@ -46,7 +47,8 @@ public:
         if (!enabled()) return;
         calendar_.push_back(signal_date);
         for (const auto& v : verdicts) {
-            if (!v.is_session()) hold_.emplace_back(v.date, v.symbol);
+            // L-07 (section 2.1): a withheld date is a hold without a hold-set row.
+            if (!v.is_session() && !v.k01_withheld()) hold_.emplace_back(v.date, v.symbol);
         }
         for (const auto& b : withheld) {
             withheld_.emplace_back(SessionClassifier::ymd(SessionClassifier::day_of(b.timestamp)),

@@ -447,24 +447,30 @@ public:
                                                 const std::string& table_name = "trading.executions");
 
     /**
-     * @brief T-ROLLX (migration 017): the latest total_roll_costs stored before `date` (the same
-     *        row get_previous_live_aggregates reads); 0 when no row exists.
+     * @brief T-ROLLX (migration 017): the cumulative ROLL cost of the book before `date`: the latest
+     *        total_roll_costs stored before `date` (the same row get_previous_live_aggregates reads; 0
+     *        when no row exists) PLUS the cost of every ROLL execution stored after that row's date
+     *        and before `date`. A run stores its executions before its live_results row, so a day
+     *        whose results write failed left its legs and no row: the total continues across it
+     *        instead of dropping that day's part (T-ROLLX-FIX commit 4, B4). With a row on every day
+     *        the second term is 0.
      */
-    virtual Result<double> get_previous_total_roll_costs(const std::string& strategy_id,
-                                                         const std::string& portfolio_id,
-                                                         const Timestamp& date,
-                                                         const std::string& table_name = "trading.live_results");
+    virtual Result<double> get_previous_total_roll_costs(
+        const std::string& strategy_id, const std::string& portfolio_id, const Timestamp& date,
+        const std::string& table_name = "trading.live_results",
+        const std::string& executions_table = "trading.executions");
 
     /**
-     * @brief T-ROLLX-FIX (LOOP_SPEC v6.1 sections 2.1, 6.5, L-09): the date of the latest positions
-     *        row of the book stored before `date` ("YYYY-MM-DD"; empty when none exists): the previous
-     *        run that wrote its book. A run stores its executions (its ROLL legs among them) before its
-     *        positions, so a run whose live_results write failed (the one missed-run form the run-gap
-     *        guard accepts) still counts as a run here and its legs are never booked again.
+     * @brief T-ROLLX-FIX (LOOP_SPEC v6.2 section 6.5, legs by STATE): per symbol, the contract the
+     *        ROLL closing legs already stored for `date` rolled out of (the instrument_id of the
+     *        symbol's earliest EXEC_<symbol>_<confirm date>_RC row of that date); empty when the
+     *        date has no ROLL row. A re-run of a date reads it: the first run re-wrote the T-1
+     *        positions row with the contract held after the T-1 bar, so the contract the book held
+     *        BEFORE that run's legs is on those legs.
      */
-    virtual Result<std::string> get_previous_book_date(
+    virtual Result<std::unordered_map<std::string, std::string>> get_stored_roll_contracts(
         const std::string& strategy_id, const std::string& portfolio_id, const Timestamp& date,
-        const std::string& table_name = "trading.positions");
+        const std::string& table_name = "trading.executions");
 
     /**
      * @brief Store backtest summary results (replaces raw SQL INSERT)

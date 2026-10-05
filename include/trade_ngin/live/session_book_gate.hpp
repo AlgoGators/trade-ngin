@@ -17,6 +17,7 @@
 #include "trade_ngin/data/roll_series.hpp"
 #include "trade_ngin/data/session_classifier.hpp"
 #include "trade_ngin/live/execution_manager.hpp"
+#include "trade_ngin/live/live_roll_legs.hpp"
 
 namespace trade_ngin {
 
@@ -188,23 +189,30 @@ struct ConsumedT1Settlement {
     /// last consumed bar is dated T-1 (a withheld bar in between is skipped); otherwise the raw T-2
     /// close passed in (unused: no consumed T-1 bar books no move).
     std::unordered_map<std::string, double> t2_close_prices;
+    /// The close each symbol's T-1 move is booked to: the raw T-1 map, except a symbol whose roll
+    /// this run legs LATE (section 6.5), which books every unbooked consumed bar's move on the T-1
+    /// row (its last consumed close against LateRollSettlement::settle_from).
+    std::unordered_map<std::string, double> t1_close_prices;
 };
 
 /**
  * @brief The live T-1 finalize's inputs on the consumed bars. `consumed` is the window without the
  *        withheld bars (k01_consumed_bars), `t1_date` the run's T-1, `roll_status` the status of
  *        each symbol's last consumed bar (roll_series::roll_status_of(consumed)),
- *        `withheld_t1_symbols` the symbols whose T-1 bar was withheld, `raw_t2` the price manager's
- *        T-2 map.
+ *        `withheld_t1_symbols` the symbols whose T-1 bar was withheld, `raw_t2` and `raw_t1` the
+ *        price manager's T-2 and T-1 maps, `late_rolls` LiveRollState::late.
  */
 inline ConsumedT1Settlement consumed_t1_settlement(
     const std::vector<Bar>& consumed, const std::string& t1_date,
     const std::unordered_map<std::string, roll_series::RollTracker::Status>& roll_status,
     const std::vector<std::string>& withheld_t1_symbols,
-    const std::unordered_map<std::string, double>& raw_t2) {
+    const std::unordered_map<std::string, double>& raw_t2,
+    const std::unordered_map<std::string, double>& raw_t1 = {},
+    const std::unordered_map<std::string, LateRollSettlement>& late_rolls = {}) {
     ConsumedT1Settlement out;
     out.zero_pnl_symbols.insert(withheld_t1_symbols.begin(), withheld_t1_symbols.end());
     out.t2_close_prices = raw_t2;
+    out.t1_close_prices = raw_t1;
     std::map<std::string, std::vector<const Bar*>> by_symbol;
     for (const auto& bar : consumed) by_symbol[bar.symbol].push_back(&bar);
     for (auto& [symbol, seq] : by_symbol) {
@@ -214,6 +222,13 @@ inline ConsumedT1Settlement consumed_t1_settlement(
         if (seq.size() >= 2) out.t2_close_prices[symbol] = static_cast<double>(seq[seq.size() - 2]->close);
         const auto rs = roll_status.find(symbol);
         if (rs != roll_status.end() && rs->second.change) out.zero_pnl_symbols.insert(symbol);
+    }
+    // A late roll's symbol books its unbooked consumed bars on this run, whether or not it has a
+    // T-1 bar (a withheld T-1 print stays out: the sum is over consumed bars).
+    for (const auto& [symbol, late] : late_rolls) {
+        out.zero_pnl_symbols.erase(symbol);
+        out.t1_close_prices[symbol] = late.settle_to;
+        out.t2_close_prices[symbol] = late.settle_from;
     }
     return out;
 }
@@ -230,10 +245,18 @@ struct BookHold {
     double target_quantity{0.0};
     bool reinserted{false};  ///< held yesterday, absent from today's target map
     bool classified{true};   ///< false: outside the classified universe (no T-1 verdict)
+    bool change_bar{false};  ///< held under D37 (its last consumed bar is pending), T-1 a SESSION
 };
 
 /**
- * @brief Holds every non-SESSION symbol at its stored T-1 quantity, on every per-strategy book.
+ * @brief Holds every non-SESSION symbol, and every symbol of `change_bar_holds`, at its stored T-1
+ *        quantity, on every per-strategy book.
+ *
+ * LOOP_SPEC v6.2 section 6.1 (D37; T-ROLLX-FIX commit 4, D-A): `change_bar_holds` is the D37 set, the
+ * symbols whose last consumed bar is pending (a change bar, either bar of a flip, an id-less bar
+ * inside a pending roll). Such a bar can carry a SESSION verdict (a full-volume switch day, a flip's
+ * reverting bar, an id-less bar), so the verdict alone does not hold it; the hold applies on EVERY
+ * rebalance, never only on a day the risk gate cuts.
  *
  * For each sleeve: a symbol whose verdict is not SESSION and whose target differs from the
  * sleeve's stored T-1 quantity gets that quantity back (flat if nothing was stored); the row's
@@ -243,12 +266,15 @@ struct BookHold {
  * close-out loop cannot flatten it. Returns one record per held change; the caller logs and
  * rebuilds the combined book.
  */
-inline std::vector<BookHold> hold_non_session_symbols(StrategyBooks& books,
-                                                      const StrategyBooks& previous,
-                                                      const T1Classification& t1,
-                                                      const Timestamp& now) {
+inline std::vector<BookHold> hold_non_session_symbols(
+    StrategyBooks& books, const StrategyBooks& previous, const T1Classification& t1,
+    const Timestamp& now, const std::unordered_set<std::string>& change_bar_holds = {}) {
     static const std::unordered_map<std::string, Position> kEmpty;
     std::vector<BookHold> holds;
+    // Held under D37 alone: the verdict would have let it trade.
+    auto d37_only = [&](const std::string& symbol) {
+        return t1.is_session(symbol) && change_bar_holds.count(symbol) > 0;
+    };
     // Deterministic order for the log.
     std::vector<std::string> names;
     for (const auto& [name, _] : books) names.push_back(name);
@@ -262,7 +288,7 @@ inline std::vector<BookHold> hold_non_session_symbols(StrategyBooks& books,
         for (const auto& [symbol, _] : book) symbols.push_back(symbol);
         std::sort(symbols.begin(), symbols.end());
         for (const auto& symbol : symbols) {
-            if (t1.is_session(symbol)) continue;
+            if (t1.is_session(symbol) && !change_bar_holds.count(symbol)) continue;
             auto& pos = book[symbol];
             auto prev_it = prev.find(symbol);
             const double prev_qty =
@@ -272,27 +298,29 @@ inline std::vector<BookHold> hold_non_session_symbols(StrategyBooks& books,
             pos.quantity = Decimal(prev_qty);
             const auto* v = t1.find(symbol);
             holds.push_back({name, symbol, v ? v->verdict : SessionVerdict::NO_BAR_CLOSURE,
-                             prev_qty, target, false, v != nullptr});
+                             prev_qty, target, false, v != nullptr, d37_only(symbol)});
         }
 
         std::vector<std::string> prev_symbols;
         for (const auto& [symbol, _] : prev) prev_symbols.push_back(symbol);
         std::sort(prev_symbols.begin(), prev_symbols.end());
         for (const auto& symbol : prev_symbols) {
-            if (book.count(symbol) || t1.is_session(symbol)) continue;
+            if (book.count(symbol)) continue;
+            if (t1.is_session(symbol) && !change_bar_holds.count(symbol)) continue;
             const Position& row = prev.at(symbol);
             if (std::abs(row.quantity.as_double()) <= 1e-6) continue;
             book[symbol] = row;
             book[symbol].last_update = now;
             const auto* v = t1.find(symbol);
             holds.push_back({name, symbol, v ? v->verdict : SessionVerdict::NO_BAR_CLOSURE,
-                             row.quantity.as_double(), 0.0, true, v != nullptr});
+                             row.quantity.as_double(), 0.0, true, v != nullptr, d37_only(symbol)});
         }
     }
     return holds;
 }
 
 inline void log_book_holds(const std::vector<BookHold>& holds) {
+    size_t without_session = 0;
     for (const auto& h : holds) {
         const std::string what = h.reinserted
                                      ? "absent from today's target, held at " +
@@ -300,6 +328,13 @@ inline void log_book_holds(const std::vector<BookHold>& holds) {
                                      : "book held at " + std::to_string(h.held_quantity) +
                                            " instead of target " +
                                            std::to_string(h.target_quantity) + "; no order today";
+        // D37 (section 6.1): a pending symbol whose T-1 is a SESSION is held by the change-bar rule,
+        // in its own family.
+        if (h.change_bar) {
+            WARN("CHANGE_BAR_HOLD " + h.symbol + " (" + h.strategy_name + "): " + what);
+            continue;
+        }
+        ++without_session;
         // T-7b-1 C7b R9: a symbol nobody classified (removed from the universe, or filtered out of
         // get_symbols) is held because nothing vouched for it, not because T-1 was a closure.
         WARN("BOOK_GATE " + h.symbol + " (" + h.strategy_name + "): " +
@@ -307,8 +342,8 @@ inline void log_book_holds(const std::vector<BookHold>& holds) {
                            : std::string("outside the classified universe (no T-1 verdict)")) +
              " -- " + what);
     }
-    if (!holds.empty()) {
-        INFO("BOOK_GATE held " + std::to_string(holds.size()) +
+    if (without_session > 0) {
+        INFO("BOOK_GATE held " + std::to_string(without_session) +
              " book change(s) on symbols without a T-1 session");
     }
 }

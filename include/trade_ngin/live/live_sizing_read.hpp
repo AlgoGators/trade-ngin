@@ -37,6 +37,7 @@
 #include <string>
 #include <tuple>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 #include <nlohmann/json.hpp>
@@ -81,12 +82,15 @@ struct LiveSizingRead {
 /// The runner's sizing reads for the run date `now` and what they decide. The calls, their order
 /// and their arguments are the runner's before T-7b-3: Day T-1's row, the previous row (before
 /// Day T-1 with a Day T-1 row, before the run date without one), then each sleeve's Day T-1 book.
+/// `t1_closes`, `t2_closes` and `zero_settlement_symbols` are the T-1 settlement on the consumed
+/// bars (consumed_t1_settlement), the inputs STEP 4 finalises Day T-1 with.
 inline LiveSizingRead read_live_sizing_equity(
     LiveDataLoader& data_loader, DatabaseInterface& db, const std::string& strategy_id,
     const std::string& portfolio_id, const std::vector<std::string>& sleeves, const Timestamp& now,
     double initial_capital, const std::unordered_map<std::string, double>& t1_closes,
     const std::unordered_map<std::string, double>& t2_closes,
-    const std::function<double(const std::string&)>& point_value) {
+    const std::function<double(const std::string&)>& point_value,
+    const std::unordered_set<std::string>& zero_settlement_symbols = {}) {
     LiveSizingRead out;
     std::string equity_failure;
     const auto sizing_t1 = now - std::chrono::hours(24);
@@ -134,7 +138,8 @@ inline LiveSizingRead read_live_sizing_equity(
     }
     out.equity = live_sizing_equity(t1_row_stored, day_before,
                                     t1_row_stored ? t1_row.value().daily_transaction_costs : 0.0,
-                                    t1_books, t1_closes, t2_closes, point_value);
+                                    t1_books, t1_closes, t2_closes, point_value,
+                                    zero_settlement_symbols);
     return out;
 }
 

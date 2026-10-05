@@ -47,7 +47,9 @@
 #include "../data/test_db_utils.hpp"
 #include "../risk/risk_module_test_helpers.hpp"
 #include "trade_ngin/instruments/futures.hpp"
+#include "trade_ngin/data/roll_series.hpp"
 #include "trade_ngin/live/live_sizing_read.hpp"
+#include "trade_ngin/live/session_book_gate.hpp"
 #include "trade_ngin/live/risk_module_failure.hpp"
 #include "trade_ngin/live/run_metadata_marks.hpp"
 #include "trade_ngin/portfolio/sizing_capital.hpp"
@@ -541,6 +543,58 @@ TEST_F(LiveSizingCapital, TheRowBeforeDayT1PlusTheSettlementMoveLessDayT1Costs) 
     EXPECT_EQ(r.unpriced, 0);
 }
 
+// D-B (T-ROLLX-FIX commit 4; LOOP_SPEC v6.2 sections 2.1, 3.1, 6.6): the book is sized on the settlement PHASE 5
+// finalises Day T-1 with, the one on the CONSUMED bars. T-1 = 2026-05-01. MES is held 2 and its T-1 bar is a change
+// bar (the vendor switched contract: 7,230.00 on A, 7,252.50 on B); ZN is held 1 and its T-2 print (111.500000) is a
+// corrupt print the K-01 feed withheld, so its previous consumed close is T-3's 110.906250:
+//   MES  change bar                                 =     0.000   (raw: 2 x (7,252.50 - 7,230.00) x 5 = 225.00)
+//   ZN   1 x (110.703125 - 110.906250) x 1,000      =  -203.125   (raw: 1 x (110.703125 - 111.500000) x 1,000 = -796.875)
+// The runner passes the settlement's maps and zero set to the sizing read and to finalize_previous_day: both book
+// -203.125, and the sizing equity is the value STEP 4 writes. Reading the price manager's raw maps (the runner before
+// this commit) sized on -571.875, an equity 368.75 away from its own stored row.
+TEST_F(LiveSizingCapital, TheBookIsSizedOnTheConsumedSettlementPhase5Finalises) {
+    LivePnLManager pnl(500'000.0, InstrumentRegistry::instance());
+    auto consumed_bar = [](const std::string& symbol, int day, double close, const std::string& id) {
+        Bar b;
+        b.symbol = symbol;
+        b.timestamp = std::chrono::sys_days{std::chrono::year{2026} / std::chrono::month{4} / std::chrono::day{27}} +
+                      std::chrono::hours(24 * day);
+        b.open = b.high = b.low = b.close = Decimal(close);
+        b.volume = 100000.0;
+        b.instrument_id = id;
+        return b;
+    };
+    // Day 0 = Mon 04-27 ... day 4 = Fri 05-01 (T-1). ZN's day-3 print is withheld: it is not in the consumed feed.
+    const std::vector<Bar> consumed = {
+        consumed_bar("MES.v.0", 2, 7215.00, "A"), consumed_bar("MES.v.0", 3, 7230.00, "A"),
+        consumed_bar("MES.v.0", 4, 7252.50, "B"), consumed_bar("ZN.v.0", 1, 110.800000, "Z"),
+        consumed_bar("ZN.v.0", 2, 110.906250, "Z"), consumed_bar("ZN.v.0", 4, 110.703125, "Z")};
+    const std::unordered_map<std::string, double> raw_t1{{"MES.v.0", 7252.50}, {"ZN.v.0", 110.703125}};
+    const std::unordered_map<std::string, double> raw_t2{{"MES.v.0", 7230.00}, {"ZN.v.0", 111.500000}};
+    const auto status = roll_series::roll_status_of(consumed);
+    const auto settlement = consumed_t1_settlement(consumed, "2026-05-01", status, {}, raw_t2, raw_t1);
+    ASSERT_TRUE(settlement.zero_pnl_symbols.count("MES.v.0")) << "the change bar books no move";
+    const std::vector<std::unordered_map<std::string, Position>> books = {
+        {{"MES.v.0", held("MES.v.0", 2.0)}}, {{"ZN.v.0", held("ZN.v.0", 1.0)}}};
+    const auto point = [&](const std::string& s) { return pnl.get_point_value(s); };
+
+    const auto sized = live_sizing_equity(true, 500'000.0, 10.0, books, settlement.t1_close_prices,
+                                          settlement.t2_close_prices, point, settlement.zero_pnl_symbols);
+    double finalised = 0.0;
+    for (const auto& book : books) {
+        std::vector<Position> rows;
+        for (const auto& [_, p] : book) rows.push_back(p);
+        auto f = pnl.finalize_previous_day(rows, settlement.t1_close_prices, settlement.t2_close_prices, 250'000.0, 0.0,
+                                           LivePnLManager::UnrealizedPolicy::SETTLED, settlement.zero_pnl_symbols);
+        ASSERT_TRUE(f.is_ok()) << f.error()->what();
+        finalised += f.value().finalized_daily_pnl;
+    }
+    EXPECT_NEAR(finalised, -203.125, 1e-9);
+    EXPECT_NEAR(sized.t1_settlement, finalised, 1e-9) << "sized on the move PHASE 5 finalises";
+    EXPECT_NEAR(sized.equity, 500'000.0 - 203.125 - 10.0, 1e-9) << "the value STEP 4 writes on Day T-1's row";
+    EXPECT_EQ(sized.priced, 2);
+}
+
 // Without a Day T-1 row STEP 4 updates nothing and STEP 5 reads the latest stored row before the run date: the
 // figure is that value, whatever the books say.
 TEST_F(LiveSizingCapital, WithoutADayT1RowTheLatestStoredValueIsTheFigure) {
@@ -940,9 +994,18 @@ TEST(SizingCapitalWiring, BothFuturesRunnersSizeOnTheEquityBeforeTheRebalance) {
         const auto block_at = src.find("// SIZING CAPITAL (T-7b-2 9c");
         EXPECT_LT(block_at, src.find("portfolio->process_market_data(")) << runners[i];
         EXPECT_NE(blocks[i].find("portfolio->set_sizing_capital(sizing_equity.equity)"), npos);
-        // Day T-1 and Day T-2 closes only: the day being sized has no mark yet.
-        EXPECT_NE(blocks[i].find("price_manager->get_all_previous_day_prices()"), npos);
-        EXPECT_NE(blocks[i].find("price_manager->get_all_two_days_ago_prices()"), npos);
+        // Day T-1 and Day T-2 closes only: the day being sized has no mark yet. Since T-ROLLX-FIX
+        // commit 4 (D-B) they are the T-1 settlement on the consumed bars, built from the price
+        // manager's two maps above the block, the settlement PHASE 5 finalises with.
+        EXPECT_NE(blocks[i].find("t1_settlement.t1_close_prices"), npos);
+        EXPECT_NE(blocks[i].find("t1_settlement.t2_close_prices"), npos);
+        EXPECT_NE(blocks[i].find("t1_settlement.zero_pnl_symbols"), npos);
+        const auto settlement_at = src.find("const ConsumedT1Settlement t1_settlement = consumed_t1_settlement(");
+        ASSERT_NE(settlement_at, npos) << runners[i];
+        EXPECT_LT(settlement_at, block_at) << runners[i] << ": the settlement is built before the sizing read";
+        const std::string settlement = src.substr(settlement_at, block_at - settlement_at);
+        EXPECT_NE(settlement.find("price_manager->get_all_previous_day_prices()"), npos);
+        EXPECT_NE(settlement.find("price_manager->get_all_two_days_ago_prices()"), npos);
         EXPECT_EQ(blocks[i].find("current_price"), npos);
         // STEP 4's parts are read by the runner helper (T-7b-3 R-3, pinned below); the decision
         // is routed by SizingCapitalWiring.BothFuturesRunnersRouteTheSizingDecisionTheSameWay.

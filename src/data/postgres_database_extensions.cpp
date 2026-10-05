@@ -98,7 +98,7 @@ Result<void> PostgresDatabase::delete_roll_executions(const Timestamp& date,
         (void)r;  // the sweep writes no log line: its rows are re-stored right after (section 7)
         return Result<void>();
     } catch (const std::exception& e) {
-        ERROR("Failed to delete the day's ROLL executions: " + std::string(e.what()));
+        ERROR("ROLL_LEG STOP: the day's ROLL executions could not be deleted: " + std::string(e.what()));
         return make_error<void>(ErrorCode::DATABASE_ERROR, e.what(), component_id_);
     }
 }
@@ -106,24 +106,36 @@ Result<void> PostgresDatabase::delete_roll_executions(const Timestamp& date,
 Result<double> PostgresDatabase::get_previous_total_roll_costs(const std::string& strategy_id,
                                                                const std::string& portfolio_id,
                                                                const Timestamp& date,
-                                                               const std::string& table_name) {
+                                                               const std::string& table_name,
+                                                               const std::string& executions_table) {
     auto validation = validate_connection();
     if (validation.is_error()) {
         return make_error<double>(validation.error()->code(), validation.error()->what());
     }
     try {
         pqxx::work txn(*connection_);
-        auto table_validation = validate_table_name(table_name);
-        if (table_validation.is_error()) {
-            return make_error<double>(table_validation.error()->code(), table_validation.error()->what());
+        for (const auto& name : {table_name, executions_table}) {
+            auto table_validation = validate_table_name(name);
+            if (table_validation.is_error()) {
+                return make_error<double>(table_validation.error()->code(),
+                                          table_validation.error()->what());
+            }
         }
         const std::string actual_portfolio_id = portfolio_id.empty() ? "BASE_PORTFOLIO" : portfolio_id;
-        auto result = txn.exec("SELECT COALESCE(total_roll_costs, 0) FROM " + table_name +
-                                   " WHERE strategy_id = $1 AND portfolio_id = $2 AND DATE(date) < DATE($3)"
-                                   " ORDER BY date DESC, created_at DESC LIMIT 1",
-                               pqxx::params{strategy_id, actual_portfolio_id, format_timestamp(date)});
+        // The latest stored row before the date, plus the ROLL legs stored after that row's date
+        // and before the date (days whose live_results write failed).
+        auto result = txn.exec(
+            "WITH prev AS (SELECT DATE(date) AS d, COALESCE(total_roll_costs, 0) AS t FROM " +
+                table_name +
+                " WHERE strategy_id = $1 AND portfolio_id = $2 AND DATE(date) < DATE($3)"
+                " ORDER BY date DESC, created_at DESC LIMIT 1)"
+                " SELECT COALESCE((SELECT t FROM prev), 0) + COALESCE((SELECT SUM(total_transaction_costs)"
+                " FROM " + executions_table +
+                " WHERE strategy_id = $1 AND portfolio_id = $2 AND execution_type = 'ROLL'"
+                " AND date < DATE($3) AND date > COALESCE((SELECT d FROM prev), DATE '-infinity')), 0)",
+            pqxx::params{strategy_id, actual_portfolio_id, format_timestamp(date)});
         txn.commit();
-        if (result.empty()) return Result<double>(0.0);
+        if (result.empty() || result[0][0].is_null()) return Result<double>(0.0);
         return Result<double>(result[0][0].as<double>());
     } catch (const std::exception& e) {
         return make_error<double>(ErrorCode::DATABASE_ERROR,
@@ -132,33 +144,37 @@ Result<double> PostgresDatabase::get_previous_total_roll_costs(const std::string
     }
 }
 
-Result<std::string> PostgresDatabase::get_previous_book_date(const std::string& strategy_id,
-                                                             const std::string& portfolio_id,
-                                                             const Timestamp& date,
-                                                             const std::string& table_name) {
+Result<std::unordered_map<std::string, std::string>> PostgresDatabase::get_stored_roll_contracts(
+    const std::string& strategy_id, const std::string& portfolio_id, const Timestamp& date,
+    const std::string& table_name) {
+    using Contracts = std::unordered_map<std::string, std::string>;
     auto validation = validate_connection();
     if (validation.is_error()) {
-        return make_error<std::string>(validation.error()->code(), validation.error()->what());
+        return make_error<Contracts>(validation.error()->code(), validation.error()->what());
     }
     try {
         pqxx::work txn(*connection_);
         auto table_validation = validate_table_name(table_name);
         if (table_validation.is_error()) {
-            return make_error<std::string>(table_validation.error()->code(),
-                                           table_validation.error()->what());
+            return make_error<Contracts>(table_validation.error()->code(),
+                                         table_validation.error()->what());
         }
         const std::string actual_portfolio_id = portfolio_id.empty() ? "BASE_PORTFOLIO" : portfolio_id;
-        auto result = txn.exec("SELECT to_char(MAX(DATE(date)), 'YYYY-MM-DD') FROM " + table_name +
-                                   " WHERE strategy_id = $1 AND portfolio_id = $2 AND DATE(date) < DATE($3)",
-                               pqxx::params{strategy_id, actual_portfolio_id, format_timestamp(date)});
+        // The exec id carries the confirming bar's date, so the first row per symbol is its
+        // earliest roll of the day: the contract the book held before the day's legs.
+        auto result = txn.exec(
+            "SELECT DISTINCT ON (symbol) symbol, COALESCE(instrument_id, '') FROM " + table_name +
+                " WHERE strategy_id = $1 AND portfolio_id = $2 AND date = $3::date"
+                " AND execution_type = 'ROLL' AND exec_id LIKE '%\\_RC' ORDER BY symbol, exec_id",
+            pqxx::params{strategy_id, actual_portfolio_id, trade_ngin::core::format_utc_date(date)});
         txn.commit();
-        if (result.empty() || result[0][0].is_null()) return Result<std::string>(std::string());
-        return Result<std::string>(result[0][0].as<std::string>());
+        Contracts out;
+        for (const auto& row : result) out[row[0].as<std::string>()] = row[1].as<std::string>();
+        return Result<Contracts>(out);
     } catch (const std::exception& e) {
-        return make_error<std::string>(ErrorCode::DATABASE_ERROR,
-                                       "Failed to read the previous book date: " +
-                                           std::string(e.what()),
-                                       "PostgresDatabase");
+        return make_error<Contracts>(ErrorCode::DATABASE_ERROR,
+                                     "Failed to read the day's stored ROLL legs: " + std::string(e.what()),
+                                     "PostgresDatabase");
     }
 }
 

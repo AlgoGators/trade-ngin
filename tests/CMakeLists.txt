@@ -47,7 +47,7 @@ set(TEST_SOURCES
     data/test_executions_execution_type_db.cpp
     data/test_futures_bar_instrument_id_db.cpp
     data/test_positions_instrument_id_db.cpp
-    data/test_previous_book_date_db.cpp
+    data/test_roll_state_db.cpp
     order/test_order_manager.cpp
     order/test_utils.cpp
     instruments/test_futures.cpp
@@ -174,6 +174,7 @@ set(TEST_SOURCES
     live/test_cost_feed_adjusted_returns.cpp
     live/test_change_bar_pnl.cpp
     live/test_live_roll_legs.cpp
+    live/test_live_k01_history.cpp
     live/test_execution_price_integrity.cpp
     live/test_margin_manager.cpp
     live/test_live_metrics_calculator.cpp

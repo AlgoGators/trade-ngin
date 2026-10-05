@@ -168,7 +168,18 @@ TEST(BaseBusOffSource, TheBaseDirectCallIsBracketedByTheSameGuardAsConservative)
     for (auto at = base.find("db->get_market_data("); at != npos;
          at = base.find("db->get_market_data(", at + 1))
         ++loads;
-    EXPECT_EQ(loads, 1u) << "every bar load in the runner must sit inside the guard";
+    // Two loads since T-ROLLX-FIX commit 4 (N-2): the window, and the session classifier's history
+    // before it. Each is bracketed by the bus-off guard.
+    EXPECT_EQ(loads, 2u) << "every bar load in the runner must sit inside the guard";
+    for (auto at = base.find("db->get_market_data("); at != npos;
+         at = base.find("db->get_market_data(", at + 1)) {
+        const auto off = base.rfind("MarketDataBus::instance().set_publish_enabled(false);", at);
+        const auto on_before = base.rfind("MarketDataBus::instance().set_publish_enabled(true);", at);
+        const auto on_after = base.find("MarketDataBus::instance().set_publish_enabled(true);", at);
+        ASSERT_NE(off, npos);
+        ASSERT_NE(on_after, npos);
+        EXPECT_TRUE(on_before == npos || on_before < off) << "a bar load outside the bus-off guard";
+    }
 }
 
 // The mechanism the guard relies on, run: a PortfolioManager subscribed to BAR rebalances once per

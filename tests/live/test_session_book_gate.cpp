@@ -206,6 +206,54 @@ TEST(SessionBookGate, AJunkSymbolIsHeldAlthoughItHasAT1Price) {
     EXPECT_TRUE(r.value().executions.empty()) << "no order at the junk print";
 }
 
+// D-A (T-ROLLX-FIX commit 4; LOOP_SPEC v6.2 section 6.1, D37): the change-bar hold on EVERY
+// rebalance. ZC's T-1 bar (Thu 04-23) is a full-volume contract switch: its verdict is SESSION and
+// its last consumed bar is a pending change. On a day the risk gate does not cut, nothing but this
+// hold stands between the strategy's new target and an order at the change bar's close. The runner
+// passes the D37 set (roll_status holds()) to the book gate: ZC is held at its stored quantity on
+// both sleeves, opened from flat on neither, re-inserted where the target dropped it, and no order
+// is generated; MES, a SESSION symbol with no pending change, trades.
+TEST(SessionBookGate, ASessionChangeBarIsHeldOnADayWithoutACut) {
+    const auto t1 = april_t1();
+    ASSERT_TRUE(t1.is_session("ZC.v.0")) << "the verdict alone would let it trade";
+    auto zc = [](const std::string& date, double close, const std::string& id) {
+        Bar b = bar_on("ZC.v.0", date, close, 150000);
+        b.instrument_id = id;
+        return b;
+    };
+    const auto status = roll_series::roll_status_of(
+        {zc("2026-04-21", 459.0, "ZCK6"), zc("2026-04-22", 460.0, "ZCK6"), zc("2026-04-23", 462.0, "ZCN6")});
+    std::unordered_set<std::string> change_bar_holds;
+    for (const auto& [symbol, st] : status) {
+        if (st.holds()) change_bar_holds.insert(symbol);
+    }
+    ASSERT_EQ(change_bar_holds.count("ZC.v.0"), 1u);
+
+    const std::unordered_map<std::string, double> t1_prices{{"MES.v.0", 7150.0}, {"ZC.v.0", 462.0}};
+    StrategyBooks prev{{"TREND_FOLLOWING", {{"ZC.v.0", pos("ZC.v.0", 2, 460.0)}, {"MES.v.0", pos("MES.v.0", 1, 7100.0)}}},
+                       {"TREND_FOLLOWING_FAST", {{"ZC.v.0", pos("ZC.v.0", 1, 460.0)}}},
+                       {"FLAT_SLEEVE", {}}};
+    StrategyBooks today{{"TREND_FOLLOWING", {{"ZC.v.0", pos("ZC.v.0", 3, 462.0)}, {"MES.v.0", pos("MES.v.0", 2, 7150.0)}}},
+                        {"TREND_FOLLOWING_FAST", {}},
+                        {"FLAT_SLEEVE", {{"ZC.v.0", pos("ZC.v.0", 1, 462.0)}}}};
+    const auto holds = hold_non_session_symbols(today, prev, t1, run_instant(), change_bar_holds);
+    ASSERT_EQ(holds.size(), 3u);
+    for (const auto& h : holds) {
+        EXPECT_EQ(h.symbol, "ZC.v.0");
+        EXPECT_TRUE(h.change_bar) << "held by the change-bar rule, its T-1 a SESSION";
+    }
+    EXPECT_DOUBLE_EQ(today["TREND_FOLLOWING"]["ZC.v.0"].quantity.as_double(), 2.0);
+    EXPECT_DOUBLE_EQ(today["TREND_FOLLOWING_FAST"]["ZC.v.0"].quantity.as_double(), 1.0) << "re-inserted";
+    EXPECT_DOUBLE_EQ(today["FLAT_SLEEVE"]["ZC.v.0"].quantity.as_double(), 0.0) << "never opened from flat";
+    EXPECT_DOUBLE_EQ(today["TREND_FOLLOWING"]["MES.v.0"].quantity.as_double(), 2.0) << "MES trades";
+    for (const std::string sleeve : {"TREND_FOLLOWING", "TREND_FOLLOWING_FAST", "FLAT_SLEEVE"}) {
+        ExecutionManager em;
+        auto r = execute_strategy_day_strict(em, today[sleeve], prev[sleeve], t1_prices, run_instant());
+        ASSERT_TRUE(r.is_ok());
+        for (const auto& e : r.value().executions) EXPECT_NE(e.symbol, "ZC.v.0") << "no order on the change bar";
+    }
+}
+
 TEST(SessionBookGate, EveryPerStrategyBookIsHeldEachAtItsOwnStoredQuantity) {
     const auto t1 = april_t1();
     StrategyBooks prev{{"TREND_FOLLOWING", {{"MYM.v.0", pos("MYM.v.0", 1, 49707)}}},

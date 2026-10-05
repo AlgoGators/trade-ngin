@@ -927,6 +927,28 @@ Result<void> BacktestCoordinator::process_portfolio_day(
             auto data_result = portfolio->process_market_data(*signal_feed, is_warmup, timestamp,
                                                               session_symbols);
             if (data_result.is_error()) {
+                // F-3 (section 6.5): the tracker has consumed this cycle's confirming bars, so a
+                // cycle that returns here would leave a held symbol's roll un-legged for good. A
+                // STOP, never a loss.
+                if (!is_warmup) {
+                    for (const auto& [symbol, confirm_date] : confirmed_now) {
+                        for (const auto& [strategy_id, book] : start_of_bar_book) {
+                            const auto held = book.find(symbol);
+                            if (held == book.end() ||
+                                std::abs(static_cast<double>(held->second.quantity)) < 1e-9) {
+                                continue;
+                            }
+                            roll_leg_stop_ = true;
+                            return make_error<void>(
+                                ErrorCode::INVALID_DATA,
+                                "ROLL_LEG STOP " + symbol + " (" + strategy_id +
+                                    "): the cycle failed (" + data_result.error()->what() +
+                                    ") and its roll confirmed " + confirm_date +
+                                    " would not be legged. Failing the run",
+                                "BacktestCoordinator");
+                        }
+                    }
+                }
                 return data_result;
             }
         }

@@ -1093,13 +1093,43 @@ int main(int argc, char* argv[]) {
         // ========================================
         SessionClassifier session_classifier;
         session_classifier.add_bars(all_bars);
+        // LOOP_SPEC v6.2 section 2.1 (N-2): a bar's K-01 verdict reads the classifier's trailing
+        // history, the same in every engine. The classifier alone also reads the bars of a fixed
+        // prefix before the window (live/live_roll_legs.hpp, kK01ClassifierHistoryDays), with their
+        // ids, so a print near the window's start is judged as the backtest judges it and a bar
+        // withheld on its own run is never fed later. The strategies' window, the price manager and
+        // k01_consumed_bars below stay on the window.
+        const Timestamp k01_history_start = k01_classifier_history_start(start_date);
+        {
+            MarketDataBus::instance().set_publish_enabled(false);
+            auto history_result = db->get_market_data(
+                symbols, k01_history_start, start_date, trade_ngin::AssetClass::FUTURES,
+                trade_ngin::DataFrequency::DAILY, "ohlcv");
+            MarketDataBus::instance().set_publish_enabled(true);
+            if (history_result.is_error()) {
+                ERROR("Failed to load the session classifier's history before the window: " +
+                      std::string(history_result.error()->what()) +
+                      ". Refusing to run: the window's first bars cannot be judged.");
+                return 1;
+            }
+            auto history_bars =
+                trade_ngin::DataConversionUtils::arrow_table_to_bars(history_result.value());
+            if (history_bars.is_error()) {
+                ERROR("Failed to convert the session classifier's history to bars: " +
+                      std::string(history_bars.error()->what()) +
+                      ". Refusing to run: the window's first bars cannot be judged.");
+                return 1;
+            }
+            session_classifier.add_bars(k01_classifier_history(history_bars.value(), start_date));
+        }
         // T-7b-2 C10a (HD 2026-09-24 ruling 16): the instrument-id continuity limb reads each kept
         // bar's vendor id over the window the bars were loaded for (the backtest reads the same
         // query). T-1's verdict reads no later bar: an id change on T-1 is held today and T's bar
         // confirms it a roll or a one-day flip on the next run.
         {
             const auto id_feed = feed_instrument_ids(
-                session_classifier, db->get_futures_instrument_ids(symbols, start_date, end_date));
+                session_classifier,
+                db->get_futures_instrument_ids(symbols, k01_history_start, end_date));
             if (id_feed.fed) {
                 INFO(id_feed.line);
             } else {
@@ -1159,6 +1189,95 @@ int main(int argc, char* argv[]) {
         }
 
         // ========================================
+        // THE STRATEGY FEED (T-7a C4; built here by T-7b-1 C7b R10; LOOP_SPEC v6.2 section 2.1, K-01)
+        // Every bar of the window except the WITHHELD ones: a JUNK bar or a thin first print, on any
+        // date of the window, is never consumed and never fed (K-01 retires the earlier rule, which
+        // withheld only the T-1 bar and fed it as T-2 on the next run). An unconfirmed instrument-id
+        // change the classifier holds is consumed: it is the change bar, held under D37. The
+        // strategies and the PortfolioManager are fed it below, and so are both cost managers
+        // (T-7a_CODE_REVIEW R10: a junk print must not enter the volume and volatility the cost model
+        // reads; K2 reads this feed) and the snapshot risk reader. A non-SESSION symbol is held on
+        // every book today, so it has no fill to cost.
+        // ========================================
+        std::vector<SymbolDayVerdict> k01_withheld;
+        const std::vector<Bar> k01_feed =
+            k01_consumed_bars(session_classifier, all_bars, &k01_withheld);
+        const std::vector<Bar>& strategy_feed_bars = k01_feed;
+        std::vector<std::string> withheld_junk_bars;  // the symbols whose T-1 bar is withheld
+        for (const auto& v : k01_withheld) {
+            if (v.date == t1_classification.t1_date) withheld_junk_bars.push_back(v.symbol);
+        }
+        std::sort(withheld_junk_bars.begin(), withheld_junk_bars.end());
+        // LOOP_SPEC v6.1 sections 2.1, 2.2 (D37): each symbol's roll status on the window's CONSUMED
+        // bars (k01_feed: a withheld bar never walks it), evaluated bar by bar, so a run that consumes
+        // several bars of a symbol (a catch-up after a missed run) reads the status of its LAST one.
+        const auto roll_status = roll_series::roll_status_of(strategy_feed_bars);
+        std::unordered_map<std::string, std::string> last_consumed_date;
+        for (const auto& bar : strategy_feed_bars) {
+            const std::string d = core::format_utc_date(bar.timestamp);
+            auto& last = last_consumed_date[bar.symbol];
+            if (d > last) last = d;
+        }
+        // LOOP_SPEC v6.2 section 6.5 (L-09, D3, B8): the rolls this run legs, by STATE: every roll a
+        // consumed bar confirmed since the contract recorded on the symbol's stored T-1 positions
+        // row (live/live_roll_legs.hpp), never the rolls of a calendar span, so a late (back-filled)
+        // confirming bar is legged on the run that first consumes it. A re-run reads the contract its
+        // own stored legs rolled out of: the first run re-wrote the T-1 row. Each roll is booked once;
+        // a re-run of today re-books today's (the sweep below clears them).
+        LiveRollState roll_state;
+        {
+            std::unordered_map<std::string, std::string> recorded_contract;
+            for (const auto& sleeve : strategy_names) {
+                auto stored_book = db->load_positions_by_date(
+                    combined_strategy_id, sleeve, coordinator_config.portfolio_id,
+                    now - std::chrono::hours(24), "trading.positions");
+                if (stored_book.is_error()) continue;  // the sizing read below refuses the run on it
+                for (const auto& [symbol, position] : stored_book.value()) {
+                    if (position.quantity.as_double() == 0.0) continue;
+                    auto& contract = recorded_contract[symbol];
+                    if (contract.empty()) contract = position.instrument_id;
+                }
+            }
+            auto stored_legs = db->get_stored_roll_contracts(combined_strategy_id, portfolio_id, now,
+                                                             "trading.executions");
+            if (stored_legs.is_error()) {
+                ERROR("ROLL_LEG STOP: today's stored ROLL legs are unreadable (" +
+                      std::string(stored_legs.error()->what()) +
+                      "); refusing to run: the rolls to book cannot be told");
+                return 1;
+            }
+            for (const auto& [symbol, contract] : stored_legs.value()) {
+                const auto held = recorded_contract.find(symbol);
+                if (held != recorded_contract.end() && !contract.empty()) held->second = contract;
+            }
+            roll_state = live_rolls_by_state(strategy_feed_bars, recorded_contract,
+                                             t1_classification.t1_date);
+            if (!roll_state.unplaced.empty()) {
+                std::string unplaced;
+                for (const auto& symbol : roll_state.unplaced) {
+                    unplaced += (unplaced.empty() ? "" : ", ") + symbol + " (" +
+                                recorded_contract[symbol] + ")";
+                }
+                ERROR("ROLL_LEG STOP: the contract recorded on the stored T-1 row is at no consumed "
+                      "bar of the window for " + unplaced +
+                      "; refusing to run: the rolls to book cannot be told");
+                return 1;
+            }
+        }
+        const std::vector<ConfirmedRoll>& confirmed_rolls = roll_state.rolls;
+        // T-ROLLX-FIX (LOOP_SPEC v6.2 sections 2.1, 6.6): the T-1 settlement on the CONSUMED bars. A
+        // symbol whose T-1 bar is a change bar (a roll's switch day or either bar of a flip) or a
+        // WITHHELD bar (K-01) books no move for T-1; every other symbol books T-1 against the close of
+        // its previous CONSUMED bar (a withheld bar between them is skipped), which is the T-2 close
+        // whenever no bar was withheld; a symbol whose roll is legged late books its unbooked bars.
+        // Built here, above the sizing read (D-B): the book is sized on this settlement, the one
+        // PHASE 5 finalises Day T-1 with, so the sizing equity is the equity the stored rows show.
+        const ConsumedT1Settlement t1_settlement = consumed_t1_settlement(
+            strategy_feed_bars, t1_classification.t1_date, roll_status, withheld_junk_bars,
+            price_manager->get_all_two_days_ago_prices(),
+            price_manager->get_all_previous_day_prices(), roll_state.late);
+
+        // ========================================
         // SIZING CAPITAL (T-7b-2 9c; HD 2026-09-25, compounding)
         // The book is sized on the account's equity at the close of T-1, the bar the strategies
         // size from, the quantity the futures backtest sizes on (its equity curve's last row).
@@ -1183,9 +1302,10 @@ int main(int argc, char* argv[]) {
         {
             auto sizing_read = read_live_sizing_equity(
                 *data_loader, *db, combined_strategy_id, coordinator_config.portfolio_id,
-                strategy_names, now, initial_capital, price_manager->get_all_previous_day_prices(),
-                price_manager->get_all_two_days_ago_prices(),
-                [&](const std::string& symbol) { return pnl_manager->get_point_value(symbol); });
+                strategy_names, now, initial_capital, t1_settlement.t1_close_prices,
+                t1_settlement.t2_close_prices,
+                [&](const std::string& symbol) { return pnl_manager->get_point_value(symbol); },
+                t1_settlement.zero_pnl_symbols);
             if (sizing_read.outcome == LiveSizingOutcome::kRefuseRun) {
                 ERROR("SIZING_CAPITAL refused: " + sizing_read.failure +
                       ". Refusing to run: the book cannot be sized and there is no book to hold.");
@@ -1260,6 +1380,9 @@ int main(int argc, char* argv[]) {
 
         // Flag to track if we should skip strategy processing
         bool skip_strategy_processing = false;
+        // LOOP_SPEC v6.2 section 6.1 (D37, D-A): the symbols whose last consumed bar is pending,
+        // held on EVERY rebalance by the book gate below, never only through a cut.
+        std::unordered_set<std::string> change_bar_holds;
 
         // Data structures for non-trading day case
         std::unordered_map<std::string, std::unordered_map<std::string, Position>>
@@ -1319,64 +1442,13 @@ int main(int argc, char* argv[]) {
             skip_strategy_processing = true;
         }
 
-        // ========================================
-        // THE STRATEGY FEED (T-7a C4; built here by T-7b-1 C7b R10; LOOP_SPEC v6.1 section 2.1, K-01)
-        // Every bar of the window except the WITHHELD ones: a JUNK bar or a thin first print, on any
-        // date of the window, is never consumed and never fed (K-01 retires the earlier rule, which
-        // withheld only the T-1 bar and fed it as T-2 on the next run). An unconfirmed instrument-id
-        // change the classifier holds is consumed: it is the change bar, held under D37. The
-        // strategies and the PortfolioManager are fed it below, and so are both cost managers
-        // (T-7a_CODE_REVIEW R10: a junk print must not enter the volume and volatility the cost model
-        // reads; K2 reads this feed) and the snapshot risk reader. A non-SESSION symbol is held on
-        // every book today, so it has no fill to cost.
-        // ========================================
-        std::vector<SymbolDayVerdict> k01_withheld;
-        const std::vector<Bar> k01_feed =
-            k01_consumed_bars(session_classifier, all_bars, &k01_withheld);
-        const std::vector<Bar>& strategy_feed_bars = k01_feed;
-        std::vector<std::string> withheld_junk_bars;  // the symbols whose T-1 bar is withheld
-        for (const auto& v : k01_withheld) {
-            if (v.date == t1_classification.t1_date) withheld_junk_bars.push_back(v.symbol);
-        }
-        std::sort(withheld_junk_bars.begin(), withheld_junk_bars.end());
-        // LOOP_SPEC v6.1 sections 2.1, 2.2 (D37): each symbol's roll status on the window's CONSUMED
-        // bars (k01_feed: a withheld bar never walks it), evaluated bar by bar, so a run that consumes
-        // several bars of a symbol (a catch-up after a missed run) reads the status of its LAST one.
-        const auto roll_status = roll_series::roll_status_of(strategy_feed_bars);
-        std::unordered_map<std::string, std::string> last_consumed_date;
-        for (const auto& bar : strategy_feed_bars) {
-            const std::string d = core::format_utc_date(bar.timestamp);
-            auto& last = last_consumed_date[bar.symbol];
-            if (d > last) last = d;
-        }
-        // LOOP_SPEC v6.1 section 6.5 (L-09, D3): this run books the legs of every roll a CONSUMED bar
-        // CONFIRMED after the previous run's T-1, up to its own T-1: one bar a symbol on a daily
-        // chain, several after missed runs. The previous run is the latest date before today with
-        // the book's positions stored: a run stores its legs before its positions, so a run whose
-        // live_results write failed (the run-gap guard above lets the next day run on its stored
-        // book) booked its legs and is a run here. Each roll is booked once; a re-run of today
-        // re-books today's (the sweep below clears them).
-        std::vector<ConfirmedRoll> confirmed_rolls;
-        {
-            auto prev_run = db->get_previous_book_date(combined_strategy_id, portfolio_id, now,
-                                                       "trading.positions");
-            if (prev_run.is_error()) {
-                ERROR("ROLL_LEG STOP: the previous run's date is unreadable (" +
-                      std::string(prev_run.error()->what()) +
-                      "); refusing to run: the rolls to book cannot be bounded");
-                return 1;
-            }
-            const std::string legs_since =
-                live_legs_since(prev_run.value(), t1_classification.t1_date);
-            confirmed_rolls =
-                rolls_confirmed_in(strategy_feed_bars, legs_since, t1_classification.t1_date);
-            for (const auto& r : confirmed_rolls) {
-                INFO("ROLL_CONFIRMED " + r.symbol + " date=" + r.confirm_date + " " + r.outgoing_id +
-                     "->" + r.incoming_id + " closing_px=" + std::to_string(r.closing_price) +
-                     " opening_px=" + std::to_string(r.opening_price) +
-                     " change_bars=" + std::to_string(r.change_bars) +
-                     ": the next consumed bar kept the new id; the legs are booked on this run");
-            }
+        // LOOP_SPEC v6.2 section 6.5: the rolls this run legs (found by state above).
+        for (const auto& r : confirmed_rolls) {
+            INFO("ROLL_CONFIRMED " + r.symbol + " date=" + r.confirm_date + " " + r.outgoing_id +
+                 "->" + r.incoming_id + " closing_px=" + std::to_string(r.closing_price) +
+                 " opening_px=" + std::to_string(r.opening_price) +
+                 " change_bars=" + std::to_string(r.change_bars) +
+                 ": the next consumed bar kept the new id; the legs are booked on this run");
         }
 
         // ========================================
@@ -1509,6 +1581,7 @@ int main(int argc, char* argv[]) {
             // key), so a lap the risk gate cuts fixes it at its held quantity and never cuts it.
             {
                 std::unordered_set<std::string> book_gate_holds;
+                change_bar_holds.clear();
                 for (const auto& symbol : symbols) {
                     if (!t1_classification.is_session(symbol)) book_gate_holds.insert(symbol);
                     // D37 (sections 2.1, 2.2): a symbol whose last consumed bar is pending (a change
@@ -1518,6 +1591,7 @@ int main(int argc, char* argv[]) {
                     const auto rs = roll_status.find(symbol);
                     if (rs == roll_status.end() || !rs->second.holds()) continue;
                     book_gate_holds.insert(symbol);
+                    change_bar_holds.insert(symbol);
                     INFO("CHANGE_BAR_HOLD " + symbol + " date=" + core::format_utc_date(now) +
                          " kind=" +
                          (rs->second.flip ? "flip_revert"
@@ -1777,6 +1851,17 @@ int main(int argc, char* argv[]) {
             price_manager->get_all_previous_day_prices();
         std::unordered_map<std::string, double> two_days_ago_close_prices =
             price_manager->get_all_two_days_ago_prices();
+        // F-2 (LOOP_SPEC v6.2 sections 2.1, 6.1): a WITHHELD T-1 print is not a usable close. The
+        // Day T row of such a symbol is valued at its last consumed close, never at the print.
+        std::unordered_map<std::string, double> day_t_mark_prices = previous_day_close_prices;
+        for (const auto& symbol : withheld_junk_bars) {
+            const auto last_consumed = latest_bars_per_symbol.find(symbol);
+            if (last_consumed != latest_bars_per_symbol.end()) {
+                day_t_mark_prices[symbol] = static_cast<double>(last_consumed->second.close);
+            } else {
+                day_t_mark_prices.erase(symbol);
+            }
+        }
 
         INFO("Retrieved prices from PriceManager: " +
              std::to_string(previous_day_close_prices.size()) + " Day T-1, " +
@@ -1833,7 +1918,7 @@ int main(int argc, char* argv[]) {
         if (!skip_strategy_processing) {
             book_holds = hold_non_session_symbols(strategy_positions_map,
                                                   previous_strategy_positions, t1_classification,
-                                                  now);
+                                                  now, change_bar_holds);
             log_book_holds(book_holds);
             if (!book_holds.empty()) {
                 rebuild_combined_positions(positions, strategy_positions_map);
@@ -1888,21 +1973,14 @@ int main(int argc, char* argv[]) {
 
         double aggregate_yesterday_total_pnl = 0.0;
 
-        // T-ROLLX-FIX (LOOP_SPEC v6.1 sections 2.1, 6.6): the T-1 settlement on the CONSUMED bars. A
-        // symbol whose T-1 bar is a change bar (a roll's switch day or either bar of a flip) or a
-        // WITHHELD bar (K-01) books no move for T-1; every other symbol books T-1 against the close of
-        // its previous CONSUMED bar (a withheld bar between them is skipped), which is the T-2 close
-        // whenever no bar was withheld.
-        const ConsumedT1Settlement t1_settlement =
-            consumed_t1_settlement(strategy_feed_bars, t1_classification.t1_date, roll_status,
-                                   withheld_junk_bars, two_days_ago_close_prices);
+        // The T-1 settlement on the CONSUMED bars, built above the sizing read (D-B).
         const auto& t1_zero_pnl_symbols = t1_settlement.zero_pnl_symbols;
         const auto& t2_consumed_close_prices = t1_settlement.t2_close_prices;
 
         // T-ROLLX-FIX (sections 6.5, 6.6): a T-1 whose only held moves were settled at 0 (change or
         // withheld bars) has a zero aggregate but WAS finalized; the live_results update below must
-        // not skip it.
-        bool t1_finalized_any = false;
+        // not skip it. F-1: the test is on the HELD symbols, not on the universe.
+        bool t1_zero_pnl_held = false;
         if (!two_days_ago_close_prices.empty() && pnl_manager) {
             INFO("Finalizing Day T-1 positions per-strategy...");
 
@@ -1952,7 +2030,7 @@ int main(int argc, char* argv[]) {
                 // Use PnLManager to finalize previous day for this strategy
                 auto finalization_result =
                     pnl_manager->finalize_previous_day(prev_positions_vec,
-                                                       previous_day_close_prices,  // T-1 prices
+                                                       t1_settlement.t1_close_prices,  // T-1 prices
                                                        t2_consumed_close_prices,  // T-2 prices
                                                        strategy_capital,
                                                        0.0,  // Commissions (will be handled later)
@@ -1980,11 +2058,14 @@ int main(int argc, char* argv[]) {
                     for (auto& finalized_pos : finalized_positions) {
                         const auto rs = roll_status.find(finalized_pos.symbol);
                         if (rs != roll_status.end()) finalized_pos.instrument_id = rs->second.held_id;
+                        if (t1_zero_pnl_symbols.count(finalized_pos.symbol) &&
+                            finalized_pos.quantity.as_double() != 0.0) {
+                            t1_zero_pnl_held = true;
+                        }
                     }
 
                     // Store updated positions for yesterday (Day T-1) in database FOR THIS STRATEGY
                     if (!finalized_positions.empty()) {
-                        t1_finalized_any = true;
                         auto update_result =
                             db->store_positions(finalized_positions,
                                                 combined_strategy_id,  // Combined strategy_id
@@ -2032,8 +2113,8 @@ int main(int argc, char* argv[]) {
         for (auto& [symbol, current_position] : positions) {
             // Get Day T-1 close price for this symbol
             double yesterday_close = current_position.average_price.as_double();  // Default
-            if (previous_day_close_prices.find(symbol) != previous_day_close_prices.end()) {
-                yesterday_close = previous_day_close_prices[symbol];
+            if (day_t_mark_prices.find(symbol) != day_t_mark_prices.end()) {
+                yesterday_close = day_t_mark_prices[symbol];
             }
 
             // Set position fields for Day T
@@ -2173,6 +2254,21 @@ int main(int argc, char* argv[]) {
             } else {
                 ERROR("Failed to generate executions for strategy " + strategy_name + ": " +
                       std::string(exec_result.error()->what()));
+                // F-3 (section 6.5): this sleeve books no leg today, and the stored state moves on,
+                // so a roll owed to it would never be legged. A STOP, never a loss.
+                for (const auto& r : confirmed_rolls) {
+                    const auto held = prev_positions_map.find(r.symbol);
+                    if (held == prev_positions_map.end() ||
+                        std::abs(held->second.quantity.as_double()) < 1e-9) {
+                        continue;
+                    }
+                    ERROR("ROLL_LEG STOP " + r.symbol + " (" + strategy_name +
+                          "): the sleeve's executions could not be generated, so its roll confirmed " +
+                          r.confirm_date + " would not be legged. Refusing to run");
+                    std::cerr << "ROLL_LEG STOP " << r.symbol << ": no executions for "
+                              << strategy_name << std::endl;
+                    return 1;
+                }
                 all_strategy_executions[strategy_name] = {};
             }
         }
@@ -2196,8 +2292,8 @@ int main(int argc, char* argv[]) {
                     positions.erase(s);
                     continue;
                 }
-                auto px = previous_day_close_prices.find(s);
-                if (px != previous_day_close_prices.end()) {
+                auto px = day_t_mark_prices.find(s);
+                if (px != day_t_mark_prices.end()) {
                     combined.average_price = Decimal(px->second);
                 }
                 combined.realized_pnl = Decimal(0.0);
@@ -2666,8 +2762,7 @@ int main(int argc, char* argv[]) {
         double yesterday_unrealized_pnl_for_email = 0.0;
 
         if (!two_days_ago_close_prices.empty() &&
-            (aggregate_yesterday_total_pnl != 0.0 ||
-             (!t1_zero_pnl_symbols.empty() && t1_finalized_any)) &&
+            (aggregate_yesterday_total_pnl != 0.0 || t1_zero_pnl_held) &&
             !is_first_trading_day) {
             INFO("STEP 4: Updating Day T-1 live_results with finalized PnL: $" +
                  std::to_string(aggregate_yesterday_total_pnl));
