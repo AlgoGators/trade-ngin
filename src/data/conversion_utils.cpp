@@ -107,6 +107,12 @@ Result<std::vector<Bar>> DataConversionUtils::arrow_table_to_bars(
         }
     }
 
+    // An empty result is an empty set of bars (T-ROLLX-FIX commit 5, finding 2): a table with no
+    // row need not carry a chunk in any column, and chunk(0) of such a column is past the end.
+    if (table->num_rows() == 0) {
+        return Result<std::vector<Bar>>(std::vector<Bar>{});
+    }
+
     try {
         // Get column arrays
         auto time_array = table->GetColumnByName("time")->chunk(0);

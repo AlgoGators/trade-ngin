@@ -354,6 +354,15 @@ Result<BacktestResults> BacktestCoordinator::run_portfolio(
                 }
             }
         } catch (const std::exception& e) {
+            // F-3 (section 6.5, commit 5): the exception path stops on an owed roll exactly as
+            // the error return above does; it never warns and goes on with the roll un-legged.
+            if (auto stop = roll_owed_stop(e.what()); stop.is_error() || roll_leg_stop_) {
+                const std::string what =
+                    stop.is_error() ? std::string(stop.error()->what()) : std::string(e.what());
+                ERROR(what);
+                return make_error<BacktestResults>(ErrorCode::INVALID_DATA, what,
+                                                   "BacktestCoordinator");
+            }
             WARN("Exception processing portfolio data: " + std::string(e.what()));
             if (!equity_curve.empty()) {
                 equity_curve.emplace_back(timestamp, equity_curve.back().second);
@@ -608,6 +617,7 @@ Result<void> BacktestCoordinator::process_portfolio_day(
     std::vector<RiskResult>& /*risk_metrics*/, bool is_warmup, double initial_capital) {
     // risk_metrics is never written: its only writer was the coordinator's own risk gate,
     // which read a risk_manager_ nothing ever assigned, and has been deleted.
+    cycle_rolls_owed_.clear();
     try {
         // BEGINNING-OF-DAY MODEL FOR PORTFOLIO BACKTEST:
         // - Use previous day's bars for signal generation via PortfolioManager
@@ -915,6 +925,21 @@ Result<void> BacktestCoordinator::process_portfolio_day(
         const auto start_of_bar_book = confirmed_now.empty()
                                            ? std::unordered_map<std::string, std::unordered_map<std::string, Position>>{}
                                            : portfolio->get_strategy_positions();
+        // F-3 (commit 5): the rolls owed from here until the legs are booked below (the tracker has
+        // consumed their confirming bars); the day's catch and the run loop's read it.
+        if (!is_warmup) {
+            for (const auto& [symbol, confirm_date] : confirmed_now) {
+                for (const auto& [strategy_id, book] : start_of_bar_book) {
+                    const auto held = book.find(symbol);
+                    if (held == book.end() ||
+                        std::abs(static_cast<double>(held->second.quantity)) < 1e-9) {
+                        continue;
+                    }
+                    cycle_rolls_owed_.push_back(symbol + " (" + strategy_id + ") confirmed " +
+                                                confirm_date);
+                }
+            }
+        }
 
         if (signal_feed->empty()) {
             // Every bar of the signal group is JUNK and nothing is carried: live's feed would hold
@@ -1024,6 +1049,7 @@ Result<void> BacktestCoordinator::process_portfolio_day(
                 }
             }
         }
+        cycle_rolls_owed_.clear();  // booked (or none owed): a later failure of the cycle is not F-3's
 
         // WARMUP HANDLING: keep equity flat, no executions
         if (is_warmup) {
@@ -1537,10 +1563,25 @@ Result<void> BacktestCoordinator::process_portfolio_day(
         return Result<void>();
 
     } catch (const std::exception& e) {
+        // F-3 (section 6.5, commit 5): an exception while a roll is owed is a STOP, as the
+        // PortfolioManager's error return is; the run loop fails the run on roll_leg_stop_.
+        if (auto stop = roll_owed_stop(e.what()); stop.is_error()) return stop;
         return make_error<void>(ErrorCode::UNKNOWN_ERROR,
                                 std::string("Error processing portfolio data: ") + e.what(),
                                 "BacktestCoordinator");
     }
+}
+
+Result<void> BacktestCoordinator::roll_owed_stop(const std::string& what) {
+    if (cycle_rolls_owed_.empty()) return Result<void>();
+    std::string owed;
+    for (const auto& roll : cycle_rolls_owed_) owed += (owed.empty() ? "" : "; ") + roll;
+    cycle_rolls_owed_.clear();
+    roll_leg_stop_ = true;
+    return make_error<void>(ErrorCode::INVALID_DATA,
+                            "ROLL_LEG STOP " + owed + ": the cycle failed (" + what +
+                                ") and the roll would not be legged. Failing the run",
+                            "BacktestCoordinator");
 }
 
 void BacktestCoordinator::reset() {
@@ -1641,6 +1682,7 @@ void BacktestCoordinator::reset_portfolio_state() {
     signal_roll_status_.clear();
     roll_leg_seq_.clear();
     roll_leg_stop_ = false;
+    cycle_rolls_owed_.clear();
     mark_withheld_.clear();
     mark_change_.clear();
     row_held_id_.clear();

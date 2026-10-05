@@ -69,7 +69,7 @@ inline LiveSizingEquity live_sizing_equity(
     const std::unordered_map<std::string, double>& t1_closes,
     const std::unordered_map<std::string, double>& t2_closes,
     const std::function<double(const std::string&)>& point_value,
-    const std::unordered_set<std::string>& zero_settlement_symbols = {}) {
+    const std::unordered_set<std::string>& zero_settlement_symbols) {
     LiveSizingEquity out;
     out.t1_row = t1_row_stored;
     out.day_before = day_before;

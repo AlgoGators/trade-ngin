@@ -536,7 +536,7 @@ TEST_F(LiveSizingCapital, TheRowBeforeDayT1PlusTheSettlementMoveLessDayT1Costs) 
         {{{"MES.v.0", held("MES.v.0", 2.0)}}, {{"ZN.v.0", held("ZN.v.0", 1.0)}}},
         {{"MES.v.0", 7252.50}, {"ZN.v.0", 110.703125}},
         {{"MES.v.0", 7230.00}, {"ZN.v.0", 110.906250}},
-        [&](const std::string& s) { return pnl.get_point_value(s); });
+        [&](const std::string& s) { return pnl.get_point_value(s); }, {});
     EXPECT_NEAR(r.t1_settlement, 21.875, 1e-9);
     EXPECT_NEAR(r.equity, 497'280.0451, 1e-9);
     EXPECT_EQ(r.priced, 2);
@@ -601,7 +601,7 @@ TEST_F(LiveSizingCapital, WithoutADayT1RowTheLatestStoredValueIsTheFigure) {
     LivePnLManager pnl(500'000.0, InstrumentRegistry::instance());
     const auto r = live_sizing_equity(
         false, 503'294.348, 12.5, {{{"MES.v.0", held("MES.v.0", 2.0)}}}, {{"MES.v.0", 7252.50}},
-        {{"MES.v.0", 7230.00}}, [&](const std::string& s) { return pnl.get_point_value(s); });
+        {{"MES.v.0", 7230.00}}, [&](const std::string& s) { return pnl.get_point_value(s); }, {});
     EXPECT_DOUBLE_EQ(r.equity, 503'294.348);
     EXPECT_DOUBLE_EQ(r.t1_settlement, 0.0);
     EXPECT_DOUBLE_EQ(r.t1_costs, 0.0);
@@ -626,7 +626,7 @@ TEST_F(LiveSizingCapital, TheMoveIsWhatPhase5FinalisesPerSleeve) {
     }
     const auto r = live_sizing_equity(true, 500'000.0, 0.0, books, t1, t2, [&](const std::string& s) {
         return pnl.get_point_value(s);
-    });
+    }, {});
     EXPECT_NEAR(r.t1_settlement, finalised, 1e-9);
     // 4 x (7,101.25 - 7,188.75) x 5 - 2 x (111.5 - 111.25) x 1,000 = -1,750 - 500 = -2,250
     EXPECT_NEAR(r.t1_settlement, -2250.0, 1e-9);
@@ -639,7 +639,7 @@ TEST_F(LiveSizingCapital, APositionMissingEitherCloseSettlesNothingAsPhase5Books
         true, 500'000.0, 0.0, {{{"MES.v.0", held("MES.v.0", 2.0)}, {"ZN.v.0", held("ZN.v.0", 1.0)}}},
         {{"MES.v.0", 7252.50}},                        // ZN has no T-1 close (NO_BAR)
         {{"MES.v.0", 7230.00}, {"ZN.v.0", 110.90625}},
-        [&](const std::string& s) { return pnl.get_point_value(s); });
+        [&](const std::string& s) { return pnl.get_point_value(s); }, {});
     EXPECT_NEAR(r.t1_settlement, 225.0, 1e-9);
     EXPECT_EQ(r.priced, 1);
     EXPECT_EQ(r.unpriced, 1);
@@ -757,7 +757,7 @@ protected:
             *loader_, *db_, "LIVE_TREND_FOLLOWING", "BASE_PORTFOLIO", {"A", "B"}, now_, 500'000.0,
             {{"MES.v.0", 7252.50}, {"ZN.v.0", 110.703125}},
             {{"MES.v.0", 7230.00}, {"ZN.v.0", 110.906250}},
-            [&](const std::string& s) { return pnl_.get_point_value(s); });
+            [&](const std::string& s) { return pnl_.get_point_value(s); }, {});
     }
     const Timestamp now_ = Timestamp(std::chrono::seconds(1777334400LL));  // 2026-04-28
     LivePnLManager pnl_{500'000.0, InstrumentRegistry::instance()};
@@ -1034,6 +1034,47 @@ TEST(SizingCapitalWiring, BothFuturesRunnersSizeOnTheEquityBeforeTheRebalance) {
     EXPECT_NE(helper.find("t1_row_stored ? sizing_t1 : now,"), npos);
     EXPECT_NE(helper.find("t1_row_stored ? t1_row.value().daily_transaction_costs : 0.0"), npos);
     EXPECT_EQ(helper.find("current_portfolio_value"), npos);
+}
+
+// T-ROLLX-FIX commit 5 (finding 12; D-B): the other half of the wiring. PHASE 5 finalises Day T-1 on
+// the SAME settlement the sizing read was given: its T-1 map (a late roll's symbol books to its last
+// consumed close), its T-2 map and its zero set. The sizing block's pin above did not cover the
+// finalize call, so a call put back on the price manager's raw T-1 map would size the book on one
+// settlement and store another with every test green.
+TEST(SizingCapitalWiring, Phase5FinalisesOnTheSettlementTheBookWasSizedOn) {
+    const char* const runners[] = {"apps/strategies/live_portfolio_conservative.cpp",
+                                   "apps/strategies/live_portfolio.cpp"};
+    std::string calls[2];
+    for (int i = 0; i < 2; ++i) {
+        const std::string src = read_source(runners[i]);
+        ASSERT_FALSE(src.empty()) << runners[i];
+        const std::string phase5 = between(src, "// PHASE 5: PER-STRATEGY DAY T-1 FINALIZATION",
+                                           "// STEP 2: CREATE TODAY'S (Day T) POSITIONS WITH ZERO PnL");
+        ASSERT_FALSE(phase5.empty()) << runners[i];
+        EXPECT_NE(phase5.find("const auto& t1_zero_pnl_symbols = t1_settlement.zero_pnl_symbols;"), npos)
+            << runners[i];
+        EXPECT_NE(phase5.find("const auto& t2_consumed_close_prices = t1_settlement.t2_close_prices;"), npos)
+            << runners[i];
+        const auto call_at = phase5.find("pnl_manager->finalize_previous_day(prev_positions_vec,");
+        ASSERT_NE(call_at, npos) << runners[i];
+        EXPECT_EQ(phase5.find("pnl_manager->finalize_previous_day(", call_at + 1), npos)
+            << runners[i] << ": one finalize call";
+        const auto call_end = phase5.find(");", call_at);
+        ASSERT_NE(call_end, npos) << runners[i];
+        calls[i] = phase5.substr(call_at, call_end - call_at);
+        const auto t1_at = calls[i].find("t1_settlement.t1_close_prices,");
+        const auto t2_at = calls[i].find("t2_consumed_close_prices,");
+        const auto zero_at = calls[i].find("t1_zero_pnl_symbols");
+        ASSERT_NE(t1_at, npos) << runners[i] << ": PHASE 5 does not finalise on the settlement's T-1 map";
+        ASSERT_NE(t2_at, npos) << runners[i];
+        ASSERT_NE(zero_at, npos) << runners[i];
+        EXPECT_LT(t1_at, t2_at) << runners[i] << ": T-1 prices, then T-2 prices";
+        EXPECT_LT(t2_at, zero_at) << runners[i];
+        EXPECT_EQ(calls[i].find("previous_day_close_prices"), npos)
+            << runners[i] << ": the raw T-1 map, not the settlement's";
+        EXPECT_EQ(calls[i].find("get_all_previous_day_prices"), npos) << runners[i];
+    }
+    EXPECT_EQ(calls[0], calls[1]) << "the twins' finalize calls are byte-identical";
 }
 
 // T-7b-3 R-3 (HD 2026-09-27 ruling 5): both runners route the sizing decision the same way. A

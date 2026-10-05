@@ -447,6 +447,23 @@ public:
                                                 const std::string& table_name = "trading.executions");
 
     /**
+     * @brief T-ROLLX-FIX commit 5 (LOOP_SPEC v6.2 section 6.5): a sleeve's executions of a day on
+     *        which it books ROLL legs, replaced in ONE transaction: the sweep of its ROLL rows dated
+     *        `date` (delete_roll_executions' predicate), the delete of the rows carrying this run's
+     *        order ids (delete_stale_executions' predicate) and the insert (store_executions'
+     *        columns). The live runners store a run's legs BEFORE they re-write the Day T-1
+     *        positions rows, and a re-run reads the contract its stored legs rolled out of; a
+     *        sweep committed apart from the insert left, on a re-run stopped between the two, a
+     *        re-written T-1 row and no leg. Committed whole or not at all.
+     */
+    virtual Result<void> replace_roll_day_executions(const std::vector<ExecutionReport>& executions,
+                                                     const std::string& strategy_id,
+                                                     const std::string& strategy_name,
+                                                     const std::string& portfolio_id,
+                                                     const Timestamp& date,
+                                                     const std::string& table_name);
+
+    /**
      * @brief T-ROLLX (migration 017): the cumulative ROLL cost of the book before `date`: the latest
      *        total_roll_costs stored before `date` (the same row get_previous_live_aggregates reads; 0
      *        when no row exists) PLUS the cost of every ROLL execution stored after that row's date
@@ -1035,6 +1052,11 @@ private:
      *        committed here. The single-write overload wraps this in its own
      *        transaction; the composing overload runs it in the caller's.
      */
+    /// The INSERT of store_executions, on the caller's transaction (store_executions and
+    /// replace_roll_day_executions share it).
+    Result<void> insert_executions_in(pqxx::work& txn, const std::vector<ExecutionReport>& executions,
+                                      const std::string& strategy_id, const std::string& strategy_name,
+                                      const std::string& portfolio_id, const std::string& table_name);
     Result<void> store_positions_in(pqxx::work& txn, const std::vector<Position>& positions,
                                     const std::string& strategy_id,
                                     const std::string& strategy_name,

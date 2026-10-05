@@ -90,7 +90,7 @@ inline LiveSizingRead read_live_sizing_equity(
     double initial_capital, const std::unordered_map<std::string, double>& t1_closes,
     const std::unordered_map<std::string, double>& t2_closes,
     const std::function<double(const std::string&)>& point_value,
-    const std::unordered_set<std::string>& zero_settlement_symbols = {}) {
+    const std::unordered_set<std::string>& zero_settlement_symbols) {
     LiveSizingRead out;
     std::string equity_failure;
     const auto sizing_t1 = now - std::chrono::hours(24);

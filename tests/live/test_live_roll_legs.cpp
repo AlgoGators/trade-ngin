@@ -212,6 +212,112 @@ TEST(LiveRollLegs, EveryRollConfirmedSinceTheRecordedContractIsLegged) {
     EXPECT_NEAR(state.late.at(s).settle_to, 423.0, 1e-9);
 }
 
+// T-ROLLX-FIX commit 5, finding 4: the late sum covers only the bars no earlier run consumed. A bar
+// with NO instrument id is not judged (section 2.2), so an earlier run can consume it, book its
+// move and leave the roll pending. Long 1, multiplier 100:
+//   04-20 400 (OLD)   04-21 410 (NEW, the change bar)   04-22 412 (NEW, confirms: a feed hole,
+//   back-filled after the 04-24 run)   04-23 413 (no id)   04-24 415 (NEW)
+//
+// | run   | T-1 bar, as the run sees it          | books                       | legs       |
+// |-------|--------------------------------------|-----------------------------|------------|
+// | 04-22 | 04-21, the change bar                | 0                           |            |
+// | 04-23 | 04-22, a hole                        | 0                           |            |
+// | 04-24 | 04-23, no id: pending, consumed      | 100 x (413 - 410) = 300     |            |
+// | 04-25 | 04-24; the 04-22 bar is back-filled  | 100 x (415 - 413) = 200     | RC 400, RO 410 |
+//
+// The held contracts moved 412 - 410, 413 - 412 and 415 - 413: 500 in all, the control's total.
+// Summing every consumed bar after the stored state booked 100 x (415 - 410) = 500 on the 04-25 run
+// on top of the 300 the 04-24 run had booked.
+TEST(LiveRollLegs, ALateRollBooksNoBarAnEarlierRunConsumed) {
+    const std::vector<Bar> all = {bar(kZm, "2026-04-20", 400.0, "OLD"), bar(kZm, "2026-04-21", 410.0, "NEW"),
+                                  bar(kZm, "2026-04-22", 412.0, "NEW"), bar(kZm, "2026-04-23", 413.0, ""),
+                                  bar(kZm, "2026-04-24", 415.0, "NEW")};
+    const std::set<std::string> hole = {"2026-04-22"};
+    const LegRun r22 = run_on(all, hole, "2026-04-22", "OLD");
+    const LegRun r23 = run_on(all, hole, "2026-04-23", r22.stored_after);
+    const LegRun r24 = run_on(all, hole, "2026-04-24", r23.stored_after);
+    EXPECT_NEAR(r22.pnl, 0.0, 1e-12);
+    EXPECT_NEAR(r23.pnl, 0.0, 1e-12);
+    EXPECT_NEAR(r24.pnl, 300.0, 1e-9) << "the id-less bar is consumed on its own run";
+    EXPECT_TRUE(r24.rolls.empty());
+    EXPECT_EQ(r24.stored_after, "OLD") << "still pending: an id-less bar confirms nothing";
+    const LegRun r25 = run_on(all, {}, "2026-04-25", r24.stored_after);  // 04-22 back-filled
+    ASSERT_EQ(r25.rolls.size(), 1u);
+    EXPECT_EQ(r25.rolls[0].confirm_date, "2026-04-22");
+    EXPECT_NEAR(r25.rolls[0].closing_price, 400.0, 1e-9);
+    EXPECT_NEAR(r25.rolls[0].opening_price, 410.0, 1e-9);
+    EXPECT_NEAR(r25.pnl, 200.0, 1e-9) << "only the bars no earlier run consumed: 04-22's 200 is "
+                                         "inside the 300 the 04-24 run booked against 410";
+    EXPECT_NEAR(r22.pnl + r23.pnl + r24.pnl + r25.pnl, 500.0, 1e-9);
+    // The control, every bar on its own run: 04-23 legs and books 200, then 100, then 200.
+    const LegRun c23 = run_on(all, {}, "2026-04-23", "OLD");
+    const LegRun c24 = run_on(all, {}, "2026-04-24", c23.stored_after);
+    const LegRun c25 = run_on(all, {}, "2026-04-25", c24.stored_after);
+    ASSERT_EQ(c23.rolls.size(), 1u);
+    EXPECT_NEAR(c23.pnl + c24.pnl + c25.pnl, 500.0, 1e-9);
+    // The id-less bar BEFORE the back-filled confirming bar: it is where the stored book stands and
+    // the sum starts after it. 04-22 413 (no id), 04-23 412 (NEW, confirms, the hole).
+    const std::vector<Bar> before = {bar(kZm, "2026-04-20", 400.0, "OLD"), bar(kZm, "2026-04-21", 410.0, "NEW"),
+                                     bar(kZm, "2026-04-22", 413.0, ""), bar(kZm, "2026-04-23", 412.0, "NEW"),
+                                     bar(kZm, "2026-04-24", 415.0, "NEW")};
+    const std::set<std::string> hole2 = {"2026-04-23"};
+    const LegRun b23 = run_on(before, hole2, "2026-04-23", "OLD");
+    const LegRun b24 = run_on(before, hole2, "2026-04-24", b23.stored_after);
+    const LegRun b25 = run_on(before, {}, "2026-04-25", b24.stored_after);
+    EXPECT_NEAR(b23.pnl, 300.0, 1e-9);
+    EXPECT_NEAR(b24.pnl, 0.0, 1e-12);
+    ASSERT_EQ(b25.rolls.size(), 1u);
+    EXPECT_NEAR(b25.pnl, 100.0 * (415.0 - 413.0), 1e-9);
+}
+
+// T-ROLLX-FIX commit 5, finding 5: a contract that recurs. The stored row says H; the bars of 04-21
+// to 04-23 are back-filled, and with them the book left H (04-22 confirms K) and came back to it
+// (04-24, the T-1 bar, confirms H again). The stored row was written before the T-1 bar was
+// consumed, so the book stands in the FIRST H segment and both rolls are owed. Reading the last bar
+// held in H, the T-1 bar itself, placed the book after both and legged the second only.
+//   04-20 400 (H)  04-21 410 (K, change)  04-22 412 (K, confirms)  04-23 405 (H, change)
+//   04-24 407 (H, confirms)
+// Unbooked: 04-22's 412 - 410 and 04-24's 407 - 405; the two change bars book 0.
+TEST(LiveRollLegs, ARecurringContractWithBothRollsOwedLegsBoth) {
+    const std::string s = "ZC.v.0";
+    const std::vector<Bar> all = {bar(s, "2026-04-20", 400.0, "H"), bar(s, "2026-04-21", 410.0, "K"),
+                                  bar(s, "2026-04-22", 412.0, "K"), bar(s, "2026-04-23", 405.0, "H"),
+                                  bar(s, "2026-04-24", 407.0, "H")};
+    const auto state = live_rolls_by_state(all, {{s, "H"}}, "2026-04-24");
+    EXPECT_TRUE(state.unplaced.empty());
+    ASSERT_EQ(state.rolls.size(), 2u) << "H -> K and K -> H are both owed";
+    EXPECT_EQ(state.rolls[0].confirm_date, "2026-04-22");
+    EXPECT_EQ(state.rolls[0].outgoing_id, "H");
+    EXPECT_EQ(state.rolls[0].incoming_id, "K");
+    EXPECT_NEAR(state.rolls[0].closing_price, 400.0, 1e-9);
+    EXPECT_NEAR(state.rolls[0].opening_price, 410.0, 1e-9);
+    EXPECT_EQ(state.rolls[1].confirm_date, "2026-04-24");
+    EXPECT_EQ(state.rolls[1].outgoing_id, "K");
+    EXPECT_EQ(state.rolls[1].incoming_id, "H");
+    EXPECT_NEAR(state.rolls[1].closing_price, 412.0, 1e-9);
+    EXPECT_NEAR(state.rolls[1].opening_price, 405.0, 1e-9);
+    ASSERT_TRUE(state.late.count(s));
+    EXPECT_NEAR(state.late.at(s).settle_to - state.late.at(s).settle_from, 2.0 + 2.0, 1e-9);
+    // The same recurrence already behind the stored row (two more bars in H, every run on time):
+    // the row was written in the second H segment and nothing is owed.
+    auto later = all;
+    later.push_back(bar(s, "2026-04-27", 409.0, "H"));
+    later.push_back(bar(s, "2026-04-28", 411.0, "H"));
+    const auto settled = live_rolls_by_state(later, {{s, "H"}}, "2026-04-28");
+    EXPECT_TRUE(settled.rolls.empty());
+    EXPECT_TRUE(settled.late.empty());
+    EXPECT_TRUE(settled.unplaced.empty());
+    // A row already re-written after its T-1 bar, the only bar held in the contract: the T-1 bar
+    // places it, and the roll that bar confirms is owed to this run.
+    const std::vector<Bar> first = {bar(s, "2026-04-20", 400.0, "H"), bar(s, "2026-04-21", 410.0, "K"),
+                                    bar(s, "2026-04-22", 412.0, "K")};
+    const auto rewritten = live_rolls_by_state(first, {{s, "K"}}, "2026-04-22");
+    EXPECT_TRUE(rewritten.unplaced.empty());
+    ASSERT_EQ(rewritten.rolls.size(), 1u);
+    EXPECT_EQ(rewritten.rolls[0].confirm_date, "2026-04-22");
+    EXPECT_TRUE(rewritten.late.empty());
+}
+
 TEST(LiveRollLegs, TheIdDateIsTheConfirmingBarsCompactDate) {
     EXPECT_EQ(compact_date("2026-05-03"), "20260503");
 }

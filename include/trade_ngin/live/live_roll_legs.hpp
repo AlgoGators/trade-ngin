@@ -32,10 +32,11 @@ namespace trade_ngin {
  *   a re-run            the first run re-wrote the T-1 row with the contract held after the T-1 bar,
  *                       so the caller passes the contract its stored legs rolled out of
  *                       (PostgresDatabase::get_stored_roll_contracts) as the recorded one.
- *   a replay after a    the T-1 row was re-written and no leg was stored: a roll the T-1 bar itself
- *   stopped run         confirms is always owed to the run whose T-1 it is, so it is legged whatever
- *                       the row says. (A LATE confirming bar on such a replay is not recoverable from
- *                       the rows: the state is gone with the re-write.)
+ *   a replay after a    the runner stores a run's legs BEFORE it re-writes the T-1 row (commit 5), so a
+ *   stopped run         stopped run leaves either the row as it was (the roll is still owed) or the
+ *                       legs (the re-run case). A row re-written with no leg stored (a run of an older
+ *                       binary): a roll the T-1 bar itself confirms is always owed to the run whose
+ *                       T-1 it is, so it is legged whatever the row says.
  *   no recorded         a symbol with no stored row, or a row written before migration 016: the roll
  *   contract            its T-1 bar confirms, as before.
  *
@@ -54,10 +55,17 @@ struct ConfirmedRoll {
 
 /**
  * @brief The move a run books for a symbol whose roll it legs LATE (a confirming bar dated before
- *        T-1): no earlier run consumed a bar after the pending change (the first one that did would
- *        have confirmed the roll), so every consumed bar after the stored state is unbooked. The T-1
- *        row books them all: `settle_to` - `settle_from` in price points per contract, the sum of
- *        each such bar's move against its previous consumed close, 0 on a change bar (section 6.6).
+ *        T-1): the consumed bars after the stored state that no earlier run consumed. The T-1 row
+ *        books them all: `settle_to` - `settle_from` in price points per contract, the sum of each
+ *        such bar's move against its previous consumed close, 0 on a change bar (section 6.6).
+ *
+ *        Which bars an earlier run consumed: an id-carrying bar after the pending change would have
+ *        confirmed, reverted or extended it on its own run, so none of those was consumed. A bar
+ *        with NO id is not judged (section 2.2): an earlier run can consume it, book its move and
+ *        leave the roll pending. Every id-less bar after the stored state and dated before T-1 is
+ *        therefore taken as consumed on its own run, its move booked against that run's previous
+ *        consumed close, and is left out of the late sum (commit 5, finding 4: with the confirming
+ *        bar back-filled BEHIND such a bar the sum booked its move twice).
  */
 struct LateRollSettlement {
     double settle_to{0.0};    ///< the symbol's last consumed close (dated T-1 or earlier)
@@ -85,6 +93,7 @@ inline LiveRollState live_rolls_by_state(
         struct Step {
             std::string date;
             double close;
+            bool idless;
             roll_series::RollTracker::Status status;
         };
         std::vector<Step> steps;
@@ -92,20 +101,31 @@ inline LiveRollState live_rolls_by_state(
         for (const auto& [ts, bar] : series) {
             const std::string d = core::format_utc_date(ts);
             if (d > t1_date) break;
-            steps.push_back({d, static_cast<double>(bar->close),
+            steps.push_back({d, static_cast<double>(bar->close), bar->instrument_id.empty(),
                              tracker.add(bar->instrument_id, static_cast<double>(bar->close))});
         }
         const auto rec = recorded_contract.find(symbol);
         const bool recorded = rec != recorded_contract.end() && !rec->second.empty();
-        // Where the stored book stands: the last bar held in the recorded contract.
+        // Where the stored book stands. The stored row is dated T-1 and was written by the run
+        // before this one, which had not consumed the T-1 bar: its contract is the one held after a
+        // bar dated BEFORE the row's date. The book stands at the last such bar held in the recorded
+        // contract, so a contract that recurs (A, B, A, the second A confirmed by the T-1 bar) is
+        // placed in the segment the row was written in and both rolls are owed (commit 5, finding
+        // 5; the last bar held in the contract, the T-1 bar included, read that as nothing owed
+        // before T-1). Only when no earlier bar is held in it does the T-1 bar place it: a row
+        // already re-written after the T-1 bar.
         int stands = -1;
         if (recorded) {
+            int at_t1 = -1;
             for (int i = static_cast<int>(steps.size()) - 1; i >= 0; --i) {
-                if (steps[i].status.held_id == rec->second) {
+                if (steps[i].status.held_id != rec->second) continue;
+                if (steps[i].date < t1_date) {
                     stands = i;
                     break;
                 }
+                at_t1 = i;
             }
+            if (stands < 0) stands = at_t1;
             if (stands < 0) {
                 out.unplaced.push_back(symbol);
                 continue;
@@ -123,9 +143,13 @@ inline LiveRollState live_rolls_by_state(
         }
         if (late) {
             double unbooked = 0.0;
+            // The last bar after the stored state an earlier run consumed (see LateRollSettlement).
+            int booked_to = stands;
             for (int i = stands + 1; i < static_cast<int>(steps.size()); ++i) {
                 if (!steps[i].status.change) unbooked += steps[i].close - steps[i - 1].close;
+                if (steps[i].idless && steps[i].date < t1_date) booked_to = i;
             }
+            unbooked -= steps[booked_to].close - steps[stands].close;
             out.late[symbol] = {steps.back().close, steps.back().close - unbooked};
         }
     }

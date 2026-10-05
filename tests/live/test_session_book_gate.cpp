@@ -164,7 +164,7 @@ TEST(SessionBookGate, AFeedHoleSymbolIsHeldAndNotFilledAtItsStaleMark) {
 
     StrategyBooks today{{"TREND_FOLLOWING", {{"MYM.v.0", pos("MYM.v.0", 2, 49707)},
                                              {"MES.v.0", pos("MES.v.0", 3, 7150)}}}};
-    const auto holds = hold_non_session_symbols(today, prev, t1, run_instant());
+    const auto holds = hold_non_session_symbols(today, prev, t1, run_instant(), {});
     ASSERT_EQ(holds.size(), 1u);
     EXPECT_EQ(holds[0].symbol, "MYM.v.0");
     EXPECT_EQ(holds[0].verdict, SessionVerdict::NO_BAR_FEED_HOLE);
@@ -195,7 +195,7 @@ TEST(SessionBookGate, AJunkSymbolIsHeldAlthoughItHasAT1Price) {
         {"MES.v.0", 7150.0}, {"6L.v.0", 0.1992}, {"ZC.v.0", 462.0}};
     StrategyBooks prev{{"TREND_FOLLOWING", {{"6L.v.0", pos("6L.v.0", 2, 0.199)}}}};
     StrategyBooks today{{"TREND_FOLLOWING", {{"6L.v.0", pos("6L.v.0", 3, 0.199)}}}};
-    const auto holds = hold_non_session_symbols(today, prev, t1, run_instant());
+    const auto holds = hold_non_session_symbols(today, prev, t1, run_instant(), {});
     ASSERT_EQ(holds.size(), 1u);
     EXPECT_EQ(holds[0].verdict, SessionVerdict::JUNK);
     EXPECT_DOUBLE_EQ(today["TREND_FOLLOWING"]["6L.v.0"].quantity.as_double(), 2.0);
@@ -260,7 +260,7 @@ TEST(SessionBookGate, EveryPerStrategyBookIsHeldEachAtItsOwnStoredQuantity) {
                        {"TREND_FOLLOWING_FAST", {{"MYM.v.0", pos("MYM.v.0", -2, 49707)}}}};
     StrategyBooks today{{"TREND_FOLLOWING", {{"MYM.v.0", pos("MYM.v.0", 3, 49707)}}},
                         {"TREND_FOLLOWING_FAST", {{"MYM.v.0", pos("MYM.v.0", 0, 49707)}}}};
-    const auto holds = hold_non_session_symbols(today, prev, t1, run_instant());
+    const auto holds = hold_non_session_symbols(today, prev, t1, run_instant(), {});
     ASSERT_EQ(holds.size(), 2u);
     EXPECT_EQ(holds[0].strategy_name, "TREND_FOLLOWING");
     EXPECT_EQ(holds[1].strategy_name, "TREND_FOLLOWING_FAST");
@@ -275,7 +275,7 @@ TEST(SessionBookGate, AHeldSymbolAbsentFromTodaysTargetIsReinsertedNotClosedOut)
     const auto t1 = april_t1();
     StrategyBooks prev{{"TREND_FOLLOWING", {{"MYM.v.0", pos("MYM.v.0", 1, 49707)}}}};
     StrategyBooks today{{"TREND_FOLLOWING", {}}};
-    const auto holds = hold_non_session_symbols(today, prev, t1, run_instant());
+    const auto holds = hold_non_session_symbols(today, prev, t1, run_instant(), {});
     ASSERT_EQ(holds.size(), 1u);
     EXPECT_TRUE(holds[0].reinserted);
     ASSERT_TRUE(today["TREND_FOLLOWING"].count("MYM.v.0"));
@@ -297,7 +297,7 @@ TEST(SessionBookGate, APositionOpenedFromFlatWithoutASessionStaysFlat) {
     ASSERT_EQ(t1.find("ZC.v.0")->verdict, SessionVerdict::NO_BAR_CLOSURE);
     StrategyBooks prev{{"TREND_FOLLOWING", {}}};
     StrategyBooks today{{"TREND_FOLLOWING", {{"ZC.v.0", pos("ZC.v.0", 1, 448.25)}}}};
-    const auto holds = hold_non_session_symbols(today, prev, t1, run_instant());
+    const auto holds = hold_non_session_symbols(today, prev, t1, run_instant(), {});
     ASSERT_EQ(holds.size(), 1u);
     EXPECT_DOUBLE_EQ(today["TREND_FOLLOWING"]["ZC.v.0"].quantity.as_double(), 0.0);
 }
@@ -308,7 +308,7 @@ TEST(SessionBookGate, AnUnchangedHeldSymbolAndASessionSymbolAreLeftAlone) {
                                             {"ZC.v.0", pos("ZC.v.0", 1, 460)}}}};
     StrategyBooks today{{"TREND_FOLLOWING", {{"MYM.v.0", pos("MYM.v.0", 1, 49707)},
                                              {"ZC.v.0", pos("ZC.v.0", 4, 462)}}}};
-    EXPECT_TRUE(hold_non_session_symbols(today, prev, t1, run_instant()).empty());
+    EXPECT_TRUE(hold_non_session_symbols(today, prev, t1, run_instant(), {}).empty());
     EXPECT_DOUBLE_EQ(today["TREND_FOLLOWING"]["ZC.v.0"].quantity.as_double(), 4.0);
 }
 
@@ -316,7 +316,7 @@ TEST(SessionBookGate, ASymbolNobodyClassifiedIsHeld) {
     const auto t1 = april_t1();
     StrategyBooks prev{{"TREND_FOLLOWING", {}}};
     StrategyBooks today{{"TREND_FOLLOWING", {{"NEW.v.0", pos("NEW.v.0", 1, 10)}}}};
-    const auto holds = hold_non_session_symbols(today, prev, t1, run_instant());
+    const auto holds = hold_non_session_symbols(today, prev, t1, run_instant(), {});
     ASSERT_EQ(holds.size(), 1u);
     EXPECT_DOUBLE_EQ(today["TREND_FOLLOWING"]["NEW.v.0"].quantity.as_double(), 0.0);
 }

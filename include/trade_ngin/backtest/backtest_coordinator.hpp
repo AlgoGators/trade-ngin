@@ -117,6 +117,14 @@ private:
     /// ids' sequence numbers); a ROLL_LEG STOP fails the run (code review X-3).
     std::unordered_map<std::string, size_t> roll_leg_seq_;
     bool roll_leg_stop_ = false;
+    /// T-ROLLX-FIX commit 5 (F-3, section 6.5): the rolls this cycle's signal feed confirmed for a
+    /// sleeve that holds the symbol ("<symbol> (<sleeve>) confirmed <date>"), from the moment the
+    /// roll tracker has consumed the confirming bars until the legs are booked. A cycle that ends
+    /// in between, by an error return or by an exception, would leave them un-legged for good.
+    std::vector<std::string> cycle_rolls_owed_;
+    /// The ROLL_LEG STOP of a cycle that failed with `what` while rolls are owed; an OK result
+    /// when none is. Sets roll_leg_stop_.
+    Result<void> roll_owed_stop(const std::string& what);
     /// T-7b-1 C7 (RA-01): one RISK_SCALE_REPORT line per post-warmup rebalance. Futures only
     /// (run_portfolio with AssetClass::FUTURES), like the session hold; the equity backtest's log
     /// is untouched.

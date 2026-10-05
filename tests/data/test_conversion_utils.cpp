@@ -10,6 +10,7 @@
 #include <arrow/api.h>
 #include <arrow/builder.h>
 #include <chrono>
+#include <cstdlib>
 #include <memory>
 
 // Pre-load std headers before flipping the macro so libc++ internals stay
@@ -84,6 +85,40 @@ std::shared_ptr<arrow::Table> build_table(int rows, bool null_open = false) {
 class ConversionUtilsTest : public ::testing::Test {};
 
 // ===== arrow_table_to_bars =====
+
+// T-ROLLX-FIX commit 5 (finding 2): an empty result set is an empty set of bars. A zero-row table
+// need not carry a chunk in any column (PostgresDatabase built its empty table on null arrays) and
+// chunk(0) of such a column is past the end: the live runner's classifier-history load died on an
+// empty prefix with exit 139 and no message. Run in a child process, so a crash is a failed test.
+TEST_F(ConversionUtilsTest, AnEmptyTableIsAnEmptyVectorOfBars) {
+    auto schema = arrow::schema({
+        arrow::field("time", arrow::timestamp(arrow::TimeUnit::SECOND)),
+        arrow::field("symbol", arrow::utf8()),
+        arrow::field("open", arrow::float64()),
+        arrow::field("high", arrow::float64()),
+        arrow::field("low", arrow::float64()),
+        arrow::field("close", arrow::float64()),
+        arrow::field("volume", arrow::float64()),
+    });
+    std::vector<std::shared_ptr<arrow::ChunkedArray>> no_chunks;
+    for (const auto& field : schema->fields()) {
+        no_chunks.push_back(std::make_shared<arrow::ChunkedArray>(arrow::ArrayVector{}, field->type()));
+    }
+    const auto table = arrow::Table::Make(schema, no_chunks, 0);
+    ASSERT_EQ(table->num_rows(), 0);
+    EXPECT_EXIT(
+        {
+            auto r = DataConversionUtils::arrow_table_to_bars(table);
+            std::_Exit(r.is_ok() && r.value().empty() ? 0 : 1);
+        },
+        ::testing::ExitedWithCode(0), "");
+    // The table arrow itself calls empty (one zero-length chunk a column) converts the same way.
+    auto made = arrow::Table::MakeEmpty(schema);
+    ASSERT_TRUE(made.ok());
+    auto r = DataConversionUtils::arrow_table_to_bars(made.ValueOrDie());
+    ASSERT_TRUE(r.is_ok());
+    EXPECT_TRUE(r.value().empty());
+}
 
 TEST_F(ConversionUtilsTest, NullTableReturnsInvalidArgumentError) {
     std::shared_ptr<arrow::Table> empty;

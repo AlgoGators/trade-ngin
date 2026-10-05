@@ -1107,7 +1107,7 @@ int main(int argc, char* argv[]) {
                 trade_ngin::DataFrequency::DAILY, "ohlcv");
             MarketDataBus::instance().set_publish_enabled(true);
             if (history_result.is_error()) {
-                ERROR("Failed to load the session classifier's history before the window: " +
+                ERROR("T1_CLASSIFIER history: failed to load the bars before the window: " +
                       std::string(history_result.error()->what()) +
                       ". Refusing to run: the window's first bars cannot be judged.");
                 return 1;
@@ -1115,7 +1115,7 @@ int main(int argc, char* argv[]) {
             auto history_bars =
                 trade_ngin::DataConversionUtils::arrow_table_to_bars(history_result.value());
             if (history_bars.is_error()) {
-                ERROR("Failed to convert the session classifier's history to bars: " +
+                ERROR("T1_CLASSIFIER history: failed to convert the bars before the window: " +
                       std::string(history_bars.error()->what()) +
                       ". Refusing to run: the window's first bars cannot be judged.");
                 return 1;
@@ -1231,7 +1231,15 @@ int main(int argc, char* argv[]) {
                 auto stored_book = db->load_positions_by_date(
                     combined_strategy_id, sleeve, coordinator_config.portfolio_id,
                     now - std::chrono::hours(24), "trading.positions");
-                if (stored_book.is_error()) continue;  // the sizing read below refuses the run on it
+                if (stored_book.is_error()) {
+                    ERROR("ROLL_LEG STOP: sleeve " + sleeve + "'s stored Day T-1 book is unreadable (" +
+                          std::string(stored_book.error()->what()) +
+                          "); refusing to run: the contract it holds, and so the rolls to book, "
+                          "cannot be told");
+                    std::cerr << "ROLL_LEG STOP: sleeve " << sleeve
+                              << "'s stored Day T-1 book is unreadable" << std::endl;
+                    return 1;
+                }
                 for (const auto& [symbol, position] : stored_book.value()) {
                     if (position.quantity.as_double() == 0.0) continue;
                     auto& contract = recorded_contract[symbol];
@@ -1260,7 +1268,12 @@ int main(int argc, char* argv[]) {
                 }
                 ERROR("ROLL_LEG STOP: the contract recorded on the stored T-1 row is at no consumed "
                       "bar of the window for " + unplaced +
-                      "; refusing to run: the rolls to book cannot be told");
+                      "; refusing to run: the rolls to book cannot be told. The instrument_id on "
+                      "that symbol's stored T-1 trading.positions row does not appear on the "
+                      "consumed bars. Remedy: restore the symbol's bars or their instrument ids "
+                      "(futures_data.ohlcv_1d, futures_data.ohlcv_1d_raw), or set that row's "
+                      "instrument_id to NULL, after which the run legs only a roll its T-1 bar "
+                      "confirms. Every run refuses until then.");
                 return 1;
             }
         }
@@ -1981,6 +1994,12 @@ int main(int argc, char* argv[]) {
         // withheld bars) has a zero aggregate but WAS finalized; the live_results update below must
         // not skip it. F-1: the test is on the HELD symbols, not on the universe.
         bool t1_zero_pnl_held = false;
+        // T-ROLLX-FIX commit 5 (section 6.5): the finalized Day T-1 rows carry the contract held
+        // AFTER the T-1 bar, and the stored row's contract is the state the roll legs are booked
+        // from. They are computed here and written only after the day's executions are stored
+        // (below), so a run stopped anywhere leaves either the T-1 rows as they were (the replay
+        // legs the same rolls and books the same late moves) or the stored legs a re-run reads.
+        std::vector<std::pair<std::string, std::vector<Position>>> t1_position_rewrites;
         if (!two_days_ago_close_prices.empty() && pnl_manager) {
             INFO("Finalizing Day T-1 positions per-strategy...");
 
@@ -2064,25 +2083,10 @@ int main(int argc, char* argv[]) {
                         }
                     }
 
-                    // Store updated positions for yesterday (Day T-1) in database FOR THIS STRATEGY
+                    // The Day T-1 rows of this strategy, written after the executions (commit 5).
                     if (!finalized_positions.empty()) {
-                        auto update_result =
-                            db->store_positions(finalized_positions,
-                                                combined_strategy_id,  // Combined strategy_id
-                                                strategy_name,         // Individual strategy_name
-                                                portfolio_id,          // Portfolio identifier
-                                                "trading.positions");
-
-                        if (update_result.is_error()) {
-                            ERROR("Failed to update Day T-1 positions for strategy " +
-                                  strategy_name + ": " +
-                                  std::string(update_result.error()->what()));
-                        } else {
-                            INFO("Successfully updated " +
-                                 std::to_string(result.finalized_positions.size()) +
-                                 " Day T-1 positions with finalized PnL for strategy: " +
-                                 strategy_name);
-                        }
+                        t1_position_rewrites.emplace_back(strategy_name,
+                                                          std::move(finalized_positions));
                     }
                 } else {
                     ERROR("PnLManager failed to finalize Day T-1 for strategy " + strategy_name +
@@ -2361,7 +2365,17 @@ int main(int argc, char* argv[]) {
 
         // Section 6.5: the re-run sweep by type. Every sleeve's ROLL rows dated today are deleted
         // before this run's legs are stored, so a re-run that no longer rolls leaves none.
+        // T-ROLLX-FIX commit 5: a sleeve that stores ROLL legs on this run is swept inside the
+        // transaction that stores them (below), so its legs are never deleted and not re-stored.
+        auto roll_legs_of = [&](const std::string& sleeve) {
+            const auto it = all_strategy_executions.find(sleeve);
+            if (it == all_strategy_executions.end()) return std::ptrdiff_t{0};
+            return std::count_if(it->second.begin(), it->second.end(), [](const ExecutionReport& e) {
+                return e.execution_type == ExecutionType::ROLL;
+            });
+        };
         for (const auto& strategy_name_rl : strategy_names) {
+            if (roll_legs_of(strategy_name_rl) > 0) continue;
             auto sweep = db->delete_roll_executions(now, strategy_name_rl, portfolio_id,
                                                     "trading.executions");
             if (sweep.is_error()) {
@@ -2374,6 +2388,33 @@ int main(int argc, char* argv[]) {
 
         // Store executions for each strategy
         for (const auto& [strategy_name, executions] : all_strategy_executions) {
+            // T-ROLLX-FIX commit 5 (section 6.5): a sleeve with ROLL legs. Its rows replace the
+            // day's in ONE transaction (the ROLL sweep, the stale-order-id delete, the insert), and
+            // a failure is a STOP before any position or result is written: the legs' costs are in
+            // today's totals and the Day T-1 rows below would move the state the legs are owed from.
+            if (const auto roll_legs = roll_legs_of(strategy_name); roll_legs > 0) {
+                INFO("ROLL_LEG store " + strategy_name + ": " + std::to_string(executions.size()) +
+                     " executions (" + std::to_string(roll_legs) +
+                     " ROLL legs) replace the sleeve's ROLL rows of the day and its rows of the "
+                     "same order ids in one transaction, before the Day T-1 rows are re-written");
+                auto replaced = db->replace_roll_day_executions(
+                    executions, combined_strategy_id, strategy_name, portfolio_id, now,
+                    "trading.executions");
+                if (replaced.is_error()) {
+                    ERROR("ROLL_LEG STOP " + strategy_name + ": the day's executions could not be "
+                          "stored (" + std::string(replaced.error()->what()) + ") and " +
+                          std::to_string(roll_legs) +
+                          " ROLL legs are owed. Refusing to run: no position and no result is "
+                          "written; the stored state is the state before this run, so running "
+                          "this date again legs the same rolls");
+                    std::cerr << "ROLL_LEG STOP " << strategy_name
+                              << ": the day's executions could not be stored" << std::endl;
+                    return 1;
+                }
+                INFO("Successfully stored " + std::to_string(executions.size()) +
+                     " executions for strategy: " + strategy_name);
+                continue;
+            }
             if (!executions.empty()) {
                 // Before inserting, delete any stale executions for today with the same order_ids
                 try {
@@ -2425,6 +2466,25 @@ int main(int argc, char* argv[]) {
                 }
             } else {
                 INFO("No executions to store for strategy: " + strategy_name);
+            }
+        }
+
+        // T-ROLLX-FIX commit 5: the Day T-1 rows PHASE 5 finalized, written now that the day's
+        // executions (the ROLL legs first of all) are stored.
+        for (const auto& [strategy_name, finalized_positions] : t1_position_rewrites) {
+            auto update_result =
+                db->store_positions(finalized_positions,
+                                    combined_strategy_id,  // Combined strategy_id
+                                    strategy_name,         // Individual strategy_name
+                                    portfolio_id,          // Portfolio identifier
+                                    "trading.positions");
+
+            if (update_result.is_error()) {
+                ERROR("Failed to update Day T-1 positions for strategy " + strategy_name + ": " +
+                      std::string(update_result.error()->what()));
+            } else {
+                INFO("Successfully updated " + std::to_string(finalized_positions.size()) +
+                     " Day T-1 positions with finalized PnL for strategy: " + strategy_name);
             }
         }
 

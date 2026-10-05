@@ -207,7 +207,7 @@ inline ConsumedT1Settlement consumed_t1_settlement(
     const std::unordered_map<std::string, roll_series::RollTracker::Status>& roll_status,
     const std::vector<std::string>& withheld_t1_symbols,
     const std::unordered_map<std::string, double>& raw_t2,
-    const std::unordered_map<std::string, double>& raw_t1 = {},
+    const std::unordered_map<std::string, double>& raw_t1,
     const std::unordered_map<std::string, LateRollSettlement>& late_rolls = {}) {
     ConsumedT1Settlement out;
     out.zero_pnl_symbols.insert(withheld_t1_symbols.begin(), withheld_t1_symbols.end());
@@ -268,7 +268,7 @@ struct BookHold {
  */
 inline std::vector<BookHold> hold_non_session_symbols(
     StrategyBooks& books, const StrategyBooks& previous, const T1Classification& t1,
-    const Timestamp& now, const std::unordered_set<std::string>& change_bar_holds = {}) {
+    const Timestamp& now, const std::unordered_set<std::string>& change_bar_holds) {
     static const std::unordered_map<std::string, Position> kEmpty;
     std::vector<BookHold> holds;
     // Held under D37 alone: the verdict would have let it trade.
