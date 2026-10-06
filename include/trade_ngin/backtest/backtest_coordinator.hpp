@@ -104,6 +104,13 @@ private:
     /// CONSUMED sequence (the bars fed to the strategies; a withheld bar never walks it), and the
     /// status of its last consumed bar, which decides the change-bar hold of every rebalance until
     /// the symbol's next consumed bar.
+    /// Loads the bars before the window, K-01-filters them with their own classifier
+    /// (live/live_estimator_history.hpp) and seeds the sleeves' estimator history with the consumed
+    /// ones (futures books).
+    Result<void> seed_estimator_history(std::shared_ptr<PortfolioManager> portfolio,
+                                        const std::vector<std::string>& symbols,
+                                        const Timestamp& start_date, AssetClass asset_class,
+                                        DataFrequency data_freq);
     std::unordered_map<std::string, roll_series::RollTracker> roll_trackers_;
     std::map<std::string, roll_series::RollTracker::Status> signal_roll_status_;
     /// T-ROLLX-FIX (LOOP_SPEC v6.1 sections 2.1, 6.6, 7): this cycle's own bar group as the marks

@@ -57,6 +57,18 @@ public:
         for (const auto& b : fed) consumed_[b.symbol].push_back(b);
     }
 
+    /// The bars before the run's window that seed the estimators' history: the consumed ones join
+    /// the symbol's consumed sequence (the series is built over all of it; series.csv writes the
+    /// window's rows only) and the withheld ones join the withheld set. No calendar date, no hold.
+    void add_history(const std::vector<SymbolDayVerdict>& withheld, const std::vector<Bar>& fed) {
+        if (!enabled()) return;
+        for (const auto& v : withheld) withheld_.emplace_back(v.date, v.symbol);
+        for (const auto& b : fed) {
+            consumed_[b.symbol].push_back(b);
+            ++history_bars_[b.symbol];
+        }
+    }
+
     struct FinalMark {
         std::string symbol, date, instrument_id, held_id;
         double close{0.0};
@@ -90,13 +102,28 @@ public:
                 ids.push_back(b.instrument_id);
             }
             const roll_series::Series s = roll_series::build_series(raw, ids);
-            for (size_t t = 0; t < bars.size(); ++t) {
+            const auto seeded = history_bars_.find(symbol);
+            const size_t first_window_bar = seeded == history_bars_.end() ? 0 : seeded->second;
+            for (size_t t = first_window_bar; t < bars.size(); ++t) {
                 ser << symbol << ","
                     << SessionClassifier::ymd(SessionClassifier::day_of(bars[t].timestamp)) << ","
                     << num(raw[t]) << "," << ids[t] << "," << int(s.flags.change[t]) << ","
                     << int(s.flags.confirm[t]) << "," << int(s.flags.flip[t]) << ","
                     << int(s.flags.pending[t]) << "," << s.flags.held_id[t] << ","
                     << num(s.adjusted[t]) << "," << num(t == 0 ? 0.0 : s.returns[t - 1]) << "\n";
+            }
+        }
+        // The history before the window, as it was seeded: one row per consumed bar.
+        std::ofstream hist(dir_ + "/history.csv");
+        if (!hist) return false;
+        hist << "symbol,date,close,instrument_id\n";
+        for (const auto& [symbol, bars] : consumed_) {
+            const auto seeded = history_bars_.find(symbol);
+            const size_t count = seeded == history_bars_.end() ? 0 : seeded->second;
+            for (size_t t = 0; t < count; ++t) {
+                hist << symbol << ","
+                     << SessionClassifier::ymd(SessionClassifier::day_of(bars[t].timestamp)) << ","
+                     << num(static_cast<double>(bars[t].close)) << "," << bars[t].instrument_id << "\n";
             }
         }
         std::ofstream fm(dir_ + "/final_marks.csv");
@@ -121,6 +148,7 @@ private:
     std::vector<std::pair<std::string, std::string>> hold_;
     std::vector<std::pair<std::string, std::string>> withheld_;
     std::map<std::string, std::vector<Bar>> consumed_;
+    std::map<std::string, size_t> history_bars_;  // per symbol: the consumed bars before the window
     std::vector<FinalMark> final_marks_;
 };
 

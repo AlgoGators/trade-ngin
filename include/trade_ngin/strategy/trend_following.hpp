@@ -10,6 +10,7 @@
 #include "trade_ngin/core/types.hpp"
 #include "trade_ngin/instruments/instrument_registry.hpp"
 #include "trade_ngin/strategy/base_strategy.hpp"
+#include "trade_ngin/strategy/trend_estimator.hpp"
 #include "trade_ngin/strategy/vol_annualisation.hpp"
 
 namespace trade_ngin {
@@ -39,8 +40,8 @@ struct TrendFollowingConfig {
         // EMA window pairs for crossovers
         {2, 8}, {4, 16}, {8, 32}, {16, 64}, {32, 128}, {64, 256}};
     int vol_lookback_short{32};   // Short lookback for volatility calculation
-    int vol_lookback_long{2520};  // Long lookback for volatility calculation
-    size_t max_history_size{0};   // 0 = auto-compute from vol_lookback_long
+    int vol_lookback_long{2520};  // Not read by the estimator: its long-run mean is 2,520 values
+    size_t max_history_size{0};   // Set to the estimators' window (trend_estimator::kWindowBars)
     std::vector<std::pair<int, double>> fdm{{1, 1.0},  {2, 1.03}, {3, 1.08},
                                             {4, 1.13}, {5, 1.19}, {6, 1.26}};
 };
@@ -83,6 +84,18 @@ struct InstrumentData {
     std::deque<double> volatility_history;
     double current_volatility = 0.01;
 
+    // The history seeded before the first fed bar (seed_history): a bulk feed, which replaces the
+    // fed history, keeps these bars in front of it.
+    std::deque<double> seeded_prices;
+    std::deque<Timestamp> seeded_timestamps;
+    std::deque<std::string> seeded_instrument_ids;
+
+    // The estimators at the last signal bar (trend_estimator.hpp), and the position they size
+    // before any limit: (forecast / 10) x capital x IDM x weight x tau / (multiplier x price x
+    // FX x sigma).
+    trend_estimator::Estimate estimate;
+    double optimal_position = 0.0;
+
     // Timestamp of last update
     Timestamp last_update;
 };
@@ -110,6 +123,13 @@ public:
      * @return Result indicating success or failure
      */
     Result<void> on_data(const std::vector<Bar>& data) override;
+
+    /**
+     * @brief Seed the estimators' history with the consumed bars that precede the first fed bar
+     *        (the window's W bars reach back before a run's own window). Publishes and sizes nothing.
+     * @param bars consumed bars of any number of symbols, each symbol's dated before its first fed bar
+     */
+    Result<void> seed_history(const std::vector<Bar>& bars) override;
 
     /**
      * @brief Initialize strategy
@@ -255,94 +275,17 @@ private:
     std::vector<double> calculate_ewma(const std::vector<double>& prices, int window) const;
 
     /**
-     * @brief Computes the blended EWMA standard deviation using short-term and long-term
-     * components.
-     * @param prices Vector of price data.
-     * @param N Lookback period for short-term EWMA std dev.
-     * @param weight_short Weight for short-term EWMA (default: 70%).
-     * @param weight_long Weight for long-term EWMA (default: 30%).
-     * @param max_history Maximum historical records (default: 10 years).
-     * @param annualisation_factor sqrt(bars a year) applied to the per-bar stddev (default:
-     *        16, which the forecast divides back out; sizing passes vol_annualisation()).
-     * @return Vector of blended EWMA standard deviation.
-     */
-    std::vector<double> blended_ewma_stddev(const roll_series::Series& series, int N,
-                                            double weight_short = 0.7, double weight_long = 0.3,
-                                            size_t max_history = 2520,
-                                            double annualisation_factor = kCarverAnnualisation) const;
-
-    /**
-     * @brief Computes the EWMA standard deviation using a lambda-based approach.
-     * @param prices Vector of price data.
-     * @param N Lookback period for EWMA.
-     * @param annualisation_factor sqrt(bars a year) applied to the per-bar stddev.
-     * @return Vector of EWMA standard deviation values.
-     */
-    std::vector<double> ewma_standard_deviation(
-        const roll_series::Series& series, int N,
-        double annualisation_factor = kCarverAnnualisation) const;
-
-    /**
-     * @brief Computes the long-term average of EWMA standard deviations.
-     * @param history Vector storing past EWMA standard deviations.
-     * @param max_history Maximum number of historical periods (default: 10 years).
-     * @return Long-term average EWMA standard deviation.
-     */
-    double compute_long_term_avg(const std::vector<double>& history,
-                                 size_t max_history = 2520) const;
-
-    /**
-     * @brief Calculate EMA crossover signals and scale by volatility
-     * @param prices Price history for a symbol
-     * @param short_window Shorter EMA window
-     * @param long_window Longer EMA window
-     * @return Vector of crossover signals
-     */
-    std::vector<double> get_raw_forecast(const roll_series::Series& series, int short_window,
-                                         int long_window) const;
-
-    /**
-     * @brief Scale raw forecasts by volatility
-     * @param raw_forecasts Raw forecast values
-     * @param blended_stddev Blended EWMA standard deviation
-     * @return Scaled forecast values
-     */
-    std::vector<double> get_scaled_forecast(const std::vector<double>& raw_forecasts,
-                                            const std::vector<double>& blended_stddev) const;
-
-    /**
-     * @brief Generate raw forecast from EMA crossovers
-     * @param prices Price history
-     * @return Vector of raw forecasts
-     */
-    std::vector<double> get_raw_combined_forecast(const roll_series::Series& series) const;
-
-    /**
-     * @brief Calculate absolute value of a vector
-     * @param values Input vector
-     * @return Absolute sum of vector elements
-     */
-    double get_abs_value(const std::vector<double>& values) const;
-
-    /**
-     * @brief Generate scaled forecast from EMA crossovers
-     * @param raw_combined_forecast Raw forecast values
-     * @return Scaled forecast values
-     */
-    std::vector<double> get_scaled_combined_forecast(
-        const std::vector<double>& raw_combined_forecast) const;
-
-    /**
      * @brief Calculate position for a symbol
      * @param symbol Instrument symbol
      * @param forecast Trading forecast
      * @param weight Weight
      * @param price Current price
      * @param volatility Current volatility
+     * @param optimal_position when given, receives the position before any limit
      * @return Target position
      */
     double calculate_position(const std::string& symbol, double forecast, double price,
-                              double volatility) const;
+                              double volatility, double* optimal_position = nullptr) const;
 
     /**
      * @brief Apply position buffering
@@ -354,15 +297,6 @@ private:
      */
     double apply_position_buffer(const std::string& symbol, double raw_position, double price,
                                  double volatility) const;
-
-    /**
-     * @brief Calculate volatility regime multiplier
-     * @param prices Price history
-     * @param volatility Pre-calculated volatility series
-     * @return Volatility regime multiplier
-     */
-    double calculate_vol_regime_multiplier(const std::vector<double>& prices,
-                                           const std::vector<double>& volatility) const;
 };
 
 }  // namespace trade_ngin

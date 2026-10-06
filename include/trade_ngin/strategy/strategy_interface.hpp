@@ -70,6 +70,13 @@ public:
     }
 
     /**
+     * @brief Seed the strategy's own history with consumed bars that precede the first bar it is
+     *        fed, for estimators whose window reaches back before a run's window. Nothing is
+     *        published and nothing is sized. A strategy that keeps no such history ignores it.
+     */
+    virtual Result<void> seed_history(const std::vector<Bar>& /*bars*/) { return Result<void>(); }
+
+    /**
      * @brief Set backtest mode for this strategy
      * @param is_backtest True if running in backtest mode (stores daily PnL), false for live (cumulative PnL)
      * @note Default implementation does nothing. Override in BaseStrategy for backtest-specific behavior.

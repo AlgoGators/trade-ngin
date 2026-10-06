@@ -3603,6 +3603,21 @@ Result<void> PortfolioManager::apply_post_rounding_risk(
     return Result<void>();
 }
 
+Result<void> PortfolioManager::seed_strategy_history(const std::vector<Bar>& bars) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    for (auto& [id, info] : strategies_) {
+        if (!info.strategy) continue;
+        auto r = info.strategy->seed_history(bars);
+        if (r.is_error()) {
+            return make_error<void>(r.error()->code(),
+                                    "Strategy " + id + " refused the seeded history: " +
+                                        std::string(r.error()->what()),
+                                    "PortfolioManager");
+        }
+    }
+    return Result<void>();
+}
+
 Result<void> PortfolioManager::set_sizing_capital(double capital) {
     if (!std::isfinite(capital) || capital <= 0.0) {
         return make_error<void>(ErrorCode::INVALID_ARGUMENT,
@@ -3855,6 +3870,22 @@ PortfolioManager::get_strategy_positions() const {
         result[strategy_id] = info.current_positions;  // These are the optimized positions
     }
 
+    return result;
+}
+
+std::unordered_map<std::string, std::unordered_map<std::string, Position>>
+PortfolioManager::get_filled_strategy_positions() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    std::unordered_map<std::string, std::unordered_map<std::string, Position>> result;
+    for (const auto& [strategy_id, filled] : filled_positions_) {
+        auto& book = result[strategy_id];
+        for (const auto& [symbol, quantity] : filled) {
+            Position pos;
+            pos.symbol = symbol;
+            pos.quantity = Quantity(quantity);
+            book[symbol] = pos;
+        }
+    }
     return result;
 }
 

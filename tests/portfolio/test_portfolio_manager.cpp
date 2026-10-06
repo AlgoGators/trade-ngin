@@ -591,6 +591,51 @@ TEST_F(PortfolioManagerExtendedTest, ProcessSkipExecutionGenerationProducesNoExe
     EXPECT_TRUE(manager_->get_recent_executions().empty());
 }
 
+// A cycle that generates no executions (the backtest's warm-up) sets the sleeves' targets and
+// fills nothing: the filled book stays empty whatever the targets are, so a consumer of the HELD
+// book (the roll legs) finds nothing to roll.
+TEST_F(PortfolioManagerExtendedTest, AWarmUpTargetIsNotInTheFilledBook) {
+    auto strat = make_strategy("WARMUP_BOOK", {"AAPL"});
+    ASSERT_TRUE(manager_->add_strategy(strat.strategy, 0.3).is_ok());
+    auto t0 = std::chrono::system_clock::now() - std::chrono::hours(24 * 300);
+    ASSERT_TRUE(
+        manager_->process_market_data(make_bars("AAPL", 300, t0), /*skip_execution_generation=*/true)
+            .is_ok());
+    double filled = 0.0;
+    for (const auto& [sid, book] : manager_->get_filled_strategy_positions()) {
+        for (const auto& [symbol, pos] : book) filled += std::abs(static_cast<double>(pos.quantity));
+    }
+    EXPECT_EQ(filled, 0.0) << "warm-up fills nothing";
+}
+
+// After a cycle that does generate executions, the filled book is the sum of the fills.
+TEST_F(PortfolioManagerExtendedTest, TheFilledBookIsTheSumOfTheFills) {
+    auto strat = make_strategy("FILLED_BOOK", {"AAPL"});
+    ASSERT_TRUE(manager_->add_strategy(strat.strategy, 0.3).is_ok());
+    auto t0 = std::chrono::system_clock::now() - std::chrono::hours(24 * 300);
+    ASSERT_TRUE(manager_->process_market_data(make_bars("AAPL", 300, t0)).is_ok());
+    std::unordered_map<std::string, double> from_fills;
+    for (const auto& [sid, execs] : manager_->get_strategy_executions()) {
+        for (const auto& e : execs) {
+            from_fills[sid + "|" + e.symbol] +=
+                (e.side == Side::BUY ? 1.0 : -1.0) * static_cast<double>(e.filled_quantity);
+        }
+    }
+    std::unordered_map<std::string, double> from_book;
+    for (const auto& [sid, book] : manager_->get_filled_strategy_positions()) {
+        for (const auto& [symbol, pos] : book) {
+            EXPECT_EQ(pos.symbol, symbol);
+            if (std::abs(static_cast<double>(pos.quantity)) > 0.0) {
+                from_book[sid + "|" + symbol] = static_cast<double>(pos.quantity);
+            }
+        }
+    }
+    for (auto it = from_fills.begin(); it != from_fills.end();) {
+        it = std::abs(it->second) > 0.0 ? std::next(it) : from_fills.erase(it);
+    }
+    EXPECT_EQ(from_book, from_fills);
+}
+
 TEST_F(PortfolioManagerExtendedTest, ProcessWithCurrentTimestampOverridesFillTime) {
     auto strat = make_strategy("TS_OVERRIDE");
     ASSERT_TRUE(manager_->add_strategy(strat.strategy, 0.3).is_ok());

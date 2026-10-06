@@ -1,4 +1,6 @@
 #include "trade_ngin/backtest/backtest_coordinator.hpp"
+#include "trade_ngin/live/live_estimator_history.hpp"
+#include "trade_ngin/strategy/trend_estimator.hpp"
 #include "trade_ngin/backtest/equity_cost_warmup.hpp"
 #include "trade_ngin/backtest/junk_signal_feed.hpp"
 #include <unordered_set>
@@ -269,6 +271,18 @@ Result<BacktestResults> BacktestCoordinator::run_portfolio(
             INFO(feed.line);
         } else {
             WARN(feed.line);
+        }
+    }
+
+    // The estimators' window reaches back W consumed bars before the first sized day: the bars
+    // before the backtest's window are judged by a classifier of their own, K-01 applied, and
+    // handed to the sleeves as history. They are no cycle: nothing is marked, sized or stored on
+    // them, and the window's own classifier and roll status start at the window as before.
+    if (session_hold_enabled_) {
+        auto seeded = seed_estimator_history(portfolio, symbols, start_date, asset_class, data_freq);
+        if (seeded.is_error()) {
+            return make_error<BacktestResults>(seeded.error()->code(), seeded.error()->what(),
+                                               "BacktestCoordinator");
         }
     }
 
@@ -920,10 +934,11 @@ Result<void> BacktestCoordinator::process_portfolio_day(
         }
 
         // Section 6.5: the held book at the START of the bar, per sleeve, the quantity the roll legs
-        // are booked at.
+        // are booked at. The book is the FILLED one: a sleeve's target that warm-up set and no fill
+        // stands behind is not held, and a roll confirmed on the first traded cycle has no leg.
         const auto start_of_bar_book = confirmed_now.empty()
                                            ? std::unordered_map<std::string, std::unordered_map<std::string, Position>>{}
-                                           : portfolio->get_strategy_positions();
+                                           : portfolio->get_filled_strategy_positions();
         // F-3 (commit 5): the rolls owed from here until the legs are booked below (the tracker has
         // consumed their confirming bars); the day's catch and the run loop's read it.
         if (!is_warmup) {
@@ -1569,6 +1584,48 @@ Result<void> BacktestCoordinator::process_portfolio_day(
                                 std::string("Error processing portfolio data: ") + e.what(),
                                 "BacktestCoordinator");
     }
+}
+
+Result<void> BacktestCoordinator::seed_estimator_history(
+    std::shared_ptr<PortfolioManager> portfolio, const std::vector<std::string>& symbols,
+    const Timestamp& start_date, AssetClass asset_class, DataFrequency data_freq) {
+    // Every bar dated before the window's first instant, back to the history start.
+    DataLoadConfig load_config;
+    load_config.symbols = symbols;
+    load_config.start_date = estimator_history_start(start_date);
+    load_config.end_date = start_date - std::chrono::seconds(1);
+    load_config.asset_class = asset_class;
+    load_config.data_freq = data_freq;
+    MarketDataBus::instance().set_publish_enabled(false);
+    auto loaded = data_loader_->load_market_data(load_config);
+    MarketDataBus::instance().set_publish_enabled(true);
+    if (loaded.is_error()) {
+        // No bar before the window is not an error: the symbols start at their first bar. (The
+        // loader reports an empty load as an error; any other failure refuses the run.)
+        const std::string what = loaded.error()->what();
+        if (what.find("No market data loaded") != std::string::npos ||
+            what.find("returned an empty table") != std::string::npos) {
+            return Result<void>();
+        }
+        return make_error<void>(loaded.error()->code(),
+                                "the bars before the backtest's window could not be loaded: " +
+                                    std::string(loaded.error()->what()),
+                                "BacktestCoordinator");
+    }
+    // The same rule as the live runners' (live/live_estimator_history.hpp): the history's bars are
+    // judged in date order by their own classifier, with their vendor ids, each against the bars
+    // before it; the withheld ones (K-01) are never consumed.
+    auto pg = std::dynamic_pointer_cast<PostgresDatabase>(db_);
+    std::vector<SymbolDayVerdict> withheld;
+    const std::vector<Bar> history = estimator_history_consumed(
+        loaded.value(), start_date,
+        pg ? pg->get_futures_instrument_ids(symbols, estimator_history_start(start_date), start_date)
+           : make_error<std::vector<market_data_utils::FuturesInstrumentId>>(
+                 ErrorCode::NOT_INITIALIZED, "the backtest's database is not a PostgresDatabase",
+                 "BacktestCoordinator"),
+        &withheld);
+    consumed_record_.add_history(withheld, history);
+    return portfolio->seed_strategy_history(history);
 }
 
 Result<void> BacktestCoordinator::roll_owed_stop(const std::string& what) {

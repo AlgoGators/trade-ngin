@@ -193,6 +193,8 @@ set(TEST_SOURCES
     strategy/test_regime_detector.cpp
     strategy/test_trend_following_fast.cpp
     strategy/test_fast_sleeve_configuration.cpp
+    strategy/test_trend_estimator.cpp
+    strategy/test_trend_history_seed.cpp
     strategy/test_buffer_weight_source.cpp
     strategy/test_mean_reversion_backtest.cpp
     strategy/test_equity_backtest_db_validation.cpp

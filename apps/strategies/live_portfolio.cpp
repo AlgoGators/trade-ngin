@@ -31,6 +31,7 @@
 #include "trade_ngin/live/live_metrics_calculator.hpp"
 #include "trade_ngin/live/live_pnl_manager.hpp"
 #include "trade_ngin/live/live_price_manager.hpp"
+#include "trade_ngin/live/live_estimator_history.hpp"
 #include "trade_ngin/live/live_roll_legs.hpp"
 #include "trade_ngin/live/live_sizing_read.hpp"
 #include "trade_ngin/live/live_trading_coordinator.hpp"
@@ -1056,11 +1057,16 @@ int main(int argc, char* argv[]) {
         // withheld on its own run is never fed later. The strategies' window, the price manager and
         // k01_consumed_bars below stay on the window.
         const Timestamp k01_history_start = k01_classifier_history_start(start_date);
+        // The same load reaches back to the estimators' history start: the trend sleeves' window
+        // is W consumed bars, more than the bar window holds. The bars before the window are
+        // judged by their own classifier and the consumed ones seed the sleeves' history below
+        // (live/live_estimator_history.hpp); nothing else reads them.
+        std::vector<Bar> estimator_history_bars;
         {
             MarketDataBus::instance().set_publish_enabled(false);
             auto history_result = db->get_market_data(
-                symbols, k01_history_start, start_date, trade_ngin::AssetClass::FUTURES,
-                trade_ngin::DataFrequency::DAILY, "ohlcv");
+                symbols, estimator_history_start(start_date), start_date,
+                trade_ngin::AssetClass::FUTURES, trade_ngin::DataFrequency::DAILY, "ohlcv");
             MarketDataBus::instance().set_publish_enabled(true);
             if (history_result.is_error()) {
                 ERROR("T1_CLASSIFIER history: failed to load the bars before the window: " +
@@ -1077,6 +1083,10 @@ int main(int argc, char* argv[]) {
                 return 1;
             }
             session_classifier.add_bars(k01_classifier_history(history_bars.value(), start_date));
+            estimator_history_bars = estimator_history_consumed(
+                history_bars.value(), start_date,
+                db->get_futures_instrument_ids(symbols, estimator_history_start(start_date),
+                                               start_date));
         }
         // T-7b-2 C10a (HD 2026-09-24 ruling 16): the instrument-id continuity limb reads each kept
         // bar's vendor id over the window the bars were loaded for (the backtest reads the same
@@ -1582,6 +1592,16 @@ int main(int argc, char* argv[]) {
                                           coordinator_config.portfolio_id, seed_previous_date,
                                           "trading.positions");
                                   });
+            }
+
+            // The sleeves' estimator history before the window, ahead of the window's own feed.
+            {
+                auto seeded = portfolio->seed_strategy_history(estimator_history_bars);
+                if (seeded.is_error()) {
+                    ERROR("The estimators' history before the window could not be seeded: " +
+                          std::string(seeded.error()->what()) + ". Refusing to run.");
+                    return 1;
+                }
             }
 
             // Process data through portfolio pipeline (optimization + risk), mirroring backtest

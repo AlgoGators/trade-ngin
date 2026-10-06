@@ -207,6 +207,12 @@ public:
      */
     Result<void> set_sizing_capital(double capital);
 
+    /// Hands every sleeve the consumed bars that precede the first bar it will be fed, for the
+    /// estimators whose window reaches back before a run's own window (StrategyInterface::
+    /// seed_history). It reaches the sleeves' own histories only: the manager's price history, its
+    /// cost model and its risk modules are not fed these bars. The first refusal stops the call.
+    Result<void> seed_strategy_history(const std::vector<Bar>& bars);
+
     /// The capital the next process_market_data sizes on (PortfolioConfig::total_capital until
     /// set_sizing_capital is called).
     double sizing_capital() const;
@@ -340,6 +346,18 @@ public:
      * @return Map of strategy ID to map of symbol to position
      */
     std::unordered_map<std::string, std::unordered_map<std::string, Position>> get_strategy_positions() const;
+
+    /**
+     * @brief The book each strategy has actually traded into: the filled-position ledger, per
+     *        strategy and symbol, as Positions carrying the symbol and the filled quantity.
+     *
+     * get_strategy_positions() returns the sleeves' current TARGETS, which a cycle that generates
+     * no executions (the backtest's warm-up) sets without filling them. A consumer that needs the
+     * book HELD at the start of a bar (the roll legs, LOOP_SPEC section 6.5) reads this one: a
+     * target no fill stands behind is not a position, and has nothing to roll.
+     */
+    std::unordered_map<std::string, std::unordered_map<std::string, Position>>
+    get_filled_strategy_positions() const;
 
     /**
      * @brief Update a specific position for a strategy (e.g., to update PnL values)
