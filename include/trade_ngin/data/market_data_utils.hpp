@@ -39,6 +39,11 @@
  */
 namespace trade_ngin::market_data_utils {
 
+// Parse PostgreSQL ISO timestamp text at the market Arrow schema's second
+// precision. Honor explicit numeric offsets; offset-free timestamps are UTC
+// under the data-layer contract. Never consult the host timezone.
+bool parse_market_timestamp_seconds(const std::string& text, Timestamp& out);
+
 /**
  * @brief Generate the SELECT column list for market data queries
  *

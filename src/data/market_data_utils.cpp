@@ -3,8 +3,34 @@
 #include "trade_ngin/data/market_data_utils.hpp"
 
 #include <cmath>
+#include <regex>
 
 namespace trade_ngin::market_data_utils {
+
+bool parse_market_timestamp_seconds(const std::string& text, Timestamp& out) {
+    static const std::regex iso(
+        R"(([0-9]{4})-([0-9]{2})-([0-9]{2}) ([0-9]{2}):([0-9]{2}):([0-9]{2})(?:\.[0-9]{1,6})?(Z|([+-])([0-9]{2})(?::([0-9]{2})(?::([0-9]{2}))?)?)?)");
+    std::smatch parts;
+    if (text.size() > 40 || !std::regex_match(text, parts, iso)) return false;
+    const auto number = [&](size_t index) {
+        return parts[index].matched ? std::stoi(parts[index].str()) : 0;
+    };
+    const std::chrono::year_month_day date{std::chrono::year(number(1)),
+        std::chrono::month(number(2)), std::chrono::day(number(3))};
+    const int hour = number(4), minute = number(5), second = number(6);
+    const int offset_hour = number(9), offset_minute = number(10), offset_second = number(11);
+    if (!date.ok() || number(1) < 1 || hour > 23 || minute > 59 || second > 59 ||
+        offset_hour > 23 || offset_minute > 59 || offset_second > 59) return false;
+    int offset = offset_hour * 3600 + offset_minute * 60 + offset_second;
+    if (parts[8] == "-") offset = -offset;
+    const auto instant = std::chrono::sys_days(date) + std::chrono::hours(hour) +
+        std::chrono::minutes(minute) + std::chrono::seconds(second - offset);
+    const auto seconds = instant.time_since_epoch();
+    if (seconds < std::chrono::ceil<std::chrono::seconds>(Timestamp::min().time_since_epoch()) ||
+        seconds > std::chrono::floor<std::chrono::seconds>(Timestamp::max().time_since_epoch())) return false;
+    out = Timestamp(std::chrono::duration_cast<Timestamp::duration>(seconds));
+    return true;
+}
 
 std::string get_market_data_columns(AssetClass asset_class) {
     using enum AssetClass;

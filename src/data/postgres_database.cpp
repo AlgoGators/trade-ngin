@@ -251,14 +251,11 @@ Result<std::shared_ptr<arrow::Table>> PostgresDatabase::get_market_data(
             event.type = MarketDataEventType::BAR;
             event.symbol = row["symbol"].as<std::string>();
 
-            // Parse timestamp
-            std::string time_str = row["time"].as<std::string>();
-            std::tm time_info = {};
-            std::istringstream ss(time_str);
-            ss >> std::get_time(&time_info, "%Y-%m-%d %H:%M:%S");
-            time_t time_val = std::mktime(&time_info);
-            trade_ngin::core::safe_gmtime(&time_val, &time_info);
-            event.timestamp = std::chrono::system_clock::from_time_t(std::mktime(&time_info));
+            if (!market_data_utils::parse_market_timestamp_seconds(
+                    row["time"].as<std::string>(), event.timestamp)) {
+                return make_error<std::shared_ptr<arrow::Table>>(
+                    ErrorCode::CONVERSION_ERROR, "Invalid market timestamp");
+            }
 
             // Add numeric fields
             event.numeric_fields["open"] = row["open"].as<double>();
@@ -1206,14 +1203,12 @@ Result<std::shared_ptr<arrow::Table>> PostgresDatabase::convert_to_arrow_table(
 
         // Populate builders
         for (const auto& row : result) {
-            // Convert string timestamp to epoch seconds
-            std::string time_str = row["time"].as<std::string>();
-            std::tm time_info = {};
-            std::istringstream ss(time_str);
-            ss >> std::get_time(&time_info, "%Y-%m-%d %H:%M:%S");
-            time_t time_val = std::mktime(&time_info);
-            trade_ngin::core::safe_gmtime(&time_val, &time_info);
-            auto tp = std::chrono::system_clock::from_time_t(std::mktime(&time_info));
+            Timestamp tp;
+            if (!market_data_utils::parse_market_timestamp_seconds(
+                    row["time"].as<std::string>(), tp)) {
+                return make_error<std::shared_ptr<arrow::Table>>(
+                    ErrorCode::CONVERSION_ERROR, "Invalid market timestamp");
+            }
 
             auto timestamp =
                 std::chrono::duration_cast<std::chrono::seconds>(tp.time_since_epoch()).count();
