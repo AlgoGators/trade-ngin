@@ -341,3 +341,37 @@ TEST(LiveConfigOverride, AttributedNonCarverPortfolioSurvivesSnapshotAndTuning) 
     EXPECT_EQ(effective.value()["risk"]["modules"][1],snapshot.value()["risk"]["modules"][1]);
     EXPECT_TRUE(apply_live_config_override(tuned.value(),{{"/risk/_ruled_by","somebody else"}}).is_error());
 }
+
+TEST(LiveConfigOverride, ExplicitBaselineValidationPreservesGovernedConfigWithoutAllowingOrdinaryNoop) {
+    const auto snapshot=build_runtime_trading_snapshot(base_config()).value();
+    auto result=validate_live_config_baseline_request({{"schema","live-config-baseline-validation/v1"},
+        {"base_snapshot",snapshot}});
+    ASSERT_TRUE(result.is_ok());
+    EXPECT_EQ(result.value().at("schema"),"live-config-baseline-validation/v1");
+    EXPECT_EQ(result.value().at("effective_snapshot"),snapshot);
+    EXPECT_EQ(result.value().at("effective_snapshot").at("execution").at("position_limit_live"),12.75);
+    EXPECT_EQ(result.value().at("effective_snapshot").at("max_drawdown"),.3);
+    EXPECT_EQ(result.value().at("base_sha256"),result.value().at("effective_sha256"));
+    EXPECT_EQ(result.value().at("base_sha256").get<std::string>().size(),64u);
+    EXPECT_EQ(result.value().at("changed_paths"),Json::array());
+    EXPECT_TRUE(validate_live_config_request(request(base_config(),Json::object())).is_error());
+    EXPECT_TRUE(validate_live_config_request(request(base_config(),{{"/optimization/tau",1.0}})).is_error());
+}
+TEST(LiveConfigOverride, BaselineValidationRequiresExactEnvelopeAndStrictCompleteV2) {
+    const Json valid={{"schema","live-config-baseline-validation/v1"},
+        {"base_snapshot",build_runtime_trading_snapshot(base_config()).value()}};
+    for(const auto* key:{"actor","changes","config_root"}) {
+        auto bad=valid;bad[key]="private-value";
+        EXPECT_TRUE(validate_live_config_baseline_request(bad).is_error());
+    }
+    auto bad=valid;bad["base_snapshot"]["snapshot_version"]=1;
+    EXPECT_TRUE(validate_live_config_baseline_request(bad).is_error());
+    bad=valid;bad["base_snapshot"].erase("risk");
+    EXPECT_TRUE(validate_live_config_baseline_request(bad).is_error());
+    bad=valid;bad["base_snapshot"]["strategies"]["TREND"]["default_allocation"]=.5;
+    EXPECT_TRUE(validate_live_config_baseline_request(bad).is_error());
+    bad=valid;bad["base_snapshot"]["optimization"]["tau"]=std::numeric_limits<double>::infinity();
+    EXPECT_TRUE(validate_live_config_baseline_request(bad).is_error());
+    bad=valid;bad.erase("base_snapshot");
+    EXPECT_TRUE(validate_live_config_baseline_request(bad).is_error());
+}

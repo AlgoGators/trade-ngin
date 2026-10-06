@@ -553,3 +553,8 @@ if(Python3_Interpreter_FOUND)
     set_tests_properties(LiveConfigValidationToolProtocol PROPERTIES
         WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}")
 endif()
+
+# Owned disposable PostgreSQL governed configuration probe; explicitly built.
+add_executable(live_config_selection_probe EXCLUDE_FROM_ALL integration/live_config_selection_probe.cpp)
+target_include_directories(live_config_selection_probe PRIVATE ${CMAKE_SOURCE_DIR}/include)
+target_link_libraries(live_config_selection_probe PRIVATE trade_ngin)

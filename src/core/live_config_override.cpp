@@ -367,6 +367,22 @@ Result<Json> validate_live_config_request(const Json& request) {
     } catch(const Refusal& e) { return make_error<Json>(ErrorCode::INVALID_ARGUMENT,e.code); }
       catch(const std::exception&) { return make_error<Json>(ErrorCode::INVALID_ARGUMENT,"live_config_invalid_request"); }
 }
+Result<Json> validate_live_config_baseline_request(const Json& request) {
+    try {
+        require(request.is_object() && request.size()==2 &&
+                request.at("schema")=="live-config-baseline-validation/v1","live_config_invalid_request");
+        finite_tree(request);
+        auto base=parse_runtime_trading_snapshot(request.at("base_snapshot"));
+        require(base.is_ok(),"live_config_invalid_base");
+        auto snapshot=build_runtime_trading_snapshot(base.value());
+        auto hash=live_config_snapshot_sha256(base.value());
+        require(snapshot.is_ok() && hash.is_ok(),"live_config_hash_unavailable");
+        return Json{{"schema","live-config-baseline-validation/v1"},{"base_sha256",hash.value()},
+            {"effective_sha256",hash.value()},{"effective_snapshot",snapshot.value()},
+            {"changed_paths",Json::array()}};
+    } catch(const Refusal& e) { return make_error<Json>(ErrorCode::INVALID_ARGUMENT,e.code); }
+      catch(const std::exception&) { return make_error<Json>(ErrorCode::INVALID_ARGUMENT,"live_config_invalid_request"); }
+}
 Result<Json> parse_live_config_request(std::string_view bytes) {
     try {
         require(!bytes.empty() && bytes.size()<=live_config_max_request_bytes,"live_config_request_size");

@@ -429,7 +429,8 @@ void PostgresDatabase::fence_live_write(pqxx::work& txn, const std::string& stra
 Result<bool> PostgresDatabase::begin_live_publication(const std::string& strategy_id,
     const std::string& portfolio_id, const Timestamp& date, const nlohmann::json& snapshot,
     bool controlled, const std::string& version, PublicationEvidenceRequirement requirement,
-    PublicationEvidenceToken* token_out, PublicationPriorRequirement prior_requirement) {
+    PublicationEvidenceToken* token_out, PublicationPriorRequirement prior_requirement,
+    const nlohmann::json& configuration_selection) {
     if (token_out) *token_out = {};
     if (pending_publication_ || publication_transaction_)
         return make_error<bool>(ErrorCode::INVALID_ARGUMENT,"runtime_publication_already_started");
@@ -458,6 +459,11 @@ Result<bool> PostgresDatabase::begin_live_publication(const std::string& strateg
         scope->producer_version = version;
         scope->snapshot = snapshot;
         pqxx::work txn(*connection_);
+        // When selected configuration is supplied, acquire source/book/config
+        // locks before either admission branch can take mutable runtime rows.
+        if (!configuration_selection.is_null())
+            txn.exec("SELECT trading.lock_live_config_scope($1,$2)",
+                     pqxx::params{strategy_id,scope->portfolio_id});
         auto investor_schema = txn.exec(
             "SELECT to_regclass('trading.investor_books') IS NOT NULL AND "
             "to_regclass('trading.investor_book_strategies') IS NOT NULL");
@@ -501,6 +507,8 @@ Result<bool> PostgresDatabase::begin_live_publication(const std::string& strateg
                     return true;
                 }
                 scope->mode = LivePublicationMode::SystemInvestor;
+                if (!configuration_selection.is_null())
+                    admit_live_config_selection(txn,*scope,configuration_selection,controlled);
                 txn.commit();
                 pending_publication_ = std::move(scope);
                 if (token_out) *token_out = std::move(token);
@@ -548,6 +556,8 @@ Result<bool> PostgresDatabase::begin_live_publication(const std::string& strateg
         } else if (!publishes_model(lifecycle) || !active || scope->registry_revision != 0) {
             throw std::runtime_error("runtime_scope_ineligible");
         }
+        if (!configuration_selection.is_null())
+            admit_live_config_selection(txn,*scope,configuration_selection,controlled);
         txn.commit();
         if (!stopped) {
             pending_publication_ = std::move(scope);

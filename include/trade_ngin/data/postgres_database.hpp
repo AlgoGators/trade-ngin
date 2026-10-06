@@ -20,6 +20,7 @@
 #include "trade_ngin/apps/equity_model_prior.hpp"
 #include "trade_ngin/apps/equity_run_projection.hpp"
 #include "trade_ngin/data/database_interface.hpp"
+#include "trade_ngin/data/live_config_selection.hpp"
 #include "trade_ngin/data/publication_transaction.hpp"
 #include "trade_ngin/data/qt_seed_publication.hpp"
 #include "trade_ngin/data/qt_empty_model_owner_publication.hpp"
@@ -475,7 +476,8 @@ public:
         const nlohmann::json& snapshot, bool controlled, const std::string& version,
         PublicationEvidenceRequirement requirement = PublicationEvidenceRequirement::LegacyNotCollected,
         PublicationEvidenceToken* token_out = nullptr,
-        PublicationPriorRequirement prior_requirement = PublicationPriorRequirement::None);
+        PublicationPriorRequirement prior_requirement = PublicationPriorRequirement::None,
+        const nlohmann::json& configuration_selection = nullptr);
     Result<std::unordered_map<std::string,Position>> load_equity_model_system_positions(
         const std::string& portfolio_id,const Timestamp& date);
     Result<std::unordered_map<std::string,Position>> load_equity_system_positions_by_owner(
@@ -1150,6 +1152,8 @@ private:
                     publication_id, producer_version;
         long long registry_revision = 0, intent_id = 0;
         nlohmann::json snapshot;
+        nlohmann::json configuration_selection;
+        std::string config_attempt_id;
         std::vector<std::function<Result<void>()>> writes;
         std::vector<std::string> fresh_system_members;
         std::vector<QtSeedRow> fresh_system_components;
@@ -1168,6 +1172,10 @@ private:
         bool inspection_capture_queued = false;
         unsigned parts = 0;
     };
+    friend Result<ConfigSelection> select_live_configuration(PostgresDatabase&,
+        const AppConfig&, const std::string&);
+    void admit_live_config_selection(pqxx::work&, PendingPublication&,
+        const nlohmann::json& receipt, bool controlled);
     std::unique_ptr<PendingPublication> pending_publication_;
     pqxx::work* publication_transaction_ = nullptr;
     bool defer_live_write(const Timestamp& date, std::function<Result<void>()> write, unsigned part=0);

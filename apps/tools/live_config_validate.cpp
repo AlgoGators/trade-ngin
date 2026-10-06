@@ -37,7 +37,10 @@ int main(int argc,char** argv) {
         if(std::cin.bad()) return refuse("live_config_input_failed");
         auto request=trade_ngin::parse_live_config_request(bytes);
         if(request.is_error()) return refuse(request.error()->what());
-        auto result=trade_ngin::validate_live_config_request(request.value());
+        const bool baseline=request.value().is_object() && request.value().contains("schema") &&
+            request.value().at("schema")=="live-config-baseline-validation/v1";
+        auto result=baseline ? trade_ngin::validate_live_config_baseline_request(request.value())
+                             : trade_ngin::validate_live_config_request(request.value());
         if(result.is_error()) return refuse(result.error()->what());
         std::cout << result.value().dump() << '\n'; return 0;
     } catch(const std::exception&) { return refuse("live_config_invalid_request"); }

@@ -212,6 +212,7 @@ set(TRADE_NGIN_SOURCES
     src/data/database_pooling.cpp
     src/data/postgres_qt_report.cpp
     src/data/postgres_runtime.cpp
+    src/data/postgres_live_config.cpp
     src/data/qt_desk_accounting.cpp
     src/data/qt_desk_current_facts.cpp
     src/data/qt_desk_market_capture.cpp
