@@ -42,6 +42,31 @@ TEST(QtWireTest, SortsFullKeysAndRejectsDuplicateMembers) {
     EXPECT_TRUE(canonical_qt_bytes({{"selection_rows", nlohmann::json::array({one, one})}}).is_error());
 }
 
+TEST(QtWireTest, BindsDraftRationaleWithPythonCanonicalTextAndNullParity) {
+    // Digests are the Python QT canonical contract; omitting or changing the
+    // rationale must not leave a saved draft's signed identity unchanged.
+    nlohmann::json draft = {{"selection_rows", nlohmann::json::array()},
+                            {"rationale", "Keep settled quantities"}};
+    auto digest = qt_digest_v1(draft);
+    ASSERT_TRUE(digest.is_ok()) << digest.error()->what();
+    EXPECT_EQ(digest.value(), "32df91d7fca4c62114bf62062a3ae2814a1337002c4104f2861833fa4946aab6");
+    EXPECT_EQ(canonical_qt_bytes(draft).value(),
+              R"({"rationale":"Keep settled quantities","selection_rows":[]})");
+    draft["rationale"] = "Different choice";
+    ASSERT_TRUE(qt_digest_v1(draft).is_ok());
+    EXPECT_NE(qt_digest_v1(draft).value(), digest.value());
+    draft["rationale"] = nullptr;
+    auto nullable = qt_digest_v1(draft);
+    ASSERT_TRUE(nullable.is_ok()) << nullable.error()->what();
+    EXPECT_EQ(nullable.value(), "450a129f657011777368aba1c8be6bea179bd1154e4f68d6286019514e050eb6");
+    draft.erase("rationale");
+    EXPECT_EQ(qt_digest_v1(draft).value(), "4a3bc494577c19c2b2e75a4601089a9dad54972213487d1729d8d18f0ae0d771");
+    draft["rationale"] = 1;
+    EXPECT_TRUE(qt_digest_v1(draft).is_error());
+    draft["rationale"] = std::string(4097, 'x');
+    EXPECT_TRUE(qt_digest_v1(draft).is_error());
+}
+
 TEST(QtWireTest, DistinguishesAdjacentDecimal8AndRejectsPaddedForm) {
     const auto a = parse_qt_quantity_exact("92233720368.12345678");
     const auto b = parse_qt_quantity_exact("92233720368.12345677");

@@ -24,17 +24,59 @@ MARKET = "a2000000-0000-4000-8000-000000000001"
 INPUT = "a3000000-0000-4000-8000-000000000001"
 
 
+def owned_clock_identity(conn):
+    """Permit catalog-clock control only inside the private synthetic socket."""
+    import re
+    import stat
+    from pathlib import Path
+    from psycopg2.extensions import parse_dsn
+    params = parse_dsn(os.environ['ALGOLENS_TEST_DB'])
+    assert set(params) <= {'host', 'port', 'dbname', 'user'}
+    assert re.fullmatch(r'algolens_test_[A-Za-z0-9_]+', params['dbname'])
+    root = Path(params['host'])
+    assert root.parent == Path('/tmp')
+    assert re.fullmatch(r'algolens-repair-pg-[A-Za-z0-9_-]+\.[A-Za-z0-9]+', root.name)
+    assert root.resolve() == root and not root.is_symlink()
+    directory = root.stat()
+    assert directory.st_uid == os.getuid() and stat.S_IMODE(directory.st_mode) == 0o700
+    data = root / 'data'
+    assert data.resolve() == data and not data.is_symlink()
+    assert data.stat().st_uid == os.getuid() and stat.S_IMODE(data.stat().st_mode) == 0o700
+    with conn.cursor() as cur:
+        cur.execute("SELECT current_database(),current_user,inet_server_addr(),"
+                    "current_setting('unix_socket_directories'),current_setting('port'),"
+                    "(SELECT rolsuper FROM pg_roles WHERE rolname=current_user),"
+                    "current_setting('data_directory'),current_setting('listen_addresses')")
+        database, user, network, socket_directory, port, privileged, data_directory, listen = cur.fetchone()
+        assert (database,user,network,socket_directory,privileged) == (
+            params['dbname'],params['user'],None,str(root),True)
+        assert params.get('port',port) == port
+        assert data_directory == str(data) and listen == ''
+        socket = (root/('.s.PGSQL.'+port)).stat()
+        assert stat.S_ISSOCK(socket.st_mode) and socket.st_uid == os.getuid()
+        cur.execute("SELECT p.oid,p.prosrc,l.lanname FROM pg_proc p JOIN pg_language l ON l.oid=p.prolang "
+                    "WHERE p.oid='pg_catalog.clock_timestamp()'::regprocedure")
+        identity = cur.fetchone()
+        assert identity[1:] == ('clock_timestamp','internal')
+        cur.execute("SELECT to_regprocedure('pg_catalog.qt_test_actual_clock_timestamp()') IS NULL")
+        assert cur.fetchone() == (True,)
+    return identity
+
+
 @pytest.fixture()
 def connection(request):
-    """A test-only clock in the already guarded, disposable database.
+    """Synthetic database clock only; preserve the real builtin and restore it.
 
-    Day-one rows are really processed today, then the same database moves
-    to tomorrow's clock. No receipt, original input, or financial row is rewritten.
+    The catalog wrapper survives native security code's pg_catalog search path.
+    It is never installed until the root/socket/database/user/no-TCP guard passes.
+    The disposable trading schema is discarded on teardown before removing the
+    wrapper; the original clock function OID and implementation are restored.
     """
     from psycopg2 import sql
     fixture = base_connection.__wrapped__()
     conn = next(fixture)
     shifted = "finalizes_on_day_two" in request.node.name
+    installed = False
     try:
         with conn.cursor() as cur:
             cur.execute("SELECT current_database()")
@@ -43,24 +85,46 @@ def connection(request):
             cur.execute(sql.SQL("ALTER DATABASE {} SET timezone={}").format(sql.Identifier(database),sql.Literal(zone)))
             cur.execute("SET TIME ZONE %s", (zone,))
         if shifted:
+            original = owned_clock_identity(conn)
+            # Prove reversible catalog permission before installing any wrapper.
             with conn.cursor() as cur:
-                cur.execute("CREATE OR REPLACE FUNCTION public.clock_timestamp() RETURNS timestamptz LANGUAGE sql VOLATILE "
-                    "AS $$ SELECT pg_catalog.clock_timestamp() $$")
-                cur.execute(sql.SQL("ALTER DATABASE {} SET search_path=public,pg_catalog").format(sql.Identifier(database)))
-                cur.execute("SET search_path=public,pg_catalog")
+                cur.execute("BEGIN")
+                try:
+                    cur.execute("ALTER FUNCTION pg_catalog.clock_timestamp() RENAME TO qt_test_actual_clock_timestamp")
+                finally:
+                    cur.execute("ROLLBACK")
+            assert owned_clock_identity(conn) == original
+            with conn.cursor() as cur:
+                cur.execute("BEGIN")
+                try:
+                    cur.execute("ALTER FUNCTION pg_catalog.clock_timestamp() RENAME TO qt_test_actual_clock_timestamp")
+                    cur.execute("CREATE FUNCTION pg_catalog.clock_timestamp() RETURNS timestamptz LANGUAGE sql VOLATILE "
+                        "AS $$ SELECT pg_catalog.qt_test_actual_clock_timestamp() $$")
+                    cur.execute("COMMIT")
+                    installed = True
+                except BaseException:
+                    cur.execute("ROLLBACK")
+                    raise
         yield conn
     finally:
-        with conn.cursor() as cur:
-            cur.execute(sql.SQL("ALTER DATABASE {} RESET timezone").format(sql.Identifier(database)))
-        if shifted:
+        try:
+            if installed:
+                with conn.cursor() as cur:
+                    cur.execute("BEGIN")
+                    try:
+                        cur.execute("DROP SCHEMA trading CASCADE")
+                        cur.execute("DROP FUNCTION pg_catalog.clock_timestamp()")
+                        cur.execute("ALTER FUNCTION pg_catalog.qt_test_actual_clock_timestamp() RENAME TO clock_timestamp")
+                        cur.execute("COMMIT")
+                    except BaseException:
+                        cur.execute("ROLLBACK")
+                        raise
+                assert owned_clock_identity(conn) == original
             with conn.cursor() as cur:
-                cur.execute(sql.SQL("ALTER DATABASE {} RESET search_path").format(sql.Identifier(database)))
-                # Defaults refer to this function; the next fixture recreates
-                # trading. Leave a real-clock implementation until that point.
-                cur.execute("CREATE OR REPLACE FUNCTION public.clock_timestamp() RETURNS timestamptz LANGUAGE sql VOLATILE "
-                    "AS $$ SELECT pg_catalog.clock_timestamp() $$")
-                cur.execute("SET search_path=pg_catalog,public")
-        next(fixture, None)
+                cur.execute(sql.SQL("ALTER DATABASE {} RESET timezone").format(sql.Identifier(database)))
+        finally:
+            # Close even when restoration fails; pytest retains that failure.
+            next(fixture, None)
 
 
 def invoke(*args, payload=None):
@@ -225,8 +289,8 @@ def test_real_first_day_finalizes_on_day_two_without_invented_predecessor(first_
     with conn.cursor() as cur:
         cur.execute("SELECT payload FROM trading.desk_run_results WHERE decision_id=%s", (DECISION,))
         original_output = cur.fetchone()[0]
-        cur.execute("CREATE OR REPLACE FUNCTION public.clock_timestamp() RETURNS timestamptz LANGUAGE sql VOLATILE "
-                    "AS $$ SELECT pg_catalog.clock_timestamp()+interval '1 day' $$")
+        cur.execute("CREATE OR REPLACE FUNCTION pg_catalog.clock_timestamp() RETURNS timestamptz LANGUAGE sql VOLATILE "
+                    "AS $$ SELECT pg_catalog.qt_test_actual_clock_timestamp()+interval '1 day' $$")
         cur.execute("SELECT clock_timestamp()")
         now = cur.fetchone()[0]
         today = now.astimezone(timezone.utc).date().isoformat()
