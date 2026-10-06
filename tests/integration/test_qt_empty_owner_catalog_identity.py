@@ -2,6 +2,7 @@
 import ctypes
 import os
 from pathlib import Path
+from tests.qt_test_artifacts import artifact
 import subprocess
 import sys
 
@@ -30,7 +31,7 @@ def invoke(mode):
     assert probe.is_absolute() and probe.is_file() and not probe.is_symlink()
     from hashlib import sha256
     assert sha256(probe.read_bytes()).hexdigest()==os.environ['QT_CATALOG_IDENTITY_PROBE_SHA256']
-    guard=Path('/home/devcontainers/qt-validation-20260921/bin/Debug/libqt_no_delivery_guard.so')
+    guard=artifact("libqt_no_delivery_guard.so")
     assert guard.is_file() and not guard.is_symlink()
     assert sha256(guard.read_bytes()).hexdigest()=='f895b1de8a5a623446d445914038d66397248b40bf0e8a9ecbbbff76adaae4a9'
     assert ctypes.CDLL(str(guard)).qt_no_delivery_guard_loaded()==1

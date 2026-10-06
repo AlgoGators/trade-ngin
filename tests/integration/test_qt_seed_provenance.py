@@ -1,5 +1,6 @@
 """Exact MODEL seed storage against the owned, route-free PostgreSQL fixture."""
 from pathlib import Path
+from tests.qt_test_artifacts import artifact
 from datetime import date
 import hashlib
 import json
@@ -133,7 +134,7 @@ def disposable_pg(streams):
 
 @pytest.fixture()
 def probe():
-    binary = Path('/home/devcontainers/qt-validation-20260921/bin/Debug/proposal_storage_probe')
+    binary = artifact("proposal_storage_probe")
 
     def publish_system_with_preserved_proposal_edit():
         result = subprocess.run([str(binary), '--scenario', 'seed-provenance'],

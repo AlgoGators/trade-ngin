@@ -2,6 +2,7 @@
 import json
 import os
 from pathlib import Path
+from tests.qt_test_artifacts import artifact
 import subprocess
 import tempfile
 
@@ -13,7 +14,7 @@ from test_qt_desk_storage import desk
 from test_runtime_control_schema import connection
 import test_qt_desk_run_cli as process_cli
 
-BINARY = Path('/home/devcontainers/qt-validation-20260921/bin/Debug/qt_desk_prepare_sources')
+BINARY = artifact("qt_desk_prepare_sources")
 GUARD = BINARY.with_name('libqt_no_delivery_guard.so')
 
 

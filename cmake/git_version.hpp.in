@@ -2,3 +2,4 @@
 
 // Auto-generated at build time with git SHA
 #define TRADE_NGIN_GIT_SHA "@TRADE_NGIN_GIT_SHA@"
+#define TRADE_NGIN_GIT_SHA_FULL "@TRADE_NGIN_GIT_SHA_FULL@"

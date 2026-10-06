@@ -1,5 +1,6 @@
 """Actual complete native publication boundary. Synthetic next MODEL payload only."""
 from pathlib import Path
+from tests.qt_test_artifacts import artifact
 import json,os,subprocess,sys
 import pytest
 STAGE=Path(__file__).resolve().parents[1]
@@ -10,7 +11,7 @@ sys.path.insert(0,str(STAGE/'tests/fixtures'))
 from mr_equity_eod_fixture import (eod,eod_clock,equity,desk,connection,finalize,
     all_state,original_rows,BOOK,DECISION,SUCCESSOR)
 from psycopg2.extras import Json
-PROBE=Path('/home/devcontainers/qt-validation-20260921/bin/Debug/equity_prior_publication_probe')
+PROBE=artifact("equity_prior_publication_probe")
 
 def argv(source,market,mode):
     assert PROBE.is_file(),'coherent actual EQ bridge required; missing binary is setup failure'

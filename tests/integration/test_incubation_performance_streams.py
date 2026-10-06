@@ -6,6 +6,7 @@ incubating, active, revision-0 scope on 013 + 015 + 016 + 025. AlgoLens's fetch_
 return exactly one position row per symbol-day (the MODEL, the system stream) and one equity point per day.
 """
 import os
+from tests.qt_test_artifacts import artifact
 import subprocess
 
 import psycopg2
@@ -14,8 +15,8 @@ from psycopg2.extras import RealDictCursor
 from test_runtime_control_schema import (connection, prepare_exact_publication_schema,  # noqa: F401
     apply_model_incubating, reincubate_at_revision_zero)
 
-PUBLISHER = "/home/devcontainers/qt-validation-20260921/bin/Debug/runtime_publication_probe"
-SEEDER = "/home/devcontainers/qt-validation-20260921/bin/Debug/proposal_storage_probe"
+PUBLISHER = str(artifact("runtime_publication_probe"))
+SEEDER = str(artifact("proposal_storage_probe"))
 
 
 def _run(argv):

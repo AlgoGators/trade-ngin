@@ -5,6 +5,7 @@ Unexecuted until the staged real dependencies are reviewed and compiled.
 import json
 import os
 from pathlib import Path
+from tests.qt_test_artifacts import artifact
 import subprocess
 import sys
 import pytest
@@ -13,7 +14,7 @@ WORKSPACE=next(p for p in Path(__file__).resolve().parents if (p/'.review/trade-
 sys.path.insert(0,str(WORKSPACE/'.review/trade-ngin-qt/tests/integration'))
 from test_runtime_control_schema import connection
 
-PROBE=Path('/home/devcontainers/qt-validation-20260921/bin/Debug/equity_model_v4_probe')
+PROBE=artifact("equity_model_v4_probe")
 
 @pytest.fixture()
 def market(connection):

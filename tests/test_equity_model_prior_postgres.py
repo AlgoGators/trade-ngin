@@ -1,6 +1,7 @@
 """Actual MR preview/processed priorâ†’finalizationâ†’MODEL prior admission; owned DB."""
 from copy import deepcopy
 from pathlib import Path
+from tests.qt_test_artifacts import artifact
 import json,os,subprocess,sys
 import pytest
 
@@ -11,7 +12,7 @@ sys.path.insert(0,str(WORKSPACE/'docs/repairs/2026-09-26-hemdutt-issue-completio
 sys.path.insert(0,str(STAGE/'tests/fixtures'))
 from mr_equity_eod_fixture import (eod,eod_clock,equity,desk,connection,finalize,
     all_state,BOOK,DECISION,SUCCESSOR)
-PROBE=Path('/home/devcontainers/qt-validation-20260921/bin/Debug/equity_model_prior_probe')
+PROBE=artifact("equity_model_prior_probe")
 
 def invoke(source,*,decision=DECISION,finalization=SUCCESSOR,book=BOOK,day=None,valuation=None):
     assert PROBE.is_file(),'coherent actual prior probe build required before behavioral gate'

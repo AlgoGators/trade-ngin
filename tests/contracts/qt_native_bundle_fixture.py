@@ -3,11 +3,15 @@ import importlib.util
 from pathlib import Path
 import re
 import subprocess
+import sys
 
 ROOT = Path(__file__).resolve().parents[2]
-BUILD = Path("/home/devcontainers/qt-validation-20260921")
-BINARY = BUILD / "bin/Debug/qt_evaluator"
-BUILD_ID = "local-qt-controlled"
+sys.path.insert(0, str(ROOT))
+from tests.qt_test_artifacts import artifact, build_dir, build_identity
+
+BUILD = build_dir()
+BINARY = artifact("qt_evaluator")
+BUILD_ID = build_identity()
 
 
 def actual_bundle_inputs():

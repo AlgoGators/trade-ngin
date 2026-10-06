@@ -5,7 +5,7 @@ import re
 import shutil
 import subprocess
 import unittest
-from qt_native_bundle_fixture import BUILD, actual_bundle_inputs
+from qt_native_bundle_fixture import BUILD, BUILD_ID, actual_bundle_inputs
 
 
 class ActualBundleTarget(unittest.TestCase):
@@ -32,7 +32,7 @@ class ActualBundleTarget(unittest.TestCase):
             self.assertEqual(completed.returncode, 0)
             manifest = json.loads((destination / 'qt_evaluator_manifest.json').read_text())
             self.assertEqual(manifest['schema'], 'qt-evaluator-bundle/v1')
-            self.assertEqual(manifest['evaluator_build'], 'local-qt-controlled')
+            self.assertEqual(manifest['evaluator_build'], BUILD_ID)
             self.assertTrue({'executable', 'engine', 'loader', 'dependency'} <=
                             {row['role'] for row in manifest['artifacts']})
             print('CMAKE_BUNDLE_MANIFEST=' + json.dumps(manifest, sort_keys=True, separators=(',', ':')))

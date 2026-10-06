@@ -5,6 +5,7 @@ from datetime import timedelta, timezone
 from decimal import Decimal
 from hashlib import sha256
 from pathlib import Path
+from tests.qt_test_artifacts import artifact
 import json
 import os
 import subprocess
@@ -35,7 +36,7 @@ PREVIEW = "a3000000-0000-4000-8000-000000000001"
 DECISION = "a4000000-0000-4000-8000-000000000001"
 ATTEMPT = "a5000000-0000-4000-8000-000000000001"
 OBSERVATION = "a6000000-0000-4000-8000-000000000001"
-BINARY = Path("/home/devcontainers/qt-validation-20260921/bin/Debug/qt_desk_storage_probe")
+BINARY = artifact("qt_desk_storage_probe")
 EVALUATOR = BINARY.with_name("qt_evaluator")
 BOOK = "EQUITY_MR_PORTFOLIO"
 

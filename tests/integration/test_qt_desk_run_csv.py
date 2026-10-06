@@ -8,6 +8,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+from tests.qt_test_artifacts import artifact
 import tempfile
 import subprocess
 import time
@@ -155,7 +156,7 @@ def test_postcommit_writer_refusal_preserves_accounted_receipt(accounting,tmp_pa
                 '--csv-output',str(output),'--connection-fd',str(fd)],
                 stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True,pass_fds=(fd,),
                 env=dict(PATH='/usr/local/bin:/usr/bin:/bin',
-                    LD_PRELOAD='/home/devcontainers/qt-validation-20260921/bin/Debug/libqt_no_delivery_guard.so'))
+                    LD_PRELOAD=str(artifact("libqt_no_delivery_guard.so"))))
             deadline=time.monotonic()+8
             while True:
                 assert process.poll() is None,'actual CLI exited before canonical lock barrier'

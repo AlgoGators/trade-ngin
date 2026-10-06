@@ -3,6 +3,7 @@
 import json
 import os
 from pathlib import Path
+from tests.qt_test_artifacts import artifact
 import subprocess
 
 import pytest
@@ -11,7 +12,7 @@ from test_proposal_storage_migration import MIGRATION, apply, predecessor
 from test_runtime_control_schema import connection
 
 
-PROBE = Path('/home/devcontainers/qt-validation-20260921/bin/Debug/proposal_storage_probe')
+PROBE = artifact("proposal_storage_probe")
 
 
 @pytest.fixture()

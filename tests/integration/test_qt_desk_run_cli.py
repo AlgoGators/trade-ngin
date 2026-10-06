@@ -2,6 +2,7 @@
 import json
 import os
 from pathlib import Path
+from tests.qt_test_artifacts import artifact
 import subprocess
 import tempfile
 
@@ -9,7 +10,7 @@ import pytest
 from test_qt_desk_accounting import accounting, desk, connection
 from test_qt_desk_upstream import upstream
 
-BINARY = Path("/home/devcontainers/qt-validation-20260921/bin/Debug/qt_desk_run")
+BINARY = artifact("qt_desk_run")
 DECISION = "40000000-0000-4000-8000-000000000001"
 ATTEMPT = "50000000-0000-4000-8000-000000000001"
 INPUT = "90000000-0000-4000-8000-000000000001"
@@ -25,7 +26,7 @@ def invoke(args, *, fd=None, environment=None):
         command += ["--connection-fd", str(fd)]
     if environment is None:
         environment = dict(PATH="/usr/local/bin:/usr/bin:/bin",
-                           LD_PRELOAD="/home/devcontainers/qt-validation-20260921/bin/Debug/libqt_no_delivery_guard.so")
+                           LD_PRELOAD=str(artifact("libqt_no_delivery_guard.so")))
     return subprocess.run(command, capture_output=True, text=True, timeout=15,
                           pass_fds=() if fd is None else (fd,), env=environment)
 
@@ -131,7 +132,7 @@ def run_owned(day, **identities):
             environment = dict(PATH="/usr/local/bin:/usr/bin:/bin", PGHOST="/unavailable", PGDATABASE="unavailable",
                                PGSERVICE="unavailable", PGPASSWORD="secret-never-echo",
                                PGPASSFILE="/unavailable", HOME="/unavailable",
-                               LD_PRELOAD="/home/devcontainers/qt-validation-20260921/bin/Debug/libqt_no_delivery_guard.so")
+                               LD_PRELOAD=str(artifact("libqt_no_delivery_guard.so")))
             return invoke(args(day, **identities), fd=fd, environment=environment)
         finally:
             os.close(fd)

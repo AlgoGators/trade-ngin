@@ -6,6 +6,7 @@ The connection fixture is the existing disposable schema/migration fixture.
 import json
 import os
 from pathlib import Path
+from tests.qt_test_artifacts import artifact
 import subprocess
 import sys
 import time
@@ -17,7 +18,7 @@ WORKSPACE=next(p for p in Path(__file__).resolve().parents if (p/'.review/trade-
 sys.path.insert(0,str(WORKSPACE/'.review/trade-ngin-qt/tests/integration'))
 from test_runtime_control_schema import connection
 
-PROBE=Path('/home/devcontainers/qt-validation-20260921/bin/Debug/equity_model_database_probe')
+PROBE=artifact("equity_model_database_probe")
 
 @pytest.fixture()
 def ledger(connection):
@@ -138,7 +139,7 @@ def test_borrowed_uow_joins_confirmation_book_lock_before_mutating(ledger):
 # The actual native publisher (equity_prior_binding_probe: PublicationPriorRequirement::None, the
 # system-reference prior, RequiredFinalObservations) against LIVE_EQUITY_MEAN_REVERSION/EQUITY_MR_PORTFOLIO.
 # The database layer is 013 + 015 + 016 + 025 (this tree's migrations). The MODEL payload is synthetic.
-BINDING_PROBE=Path('/home/devcontainers/qt-validation-20260921/bin/Debug/equity_prior_binding_probe')
+BINDING_PROBE=artifact("equity_prior_binding_probe")
 MODEL_INCUBATING=Path(__file__).resolve().parents[1]/'migrations/025_runtime_scope_model_incubating.sql'
 EQ_BOOK,EQ_PRIOR_DAY,EQ_DAY='EQUITY_MR_PORTFOLIO','2026-09-21','2026-09-22'
 EQ_UNUSED_DECISION,EQ_UNUSED_FINALIZATION='40000000-0000-4000-8000-000000000001','40000000-0000-4000-8000-000000000002'

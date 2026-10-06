@@ -5,12 +5,13 @@ Future parent-reviewed owned PG gate only. No SQL success flags or sentinels.
 from copy import deepcopy
 from decimal import Decimal
 from pathlib import Path
+from tests.qt_test_artifacts import artifact
 import ctypes,json,os,subprocess
 import pytest
 from psycopg2.extras import Json
 from test_qt_empty_owner_schema import empty_schema,predecessor,connection
 ROOT=Path(__file__).parents[2]
-PROBE=Path('/home/devcontainers/qt-validation-20260921/bin/Debug/qt_empty_owner_publication_probe')
+PROBE=artifact("qt_empty_owner_publication_probe")
 GUARD=PROBE.parent/'libqt_no_delivery_guard.so'
 ENGINE='LIVE_EQUITY_MEAN_REVERSION';OWNER='EQUITY_MEAN_REVERSION';BOOK='EQ_BOOK';DAY='2026-09-26'
 

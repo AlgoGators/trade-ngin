@@ -17,7 +17,7 @@ jobs:
     name: Code Linting
     runs-on: ubuntu-latest
     container:
-      image: ghcr.io/algogators/trade-ngin-ci:latest
+      image: ${{ vars.TRADE_NGIN_CI_IMAGE }}
       credentials:
         username: ${{ github.actor }}
         password: ${{ secrets.GITHUB_TOKEN }}
@@ -229,7 +229,7 @@ jobs:
     name: Build and Test
     runs-on: ubuntu-latest
     container:
-      image: ghcr.io/algogators/trade-ngin-ci:latest
+      image: ${{ vars.TRADE_NGIN_CI_IMAGE }}
       credentials:
         username: ${{ github.actor }}
         password: ${{ secrets.GITHUB_TOKEN }}
@@ -237,44 +237,94 @@ jobs:
     strategy:
       matrix:
         build-type: [Debug, Release]
+    env:
+      BUILD_DIR: ${{ matrix.build-type == 'Release' && 'build/qt-prod' || 'build' }}
 
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v7
       - name: Configure CMake with Coverage
+        shell: bash
         run: |
-          mkdir -p build
-          cd build
-          cmake .. \
+          TOOLCHAIN_IMAGE='${{ vars.TRADE_NGIN_CI_IMAGE }}'
+          if [[ ! "$TOOLCHAIN_IMAGE" =~ @sha256:([0-9a-f]{64})$ ]]; then
+            echo "::error::TRADE_NGIN_CI_IMAGE must be pinned by sha256 digest"
+            exit 1
+          fi
+          TOOLCHAIN_DIGEST="sha256:${BASH_REMATCH[1]}"
+          cmake -S . -B "$BUILD_DIR" \
             -DCMAKE_BUILD_TYPE=${{ matrix.build-type }} \
             -DCMAKE_EXPORT_COMPILE_COMMANDS=ON \
             -DCMAKE_CXX_COMPILER=${{ matrix.build-type == 'Debug' && 'g++' || 'g++' }} \
             -DCMAKE_CXX_FLAGS="${{ matrix.build-type == 'Debug' && '-g -O0 --coverage -fprofile-update=atomic' || '-O3' }}" \
             -DCMAKE_EXE_LINKER_FLAGS="${{ matrix.build-type == 'Debug' && '--coverage' || '' }}" \
+            -DTRADE_NGIN_TOOLCHAIN_IMAGE_DIGEST="$TOOLCHAIN_DIGEST" \
             -DNLopt_DIR=/usr/lib/x86_64-linux-gnu/cmake/nlopt
 
       - name: Build Project
         run: |
-          cd build
-          make -j$(nproc)
+          cmake --build "$BUILD_DIR" --parallel "$(nproc)"
 
       - name: Run Valgrind Memory Check
         if: matrix.build-type == 'Debug'
         run: |
-          cd build
+          cd "$BUILD_DIR"
           # Run tests with Valgrind
           valgrind --leak-check=full --show-leak-kinds=all --track-origins=yes \
             --error-exitcode=1 ctest --output-on-failure --verbose
 
       - name: Run Tests
         run: |
-          cd build
-          ctest --output-on-failure --verbose
+          ctest --test-dir "$BUILD_DIR" --output-on-failure --verbose
+
+      - name: Stage exact Release evaluator bundle
+        if: matrix.build-type == 'Release'
+        run: cmake --build "$BUILD_DIR" --target qt_evaluator_bundle --parallel 2
+
+      - name: Verify Release artifact contracts
+        if: matrix.build-type == 'Release'
+        shell: bash
+        run: |
+          export TRADE_NGIN_TEST_BUILD_DIR="$GITHUB_WORKSPACE/$BUILD_DIR"
+          export TRADE_NGIN_TEST_ARTIFACT_DIR="$GITHUB_WORKSPACE/$BUILD_DIR/bin/Release"
+          export PYTHONPATH="$GITHUB_WORKSPACE"
+          cd tests/contracts
+          PYTHONDONTWRITEBYTECODE=1 python3 -B -m unittest -v \
+            test_qt_evaluator_bundle.py test_qt_built_bundle.py \
+            test_qt_evaluator_bundle_inventory.py test_release_artifacts.py \
+            test_release_identity.py test_release_pipeline.py \
+            test_qt_test_artifact_paths.py
+
+      - name: Package canonical Release tree
+        if: matrix.build-type == 'Release'
+        shell: bash
+        run: |
+          SOURCE_DATE_EPOCH=$(git show -s --format=%ct HEAD)
+          (
+            cd "$BUILD_DIR"
+            find bin/Release qt-evaluator-bundle -type f -print0 \
+              | sort -z | xargs -0 sha256sum > release-files.sha256
+          )
+          tar --sort=name --mtime="@${SOURCE_DATE_EPOCH}" --owner=0 --group=0 --numeric-owner \
+            -cf trade-ngin-release.tar \
+            "$BUILD_DIR/bin/Release" \
+            "$BUILD_DIR/qt-evaluator-bundle" \
+            "$BUILD_DIR/include/trade_ngin/git_version.hpp" \
+            "$BUILD_DIR/release-files.sha256"
+
+      - name: Upload canonical Release tree
+        if: matrix.build-type == 'Release'
+        uses: actions/upload-artifact@v7
+        with:
+          name: canonical-release-${{ github.sha }}
+          path: trade-ngin-release.tar
+          if-no-files-found: error
+          retention-days: 30
 
       - name: Generate Coverage Report
         if: matrix.build-type == 'Debug'
         run: |
-          cd build
+          cd "$BUILD_DIR"
           # Generate coverage data
           lcov --capture --directory . --output-file coverage.info --ignore-errors mismatch --ignore-errors negative
 
@@ -296,14 +346,14 @@ jobs:
       - name: Validate Coverage Artifacts
         if: matrix.build-type == 'Debug'
         run: |
-          cd build
+          cd "$BUILD_DIR"
           test -s coverage-sonarqube.xml || { echo "Missing build/coverage-sonarqube.xml"; exit 1; }
           test -s coverage.xml || { echo "Missing build/coverage.xml"; exit 1; }
 
       - name: Coverage Debug Summary
         if: matrix.build-type == 'Debug'
         run: |
-          cd build
+          cd "$BUILD_DIR"
           echo "Files included in Sonar coverage report:"
           grep -o 'path="[^"]*"' coverage-sonarqube.xml | sed 's/path="//;s/"$//' | sort -u | head -n 200
           echo ""
@@ -316,7 +366,7 @@ jobs:
       - name: Check Coverage Threshold
         if: matrix.build-type == 'Debug'
         run: |
-          cd build
+          cd "$BUILD_DIR"
           # Extract coverage percentage (get the number before the %)
           COVERAGE_PERCENT=$(lcov --summary coverage.info 2>&1 | grep "lines" | grep -oP '\d+\.\d+(?=%)')
           echo "Coverage: $COVERAGE_PERCENT%"
@@ -353,7 +403,7 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: test-results-${{ github.run_number }}-${{ matrix.build-type }}
-          path: build/Testing/
+          path: ${{ env.BUILD_DIR }}/Testing/
 
   security-scan:
     name: Security Scan
@@ -423,14 +473,26 @@ jobs:
       packages: write
     runs-on: ubuntu-latest
     container:
-      image: ghcr.io/algogators/trade-ngin-ci:latest
+      image: ${{ vars.TRADE_NGIN_CI_IMAGE }}
       credentials:
         username: ${{ github.actor }}
         password: ${{ secrets.GITHUB_TOKEN }}
     needs: [lint, build, security-scan]
+    outputs:
+      repo: ${{ steps.build.outputs.repo }}
+      tag: ${{ steps.build.outputs.tag }}
+      sha_tag: ${{ steps.build.outputs.sha_tag }}
+      short_sha: ${{ steps.build.outputs.short_sha }}
+      full_sha: ${{ steps.build.outputs.full_sha }}
+      image_digest: ${{ steps.build.outputs.image_digest }}
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v7
+      - name: Download canonical tested Release tree
+        uses: actions/download-artifact@v8
+        with:
+          name: canonical-release-${{ github.sha }}
+          path: build/qt-download
       - name: Login to GitHub Container Registry
         uses: docker/login-action@v3
         with:
@@ -441,62 +503,89 @@ jobs:
         id: build
         shell: bash
         run: |
+          set -euo pipefail
           REPO="ghcr.io/${GITHUB_REPOSITORY,,}"
-          # Use PR source branch, else push branch, else derive from ref, else 'unknown'
-            BRANCH="${GITHUB_HEAD_REF:-${GITHUB_REF_NAME:-${GITHUB_REF#refs/heads/}}}"
-            BRANCH=${BRANCH:-unknown}
+          BRANCH="${GITHUB_HEAD_REF:-${GITHUB_REF_NAME:-${GITHUB_REF#refs/heads/}}}"
+          BRANCH=${BRANCH:-unknown}
           BRANCH_SAFE=$(echo "$BRANCH" | tr '[:upper:]' '[:lower:]' | tr '/@: ' '-')
+          TAG="${BRANCH_SAFE}-$(date +%Y%m%d)-$(date +%H%M%S)"
 
-            DATE=$(date +%Y%m%d)
-            TIME=$(date +%H%M%S)
-            TAG="${BRANCH_SAFE}-${DATE}-${TIME}"
+          git config --global --add safe.directory "${GITHUB_WORKSPACE}"
+          FULL_SHA=$(git rev-parse HEAD)
+          SHORT_SHA=$(git rev-parse --short HEAD)
+          test "$FULL_SHA" = "$GITHUB_SHA"
 
-          # Short SHA -- matches the format CMakeLists.txt embeds as
-          # TRADE_NGIN_GIT_SHA (`git rev-parse --short HEAD`), NOT the full
-          # 40-char $GITHUB_SHA. This checkout has .git (unlike the Docker
-          # build context, see .dockerignore), so this is the same value
-          # `git rev-parse --short HEAD` would produce inside the image if it
-          # could run there -- passed in explicitly via --build-arg below so
-          # the two never drift apart. Computed once, used for both the
-          # embedded version string and the image tag so a run_inputs row's
-          # trade_ngin_sha always resolves to an image tagged with the exact
-          # same string.
-          #
-          # This job runs inside a container (ghcr.io/algogators/trade-ngin-ci),
-          # so the checkout is owned by a different uid than the container user
-          # and git refuses to read it ("detected dubious ownership") unless the
-          # workspace is marked safe. actions/checkout only sets that under a
-          # temporary HOME it reverts afterwards, so it must be re-declared here
-          # or `git rev-parse` exits 128 and takes the whole job with it.
-            git config --global --add safe.directory "${GITHUB_WORKSPACE}"
-            SHORT_SHA=$(git rev-parse --short HEAD)
+          ARCHIVE=build/qt-download/trade-ngin-release.tar
+          test -s "$ARCHIVE"
+          tar -tf "$ARCHIVE" | awk 'index($0,"build/qt-prod/") == 1 {next} {exit 1}'
+          tar -xf "$ARCHIVE"
+          grep -Fxq "#define TRADE_NGIN_GIT_SHA \"${SHORT_SHA}\"" \
+            build/qt-prod/include/trade_ngin/git_version.hpp
+          grep -Fxq "#define TRADE_NGIN_GIT_SHA_FULL \"${FULL_SHA}\"" \
+            build/qt-prod/include/trade_ngin/git_version.hpp
+          (cd build/qt-prod && sha256sum -c release-files.sha256)
 
-            docker build --build-arg TRADE_NGIN_GIT_SHA="${SHORT_SHA}" -t "${REPO}:${TAG}" .
-            docker push "${REPO}:${TAG}"
+          RUNTIME_BASE_IMAGE='${{ vars.TRADE_NGIN_RUNTIME_BASE_IMAGE }}'
+          if [[ ! "$RUNTIME_BASE_IMAGE" =~ @sha256:[0-9a-f]{64}$ ]]; then
+            echo "::error::TRADE_NGIN_RUNTIME_BASE_IMAGE must be pinned by sha256 digest"
+            exit 1
+          fi
+          TOOLCHAIN_IMAGE='${{ vars.TRADE_NGIN_CI_IMAGE }}'
+          if [[ ! "$TOOLCHAIN_IMAGE" =~ @sha256:([0-9a-f]{64})$ ]]; then
+            echo "::error::TRADE_NGIN_CI_IMAGE must be pinned by sha256 digest"
+            exit 1
+          fi
+          TOOLCHAIN_DIGEST="sha256:${BASH_REMATCH[1]}"
 
-          # ADR-005 DEC-5.1: also tag by commit SHA, so benchmark_replay
-          # --engine frozen can resolve "the build that produced day d"
-          # (trading.run_inputs.trade_ngin_sha) to a real, addressable image
-          # -- additive, does not change the existing branch/timestamp tag or
-          # the prod 'latest' tag below. Provisional: this adds the addressing
-          # scheme only, not a retention/expiry policy -- GHCR's default (no
-          # auto-deletion) applies until Systems decides a real lifecycle
-          # policy for DEC-5.1. From this point forward, any run_inputs row
-          # recorded with a trade_ngin_sha from a commit that triggered this
-          # job has a resolvable image; earlier commits do not.
-            SHA_TAG="${SHORT_SHA}"
-            docker tag "${REPO}:${TAG}" "${REPO}:${SHA_TAG}"
-            docker push "${REPO}:${SHA_TAG}"
+          docker build \
+            --build-arg RUNTIME_BASE_IMAGE="$RUNTIME_BASE_IMAGE" \
+            --build-arg TRADE_NGIN_GIT_SHA="$SHORT_SHA" \
+            --build-arg TRADE_NGIN_GIT_SHA_FULL="$FULL_SHA" \
+            -t "${REPO}:${TAG}" .
+          docker push "${REPO}:${TAG}"
 
-          # Tag as latest if prod push
-            if [ "${{ github.event_name }}" == "push" ] && [ "${{ github.ref_name }}" == "prod" ]; then
-              docker tag "${REPO}:${TAG}" "${REPO}:latest"
-              docker push "${REPO}:latest"
-            fi
+          SHA_TAG="$SHORT_SHA"
+          docker tag "${REPO}:${TAG}" "${REPO}:${SHA_TAG}"
+          docker push "${REPO}:${SHA_TAG}"
+          resolve_digest() {
+            docker buildx imagetools inspect "$1" --format '{{.Manifest.Digest}}'
+          }
+          IMAGE_DIGEST=$(resolve_digest "${REPO}:${TAG}")
+          test "$IMAGE_DIGEST" = "$(resolve_digest "${REPO}:${SHA_TAG}")"
 
-            echo "repo=${REPO}" >> "$GITHUB_OUTPUT"
-            echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
-            echo "sha_tag=${SHA_TAG}" >> "$GITHUB_OUTPUT"
+          # Hash the downloaded, tested tree directly. No configure or build is
+          # allowed in this job: the runtime image and manifest bind the exact
+          # bytes produced and tested by the Release matrix job.
+          PYTHONDONTWRITEBYTECODE=1 python3 -B apps/tools/release_artifacts.py \
+            --create --release-root build/qt-prod \
+            --git-sha-full "$FULL_SHA" --git-sha-short "$SHORT_SHA" \
+            --toolchain-image-digest "$TOOLCHAIN_DIGEST" \
+            --image-digest "$IMAGE_DIGEST" \
+            --manifest build/qt-prod/release-artifacts.json \
+            --schema apps/tools/release_artifacts_schema.json \
+            --bundle-directory build/qt-prod/qt-evaluator-bundle
+          PYTHONDONTWRITEBYTECODE=1 python3 -B apps/tools/release_artifacts.py \
+            --verify --manifest build/qt-prod/release-artifacts.json \
+            --installed-root build/qt-prod \
+            --bundle-directory build/qt-prod/qt-evaluator-bundle
+
+          echo "repo=${REPO}" >> "$GITHUB_OUTPUT"
+          echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
+          echo "sha_tag=${SHA_TAG}" >> "$GITHUB_OUTPUT"
+          echo "short_sha=${SHORT_SHA}" >> "$GITHUB_OUTPUT"
+          echo "full_sha=${FULL_SHA}" >> "$GITHUB_OUTPUT"
+          echo "image_digest=${IMAGE_DIGEST}" >> "$GITHUB_OUTPUT"
+
+      - name: Upload immutable Release evidence
+        uses: actions/upload-artifact@v7
+        with:
+          name: release-evidence-${{ github.sha }}
+          path: |
+            build/qt-prod/release-artifacts.json
+            build/qt-prod/qt-evaluator-bundle/
+            build/qt-prod/release-files.sha256
+          if-no-files-found: error
+          retention-days: 90
 
       - name: Install Trivy
         shell: bash
@@ -504,14 +593,21 @@ jobs:
 
       - name: Scan image with Trivy
         shell: bash
-        # Non-blocking for now (exit-code 0): this is the first scan of an image
-        # that's been running unscanned, so the existing/known vulnerability count
-        # is unknown. Once triaged, bump exit-code to 1 for CRITICAL findings to
-        # make this a hard gate -- appropriate given this image runs live trading.
         run: |
           trivy image --format sarif --output trivy-results.sarif \
-            --severity CRITICAL,HIGH --exit-code 0 \
-            "${{ steps.build.outputs.repo }}:${{ steps.build.outputs.tag }}"
+            --severity CRITICAL,HIGH --exit-code 1 \
+            "${{ steps.build.outputs.repo }}@${{ steps.build.outputs.image_digest }}"
+
+      - name: Promote scanned prod digest to latest
+        if: github.event_name == 'push' && github.ref_name == 'prod'
+        shell: bash
+        run: |
+          set -euo pipefail
+          REPO='${{ steps.build.outputs.repo }}'
+          DIGEST='${{ steps.build.outputs.image_digest }}'
+          docker buildx imagetools create --tag "${REPO}:latest" "${REPO}@${DIGEST}"
+          LATEST=$(docker buildx imagetools inspect "${REPO}:latest" --format '{{.Manifest.Digest}}')
+          test "$LATEST" = "$DIGEST"
 
       - name: Upload Trivy results to Security tab
         uses: github/codeql-action/upload-sarif@42947a340483f03ba47bb1a039b2c519aab3df85 # v3.37.8
@@ -549,7 +645,7 @@ jobs:
     if: github.ref_name == 'prod' && github.event_name == 'push'
     runs-on: ubuntu-latest
     container:
-      image: ghcr.io/algogators/trade-ngin-ci:latest
+      image: ${{ vars.TRADE_NGIN_CI_IMAGE }}
     needs: image-generation
     steps:
       - name: Deploy to EC2
@@ -559,9 +655,26 @@ jobs:
           username: ${{ secrets.EC2_USER }}
           key: ${{ secrets.EC2_SSH_KEY }}
           script: |
-            docker pull ghcr.io/algogators/trade-ngin:latest
+            set -eu
+            REPO='${{ needs.image-generation.outputs.repo }}'
+            EXPECTED_DIGEST='${{ needs.image-generation.outputs.image_digest }}'
+            EXPECTED_SHORT_SHA='${{ needs.image-generation.outputs.short_sha }}'
+            EXPECTED_FULL_SHA='${{ needs.image-generation.outputs.full_sha }}'
+            case "$EXPECTED_DIGEST" in sha256:????????????????????????????????????????????????????????????????) ;; *) exit 1 ;; esac
+            docker pull "${REPO}@${EXPECTED_DIGEST}"
+            EXPECTED_IMAGE_ID=$(docker image inspect "${REPO}@${EXPECTED_DIGEST}" --format '{{.Id}}')
+            docker pull "${REPO}:latest"
+            LATEST_IMAGE_ID=$(docker image inspect "${REPO}:latest" --format '{{.Id}}')
+            test "$EXPECTED_IMAGE_ID" = "$LATEST_IMAGE_ID"
             docker stop trade-ngin || true
             docker rm trade-ngin || true
             cd /home/ubuntu/docker-compose/trade-ngin
             docker compose up -d
+            RUNNING_IMAGE_ID=$(docker inspect trade-ngin --format '{{.Image}}')
+            RUNNING_FULL_SHA=$(docker inspect trade-ngin --format '{{index .Config.Labels "org.opencontainers.image.revision"}}')
+            RUNNING_SHORT_SHA=$(docker inspect trade-ngin --format '{{index .Config.Labels "org.algogators.trade-ngin.short-sha"}}')
+            test "$RUNNING_IMAGE_ID" = "$EXPECTED_IMAGE_ID"
+            test "$RUNNING_FULL_SHA" = "$EXPECTED_FULL_SHA"
+            test "$RUNNING_SHORT_SHA" = "$EXPECTED_SHORT_SHA"
+            docker exec trade-ngin sh -lc 'cd /app/build && sha256sum -c release-files.sha256'
             

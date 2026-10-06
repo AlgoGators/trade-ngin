@@ -3,11 +3,15 @@ import json
 from datetime import date, timedelta
 from pathlib import Path
 import subprocess
+import sys
 import tempfile
 import unittest
 
+ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(ROOT))
+from tests.qt_test_artifacts import artifact
 
-EXECUTABLE = Path('/home/devcontainers/qt-validation-20260921/bin/Debug/qt_evaluator')
+EXECUTABLE = artifact("qt_evaluator")
 FIXTURE = Path(__file__).with_name('qt-eval-v1.json')
 
 

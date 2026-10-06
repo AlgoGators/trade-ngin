@@ -8,6 +8,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from datetime import date
 from pathlib import Path
+from tests.qt_test_artifacts import artifact
 
 import psycopg2
 import pytest
@@ -269,7 +270,7 @@ def test_migration_is_repeatable_and_refuses_incomplete_writer_prerequisites(con
                                  "incubating_changed", "incubating_inactive_controlled",
                                  "run_retired_controlled"])
 def test_cpp_publication_is_atomic_and_captures_values(connection, mode):
-    probe = Path("/home/devcontainers/qt-validation-20260921/bin/Debug/runtime_publication_probe")
+    probe = artifact("runtime_publication_probe")
     assert probe.exists(), "runtime publication probe has not been built"
     if mode in ("publish", "publish_controlled", "publish_disabled_intent", "historical_valid",
                 "publish_incubating", "historical_valid_incubating", "publish_incubating_controlled"):
@@ -386,7 +387,7 @@ def test_cpp_publication_is_atomic_and_captures_values(connection, mode):
     ("publish_inspection_capacity_uint64", "none"),
 ])
 def test_cpp_capture_is_sealed_only_by_final_sql_publication(connection, mode, expected_reason, tmp_path):
-    probe = Path("/home/devcontainers/qt-validation-20260921/bin/Debug/runtime_publication_probe")
+    probe = artifact("runtime_publication_probe")
     prepare_exact_publication_schema(connection)
     if mode == "publish_inspection_controlled":
         snapshot_result = subprocess.run([str(probe), "snapshot"], capture_output=True,
@@ -565,7 +566,7 @@ def _save_required_publication_fixture(connection, mode, result, child, *, evide
 def test_required_publication_seals_typed_unavailable_consumption(connection, controlled, tmp_path):
     """A required begin plus accepted typed evidence must commit v2, even when unavailable."""
     prepare_exact_publication_schema(connection)
-    probe = Path("/home/devcontainers/qt-validation-20260921/bin/Debug/runtime_publication_probe")
+    probe = artifact("runtime_publication_probe")
     mode = "publish_required_unavailable" + ("_controlled" if controlled else "")
     if controlled:
         exported = subprocess.run([str(probe), "snapshot"], capture_output=True,
@@ -609,7 +610,7 @@ def test_required_publication_seals_typed_unavailable_consumption(connection, co
 ])
 def test_required_protocol_refusals_cannot_publish_payload(connection, mode):
     """An ignored refusal or absent required evidence cannot commit any queued row."""
-    probe = Path("/home/devcontainers/qt-validation-20260921/bin/Debug/runtime_publication_probe")
+    probe = artifact("runtime_publication_probe")
     if "controlled" in mode:
         exported = subprocess.run([str(probe), "snapshot"], capture_output=True,
                                   text=True, check=True)
@@ -639,7 +640,7 @@ def test_required_protocol_refusals_cannot_publish_payload(connection, mode):
 def test_required_second_begin_clears_its_output_without_replacing_active_scope(
         connection, controlled):
     prepare_exact_publication_schema(connection)
-    probe = Path("/home/devcontainers/qt-validation-20260921/bin/Debug/runtime_publication_probe")
+    probe = artifact("runtime_publication_probe")
     mode = "required_already_active" + ("_controlled" if controlled else "")
     if controlled:
         exported = subprocess.run([str(probe), "snapshot"], capture_output=True,
@@ -671,7 +672,7 @@ def test_required_begin_clears_previously_valid_token_on_nonpublication(
         connection, case, controlled):
     if case == "stop_prevalid" and not controlled:
         pytest.skip("approved stop is a controlled-only operation")
-    probe = Path("/home/devcontainers/qt-validation-20260921/bin/Debug/runtime_publication_probe")
+    probe = artifact("runtime_publication_probe")
     mode = "required_" + case + ("_controlled" if controlled else "")
     if controlled and case != "stop_prevalid":
         exported = subprocess.run([str(probe), "snapshot"], capture_output=True,
@@ -704,7 +705,7 @@ def test_required_begin_clears_previously_valid_token_on_nonpublication(
 def test_required_stale_or_cross_instance_token_poison_is_lifetime_bound(connection, mode):
     """A same-day replacement cannot accept A's token; fresh C can publish."""
     prepare_exact_publication_schema(connection)
-    probe = Path("/home/devcontainers/qt-validation-20260921/bin/Debug/runtime_publication_probe")
+    probe = artifact("runtime_publication_probe")
     if "controlled" in mode:
         exported = subprocess.run([str(probe), "snapshot"], capture_output=True,
                                   text=True, check=True)
@@ -742,7 +743,7 @@ def test_required_generated_native_consumption_round_trips_jsonb(
     prepare_exact_publication_schema(connection)
     from algolens.domain.portfolio.consumption_inspection import validate_consumption_v2
 
-    probe = Path("/home/devcontainers/qt-validation-20260921/bin/Debug/runtime_publication_probe")
+    probe = artifact("runtime_publication_probe")
     mode = f"publish_required_{status}" + ("_controlled" if controlled else "")
     if controlled:
         exported = subprocess.run([str(probe), "snapshot"], capture_output=True,
@@ -784,7 +785,7 @@ def test_required_attachment_retains_sealed_copy_and_rejects_after_success(
     prepare_exact_publication_schema(connection)
     from algolens.domain.portfolio.consumption_inspection import validate_consumption_v2
 
-    probe = Path("/home/devcontainers/qt-validation-20260921/bin/Debug/runtime_publication_probe")
+    probe = artifact("runtime_publication_probe")
     mode = f"publish_required_{case}" + ("_controlled" if controlled else "")
     if controlled:
         exported = subprocess.run([str(probe), "snapshot"], capture_output=True,
@@ -819,7 +820,7 @@ def test_required_early_failure_does_not_erase_valid_final_consumption(
     prepare_exact_publication_schema(connection)
     from algolens.domain.portfolio.consumption_inspection import validate_consumption_v2
 
-    probe = Path("/home/devcontainers/qt-validation-20260921/bin/Debug/runtime_publication_probe")
+    probe = artifact("runtime_publication_probe")
     mode += "_controlled" if controlled else ""
     if controlled:
         exported = subprocess.run([str(probe),
@@ -869,7 +870,7 @@ def _publication_payload_snapshot(connection):
 def test_required_ignored_refusal_preserves_prior_publication_rows(
         connection, case, controlled):
     prepare_exact_publication_schema(connection)
-    probe = Path("/home/devcontainers/qt-validation-20260921/bin/Debug/runtime_publication_probe")
+    probe = artifact("runtime_publication_probe")
     suffix = "_controlled" if controlled else ""
     if controlled:
         exported = subprocess.run([str(probe), "snapshot"], capture_output=True,
@@ -903,7 +904,7 @@ def test_required_in_progress_attach_refusal_rolls_back_prior_payload(
         connection, controlled):
     """A refused reentrant attach during callbacks must abort the whole transaction."""
     prepare_exact_publication_schema(connection)
-    probe = Path("/home/devcontainers/qt-validation-20260921/bin/Debug/runtime_publication_probe")
+    probe = artifact("runtime_publication_probe")
     suffix = "_controlled" if controlled else ""
     if controlled:
         exported = subprocess.run([str(probe), "snapshot"], capture_output=True,
@@ -940,7 +941,7 @@ def test_required_in_progress_attach_refusal_rolls_back_prior_payload(
 def test_required_callback_failure_preserves_all_prior_payload_rows(
         connection, failure, controlled):
     prepare_exact_publication_schema(connection)
-    probe = Path("/home/devcontainers/qt-validation-20260921/bin/Debug/runtime_publication_probe")
+    probe = artifact("runtime_publication_probe")
     suffix = "_controlled" if controlled else ""
     if controlled:
         exported = subprocess.run([str(probe), "snapshot"], capture_output=True,
@@ -981,7 +982,7 @@ def test_required_combined_transport_capacity_discards_whole_typed_tree(
     prepare_exact_publication_schema(connection)
     from algolens.domain.portfolio.consumption_inspection import validate_consumption_v2
 
-    probe = Path("/home/devcontainers/qt-validation-20260921/bin/Debug/runtime_publication_probe")
+    probe = artifact("runtime_publication_probe")
     mode = f"publish_required_capacity_{kind}" + ("_controlled" if controlled else "")
     if controlled:
         exported = subprocess.run([str(probe),
@@ -1108,7 +1109,7 @@ def test_required_combined_transport_capacity_discards_whole_typed_tree(
 ])
 def test_fix1_malformed_capture_is_redacted_but_results_publish(connection, mode):
     prepare_exact_publication_schema(connection)
-    probe = Path("/home/devcontainers/qt-validation-20260921/bin/Debug/runtime_publication_probe")
+    probe = artifact("runtime_publication_probe")
     result = subprocess.run([str(probe), mode], capture_output=True, text=True, timeout=30)
     assert result.returncode == 0, (mode, result.stdout, result.stderr)
     assert f"RUNTIME_PUBLICATION_OK={mode}" in result.stdout
@@ -1149,7 +1150,7 @@ def test_fix1_malformed_capture_is_redacted_but_results_publish(connection, mode
 
 def test_fix1_valid_leap_day_capture_stays_available(connection):
     prepare_exact_publication_schema(connection)
-    probe = Path("/home/devcontainers/qt-validation-20260921/bin/Debug/runtime_publication_probe")
+    probe = artifact("runtime_publication_probe")
     result = subprocess.run([str(probe), "publish_inspection_fix1_valid_leap"],
                             capture_output=True, text=True, timeout=30)
     assert result.returncode == 0, (result.stdout, result.stderr)
@@ -1184,7 +1185,7 @@ def test_fix1_valid_leap_day_capture_stays_available(connection):
 def test_fix2_allocation_numeric_equality_preserves_publication(
         connection, mode, status, selected, allocation):
     prepare_exact_publication_schema(connection)
-    probe = Path("/home/devcontainers/qt-validation-20260921/bin/Debug/runtime_publication_probe")
+    probe = artifact("runtime_publication_probe")
     result = subprocess.run([str(probe), mode], capture_output=True, text=True, timeout=30)
     assert result.returncode == 0, (mode, result.stdout, result.stderr)
     assert f"RUNTIME_PUBLICATION_OK={mode}" in result.stdout
@@ -1217,7 +1218,7 @@ def test_fix2_allocation_numeric_equality_preserves_publication(
 
 def test_fix2_projector_resource_failure_aborts_and_keeps_prior_publication(connection):
     prepare_exact_publication_schema(connection)
-    probe = Path("/home/devcontainers/qt-validation-20260921/bin/Debug/runtime_publication_probe")
+    probe = artifact("runtime_publication_probe")
     first = subprocess.run([str(probe), "publish_inspection"],
                            capture_output=True, text=True, timeout=30)
     assert first.returncode == 0, (first.stdout, first.stderr)
@@ -1250,7 +1251,7 @@ def test_fix2_projector_resource_failure_aborts_and_keeps_prior_publication(conn
 
 def test_reserved_capture_refusals_and_old_writer_replacement(connection):
     prepare_exact_publication_schema(connection)
-    probe = Path("/home/devcontainers/qt-validation-20260921/bin/Debug/runtime_publication_probe")
+    probe = artifact("runtime_publication_probe")
     for mode in ("inspection_direct", "inspection_repeat", "inspection_mismatch"):
         result = subprocess.run([str(probe), mode], capture_output=True, text=True, timeout=30)
         assert result.returncode == 0, (mode, result.stdout, result.stderr)
@@ -1282,7 +1283,7 @@ def test_reserved_capture_refusals_and_old_writer_replacement(connection):
 @pytest.mark.parametrize("failed_mode", ["rollback_inspection", "retire_inspection"])
 def test_failed_publication_keeps_last_committed_inspection(connection, failed_mode):
     prepare_exact_publication_schema(connection)
-    probe = Path("/home/devcontainers/qt-validation-20260921/bin/Debug/runtime_publication_probe")
+    probe = artifact("runtime_publication_probe")
     first = subprocess.run([str(probe), "publish_inspection"], capture_output=True, text=True, timeout=30)
     assert first.returncode == 0, (first.stdout, first.stderr)
     with connection.cursor() as cur:
@@ -1307,7 +1308,7 @@ def test_real_http_approval_cpp_publication_and_http_applied_status(connection, 
     from algolens.infrastructure.portfolio.runtime_control import PostgresRuntimeControlRepository
     from tests.conftest import InMemoryCurrentUsers
 
-    probe = "/home/devcontainers/qt-validation-20260921/bin/Debug/runtime_publication_probe"
+    probe = str(artifact("runtime_publication_probe"))
     exported = subprocess.run([probe,"snapshot"], capture_output=True, text=True, check=True)
     snapshot = json.loads(exported.stdout.split("RUNTIME_SNAPSHOT=",1)[1])
     manifest = tmp_path / "reviewed-synthetic-config.json"
@@ -1452,7 +1453,7 @@ def test_real_qt_api_and_cpp_publisher_serialize_in_both_orders(connection, monk
             time.sleep(.02)
         raise AssertionError("competing writer did not block on the held lock")
 
-    probe = "/home/devcontainers/qt-validation-20260921/bin/Debug/runtime_publication_probe"
+    probe = str(artifact("runtime_publication_probe"))
     process = subprocess.Popen([probe,"publish_concurrent"],stdin=subprocess.PIPE,
         stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True)
     pool = ThreadPoolExecutor(max_workers=2)
@@ -1704,7 +1705,7 @@ def test_model_incubating_real_http_approval_publishes_incubating_model(connecti
     from algolens.infrastructure.portfolio.runtime_control import PostgresRuntimeControlRepository
     from tests.conftest import InMemoryCurrentUsers
 
-    probe = "/home/devcontainers/qt-validation-20260921/bin/Debug/runtime_publication_probe"
+    probe = str(artifact("runtime_publication_probe"))
     exported = subprocess.run([probe, "snapshot"], capture_output=True, text=True, check=True)
     snapshot = json.loads(exported.stdout.split("RUNTIME_SNAPSHOT=", 1)[1])
     manifest = tmp_path / "reviewed-synthetic-config.json"

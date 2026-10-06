@@ -43,6 +43,80 @@ else()
     set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin/${CMAKE_BUILD_TYPE}")
 endif()
 
+# Canonical Release artifacts are packaged at a different absolute path than
+# the CI build directory. Keep native dependency lookup relative to each ELF.
+if(UNIX AND NOT APPLE)
+    set(CMAKE_BUILD_RPATH_USE_ORIGIN TRUE)
+    set(CMAKE_BUILD_RPATH "$ORIGIN")
+endif()
+
+# Derive both Git identities from the source checkout when available. Release
+# configuration is fail-closed: an external identity may describe a Git-less
+# package, but it may never override or disagree with an available checkout.
+set(TRADE_NGIN_GIT_FULL_RESULT 1)
+set(TRADE_NGIN_GIT_SHORT_RESULT 1)
+set(TRADE_NGIN_GIT_STATUS_RESULT 1)
+find_package(Git QUIET)
+if(Git_FOUND)
+    execute_process(COMMAND ${GIT_EXECUTABLE} rev-parse HEAD
+        WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+        OUTPUT_VARIABLE TRADE_NGIN_DETECTED_FULL_SHA OUTPUT_STRIP_TRAILING_WHITESPACE
+        ERROR_QUIET RESULT_VARIABLE TRADE_NGIN_GIT_FULL_RESULT)
+    execute_process(COMMAND ${GIT_EXECUTABLE} rev-parse --short HEAD
+        WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+        OUTPUT_VARIABLE TRADE_NGIN_DETECTED_SHORT_SHA OUTPUT_STRIP_TRAILING_WHITESPACE
+        ERROR_QUIET RESULT_VARIABLE TRADE_NGIN_GIT_SHORT_RESULT)
+    execute_process(COMMAND ${GIT_EXECUTABLE} status --porcelain --untracked-files=all
+        WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+        OUTPUT_VARIABLE TRADE_NGIN_GIT_STATUS OUTPUT_STRIP_TRAILING_WHITESPACE
+        ERROR_QUIET RESULT_VARIABLE TRADE_NGIN_GIT_STATUS_RESULT)
+endif()
+
+if(DEFINED ENV{TRADE_NGIN_GIT_SHA} AND NOT "$ENV{TRADE_NGIN_GIT_SHA}" STREQUAL "")
+    set(TRADE_NGIN_GIT_SHA "$ENV{TRADE_NGIN_GIT_SHA}")
+elseif(TRADE_NGIN_GIT_SHORT_RESULT EQUAL 0)
+    set(TRADE_NGIN_GIT_SHA "${TRADE_NGIN_DETECTED_SHORT_SHA}")
+else()
+    set(TRADE_NGIN_GIT_SHA "unknown")
+endif()
+
+if(DEFINED ENV{TRADE_NGIN_GIT_SHA_FULL} AND NOT "$ENV{TRADE_NGIN_GIT_SHA_FULL}" STREQUAL "")
+    set(TRADE_NGIN_GIT_SHA_FULL "$ENV{TRADE_NGIN_GIT_SHA_FULL}")
+elseif(TRADE_NGIN_GIT_FULL_RESULT EQUAL 0)
+    set(TRADE_NGIN_GIT_SHA_FULL "${TRADE_NGIN_DETECTED_FULL_SHA}")
+else()
+    set(TRADE_NGIN_GIT_SHA_FULL "")
+endif()
+
+if(CMAKE_BUILD_TYPE STREQUAL "Release" AND
+   TRADE_NGIN_GIT_SHORT_RESULT EQUAL 0 AND
+   NOT TRADE_NGIN_GIT_SHA STREQUAL TRADE_NGIN_DETECTED_SHORT_SHA)
+    message(FATAL_ERROR "release_identity_invalid: supplied short SHA disagrees with checkout")
+endif()
+if(CMAKE_BUILD_TYPE STREQUAL "Release" AND
+   TRADE_NGIN_GIT_FULL_RESULT EQUAL 0 AND
+   NOT TRADE_NGIN_GIT_SHA_FULL STREQUAL TRADE_NGIN_DETECTED_FULL_SHA)
+    message(FATAL_ERROR "release_identity_invalid: supplied full SHA disagrees with checkout")
+endif()
+
+if(TRADE_NGIN_GIT_STATUS_RESULT EQUAL 0)
+    if(TRADE_NGIN_GIT_STATUS STREQUAL "")
+        set(TRADE_NGIN_GIT_DIRTY FALSE)
+    else()
+        set(TRADE_NGIN_GIT_DIRTY TRUE)
+    endif()
+elseif(DEFINED ENV{TRADE_NGIN_GIT_DIRTY})
+    set(TRADE_NGIN_GIT_DIRTY "$ENV{TRADE_NGIN_GIT_DIRTY}")
+else()
+    set(TRADE_NGIN_GIT_DIRTY TRUE)
+endif()
+
+include(cmake/TradeNginReleaseIdentity.cmake)
+trade_ngin_validate_release_identity("${CMAKE_BUILD_TYPE}" "${TRADE_NGIN_GIT_SHA}"
+    "${TRADE_NGIN_GIT_SHA_FULL}" "${TRADE_NGIN_GIT_DIRTY}")
+
+message(STATUS "Git SHA: ${TRADE_NGIN_GIT_SHA} (${TRADE_NGIN_GIT_SHA_FULL}), dirty=${TRADE_NGIN_GIT_DIRTY}")
+
 # Find packages
 #set(GTest_DIR "C:/vcpkg/installed/x64-windows/share/gtest")
 find_package(GTest CONFIG REQUIRED)
@@ -79,52 +153,6 @@ endif()
 
 # Include code coverage module if enabled
 include(cmake/CodeCoverage.cmake)
-
-# Extract git SHA at build time and generate version header.
-#
-# Prefer an externally-provided SHA (env var TRADE_NGIN_GIT_SHA) over
-# `git rev-parse` when one is set. This matters specifically for the Docker
-# build: .dockerignore excludes .git from the build context (smaller, faster
-# builds), so `git rev-parse` run inside a `docker build` always fails there
-# and silently falls back to "unknown" below -- every image built from this
-# repo's Dockerfile has done that until now. The Dockerfile accepts
-# --build-arg TRADE_NGIN_GIT_SHA=<sha> and exports it as this env var so a
-# build that DOES know its own SHA (CI, or a local `docker build
-# --build-arg TRADE_NGIN_GIT_SHA=$(git rev-parse --short HEAD)`) can supply
-# it. A plain `cmake -S .` outside Docker still has .git and falls through
-# to `git rev-parse` as before.
-if(DEFINED ENV{TRADE_NGIN_GIT_SHA} AND NOT "$ENV{TRADE_NGIN_GIT_SHA}" STREQUAL "")
-    set(TRADE_NGIN_GIT_SHA "$ENV{TRADE_NGIN_GIT_SHA}")
-    set(GIT_RESULT 0)
-elseif(GIT_FOUND OR (NOT WIN32 AND NOT APPLE))
-    execute_process(
-        COMMAND git rev-parse --short HEAD
-        WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
-        OUTPUT_VARIABLE TRADE_NGIN_GIT_SHA
-        OUTPUT_STRIP_TRAILING_WHITESPACE
-        ERROR_QUIET
-        RESULT_VARIABLE GIT_RESULT
-    )
-else()
-    find_package(Git QUIET)
-    if(Git_FOUND)
-        execute_process(
-            COMMAND ${GIT_EXECUTABLE} rev-parse --short HEAD
-            WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
-            OUTPUT_VARIABLE TRADE_NGIN_GIT_SHA
-            OUTPUT_STRIP_TRAILING_WHITESPACE
-            ERROR_QUIET
-            RESULT_VARIABLE GIT_RESULT
-        )
-    endif()
-endif()
-
-# Fallback to "unknown" if git command failed or git not found
-if(NOT TRADE_NGIN_GIT_SHA OR GIT_RESULT)
-    set(TRADE_NGIN_GIT_SHA "unknown")
-endif()
-
-message(STATUS "Git SHA: ${TRADE_NGIN_GIT_SHA}")
 
 # Generate git_version.hpp from template
 configure_file(
@@ -353,6 +381,9 @@ set_target_properties(live_equity_mean_reversion PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin/${CMAKE_BUILD_TYPE}"
     RUNTIME_OUTPUT_DIRECTORY_DEBUG "${CMAKE_BINARY_DIR}/bin/Debug"
     RUNTIME_OUTPUT_DIRECTORY_RELEASE "${CMAKE_BINARY_DIR}/bin/Release")
+
+# Defined by apps/tools after every current Release artifact target exists.
+trade_ngin_add_release_artifacts_target()
 
 add_executable(equity_model_entry_unit
     tests/test_equity_model_compatibility.cpp

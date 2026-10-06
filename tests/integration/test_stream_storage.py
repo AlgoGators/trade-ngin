@@ -3,10 +3,11 @@ import os
 import subprocess
 import json
 from pathlib import Path
+from tests.qt_test_artifacts import artifact
 import pytest
 from test_runtime_control_schema import connection
 
-PROBE=Path('/home/devcontainers/qt-validation-20260921/bin/Debug/stream_storage_probe')
+PROBE=artifact("stream_storage_probe")
 
 @pytest.fixture()
 def streams(connection):

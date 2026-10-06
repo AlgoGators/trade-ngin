@@ -6,6 +6,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from datetime import date
 from pathlib import Path
+from tests.qt_test_artifacts import artifact
 
 import pytest
 import psycopg2
@@ -17,7 +18,7 @@ from test_runtime_control_schema import connection
 from test_stream_storage import streams, publication_payload
 
 
-PROBE = Path('/home/devcontainers/qt-validation-20260921/bin/Debug/proposal_storage_probe')
+PROBE = artifact("proposal_storage_probe")
 EXACT_MIGRATION = Path(__file__).parents[2] / 'migrations/016_qt_exact_precision_and_seed_provenance.sql'
 
 

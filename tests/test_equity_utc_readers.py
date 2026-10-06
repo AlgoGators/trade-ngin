@@ -1,5 +1,6 @@
 """New EQ methods consume the same physical UTC data in both DB timezones."""
 from pathlib import Path
+from tests.qt_test_artifacts import artifact
 import json
 import os
 import subprocess
@@ -9,7 +10,7 @@ import pytest
 WORKSPACE=next(p for p in Path(__file__).resolve().parents if (p/'.review/trade-ngin-qt').is_dir())
 sys.path.insert(0,str(WORKSPACE/'.review/trade-ngin-qt/tests/integration'))
 from test_runtime_control_schema import connection
-PROBE=Path('/home/devcontainers/qt-validation-20260921/bin/Debug/equity_utc_readers_probe')
+PROBE=artifact("equity_utc_readers_probe")
 
 def invoke(mode,timezone):
     assert PROBE.is_file(),'coherent actual EQ probe required; setup failure is not behavioral RED'

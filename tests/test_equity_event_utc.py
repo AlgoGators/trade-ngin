@@ -2,6 +2,7 @@
 import json
 import os
 from pathlib import Path
+from tests.qt_test_artifacts import artifact
 import subprocess
 import sys
 import pytest
@@ -9,7 +10,7 @@ import pytest
 WORKSPACE=next(p for p in Path(__file__).resolve().parents if (p/'.review/trade-ngin-qt').is_dir())
 sys.path.insert(0,str(WORKSPACE/'.review/trade-ngin-qt/tests/integration'))
 from test_runtime_control_schema import connection
-PROBE=Path('/home/devcontainers/qt-validation-20260921/bin/Debug/equity_event_utc_probe')
+PROBE=artifact("equity_event_utc_probe")
 
 @pytest.fixture()
 def events(connection):

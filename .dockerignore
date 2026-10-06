@@ -33,3 +33,14 @@
 **/build
 LICENSE
 README.md
+
+# The runtime image packages the one canonical CI Release build. Re-include
+# only that build subtree after the broad local-artifact exclusions above.
+!build/
+!build/qt-prod/
+!build/qt-prod/bin/
+!build/qt-prod/bin/Release/
+!build/qt-prod/bin/Release/**
+!build/qt-prod/qt-evaluator-bundle/
+!build/qt-prod/qt-evaluator-bundle/**
+!build/qt-prod/release-files.sha256

@@ -30,6 +30,7 @@ from datetime import datetime, timezone
 from decimal import Decimal
 from hashlib import sha256
 from pathlib import Path
+from tests.qt_test_artifacts import artifact
 import json, os, subprocess, sys
 
 import pytest
@@ -46,12 +47,12 @@ from mr_equity_eod_fixture import (eod, eod_clock, equity, desk, connection, fin
 from test_proposal_storage_migration import apply  # noqa: E402
 from test_qt_desk_storage import canonical_qt_input_bytes  # noqa: E402
 
-GUARD = Path('/home/devcontainers/qt-validation-20260921/bin/Debug/libqt_no_delivery_guard.so')
+GUARD = artifact("libqt_no_delivery_guard.so")
 GUARD_SHA = 'f895b1de8a5a623446d445914038d66397248b40bf0e8a9ecbbbff76adaae4a9'
 MIGRATION_023 = ENGINE / 'migrations/023_qt_empty_model_owner_publication.sql'
 MIGRATION_024 = ENGINE / 'migrations/024_qt_equity_prior_continuation.sql'
 MIGRATION_024_SHA256 = '85263f23417ee5982f417ce83a80a7b60e51a34a18bc8f1e24e52e92e7a12865'
-PROBE = Path('/home/devcontainers/qt-validation-20260921/bin/Debug/equity_prior_binding_probe')
+PROBE = artifact("equity_prior_binding_probe")
 STRATEGY = 'LIVE_EQUITY_MEAN_REVERSION'
 D_SPLIT_ACTIONS = 'qt-actions/b4000000-0000-4000-8000-000000000001'
 # Recreated per test: equities_data lives outside the per-test trading schema, so rows another test added
