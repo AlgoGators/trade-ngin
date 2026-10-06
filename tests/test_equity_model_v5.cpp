@@ -5,7 +5,7 @@
 #include "trade_ngin/live/live_price_manager.hpp"
 #include "trade_ngin/portfolio/portfolio_manager.hpp"
 #include "trade_ngin/strategy/base_strategy.hpp"
-#include "data/test_db_utils.hpp"
+#include "trade_ngin/data/postgres_database.hpp"
 
 using namespace trade_ngin;
 namespace {
@@ -22,7 +22,9 @@ public:
         return value;
     }
     explicit FixedShares(std::string id):BaseStrategy(std::move(id),config(),
-        std::make_shared<trade_ngin::testing::MockPostgresDatabase>("mock://fixed-shares")) {
+        // BaseStrategy's lifecycle requires a database object; this synthetic
+        // strategy never connects or reads from it.
+        std::make_shared<PostgresDatabase>("")) {
         Position value;value.symbol="SYN";value.quantity=3.5;value.average_price=10;positions_["SYN"]=value;
     }
     Result<void> on_data(const std::vector<Bar>&,StrategyConsumptionTrace* =nullptr) override {
