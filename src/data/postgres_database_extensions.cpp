@@ -1,3 +1,4 @@
+#include "trade_ngin/data/live_config_owners.hpp"
 // src/data/postgres_database_extensions.cpp
 // Phase 0: Database Extensions to Replace Raw SQL
 // This file contains new methods to eliminate raw SQL from backtest and live trading
@@ -290,6 +291,7 @@ Result<void> PostgresDatabase::delete_stale_executions_scoped(
     }
 
     try {
+        mark_live_config_write();
         PublicationTransaction txn(*connection_, publication_transaction_);
         fence_live_write(txn,strategy_id,portfolio_id,portfolio_type);
 
@@ -807,6 +809,7 @@ Result<void> PostgresDatabase::update_live_results(
     }
 
     try {
+        mark_live_config_write();
         PublicationTransaction txn(*connection_, publication_transaction_);
         fence_live_write(txn,strategy_id,portfolio_id,portfolio_type);
 
@@ -903,6 +906,7 @@ Result<void> PostgresDatabase::update_live_equity_curve(const std::string& strat
     }
 
     try {
+        mark_live_config_write();
         PublicationTransaction txn(*connection_, publication_transaction_);
         fence_live_write(txn,strategy_id,portfolio_id,portfolio_type);
 
@@ -960,6 +964,7 @@ Result<void> PostgresDatabase::delete_live_results(const std::string& strategy_i
     }
 
     try {
+        mark_live_config_write();
         PublicationTransaction txn(*connection_, publication_transaction_);
         fence_live_write(txn,strategy_id,portfolio_id,portfolio_type);
 
@@ -1018,6 +1023,7 @@ Result<void> PostgresDatabase::delete_live_equity_curve(const std::string& strat
     }
 
     try {
+        mark_live_config_write();
         PublicationTransaction txn(*connection_, publication_transaction_);
         fence_live_write(txn,strategy_id,portfolio_id,portfolio_type);
 
@@ -1085,6 +1091,7 @@ Result<void> PostgresDatabase::store_live_results_complete(
     }
 
     try {
+        mark_live_config_write();
         PublicationTransaction txn(*connection_, publication_transaction_);
         fence_live_write(txn,strategy_id,portfolio_id,portfolio_type);
 
@@ -1193,6 +1200,14 @@ Result<void> PostgresDatabase::store_live_run_metadata(
                 return make_error<void>(ErrorCode::INVALID_ARGUMENT,"equity_config_inspection_capture_invalid");
             }
         }
+        if(strategy_id.starts_with("LIVE_EQUITY_") && strategy_id!="LIVE_EQUITY_MEAN_REVERSION") {
+            const auto& capture=portfolio_config.at("config_inspection");
+            if(!exact_keys(capture,{"capture_schema_version","profile"}) ||
+                capture.at("capture_schema_version")!=3 || capture.at("profile")!="live_equity_multi_sleeve") {
+                pending_publication_->invalid_payload=true;
+                return make_error<void>(ErrorCode::INVALID_ARGUMENT,"equity_multi_capture_invalid");
+            }
+        }
         pending_publication_->inspection_capture_queued = true;
     }
     if (defer_live_write(date,[this,date,strategy_id,portfolio_id,strategy_allocations,portfolio_config,strategy_configs,table_name]() {
@@ -1224,6 +1239,7 @@ Result<void> PostgresDatabase::store_live_run_metadata(
     }
 
     try {
+        mark_live_config_write();
         PublicationTransaction txn(*connection_, publication_transaction_);
         fence_live_write(txn,strategy_id,portfolio_id);
 
@@ -1253,6 +1269,18 @@ Result<void> PostgresDatabase::store_live_run_metadata(
                 {"reason",available?"none":"consumption_unavailable"},{"equity_run_consumption",projected}};
             if(!inspection_fits_transport(txn,stored_portfolio_config.at("config_inspection")))
                 throw std::runtime_error("equity_inspection_capacity_exceeded");
+        } else if (has_inspection && pending_publication_->equity_multi_consumption) {
+            const auto& p=*pending_publication_;
+            const auto captured=txn.exec("SELECT to_char(clock_timestamp() AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS.US\"Z\"')")[0][0].as<std::string>();
+            stored_portfolio_config["config_inspection"]={{"publication_schema_version",5},
+                {"profile","live_equity_multi_sleeve"},{"authority","inspection_only"},{"stream","system"},
+                {"identity",{{"registry_id",p.registry_id},{"registry_revision",p.registry_revision},
+                    {"engine_strategy_id",p.strategy_id},{"portfolio_id",p.portfolio_id},{"run_date",p.date},
+                    {"capture_id",p.publication_id},{"publication_id",p.publication_id},
+                    {"runtime_attempt_id",p.attempt_id.empty()?nlohmann::json(nullptr):nlohmann::json(p.attempt_id)},
+                    {"producer_version",p.producer_version},{"control_mode",p.attempt_id.empty()?"uncontrolled":"controlled"}}},
+                {"captured_at",captured},{"publication_recorded_at",captured},{"status","available"},{"reason","none"},
+                {"equity_multi_consumption",*p.equity_multi_consumption}};
         } else if (has_inspection) {
             // The scope was rechecked by publish_live_publication before this
             // callback. Identity and recorded time come from that transaction.
@@ -1335,6 +1363,26 @@ Result<void> PostgresDatabase::store_live_run_metadata(
             }
         }
 
+        if (has_inspection && !pending_publication_->config_attempt_id.empty()) {
+            const auto& p=*pending_publication_;
+            auto parsed=ConfigLoader::parse_trading_config(p.snapshot);
+            if(parsed.is_error())throw std::runtime_error("config_publication_snapshot_invalid");
+            const auto supplied=project_governed_live_config_fields(parsed.value());
+            if(supplied.is_error() || !validate_live_config_projection_for_publication(supplied.value()))
+                throw std::runtime_error("config_publication_projection_invalid");
+            auto& capture=stored_portfolio_config["config_inspection"];
+            capture["publication_schema_version"]=p.strategy_id.starts_with("LIVE_EQUITY_")?5:4;
+            capture["identity"]["publication_id"]=p.publication_id;
+            capture["identity"]["capture_id"]=p.publication_id;
+            capture["identity"]["config_attempt_id"]=p.config_attempt_id;
+            auto selection=p.configuration_selection;
+            selection.erase("schema");selection.erase("scope");selection.erase("engine_build");
+            capture["configuration_selection"]=std::move(selection);
+            capture["supplied"]=supplied.value();
+            capture["source_to_storage_owners"]=live_config_source_owner_map(p.snapshot,p.strategy_id);
+            if(!inspection_fits_transport(txn,capture))throw std::runtime_error("config_inspection_capacity_exceeded");
+        }
+
 
         // Format date as YYYY-MM-DD
         std::string date_str = format_timestamp(date).substr(0, 10);
@@ -1403,6 +1451,7 @@ Result<void> PostgresDatabase::store_risk_limits(const std::string& strategy_id,
     }
 
     try {
+        mark_live_config_write();
         PublicationTransaction txn(*connection_, publication_transaction_);
         fence_live_write(txn,strategy_id,portfolio_id);
 
@@ -1456,6 +1505,7 @@ Result<void> PostgresDatabase::update_equity_historical_metrics(
     auto owner=validate_strategy_id(strategy_id);if(owner.is_error())return owner;
     if(updates.empty() && nulls.empty())return Result<void>();
     try {
+        mark_live_config_write();
         PublicationTransaction txn(*connection_,publication_transaction_);
         fence_live_write(txn,strategy_id,portfolio_id,"system");
         std::string sql="UPDATE trading.live_results SET ";pqxx::params params;bool first=true;int index=1;

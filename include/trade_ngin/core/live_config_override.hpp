@@ -2,6 +2,8 @@
 #include <string_view>
 #include "trade_ngin/core/config_loader.hpp"
 namespace trade_ngin {
+// Native policy inventory for the versioned supplied projection.
+Result<nlohmann::json> live_config_editable_paths(const nlohmann::json& snapshot);
 // Native JSON dump bytes are canonical for this version; callers must not reserialize hashes.
 inline constexpr size_t live_config_max_request_bytes = 1024 * 1024;
 Result<nlohmann::json> build_runtime_trading_snapshot(const AppConfig& config);

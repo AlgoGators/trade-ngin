@@ -177,6 +177,7 @@ set(TRADE_NGIN_SOURCES
     src/apps/equity_run_consumption.cpp
     src/apps/equity_strategy_consumption.cpp
     src/apps/equity_model_prior.cpp
+    src/apps/equity_multi_consumption.cpp
     src/apps/equity_multi_live_runner.cpp
     src/apps/live_portfolio_helpers.cpp
     src/apps/qt_book_tail.cpp

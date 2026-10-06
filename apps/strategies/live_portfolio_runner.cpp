@@ -1,3 +1,4 @@
+#include "trade_ngin/data/live_config_selection.hpp"
 // Shared implementation behind both live portfolio executables.
 //
 // Derived mechanically from live_portfolio_conservative.cpp: the two apps were
@@ -403,6 +404,13 @@ int trade_ngin::run_live_portfolio(const LivePortfolioConfig& portfolio_cfg, int
             return 1;
         }
         INFO("Successfully acquired database connection from pool");
+        auto configuration_selection = select_live_configuration(*db, app_config, TRADE_NGIN_GIT_SHA);
+        if (configuration_selection.is_error()) {
+            ERROR("live_config_selection_refused");
+            return 1;
+        }
+        app_config = configuration_selection.value().config;
+
 
         // Initialize instrument registry
         INFO("Initializing instrument registry...");
@@ -524,7 +532,8 @@ int trade_ngin::run_live_portfolio(const LivePortfolioConfig& portfolio_cfg, int
         PublicationEvidenceToken evidence_token;
         auto publication_start = db->begin_live_publication(combined_strategy_id, portfolio_id,
             now, trading_snapshot.value(), controlled_runtime, TRADE_NGIN_GIT_SHA,
-            PublicationEvidenceRequirement::RequiredFinalObservations, &evidence_token);
+            PublicationEvidenceRequirement::RequiredFinalObservations, &evidence_token,
+            PublicationPriorRequirement::None, configuration_selection.value().receipt);
         if (publication_start.is_error()) {
             ERROR("Runtime scope or approved configuration refused");
             return 1;

@@ -19,6 +19,7 @@
 #include "trade_ngin/apps/consumption_projection.hpp"
 #include "trade_ngin/apps/equity_model_prior.hpp"
 #include "trade_ngin/apps/equity_run_projection.hpp"
+#include "trade_ngin/apps/equity_multi_consumption.hpp"
 #include "trade_ngin/data/database_interface.hpp"
 #include "trade_ngin/data/live_config_selection.hpp"
 #include "trade_ngin/data/publication_transaction.hpp"
@@ -490,6 +491,8 @@ public:
     Result<void> attach_equity_run_consumption(const PublicationEvidenceToken&, const EquityRunProjection&);
     Result<void> attach_live_consumption(const PublicationEvidenceToken& token,
         const ConsumptionProjection& projection);
+    Result<void> attach_equity_multi_consumption(const PublicationEvidenceToken&,
+        const PortfolioConsumptionTrace&, bool non_trading);
     Result<void> publish_live_publication();
     std::optional<LivePublicationMode> live_publication_mode() const noexcept;
     Result<void> record_qt_model_seed_publication(const QtModelSeedPublication& publication);
@@ -1165,6 +1168,7 @@ private:
         std::shared_ptr<const void> evidence_marker;
         std::optional<ConsumptionProjection> final_consumption;
         std::optional<EquityRunProjection> equity_final_consumption;
+        std::optional<nlohmann::json> equity_multi_consumption;
         PublicationPriorRequirement prior_requirement = PublicationPriorRequirement::None;
         LivePublicationMode mode = LivePublicationMode::QtHouse;
         std::optional<CapturedEquityModelPrior> equity_prior;
@@ -1174,6 +1178,7 @@ private:
     };
     friend Result<ConfigSelection> select_live_configuration(PostgresDatabase&,
         const AppConfig&, const std::string&);
+    void mark_live_config_write();
     void admit_live_config_selection(pqxx::work&, PendingPublication&,
         const nlohmann::json& receipt, bool controlled);
     std::unique_ptr<PendingPublication> pending_publication_;

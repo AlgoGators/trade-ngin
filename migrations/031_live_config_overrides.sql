@@ -275,4 +275,256 @@ BEGIN
         GRANT EXECUTE ON FUNCTION trading.lock_live_config_scope(text,text) TO qt_system_publisher;
     END IF;
 END $$;
+-- Task 4: attempt lifecycle is independent from durable side-effect safety.
+ALTER TABLE trading.live_config_attempt_safety
+    ADD COLUMN IF NOT EXISTS lifecycle text NOT NULL DEFAULT 'running'
+        CHECK (lifecycle IN ('running','failed','aborted','published','stopped')),
+    ADD COLUMN IF NOT EXISTS publication_id text,
+    ADD COLUMN IF NOT EXISTS classification_version integer CHECK (classification_version=2);
+-- Old INSERT(attempt_id) callers stay unclassified, including after deployment.
+ALTER TABLE trading.live_config_attempt_safety ALTER COLUMN classification_version DROP DEFAULT;
+CREATE OR REPLACE FUNCTION trading.initialize_live_config_attempt_v2(p_attempt text)
+RETURNS void LANGUAGE plpgsql SECURITY DEFINER SET search_path=pg_catalog,trading AS $$
+DECLARE a trading.live_config_attempt_selections%ROWTYPE;
+BEGIN
+    SELECT * INTO STRICT a FROM trading.live_config_attempt_selections WHERE attempt_id=p_attempt
+      AND xmin::text::bigint=(txid_current() % 4294967296);
+    PERFORM trading.lock_live_config_scope(a.engine_strategy_id,a.portfolio_id);
+    -- No UPDATE/upsert: a prior old-code safety row can never acquire this fact.
+    INSERT INTO trading.live_config_attempt_safety(attempt_id,classification_version) VALUES(p_attempt,2);
+END $$;
+
+-- Exact scoped rowset proof, including timestamps and duplicate rows. Store only
+-- bounded table counts and SHA-256 of sorted fixed-width SHA-256 row digests.
+-- JSONB text encoding is PostgreSQL-native; recovery recomputes in this database.
+-- No caller-supplied hash or Boolean can substitute for the database computation.
+CREATE OR REPLACE FUNCTION trading.live_config_financial_state(p_engine text,p_book text)
+RETURNS jsonb LANGUAGE plpgsql SECURITY DEFINER SET search_path=pg_catalog,trading SET TimeZone='UTC'
+    SET DateStyle='ISO,YMD' SET extra_float_digits=3 SET IntervalStyle='iso_8601' AS $$
+DECLARE result jsonb:=jsonb_build_object('schema','live-config-financial-state/v2',
+    'engine_strategy_id',p_engine,'portfolio_id',p_book,'scope','all_dates_system_and_shared'); t text; rows jsonb;
+BEGIN
+    FOREACH t IN ARRAY ARRAY['positions','live_results','equity_curve','executions','signals',
+                              'corp_action_applied','risk_limits','live_run_metadata','run_inputs'] LOOP
+        IF to_regclass('trading.'||t) IS NULL THEN
+            IF t<>'corp_action_applied' THEN RAISE EXCEPTION 'config_recovery_schema_missing'; END IF;
+            rows:='null';
+        ELSE
+            EXECUTE format('SELECT jsonb_build_object(''row_count'',count(*),''sha256'','
+                'encode(sha256(convert_to(coalesce(string_agg(h,'''' ORDER BY h COLLATE "C"),''''),''UTF8'')),''hex'')) '
+                'FROM (SELECT encode(sha256(convert_to(to_jsonb(r)::text,''UTF8'')),''hex'') AS h FROM trading.%I r '
+                'WHERE strategy_id=$1 AND portfolio_id=$2 AND (NOT (to_jsonb(r) ? ''portfolio_type'') '
+                'OR to_jsonb(r)->>''portfolio_type''=''system'')) s',t)
+                INTO rows USING p_engine,p_book;
+        END IF;
+        result:=result||jsonb_build_object(t,rows);
+    END LOOP;
+    RETURN result;
+END $$;
+
+CREATE OR REPLACE FUNCTION trading.check_live_config_retry()
+RETURNS trigger LANGUAGE plpgsql SECURITY DEFINER SET search_path=pg_catalog,trading AS $$
+DECLARE prior record;
+BEGIN
+    PERFORM trading.lock_live_config_scope(NEW.engine_strategy_id,NEW.portfolio_id);
+    -- Pre-governance failures have no state proof; absence is never a clean fact.
+    -- The current controlled attempt was inserted immediately before this trigger.
+    IF EXISTS(SELECT 1 FROM trading.runtime_attempts r JOIN trading.runtime_intents i ON i.id=r.intent_id
+        LEFT JOIN trading.live_config_attempt_selections a ON a.attempt_id=r.id
+        LEFT JOIN trading.live_config_attempt_safety s ON s.attempt_id=a.attempt_id
+        WHERE i.engine_strategy_id=NEW.engine_strategy_id AND i.portfolio_id=NEW.portfolio_id
+          AND r.id<>NEW.attempt_id AND r.status IN ('running','failed')
+          AND (a.attempt_id IS NULL OR s.attempt_id IS NULL)) THEN
+        RAISE EXCEPTION 'config_retry_recovery_required';
+    END IF;
+    IF EXISTS(SELECT 1 FROM trading.live_config_attempt_selections a
+        LEFT JOIN trading.live_config_attempt_safety s USING(attempt_id)
+        WHERE a.engine_strategy_id=NEW.engine_strategy_id AND a.portfolio_id=NEW.portfolio_id
+          AND (s.attempt_id IS NULL OR s.classification_version IS DISTINCT FROM 2)) THEN RAISE EXCEPTION 'config_retry_recovery_required'; END IF;
+    FOR prior IN SELECT a.*,s.lifecycle,s.state FROM trading.live_config_attempt_selections a
+        JOIN trading.live_config_attempt_safety s USING(attempt_id)
+        WHERE a.engine_strategy_id=NEW.engine_strategy_id AND a.portfolio_id=NEW.portfolio_id
+          AND (s.lifecycle='running' OR s.state='unsafe' OR (a.run_date=NEW.run_date AND s.lifecycle='published'))
+        ORDER BY a.admitted_at FOR UPDATE OF s LOOP
+        IF prior.lifecycle='running' THEN RAISE EXCEPTION 'config_attempt_unresolved'; END IF;
+        IF prior.run_date=NEW.run_date AND prior.lifecycle='published' THEN
+            RAISE EXCEPTION 'config_day_completed';
+        END IF;
+        IF prior.state='unsafe' THEN
+            RAISE EXCEPTION 'config_retry_recovery_required';
+        END IF;
+    END LOOP;
+    -- Older runs have no classified attempt history: never rewrite their inputs.
+    IF EXISTS(SELECT 1 FROM trading.run_inputs WHERE strategy_id=NEW.engine_strategy_id
+        AND portfolio_id=NEW.portfolio_id AND date=NEW.run_date) THEN
+        RAISE EXCEPTION 'config_day_completed';
+    END IF;
+    RETURN NEW;
+END $$;
+DROP TRIGGER IF EXISTS live_config_retry_guard ON trading.live_config_attempt_selections;
+CREATE TRIGGER live_config_retry_guard BEFORE INSERT ON trading.live_config_attempt_selections
+FOR EACH ROW EXECUTE FUNCTION trading.check_live_config_retry();
+
+CREATE OR REPLACE FUNCTION trading.assert_live_config_running(p_attempt text)
+RETURNS void LANGUAGE plpgsql SECURITY DEFINER SET search_path=pg_catalog,trading AS $$
+DECLARE a trading.live_config_attempt_selections%ROWTYPE; s trading.live_config_attempt_safety%ROWTYPE;
+BEGIN
+    SELECT * INTO STRICT a FROM trading.live_config_attempt_selections WHERE attempt_id=p_attempt;
+    PERFORM trading.lock_live_config_scope(a.engine_strategy_id,a.portfolio_id);
+    SELECT * INTO STRICT s FROM trading.live_config_attempt_safety WHERE attempt_id=p_attempt FOR UPDATE;
+    IF s.classification_version IS DISTINCT FROM 2 THEN RAISE EXCEPTION 'config_retry_recovery_required'; END IF;
+    IF s.lifecycle<>'running' THEN RAISE EXCEPTION 'config_attempt_not_running'; END IF;
+END $$;
+
+CREATE OR REPLACE FUNCTION trading.mark_live_config_unsafe(p_attempt text)
+RETURNS void LANGUAGE plpgsql SECURITY DEFINER SET search_path=pg_catalog,trading AS $$
+DECLARE a trading.live_config_attempt_selections%ROWTYPE;
+BEGIN
+    PERFORM trading.assert_live_config_running(p_attempt);
+    SELECT * INTO STRICT a FROM trading.live_config_attempt_selections WHERE attempt_id=p_attempt;
+    UPDATE trading.live_config_attempt_safety SET state='unsafe',
+        pre_write_evidence=trading.live_config_financial_state(a.engine_strategy_id,a.portfolio_id),
+        updated_at=clock_timestamp() WHERE attempt_id=p_attempt AND state='clean';
+END $$;
+
+CREATE OR REPLACE FUNCTION trading.finish_live_config_attempt(p_attempt text,p_outcome text,p_publication text DEFAULT NULL)
+RETURNS void LANGUAGE plpgsql SECURITY DEFINER SET search_path=pg_catalog,trading AS $$
+DECLARE a trading.live_config_attempt_selections%ROWTYPE; capture jsonb;
+BEGIN
+    PERFORM trading.assert_live_config_running(p_attempt);
+    IF p_outcome NOT IN ('failed','published','stopped') OR
+       (p_outcome='published' AND (p_publication IS NULL OR btrim(p_publication)='')) THEN
+        RAISE EXCEPTION 'config_attempt_outcome_invalid';
+    END IF;
+    IF p_outcome='stopped' AND (NOT EXISTS(SELECT 1 FROM trading.runtime_attempts
+        WHERE id=p_attempt AND status='applied' AND outcome='stopped') OR
+        EXISTS(SELECT 1 FROM trading.live_config_attempt_safety WHERE attempt_id=p_attempt AND state<>'clean')) THEN
+        RAISE EXCEPTION 'config_stop_evidence_missing';
+    END IF;
+    IF p_outcome='published' THEN
+        SELECT * INTO STRICT a FROM trading.live_config_attempt_selections WHERE attempt_id=p_attempt;
+        SELECT portfolio_config->'config_inspection' INTO capture FROM trading.live_run_metadata
+            WHERE strategy_id=a.engine_strategy_id AND portfolio_id=a.portfolio_id AND date=a.run_date;
+        IF p_publication<>p_attempt OR capture IS NULL OR
+           capture->'identity'->>'publication_id' IS DISTINCT FROM p_publication OR
+           capture->'identity'->>'config_attempt_id' IS DISTINCT FROM p_attempt OR
+           capture->'configuration_selection' IS DISTINCT FROM
+               (a.selection-'schema'-'scope'-'engine_build') OR
+           capture->'publication_schema_version' NOT IN ('4'::jsonb,'5'::jsonb) OR
+           NOT EXISTS(SELECT 1 FROM trading.run_inputs WHERE strategy_id=a.engine_strategy_id
+                AND portfolio_id=a.portfolio_id AND date=a.run_date AND config_snapshot=a.config_snapshot) THEN
+            RAISE EXCEPTION 'config_publication_evidence_missing';
+        END IF;
+    END IF;
+    UPDATE trading.live_config_attempt_safety SET lifecycle=p_outcome,
+        state=CASE WHEN p_outcome='published' THEN 'published' ELSE state END,
+        publication_id=p_publication,updated_at=clock_timestamp() WHERE attempt_id=p_attempt;
+END $$;
+
+-- Governed investor publication reuses the frozen identity; legacy 4-arg API unchanged.
+CREATE OR REPLACE FUNCTION trading.publish_system_investor_day(
+    p_portfolio_id text,
+    p_strategy_id text,
+    p_source_day date,
+    p_producer_version text,
+    p_publication_id uuid
+) RETURNS uuid LANGUAGE plpgsql AS $$
+DECLARE
+    matched_book_id uuid;
+    calculated_digest text;
+    existing record;
+    created_id uuid;
+BEGIN
+    IF p_source_day IS NULL OR p_producer_version IS NULL
+       OR btrim(p_producer_version) = '' THEN
+        RAISE EXCEPTION 'investor_publication_input_invalid';
+    END IF;
+    matched_book_id := trading.lock_investor_publication_scope(
+        p_strategy_id, p_portfolio_id);
+    IF p_source_day < (SELECT opening_date FROM trading.investor_books
+                       WHERE book_id = matched_book_id) THEN
+        RAISE EXCEPTION 'investor_publication_precedes_opening_date';
+    END IF;
+    calculated_digest := trading.compute_system_investor_digest(
+        upper(btrim(p_portfolio_id)), p_strategy_id, p_source_day);
+
+    SELECT * INTO existing FROM trading.investor_book_publications
+     WHERE portfolio_id = upper(btrim(p_portfolio_id))
+       AND source_day = p_source_day
+     FOR UPDATE;
+    IF FOUND THEN
+        IF (p_publication_id IS NOT NULL AND existing.publication_id IS DISTINCT FROM p_publication_id)
+           OR existing.strategy_id IS DISTINCT FROM p_strategy_id
+           OR existing.model_stream IS DISTINCT FROM 'system'
+           OR existing.content_digest IS DISTINCT FROM calculated_digest THEN
+            RAISE EXCEPTION 'investor_publication_conflict';
+        END IF;
+        RETURN existing.publication_id;
+    END IF;
+
+    INSERT INTO trading.investor_book_publications
+        (publication_id, book_id, portfolio_id, source_day, strategy_id, model_stream,
+         content_digest, producer_id, producer_version)
+    VALUES
+        (coalesce(p_publication_id,gen_random_uuid()), matched_book_id, upper(btrim(p_portfolio_id)), p_source_day,
+         p_strategy_id, 'system', calculated_digest, 'trade-ngin',
+         p_producer_version)
+    RETURNING publication_id INTO created_id;
+    RETURN created_id;
+END $$;
+
+-- Compatibility wrapper preserves historical generated-ID/idempotent behavior.
+CREATE OR REPLACE FUNCTION trading.publish_system_investor_day(
+    p_portfolio_id text,p_strategy_id text,p_source_day date,p_producer_version text
+) RETURNS uuid LANGUAGE sql AS $$
+    SELECT trading.publish_system_investor_day(p_portfolio_id,p_strategy_id,p_source_day,p_producer_version,NULL::uuid)
+$$;
+
+-- Restricted recovery/administration only: no API/publisher EXECUTE grant.
+-- It fences the original process by ending its lifecycle under the same locks.
+CREATE OR REPLACE FUNCTION trading.recover_live_config_attempt(p_attempt text,p_reason text)
+RETURNS void LANGUAGE plpgsql SECURITY DEFINER SET search_path=pg_catalog,trading AS $$
+DECLARE a trading.live_config_attempt_selections%ROWTYPE; s trading.live_config_attempt_safety%ROWTYPE;
+        current_state jsonb;
+BEGIN
+    IF p_reason IS NULL OR btrim(p_reason)='' THEN RAISE EXCEPTION 'config_recovery_reason_required'; END IF;
+    SELECT * INTO STRICT a FROM trading.live_config_attempt_selections WHERE attempt_id=p_attempt;
+    PERFORM trading.lock_live_config_scope(a.engine_strategy_id,a.portfolio_id);
+    SELECT * INTO STRICT s FROM trading.live_config_attempt_safety WHERE attempt_id=p_attempt FOR UPDATE;
+    IF s.classification_version IS DISTINCT FROM 2 THEN RAISE EXCEPTION 'config_recovery_evidence_missing'; END IF;
+    IF s.lifecycle IN ('published','stopped','aborted') OR s.state IN ('published','recovered') THEN
+        RAISE EXCEPTION 'config_recovery_not_eligible';
+    END IF;
+    current_state:=trading.live_config_financial_state(a.engine_strategy_id,a.portfolio_id);
+    IF s.state='unsafe' AND current_state IS DISTINCT FROM s.pre_write_evidence THEN
+        RAISE EXCEPTION 'config_recovery_state_mismatch';
+    END IF;
+    UPDATE trading.live_config_attempt_safety SET lifecycle='aborted',
+        state=CASE WHEN state='unsafe' THEN 'recovered' ELSE state END,
+        recovery_evidence=jsonb_build_object('schema','live-config-recovery/v1','state',current_state,
+            'reason',p_reason,'actor',session_user,'verified_at',clock_timestamp()),
+        updated_at=clock_timestamp() WHERE attempt_id=p_attempt;
+    UPDATE trading.runtime_attempts SET status='failed',failure_code='config_attempt_recovered',
+        finished_at=clock_timestamp() WHERE id=p_attempt AND status='running';
+END $$;
+REVOKE ALL ON FUNCTION trading.initialize_live_config_attempt_v2(text),trading.live_config_financial_state(text,text),trading.check_live_config_retry(),
+    trading.assert_live_config_running(text),trading.mark_live_config_unsafe(text),
+    trading.finish_live_config_attempt(text,text,text),trading.recover_live_config_attempt(text,text),
+    trading.publish_system_investor_day(text,text,date,text,uuid) FROM PUBLIC;
+DO $$ DECLARE role_name text;
+BEGIN
+    FOREACH role_name IN ARRAY ARRAY['qt_algolens_api','qt_system_publisher','qt_worker'] LOOP
+        IF EXISTS(SELECT 1 FROM pg_roles WHERE rolname=role_name) THEN
+            EXECUTE format('REVOKE ALL ON FUNCTION trading.initialize_live_config_attempt_v2(text),trading.live_config_financial_state(text,text),'
+                'trading.check_live_config_retry(),trading.assert_live_config_running(text),'
+                'trading.mark_live_config_unsafe(text),trading.finish_live_config_attempt(text,text,text),'
+                'trading.recover_live_config_attempt(text,text),trading.publish_system_investor_day(text,text,date,text,uuid) FROM %I',role_name);
+        END IF;
+    END LOOP;
+    IF EXISTS(SELECT 1 FROM pg_roles WHERE rolname='qt_system_publisher') THEN
+        GRANT EXECUTE ON FUNCTION trading.initialize_live_config_attempt_v2(text),trading.publish_system_investor_day(text,text,date,text,uuid),trading.assert_live_config_running(text),trading.mark_live_config_unsafe(text),
+            trading.finish_live_config_attempt(text,text,text) TO qt_system_publisher;
+    END IF;
+END $$;
+
 COMMIT;

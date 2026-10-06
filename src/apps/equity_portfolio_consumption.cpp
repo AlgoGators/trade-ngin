@@ -66,6 +66,10 @@ return j;}
 bool entered(PortfolioCallOutcome value){return value!=PortfolioCallOutcome::NotCalled;}
 }
 nlohmann::json project_equity_portfolio_consumption(const PortfolioConsumptionTrace& trace) {
+    return project_equity_portfolio_consumption(trace,{"LIVE_EQUITY_MEAN_REVERSION"});
+}
+nlohmann::json project_equity_portfolio_consumption(const PortfolioConsumptionTrace& trace,
+    const std::set<std::string>& strategy_owners) {
 J doc={{"schema_version","qt-equity-portfolio-consumption/v1"},{"scope","portfolio_invocation"},{"full_run_certification",false},
     {"available",false},{"unavailable_reason","instrumentation_missing"},{"outcome","not_reached"},
     {"skip_execution_generation",trace.skip_execution_generation?J(*trace.skip_execution_generation):J(nullptr)},
@@ -112,7 +116,7 @@ try {
         for(std::size_t index=0;index<vector.size();++index){const auto& c=vector[index];
             if(c.purpose!=purpose || c.symbol.empty() || c.symbol.size()>64 ||
                 !std::regex_match(c.symbol,std::regex("[A-Za-z0-9_./-]+")) ||
-                (purpose==PortfolioChargePurpose::PerStrategy?c.strategy_id!="LIVE_EQUITY_MEAN_REVERSION":!c.strategy_id.empty()))
+                (purpose==PortfolioChargePurpose::PerStrategy?!strategy_owners.contains(c.strategy_id):!c.strategy_id.empty()))
                 throw std::invalid_argument("invalid_internal_charge_identity");
             const auto values=cost_reads(c.charge);
             if(trace.skip_execution_generation==true)throw std::invalid_argument("skipped_execution_has_charges");

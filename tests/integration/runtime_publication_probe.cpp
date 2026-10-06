@@ -1,3 +1,5 @@
+#include "trade_ngin/git_version.hpp"
+#include "trade_ngin/data/live_config_selection.hpp"
 // Owned PostgreSQL only. No engine, strategies, config loader, network or email.
 #include "trade_ngin/data/postgres_database.hpp"
 #include "trade_ngin/apps/live_portfolio_helpers.hpp"
@@ -231,7 +233,21 @@ int main(int argc, char** argv) {
         synthetic.strategies_config = {{"TREND",{{"enabled_live",true},
             {"default_allocation",1.0},{"type","TrendFollowingStrategy"}}}};
         const std::string mode = argc == 2 ? argv[1] : "";
+        const bool governed=mode.find("governed")!=std::string::npos;
+        const std::string producer=governed?TRADE_NGIN_GIT_SHA:"local-test";
+        if(governed) {
+            synthetic.max_drawdown=synthetic.risk_schema.max_drawdown=.3;
+            synthetic.max_leverage=synthetic.risk_schema.max_leverage=2;
+            CarverModuleConfig gate;gate.var_limit=.25;gate.jump_risk_limit=.05;gate.max_correlation=.85;
+            gate.max_gross_leverage=4;gate.max_net_leverage=2;gate.confidence_level=.99;
+            gate.lookback_period=252;gate.missing_symbol_policy_reason="fixture";
+            synthetic.risk_schema.portfolio={{"carver","carver",gate}};
+            synthetic.risk_schema.reporting={"carver","all_bars",.25,.05,.85,4,2,.99,252};
+            synthetic.risk_config=synthetic.risk_schema.reporting.to_risk_config();
+        }
+
         std::string case_mode = mode;
+        if(const auto at=case_mode.find("_governed");at!=std::string::npos)case_mode.erase(at,9);
         if (case_mode.size() > 11 &&
             case_mode.compare(case_mode.size()-11,11,"_controlled") == 0 &&
             (case_mode.find("required_") != std::string::npos ||
@@ -278,9 +294,9 @@ int main(int argc, char** argv) {
             synthetic.strategies_config["TREND"]["default_allocation"] = 0.5;
             synthetic.strategies_config["MISSING"] = synthetic.strategies_config["TREND"];
         }
-        const auto snapshot = build_runtime_trading_snapshot(synthetic);
+        auto snapshot = build_runtime_trading_snapshot(synthetic);
         if (snapshot.is_error()) return 19;
-        if (argc == 2 && (mode == "snapshot" || mode == "snapshot_early_unavailable" ||
+        if (argc == 2 && (mode == "snapshot" || mode == "snapshot_governed" || mode == "snapshot_early_unavailable" ||
                           mode == "snapshot_capacity_early")) {
             std::cout << "RUNTIME_SNAPSHOT=" << snapshot.value().dump() << '\n';
             return 0;
@@ -294,6 +310,13 @@ int main(int argc, char** argv) {
             return 2;
         ReentrantAttachDatabase db(dsn);
         if (db.connect().is_error()) return 3;
+        nlohmann::json receipt=nullptr;
+        if(governed) {
+            auto selected=select_live_configuration(db,synthetic,producer);
+            if(selected.is_error())return 61;
+            synthetic=selected.value().config;receipt=selected.value().receipt;
+            snapshot=build_runtime_trading_snapshot(synthetic);
+        }
         if (mode.find("incubating") != std::string::npos) {
             // N5: an incubating mode runs only against an incubating registry row, never vacuously live.
             pqxx::connection check_connection(dsn);
@@ -350,9 +373,9 @@ int main(int argc, char** argv) {
         auto started = db.begin_live_publication(engine,
             (mode == "membership" || case_mode == "required_failure_prevalid") ? "SECOND" : "BOOK", date,
             snapshot.value(), controlled,
-            mode == "publish_inspection_bad_producer_version" ? "bad version!" : "local-test",
+            mode == "publish_inspection_bad_producer_version" ? "bad version!" : producer,
             requirement, case_mode == "required_null_output" ? nullptr :
-                         (request_token ? &evidence_token : nullptr));
+                         (request_token ? &evidence_token : nullptr),PublicationPriorRequirement::None,receipt);
         if (case_mode == "required_unknown_mode" || case_mode == "required_unknown_mode_prevalid" ||
             case_mode == "required_failure_prevalid" || case_mode == "required_null_output") {
             if (!started.is_error() || evidence_token.valid()) return 34;
@@ -749,7 +772,7 @@ int main(int argc, char** argv) {
             if (mode.find("retire") == 0) observer.exec("UPDATE trading.strategy_registry SET lifecycle='retired' WHERE id='trend'");
             observer.commit();
         }
-        if (mode == "publish_concurrent") {
+        if (mode == "publish_concurrent" || mode.find("_governed_concurrent")!=std::string::npos) {
             std::cout << "RUNTIME_READY" << std::endl;
             std::string command;
             if (!std::getline(std::cin,command) || command != "publish") return 22;
@@ -791,7 +814,7 @@ int main(int argc, char** argv) {
         }
         const bool expect_success = mode.find("publish") == 0 ||
             case_mode == "required_already_active";
-        if (result.is_ok() != expect_success) return 9;
+        if (result.is_ok() != expect_success) {if(result.is_error())std::cerr<<result.error()->what()<<std::endl;return 9;}
         if (mode.find("publish_required_after_success") == 0 &&
             db.attach_live_consumption(evidence_token,
                 ConsumptionProjection::unavailable(
@@ -815,8 +838,8 @@ int main(int argc, char** argv) {
             if (stored.size() != 1) return 28;
             const auto metadata = nlohmann::json::parse(stored[0][0].as<std::string>());
             const auto& child = metadata.at("config_inspection");
-            if (child.size() != 12 ||
-                child.at("publication_schema_version") != (required ? 2 : 1) ||
+            if (child.size() != (governed?14u:12u) ||
+                child.at("publication_schema_version") != (governed?4:required ? 2 : 1) ||
                 child.at("profile") != "live_portfolio_runner_futures" ||
                 child.at("identity").at("capture_id") != child.at("identity").at("publication_id")) return 29;
             if (capacity_candidate) {

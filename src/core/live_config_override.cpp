@@ -252,13 +252,20 @@ void validate_consumers(const AppConfig& c) {
 
 Result<nlohmann::json> build_runtime_trading_snapshot(const AppConfig& c) {
     try {
+        auto live=c.live;
+        for(const auto& [name,definition]:c.strategies_config.items()) {
+            (void)name;
+            if(definition.is_object() && definition.value("enabled_live",false) &&
+               definition.value("type",std::string{})=="MeanReversionStrategy") live.record_equity_policy_snapshot();
+        }
+
         Json snapshot={{"snapshot_version",2},{"portfolio_id",c.portfolio_id},
             {"initial_capital",c.initial_capital},{"reserve_capital_pct",c.reserve_capital_pct},
             {"benchmark_mode",c.benchmark_mode},{"execution",c.execution.to_json()},
             {"optimization",c.opt_config.to_json()},{"risk",c.risk_schema.to_json()},
             {"sleeve_risk_modules",c.risk_schema.sleeves_to_json()},{"use_optimization",c.use_optimization},
             {"covariance_history_prices",c.covariance_history_prices},{"max_drawdown",c.max_drawdown},
-            {"max_leverage",c.max_leverage},{"backtest",c.backtest.to_json()},{"live",c.live.to_json()},
+            {"max_leverage",c.max_leverage},{"backtest",c.backtest.to_json()},{"live",live.to_json()},
             {"strategy_defaults",c.strategy_defaults.to_json()},{"strategies",c.strategies_config}};
         finite_tree(snapshot); require(!secret_tree(snapshot),"runtime_snapshot_contains_secret_key");
         return snapshot;
@@ -399,4 +406,12 @@ Result<Json> parse_live_config_request(std::string_view bytes) {
     } catch(const Refusal& e) { return make_error<Json>(ErrorCode::INVALID_ARGUMENT,e.code); }
       catch(const std::exception&) { return make_error<Json>(ErrorCode::INVALID_ARGUMENT,"live_config_invalid_json"); }
 }
+Result<Json> live_config_editable_paths(const Json& snapshot) {
+    try {
+        Json result=Json::array();
+        for (const auto& [path,type]:editable(snapshot)) { (void)type; result.push_back(path); }
+        return result;
+    } catch (...) { return make_error<Json>(ErrorCode::INVALID_DATA,"live_config_policy_invalid"); }
+}
+
 }

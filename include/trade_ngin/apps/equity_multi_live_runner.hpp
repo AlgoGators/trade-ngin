@@ -103,6 +103,6 @@ Result<void> run_multi_sleeve_equity_live_day(
     const std::shared_ptr<PostgresDatabase>& db, InstrumentRegistry& registry,
     const HolidayChecker& holidays, const Timestamp& now,
     const Timestamp& start_date, const Timestamp& end_date,
-    bool historical_replay);
+    bool historical_replay, const nlohmann::json& configuration_selection = nullptr);
 
 }  // namespace trade_ngin::apps

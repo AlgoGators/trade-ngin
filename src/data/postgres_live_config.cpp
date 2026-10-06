@@ -112,6 +112,20 @@ Result<ConfigSelection> select_live_configuration(PostgresDatabase& db,const App
     }
 }
 
+void PostgresDatabase::mark_live_config_write() {
+    if (!pending_publication_ || publication_transaction_ || pending_publication_->config_attempt_id.empty()) return;
+    try {
+        if (pending_publication_->invalid_payload) throw std::runtime_error("config_attempt_invalid");
+        pqxx::work guard(*connection_);
+        guard.exec("SELECT trading.mark_live_config_unsafe($1)",
+                   pqxx::params{pending_publication_->config_attempt_id});
+        guard.commit(); // Must precede construction of the financial transaction.
+    } catch (...) {
+        pending_publication_->invalid_payload=true; // A swallowed failure can never publish.
+        throw;
+    }
+}
+
 void PostgresDatabase::admit_live_config_selection(pqxx::work& txn,PendingPublication& pending,
                                                   const Json& receipt,bool controlled) {
     require(receipt.is_object() && receipt.size()==7 &&
@@ -144,12 +158,13 @@ void PostgresDatabase::admit_live_config_selection(pqxx::work& txn,PendingPublic
     pending.config_attempt_id=pending.attempt_id.empty()
         ? txn.exec("SELECT gen_random_uuid()::text")[0][0].as<std::string>() : pending.attempt_id;
     pending.configuration_selection=receipt;
+    if (pending.publication_id.empty()) pending.publication_id=pending.config_attempt_id;
     txn.exec("INSERT INTO trading.live_config_attempt_selections "
         "(attempt_id,portfolio_id,engine_strategy_id,run_date,engine_build,selection,config_snapshot) "
         "VALUES($1,$2,$3,$4::date,$5,$6::jsonb,$7::jsonb)",
         pqxx::params{pending.config_attempt_id,pending.portfolio_id,pending.strategy_id,pending.date,
                      pending.producer_version,receipt.dump(),pending.snapshot.dump()});
-    txn.exec("INSERT INTO trading.live_config_attempt_safety(attempt_id) VALUES($1)",
+    txn.exec("SELECT trading.initialize_live_config_attempt_v2($1)",
              pqxx::params{pending.config_attempt_id});
 }
 } // namespace trade_ngin

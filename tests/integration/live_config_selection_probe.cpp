@@ -51,7 +51,7 @@ int main(int argc,char** argv) {
     if(!raw || !std::string(raw).starts_with("host=/tmp/algolens-repair-pg-") ||
         std::string(raw).find("dbname=algolens_test_")==std::string::npos)return 12;
     PostgresDatabase db(raw);if(db.connect().is_error())return 13;
-    if(mode=="select_changed_base")c.opt_config.tau=1.1;
+    if(mode=="select_changed_base" || mode=="admit_changed_base")c.opt_config.tau=1.1;
     if(mode=="legacy")c.strategies_config["TREND"]["default_allocation"]=.5;
     if(mode=="investor")c.portfolio_id="INVESTOR";
     if(mode=="equity_multi") {
@@ -77,6 +77,26 @@ int main(int argc,char** argv) {
             PublicationEvidenceRequirement::LegacyNotCollected,nullptr,PublicationPriorRequirement::None,receipt);
         if(begin.is_error()) {
             std::cout<<Json{{"error",begin.error()->what()}}.dump()<<'\n';return 2;
+        }
+        if(mode=="admit_crash") {
+            std::cout<<Json{{"receipt",receipt}}.dump()<<std::endl;
+            std::quick_exit(0); // Simulate process death: no destructor acknowledgment.
+        }
+        if(mode=="admit_unsafe" || mode=="admit_write_fail") {
+            auto write=db.execute_scoped_live_update(mode=="admit_write_fail" ?
+                "SELECT missing_financial_boundary()" :
+                "UPDATE trading.live_results SET total_pnl=17 WHERE portfolio_id='BOOK' AND strategy_id='LIVE_TREND'",
+                "LIVE_TREND",c.portfolio_id);
+            if(write.is_error() && mode!="admit_write_fail") return 14;
+        }
+        if(mode=="admit_wait") {
+            std::cout<<Json{{"receipt",receipt}}.dump()<<std::endl;
+            std::string signal;std::getline(std::cin,signal);
+            auto write=db.execute_scoped_live_update("UPDATE trading.live_results SET total_pnl=77 WHERE portfolio_id='BOOK'",
+                "LIVE_TREND",c.portfolio_id);
+            auto publish=db.publish_live_publication();
+            std::cout<<Json{{"write_refused",write.is_error()},{"publish_refused",publish.is_error()}}.dump()<<std::endl;
+            return 0;
         }
         db.abandon_live_publication();
     }

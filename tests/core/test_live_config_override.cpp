@@ -375,3 +375,80 @@ TEST(LiveConfigOverride, BaselineValidationRequiresExactEnvelopeAndStrictComplet
     bad=valid;bad.erase("base_snapshot");
     EXPECT_TRUE(validate_live_config_baseline_request(bad).is_error());
 }
+
+#include "trade_ngin/portfolio/portfolio_manager.hpp"
+#include "trade_ngin/apps/equity_multi_consumption.hpp"
+#include "trade_ngin/data/live_config_owners.hpp"
+TEST(LiveConfigOverride, GovernedProjectionHasExactSchema2InventoryAndRejectsTampering) {
+    const auto c=base_config();
+    const auto output=project_governed_live_config_fields(c);ASSERT_TRUE(output.is_ok());
+    const auto& projection=output.value();EXPECT_EQ(projection.at("projection_version"),2);
+    EXPECT_TRUE(validate_live_config_projection_for_publication(projection));
+    EXPECT_EQ(projection.at("effective_snapshot"),build_runtime_trading_snapshot(c).value());
+    bool schema2=false,legacy=false;
+    for(const auto& field:projection.at("fields")) {
+        if(field.at("path")=="/risk/modules/0/var_limit")schema2=true;
+        if(field.at("path")=="/risk_defaults/confidence_level")legacy=true;
+    }
+    EXPECT_TRUE(schema2);EXPECT_FALSE(legacy);
+    auto forged=projection;forged["fields"][0]["classification"]="editable_config_input";
+    EXPECT_FALSE(validate_live_config_projection_for_publication(forged));
+    forged=projection;forged["fields"].erase(forged["fields"].begin());
+    EXPECT_FALSE(validate_live_config_projection_for_publication(forged));
+    EXPECT_EQ(project_live_config_fields(c).value().at("projection_version"),1);
+}
+TEST(LiveConfigOverride, RawEquitySourceMapsWithoutChangingApprovedSnapshot) {
+    auto c=base_config();c.strategies_config={{"MEAN_REVERSION",{{"type","MeanReversionStrategy"},
+        {"enabled_live",true},{"default_allocation",1.0},{"config",Json::object()}}}};
+    const auto snapshot=build_runtime_trading_snapshot(c).value();const auto copy=snapshot;
+    const auto owners=live_config_source_owner_map(snapshot,"LIVE_EQUITY_MEAN_REVERSION");
+    EXPECT_EQ(owners,Json({{"MEAN_REVERSION","EQUITY_MEAN_REVERSION"}}));
+    EXPECT_EQ(snapshot,copy);
+    EXPECT_TRUE(live_config_storage_strategies(snapshot,"LIVE_EQUITY_MEAN_REVERSION").contains("EQUITY_MEAN_REVERSION"));
+    auto projected=project_governed_live_config_fields(c);ASSERT_TRUE(projected.is_ok());
+    EXPECT_EQ(projected.value().at("profile"),"live_equity");
+    EXPECT_TRUE(validate_live_config_projection_for_publication(projected.value()));
+}
+TEST(LiveConfigOverride, CompositeSkippedEvidenceIsBoundedAndRejectsFabricatedFullRun) {
+    auto c=base_config();c.strategies_config=Json::object();
+    for(const auto* name:{"ALPHA","BETA"})c.strategies_config[name]={{"type","MeanReversionStrategy"},
+        {"enabled_live",true},{"default_allocation",.5},{"config",Json::object()}};
+    const auto snapshot=build_runtime_trading_snapshot(c).value();const std::string hash(64,'a');
+    PortfolioConsumptionTrace absent;
+    const auto evidence=project_equity_multi_consumption(absent,true,snapshot,"LIVE_EQUITY_ALPHA_BETA",
+        c.portfolio_id,"2026-10-06",hash);
+    EXPECT_EQ(evidence.at("coverage").at("legacy_run_stages"),"not_collected");
+    for(const auto& key:{"full_run_certification","effective_sha256","source_to_storage_owners","coverage","extra"}) {
+        auto forged=evidence;forged[key]=true;
+        EXPECT_FALSE(validate_equity_multi_consumption(forged,snapshot,"LIVE_EQUITY_ALPHA_BETA",c.portfolio_id,"2026-10-06",hash));
+    }
+}
+TEST(LiveConfigOverride, EquityPolicyDefaultsAreIdenticalForExportAndRunnerSnapshots) {
+    auto c=base_config();c.strategies_config={{"MEAN_REVERSION",{{"type","MeanReversionStrategy"},
+        {"enabled_live",true},{"default_allocation",1.0},{"config",Json::object()}}}};
+    const auto omitted=build_runtime_trading_snapshot(c);ASSERT_TRUE(omitted.is_ok());
+    c.live.record_equity_policy_snapshot();
+    const auto explicit_defaults=build_runtime_trading_snapshot(c);ASSERT_TRUE(explicit_defaults.is_ok());
+    EXPECT_EQ(omitted.value(),explicit_defaults.value());
+    EXPECT_EQ(omitted.value().at("live").at("data_staleness_tolerance_days"),4);
+    EXPECT_EQ(omitted.value().at("live").at("execution_price_max_staleness_days"),5);
+    auto parsed=parse_runtime_trading_snapshot(omitted.value());ASSERT_TRUE(parsed.is_ok());
+    EXPECT_EQ(build_runtime_trading_snapshot(parsed.value()).value(),omitted.value());
+    EXPECT_EQ(build_runtime_trading_snapshot(base_config()).value().at("live"),Json({{"historical_days",300}}));
+}
+
+TEST(LiveConfigOverride, FileOnlyRawWeightsRemainPublishableWithoutWeakeningApproval) {
+    for(bool composite:{false,true}) {
+        auto c=base_config();c.strategies_config=Json::object();
+        for(const auto* name:composite?std::vector<const char*>{"ALPHA","BETA"}:std::vector<const char*>{"MEAN_REVERSION"})
+            c.strategies_config[name]={{"type","MeanReversionStrategy"},{"enabled_live",true},
+                {"default_allocation",2.0},{"config",Json::object()}};
+        const auto raw=build_runtime_trading_snapshot(c).value();
+        EXPECT_TRUE(parse_runtime_trading_snapshot(raw).is_error());
+        const auto projection=project_governed_live_config_fields(c);ASSERT_TRUE(projection.is_ok());
+        EXPECT_EQ(projection.value().at("effective_snapshot"),raw);
+        EXPECT_TRUE(validate_live_config_projection_for_publication(projection.value()));
+        const auto owners=live_config_source_owner_map(raw,composite?"LIVE_EQUITY_ALPHA_BETA":"LIVE_EQUITY_MEAN_REVERSION");
+        EXPECT_EQ(owners.size(),composite?2u:1u);
+    }
+}

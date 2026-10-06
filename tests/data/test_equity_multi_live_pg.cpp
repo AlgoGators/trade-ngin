@@ -1,4 +1,7 @@
 #include <cstdlib>
+#include <fstream>
+#include <iterator>
+#include "trade_ngin/apps/equity_multi_consumption.hpp"
 #include <array>
 #include <cmath>
 #include <memory>
@@ -93,10 +96,11 @@ EquityLiveBookPlan make_plan(double alpha_exit = 0.1) {
     return built.value();
 }
 
-AppConfig make_config(const std::string& portfolio_id, double capital) {
+AppConfig make_config(const std::string& portfolio_id, double capital, double alpha_exit=0.1) {
     AppConfig config;
     config.portfolio_id = portfolio_id;
     config.initial_capital = capital;
+    config.opt_config.capital = capital;
     config.reserve_capital_pct = 0.1;
     config.benchmark_mode = "deferred";
     config.execution.commission_rate = 0.0005;
@@ -109,7 +113,22 @@ AppConfig make_config(const std::string& portfolio_id, double capital) {
         "synthetic issue 121/124 completion gate", "codex", "2026-10-01");
     if (none.is_error()) throw std::runtime_error(none.error()->what());
     config.risk_schema.portfolio = {none.value()};
+    config.risk_schema.max_drawdown=config.max_drawdown;
+    config.risk_schema.max_leverage=config.max_leverage;
+    config.risk_schema.reporting={"carver","all_bars",.15,.10,.7,10,10,.99,252};
+    config.risk_schema.attribution={{"_ruled_by","codex"},{"_ruled_on","2026-10-01"}};
     config.live.record_equity_policy_snapshot();
+    for(const auto& sleeve:make_plan(alpha_exit).sleeves)
+        {
+        config.strategies_config[sleeve.source_id]=sleeve.definition;
+        // Raw file weights intentionally require the existing plan normalization.
+        config.strategies_config[sleeve.source_id]["default_allocation"]=2.0;
+    }
+    auto snap=build_runtime_trading_snapshot(config);
+    if(snap.is_error())throw std::runtime_error(snap.error()->what());
+    auto parsed=ConfigLoader::parse_trading_config(snap.value());
+    if(parsed.is_error())throw std::runtime_error(parsed.error()->what());
+    if(build_runtime_trading_snapshot(parsed.value()).value()!=snap.value())throw std::runtime_error("fixture snapshot roundtrip mismatch: "+nlohmann::json::diff(snap.value(),build_runtime_trading_snapshot(parsed.value()).value()).dump());
     return config;
 }
 
@@ -237,7 +256,7 @@ protected:
                  const std::string& data_end_day,
                  double alpha_exit = 0.1) {
         auto result = run_multi_sleeve_equity_live_day(
-            make_config(portfolio_id, capital), make_plan(alpha_exit), db_,
+            make_config(portfolio_id, capital, alpha_exit), make_plan(alpha_exit), db_,
             InstrumentRegistry::instance(),
             HolidayChecker(std::string(TRADE_NGIN_SOURCE_DIR) +
                            "/include/trade_ngin/core/holidays.json"),
@@ -246,6 +265,30 @@ protected:
             << "portfolio=" << portfolio_id << " source_day=" << source_day
             << " data_end_day=" << data_end_day << " error="
             << (result.is_error() ? result.error()->what() : "");
+        pqxx::connection connection(dsn_);pqxx::work tx(connection);
+        const auto rows=tx.exec("SELECT m.portfolio_config->'config_inspection',i.config_snapshot,"
+            "p.publication_id::text,s.publication_id,s.lifecycle FROM trading.live_run_metadata m "
+            "JOIN trading.run_inputs i USING(portfolio_id,strategy_id,date) "
+            "JOIN trading.investor_book_publications p ON p.portfolio_id=m.portfolio_id AND p.source_day=m.date "
+            "JOIN trading.live_config_attempt_safety s ON s.attempt_id=m.portfolio_config->'config_inspection'->'identity'->>'config_attempt_id' "
+            "WHERE m.portfolio_id=$1 AND m.date=$2::date",pqxx::params{portfolio_id,source_day});
+        ASSERT_EQ(rows.size(),1u);
+        const auto capture=nlohmann::json::parse(rows[0][0].as<std::string>());
+        const auto snapshot=nlohmann::json::parse(rows[0][1].as<std::string>());
+        EXPECT_EQ(capture.at("publication_schema_version"),5);
+        EXPECT_EQ(capture.at("identity").at("publication_id"),rows[0][2].as<std::string>());
+        EXPECT_EQ(rows[0][2].as<std::string>(),rows[0][3].as<std::string>());
+        EXPECT_EQ(rows[0][4].as<std::string>(),"published");
+        EXPECT_EQ(capture.at("supplied").at("effective_snapshot"),snapshot);
+        EXPECT_EQ(snapshot.at("strategies").at("ALPHA").at("default_allocation"),2.0);
+        EXPECT_TRUE(validate_live_config_projection_for_publication(capture.at("supplied")));
+        EXPECT_TRUE(validate_equity_multi_consumption(capture.at("equity_multi_consumption"),snapshot,kStrategy,
+            portfolio_id,source_day,capture.at("configuration_selection").at("effective_sha256")));
+        for(const char* field:{"full_run_certification","coverage","source_to_storage_owners","portfolio_invocation"}) {
+            auto malformed=capture.at("equity_multi_consumption");malformed[field]=true;
+            EXPECT_FALSE(validate_equity_multi_consumption(malformed,snapshot,kStrategy,portfolio_id,source_day,
+                capture.at("configuration_selection").at("effective_sha256")));
+        }
     }
 
     long scalar_long(const std::string& query) const {
@@ -313,12 +356,17 @@ protected:
                  WHERE i.portfolio_id = ANY(scope.books)
                 UNION ALL
                 SELECT 'live_metadata',
-                       (to_jsonb(m) - 'id' - 'created_at')::text
+                       (to_jsonb(m) - 'id' - 'created_at'
+                        #- '{portfolio_config,config_inspection,captured_at}'
+                        #- '{portfolio_config,config_inspection,publication_recorded_at}'
+                        #- '{portfolio_config,config_inspection,identity,capture_id}'
+                        #- '{portfolio_config,config_inspection,identity,publication_id}'
+                        #- '{portfolio_config,config_inspection,identity,config_attempt_id}')::text
                   FROM trading.live_run_metadata m, scope
                  WHERE m.portfolio_id = ANY(scope.books)
                 UNION ALL
                 SELECT 'publication',
-                       (to_jsonb(p) - 'publication_id' - 'book_id' - 'published_at')::text
+                       (to_jsonb(p) - 'publication_id' - 'book_id' - 'published_at' - 'content_digest')::text
                   FROM trading.investor_book_publications p, scope
                  WHERE p.portfolio_id = ANY(scope.books)
             )
@@ -354,6 +402,7 @@ protected:
             -- These rows are intentionally immutable to application DML. This
             -- is an owned disposable database, so reset the test registry with
             -- TRUNCATE only after fenced operational rows have been removed.
+            TRUNCATE TABLE trading.live_config_attempt_selections CASCADE;
             TRUNCATE TABLE trading.investor_book_publications,
                            trading.investor_book_strategies,
                            trading.investor_books,
@@ -548,7 +597,7 @@ TEST_F(EquityMultiLivePg,
 
     // A changed same-day computation must fail closed and preserve the publication.
     auto conflict = run_multi_sleeve_equity_live_day(
-        make_config(kBookA, 100000.0), make_plan(0.2), db_,
+        make_config(kBookA, 100000.0,0.2), make_plan(0.2), db_,
         InstrumentRegistry::instance(),
         HolidayChecker(std::string(TRADE_NGIN_SOURCE_DIR) +
                        "/include/trade_ngin/core/holidays.json"),
@@ -575,6 +624,61 @@ TEST_F(EquityMultiLivePg,
         ASSERT_EQ(replay_digests.count(table), 1u) << table;
         EXPECT_EQ(replay_digests.at(table), digest) << table;
     }
+}
+
+
+TEST_F(EquityMultiLivePg, NonTradingCompositePublishesExplicitSkippedCoverage) {
+    onboard_and_seed("investor_p2_a",kBookA,100000.0,1.0);
+    run_day(kBookA,100000.0,kDay1,kT1);
+    run_day(kBookA,100000.0,kDay2,kDay1);
+    run_day(kBookA,100000.0,kDay3,kDay2);
+    run_day(kBookA,100000.0,"2026-11-07",kDay3);
+    EXPECT_EQ(scalar_text("SELECT portfolio_config->'config_inspection'->'equity_multi_consumption'->'coverage'->>'primary' FROM trading.live_run_metadata WHERE portfolio_id='INVESTOR_P2_A' AND date='2026-11-07'"),"skipped_non_trading_day");
+    EXPECT_EQ(scalar_text("SELECT portfolio_config->'config_inspection'->'equity_multi_consumption'->>'portfolio_invocation' IS NULL FROM trading.live_run_metadata WHERE portfolio_id='INVESTOR_P2_A' AND date='2026-11-07'"),"t");
+}
+
+
+TEST_F(EquityMultiLivePg, InvestorPublicationWrapperSurvivesGuardedRollback) {
+    onboard_and_seed("investor_p2_a",kBookA,100000.0,1.0);
+    run_day(kBookA,100000.0,kDay1,kT1);
+    const auto sql_file=[](const char* name){std::ifstream in(std::string(TRADE_NGIN_SOURCE_DIR)+"/migrations/"+name);return std::string(std::istreambuf_iterator<char>(in),{});};
+    const auto migration=sql_file("031_live_config_overrides.sql");
+    const auto rollback=sql_file("031_live_config_overrides_rollback.sql");
+    pqxx::connection connection(dsn_);
+    {pqxx::nontransaction tx(connection);EXPECT_THROW(tx.exec(rollback),pqxx::sql_error);tx.exec("ROLLBACK");}
+    const auto before=scalar_text("SELECT publication_id::text FROM trading.investor_book_publications WHERE portfolio_id='INVESTOR_P2_A'");
+    {pqxx::nontransaction tx(connection);tx.exec("TRUNCATE trading.live_config_attempt_selections CASCADE");tx.exec(rollback);}
+    const auto call="SELECT trading.publish_system_investor_day('INVESTOR_P2_A','LIVE_EQUITY_ALPHA_BETA','2026-11-04','fixture')::text";
+    const auto invoke4=[&](){pqxx::work tx(connection);auto value=tx.exec(call)[0][0].as<std::string>();tx.commit();return value;};
+    EXPECT_EQ(invoke4(),before);
+    {pqxx::nontransaction tx(connection);tx.exec(migration);tx.exec(migration);}
+    EXPECT_EQ(invoke4(),before);
+    EXPECT_EQ(scalar_long("SELECT count(*) FROM trading.investor_book_publications WHERE portfolio_id='INVESTOR_P2_A'"),1);
+}
+
+TEST_F(EquityMultiLivePg, HouseNonemptyPublishesButLegacyEmptyHouseBoundaryStaysAtomic) {
+    onboard_and_seed("investor_p2_a",kBookA,100000.0,1.0);
+    {
+        pqxx::connection connection(dsn_);pqxx::work tx(connection);
+        tx.exec("TRUNCATE trading.investor_books,trading.runtime_intents CASCADE");
+        tx.exec("INSERT INTO trading.strategy_registry(id,strategy_type,portfolio_id) VALUES('task4-composite',$1,$2) ON CONFLICT DO NOTHING",pqxx::params{kStrategy,kBookA});
+        const auto snapshot=build_runtime_trading_snapshot(make_config(kBookA,100000.0)).value();
+        tx.exec("INSERT INTO trading.runtime_intents(registry_id,portfolio_id,engine_strategy_id,action,registry_revision,config_snapshot,status,requested_by,request_reason,approved_by,approval_reason,approved_at) VALUES('task4-composite',$1,$2,'run',0,$3::jsonb,'approved','fixture-submit','run','fixture-approve','run',now())",pqxx::params{kBookA,kStrategy,snapshot.dump()});
+        tx.commit();
+    }
+    const auto invoke=[&](const char* date,const char* previous){
+        return run_multi_sleeve_equity_live_day(make_config(kBookA,100000.0),make_plan(),db_,
+            InstrumentRegistry::instance(),HolidayChecker(std::string(TRADE_NGIN_SOURCE_DIR)+"/include/trade_ngin/core/holidays.json"),
+            day(date),day("2026-10-30"),day(previous),true);
+    };
+    expect_ok(invoke(kDay1,kT1));expect_ok(invoke(kDay2,kDay1));expect_ok(invoke(kDay3,kDay2));
+    EXPECT_EQ(scalar_long("SELECT count(*) FROM trading.qt_model_seed_publications WHERE portfolio_id='INVESTOR_P2_A'"),3);
+    const auto before=scalar_text("SELECT trading.live_config_financial_state('LIVE_EQUITY_ALPHA_BETA','INVESTOR_P2_A')::text");
+    auto empty=invoke("2026-11-09",kDay3);ASSERT_TRUE(empty.is_error());
+    EXPECT_EQ(scalar_text("SELECT trading.live_config_financial_state('LIVE_EQUITY_ALPHA_BETA','INVESTOR_P2_A')::text"),before);
+    EXPECT_EQ(scalar_long("SELECT count(*) FROM trading.run_inputs WHERE portfolio_id='INVESTOR_P2_A' AND date='2026-11-09'"),0);
+    EXPECT_EQ(scalar_long("SELECT count(*) FROM trading.qt_empty_model_owner_publications WHERE portfolio_id='INVESTOR_P2_A'"),0);
+    EXPECT_EQ(scalar_long("SELECT count(*) FROM trading.live_run_metadata WHERE portfolio_id='INVESTOR_P2_A' AND portfolio_config->'config_inspection'->>'profile'='live_equity_mean_reversion'"),0);
 }
 
 }  // namespace
