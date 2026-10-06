@@ -272,7 +272,7 @@ def desk(connection, request):
     engine_inputs = {name: deepcopy(request[name]) for name in (
         "risk_config_source_id","risk_inputs","risk_config","quantity_rules","component_cost_inputs")}
     for name in tuple(engine_inputs["risk_inputs"]):
-        if name.startswith("expected_"):
+        if name in ("expected_portfolio_id", "expected_date", "expected_revision", "expected_portfolio_type"):
             del engine_inputs["risk_inputs"][name]
     engine_inputs.update(optimizer_policy={"enabled":False,"config_source_id":"disabled-v1"},
                          optimizer_inputs=None,optimizer_config=None)

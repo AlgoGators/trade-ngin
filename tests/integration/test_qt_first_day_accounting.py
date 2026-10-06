@@ -3,7 +3,7 @@
 The opening System rows and market prices are synthetic; the native evaluator,
 anchor, processor, rollback and receipt verification are production code.
 """
-from datetime import timedelta
+from datetime import timedelta, timezone
 from copy import deepcopy
 from decimal import Decimal
 import json
@@ -36,16 +36,22 @@ def connection(request):
     conn = next(fixture)
     shifted = "finalizes_on_day_two" in request.node.name
     try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT current_database()")
+            database = cur.fetchone()[0]
+            zone = getattr(request, 'param', 'UTC')
+            cur.execute(sql.SQL("ALTER DATABASE {} SET timezone={}").format(sql.Identifier(database),sql.Literal(zone)))
+            cur.execute("SET TIME ZONE %s", (zone,))
         if shifted:
             with conn.cursor() as cur:
                 cur.execute("CREATE OR REPLACE FUNCTION public.clock_timestamp() RETURNS timestamptz LANGUAGE sql VOLATILE "
                     "AS $$ SELECT pg_catalog.clock_timestamp() $$")
-                cur.execute("SELECT current_database()")
-                database = cur.fetchone()[0]
                 cur.execute(sql.SQL("ALTER DATABASE {} SET search_path=public,pg_catalog").format(sql.Identifier(database)))
                 cur.execute("SET search_path=public,pg_catalog")
         yield conn
     finally:
+        with conn.cursor() as cur:
+            cur.execute(sql.SQL("ALTER DATABASE {} RESET timezone").format(sql.Identifier(database)))
         if shifted:
             with conn.cursor() as cur:
                 cur.execute(sql.SQL("ALTER DATABASE {} RESET search_path").format(sql.Identifier(database)))
@@ -90,9 +96,9 @@ def first_day(desk):
         day, now = cur.fetchone()
         cur.execute("INSERT INTO trading.live_results(portfolio_id,strategy_id,date,portfolio_type,total_pnl,"
             "current_portfolio_value,daily_pnl,daily_realized_pnl,daily_unrealized_pnl,daily_transaction_costs,total_transaction_costs) "
-            "VALUES('BOOK','LIVE_TREND',%s,'system',20,1000,1,-1,2.5,0.5,12)", (day,))
+            "VALUES('BOOK','LIVE_TREND',%s,'system',20,1000,1,-1,2.5,0.5,12)", (str(day)+'T00:00:00Z',))
         cur.execute("INSERT INTO trading.equity_curve(portfolio_id,strategy_id,timestamp,portfolio_type,equity) "
-            "VALUES('BOOK','LIVE_TREND',%s,'system',1000)", (day,))
+            "VALUES('BOOK','LIVE_TREND',%s,'system',1000)", (str(day)+'T00:00:00Z',))
         cur.execute("INSERT INTO trading.run_inputs(portfolio_id,strategy_id,date,config_snapshot) "
             "VALUES('BOOK','LIVE_TREND',%s,'{}')", (day,))
     instrument = dict(symbol="SYN", instrument_type="FUTURE", price_model_number="100",
@@ -122,6 +128,7 @@ def process():
 
 
 @pytest.mark.parametrize("desk", ["futures_quiet"], indirect=True)
+@pytest.mark.parametrize("connection", ["UTC", "America/New_York"], indirect=True)
 def test_first_day_noop_commits_exact_system_opening_and_replays(first_day):
     conn, _ = first_day
     result = process()
@@ -210,6 +217,7 @@ def test_first_day_input_must_match_exact_market_authority(first_day, mutation):
 
 
 @pytest.mark.parametrize("desk", ["futures"], indirect=True)
+@pytest.mark.parametrize("connection", ["UTC", "America/New_York"], indirect=True)
 def test_real_first_day_finalizes_on_day_two_without_invented_predecessor(first_day):
     conn, original_market = first_day
     result = process()
@@ -221,7 +229,7 @@ def test_real_first_day_finalizes_on_day_two_without_invented_predecessor(first_
                     "AS $$ SELECT pg_catalog.clock_timestamp()+interval '1 day' $$")
         cur.execute("SELECT clock_timestamp()")
         now = cur.fetchone()[0]
-        today = now.date().isoformat()
+        today = now.astimezone(timezone.utc).date().isoformat()
         cur.execute("SELECT to_jsonb(m) FROM trading.qt_model_seed_publications m WHERE publication_id=%s", (MODEL,))
         model = cur.fetchone()[0]
         # Only tomorrow's MODEL is synthetic; yesterday's processed ledger is
@@ -229,6 +237,17 @@ def test_real_first_day_finalizes_on_day_two_without_invented_predecessor(first_
         old_day = model['source_day']
         next_model = "a4000000-0000-4000-8000-000000000002"
         model = json.loads(json.dumps(model).replace(old_day, today).replace(MODEL, next_model))
+        for seed, proposal, quantity in zip(model['system_components'], model['proposal_components'], ('5','1')):
+            key = seed['key']
+            for stream, selected in (('system',seed['quantity_exact']),
+                                     ('qt_proposal',seed['quantity_exact']), ('qt',quantity)):
+                cur.execute("INSERT INTO trading.positions(portfolio_id,strategy_id,strategy_name,date,symbol,"
+                    "portfolio_type,quantity,average_price,daily_realized_pnl,daily_unrealized_pnl,last_update) "
+                    "VALUES('BOOK','LIVE_TREND',%s,%s,'SYN',%s,%s,100,0,0,%s)",
+                    (key['strategy_name'], today, stream, selected, now))
+            cur.execute("SELECT qt_proposal_revision::text FROM trading.positions WHERE portfolio_id='BOOK' "
+                "AND strategy_name=%s AND date=%s AND portfolio_type='qt_proposal'", (key['strategy_name'],today))
+            proposal['position_revision'] = cur.fetchone()[0]
         model['seed_digest'] = qt_digest_v1({'seed_rows': model['system_components']})
         model['proposal_manifest_digest'] = internal_snapshot_digest('qt-proposal-manifest/v1',
             {'proposal_rows': model['proposal_components']})
@@ -271,4 +290,57 @@ def test_real_first_day_finalizes_on_day_two_without_invented_predecessor(first_
     assert after != before
     result = invoke('--finalize', DECISION, final, next_market)
     assert result.returncode == 0, result.stdout+result.stderr
+    assert state(conn) == after
+    confirm_and_process_second_day(conn, old_day, today, next_model, next_market, final)
+
+
+def confirm_and_process_second_day(conn, old_day, today, next_model, next_market, final):
+    """Use the actual API save/evaluate/confirm path, then native continuation."""
+    from hashlib import sha256
+    from uuid import uuid4
+    import psycopg2
+    from test_qt_desk_storage import native_evaluator_configuration, canonical_qt_input_bytes
+    from algolens.infrastructure.config.dependencies import create_qt_workflow_service
+    from algolens.infrastructure.portfolio.qt_workflow_repository import QtWorkflowRepository
+    with conn.cursor() as cur:
+        cur.execute('CREATE SCHEMA IF NOT EXISTS metadata; CREATE TABLE IF NOT EXISTS metadata.contract_metadata '
+            '("Databento Symbol" text, "IB Symbol" text, "Asset Type" text); '
+            'TRUNCATE metadata.contract_metadata; INSERT INTO metadata.contract_metadata VALUES (\'SYN\',\'SYN\',\'FUTURE\')')
+        cur.execute("SELECT payload FROM trading.qt_evaluation_snapshots WHERE model_publication_id=%s", (MODEL,))
+        payload = json.loads(json.dumps(cur.fetchone()[0]).replace(old_day,today).replace(MODEL,next_model))
+        cur.execute("SELECT clock_timestamp()")
+        now = cur.fetchone()[0]
+        cur.execute("INSERT INTO trading.qt_evaluation_snapshots(book_id,source_day,model_publication_id,producer_id,"
+            "policy_version,source_version,as_of,valid_until,content_digest,payload) VALUES('BOOK',%s,%s,"
+            "'synthetic-desk','desk-policy-v1','synthetic-day-two',%s,%s,%s,%s)",
+            (today,next_model,now-timedelta(seconds=1),now+timedelta(hours=1),
+             sha256(canonical_qt_input_bytes(payload)).hexdigest(),Json(payload)))
+    config = native_evaluator_configuration()
+    service = create_qt_workflow_service(QtWorkflowRepository(lambda: psycopg2.connect(os.environ['ALGOLENS_TEST_DB'])),
+        evaluator_executable=config['executable'], evaluator_bundle_directory=config['bundle_directory'])
+    initial = service.get_draft('BOOK',1).to_wire()
+    draft = service.save_draft('BOOK',1,dict(expected_source_digest=initial['source_digest'],
+        expected_provenance_digest=initial['provenance_digest'],expected_draft_revision=0,
+        idempotency_key=str(uuid4()),rationale='Synthetic second-day quiet continuation.',
+        selection_rows=[dict(key=row['key'],quantity_exact='5' if row['key']['strategy_name']=='synthetic-alpha' else '1')
+                        for row in initial['selection_rows'] if row['editable']])).to_wire()
+    preview = service.create_preview(1,dict(book_id='BOOK',draft_id=draft['draft_id'],draft_revision=draft['draft_revision'],
+        draft_digest=draft['draft_digest'],expected_source_digest=draft['source_digest'],
+        expected_provenance_digest=draft['provenance_digest'],idempotency_key=str(uuid4()))).to_wire()
+    assert preview['confirmable'], (preview['unavailable_reasons'], preview['evaluation'])
+    decision = service.confirm_preview(preview['preview_id'],1,dict(action='confirm_selected_book',
+        expected_digest=preview['payload_digest'],idempotency_key=str(uuid4()),acknowledge_warnings=True)).to_wire()
+    decision_id = decision['decision_id']
+    attempt, accounting_input = str(uuid4()),str(uuid4())
+    result = invoke('--sourced',decision_id,attempt,accounting_input,next_market,'qt-finalization/'+final)
+    assert result.returncode == 0, result.stdout+result.stderr
+    with conn.cursor() as cur:
+        cur.execute("SELECT daily_pnl,total_pnl,current_portfolio_value,daily_transaction_costs "
+            "FROM trading.live_results WHERE portfolio_type='qt' AND (date AT TIME ZONE 'UTC')::date=%s", (today,))
+        assert cur.fetchone() == tuple(map(Decimal, ('0','316','1296','0')))
+        cur.execute("SELECT count(*) FROM trading.executions WHERE portfolio_type='qt' AND date=%s", (today,))
+        assert cur.fetchone() == (0,)
+    after = state(conn)
+    result = invoke('--sourced',decision_id,attempt,accounting_input,next_market,'qt-finalization/'+final)
+    assert result.returncode == 0 and 'REPLAYED=1' in result.stdout, result.stdout+result.stderr
     assert state(conn) == after
