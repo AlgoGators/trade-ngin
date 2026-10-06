@@ -82,17 +82,13 @@ flowchart LR
 strategy/
 ├── base_strategy.cpp           # Common strategy functionality
 ├── regime_detector.cpp         # Market regime classification
-├── trend_following.cpp         # Main trend strategy
-├── trend_following_fast.cpp    # Fast variant
-└── trend_following_slow.cpp    # Slow variant
+└── trend_following.cpp         # Main trend strategy
 
 include/trade_ngin/strategy/
 ├── strategy_interface.hpp      # Abstract interface
 ├── base_strategy.hpp           # Base implementation
 ├── types.hpp                   # Strategy types and configs
 ├── trend_following.hpp
-├── trend_following_fast.hpp
-├── trend_following_slow.hpp
 └── regime_detector.hpp
 ```
 

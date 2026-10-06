@@ -22,7 +22,6 @@ backtest/
 ├── backtest_execution_manager.cpp     # Execution simulation
 ├── backtest_metrics_calculator.cpp    # Performance metrics
 ├── backtest_pnl_manager.cpp           # PnL calculations
-├── backtest_portfolio_constraints.cpp # Portfolio constraints
 ├── backtest_price_manager.cpp         # Price handling
 ├── slippage_model.cpp                 # Slippage simulation
 └── transaction_cost_analysis.cpp      # Cost analysis
