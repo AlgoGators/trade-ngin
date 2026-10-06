@@ -47,8 +47,6 @@
 #include "trade_ngin/storage/live_results_manager.hpp"
 #include "trade_ngin/transaction_cost/netting.hpp"
 #include "trade_ngin/strategy/trend_following.hpp"
-#include "trade_ngin/strategy/trend_following_fast.hpp"
-#include "trade_ngin/strategy/trend_following_slow.hpp"
 
 using namespace trade_ngin;
 
@@ -683,8 +681,9 @@ int main(int argc, char* argv[]) {
                     strategy_name, strategy_config, trend_config, db, registry_ptr);
 
             } else if (strategy_type == "TrendFollowingFastStrategy") {
-                // Create TrendFollowingFastStrategy
-                trade_ngin::TrendFollowingFastConfig trend_config;
+                // The FAST sleeve: TrendFollowingStrategy on the fast configuration
+                trade_ngin::TrendFollowingConfig trend_config =
+                    trade_ngin::fast_trend_following_config();
                 if (strategy_def.contains("config")) {
                     const auto& cfg = strategy_def["config"];
                     trend_config.weight = cfg.value("weight", 0.03);
@@ -713,51 +712,7 @@ int main(int argc, char* argv[]) {
                     trend_config.fdm = app_config.strategy_defaults.fdm;
                 }
 
-                strategy = std::make_shared<trade_ngin::TrendFollowingFastStrategy>(
-                    strategy_name, strategy_config, trend_config, db, registry_ptr);
-
-            } else if (strategy_type == "TrendFollowingSlowStrategy") {
-                // Create TrendFollowingSlowStrategy (legacy support)
-                trade_ngin::TrendFollowingSlowConfig trend_config;
-                if (strategy_def.contains("config")) {
-                    const auto& cfg = strategy_def["config"];
-                    trend_config.weight = cfg.value("weight", 0.03);
-                    trend_config.risk_target = cfg.value("risk_target", 0.15);
-                    trend_config.idm = cfg.value("idm", 2.5);
-                    trend_config.max_symbol_concentration =
-                        cfg.value("max_symbol_concentration", 0.15);
-                    trend_config.use_position_buffering = cfg.value("use_position_buffering", true);
-                    trend_config.carver_buffer_floor = cfg.value(
-                        "carver_buffer_floor", app_config.strategy_defaults.carver_buffer_floor);
-                    trend_config.carver_buffer_position_factor =
-                        cfg.value("carver_buffer_position_factor",
-                                  app_config.strategy_defaults.carver_buffer_position_factor);
-                    if (cfg.contains("ema_windows")) {
-                        trend_config.ema_windows.clear();
-                        for (const auto& window : cfg["ema_windows"]) {
-                            trend_config.ema_windows.push_back(
-                                {window[0].get<int>(), window[1].get<int>()});
-                        }
-                    }
-                    trend_config.vol_lookback_short = cfg.value("vol_lookback_short", 64);
-                    trend_config.vol_lookback_long = cfg.value("vol_lookback_long", 252);
-                } else {
-                    // Use hardcoded defaults for slow strategy
-                    trend_config.weight = 0.03;
-                    trend_config.risk_target = 0.15;
-                    trend_config.max_symbol_concentration = 0.15;
-                    trend_config.idm = 2.5;
-                    trend_config.use_position_buffering = true;
-                    trend_config.ema_windows = {{4, 16},   {8, 32},   {16, 64},
-                                                {32, 128}, {64, 256}, {128, 512}};
-                    trend_config.vol_lookback_short = 64;
-                    trend_config.vol_lookback_long = 252;
-                }
-                if (trend_config.fdm.empty()) {
-                    trend_config.fdm = app_config.strategy_defaults.fdm;
-                }
-
-                strategy = std::make_shared<trade_ngin::TrendFollowingSlowStrategy>(
+                strategy = std::make_shared<trade_ngin::TrendFollowingStrategy>(
                     strategy_name, strategy_config, trend_config, db, registry_ptr);
 
             } else {
@@ -1798,12 +1753,10 @@ int main(int argc, char* argv[]) {
                 const auto& metadata = strategy->get_metadata();
                 std::string strategy_name = metadata.id;
 
-                // Try to extract signals from either TrendFollowingStrategy or
-                // TrendFollowingFastStrategy
+                // Extract signals from a TrendFollowingStrategy sleeve (TREND or FAST)
                 std::unordered_map<std::string, double> signals_map;
                 bool signals_extracted = false;
 
-                // Try TrendFollowingStrategy first
                 auto tf_strategy_ptr = std::dynamic_pointer_cast<TrendFollowingStrategy>(strategy);
                 if (tf_strategy_ptr) {
                     // Get all instrument data (contains signals for all symbols)
@@ -1815,20 +1768,6 @@ int main(int argc, char* argv[]) {
                         signals_map[symbol] = data.current_forecast;
                     }
                     signals_extracted = true;
-                } else {
-                    // Try TrendFollowingFastStrategy
-                    auto tf_fast_ptr =
-                        std::dynamic_pointer_cast<TrendFollowingFastStrategy>(strategy);
-                    if (tf_fast_ptr) {
-                        // Get all instrument data from fast strategy
-                        const auto& all_instrument_data = tf_fast_ptr->get_all_instrument_data();
-
-                        // Extract signals (current_forecast) from instrument data
-                        for (const auto& [symbol, data] : all_instrument_data) {
-                            signals_map[symbol] = data.current_forecast;
-                        }
-                        signals_extracted = true;
-                    }
                 }
 
                 if (signals_extracted) {

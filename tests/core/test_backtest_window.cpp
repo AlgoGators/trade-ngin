@@ -180,23 +180,18 @@ TEST(BacktestWindowM12, TemplateConfigDoesNotShipTheKey) {
 // the strategies the config actually ENABLES. Hardcoding one number would be
 // wrong in both directions, because the strategies disagree:
 //
-//   TrendFollowingFastConfig   longest EMA  64
-//   TrendFollowingConfig       longest EMA 256
-//   TrendFollowingSlowConfig   longest EMA 512   <-- {128, 512}
+//   fast_trend_following_config()   longest EMA  64   (the FAST sleeve)
+//   TrendFollowingConfig            longest EMA 256
+//   a sleeve configured with {128, 512}  longest EMA 512
 //
-// FINDING: the template's "256+" note is understated. A book enabling
-// TREND_FOLLOWING_SLOW needs 512 trading days, and lookback_years=2 gives about
-// 504 -- eight short. No shipped book enables Slow today (the conservative
-// portfolio enables TREND_FOLLOWING alone, longest EMA 256), so nothing is
-// currently affected, which is exactly why an unchecked coupling was able to
-// drift this far. Reported rather than changed: raising lookback_years alters
-// every backtest window and is not a byte-identical change.
+// A book enabling a sleeve whose windows reach 512 needs 512 trading days, and
+// lookback_years=2 gives about 504 -- eight short. No shipped book configures
+// one (the conservative portfolio enables TREND_FOLLOWING alone, longest EMA
+// 256).
 //
 // Warn, not refuse, because refusing would abort runs that work today.
 
 #include "trade_ngin/strategy/trend_following.hpp"
-#include "trade_ngin/strategy/trend_following_fast.hpp"
-#include "trade_ngin/strategy/trend_following_slow.hpp"
 
 #include <algorithm>
 #include <filesystem>
@@ -223,15 +218,13 @@ std::filesystem::path find_repo_file(const std::string& relative) {
 
 }  // namespace
 
-// The three strategies really do disagree, which is why the check is derived
-// from the config rather than fixed. If they ever converge, the derivation is
-// still correct -- but the comment above stops being true, so pin the numbers.
-TEST(LookbackValidationG03, TheTrendStrategiesDisagreeOnTheirLongestEmaWindow) {
-    EXPECT_EQ(longest_ema(TrendFollowingFastConfig{}.ema_windows), 64);
+// The two trend configurations really do disagree, which is why the check is
+// derived from the config rather than fixed. If they ever converge, the
+// derivation is still correct -- but the comment above stops being true, so pin
+// the numbers.
+TEST(LookbackValidationG03, TheTrendConfigurationsDisagreeOnTheirLongestEmaWindow) {
+    EXPECT_EQ(longest_ema(fast_trend_following_config().ema_windows), 64);
     EXPECT_EQ(longest_ema(TrendFollowingConfig{}.ema_windows), 256);
-    EXPECT_EQ(longest_ema(TrendFollowingSlowConfig{}.ema_windows), 512)
-        << "the slow strategy no longer needs 512 trading days; the G-03 finding about "
-           "the template's understated 256+ note may be stale";
 }
 
 // The check must actually FIRE, through ConfigLoader::validate_config itself.

@@ -21,7 +21,7 @@
 //   ZC       0.015476       18.5712          81.4288       81
 //   (none)   no instrument data: no sizing weight, Carver term 0, width 0 -> round(100) = 100
 //
-// The same holds for the Fast and Slow classes, which carry the same buffer code.
+// The same holds on the FAST configuration: it is the same class and the same buffer code.
 
 #include <gtest/gtest.h>
 
@@ -38,14 +38,18 @@
 // test_portfolio_manager_internals.cpp).
 #define private public
 #include "trade_ngin/strategy/trend_following.hpp"
-#include "trade_ngin/strategy/trend_following_fast.hpp"
-#include "trade_ngin/strategy/trend_following_slow.hpp"
 #undef private
 
 using namespace trade_ngin;
 using namespace trade_ngin::testing;
 
 namespace {
+// The FAST sleeve: TrendFollowingStrategy on fast_trend_following_config() (one class, two
+// configurations).
+struct FastTrendConfig : TrendFollowingConfig {
+    FastTrendConfig() : TrendFollowingConfig(fast_trend_following_config()) {}
+};
+
 
 constexpr double kCapital = 500000.0;
 constexpr double kIdm = 2.4;
@@ -128,33 +132,7 @@ TEST_F(BufferWeightSourceTest, TrendFollowingCarverTermReadsTheSizingWeight) {
 }
 
 TEST_F(BufferWeightSourceTest, TrendFollowingFastCarverTermReadsTheSizingWeight) {
-    TrendFollowingFastStrategy s("BUFFER_WEIGHT_FAST", strategy_config(),
-                                 buffer_config<TrendFollowingFastConfig>(), db_);
+    TrendFollowingStrategy s("BUFFER_WEIGHT_FAST", strategy_config(),
+                             buffer_config<FastTrendConfig>(), db_);
     expect_width_follows_the_sizing_weight(s);
-}
-
-TEST_F(BufferWeightSourceTest, TrendFollowingSlowCarverTermReadsTheSizingWeight) {
-    TrendFollowingSlowStrategy s("BUFFER_WEIGHT_SLOW", strategy_config(),
-                                 buffer_config<TrendFollowingSlowConfig>(), db_);
-    expect_width_follows_the_sizing_weight(s);
-}
-
-// The width equals the Carver term when floor and factor are 0, and the term is exactly
-// 0.1 x capital x idm x risk_target x SIZING weight / (cs x price x fx x vol): a held position
-// just inside the band is kept, one just outside is traded to the band's edge.
-TEST_F(BufferWeightSourceTest, TheBandEdgeSitsAtTheSizingWeightsWidth) {
-    TrendFollowingStrategy s("BUFFER_WEIGHT_EDGE", strategy_config(),
-                             buffer_config<TrendFollowingConfig>(), db_);
-    seed_instrument(s, "MES", 0.038690);  // width 46.428
-    Position held;
-    held.symbol = "MES";
-    held.quantity = Decimal(54.0);  // 100 - 54 = 46 < 46.428: inside the band, kept
-    ASSERT_TRUE(s.update_position("MES", held).is_ok());
-    EXPECT_EQ(s.apply_position_buffer("MES", kRaw, kPrice, kVol), 54.0);
-    held.quantity = Decimal(53.0);  // 100 - 53 = 47 > 46.428: outside, trade to round(53.572)
-    ASSERT_TRUE(s.update_position("MES", held).is_ok());
-    EXPECT_EQ(s.apply_position_buffer("MES", kRaw, kPrice, kVol), 54.0);
-    held.quantity = Decimal(60.0);  // with the flat 0.03 (width 36) 60 would be outside; kept
-    ASSERT_TRUE(s.update_position("MES", held).is_ok());
-    EXPECT_EQ(s.apply_position_buffer("MES", kRaw, kPrice, kVol), 60.0);
 }

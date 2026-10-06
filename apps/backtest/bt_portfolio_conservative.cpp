@@ -13,7 +13,6 @@
 #include "trade_ngin/instruments/instrument_registry.hpp"
 #include "trade_ngin/portfolio/portfolio_manager.hpp"
 #include "trade_ngin/strategy/trend_following.hpp"
-#include "trade_ngin/strategy/trend_following_fast.hpp"
 
 using namespace trade_ngin;
 using namespace trade_ngin::backtest;
@@ -344,7 +343,9 @@ int main() {
                     strategy_id, base_strategy_config, trend_config, db, registry_ptr);
 
             } else if (strategy_type == "TrendFollowingFastStrategy") {
-                trade_ngin::TrendFollowingFastConfig trend_config;
+                // The FAST sleeve: TrendFollowingStrategy on the fast configuration
+                trade_ngin::TrendFollowingConfig trend_config =
+                    trade_ngin::fast_trend_following_config();
                 if (strategy_def.contains("config")) {
                     const auto& cfg = strategy_def["config"];
                     trend_config.weight = cfg.value("weight", 0.03);
@@ -374,7 +375,7 @@ int main() {
                     trend_config.fdm = app_config.strategy_defaults.fdm;
                 }
 
-                strategy = std::make_shared<trade_ngin::TrendFollowingFastStrategy>(
+                strategy = std::make_shared<trade_ngin::TrendFollowingStrategy>(
                     strategy_id, base_strategy_config, trend_config, db, registry_ptr);
 
             } else {

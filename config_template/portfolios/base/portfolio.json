@@ -28,7 +28,7 @@
         "risk_target": 0.25,
         "idm": 2.5,
         "use_position_buffering": false,
-        "ema_windows": [[1, 4], [2, 8], [4, 16], [8, 32], [16, 64]],
+        "ema_windows": [[2, 8], [4, 16], [8, 32], [16, 64]],
         "vol_lookback_short": 16,
         "vol_lookback_long": 252
       }

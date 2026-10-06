@@ -23,8 +23,6 @@
 #define private public
 #include "trade_ngin/instruments/instrument_registry.hpp"
 #include "trade_ngin/strategy/trend_following.hpp"
-#include "trade_ngin/strategy/trend_following_fast.hpp"
-#include "trade_ngin/strategy/trend_following_slow.hpp"
 #undef private
 
 #include "trade_ngin/data/roll_series.hpp"
@@ -33,6 +31,12 @@ using namespace trade_ngin;
 using namespace trade_ngin::testing;
 
 namespace {
+// The FAST sleeve: TrendFollowingStrategy on fast_trend_following_config() (one class, two
+// configurations).
+struct FastTrendConfig : TrendFollowingConfig {
+    FastTrendConfig() : TrendFollowingConfig(fast_trend_following_config()) {}
+};
+
 
 const std::string kSym = "TSTROLL";
 // 2021-01-04 00:00:00 UTC, a Monday.
@@ -188,8 +192,7 @@ void expect_switch_invisible(const std::string& label) {
 
 TEST(TrendAdjustedSeries, AContractSwitchIsNotAReturnForTheVolOrTheEmas) {
     expect_switch_invisible<TrendFollowingStrategy, TrendFollowingConfig>("TREND");
-    expect_switch_invisible<TrendFollowingFastStrategy, TrendFollowingFastConfig>("FAST");
-    expect_switch_invisible<TrendFollowingSlowStrategy, TrendFollowingSlowConfig>("SLOW");
+    expect_switch_invisible<TrendFollowingStrategy, FastTrendConfig>("FAST");
 }
 
 // The raw forecast of each EMA pair, recomputed by hand from the series' pieces: the EMAs on the

@@ -131,11 +131,10 @@ TEST(SignalsPublication, MeanReversionDeliberatelyDoesNotCallOnSignal) {
               std::string::npos);
 }
 
-TEST(SignalsPublication, TheThreeTrendStrategiesDoPublishAndAreUnaffected) {
+TEST(SignalsPublication, TheTrendStrategyDoesPublishAndIsUnaffected) {
     // The counterpart: on_signal() is not dead code, it is trend-following's. Nothing here
     // changes for them, and the asymmetry is intentional rather than an oversight.
-    for (const auto* f : {"src/strategy/trend_following.cpp", "src/strategy/trend_following_fast.cpp",
-                          "src/strategy/trend_following_slow.cpp"}) {
+    for (const auto* f : {"src/strategy/trend_following.cpp"}) {
         auto path = find_repo_dir(f);
         if (path.empty()) GTEST_SKIP() << "strategy source not found: " << f;
         EXPECT_NE(read_all(path).find("on_signal(symbol,"), std::string::npos)

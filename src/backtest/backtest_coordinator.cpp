@@ -17,7 +17,6 @@
 #include "trade_ngin/storage/backtest_results_manager.hpp"
 #include "trade_ngin/strategy/base_strategy.hpp"
 #include "trade_ngin/strategy/trend_following.hpp"
-#include "trade_ngin/strategy/trend_following_fast.hpp"
 #include "trade_ngin/strategy/types.hpp"
 
 namespace trade_ngin {
@@ -1651,18 +1650,10 @@ int BacktestCoordinator::calculate_warmup_days(
             continue;
         }
 
-        // Try to cast to TrendFollowingStrategy
+        // A trend sleeve (TREND or FAST: one class, two configurations)
         auto trend_following = std::dynamic_pointer_cast<TrendFollowingStrategy>(strat);
         if (trend_following) {
             int strat_lookback = trend_following->get_max_required_lookback();
-            max_lookback = std::max(max_lookback, strat_lookback);
-            continue;
-        }
-
-        // Try to cast to TrendFollowingFastStrategy
-        auto trend_following_fast = std::dynamic_pointer_cast<TrendFollowingFastStrategy>(strat);
-        if (trend_following_fast) {
-            int strat_lookback = trend_following_fast->get_max_required_lookback();
             max_lookback = std::max(max_lookback, strat_lookback);
             continue;
         }

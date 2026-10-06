@@ -197,8 +197,6 @@ set(TRADE_NGIN_SOURCES
     src/transaction_cost/netting.cpp
     src/strategy/base_strategy.cpp
     src/strategy/trend_following.cpp
-    src/strategy/trend_following_slow.cpp
-    src/strategy/trend_following_fast.cpp
     src/strategy/mean_reversion.cpp
     src/strategy/regime_detector.cpp
     src/storage/results_manager_base.cpp

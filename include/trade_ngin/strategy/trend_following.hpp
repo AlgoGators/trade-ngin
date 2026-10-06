@@ -46,6 +46,20 @@ struct TrendFollowingConfig {
 };
 
 /**
+ * @brief The FAST sleeve's configuration: TrendFollowingStrategy on the four fast EMA pairs, a 16-bar
+ * short vol span, a 0.25 risk target and no strategy buffer. The FAST sleeve is this configuration
+ * of the one trend class, not a class of its own.
+ */
+inline TrendFollowingConfig fast_trend_following_config() {
+    TrendFollowingConfig config;
+    config.risk_target = 0.25;
+    config.use_position_buffering = false;
+    config.ema_windows = {{2, 8}, {4, 16}, {8, 32}, {16, 64}};
+    config.vol_lookback_short = 16;
+    return config;
+}
+
+/**
  * @brief Data structure for storing instrument data
  */
 struct InstrumentData {

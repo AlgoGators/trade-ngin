@@ -29,8 +29,6 @@
 #undef private
 
 #include "trade_ngin/strategy/trend_following.hpp"
-#include "trade_ngin/strategy/trend_following_fast.hpp"
-#include "trade_ngin/strategy/trend_following_slow.hpp"
 #include "trade_ngin/strategy/vol_annualisation.hpp"
 
 using namespace trade_ngin;
@@ -91,17 +89,19 @@ struct Traits<TrendFollowingStrategy> {
     static constexpr int kVolSpan = 32;
     static constexpr const char* kClass = "TrendFollowing";
 };
-template <>
-struct Traits<TrendFollowingFastStrategy> {
-    using Config = TrendFollowingFastConfig;
-    static constexpr int kVolSpan = 16;
-    static constexpr const char* kClass = "TrendFollowingFast";
+// The FAST sleeve is the same class on fast_trend_following_config(): a distinct C++ type here only
+// so the typed suite runs both configurations.
+struct FastTrendFollowing : TrendFollowingStrategy {
+    using TrendFollowingStrategy::TrendFollowingStrategy;
+};
+struct FastTrendConfig : TrendFollowingConfig {
+    FastTrendConfig() : TrendFollowingConfig(fast_trend_following_config()) {}
 };
 template <>
-struct Traits<TrendFollowingSlowStrategy> {
-    using Config = TrendFollowingSlowConfig;
-    static constexpr int kVolSpan = 64;
-    static constexpr const char* kClass = "TrendFollowingSlow";
+struct Traits<FastTrendFollowing> {
+    using Config = FastTrendConfig;
+    static constexpr int kVolSpan = 16;
+    static constexpr const char* kClass = "TrendFollowing";
 };
 
 // The key=value fields of every VOL_ANNUALISATION line in a captured log, in order.
@@ -271,7 +271,7 @@ protected:
 };
 
 using TrendStrategies =
-    ::testing::Types<TrendFollowingStrategy, TrendFollowingFastStrategy, TrendFollowingSlowStrategy>;
+    ::testing::Types<TrendFollowingStrategy, FastTrendFollowing>;
 TYPED_TEST_SUITE(VolAnnualisationTest, TrendStrategies);
 
 // A six-bar week (Sunday session row) at a known weekly variance returns the known annual vol.

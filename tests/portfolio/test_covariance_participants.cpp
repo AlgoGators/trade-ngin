@@ -45,8 +45,6 @@
 #define private public
 #include "trade_ngin/portfolio/portfolio_manager.hpp"
 #include "trade_ngin/strategy/trend_following.hpp"
-#include "trade_ngin/strategy/trend_following_fast.hpp"
-#include "trade_ngin/strategy/trend_following_slow.hpp"
 #undef private
 
 #include "trade_ngin/core/logger.hpp"
@@ -175,7 +173,7 @@ private:
     size_t calls_{0};
 };
 
-// A trend sleeve (TrendFollowingStrategy, or its FAST / SLOW twin) that holds a fixed book and a
+// A trend sleeve (TrendFollowingStrategy on the TREND or the FAST configuration) that holds a fixed book and a
 // hand-set price history per symbol: on_data only counts the call, so the history is exactly what
 // the test sets. The strategy's own warm-up test (on_data: fewer prices than the longest EMA
 // window means no forecast and no target of its own) reads that history. T-OPT E-7.
@@ -212,8 +210,12 @@ private:
 };
 
 using TrendWarmup = ParticipantsWarmupStrategy<TrendFollowingStrategy, TrendFollowingConfig>;
-using FastWarmup = ParticipantsWarmupStrategy<TrendFollowingFastStrategy, TrendFollowingFastConfig>;
-using SlowWarmup = ParticipantsWarmupStrategy<TrendFollowingSlowStrategy, TrendFollowingSlowConfig>;
+// The FAST sleeve: TrendFollowingStrategy on fast_trend_following_config() (one class, two
+// configurations).
+struct FastTrendConfig : TrendFollowingConfig {
+    FastTrendConfig() : TrendFollowingConfig(fast_trend_following_config()) {}
+};
+using FastWarmup = ParticipantsWarmupStrategy<TrendFollowingStrategy, FastTrendConfig>;
 
 PortfolioConfig participants_config(bool optimization = true, bool carver = false) {
     PortfolioConfig pc{1'000'000.0, 1.0, 0.0, optimization};
@@ -318,11 +320,11 @@ protected:
         return *pms_.back();
     }
 
-    // One sleeve spec for run_sleeves: a trend strategy of type S (TrendWarmup, FastWarmup or
-    // SlowWarmup) at `allocation`, and each symbol's price count in ITS OWN history (a symbol not
+    // One sleeve spec for run_sleeves: a trend strategy of type S (TrendWarmup or
+    // FastWarmup) at `allocation`, and each symbol's price count in ITS OWN history (a symbol not
     // listed gets the sleeve's full warm-up). The book is every fed symbol at its Feed quantity.
     struct Sleeve {
-        std::string kind;  // "trend", "fast" or "slow"
+        std::string kind;  // "trend" or "fast"
         double allocation{1.0};
         std::map<std::string, long> prices_vs_warmup;  // symbol -> offset from the warm-up count
     };
@@ -362,10 +364,6 @@ protected:
             };
             if (sl.kind == "fast") {
                 auto t = std::make_shared<FastWarmup>(id, sc, mock_db_, book);
-                fill(t);
-                s = t;
-            } else if (sl.kind == "slow") {
-                auto t = std::make_shared<SlowWarmup>(id, sc, mock_db_, book);
                 fill(t);
                 s = t;
             } else {
@@ -669,17 +667,6 @@ TEST_F(CovarianceParticipants, ANewSymbolTheFastSleeveDoesNotSignalIsLeftOut) {
     const auto fresh = last_n(w, 30);
     auto& pm = run_sleeves({{"AAA", w, 1.0}, {"BBB", w, 1.0}, {"NEW", fresh, 0.0}},
                            {{"fast", 1.0, {{"NEW", -1}}}}, participants_config());
-    ASSERT_TRUE(pm.covariance_cache_valid_);
-    EXPECT_EQ(pm.cached_symbols_, (std::vector<std::string>{"AAA", "BBB"}));
-}
-
-// The SLOW twin, the same.
-//   parent: NEW is in the matrix.
-TEST_F(CovarianceParticipants, ANewSymbolTheSlowSleeveDoesNotSignalIsLeftOut) {
-    const auto w = weekdays(60);
-    const auto fresh = last_n(w, 30);
-    auto& pm = run_sleeves({{"AAA", w, 1.0}, {"BBB", w, 1.0}, {"NEW", fresh, 0.0}},
-                           {{"slow", 1.0, {{"NEW", -1}}}}, participants_config());
     ASSERT_TRUE(pm.covariance_cache_valid_);
     EXPECT_EQ(pm.cached_symbols_, (std::vector<std::string>{"AAA", "BBB"}));
 }

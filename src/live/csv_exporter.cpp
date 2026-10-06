@@ -12,7 +12,6 @@
 #include "trade_ngin/instruments/instrument_registry.hpp"
 #include "trade_ngin/strategy/base_strategy.hpp"
 #include "trade_ngin/strategy/trend_following.hpp"
-#include "trade_ngin/strategy/trend_following_slow.hpp"
 
 namespace trade_ngin {
 
@@ -127,14 +126,8 @@ Result<std::string> CSVExporter::export_current_positions(
         std::unordered_set<std::string> all_symbols;
         if (strategy != nullptr) {
             auto* tf_strategy = dynamic_cast<TrendFollowingStrategy*>(strategy);
-            auto* tf_slow_strategy = dynamic_cast<TrendFollowingSlowStrategy*>(strategy);
             if (tf_strategy != nullptr) {
                 const auto& instrument_data = tf_strategy->get_all_instrument_data();
-                for (const auto& [symbol, _] : instrument_data) {
-                    all_symbols.insert(symbol);
-                }
-            } else if (tf_slow_strategy != nullptr) {
-                const auto& instrument_data = tf_slow_strategy->get_all_instrument_data();
                 for (const auto& [symbol, _] : instrument_data) {
                     all_symbols.insert(symbol);
                 }
@@ -174,16 +167,12 @@ Result<std::string> CSVExporter::export_current_positions(
                                           ? (std::abs(notional) / std::abs(portfolio_value)) * 100.0
                                           : 0.0;
 
-            // Get forecast from strategy (support both TrendFollowingStrategy and
-            // TrendFollowingSlowStrategy)
+            // Get forecast from the trend sleeve
             double forecast = 0.0;
             if (strategy != nullptr) {
                 auto* tf_strategy = dynamic_cast<TrendFollowingStrategy*>(strategy);
-                auto* tf_slow_strategy = dynamic_cast<TrendFollowingSlowStrategy*>(strategy);
                 if (tf_strategy != nullptr) {
                     forecast = tf_strategy->get_forecast(symbol);
-                } else if (tf_slow_strategy != nullptr) {
-                    forecast = tf_slow_strategy->get_forecast(symbol);
                 }
             }
 
@@ -191,14 +180,8 @@ Result<std::string> CSVExporter::export_current_positions(
             double volatility = 0.0;
             if (strategy != nullptr) {
                 auto* tf_strategy = dynamic_cast<TrendFollowingStrategy*>(strategy);
-                auto* tf_slow_strategy = dynamic_cast<TrendFollowingSlowStrategy*>(strategy);
                 if (tf_strategy != nullptr) {
                     auto instrument_data = tf_strategy->get_instrument_data(symbol);
-                    if (instrument_data != nullptr) {
-                        volatility = instrument_data->current_volatility;
-                    }
-                } else if (tf_slow_strategy != nullptr) {
-                    auto instrument_data = tf_slow_strategy->get_instrument_data(symbol);
                     if (instrument_data != nullptr) {
                         volatility = instrument_data->current_volatility;
                     }
@@ -209,15 +192,8 @@ Result<std::string> CSVExporter::export_current_positions(
             double ema_8 = 0.0, ema_32 = 0.0, ema_64 = 0.0, ema_256 = 0.0;
             if (strategy != nullptr) {
                 auto* tf_strategy = dynamic_cast<TrendFollowingStrategy*>(strategy);
-                auto* tf_slow_strategy = dynamic_cast<TrendFollowingSlowStrategy*>(strategy);
                 if (tf_strategy != nullptr) {
                     auto ema_values = tf_strategy->get_ema_values(symbol, {8, 32, 64, 256});
-                    ema_8 = ema_values.count(8) ? ema_values[8] : 0.0;
-                    ema_32 = ema_values.count(32) ? ema_values[32] : 0.0;
-                    ema_64 = ema_values.count(64) ? ema_values[64] : 0.0;
-                    ema_256 = ema_values.count(256) ? ema_values[256] : 0.0;
-                } else if (tf_slow_strategy != nullptr) {
-                    auto ema_values = tf_slow_strategy->get_ema_values(symbol, {8, 32, 64, 256});
                     ema_8 = ema_values.count(8) ? ema_values[8] : 0.0;
                     ema_32 = ema_values.count(32) ? ema_values[32] : 0.0;
                     ema_64 = ema_values.count(64) ? ema_values[64] : 0.0;
@@ -514,14 +490,8 @@ Result<std::string> CSVExporter::export_current_positions(
             std::unordered_set<std::string> all_symbols;
             if (strategy != nullptr) {
                 auto* tf_strategy = dynamic_cast<TrendFollowingStrategy*>(strategy);
-                auto* tf_slow_strategy = dynamic_cast<TrendFollowingSlowStrategy*>(strategy);
                 if (tf_strategy != nullptr) {
                     const auto& instrument_data = tf_strategy->get_all_instrument_data();
-                    for (const auto& [symbol, _] : instrument_data) {
-                        all_symbols.insert(symbol);
-                    }
-                } else if (tf_slow_strategy != nullptr) {
-                    const auto& instrument_data = tf_slow_strategy->get_all_instrument_data();
                     for (const auto& [symbol, _] : instrument_data) {
                         all_symbols.insert(symbol);
                     }
@@ -564,11 +534,8 @@ Result<std::string> CSVExporter::export_current_positions(
                 double forecast = 0.0;
                 if (strategy != nullptr) {
                     auto* tf_strategy = dynamic_cast<TrendFollowingStrategy*>(strategy);
-                    auto* tf_slow_strategy = dynamic_cast<TrendFollowingSlowStrategy*>(strategy);
                     if (tf_strategy != nullptr) {
                         forecast = tf_strategy->get_forecast(symbol);
-                    } else if (tf_slow_strategy != nullptr) {
-                        forecast = tf_slow_strategy->get_forecast(symbol);
                     }
                 }
 
@@ -576,14 +543,8 @@ Result<std::string> CSVExporter::export_current_positions(
                 double volatility = 0.0;
                 if (strategy != nullptr) {
                     auto* tf_strategy = dynamic_cast<TrendFollowingStrategy*>(strategy);
-                    auto* tf_slow_strategy = dynamic_cast<TrendFollowingSlowStrategy*>(strategy);
                     if (tf_strategy != nullptr) {
                         auto instrument_data = tf_strategy->get_instrument_data(symbol);
-                        if (instrument_data != nullptr) {
-                            volatility = instrument_data->current_volatility;
-                        }
-                    } else if (tf_slow_strategy != nullptr) {
-                        auto instrument_data = tf_slow_strategy->get_instrument_data(symbol);
                         if (instrument_data != nullptr) {
                             volatility = instrument_data->current_volatility;
                         }
@@ -594,15 +555,8 @@ Result<std::string> CSVExporter::export_current_positions(
                 double ema_8 = 0.0, ema_32 = 0.0, ema_64 = 0.0, ema_256 = 0.0;
                 if (strategy != nullptr) {
                     auto* tf_strategy = dynamic_cast<TrendFollowingStrategy*>(strategy);
-                    auto* tf_slow_strategy = dynamic_cast<TrendFollowingSlowStrategy*>(strategy);
                     if (tf_strategy != nullptr) {
                         auto ema_values = tf_strategy->get_ema_values(symbol, {8, 32, 64, 256});
-                        ema_8 = ema_values.count(8) ? ema_values[8] : 0.0;
-                        ema_32 = ema_values.count(32) ? ema_values[32] : 0.0;
-                        ema_64 = ema_values.count(64) ? ema_values[64] : 0.0;
-                        ema_256 = ema_values.count(256) ? ema_values[256] : 0.0;
-                    } else if (tf_slow_strategy != nullptr) {
-                        auto ema_values = tf_slow_strategy->get_ema_values(symbol, {8, 32, 64, 256});
                         ema_8 = ema_values.count(8) ? ema_values[8] : 0.0;
                         ema_32 = ema_values.count(32) ? ema_values[32] : 0.0;
                         ema_64 = ema_values.count(64) ? ema_values[64] : 0.0;
