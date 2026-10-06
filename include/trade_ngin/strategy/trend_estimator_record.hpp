@@ -23,8 +23,9 @@ namespace trade_ngin {
  * Columns: the signal bar's date; the symbol; the bars the window held and the values behind the
  * long-run mean; the annualisation factor; sigma_short, sigma_long, sigma (the sizing volatility)
  * and the forecast's volatility; the attenuation; the combined forecast; the capital, weight,
- * multiplier and raw close the position was sized on; the position before any limit; then each
- * pair's scaled forecast, in the configured order.
+ * multiplier and raw close the position was sized on; the position before any limit; 1 when the
+ * equity slow rule set a negative combined forecast to 0 on this bar; then each pair's scaled
+ * forecast, in the configured order. The forecast column is the RULED forecast.
  */
 inline void append_trend_estimator_record(const std::string& strategy_id, const std::string& date,
                                           const std::string& symbol,
@@ -32,7 +33,7 @@ inline void append_trend_estimator_record(const std::string& strategy_id, const 
                                           const std::vector<std::pair<int, int>>& pairs,
                                           double forecast, double capital, double weight,
                                           double multiplier, double price,
-                                          double optimal_position) {
+                                          double optimal_position, bool slow_rule_zeroed) {
     const char* dir = std::getenv("TRADE_NGIN_SERIES_DUMP_DIR");
     if (dir == nullptr || *dir == '\0') return;
     const std::string path = std::string(dir) + "/estimator_" + strategy_id + ".csv";
@@ -47,15 +48,15 @@ inline void append_trend_estimator_record(const std::string& strategy_id, const 
         std::fprintf(out,
                      "date,symbol,window_bars,long_values,factor,sigma_short,sigma_long,sigma,"
                      "forecast_sigma,attenuation,forecast,capital,weight,multiplier,price,"
-                     "optimal_position");
+                     "optimal_position,slow_rule_zeroed");
         for (const auto& [fast, slow] : pairs) std::fprintf(out, ",scaled_%d_%d", fast, slow);
         std::fprintf(out, "\n");
     }
-    std::fprintf(out, "%s,%s,%zu,%zu,%.17g,%.17g,%.17g,%.17g,%.17g,%.17g,%.17g,%.17g,%.17g,%.17g,%.17g,%.17g",
+    std::fprintf(out, "%s,%s,%zu,%zu,%.17g,%.17g,%.17g,%.17g,%.17g,%.17g,%.17g,%.17g,%.17g,%.17g,%.17g,%.17g,%d",
                  date.c_str(), symbol.c_str(), estimate.window_bars, estimate.long_values,
                  estimate.factor, estimate.sigma_short, estimate.sigma_long, estimate.sigma,
                  estimate.forecast_sigma, estimate.attenuation, forecast, capital, weight,
-                 multiplier, price, optimal_position);
+                 multiplier, price, optimal_position, slow_rule_zeroed ? 1 : 0);
     for (double scaled : estimate.scaled) std::fprintf(out, ",%.17g", scaled);
     std::fprintf(out, "\n");
     std::fclose(out);

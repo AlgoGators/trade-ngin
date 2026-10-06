@@ -71,6 +71,27 @@ Result<void> TrendFollowingStrategy::validate_config() const {
                                 "TrendFollowingStrategy");
     }
 
+    // The equity slow rule reads the scaled forecasts of the pairs it names: a ruled sleeve carries
+    // every one of them, and a rule with symbols names at least one pair.
+    if (!trend_config_.equity_slow_symbols.empty()) {
+        if (trend_config_.equity_slow_pairs.empty()) {
+            return make_error<void>(ErrorCode::INVALID_ARGUMENT,
+                                    "The equity slow rule names symbols and no pair",
+                                    "TrendFollowingStrategy");
+        }
+        for (const auto& rule_pair : trend_config_.equity_slow_pairs) {
+            if (std::find(trend_config_.ema_windows.begin(), trend_config_.ema_windows.end(),
+                          rule_pair) == trend_config_.ema_windows.end()) {
+                return make_error<void>(
+                    ErrorCode::INVALID_ARGUMENT,
+                    "The equity slow rule names the pair (" + std::to_string(rule_pair.first) +
+                        ", " + std::to_string(rule_pair.second) +
+                        "), which is not one of this sleeve's EMA window pairs",
+                    "TrendFollowingStrategy");
+            }
+        }
+    }
+
     return Result<void>();
 }
 
@@ -371,7 +392,22 @@ Result<void> TrendFollowingStrategy::on_data(const std::vector<Bar>& data) {
 
             instrument_data.current_raw_forecast = estimate.mean_scaled;
             instrument_data.current_scaled_forecast = estimate.combined;
-            instrument_data.current_forecast = estimate.combined;
+            // The equity slow rule (section 2.5, D40): on a ruled symbol a negative combined
+            // forecast stands only when every slow pair the rule names is negative. The ruled
+            // forecast is THE forecast from here on: the sizing, its sign and the stored signal.
+            double ruled_forecast = estimate.combined;
+            {
+                const std::string base_symbol = symbol.substr(0, symbol.find('.'));
+                if (std::find(trend_config_.equity_slow_symbols.begin(),
+                              trend_config_.equity_slow_symbols.end(),
+                              base_symbol) != trend_config_.equity_slow_symbols.end()) {
+                    ruled_forecast = trend_estimator::equity_slow_ruled(
+                        estimate.combined, estimate.scaled, trend_config_.ema_windows,
+                        trend_config_.equity_slow_pairs);
+                }
+            }
+            const bool slow_rule_zeroed = ruled_forecast != estimate.combined;
+            instrument_data.current_forecast = ruled_forecast;
 
             // Load instruments if not yet cached
             if (instrument_data.contract_size == 1.0) {
@@ -449,7 +485,8 @@ Result<void> TrendFollowingStrategy::on_data(const std::vector<Bar>& data) {
                                           instrument_data.current_forecast,
                                           std::max(1000.0, config_.capital_allocation),
                                           instrument_data.weight, instrument_data.contract_size,
-                                          prices.back(), instrument_data.optimal_position);
+                                          prices.back(), instrument_data.optimal_position,
+                                          slow_rule_zeroed);
 
             // Apply buffering if enabled with error handling
             double final_position = 0.0;

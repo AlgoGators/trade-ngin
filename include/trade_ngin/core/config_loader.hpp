@@ -293,6 +293,22 @@ struct StrategyDefaultsConfig {
  * - config/portfolios/{name}/risk.json
  * - config/portfolios/{name}/email.json
  */
+/**
+ * @brief portfolio.json's top-level equity_slow_rule (LOOP_SPEC sections 2.5 and 7.7, D40): for
+ * these symbols a negative combined forecast of the book's FIRST sleeve stands only when the scaled
+ * forecast of every pair named is negative, and is 0 otherwise.
+ *
+ *   "equity_slow_rule": {"symbols": ["M2K", "MES", "MNQ", "MYM"], "pairs": [[32, 128], [64, 256]]}
+ *
+ * A futures book requires the key (ConfigLoader::require_loop_keys); when present, both lists are
+ * non-empty, a symbol is a non-empty string and a pair is two positive whole numbers.
+ */
+struct EquitySlowRule {
+    bool present{false};
+    std::vector<std::string> symbols;
+    std::vector<std::pair<int, int>> pairs;
+};
+
 struct AppConfig {
     // Portfolio identification
     std::string portfolio_id;
@@ -339,6 +355,9 @@ struct AppConfig {
     // optimiser leaves it out of the date intersection (PortfolioConfig::covariance_stale_dates,
     // T-7b-1 7d). Absent means 5; a value that is not a whole number of at least 0 is a load error.
     size_t covariance_stale_dates{5};
+
+    // portfolio.json's top-level equity_slow_rule; required on a futures book.
+    EquitySlowRule equity_slow_rule;
 
     // Backtest settings
     BacktestSpecificConfig backtest;
@@ -415,6 +434,13 @@ public:
      * during the migration period.
      */
     static Result<AppConfig> load_legacy(const std::filesystem::path& config_file_path);
+
+    /**
+     * @brief The keys LOOP_SPEC section 7.7 requires of a futures book, checked by the four futures
+     *        runners right after load(): a book without one of them does not run.
+     * @return an error naming the first missing key
+     */
+    static Result<void> require_loop_keys(const AppConfig& config);
 
     /**
      * @brief Resolve a backtest's [start_date, end_date] window from config (M-12).

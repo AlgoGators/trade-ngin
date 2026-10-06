@@ -97,6 +97,19 @@ struct Estimate {
 /// Returns 0 for any other pair: such a pair has no scalar and a configuration naming it is refused.
 double forecast_scalar(int fast, int slow);
 
+/**
+ * @brief The equity slow rule (LOOP_SPEC section 2.5, D40) on one bar's combined forecast.
+ *
+ * A NEGATIVE combined forecast stands only when the scaled forecast of every pair in `rule_pairs`
+ * (each after its scalar, the attenuation and the cap, before the averaging) is negative; otherwise
+ * it is 0. A forecast that is not negative is returned as it is. `scaled[k]` is the scaled forecast
+ * of `pairs[k]`; a rule pair the sleeve does not carry counts as not negative (the caller refuses
+ * such a configuration before it gets here).
+ */
+double equity_slow_ruled(double combined, const std::vector<double>& scaled,
+                         const std::vector<std::pair<int, int>>& pairs,
+                         const std::vector<std::pair<int, int>>& rule_pairs);
+
 /// True when every pair has a fixed scalar.
 bool pairs_supported(const std::vector<std::pair<int, int>>& pairs, std::string* unsupported = nullptr);
 

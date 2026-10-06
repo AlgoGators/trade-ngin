@@ -1038,3 +1038,51 @@ TEST(EquityOptimizerGuard, RefusesOnlyWhenTheConfigAsksForTheOptimizer) {
               "runners do not run the optimizer (HD 2026-09-01; see the comment at the "
               "hard-code).");
 }
+
+// LOOP_SPEC sections 2.5 and 7.7 (D40): portfolio.json "equity_slow_rule". Parsed strictly when
+// present; a futures book requires it (the four futures runners call require_loop_keys).
+TEST_F(ConfigLoaderTest, EquitySlowRuleIsParsed) {
+    write_full_set("base", {},
+                   {{"equity_slow_rule",
+                     {{"symbols", {"M2K", "MES", "MNQ", "MYM"}},
+                      {"pairs", nlohmann::json::array({{32, 128}, {64, 256}})}}}});
+    auto r = ConfigLoader::load(base_, "base");
+    ASSERT_TRUE(r.is_ok()) << (r.error() ? r.error()->what() : "no error");
+    const auto& rule = r.value().equity_slow_rule;
+    EXPECT_TRUE(rule.present);
+    EXPECT_EQ(rule.symbols, (std::vector<std::string>{"M2K", "MES", "MNQ", "MYM"}));
+    EXPECT_EQ(rule.pairs, (std::vector<std::pair<int, int>>{{32, 128}, {64, 256}}));
+    EXPECT_TRUE(ConfigLoader::require_loop_keys(r.value()).is_ok());
+}
+
+TEST_F(ConfigLoaderTest, AFuturesBookWithoutTheEquitySlowRuleDoesNotRun) {
+    write_full_set("base");
+    auto r = ConfigLoader::load(base_, "base");
+    ASSERT_TRUE(r.is_ok()) << "the key is not required of every book: an equity book loads";
+    EXPECT_FALSE(r.value().equity_slow_rule.present);
+    auto required = ConfigLoader::require_loop_keys(r.value());
+    ASSERT_TRUE(required.is_error());
+    EXPECT_NE(std::string(required.error()->what()).find("equity_slow_rule"), std::string::npos);
+}
+
+TEST_F(ConfigLoaderTest, AMalformedEquitySlowRuleIsALoadError) {
+    const nlohmann::json pairs = nlohmann::json::array({{32, 128}, {64, 256}});
+    const std::vector<nlohmann::json> bad = {
+        nlohmann::json(true),
+        nlohmann::json{{"symbols", {"MES"}}},
+        nlohmann::json{{"pairs", pairs}},
+        nlohmann::json{{"symbols", nlohmann::json::array()}, {"pairs", pairs}},
+        nlohmann::json{{"symbols", {"MES"}}, {"pairs", nlohmann::json::array()}},
+        nlohmann::json{{"symbols", {"MES", 5}}, {"pairs", pairs}},
+        nlohmann::json{{"symbols", {"MES"}}, {"pairs", nlohmann::json::array({{32, 128, 256}})}},
+        nlohmann::json{{"symbols", {"MES"}}, {"pairs", nlohmann::json::array({{32, 1.5}})}},
+        nlohmann::json{{"symbols", {"MES"}}, {"pairs", nlohmann::json::array({{0, 128}})}},
+    };
+    for (const auto& value : bad) {
+        write_full_set("base", {}, {{"equity_slow_rule", value}});
+        auto r = ConfigLoader::load(base_, "base");
+        ASSERT_TRUE(r.is_error()) << value.dump();
+        EXPECT_NE(std::string(r.error()->what()).find("equity_slow_rule"), std::string::npos)
+            << value.dump();
+    }
+}

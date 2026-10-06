@@ -53,6 +53,13 @@ int main() {
             return 1;
         }
         auto app_config = app_config_result.value();
+        // The loop's keys are required on a futures book (LOOP_SPEC section 7.7): a book without
+        // one of them does not run.
+        if (auto loop_keys = ConfigLoader::require_loop_keys(app_config); loop_keys.is_error()) {
+            ERROR("Failed to load configuration: " + std::string(loop_keys.error()->what()));
+            std::cerr << "Failed to load configuration: " << loop_keys.error()->what() << std::endl;
+            return 1;
+        }
         INFO("Configuration loaded successfully for portfolio: " + app_config.portfolio_id);
 
         // ========================================
@@ -339,6 +346,12 @@ int main() {
                     trend_config.fdm = app_config.strategy_defaults.fdm;
                 }
 
+                // The equity slow rule acts on the book's first sleeve only (LOOP_SPEC section 2.5,
+                // D40); a first sleeve that does not carry the rule's pairs is refused when built.
+                if (strategy_id == strategy_names.front()) {
+                    trend_config.equity_slow_symbols = app_config.equity_slow_rule.symbols;
+                    trend_config.equity_slow_pairs = app_config.equity_slow_rule.pairs;
+                }
                 strategy = std::make_shared<trade_ngin::TrendFollowingStrategy>(
                     strategy_id, base_strategy_config, trend_config, db, registry_ptr);
 
@@ -375,6 +388,12 @@ int main() {
                     trend_config.fdm = app_config.strategy_defaults.fdm;
                 }
 
+                // The equity slow rule acts on the book's first sleeve only (LOOP_SPEC section 2.5,
+                // D40); a first sleeve that does not carry the rule's pairs is refused when built.
+                if (strategy_id == strategy_names.front()) {
+                    trend_config.equity_slow_symbols = app_config.equity_slow_rule.symbols;
+                    trend_config.equity_slow_pairs = app_config.equity_slow_rule.pairs;
+                }
                 strategy = std::make_shared<trade_ngin::TrendFollowingStrategy>(
                     strategy_id, base_strategy_config, trend_config, db, registry_ptr);
 

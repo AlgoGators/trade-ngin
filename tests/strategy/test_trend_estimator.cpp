@@ -295,3 +295,20 @@ TEST(TrendEstimator, EachBarIsAnnualisedByItsOwnFactor) {
     EXPECT_NEAR(e.sigma_long, sum / static_cast<double>(n - 1), 1e-13);
     EXPECT_NE(factor_of(250), factor_of(n - 1));
 }
+
+// The equity slow rule on one bar: a negative combined forecast stands only when every rule pair's
+// scaled forecast is negative.
+TEST(TrendEstimator, TheEquitySlowRule) {
+    using trade_ngin::trend_estimator::equity_slow_ruled;
+    const std::vector<std::pair<int, int>> pairs = {{2, 8}, {4, 16}, {8, 32}, {16, 64}, {32, 128}, {64, 256}};
+    const std::vector<std::pair<int, int>> slow = {{32, 128}, {64, 256}};
+    EXPECT_EQ(equity_slow_ruled(-7.0, {-9, -9, -9, -9, -3, -1}, pairs, slow), -7.0);
+    EXPECT_EQ(equity_slow_ruled(-7.0, {-9, -9, -9, -9, -3, 0.5}, pairs, slow), 0.0);
+    EXPECT_EQ(equity_slow_ruled(-7.0, {-9, -9, -9, -9, 0.5, -3}, pairs, slow), 0.0);
+    EXPECT_EQ(equity_slow_ruled(-7.0, {-9, -9, -9, -9, -3, 0.0}, pairs, slow), 0.0)
+        << "a slow speed at exactly 0 is not negative";
+    EXPECT_EQ(equity_slow_ruled(4.0, {9, 9, 9, 9, -3, -1}, pairs, slow), 4.0);
+    EXPECT_EQ(equity_slow_ruled(0.0, {0, 0, 0, 0, 1, 1}, pairs, slow), 0.0);
+    // a rule pair the sleeve does not carry counts as not negative
+    EXPECT_EQ(equity_slow_ruled(-7.0, {-9, -9, -9, -9}, {{2, 8}, {4, 16}, {8, 32}, {16, 64}}, slow), 0.0);
+}

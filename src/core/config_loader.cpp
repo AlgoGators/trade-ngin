@@ -242,6 +242,49 @@ Result<AppConfig> ConfigLoader::extract_config(const nlohmann::json& merged) {
             config.covariance_stale_dates = v.get<size_t>();
         }
 
+        // LOOP_SPEC sections 2.5 and 7.7 (D40): the equity slow rule. Parsed strictly when present;
+        // the futures runners require it (require_loop_keys).
+        if (merged.contains("equity_slow_rule")) {
+            const auto& v = merged.at("equity_slow_rule");
+            auto bad = [&](const std::string& what) {
+                return make_error<AppConfig>(
+                    ErrorCode::INVALID_DATA,
+                    "config for " + config.portfolio_id +
+                        ": portfolio.json \"equity_slow_rule\" " + what +
+                        " (expected {\"symbols\": [\"MES\", ...], \"pairs\": [[32, 128], [64, 256]]}), "
+                        "got " + v.dump(),
+                    "ConfigLoader");
+            };
+            if (!v.is_object() || !v.contains("symbols") || !v.contains("pairs")) {
+                return bad("must be an object with \"symbols\" and \"pairs\"");
+            }
+            const auto& symbols = v.at("symbols");
+            const auto& pairs = v.at("pairs");
+            if (!symbols.is_array() || symbols.empty()) {
+                return bad("needs a non-empty \"symbols\" list");
+            }
+            if (!pairs.is_array() || pairs.empty()) {
+                return bad("needs a non-empty \"pairs\" list");
+            }
+            EquitySlowRule rule;
+            rule.present = true;
+            for (const auto& symbol : symbols) {
+                if (!symbol.is_string() || symbol.get<std::string>().empty()) {
+                    return bad("names a symbol that is not a non-empty string");
+                }
+                rule.symbols.push_back(symbol.get<std::string>());
+            }
+            for (const auto& pair : pairs) {
+                if (!pair.is_array() || pair.size() != 2 || !pair[0].is_number_integer() ||
+                    !pair[1].is_number_integer() || pair[0].get<int64_t>() <= 0 ||
+                    pair[1].get<int64_t>() <= 0) {
+                    return bad("names a pair that is not two positive whole numbers");
+                }
+                rule.pairs.emplace_back(pair[0].get<int>(), pair[1].get<int>());
+            }
+            config.equity_slow_rule = rule;
+        }
+
         if (!merged.contains("risk")) {
             return make_error<AppConfig>(ErrorCode::INVALID_DATA,
                                          "risk config for " + config.portfolio_id +
@@ -412,6 +455,18 @@ Result<void> ConfigLoader::validate_config(const AppConfig& config) {
         }
     }
 
+    return Result<void>();
+}
+
+Result<void> ConfigLoader::require_loop_keys(const AppConfig& config) {
+    if (!config.equity_slow_rule.present) {
+        return make_error<void>(
+            ErrorCode::INVALID_DATA,
+            "config for " + config.portfolio_id +
+                ": portfolio.json \"equity_slow_rule\" is required on a futures book "
+                "({\"symbols\": [\"M2K\", \"MES\", \"MNQ\", \"MYM\"], \"pairs\": [[32, 128], [64, 256]]})",
+            "ConfigLoader");
+    }
     return Result<void>();
 }
 

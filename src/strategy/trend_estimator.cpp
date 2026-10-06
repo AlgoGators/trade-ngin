@@ -63,6 +63,23 @@ double forecast_scalar(int fast, int slow) {
     }
 }
 
+double equity_slow_ruled(double combined, const std::vector<double>& scaled,
+                         const std::vector<std::pair<int, int>>& pairs,
+                         const std::vector<std::pair<int, int>>& rule_pairs) {
+    if (!(combined < 0.0)) return combined;
+    for (const auto& rule_pair : rule_pairs) {
+        bool negative = false;
+        for (std::size_t k = 0; k < pairs.size() && k < scaled.size(); ++k) {
+            if (pairs[k] == rule_pair) {
+                negative = scaled[k] < 0.0;
+                break;
+            }
+        }
+        if (!negative) return 0.0;
+    }
+    return combined;
+}
+
 bool pairs_supported(const std::vector<std::pair<int, int>>& pairs, std::string* unsupported) {
     for (const auto& [fast, slow] : pairs) {
         if (forecast_scalar(fast, slow) > 0.0) continue;

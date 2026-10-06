@@ -21,6 +21,8 @@
       }
     }
   },
+  "equity_slow_rule": {"symbols": ["M2K", "MES", "MNQ", "MYM"], "pairs": [[32, 128], [64, 256]]},
+  "_equity_slow_rule_note": "required; on the book's first sleeve a negative combined forecast of these symbols stands only when the scaled forecast of every pair named is negative, and is 0 otherwise",
   "use_optimization": true,
   "covariance_history_prices": 756,
   "_covariance_history_prices_note": "daily closes per symbol the PortfolioManager keeps for the optimiser covariance, one per date, oldest dropped first; absent means 756 (the trend sleeve own cap); at least 2",

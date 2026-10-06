@@ -44,6 +44,13 @@ struct TrendFollowingConfig {
     size_t max_history_size{0};   // Set to the estimators' window (trend_estimator::kWindowBars)
     std::vector<std::pair<int, double>> fdm{{1, 1.0},  {2, 1.03}, {3, 1.08},
                                             {4, 1.13}, {5, 1.19}, {6, 1.26}};
+    // The equity slow rule (LOOP_SPEC section 2.5, D40): for these symbols (base names, "MES" for
+    // "MES.v.0") a negative combined forecast stands only when every one of these pairs' scaled
+    // forecasts is negative, and is 0 otherwise. Empty symbols: the sleeve is not ruled. The runner
+    // sets both on the book's first sleeve from portfolio.json's equity_slow_rule; every pair
+    // named must be one of the sleeve's ema_windows.
+    std::vector<std::string> equity_slow_symbols;
+    std::vector<std::pair<int, int>> equity_slow_pairs;
 };
 
 /**
