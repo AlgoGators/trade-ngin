@@ -60,6 +60,19 @@ TEST_F(LiveResultsManagerTest, ConstructorSetsBaseAccessors) {
     EXPECT_EQ(mgr_->get_strategy_id(), "STRAT_X");
 }
 
+TEST_F(LiveResultsManagerTest, DefaultSystemReportsWriteFailureAndAttemptsLaterTables) {
+    mgr_->set_positions({make_pos("ES", 5.0)});
+    mgr_->set_metrics({{"total_return", 0.05}}, {});
+    mgr_->set_config(nlohmann::json::object());
+    mgr_->set_equity(1050000.0);
+    db_->fail_on_call("store_live_results_complete");
+    const auto result = mgr_->save_all_results("RUN_1", date_at(2026, 3, 15));
+    ASSERT_TRUE(result.is_error());
+    EXPECT_EQ(result.error()->code(), ErrorCode::DATABASE_ERROR);
+    EXPECT_NE(std::string(result.error()->what()).find("live_results"), std::string::npos);
+    EXPECT_EQ(db_->call_count("store_trading_equity_curve"), 1);
+}
+
 TEST_F(LiveResultsManagerTest, GenerateRunIdEncodesStrategyAndDate) {
     auto id = LiveResultsManager::generate_run_id("STRAT_X", date_at(2026, 3, 15));
     EXPECT_NE(id.find("STRAT_X"), std::string::npos);

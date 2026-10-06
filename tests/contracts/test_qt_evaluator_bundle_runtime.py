@@ -13,7 +13,7 @@ import unittest
 from unittest.mock import patch
 
 from qt_native_bundle_fixture import ROOT, BUILD_ID, stage_actual_bundle
-sys.path.insert(0, str(ROOT.parent / "algolens-qt/algolens-api"))
+# The caller supplies the reviewed AlgoLens API through PYTHONPATH.
 from algolens.infrastructure.portfolio.qt_evaluator_bundle import QtEvaluatorBundle, QtEvaluatorBundleUnavailable
 from algolens.infrastructure.portfolio.qt_evaluator_process import QtEvaluatorProcess, QtEvaluatorUnavailable
 from algolens.infrastructure.portfolio.qt_evaluator_client import QtEvaluatorClient
@@ -39,6 +39,7 @@ class ActualBundleTest(unittest.TestCase):
         cls.manifest = stage_actual_bundle(cls.directory)
         cls.pin = next(row["sha256"] for row in cls.manifest["artifacts"] if row["role"]=="executable")
         cls.request = json.loads((ROOT / "tests/contracts/qt-eval-v1.json").read_text())["selected_book"]
+        cls.request["evaluator_build"] = BUILD_ID
         print("BUNDLE_SHA256="+cls.manifest["bundle_sha256"])
         print("BUNDLE_ARTIFACTS="+str(len(cls.manifest["artifacts"])))
         print("BUNDLE_MANIFEST="+json.dumps(cls.manifest,sort_keys=True,separators=(",",":")))

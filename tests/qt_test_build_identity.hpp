@@ -46,7 +46,13 @@ inline nlohmann::json fixture_for_compiled_build(nlohmann::json value) {
     // Rebinding its authority requires rebinding the test-only digest chain too.
     if (value.is_object() && value.contains("original_output_json") &&
         value.contains("provenance")) {
-        const auto output = nlohmann::json::parse(value.at("original_output_json").get<std::string>());
+        auto output = nlohmann::json::parse(value.at("original_output_json").get<std::string>());
+        if (output.contains("consumption")) {
+            auto financial_output = output;
+            financial_output.erase("consumption");
+            output["consumption"]["identity"]["financial_output_digest"] = qt_sha256_hex(
+                canonical_qt_desk_source_json(financial_output).value()).value();
+        }
         const auto encoded = canonical_qt_desk_source_json(output).value();
         value["original_output_json"] = encoded;
         value["provenance"]["original_run_result_digest"] = qt_sha256_hex(encoded).value();

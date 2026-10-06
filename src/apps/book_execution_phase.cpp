@@ -35,7 +35,7 @@ BookExecutionCharge charge_model_book_execution(
     // Preserve the exact tracked inputs and Decimal conversions, including
     // their exception categories. MODEL's caller handles those categories.
     const auto raw=input.asset_type==AssetType::FUTURE
-        ? manager.calculate_costs(input.symbol,input.quantity,input.reference_price,AssetType::FUTURE,observation)
+        ? manager.calculate_costs(input.symbol,input.quantity,input.reference_price,observation)
         : manager.calculate_costs(input.symbol,input.quantity,input.reference_price,AssetType::EQUITY,observation);
     return assemble(raw,false);
 }
