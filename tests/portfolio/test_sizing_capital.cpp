@@ -27,6 +27,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <ctime>
 #include <deque>
 #include <filesystem>
 #include <fstream>
@@ -1108,7 +1109,17 @@ TEST(SizingCapitalWiring, BothFuturesRunnersSizeOnTheEquityBeforeTheRebalance) {
     EXPECT_NE(helper.find("data_loader.load_live_results(strategy_id, portfolio_id, sizing_t1);"), npos);
     EXPECT_NE(helper.find("t1_row_stored ? sizing_t1 : now,"), npos);
     EXPECT_NE(helper.find("t1_row_stored ? t1_row.value().daily_transaction_costs : 0.0"), npos);
-    EXPECT_EQ(helper.find("current_portfolio_value"), npos);
+    // (its code: the no-bar-day comment names the column, which already carries the costs)
+    {
+        std::istringstream lines(helper);
+        for (std::string line; std::getline(lines, line);) {
+            const auto first = line.find_first_not_of(" \t");
+            if (first == npos) continue;
+            const std::string text = line.substr(first);
+            if (text.rfind("//", 0) == 0 || text.rfind("*", 0) == 0 || text.rfind("/*", 0) == 0) continue;
+            EXPECT_EQ(text.find("current_portfolio_value"), npos) << text;
+        }
+    }
 }
 
 // T-ROLLX-FIX commit 5 (finding 12; D-B): the other half of the wiring. PHASE 5 finalises Day T-1 on
@@ -1332,32 +1343,111 @@ TEST_F(LiveHalfCompounding, NoDayT1RowKeepsTheLastSettledCapital) {
     EXPECT_EQ(r.settled_through, "none");
 }
 
-// The run after a no-prices day. The day is now a stored row before Day T-1. While no bar is dated
-// it, it stays unsettled and adds nothing; once a bar of that date is loaded (or the day is
-// re-run), it is read in its own date's place and the capital is the recursion over the whole
-// history in date order.
-TEST_F(LiveHalfCompounding, TheNextRunCatchesUpFromTheStoredHistoryAlone) {
-    // 2026-04-25 is a Saturday: the book held positions and no bar is dated it.
+// The no-bar-day rule. A held day on which no symbol prints (a Saturday) is never finalized: its
+// stored daily_pnl, the costs of that day's fills, is final. It stays out only while no bar dated
+// after it is loaded, and from the next run that has a later bar it counts in its own date's place.
+TEST_F(LiveHalfCompounding, ANoBarDayCountsFromTheNextRunThatHasALaterBar) {
+    // 2026-04-25 is a Saturday: the book held positions, its fills cost 40.00, no bar is dated it.
     db_->history = {{"2026-04-23", 4'000.0, 2}, {"2026-04-24", -3'200.0, 2}, {"2026-04-25", -40.0, 2}};
+    // Read 1: no bar after the Saturday is loaded yet (Day T-1 has no closes either).
+    for (const char* later : {"2026-04-27", "2026-04-28", "2026-04-29", "2026-04-30"}) {
+        calendar_.bar_dates.erase(later);
+    }
+    calendar_.no_t1_closes = true;
     auto r = read();
     ASSERT_EQ(r.outcome, LiveSizingOutcome::kSized) << outcome_of(r);
     ASSERT_EQ(r.earlier_unsettled, std::vector<std::string>{"2026-04-25"});
-    EXPECT_NEAR(r.capital.capital, 496'800.0 + t1_net_, 1e-6) << "the unsettled day adds nothing";
+    EXPECT_TRUE(r.t1_unsettled);
+    EXPECT_NEAR(r.capital.capital, 496'800.0, 1e-6) << "no later bar: the Saturday adds nothing yet";
     EXPECT_NE(sizing_capital_log_line("2026-04-28", r).find(" earlier_unsettled=1 "), std::string::npos);
 
-    calendar_.bar_dates.insert("2026-04-25");  // its bars arrive
+    // Read 2: a bar dated after the Saturday is loaded. No bar is dated the Saturday itself, and
+    // none ever will be.
+    calendar_.bar_dates.insert("2026-04-27");
+    calendar_.no_t1_closes = false;
     r = read();
-    EXPECT_TRUE(r.earlier_unsettled.empty());
+    EXPECT_TRUE(r.earlier_unsettled.empty()) << "the Saturday counts once a later bar is loaded";
+    EXPECT_EQ(calendar_.bar_dates.count("2026-04-25"), 0u);
     double capital = 500'000.0;
     for (double net : {4'000.0, -3'200.0, -40.0, t1_net_}) capital = std::min(500'000.0, capital + net);
-    EXPECT_NEAR(r.capital.capital, capital, 1e-6) << "the late day in its own date's place";
+    EXPECT_NEAR(r.capital.capital, capital, 1e-6) << "the Saturday's costs in its own date's place";
+    EXPECT_NEAR(r.capital.account, 500'000.0 + 4'000.0 - 3'200.0 - 40.0 + t1_net_, 1e-6)
+        << "the account is the stored one: the Saturday's costs are in it";
+    EXPECT_EQ(r.settled_rows, 4);
 
-    // A day with a flat book, and a day before the span the run loaded, are settled.
-    calendar_.bar_dates.erase("2026-04-25");
-    db_->history = {{"2026-03-28", -500.0, 2}, {"2026-04-25", -40.0, 0}};
+    // A day with a flat book is settled whatever is loaded.
+    db_->history = {{"2026-04-25", -40.0, 0}};
     r = read();
     EXPECT_TRUE(r.earlier_unsettled.empty());
-    EXPECT_NEAR(r.capital.capital, 500'000.0 - 540.0 + t1_net_, 1e-6);
+    EXPECT_NEAR(r.capital.capital, 500'000.0 - 40.0 + t1_net_, 1e-6);
+}
+
+// The capital does not step when a no-bar day leaves the loaded window: the same stored history
+// read with a long calendar (the Saturday inside it) and a short one (the Saturday before its
+// first bar) gives one capital.
+TEST_F(LiveHalfCompounding, TheCapitalDoesNotStepWhenANoBarDayLeavesTheLoadedWindow) {
+    // 2024-06-01 and 2026-01-17 are Saturdays on which the book held positions and paid costs.
+    db_->history = {{"2024-06-01", -75.0, 3}, {"2026-01-17", -25.0, 2}, {"2026-04-24", -3'200.0, 2}};
+    const auto weekdays_from = [](int days_back) {
+        LiveSizingCalendar c;
+        const std::time_t t1 = 1777248000;  // 2026-04-27 00:00 UTC, Day T-1
+        for (int back = days_back; back >= 0; --back) {
+            const std::time_t day = t1 - static_cast<std::time_t>(back) * 86400;
+            std::tm tm{};
+            gmtime_r(&day, &tm);
+            if (tm.tm_wday == 0 || tm.tm_wday == 6) continue;
+            char buf[16];
+            std::strftime(buf, sizeof(buf), "%Y-%m-%d", &tm);
+            c.bar_dates.insert(buf);
+        }
+        c.first_bar_date = *c.bar_dates.begin();
+        return c;
+    };
+    calendar_ = weekdays_from(730);
+    ASSERT_LT(calendar_.first_bar_date, std::string("2024-06-01"));
+    const auto wide = read();
+    calendar_ = weekdays_from(100);
+    ASSERT_GT(calendar_.first_bar_date, std::string("2024-06-01"));
+    ASSERT_GT(calendar_.first_bar_date, std::string("2026-01-17"));
+    const auto narrow = read();
+    ASSERT_EQ(wide.outcome, LiveSizingOutcome::kSized) << outcome_of(wide);
+    ASSERT_EQ(narrow.outcome, LiveSizingOutcome::kSized) << outcome_of(narrow);
+    EXPECT_TRUE(wide.earlier_unsettled.empty());
+    EXPECT_TRUE(narrow.earlier_unsettled.empty());
+    EXPECT_NEAR(wide.capital.capital, 500'000.0 - 75.0 - 25.0 - 3'200.0 + t1_net_, 1e-6);
+    EXPECT_DOUBLE_EQ(wide.capital.capital, narrow.capital.capital);
+    EXPECT_DOUBLE_EQ(wide.capital.account, narrow.capital.account);
+    EXPECT_EQ(wide.settled_rows, narrow.settled_rows);
+}
+
+// The three failure paths of Day T-1 still keep the last settled capital for their one run, and
+// that capital now holds an earlier no-bar day's costs: only Day T-1 itself is withheld.
+TEST_F(LiveHalfCompounding, TheFailurePathsWithholdOnlyDayT1) {
+    // 2026-04-18 is a Saturday: held, 40.00 of costs, no bar; the week after it printed.
+    const std::vector<std::tuple<std::string, double, int>> history = {
+        {"2026-04-17", 4'000.0, 2}, {"2026-04-18", -40.0, 2}, {"2026-04-24", -3'200.0, 2}};
+    const double last_settled = 500'000.0 - 40.0 - 3'200.0;
+    const auto base_calendar = calendar_;
+    for (const std::string path : {"no T-1 closes", "no T-2 closes", "no Day T-1 row"}) {
+        db_->history = history;
+        db_->t1 = SizingReadDatabase::T1::kRow;
+        calendar_ = base_calendar;
+        if (path == "no T-1 closes") {
+            calendar_.no_t1_closes = true;
+        } else if (path == "no T-2 closes") {
+            calendar_.no_t2_closes = true;
+        } else {
+            db_->t1 = SizingReadDatabase::T1::kNoRow;
+        }
+        const auto r = read();
+        ASSERT_EQ(r.outcome, LiveSizingOutcome::kSized) << path << ": " << outcome_of(r);
+        EXPECT_TRUE(r.t1_unsettled) << path;
+        EXPECT_EQ(r.t1_unsettled_reason, path);
+        EXPECT_TRUE(r.earlier_unsettled.empty()) << path;
+        EXPECT_NEAR(r.capital.capital, last_settled, 1e-6) << path;
+        EXPECT_EQ(r.settled_through, "2026-04-24") << path;
+        EXPECT_EQ(r.settled_rows, 3) << path;
+    }
 }
 
 // A history that cannot be read is an equity read that failed: the book is held, never sized on a

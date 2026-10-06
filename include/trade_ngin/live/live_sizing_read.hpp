@@ -112,16 +112,23 @@ struct LiveSizingRead {
  * A run settles row D on the run of D + 1, unless that run was on the no-prices path: it had no
  * close dated D while the book held positions. No column records that (settled_at is migration
  * 023's), so every run re-reads the test from what is stored: the row's own book
- * (`active_positions`) and whether any bar is dated D in the span the run loaded. A date before the
- * loaded span cannot be tested and counts as settled (it has a later row). The live runners refuse
- * to run on a missing feed for a session day, so a date with no bar is a day the market did not
- * print, and the test reads the same on every later run unless a bar of that date arrives.
+ * (`active_positions`) and the dates the run loaded a bar on.
+ *
+ * The no-bar-day rule: a held day on which no symbol prints (a Saturday) is never finalized, so
+ * its stored daily_pnl, the costs of that day's fills, is final. It counts at that stored value,
+ * in its own date's place, as soon as ANY bar dated after it is loaded. trading.equity_curve and
+ * live_results.current_portfolio_value already carry those costs; this makes the sizing capital
+ * and risk_detail.account_value agree with them. A no-bar day with no later bar loaded is still
+ * unsettled, and only Day T-1 itself is withheld by its failure paths, for its one run. A date
+ * before the loaded span counts as settled, which agrees with the rule (every loaded bar is dated
+ * after it), so the capital does not step when a day leaves the loaded window.
  */
 inline bool sizing_history_day_unsettled(const LiveDataLoader::PnlHistoryRow& row,
                                          const LiveSizingCalendar& calendar) {
     if (row.active_positions <= 0) return false;
     if (calendar.first_bar_date.empty() || row.date < calendar.first_bar_date) return false;
-    return calendar.bar_dates.count(row.date) == 0;
+    if (calendar.bar_dates.count(row.date) != 0) return false;
+    return calendar.bar_dates.upper_bound(row.date) == calendar.bar_dates.end();
 }
 
 /// The runner's sizing reads for the run date `now` and what they decide. The calls, their order
