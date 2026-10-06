@@ -390,6 +390,8 @@ static Result<QtDeskProcessedReceipt> process_qt_desk_impl(pqxx::connection& con
         require(d.at("model_publication_id").is_string());
         stage="current_facts";auto capture=capture_qt_desk_current_facts(tx,text(d.at("book_id")),text(d.at("source_day")),
             d.at("created_by").get<int64_t>(),text(d.at("model_publication_id")),p.at("read_set_payload"));
+        if(capture.is_error())return make_error<QtDeskProcessedReceipt>(ErrorCode::INVALID_DATA,
+            std::string("qt_desk_unavailable:current_facts:")+capture.error()->what(),"qt_desk_processor");
         require(capture.is_ok()&&capture.value().digest==d.at("read_set_digest").get<std::string>());
         stage="draft";auto draft=one(tx,"SELECT to_jsonb(r) FROM trading.qt_drafts r WHERE draft_id="+tx.quote(text(d.at("draft_id")))+"::uuid");
         for(auto field:{"source_digest","provenance_digest","draft_digest"})require(draft.at(field)==p.at(field));
