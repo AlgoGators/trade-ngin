@@ -117,10 +117,10 @@ function(trade_ngin_add_release_artifacts_target)
     file(GENERATE OUTPUT "${inputs}" CONTENT
         "{\"source\":{\"git_sha_full\":\"${TRADE_NGIN_GIT_SHA_FULL}\",\"git_sha_short\":\"${TRADE_NGIN_GIT_SHA}\",\"dirty\":false},\"build\":{\"build_type\":\"${CMAKE_BUILD_TYPE}\",\"compiler\":{\"id\":\"${CMAKE_CXX_COMPILER_ID}\",\"version\":\"${CMAKE_CXX_COMPILER_VERSION}\"},\"cxx_standard\":\"20\",\"toolchain_image_digest\":\"${TRADE_NGIN_TOOLCHAIN_IMAGE_DIGEST}\",\"cmake_inputs\":[\"CMAKE_BUILD_TYPE=${CMAKE_BUILD_TYPE}\",\"CMAKE_CXX_FLAGS=${CMAKE_CXX_FLAGS}\",\"CMAKE_CXX_STANDARD=20\",\"NLopt_DIR=${NLopt_DIR}\"]},\"image_digest\":\"${TRADE_NGIN_IMAGE_DIGEST}\",\"expected_bundle_sha256\":\"auto\",\"artifacts\":{\"libtrade_ngin.so\":{\"source\":\"$<TARGET_FILE:trade_ngin>\",\"install_path\":\"bin/Release/libtrade_ngin.so\",\"kind\":\"engine\"},\"live_equity_mr\":{\"source\":\"$<TARGET_FILE:live_equity_mr>\",\"install_path\":\"bin/Release/live_equity_mr\",\"kind\":\"system_publisher\"},\"live_portfolio\":{\"source\":\"$<TARGET_FILE:live_portfolio>\",\"install_path\":\"bin/Release/live_portfolio\",\"kind\":\"system_publisher\"},\"live_portfolio_conservative\":{\"source\":\"$<TARGET_FILE:live_portfolio_conservative>\",\"install_path\":\"bin/Release/live_portfolio_conservative\",\"kind\":\"system_publisher\"},\"qt_desk_prepare_sources\":{\"source\":\"$<TARGET_FILE:qt_desk_prepare_sources>\",\"install_path\":\"bin/Release/qt_desk_prepare_sources\",\"kind\":\"desk_tool\"},\"qt_desk_run\":{\"source\":\"$<TARGET_FILE:qt_desk_run>\",\"install_path\":\"bin/Release/qt_desk_run\",\"kind\":\"desk_tool\"},\"qt_evaluator\":{\"source\":\"$<TARGET_FILE:qt_evaluator>\",\"install_path\":\"bin/Release/qt_evaluator\",\"kind\":\"evaluator\"},\"qt_desk_worker\":{\"source\":\"$<TARGET_FILE:qt_desk_worker>\",\"install_path\":\"bin/Release/qt_desk_worker\",\"kind\":\"desk_worker\"}},\"require_worker\":true}\n")
     add_custom_target(release_artifacts
-        COMMAND "${QT_EVALUATOR_PYTHON}" "${CMAKE_CURRENT_SOURCE_DIR}/release_artifacts.py"
+        COMMAND "${QT_EVALUATOR_PYTHON}" "${CMAKE_CURRENT_FUNCTION_LIST_DIR}/release_artifacts.py"
             --create --inputs "${inputs}"
             --manifest "${TRADE_NGIN_RELEASE_MANIFEST}"
-            --schema "${CMAKE_CURRENT_SOURCE_DIR}/release_artifacts_schema.json"
+            --schema "${CMAKE_CURRENT_FUNCTION_LIST_DIR}/release_artifacts_schema.json"
             --bundle-directory "${QT_EVALUATOR_BUNDLE_DIRECTORY}"
         DEPENDS ${release_dependencies}
         VERBATIM

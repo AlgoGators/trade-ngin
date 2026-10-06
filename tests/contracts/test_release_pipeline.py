@@ -2,6 +2,9 @@
 import json
 import os
 from pathlib import Path
+import re
+import subprocess
+import sys
 import unittest
 
 from tests.qt_test_artifacts import build_dir
@@ -93,6 +96,13 @@ class ReleasePipelineContract(unittest.TestCase):
             release = graph.split("CMakeFiles/release_artifacts.dir/all:", 1)[1].split(
                 ".PHONY : CMakeFiles/release_artifacts.dir/all", 1)[0]
             self.assertIn("apps/tools/CMakeFiles/qt_desk_worker.dir/all", release)
+
+            recipe = (configured / "CMakeFiles/release_artifacts.dir/build.make").read_text()
+            command = re.search(r"(\S+/release_artifacts\.py) --create", recipe)
+            self.assertIsNotNone(command)
+            result = subprocess.run([sys.executable, command.group(1), "--help"],
+                                    capture_output=True, text=True, check=False)
+            self.assertEqual(result.returncode, 0, result.stderr)
 
 
 if __name__ == "__main__":
