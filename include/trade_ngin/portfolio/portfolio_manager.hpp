@@ -58,6 +58,12 @@ struct PortfolioConfig : public ConfigBase {
     double sign_close_band{2.0};
     double b_sigma_floor{0.05};
     int trim_max{5};
+    // LOOP_SPEC sections 7.5 and 7.5.1: the design keys a futures book records with every run
+    // (to_json below): how the book is sized and the equity slow rule of its first sleeve, as its
+    // files state them (portfolio/loop_config.hpp fills both).
+    std::string sizing_mode;
+    std::vector<std::string> equity_slow_symbols;
+    std::vector<std::pair<int, int>> equity_slow_pairs;
     // The risk modules this book runs, portfolio scope, in evaluation order. There is
     // no boolean any more: a book that runs no risk layer carries a single `none`
     // assignment naming who ruled it and when, and an EMPTY list is a configuration
@@ -115,6 +121,37 @@ struct PortfolioConfig : public ConfigBase {
         j["opt_config"] = opt_config.to_json();
         j["risk_config"] = risk_config.to_json();
         j["version"] = version;
+        // LOOP_SPEC section 7.5.1: a book that names an overlay sleeve records the loop's design
+        // keys, and none of the retired ones. A book with no overlay sleeve writes the object it
+        // always wrote.
+        if (!overlay_sleeve.empty()) {
+            auto& opt = j["opt_config"];
+            for (const char* retired : {"tau", "asymmetric_risk_buffer", "buffer_size_factor"}) {
+                opt.erase(retired);
+            }
+            opt["sign_close_band"] = sign_close_band;
+            opt["b_sigma_floor"] = b_sigma_floor;
+            auto& risk = j["risk_config"];
+            for (const char* retired : {"var_limit", "jump_risk_limit", "max_correlation"}) {
+                risk.erase(retired);
+            }
+            for (const auto& module : risk_modules) {
+                const auto* carver = std::get_if<CarverModuleConfig>(&module.params);
+                if (carver == nullptr || !carver->overlay_limits()) continue;
+                risk["R_max"] = carver->r_max;
+                risk["R_jump_max"] = carver->r_jump_max;
+                risk["R_shock_max"] = carver->r_shock_max;
+            }
+            risk["per_name_cap"] = per_name_cap;
+            risk["trim_max"] = trim_max;
+            j["sizing_mode"] = sizing_mode;
+            nlohmann::json pairs = nlohmann::json::array();
+            for (const auto& [fast, slow] : equity_slow_pairs) {
+                pairs.push_back(nlohmann::json::array({fast, slow}));
+            }
+            j["equity_slow_rule"] = {{"symbols", equity_slow_symbols}, {"pairs", pairs}};
+            j["oracle_hash_list"] = "oracle_sha256_frozen_v6_4.txt";
+        }
         return j;
     }
 

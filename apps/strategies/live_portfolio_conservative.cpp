@@ -1413,9 +1413,10 @@ int main(int argc, char* argv[]) {
         INFO("Storing live run metadata for this trading day...");
         // Kept at this scope: a portfolio risk REFUSE found by process_market_data writes
         // this row a second time, from the same values, with the refusal marked.
-        nlohmann::json portfolio_config_json;
-        portfolio_config_json["total_capital"] = static_cast<double>(portfolio_config.total_capital);
-        portfolio_config_json["use_optimization"] = portfolio_config.use_optimization;
+        // LOOP_SPEC sections 7.5 and 7.5.1: the object the backtest records with its run
+        // (PortfolioConfig::to_json: total_capital and use_optimization are in it), so both
+        // tables carry the same design keys; the marks below are added to it.
+        nlohmann::json portfolio_config_json = portfolio_config.to_json();
 
         // Convert strategy_allocations to JSON
         nlohmann::json strategy_alloc_json(strategy_allocations);

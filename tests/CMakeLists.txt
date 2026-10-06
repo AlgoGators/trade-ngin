@@ -59,6 +59,7 @@ set(TEST_SOURCES
     risk/test_overlay.cpp
     optimization/test_one_pass.cpp
     portfolio/test_one_pass_book.cpp
+    portfolio/test_portfolio_config_keys.cpp
     risk/test_overlay_wiring.cpp
     risk/test_risk_adjusted_returns.cpp
     risk/test_risk_modules.cpp

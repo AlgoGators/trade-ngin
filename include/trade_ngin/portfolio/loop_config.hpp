@@ -17,6 +17,9 @@ namespace trade_ngin {
 inline void apply_loop_config(const AppConfig& app, PortfolioConfig& portfolio) {
     portfolio.sign_close_band = app.sign_close_band;
     portfolio.b_sigma_floor = app.b_sigma_floor;
+    portfolio.sizing_mode = app.sizing_mode;
+    portfolio.equity_slow_symbols = app.equity_slow_rule.symbols;
+    portfolio.equity_slow_pairs = app.equity_slow_rule.pairs;
     for (const auto& module : app.risk_schema.portfolio) {
         const auto* carver = std::get_if<CarverModuleConfig>(&module.params);
         if (carver == nullptr || !carver->overlay_limits()) continue;
