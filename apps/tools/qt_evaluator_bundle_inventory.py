@@ -45,16 +45,17 @@ def parse_ldd(text):
     return result
 
 
-def inventory(evaluator, engine, build_id, compiler_id, compiler_version, dependencies):
+def inventory(evaluator, engine, build_id, compiler_id, compiler_version, dependencies, *, live_config=False):
+    executable_name="live_config_validate" if live_config else "qt_evaluator"
     evaluator = Path(evaluator).resolve(strict=True)
     engine = Path(engine).resolve(strict=True)
-    if (not evaluator.is_file() or not engine.is_file() or evaluator.name != "qt_evaluator" or
+    if (not evaluator.is_file() or not engine.is_file() or evaluator.name != executable_name or
             engine.name != "libtrade_ngin.so" or
             not isinstance(dependencies, dict) or
             dependencies.get("libtrade_ngin.so") is None or
             Path(dependencies["libtrade_ngin.so"]).resolve(strict=True) != engine):
         raise ValueError("bundle_build_target_mismatch")
-    rows = [{"name": "qt_evaluator", "source": str(evaluator), "role": "executable"}]
+    rows = [{"name": executable_name, "source": str(evaluator), "role": "executable"}]
     for name, source in dependencies.items():
         source = Path(source)
         if (Path(name).name != name or not source.is_absolute() or
@@ -74,7 +75,7 @@ def inventory(evaluator, engine, build_id, compiler_id, compiler_version, depend
     return {
         "artifacts": rows,
         "metadata": {
-            "evaluator_build": build_id,
+            ("validator_build" if live_config else "evaluator_build"): build_id,
             "compiler": {"id": compiler_id, "version": compiler_version},
             "abi": {"platform": "linux", "machine": "x86_64", "elf_class": "ELF64",
                     "cxx_standard": "20"},
@@ -82,7 +83,7 @@ def inventory(evaluator, engine, build_id, compiler_id, compiler_version, depend
     }
 
 
-def inspect(evaluator, engine, build_id, compiler_id, compiler_version):
+def inspect(evaluator, engine, build_id, compiler_id, compiler_version, *, live_config=False):
     evaluator = Path(evaluator).resolve(strict=True)
     engine = Path(engine).resolve(strict=True)
     environment = {
@@ -96,7 +97,7 @@ def inspect(evaluator, engine, build_id, compiler_id, compiler_version):
     if completed.returncode != 0 or completed.stderr:
         raise ValueError("native_dependency_inspection_failed")
     return inventory(evaluator, engine, build_id, compiler_id, compiler_version,
-                     parse_ldd(completed.stdout))
+                     parse_ldd(completed.stdout), live_config=live_config)
 
 
 def main():
@@ -107,11 +108,12 @@ def main():
     parser.add_argument("--compiler-id", required=True)
     parser.add_argument("--compiler-version", required=True)
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--live-config", action="store_true")
     args = parser.parse_args()
     if args.output.exists() or args.output.is_symlink():
         raise ValueError("bundle_inventory_exists")
     value = inspect(args.evaluator, args.engine, args.build_id,
-                    args.compiler_id, args.compiler_version)
+                    args.compiler_id, args.compiler_version, live_config=args.live_config)
     args.output.parent.mkdir(parents=True, exist_ok=True)
     with args.output.open("xb") as stream:
         stream.write(canonical(value) + b"\n")

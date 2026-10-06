@@ -341,3 +341,191 @@ TEST(LiveConfigOverride, AttributedNonCarverPortfolioSurvivesSnapshotAndTuning) 
     EXPECT_EQ(effective.value()["risk"]["modules"][1],snapshot.value()["risk"]["modules"][1]);
     EXPECT_TRUE(apply_live_config_override(tuned.value(),{{"/risk/_ruled_by","somebody else"}}).is_error());
 }
+
+TEST(LiveConfigOverride, ExplicitBaselineValidationPreservesGovernedConfigWithoutAllowingOrdinaryNoop) {
+    const auto snapshot=build_runtime_trading_snapshot(base_config()).value();
+    auto result=validate_live_config_baseline_request({{"schema","live-config-baseline-validation/v1"},
+        {"base_snapshot",snapshot}});
+    ASSERT_TRUE(result.is_ok());
+    EXPECT_EQ(result.value().at("schema"),"live-config-baseline-validation/v1");
+    EXPECT_EQ(result.value().at("effective_snapshot"),snapshot);
+    EXPECT_EQ(result.value().at("effective_snapshot").at("execution").at("position_limit_live"),12.75);
+    EXPECT_EQ(result.value().at("effective_snapshot").at("max_drawdown"),.3);
+    EXPECT_EQ(result.value().at("base_sha256"),result.value().at("effective_sha256"));
+    EXPECT_EQ(result.value().at("base_sha256").get<std::string>().size(),64u);
+    EXPECT_EQ(result.value().at("changed_paths"),Json::array());
+    EXPECT_TRUE(validate_live_config_request(request(base_config(),Json::object())).is_error());
+    EXPECT_TRUE(validate_live_config_request(request(base_config(),{{"/optimization/tau",1.0}})).is_error());
+}
+TEST(LiveConfigOverride, BaselineValidationRequiresExactEnvelopeAndStrictCompleteV2) {
+    const Json valid={{"schema","live-config-baseline-validation/v1"},
+        {"base_snapshot",build_runtime_trading_snapshot(base_config()).value()}};
+    for(const auto* key:{"actor","changes","config_root"}) {
+        auto bad=valid;bad[key]="private-value";
+        EXPECT_TRUE(validate_live_config_baseline_request(bad).is_error());
+    }
+    auto bad=valid;bad["base_snapshot"]["snapshot_version"]=1;
+    EXPECT_TRUE(validate_live_config_baseline_request(bad).is_error());
+    bad=valid;bad["base_snapshot"].erase("risk");
+    EXPECT_TRUE(validate_live_config_baseline_request(bad).is_error());
+    bad=valid;bad["base_snapshot"]["strategies"]["TREND"]["default_allocation"]=.5;
+    EXPECT_TRUE(validate_live_config_baseline_request(bad).is_error());
+    bad=valid;bad["base_snapshot"]["optimization"]["tau"]=std::numeric_limits<double>::infinity();
+    EXPECT_TRUE(validate_live_config_baseline_request(bad).is_error());
+    bad=valid;bad.erase("base_snapshot");
+    EXPECT_TRUE(validate_live_config_baseline_request(bad).is_error());
+}
+
+#include "trade_ngin/portfolio/portfolio_manager.hpp"
+#include "trade_ngin/apps/equity_multi_consumption.hpp"
+#include "trade_ngin/data/live_config_owners.hpp"
+TEST(LiveConfigOverride, GovernedProjectionHasExactSchema2InventoryAndRejectsTampering) {
+    const auto c=base_config();
+    const auto output=project_governed_live_config_fields(c);ASSERT_TRUE(output.is_ok());
+    const auto& projection=output.value();EXPECT_EQ(projection.at("projection_version"),2);
+    EXPECT_TRUE(validate_live_config_projection_for_publication(projection));
+    EXPECT_EQ(projection.at("effective_snapshot"),build_runtime_trading_snapshot(c).value());
+    bool schema2=false,legacy=false;
+    for(const auto& field:projection.at("fields")) {
+        if(field.at("path")=="/risk/modules/0/var_limit")schema2=true;
+        if(field.at("path")=="/risk_defaults/confidence_level")legacy=true;
+    }
+    EXPECT_TRUE(schema2);EXPECT_FALSE(legacy);
+    auto forged=projection;forged["fields"][0]["classification"]="editable_config_input";
+    EXPECT_FALSE(validate_live_config_projection_for_publication(forged));
+    forged=projection;forged["fields"].erase(forged["fields"].begin());
+    EXPECT_FALSE(validate_live_config_projection_for_publication(forged));
+    EXPECT_EQ(project_live_config_fields(c).value().at("projection_version"),1);
+}
+TEST(LiveConfigOverride, RawEquitySourceMapsWithoutChangingApprovedSnapshot) {
+    auto c=base_config();c.strategies_config={{"MEAN_REVERSION",{{"type","MeanReversionStrategy"},
+        {"enabled_live",true},{"default_allocation",1.0},{"config",Json::object()}}}};
+    const auto snapshot=build_runtime_trading_snapshot(c).value();const auto copy=snapshot;
+    const auto owners=live_config_source_owner_map(snapshot,"LIVE_EQUITY_MEAN_REVERSION");
+    EXPECT_EQ(owners,Json({{"MEAN_REVERSION","EQUITY_MEAN_REVERSION"}}));
+    EXPECT_EQ(snapshot,copy);
+    EXPECT_TRUE(live_config_storage_strategies(snapshot,"LIVE_EQUITY_MEAN_REVERSION").contains("EQUITY_MEAN_REVERSION"));
+    auto projected=project_governed_live_config_fields(c);ASSERT_TRUE(projected.is_ok());
+    EXPECT_EQ(projected.value().at("profile"),"live_equity");
+    EXPECT_TRUE(validate_live_config_projection_for_publication(projected.value()));
+}
+TEST(LiveConfigOverride, CompositeSkippedEvidenceIsBoundedAndRejectsFabricatedFullRun) {
+    auto c=base_config();c.strategies_config=Json::object();
+    for(const auto* name:{"ALPHA","BETA"})c.strategies_config[name]={{"type","MeanReversionStrategy"},
+        {"enabled_live",true},{"default_allocation",.5},{"config",Json::object()}};
+    const auto snapshot=build_runtime_trading_snapshot(c).value();const std::string hash(64,'a');
+    PortfolioConsumptionTrace absent;
+    const auto evidence=project_equity_multi_consumption(absent,true,snapshot,"LIVE_EQUITY_ALPHA_BETA",
+        c.portfolio_id,"2026-10-06",hash);
+    EXPECT_EQ(evidence.at("coverage").at("legacy_run_stages"),"not_collected");
+    for(const auto& key:{"full_run_certification","effective_sha256","source_to_storage_owners","coverage","extra"}) {
+        auto forged=evidence;forged[key]=true;
+        EXPECT_FALSE(validate_equity_multi_consumption(forged,snapshot,"LIVE_EQUITY_ALPHA_BETA",c.portfolio_id,"2026-10-06",hash));
+    }
+}
+TEST(LiveConfigOverride, EquityPolicyDefaultsAreIdenticalForExportAndRunnerSnapshots) {
+    auto c=base_config();c.strategies_config={{"MEAN_REVERSION",{{"type","MeanReversionStrategy"},
+        {"enabled_live",true},{"default_allocation",1.0},{"config",Json::object()}}}};
+    const auto omitted=build_runtime_trading_snapshot(c);ASSERT_TRUE(omitted.is_ok());
+    c.live.record_equity_policy_snapshot();
+    const auto explicit_defaults=build_runtime_trading_snapshot(c);ASSERT_TRUE(explicit_defaults.is_ok());
+    EXPECT_EQ(omitted.value(),explicit_defaults.value());
+    EXPECT_EQ(omitted.value().at("live").at("data_staleness_tolerance_days"),4);
+    EXPECT_EQ(omitted.value().at("live").at("execution_price_max_staleness_days"),5);
+    auto parsed=parse_runtime_trading_snapshot(omitted.value());ASSERT_TRUE(parsed.is_ok());
+    EXPECT_EQ(build_runtime_trading_snapshot(parsed.value()).value(),omitted.value());
+    EXPECT_EQ(build_runtime_trading_snapshot(base_config()).value().at("live"),Json({{"historical_days",300}}));
+}
+
+TEST(LiveConfigOverride, FileOnlyRawWeightsRemainPublishableWithoutWeakeningApproval) {
+    for(bool composite:{false,true}) {
+        auto c=base_config();c.strategies_config=Json::object();
+        for(const auto* name:composite?std::vector<const char*>{"ALPHA","BETA"}:std::vector<const char*>{"MEAN_REVERSION"})
+            c.strategies_config[name]={{"type","MeanReversionStrategy"},{"enabled_live",true},
+                {"default_allocation",2.0},{"config",Json::object()}};
+        const auto raw=build_runtime_trading_snapshot(c).value();
+        EXPECT_TRUE(parse_runtime_trading_snapshot(raw).is_error());
+        const auto projection=project_governed_live_config_fields(c);ASSERT_TRUE(projection.is_ok());
+        EXPECT_EQ(projection.value().at("effective_snapshot"),raw);
+        EXPECT_TRUE(validate_live_config_projection_for_publication(projection.value()));
+        const auto owners=live_config_source_owner_map(raw,composite?"LIVE_EQUITY_ALPHA_BETA":"LIVE_EQUITY_MEAN_REVERSION");
+        EXPECT_EQ(owners.size(),composite?2u:1u);
+    }
+}
+
+TEST(LiveConfigOverride, CompositeNestedInvocationContractsAreClosed) {
+    auto c=base_config();c.strategies_config=Json::object();
+    for(const auto* owner:{"ALPHA","BETA"})c.strategies_config[owner]={{"type","MeanReversionStrategy"},
+        {"enabled_live",true},{"default_allocation",.5},{"config",Json::object()}};
+    const auto snapshot=build_runtime_trading_snapshot(c).value();const std::string hash(64,'a');
+    auto doc=project_equity_multi_consumption(PortfolioConsumptionTrace{},true,snapshot,
+        "LIVE_EQUITY_ALPHA_BETA",c.portfolio_id,"2026-10-06",hash);
+    doc["coverage"]["primary"]="observed";
+    doc["portfolio_invocation"]={{"schema_version","qt-equity-portfolio-consumption/v1"},
+        {"scope","portfolio_invocation"},{"full_run_certification",false},{"available",true},
+        {"unavailable_reason",nullptr},{"outcome","returned_ok"},{"skip_execution_generation",false},
+        {"passes",Json::array({{{"index",0},{"reads",{{"use_optimization",false},{"use_risk_management",false}}},
+            {"optimization_helper","not_reached"},{"risk_helper","not_reached"},
+            {"risk",{{"call","not_reached"},{"skip","none"},{"reads",Json::object()}}}}})},
+        {"strategy_charges",Json::array()},{"compatibility_charges",Json::array()}};
+    for(const auto* owner:{"ALPHA","BETA"})doc["strategy_invocations"][owner]={
+        {"schema_version","qt-equity-strategy-consumption/v1"},{"available",true},{"profile","mean_reversion"},
+        {"scope","strategy_invocation"},{"full_run_certification",false},{"symbols",{{"SYN",{
+            {"reads",{{"lookback_period",20},{"vol_lookback",20},{"maximum_price_history",40},{"maximum_volatility_history",40}}},
+            {"observed_state",Json::object()}}}}}};
+    const auto valid=[&](const Json& x){return validate_equity_multi_consumption(x,snapshot,
+        "LIVE_EQUITY_ALPHA_BETA",c.portfolio_id,"2026-10-06",hash);};
+    ASSERT_TRUE(valid(doc)); // Truthful insufficient-history / no-charge invocation.
+    const std::vector<std::pair<std::string,Json>> mutations={
+        {"/portfolio_invocation/passes/0/risk_helper","fabricated_call"},
+        {"/portfolio_invocation/passes/0/index",0.0},
+        {"/portfolio_invocation/passes/0/risk/manager_source",{{"unbounded","object"}}},
+        {"/portfolio_invocation/passes/0/risk/lookback_period",-1},
+        {"/portfolio_invocation/passes/0/risk/reads/var_limit",true},
+        {"/portfolio_invocation/passes/0/risk/call","returned_ok"},
+        {"/portfolio_invocation/passes/0/risk/skip","insufficient_history"},
+        {"/strategy_invocations/ALPHA/symbols/SYN/reads",{{"invented_observation",true}}},
+        {"/strategy_invocations/ALPHA/symbols/SYN/reads/lookback_period",2.5},
+        {"/strategy_invocations/ALPHA/symbols/SYN/reads/maximum_price_history",-1},
+        {"/strategy_invocations/ALPHA/symbols/SYN/reads/position_limit",1},
+        {"/strategy_invocations/ALPHA/symbols/SYN/reads/fractional_min_adv",1},
+        {"/strategy_invocations/ALPHA/symbols/SYN/observed_state/short_allowed","true"},
+        {"/strategy_invocations/ALPHA/symbols/SYN/observed_state/invented",false}};
+    for(const auto& [path,replacement]:mutations){auto bad=doc;bad[Json::json_pointer(path)]=replacement;
+        EXPECT_FALSE(valid(bad))<<path;}
+    auto enabled=doc;auto& pass=enabled["portfolio_invocation"]["passes"][0];
+    pass["reads"]["use_risk_management"]=true;pass["risk_helper"]="returned_ok";
+    pass["risk"]={{"call","not_reached"},{"skip","no_positions"},{"reads",Json::object()},
+        {"manager_source","internal"},{"lookback_period",20}};EXPECT_TRUE(valid(enabled));
+    pass["risk"]={{"call","not_reached"},{"skip","absent_risk_manager"},{"reads",Json::object()},
+        {"manager_source","absent"}};EXPECT_TRUE(valid(enabled));
+    pass["risk"]={{"call","returned_ok"},{"skip","none"},{"reads",{{"capital_exact","100"},{"var_limit",.1}}},
+        {"manager_source","external"},{"lookback_period",20}};EXPECT_TRUE(valid(enabled));
+    for(const auto& replacement:Json::array({"1e2","100.00000000","92233720368.54775808",100})){
+        auto bad=enabled;bad["portfolio_invocation"]["passes"][0]["risk"]["reads"]["capital_exact"]=replacement;EXPECT_FALSE(valid(bad));}
+    for(const auto& [path,replacement]:std::vector<std::pair<std::string,Json>>{
+        {"risk_helper","returned_error"},{"risk/call","in_progress"},{"risk/skip","no_positions"},
+        {"risk/manager_source","absent"},{"risk/manager_source","invented"},
+        {"risk/lookback_period",1.5},{"risk/reads/invented",1}}){auto bad=enabled;
+        bad[Json::json_pointer("/portfolio_invocation/passes/0/"+path)]=replacement;EXPECT_FALSE(valid(bad))<<path;}
+    auto sparse=doc;sparse["strategy_invocations"]["ALPHA"]["symbols"]=Json::object();
+    sparse["portfolio_invocation"]["skip_execution_generation"]=true;EXPECT_TRUE(valid(sparse));
+    auto contradictory=doc;auto& branch=contradictory["strategy_invocations"]["ALPHA"]["symbols"]["SYN"]["reads"];
+    branch["use_stop_loss"]=false;branch["stop_loss_pct"]=.1;EXPECT_FALSE(valid(contradictory));
+    branch.erase("stop_loss_pct");branch["allow_fractional_shares"]=false;branch["fractional_min_price"]=1;EXPECT_FALSE(valid(contradictory));
+    auto charged=doc;charged["portfolio_invocation"]["strategy_charges"].push_back({{"index",0},
+        {"purpose","per_strategy"},{"strategy_id","ALPHA"},{"symbol","SYN"},{"call","returned_ok"},
+        {"reads",{{"quantity",1},{"reference_price",10},{"input_source","explicit_values"},{"asset_lookup_path","fallback"}}}});
+    ASSERT_TRUE(valid(charged));
+    for(const auto& [path,replacement]:std::vector<std::pair<std::string,Json>>{
+        {"index",-1},{"index",1},{"index",0.0},{"symbol","bad symbol"},{"strategy_id","OTHER"},
+        {"call","not_reached"},{"reads",Json::object()},{"reads/input_source","invented"},
+        {"reads/asset_lookup_path","invented"},{"reads/quantity",true},{"reads/tick_constrained",1},
+        {"reads/invented",1}}){auto bad=charged;bad[Json::json_pointer("/portfolio_invocation/strategy_charges/0/"+path)]=replacement;EXPECT_FALSE(valid(bad))<<path;}
+    auto compatibility=charged;auto charge=compatibility["portfolio_invocation"]["strategy_charges"][0];
+    charge["purpose"]="compatibility";charge["strategy_id"]="";
+    compatibility["portfolio_invocation"]["strategy_charges"]=Json::array();
+    compatibility["portfolio_invocation"]["compatibility_charges"].push_back(charge);EXPECT_TRUE(valid(compatibility));
+    compatibility["portfolio_invocation"]["compatibility_charges"][0]["strategy_id"]="ALPHA";EXPECT_FALSE(valid(compatibility));
+    auto skipped=charged;skipped["portfolio_invocation"]["skip_execution_generation"]=true;EXPECT_FALSE(valid(skipped));
+}

@@ -1,3 +1,6 @@
+#include "trade_ngin/core/config_loader.hpp"
+#include "trade_ngin/apps/equity_multi_consumption.hpp"
+#include "trade_ngin/data/live_config_owners.hpp"
 // STAGED CANDIDATE; not compiled or run. Native historical archive proof.
 #include "trade_ngin/data/qt_model_publication.hpp"
 #include "trade_ngin/data/qt_empty_model_owner_storage.hpp"
@@ -25,10 +28,28 @@ bool utc_time(const J& value){
  return y>0&&std::chrono::year_month_day(std::chrono::year(y),std::chrono::month(std::stoi(v.substr(5,2))),std::chrono::day(std::stoi(v.substr(8,2)))).ok()&&std::stoi(v.substr(11,2))<24&&std::stoi(v.substr(14,2))<60&&std::stoi(v.substr(17,2))<60;
 }
 void inspection(pqxx::work& tx,const J& row){
- const auto& c=row.at("inspection_capture");shape(c,{"publication_schema_version","profile","authority","stream","identity","captured_at","publication_recorded_at","status","reason","equity_run_consumption"});
- need(c.at("publication_schema_version").is_number_integer()&&c.at("publication_schema_version")==3&&c.at("profile")=="live_equity_mean_reversion"&&c.at("authority")=="inspection_only"&&c.at("stream")=="system"&&c.at("status")=="available"&&c.at("reason")=="none");
- const auto& id=c.at("identity");shape(id,{"registry_id","registry_revision","engine_strategy_id","portfolio_id","run_date","capture_id","publication_id","runtime_attempt_id","producer_version","control_mode"});
+ const auto& c=row.at("inspection_capture");
+ const bool governed=c.value("publication_schema_version",0)==5;
+ const bool composite=c.value("profile",std::string{})=="live_equity_multi_sleeve";
+ if(governed) {
+  need(c.size()==13 && c.contains("supplied") && c.contains("configuration_selection") && c.contains("source_to_storage_owners"));
+  need(validate_live_config_projection_for_publication(c.at("supplied")) && c.at("supplied").at("projection_version")==2 &&
+       c.at("supplied").at("effective_snapshot")==row.at("configuration_snapshot") &&
+       c.at("source_to_storage_owners")==live_config_source_owner_map(row.at("configuration_snapshot"),text(row.at("strategy_id"))));
+ } else shape(c,{"publication_schema_version","profile","authority","stream","identity","captured_at","publication_recorded_at","status","reason","equity_run_consumption"});
+ need(c.at("publication_schema_version").is_number_integer()&&(governed||c.at("publication_schema_version")==3)&&
+      (composite?governed:c.at("profile")=="live_equity_mean_reversion")&&c.at("authority")=="inspection_only"&&c.at("stream")=="system"&&c.at("status")=="available"&&c.at("reason")=="none");
+ const auto& id=c.at("identity");auto legacy_id=id;if(governed){need(id.contains("config_attempt_id"));legacy_id.erase("config_attempt_id");}shape(legacy_id,{"registry_id","registry_revision","engine_strategy_id","portfolio_id","run_date","capture_id","publication_id","runtime_attempt_id","producer_version","control_mode"});
  need(id.at("registry_id")==row.at("registry_id")&&id.at("registry_revision").is_number_integer()&&id.at("registry_revision")==row.at("registry_revision")&&id.at("engine_strategy_id")==row.at("strategy_id")&&id.at("portfolio_id")==row.at("portfolio_id")&&id.at("run_date")==row.at("source_day")&&id.at("capture_id")==row.at("publication_id")&&id.at("publication_id")==row.at("publication_id")&&id.at("producer_version")==row.at("producer_version")&&id.at("runtime_attempt_id")==row.at("attempt_id")&&id.at("control_mode")==(row.at("attempt_id").is_null()?"uncontrolled":"controlled"));
+ if(governed) {
+  auto selection=one(tx,"SELECT jsonb_build_object('selection',a.selection-'schema'-'scope'-'engine_build','snapshot',a.config_snapshot,'lifecycle',s.lifecycle,'publication_id',s.publication_id) FROM trading.live_config_attempt_selections a JOIN trading.live_config_attempt_safety s USING(attempt_id) WHERE a.attempt_id="+tx.quote(text(id.at("config_attempt_id")))+" FOR SHARE OF a,s");
+  need(selection.at("selection")==c.at("configuration_selection") && selection.at("snapshot")==row.at("configuration_snapshot") &&
+       selection.at("lifecycle")=="published" && selection.at("publication_id")==row.at("publication_id"));
+ }
+ if(composite) {
+  need(validate_equity_multi_consumption(c.at("equity_multi_consumption"),row.at("configuration_snapshot"),text(row.at("strategy_id")),
+       text(row.at("portfolio_id")),text(row.at("source_day")),text(c.at("configuration_selection").at("effective_sha256"))));
+ } else {
  // This archive is actual metadata read back by the same publisher transaction,
  // not a supplied Boolean or a mutable same-day metadata read by this helper.
  const auto& run=c.at("equity_run_consumption");need(run.is_object()&&run.at("available").is_boolean()&&run.at("available")==true&&run.at("complete").is_boolean()&&run.at("complete")==true);
@@ -62,6 +83,7 @@ void inspection(pqxx::work& tx,const J& row){
  // existing API inspection parser used before QT preview readiness.
 
 
+ }
  need(utc_time(c.at("captured_at"))&&utc_time(c.at("publication_recorded_at"))&&utc_time(row.at("created_at")));
  const auto times=tx.exec("SELECT $1::timestamptz<=$2::timestamptz AND $2::timestamptz<=$3::timestamptz AND ($1::timestamptz AT TIME ZONE 'UTC')::date=$4::date AND ($2::timestamptz AT TIME ZONE 'UTC')::date=$4::date",pqxx::params{text(c.at("captured_at")),text(c.at("publication_recorded_at")),text(row.at("created_at")),text(row.at("source_day"))});
  need(times.size()==1&&times[0][0].as<bool>());

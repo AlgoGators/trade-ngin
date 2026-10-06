@@ -553,3 +553,13 @@ if(Python3_Interpreter_FOUND)
     set_tests_properties(LiveConfigValidationToolProtocol PROPERTIES
         WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}")
 endif()
+
+# Owned disposable PostgreSQL governed configuration probe; explicitly built.
+add_executable(live_config_selection_probe EXCLUDE_FROM_ALL integration/live_config_selection_probe.cpp)
+target_include_directories(live_config_selection_probe PRIVATE ${CMAKE_SOURCE_DIR}/include)
+target_link_libraries(live_config_selection_probe PRIVATE trade_ngin)
+
+add_executable(governed_equity_archive_probe EXCLUDE_FROM_ALL integration/governed_equity_archive_probe.cpp)
+target_include_directories(governed_equity_archive_probe PRIVATE ${CMAKE_SOURCE_DIR}/include)
+target_link_libraries(governed_equity_archive_probe PRIVATE trade_ngin)
+set_target_properties(governed_equity_archive_probe PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin/Debug")

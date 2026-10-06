@@ -27,6 +27,8 @@ set_target_properties(benchmark_replay
 target_include_directories(benchmark_replay PRIVATE ${CMAKE_BINARY_DIR}/include)
 
 # Explicit Unix-socket accounting only; no daily runner or delivery composition.
+set(LIVE_CONFIG_VALIDATOR_BUNDLE_INPUTS "${CMAKE_BINARY_DIR}/live-config-validator-bundle-inputs.json" CACHE FILEPATH "Validator dependency inventory")
+set(LIVE_CONFIG_VALIDATOR_BUNDLE_DIRECTORY "${CMAKE_BINARY_DIR}/live-config-validator-bundle" CACHE PATH "New owned validator bundle destination")
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     find_package(PostgreSQL REQUIRED)
     add_executable(qt_desk_run qt_desk_run.cpp qt_desk_csv.cpp)
@@ -92,6 +94,33 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND CMAKE_SYSTEM_PROCESSOR STREQUAL "x86_6
         )
         add_custom_target(qt_evaluator_bundle
             DEPENDS "${QT_EVALUATOR_BUNDLE_DIRECTORY}/qt_evaluator_manifest.json")
+        add_custom_command(OUTPUT "${LIVE_CONFIG_VALIDATOR_BUNDLE_INPUTS}"
+            COMMAND "${QT_EVALUATOR_PYTHON}" "${CMAKE_CURRENT_SOURCE_DIR}/qt_evaluator_bundle_inventory.py"
+                --evaluator "$<TARGET_FILE:live_config_validate>" --live-config
+                --engine "$<TARGET_FILE:trade_ngin>"
+                --build-id "${TRADE_NGIN_GIT_SHA}"
+                --compiler-id "${CMAKE_CXX_COMPILER_ID}"
+                --compiler-version "${CMAKE_CXX_COMPILER_VERSION}"
+                --output "${LIVE_CONFIG_VALIDATOR_BUNDLE_INPUTS}"
+            DEPENDS live_config_validate trade_ngin
+            VERBATIM
+            COMMENT "Inspect the exact built live configuration validator dependency closure")
+        add_custom_command(OUTPUT "${LIVE_CONFIG_VALIDATOR_BUNDLE_DIRECTORY}/live_config_validator_manifest.json"
+            COMMAND "${QT_EVALUATOR_PYTHON}" "${CMAKE_CURRENT_SOURCE_DIR}/qt_evaluator_bundle.py"
+                --profile live-config --contract "${CMAKE_CURRENT_SOURCE_DIR}/live_config_validator_manifest.json"
+                --inputs "${LIVE_CONFIG_VALIDATOR_BUNDLE_INPUTS}"
+                --destination "${LIVE_CONFIG_VALIDATOR_BUNDLE_DIRECTORY}"
+                --expected-executable "$<TARGET_FILE:live_config_validate>"
+                --expected-engine "$<TARGET_FILE:trade_ngin>"
+                --expected-build "${TRADE_NGIN_GIT_SHA}"
+                --expected-compiler-id "${CMAKE_CXX_COMPILER_ID}"
+                --expected-compiler-version "${CMAKE_CXX_COMPILER_VERSION}"
+            DEPENDS live_config_validate trade_ngin "${LIVE_CONFIG_VALIDATOR_BUNDLE_INPUTS}"
+            VERBATIM
+            COMMENT "Stage a closed, pinned live configuration validator bundle in a new local directory"
+        )
+        add_custom_target(live_config_validator_bundle
+            DEPENDS "${LIVE_CONFIG_VALIDATOR_BUNDLE_DIRECTORY}/live_config_validator_manifest.json")
     endif()
 endif()
 
@@ -125,6 +154,16 @@ function(trade_ngin_add_release_artifacts_target)
         DEPENDS ${release_dependencies}
         VERBATIM
         COMMENT "Generate the closed release-artifacts/v1 manifest from tested bytes")
+    add_custom_target(live_config_release
+        COMMAND "${QT_EVALUATOR_PYTHON}" "${CMAKE_CURRENT_FUNCTION_LIST_DIR}/live_config_release.py"
+            --create --manifest "${CMAKE_BINARY_DIR}/live-config-release.json"
+            --core-manifest "${TRADE_NGIN_RELEASE_MANIFEST}"
+            --installed-root "${CMAKE_BINARY_DIR}"
+            --qt-bundle "${QT_EVALUATOR_BUNDLE_DIRECTORY}"
+            --validator-bundle "${LIVE_CONFIG_VALIDATOR_BUNDLE_DIRECTORY}"
+        DEPENDS release_artifacts live_config_validator_bundle
+        VERBATIM
+        COMMENT "Generate detached configuration evidence linked to verified core Release bytes")
 endfunction()
 
 add_executable(qt_empty_owner_publication_probe EXCLUDE_FROM_ALL qt_empty_owner_publication_probe.cpp)

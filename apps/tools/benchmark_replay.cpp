@@ -494,23 +494,14 @@ int run_current_mode(const std::shared_ptr<PostgresDatabase>& db,
             break;
         }
 
-        PortfolioConfig portfolio_config;
-        portfolio_config.total_capital = Decimal(initial_capital);
-        double reserve_capital_pct = row.config_snapshot.value("reserve_capital_pct", 0.10);
-        portfolio_config.reserve_capital = Decimal(initial_capital * reserve_capital_pct);
-        portfolio_config.max_strategy_allocation = strategy_defaults.max_strategy_allocation;
-        portfolio_config.min_strategy_allocation = strategy_defaults.min_strategy_allocation;
-        portfolio_config.use_optimization = strategy_defaults.use_optimization;
-        portfolio_config.use_risk_management = strategy_defaults.use_risk_management;
-        portfolio_config.benchmark_mode = "deferred";
-        if (row.config_snapshot.contains("optimization")) {
-            portfolio_config.opt_config.from_json(row.config_snapshot["optimization"]);
+        auto recorded_config=replay_portfolio_config(row.config_snapshot);
+        if(recorded_config.is_error()) {
+            ERROR("Day " + row.date + ": invalid recorded configuration -- aborting replay.");
+            aborted_early=true;
+            abort_reason="invalid recorded configuration on " + row.date;
+            break;
         }
-        portfolio_config.opt_config.capital = initial_capital;  // mirrors the live path's override
-        if (row.config_snapshot.contains("risk")) {
-            portfolio_config.risk_config.from_json(row.config_snapshot["risk"]);
-        }
-        portfolio_config.risk_config.capital = Decimal(initial_capital);  // ditto
+        const PortfolioConfig portfolio_config=recorded_config.value();
 
         auto replay_portfolio = std::make_shared<PortfolioManager>(
             portfolio_config, "PORTFOLIO_MANAGER_BENCHMARK_REPLAY", registry_ptr);

@@ -1,3 +1,4 @@
+#include "trade_ngin/data/live_config_owners.hpp"
 // STAGED CANDIDATE ONLY. Keep the separately retained unavailable stub live
 // until its genuine native RED gate; this file has not been compiled or run.
 #include "trade_ngin/data/qt_empty_model_owner_publication.hpp"
@@ -107,7 +108,7 @@ Result<J> qt_empty_model_owner_document(const QtEmptyModelOwnerPublication& valu
         need(value.configuration_snapshot.is_object()&&value.configuration_snapshot.contains("strategies")&&
             value.configuration_snapshot.at("strategies").is_object());
         std::vector<std::string> expected;
-        const auto& strategies=value.configuration_snapshot.at("strategies");
+        const auto strategies=live_config_storage_strategies(value.configuration_snapshot,p.strategy_id);
         for(auto it=strategies.begin();it!=strategies.end();++it){
             (void)text(J(it.key()));need(it.value().is_object());
             if(it.value().contains("enabled_live"))need(it.value().at("enabled_live").is_boolean());

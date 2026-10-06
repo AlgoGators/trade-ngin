@@ -1,3 +1,5 @@
+#include "trade_ngin/core/live_config_override.hpp"
+#include <functional>
 // src/core/config_loader.cpp
 
 #include "trade_ngin/core/config_loader.hpp"
@@ -384,8 +386,70 @@ Result<nlohmann::json> project_live_config_fields(const AppConfig& config) {
     }
 }
 
+Result<nlohmann::json> project_governed_live_config_fields(const AppConfig& config) {
+    try {
+        const auto built=build_runtime_trading_snapshot(config);
+        if (built.is_error()) throw std::invalid_argument("snapshot");
+        const auto& snapshot=built.value();
+        const auto paths=live_config_editable_paths(snapshot);
+        if (paths.is_error()) throw std::invalid_argument("policy");
+        std::set<std::string> editable_paths;
+        for (const auto& path:paths.value()) editable_paths.insert(path.get<std::string>());
+        bool equity=false;
+        for (const auto& [name,def]:snapshot.at("strategies").items())
+            if (def.value("enabled_live",false) && def.value("type",std::string{})=="MeanReversionStrategy") equity=true;
+        Json fields=Json::array();
+        std::function<void(const Json&,const std::string&)> visit;
+        visit=[&](const Json& value,const std::string& path) {
+            const bool module_array=path=="/risk/modules" || path.rfind("/sleeve_risk_modules/",0)==0;
+            if ((value.is_object() || (value.is_array() && module_array)) && !value.empty()) {
+                for (const auto& entry:value.items()) {
+                    std::string key;
+                    for (const char c:entry.key()) key+=c=='~'?"~0":c=='/'?"~1":std::string(1,c);
+                    visit(entry.value(),path+"/"+key);
+                }
+                return;
+            }
+            const bool eligible=editable_paths.contains(path);
+            const bool unsupported=path=="/execution/commission_rate" || path=="/execution/slippage_bps" ||
+                path=="/execution/position_limit_backtest" || path=="/optimization/asymmetric_risk_buffer" ||
+                path=="/strategy_defaults/fdm" || (equity && path.rfind("/optimization/",0)==0) ||
+                path.rfind("/backtest/",0)==0;
+            std::string consumer="configuration_identity_or_control";
+            if (eligible) {
+                if (path.rfind("/strategies/",0)==0) consumer=equity?"selected_mean_reversion_strategy":"selected_trend_strategy";
+                else if (path.rfind("/risk/risk_reporting/",0)==0) consumer="reporting_risk_manager";
+                else if (path.rfind("/risk/modules/",0)==0 || path.rfind("/sleeve_risk_modules/",0)==0) consumer="assigned_risk_module";
+                else if (path.rfind("/optimization/",0)==0 || path=="/use_optimization") consumer="portfolio_optimizer_when_enabled";
+                else if (path=="/covariance_history_prices") consumer="portfolio_covariance_history";
+                else if (path.rfind("/strategy_defaults/",0)==0) consumer="selected_trend_factory_fallback";
+                else consumer="base_strategy_risk_or_position_check";
+            }
+            if (unsupported) consumer="no_active_profile_reader";
+            fields.push_back({{"path",path},{"classification",eligible?"editable_config_input":
+                unsupported?"unsupported_in_profile":"protected_config_input"},
+                {"consumer",consumer},{"consumption_evidence","not_collected"},
+                {"value_type",value.type_name()},{"value",value}});
+        };
+        visit(snapshot,"");
+        std::sort(fields.begin(),fields.end(),[](const Json& a,const Json& b){return a.at("path")<b.at("path");});
+        return Json{{"projection_version",2},{"profile",equity?"live_equity":"live_portfolio_runner_futures"},
+            {"coverage","complete_runtime_snapshot_v2"},{"authority","inspection_only"},
+            {"consumption_evidence","not_collected"},{"effective_snapshot",snapshot},{"fields",fields}};
+    } catch (const std::bad_alloc&) { throw; }
+      catch (...) { return make_error<Json>(ErrorCode::INVALID_DATA,"config_projection_invalid_field"); }
+}
+
 bool validate_live_config_projection_for_publication(const nlohmann::json& projection) {
     try {
+        if (projection.is_object() && projection.value("projection_version",0)==2) {
+            if (projection.size()!=7 || projection.dump().size()>2u*1024u*1024u) return false;
+            const auto parsed=ConfigLoader::parse_trading_config(projection.at("effective_snapshot"));
+            if (parsed.is_error()) return false;
+            const auto expected=project_governed_live_config_fields(parsed.value());
+            return expected.is_ok() && expected.value()==projection;
+        }
+
         if (!projection.is_object() || projection.size() != 6 ||
             !projection.at("projection_version").is_number_integer() ||
             projection.at("projection_version") != 1 ||

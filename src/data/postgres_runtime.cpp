@@ -1,3 +1,4 @@
+#include "trade_ngin/data/live_config_owners.hpp"
 #include "trade_ngin/data/postgres_database.hpp"
 #include <algorithm>
 #include <cctype>
@@ -387,6 +388,11 @@ void PostgresDatabase::fence_live_write(pqxx::work& txn, const std::string& stra
     if (pending_publication_ &&
         (pending_publication_->strategy_id != strategy_id || pending_publication_->portfolio_id != book))
         throw std::runtime_error("runtime_publication_scope_mismatch");
+    if (pending_publication_ && !pending_publication_->config_attempt_id.empty()) {
+        if (pending_publication_->invalid_payload) throw std::runtime_error("config_attempt_invalid");
+        txn.exec("SELECT trading.assert_live_config_running($1)",
+                 pqxx::params{pending_publication_->config_attempt_id});
+    }
     if (stream == "benchmark" || stream == "benchmark_rebench" || stream == "benchmark_frozen_shadow") {
         txn.exec("SELECT pg_advisory_xact_lock(hashtextextended($1,0))",
                  pqxx::params{"algolens:qt-book:" + book});
@@ -429,7 +435,8 @@ void PostgresDatabase::fence_live_write(pqxx::work& txn, const std::string& stra
 Result<bool> PostgresDatabase::begin_live_publication(const std::string& strategy_id,
     const std::string& portfolio_id, const Timestamp& date, const nlohmann::json& snapshot,
     bool controlled, const std::string& version, PublicationEvidenceRequirement requirement,
-    PublicationEvidenceToken* token_out, PublicationPriorRequirement prior_requirement) {
+    PublicationEvidenceToken* token_out, PublicationPriorRequirement prior_requirement,
+    const nlohmann::json& configuration_selection) {
     if (token_out) *token_out = {};
     if (pending_publication_ || publication_transaction_)
         return make_error<bool>(ErrorCode::INVALID_ARGUMENT,"runtime_publication_already_started");
@@ -458,6 +465,11 @@ Result<bool> PostgresDatabase::begin_live_publication(const std::string& strateg
         scope->producer_version = version;
         scope->snapshot = snapshot;
         pqxx::work txn(*connection_);
+        // When selected configuration is supplied, acquire source/book/config
+        // locks before either admission branch can take mutable runtime rows.
+        if (!configuration_selection.is_null())
+            txn.exec("SELECT trading.lock_live_config_scope($1,$2)",
+                     pqxx::params{strategy_id,scope->portfolio_id});
         auto investor_schema = txn.exec(
             "SELECT to_regclass('trading.investor_books') IS NOT NULL AND "
             "to_regclass('trading.investor_book_strategies') IS NOT NULL");
@@ -501,6 +513,8 @@ Result<bool> PostgresDatabase::begin_live_publication(const std::string& strateg
                     return true;
                 }
                 scope->mode = LivePublicationMode::SystemInvestor;
+                if (!configuration_selection.is_null())
+                    admit_live_config_selection(txn,*scope,configuration_selection,controlled);
                 txn.commit();
                 pending_publication_ = std::move(scope);
                 if (token_out) *token_out = std::move(token);
@@ -548,13 +562,22 @@ Result<bool> PostgresDatabase::begin_live_publication(const std::string& strateg
         } else if (!publishes_model(lifecycle) || !active || scope->registry_revision != 0) {
             throw std::runtime_error("runtime_scope_ineligible");
         }
+        if (!configuration_selection.is_null())
+            admit_live_config_selection(txn,*scope,configuration_selection,controlled);
+        if (stopped && !scope->config_attempt_id.empty())
+            txn.exec("SELECT trading.finish_live_config_attempt($1,'stopped')",
+                     pqxx::params{scope->config_attempt_id});
         txn.commit();
         if (!stopped) {
             pending_publication_ = std::move(scope);
             if (token_out) *token_out = std::move(token);
         }
         return stopped;
-    } catch(const std::exception&) {
+    } catch(const std::exception& error) {
+        const std::string message=error.what();
+        for (const char* code:{"config_attempt_unresolved","config_day_completed","config_retry_recovery_required"})
+            if (message.find(code)!=std::string::npos)
+                return make_error<bool>(ErrorCode::DATABASE_ERROR,code);
         return make_error<bool>(ErrorCode::DATABASE_ERROR,"runtime_start_refused");
     }
 }
@@ -573,7 +596,7 @@ Result<void> PostgresDatabase::store_model_position_batch(const QtModelPositionB
         poison_proposal_refusal();return make_error<void>(ErrorCode::INVALID_ARGUMENT,"runtime_model_batch_scope_invalid");
     }
     auto& pending=*pending_publication_;
-    const auto& configured=pending.snapshot.at("strategies");
+    const auto& configured=live_config_storage_strategies(pending.snapshot,pending.strategy_id);
     if(!configured.contains(batch.strategy_name) || !configured.at(batch.strategy_name).is_object() ||
         !configured.at(batch.strategy_name).contains("enabled_live") ||
         !configured.at(batch.strategy_name).at("enabled_live").is_boolean() ||
@@ -674,6 +697,28 @@ Result<VerifiedEquityModelPrior> PostgresDatabase::capture_equity_model_prior(
         pending.invalid_payload=true;
         return make_error<VerifiedEquityModelPrior>(ErrorCode::INVALID_DATA,"runtime_prior_capture_refused");
     }
+}
+
+Result<void> PostgresDatabase::attach_equity_multi_consumption(
+    const PublicationEvidenceToken& token,const PortfolioConsumptionTrace& trace,bool non_trading) {
+    if (!pending_publication_) return make_error<void>(ErrorCode::INVALID_ARGUMENT,"runtime_consumption_not_started");
+    auto& p=*pending_publication_;
+    try {
+        const bool same=token.marker_ && p.evidence_marker &&
+            !token.marker_.owner_before(p.evidence_marker) && !p.evidence_marker.owner_before(token.marker_);
+        if (!same || publication_transaction_ || p.invalid_payload || p.equity_multi_consumption ||
+            p.final_consumption || p.equity_final_consumption || !p.inspection_capture_queued ||
+            p.evidence_requirement!=PublicationEvidenceRequirement::RequiredFinalObservations)
+            throw std::runtime_error("runtime_composite_consumption_protocol_invalid");
+        const auto parsed=ConfigLoader::parse_trading_config(p.snapshot);
+        if(parsed.is_error())throw std::runtime_error("runtime_composite_snapshot_invalid");
+        const auto hash=live_config_snapshot_sha256(parsed.value());
+        if(hash.is_error())throw std::runtime_error("runtime_composite_snapshot_invalid");
+        p.equity_multi_consumption=project_equity_multi_consumption(trace,non_trading,p.snapshot,
+            p.strategy_id,p.portfolio_id,p.date,hash.value());
+        return Result<void>();
+    } catch (...) {p.invalid_payload=true;
+        return make_error<void>(ErrorCode::INVALID_DATA,"runtime_composite_consumption_invalid");}
 }
 
 Result<void> PostgresDatabase::attach_equity_run_consumption(
@@ -790,7 +835,8 @@ Result<void> PostgresDatabase::publish_live_publication() {
              PublicationEvidenceRequirement::RequiredFinalObservations &&
          (!pending_publication_->inspection_capture_queued ||
           (pending_publication_->strategy_id == "LIVE_EQUITY_MEAN_REVERSION" ?
-            !pending_publication_->equity_final_consumption : !pending_publication_->final_consumption))) ||
+            !pending_publication_->equity_final_consumption :
+            (!pending_publication_->final_consumption && !pending_publication_->equity_multi_consumption)))) ||
         (pending_publication_->prior_requirement == PublicationPriorRequirement::VerifiedEquity &&
          !pending_publication_->equity_prior)) {
         abandon_live_publication("publication_incomplete");
@@ -800,7 +846,8 @@ Result<void> PostgresDatabase::publish_live_publication() {
         // Persisted same-day rows may belong to an earlier attempt. Only a
         // freshly captured system batch can satisfy a configured member here.
         std::vector<std::string> expected_members;
-        for (const auto& [name,definition] : pending_publication_->snapshot.at("strategies").items())
+        const auto storage_strategies=live_config_storage_strategies(pending_publication_->snapshot,pending_publication_->strategy_id);
+        for (const auto& [name,definition] : storage_strategies.items())
             if (definition.value("enabled_live",false)) expected_members.push_back(name);
         auto fresh_members = pending_publication_->fresh_system_members;
         std::sort(expected_members.begin(),expected_members.end());
@@ -842,8 +889,7 @@ Result<void> PostgresDatabase::publish_live_publication() {
             if(approved.size()!=1) throw std::runtime_error("runtime_approval_changed");
         }
         // EQ schema3 and immutable MODEL seed use one identity in this transaction.
-        if(pending_publication_->strategy_id=="LIVE_EQUITY_MEAN_REVERSION" &&
-            pending_publication_->publication_id.empty())
+        if(pending_publication_->publication_id.empty())
             pending_publication_->publication_id=txn.exec("SELECT gen_random_uuid()::text")[0][0].as<std::string>();
         publication_transaction_ = &txn;
         // Callbacks hold copies of all payload values. No market work happens here.
@@ -855,7 +901,7 @@ Result<void> PostgresDatabase::publish_live_publication() {
         // A composite scope is only complete when every configured member has
         // current system evidence. House mode additionally requires effective
         // QT evidence; an investor book is forbidden from depending on it.
-        for (const auto& [name,definition] : pending_publication_->snapshot.at("strategies").items()) {
+        for (const auto& [name,definition] : storage_strategies.items()) {
             if (!definition.value("enabled_live",false)) continue;
             auto coverage = txn.exec("SELECT count(*) FROM trading.positions "
                 "WHERE portfolio_id=$1 AND strategy_id=$2 AND date=$3::date AND strategy_name=$4 "
@@ -889,12 +935,12 @@ Result<void> PostgresDatabase::publish_live_publication() {
             pending_publication_->publication_id =
                 txn.exec("SELECT gen_random_uuid()::text")[0][0].as<std::string>();
         if (system_investor) {
-            auto publication = txn.exec(
+            const auto& p=*pending_publication_;
+            auto publication = p.config_attempt_id.empty() ? txn.exec(
                 "SELECT trading.publish_system_investor_day($1,$2,$3::date,$4)::text",
-                pqxx::params{pending_publication_->portfolio_id,
-                             pending_publication_->strategy_id,
-                             pending_publication_->date,
-                             pending_publication_->producer_version});
+                pqxx::params{p.portfolio_id,p.strategy_id,p.date,p.producer_version}) : txn.exec(
+                "SELECT trading.publish_system_investor_day($1,$2,$3::date,$4,$5::uuid)::text",
+                pqxx::params{p.portfolio_id,p.strategy_id,p.date,p.producer_version,p.publication_id});
             if (publication.size()!=1 || publication[0][0].is_null())
                 throw std::runtime_error("investor_publication_record_failed");
             pending_publication_->publication_id = publication[0][0].as<std::string>();
@@ -929,6 +975,9 @@ Result<void> PostgresDatabase::publish_live_publication() {
                 pqxx::params{pending_publication_->attempt_id});
             if(updated.affected_rows()!=1) throw std::runtime_error("runtime_attempt_changed");
         }
+        if (!pending_publication_->config_attempt_id.empty())
+            txn.exec("SELECT trading.finish_live_config_attempt($1,'published',$2)",
+                pqxx::params{pending_publication_->config_attempt_id,pending_publication_->publication_id});
         publication_transaction_ = nullptr;
         txn.commit();
         pending_publication_.reset();
@@ -944,8 +993,17 @@ Result<void> PostgresDatabase::publish_live_publication() {
 void PostgresDatabase::abandon_live_publication(const std::string& failure_code) {
     if (!pending_publication_ || publication_transaction_) return;
     try {
-        if (!pending_publication_->attempt_id.empty() && connection_ && connection_->is_open()) {
+        if (connection_ && connection_->is_open()) {
             pqxx::work txn(*connection_);
+            if (!pending_publication_->config_attempt_id.empty()) {
+                txn.exec("SELECT trading.lock_live_config_scope($1,$2)",
+                    pqxx::params{pending_publication_->strategy_id,pending_publication_->portfolio_id});
+                const auto state=txn.exec("SELECT lifecycle FROM trading.live_config_attempt_safety WHERE attempt_id=$1",
+                    pqxx::params{pending_publication_->config_attempt_id});
+                if (state.size()==1 && state[0][0].as<std::string>()=="running")
+                    txn.exec("SELECT trading.finish_live_config_attempt($1,'failed')",
+                        pqxx::params{pending_publication_->config_attempt_id});
+            }
             txn.exec("UPDATE trading.runtime_attempts SET status='failed',failure_code=$2,"
                 "finished_at=now() WHERE id=$1 AND status='running'",
                 pqxx::params{pending_publication_->attempt_id,failure_code});
@@ -972,6 +1030,7 @@ Result<void> PostgresDatabase::store_live_run_inputs(const std::string& strategy
     if(defer_live_write(date,[this,strategy_id,portfolio_id,date,row]() {
         return store_live_run_inputs(strategy_id,portfolio_id,date,row); }, InputsPart)) return Result<void>();
     try {
+        mark_live_config_write();
         PublicationTransaction txn(*connection_,publication_transaction_);
         fence_live_write(txn,strategy_id,portfolio_id);
         const auto day = format_timestamp(date).substr(0,10);
@@ -1001,6 +1060,7 @@ Result<void> PostgresDatabase::store_live_run_inputs(const std::string& strategy
 Result<void> PostgresDatabase::execute_scoped_live_update(const std::string& query,
     const std::string& strategy_id,const std::string& portfolio_id) {
     try {
+        mark_live_config_write();
         PublicationTransaction txn(*connection_,publication_transaction_);
         fence_live_write(txn,strategy_id,portfolio_id);
         txn.exec(query);
@@ -1022,7 +1082,7 @@ Result<void> PostgresDatabase::stage_equity_previous_day_finalization(
         return make_error<void>(ErrorCode::INVALID_ARGUMENT,
                                 "equity_previous_day_finalization_scope_invalid");
     }
-    const auto& configured = pending_publication_->snapshot.at("strategies");
+    const auto& configured = live_config_storage_strategies(pending_publication_->snapshot,pending_publication_->strategy_id);
     std::set<std::string> owners;
     for (const auto& batch : finalization.owner_batches) {
         const bool owner_valid =
@@ -1044,7 +1104,10 @@ Result<void> PostgresDatabase::stage_equity_previous_day_finalization(
             }
         }
     }
-    if (owners.size() != configured.size()) {
+    const auto enabled_count=std::count_if(configured.begin(),configured.end(),[](const auto& definition) {
+        return definition.value("enabled_live",false);
+    });
+    if (owners.size() != static_cast<size_t>(enabled_count)) {
         pending_publication_->invalid_payload = true;
         return make_error<void>(ErrorCode::INVALID_ARGUMENT,
                                 "equity_previous_day_owner_coverage_invalid");
@@ -1070,6 +1133,7 @@ Result<void> PostgresDatabase::stage_equity_previous_day_finalization(
             for (const auto& batch : finalization.owner_batches) {
                 if (batch.positions.empty()) {
                     try {
+                        mark_live_config_write();
                         PublicationTransaction txn(*connection_, publication_transaction_);
                         fence_live_write(txn, finalization.strategy_id,
                                          finalization.portfolio_id, "system");

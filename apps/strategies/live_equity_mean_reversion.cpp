@@ -1,3 +1,4 @@
+#include "trade_ngin/data/live_config_selection.hpp"
 #include "trade_ngin/git_version.hpp"
 #include <cstdlib>
 #include <filesystem>
@@ -243,6 +244,13 @@ int main(int argc, char* argv[]) {
             return 1;
         }
         INFO("Successfully acquired database connection from pool");
+        auto configuration_selection = select_live_configuration(*db, app_config, TRADE_NGIN_GIT_SHA);
+        if (configuration_selection.is_error()) {
+            ERROR("live_config_selection_refused");
+            return 1;
+        }
+        app_config = configuration_selection.value().config;
+
 
         // Initialize instrument registry
         INFO("Initializing instrument registry...");
@@ -321,7 +329,7 @@ int main(int argc, char* argv[]) {
             }
             auto multi = trade_ngin::apps::run_multi_sleeve_equity_live_day(
                 app_config, book_plan, db, registry, *holiday_checker_ptr, now,
-                start_date, end_date, use_override_date);
+                start_date, end_date, use_override_date, configuration_selection.value().receipt);
             if (multi.is_error()) {
                 ERROR("Multi-sleeve equity run refused: " +
                       std::string(multi.error()->what()));
@@ -331,10 +339,7 @@ int main(int argc, char* argv[]) {
         }
         const auto& strat_entry = strat_entries.front();
         if(strat_entry.type!="MeanReversionStrategy")throw std::invalid_argument("equity_model_profile_invalid");
-        auto snapshot_config=app_config;
-        snapshot_config.strategies_config={{kEquityStrategyName,strat_entry.def}};
-        snapshot_config.strategies_config[kEquityStrategyName]["default_allocation"]=1.0;
-        auto trading_snapshot=build_runtime_trading_snapshot(snapshot_config);
+        auto trading_snapshot=build_runtime_trading_snapshot(app_config);
         if(trading_snapshot.is_error())throw std::invalid_argument("equity_runtime_snapshot_refused");
         // Keep the original selected source key in replay inputs, while storage
         // membership uses the actual fixed MR owner/name.
@@ -344,7 +349,8 @@ int main(int argc, char* argv[]) {
         PublicationEvidenceToken equity_evidence_token;
         auto admission=db->begin_live_publication(kEquityStrategyId,portfolio_id,now,trading_snapshot.value(),
             runtime_control.value(),TRADE_NGIN_GIT_SHA,PublicationEvidenceRequirement::RequiredFinalObservations,
-            &equity_evidence_token,verified_desk_prior?PublicationPriorRequirement::VerifiedEquity:PublicationPriorRequirement::None);
+            &equity_evidence_token,verified_desk_prior?PublicationPriorRequirement::VerifiedEquity:PublicationPriorRequirement::None,
+            configuration_selection.value().receipt);
         if(admission.is_error())throw std::invalid_argument("equity_publication_admission_refused");
         if(admission.value())return 0;
         auto publication_guard=std::shared_ptr<void>(nullptr,[db](void*){db->abandon_live_publication();});
@@ -644,6 +650,12 @@ int main(int argc, char* argv[]) {
         portfolio_config.covariance_history_prices = app_config.covariance_history_prices;
         portfolio_config.risk_modules = app_config.risk_schema.portfolio;
         portfolio_config.sleeve_risk_modules = app_config.risk_schema.sleeves;
+        if (strat_entry.id != kEquityStrategyName && portfolio_config.sleeve_risk_modules.contains(strat_entry.id)) {
+            auto source_modules=portfolio_config.sleeve_risk_modules.extract(strat_entry.id);
+            source_modules.key()=kEquityStrategyName;
+            if (!portfolio_config.sleeve_risk_modules.insert(std::move(source_modules)).inserted)
+                throw std::invalid_argument("equity_risk_owner_collision");
+        }
         portfolio_config.use_risk_management = !app_config.risk_schema.is_none();
         portfolio_config.opt_config = opt_config;
         portfolio_config.risk_config = risk_config;

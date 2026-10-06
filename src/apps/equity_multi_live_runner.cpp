@@ -12,6 +12,7 @@
 #include "trade_ngin/core/logger.hpp"
 #include "trade_ngin/core/time_utils.hpp"
 #include "trade_ngin/data/conversion_utils.hpp"
+#include "trade_ngin/data/live_config_selection.hpp"
 #include "trade_ngin/data/postgres_database.hpp"
 #include "trade_ngin/instruments/instrument_registry.hpp"
 #include "trade_ngin/live/data_freshness.hpp"
@@ -689,11 +690,36 @@ Result<void> run_multi_sleeve_equity_live_day(
     const std::shared_ptr<PostgresDatabase>& db, InstrumentRegistry& registry,
     const HolidayChecker& holidays, const Timestamp& now,
     const Timestamp& start_date, const Timestamp& end_date,
-    bool historical_replay) {
+    bool historical_replay, const nlohmann::json& configuration_selection) {
     if (!db || plan.legacy_single || plan.sleeves.empty() ||
         plan.combined_strategy_id.empty() || config.portfolio_id.empty()) {
         return refused<void>("multi_sleeve_scope_invalid");
     }
+    if (configuration_selection.is_null()) {
+        auto selected = select_live_configuration(*db, config, TRADE_NGIN_GIT_SHA);
+        if (selected.is_error()) return refused<void>(selected.error()->what());
+        const auto entries = collect_enabled_equity_strategies(selected.value().config.strategies_config,"enabled_live");
+        if (entries.is_error()) return refused<void>("multi_sleeve_source_config_invalid");
+        const auto selected_plan = build_equity_live_book_plan(entries.value());
+        if (selected_plan.is_error()) return refused<void>("multi_sleeve_source_plan_mismatch");
+        return run_multi_sleeve_equity_live_day(selected.value().config, selected_plan.value(), db,
+            registry, holidays, now, start_date, end_date, historical_replay, selected.value().receipt);
+    }
+    const auto source_entries=collect_enabled_equity_strategies(config.strategies_config,"enabled_live");
+    if(source_entries.is_error())return refused<void>("multi_sleeve_source_config_invalid");
+    const auto source_plan=build_equity_live_book_plan(source_entries.value());
+    if(source_plan.is_error() || source_plan.value().combined_strategy_id!=plan.combined_strategy_id ||
+        source_plan.value().sleeves.size()!=plan.sleeves.size())
+        return refused<void>("multi_sleeve_source_plan_mismatch");
+    for(size_t i=0;i<plan.sleeves.size();++i) {
+        const auto& expected=source_plan.value().sleeves[i];const auto& actual=plan.sleeves[i];
+        if(expected.source_id!=actual.source_id || expected.strategy_name!=actual.strategy_name ||
+            expected.definition!=actual.definition || expected.allocation!=actual.allocation ||
+            expected.symbols!=actual.symbols || expected.uses_database_symbol_fallback!=actual.uses_database_symbol_fallback)
+            return refused<void>("multi_sleeve_source_plan_mismatch");
+    }
+    if(source_plan.value().symbols!=plan.symbols || source_plan.value().allow_fractional_shares!=plan.allow_fractional_shares)
+        return refused<void>("multi_sleeve_source_plan_mismatch");
     const auto previous = holidays.find_previous_trading_day(now);
     if (!previous) return refused<void>("multi_sleeve_previous_session_missing");
     const std::string source_day = core::format_utc_date(now);
@@ -706,22 +732,21 @@ Result<void> run_multi_sleeve_equity_live_day(
     gmtime_r(&now_time, &now_tm);
     const bool non_trading = LiveDailyCycle::is_non_trading_day(now_tm, holidays);
 
-    auto snapshot_config = config;
-    snapshot_config.strategies_config = nlohmann::json::object();
     nlohmann::json allocations = nlohmann::json::object();
     nlohmann::json strategy_configs = nlohmann::json::object();
     for (const auto& sleeve : plan.sleeves) {
         auto definition = sleeve.definition;
         definition["default_allocation"] = sleeve.allocation;
-        snapshot_config.strategies_config[sleeve.strategy_name] = definition;
         allocations[sleeve.strategy_name] = sleeve.allocation;
         strategy_configs[sleeve.strategy_name] = definition.at("config");
     }
-    auto snapshot = build_runtime_trading_snapshot(snapshot_config);
+    auto snapshot = build_runtime_trading_snapshot(config);
     if (snapshot.is_error()) return refused<void>("multi_sleeve_snapshot_invalid");
+    PublicationEvidenceToken evidence_token;
     auto begun = db->begin_live_publication(
         plan.combined_strategy_id, config.portfolio_id, now, snapshot.value(),
-        true, TRADE_NGIN_GIT_SHA);
+        true, TRADE_NGIN_GIT_SHA, PublicationEvidenceRequirement::RequiredFinalObservations,
+        &evidence_token, PublicationPriorRequirement::None, configuration_selection);
     if (begun.is_error()) return refused<void>(begun.error()->what());
     if (begun.value()) return Result<void>();
     auto publication_guard = std::shared_ptr<void>(nullptr, [db](void*) {
@@ -999,12 +1024,13 @@ Result<void> run_multi_sleeve_equity_live_day(
         strategies.emplace(sleeve.strategy_name, std::move(strategy));
     }
 
+    PortfolioConsumptionTrace primary_consumption;
     std::map<std::string, std::unordered_map<std::string, Position>> target_by_owner;
     if (non_trading) {
         for (const auto& [owner, prior] : prior_by_owner)
             target_by_owner[owner] = LiveDailyCycle::carry_forward(prior);
     } else {
-        auto processed = portfolio->process_market_data(all_bars);
+        auto processed = portfolio->process_market_data(all_bars,false,std::nullopt,&primary_consumption);
         if (processed.is_error()) return refused<void>(processed.error()->what());
         for (const auto& sleeve : plan.sleeves) {
             std::unordered_map<std::string, Timestamp> last_ingested;
@@ -1183,6 +1209,8 @@ Result<void> run_multi_sleeve_equity_live_day(
         {"use_risk_management", portfolio_config.use_risk_management},
         {"allow_fractional_positions", plan.allow_fractional_shares},
         {"account_netting", true}};
+    portfolio_metadata["config_inspection"]={{"capture_schema_version",3},
+        {"profile","live_equity_multi_sleeve"}};
     stored = db->store_live_run_metadata(
         now, plan.combined_strategy_id, config.portfolio_id,
         allocations, portfolio_metadata, strategy_configs);
@@ -1221,6 +1249,8 @@ Result<void> run_multi_sleeve_equity_live_day(
             *db, plan.combined_strategy_id, owners, config.portfolio_id, now);
         if (stored.is_error()) return refused<void>(stored.error()->what());
     }
+    stored = db->attach_equity_multi_consumption(evidence_token,primary_consumption,non_trading);
+    if (stored.is_error()) return refused<void>(stored.error()->what());
     stored = db->publish_live_publication();
     if (stored.is_error()) return refused<void>(stored.error()->what());
     publication_guard.reset();

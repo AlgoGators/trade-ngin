@@ -18,6 +18,7 @@
 #include <variant>
 
 #include "trade_ngin/core/config_loader.hpp"
+#include "trade_ngin/portfolio/portfolio_manager.hpp"
 #include "trade_ngin/apps/setup_consumption.hpp"
 #include "trade_ngin/core/types.hpp"
 #include "trade_ngin/strategy/strategy_interface.hpp"
@@ -42,6 +43,9 @@ Result<PortfolioSelection> resolve_portfolio_selection(
     const std::vector<std::string>& arguments,
     const std::optional<std::string>& environment_portfolio,
     const std::string& default_name);
+
+// Rebuild recorded v1/v2 portfolio settings without consulting active overrides.
+Result<PortfolioConfig> replay_portfolio_config(const nlohmann::json& snapshot);
 
 bool runtime_control_enabled(const char* value);
 Result<nlohmann::json> build_runtime_trading_snapshot(const AppConfig& config);

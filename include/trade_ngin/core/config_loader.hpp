@@ -417,6 +417,7 @@ struct AppConfig {
 
 /** Credential-free inspection of typed live settings and known strategy inputs. */
 Result<nlohmann::json> project_live_config_fields(const AppConfig& config);
+Result<nlohmann::json> project_governed_live_config_fields(const AppConfig& config);
 
 /** Validate a pending publication projection against the projector's own catalog. */
 bool validate_live_config_projection_for_publication(const nlohmann::json& projection);

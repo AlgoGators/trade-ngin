@@ -39,6 +39,14 @@ class NativeValidationTool(unittest.TestCase):
         self.assertEqual(snapshot["snapshot_version"], 2)
         return proc.stdout.strip(), snapshot
 
+    def test_unmodified_schema2_templates_export(self):
+        for portfolio in ("base", "conservative", "equity_mr"):
+            with self.subTest(portfolio=portfolio):
+                proc, snapshot = self.run_tool(args=("--export-base", "--config-root", str(ROOT/"config_template"), "--portfolio", portfolio))
+                self.assertEqual(proc.returncode, 0, snapshot)
+                self.assertEqual(snapshot["snapshot_version"], 2)
+                self.assertEqual(snapshot["risk"]["schema"], 2)
+
     def test_export_and_valid_request_hash_native_bytes(self):
         raw, base = self.export()
         request = {"schema":"live-config-validation/v1", "base_snapshot":base,
@@ -109,6 +117,40 @@ class NativeValidationTool(unittest.TestCase):
         self.assertEqual(effective["risk"]["_ruled_by"],"unit test")
         self.assertEqual(effective["risk"]["_ruled_on"],"2026-10-06")
         self.assertEqual(effective["risk"]["modules"][1],base["risk"]["modules"][1])
+
+    def test_explicit_baseline_validation_keeps_ordinary_noop_rejected(self):
+        raw,base=self.export()
+        request={"schema":"live-config-baseline-validation/v1","base_snapshot":base}
+        proc,result=self.run_tool(json.dumps(request).encode())
+        self.assertEqual(proc.returncode,0,result)
+        self.assertEqual(result["schema"],"live-config-baseline-validation/v1")
+        self.assertEqual(result["effective_snapshot"],base)
+        self.assertEqual(result["base_sha256"],hashlib.sha256(raw).hexdigest())
+        self.assertEqual(result["effective_sha256"],result["base_sha256"])
+        self.assertEqual(result["changed_paths"],[])
+        for changes in ({},{"/optimization/tau":base["optimization"]["tau"]}):
+            proc,result=self.run_tool(json.dumps({"schema":"live-config-validation/v1",
+                "base_snapshot":base,"changes":changes}).encode())
+            self.assertEqual(proc.returncode,2,result)
+            self.assertEqual(result["error"]["code"],"live_config_noop")
+
+    def test_baseline_protocol_refuses_extra_keys_bad_base_and_unsafe_wire(self):
+        _,base=self.export()
+        request={"schema":"live-config-baseline-validation/v1","base_snapshot":base}
+        bad=[dict(request,changes={}),dict(request,actor="never-echo-reset-secret"),
+             dict(request,config_root="never-echo-reset-secret"),
+             {"schema":"live-config-baseline-validation/v1"},
+             dict(request,base_snapshot=dict(base,snapshot_version=1))]
+        for value in bad:
+            proc,result=self.run_tool(json.dumps(value).encode())
+            self.assertEqual(proc.returncode,2,result)
+            self.assertNotIn("never-echo-reset-secret",proc.stdout.decode())
+        for payload in (b'{"schema":"live-config-baseline-validation/v1","base_snapshot":{},"base_snapshot":{}}',
+                        b'{"schema":"live-config-baseline-validation/v1","base_snapshot":{"x":1e999}}',
+                        b'{"schema":"live-config-baseline-validation/v1","base_snapshot":'+b'['*80+b'0'+b']'*80+b'}',
+                        json.dumps(request).encode()+b' '*(1024*1024)):
+            proc,result=self.run_tool(payload)
+            self.assertEqual(proc.returncode,2,result)
 
     def test_wire_duplicate_nonfinite_depth_oversize_and_redaction(self):
         bad = [b'{"changes":{},"changes":{}}', b'{"nested":{"a":1,"a":2}}',

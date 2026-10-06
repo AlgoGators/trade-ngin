@@ -1191,8 +1191,8 @@ int trade_ngin::run_book_tail(BookTailInputs& inputs, BookTailCallbacks& callbac
 
             auto update_result = db->execute_scoped_live_update(update_query, combined_strategy_id, coordinator_config.portfolio_id);
             if (update_result.is_error()) {
-                ERROR("Failed to update Day T-1 live_results: " +
-                      std::string(update_result.error()->what()));
+                ERROR(std::string(update_result.error()->what()));
+                return 1;
             } else {
                 INFO(
                     "Successfully updated Day T-1 live_results with finalized PnL and all metrics");

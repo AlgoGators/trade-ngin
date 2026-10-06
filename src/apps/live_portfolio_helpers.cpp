@@ -1,4 +1,5 @@
 #include "trade_ngin/apps/live_portfolio_helpers.hpp"
+#include "trade_ngin/core/live_config_override.hpp"
 
 #include <algorithm>
 #include <chrono>
@@ -19,6 +20,58 @@
 #include "trade_ngin/strategy/trend_following_slow.hpp"
 
 namespace trade_ngin {
+Result<PortfolioConfig> replay_portfolio_config(const nlohmann::json& snapshot) {
+    try {
+        if (!snapshot.is_object() || !snapshot.contains("snapshot_version") ||
+            !snapshot.at("snapshot_version").is_number_integer())
+            throw std::invalid_argument("snapshot_version");
+        const int version=snapshot.at("snapshot_version").get<int>();
+        if(version!=1 && version!=2) throw std::invalid_argument("snapshot_version");
+        PortfolioConfig result;
+        if(version==2) {
+            // File evidence can contain raw weights; approval eligibility is a separate policy.
+            const auto parsed=ConfigLoader::parse_trading_config(snapshot);
+            if(parsed.is_error()) throw std::invalid_argument("snapshot");
+            const auto rebuilt=build_runtime_trading_snapshot(parsed.value());
+            if(rebuilt.is_error() || rebuilt.value()!=snapshot) throw std::invalid_argument("snapshot");
+            const auto& config=parsed.value();
+            result.total_capital=Decimal(config.initial_capital);
+            result.reserve_capital=Decimal(config.initial_capital*config.reserve_capital_pct);
+            result.max_strategy_allocation=config.strategy_defaults.max_strategy_allocation;
+            result.min_strategy_allocation=config.strategy_defaults.min_strategy_allocation;
+            result.use_optimization=config.use_optimization;
+            result.covariance_history_prices=config.covariance_history_prices;
+            result.risk_modules=config.risk_schema.portfolio;
+            result.sleeve_risk_modules=config.risk_schema.sleeves;
+            result.use_risk_management=!config.risk_schema.is_none();
+            result.opt_config=config.opt_config;
+            result.risk_config=config.risk_config;
+            result.opt_config.capital=config.initial_capital;
+            result.risk_config.capital=Decimal(config.initial_capital);
+            result.benchmark_mode="deferred";
+            return result;
+        }
+        const double capital=snapshot.value("initial_capital",500000.0);
+        StrategyDefaultsConfig defaults;
+        if(snapshot.contains("strategy_defaults")) defaults.from_json(snapshot.at("strategy_defaults"));
+        result.total_capital=Decimal(capital);
+        result.reserve_capital=Decimal(capital*snapshot.value("reserve_capital_pct",0.10));
+        result.max_strategy_allocation=defaults.max_strategy_allocation;
+        result.min_strategy_allocation=defaults.min_strategy_allocation;
+        const auto historical=snapshot.value("strategy_defaults",nlohmann::json::object());
+        result.use_optimization=historical.value("use_optimization",defaults.use_optimization);
+        result.use_risk_management=historical.value("use_risk_management",defaults.use_risk_management);
+        result.benchmark_mode="deferred";
+        if(snapshot.contains("optimization")) result.opt_config.from_json(snapshot.at("optimization"));
+        if(snapshot.contains("risk")) result.risk_config.from_json(snapshot.at("risk"));
+        result.opt_config.capital=capital;
+        result.risk_config.capital=Decimal(capital);
+        return result;
+    } catch(const std::exception&) {
+        return make_error<PortfolioConfig>(ErrorCode::INVALID_DATA,"invalid_recorded_configuration");
+    }
+}
+
 
 namespace {
 std::string report_date_string(const Timestamp& date) {

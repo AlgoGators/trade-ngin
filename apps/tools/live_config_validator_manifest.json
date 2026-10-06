@@ -1,0 +1,15 @@
+{
+  "schema": "live-config-validator-bundle-source/v1",
+  "bundle_schema": "live-config-validator-bundle/v1",
+  "wire_schema": "live-config-validation/v1",
+  "executable": "live_config_validate",
+  "engine": "libtrade_ngin.so",
+  "crypto": "libcrypto.so.3",
+  "loader": "ld-linux-x86-64.so.2",
+  "abi": {
+    "platform": "linux",
+    "machine": "x86_64",
+    "elf_class": "ELF64",
+    "cxx_standard": "20"
+  }
+}
