@@ -284,6 +284,27 @@ protected:
         EXPECT_TRUE(validate_live_config_projection_for_publication(capture.at("supplied")));
         EXPECT_TRUE(validate_equity_multi_consumption(capture.at("equity_multi_consumption"),snapshot,kStrategy,
             portfolio_id,source_day,capture.at("configuration_selection").at("effective_sha256")));
+        // Mutate actual captured invocations, including real no-charge/history branches.
+        const auto& observed=capture.at("equity_multi_consumption");
+        const auto rejects=[&](const nlohmann::json& malformed){
+            EXPECT_FALSE(validate_equity_multi_consumption(malformed,snapshot,kStrategy,portfolio_id,source_day,
+                capture.at("configuration_selection").at("effective_sha256")));
+        };
+        auto malformed=observed;malformed["portfolio_invocation"]["passes"][0]["risk_helper"]="fabricated_call";rejects(malformed);
+        malformed=observed;malformed["portfolio_invocation"]["passes"][0]["risk"]["manager_source"]={{"unbounded","object"}};rejects(malformed);
+        for(const auto& [owner,invocation]:observed.at("strategy_invocations").items()) {
+            for(const auto& [symbol,unused]:invocation.at("symbols").items()) {
+                (void)unused;malformed=observed;
+                malformed["strategy_invocations"][owner]["symbols"][symbol]["reads"]={{"invented_observation",true}};rejects(malformed);
+            }
+        }
+        for(const char* charges:{"strategy_charges","compatibility_charges"}) {
+            if(!observed.at("portfolio_invocation").is_null() && !observed.at("portfolio_invocation").at(charges).empty()) {
+                malformed=observed;malformed["portfolio_invocation"][charges][0]["reads"].erase("quantity");rejects(malformed);
+                malformed=observed;malformed["portfolio_invocation"][charges][0]["index"]=-1;rejects(malformed);
+                malformed=observed;malformed["portfolio_invocation"]["skip_execution_generation"]=true;rejects(malformed);
+            }
+        }
         for(const char* field:{"full_run_certification","coverage","source_to_storage_owners","portfolio_invocation"}) {
             auto malformed=capture.at("equity_multi_consumption");malformed[field]=true;
             EXPECT_FALSE(validate_equity_multi_consumption(malformed,snapshot,kStrategy,portfolio_id,source_day,
@@ -656,6 +677,32 @@ TEST_F(EquityMultiLivePg, InvestorPublicationWrapperSurvivesGuardedRollback) {
     EXPECT_EQ(scalar_long("SELECT count(*) FROM trading.investor_book_publications WHERE portfolio_id='INVESTOR_P2_A'"),1);
 }
 
+TEST_F(EquityMultiLivePg, InsufficientHistoryPreservesPartialReadsWithoutCharges) {
+    onboard_and_seed("investor_p2_a",kBookA,100000.0,0.0);
+    auto config=make_config(kBookA,100000.0);
+    for(auto& [owner,definition]:config.strategies_config.items()) {
+        (void)owner;definition["config"]["lookback_period"]=20;
+    }
+    const auto selected=collect_enabled_equity_strategies(config.strategies_config,"enabled_live");
+    ASSERT_TRUE(selected.is_ok());const auto plan=build_equity_live_book_plan(selected.value());ASSERT_TRUE(plan.is_ok());
+    auto result=run_multi_sleeve_equity_live_day(config,plan.value(),db_,InstrumentRegistry::instance(),
+        HolidayChecker(std::string(TRADE_NGIN_SOURCE_DIR)+"/include/trade_ngin/core/holidays.json"),
+        day(kDay1),day("2026-10-30"),day(kT1),true);
+    ASSERT_TRUE(result.is_ok())<<(result.is_error()?result.error()->what():"");
+    const auto capture=nlohmann::json::parse(scalar_text("SELECT (portfolio_config->'config_inspection')::text FROM trading.live_run_metadata WHERE portfolio_id='INVESTOR_P2_A'"));
+    const auto& observed=capture.at("equity_multi_consumption");
+    EXPECT_TRUE(validate_equity_multi_consumption(observed,capture.at("supplied").at("effective_snapshot"),
+        kStrategy,kBookA,kDay1,capture.at("configuration_selection").at("effective_sha256")));
+    for(const auto* key:{"strategy_charges","compatibility_charges"})EXPECT_TRUE(observed.at("portfolio_invocation").at(key).empty());
+    for(const auto& [owner,invocation]:observed.at("strategy_invocations").items()) {
+        (void)owner;const auto& row=invocation.at("symbols").at("SYN");
+        EXPECT_EQ(row.at("reads").at("lookback_period"),20);
+        EXPECT_FALSE(row.at("reads").contains("entry_threshold"));
+        EXPECT_FALSE(row.at("reads").contains("capital_allocation"));
+        EXPECT_TRUE(row.at("observed_state").empty());
+    }
+}
+
 TEST_F(EquityMultiLivePg, HouseNonemptyPublishesButLegacyEmptyHouseBoundaryStaysAtomic) {
     onboard_and_seed("investor_p2_a",kBookA,100000.0,1.0);
     {
@@ -680,5 +727,7 @@ TEST_F(EquityMultiLivePg, HouseNonemptyPublishesButLegacyEmptyHouseBoundaryStays
     EXPECT_EQ(scalar_long("SELECT count(*) FROM trading.qt_empty_model_owner_publications WHERE portfolio_id='INVESTOR_P2_A'"),0);
     EXPECT_EQ(scalar_long("SELECT count(*) FROM trading.live_run_metadata WHERE portfolio_id='INVESTOR_P2_A' AND portfolio_config->'config_inspection'->>'profile'='live_equity_mean_reversion'"),0);
 }
+
+
 
 }  // namespace

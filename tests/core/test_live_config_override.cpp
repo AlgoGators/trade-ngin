@@ -452,3 +452,80 @@ TEST(LiveConfigOverride, FileOnlyRawWeightsRemainPublishableWithoutWeakeningAppr
         EXPECT_EQ(owners.size(),composite?2u:1u);
     }
 }
+
+TEST(LiveConfigOverride, CompositeNestedInvocationContractsAreClosed) {
+    auto c=base_config();c.strategies_config=Json::object();
+    for(const auto* owner:{"ALPHA","BETA"})c.strategies_config[owner]={{"type","MeanReversionStrategy"},
+        {"enabled_live",true},{"default_allocation",.5},{"config",Json::object()}};
+    const auto snapshot=build_runtime_trading_snapshot(c).value();const std::string hash(64,'a');
+    auto doc=project_equity_multi_consumption(PortfolioConsumptionTrace{},true,snapshot,
+        "LIVE_EQUITY_ALPHA_BETA",c.portfolio_id,"2026-10-06",hash);
+    doc["coverage"]["primary"]="observed";
+    doc["portfolio_invocation"]={{"schema_version","qt-equity-portfolio-consumption/v1"},
+        {"scope","portfolio_invocation"},{"full_run_certification",false},{"available",true},
+        {"unavailable_reason",nullptr},{"outcome","returned_ok"},{"skip_execution_generation",false},
+        {"passes",Json::array({{{"index",0},{"reads",{{"use_optimization",false},{"use_risk_management",false}}},
+            {"optimization_helper","not_reached"},{"risk_helper","not_reached"},
+            {"risk",{{"call","not_reached"},{"skip","none"},{"reads",Json::object()}}}}})},
+        {"strategy_charges",Json::array()},{"compatibility_charges",Json::array()}};
+    for(const auto* owner:{"ALPHA","BETA"})doc["strategy_invocations"][owner]={
+        {"schema_version","qt-equity-strategy-consumption/v1"},{"available",true},{"profile","mean_reversion"},
+        {"scope","strategy_invocation"},{"full_run_certification",false},{"symbols",{{"SYN",{
+            {"reads",{{"lookback_period",20},{"vol_lookback",20},{"maximum_price_history",40},{"maximum_volatility_history",40}}},
+            {"observed_state",Json::object()}}}}}};
+    const auto valid=[&](const Json& x){return validate_equity_multi_consumption(x,snapshot,
+        "LIVE_EQUITY_ALPHA_BETA",c.portfolio_id,"2026-10-06",hash);};
+    ASSERT_TRUE(valid(doc)); // Truthful insufficient-history / no-charge invocation.
+    const std::vector<std::pair<std::string,Json>> mutations={
+        {"/portfolio_invocation/passes/0/risk_helper","fabricated_call"},
+        {"/portfolio_invocation/passes/0/index",0.0},
+        {"/portfolio_invocation/passes/0/risk/manager_source",{{"unbounded","object"}}},
+        {"/portfolio_invocation/passes/0/risk/lookback_period",-1},
+        {"/portfolio_invocation/passes/0/risk/reads/var_limit",true},
+        {"/portfolio_invocation/passes/0/risk/call","returned_ok"},
+        {"/portfolio_invocation/passes/0/risk/skip","insufficient_history"},
+        {"/strategy_invocations/ALPHA/symbols/SYN/reads",{{"invented_observation",true}}},
+        {"/strategy_invocations/ALPHA/symbols/SYN/reads/lookback_period",2.5},
+        {"/strategy_invocations/ALPHA/symbols/SYN/reads/maximum_price_history",-1},
+        {"/strategy_invocations/ALPHA/symbols/SYN/reads/position_limit",1},
+        {"/strategy_invocations/ALPHA/symbols/SYN/reads/fractional_min_adv",1},
+        {"/strategy_invocations/ALPHA/symbols/SYN/observed_state/short_allowed","true"},
+        {"/strategy_invocations/ALPHA/symbols/SYN/observed_state/invented",false}};
+    for(const auto& [path,replacement]:mutations){auto bad=doc;bad[Json::json_pointer(path)]=replacement;
+        EXPECT_FALSE(valid(bad))<<path;}
+    auto enabled=doc;auto& pass=enabled["portfolio_invocation"]["passes"][0];
+    pass["reads"]["use_risk_management"]=true;pass["risk_helper"]="returned_ok";
+    pass["risk"]={{"call","not_reached"},{"skip","no_positions"},{"reads",Json::object()},
+        {"manager_source","internal"},{"lookback_period",20}};EXPECT_TRUE(valid(enabled));
+    pass["risk"]={{"call","not_reached"},{"skip","absent_risk_manager"},{"reads",Json::object()},
+        {"manager_source","absent"}};EXPECT_TRUE(valid(enabled));
+    pass["risk"]={{"call","returned_ok"},{"skip","none"},{"reads",{{"capital_exact","100"},{"var_limit",.1}}},
+        {"manager_source","external"},{"lookback_period",20}};EXPECT_TRUE(valid(enabled));
+    for(const auto& replacement:Json::array({"1e2","100.00000000","92233720368.54775808",100})){
+        auto bad=enabled;bad["portfolio_invocation"]["passes"][0]["risk"]["reads"]["capital_exact"]=replacement;EXPECT_FALSE(valid(bad));}
+    for(const auto& [path,replacement]:std::vector<std::pair<std::string,Json>>{
+        {"risk_helper","returned_error"},{"risk/call","in_progress"},{"risk/skip","no_positions"},
+        {"risk/manager_source","absent"},{"risk/manager_source","invented"},
+        {"risk/lookback_period",1.5},{"risk/reads/invented",1}}){auto bad=enabled;
+        bad[Json::json_pointer("/portfolio_invocation/passes/0/"+path)]=replacement;EXPECT_FALSE(valid(bad))<<path;}
+    auto sparse=doc;sparse["strategy_invocations"]["ALPHA"]["symbols"]=Json::object();
+    sparse["portfolio_invocation"]["skip_execution_generation"]=true;EXPECT_TRUE(valid(sparse));
+    auto contradictory=doc;auto& branch=contradictory["strategy_invocations"]["ALPHA"]["symbols"]["SYN"]["reads"];
+    branch["use_stop_loss"]=false;branch["stop_loss_pct"]=.1;EXPECT_FALSE(valid(contradictory));
+    branch.erase("stop_loss_pct");branch["allow_fractional_shares"]=false;branch["fractional_min_price"]=1;EXPECT_FALSE(valid(contradictory));
+    auto charged=doc;charged["portfolio_invocation"]["strategy_charges"].push_back({{"index",0},
+        {"purpose","per_strategy"},{"strategy_id","ALPHA"},{"symbol","SYN"},{"call","returned_ok"},
+        {"reads",{{"quantity",1},{"reference_price",10},{"input_source","explicit_values"},{"asset_lookup_path","fallback"}}}});
+    ASSERT_TRUE(valid(charged));
+    for(const auto& [path,replacement]:std::vector<std::pair<std::string,Json>>{
+        {"index",-1},{"index",1},{"index",0.0},{"symbol","bad symbol"},{"strategy_id","OTHER"},
+        {"call","not_reached"},{"reads",Json::object()},{"reads/input_source","invented"},
+        {"reads/asset_lookup_path","invented"},{"reads/quantity",true},{"reads/tick_constrained",1},
+        {"reads/invented",1}}){auto bad=charged;bad[Json::json_pointer("/portfolio_invocation/strategy_charges/0/"+path)]=replacement;EXPECT_FALSE(valid(bad))<<path;}
+    auto compatibility=charged;auto charge=compatibility["portfolio_invocation"]["strategy_charges"][0];
+    charge["purpose"]="compatibility";charge["strategy_id"]="";
+    compatibility["portfolio_invocation"]["strategy_charges"]=Json::array();
+    compatibility["portfolio_invocation"]["compatibility_charges"].push_back(charge);EXPECT_TRUE(valid(compatibility));
+    compatibility["portfolio_invocation"]["compatibility_charges"][0]["strategy_id"]="ALPHA";EXPECT_FALSE(valid(compatibility));
+    auto skipped=charged;skipped["portfolio_invocation"]["skip_execution_generation"]=true;EXPECT_FALSE(valid(skipped));
+}
