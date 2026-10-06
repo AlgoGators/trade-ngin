@@ -101,6 +101,11 @@ struct InstrumentData {
     // before any limit: (forecast / 10) x capital x IDM x weight x tau / (multiplier x price x
     // FX x sigma).
     trend_estimator::Estimate estimate;
+    // The symbol's last bars that have a return, for the risk overlay's gate window (section 4):
+    // each bar's date as a whole day number and its adjusted percentage return, oldest first. The
+    // window is 252 dates on which any participant has a return, so 300 own bars cover it.
+    std::vector<double> overlay_days;
+    std::vector<double> overlay_returns;
     double optimal_position = 0.0;
 
     // Timestamp of last update
@@ -226,6 +231,8 @@ public:
      *        skips it: no forecast and no target of its own); true from then on (T-OPT E-7)
      */
     bool is_signalling(const std::string& symbol) const override;
+
+    bool overlay_series(const std::string& symbol, OverlaySeries* out) const override;
 
     /**
      * @brief Get the correct point value multiplier for a futures symbol

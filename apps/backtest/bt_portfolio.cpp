@@ -348,6 +348,10 @@ int main() {
                 if (strategy_id == strategy_names.front()) {
                     trend_config.equity_slow_symbols = app_config.equity_slow_rule.symbols;
                     trend_config.equity_slow_pairs = app_config.equity_slow_rule.pairs;
+                    // The first sleeve's own series and its risk target feed the risk overlay
+                    // (LOOP_SPEC section 4: the three risk limits are ratios to this tau).
+                    portfolio_config.overlay_sleeve = strategy_id;
+                    portfolio_config.overlay_tau = trend_config.risk_target;
                 }
                 strategy = std::make_shared<trade_ngin::TrendFollowingStrategy>(
                     strategy_id, base_strategy_config, trend_config, db, registry_ptr);
@@ -389,6 +393,10 @@ int main() {
                 if (strategy_id == strategy_names.front()) {
                     trend_config.equity_slow_symbols = app_config.equity_slow_rule.symbols;
                     trend_config.equity_slow_pairs = app_config.equity_slow_rule.pairs;
+                    // The first sleeve's own series and its risk target feed the risk overlay
+                    // (LOOP_SPEC section 4: the three risk limits are ratios to this tau).
+                    portfolio_config.overlay_sleeve = strategy_id;
+                    portfolio_config.overlay_tau = trend_config.risk_target;
                 }
                 strategy = std::make_shared<trade_ngin::TrendFollowingStrategy>(
                     strategy_id, base_strategy_config, trend_config, db, registry_ptr);

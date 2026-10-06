@@ -504,6 +504,26 @@ Result<void> ConfigLoader::require_loop_keys(const AppConfig& config) {
                 "({\"symbols\": [\"M2K\", \"MES\", \"MNQ\", \"MYM\"], \"pairs\": [[32, 128], [64, 256]]})",
             "ConfigLoader");
     }
+    // LOOP_SPEC sections 4, 7.7 and 12: the overlay's limits. The book's carver module carries
+    // R_max, R_jump_max and R_shock_max (ratios to tau); its max_gross_leverage and
+    // max_net_leverage are L_max and L_net_max.
+    {
+        bool carries = false;
+        for (const auto& module : config.risk_schema.portfolio) {
+            if (const auto* carver = std::get_if<CarverModuleConfig>(&module.params)) {
+                carries = carries || carver->overlay_limits();
+            }
+        }
+        if (!carries) {
+            return make_error<void>(
+                ErrorCode::INVALID_DATA,
+                "config for " + config.portfolio_id +
+                    ": risk.json's carver module needs \"R_max\", \"R_jump_max\" and "
+                    "\"R_shock_max\" on a futures book (the overlay's risk limits as ratios to "
+                    "tau: 2.25, 4.5, 4.0)",
+                "ConfigLoader");
+        }
+    }
     if (config.sizing_mode.empty()) {
         return make_error<void>(ErrorCode::INVALID_DATA,
                                 "config for " + config.portfolio_id +

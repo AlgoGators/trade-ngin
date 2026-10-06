@@ -10,6 +10,7 @@
 //   A1, A2                  the features that are parsed but do not run yet
 //   S5(ids), S8, S9         the rules that need every module in hand
 //   C1                      risk_reporting, and its agreement with the gate
+#include "trade_ngin/risk/overlay.hpp"
 #include "trade_ngin/risk/risk_module_config.hpp"
 
 #include <algorithm>
@@ -159,9 +160,33 @@ public:
             }
             auto r = require_keys(m, std::vector<std::string>(std::begin(kCarverKeys),
                                                               std::end(kCarverKeys)),
-                                  type);
+                                  type, {"R_max", "R_jump_max", "R_shock_max"});
             if (r.is_error()) return forward(r);
             CarverModuleConfig c;
+            // LOOP_SPEC sections 4 and 12: the overlay's three risk limits, ratios to tau. All
+            // three or none; each a positive number.
+            {
+                const bool any = m.contains("R_max") || m.contains("R_jump_max") ||
+                                 m.contains("R_shock_max");
+                const bool all = m.contains("R_max") && m.contains("R_jump_max") &&
+                                 m.contains("R_shock_max");
+                if (any && !all) {
+                    return err(path_ + " names some of R_max, R_jump_max and R_shock_max: the "
+                                       "overlay's three risk limits (ratios to tau) come together");
+                }
+                if (all) {
+                    double* into[] = {&c.r_max, &c.r_jump_max, &c.r_shock_max};
+                    const char* keys[] = {"R_max", "R_jump_max", "R_shock_max"};
+                    for (int k = 0; k < 3; ++k) {
+                        const auto& v = m.at(keys[k]);
+                        if (!v.is_number() || !(v.get<double>() > 0.0)) {
+                            return err(path_ + "." + keys[k] +
+                                       " must be a positive number (a ratio to tau), got " + val(v));
+                        }
+                        *into[k] = v.get<double>();
+                    }
+                }
+            }
             auto ranges = parse_gating_fields(prefix_, m, path_, &c.var_limit,
                                               &c.jump_risk_limit, &c.max_correlation,
                                               &c.max_gross_leverage, &c.max_net_leverage,
@@ -522,6 +547,11 @@ nlohmann::json RiskModuleConfig::to_json() const {
         j["lookback_period"] = c->lookback_period;
         j["lookback_unit"] = c->lookback_unit;
         j["min_gate_dates"] = c->min_gate_dates;
+        if (c->overlay_limits()) {
+            j["R_max"] = c->r_max;
+            j["R_jump_max"] = c->r_jump_max;
+            j["R_shock_max"] = c->r_shock_max;
+        }
         j["missing_symbol_policy"] = c->missing_symbol_policy;
         if (!c->missing_symbol_policy_reason.empty()) {
             j["_missing_symbol_policy_reason"] = c->missing_symbol_policy_reason;
@@ -601,8 +631,17 @@ Result<RiskModulePtr> make_risk_module(const RiskModuleConfig& config, Decimal c
         if (const auto* c = std::get_if<CarverModuleConfig>(&config.params)) {
             RiskConfig rc = c->to_risk_config();
             rc.capital = capital;
-            return Result<RiskModulePtr>(
-                std::make_shared<CarverRiskModule>(config.id, rc, c->min_gate_dates));
+            auto module = std::make_shared<CarverRiskModule>(config.id, rc, c->min_gate_dates);
+            if (c->overlay_limits()) {
+                overlay::LimitRatios ratios;
+                ratios.risk = c->r_max;
+                ratios.jump = c->r_jump_max;
+                ratios.shock = c->r_shock_max;
+                ratios.gross = c->max_gross_leverage;
+                ratios.net = c->max_net_leverage;
+                module->set_overlay_limits(ratios);
+            }
+            return Result<RiskModulePtr>(module);
         }
         if (const auto* cs = std::get_if<ConstantScaleModuleConfig>(&config.params)) {
             return Result<RiskModulePtr>(

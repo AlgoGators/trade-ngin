@@ -470,6 +470,30 @@ Result<void> PortfolioManager::process_market_data(const std::vector<Bar>& data,
                     }
                 }
             }
+            // LOOP_SPEC section 4: the overlay's inputs for this rebalance, the participants'
+            // adjusted returns on one calendar with their prices, multipliers and jump
+            // volatilities, from the overlay sleeve's own series as of its signal bar.
+            overlay_inputs_set_ = false;
+            const auto source = config_.overlay_sleeve.empty()
+                                    ? strategies_.end()
+                                    : strategies_.find(config_.overlay_sleeve);
+            if (source != strategies_.end() && source->second.strategy && config_.overlay_tau > 0.0) {
+                const std::vector<std::string> symbols(gate_participants_.begin(),
+                                                       gate_participants_.end());
+                std::vector<StrategyInterface::OverlaySeries> held(symbols.size());
+                std::vector<overlay::ParticipantSeries> series(symbols.size());
+                for (size_t i = 0; i < symbols.size(); ++i) {
+                    if (!source->second.strategy->overlay_series(symbols[i], &held[i])) continue;
+                    series[i].present = true;
+                    series[i].day = &held[i].day;
+                    series[i].returns = &held[i].returns;
+                    series[i].close = held[i].close;
+                    series[i].multiplier = held[i].multiplier;
+                    series[i].jump_sigma_daily = held[i].jump_sigma_daily;
+                }
+                overlay_inputs_ = overlay::build_inputs(config_.overlay_tau, symbols, series);
+                overlay_inputs_set_ = true;
+            }
         }
         {
             const RiskContext rebalance_ctx = make_risk_context(
@@ -2603,6 +2627,7 @@ RiskContext PortfolioManager::make_risk_context(RiskPhase phase, int lap, RiskSc
     ctx.bars = &data;
     ctx.applied = rebalance_applied_;
     ctx.gate_participants = &gate_participants_;
+    ctx.overlay_inputs = overlay_inputs_set_ ? &overlay_inputs_ : nullptr;
     return ctx;
 }
 

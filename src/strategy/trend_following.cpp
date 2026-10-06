@@ -367,6 +367,15 @@ Result<void> TrendFollowingStrategy::on_data(const std::vector<Bar>& data) {
                 WARN("Using default volatility for " + symbol + " due to calculation issues");
             }
             instrument_data.estimate = estimate;
+            {
+                constexpr size_t kOverlayBars = 300;
+                const size_t bars = window.day.size();
+                const size_t from = bars > kOverlayBars ? bars - kOverlayBars : 1;  // bar 0 has no return
+                instrument_data.overlay_days.assign(window.day.begin() + static_cast<long>(from),
+                                                    window.day.end());
+                instrument_data.overlay_returns.assign(
+                    window.returns.begin() + static_cast<long>(from), window.returns.end());
+            }
             instrument_data.current_volatility = estimate.valid ? estimate.sigma : 0.01;
 
             // DEBUG: Print volatility values
@@ -695,6 +704,19 @@ Result<void> TrendFollowingStrategy::on_data(const std::vector<Bar>& data) {
                                 std::string("Error processing data: ") + e.what(),
                                 "TrendFollowingStrategy");
     }
+}
+
+bool TrendFollowingStrategy::overlay_series(const std::string& symbol, OverlaySeries* out) const {
+    const auto it = instrument_data_.find(symbol);
+    if (it == instrument_data_.end() || out == nullptr) return false;
+    const InstrumentData& data = it->second;
+    if (data.price_history.empty()) return false;
+    out->day = data.overlay_days;
+    out->returns = data.overlay_returns;
+    out->close = data.price_history.back();
+    out->multiplier = data.contract_size;
+    out->jump_sigma_daily = data.estimate.valid ? data.estimate.jump_sigma_daily : 0.0;
+    return true;
 }
 
 bool TrendFollowingStrategy::is_signalling(const std::string& symbol) const {

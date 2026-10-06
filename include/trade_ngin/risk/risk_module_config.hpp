@@ -49,6 +49,15 @@ struct CarverModuleConfig {
     /// its decision: it measured, but not on enough dates for the measurement to mean
     /// anything.
     int min_gate_dates{21};
+    /// The overlay's three risk limits as RATIOS to tau (LOOP_SPEC sections 4, 7.5.1 and 12):
+    /// R_max, R_jump_max and R_shock_max. All three or none. Present, the module reads the book in
+    /// capital terms (risk/overlay.hpp) with max_gross_leverage and max_net_leverage as L_max and
+    /// L_net_max; absent (0), it reads it as before. A futures book requires them
+    /// (ConfigLoader::require_loop_keys).
+    double r_max{0.0};
+    double r_jump_max{0.0};
+    double r_shock_max{0.0};
+    bool overlay_limits() const { return r_max > 0.0 && r_jump_max > 0.0 && r_shock_max > 0.0; }
     /// What the gate does with a configured symbol that has no bar in the window.
     /// "ignore" is today's fail-open behaviour and has to say why it is chosen.
     std::string missing_symbol_policy{"ignore"};

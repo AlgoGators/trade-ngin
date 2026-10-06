@@ -3,6 +3,7 @@
 
 #include <string>
 #include <vector>
+#include "trade_ngin/risk/overlay.hpp"
 #include "trade_ngin/risk/risk_manager.hpp"
 #include "trade_ngin/risk/risk_module.hpp"
 
@@ -111,6 +112,17 @@ public:
     /// (F5's definition). Recomputed from the window; nothing caches it.
     int complete_dates_in_window() const;
 
+    /// LOOP_SPEC section 4: with limits set, evaluate reads the book in CAPITAL TERMS
+    /// (risk/overlay.hpp) on the context's overlay inputs: the four readings on the weights
+    /// x = N M P / E, the limits as ratios to tau, and m = the smallest multiplier, which is the
+    /// rate it asks for on that lap's book. Without limits, or on a context that carries no
+    /// inputs, it reads the book as before.
+    void set_overlay_limits(const overlay::LimitRatios& ratios) { overlay_ratios_ = ratios; }
+    const overlay::LimitRatios& overlay_limits() const { return overlay_ratios_; }
+    /// The last evaluation in capital terms (empty window before the first).
+    const overlay::Evaluation& last_overlay() const { return last_overlay_; }
+    bool overlay_read() const { return overlay_read_; }
+
     const RiskManager& manager() const { return rm_; }
     int min_gate_dates() const { return min_gate_dates_; }
     const std::vector<Bar>& window() const { return window_; }
@@ -130,6 +142,9 @@ private:
     RiskManager rm_;          ///< registers "RiskManager"; this class registers and logs nothing more
     int min_gate_dates_{21};  ///< read only into RiskDecision::blind
     MarketData market_data_;  ///< built by on_bars, read by evaluate on the same lap
+    overlay::LimitRatios overlay_ratios_;  ///< unset: the module reads the book as before
+    overlay::Evaluation last_overlay_;
+    bool overlay_read_{false};  ///< the last evaluate read the book in capital terms
     std::vector<Bar> window_;  ///< was PortfolioManager::risk_history_
     size_t dates_dropped_{0};  ///< F5's count on the last on_bars
     bool f5_engaged_{false};   ///< whether F5 filtered the last window

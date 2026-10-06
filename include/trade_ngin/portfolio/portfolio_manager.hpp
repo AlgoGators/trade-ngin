@@ -42,6 +42,12 @@ struct PortfolioConfig : public ConfigBase {
     double min_strategy_allocation{
         0.0};  // Minimum allocation to any strategy (keep as double - it's a ratio)
     bool use_optimization{false};     // Whether to use position optimization
+    // LOOP_SPEC section 4: the sleeve whose own series feed the risk overlay (the book's FIRST
+    // sleeve) and that sleeve's risk target tau, the unit the overlay's three risk limits are
+    // ratios to. Empty and 0: the book supplies no overlay inputs, and its risk modules read the
+    // book as they did before.
+    std::string overlay_sleeve;
+    double overlay_tau{0.0};
     // The risk modules this book runs, portfolio scope, in evaluation order. There is
     // no boolean any more: a book that runs no risk layer carries a single `none`
     // assignment naming who ruled it and when, and an EMPTY list is a configuration
@@ -643,6 +649,11 @@ private:
     /// T-7b-2 CGW: the risk gate's participants this rebalance (RiskContext::gate_participants),
     /// rebuilt before lap 1 by gate_participants_for_rebalance.
     std::set<std::string> gate_participants_;
+    /// The risk overlay's inputs of this rebalance (risk/overlay.hpp), rebuilt with
+    /// gate_participants_ from the overlay sleeve's own series; `overlay_inputs_set_` false when
+    /// the book names no such sleeve or the sleeve is not one of its strategies.
+    overlay::Inputs overlay_inputs_;
+    bool overlay_inputs_set_{false};
 
     /**
      * @brief Build the context a risk module sees for one call

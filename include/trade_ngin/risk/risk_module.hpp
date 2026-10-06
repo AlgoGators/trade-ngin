@@ -10,6 +10,7 @@
 #include <nlohmann/json.hpp>
 #include "trade_ngin/core/error.hpp"
 #include "trade_ngin/core/types.hpp"
+#include "trade_ngin/risk/overlay.hpp"
 #include "trade_ngin/risk/risk_manager.hpp"  // RiskResult
 
 namespace trade_ngin {
@@ -79,6 +80,12 @@ struct RiskContext {
     /// Carver gate intersects its window's dates over these only (T-7b-2 CGW). Null (a caller that
     /// does not set it) means every symbol of the window, the rule before CGW.
     const std::set<std::string>* gate_participants{nullptr};
+    /// The risk overlay's inputs for this rebalance (risk/overlay.hpp): the participants' returns
+    /// on one calendar, their prices, multipliers and jump volatilities, and the book's tau. Built
+    /// once per rebalance by the PortfolioManager from its first sleeve's own series. Null: the
+    /// caller has none (a book with no such sleeve), and a module that needs them reads the book
+    /// as it did before.
+    const overlay::Inputs* overlay_inputs{nullptr};
 };
 
 /// What the PM did, delivered to every module it evaluated in that scope and phase/lap.

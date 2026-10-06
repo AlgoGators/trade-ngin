@@ -668,7 +668,7 @@ TEST(TrackedTemplateResolvedRiskConfig, Conservative) {
                                  /*max_drawdown*/ 0.3, /*max_leverage*/ 2.0,
                                  /*var_limit*/ 0.25, /*jump_risk_limit*/ 0.05,
                                  /*max_correlation*/ 0.85,  // literal in its risk.json
-                                 /*max_gross*/ 4.0, /*max_net*/ 2.0,
+                                 /*max_gross*/ 8.0, /*max_net*/ 6.0,  // L_max and L_net_max (LOOP_SPEC section 12)
                                  /*confidence*/ 0.99, /*lookback*/ 252,
                                  /*capital*/ 500000.0,
                                  /*use_optimization*/ true});
@@ -679,7 +679,7 @@ TEST(TrackedTemplateResolvedRiskConfig, Base) {
                                  /*max_drawdown*/ 0.4, /*max_leverage*/ 4.0,
                                  /*var_limit*/ 0.15, /*jump_risk_limit*/ 0.1,
                                  /*max_correlation*/ 0.7,  // literal in its risk.json (schema 2)
-                                 /*max_gross*/ 4.0, /*max_net*/ 2.0,
+                                 /*max_gross*/ 8.0, /*max_net*/ 6.0,  // L_max and L_net_max (LOOP_SPEC section 12)
                                  /*confidence*/ 0.99, /*lookback*/ 252,
                                  /*capital*/ 500000.0,
                                  /*use_optimization*/ true});
@@ -1041,13 +1041,23 @@ TEST(EquityOptimizerGuard, RefusesOnlyWhenTheConfigAsksForTheOptimizer) {
 
 // LOOP_SPEC sections 2.5 and 7.7 (D40): portfolio.json "equity_slow_rule". Parsed strictly when
 // present; a futures book requires it (the four futures runners call require_loop_keys).
+// A risk.json whose carver module carries the overlay's three risk limits (ratios to tau).
+nlohmann::json overlay_risk() {
+    nlohmann::json risk = minimal_risk();
+    risk["modules"][0]["R_max"] = 2.25;
+    risk["modules"][0]["R_jump_max"] = 4.5;
+    risk["modules"][0]["R_shock_max"] = 4.0;
+    return risk;
+}
+
 TEST_F(ConfigLoaderTest, EquitySlowRuleIsParsed) {
     write_full_set("base", {},
                    {{"equity_slow_rule",
                      {{"symbols", {"M2K", "MES", "MNQ", "MYM"}},
                       {"pairs", nlohmann::json::array({{32, 128}, {64, 256}})}}},
                     {"sizing_mode", "half_compounding"},
-                    {"starting_capital", 1'000'000.0}});
+                    {"starting_capital", 1'000'000.0}},
+                   overlay_risk());
     auto r = ConfigLoader::load(base_, "base");
     ASSERT_TRUE(r.is_ok()) << (r.error() ? r.error()->what() : "no error");
     const auto& rule = r.value().equity_slow_rule;
@@ -1094,14 +1104,15 @@ TEST_F(ConfigLoaderTest, AMalformedEquitySlowRuleIsALoadError) {
 // book's initial_capital.
 TEST_F(ConfigLoaderTest, TheSizingModeAndStartingCapitalAreRequiredOnAFuturesBook) {
     const nlohmann::json rule = {{"symbols", {"MES"}}, {"pairs", nlohmann::json::array({{32, 128}})}};
-    write_full_set("base", {}, {{"equity_slow_rule", rule}});
+    write_full_set("base", {}, {{"equity_slow_rule", rule}}, overlay_risk());
     auto r = ConfigLoader::load(base_, "base");
     ASSERT_TRUE(r.is_ok()) << (r.error() ? r.error()->what() : "");
     auto required = ConfigLoader::require_loop_keys(r.value());
     ASSERT_TRUE(required.is_error());
     EXPECT_NE(std::string(required.error()->what()).find("sizing_mode"), std::string::npos);
 
-    write_full_set("base", {}, {{"equity_slow_rule", rule}, {"sizing_mode", "half_compounding"}});
+    write_full_set("base", {}, {{"equity_slow_rule", rule}, {"sizing_mode", "half_compounding"}},
+                   overlay_risk());
     r = ConfigLoader::load(base_, "base");
     ASSERT_TRUE(r.is_ok());
     required = ConfigLoader::require_loop_keys(r.value());
@@ -1111,7 +1122,8 @@ TEST_F(ConfigLoaderTest, TheSizingModeAndStartingCapitalAreRequiredOnAFuturesBoo
     write_full_set("base", {},
                    {{"equity_slow_rule", rule},
                     {"sizing_mode", "half_compounding"},
-                    {"starting_capital", 1'000'000.0}});
+                    {"starting_capital", 1'000'000.0}},
+                   overlay_risk());
     r = ConfigLoader::load(base_, "base");
     ASSERT_TRUE(r.is_ok()) << (r.error() ? r.error()->what() : "");
     EXPECT_EQ(r.value().sizing_mode, "half_compounding");
@@ -1134,5 +1146,42 @@ TEST_F(ConfigLoaderTest, ABadSizingModeOrStartingCapitalIsALoadError) {
         auto r = ConfigLoader::load(base_, "base");
         ASSERT_TRUE(r.is_error()) << bad.dump();
         EXPECT_NE(std::string(r.error()->what()).find("starting_capital"), std::string::npos);
+    }
+}
+
+
+// LOOP_SPEC sections 4, 7.7 and 12: the overlay's three risk limits on the carver module, ratios to
+// tau. All three or none; a futures book requires them.
+TEST_F(ConfigLoaderTest, TheOverlayLimitsAreParsedAndRequiredOnAFuturesBook) {
+    const nlohmann::json keys = {
+        {"equity_slow_rule", {{"symbols", {"MES"}}, {"pairs", nlohmann::json::array({{32, 128}})}}},
+        {"sizing_mode", "half_compounding"},
+        {"starting_capital", 1'000'000.0}};
+    write_full_set("base", {}, keys);
+    auto r = ConfigLoader::load(base_, "base");
+    ASSERT_TRUE(r.is_ok()) << (r.error() ? r.error()->what() : "");
+    auto required = ConfigLoader::require_loop_keys(r.value());
+    ASSERT_TRUE(required.is_error()) << "a carver module without the three limits";
+    EXPECT_NE(std::string(required.error()->what()).find("R_max"), std::string::npos);
+
+    write_full_set("base", {}, keys, overlay_risk());
+    r = ConfigLoader::load(base_, "base");
+    ASSERT_TRUE(r.is_ok()) << (r.error() ? r.error()->what() : "");
+    EXPECT_TRUE(ConfigLoader::require_loop_keys(r.value()).is_ok());
+    const auto* carver = std::get_if<CarverModuleConfig>(&r.value().risk_schema.portfolio.at(0).params);
+    ASSERT_NE(carver, nullptr);
+    EXPECT_DOUBLE_EQ(carver->r_max, 2.25);
+    EXPECT_DOUBLE_EQ(carver->r_jump_max, 4.5);
+    EXPECT_DOUBLE_EQ(carver->r_shock_max, 4.0);
+    EXPECT_EQ(r.value().risk_schema.portfolio.at(0).to_json().value("R_max", 0.0), 2.25);
+
+    // some of the three, or a value that is not a positive number, is a load error
+    nlohmann::json some = minimal_risk();
+    some["modules"][0]["R_max"] = 2.25;
+    EXPECT_NE(load_error(some).find("come together"), std::string::npos);
+    for (const nlohmann::json& bad : {nlohmann::json(0), nlohmann::json(-1.0), nlohmann::json("2.25")}) {
+        nlohmann::json risk = overlay_risk();
+        risk["modules"][0]["R_jump_max"] = bad;
+        EXPECT_NE(load_error(risk).find("R_jump_max"), std::string::npos) << bad.dump();
     }
 }

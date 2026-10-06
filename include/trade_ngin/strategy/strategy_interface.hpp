@@ -77,6 +77,31 @@ public:
     virtual Result<void> seed_history(const std::vector<Bar>& /*bars*/) { return Result<void>(); }
 
     /**
+     * @brief One symbol's inputs to the risk overlay (LOOP_SPEC section 4), from the strategy's own
+     *        consumed series as of its last signal bar.
+     *
+     * `day` and `returns` are the symbol's last bars that have an adjusted percentage return (the
+     * adjusted change over the raw previous close; 0 on a contract-switch bar), oldest first, the
+     * date as a whole day number. `close` is the last consumed raw close and `multiplier` the
+     * contract multiplier, the two a position's weight is valued on. `jump_sigma_daily` is the
+     * 99th percentile of the symbol's trailing 2,520 short-run volatilities, each as a daily
+     * standard deviation (the overlay annualises it on the gate window's factor).
+     */
+    struct OverlaySeries {
+        std::vector<double> day;
+        std::vector<double> returns;
+        double close{0.0};
+        double multiplier{1.0};
+        double jump_sigma_daily{0.0};
+    };
+
+    /// Fills `out` and returns true when the strategy holds such a series for `symbol`; a
+    /// strategy that keeps none returns false.
+    virtual bool overlay_series(const std::string& /*symbol*/, OverlaySeries* /*out*/) const {
+        return false;
+    }
+
+    /**
      * @brief Set backtest mode for this strategy
      * @param is_backtest True if running in backtest mode (stores daily PnL), false for live (cumulative PnL)
      * @note Default implementation does nothing. Override in BaseStrategy for backtest-specific behavior.

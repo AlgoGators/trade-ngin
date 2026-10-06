@@ -56,6 +56,9 @@ set(TEST_SOURCES
     instruments/test_option.cpp
     instruments/test_instrument_registry.cpp
     risk/test_risk_manager.cpp
+    risk/test_overlay.cpp
+    risk/test_overlay_module.cpp
+    risk/test_overlay_wiring.cpp
     risk/test_risk_adjusted_returns.cpp
     risk/test_risk_modules.cpp
     risk/test_risk_module_config.cpp
