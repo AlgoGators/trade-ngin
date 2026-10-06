@@ -175,6 +175,41 @@ def test_first_day_failure_rolls_back_input_positions_financials_and_receipt(fir
 
 
 @pytest.mark.parametrize("desk", ["futures"], indirect=True)
+@pytest.mark.parametrize("mutation", ["lease", "instrument", "currency"])
+def test_first_day_input_must_match_exact_market_authority(first_day, mutation):
+    conn, _ = first_day
+    # Re-hash the changed payload, so this exercises authority binding rather
+    # than merely detecting an inconsistent content digest.
+    with conn.cursor() as cur:
+        cur.execute("""CREATE FUNCTION trading.qt_test_canonical(j jsonb) RETURNS text LANGUAGE plpgsql AS $$
+          DECLARE result text;
+          BEGIN
+            IF jsonb_typeof(j)='object' THEN
+              SELECT '{'||coalesce(string_agg(to_jsonb(key)::text||':'||trading.qt_test_canonical(value),',' ORDER BY key COLLATE "C"),'')||'}'
+                INTO result FROM jsonb_each(j);
+            ELSIF jsonb_typeof(j)='array' THEN
+              SELECT '['||coalesce(string_agg(trading.qt_test_canonical(value),',' ORDER BY ord),'')||']'
+                INTO result FROM jsonb_array_elements(j) WITH ORDINALITY a(value,ord);
+            ELSE result := j::text;
+            END IF;
+            RETURN result;
+          END $$""")
+        change = {
+            'lease': "NEW.valid_until := NEW.valid_until+interval '1 day';",
+            'instrument': "NEW.payload := jsonb_set(NEW.payload,'{instruments,0,price_model_number}','\"101\"'::jsonb);",
+            'currency': "NEW.payload := jsonb_set(NEW.payload,'{currency}','\"EUR\"'::jsonb);",
+        }[mutation]
+        cur.execute("CREATE FUNCTION trading.mutate_first_day_input() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN "
+            + change + " NEW.content_digest := encode(sha256(convert_to(trading.qt_test_canonical(NEW.payload),'UTF8')),'hex'); "
+            "RETURN NEW; END $$; CREATE TRIGGER mutate_first_day_input BEFORE INSERT ON trading.qt_desk_accounting_inputs "
+            "FOR EACH ROW EXECUTE FUNCTION trading.mutate_first_day_input()")
+    before = state(conn)
+    result = process()
+    assert result.returncode != 0, "Contradictory first-day market authority was accepted: "+mutation
+    assert state(conn) == before
+
+
+@pytest.mark.parametrize("desk", ["futures"], indirect=True)
 def test_real_first_day_finalizes_on_day_two_without_invented_predecessor(first_day):
     conn, original_market = first_day
     result = process()
