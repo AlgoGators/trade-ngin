@@ -647,7 +647,26 @@ void AssetCostConfigRegistry::register_config(const AssetCostConfig& config) {
 AssetCostConfig AssetCostConfigRegistry::get_config(const std::string& symbol,
                                                     AssetType asset_type,
                                                     AssetLookupObservation* observation) const {
-    if (asset_type != AssetType::EQUITY) return get_config(symbol, observation);
+    if (asset_type == AssetType::NONE) return get_config(symbol, observation);
+    if (asset_type == AssetType::FUTURE) {
+        if (observation) *observation = {};
+        if (const auto found = configs_.find(symbol); found != configs_.end()) {
+            if (observation) observation->path = AssetLookupPath::exact_symbol;
+            return found->second;
+        }
+        if (const auto dot = symbol.find('.'); dot != std::string::npos) {
+            if (const auto found = configs_.find(symbol.substr(0, dot)); found != configs_.end()) {
+                if (observation) observation->path = AssetLookupPath::pre_dot_root;
+                auto config = found->second;
+                config.symbol = symbol;
+                return config;
+            }
+        }
+        auto config = get_default_config();
+        config.symbol = symbol;
+        if (observation) observation->path = AssetLookupPath::fallback;
+        return config;
+    }
     if (observation) *observation = {};
     const auto found = equity_configs_.find(symbol);
     if (found != equity_configs_.end()) {

@@ -35,7 +35,7 @@ BookExecutionCharge charge_model_book_execution(
     // Preserve the exact tracked inputs and Decimal conversions, including
     // their exception categories. MODEL's caller handles those categories.
     const auto raw=input.asset_type==AssetType::FUTURE
-        ? manager.calculate_costs(input.symbol,input.quantity,input.reference_price,observation)
+        ? manager.calculate_costs(input.symbol,input.quantity,input.reference_price,AssetType::FUTURE,observation)
         : manager.calculate_costs(input.symbol,input.quantity,input.reference_price,AssetType::EQUITY,observation);
     return assemble(raw,false);
 }
@@ -63,7 +63,7 @@ Result<BookExecutionCharge> charge_book_execution(
         auto* used=observation?observation:&local;
         const auto raw=input.asset_type==AssetType::FUTURE
             ? manager.calculate_costs(input.symbol,input.signed_quantity.as_double(),input.reference_price,
-                input.adv,input.volatility_multiplier,used)
+                input.adv,input.volatility_multiplier,AssetType::FUTURE,used)
             : manager.calculate_costs(input.symbol,input.signed_quantity.as_double(),input.reference_price,
                 input.adv,input.volatility_multiplier,AssetType::EQUITY,used);
         // Each admitted QT instrument is registered by its exact symbol/domain.

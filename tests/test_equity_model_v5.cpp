@@ -59,7 +59,7 @@ TEST(EquityModelV5, DefaultFuturesPolicySerializationRetainsExistingShape) {
     EXPECT_EQ(live.to_json(),nlohmann::json({{"historical_days",300}}));
     PortfolioConfig portfolio;
     EXPECT_FALSE(portfolio.allow_fractional_positions);
-    EXPECT_FALSE(portfolio.to_json().contains("allow_fractional_positions"));
+    EXPECT_EQ(portfolio.to_json().at("allow_fractional_positions"),false);
 }
 
 TEST(EquityModelV5, ActualEquityPolicySnapshotRecordsParsedAndDefaultedValues) {
@@ -76,6 +76,8 @@ TEST(EquityModelV5, FractionalOptInAcceptsTheActualManagerFirstPassWithoutRoundi
     PortfolioConfig config;config.total_capital=1000;config.allow_fractional_positions=true;
     PortfolioManager manager(config,"EQ_COMPAT_FRACTIONAL");
     auto strategy=std::make_shared<FixedShares>("EQ_COMPAT_FRACTIONAL_STRATEGY");
+    ASSERT_TRUE(strategy->initialize().is_ok());
+    ASSERT_TRUE(strategy->start().is_ok());
     ASSERT_FALSE(manager.add_strategy(strategy,1,false,false).is_error());
     PortfolioConsumptionTrace trace;
     ASSERT_FALSE(manager.process_market_data({bar("2026-09-25",10)},true,std::nullopt,&trace).is_error());
@@ -89,6 +91,8 @@ TEST(EquityModelV5, DefaultManagerStillRoundsWholeContractsAfterItsExistingLoop)
     PortfolioConfig config;config.total_capital=1000;
     PortfolioManager manager(config,"FUT_COMPAT_FRACTIONAL");
     auto strategy=std::make_shared<FixedShares>("FUT_COMPAT_FRACTIONAL_STRATEGY");
+    ASSERT_TRUE(strategy->initialize().is_ok());
+    ASSERT_TRUE(strategy->start().is_ok());
     ASSERT_FALSE(manager.add_strategy(strategy,1,false,false).is_error());
     PortfolioConsumptionTrace trace;
     ASSERT_FALSE(manager.process_market_data({bar("2026-09-25",10)},true,std::nullopt,&trace).is_error());

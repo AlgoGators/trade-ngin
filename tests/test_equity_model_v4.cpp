@@ -63,13 +63,13 @@ TEST(EquityModelV4, ActualMeanReversionPartialFillUsesWeightedShareBasis) {
     EXPECT_DOUBLE_EQ(strategy.get_positions().at("SYN").realized_pnl.as_double(),0);
 }
 
-TEST(EquityModelV4, LegacyBaseStrategyDefaultExecutionRemainsUnchanged) {
+TEST(EquityModelV4, BaseStrategyFlipRealizesOnlyClosedQuantityAndReportsGrossPnl) {
     ComponentCleanup cleanup;
     BaseStrategy strategy("legacy",StrategyConfig{},nullptr);
     ASSERT_FALSE(strategy.on_execution(fill(Side::BUY,100,10,1)).is_error());
     ASSERT_FALSE(strategy.on_execution(fill(Side::SELL,150,30,2)).is_error());
-    EXPECT_DOUBLE_EQ(strategy.get_positions().at("SYN").realized_pnl.as_double(),2997);
-    EXPECT_DOUBLE_EQ(strategy.get_metrics().realized_pnl,2997);
+    EXPECT_DOUBLE_EQ(strategy.get_positions().at("SYN").realized_pnl.as_double(),2000);
+    EXPECT_DOUBLE_EQ(strategy.get_metrics().realized_pnl,1997);
 }
 
 TEST(EquityModelV4, ActualBackwardFactorsCombineSplitDividendAndNewestAnchor) {

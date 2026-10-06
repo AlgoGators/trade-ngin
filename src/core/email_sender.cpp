@@ -3177,7 +3177,7 @@ std::string EmailSender::format_single_strategy_table(
                 const double price_for_margin = position.average_price.as_double();
                 margin_for_position =
                     instrument->get_margin_requirement(price_for_margin, signed_qty);
-                if (margin_for_position <= 0) {
+                if (margin_for_position < 0 || (signed_qty != 0 && margin_for_position == 0)) {
                     ERROR("CRITICAL: Invalid margin requirement " +
                           std::to_string(margin_for_position) + " for " + lookup_sym +
                           " (price=" + std::to_string(price_for_margin) +
