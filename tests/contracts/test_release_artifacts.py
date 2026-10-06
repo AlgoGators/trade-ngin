@@ -8,7 +8,10 @@ import sys
 import tempfile
 import unittest
 
-import test_qt_evaluator_bundle as bundle_contract
+if __package__:
+    from . import test_qt_evaluator_bundle as bundle_contract
+else:
+    import test_qt_evaluator_bundle as bundle_contract
 
 
 ROOT = Path(__file__).resolve().parents[2]

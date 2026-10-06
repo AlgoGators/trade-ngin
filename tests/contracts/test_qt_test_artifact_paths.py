@@ -81,6 +81,15 @@ class QtTestArtifactPaths(unittest.TestCase):
             env={"PATH": os.environ.get("PATH", "")})
         self.assertEqual(completed.returncode, 0, completed.stderr)
 
+    def test_bundle_contracts_import_from_repository_root(self):
+        completed = subprocess.run(
+            [sys.executable, "-B", "-c",
+             "import tests.contracts.test_qt_built_bundle; "
+             "import tests.contracts.test_release_artifacts"],
+            cwd=ROOT, capture_output=True, text=True,
+            env={"PATH": os.environ.get("PATH", ""), "PYTHONDONTWRITEBYTECODE": "1"})
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+
 
 if __name__ == "__main__":
     unittest.main()

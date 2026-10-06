@@ -1,7 +1,10 @@
 """A build target must package its own actual binary, engine and metadata."""
 import copy
 import unittest
-from test_qt_evaluator_bundle import QtEvaluatorBundleContract, CONTRACT
+if __package__:
+    from .test_qt_evaluator_bundle import QtEvaluatorBundleContract, CONTRACT
+else:
+    from test_qt_evaluator_bundle import QtEvaluatorBundleContract, CONTRACT
 
 
 class BuiltBundleTest(unittest.TestCase):
