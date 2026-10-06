@@ -198,6 +198,7 @@ set(TRADE_NGIN_SOURCES
     src/core/config_version.cpp
     src/core/config_base.cpp
     src/core/config_loader.cpp
+    src/core/live_config_override.cpp
     src/core/logger.cpp
     src/core/qt_sha256.cpp
     src/core/email_sender.cpp

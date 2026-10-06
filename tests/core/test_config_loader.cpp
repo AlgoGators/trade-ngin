@@ -1197,3 +1197,17 @@ TEST(LiveStalenessConfig, TrackedTemplateDeclaresEveryLiveKeyTheStructSerialises
                "default is silently in force (C-1 C5 / T2.9)";
     }
 }
+
+TEST_F(ConfigLoaderTest, TradingExportLoadsSchemaTwoWithoutDatabaseOrEmailFiles) {
+    write_full_set("book", {}, {{"initial_capital", 1000000.0}});
+    auto defaults = minimal_defaults(); defaults.erase("database");
+    write_json(base_ / "defaults.json", defaults);
+    std::filesystem::remove(base_ / "portfolios" / "book" / "email.json");
+    const auto result = ConfigLoader::load_trading(base_, "book");
+    ASSERT_TRUE(result.is_ok());
+    EXPECT_TRUE(result.value().database.host.empty());
+    EXPECT_TRUE(result.value().database.password.empty());
+    EXPECT_TRUE(result.value().email.password.empty());
+    EXPECT_EQ(result.value().risk_schema.schema, 2);
+    EXPECT_EQ(result.value().initial_capital, 1000000.0);
+}

@@ -251,40 +251,6 @@ bool runtime_control_enabled(const char* value) {
     return value != nullptr && std::string(value) == "true";
 }
 
-Result<nlohmann::json> build_runtime_trading_snapshot(const AppConfig& config) {
-    nlohmann::json snapshot = {
-        {"snapshot_version", 1}, {"portfolio_id", config.portfolio_id},
-        {"initial_capital", config.initial_capital},
-        {"reserve_capital_pct", config.reserve_capital_pct},
-        {"benchmark_mode", config.benchmark_mode}, {"execution", config.execution.to_json()},
-        {"optimization", config.opt_config.to_json()}, {"risk", config.risk_config.to_json()},
-        {"max_drawdown", config.max_drawdown}, {"max_leverage", config.max_leverage},
-        {"backtest", config.backtest.to_json()}, {"live", config.live.to_json()},
-        {"strategy_defaults", config.strategy_defaults.to_json()},
-        {"strategies", config.strategies_config}};
-    const auto has_secret_key = [](const auto& self, const nlohmann::json& value) -> bool {
-        if (value.is_object()) {
-            for (auto it = value.begin(); it != value.end(); ++it) {
-                std::string key = it.key();
-                std::transform(key.begin(), key.end(), key.begin(),
-                               [](unsigned char c) { return std::tolower(c); });
-                if (key.find("password") != std::string::npos ||
-                    key.find("secret") != std::string::npos ||
-                    key.find("token") != std::string::npos ||
-                    key.find("credential") != std::string::npos || key.rfind("smtp", 0) == 0 ||
-                    self(self, it.value())) return true;
-            }
-        } else if (value.is_array()) {
-            for (const auto& entry : value) if (self(self, entry)) return true;
-        }
-        return false;
-    };
-    if (has_secret_key(has_secret_key, snapshot))
-        return make_error<nlohmann::json>(ErrorCode::INVALID_ARGUMENT,
-                                         "runtime_snapshot_contains_secret_key");
-    return snapshot;
-}
-
 namespace {
 Result<StrategySelection> select_enabled_live_strategies_inner(
     const nlohmann::json& strategies_config, SelectionConsumption* observation);

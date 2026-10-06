@@ -443,6 +443,11 @@ public:
     static Result<AppConfig> load(const std::filesystem::path& config_base_path,
                                   const std::string& portfolio_name);
 
+    // Same schema-2 extraction/validation without connection credentials or logging.
+    static Result<AppConfig> parse_trading_config(const nlohmann::json& merged);
+    static Result<AppConfig> load_trading(const std::filesystem::path& config_base_path,
+                                          const std::string& portfolio_name);
+
     /**
      * @brief Load configuration from legacy single-file format
      * @param config_file_path Path to legacy config file (e.g., "./config.json")
@@ -508,7 +513,8 @@ private:
      * @param config Extracted AppConfig
      * @return Result indicating success or failure
      */
-    static Result<void> validate_config(const AppConfig& config);
+    static Result<void> validate_config(const AppConfig& config, bool require_database = true,
+                                        bool warn_windows = true);
 
     /**
      * @brief Log a brief configuration summary
