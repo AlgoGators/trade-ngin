@@ -154,8 +154,9 @@ BEGIN
   )
   INSERT INTO trading.qt_desk_dispatch_attempts(
     decision_id,attempt_number,owner_token,phase,outcome,error_code)
-  SELECT decision_id,attempt_count,owner_token,'dispatcher','dead_letter','retry_exhausted'
-    FROM closed;
+  SELECT c.decision_id,c.attempt_count,c.owner_token,
+    'dispatcher','dead_letter','retry_exhausted'
+    FROM closed c;
   SELECT j.decision_id INTO selected FROM trading.qt_desk_dispatch_jobs j
    WHERE (j.state IN ('ready','retry_wait') AND j.next_attempt_at<=clock_timestamp())
       OR (j.state='running' AND j.lease_expires_at<clock_timestamp()
