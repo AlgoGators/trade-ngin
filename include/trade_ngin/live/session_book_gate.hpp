@@ -416,6 +416,78 @@ inline Result<StrictExecutionOutcome> execute_strategy_day_strict(
     return Result<StrictExecutionOutcome>(out);
 }
 
+/// The exec_id suffix of a forecast-sign close (LOOP_SPEC section 5.2): the fill that takes a held
+/// position to flat before the day's search, stored ahead of the symbol's other fill of the day.
+inline constexpr const char* kSignCloseSuffix = "_SC";
+
+inline bool is_sign_close(const ExecutionReport& exec) {
+    const std::string suffix(kSignCloseSuffix);
+    return exec.exec_id.size() >= suffix.size() &&
+           exec.exec_id.compare(exec.exec_id.size() - suffix.size(), suffix.size(), suffix) == 0;
+}
+
+/**
+ * @brief execute_strategy_day_strict with the day's forecast-sign closes (section 5.2): a symbol
+ *        in `sign_closes` the sleeve held is first closed with ONE fill to flat (exec_id and
+ *        order_id suffixed kSignCloseSuffix), and the move from flat to today's quantity is a
+ *        second fill; every other symbol trades once, as before. Both fills are priced STRICT
+ *        from the same T-1 close, so a symbol is filled twice or rolled back to its stored row.
+ */
+inline Result<StrictExecutionOutcome> execute_strategy_day_strict(
+    ExecutionManager& execution_manager, std::unordered_map<std::string, Position>& current,
+    const std::unordered_map<std::string, Position>& previous,
+    const std::unordered_map<std::string, double>& t1_closes, const Timestamp& now,
+    const std::map<std::string, double>& sign_closes) {
+    if (sign_closes.empty()) {
+        return execute_strategy_day_strict(execution_manager, current, previous, t1_closes, now);
+    }
+    // The closed book: the stored T-1 rows with the sign-closed symbols at flat.
+    std::unordered_map<std::string, Position> closed = previous;
+    std::unordered_map<std::string, Position> closing = previous;
+    for (const auto& [symbol, fill] : sign_closes) {
+        (void)fill;
+        auto row = closed.find(symbol);
+        if (row == closed.end() || row->second.quantity.as_double() == 0.0) continue;
+        row->second.quantity = Decimal(0.0);
+        closing[symbol].quantity = Decimal(0.0);
+    }
+    StrictExecutionOutcome out;
+    std::vector<std::string> unpriced_close;
+    auto closes = execution_manager.generate_daily_executions(closing, previous, t1_closes, now,
+                                                              PricingPolicy::STRICT,
+                                                              &unpriced_close);
+    if (closes.is_error()) {
+        return make_error<StrictExecutionOutcome>(closes.error()->code(), closes.error()->what(),
+                                                  "execute_strategy_day_strict");
+    }
+    for (auto exec : closes.value()) {
+        exec.exec_id += kSignCloseSuffix;
+        exec.order_id += kSignCloseSuffix;
+        out.executions.push_back(std::move(exec));
+    }
+    // A close that could not be priced did not happen: the symbol's second step starts from its
+    // stored row, where the plain rule below rolls it back.
+    for (const auto& symbol : unpriced_close) {
+        auto prev_it = previous.find(symbol);
+        if (prev_it != previous.end()) closed[symbol] = prev_it->second;
+    }
+    auto rest = execute_strategy_day_strict(execution_manager, current, closed, t1_closes, now);
+    if (rest.is_error()) return rest;
+    for (const auto& symbol : rest.value().rolled_back) {
+        // rolled back to the STORED row, not to the closed book's flat row
+        auto prev_it = previous.find(symbol);
+        if (prev_it != previous.end() && prev_it->second.quantity.as_double() != 0.0) {
+            current[symbol] = prev_it->second;
+            current[symbol].last_update = now;
+        }
+    }
+    out.executions.insert(out.executions.end(), rest.value().executions.begin(),
+                          rest.value().executions.end());
+    out.unpriced = rest.value().unpriced;
+    out.rolled_back = rest.value().rolled_back;
+    return Result<StrictExecutionOutcome>(out);
+}
+
 /**
  * @brief The assertion: every book change left on any sleeve has a positive T-1 price. A change
  *        is a quantity that differs from the stored T-1 row, or a stored non-zero row absent from

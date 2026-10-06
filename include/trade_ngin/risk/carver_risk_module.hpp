@@ -86,22 +86,7 @@ public:
     /// records a PARTIAL apply: on a lap whose multiply skipped a pinned sleeve the level is
     /// no longer a true statement about the book this module measured, so it is marked and
     /// commit 9's level rule declines to divide by it.
-    /// finalize (below) must NOT re-run process_positions, whose RISK_DEBUG and VAR_DEBUG lines
-    /// and second result line would change the run's log; it reads the book with leverage_of.
     void on_applied(const RiskApplied& applied, const RiskContext& ctx) override;
-
-    /// The written leverage policy (HD 2026-09-20): the leverage limit is enforced to within
-    /// whole-contract rounding. At the PM's post-rounding point this reads the SHIPPED book's
-    /// leverage with RiskManager::leverage_of (silent: process_positions is not re-run) and, the
-    /// first time on a TRADING DAY (ctx.as_of, else the rebalance's newest bar) that the final
-    /// book is over its limit, returns a WARN whose reason names the day and carries the excess in
-    /// contracts. Never on a warm-up rebalance (ctx.is_warmup), which ships nothing. Otherwise NONE.
-    /// (T-7b-2 C9w; it latched once per run before, so a backtest said nothing after its first
-    /// over-limit day and a replaying runner's one line described a replayed book.)
-    Result<RiskDecision> finalize(const std::unordered_map<std::string, Position>& book,
-                                  const RiskContext& ctx) override;
-    /// The trading day finalize last warned on ("" before the first WARN).
-    const std::string& leverage_warned_day() const { return leverage_warned_day_; }
 
     /// SCALE iff r.risk_exceeded, with scale = r.recommended_scale bit for bit; else NONE with
     /// scale 1.0. metrics = r in both cases. Keyed on risk_exceeded, NOT on `scale != 1.0`: a NaN
@@ -112,16 +97,12 @@ public:
     /// (F5's definition). Recomputed from the window; nothing caches it.
     int complete_dates_in_window() const;
 
-    /// LOOP_SPEC section 4: with limits set, evaluate reads the book in CAPITAL TERMS
-    /// (risk/overlay.hpp) on the context's overlay inputs: the four readings on the weights
-    /// x = N M P / E, the limits as ratios to tau, and m = the smallest multiplier, which is the
-    /// rate it asks for on that lap's book. Without limits, or on a context that carries no
-    /// inputs, it reads the book as before.
+    /// LOOP_SPEC sections 4 and 7.7: the overlay's limits (the three risk limits as ratios to tau,
+    /// the gross and net leverage limits). A book that names an overlay sleeve is rebalanced by
+    /// the PortfolioManager's one pass, which reads its limits from here and evaluates no module:
+    /// this module is then the limits' carrier and the name on the rebalance's decision row.
     void set_overlay_limits(const overlay::LimitRatios& ratios) { overlay_ratios_ = ratios; }
     const overlay::LimitRatios& overlay_limits() const { return overlay_ratios_; }
-    /// The last evaluation in capital terms (empty window before the first).
-    const overlay::Evaluation& last_overlay() const { return last_overlay_; }
-    bool overlay_read() const { return overlay_read_; }
 
     const RiskManager& manager() const { return rm_; }
     int min_gate_dates() const { return min_gate_dates_; }
@@ -142,9 +123,7 @@ private:
     RiskManager rm_;          ///< registers "RiskManager"; this class registers and logs nothing more
     int min_gate_dates_{21};  ///< read only into RiskDecision::blind
     MarketData market_data_;  ///< built by on_bars, read by evaluate on the same lap
-    overlay::LimitRatios overlay_ratios_;  ///< unset: the module reads the book as before
-    overlay::Evaluation last_overlay_;
-    bool overlay_read_{false};  ///< the last evaluate read the book in capital terms
+    overlay::LimitRatios overlay_ratios_;  ///< unset: the book has no overlay
     std::vector<Bar> window_;  ///< was PortfolioManager::risk_history_
     size_t dates_dropped_{0};  ///< F5's count on the last on_bars
     bool f5_engaged_{false};   ///< whether F5 filtered the last window
@@ -162,7 +141,6 @@ private:
     double applied_level_{1.0};            ///< product of the factors applied this rebalance
     bool level_partial_{false};            ///< a multiply skipped a pinned scope: the level lies
     double last_requested_{1.0};           ///< the scale evaluate last requested this rebalance
-    std::string leverage_warned_day_;      ///< the trading day finalize's WARN last fired on
 };
 
 }  // namespace trade_ngin

@@ -317,12 +317,13 @@ TEST(OptimizerCostPenaltyScalarConfig, AnIntegerScalarIsUnchangedAndTheDefaultIs
     EXPECT_DOUBLE_EQ(c.cost_penalty_scalar, 0.0);
 }
 
-TEST(OptimizerCostPenaltyScalarConfig, TheTrackedTemplateCarriesFifty) {
+// LOOP_SPEC sections 5.2 and 12 (D38): the search's cost multiplier is 100.
+TEST(OptimizerCostPenaltyScalarConfig, TheTrackedTemplateCarriesOneHundred) {
     const std::string src = read_source("config_template/defaults.json");
     if (src.empty()) GTEST_SKIP() << "config_template/defaults.json not found";
     const auto j = nlohmann::json::parse(src);
     ASSERT_TRUE(j.contains("optimization"));
-    EXPECT_DOUBLE_EQ(j.at("optimization").at("cost_penalty_scalar").get<double>(), 50.0);
+    EXPECT_DOUBLE_EQ(j.at("optimization").at("cost_penalty_scalar").get<double>(), 100.0);
 }
 
 // -----------------------------------------------------------------------------------------------

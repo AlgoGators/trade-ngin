@@ -73,11 +73,6 @@ Result<void> BacktestCoordinator::create_components() {
     BacktestExecutionConfig exec_config;
     execution_manager_ = std::make_unique<BacktestExecutionManager>(exec_config);
 
-    // Create portfolio constraints manager
-    PortfolioConstraintsConfig constraints_config;
-    constraints_config.use_optimization = config_.use_optimization;
-    constraints_manager_ = std::make_unique<BacktestPortfolioConstraints>(constraints_config);
-
     return Result<void>();
 }
 
@@ -443,6 +438,12 @@ Result<BacktestResults> BacktestCoordinator::run_portfolio(
     // Add executions and equity curve to results
     results.executions = std::move(all_executions);
     results.equity_curve = std::move(equity_curve);
+    if (!equity_risk_detail_.empty()) {
+        results.equity_risk_detail.assign(results.equity_curve.size(), std::string());
+        for (const auto& [index, detail] : equity_risk_detail_) {
+            if (index < results.equity_risk_detail.size()) results.equity_risk_detail[index] = detail;
+        }
+    }
 
     // Get final portfolio positions: sum per-strategy quantities (Σ qᵢ).
     // get_portfolio_positions() applies allocation a second time, producing
@@ -598,17 +599,6 @@ Result<void> BacktestCoordinator::process_day(
 
         // Update equity curve
         equity_curve.emplace_back(timestamp, portfolio_value);
-
-        // Apply portfolio constraints if enabled (updates current_positions_)
-        if (constraints_manager_ && constraints_manager_->is_optimization_enabled()) {
-            constraints_manager_->update_historical_returns(bars);
-            auto constraint_result =
-                constraints_manager_->apply_constraints(bars, current_positions_, risk_metrics);
-            if (constraint_result.is_error()) {
-                WARN("Constraint application failed: " +
-                     std::string(constraint_result.error()->what()));
-            }
-        }
 
         // Store previous bars for next iteration
         previous_bars_ = bars;
@@ -923,6 +913,7 @@ Result<void> BacktestCoordinator::process_portfolio_day(
         // initial capital, so warm-up sizes on it and is not logged.
         if (size_on_equity_enabled_) {
             const HalfCompounding sizing = backtest_half_compounding(equity_curve, initial_capital);
+            cycle_account_value_ = sizing.account;
             auto sized = portfolio->set_sizing_capital(sizing.capital);
             if (sized.is_error()) {
                 return sized;
@@ -1115,7 +1106,7 @@ Result<void> BacktestCoordinator::process_portfolio_day(
             INFO(format_risk_delivered(
                 summarize_applied_risk(this_cycle),
                 signal_feed->empty() ? DeliveredCut{} : portfolio->last_delivered_cut(),
-                core::format_utc_date(timestamp)));
+                core::format_utc_date(timestamp), "capped_target_gross"));
         }
 
         std::vector<ExecutionReport> period_executions;
@@ -1509,6 +1500,15 @@ Result<void> BacktestCoordinator::process_portfolio_day(
 
         // Add to equity curve
         equity_curve.emplace_back(timestamp, portfolio_value);
+        // Section 7.3: the row of a sized rebalance carries the loop's record of it. An all-JUNK
+        // cycle ran no rebalance and a refused one stores none: both rows stay NULL.
+        if (!signal_feed->empty()) {
+            const OnePassDay one_pass = portfolio->last_one_pass();
+            if (one_pass.stores_detail()) {
+                equity_risk_detail_[equity_curve.size() - 1] =
+                    risk_detail_json(one_pass, cycle_account_value_).dump();
+            }
+        }
 
         // Build the portfolio-level positions map by simple per-strategy sum
         // (Σ qᵢ). get_portfolio_positions() applies allocation a second time,
@@ -1660,9 +1660,6 @@ void BacktestCoordinator::reset() {
     if (execution_manager_) {
         execution_manager_->reset();
     }
-    if (constraints_manager_) {
-        constraints_manager_->reset();
-    }
 }
 
 double BacktestCoordinator::calculate_portfolio_value(
@@ -1740,6 +1737,8 @@ void BacktestCoordinator::reset_portfolio_state() {
     mark_change_.clear();
     row_held_id_.clear();
     risk_scale_report_enabled_ = false;
+    equity_risk_detail_.clear();
+    cycle_account_value_ = 0.0;
     size_on_equity_enabled_ = false;
     equity_cost_retier_enabled_ = false;
     equity_cost_retier_.reset();
@@ -2010,6 +2009,7 @@ Result<void> BacktestCoordinator::save_portfolio_results_to_db(
         equity_points.push_back({timestamp, equity});
     }
     results_manager->set_equity_curve(equity_points);
+    results_manager->set_equity_risk_detail(results.equity_risk_detail);
 
     // Collect per-strategy executions from PortfolioManager
     if (portfolio) {

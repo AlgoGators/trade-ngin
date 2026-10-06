@@ -375,6 +375,14 @@ Result<void> TrendFollowingStrategy::on_data(const std::vector<Bar>& data) {
                                                     window.day.end());
                 instrument_data.overlay_returns.assign(
                     window.returns.begin() + static_cast<long>(from), window.returns.end());
+                constexpr size_t kOptimiserBars = 756;
+                const size_t opt_from = bars > kOptimiserBars ? bars - kOptimiserBars : 0;
+                instrument_data.opt_days.assign(window.day.begin() + static_cast<long>(opt_from),
+                                                window.day.end());
+                instrument_data.opt_closes.assign(window.close.begin() + static_cast<long>(opt_from),
+                                                  window.close.end());
+                instrument_data.opt_levels.assign(window.level.begin() + static_cast<long>(opt_from),
+                                                  window.level.end());
             }
             instrument_data.current_volatility = estimate.valid ? estimate.sigma : 0.01;
 
@@ -416,6 +424,7 @@ Result<void> TrendFollowingStrategy::on_data(const std::vector<Bar>& data) {
                 }
             }
             const bool slow_rule_zeroed = ruled_forecast != estimate.combined;
+            instrument_data.slow_rule_zeroed = slow_rule_zeroed;
             instrument_data.current_forecast = ruled_forecast;
 
             // Load instruments if not yet cached
@@ -497,45 +506,11 @@ Result<void> TrendFollowingStrategy::on_data(const std::vector<Bar>& data) {
                                           prices.back(), instrument_data.optimal_position,
                                           slow_rule_zeroed);
 
-            // Apply buffering if enabled with error handling
-            double final_position = 0.0;
-            try {
-                double latest_price = prices.back();
-                if (trend_config_.use_position_buffering) {
-                    final_position = apply_position_buffer(symbol, raw_position, latest_price,
-                                                           instrument_data.current_volatility);
-                } else {
-                    final_position = raw_position;
-                }
-
-                std::string buffering_status = "";
-                if (!trend_config_.use_position_buffering) {
-                    buffering_status = " before dynamic optimization: ";
-                } else {
-                    buffering_status = " with rounding: ";
-                }
-
-                DEBUG("Symbol " + symbol + " final position" + buffering_status +
-                      std::to_string(final_position));
-
-                // Ensure position is reasonable (not NaN or infinite)
-                if (std::isnan(final_position) || std::isinf(final_position)) {
-                    WARN("Invalid final position for " + symbol + ", using previous position");
-
-                    // Use previous position or zero
-                    auto pos_it = positions_.find(symbol);
-                    final_position = (pos_it != positions_.end())
-                                         ? static_cast<double>(pos_it->second.quantity)
-                                         : 0.0;
-                }
-            } catch (const std::exception& e) {
-                WARN("Position buffering exception for " + symbol + ": " + e.what());
-
-                // Use previous position or zero as fallback
-                auto pos_it = positions_.find(symbol);
-                final_position = (pos_it != positions_.end())
-                                     ? static_cast<double>(pos_it->second.quantity)
-                                     : 0.0;
+            // The published position is N* itself (section 3.2): no buffer, no rounding.
+            double final_position = raw_position;
+            if (std::isnan(final_position) || std::isinf(final_position)) {
+                WARN("Invalid final position for " + symbol + ", using 0.0");
+                final_position = 0.0;
             }
 
             instrument_data.final_position = final_position;
@@ -715,7 +690,25 @@ bool TrendFollowingStrategy::overlay_series(const std::string& symbol, OverlaySe
     out->returns = data.overlay_returns;
     out->close = data.price_history.back();
     out->multiplier = data.contract_size;
+    // The contract size is cached on the symbol's first sized bar (on_data). Before that the cache
+    // holds its initial 1.0, so a symbol still in warm-up answers from the registry directly: the
+    // weight of one contract is the instrument's, whether or not the sleeve signals it yet.
+    if (data.contract_size == 1.0 && registry_) {
+        const std::string lookup = symbol.substr(0, symbol.find(".v."));
+        if (registry_->has_instrument(lookup)) {
+            if (const auto instrument = registry_->get_instrument(lookup)) {
+                out->multiplier = instrument->get_multiplier();
+            }
+        }
+    }
     out->jump_sigma_daily = data.estimate.valid ? data.estimate.jump_sigma_daily : 0.0;
+    out->optimal_position = data.optimal_position;
+    out->forecast = data.current_forecast;
+    out->signalling = is_signalling(symbol);
+    out->slow_rule_zeroed = data.slow_rule_zeroed;
+    out->opt_day = data.opt_days;
+    out->opt_close = data.opt_closes;
+    out->opt_level = data.opt_levels;
     return true;
 }
 
@@ -976,191 +969,14 @@ double TrendFollowingStrategy::calculate_position(const std::string& symbol, dou
         // The optimal position, before any limit
         if (optimal_position != nullptr) *optimal_position = position;
 
-        // Apply position limits as a safeguard
-        double final_position = position;
-
-        // 1. First apply contract-based limit (legacy safeguard)
-        double position_limit = 1000.0;
-        if (config_.position_limits.count(symbol) > 0) {
-            position_limit = config_.position_limits.at(symbol);
-        }
-        final_position = std::clamp(final_position, -position_limit, position_limit);
-
-        // 2. Apply notional-based limit (concentration control)
-        // Calculate target gross exposure based on max leverage
-        double target_gross_exposure = capital * config_.max_leverage;
-        double max_notional_per_symbol = target_gross_exposure * trend_config_.max_symbol_concentration;
-
-        double actual_notional = std::abs(final_position) * contract_size * price;
-
-        if (actual_notional > max_notional_per_symbol && max_notional_per_symbol > 0) {
-            double scale_factor = max_notional_per_symbol / actual_notional;
-            double original_position = final_position;
-            final_position *= scale_factor;
-
-            INFO("Notional concentration limit applied for " + symbol +
-                 ": scaled from " + std::to_string(original_position) +
-                 " to " + std::to_string(final_position) + " contracts " +
-                 "(notional: $" + std::to_string(actual_notional) +
-                 " -> $" + std::to_string(max_notional_per_symbol) +
-                 ", max " + std::to_string(trend_config_.max_symbol_concentration * 100.0) +
-                 "% of gross exposure)");
-        }
-
-        // Log contract limit hits
-        if (std::abs(position) >= position_limit * 0.99) {
-            WARN("Contract limit reached for " + symbol + ": " + std::to_string(position) +
-                 " capped at " + std::to_string(position_limit));
-        }
-
-        INFO("Final position: " + std::to_string(final_position) +
-             " (notional: $" + std::to_string(std::abs(final_position) * contract_size * price) + ")");
-
-        return final_position;
+        // LOOP_SPEC section 3.2 (D4, D13, D14): the position is published as it is, unbuffered,
+        // unrounded and unclamped. The per-name cap, the buffer and the rounding are the
+        // portfolio's one pass's.
+        return position;
     } else {
         ERROR("No instrument data found for " + symbol);
         return 0.0;  // Use neutral position
     }
-}
-
-double TrendFollowingStrategy::apply_position_buffer(const std::string& symbol, double raw_position,
-                                                     double price, double volatility) const {
-    if (!trend_config_.use_position_buffering) {
-        return raw_position;
-    }
-
-    // Validation
-    if (std::isnan(raw_position) || std::isinf(raw_position)) {
-        WARN("Invalid raw_position for " + symbol + ", returning 0");
-        return 0.0;
-    }
-
-    if (std::isnan(price) || price <= 0.0) {
-        WARN("Invalid price for " + symbol + ", returning 0");
-        return 0.0;
-    }
-
-    if (std::isnan(volatility) || std::isinf(volatility) || volatility <= 0.0) {
-        WARN("Invalid volatility for " + symbol + ", returning 0");
-        return 0.0;
-    }
-
-    // Get current position with safeguards
-    double current_position = 0.0;
-    auto pos_it = positions_.find(symbol);
-    bool pos_found = (pos_it != positions_.end());
-    if (pos_found) {
-        current_position = static_cast<double>(pos_it->second.quantity);
-
-        // Sanity check on current position
-        if (std::isnan(current_position) || std::isinf(current_position)) {
-            current_position = 0.0;
-        }
-    }
-
-    // T-7b-2 C9a (T-VOL C2): the Carver term reads the SIZING weight, the per-instrument
-    // InstrumentData::weight that calculate_position reads (sector-equal, from get_weights), not
-    // the flat trend_config_.weight: Carver's band is 10 percent of the instrument's own average
-    // position. A symbol with no instrument data has no sizing weight (calculate_position sizes it
-    // at 0), so its Carver term is 0 and the floor and the position term set the width.
-    double weight = 0.0;
-
-    // Get contract size from instrument registry (use cached value if available)
-    double contract_size = 1.0;
-    auto inst_data_it = instrument_data_.find(symbol);
-    if (inst_data_it != instrument_data_.end()) {
-        contract_size = inst_data_it->second.contract_size;
-        weight = std::max(0.0, inst_data_it->second.weight);
-    } else {
-        // Fallback: lookup from registry
-        try {
-            std::string lookup_symbol = symbol;
-            if (symbol.find(".v.") != std::string::npos) {
-                lookup_symbol = symbol.substr(0, symbol.find(".v."));
-            }
-            if (symbol.find(".c.") != std::string::npos) {
-                lookup_symbol = symbol.substr(0, symbol.find(".c."));
-            }
-
-            if (registry_ && registry_->has_instrument(lookup_symbol)) {
-                auto instrument = registry_->get_instrument(lookup_symbol);
-                if (instrument) {
-                    contract_size = instrument->get_multiplier();
-                }
-            }
-        } catch (const std::exception& e) {
-            WARN("Failed to get contract size for " + symbol + ": " + std::string(e.what()));
-            contract_size = 1.0;
-        }
-    }
-
-    // Buffer width = max(carver_natural, floor, position_factor × |current|). Anchored on
-    // CURRENT position, not raw, to create inertia for held positions: bigger held position →
-    // wider tolerance for raw drift. When current=0, position_term=0 and floor controls entry
-    // threshold (preserves small-natural instruments).
-    double raw_buffer_width = 0.1 * config_.capital_allocation * trend_config_.idm *
-                              trend_config_.risk_target * weight /
-                              (contract_size * price * trend_config_.fx_rate * volatility);
-    double position_term =
-        trend_config_.carver_buffer_position_factor * std::abs(current_position);
-    double buffer_width = std::max(
-        {trend_config_.carver_buffer_floor, raw_buffer_width, position_term});
-
-    DEBUG("Buffer width for " + symbol + ": " + std::to_string(buffer_width) +
-          " contracts (carver=" + std::to_string(raw_buffer_width) +
-          ", floor=" + std::to_string(trend_config_.carver_buffer_floor) +
-          ", pos_term=" + std::to_string(position_term) + ")");
-
-    // Calculate buffer bounds
-    double lower_buffer = raw_position - buffer_width;
-    double upper_buffer = raw_position + buffer_width;
-
-    // IMPLEMENTATION: Apply buffering logic
-    // If current position is within the buffer zone [lower_buffer, upper_buffer],
-    // keep the current position (no trade). Otherwise, trade to the buffer boundary.
-    double new_position;
-    std::string decision;
-    if (current_position < lower_buffer) {
-        // Current position is below the buffer zone - trade up to lower boundary
-        new_position = std::round(lower_buffer);
-        decision = "TRADE_UP_TO_LOWER";
-    } else if (current_position > upper_buffer) {
-        // Current position is above the buffer zone - trade down to upper boundary
-        new_position = std::round(upper_buffer);
-        decision = "TRADE_DOWN_TO_UPPER";
-    } else {
-        // Current position is within the buffer zone - no trade needed
-        new_position = std::round(current_position);
-        decision = "KEEP";
-    }
-
-    // BUFFER_TRACE: per-symbol buffer-state diagnostic (DEBUG level).
-    // Logs full buffer state per call so we can diagnose churn root cause.
-    DEBUG("BUFFER_TRACE: sym=" + symbol +
-         " pos_found=" + std::string(pos_found ? "Y" : "N") +
-         " current=" + std::to_string(current_position) +
-         " raw=" + std::to_string(raw_position) +
-         " width=" + std::to_string(buffer_width) +
-         " (carver=" + std::to_string(raw_buffer_width) +
-         " floor=" + std::to_string(trend_config_.carver_buffer_floor) +
-         " posT=" + std::to_string(position_term) + ")" +
-         " bounds=[" + std::to_string(lower_buffer) + "," + std::to_string(upper_buffer) + "]" +
-         " => " + decision + " new_position=" + std::to_string(new_position));
-
-    // Final safety check - cap positions to configured limits
-    double position_limit = 1000.0;
-    if (config_.position_limits.count(symbol) > 0) {
-        position_limit = config_.position_limits.at(symbol);
-    }
-
-    double final_position = std::max(-position_limit, std::min(position_limit, new_position));
-
-    if (std::abs(final_position - new_position) > 0.1) {
-        WARN("Position for " + symbol + " capped by position limit: " +
-             std::to_string(new_position) + " -> " + std::to_string(final_position));
-    }
-
-    return final_position;
 }
 
 double TrendFollowingStrategy::get_point_value_multiplier(const std::string& symbol) const {

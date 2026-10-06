@@ -58,6 +58,13 @@ struct CarverModuleConfig {
     double r_jump_max{0.0};
     double r_shock_max{0.0};
     bool overlay_limits() const { return r_max > 0.0 && r_jump_max > 0.0 && r_shock_max > 0.0; }
+    /// With the overlay's limits (LOOP_SPEC sections 5.3, 6.4 and 7.7), both required: the
+    /// per-name cap L on the sizing capital and the most contracts the trim removes in a day.
+    /// The three limits of the old gate (var_limit, jump_risk_limit, max_correlation) are RETIRED
+    /// on such a module and on its book's risk_reporting block: the loader refuses them there,
+    /// and the fields above hold RiskConfig's defaults.
+    double per_name_cap{0.0};
+    int trim_max{0};
     /// What the gate does with a configured symbol that has no bar in the window.
     /// "ignore" is today's fail-open behaviour and has to say why it is chosen.
     std::string missing_symbol_policy{"ignore"};
@@ -120,6 +127,10 @@ struct RiskReportingConfig {
     double confidence_level{0.0};
     int lookback_period{0};
 
+    /// The book's carver module carries the overlay's limits: var_limit, jump_risk_limit and
+    /// max_correlation are retired in this block (they hold RiskConfig's defaults, unread) and
+    /// to_json leaves them out.
+    bool overlay_book{false};
     RiskConfig to_risk_config() const;
     nlohmann::json to_json() const;
 };

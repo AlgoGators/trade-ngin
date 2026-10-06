@@ -103,6 +103,13 @@ struct Multiplier {
 
 Multiplier multiplier(const Readings& readings, const Limits& limits);
 
+/// Section 6.4: the rows of the weights that KEEP `term` (R, R_jump, R_shock, L_g, L_n) over: for R
+/// and R_jump the rows with a positive Euler contribution x_i (Sigma x)_i among the participants in
+/// R (a hedging row is not named); for R_shock every non-zero row in R_shock; for L_g every
+/// non-zero row; for L_n the rows on the net's side.
+std::vector<char> contributors(const std::vector<double>& weights, const GateWindow& window,
+                               const std::vector<double>& sigma_jump, const std::string& term);
+
 /// The p-th percentile (0..100) of the values by linear interpolation between order statistics.
 double percentile(std::vector<double> values, double pct);
 

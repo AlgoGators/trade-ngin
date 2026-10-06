@@ -51,6 +51,10 @@ const char* const kCarverKeys[] = {"id",
                                    "min_gate_dates",
                                    "missing_symbol_policy"};
 
+// The old gate's three limits, retired on a module that carries the overlay's limits and on the
+// risk_reporting block of its book (LOOP_SPEC section 7.7).
+const char* const kRetiredGateKeys[] = {"var_limit", "jump_risk_limit", "max_correlation"};
+
 const char* const kReportingKeys[] = {"type",
                                       "window",
                                       "var_limit",
@@ -80,7 +84,8 @@ Result<void> parse_gating_fields(const std::string& prefix, const nlohmann::json
                                  const std::string& path, double* var_limit,
                                  double* jump_risk_limit, double* max_correlation,
                                  double* max_gross_leverage, double* max_net_leverage,
-                                 double* confidence_level, int* lookback_period);
+                                 double* confidence_level, int* lookback_period,
+                                 bool overlay = false);
 
 /// One module object's parse. `path` is the message's subject ("risk.modules[0]",
 /// "sleeve_risk_modules.TREND_FOLLOWING_FAST[1]").
@@ -158,11 +163,48 @@ public:
                            "Carver gate divides by the portfolio's capital, so at sleeve scope "
                            "its leverage limits would be read against the whole book's money");
             }
-            auto r = require_keys(m, std::vector<std::string>(std::begin(kCarverKeys),
-                                                              std::end(kCarverKeys)),
-                                  type, {"R_max", "R_jump_max", "R_shock_max"});
+            // LOOP_SPEC section 7.7: a module that carries the overlay's limits is the overlay.
+            // It requires the per-name cap and the trim cap, and the old gate's three limits are
+            // retired on it: a file that still names one is refused, never read.
+            const bool some_limit = m.contains("R_max") || m.contains("R_jump_max") ||
+                                    m.contains("R_shock_max");
+            const bool overlay = m.contains("R_max") && m.contains("R_jump_max") &&
+                                 m.contains("R_shock_max");
+            if (some_limit && !overlay) {
+                return err(path_ + " names some of R_max, R_jump_max and R_shock_max: the "
+                                   "overlay's three risk limits (ratios to tau) come together");
+            }
+            std::vector<std::string> required(std::begin(kCarverKeys), std::end(kCarverKeys));
+            if (overlay) {
+                for (const char* retired : kRetiredGateKeys) {
+                    if (m.contains(retired)) {
+                        return err(path_ + "." + retired +
+                                   " is retired on a module that carries the overlay's limits "
+                                   "(R_max, R_jump_max, R_shock_max): remove the key");
+                    }
+                    required.erase(std::remove(required.begin(), required.end(), retired),
+                                   required.end());
+                }
+                required.push_back("per_name_cap");
+                required.push_back("trim_max");
+            }
+            auto r = require_keys(m, required, type, {"R_max", "R_jump_max", "R_shock_max"});
             if (r.is_error()) return forward(r);
             CarverModuleConfig c;
+            if (overlay) {
+                const auto& cap = m.at("per_name_cap");
+                if (!cap.is_number() || !(cap.get<double>() > 0.0)) {
+                    return err(path_ + ".per_name_cap must be a positive number (the per-name cap "
+                                       "L on the sizing capital), got " + val(cap));
+                }
+                c.per_name_cap = cap.get<double>();
+                const auto& trim = m.at("trim_max");
+                if (!trim.is_number_integer() || trim.get<int>() < 0) {
+                    return err(path_ + ".trim_max must be a whole number of contracts, 0 or more, "
+                                       "got " + val(trim));
+                }
+                c.trim_max = trim.get<int>();
+            }
             // LOOP_SPEC sections 4 and 12: the overlay's three risk limits, ratios to tau. All
             // three or none; each a positive number.
             {
@@ -190,7 +232,7 @@ public:
             auto ranges = parse_gating_fields(prefix_, m, path_, &c.var_limit,
                                               &c.jump_risk_limit, &c.max_correlation,
                                               &c.max_gross_leverage, &c.max_net_leverage,
-                                              &c.confidence_level, &c.lookback_period);
+                                              &c.confidence_level, &c.lookback_period, overlay);
             if (ranges.is_error()) return forward(ranges);
 
             // R7. The window is keyed on the bar timestamp and capped at `lookback_period`
@@ -414,30 +456,43 @@ Result<void> parse_gating_fields(const std::string& prefix, const nlohmann::json
                                  const std::string& path, double* var_limit,
                                  double* jump_risk_limit, double* max_correlation,
                                  double* max_gross_leverage, double* max_net_leverage,
-                                 double* confidence_level, int* lookback_period) {
+                                 double* confidence_level, int* lookback_period, bool overlay) {
     const std::string p = prefix + path + ".";
 
+    // The overlay's book: the three limits of the old gate are not in the file, and the
+    // RiskConfig built from this block keeps its own defaults for them (nothing reads them: the
+    // overlay's limits are R_max, R_jump_max and R_shock_max).
+    if (overlay) {
+        const RiskConfig defaults;
+        *max_correlation = defaults.max_correlation;
+        *var_limit = defaults.var_limit;
+        *jump_risk_limit = defaults.jump_risk_limit;
+    }
     // R1: at 1.0 the correlation term can never bind, so a book that writes it has
     // switched the term off without saying so.
-    const auto& corr = m.at("max_correlation");
-    if (!corr.is_number() || !(corr.get<double>() > 0.0 && corr.get<double>() < 1.0)) {
-        return fail(p + "max_correlation must be in (0, 1), got " + val(corr) +
-                    "; at 1.0 the correlation term can never bind (risk_manager.cpp:551 clamps "
-                    "rho)");
+    if (!overlay) {
+        const auto& corr = m.at("max_correlation");
+        if (!corr.is_number() || !(corr.get<double>() > 0.0 && corr.get<double>() < 1.0)) {
+            return fail(p + "max_correlation must be in (0, 1), got " + val(corr) +
+                        "; at 1.0 the correlation term can never bind (risk_manager.cpp:551 "
+                        "clamps rho)");
+        }
+        *max_correlation = corr.get<double>();
     }
-    *max_correlation = corr.get<double>();
 
     // R2, R3
-    const auto& var = m.at("var_limit");
-    if (!var.is_number() || !(var.get<double>() > 0.0 && var.get<double>() <= 1.0)) {
-        return fail(p + "var_limit must be in (0, 1], got " + val(var));
+    if (!overlay) {
+        const auto& var = m.at("var_limit");
+        if (!var.is_number() || !(var.get<double>() > 0.0 && var.get<double>() <= 1.0)) {
+            return fail(p + "var_limit must be in (0, 1], got " + val(var));
+        }
+        *var_limit = var.get<double>();
+        const auto& jump = m.at("jump_risk_limit");
+        if (!jump.is_number() || !(jump.get<double>() > 0.0 && jump.get<double>() <= 1.0)) {
+            return fail(p + "jump_risk_limit must be in (0, 1], got " + val(jump));
+        }
+        *jump_risk_limit = jump.get<double>();
     }
-    *var_limit = var.get<double>();
-    const auto& jump = m.at("jump_risk_limit");
-    if (!jump.is_number() || !(jump.get<double>() > 0.0 && jump.get<double>() <= 1.0)) {
-        return fail(p + "jump_risk_limit must be in (0, 1], got " + val(jump));
-    }
-    *jump_risk_limit = jump.get<double>();
 
     // R4: the ceiling HD asked for, and the ordering the gate assumes.
     const auto& net = m.at("max_net_leverage");
@@ -506,6 +561,14 @@ RiskConfig RiskReportingConfig::to_risk_config() const {
 }
 
 nlohmann::json RiskReportingConfig::to_json() const {
+    if (overlay_book) {
+        return nlohmann::json{{"type", type},
+                              {"window", window},
+                              {"max_gross_leverage", max_gross_leverage},
+                              {"max_net_leverage", max_net_leverage},
+                              {"confidence_level", confidence_level},
+                              {"lookback_period", lookback_period}};
+    }
     return nlohmann::json{{"type", type},
                           {"window", window},
                           {"var_limit", var_limit},
@@ -538,9 +601,11 @@ nlohmann::json RiskModuleConfig::to_json() const {
     j["id"] = id;
     j["type"] = type;
     if (const auto* c = std::get_if<CarverModuleConfig>(&params)) {
-        j["var_limit"] = c->var_limit;
-        j["jump_risk_limit"] = c->jump_risk_limit;
-        j["max_correlation"] = c->max_correlation;
+        if (!c->overlay_limits()) {
+            j["var_limit"] = c->var_limit;
+            j["jump_risk_limit"] = c->jump_risk_limit;
+            j["max_correlation"] = c->max_correlation;
+        }
         j["max_gross_leverage"] = c->max_gross_leverage;
         j["max_net_leverage"] = c->max_net_leverage;
         j["confidence_level"] = c->confidence_level;
@@ -551,6 +616,8 @@ nlohmann::json RiskModuleConfig::to_json() const {
             j["R_max"] = c->r_max;
             j["R_jump_max"] = c->r_jump_max;
             j["R_shock_max"] = c->r_shock_max;
+            j["per_name_cap"] = c->per_name_cap;
+            j["trim_max"] = c->trim_max;
         }
         j["missing_symbol_policy"] = c->missing_symbol_policy;
         if (!c->missing_symbol_policy_reason.empty()) {
@@ -578,11 +645,13 @@ nlohmann::json RiskModuleConfig::to_json() const {
 nlohmann::json RiskSchema::to_json() const {
     nlohmann::json modules = nlohmann::json::array();
     for (const auto& m : portfolio) modules.push_back(m.to_json());
-    return nlohmann::json{{"schema", schema},
-                          {"modules", std::move(modules)},
-                          {"risk_reporting", reporting.to_json()},
-                          {"max_drawdown", max_drawdown},
-                          {"max_leverage", max_leverage}};
+    nlohmann::json j{{"schema", schema},
+                     {"modules", std::move(modules)},
+                     {"risk_reporting", reporting.to_json()},
+                     {"max_drawdown", max_drawdown}};
+    // Absent on the overlay's book, where the key is retired.
+    if (max_leverage > 0.0) j["max_leverage"] = max_leverage;
+    return j;
 }
 
 nlohmann::json RiskSchema::sleeves_to_json() const {
@@ -716,12 +785,17 @@ Result<RiskSchema> parse_risk_schema(const nlohmann::json& risk,
         return err("risk.max_drawdown is required and must be in (0, 1]");
     }
     out.max_drawdown = risk.at("max_drawdown").get<double>();
-    if (!risk.contains("max_leverage") || !risk.at("max_leverage").is_number() ||
-        !(risk.at("max_leverage").get<double>() > 0.0)) {
-        return err("risk.max_leverage is required and must be > 0 (it sizes the book: "
-                   "trend_following.cpp:1216)");
+    // max_leverage: required on every book but the overlay's, where it is retired (LOOP_SPEC
+    // section 7.7; decided below, once the modules are known). A value that is present is a
+    // positive number on either.
+    if (risk.contains("max_leverage")) {
+        if (!risk.at("max_leverage").is_number() ||
+            !(risk.at("max_leverage").get<double>() > 0.0)) {
+            return err("risk.max_leverage is required and must be > 0 (it sizes the book: "
+                       "trend_following.cpp:1216)");
+        }
+        out.max_leverage = risk.at("max_leverage").get<double>();
     }
-    out.max_leverage = risk.at("max_leverage").get<double>();
 
     // S2 + the portfolio scope's modules
     const auto& modules = risk.at("modules");
@@ -955,7 +1029,33 @@ Result<RiskSchema> parse_risk_schema(const nlohmann::json& risk,
                        " is not a key of a \"carver\" risk reporter");
         }
     }
+    // The book of the overlay: its reporter's block drops the old gate's three limits with it.
+    bool overlay_book = false;
+    for (const auto& module : out.portfolio) {
+        const auto* c = std::get_if<CarverModuleConfig>(&module.params);
+        overlay_book = overlay_book || (c != nullptr && c->overlay_limits());
+    }
+    if (overlay_book && risk.contains("max_leverage")) {
+        return err("risk.max_leverage is retired on a book whose carver module carries the "
+                   "overlay's limits (R_max, R_jump_max, R_shock_max): remove the key");
+    }
+    if (!overlay_book && !risk.contains("max_leverage")) {
+        return err("risk.max_leverage is required and must be > 0 (it sizes the book: "
+                   "trend_following.cpp:1216)");
+    }
     for (const char* key : kReportingKeys) {
+        const bool retired = overlay_book &&
+                             std::find_if(std::begin(kRetiredGateKeys), std::end(kRetiredGateKeys),
+                                          [&](const char* k) { return std::string(k) == key; }) !=
+                                 std::end(kRetiredGateKeys);
+        if (retired) {
+            if (rep.contains(key)) {
+                return err("risk.risk_reporting." + std::string(key) +
+                           " is retired on a book whose carver module carries the overlay's "
+                           "limits (R_max, R_jump_max, R_shock_max): remove the key");
+            }
+            continue;
+        }
         if (!rep.contains(key)) {
             return err("risk.risk_reporting." + std::string(key) +
                        " is required for a \"carver\" risk reporter (schema 2 has no defaults)");
@@ -971,11 +1071,12 @@ Result<RiskSchema> parse_risk_schema(const nlohmann::json& risk,
             prefix, rep, "risk.risk_reporting", &out.reporting.var_limit,
             &out.reporting.jump_risk_limit, &out.reporting.max_correlation,
             &out.reporting.max_gross_leverage, &out.reporting.max_net_leverage,
-            &out.reporting.confidence_level, &out.reporting.lookback_period);
+            &out.reporting.confidence_level, &out.reporting.lookback_period, overlay_book);
         if (r.is_error()) return forward(r);
     }
     out.reporting.type = "carver";
     out.reporting.window = "all_bars";
+    out.reporting.overlay_book = overlay_book;
 
     // While a carver module gates the book, the reporter measures the same book with the
     // same numbers: a reporter that has drifted from the gate publishes a risk figure

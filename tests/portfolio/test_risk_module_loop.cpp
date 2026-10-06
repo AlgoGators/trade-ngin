@@ -275,72 +275,13 @@ TEST_F(RiskModuleLoopTest, ANoneBookRunsNoGateAndLogsItsRuling) {
     EXPECT_FALSE(pm_->last_risk_decisions().empty());
 }
 
-// T-6b-fix F5, re-keyed in T-7b-2 C9w: the written leverage policy. max_gross/net 0.29 on 1,000 of
-// capital is 2.9 lots of ZZA at 100: the gate cuts a 5-lot book toward 2.9, which no whole-contract
-// book can equal, so forced rounding ships 3 lots, over the limit -- a book no gate reading ever saw,
-// which is why the check reads the FINAL book at the post-rounding point. That is logged at most ONCE
-// PER TRADING DAY (the day of the rebalance's newest bar, or its as_of), never on a warm-up rebalance,
-// with the excess in contracts; a book under the limit logs nothing. The old rule latched once per
-// run: a backtest then said nothing after its first over-limit day, and on a replaying runner the one
-// line described a replayed book, not the final one (T-6b-fix AUDIT section 8).
-TEST_F(RiskModuleLoopTest, ARoundedBookOverTheLeverageLimitWarnsOncePerTradingDay) {
-    make_pm(false, {{{"ZZA", make_pos("ZZA", 5.0, 100.0)}}});
-    ::testing::internal::CaptureStdout();
-    ASSERT_TRUE(pm_->process_market_data(three_days()).is_ok());                 // 2026-01-04
-    ASSERT_TRUE(pm_->process_market_data({make_bar("ZZA", 4, 101.0)}).is_ok());  // 2026-01-05
-    ASSERT_TRUE(pm_->process_market_data({make_bar("ZZA", 4, 101.0)}).is_ok());  // 2026-01-05 again
-    ASSERT_TRUE(pm_->process_market_data({make_bar("ZZA", 5, 101.0)}, /*skip_execution_generation=*/true)
-                    .is_ok());                                                   // 2026-01-06, warm-up
-    const std::string out = ::testing::internal::GetCapturedStdout();
-    const double shipped = quantity("ZZA");
-    EXPECT_EQ(shipped, std::round(shipped)) << "whole contracts";
-    EXPECT_GT(shipped * 100.0 / 1000.0, 0.29) << "the precondition: the final book is over";
-    EXPECT_EQ(count_of(out, "Risk module carver warning on portfolio PM_RML_"), 2u) << out;
-    EXPECT_EQ(count_of(out, "RISK_LEVERAGE_ROUNDED"), 2u) << "one per trading day:\n" << out;
-    EXPECT_EQ(count_of(out, "RISK_LEVERAGE_ROUNDED day=2026-01-04 "), 1u) << out;
-    EXPECT_EQ(count_of(out, "RISK_LEVERAGE_ROUNDED day=2026-01-05 "), 1u) << "the second rebalance "
-                                                                             "of the day is silent:\n"
-                                                                          << out;
-    EXPECT_EQ(count_of(out, "RISK_LEVERAGE_ROUNDED day=2026-01-06 "), 0u) << "warm-up:\n" << out;
-    // 3 lots x 100 on 1,000 is 0.30 against 0.29: 3 x (0.30/0.29 - 1) = 0.1034 contracts over.
-    EXPECT_EQ(count_of(out, "the final book of this rebalance, after whole-contract rounding (the "
-                            "book the runner stores), is over its leverage limit by about 0.103448 "
-                            "contracts (1.034483x the limit on a 3-contract book; gross 0.300000, net "
-                            "0.300000, capital 1000.000000)"),
-              2u)
-        << out;
-    EXPECT_EQ(count_of(out, "logged at most once per trading day, never on a warm-up rebalance."), 2u);
-    EXPECT_EQ(count_of(out, "logged once per run."), 0u) << "the old wording is gone:\n" << out;
-
-    // Under the limit (2 lots = 0.2 of capital): nothing to say.
-    pm_.reset();
-    make_pm(false, {{{"ZZA", make_pos("ZZA", 2.0, 100.0)}}});
-    ::testing::internal::CaptureStdout();
-    ASSERT_TRUE(pm_->process_market_data(three_days()).is_ok());
-    const std::string under = ::testing::internal::GetCapturedStdout();
-    EXPECT_EQ(quantity("ZZA"), 2.0);
-    EXPECT_EQ(count_of(under, "RISK_LEVERAGE_ROUNDED"), 0u) << under;
-}
-
-// A warm-up rebalance whose final book is over the limit logs nothing, and it does not spend the
-// day: the first live rebalance of that day still warns.
-TEST_F(RiskModuleLoopTest, AWarmupRebalanceOverTheLeverageLimitLogsNothingAndKeepsTheDay) {
-    make_pm(false, {{{"ZZA", make_pos("ZZA", 5.0, 100.0)}}});
-    ::testing::internal::CaptureStdout();
-    ASSERT_TRUE(pm_->process_market_data(three_days(), /*skip_execution_generation=*/true).is_ok());
-    const std::string warm = ::testing::internal::GetCapturedStdout();
-    EXPECT_EQ(count_of(warm, "RISK_LEVERAGE_ROUNDED"), 0u) << "warm-up:\n" << warm;
-    ::testing::internal::CaptureStdout();
-    ASSERT_TRUE(pm_->process_market_data({make_bar("ZZA", 3, 99.0)}).is_ok());  // 2026-01-04 again
-    const std::string live = ::testing::internal::GetCapturedStdout();
-    EXPECT_EQ(count_of(live, "RISK_LEVERAGE_ROUNDED day=2026-01-04 "), 1u) << live;
-}
-
-TEST_F(RiskModuleLoopTest, EveryDecisionTypeIsEvaluatedAndRecordedEachLap) {
-    // 2.5 lots never become whole, so a lap 2 happens; there the REFUSE beats the SCALE and the
-    // REPLACE, pins the strategy to its previous positions and ends the loop.
+// The portfolio risk step runs ONCE per rebalance (LOOP_SPEC section 12, D20: nothing feeds back
+// from the rounding into the risk step). Every module is evaluated and recorded once; the SCALE
+// is applied once and the book of whole contracts is then rounded once.
+TEST_F(RiskModuleLoopTest, EveryDecisionTypeIsEvaluatedAndRecordedOnce) {
     make_pm(false, {{{"ZZA", make_pos("ZZA", 2.5, 100.0)}}});
     ASSERT_TRUE(pm_->update_strategy_position("RML_S", "ZZA", make_pos("ZZA", 1.0, 100.0)).is_ok());
+    // The refusal and the replacement are scripted for a second lap, which never comes.
     ASSERT_TRUE(pm_->set_risk_modules(
                        {std::make_shared<ConstantScaleRiskModule>("scale", 0.5, /*every_lap=*/true),
                         std::make_shared<WarnRiskModule>(
@@ -357,44 +298,34 @@ TEST_F(RiskModuleLoopTest, EveryDecisionTypeIsEvaluatedAndRecordedEachLap) {
     const std::string out = ::testing::internal::GetCapturedStdout();
 
     const auto rows = rows_of(pm_->last_risk_decisions(), RiskPhase::LAP);
-    ASSERT_EQ(rows.size(), 8u) << "4 modules x 2 laps";
-    const std::vector<RiskAction> requested_1 = {RiskAction::SCALE, RiskAction::WARN,
-                                                 RiskAction::NONE, RiskAction::NONE};
-    const std::vector<RiskAction> applied_1 = {RiskAction::SCALE, RiskAction::WARN,
+    ASSERT_EQ(rows.size(), 4u) << "4 modules, one step";
+    const std::vector<RiskAction> requested = {RiskAction::SCALE, RiskAction::WARN,
                                                RiskAction::NONE, RiskAction::NONE};
-    const std::vector<RiskAction> requested_2 = {RiskAction::SCALE, RiskAction::WARN,
-                                                 RiskAction::REFUSE, RiskAction::REPLACE};
-    const std::vector<RiskAction> applied_2 = {RiskAction::NONE, RiskAction::WARN,
-                                               RiskAction::REFUSE, RiskAction::NONE};
     const std::vector<std::string> ids = {"scale", "warn", "refuse", "replace"};
     for (int k = 0; k < 4; ++k) {
         SCOPED_TRACE(ids[k]);
         EXPECT_EQ(rows[k].module_id, ids[k]);
         EXPECT_EQ(rows[k].lap, 1);
-        EXPECT_EQ(rows[k].requested.action, requested_1[k]);
-        EXPECT_EQ(rows[k].applied_action, applied_1[k]);
-        EXPECT_EQ(rows[4 + k].module_id, ids[k]);
-        EXPECT_EQ(rows[4 + k].lap, 2);
-        EXPECT_EQ(rows[4 + k].requested.action, requested_2[k]);
-        EXPECT_EQ(rows[4 + k].applied_action, applied_2[k]);
+        EXPECT_EQ(rows[k].requested.action, requested[k]);
+        EXPECT_EQ(rows[k].applied_action, requested[k]);
     }
     EXPECT_EQ(rows[0].applied_factor.raw_value(), Decimal(0.5).raw_value());
-    EXPECT_EQ(rows[4].applied_factor.raw_value(), Decimal(1.0).raw_value());
-    // Lap 1 halved the book (2.5 -> 1.25); lap 2 pinned it to the previous positions.
+    // The one step halved the book (2.5 -> 1.25) and the one rounding stored 1.
     EXPECT_EQ(quantity("ZZA"), 1.0);
-    EXPECT_EQ(count_of(out, "Risk module warn warning on portfolio"), 2u) << out;
-    EXPECT_EQ(count_of(out, "Using risk manager"), 2u);
+    EXPECT_EQ(count_of(out, "Risk module warn warning on portfolio"), 1u) << out;
+    EXPECT_EQ(count_of(out, "Using risk manager"), 1u);
     EXPECT_EQ(count_of(out, "Risk limits exceeded, scaling positions by 0.500000"), 1u);
-    EXPECT_EQ(count_of(out, "Risk module refuse refused portfolio"), 1u);
-    EXPECT_EQ(count_of(out, "Risk limits not exceeded"), 0u);
+    EXPECT_EQ(count_of(out, "Risk module refuse refused portfolio"), 0u);
+    EXPECT_EQ(count_of(out, "Iteration 2 of dynamic optimization"), 0u) << "there is no second lap";
+    EXPECT_EQ(count_of(out, "Max iterations reached"), 0u);
 
     auto j = pm_->risk_decisions_json();
-    EXPECT_EQ(j["decisions"].size(), 12u) << "8 lap rows and 4 post-rounding rows";
-    EXPECT_EQ(j["outcome"]["action"], "REFUSE");
-    EXPECT_EQ(j["outcome"]["laps"], 2);
+    EXPECT_EQ(j["decisions"].size(), 4u) << "4 rows of the one step, no post-rounding rows";
+    EXPECT_EQ(j["outcome"]["laps"], 1);
     EXPECT_EQ(j["modules"].size(), 4u);
     EXPECT_EQ(j["modules"][0]["scope"], "portfolio");
 }
+
 
 TEST_F(RiskModuleLoopTest, CarverStillScalesExactlyAsToday) {
     // The constructor's Carver module: 7 lots at 100 on 1000 capital is 0.7x gross against a
@@ -462,7 +393,7 @@ TEST_F(RiskModuleLoopTest, ContextCarriesLapScopeCapitalAndBacktestFlag) {
     const auto bars = three_days();
     const Timestamp as_of = day(3);
     ASSERT_TRUE(pm_->process_market_data(bars, /*skip_execution_generation=*/true, as_of).is_ok());
-    ASSERT_EQ(spy->contexts.size(), 5u);
+    ASSERT_EQ(spy->contexts.size(), 1u) << "the risk step runs once per rebalance";
     for (size_t k = 0; k < spy->contexts.size(); ++k) {
         const RiskContext& c = spy->contexts[k];
         EXPECT_EQ(c.phase, RiskPhase::LAP);
@@ -477,8 +408,8 @@ TEST_F(RiskModuleLoopTest, ContextCarriesLapScopeCapitalAndBacktestFlag) {
         EXPECT_EQ(*c.as_of, as_of);
         EXPECT_TRUE(c.applied.empty());
     }
-    // The spy saw the aggregated book on every lap.
-    ASSERT_EQ(spy->books.size(), 5u);
+    // The spy saw the aggregated book once.
+    ASSERT_EQ(spy->books.size(), 1u);
     EXPECT_EQ(spy->books[0].at("ZZA").quantity, Decimal(2.5));
 }
 
@@ -496,14 +427,12 @@ TEST_F(RiskModuleLoopTest, SetRiskModulesRejectsNullAndDuplicateIds) {
     EXPECT_TRUE(a->events.empty());
 }
 
-TEST_F(RiskModuleLoopTest, BeginRebalanceOncePerCallBeforeAnyLap) {
-    // 2.5 lots never become whole: five laps per call.
+TEST_F(RiskModuleLoopTest, BeginRebalanceThenOneRiskStepPerCall) {
+    // 2.5 lots are not whole, and still the risk step runs once: nothing re-reads a rounded book.
     make_pm(false, {{{"ZZA", make_pos("ZZA", 2.5, 100.0)}}});
     auto spy = std::make_shared<SpyModule>("spy", RiskAction::NONE);
     ASSERT_TRUE(pm_->set_risk_modules({spy}).is_ok());
-    const std::vector<std::string> one_call = {
-        "begin_rebalance", "on_bars:1", "evaluate:1", "on_bars:2", "evaluate:2", "on_bars:3",
-        "evaluate:3",      "on_bars:4", "evaluate:4", "on_bars:5", "evaluate:5"};
+    const std::vector<std::string> one_call = {"begin_rebalance", "on_bars:1", "evaluate:1"};
     ASSERT_TRUE(pm_->process_market_data(three_days()).is_ok());
     EXPECT_EQ(spy->events, one_call);
     spy->events.clear();
@@ -571,8 +500,8 @@ TEST_F(CarverWindowTest, AppendsOncePerRebalanceAndTrimsToLookbackDates) {
     // test is kept, pointed at the new rule, so the change is visible in the diff rather than
     // looking like a deleted test.
     //
-    // Whole contracts and a binding leverage cap: 7 lots become 2.9, never whole, so every call
-    // still runs five laps -- the loop is unchanged. Only the appending is.
+    // T-LOOP: the risk step itself now runs once per rebalance (LOOP_SPEC section 12, D20), so
+    // one append per call is also one evaluation per call.
     make_pm(false, {{{"ZZA", make_pos("ZZA", 7.0, 100.0)}}});
     RiskConfig cfg = risk_config(false).risk_config;
     cfg.lookback_period = 5;  // five DATES
@@ -592,7 +521,7 @@ TEST_F(CarverWindowTest, AppendsOncePerRebalanceAndTrimsToLookbackDates) {
     for (size_t c = 0; c < calls.size(); ++c) {
         spy->evaluations = 0;
         ASSERT_TRUE(pm_->process_market_data(calls[c]).is_ok());
-        ASSERT_EQ(spy->evaluations, 5) << "call " << c << ": the loop still runs five laps";
+        ASSERT_EQ(spy->evaluations, 1) << "call " << c << ": one risk step per rebalance";
         ref.insert(ref.end(), calls[c].begin(), calls[c].end());
         std::set<Timestamp> dates;
         for (const auto& b : ref) dates.insert(b.timestamp);
@@ -605,8 +534,7 @@ TEST_F(CarverWindowTest, AppendsOncePerRebalanceAndTrimsToLookbackDates) {
         expect_same_bars(carver->window(), ref, "after call " + std::to_string(c));
     }
 
-    // One bar per date here, so five dates is five bars -- and, crucially, the five laps of the
-    // last call did NOT push its four bars in five times over.
+    // One bar per date here, so five dates is five bars.
     EXPECT_EQ(carver->window().size(), 5u);
     EXPECT_EQ(carver->window_dates(), 5u);
     EXPECT_EQ(carver->window().front().timestamp, day(5));
@@ -614,45 +542,6 @@ TEST_F(CarverWindowTest, AppendsOncePerRebalanceAndTrimsToLookbackDates) {
 }
 
 // ===== Commit 6: the PM applies decisions by action =====
-
-namespace {
-
-// A module whose finalize() returns a scripted action and records the book it saw.
-class FinalizeSpy : public RiskModule {
-public:
-    FinalizeSpy(std::string id, RiskAction at_finalize) : id_(std::move(id)), action_(at_finalize) {}
-    const std::string& id() const override { return id_; }
-    const std::string& type() const override { return id_; }
-    std::set<RiskTerm> terms() const override { return {RiskTerm::CUSTOM}; }
-    std::set<RiskAction> capabilities() const override { return {action_}; }
-    Result<RiskDecision> evaluate(const Book& book, const RiskContext& ctx) override {
-        (void)book;
-        (void)ctx;
-        RiskDecision d;
-        d.module_id = id_;
-        return Result<RiskDecision>(d);
-    }
-    Result<RiskDecision> finalize(const Book& book, const RiskContext& ctx) override {
-        finalized.push_back(book);
-        contexts.push_back(ctx);
-        RiskDecision d;
-        d.module_id = id_;
-        d.action = action_;
-        d.scale = action_ == RiskAction::SCALE ? 0.5 : 1.0;
-        d.reason = "at the post-rounding point";
-        return Result<RiskDecision>(d);
-    }
-    nlohmann::json describe() const override { return {{"id", id_}}; }
-
-    std::vector<Book> finalized;
-    std::vector<RiskContext> contexts;
-
-private:
-    std::string id_;
-    RiskAction action_;
-};
-
-}  // namespace
 
 // A two-sleeve manager: strategy ids SA and SB at 0.5 each.
 class RiskScopeTest : public RiskModuleLoopTest {
@@ -678,7 +567,6 @@ class RiskRefuseTest : public RiskScopeTest {};
 class RiskSleeveTest : public RiskScopeTest {};
 class RiskValidationTest : public RiskScopeTest {};
 class RiskReplaceTest : public RiskScopeTest {};
-class RiskPostRoundingTest : public RiskScopeTest {};
 
 TEST_F(RiskApplyTest, ScaleIsBitwiseTheInPlaceMultiply) {
     const std::vector<std::pair<std::string, double>> in = {{"Q1", 2.42425398},
@@ -732,25 +620,22 @@ TEST_F(RiskApplyTest, ScaleOneIsNoneAndPrintsNotExceeded) {
 }
 
 TEST_F(RiskApplyTest, CallbackCarriesTheQuantisedFactor) {
-    // 2.5 lots never become whole: the spy's SCALE is applied on every lap.
     make_pm(false, {{{"ZZA", make_pos("ZZA", 2.5, 100.0)}}});
     auto spy = std::make_shared<SpyModule>("spy", RiskAction::SCALE, 0.1234567891);
     ASSERT_TRUE(pm_->set_risk_modules({spy}).is_ok());
     ASSERT_TRUE(pm_->process_market_data(three_days()).is_ok());
-    ASSERT_GE(spy->applied.size(), 2u);
+    ASSERT_EQ(spy->applied.size(), 1u) << "applied once: the risk step runs once per rebalance";
     EXPECT_EQ(spy->applied[0].action, RiskAction::SCALE);
     EXPECT_EQ(spy->applied[0].factor.raw_value(), 12345679);  // round half away, not truncation
     EXPECT_EQ(spy->applied[0].requested_scale, 0.1234567891);
     EXPECT_TRUE(spy->applied[0].won);
     EXPECT_FALSE(spy->applied[0].pinned);
-    // Lap 2 sees what lap 1 applied, quantised.
-    const std::string pm_id = spy->contexts[1].portfolio_id;
-    ASSERT_TRUE(spy->contexts[1].applied.count(pm_id));
-    EXPECT_EQ(spy->contexts[1].applied.at(pm_id), 0.12345679);
     EXPECT_TRUE(spy->contexts[0].applied.empty());
     const auto lap = rows_of(pm_->last_risk_decisions(), RiskPhase::LAP);
+    ASSERT_EQ(lap.size(), 1u);
     EXPECT_EQ(lap[0].applied_factor.raw_value(), 12345679);
 }
+
 
 TEST_F(RiskApplyTest, CarverAppliedLevelIsTheQuantisedFactor) {
     make_pm(true, {{{"ZZA", make_pos("ZZA", 7.0, 100.0)}}});
@@ -781,15 +666,14 @@ TEST_F(RiskApplyTest, MinWithinALevelNotProduct) {
     EXPECT_EQ(lap[1].applied_action, RiskAction::SCALE);
 }
 
-TEST_F(RiskRefuseTest, PortfolioRefuseBreaksTheLoopAndPinsPreviousPositions) {
+TEST_F(RiskRefuseTest, PortfolioRefusePinsPreviousPositions) {
     make_pm(false, {{{"ZZA", make_pos("ZZA", 5.0, 100.0)}}});
     ASSERT_TRUE(pm_->update_strategy_position("RML_S", "ZZA", make_pos("ZZA", 1.0, 100.0)).is_ok());
-    // Lap 1: 5 x 0.85 = 4.25, fractional, so a lap 2 happens, where the refusal fires.
+    // The refusal wins over the scale requested in the same step.
     ASSERT_TRUE(pm_->set_risk_modules(
                        {std::make_shared<ConstantScaleRiskModule>("cut", 0.85, /*every_lap=*/true),
                         std::make_shared<RefuseOnConditionRiskModule>(
-                            "stop", RiskCondition{RiskCondition::Kind::LAP_AT_LEAST, 2.0},
-                            "lap two")})
+                            "stop", RiskCondition{RiskCondition::Kind::ALWAYS, 0.0}, "always")})
                     .is_ok());
     ::testing::internal::CaptureStdout();
     const auto result = pm_->process_market_data(three_days());
@@ -797,50 +681,27 @@ TEST_F(RiskRefuseTest, PortfolioRefuseBreaksTheLoopAndPinsPreviousPositions) {
     ASSERT_TRUE(result.is_ok());
 
     const auto lap = rows_of(pm_->last_risk_decisions(), RiskPhase::LAP);
-    int max_lap = 0;
-    for (const auto& r : lap) max_lap = std::max(max_lap, r.lap);
-    EXPECT_EQ(max_lap, 2);
+    ASSERT_EQ(lap.size(), 2u);
+    EXPECT_EQ(lap[0].lap, 1);
     EXPECT_EQ(quantity("ZZA"), 1.0) << "pinned to the previous positions";
-    EXPECT_EQ(out.find("Max iterations reached"), std::string::npos);
     EXPECT_NE(out.find("Risk module stop refused portfolio"), std::string::npos) << out;
     EXPECT_NE(out.find("Risk refusal: every strategy pinned to its previous positions after "
-                       "iteration 2; leaving the loop"),
+                       "iteration 1; leaving the loop"),
               std::string::npos);
-    EXPECT_NE(out.find("Final positions pinned by a risk refusal after 2 iterations; rounding "
+    EXPECT_NE(out.find("Final positions pinned by a risk refusal after 1 iterations; rounding "
                        "skipped."),
               std::string::npos);
     // The strategy's own targets (its signals) are untouched.
     EXPECT_EQ(static_cast<double>(strategy_->get_target_positions().at("ZZA").quantity), 5.0);
-    // Lap 2: the REFUSE won over the SCALE, which is recorded and not applied.
-    EXPECT_EQ(lap[2].requested.action, RiskAction::SCALE);
-    EXPECT_EQ(lap[2].applied_action, RiskAction::NONE);
-    EXPECT_EQ(lap[3].applied_action, RiskAction::REFUSE);
+    // The REFUSE won over the SCALE, which is recorded and not applied.
+    EXPECT_EQ(lap[0].requested.action, RiskAction::SCALE);
+    EXPECT_EQ(lap[0].applied_action, RiskAction::NONE);
+    EXPECT_EQ(lap[1].applied_action, RiskAction::REFUSE);
     auto j = pm_->risk_decisions_json();
     EXPECT_EQ(j["outcome"]["action"], "REFUSE");
     EXPECT_EQ(j["outcome"]["refused"], true);
 }
 
-TEST_F(RiskRefuseTest, PinnedScopeIsSkippedByForcedRoundingAndFinalCheck) {
-    make_two_sleeves(false, false, {{"AAA", make_pos("AAA", 3.0, 100.0)}},
-                     {{"BBB", make_pos("BBB", 5.0, 100.0)}});
-    ASSERT_TRUE(pm_->update_strategy_position("SA", "AAA", make_pos("AAA", 1.5, 100.0)).is_ok());
-    ASSERT_TRUE(pm_->set_risk_modules(
-                       {std::make_shared<ConstantScaleRiskModule>("cut", 0.85, /*every_lap=*/true)},
-                       {{"SA",
-                         {std::make_shared<RefuseOnConditionRiskModule>(
-                             "stop_a", RiskCondition{RiskCondition::Kind::ALWAYS, 0.0}, "sleeve")}}})
-                    .is_ok());
-    ::testing::internal::CaptureStdout();
-    ASSERT_TRUE(pm_->process_market_data(three_days()).is_ok());
-    const std::string out = ::testing::internal::GetCapturedStdout();
-    EXPECT_EQ(qty("SA", "AAA"), 1.5);  // pinned, fractional, left alone
-    EXPECT_EQ(qty("SB", "BBB"), std::round(5.0 * 0.85 * 0.85 * 0.85 * 0.85 * 0.85));
-    EXPECT_NE(out.find("Max iterations reached (5)"), std::string::npos);
-    EXPECT_NE(out.find("Final forced rounding for BBB"), std::string::npos) << out;
-    EXPECT_EQ(out.find("Final forced rounding for AAA"), std::string::npos) << out;
-    EXPECT_EQ(out.find("FINAL CHECK"), std::string::npos) << out;
-    EXPECT_EQ(out.find("Fractional contract detected in iteration 1: AAA"), std::string::npos);
-}
 
 TEST_F(RiskRefuseTest, PerScopeApplySkipsPinnedSleeves) {
     make_two_sleeves(true, false, {{"AAA", make_pos("AAA", 4.0, 100.0)}},
@@ -1030,62 +891,6 @@ TEST_F(RiskReplaceTest, MultiSleevePortfolioReplaceFailsClosed) {
         << out;
 }
 
-TEST_F(RiskPostRoundingTest, FinalizeSeesTheRoundedBookAndMayWarnOrRefuse) {
-    // 2.5 lots never become whole: five laps, then forced rounding to 3 (the half rounds away).
-    struct Case {
-        RiskAction action;
-        double expected_qty;
-        RiskAction expected_applied;
-        const char* expected_line;
-    };
-    const std::vector<Case> cases = {
-        {RiskAction::WARN, 3.0, RiskAction::WARN,
-         "[WARNING] [RiskManager] Risk module fin warning on portfolio"},
-        {RiskAction::REFUSE, 1.0, RiskAction::REFUSE, "Risk module fin refused portfolio"},
-        {RiskAction::SCALE, 3.0, RiskAction::NONE,
-         "[ERROR] [RiskManager] Risk module fin returned SCALE at the post-rounding point; only "
-         "NONE, WARN and REFUSE are applied there"},
-    };
-    for (const auto& c : cases) {
-        SCOPED_TRACE(risk_action_name(c.action));
-        make_pm(false, {{{"ZZA", make_pos("ZZA", 2.5, 100.0)}}});
-        ASSERT_TRUE(
-            pm_->update_strategy_position("RML_S", "ZZA", make_pos("ZZA", 1.0, 100.0)).is_ok());
-        auto fin = std::make_shared<FinalizeSpy>("fin", c.action);
-        ASSERT_TRUE(pm_->set_risk_modules({fin}).is_ok());
-        ::testing::internal::CaptureStdout();
-        ASSERT_TRUE(pm_->process_market_data(three_days()).is_ok());
-        const std::string out = ::testing::internal::GetCapturedStdout();
-        ASSERT_EQ(fin->finalized.size(), 1u);
-        EXPECT_EQ(fin->finalized[0].at("ZZA").quantity, Decimal(3.0)) << "the rounded book";
-        EXPECT_EQ(fin->contexts[0].phase, RiskPhase::POST_ROUNDING);
-        EXPECT_EQ(fin->contexts[0].lap, 5);
-        EXPECT_EQ(quantity("ZZA"), c.expected_qty);
-        EXPECT_NE(out.find(c.expected_line), std::string::npos) << out;
-        const auto post = rows_of(pm_->last_risk_decisions(), RiskPhase::POST_ROUNDING);
-        ASSERT_EQ(post.size(), 1u);
-        EXPECT_EQ(post[0].requested.action, c.action);
-        EXPECT_EQ(post[0].applied_action, c.expected_applied);
-        pm_.reset();
-        StateManager::reset_instance();
-    }
-}
-
-TEST_F(RiskPostRoundingTest, TheCarverModuleIsSilentThere) {
-    // The golden log test pins the lines; here: one Carver post-rounding row, NONE, and no
-    // second "Risk management result" line in the rebalance.
-    make_pm(true, {{{"ZZA", make_pos("ZZA", 7.0, 100.0)}}});
-    ::testing::internal::CaptureStdout();
-    ASSERT_TRUE(pm_->process_market_data(three_days()).is_ok());
-    const std::string out = ::testing::internal::GetCapturedStdout();
-    EXPECT_EQ(count_of(out, "Risk management result:"), 1u);
-    const auto post = rows_of(pm_->last_risk_decisions(), RiskPhase::POST_ROUNDING);
-    ASSERT_EQ(post.size(), 1u);
-    EXPECT_EQ(post[0].module_id, "carver");
-    EXPECT_EQ(post[0].requested.action, RiskAction::NONE);
-    EXPECT_FALSE(post[0].requested.metrics.has_value());
-}
-
 // ===== The constructor builds the configured modules, and refuses an empty list =====
 //
 // Schema 2 replaced `use_risk_management` with a list. The failure mode a bool never had is
@@ -1222,187 +1027,4 @@ TEST_F(RiskSleeveTest, AWholeMultiplyIsNotReportedAsPartial) {
     ASSERT_FALSE(watcher->applied.empty());
     EXPECT_FALSE(watcher->applied.front().partial);
     EXPECT_EQ(watcher->applied.front().scopes_skipped, 0u);
-}
-
-// T-6c commit A (R-1 of T-6b-fix_ADVERSARIAL). The loop's 1e-6 integer test is a convergence
-// test: a book it passes as whole may still hold a fraction, and before this commit the converged
-// exit stored it unrounded. A factor in (1 - 1e-6/max|q|, 1 - 0.5e-8) did that, from a MAGNITUDE
-// term (the leverage rate) or from a COMPOSITION term (the Carver level on a later lap's new
-// integer book). The converged exit now stores the whole contract, logged once per rebalance.
-namespace {
-
-// Returns SCALE scales[lap - 1] on each lap (the last one repeated), NONE at every other phase.
-class LapScaleModule : public RiskModule {
-public:
-    LapScaleModule(std::string id, RiskTerm term, std::vector<double> scales)
-        : id_(std::move(id)), term_(term), scales_(std::move(scales)) {}
-    const std::string& id() const override { return id_; }
-    const std::string& type() const override { return id_; }
-    std::set<RiskTerm> terms() const override { return {term_}; }
-    std::set<RiskAction> capabilities() const override { return {RiskAction::SCALE}; }
-    Result<RiskDecision> evaluate(const Book& book, const RiskContext& ctx) override {
-        (void)book;
-        RiskDecision d;
-        d.module_id = id_;
-        if (ctx.phase != RiskPhase::LAP) return Result<RiskDecision>(d);
-        const size_t k = std::min(static_cast<size_t>(std::max(ctx.lap, 1)), scales_.size()) - 1;
-        d.action = RiskAction::SCALE;
-        d.scale = scales_[k];
-        d.reason = "lap scale";
-        return Result<RiskDecision>(d);
-    }
-    nlohmann::json describe() const override { return {{"id", id_}, {"type", id_}}; }
-
-private:
-    std::string id_;
-    RiskTerm term_;
-    std::vector<double> scales_;
-};
-
-}  // namespace
-
-class RiskConvergedSnapTest : public RiskModuleLoopTest {
-protected:
-    // Every quantity stored for RML_S (its positions and every execution) is a whole number.
-    void expect_all_whole() {
-        for (const auto& [symbol, pos] : pm_->get_strategy_positions().at("RML_S")) {
-            EXPECT_EQ(pos.quantity.raw_value() % 100000000LL, 0)
-                << symbol << " stored " << static_cast<double>(pos.quantity);
-        }
-        const auto execs = pm_->get_strategy_executions();
-        ASSERT_TRUE(execs.count("RML_S"));
-        ASSERT_FALSE(execs.at("RML_S").empty());
-        for (const auto& e : execs.at("RML_S")) {
-            EXPECT_EQ(e.filled_quantity.raw_value() % 100000000LL, 0)
-                << e.symbol << " executed " << static_cast<double>(e.filled_quantity);
-        }
-    }
-};
-
-// (1) A 1-lot at an applied factor of 0.9999999 (a leverage rate): the fraction 1e-7 passes the
-// integer test on lap 1, so the loop converges, and the whole contract is stored and logged.
-TEST_F(RiskConvergedSnapTest, AOneLotAtFactor0_9999999StoresOneAndLogsOnce) {
-    make_pm(false, {{{"ZZA", make_pos("ZZA", 1.0, 100.0)}}});
-    ASSERT_TRUE(pm_->set_risk_modules({std::make_shared<LapScaleModule>(
-                                          "lev", RiskTerm::MAGNITUDE, std::vector<double>{0.9999999})})
-                    .is_ok());
-    ::testing::internal::CaptureStdout();
-    ASSERT_TRUE(pm_->process_market_data(three_days()).is_ok());
-    const std::string out = ::testing::internal::GetCapturedStdout();
-    const auto lap = rows_of(pm_->last_risk_decisions(), RiskPhase::LAP);
-    ASSERT_EQ(lap.size(), 1u) << "converged on lap 1";
-    EXPECT_EQ(lap[0].applied_factor.raw_value(), 99999990) << "the precondition: 0.9999999 applied";
-    EXPECT_EQ(count_of(out, "No partial contracts after iteration 1. Converged!"), 1u) << out;
-    EXPECT_EQ(count_of(out, "Max iterations reached"), 0u) << "the converged exit, not forced rounding";
-    EXPECT_EQ(pm_->get_strategy_positions().at("RML_S").at("ZZA").quantity.raw_value(), 100000000LL)
-        << "stored " << quantity("ZZA");
-    expect_all_whole();
-    EXPECT_EQ(count_of(out, "RISK_CONVERGED_SNAP symbols=1 iteration=1: quantities within 1e-6 of "
-                            "a whole contract stored as that whole contract on the converged exit"),
-              1u)
-        << out;
-    EXPECT_EQ(count_of(out, "RISK_CONVERGED_SNAP"), 1u) << "once per rebalance";
-}
-
-// (2) The level term (a COMPOSITION, scale-invariant SCALE) reading 2e-8 below the level: 1 - 2e-8
-// is two Decimal quanta, so it is applied as 0.99999998, not rounded to 1, and a 3-lot becomes
-// 2.99999994, inside the 1e-6 test. It is stored whole.
-TEST_F(RiskConvergedSnapTest, TheLevelTermTwoQuantaBelowOneStoresWhole) {
-    make_pm(false, {{{"ZZA", make_pos("ZZA", 3.0, 100.0)}}});
-    ASSERT_TRUE(pm_->set_risk_modules({std::make_shared<LapScaleModule>(
-                                          "level", RiskTerm::COMPOSITION,
-                                          std::vector<double>{1.0 - 2e-8})})
-                    .is_ok());
-    ::testing::internal::CaptureStdout();
-    ASSERT_TRUE(pm_->process_market_data(three_days()).is_ok());
-    const std::string out = ::testing::internal::GetCapturedStdout();
-    const auto lap = rows_of(pm_->last_risk_decisions(), RiskPhase::LAP);
-    ASSERT_EQ(lap.size(), 1u);
-    EXPECT_EQ(lap[0].applied_factor.raw_value(), 99999998) << "the precondition: two quanta below";
-    EXPECT_EQ(pm_->get_strategy_positions().at("RML_S").at("ZZA").quantity.raw_value(), 300000000LL)
-        << "stored " << quantity("ZZA");
-    expect_all_whole();
-    EXPECT_EQ(count_of(out, "RISK_CONVERGED_SNAP symbols=1 iteration=1:"), 1u) << out;
-}
-
-// (3) Unchanged: a factor of 0.99 leaves a fraction of 0.01, well above 1e-6, so the loop goes
-// round all five laps and forced rounding makes the book whole. The converged exit is never taken
-// and the new line never prints.
-TEST_F(RiskConvergedSnapTest, Factor0_99StillIteratesAndIsForceRounded) {
-    make_pm(false, {{{"ZZA", make_pos("ZZA", 1.0, 100.0)}}});
-    ASSERT_TRUE(pm_->set_risk_modules({std::make_shared<LapScaleModule>(
-                                          "lev", RiskTerm::MAGNITUDE, std::vector<double>{0.99})})
-                    .is_ok());
-    ::testing::internal::CaptureStdout();
-    ASSERT_TRUE(pm_->process_market_data(three_days()).is_ok());
-    const std::string out = ::testing::internal::GetCapturedStdout();
-    EXPECT_EQ(rows_of(pm_->last_risk_decisions(), RiskPhase::LAP).size(), 5u) << "five laps";
-    EXPECT_EQ(count_of(out, "Max iterations reached (5). Forcing final rounding"), 1u) << out;
-    EXPECT_EQ(count_of(out, "Final forced rounding for ZZA: 0.950990 -> 1\n"), 1u) << out;
-    EXPECT_EQ(count_of(out, "Converged!"), 0u) << out;
-    EXPECT_EQ(count_of(out, "RISK_CONVERGED_SNAP"), 0u) << out;
-    EXPECT_EQ(quantity("ZZA"), 1.0);
-    expect_all_whole();
-}
-
-// (4) A loop that converges on lap 2: lap 1 halves a 3-lot to 1.5 (a fraction, so the loop goes
-// round), lap 2 applies 0.66666666 and gives 0.99999999, which passes the 1e-6 test. Nothing
-// fractional is stored.
-TEST_F(RiskConvergedSnapTest, ALoopConvergingOnLapTwoStoresNoFraction) {
-    make_pm(false, {{{"ZZA", make_pos("ZZA", 3.0, 100.0)}}});
-    ASSERT_TRUE(pm_->set_risk_modules({std::make_shared<LapScaleModule>(
-                                          "lev", RiskTerm::MAGNITUDE,
-                                          std::vector<double>{0.5, 0.66666666})})
-                    .is_ok());
-    ::testing::internal::CaptureStdout();
-    ASSERT_TRUE(pm_->process_market_data(three_days()).is_ok());
-    const std::string out = ::testing::internal::GetCapturedStdout();
-    EXPECT_EQ(rows_of(pm_->last_risk_decisions(), RiskPhase::LAP).size(), 2u) << "two laps";
-    EXPECT_EQ(count_of(out, "Fractional contract detected in iteration 1: ZZA, quantity=1.5\n"),
-              1u)
-        << out;
-    EXPECT_EQ(count_of(out, "No partial contracts after iteration 2. Converged!"), 1u) << out;
-    EXPECT_EQ(count_of(out, "Max iterations reached"), 0u) << out;
-    EXPECT_EQ(pm_->get_strategy_positions().at("RML_S").at("ZZA").quantity.raw_value(), 100000000LL)
-        << "stored " << quantity("ZZA");
-    expect_all_whole();
-    EXPECT_EQ(count_of(out, "RISK_CONVERGED_SNAP symbols=1 iteration=2:"), 1u) << out;
-}
-
-// An exactly whole book is left alone: a factor of 0.5 on a 4-lot gives exactly 2, the converged
-// exit changes nothing and prints nothing.
-TEST_F(RiskConvergedSnapTest, AnExactlyWholeBookIsUntouchedAndSilent) {
-    make_pm(false, {{{"ZZA", make_pos("ZZA", 4.0, 100.0)}}});
-    ASSERT_TRUE(pm_->set_risk_modules({std::make_shared<LapScaleModule>(
-                                          "lev", RiskTerm::MAGNITUDE, std::vector<double>{0.5})})
-                    .is_ok());
-    ::testing::internal::CaptureStdout();
-    ASSERT_TRUE(pm_->process_market_data(three_days()).is_ok());
-    const std::string out = ::testing::internal::GetCapturedStdout();
-    EXPECT_EQ(pm_->get_strategy_positions().at("RML_S").at("ZZA").quantity.raw_value(), 200000000LL);
-    EXPECT_EQ(count_of(out, "No partial contracts after iteration 1. Converged!"), 1u) << out;
-    EXPECT_EQ(count_of(out, "RISK_CONVERGED_SNAP"), 0u) << out;
-}
-
-// T-7b-1 C7b, E-31 (T-6c_CODE_REVIEW CR-6): the snap lives in the whole-contract branch only. A book
-// that allows fractional positions (the equity book) accepts lap 1 as final and stores its fraction:
-// a 1-lot at 0.9999999 stays 0.9999999, no snap line prints. Moving the snap out of the `else`
-// would round it to 1 and print the line; this test pins that it does not.
-TEST_F(RiskConvergedSnapTest, C7bE31AFractionalAllowedBookIsUntouchedAndSilent) {
-    make_pm(true, {{{"ZZA", make_pos("ZZA", 1.0, 100.0)}}});
-    ASSERT_TRUE(pm_->set_risk_modules({std::make_shared<LapScaleModule>(
-                                          "lev", RiskTerm::MAGNITUDE, std::vector<double>{0.9999999})})
-                    .is_ok());
-    ::testing::internal::CaptureStdout();
-    ASSERT_TRUE(pm_->process_market_data(three_days()).is_ok());
-    const std::string out = ::testing::internal::GetCapturedStdout();
-    const auto lap = rows_of(pm_->last_risk_decisions(), RiskPhase::LAP);
-    ASSERT_EQ(lap.size(), 1u) << "a fractional book is final after lap 1";
-    EXPECT_EQ(lap[0].applied_factor.raw_value(), 99999990) << "the precondition: 0.9999999 applied";
-    EXPECT_EQ(count_of(out, "Fractional positions permitted; accepting iteration 1 output as final"),
-              1u)
-        << out;
-    EXPECT_EQ(pm_->get_strategy_positions().at("RML_S").at("ZZA").quantity.raw_value(), 99999990LL)
-        << "stored " << quantity("ZZA");
-    EXPECT_EQ(count_of(out, "RISK_CONVERGED_SNAP"), 0u) << out;
 }

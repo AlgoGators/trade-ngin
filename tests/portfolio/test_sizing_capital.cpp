@@ -112,14 +112,9 @@ protected:
         sc.asset_classes = {AssetClass::FUTURES};
         sc.frequencies = {DataFrequency::DAILY};
         TrendFollowingConfig tc;
-        tc.weight = kWeight;  // the buffer's weight before and after C9a's C2 is the same number
         tc.idm = 2.5;
         tc.risk_target = 0.2;
         tc.fx_rate = 1.0;
-        tc.max_symbol_concentration = concentration;
-        tc.use_position_buffering = true;
-        tc.carver_buffer_floor = 0.0;             // the Carver term alone sets the width
-        tc.carver_buffer_position_factor = 0.0;
         trend_ = std::make_shared<TrendFollowingStrategy>("TF_SIZING_" + std::to_string(++n), sc,
                                                           tc, db_, nullptr);
         trend_->instrument_data_[kSym].contract_size = 1.0;
@@ -147,31 +142,6 @@ TEST_F(StrategySizingCapital, ThePositionLineReadsTheCapitalItWasGivenToday) {
     ASSERT_TRUE(trend_->set_capital_allocation(450'000.0).is_ok());
     EXPECT_NEAR(position_at(10.0), 450.0, 1e-9);
     EXPECT_NEAR(position_at(-10.0), -450.0, 1e-9) << "a short scales the same way";
-}
-
-TEST_F(StrategySizingCapital, TheNotionalConcentrationCapFollowsTheCapital) {
-    // cap = capital x max_leverage x concentration = 500,000 x 1.0 x 0.1 = 50,000 of notional
-    // = 200 contracts at 250; the uncapped 500 is cut to it.
-    make(/*max_leverage=*/1.0, /*concentration=*/0.1);
-    EXPECT_NEAR(position_at(10.0), 200.0, 1e-9);
-    ASSERT_TRUE(trend_->set_capital_allocation(600'000.0).is_ok());
-    EXPECT_NEAR(position_at(10.0), 240.0, 1e-9)
-        << "600,000 x 1.0 x 0.1 = 60,000 of notional = 240 contracts";
-}
-
-TEST_F(StrategySizingCapital, TheBufferWidthsCarverTermFollowsTheCapital) {
-    make(10.0, 0.15);
-    Position held;
-    held.symbol = kSym;
-    held.quantity = Decimal(55.0);
-    held.average_price = Decimal(kPrice);
-    ASSERT_TRUE(trend_->seed_positions({{kSym, held}}).is_ok());
-    // Target 0, holding 55. At 500,000 the width is 50: 55 is outside [-50, 50], so the buffer
-    // trades down to the edge, 50.
-    EXPECT_NEAR(trend_->apply_position_buffer(kSym, 0.0, kPrice, kVol), 50.0, 1e-9);
-    // At 600,000 the width is 60: 55 is inside [-60, 60], so the buffer keeps 55.
-    ASSERT_TRUE(trend_->set_capital_allocation(600'000.0).is_ok());
-    EXPECT_NEAR(trend_->apply_position_buffer(kSym, 0.0, kPrice, kVol), 55.0, 1e-9);
 }
 
 TEST_F(StrategySizingCapital, ABadCapitalIsRefusedAndTheOldOneKept) {
@@ -398,7 +368,6 @@ protected:
         spec.commission_per_contract = 2.0;
         spec.initial_margin = 1000.0;
         spec.maintenance_margin = 800.0;
-        spec.weight = 1.0;
         spec.trading_hours = "09:30-16:00";
         auto& registry = InstrumentRegistry::instance();
         registry.instruments_["XX"] = std::make_shared<FuturesInstrument>("XX", spec);
@@ -514,7 +483,6 @@ std::shared_ptr<FuturesInstrument> future(const std::string& root, double multip
     spec.commission_per_contract = 2.0;
     spec.initial_margin = 1000.0;
     spec.maintenance_margin = 800.0;
-    spec.weight = 1.0;
     return std::make_shared<FuturesInstrument>(root, spec);
 }
 

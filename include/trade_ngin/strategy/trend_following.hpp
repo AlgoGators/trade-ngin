@@ -19,23 +19,9 @@ namespace trade_ngin {
  * @brief Configuration specific to trend following strategy
  */
 struct TrendFollowingConfig {
-    double weight{1.0};                 // Weight for position sizing
     double risk_target{0.2};            // Target annualized risk level
     double fx_rate{1.0};                // FX conversion rate
     double idm{2.5};                    // Instrument diversification multiplier
-    double max_symbol_concentration{0.15};  // Max % of gross exposure per symbol (15% default)
-    bool use_position_buffering{true};  // Whether to use position buffers to reduce trading
-    // Minimum buffer width in contracts. Carver formula yields 0.02-0.28 for micros, which is
-    // sub-tick and a no-op for integer positions. 0.5 is the smallest value that can absorb a
-    // breach for typical 0-3 contract holdings; set to 0.0 to disable.
-    double carver_buffer_floor{0.5};
-    // Position-proportional buffer term: buffer_width = max(floor, carver, factor × |current|),
-    // where current is the HELD position (the strategy's positions_), not the raw target: a
-    // larger held position gets a wider tolerance for raw drift (T-4e 7.5, a deliberate choice
-    // for inertia). With current = 0 the term is 0 and the floor sets the entry threshold.
-    // Targets high-magnitude positions (MBT/M2K/MYM) where day-over-day raw can move
-    // > 0.5 contracts, breaching the floor. Set to 0.0 to disable (floor-only).
-    double carver_buffer_position_factor{0.0};
     std::vector<std::pair<int, int>> ema_windows{
         // EMA window pairs for crossovers
         {2, 8}, {4, 16}, {8, 32}, {16, 64}, {32, 128}, {64, 256}};
@@ -55,13 +41,12 @@ struct TrendFollowingConfig {
 
 /**
  * @brief The FAST sleeve's configuration: TrendFollowingStrategy on the four fast EMA pairs, a 16-bar
- * short vol span, a 0.25 risk target and no strategy buffer. The FAST sleeve is this configuration
+ * short vol span and a 0.25 risk target. The FAST sleeve is this configuration
  * of the one trend class, not a class of its own.
  */
 inline TrendFollowingConfig fast_trend_following_config() {
     TrendFollowingConfig config;
     config.risk_target = 0.25;
-    config.use_position_buffering = false;
     config.ema_windows = {{2, 8}, {4, 16}, {8, 32}, {16, 64}};
     config.vol_lookback_short = 16;
     return config;
@@ -106,7 +91,13 @@ struct InstrumentData {
     // window is 252 dates on which any participant has a return, so 300 own bars cover it.
     std::vector<double> overlay_days;
     std::vector<double> overlay_returns;
+    // The symbol's last 756 consumed bars for the optimiser's covariance (section 5.1): the date,
+    // the raw close and the adjusted level of each.
+    std::vector<double> opt_days;
+    std::vector<double> opt_closes;
+    std::vector<double> opt_levels;
     double optimal_position = 0.0;
+    bool slow_rule_zeroed = false;  // the equity slow rule set the last forecast to 0
 
     // Timestamp of last update
     Timestamp last_update;
@@ -300,17 +291,6 @@ private:
      */
     double calculate_position(const std::string& symbol, double forecast, double price,
                               double volatility, double* optimal_position = nullptr) const;
-
-    /**
-     * @brief Apply position buffering
-     * @param symbol Instrument symbol
-     * @param raw_position Calculated position before buffering
-     * @param price Current price
-     * @param volatility Current volatility
-     * @return Buffered position
-     */
-    double apply_position_buffer(const std::string& symbol, double raw_position, double price,
-                                 double volatility) const;
 };
 
 }  // namespace trade_ngin

@@ -93,6 +93,17 @@ public:
         double close{0.0};
         double multiplier{1.0};
         double jump_sigma_daily{0.0};
+        // For the one optimisation pass (LOOP_SPEC sections 3.2 and 5.1): the position before any
+        // limit on the sleeve's own capital (N*), the sleeve's ruled forecast, whether the sleeve
+        // signals the symbol, and the symbol's last 756 consumed bars for the optimiser's
+        // covariance: each bar's date as a whole day number, its raw close and its adjusted level.
+        double optimal_position{0.0};
+        double forecast{0.0};
+        bool signalling{false};
+        bool slow_rule_zeroed{false};  ///< the equity slow rule set this bar's forecast to 0
+        std::vector<double> opt_day;
+        std::vector<double> opt_close;
+        std::vector<double> opt_level;
     };
 
     /// Fills `out` and returns true when the strategy holds such a series for `symbol`; a

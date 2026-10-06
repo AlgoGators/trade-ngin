@@ -95,10 +95,8 @@ struct Sleeve {
         sc.trading_params[kSym] = 5.0;
         sc.position_limits[kSym] = 1000.0;
         TrendFollowingConfig tc;
-        tc.weight = 1.0 / 30.0;
         tc.risk_target = 0.2;
         tc.idm = 2.5;
-        tc.use_position_buffering = false;
         tc.ema_windows = pairs;
         tc.vol_lookback_short = pairs.size() == 4 ? 16 : 32;
         tc.fdm = {{1, 1.0}, {2, 1.03}, {3, 1.08}, {4, 1.13}, {5, 1.19}, {6, 1.26}};
@@ -113,7 +111,6 @@ struct Sleeve {
         spec.commission_per_contract = 2.0;
         spec.initial_margin = 10000.0;
         spec.maintenance_margin = 8000.0;
-        spec.weight = 1.0;
         spec.trading_hours = "09:30-16:00";
         registry.instruments_[kSym] = std::make_shared<FuturesInstrument>(kSym, spec);
         registry.initialized_ = true;

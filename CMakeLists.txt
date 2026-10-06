@@ -178,6 +178,7 @@ set(TRADE_NGIN_SOURCES
     src/risk/basic_risk_modules.cpp
     src/risk/risk_module_config.cpp
     src/optimization/dynamic_optimizer.cpp
+    src/optimization/one_pass.cpp
     src/execution/execution_engine.cpp
     src/portfolio/portfolio_manager.cpp
     src/backtest/transaction_cost_analysis.cpp
@@ -186,7 +187,6 @@ set(TRADE_NGIN_SOURCES
     src/backtest/backtest_metrics_calculator.cpp
     src/backtest/backtest_execution_manager.cpp
     src/backtest/backtest_data_loader.cpp
-    src/backtest/backtest_portfolio_constraints.cpp
     src/backtest/backtest_coordinator.cpp
     src/backtest/backtest_csv_exporter.cpp
     src/backtest/slippage_model.cpp

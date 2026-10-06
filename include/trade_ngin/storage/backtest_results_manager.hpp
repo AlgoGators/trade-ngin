@@ -22,6 +22,9 @@ private:
     // Cached data for storage
     std::unordered_map<std::string, double> performance_metrics_;
     std::vector<std::pair<Timestamp, double>> equity_curve_;
+    // One entry per equity point (the row's risk_detail object as text, empty for NULL), or
+    // empty: the column is not named (migration 020).
+    std::vector<std::string> equity_risk_detail_;
     std::vector<Position> final_positions_;
     std::vector<ExecutionReport> executions_;
     std::map<Timestamp, std::unordered_map<std::string, double>> signals_history_;
@@ -53,6 +56,10 @@ public:
     // Set data to be stored
     void set_performance_metrics(const std::unordered_map<std::string, double>& metrics) {
         performance_metrics_ = metrics;
+    }
+
+    void set_equity_risk_detail(const std::vector<std::string>& risk_detail) {
+        equity_risk_detail_ = risk_detail;
     }
 
     void set_equity_curve(const std::vector<std::pair<Timestamp, double>>& curve) {

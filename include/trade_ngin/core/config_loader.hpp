@@ -248,8 +248,6 @@ struct StrategyDefaultsConfig {
     // use_optimization) and use_risk_management was deleted with the boolean risk gate:
     // both are load errors here now, so a leftover key cannot go on being read from a
     // block that no longer owns it.
-    double carver_buffer_floor{0.5};
-    double carver_buffer_position_factor{0.0};
 
     nlohmann::json to_json() const {
         nlohmann::json j;
@@ -260,8 +258,6 @@ struct StrategyDefaultsConfig {
         j["fdm"] = fdm_array;
         j["max_strategy_allocation"] = max_strategy_allocation;
         j["min_strategy_allocation"] = min_strategy_allocation;
-        j["carver_buffer_floor"] = carver_buffer_floor;
-        j["carver_buffer_position_factor"] = carver_buffer_position_factor;
         return j;
     }
 
@@ -276,11 +272,6 @@ struct StrategyDefaultsConfig {
             max_strategy_allocation = j.at("max_strategy_allocation").get<double>();
         if (j.contains("min_strategy_allocation"))
             min_strategy_allocation = j.at("min_strategy_allocation").get<double>();
-        if (j.contains("carver_buffer_floor"))
-            carver_buffer_floor = j.at("carver_buffer_floor").get<double>();
-        if (j.contains("carver_buffer_position_factor"))
-            carver_buffer_position_factor =
-                j.at("carver_buffer_position_factor").get<double>();
     }
 };
 
@@ -366,6 +357,18 @@ struct AppConfig {
     // (one figure, written twice so that neither file can be changed alone). Empty and 0: absent.
     std::string sizing_mode;
     double starting_capital{0.0};
+
+    // The one pass's keys in defaults.json's optimization block (LOOP_SPEC sections 5.2, 5.3
+    // and 7.7), each required on a futures book (require_loop_keys): cost_penalty_scalar (the
+    // search's cost multiplier, read into opt_config), sign_close_band (the deferral band) and
+    // b_sigma_floor (B_sigma's floor as a ratio to tau). `false` / 0: the key is absent.
+    bool has_cost_penalty_scalar{false};
+    double sign_close_band{0.0};
+    double b_sigma_floor{0.0};
+    // Every RETIRED key the files still carry, as "<file>: <key>" (section 7.7). Collected at
+    // load, never read for a value; a futures book refuses to run on a non-empty list
+    // (require_loop_keys). The equity book's files are not searched for the futures-only keys.
+    std::vector<std::string> retired_loop_keys;
 
     // Backtest settings
     BacktestSpecificConfig backtest;

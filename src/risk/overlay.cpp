@@ -205,6 +205,46 @@ Multiplier multiplier(const Readings& readings, const Limits& limits) {
     return out;
 }
 
+std::vector<char> contributors(const std::vector<double>& weights, const GateWindow& window,
+                               const std::vector<double>& sigma_jump, const std::string& term) {
+    std::vector<char> out(weights.size(), 0);
+    if (term == "R" || term == "R_jump") {
+        if (window.blind()) return out;
+        std::vector<std::size_t> core;
+        for (std::size_t i = 0; i < window.in_r.size(); ++i) {
+            if (window.in_r[i]) core.push_back(i);
+        }
+        const std::size_t k = core.size();
+        std::vector<double> sigma(k, 0.0);
+        for (std::size_t a = 0; a < k; ++a) sigma[a] = std::sqrt(std::max(window.covariance[a][a], 0.0));
+        for (std::size_t a = 0; a < k; ++a) {
+            double row = 0.0;
+            for (std::size_t b = 0; b < k; ++b) {
+                double entry = window.covariance[a][b];
+                if (term == "R_jump") {
+                    double rho = a == b ? 1.0 : 0.0;
+                    if (a != b && sigma[a] * sigma[b] > 0.0) {
+                        rho = window.covariance[a][b] / (sigma[a] * sigma[b]);
+                    }
+                    entry = rho * sigma_jump[core[a]] * sigma_jump[core[b]];
+                }
+                row += entry * weights[core[b]];
+            }
+            out[core[a]] = weights[core[a]] * row > 0.0;
+        }
+    } else if (term == "R_shock") {
+        for (std::size_t i = 0; i < weights.size(); ++i) out[i] = window.in_shock[i] && weights[i] != 0.0;
+    } else if (term == "L_g") {
+        for (std::size_t i = 0; i < weights.size(); ++i) out[i] = weights[i] != 0.0;
+    } else if (term == "L_n") {
+        double net = 0.0;
+        for (double x : weights) net += x;
+        const double side = net > 0.0 ? 1.0 : (net < 0.0 ? -1.0 : 0.0);
+        for (std::size_t i = 0; i < weights.size(); ++i) out[i] = weights[i] * side > 0.0;
+    }
+    return out;
+}
+
 double percentile(std::vector<double> values, double pct) {
     if (values.empty()) return std::numeric_limits<double>::quiet_NaN();
     std::sort(values.begin(), values.end());

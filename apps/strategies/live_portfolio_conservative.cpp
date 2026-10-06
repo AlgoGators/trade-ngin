@@ -9,6 +9,7 @@
 #include <set>
 #include <sstream>
 #include "trade_ngin/core/config_loader.hpp"
+#include "trade_ngin/portfolio/loop_config.hpp"
 #include "trade_ngin/core/email_sender.hpp"
 #include "trade_ngin/core/holiday_checker.hpp"
 #include "trade_ngin/core/logger.hpp"
@@ -612,6 +613,7 @@ int main(int argc, char* argv[]) {
         portfolio_config.sleeve_risk_modules = app_config.risk_schema.sleeves;
         portfolio_config.opt_config = opt_config;
         portfolio_config.risk_config = risk_config;
+        apply_loop_config(app_config, portfolio_config);
 
         // ========================================
         // PHASE 2: STRATEGY INSTANCE FACTORY
@@ -623,7 +625,9 @@ int main(int argc, char* argv[]) {
         base_strategy_config.asset_classes = {trade_ngin::AssetClass::FUTURES};
         base_strategy_config.frequencies = {trade_ngin::DataFrequency::DAILY};
         base_strategy_config.max_drawdown = app_config.max_drawdown;
-        base_strategy_config.max_leverage = app_config.max_leverage;
+        // The sleeves' own leverage limit is the book's gross leverage limit L_max (risk.json's
+        // max_leverage is retired on a futures book).
+        base_strategy_config.max_leverage = loop_gross_leverage_limit(app_config);
 
         // Add position limits and costs for all symbols
         for (const auto& symbol : symbols) {
@@ -659,17 +663,8 @@ int main(int argc, char* argv[]) {
                 trade_ngin::TrendFollowingConfig trend_config;
                 if (strategy_def.contains("config")) {
                     const auto& cfg = strategy_def["config"];
-                    trend_config.weight = cfg.value("weight", 0.03);
                     trend_config.risk_target = cfg.value("risk_target", 0.2);
                     trend_config.idm = cfg.value("idm", 2.5);
-                    trend_config.max_symbol_concentration =
-                        cfg.value("max_symbol_concentration", 0.15);
-                    trend_config.use_position_buffering = cfg.value("use_position_buffering", true);
-                    trend_config.carver_buffer_floor = cfg.value(
-                        "carver_buffer_floor", app_config.strategy_defaults.carver_buffer_floor);
-                    trend_config.carver_buffer_position_factor =
-                        cfg.value("carver_buffer_position_factor",
-                                  app_config.strategy_defaults.carver_buffer_position_factor);
                     if (cfg.contains("ema_windows")) {
                         trend_config.ema_windows.clear();
                         for (const auto& window : cfg["ema_windows"]) {
@@ -704,18 +699,8 @@ int main(int argc, char* argv[]) {
                     trade_ngin::fast_trend_following_config();
                 if (strategy_def.contains("config")) {
                     const auto& cfg = strategy_def["config"];
-                    trend_config.weight = cfg.value("weight", 0.03);
                     trend_config.risk_target = cfg.value("risk_target", 0.25);
                     trend_config.idm = cfg.value("idm", 2.5);
-                    trend_config.max_symbol_concentration =
-                        cfg.value("max_symbol_concentration", 0.15);
-                    trend_config.use_position_buffering =
-                        cfg.value("use_position_buffering", false);
-                    trend_config.carver_buffer_floor = cfg.value(
-                        "carver_buffer_floor", app_config.strategy_defaults.carver_buffer_floor);
-                    trend_config.carver_buffer_position_factor =
-                        cfg.value("carver_buffer_position_factor",
-                                  app_config.strategy_defaults.carver_buffer_position_factor);
                     if (cfg.contains("ema_windows")) {
                         trend_config.ema_windows.clear();
                         for (const auto& window : cfg["ema_windows"]) {
@@ -1604,6 +1589,10 @@ int main(int argc, char* argv[]) {
         // book (T-7a C5, HD 2026-09-21 option b): the day is stored as a REFUSE day, the email
         // is flagged and main() exits kRiskModuleFailureExitCode instead of 0.
         std::optional<nlohmann::json> risk_module_failure;
+        // The one pass's record of today's rebalance (LOOP_SPEC sections 4 to 6): what the row
+        // stores as risk_detail and risk_scale, and the forecast-sign closes booked as their own
+        // fills. Left at its defaults on a day with no rebalance.
+        OnePassDay one_pass_day;
 
         // ========================================
         // NORMAL TRADING DAY PROCESSING
@@ -1665,9 +1654,9 @@ int main(int argc, char* argv[]) {
                      std::to_string(withheld_junk_bars.size()) + " symbol(s) from the strategy "
                      "and portfolio feed (signal not updated today): " + withheld_list);
             }
-            // T-7b-3 D-1b (HD 2026-09-27): a symbol whose T-1 verdict is not SESSION is held at
-            // its stored T-1 quantity after the rebalance (hold_non_session_symbols, the same
-            // key), so a lap the risk gate cuts fixes it at its held quantity and never cuts it.
+            // LOOP_SPEC section 6.1: the hold set of today's rebalance. A symbol whose T-1 verdict
+            // is not SESSION and a change-bar symbol (D37) are held at their stored T-1 quantity:
+            // counted in every reading, never scaled, searched, trimmed or filled.
             {
                 std::unordered_set<std::string> book_gate_holds;
                 change_bar_holds.clear();
@@ -1698,7 +1687,7 @@ int main(int argc, char* argv[]) {
                              "and its returns excluded");
                     }
                 }
-                portfolio->set_book_gate_holds(std::move(book_gate_holds));
+                portfolio->set_hold_set(std::move(book_gate_holds));
             }
             // T-7b-3 R-3: on a sizing hold the PortfolioManager is not run, so every strategy
             // keeps the seeded T-1 book above (no rebalance, no order, no signal stored today).
@@ -1780,25 +1769,7 @@ int main(int argc, char* argv[]) {
                     }
                 }
             }
-            // T-7b-3 ruling 7 (HD 2026-09-27): the risk gate's cut, delivered once with the
-            // BOOK_GATE holds fixed, left the book above the gate's level because the held
-            // contracts alone keep it there. The day is stored as it is and today's
-            // live_run_metadata row carries the over_limit_by_hold mark; the run goes on.
-            if (const auto hold_limit = portfolio->last_over_limit_by_hold();
-                hold_limit.over_limit_by_hold) {
-                auto hold_mark = db->store_live_run_metadata(
-                    now, combined_strategy_id, portfolio_id, strategy_alloc_json,
-                    portfolio_config_json = mark_over_limit_by_hold(
-                        portfolio_config_json, hold_limit.symbols, hold_limit.target,
-                        hold_limit.cut_book, hold_limit.lap),
-                    strategy_configs);
-                if (hold_mark.is_error()) {
-                    ERROR("Failed to mark today's live_run_metadata row over the limit by hold: " +
-                          std::string(hold_mark.error()->what()));
-                } else {
-                    INFO("Marked today's live_run_metadata row over the limit by hold");
-                }
-            }
+            one_pass_day = portfolio->last_one_pass();
             if (port_process_result.is_error()) {
                 std::cerr << "Failed to process data in portfolio manager: "
                           << port_process_result.error()->what() << std::endl;
@@ -2221,9 +2192,15 @@ int main(int argc, char* argv[]) {
                  "' (current=" + std::to_string(current_positions_map.size()) +
                  ", previous=" + std::to_string(prev_positions_map.size()) + ")");
 
+            // Section 5.2: a forecast-sign close is its own fill to flat, ahead of the symbol's
+            // move to today's quantity.
+            const auto sleeve_sign_closes = one_pass_day.sign_closes.find(strategy_name);
             auto exec_result =
                 execute_strategy_day_strict(*execution_manager, current_positions_map,
-                                            prev_positions_map, previous_day_close_prices, now);
+                                            prev_positions_map, previous_day_close_prices, now,
+                                            sleeve_sign_closes == one_pass_day.sign_closes.end()
+                                                ? std::map<std::string, double>{}
+                                                : sleeve_sign_closes->second);
 
             if (exec_result.is_ok()) {
                 for (const auto& s : exec_result.value().rolled_back) {
@@ -2399,13 +2376,16 @@ int main(int argc, char* argv[]) {
         // pro-rata share of sum C(q_i) - C(Q), priced by the same cost manager and state the
         // fills used (C(0) = 0: no order). Written into the rows before they are stored; the
         // day's P&L cost above stays the sum of the rows' own costs (the book's P&L is gross).
-        {
+        // Section 5.2: the sleeves' forecast-sign closes of one symbol are one account order and
+        // their other fills another; a close is never netted against the fill that follows it.
+        for (const bool sign_close_group : {true, false}) {
             std::vector<transaction_cost::SleeveExecution> sleeve_rows;
             for (auto& [netting_sleeve, netting_execs] : all_strategy_executions) {
                 for (auto& e : netting_execs) {
                     // Section 6.5: ROLL legs never enter the netting (two legs at two prices would
                     // read as a mixed-price cross); their adjustment stays 0.
                     if (e.execution_type != ExecutionType::STRATEGY) continue;
+                    if (is_sign_close(e) != sign_close_group) continue;
                     sleeve_rows.push_back({netting_sleeve, &e});
                 }
             }
@@ -2849,14 +2829,14 @@ int main(int argc, char* argv[]) {
         INFO(trade_ngin::format_risk_scale_report(
             risk_eval.is_ok() ? risk_eval.value().recommended_scale : 1.0,
             trade_ngin::summarize_applied_risk(portfolio->last_risk_decisions())));
-        // T-7b-2 C9a (T-VOL C4): the delivered cut beside the request: the stored book's gross
-        // notional over the lap-1 optimizer book's, the PortfolioManager's measurement of the same
-        // rebalance (risk_scale_report.hpp defines each field). Log only. C9a3: final_gross is the
-        // book this runner stores, strategy_positions_map AFTER the BOOK_GATE hold (a held symbol
-        // keeps its stored T-1 quantity), not the PortfolioManager's book before it.
+        // The delivered scale beside the request: the stored book's gross notional over the capped
+        // target's (the held rows counted in both), the PortfolioManager's measurement of the same
+        // rebalance (risk_scale_report.hpp defines each field). Log only. final_gross is the book
+        // this runner stores.
         INFO(trade_ngin::format_risk_delivered(
             trade_ngin::summarize_applied_risk(portfolio->last_risk_decisions()),
-            portfolio->delivered_cut_for_book(trade_ngin::account_book_of(strategy_positions_map))));
+            portfolio->delivered_cut_for_book(trade_ngin::account_book_of(strategy_positions_map)),
+            std::string(), "capped_target_gross"));
         // ========================================
         // STEP 3: CALCULATE TRANSACTION COSTS AND Day T PnL (ZERO)
         // ========================================
@@ -3847,7 +3827,6 @@ int main(int argc, char* argv[]) {
             nlohmann::json report_config_json;
             report_config_json["strategy_type"] = combined_strategy_id;  // From config (Phase 1)
             report_config_json["capital_allocation"] = initial_capital;
-            report_config_json["max_leverage"] = base_strategy_config.max_leverage;
             report_config_json["weight"] = 0.03;      // Default weight
             report_config_json["risk_target"] = 0.2;  // Default risk target
             report_config_json["idm"] = 2.5;          // Default IDM
@@ -3869,14 +3848,18 @@ int main(int argc, char* argv[]) {
             double net_leverage = 0.0;
             double max_correlation = 0.0;
             double jump_risk = 0.0;
-            double risk_scale = 1.0;
+            // LOOP_SPEC sections 7.2 and 10: risk_scale is the DELIVERED scale of today's
+            // rebalance, the stored book's gross notional over the capped target's gross notional
+            // at the raw signal closes. A day with no sized rebalance (no session, a sizing hold,
+            // a refused overlay) stores the held book against itself: 1. The request m_t is
+            // risk_detail.risk_requested, never this column.
+            double risk_scale = one_pass_day.stores_detail() ? one_pass_day.risk_scale : 1.0;
 
             if (risk_eval.is_ok()) {
                 const auto& r = risk_eval.value();
                 portfolio_var = r.portfolio_var;
                 max_correlation = r.correlation_risk;
                 jump_risk = r.jump_risk;
-                risk_scale = r.recommended_scale;
             }
 
             // Use LiveMetricsCalculator for gross leverage (notional / portfolio value)
@@ -4034,6 +4017,13 @@ int main(int argc, char* argv[]) {
             // Set config
             results_manager->set_config(report_config_json);
 
+            // Section 7.3: the loop's record of the day, on the row of a sized rebalance the
+            // overlay answered; the cell stays NULL on every other row.
+            if (one_pass_day.stores_detail()) {
+                results_manager->set_risk_detail(
+                    risk_detail_json(one_pass_day, sizing_capital_read.capital.account));
+            }
+
             // Set equity for equity curve tracking
             results_manager->set_equity(current_portfolio_value);
         } catch (const std::exception& e) {
@@ -4139,13 +4129,19 @@ int main(int argc, char* argv[]) {
             INFO("Successfully saved all live trading results to database");
         }
 
-        // Stop the strategy
+        // Stop every sleeve of the book (LOOP_SPEC section 5.4, D33), in registration order.
         INFO("Stopping strategy...");
-        auto stop_result = tf_strategy->stop();
-        if (stop_result.is_error()) {
-            ERROR("Failed to stop strategy: " + std::string(stop_result.error()->what()));
-        } else {
-            INFO("Strategy stopped successfully");
+        for (size_t i = 0; i < strategies.size(); ++i) {
+            auto stop_result = strategies[i]->stop();
+            if (stop_result.is_error()) {
+                ERROR("Failed to stop strategy" +
+                      (i == 0 ? std::string() : " " + strategy_names[i]) + ": " +
+                      std::string(stop_result.error()->what()));
+            } else if (i == 0) {
+                INFO("Strategy stopped successfully");
+            } else {
+                INFO("Strategy " + strategy_names[i] + " stopped successfully");
+            }
         }
 
         std::cout << "\n======= Daily Processing Complete =======" << std::endl;

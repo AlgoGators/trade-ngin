@@ -237,18 +237,19 @@ TEST_F(DeliveredCutPmTest, ALapOneCutThatShipsWholeDeliversTheRequest) {
 // The request is not what ships: lap 1 cuts 5 lots by 0.85 to 4.25 (fractional), lap 2 is
 // refused, and the book ships at yesterday's 1 lot. requested = 0.85 (lap 2's SCALE lost to the
 // REFUSE), delivered = 99 / 495 = 0.2.
-TEST_F(DeliveredCutPmTest, ARefusalAfterACutDeliversYesterdaysBookNotTheRequest) {
+TEST_F(DeliveredCutPmTest, ARefusalDeliversYesterdaysBookNotTheRequest) {
     make_pm({{{"ZZA", make_pos("ZZA", 5.0, 100.0)}}},
             {std::make_shared<ConstantScaleRiskModule>("cut", 0.85, /*every_lap=*/true),
              std::make_shared<RefuseOnConditionRiskModule>(
-                 "stop", RiskCondition{RiskCondition::Kind::LAP_AT_LEAST, 2.0}, "lap two")});
+                 "stop", RiskCondition{RiskCondition::Kind::ALWAYS, 0.0}, "always")});
     ASSERT_TRUE(pm_->update_strategy_position("DC_S", "ZZA", make_pos("ZZA", 1.0, 100.0)).is_ok());
     ASSERT_TRUE(pm_->process_market_data(three_days()).is_ok());
     const DeliveredCut d = pm_->last_delivered_cut();
-    EXPECT_EQ(d.lap1_gross, 495.0) << "the lap-1 book is the 5 lots before the gate";
+    EXPECT_EQ(d.lap1_gross, 495.0) << "the book the risk step read is the 5 lots before it";
     EXPECT_EQ(d.final_gross, 99.0) << "the stored book is yesterday's 1 lot";
+    // The refusal won over the scale requested in the same step, so nothing was multiplied.
     EXPECT_EQ(format_risk_delivered(summarize_applied_risk(pm_->last_risk_decisions()), d),
-              "RISK_DELIVERED requested=0.84999999999999998 delivered=0.20000000000000001 "
+              "RISK_DELIVERED requested=1 delivered=0.20000000000000001 "
               "final_gross=99 lap1_gross=495 unpriced=0");
 }
 

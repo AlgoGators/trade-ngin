@@ -61,11 +61,9 @@ TEST(FastSleeveConfiguration, TheFastConfigurationIsTheFourFastPairs) {
     EXPECT_EQ(fast.ema_windows, kFastPairs) << "the (1,4) pair is dropped from FAST (D21)";
     EXPECT_EQ(fast.vol_lookback_short, 16);
     EXPECT_DOUBLE_EQ(fast.risk_target, 0.25);
-    EXPECT_FALSE(fast.use_position_buffering);
     // Everything else is the trend class's own default.
     const TrendFollowingConfig trend;
     EXPECT_DOUBLE_EQ(fast.idm, trend.idm);
-    EXPECT_DOUBLE_EQ(fast.weight, trend.weight);
     EXPECT_EQ(fast.vol_lookback_long, trend.vol_lookback_long);
     EXPECT_EQ(fast.fdm, trend.fdm);
 }

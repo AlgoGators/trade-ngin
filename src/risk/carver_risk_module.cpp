@@ -1,5 +1,4 @@
 // src/risk/carver_risk_module.cpp
-#include "trade_ngin/risk/overlay_record.hpp"
 #include "trade_ngin/risk/carver_risk_module.hpp"
 #include <algorithm>
 #include <chrono>
@@ -248,53 +247,6 @@ void CarverRiskModule::on_bars(const std::vector<Bar>& bars, const RiskContext& 
     }
 }
 
-namespace {
-
-std::string fixed6(double v) {
-    return std::to_string(v);
-}
-
-// LOOP_SPEC section 7.7: the OVERLAY line of one evaluation: the readings, the limits, the
-// multipliers, m, the binding term or "none", the window's dates, its complete dates, the dates it
-// dropped, whether the complete-date covariance engaged, and the symbols left out of each reading.
-std::string overlay_log_line(const RiskContext& ctx, double capital, const overlay::Inputs& inputs,
-                             const overlay::Evaluation& e) {
-    auto list = [&](const std::vector<char>& mask) {
-        std::string out;
-        for (size_t i = 0; i < mask.size() && i < inputs.symbols.size(); ++i) {
-            if (mask[i]) out += (out.empty() ? "" : " ") + inputs.symbols[i];
-        }
-        return out.empty() ? std::string("-") : out;
-    };
-    std::string outside;
-    for (const auto& s : e.outside) outside += (outside.empty() ? "" : " ") + s;
-    const auto& w = e.window;
-    const bool blind = w.blind();
-    return "OVERLAY lap=" + std::to_string(ctx.lap) + " m=" + fixed6(e.multiplier.m) +
-           " binding=" + e.multiplier.binding + " R=" + (blind ? "blind" : fixed6(e.readings.risk)) +
-           " R_jump=" + (blind ? "blind" : fixed6(e.readings.jump)) +
-           " R_shock=" + (blind ? "blind" : fixed6(e.readings.shock)) +
-           " L_g=" + fixed6(e.readings.gross) + " L_n=" + fixed6(e.readings.net) +
-           " limits R_max=" + fixed6(e.limits.risk) + " R_jump_max=" + fixed6(e.limits.jump) +
-           " R_shock_max=" + fixed6(e.limits.shock) + " L_max=" + fixed6(e.limits.gross) +
-           " L_net_max=" + fixed6(e.limits.net) + " multipliers R=" + fixed6(e.multiplier.risk) +
-           " R_jump=" + fixed6(e.multiplier.jump) + " R_shock=" + fixed6(e.multiplier.shock) +
-           " L_g=" + fixed6(e.multiplier.gross) + " L_n=" + fixed6(e.multiplier.net) +
-           " capital=" + fixed6(capital) + " tau=" + fixed6(inputs.tau) +
-           " window=" + overlay::GateWindow::name(w.mode) +
-           " dates=" + std::to_string(w.window_dates) +
-           " first=" + (w.window_dates ? overlay::ordinal_date(w.first_ordinal) : "none") +
-           " last=" + (w.window_dates ? overlay::ordinal_date(w.last_ordinal) : "none") +
-           " complete_dates=" + std::to_string(w.complete_dates) +
-           " dropped_dates=" + std::to_string(w.window_dates - w.complete_dates) +
-           " f5_engaged=" + (w.mode == overlay::GateWindow::Mode::kComplete ? "1" : "0") +
-           " participants=" + std::to_string(inputs.symbols.size()) +
-           " no_return=[" + list(w.no_return) + "] short_history=[" + list(w.short_history) +
-           "] outside=[" + (outside.empty() ? "-" : outside) + "]";
-}
-
-}  // namespace
-
 RiskDecision CarverRiskModule::to_decision(const RiskResult& r, const std::string& module_id) {
     RiskDecision d;
     d.module_id = module_id;
@@ -318,45 +270,6 @@ Result<RiskDecision> CarverRiskModule::evaluate(
     }
 
     RiskResult risk_result = result.value();
-    // LOOP_SPEC section 4: the overlay in CAPITAL TERMS. With limits set and the rebalance's
-    // inputs on the context, the four readings are taken on the book's weights on the sizing
-    // capital (x = N M P / E) over the gate window of the participants' adjusted returns, each
-    // against its limit (the three risk limits as ratios to tau), and m is the smallest
-    // multiplier. The readings and the multipliers above are replaced by these.
-    overlay_read_ = false;
-    if (overlay_ratios_.set() && ctx.overlay_inputs != nullptr) {
-        const overlay::Inputs& inputs = *ctx.overlay_inputs;
-        const double capital = static_cast<double>(rm_.get_config().capital);
-        std::vector<std::pair<std::string, double>> quantities;
-        quantities.reserve(book.size());
-        for (const auto& [symbol, position] : book) {
-            quantities.emplace_back(symbol, static_cast<double>(position.quantity));
-        }
-        last_overlay_ = overlay::evaluate(inputs, quantities, capital, overlay_ratios_);
-        overlay_read_ = true;
-        const overlay::Evaluation& e = last_overlay_;
-        risk_result.portfolio_var = e.readings.risk;
-        risk_result.jump_risk = e.readings.jump;
-        risk_result.correlation_risk = e.readings.shock;
-        risk_result.gross_leverage = e.readings.gross;
-        risk_result.net_leverage = e.readings.net;
-        risk_result.portfolio_multiplier = e.multiplier.risk;
-        risk_result.jump_multiplier = e.multiplier.jump;
-        risk_result.correlation_multiplier = e.multiplier.shock;
-        risk_result.leverage_multiplier = std::min(e.multiplier.gross, e.multiplier.net);
-        risk_result.recommended_scale = e.multiplier.m;
-        risk_result.risk_exceeded = e.multiplier.m < 1.0;
-        INFO(overlay_log_line(ctx, capital, inputs, e));
-        std::vector<double> by_participant(inputs.symbols.size(), 0.0);
-        for (const auto& [symbol, quantity] : quantities) {
-            const auto at = std::lower_bound(inputs.symbols.begin(), inputs.symbols.end(), symbol);
-            if (at != inputs.symbols.end() && *at == symbol) {
-                by_participant[static_cast<size_t>(at - inputs.symbols.begin())] = quantity;
-            }
-        }
-        overlay::append_overlay_record(ctx.portfolio_id, ctx.lap, ctx.is_warmup, capital, inputs, e,
-                                       by_participant);
-    }
     // What the gate actually read: the window AFTER F5's filter, with the unfiltered span
     // recoverable as window_dates. `dates` is the number of dates create_market_data saw.
     INFO("T4_RISK_WINDOW dates=" +
@@ -400,15 +313,10 @@ Result<RiskDecision> CarverRiskModule::evaluate(
     // min(), not a product: a deep leverage cut also satisfies a shallower correlation request
     // and must not be charged twice for it. A lap on which the gate goes blind has all four
     // multipliers at 1.0 and risk_exceeded false, so it still applies nothing.
-    // In capital terms (the overlay read the book) every term is a MAGNITUDE reading of the book
-    // as it stands on this lap: the whole of m is a rate, and no term is a level.
-    const double s_inv =
-        overlay_read_ ? 1.0
-                      : std::min({static_cast<double>(risk_result.portfolio_multiplier),
-                                  static_cast<double>(risk_result.jump_multiplier),
-                                  static_cast<double>(risk_result.correlation_multiplier)});
-    const double s_lev = overlay_read_ ? risk_result.recommended_scale
-                                       : static_cast<double>(risk_result.leverage_multiplier);
+    const double s_inv = std::min({static_cast<double>(risk_result.portfolio_multiplier),
+                                   static_cast<double>(risk_result.jump_multiplier),
+                                   static_cast<double>(risk_result.correlation_multiplier)});
+    const double s_lev = static_cast<double>(risk_result.leverage_multiplier);
     last_invariant_ = s_inv;
     last_leverage_ = s_lev;
 
@@ -461,9 +369,6 @@ Result<RiskDecision> CarverRiskModule::evaluate(
                      market_data_.symbol_indices.empty() || market_data_.ordered_symbols.empty() ||
                      !mapped || complete_dates_in_window() < min_gate_dates_ ||
                      static_cast<double>(rm_.get_config().capital) <= 0.0;
-    // In capital terms BLIND is the gate window's own state (fewer than 21 complete dates): the
-    // three covariance readings ask for nothing and the leverage terms still apply (D27).
-    if (overlay_read_) decision.blind = last_overlay_.window.blind();
     return Result<RiskDecision>(std::move(decision));
 }
 
@@ -477,58 +382,6 @@ void CarverRiskModule::on_applied(const RiskApplied& applied, const RiskContext&
         // sleeve's share. Zero laps on every shipped book (no sleeve module is assigned).
         if (applied.partial) level_partial_ = true;
     }
-}
-
-Result<RiskDecision> CarverRiskModule::finalize(
-    const std::unordered_map<std::string, Position>& book, const RiskContext& ctx) {
-    RiskDecision d;
-    d.module_id = id_;
-    // A warm-up rebalance ships nothing, so it has nothing to warn about (and on a replaying runner
-    // it is a replayed book, not the day's: T-6b-fix AUDIT section 8).
-    if (ctx.is_warmup || book.empty() || market_data_.symbol_indices.empty()) {
-        return Result<RiskDecision>(std::move(d));
-    }
-    // The trading day: the context's as_of (the backtest passes it), else the newest bar of this
-    // rebalance (the live runners' dated day), else one key for the run.
-    std::optional<Timestamp> when = ctx.as_of;
-    if (!when && ctx.bars != nullptr) {
-        for (const auto& bar : *ctx.bars) {
-            if (!when || bar.timestamp > *when) when = bar.timestamp;
-        }
-    }
-    std::string day = "run";
-    if (when) {
-        const std::time_t tt = std::chrono::system_clock::to_time_t(*when);
-        std::tm tm{};
-        gmtime_r(&tt, &tm);
-        char buf[16];
-        std::strftime(buf, sizeof(buf), "%Y-%m-%d", &tm);
-        day = buf;
-    }
-    if (day == leverage_warned_day_) {
-        return Result<RiskDecision>(std::move(d));
-    }
-    const RiskManager::LeverageReading r = rm_.leverage_of(book, market_data_);
-    if (!(r.multiplier < 1.0 - 1e-9) || !(r.multiplier > 0.0)) {
-        return Result<RiskDecision>(std::move(d));
-    }
-    leverage_warned_day_ = day;
-    double gross_contracts = 0.0;
-    for (const auto& [symbol, pos] : book) gross_contracts += std::abs(static_cast<double>(pos.quantity));
-    const double ratio = 1.0 / r.multiplier;
-    d.action = RiskAction::WARN;
-    d.reason = "RISK_LEVERAGE_ROUNDED day=" + day + " lap=" + std::to_string(ctx.lap) +
-               " the final book of this rebalance, after whole-contract rounding (the book the "
-               "runner stores), is over its leverage limit by about " +
-               std::to_string(gross_contracts * (ratio - 1.0)) + " contracts (" +
-               std::to_string(ratio) + "x the limit on a " +
-               std::to_string(static_cast<long>(std::llround(gross_contracts))) +
-               "-contract book; gross " + std::to_string(r.gross_leverage) + ", net " +
-               std::to_string(r.net_leverage) + ", capital " +
-               std::to_string(static_cast<double>(rm_.get_config().capital)) +
-               "). The limit is enforced to within whole-contract rounding (config_template risk "
-               "rationale); logged at most once per trading day, never on a warm-up rebalance.";
-    return Result<RiskDecision>(std::move(d));
 }
 
 Result<void> CarverRiskModule::set_capital(Decimal capital) {

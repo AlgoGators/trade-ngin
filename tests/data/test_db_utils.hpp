@@ -311,8 +311,10 @@ public:
         const std::string& run_id,
         const std::vector<std::pair<Timestamp, double>>& equity_points,
         const std::string& portfolio_id = "BASE_PORTFOLIO",
-        const std::string& table_name = "backtest.equity_curve") override {
+        const std::string& table_name = "backtest.equity_curve",
+        const std::vector<std::string>& risk_detail = {}) override {
         (void)run_id; (void)equity_points; (void)portfolio_id; (void)table_name;
+        last_equity_risk_detail = risk_detail;
         return record_call("store_backtest_equity_curve_batch");
     }
 
@@ -384,15 +386,21 @@ public:
         return record_call("delete_stale_executions");
     }
 
+    // The risk_detail arguments of the last calls (migration 020).
+    nlohmann::json last_live_risk_detail;
+    std::vector<std::string> last_equity_risk_detail;
+
     Result<void> store_live_results_complete(
         const std::string& strategy_id, const Timestamp& date,
         const std::unordered_map<std::string, double>& metrics,
         const std::unordered_map<std::string, int>& int_metrics,
         const nlohmann::json& config,
         const std::string& portfolio_id = "BASE_PORTFOLIO",
-        const std::string& table_name = "trading.live_results") override {
+        const std::string& table_name = "trading.live_results",
+        const nlohmann::json& risk_detail = nlohmann::json()) override {
         (void)strategy_id; (void)date; (void)metrics; (void)int_metrics; (void)config;
         (void)portfolio_id; (void)table_name;
+        last_live_risk_detail = risk_detail;
         return record_call("store_live_results_complete");
     }
 

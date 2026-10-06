@@ -57,7 +57,8 @@ set(TEST_SOURCES
     instruments/test_instrument_registry.cpp
     risk/test_risk_manager.cpp
     risk/test_overlay.cpp
-    risk/test_overlay_module.cpp
+    optimization/test_one_pass.cpp
+    portfolio/test_one_pass_book.cpp
     risk/test_overlay_wiring.cpp
     risk/test_risk_adjusted_returns.cpp
     risk/test_risk_modules.cpp
@@ -99,7 +100,6 @@ set(TEST_SOURCES
     backtest/test_slippage_model.cpp
     backtest/test_backtest_execution_manager.cpp
     backtest/test_backtest_price_manager.cpp
-    backtest/test_backtest_portfolio_constraints.cpp
     backtest/test_backtest_pnl_manager.cpp
     backtest/test_backtest_metrics_calculator.cpp
     backtest/test_trade_statistics_roll_legs.cpp
@@ -142,7 +142,6 @@ set(TEST_SOURCES
     portfolio/test_fractional_position_convergence.cpp
     portfolio/test_price_history_ordering.cpp
     portfolio/test_pm_own_price_history.cpp
-    portfolio/test_risk_loop_log_golden.cpp
     portfolio/test_risk_module_loop.cpp
     portfolio/test_risk_fail_closed.cpp
     portfolio/test_optimizer_allocation_split.cpp
@@ -157,8 +156,6 @@ set(TEST_SOURCES
     portfolio/test_delivered_cut.cpp
     portfolio/test_sizing_capital.cpp
     portfolio/test_half_compounding.cpp
-    portfolio/test_cut_delivery.cpp
-    portfolio/test_cut_stands.cpp
     portfolio/test_pm_netting.cpp
     storage/test_backtest_results_manager.cpp
     storage/test_live_results_manager.cpp
@@ -200,7 +197,6 @@ set(TEST_SOURCES
     strategy/test_trend_estimator.cpp
     strategy/test_trend_history_seed.cpp
     strategy/test_equity_slow_rule.cpp
-    strategy/test_buffer_weight_source.cpp
     strategy/test_mean_reversion_backtest.cpp
     strategy/test_equity_backtest_db_validation.cpp
     strategy/test_equity_pnl_accounting.cpp

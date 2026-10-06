@@ -20,7 +20,6 @@
 #include "trade_ngin/backtest/backtest_price_manager.hpp"
 #include "trade_ngin/backtest/backtest_pnl_manager.hpp"
 #include "trade_ngin/backtest/backtest_execution_manager.hpp"
-#include "trade_ngin/backtest/backtest_portfolio_constraints.hpp"
 #include "trade_ngin/backtest/backtest_types.hpp"
 #include "trade_ngin/backtest/backtest_csv_exporter.hpp"
 #include "trade_ngin/backtest/equity_cost_retier.hpp"
@@ -58,7 +57,6 @@ struct BacktestCoordinatorConfig {
  * - BacktestPriceManager: Price history tracking
  * - BacktestPnLManager: PnL calculations
  * - BacktestExecutionManager: Execution generation
- * - BacktestPortfolioConstraints: Risk and optimization
  * - BacktestResultsManager: Storage operations
  *
  * It replaces the monolithic BacktestEngine by delegating to specialized
@@ -81,7 +79,6 @@ private:
     std::unique_ptr<BacktestPriceManager> price_manager_;
     std::unique_ptr<BacktestPnLManager> pnl_manager_;
     std::unique_ptr<BacktestExecutionManager> execution_manager_;
-    std::unique_ptr<BacktestPortfolioConstraints> constraints_manager_;
 
     // State for BOD model (replaces static variables)
     bool has_previous_bars_ = false;
@@ -136,6 +133,10 @@ private:
     /// (run_portfolio with AssetClass::FUTURES), like the session hold; the equity backtest's log
     /// is untouched.
     bool risk_scale_report_enabled_ = false;
+    // LOOP_SPEC section 7.3: the risk_detail object of each sized rebalance, by the index of
+    // its equity curve row, and the account value V_t the cycle's sizing capital was read with.
+    std::map<size_t, std::string> equity_risk_detail_;
+    double cycle_account_value_ = 0.0;
     /// T-7b-2 9c (HD 2026-09-25, compounding): every cycle sizes the book on the equity curve's
     /// last row (PortfolioManager::set_sizing_capital). Futures only (run_portfolio with
     /// AssetClass::FUTURES), like the session hold; the equity backtest sizes as before.
@@ -197,7 +198,6 @@ public:
     BacktestPriceManager* get_price_manager() { return price_manager_.get(); }
     BacktestPnLManager* get_pnl_manager() { return pnl_manager_.get(); }
     BacktestExecutionManager* get_execution_manager() { return execution_manager_.get(); }
-    BacktestPortfolioConstraints* get_constraints_manager() { return constraints_manager_.get(); }
 
     // ========== High-Level Operations ==========
 

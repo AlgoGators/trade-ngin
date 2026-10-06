@@ -55,10 +55,8 @@ protected:
         }
 
         // Create trend following configuration
-        trend_config_.weight = 1.0 / 30.0;  // Each of 30 contracts get 1/30th weight
         trend_config_.risk_target = 0.2;    // 20% annualized volatility target
         trend_config_.idm = 2.5;            // Instrument diversification multiplier
-        trend_config_.use_position_buffering = true;
         trend_config_.ema_windows = {{2, 8}, {4, 16}, {8, 32}, {16, 64}, {32, 128}};
         trend_config_.vol_lookback_short = 32;  // 1 month
         trend_config_.vol_lookback_long = 252;  // 1 year
@@ -80,7 +78,6 @@ protected:
             spec.commission_per_contract = 2.0;
             spec.initial_margin = 10000.0;
             spec.maintenance_margin = 8000.0;
-            spec.weight = 1.0;
             spec.trading_hours = "09:30-16:00";
             registry.instruments_[symbol] = std::make_shared<FuturesInstrument>(symbol, spec);
         }
@@ -256,21 +253,10 @@ protected:
     double last_position_{0.0};
 };
 
-// Pin Carver buffer constants. Production truth is floor-only buffering
-// (factor 0.0, floor 0.5) — the May 2026 churn-tuned values. The struct defaults,
-// the loader defaults, and the shipped config_template must all agree; a silent
-// change to any of them fires here.
-TEST(TrendFollowingConfigDefaults, CarverBufferConstantsArePinned) {
-    TrendFollowingConfig cfg;
-    EXPECT_DOUBLE_EQ(cfg.carver_buffer_position_factor, 0.0);
-    EXPECT_DOUBLE_EQ(cfg.carver_buffer_floor, 0.5);
-
-    StrategyDefaultsConfig loader_defaults;
-    EXPECT_DOUBLE_EQ(loader_defaults.carver_buffer_position_factor,
-                     cfg.carver_buffer_position_factor);
-    EXPECT_DOUBLE_EQ(loader_defaults.carver_buffer_floor, cfg.carver_buffer_floor);
-
-    // Guard the tracked config_template against drifting from the code defaults.
+// LOOP_SPEC sections 3.2 and 7.7 (D4, D13): the strategy has no buffer and no rounding, and the
+// tracked config_template names none of the retired buffer keys (the loader refuses each on a
+// futures book).
+TEST(TrendFollowingConfigDefaults, TheTemplateCarriesNoRetiredBufferKey) {
     // Walk up from cwd so the test works from build/, build/tests/, or repo root.
     namespace fs = std::filesystem;
     fs::path dir = fs::current_path();
@@ -288,10 +274,19 @@ TEST(TrendFollowingConfigDefaults, CarverBufferConstantsArePinned) {
     std::ifstream in(tmpl);
     nlohmann::json j = nlohmann::json::parse(in);
     const auto& sd = j.at("strategy_defaults");
-    EXPECT_DOUBLE_EQ(sd.at("carver_buffer_position_factor").get<double>(),
-                     cfg.carver_buffer_position_factor);
-    EXPECT_DOUBLE_EQ(sd.at("carver_buffer_floor").get<double>(),
-                     cfg.carver_buffer_floor);
+    EXPECT_FALSE(sd.contains("carver_buffer_position_factor"));
+    EXPECT_FALSE(sd.contains("carver_buffer_floor"));
+    for (const char* book : {"conservative", "base"}) {
+        std::ifstream pin(tmpl.parent_path() / "portfolios" / book / "portfolio.json");
+        const nlohmann::json portfolio = nlohmann::json::parse(pin);
+        for (const auto& sleeve : portfolio.at("strategies").items()) {
+            for (const char* key : {"weight", "max_symbol_concentration", "use_position_buffering",
+                                    "carver_buffer_floor", "carver_buffer_position_factor"}) {
+                EXPECT_FALSE(sleeve.value().at("config").contains(key))
+                    << book << " " << sleeve.key() << " still names " << key;
+            }
+        }
+    }
 }
 
 namespace {
@@ -659,72 +654,35 @@ TEST_F(TrendFollowingTest, VolatilityCalculation) {
     EXPECT_GT(nq_size, 0.0) << "Expected non-zero NQ position";
 }
 
-// Test position buffering so that small price movements do not trigger significant changes.
-// Carver-faithful buffer width on main is max(carver_buffer_floor, raw_buffer_width,
-// carver_buffer_position_factor × |current_position|). With position_factor=0.2 and a held
-// position of ~|N| contracts, the buffer recalculates against the new |current| each tick,
-// allowing one settling step of up to ~2×factor×|initial| before converging. After settling,
-// per-tick changes must be small (within steady-state buffer width).
-TEST_F(TrendFollowingTest, PositionBuffering) {
+// LOOP_SPEC section 3.2 (D4, D13, D14): the strategy publishes N* itself. The position it holds
+// for a symbol is the position before any limit: no buffer keeps an old quantity and nothing is
+// rounded or clamped.
+TEST_F(TrendFollowingTest, ThePublishedPositionIsTheUnbufferedOptimalPosition) {
     auto test_data = create_test_data("ES", 500, 4000.0);
 
     ASSERT_TRUE(strategy_->start().is_ok());
     process_data_safely(test_data);
 
-    // Get initial position
-    const auto& initial_positions = strategy_->get_positions();
-    ASSERT_TRUE(initial_positions.find("ES") != initial_positions.end());
-    double initial_position = initial_positions.at("ES").quantity.as_double();
-
-    // Carver buffer half-width = max(floor, raw_buffer_width, position_factor × |current|).
-    // Per-tick movement is bounded by buffer recalibration relative to |prev_position|,
-    // plus slack for raw_buffer_width and floor contributions. First step (raw forecast may
-    // be farther from |initial| while buffering still settling) gets a wider 3× envelope.
-    auto step_bound = [this](double prev, bool first_step) {
-        const double position_term =
-            trend_config_.carver_buffer_position_factor * std::abs(prev);
-        const double slack = 10.0;  // floor + small raw_buffer_width contributions
-        if (first_step) {
-            // Under floor-only buffering (position factor 0.0) the first live tick
-            // settles the warm-up forecast in one re-track; bound it relative to
-            // |prev| instead of the (now zero) position term.
-            return std::max(3.0 * position_term, 0.25 * std::abs(prev)) + slack;
-        }
-        return position_term + slack;
-    };
-
-    // Create small update data with minimal price changes
-    std::vector<Bar> small_updates;
     Bar latest = test_data.back();
-    double prev_position = initial_position;
-
     for (int i = 0; i < 5; i++) {
         Bar bar = latest;
-        bar.timestamp = latest.timestamp + std::chrono::hours(i + 1);
-        bar.close *= (1.0 + 0.001);  // Very small 0.1% change
+        bar.timestamp = latest.timestamp + std::chrono::hours(24 * (i + 1));
+        bar.close *= (1.0 + 0.001 * (i + 1));
         bar.open = bar.close * 0.999;
         bar.high = bar.close * 1.002;
         bar.low = bar.close * 0.998;
-        small_updates.push_back(bar);
+        ASSERT_TRUE(strategy_->on_data({bar}).is_ok());
 
-        // Process each update individually
-        std::vector<Bar> single_update = {bar};
-        ASSERT_TRUE(strategy_->on_data(single_update).is_ok());
-
-        // Check position after each update
-        const auto& current_positions = strategy_->get_positions();
-        ASSERT_TRUE(current_positions.find("ES") != current_positions.end());
-        double cur_position = current_positions.at("ES").quantity.as_double();
-
-        // Bound per-tick movement against previous position using recomputed buffer width.
-        // Step 0 gets a wider envelope since raw forecast may be far from a not-yet-settled
-        // |initial|. Subsequent ticks must obey the tighter buffer recalibration bound.
-        const double tolerance = step_bound(prev_position, /*first_step=*/i == 0);
-        EXPECT_NEAR(cur_position, prev_position, tolerance)
-            << "Step " << i << ": position changed too much for small price movement: "
-            << cur_position << " vs prev " << prev_position << " (tolerance " << tolerance
-            << ")";
-        prev_position = cur_position;
+        const auto& positions = strategy_->get_positions();
+        ASSERT_TRUE(positions.find("ES") != positions.end());
+        const auto& data = strategy_->get_all_instrument_data().at("ES");
+        // the stored quantity is a Decimal of eight places
+        EXPECT_NEAR(positions.at("ES").quantity.as_double(), data.optimal_position, 1e-7)
+            << "step " << i << ": the published position is not N*";
+        EXPECT_NE(data.optimal_position, std::round(data.optimal_position))
+            << "step " << i << ": N* is published unrounded";
+        EXPECT_DOUBLE_EQ(data.final_position, data.optimal_position);
+        EXPECT_DOUBLE_EQ(data.raw_position, data.optimal_position);
     }
 }
 

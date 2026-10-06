@@ -144,7 +144,6 @@ protected:
         spec.commission_per_contract = 2.0;
         spec.initial_margin = 10000.0;
         spec.maintenance_margin = 8000.0;
-        spec.weight = 1.0;
         spec.trading_hours = "09:30-16:00";
         registry.instruments_[kSym] = std::make_shared<FuturesInstrument>(kSym, spec);
         registry.initialized_ = true;
@@ -177,10 +176,8 @@ protected:
         sc.position_limits[kSym] = 1000.0;
 
         typename Traits<S>::Config tc;
-        tc.weight = 1.0;
         tc.risk_target = 0.2;
         tc.idm = 2.5;
-        tc.use_position_buffering = false;
         tc.vol_lookback_short = Traits<S>::kVolSpan;
         tc.vol_lookback_long = 252;
         if (!ema_windows.empty()) {

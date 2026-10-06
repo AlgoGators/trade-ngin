@@ -590,6 +590,11 @@ struct ResolvedRiskExpectation {
     double capital;            // risk_config.capital = initial_capital
     bool use_optimization;     // portfolio.json's top level, as resolved
     const char* none_ruled_on = nullptr;  // set when the book is assigned `none` (commit 8)
+    // The book's carver module carries the overlay's limits (LOOP_SPEC section 7.7): var_limit,
+    // jump_risk_limit, max_correlation and the top-level max_leverage are RETIRED in its files,
+    // so the values above are the structs' own unread defaults, and the module carries
+    // per_name_cap 2 and trim_max 5.
+    bool overlay_book = false;
 };
 
 void expect_resolved_risk_config(const ResolvedRiskExpectation& e) {
@@ -656,6 +661,26 @@ void expect_resolved_risk_config(const ResolvedRiskExpectation& e) {
     EXPECT_EQ(carver->lookback_period, e.lookback_period) << b << ": module.lookback_period";
     EXPECT_EQ(carver->lookback_unit, "dates") << b << ": module.lookback_unit";
     EXPECT_EQ(carver->min_gate_dates, 21) << b << ": module.min_gate_dates";
+    EXPECT_EQ(carver->overlay_limits(), e.overlay_book) << b << ": the overlay's limits";
+    if (e.overlay_book) {
+        EXPECT_EQ(carver->r_max, 2.25) << b << ": module.R_max";
+        EXPECT_EQ(carver->r_jump_max, 4.5) << b << ": module.R_jump_max";
+        EXPECT_EQ(carver->r_shock_max, 4.0) << b << ": module.R_shock_max";
+        EXPECT_EQ(carver->per_name_cap, 2.0) << b << ": module.per_name_cap";
+        EXPECT_EQ(carver->trim_max, 5) << b << ": module.trim_max";
+        EXPECT_EQ(e.max_leverage, AppConfig().max_leverage) << b << ": max_leverage is retired";
+        EXPECT_EQ(e.var_limit, RiskConfig().var_limit) << b << ": var_limit is retired";
+        EXPECT_EQ(e.jump_risk_limit, RiskConfig().jump_risk_limit) << b;
+        EXPECT_EQ(e.max_correlation, RiskConfig().max_correlation) << b;
+        EXPECT_TRUE(ConfigLoader::require_loop_keys(c).is_ok())
+            << b << ": the shipped futures book carries every loop key and no retired one: "
+            << (ConfigLoader::require_loop_keys(c).is_error()
+                    ? ConfigLoader::require_loop_keys(c).error()->what()
+                    : "");
+        EXPECT_EQ(c.opt_config.cost_penalty_scalar, 100.0) << b;
+        EXPECT_EQ(c.sign_close_band, 2.0) << b;
+        EXPECT_EQ(c.b_sigma_floor, 0.05) << b;
+    }
     EXPECT_EQ(carver->missing_symbol_policy, "ignore") << b << ": module.missing_symbol_policy";
     EXPECT_FALSE(carver->missing_symbol_policy_reason.empty())
         << b << ": \"ignore\" is the fail-open policy and must say why it is chosen";
@@ -665,24 +690,28 @@ void expect_resolved_risk_config(const ResolvedRiskExpectation& e) {
 
 TEST(TrackedTemplateResolvedRiskConfig, Conservative) {
     expect_resolved_risk_config({"conservative", "CONSERVATIVE_PORTFOLIO",
-                                 /*max_drawdown*/ 0.3, /*max_leverage*/ 2.0,
-                                 /*var_limit*/ 0.25, /*jump_risk_limit*/ 0.05,
-                                 /*max_correlation*/ 0.85,  // literal in its risk.json
+                                 /*max_drawdown*/ 0.3, /*max_leverage*/ 4.0,  // retired: the unread default
+                                 /*var_limit*/ 0.15, /*jump_risk_limit*/ 0.1,  // retired: the unread defaults
+                                 /*max_correlation*/ 0.7,  // retired: the unread default
                                  /*max_gross*/ 8.0, /*max_net*/ 6.0,  // L_max and L_net_max (LOOP_SPEC section 12)
                                  /*confidence*/ 0.99, /*lookback*/ 252,
                                  /*capital*/ 500000.0,
-                                 /*use_optimization*/ true});
+                                 /*use_optimization*/ true,
+                                 /*none_ruled_on*/ nullptr,
+                                 /*overlay_book*/ true});
 }
 
 TEST(TrackedTemplateResolvedRiskConfig, Base) {
     expect_resolved_risk_config({"base", "BASE_PORTFOLIO",
-                                 /*max_drawdown*/ 0.4, /*max_leverage*/ 4.0,
-                                 /*var_limit*/ 0.15, /*jump_risk_limit*/ 0.1,
-                                 /*max_correlation*/ 0.7,  // literal in its risk.json (schema 2)
+                                 /*max_drawdown*/ 0.4, /*max_leverage*/ 4.0,  // retired: the unread default
+                                 /*var_limit*/ 0.15, /*jump_risk_limit*/ 0.1,  // retired: the unread defaults
+                                 /*max_correlation*/ 0.7,  // retired: the unread default
                                  /*max_gross*/ 8.0, /*max_net*/ 6.0,  // L_max and L_net_max (LOOP_SPEC section 12)
                                  /*confidence*/ 0.99, /*lookback*/ 252,
                                  /*capital*/ 500000.0,
-                                 /*use_optimization*/ true});
+                                 /*use_optimization*/ true,
+                                 /*none_ruled_on*/ nullptr,
+                                 /*overlay_book*/ true});
 }
 
 // use_optimization resolves FALSE here: schema 2 moved the key into portfolio.json and
@@ -723,9 +752,11 @@ TEST(TrackedTemplateResolvedRiskConfig, EveryGatingValueIsLiteralInTheBooksOwnRi
     EXPECT_FALSE(defaults.at("strategy_defaults").contains("use_risk_management"))
         << "use_risk_management was deleted in schema 2";
 
-    struct Book { const char* dir; double max_correlation; bool use_optimization; };
-    for (const Book& b : {Book{"conservative", 0.85, true}, Book{"base", 0.7, true},
-                          Book{"equity_mr", 0.7, false}}) {
+    // A futures book's gate is the overlay (LOOP_SPEC section 7.7): its literal values are the
+    // overlay's, and the old gate's three limits are in neither its module nor its reporter.
+    struct Book { const char* dir; double max_correlation; bool use_optimization; bool overlay; };
+    for (const Book& b : {Book{"conservative", 0.0, true, true}, Book{"base", 0.0, true, true},
+                          Book{"equity_mr", 0.7, false, false}}) {
         std::ifstream in(tmpl / "portfolios" / b.dir / "risk.json");
         const auto risk = nlohmann::json::parse(in);
         ASSERT_TRUE(risk.contains("modules")) << b.dir << ": risk.json must be schema 2";
@@ -734,15 +765,30 @@ TEST(TrackedTemplateResolvedRiskConfig, EveryGatingValueIsLiteralInTheBooksOwnRi
         // written literally in its reporter block, which is what still measures it.
         const bool none_book = risk.at("modules").at(0).at("type") == "none";
         const auto& module = none_book ? risk.at("risk_reporting") : risk.at("modules").at(0);
-        for (const char* field : {"var_limit", "jump_risk_limit", "max_correlation",
-                                  "max_gross_leverage", "max_net_leverage",
-                                  "confidence_level", "lookback_period"}) {
-            EXPECT_TRUE(module.contains(field))
-                << b.dir << ": risk.json does not write " << field
-                << " literally -- schema 2 has no layer for it to come from";
+        if (b.overlay) {
+            for (const char* field : {"R_max", "R_jump_max", "R_shock_max", "per_name_cap",
+                                      "trim_max", "max_gross_leverage", "max_net_leverage",
+                                      "confidence_level", "lookback_period"}) {
+                EXPECT_TRUE(module.contains(field))
+                    << b.dir << ": risk.json does not write " << field << " literally";
+            }
+            for (const char* retired : {"var_limit", "jump_risk_limit", "max_correlation"}) {
+                EXPECT_FALSE(module.contains(retired)) << b.dir << ": module still names " << retired;
+                EXPECT_FALSE(risk.at("risk_reporting").contains(retired))
+                    << b.dir << ": risk_reporting still names " << retired;
+            }
+            EXPECT_FALSE(risk.contains("max_leverage")) << b.dir << ": max_leverage is retired";
+        } else {
+            for (const char* field : {"var_limit", "jump_risk_limit", "max_correlation",
+                                      "max_gross_leverage", "max_net_leverage",
+                                      "confidence_level", "lookback_period"}) {
+                EXPECT_TRUE(module.contains(field))
+                    << b.dir << ": risk.json does not write " << field
+                    << " literally -- schema 2 has no layer for it to come from";
+            }
+            EXPECT_EQ(module.at("max_correlation").get<double>(), b.max_correlation)
+                << b.dir << ": max_correlation, written in the book's own file";
         }
-        EXPECT_EQ(module.at("max_correlation").get<double>(), b.max_correlation)
-            << b.dir << ": max_correlation, written in the book's own file";
 
         std::ifstream pin(tmpl / "portfolios" / b.dir / "portfolio.json");
         const auto portfolio = nlohmann::json::parse(pin);
@@ -1042,16 +1088,42 @@ TEST(EquityOptimizerGuard, RefusesOnlyWhenTheConfigAsksForTheOptimizer) {
 // LOOP_SPEC sections 2.5 and 7.7 (D40): portfolio.json "equity_slow_rule". Parsed strictly when
 // present; a futures book requires it (the four futures runners call require_loop_keys).
 // A risk.json whose carver module carries the overlay's three risk limits (ratios to tau).
+// With them the module is the overlay (LOOP_SPEC section 7.7): it carries the per-name cap and
+// the trim cap, and the old gate's three limits and the top-level max_leverage are not in the file.
 nlohmann::json overlay_risk() {
     nlohmann::json risk = minimal_risk();
+    for (const char* retired : {"var_limit", "jump_risk_limit", "max_correlation"}) {
+        risk["modules"][0].erase(retired);
+        risk["risk_reporting"].erase(retired);
+    }
+    risk.erase("max_leverage");
     risk["modules"][0]["R_max"] = 2.25;
     risk["modules"][0]["R_jump_max"] = 4.5;
     risk["modules"][0]["R_shock_max"] = 4.0;
+    risk["modules"][0]["per_name_cap"] = 2;
+    risk["modules"][0]["trim_max"] = 5;
     return risk;
 }
 
+// defaults.json's optimization block of a futures book: the one pass's three keys and none of the
+// optimiser's retired ones.
+nlohmann::json loop_defaults() {
+    return {{"optimization",
+             {{"capital", 500000.0}, {"cost_penalty_scalar", 100}, {"sign_close_band", 2},
+              {"b_sigma_floor", 0.05}, {"max_iterations", 100}, {"convergence_threshold", 1e-6},
+              {"use_buffering", true}}}};
+}
+
+// portfolio.json's three loop keys.
+nlohmann::json loop_portfolio() {
+    return {{"equity_slow_rule",
+             {{"symbols", {"MES"}}, {"pairs", nlohmann::json::array({{32, 128}})}}},
+            {"sizing_mode", "half_compounding"},
+            {"starting_capital", 1'000'000.0}};
+}
+
 TEST_F(ConfigLoaderTest, EquitySlowRuleIsParsed) {
-    write_full_set("base", {},
+    write_full_set("base", loop_defaults(),
                    {{"equity_slow_rule",
                      {{"symbols", {"M2K", "MES", "MNQ", "MYM"}},
                       {"pairs", nlohmann::json::array({{32, 128}, {64, 256}})}}},
@@ -1104,14 +1176,14 @@ TEST_F(ConfigLoaderTest, AMalformedEquitySlowRuleIsALoadError) {
 // book's initial_capital.
 TEST_F(ConfigLoaderTest, TheSizingModeAndStartingCapitalAreRequiredOnAFuturesBook) {
     const nlohmann::json rule = {{"symbols", {"MES"}}, {"pairs", nlohmann::json::array({{32, 128}})}};
-    write_full_set("base", {}, {{"equity_slow_rule", rule}}, overlay_risk());
+    write_full_set("base", loop_defaults(), {{"equity_slow_rule", rule}}, overlay_risk());
     auto r = ConfigLoader::load(base_, "base");
     ASSERT_TRUE(r.is_ok()) << (r.error() ? r.error()->what() : "");
     auto required = ConfigLoader::require_loop_keys(r.value());
     ASSERT_TRUE(required.is_error());
     EXPECT_NE(std::string(required.error()->what()).find("sizing_mode"), std::string::npos);
 
-    write_full_set("base", {}, {{"equity_slow_rule", rule}, {"sizing_mode", "half_compounding"}},
+    write_full_set("base", loop_defaults(), {{"equity_slow_rule", rule}, {"sizing_mode", "half_compounding"}},
                    overlay_risk());
     r = ConfigLoader::load(base_, "base");
     ASSERT_TRUE(r.is_ok());
@@ -1119,7 +1191,7 @@ TEST_F(ConfigLoaderTest, TheSizingModeAndStartingCapitalAreRequiredOnAFuturesBoo
     ASSERT_TRUE(required.is_error());
     EXPECT_NE(std::string(required.error()->what()).find("starting_capital"), std::string::npos);
 
-    write_full_set("base", {},
+    write_full_set("base", loop_defaults(),
                    {{"equity_slow_rule", rule},
                     {"sizing_mode", "half_compounding"},
                     {"starting_capital", 1'000'000.0}},
@@ -1164,7 +1236,7 @@ TEST_F(ConfigLoaderTest, TheOverlayLimitsAreParsedAndRequiredOnAFuturesBook) {
     ASSERT_TRUE(required.is_error()) << "a carver module without the three limits";
     EXPECT_NE(std::string(required.error()->what()).find("R_max"), std::string::npos);
 
-    write_full_set("base", {}, keys, overlay_risk());
+    write_full_set("base", loop_defaults(), keys, overlay_risk());
     r = ConfigLoader::load(base_, "base");
     ASSERT_TRUE(r.is_ok()) << (r.error() ? r.error()->what() : "");
     EXPECT_TRUE(ConfigLoader::require_loop_keys(r.value()).is_ok());
@@ -1184,4 +1256,116 @@ TEST_F(ConfigLoaderTest, TheOverlayLimitsAreParsedAndRequiredOnAFuturesBook) {
         risk["modules"][0]["R_jump_max"] = bad;
         EXPECT_NE(load_error(risk).find("R_jump_max"), std::string::npos) << bad.dump();
     }
+}
+
+// LOOP_SPEC section 7.7: the one pass's keys are required on a futures book, each named when it
+// is missing: cost_penalty_scalar, sign_close_band and b_sigma_floor in defaults.json's
+// optimization block; per_name_cap and trim_max on the module that carries the overlay's limits.
+TEST_F(ConfigLoaderTest, TheOnePassKeysAreRequiredOnAFuturesBook) {
+    write_full_set("base", loop_defaults(), loop_portfolio(), overlay_risk());
+    auto r = ConfigLoader::load(base_, "base");
+    ASSERT_TRUE(r.is_ok()) << (r.error() ? r.error()->what() : "");
+    ASSERT_TRUE(ConfigLoader::require_loop_keys(r.value()).is_ok());
+    EXPECT_DOUBLE_EQ(r.value().opt_config.cost_penalty_scalar, 100.0);
+    EXPECT_DOUBLE_EQ(r.value().sign_close_band, 2.0);
+    EXPECT_DOUBLE_EQ(r.value().b_sigma_floor, 0.05);
+    const auto* carver = std::get_if<CarverModuleConfig>(&r.value().risk_schema.portfolio.at(0).params);
+    ASSERT_NE(carver, nullptr);
+    EXPECT_DOUBLE_EQ(carver->per_name_cap, 2.0);
+    EXPECT_EQ(carver->trim_max, 5);
+    EXPECT_EQ(r.value().risk_schema.portfolio.at(0).to_json().value("per_name_cap", 0.0), 2.0);
+    EXPECT_EQ(r.value().risk_schema.portfolio.at(0).to_json().value("trim_max", -1), 5);
+
+    for (const char* key : {"cost_penalty_scalar", "sign_close_band", "b_sigma_floor"}) {
+        nlohmann::json defaults = loop_defaults();
+        defaults["optimization"].erase(key);
+        write_full_set("base", defaults, loop_portfolio(), overlay_risk());
+        r = ConfigLoader::load(base_, "base");
+        ASSERT_TRUE(r.is_ok()) << key << ": the key is not required of every book";
+        auto required = ConfigLoader::require_loop_keys(r.value());
+        ASSERT_TRUE(required.is_error()) << key;
+        EXPECT_NE(std::string(required.error()->what()).find(key), std::string::npos) << key;
+    }
+    for (const char* key : {"sign_close_band", "b_sigma_floor"}) {
+        for (const nlohmann::json& bad : {nlohmann::json(0), nlohmann::json(-1.0), nlohmann::json("2")}) {
+            nlohmann::json defaults = loop_defaults();
+            defaults["optimization"][key] = bad;
+            write_full_set("base", defaults, loop_portfolio(), overlay_risk());
+            r = ConfigLoader::load(base_, "base");
+            ASSERT_TRUE(r.is_error()) << key << " " << bad.dump();
+            EXPECT_NE(std::string(r.error()->what()).find(key), std::string::npos);
+        }
+    }
+    for (const char* key : {"per_name_cap", "trim_max"}) {
+        nlohmann::json risk = overlay_risk();
+        risk["modules"][0].erase(key);
+        EXPECT_NE(load_error(risk).find(std::string(key) + " is required"), std::string::npos) << key;
+    }
+    for (const nlohmann::json& bad : {nlohmann::json(0), nlohmann::json(-2.0), nlohmann::json("2")}) {
+        nlohmann::json risk = overlay_risk();
+        risk["modules"][0]["per_name_cap"] = bad;
+        EXPECT_NE(load_error(risk).find("per_name_cap"), std::string::npos) << bad.dump();
+    }
+    for (const nlohmann::json& bad : {nlohmann::json(-1), nlohmann::json(2.5), nlohmann::json("5")}) {
+        nlohmann::json risk = overlay_risk();
+        risk["modules"][0]["trim_max"] = bad;
+        EXPECT_NE(load_error(risk).find("trim_max"), std::string::npos) << bad.dump();
+    }
+}
+
+// LOOP_SPEC section 7.7: every retired key is REFUSED on a futures book, never ignored, and the
+// refusal names the key. The same keys stay legal on a book that runs no overlay.
+TEST_F(ConfigLoaderTest, EveryRetiredKeyIsRefusedOnAFuturesBook) {
+    // risk.json: the old gate's limits on the overlay's module and in its reporter, and the
+    // top-level max_leverage, are load errors.
+    for (const char* key : {"var_limit", "jump_risk_limit", "max_correlation"}) {
+        nlohmann::json risk = overlay_risk();
+        risk["modules"][0][key] = 0.2;
+        EXPECT_NE(load_error(risk).find(std::string("risk.modules[0].") + key + " is retired"),
+                  std::string::npos) << key;
+        risk = overlay_risk();
+        risk["risk_reporting"][key] = 0.2;
+        EXPECT_NE(load_error(risk).find(std::string("risk.risk_reporting.") + key + " is retired"),
+                  std::string::npos) << key;
+    }
+    {
+        nlohmann::json risk = overlay_risk();
+        risk["max_leverage"] = 2.0;
+        EXPECT_NE(load_error(risk).find("risk.max_leverage is retired"), std::string::npos);
+    }
+    // defaults.json and portfolio.json: noted at load, refused by require_loop_keys.
+    auto refused = [&](const nlohmann::json& defaults, const nlohmann::json& portfolio,
+                       const std::string& key) {
+        write_full_set("base", defaults, portfolio, overlay_risk());
+        auto r = ConfigLoader::load(base_, "base");
+        ASSERT_TRUE(r.is_ok()) << key << ": " << (r.error() ? r.error()->what() : "");
+        auto required = ConfigLoader::require_loop_keys(r.value());
+        ASSERT_TRUE(required.is_error()) << key << " was not refused";
+        const std::string what = required.error()->what();
+        EXPECT_NE(what.find("retired"), std::string::npos) << what;
+        EXPECT_NE(what.find(key), std::string::npos) << what;
+    };
+    for (const char* key : {"tau", "asymmetric_risk_buffer", "buffer_size_factor"}) {
+        nlohmann::json defaults = loop_defaults();
+        defaults["optimization"][key] = 0.1;
+        refused(defaults, loop_portfolio(), key);
+    }
+    for (const char* key : {"carver_buffer_floor", "carver_buffer_position_factor"}) {
+        nlohmann::json defaults = loop_defaults();
+        defaults["strategy_defaults"] = minimal_defaults()["strategy_defaults"];
+        defaults["strategy_defaults"][key] = 0.5;
+        refused(defaults, loop_portfolio(), key);
+    }
+    for (const char* key : {"weight", "max_symbol_concentration", "use_position_buffering",
+                            "carver_buffer_floor", "carver_buffer_position_factor"}) {
+        nlohmann::json portfolio = loop_portfolio();
+        portfolio["strategies"] = {{"TREND_FOLLOWING", {{"allocation", 1.0}, {"config", {{key, 1}}}}}};
+        refused(loop_defaults(), portfolio, key);
+    }
+    // A book with no overlay keeps every one of them: it loads, and nothing is refused at load.
+    write_full_set("base");
+    auto plain = ConfigLoader::load(base_, "base");
+    ASSERT_TRUE(plain.is_ok()) << (plain.error() ? plain.error()->what() : "");
+    EXPECT_DOUBLE_EQ(plain.value().risk_config.var_limit, 0.15);
+    EXPECT_DOUBLE_EQ(plain.value().max_leverage, 4.0);
 }

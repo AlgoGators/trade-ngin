@@ -525,7 +525,8 @@ public:
     virtual Result<void> store_backtest_equity_curve_batch(
         const std::string& run_id, const std::vector<std::pair<Timestamp, double>>& equity_points,
         const std::string& portfolio_id = "BASE_PORTFOLIO",
-        const std::string& table_name = "backtest.equity_curve");
+        const std::string& table_name = "backtest.equity_curve",
+        const std::vector<std::string>& risk_detail = {});
 
     /**
      * @brief Store backtest final positions (replaces raw SQL INSERT)
@@ -621,7 +622,8 @@ public:
         const std::unordered_map<std::string, double>& metrics,
         const std::unordered_map<std::string, int>& int_metrics, const nlohmann::json& config,
         const std::string& portfolio_id = "BASE_PORTFOLIO",
-        const std::string& table_name = "trading.live_results");
+        const std::string& table_name = "trading.live_results",
+        const nlohmann::json& risk_detail = nlohmann::json());
 
     /**
      * @brief Store live trading run metadata

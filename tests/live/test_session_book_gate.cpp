@@ -350,6 +350,73 @@ TEST(SessionBookGate, StrictRollsAnUnpricedChangeBackToTheStoredRow) {
         << "after the rollback no book change is left without a price";
 }
 
+// LOOP_SPEC section 5.2: a forecast-sign close is its OWN fill to flat, stored ahead of the symbol's
+// move to today's quantity (exec_id and order_id suffixed _SC); every other symbol trades once.
+TEST(SessionBookGate, AForecastSignCloseIsBookedAsItsOwnFillAheadOfTheMove) {
+    StrategyBooks prev{{"TREND_FOLLOWING", {{"MBT.v.0", pos("MBT.v.0", 1, 76000)},
+                                            {"MES.v.0", pos("MES.v.0", 2, 7100)}}}};
+    StrategyBooks today{{"TREND_FOLLOWING", {{"MBT.v.0", pos("MBT.v.0", -1, 76035)},
+                                             {"MES.v.0", pos("MES.v.0", 3, 7150)}}}};
+    const std::unordered_map<std::string, double> prices{{"MBT.v.0", 76035.0}, {"MES.v.0", 7150.0}};
+    ExecutionManager em;
+    auto r = execute_strategy_day_strict(em, today["TREND_FOLLOWING"], prev["TREND_FOLLOWING"],
+                                         prices, run_instant(), {{"MBT.v.0", -1.0}});
+    ASSERT_TRUE(r.is_ok());
+    const auto& execs = r.value().executions;
+    ASSERT_EQ(execs.size(), 3u) << "the close, the move from flat, and MES's one fill";
+    EXPECT_TRUE(is_sign_close(execs[0]));
+    EXPECT_EQ(execs[0].symbol, "MBT.v.0");
+    EXPECT_EQ(execs[0].side, Side::SELL);
+    EXPECT_DOUBLE_EQ(static_cast<double>(execs[0].filled_quantity), 1.0);
+    EXPECT_DOUBLE_EQ(static_cast<double>(execs[0].fill_price), 76035.0);
+    EXPECT_EQ(execs[0].exec_id.substr(execs[0].exec_id.size() - 3), "_SC");
+    int mbt_moves = 0, mes_moves = 0;
+    for (size_t k = 1; k < execs.size(); ++k) {
+        EXPECT_FALSE(is_sign_close(execs[k]));
+        if (execs[k].symbol == "MBT.v.0") {
+            ++mbt_moves;
+            EXPECT_EQ(execs[k].side, Side::SELL);
+            EXPECT_DOUBLE_EQ(static_cast<double>(execs[k].filled_quantity), 1.0)
+                << "from flat to -1, not one fill of two";
+            EXPECT_EQ(execs[k].exec_id + "_SC", execs[0].exec_id)
+                << "the two fills share the day's id, the close suffixed";
+        } else {
+            ++mes_moves;
+            EXPECT_DOUBLE_EQ(static_cast<double>(execs[k].filled_quantity), 1.0);
+        }
+    }
+    EXPECT_EQ(mbt_moves, 1);
+    EXPECT_EQ(mes_moves, 1);
+    EXPECT_TRUE(r.value().unpriced.empty());
+    EXPECT_DOUBLE_EQ(today["TREND_FOLLOWING"]["MBT.v.0"].quantity.as_double(), -1.0);
+
+    // With no sign close the step is the plain one: MBT trades once, two contracts.
+    StrategyBooks today2{{"TREND_FOLLOWING", {{"MBT.v.0", pos("MBT.v.0", -1, 76035)},
+                                              {"MES.v.0", pos("MES.v.0", 3, 7150)}}}};
+    ExecutionManager em2;
+    auto plain = execute_strategy_day_strict(em2, today2["TREND_FOLLOWING"], prev["TREND_FOLLOWING"],
+                                             prices, run_instant(), {});
+    ASSERT_TRUE(plain.is_ok());
+    ASSERT_EQ(plain.value().executions.size(), 2u);
+    for (const auto& e : plain.value().executions) {
+        EXPECT_FALSE(is_sign_close(e));
+        if (e.symbol == "MBT.v.0") EXPECT_DOUBLE_EQ(static_cast<double>(e.filled_quantity), 2.0);
+    }
+
+    // A close that cannot be priced did not happen: the symbol goes back to its stored row.
+    StrategyBooks today3{{"TREND_FOLLOWING", {{"MBT.v.0", pos("MBT.v.0", -1, 76035)},
+                                              {"MES.v.0", pos("MES.v.0", 3, 7150)}}}};
+    ExecutionManager em3;
+    auto unpriced = execute_strategy_day_strict(em3, today3["TREND_FOLLOWING"], prev["TREND_FOLLOWING"],
+                                                {{"MES.v.0", 7150.0}}, run_instant(),
+                                                {{"MBT.v.0", -1.0}});
+    ASSERT_TRUE(unpriced.is_ok());
+    for (const auto& e : unpriced.value().executions) EXPECT_NE(e.symbol, "MBT.v.0");
+    EXPECT_DOUBLE_EQ(today3["TREND_FOLLOWING"]["MBT.v.0"].quantity.as_double(), 1.0);
+    EXPECT_EQ(r.value().rolled_back.size(), 0u);
+    EXPECT_EQ(unpriced.value().rolled_back, (std::vector<std::string>{"MBT.v.0"}));
+}
+
 // =============================================================================================
 // The JUNK feed and the feed-hole refusal
 // =============================================================================================

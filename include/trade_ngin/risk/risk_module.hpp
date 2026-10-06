@@ -59,8 +59,8 @@ struct RiskDecision {
 /// Everything a module may know about the call. Built by the PM; a module never sees the strategies.
 struct RiskContext {
     RiskPhase phase{RiskPhase::LAP};
-    int lap{0};                      ///< 0 for REBALANCE_START and SLEEVE; the PM's loop iteration
-                                     ///< (1..5) for LAP; the last iteration for POST_ROUNDING
+    int lap{0};                      ///< 0 for REBALANCE_START and SLEEVE; 1 for LAP and
+                                     ///< POST_ROUNDING (the risk step runs once per rebalance)
     std::optional<Timestamp> as_of;  ///< process_market_data's current_timestamp (only the backtest
                                      ///< coordinator passes one today)
     bool is_backtest{false};         ///< PortfolioManager::set_backtest_mode(true)
@@ -80,12 +80,6 @@ struct RiskContext {
     /// Carver gate intersects its window's dates over these only (T-7b-2 CGW). Null (a caller that
     /// does not set it) means every symbol of the window, the rule before CGW.
     const std::set<std::string>* gate_participants{nullptr};
-    /// The risk overlay's inputs for this rebalance (risk/overlay.hpp): the participants' returns
-    /// on one calendar, their prices, multipliers and jump volatilities, and the book's tau. Built
-    /// once per rebalance by the PortfolioManager from its first sleeve's own series. Null: the
-    /// caller has none (a book with no such sleeve), and a module that needs them reads the book
-    /// as it did before.
-    const overlay::Inputs* overlay_inputs{nullptr};
 };
 
 /// What the PM did, delivered to every module it evaluated in that scope and phase/lap.
@@ -141,18 +135,6 @@ public:
     virtual void on_applied(const RiskApplied& applied, const RiskContext& ctx) {
         (void)applied;
         (void)ctx;
-    }
-    /// Once per rebalance at the post-rounding point, on the final (rounded) book, before the
-    /// final fractional check. The PM honours NONE, WARN and REFUSE here; SCALE and REPLACE are
-    /// rejected (ERROR, recorded, not applied): a multiply would re-fractionalise a
-    /// whole-contract book. The default decides NONE and must stay silent.
-    virtual Result<RiskDecision> finalize(const std::unordered_map<std::string, Position>& book,
-                                          const RiskContext& ctx) {
-        (void)book;
-        (void)ctx;
-        RiskDecision d;
-        d.module_id = id();
-        return Result<RiskDecision>(std::move(d));
     }
 };
 using RiskModulePtr = std::shared_ptr<RiskModule>;

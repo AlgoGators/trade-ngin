@@ -56,9 +56,10 @@ TEST(OverlayWiring, TheFuturesTemplatesCarrySection12sLimits) {
 }
 
 // The four futures runners name the book's first sleeve as the overlay's source and pass its risk
-// target; the PortfolioManager hands the rebalance's inputs to its modules; the carver module reads
-// the book through the overlay and logs the OVERLAY line.
-TEST(OverlayWiring, TheOverlayIsFedFromTheFirstSleeveAndReadByTheModule) {
+// target; the PortfolioManager's one pass builds the overlay's window from that sleeve's own series
+// and reads the limits off the book's carver module, which itself reads no book and logs no
+// OVERLAY line (LOOP_SPEC section 4: the overlay answers once per rebalance, inside the pass).
+TEST(OverlayWiring, TheOverlayIsFedFromTheFirstSleeveAndReadByTheOnePass) {
     const auto root = repo_root();
     ASSERT_FALSE(root.empty());
     for (const char* runner : {"apps/backtest/bt_portfolio_conservative.cpp", "apps/backtest/bt_portfolio.cpp",
@@ -69,13 +70,15 @@ TEST(OverlayWiring, TheOverlayIsFedFromTheFirstSleeveAndReadByTheModule) {
         EXPECT_NE(src.find("portfolio_config.overlay_sleeve = "), std::string::npos) << runner;
         EXPECT_NE(src.find("portfolio_config.overlay_tau = trend_config.risk_target;"), std::string::npos)
             << runner;
+        EXPECT_NE(src.find("apply_loop_config(app_config, portfolio_config);"), std::string::npos) << runner;
     }
     const std::string pm = read_all(root / "src/portfolio/portfolio_manager.cpp");
-    EXPECT_NE(pm.find("overlay::build_inputs(config_.overlay_tau, symbols, series)"), std::string::npos);
-    EXPECT_NE(pm.find("ctx.overlay_inputs = overlay_inputs_set_ ? &overlay_inputs_ : nullptr;"),
-              std::string::npos);
+    EXPECT_NE(pm.find("overlay::build_inputs(in.tau, symbols, views)"), std::string::npos);
+    EXPECT_NE(pm.find("carver->overlay_limits()"), std::string::npos);
+    EXPECT_NE(pm.find("one_pass::rebalance(in)"), std::string::npos);
+    EXPECT_EQ(pm.find("for (int lap"), std::string::npos);
+    EXPECT_EQ(pm.find("max_iterations = 5"), std::string::npos) << "the lap loop is gone";
     const std::string module = read_all(root / "src/risk/carver_risk_module.cpp");
-    EXPECT_NE(module.find("overlay::evaluate(inputs, quantities, capital, overlay_ratios_)"),
-              std::string::npos);
-    EXPECT_NE(module.find("\"OVERLAY lap=\""), std::string::npos);
+    EXPECT_EQ(module.find("OVERLAY"), std::string::npos);
+    EXPECT_EQ(module.find("RISK_LEVERAGE_ROUNDED"), std::string::npos);
 }

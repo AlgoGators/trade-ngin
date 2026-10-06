@@ -223,6 +223,9 @@ struct BacktestResults {
     std::vector<ExecutionReport> actual_trades;  // Only actual trades that close positions
     std::vector<Position> positions;
     std::vector<std::pair<Timestamp, double>> equity_curve;
+    // Per equity point, the row's risk_detail object as text (LOOP_SPEC section 7.3; empty for
+    // a NULL cell); empty altogether on a book that stores none.
+    std::vector<std::string> equity_risk_detail;
     std::vector<std::pair<Timestamp, double>> drawdown_curve;
     int warmup_days{0};  // Number of warmup days (calculated dynamically from strategy lookbacks)
 
