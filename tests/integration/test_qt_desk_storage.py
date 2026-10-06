@@ -108,6 +108,11 @@ def table_state(conn):
 def desk(connection, request):
     conn = connection
     scenario = getattr(request, "param", "executed")
+    approval_person = {'override_dominick':'dominick_dupuy', 'override_john':'john_riley',
+        'override_eric':'eric_shwartz', 'override_typo':'dominick_dupuoy'}.get(scenario, 'hemdutt_rao')
+    approval_user = 1 if scenario == 'override_self' else 2
+    approval_count = 1 if scenario == 'override_single' else 2
+    if scenario.startswith('override_'): scenario = 'override'
     ticker = "MES" if scenario == "futures_mes" else "SYN"
     if scenario == "futures_mes": scenario = "futures"
     chosen = (("4","2") if scenario in ("carried", "futures_quiet") else ("5","0") if scenario in ("zero", "flat_zero_basis")
@@ -181,8 +186,16 @@ def desk(connection, request):
         cur.execute("INSERT INTO trading.qt_workflow_capabilities(book_id,enabled,version) VALUES('BOOK',true,1)")
         cur.execute("INSERT INTO trading.qt_action_grants(user_id,capability,active,version) "
                     "VALUES(1,'qt_submit',true,1),(2,'qt_approve',true,1),(3,'qt_approve',true,1)")
+        if approval_user == 1:
+            cur.execute("INSERT INTO trading.qt_action_grants(user_id,capability,active,version) VALUES(1,'qt_approve',true,1)")
+        if approval_person in {'dominick_dupuy', 'eric_shwartz'}:
+            # Fixture003 predates corrected009 identity policy. Seed current or
+            # historical authority before immutable evidence is created. Preserve
+            # mapping/approval uniqueness and FK constraints in every case.
+            cur.execute("ALTER TABLE trading.qt_approver_allowlist DROP CONSTRAINT qt_approver_identity")
         cur.execute("INSERT INTO trading.qt_approver_allowlist(person_id,display_label,user_id,active,mapping_version) "
-                    "VALUES('john_riley','john riley',2,true,1),('xander_robbins','xander robbins',3,true,1)")
+                    "VALUES(%s,%s,%s,true,1),('xander_robbins','xander robbins',3,true,1)",
+                    (approval_person,approval_person.replace('_',' '),approval_user))
 
     request = json.loads((ROOT / "tests/contracts/qt-eval-v1.json").read_text())["selected_book"]
     request["evaluator_build"] = build_identity()
@@ -394,8 +407,12 @@ def desk(connection, request):
                         "VALUES('70000000-0000-4000-8000-000000000001',%s,1)",(DECISION,))
             cur.execute("""INSERT INTO trading.qt_override_approvals
               (approval_id,request_id,person_id,user_id,mapping_version,grant_version) VALUES
-              ('80000000-0000-4000-8000-000000000001','70000000-0000-4000-8000-000000000001','john_riley',2,1,1),
-              ('80000000-0000-4000-8000-000000000002','70000000-0000-4000-8000-000000000001','xander_robbins',3,1,1)""")
+              ('80000000-0000-4000-8000-000000000001','70000000-0000-4000-8000-000000000001',%s,%s,1,1)""",
+              (approval_person,approval_user))
+            if approval_count == 2:
+                cur.execute("""INSERT INTO trading.qt_override_approvals
+                  (approval_id,request_id,person_id,user_id,mapping_version,grant_version) VALUES
+                  ('80000000-0000-4000-8000-000000000002','70000000-0000-4000-8000-000000000001','xander_robbins',3,1,1)""")
     return conn, observed
 
 
@@ -605,18 +622,82 @@ def test_native_known_breach_requires_actual_current_two_person_quorum(desk):
 
 
 @pytest.mark.parametrize("desk", ["override"], indirect=True)
-@pytest.mark.parametrize("change", ["mapping","grant","role"])
+@pytest.mark.parametrize("change", ["mapping","grant","role","mapping_version","grant_version"])
 def test_native_confirmed_status_cannot_replace_current_override_eligibility(desk, change):
     conn, _ = desk
     query = {
         "mapping":"UPDATE trading.qt_approver_allowlist SET active=false,mapping_version=2 WHERE user_id=2",
         "grant":"UPDATE trading.qt_action_grants SET active=false,version=2 WHERE user_id=2 AND capability='qt_approve'",
         "role":"UPDATE auth.users SET role='external' WHERE id=2",
+        "mapping_version":"UPDATE trading.qt_approver_allowlist SET mapping_version=2 WHERE user_id=2",
+        "grant_version":"UPDATE trading.qt_action_grants SET version=2 WHERE user_id=2 AND capability='qt_approve'",
     }[change]
     with conn.cursor() as cur:
         cur.execute(query)
     before = table_state(conn)
     assert run().returncode != 0
+    assert table_state(conn) == before
+
+
+@pytest.mark.parametrize("desk", ["override"], indirect=True)
+@pytest.mark.parametrize("approver_role", ["admin", "general_member", "exec_board"])
+def test_native_current_approver_roles_do_not_imply_submission_authority(desk, approver_role):
+    conn, _ = desk
+    with conn.cursor() as cur:
+        cur.execute("UPDATE auth.users SET role=%s WHERE id=2", (approver_role,))
+    result = run()
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
+@pytest.mark.parametrize("desk", ["override_dominick"], indirect=True)
+def test_native_corrected_dominick_identity_counts_as_current_approver(desk):
+    conn, _ = desk
+    result = run()
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
+@pytest.mark.parametrize("desk", ["override_john", "override_eric", "override_typo"], indirect=True)
+def test_native_retired_or_misspelled_people_cannot_satisfy_quorum(desk):
+    conn, _ = desk
+    before = table_state(conn)
+    result = run()
+    assert result.returncode != 0 and 'qt_desk_unavailable:authorization' in result.stdout
+    assert table_state(conn) == before
+
+
+@pytest.mark.parametrize("desk", ["override_self"], indirect=True)
+def test_native_historical_submitter_approval_never_counts(desk):
+    conn, _ = desk
+    before = table_state(conn)
+    result = run()
+    assert result.returncode != 0 and 'qt_desk_unavailable:authorization' in result.stdout
+    assert table_state(conn) == before
+
+
+@pytest.mark.parametrize("desk", ["override"], indirect=True)
+def test_native_exec_board_cannot_submit_even_with_submit_grant(desk):
+    conn, _ = desk
+    with conn.cursor() as cur:
+        cur.execute("UPDATE auth.users SET role='exec_board' WHERE id=1")
+    before = table_state(conn)
+    result = run()
+    assert result.returncode != 0 and 'qt_desk_unavailable:authorization' in result.stdout
+    assert table_state(conn) == before
+
+
+@pytest.mark.parametrize("desk", ["override_single"], indirect=True)
+@pytest.mark.parametrize("person,user", [("hemdutt_rao",3),("xander_robbins",2)])
+def test_duplicate_person_or_user_cannot_create_second_approval(desk, person, user):
+    conn, _ = desk
+    with conn.cursor() as cur:
+        with pytest.raises(psycopg2.IntegrityError):
+            cur.execute("INSERT INTO trading.qt_override_approvals "
+                "(approval_id,request_id,person_id,user_id,mapping_version,grant_version) "
+                "VALUES('80000000-0000-4000-8000-000000000002',"
+                "'70000000-0000-4000-8000-000000000001',%s,%s,1,1)", (person,user))
+    before = table_state(conn)
+    result = run()
+    assert result.returncode != 0 and 'qt_desk_unavailable:authorization' in result.stdout
     assert table_state(conn) == before
 
 
