@@ -2,7 +2,8 @@
 
 // LOOP_SPEC sections 7.2 and 7.3: the loop's record of one rebalance, and the risk_detail jsonb
 // object built from it (trading.live_results.risk_detail and backtest.equity_curve.risk_detail,
-// migration 020). Nine flat keys, pinned by tests/risk/test_risk_detail.cpp.
+// migration 020). Nine flat keys, pinned by tests/portfolio/test_one_pass_book.cpp
+// (RiskDetailJson.TheNineKeysArePinned).
 
 #include <array>
 #include <map>
@@ -29,7 +30,9 @@ struct OnePassDay {
     std::string over_limit_by_hold_symbols;       ///< sorted, space-separated, empty when none
     bool overlay_blind{false};
     double sizing_capital{0.0};        ///< E_t
-    double risk_scale{0.0};            ///< stored gross / the capped target's gross (0: flat target)
+    /// The pass's own book over the capped target's gross (0: flat target). The live runners store
+    /// PortfolioManager::delivered_scale_for_book of the book they store, not this figure.
+    double risk_scale{0.0};
     double capped_target_gross{0.0};   ///< notional, at the raw signal closes, held rows included
     double stored_gross{0.0};          ///< notional of the stored book at the same closes
     /// The forecast-sign closes, per sleeve and symbol: the signed fill that took the sleeve's held

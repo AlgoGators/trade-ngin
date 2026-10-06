@@ -32,6 +32,8 @@
   },
   "equity_slow_rule": {"symbols": ["M2K", "MES", "MNQ", "MYM"], "pairs": [[32, 128], [64, 256]]},
   "sizing_mode": "half_compounding",
+  "starting_drawdown": 0.0,
+  "_starting_drawdown_note": "optional, read by the live runners only: the drawdown in dollars a seeded chain starts with (its first sizing capital is starting_capital - starting_drawdown, and it reaches starting_capital after that much net profit); 0 or absent: a book that starts at starting_capital",
   "starting_capital": 500000,
   "_sizing_note": "required; half_compounding: the book is sized on starting_capital less the drawdown of its cumulative settled net P&L from its running peak, never above starting_capital; starting_capital must equal initial_capital",
   "_equity_slow_rule_note": "required; on the book's first sleeve a negative combined forecast of these symbols stands only when the scaled forecast of every pair named is negative, and is 0 otherwise",

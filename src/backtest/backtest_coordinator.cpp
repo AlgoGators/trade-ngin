@@ -1610,6 +1610,8 @@ Result<void> BacktestCoordinator::seed_estimator_history(
         const std::string what = loaded.error()->what();
         if (what.find("No market data loaded") != std::string::npos ||
             what.find("returned an empty table") != std::string::npos) {
+            INFO("ESTIMATOR_HISTORY empty: no bar before the window, every symbol's estimators "
+                 "start at its first bar in the window");
             return Result<void>();
         }
         return make_error<void>(loaded.error()->code(),

@@ -7,6 +7,7 @@
 
 #include <cmath>
 #include <limits>
+#include <string>
 #include <vector>
 
 #include "trade_ngin/optimization/one_pass.hpp"
@@ -267,6 +268,39 @@ DayInputs four_symbols() {
 }
 
 }  // namespace
+
+// Section 6.4: held rows KEEP a reading over. Rows 2 and 3 are held long at a net weight of 7,
+// over the net limit of 6 on their own; the two free rows are short, so the stored book's net is
+// under the limit and no stored reading is over. No term is kept by hold, and no row is named.
+TEST(OnePass, AByHoldTermIsKeptOnlyWhenTheStoredBookIsOverItToo) {
+    DayInputs in = four_symbols();
+    in.cap = 10.0;                 // no row is beyond the per-name cap (CAP is a mark of its own)
+    in.limits.gross = 100.0;       // only the net leverage can be over
+    in.hold = {0, 0, 1, 1};
+    in.held = {0.0, 0.0, 20.0, 15.0};        // held rows: 4.0 + 3.0 = 7 of net weight
+    in.target = {-5.0, -5.0, 20.0, 15.0};    // free rows: short one unit of weight each
+    in.first_forecast = {-10.0, -10.0, 10.0, 10.0};
+    const DayResult r = rebalance(in);
+    ASSERT_TRUE(r.refusal.empty()) << r.refusal;
+    EXPECT_EQ(r.fixed, (Mask{0, 0, 1, 1}));
+    EXPECT_EQ(r.book[2], 20.0);
+    EXPECT_EQ(r.book[3], 15.0);
+    ASSERT_LT(r.book[0] + r.book[1], -5.0) << "the free rows are short at least 1.2 of weight";
+    EXPECT_LT(r.stored_readings.net, 6.0) << "the stored book is inside the net limit";
+    EXPECT_TRUE(r.over_limit.empty());
+    EXPECT_TRUE(r.by_hold_terms.empty())
+        << "the held rows alone read 7 of net, but the stored book is not over: no by-hold mark";
+    EXPECT_EQ(r.by_hold, (Mask{0, 0, 0, 0}));
+
+    // The same held rows with the free rows flat: the stored book IS over, and the term is kept.
+    in.target = {0.0, 0.0, 20.0, 15.0};
+    in.first_forecast = {0.0, 0.0, 10.0, 10.0};
+    const DayResult over = rebalance(in);
+    ASSERT_FALSE(over.over_limit.empty());
+    EXPECT_EQ(over.over_limit.front().first, "L_n");
+    ASSERT_EQ(over.by_hold_terms, (std::vector<std::string>{"L_n"}));
+    EXPECT_EQ(over.by_hold, (Mask{0, 0, 1, 1}));
+}
 
 // Sections 5.2, 5.3, 6.1 and 6.3 composed: row 0 opens through the buffer, row 1 is closed by the
 // forecast-sign close and re-opened, row 2 sits in the deferral band and is held, row 3 is in the

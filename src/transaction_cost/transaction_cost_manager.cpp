@@ -298,6 +298,10 @@ double TransactionCostManager::get_adv(const std::string& symbol) const {
     return impact_model_.get_adv(symbol);
 }
 
+bool TransactionCostManager::has_volume_history(const std::string& symbol) const {
+    return impact_model_.has_sufficient_data(symbol, 1);
+}
+
 double TransactionCostManager::get_volatility_multiplier(const std::string& symbol) const {
     return spread_model_.get_volatility_multiplier(symbol);
 }

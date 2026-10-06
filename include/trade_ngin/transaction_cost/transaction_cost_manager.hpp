@@ -205,6 +205,13 @@ public:
     double get_adv(const std::string& symbol) const;
 
     /**
+     * @brief Whether the symbol's volume was ever fed (update_market_data, record_volume or
+     *        set_own_day_volume). calculate_costs prices a symbol it was never fed on a generic
+     *        ADV; a caller that must not trade on that default asks this first.
+     */
+    bool has_volume_history(const std::string& symbol) const;
+
+    /**
      * @brief Get current volatility multiplier for a symbol
      */
     double get_volatility_multiplier(const std::string& symbol) const;

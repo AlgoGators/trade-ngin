@@ -367,6 +367,7 @@ Result<void> TrendFollowingStrategy::on_data(const std::vector<Bar>& data) {
                 WARN("Using default volatility for " + symbol + " due to calculation issues");
             }
             instrument_data.estimate = estimate;
+            if (estimate.window_bars < trend_estimator::kWindowBars) ++short_window_rows_[symbol];
             {
                 constexpr size_t kOverlayBars = 300;
                 const size_t bars = window.day.size();

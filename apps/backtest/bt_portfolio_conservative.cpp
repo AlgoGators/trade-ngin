@@ -13,6 +13,8 @@
 #include "trade_ngin/data/postgres_database.hpp"
 #include "trade_ngin/instruments/instrument_registry.hpp"
 #include "trade_ngin/portfolio/portfolio_manager.hpp"
+#include "trade_ngin/strategy/short_window_log.hpp"
+#include "trade_ngin/strategy/sleeve_config.hpp"
 #include "trade_ngin/strategy/trend_following.hpp"
 
 using namespace trade_ngin;
@@ -322,10 +324,19 @@ int main() {
 
             if (strategy_type == "TrendFollowingStrategy") {
                 trade_ngin::TrendFollowingConfig trend_config;
+                // LOOP_SPEC section 7.7: a futures sleeve's risk_target, idm and vol_lookback_short
+                // are required (strategy/sleeve_config.hpp): no in-code default.
+                {
+                    auto sleeve_keys =
+                        trade_ngin::read_required_sleeve_keys(strategy_id, strategy_def, trend_config);
+                    if (sleeve_keys.is_error()) {
+                        ERROR(std::string(sleeve_keys.error()->what()));
+                        std::cerr << sleeve_keys.error()->what() << std::endl;
+                        return 1;
+                    }
+                }
                 if (strategy_def.contains("config")) {
                     const auto& cfg = strategy_def["config"];
-                    trend_config.risk_target = cfg.value("risk_target", 0.15);  // Conservative default
-                    trend_config.idm = cfg.value("idm", 2.5);
                     if (cfg.contains("ema_windows")) {
                         trend_config.ema_windows.clear();
                         for (const auto& window : cfg["ema_windows"]) {
@@ -333,7 +344,6 @@ int main() {
                                 {window[0].get<int>(), window[1].get<int>()});
                         }
                     }
-                    trend_config.vol_lookback_short = cfg.value("vol_lookback_short", 32);
                     trend_config.vol_lookback_long = cfg.value("vol_lookback_long", 252);
                 }
                 // Set FDM from strategy_defaults
@@ -358,10 +368,19 @@ int main() {
                 // The FAST sleeve: TrendFollowingStrategy on the fast configuration
                 trade_ngin::TrendFollowingConfig trend_config =
                     trade_ngin::fast_trend_following_config();
+                // LOOP_SPEC section 7.7: a futures sleeve's risk_target, idm and vol_lookback_short
+                // are required (strategy/sleeve_config.hpp): no in-code default.
+                {
+                    auto sleeve_keys =
+                        trade_ngin::read_required_sleeve_keys(strategy_id, strategy_def, trend_config);
+                    if (sleeve_keys.is_error()) {
+                        ERROR(std::string(sleeve_keys.error()->what()));
+                        std::cerr << sleeve_keys.error()->what() << std::endl;
+                        return 1;
+                    }
+                }
                 if (strategy_def.contains("config")) {
                     const auto& cfg = strategy_def["config"];
-                    trend_config.risk_target = cfg.value("risk_target", 0.20);  // Conservative default
-                    trend_config.idm = cfg.value("idm", 2.5);
                     if (cfg.contains("ema_windows")) {
                         trend_config.ema_windows.clear();
                         for (const auto& window : cfg["ema_windows"]) {
@@ -369,7 +388,6 @@ int main() {
                                 {window[0].get<int>(), window[1].get<int>()});
                         }
                     }
-                    trend_config.vol_lookback_short = cfg.value("vol_lookback_short", 16);
                     trend_config.vol_lookback_long = cfg.value("vol_lookback_long", 252);
                 }
                 // Set FDM from strategy_defaults
@@ -459,6 +477,7 @@ int main() {
         }
 
         INFO("Backtest completed successfully");
+        INFO(trade_ngin::estimator_short_window_line(strategies));
 
         // Analyze and display results
         const auto& backtest_results = result.value();

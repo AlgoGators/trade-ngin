@@ -103,12 +103,28 @@ protected:
         return r;
     }
 
+    /// The runners feed the cost model every bar before the rebalance; a symbol it was never fed
+    /// has no cost and is not priced on the model's generic default.
+    void feed_costs(const std::vector<Bar>& bars) {
+        for (const auto& b : bars) {
+            pm_->update_cost_manager_market_data(b.symbol, b.volume, static_cast<double>(b.close),
+                                                 static_cast<double>(b.close));
+        }
+    }
+
     /// One rebalance on day `d`: a bar of every symbol in `symbols`, stamped the next day.
     Result<void> rebalance(int d, const std::vector<std::string>& symbols, bool warmup = false,
                            const std::unordered_set<std::string>* session = nullptr) {
         std::vector<Bar> bars;
         for (const auto& s : symbols) bars.push_back(one_pass_bar(s, d, 100.0));
+        feed_costs(bars);
         return pm_->process_market_data(bars, warmup, one_pass_day(d + 1), session);
+    }
+
+    /// The live form: the bars alone, the cost model fed first.
+    Result<void> process(const std::vector<Bar>& bars) {
+        feed_costs(bars);
+        return pm_->process_market_data(bars);
     }
 
     double quantity(const std::string& sleeve, const std::string& symbol) {
@@ -310,7 +326,7 @@ TEST_F(OnePassBookTest, TheCallersHoldSetHoldsTheSeededBookForOneRebalance) {
     ASSERT_TRUE(pm_->update_strategy_position("A", "BBB", seed).is_ok());
 
     pm_->set_hold_set({"BBB"});
-    ASSERT_TRUE(pm_->process_market_data({one_pass_bar("AAA", 1, 100.0), one_pass_bar("BBB", 1, 100.0)})
+    ASSERT_TRUE(process({one_pass_bar("AAA", 1, 100.0), one_pass_bar("BBB", 1, 100.0)})
                     .is_ok());
     EXPECT_EQ(quantity("A", "AAA"), 8.0) << "from the seeded 4, not from flat (which would store 8 too "
                                             "only by 0 -> 9; the fill below tells them apart)";
@@ -319,7 +335,7 @@ TEST_F(OnePassBookTest, TheCallersHoldSetHoldsTheSeededBookForOneRebalance) {
     EXPECT_TRUE(fills("A", "BBB").empty());
 
     // The set was this call's only.
-    ASSERT_TRUE(pm_->process_market_data({one_pass_bar("AAA", 2, 100.0), one_pass_bar("BBB", 2, 100.0)})
+    ASSERT_TRUE(process({one_pass_bar("AAA", 2, 100.0), one_pass_bar("BBB", 2, 100.0)})
                     .is_ok());
     EXPECT_EQ(quantity("A", "BBB"), 8.0);
 }
@@ -489,7 +505,7 @@ TEST_F(OnePassBookTest, AnOverlayThatCannotAnswerRefusesAndTheHeldBookIsStored) 
 TEST_F(OnePassBookTest, ARefusalOnAnUnseededLiveScopeRefusesTheRun) {
     make_pm(/*backtest=*/false);
     a_->rows["AAA"] = row(std::numeric_limits<double>::quiet_NaN());
-    const auto r = pm_->process_market_data({one_pass_bar("AAA", 1, 100.0)});
+    const auto r = process({one_pass_bar("AAA", 1, 100.0)});
     ASSERT_TRUE(r.is_error());
     EXPECT_EQ(r.error()->code(), ErrorCode::RISK_LIMIT_EXCEEDED);
     EXPECT_NE(std::string(r.error()->what()).find("never seeded"), std::string::npos);
@@ -501,7 +517,7 @@ TEST_F(OnePassBookTest, ARefusalOnAnUnseededLiveScopeRefusesTheRun) {
     seed.quantity = Decimal(3.0);
     seed.average_price = Decimal(100.0);
     ASSERT_TRUE(pm_->update_strategy_position("A", "AAA", seed).is_ok());
-    ASSERT_TRUE(pm_->process_market_data({one_pass_bar("AAA", 2, 100.0)}).is_ok());
+    ASSERT_TRUE(process({one_pass_bar("AAA", 2, 100.0)}).is_ok());
     EXPECT_EQ(quantity("A", "AAA"), 3.0);
     EXPECT_TRUE(pm_->last_one_pass().refused);
 }
@@ -520,6 +536,212 @@ TEST_F(OnePassBookTest, ASymbolWithoutASeriesIsHeldAndNamed) {
     EXPECT_TRUE(fills("B", "ZZZ").empty());
     EXPECT_EQ(count_of(out, "BOOK_UNPRICED ZZZ"), 1u) << out;
     EXPECT_EQ(quantity("A", "AAA"), 4.0) << "the rest of the book trades";
+}
+
+// Section 6.1: a HELD symbol the first sleeve cannot weigh today is valued at its last usable
+// close and its stored multiplier and enters the pass as a fixed row at its held quantity. It is
+// in the overlay's readings and on both sides of the delivered scale, and it gets no fill.
+TEST_F(OnePassBookTest, AHeldSymbolTheFirstSleeveCannotWeighIsAFixedRowAtItsLastClose) {
+    make_two_sleeves();
+    a_->rows["AAA"] = row(5.0);
+    b_->rows["AAA"] = row(0.0, 0.0);
+    a_->rows["ZZZ"] = row(0.0, 0.0);
+    b_->rows["ZZZ"] = row(5.0);
+    ASSERT_TRUE(rebalance(1, {"AAA", "ZZZ"}).is_ok());
+    ASSERT_EQ(quantity("A", "AAA"), 4.0);
+    ASSERT_EQ(quantity("B", "ZZZ"), 4.0);
+
+    a_->rows.erase("ZZZ");  // the overlay sleeve no longer has a series for ZZZ
+    ::testing::internal::CaptureStdout();
+    ASSERT_TRUE(rebalance(2, {"AAA", "ZZZ"}).is_ok());
+    const std::string out = ::testing::internal::GetCapturedStdout();
+    EXPECT_EQ(quantity("B", "ZZZ"), 4.0) << "held";
+    EXPECT_EQ(fills("B", "ZZZ"), (std::vector<double>{4.0})) << "no fill on the held row";
+    const OnePassDay day = pm_->last_one_pass();
+    EXPECT_FALSE(day.refused);
+    // AAA: target 5, stored 4. ZZZ: held 4 on both sides, at 100 x 1,000 a contract.
+    EXPECT_NEAR(day.capped_target_gross, 900'000.0, 1e-6) << "the held row is in the target's gross";
+    EXPECT_NEAR(day.stored_gross, 800'000.0, 1e-6) << "and in the stored book's";
+    EXPECT_NEAR(day.risk_scale, 8.0 / 9.0, 1e-12);
+    EXPECT_EQ(count_of(out, " participants=2 free=1 held=1 "), 1u) << out;
+    EXPECT_EQ(count_of(out, "BOOK_UNPRICED ZZZ"), 1u) << out;
+    EXPECT_EQ(count_of(out, "held as a fixed row valued at its last usable close 100.000000 x "
+                            "multiplier 1000.000000"), 1u) << out;
+}
+
+// A held symbol that cannot be weighed and has no usable close at all cannot be put in any
+// reading: the scope is refused (the seeded book stored, nothing traded), never stored as a clean
+// day with the row left out.
+TEST_F(OnePassBookTest, AHeldSymbolWithNoUsableCloseRefusesTheScope) {
+    make_pm(/*backtest=*/false);
+    a_->rows["AAA"] = row(9.0);
+    Position seed;
+    seed.symbol = "AAA";
+    seed.quantity = Decimal(3.0);
+    seed.average_price = Decimal(100.0);
+    ASSERT_TRUE(pm_->update_strategy_position("A", "AAA", seed).is_ok());
+    seed.symbol = "ZZZ";  // held, and the sleeve, the price history and the registry know nothing of it
+    seed.quantity = Decimal(2.0);
+    ASSERT_TRUE(pm_->update_strategy_position("A", "ZZZ", seed).is_ok());
+
+    ::testing::internal::CaptureStdout();
+    const auto r = process({one_pass_bar("AAA", 1, 100.0)});
+    const std::string out = ::testing::internal::GetCapturedStdout();
+    ASSERT_TRUE(r.is_ok()) << "a seeded scope holds its book";
+    const OnePassDay day = pm_->last_one_pass();
+    EXPECT_TRUE(day.refused);
+    EXPECT_FALSE(day.stores_detail());
+    EXPECT_EQ(quantity("A", "AAA"), 3.0) << "nothing trades on a refused day";
+    EXPECT_EQ(quantity("A", "ZZZ"), 2.0);
+    EXPECT_TRUE(fills("A", "AAA").empty());
+    EXPECT_EQ(count_of(out, "OVERLAY refused"), 1u) << out;
+    const auto mark = portfolio_risk_refusal(pm_->last_risk_decisions());
+    ASSERT_TRUE(mark.has_value());
+    EXPECT_EQ(mark->value("action", ""), "REFUSE");
+    EXPECT_NE(mark->value("reason", "").find("ZZZ"), std::string::npos) << mark->dump();
+}
+
+// Section 5.1: no generic default. A symbol the cost model was never fed has no cost of its own
+// (the model would price it on an assumed volume): it is unpriced, named, and not opened.
+TEST_F(OnePassBookTest, ASymbolTheCostModelWasNeverFedIsNotPricedOnADefault) {
+    make_pm();
+    a_->rows["AAA"] = row(5.0);
+    a_->rows["NEW"] = row(5.0);
+    const std::vector<Bar> bars = {one_pass_bar("AAA", 1, 100.0), one_pass_bar("NEW", 1, 100.0)};
+    feed_costs({bars[0]});  // the cost model is fed AAA only
+    ::testing::internal::CaptureStdout();
+    ASSERT_TRUE(pm_->process_market_data(bars, false, one_pass_day(2), nullptr).is_ok());
+    const std::string out = ::testing::internal::GetCapturedStdout();
+    EXPECT_EQ(quantity("A", "AAA"), 4.0);
+    EXPECT_EQ(quantity("A", "NEW"), 0.0) << "not opened on a default cost";
+    EXPECT_TRUE(fills("A", "NEW").empty());
+    EXPECT_EQ(count_of(out, "BOOK_UNPRICED NEW: the cost model has no cost for it (never fed its volume)"),
+              1u) << out;
+    // It stays in the pass, a participant held at zero: its dates count in the overlay's window.
+    EXPECT_EQ(count_of(out, " participants=2 free=1 held=1 "), 1u) << out;
+}
+
+// A stopped overlay sleeve leaves the book nothing to be weighed on. The scope is refused through
+// the overlay's refusal path: the held book stored, a REFUSE decision recorded, no risk_detail.
+TEST_F(OnePassBookTest, AStoppedOverlaySleeveRefusesTheScope) {
+    make_two_sleeves();
+    a_->rows["AAA"] = row(3.0);
+    b_->rows["AAA"] = row(1.0);
+    ASSERT_TRUE(rebalance(1, {"AAA"}).is_ok());
+    ASSERT_EQ(quantity("A", "AAA"), 2.0);
+    ASSERT_EQ(quantity("B", "AAA"), 1.0);
+
+    ASSERT_TRUE(a_->stop().is_ok());
+    b_->rows["AAA"] = row(9.0);  // the running sleeve asks for more: nothing may trade
+    ::testing::internal::CaptureStdout();
+    const auto r = rebalance(2, {"AAA"});
+    const std::string out = ::testing::internal::GetCapturedStdout();
+    ASSERT_TRUE(r.is_ok()) << "a seeded scope holds its book; the run goes on";
+    const OnePassDay day = pm_->last_one_pass();
+    EXPECT_TRUE(day.ran);
+    EXPECT_TRUE(day.refused) << "a stopped overlay sleeve must not store a clean-looking day";
+    EXPECT_FALSE(day.stores_detail());
+    EXPECT_EQ(quantity("A", "AAA"), 2.0);
+    EXPECT_EQ(quantity("B", "AAA"), 1.0);
+    EXPECT_EQ(fills("A", "AAA"), (std::vector<double>{2.0}));
+    EXPECT_EQ(fills("B", "AAA"), (std::vector<double>{1.0}));
+    EXPECT_EQ(count_of(out, "OVERLAY refused"), 1u) << out;
+    EXPECT_EQ(count_of(out, "OPTIMISER"), 0u) << out;
+    const auto mark = portfolio_risk_refusal(pm_->last_risk_decisions());
+    ASSERT_TRUE(mark.has_value());
+    EXPECT_EQ(mark->value("action", ""), "REFUSE");
+    EXPECT_EQ(mark->value("phase", ""), "lap");
+    EXPECT_NE(mark->value("reason", "").find("not RUNNING"), std::string::npos) << mark->dump();
+}
+
+// Section 5.4: a contribution too small to form a share on (|sum N*| <= 1e-8) is no contribution.
+// The book the buffer keeps is split by what each sleeve holds, never handed to nobody.
+TEST_F(OnePassBookTest, AContributionTooSmallToShareIsSplitByTheHeldQuantities) {
+    make_two_sleeves();
+    a_->rows["AAA"] = row(3.0);
+    b_->rows["AAA"] = row(1.0);
+    ASSERT_TRUE(rebalance(1, {"AAA"}).is_ok());
+    ASSERT_EQ(quantity("A", "AAA"), 2.0);
+    ASSERT_EQ(quantity("B", "AAA"), 1.0);
+
+    a_->rows["AAA"] = row(6e-9);  // a forecast next to zero
+    b_->rows["AAA"] = row(0.0, 0.0);
+    ASSERT_TRUE(rebalance(2, {"AAA"}).is_ok());
+    const OnePassDay day = pm_->last_one_pass();
+    ASSERT_NEAR(day.stored_gross, 100'000.0, 1e-6) << "the buffer keeps 1 of the held 3";
+    EXPECT_EQ(quantity("A", "AAA") + quantity("B", "AAA"), 1.0)
+        << "the sleeves' rows sum to the book the pass stored";
+    EXPECT_EQ(quantity("A", "AAA"), 1.0) << "split by the held 2 and 1";
+    EXPECT_EQ(quantity("B", "AAA"), 0.0);
+}
+
+// Section 5.4: a row no sleeve targets whose book the pass stores at zero stores zero on every
+// sleeve. Day 1 leaves the two sleeves opposed on a zero book (the netting branch keeps each
+// sleeve's own side while they both target the symbol); on day 2 neither targets it any more and
+// the offsetting rows are closed, not carried for ever.
+TEST_F(OnePassBookTest, AZeroBookRowNoSleeveTargetsStoresZeroOnEverySleeve) {
+    make_two_sleeves();
+    a_->rows["AAA"] = row(2.6);
+    b_->rows["AAA"] = row(-1.6, -10.0);
+    ASSERT_TRUE(rebalance(1, {"AAA"}).is_ok());
+    ASSERT_EQ(quantity("A", "AAA"), 2.0) << "opposed sleeves, summed target 1 from flat: no trade "
+                                            "on the book, each sleeve keeps its side";
+    ASSERT_EQ(quantity("B", "AAA"), -2.0);
+
+    a_->rows["AAA"] = row(0.0, 0.0);
+    b_->rows["AAA"] = row(0.0, 0.0);
+    ASSERT_TRUE(rebalance(2, {"AAA"}).is_ok());
+    EXPECT_EQ(pm_->last_one_pass().stored_gross, 0.0);
+    EXPECT_EQ(quantity("A", "AAA"), 0.0) << "a zero book nobody targets is flat on every sleeve";
+    EXPECT_EQ(quantity("B", "AAA"), 0.0);
+    EXPECT_EQ(fills("A", "AAA"), (std::vector<double>{2.0, -2.0}));
+    EXPECT_EQ(fills("B", "AAA"), (std::vector<double>{-2.0, 2.0}));
+}
+
+// Section 4 (D27): a BLIND window is warned, on its own WARN line; a window with enough complete
+// dates (150 here, above the 120 a participant needs to be read) is not.
+TEST_F(OnePassBookTest, ABlindOverlayWindowIsWarned) {
+    make_pm();
+    a_->rows["AAA"] = row(5.0);  // the stub gives no window: BLIND
+    ::testing::internal::CaptureStdout();
+    ASSERT_TRUE(rebalance(1, {"AAA"}).is_ok());
+    std::string out = ::testing::internal::GetCapturedStdout();
+    ASSERT_TRUE(pm_->last_one_pass().overlay_blind);
+    ASSERT_EQ(count_of(out, "OVERLAY_BLIND complete_dates=0 of 0 window dates"), 1u) << out;
+    const size_t at = out.find("OVERLAY_BLIND");
+    const size_t line_start = out.rfind('\n', at) == std::string::npos ? 0 : out.rfind('\n', at) + 1;
+    EXPECT_NE(out.substr(line_start, at - line_start).find("[WARN"), std::string::npos)
+        << out.substr(line_start, at - line_start + 40);
+
+    OverlayStubStrategy::fill_window(a_->rows["AAA"], 150);
+    ::testing::internal::CaptureStdout();
+    ASSERT_TRUE(rebalance(2, {"AAA"}).is_ok());
+    out = ::testing::internal::GetCapturedStdout();
+    ASSERT_FALSE(pm_->last_one_pass().overlay_blind);
+    EXPECT_EQ(count_of(out, "OVERLAY_BLIND"), 0u) << out;
+}
+
+// Sections 7.2 and 10: the delivered scale a live row stores is measured on the book the runner
+// STORES. Unchanged, it is the pass's own figure to the bit; with a row the runner's STRICT step
+// rolled back it is that smaller book over the same capped target; a flat capped target stores 1.
+TEST_F(OnePassBookTest, TheDeliveredScaleIsMeasuredOnTheStoredBook) {
+    make_pm();
+    a_->rows["AAA"] = row(5.0);
+    a_->rows["BBB"] = row(5.0);
+    ASSERT_TRUE(rebalance(1, {"AAA", "BBB"}).is_ok());
+    const OnePassDay day = pm_->last_one_pass();
+    ASSERT_NEAR(day.risk_scale, 0.8, 1e-12);
+    EXPECT_DOUBLE_EQ(pm_->delivered_scale_for_book({{"AAA", 4.0}, {"BBB", 4.0}}), day.risk_scale);
+    EXPECT_NEAR(pm_->delivered_scale_for_book({{"AAA", 4.0}, {"BBB", 0.0}}), 0.4, 1e-12)
+        << "BBB's fill rolled back: the stored book delivers 4 of the target's 10";
+    EXPECT_NEAR(pm_->delivered_scale_for_book({{"AAA", 4.0}}), 0.4, 1e-12);
+
+    // A flat capped target: nothing to deliver against.
+    make_pm();
+    a_->rows["AAA"] = row(0.0, 0.0);
+    ASSERT_TRUE(rebalance(1, {"AAA"}).is_ok());
+    ASSERT_EQ(pm_->last_one_pass().capped_target_gross, 0.0);
+    EXPECT_DOUBLE_EQ(pm_->delivered_scale_for_book({}), 1.0) << "as a day with no rebalance stores";
 }
 
 // The sizing capital the pass reads is the one the runner set today (section 3.1): the same

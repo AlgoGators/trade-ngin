@@ -4,6 +4,7 @@
 #include <chrono>
 #include <vector>
 
+#include "trade_ngin/core/logger.hpp"
 #include "trade_ngin/core/types.hpp"
 #include "trade_ngin/data/session_classifier.hpp"
 #include "trade_ngin/strategy/trend_estimator.hpp"
@@ -50,7 +51,15 @@ inline std::vector<Bar> estimator_history_consumed(
     }
     SessionClassifier classifier;
     classifier.add_bars(history);
-    (void)feed_instrument_ids(classifier, ids);
+    const InstrumentIdFeed id_feed = feed_instrument_ids(classifier, ids);
+    if (!id_feed.fed) {
+        WARN("ESTIMATOR_HISTORY the instrument ids of the bars before the window could not be read; "
+             "the history is judged without the instrument-id limb: " + id_feed.line);
+    }
+    if (history.empty()) {
+        INFO("ESTIMATOR_HISTORY empty: no bar before the window, every symbol's estimators start at "
+             "its first bar in the window");
+    }
     return k01_consumed_bars(classifier, history, withheld);
 }
 

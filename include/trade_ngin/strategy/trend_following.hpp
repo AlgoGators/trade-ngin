@@ -2,6 +2,7 @@
 #pragma once
 
 #include <deque>
+#include <map>
 #include <memory>
 #include <utility>
 #include <vector>
@@ -209,6 +210,10 @@ public:
         return instrument_data_;
     }
 
+    /// Per symbol, how many bars of this run the sleeve's estimators read a window shorter than
+    /// trend_estimator::kWindowBars (a symbol with less history starts at its first bar).
+    const std::map<std::string, std::size_t>& short_window_rows() const { return short_window_rows_; }
+
     /**
      * @brief Get target positions from instrument data
      * @note Overrides base class to return positions calculated from instrument_data_
@@ -268,6 +273,9 @@ private:
     mutable std::unordered_map<std::string, double> weight_cache_;
 
     std::unordered_map<std::string, InstrumentData> instrument_data_;
+    /// Per symbol, the bars of this run sized on an estimator window shorter than
+    /// trend_estimator::kWindowBars (LOOP_SPEC section 1: flagged and counted).
+    std::map<std::string, std::size_t> short_window_rows_;
 
     // Previous day positions for PnL calculation
 

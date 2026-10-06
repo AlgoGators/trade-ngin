@@ -257,6 +257,19 @@ Result<void> PostgresDatabase::store_backtest_equity_curve_batch(
     const std::vector<std::string>& risk_detail) {
     std::lock_guard<std::mutex> lock(mutex_);
 
+    // risk_detail (migration 020) carries one entry per point (a futures book) or none at all (the
+    // equity book). Any other length would write the curve without the column and lose the day
+    // records without a word: refused.
+    if (!risk_detail.empty() && risk_detail.size() != equity_points.size()) {
+        return make_error<void>(ErrorCode::INVALID_ARGUMENT,
+                                "store_backtest_equity_curve_batch: " +
+                                    std::to_string(risk_detail.size()) +
+                                    " risk_detail entries for " +
+                                    std::to_string(equity_points.size()) +
+                                    " equity points; one per point or none",
+                                "PostgresDatabase");
+    }
+
     // Validate connection
     auto validation = validate_connection();
     if (validation.is_error()) {
@@ -278,10 +291,10 @@ Result<void> PostgresDatabase::store_backtest_equity_curve_batch(
 
         std::string actual_portfolio_id = portfolio_id.empty() ? "BASE_PORTFOLIO" : portfolio_id;
 
-        // Build batch INSERT query. risk_detail (migration 020) is named only when the caller
-        // carries one entry per point (a futures book); an empty entry is a NULL cell. A caller
-        // that passes none (the equity book) writes the statement it always wrote.
-        const bool with_detail = risk_detail.size() == equity_points.size();
+        // Build batch INSERT query. risk_detail is named only when the caller carries one entry
+        // per point; an empty entry is a NULL cell. A caller that passes none (the equity book)
+        // writes the statement it always wrote.
+        const bool with_detail = !risk_detail.empty();
         std::string query = "INSERT INTO " + table_name +
                             (with_detail ? " (run_id, portfolio_id, timestamp, equity, risk_detail) VALUES "
                                          : " (run_id, portfolio_id, timestamp, equity) VALUES ");

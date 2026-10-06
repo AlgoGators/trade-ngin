@@ -970,50 +970,15 @@ std::vector<double> PortfolioManager::calculate_weights_per_contract(
 
 std::vector<double> PortfolioManager::calculate_trading_costs(
     const std::vector<std::string>& symbols, [[maybe_unused]] double capital) const {
+    // The generic optimiser step's cost vector. Only a book that names no overlay sleeve reaches
+    // it (a futures book is rebalanced by the one pass, which prices each contract through the
+    // cost model itself), and such a book has no trend sleeve to read a contract size and price
+    // from: every entry is zero, named once per symbol as it always was. The branch that read a
+    // trend sleeve's instrument data was reached by no book after the one pass and is gone.
     std::vector<double> costs(symbols.size(), 0.0);
-
-    // Collect all trading data once
-    std::unordered_map<std::string, const InstrumentData*> all_trading_data;
-    for (const auto& [strategy_id, info] : strategies_) {
-        auto trend_strategy = std::dynamic_pointer_cast<TrendFollowingStrategy>(info.strategy);
-        if (trend_strategy) {
-            const auto& strategy_data = trend_strategy->get_all_instrument_data();
-            for (const auto& [symbol, data] : strategy_data) {
-                all_trading_data[symbol] = &data;
-            }
-        }
+    for (const auto& symbol : symbols) {
+        WARN("Symbol " + symbol + " not found in trading data, using zero cost");
     }
-
-    for (size_t i = 0; i < symbols.size(); ++i) {
-        const std::string& symbol = symbols[i];
-
-        // Get contract size and price for this symbol
-        auto it = all_trading_data.find(symbol);
-        if (it != all_trading_data.end()) {
-            const auto& data = *(it->second);
-            double contract_size = data.contract_size;
-            double price = data.price_history.empty() ? 1.0 : data.price_history.back();
-            double fx_rate = 1.0;  // Default exchange rate
-
-            // F4 (T-7b-1 C8d, ledger M-04): the entry is the cost of ONE contract over that
-            // contract's notional. The optimizer charges |dw| x costs[i] with dw in weight
-            // (notional / capital); n contracts are dw = n x notional / capital and cost
-            // n x cost_per_contract dollars, n x cost_per_contract / capital of capital, which is
-            // |dw| x cost_per_contract / notional. The entry was cost_per_contract / capital,
-            // which understated the penalty by capital / notional (13.8x for MES at 7,252.5 on
-            // $500,000, 4.6x for ZF at 107.85). notional uses the same contract_size and price
-            // as the weights per contract in optimize_positions.
-            double notional_per_contract = contract_size * price * fx_rate;
-            auto cost_result = cost_manager_.calculate_costs(symbol, 1.0, price);
-            double cost_per_contract = cost_result.total_transaction_costs;
-            costs[i] = (notional_per_contract > 0.0) ? (cost_per_contract / notional_per_contract)
-                                                     : 0.0;
-        } else {
-            WARN("Symbol " + symbol + " not found in trading data, using zero cost");
-            costs[i] = 0.0;
-        }
-    }
-
     return costs;
 }
 
@@ -1709,7 +1674,6 @@ Result<void> PortfolioManager::optimize_positions() {
     try {
         // Get unique symbols across all strategies and collect data under lock
         std::vector<std::string> symbols;
-        std::unordered_map<std::string, const InstrumentData*> all_trading_data;
         std::vector<double> current_weights;
         std::vector<double> target_weights;
         std::vector<double> weights_per_contract;
@@ -1824,38 +1788,15 @@ Result<void> PortfolioManager::optimize_positions() {
                 return Result<void>();
             }
 
-            // Collect all instrument data
-            for (const auto& [id, info] : strategies_) {
-                auto trend_strategy =
-                    std::dynamic_pointer_cast<TrendFollowingStrategy>(info.strategy);
-                if (trend_strategy) {
-                    const auto& strategy_data = trend_strategy->get_all_instrument_data();
-                    for (const auto& [symbol, data] : strategy_data) {
-                        all_trading_data[symbol] = &data;
-                    }
-                }
-            }
-
-            // Calculate weights per contract (only for valid symbols)
+            // Calculate weights per contract (only for valid symbols). Only a book that names no
+            // overlay sleeve reaches this step, and it has no trend sleeve to read a contract size
+            // and price from (the branch that did was reached by no book after the one pass and
+            // is gone): every symbol takes the default weight, named as it always was.
             weights_per_contract.reserve(symbols.size());
 
             for (auto const& symbol : symbols) {
-                // Get contract size and price for this symbol
-                auto it = all_trading_data.find(symbol);
-                if (it != all_trading_data.end()) {
-                    const auto& data = *(it->second);
-                    double contract_size = data.contract_size;
-                    double price = data.price_history.empty() ? 1.0 : data.price_history.back();
-                    double fx_rate = 1.0;  // Default exchange rate
-
-                    // Calculate notional per contract
-                    double notional_per_contract = contract_size * price * fx_rate;
-                    weights_per_contract.push_back(notional_per_contract /
-                                                   static_cast<double>(sizing_capital_));
-                } else {
-                    WARN("Symbol " + symbol + " not found in trading data, using default weight");
-                    weights_per_contract.push_back(0.01);  // Reasonable default
-                }
+                WARN("Symbol " + symbol + " not found in trading data, using default weight");
+                weights_per_contract.push_back(0.01);  // Reasonable default
             }
 
             // Build current and target in weight space (only for valid symbols)
@@ -2019,20 +1960,6 @@ Result<void> PortfolioManager::optimize_positions() {
                     }
                 }
 
-                // Get original position from before optimization (stored in your trading data)
-                for (const auto& [_, info] : strategies_) {
-                    auto trend_strategy =
-                        std::dynamic_pointer_cast<TrendFollowingStrategy>(info.strategy);
-                    if (trend_strategy) {
-                        const auto& data = trend_strategy->get_all_instrument_data();
-                        auto it = data.find(symbol);
-                        if (it != data.end()) {
-                            original_position = it->second.final_position;
-                            break;
-                        }
-                    }
-                }
-
                 INFO("Symbol " + symbol + ": raw=" + std::to_string(original_position) +
                      ", optimized=" + std::to_string(optimized_position) +
                      ", change=" + std::to_string(optimized_position - original_position));
@@ -2124,8 +2051,10 @@ Result<void> PortfolioManager::rebalance_one_pass(
             return q == book->second.end() ? 0.0 : static_cast<double>(q->second.quantity);
         };
 
-        // The symbols: everything a sleeve lists or holds. One the first sleeve has no series,
-        // price, multiplier or cost for is held at each sleeve's held quantity and named.
+        // The symbols: everything a sleeve lists or holds (section 5.1: no silent default). One the
+        // first sleeve has no series, close or multiplier for cannot be weighed: with no position
+        // it is named and left alone; with a held position it enters the pass as a FIXED row at
+        // its last usable close. One it weighs but the cost model cannot price is held (below).
         std::set<std::string> listed;
         for (const auto& sid : sids) {
             for (const auto& [symbol, pos] : strategies_.at(sid).target_positions) {
@@ -2148,27 +2077,108 @@ Result<void> PortfolioManager::rebalance_one_pass(
                 }
             }
         }
+        // A stopped overlay sleeve leaves the book with no series to weigh anything on: the scope is
+        // refused (the held book stored, REFUSE recorded), never stored as a clean day.
+        std::string scope_refusal;
+        const bool overlay_running = first->second.strategy &&
+                                     first->second.strategy->get_state() == StrategyState::RUNNING;
+        if (!overlay_running) {
+            scope_refusal = "the overlay sleeve " + config_.overlay_sleeve +
+                            " is not RUNNING, so the book cannot be weighed";
+        }
         std::vector<std::string> symbols;
         std::vector<StrategyInterface::OverlaySeries> own;
         std::vector<double> costs;
-        std::vector<std::string> unpriced;
+        std::vector<std::string> unpriced;       // not passed: every sleeve keeps its held quantity
+        std::vector<char> unweighed_held;        // per passed symbol: a held row fixed at its last close
+        std::vector<std::string> unweighed_lines;
         for (const auto& symbol : listed) {
-            StrategyInterface::OverlaySeries series;
-            const bool has_series = first->second.strategy->get_state() == StrategyState::RUNNING &&
-                                    first->second.strategy->overlay_series(symbol, &series);
-            // the cost of one contract bought at the signal close, as the cost model prices it
-            const double cost =
-                has_series ? cost_manager_.calculate_costs(symbol, 1.0, series.close)
-                                 .total_transaction_costs
-                           : 0.0;
-            if (!has_series || !(series.close > 0.0) || !(series.multiplier > 0.0) ||
-                !std::isfinite(cost) || !(cost > 0.0)) {
+            if (!overlay_running) {
                 unpriced.push_back(symbol);
                 continue;
             }
+            StrategyInterface::OverlaySeries series;
+            const bool has_series = first->second.strategy->overlay_series(symbol, &series);
+            const bool weighed = has_series && series.close > 0.0 && series.multiplier > 0.0 &&
+                                 std::isfinite(series.close) && std::isfinite(series.multiplier);
+            // The cost of one contract bought at the signal close, as the cost model prices it. A
+            // symbol the cost model was never fed has no cost: its generic ADV is not a price.
+            const bool cost_fed = cost_manager_.has_volume_history(symbol);
+            const double cost =
+                weighed && cost_fed ? cost_manager_.calculate_costs(symbol, 1.0, series.close)
+                                          .total_transaction_costs
+                                    : 0.0;
+            if (weighed && cost_fed && std::isfinite(cost) && cost > 0.0) {
+                symbols.push_back(symbol);
+                own.push_back(std::move(series));
+                costs.push_back(cost);
+                unweighed_held.push_back(0);
+                continue;
+            }
+            if (weighed) {
+                // The sleeve weighs it but the cost model has no cost of its own for it (it was
+                // never fed the symbol, or prices it at nothing). It stays in the pass, a
+                // participant whose dates count in the overlay's window, as a HELD row at its held
+                // quantity (zero included): it cannot be opened or traded on a default cost.
+                unweighed_lines.push_back(
+                    "BOOK_UNPRICED " + symbol + ": the cost model has no cost for it (" +
+                    (cost_fed ? "a cost that is not a positive number" : "never fed its volume") +
+                    "); held at the held quantity as a fixed row, no fill");
+                symbols.push_back(symbol);
+                own.push_back(std::move(series));
+                costs.push_back(0.0);
+                unweighed_held.push_back(1);
+                continue;
+            }
+            bool held_row = false;
+            for (const auto& sid : sids) held_row = held_row || held_of(sid, symbol) != 0.0;
+            if (!held_row) {
+                unpriced.push_back(symbol);
+                continue;
+            }
+            // Section 6.1: a held symbol that cannot be weighed today is valued at its last usable
+            // close and its stored multiplier and enters the pass as a FIXED row at its held
+            // quantity, so it is in the leverage readings, the cap check and both sides of the
+            // delivered scale; it gets no fill. With no usable close at all the scope is refused.
+            StrategyInterface::OverlaySeries fixed_row;
+            {
+                // The last usable close: this manager's latest stored close of the symbol, else
+                // the close the last pass valued it on. The stored multiplier: the last pass's,
+                // else the registry's.
+                fixed_row.close = 0.0;
+                fixed_row.multiplier = 0.0;
+                const auto valued = one_pass_valued_.find(symbol);
+                if (valued != one_pass_valued_.end()) {
+                    fixed_row.close = valued->second.first;
+                    fixed_row.multiplier = valued->second.second;
+                } else if (registry_ && registry_->has_instrument(symbol)) {
+                    auto instrument = registry_->get_instrument(symbol);
+                    if (instrument) fixed_row.multiplier = instrument->get_multiplier();
+                }
+                const auto closes = closes_by_date_.find(symbol);
+                if (closes != closes_by_date_.end() && !closes->second.empty() &&
+                    closes->second.rbegin()->second > 0.0) {
+                    fixed_row.close = closes->second.rbegin()->second;
+                }
+            }
+            if (!(fixed_row.close > 0.0) || !(fixed_row.multiplier > 0.0) ||
+                !std::isfinite(fixed_row.close) || !std::isfinite(fixed_row.multiplier)) {
+                if (scope_refusal.empty()) {
+                    scope_refusal = "the held symbol " + symbol +
+                                    " cannot be weighed today and has no usable close or multiplier";
+                }
+                unpriced.push_back(symbol);
+                continue;
+            }
+            unweighed_lines.push_back(
+                "BOOK_UNPRICED " + symbol + ": no series, close or multiplier for it today; "
+                "held as a fixed row valued at its last usable close " +
+                std::to_string(fixed_row.close) + " x multiplier " +
+                std::to_string(fixed_row.multiplier) + ", no fill");
             symbols.push_back(symbol);
-            own.push_back(std::move(series));
-            costs.push_back(cost);
+            own.push_back(std::move(fixed_row));
+            costs.push_back(0.0);
+            unweighed_held.push_back(1);
         }
         const size_t n = symbols.size();
 
@@ -2210,6 +2220,7 @@ Result<void> PortfolioManager::rebalance_one_pass(
             const std::string& symbol = symbols[i];
             in.multiplier[i] = own[i].multiplier;
             in.close[i] = own[i].close;
+            if (!unweighed_held[i]) one_pass_valued_[symbol] = {own[i].close, own[i].multiplier};
             in.first_forecast[i] = own[i].forecast;
             in.first_signalling[i] = own[i].signalling;
             in.jump_sigma_daily[i] = own[i].jump_sigma_daily;
@@ -2217,9 +2228,10 @@ Result<void> PortfolioManager::rebalance_one_pass(
             in.has_bar[i] = fed.count(symbol) > 0;
             // Section 6.1: the hold applies on sized days only (in warm-up the book follows the
             // search): the caller's set, and in the backtest every symbol outside the session set.
-            in.hold[i] = !is_warmup &&
-                         (caller_holds.count(symbol) > 0 ||
-                          (session_symbols != nullptr && session_symbols->count(symbol) == 0));
+            in.hold[i] = unweighed_held[i] ||
+                         (!is_warmup &&
+                          (caller_holds.count(symbol) > 0 ||
+                           (session_symbols != nullptr && session_symbols->count(symbol) == 0)));
             for (size_t s = 0; s < sids.size(); ++s) {
                 const auto& info = strategies_.at(sids[s]);
                 sleeve_held[s][i] = held_of(sids[s], symbol);
@@ -2284,7 +2296,9 @@ Result<void> PortfolioManager::rebalance_one_pass(
             return held;
         };
         one_pass::DayResult result;
-        if (sleeve_pinned) {
+        if (!scope_refusal.empty()) {
+            result = held_book(scope_refusal);
+        } else if (sleeve_pinned) {
             result = held_book("a sleeve of the book was refused by its own risk module");
         } else {
             try {
@@ -2303,6 +2317,14 @@ Result<void> PortfolioManager::rebalance_one_pass(
         // The log lines (section 7.7).
         Logger::register_component("RiskManager");
         INFO(one_pass::overlay_line(symbols, in, result));
+        if (!refused && result.window.blind()) {
+            // Section 4 (D27): a BLIND window is warned. The three covariance multipliers are 1 and
+            // only the leverage term can cut.
+            WARN("OVERLAY_BLIND complete_dates=" + std::to_string(result.window.complete_dates) +
+                 " of " + std::to_string(result.window.window_dates) +
+                 " window dates: the covariance readings are blind (multipliers 1), the leverage "
+                 "term still applies");
+        }
         if (!refused) {
             Logger::register_component("DynamicOptimizer");
             INFO(one_pass::optimiser_line(symbols, result));
@@ -2329,6 +2351,7 @@ Result<void> PortfolioManager::rebalance_one_pass(
             WARN("BOOK_UNPRICED " + symbol + ": the first sleeve has no series, close, multiplier "
                  "or cost for it; held at the held quantity, no fill");
         }
+        for (const auto& line : unweighed_lines) WARN(line);
 
         // The record the runners store, and the decision row.
         OnePassDay record;
@@ -2369,6 +2392,11 @@ Result<void> PortfolioManager::rebalance_one_pass(
             record.risk_scale = result.risk_scale;
             record.capped_target_gross = result.target_gross * in.capital;
             record.stored_gross = result.stored_gross * in.capital;
+            one_pass_weights_.clear();
+            for (const std::size_t i : result.participants) {
+                one_pass_weights_.emplace_back(symbols[i], result.u[i]);
+            }
+            one_pass_target_gross_ = result.target_gross;
             decision.blind = record.overlay_blind;
             if (result.multiplier.m < 1.0) {
                 decision.action = RiskAction::SCALE;
@@ -2395,11 +2423,16 @@ Result<void> PortfolioManager::rebalance_one_pass(
         if (!refused) {
             for (size_t i = 0; i < n; ++i) {
                 if (!result.free[i] && !result.closeout[i]) continue;
-                // A symbol no sleeve targets any more (a zero forecast, a close-out) whose book the
-                // pass has not taken to flat is split in proportion to what each sleeve holds.
-                bool any_contribution = false;
-                for (size_t s = 0; s < sids.size(); ++s) {
-                    any_contribution = any_contribution || contribution[s][i] != 0.0;
+                // A row with no contribution is a symbol no sleeve targets any more (a zero
+                // forecast, a close-out) or one whose contributions sum to nothing a share can be
+                // formed on (|sum N*| <= 1e-8). Its book is split in proportion to what each sleeve
+                // holds; taken to flat, every sleeve stores 0.
+                double total_contribution = 0.0;
+                for (size_t s = 0; s < sids.size(); ++s) total_contribution += contribution[s][i];
+                const bool any_contribution = std::abs(total_contribution) > 1e-8;
+                if (!any_contribution && result.book[i] == 0.0) {
+                    for (size_t s = 0; s < sids.size(); ++s) sleeve_new[s][i] = 0.0;
+                    continue;
                 }
                 std::vector<SleeveContribution> parts;
                 for (size_t s = 0; s < sids.size(); ++s) {
@@ -2685,15 +2718,44 @@ DeliveredCut PortfolioManager::delivered_cut_for_book(
                                  npc);
 }
 
+double PortfolioManager::delivered_scale_for_book(
+    const std::map<std::string, double>& stored_book) const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (!(one_pass_target_gross_ > 0.0)) return 1.0;
+    // The pass's own sum, in its order, so an unchanged book reads the pass's figure to the bit.
+    double stored_gross = 0.0;
+    for (const auto& [symbol, u] : one_pass_weights_) {
+        const auto row = stored_book.find(symbol);
+        const double quantity = row == stored_book.end() ? 0.0 : row->second;
+        stored_gross += std::abs(quantity * u);
+    }
+    return stored_gross / one_pass_target_gross_;
+}
+
 std::map<std::string, double> PortfolioManager::delivered_notional_per_contract(
     const std::set<std::string>& symbols) const {
     std::map<std::string, double> out;
+    // The trend sleeves' own contract size and last price. A book that names an overlay sleeve
+    // reads THAT sleeve alone (the sleeve the pass weighs the book on); any other book reads its
+    // sleeves in id order, the first that holds the symbol. Never whichever sleeve an unordered
+    // walk visits last: two sleeves can carry different rows for one symbol.
     std::unordered_map<std::string, const InstrumentData*> trend_data;
-    for (const auto& [id, info] : strategies_) {
-        auto trend_strategy = std::dynamic_pointer_cast<TrendFollowingStrategy>(info.strategy);
+    std::vector<std::string> sleeve_ids;
+    if (!config_.overlay_sleeve.empty() && strategies_.count(config_.overlay_sleeve) > 0) {
+        sleeve_ids.push_back(config_.overlay_sleeve);
+    } else {
+        for (const auto& [id, info] : strategies_) {
+            (void)info;
+            sleeve_ids.push_back(id);
+        }
+        std::sort(sleeve_ids.begin(), sleeve_ids.end());
+    }
+    for (const auto& id : sleeve_ids) {
+        auto trend_strategy =
+            std::dynamic_pointer_cast<TrendFollowingStrategy>(strategies_.at(id).strategy);
         if (!trend_strategy) continue;
         for (const auto& [symbol, data] : trend_strategy->get_all_instrument_data()) {
-            trend_data[symbol] = &data;
+            trend_data.emplace(symbol, &data);
         }
     }
     for (const auto& symbol : symbols) {

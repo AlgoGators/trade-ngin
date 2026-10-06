@@ -48,6 +48,8 @@
 #include "trade_ngin/risk/risk_scale_report.hpp"
 #include "trade_ngin/storage/live_results_manager.hpp"
 #include "trade_ngin/transaction_cost/netting.hpp"
+#include "trade_ngin/strategy/short_window_log.hpp"
+#include "trade_ngin/strategy/sleeve_config.hpp"
 #include "trade_ngin/strategy/trend_following.hpp"
 
 using namespace trade_ngin;
@@ -614,6 +616,9 @@ int main(int argc, char* argv[]) {
         portfolio_config.opt_config = opt_config;
         portfolio_config.risk_config = risk_config;
         apply_loop_config(app_config, portfolio_config);
+        // Section 3.1, "chain seeding": the drawdown a seeded live chain starts with (0 when the
+        // key is absent), recorded with the run beside sizing_mode and passed to the sizing read.
+        portfolio_config.starting_drawdown = app_config.starting_drawdown;
 
         // ========================================
         // PHASE 2: STRATEGY INSTANCE FACTORY
@@ -661,10 +666,19 @@ int main(int argc, char* argv[]) {
             if (strategy_type == "TrendFollowingStrategy") {
                 // Create TrendFollowingStrategy (normal speed)
                 trade_ngin::TrendFollowingConfig trend_config;
+                // LOOP_SPEC section 7.7: a futures sleeve's risk_target, idm and vol_lookback_short
+                // are required (strategy/sleeve_config.hpp): no in-code default.
+                {
+                    auto sleeve_keys =
+                        trade_ngin::read_required_sleeve_keys(strategy_name, strategy_def, trend_config);
+                    if (sleeve_keys.is_error()) {
+                        ERROR(std::string(sleeve_keys.error()->what()));
+                        std::cerr << sleeve_keys.error()->what() << std::endl;
+                        return 1;
+                    }
+                }
                 if (strategy_def.contains("config")) {
                     const auto& cfg = strategy_def["config"];
-                    trend_config.risk_target = cfg.value("risk_target", 0.2);
-                    trend_config.idm = cfg.value("idm", 2.5);
                     if (cfg.contains("ema_windows")) {
                         trend_config.ema_windows.clear();
                         for (const auto& window : cfg["ema_windows"]) {
@@ -672,7 +686,6 @@ int main(int argc, char* argv[]) {
                                 {window[0].get<int>(), window[1].get<int>()});
                         }
                     }
-                    trend_config.vol_lookback_short = cfg.value("vol_lookback_short", 32);
                     trend_config.vol_lookback_long = cfg.value("vol_lookback_long", 252);
                 }
                 // Set default FDM if not loaded
@@ -697,10 +710,19 @@ int main(int argc, char* argv[]) {
                 // The FAST sleeve: TrendFollowingStrategy on the fast configuration
                 trade_ngin::TrendFollowingConfig trend_config =
                     trade_ngin::fast_trend_following_config();
+                // LOOP_SPEC section 7.7: a futures sleeve's risk_target, idm and vol_lookback_short
+                // are required (strategy/sleeve_config.hpp): no in-code default.
+                {
+                    auto sleeve_keys =
+                        trade_ngin::read_required_sleeve_keys(strategy_name, strategy_def, trend_config);
+                    if (sleeve_keys.is_error()) {
+                        ERROR(std::string(sleeve_keys.error()->what()));
+                        std::cerr << sleeve_keys.error()->what() << std::endl;
+                        return 1;
+                    }
+                }
                 if (strategy_def.contains("config")) {
                     const auto& cfg = strategy_def["config"];
-                    trend_config.risk_target = cfg.value("risk_target", 0.25);
-                    trend_config.idm = cfg.value("idm", 2.5);
                     if (cfg.contains("ema_windows")) {
                         trend_config.ema_windows.clear();
                         for (const auto& window : cfg["ema_windows"]) {
@@ -708,7 +730,6 @@ int main(int argc, char* argv[]) {
                                 {window[0].get<int>(), window[1].get<int>()});
                         }
                     }
-                    trend_config.vol_lookback_short = cfg.value("vol_lookback_short", 16);
                     trend_config.vol_lookback_long = cfg.value("vol_lookback_long", 252);
                 }
                 if (trend_config.fdm.empty()) {
@@ -1373,7 +1394,8 @@ int main(int argc, char* argv[]) {
                     calendar.no_t1_closes = price_manager->get_all_previous_day_prices().empty();
                     calendar.no_t2_closes = price_manager->get_all_two_days_ago_prices().empty();
                     return calendar;
-                }());
+                }(),
+                app_config.starting_drawdown);
             if (sizing_read.outcome == LiveSizingOutcome::kRefuseRun) {
                 ERROR("SIZING_CAPITAL refused: " + sizing_read.failure +
                       ". Refusing to run: the book cannot be sized and there is no book to hold.");
@@ -1777,6 +1799,7 @@ int main(int argc, char* argv[]) {
                 return 1;
             }
             INFO("Portfolio processing completed");
+            INFO(trade_ngin::estimator_short_window_line(strategies));
 
             // ========================================
             // PHASE 4: PER-STRATEGY SIGNALS STORAGE
@@ -3846,11 +3869,16 @@ int main(int argc, char* argv[]) {
             double max_correlation = 0.0;
             double jump_risk = 0.0;
             // LOOP_SPEC sections 7.2 and 10: risk_scale is the DELIVERED scale of today's
-            // rebalance, the stored book's gross notional over the capped target's gross notional
-            // at the raw signal closes. A day with no sized rebalance (no session, a sizing hold,
-            // a refused overlay) stores the held book against itself: 1. The request m_t is
+            // rebalance, the STORED book's gross notional (the book this runner stores, after its
+            // STRICT step) over the capped target's gross notional at the raw signal closes. A day
+            // with no sized rebalance (no session, a sizing hold, a refused overlay) stores the
+            // held book against itself: 1, and so does a flat capped target. The request m_t is
             // risk_detail.risk_requested, never this column.
-            double risk_scale = one_pass_day.stores_detail() ? one_pass_day.risk_scale : 1.0;
+            double risk_scale =
+                one_pass_day.stores_detail()
+                    ? portfolio->delivered_scale_for_book(
+                          trade_ngin::account_book_of(strategy_positions_map))
+                    : 1.0;
 
             if (risk_eval.is_ok()) {
                 const auto& r = risk_eval.value();

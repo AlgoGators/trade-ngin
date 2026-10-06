@@ -104,6 +104,7 @@ struct LiveSizingRead {
     std::string t1_date;            ///< Day T-1, YYYY-MM-DD
     std::string t1_unsettled_reason;
     std::vector<std::string> earlier_unsettled;  ///< earlier dates still unsettled, in date order
+    double starting_drawdown{0.0};  ///< D_0 the capital was computed from (0: not a seeded chain)
 };
 
 /**
@@ -135,7 +136,9 @@ inline bool sizing_history_day_unsettled(const LiveDataLoader::PnlHistoryRow& ro
 /// and their arguments are the runner's before T-7b-3: Day T-1's row, the previous row (before
 /// Day T-1 with a Day T-1 row, before the run date without one), then each sleeve's Day T-1 book.
 /// `t1_closes`, `t2_closes` and `zero_settlement_symbols` are the T-1 settlement on the consumed
-/// bars (consumed_t1_settlement), the inputs STEP 4 finalises Day T-1 with.
+/// bars (consumed_t1_settlement), the inputs STEP 4 finalises Day T-1 with. `starting_drawdown` is
+/// D_0 (section 3.1; portfolio.json's optional starting_drawdown): the capital starts at the
+/// starting capital less D_0 and reaches the starting capital only after D_0 of net profit.
 inline LiveSizingRead read_live_sizing_equity(
     LiveDataLoader& data_loader, DatabaseInterface& db, const std::string& strategy_id,
     const std::string& portfolio_id, const std::vector<std::string>& sleeves, const Timestamp& now,
@@ -143,8 +146,9 @@ inline LiveSizingRead read_live_sizing_equity(
     const std::unordered_map<std::string, double>& t2_closes,
     const std::function<double(const std::string&)>& point_value,
     const std::unordered_set<std::string>& zero_settlement_symbols,
-    const LiveSizingCalendar& calendar) {
+    const LiveSizingCalendar& calendar, double starting_drawdown) {
     LiveSizingRead out;
+    out.starting_drawdown = starting_drawdown;
     std::string equity_failure;
     const auto sizing_t1 = now - std::chrono::hours(24);
     out.t1_date = core::format_utc_date(sizing_t1);
@@ -240,7 +244,7 @@ inline LiveSizingRead read_live_sizing_equity(
         out.settled_through = out.t1_date;
     }
     out.settled_rows = static_cast<int>(settled_nets.size());
-    out.capital = half_compounded_capital(initial_capital, settled_nets);
+    out.capital = half_compounded_capital(initial_capital, settled_nets, starting_drawdown);
     return out;
 }
 
@@ -258,7 +262,10 @@ inline std::string sizing_capital_log_line(const std::string& run_date, const Li
            read.day_before_source + ") t1_settlement=" + std::to_string(read.equity.t1_settlement) +
            " t1_costs=" + std::to_string(read.equity.t1_costs) +
            " priced=" + std::to_string(read.equity.priced) +
-           " unpriced=" + std::to_string(read.equity.unpriced);
+           " unpriced=" + std::to_string(read.equity.unpriced) +
+           (read.starting_drawdown > 0.0
+                ? " starting_drawdown=" + std::to_string(read.starting_drawdown)
+                : std::string());
 }
 
 /// The SIZING_CAPITAL_UNSETTLED line (WARN) of a run whose Day T-1 is on a failure path.

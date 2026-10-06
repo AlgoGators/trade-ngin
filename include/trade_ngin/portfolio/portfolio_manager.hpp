@@ -62,6 +62,9 @@ struct PortfolioConfig : public ConfigBase {
     // (to_json below): how the book is sized and the equity slow rule of its first sleeve, as its
     // files state them (portfolio/loop_config.hpp fills both).
     std::string sizing_mode;
+    /// D_0 of a seeded live chain, in dollars (section 3.1); 0 on a book that starts at its
+    /// starting capital, and then not written by to_json. The live futures runners set it.
+    double starting_drawdown{0.0};
     std::vector<std::string> equity_slow_symbols;
     std::vector<std::pair<int, int>> equity_slow_pairs;
     // The risk modules this book runs, portfolio scope, in evaluation order. There is
@@ -145,6 +148,9 @@ struct PortfolioConfig : public ConfigBase {
             risk["per_name_cap"] = per_name_cap;
             risk["trim_max"] = trim_max;
             j["sizing_mode"] = sizing_mode;
+            // beside sizing_mode, on a seeded chain only: a book with D_0 = 0 writes the object
+            // it always wrote
+            if (starting_drawdown > 0.0) j["starting_drawdown"] = starting_drawdown;
             nlohmann::json pairs = nlohmann::json::array();
             for (const auto& [fast, slow] : equity_slow_pairs) {
                 pairs.push_back(nlohmann::json::array({fast, slow}));
@@ -337,8 +343,8 @@ public:
                                          double close_price, double prev_close_price);
 
     /**
-     * @brief This manager's own cost model: it prices the optimizer's cost vector
-     *        (calculate_trading_costs) and the executions this manager generates.
+     * @brief This manager's own cost model: it prices the one pass's cost vector (the cost of one
+     *        contract of every symbol the pass weighs) and the executions this manager generates.
      *
      * H-2 (T-7b-1 C8d): the backtest feeds it through update_cost_manager_market_data; the live
      * futures runners feed it through feed_futures_cost_model (futures_cost_feed.hpp), the same
@@ -474,6 +480,17 @@ public:
     DeliveredCut delivered_cut_for_book(const std::map<std::string, double>& stored_book) const;
 
     /**
+     * @brief The delivered scale of the last one pass, measured on the book the runner STORES
+     *        (LOOP_SPEC sections 7.2 and 10): that book's gross weight over the gross weight of
+     *        the capped target the overlay read, both at the pass's own weight per contract (the
+     *        raw signal closes), over the pass's participants. A runner step after the pass that
+     *        changes a row (the live STRICT roll-back) is therefore in the numerator. A flat
+     *        capped target has nothing to deliver against and stores 1, as a day with no
+     *        rebalance does.
+     */
+    double delivered_scale_for_book(const std::map<std::string, double>& stored_book) const;
+
+    /**
      * @brief Mark this manager as driven by a backtest (BacktestCoordinator::run_portfolio). Read into
      *        RiskContext::is_backtest and scope_is_seeded, and it switches on the per-bar netting of the
      *        sleeves' execution reports (K3), which are the stored fills only in a backtest (T-7b-2 C8b4).
@@ -562,6 +579,13 @@ private:
     // config_.covariance_history_prices dates per symbol, oldest dropped first. A symbol that
     // leaves the feed keeps its series, which stops growing. No strategy's history is read.
     std::unordered_map<std::string, std::map<int64_t, double>> closes_by_date_;
+    /// The last one pass's participants in symbol order, each with the weight of one contract on
+    /// the sizing capital, and the capped target's gross weight (delivered_scale_for_book).
+    std::vector<std::pair<std::string, double>> one_pass_weights_;
+    double one_pass_target_gross_{0.0};
+    /// Per symbol, the raw close and the multiplier the last pass that could weigh it valued it
+    /// on: what a held row that cannot be weighed today is valued at (section 6.1).
+    std::unordered_map<std::string, std::pair<double, double>> one_pass_valued_;
     /// T-ROLLX: each stored close's vendor instrument id (empty when unknown), the same keys as
     /// closes_by_date_, so the optimizer's covariance reads the ADJUSTED returns (roll_series.hpp).
     std::unordered_map<std::string, std::map<int64_t, std::string>> ids_by_date_;
@@ -823,9 +847,10 @@ private:
     std::unordered_map<std::string, Position> get_positions_internal() const;
 
     /**
-     * @brief T-7b-2 C9a: one notional per contract for each symbol, for the delivered cut. The
-     *        optimizer's own figure (contract_size x the latest price of the TrendFollowingStrategy
-     *        that carries the symbol, the later strategy winning as in optimize_positions);
+     * @brief T-7b-2 C9a: one notional per contract for each symbol, for the delivered cut. A trend
+     *        sleeve's own figure (contract_size x its latest price): on a book that names an
+     *        overlay sleeve, THAT sleeve's row and no other; on any other book the sleeves in id
+     *        order, the first that carries the symbol (never whichever an unordered walk visits last);
      *        otherwise this manager's latest close for it (closes_by_date_) x the registry's
      *        multiplier (1 without a registry entry); a symbol with neither is left out
      *        (DeliveredCut::unpriced). Called with mutex_ held; logs nothing.

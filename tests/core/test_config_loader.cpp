@@ -1203,6 +1203,36 @@ TEST_F(ConfigLoaderTest, TheSizingModeAndStartingCapitalAreRequiredOnAFuturesBoo
     EXPECT_TRUE(ConfigLoader::require_loop_keys(r.value()).is_ok());
 }
 
+// LOOP_SPEC section 3.1 and section 12 "chain seeding": portfolio.json's optional starting_drawdown,
+// the drawdown in dollars a seeded live chain starts with. Absent is 0; a negative or non-numeric
+// value is a load error.
+TEST_F(ConfigLoaderTest, TheStartingDrawdownIsOptionalAndFailsClosed) {
+    write_full_set("base");
+    auto r = ConfigLoader::load(base_, "base");
+    ASSERT_TRUE(r.is_ok()) << (r.error() ? r.error()->what() : "");
+    EXPECT_EQ(r.value().starting_drawdown, 0.0) << "absent: the book starts at its starting capital";
+
+    write_full_set("base", {}, {{"starting_drawdown", 60'000.0}});
+    r = ConfigLoader::load(base_, "base");
+    ASSERT_TRUE(r.is_ok()) << (r.error() ? r.error()->what() : "");
+    EXPECT_DOUBLE_EQ(r.value().starting_drawdown, 60'000.0);
+
+    write_full_set("base", {}, {{"starting_drawdown", 0}});
+    r = ConfigLoader::load(base_, "base");
+    ASSERT_TRUE(r.is_ok());
+    EXPECT_EQ(r.value().starting_drawdown, 0.0);
+
+    for (const nlohmann::json& bad : {nlohmann::json(-1.0), nlohmann::json(-0.01), nlohmann::json("60000"),
+                                      nlohmann::json(true), nlohmann::json(nullptr),
+                                      nlohmann::json::array({60'000.0})}) {
+        write_full_set("base", {}, {{"starting_drawdown", bad}});
+        r = ConfigLoader::load(base_, "base");
+        ASSERT_TRUE(r.is_error()) << bad.dump();
+        EXPECT_NE(std::string(r.error()->what()).find("starting_drawdown"), std::string::npos)
+            << r.error()->what();
+    }
+}
+
 TEST_F(ConfigLoaderTest, ABadSizingModeOrStartingCapitalIsALoadError) {
     for (const nlohmann::json& bad : {nlohmann::json("full_compounding"), nlohmann::json("fixed"),
                                       nlohmann::json(""), nlohmann::json(1), nlohmann::json(true)}) {

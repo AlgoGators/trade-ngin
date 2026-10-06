@@ -595,6 +595,13 @@ DayResult rebalance(const DayInputs& in) {
         const overlay::Readings held_readings = overlay::readings(x, out.window, sigma_jump);
         for (const auto& [term, excess] : over_limit(held_readings, in.limits)) {
             (void)excess;
+            // Section 6.4: held rows KEEP a reading over, so the term is marked only when the
+            // stored book's own reading is over it too (free rows can offset a held reading).
+            const std::string& held_term = term;
+            const bool stored_over =
+                std::any_of(out.over_limit.begin(), out.over_limit.end(),
+                            [&](const auto& stored) { return stored.first == held_term; });
+            if (!stored_over) continue;
             out.by_hold_terms.push_back(term);
             const Mask named = overlay::contributors(x, out.window, sigma_jump, term);
             for (std::size_t a = 0; a < k; ++a) {

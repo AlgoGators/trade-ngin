@@ -357,6 +357,12 @@ struct AppConfig {
     // (one figure, written twice so that neither file can be changed alone). Empty and 0: absent.
     std::string sizing_mode;
     double starting_capital{0.0};
+    // portfolio.json's optional top-level starting_drawdown (LOOP_SPEC section 3.1, section 12
+    // "chain seeding"): D_0, the drawdown in dollars a seeded LIVE chain starts with (its first
+    // sizing capital is starting_capital - starting_drawdown). 0 when absent: the book starts at
+    // its starting capital. Read by the live futures runners only: a backtest starts its own
+    // account at the starting capital and recomputes the capital from its own curve.
+    double starting_drawdown{0.0};
 
     // The one pass's keys in defaults.json's optimization block (LOOP_SPEC sections 5.2, 5.3
     // and 7.7), each required on a futures book (require_loop_keys): cost_penalty_scalar (the

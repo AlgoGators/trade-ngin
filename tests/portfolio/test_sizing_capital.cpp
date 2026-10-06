@@ -275,14 +275,16 @@ TEST_F(PortfolioSizingCapital, EverySizingInputMovesWithTheCapital) {
     EXPECT_DOUBLE_EQ(a_->get_config().capital_allocation, 528'000.0);
 }
 
-TEST_F(PortfolioSizingCapital, TheOptimizersWeightPerContractFollowsTheCapital) {
-    // optimize_positions divides a contract's notional by the sizing capital (not total_capital).
-    const std::string src = [] {
+TEST_F(PortfolioSizingCapital, TheWeightPerContractFollowsTheCapital) {
+    // The one pass weighs a contract on the sizing capital (not total_capital): the manager hands
+    // the pass sizing_capital_, and the pass divides a contract's notional by it. The generic
+    // optimiser step, which only a book with no overlay sleeve reaches, reads no capital at all.
+    const auto read = [](const std::string& relative) {
         namespace fs = std::filesystem;
         fs::path dir = fs::current_path();
         for (int i = 0; i < 8 && !dir.empty(); ++i) {
-            if (fs::exists(dir / "src/portfolio/portfolio_manager.cpp")) {
-                std::ifstream in(dir / "src/portfolio/portfolio_manager.cpp");
+            if (fs::exists(dir / relative)) {
+                std::ifstream in(dir / relative);
                 std::ostringstream ss;
                 ss << in.rdbuf();
                 return ss.str();
@@ -290,15 +292,19 @@ TEST_F(PortfolioSizingCapital, TheOptimizersWeightPerContractFollowsTheCapital) 
             dir = dir.parent_path();
         }
         return std::string();
-    }();
+    };
+    const std::string src = read("src/portfolio/portfolio_manager.cpp");
     ASSERT_FALSE(src.empty());
+    const auto pass = src.find("Result<void> PortfolioManager::rebalance_one_pass(");
+    ASSERT_NE(pass, npos);
+    EXPECT_NE(src.find("in.capital = static_cast<double>(sizing_capital_);", pass), npos);
+    const std::string one_pass = read("src/optimization/one_pass.cpp");
+    EXPECT_NE(one_pass.find("out.u[i] = in.multiplier[i] * in.close[i] / in.capital;"), npos);
     const auto opt = src.find("Result<void> PortfolioManager::optimize_positions()");
     ASSERT_NE(opt, npos);
-    const auto end = src.find("Result<void> PortfolioManager::validate_risk_modules(", opt);
+    const auto end = src.find("bool PortfolioManager::one_pass_book() const", opt);
+    ASSERT_NE(end, npos);
     const std::string body = src.substr(opt, end - opt);
-    EXPECT_NE(body.find("notional_per_contract /\n                                                   "
-                        "static_cast<double>(sizing_capital_)"),
-              npos);
     EXPECT_EQ(body.find("config_.total_capital"), npos)
         << "no sizing read of the constant is left in the optimizer";
 }
@@ -814,8 +820,10 @@ protected:
             *loader_, *db_, "LIVE_TREND_FOLLOWING", "BASE_PORTFOLIO", {"A", "B"}, now_, 500'000.0,
             {{"MES.v.0", 7252.50}, {"ZN.v.0", 110.703125}},
             {{"MES.v.0", 7230.00}, {"ZN.v.0", 110.906250}},
-            [&](const std::string& s) { return pnl_.get_point_value(s); }, {}, calendar_);
+            [&](const std::string& s) { return pnl_.get_point_value(s); }, {}, calendar_,
+            starting_drawdown_);
     }
+    double starting_drawdown_ = 0.0;  // D_0: 0 on a book that starts at its starting capital
     // The dates the run loaded a bar on: every weekday of April 2026 (2026-04-27, Day T-1, among
     // them), so every stored day of the fixtures is a settled one unless a test removes its date.
     LiveSizingCalendar calendar_ = [] {
@@ -1448,6 +1456,59 @@ TEST_F(LiveHalfCompounding, TheFailurePathsWithholdOnlyDayT1) {
         EXPECT_EQ(r.settled_through, "2026-04-24") << path;
         EXPECT_EQ(r.settled_rows, 3) << path;
     }
+}
+
+// Section 3.1 and section 12 "chain seeding": a seeded live chain starts with a drawdown D_0
+// (portfolio.json's starting_drawdown). Its first day is sized on S_0 - D_0, and the capital reaches
+// S_0 only after D_0 of net P&L; profits beyond that are set aside as on any book.
+TEST_F(LiveHalfCompounding, ASeededChainSizesOnTheStartingCapitalLessItsStartingDrawdown) {
+    starting_drawdown_ = 60'000.0;
+    // The chain's first run: no row at all.
+    db_->t1 = SizingReadDatabase::T1::kNoRow;
+    db_->previous_value.reset();
+    auto r = read();
+    ASSERT_EQ(r.outcome, LiveSizingOutcome::kSized) << outcome_of(r);
+    EXPECT_DOUBLE_EQ(r.capital.capital, 440'000.0) << "the first day is sized on 500,000 - 60,000";
+    EXPECT_NE(sizing_capital_log_line("2026-04-28", r).find(" starting_drawdown=60000.000000"),
+              std::string::npos);
+
+    // Net P&L of +20,000, then +30,000 more, then the last 10,000 less Day T-1's own net: 440,000
+    // climbs by exactly the net, and is 500,000 only once 60,000 has been made.
+    db_->t1 = SizingReadDatabase::T1::kRow;
+    db_->previous_value = 497'274.5217;
+    db_->history = {{"2026-04-21", 20'000.0, 2}};
+    r = read();
+    EXPECT_NEAR(r.capital.capital, 460'000.0 + t1_net_, 1e-6);
+    db_->history = {{"2026-04-21", 20'000.0, 2}, {"2026-04-22", 30'000.0, 2}};
+    r = read();
+    EXPECT_NEAR(r.capital.capital, 490'000.0 + t1_net_, 1e-6);
+    EXPECT_LT(r.capital.capital, 500'000.0) << "50,005.52 of net P&L is not yet 60,000";
+    db_->history = {{"2026-04-21", 20'000.0, 2}, {"2026-04-22", 30'000.0, 2},
+                    {"2026-04-23", 10'000.0 - t1_net_, 2}};
+    r = read();
+    EXPECT_NEAR(r.capital.capital, 500'000.0, 1e-6) << "exactly 60,000 of net P&L: back at the start";
+    // More profit is set aside; a loss comes off 500,000 at once.
+    db_->history.push_back({"2026-04-24", 7'500.0, 2});
+    r = read();
+    EXPECT_NEAR(r.capital.capital, 500'000.0, 1e-6) << "67,500 made: the 7,500 above D_0 is set aside";
+    db_->history.back() = {"2026-04-24", -2'500.0, 2};
+    r = read();
+    EXPECT_NEAR(r.capital.capital, 497'500.0, 1e-6) << "57,500 made of the 60,000: 2,500 short";
+}
+
+// D_0 = 0 is the book as it was: the same capital to the bit, and the line carries no new field.
+TEST_F(LiveHalfCompounding, AZeroStartingDrawdownChangesNothing) {
+    db_->history = {{"2026-04-21", 0.0, 0}, {"2026-04-22", 4'000.0, 2}, {"2026-04-23", -1'500.0, 2},
+                    {"2026-04-24", -3'200.0, 2}};
+    starting_drawdown_ = 0.0;
+    const auto r = read();
+    ASSERT_EQ(r.outcome, LiveSizingOutcome::kSized) << outcome_of(r);
+    const auto plain =
+        half_compounded_capital(500'000.0, {0.0, 4'000.0, -1'500.0, -3'200.0, r.equity.t1_settlement - r.equity.t1_costs});
+    EXPECT_EQ(r.capital.capital, plain.capital);
+    EXPECT_EQ(r.capital.account, plain.account);
+    EXPECT_EQ(r.capital.peak, plain.peak);
+    EXPECT_EQ(sizing_capital_log_line("2026-04-28", r).find("starting_drawdown"), std::string::npos);
 }
 
 // A history that cannot be read is an equity read that failed: the book is held, never sized on a
