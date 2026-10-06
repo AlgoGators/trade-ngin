@@ -758,12 +758,13 @@ Result<AppConfig> ConfigLoader::extract_config(const nlohmann::json& merged) {
     }
 }
 
-Result<void> ConfigLoader::validate_config(const AppConfig& config) {
+Result<void> ConfigLoader::validate_config(const AppConfig& config, bool require_database,
+                                          bool warn_windows) {
     if (config.portfolio_id.empty()) {
         return make_error<void>(ErrorCode::INVALID_DATA, "Missing portfolio_id", "ConfigLoader");
     }
-    if (config.database.host.empty() || config.database.username.empty() ||
-        config.database.password.empty() || config.database.name.empty()) {
+    if (require_database && (config.database.host.empty() || config.database.username.empty() ||
+        config.database.password.empty() || config.database.name.empty())) {
         return make_error<void>(ErrorCode::INVALID_DATA,
                                 "Missing required database configuration fields",
                                 "ConfigLoader");
@@ -804,7 +805,7 @@ Result<void> ConfigLoader::validate_config(const AppConfig& config) {
     // WARN ONLY, deliberately: a refusal would abort runs that work today, which
     // is a behaviour change and not this batch's business. The point is that a
     // short window now says so in the log instead of being invisible.
-    {
+    if (warn_windows) {
         constexpr int kTradingDaysPerYear = 252;
         // Documented floor, used when a strategy does not spell out its windows.
         constexpr int kDefaultLongestEma = 256;
@@ -841,7 +842,7 @@ Result<void> ConfigLoader::validate_config(const AppConfig& config) {
         if (required == 0) required = kDefaultLongestEma;
 
         const int available = config.backtest.lookback_years * kTradingDaysPerYear;
-        if (available < required) {
+        if (warn_windows && available < required) {
             WARN("backtest.lookback_years=" + std::to_string(config.backtest.lookback_years) +
                  " gives about " + std::to_string(available) + " trading days, fewer than the " +
                  std::to_string(required) + " the longest EMA window of enabled strategy " +
@@ -854,13 +855,13 @@ Result<void> ConfigLoader::validate_config(const AppConfig& config) {
         // 365/252 is the ratio the template's own "2 yrs = 730 days" note uses.
         const int live_trading_days =
             static_cast<int>(config.live.historical_days * kTradingDaysPerYear / 365.0);
-        if (live_trading_days < required) {
+        if (warn_windows && live_trading_days < required) {
             WARN("live.historical_days=" + std::to_string(config.live.historical_days) +
                  " is about " + std::to_string(live_trading_days) +
                  " trading days, fewer than the " + std::to_string(required) +
                  " the longest EMA window of enabled strategy " + driver + " needs (G-03).");
         }
-        if (live_trading_days < available) {
+        if (warn_windows && live_trading_days < available) {
             WARN("live.historical_days (" + std::to_string(live_trading_days) +
                  " trading days) is shorter than backtest.lookback_years (" +
                  std::to_string(available) +
@@ -948,6 +949,40 @@ void ConfigLoader::log_config_summary(const AppConfig& config) {
     INFO("Config summary: strategies=" + std::to_string(config.strategies_config.size()) +
          ", backtest_lookback_years=" + std::to_string(config.backtest.lookback_years) +
          ", live_historical_days=" + std::to_string(config.live.historical_days));
+}
+
+Result<AppConfig> ConfigLoader::parse_trading_config(const nlohmann::json& merged) {
+    // Never parse connection or delivery fields in this pure trading boundary.
+    if (!merged.is_object() || (merged.contains("benchmark_mode") &&
+        (!merged.at("benchmark_mode").is_string() ||
+         (merged.at("benchmark_mode") != "live" && merged.at("benchmark_mode") != "deferred"))))
+        return make_error<AppConfig>(ErrorCode::INVALID_ARGUMENT,"live_config_invalid_effective");
+    auto trading = merged;
+    trading.erase("database");
+    trading.erase("email");
+    auto result = extract_config(trading);
+    if (result.is_error()) return make_error<AppConfig>(ErrorCode::INVALID_ARGUMENT,
+                                                       "live_config_invalid_effective");
+    auto valid = validate_config(result.value(), false, false);
+    if (valid.is_error()) return make_error<AppConfig>(ErrorCode::INVALID_ARGUMENT,
+                                                      "live_config_invalid_effective");
+    return result;
+}
+
+Result<AppConfig> ConfigLoader::load_trading(const std::filesystem::path& root,
+                                             const std::string& portfolio_name) {
+    auto directory = resolve_portfolio_config_directory(root, portfolio_name);
+    if (directory.is_error()) return make_error<AppConfig>(ErrorCode::INVALID_ARGUMENT,
+                                                          "live_config_invalid_portfolio");
+    auto defaults = load_json_file(root / "defaults.json");
+    auto portfolio = load_json_file(directory.value() / "portfolio.json");
+    auto risk = load_json_file(directory.value() / "risk.json");
+    if (defaults.is_error() || portfolio.is_error() || risk.is_error())
+        return make_error<AppConfig>(ErrorCode::INVALID_ARGUMENT, "live_config_export_unavailable");
+    auto merged = defaults.value();
+    merge_json(merged, portfolio.value());
+    merged["risk"] = risk.value();
+    return parse_trading_config(merged);
 }
 
 Result<AppConfig> ConfigLoader::load(const std::filesystem::path& config_base_path,

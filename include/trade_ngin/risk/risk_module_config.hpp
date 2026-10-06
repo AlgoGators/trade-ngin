@@ -124,7 +124,11 @@ struct RiskSchema {
     double max_drawdown{0.0};
     double max_leverage{0.0};
 
-    /// The risk.json object: schema, modules, risk_reporting, max_drawdown, max_leverage.
+    /// Required top-level ruling on a non-Carver book. Preserve both optional
+    /// source fields verbatim, including when a Carver book also carries them.
+    nlohmann::json attribution = nlohmann::json::object();
+
+    /// The risk.json object, including its protected top-level ruling.
     nlohmann::json to_json() const;
     /// The portfolio.json `sleeve_risk_modules` object (empty object when no sleeve has
     /// modules). Kept out of to_json(): the two live in different files, and nesting the

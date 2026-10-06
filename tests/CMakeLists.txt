@@ -70,6 +70,7 @@ set(TEST_SOURCES
     core/test_email_positions_table.cpp
     core/test_run_id_generator.cpp
     core/test_config_loader.cpp
+    core/test_live_config_override.cpp
     data/test_db_utils.cpp
     data/test_utc_date_contract.cpp
     data/test_postgres_param_safety.cpp
@@ -541,3 +542,14 @@ set_target_properties(qt_desk_report_scope_tests PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin"
     RUNTIME_OUTPUT_DIRECTORY_DEBUG "${CMAKE_BINARY_DIR}/bin/Debug"
     RUNTIME_OUTPUT_DIRECTORY_RELEASE "${CMAKE_BINARY_DIR}/bin/Release")
+
+# A real bounded process protocol, including the operator export path.
+find_package(Python3 QUIET COMPONENTS Interpreter)
+if(Python3_Interpreter_FOUND)
+    add_test(NAME LiveConfigValidationToolProtocol
+        COMMAND ${CMAKE_COMMAND} -E env
+            "LIVE_CONFIG_VALIDATE=$<TARGET_FILE:live_config_validate>"
+            ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/core/test_live_config_override_tool.py)
+    set_tests_properties(LiveConfigValidationToolProtocol PROPERTIES
+        WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}")
+endif()

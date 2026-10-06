@@ -548,11 +548,14 @@ nlohmann::json RiskModuleConfig::to_json() const {
 nlohmann::json RiskSchema::to_json() const {
     nlohmann::json modules = nlohmann::json::array();
     for (const auto& m : portfolio) modules.push_back(m.to_json());
-    return nlohmann::json{{"schema", schema},
+    nlohmann::json result{{"schema", schema},
                           {"modules", std::move(modules)},
                           {"risk_reporting", reporting.to_json()},
                           {"max_drawdown", max_drawdown},
                           {"max_leverage", max_leverage}};
+    for (const char* key : {"_ruled_by", "_ruled_on"})
+        if (attribution.contains(key)) result[key] = attribution.at(key);
+    return result;
 }
 
 nlohmann::json RiskSchema::sleeves_to_json() const {
@@ -866,6 +869,9 @@ Result<RiskSchema> parse_risk_schema(const nlohmann::json& risk,
             }
         }
     }
+
+    for (const char* key : {"_ruled_by", "_ruled_on"})
+        if (risk.contains(key)) out.attribution[key] = risk.at(key);
 
     // R10's other half: a warn or refuse whose condition is `never` cannot fire, so it is
     // furniture. Listing it is allowed -- a test book does it -- but it says why.

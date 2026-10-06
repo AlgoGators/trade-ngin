@@ -970,3 +970,15 @@ TEST(TrackedPortfolioRiskAssignment, ANoneAssignmentConstructsAndAnEmptyListThro
     omitted.risk_modules.clear();
     EXPECT_THROW(PortfolioManager(omitted, "PM_OMITTED"), std::invalid_argument);
 }
+
+TEST(RiskSchemaRoundTrip, NonCarverBookRetainsRequiredTopLevelAttribution) {
+    for (const auto& module : {constant_scale_module(),warn_module()}) {
+        const auto risk=ruled(risk_with({module}));
+        auto first=parse_risk_schema(risk,nlohmann::json(),one_sleeve(),kP); ASSERT_TRUE(first.is_ok());
+        const auto emitted=first.value().to_json();
+        EXPECT_EQ(emitted.value("_ruled_by",std::string()),"unit test");
+        EXPECT_EQ(emitted.value("_ruled_on",std::string()),"2026-09-20");
+        auto second=parse_risk_schema(emitted,nlohmann::json(),one_sleeve(),kP); ASSERT_TRUE(second.is_ok());
+        EXPECT_EQ(second.value().to_json(),emitted);
+    }
+}

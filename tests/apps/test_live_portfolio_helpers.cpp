@@ -102,7 +102,9 @@ TEST(LiveRuntimeControl, SnapshotOmitsTransportCredentialsAndRejectsNestedSecret
     config.strategies_config = {{"TREND", {{"enabled_live", true}, {"default_allocation", 1.0}}}};
     auto snapshot = build_runtime_trading_snapshot(config);
     ASSERT_TRUE(snapshot.is_ok());
-    EXPECT_EQ(snapshot.value().at("snapshot_version"), 1);
+    EXPECT_EQ(snapshot.value().at("snapshot_version"), 2);
+    EXPECT_TRUE(snapshot.value().contains("sleeve_risk_modules"));
+    EXPECT_EQ(snapshot.value().at("risk").at("schema"), 2);
     EXPECT_EQ(snapshot.value().at("initial_capital"), 500000.0);
     EXPECT_FALSE(snapshot.value().contains("email"));
     EXPECT_FALSE(snapshot.value().contains("database"));
