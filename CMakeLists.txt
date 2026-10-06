@@ -387,6 +387,7 @@ add_executable(equity_model_entry_unit
     tests/test_equity_run_consumption.cpp)
 target_link_libraries(equity_model_entry_unit PRIVATE
     trade_ngin GTest::gtest GTest::gtest_main)
+target_include_directories(equity_model_entry_unit PRIVATE ${CMAKE_SOURCE_DIR}/tests)
 target_compile_definitions(equity_model_entry_unit PRIVATE TESTING USE_DIRECT_DB_CONNECTION)
 set_target_properties(equity_model_entry_unit PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin/${CMAKE_BUILD_TYPE}"

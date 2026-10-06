@@ -1,3 +1,6 @@
+# Share test-only fixture helpers with the focused acceptance executables.
+include_directories(${CMAKE_CURRENT_SOURCE_DIR})
+
 # Set test source files
 set(TEST_SOURCES
     apps/test_book_execution_phase.cpp
