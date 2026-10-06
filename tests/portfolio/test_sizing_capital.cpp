@@ -1354,9 +1354,15 @@ TEST_F(LiveHalfCompounding, NoDayT1RowKeepsTheLastSettledCapital) {
 // The no-bar-day rule. A held day on which no symbol prints (a Saturday) is never finalized: its
 // stored daily_pnl, the costs of that day's fills, is final. It stays out only while no bar dated
 // after it is loaded, and from the next run that has a later bar it counts in its own date's place.
+//
+// The nets are chosen so that the PLACE matters: the cap at 500,000 binds in the middle of the
+// sequence. In date order the capital is 500,000 (the 4,000 profit is not sized on), 499,997,
+// 499,957 after the Saturday's 40.00, and 499,962.5234 after Day T-1's 5.5234. With the late day
+// appended after Day T-1 instead, Day T-1's profit would be cut off at the cap first (499,997 +
+// 5.5234 capped to 500,000) and the answer would be 499,960: 2.5234 less.
 TEST_F(LiveHalfCompounding, ANoBarDayCountsFromTheNextRunThatHasALaterBar) {
     // 2026-04-25 is a Saturday: the book held positions, its fills cost 40.00, no bar is dated it.
-    db_->history = {{"2026-04-23", 4'000.0, 2}, {"2026-04-24", -3'200.0, 2}, {"2026-04-25", -40.0, 2}};
+    db_->history = {{"2026-04-23", 4'000.0, 2}, {"2026-04-24", -3.0, 2}, {"2026-04-25", -40.0, 2}};
     // Read 1: no bar after the Saturday is loaded yet (Day T-1 has no closes either).
     for (const char* later : {"2026-04-27", "2026-04-28", "2026-04-29", "2026-04-30"}) {
         calendar_.bar_dates.erase(later);
@@ -1366,7 +1372,7 @@ TEST_F(LiveHalfCompounding, ANoBarDayCountsFromTheNextRunThatHasALaterBar) {
     ASSERT_EQ(r.outcome, LiveSizingOutcome::kSized) << outcome_of(r);
     ASSERT_EQ(r.earlier_unsettled, std::vector<std::string>{"2026-04-25"});
     EXPECT_TRUE(r.t1_unsettled);
-    EXPECT_NEAR(r.capital.capital, 496'800.0, 1e-6) << "no later bar: the Saturday adds nothing yet";
+    EXPECT_NEAR(r.capital.capital, 499'997.0, 1e-6) << "no later bar: the Saturday adds nothing yet";
     EXPECT_NE(sizing_capital_log_line("2026-04-28", r).find(" earlier_unsettled=1 "), std::string::npos);
 
     // Read 2: a bar dated after the Saturday is loaded. No bar is dated the Saturday itself, and
@@ -1376,10 +1382,15 @@ TEST_F(LiveHalfCompounding, ANoBarDayCountsFromTheNextRunThatHasALaterBar) {
     r = read();
     EXPECT_TRUE(r.earlier_unsettled.empty()) << "the Saturday counts once a later bar is loaded";
     EXPECT_EQ(calendar_.bar_dates.count("2026-04-25"), 0u);
-    double capital = 500'000.0;
-    for (double net : {4'000.0, -3'200.0, -40.0, t1_net_}) capital = std::min(500'000.0, capital + net);
-    EXPECT_NEAR(r.capital.capital, capital, 1e-6) << "the Saturday's costs in its own date's place";
-    EXPECT_NEAR(r.capital.account, 500'000.0 + 4'000.0 - 3'200.0 - 40.0 + t1_net_, 1e-6)
+    double in_its_place = 500'000.0, appended_last = 500'000.0;
+    for (double net : {4'000.0, -3.0, -40.0, t1_net_}) in_its_place = std::min(500'000.0, in_its_place + net);
+    for (double net : {4'000.0, -3.0, t1_net_, -40.0}) appended_last = std::min(500'000.0, appended_last + net);
+    ASSERT_NEAR(in_its_place, 499'962.5234, 1e-6);
+    ASSERT_NEAR(appended_last, 499'960.0, 1e-6);
+    ASSERT_GT(in_its_place - appended_last, 2.5) << "the fixture tells the two orders apart";
+    EXPECT_NEAR(r.capital.capital, in_its_place, 1e-6) << "the Saturday's costs in its own date's place";
+    EXPECT_GT(std::abs(r.capital.capital - appended_last), 2.5) << "not appended after Day T-1";
+    EXPECT_NEAR(r.capital.account, 500'000.0 + 4'000.0 - 3.0 - 40.0 + t1_net_, 1e-6)
         << "the account is the stored one: the Saturday's costs are in it";
     EXPECT_EQ(r.settled_rows, 4);
 

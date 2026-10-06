@@ -60,6 +60,7 @@ set(TEST_SOURCES
     optimization/test_one_pass.cpp
     portfolio/test_one_pass_book.cpp
     portfolio/test_loop_fixups.cpp
+    portfolio/test_worked_days.cpp
     portfolio/test_portfolio_config_keys.cpp
     risk/test_overlay_wiring.cpp
     risk/test_risk_adjusted_returns.cpp

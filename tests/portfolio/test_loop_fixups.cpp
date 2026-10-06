@@ -442,7 +442,8 @@ protected:
         std::this_thread::sleep_for(std::chrono::milliseconds(50));
         TestBase::TearDown();
     }
-    double notional(const std::string& overlay_id, const std::string& other_id) {
+    double notional(const std::string& overlay_id, const std::string& other_id,
+                    bool overlay_added_first = true) {
         static int n = 0;
         PortfolioManager pm(one_pass_config(overlay_id), "PM_OSN_" + std::to_string(++n));
         StrategyConfig sc;
@@ -455,8 +456,9 @@ protected:
         overlay->instrument_data_["ZZA"].price_history = {100.0, 120.0};
         other->instrument_data_["ZZA"].contract_size = 1.0;    // a sleeve still in warm-up: 1 x 120
         other->instrument_data_["ZZA"].price_history = {100.0, 120.0};
-        EXPECT_TRUE(pm.add_strategy(overlay, 0.5, false).is_ok());
-        EXPECT_TRUE(pm.add_strategy(other, 0.5, false).is_ok());
+        // either order of registration: an unordered walk visits the sleeves in an order that follows it
+        EXPECT_TRUE(pm.add_strategy(overlay_added_first ? overlay : other, 0.5, false).is_ok());
+        EXPECT_TRUE(pm.add_strategy(overlay_added_first ? other : overlay, 0.5, false).is_ok());
         return pm.delivered_notional_per_contract({"ZZA"}).at("ZZA");
     }
     std::shared_ptr<MockPostgresDatabase> db_;
@@ -467,6 +469,12 @@ TEST_F(OverlaySleeveNotional, IsTheOverlaySleevesWhicheverIdItHas) {
     EXPECT_EQ(notional("SLEEVE_B", "SLEEVE_A"), 600.0);
     EXPECT_EQ(notional("TREND_FOLLOWING", "TREND_FOLLOWING_FAST"), 600.0);
     EXPECT_EQ(notional("TREND_FOLLOWING_FAST", "TREND_FOLLOWING"), 600.0);
+    for (const bool first : {true, false}) {
+        EXPECT_EQ(notional("SLEEVE_A", "SLEEVE_B", first), 600.0) << first;
+        EXPECT_EQ(notional("SLEEVE_B", "SLEEVE_A", first), 600.0) << first;
+        EXPECT_EQ(notional("TREND_FOLLOWING", "TREND_FOLLOWING_FAST", first), 600.0) << first;
+        EXPECT_EQ(notional("TREND_FOLLOWING_FAST", "TREND_FOLLOWING", first), 600.0) << first;
+    }
 }
 
 // The generic optimiser step, which no book with a trend sleeve reaches after the one pass, reads

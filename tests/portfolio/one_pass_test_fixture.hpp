@@ -46,6 +46,11 @@ public:
         bool slow_rule_zeroed{false};
         std::vector<double> day;      ///< the overlay window's dates (whole day numbers)
         std::vector<double> returns;  ///< its adjusted percentage returns
+        double jump_sigma_daily{0.0};  ///< the jump sigma as a daily standard deviation
+        /// The optimiser's closes, when a test gives them itself (dates, raw closes; the adjusted
+        /// level is the raw close). Empty: built from the window, one close per window date.
+        std::vector<double> opt_day;
+        std::vector<double> opt_close;
     };
 
     OverlayStubStrategy(std::string id, StrategyConfig config, std::shared_ptr<DatabaseInterface> db)
@@ -103,7 +108,7 @@ public:
         out->returns = row.returns;
         out->close = row.close;
         out->multiplier = row.multiplier;
-        out->jump_sigma_daily = 0.0;
+        out->jump_sigma_daily = row.jump_sigma_daily;
         out->optimal_position = row.optimal;
         out->forecast = row.forecast;
         out->signalling = row.signalling;
@@ -121,6 +126,11 @@ public:
         if (!levels.empty()) levels[0] = level;
         out->opt_close = levels;
         out->opt_level = levels;
+        if (!row.opt_day.empty()) {
+            out->opt_day = row.opt_day;
+            out->opt_close = row.opt_close;
+            out->opt_level = row.opt_close;
+        }
         return true;
     }
 };
