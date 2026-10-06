@@ -5,6 +5,7 @@
 #include "trade_ngin/live/live_price_manager.hpp"
 #include "trade_ngin/portfolio/portfolio_manager.hpp"
 #include "trade_ngin/strategy/base_strategy.hpp"
+#include "data/test_db_utils.hpp"
 
 using namespace trade_ngin;
 namespace {
@@ -16,7 +17,12 @@ Bar bar(const char* date,double price) {Bar result;result.symbol="SYN";result.ti
 class FixedShares final:public BaseStrategy {
 public:
     int calls=0;
-    explicit FixedShares(std::string id):BaseStrategy(std::move(id),StrategyConfig{},nullptr) {
+    static StrategyConfig config() {
+        StrategyConfig value;value.capital_allocation=1000;value.max_leverage=1;
+        return value;
+    }
+    explicit FixedShares(std::string id):BaseStrategy(std::move(id),config(),
+        std::make_shared<trade_ngin::testing::MockPostgresDatabase>("mock://fixed-shares")) {
         Position value;value.symbol="SYN";value.quantity=3.5;value.average_price=10;positions_["SYN"]=value;
     }
     Result<void> on_data(const std::vector<Bar>&,StrategyConsumptionTrace* =nullptr) override {
