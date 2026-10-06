@@ -359,6 +359,14 @@ struct AppConfig {
     // portfolio.json's top-level equity_slow_rule; required on a futures book.
     EquitySlowRule equity_slow_rule;
 
+    // portfolio.json's top-level sizing_mode and starting_capital (LOOP_SPEC sections 3.1 and 7.7,
+    // D19); both required on a futures book. The one mode is "half_compounding": the book is sized
+    // on the starting capital less the drawdown of its cumulative settled net P&L from its running
+    // peak, never above the starting capital. starting_capital is S_0 and equals initial_capital
+    // (one figure, written twice so that neither file can be changed alone). Empty and 0: absent.
+    std::string sizing_mode;
+    double starting_capital{0.0};
+
     // Backtest settings
     BacktestSpecificConfig backtest;
 

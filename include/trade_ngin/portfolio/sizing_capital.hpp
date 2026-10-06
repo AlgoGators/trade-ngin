@@ -33,12 +33,65 @@
 
 namespace trade_ngin {
 
-/// The backtest's sizing equity for the cycle about to size: the equity curve's last row (the
-/// previous cycle's close), or `initial_capital` when the curve is empty. Warm-up rows are flat at
-/// the initial capital, so warm-up sizes exactly as before.
+/**
+ * @brief The sizing capital under Carver's half compounding (LOOP_SPEC section 3.1, D19), as a
+ *        closed form of the settled daily net P&L in date order.
+ *
+ * C is the cumulative net P&L of the settled days (0 at the start), P its running peak floored at
+ * 0, D_0 the drawdown the book starts with (0 on a book that starts at the starting capital; the
+ * starting capital less the seed on a seeded chain). Then
+ *
+ *     D = max(D_0, P) - C,   capital = S_0 - D,   account = S_0 + C.
+ *
+ * Row by row this is capital' = min(S_0, capital + net) from capital = S_0 - D_0: a loss comes off
+ * the capital at once, a profit rebuilds it, and nothing above the starting capital is ever sized
+ * on. It is a function of the settled history alone, so a run that reads a late day in its own
+ * date's place gets what the recursion applied in date order would have given.
+ */
+struct HalfCompounding {
+    double capital{0.0};     ///< E, the capital the book is sized on
+    double account{0.0};     ///< V = S_0 + C, the account the settled history gives
+    double cumulative{0.0};  ///< C, the cumulative settled net P&L
+    double peak{0.0};        ///< P, the running peak of C, floored at 0
+};
+
+inline HalfCompounding half_compounded_capital(double starting_capital,
+                                               const std::vector<double>& settled_nets,
+                                               double starting_drawdown = 0.0) {
+    HalfCompounding out;
+    for (double net : settled_nets) {
+        out.cumulative += net;
+        if (out.cumulative > out.peak) out.peak = out.cumulative;
+    }
+    const double drawdown =
+        (starting_drawdown > out.peak ? starting_drawdown : out.peak) - out.cumulative;
+    out.capital = starting_capital - drawdown;
+    out.account = starting_capital + out.cumulative;
+    return out;
+}
+
+/// The backtest's half compounding for the cycle about to size: the settled history is the equity
+/// curve's own day rows (each row's change from the row before it; the first row is the starting
+/// capital and warm-up rows are flat), ending at the curve's last row, the previous cycle's close.
+/// The cumulative P&L is read as each row's value less the starting capital, so no sum of
+/// differences is carried.
+inline HalfCompounding backtest_half_compounding(
+    const std::vector<std::pair<Timestamp, double>>& equity_curve, double initial_capital) {
+    HalfCompounding out;
+    for (const auto& row : equity_curve) {
+        out.cumulative = row.second - initial_capital;
+        if (out.cumulative > out.peak) out.peak = out.cumulative;
+    }
+    out.capital = initial_capital - (out.peak - out.cumulative);
+    out.account = initial_capital + out.cumulative;
+    return out;
+}
+
+/// The backtest's sizing capital for the cycle about to size: the half-compounded capital of the
+/// equity curve (the initial capital on an empty curve and through warm-up, whose rows are flat).
 inline double backtest_sizing_equity(const std::vector<std::pair<Timestamp, double>>& equity_curve,
                                      double initial_capital) {
-    return equity_curve.empty() ? initial_capital : equity_curve.back().second;
+    return backtest_half_compounding(equity_curve, initial_capital).capital;
 }
 
 /// The live runner's sizing equity and its parts, for the log line.

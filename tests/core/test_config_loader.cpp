@@ -1045,7 +1045,9 @@ TEST_F(ConfigLoaderTest, EquitySlowRuleIsParsed) {
     write_full_set("base", {},
                    {{"equity_slow_rule",
                      {{"symbols", {"M2K", "MES", "MNQ", "MYM"}},
-                      {"pairs", nlohmann::json::array({{32, 128}, {64, 256}})}}}});
+                      {"pairs", nlohmann::json::array({{32, 128}, {64, 256}})}}},
+                    {"sizing_mode", "half_compounding"},
+                    {"starting_capital", 1'000'000.0}});
     auto r = ConfigLoader::load(base_, "base");
     ASSERT_TRUE(r.is_ok()) << (r.error() ? r.error()->what() : "no error");
     const auto& rule = r.value().equity_slow_rule;
@@ -1084,5 +1086,53 @@ TEST_F(ConfigLoaderTest, AMalformedEquitySlowRuleIsALoadError) {
         ASSERT_TRUE(r.is_error()) << value.dump();
         EXPECT_NE(std::string(r.error()->what()).find("equity_slow_rule"), std::string::npos)
             << value.dump();
+    }
+}
+
+// LOOP_SPEC sections 3.1 and 7.7 (D19): portfolio.json "sizing_mode" and "starting_capital", both
+// required on a futures book; the one mode is "half_compounding" and the starting capital is the
+// book's initial_capital.
+TEST_F(ConfigLoaderTest, TheSizingModeAndStartingCapitalAreRequiredOnAFuturesBook) {
+    const nlohmann::json rule = {{"symbols", {"MES"}}, {"pairs", nlohmann::json::array({{32, 128}})}};
+    write_full_set("base", {}, {{"equity_slow_rule", rule}});
+    auto r = ConfigLoader::load(base_, "base");
+    ASSERT_TRUE(r.is_ok()) << (r.error() ? r.error()->what() : "");
+    auto required = ConfigLoader::require_loop_keys(r.value());
+    ASSERT_TRUE(required.is_error());
+    EXPECT_NE(std::string(required.error()->what()).find("sizing_mode"), std::string::npos);
+
+    write_full_set("base", {}, {{"equity_slow_rule", rule}, {"sizing_mode", "half_compounding"}});
+    r = ConfigLoader::load(base_, "base");
+    ASSERT_TRUE(r.is_ok());
+    required = ConfigLoader::require_loop_keys(r.value());
+    ASSERT_TRUE(required.is_error());
+    EXPECT_NE(std::string(required.error()->what()).find("starting_capital"), std::string::npos);
+
+    write_full_set("base", {},
+                   {{"equity_slow_rule", rule},
+                    {"sizing_mode", "half_compounding"},
+                    {"starting_capital", 1'000'000.0}});
+    r = ConfigLoader::load(base_, "base");
+    ASSERT_TRUE(r.is_ok()) << (r.error() ? r.error()->what() : "");
+    EXPECT_EQ(r.value().sizing_mode, "half_compounding");
+    EXPECT_DOUBLE_EQ(r.value().starting_capital, 1'000'000.0);
+    EXPECT_TRUE(ConfigLoader::require_loop_keys(r.value()).is_ok());
+}
+
+TEST_F(ConfigLoaderTest, ABadSizingModeOrStartingCapitalIsALoadError) {
+    for (const nlohmann::json& bad : {nlohmann::json("full_compounding"), nlohmann::json("fixed"),
+                                      nlohmann::json(""), nlohmann::json(1), nlohmann::json(true)}) {
+        write_full_set("base", {}, {{"sizing_mode", bad}});
+        auto r = ConfigLoader::load(base_, "base");
+        ASSERT_TRUE(r.is_error()) << bad.dump();
+        EXPECT_NE(std::string(r.error()->what()).find("sizing_mode"), std::string::npos);
+    }
+    // not a positive number; and not the book's initial_capital (1,000,000 in this fixture)
+    for (const nlohmann::json& bad : {nlohmann::json(0), nlohmann::json(-5.0), nlohmann::json("500000"),
+                                      nlohmann::json(500'000.0)}) {
+        write_full_set("base", {}, {{"starting_capital", bad}});
+        auto r = ConfigLoader::load(base_, "base");
+        ASSERT_TRUE(r.is_error()) << bad.dump();
+        EXPECT_NE(std::string(r.error()->what()).find("starting_capital"), std::string::npos);
     }
 }

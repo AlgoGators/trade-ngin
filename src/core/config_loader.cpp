@@ -285,6 +285,43 @@ Result<AppConfig> ConfigLoader::extract_config(const nlohmann::json& merged) {
             config.equity_slow_rule = rule;
         }
 
+        // LOOP_SPEC sections 3.1 and 7.7 (D19): the sizing mode and the starting capital. Parsed
+        // strictly when present; the futures runners require both (require_loop_keys).
+        if (merged.contains("sizing_mode")) {
+            const auto& v = merged.at("sizing_mode");
+            if (!v.is_string() || v.get<std::string>() != "half_compounding") {
+                return make_error<AppConfig>(
+                    ErrorCode::INVALID_DATA,
+                    "config for " + config.portfolio_id +
+                        ": portfolio.json \"sizing_mode\" must be \"half_compounding\" (the one "
+                        "sizing mode), got " + v.dump(),
+                    "ConfigLoader");
+            }
+            config.sizing_mode = v.get<std::string>();
+        }
+        if (merged.contains("starting_capital")) {
+            const auto& v = merged.at("starting_capital");
+            if (!v.is_number() || !(v.get<double>() > 0.0)) {
+                return make_error<AppConfig>(
+                    ErrorCode::INVALID_DATA,
+                    "config for " + config.portfolio_id +
+                        ": portfolio.json \"starting_capital\" must be a positive number, got " +
+                        v.dump(),
+                    "ConfigLoader");
+            }
+            config.starting_capital = v.get<double>();
+            if (config.starting_capital != config.initial_capital) {
+                return make_error<AppConfig>(
+                    ErrorCode::INVALID_DATA,
+                    "config for " + config.portfolio_id +
+                        ": portfolio.json \"starting_capital\" (" + v.dump() +
+                        ") must equal \"initial_capital\" (" +
+                        std::to_string(config.initial_capital) +
+                        "): the starting capital of the sizing is the book's capital",
+                    "ConfigLoader");
+            }
+        }
+
         if (!merged.contains("risk")) {
             return make_error<AppConfig>(ErrorCode::INVALID_DATA,
                                          "risk config for " + config.portfolio_id +
@@ -466,6 +503,20 @@ Result<void> ConfigLoader::require_loop_keys(const AppConfig& config) {
                 ": portfolio.json \"equity_slow_rule\" is required on a futures book "
                 "({\"symbols\": [\"M2K\", \"MES\", \"MNQ\", \"MYM\"], \"pairs\": [[32, 128], [64, 256]]})",
             "ConfigLoader");
+    }
+    if (config.sizing_mode.empty()) {
+        return make_error<void>(ErrorCode::INVALID_DATA,
+                                "config for " + config.portfolio_id +
+                                    ": portfolio.json \"sizing_mode\" is required on a futures "
+                                    "book (\"half_compounding\")",
+                                "ConfigLoader");
+    }
+    if (!(config.starting_capital > 0.0)) {
+        return make_error<void>(ErrorCode::INVALID_DATA,
+                                "config for " + config.portfolio_id +
+                                    ": portfolio.json \"starting_capital\" is required on a "
+                                    "futures book (the book's initial_capital)",
+                                "ConfigLoader");
     }
     return Result<void>();
 }

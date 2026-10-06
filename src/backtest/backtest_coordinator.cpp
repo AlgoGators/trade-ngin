@@ -914,22 +914,27 @@ Result<void> BacktestCoordinator::process_portfolio_day(
             }
         }
 
-        // T-7b-2 9c (HD 2026-09-25, compounding): the book is sized on the account's equity at the
-        // close of the signal group, i.e. the equity curve's LAST row, which is the previous
-        // cycle's (this cycle's row is appended below, after its fills and its marks). Every
-        // sizing input follows it (PortfolioManager::set_sizing_capital). Warm-up rows are flat at
-        // the initial capital, so warm-up sizes as before and is not logged.
+        // LOOP_SPEC section 3.1 (D19, half compounding): the book is sized on the starting capital
+        // less the drawdown of the cumulative net P&L from its running peak, never above the
+        // starting capital. The settled history is the equity curve's own rows up to its LAST row,
+        // the previous cycle's (this cycle's row is appended below, after its fills and its marks);
+        // it is recomputed from the curve on every cycle and nothing persists it. Every sizing
+        // input follows it (PortfolioManager::set_sizing_capital). Warm-up rows are flat at the
+        // initial capital, so warm-up sizes on it and is not logged.
         if (size_on_equity_enabled_) {
-            const double sizing_equity = backtest_sizing_equity(equity_curve, initial_capital);
-            auto sized = portfolio->set_sizing_capital(sizing_equity);
+            const HalfCompounding sizing = backtest_half_compounding(equity_curve, initial_capital);
+            auto sized = portfolio->set_sizing_capital(sizing.capital);
             if (sized.is_error()) {
                 return sized;
             }
             if (!is_warmup) {
                 INFO("SIZING_CAPITAL date=" + core::format_utc_date(timestamp) +
-                     " equity=" + std::to_string(sizing_equity) + " source=equity_curve row=" +
+                     " capital=" + std::to_string(sizing.capital) +
+                     " account=" + std::to_string(sizing.account) +
+                     " peak=" + std::to_string(sizing.peak) + " settled_through=" +
                      (equity_curve.empty() ? std::string("none")
-                                           : core::format_utc_date(equity_curve.back().first)));
+                                           : core::format_utc_date(equity_curve.back().first)) +
+                     " source=equity_curve");
             }
         }
 

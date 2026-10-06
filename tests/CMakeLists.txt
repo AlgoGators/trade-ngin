@@ -153,6 +153,7 @@ set(TEST_SOURCES
     portfolio/test_pm_session_hold.cpp
     portfolio/test_delivered_cut.cpp
     portfolio/test_sizing_capital.cpp
+    portfolio/test_half_compounding.cpp
     portfolio/test_cut_delivery.cpp
     portfolio/test_cut_stands.cpp
     portfolio/test_pm_netting.cpp

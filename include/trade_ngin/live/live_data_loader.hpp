@@ -201,6 +201,25 @@ public:
                                                            const std::string& portfolio_id,
                                                            const Timestamp& as_of_date);
 
+    /// One stored day of a book's P&L history, for the sizing capital (LOOP_SPEC section 3.1).
+    struct PnlHistoryRow {
+        std::string date;         ///< YYYY-MM-DD
+        double daily_pnl{0.0};    ///< the row's stored net P&L
+        int active_positions{0};  ///< the positions the day's stored book held
+    };
+
+    /**
+     * @brief The book's stored daily net P&L in date order, for the sizing capital: every
+     *        live_results row of the key dated on or after the book's start (the earliest
+     *        live_start_date of trading.strategy_trading_days_metadata for the key; no lower bound
+     *        when the key has no such row) and strictly before `before_date`.
+     *
+     * No row is an empty list, not an error; a failed query is a DATABASE_ERROR.
+     */
+    Result<std::vector<PnlHistoryRow>> load_sizing_pnl_history(const std::string& strategy_id,
+                                                               const std::string& portfolio_id,
+                                                               const Timestamp& before_date);
+
     /**
      * @brief Load daily PnL history (dollars) up to and including a given date.
      *

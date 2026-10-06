@@ -1346,6 +1346,11 @@ int main(int argc, char* argv[]) {
         // row.
         // ========================================
         LiveSizingEquity sizing_equity;
+        // LOOP_SPEC section 3.1 (D19): the capital the book is sized on is the half compounding of
+        // the book's settled daily P&L (live/live_sizing_read.hpp), recomputed on every run from
+        // the stored rows before Day T-1 and Day T-1's rebuilt net; `sizing_equity` above stays
+        // the account's value rebuilt at the close of T-1, for the log and the check.
+        LiveSizingRead sizing_capital_read;
         // T-7b-3 R-3 (HD 2026-09-27 ruling 5; live/live_sizing_read.hpp): each read's own "nothing
         // stored" answer sizes as before (no Day T-1 row, no row before it, a sleeve with no stored
         // book). A sleeve book that fails to load refuses the run here (exit 1, no row: nothing to
@@ -1360,7 +1365,22 @@ int main(int argc, char* argv[]) {
                 strategy_names, now, initial_capital, t1_settlement.t1_close_prices,
                 t1_settlement.t2_close_prices,
                 [&](const std::string& symbol) { return pnl_manager->get_point_value(symbol); },
-                t1_settlement.zero_pnl_symbols);
+                t1_settlement.zero_pnl_symbols, [&] {
+                    // The dates the run loaded a bar on, and the finalize's own two tests on the
+                    // price manager's raw maps (PHASE 5's "No T-1 close prices available", STEP
+                    // 4's first clause).
+                    LiveSizingCalendar calendar;
+                    for (const auto& bar : all_bars) {
+                        calendar.bar_dates.insert(
+                            SessionClassifier::ymd(SessionClassifier::day_of(bar.timestamp)));
+                    }
+                    if (!calendar.bar_dates.empty()) {
+                        calendar.first_bar_date = *calendar.bar_dates.begin();
+                    }
+                    calendar.no_t1_closes = price_manager->get_all_previous_day_prices().empty();
+                    calendar.no_t2_closes = price_manager->get_all_two_days_ago_prices().empty();
+                    return calendar;
+                }());
             if (sizing_read.outcome == LiveSizingOutcome::kRefuseRun) {
                 ERROR("SIZING_CAPITAL refused: " + sizing_read.failure +
                       ". Refusing to run: the book cannot be sized and there is no book to hold.");
@@ -1374,16 +1394,12 @@ int main(int argc, char* argv[]) {
                       std::to_string(kRiskModuleFailureExitCode));
             } else {
                 sizing_equity = sizing_read.equity;
-                const std::string& day_before_source = sizing_read.day_before_source;
-                INFO("SIZING_CAPITAL date=" + core::format_utc_date(now) +
-                     " equity=" + std::to_string(sizing_equity.equity) +
-                     " day_before=" + std::to_string(sizing_equity.day_before) + " (" +
-                     day_before_source + ") t1_settlement=" +
-                     std::to_string(sizing_equity.t1_settlement) +
-                     " t1_costs=" + std::to_string(sizing_equity.t1_costs) +
-                     " priced=" + std::to_string(sizing_equity.priced) +
-                     " unpriced=" + std::to_string(sizing_equity.unpriced));
-                auto sized = portfolio->set_sizing_capital(sizing_equity.equity);
+                sizing_capital_read = sizing_read;
+                INFO(sizing_capital_log_line(core::format_utc_date(now), sizing_read));
+                if (sizing_read.t1_unsettled) {
+                    WARN(sizing_capital_unsettled_log_line(core::format_utc_date(now), sizing_read));
+                }
+                auto sized = portfolio->set_sizing_capital(sizing_read.capital.capital);
                 if (sized.is_error()) {
                     ERROR("SIZING_CAPITAL refused: " + std::string(sized.error()->what()) +
                           ". Refusing to run: the book cannot be sized on the account's equity.");
@@ -3596,11 +3612,20 @@ int main(int argc, char* argv[]) {
         } catch (const std::exception& e) {
             INFO("Could not load previous day aggregates: " + std::string(e.what()));
         }
-        // T-7b-2 9c: the equity the book was sized on, beside the finalised value it rebuilt.
-        INFO("SIZING_CAPITAL_CHECK date=" + core::format_utc_date(now) +
-             " sized_on=" + std::to_string(sizing_equity.equity) +
-             " previous_portfolio_value=" + std::to_string(previous_portfolio_value) +
-             " difference=" + std::to_string(sizing_equity.equity - previous_portfolio_value));
+        // LOOP_SPEC section 3.1: after STEP 4, the Day T-1 net the sizing read rebuilt beside the
+        // one the finalize stored (Day T-1's stored value less the stored value of the row before
+        // it). On an unsettled Day T-1 nothing was added and nothing is compared.
+        {
+            const double rebuilt_t1_net = sizing_equity.t1_settlement - sizing_equity.t1_costs;
+            const double stored_t1_net = previous_portfolio_value - sizing_equity.day_before;
+            const bool compared = sizing_equity.t1_row && !sizing_capital_read.t1_unsettled;
+            INFO("SIZING_CAPITAL_CHECK date=" + core::format_utc_date(now) +
+                 " t1_settled=" + (compared ? "1" : "0") +
+                 " rebuilt_t1_net=" + std::to_string(compared ? rebuilt_t1_net : 0.0) +
+                 " finalized_t1_daily_pnl=" + std::to_string(compared ? stored_t1_net : 0.0) +
+                 " difference=" + std::to_string(compared ? rebuilt_t1_net - stored_t1_net : 0.0) +
+                 " sized_on=" + std::to_string(sizing_capital_read.capital.capital));
+        }
 
         // Calculate cumulative values for Day T
         double total_pnl = previous_total_pnl + daily_pnl_for_today;

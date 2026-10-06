@@ -656,6 +656,64 @@ Result<std::vector<double>> LiveDataLoader::load_daily_pnl_history(const std::st
     return Result<std::vector<double>>(pnls);
 }
 
+Result<std::vector<LiveDataLoader::PnlHistoryRow>> LiveDataLoader::load_sizing_pnl_history(
+    const std::string& strategy_id, const std::string& portfolio_id, const Timestamp& before_date) {
+    using Rows = std::vector<PnlHistoryRow>;
+    auto validation = validate_connection();
+    if (validation.is_error()) {
+        return make_error<Rows>(ErrorCode::DATABASE_ERROR, validation.error()->what(),
+                                "LiveDataLoader");
+    }
+    const std::string date_str = core::format_utc_date(before_date);
+    const std::string actual_portfolio_id = portfolio_id.empty() ? "BASE_PORTFOLIO" : portfolio_id;
+    // The book's start is the anchor the runner annualises from (the metadata row of the key).
+    const std::string query =
+        "SELECT to_char(date, 'YYYY-MM-DD') AS sizing_history_date, "
+        "COALESCE(daily_pnl, 0)::double precision AS daily_pnl, "
+        "COALESCE(active_positions, 0) AS active_positions "
+        "FROM " + schema_ + ".live_results "
+        "WHERE strategy_id = '" + strategy_id + "' "
+        "AND portfolio_id = '" + actual_portfolio_id + "' "
+        "AND DATE(date) < '" + date_str + "' "
+        "AND DATE(date) >= COALESCE((SELECT MIN(live_start_date) FROM " + schema_ +
+        ".strategy_trading_days_metadata WHERE strategy_id = '" + strategy_id +
+        "' AND portfolio_id = '" + actual_portfolio_id + "'), DATE '0001-01-01') "
+        "ORDER BY date ASC";
+    DEBUG("Loading the sizing P&L history: " + query);
+    auto result = db_->execute_query(query);
+    if (result.is_error()) {
+        return make_error<Rows>(
+            ErrorCode::DATABASE_ERROR,
+            "Failed to load the sizing P&L history: " + std::string(result.error()->what()),
+            "LiveDataLoader");
+    }
+    Rows rows;
+    auto table = result.value();
+    if (!table || table->num_rows() == 0) {
+        return Result<Rows>(rows);
+    }
+    // convert_generic_to_arrow builds every column as arrow::utf8()
+    auto dates = std::static_pointer_cast<arrow::StringArray>(table->column(0)->chunk(0));
+    auto pnls = std::static_pointer_cast<arrow::StringArray>(table->column(1)->chunk(0));
+    auto held = std::static_pointer_cast<arrow::StringArray>(table->column(2)->chunk(0));
+    rows.reserve(static_cast<size_t>(table->num_rows()));
+    for (int64_t i = 0; i < table->num_rows(); ++i) {
+        PnlHistoryRow row;
+        try {
+            row.date = dates->GetString(i);
+            row.daily_pnl = pnls->IsNull(i) ? 0.0 : std::stod(pnls->GetString(i));
+            row.active_positions = held->IsNull(i) ? 0 : std::stoi(held->GetString(i));
+        } catch (const std::exception& e) {
+            return make_error<Rows>(ErrorCode::DATABASE_ERROR,
+                                    "Failed to load the sizing P&L history: row " +
+                                        std::to_string(i) + " is not readable (" + e.what() + ")",
+                                    "LiveDataLoader");
+        }
+        rows.push_back(std::move(row));
+    }
+    return Result<Rows>(rows);
+}
+
 Result<std::vector<double>> LiveDataLoader::load_equity_curve_history(
     const std::string& strategy_id, const std::string& portfolio_id, const Timestamp& as_of_date) {
     auto validation = validate_connection();

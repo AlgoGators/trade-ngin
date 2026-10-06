@@ -22,6 +22,9 @@
     }
   },
   "equity_slow_rule": {"symbols": ["M2K", "MES", "MNQ", "MYM"], "pairs": [[32, 128], [64, 256]]},
+  "sizing_mode": "half_compounding",
+  "starting_capital": 500000.0,
+  "_sizing_note": "required; half_compounding: the book is sized on starting_capital less the drawdown of its cumulative settled net P&L from its running peak, never above starting_capital; starting_capital must equal initial_capital",
   "_equity_slow_rule_note": "required; on the book's first sleeve a negative combined forecast of these symbols stands only when the scaled forecast of every pair named is negative, and is 0 otherwise",
   "use_optimization": true,
   "covariance_history_prices": 756,
