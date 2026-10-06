@@ -292,6 +292,12 @@ public:
         return record_call("store_trading_equity_curve");
     }
 
+    Result<void> store_equity_trading_equity_curve(const std::string& strategy_id,
+        const Timestamp& timestamp, double equity, const std::string& portfolio_id) override {
+        return store_trading_equity_curve(strategy_id, timestamp, equity, portfolio_id,
+                                         "trading.equity_curve", "system");
+    }
+
     Result<void> store_trading_equity_curve_batch(
         const std::string& strategy_id,
         const std::vector<std::pair<Timestamp, double>>& equity_points,

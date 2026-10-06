@@ -5,11 +5,15 @@ from datetime import timedelta, timezone
 from decimal import Decimal
 from hashlib import sha256
 from pathlib import Path
-from tests.qt_test_artifacts import artifact
+from tests.qt_test_artifacts import artifact, build_identity
+from tests.contracts.qt_native_bundle_fixture import stage_actual_bundle
+import atexit
+from functools import lru_cache
 import json
 import os
 import subprocess
 import sys
+import tempfile
 from uuid import UUID
 
 import psycopg2
@@ -20,8 +24,8 @@ from test_runtime_control_schema import connection
 from test_proposal_storage_migration import normalize_positions_shape, apply
 
 ROOT = Path(__file__).parents[2]
-API = ROOT.parent / "algolens-qt/algolens-api"
-sys.path.insert(0, str(API))
+import algolens
+API = Path(algolens.__file__).resolve().parent.parent
 from algolens.domain.portfolio.qt_canonical import qt_digest_v1, qt_book_digest_v1
 from algolens.infrastructure.portfolio.qt_read_set import (
     canonical_internal_snapshot_bytes, capture_qt_read_set, internal_snapshot_digest)
@@ -29,7 +33,18 @@ from algolens.infrastructure.portfolio.qt_workflow_repository import QtTransacti
 from algolens.infrastructure.portfolio.qt_evaluation_inputs import canonical_qt_input_bytes, load_qt_evaluation_inputs
 from algolens.infrastructure.portfolio.qt_evaluator_client import QtEvaluatorClient
 from algolens.infrastructure.portfolio.qt_evaluator_process import QtEvaluatorProcess
-from tests.qt_native_evaluator import native_evaluator_configuration
+
+
+@lru_cache(maxsize=1)
+def native_evaluator_configuration():
+    owned = tempfile.TemporaryDirectory(prefix="qt-owned-native-fixture-")
+    atexit.register(owned.cleanup)
+    directory = Path(owned.name) / "bundle"
+    manifest = stage_actual_bundle(directory)
+    executable = next(row for row in manifest["artifacts"] if row["role"] == "executable")
+    return dict(executable=directory / "bin/qt_evaluator", expected_sha256=executable["sha256"],
+                expected_build=manifest["evaluator_build"], bundle_directory=directory,
+                expected_bundle_sha256=manifest["bundle_sha256"])
 
 MODEL = "10000000-0000-4000-8000-000000000001"
 DRAFT = "20000000-0000-4000-8000-000000000001"
@@ -93,10 +108,16 @@ def table_state(conn):
 def desk(connection, request):
     conn = connection
     scenario = getattr(request, "param", "executed")
+    approval_person = {'override_dominick':'dominick_dupuy', 'override_john':'john_riley',
+        'override_eric':'eric_shwartz', 'override_typo':'dominick_dupuoy'}.get(scenario, 'hemdutt_rao')
+    approval_user = 1 if scenario == 'override_self' else 2
+    approval_count = 1 if scenario == 'override_single' else 2
+    if scenario.startswith('override_'): scenario = 'override'
     ticker = "MES" if scenario == "futures_mes" else "SYN"
     if scenario == "futures_mes": scenario = "futures"
-    chosen = (("4","2") if scenario == "carried" else ("5","0") if scenario in ("zero", "flat_zero_basis")
+    chosen = (("4","2") if scenario in ("carried", "futures_quiet") else ("5","0") if scenario in ("zero", "flat_zero_basis")
               else ("-0.5","2.25") if scenario == "fractional" else ("5","1"))
+    if scenario == "futures_quiet": scenario = "futures"
     normalize_positions_shape(conn)
     apply(conn, ROOT / "migrations/015_qt_proposal_positions.sql")
     apply(conn, ROOT / "migrations/016_qt_exact_precision_and_seed_provenance.sql")
@@ -165,10 +186,19 @@ def desk(connection, request):
         cur.execute("INSERT INTO trading.qt_workflow_capabilities(book_id,enabled,version) VALUES('BOOK',true,1)")
         cur.execute("INSERT INTO trading.qt_action_grants(user_id,capability,active,version) "
                     "VALUES(1,'qt_submit',true,1),(2,'qt_approve',true,1),(3,'qt_approve',true,1)")
+        if approval_user == 1:
+            cur.execute("INSERT INTO trading.qt_action_grants(user_id,capability,active,version) VALUES(1,'qt_approve',true,1)")
+        if approval_person in {'dominick_dupuy', 'eric_shwartz'}:
+            # Fixture003 predates corrected009 identity policy. Seed current or
+            # historical authority before immutable evidence is created. Preserve
+            # mapping/approval uniqueness and FK constraints in every case.
+            cur.execute("ALTER TABLE trading.qt_approver_allowlist DROP CONSTRAINT qt_approver_identity")
         cur.execute("INSERT INTO trading.qt_approver_allowlist(person_id,display_label,user_id,active,mapping_version) "
-                    "VALUES('john_riley','john riley',2,true,1),('xander_robbins','xander robbins',3,true,1)")
+                    "VALUES(%s,%s,%s,true,1),('xander_robbins','xander robbins',3,true,1)",
+                    (approval_person,approval_person.replace('_',' '),approval_user))
 
     request = json.loads((ROOT / "tests/contracts/qt-eval-v1.json").read_text())["selected_book"]
+    request["evaluator_build"] = build_identity()
     if ticker != "SYN": request = json.loads(json.dumps(request).replace('"SYN"', json.dumps(ticker)))
     asset_type = "FUTURE" if scenario == "futures" else "EQUITY"
     if scenario == "futures":
@@ -255,7 +285,7 @@ def desk(connection, request):
     engine_inputs = {name: deepcopy(request[name]) for name in (
         "risk_config_source_id","risk_inputs","risk_config","quantity_rules","component_cost_inputs")}
     for name in tuple(engine_inputs["risk_inputs"]):
-        if name.startswith("expected_"):
+        if name in ("expected_portfolio_id", "expected_date", "expected_revision", "expected_portfolio_type"):
             del engine_inputs["risk_inputs"][name]
     engine_inputs.update(optimizer_policy={"enabled":False,"config_source_id":"disabled-v1"},
                          optimizer_inputs=None,optimizer_config=None)
@@ -288,8 +318,8 @@ def desk(connection, request):
     with conn.cursor() as cur:
         cur.execute("""INSERT INTO trading.qt_source_policies
             (book_id,purpose,enabled,version,producer_id,policy_version,evaluator_build,evaluator_sha256,evaluator_bundle_sha256,allowed_override_codes)
-            VALUES('BOOK','evaluation',true,1,'synthetic-desk','desk-policy-v1','local-qt-controlled',%s,%s,%s),
-                  ('BOOK','execution',true,1,'synthetic-execution','execution-policy-v1',null,null,null,'[]')""",(pin,bundle_pin,Json(allowed_codes)))
+            VALUES('BOOK','evaluation',true,1,'synthetic-desk','desk-policy-v1',%s,%s,%s,%s),
+                  ('BOOK','execution',true,1,'synthetic-execution','execution-policy-v1',null,null,null,'[]')""",(build_identity(),pin,bundle_pin,Json(allowed_codes)))
         cur.execute("""INSERT INTO trading.qt_evaluation_snapshots
             (book_id,source_day,model_publication_id,producer_id,policy_version,source_version,
              as_of,valid_until,content_digest,payload)
@@ -354,11 +384,11 @@ def desk(connection, request):
           (preview_id,book_id,source_day,draft_id,draft_revision,draft_digest,source_digest,
            provenance_digest,read_set_digest,optimizer_book_digest,selected_book_digest,payload_digest,
            payload,read_set_payload,evaluator_build,policy_version,availability,created_by,state)
-          VALUES(%s,'BOOK',%s,%s,1,%s,%s,%s,%s,%s,%s,%s,%s,%s,'local-qt-controlled',
+          VALUES(%s,'BOOK',%s,%s,1,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,
                  'desk-policy-v1','ready',1,'confirmed_decision')""",
           (PREVIEW,day,DRAFT,draft_digest,preview["source_digest"],preview["provenance_digest"],
            read_set.digest,diagnostic.book_digest,evaluation.book_digest,preview["payload_digest"],
-           Json(preview),Json(read_set_payload)))
+           Json(preview),Json(read_set_payload),build_identity()))
         cur.execute("""INSERT INTO trading.qt_decisions
           (decision_id,preview_id,book_id,source_day,status,model_publication_id,provenance_digest,
            draft_id,draft_revision,selected_book_digest,read_set_digest,workflow_capability_version,
@@ -377,8 +407,12 @@ def desk(connection, request):
                         "VALUES('70000000-0000-4000-8000-000000000001',%s,1)",(DECISION,))
             cur.execute("""INSERT INTO trading.qt_override_approvals
               (approval_id,request_id,person_id,user_id,mapping_version,grant_version) VALUES
-              ('80000000-0000-4000-8000-000000000001','70000000-0000-4000-8000-000000000001','john_riley',2,1,1),
-              ('80000000-0000-4000-8000-000000000002','70000000-0000-4000-8000-000000000001','xander_robbins',3,1,1)""")
+              ('80000000-0000-4000-8000-000000000001','70000000-0000-4000-8000-000000000001',%s,%s,1,1)""",
+              (approval_person,approval_user))
+            if approval_count == 2:
+                cur.execute("""INSERT INTO trading.qt_override_approvals
+                  (approval_id,request_id,person_id,user_id,mapping_version,grant_version) VALUES
+                  ('80000000-0000-4000-8000-000000000002','70000000-0000-4000-8000-000000000001','xander_robbins',3,1,1)""")
     return conn, observed
 
 
@@ -588,18 +622,82 @@ def test_native_known_breach_requires_actual_current_two_person_quorum(desk):
 
 
 @pytest.mark.parametrize("desk", ["override"], indirect=True)
-@pytest.mark.parametrize("change", ["mapping","grant","role"])
+@pytest.mark.parametrize("change", ["mapping","grant","role","mapping_version","grant_version"])
 def test_native_confirmed_status_cannot_replace_current_override_eligibility(desk, change):
     conn, _ = desk
     query = {
         "mapping":"UPDATE trading.qt_approver_allowlist SET active=false,mapping_version=2 WHERE user_id=2",
         "grant":"UPDATE trading.qt_action_grants SET active=false,version=2 WHERE user_id=2 AND capability='qt_approve'",
         "role":"UPDATE auth.users SET role='external' WHERE id=2",
+        "mapping_version":"UPDATE trading.qt_approver_allowlist SET mapping_version=2 WHERE user_id=2",
+        "grant_version":"UPDATE trading.qt_action_grants SET version=2 WHERE user_id=2 AND capability='qt_approve'",
     }[change]
     with conn.cursor() as cur:
         cur.execute(query)
     before = table_state(conn)
     assert run().returncode != 0
+    assert table_state(conn) == before
+
+
+@pytest.mark.parametrize("desk", ["override"], indirect=True)
+@pytest.mark.parametrize("approver_role", ["admin", "general_member", "exec_board"])
+def test_native_current_approver_roles_do_not_imply_submission_authority(desk, approver_role):
+    conn, _ = desk
+    with conn.cursor() as cur:
+        cur.execute("UPDATE auth.users SET role=%s WHERE id=2", (approver_role,))
+    result = run()
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
+@pytest.mark.parametrize("desk", ["override_dominick"], indirect=True)
+def test_native_corrected_dominick_identity_counts_as_current_approver(desk):
+    conn, _ = desk
+    result = run()
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
+@pytest.mark.parametrize("desk", ["override_john", "override_eric", "override_typo"], indirect=True)
+def test_native_retired_or_misspelled_people_cannot_satisfy_quorum(desk):
+    conn, _ = desk
+    before = table_state(conn)
+    result = run()
+    assert result.returncode != 0 and 'qt_desk_unavailable:authorization' in result.stdout
+    assert table_state(conn) == before
+
+
+@pytest.mark.parametrize("desk", ["override_self"], indirect=True)
+def test_native_historical_submitter_approval_never_counts(desk):
+    conn, _ = desk
+    before = table_state(conn)
+    result = run()
+    assert result.returncode != 0 and 'qt_desk_unavailable:authorization' in result.stdout
+    assert table_state(conn) == before
+
+
+@pytest.mark.parametrize("desk", ["override"], indirect=True)
+def test_native_exec_board_cannot_submit_even_with_submit_grant(desk):
+    conn, _ = desk
+    with conn.cursor() as cur:
+        cur.execute("UPDATE auth.users SET role='exec_board' WHERE id=1")
+    before = table_state(conn)
+    result = run()
+    assert result.returncode != 0 and 'qt_desk_unavailable:authorization' in result.stdout
+    assert table_state(conn) == before
+
+
+@pytest.mark.parametrize("desk", ["override_single"], indirect=True)
+@pytest.mark.parametrize("person,user", [("hemdutt_rao",3),("xander_robbins",2)])
+def test_duplicate_person_or_user_cannot_create_second_approval(desk, person, user):
+    conn, _ = desk
+    with conn.cursor() as cur:
+        with pytest.raises(psycopg2.IntegrityError):
+            cur.execute("INSERT INTO trading.qt_override_approvals "
+                "(approval_id,request_id,person_id,user_id,mapping_version,grant_version) "
+                "VALUES('80000000-0000-4000-8000-000000000002',"
+                "'70000000-0000-4000-8000-000000000001',%s,%s,1,1)", (person,user))
+    before = table_state(conn)
+    result = run()
+    assert result.returncode != 0 and 'qt_desk_unavailable:authorization' in result.stdout
     assert table_state(conn) == before
 
 

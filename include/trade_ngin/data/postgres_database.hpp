@@ -848,7 +848,7 @@ public:
 
     // Explicit EQ system owner path; UTC instant, existing book fence/publication
     // part and full owner/stream conflict key. Legacy override stays unchanged.
-    Result<void> store_equity_trading_equity_curve(const std::string& strategy_id,
+    virtual Result<void> store_equity_trading_equity_curve(const std::string& strategy_id,
         const Timestamp& timestamp,double equity,const std::string& portfolio_id);
 
     /**

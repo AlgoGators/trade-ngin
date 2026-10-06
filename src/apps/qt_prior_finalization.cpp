@@ -27,10 +27,13 @@ Result<J> produce_qt_prior_finalization(const J& d,const J& in,const J& out,cons
  try{
   const auto source_day=text(d.at("source_day")),valuation_day=text(market.at("source_day"));day(source_day);day(valuation_day);need(source_day<valuation_day);
   const auto stamp=valuation_day+"T00:00:00Z";need(market.at("valuation_time")==stamp&&market.at("previous_day")==source_day&&market.at("book_id")==d.at("book_id")&&market.at("currency")==in.at("currency"));
-  const bool v2=in.at("schema_version")=="qt-futures-accounting-input/v2";need(v2||in.at("schema_version")=="qt-futures-accounting-input/v1");
+  const bool first=in.at("schema_version")=="qt-futures-accounting-input-first-day/v1";
+  const bool v2=in.at("schema_version")=="qt-futures-accounting-input/v2";need(first||v2||in.at("schema_version")=="qt-futures-accounting-input/v1");
   need(market.at("schema_version")=="qt-accounting-market/v1"&&out.at("schema_version")=="qt-futures-accounting/v1");
   const auto& observation=out.at("observation");for(auto f:{"decision_id","book_id","source_day"})need(in.at(f)==d.at(f)&&observation.at(f)==d.at(f));
-  need(in.at("timestamp")==source_day+"T00:00:00Z");need(provenance.at("predecessor_finalization_source_id")==in.at("prior_finalization_source_id"));
+  need(in.at("timestamp")==source_day+"T00:00:00Z");
+  if(first){need(in.at("opening_day")==source_day&&provenance.at("first_day_anchor_id")==in.at("first_day_anchor_id")&&provenance.at("first_day_anchor_digest")==in.at("first_day_anchor_digest"));}
+  else need(provenance.at("predecessor_finalization_source_id")==in.at("prior_finalization_source_id"));
   const auto& policy=provenance.at("policy_identity");need(policy.at("book_id")==d.at("book_id")&&policy.at("purpose")=="execution"&&policy.at("version").is_number_integer()&&policy.at("version").get<int64_t>()>0);text(policy.at("producer_id"));text(policy.at("policy_version"));
   auto references=by(in.at("instruments"),"symbol"),marks=by(market.at("instruments"),"symbol"),prior=by(in.at("previous_totals"),"strategy_id"),live=by(out.at("live_results"),"strategy_id");
   need(!live.empty()&&live.size()==prior.size());
@@ -43,26 +46,32 @@ Result<J> produce_qt_prior_finalization(const J& d,const J& in,const J& out,cons
    const auto symbol=text(key.at("symbol")),engine=text(key.at("strategy_id"));need(live.contains(engine)&&references.contains(symbol)&&marks.contains(symbol));symbols.insert(symbol);
    const auto& reference=references.at(symbol);const auto& mark=marks.at(symbol);need(mark.at("instrument_type")=="FUTURE"&&mark.at("price_time")==source_day+"T00:00:00Z");
    auto quantity=dec(fill.at("selected_quantity_exact")),basis=dec(fill.at("average_price_exact")),charge=dec(fill.at("actual_cash_cost_exact"));need(quantity.raw_value()%100000000==0&&basis.raw_value()>0&&charge.raw_value()>=0&&fill.at("currency")==in.at("currency"));
-   const auto ref=v2?number(reference.at("price_model_number")):dec(reference.at("price_exact")).as_double();const auto point=v2?number(reference.at("point_value")):dec(reference.at("point_value")).as_double();const auto close=number(mark.at("price_model_number"));need(ref>0&&close>0&&point>0&&number(mark.at("point_value"))==point);
+   const auto ref=(v2||first)?number(reference.at("price_model_number")):dec(reference.at("price_exact")).as_double();const auto point=(v2||first)?number(reference.at("point_value")):dec(reference.at("point_value")).as_double();const auto close=number(mark.at("price_model_number"));need(ref>0&&close>0&&point>0&&number(mark.at("point_value"))==point);
    const double pnl=calculator.calculate_daily_pnl(quantity.as_double(),ref,close,point);auto rounded=cash(pnl);gross[engine]+=pnl;need(std::isfinite(gross[engine]));costs[engine]=add(costs[engine],charge);
    J position={{"key",key},{"quantity_exact",fill.at("selected_quantity_exact")},{"average_price_exact",fill.at("average_price_exact")},{"daily_realized_pnl_exact",fill.at("daily_realized_pnl_exact")},{"daily_unrealized_pnl_exact",fill.at("daily_unrealized_pnl_exact")},{"last_update",fill.at("last_update")}};
-   need(position.at("daily_realized_pnl_exact")=="0"&&position.at("daily_unrealized_pnl_exact")=="0"&&position.at("last_update")==in.at("timestamp"));expected_positions.push_back(position);position["daily_realized_pnl_exact"]=rounded.to_string();position["last_update"]=stamp;after_positions.push_back(position);
+   Decimal opening_realized,opening_unrealized;
+   if(first)for(const auto& opening:in.at("previous_positions"))if(opening.at("key")==key){opening_realized=dec(opening.at("daily_realized_pnl_exact"));opening_unrealized=dec(opening.at("daily_unrealized_pnl_exact"));}
+   need(dec(position.at("daily_realized_pnl_exact"))==opening_realized&&dec(position.at("daily_unrealized_pnl_exact"))==opening_unrealized&&position.at("last_update")==in.at("timestamp"));expected_positions.push_back(position);position["daily_realized_pnl_exact"]=add(opening_realized,rounded).to_string();position["last_update"]=stamp;after_positions.push_back(position);
    components.push_back({{"key",key},{"quantity_exact",quantity.to_string()},{"average_price_exact",basis.to_string()},{"reference_price_model_number",model(ref)},{"settlement_price_model_number",model(close)},{"point_value_model_number",model(point)},{"reference_source_id",text(reference.at("source_id"))},{"settlement_source_id",text(mark.at("source_id"))},{"gross_pnl_model_number",model(pnl)},{"gross_pnl_exact",rounded.to_string()}});
   }
   need(!keys.empty()&&symbols.size()==references.size());
   J after_live=J::array(),after_equity=J::array(),totals=J::array();
   for(const auto& [engine,row]:live){
    need(prior.contains(engine)&&gross.contains(engine));const auto& p=prior.at(engine);const auto charge=costs.at(engine),prior_equity=dec(p.at("equity_exact")),prior_pnl=dec(p.at("total_pnl_exact"));need(prior_equity.raw_value()>0);
-   need(row.at("portfolio_id")==d.at("book_id")&&row.at("date")==source_day&&row.at("portfolio_type")=="qt"&&dec(row.at("daily_transaction_costs_exact"))==charge&&dec(row.at("daily_pnl_exact"))==-charge&&dec(row.at("total_pnl_exact"))==add(prior_pnl,-charge)&&dec(row.at("current_portfolio_value_exact"))==add(prior_equity,-charge));
-   J original=row;original["daily_realized_pnl_exact"]="0";original["daily_unrealized_pnl_exact"]="0";expected_live.push_back(original);
+   const auto opening_daily=first?dec(p.at("daily_pnl_exact")):Decimal(0),opening_cost=first?dec(p.at("daily_transaction_costs_exact")):Decimal(0),opening_realized=first?dec(p.at("daily_realized_pnl_exact")):Decimal(0),opening_unrealized=first?dec(p.at("daily_unrealized_pnl_exact")):Decimal(0);
+   need(row.at("portfolio_id")==d.at("book_id")&&row.at("date")==source_day&&row.at("portfolio_type")=="qt"&&dec(row.at("daily_transaction_costs_exact"))==add(opening_cost,charge)&&dec(row.at("daily_pnl_exact"))==add(opening_daily,-charge)&&dec(row.at("total_pnl_exact"))==add(prior_pnl,-charge)&&dec(row.at("current_portfolio_value_exact"))==add(prior_equity,-charge));
+   if(first)need(dec(row.at("daily_realized_pnl_exact"))==opening_realized&&dec(row.at("daily_unrealized_pnl_exact"))==opening_unrealized&&dec(row.at("total_transaction_costs_exact"))==add(dec(p.at("total_transaction_costs_exact")),charge));
+   J original=row;original["daily_realized_pnl_exact"]=opening_realized.to_string();original["daily_unrealized_pnl_exact"]=opening_unrealized.to_string();expected_live.push_back(original);
    J equity={{"portfolio_id",d.at("book_id")},{"strategy_id",engine},{"timestamp",source_day+"T00:00:00Z"},{"portfolio_type","qt"},{"equity_exact",row.at("current_portfolio_value_exact")}};expected_equity.push_back(equity);
    const auto rounded=cash(gross.at(engine)),net=add(rounded,-charge),value=add(prior_equity,net),total=add(prior_pnl,net);need(value.raw_value()>0);
-   original["daily_realized_pnl_exact"]=rounded.to_string();original["daily_pnl_exact"]=net.to_string();original["total_pnl_exact"]=total.to_string();original["current_portfolio_value_exact"]=value.to_string();after_live.push_back(original);equity["equity_exact"]=value.to_string();after_equity.push_back(equity);
+   original["daily_realized_pnl_exact"]=add(opening_realized,rounded).to_string();original["daily_pnl_exact"]=add(opening_daily,net).to_string();original["total_pnl_exact"]=total.to_string();original["current_portfolio_value_exact"]=value.to_string();after_live.push_back(original);equity["equity_exact"]=value.to_string();after_equity.push_back(equity);
    totals.push_back({{"strategy_id",engine},{"prior_equity_exact",prior_equity.to_string()},{"prior_total_pnl_exact",prior_pnl.to_string()},{"gross_pnl_model_number",model(gross.at(engine))},{"gross_pnl_exact",rounded.to_string()},{"actual_cash_cost_exact",charge.to_string()},{"net_pnl_exact",net.to_string()},{"equity_exact",value.to_string()},{"total_pnl_exact",total.to_string()}});
   }
   need(before.is_object()&&before.size()==3&&sorted(before.at("positions"))==sorted(expected_positions)&&sorted(before.at("live_results"))==sorted(expected_live)&&sorted(before.at("equity_curve"))==sorted(expected_equity));
   J result={{"schema_version","qt-desk-finalization/v1"},{"calculation_version","futures-prior-close-mark/v1"},{"decision_id",d.at("decision_id")},{"book_id",d.at("book_id")},{"source_day",source_day},{"valuation_day",valuation_day},{"valuation_time",stamp},{"currency",in.at("currency")},{"components",components},{"engine_totals",totals},{"before_financial",{{"positions",expected_positions},{"live_results",expected_live},{"equity_curve",expected_equity}}},{"after_financial",{{"positions",after_positions},{"live_results",after_live},{"equity_curve",after_equity}}}};
-  for(auto f:{"finalization_id","original_accounting_input_id","original_run_result_digest","original_observation_digest","predecessor_finalization_source_id","predecessor_finalization_digest","market_source_id","market_source_digest","unchanged_execution_digest"}){result[f]=text(provenance.at(f));}
+  for(auto f:{"finalization_id","original_accounting_input_id","original_run_result_digest","original_observation_digest","market_source_id","market_source_digest","unchanged_execution_digest"}){result[f]=text(provenance.at(f));}
+  if(first){result["first_day_anchor_id"]=text(provenance.at("first_day_anchor_id"));result["first_day_anchor_digest"]=text(provenance.at("first_day_anchor_digest"));}
+  else{result["predecessor_finalization_source_id"]=text(provenance.at("predecessor_finalization_source_id"));result["predecessor_finalization_digest"]=text(provenance.at("predecessor_finalization_digest"));}
   result["policy_identity"]=policy;return result;
  }catch(const std::exception&){return make_error<J>(ErrorCode::INVALID_DATA,"qt_finalization_unavailable","qt_prior_finalization");}
 }

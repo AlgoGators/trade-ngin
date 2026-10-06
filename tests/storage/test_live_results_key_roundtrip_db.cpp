@@ -131,7 +131,7 @@ TEST_F(LiveResultsKeyRoundTripTest, PositionsWrittenByManagerAreFoundByTheRunner
     const auto date = date_at(2026, 3, 16);
 
     LiveResultsManager mgr(db_, /*store_enabled=*/true, kScratchStrategyId, kScratchPortfolio,
-                           kScratchStrategyName);
+                           "system", kScratchStrategyName);
     mgr.set_positions({make_position("AAPL", 12.0, 190.5), make_position("MSFT", -4.0, 410.25)});
     ASSERT_TRUE(mgr.save_positions_snapshot(date).is_ok());
 
@@ -152,7 +152,7 @@ TEST_F(LiveResultsKeyRoundTripTest, ThePreFixKeyFindsNothing) {
     const auto date = date_at(2026, 3, 16);
 
     LiveResultsManager mgr(db_, /*store_enabled=*/true, kScratchStrategyId, kScratchPortfolio,
-                           kScratchStrategyName);
+                           "system", kScratchStrategyName);
     mgr.set_positions({make_position("AAPL", 12.0, 190.5)});
     ASSERT_TRUE(mgr.save_positions_snapshot(date).is_ok());
 

@@ -56,6 +56,11 @@ J first_day_inputs(){
 TEST(QtDeskCycleTest, FirstDayCarriesSystemFinancialsAndChargesOnlyIncrementalChange) {
     auto result=produce_qt_futures_accounting(decision(),choices(),first_day_inputs());
     ASSERT_TRUE(result.is_ok());
+    EXPECT_EQ(result.value()["observation"]["results"]["currency_totals"][0]["daily_realized_pnl_exact"],
+              first_day_inputs()["previous_positions"][0]["daily_realized_pnl_exact"]);
+    EXPECT_EQ(result.value()["observation"]["results"]["currency_totals"][0]["daily_unrealized_pnl_exact"],
+              first_day_inputs()["previous_positions"][0]["daily_unrealized_pnl_exact"]);
+    ASSERT_TRUE(result.is_ok());
     const auto charge=parse_qt_quantity_exact(result.value()["executions"][0]["total_transaction_costs_exact"].get<std::string>()).value();
     const auto& live=result.value()["live_results"][0];
     EXPECT_EQ(result.value()["observation"]["fills"][0]["daily_realized_pnl_exact"],"3");

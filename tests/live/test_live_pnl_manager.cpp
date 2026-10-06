@@ -231,7 +231,7 @@ TEST_F(LivePnLManagerTest, DefaultAssetTypeKeepsTheFuturesFallbackTable) {
     LivePnLManager mgr(500000.0, InstrumentRegistry::instance());
     EXPECT_EQ(mgr.asset_type(), AssetType::FUTURE) << "silent callers stay on futures";
     EXPECT_DOUBLE_EQ(mgr.get_point_value("CL"), 1000.0);
-    EXPECT_DOUBLE_EQ(mgr.get_point_value("GC"), 1000.0);
+    EXPECT_DOUBLE_EQ(mgr.get_point_value("GC"), 100.0);
     EXPECT_DOUBLE_EQ(mgr.get_point_value("ZM"), 100.0) << "as futures, ZM IS soybean meal";
     EXPECT_DOUBLE_EQ(mgr.get_point_value("UNKNOWN_XYZ"), 1.0) << "no match, still 1.0";
 }

@@ -58,6 +58,7 @@ std::string key_id(const Json& key){
     return key.dump();
 }
 bool role(const Json& user){return user.at("role")=="admin"||user.at("role")=="general_member";}
+bool approval_role(const Json& user){return role(user)||user.at("role")=="exec_board";}
 Json account(pqxx::work& tx,int64_t user){
     return one(tx,"SELECT jsonb_build_object('id',id,'role',role) FROM auth.users WHERE id="+tx.quote(user));
 }
@@ -126,13 +127,14 @@ void authorize(pqxx::work& tx,const Json& d,const Json& p){
     }
     auto request=one(tx,"SELECT to_jsonb(r) FROM trading.qt_override_requests r WHERE decision_id="+tx.quote(text(d.at("decision_id")))+"::uuid");
     require(request.at("required_approvals")==2&&request.at("eligibility_version")==ep.at("version"));
-    const std::set<std::string> canonical={"eric_shwartz","john_riley","xander_robbins","hemdutt_rao","dominick_dupuoy"};
+    const std::set<std::string> canonical={"xander_robbins","hemdutt_rao","dominick_dupuy"};
     std::set<std::string> people;std::set<int64_t> users;
     for(const auto& approval:approvals(tx,text(d.at("decision_id")))){
         const auto person=text(approval.at("person_id"));const auto user=approval.at("user_id").get<int64_t>();
         auto mappings=rows(tx,"SELECT to_jsonb(m) FROM trading.qt_approver_allowlist m WHERE person_id="+tx.quote(person));
         auto grants=rows(tx,"SELECT to_jsonb(g) FROM trading.qt_action_grants g WHERE user_id="+tx.quote(user)+" AND capability='qt_approve'");
-        if(!canonical.contains(person)||mappings.size()!=1||grants.size()!=1||!role(account(tx,user)))continue;
+        if(user==actor||!canonical.contains(person)||mappings.size()!=1||grants.size()!=1||
+            !approval_role(account(tx,user)))continue;
         const auto& m=mappings[0];const auto& ag=grants[0];
         if(m.at("active")!=true||m.at("user_id")!=user||m.at("mapping_version")!=approval.at("mapping_version")||
             ag.at("active")!=true||ag.at("version")!=approval.at("grant_version"))continue;
@@ -390,6 +392,8 @@ static Result<QtDeskProcessedReceipt> process_qt_desk_impl(pqxx::connection& con
         require(d.at("model_publication_id").is_string());
         stage="current_facts";auto capture=capture_qt_desk_current_facts(tx,text(d.at("book_id")),text(d.at("source_day")),
             d.at("created_by").get<int64_t>(),text(d.at("model_publication_id")),p.at("read_set_payload"));
+        if(capture.is_error())return make_error<QtDeskProcessedReceipt>(ErrorCode::INVALID_DATA,
+            std::string("qt_desk_unavailable:current_facts:")+capture.error()->what(),"qt_desk_processor");
         require(capture.is_ok()&&capture.value().digest==d.at("read_set_digest").get<std::string>());
         stage="draft";auto draft=one(tx,"SELECT to_jsonb(r) FROM trading.qt_drafts r WHERE draft_id="+tx.quote(text(d.at("draft_id")))+"::uuid");
         for(auto field:{"source_digest","provenance_digest","draft_digest"})require(draft.at(field)==p.at(field));

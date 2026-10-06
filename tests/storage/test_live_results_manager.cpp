@@ -60,6 +60,19 @@ TEST_F(LiveResultsManagerTest, ConstructorSetsBaseAccessors) {
     EXPECT_EQ(mgr_->get_strategy_id(), "STRAT_X");
 }
 
+TEST_F(LiveResultsManagerTest, DefaultSystemReportsWriteFailureAndAttemptsLaterTables) {
+    mgr_->set_positions({make_pos("ES", 5.0)});
+    mgr_->set_metrics({{"total_return", 0.05}}, {});
+    mgr_->set_config(nlohmann::json::object());
+    mgr_->set_equity(1050000.0);
+    db_->fail_on_call("store_live_results_complete");
+    const auto result = mgr_->save_all_results("RUN_1", date_at(2026, 3, 15));
+    ASSERT_TRUE(result.is_error());
+    EXPECT_EQ(result.error()->code(), ErrorCode::DATABASE_ERROR);
+    EXPECT_NE(std::string(result.error()->what()).find("live_results"), std::string::npos);
+    EXPECT_EQ(db_->call_count("store_trading_equity_curve"), 1);
+}
+
 TEST_F(LiveResultsManagerTest, GenerateRunIdEncodesStrategyAndDate) {
     auto id = LiveResultsManager::generate_run_id("STRAT_X", date_at(2026, 3, 15));
     EXPECT_NE(id.find("STRAT_X"), std::string::npos);
@@ -203,6 +216,8 @@ protected:
     std::unique_ptr<LiveResultsManager> make_mgr(const std::string& strategy_id,
                                                  const std::string& portfolio_id,
                                                  const std::string& strategy_name) {
+        if (strategy_name.empty())
+            return std::make_unique<LiveResultsManager>(db_, true, strategy_id, portfolio_id);
         return std::make_unique<LiveResultsManager>(db_, /*store_enabled=*/true, strategy_id,
                                                     portfolio_id, "system", strategy_name);
     }
@@ -283,7 +298,7 @@ TEST_F(LiveResultsManagerKeyTest, SaveAllResultsReportsAFailedTableInsteadOfExit
     EXPECT_NE(std::string(r.error()->what()).find("live_results"), std::string::npos);
 }
 
-TEST_F(LiveResultsManagerKeyTest, SaveAllResultsStillAttemptsLaterTablesAfterAFailure) {
+TEST_F(LiveResultsManagerKeyTest, ExplicitOwnerStopsAtFailureBeforeLaterPublicationWrites) {
     auto mgr = make_mgr("LIVE_EQUITY_MEAN_REVERSION", "EQUITY_PORTFOLIO",
                         "EQUITY_MEAN_REVERSION");
     mgr->set_positions({make_pos("AAPL", 5.0)});
@@ -295,8 +310,8 @@ TEST_F(LiveResultsManagerKeyTest, SaveAllResultsStillAttemptsLaterTablesAfterAFa
 
     auto r = mgr->save_all_results("RUN_1", date_at(2026, 3, 15));
     EXPECT_TRUE(r.is_error());
-    // Failing table 5 must not cost us table 6: reporting the failure is not aborting.
-    EXPECT_EQ(db_->call_count("store_trading_equity_curve"), 1);
+    // Explicit owner publication must stop when its financial evidence failed.
+    EXPECT_EQ(db_->call_count("store_trading_equity_curve"), 0);
     EXPECT_GT(db_->call_count("store_positions"), 0);
 }
 

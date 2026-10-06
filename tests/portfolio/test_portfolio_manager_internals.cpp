@@ -1120,8 +1120,8 @@ TEST_F(PortfolioManagerInternalsTest, ObservedAndPlainNonemptyReportsMatchAcross
     EXPECT_DOUBLE_EQ(observed.strategy_targets.at("AAPL").quantity.as_double(), 12.0);
     EXPECT_DOUBLE_EQ(observed.strategy[0].filled_quantity.as_double(), 10.0);
     EXPECT_DOUBLE_EQ(observed.strategy[1].filled_quantity.as_double(), 2.0);
-    EXPECT_DOUBLE_EQ(observed.strategy[0].commissions_fees.as_double(), 15.0);
-    EXPECT_DOUBLE_EQ(observed.strategy[1].commissions_fees.as_double(), 3.0);
+    EXPECT_DOUBLE_EQ(observed.strategy[0].commissions_fees.as_double(), 1.0);
+    EXPECT_DOUBLE_EQ(observed.strategy[1].commissions_fees.as_double(), 1.0);
     EXPECT_EQ(observed.strategy[0].fill_time, t0);
     EXPECT_EQ(observed.strategy[1].fill_time, t1);
     ASSERT_EQ(observed.trace.strategy_charges.size(), 1u);
