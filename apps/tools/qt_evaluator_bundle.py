@@ -11,6 +11,7 @@ from pathlib import Path
 import re
 import shutil
 import struct
+from dataclasses import dataclass
 
 
 _NAME = re.compile(r'[A-Za-z0-9_.+-]{1,160}\Z')
@@ -19,6 +20,21 @@ _MAX_FILE = 512 * 1024 * 1024
 _MAX_TOTAL = 1024 * 1024 * 1024
 _MANIFEST = 'qt_evaluator_manifest.json'
 _ABI = {'platform': 'linux', 'machine': 'x86_64', 'elf_class': 'ELF64', 'cxx_standard': '20'}
+
+
+@dataclass(frozen=True)
+class BundleProfile:
+    manifest: str
+    schema: str
+    source_schema: str
+    wire: str
+    build_key: str
+    executable: str
+
+QT_PROFILE = BundleProfile('qt_evaluator_manifest.json','qt-evaluator-bundle/v1',
+    'qt-evaluator-bundle-source/v1','qt-eval/v1','evaluator_build','qt_evaluator')
+LIVE_CONFIG_PROFILE = BundleProfile('live_config_validator_manifest.json','live-config-validator-bundle/v1',
+    'live-config-validator-bundle-source/v1','live-config-validation/v1','validator_build','live_config_validate')
 
 
 def _pairs(pairs):
@@ -120,21 +136,21 @@ def read_elf(data):
             'runpath': [string_at(value) for tag, value in tags if tag in {15, 29}]}
 
 
-def _metadata(metadata):
-    if (not isinstance(metadata, dict) or set(metadata) != {'evaluator_build', 'compiler', 'abi'}
+def _metadata(metadata, profile=QT_PROFILE):
+    if (not isinstance(metadata, dict) or set(metadata) != {profile.build_key, 'compiler', 'abi'}
             or metadata['abi'] != _ABI or not isinstance(metadata['compiler'], dict)
             or set(metadata['compiler']) != {'id', 'version'}):
         raise ValueError('invalid_bundle_metadata')
-    for value in [metadata['evaluator_build'], *metadata['compiler'].values()]:
+    for value in [metadata[profile.build_key], *metadata['compiler'].values()]:
         if not isinstance(value, str) or not value.strip() or len(value) > 256:
             raise ValueError('invalid_bundle_metadata')
 
 
-def _closure(rows):
+def _closure(rows, profile=QT_PROFILE):
     names = {row['name']: row for row in rows}
     if len(names) != len(rows) or not 4 <= len(rows) <= 256:
         raise ValueError('ambiguous_bundle_artifacts')
-    required = {'executable': 'qt_evaluator', 'engine': 'libtrade_ngin.so',
+    required = {'executable': profile.executable, 'engine': 'libtrade_ngin.so',
                 'loader': 'ld-linux-x86-64.so.2'}
     for role, name in required.items():
         if [row['name'] for row in rows if row['role'] == role] != [name]:
@@ -170,15 +186,15 @@ def _closure(rows):
         raise ValueError('disconnected_bundle_artifact')
 
 
-def stage_bundle(contract, artifacts, metadata, destination):
+def stage_bundle(contract, artifacts, metadata, destination, *, profile=QT_PROFILE):
     contract = _json(Path(contract))
-    expected_contract = {'schema': 'qt-evaluator-bundle-source/v1',
-                         'bundle_schema': 'qt-evaluator-bundle/v1', 'wire_schema': 'qt-eval/v1',
-                         'executable': 'qt_evaluator', 'engine': 'libtrade_ngin.so',
+    expected_contract = {'schema': profile.source_schema,
+                         'bundle_schema': profile.schema, 'wire_schema': profile.wire,
+                         'executable': profile.executable, 'engine': 'libtrade_ngin.so',
                          'crypto': 'libcrypto.so.3', 'loader': 'ld-linux-x86-64.so.2', 'abi': _ABI}
     if contract != expected_contract:
         raise ValueError('invalid_bundle_contract')
-    _metadata(metadata)
+    _metadata(metadata, profile)
     destination = Path(destination)
     if destination.exists() or destination.is_symlink():
         raise ValueError('bundle_destination_exists')
@@ -205,7 +221,7 @@ def stage_bundle(contract, artifacts, metadata, destination):
                      'size': size, 'sha256': sha256(data).hexdigest(), 'elf': read_elf(data)})
         sources[name] = source
     rows.sort(key=lambda row: row['name'])
-    _closure(rows)
+    _closure(rows, profile)
     manifest = {'schema': contract['bundle_schema'], 'wire_schema': contract['wire_schema'],
                 **metadata, 'artifacts': rows}
     manifest['bundle_sha256'] = sha256(_canonical(manifest)).hexdigest()
@@ -219,8 +235,8 @@ def stage_bundle(contract, artifacts, metadata, destination):
                 raise ValueError('bundle_source_changed')
             path.write_bytes(data)
             path.chmod(0o500 if row['role'] in {'executable', 'loader'} else 0o400)
-        (destination / _MANIFEST).write_bytes(_canonical(manifest) + b'\n')
-        verify_bundle(destination, manifest['bundle_sha256'])
+        (destination / profile.manifest).write_bytes(_canonical(manifest) + b'\n')
+        verify_bundle(destination, manifest['bundle_sha256'], profile=profile)
     except BaseException:
         # Only the newly created, owned destination is removed.
         shutil.rmtree(destination)
@@ -228,28 +244,28 @@ def stage_bundle(contract, artifacts, metadata, destination):
     return manifest
 
 
-def verify_bundle(directory, expected_bundle_sha256):
+def verify_bundle(directory, expected_bundle_sha256, *, profile=QT_PROFILE):
     directory = Path(directory)
     if directory.is_symlink() or not directory.is_dir() or directory.resolve() != directory.absolute():
         raise ValueError('invalid_bundle_directory')
-    path = directory / _MANIFEST
+    path = directory / profile.manifest
     if path.is_symlink() or not path.is_file():
         raise ValueError('invalid_bundle_manifest')
     manifest = _json(path)
     if (not isinstance(manifest, dict) or set(manifest) !=
-            {'schema', 'wire_schema', 'evaluator_build', 'compiler', 'abi', 'artifacts', 'bundle_sha256'}
-            or manifest['schema'] != 'qt-evaluator-bundle/v1' or manifest['wire_schema'] != 'qt-eval/v1'
+            {'schema', 'wire_schema', profile.build_key, 'compiler', 'abi', 'artifacts', 'bundle_sha256'}
+            or manifest['schema'] != profile.schema or manifest['wire_schema'] != profile.wire
             or not isinstance(expected_bundle_sha256, str) or not _DIGEST.fullmatch(expected_bundle_sha256)):
         raise ValueError('invalid_bundle_manifest')
     unsigned = {key: value for key, value in manifest.items() if key != 'bundle_sha256'}
     if manifest['bundle_sha256'] != expected_bundle_sha256 or sha256(_canonical(unsigned)).hexdigest() != expected_bundle_sha256:
         raise ValueError('bundle_digest_mismatch')
-    _metadata({key: manifest[key] for key in ['evaluator_build', 'compiler', 'abi']})
+    _metadata({key: manifest[key] for key in [profile.build_key, 'compiler', 'abi']}, profile)
     rows = manifest['artifacts']
     if not isinstance(rows, list):
         raise ValueError('invalid_bundle_artifacts')
     total = 0
-    expected_files = {_MANIFEST}
+    expected_files = {profile.manifest}
     for row in rows:
         if (not isinstance(row, dict) or set(row) != {'name', 'role', 'path', 'size', 'sha256', 'elf'}
                 or type(row['size']) is not int or not 0 < row['size'] <= _MAX_FILE
@@ -269,7 +285,7 @@ def verify_bundle(directory, expected_bundle_sha256):
         if sha256(data).hexdigest() != row['sha256'] or read_elf(data) != row['elf']:
             raise ValueError('bundle_artifact_changed')
         expected_files.add(row['path'])
-    _closure(rows)
+    _closure(rows, profile)
     actual_files = set()
     for path in directory.rglob('*'):
         if path.is_symlink():
@@ -284,14 +300,14 @@ def verify_bundle(directory, expected_bundle_sha256):
 
 
 def stage_built_bundle(contract, inputs, destination, executable, engine,
-                       build_id, compiler_id, compiler_version):
+                       build_id, compiler_id, compiler_version, *, profile=QT_PROFILE):
     """Bind an explicit dependency inventory to the invoking CMake targets."""
     if not isinstance(inputs, dict) or set(inputs) != {'artifacts', 'metadata'}:
         raise ValueError('invalid_bundle_inputs')
     artifacts = inputs['artifacts']
     metadata = inputs['metadata']
     if (not isinstance(artifacts, list) or not isinstance(metadata, dict)
-            or metadata.get('evaluator_build') != build_id
+            or metadata.get(profile.build_key) != build_id
             or metadata.get('compiler') != {'id': compiler_id, 'version': compiler_version}):
         raise ValueError('bundle_build_target_mismatch')
     for role, target in [('executable', executable), ('engine', engine)]:
@@ -299,7 +315,7 @@ def stage_built_bundle(contract, inputs, destination, executable, engine,
         if (len(selected) != 1 or not isinstance(selected[0].get('source'), str)
                 or Path(selected[0]['source']).resolve(strict=True) != Path(target).resolve(strict=True)):
             raise ValueError('bundle_build_target_mismatch')
-    return stage_bundle(contract, artifacts, metadata, destination)
+    return stage_bundle(contract, artifacts, metadata, destination, profile=profile)
 
 
 def main():
@@ -313,7 +329,9 @@ def main():
     parser.add_argument('--expected-build')
     parser.add_argument('--expected-compiler-id')
     parser.add_argument('--expected-compiler-version')
+    parser.add_argument('--profile', choices=['qt','live-config'], default='qt')
     args = parser.parse_args()
+    profile = QT_PROFILE if args.profile=='qt' else LIVE_CONFIG_PROFILE
     inputs = _json(args.inputs)
     if not isinstance(inputs, dict) or set(inputs) != {'artifacts', 'metadata'}:
         raise ValueError('invalid_bundle_inputs')
@@ -322,9 +340,9 @@ def main():
     if any(value is not None for value in expected):
         if not all(value is not None for value in expected):
             raise ValueError('incomplete_bundle_build_target')
-        result = stage_built_bundle(args.contract, inputs, args.destination, *expected)
+        result = stage_built_bundle(args.contract, inputs, args.destination, *expected, profile=profile)
     else:
-        result = stage_bundle(args.contract, inputs['artifacts'], inputs['metadata'], args.destination)
+        result = stage_bundle(args.contract, inputs['artifacts'], inputs['metadata'], args.destination, profile=profile)
     print(result['bundle_sha256'])
 
 

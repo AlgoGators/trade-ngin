@@ -1716,3 +1716,39 @@ TEST(LiveConfigInspectionCapture, ThreeTypesPreserveMissingVersusEmptyAcrossBoth
         EXPECT_EQ(normalized.at("max_history_size"), expected.normalized_capacity);
     }
 }
+
+TEST(RecordedConfiguration, Schema2PreservesRiskModulesAndRawWeights) {
+    AppConfig config;
+    config.portfolio_id="REPLAY";
+    config.use_optimization=true;
+    config.covariance_history_prices=123;
+    config.max_drawdown=config.risk_schema.max_drawdown=.3;
+    config.max_leverage=config.risk_schema.max_leverage=2;
+    config.risk_schema.reporting={"carver","all_bars",.25,.05,.85,4,2,.99,252};
+    config.risk_schema.attribution={{"_ruled_by","test"},{"_ruled_on","2026-10-01"}};
+    config.strategies_config={{"TREND",{{"type","TrendFollowingStrategy"},{"enabled_live",true},{"default_allocation",2.0}}}};
+    config.risk_schema.portfolio.push_back(make_none_module("recorded fixture","test","2026-10-01").value());
+    config.risk_schema.sleeves["TREND"].push_back({"sleeve_scale","constant_scale",ConstantScaleModuleConfig{.8,false}});
+    auto snapshot=build_runtime_trading_snapshot(config);ASSERT_TRUE(snapshot.is_ok());
+    auto parsed=ConfigLoader::parse_trading_config(snapshot.value());
+    ASSERT_TRUE(parsed.is_ok())<<(parsed.is_error()?parsed.error()->what():"");
+    auto rebuilt=build_runtime_trading_snapshot(parsed.value());ASSERT_TRUE(rebuilt.is_ok());
+    ASSERT_EQ(rebuilt.value(),snapshot.value());
+    auto result=replay_portfolio_config(snapshot.value());ASSERT_TRUE(result.is_ok());
+    EXPECT_TRUE(result.value().use_optimization);
+    EXPECT_EQ(result.value().covariance_history_prices,123);
+    EXPECT_EQ(result.value().risk_modules.size(),1);
+    EXPECT_EQ(result.value().sleeve_risk_modules.size(),1);
+    EXPECT_TRUE(result.value().use_risk_management);
+    auto bad=snapshot.value();bad["snapshot_version"]=3;EXPECT_TRUE(replay_portfolio_config(bad).is_error());
+    bad=snapshot.value();bad["risk"]["fabricated"]=true;EXPECT_TRUE(replay_portfolio_config(bad).is_error());
+}
+TEST(RecordedConfiguration, HistoricalFlatRiskRemainsReadable) {
+    nlohmann::json snapshot={{"snapshot_version",1},{"initial_capital",12345.0},
+        {"risk",{{"var_limit",.17}}},{"strategy_defaults",{{"use_optimization",false},{"use_risk_management",true}}}};
+    auto result=replay_portfolio_config(snapshot);ASSERT_TRUE(result.is_ok());
+    EXPECT_FALSE(result.value().use_optimization);
+    EXPECT_TRUE(result.value().use_risk_management);
+    EXPECT_DOUBLE_EQ(result.value().risk_config.var_limit,.17);
+    EXPECT_TRUE(result.value().risk_modules.empty());
+}

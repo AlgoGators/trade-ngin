@@ -527,4 +527,12 @@ BEGIN
     END IF;
 END $$;
 
+-- Inspection needs terminal classification only; financial recovery proof stays owner-only.
+DO $$ BEGIN
+ IF EXISTS(SELECT 1 FROM pg_roles WHERE rolname='qt_algolens_api') THEN
+  GRANT SELECT(attempt_id,classification_version,state,lifecycle,publication_id)
+   ON trading.live_config_attempt_safety TO qt_algolens_api;
+ END IF;
+END $$;
+
 COMMIT;

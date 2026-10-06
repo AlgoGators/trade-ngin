@@ -39,6 +39,7 @@ WORKDIR /app
 
 COPY build/qt-prod/bin/Release/ /app/build/bin/Release/
 COPY build/qt-prod/qt-evaluator-bundle/ /app/build/qt-evaluator-bundle/
+COPY build/qt-prod/live-config-validator-bundle/ /app/build/live-config-validator-bundle/
 COPY build/qt-prod/release-files.sha256 /app/build/release-files.sha256
 COPY config_template/ /app/config_template/
 COPY scripts/ /app/scripts/
@@ -54,6 +55,8 @@ RUN test "${#TRADE_NGIN_GIT_SHA}" -ge 7 \
     && test "${TRADE_NGIN_GIT_SHA_FULL#${TRADE_NGIN_GIT_SHA}}" != "${TRADE_NGIN_GIT_SHA_FULL}" \
     && test -x /app/build/bin/Release/live_portfolio_conservative \
     && test -x /app/build/bin/Release/qt_evaluator \
+    && test -x /app/build/bin/Release/live_config_validate \
+    && test -f /app/build/live-config-validator-bundle/live_config_validator_manifest.json \
     && test -x /app/build/bin/Release/qt_desk_worker \
     && test -f /app/build/qt-evaluator-bundle/qt_evaluator_manifest.json \
     && (cd /app/build && sha256sum -c release-files.sha256) \

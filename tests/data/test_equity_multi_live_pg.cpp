@@ -28,11 +28,11 @@ namespace {
 constexpr const char* kStrategy = "LIVE_EQUITY_ALPHA_BETA";
 constexpr const char* kBookA = "INVESTOR_P2_A";
 constexpr const char* kBookB = "INVESTOR_P2_B";
-constexpr const char* kT2 = "2026-11-02";
-constexpr const char* kT1 = "2026-11-03";
-constexpr const char* kDay1 = "2026-11-04";
-constexpr const char* kDay2 = "2026-11-05";
-constexpr const char* kDay3 = "2026-11-06";
+constexpr const char* kT2 = "2026-08-10";
+constexpr const char* kT1 = "2026-08-11";
+constexpr const char* kDay1 = "2026-08-12";
+constexpr const char* kDay2 = "2026-08-13";
+constexpr const char* kDay3 = "2026-08-14";
 
 struct LiveDay {
     const char* source_day;
@@ -40,16 +40,16 @@ struct LiveDay {
 };
 
 constexpr std::array<LiveDay, 10> kLiveDays{{
-    {"2026-11-04", "2026-11-03"},
-    {"2026-11-05", "2026-11-04"},
-    {"2026-11-06", "2026-11-05"},
-    {"2026-11-09", "2026-11-06"},
-    {"2026-11-10", "2026-11-09"},
-    {"2026-11-11", "2026-11-10"},
-    {"2026-11-12", "2026-11-11"},
-    {"2026-11-13", "2026-11-12"},
-    {"2026-11-16", "2026-11-13"},
-    {"2026-11-17", "2026-11-16"},
+    {"2026-08-12", "2026-08-11"},
+    {"2026-08-13", "2026-08-12"},
+    {"2026-08-14", "2026-08-13"},
+    {"2026-08-17", "2026-08-14"},
+    {"2026-08-18", "2026-08-17"},
+    {"2026-08-19", "2026-08-18"},
+    {"2026-08-20", "2026-08-19"},
+    {"2026-08-21", "2026-08-20"},
+    {"2026-08-24", "2026-08-21"},
+    {"2026-08-25", "2026-08-24"},
 }};
 
 std::string owned_dsn() {
@@ -110,13 +110,13 @@ AppConfig make_config(const std::string& portfolio_id, double capital, double al
     config.risk_config.max_gross_leverage = 10.0;
     config.risk_config.max_net_leverage = 10.0;
     auto none = make_none_module(
-        "synthetic issue 121/124 completion gate", "codex", "2026-10-01");
+        "synthetic issue 121/124 completion gate", "codex", "2026-07-09");
     if (none.is_error()) throw std::runtime_error(none.error()->what());
     config.risk_schema.portfolio = {none.value()};
     config.risk_schema.max_drawdown=config.max_drawdown;
     config.risk_schema.max_leverage=config.max_leverage;
     config.risk_schema.reporting={"carver","all_bars",.15,.10,.7,10,10,.99,252};
-    config.risk_schema.attribution={{"_ruled_by","codex"},{"_ruled_on","2026-10-01"}};
+    config.risk_schema.attribution={{"_ruled_by","codex"},{"_ruled_on","2026-07-09"}};
     config.live.record_equity_policy_snapshot();
     for(const auto& sleeve:make_plan(alpha_exit).sleeves)
         {
@@ -181,18 +181,18 @@ protected:
             INSERT INTO equities_data.ohlcv_1d
                 (symbol,time,open,high,low,close,volume,div_cash,split_factor,delisting_date)
             VALUES
-                ('SYN','2026-10-30T00:00:00Z',200,200,200,200,1000000,0,1,NULL),
-                ('SYN','2026-11-02T00:00:00Z',200,200,200,200,1000000,0,1,NULL),
-                ('SYN','2026-11-03T00:00:00Z',90,90,90,90,1000000,0,2,NULL),
-                ('SYN','2026-11-04T00:00:00Z',80,80,80,80,1000000,0,1,NULL),
-                ('SYN','2026-11-05T00:00:00Z',110,110,110,110,1000000,0,1,NULL),
-                ('SYN','2026-11-06T00:00:00Z',100,100,100,100,1000000,0,1,NULL),
-                ('SYN','2026-11-09T00:00:00Z',75,75,75,75,1000000,0,1,NULL),
-                ('SYN','2026-11-10T00:00:00Z',115,115,115,115,1000000,0,1,NULL),
-                ('SYN','2026-11-11T00:00:00Z',100,100,100,100,1000000,0,1,NULL),
-                ('SYN','2026-11-12T00:00:00Z',70,70,70,70,1000000,0,1,NULL),
-                ('SYN','2026-11-13T00:00:00Z',120,120,120,120,1000000,0,1,NULL),
-                ('SYN','2026-11-16T00:00:00Z',100,100,100,100,1000000,0,1,NULL);
+                ('SYN','2026-08-07T00:00:00Z',200,200,200,200,1000000,0,1,NULL),
+                ('SYN','2026-08-10T00:00:00Z',200,200,200,200,1000000,0,1,NULL),
+                ('SYN','2026-08-11T00:00:00Z',90,90,90,90,1000000,0,2,NULL),
+                ('SYN','2026-08-12T00:00:00Z',80,80,80,80,1000000,0,1,NULL),
+                ('SYN','2026-08-13T00:00:00Z',110,110,110,110,1000000,0,1,NULL),
+                ('SYN','2026-08-14T00:00:00Z',100,100,100,100,1000000,0,1,NULL),
+                ('SYN','2026-08-17T00:00:00Z',75,75,75,75,1000000,0,1,NULL),
+                ('SYN','2026-08-18T00:00:00Z',115,115,115,115,1000000,0,1,NULL),
+                ('SYN','2026-08-19T00:00:00Z',100,100,100,100,1000000,0,1,NULL),
+                ('SYN','2026-08-20T00:00:00Z',70,70,70,70,1000000,0,1,NULL),
+                ('SYN','2026-08-21T00:00:00Z',120,120,120,120,1000000,0,1,NULL),
+                ('SYN','2026-08-24T00:00:00Z',100,100,100,100,1000000,0,1,NULL);
         )SQL");
         tx.commit();
     }
@@ -201,7 +201,7 @@ protected:
                           const std::string& portfolio_id, double capital,
                           double quantity_scale) {
         const InvestorBookOnboarding request{
-            config_key, portfolio_id, capital, "2026-10-30", {kStrategy},
+            config_key, portfolio_id, capital, "2026-08-07", {kStrategy},
             "issues-121-124-pg-gate"};
         auto onboarded = db_->onboard_investor_book(request);
         ASSERT_TRUE(onboarded.is_ok())
@@ -260,7 +260,7 @@ protected:
             InstrumentRegistry::instance(),
             HolidayChecker(std::string(TRADE_NGIN_SOURCE_DIR) +
                            "/include/trade_ngin/core/holidays.json"),
-            day(source_day), day("2026-10-30"), day(data_end_day), true);
+            day(source_day), day("2026-08-07"), day(data_end_day), true);
         ASSERT_TRUE(result.is_ok())
             << "portfolio=" << portfolio_id << " source_day=" << source_day
             << " data_end_day=" << data_end_day << " error="
@@ -448,7 +448,7 @@ TEST_F(EquityMultiLivePg,
         "SELECT count(*) FROM trading.strategy_trading_days_metadata WHERE "
         "portfolio_id IN ('INVESTOR_P2_A','INVESTOR_P2_B') "
         "AND strategy_id='LIVE_EQUITY_ALPHA_BETA' "
-        "AND live_start_date='2026-10-30'"), 2);
+        "AND live_start_date='2026-08-07'"), 2);
 
     // A fully scoped delete cannot cross investor books. Restore the deleted
     // synthetic seed before running so the financial path remains identical.
@@ -463,10 +463,10 @@ TEST_F(EquityMultiLivePg,
     }
     EXPECT_EQ(scalar_long(
         "SELECT count(*) FROM trading.positions WHERE portfolio_id='INVESTOR_P2_A' "
-        "AND strategy_id='LIVE_EQUITY_ALPHA_BETA' AND date='2026-11-02'"), 1);
+        "AND strategy_id='LIVE_EQUITY_ALPHA_BETA' AND date='2026-08-10'"), 1);
     EXPECT_EQ(scalar_long(
         "SELECT count(*) FROM trading.positions WHERE portfolio_id='INVESTOR_P2_B' "
-        "AND strategy_id='LIVE_EQUITY_ALPHA_BETA' AND date='2026-11-02'"), 2);
+        "AND strategy_id='LIVE_EQUITY_ALPHA_BETA' AND date='2026-08-10'"), 2);
     onboard_and_seed("investor_p2_a", kBookA, 100000.0, 1.0);
 
     run_day(kBookA, 100000.0, kDay1, kT1);
@@ -474,10 +474,10 @@ TEST_F(EquityMultiLivePg,
 
     EXPECT_EQ(scalar_long(
         "SELECT count(*) FROM trading.investor_book_publications WHERE "
-        "portfolio_id IN ('INVESTOR_P2_A','INVESTOR_P2_B') AND source_day='2026-11-04'"), 2);
+        "portfolio_id IN ('INVESTOR_P2_A','INVESTOR_P2_B') AND source_day='2026-08-12'"), 2);
     EXPECT_EQ(scalar_long(
         "SELECT count(DISTINCT publication_id) FROM trading.investor_book_publications WHERE "
-        "portfolio_id IN ('INVESTOR_P2_A','INVESTOR_P2_B') AND source_day='2026-11-04'"), 2);
+        "portfolio_id IN ('INVESTOR_P2_A','INVESTOR_P2_B') AND source_day='2026-08-12'"), 2);
     EXPECT_EQ(scalar_long(
         "SELECT count(*) FROM trading.investor_book_publications WHERE "
         "portfolio_id IN ('INVESTOR_P2_A','INVESTOR_P2_B') AND model_stream<>'system'"), 0);
@@ -488,29 +488,29 @@ TEST_F(EquityMultiLivePg,
     // The T-1 split was independently applied and durably audited for both owners.
     EXPECT_DOUBLE_EQ(scalar_double(
         "SELECT sum(quantity) FROM trading.positions WHERE portfolio_id='INVESTOR_P2_A' "
-        "AND strategy_id='LIVE_EQUITY_ALPHA_BETA' AND date='2026-11-03'"), 60.0);
+        "AND strategy_id='LIVE_EQUITY_ALPHA_BETA' AND date='2026-08-11'"), 60.0);
     EXPECT_DOUBLE_EQ(scalar_double(
         "SELECT sum(daily_unrealized_pnl) FROM trading.positions WHERE "
         "portfolio_id='INVESTOR_P2_A' AND strategy_id='LIVE_EQUITY_ALPHA_BETA' "
-        "AND date='2026-11-03'"), 2400.0);
+        "AND date='2026-08-11'"), 2400.0);
     EXPECT_EQ(scalar_long(
         "SELECT count(*) FROM trading.corp_action_applied WHERE portfolio_id IN "
         "('INVESTOR_P2_A','INVESTOR_P2_B') AND strategy_id='LIVE_EQUITY_ALPHA_BETA' "
-        "AND symbol='SYN' AND action_type='SPLIT' AND ex_date='2026-11-03'"), 4);
+        "AND symbol='SYN' AND action_type='SPLIT' AND ex_date='2026-08-11'"), 4);
 
     // ALPHA increases a long while BETA exits. Only their net reaches the account.
     EXPECT_EQ(scalar_long(
         "SELECT count(*) FROM trading.executions WHERE portfolio_id='INVESTOR_P2_A' "
-        "AND strategy_id='LIVE_EQUITY_ALPHA_BETA' AND date='2026-11-04' "
+        "AND strategy_id='LIVE_EQUITY_ALPHA_BETA' AND date='2026-08-12' "
         "AND strategy_name='ALPHA' AND side='BUY'"), 1);
     EXPECT_EQ(scalar_long(
         "SELECT count(*) FROM trading.executions WHERE portfolio_id='INVESTOR_P2_A' "
-        "AND strategy_id='LIVE_EQUITY_ALPHA_BETA' AND date='2026-11-04' "
+        "AND strategy_id='LIVE_EQUITY_ALPHA_BETA' AND date='2026-08-12' "
         "AND strategy_name='BETA' AND side='SELL'"), 1);
     EXPECT_EQ(scalar_long(
         "SELECT jsonb_array_length(engine_flags->'account_executions') FROM trading.run_inputs "
         "WHERE portfolio_id='INVESTOR_P2_A' AND strategy_id='LIVE_EQUITY_ALPHA_BETA' "
-        "AND date='2026-11-04'"), 1);
+        "AND date='2026-08-12'"), 1);
 
     // W12 accounting identities hold against the durable owner rows and fills.
     EXPECT_NEAR(scalar_double(
@@ -519,39 +519,39 @@ TEST_F(EquityMultiLivePg,
         "FROM trading.positions p WHERE p.portfolio_id=r.portfolio_id "
         "AND p.strategy_id=r.strategy_id AND p.date=r.date AND p.portfolio_type='system') p "
         "WHERE r.portfolio_id='INVESTOR_P2_A' AND r.strategy_id='LIVE_EQUITY_ALPHA_BETA' "
-        "AND r.date='2026-11-04' AND r.portfolio_type='system'"), 0.0, 1e-6);
+        "AND r.date='2026-08-12' AND r.portfolio_type='system'"), 0.0, 1e-6);
     EXPECT_NEAR(scalar_double(
         "SELECT abs(r.total_unrealized_pnl-p.unrealized) FROM trading.live_results r "
         "CROSS JOIN LATERAL (SELECT coalesce(sum(daily_unrealized_pnl),0) unrealized "
         "FROM trading.positions p WHERE p.portfolio_id=r.portfolio_id "
         "AND p.strategy_id=r.strategy_id AND p.date=r.date AND p.portfolio_type='system') p "
         "WHERE r.portfolio_id='INVESTOR_P2_A' AND r.strategy_id='LIVE_EQUITY_ALPHA_BETA' "
-        "AND r.date='2026-11-04' AND r.portfolio_type='system'"), 0.0, 1e-6);
+        "AND r.date='2026-08-12' AND r.portfolio_type='system'"), 0.0, 1e-6);
     EXPECT_NEAR(scalar_double(
         "SELECT abs(r.daily_transaction_costs-e.costs) FROM trading.live_results r "
         "CROSS JOIN LATERAL (SELECT coalesce(sum(total_transaction_costs-netting_adjustment),0) costs "
         "FROM trading.executions e WHERE e.portfolio_id=r.portfolio_id "
         "AND e.strategy_id=r.strategy_id AND e.date=r.date AND e.portfolio_type='system') e "
         "WHERE r.portfolio_id='INVESTOR_P2_A' AND r.strategy_id='LIVE_EQUITY_ALPHA_BETA' "
-        "AND r.date='2026-11-04' AND r.portfolio_type='system'"), 0.0, 1e-6);
+        "AND r.date='2026-08-12' AND r.portfolio_type='system'"), 0.0, 1e-6);
     EXPECT_NEAR(scalar_double(
         "SELECT abs(total_pnl-(total_realized_pnl-total_transaction_costs+total_unrealized_pnl)) "
         "FROM trading.live_results WHERE portfolio_id='INVESTOR_P2_A' "
-        "AND strategy_id='LIVE_EQUITY_ALPHA_BETA' AND date='2026-11-04'"), 0.0, 1e-6);
+        "AND strategy_id='LIVE_EQUITY_ALPHA_BETA' AND date='2026-08-12'"), 0.0, 1e-6);
     EXPECT_NEAR(scalar_double(
         "SELECT abs(r.current_portfolio_value-(b.initial_capital+r.total_pnl)) "
         "FROM trading.live_results r JOIN trading.investor_books b USING(portfolio_id) "
         "WHERE r.portfolio_id='INVESTOR_P2_A' AND r.strategy_id='LIVE_EQUITY_ALPHA_BETA' "
-        "AND r.date='2026-11-04'"), 0.0, 1e-6);
+        "AND r.date='2026-08-12'"), 0.0, 1e-6);
 
     const double a_alpha = scalar_double(
         "SELECT quantity FROM trading.positions WHERE portfolio_id='INVESTOR_P2_A' "
         "AND strategy_id='LIVE_EQUITY_ALPHA_BETA' AND strategy_name='ALPHA' "
-        "AND date='2026-11-04' AND symbol='SYN'");
+        "AND date='2026-08-12' AND symbol='SYN'");
     const double b_alpha = scalar_double(
         "SELECT quantity FROM trading.positions WHERE portfolio_id='INVESTOR_P2_B' "
         "AND strategy_id='LIVE_EQUITY_ALPHA_BETA' AND strategy_name='ALPHA' "
-        "AND date='2026-11-04' AND symbol='SYN'");
+        "AND date='2026-08-12' AND symbol='SYN'");
     ASSERT_NE(a_alpha, 0.0);
     EXPECT_LE(std::abs(b_alpha - 2.0 * a_alpha), 1.0);
 
@@ -573,27 +573,27 @@ TEST_F(EquityMultiLivePg,
     EXPECT_EQ(scalar_long(
         "SELECT count(*) FROM trading.investor_book_publications WHERE "
         "portfolio_id IN ('INVESTOR_P2_A','INVESTOR_P2_B') AND source_day BETWEEN "
-        "'2026-11-04' AND '2026-11-17'"), 20);
+        "'2026-08-12' AND '2026-08-25'"), 20);
     EXPECT_EQ(scalar_long(
         "SELECT count(DISTINCT publication_id) FROM trading.investor_book_publications WHERE "
         "portfolio_id IN ('INVESTOR_P2_A','INVESTOR_P2_B') AND source_day BETWEEN "
-        "'2026-11-04' AND '2026-11-17'"), 20);
+        "'2026-08-12' AND '2026-08-25'"), 20);
     EXPECT_EQ(scalar_long(
         "SELECT count(*) FROM trading.live_results WHERE portfolio_id IN "
         "('INVESTOR_P2_A','INVESTOR_P2_B') AND strategy_id='LIVE_EQUITY_ALPHA_BETA' "
-        "AND date BETWEEN '2026-11-04' AND '2026-11-17' AND portfolio_type='system'"), 20);
+        "AND date BETWEEN '2026-08-12' AND '2026-08-25' AND portfolio_type='system'"), 20);
     EXPECT_EQ(scalar_long(
         "SELECT count(*) FROM trading.executions WHERE portfolio_id IN "
         "('INVESTOR_P2_A','INVESTOR_P2_B') AND strategy_id='LIVE_EQUITY_ALPHA_BETA' "
-        "AND date='2026-11-05' AND side='BUY'"), 4);
+        "AND date='2026-08-13' AND side='BUY'"), 4);
     EXPECT_EQ(scalar_long(
         "SELECT count(*) FROM trading.executions WHERE portfolio_id IN "
         "('INVESTOR_P2_A','INVESTOR_P2_B') AND strategy_id='LIVE_EQUITY_ALPHA_BETA' "
-        "AND date='2026-11-06' AND side='SELL'"), 4);
+        "AND date='2026-08-14' AND side='SELL'"), 4);
     EXPECT_NEAR(scalar_double(
         "SELECT coalesce(sum(abs(quantity)),0) FROM trading.positions WHERE "
         "portfolio_id IN ('INVESTOR_P2_A','INVESTOR_P2_B') "
-        "AND strategy_id='LIVE_EQUITY_ALPHA_BETA' AND date='2026-11-06' "
+        "AND strategy_id='LIVE_EQUITY_ALPHA_BETA' AND date='2026-08-14' "
         "AND portfolio_type='system'"), 0.0, 1e-6);
     EXPECT_NEAR(scalar_double(
         "SELECT coalesce(max(abs(r.daily_realized_pnl-p.realized)),0) FROM "
@@ -603,18 +603,18 @@ TEST_F(EquityMultiLivePg,
         "AND p.date=r.date AND p.portfolio_type='system') p WHERE "
         "r.portfolio_id IN ('INVESTOR_P2_A','INVESTOR_P2_B') "
         "AND r.strategy_id='LIVE_EQUITY_ALPHA_BETA' AND r.date BETWEEN "
-        "'2026-11-04' AND '2026-11-17' AND r.portfolio_type='system'"), 0.0, 1e-6);
+        "'2026-08-12' AND '2026-08-25' AND r.portfolio_type='system'"), 0.0, 1e-6);
 
     const std::string publication_before = scalar_text(
         "SELECT publication_id::text||':'||content_digest FROM "
         "trading.investor_book_publications WHERE portfolio_id='INVESTOR_P2_A' "
-        "AND source_day='2026-11-17'");
+        "AND source_day='2026-08-25'");
     run_day(kBookA, 100000.0, kLiveDays.back().source_day,
             kLiveDays.back().data_end_day);
     EXPECT_EQ(scalar_text(
         "SELECT publication_id::text||':'||content_digest FROM "
         "trading.investor_book_publications WHERE portfolio_id='INVESTOR_P2_A' "
-        "AND source_day='2026-11-17'"), publication_before);
+        "AND source_day='2026-08-25'"), publication_before);
 
     // A changed same-day computation must fail closed and preserve the publication.
     auto conflict = run_multi_sleeve_equity_live_day(
@@ -622,13 +622,13 @@ TEST_F(EquityMultiLivePg,
         InstrumentRegistry::instance(),
         HolidayChecker(std::string(TRADE_NGIN_SOURCE_DIR) +
                        "/include/trade_ngin/core/holidays.json"),
-        day(kLiveDays.back().source_day), day("2026-10-30"),
+        day(kLiveDays.back().source_day), day("2026-08-07"),
         day(kLiveDays.back().data_end_day), true);
     ASSERT_TRUE(conflict.is_error());
     EXPECT_EQ(scalar_text(
         "SELECT publication_id::text||':'||content_digest FROM "
         "trading.investor_book_publications WHERE portfolio_id='INVESTOR_P2_A' "
-        "AND source_day='2026-11-17'"), publication_before);
+        "AND source_day='2026-08-25'"), publication_before);
 
     // The ten-day chain is deterministic from a clean book scope. Recreate
     // onboarding, anchors, seeds, and every daily publication, then compare
@@ -653,9 +653,9 @@ TEST_F(EquityMultiLivePg, NonTradingCompositePublishesExplicitSkippedCoverage) {
     run_day(kBookA,100000.0,kDay1,kT1);
     run_day(kBookA,100000.0,kDay2,kDay1);
     run_day(kBookA,100000.0,kDay3,kDay2);
-    run_day(kBookA,100000.0,"2026-11-07",kDay3);
-    EXPECT_EQ(scalar_text("SELECT portfolio_config->'config_inspection'->'equity_multi_consumption'->'coverage'->>'primary' FROM trading.live_run_metadata WHERE portfolio_id='INVESTOR_P2_A' AND date='2026-11-07'"),"skipped_non_trading_day");
-    EXPECT_EQ(scalar_text("SELECT portfolio_config->'config_inspection'->'equity_multi_consumption'->>'portfolio_invocation' IS NULL FROM trading.live_run_metadata WHERE portfolio_id='INVESTOR_P2_A' AND date='2026-11-07'"),"t");
+    run_day(kBookA,100000.0,"2026-08-15",kDay3);
+    EXPECT_EQ(scalar_text("SELECT portfolio_config->'config_inspection'->'equity_multi_consumption'->'coverage'->>'primary' FROM trading.live_run_metadata WHERE portfolio_id='INVESTOR_P2_A' AND date='2026-08-15'"),"skipped_non_trading_day");
+    EXPECT_EQ(scalar_text("SELECT portfolio_config->'config_inspection'->'equity_multi_consumption'->>'portfolio_invocation' IS NULL FROM trading.live_run_metadata WHERE portfolio_id='INVESTOR_P2_A' AND date='2026-08-15'"),"t");
 }
 
 
@@ -669,7 +669,7 @@ TEST_F(EquityMultiLivePg, InvestorPublicationWrapperSurvivesGuardedRollback) {
     {pqxx::nontransaction tx(connection);EXPECT_THROW(tx.exec(rollback),pqxx::sql_error);tx.exec("ROLLBACK");}
     const auto before=scalar_text("SELECT publication_id::text FROM trading.investor_book_publications WHERE portfolio_id='INVESTOR_P2_A'");
     {pqxx::nontransaction tx(connection);tx.exec("TRUNCATE trading.live_config_attempt_selections CASCADE");tx.exec(rollback);}
-    const auto call="SELECT trading.publish_system_investor_day('INVESTOR_P2_A','LIVE_EQUITY_ALPHA_BETA','2026-11-04','fixture')::text";
+    const auto call="SELECT trading.publish_system_investor_day('INVESTOR_P2_A','LIVE_EQUITY_ALPHA_BETA','2026-08-12','fixture')::text";
     const auto invoke4=[&](){pqxx::work tx(connection);auto value=tx.exec(call)[0][0].as<std::string>();tx.commit();return value;};
     EXPECT_EQ(invoke4(),before);
     {pqxx::nontransaction tx(connection);tx.exec(migration);tx.exec(migration);}
@@ -687,7 +687,7 @@ TEST_F(EquityMultiLivePg, InsufficientHistoryPreservesPartialReadsWithoutCharges
     ASSERT_TRUE(selected.is_ok());const auto plan=build_equity_live_book_plan(selected.value());ASSERT_TRUE(plan.is_ok());
     auto result=run_multi_sleeve_equity_live_day(config,plan.value(),db_,InstrumentRegistry::instance(),
         HolidayChecker(std::string(TRADE_NGIN_SOURCE_DIR)+"/include/trade_ngin/core/holidays.json"),
-        day(kDay1),day("2026-10-30"),day(kT1),true);
+        day(kDay1),day("2026-08-07"),day(kT1),true);
     ASSERT_TRUE(result.is_ok())<<(result.is_error()?result.error()->what():"");
     const auto capture=nlohmann::json::parse(scalar_text("SELECT (portfolio_config->'config_inspection')::text FROM trading.live_run_metadata WHERE portfolio_id='INVESTOR_P2_A'"));
     const auto& observed=capture.at("equity_multi_consumption");
@@ -716,14 +716,14 @@ TEST_F(EquityMultiLivePg, HouseNonemptyPublishesButLegacyEmptyHouseBoundaryStays
     const auto invoke=[&](const char* date,const char* previous){
         return run_multi_sleeve_equity_live_day(make_config(kBookA,100000.0),make_plan(),db_,
             InstrumentRegistry::instance(),HolidayChecker(std::string(TRADE_NGIN_SOURCE_DIR)+"/include/trade_ngin/core/holidays.json"),
-            day(date),day("2026-10-30"),day(previous),true);
+            day(date),day("2026-08-07"),day(previous),true);
     };
     expect_ok(invoke(kDay1,kT1));expect_ok(invoke(kDay2,kDay1));expect_ok(invoke(kDay3,kDay2));
     EXPECT_EQ(scalar_long("SELECT count(*) FROM trading.qt_model_seed_publications WHERE portfolio_id='INVESTOR_P2_A'"),3);
     const auto before=scalar_text("SELECT trading.live_config_financial_state('LIVE_EQUITY_ALPHA_BETA','INVESTOR_P2_A')::text");
-    auto empty=invoke("2026-11-09",kDay3);ASSERT_TRUE(empty.is_error());
+    auto empty=invoke("2026-08-17",kDay3);ASSERT_TRUE(empty.is_error());
     EXPECT_EQ(scalar_text("SELECT trading.live_config_financial_state('LIVE_EQUITY_ALPHA_BETA','INVESTOR_P2_A')::text"),before);
-    EXPECT_EQ(scalar_long("SELECT count(*) FROM trading.run_inputs WHERE portfolio_id='INVESTOR_P2_A' AND date='2026-11-09'"),0);
+    EXPECT_EQ(scalar_long("SELECT count(*) FROM trading.run_inputs WHERE portfolio_id='INVESTOR_P2_A' AND date='2026-08-17'"),0);
     EXPECT_EQ(scalar_long("SELECT count(*) FROM trading.qt_empty_model_owner_publications WHERE portfolio_id='INVESTOR_P2_A'"),0);
     EXPECT_EQ(scalar_long("SELECT count(*) FROM trading.live_run_metadata WHERE portfolio_id='INVESTOR_P2_A' AND portfolio_config->'config_inspection'->>'profile'='live_equity_mean_reversion'"),0);
 }

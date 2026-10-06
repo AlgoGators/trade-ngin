@@ -39,6 +39,14 @@ class NativeValidationTool(unittest.TestCase):
         self.assertEqual(snapshot["snapshot_version"], 2)
         return proc.stdout.strip(), snapshot
 
+    def test_unmodified_schema2_templates_export(self):
+        for portfolio in ("base", "conservative", "equity_mr"):
+            with self.subTest(portfolio=portfolio):
+                proc, snapshot = self.run_tool(args=("--export-base", "--config-root", str(ROOT/"config_template"), "--portfolio", portfolio))
+                self.assertEqual(proc.returncode, 0, snapshot)
+                self.assertEqual(snapshot["snapshot_version"], 2)
+                self.assertEqual(snapshot["risk"]["schema"], 2)
+
     def test_export_and_valid_request_hash_native_bytes(self):
         raw, base = self.export()
         request = {"schema":"live-config-validation/v1", "base_snapshot":base,

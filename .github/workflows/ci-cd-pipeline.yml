@@ -278,7 +278,7 @@ jobs:
 
       - name: Stage exact Release evaluator bundle
         if: matrix.build-type == 'Release'
-        run: cmake --build "$BUILD_DIR" --target qt_evaluator_bundle --parallel 2
+        run: cmake --build "$BUILD_DIR" --target qt_evaluator_bundle live_config_validator_bundle --parallel 2
 
       - name: Verify Release artifact contracts
         if: matrix.build-type == 'Release'
@@ -301,13 +301,14 @@ jobs:
           SOURCE_DATE_EPOCH=$(git show -s --format=%ct HEAD)
           (
             cd "$BUILD_DIR"
-            find bin/Release qt-evaluator-bundle -type f -print0 \
+            find bin/Release qt-evaluator-bundle live-config-validator-bundle -type f -print0 \
               | sort -z | xargs -0 sha256sum > release-files.sha256
           )
           tar --sort=name --mtime="@${SOURCE_DATE_EPOCH}" --owner=0 --group=0 --numeric-owner \
             -cf trade-ngin-release.tar \
             "$BUILD_DIR/bin/Release" \
             "$BUILD_DIR/qt-evaluator-bundle" \
+            "$BUILD_DIR/live-config-validator-bundle" \
             "$BUILD_DIR/include/trade_ngin/git_version.hpp" \
             "$BUILD_DIR/release-files.sha256"
 
@@ -586,6 +587,18 @@ jobs:
             --installed-root build/qt-prod \
             --bundle-directory build/qt-prod/qt-evaluator-bundle
 
+          # Detached attestations bind the already pushed image, avoiding a digest cycle.
+          PYTHONDONTWRITEBYTECODE=1 python3 -B apps/tools/live_config_release.py --create \
+            --manifest build/qt-prod/live-config-release.json \
+            --core-manifest build/qt-prod/release-artifacts.json \
+            --installed-root build/qt-prod --qt-bundle build/qt-prod/qt-evaluator-bundle \
+            --validator-bundle build/qt-prod/live-config-validator-bundle
+          PYTHONDONTWRITEBYTECODE=1 python3 -B apps/tools/live_config_release.py \
+            --manifest build/qt-prod/live-config-release.json \
+            --core-manifest build/qt-prod/release-artifacts.json \
+            --installed-root build/qt-prod --qt-bundle build/qt-prod/qt-evaluator-bundle \
+            --validator-bundle build/qt-prod/live-config-validator-bundle
+
           echo "repo=${REPO}" >> "$GITHUB_OUTPUT"
           echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
           echo "sha_tag=${SHA_TAG}" >> "$GITHUB_OUTPUT"
@@ -599,6 +612,8 @@ jobs:
           name: release-evidence-${{ github.sha }}
           path: |
             build/qt-prod/release-artifacts.json
+            build/qt-prod/live-config-release.json
+            build/qt-prod/live-config-validator-bundle/
             build/qt-prod/qt-evaluator-bundle/
             build/qt-prod/release-files.sha256
           if-no-files-found: error
