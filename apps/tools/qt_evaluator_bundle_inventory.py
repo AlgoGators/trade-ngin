@@ -56,8 +56,12 @@ def inventory(evaluator, engine, build_id, compiler_id, compiler_version, depend
         raise ValueError("bundle_build_target_mismatch")
     rows = [{"name": "qt_evaluator", "source": str(evaluator), "role": "executable"}]
     for name, source in dependencies.items():
-        source = Path(source).resolve(strict=True)
-        if not source.is_file() or source.name != name:
+        source = Path(source)
+        if (Path(name).name != name or not source.is_absolute() or
+                source.name != name or not source.is_file()):
+            raise ValueError("invalid_native_dependency")
+        source = source.resolve(strict=True)
+        if not source.is_file():
             raise ValueError("invalid_native_dependency")
         role = ("engine" if name == "libtrade_ngin.so" else
                 "loader" if name == "ld-linux-x86-64.so.2" else "dependency")

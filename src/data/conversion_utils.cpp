@@ -2,6 +2,7 @@
 #include "trade_ngin/data/conversion_utils.hpp"
 
 #include <cctype>
+#include <cmath>
 #include <cstdint>
 #include <ctime>
 #include <stdexcept>
@@ -269,7 +270,7 @@ Result<std::string> DataConversionUtils::extract_string(const std::shared_ptr<ar
 Result<double> DataConversionUtils::safe_get_double(
     const std::shared_ptr<arrow::ChunkedArray>& col, int64_t row,
     const std::string& column_name) {
-    if (!col) {
+    if (!col || row < 0) {
         return make_error<double>(ErrorCode::INVALID_ARGUMENT,
                                   "safe_get_double: null column (" + column_name + ")",
                                   "DataConversionUtils");
@@ -290,12 +291,25 @@ Result<double> DataConversionUtils::safe_get_double(
     }
     try {
         switch (chunk->type_id()) {
-            case arrow::Type::DOUBLE:
-                return Result<double>(
-                    static_cast<const arrow::DoubleArray*>(chunk)->Value(off));
-            case arrow::Type::FLOAT:
-                return Result<double>(static_cast<double>(
-                    static_cast<const arrow::FloatArray*>(chunk)->Value(off)));
+            case arrow::Type::DOUBLE: {
+                const double value = static_cast<const arrow::DoubleArray*>(chunk)->Value(off);
+                if (!std::isfinite(value)) {
+                    return make_error<double>(ErrorCode::CONVERSION_ERROR,
+                                              "safe_get_double non-finite value",
+                                              "DataConversionUtils");
+                }
+                return Result<double>(value);
+            }
+            case arrow::Type::FLOAT: {
+                const double value = static_cast<double>(
+                    static_cast<const arrow::FloatArray*>(chunk)->Value(off));
+                if (!std::isfinite(value)) {
+                    return make_error<double>(ErrorCode::CONVERSION_ERROR,
+                                              "safe_get_double non-finite value",
+                                              "DataConversionUtils");
+                }
+                return Result<double>(value);
+            }
             case arrow::Type::INT64:
                 return Result<double>(static_cast<double>(
                     static_cast<const arrow::Int64Array*>(chunk)->Value(off)));
@@ -311,7 +325,12 @@ Result<double> DataConversionUtils::safe_get_double(
                     s = static_cast<const arrow::LargeStringArray*>(chunk)->GetString(off);
                 }
                 try {
-                    return Result<double>(std::stod(s));
+                    std::size_t consumed = 0;
+                    const double value = std::stod(s, &consumed);
+                    if (consumed != s.size() || !std::isfinite(value)) {
+                        throw std::invalid_argument("partial or non-finite numeric text");
+                    }
+                    return Result<double>(value);
                 } catch (const std::exception& e) {
                     WARN("safe_get_double: bad value '" + s + "' in column " + column_name +
                          " at row " + std::to_string(row) + " (" + e.what() + ")");
@@ -472,15 +491,6 @@ Result<std::string> DataConversionUtils::safe_get_string(
             case arrow::Type::LARGE_STRING:
                 return Result<std::string>(
                     static_cast<const arrow::LargeStringArray*>(chunk)->GetString(off));
-            case arrow::Type::DOUBLE:
-                return Result<std::string>(std::to_string(
-                    static_cast<const arrow::DoubleArray*>(chunk)->Value(off)));
-            case arrow::Type::INT64:
-                return Result<std::string>(std::to_string(
-                    static_cast<const arrow::Int64Array*>(chunk)->Value(off)));
-            case arrow::Type::INT32:
-                return Result<std::string>(std::to_string(
-                    static_cast<const arrow::Int32Array*>(chunk)->Value(off)));
             default: {
                 const std::string actual = chunk->type()->ToString();
                 ERROR("safe_get_string: unsupported Arrow type '" + actual + "' in column " +

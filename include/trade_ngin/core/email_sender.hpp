@@ -83,23 +83,6 @@ public:
         const std::map<std::string, double>& strategy_metrics,
         const std::vector<ExecutionReport>& executions,
         const std::string& date,
-        bool is_daily_strategy,
-        const std::unordered_map<std::string, double>& current_prices,
-        std::shared_ptr<DatabaseInterface> db,
-        const std::unordered_map<std::string, Position>& yesterday_positions,
-        const std::unordered_map<std::string, double>& yesterday_close_prices,
-        const std::unordered_map<std::string, double>& two_days_ago_close_prices,
-        const std::map<std::string, double>& yesterday_daily_metrics,
-        const std::string& chart_strategy_id,
-        const std::string& chart_portfolio_id
-    );
-
-    std::string generate_trading_report_body(
-        const std::unordered_map<std::string, Position>& positions,
-        const std::optional<RiskResult>& risk_metrics,
-        const std::map<std::string, double>& strategy_metrics,
-        const std::vector<ExecutionReport>& executions,
-        const std::string& date,
         bool is_daily_strategy = true,
         const std::unordered_map<std::string, double>& current_prices = {},
         std::shared_ptr<DatabaseInterface> db = nullptr,
@@ -172,7 +155,7 @@ private:
     std::string chart_base64_;  // Store equity curve chart data for embedding in email
     std::string pnl_by_symbol_base64_;  // Store PnL by symbol chart data
     std::string daily_pnl_base64_;  // Store daily PnL chart data
-    std::string total_transaction_costs_base64_; // Store cumulative transaction costs 
+    std::string total_transaction_costs_base64_; // Store cumulative transaction costs
     std::string margin_posted_base64_; //Store total margin posted
     std::string portfolio_composition_base64_; //Store portfolio composition
     std::string cumulative_pnl_by_symbol_base64_; //Store cumalative pnl

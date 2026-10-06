@@ -1,6 +1,7 @@
 #include "trade_ngin/apps/qt_processed_report.hpp"
 #include "trade_ngin/portfolio/qt_wire.hpp"
 #include "trade_ngin/data/postgres_database.hpp"
+#include "qt_test_build_identity.hpp"
 #include <gtest/gtest.h>
 #include <algorithm>
 #include <cstdint>
@@ -64,7 +65,7 @@ Json evidence(const std::vector<Leg>& legs={{"synthetic-alpha","SYN","4","5"},{"
         {"draft_revision",payload["draft_revision"]},{"source_digest",payload["source_digest"]},
         {"provenance_digest",payload["provenance_digest"]},{"read_set_digest",payload["read_set_digest"]},
         {"selected_book_digest",digest},{"payload_digest",payload["payload_digest"]},
-        {"policy_version","synthetic-policy-v1"},{"evaluator_build","local-qt-controlled"},
+        {"policy_version","synthetic-policy-v1"},{"evaluator_build",TRADE_NGIN_GIT_SHA},
         {"availability","ready"},{"state","confirmed_decision"},{"payload",payload},
         {"read_set_payload",{{"saved_accounting",before}}}};
     Json reference={{"schema_version","qt-desk-decision/v1"},{"decision_id",decision_id},

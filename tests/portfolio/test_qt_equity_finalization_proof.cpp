@@ -2,6 +2,7 @@
 #include "trade_ngin/apps/qt_equity_prior_finalization.hpp"
 #include "trade_ngin/data/qt_desk_current_facts.hpp"
 #include "trade_ngin/core/qt_sha256.hpp"
+#include "qt_test_build_identity.hpp"
 #include <gtest/gtest.h>
 #include <filesystem>
 #include <fstream>
@@ -10,7 +11,7 @@ namespace {
 using J=nlohmann::json;
 std::string bytes(const J& j){auto r=canonical_qt_desk_source_json(j);if(r.is_error())throw std::runtime_error("fixture source bytes");return r.value();}
 std::string digest(const J& j){auto r=qt_sha256_hex(bytes(j));if(r.is_error())throw std::runtime_error("fixture hash");return r.value();}
-J fixture(){std::ifstream f(std::filesystem::path(__FILE__).parent_path().parent_path()/"contracts/qt-equity-finalization-wire.json");if(!f.good())throw std::runtime_error("missing fixture");return J::parse(f);}
+J fixture(){std::ifstream f(std::filesystem::path(__FILE__).parent_path().parent_path()/"contracts/qt-equity-finalization-wire.json");if(!f.good())throw std::runtime_error("missing fixture");return trade_ngin::test::fixture_for_compiled_build(J::parse(f));}
 void fingerprint(J& r){auto copy=r;copy.erase("context_fingerprint");r["context_fingerprint"]=digest(copy);}
 J calculated(const J& r){auto out=J::parse(r.at("original_output_json").get<std::string>());auto x=produce_qt_equity_prior_finalization(r.at("decision"),r.at("original_input"),out,r.at("market_payload"),r.at("actions_payload"),r.at("before_financial"),r.at("provenance"));if(x.is_error())throw std::runtime_error("actual finalizer fixture unavailable");return x.value();}
 }

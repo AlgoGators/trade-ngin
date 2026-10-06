@@ -398,16 +398,13 @@ TEST(ConversionUtilsSafeGet, Int64FromDoubleTruncates) {
     EXPECT_EQ(r.value(), 42);
 }
 
-// safe_get_string: doubles are stringified so callers can store opaque
-// label-like values without a separate type branch.
-TEST(ConversionUtilsSafeGet, StringFromDoubleStringifies) {
+// Identifiers must not be synthesized from numeric storage; callers only get
+// strings from actual Arrow string columns.
+TEST(ConversionUtilsSafeGet, StringFromDoubleIsRejected) {
     auto col = make_double_column({1.5});
     auto r = DataConversionUtils::safe_get_string(col, 0, "label");
-    ASSERT_TRUE(r.is_ok()) << r.error()->what();
-    // std::to_string(1.5) produces "1.500000" with default precision -- the
-    // contract is "some string representation", so we accept the natural
-    // form rather than pinning a specific format.
-    EXPECT_NE(r.value().find("1.5"), std::string::npos);
+    ASSERT_TRUE(r.is_error());
+    EXPECT_EQ(r.error()->code(), ErrorCode::CONVERSION_ERROR);
 }
 
 // Null column pointer -> error, not a crash.

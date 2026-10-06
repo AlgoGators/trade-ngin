@@ -9,15 +9,24 @@ import unittest
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
-from tests.qt_test_artifacts import artifact
+from tests.qt_test_artifacts import artifact, build_identity
 
 EXECUTABLE = artifact("qt_evaluator")
 FIXTURE = Path(__file__).with_name('qt-eval-v1.json')
 
 
 class QtEvaluatorCliContract(unittest.TestCase):
+    def fixture_request(self, name):
+        request = json.loads(FIXTURE.read_text())[name]
+        if request.get('evaluator_build') == 'local-qt-controlled':
+            request['evaluator_build'] = build_identity()
+        return request
+
     def request(self):
-        return json.loads(FIXTURE.read_text())['selected_book']
+        return self.fixture_request('selected_book')
+
+    def test_fixture_is_bound_to_the_compiled_reviewed_build(self):
+        self.assertEqual(self.request()['evaluator_build'], build_identity())
 
     def invoke(self, data):
         self.assertTrue(EXECUTABLE.is_file(), 'Actual qt_evaluator executable must be built')
@@ -86,7 +95,7 @@ class QtEvaluatorCliContract(unittest.TestCase):
                 self.assertNotIn('completeness', value)
 
     def test_diagnostic_advice_does_not_replace_the_evaluated_candidate(self):
-        request = json.loads(FIXTURE.read_text())['draft_diagnostic']
+        request = self.fixture_request('draft_diagnostic')
         # The optimizer needs 21 observations. The parser fixture has only
         # three, so supply a complete declared synthetic history for this
         # real-kernel positive case, consistently for both evaluation stages.

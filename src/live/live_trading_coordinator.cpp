@@ -10,6 +10,8 @@
 #include "trade_ngin/live/live_pnl_manager.hpp"
 #include "trade_ngin/live/live_price_manager.hpp"
 #include "trade_ngin/storage/live_results_manager.hpp"
+#include <algorithm>
+#include <cctype>
 
 namespace trade_ngin {
 
@@ -19,6 +21,11 @@ LiveTradingCoordinator::LiveTradingCoordinator(std::shared_ptr<PostgresDatabase>
     : config_(config), db_(db), registry_(&registry) {
     if (!db_) {
         throw std::invalid_argument("Database connection cannot be null");
+    }
+    if (config_.portfolio_id.empty() ||
+        std::all_of(config_.portfolio_id.begin(), config_.portfolio_id.end(),
+                    [](unsigned char ch) { return std::isspace(ch) != 0; })) {
+        throw std::invalid_argument("portfolio_id must not be empty");
     }
 }
 
@@ -42,9 +49,13 @@ Result<void> LiveTradingCoordinator::initialize() {
         metrics_calculator_ = std::make_unique<LiveMetricsCalculator>();
 
         // Initialize LiveResultsManager
-        results_manager_ = std::make_unique<LiveResultsManager>(
-            db_, config_.store_results, config_.strategy_id, config_.portfolio_id,
-            config_.strategy_name);
+        if(config_.strategy_name.empty()) {
+            results_manager_ = std::make_unique<LiveResultsManager>(
+                db_, config_.store_results, config_.strategy_id, config_.portfolio_id);
+        } else {
+            results_manager_ = std::make_unique<LiveResultsManager>(
+                db_,config_.store_results,config_.strategy_id,config_.portfolio_id,"system",config_.strategy_name);
+        }
 
         // Initialize LivePriceManager
         price_manager_ = std::make_unique<LivePriceManager>(db_);
@@ -234,12 +245,7 @@ Result<void> LiveTradingCoordinator::store_results(const TradingMetrics& metrics
     }
 }
 
-// Drift-D: the COORDINATOR's load_commissions_by_symbol() wrapper was deleted as dead code.
-// The LiveDataLoader method it wrapped is alive and called every run by
-// live_equity_mean_reversion.cpp, so read this as "the wrapper is gone", not "the function
-// is gone" -- the previous wording said the latter and sent a reader looking for a deletion
-// that never happened. The two futures runners dropped their own calls (the result map was
-// unused there); the equity runner still uses the figures for its per-symbol CSV export.
+// load_commissions_by_symbol() was deleted as dead code. See header for rationale.
 
 Result<std::vector<Position>> LiveTradingCoordinator::load_positions_for_export(
     const Timestamp& date) const {
@@ -257,7 +263,7 @@ Result<int> LiveTradingCoordinator::get_trading_days_count() const {
                                "LiveTradingCoordinator");
     }
 
-    return data_loader_->get_live_results_count(config_.strategy_id);
+    return data_loader_->get_live_results_count(config_.strategy_id, config_.portfolio_id);
 }
 
 Result<void> LiveTradingCoordinator::validate_connection() const {

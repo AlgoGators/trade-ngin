@@ -64,7 +64,7 @@ public:
                                           const std::string& strategy_id,
                                           const std::string& strategy_name,
                                           const std::string& portfolio_id,
-                                          const std::string& table_name = "trading.executions") = 0;
+                                          const std::string& table_name = "trading.executions", const std::string& portfolio_type = "system") = 0;
 
     /**
      * @brief Store position data
@@ -74,13 +74,19 @@ public:
      * @param strategy_name Individual strategy name (e.g., TREND_FOLLOWING)
      * @param portfolio_id Portfolio identifier (e.g., BASE_PORTFOLIO, CONSERVATIVE_PORTFOLIO)
      * @param table_name Name of the table to insert into
+     * @param portfolio_type Which stream this belongs to: "system" for the engine's own
+     *        signal-driven output, "qt" for the human-adjusted portfolio that is actually
+     *        executed. Orthogonal to portfolio_id -- BASE_PORTFOLIO and CONSERVATIVE_PORTFOLIO
+     *        each have both streams. Defaults to "system" so existing callers are unchanged.
+     *        Ignored (with a warning) if the dual-portfolio migration has not been applied.
      * @return Result indicating success or failure
      */
     virtual Result<void> store_positions(const std::vector<Position>& positions,
                                          const std::string& strategy_id,
                                          const std::string& strategy_name,
                                          const std::string& portfolio_id,
-                                         const std::string& table_name = "trading.positions") = 0;
+                                         const std::string& table_name = "trading.positions",
+                                         const std::string& portfolio_type = "system") = 0;
 
     /**
      * @brief Get latest market prices for symbols
@@ -103,12 +109,16 @@ public:
      * @param portfolio_id Portfolio identifier (e.g., BASE_PORTFOLIO, CONSERVATIVE_PORTFOLIO)
      * @param date Date to load positions for
      * @param table_name Name of the positions table
+     * @param portfolio_type Which stream to read: "system" or "qt". Defaults to "system" so
+     *        existing callers are unchanged. Ignored (with a warning) if the dual-portfolio
+     *        migration has not been applied.
      * @return Result containing map of symbol to position
      */
     virtual Result<std::unordered_map<std::string, Position>> load_positions_by_date(
         const std::string& strategy_id, const std::string& strategy_name,
         const std::string& portfolio_id, const Timestamp& date,
-        const std::string& table_name = "trading.positions") = 0;
+        const std::string& table_name = "trading.positions",
+        const std::string& portfolio_type = "system") = 0;
 
     /**
      * @brief Store strategy signals
@@ -155,7 +165,7 @@ public:
      */
     virtual Result<void> store_backtest_executions(
         const std::vector<ExecutionReport>& executions, const std::string& run_id,
-        const std::string& portfolio_id = "BASE_PORTFOLIO",
+        const std::string& portfolio_id,
         const std::string& table_name = "backtest.executions") = 0;
 
     /**
@@ -170,8 +180,25 @@ public:
     virtual Result<void> store_backtest_signals(
         const std::unordered_map<std::string, double>& signals, const std::string& strategy_id,
         const std::string& run_id, const Timestamp& timestamp,
-        const std::string& portfolio_id = "BASE_PORTFOLIO",
+        const std::string& portfolio_id,
         const std::string& table_name = "backtest.signals") = 0;
+
+    /**
+     * @brief Store backtest run metadata
+     * @param run_id Backtest run identifier
+     * @param name Run name
+     * @param description Run description
+     * @param start_date Start date
+     * @param end_date End date
+     * @param hyperparameters JSON configuration
+     * @param table_name Name of the table to insert into
+     * @return Result indicating success or failure
+     */
+    virtual Result<void> store_backtest_metadata(
+        const std::string& run_id, const std::string& name, const std::string& description,
+        const Timestamp& start_date, const Timestamp& end_date,
+        const nlohmann::json& hyperparameters, const std::string& portfolio_id,
+        const std::string& table_name = "backtest.run_metadata") = 0;
 
     // ============================================================================
     // NEW METHODS FOR LIVE TRADING DATA STORAGE
@@ -242,7 +269,8 @@ public:
         double margin_leverage, double margin_cushion, double max_correlation, double jump_risk,
         double risk_scale, double gross_notional, double net_notional, int active_positions,
         double total_transaction_costs, double margin_posted, double cash_available,
-        const nlohmann::json& config, const std::string& table_name = "trading.live_results") = 0;
+        const nlohmann::json& config, const std::string& table_name,
+        const std::string& portfolio_id, const std::string& portfolio_type = "system") = 0;
 
     /**
      * @brief Fetch previous day's cumulative aggregates from live_results
@@ -255,7 +283,7 @@ public:
      */
     virtual Result<std::tuple<double, double, double>> get_previous_live_aggregates(
         const std::string& strategy_id, const std::string& portfolio_id, const Timestamp& date,
-        const std::string& table_name = "trading.live_results") = 0;
+        const std::string& table_name = "trading.live_results", const std::string& portfolio_type = "system") = 0;
 
     /**
      * @brief Store live trading equity curve point
@@ -269,7 +297,8 @@ public:
     virtual Result<void> store_trading_equity_curve(
         const std::string& strategy_id, const Timestamp& timestamp, double equity,
         const std::string& portfolio_id,
-        const std::string& table_name = "trading.equity_curve") = 0;
+        const std::string& table_name = "trading.equity_curve",
+        const std::string& portfolio_type = "system") = 0;
 
     /**
      * @brief Store multiple live trading equity curve points
@@ -283,7 +312,7 @@ public:
         const std::string& strategy_id,
         const std::vector<std::pair<Timestamp, double>>& equity_points,
         const std::string& portfolio_id,
-        const std::string& table_name = "trading.equity_curve") = 0;
+        const std::string& table_name = "trading.equity_curve", const std::string& portfolio_type = "system") = 0;
 
 protected:
     /**

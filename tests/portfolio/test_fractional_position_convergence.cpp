@@ -52,8 +52,9 @@ public:
         metadata_.name = "Fixed Fractional Strategy";
     }
 
-    Result<void> on_data(const std::vector<Bar>& data) override {
-        auto base = BaseStrategy::on_data(data);
+    Result<void> on_data(const std::vector<Bar>& data,
+                         StrategyConsumptionTrace* trace = nullptr) override {
+        auto base = BaseStrategy::on_data(data, trace);
         if (base.is_error()) return base;
         for (const auto& bar : data) {
             Position pos;

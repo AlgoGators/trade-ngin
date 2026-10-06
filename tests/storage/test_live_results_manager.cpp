@@ -204,7 +204,7 @@ protected:
                                                  const std::string& portfolio_id,
                                                  const std::string& strategy_name) {
         return std::make_unique<LiveResultsManager>(db_, /*store_enabled=*/true, strategy_id,
-                                                    portfolio_id, strategy_name);
+                                                    portfolio_id, "system", strategy_name);
     }
     std::shared_ptr<MockPostgresDatabase> db_;
 };

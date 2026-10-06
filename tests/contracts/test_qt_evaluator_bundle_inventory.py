@@ -67,6 +67,53 @@ libc.so.6 => /usr/lib/libc.so.6 (0x00007f02)
             self.assertEqual(rows["libtrade_ngin.so"]["role"], "engine")
             self.assertEqual(rows["ld-linux-x86-64.so.2"]["role"], "loader")
 
+    def test_inventory_accepts_a_real_soname_symlink_and_seals_its_target(self):
+        """Removing SONAME-symlink support must break canonical Linux bundle discovery."""
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            evaluator = root / "qt_evaluator"
+            engine = root / "libtrade_ngin.so"
+            evaluator.write_bytes(b"evaluator")
+            engine.write_bytes(b"engine")
+            crypto_target = root / "libcrypto.so.3.4.5"
+            crypto_target.write_bytes(b"crypto")
+            crypto = root / "libcrypto.so.3"
+            crypto.symlink_to(crypto_target.name)
+            loader = root / "ld-linux-x86-64.so.2"
+            loader.write_bytes(b"loader")
+
+            value = load_tool().inventory(
+                evaluator, engine, "a982e42", "GNU", "14.2.0", {
+                    "libtrade_ngin.so": engine,
+                    "libcrypto.so.3": crypto,
+                    "ld-linux-x86-64.so.2": loader,
+                })
+
+            crypto_row = next(row for row in value["artifacts"]
+                              if row["name"] == "libcrypto.so.3")
+            self.assertEqual(crypto_row["source"], str(crypto_target.resolve()))
+
+    def test_inventory_rejects_a_dependency_path_whose_leaf_is_not_its_soname(self):
+        """Accepting symlinks must not allow an ldd name to alias an unrelated leaf path."""
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            evaluator = root / "qt_evaluator"
+            engine = root / "libtrade_ngin.so"
+            evaluator.write_bytes(b"evaluator")
+            engine.write_bytes(b"engine")
+            loader = root / "ld-linux-x86-64.so.2"
+            loader.write_bytes(b"loader")
+            substituted = root / "libnotcrypto.so.3"
+            substituted.write_bytes(b"not crypto")
+
+            with self.assertRaisesRegex(ValueError, "invalid_native_dependency"):
+                load_tool().inventory(
+                    evaluator, engine, "a982e42", "GNU", "14.2.0", {
+                        "libtrade_ngin.so": engine,
+                        "libcrypto.so.3": substituted,
+                        "ld-linux-x86-64.so.2": loader,
+                    })
+
 
 if __name__ == "__main__":
     unittest.main()

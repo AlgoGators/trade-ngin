@@ -72,7 +72,7 @@
         "required": ["name", "kind", "install_path", "size", "sha256"],
         "properties": {
           "name": {
-            "enum": ["libtrade_ngin.so", "live_equity_mean_reversion", "live_portfolio", "live_portfolio_conservative", "qt_desk_prepare_sources", "qt_desk_run", "qt_desk_worker", "qt_evaluator"]
+            "enum": ["libtrade_ngin.so", "live_equity_mr", "live_portfolio", "live_portfolio_conservative", "qt_desk_prepare_sources", "qt_desk_run", "qt_desk_worker", "qt_evaluator"]
           },
           "kind": {"enum": ["engine", "system_publisher", "desk_tool", "desk_worker", "evaluator"]},
           "install_path": {"type": "string", "pattern": "^bin/Release/[A-Za-z0-9_.-]+$"},

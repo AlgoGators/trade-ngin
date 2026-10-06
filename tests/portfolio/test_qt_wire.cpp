@@ -1,6 +1,7 @@
 #include "trade_ngin/portfolio/qt_wire.hpp"
 #include "trade_ngin/core/qt_sha256.hpp"
 #include "trade_ngin/portfolio/qt_evaluation.hpp"
+#include "qt_test_build_identity.hpp"
 
 #include <gtest/gtest.h>
 #include <fstream>
@@ -79,7 +80,8 @@ TEST(QtWireTest, ParsesCompleteSelectedAndDiagnosticSnapshots) {
                          "contracts" / "qt-eval-v1.json";
     std::ifstream file(fixture, std::ios::binary);
     ASSERT_TRUE(file.good());
-    const auto examples = nlohmann::json::parse(file);
+    const auto examples = trade_ngin::test::fixture_for_compiled_build(
+        nlohmann::json::parse(file));
     auto selected = parse_qt_evaluation_request(examples.at("selected_book").dump());
     ASSERT_TRUE(selected.is_ok()) << selected.error()->what();
     EXPECT_EQ(selected.value().operation, QtEvaluationOperation::SelectedBook);
@@ -100,7 +102,8 @@ TEST(QtWireTest, RejectsMissingAndMismatchedEvaluatorEvidence) {
                          "contracts" / "qt-eval-v1.json";
     std::ifstream file(fixture, std::ios::binary);
     ASSERT_TRUE(file.good());
-    const auto examples = nlohmann::json::parse(file);
+    const auto examples = trade_ngin::test::fixture_for_compiled_build(
+        nlohmann::json::parse(file));
     auto selected = examples.at("selected_book");
     selected["evaluator_build"] = "wrong-build";
     EXPECT_TRUE(parse_qt_evaluation_request(selected.dump()).is_error());
@@ -138,7 +141,8 @@ TEST(QtWireTest, CanonicalEvalRequestSortsCompleteComponentKeys) {
                          "contracts" / "qt-eval-v1.json";
     std::ifstream file(fixture, std::ios::binary);
     ASSERT_TRUE(file.good());
-    const auto selected = nlohmann::json::parse(file).at("selected_book");
+    const auto selected = trade_ngin::test::fixture_for_compiled_build(
+        nlohmann::json::parse(file).at("selected_book"));
     auto reversed = selected;
     std::reverse(reversed["context"]["slots"].begin(), reversed["context"]["slots"].end());
     std::reverse(reversed["proposal"]["quantities"].begin(), reversed["proposal"]["quantities"].end());

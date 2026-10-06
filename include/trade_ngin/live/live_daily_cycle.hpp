@@ -207,11 +207,17 @@ public:
      * @param min_bars the count below which a symbol is reported as thin: 21 bars
      *        is what a full 20-observation ADV and 20 real returns require
      */
+    struct EquityCostFeedSymbol {
+        transaction_cost::MarketDataObservation market_data;
+        double previous_close_forwarded{0.0};
+    };
     static CostFeedResult feed_cost_model(
         transaction_cost::TransactionCostManager& tcm,
         const std::vector<std::string>& symbols,
         const std::unordered_map<std::string, std::vector<Bar>>& bars_by_symbol,
-        size_t min_bars = 21) {
+        size_t min_bars = 21,
+        std::unordered_map<std::string,EquityCostFeedSymbol>* observations = nullptr) {
+        if(observations)observations->clear();
 
         CostFeedResult out;
         for (const auto& symbol : symbols) {
@@ -230,7 +236,9 @@ public:
             double prev_close = 0.0;
             for (const auto& bar : bars) {
                 const double close = static_cast<double>(bar.close);
-                tcm.update_market_data(symbol, bar.volume, close, prev_close);
+                auto* observed=observations?&(*observations)[symbol]:nullptr;
+                if(observed)observed->previous_close_forwarded=prev_close;
+                tcm.update_market_data(symbol, bar.volume, close, prev_close,observed?&observed->market_data:nullptr);
                 if (prev_close > 0.0 && close > 0.0) ++out.returns_fed;
                 prev_close = close;
                 ++out.bars_fed;
@@ -458,7 +466,8 @@ public:
         const std::unordered_map<std::string, double>& t1_closes,
         const std::vector<Bar>& bars,
         const Timestamp& now,
-        int max_staleness_days = ExecutionPriceResolver::kDefaultMaxStalenessDays) {
+        int max_staleness_days = ExecutionPriceResolver::kDefaultMaxStalenessDays,
+        DailyExecutionObservation* observations = nullptr) {
 
         ExecutionOutcome outcome;
 
@@ -482,7 +491,7 @@ public:
         // keep MARK_FALLBACK, where that field holds a mark and the fallback is right.
         auto exec_result = execution_manager.generate_daily_executions(
             positions, previous_positions, execution_prices, now,
-            PricingPolicy::STRICT, &outcome.unpriced);
+            PricingPolicy::STRICT, &outcome.unpriced,observations);
         if (exec_result.is_error()) {
             return make_error<ExecutionOutcome>(exec_result.error()->code(),
                                                 exec_result.error()->what(),

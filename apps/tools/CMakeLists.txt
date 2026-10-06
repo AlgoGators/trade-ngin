@@ -95,9 +95,9 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND CMAKE_SYSTEM_PROCESSOR STREQUAL "x86_6
     endif()
 endif()
 
-# T4 supplies QT_DESK_WORKER_TARGET from its isolated qt_desk_worker.cmake;
-# T6 adds that one include before this function is called. Until then the
-# manifest explicitly reports the pending worker instead of inventing a hash.
+# The worker is a mandatory Linux production artifact. Refer to the target
+# directly: normal CMake variables are directory-scoped, while targets are
+# visible from the parent scope that creates the release graph.
 set(TRADE_NGIN_TOOLCHAIN_IMAGE_DIGEST "" CACHE STRING "Immutable sha256 digest of the Release build image")
 set(TRADE_NGIN_IMAGE_DIGEST "" CACHE STRING "Immutable sha256 digest of the pushed runtime image")
 set(TRADE_NGIN_RELEASE_MANIFEST "${CMAKE_BINARY_DIR}/release-artifacts.json" CACHE FILEPATH "release-artifacts/v1 output")
@@ -106,19 +106,16 @@ function(trade_ngin_add_release_artifacts_target)
     if(NOT QT_EVALUATOR_PYTHON OR NOT TARGET qt_evaluator_bundle)
         return()
     endif()
-    set(worker_json "")
-    set(require_worker false)
+    if(NOT TARGET qt_desk_worker)
+        message(FATAL_ERROR "release_artifacts_invalid: qt_desk_worker target is required")
+    endif()
     set(release_dependencies
         qt_evaluator_bundle trade_ngin qt_evaluator qt_desk_prepare_sources qt_desk_run
-        live_portfolio live_portfolio_conservative live_equity_mean_reversion)
-    if(DEFINED QT_DESK_WORKER_TARGET AND TARGET "${QT_DESK_WORKER_TARGET}")
-        set(worker_json ",\"qt_desk_worker\":{\"source\":\"$<TARGET_FILE:${QT_DESK_WORKER_TARGET}>\",\"install_path\":\"bin/Release/qt_desk_worker\",\"kind\":\"desk_worker\"}")
-        set(require_worker true)
-        list(APPEND release_dependencies "${QT_DESK_WORKER_TARGET}")
-    endif()
+        live_portfolio live_portfolio_conservative live_equity_mr
+        qt_desk_worker)
     set(inputs "${CMAKE_BINARY_DIR}/release-artifacts-inputs-$<CONFIG>.json")
     file(GENERATE OUTPUT "${inputs}" CONTENT
-        "{\"source\":{\"git_sha_full\":\"${TRADE_NGIN_GIT_SHA_FULL}\",\"git_sha_short\":\"${TRADE_NGIN_GIT_SHA}\",\"dirty\":false},\"build\":{\"build_type\":\"${CMAKE_BUILD_TYPE}\",\"compiler\":{\"id\":\"${CMAKE_CXX_COMPILER_ID}\",\"version\":\"${CMAKE_CXX_COMPILER_VERSION}\"},\"cxx_standard\":\"20\",\"toolchain_image_digest\":\"${TRADE_NGIN_TOOLCHAIN_IMAGE_DIGEST}\",\"cmake_inputs\":[\"CMAKE_BUILD_TYPE=${CMAKE_BUILD_TYPE}\",\"CMAKE_CXX_FLAGS=${CMAKE_CXX_FLAGS}\",\"CMAKE_CXX_STANDARD=20\",\"NLopt_DIR=${NLopt_DIR}\"]},\"image_digest\":\"${TRADE_NGIN_IMAGE_DIGEST}\",\"expected_bundle_sha256\":\"auto\",\"artifacts\":{\"libtrade_ngin.so\":{\"source\":\"$<TARGET_FILE:trade_ngin>\",\"install_path\":\"bin/Release/libtrade_ngin.so\",\"kind\":\"engine\"},\"live_equity_mean_reversion\":{\"source\":\"$<TARGET_FILE:live_equity_mean_reversion>\",\"install_path\":\"bin/Release/live_equity_mean_reversion\",\"kind\":\"system_publisher\"},\"live_portfolio\":{\"source\":\"$<TARGET_FILE:live_portfolio>\",\"install_path\":\"bin/Release/live_portfolio\",\"kind\":\"system_publisher\"},\"live_portfolio_conservative\":{\"source\":\"$<TARGET_FILE:live_portfolio_conservative>\",\"install_path\":\"bin/Release/live_portfolio_conservative\",\"kind\":\"system_publisher\"},\"qt_desk_prepare_sources\":{\"source\":\"$<TARGET_FILE:qt_desk_prepare_sources>\",\"install_path\":\"bin/Release/qt_desk_prepare_sources\",\"kind\":\"desk_tool\"},\"qt_desk_run\":{\"source\":\"$<TARGET_FILE:qt_desk_run>\",\"install_path\":\"bin/Release/qt_desk_run\",\"kind\":\"desk_tool\"},\"qt_evaluator\":{\"source\":\"$<TARGET_FILE:qt_evaluator>\",\"install_path\":\"bin/Release/qt_evaluator\",\"kind\":\"evaluator\"}${worker_json}},\"require_worker\":${require_worker}}\n")
+        "{\"source\":{\"git_sha_full\":\"${TRADE_NGIN_GIT_SHA_FULL}\",\"git_sha_short\":\"${TRADE_NGIN_GIT_SHA}\",\"dirty\":false},\"build\":{\"build_type\":\"${CMAKE_BUILD_TYPE}\",\"compiler\":{\"id\":\"${CMAKE_CXX_COMPILER_ID}\",\"version\":\"${CMAKE_CXX_COMPILER_VERSION}\"},\"cxx_standard\":\"20\",\"toolchain_image_digest\":\"${TRADE_NGIN_TOOLCHAIN_IMAGE_DIGEST}\",\"cmake_inputs\":[\"CMAKE_BUILD_TYPE=${CMAKE_BUILD_TYPE}\",\"CMAKE_CXX_FLAGS=${CMAKE_CXX_FLAGS}\",\"CMAKE_CXX_STANDARD=20\",\"NLopt_DIR=${NLopt_DIR}\"]},\"image_digest\":\"${TRADE_NGIN_IMAGE_DIGEST}\",\"expected_bundle_sha256\":\"auto\",\"artifacts\":{\"libtrade_ngin.so\":{\"source\":\"$<TARGET_FILE:trade_ngin>\",\"install_path\":\"bin/Release/libtrade_ngin.so\",\"kind\":\"engine\"},\"live_equity_mr\":{\"source\":\"$<TARGET_FILE:live_equity_mr>\",\"install_path\":\"bin/Release/live_equity_mr\",\"kind\":\"system_publisher\"},\"live_portfolio\":{\"source\":\"$<TARGET_FILE:live_portfolio>\",\"install_path\":\"bin/Release/live_portfolio\",\"kind\":\"system_publisher\"},\"live_portfolio_conservative\":{\"source\":\"$<TARGET_FILE:live_portfolio_conservative>\",\"install_path\":\"bin/Release/live_portfolio_conservative\",\"kind\":\"system_publisher\"},\"qt_desk_prepare_sources\":{\"source\":\"$<TARGET_FILE:qt_desk_prepare_sources>\",\"install_path\":\"bin/Release/qt_desk_prepare_sources\",\"kind\":\"desk_tool\"},\"qt_desk_run\":{\"source\":\"$<TARGET_FILE:qt_desk_run>\",\"install_path\":\"bin/Release/qt_desk_run\",\"kind\":\"desk_tool\"},\"qt_evaluator\":{\"source\":\"$<TARGET_FILE:qt_evaluator>\",\"install_path\":\"bin/Release/qt_evaluator\",\"kind\":\"evaluator\"},\"qt_desk_worker\":{\"source\":\"$<TARGET_FILE:qt_desk_worker>\",\"install_path\":\"bin/Release/qt_desk_worker\",\"kind\":\"desk_worker\"}},\"require_worker\":true}\n")
     add_custom_target(release_artifacts
         COMMAND "${QT_EVALUATOR_PYTHON}" "${CMAKE_CURRENT_SOURCE_DIR}/release_artifacts.py"
             --create --inputs "${inputs}"

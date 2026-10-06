@@ -3,6 +3,9 @@ FROM ${RUNTIME_BASE_IMAGE}
 
 ARG TRADE_NGIN_GIT_SHA
 ARG TRADE_NGIN_GIT_SHA_FULL
+ARG APACHE_ARROW_APT_SOURCE_SHA256
+ARG TRADE_NGIN_BOOTSTRAP_APT_PACKAGES
+ARG TRADE_NGIN_RUNTIME_APT_PACKAGES
 LABEL org.opencontainers.image.revision="${TRADE_NGIN_GIT_SHA_FULL}" \
       org.algogators.trade-ngin.short-sha="${TRADE_NGIN_GIT_SHA}"
 
@@ -12,15 +15,23 @@ ENV DEBIAN_FRONTEND=noninteractive \
 
 # Runtime dependencies only. Compilation and tests happen once in the pinned CI
 # toolchain; this image packages those exact bytes and never edits source code.
-RUN apt-get update && apt-get install -y --no-install-recommends \
-        ca-certificates wget gnupg lsb-release \
+RUN test "${#APACHE_ARROW_APT_SOURCE_SHA256}" -eq 64 \
+    && printf '%s\n' "${APACHE_ARROW_APT_SOURCE_SHA256}" | grep -Eq '^[0-9a-f]+$' \
+    && test -n "${TRADE_NGIN_BOOTSTRAP_APT_PACKAGES}" \
+    && test -n "${TRADE_NGIN_RUNTIME_APT_PACKAGES}" \
+    && for package in ${TRADE_NGIN_BOOTSTRAP_APT_PACKAGES} ${TRADE_NGIN_RUNTIME_APT_PACKAGES}; do \
+         case "${package}" in *=?*) ;; *) echo "package_missing_exact_version: ${package}" >&2; exit 1 ;; esac; \
+       done \
+    && apt-get update && apt-get install -y --no-install-recommends \
+        ${TRADE_NGIN_BOOTSTRAP_APT_PACKAGES} \
     && wget -qO /tmp/apache-arrow-apt-source.deb \
         "https://apache.jfrog.io/artifactory/arrow/ubuntu/apache-arrow-apt-source-latest-$(lsb_release -cs).deb" \
+    && printf '%s  %s\n' "${APACHE_ARROW_APT_SOURCE_SHA256}" /tmp/apache-arrow-apt-source.deb \
+        | sha256sum -c - \
     && apt-get install -y --no-install-recommends /tmp/apache-arrow-apt-source.deb \
     && rm /tmp/apache-arrow-apt-source.deb \
     && apt-get update && apt-get install -y --no-install-recommends \
-        libarrow-dev libarrow-dataset-dev libpq5 libnlopt0 libcurl4t64 \
-        cron gnuplot-nox procps tzdata \
+        ${TRADE_NGIN_RUNTIME_APT_PACKAGES} \
     && apt-get purge -y --auto-remove gnupg lsb-release \
     && rm -rf /var/lib/apt/lists/*
 
@@ -43,6 +54,7 @@ RUN test "${#TRADE_NGIN_GIT_SHA}" -ge 7 \
     && test "${TRADE_NGIN_GIT_SHA_FULL#${TRADE_NGIN_GIT_SHA}}" != "${TRADE_NGIN_GIT_SHA_FULL}" \
     && test -x /app/build/bin/Release/live_portfolio_conservative \
     && test -x /app/build/bin/Release/qt_evaluator \
+    && test -x /app/build/bin/Release/qt_desk_worker \
     && test -f /app/build/qt-evaluator-bundle/qt_evaluator_manifest.json \
     && (cd /app/build && sha256sum -c release-files.sha256) \
     && chmod 0644 /etc/cron.d/live_portfolio \

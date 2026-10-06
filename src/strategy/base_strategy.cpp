@@ -1,8 +1,6 @@
 // src/strategy/base_strategy.cpp
 
 #include "trade_ngin/strategy/base_strategy.hpp"
-#include <algorithm>
-#include <cmath>
 #include <iostream>
 #include <sstream>
 #include "trade_ngin/core/logger.hpp"
@@ -146,7 +144,18 @@ Result<void> BaseStrategy::resume() {
     return transition_state(StrategyState::RUNNING);
 }
 
-Result<void> BaseStrategy::on_data(const std::vector<Bar>& data) {
+Result<void> BaseStrategy::on_data(const std::vector<Bar>& data,
+                                   StrategyConsumptionTrace* trace) {
+    if (trace) {
+        *trace = {};
+        trace->profile = StrategyConsumptionProfile::Base;
+    }
+    return process_base_data(data, trace ? &trace->base_risk : nullptr);
+}
+
+Result<void> BaseStrategy::process_base_data(const std::vector<Bar>& data,
+                                              StrategyRiskConsumption* consumption) {
+    if (consumption) *consumption = {};
     if (data.empty()) {
         return Result<void>();
     }
@@ -186,7 +195,7 @@ Result<void> BaseStrategy::on_data(const std::vector<Bar>& data) {
         }
 
         // Check risk limits
-        return check_risk_limits();
+        return check_risk_limits(consumption);
     } catch (const std::exception& e) {
         return make_error<void>(ErrorCode::UNKNOWN_ERROR,
                                 std::string("Error processing data: ") + e.what(), "BaseStrategy");
@@ -199,18 +208,7 @@ Result<void> BaseStrategy::on_execution(const ExecutionReport& report) {
     try {
         auto& pos = positions_[report.symbol];
 
-        // Calculate realized PnL if closing position.
-        //
-        // E2-F27 / T-OR.4: realize on the CLOSED quantity, not on the whole fill. A fill that
-        // crosses zero -- long 100, SELL 150 -- closes 100 shares against the existing basis and
-        // OPENS 50 new ones at the fill price. Multiplying the price difference by the full 150
-        // books P&L on 50 shares that were never held (measured: 3000 where the trade made 2000),
-        // and the overstatement is permanent: it lands in pos.realized_pnl and metrics_.realized_pnl,
-        // which live_results and trading.positions.daily_realized_pnl are built from.
-        //
-        // Latent rather than live today only because MeanReversionStrategy cannot flip in a single
-        // bar and TF/TFF/TFS override on_execution; an optimizer-driven QP_FLIP/RISK_SCALE_FLIP on
-        // any non-overriding strategy reaches this path.
+        // Calculate realized PnL if closing position
         if ((pos.quantity > 0 && report.side == Side::SELL) ||
             (pos.quantity < 0 && report.side == Side::BUY)) {
             const double closed_quantity =
@@ -271,25 +269,8 @@ Result<void> BaseStrategy::on_execution(const ExecutionReport& report) {
 
         pos.last_update = report.fill_time;
 
-        // E2-F1 / E2-F9: `pos.realized_pnl` is GROSS trade P&L. Transaction costs are NOT
-        // netted into it.
-        //
-        // This field is persisted as trading.positions.daily_realized_pnl (via
-        // LiveDailyCycle::resolve_and_apply_basis), while live_results carries costs in
-        // their own column. Netting costs here made the row net-of-cost and the aggregate
-        // net-of-commission-only, so the two reconciled against different cost bases in the
-        // same run and the row-sums-to-aggregate check could never be exact.
-        //
-        // The reporting model now mirrors futures: realized is gross, costs are a separate
-        // column, and the consumer subtracts once --
-        //     daily_pnl = (daily_realized_pnl - daily_transaction_costs) + daily_unrealized_pnl
-        // Netting here as well would subtract them twice.
-        //
-        // metrics_ is deliberately left net. It is internal strategy bookkeeping, and
-        // metrics_.total_pnl feeds the drawdown gate in check_risk_limits(); making that
-        // gross would quietly loosen a risk limit, which is outside this fix. The asymmetry
-        // is intentional: metrics_ is a risk input, pos.realized_pnl is a reported figure.
-        double transaction_cost = static_cast<double>(report.total_transaction_costs);
+        // Position realized PnL is gross; costs remain separately reportable.
+        double transaction_cost = static_cast<double>(report.net_transaction_costs());
         metrics_.realized_pnl -= transaction_cost;
         metrics_.total_pnl -= transaction_cost;
 
@@ -356,12 +337,21 @@ std::unordered_map<std::string, Position> BaseStrategy::get_target_positions() c
     return positions_;
 }
 
-Result<void> BaseStrategy::update_position(const std::string& symbol, const Position& position) {
+Result<void> BaseStrategy::update_position(const std::string& symbol, const Position& position,
+                                            StrategyPositionLimitConsumption* consumption) {
+    if (consumption) {
+        *consumption = {};
+        consumption->supported = true;
+    }
     std::lock_guard<std::mutex> lock(mutex_);
 
     // Validate position against limits
-    if (config_.position_limits.count(symbol) > 0) {
-        if (std::abs(static_cast<double>(position.quantity)) > config_.position_limits.at(symbol)) {
+    const bool has_limit = config_.position_limits.count(symbol) > 0;
+    if (consumption) consumption->symbols[symbol].present = has_limit;
+    if (has_limit) {
+        const double limit = config_.position_limits.at(symbol);
+        if (consumption) consumption->symbols[symbol].value = limit;
+        if (std::abs(static_cast<double>(position.quantity)) > limit) {
             return make_error<void>(ErrorCode::POSITION_LIMIT_EXCEEDED,
                                     "Position exceeds limit for " + symbol, "BaseStrategy");
         }
@@ -388,7 +378,11 @@ Result<void> BaseStrategy::update_risk_limits(const RiskLimits& limits) {
     return check_risk_limits();
 }
 
-Result<void> BaseStrategy::check_risk_limits() {
+Result<void> BaseStrategy::check_risk_limits(StrategyRiskConsumption* consumption) {
+    if (consumption) {
+        *consumption = {};
+        consumption->supported = true;
+    }
     // Calculate total position value
     double total_value = 0.0;
 
@@ -401,8 +395,11 @@ Result<void> BaseStrategy::check_risk_limits() {
             continue;
         }
 
-        double contract_size =
-            config_.trading_params.count(symbol) > 0 ? config_.trading_params.at(symbol) : 1.0;
+        const bool has_multiplier = config_.trading_params.count(symbol) > 0;
+        if (consumption) consumption->trading_multipliers[symbol].present = has_multiplier;
+        double contract_size = has_multiplier ? config_.trading_params.at(symbol) : 1.0;
+        if (consumption && has_multiplier)
+            consumption->trading_multipliers[symbol].value = contract_size;
 
         double position_value =
             std::abs(static_cast<double>(position.quantity) *
@@ -411,15 +408,18 @@ Result<void> BaseStrategy::check_risk_limits() {
     }
 
     // Check leverage
+    if (consumption) consumption->capital_allocation = config_.capital_allocation;
     double leverage = total_value / config_.capital_allocation;
     if (total_value < 0.1) {  // If positions are essentially 0
         leverage = 0.0;       // No leverage when no positions
     }
 
     // Make sure we have a valid leverage limit
+    if (consumption) consumption->risk_max_leverage = risk_limits_.max_leverage;
     double max_leverage = static_cast<double>(risk_limits_.max_leverage);
     if (max_leverage <= 0.0) {
         // Use a reasonable default if not set
+        if (consumption) consumption->fallback_config_max_leverage = config_.max_leverage;
         max_leverage = config_.max_leverage > 0.0 ? config_.max_leverage : 2.0;
 
         // Log a warning that we're using a default value
@@ -441,6 +441,7 @@ Result<void> BaseStrategy::check_risk_limits() {
     const double MIN_DRAWDOWN_THRESHOLD = 0.001;  // Only trigger if drawdown is at least 0.1%
 
     // Only trigger error if drawdown exceeds limit AND is greater than minimum threshold
+    if (consumption) consumption->risk_max_drawdown = risk_limits_.max_drawdown;
     if (drawdown < -static_cast<double>(risk_limits_.max_drawdown) &&
         std::abs(drawdown) > MIN_DRAWDOWN_THRESHOLD) {
         return make_error<void>(ErrorCode::RISK_LIMIT_EXCEEDED,
@@ -564,6 +565,122 @@ void BaseStrategy::set_backtest_mode(bool is_backtest) {
 
 bool BaseStrategy::is_backtest_mode() const {
     return is_backtest_mode_;
+}
+
+Result<void> BaseStrategy::process_equity_execution(const ExecutionReport& report) {
+    std::lock_guard<std::mutex> lock(mutex_);
+
+    try {
+        auto& pos = positions_[report.symbol];
+
+        // Calculate realized PnL if closing position.
+        //
+        // E2-F27 / T-OR.4: realize on the CLOSED quantity, not on the whole fill. A fill that
+        // crosses zero -- long 100, SELL 150 -- closes 100 shares against the existing basis and
+        // OPENS 50 new ones at the fill price. Multiplying the price difference by the full 150
+        // books P&L on 50 shares that were never held (measured: 3000 where the trade made 2000),
+        // and the overstatement is permanent: it lands in pos.realized_pnl and metrics_.realized_pnl,
+        // which live_results and trading.positions.daily_realized_pnl are built from.
+        //
+        // Latent rather than live today only because MeanReversionStrategy cannot flip in a single
+        // bar and TF/TFF/TFS override on_execution; an optimizer-driven QP_FLIP/RISK_SCALE_FLIP on
+        // any non-overriding strategy reaches this path.
+        if ((pos.quantity > 0 && report.side == Side::SELL) ||
+            (pos.quantity < 0 && report.side == Side::BUY)) {
+            const double closed_quantity =
+                std::min(std::abs(static_cast<double>(pos.quantity)),
+                         static_cast<double>(report.filled_quantity));
+            double realized_pnl = 0.0;
+            if (report.side == Side::SELL) {
+                realized_pnl = (static_cast<double>(report.fill_price) -
+                                static_cast<double>(pos.average_price)) *
+                               closed_quantity;
+            } else {
+                realized_pnl = (static_cast<double>(pos.average_price) -
+                                static_cast<double>(report.fill_price)) *
+                               closed_quantity;
+            }
+
+            pos.realized_pnl += Decimal(realized_pnl);
+            metrics_.realized_pnl += realized_pnl;
+            metrics_.total_pnl += realized_pnl;
+        }
+
+        // Update position quantity and average price
+        if (report.side == Side::BUY) {
+            double new_quantity =
+                static_cast<double>(pos.quantity) + static_cast<double>(report.filled_quantity);
+            if (static_cast<double>(pos.quantity) >= 0) {
+                // Adding to long position
+                pos.average_price = Decimal(
+                    (static_cast<double>(pos.average_price) * static_cast<double>(pos.quantity) +
+                     static_cast<double>(report.fill_price) *
+                         static_cast<double>(report.filled_quantity)) /
+                    new_quantity);
+            } else {
+                // Covering short position
+                if (new_quantity >= 0) {
+                    pos.average_price = report.fill_price;
+                }
+            }
+            pos.quantity = Quantity(new_quantity);
+        } else {
+            double new_quantity =
+                static_cast<double>(pos.quantity) - static_cast<double>(report.filled_quantity);
+            if (static_cast<double>(pos.quantity) <= 0) {
+                // Adding to short position
+                pos.average_price = Decimal((static_cast<double>(pos.average_price) *
+                                                 std::abs(static_cast<double>(pos.quantity)) +
+                                             static_cast<double>(report.fill_price) *
+                                                 static_cast<double>(report.filled_quantity)) /
+                                            std::abs(new_quantity));
+            } else {
+                // Reducing long position
+                if (new_quantity <= 0) {
+                    pos.average_price = report.fill_price;
+                }
+            }
+            pos.quantity = Quantity(new_quantity);
+        }
+
+        pos.last_update = report.fill_time;
+
+        // E2-F1 / E2-F9: `pos.realized_pnl` is GROSS trade P&L. Transaction costs are NOT
+        // netted into it.
+        //
+        // This field is persisted as trading.positions.daily_realized_pnl (via
+        // LiveDailyCycle::resolve_and_apply_basis), while live_results carries costs in
+        // their own column. Netting costs here made the row net-of-cost and the aggregate
+        // net-of-commission-only, so the two reconciled against different cost bases in the
+        // same run and the row-sums-to-aggregate check could never be exact.
+        //
+        // The reporting model now mirrors futures: realized is gross, costs are a separate
+        // column, and the consumer subtracts once --
+        //     daily_pnl = (daily_realized_pnl - daily_transaction_costs) + daily_unrealized_pnl
+        // Netting here as well would subtract them twice.
+        //
+        // metrics_ is deliberately left net. It is internal strategy bookkeeping, and
+        // metrics_.total_pnl feeds the drawdown gate in check_risk_limits(); making that
+        // gross would quietly loosen a risk limit, which is outside this fix. The asymmetry
+        // is intentional: metrics_ is a risk input, pos.realized_pnl is a reported figure.
+        double transaction_cost = static_cast<double>(report.net_transaction_costs());
+        metrics_.realized_pnl -= transaction_cost;
+        metrics_.total_pnl -= transaction_cost;
+
+        // Update metrics
+        metrics_.total_trades++;
+        if (report.fill_price > pos.average_price) {
+            metrics_.win_rate =
+                (metrics_.win_rate * (metrics_.total_trades - 1) + 1.0) / metrics_.total_trades;
+        }
+
+        return Result<void>();
+
+    } catch (const std::exception& e) {
+        return make_error<void>(ErrorCode::UNKNOWN_ERROR,
+                                "Error processing execution: " + std::string(e.what()),
+                                "BaseStrategy");
+    }
 }
 
 }  // namespace trade_ngin

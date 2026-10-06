@@ -1,13 +1,14 @@
 #include <gtest/gtest.h>
 #include "trade_ngin/data/qt_empty_model_owner_reference.hpp"
 #include "empty_owner_vectors.hpp"
+#include "qt_test_build_identity.hpp"
 #include <limits>
 using namespace trade_ngin;
 namespace {
 using J=nlohmann::json;
-J vector(){return J::parse(empty_owner_test::fixture);}
+J vector(){return trade_ngin::test::fixture_for_compiled_build(J::parse(empty_owner_test::fixture));}
 TEST(QtEmptyOwnerReference, ExactIndependentVariantKeepsItsDiscriminant){
- auto v=vector();auto d=v.at("document");auto result=qt_empty_model_owner_reference(d,7,"local-qt-controlled","registry-equity",0);ASSERT_TRUE(result.is_ok());
+ auto v=vector();auto d=v.at("document");auto result=qt_empty_model_owner_reference(d,7,TRADE_NGIN_GIT_SHA,"registry-equity",0);ASSERT_TRUE(result.is_ok());
  auto& r=result.value();EXPECT_EQ(r.size(),13U);EXPECT_EQ(r.at("schema_version"),"qt-empty-model-owner-reference/v2");
  EXPECT_EQ(r.at("owner_document_digest"),v.at("owner_digest"));EXPECT_EQ(r.at("publication_id"),d.at("publication_id"));
  EXPECT_EQ(r.at("configured_owner_names"),d.at("configured_owner_names"));EXPECT_EQ(r.at("registry_revision"),0);

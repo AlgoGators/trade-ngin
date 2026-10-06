@@ -76,8 +76,10 @@ public:
                           std::shared_ptr<PostgresDatabase> db,
                           std::shared_ptr<InstrumentRegistry> registry = nullptr);
 
-    Result<void> on_data(const std::vector<Bar>& data) override;
+    Result<void> on_data(const std::vector<Bar>& data,
+        StrategyConsumptionTrace* trace = nullptr) override;
     Result<void> initialize() override;
+    Result<void> on_execution(const ExecutionReport& report) override;
 
     // Surfaces target positions from instrument_data_.target_position. positions_
     // is left to BaseStrategy::on_execution() as the actual-holdings record, so
@@ -127,14 +129,14 @@ private:
     double calculate_sma(const std::deque<double>& prices, int period) const;
     double calculate_std_dev(const std::deque<double>& prices, int period, double mean) const;
     double calculate_z_score(double price, double mean, double std_dev) const;
-    double calculate_position_size(const std::string& symbol, double price, double volatility) const;
+    double calculate_position_size(const std::string& symbol, double price, double volatility,MeanReversionSymbolConsumption* trace=nullptr) const;
     double calculate_volatility(const std::deque<double>& prices, int lookback) const;
-    double generate_signal(const std::string& symbol, const MeanReversionInstrumentData& data) const;
+    double generate_signal(const std::string& symbol, const MeanReversionInstrumentData& data,MeanReversionSymbolConsumption* trace=nullptr) const;
 
     /**
      * @brief Trim price/volatility history to prevent unbounded memory growth
      */
-    void trim_history(MeanReversionInstrumentData& data) const;
+    void trim_history(MeanReversionInstrumentData& data,MeanReversionSymbolConsumption* trace=nullptr) const;
 
 #ifdef TESTING
 public:

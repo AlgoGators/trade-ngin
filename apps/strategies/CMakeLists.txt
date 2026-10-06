@@ -4,10 +4,12 @@
 
 set(LIVE_PORTFOLIO_SOURCES
     live_portfolio.cpp
+    live_portfolio_runner.cpp
 )
 
 set(LIVE_PORTFOLIO_CONSERVATIVE_SOURCES
     live_portfolio_conservative.cpp
+    live_portfolio_runner.cpp
 )
 
 set(LIVE_EQUITY_MR_SOURCES
@@ -60,3 +62,8 @@ set_target_properties(live_equity_mr
     RUNTIME_OUTPUT_DIRECTORY_DEBUG "${CMAKE_BINARY_DIR}/bin/Debug"
     RUNTIME_OUTPUT_DIRECTORY_RELEASE "${CMAKE_BINARY_DIR}/bin/Release"
 )
+
+target_include_directories(live_portfolio PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR} ${CMAKE_BINARY_DIR}/include)
+target_include_directories(live_portfolio_conservative PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR} ${CMAKE_BINARY_DIR}/include)

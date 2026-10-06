@@ -197,8 +197,10 @@ TEST(HistoricalMetricsColumns, KnownSeriesProducesHandComputedColumns) {
     const double dd = std::sqrt(2.5) * std::sqrt(252.0);
     EXPECT_NEAR(m.downside_deviation, dd, 1e-9);
 
-    EXPECT_NEAR(m.sharpe_ratio, annualized_return_pct / vol, 1e-12);
-    EXPECT_NEAR(m.sortino_ratio, annualized_return_pct / dd, 1e-12);
+    ASSERT_TRUE(m.sharpe_ratio.has_value());
+    ASSERT_TRUE(m.sortino_ratio.has_value());
+    EXPECT_NEAR(*m.sharpe_ratio, annualized_return_pct / vol, 1e-12);
+    EXPECT_NEAR(*m.sortino_ratio, annualized_return_pct / dd, 1e-12);
 
     // Drawdown is tracked from a running peak SEEDED AT THE FIRST EQUITY VALUE, not at
     // initial capital: peak 10100 -> 9900 is (10100-9900)/10100*100 = 1.9801980%, and the
@@ -219,7 +221,8 @@ TEST(HistoricalMetricsColumns, KnownSeriesProducesHandComputedColumns) {
     EXPECT_DOUBLE_EQ(m.worst_day, -2.0);
     EXPECT_DOUBLE_EQ(m.gross_profit, 400.0);
     EXPECT_DOUBLE_EQ(m.gross_loss, 300.0);
-    EXPECT_NEAR(m.profit_factor, 400.0 / 300.0, 1e-12);
+    ASSERT_TRUE(m.profit_factor.has_value());
+    EXPECT_NEAR(*m.profit_factor, 400.0 / 300.0, 1e-12);
     EXPECT_EQ(m.total_trades, 4);
 
     // And the columns carry exactly those numbers.

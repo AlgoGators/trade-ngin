@@ -1,4 +1,5 @@
 #include "trade_ngin/apps/qt_book_tail.hpp"
+#include "qt_test_build_identity.hpp"
 #include <gtest/gtest.h>
 #include <filesystem>
 #include <fstream>
@@ -7,7 +8,7 @@ namespace {
 using J=nlohmann::json;
 J fixture() {
     std::ifstream f(std::filesystem::path(__FILE__).parent_path().parent_path()/"contracts/qt-equity-finalization-wire.json");
-    J j;f>>j;return j;
+    J j;f>>j;return trade_ngin::test::fixture_for_compiled_build(std::move(j));
 }
 J key(const char* owner,const char* day,const char* stream) {
     return {{"portfolio_id","BOOK"},{"strategy_id","ENGINE"},{"strategy_name",owner},

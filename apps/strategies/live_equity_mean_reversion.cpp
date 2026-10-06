@@ -1,3 +1,4 @@
+#include "trade_ngin/git_version.hpp"
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
@@ -11,6 +12,14 @@
 #include <algorithm>
 #include <nlohmann/json.hpp>
 #include "trade_ngin/core/config_loader.hpp"
+#include "trade_ngin/apps/equity_strategy_consumption.hpp"
+#include "trade_ngin/apps/equity_model_prior.hpp"
+#include "trade_ngin/apps/equity_model_action_frame.hpp"
+#include "trade_ngin/apps/equity_run_consumption.hpp"
+#include "trade_ngin/apps/equity_execution_consumption.hpp"
+#include "trade_ngin/apps/live_portfolio_helpers.hpp"
+#include "trade_ngin/apps/live_runtime_invocation.hpp"
+#include "trade_ngin/portfolio/qt_wire.hpp"
 #include "trade_ngin/core/holiday_checker.hpp"
 #include "trade_ngin/core/logger.hpp"
 #include "trade_ngin/core/time_utils.hpp"
@@ -32,6 +41,7 @@
 #include "trade_ngin/portfolio/portfolio_manager.hpp"
 #include "trade_ngin/strategy/mean_reversion.hpp"
 #include "trade_ngin/strategy/equity_strategy_builder.hpp"
+#include "trade_ngin/apps/equity_multi_live_runner.hpp"
 #include "trade_ngin/core/email_sender.hpp"
 #include "trade_ngin/storage/live_results_manager.hpp"
 #include "trade_ngin/live/live_data_loader.hpp"
@@ -75,16 +85,35 @@ static std::string resolve_corp_actions_state_dir(const std::string& strategy_id
 // trade_ngin::core::format_utc_date as the only approved primitive for
 // UTC date-string keys).
 
+static std::string format_equity_ratio(const std::optional<double>& value) {
+    return value ? std::to_string(*value) : "N/A";
+}
+
 int main(int argc, char* argv[]) {
     try {
+        std::vector<std::string> raw_arguments;
+        for(int i=1;i<argc;++i)raw_arguments.emplace_back(argv[i]);
+        std::optional<std::string> environment_portfolio;
+        if(const char* value=std::getenv("TRADE_NGIN_PORTFOLIO"))environment_portfolio=value;
+        auto portfolio_selection=resolve_portfolio_selection(
+            raw_arguments,environment_portfolio,"equity_mr");
+        if(portfolio_selection.is_error()){
+            std::cerr<<portfolio_selection.error()->what()<<"\nUsage: "<<argv[0]
+                     <<" [YYYY-MM-DD] [--send-email] [--portfolio NAME]\n";
+            return 1;
+        }
+        auto prior_arguments=parse_equity_model_prior_arguments(
+            portfolio_selection.value().runner_arguments);
+        if(prior_arguments.is_error()){std::cerr<<"Invalid governed equity prior arguments\n";return 1;}
+        const auto prior_selection=prior_arguments.value();
+        const bool verified_desk_prior=prior_selection.mode==EquityModelPriorMode::VerifiedDeskPrior;
         // Parse command-line arguments for date override and email flag
         std::chrono::system_clock::time_point target_date;
         bool use_override_date = false;
         bool send_email = false;  // Default to false for historical runs
 
         // Parse command-line arguments
-        for (int i = 1; i < argc; i++) {
-            std::string arg = argv[i];
+        for (const auto& arg : prior_selection.runner_arguments) {
 
             // Check for email flag
             if (arg == "--send-email") {
@@ -103,8 +132,10 @@ int main(int argc, char* argv[]) {
                 std::cout << "Running for historical date: " << arg << std::endl;
             } else if (arg != "--send-email") {
                 std::cerr << "Invalid argument: " << arg << std::endl;
-                std::cerr << "Usage: " << argv[0] << " [YYYY-MM-DD] [--send-email]" << std::endl;
-                std::cerr << "Example: " << argv[0] << " 2025-01-01 --send-email" << std::endl;
+                std::cerr << "Usage: " << argv[0]
+                          << " [YYYY-MM-DD] [--send-email] [--portfolio NAME]" << std::endl;
+                std::cerr << "Example: " << argv[0]
+                          << " 2025-01-01 --send-email --portfolio equity_mr" << std::endl;
                 return 1;
             }
         }
@@ -152,14 +183,16 @@ int main(int argc, char* argv[]) {
         // ========================================
         // LOAD CONFIGURATION FROM MODULAR CONFIG FILES
         // ========================================
-        INFO("Loading configuration from config/portfolios/equity_mr...");
-        auto app_config_result = ConfigLoader::load("./config", "equity_mr");
+        const auto& config_name=portfolio_selection.value().config_name;
+        INFO("Loading configuration from config/portfolios/"+config_name+"...");
+        auto app_config_result = ConfigLoader::load("./config", config_name);
         if (app_config_result.is_error()) {
-            ERROR("Failed to load equity_mr configuration: " +
+            ERROR("Failed to load " + config_name + " configuration: " +
                   std::string(app_config_result.error()->what()));
             return 1;
         }
         auto app_config = app_config_result.value();
+        app_config.live.record_equity_policy_snapshot();
         INFO("Configuration loaded successfully for portfolio: " + app_config.portfolio_id);
 
         // Storage identity comes from config, never a literal: this runner writes to
@@ -273,15 +306,52 @@ int main(int argc, char* argv[]) {
             return 1;
         }
         const auto& strat_entries = strat_entries_result.value();
-        // The live runner's storage layer is keyed to a single strategy id today
-        // (LIVE_EQUITY_MEAN_REVERSION, used at ~20 storage/query sites), so require
-        // exactly one enabled strategy rather than silently running only the first.
-        if (strat_entries.size() != 1) {
-            ERROR("Live equity runner supports exactly one enabled strategy today; found " +
-                  std::to_string(strat_entries.size()));
+        auto book_plan_result =
+            trade_ngin::apps::build_equity_live_book_plan(strat_entries);
+        if (book_plan_result.is_error()) {
+            ERROR(std::string(book_plan_result.error()->what()));
             return 1;
         }
+        const auto& book_plan = book_plan_result.value();
+        if (!book_plan.legacy_single) {
+            if (verified_desk_prior) {
+                ERROR("Verified desk prior is defined only for the legacy single-sleeve "
+                      "equity owner; refusing a composite multi-sleeve replay.");
+                return 1;
+            }
+            auto multi = trade_ngin::apps::run_multi_sleeve_equity_live_day(
+                app_config, book_plan, db, registry, *holiday_checker_ptr, now,
+                start_date, end_date, use_override_date);
+            if (multi.is_error()) {
+                ERROR("Multi-sleeve equity run refused: " +
+                      std::string(multi.error()->what()));
+                return 1;
+            }
+            return 0;
+        }
         const auto& strat_entry = strat_entries.front();
+        if(strat_entry.type!="MeanReversionStrategy")throw std::invalid_argument("equity_model_profile_invalid");
+        auto snapshot_config=app_config;
+        snapshot_config.strategies_config={{kEquityStrategyName,strat_entry.def}};
+        snapshot_config.strategies_config[kEquityStrategyName]["default_allocation"]=1.0;
+        auto trading_snapshot=build_runtime_trading_snapshot(snapshot_config);
+        if(trading_snapshot.is_error())throw std::invalid_argument("equity_runtime_snapshot_refused");
+        // Keep the original selected source key in replay inputs, while storage
+        // membership uses the actual fixed MR owner/name.
+        const auto invocation_clock=std::chrono::system_clock::now();
+        auto runtime_control=resolve_live_runtime_control(std::getenv("QT_RUNTIME_CONTROL_ENABLED"),now,invocation_clock);
+        if(runtime_control.is_error())throw std::invalid_argument("equity_runtime_control_refused");
+        PublicationEvidenceToken equity_evidence_token;
+        auto admission=db->begin_live_publication(kEquityStrategyId,portfolio_id,now,trading_snapshot.value(),
+            runtime_control.value(),TRADE_NGIN_GIT_SHA,PublicationEvidenceRequirement::RequiredFinalObservations,
+            &equity_evidence_token,verified_desk_prior?PublicationPriorRequirement::VerifiedEquity:PublicationPriorRequirement::None);
+        if(admission.is_error())throw std::invalid_argument("equity_publication_admission_refused");
+        if(admission.value())return 0;
+        auto publication_guard=std::shared_ptr<void>(nullptr,[db](void*){db->abandon_live_publication();});
+        EquityRunConsumption equity_run;
+        equity_run.portfolio_id=portfolio_id;equity_run.strategy_id=kEquityStrategyId;
+        equity_run.strategy_name=kEquityStrategyName;equity_run.date=core::format_utc_date(now);
+        std::optional<VerifiedEquityModelPrior> governed_prior;
 
         // Load symbols config-first (from the strategy def); fall back to a full DB
         // scan only if none are configured. Previously this unconditionally loaded
@@ -350,6 +420,21 @@ int main(int argc, char* argv[]) {
             return 1;
         }
         auto previous_date = *prev_day_opt;
+        if(verified_desk_prior){
+            auto prior=db->capture_equity_model_prior(prior_selection,{portfolio_id,kEquityStrategyId,kEquityStrategyName,
+                core::format_utc_date(previous_date),core::format_utc_date(now)});
+            if(prior.is_error())throw std::invalid_argument("verified_equity_prior_refused");
+            governed_prior=prior.value();
+            const auto& ref=governed_prior->replay_reference;auto& read=equity_run.prior.reads;
+            read.mode="verified_desk_prior";read.source_day=ref.at("source_day").get<std::string>();
+            read.valuation_day=ref.at("valuation_day").get<std::string>();
+            read.decision_id=ref.at("decision_id").get<std::string>();read.finalization_id=ref.at("finalization_id").get<std::string>();
+            read.finalization_digest=ref.at("finalization_digest").get<std::string>();
+            read.finalization_source_digest=ref.at("finalization_source_digest").get<std::string>();
+            read.accounting_input_digest=ref.at("accounting_input_digest").get<std::string>();
+            read.observation_digest=ref.at("observation_digest").get<std::string>();read.results_digest=ref.at("results_digest").get<std::string>();
+        }else{equity_run.prior.reads.mode="system_reference";equity_run.prior.reads.source_day=core::format_utc_date(previous_date);}
+        equity_run.prior.outcome=EquityStageOutcome::ReturnedOk;
 
         // drift-F: say which day was resolved, out loud, once.
         //
@@ -393,15 +478,13 @@ int main(int argc, char* argv[]) {
                 format_ymd_utc(std::chrono::system_clock::to_time_t(now));
 
             std::unordered_map<std::string, Position> seed_held;
-            auto seed_book = db->load_positions_by_date(kEquityStrategyId, kEquityStrategyName,
-                                                       portfolio_id, previous_date,
-                                                       "trading.positions");
+            auto seed_book = governed_prior?Result<std::unordered_map<std::string,Position>>(governed_prior->positions):
+                db->load_equity_model_system_positions(portfolio_id,previous_date);
             if (seed_book.is_ok()) {
                 std::unordered_map<std::string, Position> seed_closed;
                 LiveDailyCycle::split_open_and_closed(seed_book.value(), seed_held, seed_closed);
             } else {
-                INFO("No previous-day book for the universe check (first run or no data): " +
-                     std::string(seed_book.error()->what()));
+                ERROR("Strict system prior read refused: " +std::string(seed_book.error()->what()));return 1;
             }
 
             auto alias_result = db->get_ticker_aliases();
@@ -558,7 +641,10 @@ int main(int argc, char* argv[]) {
         // single run. bt_equity_mean_reversion.cpp already disables it; this makes live
         // agree rather than optimising on values it made up.
         portfolio_config.use_optimization = false;
-        portfolio_config.use_risk_management = app_config.strategy_defaults.use_risk_management;
+        portfolio_config.covariance_history_prices = app_config.covariance_history_prices;
+        portfolio_config.risk_modules = app_config.risk_schema.portfolio;
+        portfolio_config.sleeve_risk_modules = app_config.risk_schema.sleeves;
+        portfolio_config.use_risk_management = !app_config.risk_schema.is_none();
         portfolio_config.opt_config = opt_config;
         portfolio_config.risk_config = risk_config;
 
@@ -642,6 +728,10 @@ int main(int argc, char* argv[]) {
             return 1;
         }
         INFO("Strategy added to portfolio successfully");
+        equity_run.setup.reads={mr_config.capital_allocation,mr_config.max_leverage,mr_config.max_drawdown,
+            portfolio_config.reserve_capital.as_double(),portfolio_config.use_optimization,
+            portfolio_config.use_risk_management,portfolio_config.allow_fractional_positions};
+        equity_run.setup.outcome=EquityStageOutcome::ReturnedOk;
 
         // Per-run provenance: what this run was configured with. The futures runners have
         // always written it (live_portfolio_conservative.cpp:620); the equity runner never
@@ -676,13 +766,18 @@ int main(int argc, char* argv[]) {
                 {"stop_loss_pct", mean_rev_config.stop_loss_pct},
                 {"allow_fractional_shares", mean_rev_config.allow_fractional_shares}};
 
+            portfolio_config_json["config_inspection"]={{"capture_schema_version",2},
+                {"captured_at",[](){const auto clock=std::chrono::system_clock::now();const auto second=std::chrono::floor<std::chrono::seconds>(clock);
+                    auto text=core::format_utc_datetime(second);text[10]='T';std::ostringstream stamp;
+                    stamp<<text<<'.'<<std::setfill('0')<<std::setw(6)<<std::chrono::duration_cast<std::chrono::microseconds>(clock-second).count()<<'Z';return stamp.str();}()}};
             auto metadata_result = db->store_live_run_metadata(
                 now, kEquityStrategyId, portfolio_id, strategy_alloc_json,
                 portfolio_config_json, strategy_configs_json);
 
             if (metadata_result.is_error()) {
-                WARN("Failed to store live run metadata: " +
+                ERROR("Failed to store live run metadata: " +
                      std::string(metadata_result.error()->what()));
+                return 1;
             } else {
                 INFO("Successfully stored live run metadata for date");
             }
@@ -740,23 +835,25 @@ int main(int argc, char* argv[]) {
 
         // Load market data for daily processing
         INFO("Loading market data for daily processing...");
+        equity_run.market_input.reads={historical_days,"EQUITY","DAILY",core::format_utc_date(start_date),
+            core::format_utc_date(end_date),app_config.live.data_staleness_tolerance_days};
         auto market_data_result = db->get_market_data(
             symbols, start_date, end_date,
             trade_ngin::AssetClass::EQUITIES,
             trade_ngin::DataFrequency::DAILY, "ohlcv");
-        
+
         if (market_data_result.is_error()) {
             ERROR("Failed to load market data: " + std::string(market_data_result.error()->what()));
             return 1;
         }
-        
+
         // Convert Arrow table to Bars using the same conversion as backtest
         auto conversion_result = trade_ngin::DataConversionUtils::arrow_table_to_bars(market_data_result.value());
         if (conversion_result.is_error()) {
             ERROR("Failed to convert market data to bars: " + std::string(conversion_result.error()->what()));
             return 1;
         }
-        
+
         auto all_bars = conversion_result.value();
 
         // E2-F15: the newest loaded bar PER SYMBOL. Hoisted here (it used to be built
@@ -807,7 +904,7 @@ int main(int argc, char* argv[]) {
                 " AND portfolio_id = '" + portfolio_id + "'");
             auto first_q = db->execute_query(
                 "SELECT COALESCE(MIN(date)::text, '') FROM trading.live_results "
-                "WHERE strategy_id = '" + std::string(kEquityStrategyId) + "'"
+                "WHERE portfolio_type = 'system' AND strategy_id = '" + std::string(kEquityStrategyId) + "'"
                 " AND portfolio_id = '" + portfolio_id + "'");
 
             auto first_cell = [](const Result<std::shared_ptr<arrow::Table>>& r) -> std::string {
@@ -955,6 +1052,8 @@ int main(int argc, char* argv[]) {
             return 1;
         }
 
+        equity_run.market_input.outcome=EquityStageOutcome::ReturnedOk;
+
         // Register tier-appropriate equity cost configs using actual recent
         // ADV per symbol from the bars we just loaded. Closes audit §1.1:
         // before this, unconfigured equities fell through to the futures
@@ -986,7 +1085,16 @@ int main(int argc, char* argv[]) {
             auto& tcm = execution_manager->get_transaction_cost_manager();
             tcm.register_equity_costs_from_bars(symbols, bars_by_symbol);
 
-            const auto feed = LiveDailyCycle::feed_cost_model(tcm, symbols, bars_by_symbol);
+            std::unordered_map<std::string,LiveDailyCycle::EquityCostFeedSymbol> feed_observations;
+            const auto feed = LiveDailyCycle::feed_cost_model(tcm, symbols, bars_by_symbol,21,&feed_observations);
+            for(const auto& [symbol,observed]:feed_observations){
+                auto& read=equity_run.cost_symbols[symbol];
+                if(observed.market_data.volume.adv_lookback_days)read.adv_lookback_days=static_cast<int>(*observed.market_data.volume.adv_lookback_days);
+                if(observed.market_data.log_returns.lookback_days)read.log_return_lookback_days=static_cast<int>(*observed.market_data.log_returns.lookback_days);
+                read.previous_close_forwarded=observed.previous_close_forwarded;
+                read.previous_close_source=observed.previous_close_forwarded==0?"no_previous_close":"stored_previous_close";
+            }
+            equity_run.cost_history.outcome=EquityStageOutcome::ReturnedOk;
             INFO("Cost model fed: " + std::to_string(feed.bars_fed) + " bar(s) and " +
                  std::to_string(feed.returns_fed) + " log return(s) across " +
                  std::to_string(feed.symbols_fed) + " symbol(s) (E2-F62); ADV and "
@@ -1080,14 +1188,14 @@ int main(int argc, char* argv[]) {
 
         // Load previous day positions for PnL calculation
         INFO("Loading previous day positions for PnL calculation...");
-        auto previous_positions_result = db->load_positions_by_date(kEquityStrategyId, kEquityStrategyName, portfolio_id, previous_date, "trading.positions");
+        auto previous_positions_result = governed_prior?Result<std::unordered_map<std::string,Position>>(governed_prior->positions):db->load_equity_model_system_positions(portfolio_id,previous_date);
         std::unordered_map<std::string, Position> previous_positions;
-        
+
         if (previous_positions_result.is_ok()) {
             previous_positions = previous_positions_result.value();
             INFO("Loaded " + std::to_string(previous_positions.size()) + " previous day positions");
         } else {
-            INFO("No previous day positions found (first run or no data): " + std::string(previous_positions_result.error()->what()));
+            ERROR("Strict system prior read refused: " +std::string(previous_positions_result.error()->what()));return 1;
         }
 
         // E2-F19: a position closed to zero keeps its row for the day it closed, so the
@@ -1126,7 +1234,7 @@ int main(int argc, char* argv[]) {
         //
         // Deliberately NOT resolved by falling back to MAX(date): that would paper over a
         // broken invariant and could silently revive a stale book.
-        if (previous_positions.empty()) {
+        if (!verified_desk_prior && previous_positions.empty()) {
             // An empty prior book has two very different causes and they must not be
             // conflated:
             //   (a) the strategy legitimately holds nothing -- it exited everything, or it
@@ -1152,7 +1260,7 @@ int main(int argc, char* argv[]) {
             const std::string prev_date_str = trade_ngin::core::format_utc_date(previous_date);
             auto prev_run = db->execute_query(
                 "SELECT count(*)::text FROM trading.live_results "
-                "WHERE strategy_id = '" + std::string(kEquityStrategyId) + "'"
+                "WHERE portfolio_type = 'system' AND strategy_id = '" + std::string(kEquityStrategyId) + "'"
                 " AND portfolio_id = '" + portfolio_id + "'"
                 " AND date = '" + prev_date_str + "'");
 
@@ -1170,7 +1278,7 @@ int main(int argc, char* argv[]) {
             } else {
                 auto last_run = db->execute_query(
                     "SELECT MAX(date)::text FROM trading.live_results "
-                    "WHERE strategy_id = '" + std::string(kEquityStrategyId) + "'"
+                    "WHERE portfolio_type = 'system' AND strategy_id = '" + std::string(kEquityStrategyId) + "'"
                     " AND portfolio_id = '" + portfolio_id + "'"
                     " AND date < '" + today_date_str + "'");
 
@@ -1255,6 +1363,7 @@ int main(int argc, char* argv[]) {
 
         // E2-F15: ex-date of any class-1 event APPLIED on this run, per symbol. Used to pick
         // the right T-1 snapshot for finalization -- see the selection below.
+        int observed_effective_action_count=0;
         std::unordered_map<std::string, std::string> applied_class1_ex_date;
 
 
@@ -1264,7 +1373,7 @@ int main(int argc, char* argv[]) {
         for (const auto& [symbol, pos] : previous_positions) {
             DEBUG("Previous position - " + symbol + ": " + std::to_string(pos.quantity.as_double()));
         }
-        
+
         // Get market prices from PriceManager - already extracted from bars
         INFO("Getting market prices for PnL lag model from PriceManager...");
 
@@ -1301,7 +1410,7 @@ int main(int argc, char* argv[]) {
         // window and wrong for an era test. Class 2 reads its own dates -- the start of
         // the CURRENT holding, up with the effective universe (BA-2).
 
-        if (!previous_positions.empty()) {
+        if (!verified_desk_prior && !previous_positions.empty()) {
             // Lookback is DERIVED FROM POSITION HISTORY, never a fixed
             // constant and never from last_update.
             //
@@ -1316,10 +1425,10 @@ int main(int argc, char* argv[]) {
             // Widening to a bigger constant is not sufficient either: a book can
             // outlive any constant (the live futures book already spans 459
             // days). Neither is deriving from previous_positions.last_update --
-            // load_positions_by_date() selects WHERE DATE(last_update) =
-            // DATE($n), so every row it returns carries the requested date by
-            // construction (the table has zero rows where last_update differs
-            // from date). That derivation always collapsed to "yesterday",
+            // The explicit equity reader selects the physical date key, while
+            // preserving the actual UTC mark timestamp. The legacy shared reader
+            // selected DATE(last_update), which cannot retrieve S rows marked D.
+            // Deriving the holding inception from that mark collapsed to yesterday,
             // leaving the effective window at the 14-day floor it was meant to
             // replace. The window is therefore derived from when positions were
             // actually ESTABLISHED, via position history.
@@ -1361,7 +1470,7 @@ int main(int argc, char* argv[]) {
             std::unordered_map<std::string, std::string> inception_dates;
             auto inception_result = db->get_position_inception_dates(
                 kEquityStrategyId, kEquityStrategyName,
-                portfolio_id, held_symbols);
+                portfolio_id, held_symbols, core::format_utc_date(previous_date));
             //
             // BA-9: "the read failed" and "the read succeeded but cannot account for
             // this holding" are the SAME epistemic state for class 1, and both must
@@ -1638,9 +1747,7 @@ int main(int argc, char* argv[]) {
                         if (!core::parse_utc_date(ex_date, ex_tp)) return 0.0;
                         auto tt = std::chrono::system_clock::to_time_t(ex_tp) - 24 * 60 * 60;
                         auto tp = std::chrono::system_clock::from_time_t(tt);
-                        auto r = db->load_positions_by_date(
-                            kEquityStrategyId, kEquityStrategyName,
-                            portfolio_id, tp, "trading.positions");
+                        auto r = db->load_equity_model_system_positions(portfolio_id, tp);
                         auto& slot = positions_at_date_cache[ex_date];
                         if (r.is_ok()) slot = r.value();
                         cached = positions_at_date_cache.find(ex_date);
@@ -1676,9 +1783,7 @@ int main(int argc, char* argv[]) {
                     if (cached == positions_at_exdate_cache.end()) {
                         auto parsed = parse_ex_date(ex_date);
                         if (!parsed) return 0.0;
-                        auto r = db->load_positions_by_date(
-                            kEquityStrategyId, kEquityStrategyName,
-                            portfolio_id, *parsed, "trading.positions");
+                        auto r = db->load_equity_model_system_positions(portfolio_id,*parsed);
                         auto& slot = positions_at_exdate_cache[ex_date];
                         if (r.is_ok()) slot = r.value();
                         cached = positions_at_exdate_cache.find(ex_date);
@@ -1707,7 +1812,7 @@ int main(int argc, char* argv[]) {
                         const std::string prev_str = trade_ngin::core::format_utc_date(*parsed);
                         auto r = db->execute_query(
                             "SELECT count(*)::text FROM trading.live_results "
-                            "WHERE strategy_id = '" + std::string(kEquityStrategyId) + "'"
+                            "WHERE portfolio_type = 'system' AND strategy_id = '" + std::string(kEquityStrategyId) + "'"
                             " AND portfolio_id = '" + portfolio_id + "'"
                             " AND date = '" + prev_str + "'");
                         if (r.is_ok() && r.value()->num_rows() > 0) {
@@ -3072,6 +3177,7 @@ int main(int argc, char* argv[]) {
                               std::string(commit_result.error()->what()));
                         return 1;
                     }
+                    observed_effective_action_count+=static_cast<int>(adjustments.size());
                     INFO("Persisted " + std::to_string(adjustments.size()) +
                          " corp-action adjustments to trading.positions");
                     } else {
@@ -3099,7 +3205,7 @@ int main(int argc, char* argv[]) {
         // on a day the market was shut. Nothing is recorded on the skip, and the
         // admission rule (delist_date <= as_of) still admits the event on the next open
         // session, so Monday books it.
-        if (!today_is_non_trading && !previous_positions.empty()) {
+        if (!verified_desk_prior && !today_is_non_trading && !previous_positions.empty()) {
             auto today_t2 = std::chrono::system_clock::to_time_t(now);
             std::tm today_tm2{};
             gmtime_r(&today_t2, &today_tm2);
@@ -3500,11 +3606,61 @@ int main(int argc, char* argv[]) {
                     return 1;
                 }
 
+                observed_effective_action_count+=static_cast<int>(lifecycle_log.size());
                 INFO("Persisted " + std::to_string(lifecycle_log.size()) +
                      " lifecycle adjustment(s) to trading.positions, " +
                      std::to_string(recorded) + " dedup record(s)");
             }
         }
+
+        if(verified_desk_prior){
+            // Original S is immutable. Only the loader's proved copied frame
+            // may restate MODEL holdings; no system audit history is replayed.
+            const auto& reference=governed_prior->replay_reference;
+            const bool adjusted=reference.at("schema_version")=="qt-equity-model-prior/v2";
+            const auto held=equity_model_action_held_symbols(previous_positions);
+            const auto action_start=adjusted?core::format_utc_date(previous_date+std::chrono::days(1)):core::format_utc_date(previous_date);
+            auto events=db->get_per_bar_corporate_actions(held,action_start,core::format_utc_date(now));
+            auto aliases=db->get_ticker_aliases();
+            auto terminations=db->get_delisting_dates(held,core::format_utc_date(previous_date));
+            auto terms=db->get_corporate_actions(held,core::format_utc_date(previous_date),core::format_utc_date(now),vendor_labels_for_class(CorpActionClass::TERMINATION));
+            if(events.is_error() || aliases.is_error() || terminations.is_error() || terms.is_error())throw std::invalid_argument("equity_action_frame_unavailable");
+            if(!terms.value().empty())throw std::invalid_argument("equity_new_action_alignment_unavailable");
+            if(adjusted){
+                const auto& frame=reference.at("action_frame");
+                const auto& proved=frame.at("actions_source").at("payload").at("events");
+                if(events.value().size()!=proved.size())throw std::invalid_argument("equity_action_frame_changed");
+                for(std::size_t index=0;index<proved.size();++index){
+                    const auto& expected=proved.at(index);const auto& actual=events.value()[index];
+                    const auto type=expected.at("type").get<std::string>();
+                    if(actual.ticker!=expected.at("key").at("symbol").get<std::string>() || actual.date_str!=expected.at("ex_date").get<std::string>() ||
+                        actual.action!=(type=="DIVIDEND"?"dividend":"split") ||
+                        actual.value!=std::stod(expected.at("value_model_number").get<std::string>()))
+                        throw std::invalid_argument("equity_action_frame_changed");
+                }
+                equity_run.corporate_actions.reads.path="proved_action_adjusted_prior";
+                equity_run.corporate_actions.reads.original_action_count=frame.at("original_action_count").get<int>();
+                equity_run.corporate_actions.reads.successor_action_count=frame.at("successor_action_count").get<int>();
+                equity_run.corporate_actions.reads.original_action_digest=frame.at("original_action_digest").get<std::string>();
+                equity_run.corporate_actions.reads.successor_action_digest=frame.at("successor_action_digest").get<std::string>();
+                equity_run.corporate_actions.reads.basis_frame_digest=reference.at("action_frame_digest").get<std::string>();
+            }else{
+                if(!events.value().empty())throw std::invalid_argument("equity_new_action_alignment_unavailable");
+                equity_run.corporate_actions.reads.path="proved_action_free_prior";
+            }
+            // Unsupported ownership transitions never infer basis or prices.
+            for(const auto& event:aliases.value())for(const auto& symbol:held)
+                if(event.historical_ticker==symbol || event.current_symbol==symbol)throw std::invalid_argument("equity_alias_alignment_unavailable");
+            for(const auto& event:terminations.value())for(const auto& symbol:held)
+                if(event.first==symbol && event.second<=core::format_utc_date(now))throw std::invalid_argument("equity_termination_alignment_unavailable");
+            equity_run.corporate_actions.reads.effective_event_count=0;
+        }else{
+            equity_run.corporate_actions.reads.path="system_history";
+            equity_run.corporate_actions.reads.spinoff_child_policy_requested=app_config.live.spinoff_child_policy;
+            equity_run.corporate_actions.reads.spinoff_child_policy_effective=spinoff_child_policy_to_string(spinoff_child_policy_from_string(app_config.live.spinoff_child_policy));
+            equity_run.corporate_actions.reads.effective_event_count=observed_effective_action_count;
+        }
+        equity_run.corporate_actions.outcome=EquityStageOutcome::ReturnedOk;
 
         // Seed the strategy with the previous day's holdings, then generate the day's
         // signals. Both the ordering and the placement of this block are load-bearing:
@@ -3514,12 +3670,16 @@ int main(int argc, char* argv[]) {
         // by the corporate-action blocks above, since a split changes quantity and a
         // dividend changes cost basis. See LiveDailyCycle::prepare_strategy_for_signals.
         std::unordered_map<std::string, Position> positions;
+        PortfolioConsumptionTrace equity_invocation;
+        bool equity_invocation_reached=false;
 
         if (today_is_non_trading) {
             // Carry the book forward untouched. No bar closed today, so there is nothing
             // to signal from and nothing legitimate to trade against; re-deriving targets
             // from a stale bar would manufacture a weekend trade.
             positions = LiveDailyCycle::carry_forward(previous_positions);
+            equity_run.preparation.outcome=equity_run.primary.outcome=equity_run.execution.outcome=EquityStageOutcome::Skipped;
+            equity_run.preparation.skip=equity_run.primary.skip=equity_run.execution.skip=EquityStageSkip::NonTradingDay;
             INFO("Non-trading day: carried " + std::to_string(positions.size()) +
                  " position(s) forward without generating signals.");
         } else {
@@ -3532,6 +3692,8 @@ int main(int argc, char* argv[]) {
                 return 1;
             }
 
+            equity_run.preparation.outcome=EquityStageOutcome::ReturnedOk;
+
             // Process data through portfolio pipeline (risk; optimization is off for MR).
             //
             // E2-F28: this is the ONE place the strategy is fed. process_market_data
@@ -3539,7 +3701,8 @@ int main(int argc, char* argv[]) {
             // not, because MeanReversion appends every bar it is given and a second pass
             // over the same vector doubled the price history and the ADV EMA.
             INFO("Processing data through portfolio manager (feeds the strategy once; risk)...");
-            auto port_process_result = portfolio->process_market_data(all_bars);
+            equity_invocation_reached=true;
+            auto port_process_result = portfolio->process_market_data(all_bars,false,std::nullopt,&equity_invocation);
             if (port_process_result.is_error()) {
                 std::cerr << "Failed to process data in portfolio manager: "
                           << port_process_result.error()->what() << std::endl;
@@ -3610,6 +3773,11 @@ int main(int argc, char* argv[]) {
             // Get portfolio positions (post risk-management)
             INFO("Retrieving portfolio positions...");
             positions = portfolio->get_portfolio_positions();
+            equity_run.primary.reads.portfolio_invocation=equity_invocation;
+            if(equity_invocation.strategies.size()!=1 || equity_invocation.strategies.front().strategy_id!=kEquityStrategyId)
+                throw std::invalid_argument("equity_actual_strategy_trace_missing");
+            equity_run.primary.reads.strategy_invocation=equity_invocation.strategies.front().strategy;
+            equity_run.primary.outcome=EquityStageOutcome::ReturnedOk;
         }
 
         // Verify we have prices for all required symbols
@@ -3686,7 +3854,7 @@ int main(int argc, char* argv[]) {
         double yesterday_finalized_unrealized = 0.0;
         std::vector<trade_ngin::Position> yesterday_finalized_positions;
 
-        if (!two_days_ago_close_prices.empty() && !previous_positions.empty() && pnl_manager) {
+        if (!verified_desk_prior && !two_days_ago_close_prices.empty() && !previous_positions.empty() && pnl_manager) {
             INFO("Using PnLManager to finalize Day T-1 positions...");
 
             // Convert map to vector for PnLManager.
@@ -3827,7 +3995,10 @@ int main(int argc, char* argv[]) {
             if (!finalized_to_store.empty() && have_t1_prices) {
                 // Always save yesterday's finalized positions immediately (not queued)
                 // These are updates to existing positions from the previous day
-                auto update_result = db->store_positions(finalized_to_store, kEquityStrategyId, kEquityStrategyName, portfolio_id, "trading.positions");
+                auto update_result=[&]()->Result<void>{
+                    auto owned=db->begin_unit_of_work();if(owned.is_error())return make_error<void>(owned.error()->code(),owned.error()->what());
+                    auto stored=db->store_positions(*owned.value(),finalized_to_store,kEquityStrategyId,kEquityStrategyName,portfolio_id,"trading.positions");
+                    if(stored.is_error())return stored;return owned.value()->commit();}();
                 if (update_result.is_error()) {
                     // E2-F5 follow-on: FATAL, like every other store_positions site in this
                     // runner. This one logged and carried on, so a failed T-1 position write
@@ -3908,12 +4079,13 @@ int main(int argc, char* argv[]) {
         // "the deltas happen to be zero" is not the reason we must not trade on a day the
         // exchange is shut.
         LiveDailyCycle::ExecutionOutcome exec_outcome;
+        DailyExecutionObservation actual_equity_executions;
         if (today_is_non_trading) {
             INFO("Non-trading day: skipping execution generation entirely.");
         } else {
             auto day_t_exec = LiveDailyCycle::execute_day_t(
                 *execution_manager, positions, previous_positions, previous_day_close_prices,
-                all_bars, now, app_config.live.execution_price_max_staleness_days);
+                all_bars, now, app_config.live.execution_price_max_staleness_days,&actual_equity_executions);
 
             if (day_t_exec.is_error()) {
                 ERROR("ExecutionManager failed: " + std::string(day_t_exec.error()->what()));
@@ -3921,6 +4093,8 @@ int main(int argc, char* argv[]) {
                 throw std::runtime_error("ExecutionManager failed");
             }
             exec_outcome = day_t_exec.value();
+            equity_run.execution.reads.execution_price_max_staleness_days=app_config.live.execution_price_max_staleness_days;
+            equity_run.execution.outcome=EquityStageOutcome::ReturnedOk;
         }
 
         std::vector<ExecutionReport> daily_executions = exec_outcome.executions;
@@ -3933,6 +4107,21 @@ int main(int argc, char* argv[]) {
                  " corp-action exit execution(s) into the day's executions");
             daily_executions.insert(daily_executions.end(),
                                     corp_action_executions.begin(), corp_action_executions.end());
+        }
+        if(!today_is_non_trading){
+            if(actual_equity_executions.state!=DailyExecutionState::returned)throw std::invalid_argument("equity_execution_trace_incomplete");
+            // Synthetic corporate-action cashouts do not pass this actual typed
+            // cost call. Keep this branch honestly unavailable until instrumented.
+            if(!corp_action_executions.empty())equity_run.execution.outcome=EquityStageOutcome::ReturnedError;
+            if(actual_equity_executions.attempts.size()!=exec_outcome.executions.size())throw std::invalid_argument("equity_execution_trace_count");
+            for(std::size_t index=0;index<actual_equity_executions.attempts.size();++index){
+                const auto& attempt=actual_equity_executions.attempts[index];const auto& executed=exec_outcome.executions[index];
+                if(!attempt.returned || attempt.execution.state!=ExecutionCallState::returned || attempt.symbol!=executed.symbol || attempt.sequence!=index)
+                    throw std::invalid_argument("equity_execution_trace_identity");
+                auto evidence=equity_execution_consumption(executed,attempt,portfolio_id,kEquityStrategyId,kEquityStrategyName,index);
+                if(evidence.is_error())throw std::invalid_argument("equity_execution_projection_refused");
+                equity_run.executions.push_back(evidence.value());
+            }
         }
         INFO("ExecutionManager generated " + std::to_string(daily_executions.size()) +
              " executions");
@@ -4092,7 +4281,7 @@ int main(int argc, char* argv[]) {
         // Store executions in database
         if (!daily_executions.empty()) {
             INFO("Storing " + std::to_string(daily_executions.size()) + " executions to database...");
-            
+
             for (const auto& exec : daily_executions) {
                 DEBUG("Execution data - order_id: " + exec.order_id +
                       " symbol: " + exec.symbol +
@@ -4147,7 +4336,7 @@ int main(int argc, char* argv[]) {
         } else {
             INFO("No executions to store (no position changes detected)");
         }
-        
+
         std::cout << "\n======= Daily Position Report =======" << std::endl;
         std::cout << "Date: " << (now_tm->tm_year + 1900) << "-"
                   << std::setfill('0') << std::setw(2) << (now_tm->tm_mon + 1) << "-"
@@ -4199,7 +4388,7 @@ int main(int argc, char* argv[]) {
         std::cout << "Active Positions: " << active_positions << std::endl;
         std::cout << "Gross Notional: $" << std::fixed << std::setprecision(2) << gross_notional << std::endl;
         std::cout << "Net Notional: $" << std::fixed << std::setprecision(2) << net_notional << std::endl;
-        std::cout << "Portfolio Leverage (gross/current): " << std::fixed << std::setprecision(2) 
+        std::cout << "Portfolio Leverage (gross/current): " << std::fixed << std::setprecision(2)
                   << (gross_notional / initial_capital) << "x" << std::endl;
         // Posted margin should never be zero if there are active positions; enforce and warn
         if (active_positions > 0 && total_posted_margin <= 0.0) {
@@ -4362,7 +4551,7 @@ int main(int argc, char* argv[]) {
                  " daily_realized_pnl=" + std::to_string(static_cast<double>(validated_position.realized_pnl)) +
                  " daily_unrealized_pnl=" + std::to_string(static_cast<double>(validated_position.unrealized_pnl)));
         }
-        
+
         // E2-C7: live has NO overnight borrow-cost accrual, so it must not carry a short.
         //
         // TransactionCostManager::calculate_overnight_borrow_fees() has exactly one caller,
@@ -4413,6 +4602,8 @@ int main(int argc, char* argv[]) {
         // left the day EMPTY as well as unwritten. Moved down; see the comment at the
         // clear-then-write site further below.
 
+        // Nonempty owners retain the v1 position batch. The explicit empty v2
+        // batch is queued in the final publication scope below; no sentinel row.
         if (!positions_to_save.empty()) {
             INFO("Attempting to save " + std::to_string(positions_to_save.size()) + " positions to database");
             DEBUG("Database connection status: " + std::string(db->is_connected() ? "connected" : "disconnected"));
@@ -4478,7 +4669,7 @@ int main(int argc, char* argv[]) {
         // implicit_price_impact is the per-share intermediate, already inside slippage, and
         // must not be added again.
         for (const auto& exec : daily_executions) {
-            total_daily_commissions += exec.total_transaction_costs.as_double();
+            total_daily_commissions += exec.net_transaction_costs().as_double();
         }
         INFO("Total daily commissions: $" + std::to_string(total_daily_commissions));
 
@@ -4629,7 +4820,7 @@ int main(int argc, char* argv[]) {
         // whole statement on such a day, leaving the row un-finalized -- and combined with the
         // date mismatch (E2-F14) it fired on every weekend, which is how the Sunday/Monday
         // reruns were able to leave live_results stale while still rewriting position rows.
-        if (!previous_day_close_prices.empty() && !is_first_trading_day) {
+        if (!verified_desk_prior && !previous_day_close_prices.empty() && !is_first_trading_day) {
             INFO("STEP 4: Finalizing Day T-1 live_results -- mark $" +
                  std::to_string(yesterday_finalized_unrealized) + ", day move $" +
                  std::to_string(yesterday_total_pnl));
@@ -4740,14 +4931,14 @@ int main(int argc, char* argv[]) {
                     "SELECT COALESCE(y.daily_realized_pnl, 0.0), "
                     "       COALESCE(y.total_transaction_costs, 0.0), "
                     "       COALESCE((SELECT total_realized_pnl FROM trading.live_results "
-                    "                 WHERE strategy_id = 'LIVE_EQUITY_MEAN_REVERSION' "
+                    "                 WHERE portfolio_type = 'system' AND strategy_id = 'LIVE_EQUITY_MEAN_REVERSION' "
                     "                   AND portfolio_id = '" + portfolio_id + "' "
-                    "                   AND DATE(date) < '" + yesterday_date_str + "' "
+                    "                   AND (date AT TIME ZONE 'UTC')::date < '" + yesterday_date_str + "' "
                     "                 ORDER BY date DESC LIMIT 1), 0.0) "
                     "FROM trading.live_results y "
-                    "WHERE y.strategy_id = 'LIVE_EQUITY_MEAN_REVERSION' "
+                    "WHERE y.portfolio_type = 'system' AND y.strategy_id = 'LIVE_EQUITY_MEAN_REVERSION' "
                     "  AND y.portfolio_id = '" + portfolio_id + "' "
-                    "  AND DATE(y.date) = '" + yesterday_date_str + "'";
+                    "  AND (y.date AT TIME ZONE 'UTC')::date = '" + yesterday_date_str + "'";
                 auto cq = db->execute_query(comp_query);
                 if (cq.is_ok() && cq.value()->num_rows() > 0) {
                     auto a = DataConversionUtils::safe_get_double(cq.value()->column(0), 0,
@@ -4798,8 +4989,8 @@ int main(int argc, char* argv[]) {
                 // Call PostgreSQL function to calculate trading days
                 auto trading_days_result = db->execute_query(
                     "SELECT trading.get_trading_days('LIVE_EQUITY_MEAN_REVERSION', DATE '" + yesterday_date_str +
-                    "', '" + portfolio_id + "')");
-                
+                    "', '" + portfolio_id + "', 'system')");
+
                 if (trading_days_result.is_ok()) {
                     auto table = trading_days_result.value();
                     if (table && table->num_rows() > 0 && table->num_columns() > 0) {
@@ -4923,7 +5114,7 @@ int main(int argc, char* argv[]) {
                 "         COALESCE(total_unrealized_pnl, 0.0) as prev_unrealized, "
                 "         COALESCE(total_realized_pnl, 0.0) as prev_total_realized "
                 "  FROM trading.live_results "
-                "  WHERE strategy_id = 'LIVE_EQUITY_MEAN_REVERSION' AND portfolio_id = '" + portfolio_id + "' AND DATE(date) < '" + yesterday_date_str + "' "
+                "  WHERE portfolio_type = 'system' AND strategy_id = 'LIVE_EQUITY_MEAN_REVERSION' AND portfolio_id = '" + portfolio_id + "' AND (date AT TIME ZONE 'UTC')::date < '" + yesterday_date_str + "' "
                 "  ORDER BY date DESC LIMIT 1"
                 ") "
                 "UPDATE trading.live_results SET "
@@ -4950,12 +5141,12 @@ int main(int argc, char* argv[]) {
                 "cash_available = " + std::to_string(initial_capital) + " "
                 "             + (COALESCE((SELECT prev_total_realized FROM day_before), 0.0) + COALESCE(daily_realized_pnl, 0.0) "
                 "                - COALESCE(total_transaction_costs, 0.0)) + " + std::to_string(yesterday_finalized_unrealized) + " - COALESCE(margin_posted, 0.0) "
-                "WHERE strategy_id = 'LIVE_EQUITY_MEAN_REVERSION' AND portfolio_id = '" + portfolio_id + "' AND DATE(date) = '" + yesterday_date_str + "'";
+                "WHERE portfolio_type = 'system' AND strategy_id = 'LIVE_EQUITY_MEAN_REVERSION' AND portfolio_id = '" + portfolio_id + "' AND (date AT TIME ZONE 'UTC')::date = '" + yesterday_date_str + "'";
 
             INFO("Executing UPDATE query for Day T-1 live_results...");
             INFO("UPDATE will set current_portfolio_value for date: " + yesterday_date_str);
 
-            auto update_result = db->execute_direct_query(update_query);
+            auto update_result = db->execute_scoped_live_update(update_query,kEquityStrategyId,portfolio_id);
             if (update_result.is_error()) {
                 // E2-F1: a failed T-1 UPDATE is FATAL. It used to log and carry on, and the
                 // run still exited 0 -- the same defect class as E2-F5/E2-F6, where a
@@ -4988,7 +5179,7 @@ int main(int argc, char* argv[]) {
             // Query the current portfolio value from updated live_results
             std::string get_equity_query =
                 "SELECT current_portfolio_value FROM trading.live_results "
-                "WHERE strategy_id = 'LIVE_EQUITY_MEAN_REVERSION' AND portfolio_id = '" + portfolio_id + "' AND DATE(date) = '" + yesterday_date_str + "'";
+                "WHERE portfolio_type = 'system' AND strategy_id = 'LIVE_EQUITY_MEAN_REVERSION' AND portfolio_id = '" + portfolio_id + "' AND (date AT TIME ZONE 'UTC')::date = '" + yesterday_date_str + "'";
 
             INFO("Querying for portfolio value with date: " + yesterday_date_str);
 
@@ -5043,7 +5234,7 @@ int main(int argc, char* argv[]) {
                             // gets no row at all. live_portfolio_conservative.cpp:2217
                             // passes it at the byte-identical call site.
                             auto yesterday_manager = std::make_unique<LiveResultsManager>(
-                                db, true, kEquityStrategyId, portfolio_id, kEquityStrategyName
+                                db, true, kEquityStrategyId, portfolio_id, "system", kEquityStrategyName
                             );
                             yesterday_manager->set_equity(portfolio_value);
 
@@ -5130,8 +5321,8 @@ int main(int argc, char* argv[]) {
                          std::to_string(yesterday_hist_metrics.volatility) +
                          " downside_deviation=" +
                          std::to_string(yesterday_hist_metrics.downside_deviation) +
-                         " sharpe=" + std::to_string(yesterday_hist_metrics.sharpe_ratio) +
-                         " sortino=" + std::to_string(yesterday_hist_metrics.sortino_ratio) +
+                         " sharpe=" + format_equity_ratio(yesterday_hist_metrics.sharpe_ratio) +
+                         " sortino=" + format_equity_ratio(yesterday_hist_metrics.sortino_ratio) +
                          " max_drawdown=" +
                          std::to_string(yesterday_hist_metrics.max_drawdown) +
                          " winning_days=" +
@@ -5147,7 +5338,7 @@ int main(int argc, char* argv[]) {
                          std::to_string(yesterday_hist_metrics.gross_profit) +
                          " gross_loss=" + std::to_string(yesterday_hist_metrics.gross_loss) +
                          " profit_factor=" +
-                         std::to_string(yesterday_hist_metrics.profit_factor) +
+                         format_equity_ratio(yesterday_hist_metrics.profit_factor) +
                          " (returns n=" + std::to_string(returns_hist.size()) +
                          ", equity n=" + std::to_string(equity_hist.size()) +
                          ", executions=" + std::to_string(total_trades_hist) + ")");
@@ -5164,10 +5355,10 @@ int main(int argc, char* argv[]) {
                     }
 
                     auto yesterday_metrics_manager = std::make_unique<LiveResultsManager>(
-                        db, true, kEquityStrategyId, portfolio_id, kEquityStrategyName);
+                        db, true, kEquityStrategyId, portfolio_id, "system", kEquityStrategyName);
                     auto update_metrics_result =
-                        yesterday_metrics_manager->update_live_results(previous_date,
-                                                                       metric_updates);
+                        yesterday_metrics_manager->update_live_results_nullable(previous_date,
+                        metric_updates,historical_metrics_null_columns(yesterday_hist_metrics));
                     if (update_metrics_result.is_error()) {
                         WARN("Failed to update Day T-1 historical performance metrics: " +
                              std::string(update_metrics_result.error()->what()));
@@ -5190,7 +5381,7 @@ int main(int argc, char* argv[]) {
                     "SELECT daily_return, daily_pnl, daily_realized_pnl, daily_unrealized_pnl, "
                     "portfolio_leverage, equity_to_margin_ratio "
                     "FROM trading.live_results "
-                    "WHERE strategy_id = 'LIVE_EQUITY_MEAN_REVERSION' AND portfolio_id = '" + portfolio_id + "' AND DATE(date) = '" + yesterday_date_str + "'";
+                    "WHERE portfolio_type = 'system' AND strategy_id = 'LIVE_EQUITY_MEAN_REVERSION' AND portfolio_id = '" + portfolio_id + "' AND (date AT TIME ZONE 'UTC')::date = '" + yesterday_date_str + "'";
 
                 INFO("Loading yesterday's metrics from database with query: " + metrics_query);
                 auto metrics_result = db->execute_query(metrics_query);
@@ -5267,7 +5458,18 @@ int main(int argc, char* argv[]) {
         // the column itself, scoped by portfolio_id like every other query in this file.
         double previous_total_unrealized_pnl = 0.0;
 
-        try {
+        if(governed_prior){
+            const auto& row=governed_prior->financial.at("live_results").at(0);
+            auto exact=[](const nlohmann::json& value){auto parsed=parse_qt_quantity_exact(value.get<std::string>());if(parsed.is_error())throw std::invalid_argument("equity_prior_exact");return parsed.value();};
+            previous_portfolio_value=exact(row.at("current_portfolio_value_exact")).as_double();
+            previous_total_pnl=exact(row.at("total_pnl_exact")).as_double();
+            previous_total_commissions=exact(row.at("total_transaction_costs_exact")).as_double();
+            previous_total_unrealized_pnl=exact(row.at("total_unrealized_pnl_exact")).as_double();
+            equity_run.eod.reads={"proved_desk_successor",exact(row.at("current_portfolio_value_exact")),exact(row.at("total_pnl_exact")),
+                exact(row.at("total_realized_pnl_exact")),exact(row.at("total_transaction_costs_exact")),exact(row.at("initial_capital_exact"))};
+            equity_run.eod.outcome=EquityStageOutcome::Skipped;equity_run.eod.skip=EquityStageSkip::ProvedDeskSuccessor;
+        }
+        if(!verified_desk_prior) try {
             auto db_ptr = std::dynamic_pointer_cast<PostgresDatabase>(db);
             if (db_ptr) {
                 auto prev_agg = db_ptr->get_previous_live_aggregates("LIVE_EQUITY_MEAN_REVERSION", portfolio_id, now, "trading.live_results");
@@ -5288,11 +5490,11 @@ int main(int argc, char* argv[]) {
         // row -- the first trading day -- correctly leaves this at 0.0, which makes the
         // realized-only strip a no-op and makes daily_unrealized_pnl equal the full opening
         // mark, both of which are right on day one.
-        try {
+        if(!verified_desk_prior) try {
             std::string prev_unrealized_query =
                 "SELECT COALESCE(total_unrealized_pnl, 0.0) FROM trading.live_results "
-                "WHERE strategy_id = 'LIVE_EQUITY_MEAN_REVERSION' AND portfolio_id = '" + portfolio_id + "' "
-                "AND DATE(date) < '" + today_date_str + "' "
+                "WHERE portfolio_type = 'system' AND strategy_id = 'LIVE_EQUITY_MEAN_REVERSION' AND portfolio_id = '" + portfolio_id + "' "
+                "AND (date AT TIME ZONE 'UTC')::date < '" + today_date_str + "' "
                 "ORDER BY date DESC LIMIT 1";
             auto pu = db->execute_query(prev_unrealized_query);
             if (pu.is_ok() && pu.value()->num_rows() > 0) {
@@ -5461,11 +5663,13 @@ int main(int argc, char* argv[]) {
         // Do not turn total_pnl back into an accumulator -- adding a snapshot to a running
         // total is precisely how the mark started compounding.
         double previous_total_realized_pnl = 0.0;
-        try {
+        if(governed_prior){auto parsed=parse_qt_quantity_exact(governed_prior->financial.at("live_results").at(0).at("total_realized_pnl_exact").get<std::string>());
+            if(parsed.is_error())throw std::invalid_argument("equity_prior_realized_invalid");previous_total_realized_pnl=parsed.value().as_double();}
+        if(!verified_desk_prior) try {
             std::string prev_realized_query =
                 "SELECT COALESCE(total_realized_pnl, 0.0) FROM trading.live_results "
-                "WHERE strategy_id = 'LIVE_EQUITY_MEAN_REVERSION' AND portfolio_id = '" + portfolio_id + "' "
-                "AND DATE(date) < '" + today_date_str + "' "
+                "WHERE portfolio_type = 'system' AND strategy_id = 'LIVE_EQUITY_MEAN_REVERSION' AND portfolio_id = '" + portfolio_id + "' "
+                "AND (date AT TIME ZONE 'UTC')::date < '" + today_date_str + "' "
                 "ORDER BY date DESC LIMIT 1";
             auto pr = db->execute_query(prev_realized_query);
             if (pr.is_ok() && pr.value()->num_rows() > 0) {
@@ -5488,6 +5692,9 @@ int main(int argc, char* argv[]) {
             WARN("Could not load previous total_realized_pnl: " + std::string(e.what()));
         }
 
+        if(!verified_desk_prior){equity_run.eod.reads={"system_finalization",Decimal(previous_portfolio_value),Decimal(previous_total_pnl),
+            Decimal(previous_total_realized_pnl),Decimal(previous_total_commissions),Decimal(initial_capital)};
+            equity_run.eod.outcome=EquityStageOutcome::ReturnedOk;}
         double total_realized_pnl = previous_total_realized_pnl + daily_realized_pnl;
 
         // Day-over-day change in the mark. This is what daily_unrealized_pnl should have held
@@ -5528,8 +5735,8 @@ int main(int argc, char* argv[]) {
             // Call PostgreSQL function to calculate trading days
             auto trading_days_result = db->execute_query(
                 "SELECT trading.get_trading_days('LIVE_EQUITY_MEAN_REVERSION', DATE '" + now_date_str +
-                    "', '" + portfolio_id + "')");
-            
+                    "', '" + portfolio_id + "', 'system')");
+
             if (trading_days_result.is_ok()) {
                 auto table = trading_days_result.value();
                 if (table && table->num_rows() > 0 && table->num_columns() > 0) {
@@ -5568,7 +5775,7 @@ int main(int argc, char* argv[]) {
         INFO("  Total PnL: $" + std::to_string(total_pnl));
         INFO("  Daily return: " + std::to_string(daily_return) + "%");
         INFO("  Annualized return: " + std::to_string(total_return_annualized) + "%");
-        
+
         std::cout << "Total P&L: $" << std::fixed << std::setprecision(2) << total_pnl << std::endl;
         std::cout << "Realized P&L: $" << std::fixed << std::setprecision(2) << total_realized_pnl << std::endl;
         std::cout << "Unrealized P&L: $" << std::fixed << std::setprecision(2) << total_unrealized_pnl << std::endl;
@@ -5576,7 +5783,7 @@ int main(int argc, char* argv[]) {
         std::cout << "Total Return (Cumulative): " << std::fixed << std::setprecision(2) << total_cumulative_return_pct << "%" << std::endl;
         std::cout << "Total Return (Annualized): " << std::fixed << std::setprecision(2) << total_return_annualized << "%" << std::endl;
         std::cout << "Daily Return: " << std::fixed << std::setprecision(2) << daily_return << "%" << std::endl;
-        std::cout << "Portfolio Leverage: " << std::fixed << std::setprecision(2) 
+        std::cout << "Portfolio Leverage: " << std::fixed << std::setprecision(2)
                   << (gross_notional / current_portfolio_value) << "x" << std::endl;
         std::cout << "Posted Margin (Initial×Contracts): $" << std::fixed << std::setprecision(2)
                   << total_posted_margin << std::endl;
@@ -5637,7 +5844,7 @@ int main(int argc, char* argv[]) {
         try {
             // Calculate current date for results (use override date if specified)
             auto current_date = now;
-            
+
             // E2-F33: the thirteen `= 0.0; // Would need historical data to calculate`
             // placeholders that stood here are gone, along with the claim in their comments.
             // The history they said was unavailable is four SELECTs away and both futures
@@ -5665,7 +5872,7 @@ int main(int argc, char* argv[]) {
             double cvar_95 = 0.0;
             double beta = 0.0;
             double correlation = 0.0;
-            
+
             // The ex-ante risk figures. NOT volatility any more -- see above.
             if (risk_eval.is_ok()) {
                 const auto& r = risk_eval.value();
@@ -5674,7 +5881,7 @@ int main(int argc, char* argv[]) {
                 beta = 0.0;                           // No beta available in RiskResult
                 correlation = r.correlation_risk;     // Use correlation risk
             }
-            
+
             // Create configuration JSON
             nlohmann::json config_json;
             config_json["strategy_type"] = "LIVE_EQUITY_MEAN_REVERSION";
@@ -5687,7 +5894,7 @@ int main(int argc, char* argv[]) {
             config_json["gross_notional"] = gross_notional;
             config_json["net_notional"] = net_notional;
             config_json["portfolio_leverage"] = gross_notional / initial_capital;
-            
+
             // Phase 6 §6c: removed unused date_ss timestamp string (dead
             // code -- the live_results insert is now driven by the
             // store_live_results_complete dynamic-column API rather than
@@ -5714,7 +5921,7 @@ int main(int argc, char* argv[]) {
             // Use LiveMetricsCalculator for portfolio metrics
             double portfolio_leverage = metrics_calculator->calculate_gross_leverage(gross_notional, current_portfolio_value);
             // equity_to_margin_ratio and margin_cushion already computed above
-            
+
             // Use the LiveResultsManager
             INFO("Setting metrics in LiveResultsManager...");
 
@@ -5803,8 +6010,8 @@ int main(int argc, char* argv[]) {
                          std::to_string(historical_metrics.volatility) +
                          " downside_deviation=" +
                          std::to_string(historical_metrics.downside_deviation) +
-                         " sharpe=" + std::to_string(historical_metrics.sharpe_ratio) +
-                         " sortino=" + std::to_string(historical_metrics.sortino_ratio) +
+                         " sharpe=" + format_equity_ratio(historical_metrics.sharpe_ratio) +
+                         " sortino=" + format_equity_ratio(historical_metrics.sortino_ratio) +
                          " max_drawdown=" + std::to_string(historical_metrics.max_drawdown) +
                          " winning_days=" + std::to_string(historical_metrics.winning_days) +
                          " losing_days=" + std::to_string(historical_metrics.losing_days) +
@@ -5816,7 +6023,7 @@ int main(int argc, char* argv[]) {
                          " worst_day=" + std::to_string(historical_metrics.worst_day) +
                          " gross_profit=" + std::to_string(historical_metrics.gross_profit) +
                          " gross_loss=" + std::to_string(historical_metrics.gross_loss) +
-                         " profit_factor=" + std::to_string(historical_metrics.profit_factor) +
+                         " profit_factor=" + format_equity_ratio(historical_metrics.profit_factor) +
                          " (returns n=" + std::to_string(returns_hist.size()) +
                          ", equity n=" + std::to_string(equity_hist.size()) +
                          ", executions=" + std::to_string(total_trades_hist) + ")");
@@ -5886,12 +6093,34 @@ int main(int argc, char* argv[]) {
             results_manager->set_metrics(double_metrics, int_metrics);
 
             // Set config
+            if(equity_invocation_reached) {
+                if(equity_invocation.outcome!=PortfolioCallOutcome::ReturnedOk || equity_invocation.strategies.size()!=1 ||
+                   equity_invocation.strategies.front().strategy_id!=kEquityStrategyId ||
+                   equity_invocation.strategies.front().outcome!=PortfolioCallOutcome::ReturnedOk) {
+                    ERROR("Actual equity strategy invocation evidence incomplete");return 1;
+                }
+                auto consumed=project_equity_strategy_consumption(equity_invocation.strategies.front().strategy);
+                if(consumed.is_error()) {ERROR("Actual equity strategy consumption projection refused");return 1;}
+                config_json["equity_strategy_consumption"]=consumed.value();
+            } else {
+                config_json["equity_strategy_consumption"]={{"schema_version","qt-equity-strategy-consumption/v1"},
+                    {"available",false},{"reason","non_trading_invocation_not_reached"},{"scope","strategy_invocation"},
+                    {"full_run_certification",false}};
+            }
+            equity_run.result_assembly.reads={"USD",Decimal(current_portfolio_value),Decimal(total_realized_pnl),
+                Decimal(total_unrealized_pnl),Decimal(total_commissions_cumulative)};
+            equity_run.result_assembly.outcome=EquityStageOutcome::ReturnedOk;
+            auto projection=project_equity_run_consumption(equity_run);
+            config_json["equity_run_consumption"]=projection.document();
+            auto attached=db->attach_equity_run_consumption(equity_evidence_token,projection);
+            if(attached.is_error())throw std::invalid_argument("equity_consumption_attachment_refused");
             results_manager->set_config(config_json);
 
             // Set equity for equity curve tracking
             results_manager->set_equity(current_portfolio_value);
         } catch (const std::exception& e) {
             ERROR("Exception while saving trading results: " + std::string(e.what()));
+            return 1;
         }
 
         // Phase 4: Use CSVExporter for position export
@@ -5900,7 +6129,7 @@ int main(int argc, char* argv[]) {
         // Query daily commissions per symbol using LiveDataLoader
         std::unordered_map<std::string, double> symbol_commissions;
         try {
-            auto commission_result = data_loader->load_commissions_by_symbol(portfolio_id, now);
+            auto commission_result = data_loader->load_commissions_by_symbol(kEquityStrategyId,kEquityStrategyName,portfolio_id,now);
             if (commission_result.is_ok()) {
                 symbol_commissions = commission_result.value();
                 INFO("Loaded commissions for " + std::to_string(symbol_commissions.size()) + " symbols via LiveDataLoader");
@@ -5947,11 +6176,11 @@ int main(int argc, char* argv[]) {
         // NOT positions, which is why this statement exists at all.
         {
             const std::string clear_today =
-                "DELETE FROM trading.positions WHERE strategy_id = '" +
+                "DELETE FROM trading.positions WHERE portfolio_type = 'system' AND strategy_id = '" +
                 std::string(kEquityStrategyId) + "' AND strategy_name = '" +
                 std::string(kEquityStrategyName) + "' AND portfolio_id = '" + portfolio_id +
-                "' AND DATE(last_update) = '" + today_date_str + "'";
-            auto cleared = db->execute_direct_query(clear_today);
+                "' AND date = '" + today_date_str + "'";
+            auto cleared = db->clear_equity_model_current_positions(portfolio_id,now);
             if (cleared.is_error()) {
                 ERROR("Failed to clear today's position rows before the day-T write: " +
                       std::string(cleared.error()->what()) +
@@ -5964,6 +6193,10 @@ int main(int argc, char* argv[]) {
                  " row(s) queued)");
         }
 
+        if(positions_to_save.empty()) {
+            const trade_ngin::QtModelPositionBatch completed{portfolio_id,kEquityStrategyId,kEquityStrategyName,today_date_str,{}};
+            if(db->store_model_position_batch(completed).is_error())return 1;
+        }
         bool persist_failed = false;
         auto save_result = results_manager->save_all_results("LIVE_EQUITY_MEAN_REVERSION", now);
         if (save_result.is_error()) {
@@ -5974,6 +6207,40 @@ int main(int argc, char* argv[]) {
             ERROR("Failed to save all live results: " + std::string(save_result.error()->what()));
         } else {
             INFO("Successfully saved all live trading results to database");
+        }
+
+        if(persist_failed)return 1;
+        std::unordered_map<std::string,double> published_limits={{"max_gross_leverage",risk_config.max_gross_leverage},
+            {"max_net_leverage",risk_config.max_net_leverage}};
+        if(db->store_risk_limits(kEquityStrategyId,portfolio_id,published_limits).is_error())return 1;
+        const bool system_investor_publication =
+            db->live_publication_mode() == LivePublicationMode::SystemInvestor;
+        if(!system_investor_publication) {
+            auto proposal_seed = seed_qt_proposal_positions(
+                *db,kEquityStrategyId,{kEquityStrategyName},portfolio_id,now);
+            if(proposal_seed.is_error()) {
+                ERROR("QT proposal seed failed: " +
+                      std::string(proposal_seed.error()->what()));
+                return 1;
+            }
+            auto report_seed = seed_qt_report_positions(
+                *db,kEquityStrategyId,{kEquityStrategyName},portfolio_id,now);
+            if(report_seed.is_error()) {
+                ERROR("QT report seed failed: " +
+                      std::string(report_seed.error()->what()));
+                return 1;
+            }
+        }
+        auto inputs=build_run_inputs_row(TRADE_NGIN_GIT_SHA,trading_snapshot.value(),symbols,all_bars,
+            portfolio_config.benchmark_mode,start_date,end_date);
+        inputs["engine_flags"]["equity_strategy_source_key"]=strat_entry.id;
+        if(governed_prior)inputs["engine_flags"]["equity_model_prior"]=governed_prior->replay_reference;
+        if(db->store_live_run_inputs(kEquityStrategyId,portfolio_id,now,inputs).is_error())return 1;
+        auto publication = db->publish_live_publication();
+        if(publication.is_error()) {
+            ERROR("Live publication failed: " +
+                  std::string(publication.error()->what()));
+            return 1;
         }
 
         // Stop the strategy
@@ -6036,7 +6303,7 @@ int main(int argc, char* argv[]) {
 
                 std::string positions_query_email = "SELECT symbol, quantity, average_price, daily_realized_pnl, daily_unrealized_pnl, last_update "
                                                    "FROM trading.positions "
-                                                   "WHERE strategy_id = 'LIVE_EQUITY_MEAN_REVERSION' AND portfolio_id = '" + portfolio_id + "' AND DATE(last_update) = '" + yesterday_date_for_email + "'";
+                                                   "WHERE strategy_name = 'EQUITY_MEAN_REVERSION' AND portfolio_type = 'system' AND strategy_id = 'LIVE_EQUITY_MEAN_REVERSION' AND portfolio_id = '" + portfolio_id + "' AND date = '" + yesterday_date_for_email + "'";
 
                 auto positions_result_email = db->execute_query(positions_query_email);
 
@@ -6086,7 +6353,7 @@ int main(int argc, char* argv[]) {
                         "SELECT daily_return, daily_unrealized_pnl, daily_realized_pnl, daily_pnl, "
                         "daily_transaction_costs, total_dividend_income "
                         "FROM trading.live_results "
-                        "WHERE strategy_id = 'LIVE_EQUITY_MEAN_REVERSION' AND portfolio_id = '" + portfolio_id + "' AND date = '" + yesterday_date_for_email + "' "
+                        "WHERE portfolio_type = 'system' AND strategy_id = 'LIVE_EQUITY_MEAN_REVERSION' AND portfolio_id = '" + portfolio_id + "' AND date = '" + yesterday_date_for_email + "' "
                         "ORDER BY date DESC LIMIT 1";
 
                     INFO("Loading yesterday's daily metrics from live_results: " + yesterday_metrics_query);
@@ -6151,7 +6418,7 @@ int main(int argc, char* argv[]) {
                 } else {
                     INFO("No finalized positions found for yesterday's email table");
                 }
-                
+
                 // Create strategy metrics map with all relevant metrics organized by category
                 std::map<std::string, double> strategy_metrics;
 
@@ -6192,7 +6459,7 @@ int main(int argc, char* argv[]) {
                 double gross_leverage_calc = (current_portfolio_value != 0.0) ? (gross_notional / current_portfolio_value) : 0.0;
                 double net_leverage_calc = (current_portfolio_value != 0.0) ? (net_notional / current_portfolio_value) : 0.0;
                 double portfolio_leverage_calc = (current_portfolio_value != 0.0) ? (gross_notional / current_portfolio_value) : 0.0;
-                
+
                 strategy_metrics["Gross Leverage"] = gross_leverage_calc;
                 strategy_metrics["Net Leverage"] = net_leverage_calc;
                 strategy_metrics["Portfolio Leverage"] = portfolio_leverage_calc;
@@ -6226,7 +6493,7 @@ int main(int argc, char* argv[]) {
                     std::string(kEquityStrategyId),
                     portfolio_id
                 );
-                
+
                 // Send email without CSV attachments (CSV export disabled for mean reversion)
                 std::vector<std::string> attachments = {};  // No CSV files for mean reversion
 

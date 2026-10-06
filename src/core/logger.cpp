@@ -13,8 +13,7 @@
 
 namespace trade_ngin {
 
-// Thread-local variable to store the current component name
-thread_local std::string Logger::current_component_;
+thread_local Logger::ComponentContext* Logger::current_component_context_ = nullptr;
 
 // Helper function to generate formatted timestamp
 std::string generate_session_timestamp() {
@@ -32,6 +31,20 @@ std::string generate_session_timestamp() {
 Logger& Logger::instance() {
     static Logger instance;
     return instance;
+}
+
+void Logger::register_component(const std::string& component) {
+    auto& logger = instance();
+    std::lock_guard<std::mutex> lock(logger.mutex_);
+    if (!current_component_context_) {
+        auto context = std::make_unique<ComponentContext>();
+        context->name = component;
+        auto& owned = logger.component_contexts_[std::this_thread::get_id()];
+        owned = std::move(context);
+        current_component_context_ = owned.get();
+    } else {
+        current_component_context_->name = component;
+    }
 }
 
 namespace {
@@ -215,8 +228,8 @@ std::string Logger::format_message(LogLevel level, const std::string& message) {
     }
 
     // Add component name if available
-    if (!current_component_.empty()) {
-        ss << "[" << current_component_ << "] ";
+    if (current_component_context_ && !current_component_context_->name.empty()) {
+        ss << "[" << current_component_context_->name << "] ";
     }
 
     // Add the actual message

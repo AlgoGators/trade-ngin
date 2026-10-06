@@ -48,7 +48,7 @@ class ReleaseArtifactsContract(unittest.TestCase):
             "libtrade_ngin.so": "engine",
             "live_portfolio": "system_publisher",
             "live_portfolio_conservative": "system_publisher",
-            "live_equity_mean_reversion": "system_publisher",
+            "live_equity_mr": "system_publisher",
             "qt_desk_prepare_sources": "desk_tool",
             "qt_desk_run": "desk_tool",
         }

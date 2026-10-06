@@ -8,7 +8,9 @@
 // unknown strategy type instead of silently dropping it (review §F10).
 
 #include <algorithm>
+#include <stdexcept>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 #include <nlohmann/json.hpp>
@@ -52,6 +54,47 @@ struct EquityStrategyEntry {
     double allocation;    // "default_allocation" (defaults to 1.0)
     nlohmann::json def;   // the full strategy definition
 };
+
+struct EquityLiveSleevePlan {
+    std::string source_id;
+    std::string strategy_name;
+    double allocation;
+    std::vector<std::string> symbols;
+    bool uses_database_symbol_fallback{false};
+    nlohmann::json definition;
+};
+
+struct EquityLiveBookPlan {
+    std::string combined_strategy_id;
+    bool legacy_single{false};
+    bool allow_fractional_shares{false};
+    std::vector<EquityLiveSleevePlan> sleeves;
+    std::vector<std::string> symbols;
+};
+
+Result<EquityLiveBookPlan> build_equity_live_book_plan(
+    const std::vector<EquityStrategyEntry>& entries);
+
+inline nlohmann::json build_equity_backtest_config_snapshot(
+    const std::vector<EquityStrategyEntry>& entries,
+    const std::unordered_map<std::string, double>& normalized_allocations) {
+    nlohmann::json strategies = nlohmann::json::object();
+    for (const auto& entry : entries) {
+        if (entry.id.empty() || strategies.contains(entry.id) ||
+            !normalized_allocations.contains(entry.id)) {
+            throw std::invalid_argument("Invalid equity backtest strategy snapshot");
+        }
+        nlohmann::json row = entry.def;
+        row["type"] = entry.type;
+        row["allocation"] = normalized_allocations.at(entry.id);
+        strategies[entry.id] = std::move(row);
+    }
+    if (strategies.empty() || strategies.size() != normalized_allocations.size()) {
+        throw std::invalid_argument("Incomplete equity backtest strategy snapshot");
+    }
+    return {{"schema", 1}, {"asset_class", "EQUITIES"},
+            {"strategies", std::move(strategies)}};
+}
 
 // Iterate strategies_config, collect the strategies enabled for the given mode,
 // and validate that every enabled strategy has a recognized "type" and a "config"
@@ -100,6 +143,15 @@ inline Result<std::vector<EquityStrategyEntry>> collect_enabled_equity_strategie
             "equity_strategy_builder");
     }
     return Result<std::vector<EquityStrategyEntry>>(std::move(entries));
+}
+
+inline Result<void> refuse_if_optimizer_requested(bool config_use_optimization) {
+    if (!config_use_optimization) return Result<void>();
+    return make_error<void>(
+        ErrorCode::INVALID_DATA,
+        "Refusing to start: portfolio.json sets use_optimization=true, but the equity runners "
+        "do not run the optimizer (HD 2026-09-01; see the runner configuration).",
+        "equity_strategy_builder");
 }
 
 }  // namespace apps

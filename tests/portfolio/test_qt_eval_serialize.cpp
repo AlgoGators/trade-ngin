@@ -1,5 +1,6 @@
 #include "trade_ngin/portfolio/qt_evaluation.hpp"
 #include "trade_ngin/portfolio/qt_wire.hpp"
+#include "qt_test_build_identity.hpp"
 
 #include <gtest/gtest.h>
 #include <filesystem>
@@ -30,7 +31,8 @@ TEST(QtEvalSerializeTest, UnavailableEvidenceNeverLooksEvaluated) {
                          "contracts" / "qt-eval-v1.json";
     std::ifstream file(fixture, std::ios::binary);
     ASSERT_TRUE(file.good());
-    const auto request_json = nlohmann::json::parse(file).at("selected_book");
+    const auto request_json = trade_ngin::test::fixture_for_compiled_build(
+        nlohmann::json::parse(file).at("selected_book"));
     const auto request = parse_qt_evaluation_request(request_json.dump());
     ASSERT_TRUE(request.is_ok());
     const auto overlay = overlay_component_book(request.value().context, request.value().proposal);
@@ -79,7 +81,7 @@ TEST(QtEvalSerializeTest, UnavailableEvidenceNeverLooksEvaluated) {
 TEST(QtEvalSerializeTest, RejectsMismatchedSelectedDigestAndFabricatedStage) {
     QtEvaluation evaluation;
     evaluation.operation = QtEvaluationOperation::SelectedBook;
-    evaluation.evaluator_build = "local-qt-controlled";
+    evaluation.evaluator_build = TRADE_NGIN_GIT_SHA;
     evaluation.context_fingerprint = std::string(64, '1');
     evaluation.evaluated_book_digest = std::string(64, '0');
     evaluation.optimizer_status = QtEvidenceStatus::Disabled;

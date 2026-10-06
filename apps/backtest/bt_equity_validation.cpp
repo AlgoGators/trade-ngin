@@ -12,8 +12,10 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdlib>
 #include <iomanip>
 #include <iostream>
+#include <limits>
 #include <map>
 #include <numeric>
 #include <sstream>
@@ -23,6 +25,7 @@
 
 #include <arrow/api.h>
 
+#include "trade_ngin/apps/live_portfolio_helpers.hpp"
 #include "trade_ngin/backtest/backtest_coordinator.hpp"
 #include "trade_ngin/core/config_loader.hpp"
 #include "trade_ngin/core/logger.hpp"
@@ -101,7 +104,7 @@ static std::string ts_to_date_str(const Timestamp& ts) {
 // MAIN
 // ============================================================================
 
-int main() {
+int main(int argc, char* argv[]) {
     try {
         StateManager::reset_instance();
         Logger::reset_for_tests();
@@ -129,7 +132,21 @@ int main() {
         // SETUP — Load config and connect to database
         // ====================================================================
         INFO("Loading configuration...");
-        auto app_config_result = ConfigLoader::load("./config", "equity_mr");
+        std::vector<std::string> raw_arguments;
+        for (int i = 1; i < argc; ++i) raw_arguments.emplace_back(argv[i]);
+        std::optional<std::string> environment_portfolio;
+        if (const char* value = std::getenv("TRADE_NGIN_PORTFOLIO")) {
+            environment_portfolio = value;
+        }
+        auto selection = resolve_portfolio_selection(
+            raw_arguments, environment_portfolio, "equity_mr");
+        if (selection.is_error() || !selection.value().runner_arguments.empty()) {
+            std::cerr << (selection.is_error() ? selection.error()->what()
+                                               : "Unexpected equity validation argument")
+                      << "\nUsage: " << argv[0] << " [--portfolio NAME]\n";
+            return 1;
+        }
+        auto app_config_result = ConfigLoader::load("./config", selection.value().config_name);
         if (app_config_result.is_error()) {
             ERROR("Failed to load equity_mr configuration: " +
                   std::string(app_config_result.error()->what()));
@@ -574,7 +591,6 @@ int main() {
 
         BacktestCoordinatorConfig coord_config;
         coord_config.initial_capital = initial_capital;
-        coord_config.use_risk_management = false;
         coord_config.use_optimization = false;
         coord_config.store_trade_details = true;
         coord_config.portfolio_id = "equity_validation";
@@ -590,10 +606,22 @@ int main() {
         portfolio_config.total_capital = Decimal(initial_capital);
         portfolio_config.reserve_capital = Decimal(initial_capital * 0.05);
         portfolio_config.use_optimization = false;
-        portfolio_config.use_risk_management = false;
+        portfolio_config.covariance_history_prices = app_config.covariance_history_prices;
+        // This harness measures the strategy alone, so it runs no portfolio risk layer.
+        // Schema 2 will not let that be a forgotten line: the decision is written down,
+        // with who made it and when, and the PortfolioManager refuses an empty list.
+        auto none_module = make_none_module(
+            "Equity validation harness: measures the strategy alone, without a portfolio risk "
+            "layer (T-RISK-ARCH \u00a77 table)",
+            "HD (T-RISK-ARCH \u00a77, adopted STAGE3_PLAN \u00a728)", "2026-09-18");
+        if (none_module.is_error()) {
+            ERROR(std::string(none_module.error()->what()));
+            return 1;
+        }
+        portfolio_config.risk_modules = {none_module.value()};
 
         auto portfolio = std::make_shared<PortfolioManager>(portfolio_config);
-        auto add_result = portfolio->add_strategy(strategy, 1.0, false, false);
+        auto add_result = portfolio->add_strategy(strategy, 1.0, false);
         if (add_result.is_error()) {
             ERROR("Failed to add strategy: " + std::string(add_result.error()->what()));
             return 1;
@@ -861,7 +889,7 @@ int main() {
                         double qty = exec.filled_quantity.as_double();
                         if (exec.side == Side::SELL) qty = -qty;
                         positions[exec.symbol] += qty;
-                        day_txn_costs += exec.total_transaction_costs.as_double();
+                        day_txn_costs += exec.net_transaction_costs().as_double();
                     }
                 }
 
@@ -1037,16 +1065,23 @@ int main() {
 
             print_metric("total_return", manual_total_return, backtest_results.total_return);
             print_metric("volatility", manual_vol, backtest_results.volatility);
-            print_metric("sharpe_ratio", manual_sharpe, backtest_results.sharpe_ratio);
-            print_metric("sortino_ratio", manual_sortino, backtest_results.sortino_ratio);
+            print_metric("sharpe_ratio", manual_sharpe,
+                         backtest_results.sharpe_ratio.value_or(
+                             std::numeric_limits<double>::quiet_NaN()));
+            print_metric("sortino_ratio", manual_sortino,
+                         backtest_results.sortino_ratio.value_or(
+                             std::numeric_limits<double>::quiet_NaN()));
             print_metric("max_drawdown", manual_max_dd, backtest_results.max_drawdown);
-            print_metric("calmar_ratio", manual_calmar, backtest_results.calmar_ratio);
+            print_metric("calmar_ratio", manual_calmar,
+                         backtest_results.calmar_ratio.value_or(
+                             std::numeric_limits<double>::quiet_NaN()));
 
             std::cout << "\nAdditional backtest results:" << std::endl;
             std::cout << "  Total trades: " << backtest_results.total_trades << std::endl;
             std::cout << "  Win rate: " << std::fixed << std::setprecision(2)
                       << (backtest_results.win_rate * 100) << "%" << std::endl;
-            std::cout << "  Profit factor: " << std::setprecision(3) << backtest_results.profit_factor << std::endl;
+            std::cout << "  Profit factor: " << std::setprecision(3)
+                      << backtest_results.profit_factor.value_or(0.0) << std::endl;
             std::cout << std::endl;
         }
 

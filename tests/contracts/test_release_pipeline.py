@@ -1,6 +1,10 @@
-"""Static guards for the immutable build-once production release chain."""
+"""Guards for the immutable build-once production release chain."""
+import json
+import os
 from pathlib import Path
 import unittest
+
+from tests.qt_test_artifacts import build_dir
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -38,6 +42,18 @@ class ReleasePipelineContract(unittest.TestCase):
         self.assertNotIn("make ", self.dockerfile)
         self.assertNotIn("sed ", self.dockerfile)
 
+    def test_runtime_packages_and_arrow_source_are_immutable_inputs(self):
+        self.assertIn("ARG APACHE_ARROW_APT_SOURCE_SHA256", self.dockerfile)
+        self.assertIn("sha256sum -c -", self.dockerfile)
+        self.assertIn("ARG TRADE_NGIN_RUNTIME_APT_PACKAGES", self.dockerfile)
+        self.assertIn("package_missing_exact_version", self.dockerfile)
+        self.assertIn(
+            '--build-arg APACHE_ARROW_APT_SOURCE_SHA256="$APACHE_ARROW_APT_SOURCE_SHA256"',
+            self.image_job)
+        self.assertIn(
+            '--build-arg TRADE_NGIN_RUNTIME_APT_PACKAGES="$TRADE_NGIN_RUNTIME_APT_PACKAGES"',
+            self.image_job)
+
     def test_prod_deploy_trigger_remains_exact(self):
         deploy = self.workflow.split("  deploy-to-ec2:", 1)[1]
         self.assertIn("if: github.ref_name == 'prod' && github.event_name == 'push'", deploy)
@@ -52,7 +68,31 @@ class ReleasePipelineContract(unittest.TestCase):
         self.assertIn(include, tools)
         self.assertLess(tools.index(include), tools.index("function(trade_ngin_add_release_artifacts_target)"))
         self.assertIn("set(QT_DESK_WORKER_TARGET qt_desk_worker)", worker)
-        self.assertIn('TARGET "${QT_DESK_WORKER_TARGET}"', tools)
+        self.assertIn("if(NOT TARGET qt_desk_worker)", tools)
+        self.assertIn("qt_desk_worker)", tools)
+        self.assertIn("--require-worker", self.image_job)
+
+    @unittest.skipUnless(os.environ.get("TRADE_NGIN_TEST_BUILD_DIR"),
+                         "configured-build contract needs TRADE_NGIN_TEST_BUILD_DIR")
+    def test_configured_release_input_and_target_graph_require_the_worker(self):
+        """A directory-scope regression must fail on configured output, not source text."""
+        configured = build_dir()
+        inputs = json.loads(
+            (configured / "release-artifacts-inputs-Release.json").read_text(
+                encoding="utf-8"))
+        self.assertIs(inputs["require_worker"], True)
+        self.assertEqual(inputs["artifacts"]["qt_desk_worker"], {
+            "source": str(configured / "bin/Release/qt_desk_worker"),
+            "install_path": "bin/Release/qt_desk_worker",
+            "kind": "desk_worker",
+        })
+
+        make_graph = configured / "CMakeFiles/Makefile2"
+        if make_graph.exists():
+            graph = make_graph.read_text(encoding="utf-8")
+            release = graph.split("CMakeFiles/release_artifacts.dir/all:", 1)[1].split(
+                ".PHONY : CMakeFiles/release_artifacts.dir/all", 1)[0]
+            self.assertIn("apps/tools/CMakeFiles/qt_desk_worker.dir/all", release)
 
 
 if __name__ == "__main__":

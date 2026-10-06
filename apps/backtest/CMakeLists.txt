@@ -32,10 +32,8 @@ add_executable(bt_transaction_cost_report ${BT_TRANSACTION_COST_REPORT_SOURCES})
 # Create conservative portfolio backtest executable
 add_executable(bt_portfolio_conservative ${BT_PORTFOLIO_CONSERVATIVE_SOURCES})
 
-# Create equity mean reversion backtest executable
 add_executable(bt_equity_mr ${BT_EQUITY_MR_SOURCES})
 
-# Create equity validation executable
 add_executable(bt_equity_validation ${BT_EQUITY_VALIDATION_SOURCES})
 
 # Link against the trade_ngin library

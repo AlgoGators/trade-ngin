@@ -1,5 +1,6 @@
 #include "trade_ngin/data/qt_desk_publication.hpp"
 #include "trade_ngin/portfolio/qt_wire.hpp"
+#include "qt_test_build_identity.hpp"
 
 #include <gtest/gtest.h>
 #include <filesystem>
@@ -27,7 +28,7 @@ Json preview_row(const Json& payload) {
             {"selected_book_digest",payload.at("selected_book_digest")},
             {"payload_digest",payload.at("payload_digest")},
             {"policy_version","synthetic-policy-v1"},
-            {"evaluator_build","local-qt-controlled"},
+            {"evaluator_build",TRADE_NGIN_GIT_SHA},
             {"availability","ready"}, {"state","confirmed_decision"},
             {"payload",payload}, {"read_set_payload",Json::object()}};
 }

@@ -1,6 +1,7 @@
 #include "trade_ngin/portfolio/qt_equity_proof.hpp"
 #include "trade_ngin/portfolio/qt_wire.hpp"
 #include "trade_ngin/portfolio/qt_evaluation.hpp"
+#include "qt_test_build_identity.hpp"
 #include <gtest/gtest.h>
 #include <filesystem>
 #include <fstream>
@@ -10,7 +11,7 @@ TEST(QtOfflineEnvelope, RetainsLegacyValid4096OwnersAndHistoryBelowEightMiB){
     using J=nlohmann::json;
     const auto path=std::filesystem::path(__FILE__).parent_path().parent_path()/"contracts"/"qt-eval-v1.json";
     std::ifstream file(path,std::ios::binary);ASSERT_TRUE(file.good());
-    auto r=J::parse(file).at("selected_book");
+    auto r=trade_ngin::test::fixture_for_compiled_build(J::parse(file).at("selected_book"));
     const auto slot=r.at("context").at("slots")[0];
     const auto proposal=r.at("proposal").at("quantities")[0];
     const auto cost=r.at("component_cost_inputs")[0];

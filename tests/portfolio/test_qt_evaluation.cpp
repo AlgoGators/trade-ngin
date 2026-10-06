@@ -1,4 +1,5 @@
 #include "trade_ngin/portfolio/qt_evaluation.hpp"
+#include "qt_test_build_identity.hpp"
 
 #include <gtest/gtest.h>
 
@@ -21,7 +22,7 @@ Position prior(const char* symbol, Quantity quantity) {
 QtEvaluationRequest request() {
     QtEvaluationRequest out;
     out.operation = QtEvaluationOperation::SelectedBook;
-    out.evaluator_build = "local-qt-controlled";
+    out.evaluator_build = TRADE_NGIN_GIT_SHA;
     out.context_fingerprint = std::string(64, 'a');
     out.risk_config_source_id = "synthetic-risk-policy";
     out.context = {"book", "2026-09-25", "qt_proposal", "revision", {

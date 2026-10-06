@@ -5,6 +5,7 @@
 #include "trade_ngin/portfolio/qt_evaluation.hpp"
 #include "trade_ngin/core/qt_sha256.hpp"
 #include "trade_ngin/git_version.hpp"
+#include "qt_test_build_identity.hpp"
 #include <gtest/gtest.h>
 #include <cmath>
 #include <filesystem>
@@ -15,6 +16,7 @@
 using namespace trade_ngin;
 namespace {
 using J=nlohmann::json;
+#define fixture unbound_fixture
 // Exact owned synthetic helper fixture is embedded below; no filesystem input
 // or purported SQL authority is accepted by the production wire.
 J fixture(){return J::parse(R"QT_FIXTURE({
@@ -167,6 +169,8 @@ J fixture(){return J::parse(R"QT_FIXTURE({
   ]
 }
 )QT_FIXTURE");}
+#undef fixture
+J fixture(){return trade_ngin::test::fixture_for_compiled_build(unbound_fixture());}
 std::string hash(const J& value,bool source=false){
     auto bytes=source?canonical_qt_desk_source_json(value):canonical_qt_desk_input_json(value);
     if(bytes.is_error())throw std::runtime_error("test canonicalization failed");
@@ -311,7 +315,7 @@ TEST(QtOfflineEnvelope, RoutesFullEquityRequestWithoutChangingImmutableOperands)
 TEST(QtOfflineEnvelope, ExistingEvaluationWireStillUsesOriginalSemanticParser){
     const auto path=std::filesystem::path(__FILE__).parent_path().parent_path()/"contracts"/"qt-eval-v1.json";
     std::ifstream file(path,std::ios::binary);ASSERT_TRUE(file.good());
-    auto existing=J::parse(file).at("selected_book");const auto bytes=existing.dump();
+    auto existing=trade_ngin::test::fixture_for_compiled_build(J::parse(file).at("selected_book"));const auto bytes=existing.dump();
     auto direct=parse_qt_evaluation_request(bytes);ASSERT_TRUE(direct.is_ok());
     auto routed=parse_qt_offline_envelope(bytes);ASSERT_TRUE(routed.is_ok());EXPECT_EQ(routed.value(),existing);
     auto retained=parse_qt_evaluation_request(bytes);ASSERT_TRUE(retained.is_ok());

@@ -46,10 +46,10 @@ public:
     }
 
     Decimal(int i) : value_(static_cast<int64_t>(i) * SCALE) {}
-    
+
     // Only define long constructor if long is different from int64_t
     template<typename T = long>
-    Decimal(T l, typename std::enable_if<!std::is_same<T, int64_t>::value>::type* = nullptr) 
+    Decimal(T l, typename std::enable_if<!std::is_same<T, int64_t>::value>::type* = nullptr)
         : value_(static_cast<int64_t>(l) * SCALE) {}
 
     // Conversion operators
@@ -285,15 +285,7 @@ enum class AssetType { FUTURE, EQUITY, OPTION, FOREX, CRYPTO, NONE };
 
 /**
  * @brief Market data bar structure
- * Represents OHLCV data for any timeframe.
- *
- * Equity convention: for AssetType::EQUITY symbols, the loader at
- * postgres_database.cpp reads RAW prices plus the per-bar corporate-action
- * primitives (div_cash, split_factor) and scales OHLC by the backward
- * cumulative adjustment factor computed in market_data_utils. So for equities
- * the OHLC stored here is split- AND dividend-adjusted (a continuous
- * total-return price series), not the raw exchange price. Futures bars carry
- * raw OHLC.
+ * Represents OHLCV data for any timeframe
  */
 struct Bar {
     Timestamp timestamp;
@@ -342,7 +334,7 @@ struct ContractSpec {
 struct Order {
     std::string order_id;
     std::string symbol;
-    Side side;
+    Side side{Side::NONE};
     OrderType type;
     Quantity quantity;
     Price price;
@@ -416,7 +408,8 @@ struct Position {
  * - commissions_fees: Explicit fees (|qty| × fee_per_contract)
  * - implicit_price_impact: Spread + market impact in price units per contract
  * - slippage_market_impact: Implicit costs in dollars
- * - total_transaction_costs: commissions_fees + slippage_market_impact
+ * - total_transaction_costs: gross/as-if commissions_fees + slippage_market_impact
+ * - netting_adjustment: sleeve credit (or negative debit) from account-level netting
  */
 struct ExecutionReport {
     std::string order_id;
@@ -431,9 +424,15 @@ struct ExecutionReport {
     Decimal commissions_fees;         // Explicit: |qty| × fee_per_contract
     Decimal implicit_price_impact;    // Spread + impact in price units
     Decimal slippage_market_impact;   // Implicit costs in dollars
-    Decimal total_transaction_costs;  // commissions_fees + slippage_market_impact
+    Decimal total_transaction_costs;  // gross/as-if cost before sleeve netting
 
     bool is_partial{false};
+    // Kept after is_partial so existing aggregate initialization remains source-compatible.
+    Decimal netting_adjustment{};
+
+    Decimal net_transaction_costs() const {
+        return total_transaction_costs - netting_adjustment;
+    }
 };
 
 /**

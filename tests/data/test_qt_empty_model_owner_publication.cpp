@@ -3,15 +3,16 @@
 #include "empty_owner_vectors.hpp"
 #include "trade_ngin/core/qt_sha256.hpp"
 #include "trade_ngin/portfolio/qt_wire.hpp"
+#include "qt_test_build_identity.hpp"
 using namespace trade_ngin;
 namespace {
 using J=nlohmann::json;
-J vectors(){return J::parse(empty_owner_test::fixture);}
+J vectors(){return trade_ngin::test::fixture_for_compiled_build(J::parse(empty_owner_test::fixture));}
 QtEmptyModelOwnerPublication sample(){
     auto v=vectors();QtEmptyModelOwnerPublication value;
     value.publication.publication_id="f0000000-0000-4000-8000-000000000001";
     value.publication.portfolio_id="EQ_BOOK";value.publication.strategy_id="LIVE_EQUITY_MEAN_REVERSION";
-    value.publication.source_day="2026-09-26";value.publication.producer_version="local-qt-controlled";
+    value.publication.source_day="2026-09-26";value.publication.producer_version=TRADE_NGIN_GIT_SHA;
     value.configuration_snapshot=v.at("configuration_snapshot");value.configured_owner_names={"empty-alpha"};
     value.fresh_empty_batches={{"EQ_BOOK","LIVE_EQUITY_MEAN_REVERSION","empty-alpha","2026-09-26"}};
     return value;
