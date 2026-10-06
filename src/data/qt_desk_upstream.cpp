@@ -51,8 +51,13 @@ J market_row(pqxx::work& tx,const std::string& id,bool fresh){
 std::string scope(pqxx::work& tx,const J& d){return "portfolio_id="+tx.quote(text(d.at("book_id")))+" AND date="+tx.quote(text(d.at("source_day")))+"::date AND portfolio_type='qt'";}
 J capture(pqxx::work& tx,const J& d){
  auto s=scope(tx,d);
+ auto input=one(tx,"SELECT i.payload FROM trading.qt_desk_accounting_inputs i JOIN trading.desk_run_results r USING(input_id) WHERE r.decision_id="+tx.quote(text(d.at("decision_id")))+"::uuid");
+ const bool first=input.at("schema_version")=="qt-futures-accounting-input-first-day/v1";
  auto positions=rows(tx,"SELECT jsonb_build_object('key',jsonb_build_object('portfolio_id',portfolio_id,'strategy_id',strategy_id,'strategy_name',strategy_name,'date',date::text,'symbol',symbol,'portfolio_type',portfolio_type),'quantity_exact',"+exact("quantity")+",'average_price_exact',"+exact("average_price")+",'daily_realized_pnl_exact',"+exact("daily_realized_pnl")+",'daily_unrealized_pnl_exact',"+exact("daily_unrealized_pnl")+",'last_update',"+stamp("last_update")+") FROM trading.positions WHERE "+s+" ORDER BY strategy_id,strategy_name,symbol FOR UPDATE");
  auto live=rows(tx,"SELECT jsonb_build_object('portfolio_id',portfolio_id,'strategy_id',strategy_id,'date',date::date::text,'portfolio_type',portfolio_type,'daily_pnl_exact',"+exact("daily_pnl")+",'daily_realized_pnl_exact',"+exact("daily_realized_pnl")+",'daily_unrealized_pnl_exact',"+exact("daily_unrealized_pnl")+",'daily_transaction_costs_exact',"+exact("daily_transaction_costs")+",'total_pnl_exact',"+exact("total_pnl")+",'current_portfolio_value_exact',"+exact("current_portfolio_value")+") FROM trading.live_results WHERE "+s+" ORDER BY strategy_id FOR UPDATE");
+ // Keep the historical continuation shape stable; first-day totals additionally
+ // bind all already-incurred System costs through settlement and replay.
+ if(first)for(auto& row:live){auto costs=tx.exec("SELECT "+exact("total_transaction_costs")+" FROM trading.live_results WHERE "+s+" AND strategy_id="+tx.quote(text(row.at("strategy_id"))));need(costs.size()==1&&!costs[0][0].is_null());row["total_transaction_costs_exact"]=costs[0][0].as<std::string>();}
  auto equity=rows(tx,"SELECT jsonb_build_object('portfolio_id',portfolio_id,'strategy_id',strategy_id,'timestamp',"+stamp("timestamp")+",'portfolio_type',portfolio_type,'equity_exact',"+exact("equity")+") FROM trading.equity_curve WHERE portfolio_id="+tx.quote(text(d.at("book_id")))+" AND timestamp="+tx.quote(text(d.at("source_day"))+"T00:00:00Z")+"::timestamptz AND portfolio_type='qt' ORDER BY strategy_id FOR UPDATE");
  return {{"positions",positions},{"live_results",live},{"equity_curve",equity}};
 }
@@ -100,11 +105,21 @@ J links(pqxx::work& tx,const J& d){
  need(sorted(original_positions)==sorted(publication.at("after_accounting")));auto selected_hash=qt_digest_v1(J{{"selection_rows",selected}});need(selected_hash.is_ok()&&selected_hash.value()==text(d.at("selected_book_digest")));
  auto results=one(tx,"SELECT to_jsonb(r) FROM trading.qt_desk_results r WHERE decision_id="+id+"::uuid");need(results.at("attempt_id")==receipt.at("attempt_id")&&results.at("observation_id")==observed.at("observation_id")&&results.at("content_digest")==publication.at("results_digest")&&hash(results.at("payload"))==text(results.at("content_digest")));
  const auto& rp=results.at("payload");need(rp.size()==7&&rp.at("schema_version")=="qt-desk-result/v1"&&rp.at("observation_id")==observed.at("observation_id")&&rp.at("results")==observed.at("payload").at("results"));for(auto f:{"decision_id","book_id","source_day","selected_book_digest"})need(rp.at(f)==d.at(f));
+ if(input.at("payload").at("schema_version")=="qt-futures-accounting-input-first-day/v1"){
+  need(validate_qt_first_day_accounting_input(tx,d,input,false).is_ok());
+  auto anchor=one(tx,"SELECT to_jsonb(a) FROM trading.qt_first_day_anchors a WHERE anchor_id="+tx.quote(text(input.at("payload").at("first_day_anchor_id")))+"::uuid");
+  return {{"input",input},{"output",output},{"observed",observed},{"anchor",anchor}};
+ }
  auto prior=one(tx,"SELECT to_jsonb(f) FROM trading.qt_desk_finalization_sources f WHERE source_id="+tx.quote(text(input.at("payload").at("prior_finalization_source_id"))));
  need((prior.at("payload").at("schema_version")=="qt-finalized-accounting/v1"||prior.at("payload").at("schema_version")=="qt-finalized-accounting/v2")&&prior.at("payload").at("book_id")==d.at("book_id")&&prior.at("payload").at("source_day")==input.at("payload").at("previous_day")&&hash(prior.at("payload"))==text(prior.at("content_digest"))&&prior.at("book_id")==d.at("book_id")&&prior.at("source_day")==input.at("payload").at("previous_day")&&prior.at("producer_id")==input.at("producer_id")&&prior.at("policy_version")==input.at("policy_version")&&sorted(prior.at("payload").at("previous_totals"))==sorted(input.at("payload").at("previous_totals")));
  return {{"input",input},{"output",output},{"observed",observed},{"prior",prior}};
 }
-J provenance(const J& link,const J& market,const J& p,const std::string& id){return {{"finalization_id",id},{"original_accounting_input_id",link.at("input").at("input_id")},{"original_run_result_digest",link.at("output").at("content_digest")},{"original_observation_digest",link.at("observed").at("content_digest")},{"predecessor_finalization_source_id",link.at("prior").at("source_id")},{"predecessor_finalization_digest",link.at("prior").at("content_digest")},{"market_source_id",market.at("source_id")},{"market_source_digest",market.at("content_digest")},{"unchanged_execution_digest",hash(link.at("output").at("payload").at("executions"))},{"policy_identity",{{"book_id",p.at("book_id")},{"purpose","execution"},{"version",p.at("version")},{"producer_id",p.at("producer_id")},{"policy_version",p.at("policy_version")}}}};}
+J provenance(const J& link,const J& market,const J& p,const std::string& id){
+ J result={{"finalization_id",id},{"original_accounting_input_id",link.at("input").at("input_id")},{"original_run_result_digest",link.at("output").at("content_digest")},{"original_observation_digest",link.at("observed").at("content_digest")},{"market_source_id",market.at("source_id")},{"market_source_digest",market.at("content_digest")},{"unchanged_execution_digest",hash(link.at("output").at("payload").at("executions"))},{"policy_identity",{{"book_id",p.at("book_id")},{"purpose","execution"},{"version",p.at("version")},{"producer_id",p.at("producer_id")},{"policy_version",p.at("policy_version")}}}};
+ if(link.contains("anchor")){result["first_day_anchor_id"]=link.at("anchor").at("anchor_id");result["first_day_anchor_digest"]=link.at("anchor").at("content_digest");}
+ else{result["predecessor_finalization_source_id"]=link.at("prior").at("source_id");result["predecessor_finalization_digest"]=link.at("prior").at("content_digest");}
+ return result;
+}
 }
 Result<J> publish_qt_desk_market_source(pqxx::connection& c,const J& source){try{
  pqxx::work tx(c);const auto& m=source.at("payload");market_shape(m);need(validate_qt_desk_market_capture(source).is_ok());const auto book=text(m.at("book_id"));lock(tx,book);auto p=policy(tx,book);need(source.at("producer_id")==p.at("producer_id")&&source.at("policy_version")==p.at("policy_version"));model_link(tx,m);

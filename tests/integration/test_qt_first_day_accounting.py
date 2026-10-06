@@ -4,6 +4,7 @@ The opening System rows and market prices are synthetic; the native evaluator,
 anchor, processor, rollback and receipt verification are production code.
 """
 from datetime import timedelta
+from copy import deepcopy
 from decimal import Decimal
 import json
 import os
@@ -12,14 +13,48 @@ import subprocess
 import pytest
 from psycopg2.extras import Json
 
-from test_runtime_control_schema import connection
-from test_qt_desk_storage import desk, ROOT, BINARY, DECISION, ATTEMPT, MODEL
+from test_runtime_control_schema import connection as base_connection
+from test_qt_desk_storage import (desk, ROOT, BINARY, DECISION, ATTEMPT, MODEL,
+    qt_digest_v1, internal_snapshot_digest)
 from test_qt_desk_accounting import all_state
 
 PROBE = BINARY.with_name("qt_desk_upstream_probe")
 ANCHOR = "a1000000-0000-4000-8000-000000000001"
 MARKET = "a2000000-0000-4000-8000-000000000001"
 INPUT = "a3000000-0000-4000-8000-000000000001"
+
+
+@pytest.fixture()
+def connection(request):
+    """A test-only clock in the already guarded, disposable database.
+
+    Day-one rows are really processed today, then the same database moves
+    to tomorrow's clock. No receipt, original input, or financial row is rewritten.
+    """
+    from psycopg2 import sql
+    fixture = base_connection.__wrapped__()
+    conn = next(fixture)
+    shifted = "finalizes_on_day_two" in request.node.name
+    try:
+        if shifted:
+            with conn.cursor() as cur:
+                cur.execute("CREATE OR REPLACE FUNCTION public.clock_timestamp() RETURNS timestamptz LANGUAGE sql VOLATILE "
+                    "AS $$ SELECT pg_catalog.clock_timestamp() $$")
+                cur.execute("SELECT current_database()")
+                database = cur.fetchone()[0]
+                cur.execute(sql.SQL("ALTER DATABASE {} SET search_path=public,pg_catalog").format(sql.Identifier(database)))
+                cur.execute("SET search_path=public,pg_catalog")
+        yield conn
+    finally:
+        if shifted:
+            with conn.cursor() as cur:
+                cur.execute(sql.SQL("ALTER DATABASE {} RESET search_path").format(sql.Identifier(database)))
+                # Defaults refer to this function; the next fixture recreates
+                # trading. Leave a real-clock implementation until that point.
+                cur.execute("CREATE OR REPLACE FUNCTION public.clock_timestamp() RETURNS timestamptz LANGUAGE sql VOLATILE "
+                    "AS $$ SELECT pg_catalog.clock_timestamp() $$")
+                cur.execute("SET search_path=pg_catalog,public")
+        next(fixture, None)
 
 
 def invoke(*args, payload=None):
@@ -136,3 +171,57 @@ def test_first_day_failure_rolls_back_input_positions_financials_and_receipt(fir
         cur.execute("DROP TRIGGER reject_first_day_result ON trading.qt_desk_results")
     result = process()
     assert result.returncode == 0, result.stdout+result.stderr
+
+
+@pytest.mark.parametrize("desk", ["futures"], indirect=True)
+def test_real_first_day_finalizes_on_day_two_without_invented_predecessor(first_day):
+    conn, original_market = first_day
+    result = process()
+    assert result.returncode == 0, result.stdout+result.stderr
+    with conn.cursor() as cur:
+        cur.execute("SELECT payload FROM trading.desk_run_results WHERE decision_id=%s", (DECISION,))
+        original_output = cur.fetchone()[0]
+        cur.execute("CREATE OR REPLACE FUNCTION public.clock_timestamp() RETURNS timestamptz LANGUAGE sql VOLATILE "
+                    "AS $$ SELECT pg_catalog.clock_timestamp()+interval '1 day' $$")
+        cur.execute("SELECT clock_timestamp()")
+        now = cur.fetchone()[0]
+        today = now.date().isoformat()
+        cur.execute("SELECT to_jsonb(m) FROM trading.qt_model_seed_publications m WHERE publication_id=%s", (MODEL,))
+        model = cur.fetchone()[0]
+        # Only tomorrow's MODEL is synthetic; yesterday's processed ledger is
+        # left exactly as written by the real processor.
+        old_day = model['source_day']
+        next_model = "a4000000-0000-4000-8000-000000000002"
+        model = json.loads(json.dumps(model).replace(old_day, today).replace(MODEL, next_model))
+        model['seed_digest'] = qt_digest_v1({'seed_rows': model['system_components']})
+        model['proposal_manifest_digest'] = internal_snapshot_digest('qt-proposal-manifest/v1',
+            {'proposal_rows': model['proposal_components']})
+        cur.execute("INSERT INTO trading.qt_model_seed_publications SELECT * FROM "
+            "jsonb_populate_record(NULL::trading.qt_model_seed_publications,%s)", (Json(model),))
+    market = deepcopy(original_market)
+    next_market = "a2000000-0000-4000-8000-000000000002"
+    final = "a5000000-0000-4000-8000-000000000002"
+    market.update(source_id=next_market, source_version='synthetic-day-two',
+        as_of=(now-timedelta(seconds=1)).isoformat(), valid_until=(now+timedelta(hours=1)).isoformat())
+    market['payload'].update(source_day=today, previous_day=old_day,
+        valuation_time=today+'T00:00:00Z', model_publication_id=next_model)
+    market['payload']['instruments'][0].update(price_model_number='101', price_time=old_day+'T00:00:00Z')
+    result = invoke('--market', payload=market)
+    assert result.returncode == 0, result.stdout+result.stderr
+    before = state(conn)
+    result = invoke('--finalize', DECISION, final, next_market)
+    assert result.returncode == 0, result.stdout+result.stderr
+    transition = json.loads(result.stdout)
+    assert transition['first_day_anchor_id'] == ANCHOR
+    assert 'predecessor_finalization_source_id' not in transition
+    with conn.cursor() as cur:
+        cur.execute("SELECT daily_pnl,daily_realized_pnl,daily_unrealized_pnl,total_pnl,current_portfolio_value,"
+                    "daily_transaction_costs,total_transaction_costs FROM trading.live_results WHERE portfolio_type='qt'")
+        assert cur.fetchone() == tuple(map(Decimal, ('297', '299', '2.5', '316', '1296', '4.5', '16')))
+        cur.execute("SELECT payload FROM trading.desk_run_results WHERE decision_id=%s", (DECISION,))
+        assert cur.fetchone()[0] == original_output
+    after = state(conn)
+    assert after != before
+    result = invoke('--finalize', DECISION, final, next_market)
+    assert result.returncode == 0, result.stdout+result.stderr
+    assert state(conn) == after
