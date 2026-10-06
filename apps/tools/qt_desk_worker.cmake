@@ -13,6 +13,7 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
         RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin"
         RUNTIME_OUTPUT_DIRECTORY_DEBUG "${CMAKE_BINARY_DIR}/bin/Debug"
         RUNTIME_OUTPUT_DIRECTORY_RELEASE "${CMAKE_BINARY_DIR}/bin/Release")
+    set(QT_DESK_WORKER_TARGET qt_desk_worker)
 
     add_executable(qt_desk_dispatcher_tests
         "${CMAKE_SOURCE_DIR}/tests/apps/test_qt_desk_dispatcher.cpp"

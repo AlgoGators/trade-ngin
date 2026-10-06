@@ -6,6 +6,8 @@ import unittest
 ROOT = Path(__file__).resolve().parents[2]
 WORKFLOW = ROOT / ".github/workflows/ci-cd-pipeline.yml"
 DOCKERFILE = ROOT / "Dockerfile"
+TOOLS_CMAKE = ROOT / "apps/tools/CMakeLists.txt"
+WORKER_CMAKE = ROOT / "apps/tools/qt_desk_worker.cmake"
 
 
 class ReleasePipelineContract(unittest.TestCase):
@@ -42,6 +44,15 @@ class ReleasePipelineContract(unittest.TestCase):
         self.assertIn("EXPECTED_DIGEST='${{ needs.image-generation.outputs.image_digest }}'",
                       deploy)
         self.assertIn("test \"$RUNNING_IMAGE_ID\" = \"$EXPECTED_IMAGE_ID\"", deploy)
+
+    def test_worker_target_is_mandatory_release_input(self):
+        tools = TOOLS_CMAKE.read_text(encoding="utf-8")
+        worker = WORKER_CMAKE.read_text(encoding="utf-8")
+        include = 'include("${CMAKE_CURRENT_LIST_DIR}/qt_desk_worker.cmake")'
+        self.assertIn(include, tools)
+        self.assertLess(tools.index(include), tools.index("function(trade_ngin_add_release_artifacts_target)"))
+        self.assertIn("set(QT_DESK_WORKER_TARGET qt_desk_worker)", worker)
+        self.assertIn('TARGET "${QT_DESK_WORKER_TARGET}"', tools)
 
 
 if __name__ == "__main__":

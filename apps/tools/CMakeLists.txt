@@ -45,6 +45,8 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     )
 endif()
 
+include("${CMAKE_CURRENT_LIST_DIR}/qt_desk_worker.cmake")
+
 # Pure one-request evaluator: no database, runner, configuration or delivery entrypoint.
 add_executable(qt_evaluator qt_evaluator.cpp)
 target_link_libraries(qt_evaluator PRIVATE trade_ngin)
