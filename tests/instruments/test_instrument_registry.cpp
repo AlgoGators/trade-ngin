@@ -384,7 +384,7 @@ TEST_F(InstrumentRegistryTest, CreateInstrumentFromDbDefaultsContractSizeWhenZer
     });
     auto instr = r.create_instrument_from_db(table, 0);
     ASSERT_NE(instr, nullptr);
-    EXPECT_DOUBLE_EQ(instr->get_multiplier(), 1.0);  // defaulted from 0.0
+    EXPECT_DOUBLE_EQ(instr->get_multiplier(), 50.0);  // known ES contract point value
 }
 
 // ===== folded in from tests/instruments/test_exchange_json_wireup.cpp =====
@@ -481,8 +481,8 @@ TEST_F(ExchangeJsonWireupTest, EmptyPathFallsBackToAllNYSE) {
 
     // Distinct symbol set so we don't collide with the test above's
     // registrations (load_equity_instruments skips already-registered).
-    const std::string fallback_a = "PHASE1_T23_FALLBACK_A";
-    const std::string fallback_b = "PHASE1_T23_FALLBACK_B";
+    const std::string fallback_a = "T23_FALLBACK_A";
+    const std::string fallback_b = "T23_FALLBACK_B";
 
     std::vector<std::string> symbols{fallback_a, fallback_b};
     auto load_result = registry.load_equity_instruments(symbols);  // no path

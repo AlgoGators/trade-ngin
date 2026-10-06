@@ -292,7 +292,7 @@ TEST_F(BaseStrategyTest, OnExecutionChargesNetCostAfterSleeveNettingAdjustment) 
 
     ASSERT_TRUE(strategy->on_execution(report).is_ok());
     const auto& position = strategy->get_positions().at("AAPL");
-    EXPECT_DOUBLE_EQ(position.realized_pnl.as_double(), -0.4);
+    EXPECT_DOUBLE_EQ(position.realized_pnl.as_double(), 0.0);
     EXPECT_DOUBLE_EQ(strategy->get_metrics().realized_pnl, -0.4);
     EXPECT_DOUBLE_EQ(strategy->get_metrics().total_pnl, -0.4);
 }

@@ -606,7 +606,8 @@ std::string expected_tables(const std::vector<Row>& rows) {
         double total=0,margin=0; int active=0;
         for(const auto& row:list) {
             const auto& item=instruments().at(row.symbol);
-            total+=std::abs(row.quantity*row.average*item.multiplier); margin+=std::abs(row.quantity)*item.margin;
+            total+=std::abs(row.quantity*row.average*item.multiplier);
+            margin+=std::abs(row.quantity)*(item.type==AssetType::EQUITY?row.average:item.margin);
             if(row.quantity!=0) ++active;
         }
         html<<"<h3 style=\"margin-top: 20px; margin-bottom: 10px; color: #333; border-left: 4px solid #2c5aa0; padding-left: 12px;\">"

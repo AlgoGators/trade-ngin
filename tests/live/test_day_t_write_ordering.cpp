@@ -50,7 +50,7 @@ TEST(DayTWriteOrdering, TheClearRunsAfterBothFatalL5IdentitiesAndNotBefore) {
     const std::string src = read_runner();
     if (src.empty()) GTEST_SKIP() << "runner source not found from the test working directory";
 
-    const auto clear = src.find("DELETE FROM trading.positions WHERE strategy_id = ");
+    const auto clear = src.find("DELETE FROM trading.positions WHERE portfolio_type = 'system' AND strategy_id = ");
     const auto realized = src.find("L5 realized identity VIOLATED");
     const auto unrealized = src.find("L5 unrealized identity VIOLATED");
     const auto save = src.find("save_all_results(\"LIVE_EQUITY_MEAN_REVERSION\"");

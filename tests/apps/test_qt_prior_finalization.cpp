@@ -50,6 +50,45 @@ TEST(QtPriorFinalizationTest, UsesActualOriginalAccountingAndSeparatesMarkFromBa
  EXPECT_EQ(finalized["after_financial"]["positions"][0]["daily_realized_pnl_exact"],"250");
  EXPECT_EQ(finalized["after_financial"]["positions"][0]["daily_unrealized_pnl_exact"],"0");
 }
+TEST(QtPriorFinalizationTest, FirstDayFinalizesFromSystemAnchorWithoutChargingInheritedCostsAgain){
+ auto input=original_input();
+ input["schema_version"]="qt-futures-accounting-input-first-day/v1";
+ input.erase("previous_day");input.erase("prior_finalization_source_id");
+ input["opening_day"]="2026-09-25";input["first_day_anchor_id"]="first-anchor";
+ input["first_day_anchor_digest"]=std::string(64,'f');
+ input["market_source_id"]="first-market";input["market_source_digest"]=std::string(64,'a');
+ auto& position=input["previous_positions"][0];position["key"]["date"]="2026-09-25";
+ position["daily_realized_pnl_exact"]="17";position["daily_unrealized_pnl_exact"]="3";
+ auto& totals=input["previous_totals"][0];
+ totals["daily_pnl_exact"]="15";totals["daily_realized_pnl_exact"]="17";
+ totals["daily_unrealized_pnl_exact"]="3";totals["daily_transaction_costs_exact"]="5";
+ totals["total_transaction_costs_exact"]="12";
+ auto& instrument=input["instruments"][0];
+ instrument["price_model_number"]=instrument["price_exact"];instrument.erase("price_exact");
+ instrument["adv_model_number"]=instrument["adv_exact"];instrument.erase("adv_exact");
+ instrument["volatility_multiplier_model_number"]=instrument["volatility_multiplier_exact"];
+ instrument.erase("volatility_multiplier_exact");
+ auto output=produce_qt_futures_accounting(original_decision(),original_selection(),input);
+ ASSERT_TRUE(output.is_ok());
+ auto financial=before(output.value());financial["live_results"]=output.value()["live_results"];
+ auto proof=provenance();proof.erase("predecessor_finalization_source_id");proof.erase("predecessor_finalization_digest");
+ proof["first_day_anchor_id"]="first-anchor";proof["first_day_anchor_digest"]=std::string(64,'f');
+ auto result=produce_qt_prior_finalization(original_decision(),input,output.value(),market(),financial,proof);
+ ASSERT_TRUE(result.is_ok());
+ const auto& live=result.value()["after_financial"]["live_results"][0];
+ EXPECT_EQ(live["daily_pnl_exact"],"263");
+ EXPECT_EQ(live["daily_realized_pnl_exact"],"267");
+ EXPECT_EQ(live["daily_unrealized_pnl_exact"],"3");
+ EXPECT_EQ(live["daily_transaction_costs_exact"],"7");
+ EXPECT_EQ(live["total_transaction_costs_exact"],"14");
+ EXPECT_EQ(live["total_pnl_exact"],"268");
+ EXPECT_EQ(live["current_portfolio_value_exact"],"1248");
+ EXPECT_EQ(result.value()["after_financial"]["positions"][0]["daily_realized_pnl_exact"],"267");
+ EXPECT_EQ(result.value()["first_day_anchor_id"],"first-anchor");
+ EXPECT_FALSE(result.value().contains("predecessor_finalization_source_id"));
+ financial["live_results"][0]["total_transaction_costs_exact"]="999";
+ EXPECT_TRUE(produce_qt_prior_finalization(original_decision(),input,output.value(),market(),financial,proof).is_error());
+}
 TEST(QtPriorFinalizationTest, ZeroPnlIsFinalizedAndUnavailableMarkNeverBecomesZero){
  auto output=produce_qt_futures_accounting(original_decision(),original_selection(),original_input());ASSERT_TRUE(output.is_ok());
  auto marks=market();marks["instruments"][0]["price_model_number"]="100";

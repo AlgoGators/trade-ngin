@@ -60,12 +60,15 @@ Result<void> LiveResultsManager::save_all_results(const std::string& run_id,
         // Non-fatal, continue
     }
 
+    // System futures attempts every table, but must not report a partial write as
+    // success. QT and explicit-owner publication keep their fail-fast fencing.
+    std::vector<std::string> failed_tables;
     // 2. Save positions
     result = save_positions_snapshot(date);
     if (result.is_error()) {
         if (portfolio_type_ != "system" || !explicit_strategy_name_.empty()) return result;
         ERROR("Failed to save positions: " + std::string(result.error()->what()));
-        // Continue with other saves
+        failed_tables.emplace_back("positions");
     }
 
     // 3. Save executions
@@ -73,7 +76,7 @@ Result<void> LiveResultsManager::save_all_results(const std::string& run_id,
     if (result.is_error()) {
         if (portfolio_type_ != "system" || !explicit_strategy_name_.empty()) return result;
         ERROR("Failed to save executions: " + std::string(result.error()->what()));
-        // Continue
+        failed_tables.emplace_back("executions");
     }
 
     // 4. Save signals
@@ -81,7 +84,7 @@ Result<void> LiveResultsManager::save_all_results(const std::string& run_id,
     if (result.is_error()) {
         if (portfolio_type_ != "system" || !explicit_strategy_name_.empty()) return result;
         ERROR("Failed to save signals: " + std::string(result.error()->what()));
-        // Continue
+        failed_tables.emplace_back("signals");
     }
 
     // 5. Save live results (metrics)
@@ -89,17 +92,28 @@ Result<void> LiveResultsManager::save_all_results(const std::string& run_id,
     if (result.is_error()) {
         if (portfolio_type_ != "system" || !explicit_strategy_name_.empty()) return result;
         ERROR("Failed to save live results: " + std::string(result.error()->what()));
-        // Continue
+        failed_tables.emplace_back("live_results");
     }
 
     // 6. Save/update equity curve
     if (has_equity_update_) {
         result = save_equity_curve(date);
         if (result.is_error()) {
-        if (portfolio_type_ != "system" || !explicit_strategy_name_.empty()) return result;
+            if (portfolio_type_ != "system" || !explicit_strategy_name_.empty()) return result;
             ERROR("Failed to save equity curve: " + std::string(result.error()->what()));
-            // Non-fatal
+            failed_tables.emplace_back("equity_curve");
         }
+    }
+
+    if (!failed_tables.empty()) {
+        std::string joined;
+        for (const auto& table : failed_tables) {
+            if (!joined.empty()) joined += ", ";
+            joined += table;
+        }
+        return make_error<void>(ErrorCode::DATABASE_ERROR,
+                                "Failed to persist live results table(s): " + joined,
+                                component_id_);
     }
 
     INFO("Successfully saved all live trading results for date: " +

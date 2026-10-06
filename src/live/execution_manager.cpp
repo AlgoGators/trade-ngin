@@ -180,7 +180,7 @@ ExecutionReport ExecutionManager::generate_execution(
 
     if (observation) observation->state = ExecutionCallState::cost_call_reached;
     auto charge = charge_model_book_execution(*cost_manager_,
-        ModelTrackedExecutionCharge{symbol, quantity_change, market_price, AssetType::NONE},
+        ModelTrackedExecutionCharge{symbol, quantity_change, market_price, AssetType::FUTURE},
         observation ? &observation->cost : nullptr);
     const auto& cost_result = charge.raw;
 

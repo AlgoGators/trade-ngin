@@ -13,12 +13,34 @@
 
 #include <gtest/gtest.h>
 #include <string>
+#include "trade_ngin/core/time_utils.hpp"
 #include "trade_ngin/data/market_data_utils.hpp"
 #include "trade_ngin/core/types.hpp"
 
 using namespace trade_ngin;
 
 class MarketDataUtilsTest : public ::testing::Test {};
+
+TEST_F(MarketDataUtilsTest, MarketTimestampsHonorDatabaseOffsetsWithoutHostConversion) {
+    for (const auto* value : {"2026-10-05 16:30:00+00", "2026-10-05 12:30:00-04",
+            "2026-10-05 22:00:00.123456+05:30", "2026-10-06 01:30:00+09",
+            "2026-10-05 16:30:00Z", "2026-10-05 16:30:00",
+            "2026-10-05 16:30:30+00:00:30"}) {
+        Timestamp parsed;
+        ASSERT_TRUE(market_data_utils::parse_market_timestamp_seconds(value, parsed)) << value;
+        EXPECT_EQ(core::format_utc_datetime(parsed), "2026-10-05 16:30:00") << value;
+    }
+}
+
+TEST_F(MarketDataUtilsTest, MarketTimestampRejectsMalformedOrUnrepresentableValues) {
+    for (const auto* value : {"infinity", "2026-02-30 16:30:00+00", "2026-10-05 24:00:00+00",
+            "2026-10-05 16:30:60+00", "2026-10-05 16:30:00+00:60", "2026-10-05 16:30:00+24",
+            "2026-10-05 16:30:00junk", "2026-10-05 16:30:00.", "9999-10-05 16:30:00+00"}) {
+        Timestamp parsed = Timestamp(std::chrono::seconds(123));
+        EXPECT_FALSE(market_data_utils::parse_market_timestamp_seconds(value, parsed)) << value;
+        EXPECT_EQ(parsed, Timestamp(std::chrono::seconds(123))) << value;
+    }
+}
 
 // ===== get_market_data_columns for EQUITIES =====
 

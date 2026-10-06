@@ -74,7 +74,8 @@ Result<J> build_qt_desk_diagnostics(const J& d,const J& p,const J& facts,const J
         }else{
             const auto& price=markets.at(row.at("key").at("symbol").get<std::string>());
             auto delta=difference(number(row.at("quantity_exact")),number(model.at(id).at("quantity_exact")));
-            const bool model_numbers=in.at("schema_version")=="qt-futures-accounting-input/v2";
+            const bool model_numbers=in.at("schema_version")=="qt-futures-accounting-input/v2"||
+                in.at("schema_version")=="qt-futures-accounting-input-first-day/v1";
             std::string notional;
             if(model_numbers)notional=model_product({delta.to_string(),price.at("price_model_number").get<std::string>(),price.at("point_value").get<std::string>()});
             else{auto mark=number(price.at("price_exact")),multiplier=number(price.at("point_value"));require(mark.raw_value()>0&&multiplier.raw_value()>0);notional=product(delta,mark,multiplier);}

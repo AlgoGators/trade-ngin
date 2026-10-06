@@ -70,7 +70,7 @@ TEST(QtBookTail, EquityUsesOriginalFractionalDecisionAndActualAccounting) {
     const auto before=selection;
     auto r=run_book_tail(QtEquityBookTailInputs{decision,selection,input,original.at("producer_authority")});
     ASSERT_TRUE(r.is_ok()) << (r.error() ? r.error()->what() : "missing error");
-    EXPECT_EQ(r.value(),original);
+    EXPECT_TRUE(r.value()==original) << J::diff(original,r.value()).dump(2);
     EXPECT_EQ(selection,before);
 }
 TEST(QtBookTail, MissingGovernedEquityInputCannotProduceFinancialRows) {

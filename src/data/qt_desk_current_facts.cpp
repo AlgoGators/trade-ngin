@@ -261,16 +261,27 @@ Result<std::string> canonical_qt_desk_input_json(const Json& payload){
 }
 Result<QtDeskReadSetCapture> capture_qt_desk_current_facts(pqxx::work& tx,const std::string& book,
     const std::string& day,int64_t actor,const std::string& model,const Json& original){
+    const char* stage="normalize";
     try{
         auto normalized=canonical_qt_desk_read_set_bytes(original);if(normalized.is_error())reject();
         const auto proof=Json::parse(normalized.value());
+        stage="collect";
         auto facts=collect(tx,book,day,actor,model,proof);
         const auto checked=tx.exec("SELECT "+stamp("sampled")+" FROM(SELECT clock_timestamp() sampled)c")[0][0].as<std::string>();
+        stage="admit";
         auto admitted=admit_qt_desk_read_set(facts,checked);
-        if(admitted.is_error()||admitted.value().payload!=proof)reject();
+        if(admitted.is_error())reject();
+        // Field names come from the validated read-set schema, never values or
+        // driver diagnostics. Preserve exact comparison while making stale
+        // authority failures actionable without exposing financial payloads.
+        for(auto field=proof.begin();field!=proof.end();++field)
+            if(admitted.value().payload.at(field.key())!=field.value())
+                return make_error<QtDeskReadSetCapture>(ErrorCode::INVALID_DATA,
+                    "qt_desk_read_set_mismatch:"+field.key(),"qt_desk_current_facts");
+        if(admitted.value().payload!=proof)reject();
         return admitted;
     }catch(const std::exception&){return make_error<QtDeskReadSetCapture>(ErrorCode::INVALID_DATA,
-        "qt_desk_source_unavailable","qt_desk_current_facts");}
+        std::string("qt_desk_source_unavailable:")+stage,"qt_desk_current_facts");}
 }
 
 Result<QtDeskReadSetCapture> capture_qt_desk_processed_facts(

@@ -8,8 +8,8 @@
 // unit-of-work contract that removes that window.
 //
 // Transaction semantics cannot be faked: pqxx rollback is only observable
-// against a real server. These cases write only to a scratch table plus scratch
-// identifiers, never to production rows.
+// against a real server. These cases write only scratch identities in the
+// migrated positions and dedup tables of an explicitly selected test database.
 //
 // Reachability gate. A silent skip means a regression here passes unnoticed, so
 // the behaviour is explicit:
@@ -44,7 +44,7 @@ using namespace trade_ngin;
 
 namespace {
 
-constexpr const char* kScratchTable = "trading.dbtxn_atomicity_probe";
+constexpr const char* kScratchTable = "trading.positions";
 constexpr const char* kScratchPortfolio = "DBTXN_PROBE_PORTFOLIO";
 constexpr const char* kScratchStrategyId = "DBTXN_PROBE_STRATEGY";
 constexpr const char* kScratchStrategyName = "DBTXN_PROBE_NAME";
@@ -113,13 +113,13 @@ protected:
             }
             GTEST_SKIP() << "database unreachable; transaction semantics need a real server";
         }
-        ASSERT_TRUE(create_scratch_table());
+        ASSERT_TRUE(has_positions_table());
         clear_scratch_rows();
     }
 
     void TearDown() override {
         if (db_ && db_->is_connected()) {
-            drop_scratch_table();
+            clear_scratch_rows();
             clear_dedup_rows();
             db_->disconnect();
         }
@@ -152,17 +152,16 @@ protected:
         }
     }
 
-    bool create_scratch_table() {
-        return run_raw(std::string("CREATE TABLE IF NOT EXISTS ") + kScratchTable +
-                       " (symbol text, quantity double precision, average_price double precision,"
-                       "  daily_unrealized_pnl double precision, daily_realized_pnl double precision,"
-                       "  last_update timestamptz, updated_at timestamptz, strategy_id text,"
-                       "  strategy_name text, date date, portfolio_id text)");
+    bool has_positions_table() {
+        // The fenced equity unit of work intentionally accepts only the real
+        // positions relation. The owned fixture provides its migrated schema.
+        return run_raw("SELECT 1 FROM trading.positions LIMIT 0");
     }
 
-    void drop_scratch_table() { run_raw(std::string("DROP TABLE IF EXISTS ") + kScratchTable); }
-
-    void clear_scratch_rows() { run_raw(std::string("DELETE FROM ") + kScratchTable); }
+    void clear_scratch_rows() {
+        run_raw(std::string("DELETE FROM trading.positions WHERE portfolio_id='") +
+                kScratchPortfolio + "' AND strategy_id='" + kScratchStrategyId + "'");
+    }
 
     void clear_dedup_rows() {
         run_raw(std::string("DELETE FROM trading.corp_action_applied WHERE portfolio_id = '") +
@@ -170,7 +169,8 @@ protected:
     }
 
     int scratch_row_count() {
-        return scalar(std::string("SELECT count(*) FROM ") + kScratchTable);
+        return scalar(std::string("SELECT count(*) FROM trading.positions WHERE portfolio_id='") +
+                      kScratchPortfolio + "' AND strategy_id='" + kScratchStrategyId + "'");
     }
 
     int dedup_row_count() {

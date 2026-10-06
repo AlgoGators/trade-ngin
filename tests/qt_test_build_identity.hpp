@@ -1,6 +1,8 @@
 #pragma once
 
 #include "trade_ngin/git_version.hpp"
+#include "trade_ngin/data/qt_desk_current_facts.hpp"
+#include "trade_ngin/core/qt_sha256.hpp"
 
 #include <nlohmann/json.hpp>
 
@@ -40,6 +42,25 @@ inline void bind_fixture_to_compiled_build(nlohmann::json& value) {
 
 inline nlohmann::json fixture_for_compiled_build(nlohmann::json value) {
     bind_fixture_to_compiled_build(value);
+    // Finalization fixtures embed a canonical JSON document and its digest.
+    // Rebinding its authority requires rebinding the test-only digest chain too.
+    if (value.is_object() && value.contains("original_output_json") &&
+        value.contains("provenance")) {
+        auto output = nlohmann::json::parse(value.at("original_output_json").get<std::string>());
+        if (output.contains("consumption")) {
+            auto financial_output = output;
+            financial_output.erase("consumption");
+            output["consumption"]["identity"]["financial_output_digest"] = qt_sha256_hex(
+                canonical_qt_desk_source_json(financial_output).value()).value();
+        }
+        const auto encoded = canonical_qt_desk_source_json(output).value();
+        value["original_output_json"] = encoded;
+        value["provenance"]["original_run_result_digest"] = qt_sha256_hex(encoded).value();
+        auto unsigned_value = value;
+        unsigned_value.erase("context_fingerprint");
+        value["context_fingerprint"] = qt_sha256_hex(
+            canonical_qt_desk_source_json(unsigned_value).value()).value();
+    }
     return value;
 }
 

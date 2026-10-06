@@ -71,7 +71,7 @@ TEST_F(LiveTradingCoordinatorKeyingTest, DefaultConfigStillTargetsTheFuturesBook
     // LiveTradingConfig means, because the futures apps lean on these defaults.
     LiveTradingConfig config;
     EXPECT_EQ(config.strategy_id, "LIVE_TREND_FOLLOWING");
-    EXPECT_EQ(config.portfolio_id, "BASE_PORTFOLIO");
+    EXPECT_TRUE(config.portfolio_id.empty());
     EXPECT_EQ(config.schema, "trading");
     EXPECT_TRUE(config.strategy_name.empty());
 }

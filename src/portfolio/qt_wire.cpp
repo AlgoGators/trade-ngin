@@ -65,7 +65,7 @@ constexpr std::string_view kString =
     "schema_version book_id source_day workflow_state read_only_reason state portfolio_id strategy_id "
     "strategy_name date symbol portfolio_type basis_status asset_type origin status availability "
     "instrument_type config_source_id market_snapshot_id source_id code unit message action person_id "
-    "display_label user_id approved_at created_at updated_at evaluator_build policy_version";
+    "display_label user_id approved_at created_at updated_at evaluator_build policy_version rationale";
 constexpr std::string_view kSorted = "selection_rows seed_rows saved_qt_rows component_keys by_component";
 constexpr std::string_view kTextArray = "trace diagnostics unavailable_reasons report_blocked_reasons reason_codes";
 
@@ -229,7 +229,7 @@ void validate(Json& value, std::string_view field, unsigned depth) {
     }
     if (value.is_null()) {
         if (in("average_price_exact total_exact "
-               "read_only_reason config_source_id market_snapshot_id source_id passed version user_id",field) ||
+               "read_only_reason rationale config_source_id market_snapshot_id source_id passed version user_id",field) ||
             in(kDiagnostic,field)||in(kDigest,field)||in(kUuid,field)||in(kObject,field)) return;
         throw std::invalid_argument("invalid_qt_payload");
     }
@@ -354,4 +354,3 @@ Result<std::string> qt_digest_v1(const nlohmann::json& value) {
 }
 
 }  // namespace trade_ngin
-

@@ -103,7 +103,7 @@ Result<J> produce_qt_futures_accounting(const J& d,const J& selection,const J& i
         }
         J fills=J::array(),executions=J::array(),distance=J::array();
         std::map<std::string,Decimal> charges;
-        std::set<std::string> symbols;Decimal cash;
+        std::set<std::string> symbols;Decimal cash,realized_total,unrealized_total;
         for(const auto& [id,row]:selected){
             auto k=J::parse(id);const auto symbol=text(k.at("symbol")),engine=text(k.at("strategy_id"));symbols.insert(symbol);
             need(markets.contains(symbol));const auto& m=markets.at(symbol);
@@ -135,6 +135,7 @@ Result<J> produce_qt_futures_accounting(const J& d,const J& selection,const J& i
             charges[engine]=sum(charges[engine],charge);cash=sum(cash,charge);
             const auto realized=first&&previous.contains(id)?dec(previous.at(id).at("daily_realized_pnl_exact")):Decimal(0);
             const auto unrealized=first&&previous.contains(id)?dec(previous.at(id).at("daily_unrealized_pnl_exact")):Decimal(0);
+            realized_total=sum(realized_total,realized);unrealized_total=sum(unrealized_total,unrealized);
             fills.push_back({{"key",k},{"observation_kind",delta.is_zero()?"carried":"executed"},
                 {"selected_quantity_exact",qty.to_string()},{"average_price_exact",basis.to_string()},
                 {"actual_cash_cost_exact",charge.to_string()},{"currency",currency},{"execution_id",execution_id},
@@ -156,7 +157,7 @@ Result<J> produce_qt_futures_accounting(const J& d,const J& selection,const J& i
             live.push_back(std::move(row));
         }
         J result={{"position_count",fills.size()},{"currency_totals",J::array({{{"currency",currency},
-            {"actual_cash_cost_exact",cash.to_string()},{"daily_unrealized_pnl_exact","0"},{"daily_realized_pnl_exact","0"}}})}};
+            {"actual_cash_cost_exact",cash.to_string()},{"daily_unrealized_pnl_exact",unrealized_total.to_string()},{"daily_realized_pnl_exact",realized_total.to_string()}}})}};
         return J{{"schema_version","qt-futures-accounting/v1"},{"observation",{{"schema_version","qt-execution/v1"},
             {"decision_id",d.at("decision_id")},{"book_id",d.at("book_id")},{"source_day",today},{"fills",fills},{"results",result}}},
             {"executions",executions},{"live_results",live},{"distance",distance},
