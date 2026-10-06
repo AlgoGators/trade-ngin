@@ -19,10 +19,6 @@ MeanReversionStrategy::MeanReversionStrategy(std::string id, StrategyConfig conf
     metadata_.description = "Z-score based mean reversion strategy";
 }
 
-Result<void> MeanReversionStrategy::on_execution(const ExecutionReport& report) {
-    return process_equity_execution(report);
-}
-
 Result<void> MeanReversionStrategy::validate_config() const {
     auto result = BaseStrategy::validate_config();
     if (result.is_error())
@@ -85,8 +81,7 @@ Result<void> MeanReversionStrategy::initialize() {
     }
 }
 
-Result<void> MeanReversionStrategy::on_data(const std::vector<Bar>& data, StrategyConsumptionTrace* trace) {
-    if(trace) { *trace={};trace->profile=StrategyConsumptionProfile::MeanReversion; }
+Result<void> MeanReversionStrategy::on_data(const std::vector<Bar>& data) {
     if (state_ != StrategyState::RUNNING) {
         return make_error<void>(ErrorCode::STRATEGY_ERROR,
                                 "Strategy is not in running state",
@@ -119,12 +114,6 @@ Result<void> MeanReversionStrategy::on_data(const std::vector<Bar>& data, Strate
                 continue;
             }
             auto& inst_data = instrument_data_[bar.symbol];
-            MeanReversionSymbolConsumption* observed=nullptr;
-            if(trace) {
-                auto& symbols=trace->mean_reversion.symbols;
-                if(symbols.count(bar.symbol) || symbols.size()<256) observed=&symbols[bar.symbol];
-                else trace->mean_reversion.capacity_exceeded=true;
-            }
 
             // Update price history
             inst_data.price_history.push_back(bar.close.as_double());
@@ -132,7 +121,6 @@ Result<void> MeanReversionStrategy::on_data(const std::vector<Bar>& data, Strate
             inst_data.last_update = bar.timestamp;
 
             // Track rolling ADV for fractional share eligibility
-            if(observed) observed->vol_lookback=mr_config_.vol_lookback;
             inst_data.volume_sample_count++;
             size_t ema_window = std::min(inst_data.volume_sample_count,
                                          static_cast<size_t>(mr_config_.vol_lookback));
@@ -140,10 +128,9 @@ Result<void> MeanReversionStrategy::on_data(const std::vector<Bar>& data, Strate
             inst_data.avg_daily_volume += alpha * (bar.volume - inst_data.avg_daily_volume);
 
             // FIX (MAJOR #1): Trim price/volatility history to prevent unbounded memory growth
-            trim_history(inst_data,observed);
+            trim_history(inst_data);
 
             // Need enough data for calculations
-            if(observed) observed->lookback_period=mr_config_.lookback_period;
             if (inst_data.price_history.size() < static_cast<size_t>(mr_config_.lookback_period)) {
                 DEBUG("Insufficient data for " + bar.symbol + ": " +
                       std::to_string(inst_data.price_history.size()) + "/" +
@@ -161,19 +148,18 @@ Result<void> MeanReversionStrategy::on_data(const std::vector<Bar>& data, Strate
             inst_data.volatility_history.push_back(inst_data.current_volatility);
 
             // Generate signal
-            double signal = generate_signal(bar.symbol, inst_data,observed);
+            double signal = generate_signal(bar.symbol, inst_data);
             signals[bar.symbol] = signal;
 
             // Calculate position size
             if (std::abs(signal) > 0.01) {
-                double position_size = calculate_position_size(bar.symbol, bar.close.as_double(), inst_data.current_volatility,observed);
+                double position_size = calculate_position_size(bar.symbol, bar.close.as_double(), inst_data.current_volatility);
                 double new_target = signal * position_size;
                 // Phase 2 short-selling gate (audit §3.2). If the instrument
                 // is an equity that isn't REG_T with short_selling_allowed,
                 // clamp the short to zero -- cash accounts can't short.
                 if (new_target < 0.0 && registry_) {
                     auto equity = registry_->get_equity_instrument(bar.symbol);
-                    if(equity && observed) observed->short_allowed=equity->is_short_allowed();
                     if (equity && !equity->is_short_allowed()) {
                         WARN("Shorting disallowed for " + bar.symbol +
                              " (account_mode=CASH or short_selling_allowed=false). "
@@ -257,16 +243,14 @@ std::unordered_map<std::string, Position> MeanReversionStrategy::get_target_posi
     return target_positions;
 }
 
-void MeanReversionStrategy::trim_history(MeanReversionInstrumentData& data,MeanReversionSymbolConsumption* trace) const {
+void MeanReversionStrategy::trim_history(MeanReversionInstrumentData& data) const {
     size_t max_price_size = static_cast<size_t>(
         std::max(mr_config_.lookback_period, mr_config_.vol_lookback) * 2);
-    if(trace) trace->maximum_price_history=max_price_size;
     while (data.price_history.size() > max_price_size) {
         data.price_history.pop_front();
     }
 
     size_t max_vol_size = static_cast<size_t>(mr_config_.vol_lookback * 2);
-    if(trace) trace->maximum_volatility_history=max_vol_size;
     while (data.volatility_history.size() > max_vol_size) {
         data.volatility_history.pop_front();
     }
@@ -305,15 +289,11 @@ double MeanReversionStrategy::calculate_z_score(double price, double mean, doubl
     return (price - mean) / std_dev;
 }
 
-double MeanReversionStrategy::calculate_position_size(const std::string& symbol,double price,double volatility,MeanReversionSymbolConsumption* trace) const {
+double MeanReversionStrategy::calculate_position_size(const std::string& symbol, double price, double volatility) const {
     if (price < 1e-8 || volatility < 1e-8) {
         return 0.0;
     }
 
-    if(trace) {
-        trace->sizing_reached=true;trace->capital_allocation=config_.capital_allocation;
-        trace->position_size=mr_config_.position_size;trace->risk_target=mr_config_.risk_target;
-    }
     double capital = config_.capital_allocation;
     double target_value = capital * mr_config_.position_size;
 
@@ -327,21 +307,11 @@ double MeanReversionStrategy::calculate_position_size(const std::string& symbol,
 
     // Fractional share eligibility: require sufficient price AND reliable ADV above threshold.
     // During warmup (< vol_lookback bars), ADV is unreliable — fail closed to whole shares.
-    if(trace) {
-        trace->allow_fractional_shares=mr_config_.allow_fractional_shares;
-        if(mr_config_.allow_fractional_shares)trace->fractional_min_price=mr_config_.fractional_min_price;
-    }
     bool fractional_ok = mr_config_.allow_fractional_shares
                          && price >= mr_config_.fractional_min_price;
     if (fractional_ok) {
         auto inst_it = instrument_data_.find(symbol);
         if (inst_it != instrument_data_.end()) {
-            if(trace) {
-                trace->fractional_adv_reached=true;trace->vol_lookback=mr_config_.vol_lookback;
-                trace->fractional_min_adv=mr_config_.fractional_min_adv;
-                trace->volume_sample_count=inst_it->second.volume_sample_count;
-                trace->average_daily_volume=inst_it->second.avg_daily_volume;
-            }
             bool adv_warmed_up = inst_it->second.volume_sample_count >=
                                  static_cast<size_t>(mr_config_.vol_lookback);
             bool adv_above_min = inst_it->second.avg_daily_volume >= mr_config_.fractional_min_adv;
@@ -362,7 +332,6 @@ double MeanReversionStrategy::calculate_position_size(const std::string& symbol,
     // estimate is intentionally absent — sizing is volatility-targeted,
     // not cost-aware. If a future cost-aware sizing pass is added, it must
     // run AFTER this rounding step.
-    if(trace)trace->fractional_eligible=fractional_ok;
     if (fractional_ok) {
         num_shares = std::round(num_shares * 1000000.0) / 1000000.0;
     } else {
@@ -371,11 +340,6 @@ double MeanReversionStrategy::calculate_position_size(const std::string& symbol,
 
     // FIX (MAJOR #2): Enforce position limits
     auto limit_it = config_.position_limits.find(symbol);
-    if(trace) {
-        trace->position_limit_reached=true;
-        trace->position_limit.present=limit_it!=config_.position_limits.end();
-        if(trace->position_limit.present)trace->position_limit.value=limit_it->second;
-    }
     if (limit_it != config_.position_limits.end()) {
         num_shares = std::min(num_shares, limit_it->second);
     }
@@ -423,7 +387,7 @@ double MeanReversionStrategy::calculate_volatility(const std::deque<double>& pri
     return annualized;
 }
 
-double MeanReversionStrategy::generate_signal(const std::string& symbol,const MeanReversionInstrumentData& data,MeanReversionSymbolConsumption* trace) const {
+double MeanReversionStrategy::generate_signal(const std::string& symbol, const MeanReversionInstrumentData& data) const {
     double current_position = 0.0;
     auto pos_it = positions_.find(symbol);
     if (pos_it != positions_.end()) {
@@ -432,7 +396,6 @@ double MeanReversionStrategy::generate_signal(const std::string& symbol,const Me
 
     // Entry signals
     if (std::abs(current_position) < 1e-6) {
-        if(trace)trace->entry_threshold=mr_config_.entry_threshold;
         if (data.z_score > mr_config_.entry_threshold) {
             return -1.0;  // Price too high - go short
         } else if (data.z_score < -mr_config_.entry_threshold) {
@@ -445,13 +408,10 @@ double MeanReversionStrategy::generate_signal(const std::string& symbol,const Me
     double avg_price = static_cast<double>(pos_it->second.average_price);
 
     if (current_position > 0) {
-        if(trace)trace->exit_threshold=mr_config_.exit_threshold;
         if (data.z_score > -mr_config_.exit_threshold) {
             return 0.0;  // Mean reversion complete - exit long
         }
-        if(trace)trace->use_stop_loss=mr_config_.use_stop_loss;
         if (mr_config_.use_stop_loss && avg_price > 0) {
-            if(trace)trace->stop_loss_pct=mr_config_.stop_loss_pct;
             double pnl_pct = (data.current_price - avg_price) / avg_price;
             if (pnl_pct < -mr_config_.stop_loss_pct) {
                 return 0.0;  // Stop loss hit
@@ -461,13 +421,10 @@ double MeanReversionStrategy::generate_signal(const std::string& symbol,const Me
     }
 
     if (current_position < 0) {
-        if(trace)trace->exit_threshold=mr_config_.exit_threshold;
         if (data.z_score < mr_config_.exit_threshold) {
             return 0.0;  // Mean reversion complete - exit short
         }
-        if(trace)trace->use_stop_loss=mr_config_.use_stop_loss;
         if (mr_config_.use_stop_loss && avg_price > 0) {
-            if(trace)trace->stop_loss_pct=mr_config_.stop_loss_pct;
             double pnl_pct = (avg_price - data.current_price) / avg_price;
             if (pnl_pct < -mr_config_.stop_loss_pct) {
                 return 0.0;  // Stop loss hit

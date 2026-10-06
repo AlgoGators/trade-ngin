@@ -4,29 +4,25 @@
 #include "trade_ngin/storage/results_manager_base.hpp"
 #include "trade_ngin/core/logger.hpp"
 #include "trade_ngin/core/types.hpp"
-#include <algorithm>
-#include <cctype>
 
 namespace trade_ngin {
 
 ResultsManagerBase::ResultsManagerBase(std::shared_ptr<PostgresDatabase> db, bool store_enabled,
                                        const std::string& schema, const std::string& strategy_id,
-                                       const std::string& portfolio_id, const std::string& portfolio_type)
+                                       const std::string& portfolio_id,
+                                       const std::string& strategy_name)
     : db_(db),
       store_enabled_(store_enabled),
       schema_(schema),
       strategy_id_(strategy_id),
+      // Empty means "same as the id": the futures runners have always written
+      // (strategy_id, strategy_id, portfolio_id) and must keep doing so byte-for-byte.
+      strategy_name_(strategy_name.empty() ? strategy_id : strategy_name),
       portfolio_id_(portfolio_id),
-      portfolio_type_(portfolio_type),
       component_id_("ResultsManager_" + schema) {
-    if (portfolio_id.empty() ||
-        std::all_of(portfolio_id.begin(), portfolio_id.end(), [](unsigned char ch) {
-            return std::isspace(ch) != 0;
-        })) {
-        throw std::invalid_argument("portfolio_id must not be empty");
-    }
     INFO("Initialized " + component_id_ + " for strategy: " + strategy_id +
-         ", portfolio: " + portfolio_id + ", storage " + (store_enabled ? "enabled" : "disabled"));
+         ", name: " + strategy_name_ + ", portfolio: " + portfolio_id + ", storage " +
+         (store_enabled ? "enabled" : "disabled"));
 }
 
 Result<void> ResultsManagerBase::validate_database_connection() const {
@@ -87,12 +83,14 @@ Result<void> ResultsManagerBase::save_positions(const std::vector<Position>& pos
         for (auto& pos : positions_with_date) {
             pos.last_update = date;  // Set timestamp to the date being processed
         }
-        return db_->store_backtest_positions(positions_with_date, run_id, portfolio_id_,
+        // Note: portfolio_id not available in base class, will be passed as empty string
+        // BacktestResultsManager should override this method to pass portfolio_id
+        return db_->store_backtest_positions(positions_with_date, run_id, "BASE_PORTFOLIO",
                                              table_name);
     } else {
         // For live trading, use regular store_positions
-        return db_->store_positions(positions, strategy_id_, strategy_id_, portfolio_id_,
-                                    table_name,portfolio_type_);
+        return db_->store_positions(positions, strategy_id_, strategy_name_, portfolio_id_,
+                                    table_name);
     }
 }
 
@@ -122,10 +120,12 @@ Result<void> ResultsManagerBase::save_executions(const std::vector<ExecutionRepo
 
     // Use appropriate storage method based on schema
     if (schema_ == "backtest") {
-        return db_->store_backtest_executions(executions, run_id, portfolio_id_, table_name);
+        // Note: portfolio_id not available in base class, will default to BASE_PORTFOLIO
+        // BacktestResultsManager should override this method to pass portfolio_id
+        return db_->store_backtest_executions(executions, run_id, "BASE_PORTFOLIO", table_name);
     } else {
-        return db_->store_executions(executions, strategy_id_, strategy_id_, portfolio_id_,
-                                     table_name,portfolio_type_);
+        return db_->store_executions(executions, strategy_id_, strategy_name_, portfolio_id_,
+                                     table_name);
     }
 }
 
@@ -155,12 +155,12 @@ Result<void> ResultsManagerBase::save_signals(
 
     // Use appropriate storage method based on schema
     if (schema_ == "backtest") {
-        return db_->store_backtest_signals(signals, strategy_id_, run_id, date, portfolio_id_,
+        // Note: portfolio_id not available in base class, will default to BASE_PORTFOLIO
+        // BacktestResultsManager should override this method to pass portfolio_id
+        return db_->store_backtest_signals(signals, strategy_id_, run_id, date, "BASE_PORTFOLIO",
                                            table_name);
     } else {
-        if (portfolio_type_ != "system")
-            return make_error<void>(ErrorCode::INVALID_ARGUMENT,"qt_signals_unsupported");
-        return db_->store_signals(signals, strategy_id_, strategy_id_, portfolio_id_, date,
+        return db_->store_signals(signals, strategy_id_, strategy_name_, portfolio_id_, date,
                                   table_name);
     }
 }

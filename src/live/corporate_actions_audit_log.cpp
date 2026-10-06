@@ -14,14 +14,6 @@
 
 namespace trade_ngin {
 
-bool allows_legacy_corp_action_import(const std::string& portfolio_id,
-                                      const std::string& strategy_id,
-                                      const std::string& strategy_name) {
-    return portfolio_id == "EQUITY_MR_PORTFOLIO" &&
-           strategy_id == "LIVE_EQUITY_MEAN_REVERSION" &&
-           strategy_name == "EQUITY_MEAN_REVERSION";
-}
-
 CorporateActionsAuditLog::CorporateActionsAuditLog(std::string state_dir)
     : state_dir_(std::move(state_dir)) {}
 
@@ -41,9 +33,6 @@ bool CorporateActionsAuditLog::migrate_state_file_to_db() {
     // stale file can never resurrect events over a DB record that has since
     // moved on. Idempotent by that guard plus the table's ON CONFLICT.
     if (!db_backed()) return false;
-    if (!allows_legacy_corp_action_import(portfolio_id_, strategy_id_, strategy_name_)) {
-        return false;
-    }
     if (!std::filesystem::exists(file_path())) return false;
 
     CorporateActionsAuditLog file_log(state_dir_);

@@ -62,9 +62,31 @@ public:
     virtual bool is_tradeable() const = 0;
 
     /**
-     * @brief Get margin requirement
+     * @brief Get margin requirement (legacy, no-context form).
+     *
+     * For futures this returns the contract's initial-margin dollar amount.
+     * For equities this is unreliable -- equity margin depends on price and
+     * signed quantity (cash account: full notional; Reg T long: 50%; Reg T
+     * short: 150%). Prefer the price/quantity overload below for equities.
      */
     virtual double get_margin_requirement() const = 0;
+
+    /**
+     * @brief Get margin requirement given price and signed quantity.
+     *
+     * Default body forwards to the no-arg version so futures and other
+     * legacy instruments don't need to override. Equities override this to
+     * compute account-mode-aware margin (cash vs Reg T, long vs short).
+     *
+     * @param price Reference price per unit (e.g. close)
+     * @param quantity Signed share/contract count (positive long, negative short)
+     * @return Margin requirement in dollars
+     */
+    virtual double get_margin_requirement(double price, double quantity) const {
+        (void)price;
+        (void)quantity;
+        return get_margin_requirement();
+    }
 
     /**
      * @brief Get trading hours

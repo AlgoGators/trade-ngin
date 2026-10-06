@@ -25,114 +25,6 @@ protected:
     std::unique_ptr<PostgresDatabase> db;
 };
 
-#define EXPECT_INVALID_PORTFOLIO(expr)                                        \
-    do {                                                                       \
-        auto __result = (expr);                                                \
-        ASSERT_TRUE(__result.is_error());                                      \
-        EXPECT_EQ(__result.error()->code(), ErrorCode::INVALID_ARGUMENT);      \
-    } while (0)
-
-TEST(PostgresDatabasePortfolioScope, EmptyIdentityFailsBeforeConnection) {
-    PostgresDatabase disconnected("host=invalid port=1 user=u dbname=d");
-    const Timestamp date{};
-    const std::vector<ExecutionReport> executions;
-    const std::vector<Position> positions;
-    const std::unordered_map<std::string, double> signals;
-    const std::unordered_map<std::string, double> metrics;
-
-    EXPECT_INVALID_PORTFOLIO(disconnected.validate_portfolio_id(""));
-    EXPECT_INVALID_PORTFOLIO(disconnected.validate_operational_stream("", "system"));
-    EXPECT_INVALID_PORTFOLIO(disconnected.store_executions(
-        executions, "S", "OWNER", "", "trading.executions"));
-    EXPECT_INVALID_PORTFOLIO(disconnected.store_positions(
-        positions, "S", "OWNER", "", "trading.positions"));
-    EXPECT_INVALID_PORTFOLIO(disconnected.store_signals(
-        signals, "S", "OWNER", "", date, "trading.signals"));
-    EXPECT_INVALID_PORTFOLIO(disconnected.load_positions_by_date(
-        "S", "OWNER", "", date, "trading.positions", "system"));
-    EXPECT_INVALID_PORTFOLIO(disconnected.store_backtest_executions(
-        executions, "RUN", "", "backtest.executions"));
-    EXPECT_INVALID_PORTFOLIO(disconnected.store_backtest_executions_with_strategy(
-        executions, "RUN", "S", "", "backtest.executions"));
-    EXPECT_INVALID_PORTFOLIO(disconnected.store_backtest_signals(
-        signals, "S", "RUN", date, "", "backtest.signals"));
-    EXPECT_INVALID_PORTFOLIO(disconnected.store_backtest_metadata(
-        "RUN", "name", "description", date, date, nlohmann::json::object(), "",
-        "backtest.run_metadata"));
-    EXPECT_INVALID_PORTFOLIO(disconnected.store_backtest_metadata_with_portfolio(
-        "RUN", "PORTFOLIO_RUN", "S", 1.0, nlohmann::json::object(), "name",
-        "description", date, date, nlohmann::json::object(), "",
-        "backtest.run_metadata"));
-    EXPECT_INVALID_PORTFOLIO(disconnected.store_backtest_summary(
-        "RUN", date, date, metrics, "", "backtest.results"));
-    EXPECT_INVALID_PORTFOLIO(disconnected.store_backtest_equity_curve_batch(
-        "RUN", {}, "", "backtest.equity_curve"));
-    EXPECT_INVALID_PORTFOLIO(disconnected.store_backtest_positions(
-        positions, "RUN", "", "backtest.final_positions"));
-    EXPECT_INVALID_PORTFOLIO(disconnected.store_backtest_positions_with_strategy(
-        positions, "RUN", "S", "", "backtest.final_positions"));
-    EXPECT_INVALID_PORTFOLIO(disconnected.get_previous_live_aggregates(
-        "S", "", date, "trading.live_results", "system"));
-}
-
-TEST(PostgresDatabaseExecutionValidation, NettingAdjustmentMayBeNegativeButNeverCreatesNegativeNetCost) {
-    PostgresDatabase disconnected("host=invalid port=1 user=u dbname=d");
-    auto execution = create_test_executions().front();
-    execution.total_transaction_costs = Decimal(0.8);
-
-    execution.netting_adjustment = Decimal(-1.2);
-    EXPECT_TRUE(disconnected.validate_execution_report(execution).is_ok());
-    EXPECT_DOUBLE_EQ(execution.net_transaction_costs().as_double(), 2.0);
-
-    execution.netting_adjustment = Decimal(0.81);
-    auto negative_net = disconnected.validate_execution_report(execution);
-    ASSERT_TRUE(negative_net.is_error());
-    EXPECT_EQ(negative_net.error()->code(), ErrorCode::INVALID_ARGUMENT);
-
-    execution.netting_adjustment = Decimal(-1.0e10);
-    auto unbounded = disconnected.validate_execution_report(execution);
-    ASSERT_TRUE(unbounded.is_error());
-    EXPECT_EQ(unbounded.error()->code(), ErrorCode::INVALID_ARGUMENT);
-}
-
-TEST(PostgresDatabaseIdentityValidation, CombinedStrategyIdsUseTheSchemaWidth) {
-    PostgresDatabase disconnected("host=invalid port=1 user=u dbname=d");
-    const std::string three_sleeve_id =
-        "LIVE_TREND_FOLLOWING_TREND_FOLLOWING_FAST_TREND_FOLLOWING_SLOW";
-    ASSERT_GT(three_sleeve_id.size(), 50u);
-    ASSERT_LE(three_sleeve_id.size(), 100u);
-    EXPECT_TRUE(disconnected.validate_strategy_id(three_sleeve_id).is_ok());
-    EXPECT_TRUE(disconnected.validate_strategy_id(std::string(100, 'A')).is_ok());
-    EXPECT_TRUE(disconnected.validate_strategy_id(std::string(101, 'A')).is_error());
-}
-
-TEST(PostgresDatabaseInvestorBooks, InvalidOnboardingFailsBeforeConnection) {
-    PostgresDatabase disconnected("host=invalid port=1 user=u dbname=d");
-    InvestorBookOnboarding request{
-        "investor_alpha", "INVESTOR_ALPHA", 1'000'000.0, "2026-10-01",
-        {"LIVE_TREND_FOLLOWING"}, "unit-test"};
-
-    auto valid_but_disconnected = disconnected.onboard_investor_book(request);
-    ASSERT_TRUE(valid_but_disconnected.is_error());
-    EXPECT_NE(valid_but_disconnected.error()->code(), ErrorCode::INVALID_ARGUMENT);
-
-    request.config_key = "../escape";
-    EXPECT_EQ(disconnected.onboard_investor_book(request).error()->code(),
-              ErrorCode::INVALID_ARGUMENT);
-    request.config_key = "investor_alpha";
-    request.portfolio_id = "investor_alpha";
-    EXPECT_EQ(disconnected.onboard_investor_book(request).error()->code(),
-              ErrorCode::INVALID_ARGUMENT);
-    request.portfolio_id = "INVESTOR_ALPHA";
-    request.initial_capital = 0.0;
-    EXPECT_EQ(disconnected.onboard_investor_book(request).error()->code(),
-              ErrorCode::INVALID_ARGUMENT);
-    request.initial_capital = 1'000'000.0;
-    request.strategy_ids.push_back("LIVE_TREND_FOLLOWING");
-    EXPECT_EQ(disconnected.onboard_investor_book(request).error()->code(),
-              ErrorCode::INVALID_ARGUMENT);
-}
-
 TEST_F(PostgresDatabaseTest, ConnectionLifecycle) {
     EXPECT_FALSE(db->is_connected());
 
@@ -435,4 +327,79 @@ TEST_F(PostgresDatabaseTest, TimezoneHandling) {
             timestamp_array->Value(table->num_rows() - 1),
             std::chrono::duration_cast<std::chrono::seconds>(utc_time.time_since_epoch()).count());
     }
+}
+
+// ===== New tests for PR #57 coverage =====
+
+TEST_F(PostgresDatabaseTest, AssetClassToStringOptionsReturnsOption) {
+    // Test that OPTIONS asset class is properly handled in asset_class_to_string().
+    // This is required for the new OPTIONS case added in PR #57.
+    auto result = db->asset_class_to_string(AssetClass::OPTIONS);
+    EXPECT_EQ(result, "OPTION");
+}
+
+TEST_F(PostgresDatabaseTest, AssetClassToStringAllClassesHaveMapping) {
+    // Verify all asset classes map to non-empty strings
+    EXPECT_NE(db->asset_class_to_string(AssetClass::EQUITIES), "");
+    EXPECT_NE(db->asset_class_to_string(AssetClass::FUTURES), "");
+    EXPECT_NE(db->asset_class_to_string(AssetClass::FIXED_INCOME), "");
+    EXPECT_NE(db->asset_class_to_string(AssetClass::CURRENCIES), "");
+    EXPECT_NE(db->asset_class_to_string(AssetClass::COMMODITIES), "");
+    EXPECT_NE(db->asset_class_to_string(AssetClass::CRYPTO), "");
+    EXPECT_NE(db->asset_class_to_string(AssetClass::OPTIONS), "");
+}
+
+TEST_F(PostgresDatabaseTest, ExecuteMarketDataQueryUsesCorrectColumnsForEquities) {
+    // Test that execute_market_data_query uses adjusted columns for equities.
+    // This verifies the new market_data_utils::get_market_data_columns() integration.
+    auto connect_result = db->connect();
+    ASSERT_TRUE(connect_result.is_ok());
+
+    std::vector<std::string> symbols = {"AAPL"};
+    auto start_date = std::chrono::system_clock::now() - std::chrono::hours(24);
+    auto end_date = std::chrono::system_clock::now();
+
+    auto result = db->get_market_data(symbols, start_date, end_date, AssetClass::EQUITIES,
+                                      DataFrequency::DAILY);
+
+    // The query should succeed and return a table with the expected columns
+    ASSERT_TRUE(result.is_ok()) << "Market data query should succeed for EQUITIES";
+    auto table = result.value();
+
+    // Verify the table has the expected columns (time, symbol, open, high, low, close, volume)
+    EXPECT_EQ(table->num_columns(), 7);
+    EXPECT_EQ(table->ColumnNames()[0], "time");
+    EXPECT_EQ(table->ColumnNames()[1], "symbol");
+    EXPECT_EQ(table->ColumnNames()[2], "open");
+    EXPECT_EQ(table->ColumnNames()[3], "high");
+    EXPECT_EQ(table->ColumnNames()[4], "low");
+    EXPECT_EQ(table->ColumnNames()[5], "close");
+    EXPECT_EQ(table->ColumnNames()[6], "volume");
+}
+
+TEST_F(PostgresDatabaseTest, ExecuteMarketDataQueryUsesCorrectColumnsForFutures) {
+    // Test that execute_market_data_query uses unadjusted columns for futures.
+    auto connect_result = db->connect();
+    ASSERT_TRUE(connect_result.is_ok());
+
+    std::vector<std::string> symbols = {"ES"};
+    auto start_date = std::chrono::system_clock::now() - std::chrono::hours(24);
+    auto end_date = std::chrono::system_clock::now();
+
+    auto result = db->get_market_data(symbols, start_date, end_date, AssetClass::FUTURES,
+                                      DataFrequency::DAILY);
+
+    // The query should succeed and return a table with unadjusted columns
+    ASSERT_TRUE(result.is_ok()) << "Market data query should succeed for FUTURES";
+    auto table = result.value();
+
+    // Verify the table has the expected columns
+    EXPECT_EQ(table->num_columns(), 7);
+    EXPECT_EQ(table->ColumnNames()[0], "time");
+    EXPECT_EQ(table->ColumnNames()[1], "symbol");
+    EXPECT_EQ(table->ColumnNames()[2], "open");
+    EXPECT_EQ(table->ColumnNames()[3], "high");
+    EXPECT_EQ(table->ColumnNames()[4], "low");
+    EXPECT_EQ(table->ColumnNames()[5], "close");
+    EXPECT_EQ(table->ColumnNames()[6], "volume");
 }

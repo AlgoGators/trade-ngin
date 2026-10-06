@@ -1,18 +1,16 @@
 #include <gtest/gtest.h>
-#include <atomic>
-#include <condition_variable>
-#include <cstring>
-#include <exception>
-#include <memory>
-#include <mutex>
 #include <thread>
-#include "../data/market_data_bus_test_peer.hpp"
 #include "../data/test_db_utils.hpp"
-#include "../sync_test_deadline.hpp"
 #include "../order/test_utils.hpp"
 #include "mock_strategy.hpp"
-#include "portfolio_manager_test_peer.hpp"
 #include "trade_ngin/portfolio/portfolio_manager.hpp"
+
+#include <chrono>
+#include <cmath>
+#include <memory>
+#include "../core/test_base.hpp"
+#include "trade_ngin/portfolio/portfolio_manager.hpp"
+#include "trade_ngin/risk/risk_manager.hpp"
 
 using namespace trade_ngin;
 using namespace trade_ngin::testing;
@@ -20,10 +18,6 @@ using namespace trade_ngin::testing;
 class PortfolioManagerTest : public TestBase {
 protected:
     void SetUp() override {
-        if (std::strcmp(::testing::UnitTest::GetInstance()->current_test_info()->name(),
-                        "PositionUpdateCallbackSyncBlocksUntilManagerMutexReleased") == 0) {
-            sync_deadline_ = std::make_unique<SyncTestDeadline>(std::chrono::seconds(15));
-        }
         TestBase::SetUp();
 
         // Reset state manager
@@ -143,7 +137,6 @@ protected:
     std::unique_ptr<PortfolioManager> manager_;
     std::shared_ptr<DatabaseInterface> db_;
     std::string manager_id_;
-    std::unique_ptr<SyncTestDeadline> sync_deadline_;
 };
 
 TEST_F(PortfolioManagerTest, AddStrategy) {
@@ -374,204 +367,451 @@ TEST_F(PortfolioManagerTest, StressTest) {
     }
 }
 
-namespace {
-class PortfolioLifetimeBusCleanup {
-public:
-    ~PortfolioLifetimeBusCleanup() { (void)MarketDataBus::instance().unsubscribe("PORTFOLIO_MANAGER"); }
-};
+// ===== folded in from tests/portfolio/test_portfolio_manager_extended.cpp =====
+// Extended PortfolioManager coverage. Targets specific branches in
+// add_strategy, update_allocations, process_market_data, get_portfolio_value,
+// strategy/execution accessors, set_risk_manager, update_strategy_position,
+// and update_cost_manager_market_data. Companion to test_portfolio_manager.cpp;
+// no overlap with the basic happy-path tests there.
+namespace portfolio_manager_extended_detail {
 
-class CountingLifetimeStrategy : public MockStrategy {
-public:
-    using MockStrategy::MockStrategy;
-    int calls{0};
-    Result<void> on_data(const std::vector<Bar>& bars,
-                         StrategyConsumptionTrace* trace = nullptr) override {
-        ++calls;
-        return MockStrategy::on_data(bars, trace);
+using namespace trade_ngin;
+using namespace trade_ngin::testing;
+
+namespace {
+
+PortfolioConfig default_config(bool use_optimization = false, bool use_risk_management = false) {
+    PortfolioConfig c{
+        1'000'000.0,           // total_capital
+        100'000.0,             // reserve_capital
+        0.6,                   // max_strategy_allocation
+        0.05,                  // min_strategy_allocation
+        use_optimization,
+        use_risk_management,
+    };
+    c.opt_config.tau = 1.0;
+    c.opt_config.capital = 1'000'000.0;
+    c.opt_config.cost_penalty_scalar = 10.0;
+    c.opt_config.asymmetric_risk_buffer = 0.1;
+    c.opt_config.max_iterations = 100;
+    c.opt_config.convergence_threshold = 1e-6;
+    c.risk_config.var_limit = 1.0;            // loose so risk doesn't fire
+    c.risk_config.max_correlation = 1.0;
+    c.risk_config.max_gross_leverage = 1e6;
+    c.risk_config.max_net_leverage = 1e6;
+    c.risk_config.capital = 1'000'000.0;
+    c.risk_config.confidence_level = 0.99;
+    c.risk_config.lookback_period = 252;
+    return c;
+}
+
+}  // namespace
+
+class PortfolioManagerExtendedTest : public TestBase {
+protected:
+    void SetUp() override {
+        TestBase::SetUp();
+        StateManager::reset_instance();
+        std::this_thread::sleep_for(std::chrono::milliseconds(50));
+
+        db_ = std::make_shared<MockPostgresDatabase>("mock://testdb");
+        ASSERT_TRUE(db_->connect().is_ok());
+
+        static int n = 0;
+        manager_id_ = "PM_EXT_" + std::to_string(++n);
+        manager_ = std::make_unique<PortfolioManager>(default_config(), manager_id_);
     }
-};
 
-PortfolioConfig lifetime_portfolio_config() {
-    return {1000000.0, 100000.0, 1.0, 0.0, false, false};
-}
+    void TearDown() override {
+        manager_.reset();
+        db_.reset();
+        StateManager::reset_instance();
+        std::this_thread::sleep_for(std::chrono::milliseconds(50));
+        TestBase::TearDown();
+    }
 
-std::shared_ptr<CountingLifetimeStrategy> lifetime_strategy(
-    const std::string& id, const std::shared_ptr<DatabaseInterface>& db) {
-    StrategyConfig config;
-    config.capital_allocation = 1000000.0;
-    config.max_leverage = 2.0;
-    config.asset_classes = {AssetClass::EQUITIES};
-    config.frequencies = {DataFrequency::DAILY};
-    config.trading_params["AAPL"] = 1.0;
-    config.position_limits["AAPL"] = 10000.0;
-    auto strategy = std::make_shared<CountingLifetimeStrategy>(id, config, db);
-    if (strategy->initialize().is_error() || strategy->start().is_error())
-        throw std::runtime_error("Unable to start counting lifetime strategy");
-    return strategy;
-}
+    struct StrategyHandle {
+        std::shared_ptr<StrategyInterface> strategy;
+        std::string id;
+    };
 
-MarketDataEvent lifetime_portfolio_bar() {
-    return {MarketDataEventType::BAR, "AAPL", std::chrono::system_clock::now(),
-            {{"open", 100.0}, {"high", 101.0}, {"low", 99.0},
-             {"close", 100.5}, {"volume", 10000.0}}, {}};
-}
-}  // namespace
-
-TEST_F(PortfolioManagerTest, LifetimeLiveCallbackStopsAfterManagerDestruction) {
-    PortfolioLifetimeBusCleanup cleanup;
-    auto strategy = lifetime_strategy("LIFETIME_SINGLE", db_);
-    ASSERT_TRUE(manager_->add_strategy(strategy, 0.3).is_ok());
-    MarketDataBus::instance().publish(lifetime_portfolio_bar());
-    ASSERT_EQ(strategy->calls, 1);
-    manager_.reset();
-    ASSERT_FALSE(MarketDataBusTestPeer::is_active(MarketDataBus::instance(), "PORTFOLIO_MANAGER"))
-        << "Do not publish toward a destroyed manager on the RED build";
-    MarketDataBus::instance().publish(lifetime_portfolio_bar());
-    EXPECT_EQ(strategy->calls, 1);
-}
-
-TEST_F(PortfolioManagerTest, LifetimeDefaultIdentityCanBeReusedAfterDestruction) {
-    PortfolioLifetimeBusCleanup cleanup;
-    manager_.reset();
-    EXPECT_TRUE(StateManager::instance().get_state("PORTFOLIO_MANAGER").is_error());
-
-    EXPECT_NO_THROW({
-        auto next = std::make_unique<PortfolioManager>(lifetime_portfolio_config());
-        EXPECT_TRUE(StateManager::instance().get_state("PORTFOLIO_MANAGER").is_ok());
-    });
-    EXPECT_TRUE(StateManager::instance().get_state("PORTFOLIO_MANAGER").is_error());
-}
-
-TEST_F(PortfolioManagerTest, LifetimeOlderManagerDestructionPreservesNewer) {
-    PortfolioLifetimeBusCleanup cleanup;
-    auto old_strategy = lifetime_strategy("LIFETIME_OLD_FIRST_A", db_);
-    ASSERT_TRUE(manager_->add_strategy(old_strategy, 0.3).is_ok());
-    auto newer = std::make_unique<PortfolioManager>(lifetime_portfolio_config(), "LIFETIME_OLD_FIRST_B");
-    auto new_strategy = lifetime_strategy("LIFETIME_OLD_FIRST_B_STRATEGY", db_);
-    ASSERT_TRUE(newer->add_strategy(new_strategy, 0.3).is_ok());
-    MarketDataBus::instance().publish(lifetime_portfolio_bar());
-    EXPECT_EQ(old_strategy->calls, 0);
-    EXPECT_EQ(new_strategy->calls, 1);
-    manager_.reset();
-    ASSERT_TRUE(MarketDataBusTestPeer::is_active(MarketDataBus::instance(), "PORTFOLIO_MANAGER"));
-    MarketDataBus::instance().publish(lifetime_portfolio_bar());
-    EXPECT_EQ(old_strategy->calls, 0);
-    EXPECT_EQ(new_strategy->calls, 2);
-    newer.reset();
-    ASSERT_FALSE(MarketDataBusTestPeer::is_active(MarketDataBus::instance(), "PORTFOLIO_MANAGER"))
-        << "Do not publish toward a destroyed manager on the RED build";
-    MarketDataBus::instance().publish(lifetime_portfolio_bar());
-    EXPECT_EQ(new_strategy->calls, 2);
-}
-
-TEST_F(PortfolioManagerTest, LifetimeNewerManagerDestructionDoesNotReviveOlder) {
-    PortfolioLifetimeBusCleanup cleanup;
-    auto old_strategy = lifetime_strategy("LIFETIME_NEW_FIRST_A", db_);
-    ASSERT_TRUE(manager_->add_strategy(old_strategy, 0.3).is_ok());
-    auto newer = std::make_unique<PortfolioManager>(lifetime_portfolio_config(), "LIFETIME_NEW_FIRST_B");
-    auto new_strategy = lifetime_strategy("LIFETIME_NEW_FIRST_B_STRATEGY", db_);
-    ASSERT_TRUE(newer->add_strategy(new_strategy, 0.3).is_ok());
-    MarketDataBus::instance().publish(lifetime_portfolio_bar());
-    EXPECT_EQ(old_strategy->calls, 0);
-    EXPECT_EQ(new_strategy->calls, 1);
-    newer.reset();
-    ASSERT_FALSE(MarketDataBusTestPeer::is_active(MarketDataBus::instance(), "PORTFOLIO_MANAGER"))
-        << "Do not publish toward a destroyed manager on the RED build";
-    MarketDataBus::instance().publish(lifetime_portfolio_bar());
-    EXPECT_EQ(old_strategy->calls, 0);
-    EXPECT_EQ(new_strategy->calls, 1);
-    manager_.reset();
-    EXPECT_FALSE(MarketDataBusTestPeer::is_active(MarketDataBus::instance(), "PORTFOLIO_MANAGER"));
-}
-
-namespace {
-std::atomic<bool>* sync_contention_flag = nullptr;
-std::condition_variable* sync_contention_cv = nullptr;
-void signal_position_update_contention() noexcept {
-    sync_contention_flag->store(true, std::memory_order_release);
-    sync_contention_cv->notify_all();
-}
-
-MarketDataEvent sync_position_update_event(const std::string& strategy_id) {
-    MarketDataEvent event;
-    event.type = MarketDataEventType::POSITION_UPDATE;
-    event.symbol = "AAPL";
-    event.timestamp = std::chrono::system_clock::now();
-    event.numeric_fields = {{"quantity", 10.0}, {"price", 101.5}};
-    event.string_fields = {{"strategy_id", strategy_id}};
-    return event;
-}
-}  // namespace
-
-// market-data-bus-sync-brief.md defect 2: the POSITION_UPDATE callback branch
-// reads strategies_ and writes current_positions and must take mutex_ for its
-// whole read-modify-write, in the same lock order the BAR branch already
-// establishes (bus mutex -- already held by the publisher for the callback's
-// duration -- then mutex_). This test holds mutex_ on the main thread through
-// the test peer, publishes a POSITION_UPDATE from another thread, and requires
-// a witnessed try-lock failure on mutex_ before the callback may proceed.
-// Against the original unlocked branch (with inert test scaffolding) the hook never
-// fires, "witnessed" stays false, and the callback completes immediately even
-// though the test holds mutex_: this test fails deterministically (after its
-// 5s observation wait). It passes once the branch takes mutex_ for the RMW.
-TEST_F(PortfolioManagerTest, PositionUpdateCallbackSyncBlocksUntilManagerMutexReleased) {
-    auto strategy = create_test_strategy("SYNC_TARGET", {"AAPL"});
-    ASSERT_TRUE(manager_->add_strategy(strategy, 0.3).is_ok());
-    const std::string strategy_id = strategy->get_metadata().id;
-    const MarketDataEvent event = sync_position_update_event(strategy_id);
-
-    std::mutex wait_mutex;
-    std::condition_variable contention_cv;
-    std::atomic<bool> contended{false};
-    std::atomic<bool> callback_returned{false};
-
-    std::exception_ptr publish_error;
-    std::unique_lock<std::mutex> manager_lock;
-    std::thread publisher;
-    auto cleanup = sync_test_scope_exit([&] {
-        if (manager_lock.owns_lock()) manager_lock.unlock();
-        if (publisher.joinable()) publisher.join();
-        PortfolioManagerTestPeer::set_position_update_contention_hook(*manager_, nullptr);
-        sync_contention_flag = nullptr;
-        sync_contention_cv = nullptr;
-    });
-
-    sync_contention_flag = &contended;
-    sync_contention_cv = &contention_cv;
-    PortfolioManagerTestPeer::set_position_update_contention_hook(
-        *manager_, signal_position_update_contention);
-    manager_lock = PortfolioManagerTestPeer::lock_manager_mutex(*manager_);
-
-    publisher = std::thread([&] {
-        try {
-            MarketDataBus::instance().publish(event);
-            callback_returned.store(true, std::memory_order_release);
-        } catch (...) {
-            publish_error = std::current_exception();
+    StrategyHandle make_strategy(const std::string& id_prefix,
+                                  std::vector<std::string> symbols = {"AAPL"}) {
+        static int n = 0;
+        std::string unique_id = id_prefix + "_" + std::to_string(++n);
+        StrategyConfig sc;
+        sc.capital_allocation = 1'000'000.0;
+        sc.max_leverage = 2.0;
+        sc.asset_classes = {AssetClass::EQUITIES};
+        sc.frequencies = {DataFrequency::DAILY};
+        for (const auto& s : symbols) {
+            sc.trading_params[s] = 1.0;
+            sc.position_limits[s] = 10000.0;
         }
-    });
-
-    bool witnessed;
-    {
-        std::unique_lock<std::mutex> lock(wait_mutex);
-        witnessed = contention_cv.wait_for(
-            lock, std::chrono::seconds(5),
-            [&] { return contended.load(std::memory_order_acquire); });
+        auto strat = std::make_shared<MockStrategy>(unique_id, sc, db_);
+        if (strat->initialize().is_error()) throw std::runtime_error("init failed");
+        if (strat->start().is_error()) throw std::runtime_error("start failed");
+        return {strat, unique_id};
     }
-    const bool returned_before_release = callback_returned.load(std::memory_order_acquire);
 
-    manager_lock.unlock();
-    publisher.join();
+    std::vector<Bar> make_bars(const std::string& symbol, int n,
+                                std::chrono::system_clock::time_point t0) {
+        std::vector<Bar> bars;
+        for (int i = 0; i < n; ++i) {
+            Bar b;
+            b.symbol = symbol;
+            b.timestamp = t0 + std::chrono::hours(24 * i);
+            double price = 100.0 + std::sin(i * 0.1) * 2.0;
+            b.open = b.close = Decimal(price);
+            b.high = Decimal(price + 1.0);
+            b.low = Decimal(price - 1.0);
+            b.volume = 100000.0;
+            bars.push_back(b);
+        }
+        return bars;
+    }
 
-    PortfolioManagerTestPeer::set_position_update_contention_hook(*manager_, nullptr);
-    sync_contention_flag = nullptr;
-    sync_contention_cv = nullptr;
-    if (publish_error) std::rethrow_exception(publish_error);
+    std::shared_ptr<MockPostgresDatabase> db_;
+    std::unique_ptr<PortfolioManager> manager_;
+    std::string manager_id_;
+};
 
-    EXPECT_TRUE(witnessed)
-        << "publish() never contended on the manager's mutex_ -- the "
-           "POSITION_UPDATE branch is not (still) holding it for its RMW";
-    EXPECT_FALSE(returned_before_release)
-        << "Callback completed while the test held mutex_";
-    EXPECT_TRUE(callback_returned.load(std::memory_order_acquire));
+// ===== add_strategy validation =====
+
+TEST_F(PortfolioManagerExtendedTest, AddStrategyRejectsNullPointer) {
+    auto r = manager_->add_strategy(nullptr, 0.3);
+    EXPECT_TRUE(r.is_error());
+}
+
+TEST_F(PortfolioManagerExtendedTest, AddStrategyRejectsAllocationAboveMax) {
+    auto strat = make_strategy("S");
+    // max_strategy_allocation = 0.6 → 0.7 rejected
+    auto r = manager_->add_strategy(strat.strategy, 0.7);
+    EXPECT_TRUE(r.is_error());
+}
+
+TEST_F(PortfolioManagerExtendedTest, AddStrategyRejectsAllocationBelowMin) {
+    auto strat = make_strategy("S");
+    // min_strategy_allocation = 0.05 → 0.01 rejected
+    auto r = manager_->add_strategy(strat.strategy, 0.01);
+    EXPECT_TRUE(r.is_error());
+}
+
+TEST_F(PortfolioManagerExtendedTest, AddStrategyRejectsDuplicateId) {
+    auto strat = make_strategy("DUP");
+    ASSERT_TRUE(manager_->add_strategy(strat.strategy, 0.3).is_ok());
+    auto r = manager_->add_strategy(strat.strategy, 0.2);
+    EXPECT_TRUE(r.is_error());
+}
+
+TEST_F(PortfolioManagerExtendedTest, AddStrategyRejectsAllocationsThatExceedTotal) {
+    // Three strategies each at 0.4 sum to 1.2 > 1.0 → third rejected.
+    ASSERT_TRUE(manager_->add_strategy(make_strategy("A").strategy, 0.4).is_ok());
+    ASSERT_TRUE(manager_->add_strategy(make_strategy("B").strategy, 0.4).is_ok());
+    auto r = manager_->add_strategy(make_strategy("C").strategy, 0.4);
+    EXPECT_TRUE(r.is_error());
+}
+
+TEST_F(PortfolioManagerExtendedTest, GetStrategiesReflectsOrderOfAddition) {
+    auto a = make_strategy("ORDER_A");
+    auto b = make_strategy("ORDER_B");
+    ASSERT_TRUE(manager_->add_strategy(a.strategy, 0.3).is_ok());
+    ASSERT_TRUE(manager_->add_strategy(b.strategy, 0.3).is_ok());
+    auto strategies = manager_->get_strategies();
+    EXPECT_EQ(strategies.size(), 2u);
+}
+
+// ===== update_allocations validation =====
+
+TEST_F(PortfolioManagerExtendedTest, UpdateAllocationsRejectsUnknownStrategy) {
+    auto strat = make_strategy("UA");
+    ASSERT_TRUE(manager_->add_strategy(strat.strategy, 0.3).is_ok());
+    auto r = manager_->update_allocations({{"NOT_REGISTERED", 0.5}});
+    EXPECT_TRUE(r.is_error());
+}
+
+TEST_F(PortfolioManagerExtendedTest, UpdateAllocationsRejectsAllocationsSummingAboveOne) {
+    auto a = make_strategy("UA1");
+    auto b = make_strategy("UA2");
+    ASSERT_TRUE(manager_->add_strategy(a.strategy, 0.3).is_ok());
+    ASSERT_TRUE(manager_->add_strategy(b.strategy, 0.3).is_ok());
+    auto r = manager_->update_allocations({{a.id, 0.6}, {b.id, 0.6}});
+    EXPECT_TRUE(r.is_error());
+}
+
+TEST_F(PortfolioManagerExtendedTest, UpdateAllocationsAcceptsCompleteUpdateSummingToOne) {
+    auto a = make_strategy("UA3");
+    auto b = make_strategy("UA4");
+    ASSERT_TRUE(manager_->add_strategy(a.strategy, 0.3).is_ok());
+    ASSERT_TRUE(manager_->add_strategy(b.strategy, 0.3).is_ok());
+    // Production contract: validate_allocations requires the supplied map to
+    // sum to 1.0 (within 1e-6). Partial updates not supported.
+    auto r = manager_->update_allocations({{a.id, 0.4}, {b.id, 0.6}});
+    EXPECT_TRUE(r.is_ok());
+}
+
+TEST_F(PortfolioManagerExtendedTest, UpdateAllocationsRejectsSumNotEqualToOne) {
+    auto a = make_strategy("UA3B");
+    auto b = make_strategy("UA4B");
+    ASSERT_TRUE(manager_->add_strategy(a.strategy, 0.3).is_ok());
+    ASSERT_TRUE(manager_->add_strategy(b.strategy, 0.3).is_ok());
+    // 0.4 + 0.5 = 0.9; both within bounds but sum != 1.0
+    auto r = manager_->update_allocations({{a.id, 0.4}, {b.id, 0.5}});
+    EXPECT_TRUE(r.is_error());
+}
+
+TEST_F(PortfolioManagerExtendedTest, UpdateAllocationsRejectsEmptyMap) {
+    auto a = make_strategy("UA_EMPTY");
+    ASSERT_TRUE(manager_->add_strategy(a.strategy, 0.3).is_ok());
+    auto r = manager_->update_allocations({});
+    EXPECT_TRUE(r.is_error());
+}
+
+TEST_F(PortfolioManagerExtendedTest, UpdateAllocationsRejectsBelowMin) {
+    auto a = make_strategy("UA5");
+    ASSERT_TRUE(manager_->add_strategy(a.strategy, 0.3).is_ok());
+    auto r = manager_->update_allocations({{a.id, 0.001}});
+    EXPECT_TRUE(r.is_error());
+}
+
+// ===== process_market_data branches =====
+
+TEST_F(PortfolioManagerExtendedTest, ProcessEmptyBarsReturnsError) {
+    auto strat = make_strategy("EMPTY");
+    ASSERT_TRUE(manager_->add_strategy(strat.strategy, 0.3).is_ok());
+    EXPECT_TRUE(manager_->process_market_data({}).is_error());
+}
+
+TEST_F(PortfolioManagerExtendedTest, ProcessSkipExecutionGenerationProducesNoExecutions) {
+    auto strat = make_strategy("WARMUP");
+    ASSERT_TRUE(manager_->add_strategy(strat.strategy, 0.3).is_ok());
+    auto t0 = std::chrono::system_clock::now() - std::chrono::hours(24 * 300);
+    auto bars = make_bars("AAPL", 300, t0);
+    ASSERT_TRUE(manager_->process_market_data(bars, /*skip_execution_generation=*/true).is_ok());
+    EXPECT_TRUE(manager_->get_recent_executions().empty());
+}
+
+TEST_F(PortfolioManagerExtendedTest, ProcessWithCurrentTimestampOverridesFillTime) {
+    auto strat = make_strategy("TS_OVERRIDE");
+    ASSERT_TRUE(manager_->add_strategy(strat.strategy, 0.3).is_ok());
+    auto t0 = std::chrono::system_clock::now() - std::chrono::hours(24 * 300);
+    auto bars = make_bars("AAPL", 300, t0);
+    auto override_ts = t0 + std::chrono::hours(24 * 500);
+    auto r = manager_->process_market_data(bars, /*skip=*/false, override_ts);
+    EXPECT_TRUE(r.is_ok());
+    auto execs = manager_->get_recent_executions();
+    for (const auto& e : execs) {
+        EXPECT_EQ(e.fill_time, override_ts);
+    }
+}
+
+// ===== get_portfolio_value =====
+
+TEST_F(PortfolioManagerExtendedTest, GetPortfolioValueWithoutPositionsEqualsCapital) {
+    EXPECT_DOUBLE_EQ(manager_->get_portfolio_value({}), 1'000'000.0);
+}
+
+TEST_F(PortfolioManagerExtendedTest, GetPortfolioValueWithPositionsAddsMarkToMarket) {
+    auto strat = make_strategy("PV", {"AAPL"});
+    ASSERT_TRUE(manager_->add_strategy(strat.strategy, 0.3).is_ok());
+    auto t0 = std::chrono::system_clock::now() - std::chrono::hours(24 * 300);
+    ASSERT_TRUE(manager_->process_market_data(make_bars("AAPL", 300, t0)).is_ok());
+    // After processing, mock strategy should have positions; value must be finite
+    // and depend on the price map.
+    auto value_low = manager_->get_portfolio_value({{"AAPL", 50.0}});
+    auto value_high = manager_->get_portfolio_value({{"AAPL", 200.0}});
+    EXPECT_TRUE(std::isfinite(value_low));
+    EXPECT_TRUE(std::isfinite(value_high));
+}
+
+// ===== execution accessors =====
+
+TEST_F(PortfolioManagerExtendedTest, ClearExecutionHistoryEmptiesAggregate) {
+    auto strat = make_strategy("CLR1");
+    ASSERT_TRUE(manager_->add_strategy(strat.strategy, 0.3).is_ok());
+    auto t0 = std::chrono::system_clock::now() - std::chrono::hours(24 * 300);
+    ASSERT_TRUE(manager_->process_market_data(make_bars("AAPL", 300, t0)).is_ok());
+    manager_->clear_execution_history();
+    EXPECT_TRUE(manager_->get_recent_executions().empty());
+}
+
+TEST_F(PortfolioManagerExtendedTest, ClearAllExecutionsEmptiesPerStrategyToo) {
+    auto strat = make_strategy("CLR2");
+    ASSERT_TRUE(manager_->add_strategy(strat.strategy, 0.3).is_ok());
+    auto t0 = std::chrono::system_clock::now() - std::chrono::hours(24 * 300);
+    ASSERT_TRUE(manager_->process_market_data(make_bars("AAPL", 300, t0)).is_ok());
+    manager_->clear_all_executions();
+    EXPECT_TRUE(manager_->get_recent_executions().empty());
+    // Per-strategy executions also cleared.
+    auto per_strat = manager_->get_strategy_executions();
+    for (const auto& [_id, execs] : per_strat) {
+        EXPECT_TRUE(execs.empty());
+    }
+}
+
+// ===== update_strategy_position =====
+
+TEST_F(PortfolioManagerExtendedTest, UpdateStrategyPositionRejectsUnknownStrategy) {
+    Position pos("AAPL", Quantity(10.0), Price(100.0), Decimal(0.0), Decimal(0.0), Timestamp{});
+    auto r = manager_->update_strategy_position("NOT_FOUND", "AAPL", pos);
+    EXPECT_TRUE(r.is_error());
+}
+
+TEST_F(PortfolioManagerExtendedTest, UpdateStrategyPositionAcceptsKnownStrategy) {
+    auto strat = make_strategy("USP");
+    ASSERT_TRUE(manager_->add_strategy(strat.strategy, 0.3).is_ok());
+    auto t0 = std::chrono::system_clock::now() - std::chrono::hours(24 * 300);
+    ASSERT_TRUE(manager_->process_market_data(make_bars("AAPL", 300, t0)).is_ok());
+
+    Position updated("AAPL", Quantity(42.0), Price(105.0), Decimal(123.0), Decimal(0.0),
+                      Timestamp{});
+    auto r = manager_->update_strategy_position(strat.id, "AAPL", updated);
+    EXPECT_TRUE(r.is_ok());
+    auto positions = manager_->get_strategy_positions();
+    ASSERT_TRUE(positions.count(strat.id));
+    auto& sp = positions.at(strat.id);
+    if (sp.count("AAPL")) {
+        EXPECT_DOUBLE_EQ(static_cast<double>(sp.at("AAPL").quantity), 42.0);
+    }
+}
+
+// ===== set_risk_manager / external risk manager pathway =====
+
+TEST_F(PortfolioManagerExtendedTest, SetExternalRiskManagerSwitchesActiveImplementation) {
+    auto cfg = default_config(/*use_optimization=*/false, /*use_risk_management=*/true);
+    auto pm = std::make_unique<PortfolioManager>(cfg, manager_id_ + "_RISK");
+    auto external = std::make_shared<RiskManager>(cfg.risk_config);
+    pm->set_risk_manager(external);
+    // No crash + subsequent operations work with the external manager.
+    auto strat = make_strategy("EXT_RISK");
+    EXPECT_TRUE(pm->add_strategy(strat.strategy, 0.3, /*opt=*/false, /*risk=*/true).is_ok());
+}
+
+TEST_F(PortfolioManagerExtendedTest, SetExternalRiskManagerWithNullDoesNotReplace) {
+    auto cfg = default_config(/*use_optimization=*/false, /*use_risk_management=*/true);
+    auto pm = std::make_unique<PortfolioManager>(cfg, manager_id_ + "_NOOP");
+    pm->set_risk_manager(nullptr);
+    // Internal risk manager should still function.
+    auto strat = make_strategy("NULL_RISK");
+    EXPECT_TRUE(pm->add_strategy(strat.strategy, 0.3, /*opt=*/false, /*risk=*/true).is_ok());
+}
+
+// ===== update_cost_manager_market_data + downstream =====
+
+TEST_F(PortfolioManagerExtendedTest, UpdateCostManagerMarketDataDoesNotErrorOrAlterPositions) {
+    auto strat = make_strategy("COST");
+    ASSERT_TRUE(manager_->add_strategy(strat.strategy, 0.3).is_ok());
+    auto t0 = std::chrono::system_clock::now() - std::chrono::hours(24 * 300);
+    ASSERT_TRUE(manager_->process_market_data(make_bars("AAPL", 300, t0)).is_ok());
+    auto pre = manager_->get_portfolio_positions();
+    manager_->update_cost_manager_market_data("AAPL", 1'000'000.0, 105.0, 100.0);
+    auto post = manager_->get_portfolio_positions();
+    EXPECT_EQ(pre.size(), post.size());
+}
+
+// ===== getters =====
+
+TEST_F(PortfolioManagerExtendedTest, GetConfigReturnsConstructorConfig) {
+    const auto& cfg = manager_->get_config();
+    EXPECT_DOUBLE_EQ(cfg.total_capital.as_double(), 1'000'000.0);
+    EXPECT_DOUBLE_EQ(cfg.reserve_capital.as_double(), 100'000.0);
+}
+
+TEST_F(PortfolioManagerExtendedTest, GetPortfolioPositionsEmptyBeforeProcessing) {
+    auto strat = make_strategy("GP");
+    ASSERT_TRUE(manager_->add_strategy(strat.strategy, 0.3).is_ok());
+    EXPECT_TRUE(manager_->get_portfolio_positions().empty());
+}
+
+TEST_F(PortfolioManagerExtendedTest, GetRequiredChangesEmptyBeforeProcessing) {
+    auto strat = make_strategy("GRC");
+    ASSERT_TRUE(manager_->add_strategy(strat.strategy, 0.3).is_ok());
+    EXPECT_TRUE(manager_->get_required_changes().empty());
+}
+
+TEST_F(PortfolioManagerExtendedTest, GetStrategyPositionsEmptyBeforeProcessing) {
+    auto strat = make_strategy("GSP");
+    ASSERT_TRUE(manager_->add_strategy(strat.strategy, 0.3).is_ok());
+    auto positions = manager_->get_strategy_positions();
+    if (positions.count(strat.id)) {
+        EXPECT_TRUE(positions.at(strat.id).empty());
+    }
+}
+
+// ===== aggregation across multiple strategies =====
+
+TEST_F(PortfolioManagerExtendedTest, MultipleStrategiesAggregatePositionsBySymbol) {
+    auto a = make_strategy("AGG_A", {"AAPL"});
+    auto b = make_strategy("AGG_B", {"AAPL"});  // both trade the same symbol
+    ASSERT_TRUE(manager_->add_strategy(a.strategy, 0.3).is_ok());
+    ASSERT_TRUE(manager_->add_strategy(b.strategy, 0.3).is_ok());
+    auto t0 = std::chrono::system_clock::now() - std::chrono::hours(24 * 300);
+    ASSERT_TRUE(manager_->process_market_data(make_bars("AAPL", 300, t0)).is_ok());
+
+    auto by_strategy = manager_->get_strategy_positions();
+    EXPECT_EQ(by_strategy.size(), 2u);
+
+    auto portfolio = manager_->get_portfolio_positions();
+    // Aggregate may collapse to a single symbol entry summing both strategies'
+    // positions; either way the symbol must be tracked.
+    EXPECT_TRUE(portfolio.count("AAPL") > 0 || portfolio.empty());
+}
+
+// ===== process with optimization enabled =====
+
+TEST_F(PortfolioManagerExtendedTest, ProcessWithOptimizationEnabledSucceeds) {
+    auto cfg = default_config(/*use_optimization=*/true, /*use_risk_management=*/false);
+    auto pm = std::make_unique<PortfolioManager>(cfg, manager_id_ + "_OPT");
+    auto strat = make_strategy("OPT");
+    ASSERT_TRUE(pm->add_strategy(strat.strategy, 0.3, /*opt=*/true, /*risk=*/false).is_ok());
+    auto t0 = std::chrono::system_clock::now() - std::chrono::hours(24 * 300);
+    EXPECT_TRUE(pm->process_market_data(make_bars("AAPL", 300, t0)).is_ok());
+}
+
+TEST_F(PortfolioManagerExtendedTest, ProcessWithRiskManagementEnabledSucceeds) {
+    auto cfg = default_config(/*use_optimization=*/false, /*use_risk_management=*/true);
+    auto pm = std::make_unique<PortfolioManager>(cfg, manager_id_ + "_RM");
+    auto strat = make_strategy("RM");
+    ASSERT_TRUE(pm->add_strategy(strat.strategy, 0.3, /*opt=*/false, /*risk=*/true).is_ok());
+    auto t0 = std::chrono::system_clock::now() - std::chrono::hours(24 * 300);
+    EXPECT_TRUE(pm->process_market_data(make_bars("AAPL", 300, t0)).is_ok());
+}
+
+TEST_F(PortfolioManagerExtendedTest, ProcessWithOptimizationAndRiskBothEnabled) {
+    auto cfg = default_config(/*use_optimization=*/true, /*use_risk_management=*/true);
+    auto pm = std::make_unique<PortfolioManager>(cfg, manager_id_ + "_BOTH");
+    auto strat = make_strategy("BOTH");
+    ASSERT_TRUE(pm->add_strategy(strat.strategy, 0.3, /*opt=*/true, /*risk=*/true).is_ok());
+    auto t0 = std::chrono::system_clock::now() - std::chrono::hours(24 * 300);
+    EXPECT_TRUE(pm->process_market_data(make_bars("AAPL", 300, t0)).is_ok());
+}
+
+}  // namespace portfolio_manager_extended_detail
+
+// E2-C9: PortfolioManager owns a SECOND TransactionCostManager, independent of the one
+// BacktestCoordinator holds. The PM's prices the executions that reach backtest.executions
+// and the equity curve; the coordinator's prices the copies that feed the reported metrics.
+// Only the coordinator's was ever registered, so one backtest run carried two different cost
+// bases -- stored executions from the static hardcoded configs, metrics from ADV-tiered ones.
+//
+// This pins that the accessor actually reaches the PM's own manager. It cannot pin the app
+// wiring (bt_equity_mean_reversion.cpp must call it alongside the coordinator registration);
+// what it catches is the accessor being a no-op or forwarding to the wrong object.
+TEST_F(PortfolioManagerTest, RegisterEquityCostConfigsReachesTheManagersOwnCostModel) {
+    std::unordered_map<std::string, std::vector<Bar>> bars_by_symbol;
+    for (int i = 0; i < 25; ++i) {
+        Bar b;
+        b.symbol = "AAPL";
+        b.timestamp = std::chrono::system_clock::now() - std::chrono::hours(24 * (25 - i));
+        b.open = b.high = b.low = b.close = Decimal(190.0);
+        b.volume = 40'000'000.0;
+        bars_by_symbol["AAPL"].push_back(b);
+    }
+
+    const int registered = manager_->register_equity_cost_configs({"AAPL"}, bars_by_symbol);
+
+    EXPECT_EQ(registered, 1)
+        << "PortfolioManager::register_equity_cost_configs did not register anything. Its own "
+           "cost manager then keeps whatever initialize_default_configs() gave it, while the "
+           "coordinator's uses ADV-tiered configs -- two cost bases in one backtest run.";
 }

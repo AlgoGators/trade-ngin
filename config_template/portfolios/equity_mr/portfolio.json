@@ -3,7 +3,6 @@
   "portfolio_id": "EQUITY_MR_PORTFOLIO",
   "initial_capital": 100000,
   "reserve_capital_pct": 0.1,
-  "benchmark_mode": "live",
   "strategies": {
     "MEAN_REVERSION": {
       "enabled_backtest": true,
@@ -35,9 +34,5 @@
         "allow_fractional_shares": true
       }
     }
-  },
-  "use_optimization": false,
-  "_use_optimization_note": "false: the equity runners hard-code the optimizer off (live_equity_mean_reversion.cpp, bt_equity_mean_reversion.cpp; HD 2026-09-01) and refuse to start if this says true.",
-  "covariance_history_prices": 756,
-  "_covariance_history_prices_note": "daily closes per symbol the PortfolioManager keeps for the optimiser covariance, one per date, oldest dropped first; absent means 756 (the trend sleeve own cap); at least 2"
+  }
 }

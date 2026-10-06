@@ -12,7 +12,6 @@
 #include <nlohmann/json.hpp>
 #include <sstream>
 #include <string>
-#include <thread>
 #include <unordered_map>
 #include "trade_ngin/core/config_base.hpp"
 #include "trade_ngin/core/types.hpp"
@@ -37,8 +36,7 @@ enum class LogLevel {
 enum class LogDestination {
     CONSOLE,  // Standard output
     FILE,     // File output
-    BOTH,     // Both console and file
-    NONE      // Structured tools return diagnostics in their response instead
+    BOTH      // Both console and file
 };
 
 inline std::string level_to_string(LogLevel level) {
@@ -68,8 +66,6 @@ inline std::string log_destination_to_string(LogDestination dest) {
             return "FILE";
         case LogDestination::BOTH:
             return "BOTH";
-        case LogDestination::NONE:
-            return "NONE";
         default:
             return "UNKNOWN";
     }
@@ -82,12 +78,35 @@ struct LoggerConfig : public ConfigBase {
     LogLevel min_level{LogLevel::INFO};  // Minimum level to log
     LogDestination destination{LogDestination::CONSOLE};
     std::string log_directory{"logs"};          // Directory for log files
-    std::string log_subdirectory{};  // Empty keeps the existing MODEL directory.
+    /**
+     * Optional sub-directory of `log_directory` for this session's files (drift-F).
+     *
+     * EMPTY by default, which is exactly the previous behaviour. A replay sets it to the
+     * date being replayed, so `logs/2026-04-17/` holds that date's run and the retention
+     * budget below is spent per date instead of globally: a 126-day chain used to leave
+     * eight files behind and every dividend-applying run in the middle of it was
+     * unreconcilable after the fact.
+     */
+    std::string log_subdirectory{};
     std::string filename_prefix{"trade_ngin"};  // Prefix for log files
     bool include_timestamp{true};               // Include timestamp in logs
     bool include_level{true};                   // Include log level in logs
     size_t max_file_size{50 * 1024 * 1024};     // Max log file size (50MB)
-    size_t max_files{10};                       // Maximum number of log files to keep
+    /**
+     * Maximum number of log files to keep -- counting only files this logger WROTE, i.e.
+     * those named exactly `<filename_prefix>_YYYYMMDD_HHMMSS_partN.log` in this session's own
+     * directory (drift-F). Rotation used to delete the oldest file of ANY name in
+     * `log_directory`, so with nine prefixes sharing `logs/` a futures session evicted the
+     * equity session's evidence and vice versa; the budget was global where the retention
+     * question is per runner.
+     *
+     * The match is the whole filename, not `starts_with(filename_prefix)`: the prefixes NEST.
+     * `live_trend` is a prefix of `live_trend_conservative` and `bt_portfolio` of
+     * `bt_portfolio_conservative`, so a "begins with" test left the two futures books sharing
+     * one budget and the base runner deleting the conservative runner's logs. It also means
+     * retention never removes a file this logger did not write.
+     */
+    size_t max_files{10};
 
     // Configuration metadata
     std::string version{"1.0.0"};  // Configuration version
@@ -98,7 +117,7 @@ struct LoggerConfig : public ConfigBase {
         j["min_level"] = level_to_string(min_level);
         j["destination"] = log_destination_to_string(destination);
         j["log_directory"] = log_directory;
-        if (!log_subdirectory.empty()) j["log_subdirectory"] = log_subdirectory;
+        j["log_subdirectory"] = log_subdirectory;
         j["filename_prefix"] = filename_prefix;
         j["include_timestamp"] = include_timestamp;
         j["include_level"] = include_level;
@@ -133,8 +152,6 @@ struct LoggerConfig : public ConfigBase {
                 destination = LogDestination::FILE;
             else if (dest_str == "BOTH")
                 destination = LogDestination::BOTH;
-            else if (dest_str == "NONE")
-                destination = LogDestination::NONE;
         }
         if (j.contains("log_directory"))
             log_directory = j.at("log_directory").get<std::string>();
@@ -218,7 +235,9 @@ public:
         return initialized_.load(std::memory_order_acquire);
     }
 
-    static void register_component(const std::string& component);
+    static void register_component(const std::string& component) {
+        current_component_ = component;
+    }
 
 private:
     Logger() = default;
@@ -242,21 +261,11 @@ private:
     std::ofstream log_file_;
     std::atomic<bool> initialized_{false};
     [[maybe_unused]] bool locked_initialization_{false};  // Prevent re-initialization after first call
-    struct ComponentContext {
-        std::string name;
-    };
-    // Trivial TLS survives nontrivial TLS teardown. Logger owns the name
-    // through static shutdown; the context is never owned by this pointer.
-    static thread_local ComponentContext* current_component_context_;
+    static thread_local std::string current_component_;  // Thread-local component name
 
     // New members for improved file naming
     std::string current_session_timestamp_;  // Format: YYYYMMDD_HHMMSS
     int current_part_number_{1};             // Current part number for this session
-
-    // Contexts are reclaimed with Logger, which the runner initializes
-    // before other logging singletons. A reused thread id replaces its
-    // retired context only when the new thread first registers a name.
-    std::unordered_map<std::thread::id, std::unique_ptr<ComponentContext>> component_contexts_;
 };
 
 /**

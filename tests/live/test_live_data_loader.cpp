@@ -8,58 +8,10 @@
 #include <gtest/gtest.h>
 #include <chrono>
 #include <memory>
-#include <limits>
 #include "trade_ngin/data/postgres_database.hpp"
 #include "trade_ngin/live/live_data_loader.hpp"
 
 using namespace trade_ngin;
-
-namespace {
-class QueryResultDb : public PostgresDatabase {
-public:
-    std::shared_ptr<arrow::Table> table;
-    QueryResultDb():PostgresDatabase("mock://query-result") {}
-    bool is_connected() const override {return true;}
-    Result<std::shared_ptr<arrow::Table>> execute_query(const std::string&) override {return table;}
-};
-std::shared_ptr<arrow::Table> string_cell(const std::string& value,bool null=false) {
-    arrow::StringBuilder builder;
-    if(null) EXPECT_TRUE(builder.AppendNull().ok()); else EXPECT_TRUE(builder.Append(value).ok());
-    std::shared_ptr<arrow::Array> values; EXPECT_TRUE(builder.Finish(&values).ok());
-    return arrow::Table::Make(arrow::schema({arrow::field("value",arrow::utf8())}),{values});
-}
-}
-
-TEST(LiveDataLoaderConversions, SqlUtf8AndTypedNumericValuesAreReadWithoutBufferReinterpretation) {
-    auto db=std::make_shared<QueryResultDb>();LiveDataLoader loader(db);
-    db->table=string_cell("1");
-    auto count=loader.load_total_trades_count("S","B",Timestamp{});
-    ASSERT_TRUE(count.is_ok());EXPECT_EQ(count.value(),1);
-    arrow::DoubleBuilder builder;ASSERT_TRUE(builder.Append(1234.5).ok());
-    std::shared_ptr<arrow::Array> values;ASSERT_TRUE(builder.Finish(&values).ok());
-    db->table=arrow::Table::Make(arrow::schema({arrow::field("value",arrow::float64())}),{values});
-    auto equity=loader.load_portfolio_value("S","B",Timestamp{});
-    ASSERT_TRUE(equity.is_ok());EXPECT_DOUBLE_EQ(equity.value(),1234.5);
-    db->table=string_cell("",true);
-    equity=loader.load_portfolio_value("S","B",Timestamp{});
-    ASSERT_TRUE(equity.is_ok());EXPECT_DOUBLE_EQ(equity.value(),0);
-}
-
-TEST(LiveDataLoaderConversions, MalformedNonfiniteAndInvalidCountsAreErrorsNotValidNumbers) {
-    auto db=std::make_shared<QueryResultDb>();LiveDataLoader loader(db);
-    for(const auto& value:{"garbage","12oops","NaN","Infinity","-Infinity"}) {
-        db->table=string_cell(value);
-        EXPECT_TRUE(loader.load_portfolio_value("S","B",Timestamp{}).is_error())<<value;
-        EXPECT_TRUE(loader.load_total_trades_count("S","B",Timestamp{}).is_error())<<value;
-        EXPECT_TRUE(loader.load_daily_returns_history("S","B",Timestamp{}).is_error())<<value;
-        EXPECT_TRUE(loader.load_daily_pnl_history("S","B",Timestamp{}).is_error())<<value;
-        EXPECT_TRUE(loader.load_equity_curve_history("S","B",Timestamp{}).is_error())<<value;
-    }
-    for(const auto& value:{"-1","1.5","2147483648"}) {
-        db->table=string_cell(value);
-        EXPECT_TRUE(loader.get_live_results_count("S","B").is_error())<<value;
-    }
-}
 
 class LiveDataLoaderTest : public ::testing::Test {
 protected:
@@ -127,31 +79,95 @@ TEST_F(LiveDataLoaderTest, LoadDailyPnLHistoryDisconnectedErrors) {
     ASSERT_DB_ERROR(l.load_daily_pnl_history("S", "P", now()));
 }
 
-#define ASSERT_EMPTY_PORTFOLIO_ERROR(expr)                                    \
-    do {                                                                       \
-        auto __r = (expr);                                                     \
-        ASSERT_TRUE(__r.is_error());                                           \
-        EXPECT_EQ(__r.error()->code(), ErrorCode::INVALID_ARGUMENT);           \
-    } while (0)
+// ──────────────────────────────────────────────────────────────────────────
+// BA-5 / C-1 D2 -- a real pin for 43dfefb7.
+//
+// That commit's headline fix was load_commissions_by_symbol's column name:
+// <schema>.executions stores realised commissions in `commissions_fees`, never
+// `commission`, so the old query FAILED at runtime and every caller silently
+// degraded to a WARN with an empty map. C-1 found the fix had no test anywhere
+// at HEAD -- the one test the commit added covers an unrelated dividend
+// contract, so the column name could be reverted and the suite stays green.
+//
+// The query is built as a string and handed to execute_query, so its SHAPE is
+// observable: capture it and assert the column. Note `commission` is a
+// SUBSTRING of `commissions_fees`, so the assertion has to name the full
+// aggregate expression or it would pass on the broken query too.
+// ──────────────────────────────────────────────────────────────────────────
+namespace {
 
-TEST_F(LiveDataLoaderTest, EveryPortfolioScopedReadRejectsEmptyIdentity) {
-    LiveDataLoader loader(make_disconnected_db(), "trading");
-    const auto date = now();
-    ASSERT_EMPTY_PORTFOLIO_ERROR(loader.load_previous_portfolio_value("S", "", date));
-    ASSERT_EMPTY_PORTFOLIO_ERROR(loader.load_portfolio_value("S", "", date));
-    ASSERT_EMPTY_PORTFOLIO_ERROR(loader.load_live_results("S", "", date));
-    ASSERT_EMPTY_PORTFOLIO_ERROR(loader.load_previous_day_data("S", "", date));
-    ASSERT_EMPTY_PORTFOLIO_ERROR(loader.has_live_results("S", "", date));
-    ASSERT_EMPTY_PORTFOLIO_ERROR(loader.get_live_results_count("S", ""));
-    ASSERT_EMPTY_PORTFOLIO_ERROR(loader.load_daily_returns_history("S", "", date));
-    ASSERT_EMPTY_PORTFOLIO_ERROR(loader.load_daily_pnl_history("S", "", date));
-    ASSERT_EMPTY_PORTFOLIO_ERROR(loader.load_equity_curve_history("S", "", date));
-    ASSERT_EMPTY_PORTFOLIO_ERROR(loader.load_total_trades_count("S", "", date));
-    ASSERT_EMPTY_PORTFOLIO_ERROR(loader.load_positions("S", "", date));
-    ASSERT_EMPTY_PORTFOLIO_ERROR(loader.load_positions_for_export("S", "", date));
-    ASSERT_EMPTY_PORTFOLIO_ERROR(loader.load_daily_transaction_costs("S", "", date));
-    ASSERT_EMPTY_PORTFOLIO_ERROR(loader.load_margin_metrics("S", "", date));
-    ASSERT_EMPTY_PORTFOLIO_ERROR(loader.load_daily_metrics_for_email("S", "", date));
-    ASSERT_EMPTY_PORTFOLIO_ERROR(
-        loader.load_commissions_by_symbol("S", "OWNER", "", date));
+class QueryCapturingDb : public PostgresDatabase {
+public:
+    QueryCapturingDb() : PostgresDatabase("mock://capture") {}
+
+    Result<void> connect() override {
+        connected_ = true;
+        return Result<void>();
+    }
+    void disconnect() override { connected_ = false; }
+    bool is_connected() const override { return connected_; }
+
+    Result<std::shared_ptr<arrow::Table>> execute_query(const std::string& query) override {
+        last_query = query;
+        // A null table is the documented "no rows" path in the caller.
+        return Result<std::shared_ptr<arrow::Table>>(nullptr);
+    }
+
+    std::string last_query;
+
+private:
+    bool connected_{true};
+};
+
+}  // namespace
+
+TEST_F(LiveDataLoaderTest, CommissionsQueryNamesTheCommissionsFeesColumn) {
+    auto db = std::make_shared<QueryCapturingDb>();
+    ASSERT_TRUE(db->connect().is_ok());
+    LiveDataLoader loader(db, "trading");
+
+    // 2026-08-06 00:00:00 UTC, a date inside the equity book's window.
+    std::tm utc{};
+    utc.tm_year = 126;
+    utc.tm_mon = 7;
+    utc.tm_mday = 6;
+    const Timestamp when = std::chrono::system_clock::from_time_t(timegm(&utc));
+
+    auto r = loader.load_commissions_by_symbol("EQUITY_MR_PORTFOLIO", when);
+    ASSERT_TRUE(r.is_ok()) << r.error()->what();
+    ASSERT_FALSE(db->last_query.empty()) << "the loader must have issued a query";
+
+    // The column. Asserting the whole aggregate expression matters: "commission"
+    // alone is a substring of "commissions_fees" and would match the broken query.
+    EXPECT_NE(db->last_query.find("SUM(commissions_fees)"), std::string::npos)
+        << "realised commissions live in commissions_fees; SUM(commission) fails at "
+           "runtime and the caller degrades to an empty map. Query was:\n"
+        << db->last_query;
+    EXPECT_EQ(db->last_query.find("SUM(commission)"), std::string::npos)
+        << "the pre-fix column name must not come back";
+
+    // The rest of the query's shape, so a rewrite cannot quietly change what is
+    // being aggregated or over what.
+    EXPECT_NE(db->last_query.find("trading.executions"), std::string::npos);
+    EXPECT_NE(db->last_query.find("GROUP BY symbol"), std::string::npos);
+
+    // Portfolio id and date are quoted literals, not bare concatenation -- the
+    // other half of what 43dfefb7 changed.
+    EXPECT_NE(db->last_query.find("'EQUITY_MR_PORTFOLIO'"), std::string::npos);
+    EXPECT_NE(db->last_query.find("'2026-08-06'"), std::string::npos)
+        << "the date key must be the UTC date, quoted. Query was:\n"
+        << db->last_query;
+}
+
+// A portfolio id containing a quote must not break out of the literal.
+TEST_F(LiveDataLoaderTest, CommissionsQueryEscapesAQuoteInThePortfolioId) {
+    auto db = std::make_shared<QueryCapturingDb>();
+    ASSERT_TRUE(db->connect().is_ok());
+    LiveDataLoader loader(db, "trading");
+
+    auto r = loader.load_commissions_by_symbol("O'BRIEN", std::chrono::system_clock::now());
+    ASSERT_TRUE(r.is_ok());
+    EXPECT_NE(db->last_query.find("'O''BRIEN'"), std::string::npos)
+        << "an embedded quote must be doubled. Query was:\n"
+        << db->last_query;
 }

@@ -1,10 +1,8 @@
-#include <cstdlib>
 #include <fstream>
 #include <iomanip>
 #include <iostream>
 #include <unordered_set>
 #include <nlohmann/json.hpp>
-#include "trade_ngin/apps/live_portfolio_helpers.hpp"
 #include "trade_ngin/backtest/backtest_coordinator.hpp"
 #include "trade_ngin/core/config_loader.hpp"
 #include "trade_ngin/core/logger.hpp"
@@ -22,7 +20,7 @@
 using namespace trade_ngin;
 using namespace trade_ngin::backtest;
 
-int main(int argc, char* argv[]) {
+int main() {
     try {
         StateManager::reset_instance();
         Logger::reset_for_tests();
@@ -48,23 +46,9 @@ int main(int argc, char* argv[]) {
         // LOAD CONFIGURATION
         // ========================================
         INFO("Loading configuration...");
-        std::vector<std::string> raw_arguments;
-        for (int i = 1; i < argc; ++i) raw_arguments.emplace_back(argv[i]);
-        std::optional<std::string> environment_portfolio;
-        if (const char* value = std::getenv("TRADE_NGIN_PORTFOLIO")) {
-            environment_portfolio = value;
-        }
-        auto selection = resolve_portfolio_selection(
-            raw_arguments, environment_portfolio, "equity_mr");
-        if (selection.is_error() || !selection.value().runner_arguments.empty()) {
-            std::cerr << (selection.is_error() ? selection.error()->what()
-                                               : "Unexpected equity backtest argument")
-                      << "\nUsage: " << argv[0] << " [--portfolio NAME]\n";
-            return 1;
-        }
-        auto app_config_result = ConfigLoader::load("./config", selection.value().config_name);
+        auto app_config_result = ConfigLoader::load("./config", "equity_mr");
         if (app_config_result.is_error()) {
-            ERROR("Failed to load equity portfolio configuration: " +
+            ERROR("Failed to load equity_mr configuration: " +
                   std::string(app_config_result.error()->what()));
             return 1;
         }
@@ -178,16 +162,6 @@ int main(int argc, char* argv[]) {
         // be in a portfolio with max_gross_leverage > 1.0 -- cash accounts
         // can't borrow, so a leverage cap above 1.0 is structurally invalid.
         // Fail fast at startup rather than silently producing nonsense margin.
-        // The optimizer is hard-coded off below (HD 2026-09-01). A config that says
-        // otherwise is a contradiction, and silently winning it would leave the operator
-        // believing a setting that does nothing. Silent on today's config, which says false.
-        if (auto optimizer_guard =
-                apps::refuse_if_optimizer_requested(app_config.use_optimization);
-            optimizer_guard.is_error()) {
-            ERROR(std::string(optimizer_guard.error()->what()));
-            return 1;
-        }
-
         if (app_config.risk_config.max_gross_leverage > 1.0) {
             for (const auto& symbol : symbols) {
                 auto inst = registry.get_equity_instrument(symbol);
@@ -213,20 +187,15 @@ int main(int argc, char* argv[]) {
         // ========================================
         // CONFIGURE BACKTEST PARAMETERS
         // ========================================
-        // Window resolution lives in ConfigLoader::resolve_backtest_window (M-12).
-        // With backtest.frozen_end_date unset -- the deployed state -- it is the
-        // same now()/lookback_years arithmetic this block used to do inline.
-        bool frozen_window = false;
         auto now = std::chrono::system_clock::now();
-        auto window = trade_ngin::ConfigLoader::resolve_backtest_window(
-            app_config.backtest, now, &frozen_window);
-        Timestamp start_date = window.first;
-        Timestamp end_date = window.second;
-        if (frozen_window) {
-            WARN("M-12 FROZEN BACKTEST WINDOW in force: end_date pinned to "
-                 + app_config.backtest.frozen_end_date
-                 + ". This is a TEST configuration; a production run must not show this line.");
-        }
+        auto now_time_t = std::chrono::system_clock::to_time_t(now);
+        std::tm* now_tm = std::localtime(&now_time_t);
+
+        std::tm start_tm = *now_tm;
+        start_tm.tm_year -= app_config.backtest.lookback_years;
+        auto start_time_t = std::mktime(&start_tm);
+        Timestamp start_date = std::chrono::system_clock::from_time_t(start_time_t);
+        Timestamp end_date = now;
 
         double initial_capital = app_config.initial_capital;
 
@@ -239,7 +208,8 @@ int main(int argc, char* argv[]) {
         // ========================================
         BacktestCoordinatorConfig coord_config;
         coord_config.initial_capital = initial_capital;
-        coord_config.use_optimization = app_config.use_optimization;
+        coord_config.use_risk_management = app_config.strategy_defaults.use_risk_management;
+        coord_config.use_optimization = app_config.strategy_defaults.use_optimization;
         coord_config.store_trade_details = app_config.backtest.store_trade_details;
         coord_config.portfolio_id = app_config.portfolio_id;
 
@@ -322,9 +292,7 @@ int main(int argc, char* argv[]) {
         portfolio_config.total_capital = Decimal(initial_capital);
         portfolio_config.reserve_capital = Decimal(initial_capital * app_config.reserve_capital_pct);
         portfolio_config.use_optimization = false;
-        portfolio_config.covariance_history_prices = app_config.covariance_history_prices;
-        portfolio_config.risk_modules = app_config.risk_schema.portfolio;
-        portfolio_config.sleeve_risk_modules = app_config.risk_schema.sleeves;
+        portfolio_config.use_risk_management = app_config.strategy_defaults.use_risk_management;
         portfolio_config.allow_fractional_positions = any_fractional_shares;
         portfolio_config.risk_config = app_config.risk_config;
         INFO(std::string("Fractional positions permitted: ") +
@@ -333,7 +301,8 @@ int main(int argc, char* argv[]) {
         auto portfolio = std::make_shared<PortfolioManager>(portfolio_config);
 
         for (const auto& [strategy, weight] : strategies) {
-            auto add_result = portfolio->add_strategy(strategy, weight, false);
+            auto add_result = portfolio->add_strategy(strategy, weight, false,
+                                                       portfolio_config.use_risk_management);
             if (add_result.is_error()) {
                 ERROR("Failed to add strategy to portfolio: " +
                       std::string(add_result.error()->what()));
@@ -400,15 +369,12 @@ int main(int argc, char* argv[]) {
         std::cout << "\n======= Equity Mean Reversion Backtest Results =======" << std::endl;
         std::cout << "Total Return: " << std::fixed << std::setprecision(2)
                   << (backtest_results.total_return * 100.0) << "%" << std::endl;
-        std::cout << "Sharpe Ratio: " << std::setprecision(3)
-                  << backtest_results.sharpe_ratio.value_or(0.0)
+        std::cout << "Sharpe Ratio: " << std::setprecision(3) << backtest_results.sharpe_ratio
                   << std::endl;
-        std::cout << "Sortino Ratio: " << backtest_results.sortino_ratio.value_or(0.0)
-                  << std::endl;
+        std::cout << "Sortino Ratio: " << backtest_results.sortino_ratio << std::endl;
         std::cout << "Max Drawdown: " << std::setprecision(2)
                   << (backtest_results.max_drawdown * 100.0) << "%" << std::endl;
-        std::cout << "Calmar Ratio: " << std::setprecision(3)
-                  << backtest_results.calmar_ratio.value_or(0.0)
+        std::cout << "Calmar Ratio: " << std::setprecision(3) << backtest_results.calmar_ratio
                   << std::endl;
         std::cout << "Volatility: " << std::setprecision(2)
                   << (backtest_results.volatility * 100.0) << "%" << std::endl;
@@ -426,9 +392,21 @@ int main(int argc, char* argv[]) {
                 strategy_allocations[entry.id] = entry.allocation / total_allocation;
             }
 
-            nlohmann::json config_json =
-                trade_ngin::apps::build_equity_backtest_config_snapshot(
-                    strat_entries, strategy_allocations);
+            nlohmann::json config_json;
+            config_json["strategy_type"] = "MeanReversionStrategy";
+            config_json["asset_class"] = "EQUITIES";
+            {
+                auto mr = trade_ngin::apps::build_mean_reversion_config(
+                    strat_entries.front().def["config"]);
+                config_json["mean_reversion"] = {
+                    {"lookback_period", mr.lookback_period},
+                    {"entry_threshold", mr.entry_threshold},
+                    {"exit_threshold", mr.exit_threshold},
+                    {"risk_target", mr.risk_target},
+                    {"position_size", mr.position_size},
+                    {"vol_lookback", mr.vol_lookback},
+                    {"allow_fractional_shares", mr.allow_fractional_shares}};
+            }
 
             auto save_result = coordinator->save_portfolio_results_to_db(
                 backtest_results, strategy_names, strategy_allocations, portfolio, config_json);

@@ -12,7 +12,6 @@
 #include <gtest/gtest.h>
 #include <chrono>
 #include <unordered_map>
-#include <stdexcept>
 #include "trade_ngin/live/execution_manager.hpp"
 
 using namespace trade_ngin;
@@ -39,90 +38,6 @@ Timestamp at_local_date(int year, int month, int day) {
 }  // namespace
 
 class ExecutionManagerTest : public ::testing::Test {};
-
-TEST_F(ExecutionManagerTest, QtIdsSeparateStreamsWithoutChangingFillEconomics) {
-    ExecutionManager em;
-    const auto day=at_local_date(2026,9,22);
-    auto system=em.generate_execution("ES",2,100,day,0);
-    auto qt=em.generate_execution("ES",2,100,day,0,"qt");
-    EXPECT_EQ(system.order_id,"DAILY_ES_20260922");
-    EXPECT_EQ(qt.order_id,"QT_DAILY_ES_20260922");
-    EXPECT_EQ(qt.exec_id,system.exec_id);
-    EXPECT_EQ(qt.filled_quantity,system.filled_quantity);
-    EXPECT_EQ(qt.fill_price,system.fill_price);
-    EXPECT_EQ(qt.total_transaction_costs,system.total_transaction_costs);
-    auto closed=em.generate_daily_executions({},{{"ES",make_position("ES",2,100)}},{{"ES",100}},day,"qt");
-    ASSERT_TRUE(closed.is_ok()); ASSERT_EQ(closed.value().size(),1u);
-    EXPECT_EQ(closed.value()[0].order_id,"QT_DAILY_ES_20260922");
-    EXPECT_EQ(closed.value()[0].side,Side::SELL);
-    auto opened=em.generate_daily_executions({{"ES",make_position("ES",2,100)}},{},{{"ES",100}},day,"qt");
-    ASSERT_TRUE(opened.is_ok()); ASSERT_EQ(opened.value().size(),1u);
-    EXPECT_EQ(opened.value()[0].order_id,"QT_DAILY_ES_20260922");
-    EXPECT_TRUE(em.generate_daily_executions({}, {}, {},day,"unknown").is_error());
-    EXPECT_THROW(em.generate_execution("ES",1,100,day,0,"unknown"),std::invalid_argument);
-    EXPECT_THROW(em.generate_execution(std::string(48,'A'),1,100,day,0,"qt"),std::invalid_argument);
-    EXPECT_TRUE(em.generate_daily_executions({{std::string(48,'A'),make_position(std::string(48,'A'),1,100)}},{},{},day,"qt").is_error());
-}
-
-transaction_cost::TransactionCostManager::Config evidence_config() {
-    transaction_cost::TransactionCostManager::Config config;
-    config.explicit_fee_per_contract = 2.75;
-    config.spread_config.lambda = 0.4;
-    config.spread_config.lookback_days = 2;
-    config.impact_config.adv_lookback_days = 2;
-    config.impact_config.min_adv = 150.5;
-    config.impact_config.min_participation = 0.0;
-    config.impact_config.max_participation = 0.08;
-    return config;
-}
-
-void register_evidence_asset(ExecutionManager& manager, const std::string& symbol) {
-    transaction_cost::AssetCostConfig asset;
-    asset.symbol = symbol;
-    asset.baseline_spread_ticks = 2.0;
-    asset.min_spread_ticks = 0.5;
-    asset.max_spread_ticks = 4.0;
-    asset.spread_cost_multiplier = 0.3;
-    asset.tick_size = 1.25;
-    asset.point_value = 40.0;
-    asset.max_impact_bps = 90.0;
-    manager.get_transaction_cost_manager().register_asset_config(asset);
-}
-
-void expect_report_equal(const ExecutionReport& observed, const ExecutionReport& plain) {
-    EXPECT_EQ(observed.order_id, plain.order_id);
-    EXPECT_EQ(observed.exec_id, plain.exec_id);
-    EXPECT_EQ(observed.symbol, plain.symbol);
-    EXPECT_EQ(observed.side, plain.side);
-    EXPECT_EQ(observed.filled_quantity, plain.filled_quantity);
-    EXPECT_EQ(observed.fill_price, plain.fill_price);
-    EXPECT_EQ(observed.fill_time, plain.fill_time);
-    EXPECT_EQ(observed.commissions_fees, plain.commissions_fees);
-    EXPECT_EQ(observed.implicit_price_impact, plain.implicit_price_impact);
-    EXPECT_EQ(observed.slippage_market_impact, plain.slippage_market_impact);
-    EXPECT_EQ(observed.total_transaction_costs, plain.total_transaction_costs);
-    EXPECT_EQ(observed.is_partial, plain.is_partial);
-}
-
-void expect_call_cost(const ExecutionCallObservation& trace, double qty, double price) {
-    EXPECT_EQ(trace.state, ExecutionCallState::returned);
-    EXPECT_EQ(trace.cost.input_source, transaction_cost::CostInputSource::internally_tracked);
-    EXPECT_EQ(trace.cost.quantity, qty);
-    EXPECT_EQ(trace.cost.reference_price, price);
-    EXPECT_EQ(trace.cost.retrieved_adv, 0.0);
-    EXPECT_EQ(trace.cost.effective_adv, 100000.0);
-    EXPECT_EQ(trace.cost.retrieved_volatility_multiplier, 1.0);
-    EXPECT_EQ(trace.cost.effective_volatility_multiplier, 1.0);
-    EXPECT_EQ(trace.cost.explicit_fee_per_contract, 2.75);
-    EXPECT_EQ(trace.cost.point_value, 40.0);
-    EXPECT_EQ(trace.cost.asset_lookup.path, transaction_cost::AssetLookupPath::exact_symbol);
-    EXPECT_EQ(trace.cost.spread.baseline_spread_ticks, 2.0);
-    EXPECT_EQ(trace.cost.spread.spread_cost_multiplier, 0.3);
-    EXPECT_EQ(trace.cost.impact.min_adv, 150.5);
-    EXPECT_EQ(trace.cost.impact.max_participation, 0.08);
-    EXPECT_EQ(trace.cost.impact.selected_k_bps, 40.0);
-    EXPECT_FALSE(trace.cost.adv_argument.has_value());
-}
 
 // ===== generate_daily_executions =====
 
@@ -189,15 +104,74 @@ TEST_F(ExecutionManagerTest, ClosedShortPositionGeneratesBuyExecution) {
     EXPECT_EQ(r.value()[0].side, Side::BUY);
 }
 
-TEST_F(ExecutionManagerTest, MissingMarketPriceFallsBackToAveragePrice) {
+// This test used to be MissingMarketPriceFallsBackToAveragePrice and asserted that a
+// symbol with no market price was filled at its average_price. That fallback was the
+// bug: average_price is a COST BASIS, and for a position opened today it is 0 until
+// the fill being priced has been processed -- so the fallback booked fills at zero,
+// persisted the zero as the new basis, and reloaded it the next session as a carried
+// basis of zero. The old assertion passed only because the fixture handed it a
+// pre-set basis of 4500.0, which production does not have for a new position.
+//
+// A symbol we cannot price is a symbol we must not trade.
+TEST_F(ExecutionManagerTest, MissingMarketPriceSkipsTheExecutionRatherThanPricingItFromBasis) {
     ExecutionManager em;
     std::unordered_map<std::string, Position> curr{{"ES", make_position("ES", 2.0, 4500.0)}};
     std::unordered_map<std::string, Position> prev;
     std::unordered_map<std::string, double> prices;  // no price for ES
-    auto r = em.generate_daily_executions(curr, prev, prices, std::chrono::system_clock::now());
+    std::vector<std::string> unpriced;
+    auto r = em.generate_daily_executions(curr, prev, prices, std::chrono::system_clock::now(),
+                                          PricingPolicy::STRICT, &unpriced);
     ASSERT_TRUE(r.is_ok());
-    ASSERT_EQ(r.value().size(), 1u);
-    EXPECT_DOUBLE_EQ(r.value()[0].fill_price.as_double(), 4500.0);
+    EXPECT_TRUE(r.value().empty()) << "an unpriceable symbol must not generate an execution";
+    ASSERT_EQ(unpriced.size(), 1u);
+    EXPECT_EQ(unpriced[0], "ES");
+}
+
+// A brand-new position has no basis at all. This is the production shape the old
+// fallback actually met, and the one that made the zero self-sustaining.
+TEST_F(ExecutionManagerTest, MissingMarketPriceOnAZeroBasisPositionDoesNotFillAtZero) {
+    ExecutionManager em;
+    std::unordered_map<std::string, Position> curr{{"ES", make_position("ES", 2.0, 0.0)}};
+    std::unordered_map<std::string, Position> prev;
+    std::unordered_map<std::string, double> prices;
+    auto r = em.generate_daily_executions(curr, prev, prices, std::chrono::system_clock::now(),
+                                          PricingPolicy::STRICT);
+    ASSERT_TRUE(r.is_ok());
+    for (const auto& e : r.value()) {
+        EXPECT_GT(e.fill_price.as_double(), 0.0) << "fill booked at a non-positive price";
+    }
+    EXPECT_TRUE(r.value().empty());
+}
+
+// A price that is present but non-positive is not a price either.
+TEST_F(ExecutionManagerTest, NonPositiveMarketPriceIsRefused) {
+    ExecutionManager em;
+    std::unordered_map<std::string, Position> curr{{"ES", make_position("ES", 2.0, 4500.0)}};
+    std::unordered_map<std::string, Position> prev;
+    std::unordered_map<std::string, double> prices{{"ES", 0.0}};
+    std::vector<std::string> unpriced;
+    auto r = em.generate_daily_executions(curr, prev, prices, std::chrono::system_clock::now(),
+                                          PricingPolicy::STRICT, &unpriced);
+    ASSERT_TRUE(r.is_ok());
+    EXPECT_TRUE(r.value().empty());
+    ASSERT_EQ(unpriced.size(), 1u);
+    EXPECT_EQ(unpriced[0], "ES");
+}
+
+// A close-out with no price must not book a fill at the position's own basis, which
+// would silently report zero realized PnL on the exit.
+TEST_F(ExecutionManagerTest, MissingMarketPriceOnCloseOutSkipsRatherThanUsingBasis) {
+    ExecutionManager em;
+    std::unordered_map<std::string, Position> curr;
+    std::unordered_map<std::string, Position> prev{{"ES", make_position("ES", 3.0, 4500.0)}};
+    std::unordered_map<std::string, double> prices;  // no price for ES
+    std::vector<std::string> unpriced;
+    auto r = em.generate_daily_executions(curr, prev, prices, std::chrono::system_clock::now(),
+                                          PricingPolicy::STRICT, &unpriced);
+    ASSERT_TRUE(r.is_ok());
+    EXPECT_TRUE(r.value().empty());
+    ASSERT_EQ(unpriced.size(), 1u);
+    EXPECT_EQ(unpriced[0], "ES");
 }
 
 // ===== generate_execution =====
@@ -245,232 +219,189 @@ TEST_F(ExecutionManagerTest, UpdateMarketDataDoesNotThrow) {
     EXPECT_NO_THROW(em.update_market_data("ES", 1100.0, 4510.0));
 }
 
-TEST_F(ExecutionManagerTest, DirectEvidenceCapturesRealBuySellAndZeroCostsWithoutChangingReports) {
-    auto config = evidence_config();
-    ExecutionManager observed(config), plain(config);
-    register_evidence_asset(observed, "SYN");
-    register_evidence_asset(plain, "SYN");
-    const auto day = at_local_date(2026, 9, 24);
-    ExecutionCallObservation trace;
-    for (const double quantity : {4.0, -4.0, 0.0}) {
-        auto actual = observed.generate_execution("SYN", quantity, 125.0, day, 3, "qt", &trace);
-        auto baseline = plain.generate_execution("SYN", quantity, 125.0, day, 3, "qt");
-        expect_report_equal(actual, baseline);
-        expect_call_cost(trace, std::abs(quantity), 125.0);
-        if (quantity != 0.0) {
-            EXPECT_DOUBLE_EQ(actual.commissions_fees.as_double(), 11.0);
-            EXPECT_NEAR(actual.implicit_price_impact.as_double(), 0.7531622776601684, 1e-8);
-            EXPECT_NEAR(actual.slippage_market_impact.as_double(), 120.50596442562694, 1e-8);
-            EXPECT_NEAR(actual.total_transaction_costs.as_double(), 131.50596442562694, 1e-8);
+// ---------------------------------------------------------------------------
+// Futures behaviour preservation.
+//
+// TrendFollowingStrategy sets Position::average_price to price_history.back() --
+// the latest mark, by design (trend_following.cpp:623, REALIZED_ONLY daily
+// settlement). So for futures the mark fallback prices the fill at a real,
+// one-session-stale close, and removing it would replace a correct fill with a
+// skip. MARK_FALLBACK is the default precisely so the two futures runners, which
+// pass no policy argument, keep the behaviour they have always had.
+// ---------------------------------------------------------------------------
+
+TEST_F(ExecutionManagerTest, MarkFallbackPricesFuturesFillFromTheLatestMark) {
+    ExecutionManager em;
+    // ZC on a Monday with no Sunday print: average_price holds Friday's close.
+    std::unordered_map<std::string, Position> curr{{"ZC", make_position("ZC", 10.0, 450.25)}};
+    std::unordered_map<std::string, Position> prev;
+    std::unordered_map<std::string, double> prices;  // no T-1 print
+
+    auto r = em.generate_daily_executions(curr, prev, prices, std::chrono::system_clock::now());
+
+    ASSERT_TRUE(r.is_ok());
+    ASSERT_EQ(r.value().size(), 1u) << "futures must still generate the execution";
+    EXPECT_DOUBLE_EQ(r.value()[0].fill_price.as_double(), 450.25)
+        << "fill must be priced at the mark, exactly as before the STRICT policy existed";
+    EXPECT_DOUBLE_EQ(r.value()[0].filled_quantity.as_double(), 10.0);
+}
+
+TEST_F(ExecutionManagerTest, MarkFallbackClosesFuturesPositionAtTheLatestMark) {
+    ExecutionManager em;
+    std::unordered_map<std::string, Position> curr;
+    std::unordered_map<std::string, Position> prev{{"ZC", make_position("ZC", 10.0, 450.25)}};
+    std::unordered_map<std::string, double> prices;
+
+    auto r = em.generate_daily_executions(curr, prev, prices, std::chrono::system_clock::now());
+
+    ASSERT_TRUE(r.is_ok());
+    ASSERT_EQ(r.value().size(), 1u) << "the close-out must still be generated for futures";
+    EXPECT_DOUBLE_EQ(r.value()[0].fill_price.as_double(), 450.25);
+}
+
+// The default must remain MARK_FALLBACK. If this flips, both futures runners
+// silently change behaviour without their call sites being touched.
+TEST_F(ExecutionManagerTest, DefaultPolicyIsMarkFallbackSoFuturesCallersAreUnaffected) {
+    ExecutionManager em;
+    std::unordered_map<std::string, Position> curr{{"ES", make_position("ES", 1.0, 4500.0)}};
+    std::unordered_map<std::string, Position> prev;
+    std::unordered_map<std::string, double> prices;
+
+    auto defaulted = em.generate_daily_executions(curr, prev, prices,
+                                                  std::chrono::system_clock::now());
+    auto explicit_mark = em.generate_daily_executions(curr, prev, prices,
+                                                      std::chrono::system_clock::now(),
+                                                      PricingPolicy::MARK_FALLBACK);
+    ASSERT_TRUE(defaulted.is_ok());
+    ASSERT_TRUE(explicit_mark.is_ok());
+    ASSERT_EQ(defaulted.value().size(), explicit_mark.value().size());
+    ASSERT_EQ(defaulted.value().size(), 1u);
+    EXPECT_DOUBLE_EQ(defaulted.value()[0].fill_price.as_double(),
+                     explicit_mark.value()[0].fill_price.as_double());
+}
+
+// ============================================================================
+// E2-F29: SEC/TAF regulatory fees must reach a SELL fill.
+//
+// TransactionCostManager gates the fees on `quantity < 0`; the live caller passed
+// |quantity| for both sides, so on a config with apply_regulatory_fees the sell
+// side was charged exactly what the buy side was. SELL cost - BUY cost must equal
+// sec_fee + taf for the same clip.
+// ============================================================================
+TEST_F(ExecutionManagerTest, SellSideCarriesRegulatoryFeesWhenConfigured) {
+    ExecutionManager em;
+    transaction_cost::AssetCostConfig cfg;
+    cfg.symbol = "TIERD";
+    cfg.asset_type = AssetType::EQUITY;
+    cfg.commission_per_unit = 0.0035;
+    cfg.min_commission_per_order = 0.35;
+    cfg.max_commission_per_order = 1e9;
+    cfg.apply_regulatory_fees = true;
+    cfg.sec_fee_per_million = 20.60;
+    cfg.finra_taf_per_share = 0.000195;
+    cfg.finra_taf_cap_per_trade = 9.79;
+    em.get_transaction_cost_manager().register_asset_config(cfg);
+
+    const double qty = 1000.0, px = 50.0;
+    std::unordered_map<std::string, double> prices{{"TIERD", px}};
+    std::unordered_map<std::string, Position> flat;
+    std::unordered_map<std::string, Position> held{{"TIERD", make_position("TIERD", qty, px)}};
+
+    auto buy = em.generate_daily_executions(held, flat, prices, std::chrono::system_clock::now());
+    auto sell = em.generate_daily_executions(flat, held, prices, std::chrono::system_clock::now());
+    ASSERT_TRUE(buy.is_ok() && sell.is_ok());
+    ASSERT_EQ(buy.value().size(), 1u);
+    ASSERT_EQ(sell.value().size(), 1u);
+    ASSERT_EQ(buy.value()[0].side, Side::BUY);
+    ASSERT_EQ(sell.value()[0].side, Side::SELL);
+
+    const double sec_fee = (qty * px / 1e6) * cfg.sec_fee_per_million;   // 1.03
+    const double taf = std::min(qty * cfg.finra_taf_per_share, cfg.finra_taf_cap_per_trade);  // 0.195
+    EXPECT_NEAR(sell.value()[0].commissions_fees.as_double() - buy.value()[0].commissions_fees.as_double(),
+                sec_fee + taf, 1e-9)
+        << "SELL must carry SEC + TAF on top of the BUY-side commission";
+    EXPECT_NEAR(sell.value()[0].total_transaction_costs.as_double() -
+                    buy.value()[0].total_transaction_costs.as_double(),
+                sec_fee + taf, 1e-9);
+}
+
+// ──────────────────────────────────────────────────────────────────────────
+// E2-F46 -- the order-id date must be the RUN date, in the run date's frame.
+//
+// generate_date_string formatted the run timestamp with std::localtime while
+// the equity runner passes UTC midnight (95679ea2) and stamps every other
+// artefact of the same run with gmtime. On a negative-offset host that is the
+// previous evening locally, so the id took the previous calendar day: the
+// 2026-06-15 run wrote DAILY_AAPL_20260614. The id is what
+// delete_stale_executions matches on and what a broker statement is
+// reconciled against, so an id naming the wrong day is not cosmetic.
+//
+// Both frames are pinned: UTC midnight is what the equity runner passes, local
+// midnight is what live_portfolio*.cpp:60 still passes (E2-F42). Both must
+// produce the run date's own YYYYMMDD, or fixing equities would move futures.
+// ──────────────────────────────────────────────────────────────────────────
+
+namespace {
+
+class OrderIdDateFrameTest : public ::testing::Test {
+protected:
+    void SetUp() override {
+        if (const char* tz = std::getenv("TZ")) {
+            had_tz_ = true;
+            saved_tz_ = tz;
+        }
+        setenv("TZ", "America/New_York", 1);
+        tzset();
+    }
+    void TearDown() override {
+        if (had_tz_) {
+            setenv("TZ", saved_tz_.c_str(), 1);
         } else {
-            EXPECT_DOUBLE_EQ(actual.commissions_fees.as_double(), 0.0);
-            EXPECT_DOUBLE_EQ(actual.slippage_market_impact.as_double(), 0.0);
-            EXPECT_DOUBLE_EQ(actual.total_transaction_costs.as_double(), 0.0);
-            EXPECT_EQ(actual.side, Side::SELL);
+            unsetenv("TZ");
         }
+        tzset();
     }
-}
-
-TEST_F(ExecutionManagerTest, DirectValidationAndThrowResetReusedEvidenceWithoutInventingCharge) {
-    ExecutionManager observed(evidence_config()), plain(evidence_config());
-    register_evidence_asset(observed, "SYN");
-    register_evidence_asset(plain, "SYN");
-    const auto day = at_local_date(2026, 9, 24);
-    ExecutionCallObservation trace;
-    observed.generate_execution("SYN", 1, 125, day, 0, "qt", &trace);
-    EXPECT_TRUE(trace.cost.quantity.has_value());
-    std::string actual_message, baseline_message;
-    try { observed.generate_execution("SYN", 1, 125, day, 0, "bad", &trace); }
-    catch (const std::invalid_argument& e) { actual_message = e.what(); }
-    try { plain.generate_execution("SYN", 1, 125, day, 0, "bad"); }
-    catch (const std::invalid_argument& e) { baseline_message = e.what(); }
-    EXPECT_EQ(actual_message, baseline_message);
-    EXPECT_EQ(trace.state, ExecutionCallState::rejected_stream);
-    EXPECT_FALSE(trace.cost.quantity.has_value());
-    const auto long_symbol = std::string(48, 'X');
-    try { observed.generate_execution(long_symbol, 1, 125, day, 0, "qt", &trace); }
-    catch (const std::invalid_argument& e) { actual_message = e.what(); }
-    try { plain.generate_execution(long_symbol, 1, 125, day, 0, "qt"); }
-    catch (const std::invalid_argument& e) { baseline_message = e.what(); }
-    EXPECT_EQ(actual_message, baseline_message);
-    EXPECT_EQ(trace.state, ExecutionCallState::rejected_id);
-    EXPECT_FALSE(trace.cost.quantity.has_value());
-}
-
-TEST_F(ExecutionManagerTest, DailyAttemptsPairWithReportsAndPreservePriceBranch) {
-    ExecutionManager observed(evidence_config()), plain(evidence_config());
-    for (const auto& symbol : {"NEW", "CHANGED", "SHORT", "LONG"}) {
-        register_evidence_asset(observed, symbol);
-        register_evidence_asset(plain, symbol);
+    static Timestamp utc_midnight(int y, int m, int d) {
+        std::tm tm{};
+        tm.tm_year = y - 1900;
+        tm.tm_mon = m - 1;
+        tm.tm_mday = d;
+        return std::chrono::system_clock::from_time_t(timegm(&tm));
     }
-    const auto day = at_local_date(2026, 9, 24);
-    std::unordered_map<std::string, Position> current{
-        {"NEW", make_position("NEW", 3, 101)},
-        {"CHANGED", make_position("CHANGED", 7, 202)}};
-    std::unordered_map<std::string, Position> previous{
-        {"CHANGED", make_position("CHANGED", 5, 201)},
-        {"SHORT", make_position("SHORT", -2, 303)},
-        {"LONG", make_position("LONG", 2, 404)}};
-    std::unordered_map<std::string, double> prices{{"NEW", 111}, {"LONG", 444}};
-    DailyExecutionObservation trace;
-    auto actual = observed.generate_daily_executions(current, previous, prices, day, "qt", &trace);
-    auto baseline = plain.generate_daily_executions(current, previous, prices, day, "qt");
-    ASSERT_TRUE(actual.is_ok()); ASSERT_TRUE(baseline.is_ok());
-    ASSERT_EQ(actual.value().size(), 4u);
-    ASSERT_EQ(trace.attempts.size(), actual.value().size());
-    EXPECT_EQ(trace.state, DailyExecutionState::returned);
-    EXPECT_FALSE(trace.error_code.has_value());
-    for (size_t i = 0; i < trace.attempts.size(); ++i) {
-        const auto& attempt = trace.attempts[i];
-        expect_report_equal(actual.value()[i], baseline.value()[i]);
-        EXPECT_TRUE(attempt.returned);
-        EXPECT_EQ(attempt.sequence, i);
-        EXPECT_EQ(attempt.symbol, actual.value()[i].symbol);
-        EXPECT_EQ(attempt.execution.state, ExecutionCallState::returned);
-        EXPECT_EQ(attempt.execution.cost.quantity, actual.value()[i].filled_quantity.as_double());
-        EXPECT_EQ(attempt.execution.cost.reference_price, actual.value()[i].fill_price.as_double());
-        EXPECT_DOUBLE_EQ(attempt.selected_price, actual.value()[i].fill_price.as_double());
-        if (attempt.symbol == "NEW") {
-            EXPECT_EQ(attempt.branch, DailyPositionBranch::current_position);
-            EXPECT_EQ(attempt.price_source, ExecutionPriceSource::market_prices);
-            EXPECT_DOUBLE_EQ(attempt.selected_price, 111);
-        } else if (attempt.symbol == "CHANGED") {
-            EXPECT_EQ(attempt.branch, DailyPositionBranch::current_position);
-            EXPECT_EQ(attempt.price_source, ExecutionPriceSource::current_average_price);
-            EXPECT_DOUBLE_EQ(attempt.selected_price, 202);
-        } else if (attempt.symbol == "SHORT") {
-            EXPECT_EQ(attempt.branch, DailyPositionBranch::removed_position);
-            EXPECT_EQ(attempt.price_source, ExecutionPriceSource::previous_average_price);
-            EXPECT_DOUBLE_EQ(attempt.selected_price, 303);
-            EXPECT_EQ(actual.value()[i].side, Side::BUY);
-        } else if (attempt.symbol == "LONG") {
-            EXPECT_EQ(attempt.branch, DailyPositionBranch::removed_position);
-            EXPECT_EQ(attempt.price_source, ExecutionPriceSource::market_prices);
-            EXPECT_DOUBLE_EQ(attempt.selected_price, 444);
-            EXPECT_EQ(actual.value()[i].side, Side::SELL);
-        } else {
-            ADD_FAILURE() << "Unexpected symbol: " << attempt.symbol;
-        }
+    static Timestamp local_midnight(int y, int m, int d) {
+        std::tm tm{};
+        tm.tm_year = y - 1900;
+        tm.tm_mon = m - 1;
+        tm.tm_mday = d;
+        tm.tm_isdst = -1;
+        return std::chrono::system_clock::from_time_t(std::mktime(&tm));
     }
+    bool had_tz_ = false;
+    std::string saved_tz_;
+};
+
+}  // namespace
+
+TEST_F(OrderIdDateFrameTest, UtcMidnightRunDateStampsItsOwnDay) {
+    EXPECT_EQ(ExecutionManager::generate_date_string(utc_midnight(2026, 6, 15)), "20260615")
+        << "the 2026-06-15 run wrote DAILY_<SYM>_20260614";
+    EXPECT_EQ(ExecutionManager::generate_date_string(utc_midnight(2026, 1, 1)), "20260101")
+        << "a year boundary is where the off-by-one is most expensive";
 }
 
-TEST_F(ExecutionManagerTest, DailyReuseClearsSuccessForEmptyUnchangedAndUnsupportedBatches) {
-    ExecutionManager manager(evidence_config()), plain(evidence_config());
-    register_evidence_asset(manager, "SYN");
-    register_evidence_asset(plain, "SYN");
-    const auto day = at_local_date(2026, 9, 24);
-    DailyExecutionObservation trace;
-    auto first = manager.generate_daily_executions({{"SYN", make_position("SYN", 2, 125)}}, {}, {}, day, "system", &trace);
-    auto first_plain = plain.generate_daily_executions({{"SYN", make_position("SYN", 2, 125)}}, {}, {}, day, "system");
-    ASSERT_TRUE(first.is_ok()); ASSERT_TRUE(first_plain.is_ok());
-    ASSERT_EQ(first.value().size(), 1u); ASSERT_EQ(first_plain.value().size(), 1u);
-    expect_report_equal(first.value()[0], first_plain.value()[0]);
-    ASSERT_EQ(trace.attempts.size(), 1u);
-    auto empty = manager.generate_daily_executions({}, {}, {}, day, "system", &trace);
-    ASSERT_TRUE(empty.is_ok()); EXPECT_TRUE(empty.value().empty());
-    EXPECT_EQ(trace.state, DailyExecutionState::returned);
-    EXPECT_TRUE(trace.attempts.empty());
-    auto unchanged = manager.generate_daily_executions({{"SYN", make_position("SYN", 2, 125)}},
-        {{"SYN", make_position("SYN", 2, 125)}}, {}, day, "system", &trace);
-    ASSERT_TRUE(unchanged.is_ok()); EXPECT_TRUE(unchanged.value().empty());
-    EXPECT_TRUE(trace.attempts.empty());
-    auto rejected = manager.generate_daily_executions({}, {}, {}, day, "bad", &trace);
-    ASSERT_TRUE(rejected.is_error());
-    EXPECT_EQ(trace.state, DailyExecutionState::rejected_stream);
-    EXPECT_EQ(trace.error_code, ErrorCode::INVALID_ARGUMENT);
-    EXPECT_TRUE(trace.attempts.empty());
-    auto repeated = manager.generate_daily_executions({{"SYN", make_position("SYN", 3, 125)}},
-        {{"SYN", make_position("SYN", 2, 125)}}, {{"SYN", 130}}, day, "system", &trace);
-    auto repeated_plain = plain.generate_daily_executions({{"SYN", make_position("SYN", 3, 125)}},
-        {{"SYN", make_position("SYN", 2, 125)}}, {{"SYN", 130}}, day, "system");
-    ASSERT_TRUE(repeated.is_ok()); ASSERT_EQ(repeated.value().size(), 1u);
-    ASSERT_TRUE(repeated_plain.is_ok()); ASSERT_EQ(repeated_plain.value().size(), 1u);
-    expect_report_equal(repeated.value()[0], repeated_plain.value()[0]);
-    ASSERT_EQ(trace.attempts.size(), 1u);
-    EXPECT_EQ(trace.attempts[0].symbol, "SYN");
-    EXPECT_EQ(trace.attempts[0].sequence, 0u);
-    EXPECT_EQ(trace.attempts[0].execution.cost.quantity, 1.0);
-    EXPECT_EQ(trace.attempts[0].execution.cost.reference_price, 130.0);
-    EXPECT_EQ(trace.attempts[0].price_source, ExecutionPriceSource::market_prices);
-    EXPECT_EQ(trace.state, DailyExecutionState::returned);
-    EXPECT_FALSE(trace.error_code.has_value());
+// Futures preservation: a local-midnight run date lands at 04:00/05:00Z on the
+// same calendar day, so reading it in UTC gives the same YYYYMMDD it always did.
+TEST_F(OrderIdDateFrameTest, LocalMidnightRunDateStampsTheSameDay) {
+    EXPECT_EQ(ExecutionManager::generate_date_string(local_midnight(2026, 6, 15)), "20260615");
+    EXPECT_EQ(ExecutionManager::generate_date_string(local_midnight(2026, 1, 1)), "20260101");
 }
 
-TEST_F(ExecutionManagerTest, DailyLaterRemovedPositionErrorRetainsOnlyPartialAttemptEvidence) {
-    ExecutionManager observed(evidence_config()), plain(evidence_config());
-    register_evidence_asset(observed, "GOOD"); register_evidence_asset(plain, "GOOD");
-    const auto day = at_local_date(2026, 9, 24);
-    const auto bad = std::string(48, 'B');
-    std::unordered_map<std::string, Position> current{{"GOOD", make_position("GOOD", 2, 125)}};
-    std::unordered_map<std::string, Position> previous{{bad, make_position(bad, 1, 125)}};
-    DailyExecutionObservation trace;
-    auto actual = observed.generate_daily_executions(current, previous, {}, day, "qt", &trace);
-    auto baseline = plain.generate_daily_executions(current, previous, {}, day, "qt");
-    ASSERT_TRUE(actual.is_error()); ASSERT_TRUE(baseline.is_error());
-    ASSERT_NE(actual.error(), nullptr); ASSERT_NE(baseline.error(), nullptr);
-    EXPECT_EQ(actual.error()->code(), baseline.error()->code());
-    EXPECT_EQ(std::string(actual.error()->what()), std::string(baseline.error()->what()));
-    EXPECT_EQ(trace.state, DailyExecutionState::invalid_argument);
-    EXPECT_EQ(trace.error_code, ErrorCode::INVALID_ARGUMENT);
-    ASSERT_EQ(trace.attempts.size(), 2u);
-    EXPECT_EQ(trace.attempts[0].symbol, "GOOD");
-    EXPECT_EQ(trace.attempts[0].branch, DailyPositionBranch::current_position);
-    EXPECT_EQ(trace.attempts[0].sequence, 0u);
-    EXPECT_TRUE(trace.attempts[0].returned);
-    expect_call_cost(trace.attempts[0].execution, 2, 125);
-    EXPECT_EQ(trace.attempts[1].symbol, bad);
-    EXPECT_EQ(trace.attempts[1].branch, DailyPositionBranch::removed_position);
-    EXPECT_EQ(trace.attempts[1].sequence, 1u);
-    EXPECT_FALSE(trace.attempts[1].returned);
-    EXPECT_EQ(trace.attempts[1].execution.state, ExecutionCallState::rejected_id);
-    EXPECT_FALSE(trace.attempts[1].execution.cost.quantity.has_value());
-}
-
-TEST_F(ExecutionManagerTest, UpdateEvidenceTracksActualPreviousCloseAndHistoryWithoutChangingCosts) {
-    auto config = evidence_config();
-    ExecutionManager observed(config), plain(config), another(config);
-    for (auto* manager : {&observed, &plain, &another}) register_evidence_asset(*manager, "SYN");
-    ExecutionMarketDataObservation trace;
-    const auto day = at_local_date(2026, 9, 24);
-    const double closes[] = {100, 0, 110, 120};
-    const double volumes[] = {100, 200, 300, 400};
-    const double expected_adv[] = {100, 150, 250, 350};
-    for (size_t i = 0; i < 4; ++i) {
-        observed.update_market_data("SYN", volumes[i], closes[i], &trace);
-        plain.update_market_data("SYN", volumes[i], closes[i]);
-        ASSERT_TRUE(trace.cost_model_reached);
-        EXPECT_EQ(trace.previous_close_source, i == 0 ? PreviousCloseSource::initial_current_close
-                                                        : PreviousCloseSource::stored_previous_close);
-        EXPECT_EQ(trace.previous_close_forwarded, i == 0 ? 100 : closes[i - 1]);
-        EXPECT_EQ(trace.market_data.volume.adv_lookback_days, 2u);
-        if (closes[i] > 0 && (i == 0 || closes[i - 1] > 0)) {
-            EXPECT_EQ(trace.market_data.log_returns.lookback_days, 2u);
-        } else {
-            EXPECT_FALSE(trace.market_data.log_returns.lookback_days.has_value());
-        }
-        EXPECT_DOUBLE_EQ(observed.get_transaction_cost_manager().get_adv("SYN"),
-                         plain.get_transaction_cost_manager().get_adv("SYN"));
-        ExecutionCallObservation charge_trace;
-        auto charged = observed.generate_execution("SYN", 2, 125, day, i, "qt", &charge_trace);
-        auto baseline = plain.generate_execution("SYN", 2, 125, day, i, "qt");
-        expect_report_equal(charged, baseline);
-        EXPECT_EQ(charge_trace.state, ExecutionCallState::returned);
-        EXPECT_EQ(charge_trace.cost.retrieved_adv, expected_adv[i]);
-        EXPECT_EQ(charge_trace.cost.effective_adv, expected_adv[i]);
-        EXPECT_EQ(charge_trace.cost.retrieved_volatility_multiplier,
-                  i == 3 ? 1.5 : 1.0);
-        EXPECT_EQ(charge_trace.cost.volatility.lambda.has_value(), i == 3);
-        if (i == 3) {
-            EXPECT_EQ(charge_trace.cost.volatility.lambda, 0.4);
-        }
-        EXPECT_DOUBLE_EQ(observed.get_transaction_cost_manager().get_volatility_multiplier("SYN"),
-                         plain.get_transaction_cost_manager().get_volatility_multiplier("SYN"));
-    }
-    another.update_market_data("SYN", 1000, 90, &trace);
-    EXPECT_EQ(trace.previous_close_source, PreviousCloseSource::initial_current_close);
-    EXPECT_EQ(trace.previous_close_forwarded, 90);
-    EXPECT_EQ(trace.market_data.volume.adv_lookback_days, 2u);
-    observed.update_market_data("SYN", 500, 130, &trace);
-    EXPECT_EQ(trace.previous_close_source, PreviousCloseSource::stored_previous_close);
-    EXPECT_EQ(trace.previous_close_forwarded, 120);
+// The whole point of the id: two runs on different days must not collide, and a
+// run's id must match the date its rows are keyed on.
+TEST_F(OrderIdDateFrameTest, ConsecutiveRunDatesProduceDistinctStamps) {
+    const auto a = ExecutionManager::generate_date_string(utc_midnight(2026, 6, 15));
+    const auto b = ExecutionManager::generate_date_string(utc_midnight(2026, 6, 16));
+    EXPECT_EQ(a, "20260615");
+    EXPECT_EQ(b, "20260616");
+    EXPECT_NE(a, b);
 }

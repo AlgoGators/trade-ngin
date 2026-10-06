@@ -18,6 +18,16 @@
 #include <vector>
 #define private public
 #include "trade_ngin/data/conversion_utils.hpp"
+#include <gtest/gtest.h>
+
+#include <arrow/chunked_array.h>
+
+#include <memory>
+#include <vector>
+
+#include "trade_ngin/core/error.hpp"
+#include "trade_ngin/data/conversion_utils.hpp"
+
 #undef private
 
 using namespace trade_ngin;
@@ -226,4 +236,324 @@ TEST_F(ConversionUtilsTest, ExtractStringValidValueRoundTrip) {
     auto r = DataConversionUtils::extract_string(a, 0);
     ASSERT_TRUE(r.is_ok());
     EXPECT_EQ(r.value(), "AAPL");
+}
+
+// ===== folded in from tests/data/test_conversion_utils_safe_get.cpp =====
+namespace conversion_utils_safe_get_detail {
+
+using namespace trade_ngin;
+
+// Phase 5 §1.17a + §5d -- pins the type-aware Arrow accessors.
+//
+// LiveDataLoader builds Arrow columns as utf8 via convert_generic_to_arrow,
+// and many call sites blind-cast to DoubleArray and silently return 0.0 on
+// mismatch. safe_get_double dispatches on the actual column type, accepts
+// utf8 as a documented fallback (with WARN on parse failure), and never
+// returns a silent default.
+
+namespace {
+
+// Build a single-chunk ChunkedArray<double> from a vector. nulls is parallel.
+std::shared_ptr<arrow::ChunkedArray> make_double_column(
+    const std::vector<double>& vals, const std::vector<bool>& nulls = {}) {
+    arrow::DoubleBuilder b;
+    for (size_t i = 0; i < vals.size(); ++i) {
+        if (!nulls.empty() && nulls[i]) {
+            EXPECT_TRUE(b.AppendNull().ok());
+        } else {
+            EXPECT_TRUE(b.Append(vals[i]).ok());
+        }
+    }
+    std::shared_ptr<arrow::Array> arr;
+    EXPECT_TRUE(b.Finish(&arr).ok());
+    return std::make_shared<arrow::ChunkedArray>(arr);
+}
+
+std::shared_ptr<arrow::ChunkedArray> make_string_column(
+    const std::vector<std::string>& vals, const std::vector<bool>& nulls = {}) {
+    arrow::StringBuilder b;
+    for (size_t i = 0; i < vals.size(); ++i) {
+        if (!nulls.empty() && nulls[i]) {
+            EXPECT_TRUE(b.AppendNull().ok());
+        } else {
+            EXPECT_TRUE(b.Append(vals[i]).ok());
+        }
+    }
+    std::shared_ptr<arrow::Array> arr;
+    EXPECT_TRUE(b.Finish(&arr).ok());
+    return std::make_shared<arrow::ChunkedArray>(arr);
+}
+
+std::shared_ptr<arrow::ChunkedArray> make_int64_column(const std::vector<int64_t>& vals) {
+    arrow::Int64Builder b;
+    for (auto v : vals) EXPECT_TRUE(b.Append(v).ok());
+    std::shared_ptr<arrow::Array> arr;
+    EXPECT_TRUE(b.Finish(&arr).ok());
+    return std::make_shared<arrow::ChunkedArray>(arr);
+}
+
+// Build a multi-chunk ChunkedArray<double> with two chunks of known length so
+// we can verify the chunk-walk in resolve_chunk doesn't assume chunk(0).
+std::shared_ptr<arrow::ChunkedArray> make_two_chunk_double_column(
+    const std::vector<double>& first, const std::vector<double>& second) {
+    auto build_one = [](const std::vector<double>& vals) -> std::shared_ptr<arrow::Array> {
+        arrow::DoubleBuilder b;
+        for (auto v : vals) EXPECT_TRUE(b.Append(v).ok());
+        std::shared_ptr<arrow::Array> a;
+        EXPECT_TRUE(b.Finish(&a).ok());
+        return a;
+    };
+    return std::make_shared<arrow::ChunkedArray>(
+        arrow::ArrayVector{build_one(first), build_one(second)});
+}
+
+std::shared_ptr<arrow::ChunkedArray> make_timestamp_column() {
+    arrow::TimestampBuilder b(arrow::timestamp(arrow::TimeUnit::SECOND), arrow::default_memory_pool());
+    EXPECT_TRUE(b.Append(1700000000).ok());
+    std::shared_ptr<arrow::Array> arr;
+    EXPECT_TRUE(b.Finish(&arr).ok());
+    return std::make_shared<arrow::ChunkedArray>(arr);
+}
+
+}  // namespace
+
+// DoubleArray is the "easy" path -- unwrap directly, no fallback.
+TEST(ConversionUtilsSafeGet, DoubleColumnUnwraps) {
+    auto col = make_double_column({1.5, 2.5, 3.5});
+    auto r = DataConversionUtils::safe_get_double(col, 1, "test_col");
+    ASSERT_TRUE(r.is_ok()) << r.error()->what();
+    EXPECT_DOUBLE_EQ(r.value(), 2.5);
+}
+
+// utf8 column carrying numeric strings is the documented loader storage --
+// expected to parse silently via std::stod (no WARN).
+TEST(ConversionUtilsSafeGet, StringNumericParses) {
+    auto col = make_string_column({"123.45", "67.89"});
+    auto r = DataConversionUtils::safe_get_double(col, 0, "px");
+    ASSERT_TRUE(r.is_ok()) << r.error()->what();
+    EXPECT_DOUBLE_EQ(r.value(), 123.45);
+}
+
+// utf8 garbage must return an error Result -- NOT a silent 0.0, which was
+// the §1.17a regression. (Logger WARN is fired; we don't assert the line
+// here because the project's logger doesn't expose a capture API at this
+// layer -- the existence of the error Result is the contract.)
+TEST(ConversionUtilsSafeGet, StringGarbageReturnsError) {
+    auto col = make_string_column({"abc"});
+    auto r = DataConversionUtils::safe_get_double(col, 0, "px");
+    ASSERT_TRUE(r.is_error());
+    EXPECT_EQ(r.error()->code(), ErrorCode::CONVERSION_ERROR);
+}
+
+// Int64 column coerces to double silently -- doubles-on-int columns are a
+// common arrow producer quirk and shouldn't WARN.
+TEST(ConversionUtilsSafeGet, Int64ColumnCoercesToDouble) {
+    auto col = make_int64_column({100, 200, 300});
+    auto r = DataConversionUtils::safe_get_double(col, 2, "qty");
+    ASSERT_TRUE(r.is_ok()) << r.error()->what();
+    EXPECT_DOUBLE_EQ(r.value(), 300.0);
+}
+
+// Multi-chunk: row index 5 lands in the second chunk (offset 2). If
+// resolve_chunk assumed chunk(0), this would either return a wrong value
+// or out-of-range error.
+TEST(ConversionUtilsSafeGet, MultiChunkResolvesCorrectOffset) {
+    auto col = make_two_chunk_double_column({1.0, 2.0, 3.0}, {4.0, 5.0, 6.0});
+    auto r = DataConversionUtils::safe_get_double(col, 5, "px");
+    ASSERT_TRUE(r.is_ok()) << r.error()->what();
+    EXPECT_DOUBLE_EQ(r.value(), 6.0);
+}
+
+// Null cell is an error -- the §1.17a fix forbids the historical silent-0.0
+// behavior for nulls just as it does for type mismatches.
+TEST(ConversionUtilsSafeGet, NullCellReturnsError) {
+    auto col = make_double_column({1.0, 0.0, 3.0}, {false, true, false});
+    auto r = DataConversionUtils::safe_get_double(col, 1, "px");
+    ASSERT_TRUE(r.is_error());
+    EXPECT_EQ(r.error()->code(), ErrorCode::INVALID_DATA);
+}
+
+// Out-of-range row (past the end of all chunks) is an error.
+TEST(ConversionUtilsSafeGet, OutOfRangeRowReturnsError) {
+    auto col = make_double_column({1.0, 2.0});
+    auto r = DataConversionUtils::safe_get_double(col, 10, "px");
+    ASSERT_TRUE(r.is_error());
+    EXPECT_EQ(r.error()->code(), ErrorCode::INVALID_ARGUMENT);
+}
+
+// Unsupported Arrow type (timestamp) -> ERROR log + error Result.
+TEST(ConversionUtilsSafeGet, UnsupportedTypeReturnsError) {
+    auto col = make_timestamp_column();
+    auto r = DataConversionUtils::safe_get_double(col, 0, "ts");
+    ASSERT_TRUE(r.is_error());
+    EXPECT_EQ(r.error()->code(), ErrorCode::CONVERSION_ERROR);
+}
+
+// safe_get_int64: doubles in the source are truncated (with a WARN) so
+// loaders that pass through fractional ints don't drop the row.
+TEST(ConversionUtilsSafeGet, Int64FromDoubleTruncates) {
+    auto col = make_double_column({42.9});
+    auto r = DataConversionUtils::safe_get_int64(col, 0, "count");
+    ASSERT_TRUE(r.is_ok()) << r.error()->what();
+    EXPECT_EQ(r.value(), 42);
+}
+
+// safe_get_string: doubles are stringified so callers can store opaque
+// label-like values without a separate type branch.
+TEST(ConversionUtilsSafeGet, StringFromDoubleStringifies) {
+    auto col = make_double_column({1.5});
+    auto r = DataConversionUtils::safe_get_string(col, 0, "label");
+    ASSERT_TRUE(r.is_ok()) << r.error()->what();
+    // std::to_string(1.5) produces "1.500000" with default precision -- the
+    // contract is "some string representation", so we accept the natural
+    // form rather than pinning a specific format.
+    EXPECT_NE(r.value().find("1.5"), std::string::npos);
+}
+
+// Null column pointer -> error, not a crash.
+TEST(ConversionUtilsSafeGet, NullColumnReturnsError) {
+    std::shared_ptr<arrow::ChunkedArray> col;  // nullptr
+    auto r = DataConversionUtils::safe_get_double(col, 0, "px");
+    ASSERT_TRUE(r.is_error());
+    EXPECT_EQ(r.error()->code(), ErrorCode::INVALID_ARGUMENT);
+}
+
+}  // namespace conversion_utils_safe_get_detail
+
+// ──────────────────────────────────────────────────────────────────────────
+// E2-F37 / BA-14 -- safe_get_int64 and temporal columns.
+//
+// The canonical schema stores dates as TimestampArray, but
+// convert_generic_to_arrow may surface the same column as utf8 or int64
+// depending on the source -- which is exactly why LiveDataLoader routes
+// timestamps through safe_get_int64. There was no TIMESTAMP case, so such a
+// column hit `default` and errored; and when it arrived as text,
+// std::stoll("2026-09-02 00:00:00") returned 2026, a silent plausible-looking
+// integer that is not a timestamp in any unit.
+// ──────────────────────────────────────────────────────────────────────────
+namespace {
+
+using conversion_utils_safe_get_detail::make_string_column;
+using conversion_utils_safe_get_detail::make_timestamp_column;
+
+std::shared_ptr<arrow::ChunkedArray> make_timestamp_column_us(int64_t micros) {
+    arrow::TimestampBuilder b(arrow::timestamp(arrow::TimeUnit::MICRO),
+                              arrow::default_memory_pool());
+    EXPECT_TRUE(b.Append(micros).ok());
+    std::shared_ptr<arrow::Array> arr;
+    EXPECT_TRUE(b.Finish(&arr).ok());
+    return std::make_shared<arrow::ChunkedArray>(arr);
+}
+
+std::shared_ptr<arrow::ChunkedArray> make_date32_column(int32_t days) {
+    arrow::Date32Builder b;
+    EXPECT_TRUE(b.Append(days).ok());
+    std::shared_ptr<arrow::Array> arr;
+    EXPECT_TRUE(b.Finish(&arr).ok());
+    return std::make_shared<arrow::ChunkedArray>(arr);
+}
+
+std::shared_ptr<arrow::ChunkedArray> make_date64_column(int64_t millis) {
+    arrow::Date64Builder b;
+    EXPECT_TRUE(b.Append(millis).ok());
+    std::shared_ptr<arrow::Array> arr;
+    EXPECT_TRUE(b.Finish(&arr).ok());
+    return std::make_shared<arrow::ChunkedArray>(arr);
+}
+
+}  // namespace
+
+// A TIMESTAMP column yields its stored value in its own unit -- the same number
+// an int64 column holding that value would have given, which is what
+// LiveDataLoader::load_previous_day_data already reads as microseconds.
+TEST(ConversionUtilsSafeGet, Int64FromTimestampMicrosecondsReturnsTheStoredValue) {
+    // 2026-09-02 00:00:00 UTC in microseconds.
+    const int64_t micros = 1788307200LL * 1000000LL;
+    auto col = make_timestamp_column_us(micros);
+    auto r = DataConversionUtils::safe_get_int64(col, 0, "date");
+    ASSERT_TRUE(r.is_ok()) << r.error()->what();
+    EXPECT_EQ(r.value(), micros);
+}
+
+// Seconds-unit timestamps are equally accepted; the unit is the column's, and
+// this test states that plainly so nobody reads it as normalisation.
+TEST(ConversionUtilsSafeGet, Int64FromTimestampSecondsReturnsSecondsNotMicroseconds) {
+    auto col = make_timestamp_column();  // TimeUnit::SECOND, 1700000000
+    auto r = DataConversionUtils::safe_get_int64(col, 0, "ts");
+    ASSERT_TRUE(r.is_ok()) << r.error()->what();
+    EXPECT_EQ(r.value(), 1700000000)
+        << "the value comes back in the COLUMN's unit; safe_get_int64 does not normalise";
+}
+
+TEST(ConversionUtilsSafeGet, Int64FromDate32IsDaysAndDate64IsMilliseconds) {
+    auto d32 = make_date32_column(20698);  // 2026-09-02
+    auto r32 = DataConversionUtils::safe_get_int64(d32, 0, "date");
+    ASSERT_TRUE(r32.is_ok()) << r32.error()->what();
+    EXPECT_EQ(r32.value(), 20698) << "Date32 is days since the epoch";
+
+    auto d64 = make_date64_column(1788307200LL * 1000LL);
+    auto r64 = DataConversionUtils::safe_get_int64(d64, 0, "date");
+    ASSERT_TRUE(r64.is_ok()) << r64.error()->what();
+    EXPECT_EQ(r64.value(), 1788307200LL * 1000LL) << "Date64 is milliseconds since the epoch";
+}
+
+// The silent-wrong-answer this item exists to close.
+TEST(ConversionUtilsSafeGet, Int64FromDatetimeStringIsNotTheYear) {
+    auto col = make_string_column({"2026-09-02 00:00:00"});
+    auto r = DataConversionUtils::safe_get_int64(col, 0, "date");
+    ASSERT_TRUE(r.is_ok()) << r.error()->what();
+    EXPECT_NE(r.value(), 2026)
+        << "std::stoll stops at the first '-' and used to return the YEAR as if it "
+           "were a timestamp";
+    EXPECT_EQ(r.value(), 1788307200LL * 1000000LL)
+        << "a textual datetime comes back as microseconds since the epoch";
+}
+
+TEST(ConversionUtilsSafeGet, Int64FromDateOnlyStringIsMidnightUtc) {
+    auto col = make_string_column({"2026-09-02"});
+    auto r = DataConversionUtils::safe_get_int64(col, 0, "date");
+    ASSERT_TRUE(r.is_ok()) << r.error()->what();
+    EXPECT_EQ(r.value(), 1788307200LL * 1000000LL);
+
+    // The 'T' separator is accepted too -- the same instant.
+    auto iso = make_string_column({"2026-09-02T00:00:00"});
+    auto r_iso = DataConversionUtils::safe_get_int64(iso, 0, "date");
+    ASSERT_TRUE(r_iso.is_ok()) << r_iso.error()->what();
+    EXPECT_EQ(r_iso.value(), r.value());
+}
+
+// UTC, not the host zone: a stored timestamptz is already a UTC instant, so
+// timegm is required. mktime on a New York host shifts this by five hours.
+TEST(ConversionUtilsSafeGet, Int64FromDatetimeStringIsUtcOnAnyHost) {
+    auto col = make_string_column({"2026-09-02 00:00:00"});
+
+    const char* saved = std::getenv("TZ");
+    setenv("TZ", "America/New_York", 1);
+    tzset();
+    auto r = DataConversionUtils::safe_get_int64(col, 0, "date");
+    if (saved) setenv("TZ", saved, 1); else unsetenv("TZ");
+    tzset();
+
+    ASSERT_TRUE(r.is_ok()) << r.error()->what();
+    EXPECT_EQ(r.value(), 1788307200LL * 1000000LL)
+        << "a UTC instant must not be re-interpreted in the host zone (E2-F22)";
+}
+
+// Integer strings are unchanged -- every existing caller relies on this.
+TEST(ConversionUtilsSafeGet, Int64FromIntegerStringIsStillParsed) {
+    EXPECT_EQ(DataConversionUtils::safe_get_int64(make_string_column({"42"}), 0, "n").value(), 42);
+    EXPECT_EQ(DataConversionUtils::safe_get_int64(make_string_column({"-7"}), 0, "n").value(), -7);
+    // Surrounding whitespace is still an integer.
+    EXPECT_EQ(DataConversionUtils::safe_get_int64(make_string_column({" 13 "}), 0, "n").value(), 13);
+}
+
+// Anything that is neither an integer nor a datetime must ERROR, never return a
+// partial parse.
+TEST(ConversionUtilsSafeGet, Int64FromUnparseableStringErrorsRatherThanTruncating) {
+    for (const char* bad : {"12abc", "abc", "", "2026-13-45", "2026-09-02 99:99:99",
+                            "2026-09-02 00:00"}) {
+        auto r = DataConversionUtils::safe_get_int64(make_string_column({bad}), 0, "n");
+        EXPECT_TRUE(r.is_error()) << "'" << bad << "' must not parse to anything";
+        if (r.is_error()) EXPECT_EQ(r.error()->code(), ErrorCode::CONVERSION_ERROR);
+    }
 }

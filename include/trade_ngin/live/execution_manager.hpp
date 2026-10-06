@@ -3,7 +3,6 @@
 #include "trade_ngin/core/types.hpp"
 #include "trade_ngin/core/error.hpp"
 #include "trade_ngin/transaction_cost/transaction_cost_manager.hpp"
-#include "trade_ngin/live/execution_consumption.hpp"
 #include <vector>
 #include <unordered_map>
 #include <string>
@@ -13,15 +12,46 @@
 namespace trade_ngin {
 
 /**
- * ExecutionManager - Handles execution generation for live trading
+ * ExecutionManager - Offline execution synthesizer for the live trading flow.
  *
- * This class encapsulates the logic for:
- * - Generating execution reports from position changes
- * - Calculating commissions and transaction costs via TransactionCostManager
+ * Despite "live" in the path, this class is NOT a real broker adapter.
+ * It generates synthetic ExecutionReports from position deltas
+ * (target - current) priced at T-1 close, and computes commissions /
+ * transaction costs via TransactionCostManager. There is no order routing,
+ * no broker network call, no partial-fill handling.
  *
- * Extracted from live_trend.cpp lines 717-833 as part of Phase 3 refactoring
+ * This is paper-trading by design per the 2026-05-03 audit §7. A real
+ * broker adapter (and the broker-reconciliation work in audit §1.13) lands
+ * in a separate phase if and when live brokerage integration ships.
+ *
+ * For historical simulation, see backtest::BacktestExecutionManager.
+ *
+ * History: extracted from live_trend.cpp lines 717-833 during the Phase 3
+ * refactor. The "live" prefix is preserved for path stability; this
+ * docstring is the authoritative description of the role.
  */
-enum class PricingPolicy { MARK_FALLBACK, STRICT };
+
+/**
+ * How generate_daily_executions() prices a fill when market_prices has no usable
+ * entry for the symbol.
+ *
+ * The distinction exists because Position::average_price does not mean the same
+ * thing in every strategy. Futures trend-following assigns it the latest mark
+ * (trend_following.cpp:623, matching REALIZED_ONLY daily settlement), so falling
+ * back to it yields a real price. Equity mean reversion maintains it as a weighted
+ * cost basis, which for a position opened today is 0.00 until the fill being priced
+ * is itself processed -- so the same fallback books the trade at zero.
+ */
+enum class PricingPolicy {
+    /// Fall back to Position::average_price. Correct where that field holds a mark.
+    /// This is the historical behaviour and the default, so existing callers are
+    /// unaffected.
+    MARK_FALLBACK,
+
+    /// Never invent a price: skip the symbol with an ERROR and report it through
+    /// unpriced_out. For callers whose average_price is a cost basis.
+    STRICT
+};
 
 class ExecutionManager {
 private:
@@ -32,17 +62,6 @@ private:
     std::unordered_map<std::string, double> prev_close_prices_;
 
 public:
-    // Explicit equity compatibility overload. Existing stream/default overload is unchanged.
-    Result<std::vector<ExecutionReport>> generate_daily_executions(
-        const std::unordered_map<std::string, Position>& current_positions,
-        const std::unordered_map<std::string, Position>& previous_positions,
-        const std::unordered_map<std::string, double>& market_prices,
-        const Timestamp& timestamp, PricingPolicy pricing,
-        std::vector<std::string>* unpriced_out = nullptr,
-        DailyExecutionObservation* observation = nullptr);
-    ExecutionReport generate_equity_execution(const std::string& symbol,
-        double quantity_change, double market_price, const Timestamp& timestamp,
-        size_t exec_sequence, ExecutionCallObservation* observation = nullptr);
     /**
      * Constructor with optional TransactionCostManager config
      */
@@ -56,16 +75,37 @@ public:
      *
      * @param current_positions Current day's positions
      * @param previous_positions Previous day's positions
-     * @param market_prices Market prices (typically T-1 close prices)
+     * @param market_prices Market prices (typically T-1 close prices).
      * @param timestamp Execution timestamp
+     * @param pricing How to handle a symbol with no usable price in market_prices.
+     *
+     *        MARK_FALLBACK (default) is the long-standing behaviour and is CORRECT for
+     *        futures: TrendFollowingStrategy sets Position::average_price to
+     *        price_history.back() -- the latest mark, by design, matching REALIZED_ONLY
+     *        daily settlement (trend_following.cpp:623). Falling back to it prices the
+     *        fill at a real, one-session-stale close.
+     *
+     *        STRICT is for callers whose average_price is a weighted COST BASIS rather
+     *        than a mark -- equity mean reversion. There, a position opened today has no
+     *        basis until the very fill being priced is processed, so the fallback books
+     *        the trade at 0.00, which then persists as the new basis. Such a symbol is
+     *        skipped with an ERROR and reported through unpriced_out.
+     *
+     *        The same field means opposite things by asset class; this parameter is the
+     *        seam. See docs/AVERAGE_PRICE_LIFECYCLE.md.
+     * @param unpriced_out Optional, STRICT only. Receives the symbols skipped for want of
+     *        a price. A skip is not a flat position and not a fill -- the caller must
+     *        reconcile these before persisting, or the book will silently disagree with
+     *        the executions.
      * @return Vector of execution reports
      */
     Result<std::vector<ExecutionReport>> generate_daily_executions(
         const std::unordered_map<std::string, Position>& current_positions,
         const std::unordered_map<std::string, Position>& previous_positions,
         const std::unordered_map<std::string, double>& market_prices,
-        const Timestamp& timestamp, const std::string& portfolio_type = "system",
-        DailyExecutionObservation* observation = nullptr);
+        const Timestamp& timestamp,
+        PricingPolicy pricing = PricingPolicy::MARK_FALLBACK,
+        std::vector<std::string>* unpriced_out = nullptr);
 
     /**
      * Generate a single execution report
@@ -82,8 +122,7 @@ public:
         double quantity_change,
         double market_price,
         const Timestamp& timestamp,
-        size_t exec_sequence, const std::string& portfolio_type = "system",
-        ExecutionCallObservation* observation = nullptr);
+        size_t exec_sequence);
 
     /**
      * Update market data for TransactionCostManager (ADV and volatility tracking)
@@ -93,8 +132,7 @@ public:
      * @param volume Daily volume for the symbol
      * @param close_price Daily close price for the symbol
      */
-    void update_market_data(const std::string& symbol, double volume, double close_price,
-                            ExecutionMarketDataObservation* observation = nullptr);
+    void update_market_data(const std::string& symbol, double volume, double close_price);
 
     /**
      * Generate date string for order IDs

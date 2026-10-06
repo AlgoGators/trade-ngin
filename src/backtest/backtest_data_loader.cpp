@@ -11,6 +11,18 @@ BacktestDataLoader::BacktestDataLoader(std::shared_ptr<PostgresDatabase> db)
     : db_(std::move(db)) {}
 
 Result<std::vector<Bar>> BacktestDataLoader::load_market_data(const DataLoadConfig& config) {
+    // Reject options upfront: data-ngin has zero options ingestion (no fetcher, no schema).
+    // The options_data schema does not exist and will not for the foreseeable future.
+    // This is the honest failure: loud and actionable, not a silent SQL error.
+    if (config.asset_class == AssetClass::OPTIONS) {
+        return make_error<std::vector<Bar>>(
+            ErrorCode::MARKET_DATA_ERROR,
+            "Options market data is not yet ingested by data-ngin. "
+            "No fetcher, schema, or DAG exists for options. "
+            "See data-ngin#39 for ingest roadmap.",
+            "BacktestDataLoader");
+    }
+
     // Ensure database connection
     auto conn_result = ensure_connection();
     if (conn_result.is_error()) {

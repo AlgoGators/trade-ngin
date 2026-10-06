@@ -5,7 +5,10 @@
 #include <cmath>
 #include <iomanip>
 #include <iostream>
+#include <cstdint>
 #include <numeric>
+#include <random>
+#include <vector>
 #include <sstream>
 #include "trade_ngin/transaction_cost/transaction_cost_manager.hpp"
 #include "trade_ngin/core/logger.hpp"
@@ -13,6 +16,13 @@
 #include "trade_ngin/data/market_data_bus.hpp"
 
 namespace trade_ngin {
+
+namespace {
+// Seed for the simulated-fill price jitter in execute_vwap. Fixed so a VWAP
+// backtest reproduces the same simulated price path from one run to the next.
+// Simulation only: these prices never feed live routing decisions.
+constexpr std::uint32_t kVwapJitterSeed = 42;
+}  // namespace
 
 ExecutionEngine::ExecutionEngine(std::shared_ptr<OrderManager> order_manager)
     : order_manager_(std::move(order_manager)) {
@@ -498,14 +508,18 @@ Result<void> ExecutionEngine::execute_vwap(const ExecutionJob& job) {
         double total_volume = 0.0;
         double volume_weighted_price = 0.0;
 
+        // Simulated child-order prices for this job. The fixed seed makes the
+        // same job reproduce the same price path from one run to the next.
+        const std::vector<double> slice_prices = generate_vwap_slice_prices(
+            kVwapJitterSeed, parent_order.price.as_double(), num_slices);
+
         // Generate child orders
         for (int i = 0; i < num_slices; ++i) {
             Order child = parent_order;
             child.quantity = Quantity(slice_size);
 
             // Adjust price slightly around parent price to simulate market impact
-            double price_adjustment = (static_cast<double>(rand()) / RAND_MAX - 0.5) * 0.001;
-            child.price = Price(parent_order.price.as_double() * (1.0 + price_adjustment));
+            child.price = Price(slice_prices[static_cast<size_t>(i)]);
 
             auto submit_result = order_manager_->submit_order(child, "VWAP_" + job.job_id);
             if (submit_result.is_error()) {
@@ -992,12 +1006,35 @@ std::string ExecutionEngine::generate_job_id() const {
     return ss.str();
 }
 
+std::vector<double> ExecutionEngine::generate_vwap_slice_prices(std::uint32_t seed,
+                                                                double parent_price,
+                                                                int num_slices) {
+    // Seeded per call, so a given seed reproduces the same price path regardless
+    // of thread or of how many jobs ran before it. Simulation only; these prices
+    // never feed live routing decisions.
+    std::mt19937 rng(seed);
+    std::uniform_real_distribution<double> jitter(-0.0005, 0.0005);
+
+    std::vector<double> prices;
+    prices.reserve(static_cast<size_t>(std::max(0, num_slices)));
+    for (int i = 0; i < num_slices; ++i) {
+        prices.push_back(parent_price * (1.0 + jitter(rng)));
+    }
+    return prices;
+}
+
 double ExecutionEngine::calculate_transaction_costs(const ExecutionReport& execution, const ExecutionConfig& config) {
     transaction_cost::TransactionCostManager::Config tc_config;
     tc_config.explicit_fee_per_contract = config.explicit_fee_per_contract;
     transaction_cost::TransactionCostManager cost_manager(tc_config);
 
+    // E2-F29: sign the quantity from the report's side. filled_quantity is always positive, so
+    // passing it raw made the sell-side-only SEC/TAF gate (`quantity < 0`) unreachable; every
+    // other cost term takes |qty|.
     double qty = static_cast<double>(execution.filled_quantity);
+    if (execution.side == Side::SELL) {
+        qty = -qty;
+    }
     double price = static_cast<double>(execution.fill_price);
 
     auto cost_result = cost_manager.calculate_costs(execution.symbol, qty, price);

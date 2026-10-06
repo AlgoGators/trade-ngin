@@ -5,8 +5,6 @@
 #include <arrow/util/logging.h>
 #include <chrono>
 #include <memory>
-#include <utility>
-#include <vector>
 #include "../core/test_base.hpp"
 #include "../data/test_db_utils.hpp"
 #include "trade_ngin/instruments/equity.hpp"
@@ -16,7 +14,13 @@
 // Reach into private state to populate the singleton without DB access.
 #define private public
 #include "trade_ngin/instruments/instrument_registry.hpp"
-#include "trade_ngin/instruments/contract_multiplier.hpp"
+#include <cstdlib>
+#include <filesystem>
+#include <fstream>
+#include <string>
+#include <vector>
+#include "trade_ngin/instruments/instrument_registry.hpp"
+
 #undef private
 
 using namespace trade_ngin;
@@ -62,31 +66,6 @@ std::shared_ptr<OptionInstrument> make_option(const std::string& symbol) {
     return std::make_shared<OptionInstrument>(symbol, s);
 }
 
-void install_instrument(InstrumentRegistry& registry, const std::shared_ptr<Instrument>& instrument) {
-    const auto& symbol = instrument->get_symbol();
-
-    switch (instrument->get_type()) {
-        case AssetType::FUTURE:
-            registry.futures_[symbol] = std::dynamic_pointer_cast<FuturesInstrument>(instrument);
-            break;
-        case AssetType::EQUITY:
-            registry.equities_[symbol] = std::dynamic_pointer_cast<EquityInstrument>(instrument);
-            break;
-        case AssetType::OPTION:
-            registry.options_[symbol] = std::dynamic_pointer_cast<OptionInstrument>(instrument);
-            break;
-        default:
-            break;
-    }
-
-    if (instrument->get_type() == AssetType::EQUITY ||
-        registry.instruments_.find(symbol) == registry.instruments_.end()) {
-        registry.instruments_[symbol] = instrument;
-    }
-}
-
-Result<void> load_es_collision_metadata(InstrumentRegistry& registry, bool future_first);
-
 }  // namespace
 
 class InstrumentRegistryTest : public TestBase {
@@ -95,18 +74,12 @@ protected:
         TestBase::SetUp();
         auto& r = InstrumentRegistry::instance();
         r.instruments_.clear();
-        r.futures_.clear();
-        r.equities_.clear();
-        r.options_.clear();
         r.initialized_ = false;
         r.db_.reset();
     }
     void TearDown() override {
         auto& r = InstrumentRegistry::instance();
         r.instruments_.clear();
-        r.futures_.clear();
-        r.equities_.clear();
-        r.options_.clear();
         r.initialized_ = false;
         r.db_.reset();
         TestBase::TearDown();
@@ -140,129 +113,82 @@ TEST_F(InstrumentRegistryTest, GetInstrumentReturnsNullForUnknownSymbol) {
     EXPECT_EQ(r.get_instrument("ZZZ"), nullptr);
 }
 
-TEST_F(InstrumentRegistryTest, AFullSizeTickerIsNotSilentlyTheMicroContract) {
-    // The registry used to rewrite ES to MES before every lookup, which valued
-    // a full-size S&P contract at a tenth of what it is worth. Registering the
-    // micro must not make the full-size resolve to it.
+TEST_F(InstrumentRegistryTest, GetInstrumentMapsESToMES) {
     auto& r = InstrumentRegistry::instance();
     auto mes = make_futures("MES");
-    install_instrument(r, mes);
+    r.instruments_["MES"] = mes;
+    EXPECT_EQ(r.get_instrument("ES"), mes);
     EXPECT_EQ(r.get_instrument("MES"), mes);
-    EXPECT_EQ(r.get_instrument("ES"), nullptr);
-    EXPECT_EQ(r.get_instrument("ES.v.0"), nullptr);
 }
 
-TEST_F(InstrumentRegistryTest, EachEquityIndexTickerResolvesToItsOwnContract) {
-    // Both spellings exist in production metadata with their own point values,
-    // so both must resolve to themselves and neither to the other.
+TEST_F(InstrumentRegistryTest, GetInstrumentMapsNQToMNQAndYMToMYM) {
     auto& r = InstrumentRegistry::instance();
-    auto nq = make_futures("NQ");
     auto mnq = make_futures("MNQ");
-    auto ym = make_futures("YM");
-    install_instrument(r, nq);
-    install_instrument(r, mnq);
-    install_instrument(r, ym);
-    EXPECT_EQ(r.get_instrument("NQ"), nq);
-    EXPECT_EQ(r.get_instrument("MNQ"), mnq);
-    EXPECT_EQ(r.get_instrument("YM"), ym);
-    // MYM is not registered here, and YM must not stand in for it.
-    EXPECT_EQ(r.get_instrument("MYM"), nullptr);
+    auto mym = make_futures("MYM");
+    r.instruments_["MNQ"] = mnq;
+    r.instruments_["MYM"] = mym;
+    EXPECT_EQ(r.get_instrument("NQ"), mnq);
+    EXPECT_EQ(r.get_instrument("YM"), mym);
 }
 
-TEST_F(InstrumentRegistryTest, HasInstrumentAnswersForTheSymbolItWasAsked) {
+TEST_F(InstrumentRegistryTest, HasInstrumentRespectsMicroSymbolMapping) {
     auto& r = InstrumentRegistry::instance();
-    install_instrument(r, make_futures("MES"));
+    r.instruments_["MES"] = make_futures("MES");
+    EXPECT_TRUE(r.has_instrument("ES"));
     EXPECT_TRUE(r.has_instrument("MES"));
-    EXPECT_FALSE(r.has_instrument("ES"));
     EXPECT_FALSE(r.has_instrument("NQ"));
     EXPECT_FALSE(r.has_instrument("UNKNOWN"));
 }
 
-TEST_F(InstrumentRegistryTest, EquityWinsGenericLookupWhenMetadataLoadsEquityBeforeFuture) {
+TEST_F(InstrumentRegistryTest, ExactEquitySymbolWinsOverMicroRemap) {
     auto& r = InstrumentRegistry::instance();
-    ASSERT_TRUE(load_es_collision_metadata(r, false).is_ok());
-
-    auto es_equity = r.get_equity_instrument("ES");
-    auto es_future = r.get_futures_instrument("ES.v.0");
-    ASSERT_NE(es_equity, nullptr);
-    ASSERT_NE(es_future, nullptr);
-
+    auto es_equity = make_equity("ES");  // NYSE "ES" = Eversource Energy
+    auto mes = make_futures("MES");
+    r.instruments_["ES"] = es_equity;
+    r.instruments_["MES"] = mes;
+    // A registered bare symbol must win over the ES->MES micro remap; pre-fix
+    // the remap fired unconditionally and handed back the futures contract.
     EXPECT_EQ(r.get_instrument("ES"), es_equity);
-    EXPECT_EQ(r.get_instrument("ES.v.0"), es_future);
-    EXPECT_EQ(r.get_equity_instrument("ES"), es_equity);
-    EXPECT_EQ(r.get_equity_instrument("ES.v.0"), nullptr);
-    EXPECT_EQ(r.get_futures_instrument("ES"), es_future);
-    EXPECT_EQ(r.get_futures_instrument("ES.v.0"), es_future);
-    const auto equities = r.get_instruments_by_asset_class(AssetClass::EQUITIES);
-    const auto futures = r.get_instruments_by_asset_class(AssetClass::FUTURES);
-    ASSERT_EQ(equities.size(), 1u);
-    ASSERT_EQ(futures.size(), 1u);
-    EXPECT_EQ(equities.front(), es_equity);
-    EXPECT_EQ(futures.front(), es_future);
-
-    auto all = r.get_all_instruments();
-    ASSERT_EQ(all.size(), 1u);
-    EXPECT_EQ(all.at("ES"), es_equity);
-}
-
-TEST_F(InstrumentRegistryTest, EquityWinsGenericLookupWhenMetadataLoadsFutureBeforeEquity) {
-    auto& r = InstrumentRegistry::instance();
-    ASSERT_TRUE(load_es_collision_metadata(r, true).is_ok());
-
-    auto es_equity = r.get_equity_instrument("ES");
-    auto es_future = r.get_futures_instrument("ES.v.0");
-    ASSERT_NE(es_equity, nullptr);
-    ASSERT_NE(es_future, nullptr);
-
-    EXPECT_EQ(r.get_instrument("ES"), es_equity);
-    EXPECT_EQ(r.get_instrument("ES.v.0"), es_future);
-    EXPECT_EQ(r.get_equity_instrument("ES"), es_equity);
-    EXPECT_EQ(r.get_equity_instrument("ES.v.0"), nullptr);
-    EXPECT_EQ(r.get_futures_instrument("ES"), es_future);
-    EXPECT_EQ(r.get_futures_instrument("ES.v.0"), es_future);
-    const auto equities = r.get_instruments_by_asset_class(AssetClass::EQUITIES);
-    const auto futures = r.get_instruments_by_asset_class(AssetClass::FUTURES);
-    ASSERT_EQ(equities.size(), 1u);
-    ASSERT_EQ(futures.size(), 1u);
-    EXPECT_EQ(equities.front(), es_equity);
-    EXPECT_EQ(futures.front(), es_future);
-
-    auto all = r.get_all_instruments();
-    ASSERT_EQ(all.size(), 1u);
-    EXPECT_EQ(all.at("ES"), es_equity);
+    EXPECT_TRUE(r.has_instrument("ES"));
+    // A .v. variant suffix marks a futures continuous series: still remaps
+    // even with the equity registered.
+    EXPECT_EQ(r.get_instrument("ES.v.0"), mes);
+    EXPECT_TRUE(r.has_instrument("ES.v.0"));
+    // Micro remap unchanged when no bare registration exists.
+    EXPECT_EQ(r.get_instrument("NQ"), nullptr);
 }
 
 TEST_F(InstrumentRegistryTest, GetFuturesInstrumentReturnsNullForNonFutures) {
     auto& r = InstrumentRegistry::instance();
-    install_instrument(r, make_equity("AAPL"));
-    install_instrument(r, make_futures("MES"));
+    r.instruments_["AAPL"] = make_equity("AAPL");
+    r.instruments_["MES"] = make_futures("MES");
     EXPECT_EQ(r.get_futures_instrument("AAPL"), nullptr);
     EXPECT_NE(r.get_futures_instrument("MES"), nullptr);
 }
 
 TEST_F(InstrumentRegistryTest, GetEquityInstrumentReturnsNullForNonEquity) {
     auto& r = InstrumentRegistry::instance();
-    install_instrument(r, make_futures("MES"));
-    install_instrument(r, make_equity("AAPL"));
+    r.instruments_["MES"] = make_futures("MES");
+    r.instruments_["AAPL"] = make_equity("AAPL");
     EXPECT_EQ(r.get_equity_instrument("MES"), nullptr);
     EXPECT_NE(r.get_equity_instrument("AAPL"), nullptr);
 }
 
 TEST_F(InstrumentRegistryTest, GetOptionInstrumentReturnsNullForNonOption) {
     auto& r = InstrumentRegistry::instance();
-    install_instrument(r, make_futures("MES"));
-    install_instrument(r, make_option("AAPL_OPT"));
+    r.instruments_["MES"] = make_futures("MES");
+    r.instruments_["AAPL_OPT"] = make_option("AAPL_OPT");
     EXPECT_EQ(r.get_option_instrument("MES"), nullptr);
     EXPECT_NE(r.get_option_instrument("AAPL_OPT"), nullptr);
 }
 
 TEST_F(InstrumentRegistryTest, GetInstrumentsByAssetClassPartitionsCorrectly) {
     auto& r = InstrumentRegistry::instance();
-    install_instrument(r, make_futures("MES"));
-    install_instrument(r, make_futures("MNQ"));
-    install_instrument(r, make_equity("AAPL"));
-    install_instrument(r, make_equity("MSFT"));
-    install_instrument(r, make_option("AAPL_OPT"));
+    r.instruments_["MES"] = make_futures("MES");
+    r.instruments_["MNQ"] = make_futures("MNQ");
+    r.instruments_["AAPL"] = make_equity("AAPL");
+    r.instruments_["MSFT"] = make_equity("MSFT");
+    r.instruments_["AAPL_OPT"] = make_option("AAPL_OPT");
 
     EXPECT_EQ(r.get_instruments_by_asset_class(AssetClass::FUTURES).size(), 2u);
     EXPECT_EQ(r.get_instruments_by_asset_class(AssetClass::EQUITIES).size(), 2u);
@@ -273,8 +199,8 @@ TEST_F(InstrumentRegistryTest, GetInstrumentsByAssetClassPartitionsCorrectly) {
 
 TEST_F(InstrumentRegistryTest, GetAllInstrumentsReturnsCopyOfMap) {
     auto& r = InstrumentRegistry::instance();
-    install_instrument(r, make_futures("MES"));
-    install_instrument(r, make_equity("AAPL"));
+    r.instruments_["MES"] = make_futures("MES");
+    r.instruments_["AAPL"] = make_equity("AAPL");
     auto all = r.get_all_instruments();
     EXPECT_EQ(all.size(), 2u);
     EXPECT_TRUE(all.count("MES"));
@@ -388,46 +314,6 @@ std::shared_ptr<arrow::Table> build_contract_table(const std::vector<ContractRow
     return arrow::Table::Make(schema, {dbento, ib, at, ex, cs, mt, ts, im, mm, th, sec});
 }
 
-class CollisionMetadataMockDb : public MockPostgresDatabase {
-public:
-    CollisionMetadataMockDb(std::vector<ContractRow> rows)
-        : MockPostgresDatabase("mock://instrument-collision"), rows_(std::move(rows)) {}
-
-    Result<std::shared_ptr<arrow::Table>> get_contract_metadata() const override {
-        if (!is_connected()) {
-            return make_error<std::shared_ptr<arrow::Table>>(ErrorCode::DATABASE_ERROR,
-                                                             "Not connected");
-        }
-        return Result<std::shared_ptr<arrow::Table>>(build_contract_table(rows_));
-    }
-
-private:
-    std::vector<ContractRow> rows_;
-};
-
-Result<void> load_es_collision_metadata(InstrumentRegistry& registry, bool future_first) {
-    const ContractRow future{"ES.v.0", "", "FUTURE", "CME", 50.0, 0.25, "0.25", 12000.0,
-                             9000.0, "09:30-16:00", ""};
-    const ContractRow equity{"ES", "", "EQUITY", "NYSE", 1.0, 0.01, "0.01", 0.0, 0.0,
-                             "09:30-16:00", "Utilities"};
-    std::vector<ContractRow> rows = future_first
-                                        ? std::vector<ContractRow>{future, equity}
-                                        : std::vector<ContractRow>{equity, future};
-    auto db = std::make_shared<CollisionMetadataMockDb>(std::move(rows));
-
-    auto connected = db->connect();
-    if (connected.is_error()) {
-        return connected;
-    }
-
-    auto initialized = registry.initialize(db);
-    if (initialized.is_error()) {
-        return initialized;
-    }
-
-    return registry.load_instruments();
-}
-
 }  // namespace
 
 TEST_F(InstrumentRegistryTest, CreateInstrumentFromDbBuildsFutures) {
@@ -490,15 +376,7 @@ TEST_F(InstrumentRegistryTest, CreateInstrumentFromDbReturnsNullWhenBothSymbolsE
     EXPECT_EQ(r.create_instrument_from_db(table, 0), nullptr);
 }
 
-TEST_F(InstrumentRegistryTest, CreateInstrumentFromDbFallsBackToTheKnownPointValue) {
-    // A missing contract size used to default to a multiplier of 1.0, which
-    // prices an S&P contract at its index level. The contract table knows what
-    // an E-mini point is worth; that is a better answer than a number chosen
-    // because it is multiplicatively harmless.
-    //
-    // 50.0, the real E-mini point value. This read 5.0 while the deployment
-    // aliased ES to MES; production settled that on 2026-09-06 and the alias is
-    // gone, so ES is priced as ES.
+TEST_F(InstrumentRegistryTest, CreateInstrumentFromDbDefaultsContractSizeWhenZero) {
     auto& r = InstrumentRegistry::instance();
     auto table = build_contract_table({
         {"ES.v.0", "", "FUTURE", "CME", 0.0, 0.25, "0.25", 12000.0, 9000.0,
@@ -506,46 +384,117 @@ TEST_F(InstrumentRegistryTest, CreateInstrumentFromDbFallsBackToTheKnownPointVal
     });
     auto instr = r.create_instrument_from_db(table, 0);
     ASSERT_NE(instr, nullptr);
-    EXPECT_DOUBLE_EQ(instr->get_multiplier(), 50.0);
-    EXPECT_DOUBLE_EQ(known_contract("ES")->price_multiplier(), 50.0);
+    EXPECT_DOUBLE_EQ(instr->get_multiplier(), 1.0);  // defaulted from 0.0
 }
 
-TEST_F(InstrumentRegistryTest, CreateInstrumentFromDbDefaultsToOneForAnUnknownSymbol) {
-    // Nothing is known about it, so there is nothing better to say.
-    auto& r = InstrumentRegistry::instance();
-    auto table = build_contract_table({
-        {"XYZ.v.0", "", "FUTURE", "CME", 0.0, 0.25, "0.25", 0.0, 0.0,
-         "09:30-16:00", ""},
-    });
-    auto instr = r.create_instrument_from_db(table, 0);
-    ASSERT_NE(instr, nullptr);
-    EXPECT_DOUBLE_EQ(instr->get_multiplier(), 1.0);
+// ===== folded in from tests/instruments/test_exchange_json_wireup.cpp =====
+namespace exchange_json_wireup_detail {
+
+using namespace trade_ngin;
+using namespace trade_ngin::testing;
+
+// Regression test for audit finding §1.2. Phase 1b passes the
+// equity_exchanges.json path into load_equity_instruments() from the 3
+// callers (live + 2 backtest apps). Previously, every equity defaulted to
+// "NYSE" regardless of actual listing because no caller provided the path.
+
+namespace {
+
+// Use synthetic symbols so we don't collide with anything other tests
+// may have registered in the singleton registry.
+const std::string kNasdaq1 = "PHASE1_T23_NASDAQ_A";
+const std::string kNasdaq2 = "PHASE1_T23_NASDAQ_B";
+const std::string kNyse1 = "PHASE1_T23_NYSE_A";
+const std::string kUnlisted = "PHASE1_T23_UNLISTED";
+
+class ExchangeJsonWireupTest : public TestBase {
+protected:
+    void SetUp() override {
+        TestBase::SetUp();
+
+        tmp_dir_ = std::filesystem::temp_directory_path() /
+                   ("exchange_wireup_" + std::to_string(std::rand()));
+        std::filesystem::create_directories(tmp_dir_);
+        json_path_ = tmp_dir_ / "exchanges.json";
+
+        std::ofstream out(json_path_);
+        out << "{\n"
+            << "  \"_comment\": \"test fixture\",\n"
+            << "  \"NASDAQ\": [\"" << kNasdaq1 << "\", \"" << kNasdaq2 << "\"],\n"
+            << "  \"NYSE\": [\"" << kNyse1 << "\"]\n"
+            << "}\n";
+        out.close();
+
+        // Initialize the singleton registry with a mock DB if it hasn't been
+        // touched yet (no-op if already initialized by another test).
+        auto& registry = InstrumentRegistry::instance();
+        auto db = std::make_shared<MockPostgresDatabase>("mock://testdb");
+        ASSERT_TRUE(db->connect().is_ok());
+        (void)registry.initialize(db);  // Idempotent: no-op if already initialized.
+    }
+
+    void TearDown() override {
+        std::error_code ec;
+        std::filesystem::remove_all(tmp_dir_, ec);
+        TestBase::TearDown();
+    }
+
+    std::filesystem::path tmp_dir_;
+    std::filesystem::path json_path_;
+};
+
+}  // namespace
+
+// With JSON path supplied: NASDAQ entries get "NASDAQ", NYSE entries get
+// "NYSE", and symbols not listed in either fall back to "NYSE" (the loader's
+// hardcoded default).
+TEST_F(ExchangeJsonWireupTest, JsonPathPopulatesExchangesPerSymbol) {
+    auto& registry = InstrumentRegistry::instance();
+
+    std::vector<std::string> symbols{kNasdaq1, kNasdaq2, kNyse1, kUnlisted};
+    auto load_result = registry.load_equity_instruments(symbols, json_path_.string());
+    ASSERT_TRUE(load_result.is_ok())
+        << "load_equity_instruments failed: " << load_result.error()->what();
+
+    auto a = registry.get_equity_instrument(kNasdaq1);
+    auto b = registry.get_equity_instrument(kNasdaq2);
+    auto c = registry.get_equity_instrument(kNyse1);
+    auto d = registry.get_equity_instrument(kUnlisted);
+
+    ASSERT_NE(a, nullptr);
+    ASSERT_NE(b, nullptr);
+    ASSERT_NE(c, nullptr);
+    ASSERT_NE(d, nullptr);
+
+    EXPECT_EQ(a->get_exchange(), "NASDAQ");
+    EXPECT_EQ(b->get_exchange(), "NASDAQ");
+    EXPECT_EQ(c->get_exchange(), "NYSE");
+    EXPECT_EQ(d->get_exchange(), "NYSE")
+        << "Symbols absent from the JSON should fall back to the NYSE default.";
 }
 
-TEST_F(InstrumentRegistryTest, ContractSizeIsScaledByTheQuoteConvention) {
-    // metadata.contract_metadata spells this column "Contract Size", and for a
-    // ten-year note that is $100,000 of face value. The price is quoted as a
-    // percentage of par, so one point is $1,000. Reading the column straight
-    // into the multiplier priced forty contracts at $449m.
-    auto& r = InstrumentRegistry::instance();
-    auto table = build_contract_table({
-        {"ZN.v.0", "", "FUTURE", "CBOT", 100000.0, 0.015625, "1/64", 2000.0, 1500.0,
-         "17:00-16:00", ""},
-    });
-    auto instr = r.create_instrument_from_db(table, 0);
-    ASSERT_NE(instr, nullptr);
-    EXPECT_DOUBLE_EQ(instr->get_multiplier(), 1000.0);
+// Documents the pre-fix behavior: when no JSON path is supplied, every
+// symbol gets "NYSE" regardless of actual listing. This is what every
+// caller was unintentionally doing pre-Phase-1b.
+TEST_F(ExchangeJsonWireupTest, EmptyPathFallsBackToAllNYSE) {
+    auto& registry = InstrumentRegistry::instance();
+
+    // Distinct symbol set so we don't collide with the test above's
+    // registrations (load_equity_instruments skips already-registered).
+    const std::string fallback_a = "PHASE1_T23_FALLBACK_A";
+    const std::string fallback_b = "PHASE1_T23_FALLBACK_B";
+
+    std::vector<std::string> symbols{fallback_a, fallback_b};
+    auto load_result = registry.load_equity_instruments(symbols);  // no path
+    ASSERT_TRUE(load_result.is_ok());
+
+    auto a = registry.get_equity_instrument(fallback_a);
+    auto b = registry.get_equity_instrument(fallback_b);
+    ASSERT_NE(a, nullptr);
+    ASSERT_NE(b, nullptr);
+
+    EXPECT_EQ(a->get_exchange(), "NYSE");
+    EXPECT_EQ(b->get_exchange(), "NYSE");
 }
 
-TEST_F(InstrumentRegistryTest, AContractSizeThatIsAlreadyAPointValueIsNotScaledAgain) {
-    // Whether that column holds sizes or point values is not settled across
-    // deployments. A row already carrying 1,000 for ZN must not become 10.
-    auto& r = InstrumentRegistry::instance();
-    auto table = build_contract_table({
-        {"ZN.v.0", "", "FUTURE", "CBOT", 1000.0, 0.015625, "1/64", 2000.0, 1500.0,
-         "17:00-16:00", ""},
-    });
-    auto instr = r.create_instrument_from_db(table, 0);
-    ASSERT_NE(instr, nullptr);
-    EXPECT_DOUBLE_EQ(instr->get_multiplier(), 1000.0);
-}
+}  // namespace exchange_json_wireup_detail

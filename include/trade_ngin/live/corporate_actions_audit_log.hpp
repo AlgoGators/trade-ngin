@@ -13,13 +13,6 @@
 
 namespace trade_ngin {
 
-// The unscoped JSON file predates portfolio/sleeve ownership. Only the exact
-// original house book may import it; every new portfolio or sleeve starts from
-// its own database-scoped dedup set.
-bool allows_legacy_corp_action_import(const std::string& portfolio_id,
-                                      const std::string& strategy_id,
-                                      const std::string& strategy_name);
-
 /**
  * @brief On-disk dedup record for corp-action events applied to a strategy.
  *

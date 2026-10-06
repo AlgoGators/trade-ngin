@@ -10,6 +10,12 @@
 #include "trade_ngin/strategy/base_strategy.hpp"
 #include "trade_ngin/strategy/types.hpp"
 
+#include <memory>
+#include "../core/test_base.hpp"
+#include "../data/test_db_utils.hpp"
+#include "trade_ngin/strategy/mean_reversion.hpp"
+#include "trade_ngin/strategy/trend_following.hpp"
+#include "trade_ngin/backtest/backtest_pnl_manager.hpp"
 using namespace trade_ngin;
 
 TEST(StrategyMetricsTest, DefaultConstructionInitializesEveryField) {
@@ -634,4 +640,225 @@ TEST_F(BaseStrategyTest, ValidateStateTransition_BlocksInvalidTransitions) {
     // INITIALIZED → PAUSED (invalid)
     auto result = strategy->transition_state(StrategyState::PAUSED);
     EXPECT_TRUE(result.is_error());
+}
+
+// ===== folded in from tests/strategy/test_pnl_accounting_branch.cpp =====
+namespace pnl_accounting_branch_detail {
+
+using namespace trade_ngin;
+using namespace trade_ngin::testing;
+// This file also declares a file-scope MockPostgresDatabase; the folded-in
+// tests were written against trade_ngin::testing's. Pin that resolution.
+using MockPostgresDatabase = trade_ngin::testing::MockPostgresDatabase;
+
+// Phase 4 audit test T4.6 — §1.14 backtest coordinator P&L semantics.
+//
+// Contract test: the coordinator's branch reads strategy->get_pnl_accounting().method
+// and only stamps realized_pnl when REALIZED_ONLY (futures: settled daily).
+// MIXED / UNREALIZED_ONLY (equities) leaves realized_pnl untouched at the
+// coordinator level -- on_execution writes realized when positions actually close.
+//
+// This test pins the contract by verifying:
+// 1. Each strategy's accounting method is what the coordinator expects.
+// 2. The PnL accounting accessor returns the same value over successive calls.
+//
+// A true integration test of the coordinator's branch requires the full bar
+// loop, portfolio, and execution path -- captured by the broader smoke runs
+// rather than a unit test. This contract test catches regressions in the
+// accessor / setter contract that the coordinator's branch depends on.
+
+namespace {
+
+class PnLAccountingBranchTest : public TestBase {
+protected:
+    void SetUp() override {
+        TestBase::SetUp();
+        StateManager::reset_instance();
+        db_ = std::make_shared<MockPostgresDatabase>("mock://pnl_branch_test");
+        ASSERT_TRUE(db_->connect().is_ok());
+    }
+
+    std::shared_ptr<MockPostgresDatabase> db_;
+};
+
+}  // namespace
+
+TEST_F(PnLAccountingBranchTest, MeanReversionUsesMixed) {
+    StrategyConfig cfg;
+    cfg.capital_allocation = 100000.0;
+    cfg.max_leverage = 2.0;
+    cfg.max_drawdown = 0.3;
+    cfg.asset_classes = {AssetClass::EQUITIES};
+    cfg.frequencies = {DataFrequency::DAILY};
+    cfg.trading_params["AAPL"] = 1.0;
+    cfg.position_limits["AAPL"] = 1000.0;
+
+    MeanReversionConfig mr;
+    mr.lookback_period = 20;
+    mr.vol_lookback = 20;
+    mr.entry_threshold = 2.0;
+    mr.exit_threshold = 0.5;
+    mr.risk_target = 0.15;
+    mr.position_size = 0.1;
+
+    MeanReversionStrategy strat("TEST_MR_PNL", cfg, mr, db_);
+    ASSERT_TRUE(strat.initialize().is_ok());
+
+    EXPECT_EQ(strat.get_pnl_accounting().method, PnLAccountingMethod::MIXED)
+        << "Equity mean reversion must declare MIXED accounting so the "
+           "backtest coordinator skips daily realized_pnl writes (Phase 4 §1.14).";
+}
+
+TEST_F(PnLAccountingBranchTest, TrendFollowingUsesRealizedOnly) {
+    StrategyConfig cfg;
+    cfg.capital_allocation = 100000.0;
+    cfg.max_leverage = 2.0;
+    cfg.max_drawdown = 0.3;
+    cfg.asset_classes = {AssetClass::FUTURES};
+    cfg.frequencies = {DataFrequency::DAILY};
+    cfg.trading_params["ES"] = 1.0;
+    cfg.position_limits["ES"] = 10.0;
+
+    TrendFollowingConfig tfc;
+
+    TrendFollowingStrategy strat("TEST_TF_PNL", cfg, tfc, db_);
+    ASSERT_TRUE(strat.initialize().is_ok());
+
+    EXPECT_EQ(strat.get_pnl_accounting().method, PnLAccountingMethod::REALIZED_ONLY)
+        << "Futures trend following must declare REALIZED_ONLY accounting so "
+           "the backtest coordinator writes daily MTM into realized_pnl "
+           "(futures settle daily) per Phase 4 §1.14.";
+}
+
+TEST_F(PnLAccountingBranchTest, AccessorIsStableAcrossCalls) {
+    StrategyConfig cfg;
+    cfg.capital_allocation = 100000.0;
+    cfg.max_leverage = 2.0;
+    cfg.max_drawdown = 0.3;
+    cfg.asset_classes = {AssetClass::EQUITIES};
+    cfg.frequencies = {DataFrequency::DAILY};
+    cfg.trading_params["AAPL"] = 1.0;
+    cfg.position_limits["AAPL"] = 1000.0;
+
+    MeanReversionStrategy strat("TEST_MR_STABLE", cfg, MeanReversionConfig{}, db_);
+    ASSERT_TRUE(strat.initialize().is_ok());
+
+    auto method_a = strat.get_pnl_accounting().method;
+    auto method_b = strat.get_pnl_accounting().method;
+    auto method_c = strat.get_pnl_accounting().method;
+    EXPECT_EQ(method_a, method_b);
+    EXPECT_EQ(method_b, method_c);
+}
+
+}  // namespace pnl_accounting_branch_detail
+
+// ============================================================================
+// E2-F27 / T-OR.4: a fill that crosses zero realizes on the CLOSED quantity only.
+//
+// Long 100 @ 150, SELL 150 @ 170: 100 shares close (realized 100 x 20 = 2000)
+// and the remaining 50 open a new short at the fill price. Realizing on the
+// full 150 (3000) books P&L on 50 shares that were never held. Mirror for the
+// short side. TF/TFF/TFS override on_execution; MR and any non-overriding
+// strategy hit this path on an optimizer-driven flip.
+// ============================================================================
+TEST_F(BaseStrategyTest, OnExecution_FlipRealizesOnlyTheClosedQuantity_Long) {
+    auto db = std::make_shared<MockPostgresDatabase>();
+    StrategyConfig config;
+    auto strategy = createRunningStrategy(config, db);
+
+    ASSERT_TRUE(strategy->on_execution(createExecution(Side::BUY, "AAPL", 100, 150.0)).is_ok());
+    ASSERT_TRUE(strategy->on_execution(createExecution(Side::SELL, "AAPL", 150, 170.0)).is_ok());
+
+    const auto& pos = strategy->get_positions().at("AAPL");
+    EXPECT_DOUBLE_EQ(pos.realized_pnl.as_double(), 2000.0)
+        << "realized must be (170-150) x the 100 shares that closed, not x 150";
+    EXPECT_DOUBLE_EQ(strategy->get_metrics().realized_pnl, 2000.0);
+    EXPECT_DOUBLE_EQ(pos.quantity.as_double(), -50.0);
+    EXPECT_DOUBLE_EQ(pos.average_price.as_double(), 170.0)
+        << "the 50-share remainder opens at the fill price";
+}
+
+TEST_F(BaseStrategyTest, OnExecution_FlipRealizesOnlyTheClosedQuantity_Short) {
+    auto db = std::make_shared<MockPostgresDatabase>();
+    StrategyConfig config;
+    auto strategy = createRunningStrategy(config, db);
+
+    ASSERT_TRUE(strategy->on_execution(createExecution(Side::SELL, "AAPL", 100, 150.0)).is_ok());
+    ASSERT_TRUE(strategy->on_execution(createExecution(Side::BUY, "AAPL", 150, 130.0)).is_ok());
+
+    const auto& pos = strategy->get_positions().at("AAPL");
+    EXPECT_DOUBLE_EQ(pos.realized_pnl.as_double(), 2000.0)
+        << "realized must be (150-130) x the 100 shares that covered, not x 150";
+    EXPECT_DOUBLE_EQ(strategy->get_metrics().realized_pnl, 2000.0);
+    EXPECT_DOUBLE_EQ(pos.quantity.as_double(), 50.0);
+    EXPECT_DOUBLE_EQ(pos.average_price.as_double(), 130.0)
+        << "the 50-share remainder opens at the fill price";
+}
+
+// An exact close (qty == fill) and a partial close are unchanged by the fix.
+TEST_F(BaseStrategyTest, OnExecution_ExactAndPartialCloseRealizeOnTheFill) {
+    auto db = std::make_shared<MockPostgresDatabase>();
+    StrategyConfig config;
+    auto strategy = createRunningStrategy(config, db);
+
+    ASSERT_TRUE(strategy->on_execution(createExecution(Side::BUY, "AAPL", 100, 150.0)).is_ok());
+    ASSERT_TRUE(strategy->on_execution(createExecution(Side::SELL, "AAPL", 40, 160.0)).is_ok());
+    EXPECT_DOUBLE_EQ(strategy->get_positions().at("AAPL").realized_pnl.as_double(), 400.0);
+    EXPECT_DOUBLE_EQ(strategy->get_positions().at("AAPL").quantity.as_double(), 60.0);
+    EXPECT_DOUBLE_EQ(strategy->get_positions().at("AAPL").average_price.as_double(), 150.0);
+
+    ASSERT_TRUE(strategy->on_execution(createExecution(Side::SELL, "AAPL", 60, 170.0)).is_ok());
+    EXPECT_DOUBLE_EQ(strategy->get_positions().at("AAPL").realized_pnl.as_double(), 400.0 + 1200.0);
+    EXPECT_DOUBLE_EQ(strategy->get_positions().at("AAPL").quantity.as_double(), 0.0);
+}
+
+// ---------------------------------------------------------------------------
+// C-5 §9-A2 -- the §1.14 branch itself, not just the accessor it reads.
+//
+// THE TEST DEFECT: the three tests above assert what get_pnl_accounting() returns for a
+// mean-reversion and a trend-following config. That contract predates 7e3d07c2. Executed
+// revert (C-5 L-CLOSURE): with src/backtest/backtest_coordinator.cpp reverted to 7e3d07c2^
+// -- the file whose branch the commit's own header names -- all three still PASS:
+//
+//     [==========] 3 tests from 1 test suite ran.
+//     [  PASSED  ] 3 tests.
+//
+// The coordinator's branch was never entered, so nothing pinned the behaviour the commit
+// shipped. These add it: the two methods must produce DIFFERENT realized figures from the
+// same bar, because they are different quantities.
+// ---------------------------------------------------------------------------
+
+TEST(PnLAccountingBranchRule, TheTwoMethodsBookDifferentRealizedFromTheSameBar) {
+    // One bar: a settled MTM move of -877.50 (the MYM.v.0 figure), and fills that realized
+    // +200.00 on this bar.
+    const double daily_mtm = -877.50;
+    const double flow = 200.00;
+
+    const double futures = trade_ngin::backtest::BacktestPnLManager::realized_for_row(
+        PnLAccountingMethod::REALIZED_ONLY, daily_mtm, flow);
+    const double equities = trade_ngin::backtest::BacktestPnLManager::realized_for_row(
+        PnLAccountingMethod::MIXED, daily_mtm, flow);
+
+    EXPECT_DOUBLE_EQ(futures, daily_mtm)
+        << "under REALIZED_ONLY the settled move IS the day's realized";
+    EXPECT_DOUBLE_EQ(equities, flow)
+        << "under MIXED realized comes from the fills, never from the mark";
+    EXPECT_NE(futures, equities)
+        << "if these agreed the branch would be unobservable and the column meaningless";
+}
+
+TEST(PnLAccountingBranchRule, AHeldEquityDayBooksZeroRealizedNotTheMarkMove) {
+    // The defect's signature: a day on which nothing closed. Under MIXED the row must read
+    // 0.00, not the day's mark-to-market move -- otherwise every held day looks like a
+    // realizing day and the column no longer sums to the position's realized P&L.
+    const double realized = trade_ngin::backtest::BacktestPnLManager::realized_for_row(
+        PnLAccountingMethod::MIXED, /*daily_mtm=*/-877.50, /*flow=*/0.0);
+    EXPECT_DOUBLE_EQ(realized, 0.0);
+}
+
+TEST(PnLAccountingBranchRule, UnrealizedOnlyBooksTheFlowLikeMixed) {
+    // UNREALIZED_ONLY is a cash book too; only REALIZED_ONLY takes the mark.
+    EXPECT_DOUBLE_EQ(trade_ngin::backtest::BacktestPnLManager::realized_for_row(
+                         PnLAccountingMethod::UNREALIZED_ONLY, -877.50, 200.0),
+                     200.0);
 }

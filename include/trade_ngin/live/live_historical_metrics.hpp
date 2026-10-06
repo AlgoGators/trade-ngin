@@ -1,9 +1,8 @@
 #pragma once
 
-#include <optional>
-#include <vector>
 #include <string>
 #include <unordered_map>
+#include <vector>
 
 namespace trade_ngin {
 
@@ -13,21 +12,13 @@ namespace trade_ngin {
  * Units:
  * - Returns-related fields (volatility, downside_deviation, avg_win, avg_loss,
  *   best_day, worst_day) are in percentage points, consistent with daily_return.
- * - Ratios (sharpe_ratio, sortino_ratio, profit_factor) are dimensionless, and
- *   EMPTY where their denominator is zero. Volatility, downside deviation and
- *   the gross P&L figures are reported alongside, so an absent ratio always has
- *   its explanation in the same struct.
+ * - Ratios (sharpe_ratio, sortino_ratio, profit_factor) are dimensionless.
  * - PnL aggregates (gross_profit, gross_loss) are in portfolio currency.
  */
 struct HistoricalMetrics {
-    // Risk-adjusted performance.
-    //
-    // Both were 0.0 when their denominator was zero, which is a claim -- "no
-    // return per unit of risk" -- about a quantity that has no value. A book
-    // whose daily returns never varied has no Sharpe ratio; one that never had
-    // a down day has no Sortino.
-    std::optional<double> sharpe_ratio;   // annualised return / volatility
-    std::optional<double> sortino_ratio;  // annualised return / downside deviation
+    // Risk-adjusted performance
+    double sharpe_ratio = 0.0;
+    double sortino_ratio = 0.0;
     double max_drawdown = 0.0;        // % peak-to-trough from equity curve
     double volatility = 0.0;          // annualized, % units
     double downside_deviation = 0.0;  // annualized, % units
@@ -46,15 +37,7 @@ struct HistoricalMetrics {
     // Profit factor based on daily PnL
     double gross_profit = 0.0;  // sum of positive daily_pnl
     double gross_loss = 0.0;    // sum of abs(negative daily_pnl)
-
-    // gross_profit / gross_loss, and EMPTY when there is no denominator.
-    //
-    // A book that has not had a losing day has no profit factor -- the ratio is
-    // a division by zero, not a large number. This used to be reported as
-    // 999.99, a sentinel that is indistinguishable from a measurement once it
-    // is in a numeric column: it averages, it sorts to the top of a leaderboard,
-    // and it renders as "999.99x" on a dashboard.
-    std::optional<double> profit_factor;
+    double profit_factor = 0.0; // gross_profit / gross_loss
 
     // Trade-level stats
     int total_trades = 0;       // count of executions since inception
@@ -94,9 +77,34 @@ private:
     static double calculate_max_drawdown_from_equity(const std::vector<double>& equity_values);
 };
 
-std::unordered_map<std::string,double> historical_metrics_double_columns(const HistoricalMetrics&);
-std::unordered_map<std::string,int> historical_metrics_int_columns(const HistoricalMetrics&);
-std::vector<std::string> historical_metrics_null_columns(const HistoricalMetrics&);
+/**
+ * @brief The since-inception block as `trading.live_results` columns (E2-F33).
+ *
+ * One definition of "which columns ARE the historical-metrics block", so the two sites that
+ * write it -- the Day T-1 UPDATE and the day-T INSERT -- cannot drift apart and drop a
+ * column on one path only. Fifteen columns in total, every one of which was NULL on every
+ * equity row before E2-F33.
+ *
+ * `volatility` IS one of them (D3, 2026-09-03). It was held out when the block first landed
+ * because the equity runner wrote `portfolio_var x 100` -- the ex-ante instrument-mix sigma --
+ * into that column and the chain gate compared it, so filling in NULLs must not have moved it.
+ * The lead then ruled the two books may not carry two meanings in one column: both futures
+ * runners store the REALISED annualised return volatility here and keep the ex-ante sigma in
+ * `portfolio_var`, and equities now do the same. It also makes `sharpe_ratio` reproducible
+ * from the row it is written on -- `sharpe = total_annualized_return / volatility` -- which it
+ * was not while the denominator lived nowhere.
+ *
+ * `portfolio_var`, `var_95` and `cvar_95` are untouched: the ex-ante sigma still feeds the risk
+ * gate and nothing is lost.
+ *
+ * `total_trades` and `flat_days` are absent because `trading.live_results` has no such
+ * columns; flat_days is `total_days - winning_days - losing_days` on read.
+ */
+std::unordered_map<std::string, double> historical_metrics_double_columns(
+    const HistoricalMetrics& m);
+
+/** @brief The integer half of the same block: winning_days, losing_days, total_days. */
+std::unordered_map<std::string, int> historical_metrics_int_columns(const HistoricalMetrics& m);
 
 }  // namespace trade_ngin
 

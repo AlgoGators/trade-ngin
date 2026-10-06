@@ -1,9 +1,93 @@
 // src/data/conversion_utils.cpp
 #include "trade_ngin/data/conversion_utils.hpp"
-#include <cmath>
+
+#include <cctype>
+#include <cstdint>
+#include <ctime>
+#include <stdexcept>
+#include <string>
+
 #include <arrow/type_traits.h>
 
+#include "trade_ngin/core/logger.hpp"
+
 namespace trade_ngin {
+
+namespace {
+
+// Parse "YYYY-MM-DD" or "YYYY-MM-DD HH:MM:SS" (also accepting the 'T'
+// separator) as MICROSECONDS since the Unix epoch. UTC by construction --
+// timegm, never mktime, because a stored timestamptz is already a UTC instant
+// and mktime would re-interpret it in the host zone (E2-F22).
+//
+// Returns false on anything else, so a caller can distinguish "not a datetime"
+// from a datetime at the epoch.
+bool parse_ymd_hms_to_micros(const std::string& text, int64_t& out_micros) {
+    if (text.size() < 10) return false;
+    if (text[4] != '-' || text[7] != '-') return false;
+
+    auto digits = [&](std::size_t at, std::size_t n, int& out) -> bool {
+        if (at + n > text.size()) return false;
+        int v = 0;
+        for (std::size_t i = 0; i < n; ++i) {
+            const char c = text[at + i];
+            if (c < '0' || c > '9') return false;
+            v = v * 10 + (c - '0');
+        }
+        out = v;
+        return true;
+    };
+
+    int year = 0, month = 0, day = 0, hour = 0, minute = 0, second = 0;
+    if (!digits(0, 4, year) || !digits(5, 2, month) || !digits(8, 2, day)) return false;
+    if (month < 1 || month > 12 || day < 1 || day > 31) return false;
+
+    if (text.size() >= 19) {
+        const char sep = text[10];
+        if (sep != ' ' && sep != 'T') return false;
+        if (text[13] != ':' || text[16] != ':') return false;
+        if (!digits(11, 2, hour) || !digits(14, 2, minute) || !digits(17, 2, second)) {
+            return false;
+        }
+        if (hour > 23 || minute > 59 || second > 60) return false;
+    } else if (text.size() != 10) {
+        return false;  // a partial time is not a datetime
+    }
+
+    std::tm tm{};
+    tm.tm_year = year - 1900;
+    tm.tm_mon = month - 1;
+    tm.tm_mday = day;
+    tm.tm_hour = hour;
+    tm.tm_min = minute;
+    tm.tm_sec = second;
+    const std::time_t seconds = timegm(&tm);
+    if (seconds == static_cast<std::time_t>(-1)) return false;
+    out_micros = static_cast<int64_t>(seconds) * 1000000;
+    return true;
+}
+
+// Resolve a logical row index into a ChunkedArray to (chunk pointer,
+// offset within that chunk). Returns nullptr on out-of-range so the
+// caller can produce a typed error Result.
+const arrow::Array* resolve_chunk(const std::shared_ptr<arrow::ChunkedArray>& col,
+                                  int64_t logical_row, int64_t& out_offset) {
+    if (!col) return nullptr;
+    int64_t remaining = logical_row;
+    for (int i = 0; i < col->num_chunks(); ++i) {
+        const auto& chunk = col->chunk(i);
+        const int64_t len = chunk->length();
+        if (remaining < len) {
+            out_offset = remaining;
+            return chunk.get();
+        }
+        remaining -= len;
+    }
+    return nullptr;
+}
+
+}  // namespace
+
 
 Result<std::vector<Bar>> DataConversionUtils::arrow_table_to_bars(
     const std::shared_ptr<arrow::Table>& table) {
@@ -177,57 +261,240 @@ Result<std::string> DataConversionUtils::extract_string(const std::shared_ptr<ar
     }
 }
 
+// ----------------------------------------------------------------------------
+// safe_get_* (Phase 5 §1.17a + §5d) -- type-aware chunked accessors. See the
+// header for the dispatch contract.
+// ----------------------------------------------------------------------------
+
 Result<double> DataConversionUtils::safe_get_double(
-    const std::shared_ptr<arrow::ChunkedArray>& column,int64_t row,const std::string& name) {
-    if(!column || row<0 || row>=column->length())
-        return make_error<double>(ErrorCode::INVALID_ARGUMENT,"invalid_numeric_cell:"+name);
-    int64_t offset=row;
-    for(const auto& chunk:column->chunks()) {
-        if(offset>=chunk->length()) {offset-=chunk->length();continue;}
-        if(chunk->IsNull(offset))
-            return make_error<double>(ErrorCode::INVALID_DATA,"null_numeric_cell:"+name);
-        try {
-            double value;
-            switch(chunk->type_id()) {
-                case arrow::Type::DOUBLE:value=static_cast<const arrow::DoubleArray*>(chunk.get())->Value(offset);break;
-                case arrow::Type::FLOAT:value=static_cast<const arrow::FloatArray*>(chunk.get())->Value(offset);break;
-                case arrow::Type::INT64:value=static_cast<double>(static_cast<const arrow::Int64Array*>(chunk.get())->Value(offset));break;
-                case arrow::Type::INT32:value=static_cast<const arrow::Int32Array*>(chunk.get())->Value(offset);break;
-                case arrow::Type::STRING:
-                case arrow::Type::LARGE_STRING: {
-                    const auto text=chunk->type_id()==arrow::Type::STRING
-                        ?static_cast<const arrow::StringArray*>(chunk.get())->GetString(offset)
-                        :static_cast<const arrow::LargeStringArray*>(chunk.get())->GetString(offset);
-                    size_t consumed=0;value=std::stod(text,&consumed);
-                    if(consumed!=text.size())throw std::invalid_argument("trailing_numeric_text");
-                    break;
-                }
-                default:return make_error<double>(ErrorCode::CONVERSION_ERROR,"unsupported_numeric_cell:"+name);
-            }
-            if(!std::isfinite(value))throw std::invalid_argument("nonfinite_numeric_cell");
-            return Result<double>(value);
-        } catch(const std::exception&) {
-            return make_error<double>(ErrorCode::CONVERSION_ERROR,"invalid_numeric_cell:"+name);
-        }
+    const std::shared_ptr<arrow::ChunkedArray>& col, int64_t row,
+    const std::string& column_name) {
+    if (!col) {
+        return make_error<double>(ErrorCode::INVALID_ARGUMENT,
+                                  "safe_get_double: null column (" + column_name + ")",
+                                  "DataConversionUtils");
     }
-    return make_error<double>(ErrorCode::INVALID_ARGUMENT,"invalid_numeric_cell:"+name);
+    int64_t off = 0;
+    const arrow::Array* chunk = resolve_chunk(col, row, off);
+    if (!chunk) {
+        return make_error<double>(ErrorCode::INVALID_ARGUMENT,
+                                  "safe_get_double: row " + std::to_string(row) +
+                                      " out of range in column " + column_name,
+                                  "DataConversionUtils");
+    }
+    if (chunk->IsNull(off)) {
+        return make_error<double>(ErrorCode::INVALID_DATA,
+                                  "safe_get_double: null at row " + std::to_string(row) +
+                                      " in column " + column_name,
+                                  "DataConversionUtils");
+    }
+    try {
+        switch (chunk->type_id()) {
+            case arrow::Type::DOUBLE:
+                return Result<double>(
+                    static_cast<const arrow::DoubleArray*>(chunk)->Value(off));
+            case arrow::Type::FLOAT:
+                return Result<double>(static_cast<double>(
+                    static_cast<const arrow::FloatArray*>(chunk)->Value(off)));
+            case arrow::Type::INT64:
+                return Result<double>(static_cast<double>(
+                    static_cast<const arrow::Int64Array*>(chunk)->Value(off)));
+            case arrow::Type::INT32:
+                return Result<double>(static_cast<double>(
+                    static_cast<const arrow::Int32Array*>(chunk)->Value(off)));
+            case arrow::Type::STRING:
+            case arrow::Type::LARGE_STRING: {
+                std::string s;
+                if (chunk->type_id() == arrow::Type::STRING) {
+                    s = static_cast<const arrow::StringArray*>(chunk)->GetString(off);
+                } else {
+                    s = static_cast<const arrow::LargeStringArray*>(chunk)->GetString(off);
+                }
+                try {
+                    return Result<double>(std::stod(s));
+                } catch (const std::exception& e) {
+                    WARN("safe_get_double: bad value '" + s + "' in column " + column_name +
+                         " at row " + std::to_string(row) + " (" + e.what() + ")");
+                    return make_error<double>(ErrorCode::CONVERSION_ERROR,
+                                              "safe_get_double parse failure", "DataConversionUtils");
+                }
+            }
+            default: {
+                const std::string actual = chunk->type()->ToString();
+                ERROR("safe_get_double: unsupported Arrow type '" + actual + "' in column " +
+                      column_name + " at row " + std::to_string(row));
+                return make_error<double>(ErrorCode::CONVERSION_ERROR,
+                                          "safe_get_double unsupported type",
+                                          "DataConversionUtils");
+            }
+        }
+    } catch (const std::exception& e) {
+        return make_error<double>(ErrorCode::CONVERSION_ERROR,
+                                  std::string("safe_get_double exception: ") + e.what(),
+                                  "DataConversionUtils");
+    }
+}
+
+Result<int64_t> DataConversionUtils::safe_get_int64(
+    const std::shared_ptr<arrow::ChunkedArray>& col, int64_t row,
+    const std::string& column_name) {
+    if (!col) {
+        return make_error<int64_t>(ErrorCode::INVALID_ARGUMENT,
+                                   "safe_get_int64: null column (" + column_name + ")",
+                                   "DataConversionUtils");
+    }
+    int64_t off = 0;
+    const arrow::Array* chunk = resolve_chunk(col, row, off);
+    if (!chunk) {
+        return make_error<int64_t>(ErrorCode::INVALID_ARGUMENT,
+                                   "safe_get_int64: row " + std::to_string(row) +
+                                       " out of range in column " + column_name,
+                                   "DataConversionUtils");
+    }
+    if (chunk->IsNull(off)) {
+        return make_error<int64_t>(ErrorCode::INVALID_DATA,
+                                   "safe_get_int64: null at row " + std::to_string(row) +
+                                       " in column " + column_name,
+                                   "DataConversionUtils");
+    }
+    try {
+        switch (chunk->type_id()) {
+            case arrow::Type::INT64:
+                return Result<int64_t>(
+                    static_cast<const arrow::Int64Array*>(chunk)->Value(off));
+            case arrow::Type::INT32:
+                return Result<int64_t>(static_cast<int64_t>(
+                    static_cast<const arrow::Int32Array*>(chunk)->Value(off)));
+            case arrow::Type::DOUBLE: {
+                const double d = static_cast<const arrow::DoubleArray*>(chunk)->Value(off);
+                WARN("safe_get_int64: truncating double " + std::to_string(d) + " in column " +
+                     column_name + " at row " + std::to_string(row));
+                return Result<int64_t>(static_cast<int64_t>(d));
+            }
+            // E2-F37 / BA-14: temporal columns. The canonical schema stores dates as
+            // TimestampArray; without these cases such a column fell through to
+            // `default` and errored. The value is returned in the column's OWN unit
+            // (the canonical schema is microseconds, which is what
+            // LiveDataLoader::load_previous_day_data reads) -- see the header.
+            case arrow::Type::TIMESTAMP:
+                return Result<int64_t>(
+                    static_cast<const arrow::TimestampArray*>(chunk)->Value(off));
+            case arrow::Type::DATE32:  // days since epoch
+                return Result<int64_t>(static_cast<int64_t>(
+                    static_cast<const arrow::Date32Array*>(chunk)->Value(off)));
+            case arrow::Type::DATE64:  // milliseconds since epoch
+                return Result<int64_t>(
+                    static_cast<const arrow::Date64Array*>(chunk)->Value(off));
+            case arrow::Type::STRING:
+            case arrow::Type::LARGE_STRING: {
+                std::string s;
+                if (chunk->type_id() == arrow::Type::STRING) {
+                    s = static_cast<const arrow::StringArray*>(chunk)->GetString(off);
+                } else {
+                    s = static_cast<const arrow::LargeStringArray*>(chunk)->GetString(off);
+                }
+                // A FULLY integral string is an integer. `std::stoll` stops at the
+                // first non-digit, so "2026-09-02 00:00:00" used to come back as
+                // 2026 -- a silent, plausible integer that is not a timestamp in any
+                // unit. Require the whole string to be consumed before believing it.
+                try {
+                    std::size_t consumed = 0;
+                    const long long v = std::stoll(s, &consumed);
+                    while (consumed < s.size() &&
+                           std::isspace(static_cast<unsigned char>(s[consumed]))) {
+                        ++consumed;
+                    }
+                    if (consumed == s.size()) {
+                        return Result<int64_t>(static_cast<int64_t>(v));
+                    }
+                } catch (const std::exception&) {
+                    // fall through to the datetime attempt
+                }
+
+                // Not an integer. The one shape a temporal column legitimately takes
+                // as text: YYYY-MM-DD, optionally with a time. Returned as
+                // MICROSECONDS since the epoch, the canonical timestamp unit.
+                int64_t micros = 0;
+                if (parse_ymd_hms_to_micros(s, micros)) {
+                    return Result<int64_t>(micros);
+                }
+
+                WARN("safe_get_int64: bad value '" + s + "' in column " + column_name +
+                     " at row " + std::to_string(row) +
+                     " (neither an integer nor YYYY-MM-DD[ HH:MM:SS])");
+                return make_error<int64_t>(ErrorCode::CONVERSION_ERROR,
+                                           "safe_get_int64 parse failure",
+                                           "DataConversionUtils");
+            }
+            default: {
+                const std::string actual = chunk->type()->ToString();
+                ERROR("safe_get_int64: unsupported Arrow type '" + actual + "' in column " +
+                      column_name + " at row " + std::to_string(row));
+                return make_error<int64_t>(ErrorCode::CONVERSION_ERROR,
+                                           "safe_get_int64 unsupported type",
+                                           "DataConversionUtils");
+            }
+        }
+    } catch (const std::exception& e) {
+        return make_error<int64_t>(ErrorCode::CONVERSION_ERROR,
+                                   std::string("safe_get_int64 exception: ") + e.what(),
+                                   "DataConversionUtils");
+    }
 }
 
 Result<std::string> DataConversionUtils::safe_get_string(
-    const std::shared_ptr<arrow::ChunkedArray>& column,int64_t row,const std::string& name) {
-    if(!column || row<0 || row>=column->length())
-        return make_error<std::string>(ErrorCode::INVALID_ARGUMENT,"invalid_string_cell:"+name);
-    int64_t offset=row;
-    for(const auto& chunk:column->chunks()) {
-        if(offset>=chunk->length()) {offset-=chunk->length();continue;}
-        if(chunk->IsNull(offset))return make_error<std::string>(ErrorCode::INVALID_DATA,"null_string_cell:"+name);
-        if(chunk->type_id()==arrow::Type::STRING)
-            return Result<std::string>(static_cast<const arrow::StringArray*>(chunk.get())->GetString(offset));
-        if(chunk->type_id()==arrow::Type::LARGE_STRING)
-            return Result<std::string>(static_cast<const arrow::LargeStringArray*>(chunk.get())->GetString(offset));
-        return make_error<std::string>(ErrorCode::CONVERSION_ERROR,"unsupported_string_cell:"+name);
+    const std::shared_ptr<arrow::ChunkedArray>& col, int64_t row,
+    const std::string& column_name) {
+    if (!col) {
+        return make_error<std::string>(ErrorCode::INVALID_ARGUMENT,
+                                       "safe_get_string: null column (" + column_name + ")",
+                                       "DataConversionUtils");
     }
-    return make_error<std::string>(ErrorCode::INVALID_ARGUMENT,"invalid_string_cell:"+name);
+    int64_t off = 0;
+    const arrow::Array* chunk = resolve_chunk(col, row, off);
+    if (!chunk) {
+        return make_error<std::string>(ErrorCode::INVALID_ARGUMENT,
+                                       "safe_get_string: row " + std::to_string(row) +
+                                           " out of range in column " + column_name,
+                                       "DataConversionUtils");
+    }
+    if (chunk->IsNull(off)) {
+        return make_error<std::string>(ErrorCode::INVALID_DATA,
+                                       "safe_get_string: null at row " + std::to_string(row) +
+                                           " in column " + column_name,
+                                       "DataConversionUtils");
+    }
+    try {
+        switch (chunk->type_id()) {
+            case arrow::Type::STRING:
+                return Result<std::string>(
+                    static_cast<const arrow::StringArray*>(chunk)->GetString(off));
+            case arrow::Type::LARGE_STRING:
+                return Result<std::string>(
+                    static_cast<const arrow::LargeStringArray*>(chunk)->GetString(off));
+            case arrow::Type::DOUBLE:
+                return Result<std::string>(std::to_string(
+                    static_cast<const arrow::DoubleArray*>(chunk)->Value(off)));
+            case arrow::Type::INT64:
+                return Result<std::string>(std::to_string(
+                    static_cast<const arrow::Int64Array*>(chunk)->Value(off)));
+            case arrow::Type::INT32:
+                return Result<std::string>(std::to_string(
+                    static_cast<const arrow::Int32Array*>(chunk)->Value(off)));
+            default: {
+                const std::string actual = chunk->type()->ToString();
+                ERROR("safe_get_string: unsupported Arrow type '" + actual + "' in column " +
+                      column_name + " at row " + std::to_string(row));
+                return make_error<std::string>(ErrorCode::CONVERSION_ERROR,
+                                               "safe_get_string unsupported type",
+                                               "DataConversionUtils");
+            }
+        }
+    } catch (const std::exception& e) {
+        return make_error<std::string>(ErrorCode::CONVERSION_ERROR,
+                                       std::string("safe_get_string exception: ") + e.what(),
+                                       "DataConversionUtils");
+    }
 }
 
 }  // namespace trade_ngin

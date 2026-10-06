@@ -193,14 +193,6 @@ Result<void> TrendFollowingStrategy::on_data(const std::vector<Bar>& data,
             for (const auto& bar : symbol_bars) {
                 instrument_data.price_history.push_back(static_cast<double>(bar.close));
 
-                // STICKY_DEBUG: Trace on_data push for MBT
-                if (symbol == "MBT.v.0") {
-                    INFO("STICKY_DEBUG_ONDATA: symbol=" + symbol + " bar.close=" +
-                         std::to_string(static_cast<double>(bar.close)) + " price_history.size()=" +
-                         std::to_string(instrument_data.price_history.size()) + " bar.timestamp=" +
-                         std::to_string(std::chrono::system_clock::to_time_t(bar.timestamp)));
-                }
-
                 // MEMORY FIX: Limit price history to maximum needed lookback
                 if (trace) trace->history.max_history_size = trend_config_.max_history_size;
                 if (instrument_data.price_history.size() > trend_config_.max_history_size) {
@@ -233,6 +225,9 @@ Result<void> TrendFollowingStrategy::on_data(const std::vector<Bar>& data,
         for (const auto& bar : data) {
             bars_by_symbol[bar.symbol].push_back(bar);
         }
+
+        // Cache weights once per on_data() call to avoid repeated DB queries
+        auto cached_weights = get_weights();
 
         // Process each symbol for signal generation
         for (const auto& [symbol, symbol_bars] : bars_by_symbol) {
@@ -361,10 +356,11 @@ Result<void> TrendFollowingStrategy::on_data(const std::vector<Bar>& data,
                         lookup_symbol = "MYM";
                     }
 
-                    // Get weight
-                    const auto& weights = get_weights();
-                    if (weights.count(lookup_symbol) > 0) {
-                        instrument_data.weight = weights.at(lookup_symbol);
+                    // Get weight from the per-call hoisted copy (get_weights() itself
+                    // caches internally; hoisting avoids a map copy per symbol)
+                    auto weight_it = cached_weights.find(lookup_symbol);
+                    if (weight_it != cached_weights.end()) {
+                        instrument_data.weight = weight_it->second;
                     } else {
                         WARN("Weight not found for " + symbol);
                     }
@@ -654,17 +650,6 @@ std::unordered_map<std::string, Position> TrendFollowingStrategy::get_target_pos
 
         pos.last_update = instrument_data.last_update;
         target_positions[symbol] = pos;
-
-        // STICKY_DEBUG: Trace average_price at get_target_positions stage
-        if (symbol == "MBT.v.0" || symbol == "NQ.v.0") {
-            INFO("STICKY_DEBUG_GTP: symbol=" + symbol + " price_history.size()=" +
-                 std::to_string(instrument_data.price_history.size()) + " price_history.back()=" +
-                 (instrument_data.price_history.empty()
-                      ? "EMPTY"
-                      : std::to_string(instrument_data.price_history.back())) +
-                 " pos.average_price=" + std::to_string(static_cast<double>(pos.average_price)) +
-                 " pos.quantity=" + std::to_string(static_cast<double>(pos.quantity)));
-        }
     }
 
     return target_positions;

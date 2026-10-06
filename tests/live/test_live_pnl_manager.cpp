@@ -205,6 +205,37 @@ TEST_F(LivePnLManagerTest, GetPointValueStripsVariantSuffix) {
     EXPECT_DOUBLE_EQ(mgr.get_point_value("ES.v.0"), 50.0);
 }
 
+// E2-F38 / BA-7: the fallback table is matched by SUBSTRING over futures contract
+// codes, so an unregistered EQUITY ticker that happens to contain one inherits a
+// futures multiplier. These are all real US tickers, and the multipliers below are
+// what the table actually returns for them today.
+TEST_F(LivePnLManagerTest, UnregisteredEquityDoesNotInheritAFuturesMultiplier) {
+    LivePnLManager mgr(500000.0, InstrumentRegistry::instance());
+    mgr.set_asset_type(AssetType::EQUITY);
+
+    // LEN is the spinoff parent in this campaign's own corp-action work (LEN/Millrose).
+    EXPECT_DOUBLE_EQ(mgr.get_point_value("LEN"), 1.0) << "matches \"LE\", live cattle, 40000";
+    EXPECT_DOUBLE_EQ(mgr.get_point_value("ZM"), 1.0) << "Zoom matches \"ZM\", soybean meal, 100";
+    EXPECT_DOUBLE_EQ(mgr.get_point_value("UBER"), 1.0) << "matches \"UB\", ultra T-bond, 1000";
+    EXPECT_DOUBLE_EQ(mgr.get_point_value("HES"), 1.0) << "Hess matches \"ES\", E-mini S&P, 5";
+    EXPECT_DOUBLE_EQ(mgr.get_point_value("SIRI"), 1.0) << "matches \"SI\", silver, 5000";
+    EXPECT_DOUBLE_EQ(mgr.get_point_value("PLD"), 1.0) << "Prologis matches \"PL\", platinum, 50";
+
+    // A share is a share: every equity point value is 1.0, registered or not.
+    EXPECT_DOUBLE_EQ(mgr.get_point_value("AAPL"), 1.0);
+}
+
+// The futures default is untouched: a manager that says nothing behaves exactly as
+// it does today, which is what keeps this change inert for both futures runners.
+TEST_F(LivePnLManagerTest, DefaultAssetTypeKeepsTheFuturesFallbackTable) {
+    LivePnLManager mgr(500000.0, InstrumentRegistry::instance());
+    EXPECT_EQ(mgr.asset_type(), AssetType::FUTURE) << "silent callers stay on futures";
+    EXPECT_DOUBLE_EQ(mgr.get_point_value("CL"), 1000.0);
+    EXPECT_DOUBLE_EQ(mgr.get_point_value("GC"), 1000.0);
+    EXPECT_DOUBLE_EQ(mgr.get_point_value("ZM"), 100.0) << "as futures, ZM IS soybean meal";
+    EXPECT_DOUBLE_EQ(mgr.get_point_value("UNKNOWN_XYZ"), 1.0) << "no match, still 1.0";
+}
+
 // ===== reset_daily_tracking =====
 
 TEST_F(LivePnLManagerTest, ResetDailyTrackingClearsAccumulators) {
