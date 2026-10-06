@@ -1,5 +1,6 @@
 #include "trade_ngin/core/live_config_override.hpp"
 #include "trade_ngin/core/qt_sha256.hpp"
+#include "trade_ngin/apps/live_portfolio_helpers.hpp"
 #include <algorithm>
 #include <cctype>
 #include <optional>
@@ -73,15 +74,31 @@ Policy editable(const Json& snapshot, bool live_profile_only = true) {
         leaves(policy,snapshot.at("optimization"),"/optimization/",{
         {"tau",Type::Number},{"cost_penalty_scalar",Type::Number},{"max_iterations",Type::Integer},
         {"convergence_threshold",Type::Number},{"use_buffering",Type::Boolean},{"buffer_size_factor",Type::Number}});
-    if (!live_profile_only || live_trend)
-        leaves(policy,snapshot.at("strategy_defaults"),"/strategy_defaults/",{
-        {"fdm",Type::NumberPairs},{"carver_buffer_floor",Type::Number},{"carver_buffer_position_factor",Type::Number}});
+    // FDM is shadowed by every trend struct's nonempty table. Buffer defaults
+    // have a factory consumer only in a selected config block omitting that key.
+    if (!live_profile_only)
+        leaves(policy,snapshot.at("strategy_defaults"),"/strategy_defaults/",{{"fdm",Type::NumberPairs}});
+    for (const auto* key : {"carver_buffer_floor","carver_buffer_position_factor"}) {
+        bool consumed = !live_profile_only;
+        for (const auto& entry : snapshot.at("strategies").items()) {
+            const auto& def=entry.value();
+            if (!def.is_object() || !def.value("enabled_live",false) || !def.contains("config")) continue;
+            const auto type=def.value("type",std::string("TrendFollowingStrategy"));
+            if ((type=="TrendFollowingStrategy" || type=="TrendFollowingFastStrategy" || type=="TrendFollowingSlowStrategy") &&
+                def.at("config").is_object() && !def.at("config").contains(key)) consumed=true;
+        }
+        if (consumed) leaves(policy,snapshot.at("strategy_defaults"),"/strategy_defaults/",{{key,Type::Number}});
+    }
     const auto& risk=snapshot.at("risk");
     leaves(policy,risk,"/risk/",{{"max_drawdown",Type::Number},{"max_leverage",Type::Number}});
     leaves(policy,risk.at("risk_reporting"),"/risk/risk_reporting/",risk_fields);
     modules(policy,risk.at("modules"),"/risk/modules/");
-    for(const auto& sleeve:snapshot.at("sleeve_risk_modules").items())
-        modules(policy,sleeve.value(),"/sleeve_risk_modules/"+escape(sleeve.key())+"/");
+    for(const auto& sleeve:snapshot.at("sleeve_risk_modules").items()) {
+        const auto& strategies=snapshot.at("strategies");
+        if (!live_profile_only || (strategies.contains(sleeve.key()) &&
+            strategies.at(sleeve.key()).value("enabled_live",false)))
+            modules(policy,sleeve.value(),"/sleeve_risk_modules/"+escape(sleeve.key())+"/");
+    }
     for(const auto& entry:snapshot.at("strategies").items()) {
         if(!entry.value().is_object()) continue;
         const auto& def=entry.value();
@@ -152,6 +169,12 @@ void validate_consumers(const AppConfig& c) {
         require(std::isfinite(weight) && weight > 0.0);
         allocation_sum += weight;
     }
+    // The live factory registers only the enabled selection; PortfolioManager
+    // cannot attach an assigned sleeve to a disabled/unregistered strategy.
+    for (const auto& [name, modules] : c.risk_schema.sleeves) {
+        (void)modules;
+        require(c.strategies_config.contains(name) && c.strategies_config.at(name).value("enabled_live",false));
+    }
     require(profile != 0 && std::isfinite(allocation_sum) && std::abs(allocation_sum - 1.0) <= 1e-9);
     require(c.initial_capital>0 && c.reserve_capital_pct>=0 && c.reserve_capital_pct<1);
     require(c.execution.position_limit_live>0);
@@ -164,6 +187,24 @@ void validate_consumers(const AppConfig& c) {
     require(c.covariance_history_prices>=2 && c.covariance_history_prices<=static_cast<size_t>(std::numeric_limits<int>::max()));
     for(const auto& [count,mult]:c.strategy_defaults.fdm) require(count>0 && mult>0);
     require(!c.strategy_defaults.fdm.empty() && c.strategy_defaults.carver_buffer_floor>=0 && c.strategy_defaults.carver_buffer_position_factor>=0);
+    // Use the shared pure factory and constructor stages, including omitted JSON
+    // defaults. Guard signed multiplication before invoking normalization.
+    for (const auto& entry : c.strategies_config.items()) {
+        const auto& def=entry.value();
+        if (!def.value("enabled_live",false)) continue;
+        const auto factory=resolve_factory_trend_config(def.value("type",std::string("TrendFollowingStrategy")),
+            def,c.strategy_defaults,std::nullopt);
+        std::visit([](auto actual) {
+            using T=std::decay_t<decltype(actual)>;
+            if constexpr (!std::is_same_v<T,std::monostate>) {
+                require(actual.vol_lookback_short>0 && actual.vol_lookback_long>=2);
+                if (actual.vol_lookback_long<=actual.vol_lookback_short)
+                    require(actual.vol_lookback_short<=std::numeric_limits<int>::max()/4);
+                normalize_constructor_trend_config(actual);
+                require(actual.vol_lookback_long>actual.vol_lookback_short);
+            }
+        },factory);
+    }
     std::optional<bool> fractional;
     const auto full_config = c.to_json();
     const auto known_inputs = editable(full_config, false);

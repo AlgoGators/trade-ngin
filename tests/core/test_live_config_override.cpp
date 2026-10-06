@@ -3,6 +3,7 @@
 #include <gtest/gtest.h>
 #include <limits>
 #include "trade_ngin/core/live_config_override.hpp"
+#include "trade_ngin/apps/live_portfolio_helpers.hpp"
 using namespace trade_ngin;
 using Json = nlohmann::json;
 namespace {
@@ -113,8 +114,6 @@ TEST(LiveConfigOverride, AcceptsEveryWiredFuturesLeafWithoutAddingMissingPaths) 
         {"/optimization/cost_penalty_scalar",12.75},{"/optimization/max_iterations",120},
         {"/optimization/convergence_threshold",.0001},{"/optimization/use_buffering",false},
         {"/optimization/buffer_size_factor",.06},{"/use_optimization",true},{"/covariance_history_prices",800},
-        {"/strategy_defaults/fdm",Json::array({{1,1.0},{2,1.1}})},
-        {"/strategy_defaults/carver_buffer_floor",.75},{"/strategy_defaults/carver_buffer_position_factor",.2},
         {"/strategies/TREND/config/weight",.05},{"/strategies/TREND/config/risk_target",.25},
         {"/strategies/TREND/config/idm",3.0},{"/strategies/TREND/config/max_symbol_concentration",.2},
         {"/strategies/TREND/config/use_position_buffering",false},
@@ -231,4 +230,114 @@ TEST(LiveConfigOverride, NativeBaseHashKeepsLegacyAllocationNormalizationAvailab
     const auto hash=live_config_snapshot_sha256(c);
     ASSERT_TRUE(hash.is_ok()); EXPECT_EQ(hash.value().size(),64u);
     EXPECT_TRUE(parse_runtime_trading_snapshot(build_runtime_trading_snapshot(c).value()).is_error());
+}
+
+TEST(LiveConfigOverride, DefaultEligibilityMatchesActualFactoryConsumers) {
+    for (const auto* type : {"TrendFollowingStrategy", "TrendFollowingFastStrategy", "TrendFollowingSlowStrategy"}) {
+        auto c=base_config(); c.strategies_config["TREND"]["type"]=type;
+        auto resolve=[&](const AppConfig& config) {
+            return resolve_factory_trend_config(type, config.strategies_config.at("TREND"), config.strategy_defaults, std::nullopt);
+        };
+        auto factory=resolve(c);
+        std::visit([&](const auto& actual) {
+            using T=std::decay_t<decltype(actual)>;
+            if constexpr (!std::is_same_v<T,std::monostate>) {
+                EXPECT_EQ(actual.carver_buffer_floor,.5); EXPECT_EQ(actual.carver_buffer_position_factor,.1);
+                auto defaults=c.strategy_defaults; defaults.fdm={{1,9.0}};
+                const auto changed=resolve_factory_trend_config(type,c.strategies_config.at("TREND"),defaults,std::nullopt);
+                EXPECT_EQ(std::get<T>(changed).fdm,actual.fdm); // Existing nonempty struct table shadows FDM.
+            }
+        },factory);
+        EXPECT_TRUE(apply_live_config_override(c,{{"/strategy_defaults/fdm",Json::array({{1,9.0}})}}).is_error());
+        for (const auto* key : {"carver_buffer_floor","carver_buffer_position_factor"}) {
+            const std::string path=std::string("/strategy_defaults/")+key;
+            EXPECT_TRUE(apply_live_config_override(c,{{path,.8}}).is_error()); // Both supplied: defaults shadowed.
+            auto fallback=c; fallback.strategies_config["TREND"]["config"].erase(key);
+            auto changed=apply_live_config_override(fallback,{{path,.8}}); ASSERT_TRUE(changed.is_ok()) << type << key;
+            std::visit([&](const auto& actual) {
+                using T=std::decay_t<decltype(actual)>;
+                if constexpr (!std::is_same_v<T,std::monostate>) {
+                    const auto before=std::get<T>(resolve(fallback));
+                    if (std::string(key)=="carver_buffer_floor") {
+                        EXPECT_EQ(before.carver_buffer_floor,.5); EXPECT_EQ(actual.carver_buffer_floor,.8);
+                    } else { EXPECT_EQ(before.carver_buffer_position_factor,0); EXPECT_EQ(actual.carver_buffer_position_factor,.8); }
+                }
+            },resolve(changed.value()));
+            auto absent=c; absent.strategies_config["TREND"].erase("config");
+            EXPECT_TRUE(apply_live_config_override(absent,{{path,.8}}).is_error()); // No config branch uses struct values.
+        }
+        // A disabled fallback cannot authorize a shadowed live default.
+        c.strategies_config["OFF"]=c.strategies_config["TREND"];
+        c.strategies_config["OFF"]["enabled_live"]=false;
+        c.strategies_config["OFF"]["config"].erase("carver_buffer_floor");
+        EXPECT_TRUE(apply_live_config_override(c,{{"/strategy_defaults/carver_buffer_floor",.8}}).is_error());
+    }
+}
+TEST(LiveConfigOverride, GovernedSleevesMustBelongToSelectedLiveStrategies) {
+    auto c=base_config(); c.strategies_config["OFF"]=c.strategies_config["TREND"];
+    c.strategies_config["OFF"]["enabled_live"]=false;
+    c.risk_schema.sleeves["OFF"]={{"off_scale","constant_scale",ConstantScaleModuleConfig{.8,false}}};
+    const auto snapshot=build_runtime_trading_snapshot(c); ASSERT_TRUE(snapshot.is_ok()); // Legacy builder stays permissive.
+    EXPECT_TRUE(live_config_snapshot_sha256(c).is_ok());
+    EXPECT_TRUE(parse_runtime_trading_snapshot(snapshot.value()).is_error());
+    EXPECT_TRUE(apply_live_config_override(c,{{"/sleeve_risk_modules/OFF/0/scale",.7}}).is_error());
+    EXPECT_TRUE(apply_live_config_override(c,{{"/optimization/tau",1.2}}).is_error());
+}
+TEST(LiveConfigOverride, OmittedVolatilityDefaultsAreResolvedBeforeOverflowChecks) {
+    for (const auto* type : {"TrendFollowingStrategy", "TrendFollowingFastStrategy", "TrendFollowingSlowStrategy"}) {
+        auto c=base_config(); auto& def=c.strategies_config["TREND"]; def["type"]=type;
+        def["config"].erase("vol_lookback_long");
+        const auto resolve=[&](const AppConfig& config) {
+            return resolve_factory_trend_config(type,config.strategies_config.at("TREND"),config.strategy_defaults,std::nullopt);
+        };
+        std::visit([](auto actual) {
+            using T=std::decay_t<decltype(actual)>;
+            if constexpr (!std::is_same_v<T,std::monostate>) { EXPECT_EQ(actual.vol_lookback_long,252); }
+        },resolve(c));
+        EXPECT_TRUE(apply_live_config_override(c,{{"/strategies/TREND/config/vol_lookback_short",std::numeric_limits<int>::max()}}).is_error());
+        EXPECT_TRUE(apply_live_config_override(c,{{"/strategies/TREND/config/vol_lookback_short",std::numeric_limits<int>::max()/4+1}}).is_error());
+        EXPECT_TRUE(apply_live_config_override(c,{{"/strategies/TREND/config/vol_lookback_short",std::numeric_limits<int>::max()/4}}).is_ok());
+        def["config"]["vol_lookback_short"]=std::numeric_limits<int>::max();
+        EXPECT_TRUE(parse_runtime_trading_snapshot(build_runtime_trading_snapshot(c).value()).is_error());
+        def["config"]["vol_lookback_short"]=32;
+        auto safe=apply_live_config_override(c,{{"/strategies/TREND/config/vol_lookback_short",500}}); ASSERT_TRUE(safe.is_ok());
+        std::visit([](auto actual) {
+            using T=std::decay_t<decltype(actual)>;
+            if constexpr (!std::is_same_v<T,std::monostate>) {
+                EXPECT_EQ(actual.vol_lookback_short,500); EXPECT_EQ(actual.vol_lookback_long,252);
+                normalize_constructor_trend_config(actual); EXPECT_EQ(actual.vol_lookback_long,2000);
+                EXPECT_EQ(actual.max_history_size,2000u);
+            }
+        },resolve(safe.value()));
+        // The other omitted key also resolves through the factory, not supplied JSON alone.
+        def["config"].erase("vol_lookback_short"); def["config"]["vol_lookback_long"]=256;
+        auto long_edit=apply_live_config_override(c,{{"/strategies/TREND/config/vol_lookback_long",300}});
+        ASSERT_TRUE(long_edit.is_ok());
+        std::visit([&](auto actual) {
+            using T=std::decay_t<decltype(actual)>;
+            if constexpr (!std::is_same_v<T,std::monostate>) {
+                EXPECT_EQ(actual.vol_lookback_short,std::string(type)=="TrendFollowingFastStrategy"?16:std::string(type)=="TrendFollowingSlowStrategy"?64:32);
+                EXPECT_EQ(actual.vol_lookback_long,300); normalize_constructor_trend_config(actual);
+                EXPECT_EQ(actual.vol_lookback_long,300);
+            }
+        },resolve(long_edit.value()));
+    }
+}
+TEST(LiveConfigOverride, AttributedNonCarverPortfolioSurvivesSnapshotAndTuning) {
+    auto c=base_config(); auto risk=c.risk_schema.to_json();
+    risk["modules"]=Json::array({{{"id","scale"},{"type","constant_scale"},{"scale",.8},{"every_lap",false}},
+        {{"id","warn"},{"type","warn"},{"condition",{{"kind","lap_at_least"},{"threshold",3}}},{"reason","fixture"}}});
+    risk["_ruled_by"]="unit test"; risk["_ruled_on"]="2026-10-06";
+    auto parsed=parse_risk_schema(risk,Json::object(),c.strategies_config,c.portfolio_id); ASSERT_TRUE(parsed.is_ok());
+    c.risk_schema=parsed.value();
+    auto snapshot=build_runtime_trading_snapshot(c); ASSERT_TRUE(snapshot.is_ok());
+    EXPECT_EQ(snapshot.value()["risk"].value("_ruled_by",std::string()),"unit test");
+    EXPECT_EQ(snapshot.value()["risk"].value("_ruled_on",std::string()),"2026-10-06");
+    auto roundtrip=parse_runtime_trading_snapshot(snapshot.value()); ASSERT_TRUE(roundtrip.is_ok());
+    auto tuned=apply_live_config_override(roundtrip.value(),{{"/risk/modules/0/scale",.7}}); ASSERT_TRUE(tuned.is_ok());
+    auto effective=build_runtime_trading_snapshot(tuned.value()); ASSERT_TRUE(effective.is_ok());
+    EXPECT_EQ(effective.value()["risk"]["modules"][0]["scale"],.7);
+    EXPECT_EQ(effective.value()["risk"]["_ruled_by"],"unit test"); EXPECT_EQ(effective.value()["risk"]["_ruled_on"],"2026-10-06");
+    EXPECT_EQ(effective.value()["risk"]["modules"][1],snapshot.value()["risk"]["modules"][1]);
+    EXPECT_TRUE(apply_live_config_override(tuned.value(),{{"/risk/_ruled_by","somebody else"}}).is_error());
 }

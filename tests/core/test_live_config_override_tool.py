@@ -68,6 +68,48 @@ class NativeValidationTool(unittest.TestCase):
             self.assertEqual(proc.returncode,0,result)
             self.assertEqual(result["risk"]["schema"],2)
 
+    def test_actual_consumer_refusals(self):
+        _,base=self.export()
+        selected=[key for key,value in base["strategies"].items() if value.get("enabled_live",False)]
+        for changes in ({"/strategy_defaults/fdm":[[1,9.0]]},):
+            proc,result=self.run_tool(json.dumps({"schema":"live-config-validation/v1","base_snapshot":base,"changes":changes}).encode())
+            self.assertEqual(proc.returncode,2,result)
+        for key in selected:
+            base["strategies"][key]["config"]={"vol_lookback_short":32,"carver_buffer_floor":.5,"carver_buffer_position_factor":0.0}
+        for changes in ({"/strategy_defaults/carver_buffer_floor":.8},
+                        {"/strategy_defaults/carver_buffer_position_factor":.8},
+                        {f"/strategies/{selected[0]}/config/vol_lookback_short":2147483647}):
+            proc,result=self.run_tool(json.dumps({"schema":"live-config-validation/v1","base_snapshot":base,"changes":changes}).encode())
+            self.assertEqual(proc.returncode,2,result)
+        base["strategies"]["OFF"]={"type":"TrendFollowingStrategy","enabled_live":False,"config":{"risk_target":.2}}
+        base["sleeve_risk_modules"]["OFF"]=[{"id":"off_scale","type":"constant_scale","scale":.8,"every_lap":False}]
+        for changes in ({"/sleeve_risk_modules/OFF/0/scale":.7},{"/optimization/tau":1.2}):
+            proc,result=self.run_tool(json.dumps({"schema":"live-config-validation/v1","base_snapshot":base,"changes":changes}).encode())
+            self.assertEqual(proc.returncode,2,result)
+
+    def test_export_attributed_noncarver_roundtrip_and_tuning(self):
+        with tempfile.TemporaryDirectory() as temp:
+            config=Path(temp); book=config/"portfolios"/"book"; book.mkdir(parents=True)
+            self.write_schema2_defaults(config)
+            (book/"portfolio.json").write_bytes((ROOT/"config_template/portfolios/conservative/portfolio.json").read_bytes())
+            risk=json.loads((ROOT/"config_template/portfolios/conservative/risk.json").read_text())
+            risk["modules"]=[{"id":"scale","type":"constant_scale","scale":.8,"every_lap":False},
+                             {"id":"warn","type":"warn","condition":{"kind":"lap_at_least","threshold":3},"reason":"fixture"}]
+            risk["_ruled_by"]="unit test"; risk["_ruled_on"]="2026-10-06"
+            (book/"risk.json").write_text(json.dumps(risk))
+            proc,base=self.run_tool(args=("--export-base","--config-root",temp,"--portfolio","book"))
+            self.assertEqual(proc.returncode,0,base)
+        self.assertEqual(base["risk"]["_ruled_by"],"unit test")
+        self.assertEqual(base["risk"]["_ruled_on"],"2026-10-06")
+        proc,result=self.run_tool(json.dumps({"schema":"live-config-validation/v1","base_snapshot":base,
+                                             "changes":{"/risk/modules/0/scale":.7}}).encode())
+        self.assertEqual(proc.returncode,0,result)
+        effective=result["effective_snapshot"]
+        self.assertEqual(effective["risk"]["modules"][0]["scale"],.7)
+        self.assertEqual(effective["risk"]["_ruled_by"],"unit test")
+        self.assertEqual(effective["risk"]["_ruled_on"],"2026-10-06")
+        self.assertEqual(effective["risk"]["modules"][1],base["risk"]["modules"][1])
+
     def test_wire_duplicate_nonfinite_depth_oversize_and_redaction(self):
         bad = [b'{"changes":{},"changes":{}}', b'{"nested":{"a":1,"a":2}}',
                b'{"x":NaN}',b'{"x":1e999}',b" "*(1024*1024+1),
