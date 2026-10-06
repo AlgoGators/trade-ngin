@@ -16,4 +16,14 @@ Result<void> assemble_qt_desk_accounting_input(pqxx::work&,const nlohmann::json&
     const std::string& market_source_id,const std::string& finalization_source_id);
 Result<void> validate_qt_desk_upstream_input(pqxx::work&,const nlohmann::json& decision,
     const nlohmann::json& input_row,const nlohmann::json& finalization_row);
+// First live QT day: derive one immutable opening anchor from the current-day
+// System publication and financial rows. No caller supplies financial values.
+Result<nlohmann::json> create_qt_first_day_anchor(pqxx::connection&,
+    const std::string& decision_id,const std::string& anchor_id);
+Result<void> assemble_qt_first_day_accounting_input(pqxx::work&,
+    const nlohmann::json& decision,const nlohmann::json& selection,
+    const std::string& input_id,const std::string& market_source_id,
+    const std::string& anchor_id);
+Result<void> validate_qt_first_day_accounting_input(pqxx::work&,
+    const nlohmann::json& decision,const nlohmann::json& input_row,bool fresh);
 }

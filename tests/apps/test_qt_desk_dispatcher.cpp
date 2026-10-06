@@ -100,6 +100,21 @@ void child_arguments_are_explicit_and_internal_only() {
         "--connection-fd","3","--market-source",job.market_source_id,
         "--finalization-source","qt-finalization/" + job.finalization_id};
     check(run == expected_run, "run invocation must contain no delivery arguments");
+    const auto first_prepare=qt_dispatch_first_day_prepare_arguments(job,
+        "2026-10-06T14:00:00Z","2026-10-06T14:10:00Z",3);
+    const std::vector<std::string> expected_first_prepare{
+        "--desk","2026-10-06","--decision",job.decision_id,
+        "--first-day-anchor",job.finalization_id,"--market-source",job.market_source_id,
+        "--as-of","2026-10-06T14:00:00Z","--valid-until","2026-10-06T14:10:00Z",
+        "--connection-fd","3"};
+    check(first_prepare==expected_first_prepare,"first-day prepare must carry only stable anchor identity");
+    const auto first_run=qt_dispatch_first_day_run_arguments(job,3);
+    const std::vector<std::string> expected_first_run{
+        "--desk","2026-10-06","--decision",job.decision_id,
+        "--attempt",job.attempt_id,"--input",job.input_id,
+        "--connection-fd","3","--market-source",job.market_source_id,
+        "--first-day-anchor",job.finalization_id};
+    check(first_run==expected_first_run,"first-day run must not claim a historical finalization");
 }
 
 }  // namespace

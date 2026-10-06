@@ -1,5 +1,6 @@
 #include "trade_ngin/apps/qt_desk_cycle.hpp"
 #include "trade_ngin/core/types.hpp"
+#include "trade_ngin/portfolio/qt_wire.hpp"
 #include "trade_ngin/transaction_cost/transaction_cost_manager.hpp"
 #include <gtest/gtest.h>
 
@@ -27,6 +28,66 @@ J inputs(){return {{"schema_version","qt-futures-accounting-input/v1"},
         {"baseline_spread_ticks","1"},{"min_spread_ticks","1"},{"max_spread_ticks","10"},
         {"spread_cost_multiplier","0.5"},{"max_impact_bps","100"},{"tick_size","0.01"},
         {"point_value","5"},{"max_total_implicit_bps","200"}}})}};}
+J first_day_inputs(){
+    auto value=inputs();
+    value["schema_version"]="qt-futures-accounting-input-first-day/v1";
+    value.erase("prior_finalization_source_id");
+    value.erase("previous_day");
+    value["first_day_anchor_id"]="anchor";
+    value["first_day_anchor_digest"]=std::string(64,'a');
+    value["opening_day"]="2026-09-26";
+    value["previous_positions"][0]["key"]["date"]="2026-09-26";
+    value["previous_positions"][0]["daily_realized_pnl_exact"]="3";
+    value["previous_positions"][0]["daily_unrealized_pnl_exact"]="4";
+    value["market_source_id"]="market";
+    value["market_source_digest"]=std::string(64,'b');
+    auto& instrument=value["instruments"][0];
+    instrument["price_model_number"]=instrument["price_exact"];instrument.erase("price_exact");
+    instrument["adv_model_number"]=instrument["adv_exact"];instrument.erase("adv_exact");
+    instrument["volatility_multiplier_model_number"]=instrument["volatility_multiplier_exact"];instrument.erase("volatility_multiplier_exact");
+    auto& totals=value["previous_totals"][0];
+    totals["daily_pnl_exact"]="7";
+    totals["daily_realized_pnl_exact"]="3";
+    totals["daily_unrealized_pnl_exact"]="4";
+    totals["daily_transaction_costs_exact"]="2";
+    totals["total_transaction_costs_exact"]="12";
+    return value;
+}
+TEST(QtDeskCycleTest, FirstDayCarriesSystemFinancialsAndChargesOnlyIncrementalChange) {
+    auto result=produce_qt_futures_accounting(decision(),choices(),first_day_inputs());
+    ASSERT_TRUE(result.is_ok());
+    const auto charge=parse_qt_quantity_exact(result.value()["executions"][0]["total_transaction_costs_exact"].get<std::string>()).value();
+    const auto& live=result.value()["live_results"][0];
+    EXPECT_EQ(result.value()["observation"]["fills"][0]["daily_realized_pnl_exact"],"3");
+    EXPECT_EQ(result.value()["observation"]["fills"][0]["daily_unrealized_pnl_exact"],"4");
+    EXPECT_EQ(live["daily_pnl_exact"],(Decimal(7)-charge).to_string());
+    EXPECT_EQ(live["daily_realized_pnl_exact"],"3");
+    EXPECT_EQ(live["daily_unrealized_pnl_exact"],"4");
+    EXPECT_EQ(live["daily_transaction_costs_exact"],(Decimal(2)+charge).to_string());
+    EXPECT_EQ(live["total_transaction_costs_exact"],(Decimal(12)+charge).to_string());
+    EXPECT_EQ(live["total_pnl_exact"],(Decimal(20)-charge).to_string());
+    EXPECT_EQ(live["current_portfolio_value_exact"],(Decimal(1000)-charge).to_string());
+}
+TEST(QtDeskCycleTest, FirstDayQuietChoicePreservesTheExactSystemOpeningState) {
+    auto selected=choices();selected[0]["quantity_exact"]="4";
+    auto result=produce_qt_futures_accounting(decision(),selected,first_day_inputs());
+    ASSERT_TRUE(result.is_ok());
+    EXPECT_TRUE(result.value()["executions"].empty());
+    const auto& live=result.value()["live_results"][0];
+    EXPECT_EQ(live["daily_pnl_exact"],"7");
+    EXPECT_EQ(live["daily_realized_pnl_exact"],"3");
+    EXPECT_EQ(live["daily_unrealized_pnl_exact"],"4");
+    EXPECT_EQ(live["daily_transaction_costs_exact"],"2");
+    EXPECT_EQ(live["total_transaction_costs_exact"],"12");
+    EXPECT_EQ(live["total_pnl_exact"],"20");
+    EXPECT_EQ(live["current_portfolio_value_exact"],"1000");
+}
+TEST(QtDeskCycleTest, FirstDayRefusesPriorDayOrIncompleteOpeningTotals) {
+    auto wrong_day=first_day_inputs();wrong_day["opening_day"]="2026-09-25";
+    EXPECT_TRUE(produce_qt_futures_accounting(decision(),choices(),wrong_day).is_error());
+    auto incomplete=first_day_inputs();incomplete["previous_totals"][0].erase("total_transaction_costs_exact");
+    EXPECT_TRUE(produce_qt_futures_accounting(decision(),choices(),incomplete).is_error());
+}
 TEST(QtDeskCycleTest, ActualSharedCostModelProducesPriorCloseExecutionAndEquity) {
     auto r=produce_qt_futures_accounting(decision(),choices(),inputs());
     ASSERT_TRUE(r.is_ok());const auto& o=r.value();

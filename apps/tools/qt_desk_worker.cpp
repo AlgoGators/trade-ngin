@@ -32,6 +32,8 @@ using trade_ngin::qt_dispatch_ids;
 using trade_ngin::qt_dispatch_prepare_arguments;
 using trade_ngin::qt_dispatch_retry_delay;
 using trade_ngin::qt_dispatch_run_arguments;
+using trade_ngin::qt_dispatch_first_day_prepare_arguments;
+using trade_ngin::qt_dispatch_first_day_run_arguments;
 using namespace trade_ngin::qt_desk_cli;
 
 std::atomic_bool stopping{false};
@@ -285,14 +287,10 @@ int main(int argc, char** argv) {
             }
             log("claimed", claimed->job.decision_id);
             const auto prior = prior_decision(connection, *claimed);
-            if (!prior) {
-                finish(connection, *claimed, owner, "bootstrap", QtDispatchDisposition::DeadLetter,
-                       "first_day_bootstrap_unavailable");
-                log("dead_letter", claimed->job.decision_id); continue;
-            }
             const auto times = lease_times(connection);
             int exit_code = child(options.prepare_tool,
-                qt_dispatch_prepare_arguments(claimed->job, *prior, times.first, times.second, 3),
+                prior?qt_dispatch_prepare_arguments(claimed->job,*prior,times.first,times.second,3):
+                      qt_dispatch_first_day_prepare_arguments(claimed->job,times.first,times.second,3),
                 material, connection, *claimed, owner, config);
             auto disposition = qt_dispatch_classify_exit(
                 QtDispatchPhase::Prepare, exit_code, claimed->attempt_number, config.max_attempts);
@@ -302,7 +300,8 @@ int main(int argc, char** argv) {
                 log(disposition == QtDispatchDisposition::Retry ? "retry_wait" : "dead_letter",
                     claimed->job.decision_id); continue;
             }
-            exit_code = child(options.run_tool, qt_dispatch_run_arguments(claimed->job, 3),
+            exit_code = child(options.run_tool, prior?qt_dispatch_run_arguments(claimed->job,3):
+                qt_dispatch_first_day_run_arguments(claimed->job,3),
                 material, connection, *claimed, owner, config);
             disposition = qt_dispatch_classify_exit(
                 QtDispatchPhase::Run, exit_code, claimed->attempt_number, config.max_attempts);

@@ -33,18 +33,21 @@ bool utc_timestamp(const std::string& value) {
 }
 
 bool parse(int argc, char** argv, std::map<std::string, std::string>& options, int& fd) {
-    if (argc != 17) return false;
+    if (argc != 17 && argc != 15) return false;
     for (int i = 1; i < argc; i += 2) {
         const std::string name(argv[i]);
-        if (name != "--desk" && name != "--decision" && name != "--prior-decision" &&
+        if (name != "--desk" && name != "--decision" && name != "--prior-decision" && name != "--first-day-anchor" &&
             name != "--market-source" && name != "--finalization" && name != "--as-of" &&
             name != "--valid-until" && name != "--connection-fd") return false;
         if (!options.emplace(name, argv[i + 1]).second) return false;
     }
     if (!canonical_day(options.at("--desk")) || !utc_timestamp(options.at("--as-of")) ||
         !utc_timestamp(options.at("--valid-until"))) return false;
-    for (const auto name : {"--decision", "--prior-decision", "--market-source", "--finalization"})
+    for (const auto name : {"--decision", "--market-source"})
         if (!canonical_uuid(options.at(name))) return false;
+    const bool first=options.contains("--first-day-anchor");
+    if(first){if(options.contains("--prior-decision")||options.contains("--finalization")||options.size()!=7||!canonical_uuid(options.at("--first-day-anchor")))return false;}
+    else {if(!options.contains("--prior-decision")||!options.contains("--finalization")||options.size()!=8||!canonical_uuid(options.at("--prior-decision"))||!canonical_uuid(options.at("--finalization")))return false;}
     const auto& number = options.at("--connection-fd");
     if (number.empty() || number.front() == '0' ||
         !std::all_of(number.begin(), number.end(), [](char c) { return c >= '0' && c <= '9'; }))
@@ -58,6 +61,8 @@ int main(int argc, char** argv) {
     if (argc == 2 && std::string(argv[1]) == "--help") {
         std::cout << "qt_desk_prepare_sources --desk YYYY-MM-DD --decision UUID --prior-decision UUID\n"
                      "  --market-source UUID --finalization UUID --as-of UTC --valid-until UTC --connection-fd N\n"
+                     "or --desk YYYY-MM-DD --decision UUID --first-day-anchor UUID --market-source UUID\n"
+                     "  --as-of UTC --valid-until UTC --connection-fd N\n"
                      "Prepare immutable sources for a confirmed decision; current accounting is a separate step.\n";
         return 0;
     }
@@ -87,18 +92,17 @@ int main(int argc, char** argv) {
                 decision[0][1].as<std::string>() != "confirmed_decision")
                 return fail(4, "decision_day_unavailable");
         }
+        const bool first=options.contains("--first-day-anchor");
         const Json request{{"source_id", options.at("--market-source")},
-            {"decision_id", options.at("--decision")}, {"prior_decision_id", options.at("--prior-decision")},
+            {"decision_id", options.at("--decision")}, {"prior_decision_id", first?Json(nullptr):Json(options.at("--prior-decision"))},
             {"as_of", options.at("--as-of")}, {"valid_until", options.at("--valid-until")}};
         auto captured = trade_ngin::capture_qt_desk_market_source(connection, request);
         if (captured.is_error()) return fail(5, "source_capture_refused");
-        auto finalized = trade_ngin::finalize_qt_desk_accounting(connection,
-            options.at("--prior-decision"), options.at("--finalization"), options.at("--market-source"));
-        if (finalized.is_error()) return fail(6, "prior_finalization_refused");
-        std::cout << Json({{"schema", "qt-desk-prepare/v1"}, {"status", "sources_prepared"},
-            {"decision_id", options.at("--decision")}, {"prior_decision_id", options.at("--prior-decision")},
-            {"source_day", options.at("--desk")}, {"market_source_id", options.at("--market-source")},
-            {"finalization_source_id", "qt-finalization/" + options.at("--finalization")}}).dump() << '\n';
+        Json answer{{"schema", "qt-desk-prepare/v1"}, {"status", "sources_prepared"},
+            {"decision_id", options.at("--decision")}, {"source_day", options.at("--desk")}, {"market_source_id", options.at("--market-source")}};
+        if(first){auto anchored=trade_ngin::create_qt_first_day_anchor(connection,options.at("--decision"),options.at("--first-day-anchor"));if(anchored.is_error())return fail(6,"first_day_anchor_refused");answer["first_day_anchor_id"]=options.at("--first-day-anchor");}
+        else {auto finalized=trade_ngin::finalize_qt_desk_accounting(connection,options.at("--prior-decision"),options.at("--finalization"),options.at("--market-source"));if(finalized.is_error())return fail(6,"prior_finalization_refused");answer["prior_decision_id"]=options.at("--prior-decision");answer["finalization_source_id"]="qt-finalization/"+options.at("--finalization");}
+        std::cout << answer.dump() << '\n';
         return 0;
     } catch (const std::exception&) {
         return fail(7, "preparation_unavailable");

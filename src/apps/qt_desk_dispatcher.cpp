@@ -83,4 +83,23 @@ std::vector<std::string> qt_dispatch_run_arguments(
             "--finalization-source", "qt-finalization/" + job.finalization_id};
 }
 
+std::vector<std::string> qt_dispatch_first_day_prepare_arguments(
+    const QtDispatchJob& job,const std::string& as_of,
+    const std::string& valid_until,int connection_fd) {
+    return {"--desk",job.source_day,"--decision",job.decision_id,
+            "--first-day-anchor",job.finalization_id,
+            "--market-source",job.market_source_id,
+            "--as-of",as_of,"--valid-until",valid_until,
+            "--connection-fd",std::to_string(connection_fd)};
+}
+
+std::vector<std::string> qt_dispatch_first_day_run_arguments(
+    const QtDispatchJob& job,int connection_fd) {
+    return {"--desk",job.source_day,"--decision",job.decision_id,
+            "--attempt",job.attempt_id,"--input",job.input_id,
+            "--connection-fd",std::to_string(connection_fd),
+            "--market-source",job.market_source_id,
+            "--first-day-anchor",job.finalization_id};
+}
+
 }  // namespace trade_ngin

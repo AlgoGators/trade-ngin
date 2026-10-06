@@ -46,17 +46,22 @@ void day(const std::string& s){need(s.size()==10&&s[4]=='-'&&s[7]=='-');
 
 Result<J> produce_qt_futures_accounting(const J& d,const J& selection,const J& in){
     try {
-        const bool v2=in.at("schema_version")=="qt-futures-accounting-input/v2";need(v2||in.at("schema_version")=="qt-futures-accounting-input/v1");
+        const bool first=in.at("schema_version")=="qt-futures-accounting-input-first-day/v1";
+        const bool v2=in.at("schema_version")=="qt-futures-accounting-input/v2";
+        need(first||v2||in.at("schema_version")=="qt-futures-accounting-input/v1");
+        if(first){text(in.at("first_day_anchor_id"));text(in.at("first_day_anchor_digest"));text(in.at("market_source_id"));text(in.at("market_source_digest"));}
         if(v2){text(in.at("market_source_id"));text(in.at("market_source_digest"));text(in.at("prior_finalization_digest"));}
-        auto positive_model=[v2](const J& value){auto n=v2?model_number(value):positive(value);need(n>0);return n;};
-        auto nonnegative_model=[v2](const J& value){auto n=v2?model_number(value):nonnegative(value);need(n>=0);return n;};
+        const bool governed=v2||first;
+        auto positive_model=[governed](const J& value){auto n=governed?model_number(value):positive(value);need(n>0);return n;};
+        auto nonnegative_model=[governed](const J& value){auto n=governed?model_number(value):nonnegative(value);need(n>=0);return n;};
         for(auto f:{"decision_id","book_id","source_day"})need(in.at(f)==d.at(f));
-        auto today=text(d.at("source_day")),prior=text(in.at("previous_day"));day(today);day(prior);need(prior<today);
+        auto today=text(d.at("source_day"));day(today);
+        auto prior=first?text(in.at("opening_day")):text(in.at("previous_day"));day(prior);need(first?prior==today:prior<today);
         const auto source=text(in.at("accounting_source_id")),currency=text(in.at("currency"));
         const auto stamp=text(in.at("timestamp"));need(stamp==today+"T00:00:00Z");
         // This is a reference to governed finalization evidence, never a boolean
         // assertion inferred from the presence of a live_results row.
-        text(in.at("prior_finalization_source_id"));
+        if(!first)text(in.at("prior_finalization_source_id"));
         need(selection.is_array()&&!selection.empty()&&selection.size()<=4096);
         std::map<std::string,J> previous,selected,markets,totals;
         std::set<std::string> engines;
@@ -65,6 +70,7 @@ Result<J> produce_qt_futures_accounting(const J& d,const J& selection,const J& i
             auto id=identity(r.at("key"),d,prior);need(previous.emplace(id,r).second);
             auto q=dec(r.at("quantity_exact"));need(q.raw_value()%100000000==0);
             need(dec(r.at("average_price_exact")).raw_value()>0);
+            if(first){dec(r.at("daily_realized_pnl_exact"));dec(r.at("daily_unrealized_pnl_exact"));}
         }
         for(const auto& r:selection){
             need(r.at("asset_type")=="FUTURE"&&r.at("editable").is_boolean());
@@ -76,6 +82,7 @@ Result<J> produce_qt_futures_accounting(const J& d,const J& selection,const J& i
         for(const auto& r:in.at("previous_totals")){
             auto engine=text(r.at("strategy_id"));need(engines.contains(engine)&&totals.emplace(engine,r).second);
             positive(r.at("equity_exact"));dec(r.at("total_pnl_exact"));
+            if(first)for(auto f:{"daily_pnl_exact","daily_realized_pnl_exact","daily_unrealized_pnl_exact","daily_transaction_costs_exact","total_transaction_costs_exact"})dec(r.at(f));
         }need(totals.size()==engines.size());
         transaction_cost::TransactionCostManager::Config config;
         const auto& c=in.at("cost_config");config.explicit_fee_per_contract=nonnegative_model(c.at("explicit_fee_per_contract"));
@@ -86,7 +93,7 @@ Result<J> produce_qt_futures_accounting(const J& d,const J& selection,const J& i
         transaction_cost::TransactionCostManager costs(config);
         for(const auto& r:in.at("instruments")){
             const auto symbol=text(r.at("symbol"));need(markets.emplace(symbol,r).second);
-            text(r.at("source_id"));positive_model(r.at(v2?"price_model_number":"price_exact"));positive_model(r.at(v2?"adv_model_number":"adv_exact"));positive_model(r.at(v2?"volatility_multiplier_model_number":"volatility_multiplier_exact"));
+            text(r.at("source_id"));positive_model(r.at(governed?"price_model_number":"price_exact"));positive_model(r.at(governed?"adv_model_number":"adv_exact"));positive_model(r.at(governed?"volatility_multiplier_model_number":"volatility_multiplier_exact"));
             transaction_cost::AssetCostConfig a;a.symbol=symbol;
             a.baseline_spread_ticks=nonnegative_model(r.at("baseline_spread_ticks"));a.min_spread_ticks=nonnegative_model(r.at("min_spread_ticks"));
             a.max_spread_ticks=nonnegative_model(r.at("max_spread_ticks"));need(a.min_spread_ticks<=a.max_spread_ticks);
@@ -101,7 +108,7 @@ Result<J> produce_qt_futures_accounting(const J& d,const J& selection,const J& i
             auto k=J::parse(id);const auto symbol=text(k.at("symbol")),engine=text(k.at("strategy_id"));symbols.insert(symbol);
             need(markets.contains(symbol));const auto& m=markets.at(symbol);
             auto qty=dec(row.at("quantity_exact"));auto prev=previous.contains(id)?dec(previous.at(id).at("quantity_exact")):Decimal(0);
-            auto delta=sum(qty,-prev);const auto reference=positive_model(m.at(v2?"price_model_number":"price_exact"));auto price=v2?cash_decimal(reference):dec(m.at("price_exact"));need(price.raw_value()>0);
+            auto delta=sum(qty,-prev);const auto reference=positive_model(m.at(governed?"price_model_number":"price_exact"));auto price=governed?cash_decimal(reference):dec(m.at("price_exact"));need(price.raw_value()>0);
             // Preserve the explicitly supplied system basis; new symbols require
             // an execution and acquire the actual prior-close reference price.
             auto basis=row.at("average_price_exact").is_null()?price:dec(row.at("average_price_exact"));need(basis.raw_value()>0);
@@ -112,7 +119,7 @@ Result<J> produce_qt_futures_accounting(const J& d,const J& selection,const J& i
             if(!delta.is_zero()){
                 transaction_cost::CostChargeObservation observed;
                 auto charged=charge_book_execution(costs,GovernedExecutionCharge{symbol,delta,reference,
-                    positive_model(m.at(v2?"adv_model_number":"adv_exact")),positive_model(m.at(v2?"volatility_multiplier_model_number":"volatility_multiplier_exact")),AssetType::FUTURE},&observed);
+                    positive_model(m.at(governed?"adv_model_number":"adv_exact")),positive_model(m.at(governed?"volatility_multiplier_model_number":"volatility_multiplier_exact")),AssetType::FUTURE},&observed);
                 need(charged.is_ok());const auto& cost=charged.value();
                 const auto commission=cost.commissions_fees,slippage=cost.slippage_market_impact;
                 charge=cost.total_transaction_costs;
@@ -126,10 +133,12 @@ Result<J> produce_qt_futures_accounting(const J& d,const J& selection,const J& i
                     {"slippage_market_impact_exact",slippage.to_string()},{"total_transaction_costs_exact",charge.to_string()}});
             }
             charges[engine]=sum(charges[engine],charge);cash=sum(cash,charge);
+            const auto realized=first&&previous.contains(id)?dec(previous.at(id).at("daily_realized_pnl_exact")):Decimal(0);
+            const auto unrealized=first&&previous.contains(id)?dec(previous.at(id).at("daily_unrealized_pnl_exact")):Decimal(0);
             fills.push_back({{"key",k},{"observation_kind",delta.is_zero()?"carried":"executed"},
                 {"selected_quantity_exact",qty.to_string()},{"average_price_exact",basis.to_string()},
                 {"actual_cash_cost_exact",charge.to_string()},{"currency",currency},{"execution_id",execution_id},
-                {"accounting_source_id",source},{"daily_unrealized_pnl_exact","0"},{"daily_realized_pnl_exact","0"},{"last_update",stamp}});
+                {"accounting_source_id",source},{"daily_unrealized_pnl_exact",unrealized.to_string()},{"daily_realized_pnl_exact",realized.to_string()},{"last_update",stamp}});
             distance.push_back({{"key",k},{"selected_quantity_exact",qty.to_string()},
                 {"previous_quantity_exact",prev.to_string()},{"execution_delta_exact",delta.to_string()},
                 {"selection_moved_by","unchanged"}});
@@ -138,10 +147,13 @@ Result<J> produce_qt_futures_accounting(const J& d,const J& selection,const J& i
         J live=J::array();for(const auto& [engine,t]:totals){
             const auto charge=charges[engine],equity=sum(dec(t.at("equity_exact")),-charge);
             need(equity.raw_value()>0);
-            live.push_back({{"strategy_id",engine},{"portfolio_id",d.at("book_id")},{"date",today},{"portfolio_type","qt"},
-                {"daily_pnl_exact",(-charge).to_string()},{"daily_transaction_costs_exact",charge.to_string()},
+            J row={{"strategy_id",engine},{"portfolio_id",d.at("book_id")},{"date",today},{"portfolio_type","qt"},
+                {"daily_pnl_exact",sum(first?dec(t.at("daily_pnl_exact")):Decimal(0),-charge).to_string()},
+                {"daily_transaction_costs_exact",sum(first?dec(t.at("daily_transaction_costs_exact")):Decimal(0),charge).to_string()},
                 {"total_pnl_exact",sum(dec(t.at("total_pnl_exact")),-charge).to_string()},
-                {"current_portfolio_value_exact",equity.to_string()}});
+                {"current_portfolio_value_exact",equity.to_string()}};
+            if(first){row["daily_realized_pnl_exact"]=text(t.at("daily_realized_pnl_exact"));row["daily_unrealized_pnl_exact"]=text(t.at("daily_unrealized_pnl_exact"));row["total_transaction_costs_exact"]=sum(dec(t.at("total_transaction_costs_exact")),charge).to_string();}
+            live.push_back(std::move(row));
         }
         J result={{"position_count",fills.size()},{"currency_totals",J::array({{{"currency",currency},
             {"actual_cash_cost_exact",cash.to_string()},{"daily_unrealized_pnl_exact","0"},{"daily_realized_pnl_exact","0"}}})}};

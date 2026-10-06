@@ -33,20 +33,21 @@ bool parse(int argc, char** argv, std::map<std::string, std::string>& options, i
         const std::string name(argv[i]);
         if (name != "--desk" && name != "--decision" && name != "--attempt" &&
             name != "--input" && name != "--connection-fd" &&
-            name != "--market-source" && name != "--finalization-source" && name != "--csv-output") return false;
+            name != "--market-source" && name != "--finalization-source" && name != "--first-day-anchor" && name != "--csv-output") return false;
         if (!options.emplace(name, argv[i + 1]).second) return false;
     }
     for (const char* name : {"--desk", "--decision", "--attempt", "--input", "--connection-fd"})
         if (!options.contains(name)) return false;
     const bool market = options.contains("--market-source");
-    if (market != options.contains("--finalization-source") ||
+    const bool finalization=options.contains("--finalization-source"),first=options.contains("--first-day-anchor");
+    if (market != (finalization||first) || (finalization&&first) ||
         options.size() != (market ? 7u : 5u) + (options.contains("--csv-output") ? 1u : 0u)) return false;
     if (market) {
         const std::string prefix("qt-finalization/");
-        const auto& finalization = options.at("--finalization-source");
+        const auto& source = finalization?options.at("--finalization-source"):options.at("--first-day-anchor");
         if (!canonical_uuid(options.at("--market-source")) ||
-            !finalization.starts_with(prefix) ||
-            !canonical_uuid(finalization.substr(prefix.size()))) return false;
+            (finalization&&(!source.starts_with(prefix)||!canonical_uuid(source.substr(prefix.size())))) ||
+            (first&&!canonical_uuid(source))) return false;
     }
     if (!canonical_day(options.at("--desk")) ||
         !canonical_uuid(options.at("--decision")) || !canonical_uuid(options.at("--attempt")) ||
@@ -65,6 +66,7 @@ int main(int argc, char** argv) {
     if (argc == 2 && std::string(argv[1]) == "--help") {
         std::cout << "qt_desk_run --desk YYYY-MM-DD --decision UUID --attempt UUID --input UUID --connection-fd N\n"
                      "  [--market-source UUID --finalization-source qt-finalization/UUID]\n"
+                     "  [--market-source UUID --first-day-anchor UUID]\n"
                      "  [--csv-output /absolute/new-file.csv]\n"
                      "Local accounting for an already-confirmed QT decision; internal receipt only.\n";
         return 0;
@@ -98,8 +100,11 @@ int main(int argc, char** argv) {
                 decision[0][1].as<std::string>() != "confirmed_decision")
                 return fail(4, "decision_day_unavailable");
         }
-        auto processed = options.contains("--market-source")
-            ? trade_ngin::process_qt_desk_sourced_decision(
+        auto processed = options.contains("--first-day-anchor")
+            ? trade_ngin::process_qt_desk_first_day_decision(
+                connection, options.at("--decision"), options.at("--attempt"), options.at("--input"),
+                options.at("--market-source"), options.at("--first-day-anchor"))
+            : options.contains("--market-source") ? trade_ngin::process_qt_desk_sourced_decision(
                 connection, options.at("--decision"), options.at("--attempt"), options.at("--input"),
                 options.at("--market-source"), options.at("--finalization-source"))
             : trade_ngin::process_qt_desk_accounting_decision(

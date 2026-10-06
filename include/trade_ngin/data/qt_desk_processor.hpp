@@ -33,6 +33,10 @@ Result<QtDeskProcessedReceipt> process_qt_desk_sourced_decision(
     pqxx::connection&,const std::string& decision_id,const std::string& attempt_id,
     const std::string& accounting_input_id,const std::string& market_source_id,
     const std::string& finalization_source_id);
+Result<QtDeskProcessedReceipt> process_qt_desk_first_day_decision(
+    pqxx::connection&,const std::string& decision_id,const std::string& attempt_id,
+    const std::string& accounting_input_id,const std::string& market_source_id,
+    const std::string& first_day_anchor_id);
 
 // Explicitly disabled capability is the sole legacy report admission.
 Result<nlohmann::json> load_qt_desk_report_evidence(

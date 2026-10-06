@@ -20,7 +20,7 @@ J sorted(J j){need(j.is_array());std::sort(j.begin(),j.end(),[](const J& a,const
 bool equity_input(pqxx::work& tx,const std::string& id){
     const auto row=one(tx,"SELECT payload FROM trading.qt_desk_accounting_inputs WHERE input_id="+tx.quote(id)+"::uuid FOR SHARE");
     const auto version=text(row.at("schema_version"));
-    need(version=="qt-equity-accounting-input/v1"||version=="qt-equity-accounting-input-empty-owner/v2"||version=="qt-futures-accounting-input/v1"||version=="qt-futures-accounting-input/v2");
+    need(version=="qt-equity-accounting-input/v1"||version=="qt-equity-accounting-input-empty-owner/v2"||version=="qt-futures-accounting-input/v1"||version=="qt-futures-accounting-input/v2"||version=="qt-futures-accounting-input-first-day/v1");
     return version=="qt-equity-accounting-input/v1"||version=="qt-equity-accounting-input-empty-owner/v2";
 }
 // live_results has both legacy DATE and TIMESTAMPTZ installations. Keep exact
@@ -40,6 +40,13 @@ J admit(pqxx::work& tx,const J& d,const std::string& id){
     text(row.at("source_version"));auto fresh=tx.exec("SELECT as_of<=clock_timestamp() AND clock_timestamp()<=valid_until FROM trading.qt_desk_accounting_inputs WHERE input_id="+tx.quote(id)+"::uuid");
     need(fresh.size()==1&&fresh[0][0].as<bool>()&&digest(row.at("payload"))==text(row.at("content_digest")));
     const auto& in=row.at("payload");for(auto name:{"decision_id","book_id","source_day"})need(in.at(name)==d.at(name));
+    if(in.at("schema_version")=="qt-futures-accounting-input-first-day/v1"){
+        need(validate_qt_first_day_accounting_input(tx,d,row,true).is_ok());
+        const auto book=tx.quote(text(d.at("book_id"))),current=tx.quote(text(d.at("source_day")));
+        J positions=J::array();for(auto r:tx.exec("SELECT jsonb_build_object('key',jsonb_build_object('portfolio_id',portfolio_id,'strategy_id',strategy_id,'strategy_name',strategy_name,'date',date::text,'symbol',symbol,'portfolio_type',portfolio_type),'quantity_exact',"+exact("quantity")+",'average_price_exact',"+exact("average_price")+",'daily_realized_pnl_exact',"+exact("daily_realized_pnl")+",'daily_unrealized_pnl_exact',"+exact("daily_unrealized_pnl")+") FROM trading.positions WHERE portfolio_id="+book+" AND portfolio_type='qt' AND date="+current+"::date FOR SHARE"))positions.push_back(J::parse(r[0].c_str()));
+        need(sorted(positions)==sorted(in.at("previous_positions")));
+        auto empty=tx.exec("SELECT NOT EXISTS(SELECT 1 FROM trading.live_results WHERE portfolio_id="+book+" AND portfolio_type='qt') AND NOT EXISTS(SELECT 1 FROM trading.equity_curve WHERE portfolio_id="+book+" AND portfolio_type='qt') AND NOT EXISTS(SELECT 1 FROM trading.executions WHERE portfolio_id="+book+" AND portfolio_type='qt')");need(empty.size()==1&&empty[0][0].as<bool>());return row;
+    }
     auto final=one(tx,"SELECT to_jsonb(f) FROM trading.qt_desk_finalization_sources f WHERE source_id="+tx.quote(text(in.at("prior_finalization_source_id")))+" FOR SHARE");
     need(final.at("book_id")==d.at("book_id")&&final.at("source_day")==in.at("previous_day")&&final.at("producer_id")==policy.at("producer_id")&&final.at("policy_version")==policy.at("policy_version"));
     text(final.at("source_version"));need(digest(final.at("payload"))==text(final.at("content_digest")));
@@ -93,11 +100,14 @@ Result<void> verify_qt_desk_accounting_outputs(pqxx::work& tx,const J& d,const s
         // fresh admission, without reapplying an input's now-expired lease.
         const auto& in=input.at("payload");
         for(auto name:{"decision_id","book_id","source_day"})need(in.at(name)==d.at(name));
+        if(in.at("schema_version")=="qt-futures-accounting-input-first-day/v1"){
+            need(validate_qt_first_day_accounting_input(tx,d,input,false).is_ok());
+        }else{
         auto final=one(tx,"SELECT to_jsonb(f) FROM trading.qt_desk_finalization_sources f WHERE source_id="+tx.quote(text(in.at("prior_finalization_source_id"))));
         need(final.at("book_id")==d.at("book_id")&&final.at("source_day")==in.at("previous_day")&&final.at("producer_id")==input.at("producer_id")&&final.at("policy_version")==input.at("policy_version"));
         text(final.at("source_version"));need(digest(final.at("payload"))==text(final.at("content_digest")));
         need((final.at("payload").at("schema_version")=="qt-finalized-accounting/v1"||final.at("payload").at("schema_version")=="qt-finalized-accounting/v2")&&final.at("payload").at("book_id")==d.at("book_id")&&final.at("payload").at("source_day")==in.at("previous_day")&&sorted(final.at("payload").at("previous_totals"))==sorted(in.at("previous_totals")));
-        if(in.at("schema_version")=="qt-futures-accounting-input/v2")need(validate_qt_desk_upstream_input(tx,d,input,final).is_ok());else need(final.at("payload").at("schema_version")=="qt-finalized-accounting/v1");
+        if(in.at("schema_version")=="qt-futures-accounting-input/v2")need(validate_qt_desk_upstream_input(tx,d,input,final).is_ok());else need(final.at("payload").at("schema_version")=="qt-finalized-accounting/v1");}
         const auto observed=one(tx,"SELECT to_jsonb(o) FROM trading.qt_execution_observations o WHERE observation_id="+tx.quote(id)+"::uuid");
         need(observed.at("payload")==output.at("observation")&&observed.at("producer_id")==input.at("producer_id")&&observed.at("policy_version")==input.at("policy_version")&&observed.at("source_version")==input.at("source_version"));
         auto copied=tx.exec("SELECT i.as_of=o.as_of AND i.valid_until=o.valid_until FROM trading.qt_desk_accounting_inputs i JOIN trading.qt_execution_observations o ON o.observation_id=i.input_id WHERE i.input_id="+tx.quote(id)+"::uuid");need(copied.size()==1&&copied[0][0].as<bool>());
@@ -107,8 +117,9 @@ Result<void> verify_qt_desk_accounting_outputs(pqxx::work& tx,const J& d,const s
             const auto scope="portfolio_id="+tx.quote(text(r.at("portfolio_id")))+" AND strategy_id="+tx.quote(text(r.at("strategy_id")))+" AND date="+tx.quote(text(r.at("date")))+"::date AND portfolio_type='qt'";
             const auto live_date=live_date_sql(tx,text(r.at("date")));
             const auto live_scope="portfolio_id="+tx.quote(text(r.at("portfolio_id")))+" AND strategy_id="+tx.quote(text(r.at("strategy_id")))+" AND date="+live_date.value+" AND portfolio_type='qt'";
-            auto live=one(tx,"SELECT jsonb_build_object('strategy_id',strategy_id,'portfolio_id',portfolio_id,'date',"+live_date.day_text+",'portfolio_type',portfolio_type,'daily_pnl_exact',"+exact("daily_pnl")+",'daily_transaction_costs_exact',"+exact("daily_transaction_costs")+",'total_pnl_exact',"+exact("total_pnl")+",'current_portfolio_value_exact',"+exact("current_portfolio_value")+") FROM trading.live_results WHERE "+live_scope);
-            auto expected=r;std::string realized="0",unrealized="0";
+            const bool first=in.at("schema_version")=="qt-futures-accounting-input-first-day/v1";
+            auto live=one(tx,"SELECT jsonb_build_object('strategy_id',strategy_id,'portfolio_id',portfolio_id,'date',"+live_date.day_text+",'portfolio_type',portfolio_type,'daily_pnl_exact',"+exact("daily_pnl")+",'daily_transaction_costs_exact',"+exact("daily_transaction_costs")+",'total_pnl_exact',"+exact("total_pnl")+",'current_portfolio_value_exact',"+exact("current_portfolio_value")+(first?",'daily_realized_pnl_exact',"+exact("daily_realized_pnl")+",'daily_unrealized_pnl_exact',"+exact("daily_unrealized_pnl")+",'total_transaction_costs_exact',"+exact("total_transaction_costs"):"")+") FROM trading.live_results WHERE "+live_scope);
+            auto expected=r;std::string realized=first?text(r.at("daily_realized_pnl_exact")):"0",unrealized=first?text(r.at("daily_unrealized_pnl_exact")):"0";
             if(!successor.value().is_null()){
                 bool found=false;for(const auto& row:successor.value().at("live_results"))if(row.at("strategy_id")==r.at("strategy_id")){
                     need(!found);found=true;expected=row;realized=text(row.at("daily_realized_pnl_exact"));unrealized=text(row.at("daily_unrealized_pnl_exact"));
@@ -145,8 +156,12 @@ Result<void> store_qt_desk_accounting(pqxx::work& tx,const J& d,const std::strin
             const auto live_scope="portfolio_id="+tx.quote(text(r.at("portfolio_id")))+" AND strategy_id="+tx.quote(text(r.at("strategy_id")))+" AND date="+live_date.value+" AND portfolio_type='qt'";
             tx.exec("DELETE FROM trading.executions WHERE "+scope);
             tx.exec("DELETE FROM trading.live_results WHERE "+live_scope);
-            tx.exec("INSERT INTO trading.live_results(portfolio_id,strategy_id,date,portfolio_type,daily_pnl,daily_realized_pnl,daily_unrealized_pnl,daily_transaction_costs,total_pnl,current_portfolio_value) VALUES("+
-                tx.quote(text(r.at("portfolio_id")))+","+tx.quote(text(r.at("strategy_id")))+","+live_date.value+",'qt',"+
+            const bool first=out.at("schema_version")=="qt-futures-accounting/v1"&&r.contains("total_transaction_costs_exact");
+            const auto base=tx.quote(text(r.at("portfolio_id")))+","+tx.quote(text(r.at("strategy_id")))+","+live_date.value+",'qt',";
+            if(first)tx.exec("INSERT INTO trading.live_results(portfolio_id,strategy_id,date,portfolio_type,daily_pnl,daily_realized_pnl,daily_unrealized_pnl,daily_transaction_costs,total_transaction_costs,total_pnl,current_portfolio_value) VALUES("+base+
+                tx.quote(text(r.at("daily_pnl_exact")))+","+tx.quote(text(r.at("daily_realized_pnl_exact")))+","+tx.quote(text(r.at("daily_unrealized_pnl_exact")))+","+tx.quote(text(r.at("daily_transaction_costs_exact")))+","+tx.quote(text(r.at("total_transaction_costs_exact")))+","+
+                tx.quote(text(r.at("total_pnl_exact")))+","+tx.quote(text(r.at("current_portfolio_value_exact")))+")");
+            else tx.exec("INSERT INTO trading.live_results(portfolio_id,strategy_id,date,portfolio_type,daily_pnl,daily_realized_pnl,daily_unrealized_pnl,daily_transaction_costs,total_pnl,current_portfolio_value) VALUES("+base+
                 tx.quote(text(r.at("daily_pnl_exact")))+",0,0,"+tx.quote(text(r.at("daily_transaction_costs_exact")))+","+
                 tx.quote(text(r.at("total_pnl_exact")))+","+tx.quote(text(r.at("current_portfolio_value_exact")))+")");
             tx.exec("INSERT INTO trading.equity_curve(portfolio_id,strategy_id,timestamp,portfolio_type,equity) VALUES("+

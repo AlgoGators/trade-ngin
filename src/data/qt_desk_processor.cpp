@@ -370,7 +370,7 @@ void store_positions(pqxx::work& tx,const Json& before,const Json& after,const J
 } // namespace
 
 static Result<QtDeskProcessedReceipt> process_qt_desk_impl(pqxx::connection& connection,const std::string& id,
-    const std::string& attempt,const std::string& observation_id,bool produce,const std::string& market_id="",const std::string& final_id=""){
+    const std::string& attempt,const std::string& observation_id,bool produce,const std::string& market_id="",const std::string& final_id="",bool first_day=false){
     const char* stage="identity";
     try{
         uuid(id);uuid(attempt);uuid(observation_id);pqxx::work tx(connection);
@@ -382,7 +382,7 @@ static Result<QtDeskProcessedReceipt> process_qt_desk_impl(pqxx::connection& con
             require(existing.size()==1&&existing[0].at("status")=="processed"&&existing[0].at("attempt_id")==attempt&&
                 existing[0].at("publication_payload").at("observation_id")==observation_id);
             auto current=capture_qt_desk_processed_facts(tx,d,p,existing[0]);require(current.is_ok());
-            if(!market_id.empty()){auto input=one(tx,"SELECT payload FROM trading.qt_desk_accounting_inputs WHERE input_id="+tx.quote(observation_id)+"::uuid");require(input.at("market_source_id")==market_id&&input.at("prior_finalization_source_id")==final_id);}
+            if(!market_id.empty()){auto input=one(tx,"SELECT payload FROM trading.qt_desk_accounting_inputs WHERE input_id="+tx.quote(observation_id)+"::uuid");require(input.at("market_source_id")==market_id&&input.at(first_day?"first_day_anchor_id":"prior_finalization_source_id")==final_id);}
             if(produce){stage="accounting_replay";require(verify_qt_desk_accounting_outputs(tx,d,observation_id).is_ok());}
             auto payload=existing[0].at("publication_payload");tx.commit();
             return QtDeskProcessedReceipt{id,attempt,selection.value().selected_book_digest,payload,true};
@@ -396,7 +396,9 @@ static Result<QtDeskProcessedReceipt> process_qt_desk_impl(pqxx::connection& con
         require(draft.at("revision")==d.at("draft_revision")&&draft.at("model_publication_id")==d.at("model_publication_id"));
         auto dd=qt_digest_v1(draft.at("selection_payload"));require(dd.is_ok()&&dd.value()==draft.at("draft_digest").get<std::string>());
         stage="owner_scope";validate_owner_scope(tx,d,p,capture.value().payload);
-        if(!market_id.empty()){stage="upstream_input";require(assemble_qt_desk_accounting_input(tx,d,p.at("payload").at("selection_rows"),observation_id,market_id,final_id).is_ok());}
+        if(!market_id.empty()){stage="upstream_input";auto assembled=first_day?
+            assemble_qt_first_day_accounting_input(tx,d,p.at("payload").at("selection_rows"),observation_id,market_id,final_id):
+            assemble_qt_desk_accounting_input(tx,d,p.at("payload").at("selection_rows"),observation_id,market_id,final_id);require(assembled.is_ok());}
         Json accounting;
         if(produce){stage="accounting_producer";auto generated=prepare_qt_desk_accounting(tx,d,p,observation_id,capture.value().payload);
             require(generated.is_ok());accounting=generated.value();}
@@ -458,6 +460,11 @@ Result<QtDeskProcessedReceipt> process_qt_desk_sourced_decision(pqxx::connection
     const std::string& input_id,const std::string& market_id,const std::string& final_id){
     if(market_id.empty()||final_id.empty())return make_error<QtDeskProcessedReceipt>(ErrorCode::INVALID_DATA,"qt_sourced_accounting_unavailable","qt_desk_processor");
     return process_qt_desk_impl(c,id,attempt,input_id,true,market_id,final_id);
+}
+Result<QtDeskProcessedReceipt> process_qt_desk_first_day_decision(pqxx::connection& c,const std::string& id,const std::string& attempt,
+    const std::string& input_id,const std::string& market_id,const std::string& anchor_id){
+    if(market_id.empty()||anchor_id.empty())return make_error<QtDeskProcessedReceipt>(ErrorCode::INVALID_DATA,"qt_first_day_accounting_unavailable","qt_desk_processor");
+    return process_qt_desk_impl(c,id,attempt,input_id,true,market_id,anchor_id,true);
 }
 Result<Json> load_qt_desk_report_evidence(pqxx::connection& connection,const std::string& book,const std::string& day){
     try{

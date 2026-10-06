@@ -52,5 +52,10 @@ std::vector<std::string> qt_dispatch_prepare_arguments(
     const std::string& as_of, const std::string& valid_until, int connection_fd);
 std::vector<std::string> qt_dispatch_run_arguments(
     const QtDispatchJob& job, int connection_fd);
+std::vector<std::string> qt_dispatch_first_day_prepare_arguments(
+    const QtDispatchJob& job,const std::string& as_of,
+    const std::string& valid_until,int connection_fd);
+std::vector<std::string> qt_dispatch_first_day_run_arguments(
+    const QtDispatchJob& job,int connection_fd);
 
 }  // namespace trade_ngin
