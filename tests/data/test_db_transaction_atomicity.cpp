@@ -8,8 +8,8 @@
 // unit-of-work contract that removes that window.
 //
 // Transaction semantics cannot be faked: pqxx rollback is only observable
-// against a real server. These cases write only to a scratch table plus scratch
-// identifiers, never to production rows.
+// against a real server. These cases write only scratch identities in the
+// migrated positions and dedup tables of an explicitly selected test database.
 //
 // Reachability gate. A silent skip means a regression here passes unnoticed, so
 // the behaviour is explicit:
@@ -113,7 +113,7 @@ protected:
             }
             GTEST_SKIP() << "database unreachable; transaction semantics need a real server";
         }
-        ASSERT_TRUE(create_scratch_table());
+        ASSERT_TRUE(has_positions_table());
         clear_scratch_rows();
     }
 
@@ -152,7 +152,7 @@ protected:
         }
     }
 
-    bool create_scratch_table() {
+    bool has_positions_table() {
         // The fenced equity unit of work intentionally accepts only the real
         // positions relation. The owned fixture provides its migrated schema.
         return run_raw("SELECT 1 FROM trading.positions LIMIT 0");

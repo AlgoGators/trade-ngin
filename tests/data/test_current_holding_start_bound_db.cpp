@@ -139,9 +139,8 @@ TEST_F(CurrentHoldingStartBoundDbTest, AFutureDatedNonZeroRowDoesNotBecomeTheHol
            "the run is about to apply renames to; it reported "
         << (bounded.count("ZZTEST") ? bounded.at("ZZTEST") : std::string());
 
-    // Unbounded is the defect, pinned so the fix cannot be quietly reverted: the 05-01 row is
-    // the only non-zero row after the 04-15 break, so it becomes the holding start -- a date
-    // in the run's future.
+    // A later explicit as-of sees the 05-01 reopening. This is why callers
+    // must supply their actual prior date instead of looking at future rows.
     const auto unbounded = starts("2026-05-01");
     ASSERT_EQ(unbounded.count("ZZTEST"), 1u);
     EXPECT_EQ(unbounded.at("ZZTEST"), "2026-05-01");
@@ -161,14 +160,13 @@ TEST_F(CurrentHoldingStartBoundDbTest, AFutureDatedFlatRowDoesNotHideALiveHoldin
            "holding dropped out of the map and its rename would be skipped in silence";
     EXPECT_EQ(bounded.at("ZZTEST"), "2026-04-12");
 
-    // Unbounded is the defect: the future flat row is the newest, nothing follows it, and the
-    // symbol vanishes.
+    // A later explicit as-of sees the closing row and the symbol vanishes.
     EXPECT_EQ(starts("2026-05-01").count("ZZTEST"), 0u);
 }
 
 TEST_F(CurrentHoldingStartBoundDbTest, AnEmptyBoundIsRefusedAndExplicitBoundIsInclusive) {
-    // No stray rows: bounded and unbounded must agree, and both must give the earliest
-    // non-zero row after the last flat one.
+    // An omitted date is refused; an admitted date gives the earliest non-zero
+    // row after the last flat one without weakening the temporal boundary.
     insert_row("ZZTEST", "2026-04-06", 50.0);
     insert_row("ZZTEST", "2026-04-08", 0.0);   // previous holding closed
     insert_row("ZZTEST", "2026-04-12", 100.0); // current holding starts here
