@@ -156,11 +156,85 @@ Recommendation: land the shared-library fixes as their own PR together with the 
 so the numerical changes get reviewed on their own rather than inside the regime merge. That also
 decouples them from PR #41, which edits two of the same files.
 
+## §8(iii) Credit spreads reconciliation
+
+Method: read-only query against `new_algo_data` (PostgreSQL 16.14 + TimescaleDB), run through
+pgAdmin. No writes, no runner started.
+
+### What is populated
+
+| table | rows | first date | last date | `ig_credit_spread` non-null | `high_yield_spread` non-null |
+|---|---|---|---|---|---|
+| `macro_data.credit_spreads` | 3,977 | 2011-03-23 | 2026-04-07 | 3,928 | 3,928 |
+| `macro_data.growth` | 941 | 2011-01-01 | 2026-03-28 | | |
+| `macro_data.inflation` | 3,979 | 2011-03-01 | 2026-04-08 | | |
+| `macro_data.liquidity` | 3,128 | 2011-03-01 | 2026-04-01 | | |
+| `macro_data.market` | 3,942 | 2011-03-23 | 2026-04-07 | | |
+| `macro_data.yield_curve` | 3,980 | 2011-03-01 | 2026-04-08 | | |
+
+`credit_spreads` is **populated, not empty**: both columns carry 3,928 of 3,977 rows (98.8%), and
+the two counts are identical, which is consistent with one FRED fetch writing both. 49 rows carry
+neither value.
+
+### Which pipeline reads it
+
+The **macro** pipeline only. Both columns are joined in `macro_data_loader.cpp:62` and enter the
+24-series panel as `"ig_credit_spread"` and `"high_yield_spread"`
+(`macro_regime_pipeline.hpp:190`). The **market** pipeline does not read this table at all — which
+is precisely what Gap 6 is about.
+
+### What Gap 6 still needs
+
+`ENHANCEMENTS.md:388` framed Gap 6 as: verify the table is populated and refreshed, then wire a
+market-side funding-stress detector to it; "if stale/empty, it is an ingest ask."
+
+It is **not empty**, so Gap 6 is not an ingest ask for existence — it is the market-side detector
+work, and that work is unblocked on data grounds.
+
+It **is stale**. The last observation is 2026-04-07, roughly six months before this run. That is
+not specific to credit spreads: the whole panel stops between 2026-03-28 and 2026-04-08, which
+matches the macro ingest port still being outstanding (D8; `DATA_OWNER_ASKS.md` item 7, sent
+2026-09-11). So the refresh-cadence question in item 10 resolves to the same dependency as the
+rest of the panel rather than to anything particular to this table.
+
+### Can the ICE BofA series be backfilled before 2011 for the 2007 fixture?
+
+**The history exists, but the route the repo uses can no longer reach it.**
+
+`scripts/fetch_macro_data.py:39-40` sources both columns from FRED:
+
+| column | FRED series |
+|---|---|
+| `ig_credit_spread` | `BAMLC0A4CBBB` — ICE BofA BBB US Corp Index OAS |
+| `high_yield_spread` | `BAMLH0A0HYM2` — ICE BofA US High Yield Index OAS |
+
+`BAMLH0A0HYM2` begins **1996-12-31**, comfortably before 2007. But both FRED series pages now
+carry this note, verbatim and identical on each:
+
+> "Starting in April 2026, this series will only include 3 years of observations. For more data,
+> go to the source."
+
+So as of April 2026 FRED serves a rolling three-year window. `fetch_macro_data.py` cannot backfill
+pre-2011 from FRED, and can no longer even reproduce the 2011-2023 span already in the table. A
+pre-2011 backfill has to come from ICE Data Indices directly.
+
+Two consequences worth a ruling before anyone plans the 2007 fixture:
+
+1. ICE Data Indices is a **new vendor**, and §4 lists "new data that costs money or needs a new
+   vendor" as a decision that comes back to HD.
+2. Backfilling `credit_spreads` alone would not deliver a 2007 fixture anyway. **The 2011 floor is
+   shared by the entire macro panel** (growth 2011-01-01; inflation, yield_curve and liquidity
+   2011-03-01; credit_spreads and market 2011-03-23). Any pre-2011 fixture needs the whole panel
+   backfilled, not one table.
+
+There is also a narrower risk that is independent of the 2007 question: because FRED has truncated
+to three years, the *existing* history in this table is now only reproducible from what is already
+stored. It should be treated as the system of record and backed up before any reload runs.
+
 ## Blocked
 
 | part | blocker |
 |---|---|
 | (d) timeline gate diff, `TZ=UTC` | needs the scratch database copy. Section 12 says it comes from you — requesting one; please name the snapshot date |
 | §8(ii) baseline reproduction against `market_timeline_K05plus.csv` | same copy |
-| §8(iii) credit spreads reconciliation | needs Q1/Q2 against that copy |
 | §8(iv) macro ingest timing | needs the data owners, not code |

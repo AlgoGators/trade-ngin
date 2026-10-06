@@ -72,6 +72,27 @@ set of tests that were updated alongside these changes is not complete.
 statistics tests, so the numerical changes get reviewed on their own rather than buried inside a
 large regime merge.
 
+**5. The credit-spread data is there, but FRED has cut off the history.**
+
+One of the four analysis questions (section 8(iii)) asked whether the credit-spread table is
+actually populated, who reads it, and whether it can be backfilled to 2007 for a fixture.
+
+It is populated — 3,977 rows covering 2011 to April 2026, with both columns filled on 98.8% of
+them. Only the macro pipeline reads it; the market pipeline does not, and wiring a market-side
+funding-stress detector to it is exactly what Gap 6 is for. So Gap 6 is not waiting on data.
+
+The backfill answer is less comfortable. The underlying series goes back to 1996, but FRED — where
+the repo's fetch script gets it — now publishes only a rolling three-year window: *"Starting in
+April 2026, this series will only include 3 years of observations."* So the script can no longer
+reach pre-2011 data, or even re-fetch the history already stored. Getting it means going to ICE
+Data Indices directly, which is a new vendor and therefore a decision for HD.
+
+And a 2007 fixture would need more than this one table: every table in the macro panel starts in
+2011, not just this one.
+
+A side effect worth flagging: since FRED truncated, the history already in the database is the
+only copy. It should be backed up before anything reloads that table.
+
 ## What is still blocked
 
 Step 0 has one more part, and the four analysis questions in section 8 of the issue mostly need
