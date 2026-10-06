@@ -123,7 +123,7 @@ Result<void> verify_qt_desk_accounting_outputs(pqxx::work& tx,const J& d,const s
             if(!successor.value().is_null()){
                 bool found=false;for(const auto& row:successor.value().at("live_results"))if(row.at("strategy_id")==r.at("strategy_id")){
                     need(!found);found=true;expected=row;realized=text(row.at("daily_realized_pnl_exact"));unrealized=text(row.at("daily_unrealized_pnl_exact"));
-                    expected.erase("daily_realized_pnl_exact");expected.erase("daily_unrealized_pnl_exact");
+                    if(!first){expected.erase("daily_realized_pnl_exact");expected.erase("daily_unrealized_pnl_exact");}
                 }need(found);
             }
             need(live==expected);

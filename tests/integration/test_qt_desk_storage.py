@@ -5,11 +5,15 @@ from datetime import timedelta, timezone
 from decimal import Decimal
 from hashlib import sha256
 from pathlib import Path
-from tests.qt_test_artifacts import artifact
+from tests.qt_test_artifacts import artifact, build_identity
+from tests.contracts.qt_native_bundle_fixture import stage_actual_bundle
+import atexit
+from functools import lru_cache
 import json
 import os
 import subprocess
 import sys
+import tempfile
 from uuid import UUID
 
 import psycopg2
@@ -20,8 +24,8 @@ from test_runtime_control_schema import connection
 from test_proposal_storage_migration import normalize_positions_shape, apply
 
 ROOT = Path(__file__).parents[2]
-API = ROOT.parent / "algolens-qt/algolens-api"
-sys.path.insert(0, str(API))
+import algolens
+API = Path(algolens.__file__).resolve().parent.parent
 from algolens.domain.portfolio.qt_canonical import qt_digest_v1, qt_book_digest_v1
 from algolens.infrastructure.portfolio.qt_read_set import (
     canonical_internal_snapshot_bytes, capture_qt_read_set, internal_snapshot_digest)
@@ -29,7 +33,18 @@ from algolens.infrastructure.portfolio.qt_workflow_repository import QtTransacti
 from algolens.infrastructure.portfolio.qt_evaluation_inputs import canonical_qt_input_bytes, load_qt_evaluation_inputs
 from algolens.infrastructure.portfolio.qt_evaluator_client import QtEvaluatorClient
 from algolens.infrastructure.portfolio.qt_evaluator_process import QtEvaluatorProcess
-from tests.qt_native_evaluator import native_evaluator_configuration
+
+
+@lru_cache(maxsize=1)
+def native_evaluator_configuration():
+    owned = tempfile.TemporaryDirectory(prefix="qt-owned-native-fixture-")
+    atexit.register(owned.cleanup)
+    directory = Path(owned.name) / "bundle"
+    manifest = stage_actual_bundle(directory)
+    executable = next(row for row in manifest["artifacts"] if row["role"] == "executable")
+    return dict(executable=directory / "bin/qt_evaluator", expected_sha256=executable["sha256"],
+                expected_build=manifest["evaluator_build"], bundle_directory=directory,
+                expected_bundle_sha256=manifest["bundle_sha256"])
 
 MODEL = "10000000-0000-4000-8000-000000000001"
 DRAFT = "20000000-0000-4000-8000-000000000001"
@@ -95,8 +110,9 @@ def desk(connection, request):
     scenario = getattr(request, "param", "executed")
     ticker = "MES" if scenario == "futures_mes" else "SYN"
     if scenario == "futures_mes": scenario = "futures"
-    chosen = (("4","2") if scenario == "carried" else ("5","0") if scenario in ("zero", "flat_zero_basis")
+    chosen = (("4","2") if scenario in ("carried", "futures_quiet") else ("5","0") if scenario in ("zero", "flat_zero_basis")
               else ("-0.5","2.25") if scenario == "fractional" else ("5","1"))
+    if scenario == "futures_quiet": scenario = "futures"
     normalize_positions_shape(conn)
     apply(conn, ROOT / "migrations/015_qt_proposal_positions.sql")
     apply(conn, ROOT / "migrations/016_qt_exact_precision_and_seed_provenance.sql")
@@ -169,6 +185,7 @@ def desk(connection, request):
                     "VALUES('john_riley','john riley',2,true,1),('xander_robbins','xander robbins',3,true,1)")
 
     request = json.loads((ROOT / "tests/contracts/qt-eval-v1.json").read_text())["selected_book"]
+    request["evaluator_build"] = build_identity()
     if ticker != "SYN": request = json.loads(json.dumps(request).replace('"SYN"', json.dumps(ticker)))
     asset_type = "FUTURE" if scenario == "futures" else "EQUITY"
     if scenario == "futures":
@@ -288,8 +305,8 @@ def desk(connection, request):
     with conn.cursor() as cur:
         cur.execute("""INSERT INTO trading.qt_source_policies
             (book_id,purpose,enabled,version,producer_id,policy_version,evaluator_build,evaluator_sha256,evaluator_bundle_sha256,allowed_override_codes)
-            VALUES('BOOK','evaluation',true,1,'synthetic-desk','desk-policy-v1','local-qt-controlled',%s,%s,%s),
-                  ('BOOK','execution',true,1,'synthetic-execution','execution-policy-v1',null,null,null,'[]')""",(pin,bundle_pin,Json(allowed_codes)))
+            VALUES('BOOK','evaluation',true,1,'synthetic-desk','desk-policy-v1',%s,%s,%s,%s),
+                  ('BOOK','execution',true,1,'synthetic-execution','execution-policy-v1',null,null,null,'[]')""",(build_identity(),pin,bundle_pin,Json(allowed_codes)))
         cur.execute("""INSERT INTO trading.qt_evaluation_snapshots
             (book_id,source_day,model_publication_id,producer_id,policy_version,source_version,
              as_of,valid_until,content_digest,payload)
@@ -354,11 +371,11 @@ def desk(connection, request):
           (preview_id,book_id,source_day,draft_id,draft_revision,draft_digest,source_digest,
            provenance_digest,read_set_digest,optimizer_book_digest,selected_book_digest,payload_digest,
            payload,read_set_payload,evaluator_build,policy_version,availability,created_by,state)
-          VALUES(%s,'BOOK',%s,%s,1,%s,%s,%s,%s,%s,%s,%s,%s,%s,'local-qt-controlled',
+          VALUES(%s,'BOOK',%s,%s,1,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,
                  'desk-policy-v1','ready',1,'confirmed_decision')""",
           (PREVIEW,day,DRAFT,draft_digest,preview["source_digest"],preview["provenance_digest"],
            read_set.digest,diagnostic.book_digest,evaluation.book_digest,preview["payload_digest"],
-           Json(preview),Json(read_set_payload)))
+           Json(preview),Json(read_set_payload),build_identity()))
         cur.execute("""INSERT INTO trading.qt_decisions
           (decision_id,preview_id,book_id,source_day,status,model_publication_id,provenance_digest,
            draft_id,draft_revision,selected_book_digest,read_set_digest,workflow_capability_version,
