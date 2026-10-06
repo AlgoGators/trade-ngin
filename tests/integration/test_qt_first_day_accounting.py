@@ -66,7 +66,8 @@ def invoke(*args, payload=None):
 def state(conn):
     result = all_state(conn)
     with conn.cursor() as cur:
-        for table in ("qt_desk_accounting_inputs", "qt_desk_finalizations", "qt_first_day_anchors"):
+        for table in ("qt_desk_accounting_inputs", "qt_desk_finalizations",
+                      "qt_desk_finalization_sources", "qt_first_day_anchors"):
             cur.execute("SELECT to_jsonb(t)::text FROM trading." + table + " t ORDER BY to_jsonb(t)::text")
             result.append(cur.fetchall())
     return result
@@ -208,6 +209,17 @@ def test_real_first_day_finalizes_on_day_two_without_invented_predecessor(first_
     market['payload']['instruments'][0].update(price_model_number='101', price_time=old_day+'T00:00:00Z')
     result = invoke('--market', payload=market)
     assert result.returncode == 0, result.stdout+result.stderr
+    with conn.cursor() as cur:
+        cur.execute("""CREATE FUNCTION trading.reject_first_day_finalization() RETURNS trigger LANGUAGE plpgsql AS $$
+          BEGIN RAISE EXCEPTION 'synthetic settlement failure'; END $$;
+          CREATE TRIGGER reject_first_day_finalization BEFORE INSERT ON trading.qt_desk_finalizations
+          FOR EACH ROW EXECUTE FUNCTION trading.reject_first_day_finalization()""")
+    before_failure = state(conn)
+    result = invoke('--finalize', DECISION, final, next_market)
+    assert result.returncode != 0 and 'storage' in result.stdout, result.stdout+result.stderr
+    assert state(conn) == before_failure
+    with conn.cursor() as cur:
+        cur.execute("DROP TRIGGER reject_first_day_finalization ON trading.qt_desk_finalizations")
     before = state(conn)
     result = invoke('--finalize', DECISION, final, next_market)
     assert result.returncode == 0, result.stdout+result.stderr
