@@ -142,7 +142,7 @@ TEST_F(CurrentHoldingStartBoundDbTest, AFutureDatedNonZeroRowDoesNotBecomeTheHol
     // Unbounded is the defect, pinned so the fix cannot be quietly reverted: the 05-01 row is
     // the only non-zero row after the 04-15 break, so it becomes the holding start -- a date
     // in the run's future.
-    const auto unbounded = starts("");
+    const auto unbounded = starts("2026-05-01");
     ASSERT_EQ(unbounded.count("ZZTEST"), 1u);
     EXPECT_EQ(unbounded.at("ZZTEST"), "2026-05-01");
 }
@@ -163,10 +163,10 @@ TEST_F(CurrentHoldingStartBoundDbTest, AFutureDatedFlatRowDoesNotHideALiveHoldin
 
     // Unbounded is the defect: the future flat row is the newest, nothing follows it, and the
     // symbol vanishes.
-    EXPECT_EQ(starts("").count("ZZTEST"), 0u);
+    EXPECT_EQ(starts("2026-05-01").count("ZZTEST"), 0u);
 }
 
-TEST_F(CurrentHoldingStartBoundDbTest, AnEmptyBoundIsThePreviousBehaviourExactly) {
+TEST_F(CurrentHoldingStartBoundDbTest, AnEmptyBoundIsRefusedAndExplicitBoundIsInclusive) {
     // No stray rows: bounded and unbounded must agree, and both must give the earliest
     // non-zero row after the last flat one.
     insert_row("ZZTEST", "2026-04-06", 50.0);
@@ -174,11 +174,12 @@ TEST_F(CurrentHoldingStartBoundDbTest, AnEmptyBoundIsThePreviousBehaviourExactly
     insert_row("ZZTEST", "2026-04-12", 100.0); // current holding starts here
     insert_row("ZZTEST", "2026-04-14", 100.0);
 
-    const auto unbounded = starts("");
+    const auto unbounded = db_->get_current_holding_start_dates(
+        kStrategyId,kStrategyName,kPortfolioId,{"ZZTEST"},"");
+    EXPECT_TRUE(unbounded.is_error());
     const auto bounded = starts("2026-04-20");
-    ASSERT_EQ(unbounded.count("ZZTEST"), 1u);
-    EXPECT_EQ(unbounded.at("ZZTEST"), "2026-04-12");
-    EXPECT_EQ(bounded, unbounded);
+    ASSERT_EQ(bounded.count("ZZTEST"), 1u);
+    EXPECT_EQ(bounded.at("ZZTEST"), "2026-04-12");
 
     // And the bound is inclusive on its own date.
     const auto on_the_day = starts("2026-04-12");
@@ -192,7 +193,7 @@ TEST_F(CurrentHoldingStartBoundDbTest, TheBoundNeverInventsAHoldingThatEndedBefo
     insert_row("ZZTEST", "2026-04-06", 50.0);
     insert_row("ZZTEST", "2026-04-08", 0.0);
 
-    for (const auto* bound : {"", "2026-04-20", "2026-04-08"}) {
+    for (const auto* bound : {"2026-04-20", "2026-04-08"}) {
         EXPECT_EQ(starts(bound).count("ZZTEST"), 0u) << "bound=" << bound;
     }
     // Bounding BEFORE the close does report the old holding -- correct, and the reason the

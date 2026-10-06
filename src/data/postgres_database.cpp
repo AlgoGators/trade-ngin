@@ -876,12 +876,8 @@ Result<std::unordered_map<std::string, Position>> PostgresDatabase::load_positio
             try {
                 // Try to parse as timestamp
                 std::string last_update_str = row[5].as<std::string>();
-                std::tm tm = {};
-                std::istringstream ss(last_update_str);
-                ss >> std::get_time(&tm, "%Y-%m-%d %H:%M:%S");
-                if (!ss.fail()) {
-                    auto time_c = std::mktime(&tm);
-                    last_update = std::chrono::system_clock::from_time_t(time_c);
+                if (core::parse_utc_datetime(last_update_str, last_update)) {
+                    // The database instant is UTC, independent of the host TZ.
                 } else {
                     // Fall back to current time if parsing fails
                     WARN("Failed to parse timestamp: " + last_update_str + ", using current time");
@@ -969,14 +965,9 @@ Result<PostgresDatabase::ReportPositionRows> PostgresDatabase::load_report_posit
             Timestamp last_update;
             try {
                 const std::string last_update_str = row[5].as<std::string>();
-                std::tm tm = {};
-                std::istringstream stream(last_update_str);
-                stream >> std::get_time(&tm, "%Y-%m-%d %H:%M:%S");
-                if (stream.fail()) {
+                if (!core::parse_utc_datetime(last_update_str, last_update)) {
                     WARN("Failed to parse timestamp: " + last_update_str + ", using current time");
                     last_update = std::chrono::system_clock::now();
-                } else {
-                    last_update = std::chrono::system_clock::from_time_t(std::mktime(&tm));
                 }
             } catch (const std::exception& e) {
                 WARN("Exception parsing timestamp: " + std::string(e.what()) +
