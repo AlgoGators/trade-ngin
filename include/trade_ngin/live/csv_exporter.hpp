@@ -10,6 +10,15 @@
 #include "trade_ngin/core/types.hpp"
 
 namespace trade_ngin {
+struct CurrentReportQuantityProjection;
+
+// Explicit local rendering context, never installed in the global registry.
+// Its SQL caller must bind every exact symbol/type/multiplier to admitted evidence.
+struct DeskCsvInstrument {
+    AssetType asset_type;
+    double multiplier;
+};
+using DeskCsvInstruments = std::unordered_map<std::string, DeskCsvInstrument>;
 
 // Forward declarations
 class IDatabase;
@@ -81,6 +90,9 @@ public:
      * @param gross_notional Gross notional value
      * @param net_notional Net notional value
      * @param strategy_instances Map of strategy name to strategy instance for forecasts and EMAs
+     * @param strict_snapshot_rows When true, write only symbols present in
+     *        strategy_positions.  Use for the QT report snapshot so an explicit
+     *        zero closure cannot be recreated from a strategy universe.
      * @return Result containing filename on success, or error
      */
     Result<std::string> export_current_positions(
@@ -90,7 +102,35 @@ public:
         double portfolio_value,
         double gross_notional,
         double net_notional,
-        const StrategyInstancesMap& strategy_instances);
+        const StrategyInstancesMap& strategy_instances,
+        bool strict_snapshot_rows = false,
+        const CurrentReportQuantityProjection* display = nullptr);
+
+    /**
+     * @brief Explicit desk-only snapshot: model columns are absent.
+     *
+     * Omission of the strategy map selects this overload. Writes only supplied
+     * owner/symbol rows (including zero closures), with exact quantity text and
+     * seven position columns. Requires complete finite positive explicit prices
+     * and registered instruments. Does not load strategies or market data.
+     * Existing overloads with an explicit map retain their legacy behavior.
+     */
+    Result<std::string> export_current_positions(
+        const std::chrono::system_clock::time_point& date,
+        const StrategyPositionsMap& strategy_positions,
+        const std::unordered_map<std::string, double>& market_prices,
+        double portfolio_value,
+        double gross_notional,
+        double net_notional);
+
+    // Named overload keeps map-call {} resolution unchanged. Explicit context
+    // is complete for the supplied rows; no registry/default/type fallback.
+    Result<std::string> export_desk_positions(
+        const std::chrono::system_clock::time_point& date,
+        const StrategyPositionsMap& strategy_positions,
+        const std::unordered_map<std::string, double>& market_prices,
+        double portfolio_value, double gross_notional, double net_notional,
+        const DeskCsvInstruments& instruments);
 
     /**
      * @brief Export yesterday's finalized positions to CSV (with PnL)
@@ -142,6 +182,15 @@ public:
     void set_output_directory(const std::string& directory);
 
 private:
+    Result<std::string> export_current_positions_impl(
+        const std::chrono::system_clock::time_point& date,
+        const StrategyPositionsMap& strategy_positions,
+        const std::unordered_map<std::string, double>& market_prices,
+        double portfolio_value, double gross_notional, double net_notional,
+        const StrategyInstancesMap& strategy_instances, bool strict_snapshot_rows,
+        const CurrentReportQuantityProjection* display, bool model_columns_absent,
+        const DeskCsvInstruments* desk_instruments = nullptr);
+
     std::string output_directory_;
 
     /**

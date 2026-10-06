@@ -3,6 +3,7 @@
 
 #include <memory>
 #include <nlohmann/json.hpp>
+#include <optional>
 #include <unordered_map>
 #include <vector>
 #include "trade_ngin/core/config_base.hpp"
@@ -62,7 +63,7 @@ struct DynamicOptConfig : public ConfigBase {
             asymmetric_risk_buffer = j.at("asymmetric_risk_buffer").get<double>();
         }
         if (j.contains("cost_penalty_scalar")) {
-            cost_penalty_scalar = j.at("cost_penalty_scalar").get<int>();
+            cost_penalty_scalar = j.at("cost_penalty_scalar").get<double>();
         }
         if (j.contains("max_iterations")) {
             max_iterations = j.at("max_iterations").get<size_t>();
@@ -91,6 +92,35 @@ struct OptimizationResult {
     bool converged;                 // Whether optimization converged
 };
 
+enum class OptimizationBufferBranch {
+    NotReached,    // No successful solver result
+    Disabled,      // Solver result returned without buffering
+    ReturnedPrior, // Buffer threshold retained the input book
+    Applied,       // Continuous buffering and contract rounding ran
+    Failed         // Buffering started but returned an error
+};
+
+// Values read by operational calculations and guards in one optimizer call.
+struct OptimizationConfigConsumption {
+    std::optional<double> cost_penalty_scalar;
+    std::optional<int> max_iterations;
+    std::optional<double> convergence_threshold;
+    std::optional<bool> use_buffering;
+    std::optional<double> tau;
+    std::optional<double> buffer_size_factor;
+};
+
+// Optional, value-only evidence from the one optimize() call.
+struct OptimizationTrace {
+    // Observed before buffering replaces the result with its zero-iteration result.
+    std::optional<int> solver_iterations;
+    std::optional<std::vector<double>> solver_positions;
+    std::optional<std::vector<double>> continuous_buffered_positions;
+    std::optional<std::vector<double>> rounded_buffered_positions;
+    OptimizationBufferBranch buffer_branch{OptimizationBufferBranch::NotReached};
+    OptimizationConfigConsumption consumed_config;
+};
+
 /**
  * @brief Dynamic position optimizer
  *
@@ -117,7 +147,8 @@ public:
                                         const std::vector<double>& target_positions,
                                         const std::vector<double>& costs,
                                         const std::vector<double>& weights_per_contract,
-                                        const std::vector<std::vector<double>>& covariance) const;
+                                        const std::vector<std::vector<double>>& covariance,
+                                        OptimizationTrace* trace = nullptr) const;
 
     /**
      * @brief Optimize positions for a single trading period
@@ -131,7 +162,9 @@ public:
     Result<OptimizationResult> optimize_single_period(
         const std::vector<double>& current_positions, const std::vector<double>& target_positions,
         const std::vector<double>& costs, const std::vector<double>& weights,
-        const std::vector<std::vector<double>>& covariance) const;
+        const std::vector<std::vector<double>>& covariance,
+        OptimizationConfigConsumption* consumed_config = nullptr,
+        int* performed_iterations = nullptr) const;
 
     /**
      * @brief Update configuration
@@ -175,7 +208,8 @@ private:
         const std::vector<double>& current_positions,
         const std::vector<double>& optimized_positions, const std::vector<double>& target_positions,
         const std::vector<double>& costs, const std::vector<double>& weights_per_contract,
-        const std::vector<std::vector<double>>& covariance) const;
+        const std::vector<std::vector<double>>& covariance,
+        OptimizationTrace* trace) const;
 
     /**
      * @brief Calculate trading cost penalty

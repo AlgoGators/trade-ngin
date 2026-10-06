@@ -1,0 +1,94 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://algogators.internal/schemas/release-artifacts-v1.json",
+  "title": "trade-ngin immutable Release artifacts",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "source", "build", "image", "evaluator", "artifacts", "integration", "manifest_sha256"],
+  "properties": {
+    "schema": {"const": "release-artifacts/v1"},
+    "source": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["git_sha_full", "git_sha_short", "dirty"],
+      "properties": {
+        "git_sha_full": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+        "git_sha_short": {"type": "string", "pattern": "^[0-9a-f]{7,40}$"},
+        "dirty": {"const": false}
+      }
+    },
+    "build": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["build_type", "compiler", "cxx_standard", "toolchain_image_digest", "cmake_inputs"],
+      "properties": {
+        "build_type": {"const": "Release"},
+        "compiler": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["id", "version"],
+          "properties": {
+            "id": {"type": "string", "minLength": 1},
+            "version": {"type": "string", "minLength": 1}
+          }
+        },
+        "cxx_standard": {"const": "20"},
+        "toolchain_image_digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+        "cmake_inputs": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {"type": "string", "minLength": 1, "maxLength": 512}
+        }
+      }
+    },
+    "image": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["digest"],
+      "properties": {
+        "digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"}
+      }
+    },
+    "evaluator": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["evaluator_build", "evaluator_sha256", "evaluator_bundle_sha256", "bundle_manifest_sha256", "install_path"],
+      "properties": {
+        "evaluator_build": {"type": "string", "pattern": "^[0-9a-f]{7,40}$"},
+        "evaluator_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "evaluator_bundle_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "bundle_manifest_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "install_path": {"const": "qt-evaluator-bundle"}
+      }
+    },
+    "artifacts": {
+      "type": "array",
+      "minItems": 7,
+      "maxItems": 8,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["name", "kind", "install_path", "size", "sha256"],
+        "properties": {
+          "name": {
+            "enum": ["libtrade_ngin.so", "live_equity_mr", "live_portfolio", "live_portfolio_conservative", "qt_desk_prepare_sources", "qt_desk_run", "qt_desk_worker", "qt_evaluator"]
+          },
+          "kind": {"enum": ["engine", "system_publisher", "desk_tool", "desk_worker", "evaluator"]},
+          "install_path": {"type": "string", "pattern": "^bin/Release/[A-Za-z0-9_.-]+$"},
+          "size": {"type": "integer", "minimum": 1, "maximum": 1073741824},
+          "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+        }
+      }
+    },
+    "integration": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["pending_artifacts"],
+      "properties": {
+        "pending_artifacts": {"enum": [[], ["qt_desk_worker"]]}
+      }
+    },
+    "manifest_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+  }
+}

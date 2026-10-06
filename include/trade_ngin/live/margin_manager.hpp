@@ -159,15 +159,21 @@ private:
     Result<std::shared_ptr<Instrument>> get_instrument_safe(const std::string& symbol);
 
     /**
-     * Extract margin requirements from instrument
+     * Extract margin requirements from instrument.
+     *
+     * Equities need price+signed quantity to compute account-mode-aware
+     * margin (cash: full notional; Reg T long: 50%; Reg T short: 150%).
+     * Futures ignore price (their margin is fixed dollar amount per contract).
      *
      * @param instrument Instrument pointer
-     * @param quantity Position quantity
+     * @param quantity Position quantity (signed)
+     * @param market_price Reference price per unit; required for equities
      * @return Pair of (initial_margin, maintenance_margin)
      */
     std::pair<double, double> extract_margin_requirements(
         const std::shared_ptr<Instrument>& instrument,
-        double quantity) const;
+        double quantity,
+        double market_price) const;
 };
 
 } // namespace trade_ngin

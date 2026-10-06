@@ -4,6 +4,7 @@
 #include "trade_ngin/data/postgres_database.hpp"
 #include "trade_ngin/core/types.hpp"
 #include <memory>
+#include <optional>
 
 namespace trade_ngin {
 
@@ -69,6 +70,10 @@ public:
      * Get settlement/close price for a symbol on a date
      * Replaces the settlement price queries in live_trend.cpp
      */
+    // Explicit caller-resolved equity session; legacy two-argument path remains unchanged.
+    Result<void> update_from_bars(const std::vector<Bar>& bars,const Timestamp& reference_date,
+        std::optional<Timestamp> t1_date);
+
     Result<double> get_settlement_price(
         const std::string& symbol,
         const Timestamp& date) const;

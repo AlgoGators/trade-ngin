@@ -13,27 +13,36 @@ double ImpactModel::calculate_market_impact(
     double quantity,
     double reference_price,
     double adv,
-    const AssetCostConfig& asset_config) const {
+    const AssetCostConfig& asset_config,
+    ImpactPriceObservation* observation) const {
+    if (observation) *observation = {};
 
     // Ensure quantity is absolute
     quantity = std::abs(quantity);
 
     // Apply ADV floor to prevent division by very small numbers
+    if (observation) observation->min_adv = config_.min_adv;
     adv = std::max(adv, config_.min_adv);
 
     // Calculate participation rate
     double participation = quantity / adv;
 
     // Clamp participation to configured bounds
+    if (observation) {
+        observation->min_participation = config_.min_participation;
+        observation->max_participation = config_.max_participation;
+    }
     participation = std::clamp(participation, config_.min_participation, config_.max_participation);
 
     // Get impact coefficient based on ADV bucket
     double k_bps = get_impact_k_bps(adv);
+    if (observation) observation->selected_k_bps = k_bps;
 
     // Square-root impact model: impact_bps = k * sqrt(participation)
     double impact_bps = k_bps * std::sqrt(participation);
 
     // Cap impact to prevent blowups
+    if (observation) observation->max_impact_bps = asset_config.max_impact_bps;
     impact_bps = std::min(impact_bps, asset_config.max_impact_bps);
 
     // Convert basis points to price impact
@@ -61,12 +70,15 @@ double ImpactModel::get_impact_k_bps(double adv) const {
     return 80.0;  // Very thin
 }
 
-void ImpactModel::update_volume(const std::string& symbol, double volume) {
+void ImpactModel::update_volume(const std::string& symbol, double volume,
+                                ImpactHistoryObservation* observation) {
+    if (observation) *observation = {};
     auto& volumes = symbol_volumes_[symbol];
 
     volumes.push_back(volume);
 
     // Maintain rolling window size
+    if (observation) observation->adv_lookback_days = config_.adv_lookback_days;
     while (volumes.size() > config_.adv_lookback_days) {
         volumes.pop_front();
     }

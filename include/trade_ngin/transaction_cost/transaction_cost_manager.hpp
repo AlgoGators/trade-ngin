@@ -3,12 +3,16 @@
 #include <memory>
 #include <string>
 #include <vector>
+#include <unordered_map>
 
+#include "trade_ngin/core/types.hpp"
 #include "trade_ngin/transaction_cost/asset_cost_config.hpp"
 #include "trade_ngin/transaction_cost/impact_model.hpp"
 #include "trade_ngin/transaction_cost/spread_model.hpp"
+#include "trade_ngin/transaction_cost/consumption.hpp"
 
 namespace trade_ngin {
+class InstrumentRegistry;
 namespace transaction_cost {
 
 /**
@@ -80,7 +84,11 @@ public:
     TransactionCostResult calculate_costs(
         const std::string& symbol,
         double quantity,
-        double reference_price) const;
+        double reference_price,
+        CostChargeObservation* observation = nullptr) const;
+    TransactionCostResult calculate_costs(
+        const std::string& symbol, double quantity, double reference_price,
+        AssetType asset_type, CostChargeObservation* observation = nullptr) const;
 
     /**
      * @brief Calculate costs with explicit ADV and volatility multiplier
@@ -99,7 +107,12 @@ public:
         double quantity,
         double reference_price,
         double adv,
-        double volatility_multiplier) const;
+        double volatility_multiplier,
+        CostChargeObservation* observation = nullptr) const;
+    TransactionCostResult calculate_costs(
+        const std::string& symbol, double quantity, double reference_price,
+        double adv, double volatility_multiplier, AssetType asset_type,
+        CostChargeObservation* observation = nullptr) const;
 
     /**
      * @brief Update market data for a symbol (call daily)
@@ -115,7 +128,8 @@ public:
         const std::string& symbol,
         double volume,
         double close_price,
-        double prev_close_price);
+        double prev_close_price,
+        MarketDataObservation* observation = nullptr);
 
     /**
      * @brief Get current ADV for a symbol
@@ -125,17 +139,31 @@ public:
     /**
      * @brief Get current volatility multiplier for a symbol
      */
-    double get_volatility_multiplier(const std::string& symbol) const;
+    double get_volatility_multiplier(const std::string& symbol,
+                                     VolatilityObservation* observation = nullptr) const;
+    double get_annual_volatility(const std::string& symbol) const;
 
     /**
      * @brief Get asset configuration for a symbol
      */
-    AssetCostConfig get_asset_config(const std::string& symbol) const;
+    AssetCostConfig get_asset_config(const std::string& symbol,
+                                     AssetLookupObservation* observation = nullptr) const;
+    AssetCostConfig get_asset_config(const std::string& symbol, AssetType asset_type,
+                                     AssetLookupObservation* observation = nullptr) const;
 
     /**
      * @brief Register custom asset configuration
      */
     void register_asset_config(const AssetCostConfig& config);
+    int register_equity_costs_from_bars(
+        const std::vector<std::string>& symbols,
+        const std::unordered_map<std::string, std::vector<Bar>>& bars_by_symbol,
+        int adv_lookback_days = 20);
+
+    std::unordered_map<std::string, double> calculate_overnight_borrow_fees(
+        const std::unordered_map<std::string, Position>& positions,
+        const std::unordered_map<std::string, double>& current_prices,
+        const InstrumentRegistry& registry) const;
 
     /**
      * @brief Clear all market data (for new backtest run)
@@ -148,6 +176,13 @@ public:
     double get_explicit_fee_per_contract() const { return config_.explicit_fee_per_contract; }
 
 private:
+    TransactionCostResult calculate_charges(const std::string& symbol,
+                                             double quantity,
+                                             double reference_price,
+                                             double adv,
+                                             double volatility_multiplier,
+                                             AssetType asset_type,
+                                             CostChargeObservation* observation) const;
     Config config_;
     AssetCostConfigRegistry asset_configs_;
     SpreadModel spread_model_;

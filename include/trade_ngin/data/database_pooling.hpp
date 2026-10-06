@@ -1,15 +1,34 @@
 #pragma once
 
+#include <chrono>
 #include <condition_variable>
 #include <deque>
 #include <memory>
 #include <mutex>
+#include <random>
 #include <thread>
 #include <vector>
 #include "trade_ngin/data/postgres_database.hpp"
 
 namespace trade_ngin {
 namespace utils {
+
+/**
+ * @brief Draw a random backoff jitter in [0, 99] milliseconds.
+ *
+ * The jitter decorrelates retry timing between clients competing for the same
+ * database. An unseeded rand() emits an identical sequence in every process, so
+ * all clients would retry in lockstep and keep colliding. Each thread therefore
+ * gets its own random_device-seeded engine. This is scheduling jitter only and
+ * carries no security requirement, so a non-cryptographic PRNG is appropriate.
+ *
+ * @return Jitter duration between 0 and 99 milliseconds inclusive
+ */
+inline std::chrono::milliseconds backoff_jitter() {
+    static thread_local std::mt19937 jitter_rng{std::random_device{}()};
+    static thread_local std::uniform_int_distribution<int> jitter_ms(0, 99);
+    return std::chrono::milliseconds(jitter_ms(jitter_rng));
+}
 
 // Retry function with exponential backoff
 template <typename Func>
@@ -35,7 +54,7 @@ auto retry_with_backoff(Func func, int max_retries = 3) -> decltype(func()) {
 
         // Exponential backoff with jitter
         delay *= 2;
-        delay += std::chrono::milliseconds(rand() % 100);
+        delay += backoff_jitter();
 
         attempt++;
     }

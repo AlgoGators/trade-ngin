@@ -15,15 +15,73 @@
 #include <unordered_map>
 #include <utility>
 #include <vector>
+#include <variant>
 
 #include "trade_ngin/core/config_loader.hpp"
+#include "trade_ngin/apps/setup_consumption.hpp"
 #include "trade_ngin/core/types.hpp"
 #include "trade_ngin/strategy/strategy_interface.hpp"
+#include "trade_ngin/strategy/trend_following.hpp"
+#include "trade_ngin/strategy/trend_following_fast.hpp"
+#include "trade_ngin/strategy/trend_following_slow.hpp"
 
 namespace trade_ngin {
 
 class PostgresDatabase;
 class InstrumentRegistry;
+
+struct PortfolioSelection {
+    std::string config_name;
+    std::vector<std::string> runner_arguments;
+};
+
+// Resolve one portfolio config key with CLI > TRADE_NGIN_PORTFOLIO > default
+// precedence. The portfolio flag is removed while existing runner arguments
+// retain their original order.
+Result<PortfolioSelection> resolve_portfolio_selection(
+    const std::vector<std::string>& arguments,
+    const std::optional<std::string>& environment_portfolio,
+    const std::string& default_name);
+
+bool runtime_control_enabled(const char* value);
+Result<nlohmann::json> build_runtime_trading_snapshot(const AppConfig& config);
+
+using StrategyPositionRows =
+    std::unordered_map<std::string, std::unordered_map<std::string, Position>>;
+
+struct ReportPositionSnapshot {
+    const StrategyPositionRows by_strategy;
+    const std::unordered_map<std::string, Position> combined;
+    const std::string portfolio_id;
+    const std::string strategy_id;
+    const std::vector<std::string> strategy_names;
+    const std::string portfolio_type;
+    const Timestamp date;
+    const std::unordered_map<std::string, size_t> evidence_counts;
+};
+
+// Carry QT state for every enabled strategy, including a now-flat system book.
+Result<void> seed_qt_report_positions(
+    PostgresDatabase& db, const std::string& strategy_id,
+    const std::vector<std::string>& strategy_names, const std::string& portfolio_id,
+    const Timestamp& report_date);
+
+// Called while the live publication is pending, after all same-day system
+// batches. Success means every component's seed callback was registered;
+// proposal rows are committed only with that publication. Include a component
+// whose system book is flat.
+Result<void> seed_qt_proposal_positions(
+    PostgresDatabase& db, const std::string& strategy_id,
+    const std::vector<std::string>& strategy_names, const std::string& portfolio_id,
+    const Timestamp& report_date);
+
+// Loads the QT execution snapshot for every report strategy, verifies that
+// QT rows account for all non-flat system symbols, and returns open QT
+// positions plus the aggregated report position map.
+Result<ReportPositionSnapshot> load_qt_report_position_snapshot(
+    PostgresDatabase& db, const std::string& strategy_id,
+    const std::vector<std::string>& strategy_names, const std::string& portfolio_id,
+    const Timestamp& report_date, const StrategyPositionRows& system_rows);
 
 // Latest bar per symbol from a flat, chronologically-loaded bar vector
 // (DataConversionUtils::arrow_table_to_bars' real return type). Built once
@@ -74,6 +132,10 @@ struct StrategySelection {
     double allocation_sum_before_normalization{0.0};
 };
 
+// Controlled operation never normalizes a partial allocation into full capital.
+Result<StrategySelection> select_controlled_live_strategies(
+    const nlohmann::json& config, SelectionConsumption* observation = nullptr);
+
 // Selects strategies with enabled_live=true from a strategies_config JSON
 // object -- either AppConfig::strategies_config (the live path) or the
 // "strategies" key of a run_inputs.config_snapshot (a replay). Pure JSON
@@ -82,7 +144,8 @@ struct StrategySelection {
 // config files say.
 // Errors: strategies_config is null/not an object, or no strategy has
 // enabled_live=true.
-Result<StrategySelection> select_enabled_live_strategies(const nlohmann::json& strategies_config);
+Result<StrategySelection> select_enabled_live_strategies(
+    const nlohmann::json& strategies_config, SelectionConsumption* observation = nullptr);
 
 // LIVE_<sorted_names_joined_by__> -- the Tier-2 combined strategy_id
 // convention. Takes selection.names (already sorted by
@@ -90,6 +153,22 @@ Result<StrategySelection> select_enabled_live_strategies(const nlohmann::json& s
 // since benchmark_replay derives the same id from a run_inputs row's
 // recorded universe/config rather than from a fresh selection call.
 std::string build_combined_strategy_id(const std::vector<std::string>& sorted_strategy_names);
+
+using FactoryTrendConfig = std::variant<std::monostate, TrendFollowingConfig,
+                                        TrendFollowingFastConfig, TrendFollowingSlowConfig>;
+
+// Pure factory stage: resolves only the known trend parameters. The caller's
+// type must be the existing definition.value("type", ...) result.
+FactoryTrendConfig resolve_factory_trend_config(
+    const std::string& strategy_type, const nlohmann::json& strategy_definition,
+    const StrategyDefaultsConfig& strategy_defaults,
+    std::optional<double> slow_max_symbol_concentration_override);
+
+// Inspection-only recomputation of the two shared pure trend stages. This is
+// pending capture data, not a publication identity or a runtime-effective view.
+nlohmann::json build_live_config_inspection_capture(
+    const AppConfig& config, const StrategySelection& selection,
+    std::optional<double> slow_max_symbol_concentration_override);
 
 // Builds and starts one StrategyInterface instance per selection.names
 // entry (TrendFollowingStrategy / *Fast / *Slow, chosen by each strategy's
@@ -109,7 +188,8 @@ std::vector<std::shared_ptr<StrategyInterface>> build_strategy_instances(
     const StrategySelection& selection, const StrategyConfig& base_strategy_config,
     double initial_capital, const StrategyDefaultsConfig& strategy_defaults,
     std::optional<double> slow_max_symbol_concentration_override,
-    std::shared_ptr<PostgresDatabase> db, std::shared_ptr<InstrumentRegistry> registry_ptr);
+    std::shared_ptr<PostgresDatabase> db, std::shared_ptr<InstrumentRegistry> registry_ptr,
+    FactoryConsumption* observation = nullptr);
 
 // One contiguous run of trading.run_inputs dates that all recorded the same
 // trade_ngin_sha.

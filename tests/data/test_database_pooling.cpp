@@ -2,9 +2,13 @@
 #include <atomic>
 #include <future>
 #include <thread>
+#include <vector>
 #include "../core/test_base.hpp"
 #include "test_db_utils.hpp"
 #include "trade_ngin/data/postgres_database.hpp"
+
+#include <chrono>
+#include "trade_ngin/data/database_pooling.hpp"
 
 using namespace trade_ngin;
 using namespace trade_ngin::testing;
@@ -280,3 +284,154 @@ TEST_F(DatabasePoolTest, MixedOperations) {
     double success_rate = static_cast<double>(success_count) / (operations_per_type * 3);
     EXPECT_GT(success_rate, 0.8) << "Too many operations failed";
 }
+
+// ===== folded in from tests/data/test_database_pooling_extended.cpp =====
+// Coverage for database_pooling.cpp paths that don't require a live DB.
+// Targets:
+// - DatabasePool::initialize with a connection string that fails to open
+//   (returns CONNECTION_ERROR after 0 successful connections)
+// - DatabasePool::return_connection with nullptr
+// - retry_with_backoff template (header) on success and on retryable failure
+//
+// We deliberately avoid testing acquire_connection / multi-connection paths
+// because those require a working PostgresDatabase, which the existing
+// MockPostgresDatabase doesn't substitute for inside DatabasePool (it
+// constructs std::make_shared<PostgresDatabase> directly). Captured here as
+// a deferred-refactor item; see deliverables/unit_testing/postgres_database.md.
+namespace database_pooling_extended_detail {
+
+using namespace trade_ngin;
+
+class DatabasePoolingExtendedTest : public ::testing::Test {};
+
+// The retry paths are now exercised below. They previously had to be skipped
+// because retry_with_backoff called std::rand(), advancing global RNG state and
+// breaking downstream tests that also used rand(). backoff_jitter() now owns a
+// thread_local engine, so the retry paths no longer have cross-test side effects.
+
+// ===== initialize fails when all connections fail =====
+
+TEST_F(DatabasePoolingExtendedTest, InitializeWithBadConnectionStringReturnsError) {
+    // Use a syntactically-malformed connection string so libpq rejects
+    // immediately without DNS lookup or TCP timeout.
+    std::string bad_conn = "host= port=invalid_not_a_number user= dbname=";
+    auto& pool = DatabasePool::instance();
+    auto r = pool.initialize(bad_conn, /*pool_size=*/1);
+    // initialize is a singleton method. If it succeeds (was already
+    // initialized earlier in the test run), it returns a warning but ok.
+    // If this is the first call, it should return error because all
+    // connection attempts fail.
+    if (!r.is_ok()) {
+        EXPECT_EQ(r.error()->code(), ErrorCode::CONNECTION_ERROR);
+    }
+}
+
+// ===== return_connection rejects nullptr =====
+
+TEST_F(DatabasePoolingExtendedTest, ReturnNullConnectionReturnsInvalidArgument) {
+    auto& pool = DatabasePool::instance();
+    auto r = pool.return_connection(nullptr);
+    ASSERT_TRUE(r.is_error());
+    EXPECT_EQ(r.error()->code(), ErrorCode::INVALID_ARGUMENT);
+}
+
+// ===== retry_with_backoff =====
+
+TEST_F(DatabasePoolingExtendedTest, RetryWithBackoffReturnsImmediatelyOnSuccess) {
+    std::atomic<int> calls{0};
+    auto fn = [&]() -> Result<int> {
+        ++calls;
+        return Result<int>(42);
+    };
+    auto r = utils::retry_with_backoff(fn, 3);
+    ASSERT_TRUE(r.is_ok());
+    EXPECT_EQ(r.value(), 42);
+    EXPECT_EQ(calls.load(), 1);  // no retry needed
+}
+
+TEST_F(DatabasePoolingExtendedTest, RetryWithBackoffStopsRetryingOnNonRetryableError) {
+    std::atomic<int> calls{0};
+    auto fn = [&]() -> Result<int> {
+        ++calls;
+        return make_error<int>(ErrorCode::INVALID_ARGUMENT, "non-retryable", "test");
+    };
+    auto r = utils::retry_with_backoff(fn, 5);
+    ASSERT_TRUE(r.is_error());
+    EXPECT_EQ(calls.load(), 1);  // not a CONNECTION_ERROR → no retries
+}
+
+// ===== backoff jitter =====
+
+// The jitter exists to decorrelate clients competing for the same database.
+// An unseeded rand() emitted an identical sequence in every process, so all
+// clients retried in lockstep. Each thread must now draw its own sequence.
+TEST_F(DatabasePoolingExtendedTest, BackoffJitterStaysWithinDocumentedRange) {
+    for (int i = 0; i < 200; ++i) {
+        auto jitter = utils::backoff_jitter();
+        EXPECT_GE(jitter.count(), 0);
+        EXPECT_LE(jitter.count(), 99);
+    }
+}
+
+TEST_F(DatabasePoolingExtendedTest, BackoffJitterDecorrelatesAcrossThreads) {
+    // Compare whole sequences rather than single draws: two threads each drawing
+    // one value from [0, 99] would collide ~1% of the time, which would flake.
+    constexpr int kDraws = 8;
+    std::vector<long long> a;
+    std::vector<long long> b;
+
+    auto collect = [](std::vector<long long>& out) {
+        for (int i = 0; i < kDraws; ++i) {
+            out.push_back(utils::backoff_jitter().count());
+        }
+    };
+
+    std::thread t1(collect, std::ref(a));
+    std::thread t2(collect, std::ref(b));
+    t1.join();
+    t2.join();
+
+    ASSERT_EQ(a.size(), static_cast<size_t>(kDraws));
+    ASSERT_EQ(b.size(), static_cast<size_t>(kDraws));
+    // Two independently seeded mt19937 engines matching on all 8 draws has
+    // probability ~100^-8; any match means the engines share a seed sequence.
+    EXPECT_NE(a, b) << "Both threads produced an identical jitter sequence, "
+                       "so retry timing is still correlated across threads.";
+}
+
+// ===== retry path =====
+
+TEST_F(DatabasePoolingExtendedTest, RetryWithBackoffRetriesOnConnectionError) {
+    std::atomic<int> calls{0};
+    auto fn = [&]() -> Result<int> {
+        ++calls;
+        return make_error<int>(ErrorCode::CONNECTION_ERROR, "retryable", "test");
+    };
+
+    auto start = std::chrono::steady_clock::now();
+    auto r = utils::retry_with_backoff(fn, 2);
+    auto elapsed = std::chrono::steady_clock::now() - start;
+
+    ASSERT_TRUE(r.is_error());
+    // max_retries attempts inside the loop, then one final attempt.
+    EXPECT_EQ(calls.load(), 3);
+    // Backoff must remain exponential: the loop sleeps 30ms then >=60ms.
+    // Asserting only the lower bound keeps this robust on a loaded CI runner.
+    EXPECT_GE(std::chrono::duration_cast<std::chrono::milliseconds>(elapsed).count(), 90);
+}
+
+TEST_F(DatabasePoolingExtendedTest, RetryWithBackoffReturnsSuccessAfterTransientFailure) {
+    std::atomic<int> calls{0};
+    auto fn = [&]() -> Result<int> {
+        if (++calls == 1) {
+            return make_error<int>(ErrorCode::CONNECTION_ERROR, "transient", "test");
+        }
+        return Result<int>(7);
+    };
+    auto r = utils::retry_with_backoff(fn, 3);
+    ASSERT_TRUE(r.is_ok());
+    EXPECT_EQ(r.value(), 7);
+    EXPECT_EQ(calls.load(), 2);
+}
+
+}  // namespace database_pooling_extended_detail

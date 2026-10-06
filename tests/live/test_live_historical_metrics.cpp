@@ -104,8 +104,9 @@ TEST_F(LiveHistoricalMetricsTest, CalculateEmptyReturnsZeroedMetricsExceptCounts
     auto m = c.calculate({}, {}, {}, 12.0, 5);
     EXPECT_EQ(m.total_days, 0);
     EXPECT_EQ(m.total_trades, 5);
-    EXPECT_DOUBLE_EQ(m.sharpe_ratio, 0.0);
-    EXPECT_DOUBLE_EQ(m.sortino_ratio, 0.0);
+    // No returns at all: nothing to divide, and nothing to divide by.
+    EXPECT_FALSE(m.sharpe_ratio.has_value());
+    EXPECT_FALSE(m.sortino_ratio.has_value());
     EXPECT_DOUBLE_EQ(m.win_rate, 0.0);
 }
 
@@ -122,26 +123,38 @@ TEST_F(LiveHistoricalMetricsTest, CalculatePopulatesAllAggregateStats) {
     EXPECT_EQ(m.losing_days, 2);
     EXPECT_NEAR(m.win_rate, 60.0, 1e-9);
     EXPECT_GT(m.volatility, 0.0);
-    EXPECT_GT(m.sharpe_ratio, 0.0);
+    ASSERT_TRUE(m.sharpe_ratio.has_value());
+    EXPECT_GT(*m.sharpe_ratio, 0.0);
     EXPECT_GT(m.gross_profit, 0.0);
     EXPECT_GT(m.gross_loss, 0.0);
     EXPECT_NEAR(m.gross_profit, 3500.0, 1e-9);
     EXPECT_NEAR(m.gross_loss, 2000.0, 1e-9);
-    EXPECT_NEAR(m.profit_factor, 1.75, 1e-9);
+    ASSERT_TRUE(m.profit_factor.has_value());
+    EXPECT_NEAR(*m.profit_factor, 1.75, 1e-9);
     EXPECT_DOUBLE_EQ(m.best_day, 2.0);
     EXPECT_DOUBLE_EQ(m.worst_day, -1.5);
 }
 
-TEST_F(LiveHistoricalMetricsTest, CalculateProfitFactorIsLargeWhenNoLosses) {
+TEST_F(LiveHistoricalMetricsTest, ProfitFactorIsUndefinedWhenThereAreNoLosses) {
+    // Two up days and nothing else. gross_loss is zero, so the ratio has no
+    // denominator: the answer is "there isn't one", not 999.99. The gross
+    // figures are still reported, which is what a reader actually needs.
     LiveHistoricalMetricsCalculator c;
     auto m = c.calculate({1.0, 2.0}, {100.0, 200.0}, {1000.0, 1100.0}, 5.0, 2);
-    EXPECT_GT(m.profit_factor, 100.0);
+    EXPECT_FALSE(m.profit_factor.has_value());
+    EXPECT_NEAR(m.gross_profit, 300.0, 1e-9);
+    EXPECT_DOUBLE_EQ(m.gross_loss, 0.0);
 }
 
-TEST_F(LiveHistoricalMetricsTest, CalculateZeroVolatilityKeepsRatiosAtZero) {
+TEST_F(LiveHistoricalMetricsTest, CalculateZeroVolatilityLeavesTheRatiosUndefined) {
+    // Three identical days: no dispersion, so neither ratio has a denominator.
+    // These used to read 0.0, which is what trading.live_results then stored and
+    // the dashboard then rendered -- indistinguishable from a book that really
+    // did earn nothing per unit of risk.
     LiveHistoricalMetricsCalculator c;
     auto m = c.calculate({0.5, 0.5, 0.5}, {}, {}, 10.0, 0);
     EXPECT_DOUBLE_EQ(m.volatility, 0.0);
-    EXPECT_DOUBLE_EQ(m.sharpe_ratio, 0.0);
-    EXPECT_DOUBLE_EQ(m.sortino_ratio, 0.0);
+    EXPECT_DOUBLE_EQ(m.downside_deviation, 0.0);
+    EXPECT_FALSE(m.sharpe_ratio.has_value());
+    EXPECT_FALSE(m.sortino_ratio.has_value());
 }

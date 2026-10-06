@@ -12,18 +12,46 @@
 // (no public API to add instruments without a real DB connection).
 #define private public
 #include "trade_ngin/instruments/instrument_registry.hpp"
-#undef private
-
 #include "trade_ngin/strategy/trend_following_fast.hpp"
+#undef private
+#include "consumption_test_helpers.hpp"
 
 using namespace trade_ngin;
 using namespace trade_ngin::testing;
+
+TEST(OriginalTrendConstructorConfig, FastNormalizesLookbacksAndPreservesNonzeroHistoryCap) {
+    TrendFollowingFastConfig config;
+    config.vol_lookback_short = 0;
+    config.vol_lookback_long = 0;
+    config.max_history_size = 42;
+    TrendFollowingFastStrategy strategy("FAST_CHARACTERIZATION", {}, config, nullptr);
+    EXPECT_EQ(strategy.trend_config_.vol_lookback_short, 16);
+    EXPECT_EQ(strategy.trend_config_.vol_lookback_long, 64);
+    EXPECT_EQ(strategy.trend_config_.max_history_size, 42u);
+    EXPECT_DOUBLE_EQ(strategy.trend_config_.weight, 1.0);
+}
+
+TEST(ConstructorTrendConfigResolution, FastPureNormalizerMatchesOriginalConstructor) {
+    TrendFollowingFastConfig config;
+    config.vol_lookback_short = 0;
+    config.vol_lookback_long = 0;
+    config.max_history_size = 42;
+    normalize_constructor_trend_config(config);
+    EXPECT_EQ(config.vol_lookback_short, 16);
+    EXPECT_EQ(config.vol_lookback_long, 64);
+    EXPECT_EQ(config.max_history_size, 42u);
+}
 
 namespace {
 
 void seed_registry_with_micros() {
     auto& registry = InstrumentRegistry::instance();
-    for (const auto& symbol : {"MES", "MNQ", "MYM"}) {
+    // Registered under the symbols these tests actually feed the strategy.
+    // They were the micro spellings because get_instrument rewrote ES to
+    // MES before every lookup; it does not any more. The multiplier below
+    // is a fixture constant chosen to keep the arithmetic simple, not a
+    // claim about what an E-mini point is worth.
+    for (const auto& symbol : {"ES", "NQ", "YM"}) {
         FuturesSpec spec;
         spec.root_symbol = symbol;
         spec.exchange = "CME";
@@ -145,6 +173,92 @@ TEST_F(TrendFollowingFastTest, MaxRequiredLookbackReflectsLongestEMAWindow) {
     int lb = strategy_->get_max_required_lookback();
     // Default fast EMA windows top out at 64 (slow side); add vol_lookback_long(64).
     EXPECT_GT(lb, 0);
+}
+
+TEST_F(TrendFollowingFastTest, ConsumptionShortHistoryAndReuseThroughInterface) {
+    ASSERT_TRUE(strategy_->start().is_ok());
+    StrategyInterface& selected = *strategy_;
+    StrategyConsumptionTrace trace;
+    ASSERT_TRUE(selected.on_data(create_test_data("ES", 10), &trace).is_ok());
+    EXPECT_EQ(trace.profile, StrategyConsumptionProfile::Fast);
+    ASSERT_TRUE(trace.history.max_history_size.has_value());
+    EXPECT_EQ(*trace.history.max_history_size, size_t{2520});
+    EXPECT_EQ(*trace.history.ema_windows,
+              (std::vector<std::pair<int, int>>{{1, 4}, {2, 8}, {4, 16}, {8, 32}, {16, 64}}));
+    EXPECT_TRUE(trace.base_risk.supported);
+    EXPECT_FALSE(trace.forecast.fdm.has_value());
+    EXPECT_FALSE(trace.sizing.risk_target.has_value());
+    EXPECT_FALSE(trace.buffering.use_position_buffering.has_value());
+
+    ASSERT_TRUE(selected.on_data({}, &trace).is_ok());
+    EXPECT_EQ(trace.profile, StrategyConsumptionProfile::Fast);
+    EXPECT_FALSE(trace.history.max_history_size.has_value());
+    EXPECT_FALSE(trace.base_risk.supported);
+}
+
+TEST_F(TrendFollowingFastTest, ConsumptionFullCalculationReadsNormalizedInputs) {
+    TrendFollowingFastConfig custom;
+    set_nondefault_trend_inputs(custom);
+    SignalInspectableStrategy<TrendFollowingFastStrategy> selected_strategy(
+        "FAST_CONSUMPTION", strategy_config_, custom, db_, registry_ptr_);
+    SignalInspectableStrategy<TrendFollowingFastStrategy> plain_strategy(
+        "FAST_PLAIN", strategy_config_, custom, db_, registry_ptr_);
+    ASSERT_TRUE(selected_strategy.initialize().is_ok());
+    ASSERT_TRUE(plain_strategy.initialize().is_ok());
+    RiskLimits live_limits = risk_limits_;
+    live_limits.max_leverage = Decimal(3.25);
+    live_limits.max_drawdown = Decimal(0.45);
+    ASSERT_TRUE(selected_strategy.update_risk_limits(live_limits).is_ok());
+    ASSERT_TRUE(plain_strategy.update_risk_limits(live_limits).is_ok());
+    ASSERT_TRUE(selected_strategy.start().is_ok());
+    ASSERT_TRUE(plain_strategy.start().is_ok());
+    StrategyInterface& selected = selected_strategy;
+    StrategyConsumptionTrace trace;
+    auto bars = create_test_data("ES", 300);
+    ASSERT_TRUE(selected.on_data(bars, &trace).is_ok());
+    ASSERT_TRUE(plain_strategy.on_data(bars).is_ok());
+    expect_full_strategy_consumption(trace, StrategyConsumptionProfile::Fast, 16, 64);
+    EXPECT_DOUBLE_EQ(selected_strategy.get_forecast("ES"), plain_strategy.get_forecast("ES"));
+    EXPECT_DOUBLE_EQ(selected_strategy.get_position("ES"), plain_strategy.get_position("ES"));
+    EXPECT_DOUBLE_EQ(static_cast<double>(selected_strategy.get_positions().at("ES").quantity),
+                     static_cast<double>(plain_strategy.get_positions().at("ES").quantity));
+    expect_signal_and_metrics_parity(selected_strategy, plain_strategy, "ES");
+    expect_malformed_bar_error_parity(selected, plain_strategy, bars, trace);
+    expect_safe_helper_early_returns(selected_strategy);
+    expect_full_to_short_empty_error_reset(selected, create_test_data("NQ", 5),
+                                           StrategyConsumptionProfile::Fast);
+}
+
+TEST_F(TrendFollowingFastTest, ConsumptionDisabledBufferAndMalformedReset) {
+    ASSERT_TRUE(strategy_->start().is_ok());
+    StrategyInterface& selected = *strategy_;
+    auto bars = create_test_data("ES", 100);
+    StrategyConsumptionTrace trace;
+    ASSERT_TRUE(selected.on_data(bars, &trace).is_ok());
+    ASSERT_TRUE(trace.buffering.use_position_buffering.has_value());
+    EXPECT_FALSE(*trace.buffering.use_position_buffering);
+    EXPECT_FALSE(trace.buffering.weight.has_value());
+    EXPECT_FALSE(trace.buffering.carver_buffer_floor.has_value());
+    EXPECT_TRUE(trace.sizing.risk_target.has_value());
+    bars.front().open = Decimal(0.0);
+    EXPECT_TRUE(selected.on_data(bars, &trace).is_error());
+    EXPECT_EQ(trace.profile, StrategyConsumptionProfile::Fast);
+    EXPECT_FALSE(trace.history.max_history_size.has_value());
+    EXPECT_FALSE(trace.base_risk.supported);
+    EXPECT_FALSE(trace.buffering.use_position_buffering.has_value());
+}
+
+TEST_F(TrendFollowingFastTest, ConsumptionMissingSymbolLimitRemainsAbsentAtEachReachedStage) {
+    TrendFollowingFastConfig custom;
+    set_nondefault_trend_inputs(custom);
+    auto config = strategy_config_;
+    config.position_limits.erase("ES");
+    TrendFollowingFastStrategy strategy("FAST_NO_LIMIT", config, custom, db_, registry_ptr_);
+    ASSERT_TRUE(strategy.initialize().is_ok());
+    ASSERT_TRUE(strategy.start().is_ok());
+    StrategyConsumptionTrace trace;
+    ASSERT_TRUE(strategy.on_data(create_test_data("ES", 100), &trace).is_ok());
+    expect_missing_symbol_limit(trace);
 }
 
 TEST_F(TrendFollowingFastTest, OnDataAcceptsEmptyBars) {

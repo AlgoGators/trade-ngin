@@ -14,11 +14,14 @@
 
 set -uo pipefail  # deliberately NOT -e: we capture the binary's exit code ourselves
 
-# Which portfolio to run. Defaults to the conservative binary because that is
-# what the live database shows was actually being run -- CONSERVATIVE_PORTFOLIO
-# has data through 2026-05-03, while BASE_PORTFOLIO stops in December 2025.
-# Override with -e LIVE_BINARY=... to run a different one.
+# The optional manifest is a literal two-column TSV: absolute runner path, then
+# the validated portfolio config key. Rows run in file order. Blank lines and
+# lines beginning with # are ignored. When it is absent, retain the historical
+# single conservative-book default.
 BINARY="${LIVE_BINARY:-/app/build/bin/Release/live_portfolio_conservative}"
+PORTFOLIO="${LIVE_PORTFOLIO:-conservative}"
+BOOK_MANIFEST="${LIVE_BOOK_MANIFEST:-}"
+APP_ROOT="${APP_ROOT:-/app}"
 
 CRON_ENV="${CRON_ENV:-/app/.cron_env}"
 LOCK_DIR="${LOCK_DIR:-/tmp/live_portfolio.lock}"
@@ -50,16 +53,65 @@ fi
 # mkdir is atomic, so this is a safe lock without extra tooling. A catch-up run
 # started by hand should not collide with the scheduled one.
 if ! mkdir "$LOCK_DIR" 2>/dev/null; then
-    log "skipping: another run already holds $LOCK_DIR"
+    log "skipping: another cycle already holds $LOCK_DIR"
     exit 0
 fi
 trap 'rmdir "$LOCK_DIR" 2>/dev/null || true' EXIT
 
-# --- preflight ---------------------------------------------------------------
-if [ ! -x "$BINARY" ]; then
-    log "FATAL: binary not found or not executable: $BINARY"
-    log "       built targets are live_portfolio and live_portfolio_conservative"
-    exit 127
+# --- manifest/preflight ------------------------------------------------------
+declare -a RUNNERS=()
+declare -a PORTFOLIOS=()
+declare -A SEEN_PORTFOLIOS=()
+
+valid_portfolio_key() {
+    local key="$1"
+    [[ ${#key} -ge 1 && ${#key} -le 64 && "$key" =~ ^[a-z0-9][a-z0-9_-]*$ ]]
+}
+
+append_book() {
+    local runner="$1"
+    local portfolio="$2"
+    local source="$3"
+
+    if [[ "$runner" != /* || ! -x "$runner" ]]; then
+        log "FATAL: $source runner must be an absolute executable path: $runner"
+        return 127
+    fi
+    if ! valid_portfolio_key "$portfolio"; then
+        log "FATAL: $source has invalid portfolio key: $portfolio"
+        return 64
+    fi
+    if [[ -n "${SEEN_PORTFOLIOS[$portfolio]:-}" ]]; then
+        log "FATAL: $source repeats portfolio key: $portfolio"
+        return 64
+    fi
+    SEEN_PORTFOLIOS[$portfolio]=1
+    RUNNERS+=("$runner")
+    PORTFOLIOS+=("$portfolio")
+}
+
+if [[ -n "$BOOK_MANIFEST" ]]; then
+    if [[ ! -f "$BOOK_MANIFEST" ]]; then
+        log "FATAL: live-book manifest not found: $BOOK_MANIFEST"
+        exit 66
+    fi
+    line_number=0
+    while IFS=$'\t' read -r runner portfolio extra || [[ -n "${runner:-}${portfolio:-}${extra:-}" ]]; do
+        line_number=$((line_number + 1))
+        [[ -z "${runner:-}${portfolio:-}${extra:-}" ]] && continue
+        [[ "${runner:-}" == \#* ]] && continue
+        if [[ -z "${runner:-}" || -z "${portfolio:-}" || -n "${extra:-}" ]]; then
+            log "FATAL: $BOOK_MANIFEST:$line_number must contain exactly runner<TAB>portfolio"
+            exit 64
+        fi
+        append_book "$runner" "$portfolio" "$BOOK_MANIFEST:$line_number" || exit $?
+    done < "$BOOK_MANIFEST"
+    if [[ ${#RUNNERS[@]} -eq 0 ]]; then
+        log "FATAL: live-book manifest contains no runnable books: $BOOK_MANIFEST"
+        exit 64
+    fi
+else
+    append_book "$BINARY" "$PORTFOLIO" "single-book fallback" || exit $?
 fi
 
 # --- working directory -------------------------------------------------------
@@ -68,21 +120,29 @@ fi
 # relative to the current directory. Without this cd every scheduled run dies
 # on config-not-found -- the same class of silent failure this script exists
 # to eliminate.
-cd /app || { log "FATAL: cannot cd /app"; exit 1; }
+cd "$APP_ROOT" || { log "FATAL: cannot cd $APP_ROOT"; exit 1; }
 
 # --- run ---------------------------------------------------------------------
 DATE="$(date +%Y-%m-%d)"
-log "starting $BINARY for $DATE"
+log "starting ${#RUNNERS[@]} portfolio(s) for $DATE"
 
-"$BINARY" "$DATE" --send-email
-rc=$?
+for index in "${!RUNNERS[@]}"; do
+    runner="${RUNNERS[$index]}"
+    portfolio="${PORTFOLIOS[$index]}"
+    run_args=("$DATE" --portfolio "$portfolio")
+    if [ "${QT_EMAIL_DELIVERY_ENABLED:-}" = "true" ]; then
+        run_args+=(--send-email)
+    fi
 
-if [ "$rc" -eq 0 ]; then
-    log "completed successfully for $DATE"
-else
-    log "FAILED for $DATE (exit $rc)"
-fi
+    log "starting portfolio $portfolio with $runner for $DATE"
+    "$runner" "${run_args[@]}"
+    rc=$?
+    if [[ "$rc" -ne 0 ]]; then
+        log "FAILED portfolio $portfolio for $DATE (exit $rc); stopping cycle"
+        exit "$rc"
+    fi
+    log "completed portfolio $portfolio for $DATE"
+done
 
-# Propagate the real exit code so cron -- and anything reading container logs --
-# sees the failure.
-exit "$rc"
+log "completed all ${#RUNNERS[@]} portfolio(s) successfully for $DATE"
+exit 0

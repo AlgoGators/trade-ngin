@@ -3,6 +3,8 @@
 
 #pragma once
 
+#include <optional>
+
 #include <cmath>
 #include <vector>
 #include <string>
@@ -33,8 +35,10 @@ struct CalculatedMetrics {
     double unrealized_pnl = 0.0;
 
     // Risk metrics (for future expansion)
-    double sharpe_ratio = 0.0;
-    double sortino_ratio = 0.0;
+    /// Empty when the returns never varied: no volatility to divide by.
+    std::optional<double> sharpe_ratio;
+    /// Empty when no return fell below the target: no downside to divide by.
+    std::optional<double> sortino_ratio;
     double max_drawdown = 0.0;
     double volatility = 0.0;
     double var_95 = 0.0;
@@ -43,7 +47,8 @@ struct CalculatedMetrics {
     // Additional metrics
     int trading_days = 0;
     double win_rate = 0.0;
-    double profit_factor = 0.0;
+    /// Empty when there were no losses to divide by. See calculate_profit_factor.
+    std::optional<double> profit_factor;
 };
 
 /**
@@ -184,7 +189,7 @@ public:
      * @param risk_free_rate Risk-free rate (annual)
      * @return Sharpe ratio
      */
-    double calculate_sharpe_ratio(
+    std::optional<double> calculate_sharpe_ratio(
         const std::vector<double>& returns,
         double risk_free_rate = 0.0) const;
 
@@ -194,7 +199,7 @@ public:
      * @param minimum_acceptable_return Minimum acceptable return
      * @return Sortino ratio
      */
-    double calculate_sortino_ratio(
+    std::optional<double> calculate_sortino_ratio(
         const std::vector<double>& returns,
         double minimum_acceptable_return = 0.0) const;
 
@@ -292,9 +297,12 @@ public:
      * @brief Calculate profit factor
      * @param gross_wins Total winning amount
      * @param gross_losses Total losing amount (as positive value)
-     * @return Profit factor ratio
+     * @return The ratio, or nothing when there are no losses to divide by.
+     *
+     * Nothing rather than a large number: this returned 999.99, which reads as
+     * a measurement everywhere it is stored, charted or averaged.
      */
-    double calculate_profit_factor(
+    std::optional<double> calculate_profit_factor(
         double gross_wins,
         double gross_losses) const;
 

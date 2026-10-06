@@ -1,10 +1,15 @@
+#include "trade_ngin/apps/qt_report_quantity_projection.hpp"
 #include "trade_ngin/live/csv_exporter.hpp"
 #include <arrow/api.h>
 #include <arrow/type.h>
 #include <iomanip>
+#include <cmath>
+#include <limits>
+#include <map>
 #include <sstream>
 #include <unordered_set>
 #include "trade_ngin/core/logger.hpp"
+#include "trade_ngin/data/conversion_utils.hpp"
 #include "trade_ngin/data/database_interface.hpp"
 #include "trade_ngin/instruments/instrument_registry.hpp"
 #include "trade_ngin/strategy/base_strategy.hpp"
@@ -146,9 +151,11 @@ Result<std::string> CSVExporter::export_current_positions(
         for (const auto& symbol : all_symbols) {
             // Get position quantity (0 if not in positions map)
             double quantity = 0.0;
+            std::string quantity_text = "0";
             auto pos_it = positions.find(symbol);
             if (pos_it != positions.end()) {
                 quantity = pos_it->second.quantity.as_double();
+                quantity_text = pos_it->second.quantity.to_string();
             }
 
             // Get market price (Day T-1 close)
@@ -223,7 +230,7 @@ Result<std::string> CSVExporter::export_current_positions(
             }
 
             // Write position row
-            file << symbol << "," << quantity << "," << market_price << "," << notional << ","
+            file << symbol << "," << quantity_text << "," << market_price << "," << notional << ","
                  << pct_of_gross << "," << pct_of_portfolio << "," << forecast << "," << std::fixed
                  << std::setprecision(6) << volatility << "," << ema_8 << "," << ema_32 << ","
                  << ema_64 << "," << ema_256 << "\n";
@@ -273,16 +280,25 @@ Result<std::string> CSVExporter::export_finalized_positions(
         WARN("CSVExporter: Using fallback positions (database loading temporarily disabled)");
 
         if (false && db != nullptr) {
-            // Process database results
-            auto symbol_arr = std::static_pointer_cast<arrow::StringArray>(table->column(0));
-            auto quantity_arr = std::static_pointer_cast<arrow::StringArray>(table->column(1));
-            auto realized_pnl_arr = std::static_pointer_cast<arrow::StringArray>(table->column(3));
+            // Phase 6 §1.17a: type-aware access -- table here is a
+            // RecordBatch (not a Table), so safe_get_* (ChunkedArray API)
+            // can't be applied directly. Wrap each column in a single-chunk
+            // ChunkedArray to reuse the helper's dispatch + WARN logic.
+            auto wrap = [](const std::shared_ptr<arrow::Array>& arr) {
+                return std::make_shared<arrow::ChunkedArray>(arr);
+            };
+            auto symbol_col       = wrap(table->column(0));
+            auto quantity_col     = wrap(table->column(1));
+            auto realized_pnl_col = wrap(table->column(3));
 
             for (int64_t i = 0; i < table->num_rows(); ++i) {
-                if (!symbol_arr->IsNull(i) && !quantity_arr->IsNull(i)) {
-                    std::string symbol = symbol_arr->GetString(i);
-                    double quantity = std::stod(quantity_arr->GetString(i));
-                    double realized_pnl = std::stod(realized_pnl_arr->GetString(i));
+                auto sym_r = DataConversionUtils::safe_get_string(symbol_col, i, "symbol");
+                auto qty_r = DataConversionUtils::safe_get_double(quantity_col, i, "quantity");
+                auto rp_r  = DataConversionUtils::safe_get_double(realized_pnl_col, i, "realized_pnl");
+                if (sym_r.is_ok() && qty_r.is_ok() && rp_r.is_ok()) {
+                    std::string symbol = sym_r.value();
+                    double quantity = qty_r.value();
+                    double realized_pnl = rp_r.value();
 
                     // Skip zero positions
                     if (std::abs(quantity) < 0.0001)
@@ -450,6 +466,24 @@ std::string CSVExporter::format_strategy_display_name(const std::string& strateg
     return result;
 }
 
+Result<std::string> CSVExporter::export_desk_positions(
+    const std::chrono::system_clock::time_point& date,
+    const StrategyPositionsMap& positions,
+    const std::unordered_map<std::string, double>& prices,
+    double equity, double gross, double net, const DeskCsvInstruments& instruments) {
+    return export_current_positions_impl(date, positions, prices, equity, gross, net,
+                                        {}, true, nullptr, true, &instruments);
+}
+
+Result<std::string> CSVExporter::export_current_positions(
+    const std::chrono::system_clock::time_point& date,
+    const StrategyPositionsMap& positions,
+    const std::unordered_map<std::string, double>& prices,
+    double equity, double gross, double net) {
+    return export_current_positions_impl(date, positions, prices, equity, gross, net,
+                                        {}, true, nullptr, true);
+}
+
 Result<std::string> CSVExporter::export_current_positions(
     const std::chrono::system_clock::time_point& date,
     const StrategyPositionsMap& strategy_positions,
@@ -457,9 +491,73 @@ Result<std::string> CSVExporter::export_current_positions(
     double portfolio_value,
     double gross_notional,
     double net_notional,
-    const StrategyInstancesMap& strategy_instances) {
+    const StrategyInstancesMap& strategy_instances,
+    bool strict_snapshot_rows,
+    const CurrentReportQuantityProjection* display) {
+    return export_current_positions_impl(date, strategy_positions, market_prices,
+        portfolio_value, gross_notional, net_notional, strategy_instances,
+        strict_snapshot_rows, display, false);
+}
+
+Result<std::string> CSVExporter::export_current_positions_impl(
+    const std::chrono::system_clock::time_point& date,
+    const StrategyPositionsMap& strategy_positions,
+    const std::unordered_map<std::string, double>& market_prices,
+    double portfolio_value, double gross_notional, double net_notional,
+    const StrategyInstancesMap& strategy_instances, bool strict_snapshot_rows,
+    const CurrentReportQuantityProjection* display, bool model_columns_absent,
+    const DeskCsvInstruments* desk_instruments) {
+    if (display && (!strict_snapshot_rows || !valid_qt_report_display_rows(strategy_positions, *display)))
+        return make_error<std::string>(ErrorCode::INVALID_DATA,
+            "QT report quantity projection is incomplete", "CSVExporter::export_current_positions");
     try {
         INFO("CSVExporter: Exporting per-strategy positions...");
+
+        // Absent-model admission is complete before opening the file.
+        std::map<std::pair<std::string, std::string>, double> desk_notional;
+        if (model_columns_absent) {
+            const auto invalid = [] {
+                return make_error<std::string>(ErrorCode::INVALID_DATA,
+                    "desk_csv_snapshot_unavailable", "CSVExporter::export_current_positions");
+            };
+            if (!strict_snapshot_rows || display || !strategy_instances.empty() ||
+                !std::isfinite(portfolio_value) || !std::isfinite(gross_notional) ||
+                !std::isfinite(net_notional) || gross_notional < 0) return invalid();
+            std::unordered_set<std::string> admitted_symbols;
+            for (const auto& [owner, rows] : strategy_positions) {
+                if (owner.empty()) return invalid();
+                for (const auto& [symbol, position] : rows) {
+                    const auto found = market_prices.find(symbol);
+                    if (symbol.empty() || position.symbol != symbol || found == market_prices.end() ||
+                        !std::isfinite(found->second) || found->second <= 0) return invalid();
+                    double multiplier = 0;
+                    if (desk_instruments) {
+                        const auto item = desk_instruments->find(symbol);
+                        if (item == desk_instruments->end()) return invalid();
+                        const auto& instrument = item->second;
+                        multiplier = instrument.multiplier;
+                        if ((instrument.asset_type != AssetType::EQUITY && instrument.asset_type != AssetType::FUTURE) ||
+                            !std::isfinite(multiplier) || multiplier <= 0 ||
+                            (instrument.asset_type == AssetType::EQUITY && multiplier != 1) ||
+                            (instrument.asset_type == AssetType::FUTURE && position.quantity.raw_value() % 100000000LL != 0))
+                            return invalid();
+                        admitted_symbols.insert(symbol);
+                    } else {
+                        const auto instrument = InstrumentRegistry::instance().get_instrument(get_clean_symbol(symbol));
+                        if (!instrument || !std::isfinite(instrument->get_multiplier()) ||
+                            instrument->get_multiplier() <= 0) return invalid();
+                        multiplier = instrument->get_multiplier();
+                    }
+                    const double notional = position.quantity.as_double() * found->second * multiplier;
+                    const double gross_pct = gross_notional == 0 ? 0 : std::abs(notional) / gross_notional * 100.0;
+                    const double equity_pct = portfolio_value == 0 ? 0 : std::abs(notional) / std::abs(portfolio_value) * 100.0;
+                    if (!std::isfinite(notional) || !std::isfinite(gross_pct) || !std::isfinite(equity_pct)) return invalid();
+                    desk_notional.emplace(std::make_pair(owner, symbol), notional);
+                }
+            }
+            if (desk_instruments && (desk_instruments->size() != admitted_symbols.size() ||
+                                     market_prices.size() != admitted_symbols.size())) return invalid();
+        }
 
         // Generate filename: YYYY-MM-DD_positions.csv
         std::string date_str = format_date_for_filename(date);
@@ -475,9 +573,14 @@ Result<std::string> CSVExporter::export_current_positions(
         write_portfolio_header(file, portfolio_value, gross_notional, net_notional,
                                format_date_for_display(date));
 
-        // Write CSV header with strategy column
-        file << "strategy,symbol,quantity,market_price,notional,pct_of_gross_notional,pct_of_portfolio_value,"
-             << "forecast,volatility,ema_8,ema_32,ema_64,ema_256\n";
+        // Explicit-map MODEL/report output retains its legacy bytes.
+        if (model_columns_absent) {
+            file << "# Model columns: absent\n"
+                 << "strategy,symbol,quantity,market_price,notional,pct_of_gross_notional,pct_of_portfolio_value\n";
+        } else {
+            file << "strategy,symbol,quantity,market_price,notional,pct_of_gross_notional,pct_of_portfolio_value,"
+                 << "forecast,volatility,ema_8,ema_32,ema_64,ema_256\n";
+        }
 
         // Sort strategies alphabetically for consistent ordering
         std::vector<std::string> strategy_names;
@@ -498,9 +601,11 @@ Result<std::string> CSVExporter::export_current_positions(
                 strategy = strategy_it->second;
             }
 
-            // Get all tradeable symbols from strategy to include even zero positions
+            // Legacy exports include every tradeable symbol even when it is flat.
+            // A QT report snapshot is already the authoritative display set: adding
+            // the strategy universe there would resurrect explicit QT zero closures.
             std::unordered_set<std::string> all_symbols;
-            if (strategy != nullptr) {
+            if (!strict_snapshot_rows && strategy != nullptr) {
                 auto* tf_strategy = dynamic_cast<TrendFollowingStrategy*>(strategy);
                 auto* tf_slow_strategy = dynamic_cast<TrendFollowingSlowStrategy*>(strategy);
                 if (tf_strategy != nullptr) {
@@ -520,12 +625,17 @@ Result<std::string> CSVExporter::export_current_positions(
                 all_symbols.insert(symbol);
             }
 
-            for (const auto& symbol : all_symbols) {
+            std::vector<std::string> ordered_symbols(all_symbols.begin(), all_symbols.end());
+            if (model_columns_absent) std::sort(ordered_symbols.begin(), ordered_symbols.end());
+            for (const auto& symbol : ordered_symbols) {
                 // Get position quantity (0 if not in positions map)
                 double quantity = 0.0;
+                std::string quantity_text = "0";
                 auto pos_it = positions.find(symbol);
                 if (pos_it != positions.end()) {
                     quantity = pos_it->second.quantity.as_double();
+                    quantity_text = display ? display->quantity_exact.at({strategy_name, symbol})
+                                            : pos_it->second.quantity.to_string();
                 }
 
                 // Get market price (Day T-1 close)
@@ -539,7 +649,9 @@ Result<std::string> CSVExporter::export_current_positions(
                 }
 
                 // Calculate notional
-                double notional = calculate_notional(symbol, quantity, market_price);
+                double notional = model_columns_absent
+                    ? desk_notional.at({strategy_name, symbol})
+                    : calculate_notional(symbol, quantity, market_price);
 
                 // Calculate percentages
                 double pct_of_gross =
@@ -547,6 +659,19 @@ Result<std::string> CSVExporter::export_current_positions(
                 double pct_of_portfolio = (portfolio_value != 0.0)
                                               ? (std::abs(notional) / std::abs(portfolio_value)) * 100.0
                                               : 0.0;
+
+                if (model_columns_absent) {
+                    const auto cell = [](const std::string& value) {
+                        if (value.find_first_of(",\"\r\n") == std::string::npos) return value;
+                        std::string escaped = "\"";
+                        for (const char ch : value) { if (ch == '\"') escaped += '\"'; escaped += ch; }
+                        return escaped + "\"";
+                    };
+                    file << std::defaultfloat << std::setprecision(std::numeric_limits<double>::max_digits10)
+                         << cell(display_name) << "," << cell(symbol) << "," << quantity_text << "," << market_price << ","
+                         << notional << "," << pct_of_gross << "," << pct_of_portfolio << "\n";
+                    continue;
+                }
 
                 // Get forecast from strategy
                 double forecast = 0.0;
@@ -599,7 +724,7 @@ Result<std::string> CSVExporter::export_current_positions(
                 }
 
                 // Write position row with strategy column
-                file << display_name << "," << symbol << "," << quantity << "," << market_price << ","
+                file << display_name << "," << symbol << "," << quantity_text << "," << market_price << ","
                      << notional << "," << pct_of_gross << "," << pct_of_portfolio << "," << forecast << ","
                      << std::fixed << std::setprecision(6) << volatility << "," << ema_8 << "," << ema_32 << ","
                      << ema_64 << "," << ema_256 << "\n";
@@ -607,6 +732,11 @@ Result<std::string> CSVExporter::export_current_positions(
         }
 
         file.close();
+        if (model_columns_absent && file.fail())
+            return make_error<std::string>(ErrorCode::FILE_IO_ERROR,
+                "desk_csv_write_refused", "CSVExporter::export_current_positions");
+        if (model_columns_absent && !file) return make_error<std::string>(ErrorCode::FILE_IO_ERROR,
+            "desk_csv_write_unavailable", "CSVExporter::export_current_positions");
         INFO("CSVExporter: Per-strategy positions saved to " + filename);
         return Result<std::string>(filename);
 

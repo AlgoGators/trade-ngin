@@ -9,9 +9,35 @@
 #include "trade_ngin/storage/backtest_results_manager.hpp"
 #include "trade_ngin/strategy/trend_following.hpp"
 #include "trade_ngin/strategy/trend_following_fast.hpp"
+#include <cctype>
 
 namespace trade_ngin {
 namespace backtest {
+
+Result<void> deliver_owned_executions(
+    const std::vector<OwnedExecutionReport>& executions,
+    const std::vector<std::shared_ptr<StrategyInterface>>& strategies) {
+    std::unordered_map<std::string, std::shared_ptr<StrategyInterface>> by_id;
+    for (const auto& strategy : strategies) {
+        if (!strategy || strategy->get_metadata().id.empty() ||
+            !by_id.emplace(strategy->get_metadata().id, strategy).second) {
+            return make_error<void>(ErrorCode::INVALID_DATA,
+                                    "Backtest strategy ownership map is invalid",
+                                    "BacktestCoordinator");
+        }
+    }
+    for (const auto& owned : executions) {
+        auto owner = by_id.find(owned.strategy_id);
+        if (owner == by_id.end()) {
+            return make_error<void>(ErrorCode::INVALID_DATA,
+                                    "Execution owner is not registered: " + owned.strategy_id,
+                                    "BacktestCoordinator");
+        }
+        auto result = owner->second->on_execution(owned.report);
+        if (result.is_error()) return result;
+    }
+    return Result<void>();
+}
 
 BacktestCoordinator::BacktestCoordinator(std::shared_ptr<PostgresDatabase> db,
                                          InstrumentRegistry* registry,
@@ -19,7 +45,13 @@ BacktestCoordinator::BacktestCoordinator(std::shared_ptr<PostgresDatabase> db,
     : config_(config),
       db_(std::move(db)),
       registry_(registry),
-      current_portfolio_value_(config.initial_capital) {}
+      current_portfolio_value_(config.initial_capital) {
+    if (config_.portfolio_id.empty() ||
+        std::all_of(config_.portfolio_id.begin(), config_.portfolio_id.end(),
+                    [](unsigned char ch) { return std::isspace(ch) != 0; })) {
+        throw std::invalid_argument("portfolio_id must not be empty");
+    }
+}
 
 BacktestCoordinator::~BacktestCoordinator() = default;
 
@@ -558,7 +590,7 @@ Result<void> BacktestCoordinator::process_portfolio_day(
         }
 
         // POST-WARMUP: Normal trading logic
-        std::vector<ExecutionReport> period_executions;
+        std::vector<OwnedExecutionReport> period_executions;
 
         if (had_previous_bars) {
             try {
@@ -571,7 +603,7 @@ Result<void> BacktestCoordinator::process_portfolio_day(
                                             ? strategy_exec_counts_before.at(strategy_id)
                                             : 0;
                     for (size_t i = prev_count; i < strat_execs.size(); ++i) {
-                        period_executions.push_back(strat_execs[i]);
+                        period_executions.push_back({strategy_id, strat_execs[i]});
                     }
                 }
             } catch (const std::exception& e) {
@@ -581,8 +613,9 @@ Result<void> BacktestCoordinator::process_portfolio_day(
         }
 
         // Apply transaction costs to executions
-        for (auto& exec : period_executions) {
+        for (auto& owned : period_executions) {
             try {
+                auto& exec = owned.report;
                 exec.fill_time = timestamp;
 
                 // TransactionCostManager is the single source of truth.
@@ -600,24 +633,18 @@ Result<void> BacktestCoordinator::process_portfolio_day(
 
                 executions.push_back(exec);
             } catch (const std::exception& e) {
-                WARN("Exception processing execution for " + exec.symbol + ": " +
+                WARN("Exception processing execution for " + owned.report.symbol + ": " +
                      std::string(e.what()));
             }
         }
 
         // Feed executions back to strategies
-        for (const auto& exec : period_executions) {
-            try {
-                for (auto strategy_ptr : portfolio->get_strategies()) {
-                    auto execution_result = strategy_ptr->on_execution(exec);
-                    if (execution_result.is_error()) {
-                        WARN("Failed to process execution for strategy: " +
-                             execution_result.error()->to_string());
-                    }
-                }
-            } catch (const std::exception& e) {
-                WARN("Exception feeding execution to strategies: " + std::string(e.what()));
-            }
+        auto delivery = deliver_owned_executions(period_executions, portfolio->get_strategies());
+        if (delivery.is_error()) {
+            return make_error<void>(delivery.error()->code(),
+                                    "Failed to deliver owned execution: " +
+                                        std::string(delivery.error()->what()),
+                                    "BacktestCoordinator");
         }
 
         // PNL CALCULATION (SINGLE SOURCE OF TRUTH via pnl_manager_)
@@ -882,7 +909,14 @@ void BacktestCoordinator::reset_portfolio_state() {
 
 std::string BacktestCoordinator::generate_portfolio_run_id(
     const std::vector<std::string>& strategy_names, const Timestamp& end_date) {
-    return RunIdGenerator::generate_portfolio_run_id(strategy_names, end_date);
+    const std::string legacy_id =
+        RunIdGenerator::generate_portfolio_run_id(strategy_names, end_date);
+    // Keep the established one-sleeve equity house identifier byte-for-byte
+    // compatible. Every selectable non-house book must include its immutable
+    // portfolio scope, otherwise two books using the same strategies and end
+    // date overwrite/collide in the globally keyed backtest tables.
+    if (config_.portfolio_id == "EQUITY_MR_PORTFOLIO") return legacy_id;
+    return config_.portfolio_id + "__" + legacy_id;
 }
 
 Result<void> BacktestCoordinator::save_daily_positions(std::shared_ptr<PortfolioManager> portfolio,
@@ -896,10 +930,6 @@ Result<void> BacktestCoordinator::save_daily_positions(std::shared_ptr<Portfolio
     int strategies_with_positions = 0;
 
     for (const auto& [strategy_id, positions_map] : strategy_positions) {
-        if (positions_map.empty()) {
-            continue;
-        }
-
         std::vector<Position> positions_vec;
         positions_vec.reserve(positions_map.size());
 
@@ -916,10 +946,10 @@ Result<void> BacktestCoordinator::save_daily_positions(std::shared_ptr<Portfolio
             }
         }
 
-        if (!positions_vec.empty()) {
-            std::string composite_run_id = run_id + "|" + strategy_id;
-            auto save_result = db_->store_backtest_positions(
-                positions_vec, composite_run_id, config_.portfolio_id, "backtest.final_positions");
+        {
+            auto save_result = db_->replace_backtest_positions_for_date(
+                positions_vec, run_id, strategy_id, config_.portfolio_id, timestamp,
+                "backtest.final_positions");
 
             if (save_result.is_error()) {
                 WARN("Failed to save daily positions for strategy " + strategy_id +
@@ -952,7 +982,7 @@ double BacktestCoordinator::calculate_period_transaction_costs(
 
         // Get only the new executions (those added after count_before)
         for (size_t i = count_before; i < execs.size(); ++i) {
-            total_transaction_costs += static_cast<double>(execs[i].total_transaction_costs);
+            total_transaction_costs += static_cast<double>(execs[i].net_transaction_costs());
         }
     }
 
@@ -1017,14 +1047,10 @@ Result<void> BacktestCoordinator::save_portfolio_results_to_db(
     // Set performance metrics (portfolio-level)
     std::unordered_map<std::string, double> metrics = {
         {"total_return", results.total_return},
-        {"sharpe_ratio", results.sharpe_ratio},
-        {"sortino_ratio", results.sortino_ratio},
         {"max_drawdown", results.max_drawdown},
-        {"calmar_ratio", results.calmar_ratio},
         {"volatility", results.volatility},
         {"total_trades", static_cast<double>(results.total_trades)},
         {"win_rate", results.win_rate},
-        {"profit_factor", results.profit_factor},
         {"avg_win", results.avg_win},
         {"avg_loss", results.avg_loss},
         {"max_win", results.max_win},
@@ -1035,6 +1061,21 @@ Result<void> BacktestCoordinator::save_portfolio_results_to_db(
         {"beta", results.beta},
         {"correlation", results.correlation},
         {"downside_volatility", results.downside_volatility}};
+    // Only when they are defined. A column left out is stored NULL, which is
+    // what "there was no denominator" means; 999.0 was what it used to say, and
+    // a reader could not tell that apart from an extraordinary result.
+    if (results.profit_factor) {
+        metrics["profit_factor"] = *results.profit_factor;
+    }
+    if (results.sharpe_ratio) {
+        metrics["sharpe_ratio"] = *results.sharpe_ratio;
+    }
+    if (results.sortino_ratio) {
+        metrics["sortino_ratio"] = *results.sortino_ratio;
+    }
+    if (results.calmar_ratio) {
+        metrics["calmar_ratio"] = *results.calmar_ratio;
+    }
     results_manager->set_performance_metrics(metrics);
 
     // Set portfolio-level equity curve

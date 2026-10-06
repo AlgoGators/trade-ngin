@@ -2,6 +2,7 @@
 #pragma once
 
 #include <chrono>
+#include <cmath>
 #include <string>
 #include "trade_ngin/instruments/instrument.hpp"
 
@@ -66,6 +67,14 @@ public:
     bool is_tradeable() const override;
     double get_margin_requirement() const override {
         return spec_.initial_margin;
+    }
+    // Override the price/qty overload so the base-class default (which forwards
+    // to the no-arg version returning per-contract margin) doesn't strip the
+    // contract-count multiplication. MarginManager calls this overload and
+    // expects total dollars, not per-contract.
+    double get_margin_requirement(double price, double quantity) const override {
+        (void)price;  // Futures margin is a fixed dollar amount per contract.
+        return std::abs(quantity) * spec_.initial_margin;
     }
     std::string get_trading_hours() const override {
         return spec_.trading_hours;

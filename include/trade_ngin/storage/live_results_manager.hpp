@@ -14,6 +14,7 @@ namespace trade_ngin {
  */
 class LiveResultsManager : public ResultsManagerBase {
 private:
+    std::string explicit_strategy_name_;
     // Cached data for storage
     std::vector<Position> positions_;
     std::vector<ExecutionReport> executions_;
@@ -33,7 +34,19 @@ private:
 public:
     LiveResultsManager(std::shared_ptr<PostgresDatabase> db, bool store_enabled,
                        const std::string& strategy_id,
-                       const std::string& portfolio_id = "BASE_PORTFOLIO");
+                       const std::string& portfolio_id,
+                       const std::string& portfolio_type = "system");
+
+    // Mandatory stream and name avoid ambiguity with the existing fifth stream argument.
+    LiveResultsManager(std::shared_ptr<PostgresDatabase> db,bool store_enabled,
+        const std::string& strategy_id,const std::string& portfolio_id,
+        const std::string& portfolio_type,const std::string& strategy_name);
+    const std::string& explicit_strategy_name() const { return explicit_strategy_name_; }
+    std::string get_strategy_name() const {
+        return explicit_strategy_name_.empty() ? strategy_id_ : explicit_strategy_name_;
+    }
+    Result<void> update_live_results_nullable(const Timestamp& date,
+        const std::unordered_map<std::string,double>& updates,const std::vector<std::string>& null_columns);
 
     ~LiveResultsManager() override = default;
 

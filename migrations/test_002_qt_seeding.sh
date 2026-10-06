@@ -8,6 +8,7 @@
 # Requires PGHOST/PGPORT/PGUSER/PGPASSWORD/PGDATABASE.
 
 set -uo pipefail
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 PSQL="psql -v ON_ERROR_STOP=1 -q -X"
 pass=0
@@ -17,20 +18,17 @@ bad() { echo "  FAIL  $1"; fail=$((fail + 1)); }
 
 # The exact statement the C++ issues, with $1..$4 bound.
 seed() {
+    local seed_date="${1:-2026-05-03}"
+    local statement
+    statement="$(python3 - "$HERE/../tests/test_qt_position_sql.py" <<'PY'
+import runpy
+import sys
+print(runpy.run_path(sys.argv[1])["seed_sql"]())
+PY
+)" || return 1
     $PSQL -tAc "
-    INSERT INTO trading.positions
-        (symbol, quantity, average_price, daily_unrealized_pnl, daily_realized_pnl,
-         last_update, updated_at, strategy_id, strategy_name, date, portfolio_id, portfolio_type)
-    SELECT symbol, quantity, average_price, daily_unrealized_pnl, daily_realized_pnl,
-           last_update, updated_at, strategy_id, strategy_name, date, portfolio_id, 'qt'
-    FROM trading.positions
-    WHERE strategy_id = 'SID' AND strategy_name = 'SNAME' AND portfolio_id = 'P'
-      AND date = '2026-05-03' AND portfolio_type = 'system'
-      AND NOT EXISTS (
-          SELECT 1 FROM trading.positions
-          WHERE strategy_id = 'SID' AND strategy_name = 'SNAME' AND portfolio_id = 'P'
-            AND date = '2026-05-03' AND portfolio_type = 'qt')
-    RETURNING 1" | grep -c 1 || true
+    PREPARE qt_seed(text,text,text,date) AS $statement RETURNING 1;
+    EXECUTE qt_seed('SID','SNAME','P','$seed_date');" | grep -c '^1$' || true
 }
 
 qty() { $PSQL -tAc "SELECT quantity FROM trading.positions WHERE symbol='$1' AND portfolio_type='$2' AND date='2026-05-03'"; }
@@ -66,14 +64,14 @@ n=$(seed)
 echo ""
 echo "########## THE CRITICAL PROPERTY: QT edits survive a re-run ##########"
 $PSQL -q -c "UPDATE trading.positions SET quantity = 99 WHERE symbol='ES' AND portfolio_type='qt'"
-$PSQL -q -c "DELETE FROM trading.positions WHERE symbol='NG' AND portfolio_type='qt'"
-echo "  (QT changed ES to 99 and removed NG entirely)"
+$PSQL -q -c "UPDATE trading.positions SET quantity = 0 WHERE symbol='NG' AND portfolio_type='qt'"
+echo "  (QT changed ES to 99 and explicitly closed NG)"
 
 seed > /dev/null   # engine re-runs
 [ "$(qty ES qt)" = "99" ] && ok "QT's edit preserved (ES still 99, not reset to 3)" \
                           || bad "QT's edit CLOBBERED: ES = $(qty ES qt)"
-[ "$(cnt qt)" = "1" ] && ok "QT's deletion preserved (NG not resurrected)" \
-                      || bad "deleted row came back, qt count = $(cnt qt)"
+[ "$(qty NG qt)" = "0" ] && ok "QT's zero closure preserved" \
+                      || bad "closed NG reopened"
 
 echo ""
 echo "########## the system stream is untouched throughout ##########"
@@ -90,26 +88,19 @@ after=$($PSQL -tAc "SELECT count(*) FROM trading.positions")
                          || bad "row count drifted $before -> $after"
 
 echo ""
-echo "########## a fresh day seeds independently ##########"
+echo "########## a fresh day carries manual quantity and zero closure ##########"
 $PSQL -q -c "INSERT INTO trading.positions
  (symbol,quantity,average_price,daily_unrealized_pnl,daily_realized_pnl,last_update,
   strategy_id,strategy_name,date,portfolio_id)
  VALUES ('ES',7,5000,0,0,'2026-05-04','SID','SNAME','2026-05-04','P')"
-$PSQL -q -tAc "
-  INSERT INTO trading.positions
-      (symbol, quantity, average_price, daily_unrealized_pnl, daily_realized_pnl,
-       last_update, updated_at, strategy_id, strategy_name, date, portfolio_id, portfolio_type)
-  SELECT symbol, quantity, average_price, daily_unrealized_pnl, daily_realized_pnl,
-         last_update, updated_at, strategy_id, strategy_name, date, portfolio_id, 'qt'
-  FROM trading.positions
-  WHERE strategy_id='SID' AND strategy_name='SNAME' AND portfolio_id='P'
-    AND date='2026-05-04' AND portfolio_type='system'
-    AND NOT EXISTS (SELECT 1 FROM trading.positions
-        WHERE strategy_id='SID' AND strategy_name='SNAME' AND portfolio_id='P'
-          AND date='2026-05-04' AND portfolio_type='qt')" > /dev/null
+seed '2026-05-04' > /dev/null
 d2=$($PSQL -tAc "SELECT count(*) FROM trading.positions WHERE date='2026-05-04' AND portfolio_type='qt'")
-[ "$d2" = "1" ] && ok "next day seeded despite prior day already being edited" \
-                || bad "next day qt count = $d2, expected 1"
+[ "$d2" = "2" ] && ok "next day carries both QT identities" \
+                || bad "next day qt count = $d2, expected 2"
+d2_es=$($PSQL -tAc "SELECT quantity FROM trading.positions WHERE date='2026-05-04' AND portfolio_type='qt' AND symbol='ES'")
+d2_ng=$($PSQL -tAc "SELECT quantity FROM trading.positions WHERE date='2026-05-04' AND portfolio_type='qt' AND symbol='NG'")
+[ "$d2_es" = "99" ] && ok "next day preserves ES override" || bad "ES override lost: $d2_es"
+[ "$d2_ng" = "0" ] && ok "next day preserves NG closure" || bad "NG closure lost: $d2_ng"
 
 echo ""
 echo "RESULT: $pass passed, $fail failed"

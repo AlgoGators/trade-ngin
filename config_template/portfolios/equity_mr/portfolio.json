@@ -1,0 +1,43 @@
+{
+  "_description": "EQUITY_MR_PORTFOLIO - Equity mean reversion strategy",
+  "portfolio_id": "EQUITY_MR_PORTFOLIO",
+  "initial_capital": 100000,
+  "reserve_capital_pct": 0.1,
+  "benchmark_mode": "live",
+  "strategies": {
+    "MEAN_REVERSION": {
+      "enabled_backtest": true,
+      "enabled_live": true,
+      "default_allocation": 1.0,
+      "type": "MeanReversionStrategy",
+      "_symbols_note": "ABEV and ABM have NO bars in equities_data.ohlcv_1d (data-owner ask DO-ABEV/ABM). The live runner's freshness guard treats a requested symbol with no bars as absent and refuses a bare live run, so the LIVE runtime config keeps the universe the 2026-09 gate proved (BKNG and DD in their place) until those bars exist; swap back here-to-runtime when they do. var_limit lives in risk.json (0.25, proven).",
+      "symbols": [
+        "AAPL",
+        "MSFT",
+        "AMZN",
+        "GOOGL",
+        "META",
+        "TMUS",
+        "NSC",
+        "ABT",
+        "ABEV",
+        "ABM"
+      ],
+      "config": {
+        "lookback_period": 20,
+        "entry_threshold": 2.0,
+        "exit_threshold": 0.5,
+        "risk_target": 0.15,
+        "position_size": 0.1,
+        "vol_lookback": 20,
+        "use_stop_loss": true,
+        "stop_loss_pct": 0.05,
+        "allow_fractional_shares": true
+      }
+    }
+  },
+  "use_optimization": false,
+  "_use_optimization_note": "false: the equity runners hard-code the optimizer off (live_equity_mean_reversion.cpp, bt_equity_mean_reversion.cpp; HD 2026-09-01) and refuse to start if this says true.",
+  "covariance_history_prices": 756,
+  "_covariance_history_prices_note": "daily closes per symbol the PortfolioManager keeps for the optimiser covariance, one per date, oldest dropped first; absent means 756 (the trend sleeve own cap); at least 2"
+}

@@ -61,14 +61,15 @@ std::shared_ptr<FuturesInstrument> make_es_futures() {
 class MarginManagerTest : public ::testing::Test {
 protected:
     void SetUp() override {
-        // Hand-inject futures instrument. NOTE: get_instrument("ES") looks up
-        // "MES" internally (the micro contract), so we register under MES.
+        // Hand-inject the futures instrument under its own symbol. This used
+        // to be registered as MES, because get_instrument rewrote ES to MES
+        // before every lookup.
         auto& reg = InstrumentRegistry::instance();
-        reg.instruments_["MES"] = make_es_futures();
+        reg.instruments_["ES"] = make_es_futures();
     }
     void TearDown() override {
         auto& reg = InstrumentRegistry::instance();
-        reg.instruments_.erase("MES");
+        reg.instruments_.erase("ES");
     }
 };
 

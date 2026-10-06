@@ -97,27 +97,29 @@ TEST_F(LiveMetricsCalculatorTest, NetPnLIsGrossMinusCommissions) {
 
 // ===== Risk metrics =====
 
-TEST_F(LiveMetricsCalculatorTest, SharpeOfEmptyOrSingleIsZero) {
-    EXPECT_DOUBLE_EQ(c.calculate_sharpe_ratio({}, 0.02), 0.0);
-    EXPECT_DOUBLE_EQ(c.calculate_sharpe_ratio({0.01}, 0.02), 0.0);
+TEST_F(LiveMetricsCalculatorTest, SharpeOfEmptyOrSingleIsUndefined) {
+    EXPECT_FALSE(c.calculate_sharpe_ratio({}, 0.02).has_value());
+    EXPECT_FALSE(c.calculate_sharpe_ratio({0.01}, 0.02).has_value());
 }
 
-TEST_F(LiveMetricsCalculatorTest, SharpeOfFlatReturnsIsZero) {
-    EXPECT_DOUBLE_EQ(c.calculate_sharpe_ratio({0.01, 0.01, 0.01, 0.01}, 0.0), 0.0);
+TEST_F(LiveMetricsCalculatorTest, SharpeOfFlatReturnsIsUndefined) {
+    // The source comment already said "cannot calculate Sharpe ratio" and then
+    // returned 0.0, which is a number that says it can.
+    EXPECT_FALSE(c.calculate_sharpe_ratio({0.01, 0.01, 0.01, 0.01}, 0.0).has_value());
 }
 
-TEST_F(LiveMetricsCalculatorTest, SharpeIsNonZeroForVariableReturns) {
+TEST_F(LiveMetricsCalculatorTest, SharpeIsMeasuredForVariableReturns) {
     auto s = c.calculate_sharpe_ratio({0.01, -0.005, 0.02, 0.015}, 0.0);
-    EXPECT_GT(std::abs(s), 0.0);
+    ASSERT_TRUE(s.has_value());
+    EXPECT_GT(std::abs(*s), 0.0);
 }
 
-TEST_F(LiveMetricsCalculatorTest, SortinoOfEmptyIsZero) {
-    EXPECT_DOUBLE_EQ(c.calculate_sortino_ratio({}, 0.0), 0.0);
+TEST_F(LiveMetricsCalculatorTest, SortinoOfEmptyIsUndefined) {
+    EXPECT_FALSE(c.calculate_sortino_ratio({}, 0.0).has_value());
 }
 
-TEST_F(LiveMetricsCalculatorTest, SortinoZeroWhenNoDownside) {
-    auto s = c.calculate_sortino_ratio({0.01, 0.02, 0.03}, 0.0);
-    EXPECT_DOUBLE_EQ(s, 0.0);
+TEST_F(LiveMetricsCalculatorTest, SortinoWithNoDownsideIsUndefined) {
+    EXPECT_FALSE(c.calculate_sortino_ratio({0.01, 0.02, 0.03}, 0.0).has_value());
 }
 
 TEST_F(LiveMetricsCalculatorTest, MaxDrawdownEmptyIsZero) {
@@ -204,13 +206,18 @@ TEST_F(LiveMetricsCalculatorTest, WinRateIsPercent) {
 }
 
 TEST_F(LiveMetricsCalculatorTest, ProfitFactorRatio) {
-    EXPECT_DOUBLE_EQ(c.calculate_profit_factor(2000.0, 1000.0), 2.0);
+    auto pf = c.calculate_profit_factor(2000.0, 1000.0);
+    ASSERT_TRUE(pf.has_value());
+    EXPECT_DOUBLE_EQ(*pf, 2.0);
 }
 
-TEST_F(LiveMetricsCalculatorTest, ProfitFactorLargeWhenNoLosses) {
-    EXPECT_GT(c.calculate_profit_factor(1000.0, 0.0), 100.0);
+TEST_F(LiveMetricsCalculatorTest, ProfitFactorIsUndefinedWhenThereAreNoLosses) {
+    EXPECT_FALSE(c.calculate_profit_factor(1000.0, 0.0).has_value());
 }
 
-TEST_F(LiveMetricsCalculatorTest, ProfitFactorZeroWhenNoActivity) {
-    EXPECT_DOUBLE_EQ(c.calculate_profit_factor(0.0, 0.0), 0.0);
+TEST_F(LiveMetricsCalculatorTest, ProfitFactorIsUndefinedWhenNothingHappened) {
+    // Zero over zero. The old code returned 0.0 here and 999.99 one line up,
+    // so the same undefined quantity got two different confident answers
+    // depending on which side of the ratio happened to be empty.
+    EXPECT_FALSE(c.calculate_profit_factor(0.0, 0.0).has_value());
 }

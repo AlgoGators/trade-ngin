@@ -12,7 +12,9 @@ namespace trade_ngin {
 // ========== Return Calculations ==========
 
 double BacktestMetricsCalculator::calculate_total_return(double start_value, double end_value) const {
-    if (start_value <= 0.0) {
+    // !(x > 0) instead of (x <= 0): NaN compares false to everything, so the
+    // old form let a NaN start value through to the division.
+    if (!(start_value > 0.0) || !std::isfinite(end_value)) {
         return 0.0;
     }
     return (end_value - start_value) / start_value;
@@ -36,7 +38,9 @@ std::vector<double> BacktestMetricsCalculator::calculate_returns_from_equity(
 
     returns.reserve(equity_curve.size() - 1);
     for (size_t i = 1; i < equity_curve.size(); ++i) {
-        if (equity_curve[i - 1].second > 0.0) {
+        // prev > 0.0 already excludes NaN prev; the current point must also be
+        // finite or the computed return itself is NaN.
+        if (equity_curve[i - 1].second > 0.0 && std::isfinite(equity_curve[i].second)) {
             double ret = (equity_curve[i].second - equity_curve[i - 1].second) /
                         equity_curve[i - 1].second;
             returns.push_back(ret);
@@ -47,19 +51,24 @@ std::vector<double> BacktestMetricsCalculator::calculate_returns_from_equity(
 
 // ========== Risk-Adjusted Return Metrics ==========
 
-double BacktestMetricsCalculator::calculate_sharpe_ratio(
+std::optional<double> BacktestMetricsCalculator::calculate_sharpe_ratio(
     const std::vector<double>& returns,
     int trading_days,
     double risk_free_rate) const {
+    // Nothing to measure.
     if (returns.empty() || trading_days <= 0) {
-        return 0.0;
+        return std::nullopt;
     }
 
     double mean_return = calculate_mean(returns);
     double volatility = calculate_volatility(returns);
 
     if (volatility <= 0.0) {
-        return 0.0;
+        // Return per unit of risk, with no risk to divide by. A zero here is
+        // not "earned nothing per unit of risk" -- it is a division by zero
+        // wearing the same clothes as a real result, and it averages into a
+        // fund-level Sharpe exactly like one.
+        return std::nullopt;
     }
 
     // Annualize mean daily return: multiply by 252 (trading days per year)
@@ -70,20 +79,25 @@ double BacktestMetricsCalculator::calculate_sharpe_ratio(
     return (annualized_return - risk_free_rate) / volatility;
 }
 
-double BacktestMetricsCalculator::calculate_sortino_ratio(
+std::optional<double> BacktestMetricsCalculator::calculate_sortino_ratio(
     const std::vector<double>& returns,
     int trading_days,
     double minimum_acceptable_return) const {
+    // Nothing to measure.
     if (returns.empty() || trading_days <= 0) {
-        return 0.0;
+        return std::nullopt;
     }
 
     double mean_return = calculate_mean(returns);
     double downside_vol = calculate_downside_volatility(returns, minimum_acceptable_return);
 
     if (downside_vol <= 0.0) {
-        // No negative returns - cap at reasonable value
-        return (mean_return * 252.0) >= 0 ? 999.0 : 0.0;
+        // No return fell below the target, so there is no downside to divide
+        // by. This answered 999.0 for a positive numerator and 0.0 for a
+        // negative one -- two confident values for the same division by zero,
+        // one of which reads as a spectacular result and the other as a
+        // measured absence of one.
+        return std::nullopt;
     }
 
     // Annualize mean daily return: multiply by 252 (trading days per year)
@@ -91,9 +105,12 @@ double BacktestMetricsCalculator::calculate_sortino_ratio(
     return (annualized_return - minimum_acceptable_return) / downside_vol;
 }
 
-double BacktestMetricsCalculator::calculate_calmar_ratio(double annualized_return, double max_drawdown) const {
+std::optional<double> BacktestMetricsCalculator::calculate_calmar_ratio(
+    double annualized_return, double max_drawdown) const {
     if (max_drawdown <= 0.0) {
-        return annualized_return >= 0 ? 999.0 : 0.0;
+        // An equity curve that never fell has no Calmar ratio. max_drawdown is
+        // reported separately and a zero there is the whole explanation.
+        return std::nullopt;
     }
     return annualized_return / max_drawdown;
 }
@@ -120,7 +137,13 @@ double BacktestMetricsCalculator::calculate_volatility(const std::vector<double>
     // collapse it to a clean 0 so the `volatility <= 0` guard in
     // calculate_sharpe_ratio treats the degenerate case as such instead of
     // dividing by dust and reporting an absurd Sharpe.
-    return volatility < 1e-12 ? 0.0 : volatility;
+    if (volatility > 0.0 && volatility < 1e-12) {
+        WARN("Volatility collapsed to 0 (rounding dust; constant or near-constant "
+             "series of " + std::to_string(returns.size()) +
+             " returns); Sharpe will report 0 -- distinguish flat from broken data upstream");
+        return 0.0;
+    }
+    return volatility;
 }
 
 double BacktestMetricsCalculator::calculate_downside_volatility(
@@ -142,7 +165,17 @@ double BacktestMetricsCalculator::calculate_downside_volatility(
     }
 
     // Annualize using sqrt(252)
-    return std::sqrt(downside_sum / downside_count) * std::sqrt(252.0);
+    double downside_vol = std::sqrt(downside_sum / downside_count) * std::sqrt(252.0);
+
+    // Same rounding-dust collapse calculate_volatility applies: returns sitting a
+    // hair below target otherwise leave a ~1e-17 denominator and Sortino explodes
+    // to an absurd finite value instead of hitting its degenerate-case sentinel.
+    if (downside_vol > 0.0 && downside_vol < 1e-12) {
+        WARN("Downside volatility collapsed to 0 (rounding dust " +
+             std::to_string(downside_vol) + "); Sortino will report its degenerate-case value");
+        return 0.0;
+    }
+    return downside_vol;
 }
 
 // ========== Drawdown Metrics ==========
@@ -249,7 +282,7 @@ BacktestMetricsCalculator::TradeStatistics BacktestMetricsCalculator::calculate_
         const std::string& symbol = exec.symbol;
         double fill_price = static_cast<double>(exec.fill_price);
         double quantity = static_cast<double>(exec.filled_quantity);
-        double commission = static_cast<double>(exec.total_transaction_costs);
+        double commission = static_cast<double>(exec.net_transaction_costs());
 
         // Adjust quantity based on side
         double signed_qty = (exec.side == Side::BUY) ? quantity : -quantity;
@@ -323,9 +356,10 @@ BacktestMetricsCalculator::TradeStatistics BacktestMetricsCalculator::calculate_
 
     if (stats.total_loss > 0) {
         stats.profit_factor = stats.total_profit / stats.total_loss;
-    } else if (stats.total_trades > 0 && stats.total_profit > 0) {
-        stats.profit_factor = 999.0;
     }
+    // A backtest with no losing trades has no profit factor. It reported 999.0,
+    // which is the live path's 999.99 with a different number of nines and the
+    // same problem.
 
     if (!holding_periods.empty()) {
         stats.avg_holding_period = std::accumulate(holding_periods.begin(),
@@ -347,7 +381,7 @@ std::map<std::string, double> BacktestMetricsCalculator::calculate_symbol_pnl(
         const std::string& symbol = exec.symbol;
         double fill_price = static_cast<double>(exec.fill_price);
         double quantity = static_cast<double>(exec.filled_quantity);
-        double commission = static_cast<double>(exec.total_transaction_costs);
+        double commission = static_cast<double>(exec.net_transaction_costs());
 
         double signed_qty = (exec.side == Side::BUY) ? quantity : -quantity;
 
@@ -381,9 +415,11 @@ std::unordered_map<std::string, double> BacktestMetricsCalculator::calculate_mon
     std::unordered_map<std::string, double> monthly_returns;
 
     for (size_t i = 1; i < equity_curve.size(); ++i) {
-        // Skip non-positive equity points, matching calculate_returns_from_equity:
-        // dividing by 0 would silently inject inf/NaN into the monthly totals.
-        if (equity_curve[i - 1].second <= 0.0) {
+        // Skip non-positive OR non-finite equity points, matching
+        // calculate_returns_from_equity. !(x > 0) instead of (x <= 0): NaN
+        // compares false to everything, so the old form let NaN through into
+        // the monthly totals.
+        if (!(equity_curve[i - 1].second > 0.0) || !std::isfinite(equity_curve[i].second)) {
             continue;
         }
 

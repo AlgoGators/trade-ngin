@@ -29,7 +29,7 @@ struct TrendFollowingConfig {
     // Position-proportional buffer: buffer_width = max(floor, factor × |raw_position|).
     // Targets high-magnitude positions (MBT/M2K/MYM) where day-over-day raw can move
     // > 0.5 contracts, breaching the floor. Set to 0.0 to disable (floor-only).
-    double carver_buffer_position_factor{0.2};
+    double carver_buffer_position_factor{0.0};
     std::vector<std::pair<int, int>> ema_windows{
         // EMA window pairs for crossovers
         {2, 8}, {4, 16}, {8, 32}, {16, 64}, {32, 128}, {64, 256}};
@@ -39,6 +39,8 @@ struct TrendFollowingConfig {
     std::vector<std::pair<int, double>> fdm{{1, 1.0},  {2, 1.03}, {3, 1.08},
                                             {4, 1.13}, {5, 1.19}, {6, 1.26}};
 };
+
+void normalize_constructor_trend_config(TrendFollowingConfig& config);
 
 /**
  * @brief Data structure for storing instrument data
@@ -88,7 +90,8 @@ public:
      * @param data Vector of price bars
      * @return Result indicating success or failure
      */
-    Result<void> on_data(const std::vector<Bar>& data) override;
+    Result<void> on_data(const std::vector<Bar>& data,
+                         StrategyConsumptionTrace* trace = nullptr) override;
 
     /**
      * @brief Initialize strategy
@@ -116,6 +119,27 @@ public:
             history[symbol].assign(data.price_history.begin(), data.price_history.end());
         }
         return history;
+    }
+
+    std::unordered_map<std::string, double>
+    get_portfolio_cost_reference_prices() const override {
+        std::unordered_map<std::string, double> references;
+        for (const auto& [symbol, data] : instrument_data_) {
+            references[symbol] = data.price_history.empty() ? 1.0 : data.price_history.back();
+        }
+        return references;
+    }
+
+    std::unordered_map<std::string, PortfolioOptimizerInputs>
+    get_portfolio_optimizer_inputs() const override {
+        std::unordered_map<std::string, PortfolioOptimizerInputs> inputs;
+        for (const auto& [symbol, data] : instrument_data_) {
+            inputs.emplace(symbol, PortfolioOptimizerInputs{
+                data.contract_size,
+                data.price_history.empty() ? 1.0 : data.price_history.back(),
+                data.final_position});
+        }
+        return inputs;
     }
 
     /**
@@ -193,6 +217,13 @@ public:
      */
     int get_max_required_lookback() const;
 
+    /**
+     * @brief Get sector-budgeted symbol weights for position sizing
+     * @return Map of symbol to weight (sums to 1.0; per-symbol capped at 50% of
+     *         its sector allocation). Public so tests can pin the cap invariant.
+     */
+    std::unordered_map<std::string, double> get_weights() const;
+
 protected:
     /**
      * @brief Validate strategy configuration
@@ -211,7 +242,6 @@ private:
     std::unordered_map<std::string, InstrumentData> instrument_data_;
 
     // Previous day positions for PnL calculation
-    std::unordered_map<std::string, Position> previous_positions_;
 
     /**
      * @brief Calculate EWMA for a price series
@@ -260,7 +290,8 @@ private:
      * @return Vector of crossover signals
      */
     std::vector<double> get_raw_forecast(const std::vector<double>& prices, int short_window,
-                                         int long_window) const;
+                                         int long_window,
+                                         StrategyConsumptionTrace* trace = nullptr) const;
 
     /**
      * @brief Scale raw forecasts by volatility
@@ -276,7 +307,8 @@ private:
      * @param prices Price history
      * @return Vector of raw forecasts
      */
-    std::vector<double> get_raw_combined_forecast(const std::vector<double>& prices) const;
+    std::vector<double> get_raw_combined_forecast(
+        const std::vector<double>& prices, StrategyConsumptionTrace* trace = nullptr) const;
 
     /**
      * @brief Calculate absolute value of a vector
@@ -291,13 +323,8 @@ private:
      * @return Scaled forecast values
      */
     std::vector<double> get_scaled_combined_forecast(
-        const std::vector<double>& raw_combined_forecast) const;
-
-    /**
-     * @brief Get weights for position sizing
-     * @return Map of symbol to weight
-     */
-    std::unordered_map<std::string, double> get_weights() const;
+        const std::vector<double>& raw_combined_forecast,
+        StrategyConsumptionTrace* trace = nullptr) const;
 
     /**
      * @brief Calculate position for a symbol
@@ -309,7 +336,7 @@ private:
      * @return Target position
      */
     double calculate_position(const std::string& symbol, double forecast, double price,
-                              double volatility) const;
+                              double volatility, StrategyConsumptionTrace* trace = nullptr) const;
 
     /**
      * @brief Apply position buffering
@@ -320,7 +347,7 @@ private:
      * @return Buffered position
      */
     double apply_position_buffer(const std::string& symbol, double raw_position, double price,
-                                 double volatility) const;
+                                 double volatility, StrategyConsumptionTrace* trace = nullptr) const;
 
     /**
      * @brief Calculate volatility regime multiplier
@@ -329,7 +356,8 @@ private:
      * @return Volatility regime multiplier
      */
     double calculate_vol_regime_multiplier(const std::vector<double>& prices,
-                                           const std::vector<double>& volatility) const;
+                                           const std::vector<double>& volatility,
+                                           StrategyConsumptionTrace* trace = nullptr) const;
 };
 
 }  // namespace trade_ngin

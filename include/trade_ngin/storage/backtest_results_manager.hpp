@@ -36,13 +36,11 @@ private:
     nlohmann::json hyperparameters_;
     std::string run_name_;
     std::string run_description_;
-    std::string portfolio_id_;
-
 public:
     BacktestResultsManager(std::shared_ptr<PostgresDatabase> db,
                           bool store_enabled,
                           const std::string& strategy_id,
-                          const std::string& portfolio_id = "BASE_PORTFOLIO");
+                          const std::string& portfolio_id);
 
     ~BacktestResultsManager() override = default;
 
@@ -99,7 +97,6 @@ public:
     Result<void> save_final_positions(const std::string& run_id);
     Result<void> save_executions_batch(const std::string& run_id);
     Result<void> save_signals_batch(const std::string& run_id);
-    Result<void> save_metadata(const std::string& run_id);
 
     // Multi-strategy storage methods
     Result<void> save_strategy_positions(const std::string& portfolio_run_id);

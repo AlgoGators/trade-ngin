@@ -1,9 +1,13 @@
 #include <gtest/gtest.h>
 #include <algorithm>
 #include <cmath>
+#include <filesystem>
+#include <fstream>
 #include <memory>
 #include <numeric>
 #include <vector>
+#include <nlohmann/json.hpp>
+#include "trade_ngin/core/config_loader.hpp"
 #include "../core/test_base.hpp"
 #include "../data/test_db_utils.hpp"
 #include "trade_ngin/data/database_interface.hpp"
@@ -13,12 +17,62 @@
 // (no public API to add instruments without a real DB connection)
 #define private public
 #include "trade_ngin/instruments/instrument_registry.hpp"
-#undef private
-
 #include "trade_ngin/strategy/trend_following.hpp"
+#undef private
+#include "consumption_test_helpers.hpp"
 
 using namespace trade_ngin;
 using namespace trade_ngin::testing;
+
+TEST(OriginalTrendConstructorConfig, StandardNormalizesOnlyLookbacksAndHistoryAfterConstruction) {
+    TrendFollowingConfig config;
+    config.weight = 0.07;
+    config.risk_target = -0.2;
+    config.fx_rate = 1.4;
+    config.idm = 3.1;
+    config.max_symbol_concentration = 0.27;
+    config.use_position_buffering = false;
+    config.carver_buffer_floor = 0.64;
+    config.carver_buffer_position_factor = 0.13;
+    config.ema_windows = {{3, 12}, {3, 12}};
+    config.vol_lookback_short = 0;
+    config.vol_lookback_long = 0;
+    config.max_history_size = 0;
+    config.fdm = {{7, 1.7}};
+    StrategyConfig base;
+    base.capital_allocation = 100000.0;
+    base.max_leverage = 10.0;
+    base.max_drawdown = 0.5;
+    TrendFollowingStrategy strategy("STANDARD_CHARACTERIZATION", base, config, nullptr);
+    const auto& actual = strategy.trend_config_;
+    EXPECT_DOUBLE_EQ(actual.weight, 0.07);
+    EXPECT_DOUBLE_EQ(actual.risk_target, -0.2);
+    EXPECT_DOUBLE_EQ(actual.fx_rate, 1.4);
+    EXPECT_DOUBLE_EQ(actual.idm, 3.1);
+    EXPECT_DOUBLE_EQ(actual.max_symbol_concentration, 0.27);
+    EXPECT_FALSE(actual.use_position_buffering);
+    EXPECT_DOUBLE_EQ(actual.carver_buffer_floor, 0.64);
+    EXPECT_DOUBLE_EQ(actual.carver_buffer_position_factor, 0.13);
+    EXPECT_EQ(actual.ema_windows, (std::vector<std::pair<int, int>>{{3, 12}, {3, 12}}));
+    EXPECT_EQ(actual.vol_lookback_short, 22);
+    EXPECT_EQ(actual.vol_lookback_long, 88);
+    EXPECT_EQ(actual.max_history_size, 756u);
+    EXPECT_EQ(actual.fdm, (std::vector<std::pair<int, double>>{{7, 1.7}}));
+    auto initialized = strategy.initialize();
+    ASSERT_TRUE(initialized.is_error());
+    EXPECT_NE(std::string(initialized.error()->what()).find("Risk target"), std::string::npos);
+}
+
+TEST(ConstructorTrendConfigResolution, StandardPureNormalizerMatchesOriginalConstructor) {
+    TrendFollowingConfig config;
+    config.vol_lookback_short = 0;
+    config.vol_lookback_long = 0;
+    config.max_history_size = 0;
+    normalize_constructor_trend_config(config);
+    EXPECT_EQ(config.vol_lookback_short, 22);
+    EXPECT_EQ(config.vol_lookback_long, 88);
+    EXPECT_EQ(config.max_history_size, 756u);
+}
 
 class TrendFollowingTest : public TestBase {
 protected:
@@ -66,7 +120,12 @@ protected:
         // Populate the singleton InstrumentRegistry with test instruments
         // has_instrument() maps ES→MES, NQ→MNQ, YM→MYM, so use micro symbols as keys
         auto& registry = InstrumentRegistry::instance();
-        for (const auto& symbol : {"MES", "MNQ", "MYM"}) {
+        // Registered under the symbols these tests actually feed the strategy.
+        // They were the micro spellings because get_instrument rewrote ES to
+        // MES before every lookup; it does not any more. The multiplier below
+        // is a fixture constant chosen to keep the arithmetic simple, not a
+        // claim about what an E-mini point is worth.
+        for (const auto& symbol : {"ES", "NQ", "YM"}) {
             FuturesSpec spec;
             spec.root_symbol = symbol;
             spec.exchange = "CME";
@@ -252,12 +311,113 @@ protected:
     double last_position_{0.0};
 };
 
-// Pin Carver buffer constants. If anyone tunes these defaults silently, this test fires
-// and forces them to also update PositionBuffering test bounds + buffering docs.
+// Pin Carver buffer constants. Production truth is floor-only buffering
+// (factor 0.0, floor 0.5) — the May 2026 churn-tuned values. The struct defaults,
+// the loader defaults, and the shipped config_template must all agree; a silent
+// change to any of them fires here.
 TEST(TrendFollowingConfigDefaults, CarverBufferConstantsArePinned) {
     TrendFollowingConfig cfg;
-    EXPECT_DOUBLE_EQ(cfg.carver_buffer_position_factor, 0.2);
+    EXPECT_DOUBLE_EQ(cfg.carver_buffer_position_factor, 0.0);
     EXPECT_DOUBLE_EQ(cfg.carver_buffer_floor, 0.5);
+
+    StrategyDefaultsConfig loader_defaults;
+    EXPECT_DOUBLE_EQ(loader_defaults.carver_buffer_position_factor,
+                     cfg.carver_buffer_position_factor);
+    EXPECT_DOUBLE_EQ(loader_defaults.carver_buffer_floor, cfg.carver_buffer_floor);
+
+    // Guard the tracked config_template against drifting from the code defaults.
+    // Walk up from cwd so the test works from build/, build/tests/, or repo root.
+    namespace fs = std::filesystem;
+    fs::path dir = fs::current_path();
+    fs::path tmpl;
+    for (int i = 0; i < 8 && !dir.empty(); ++i) {
+        if (fs::exists(dir / "config_template" / "defaults.json")) {
+            tmpl = dir / "config_template" / "defaults.json";
+            break;
+        }
+        dir = dir.parent_path();
+    }
+    if (tmpl.empty()) {
+        GTEST_SKIP() << "config_template/defaults.json not reachable from cwd";
+    }
+    std::ifstream in(tmpl);
+    nlohmann::json j = nlohmann::json::parse(in);
+    const auto& sd = j.at("strategy_defaults");
+    EXPECT_DOUBLE_EQ(sd.at("carver_buffer_position_factor").get<double>(),
+                     cfg.carver_buffer_position_factor);
+    EXPECT_DOUBLE_EQ(sd.at("carver_buffer_floor").get<double>(),
+                     cfg.carver_buffer_floor);
+}
+
+namespace {
+
+// Mock DB whose contract metadata contains a single-symbol sector, so the
+// 50%-of-sector cap in get_weights() actually fires.
+class SectorMetadataMockDb : public MockPostgresDatabase {
+public:
+    using MockPostgresDatabase::MockPostgresDatabase;
+
+    Result<std::shared_ptr<arrow::Table>> get_contract_metadata() const override {
+        arrow::StringBuilder sector_b;
+        arrow::StringBuilder symbol_b;
+        const std::vector<std::pair<std::string, std::string>> rows = {
+            {"Metals", "GC"}, {"Metals", "SI"}, {"Metals", "HG"}, {"Crypto", "MBT"}};
+        for (const auto& [sec, sym] : rows) {
+            (void)sector_b.Append(sec);
+            (void)symbol_b.Append(sym);
+        }
+        std::shared_ptr<arrow::Array> sector_arr;
+        std::shared_ptr<arrow::Array> symbol_arr;
+        (void)sector_b.Finish(&sector_arr);
+        (void)symbol_b.Finish(&symbol_arr);
+        auto schema = arrow::schema({arrow::field("Sector", arrow::utf8()),
+                                     arrow::field("Databento Symbol", arrow::utf8())});
+        return Result<std::shared_ptr<arrow::Table>>(
+            arrow::Table::Make(schema, {sector_arr, symbol_arr}));
+    }
+
+    Result<std::vector<std::string>> get_symbols(AssetClass asset_class, DataFrequency freq,
+                                                 const std::string& data_type) override {
+        (void)asset_class;
+        (void)freq;
+        (void)data_type;
+        return Result<std::vector<std::string>>({"GC.v.0", "SI.v.0", "HG.v.0", "MBT.v.0"});
+    }
+};
+
+}  // namespace
+
+// The sector cap must survive normalization: a single-symbol sector is capped to
+// 50% of its sector budget and the freed weight goes to OTHER symbols only.
+// Pre-fix, the closing renormalization re-inflated the capped symbol (MBT landed
+// at 1/3 instead of 1/4).
+TEST(TrendFollowingWeights, SectorCapSurvivesNormalization) {
+    StateManager::reset_instance();
+    auto db = std::make_shared<SectorMetadataMockDb>("mock://sector");
+    ASSERT_TRUE(db->connect().is_ok());
+
+    StrategyConfig cfg;
+    cfg.capital_allocation = 1000000.0;
+    cfg.asset_classes = {AssetClass::FUTURES};
+    cfg.frequencies = {DataFrequency::DAILY};
+    TrendFollowingConfig tf;
+    TrendFollowingStrategy strat("TEST_WEIGHTS_CAP", cfg, tf, db);
+
+    auto weights = strat.get_weights();
+    ASSERT_EQ(weights.size(), 4u);
+
+    double sum = 0.0;
+    for (const auto& [sym, w] : weights) {
+        sum += w;
+    }
+    EXPECT_NEAR(sum, 1.0, 1e-9);
+
+    // 2 sectors -> sector budget 0.5 each. MBT alone in Crypto: capped at 0.25.
+    EXPECT_NEAR(weights.at("MBT"), 0.25, 1e-9)
+        << "capped symbol was re-inflated by normalization";
+    for (const auto* metal : {"GC", "SI", "HG"}) {
+        EXPECT_NEAR(weights.at(metal), 0.25, 1e-9);
+    }
 }
 
 // Test initialization and valid configuration
@@ -282,6 +442,130 @@ TEST_F(TrendFollowingTest, InvalidConfiguration) {
 }
 
 // Test signal generation and error handling for edge cases
+TEST_F(TrendFollowingTest, ConsumptionShortHistoryAndReuseThroughInterface) {
+    ASSERT_TRUE(strategy_->start().is_ok());
+    StrategyInterface& selected = *strategy_;
+    StrategyConsumptionTrace trace;
+    ASSERT_TRUE(selected.on_data(create_test_data("ES", 10, 4000.0), &trace).is_ok());
+    EXPECT_EQ(trace.profile, StrategyConsumptionProfile::Standard);
+    ASSERT_TRUE(trace.history.max_history_size.has_value());
+    EXPECT_EQ(*trace.history.max_history_size, size_t{756});
+    EXPECT_EQ(*trace.history.ema_windows, trend_config_.ema_windows);
+    EXPECT_TRUE(trace.base_risk.supported);
+    EXPECT_FALSE(trace.forecast.fdm.has_value());
+    EXPECT_FALSE(trace.sizing.risk_target.has_value());
+    EXPECT_FALSE(trace.buffering.use_position_buffering.has_value());
+
+    ASSERT_TRUE(selected.on_data({}, &trace).is_ok());
+    EXPECT_EQ(trace.profile, StrategyConsumptionProfile::Standard);
+    EXPECT_FALSE(trace.history.max_history_size.has_value());
+    EXPECT_FALSE(trace.base_risk.supported);
+}
+
+TEST_F(TrendFollowingTest, ConsumptionFullCalculationReadsNormalizedInputs) {
+    auto custom = trend_config_;
+    set_nondefault_trend_inputs(custom);
+    auto registry_ptr = std::shared_ptr<InstrumentRegistry>(&InstrumentRegistry::instance(),
+                                                            [](InstrumentRegistry*) {});
+    SignalInspectableStrategy<TrendFollowingStrategy> selected_strategy(
+        "STANDARD_CONSUMPTION", strategy_config_, custom, db_, registry_ptr);
+    SignalInspectableStrategy<TrendFollowingStrategy> plain_strategy(
+        "STANDARD_PLAIN", strategy_config_, custom, db_, registry_ptr);
+    ASSERT_TRUE(selected_strategy.initialize().is_ok());
+    ASSERT_TRUE(plain_strategy.initialize().is_ok());
+    RiskLimits live_limits = risk_limits_;
+    live_limits.max_leverage = Decimal(3.25);
+    live_limits.max_drawdown = Decimal(0.45);
+    ASSERT_TRUE(selected_strategy.update_risk_limits(live_limits).is_ok());
+    ASSERT_TRUE(plain_strategy.update_risk_limits(live_limits).is_ok());
+    ASSERT_TRUE(selected_strategy.start().is_ok());
+    ASSERT_TRUE(plain_strategy.start().is_ok());
+    StrategyInterface& selected = selected_strategy;
+    StrategyConsumptionTrace trace;
+    auto bars = create_test_data("ES", 300, 4000.0);
+    ASSERT_TRUE(selected.on_data(bars, &trace).is_ok());
+    ASSERT_TRUE(plain_strategy.on_data(bars).is_ok());
+    expect_full_strategy_consumption(trace, StrategyConsumptionProfile::Standard, 22, 88);
+    EXPECT_DOUBLE_EQ(selected_strategy.get_forecast("ES"), plain_strategy.get_forecast("ES"));
+    EXPECT_DOUBLE_EQ(selected_strategy.get_position("ES"), plain_strategy.get_position("ES"));
+    EXPECT_DOUBLE_EQ(static_cast<double>(selected_strategy.get_positions().at("ES").quantity),
+                     static_cast<double>(plain_strategy.get_positions().at("ES").quantity));
+    expect_signal_and_metrics_parity(selected_strategy, plain_strategy, "ES");
+    expect_malformed_bar_error_parity(selected, plain_strategy, bars, trace);
+    expect_safe_helper_early_returns(selected_strategy);
+    expect_full_to_short_empty_error_reset(selected, create_test_data("NQ", 5, 15000.0),
+                                           StrategyConsumptionProfile::Standard);
+}
+
+TEST_F(TrendFollowingTest, ConsumptionDisabledBufferAndMalformedReset) {
+    auto custom = trend_config_;
+    set_nondefault_trend_inputs(custom);
+    custom.use_position_buffering = false;
+    auto registry_ptr = std::shared_ptr<InstrumentRegistry>(&InstrumentRegistry::instance(),
+                                                            [](InstrumentRegistry*) {});
+    TrendFollowingStrategy selected_strategy("STANDARD_NO_BUFFER", strategy_config_, custom,
+                                             db_, registry_ptr);
+    ASSERT_TRUE(selected_strategy.initialize().is_ok());
+    ASSERT_TRUE(selected_strategy.start().is_ok());
+    StrategyInterface& selected = selected_strategy;
+    auto bars = create_test_data("ES", 100, 4000.0);
+    StrategyConsumptionTrace trace;
+    ASSERT_TRUE(selected.on_data(bars, &trace).is_ok());
+    ASSERT_TRUE(trace.buffering.use_position_buffering.has_value());
+    EXPECT_FALSE(*trace.buffering.use_position_buffering);
+    EXPECT_FALSE(trace.buffering.weight.has_value());
+    EXPECT_FALSE(trace.buffering.carver_buffer_floor.has_value());
+    EXPECT_TRUE(trace.sizing.risk_target.has_value());
+    bars.front().open = Decimal(0.0);
+    EXPECT_TRUE(selected.on_data(bars, &trace).is_error());
+    EXPECT_EQ(trace.profile, StrategyConsumptionProfile::Standard);
+    EXPECT_FALSE(trace.history.max_history_size.has_value());
+    EXPECT_FALSE(trace.base_risk.supported);
+    EXPECT_FALSE(trace.buffering.use_position_buffering.has_value());
+}
+
+TEST_F(TrendFollowingTest, ConsumptionMissingSymbolLimitRemainsAbsentAtEachReachedStage) {
+    auto custom = trend_config_;
+    set_nondefault_trend_inputs(custom);
+    auto config = strategy_config_;
+    config.position_limits.erase("ES");
+    auto registry_ptr = std::shared_ptr<InstrumentRegistry>(&InstrumentRegistry::instance(),
+                                                            [](InstrumentRegistry*) {});
+    TrendFollowingStrategy strategy("STANDARD_NO_LIMIT", config, custom, db_, registry_ptr);
+    ASSERT_TRUE(strategy.initialize().is_ok());
+    ASSERT_TRUE(strategy.start().is_ok());
+    StrategyConsumptionTrace trace;
+    ASSERT_TRUE(strategy.on_data(create_test_data("ES", 100, 4000.0), &trace).is_ok());
+    expect_missing_symbol_limit(trace);
+}
+
+TEST_F(TrendFollowingTest, ConsumptionSymbolCapsRemainKeyedThroughSizingBufferAndUpdate) {
+    auto custom = trend_config_;
+    set_nondefault_trend_inputs(custom);
+    auto config = strategy_config_;
+    config.position_limits["ES"] = 7.0;
+    config.position_limits["NQ"] = 13.0;
+    auto registry_ptr = std::shared_ptr<InstrumentRegistry>(&InstrumentRegistry::instance(),
+                                                            [](InstrumentRegistry*) {});
+    TrendFollowingStrategy strategy("STANDARD_TWO_CAPS", config, custom, db_, registry_ptr);
+    ASSERT_TRUE(strategy.initialize().is_ok());
+    ASSERT_TRUE(strategy.start().is_ok());
+    auto bars = create_test_data("ES", 100, 4000.0);
+    auto nq = create_test_data("NQ", 100, 15000.0);
+    bars.insert(bars.end(), nq.begin(), nq.end());
+    StrategyConsumptionTrace trace;
+    ASSERT_TRUE(strategy.on_data(bars, &trace).is_ok());
+    ASSERT_EQ(trace.sizing.symbol_limits.size(), size_t{2});
+    EXPECT_DOUBLE_EQ(*trace.sizing.symbol_limits.at("ES").value, 7.0);
+    EXPECT_DOUBLE_EQ(*trace.sizing.symbol_limits.at("NQ").value, 13.0);
+    ASSERT_EQ(trace.buffering.symbol_limits.size(), size_t{2});
+    EXPECT_DOUBLE_EQ(*trace.buffering.symbol_limits.at("ES").value, 7.0);
+    EXPECT_DOUBLE_EQ(*trace.buffering.symbol_limits.at("NQ").value, 13.0);
+    ASSERT_EQ(trace.position_limits.symbols.size(), size_t{2});
+    EXPECT_DOUBLE_EQ(*trace.position_limits.symbols.at("ES").value, 7.0);
+    EXPECT_DOUBLE_EQ(*trace.position_limits.symbols.at("NQ").value, 13.0);
+}
+
 TEST_F(TrendFollowingTest, SignalGeneration) {
     auto test_data = create_test_data("ES", 300, 4000.0);
 
@@ -579,7 +863,13 @@ TEST_F(TrendFollowingTest, PositionBuffering) {
         const double position_term =
             trend_config_.carver_buffer_position_factor * std::abs(prev);
         const double slack = 10.0;  // floor + small raw_buffer_width contributions
-        return (first_step ? 3.0 : 1.0) * position_term + slack;
+        if (first_step) {
+            // Under floor-only buffering (position factor 0.0) the first live tick
+            // settles the warm-up forecast in one re-track; bound it relative to
+            // |prev| instead of the (now zero) position term.
+            return std::max(3.0 * position_term, 0.25 * std::abs(prev)) + slack;
+        }
+        return position_term + slack;
     };
 
     // Create small update data with minimal price changes

@@ -14,6 +14,7 @@
 #include "trade_ngin/risk/risk_manager.hpp"
 
 namespace trade_ngin {
+struct CurrentReportQuantityProjection;
 
 // Type alias for per-strategy positions map
 using StrategyPositionsMap = std::unordered_map<std::string, std::unordered_map<std::string, Position>>;
@@ -49,6 +50,7 @@ public:
      * @param config Email sender configuration
      */
     explicit EmailSender(const EmailSenderConfig& config);
+    virtual ~EmailSender() = default;
 
     /**
      * @brief Initialize email configuration from credential store
@@ -87,7 +89,9 @@ public:
         const std::unordered_map<std::string, Position>& yesterday_positions = {},
         const std::unordered_map<std::string, double>& yesterday_close_prices = {},
         const std::unordered_map<std::string, double>& two_days_ago_close_prices = {},
-        const std::map<std::string, double>& yesterday_daily_metrics = {}
+        const std::map<std::string, double>& yesterday_daily_metrics = {},
+        const std::string& chart_strategy_id = "LIVE_TREND_FOLLOWING",
+        const std::string& chart_portfolio_id = ""
     );
 
     /**
@@ -116,7 +120,8 @@ public:
         const StrategyPositionsMap& yesterday_strategy_positions = {},
         const std::unordered_map<std::string, double>& yesterday_close_prices = {},
         const std::unordered_map<std::string, double>& two_days_ago_close_prices = {},
-        const std::map<std::string, double>& yesterday_daily_metrics = {}
+        const std::map<std::string, double>& yesterday_daily_metrics = {},
+        const CurrentReportQuantityProjection* display = nullptr
     );
 
     /**
@@ -132,6 +137,17 @@ public:
         const std::string& date
     );
 
+protected:
+    /**
+     * @brief Perform the configured email transport after delivery policy approval
+     */
+    virtual Result<void> deliver_email(
+        const std::string& subject,
+        const std::string& body,
+        bool is_html,
+        const std::vector<std::string>& attachment_paths
+    );
+
 private:
     std::shared_ptr<CredentialStore> credentials_;
     EmailSenderConfig config_;
@@ -139,7 +155,7 @@ private:
     std::string chart_base64_;  // Store equity curve chart data for embedding in email
     std::string pnl_by_symbol_base64_;  // Store PnL by symbol chart data
     std::string daily_pnl_base64_;  // Store daily PnL chart data
-    std::string total_transaction_costs_base64_; // Store cumulative transaction costs 
+    std::string total_transaction_costs_base64_; // Store cumulative transaction costs
     std::string margin_posted_base64_; //Store total margin posted
     std::string portfolio_composition_base64_; //Store portfolio composition
     std::string cumulative_pnl_by_symbol_base64_; //Store cumalative pnl
@@ -259,7 +275,8 @@ private:
     std::string format_strategy_positions_tables(
         const StrategyPositionsMap& strategy_positions,
         const std::unordered_map<std::string, double>& current_prices,
-        const std::map<std::string, double>& strategy_metrics
+        const std::map<std::string, double>& strategy_metrics,
+        const CurrentReportQuantityProjection* display = nullptr
     );
 
     /**
@@ -272,7 +289,8 @@ private:
     std::string format_single_strategy_table(
         const std::string& strategy_name,
         const std::unordered_map<std::string, Position>& positions,
-        const std::unordered_map<std::string, double>& current_prices
+        const std::unordered_map<std::string, double>& current_prices,
+        const CurrentReportQuantityProjection* display = nullptr
     );
 
     /**

@@ -169,14 +169,49 @@ HistoricalMetrics LiveHistoricalMetricsCalculator::calculate(
 
         if (metrics.gross_loss > 0.0) {
             metrics.profit_factor = metrics.gross_profit / metrics.gross_loss;
-        } else if (metrics.gross_profit > 0.0) {
-            // Convention: very large profit factor if there are no losses
-            metrics.profit_factor = 999.99;
         }
+        // No losing day means no denominator, so profit factor stays empty.
+        // It was 999.99 here, which every consumer then had to know to special-
+        // case, and none of them did.
     }
 
     return metrics;
 }
 
-}  // namespace trade_ngin
+std::unordered_map<std::string, double> historical_metrics_double_columns(
+    const HistoricalMetrics& m) {
+    std::unordered_map<std::string,double> result {
+        {"volatility", m.volatility},
+        {"max_drawdown", m.max_drawdown},
+        {"downside_deviation", m.downside_deviation},
+        {"win_rate", m.win_rate},
+        {"avg_win", m.avg_win},
+        {"avg_loss", m.avg_loss},
+        {"best_day", m.best_day},
+        {"worst_day", m.worst_day},
+        {"gross_profit", m.gross_profit},
+        {"gross_loss", m.gross_loss},
+    };
+    if(m.sharpe_ratio) result["sharpe_ratio"]=*m.sharpe_ratio;
+    if(m.sortino_ratio) result["sortino_ratio"]=*m.sortino_ratio;
+    if(m.profit_factor) result["profit_factor"]=*m.profit_factor;
+    return result;
+}
 
+std::unordered_map<std::string, int> historical_metrics_int_columns(const HistoricalMetrics& m) {
+    return {
+        {"winning_days", m.winning_days},
+        {"losing_days", m.losing_days},
+        {"total_days", m.total_days},
+    };
+}
+
+std::vector<std::string> historical_metrics_null_columns(const HistoricalMetrics& m) {
+    std::vector<std::string> result;
+    if(!m.sharpe_ratio) result.push_back("sharpe_ratio");
+    if(!m.sortino_ratio) result.push_back("sortino_ratio");
+    if(!m.profit_factor) result.push_back("profit_factor");
+    return result;
+}
+
+}  // namespace trade_ngin

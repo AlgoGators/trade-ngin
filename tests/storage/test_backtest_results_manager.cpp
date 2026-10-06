@@ -77,13 +77,12 @@ TEST_F(BacktestResultsManagerTest, ConstructorSetsAccessors) {
     EXPECT_TRUE(mgr_->is_storage_enabled());
     EXPECT_EQ(mgr_->get_schema(), "backtest");
     EXPECT_EQ(mgr_->get_strategy_id(), "TEST_STRAT");
-    // FIXME: production bug — BacktestResultsManager declares its own
-    // `portfolio_id_` member that shadows the one on ResultsManagerBase. The
-    // constructor stores the supplied portfolio_id into the derived class's
-    // shadow, while get_portfolio_id() (defined on the base) reads the base's
-    // member, which keeps its default "BASE_PORTFOLIO". Capture observed
-    // behavior so this test fires if/when the shadow is removed.
-    EXPECT_EQ(mgr_->get_portfolio_id(), "BASE_PORTFOLIO");
+    EXPECT_EQ(mgr_->get_portfolio_id(), "TEST_PORTFOLIO");
+}
+
+TEST_F(BacktestResultsManagerTest, ConstructorRejectsEmptyPortfolioIdentity) {
+    EXPECT_THROW(BacktestResultsManager(db_, true, "TEST_STRAT", ""),
+                 std::invalid_argument);
 }
 
 TEST_F(BacktestResultsManagerTest, SetStorageEnabledFlipsFlag) {
@@ -187,17 +186,6 @@ TEST_F(BacktestResultsManagerTest, SaveSignalsBatchInvokesStoreBacktestSignalsPe
     auto r = mgr_->save_signals_batch("RUN_1");
     EXPECT_TRUE(r.is_ok());
     EXPECT_GT(db_->call_count("store_backtest_signals"), 0);
-}
-
-// ===== save_metadata =====
-
-TEST_F(BacktestResultsManagerTest, SaveMetadataInvokesStoreBacktestMetadata) {
-    mgr_->set_metadata(date_at(2026, 1, 1), date_at(2026, 1, 5),
-                        nlohmann::json{{"key", "val"}}, "Run name", "Run desc");
-    db_->reset_call_counts();
-    auto r = mgr_->save_metadata("RUN_1");
-    EXPECT_TRUE(r.is_ok());
-    EXPECT_EQ(db_->call_count("store_backtest_metadata"), 1);
 }
 
 // ===== save_strategy_positions / save_strategy_executions =====

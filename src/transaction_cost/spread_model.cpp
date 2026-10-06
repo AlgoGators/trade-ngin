@@ -11,29 +11,49 @@ SpreadModel::SpreadModel(const VolatilityConfig& vol_config)
 
 double SpreadModel::calculate_spread_price_impact(
     const AssetCostConfig& config,
-    double volatility_multiplier) const {
+    double volatility_multiplier,
+    SpreadPriceObservation* observation) const {
+    if (observation) *observation = {};
 
     // Apply volatility widening to baseline spread
+    if (observation) observation->baseline_spread_ticks = config.baseline_spread_ticks;
     double spread_ticks = config.baseline_spread_ticks * volatility_multiplier;
 
     // Clamp to min/max bounds
+    if (observation) {
+        observation->min_spread_ticks = config.min_spread_ticks;
+        observation->max_spread_ticks = config.max_spread_ticks;
+    }
     spread_ticks = std::clamp(spread_ticks, config.min_spread_ticks, config.max_spread_ticks);
+
+    // Preserve main's equity tick constraint without changing futures spreads.
+    if (config.asset_type == AssetType::EQUITY) {
+        if (observation) observation->tick_constrained = config.tick_constrained;
+        spread_ticks = std::max(spread_ticks, config.tick_constrained ? 0.5 : 1.0);
+    }
 
     // Spread cost (one-way) in price units per contract.
     // Default multiplier=0.5 models crossing half the quoted spread.
     // For limit-order style execution, use a smaller multiplier (e.g. 0.25)
     // to reflect improved pricing but still account for adverse selection.
+    if (observation) {
+        observation->spread_cost_multiplier = config.spread_cost_multiplier;
+        observation->tick_size = config.tick_size;
+    }
     double spread_price_impact = config.spread_cost_multiplier * spread_ticks * config.tick_size;
 
     return spread_price_impact;
 }
 
-double SpreadModel::calculate_volatility_multiplier(const std::vector<double>& log_returns) const {
+double SpreadModel::calculate_volatility_multiplier(const std::vector<double>& log_returns,
+                                                    VolatilityObservation* observation) const {
+    if (observation) *observation = {};
     // Need at least 2 returns to calculate volatility
     if (log_returns.size() < 2) {
         return 1.0;  // Default multiplier if insufficient data
     }
 
+    if(observation)observation->calculation_reached=true;
     // Calculate current volatility (stdev of log returns)
     double mean = compute_mean(log_returns);
     double sigma = compute_stdev(log_returns, mean);
@@ -55,26 +75,37 @@ double SpreadModel::calculate_volatility_multiplier(const std::vector<double>& l
     z_sigma = std::clamp(z_sigma, -2.0, 2.0);
 
     // Calculate volatility multiplier
+    if (observation) observation->lambda = vol_config_.lambda;
     double vol_mult = 1.0 + vol_config_.lambda * z_sigma;
 
     // Clamp to configured bounds
+    if (observation) {
+        observation->min_multiplier = vol_config_.min_multiplier;
+        observation->max_multiplier = vol_config_.max_multiplier;
+    }
     vol_mult = std::clamp(vol_mult, vol_config_.min_multiplier, vol_config_.max_multiplier);
 
     return vol_mult;
 }
 
-void SpreadModel::update_log_returns(const std::string& symbol, double log_return) {
+void SpreadModel::update_log_returns(const std::string& symbol, double log_return,
+                                     SpreadHistoryObservation* observation) {
+    if (observation) *observation = {};
     auto& returns = symbol_log_returns_[symbol];
 
     returns.push_back(log_return);
 
     // Maintain rolling window size
+    if (observation) observation->lookback_days = vol_config_.lookback_days;
     while (returns.size() > vol_config_.lookback_days) {
         returns.pop_front();
     }
 }
 
-double SpreadModel::get_volatility_multiplier(const std::string& symbol) const {
+double SpreadModel::get_volatility_multiplier(const std::string& symbol,
+                                              VolatilityObservation* observation) const {
+    if (observation) *observation = {};
+    if(observation)observation->calculation_reached=false;
     auto it = symbol_log_returns_.find(symbol);
     if (it == symbol_log_returns_.end() || it->second.size() < 2) {
         return 1.0;  // Default if no data
@@ -82,7 +113,14 @@ double SpreadModel::get_volatility_multiplier(const std::string& symbol) const {
 
     // Convert deque to vector for calculation
     std::vector<double> returns(it->second.begin(), it->second.end());
-    return calculate_volatility_multiplier(returns);
+    return calculate_volatility_multiplier(returns, observation);
+}
+
+double SpreadModel::get_annual_volatility(const std::string& symbol) const {
+    const auto it = symbol_log_returns_.find(symbol);
+    if (it == symbol_log_returns_.end() || it->second.size() < 2) return 0.25;
+    const std::vector<double> returns(it->second.begin(), it->second.end());
+    return compute_stdev(returns, compute_mean(returns)) * std::sqrt(252.0);
 }
 
 void SpreadModel::clear_symbol_data(const std::string& symbol) {

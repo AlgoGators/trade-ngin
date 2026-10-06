@@ -19,14 +19,63 @@ dual-portfolio workflow:
    results without mixing them into production attribution.
 8. `008_strategy_config.sql` — delivered by PR #60; stores versioned strategy
    overrides and run manifests without colliding with the portfolio migrations.
+9. `009_books_and_membership.sql` — delivered on the `qt-platform-preview`
+   branch; declares books as first-class rows, lets a strategy belong to
+   several, and adds the append-only book-change audit. Numbered 009 because
+   PR #60 already holds 008 on its own branch; both are meant for `main`.
+10. `010_clear_profit_factor_sentinel.sql` — delivered on the `qt-platform-preview`
+   branch; clears the 999.99 placeholder the engine used to write for a book
+   with no losing days. Apply it together with the binary that stops writing it;
+   applying it early is harmless, because the next run would put the sentinel
+   back and a later re-run of the migration clears it again.
+11. `011_live_results_and_executions_columns.sql` — delivered on the
+   `qt-platform-preview` branch; declares, with `ADD COLUMN IF NOT EXISTS`,
+   every column the live runner writes to `trading.live_results` and the
+   execution writer writes to `trading.executions`. Nothing in this directory
+   had ever created those two tables or added a column to either: their shape
+   existed only as whatever was done by hand on the box running the engine.
+   That became a deployment blocker when AlgoLens started reading ten published
+   metrics out of `live_results` rather than recomputing them. Additive and
+   idempotent — a no-op on a database that already has them, which a working
+   production box does. Apply it BEFORE 010, which UPDATEs `profit_factor`.
+12. `012_position_overrides_portfolio_scope.sql` — adds `portfolio_id` to new
+   manual position-override audit rows, while retaining pre-012 rows unchanged.
+   It records an append-only companion scope only for legacy rows whose
+   `(strategy_id, symbol)` matches exactly one distinct portfolio in
+   `trading.positions`; unmatched and multi-book rows remain unscoped. The
+   `NOT VALID` constraint rejects future unscoped writes without rejecting the
+   retained legacy evidence. Apply it before deploying the portfolio-scoped
+   override-history reader/writer.
 
 The safe release sequence is: merge PR #55 and PR #56; apply 002–004 from PR
 #55, then 005 from PR #56, then 006–007 from PR #55; deploy the combined binary
 only after the schema is current. Apply 008 from PR #60 before enabling
-database-backed strategy overrides. Run each `test_*.sh` migration test against
+database-backed strategy overrides, and 009 before deploying an AlgoLens that
+has the Books tab (it no longer creates these tables itself). Apply 011 before 010 and before deploying an
+AlgoLens that reads the engine's published metrics; apply 010 with the binary
+that stops writing the profit-factor sentinel.
+
+Building a database from this directory and checking it against AlgoLens's
+schema contract (`algolens-api/scripts/check_schema.py`) reported fourteen
+mismatches before 011 and reports two after: `futures_data.ohlcv_1d` and
+`metadata.contract_metadata`, which belong to data-ngin and are correctly not
+created here. That check is worth running against production before any
+deploy. `test_011_live_results_columns.sh` covers 011 and 010 together: that the
+ten metrics AlgoLens reads are absent before 011 and present after, that 010
+skips rather than fails when `profit_factor` does not exist, that re-applying
+011 leaves a populated column alone, and that 011 refuses on a database with no
+`trading.live_results` rather than inventing one. Run each `test_*.sh` migration test against
 disposable PostgreSQL before production rollout. Rollback scripts intentionally
 refuse operations that would discard populated attribution streams.
 
 Manual position writes must target only `portfolio_type = 'qt'`, must create a
 `trading.position_overrides` row in the same transaction, and must never mutate
 the `system` or benchmark streams.
+
+`012_position_overrides_portfolio_scope_rollback.sql` intentionally refuses to
+remove the migration when either new scoped audit rows or inferred legacy-scope
+rows exist, because that would discard audit attribution. It is safe and
+idempotent only while both are empty. Run
+`test_012_position_overrides_portfolio_scope.sh` only with local Docker: the
+harness creates and removes its own disposable PostgreSQL container and never
+uses a production connection.

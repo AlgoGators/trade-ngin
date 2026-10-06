@@ -14,3 +14,4 @@ Dockerfile text eol=lf
 *.py    text eol=lf
 *.yml   text eol=lf
 *.yaml  text eol=lf
+*.sql   text eol=lf

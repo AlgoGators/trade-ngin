@@ -1,0 +1,31 @@
+{
+  "schema_version": "qt-read-set/v1",
+  "book_id": "synthetic-book",
+  "source_day": "2026-09-25",
+  "source_rows": [],
+  "saved_rows": [],
+  "saved_accounting": [],
+  "system_rows": [],
+  "publication_refs": [],
+  "audit_refs": [],
+  "draft": {"status":"absent","draft_id":null,"revision":0,"digest":null},
+  "registry": [],
+  "memberships": [],
+  "capability": {"status":"absent","enabled":null,"version":null},
+  "grants": [],
+  "risk_limits": {"status":"absent","id":null,"published_at":null,"content_digest":null},
+  "risk_inventory": [],
+  "portfolio_inputs": {"status":"absent","source_id":null,"source_day":null,"capital_exact":null,"content_digest":null},
+  "external_sources": [
+    {"name":"mark","status":"unavailable","source_id":null,"version":null,"as_of":null,"valid_until":null,"digest":null,"reason":"no_authoritative_versioned_source"},
+    {"name":"history","status":"unavailable","source_id":null,"version":null,"as_of":null,"valid_until":null,"digest":null,"reason":"no_authoritative_versioned_source"},
+    {"name":"cost","status":"unavailable","source_id":null,"version":null,"as_of":null,"valid_until":null,"digest":null,"reason":"no_authoritative_versioned_source"},
+    {"name":"multiplier","status":"unavailable","source_id":null,"version":null,"as_of":null,"valid_until":null,"digest":null,"reason":"no_authoritative_versioned_source"},
+    {"name":"universe","status":"unavailable","source_id":null,"version":null,"as_of":null,"valid_until":null,"digest":null,"reason":"no_authoritative_versioned_source"},
+    {"name":"instrument_type","status":"unavailable","source_id":null,"version":null,"as_of":null,"valid_until":null,"digest":null,"reason":"no_authoritative_versioned_source"},
+    {"name":"quantity_rule","status":"unavailable","source_id":null,"version":null,"as_of":null,"valid_until":null,"digest":null,"reason":"no_authoritative_versioned_source"},
+    {"name":"evaluator_policy","status":"unavailable","source_id":null,"version":null,"as_of":null,"valid_until":null,"digest":null,"reason":"no_authoritative_versioned_source"}
+  ],
+  "evaluator": {"status":"unavailable","build":null,"policy_version":null},
+  "provenance": {"status":"provenance_unresolved","source_digest":null,"chain_digest":null,"seed_digest":null}
+}

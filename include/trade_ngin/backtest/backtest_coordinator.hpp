@@ -29,6 +29,15 @@ class InstrumentRegistry;
 
 namespace backtest {
 
+struct OwnedExecutionReport {
+    std::string strategy_id;
+    ExecutionReport report;
+};
+
+Result<void> deliver_owned_executions(
+    const std::vector<OwnedExecutionReport>& executions,
+    const std::vector<std::shared_ptr<StrategyInterface>>& strategies);
+
 /**
  * @brief Configuration for BacktestCoordinator
  */
@@ -40,7 +49,7 @@ struct BacktestCoordinatorConfig {
     int warmup_days = 0;
     std::string results_schema = "backtest";
     bool store_trade_details = true;
-    std::string portfolio_id = "BASE_PORTFOLIO";
+    std::string portfolio_id;
     std::string csv_output_path = "apps/backtest/results";
 };
 
@@ -95,6 +104,10 @@ private:
     // CSV exporter for portfolio backtest
     std::unique_ptr<BacktestCSVExporter> csv_exporter_;
     std::unordered_map<std::string, Position> portfolio_previous_positions_;
+    /// E2-F19: the strategy's cumulative realized per (strategy|symbol) at the last bar,
+    /// so a cash-book position row can be written as that bar's realized FLOW -- the same
+    /// definition the live equity runner persists -- rather than the running total.
+    std::unordered_map<std::string, double> last_cumulative_realized_;
 
     // Optional components for portfolio backtest
     std::shared_ptr<RiskManager> risk_manager_;

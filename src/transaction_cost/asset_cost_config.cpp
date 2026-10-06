@@ -578,13 +578,41 @@ void AssetCostConfigRegistry::initialize_default_configs() {
         config.point_value = 2000.0;
         configs_[config.symbol] = config;
     }
+
+    const auto add_equity = [this](const char* symbol, double spread_ticks,
+                                   double max_spread_ticks, double max_impact_bps,
+                                   double max_total_implicit_bps) {
+        auto config = get_equity_default_config();
+        config.symbol = symbol;
+        config.baseline_spread_ticks = spread_ticks;
+        config.max_spread_ticks = max_spread_ticks;
+        config.max_impact_bps = max_impact_bps;
+        config.max_total_implicit_bps = max_total_implicit_bps;
+        equity_configs_[config.symbol] = config;
+    };
+    for (const auto* symbol : {"AAPL", "MSFT", "AMZN", "GOOGL", "META"}) {
+        add_equity(symbol, 1.0, 3.0, 50.0, 75.0);
+    }
+    for (const auto* symbol : {"TMUS", "NSC", "ABT"}) {
+        add_equity(symbol, 2.0, 5.0, 75.0, 100.0);
+    }
+    for (const auto* symbol : {"ABEV", "ABM"}) {
+        add_equity(symbol, 3.0, 8.0, 100.0, 150.0);
+    }
 }
 
-AssetCostConfig AssetCostConfigRegistry::get_config(const std::string& symbol) const {
+AssetCostConfig AssetCostConfigRegistry::get_config(const std::string& symbol,
+                                                    AssetLookupObservation* observation) const {
+    if (observation) *observation = {};
     // First try exact match
     auto it = configs_.find(symbol);
     if (it != configs_.end()) {
+        if (observation) observation->path = AssetLookupPath::exact_symbol;
         return it->second;
+    }
+    if (const auto equity = equity_configs_.find(symbol); equity != equity_configs_.end()) {
+        if (observation) observation->path = AssetLookupPath::exact_symbol;
+        return equity->second;
     }
 
     // Strip continuous contract suffix (e.g., ".v.0", ".v.1") and try again
@@ -594,6 +622,7 @@ AssetCostConfig AssetCostConfigRegistry::get_config(const std::string& symbol) c
         base_symbol = symbol.substr(0, dot_pos);
         it = configs_.find(base_symbol);
         if (it != configs_.end()) {
+            if (observation) observation->path = AssetLookupPath::pre_dot_root;
             auto config = it->second;
             config.symbol = symbol;  // Keep original symbol for reference
             return config;
@@ -602,16 +631,57 @@ AssetCostConfig AssetCostConfigRegistry::get_config(const std::string& symbol) c
 
     // Return default config for unknown symbols
     auto default_config = get_default_config();
+    if (observation) observation->path = AssetLookupPath::fallback;
     default_config.symbol = symbol;
     return default_config;
 }
 
 void AssetCostConfigRegistry::register_config(const AssetCostConfig& config) {
-    configs_[config.symbol] = config;
+    if (config.asset_type == AssetType::EQUITY) {
+        equity_configs_[config.symbol] = config;
+    } else {
+        configs_[config.symbol] = config;
+    }
+}
+
+AssetCostConfig AssetCostConfigRegistry::get_config(const std::string& symbol,
+                                                    AssetType asset_type,
+                                                    AssetLookupObservation* observation) const {
+    if (asset_type == AssetType::NONE) return get_config(symbol, observation);
+    if (asset_type == AssetType::FUTURE) {
+        if (observation) *observation = {};
+        if (const auto found = configs_.find(symbol); found != configs_.end()) {
+            if (observation) observation->path = AssetLookupPath::exact_symbol;
+            return found->second;
+        }
+        if (const auto dot = symbol.find('.'); dot != std::string::npos) {
+            if (const auto found = configs_.find(symbol.substr(0, dot)); found != configs_.end()) {
+                if (observation) observation->path = AssetLookupPath::pre_dot_root;
+                auto config = found->second;
+                config.symbol = symbol;
+                return config;
+            }
+        }
+        auto config = get_default_config();
+        config.symbol = symbol;
+        if (observation) observation->path = AssetLookupPath::fallback;
+        return config;
+    }
+    if (observation) *observation = {};
+    const auto found = equity_configs_.find(symbol);
+    if (found != equity_configs_.end()) {
+        if (observation) observation->path = AssetLookupPath::exact_symbol;
+        return found->second;
+    }
+    // Equity tickers containing a dot are complete tickers, not futures roots.
+    auto config = get_equity_default_config();
+    config.symbol = symbol;
+    if (observation) observation->path = AssetLookupPath::fallback;
+    return config;
 }
 
 bool AssetCostConfigRegistry::has_config(const std::string& symbol) const {
-    return configs_.find(symbol) != configs_.end();
+    return configs_.find(symbol) != configs_.end() || equity_configs_.find(symbol) != equity_configs_.end();
 }
 
 AssetCostConfig AssetCostConfigRegistry::get_default_config() {
@@ -625,6 +695,76 @@ AssetCostConfig AssetCostConfigRegistry::get_default_config() {
     config.tick_size = 0.01;
     config.point_value = 100.0;
     config.max_total_implicit_bps = 200.0;
+    return config;
+}
+
+AssetCostConfig AssetCostConfigRegistry::get_equity_default_config() {
+    // Sensible defaults for unknown equity symbols
+    // Prevents 100x cost scaling and 300x commission overstatement
+    AssetCostConfig config;
+    config.symbol = "EQUITY_DEFAULT";
+    config.asset_type = AssetType::EQUITY;
+    config.baseline_spread_ticks = 2.0;
+    config.min_spread_ticks = 1.0;
+    config.max_spread_ticks = 10.0;
+    config.tick_size = 0.01;
+    config.point_value = 1.0;              // 1 share = 1 point (not 100.0!)
+    config.commission_per_unit = 0.005;    // IBKR Pro: $0.005/share
+    config.min_commission_per_order = 1.00;
+    config.max_commission_per_order = 1e9;
+    config.max_commission_pct = 0.01;   // E2-C1: IBKR Fixed 1%; 0.5% is the Tiered cap
+    config.apply_regulatory_fees = false;  // E2-C3: IBKR Fixed is all-inclusive
+    config.max_impact_bps = 100.0;
+    config.max_total_implicit_bps = 200.0;
+    return config;
+}
+
+AssetCostConfig AssetCostConfigRegistry::get_tiered_equity_config(double price, double adv) {
+    auto config = get_equity_default_config();
+
+    // Sub-dollar stocks use different tick size (SEC Rule 612)
+    if (price < 1.0) {
+        config.tick_size = 0.0001;
+    }
+
+    // Tier by ADV (calibrated to TCA literature: Almgren 2005, Deutsche Bank, Virtu/ITG)
+    if (adv > 10000000.0) {
+        // Mega-cap / ultra-liquid
+        config.baseline_spread_ticks = 1.0;
+        config.min_spread_ticks = 1.0;
+        config.max_spread_ticks = 3.0;
+        config.max_impact_bps = 50.0;
+        config.max_total_implicit_bps = 75.0;
+    } else if (adv > 2000000.0) {
+        // Large-cap
+        config.baseline_spread_ticks = 2.0;
+        config.min_spread_ticks = 1.0;
+        config.max_spread_ticks = 5.0;
+        config.max_impact_bps = 75.0;
+        config.max_total_implicit_bps = 100.0;
+    } else if (adv > 500000.0) {
+        // Mid-cap
+        config.baseline_spread_ticks = 3.0;
+        config.min_spread_ticks = 1.5;
+        config.max_spread_ticks = 8.0;
+        config.max_impact_bps = 100.0;
+        config.max_total_implicit_bps = 150.0;
+    } else if (adv > 100000.0) {
+        // Small-cap
+        config.baseline_spread_ticks = 5.0;
+        config.min_spread_ticks = 2.0;
+        config.max_spread_ticks = 15.0;
+        config.max_impact_bps = 150.0;
+        config.max_total_implicit_bps = 250.0;
+    } else {
+        // Penny / illiquid
+        config.baseline_spread_ticks = 10.0;
+        config.min_spread_ticks = 5.0;
+        config.max_spread_ticks = 50.0;
+        config.max_impact_bps = 300.0;
+        config.max_total_implicit_bps = 500.0;
+    }
+
     return config;
 }
 

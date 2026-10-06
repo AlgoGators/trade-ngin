@@ -1,6 +1,8 @@
 // include/trade_ngin/backtest/backtest_types.hpp
 #pragma once
 
+#include <optional>
+
 #include <chrono>
 #include <map>
 #include <nlohmann/json.hpp>
@@ -154,7 +156,7 @@ struct BacktestConfig : public ConfigBase {
     std::string results_db_schema = "backtest";
     bool store_trade_details = true;
     std::string csv_output_path = "apps/backtest/results";
-    std::string portfolio_id{"BASE_PORTFOLIO"};  // Portfolio identifier for multiple portfolios
+    std::string portfolio_id;  // Required portfolio identifier for multiple portfolios
 
     // Configuration metadata
     std::string version{"1.0.0"};
@@ -194,15 +196,20 @@ struct BacktestResults {
     // Performance metrics
     double total_return{0.0};
     double volatility{0.0};
-    double sharpe_ratio{0.0};
-    double sortino_ratio{0.0};
+    /// Empty when the returns never varied: no volatility to divide by.
+    std::optional<double> sharpe_ratio;
+    /// Empty when no return fell below the target: no downside to divide by.
+    std::optional<double> sortino_ratio;
     double max_drawdown{0.0};
-    double calmar_ratio{0.0};
+    /// Empty when the curve never drew down: no denominator. max_drawdown above
+    /// is the explanation.
+    std::optional<double> calmar_ratio;
 
     // Trading metrics
     int total_trades{0};
     double win_rate{0.0};
-    double profit_factor{0.0};
+    /// Empty when there were no losing trades to divide by.
+    std::optional<double> profit_factor;
     double avg_win{0.0};
     double avg_loss{0.0};
     double max_win{0.0};

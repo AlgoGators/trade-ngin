@@ -3,9 +3,16 @@
 
 #include <memory>
 #include "trade_ngin/core/error.hpp"
+#include "trade_ngin/strategy/consumption.hpp"
 #include "trade_ngin/strategy/types.hpp"
 
 namespace trade_ngin {
+
+struct PortfolioOptimizerInputs {
+    double contract_size;
+    double reference_price;
+    double final_position;
+};
 
 /**
  * @brief Interface for all trading strategies
@@ -22,7 +29,8 @@ public:
     virtual Result<void> resume() = 0;
 
     // Data processing
-    virtual Result<void> on_data(const std::vector<Bar>& data) = 0;
+    virtual Result<void> on_data(const std::vector<Bar>& data,
+                                 StrategyConsumptionTrace* trace = nullptr) = 0;
     virtual Result<void> on_execution(const ExecutionReport& report) = 0;
     virtual Result<void> on_signal(const std::string& symbol, double signal) = 0;
 
@@ -32,9 +40,18 @@ public:
     virtual const StrategyConfig& get_config() const = 0;
     virtual const StrategyMetadata& get_metadata() const = 0;
     virtual std::unordered_map<std::string, std::vector<double>> get_price_history() const = 0;
+    // Empty means no eligible inputs for this MODEL optimizer cost estimate,
+    // not that actual trading costs are zero.
+    virtual std::unordered_map<std::string, double>
+    get_portfolio_cost_reference_prices() const { return {}; }
+    // Absence means MODEL optimizer metadata is unavailable for this symbol;
+    // it does not make a target ineligible for optimization.
+    virtual std::unordered_map<std::string, PortfolioOptimizerInputs>
+    get_portfolio_optimizer_inputs() const { return {}; }
     // Position management
     virtual const std::unordered_map<std::string, Position>& get_positions() const = 0;
-    virtual Result<void> update_position(const std::string& symbol, const Position& position) = 0;
+    virtual Result<void> update_position(const std::string& symbol, const Position& position,
+                                          StrategyPositionLimitConsumption* consumption = nullptr) = 0;
 
     /**
      * @brief Seed in-memory positions from an external snapshot (typically yesterday's
@@ -54,7 +71,7 @@ public:
 
     // Risk management
     virtual Result<void> update_risk_limits(const RiskLimits& limits) = 0;
-    virtual Result<void> check_risk_limits() = 0;
+    virtual Result<void> check_risk_limits(StrategyRiskConsumption* consumption = nullptr) = 0;
 
     /**
      * @brief Set backtest mode for this strategy

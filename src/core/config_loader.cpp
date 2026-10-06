@@ -2,12 +2,485 @@
 
 #include "trade_ngin/core/config_loader.hpp"
 
+#include <algorithm>
+#include <cctype>
+#include <ctime>
 #include <fstream>
+#include <iomanip>
 #include <iostream>
+#include <cmath>
+#include <limits>
+#include <map>
+#include <new>
+#include <optional>
+#include <set>
+#include <string_view>
+#include <stdexcept>
+#include <string>
 
 #include "trade_ngin/core/logger.hpp"
 
 namespace trade_ngin {
+
+bool is_valid_portfolio_config_key(std::string_view name) {
+    if (name.empty() || name.size() > 64) return false;
+    const auto alphanumeric = [](char value) {
+        return (value >= 'a' && value <= 'z') || (value >= '0' && value <= '9');
+    };
+    if (!alphanumeric(name.front())) return false;
+    return std::all_of(name.begin() + 1, name.end(), [&](char value) {
+        return alphanumeric(value) || value == '_' || value == '-';
+    });
+}
+
+Result<std::filesystem::path> resolve_portfolio_config_directory(
+    const std::filesystem::path& config_base_path, std::string_view portfolio_name) {
+    if (!is_valid_portfolio_config_key(portfolio_name)) {
+        return make_error<std::filesystem::path>(
+            ErrorCode::INVALID_ARGUMENT, "Invalid portfolio config key", "ConfigLoader");
+    }
+
+    std::error_code error;
+    const auto root = std::filesystem::weakly_canonical(
+        config_base_path / "portfolios", error);
+    if (error) {
+        return make_error<std::filesystem::path>(
+            ErrorCode::INVALID_ARGUMENT, "Portfolio config root is unavailable", "ConfigLoader");
+    }
+    const auto candidate = std::filesystem::weakly_canonical(
+        root / std::string(portfolio_name), error);
+    if (error || candidate.parent_path() != root) {
+        return make_error<std::filesystem::path>(
+            ErrorCode::INVALID_ARGUMENT, "Portfolio config path escapes portfolios root",
+            "ConfigLoader");
+    }
+    return candidate;
+}
+
+namespace {
+
+struct InvalidProjectionField {};
+
+using Json = nlohmann::json;
+
+Json finite_number(double value) {
+    if (!std::isfinite(value)) throw InvalidProjectionField{};
+    return value;
+}
+
+Json typed_integer(const Json& value) {
+    if (!value.is_number_integer()) throw InvalidProjectionField{};
+    if (value.is_number_unsigned()) {
+        const auto n = value.get<std::uint64_t>();
+        if (n > static_cast<std::uint64_t>(std::numeric_limits<int>::max()))
+            throw InvalidProjectionField{};
+        return static_cast<int>(n);
+    }
+    const auto n = value.get<std::int64_t>();
+    if (n < std::numeric_limits<int>::min() || n > std::numeric_limits<int>::max())
+        throw InvalidProjectionField{};
+    return static_cast<int>(n);
+}
+
+Json typed_pairs(const Json& value, bool second_integer) {
+    if (!value.is_array()) throw InvalidProjectionField{};
+    Json result = Json::array();
+    for (const auto& pair : value) {
+        if (!pair.is_array() || pair.size() != 2) throw InvalidProjectionField{};
+        Json second;
+        if (second_integer) {
+            second = typed_integer(pair.at(1));
+        } else {
+            if (!pair.at(1).is_number()) throw InvalidProjectionField{};
+            second = finite_number(pair.at(1).get<double>());
+        }
+        result.push_back(Json::array({typed_integer(pair.at(0)), second}));
+    }
+    return result;
+}
+
+std::optional<Json> supplied(const Json* source, std::string_view key,
+                             std::string_view value_type) {
+    if (source == nullptr) return std::nullopt;
+    const auto it = source->find(std::string(key));
+    if (it == source->end()) return std::nullopt;
+    const auto& value = *it;
+    if (value_type == "number") {
+        if (!value.is_number()) throw InvalidProjectionField{};
+        return finite_number(value.get<double>());
+    }
+    if (value_type == "integer") return typed_integer(value);
+    if (value_type == "boolean") {
+        if (!value.is_boolean()) throw InvalidProjectionField{};
+        return value.get<bool>();
+    }
+    if (value_type == "enum_string") {
+        if (!value.is_string()) throw InvalidProjectionField{};
+        return value.get<std::string>();
+    }
+    if (value_type == "integer_pairs" || value_type == "integer_number_pairs")
+        return typed_pairs(value, value_type == "integer_pairs");
+    throw InvalidProjectionField{};
+}
+
+void add_field(Json& fields, const std::string& path, const char* classification,
+               const char* reason, const char* condition, const char* value_type,
+               const char* unit, const char* origin, const char* state,
+               std::optional<Json> value = std::nullopt) {
+    Json field = {{"path", path}, {"scope", "exact"},
+                  {"classification", classification}, {"reason", reason},
+                  {"condition", condition}, {"value_type", value_type},
+                  {"unit", unit}, {"value_origin", origin},
+                  {"value_state", state}};
+    if (value) field["value"] = std::move(*value);
+    fields.push_back(std::move(field));
+}
+
+void member(Json& fields, const char* path, const char* classification,
+            const char* reason, const char* condition, const char* value_type,
+            const char* unit, Json value) {
+    add_field(fields, path, classification, reason, condition, value_type, unit,
+              "app_config_member", "included", std::move(value));
+}
+
+void descriptor(Json& fields, const char* path, const char* classification,
+                const char* reason, const char* condition, const char* value_type,
+                const char* unit) {
+    add_field(fields, path, classification, reason, condition, value_type, unit,
+              "not_projected", "omitted");
+}
+
+void strategy_leaf(Json& fields, const std::string& root, const Json* source,
+                   const char* key, const char* classification, const char* reason,
+                   const char* condition, const char* value_type, const char* unit) {
+    auto value = supplied(source, key, value_type);
+    add_field(fields, root + key, classification, reason, condition, value_type,
+              unit, "configured_strategy_leaf", value ? "included" : "absent_in_input",
+              std::move(value));
+}
+
+bool valid_strategy_id(const std::string& id) {
+    if (id.empty() || id.size() > 128) return false;
+    return std::all_of(id.begin(), id.end(), [](unsigned char ch) {
+        return (ch >= 'A' && ch <= 'Z') || (ch >= 'a' && ch <= 'z') ||
+               (ch >= '0' && ch <= '9') || ch == '_' || ch == '-';
+    });
+}
+
+bool known_strategy_type(const std::string& type) {
+    return type == "TrendFollowingStrategy" ||
+           type == "TrendFollowingFastStrategy" ||
+           type == "TrendFollowingSlowStrategy";
+}
+
+void add_strategy(Json& fields, const std::string& id, const Json& definition) {
+    if (!valid_strategy_id(id) || !definition.is_object()) throw InvalidProjectionField{};
+    const std::string root = "/strategies/" + id + "/";
+    const Json* params = nullptr;
+    const auto config_it = definition.find("config");
+    if (config_it != definition.end()) {
+        if (!config_it->is_object()) throw InvalidProjectionField{};
+        params = &*config_it;
+    }
+    strategy_leaf(fields, root, &definition, "enabled_live", "source_supported_config_input",
+                  "source_reader", "strategy_selection", "boolean", "flag");
+    strategy_leaf(fields, root, &definition, "default_allocation", "source_supported_config_input",
+                  "source_reader", "strategy_selection", "number", "fraction");
+    strategy_leaf(fields, root, &definition, "enabled_backtest", "unsupported_in_profile",
+                  "backtest_only", "no_active_profile_reader", "boolean", "flag");
+    auto type = supplied(&definition, "type", "enum_string");
+    if (type && !known_strategy_type(type->get<std::string>())) {
+        add_field(fields, root + "type", "unsupported_in_profile", "unknown_strategy_type",
+                  "no_active_profile_reader", "enum_string", "strategy_type",
+                  "not_projected", "omitted");
+        return;
+    }
+    add_field(fields, root + "type", "source_supported_config_input", "source_reader",
+              "strategy_dispatch", "enum_string", "strategy_type",
+              "configured_strategy_leaf", type ? "included" : "absent_in_input",
+              std::move(type));
+    const std::string cfg = root + "config/";
+    strategy_leaf(fields, cfg, params, "weight", "source_supported_config_input", "source_reader",
+                  "selected_known_strategy_buffering_enabled", "number", "multiplier");
+    strategy_leaf(fields, cfg, params, "risk_target", "source_supported_config_input",
+                  "source_reader", "selected_known_strategy", "number",
+                  "annualized_volatility_fraction");
+    strategy_leaf(fields, cfg, params, "idm", "source_supported_config_input", "source_reader",
+                  "selected_known_strategy", "number", "multiplier");
+    strategy_leaf(fields, cfg, params, "max_symbol_concentration", "source_supported_config_input",
+                  "source_reader", "selected_known_strategy", "number", "fraction");
+    strategy_leaf(fields, cfg, params, "use_position_buffering", "source_supported_config_input",
+                  "source_reader", "selected_known_strategy", "boolean", "flag");
+    strategy_leaf(fields, cfg, params, "carver_buffer_floor", "source_supported_config_input",
+                  "source_reader", "selected_known_strategy_buffering_enabled", "number", "contracts");
+    strategy_leaf(fields, cfg, params, "carver_buffer_position_factor",
+                  "source_supported_config_input", "source_reader",
+                  "selected_known_strategy_buffering_enabled", "number", "fraction");
+    strategy_leaf(fields, cfg, params, "ema_windows", "source_supported_config_input",
+                  "source_reader", "selected_known_strategy", "integer_pairs", "short_long_bar_pairs");
+    strategy_leaf(fields, cfg, params, "vol_lookback_short", "source_supported_config_input",
+                  "source_reader", "selected_known_strategy", "integer", "bar_windows");
+    strategy_leaf(fields, cfg, params, "vol_lookback_long", "source_supported_config_input",
+                  "source_reader", "selected_known_strategy", "integer", "bar_windows");
+    add_field(fields, cfg + "fx_rate", "unsupported_in_profile", "typed_member_not_input_wired",
+              "no_active_profile_reader", "number", "currency_ratio", "not_projected", "omitted");
+    add_field(fields, cfg + "max_history_size", "unsupported_in_profile",
+              "typed_member_not_input_wired", "no_active_profile_reader", "integer",
+              "bar_records", "not_projected", "omitted");
+    add_field(fields, cfg + "fdm", "unsupported_in_profile", "typed_member_not_input_wired",
+              "no_active_profile_reader", "integer_number_pairs", "rule_count_multiplier_pairs",
+              "not_projected", "omitted");
+}
+
+}  // namespace
+
+Result<nlohmann::json> project_live_config_fields(const AppConfig& config) {
+    try {
+        Json fields = Json::array();
+        descriptor(fields, "/portfolio_id", "read_only_metadata", "identity_metadata",
+                   "metadata_only", "string", "identity");
+        member(fields, "/initial_capital", "source_supported_config_input", "source_reader",
+               "source_path", "number", "account_currency", finite_number(config.initial_capital));
+        member(fields, "/reserve_capital_pct", "unsupported_in_profile", "stored_metadata_only",
+               "no_active_profile_reader", "number", "fraction",
+               finite_number(config.reserve_capital_pct));
+        if (config.benchmark_mode != "live" && config.benchmark_mode != "deferred")
+            throw InvalidProjectionField{};
+        member(fields, "/benchmark_mode", "source_supported_config_input", "source_reader",
+               "benchmark_stage", "enum_string", "mode", config.benchmark_mode);
+
+        member(fields, "/execution/commission_rate", "unsupported_in_profile",
+               "not_wired_to_futures_cost_model", "no_active_profile_reader", "number",
+               "unverified_rate", finite_number(config.execution.commission_rate));
+        member(fields, "/execution/slippage_bps", "unsupported_in_profile",
+               "not_wired_to_futures_cost_model", "no_active_profile_reader", "number",
+               "basis_points", finite_number(config.execution.slippage_bps));
+        member(fields, "/execution/position_limit_backtest", "unsupported_in_profile",
+               "backtest_only", "no_active_profile_reader", "number", "contracts",
+               finite_number(config.execution.position_limit_backtest));
+        member(fields, "/execution/position_limit_live", "source_supported_config_input",
+               "source_reader", "base_position_validation", "number", "contracts",
+               finite_number(config.execution.position_limit_live));
+
+        member(fields, "/optimization/tau", "source_supported_config_input", "source_reader",
+               "optimizer_succeeded_and_buffering_enabled", "number", "risk_scale",
+               finite_number(config.opt_config.tau));
+        member(fields, "/optimization/capital", "read_only_metadata", "derived_alias",
+               "metadata_only", "number", "account_currency", finite_number(config.opt_config.capital));
+        member(fields, "/optimization/cost_penalty_scalar", "source_supported_config_input",
+               "source_reader", "optimizer_enabled", "number", "multiplier",
+               finite_number(config.opt_config.cost_penalty_scalar));
+        member(fields, "/optimization/asymmetric_risk_buffer", "unsupported_in_profile",
+               "no_active_reader", "no_active_profile_reader", "number", "unverified_buffer_fraction",
+               finite_number(config.opt_config.asymmetric_risk_buffer));
+        member(fields, "/optimization/max_iterations", "source_supported_config_input",
+               "source_reader", "optimizer_enabled", "integer", "iterations",
+               config.opt_config.max_iterations);
+        member(fields, "/optimization/convergence_threshold", "source_supported_config_input",
+               "source_reader", "optimizer_enabled", "number", "objective_difference",
+               finite_number(config.opt_config.convergence_threshold));
+        member(fields, "/optimization/use_buffering", "source_supported_config_input",
+               "source_reader", "optimizer_enabled", "boolean", "flag", config.opt_config.use_buffering);
+        member(fields, "/optimization/buffer_size_factor", "source_supported_config_input",
+               "source_reader", "optimizer_succeeded_and_buffering_enabled", "number", "multiplier",
+               finite_number(config.opt_config.buffer_size_factor));
+        descriptor(fields, "/optimization/version", "read_only_metadata", "version_metadata",
+                   "metadata_only", "string", "config_version");
+
+        member(fields, "/risk/var_limit", "source_supported_config_input", "source_reader",
+               "risk_enabled", "number", "annualized_volatility_fraction",
+               finite_number(config.risk_config.var_limit));
+        member(fields, "/risk/jump_risk_limit", "source_supported_config_input", "source_reader",
+               "risk_enabled", "number", "fraction", finite_number(config.risk_config.jump_risk_limit));
+        member(fields, "/risk/corr_shock_threshold", "unsupported_in_profile", "inactive_alternative",
+               "no_active_profile_reader", "number", "annualized_volatility_fraction",
+               finite_number(config.risk_config.corr_shock_threshold));
+        member(fields, "/risk/jump_shock_threshold", "unsupported_in_profile", "inactive_alternative",
+               "no_active_profile_reader", "number", "annualized_volatility_fraction",
+               finite_number(config.risk_config.jump_shock_threshold));
+        member(fields, "/risk/max_gross_leverage", "source_supported_config_input", "source_reader",
+               "risk_enabled", "number", "leverage_multiple",
+               finite_number(config.risk_config.max_gross_leverage));
+        member(fields, "/risk/max_net_leverage", "source_supported_config_input", "source_reader",
+               "risk_enabled", "number", "leverage_multiple",
+               finite_number(config.risk_config.max_net_leverage));
+        member(fields, "/risk/capital", "read_only_metadata", "derived_alias", "metadata_only",
+               "number", "account_currency", finite_number(static_cast<double>(config.risk_config.capital)));
+        descriptor(fields, "/risk/version", "read_only_metadata", "version_metadata",
+                   "metadata_only", "string", "config_version");
+        member(fields, "/risk/max_drawdown", "source_supported_config_input", "source_reader",
+               "base_strategy_risk_check", "number", "fraction", finite_number(config.max_drawdown));
+        member(fields, "/risk/max_leverage", "source_supported_config_input", "diagnostic_reader",
+               "base_strategy_risk_check", "number", "leverage_multiple", finite_number(config.max_leverage));
+        member(fields, "/risk_defaults/confidence_level", "source_supported_config_input",
+               "source_reader", "risk_enabled", "number", "probability",
+               finite_number(config.risk_config.confidence_level));
+        member(fields, "/risk_defaults/lookback_period", "source_supported_config_input",
+               "source_reader", "risk_enabled", "integer", "bar_records",
+               config.risk_config.lookback_period);
+        member(fields, "/risk_defaults/max_correlation", "source_supported_config_input",
+               "source_reader", "risk_enabled", "number", "absolute_correlation",
+               finite_number(config.risk_config.max_correlation));
+
+        member(fields, "/backtest/lookback_years", "unsupported_in_profile", "backtest_only",
+               "no_active_profile_reader", "integer", "years", config.backtest.lookback_years);
+        member(fields, "/backtest/store_trade_details", "unsupported_in_profile", "backtest_only",
+               "no_active_profile_reader", "boolean", "flag", config.backtest.store_trade_details);
+        member(fields, "/live/historical_days", "source_supported_config_input", "source_reader",
+               "source_path", "integer", "calendar_days", config.live.historical_days);
+
+        Json fdm = Json::array();
+        for (const auto& [count, multiplier] : config.strategy_defaults.fdm)
+            fdm.push_back(Json::array({count, finite_number(multiplier)}));
+        member(fields, "/strategy_defaults/fdm", "unsupported_in_profile", "blocked_default_fallback",
+               "no_active_profile_reader", "integer_number_pairs", "rule_count_multiplier_pairs",
+               std::move(fdm));
+        member(fields, "/strategy_defaults/max_strategy_allocation", "source_supported_config_input",
+               "source_reader", "allocation_validation", "number", "fraction",
+               finite_number(config.strategy_defaults.max_strategy_allocation));
+        member(fields, "/strategy_defaults/min_strategy_allocation", "source_supported_config_input",
+               "source_reader", "allocation_validation", "number", "fraction",
+               finite_number(config.strategy_defaults.min_strategy_allocation));
+        member(fields, "/strategy_defaults/use_optimization", "source_supported_config_input",
+               "source_reader", "source_path", "boolean", "flag",
+               config.strategy_defaults.use_optimization);
+        member(fields, "/strategy_defaults/use_risk_management", "source_supported_config_input",
+               "source_reader", "source_path", "boolean", "flag",
+               config.strategy_defaults.use_risk_management);
+        member(fields, "/strategy_defaults/carver_buffer_floor", "source_supported_config_input",
+               "source_reader", "strategy_config_present_leaf_absent_and_buffering_enabled",
+               "number", "contracts", finite_number(config.strategy_defaults.carver_buffer_floor));
+        member(fields, "/strategy_defaults/carver_buffer_position_factor",
+               "source_supported_config_input", "source_reader",
+               "strategy_config_present_leaf_absent_and_buffering_enabled", "number", "fraction",
+               finite_number(config.strategy_defaults.carver_buffer_position_factor));
+
+        if (config.strategies_config.is_object()) {
+            for (auto it = config.strategies_config.begin(); it != config.strategies_config.end(); ++it)
+                add_strategy(fields, it.key(), it.value());
+        } else if (!config.strategies_config.is_null()) {
+            throw InvalidProjectionField{};
+        }
+        std::sort(fields.begin(), fields.end(), [](const Json& a, const Json& b) {
+            return a.at("path").get_ref<const std::string&>() <
+                   b.at("path").get_ref<const std::string&>();
+        });
+        for (std::size_t i = 1; i < fields.size(); ++i) {
+            if (fields[i - 1].at("path") == fields[i].at("path"))
+                throw InvalidProjectionField{};
+        }
+        return Json{{"projection_version", 1},
+                    {"profile", "live_portfolio_runner_futures"},
+                    {"coverage", "current_typed_fields_and_known_strategy_leaves"},
+                    {"authority", "inspection_only"},
+                    {"consumption_evidence", "not_collected"},
+                    {"fields", std::move(fields)}};
+    } catch (const std::bad_alloc&) {
+        throw;
+    } catch (...) {
+        return make_error<nlohmann::json>(ErrorCode::INVALID_DATA,
+                                          "config_projection_invalid_field",
+                                          "ConfigFieldProjection");
+    }
+}
+
+bool validate_live_config_projection_for_publication(const nlohmann::json& projection) {
+    try {
+        if (!projection.is_object() || projection.size() != 6 ||
+            !projection.at("projection_version").is_number_integer() ||
+            projection.at("projection_version") != 1 ||
+            projection.at("profile") != "live_portfolio_runner_futures" ||
+            projection.at("coverage") != "current_typed_fields_and_known_strategy_leaves" ||
+            projection.at("authority") != "inspection_only" ||
+            projection.at("consumption_evidence") != "not_collected" ||
+            !projection.at("fields").is_array() ||
+            projection.dump().size() > 2u * 1024u * 1024u) return false;
+
+        const auto& fields = projection.at("fields");
+        if (fields.size() > 20000) return false;
+        std::map<std::string, const Json*> by_path;
+        std::set<std::string> strategy_ids;
+        std::string prior;
+        for (const auto& field : fields) {
+            if (!field.is_object() || !field.contains("path") ||
+                !field.at("path").is_string()) return false;
+            const auto& path = field.at("path").get_ref<const std::string&>();
+            if (!prior.empty() && path <= prior) return false;
+            prior = path;
+            by_path.emplace(path, &field);
+            if (path.rfind("/strategies/", 0) == 0) {
+                const auto slash = path.find('/', 12);
+                if (slash == std::string::npos ||
+                    !valid_strategy_id(path.substr(12, slash - 12))) return false;
+                strategy_ids.insert(path.substr(12, slash - 12));
+                if (strategy_ids.size() > 1024) return false;
+            }
+        }
+
+        // Only descriptors come from this safe synthetic input. Its values are
+        // never compared with, substituted for, or used to resolve the capture.
+        AppConfig catalog_input;
+        catalog_input.strategies_config = Json::object();
+        for (const auto& id : strategy_ids) {
+            const auto type = by_path.find("/strategies/" + id + "/type");
+            if (type == by_path.end() || !type->second->contains("reason") ||
+                !type->second->at("reason").is_string()) return false;
+            const bool unknown = type->second->at("reason") == "unknown_strategy_type";
+            catalog_input.strategies_config[id] = {
+                {"type", unknown ? "UnknownSynthetic" : "TrendFollowingStrategy"}};
+        }
+        const auto projected_catalog = project_live_config_fields(catalog_input);
+        if (projected_catalog.is_error()) return false;
+        const auto& catalog = projected_catalog.value().at("fields");
+        if (fields.size() != catalog.size()) return false;
+        for (std::size_t index = 0; index < fields.size(); ++index) {
+            const auto& field = fields[index];
+            const auto& expected = catalog[index];
+            for (const char* key : {"path", "scope", "classification", "reason",
+                                    "condition", "value_type", "unit", "value_origin"})
+                if (!field.contains(key) || field.at(key) != expected.at(key)) return false;
+            if (!field.contains("value_state") || !field.at("value_state").is_string())
+                return false;
+            const auto& state = field.at("value_state").get_ref<const std::string&>();
+            const auto& origin = expected.at("value_origin").get_ref<const std::string&>();
+            const bool included = state == "included";
+            if (origin == "not_projected") {
+                if (state != "omitted") return false;
+            } else if (origin == "app_config_member") {
+                if (!included) return false;
+            } else if (origin == "configured_strategy_leaf") {
+                if (!included && state != "absent_in_input") return false;
+            } else return false;
+            if (field.size() != (included ? 10u : 9u) ||
+                field.contains("value") != included) return false;
+            if (!included) continue;
+
+            const auto& value = field.at("value");
+            const auto& type = expected.at("value_type").get_ref<const std::string&>();
+            if (type == "number") {
+                if (!value.is_number() || !std::isfinite(value.get<double>())) return false;
+            } else if (type == "integer") {
+                (void)typed_integer(value);
+            } else if (type == "boolean") {
+                if (!value.is_boolean()) return false;
+            } else if (type == "enum_string") {
+                if (!value.is_string()) return false;
+                if (field.at("path") == "/benchmark_mode") {
+                    if (value != "live" && value != "deferred") return false;
+                } else if (!known_strategy_type(value.get<std::string>())) return false;
+            } else if (type == "integer_pairs" || type == "integer_number_pairs") {
+                (void)typed_pairs(value, type == "integer_pairs");
+            } else return false;
+        }
+        return true;
+    } catch (const std::bad_alloc&) {
+        throw;
+    } catch (const std::exception&) {
+        return false;
+    } catch (const InvalidProjectionField&) {
+        return false;
+    }
+}
 
 Result<nlohmann::json> ConfigLoader::load_json_file(const std::filesystem::path& file_path) {
     std::ifstream file(file_path);
@@ -47,6 +520,87 @@ void ConfigLoader::merge_json(nlohmann::json& target, const nlohmann::json& sour
         }
     }
 }
+
+namespace {
+
+/// Walks every object below `node` looking for one key, and names where it found it.
+/// Only the PATH is ever reported, never a value: the same tree carries the database
+/// and email passwords.
+bool find_key(const nlohmann::json& node, const std::string& key, const std::string& path,
+              std::string* found) {
+    if (node.is_object()) {
+        for (const auto& item : node.items()) {
+            const std::string child = path.empty() ? item.key() : path + "." + item.key();
+            if (item.key() == key) {
+                *found = child;
+                return true;
+            }
+            if (find_key(item.value(), key, child, found)) return true;
+        }
+    } else if (node.is_array()) {
+        for (size_t i = 0; i < node.size(); ++i) {
+            if (find_key(node.at(i), key, path + "[" + std::to_string(i) + "]", found)) return true;
+        }
+    }
+    return false;
+}
+
+/**
+ * @brief S7 -- the keys schema 2 removed are load ERRORS, not ignored leftovers.
+ *
+ * Ignoring them is what makes a migration silently half-applied: a `use_risk_management:
+ * false` left behind in a file nobody re-read would read as "risk is off" to a human and
+ * as nothing at all to the loader, and the book would gate while its config says it does
+ * not. Each message names the key's path and what replaced it.
+ *
+ * removed-key guard: delete after the first production run on schema 2 (the lead names
+ * the release; LEAD_RULINGS_C7 item 15 records it as an open question for HD).
+ */
+Result<void> check_removed_keys(const nlohmann::json& merged, const std::string& portfolio_id) {
+    const std::string config_prefix = "config for " + portfolio_id + ": ";
+    std::string where;
+    if (find_key(merged, "use_risk_management", "", &where)) {
+        return make_error<void>(
+            ErrorCode::INVALID_DATA,
+            config_prefix + where +
+                " (use_risk_management) was removed in schema 2; risk is assigned by risk.json "
+                "\"modules\". Delete the key (a leftover false would silently turn risk back on, "
+                "T-RISK-ARCH_ADVERSARIAL E2)",
+            "ConfigLoader");
+    }
+    if (merged.contains("risk_defaults")) {
+        return make_error<void>(
+            ErrorCode::INVALID_DATA,
+            config_prefix +
+                "risk_defaults was removed in schema 2; every gating value is written literally "
+                "in each portfolio's risk.json (run scripts/migrate_risk_json.py)",
+            "ConfigLoader");
+    }
+    if (merged.contains("strategy_defaults") && merged.at("strategy_defaults").is_object() &&
+        merged.at("strategy_defaults").contains("use_optimization")) {
+        return make_error<void>(
+            ErrorCode::INVALID_DATA,
+            config_prefix +
+                "strategy_defaults.use_optimization moved to portfolio.json \"use_optimization\" "
+                "in schema 2",
+            "ConfigLoader");
+    }
+    if (merged.contains("risk")) {
+        for (const char* key : {"corr_shock_threshold", "jump_shock_threshold"}) {
+            if (find_key(merged.at("risk"), key, "risk", &where)) {
+                return make_error<void>(
+                    ErrorCode::INVALID_DATA,
+                    "risk config for " + portfolio_id + ": " + where +
+                        " has had no reader since the carver_shock methods were deleted; delete "
+                        "it",
+                    "ConfigLoader");
+            }
+        }
+    }
+    return Result<void>();
+}
+
+}  // namespace
 
 Result<AppConfig> ConfigLoader::extract_config(const nlohmann::json& merged) {
     try {
@@ -94,34 +648,78 @@ Result<AppConfig> ConfigLoader::extract_config(const nlohmann::json& merged) {
         // Set capital in opt_config
         config.opt_config.capital = config.initial_capital;
 
-        // Risk configuration - from risk_defaults and risk section
-        if (merged.contains("risk_defaults")) {
-            const auto& risk_defaults = merged.at("risk_defaults");
-            if (risk_defaults.contains("confidence_level")) {
-                config.risk_config.confidence_level =
-                    risk_defaults.at("confidence_level").get<double>();
+        // Risk configuration - schema 2. Named first, so an unmigrated production box
+        // is told what to run instead of being told about a key it never wrote.
+        {
+            auto schema1 = check_not_schema1(merged.value("risk", nlohmann::json::object()),
+                                             config.portfolio_id);
+            if (schema1.is_error()) {
+                return make_error<AppConfig>(ErrorCode::INVALID_DATA, schema1.error()->what(),
+                                             "ConfigLoader");
             }
-            if (risk_defaults.contains("lookback_period")) {
-                config.risk_config.lookback_period =
-                    risk_defaults.at("lookback_period").get<int>();
-            }
-            if (risk_defaults.contains("max_correlation")) {
-                config.risk_config.max_correlation =
-                    risk_defaults.at("max_correlation").get<double>();
+            auto removed = check_removed_keys(merged, config.portfolio_id);
+            if (removed.is_error()) {
+                return make_error<AppConfig>(ErrorCode::INVALID_DATA, removed.error()->what(),
+                                             "ConfigLoader");
             }
         }
 
-        if (merged.contains("risk")) {
-            config.risk_config.from_json(merged.at("risk"));
+        // P1: portfolio.json owns use_optimization now. Required and boolean; there is no
+        // default, because a default is how an optimizer gets switched on for a book
+        // nobody decided to switch it on for.
+        if (!merged.contains("use_optimization") || !merged.at("use_optimization").is_boolean()) {
+            return make_error<AppConfig>(
+                ErrorCode::INVALID_DATA,
+                "config for " + config.portfolio_id +
+                    ": portfolio.json must set \"use_optimization\" (true or false) at its top "
+                    "level; schema 2 has no default",
+                "ConfigLoader");
+        }
+        config.use_optimization = merged.at("use_optimization").get<bool>();
 
-            // Additional risk limits
-            const auto& risk = merged.at("risk");
-            if (risk.contains("max_drawdown")) {
-                config.max_drawdown = risk.at("max_drawdown").get<double>();
+        // T-6c commit B: the PortfolioManager's covariance history length, in prices per
+        // symbol. Optional; absent means 756 (the trend sleeve's own history cap). A value
+        // that is not a whole number of at least 2 is refused: one price gives no return.
+        if (merged.contains("covariance_history_prices")) {
+            const auto& v = merged.at("covariance_history_prices");
+            if (!v.is_number_integer() || v.get<int64_t>() < 2) {
+                return make_error<AppConfig>(
+                    ErrorCode::INVALID_DATA,
+                    "config for " + config.portfolio_id +
+                        ": portfolio.json \"covariance_history_prices\" must be a whole number "
+                        "of at least 2 (prices per symbol kept for the optimiser's covariance; "
+                        "absent means 756), got " + v.dump(),
+                    "ConfigLoader");
             }
-            if (risk.contains("max_leverage")) {
-                config.max_leverage = risk.at("max_leverage").get<double>();
-            }
+            config.covariance_history_prices = v.get<size_t>();
+        }
+
+        if (!merged.contains("risk")) {
+            return make_error<AppConfig>(ErrorCode::INVALID_DATA,
+                                         "risk config for " + config.portfolio_id +
+                                             ": risk.json is required",
+                                         "ConfigLoader");
+        }
+        auto schema = parse_risk_schema(
+            merged.at("risk"), merged.value("sleeve_risk_modules", nlohmann::json()),
+            merged.value("strategies", nlohmann::json::object()), config.portfolio_id);
+        if (schema.is_error()) {
+            return make_error<AppConfig>(ErrorCode::INVALID_DATA, schema.error()->what(),
+                                         "ConfigLoader");
+        }
+        config.risk_schema = schema.value();
+        // The reporting block is the single source of AppConfig::risk_config: every
+        // snapshot RiskManager and both equity start-up guards read it, and it survives a
+        // book whose gate becomes `none`.
+        config.risk_config = config.risk_schema.reporting.to_risk_config();
+
+        // Additional risk limits
+        const auto& risk = merged.at("risk");
+        if (risk.contains("max_drawdown")) {
+            config.max_drawdown = risk.at("max_drawdown").get<double>();
+        }
+        if (risk.contains("max_leverage")) {
+            config.max_leverage = risk.at("max_leverage").get<double>();
         }
         // Set capital in risk_config
         config.risk_config.capital = Decimal(config.initial_capital);
@@ -186,7 +784,154 @@ Result<void> ConfigLoader::validate_config(const AppConfig& config) {
                                 "strategies configuration is missing or empty",
                                 "ConfigLoader");
     }
+
+    // G-03: the lookback window has to be long enough for the strategies that
+    // read it, and nothing checked that it was.
+    //
+    // config_template/defaults.json states the coupling in a COMMENT -- "Must
+    // match backtest.lookback_years (2 yrs = 730 days). Strategy needs 256+
+    // trading days for longest EMA and 252 for vol_lookback_long" -- and a
+    // comment is not a check. A short window does not fail: the longest EMA
+    // never warms up and emits a signal that looks exactly like a real one.
+    //
+    // The requirement is DERIVED from the enabled strategies' own ema_windows
+    // rather than hardcoded, because the strategies do not agree on it:
+    // TrendFollowing tops out at 256, Fast at 64, and Slow carries a {128, 512}
+    // pair. A single constant would either nag every run of a book that does not
+    // enable Slow, or miss the case of a book that does. The template's own
+    // "256+" note is understated for exactly that reason.
+    //
+    // WARN ONLY, deliberately: a refusal would abort runs that work today, which
+    // is a behaviour change and not this batch's business. The point is that a
+    // short window now says so in the log instead of being invisible.
+    {
+        constexpr int kTradingDaysPerYear = 252;
+        // Documented floor, used when a strategy does not spell out its windows.
+        constexpr int kDefaultLongestEma = 256;
+
+        int required = 0;
+        std::string driver;
+        for (const auto& entry : config.strategies_config.items()) {
+            const auto& def = entry.value();
+            // A documentation key such as "_description" is a string, not a
+            // strategy definition. value() would throw on it; the runners
+            // themselves use contains() and skip such entries, so do the same.
+            if (!def.is_object()) continue;
+            const auto flag = [&](const char* key) {
+                return def.contains(key) && def.at(key).is_boolean() && def.at(key).get<bool>();
+            };
+            const bool enabled = flag("enabled_backtest") || flag("enabled_live");
+            if (!enabled) continue;
+
+            int longest = kDefaultLongestEma;
+            if (def.contains("config") && def.at("config").contains("ema_windows")) {
+                longest = 0;
+                for (const auto& pair : def.at("config").at("ema_windows")) {
+                    if (pair.is_array() && pair.size() == 2 && pair.at(1).is_number_integer()) {
+                        longest = std::max(longest, pair.at(1).get<int>());
+                    }
+                }
+                if (longest == 0) longest = kDefaultLongestEma;
+            }
+            if (longest > required) {
+                required = longest;
+                driver = entry.key();
+            }
+        }
+        if (required == 0) required = kDefaultLongestEma;
+
+        const int available = config.backtest.lookback_years * kTradingDaysPerYear;
+        if (available < required) {
+            WARN("backtest.lookback_years=" + std::to_string(config.backtest.lookback_years) +
+                 " gives about " + std::to_string(available) + " trading days, fewer than the " +
+                 std::to_string(required) + " the longest EMA window of enabled strategy " +
+                 driver + " needs. That EMA will not be warmed up and its signal will be "
+                 "meaningless rather than absent (G-03).");
+        }
+
+        // The live side reads the same history through a CALENDAR-day setting,
+        // so the two must be put in the same units before they can be compared.
+        // 365/252 is the ratio the template's own "2 yrs = 730 days" note uses.
+        const int live_trading_days =
+            static_cast<int>(config.live.historical_days * kTradingDaysPerYear / 365.0);
+        if (live_trading_days < required) {
+            WARN("live.historical_days=" + std::to_string(config.live.historical_days) +
+                 " is about " + std::to_string(live_trading_days) +
+                 " trading days, fewer than the " + std::to_string(required) +
+                 " the longest EMA window of enabled strategy " + driver + " needs (G-03).");
+        }
+        if (live_trading_days < available) {
+            WARN("live.historical_days (" + std::to_string(live_trading_days) +
+                 " trading days) is shorter than backtest.lookback_years (" +
+                 std::to_string(available) +
+                 " trading days), so the live book warms up on less history than the "
+                 "backtest it is compared against (G-03).");
+        }
+    }
+
     return Result<void>();
+}
+
+std::pair<Timestamp, Timestamp> ConfigLoader::resolve_backtest_window(
+    const BacktestSpecificConfig& backtest, Timestamp now, bool* froze) {
+    if (froze) *froze = false;
+
+    // The now() path, byte-for-byte what the three bt runners did inline.
+    auto now_time_t = std::chrono::system_clock::to_time_t(now);
+    std::tm anchor_tm{};
+    std::tm* local_tm = std::localtime(&now_time_t);
+    if (local_tm != nullptr) anchor_tm = *local_tm;
+    Timestamp end_date = now;
+
+    // M-12: the frozen window, taken only when a config explicitly carries the
+    // key. Anything unparseable is refused rather than silently ignored -- a
+    // typo in a test config that quietly reverted to now() would reintroduce the
+    // very drift this exists to remove, and it would do it invisibly.
+    if (!backtest.frozen_end_date.empty()) {
+        // Parsed by hand rather than with std::get_time: libc++'s "%Y-%m-%d"
+        // accepts "03-05-2026" (year 3) and stops happily at "2026-05" without
+        // setting failbit, so a typo would be taken as a real date and the run
+        // would be frozen to the wrong window while looking fine.
+        const std::string& fd = backtest.frozen_end_date;
+        auto all_digits = [&fd](size_t off, size_t n) {
+            for (size_t k = 0; k < n; ++k) {
+                if (!std::isdigit(static_cast<unsigned char>(fd[off + k]))) return false;
+            }
+            return true;
+        };
+        if (fd.size() != 10 || fd[4] != '-' || fd[7] != '-' || !all_digits(0, 4) ||
+            !all_digits(5, 2) || !all_digits(8, 2)) {
+            throw std::runtime_error(
+                "backtest.frozen_end_date is not YYYY-MM-DD: '" + fd + "'");
+        }
+        const int fy = std::stoi(fd.substr(0, 4));
+        const int fm = std::stoi(fd.substr(5, 2));
+        const int fdy = std::stoi(fd.substr(8, 2));
+        if (fm < 1 || fm > 12 || fdy < 1 || fdy > 31) {
+            throw std::runtime_error(
+                "backtest.frozen_end_date is not a real calendar date: '" + fd + "'");
+        }
+        std::tm frozen_tm{};
+        frozen_tm.tm_year = fy - 1900;
+        frozen_tm.tm_mon = fm - 1;
+        frozen_tm.tm_mday = fdy;
+        frozen_tm.tm_hour = 0;
+        frozen_tm.tm_min = 0;
+        frozen_tm.tm_sec = 0;
+        frozen_tm.tm_isdst = -1;  // let mktime resolve DST for that local date
+        std::tm normalise = frozen_tm;
+        auto frozen_time_t = std::mktime(&normalise);
+        end_date = std::chrono::system_clock::from_time_t(frozen_time_t);
+        anchor_tm = frozen_tm;
+        if (froze) *froze = true;
+    }
+
+    std::tm start_tm = anchor_tm;
+    start_tm.tm_year -= backtest.lookback_years;
+    auto start_time_t = std::mktime(&start_tm);
+    Timestamp start_date = std::chrono::system_clock::from_time_t(start_time_t);
+
+    return {start_date, end_date};
 }
 
 void ConfigLoader::log_config_summary(const AppConfig& config) {
@@ -207,6 +952,13 @@ void ConfigLoader::log_config_summary(const AppConfig& config) {
 
 Result<AppConfig> ConfigLoader::load(const std::filesystem::path& config_base_path,
                                      const std::string& portfolio_name) {
+    auto portfolio_path_result =
+        resolve_portfolio_config_directory(config_base_path, portfolio_name);
+    if (portfolio_path_result.is_error()) {
+        return make_error<AppConfig>(portfolio_path_result.error()->code(),
+                                     portfolio_path_result.error()->what(), "ConfigLoader");
+    }
+
     // 1. Load defaults.json
     auto defaults_path = config_base_path / "defaults.json";
     auto defaults_result = load_json_file(defaults_path);
@@ -219,7 +971,7 @@ Result<AppConfig> ConfigLoader::load(const std::filesystem::path& config_base_pa
     nlohmann::json merged = defaults_result.value();
 
     // 2. Load portfolio-specific configs
-    auto portfolio_path = config_base_path / "portfolios" / portfolio_name;
+    const auto& portfolio_path = portfolio_path_result.value();
 
     // Load portfolio.json
     auto portfolio_json_path = portfolio_path / "portfolio.json";

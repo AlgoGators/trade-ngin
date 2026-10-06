@@ -1,0 +1,1686 @@
+{
+  "case_count": 21,
+  "cases": [
+    {
+      "after": [
+        {
+          "average_price_exact": "10",
+          "daily_realized_pnl_exact": "0",
+          "daily_unrealized_pnl_exact": "0",
+          "key": {
+            "date": "2026-09-25",
+            "portfolio_id": "QT_BOOK",
+            "portfolio_type": "qt",
+            "strategy_id": "RUN",
+            "strategy_name": "alpha",
+            "symbol": "ES"
+          },
+          "last_update": "2026-09-25T20:00:00Z",
+          "quantity_exact": "7"
+        }
+      ],
+      "before": [
+        {
+          "average_price_exact": "10",
+          "daily_realized_pnl_exact": "0",
+          "daily_unrealized_pnl_exact": "0",
+          "key": {
+            "date": "2026-09-25",
+            "portfolio_id": "QT_BOOK",
+            "portfolio_type": "qt",
+            "strategy_id": "RUN",
+            "strategy_name": "alpha",
+            "symbol": "ES"
+          },
+          "last_update": "2026-09-25T20:00:00Z",
+          "quantity_exact": "5"
+        }
+      ],
+      "expected_manifest_digest": "bed48683ddab4bb541702443bff3eebb17f0ef8912152dc6825ad32216eab0cd",
+      "expected_shown_keys": [
+        {
+          "date": "2026-09-25",
+          "portfolio_id": "QT_BOOK",
+          "portfolio_type": "qt",
+          "strategy_id": "RUN",
+          "strategy_name": "alpha",
+          "symbol": "ES"
+        }
+      ],
+      "name": "futures_5_to_7",
+      "selection_rows": [
+        {
+          "asset_type": "FUTURE",
+          "key": {
+            "date": "2026-09-25",
+            "portfolio_id": "QT_BOOK",
+            "strategy_id": "RUN",
+            "strategy_name": "alpha",
+            "symbol": "ES"
+          }
+        }
+      ]
+    },
+    {
+      "after": [
+        {
+          "average_price_exact": "10",
+          "daily_realized_pnl_exact": "0",
+          "daily_unrealized_pnl_exact": "0",
+          "key": {
+            "date": "2026-09-25",
+            "portfolio_id": "QT_BOOK",
+            "portfolio_type": "qt",
+            "strategy_id": "RUN",
+            "strategy_name": "alpha",
+            "symbol": "SYN"
+          },
+          "last_update": "2026-09-25T20:00:00Z",
+          "quantity_exact": "9.25"
+        }
+      ],
+      "before": [
+        {
+          "average_price_exact": "10",
+          "daily_realized_pnl_exact": "0",
+          "daily_unrealized_pnl_exact": "0",
+          "key": {
+            "date": "2026-09-25",
+            "portfolio_id": "QT_BOOK",
+            "portfolio_type": "qt",
+            "strategy_id": "RUN",
+            "strategy_name": "alpha",
+            "symbol": "SYN"
+          },
+          "last_update": "2026-09-25T20:00:00Z",
+          "quantity_exact": "9"
+        }
+      ],
+      "expected_manifest_digest": "83cb714f0cc53ab3393ef64cfd1cbbce9cdeff5272c762a4d0d697ed4d8fcd57",
+      "expected_shown_keys": [
+        {
+          "date": "2026-09-25",
+          "portfolio_id": "QT_BOOK",
+          "portfolio_type": "qt",
+          "strategy_id": "RUN",
+          "strategy_name": "alpha",
+          "symbol": "SYN"
+        }
+      ],
+      "name": "equity_9_to_9_25",
+      "selection_rows": [
+        {
+          "asset_type": "EQUITY",
+          "key": {
+            "date": "2026-09-25",
+            "portfolio_id": "QT_BOOK",
+            "strategy_id": "RUN",
+            "strategy_name": "alpha",
+            "symbol": "SYN"
+          }
+        }
+      ]
+    },
+    {
+      "after": [
+        {
+          "average_price_exact": "10",
+          "daily_realized_pnl_exact": "0",
+          "daily_unrealized_pnl_exact": "0",
+          "key": {
+            "date": "2026-09-25",
+            "portfolio_id": "QT_BOOK",
+            "portfolio_type": "qt",
+            "strategy_id": "RUN",
+            "strategy_name": "alpha",
+            "symbol": "SYN"
+          },
+          "last_update": "2026-09-25T20:00:00Z",
+          "quantity_exact": "5"
+        },
+        {
+          "average_price_exact": "10",
+          "daily_realized_pnl_exact": "0",
+          "daily_unrealized_pnl_exact": "0",
+          "key": {
+            "date": "2026-09-25",
+            "portfolio_id": "QT_BOOK",
+            "portfolio_type": "qt",
+            "strategy_id": "RUN",
+            "strategy_name": "alpha",
+            "symbol": "NEW"
+          },
+          "last_update": "2026-09-25T20:00:00Z",
+          "quantity_exact": "2"
+        }
+      ],
+      "before": [
+        {
+          "average_price_exact": "10",
+          "daily_realized_pnl_exact": "0",
+          "daily_unrealized_pnl_exact": "0",
+          "key": {
+            "date": "2026-09-25",
+            "portfolio_id": "QT_BOOK",
+            "portfolio_type": "qt",
+            "strategy_id": "RUN",
+            "strategy_name": "alpha",
+            "symbol": "SYN"
+          },
+          "last_update": "2026-09-25T20:00:00Z",
+          "quantity_exact": "5"
+        },
+        {
+          "average_price_exact": "10",
+          "daily_realized_pnl_exact": "0",
+          "daily_unrealized_pnl_exact": "0",
+          "key": {
+            "date": "2026-09-25",
+            "portfolio_id": "QT_BOOK",
+            "portfolio_type": "qt",
+            "strategy_id": "RUN",
+            "strategy_name": "alpha",
+            "symbol": "NEW"
+          },
+          "last_update": "2026-09-25T20:00:00Z",
+          "quantity_exact": "0"
+        }
+      ],
+      "expected_manifest_digest": "27f73d670e176fd273019c44f935a4665ea16275cd073c70c7a21137eff193f3",
+      "expected_shown_keys": [
+        {
+          "date": "2026-09-25",
+          "portfolio_id": "QT_BOOK",
+          "portfolio_type": "qt",
+          "strategy_id": "RUN",
+          "strategy_name": "alpha",
+          "symbol": "NEW"
+        },
+        {
+          "date": "2026-09-25",
+          "portfolio_id": "QT_BOOK",
+          "portfolio_type": "qt",
+          "strategy_id": "RUN",
+          "strategy_name": "alpha",
+          "symbol": "SYN"
+        }
+      ],
+      "name": "open_from_zero",
+      "selection_rows": [
+        {
+          "asset_type": "EQUITY",
+          "key": {
+            "date": "2026-09-25",
+            "portfolio_id": "QT_BOOK",
+            "strategy_id": "RUN",
+            "strategy_name": "alpha",
+            "symbol": "SYN"
+          }
+        },
+        {
+          "asset_type": "EQUITY",
+          "key": {
+            "date": "2026-09-25",
+            "portfolio_id": "QT_BOOK",
+            "strategy_id": "RUN",
+            "strategy_name": "alpha",
+            "symbol": "NEW"
+          }
+        }
+      ]
+    },
+    {
+      "after": [
+        {
+          "average_price_exact": "10",
+          "daily_realized_pnl_exact": "0",
+          "daily_unrealized_pnl_exact": "0",
+          "key": {
+            "date": "2026-09-25",
+            "portfolio_id": "QT_BOOK",
+            "portfolio_type": "qt",
+            "strategy_id": "RUN",
+            "strategy_name": "alpha",
+            "symbol": "SYN"
+          },
+          "last_update": "2026-09-25T20:00:00Z",
+          "quantity_exact": "0"
+        },
+        {
+          "average_price_exact": "10",
+          "daily_realized_pnl_exact": "0",
+          "daily_unrealized_pnl_exact": "0",
+          "key": {
+            "date": "2026-09-25",
+            "portfolio_id": "QT_BOOK",
+            "portfolio_type": "qt",
+            "strategy_id": "RUN",
+            "strategy_name": "beta",
+            "symbol": "ALT"
+          },
+          "last_update": "2026-09-25T20:00:00Z",
+          "quantity_exact": "-3"
+        }
+      ],
+      "before": [
+        {
+          "average_price_exact": "10",
+          "daily_realized_pnl_exact": "0",
+          "daily_unrealized_pnl_exact": "0",
+          "key": {
+            "date": "2026-09-25",
+            "portfolio_id": "QT_BOOK",
+            "portfolio_type": "qt",
+            "strategy_id": "RUN",
+            "strategy_name": "alpha",
+            "symbol": "SYN"
+          },
+          "last_update": "2026-09-25T20:00:00Z",
+          "quantity_exact": "5"
+        },
+        {
+          "average_price_exact": "10",
+          "daily_realized_pnl_exact": "0",
+          "daily_unrealized_pnl_exact": "0",
+          "key": {
+            "date": "2026-09-25",
+            "portfolio_id": "QT_BOOK",
+            "portfolio_type": "qt",
+            "strategy_id": "RUN",
+            "strategy_name": "beta",
+            "symbol": "ALT"
+          },
+          "last_update": "2026-09-25T20:00:00Z",
+          "quantity_exact": "-3"
+        }
+      ],
+      "expected_manifest_digest": "bc741d9d0cd0a3e98bda044dae28885ec29247742b2107b5e311d27a664ddf67",
+      "expected_shown_keys": [
+        {
+          "date": "2026-09-25",
+          "portfolio_id": "QT_BOOK",
+          "portfolio_type": "qt",
+          "strategy_id": "RUN",
+          "strategy_name": "alpha",
+          "symbol": "SYN"
+        },
+        {
+          "date": "2026-09-25",
+          "portfolio_id": "QT_BOOK",
+          "portfolio_type": "qt",
+          "strategy_id": "RUN",
+          "strategy_name": "beta",
+          "symbol": "ALT"
+        }
+      ],
+      "name": "close_to_zero",
+      "selection_rows": [
+        {
+          "asset_type": "EQUITY",
+          "key": {
+            "date": "2026-09-25",
+            "portfolio_id": "QT_BOOK",
+            "strategy_id": "RUN",
+            "strategy_name": "alpha",
+            "symbol": "SYN"
+          }
+        },
+        {
+          "asset_type": "EQUITY",
+          "key": {
+            "date": "2026-09-25",
+            "portfolio_id": "QT_BOOK",
+            "strategy_id": "RUN",
+            "strategy_name": "beta",
+            "symbol": "ALT"
+          }
+        }
+      ]
+    },
+    {
+      "after": [
+        {
+          "average_price_exact": "10",
+          "daily_realized_pnl_exact": "0",
+          "daily_unrealized_pnl_exact": "0",
+          "key": {
+            "date": "2026-09-25",
+            "portfolio_id": "QT_BOOK",
+            "portfolio_type": "qt",
+            "strategy_id": "RUN",
+            "strategy_name": "alpha",
+            "symbol": "SYN"
+          },
+          "last_update": "2026-09-25T20:00:00Z",
+          "quantity_exact": "5"
+        },
+        {
+          "average_price_exact": "10",
+          "daily_realized_pnl_exact": "0",
+          "daily_unrealized_pnl_exact": "0",
+          "key": {
+            "date": "2026-09-25",
+            "portfolio_id": "QT_BOOK",
+            "portfolio_type": "qt",
+            "strategy_id": "RUN",
+            "strategy_name": "alpha",
+            "symbol": "ZERO"
+          },
+          "last_update": "2026-09-25T20:00:00Z",
+          "quantity_exact": "0"
+        }
+      ],
+      "before": [
+        {
+          "average_price_exact": "10",
+          "daily_realized_pnl_exact": "0",
+          "daily_unrealized_pnl_exact": "0",
+          "key": {
+            "date": "2026-09-25",
+            "portfolio_id": "QT_BOOK",
+            "portfolio_type": "qt",
+            "strategy_id": "RUN",
+            "strategy_name": "alpha",
+            "symbol": "SYN"
+          },
+          "last_update": "2026-09-25T20:00:00Z",
+          "quantity_exact": "5"
+        },
+        {
+          "average_price_exact": "10",
+          "daily_realized_pnl_exact": "0",
+          "daily_unrealized_pnl_exact": "0",
+          "key": {
+            "date": "2026-09-25",
+            "portfolio_id": "QT_BOOK",
+            "portfolio_type": "qt",
+            "strategy_id": "RUN",
+            "strategy_name": "alpha",
+            "symbol": "ZERO"
+          },
+          "last_update": "2026-09-25T20:00:00Z",
+          "quantity_exact": "0"
+        }
+      ],
+      "expected_manifest_digest": "83cb714f0cc53ab3393ef64cfd1cbbce9cdeff5272c762a4d0d697ed4d8fcd57",
+      "expected_shown_keys": [
+        {
+          "date": "2026-09-25",
+          "portfolio_id": "QT_BOOK",
+          "portfolio_type": "qt",
+          "strategy_id": "RUN",
+          "strategy_name": "alpha",
+          "symbol": "SYN"
+        }
+      ],
+      "name": "zero_stays_hidden",
+      "selection_rows": [
+        {
+          "asset_type": "EQUITY",
+          "key": {
+            "date": "2026-09-25",
+            "portfolio_id": "QT_BOOK",
+            "strategy_id": "RUN",
+            "strategy_name": "alpha",
+            "symbol": "SYN"
+          }
+        },
+        {
+          "asset_type": "EQUITY",
+          "key": {
+            "date": "2026-09-25",
+            "portfolio_id": "QT_BOOK",
+            "strategy_id": "RUN",
+            "strategy_name": "alpha",
+            "symbol": "ZERO"
+          }
+        }
+      ]
+    },
+    {
+      "after": [
+        {
+          "average_price_exact": "10",
+          "daily_realized_pnl_exact": "0",
+          "daily_unrealized_pnl_exact": "0",
+          "key": {
+            "date": "2026-09-25",
+            "portfolio_id": "QT_BOOK",
+            "portfolio_type": "qt",
+            "strategy_id": "RUN",
+            "strategy_name": "alpha",
+            "symbol": "SYN"
+          },
+          "last_update": "2026-09-25T20:00:00Z",
+          "quantity_exact": "0"
+        },
+        {
+          "average_price_exact": "10",
+          "daily_realized_pnl_exact": "0",
+          "daily_unrealized_pnl_exact": "0",
+          "key": {
+            "date": "2026-09-25",
+            "portfolio_id": "QT_BOOK",
+            "portfolio_type": "qt",
+            "strategy_id": "RUN",
+            "strategy_name": "beta",
+            "symbol": "SYN"
+          },
+          "last_update": "2026-09-25T20:00:00Z",
+          "quantity_exact": "5"
+        }
+      ],
+      "before": [
+        {
+          "average_price_exact": "10",
+          "daily_realized_pnl_exact": "0",
+          "daily_unrealized_pnl_exact": "0",
+          "key": {
+            "date": "2026-09-25",
+            "portfolio_id": "QT_BOOK",
+            "portfolio_type": "qt",
+            "strategy_id": "RUN",
+            "strategy_name": "alpha",
+            "symbol": "SYN"
+          },
+          "last_update": "2026-09-25T20:00:00Z",
+          "quantity_exact": "5"
+        },
+        {
+          "average_price_exact": "10",
+          "daily_realized_pnl_exact": "0",
+          "daily_unrealized_pnl_exact": "0",
+          "key": {
+            "date": "2026-09-25",
+            "portfolio_id": "QT_BOOK",
+            "portfolio_type": "qt",
+            "strategy_id": "RUN",
+            "strategy_name": "beta",
+            "symbol": "SYN"
+          },
+          "last_update": "2026-09-25T20:00:00Z",
+          "quantity_exact": "5"
+        }
+      ],
+      "expected_manifest_digest": "a9fcec3e3f312853d2aca2d98e7a5a5650691216b8794019e56c6bcc4a594e1c",
+      "expected_shown_keys": [
+        {
+          "date": "2026-09-25",
+          "portfolio_id": "QT_BOOK",
+          "portfolio_type": "qt",
+          "strategy_id": "RUN",
+          "strategy_name": "alpha",
+          "symbol": "SYN"
+        },
+        {
+          "date": "2026-09-25",
+          "portfolio_id": "QT_BOOK",
+          "portfolio_type": "qt",
+          "strategy_id": "RUN",
+          "strategy_name": "beta",
+          "symbol": "SYN"
+        }
+      ],
+      "name": "split_symbol_one_leg_closes",
+      "selection_rows": [
+        {
+          "asset_type": "EQUITY",
+          "key": {
+            "date": "2026-09-25",
+            "portfolio_id": "QT_BOOK",
+            "strategy_id": "RUN",
+            "strategy_name": "alpha",
+            "symbol": "SYN"
+          }
+        },
+        {
+          "asset_type": "EQUITY",
+          "key": {
+            "date": "2026-09-25",
+            "portfolio_id": "QT_BOOK",
+            "strategy_id": "RUN",
+            "strategy_name": "beta",
+            "symbol": "SYN"
+          }
+        }
+      ]
+    },
+    {
+      "after": [
+        {
+          "average_price_exact": "10",
+          "daily_realized_pnl_exact": "0",
+          "daily_unrealized_pnl_exact": "0",
+          "key": {
+            "date": "2026-09-25",
+            "portfolio_id": "QT_BOOK",
+            "portfolio_type": "qt",
+            "strategy_id": "RUN",
+            "strategy_name": "zeta",
+            "symbol": "SYN"
+          },
+          "last_update": "2026-09-25T20:00:00Z",
+          "quantity_exact": "1"
+        },
+        {
+          "average_price_exact": "10",
+          "daily_realized_pnl_exact": "0",
+          "daily_unrealized_pnl_exact": "0",
+          "key": {
+            "date": "2026-09-25",
+            "portfolio_id": "QT_BOOK",
+            "portfolio_type": "qt",
+            "strategy_id": "RUN",
+            "strategy_name": "alpha",
+            "symbol": "AAA"
+          },
+          "last_update": "2026-09-25T20:00:00Z",
+          "quantity_exact": "3"
+        }
+      ],
+      "before": [
+        {
+          "average_price_exact": "10",
+          "daily_realized_pnl_exact": "0",
+          "daily_unrealized_pnl_exact": "0",
+          "key": {
+            "date": "2026-09-25",
+            "portfolio_id": "QT_BOOK",
+            "portfolio_type": "qt",
+            "strategy_id": "RUN",
+            "strategy_name": "zeta",
+            "symbol": "SYN"
+          },
+          "last_update": "2026-09-25T20:00:00Z",
+          "quantity_exact": "1"
+        },
+        {
+          "average_price_exact": "10",
+          "daily_realized_pnl_exact": "0",
+          "daily_unrealized_pnl_exact": "0",
+          "key": {
+            "date": "2026-09-25",
+            "portfolio_id": "QT_BOOK",
+            "portfolio_type": "qt",
+            "strategy_id": "RUN",
+            "strategy_name": "alpha",
+            "symbol": "AAA"
+          },
+          "last_update": "2026-09-25T20:00:00Z",
+          "quantity_exact": "2"
+        }
+      ],
+      "expected_manifest_digest": "8eaf3decd62ff8a6ef83c193aae9bfe8a20056233010f5f51284d4dfe6e709cc",
+      "expected_shown_keys": [
+        {
+          "date": "2026-09-25",
+          "portfolio_id": "QT_BOOK",
+          "portfolio_type": "qt",
+          "strategy_id": "RUN",
+          "strategy_name": "alpha",
+          "symbol": "AAA"
+        },
+        {
+          "date": "2026-09-25",
+          "portfolio_id": "QT_BOOK",
+          "portfolio_type": "qt",
+          "strategy_id": "RUN",
+          "strategy_name": "zeta",
+          "symbol": "SYN"
+        }
+      ],
+      "name": "unsorted_input_order",
+      "selection_rows": [
+        {
+          "asset_type": "EQUITY",
+          "key": {
+            "date": "2026-09-25",
+            "portfolio_id": "QT_BOOK",
+            "strategy_id": "RUN",
+            "strategy_name": "zeta",
+            "symbol": "SYN"
+          }
+        },
+        {
+          "asset_type": "EQUITY",
+          "key": {
+            "date": "2026-09-25",
+            "portfolio_id": "QT_BOOK",
+            "strategy_id": "RUN",
+            "strategy_name": "alpha",
+            "symbol": "AAA"
+          }
+        }
+      ]
+    },
+    {
+      "after": [
+        {
+          "average_price_exact": "10",
+          "daily_realized_pnl_exact": "0",
+          "daily_unrealized_pnl_exact": "0",
+          "key": {
+            "date": "2026-09-25",
+            "portfolio_id": "QT_BOOK",
+            "portfolio_type": "qt",
+            "strategy_id": "RUN",
+            "strategy_name": "alpha",
+            "symbol": "ES"
+          },
+          "last_update": "2026-09-25T20:00:00Z",
+          "quantity_exact": "1.5"
+        }
+      ],
+      "before": [
+        {
+          "average_price_exact": "10",
+          "daily_realized_pnl_exact": "0",
+          "daily_unrealized_pnl_exact": "0",
+          "key": {
+            "date": "2026-09-25",
+            "portfolio_id": "QT_BOOK",
+            "portfolio_type": "qt",
+            "strategy_id": "RUN",
+            "strategy_name": "alpha",
+            "symbol": "ES"
+          },
+          "last_update": "2026-09-25T20:00:00Z",
+          "quantity_exact": "0"
+        }
+      ],
+      "expected_manifest_digest": null,
+      "expected_shown_keys": null,
+      "name": "fractional_future_opening_refused",
+      "selection_rows": [
+        {
+          "asset_type": "FUTURE",
+          "key": {
+            "date": "2026-09-25",
+            "portfolio_id": "QT_BOOK",
+            "strategy_id": "RUN",
+            "strategy_name": "alpha",
+            "symbol": "ES"
+          }
+        }
+      ]
+    },
+    {
+      "after": [
+        {
+          "average_price_exact": "10",
+          "daily_realized_pnl_exact": "0",
+          "daily_unrealized_pnl_exact": "0",
+          "key": {
+            "date": "2026-09-25",
+            "portfolio_id": "QT_BOOK",
+            "portfolio_type": "qt",
+            "strategy_id": "RUN",
+            "strategy_name": "alpha",
+            "symbol": "ES"
+          },
+          "last_update": "2026-09-25T20:00:00Z",
+          "quantity_exact": "5.5"
+        }
+      ],
+      "before": [
+        {
+          "average_price_exact": "10",
+          "daily_realized_pnl_exact": "0",
+          "daily_unrealized_pnl_exact": "0",
+          "key": {
+            "date": "2026-09-25",
+            "portfolio_id": "QT_BOOK",
+            "portfolio_type": "qt",
+            "strategy_id": "RUN",
+            "strategy_name": "alpha",
+            "symbol": "ES"
+          },
+          "last_update": "2026-09-25T20:00:00Z",
+          "quantity_exact": "5"
+        }
+      ],
+      "expected_manifest_digest": null,
+      "expected_shown_keys": null,
+      "name": "fractional_future_change_refused",
+      "selection_rows": [
+        {
+          "asset_type": "FUTURE",
+          "key": {
+            "date": "2026-09-25",
+            "portfolio_id": "QT_BOOK",
+            "strategy_id": "RUN",
+            "strategy_name": "alpha",
+            "symbol": "ES"
+          }
+        }
+      ]
+    },
+    {
+      "after": [
+        {
+          "average_price_exact": "10",
+          "daily_realized_pnl_exact": "0",
+          "daily_unrealized_pnl_exact": "0",
+          "key": {
+            "date": "2026-09-25",
+            "portfolio_id": "QT_BOOK",
+            "portfolio_type": "qt",
+            "strategy_id": "RUN",
+            "strategy_name": "alpha",
+            "symbol": "ES"
+          },
+          "last_update": "2026-09-25T20:00:00Z",
+          "quantity_exact": "5"
+        },
+        {
+          "average_price_exact": "10",
+          "daily_realized_pnl_exact": "0",
+          "daily_unrealized_pnl_exact": "0",
+          "key": {
+            "date": "2026-09-25",
+            "portfolio_id": "QT_BOOK",
+            "portfolio_type": "qt",
+            "strategy_id": "RUN",
+            "strategy_name": "alpha",
+            "symbol": "NQ"
+          },
+          "last_update": "2026-09-25T20:00:00Z",
+          "quantity_exact": "2"
+        }
+      ],
+      "before": [
+        {
+          "average_price_exact": "10",
+          "daily_realized_pnl_exact": "0",
+          "daily_unrealized_pnl_exact": "0",
+          "key": {
+            "date": "2026-09-25",
+            "portfolio_id": "QT_BOOK",
+            "portfolio_type": "qt",
+            "strategy_id": "RUN",
+            "strategy_name": "alpha",
+            "symbol": "ES"
+          },
+          "last_update": "2026-09-25T20:00:00Z",
+          "quantity_exact": "5"
+        }
+      ],
+      "expected_manifest_digest": "304a71dc4f663176b215c1bac45954fdc8c0ee5fab7bf7ebc87a497d961675ab",
+      "expected_shown_keys": [
+        {
+          "date": "2026-09-25",
+          "portfolio_id": "QT_BOOK",
+          "portfolio_type": "qt",
+          "strategy_id": "RUN",
+          "strategy_name": "alpha",
+          "symbol": "ES"
+        },
+        {
+          "date": "2026-09-25",
+          "portfolio_id": "QT_BOOK",
+          "portfolio_type": "qt",
+          "strategy_id": "RUN",
+          "strategy_name": "alpha",
+          "symbol": "NQ"
+        }
+      ],
+      "name": "futures_open_from_absent",
+      "selection_rows": [
+        {
+          "asset_type": "FUTURE",
+          "key": {
+            "date": "2026-09-25",
+            "portfolio_id": "QT_BOOK",
+            "strategy_id": "RUN",
+            "strategy_name": "alpha",
+            "symbol": "ES"
+          }
+        },
+        {
+          "asset_type": "FUTURE",
+          "key": {
+            "date": "2026-09-25",
+            "portfolio_id": "QT_BOOK",
+            "strategy_id": "RUN",
+            "strategy_name": "alpha",
+            "symbol": "NQ"
+          }
+        }
+      ]
+    },
+    {
+      "after": [
+        {
+          "average_price_exact": "10",
+          "daily_realized_pnl_exact": "0",
+          "daily_unrealized_pnl_exact": "0",
+          "key": {
+            "date": "2026-09-25",
+            "portfolio_id": "QT_BOOK",
+            "portfolio_type": "qt",
+            "strategy_id": "RUN",
+            "strategy_name": "alpha",
+            "symbol": "SYN"
+          },
+          "last_update": "2026-09-25T20:00:00Z",
+          "quantity_exact": "5"
+        },
+        {
+          "average_price_exact": "10",
+          "daily_realized_pnl_exact": "0",
+          "daily_unrealized_pnl_exact": "0",
+          "key": {
+            "date": "2026-09-25",
+            "portfolio_id": "QT_BOOK",
+            "portfolio_type": "qt",
+            "strategy_id": "RUN",
+            "strategy_name": "alpha",
+            "symbol": "NEW"
+          },
+          "last_update": "2026-09-25T20:00:00Z",
+          "quantity_exact": "9.25"
+        }
+      ],
+      "before": [
+        {
+          "average_price_exact": "10",
+          "daily_realized_pnl_exact": "0",
+          "daily_unrealized_pnl_exact": "0",
+          "key": {
+            "date": "2026-09-25",
+            "portfolio_id": "QT_BOOK",
+            "portfolio_type": "qt",
+            "strategy_id": "RUN",
+            "strategy_name": "alpha",
+            "symbol": "SYN"
+          },
+          "last_update": "2026-09-25T20:00:00Z",
+          "quantity_exact": "5"
+        }
+      ],
+      "expected_manifest_digest": "27f73d670e176fd273019c44f935a4665ea16275cd073c70c7a21137eff193f3",
+      "expected_shown_keys": [
+        {
+          "date": "2026-09-25",
+          "portfolio_id": "QT_BOOK",
+          "portfolio_type": "qt",
+          "strategy_id": "RUN",
+          "strategy_name": "alpha",
+          "symbol": "NEW"
+        },
+        {
+          "date": "2026-09-25",
+          "portfolio_id": "QT_BOOK",
+          "portfolio_type": "qt",
+          "strategy_id": "RUN",
+          "strategy_name": "alpha",
+          "symbol": "SYN"
+        }
+      ],
+      "name": "equity_open_from_absent",
+      "selection_rows": [
+        {
+          "asset_type": "EQUITY",
+          "key": {
+            "date": "2026-09-25",
+            "portfolio_id": "QT_BOOK",
+            "strategy_id": "RUN",
+            "strategy_name": "alpha",
+            "symbol": "SYN"
+          }
+        },
+        {
+          "asset_type": "EQUITY",
+          "key": {
+            "date": "2026-09-25",
+            "portfolio_id": "QT_BOOK",
+            "strategy_id": "RUN",
+            "strategy_name": "alpha",
+            "symbol": "NEW"
+          }
+        }
+      ]
+    },
+    {
+      "after": [
+        {
+          "average_price_exact": "10",
+          "daily_realized_pnl_exact": "0",
+          "daily_unrealized_pnl_exact": "0",
+          "key": {
+            "date": "2026-09-25",
+            "portfolio_id": "QT_BOOK",
+            "portfolio_type": "qt",
+            "strategy_id": "RUN",
+            "strategy_name": "alpha",
+            "symbol": "SYN"
+          },
+          "last_update": "2026-09-25T20:00:00Z",
+          "quantity_exact": "5"
+        },
+        {
+          "average_price_exact": "10",
+          "daily_realized_pnl_exact": "0",
+          "daily_unrealized_pnl_exact": "0",
+          "key": {
+            "date": "2026-09-25",
+            "portfolio_id": "QT_BOOK",
+            "portfolio_type": "qt",
+            "strategy_id": "RUN",
+            "strategy_name": "alpha",
+            "symbol": "CL"
+          },
+          "last_update": "2026-09-25T20:00:00Z",
+          "quantity_exact": "-3"
+        }
+      ],
+      "before": [
+        {
+          "average_price_exact": "10",
+          "daily_realized_pnl_exact": "0",
+          "daily_unrealized_pnl_exact": "0",
+          "key": {
+            "date": "2026-09-25",
+            "portfolio_id": "QT_BOOK",
+            "portfolio_type": "qt",
+            "strategy_id": "RUN",
+            "strategy_name": "alpha",
+            "symbol": "SYN"
+          },
+          "last_update": "2026-09-25T20:00:00Z",
+          "quantity_exact": "5"
+        }
+      ],
+      "expected_manifest_digest": "5a97183475da457835ad8776b9cb86773780c63eb3a465b2ec1572fdfbcd725d",
+      "expected_shown_keys": [
+        {
+          "date": "2026-09-25",
+          "portfolio_id": "QT_BOOK",
+          "portfolio_type": "qt",
+          "strategy_id": "RUN",
+          "strategy_name": "alpha",
+          "symbol": "CL"
+        },
+        {
+          "date": "2026-09-25",
+          "portfolio_id": "QT_BOOK",
+          "portfolio_type": "qt",
+          "strategy_id": "RUN",
+          "strategy_name": "alpha",
+          "symbol": "SYN"
+        }
+      ],
+      "name": "short_future_open_from_absent",
+      "selection_rows": [
+        {
+          "asset_type": "EQUITY",
+          "key": {
+            "date": "2026-09-25",
+            "portfolio_id": "QT_BOOK",
+            "strategy_id": "RUN",
+            "strategy_name": "alpha",
+            "symbol": "SYN"
+          }
+        },
+        {
+          "asset_type": "FUTURE",
+          "key": {
+            "date": "2026-09-25",
+            "portfolio_id": "QT_BOOK",
+            "strategy_id": "RUN",
+            "strategy_name": "alpha",
+            "symbol": "CL"
+          }
+        }
+      ]
+    },
+    {
+      "after": [
+        {
+          "average_price_exact": "10",
+          "daily_realized_pnl_exact": "0",
+          "daily_unrealized_pnl_exact": "0",
+          "key": {
+            "date": "2026-09-25",
+            "portfolio_id": "QT_BOOK",
+            "portfolio_type": "qt",
+            "strategy_id": "RUN",
+            "strategy_name": "alpha",
+            "symbol": "SYN"
+          },
+          "last_update": "2026-09-25T20:00:00Z",
+          "quantity_exact": "5"
+        },
+        {
+          "average_price_exact": "10",
+          "daily_realized_pnl_exact": "0",
+          "daily_unrealized_pnl_exact": "0",
+          "key": {
+            "date": "2026-09-25",
+            "portfolio_id": "QT_BOOK",
+            "portfolio_type": "qt",
+            "strategy_id": "RUN",
+            "strategy_name": "beta",
+            "symbol": "ALT"
+          },
+          "last_update": "2026-09-25T20:00:00Z",
+          "quantity_exact": "-3"
+        }
+      ],
+      "before": [
+        {
+          "average_price_exact": "10",
+          "daily_realized_pnl_exact": "0",
+          "daily_unrealized_pnl_exact": "0",
+          "key": {
+            "date": "2026-09-25",
+            "portfolio_id": "QT_BOOK",
+            "portfolio_type": "qt",
+            "strategy_id": "RUN",
+            "strategy_name": "alpha",
+            "symbol": "SYN"
+          },
+          "last_update": "2026-09-25T20:00:00Z",
+          "quantity_exact": "5"
+        }
+      ],
+      "expected_manifest_digest": "bc741d9d0cd0a3e98bda044dae28885ec29247742b2107b5e311d27a664ddf67",
+      "expected_shown_keys": [
+        {
+          "date": "2026-09-25",
+          "portfolio_id": "QT_BOOK",
+          "portfolio_type": "qt",
+          "strategy_id": "RUN",
+          "strategy_name": "alpha",
+          "symbol": "SYN"
+        },
+        {
+          "date": "2026-09-25",
+          "portfolio_id": "QT_BOOK",
+          "portfolio_type": "qt",
+          "strategy_id": "RUN",
+          "strategy_name": "beta",
+          "symbol": "ALT"
+        }
+      ],
+      "name": "open_from_absent_new_strategy_name",
+      "selection_rows": [
+        {
+          "asset_type": "EQUITY",
+          "key": {
+            "date": "2026-09-25",
+            "portfolio_id": "QT_BOOK",
+            "strategy_id": "RUN",
+            "strategy_name": "alpha",
+            "symbol": "SYN"
+          }
+        },
+        {
+          "asset_type": "EQUITY",
+          "key": {
+            "date": "2026-09-25",
+            "portfolio_id": "QT_BOOK",
+            "strategy_id": "RUN",
+            "strategy_name": "beta",
+            "symbol": "ALT"
+          }
+        }
+      ]
+    },
+    {
+      "after": [
+        {
+          "average_price_exact": "10",
+          "daily_realized_pnl_exact": "0",
+          "daily_unrealized_pnl_exact": "0",
+          "key": {
+            "date": "2026-09-25",
+            "portfolio_id": "QT_BOOK",
+            "portfolio_type": "qt",
+            "strategy_id": "RUN",
+            "strategy_name": "alpha",
+            "symbol": "SYN"
+          },
+          "last_update": "2026-09-25T20:00:00Z",
+          "quantity_exact": "5"
+        },
+        {
+          "average_price_exact": "10",
+          "daily_realized_pnl_exact": "0",
+          "daily_unrealized_pnl_exact": "0",
+          "key": {
+            "date": "2026-09-25",
+            "portfolio_id": "QT_BOOK",
+            "portfolio_type": "qt",
+            "strategy_id": "RUN",
+            "strategy_name": "alpha",
+            "symbol": "NEW"
+          },
+          "last_update": "2026-09-25T20:00:00Z",
+          "quantity_exact": "0"
+        }
+      ],
+      "before": [
+        {
+          "average_price_exact": "10",
+          "daily_realized_pnl_exact": "0",
+          "daily_unrealized_pnl_exact": "0",
+          "key": {
+            "date": "2026-09-25",
+            "portfolio_id": "QT_BOOK",
+            "portfolio_type": "qt",
+            "strategy_id": "RUN",
+            "strategy_name": "alpha",
+            "symbol": "SYN"
+          },
+          "last_update": "2026-09-25T20:00:00Z",
+          "quantity_exact": "5"
+        }
+      ],
+      "expected_manifest_digest": "83cb714f0cc53ab3393ef64cfd1cbbce9cdeff5272c762a4d0d697ed4d8fcd57",
+      "expected_shown_keys": [
+        {
+          "date": "2026-09-25",
+          "portfolio_id": "QT_BOOK",
+          "portfolio_type": "qt",
+          "strategy_id": "RUN",
+          "strategy_name": "alpha",
+          "symbol": "SYN"
+        }
+      ],
+      "name": "absent_to_zero_hidden",
+      "selection_rows": [
+        {
+          "asset_type": "EQUITY",
+          "key": {
+            "date": "2026-09-25",
+            "portfolio_id": "QT_BOOK",
+            "strategy_id": "RUN",
+            "strategy_name": "alpha",
+            "symbol": "SYN"
+          }
+        },
+        {
+          "asset_type": "EQUITY",
+          "key": {
+            "date": "2026-09-25",
+            "portfolio_id": "QT_BOOK",
+            "strategy_id": "RUN",
+            "strategy_name": "alpha",
+            "symbol": "NEW"
+          }
+        }
+      ]
+    },
+    {
+      "after": [
+        {
+          "average_price_exact": "10",
+          "daily_realized_pnl_exact": "0",
+          "daily_unrealized_pnl_exact": "0",
+          "key": {
+            "date": "2026-09-25",
+            "portfolio_id": "QT_BOOK",
+            "portfolio_type": "qt",
+            "strategy_id": "RUN",
+            "strategy_name": "alpha",
+            "symbol": "NQ"
+          },
+          "last_update": "2026-09-25T20:00:00Z",
+          "quantity_exact": "2"
+        }
+      ],
+      "before": [],
+      "expected_manifest_digest": "1b28f4921eb82ed8fc9a1e2a19b08b053371be0c406959c5392c4f88f03a9c18",
+      "expected_shown_keys": [
+        {
+          "date": "2026-09-25",
+          "portfolio_id": "QT_BOOK",
+          "portfolio_type": "qt",
+          "strategy_id": "RUN",
+          "strategy_name": "alpha",
+          "symbol": "NQ"
+        }
+      ],
+      "name": "open_into_empty_before_book",
+      "selection_rows": [
+        {
+          "asset_type": "FUTURE",
+          "key": {
+            "date": "2026-09-25",
+            "portfolio_id": "QT_BOOK",
+            "strategy_id": "RUN",
+            "strategy_name": "alpha",
+            "symbol": "NQ"
+          }
+        }
+      ]
+    },
+    {
+      "after": [
+        {
+          "average_price_exact": "10",
+          "daily_realized_pnl_exact": "0",
+          "daily_unrealized_pnl_exact": "0",
+          "key": {
+            "date": "2026-09-25",
+            "portfolio_id": "QT_BOOK",
+            "portfolio_type": "qt",
+            "strategy_id": "RUN",
+            "strategy_name": "alpha",
+            "symbol": "ES"
+          },
+          "last_update": "2026-09-25T20:00:00Z",
+          "quantity_exact": "0"
+        },
+        {
+          "average_price_exact": "10",
+          "daily_realized_pnl_exact": "0",
+          "daily_unrealized_pnl_exact": "0",
+          "key": {
+            "date": "2026-09-25",
+            "portfolio_id": "QT_BOOK",
+            "portfolio_type": "qt",
+            "strategy_id": "RUN",
+            "strategy_name": "alpha",
+            "symbol": "SYN"
+          },
+          "last_update": "2026-09-25T20:00:00Z",
+          "quantity_exact": "1"
+        }
+      ],
+      "before": [
+        {
+          "average_price_exact": "10",
+          "daily_realized_pnl_exact": "0",
+          "daily_unrealized_pnl_exact": "0",
+          "key": {
+            "date": "2026-09-25",
+            "portfolio_id": "QT_BOOK",
+            "portfolio_type": "qt",
+            "strategy_id": "RUN",
+            "strategy_name": "alpha",
+            "symbol": "ES"
+          },
+          "last_update": "2026-09-25T20:00:00Z",
+          "quantity_exact": "5"
+        },
+        {
+          "average_price_exact": "10",
+          "daily_realized_pnl_exact": "0",
+          "daily_unrealized_pnl_exact": "0",
+          "key": {
+            "date": "2026-09-25",
+            "portfolio_id": "QT_BOOK",
+            "portfolio_type": "qt",
+            "strategy_id": "RUN",
+            "strategy_name": "alpha",
+            "symbol": "SYN"
+          },
+          "last_update": "2026-09-25T20:00:00Z",
+          "quantity_exact": "1"
+        }
+      ],
+      "expected_manifest_digest": "abf9e95d1491b51b39cc468564d33b8b00d0a3392f41defb2c587811b343333c",
+      "expected_shown_keys": [
+        {
+          "date": "2026-09-25",
+          "portfolio_id": "QT_BOOK",
+          "portfolio_type": "qt",
+          "strategy_id": "RUN",
+          "strategy_name": "alpha",
+          "symbol": "ES"
+        },
+        {
+          "date": "2026-09-25",
+          "portfolio_id": "QT_BOOK",
+          "portfolio_type": "qt",
+          "strategy_id": "RUN",
+          "strategy_name": "alpha",
+          "symbol": "SYN"
+        }
+      ],
+      "name": "future_closed_to_zero",
+      "selection_rows": [
+        {
+          "asset_type": "FUTURE",
+          "key": {
+            "date": "2026-09-25",
+            "portfolio_id": "QT_BOOK",
+            "strategy_id": "RUN",
+            "strategy_name": "alpha",
+            "symbol": "ES"
+          }
+        },
+        {
+          "asset_type": "EQUITY",
+          "key": {
+            "date": "2026-09-25",
+            "portfolio_id": "QT_BOOK",
+            "strategy_id": "RUN",
+            "strategy_name": "alpha",
+            "symbol": "SYN"
+          }
+        }
+      ]
+    },
+    {
+      "after": [
+        {
+          "average_price_exact": "10",
+          "daily_realized_pnl_exact": "0",
+          "daily_unrealized_pnl_exact": "0",
+          "key": {
+            "date": "2026-09-25",
+            "portfolio_id": "QT_BOOK",
+            "portfolio_type": "qt",
+            "strategy_id": "RUN",
+            "strategy_name": "alpha",
+            "symbol": "SYN"
+          },
+          "last_update": "2026-09-25T20:00:00Z",
+          "quantity_exact": "5"
+        },
+        {
+          "average_price_exact": "10",
+          "daily_realized_pnl_exact": "0",
+          "daily_unrealized_pnl_exact": "0",
+          "key": {
+            "date": "2026-09-25",
+            "portfolio_id": "QT_BOOK",
+            "portfolio_type": "qt",
+            "strategy_id": "RUN",
+            "strategy_name": "alpha",
+            "symbol": "ES"
+          },
+          "last_update": "2026-09-25T20:00:00Z",
+          "quantity_exact": "1.5"
+        }
+      ],
+      "before": [
+        {
+          "average_price_exact": "10",
+          "daily_realized_pnl_exact": "0",
+          "daily_unrealized_pnl_exact": "0",
+          "key": {
+            "date": "2026-09-25",
+            "portfolio_id": "QT_BOOK",
+            "portfolio_type": "qt",
+            "strategy_id": "RUN",
+            "strategy_name": "alpha",
+            "symbol": "SYN"
+          },
+          "last_update": "2026-09-25T20:00:00Z",
+          "quantity_exact": "5"
+        }
+      ],
+      "expected_manifest_digest": null,
+      "expected_shown_keys": null,
+      "name": "fractional_future_open_from_absent_refused",
+      "selection_rows": [
+        {
+          "asset_type": "EQUITY",
+          "key": {
+            "date": "2026-09-25",
+            "portfolio_id": "QT_BOOK",
+            "strategy_id": "RUN",
+            "strategy_name": "alpha",
+            "symbol": "SYN"
+          }
+        },
+        {
+          "asset_type": "FUTURE",
+          "key": {
+            "date": "2026-09-25",
+            "portfolio_id": "QT_BOOK",
+            "strategy_id": "RUN",
+            "strategy_name": "alpha",
+            "symbol": "ES"
+          }
+        }
+      ]
+    },
+    {
+      "after": [
+        {
+          "average_price_exact": "10",
+          "daily_realized_pnl_exact": "0",
+          "daily_unrealized_pnl_exact": "0",
+          "key": {
+            "date": "2026-09-25",
+            "portfolio_id": "QT_BOOK",
+            "portfolio_type": "qt",
+            "strategy_id": "RUN",
+            "strategy_name": "alpha",
+            "symbol": "SYN"
+          },
+          "last_update": "2026-09-25T20:00:00Z",
+          "quantity_exact": "5"
+        },
+        {
+          "average_price_exact": "10",
+          "daily_realized_pnl_exact": "0",
+          "daily_unrealized_pnl_exact": "0",
+          "key": {
+            "date": "2026-09-25",
+            "portfolio_id": "QT_BOOK",
+            "portfolio_type": "qt",
+            "strategy_id": "OTHER",
+            "strategy_name": "beta",
+            "symbol": "ALT"
+          },
+          "last_update": "2026-09-25T20:00:00Z",
+          "quantity_exact": "3"
+        }
+      ],
+      "before": [
+        {
+          "average_price_exact": "10",
+          "daily_realized_pnl_exact": "0",
+          "daily_unrealized_pnl_exact": "0",
+          "key": {
+            "date": "2026-09-25",
+            "portfolio_id": "QT_BOOK",
+            "portfolio_type": "qt",
+            "strategy_id": "RUN",
+            "strategy_name": "alpha",
+            "symbol": "SYN"
+          },
+          "last_update": "2026-09-25T20:00:00Z",
+          "quantity_exact": "5"
+        },
+        {
+          "average_price_exact": "10",
+          "daily_realized_pnl_exact": "0",
+          "daily_unrealized_pnl_exact": "0",
+          "key": {
+            "date": "2026-09-25",
+            "portfolio_id": "QT_BOOK",
+            "portfolio_type": "qt",
+            "strategy_id": "OTHER",
+            "strategy_name": "beta",
+            "symbol": "ALT"
+          },
+          "last_update": "2026-09-25T20:00:00Z",
+          "quantity_exact": "3"
+        }
+      ],
+      "expected_manifest_digest": null,
+      "expected_shown_keys": null,
+      "name": "two_strategy_ids_refused",
+      "selection_rows": [
+        {
+          "asset_type": "EQUITY",
+          "key": {
+            "date": "2026-09-25",
+            "portfolio_id": "QT_BOOK",
+            "strategy_id": "RUN",
+            "strategy_name": "alpha",
+            "symbol": "SYN"
+          }
+        },
+        {
+          "asset_type": "EQUITY",
+          "key": {
+            "date": "2026-09-25",
+            "portfolio_id": "QT_BOOK",
+            "strategy_id": "OTHER",
+            "strategy_name": "beta",
+            "symbol": "ALT"
+          }
+        }
+      ]
+    },
+    {
+      "after": [
+        {
+          "average_price_exact": "10",
+          "daily_realized_pnl_exact": "0",
+          "daily_unrealized_pnl_exact": "0",
+          "key": {
+            "date": "2026-09-25",
+            "portfolio_id": "QT_BOOK",
+            "portfolio_type": "qt",
+            "strategy_id": "RUN",
+            "strategy_name": "alpha",
+            "symbol": "SYN"
+          },
+          "last_update": "2026-09-25T20:00:00Z",
+          "quantity_exact": "5"
+        },
+        {
+          "average_price_exact": "10",
+          "daily_realized_pnl_exact": "0",
+          "daily_unrealized_pnl_exact": "0",
+          "key": {
+            "date": "2026-09-25",
+            "portfolio_id": "QT_BOOK",
+            "portfolio_type": "qt",
+            "strategy_id": "OTHER",
+            "strategy_name": "beta",
+            "symbol": "ALT"
+          },
+          "last_update": "2026-09-25T20:00:00Z",
+          "quantity_exact": "3"
+        }
+      ],
+      "before": [
+        {
+          "average_price_exact": "10",
+          "daily_realized_pnl_exact": "0",
+          "daily_unrealized_pnl_exact": "0",
+          "key": {
+            "date": "2026-09-25",
+            "portfolio_id": "QT_BOOK",
+            "portfolio_type": "qt",
+            "strategy_id": "RUN",
+            "strategy_name": "alpha",
+            "symbol": "SYN"
+          },
+          "last_update": "2026-09-25T20:00:00Z",
+          "quantity_exact": "5"
+        }
+      ],
+      "expected_manifest_digest": null,
+      "expected_shown_keys": null,
+      "name": "two_strategy_ids_from_absent_key_refused",
+      "selection_rows": [
+        {
+          "asset_type": "EQUITY",
+          "key": {
+            "date": "2026-09-25",
+            "portfolio_id": "QT_BOOK",
+            "strategy_id": "RUN",
+            "strategy_name": "alpha",
+            "symbol": "SYN"
+          }
+        },
+        {
+          "asset_type": "EQUITY",
+          "key": {
+            "date": "2026-09-25",
+            "portfolio_id": "QT_BOOK",
+            "strategy_id": "OTHER",
+            "strategy_name": "beta",
+            "symbol": "ALT"
+          }
+        }
+      ]
+    },
+    {
+      "after": [
+        {
+          "average_price_exact": "10",
+          "daily_realized_pnl_exact": "0",
+          "daily_unrealized_pnl_exact": "0",
+          "key": {
+            "date": "2026-09-25",
+            "portfolio_id": "QT_BOOK",
+            "portfolio_type": "qt",
+            "strategy_id": "RUN",
+            "strategy_name": "alpha",
+            "symbol": "SYN"
+          },
+          "last_update": "2026-09-25T20:00:00Z",
+          "quantity_exact": "5"
+        }
+      ],
+      "before": [
+        {
+          "average_price_exact": "10",
+          "daily_realized_pnl_exact": "0",
+          "daily_unrealized_pnl_exact": "0",
+          "key": {
+            "date": "2026-09-25",
+            "portfolio_id": "QT_BOOK",
+            "portfolio_type": "qt",
+            "strategy_id": "RUN",
+            "strategy_name": "alpha",
+            "symbol": "SYN"
+          },
+          "last_update": "2026-09-25T20:00:00Z",
+          "quantity_exact": "5"
+        },
+        {
+          "average_price_exact": "10",
+          "daily_realized_pnl_exact": "0",
+          "daily_unrealized_pnl_exact": "0",
+          "key": {
+            "date": "2026-09-25",
+            "portfolio_id": "QT_BOOK",
+            "portfolio_type": "qt",
+            "strategy_id": "RUN",
+            "strategy_name": "alpha",
+            "symbol": "ALT"
+          },
+          "last_update": "2026-09-25T20:00:00Z",
+          "quantity_exact": "3"
+        }
+      ],
+      "expected_manifest_digest": null,
+      "expected_shown_keys": null,
+      "name": "before_key_missing_from_after_refused",
+      "selection_rows": [
+        {
+          "asset_type": "EQUITY",
+          "key": {
+            "date": "2026-09-25",
+            "portfolio_id": "QT_BOOK",
+            "strategy_id": "RUN",
+            "strategy_name": "alpha",
+            "symbol": "SYN"
+          }
+        }
+      ]
+    },
+    {
+      "after": [],
+      "before": [],
+      "expected_manifest_digest": null,
+      "expected_shown_keys": null,
+      "name": "empty_selection_refused",
+      "selection_rows": []
+    }
+  ],
+  "schema_version": "qt-report-manifest-vectors/v2"
+}

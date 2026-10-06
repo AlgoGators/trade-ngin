@@ -2,10 +2,45 @@
 #include "trade_ngin/instruments/equity.hpp"
 #include <algorithm>
 #include <cmath>
+#include <mutex>
 #include <regex>
+#include <unordered_set>
+#include "trade_ngin/core/logger.hpp"
 #include "trade_ngin/core/time_utils.hpp"
 
 namespace trade_ngin {
+
+std::shared_ptr<HolidayChecker> EquityInstrument::holiday_checker_ = nullptr;
+
+void EquityInstrument::set_holiday_checker(std::shared_ptr<HolidayChecker> checker) {
+    // atomic_store handles the racing-with-reads case (Phase 6 §6b).
+    std::atomic_store(&holiday_checker_, std::move(checker));
+}
+
+std::shared_ptr<HolidayChecker> EquityInstrument::get_holiday_checker() {
+    return std::atomic_load(&holiday_checker_);
+}
+
+bool is_us_equities_exchange(const std::string& exchange) {
+    return exchange.empty() || exchange == "NYSE" || exchange == "NASDAQ" ||
+           exchange == "ARCA" || exchange == "AMEX" || exchange == "BATS";
+}
+
+namespace {
+
+void warn_unknown_exchange_once(const std::string& exchange) {
+    static std::mutex mutex;
+    static std::unordered_set<std::string> seen;
+    std::lock_guard<std::mutex> lock(mutex);
+    if (seen.insert(exchange).second) {
+        WARN("EquityInstrument::is_market_open: no holiday calendar for exchange '" +
+             exchange + "' -- failing OPEN (allowing trade)");
+    }
+}
+
+}  // namespace
+
+
 
 EquityInstrument::EquityInstrument(std::string symbol, EquitySpec spec)
     : symbol_(std::move(symbol)), spec_(std::move(spec)) {}
@@ -18,6 +53,11 @@ bool EquityInstrument::is_tradeable() const {
 
 bool EquityInstrument::is_market_open(const Timestamp& timestamp) const {
     try {
+        if (!is_us_equities_exchange(spec_.exchange)) {
+            warn_unknown_exchange_once(spec_.exchange);
+            return true;
+        }
+
         // Convert timestamp to local time
         std::time_t time = std::chrono::system_clock::to_time_t(timestamp);
         std::tm local_time_buffer;
@@ -26,6 +66,12 @@ bool EquityInstrument::is_market_open(const Timestamp& timestamp) const {
         // Check for weekdays only
         if (local_time->tm_wday == 0 || local_time->tm_wday == 6) {
             return false;
+        }
+
+        if (auto checker = get_holiday_checker()) {
+            char date_buf[11];
+            std::strftime(date_buf, sizeof(date_buf), "%Y-%m-%d", local_time);
+            if (checker->is_holiday(std::string(date_buf))) return false;
         }
 
         // Parse trading hours (format: "HH:MM-HH:MM")
@@ -63,6 +109,14 @@ double EquityInstrument::get_notional_value(double quantity, double price) const
 
 double EquityInstrument::calculate_commission(double quantity) const {
     return std::abs(quantity) * spec_.commission_per_share;
+}
+
+double EquityInstrument::get_margin_requirement(double price, double quantity) const {
+    const double notional = std::abs(quantity) * price;
+    if (spec_.account_mode == EquityAccountMode::CASH) {
+        return notional;
+    }
+    return quantity >= 0.0 ? notional * 0.50 : notional * 1.50;
 }
 
 std::optional<DividendInfo> EquityInstrument::get_next_dividend(const Timestamp& from) const {

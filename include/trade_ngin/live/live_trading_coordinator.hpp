@@ -27,8 +27,9 @@ class InstrumentRegistry;
  */
 struct LiveTradingConfig {
     std::string strategy_id = "LIVE_TREND_FOLLOWING";
-    std::string portfolio_id = "BASE_PORTFOLIO";
+    std::string portfolio_id;
     std::string schema = "trading";
+    std::string strategy_name; // Explicit equity owner; empty preserves legacy path.
     double initial_capital = 500000.0;
     bool store_results = true;
     bool calculate_risk_metrics = true;

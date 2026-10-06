@@ -1,5 +1,7 @@
 #pragma once
 
+#include <optional>
+
 #include <vector>
 #include <string>
 #include <unordered_map>
@@ -70,10 +72,16 @@ public:
      * @brief Calculate Sharpe ratio
      * @param returns Vector of daily returns
      * @param trading_days Number of trading days (for annualization)
-     * @param risk_free_rate Annual risk-free rate (default 0)
-     * @return Sharpe ratio
+     * @param risk_free_rate Risk-free rate (annualized)
+     * @return The ratio, or nothing when it is undefined.
+     *
+     * Undefined when there are no returns, or when they never varied so there
+     * is no volatility to divide by. This returned 0.0 for both, which reads as
+     * a measured "earned nothing per unit of risk" rather than as the division
+     * by zero it is. volatility is reported separately and a zero there is the
+     * explanation.
      */
-    double calculate_sharpe_ratio(
+    std::optional<double> calculate_sharpe_ratio(
         const std::vector<double>& returns,
         int trading_days,
         double risk_free_rate = 0.0) const;
@@ -83,9 +91,18 @@ public:
      * @param returns Vector of daily returns
      * @param trading_days Number of trading days (for annualization)
      * @param minimum_acceptable_return Minimum acceptable return (default 0)
-     * @return Sortino ratio
+     * @return The ratio, or nothing when it is undefined.
+     *
+     * Undefined means one of two things, and neither is a number: there are no
+     * returns to measure, or none of them fell below the target, so the
+     * denominator is zero. This used to answer the second case with 999.0 when
+     * the numerator was positive and 0.0 when it was not -- two different
+     * confident values for the same division by zero.
+     *
+     * A caller that wants to say something still can. downside_volatility is
+     * available separately, and a zero there is the whole explanation.
      */
-    double calculate_sortino_ratio(
+    std::optional<double> calculate_sortino_ratio(
         const std::vector<double>& returns,
         int trading_days,
         double minimum_acceptable_return = 0.0) const;
@@ -94,9 +111,16 @@ public:
      * @brief Calculate Calmar ratio (annualized return / max drawdown)
      * @param annualized_return Annualized return as decimal
      * @param max_drawdown Maximum drawdown as decimal
-     * @return Calmar ratio
+     * @return The ratio, or nothing when there was no drawdown to divide by.
+     *
+     * An equity curve that never fell has no Calmar ratio. It reported 999.0 or
+     * 0.0 depending on the sign of the numerator; both are claims about
+     * risk-adjusted return that the data does not support. max_drawdown is
+     * stored beside it, so a reader who sees an absent ratio and a zero
+     * drawdown has the reason in front of them.
      */
-    double calculate_calmar_ratio(double annualized_return, double max_drawdown) const;
+    std::optional<double> calculate_calmar_ratio(double annualized_return,
+                                                 double max_drawdown) const;
 
     // ========== Volatility Metrics ==========
 
@@ -170,7 +194,8 @@ public:
         int total_trades = 0;
         int winning_trades = 0;
         double win_rate = 0.0;
-        double profit_factor = 0.0;
+        /// Empty when there were no losing trades to divide by.
+        std::optional<double> profit_factor;
         double total_profit = 0.0;
         double total_loss = 0.0;
         double avg_win = 0.0;

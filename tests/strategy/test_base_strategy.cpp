@@ -1,13 +1,49 @@
 #include <gtest/gtest.h>
+#include <array>
 #include <atomic>
 #include <cmath>
+#include <cstddef>
+#include <new>
 #include <thread>
 #include "trade_ngin/core/state_manager.hpp"
 #include "trade_ngin/data/database_interface.hpp"
 #include "trade_ngin/strategy/base_strategy.hpp"
 #include "trade_ngin/strategy/types.hpp"
 
+#include <memory>
+#include "../core/test_base.hpp"
+#include "../data/test_db_utils.hpp"
+#include "trade_ngin/strategy/mean_reversion.hpp"
+#include "trade_ngin/strategy/trend_following.hpp"
+#include "trade_ngin/backtest/backtest_pnl_manager.hpp"
 using namespace trade_ngin;
+
+TEST(StrategyMetricsTest, DefaultConstructionInitializesEveryField) {
+    alignas(StrategyMetrics) std::array<std::byte, sizeof(StrategyMetrics)> storage;
+    storage.fill(std::byte{0xA5});
+
+    auto* metrics = ::new (static_cast<void*>(storage.data())) StrategyMetrics;
+
+    EXPECT_DOUBLE_EQ(metrics->unrealized_pnl, 0.0);
+    EXPECT_DOUBLE_EQ(metrics->realized_pnl, 0.0);
+    EXPECT_DOUBLE_EQ(metrics->total_pnl, 0.0);
+    EXPECT_DOUBLE_EQ(metrics->sharpe_ratio, 0.0);
+    EXPECT_DOUBLE_EQ(metrics->sortino_ratio, 0.0);
+    EXPECT_DOUBLE_EQ(metrics->max_drawdown, 0.0);
+    EXPECT_DOUBLE_EQ(metrics->win_rate, 0.0);
+    EXPECT_DOUBLE_EQ(metrics->profit_factor, 0.0);
+    EXPECT_EQ(metrics->total_trades, 0);
+    EXPECT_DOUBLE_EQ(metrics->avg_trade, 0.0);
+    EXPECT_DOUBLE_EQ(metrics->avg_winner, 0.0);
+    EXPECT_DOUBLE_EQ(metrics->avg_loser, 0.0);
+    EXPECT_DOUBLE_EQ(metrics->max_winner, 0.0);
+    EXPECT_DOUBLE_EQ(metrics->max_loser, 0.0);
+    EXPECT_DOUBLE_EQ(metrics->avg_holding_period, 0.0);
+    EXPECT_DOUBLE_EQ(metrics->turnover, 0.0);
+    EXPECT_DOUBLE_EQ(metrics->volatility, 0.0);
+
+    metrics->~StrategyMetrics();
+}
 
 // --- Mock Database with Failure Simulation ---
 class MockPostgresDatabase : public PostgresDatabase {
@@ -33,7 +69,7 @@ public:
     Result<void> store_executions(const std::vector<ExecutionReport>& executions,
                                   const std::string& strategy_id, const std::string& strategy_name,
                                   const std::string& portfolio_id,
-                                  const std::string& table_name) override {
+                                  const std::string& table_name, const std::string& portfolio_type = "system") override {
         (void)strategy_id;
         (void)strategy_name;
         (void)portfolio_id;
@@ -248,6 +284,19 @@ TEST_F(BaseStrategyTest, OnExecution_UpdatesPositionAndMetrics) {
     EXPECT_DOUBLE_EQ(positions.at("AAPL").average_price.as_double(), 150.0);
 }
 
+TEST_F(BaseStrategyTest, OnExecutionChargesNetCostAfterSleeveNettingAdjustment) {
+    auto strategy = createRunningStrategy();
+    auto report = createExecution(Side::BUY, "AAPL", 100, 150.0);
+    report.total_transaction_costs = Decimal(1.0);
+    report.netting_adjustment = Decimal(0.6);
+
+    ASSERT_TRUE(strategy->on_execution(report).is_ok());
+    const auto& position = strategy->get_positions().at("AAPL");
+    EXPECT_DOUBLE_EQ(position.realized_pnl.as_double(), 0.0);
+    EXPECT_DOUBLE_EQ(strategy->get_metrics().realized_pnl, -0.4);
+    EXPECT_DOUBLE_EQ(strategy->get_metrics().total_pnl, -0.4);
+}
+
 // --- Position & Risk Limits ---
 TEST_F(BaseStrategyTest, UpdatePosition_FailsIfExceedsLimit) {
     StrategyConfig config;
@@ -266,17 +315,187 @@ TEST_F(BaseStrategyTest, CheckRiskLimits_FailsOnMaxDrawdown) {
     auto strategy = createRunningStrategy(config);
 
     // Simulate a large loss
-    strategy->on_execution(createExecution(Side::SELL, "AAPL", 1000, 50.0));  // Short 1000 shares
-    strategy->on_execution(
-        createExecution(Side::BUY, "AAPL", 1000, 200.0));  // Buy back at higher price
+    ASSERT_TRUE(
+        strategy->on_execution(createExecution(Side::SELL, "AAPL", 1000, 50.0)).is_ok());
+    ASSERT_TRUE(
+        strategy->on_execution(createExecution(Side::BUY, "AAPL", 1000, 200.0)).is_ok());
     // Realized PnL: (50 - 200) * 1000 = -150,000 → Drawdown = -150%
 
     RiskLimits limits;
     limits.max_drawdown = 0.5;  // 50% max drawdown
-    strategy->update_risk_limits(limits);
+    ASSERT_TRUE(strategy->update_risk_limits(limits).is_error());
     auto result = strategy->check_risk_limits();
-    EXPECT_TRUE(result.is_error());
+    ASSERT_TRUE(result.is_error());
     EXPECT_EQ(result.error()->code(), ErrorCode::RISK_LIMIT_EXCEEDED);
+}
+
+TEST_F(BaseStrategyTest, ConsumptionTraceResetsOnEmptyVirtualCallAndReadsLiveRiskLimits) {
+    StrategyConfig config;
+    config.capital_allocation = 200000.0;
+    config.max_leverage = 6.0;
+    config.trading_params["AAPL"] = 12.5;
+    auto strategy = createRunningStrategy(config);
+    RiskLimits limits;
+    limits.max_leverage = Decimal::from_raw(175123456);
+    limits.max_drawdown = Decimal::from_raw(40123456);
+    ASSERT_TRUE(strategy->update_risk_limits(limits).is_ok());
+    Position position = createPosition(2.0, 100.0);
+    ASSERT_TRUE(strategy->update_position("AAPL", position).is_ok());
+
+    StrategyConsumptionTrace trace;
+    StrategyInterface& selected = *strategy;
+    Bar bar;
+    bar.symbol = "AAPL";
+    bar.timestamp = std::chrono::system_clock::now();
+    bar.close = Decimal(101.0);
+    ASSERT_TRUE(selected.on_data({bar}, &trace).is_ok());
+    EXPECT_EQ(trace.profile, StrategyConsumptionProfile::Base);
+    ASSERT_TRUE(trace.base_risk.risk_max_leverage.has_value());
+    EXPECT_EQ(trace.base_risk.risk_max_leverage->raw_value(), int64_t{175123456});
+    EXPECT_DOUBLE_EQ(static_cast<double>(*trace.base_risk.risk_max_leverage), 1.75123456);
+    ASSERT_TRUE(trace.base_risk.risk_max_drawdown.has_value());
+    EXPECT_EQ(trace.base_risk.risk_max_drawdown->raw_value(), int64_t{40123456});
+    EXPECT_DOUBLE_EQ(static_cast<double>(*trace.base_risk.risk_max_drawdown), 0.40123456);
+    EXPECT_DOUBLE_EQ(*trace.base_risk.capital_allocation, 200000.0);
+    EXPECT_DOUBLE_EQ(*trace.base_risk.trading_multipliers.at("AAPL").value, 12.5);
+    EXPECT_FALSE(trace.base_risk.fallback_config_max_leverage.has_value());
+
+    ASSERT_TRUE(selected.on_data({}, &trace).is_ok());
+    EXPECT_EQ(trace.profile, StrategyConsumptionProfile::Base);
+    EXPECT_FALSE(trace.base_risk.risk_max_leverage.has_value());
+    EXPECT_TRUE(trace.base_risk.trading_multipliers.empty());
+}
+
+TEST_F(BaseStrategyTest, PositionLimitReadSurvivesRejectionAndClearsForMissingSymbol) {
+    StrategyConfig config;
+    config.position_limits["AAPL"] = 100.0;
+    auto strategy = createRunningStrategy(config);
+    ASSERT_TRUE(strategy->update_position("AAPL", createPosition(50.0, 100.0)).is_ok());
+    StrategyPositionLimitConsumption read;
+    auto rejected = strategy->update_position("AAPL", createPosition(200.0, 100.0), &read);
+    ASSERT_TRUE(rejected.is_error());
+    EXPECT_EQ(rejected.error()->code(), ErrorCode::POSITION_LIMIT_EXCEEDED);
+    EXPECT_STREQ(rejected.error()->what(), "Position exceeds limit for AAPL");
+    EXPECT_DOUBLE_EQ(static_cast<double>(strategy->get_positions().at("AAPL").quantity), 50.0);
+    EXPECT_TRUE(read.supported);
+    ASSERT_TRUE(read.symbols.at("AAPL").value.has_value());
+    EXPECT_DOUBLE_EQ(*read.symbols.at("AAPL").value, 100.0);
+
+    ASSERT_TRUE(strategy->update_position("MSFT", createPosition(1.0, 200.0), &read).is_ok());
+    EXPECT_EQ(read.symbols.size(), size_t{1});
+    EXPECT_FALSE(read.symbols.at("MSFT").present);
+    EXPECT_FALSE(read.symbols.at("MSFT").value.has_value());
+}
+
+TEST_F(BaseStrategyTest, RiskReadUsesConfiguredFallbackOnlyWhenLiveLimitIsInvalid) {
+    StrategyConfig config;
+    config.capital_allocation = 200000.0;
+    config.max_leverage = 6.0;
+    auto strategy = createRunningStrategy(config);
+    ASSERT_TRUE(strategy->update_position("AAPL", createPosition(2.0, 100.0)).is_ok());
+    RiskLimits limits;
+    limits.max_leverage = Decimal(0.0);
+    limits.max_drawdown = Decimal(0.35);
+    ASSERT_TRUE(strategy->update_risk_limits(limits).is_ok());
+    StrategyRiskConsumption risk;
+    ASSERT_TRUE(strategy->check_risk_limits(&risk).is_ok());
+    EXPECT_TRUE(risk.supported);
+    ASSERT_TRUE(risk.risk_max_leverage.has_value());
+    EXPECT_DOUBLE_EQ(static_cast<double>(*risk.risk_max_leverage), 0.0);
+    ASSERT_TRUE(risk.fallback_config_max_leverage.has_value());
+    EXPECT_DOUBLE_EQ(*risk.fallback_config_max_leverage, 6.0);
+    EXPECT_FALSE(risk.trading_multipliers.at("AAPL").present);
+    EXPECT_FALSE(risk.trading_multipliers.at("AAPL").value.has_value());
+}
+
+TEST_F(BaseStrategyTest, RiskMultiplierReadsRemainSymbolKeyedAndReset) {
+    StrategyConfig config;
+    config.capital_allocation = 1'000'000.0;
+    config.max_leverage = 20.0;
+    config.trading_params["AAPL"] = 2.25;
+    config.trading_params["GOOG"] = 7.5;
+    auto strategy = createRunningStrategy(config);
+    ASSERT_TRUE(strategy->update_position("AAPL", createPosition(2.0, 100.0)).is_ok());
+    ASSERT_TRUE(strategy->update_position("GOOG", createPosition(3.0, 200.0)).is_ok());
+    StrategyRiskConsumption risk;
+    ASSERT_TRUE(strategy->check_risk_limits(&risk).is_ok());
+    ASSERT_EQ(risk.trading_multipliers.size(), size_t{2});
+    EXPECT_DOUBLE_EQ(*risk.trading_multipliers.at("AAPL").value, 2.25);
+    EXPECT_DOUBLE_EQ(*risk.trading_multipliers.at("GOOG").value, 7.5);
+
+    ASSERT_TRUE(strategy->seed_positions({}).is_ok());
+    ASSERT_TRUE(strategy->check_risk_limits(&risk).is_ok());
+    EXPECT_TRUE(risk.trading_multipliers.empty());
+}
+
+TEST_F(BaseStrategyTest, DrawdownErrorRetainsOnlyReachedReads) {
+    StrategyConfig config;
+    config.capital_allocation = 100000.0;
+    auto strategy = createRunningStrategy(config);
+    ASSERT_TRUE(strategy->on_execution(createExecution(Side::SELL, "AAPL", 1000, 50.0)).is_ok());
+    ASSERT_TRUE(strategy->on_execution(createExecution(Side::BUY, "AAPL", 1000, 200.0)).is_ok());
+    RiskLimits limits;
+    limits.max_leverage = Decimal(5.0);
+    limits.max_drawdown = Decimal(0.5);
+    ASSERT_TRUE(strategy->update_risk_limits(limits).is_error());
+    Bar bar;
+    bar.symbol = "AAPL";
+    bar.timestamp = std::chrono::system_clock::now();
+    bar.close = Decimal(100.0);
+    StrategyConsumptionTrace trace;
+    auto result = strategy->on_data({bar}, &trace);
+    ASSERT_TRUE(result.is_error());
+    EXPECT_EQ(result.error()->code(), ErrorCode::RISK_LIMIT_EXCEEDED);
+    EXPECT_EQ(trace.profile, StrategyConsumptionProfile::Base);
+    EXPECT_TRUE(trace.base_risk.supported);
+    EXPECT_DOUBLE_EQ(*trace.base_risk.capital_allocation, 100000.0);
+    EXPECT_DOUBLE_EQ(static_cast<double>(*trace.base_risk.risk_max_drawdown), 0.5);
+    EXPECT_FALSE(trace.base_risk.fallback_config_max_leverage.has_value());
+
+    bar.symbol.clear();
+    result = strategy->on_data({bar}, &trace);
+    ASSERT_TRUE(result.is_error());
+    EXPECT_EQ(result.error()->code(), ErrorCode::INVALID_DATA);
+    EXPECT_FALSE(trace.base_risk.supported);
+    EXPECT_FALSE(trace.base_risk.capital_allocation.has_value());
+}
+
+class RiskOverrideProbe : public BaseStrategy {
+public:
+    using BaseStrategy::BaseStrategy;
+
+    Result<void> check_risk_limits(StrategyRiskConsumption* consumption = nullptr) override {
+        ++calls;
+        if (consumption) *consumption = {};
+        return make_error<void>(ErrorCode::RISK_LIMIT_EXCEEDED, "Custom risk rejected",
+                                "RiskOverrideProbe");
+    }
+
+    int calls{0};
+};
+
+TEST(StrategyConsumptionVirtualDispatch, BaseDataInvokesCustomRiskOverride) {
+    StrategyConfig config;
+    config.capital_allocation = 100000.0;
+    config.max_leverage = 4.0;
+    auto db = std::make_shared<MockPostgresDatabase>();
+    RiskOverrideProbe strategy("RISK_OVERRIDE", config, db);
+    ASSERT_TRUE(strategy.initialize().is_ok());
+    ASSERT_TRUE(strategy.start().is_ok());
+    Bar bar;
+    bar.symbol = "AAPL";
+    bar.timestamp = std::chrono::system_clock::now();
+    bar.close = Decimal(100.0);
+    StrategyInterface& selected = strategy;
+    StrategyConsumptionTrace trace;
+    auto result = selected.on_data({bar}, &trace);
+    ASSERT_TRUE(result.is_error());
+    EXPECT_EQ(result.error()->code(), ErrorCode::RISK_LIMIT_EXCEEDED);
+    EXPECT_STREQ(result.error()->what(), "Custom risk rejected");
+    EXPECT_EQ(strategy.calls, 1);
+    EXPECT_EQ(trace.profile, StrategyConsumptionProfile::Base);
+    EXPECT_FALSE(trace.base_risk.supported);
+    EXPECT_FALSE(trace.base_risk.capital_allocation.has_value());
 }
 
 // --- Concurrency ---
@@ -421,4 +640,225 @@ TEST_F(BaseStrategyTest, ValidateStateTransition_BlocksInvalidTransitions) {
     // INITIALIZED → PAUSED (invalid)
     auto result = strategy->transition_state(StrategyState::PAUSED);
     EXPECT_TRUE(result.is_error());
+}
+
+// ===== folded in from tests/strategy/test_pnl_accounting_branch.cpp =====
+namespace pnl_accounting_branch_detail {
+
+using namespace trade_ngin;
+using namespace trade_ngin::testing;
+// This file also declares a file-scope MockPostgresDatabase; the folded-in
+// tests were written against trade_ngin::testing's. Pin that resolution.
+using MockPostgresDatabase = trade_ngin::testing::MockPostgresDatabase;
+
+// Phase 4 audit test T4.6 — §1.14 backtest coordinator P&L semantics.
+//
+// Contract test: the coordinator's branch reads strategy->get_pnl_accounting().method
+// and only stamps realized_pnl when REALIZED_ONLY (futures: settled daily).
+// MIXED / UNREALIZED_ONLY (equities) leaves realized_pnl untouched at the
+// coordinator level -- on_execution writes realized when positions actually close.
+//
+// This test pins the contract by verifying:
+// 1. Each strategy's accounting method is what the coordinator expects.
+// 2. The PnL accounting accessor returns the same value over successive calls.
+//
+// A true integration test of the coordinator's branch requires the full bar
+// loop, portfolio, and execution path -- captured by the broader smoke runs
+// rather than a unit test. This contract test catches regressions in the
+// accessor / setter contract that the coordinator's branch depends on.
+
+namespace {
+
+class PnLAccountingBranchTest : public TestBase {
+protected:
+    void SetUp() override {
+        TestBase::SetUp();
+        StateManager::reset_instance();
+        db_ = std::make_shared<MockPostgresDatabase>("mock://pnl_branch_test");
+        ASSERT_TRUE(db_->connect().is_ok());
+    }
+
+    std::shared_ptr<MockPostgresDatabase> db_;
+};
+
+}  // namespace
+
+TEST_F(PnLAccountingBranchTest, MeanReversionUsesMixed) {
+    StrategyConfig cfg;
+    cfg.capital_allocation = 100000.0;
+    cfg.max_leverage = 2.0;
+    cfg.max_drawdown = 0.3;
+    cfg.asset_classes = {AssetClass::EQUITIES};
+    cfg.frequencies = {DataFrequency::DAILY};
+    cfg.trading_params["AAPL"] = 1.0;
+    cfg.position_limits["AAPL"] = 1000.0;
+
+    MeanReversionConfig mr;
+    mr.lookback_period = 20;
+    mr.vol_lookback = 20;
+    mr.entry_threshold = 2.0;
+    mr.exit_threshold = 0.5;
+    mr.risk_target = 0.15;
+    mr.position_size = 0.1;
+
+    MeanReversionStrategy strat("TEST_MR_PNL", cfg, mr, db_);
+    ASSERT_TRUE(strat.initialize().is_ok());
+
+    EXPECT_EQ(strat.get_pnl_accounting().method, PnLAccountingMethod::MIXED)
+        << "Equity mean reversion must declare MIXED accounting so the "
+           "backtest coordinator skips daily realized_pnl writes (Phase 4 §1.14).";
+}
+
+TEST_F(PnLAccountingBranchTest, TrendFollowingUsesRealizedOnly) {
+    StrategyConfig cfg;
+    cfg.capital_allocation = 100000.0;
+    cfg.max_leverage = 2.0;
+    cfg.max_drawdown = 0.3;
+    cfg.asset_classes = {AssetClass::FUTURES};
+    cfg.frequencies = {DataFrequency::DAILY};
+    cfg.trading_params["ES"] = 1.0;
+    cfg.position_limits["ES"] = 10.0;
+
+    TrendFollowingConfig tfc;
+
+    TrendFollowingStrategy strat("TEST_TF_PNL", cfg, tfc, db_);
+    ASSERT_TRUE(strat.initialize().is_ok());
+
+    EXPECT_EQ(strat.get_pnl_accounting().method, PnLAccountingMethod::REALIZED_ONLY)
+        << "Futures trend following must declare REALIZED_ONLY accounting so "
+           "the backtest coordinator writes daily MTM into realized_pnl "
+           "(futures settle daily) per Phase 4 §1.14.";
+}
+
+TEST_F(PnLAccountingBranchTest, AccessorIsStableAcrossCalls) {
+    StrategyConfig cfg;
+    cfg.capital_allocation = 100000.0;
+    cfg.max_leverage = 2.0;
+    cfg.max_drawdown = 0.3;
+    cfg.asset_classes = {AssetClass::EQUITIES};
+    cfg.frequencies = {DataFrequency::DAILY};
+    cfg.trading_params["AAPL"] = 1.0;
+    cfg.position_limits["AAPL"] = 1000.0;
+
+    MeanReversionStrategy strat("TEST_MR_STABLE", cfg, MeanReversionConfig{}, db_);
+    ASSERT_TRUE(strat.initialize().is_ok());
+
+    auto method_a = strat.get_pnl_accounting().method;
+    auto method_b = strat.get_pnl_accounting().method;
+    auto method_c = strat.get_pnl_accounting().method;
+    EXPECT_EQ(method_a, method_b);
+    EXPECT_EQ(method_b, method_c);
+}
+
+}  // namespace pnl_accounting_branch_detail
+
+// ============================================================================
+// E2-F27 / T-OR.4: a fill that crosses zero realizes on the CLOSED quantity only.
+//
+// Long 100 @ 150, SELL 150 @ 170: 100 shares close (realized 100 x 20 = 2000)
+// and the remaining 50 open a new short at the fill price. Realizing on the
+// full 150 (3000) books P&L on 50 shares that were never held. Mirror for the
+// short side. TF/TFF/TFS override on_execution; MR and any non-overriding
+// strategy hit this path on an optimizer-driven flip.
+// ============================================================================
+TEST_F(BaseStrategyTest, OnExecution_FlipRealizesOnlyTheClosedQuantity_Long) {
+    auto db = std::make_shared<MockPostgresDatabase>();
+    StrategyConfig config;
+    auto strategy = createRunningStrategy(config, db);
+
+    ASSERT_TRUE(strategy->on_execution(createExecution(Side::BUY, "AAPL", 100, 150.0)).is_ok());
+    ASSERT_TRUE(strategy->on_execution(createExecution(Side::SELL, "AAPL", 150, 170.0)).is_ok());
+
+    const auto& pos = strategy->get_positions().at("AAPL");
+    EXPECT_DOUBLE_EQ(pos.realized_pnl.as_double(), 2000.0)
+        << "realized must be (170-150) x the 100 shares that closed, not x 150";
+    EXPECT_DOUBLE_EQ(strategy->get_metrics().realized_pnl, 2000.0);
+    EXPECT_DOUBLE_EQ(pos.quantity.as_double(), -50.0);
+    EXPECT_DOUBLE_EQ(pos.average_price.as_double(), 170.0)
+        << "the 50-share remainder opens at the fill price";
+}
+
+TEST_F(BaseStrategyTest, OnExecution_FlipRealizesOnlyTheClosedQuantity_Short) {
+    auto db = std::make_shared<MockPostgresDatabase>();
+    StrategyConfig config;
+    auto strategy = createRunningStrategy(config, db);
+
+    ASSERT_TRUE(strategy->on_execution(createExecution(Side::SELL, "AAPL", 100, 150.0)).is_ok());
+    ASSERT_TRUE(strategy->on_execution(createExecution(Side::BUY, "AAPL", 150, 130.0)).is_ok());
+
+    const auto& pos = strategy->get_positions().at("AAPL");
+    EXPECT_DOUBLE_EQ(pos.realized_pnl.as_double(), 2000.0)
+        << "realized must be (150-130) x the 100 shares that covered, not x 150";
+    EXPECT_DOUBLE_EQ(strategy->get_metrics().realized_pnl, 2000.0);
+    EXPECT_DOUBLE_EQ(pos.quantity.as_double(), 50.0);
+    EXPECT_DOUBLE_EQ(pos.average_price.as_double(), 130.0)
+        << "the 50-share remainder opens at the fill price";
+}
+
+// An exact close (qty == fill) and a partial close are unchanged by the fix.
+TEST_F(BaseStrategyTest, OnExecution_ExactAndPartialCloseRealizeOnTheFill) {
+    auto db = std::make_shared<MockPostgresDatabase>();
+    StrategyConfig config;
+    auto strategy = createRunningStrategy(config, db);
+
+    ASSERT_TRUE(strategy->on_execution(createExecution(Side::BUY, "AAPL", 100, 150.0)).is_ok());
+    ASSERT_TRUE(strategy->on_execution(createExecution(Side::SELL, "AAPL", 40, 160.0)).is_ok());
+    EXPECT_DOUBLE_EQ(strategy->get_positions().at("AAPL").realized_pnl.as_double(), 400.0);
+    EXPECT_DOUBLE_EQ(strategy->get_positions().at("AAPL").quantity.as_double(), 60.0);
+    EXPECT_DOUBLE_EQ(strategy->get_positions().at("AAPL").average_price.as_double(), 150.0);
+
+    ASSERT_TRUE(strategy->on_execution(createExecution(Side::SELL, "AAPL", 60, 170.0)).is_ok());
+    EXPECT_DOUBLE_EQ(strategy->get_positions().at("AAPL").realized_pnl.as_double(), 400.0 + 1200.0);
+    EXPECT_DOUBLE_EQ(strategy->get_positions().at("AAPL").quantity.as_double(), 0.0);
+}
+
+// ---------------------------------------------------------------------------
+// C-5 §9-A2 -- the §1.14 branch itself, not just the accessor it reads.
+//
+// THE TEST DEFECT: the three tests above assert what get_pnl_accounting() returns for a
+// mean-reversion and a trend-following config. That contract predates 7e3d07c2. Executed
+// revert (C-5 L-CLOSURE): with src/backtest/backtest_coordinator.cpp reverted to 7e3d07c2^
+// -- the file whose branch the commit's own header names -- all three still PASS:
+//
+//     [==========] 3 tests from 1 test suite ran.
+//     [  PASSED  ] 3 tests.
+//
+// The coordinator's branch was never entered, so nothing pinned the behaviour the commit
+// shipped. These add it: the two methods must produce DIFFERENT realized figures from the
+// same bar, because they are different quantities.
+// ---------------------------------------------------------------------------
+
+TEST(PnLAccountingBranchRule, TheTwoMethodsBookDifferentRealizedFromTheSameBar) {
+    // One bar: a settled MTM move of -877.50 (the MYM.v.0 figure), and fills that realized
+    // +200.00 on this bar.
+    const double daily_mtm = -877.50;
+    const double flow = 200.00;
+
+    const double futures = trade_ngin::backtest::BacktestPnLManager::realized_for_row(
+        PnLAccountingMethod::REALIZED_ONLY, daily_mtm, flow);
+    const double equities = trade_ngin::backtest::BacktestPnLManager::realized_for_row(
+        PnLAccountingMethod::MIXED, daily_mtm, flow);
+
+    EXPECT_DOUBLE_EQ(futures, daily_mtm)
+        << "under REALIZED_ONLY the settled move IS the day's realized";
+    EXPECT_DOUBLE_EQ(equities, flow)
+        << "under MIXED realized comes from the fills, never from the mark";
+    EXPECT_NE(futures, equities)
+        << "if these agreed the branch would be unobservable and the column meaningless";
+}
+
+TEST(PnLAccountingBranchRule, AHeldEquityDayBooksZeroRealizedNotTheMarkMove) {
+    // The defect's signature: a day on which nothing closed. Under MIXED the row must read
+    // 0.00, not the day's mark-to-market move -- otherwise every held day looks like a
+    // realizing day and the column no longer sums to the position's realized P&L.
+    const double realized = trade_ngin::backtest::BacktestPnLManager::realized_for_row(
+        PnLAccountingMethod::MIXED, /*daily_mtm=*/-877.50, /*flow=*/0.0);
+    EXPECT_DOUBLE_EQ(realized, 0.0);
+}
+
+TEST(PnLAccountingBranchRule, UnrealizedOnlyBooksTheFlowLikeMixed) {
+    // UNREALIZED_ONLY is a cash book too; only REALIZED_ONLY takes the mark.
+    EXPECT_DOUBLE_EQ(trade_ngin::backtest::BacktestPnLManager::realized_for_row(
+                         PnLAccountingMethod::UNREALIZED_ONLY, -877.50, 200.0),
+                     200.0);
 }

@@ -1,0 +1,195 @@
+{
+  "schema_version": "qt-workflow/v1",
+  "proposal_ready": {
+    "schema_version": "qt-workflow/v1",
+    "book_id": "synthetic-book-A",
+    "source_day": "2026-09-25",
+    "capability": {"required": true, "available": true, "version": 1},
+    "workflow_state": "ready",
+    "read_only_reason": null,
+    "action_grants": {"can_save_draft": true, "can_confirm": true, "can_approve": false},
+    "source_digest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "provenance_digest": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "seed_publication_id": "10000000-0000-4000-8000-000000000001",
+    "seed_rows": [
+      {"key": {"portfolio_id": "synthetic-book-A", "strategy_id": "component-1", "strategy_name": "synthetic-alpha", "date": "2026-09-25", "symbol": "SYN", "portfolio_type": "qt_proposal"}, "quantity_exact": "4", "basis_status": "preserved_source", "average_price_exact": "100", "asset_type": "EQUITY", "editable": true, "origin": "verified_model_seed"},
+      {"key": {"portfolio_id": "synthetic-book-A", "strategy_id": "component-2", "strategy_name": "synthetic-beta", "date": "2026-09-25", "symbol": "SYN", "portfolio_type": "qt_proposal"}, "quantity_exact": "2", "basis_status": "preserved_source", "average_price_exact": "100", "asset_type": "EQUITY", "editable": true, "origin": "verified_model_seed"}
+    ],
+    "saved_qt_rows": []
+  },
+  "draft_saved": {
+    "schema_version": "qt-workflow/v1",
+    "book_id": "synthetic-book-A",
+    "source_day": "2026-09-25",
+    "state": "saved",
+    "draft_id": "20000000-0000-4000-8000-000000000001",
+    "draft_revision": 1,
+    "draft_digest": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+    "source_digest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "provenance_digest": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "selection_rows": [
+      {"key": {"portfolio_id": "synthetic-book-A", "strategy_id": "component-1", "strategy_name": "synthetic-alpha", "date": "2026-09-25", "symbol": "SYN", "portfolio_type": "qt_proposal"}, "quantity_exact": "5", "basis_status": "preserved_source", "average_price_exact": "100", "asset_type": "EQUITY", "editable": true, "origin": "qt_draft"},
+      {"key": {"portfolio_id": "synthetic-book-A", "strategy_id": "component-2", "strategy_name": "synthetic-beta", "date": "2026-09-25", "symbol": "SYN", "portfolio_type": "qt_proposal"}, "quantity_exact": "1", "basis_status": "preserved_source", "average_price_exact": "100", "asset_type": "EQUITY", "editable": true, "origin": "qt_draft"}
+    ]
+  },
+  "preview_clean": {
+    "schema_version": "qt-workflow/v1",
+    "book_id": "synthetic-book-A",
+    "source_day": "2026-09-25",
+    "preview_id": "30000000-0000-4000-8000-000000000001",
+    "payload_digest": "2228326ff0a55c1ee840d74cfef21ba7b08e7ade2ad4a9cf78628045679e5420",
+    "optimizer_book_digest": "3dc7197cdb7a26fe074c96245494cc28e56f7e05b8fc795e0f231d3ceba57c48",
+    "selected_book_digest": "170528e9e3a72c56773ceeba05ed1762eb4a35ff1a35d0af8633e35039ee99df",
+    "draft_id": "20000000-0000-4000-8000-000000000001",
+    "draft_revision": 1,
+    "source_digest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "provenance_digest": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "read_set_digest": "1111111111111111111111111111111111111111111111111111111111111111",
+    "availability": "ready",
+    "confirmable": true,
+    "requires_override": false,
+    "selection_rows": [
+      {"key": {"portfolio_id": "synthetic-book-A", "strategy_id": "component-1", "strategy_name": "synthetic-alpha", "date": "2026-09-25", "symbol": "SYN", "portfolio_type": "qt_proposal"}, "quantity_exact": "5", "basis_status": "preserved_source", "average_price_exact": "100", "asset_type": "EQUITY", "editable": true, "origin": "qt_draft"},
+      {"key": {"portfolio_id": "synthetic-book-A", "strategy_id": "component-2", "strategy_name": "synthetic-beta", "date": "2026-09-25", "symbol": "SYN", "portfolio_type": "qt_proposal"}, "quantity_exact": "1", "basis_status": "preserved_source", "average_price_exact": "100", "asset_type": "EQUITY", "editable": true, "origin": "qt_draft"}
+    ],
+    "unavailable_reasons": [],
+    "evaluation": {
+      "optimizer": {
+        "status": "evaluated", "evaluated_book_digest": "3dc7197cdb7a26fe074c96245494cc28e56f7e05b8fc795e0f231d3ceba57c48",
+        "aggregate_bindings": [{"instrument_type": "EQUITY", "symbol": "SYN", "component_keys": [
+          {"portfolio_id": "synthetic-book-A", "strategy_id": "component-1", "strategy_name": "synthetic-alpha", "date": "2026-09-25", "symbol": "SYN", "portfolio_type": "qt_proposal"},
+          {"portfolio_id": "synthetic-book-A", "strategy_id": "component-2", "strategy_name": "synthetic-beta", "date": "2026-09-25", "symbol": "SYN", "portfolio_type": "qt_proposal"}
+        ], "previous_net_quantity_exact": "6", "proposed_net_quantity_exact": "6"}],
+        "current_weights": [{"instrument_type": "EQUITY", "symbol": "SYN", "weight_diagnostic": "0.5"}],
+        "target_weights": [{"instrument_type": "EQUITY", "symbol": "SYN", "weight_diagnostic": "0.6"}],
+        "solved_weights": [{"instrument_type": "EQUITY", "symbol": "SYN", "weight_diagnostic": "0.55"}],
+        "trace": ["synthetic optimizer diagnostic"], "cost_penalty": "0.01",
+        "diagnostics": [], "config_source_id": "synthetic-config-v1"
+      },
+      "selected_risk": {
+        "status": "evaluated", "evaluated_book_digest": "170528e9e3a72c56773ceeba05ed1762eb4a35ff1a35d0af8633e35039ee99df",
+        "passed": true, "breaches": [],
+        "metrics": [{"code": "synthetic_exposure_ratio", "value_diagnostic": "0.12345678901234566", "unit": "ratio", "source_id": "synthetic-risk-v1"}],
+        "config_source_id": "synthetic-risk-v1", "market_snapshot_id": "synthetic-market-v1", "diagnostics": []
+      },
+      "selected_costs": {
+        "status": "evaluated", "evaluated_book_digest": "170528e9e3a72c56773ceeba05ed1762eb4a35ff1a35d0af8633e35039ee99df",
+        "by_component": [
+          {"key": {"portfolio_id": "synthetic-book-A", "strategy_id": "component-1", "strategy_name": "synthetic-alpha", "date": "2026-09-25", "symbol": "SYN", "portfolio_type": "qt_proposal"}, "prior_quantity_exact": "4", "selected_quantity_exact": "5", "cash_cost_exact": "0.01", "source_id": "synthetic-cost-v1"},
+          {"key": {"portfolio_id": "synthetic-book-A", "strategy_id": "component-2", "strategy_name": "synthetic-beta", "date": "2026-09-25", "symbol": "SYN", "portfolio_type": "qt_proposal"}, "prior_quantity_exact": "2", "selected_quantity_exact": "1", "cash_cost_exact": "0.01", "source_id": "synthetic-cost-v1"}
+        ],
+        "total_exact": "0.02", "diagnostics": []
+      }
+    }
+  },
+  "preview_breach": {
+    "schema_version": "qt-workflow/v1", "book_id": "synthetic-book-A", "source_day": "2026-09-25",
+    "preview_id": "30000000-0000-4000-8000-000000000002",
+    "payload_digest": "da10d91b8db706f724b1ab6a248ddc2b122d80e7279cf906ae0bef93eb89cfac",
+    "optimizer_book_digest": "3dc7197cdb7a26fe074c96245494cc28e56f7e05b8fc795e0f231d3ceba57c48",
+    "selected_book_digest": "170528e9e3a72c56773ceeba05ed1762eb4a35ff1a35d0af8633e35039ee99df",
+    "draft_id": "20000000-0000-4000-8000-000000000001", "draft_revision": 1,
+    "source_digest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "provenance_digest": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "read_set_digest": "4444444444444444444444444444444444444444444444444444444444444444",
+    "availability": "ready", "confirmable": true, "requires_override": true,
+    "selection_rows": [
+      {"key": {"portfolio_id": "synthetic-book-A", "strategy_id": "component-1", "strategy_name": "synthetic-alpha", "date": "2026-09-25", "symbol": "SYN", "portfolio_type": "qt_proposal"}, "quantity_exact": "5", "basis_status": "preserved_source", "average_price_exact": "100", "asset_type": "EQUITY", "editable": true, "origin": "qt_draft"},
+      {"key": {"portfolio_id": "synthetic-book-A", "strategy_id": "component-2", "strategy_name": "synthetic-beta", "date": "2026-09-25", "symbol": "SYN", "portfolio_type": "qt_proposal"}, "quantity_exact": "1", "basis_status": "preserved_source", "average_price_exact": "100", "asset_type": "EQUITY", "editable": true, "origin": "qt_draft"}
+    ], "unavailable_reasons": [],
+    "evaluation": {
+      "optimizer": {"status": "disabled", "evaluated_book_digest": null, "aggregate_bindings": [], "current_weights": [], "target_weights": [], "solved_weights": [], "trace": [], "cost_penalty": null, "diagnostics": ["synthetic breach case"], "config_source_id": null},
+      "selected_risk": {"status": "evaluated", "evaluated_book_digest": "170528e9e3a72c56773ceeba05ed1762eb4a35ff1a35d0af8633e35039ee99df", "passed": false, "breaches": [{"code": "synthetic_limit", "limit_diagnostic": "0.1", "actual_diagnostic": "0.12345678901234566"}], "metrics": [{"code": "synthetic_exposure_ratio", "value_diagnostic": "0.12345678901234566", "unit": "ratio", "source_id": "synthetic-risk-breach-v1"}], "config_source_id": "synthetic-risk-breach-v1", "market_snapshot_id": "synthetic-market-v1", "diagnostics": []},
+      "selected_costs": {"status": "evaluated", "evaluated_book_digest": "170528e9e3a72c56773ceeba05ed1762eb4a35ff1a35d0af8633e35039ee99df", "by_component": [
+        {"key": {"portfolio_id": "synthetic-book-A", "strategy_id": "component-1", "strategy_name": "synthetic-alpha", "date": "2026-09-25", "symbol": "SYN", "portfolio_type": "qt_proposal"}, "prior_quantity_exact": "4", "selected_quantity_exact": "5", "cash_cost_exact": "0.01", "source_id": "synthetic-cost-v1"},
+        {"key": {"portfolio_id": "synthetic-book-A", "strategy_id": "component-2", "strategy_name": "synthetic-beta", "date": "2026-09-25", "symbol": "SYN", "portfolio_type": "qt_proposal"}, "prior_quantity_exact": "2", "selected_quantity_exact": "1", "cash_cost_exact": "0.01", "source_id": "synthetic-cost-v1"}
+      ], "total_exact": "0.02", "diagnostics": []}
+    }
+  },
+  "confirm_pending": {
+    "schema_version": "qt-workflow/v1", "book_id": "synthetic-book-A",
+    "preview_id": "30000000-0000-4000-8000-000000000002",
+    "decision_id": "40000000-0000-4000-8000-000000000002",
+    "request_id": "50000000-0000-4000-8000-000000000001",
+    "status": "pending_override", "selected_book_digest": "170528e9e3a72c56773ceeba05ed1762eb4a35ff1a35d0af8633e35039ee99df",
+    "read_set_digest": "4444444444444444444444444444444444444444444444444444444444444444",
+    "approvals": [], "approvals_count": 0, "required_approvals": 2, "can_approve": false,
+    "receipt": null, "report_ready": false, "report_blocked_reasons": ["decision_pending_override"]
+  },
+  "decision_processed": {
+    "schema_version": "qt-workflow/v1", "book_id": "synthetic-book-A",
+    "preview_id": "30000000-0000-4000-8000-000000000001",
+    "decision_id": "40000000-0000-4000-8000-000000000001", "request_id": null,
+    "status": "confirmed_decision", "selected_book_digest": "170528e9e3a72c56773ceeba05ed1762eb4a35ff1a35d0af8633e35039ee99df",
+    "read_set_digest": "1111111111111111111111111111111111111111111111111111111111111111",
+    "approvals": [], "approvals_count": 0, "required_approvals": 2, "can_approve": false,
+    "receipt": {"status": "processed", "published_book_digest": "170528e9e3a72c56773ceeba05ed1762eb4a35ff1a35d0af8633e35039ee99df", "report_eligibility": {"status": "eligible", "reason_codes": [], "row_manifest_digest": "3333333333333333333333333333333333333333333333333333333333333333"}},
+    "report_ready": true, "report_blocked_reasons": []
+  },
+  "decision_pending": {
+    "schema_version": "qt-workflow/v1", "book_id": "synthetic-book-A",
+    "preview_id": "30000000-0000-4000-8000-000000000001",
+    "decision_id": "40000000-0000-4000-8000-000000000001", "request_id": null,
+    "status": "confirmed_decision", "selected_book_digest": "170528e9e3a72c56773ceeba05ed1762eb4a35ff1a35d0af8633e35039ee99df",
+    "read_set_digest": "1111111111111111111111111111111111111111111111111111111111111111",
+    "approvals": [], "approvals_count": 0, "required_approvals": 2, "can_approve": false,
+    "receipt": null, "report_ready": false, "report_blocked_reasons": ["receipt_pending"]
+  },
+  "stale_error": {
+    "schema_version": "qt-workflow/v1",
+    "error": {"code": "preview_stale", "message": "The source or draft changed; create a new preview.", "retryable": false},
+    "book_id": "synthetic-book-A", "preview_id": "30000000-0000-4000-8000-000000000001"
+  },
+  "canonical_vectors": [
+    {
+      "input": {"quantity_exact": "1.25", "symbol": "ES"},
+      "canonical_json": "{\"quantity_exact\":\"1.25\",\"symbol\":\"ES\"}",
+      "sha256": "ffb1f43d93c320c8dc8b82e62505c7c9e129335d008eb86360d2e58b45259087"
+    },
+    {
+      "input": {"seed_rows": [{"key": {"portfolio_id": "synthetic-book-A", "strategy_id": "component-1", "strategy_name": "synthetic-alpha", "date": "2026-09-25", "symbol": "SYN", "portfolio_type": "system"}, "quantity_exact": "4", "average_price_exact": "100"}]},
+      "canonical_json": "{\"seed_rows\":[{\"average_price_exact\":\"100\",\"key\":{\"date\":\"2026-09-25\",\"portfolio_id\":\"synthetic-book-A\",\"portfolio_type\":\"system\",\"strategy_id\":\"component-1\",\"strategy_name\":\"synthetic-alpha\",\"symbol\":\"SYN\"},\"quantity_exact\":\"4\"}]}",
+      "sha256": "a6c33d6973d6cca994a5a08a2e98a69638abb68c2d6d835803e32b25bcea6ef8"
+    },
+    {
+      "input": {"selection_rows": [
+        {"key": {"portfolio_id": "synthetic-book-A", "strategy_id": "component-1", "strategy_name": "synthetic-alpha", "date": "2026-09-25", "symbol": "SYN", "portfolio_type": "qt"}, "quantity_exact": "5"},
+        {"key": {"portfolio_id": "synthetic-book-A", "strategy_id": "component-2", "strategy_name": "synthetic-beta", "date": "2026-09-25", "symbol": "SYN", "portfolio_type": "qt"}, "quantity_exact": "1"}
+      ]},
+      "canonical_json": "{\"selection_rows\":[{\"key\":{\"date\":\"2026-09-25\",\"portfolio_id\":\"synthetic-book-A\",\"portfolio_type\":\"qt\",\"strategy_id\":\"component-1\",\"strategy_name\":\"synthetic-alpha\",\"symbol\":\"SYN\"},\"quantity_exact\":\"5\"},{\"key\":{\"date\":\"2026-09-25\",\"portfolio_id\":\"synthetic-book-A\",\"portfolio_type\":\"qt\",\"strategy_id\":\"component-2\",\"strategy_name\":\"synthetic-beta\",\"symbol\":\"SYN\"},\"quantity_exact\":\"1\"}]}",
+      "sha256": "170528e9e3a72c56773ceeba05ed1762eb4a35ff1a35d0af8633e35039ee99df"
+    },
+    {
+      "input": {"selection_rows": [
+        {"key": {"portfolio_id": "synthetic-book-A", "strategy_id": "component-1", "strategy_name": "synthetic-alpha", "date": "2026-09-25", "symbol": "SYN", "portfolio_type": "qt"}, "quantity_exact": "3"},
+        {"key": {"portfolio_id": "synthetic-book-A", "strategy_id": "component-2", "strategy_name": "synthetic-beta", "date": "2026-09-25", "symbol": "SYN", "portfolio_type": "qt"}, "quantity_exact": "3"}
+      ]},
+      "canonical_json": "{\"selection_rows\":[{\"key\":{\"date\":\"2026-09-25\",\"portfolio_id\":\"synthetic-book-A\",\"portfolio_type\":\"qt\",\"strategy_id\":\"component-1\",\"strategy_name\":\"synthetic-alpha\",\"symbol\":\"SYN\"},\"quantity_exact\":\"3\"},{\"key\":{\"date\":\"2026-09-25\",\"portfolio_id\":\"synthetic-book-A\",\"portfolio_type\":\"qt\",\"strategy_id\":\"component-2\",\"strategy_name\":\"synthetic-beta\",\"symbol\":\"SYN\"},\"quantity_exact\":\"3\"}]}",
+      "sha256": "3dc7197cdb7a26fe074c96245494cc28e56f7e05b8fc795e0f231d3ceba57c48"
+    },
+    {
+      "input": {
+        "selection_rows": [
+          {
+            "key": {
+              "portfolio_id": "synthetic-book-A",
+              "strategy_id": "component-1",
+              "strategy_name": "synthetic-alpha",
+              "date": "2026-09-25",
+              "symbol": "NEW",
+              "portfolio_type": "qt_proposal"
+            },
+            "quantity_exact": "3",
+            "basis_status": "preserved_source",
+            "average_price_exact": "102",
+            "asset_type": "EQUITY",
+            "editable": true,
+            "origin": "verified_qt_decision"
+          }
+        ]
+      },
+      "canonical_json": "{\"selection_rows\":[{\"asset_type\":\"EQUITY\",\"average_price_exact\":\"102\",\"basis_status\":\"preserved_source\",\"editable\":true,\"key\":{\"date\":\"2026-09-25\",\"portfolio_id\":\"synthetic-book-A\",\"portfolio_type\":\"qt_proposal\",\"strategy_id\":\"component-1\",\"strategy_name\":\"synthetic-alpha\",\"symbol\":\"NEW\"},\"origin\":\"verified_qt_decision\",\"quantity_exact\":\"3\"}]}",
+      "sha256": "09f523150de322d538649b2ea9efba3a6af65325194931fade5a095fb2d5a879"
+    }
+  ]
+}

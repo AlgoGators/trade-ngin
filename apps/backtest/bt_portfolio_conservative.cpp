@@ -1,6 +1,7 @@
 #include <fstream>
 #include <iomanip>
 #include <iostream>
+#include <string>
 #include <nlohmann/json.hpp>
 #include "trade_ngin/backtest/backtest_coordinator.hpp"
 #include "trade_ngin/backtest/transaction_cost_analysis.hpp"
@@ -14,6 +15,7 @@
 #include "trade_ngin/portfolio/portfolio_manager.hpp"
 #include "trade_ngin/strategy/trend_following.hpp"
 #include "trade_ngin/strategy/trend_following_fast.hpp"
+#include "trade_ngin/strategy/trend_following_slow.hpp"
 
 using namespace trade_ngin;
 using namespace trade_ngin::backtest;
@@ -167,8 +169,7 @@ int main() {
         // APPLY CONFIG VALUES TO BACKTEST CONFIG
         // ========================================
         config.portfolio_config.initial_capital = app_config.initial_capital;
-        config.portfolio_config.use_risk_management = app_config.strategy_defaults.use_risk_management;
-        config.portfolio_config.use_optimization = app_config.strategy_defaults.use_optimization;
+        config.portfolio_config.use_optimization = app_config.use_optimization;
         config.strategy_config.initial_capital = config.portfolio_config.initial_capital;
 
         std::cout << "Retrieved " << config.strategy_config.symbols.size() << " symbols"
@@ -201,7 +202,6 @@ int main() {
 
         trade_ngin::backtest::BacktestCoordinatorConfig coord_config;
         coord_config.initial_capital = static_cast<double>(config.portfolio_config.initial_capital);
-        coord_config.use_risk_management = config.portfolio_config.use_risk_management;
         coord_config.use_optimization = config.portfolio_config.use_optimization;
         coord_config.store_trade_details = config.store_trade_details;
         coord_config.portfolio_id = config.portfolio_id;
@@ -222,8 +222,10 @@ int main() {
             config.portfolio_config.initial_capital * app_config.reserve_capital_pct;
         portfolio_config.max_strategy_allocation = app_config.strategy_defaults.max_strategy_allocation;
         portfolio_config.min_strategy_allocation = app_config.strategy_defaults.min_strategy_allocation;
-        portfolio_config.use_optimization = app_config.strategy_defaults.use_optimization;
-        portfolio_config.use_risk_management = app_config.strategy_defaults.use_risk_management;
+        portfolio_config.use_optimization = app_config.use_optimization;
+        portfolio_config.covariance_history_prices = app_config.covariance_history_prices;
+        portfolio_config.risk_modules = app_config.risk_schema.portfolio;
+        portfolio_config.sleeve_risk_modules = app_config.risk_schema.sleeves;
         portfolio_config.opt_config = config.portfolio_config.opt_config;
         portfolio_config.risk_config = config.portfolio_config.risk_config;
 
@@ -377,6 +379,39 @@ int main() {
                 strategy = std::make_shared<trade_ngin::TrendFollowingFastStrategy>(
                     strategy_id, base_strategy_config, trend_config, db, registry_ptr);
 
+            } else if (strategy_type == "TrendFollowingSlowStrategy") {
+                trade_ngin::TrendFollowingSlowConfig trend_config;
+                if (strategy_def.contains("config")) {
+                    const auto& cfg = strategy_def["config"];
+                    trend_config.weight = cfg.value("weight", 0.03);
+                    trend_config.risk_target = cfg.value("risk_target", 0.15);
+                    trend_config.idm = cfg.value("idm", 2.5);
+                    trend_config.max_symbol_concentration =
+                        cfg.value("max_symbol_concentration", 0.15);
+                    trend_config.use_position_buffering =
+                        cfg.value("use_position_buffering", true);
+                    trend_config.carver_buffer_floor = cfg.value(
+                        "carver_buffer_floor", app_config.strategy_defaults.carver_buffer_floor);
+                    trend_config.carver_buffer_position_factor = cfg.value(
+                        "carver_buffer_position_factor",
+                        app_config.strategy_defaults.carver_buffer_position_factor);
+                    if (cfg.contains("ema_windows")) {
+                        trend_config.ema_windows.clear();
+                        for (const auto& window : cfg["ema_windows"]) {
+                            trend_config.ema_windows.push_back(
+                                {window[0].get<int>(), window[1].get<int>()});
+                        }
+                    }
+                    trend_config.vol_lookback_short = cfg.value("vol_lookback_short", 64);
+                    trend_config.vol_lookback_long = cfg.value("vol_lookback_long", 252);
+                }
+                if (trend_config.fdm.empty()) {
+                    trend_config.fdm = app_config.strategy_defaults.fdm;
+                }
+
+                strategy = std::make_shared<trade_ngin::TrendFollowingSlowStrategy>(
+                    strategy_id, base_strategy_config, trend_config, db, registry_ptr);
+
             } else {
                 ERROR("Unknown strategy type: " + strategy_type + " for strategy: " + strategy_id);
                 return 1;
@@ -414,9 +449,8 @@ int main() {
             const std::string& strategy_id = strategy_names[i];
             double allocation = strategy_allocations[strategy_id];
 
-            auto add_result = portfolio->add_strategy(strategy, allocation,
-                                                      config.portfolio_config.use_optimization,
-                                                      config.portfolio_config.use_risk_management);
+            auto add_result = portfolio->add_strategy(
+                strategy, allocation, config.portfolio_config.use_optimization);
 
             if (add_result.is_error()) {
                 ERROR("Failed to add strategy " + strategy_id +
@@ -456,11 +490,25 @@ int main() {
         std::cout << "======= Conservative Portfolio Backtest Results =======" << std::endl;
         std::cout << "Total Return: " << (backtest_results.total_return * 100.0) << "%"
                   << std::endl;
-        std::cout << "Sharpe Ratio: " << backtest_results.sharpe_ratio << std::endl;
-        std::cout << "Sortino Ratio: " << backtest_results.sortino_ratio << std::endl;
+        std::cout << "Sharpe Ratio: "
+                  << (backtest_results.sharpe_ratio
+                          ? std::to_string(*backtest_results.sharpe_ratio)
+                          : std::string("n/a (no volatility)"))
+                  << std::endl;
+        // "n/a" and not a number, because an undefined ratio printed as 0
+        // reads as a measured zero and printed as 999 reads as a triumph.
+        std::cout << "Sortino Ratio: "
+                  << (backtest_results.sortino_ratio
+                          ? std::to_string(*backtest_results.sortino_ratio)
+                          : std::string("n/a (no returns below target)"))
+                  << std::endl;
         std::cout << "Max Drawdown: " << (backtest_results.max_drawdown * 100.0) << "%"
                   << std::endl;
-        std::cout << "Calmar Ratio: " << backtest_results.calmar_ratio << std::endl;
+        std::cout << "Calmar Ratio: "
+                  << (backtest_results.calmar_ratio
+                          ? std::to_string(*backtest_results.calmar_ratio)
+                          : std::string("n/a (no drawdown)"))
+                  << std::endl;
         std::cout << "Volatility: " << (backtest_results.volatility * 100.0) << "%" << std::endl;
         std::cout << "Win Rate: " << (backtest_results.win_rate * 100.0) << "%" << std::endl;
         std::cout << "Total Trades: " << backtest_results.total_trades << std::endl;

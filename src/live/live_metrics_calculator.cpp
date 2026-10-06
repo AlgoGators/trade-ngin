@@ -139,21 +139,22 @@ double LiveMetricsCalculator::calculate_net_pnl(
 
 // ========== Risk Metrics Calculations ==========
 
-double LiveMetricsCalculator::calculate_sharpe_ratio(
+std::optional<double> LiveMetricsCalculator::calculate_sharpe_ratio(
     const std::vector<double>& returns,
     double risk_free_rate) const {
 
     if (returns.empty() || returns.size() < 2) {
-        // LOG_DEBUG << "Insufficient returns data for Sharpe ratio";
-        return 0.0;
+        // Fewer than two returns is no dispersion to measure.
+        return std::nullopt;
     }
 
     double mean_return = calculate_mean(returns);
     double std_dev = calculate_std_dev(returns, mean_return);
 
     if (std_dev <= 0.0) {
-        // LOG_DEBUG << "Zero standard deviation, cannot calculate Sharpe ratio";
-        return 0.0;
+        // The comment here already said "cannot calculate Sharpe ratio" and
+        // then returned 0.0 anyway, which is a number that says it can.
+        return std::nullopt;
     }
 
     // Convert risk-free rate from annual to daily
@@ -165,21 +166,22 @@ double LiveMetricsCalculator::calculate_sharpe_ratio(
     return sharpe * std::sqrt(252.0);
 }
 
-double LiveMetricsCalculator::calculate_sortino_ratio(
+std::optional<double> LiveMetricsCalculator::calculate_sortino_ratio(
     const std::vector<double>& returns,
     double minimum_acceptable_return) const {
 
     if (returns.empty() || returns.size() < 2) {
-        // LOG_DEBUG << "Insufficient returns data for Sortino ratio";
-        return 0.0;
+        return std::nullopt;
     }
 
     double mean_return = calculate_mean(returns);
     double downside_dev = calculate_downside_deviation(returns, minimum_acceptable_return);
 
     if (downside_dev <= 0.0) {
-        // LOG_DEBUG << "Zero downside deviation, cannot calculate Sortino ratio";
-        return 0.0;
+        // Same as above: the comment said it could not be calculated, and then
+        // a value was returned that nothing downstream could tell apart from
+        // one that had been.
+        return std::nullopt;
     }
 
     // Convert MAR from annual to daily
@@ -288,6 +290,11 @@ CalculatedMetrics LiveMetricsCalculator::calculate_all_metrics(
     int trading_days,
     double daily_transaction_costs) const {
 
+    // E2-C8: intentionally unused. The caller passes daily_pnl ALREADY net of costs
+    // (live_equity_mean_reversion.cpp computes `(realized - costs) + change in mark` before
+    // calling), so subtracting daily_transaction_costs again here would double-charge it.
+    // The parameter is retained for signature stability across both asset classes' callers
+    // and as documentation of what the caller has already applied.
     (void)daily_transaction_costs;
     CalculatedMetrics metrics;
 
@@ -334,6 +341,8 @@ CalculatedMetrics LiveMetricsCalculator::calculate_finalization_metrics(
     int trading_days,
     double commissions) const {
 
+    // E2-C8: intentionally unused, same reason as above -- realized_pnl arrives net of
+    // costs, so applying `commissions` here would subtract them a second time.
     (void)commissions;
     CalculatedMetrics metrics;
 
@@ -387,13 +396,17 @@ double LiveMetricsCalculator::calculate_win_rate(
     return (static_cast<double>(winning_trades) / total_trades) * 100.0;
 }
 
-double LiveMetricsCalculator::calculate_profit_factor(
+std::optional<double> LiveMetricsCalculator::calculate_profit_factor(
     double gross_wins,
     double gross_losses) const {
 
     if (gross_losses <= 0.0) {
-        // If no losses, profit factor is infinite (we'll return a large number)
-        return gross_wins > 0.0 ? 999.99 : 0.0;
+        // No denominator. Undefined is the honest answer, and a caller that
+        // wants to print something can decide what -- an em-dash, "n/a", the
+        // gross figures side by side. It cannot decide that if it is handed a
+        // number that looks real.
+        (void)gross_wins;
+        return std::nullopt;
     }
 
     return gross_wins / gross_losses;

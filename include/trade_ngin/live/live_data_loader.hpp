@@ -1,7 +1,28 @@
 // include/trade_ngin/live/live_data_loader.hpp
-// Data loading component for live trading - encapsulates all SELECT queries
+// Data loading component for live trading - encapsulates all SELECT queries.
+//
+// Timezone contract (Phase 5 §5c):
+//   All `Timestamp` parameters and all `YYYY-MM-DD` keys produced by this
+//   module are UTC. Provider date columns (e.g. `equities_data.corporate_action.date`)
+//   are interpreted as calendar dates with no timezone shift -- they are
+//   text/date values whose semantics are determined by the ingest pipeline,
+//   not by this loader. If a strategy needs market-local semantics, convert
+//   at the strategy boundary, not here.
+//
+//   Date-string keys MUST be produced via `trade_ngin::core::format_utc_date`;
+//   direct `std::gmtime` / `std::put_time` use is forbidden (non-thread-safe
+//   and locale-dependent).
+//
+// Decoding contract (Phase 5 §1.17a + §5d):
+//   Numeric columns from `convert_generic_to_arrow` are stored as utf8.
+//   Implementations use `DataConversionUtils::safe_get_*` which dispatches
+//   on the actual Arrow type, falls back to `std::stod`/`std::stoll` for
+//   string storage (logging WARN on parse failures), and returns a typed
+//   `Result` on null/type-mismatch -- never a silent 0.0.
 
 #pragma once
+
+#include <optional>
 
 #include <memory>
 #include <string>
@@ -38,14 +59,18 @@ struct LiveResultsRow {
     std::string strategy_id;
 
     // Additional metrics
-    double sharpe_ratio = 0.0;
-    double sortino_ratio = 0.0;
+    /// Empty when the column is NULL, which is what an undefined ratio looks
+    /// like in the database.
+    std::optional<double> sharpe_ratio;
+    std::optional<double> sortino_ratio;
     double max_drawdown = 0.0;
     double volatility = 0.0;
     double win_rate = 0.0;
     double avg_win = 0.0;
     double avg_loss = 0.0;
-    double profit_factor = 0.0;
+    /// Empty when the column is NULL, which is what an undefined profit factor
+    /// looks like in the database.
+    std::optional<double> profit_factor;
     double best_day = 0.0;
     double worst_day = 0.0;
     double downside_deviation = 0.0;
@@ -96,6 +121,7 @@ private:
 
     // Helper method to check database connection
     Result<void> validate_connection() const;
+    Result<void> validate_portfolio_connection(const std::string& portfolio_id) const;
 
 public:
     /**
@@ -165,7 +191,7 @@ public:
      * @return Row count or error
      */
     Result<int> get_live_results_count(const std::string& strategy_id,
-                                       const std::string& portfolio_id = "BASE_PORTFOLIO");
+                                       const std::string& portfolio_id);
 
     // ========== Historical Series Methods (since inception, as-of date) ==========
 
@@ -231,12 +257,25 @@ public:
                                                             const std::string& portfolio_id,
                                                             const Timestamp& date);
 
+    // Full owner/UTC-day/system scope is mandatory for actual equity commission reporting.
+    Result<std::unordered_map<std::string,double>> load_commissions_by_symbol(
+        const std::string& strategy_id,const std::string& strategy_name,
+        const std::string& portfolio_id,const Timestamp& date);
+
     // ========== Commission Methods ==========
 
-    // Note: load_commissions_by_symbol was deleted - it was dead code that referenced
-    // a non-existent "commission" column and the result map was never used downstream.
-    // All real transaction-cost data flows through cost_manager_->calculate_costs()
-    // at execution time and is stored on trading.executions / trading.live_results.
+    /**
+     * @brief Load commissions grouped by symbol for a date
+     * @param date Target date
+     * @return Map of symbol to total commission or error
+     *
+     * Dead on the futures line (deleted there), but the equity live runner calls it
+     * for commission reporting. FIXME(4.2): trading.executions has no "commission"
+     * column today -- the query errors at runtime and callers degrade gracefully;
+     * commission sourcing is reworked with the equity data layer.
+     */
+    Result<std::unordered_map<std::string, double>> load_commissions_by_symbol(
+        const std::string& portfolio_id, const Timestamp& date);
 
     /**
      * @brief Load total daily transaction costs for a strategy

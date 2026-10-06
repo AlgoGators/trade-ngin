@@ -1,0 +1,10 @@
+{
+  "schema": "qt-evaluator-bundle-source/v1",
+  "bundle_schema": "qt-evaluator-bundle/v1",
+  "wire_schema": "qt-eval/v1",
+  "executable": "qt_evaluator",
+  "engine": "libtrade_ngin.so",
+  "crypto": "libcrypto.so.3",
+  "loader": "ld-linux-x86-64.so.2",
+  "abi": {"platform": "linux", "machine": "x86_64", "elf_class": "ELF64", "cxx_standard": "20"}
+}

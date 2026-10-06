@@ -67,7 +67,8 @@ public:
      * @param data Vector of price bars
      * @return Result indicating success or failure
      */
-    Result<void> on_data(const std::vector<Bar>& data) override;
+    Result<void> on_data(const std::vector<Bar>& data,
+                         StrategyConsumptionTrace* trace = nullptr) override;
 
     /**
      * @brief Process execution reports
@@ -132,7 +133,8 @@ public:
      * @param position New position
      * @return Result indicating success or failure
      */
-    Result<void> update_position(const std::string& symbol, const Position& position) override;
+    Result<void> update_position(const std::string& symbol, const Position& position,
+                                  StrategyPositionLimitConsumption* consumption = nullptr) override;
 
     /**
      * @brief Seed the strategy's in-memory positions_ map from an external snapshot
@@ -155,7 +157,7 @@ public:
      * @brief Get the current signals for the strategy
      * @return Map of signals by symbol
      */
-    Result<void> check_risk_limits() override;
+    Result<void> check_risk_limits(StrategyRiskConsumption* consumption = nullptr) override;
 
     /**
      * @brief Get the current signals for the strategy
@@ -168,6 +170,17 @@ public:
      * @return PnL accounting information
      */
     const PnLAccounting& get_pnl_accounting() const;
+
+    /**
+     * @brief Get the most recent per-symbol signals computed by on_data().
+     *
+     * Exposes the protected last_signals_ map for diagnostics and for the
+     * live-vs-backtest signal-parity test (review T-OR.5).
+     * @return Map of symbol -> latest signal value
+     */
+    const std::unordered_map<std::string, double>& get_last_signals() const {
+        return last_signals_;
+    }
 
     /**
      * @brief Set the PnL accounting method for this strategy
@@ -201,8 +214,13 @@ public:
     Result<void> transition_state(StrategyState new_state);
 
 protected:
+    // Pinned-main equity arithmetic is opted into only by the actual equity strategy.
+    Result<void> process_equity_execution(const ExecutionReport& report);
+
     // Protected methods for derived classes
     virtual Result<void> validate_config() const;
+    Result<void> process_base_data(const std::vector<Bar>& data,
+                                   StrategyRiskConsumption* consumption = nullptr);
 
     // Data members
     std::string id_;
