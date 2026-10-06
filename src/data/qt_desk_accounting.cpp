@@ -33,7 +33,7 @@ LiveDateSql live_date_sql(pqxx::work& tx,const std::string& day){
     return date_only?LiveDateSql{tx.quote(day)+"::date","date::text"}:
         LiveDateSql{tx.quote(day+"T00:00:00Z")+"::timestamptz","to_char(date AT TIME ZONE 'UTC','YYYY-MM-DD')"};
 }
-J admit(pqxx::work& tx,const J& d,const std::string& id){
+J admit(pqxx::work& tx,const J& d,const std::string& id,bool opening=true){
     auto row=one(tx,"SELECT to_jsonb(i) FROM trading.qt_desk_accounting_inputs i WHERE input_id="+tx.quote(id)+"::uuid FOR SHARE");
     auto policy=one(tx,"SELECT to_jsonb(p) FROM trading.qt_source_policies p WHERE book_id="+tx.quote(text(d.at("book_id")))+" AND purpose='execution'");
     need(row.at("decision_id")==d.at("decision_id")&&policy.at("enabled")==true&&row.at("producer_id")==policy.at("producer_id")&&row.at("policy_version")==policy.at("policy_version"));
@@ -42,6 +42,10 @@ J admit(pqxx::work& tx,const J& d,const std::string& id){
     const auto& in=row.at("payload");for(auto name:{"decision_id","book_id","source_day"})need(in.at(name)==d.at(name));
     if(in.at("schema_version")=="qt-futures-accounting-input-first-day/v1"){
         need(validate_qt_first_day_accounting_input(tx,d,row,true).is_ok());
+        // Opening state is admitted before publication. At precommit this
+        // rechecks the immutable inputs; exact output verification checks the
+        // rows just written by the transaction instead of the opening rows.
+        if(!opening)return row;
         const auto book=tx.quote(text(d.at("book_id"))),current=tx.quote(text(d.at("source_day")));
         J positions=J::array();for(auto r:tx.exec("SELECT jsonb_build_object('key',jsonb_build_object('portfolio_id',portfolio_id,'strategy_id',strategy_id,'strategy_name',strategy_name,'date',date::text,'symbol',symbol,'portfolio_type',portfolio_type),'quantity_exact',"+exact("quantity")+",'average_price_exact',"+exact("average_price")+",'daily_realized_pnl_exact',"+exact("daily_realized_pnl")+",'daily_unrealized_pnl_exact',"+exact("daily_unrealized_pnl")+") FROM trading.positions WHERE portfolio_id="+book+" AND portfolio_type='qt' AND date="+current+"::date FOR SHARE"))positions.push_back(J::parse(r[0].c_str()));
         need(sorted(positions)==sorted(in.at("previous_positions")));
@@ -86,7 +90,7 @@ Result<J> prepare_qt_desk_accounting(pqxx::work& tx,const J& d,const J& p,const 
     }catch(const std::exception&){return make_error<J>(ErrorCode::INVALID_DATA,"qt_accounting_input_unavailable","qt_desk_accounting");}
 }
 Result<void> revalidate_qt_desk_accounting(pqxx::work& tx,const J& d,const std::string& id){
-    try{if(equity_input(tx,id))return revalidate_qt_equity_desk_accounting(tx,d,id);admit(tx,d,id);return Result<void>();}catch(const std::exception&){return make_error<void>(ErrorCode::INVALID_DATA,"qt_accounting_input_changed","qt_desk_accounting");}
+    try{if(equity_input(tx,id))return revalidate_qt_equity_desk_accounting(tx,d,id);admit(tx,d,id,false);return Result<void>();}catch(const std::exception&){return make_error<void>(ErrorCode::INVALID_DATA,"qt_accounting_input_changed","qt_desk_accounting");}
 }
 Result<void> verify_qt_desk_accounting_outputs(pqxx::work& tx,const J& d,const std::string& id){
     try{
