@@ -272,6 +272,11 @@ int main(int argc, char** argv) {
     try {
         pqxx::connection connection(dsn);
         std::fill(dsn.begin(), dsn.end(), '\0');
+        {
+            pqxx::work identity(connection);
+            identity.exec("SET application_name = 'qt_desk_worker'");
+            identity.commit();
+        }
         if (options.healthcheck) {
             const bool ok = healthy(connection); log(ok ? "healthy" : "unhealthy");
             std::fill(material.begin(), material.end(), '\0'); return ok ? 0 : 1;
