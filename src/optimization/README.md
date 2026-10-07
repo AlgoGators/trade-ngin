@@ -196,10 +196,16 @@ Each multiplier is in range [0, 1]:
 
 ## Integration with Portfolio Manager
 
-```cpp
-// In PortfolioManager::optimize_positions()
+A futures book (one that names an overlay sleeve) does not go through this optimizer: it is
+rebalanced by the one pass (`one_pass::rebalance`, called from
+`PortfolioManager::rebalance_one_pass`), which prices the cost of one contract of every symbol it
+weighs through the manager's cost model. The generic step below is what a book with no overlay
+sleeve runs (the equity book); its cost vector is zero for every symbol.
 
-// Get trading costs
+```cpp
+// In PortfolioManager::optimize_positions() (a book with no overlay sleeve)
+
+// The generic step's cost vector: zero for every symbol
 costs = calculate_trading_costs(symbols, capital);
 
 // Run optimization
