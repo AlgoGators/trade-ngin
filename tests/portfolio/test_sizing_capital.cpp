@@ -820,10 +820,8 @@ protected:
             *loader_, *db_, "LIVE_TREND_FOLLOWING", "BASE_PORTFOLIO", {"A", "B"}, now_, 500'000.0,
             {{"MES.v.0", 7252.50}, {"ZN.v.0", 110.703125}},
             {{"MES.v.0", 7230.00}, {"ZN.v.0", 110.906250}},
-            [&](const std::string& s) { return pnl_.get_point_value(s); }, {}, calendar_,
-            starting_drawdown_);
+            [&](const std::string& s) { return pnl_.get_point_value(s); }, {}, calendar_);
     }
-    double starting_drawdown_ = 0.0;  // D_0: 0 on a book that starts at its starting capital
     // The dates the run loaded a bar on: every weekday of April 2026 (2026-04-27, Day T-1, among
     // them), so every stored day of the fixtures is a settled one unless a test removes its date.
     LiveSizingCalendar calendar_ = [] {
@@ -1394,11 +1392,47 @@ TEST_F(LiveHalfCompounding, ANoBarDayCountsFromTheNextRunThatHasALaterBar) {
         << "the account is the stored one: the Saturday's costs are in it";
     EXPECT_EQ(r.settled_rows, 4);
 
-    // A day with a flat book is settled whatever is loaded.
+    // A day with a FLAT book is settled whatever is loaded: with no bar dated after it either
+    // (the later dates erased again), only the flat book settles it. The same day with a held
+    // book and the same calendar is the unsettled one of read 1.
+    calendar_.bar_dates.erase("2026-04-27");
     db_->history = {{"2026-04-25", -40.0, 0}};
     r = read();
-    EXPECT_TRUE(r.earlier_unsettled.empty());
+    EXPECT_TRUE(r.earlier_unsettled.empty()) << "a flat book has nothing to settle";
     EXPECT_NEAR(r.capital.capital, 500'000.0 - 40.0 + t1_net_, 1e-6);
+    db_->history = {{"2026-04-25", -40.0, 2}};
+    r = read();
+    EXPECT_EQ(r.earlier_unsettled, std::vector<std::string>{"2026-04-25"});
+    EXPECT_NEAR(r.capital.capital, 500'000.0, 1e-6) << "the 40.00 stays out; Day T-1's profit is capped";
+}
+
+// The stored rows and the stored value should tell one story: the starting capital plus every
+// stored daily_pnl before Day T-1 is the stored value of the row before Day T-1. When they part by
+// more than a cent (a spliced or missing row in the history) the read says so, for a WARN line
+// beside SIZING_CAPITAL; the capital is still the rows'.
+TEST_F(LiveHalfCompounding, AHistoryThatDoesNotSumToTheStoredValueIsNamed) {
+    db_->history = {{"2026-04-22", 4'000.0, 2}, {"2026-04-23", -1'500.0, 2}, {"2026-04-24", -3'200.0, 2}};
+    db_->previous_value = 500'000.0 + 4'000.0 - 1'500.0 - 3'200.0;  // the rows' own sum
+    auto r = read();
+    ASSERT_EQ(r.outcome, LiveSizingOutcome::kSized) << outcome_of(r);
+    EXPECT_TRUE(r.history_compared);
+    EXPECT_NEAR(r.history_gap, 0.0, 1e-9);
+    EXPECT_FALSE(sizing_history_mismatch(r));
+    const double capital = r.capital.capital;
+
+    db_->previous_value = 500'000.0 + 4'000.0 - 1'500.0 - 3'200.0 - 244.76;  // the value carries less
+    r = read();
+    EXPECT_NEAR(r.history_gap, 244.76, 1e-6);
+    EXPECT_TRUE(sizing_history_mismatch(r));
+    EXPECT_DOUBLE_EQ(r.capital.capital, capital) << "the capital is built from the rows either way";
+    const std::string line = sizing_capital_history_log_line("2026-04-28", r);
+    EXPECT_EQ(line.rfind("SIZING_CAPITAL_HISTORY date=2026-04-28 gap=244.760000 day_before=", 0), 0u) << line;
+
+    db_->previous_value = 500'000.0 + 4'000.0 - 1'500.0 - 3'200.0 + 0.005;  // inside a cent
+    EXPECT_FALSE(sizing_history_mismatch(read()));
+    // no Day T-1 row: the row before the run date is not the row before Day T-1, nothing is compared
+    db_->t1 = SizingReadDatabase::T1::kNoRow;
+    EXPECT_FALSE(read().history_compared);
 }
 
 // The capital does not step when a no-bar day leaves the loaded window: the same stored history
@@ -1467,59 +1501,6 @@ TEST_F(LiveHalfCompounding, TheFailurePathsWithholdOnlyDayT1) {
         EXPECT_EQ(r.settled_through, "2026-04-24") << path;
         EXPECT_EQ(r.settled_rows, 3) << path;
     }
-}
-
-// Section 3.1 and section 12 "chain seeding": a seeded live chain starts with a drawdown D_0
-// (portfolio.json's starting_drawdown). Its first day is sized on S_0 - D_0, and the capital reaches
-// S_0 only after D_0 of net P&L; profits beyond that are set aside as on any book.
-TEST_F(LiveHalfCompounding, ASeededChainSizesOnTheStartingCapitalLessItsStartingDrawdown) {
-    starting_drawdown_ = 60'000.0;
-    // The chain's first run: no row at all.
-    db_->t1 = SizingReadDatabase::T1::kNoRow;
-    db_->previous_value.reset();
-    auto r = read();
-    ASSERT_EQ(r.outcome, LiveSizingOutcome::kSized) << outcome_of(r);
-    EXPECT_DOUBLE_EQ(r.capital.capital, 440'000.0) << "the first day is sized on 500,000 - 60,000";
-    EXPECT_NE(sizing_capital_log_line("2026-04-28", r).find(" starting_drawdown=60000.000000"),
-              std::string::npos);
-
-    // Net P&L of +20,000, then +30,000 more, then the last 10,000 less Day T-1's own net: 440,000
-    // climbs by exactly the net, and is 500,000 only once 60,000 has been made.
-    db_->t1 = SizingReadDatabase::T1::kRow;
-    db_->previous_value = 497'274.5217;
-    db_->history = {{"2026-04-21", 20'000.0, 2}};
-    r = read();
-    EXPECT_NEAR(r.capital.capital, 460'000.0 + t1_net_, 1e-6);
-    db_->history = {{"2026-04-21", 20'000.0, 2}, {"2026-04-22", 30'000.0, 2}};
-    r = read();
-    EXPECT_NEAR(r.capital.capital, 490'000.0 + t1_net_, 1e-6);
-    EXPECT_LT(r.capital.capital, 500'000.0) << "50,005.52 of net P&L is not yet 60,000";
-    db_->history = {{"2026-04-21", 20'000.0, 2}, {"2026-04-22", 30'000.0, 2},
-                    {"2026-04-23", 10'000.0 - t1_net_, 2}};
-    r = read();
-    EXPECT_NEAR(r.capital.capital, 500'000.0, 1e-6) << "exactly 60,000 of net P&L: back at the start";
-    // More profit is set aside; a loss comes off 500,000 at once.
-    db_->history.push_back({"2026-04-24", 7'500.0, 2});
-    r = read();
-    EXPECT_NEAR(r.capital.capital, 500'000.0, 1e-6) << "67,500 made: the 7,500 above D_0 is set aside";
-    db_->history.back() = {"2026-04-24", -2'500.0, 2};
-    r = read();
-    EXPECT_NEAR(r.capital.capital, 497'500.0, 1e-6) << "57,500 made of the 60,000: 2,500 short";
-}
-
-// D_0 = 0 is the book as it was: the same capital to the bit, and the line carries no new field.
-TEST_F(LiveHalfCompounding, AZeroStartingDrawdownChangesNothing) {
-    db_->history = {{"2026-04-21", 0.0, 0}, {"2026-04-22", 4'000.0, 2}, {"2026-04-23", -1'500.0, 2},
-                    {"2026-04-24", -3'200.0, 2}};
-    starting_drawdown_ = 0.0;
-    const auto r = read();
-    ASSERT_EQ(r.outcome, LiveSizingOutcome::kSized) << outcome_of(r);
-    const auto plain =
-        half_compounded_capital(500'000.0, {0.0, 4'000.0, -1'500.0, -3'200.0, r.equity.t1_settlement - r.equity.t1_costs});
-    EXPECT_EQ(r.capital.capital, plain.capital);
-    EXPECT_EQ(r.capital.account, plain.account);
-    EXPECT_EQ(r.capital.peak, plain.peak);
-    EXPECT_EQ(sizing_capital_log_line("2026-04-28", r).find("starting_drawdown"), std::string::npos);
 }
 
 // A history that cannot be read is an equity read that failed: the book is held, never sized on a

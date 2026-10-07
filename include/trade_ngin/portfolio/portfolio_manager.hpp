@@ -62,9 +62,6 @@ struct PortfolioConfig : public ConfigBase {
     // (to_json below): how the book is sized and the equity slow rule of its first sleeve, as its
     // files state them (portfolio/loop_config.hpp fills both).
     std::string sizing_mode;
-    /// D_0 of a seeded live chain, in dollars (section 3.1); 0 on a book that starts at its
-    /// starting capital, and then not written by to_json. The live futures runners set it.
-    double starting_drawdown{0.0};
     std::vector<std::string> equity_slow_symbols;
     std::vector<std::pair<int, int>> equity_slow_pairs;
     // The risk modules this book runs, portfolio scope, in evaluation order. There is
@@ -148,9 +145,6 @@ struct PortfolioConfig : public ConfigBase {
             risk["per_name_cap"] = per_name_cap;
             risk["trim_max"] = trim_max;
             j["sizing_mode"] = sizing_mode;
-            // beside sizing_mode, on a seeded chain only: a book with D_0 = 0 writes the object
-            // it always wrote
-            if (starting_drawdown > 0.0) j["starting_drawdown"] = starting_drawdown;
             nlohmann::json pairs = nlohmann::json::array();
             for (const auto& [fast, slow] : equity_slow_pairs) {
                 pairs.push_back(nlohmann::json::array({fast, slow}));

@@ -496,6 +496,25 @@ Result<void> PortfolioManager::process_market_data(const std::vector<Bar>& data,
         // to 6): the overlay once on the capped target, one search from the held book, one
         // rounding, the trim, the fills. Nothing below this block changes its book.
         const bool one_pass = one_pass_book();
+        if (!one_pass) {
+            // A trend sleeve is rebalanced by the one pass and by nothing else. A book that holds
+            // one and names no overlay sleeve (or names one that is not registered, or no tau)
+            // would go through the generic step below on a placeholder weight and no cost:
+            // refused, never optimised on defaults.
+            std::lock_guard<std::mutex> lock(mutex_);
+            for (const auto& [sid, info] : strategies_) {
+                if (std::dynamic_pointer_cast<TrendFollowingStrategy>(info.strategy)) {
+                    return make_error<void>(
+                        ErrorCode::INVALID_ARGUMENT,
+                        "Portfolio " + id_ + " holds the trend sleeve " + sid +
+                            " and names no overlay sleeve the one pass can run on (overlay_sleeve "
+                            "'" + config_.overlay_sleeve + "', overlay_tau " +
+                            std::to_string(config_.overlay_tau) +
+                            "); a trend sleeve is not rebalanced by the generic optimiser step",
+                        "PortfolioManager");
+                }
+            }
+        }
         RiskLapOutcome risk_outcome;  // pin_all set by a portfolio-scope REFUSE / REPLACE
         if (one_pass) {
             auto passed = rebalance_one_pass(data, skip_execution_generation, current_timestamp,
@@ -2102,8 +2121,9 @@ Result<void> PortfolioManager::rebalance_one_pass(
             const bool weighed = has_series && series.close > 0.0 && series.multiplier > 0.0 &&
                                  std::isfinite(series.close) && std::isfinite(series.multiplier);
             // The cost of one contract bought at the signal close, as the cost model prices it. A
-            // symbol the cost model was never fed has no cost: its generic ADV is not a price.
-            const bool cost_fed = cost_manager_.has_volume_history(symbol);
+            // symbol the cost model has no usable volume for (never fed, or fed nothing but zero
+            // volume) has no cost: the model would price it on a generic ADV, which is not a price.
+            const bool cost_fed = cost_manager_.has_usable_volume(symbol);
             const double cost =
                 weighed && cost_fed ? cost_manager_.calculate_costs(symbol, 1.0, series.close)
                                           .total_transaction_costs
@@ -2122,7 +2142,10 @@ Result<void> PortfolioManager::rebalance_one_pass(
                 // quantity (zero included): it cannot be opened or traded on a default cost.
                 unweighed_lines.push_back(
                     "BOOK_UNPRICED " + symbol + ": the cost model has no cost for it (" +
-                    (cost_fed ? "a cost that is not a positive number" : "never fed its volume") +
+                    (cost_fed ? "a cost that is not a positive number"
+                              : (cost_manager_.has_volume_history(symbol)
+                                     ? "its fed volume is zero"
+                                     : "never fed its volume")) +
                     "); held at the held quantity as a fixed row, no fill");
                 symbols.push_back(symbol);
                 own.push_back(std::move(series));
@@ -2291,6 +2314,11 @@ Result<void> PortfolioManager::rebalance_one_pass(
                                  &held.sign_fill, &held.rest_fill}) {
                 vector->assign(n, 0.0);
             }
+            // Every per-symbol vector the rebalance's record writes is sized: a refused day has a
+            // record row too (nothing capped, the search's and the pre-trim book the held book).
+            held.cap_bound.assign(n, 0);
+            held.search_book = in.held;
+            held.pre_trim = in.held;
             held.book = in.held;
             held.refusal = why;
             return held;
@@ -2348,8 +2376,15 @@ Result<void> PortfolioManager::rebalance_one_pass(
             }
         }
         for (const auto& symbol : unpriced) {
-            WARN("BOOK_UNPRICED " + symbol + ": the first sleeve has no series, close, multiplier "
-                 "or cost for it; held at the held quantity, no fill");
+            // Left out of the pass: with no position there is nothing to hold; with one (a refused
+            // scope) every sleeve keeps its held quantity.
+            bool held_row = false;
+            for (const auto& sid : sids) held_row = held_row || held_of(sid, symbol) != 0.0;
+            WARN("BOOK_UNPRICED " + symbol +
+                 (held_row ? ": it cannot be weighed today; left out of the pass, every sleeve "
+                             "keeps its held quantity, no fill"
+                           : ": the overlay sleeve has no series, close or multiplier for it and "
+                             "no sleeve holds it; left out of the pass, not opened"));
         }
         for (const auto& line : unweighed_lines) WARN(line);
 

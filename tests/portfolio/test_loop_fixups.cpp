@@ -7,6 +7,7 @@
 
 #include <gtest/gtest.h>
 
+#include <array>
 #include <chrono>
 #include <filesystem>
 #include <fstream>
@@ -16,6 +17,8 @@
 #include <thread>
 #include <vector>
 
+#include <arrow/api.h>
+#include <arrow/util/logging.h>
 #include <nlohmann/json.hpp>
 
 #define private public
@@ -32,6 +35,7 @@
 #include "trade_ngin/data/postgres_database.hpp"
 #include "trade_ngin/instruments/futures.hpp"
 #include "trade_ngin/live/live_estimator_history.hpp"
+#include "trade_ngin/live/stored_book_ownership.hpp"
 #include "trade_ngin/strategy/short_window_log.hpp"
 #include "trade_ngin/strategy/sleeve_config.hpp"
 
@@ -166,50 +170,6 @@ TEST(RequiredSleeveKeys, TheFuturesTemplatesCarryThem) {
         }
     }
     EXPECT_EQ(sleeves, 3) << "CONSERVATIVE's one sleeve and BASE's two";
-}
-
-// ---- section 3.1, section 12 "chain seeding": the starting drawdown ----------------------------
-
-// Recorded beside sizing_mode on a seeded chain; a book with D_0 = 0 writes the object it always
-// wrote (the key list of test_portfolio_config_keys.cpp is unchanged).
-TEST(StartingDrawdown, IsRecordedBesideTheSizingModeOnlyOnASeededChain) {
-    PortfolioConfig pc = one_pass_config("A");
-    pc.sizing_mode = "half_compounding";
-    const nlohmann::json plain = pc.to_json();
-    EXPECT_FALSE(plain.contains("starting_drawdown"));
-    pc.starting_drawdown = 60'000.0;
-    const nlohmann::json seeded = pc.to_json();
-    ASSERT_TRUE(seeded.contains("starting_drawdown"));
-    EXPECT_DOUBLE_EQ(seeded.at("starting_drawdown").get<double>(), 60'000.0);
-    nlohmann::json without = seeded;
-    without.erase("starting_drawdown");
-    EXPECT_EQ(without, plain) << "nothing else in the object moves";
-
-    // a book with no overlay sleeve never writes it
-    PortfolioConfig equity{500000.0, 1.0, 0.0, true};
-    equity.starting_drawdown = 60'000.0;
-    EXPECT_FALSE(equity.to_json().contains("starting_drawdown"));
-}
-
-// The two live futures runners pass it to the sizing read as D_0 and record it; the backtests do
-// not read it (a backtest starts its own account at the starting capital).
-TEST(StartingDrawdown, TheLiveFuturesRunnersPassItAndTheBacktestsIgnoreIt) {
-    const auto root = repo_root();
-    ASSERT_FALSE(root.empty());
-    for (const char* runner : {"apps/strategies/live_portfolio_conservative.cpp",
-                               "apps/strategies/live_portfolio.cpp"}) {
-        const std::string src = read_all(root / runner);
-        EXPECT_EQ(count_of(src, "portfolio_config.starting_drawdown = app_config.starting_drawdown;"), 1u)
-            << runner;
-        const size_t read = src.find("read_live_sizing_equity(");
-        ASSERT_NE(read, std::string::npos) << runner;
-        const size_t passed = src.find("app_config.starting_drawdown);", read);
-        ASSERT_NE(passed, std::string::npos) << runner << " does not pass D_0 to the sizing read";
-        EXPECT_LT(passed - read, 2500u) << runner;
-    }
-    for (const char* runner : {"apps/backtest/bt_portfolio_conservative.cpp", "apps/backtest/bt_portfolio.cpp"}) {
-        EXPECT_EQ(read_all(root / runner).find("starting_drawdown"), std::string::npos) << runner;
-    }
 }
 
 // ---- sections 7.2 and 10: the live risk_scale is measured on the stored book -------------------
@@ -477,15 +437,183 @@ TEST_F(OverlaySleeveNotional, IsTheOverlaySleevesWhicheverIdItHas) {
     }
 }
 
+// A book that holds a trend sleeve and names no overlay sleeve cannot be rebalanced by the one
+// pass, and the generic step would optimise it on a placeholder weight and no cost: it is refused.
+// A book of another strategy with no overlay sleeve (the equity book's shape) runs as before.
+TEST_F(OverlaySleeveNotional, ATrendSleeveWithoutAnOverlaySleeveIsRefused) {
+    PortfolioConfig plain{500000.0, 1.0, 0.0, /*optimization=*/true};
+    plain.opt_config.capital = 500000.0;
+    plain.risk_config.capital = 500000.0;
+    plain.risk_modules = {test_none_module()};
+    StrategyConfig sc;
+    sc.capital_allocation = 500000.0;
+    sc.max_leverage = 10.0;
+    sc.asset_classes = {AssetClass::FUTURES};
+    sc.frequencies = {DataFrequency::DAILY};
+    {
+        PortfolioManager pm(plain, "PM_NO_OVERLAY_TREND");
+        auto trend = std::make_shared<TrendFollowingStrategy>("TREND", sc, TrendFollowingConfig{}, db_);
+        pm.strategies_["TREND"] = PortfolioManager::StrategyInfo{trend, 1.0, true, {}, {}};
+        const auto r = pm.process_market_data({one_pass_bar("ZZA", 1, 100.0)});
+        ASSERT_TRUE(r.is_error()) << "a trend sleeve was optimised by the generic step";
+        EXPECT_EQ(r.error()->code(), ErrorCode::INVALID_ARGUMENT);
+        const std::string what = r.error()->what();
+        EXPECT_NE(what.find("holds the trend sleeve TREND and names no overlay sleeve"), std::string::npos)
+            << what;
+    }
+    {
+        // the overlay sleeve named but not registered is the same book
+        PortfolioConfig named = plain;
+        named.overlay_sleeve = "MISSING";
+        named.overlay_tau = 0.2;
+        PortfolioManager pm(named, "PM_OVERLAY_NOT_REGISTERED");
+        auto trend = std::make_shared<TrendFollowingStrategy>("TREND", sc, TrendFollowingConfig{}, db_);
+        pm.strategies_["TREND"] = PortfolioManager::StrategyInfo{trend, 1.0, true, {}, {}};
+        EXPECT_TRUE(pm.process_market_data({one_pass_bar("ZZA", 1, 100.0)}).is_error());
+    }
+    {
+        PortfolioManager pm(plain, "PM_NO_OVERLAY_OTHER");
+        auto other = make_overlay_stub("OTHER", 500000.0, db_);
+        ASSERT_TRUE(other->initialize().is_ok());
+        ASSERT_TRUE(other->start().is_ok());
+        ASSERT_TRUE(pm.add_strategy(other, 1.0, true).is_ok());
+        const auto r = pm.process_market_data({one_pass_bar("ZZA", 1, 100.0)});
+        EXPECT_TRUE(r.is_ok()) << (r.is_error() ? r.error()->what() : "");
+    }
+}
+
+// ---- a stored book the run will not load -------------------------------------------------------
+
+namespace {
+
+// The positions query's answer, every column a string as the generic converter builds it.
+class StoredBookDatabase : public MockPostgresDatabase {
+public:
+    StoredBookDatabase() : MockPostgresDatabase("mock://stored_book") { (void)connect(); }
+    std::vector<std::array<std::string, 5>> rows;  // date, strategy_id, sleeve, symbol, quantity
+    bool fail = false;
+    std::string last_query;
+    Result<std::shared_ptr<arrow::Table>> execute_query(const std::string& query) override {
+        if (query.find(".positions") == std::string::npos) return MockPostgresDatabase::execute_query(query);
+        last_query = query;
+        if (fail) {
+            return make_error<std::shared_ptr<arrow::Table>>(
+                ErrorCode::DATABASE_ERROR, "server closed the connection unexpectedly", "PostgresDatabase");
+        }
+        std::vector<std::shared_ptr<arrow::Array>> arrays;
+        std::vector<std::shared_ptr<arrow::Field>> fields;
+        const char* const names[] = {"stored_book_date", "strategy_id", "strategy_name", "symbol", "quantity"};
+        for (int c = 0; c < 5; ++c) {
+            arrow::StringBuilder b;
+            for (const auto& row : rows) ARROW_CHECK_OK(b.Append(row[static_cast<size_t>(c)]));
+            std::shared_ptr<arrow::Array> a;
+            ARROW_CHECK_OK(b.Finish(&a));
+            arrays.push_back(a);
+            fields.push_back(arrow::field(names[c], arrow::utf8()));
+        }
+        return Result<std::shared_ptr<arrow::Table>>(arrow::Table::Make(arrow::schema(fields), arrays));
+    }
+};
+
+const Timestamp kRunDate = Timestamp(std::chrono::seconds(1776988800LL));  // 2026-04-24
+const char* const kBaseId = "LIVE_TREND_FOLLOWING_TREND_FOLLOWING_FAST";
+
+}  // namespace
+
+TEST(StoredBookOwnership, ABookTheRunLoadsInFullIsNotRefused) {
+    StoredBookDatabase db;
+    db.rows = {{"2026-04-23", kBaseId, "TREND_FOLLOWING", "MES.v.0", "1.0000"},
+               {"2026-04-23", kBaseId, "TREND_FOLLOWING_FAST", "MES.v.0", "-2.0000"}};
+    const auto r = stored_positions_outside_run(db, "BASE_PORTFOLIO", kBaseId,
+                                                {"TREND_FOLLOWING", "TREND_FOLLOWING_FAST"}, kRunDate);
+    ASSERT_TRUE(r.is_ok()) << r.error()->what();
+    EXPECT_TRUE(r.value().empty());
+    // the previous book date before the RUN date, this portfolio's, non-zero rows only
+    EXPECT_NE(db.last_query.find("portfolio_id = 'BASE_PORTFOLIO'"), std::string::npos) << db.last_query;
+    EXPECT_NE(db.last_query.find("quantity <> 0"), std::string::npos);
+    EXPECT_NE(db.last_query.find("DATE(date) < '2026-04-24'"), std::string::npos) << db.last_query;
+    // a portfolio with no stored book at all
+    db.rows.clear();
+    const auto first = stored_positions_outside_run(db, "BASE_PORTFOLIO", kBaseId, {"TREND_FOLLOWING"}, kRunDate);
+    ASSERT_TRUE(first.is_ok());
+    EXPECT_TRUE(first.value().empty());
+}
+
+// The adversary's construction: BASE with its first sleeve not loaded. The run's strategy id is
+// then the FAST sleeve's alone, and BOTH sleeves' stored rows sit under the two-sleeve id.
+TEST(StoredBookOwnership, StoredPositionsOfASleeveTheRunDoesNotLoadAreNamed) {
+    StoredBookDatabase db;
+    db.rows = {{"2026-04-23", kBaseId, "TREND_FOLLOWING", "6C.v.0", "1.0000"},
+               {"2026-04-23", kBaseId, "TREND_FOLLOWING", "MES.v.0", "1.0000"},
+               {"2026-04-23", kBaseId, "TREND_FOLLOWING_FAST", "MES.v.0", "1.0000"}};
+    auto r = stored_positions_outside_run(db, "BASE_PORTFOLIO", "LIVE_TREND_FOLLOWING_FAST",
+                                          {"TREND_FOLLOWING_FAST"}, kRunDate);
+    ASSERT_TRUE(r.is_ok());
+    ASSERT_EQ(r.value().size(), 3u) << "another strategy id: no row of it is this run's";
+    EXPECT_EQ(r.value()[0], std::string("2026-04-23 ") + kBaseId + "/TREND_FOLLOWING 6C.v.0 1.0000");
+    const std::string line =
+        stored_positions_outside_run_line("BASE_PORTFOLIO", "LIVE_TREND_FOLLOWING_FAST", r.value());
+    EXPECT_EQ(line.rfind("STORED_BOOK_NOT_LOADED portfolio BASE_PORTFOLIO: 3 stored non-zero position(s)", 0), 0u)
+        << line;
+    EXPECT_NE(line.find("it runs as LIVE_TREND_FOLLOWING_FAST"), std::string::npos) << line;
+    EXPECT_NE(line.find("TREND_FOLLOWING 6C.v.0 1.0000"), std::string::npos) << line;
+    EXPECT_NE(line.find("Refusing to run"), std::string::npos) << line;
+
+    // the same strategy id, one of its sleeves not loaded: that sleeve's rows only
+    r = stored_positions_outside_run(db, "BASE_PORTFOLIO", kBaseId, {"TREND_FOLLOWING_FAST"}, kRunDate);
+    ASSERT_TRUE(r.is_ok());
+    EXPECT_EQ(r.value().size(), 2u);
+}
+
+TEST(StoredBookOwnership, AFailedReadIsAnErrorNotAnEmptyBook) {
+    StoredBookDatabase db;
+    db.fail = true;
+    const auto r = stored_positions_outside_run(db, "BASE_PORTFOLIO", kBaseId, {"TREND_FOLLOWING"}, kRunDate);
+    ASSERT_TRUE(r.is_error());
+    EXPECT_NE(std::string(r.error()->what()).find("previous stored book could not be read"), std::string::npos);
+}
+
+// Both live futures runners refuse before any row of the day is written: the check sits above the
+// sizing read, which is itself above the first write (the live_run_metadata upsert).
+TEST(StoredBookOwnership, BothLiveFuturesRunnersRefuseBeforeAnyRowIsWritten) {
+    const auto root = repo_root();
+    ASSERT_FALSE(root.empty());
+    for (const char* runner : {"apps/strategies/live_portfolio_conservative.cpp",
+                               "apps/strategies/live_portfolio.cpp"}) {
+        const std::string src = read_all(root / runner);
+        const size_t check = src.find("stored_positions_outside_run(*db, coordinator_config.portfolio_id,");
+        ASSERT_NE(check, std::string::npos) << runner;
+        const size_t refuse = src.find("return 1;", check);
+        const size_t sizing = src.find("read_live_sizing_equity(", check);
+        const size_t first_write = src.find("db->store_live_run_metadata(", check);
+        ASSERT_NE(sizing, std::string::npos);
+        ASSERT_NE(first_write, std::string::npos);
+        EXPECT_LT(refuse, sizing) << runner;
+        EXPECT_LT(sizing, first_write) << runner;
+        EXPECT_EQ(src.substr(0, check).find("db->store_"), std::string::npos)
+            << runner << " writes a row above the check";
+        EXPECT_EQ(count_of(src, "WARN(sizing_capital_history_log_line("), 1u) << runner;
+    }
+    for (const char* runner : kFuturesRunners) {
+        EXPECT_EQ(count_of(read_all(root / runner), "Logger::register_component(\"SleeveConfig\");"), 2u)
+            << runner << ": the required-key refusal is logged under its own tag";
+    }
+}
+
 // The generic optimiser step, which no book with a trend sleeve reaches after the one pass, reads
 // no trend sleeve: one cast is left in the manager, the one above.
 TEST(OverlaySleeveNotionalSource, TheUnreachedCastSitesAreGone) {
     const auto root = repo_root();
     ASSERT_FALSE(root.empty());
     const std::string src = read_all(root / "src/portfolio/portfolio_manager.cpp");
-    EXPECT_EQ(count_of(src, "dynamic_pointer_cast<TrendFollowingStrategy>"), 1u);
-    const size_t at = src.find("dynamic_pointer_cast<TrendFollowingStrategy>");
-    ASSERT_NE(at, std::string::npos);
+    // Two casts are left: the refusal of a trend sleeve with no overlay sleeve (it reads no trend
+    // data), and the one reached site.
+    EXPECT_EQ(count_of(src, "dynamic_pointer_cast<TrendFollowingStrategy>"), 2u);
+    const size_t refusal = src.find("dynamic_pointer_cast<TrendFollowingStrategy>");
+    ASSERT_NE(refusal, std::string::npos);
+    EXPECT_NE(src.find("names no overlay sleeve the one pass can run on", refusal), std::string::npos);
+    const size_t at = src.rfind("dynamic_pointer_cast<TrendFollowingStrategy>");
+    ASSERT_NE(at, refusal);
     const size_t function = src.rfind("PortfolioManager::delivered_notional_per_contract(", at);
     ASSERT_NE(function, std::string::npos);
     EXPECT_EQ(src.find("\n}\n", function) > at, true) << "the remaining cast is not in that function";

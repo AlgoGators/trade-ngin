@@ -33,6 +33,7 @@
 #pragma once
 
 #include <chrono>
+#include <cmath>
 #include <functional>
 #include <set>
 #include <string>
@@ -104,7 +105,12 @@ struct LiveSizingRead {
     std::string t1_date;            ///< Day T-1, YYYY-MM-DD
     std::string t1_unsettled_reason;
     std::vector<std::string> earlier_unsettled;  ///< earlier dates still unsettled, in date order
-    double starting_drawdown{0.0};  ///< D_0 the capital was computed from (0: not a seeded chain)
+    /// With a Day T-1 row and a stored row before it: the starting capital plus the sum of every
+    /// stored daily_pnl before Day T-1, less the stored value of the row before Day T-1. Zero on a
+    /// chain whose rows are complete and in order; anything else is P&L the stored value carries
+    /// and no row does (or the reverse), which the sizing capital, built from rows, cannot see.
+    bool history_compared{false};
+    double history_gap{0.0};
 };
 
 /**
@@ -136,9 +142,7 @@ inline bool sizing_history_day_unsettled(const LiveDataLoader::PnlHistoryRow& ro
 /// and their arguments are the runner's before T-7b-3: Day T-1's row, the previous row (before
 /// Day T-1 with a Day T-1 row, before the run date without one), then each sleeve's Day T-1 book.
 /// `t1_closes`, `t2_closes` and `zero_settlement_symbols` are the T-1 settlement on the consumed
-/// bars (consumed_t1_settlement), the inputs STEP 4 finalises Day T-1 with. `starting_drawdown` is
-/// D_0 (section 3.1; portfolio.json's optional starting_drawdown): the capital starts at the
-/// starting capital less D_0 and reaches the starting capital only after D_0 of net profit.
+/// bars (consumed_t1_settlement), the inputs STEP 4 finalises Day T-1 with.
 inline LiveSizingRead read_live_sizing_equity(
     LiveDataLoader& data_loader, DatabaseInterface& db, const std::string& strategy_id,
     const std::string& portfolio_id, const std::vector<std::string>& sleeves, const Timestamp& now,
@@ -146,9 +150,8 @@ inline LiveSizingRead read_live_sizing_equity(
     const std::unordered_map<std::string, double>& t2_closes,
     const std::function<double(const std::string&)>& point_value,
     const std::unordered_set<std::string>& zero_settlement_symbols,
-    const LiveSizingCalendar& calendar, double starting_drawdown) {
+    const LiveSizingCalendar& calendar) {
     LiveSizingRead out;
-    out.starting_drawdown = starting_drawdown;
     std::string equity_failure;
     const auto sizing_t1 = now - std::chrono::hours(24);
     out.t1_date = core::format_utc_date(sizing_t1);
@@ -244,8 +247,29 @@ inline LiveSizingRead read_live_sizing_equity(
         out.settled_through = out.t1_date;
     }
     out.settled_rows = static_cast<int>(settled_nets.size());
-    out.capital = half_compounded_capital(initial_capital, settled_nets, starting_drawdown);
+    out.capital = half_compounded_capital(initial_capital, settled_nets);
+    if (t1_row_stored && stored.is_ok() && !history.value().empty()) {
+        double history_sum = 0.0;
+        for (const auto& row : history.value()) history_sum += row.daily_pnl;
+        out.history_compared = true;
+        out.history_gap = initial_capital + history_sum - day_before;
+    }
     return out;
+}
+
+/// The stored rows and the stored value part by more than a cent.
+inline bool sizing_history_mismatch(const LiveSizingRead& read) {
+    return read.history_compared && std::abs(read.history_gap) > 0.01;
+}
+
+/// The SIZING_CAPITAL_HISTORY line (WARN) printed beside SIZING_CAPITAL when they do.
+inline std::string sizing_capital_history_log_line(const std::string& run_date,
+                                                   const LiveSizingRead& read) {
+    return "SIZING_CAPITAL_HISTORY date=" + run_date + " gap=" + std::to_string(read.history_gap) +
+           " day_before=" + std::to_string(read.equity.day_before) +
+           ": the starting capital plus the stored daily_pnl of every row before Day T-1 is not "
+           "the stored value of the row before Day T-1; the sizing capital and "
+           "risk_detail.account_value are built from the rows";
 }
 
 /// The SIZING_CAPITAL line of a sized run (LOOP_SPEC section 7.7): the capital, the account the
@@ -262,10 +286,7 @@ inline std::string sizing_capital_log_line(const std::string& run_date, const Li
            read.day_before_source + ") t1_settlement=" + std::to_string(read.equity.t1_settlement) +
            " t1_costs=" + std::to_string(read.equity.t1_costs) +
            " priced=" + std::to_string(read.equity.priced) +
-           " unpriced=" + std::to_string(read.equity.unpriced) +
-           (read.starting_drawdown > 0.0
-                ? " starting_drawdown=" + std::to_string(read.starting_drawdown)
-                : std::string());
+           " unpriced=" + std::to_string(read.equity.unpriced);
 }
 
 /// The SIZING_CAPITAL_UNSETTLED line (WARN) of a run whose Day T-1 is on a failure path.

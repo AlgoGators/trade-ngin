@@ -302,6 +302,10 @@ bool TransactionCostManager::has_volume_history(const std::string& symbol) const
     return impact_model_.has_sufficient_data(symbol, 1);
 }
 
+bool TransactionCostManager::has_usable_volume(const std::string& symbol) const {
+    return has_volume_history(symbol) && impact_model_.get_adv(symbol) > 0.0;
+}
+
 double TransactionCostManager::get_volatility_multiplier(const std::string& symbol) const {
     return spread_model_.get_volatility_multiplier(symbol);
 }

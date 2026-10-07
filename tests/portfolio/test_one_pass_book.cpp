@@ -18,12 +18,19 @@
 
 #include <chrono>
 #include <cmath>
+#include <filesystem>
+#include <fstream>
+#include <sstream>
+#include <cstdlib>
+#include <algorithm>
 #include <limits>
 #include <memory>
 #include <string>
 #include <thread>
 #include <unordered_set>
 #include <vector>
+
+#include <unistd.h>
 
 #include "../core/test_base.hpp"
 #include "../data/test_db_utils.hpp"
@@ -619,6 +626,109 @@ TEST_F(OnePassBookTest, ASymbolTheCostModelWasNeverFedIsNotPricedOnADefault) {
               1u) << out;
     // It stays in the pass, a participant held at zero: its dates count in the overlay's window.
     EXPECT_EQ(count_of(out, " participants=2 free=1 held=1 "), 1u) << out;
+}
+
+// A refused day has a record row like any other day. With the rebalance's record switched on (the
+// gate harness switches it on for every run) a scope the MANAGER refuses (here a held symbol with
+// no usable close; a stopped overlay sleeve and a refused sleeve take the same path) used to index
+// three vectors that path never sized, and the run died of a segmentation fault instead of holding
+// the book and exiting as a refusal does.
+TEST_F(OnePassBookTest, ARefusedDayWritesItsRecordRowAndDoesNotCrash) {
+    const std::filesystem::path dir =
+        std::filesystem::temp_directory_path() / ("trade_ngin_refused_record_" + std::to_string(::getpid()));
+    std::filesystem::remove_all(dir);
+    std::filesystem::create_directories(dir);
+    static int n = 0;
+    const std::string id = "PM_REFUSED_RECORD_" + std::to_string(++n);
+    pm_ = std::make_unique<PortfolioManager>(one_pass_config("A"), id);
+    pm_->set_backtest_mode(false);
+    a_ = make_overlay_stub("A", 500000.0, db_);
+    ASSERT_TRUE(a_->initialize().is_ok());
+    ASSERT_TRUE(a_->start().is_ok());
+    ASSERT_TRUE(pm_->add_strategy(a_, 1.0, true).is_ok());
+    a_->rows["AAA"] = row(9.0);
+    a_->rows["BBB"] = row(9.0);
+    Position seed;
+    seed.average_price = Decimal(100.0);
+    for (const auto& [symbol, quantity] :
+         std::vector<std::pair<std::string, double>>{{"AAA", 3.0}, {"BBB", 4.0}, {"ZZZ", 2.0}}) {
+        seed.symbol = symbol;  // ZZZ: held, and the sleeve, the price history and the registry know nothing of it
+        seed.quantity = Decimal(quantity);
+        ASSERT_TRUE(pm_->update_strategy_position("A", symbol, seed).is_ok());
+    }
+
+    ::setenv("TRADE_NGIN_SERIES_DUMP_DIR", dir.c_str(), 1);
+    const auto refused = process({one_pass_bar("AAA", 1, 100.0), one_pass_bar("BBB", 1, 100.0)});
+    ::unsetenv("TRADE_NGIN_SERIES_DUMP_DIR");
+    ASSERT_TRUE(refused.is_ok()) << "a seeded scope holds its book";
+    EXPECT_TRUE(pm_->last_one_pass().refused);
+    EXPECT_EQ(quantity("A", "AAA"), 3.0);
+    EXPECT_EQ(quantity("A", "BBB"), 4.0);
+    EXPECT_EQ(quantity("A", "ZZZ"), 2.0);
+    EXPECT_TRUE(fills("A", "AAA").empty());
+
+    auto lines = [](const std::filesystem::path& p) {
+        std::ifstream in(p);
+        std::vector<std::string> out;
+        for (std::string line; std::getline(in, line);) out.push_back(line);
+        return out;
+    };
+    const auto days = lines(dir / ("onepass_days_" + id + ".csv"));
+    const auto book = lines(dir / ("onepass_book_" + id + ".csv"));
+    ASSERT_EQ(days.size(), 2u) << "the header and the refused day";
+    ASSERT_EQ(book.size(), 3u) << "the header and the two symbols passed (ZZZ is left out)";
+    // the refused day's rows: every column present, the held book in the search, pre-trim and stored columns
+    const auto cells = [](const std::string& line) {
+        std::vector<std::string> out;
+        std::stringstream ss(line);
+        for (std::string cell; std::getline(ss, cell, ',');) out.push_back(cell);
+        return out;
+    };
+    const auto header = cells(book[0]);
+    const std::vector<double> held = {3.0, 4.0};
+    for (size_t k = 1; k < 3; ++k) {
+        const auto r = cells(book[k]);
+        ASSERT_EQ(r.size(), header.size());
+        auto at = [&](const std::string& name) {
+            return r[static_cast<size_t>(std::find(header.begin(), header.end(), name) - header.begin())];
+        };
+        EXPECT_EQ(std::stod(at("held")), held[k - 1]);
+        EXPECT_EQ(std::stod(at("search_book")), held[k - 1]);
+        EXPECT_EQ(std::stod(at("pre_trim")), held[k - 1]);
+        EXPECT_EQ(std::stod(at("book")), held[k - 1]);
+        EXPECT_EQ(at("cap_bound"), "0");
+    }
+    std::filesystem::remove_all(dir);
+}
+
+// A symbol the cost model was fed nothing but zero volume has no volume of its own either: the
+// model would price it on the same generic volume as a symbol it was never fed. Held, named, not
+// opened; a symbol fed a real volume beside it trades.
+TEST_F(OnePassBookTest, ASymbolFedOnlyZeroVolumeIsNotPricedOnADefault) {
+    make_pm();
+    a_->rows["AAA"] = row(5.0);
+    a_->rows["NEW"] = row(5.0);
+    const std::vector<Bar> bars = {one_pass_bar("AAA", 1, 100.0), one_pass_bar("NEW", 1, 100.0, 0.0)};
+    feed_costs(bars);  // AAA 100,000 lots; NEW a bar of zero volume
+    ASSERT_TRUE(pm_->get_transaction_cost_manager().has_volume_history("NEW"));
+    EXPECT_FALSE(pm_->get_transaction_cost_manager().has_usable_volume("NEW"));
+    EXPECT_TRUE(pm_->get_transaction_cost_manager().has_usable_volume("AAA"));
+    EXPECT_FALSE(pm_->get_transaction_cost_manager().has_usable_volume("NEVER_FED"));
+    ::testing::internal::CaptureStdout();
+    ASSERT_TRUE(pm_->process_market_data(bars, false, one_pass_day(2), nullptr).is_ok());
+    const std::string out = ::testing::internal::GetCapturedStdout();
+    EXPECT_EQ(quantity("A", "AAA"), 4.0);
+    EXPECT_EQ(quantity("A", "NEW"), 0.0) << "not opened on the generic volume";
+    EXPECT_TRUE(fills("A", "NEW").empty());
+    EXPECT_EQ(count_of(out, "BOOK_UNPRICED NEW: the cost model has no cost for it (its fed volume is zero)"), 1u)
+        << out;
+
+    // once it has a volume of its own it is priced and trades
+    const std::vector<Bar> next = {one_pass_bar("AAA", 2, 100.0), one_pass_bar("NEW", 2, 100.0, 50000.0)};
+    pm_->get_transaction_cost_manager().set_own_day_volume("NEW", 50000.0);
+    pm_->update_cost_manager_market_data("AAA", 100000.0, 100.0, 100.0);
+    ASSERT_TRUE(pm_->process_market_data(next, false, one_pass_day(3), nullptr).is_ok());
+    EXPECT_EQ(quantity("A", "NEW"), 4.0);
 }
 
 // A stopped overlay sleeve leaves the book nothing to be weighed on. The scope is refused through

@@ -48,6 +48,7 @@
 #include "trade_ngin/risk/risk_scale_report.hpp"
 #include "trade_ngin/storage/live_results_manager.hpp"
 #include "trade_ngin/transaction_cost/netting.hpp"
+#include "trade_ngin/live/stored_book_ownership.hpp"
 #include "trade_ngin/strategy/short_window_log.hpp"
 #include "trade_ngin/strategy/sleeve_config.hpp"
 #include "trade_ngin/strategy/trend_following.hpp"
@@ -616,9 +617,6 @@ int main(int argc, char* argv[]) {
         portfolio_config.opt_config = opt_config;
         portfolio_config.risk_config = risk_config;
         apply_loop_config(app_config, portfolio_config);
-        // Section 3.1, "chain seeding": the drawdown a seeded live chain starts with (0 when the
-        // key is absent), recorded with the run beside sizing_mode and passed to the sizing read.
-        portfolio_config.starting_drawdown = app_config.starting_drawdown;
 
         // ========================================
         // PHASE 2: STRATEGY INSTANCE FACTORY
@@ -672,6 +670,7 @@ int main(int argc, char* argv[]) {
                     auto sleeve_keys =
                         trade_ngin::read_required_sleeve_keys(strategy_name, strategy_def, trend_config);
                     if (sleeve_keys.is_error()) {
+                        Logger::register_component("SleeveConfig");
                         ERROR(std::string(sleeve_keys.error()->what()));
                         std::cerr << sleeve_keys.error()->what() << std::endl;
                         return 1;
@@ -716,6 +715,7 @@ int main(int argc, char* argv[]) {
                     auto sleeve_keys =
                         trade_ngin::read_required_sleeve_keys(strategy_name, strategy_def, trend_config);
                     if (sleeve_keys.is_error()) {
+                        Logger::register_component("SleeveConfig");
                         ERROR(std::string(sleeve_keys.error()->what()));
                         std::cerr << sleeve_keys.error()->what() << std::endl;
                         return 1;
@@ -1359,6 +1359,23 @@ int main(int argc, char* argv[]) {
         // live_run_metadata upsert like the other refusals, so a run that cannot set it leaves no
         // row.
         // ========================================
+        // A stored book the run will not load (live/stored_book_ownership.hpp): refused here,
+        // before any row of the day is written.
+        {
+            auto outside = stored_positions_outside_run(*db, coordinator_config.portfolio_id,
+                                                        combined_strategy_id, strategy_names, now);
+            if (outside.is_error() || !outside.value().empty()) {
+                const std::string line =
+                    outside.is_error()
+                        ? "STORED_BOOK_NOT_LOADED portfolio " + coordinator_config.portfolio_id +
+                              ": " + std::string(outside.error()->what()) + ". Refusing to run."
+                        : stored_positions_outside_run_line(coordinator_config.portfolio_id,
+                                                            combined_strategy_id, outside.value());
+                ERROR(line);
+                std::cerr << line << std::endl;
+                return 1;
+            }
+        }
         LiveSizingEquity sizing_equity;
         // LOOP_SPEC section 3.1 (D19): the capital the book is sized on is the half compounding of
         // the book's settled daily P&L (live/live_sizing_read.hpp), recomputed on every run from
@@ -1394,8 +1411,7 @@ int main(int argc, char* argv[]) {
                     calendar.no_t1_closes = price_manager->get_all_previous_day_prices().empty();
                     calendar.no_t2_closes = price_manager->get_all_two_days_ago_prices().empty();
                     return calendar;
-                }(),
-                app_config.starting_drawdown);
+                }());
             if (sizing_read.outcome == LiveSizingOutcome::kRefuseRun) {
                 ERROR("SIZING_CAPITAL refused: " + sizing_read.failure +
                       ". Refusing to run: the book cannot be sized and there is no book to hold.");
@@ -1411,6 +1427,9 @@ int main(int argc, char* argv[]) {
                 sizing_equity = sizing_read.equity;
                 sizing_capital_read = sizing_read;
                 INFO(sizing_capital_log_line(core::format_utc_date(now), sizing_read));
+                if (sizing_history_mismatch(sizing_read)) {
+                    WARN(sizing_capital_history_log_line(core::format_utc_date(now), sizing_read));
+                }
                 if (sizing_read.t1_unsettled) {
                     WARN(sizing_capital_unsettled_log_line(core::format_utc_date(now), sizing_read));
                 }
@@ -1595,10 +1614,11 @@ int main(int argc, char* argv[]) {
             }
         }
 
-        // H-2 (T-7b-1 C8d): the PortfolioManager's own cost manager prices the optimizer's cost
-        // vector (calculate_trading_costs). Live never fed it, so every entry was priced off its
-        // fallbacks (ADV 100,000, vol_mult 1.0). It is fed the SAME K2 feed as the execution
-        // manager's, here, before process_market_data runs the optimizer below.
+        // H-2 (T-7b-1 C8d): the PortfolioManager's own cost manager prices the one pass's cost
+        // vector (the cost of one contract of every symbol the pass weighs,
+        // rebalance_one_pass) and the fills it books. It is fed the SAME K2 feed as the
+        // execution manager's, here, before process_market_data runs the pass below; a symbol
+        // with no usable volume in it is held, never priced on a generic ADV.
         {
             auto& optimizer_cost_model = portfolio->get_transaction_cost_manager();
             const auto optimizer_feed =

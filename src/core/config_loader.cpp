@@ -4,7 +4,6 @@
 
 #include <algorithm>
 #include <cctype>
-#include <cmath>
 #include <ctime>
 #include <fstream>
 #include <iomanip>
@@ -347,21 +346,6 @@ Result<AppConfig> ConfigLoader::extract_config(const nlohmann::json& merged) {
                     "ConfigLoader");
             }
             config.sizing_mode = v.get<std::string>();
-        }
-        // LOOP_SPEC section 3.1 and section 12 "chain seeding": the drawdown D_0 a seeded live
-        // chain starts with, in dollars. Optional; absent is 0 (a book that starts at its starting
-        // capital). A negative or non-numeric value is refused.
-        if (merged.contains("starting_drawdown")) {
-            const auto& v = merged.at("starting_drawdown");
-            if (!v.is_number() || !std::isfinite(v.get<double>()) || v.get<double>() < 0.0) {
-                return make_error<AppConfig>(
-                    ErrorCode::INVALID_DATA,
-                    "config for " + config.portfolio_id +
-                        ": portfolio.json \"starting_drawdown\" must be a number of dollars at or "
-                        "above 0, got " + v.dump(),
-                    "ConfigLoader");
-            }
-            config.starting_drawdown = v.get<double>();
         }
         if (merged.contains("starting_capital")) {
             const auto& v = merged.at("starting_capital");

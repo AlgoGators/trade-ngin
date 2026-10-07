@@ -370,11 +370,7 @@ TEST(NoSilentDefaults, TheSettlementSizingAndHoldInputsAreRequired) {
     EXPECT_FALSE((kReadsSizing<LiveDataLoader&, DatabaseInterface&, const std::string&, const std::string&, Names,
                                const Timestamp&, double, Closes, Closes, PointValue, Symbols>))
         << "read_live_sizing_equity compiles without the bar calendar its settled test reads";
-    EXPECT_FALSE((kReadsSizing<LiveDataLoader&, DatabaseInterface&, const std::string&, const std::string&, Names,
-                               const Timestamp&, double, Closes, Closes, PointValue, Symbols,
-                               const LiveSizingCalendar&>))
-        << "read_live_sizing_equity compiles without the starting drawdown (a seeded chain's D_0)";
     EXPECT_TRUE((kReadsSizing<LiveDataLoader&, DatabaseInterface&, const std::string&, const std::string&, Names,
                               const Timestamp&, double, Closes, Closes, PointValue, Symbols,
-                              const LiveSizingCalendar&, double>));
+                              const LiveSizingCalendar&>));
 }

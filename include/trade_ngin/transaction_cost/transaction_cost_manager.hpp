@@ -212,6 +212,14 @@ public:
     bool has_volume_history(const std::string& symbol) const;
 
     /**
+     * @brief Whether the symbol has a volume of its own to be priced on: it was fed AND the
+     *        average of what it was fed is above 0. A symbol fed nothing but zero volume has an
+     *        ADV of 0, and calculate_costs then prices it on the same generic ADV as a symbol it
+     *        was never fed.
+     */
+    bool has_usable_volume(const std::string& symbol) const;
+
+    /**
      * @brief Get current volatility multiplier for a symbol
      */
     double get_volatility_multiplier(const std::string& symbol) const;

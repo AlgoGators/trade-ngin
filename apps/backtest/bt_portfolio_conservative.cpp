@@ -330,6 +330,7 @@ int main() {
                     auto sleeve_keys =
                         trade_ngin::read_required_sleeve_keys(strategy_id, strategy_def, trend_config);
                     if (sleeve_keys.is_error()) {
+                        Logger::register_component("SleeveConfig");
                         ERROR(std::string(sleeve_keys.error()->what()));
                         std::cerr << sleeve_keys.error()->what() << std::endl;
                         return 1;
@@ -374,6 +375,7 @@ int main() {
                     auto sleeve_keys =
                         trade_ngin::read_required_sleeve_keys(strategy_id, strategy_def, trend_config);
                     if (sleeve_keys.is_error()) {
+                        Logger::register_component("SleeveConfig");
                         ERROR(std::string(sleeve_keys.error()->what()));
                         std::cerr << sleeve_keys.error()->what() << std::endl;
                         return 1;
