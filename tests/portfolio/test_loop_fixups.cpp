@@ -558,6 +558,14 @@ TEST(StoredBookOwnership, StoredPositionsOfASleeveTheRunDoesNotLoadAreNamed) {
     EXPECT_NE(line.find("it runs as LIVE_TREND_FOLLOWING_FAST"), std::string::npos) << line;
     EXPECT_NE(line.find("TREND_FOLLOWING 6C.v.0 1.0000"), std::string::npos) << line;
     EXPECT_NE(line.find("Refusing to run"), std::string::npos) << line;
+    // the remedy names the portfolio id before the sleeves, and never tells the operator to close
+    // positions: a config pointed at another portfolio would be told to close that book's
+    const auto portfolio_check = line.find("Check that the config's portfolio_id");
+    const auto sleeve_remedy = line.find("load every sleeve");
+    ASSERT_NE(portfolio_check, std::string::npos) << line;
+    ASSERT_NE(sleeve_remedy, std::string::npos) << line;
+    EXPECT_LT(portfolio_check, sleeve_remedy) << line;
+    EXPECT_EQ(line.find("close"), std::string::npos) << line;
 
     // the same strategy id, one of its sleeves not loaded: that sleeve's rows only
     r = stored_positions_outside_run(db, "BASE_PORTFOLIO", kBaseId, {"TREND_FOLLOWING_FAST"}, kRunDate);

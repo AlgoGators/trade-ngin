@@ -84,7 +84,8 @@ inline std::string stored_positions_outside_run_line(const std::string& portfoli
            " stored non-zero position(s) of the previous book belong to a strategy or sleeve this "
            "run does not load (it runs as " + strategy_id + "): " + rows +
            ". Refusing to run: the run would store a new book beside them and leave them held "
-           "with no fill. Load every sleeve that holds a position, or close those positions first.";
+           "with no fill. Check that the config's portfolio_id names this book's own portfolio, "
+           "then load every sleeve the stored book holds a position under.";
 }
 
 }  // namespace trade_ngin
