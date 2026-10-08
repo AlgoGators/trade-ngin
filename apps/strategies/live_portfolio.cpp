@@ -26,6 +26,7 @@
 #include "trade_ngin/live/csv_exporter.hpp"
 #include "trade_ngin/live/data_freshness.hpp"
 #include "trade_ngin/live/execution_manager.hpp"
+#include "trade_ngin/live/finalized_books_read.hpp"
 #include "trade_ngin/live/futures_cost_feed.hpp"
 #include "trade_ngin/live/live_data_loader.hpp"
 #include "trade_ngin/live/live_historical_metrics.hpp"
@@ -4115,6 +4116,17 @@ int main(int argc, char* argv[]) {
                   std::string(current_export_result.error()->what()));
         }
 
+        // The Day T-1 books as stored after the finalize write above. previous_strategy_positions
+        // was loaded before it (the no-session hold needs the stored book early), so its realized
+        // P&L is still yesterday's placeholder: the yesterday CSV and the email's "Yesterday's
+        // Finalized Position Results" table print the rows read back here.
+        const SleeveBooks finalized_strategy_positions = read_back_finalized_books(
+            previous_strategy_positions, [&](const std::string& strategy_name) {
+                return db->load_positions_by_date(combined_strategy_id, strategy_name,
+                                                  coordinator_config.portfolio_id, previous_date,
+                                                  "trading.positions");
+            });
+
         // Export yesterday's finalized positions with per-strategy breakdown (if not first trading
         // day)
         std::string yesterday_filename;
@@ -4124,7 +4136,7 @@ int main(int argc, char* argv[]) {
             auto yesterday_time = now - std::chrono::hours(24);
 
             auto finalized_export_result = csv_exporter->export_finalized_positions(
-                now, yesterday_time, previous_strategy_positions,
+                now, yesterday_time, finalized_strategy_positions,
                 two_days_ago_close_prices,  // Entry prices (T-2)
                 previous_day_close_prices   // Exit prices (T-1)
             );
@@ -4499,8 +4511,8 @@ int main(int argc, char* argv[]) {
                         previous_day_close_prices,    // Pass Day T-1 close prices for today's
                                                       // positions
                         db,                           // Pass database for symbols reference table
-                        previous_strategy_positions,  // Per-strategy yesterday's positions for
-                                                      // grouped tables
+                        finalized_strategy_positions,  // Per-strategy yesterday's positions,
+                                                       // read back after the finalize
                         yesterday_exit_prices,   // Day T-1 close prices for yesterday's positions
                         yesterday_entry_prices,  // Day T-2 close prices for yesterday's positions
                         yesterday_daily_metrics_final  // Yesterday's metrics

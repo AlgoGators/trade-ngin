@@ -133,6 +133,7 @@ set(TEST_SOURCES
     live/test_feed_freshness_universe.cpp
     live/test_feed_ingestion_assertion.cpp
     live/test_day_t_write_ordering.cpp
+    live/test_finalized_books_read.cpp
     live/test_live_run_refusal_arms.cpp
     live/test_risk_module_error_path.cpp
     live/test_sleeve_risk_module_failure.cpp
@@ -189,6 +190,7 @@ set(TEST_SOURCES
     live/test_finalize_realized_policy.cpp
     live/test_realized_row_retention.cpp
     live/test_unrealized_cost_basis.cpp
+    live/test_yesterday_rows_source.cpp
     live/test_live_data_loader.cpp
     live/test_live_results_roll_cost_columns.cpp
     live/test_csv_exporter.cpp
