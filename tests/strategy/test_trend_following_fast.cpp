@@ -10,9 +10,7 @@
 
 // Expose private members so we can populate the singleton registry in tests
 // (no public API to add instruments without a real DB connection).
-#define private public
 #include "trade_ngin/instruments/instrument_registry.hpp"
-#undef private
 
 #include "trade_ngin/strategy/trend_following_fast.hpp"
 

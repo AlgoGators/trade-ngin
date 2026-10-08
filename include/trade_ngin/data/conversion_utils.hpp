@@ -8,6 +8,7 @@
 #include <vector>
 #include "trade_ngin/core/error.hpp"
 #include "trade_ngin/core/types.hpp"
+#include "trade_ngin/core/testing_access.hpp"
 
 namespace trade_ngin {
 
@@ -20,6 +21,7 @@ public:
      */
     static Result<std::vector<Bar>> arrow_table_to_bars(const std::shared_ptr<arrow::Table>& table);
 
+TESTING_PRIVATE:
     // ------------------------------------------------------------
     // Type-safe accessors (Phase 5 §1.17a + §5d)
     //
@@ -37,7 +39,6 @@ public:
     // chunk-aware: resolves (chunk_index, offset) from a logical row index
     // by walking the ChunkedArray, so callers don't have to assume chunk(0).
     // ------------------------------------------------------------
-
     /**
      * @brief Get a double from a ChunkedArray, with type-aware dispatch.
      *

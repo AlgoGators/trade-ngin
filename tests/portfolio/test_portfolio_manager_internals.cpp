@@ -1,5 +1,4 @@
 // Direct tests of PortfolioManager internal helpers (private members reached
-// via #define private public) plus multi-cycle integration scenarios that
 // exercise the optimization+risk iterative loop, execution generation from
 // previous-vs-current diffs, and update_historical_returns/calculate_covariance_matrix
 // in isolation.
@@ -13,9 +12,7 @@
 #include "../data/test_db_utils.hpp"
 #include "mock_strategy.hpp"
 
-#define private public
 #include "trade_ngin/portfolio/portfolio_manager.hpp"
-#undef private
 
 #include "trade_ngin/risk/risk_manager.hpp"
 
@@ -109,7 +106,6 @@ protected:
     std::string manager_id_;
 };
 
-// ===== validate_allocations (private; reached via #define private public) =====
 
 TEST_F(PortfolioManagerInternalsTest, ValidateAllocationsRejectsEmptyMap) {
     auto a = make_strategy("V1");

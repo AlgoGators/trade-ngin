@@ -80,7 +80,6 @@ Result<void> HMM::fit(const Eigen::MatrixXd& observations) {
     // Baum-Welch algorithm (EM)
     double prev_log_likelihood = -std::numeric_limits<double>::infinity();
     bool converged = false;
-    last_convergence_info_ = ConvergenceInfo{};
 
     for (int iter = 0; iter < config_.max_iterations; ++iter) {
         Eigen::MatrixXd gamma(T, config_.n_states);
@@ -89,18 +88,12 @@ Result<void> HMM::fit(const Eigen::MatrixXd& observations) {
         // E-step: Forward-backward algorithm
         double log_likelihood = forward_backward(observations, gamma, xi);
 
-        last_convergence_info_.objective_history.push_back(log_likelihood);
-
         double delta = std::abs(log_likelihood - prev_log_likelihood);
         TRACE("[HMM::fit] iter=" << iter << " ll=" << log_likelihood << " delta=" << delta);
 
         // Check convergence
         if (delta < config_.tolerance) {
             converged = true;
-            last_convergence_info_.iterations = iter + 1;
-            last_convergence_info_.final_tolerance = delta;
-            last_convergence_info_.converged = true;
-            last_convergence_info_.termination_reason = "tolerance";
             break;
         }
         prev_log_likelihood = log_likelihood;
@@ -154,29 +147,11 @@ Result<void> HMM::fit(const Eigen::MatrixXd& observations) {
 
     if (!converged) {
         WARN("[HMM::fit] did not converge after " << config_.max_iterations << " iterations");
-        last_convergence_info_.iterations = config_.max_iterations;
-        last_convergence_info_.converged = false;
-        last_convergence_info_.termination_reason = "max_iterations";
-        if (!last_convergence_info_.objective_history.empty()) {
-            double last_ll = last_convergence_info_.objective_history.back();
-            double prev = (last_convergence_info_.objective_history.size() > 1)
-                ? last_convergence_info_.objective_history[last_convergence_info_.objective_history.size() - 2]
-                : -std::numeric_limits<double>::infinity();
-            last_convergence_info_.final_tolerance = std::abs(last_ll - prev);
-        }
     }
 
     initialized_ = true;
     DEBUG("[HMM::fit] exit: converged=" << converged);
     return Result<void>();
-}
-
-Result<ConvergenceInfo> HMM::fit_with_diagnostics(const Eigen::MatrixXd& observations) {
-    auto result = fit(observations);
-    if (result.is_error()) {
-        return make_error<ConvergenceInfo>(result.error()->code(), result.error()->what(), "HMM");
-    }
-    return Result<ConvergenceInfo>(last_convergence_info_);
 }
 
 void HMM::initialize_parameters(const Eigen::MatrixXd& observations) {

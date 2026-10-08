@@ -13,9 +13,7 @@
 #include <map>
 #include <string>
 #include <vector>
-#define private public
 #include "trade_ngin/core/config_loader.hpp"
-#undef private
 
 using namespace trade_ngin;
 using namespace trade_ngin::testing;

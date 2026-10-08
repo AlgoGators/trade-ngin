@@ -16,19 +16,7 @@
 // valid; needed because extract_* helpers are private.
 #include <string>
 #include <vector>
-#define private public
 #include "trade_ngin/data/conversion_utils.hpp"
-#include <gtest/gtest.h>
-
-#include <arrow/chunked_array.h>
-
-#include <memory>
-#include <vector>
-
-#include "trade_ngin/core/error.hpp"
-#include "trade_ngin/data/conversion_utils.hpp"
-
-#undef private
 
 using namespace trade_ngin;
 

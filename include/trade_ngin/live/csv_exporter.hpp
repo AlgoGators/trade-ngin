@@ -8,6 +8,7 @@
 #include <vector>
 #include "trade_ngin/core/error.hpp"
 #include "trade_ngin/core/types.hpp"
+#include "trade_ngin/core/testing_access.hpp"
 
 namespace trade_ngin {
 
@@ -141,7 +142,7 @@ public:
      */
     void set_output_directory(const std::string& directory);
 
-private:
+TESTING_PRIVATE:
     std::string output_directory_;
 
     /**

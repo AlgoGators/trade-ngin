@@ -1,0 +1,201 @@
+name: Build and upload to PyPI
+
+on:
+  workflow_dispatch:
+  pull_request:
+  push:
+    branches:
+      - main
+  release:
+    types:
+      - published
+
+jobs:
+  build_wheels:
+    name: Build wheels for ${{ matrix.os }}
+    runs-on: ${{ matrix.runs-on }}
+    strategy:
+      # Without this, one platform failing cancels the other three mid-build
+      # and they all report as failures. One real macos-arm failure was
+      # cancelling linux-intel, windows-intel and macos-intel within 23
+      # seconds, so four red checks described one problem and hid whether
+      # the other three platforms build at all.
+      fail-fast: false
+      matrix:
+        include:
+          - os: linux-intel
+            runs-on: ubuntu-latest
+            triplet: x64-linux
+
+          # - os: linux-arm
+          #   runs-on: ubuntu-24.04-arm
+          #   triplet: arm64-linux
+
+          - os: windows-intel
+            runs-on: windows-latest
+            triplet: x64-windows-static-md
+
+          # - os: windows-arm
+          #   runs-on: windows-11-arm
+          #   triplet: arm64-windows
+
+          - os: macos-intel
+            runs-on: macos-15-intel # macos-15-intel is the last x86_64 runner
+            triplet: x64-osx
+
+          - os: macos-arm
+            runs-on: macos-latest # macos-14+ (including latest) are ARM64 runners
+            triplet: arm64-osx
+
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+          submodules: recursive
+
+      - name: Cache vcpkg binaries
+        uses: actions/cache@v4
+        with:
+          path: |
+            /tmp/vcpkg-cache
+            C:\\vcpkg-cache
+          key: vcpkg-${{ runner.os }}-${{ matrix.triplet }}-${{ hashFiles('vcpkg.json') }}
+
+      - name: Build wheels
+        uses: pypa/cibuildwheel@v4.0.0
+        env:
+          CIBW_PLATFORM: ${{ matrix.platform || 'auto' }}
+          CIBW_ARCHS: ${{ matrix.archs || 'auto' }}
+          CIBW_BUILD_VERBOSITY: 3
+          CIBW_SKIP: "*-win32 *musllinux*"
+
+          # Smoke-test each wheel after it is built. Without this the job only proves
+          # the module compiles and links -- a wheel that fails to load (missing shared
+          # library, bad rpath, ABI mismatch) would still be published as a success.
+          CIBW_TEST_COMMAND: >
+            python -c "import tradengin; print('tradengin OK:', sorted(n for n in dir(tradengin) if not n.startswith('_')))"
+
+          CIBW_ENVIRONMENT_LINUX: >
+            VCPKG_ROOT=/tmp/vcpkg
+            VCPKG_BINARY_SOURCES=files,/tmp/vcpkg-cache,readwrite
+            VCPKG_TRIPLET=${{ matrix.triplet }}
+            VCPKG_BUILD_TYPE=release
+            CMAKE_ARGS="-DCMAKE_TOOLCHAIN_FILE=/tmp/vcpkg/scripts/buildsystems/vcpkg.cmake -DVCPKG_TARGET_TRIPLET=${{ matrix.triplet }}"
+
+          CIBW_ENVIRONMENT_MACOS: >
+            MACOSX_DEPLOYMENT_TARGET=13.3
+            CMAKE_OSX_DEPLOYMENT_TARGET=13.3
+            CXXFLAGS=-mmacosx-version-min=13.3
+            CFLAGS=-mmacosx-version-min=13.3
+            VCPKG_ROOT=/tmp/vcpkg
+            VCPKG_BINARY_SOURCES=files,/tmp/vcpkg-cache,readwrite
+            VCPKG_TRIPLET=${{ matrix.triplet }}
+            VCPKG_BUILD_TYPE=release
+            CMAKE_ARGS="-DCMAKE_TOOLCHAIN_FILE=/tmp/vcpkg/scripts/buildsystems/vcpkg.cmake -DVCPKG_TARGET_TRIPLET=${{ matrix.triplet }}"
+
+          CIBW_ENVIRONMENT_WINDOWS: >
+            VCPKG_ROOT=C:\\vcpkg
+            VCPKG_BINARY_SOURCES=files,C:\\vcpkg-cache,readwrite
+            VCPKG_TRIPLET=${{ matrix.triplet }}
+            VCPKG_OVERLAY_TRIPLETS=$GITHUB_WORKSPACE/triplets
+            CMAKE_ARGS="-DCMAKE_TOOLCHAIN_FILE=C:/vcpkg/scripts/buildsystems/vcpkg.cmake -DVCPKG_TARGET_TRIPLET=${{ matrix.triplet }}"
+
+          CIBW_BEFORE_ALL_MACOS: |
+            # autoconf/automake/libtool are required by vcpkg to build libpq; the
+            # Linux block already installs them via yum. Without them the arm64-osx
+            # build fails with "libpq requires autoconf from the system package
+            # manager". The x86_64 runner image happens to ship autoconf, which is
+            # why macos-intel passed and macos-arm did not.
+            brew install bison autoconf automake libtool
+            export PATH=$(brew --prefix bison)/bin:$PATH
+            git clone https://github.com/microsoft/vcpkg /tmp/vcpkg
+            /tmp/vcpkg/bootstrap-vcpkg.sh
+            /tmp/vcpkg/vcpkg install --triplet ${VCPKG_TRIPLET}
+            find /tmp/vcpkg-cache | head -100
+
+          CIBW_BEFORE_ALL_LINUX: |
+            yum install -y cmake git curl zip unzip tar perl-IPC-Cmd perl-CPAN perl-ExtUtils-MakeMaker glibc-devel flex autoconf libtool automake pkg-config openssl-devel
+            # ftpmirror.gnu.org redirects to a working GNU mirror. ftp.gnu.org
+            # itself is not reachable from GitHub runners, and with no timeout
+            # curl sat on it until the job was killed ~20 minutes later. The
+            # explicit timeouts and --fail mean an unreachable mirror now fails
+            # in seconds with a real error instead of burning the whole job.
+            curl -LO --fail --retry 3 --retry-delay 5 --connect-timeout 15 --max-time 300 https://ftpmirror.gnu.org/gnu/bison/bison-3.8.2.tar.gz
+            tar xf bison-3.8.2.tar.gz
+            cd bison-3.8.2
+            ./configure
+            make -j$(nproc)
+            make install
+            git clone https://github.com/microsoft/vcpkg /tmp/vcpkg
+            /tmp/vcpkg/bootstrap-vcpkg.sh
+            /tmp/vcpkg/vcpkg install --triplet ${VCPKG_TRIPLET}
+
+          CIBW_BEFORE_ALL_WINDOWS: |
+            if not exist C:\\vcpkg (
+              git clone https://github.com/microsoft/vcpkg C:\\vcpkg
+            )
+            C:\\vcpkg\bootstrap-vcpkg.bat
+            C:\\vcpkg\vcpkg install --triplet %VCPKG_TRIPLET%
+
+          CIBW_REPAIR_WHEEL_COMMAND_WINDOWS: ""
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: cibw-wheels-${{ matrix.os }}-${{ strategy.job-index }}
+          path: ./wheelhouse/*.whl
+
+  build_sdist:
+    name: Build source distribution
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - name: Build sdist
+        run: pipx run build --sdist
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: cibw-sdist
+          path: dist/*.tar.gz
+
+  upload_test_pypi:
+    needs: [build_wheels, build_sdist]
+    if: github.event_name == 'release' && github.event.action == 'published'
+    runs-on: ubuntu-latest
+    environment:
+      name: testpypi
+      url: https://test.pypi.org/p/trade-ngin
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v5
+        with:
+          # unpacks all CIBW artifacts into dist/
+          pattern: cibw-*
+          path: dist
+          merge-multiple: true
+
+      - uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          repository-url: https://test.pypi.org/legacy/
+
+  upload_pypi:
+    needs: [build_wheels, build_sdist, upload_test_pypi]
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: https://pypi.org/p/trade-ngin
+    permissions:
+      id-token: write
+    if: github.event_name == 'release' && github.event.action == 'published'
+    steps:
+      - uses: actions/download-artifact@v5
+        with:
+          # unpacks all CIBW artifacts into dist/
+          pattern: cibw-*
+          path: dist
+          merge-multiple: true
+
+      - uses: pypa/gh-action-pypi-publish@release/v1

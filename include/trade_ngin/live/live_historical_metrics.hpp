@@ -3,6 +3,7 @@
 #include <string>
 #include <unordered_map>
 #include <vector>
+#include "trade_ngin/core/testing_access.hpp"
 
 namespace trade_ngin {
 
@@ -69,7 +70,7 @@ public:
                                 double total_annualized_return_pct,
                                 int total_trades_executions) const;
 
-private:
+TESTING_PRIVATE:
     static double calculate_mean(const std::vector<double>& values);
     static double calculate_annualized_volatility(const std::vector<double>& returns_pct);
     static double calculate_annualized_downside_deviation(const std::vector<double>& returns_pct,

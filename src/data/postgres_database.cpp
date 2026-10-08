@@ -4,6 +4,9 @@
 #include <algorithm>
 #include <iomanip>
 #include <sstream>
+#include <string>
+#include <string_view>
+#include "trade_ngin/core/logger.hpp"
 #include "trade_ngin/core/state_manager.hpp"
 #include "trade_ngin/core/time_utils.hpp"
 #include "trade_ngin/data/market_data_utils.hpp"
@@ -265,31 +268,33 @@ Result<void> PostgresDatabase::store_executions(const std::vector<ExecutionRepor
             const std::string exec_date = trade_ngin::core::format_utc_date(exec.fill_time);
 
             // Updated INSERT to include all 4 cost breakdown fields
-            std::string query = "INSERT INTO " + table_name +
-                                " (exec_id, order_id, symbol, side, quantity, price, "
-                                "execution_time, commissions_fees, implicit_price_impact, "
-                                "slippage_market_impact, total_transaction_costs, is_partial, "
-                                "strategy_id, strategy_name, date, portfolio_id) VALUES "
-                                "($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)";
+            std::string query =
+                "INSERT INTO " + table_name +
+                " (exec_id, order_id, symbol, side, quantity, price, "
+                "execution_time, commissions_fees, implicit_price_impact, "
+                "slippage_market_impact, total_transaction_costs, is_partial, "
+                "strategy_id, strategy_name, date, portfolio_id) VALUES "
+                "($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)";
 
             std::cout << "DEBUG: About to execute SQL query" << std::endl;
             std::cout << "DEBUG: Query: " << query << std::endl;
 
             // Updated exec to include all 4 cost fields
             txn.exec(
-                query, pqxx::params{
-                exec.exec_id, exec.order_id, exec.symbol, side_to_string(exec.side),
-                static_cast<double>(exec.filled_quantity), static_cast<double>(exec.fill_price),
-                format_timestamp(exec.fill_time),
-                static_cast<double>(exec.commissions_fees),         // $8
-                static_cast<double>(exec.implicit_price_impact),    // $9
-                static_cast<double>(exec.slippage_market_impact),   // $10
-                static_cast<double>(exec.total_transaction_costs),  // $11
-                exec.is_partial,                                    // $12
-                strategy_id,    // $13 - combined (e.g., LIVE_TREND_FOLLOWING_TREND_FOLLOWING_FAST)
-                strategy_name,  // $14 - individual (e.g., TREND_FOLLOWING)
-                exec_date,      // $15
-                portfolio_id}); // $16 - portfolio identifier
+                query,
+                pqxx::params{exec.exec_id, exec.order_id, exec.symbol, side_to_string(exec.side),
+                             static_cast<double>(exec.filled_quantity),
+                             static_cast<double>(exec.fill_price), format_timestamp(exec.fill_time),
+                             static_cast<double>(exec.commissions_fees),         // $8
+                             static_cast<double>(exec.implicit_price_impact),    // $9
+                             static_cast<double>(exec.slippage_market_impact),   // $10
+                             static_cast<double>(exec.total_transaction_costs),  // $11
+                             exec.is_partial,                                    // $12
+                             strategy_id,     // $13 - combined (e.g.,
+                                              // LIVE_TREND_FOLLOWING_TREND_FOLLOWING_FAST)
+                             strategy_name,   // $14 - individual (e.g., TREND_FOLLOWING)
+                             exec_date,       // $15
+                             portfolio_id});  // $16 - portfolio identifier
 
             std::cout << "DEBUG: SQL executed successfully for " << exec.symbol << std::endl;
         }
@@ -584,7 +589,7 @@ Result<void> PostgresDatabase::store_signals(const std::unordered_map<std::strin
                 "DO UPDATE SET signal_value = EXCLUDED.signal_value";
 
             txn.exec(query, pqxx::params{strategy_id, symbol, signal, format_timestamp(timestamp),
-                            portfolio_id, strategy_name});
+                                         portfolio_id, strategy_name});
         }
 
         txn.commit();
@@ -745,8 +750,8 @@ Result<std::unordered_map<std::string, Position>> PostgresDatabase::load_positio
             DEBUG("Querying positions for strategy_id: " + strategy_id + ", strategy_name: " +
                   strategy_name + ", portfolio_id: " + actual_portfolio_id + ", date: " + date_str);
             DEBUG("Full query: " + query);
-            result =
-                txn.exec(query, pqxx::params{strategy_id, strategy_name, actual_portfolio_id, date_str});
+            result = txn.exec(
+                query, pqxx::params{strategy_id, strategy_name, actual_portfolio_id, date_str});
         } else {
             // If strategy_name is empty, filter by strategy_id and portfolio_id (for aggregate
             // loading)
@@ -957,8 +962,9 @@ Result<pqxx::result> PostgresDatabase::execute_market_data_query(
         try {
             return Result<pqxx::result>(txn.exec(query, pqxx::params{start_ts, end_ts}));
         } catch (const std::exception& e) {
-            return make_error<pqxx::result>(ErrorCode::DATABASE_ERROR,
-                                            "Query execution failed: " + std::string(e.what()));
+            return make_error<pqxx::result>(
+                ErrorCode::DATABASE_ERROR,
+                "Query execution failed without symbols: " + std::string(e.what()));
         }
     } else {
         // With symbol filter - validate symbols first
@@ -968,6 +974,10 @@ Result<pqxx::result> PostgresDatabase::execute_market_data_query(
                                             symbol_validation.error()->what());
         }
 
+        pqxx::params p;
+        p.append(start_ts);
+        p.append(end_ts);
+        p.append(symbols);
         std::string query =
             (asset_class == AssetClass::EQUITIES)
                 ? market_data_utils::build_equity_adjusted_query(full_table_name, true)
@@ -977,10 +987,11 @@ Result<pqxx::result> PostgresDatabase::execute_market_data_query(
                       " ORDER BY time, symbol";
 
         try {
-            return Result<pqxx::result>(txn.exec(query, pqxx::params{start_ts, end_ts, symbols}));
+            return Result<pqxx::result>(txn.exec(query, std::move(p)));
         } catch (const std::exception& e) {
-            return make_error<pqxx::result>(ErrorCode::DATABASE_ERROR,
-                                            "Query execution failed: " + std::string(e.what()));
+            return make_error<pqxx::result>(
+                ErrorCode::DATABASE_ERROR,
+                "Query execution failed with symbols: " + std::string(e.what()));
         }
     }
 }
@@ -1190,7 +1201,7 @@ Result<std::shared_ptr<arrow::Table>> PostgresDatabase::convert_metadata_to_arro
     [[maybe_unused]] const int TIME_OF_EXPIRY_IDX = 20;  // Not needed in final table
 
     // Helper function to safely append string values
-    auto append_string = [](arrow::StringBuilder& builder, const pqxx::row& row, int index) {
+    auto append_string = [](arrow::StringBuilder& builder, const auto& row, int index) {
         try {
             if (index >= row.size() || row[index].is_null()) {
                 return builder.AppendNull();
@@ -1204,7 +1215,7 @@ Result<std::shared_ptr<arrow::Table>> PostgresDatabase::convert_metadata_to_arro
     };
 
     // Helper function to safely convert and append double values
-    auto append_double = [](arrow::DoubleBuilder& builder, const pqxx::row& row, int index) {
+    auto append_double = [](arrow::DoubleBuilder& builder, const auto& row, int index) {
         try {
             if (index >= row.size() || row[index].is_null()) {
                 return builder.AppendNull();
@@ -1776,7 +1787,8 @@ Result<void> PostgresDatabase::validate_execution_report(const ExecutionReport& 
                                 "PostgresDatabase");
     }
 
-    if (exec.total_transaction_costs.is_negative() || static_cast<double>(exec.total_transaction_costs) > 1e12) {
+    if (exec.total_transaction_costs.is_negative() ||
+        static_cast<double>(exec.total_transaction_costs) > 1e12) {
         return make_error<void>(ErrorCode::INVALID_ARGUMENT,
                                 "Invalid total_transaction_costs: must be between 0 and 1e12",
                                 "PostgresDatabase");
@@ -1917,22 +1929,24 @@ Result<void> PostgresDatabase::store_backtest_executions(
         } else {
             // Use parameterized queries for smaller batches
             for (const auto& exec : executions) {
-                std::string query = "INSERT INTO " + table_name +
-                                    " (run_id, portfolio_id, execution_id, order_id, timestamp, "
-                                    "symbol, side, quantity, price, commissions_fees, "
-                                    "implicit_price_impact, slippage_market_impact, "
-                                    "total_transaction_costs, is_partial) "
-                                    "VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)";
+                std::string query =
+                    "INSERT INTO " + table_name +
+                    " (run_id, portfolio_id, execution_id, order_id, timestamp, "
+                    "symbol, side, quantity, price, commissions_fees, "
+                    "implicit_price_impact, slippage_market_impact, "
+                    "total_transaction_costs, is_partial) "
+                    "VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)";
 
-                txn.exec(
-                    query, pqxx::params{
-                    run_id, actual_portfolio_id, exec.exec_id, exec.order_id,
-                    format_timestamp(exec.fill_time), exec.symbol, side_to_string(exec.side),
-                    static_cast<double>(exec.filled_quantity), static_cast<double>(exec.fill_price),
-                    static_cast<double>(exec.commissions_fees),
-                    static_cast<double>(exec.implicit_price_impact),
-                    static_cast<double>(exec.slippage_market_impact),
-                    static_cast<double>(exec.total_transaction_costs), exec.is_partial});
+                txn.exec(query, pqxx::params{run_id, actual_portfolio_id, exec.exec_id,
+                                             exec.order_id, format_timestamp(exec.fill_time),
+                                             exec.symbol, side_to_string(exec.side),
+                                             static_cast<double>(exec.filled_quantity),
+                                             static_cast<double>(exec.fill_price),
+                                             static_cast<double>(exec.commissions_fees),
+                                             static_cast<double>(exec.implicit_price_impact),
+                                             static_cast<double>(exec.slippage_market_impact),
+                                             static_cast<double>(exec.total_transaction_costs),
+                                             exec.is_partial});
             }
         }
 
@@ -2030,15 +2044,16 @@ Result<void> PostgresDatabase::store_backtest_executions_with_strategy(
                     "slippage_market_impact, total_transaction_costs, is_partial) "
                     "VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)";
 
-                txn.exec(
-                    query, pqxx::params{
-                    run_id, actual_portfolio_id, strategy_id, exec.exec_id, exec.order_id,
-                    format_timestamp(exec.fill_time), exec.symbol, side_to_string(exec.side),
-                    static_cast<double>(exec.filled_quantity), static_cast<double>(exec.fill_price),
-                    static_cast<double>(exec.commissions_fees),
-                    static_cast<double>(exec.implicit_price_impact),
-                    static_cast<double>(exec.slippage_market_impact),
-                    static_cast<double>(exec.total_transaction_costs), exec.is_partial});
+                txn.exec(query, pqxx::params{run_id, actual_portfolio_id, strategy_id, exec.exec_id,
+                                             exec.order_id, format_timestamp(exec.fill_time),
+                                             exec.symbol, side_to_string(exec.side),
+                                             static_cast<double>(exec.filled_quantity),
+                                             static_cast<double>(exec.fill_price),
+                                             static_cast<double>(exec.commissions_fees),
+                                             static_cast<double>(exec.implicit_price_impact),
+                                             static_cast<double>(exec.slippage_market_impact),
+                                             static_cast<double>(exec.total_transaction_costs),
+                                             exec.is_partial});
             }
         }
 
@@ -2083,7 +2098,7 @@ Result<void> PostgresDatabase::store_backtest_signals(
                         "DO UPDATE SET signal_value = EXCLUDED.signal_value, portfolio_id = "
                         "EXCLUDED.portfolio_id, portfolio_run_id = EXCLUDED.portfolio_run_id";
                 txn.exec(query, pqxx::params{run_id, actual_portfolio_id, strategy_id, symbol,
-                                signal_value, format_timestamp(timestamp), run_id});
+                                             signal_value, format_timestamp(timestamp), run_id});
             } else {
                 // Single strategy run or other table: include portfolio_id
                 query = "INSERT INTO " + table_name +
@@ -2093,7 +2108,7 @@ Result<void> PostgresDatabase::store_backtest_signals(
                         "DO UPDATE SET signal_value = EXCLUDED.signal_value, portfolio_id = "
                         "EXCLUDED.portfolio_id";
                 txn.exec(query, pqxx::params{run_id, actual_portfolio_id, strategy_id, symbol,
-                                signal_value, format_timestamp(timestamp)});
+                                             signal_value, format_timestamp(timestamp)});
             }
         }
 
@@ -2138,9 +2153,9 @@ Result<void> PostgresDatabase::store_backtest_metadata_with_portfolio(
             "hyperparameters = EXCLUDED.hyperparameters";
 
         txn.exec(query, pqxx::params{run_id, actual_portfolio_id, portfolio_run_id, strategy_id,
-                        strategy_allocation, portfolio_config.dump(), name, description,
-                        format_timestamp(start_date), format_timestamp(end_date),
-                        hyperparameters.dump()});
+                                     strategy_allocation, portfolio_config.dump(), name,
+                                     description, format_timestamp(start_date),
+                                     format_timestamp(end_date), hyperparameters.dump()});
 
         txn.commit();
         INFO("Successfully stored backtest metadata with portfolio for run: " + run_id +
@@ -2193,11 +2208,28 @@ Result<void> PostgresDatabase::store_trading_results(
             "cvar_95 = EXCLUDED.cvar_95, beta = EXCLUDED.beta, correlation = EXCLUDED.correlation, "
             "downside_volatility = EXCLUDED.downside_volatility, config = EXCLUDED.config";
 
-        txn.exec(query, pqxx::params{strategy_id, format_timestamp(date), total_return, sharpe_ratio,
-                        sortino_ratio, max_drawdown, calmar_ratio, volatility, total_trades,
-                        win_rate, profit_factor, avg_win, avg_loss, max_win, max_loss,
-                        avg_holding_period, var_95, cvar_95, beta, correlation, downside_volatility,
-                        config.dump()});
+        txn.exec(query, pqxx::params{strategy_id,
+                                     format_timestamp(date),
+                                     total_return,
+                                     sharpe_ratio,
+                                     sortino_ratio,
+                                     max_drawdown,
+                                     calmar_ratio,
+                                     volatility,
+                                     total_trades,
+                                     win_rate,
+                                     profit_factor,
+                                     avg_win,
+                                     avg_loss,
+                                     max_win,
+                                     max_loss,
+                                     avg_holding_period,
+                                     var_95,
+                                     cvar_95,
+                                     beta,
+                                     correlation,
+                                     downside_volatility,
+                                     config.dump()});
 
         txn.commit();
         INFO("Successfully stored trading results for strategy: " + strategy_id + " on " +
@@ -2214,11 +2246,10 @@ Result<void> PostgresDatabase::store_live_results(
     const std::string& strategy_id, const Timestamp& date, double total_return, double volatility,
     double total_pnl, double unrealized_pnl, double realized_pnl, double current_portfolio_value,
     double daily_realized_pnl, double daily_unrealized_pnl, double portfolio_var,
-    double net_leverage, double gross_leverage, double margin_leverage,
-    double margin_cushion, double max_correlation, double jump_risk, double risk_scale,
-    double gross_notional, double net_notional, int active_positions, double total_transaction_costs,
-    double margin_posted, double cash_available, const nlohmann::json& config,
-    const std::string& table_name) {
+    double net_leverage, double gross_leverage, double margin_leverage, double margin_cushion,
+    double max_correlation, double jump_risk, double risk_scale, double gross_notional,
+    double net_notional, int active_positions, double total_transaction_costs, double margin_posted,
+    double cash_available, const nlohmann::json& config, const std::string& table_name) {
     auto validation = validate_connection();
     if (validation.is_error())
         return validation;
@@ -2263,13 +2294,19 @@ Result<void> PostgresDatabase::store_live_results(
             "EXCLUDED.margin_posted, cash_available = EXCLUDED.cash_available, config = "
             "EXCLUDED.config";
 
-        txn.exec(query, pqxx::params{strategy_id, format_timestamp(date), total_return, volatility,
-                        total_pnl, unrealized_pnl, realized_pnl, current_portfolio_value,
-                        daily_realized_pnl, daily_unrealized_pnl, portfolio_var,
-                        net_leverage, gross_leverage, margin_leverage, margin_cushion,
-                        max_correlation, jump_risk, risk_scale, gross_notional, net_notional,
-                        active_positions, total_transaction_costs, margin_posted, cash_available,
-                        config.dump()});
+        txn.exec(query, pqxx::params{strategy_id,        format_timestamp(date),
+                                     total_return,       volatility,
+                                     total_pnl,          unrealized_pnl,
+                                     realized_pnl,       current_portfolio_value,
+                                     daily_realized_pnl, daily_unrealized_pnl,
+                                     portfolio_var,      net_leverage,
+                                     gross_leverage,     margin_leverage,
+                                     margin_cushion,     max_correlation,
+                                     jump_risk,          risk_scale,
+                                     gross_notional,     net_notional,
+                                     active_positions,   total_transaction_costs,
+                                     margin_posted,      cash_available,
+                                     config.dump()});
 
         txn.commit();
         INFO("Successfully stored live results for strategy: " + strategy_id + " on " +
@@ -2371,7 +2408,8 @@ Result<void> PostgresDatabase::store_trading_equity_curve(const std::string& str
                             "ON CONFLICT (portfolio_id, strategy_id, timestamp, portfolio_type) "
                             "DO UPDATE SET equity = EXCLUDED.equity";
 
-        txn.exec(query, pqxx::params{strategy_id, format_timestamp(timestamp), equity, portfolio_id});
+        txn.exec(query,
+                 pqxx::params{strategy_id, format_timestamp(timestamp), equity, portfolio_id});
 
         txn.commit();
         return Result<void>();
@@ -2405,7 +2443,8 @@ Result<void> PostgresDatabase::store_trading_equity_curve_batch(
                                 "ON CONFLICT (portfolio_id, strategy_id, timestamp, portfolio_type) "
                                 "DO UPDATE SET equity = EXCLUDED.equity";
 
-            txn.exec(query, pqxx::params{strategy_id, format_timestamp(timestamp), equity, portfolio_id});
+            txn.exec(query,
+                     pqxx::params{strategy_id, format_timestamp(timestamp), equity, portfolio_id});
         }
 
         txn.commit();
@@ -3243,5 +3282,4 @@ Result<std::unique_ptr<DbTransaction>> PostgresDatabase::begin_unit_of_work() {
                                  "PostgresDatabase");
     }
 }
-
 }  // namespace trade_ngin

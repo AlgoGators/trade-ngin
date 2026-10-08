@@ -1,0 +1,26 @@
+{
+  "name": "trade-ngin",
+  "version": "0.1.0",
+  "$comment": [
+    "builtin-baseline pins the vcpkg registry commit so every machine and CI",
+    "runner resolves the same dependency versions.",
+    "Lower bound: must stay at or after the 2026-03-23 commit that introduced",
+    "libpqxx 8. src/data/postgres_database.cpp uses the pqxx 8 API",
+    "(exec(query, params), result::one_row), which does not exist in 7.x.",
+    "Upper bound: must stay before the 2026-05-23 commit that moved arrow to",
+    "24.0.0. Arrow 24's bpacking_simd_kernel_internal.h does not compile with",
+    "MSVC (xsimd::make_sized_batch_t non-constant template argument).",
+    "This pin is arrow 23.0.1 + libpqxx 8.0.1. Bump deliberately, and rebuild",
+    "arrow on Windows before merging any bump."
+  ],
+  "builtin-baseline": "d8e71a80c1f84c6a6089f13144cbc339f22e9139",
+  "dependencies": [
+    "arrow",
+    "curl",
+    "eigen3",
+    "libpqxx",
+    "nlopt",
+    "nlohmann-json",
+    "gtest"
+  ]
+}

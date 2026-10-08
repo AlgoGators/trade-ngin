@@ -24,10 +24,8 @@
 #include <vector>
 
 #include "trade_ngin/instruments/futures.hpp"
-#define private public
 #include "trade_ngin/instruments/instrument_registry.hpp"
 #include "trade_ngin/live/live_pnl_manager.hpp"
-#undef private
 
 using namespace trade_ngin;
 

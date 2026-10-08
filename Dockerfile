@@ -12,6 +12,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         lsb-release \
         pkg-config \
         libpq-dev \
+        python3-dev \
+        python3-full \
     && rm -rf /var/lib/apt/lists/*
 
 # Google Test / Google Mock from source
@@ -39,8 +41,11 @@ RUN git clone --depth 1 https://github.com/nlohmann/json.git /tmp/json && \
     cmake --build /tmp/json/build -j"$(nproc)" --target install && \
     rm -rf /tmp/json
 
-# libpqxx 7.10.4 — pinned.
-RUN git clone --branch 7.10.4 --depth 1 https://github.com/jtv/libpqxx.git /tmp/libpqxx && \
+# libpqxx 8.0.1 — pinned. Must stay on 8.x: src/data/postgres_database.cpp
+# uses the pqxx 8 API (exec(query, pqxx::params), result::one_row), which does
+# not exist in 7.x. Matches the libpqxx version resolved by the
+# builtin-baseline in vcpkg.json; keep the two in sync.
+RUN git clone --branch 8.0.1 --depth 1 https://github.com/jtv/libpqxx.git /tmp/libpqxx && \
     cmake -S /tmp/libpqxx -B /tmp/libpqxx/build \
         -DSKIP_BUILD_TEST=ON \
         -DCMAKE_POSITION_INDEPENDENT_CODE=ON \
@@ -73,7 +78,10 @@ RUN sed -i '1i\#include <algorithm>' src/core/logger.cpp && \
     sed -i '1i\#include <thread>' tests/backtesting/test_engine.cpp && \
     sed -i 's/void BacktestEngineTest::patch_mock_db_to_return_test_data/void patch_mock_db_to_return_test_data/' tests/backtesting/test_engine.cpp
 
+# The runtime image does not need the Python wrapper, and the build context
+# has no extern/pybind11 checkout to build it from.
 RUN cmake -S /app -B /app/build \
+        -DBUILD_PYTHON_WRAPPER=OFF \
         -DCMAKE_BUILD_TYPE=Release \
         -DCMAKE_POSITION_INDEPENDENT_CODE=ON \
         -DNLopt_DIR=/usr/lib/x86_64-linux-gnu/cmake/nlopt && \

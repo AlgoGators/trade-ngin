@@ -7,9 +7,7 @@
 
 // Static helpers are private; reach them via the standard pattern.
 #include <string>
-#define private public
 #include "trade_ngin/live/live_historical_metrics.hpp"
-#undef private
 
 using namespace trade_ngin;
 

@@ -4,7 +4,12 @@
 #include <arrow/array/builder_primitive.h>
 #include <arrow/util/logging.h>
 #include <chrono>
+#include <cstdlib>
+#include <filesystem>
+#include <fstream>
 #include <memory>
+#include <string>
+#include <vector>
 #include "../core/test_base.hpp"
 #include "../data/test_db_utils.hpp"
 #include "trade_ngin/instruments/equity.hpp"
@@ -12,16 +17,7 @@
 #include "trade_ngin/instruments/option.hpp"
 
 // Reach into private state to populate the singleton without DB access.
-#define private public
 #include "trade_ngin/instruments/instrument_registry.hpp"
-#include <cstdlib>
-#include <filesystem>
-#include <fstream>
-#include <string>
-#include <vector>
-#include "trade_ngin/instruments/instrument_registry.hpp"
-
-#undef private
 
 using namespace trade_ngin;
 using namespace trade_ngin::testing;
@@ -214,7 +210,6 @@ TEST_F(InstrumentRegistryTest, LoadInstrumentsErrorsWhenNotInitialized) {
     EXPECT_EQ(result.error()->code(), ErrorCode::NOT_INITIALIZED);
 }
 
-// ===== string_to_asset_type (private; reached via #define private public) =====
 
 TEST_F(InstrumentRegistryTest, StringToAssetTypeFutureAliases) {
     auto& r = InstrumentRegistry::instance();
@@ -248,7 +243,6 @@ TEST_F(InstrumentRegistryTest, StringToAssetTypeCryptoAndUnknown) {
     EXPECT_EQ(r.string_to_asset_type(""), AssetType::NONE);
 }
 
-// ===== create_instrument_from_db (private; reached via #define private public) =====
 //
 // Construct minimal Arrow tables matching the schema the production code reads.
 
