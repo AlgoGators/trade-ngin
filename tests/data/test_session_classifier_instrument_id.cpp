@@ -414,8 +414,14 @@ TEST(InstrumentIdWiring, BothTwinsFeedTheIdsAfterTheBarsAndBeforeTheT1Classifica
 TEST(InstrumentIdWiring, TheBacktestFeedsTheIdsOnceTheBarsAreLoaded) {
     const std::string src = read_repo_file("src/backtest/backtest_coordinator.cpp");
     if (src.empty()) GTEST_SKIP() << "coordinator source not found";
-    const auto feed = src.find("pg->get_futures_instrument_ids(symbols, start_date, end_date)");
-    ASSERT_NE(feed, npos) << "the backtest never feeds the instrument ids";
+    // The ids are read from the classifier's history start, the prefix before the window
+    // included, as the live runners read them (the window's first bars are judged on the id limb
+    // against the prefix's ids; the read used to start at the window).
+    const auto feed =
+        src.find("pg->get_futures_instrument_ids(symbols, k01_classifier_history_start(start_date),");
+    ASSERT_NE(feed, npos) << "the backtest does not feed the instrument ids from the prefix's start";
+    EXPECT_EQ(src.find("pg->get_futures_instrument_ids(symbols, start_date, end_date)"), npos)
+        << "the window's id read still starts at the window";
     const auto grouped = src.rfind("group_bars_by_timestamp(all_bars);", feed);
     const auto portfolio = src.rfind("BacktestCoordinator::run_portfolio(", feed);
     const auto loop = src.find("for (const auto& [timestamp, bars] : grouped_bars)", feed);
@@ -424,6 +430,33 @@ TEST(InstrumentIdWiring, TheBacktestFeedsTheIdsOnceTheBarsAreLoaded) {
     ASSERT_NE(loop, npos);
     EXPECT_LT(portfolio, grouped) << "fed in run_portfolio, after its bars are loaded";
     EXPECT_NE(src.find("process_portfolio_day(timestamp, bars", loop), npos);
+}
+
+// LOOP_SPEC v6.2 section 2.1 (N-2): a bar's K-01 verdict reads the classifier's trailing history,
+// the same in every engine. The backtest's window classifier started cold, so a 2-year run consumed
+// two thin Sunday prints in its first weeks (RB 2024-05-05, 6M 2024-05-12) that the longer runs
+// and live withhold. It is given the prefix live gives its own (the bars of the 120 calendar days
+// before the window, from the history the run already loads), before the first cycle.
+TEST(InstrumentIdWiring, TheBacktestWindowClassifierIsFedThePrefixBeforeTheFirstCycle) {
+    const std::string src = read_repo_file("src/backtest/backtest_coordinator.cpp");
+    if (src.empty()) GTEST_SKIP() << "coordinator source not found";
+    const auto seed = src.find("Result<void> BacktestCoordinator::seed_estimator_history(");
+    ASSERT_NE(seed, npos);
+    const auto loaded = src.find("auto loaded = data_loader_->load_market_data(load_config);", seed);
+    const auto prefix =
+        src.find("session_classifier_.add_bars(k01_classifier_history(loaded.value(), start_date));", seed);
+    const auto own = src.find("estimator_history_consumed(", seed);
+    ASSERT_NE(loaded, npos);
+    ASSERT_NE(own, npos);
+    ASSERT_NE(prefix, npos) << "the window's classifier judges its first bars with no history";
+    EXPECT_LT(loaded, prefix) << "from the history the run already loads";
+    EXPECT_LT(prefix, own) << "inside the seed, which runs before the first cycle";
+    const auto run = src.find("BacktestCoordinator::run_portfolio(");
+    const auto call = src.find("seed_estimator_history(portfolio, symbols, start_date, asset_class, data_freq)", run);
+    const auto loop = src.find("for (const auto& [timestamp, bars] : grouped_bars)", run);
+    ASSERT_NE(call, npos);
+    ASSERT_NE(loop, npos);
+    EXPECT_LT(call, loop);
 }
 
 // ---------------------------------------------------------------------------------------------
