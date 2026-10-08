@@ -443,8 +443,9 @@ TEST_F(RefusalPmFixture, APortfolioRefuseIsReadWithItsModuleReasonAndLap) {
 
     // The second upsert's JSON: the first upsert's keys kept verbatim, the mark added.
     const auto decisions = pm_->risk_decisions_json();
-    const auto marked = mark_risk_refusal(first_upsert_portfolio_config(), *refusal, decisions);
-    for (const auto& [k, v] : first_upsert_portfolio_config().items()) {
+    const auto first = first_upsert_portfolio_config();
+    const auto marked = mark_risk_refusal(first, *refusal, decisions);
+    for (const auto& [k, v] : first.items()) {
         EXPECT_EQ(marked.at(k), v) << k;
     }
     EXPECT_EQ(marked["risk_refusal"], *refusal);
