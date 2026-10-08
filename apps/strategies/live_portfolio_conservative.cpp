@@ -4545,7 +4545,8 @@ int main(int argc, char* argv[]) {
                                                        // read back after the finalize
                         yesterday_exit_prices,   // Day T-1 close prices for yesterday's positions
                         yesterday_entry_prices,  // Day T-2 close prices for yesterday's positions
-                        yesterday_daily_metrics_final  // Yesterday's metrics
+                        yesterday_daily_metrics_final,  // Yesterday's metrics
+                        combined_strategy_id            // The charts query this run's own rows
                     );
 
                     // Send email with CSV attachments: today's positions and yesterday's finalized

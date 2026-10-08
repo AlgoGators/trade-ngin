@@ -102,6 +102,7 @@ public:
      * @param date Trading date
      * @param portfolio_name Display name for the portfolio (shown in header)
      * @param is_daily_strategy Flag indicating if this is a daily strategy
+     * @param chart_strategy_id The strategy id the charts query: the run's own stored id
      * @return HTML email body
      */
     std::string generate_trading_report_body(
@@ -118,7 +119,8 @@ public:
         const StrategyPositionsMap& yesterday_strategy_positions = {},
         const std::unordered_map<std::string, double>& yesterday_close_prices = {},
         const std::unordered_map<std::string, double>& two_days_ago_close_prices = {},
-        const std::map<std::string, double>& yesterday_daily_metrics = {}
+        const std::map<std::string, double>& yesterday_daily_metrics = {},
+        const std::string& chart_strategy_id = "LIVE_TREND_FOLLOWING"
     );
 
     /**

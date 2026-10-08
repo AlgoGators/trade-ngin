@@ -1,6 +1,7 @@
 # Set test source files
 set(TEST_SOURCES
     core/test_decimal.cpp
+    core/test_email_chart_strategy_id.cpp
     core/test_time_utils_parse.cpp
     core/test_result.cpp
     core/test_state_manager.cpp
