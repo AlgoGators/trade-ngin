@@ -470,3 +470,34 @@ TEST(LateBarWarningSource, BothTwinsNameALateBarAfterTheStoredBooksAreLoaded) {
     ASSERT_FALSE(blocks[0].empty());
     EXPECT_EQ(blocks[0], blocks[1]);
 }
+
+// =============================================================================================
+// The stored exposure cells value a held symbol at the Day T mark (T-FIX). A held symbol whose T-1
+// print is withheld was valued at the withheld print in gross and net notional and in leverage:
+// the runner built day_t_mark_prices (the last consumed close of such a symbol) and four call
+// sites still passed the raw T-1 closes.
+// =============================================================================================
+
+TEST(ExposureMarkSource, BothTwinsValueTheBookAtTheDayTMarkAtTheFourExposureSites) {
+    std::vector<std::string> sites;
+    for (const char* runner : kFuturesRunners) {
+        SCOPED_TRACE(runner);
+        const std::string src = read_source(runner);
+        if (src.empty()) GTEST_SKIP() << "runner source not found";
+        const std::string margin =
+            between(src, "margin_manager->calculate_margin_requirements(", ");");
+        const std::string exposure = between(src, "const BookExposure exposure = account_book_exposure(",
+                                             "[&](const std::string& symbol, double qty, double price)");
+        const std::string csv = between(src, "return csv_exporter->export_current_positions(", ");");
+        const std::string email = between(src, "email_sender->generate_trading_report_body(", ");");
+        for (const std::string* site : {&margin, &exposure, &csv, &email}) {
+            ASSERT_FALSE(site->empty());
+            EXPECT_NE(site->find("day_t_mark_prices"), npos)
+                << "a withheld T-1 print still values the book here: " << *site;
+            EXPECT_EQ(site->find("previous_day_close_prices"), npos) << *site;
+        }
+        sites.push_back(margin + exposure + csv);
+    }
+    ASSERT_EQ(sites.size(), 2u);
+    EXPECT_EQ(sites[0], sites[1]);
+}

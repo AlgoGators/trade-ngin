@@ -2647,8 +2647,10 @@ int main(int argc, char* argv[]) {
         // Use MarginManager for margin calculations
         INFO("Using MarginManager to calculate margin requirements...");
 
+        // The stored exposure cells value a held symbol at the Day T mark: its last consumed
+        // close when its T-1 print is withheld (day_t_mark_prices), never the withheld print.
         auto margin_result = margin_manager->calculate_margin_requirements(
-            positions, previous_day_close_prices, initial_capital);
+            positions, day_t_mark_prices, initial_capital);
 
         double gross_notional = 0.0;
         double net_notional = 0.0;
@@ -2672,8 +2674,8 @@ int main(int argc, char* argv[]) {
             const BookExposure exposure = account_book_exposure(
                 strategy_positions_map,
                 [&](const std::string& symbol, const Position& pos) {
-                    return previous_day_close_prices.count(symbol)
-                               ? previous_day_close_prices.at(symbol)
+                    return day_t_mark_prices.count(symbol)
+                               ? day_t_mark_prices.at(symbol)
                                : pos.average_price.as_double();
                 },
                 [&](const std::string& symbol, double qty, double price) {
@@ -4148,7 +4150,7 @@ int main(int argc, char* argv[]) {
             if (!skip_strategy_processing) {
                 return csv_exporter->export_current_positions(
                     now, strategy_positions_map,
-                    previous_day_close_prices,  // Market prices (Day T-1 close)
+                    day_t_mark_prices,  // Market prices (the Day T mark)
                     current_portfolio_value, gross_notional, net_notional,
                     strategy_instances_map);
             }
@@ -4578,8 +4580,7 @@ int main(int argc, char* argv[]) {
                         strategy_metrics, all_strategy_executions, date_str,
                         portfolio_id,                 // Portfolio name for email header
                         true,                         // is_daily_strategy
-                        previous_day_close_prices,    // Pass Day T-1 close prices for today's
-                                                      // positions
+                        day_t_mark_prices,            // The Day T mark of today's positions
                         db,                           // Pass database for symbols reference table
                         finalized_strategy_positions,  // Per-strategy yesterday's positions,
                                                        // read back after the finalize
