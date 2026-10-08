@@ -396,7 +396,10 @@ Result<BacktestResults> BacktestCoordinator::run_portfolio(
 
         day_index++;
     }
-    (void)consumed_record_.write();
+    if (!consumed_record_.write()) {
+        record_file::report_failure(consumed_record_.dir(),
+                                    "a file of the consumed series record could not be written");
+    }
 
     if (equity_cost_retier_enabled_) {
         INFO("EQUITY_COST_RETIER_SUMMARY cycles=" + std::to_string(equity_cost_retier_cycles_) +
@@ -958,6 +961,11 @@ Result<void> BacktestCoordinator::process_portfolio_day(
                  SessionClassifier::ymd(SessionClassifier::day_of(timestamp)) +
                  " holds only JUNK bars: nothing is fed to the strategies or the PortfolioManager "
                  "on this cycle");
+            if (consumed_record_.enabled() && had_previous_bars) {
+                portfolio->record_no_pass(
+                    SessionClassifier::ymd(SessionClassifier::day_of(bars_for_signals.front().timestamp)),
+                    timestamp, is_warmup);
+            }
         } else {
             auto data_result = portfolio->process_market_data(*signal_feed, is_warmup, timestamp,
                                                               session_symbols);
