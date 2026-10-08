@@ -1219,6 +1219,13 @@ int main(int argc, char* argv[]) {
             auto& last = last_consumed_date[bar.symbol];
             if (d > last) last = d;
         }
+        // LOOP_SPEC v6.2 sections 7.2, 7.7: a day none of whose T-1 bars is consumed (T-1 printed
+        // no bar, or every bar it printed is withheld) is not a rebalance. The backtest feeds
+        // nothing on such a cycle (BT_JUNK_FEED): no OVERLAY, OPTIMISER or BOOK line and no
+        // risk_detail. Live carries the whole book on it, below.
+        const bool no_t1_bar_consumed =
+            std::none_of(last_consumed_date.begin(), last_consumed_date.end(),
+                         [&](const auto& entry) { return entry.second == t1_classification.t1_date; });
         // LOOP_SPEC v6.2 section 6.5 (L-09, D3, B8): the rolls this run legs, by STATE: every roll a
         // consumed bar confirmed since the contract recorded on the symbol's stored T-1 positions
         // row (live/live_roll_legs.hpp), never the rolls of a calendar span, so a late (back-filled)
@@ -1499,8 +1506,9 @@ int main(int argc, char* argv[]) {
 
         // The book-level rule (HD 2026-09-17): carry the whole book when NO symbol printed on T-1,
         // i.e. the T-1 price map is empty. It is a carry on every such day, never an abort; the
-        // classifier names the reason (a closure is INFO, a feed hole an ERROR).
-        if (early_previous_day_close_prices.empty()) {
+        // classifier names the reason (a closure is INFO, a feed hole an ERROR). A T-1 whose
+        // every bar is withheld is carried the same way: no bar of it is consumed.
+        if (early_previous_day_close_prices.empty() || no_t1_bar_consumed) {
             // ========================================
             // No symbol has a T-1 price: reuse previous positions, skip strategy processing
             // ========================================

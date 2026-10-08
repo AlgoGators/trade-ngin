@@ -501,3 +501,29 @@ TEST(ExposureMarkSource, BothTwinsValueTheBookAtTheDayTMarkAtTheFourExposureSite
     ASSERT_EQ(sites.size(), 2u);
     EXPECT_EQ(sites[0], sites[1]);
 }
+
+// =============================================================================================
+// A day none of whose T-1 bars is consumed is carried (T-FIX; LOOP_SPEC sections 7.2, 7.7). A T-1
+// whose every bar was withheld ran the rebalance on the window's earlier bars with every symbol
+// held: it printed OVERLAY, OPTIMISER and BOOK and stored risk_detail, where the backtest feeds
+// nothing on such a cycle and stores NULL. One condition, the carry's, in both runners.
+// =============================================================================================
+
+TEST(AllWithheldDaySource, BothTwinsCarryADayNoneOfWhoseT1BarsIsConsumed) {
+    std::vector<std::string> blocks;
+    for (const char* runner : kFuturesRunners) {
+        SCOPED_TRACE(runner);
+        const std::string src = read_source(runner);
+        if (src.empty()) GTEST_SKIP() << "runner source not found";
+        EXPECT_NE(src.find("if (early_previous_day_close_prices.empty() || no_t1_bar_consumed) {"), npos)
+            << "the carry still tests the raw T-1 price map alone, which holds a withheld bar";
+        const std::string rule = between(src, "const bool no_t1_bar_consumed =", ";\n");
+        ASSERT_FALSE(rule.empty());
+        EXPECT_NE(rule.find("last_consumed_date"), npos) << "the test is on the CONSUMED bars";
+        EXPECT_NE(rule.find("t1_classification.t1_date"), npos);
+        EXPECT_LT(src.find("const bool no_t1_bar_consumed ="), src.find("NON-TRADING DAY DETECTED"));
+        blocks.push_back(rule);
+    }
+    ASSERT_EQ(blocks.size(), 2u);
+    EXPECT_EQ(blocks[0], blocks[1]);
+}
