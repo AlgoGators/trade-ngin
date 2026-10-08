@@ -138,3 +138,108 @@ TEST(LateBarWarning, WhatIsNotALateBar) {
     rolled[2] = bar("ZF.v.0", "2026-04-28", 108.0546875, "ZFU6");
     EXPECT_TRUE(find_late_bars(rolled, "2026-04-29", {"ZF.v.0"}, {}, zero.reader()).empty());
 }
+
+// The walk is bounded: five consumed bars back per symbol, and one further line when the bar
+// behind the last listed one also qualifies (a first run from a book whose old rows book 0 named
+// 18 bars, each with a remedy to replay an old date).
+namespace {
+
+// Nine bars, 04-17 .. 04-29 (T-1), every close different, one contract.
+const std::vector<std::string> kNineDates = {"2026-04-17", "2026-04-20", "2026-04-21", "2026-04-22", "2026-04-23",
+                                             "2026-04-24", "2026-04-27", "2026-04-28", "2026-04-29"};
+
+std::vector<Bar> nine_bars() {
+    std::vector<Bar> bars;
+    double close = 108.0;
+    for (const auto& d : kNineDates) bars.push_back(bar("ZF.v.0", d, close += 0.125));
+    return bars;
+}
+
+// The stored rows of the `n` bars before T-1 book 0 at quantity -2; the row before them is booked.
+Rows zero_rows_back(size_t n) {
+    Rows rows;
+    for (size_t i = 0; i < n; ++i) rows.by_date[kNineDates[7 - i]] = {stored("ZF.v.0", -2.0, 0.0)};
+    if (n < 8) rows.by_date[kNineDates[7 - n]] = {stored("ZF.v.0", -2.0, 12.5)};
+    return rows;
+}
+
+// The lines a run prints (the runners print one per entry, in order), and which of them is the one
+// that says a symbol's listing was cut.
+std::vector<std::string> lines_of(const std::vector<LateBar>& late) {
+    std::vector<std::string> lines;
+    for (const auto& found : late) lines.push_back(late_bar_warning_line(found, 1000.0));
+    return lines;
+}
+
+bool says_not_listed(const std::string& line) {
+    return line.find("are not listed") != std::string::npos;
+}
+
+}  // namespace
+
+TEST(LateBarWarning, SevenLateBarsInARowListFiveAndSayOnceThatEarlierRowsAreNotListed) {
+    Rows rows = zero_rows_back(7);
+    const auto late = find_late_bars(nine_bars(), "2026-04-29", {"ZF.v.0"}, {}, rows.reader());
+    const auto lines = lines_of(late);
+    ASSERT_EQ(lines.size(), 6u) << "five listed bars and the one line that says the listing was cut";
+    const std::vector<std::string> listed = {"2026-04-28", "2026-04-27", "2026-04-24", "2026-04-23", "2026-04-22"};
+    for (size_t i = 0; i < 5; ++i) {
+        EXPECT_EQ(late[i].date, listed[i]);
+        EXPECT_DOUBLE_EQ(late[i].unbooked(1000.0), -250.0);
+        const std::string& line = lines[i];
+        EXPECT_FALSE(says_not_listed(line)) << line;
+        EXPECT_NE(line.find("so -250.00 is on no stored row"), std::string::npos) << line;
+        EXPECT_NE(line.find("Remedy: re-run "), std::string::npos) << line;
+    }
+    EXPECT_EQ(late[5].symbol, "ZF.v.0");
+    EXPECT_EQ(late[5].date, "2026-04-22") << "the date the listing stops at";
+    const std::string& cut = lines[5];
+    EXPECT_EQ(cut, "LATE_BAR ZF.v.0: earlier stored rows of ZF.v.0 also book 0 at a non-zero quantity and are "
+                   "not listed. The listing stops at 2026-04-22 (5 consumed bars back at most)");
+    EXPECT_EQ(cut.find("Remedy"), std::string::npos) << cut;
+    EXPECT_EQ(cut.find("re-run"), std::string::npos) << cut;
+    EXPECT_EQ(cut.find("on no stored row"), std::string::npos) << cut;
+    // One row behind the last listed bar is read, to know whether to say so; nothing further back.
+    EXPECT_EQ(rows.reads["2026-04-21"], 1);
+    EXPECT_EQ(rows.reads.count("2026-04-20"), 0u);
+}
+
+TEST(LateBarWarning, ExactlyFiveLateBarsAreAllListedWithNoFurtherLine) {
+    // The sixth bar back has a booked row.
+    Rows booked = zero_rows_back(5);
+    const auto late = find_late_bars(nine_bars(), "2026-04-29", {"ZF.v.0"}, {}, booked.reader());
+    ASSERT_EQ(late.size(), 5u);
+    for (const auto& line : lines_of(late)) EXPECT_FALSE(says_not_listed(line)) << line;
+    EXPECT_EQ(late[0].date, "2026-04-28");
+    EXPECT_EQ(late[4].date, "2026-04-22");
+    // The window ends behind the fifth: seven bars, the first has nothing before it.
+    std::vector<Bar> seven = nine_bars();
+    seven.erase(seven.begin(), seven.begin() + 2);
+    Rows all = zero_rows_back(8);
+    const auto ended = find_late_bars(seven, "2026-04-29", {"ZF.v.0"}, {}, all.reader());
+    ASSERT_EQ(ended.size(), 5u);
+    for (const auto& line : lines_of(ended)) EXPECT_FALSE(says_not_listed(line)) << line;
+}
+
+TEST(LateBarWarning, TheBoundIsPerSymbol) {
+    // ZF has seven late bars, ZT two: ZT's are listed whole, behind ZF's five and its one cut entry.
+    std::vector<Bar> bars = nine_bars();
+    bars.push_back(bar("ZT.v.0", "2026-04-24", 103.5, "ZTM6"));
+    bars.push_back(bar("ZT.v.0", "2026-04-27", 103.625, "ZTM6"));
+    bars.push_back(bar("ZT.v.0", "2026-04-28", 103.75, "ZTM6"));
+    bars.push_back(bar("ZT.v.0", "2026-04-29", 103.875, "ZTM6"));
+    Rows rows = zero_rows_back(7);
+    rows.by_date["2026-04-28"].push_back(stored("ZT.v.0", 1.0, 0.0));
+    rows.by_date["2026-04-27"].push_back(stored("ZT.v.0", 1.0, 0.0));
+    const auto late = find_late_bars(bars, "2026-04-29", {"ZF.v.0", "ZT.v.0"}, {}, rows.reader());
+    const auto lines = lines_of(late);
+    ASSERT_EQ(lines.size(), 8u);
+    EXPECT_TRUE(says_not_listed(lines[5])) << lines[5];
+    EXPECT_EQ(lines[5].rfind("LATE_BAR ZF.v.0: ", 0), 0u) << lines[5];
+    EXPECT_EQ(late[6].symbol, "ZT.v.0");
+    EXPECT_EQ(late[6].date, "2026-04-28");
+    EXPECT_EQ(late[7].symbol, "ZT.v.0");
+    EXPECT_EQ(late[7].date, "2026-04-27");
+    EXPECT_FALSE(says_not_listed(lines[6])) << lines[6];
+    EXPECT_FALSE(says_not_listed(lines[7])) << lines[7];
+}

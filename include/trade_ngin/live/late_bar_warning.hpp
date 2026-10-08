@@ -2,6 +2,7 @@
 #pragma once
 
 #include <algorithm>
+#include <cstddef>
 #include <cstdio>
 #include <functional>
 #include <map>
@@ -36,7 +37,18 @@ namespace trade_ngin {
  *     them books a realized P&L of exactly 0.
  * The walk stops at the first bar that fails one of them. A symbol whose roll this run settles
  * late (LiveRollState::late) is left out: that settlement books its unbooked bars itself.
+ *
+ * The walk is BOUNDED (HD 2026-10-08): at most kLateBarMaxBarsBack consumed bars back per symbol
+ * are listed. When the next bar back would also have been listed, the symbol gets ONE further
+ * entry (`earlier_rows_not_listed`) whose line says that earlier stored rows of the symbol also
+ * book 0 and are not listed, and the date the listing stops at. It names no amount and no remedy,
+ * and nothing further back is read.
  */
+
+/// The furthest the walk lists, in consumed bars before the T-1 bar: a trading week. A late bar is
+/// a recent event, not old history (a first run from a book whose old rows book 0 named 18 bars).
+inline constexpr size_t kLateBarMaxBarsBack = 5;
+
 struct LateBar {
     std::string symbol;
     std::string date;            ///< the late bar's date
@@ -44,6 +56,9 @@ struct LateBar {
     double quantity{0.0};        ///< the stored rows' quantity on that date, summed over the sleeves
     double close{0.0};           ///< the late bar's close
     double previous_close{0.0};  ///< the close of the consumed bar before it
+    /// Not a late bar: the listing of `symbol` was cut by kLateBarMaxBarsBack at `date` (the oldest
+    /// bar listed) and the bar before it also qualifies. Quantity and closes are 0 on this entry.
+    bool earlier_rows_not_listed{false};
 
     double unbooked(double point_value) const { return quantity * (close - previous_close) * point_value; }
 };
@@ -69,6 +84,7 @@ inline std::vector<LateBar> find_late_bars(const std::vector<Bar>& consumed, con
         std::stable_sort(seq.begin(), seq.end(),
                          [](const Bar* a, const Bar* b) { return a->timestamp < b->timestamp; });
         if (seq.size() < 3 || date_of(seq.back()) != t1_date) continue;
+        size_t listed = 0;
         for (size_t t = seq.size() - 2; t >= 1; --t) {
             const Bar* bar = seq[t];
             const Bar* before = seq[t - 1];
@@ -85,6 +101,15 @@ inline std::vector<LateBar> find_late_bars(const std::vector<Bar>& consumed, con
                 quantity += static_cast<double>(row.quantity);
             }
             if (booked || quantity == 0.0) break;
+            if (listed == kLateBarMaxBarsBack) {
+                LateBar cut;
+                cut.symbol = symbol;
+                cut.date = late.back().date;
+                cut.timestamp = late.back().timestamp;
+                cut.earlier_rows_not_listed = true;
+                late.push_back(cut);
+                break;
+            }
             LateBar found;
             found.symbol = symbol;
             found.date = date_of(bar);
@@ -93,13 +118,22 @@ inline std::vector<LateBar> find_late_bars(const std::vector<Bar>& consumed, con
             found.close = static_cast<double>(bar->close);
             found.previous_close = static_cast<double>(before->close);
             late.push_back(found);
+            ++listed;
         }
     }
     return late;
 }
 
-/// The one line of a late bar.
+/// The one line of a late bar, or of the entry that says a symbol's listing was cut.
 inline std::string late_bar_warning_line(const LateBar& bar, double point_value) {
+    if (bar.earlier_rows_not_listed) {
+        char cut[320];
+        std::snprintf(cut, sizeof(cut),
+                      "LATE_BAR %s: earlier stored rows of %s also book 0 at a non-zero quantity and "
+                      "are not listed. The listing stops at %s (%zu consumed bars back at most)",
+                      bar.symbol.c_str(), bar.symbol.c_str(), bar.date.c_str(), kLateBarMaxBarsBack);
+        return cut;
+    }
     const std::string settling_run =
         SessionClassifier::ymd(SessionClassifier::day_of(bar.timestamp) + std::chrono::days(1));
     char text[640];
