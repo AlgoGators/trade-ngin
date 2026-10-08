@@ -135,6 +135,7 @@ set(TEST_SOURCES
     live/test_feed_ingestion_assertion.cpp
     live/test_day_t_write_ordering.cpp
     live/test_finalized_books_read.cpp
+    live/test_late_bar_warning.cpp
     live/test_live_run_refusal_arms.cpp
     live/test_risk_module_error_path.cpp
     live/test_sleeve_risk_module_failure.cpp

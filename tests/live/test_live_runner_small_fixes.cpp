@@ -439,3 +439,34 @@ TEST(C7bBookGate, TheCombinedMapOfTwoSleevesIsTheirSum) {
     EXPECT_DOUBLE_EQ(combined.at("6L.v.0").quantity.as_double(), 2.0);
     EXPECT_DOUBLE_EQ(combined.at("MES.v.0").quantity.as_double(), -2.0);
 }
+
+// =============================================================================================
+// The late-bar warning (T-FIX; HD 2026-10-07: a warning, no catch-up, no refusal). A held symbol's
+// bar that arrives after the run that settles its date is on no stored row; both runners name it,
+// identically, once the stored T-1 books are loaded and before the finalize.
+// (The rule itself: tests/live/test_late_bar_warning.cpp.)
+// =============================================================================================
+
+TEST(LateBarWarningSource, BothTwinsNameALateBarAfterTheStoredBooksAreLoaded) {
+    std::vector<std::string> blocks;
+    for (const char* runner : kFuturesRunners) {
+        SCOPED_TRACE(runner);
+        const std::string src = read_source(runner);
+        if (src.empty()) GTEST_SKIP() << "runner source not found";
+        const auto books = src.find("previous_strategy_positions[strategy_name] = prev_result.value();");
+        const auto call = src.find("find_late_bars(");
+        const auto finalize = src.find("PHASE 5: Finalizing Day T-1 PnL per-strategy");
+        ASSERT_NE(books, npos);
+        ASSERT_NE(finalize, npos);
+        ASSERT_NE(call, npos) << "a late bar of a held symbol is lost without a line";
+        EXPECT_GT(call, books) << "the held symbols are the stored T-1 books'";
+        EXPECT_LT(call, finalize);
+        EXPECT_NE(src.find("WARN(late_bar_warning_line(bar, pnl_manager->get_point_value(bar.symbol)));"),
+                  npos)
+            << "the line is not printed at WARNING with the symbol's point value";
+        blocks.push_back(between(src, "// A LATE BAR (HD 2026-10-07", "// BOOK GATE (T-7a C4"));
+    }
+    ASSERT_EQ(blocks.size(), 2u);
+    ASSERT_FALSE(blocks[0].empty());
+    EXPECT_EQ(blocks[0], blocks[1]);
+}

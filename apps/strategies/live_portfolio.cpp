@@ -27,6 +27,7 @@
 #include "trade_ngin/live/data_freshness.hpp"
 #include "trade_ngin/live/execution_manager.hpp"
 #include "trade_ngin/live/finalized_books_read.hpp"
+#include "trade_ngin/live/late_bar_warning.hpp"
 #include "trade_ngin/live/futures_cost_feed.hpp"
 #include "trade_ngin/live/live_data_loader.hpp"
 #include "trade_ngin/live/live_historical_metrics.hpp"
@@ -1988,6 +1989,45 @@ int main(int argc, char* argv[]) {
                 INFO("No previous positions found for strategy: " + strategy_name +
                      " (first run or no data): " + std::string(prev_result.error()->what()));
                 previous_strategy_positions[strategy_name] = {};
+            }
+        }
+
+        // A LATE BAR (HD 2026-10-07: a warning, no catch-up and no refusal). A held symbol's bar
+        // that arrived after the run that should have settled it: the stored row of its date books
+        // 0 and this run settles Day T-1 against its close, so its own move is on no stored row.
+        // The run that first consumes it names it once (live/late_bar_warning.hpp). Nothing stored
+        // changes.
+        {
+            std::unordered_set<std::string> held_symbols;
+            for (const auto& [strategy_name, book] : previous_strategy_positions) {
+                for (const auto& [symbol, row] : book) {
+                    if (row.quantity.as_double() != 0.0) held_symbols.insert(symbol);
+                }
+            }
+            std::unordered_set<std::string> late_roll_symbols;
+            for (const auto& [symbol, late] : roll_state.late) late_roll_symbols.insert(symbol);
+            std::map<Timestamp, std::vector<Position>> rows_by_date;
+            const auto late_bars = find_late_bars(
+                strategy_feed_bars, t1_classification.t1_date, held_symbols, late_roll_symbols,
+                [&](const Timestamp& bar_time) {
+                    const auto cached = rows_by_date.find(bar_time);
+                    if (cached != rows_by_date.end()) return cached->second;
+                    std::vector<Position> rows;
+                    for (const auto& [strategy_name, book] : previous_strategy_positions) {
+                        auto stored = db->load_positions_by_date(
+                            combined_strategy_id, strategy_name, coordinator_config.portfolio_id,
+                            bar_time, "trading.positions");
+                        if (stored.is_error()) continue;
+                        for (const auto& [symbol, stored_row] : stored.value()) {
+                            Position row = stored_row;
+                            row.symbol = symbol;
+                            rows.push_back(std::move(row));
+                        }
+                    }
+                    return rows_by_date.emplace(bar_time, std::move(rows)).first->second;
+                });
+            for (const auto& bar : late_bars) {
+                WARN(late_bar_warning_line(bar, pnl_manager->get_point_value(bar.symbol)));
             }
         }
 
