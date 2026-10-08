@@ -1,5 +1,6 @@
 #include "trade_ngin/live/execution_manager.hpp"
 #include "trade_ngin/core/logger.hpp"
+#include <algorithm>
 #include <cmath>
 #include <sstream>
 #include <iomanip>
@@ -10,10 +11,13 @@ Result<std::vector<ExecutionReport>> ExecutionManager::generate_daily_executions
     const std::unordered_map<std::string, Position>& current_positions,
     const std::unordered_map<std::string, Position>& previous_positions,
     const std::unordered_map<std::string, double>& market_prices,
-    const Timestamp& timestamp) {
+    const Timestamp& timestamp,
+    PricingPolicy pricing,
+    std::vector<std::string>* unpriced_out) {
 
     INFO("Generating execution reports for position changes...");
     std::vector<ExecutionReport> daily_executions;
+    std::vector<std::string> unpriced_symbols;
 
     // Handle existing positions that changed
     for (const auto& [symbol, current_position] : current_positions) {
@@ -34,13 +38,25 @@ Result<std::vector<ExecutionReport>> ExecutionManager::generate_daily_executions
         if (std::abs(current_qty - prev_qty) > 1e-6) {
             double trade_size = current_qty - prev_qty;
 
-            // Get market price (Day T-1 close price for Day T execution)
-            double market_price = current_position.average_price.as_double();
+            // Market price (Day T-1 close for Day T execution). What happens when the
+            // map has no usable entry depends on what average_price means to THIS
+            // caller -- see PricingPolicy. Futures assigns it the latest mark, so the
+            // fallback yields a real price; equity mean reversion maintains it as a
+            // cost basis, which is 0.00 for a position opened today.
             auto price_it = market_prices.find(symbol);
-            if (price_it != market_prices.end()) {
+            double market_price = 0.0;
+            if (price_it != market_prices.end() && price_it->second > 0.0) {
                 market_price = price_it->second;
-            } else {
+            } else if (pricing == PricingPolicy::MARK_FALLBACK) {
+                market_price = current_position.average_price.as_double();
                 WARN("No market price for " + symbol + ", using average price");
+            } else {
+                ERROR("No usable market price for " + symbol +
+                      " - skipping execution for a position change of " +
+                      std::to_string(trade_size) +
+                      ". This symbol will NOT be traded today.");
+                unpriced_symbols.push_back(symbol);
+                continue;
             }
 
             // Generate execution
@@ -62,13 +78,23 @@ Result<std::vector<ExecutionReport>> ExecutionManager::generate_daily_executions
             // This position was completely closed
             double prev_qty = prev_position.quantity.as_double();
 
-            // Get market price (Day T-1 close price for closing on Day T)
-            double market_price = prev_position.average_price.as_double(); // Default fallback
+            // Same rule as the position-change path above; see PricingPolicy. Under
+            // STRICT, a close-out priced at the position's own cost basis would book
+            // the exit at what it cost rather than what it is worth, silently
+            // reporting zero realized PnL.
             auto price_it = market_prices.find(symbol);
-            if (price_it != market_prices.end()) {
+            double market_price = 0.0;
+            if (price_it != market_prices.end() && price_it->second > 0.0) {
                 market_price = price_it->second;
-            } else {
+            } else if (pricing == PricingPolicy::MARK_FALLBACK) {
+                market_price = prev_position.average_price.as_double();
                 WARN("No market price for closed position " + symbol + ", using average price");
+            } else {
+                ERROR("No usable market price to close " + symbol + " (quantity " +
+                      std::to_string(prev_qty) +
+                      ") - skipping execution. The caller must reconcile this symbol.");
+                unpriced_symbols.push_back(symbol);
+                continue;
             }
 
             // Generate execution for closing (opposite side of position)
@@ -85,6 +111,22 @@ Result<std::vector<ExecutionReport>> ExecutionManager::generate_daily_executions
     }
 
     INFO("Generated " + std::to_string(daily_executions.size()) + " execution reports");
+
+    if (!unpriced_symbols.empty()) {
+        std::sort(unpriced_symbols.begin(), unpriced_symbols.end());
+        unpriced_symbols.erase(std::unique(unpriced_symbols.begin(), unpriced_symbols.end()),
+                               unpriced_symbols.end());
+        std::string joined;
+        for (const auto& s : unpriced_symbols) {
+            if (!joined.empty()) joined += ", ";
+            joined += s;
+        }
+        ERROR("Skipped " + std::to_string(unpriced_symbols.size()) +
+              " symbol(s) with no usable market price: " + joined +
+              ". Their intended position changes did NOT execute.");
+    }
+    if (unpriced_out) *unpriced_out = unpriced_symbols;
+
     return Result<std::vector<ExecutionReport>>(daily_executions);
 }
 
@@ -111,14 +153,16 @@ ExecutionReport ExecutionManager::generate_execution(
     exec.filled_quantity = std::abs(quantity_change);
     exec.fill_time = timestamp;
 
-    double abs_quantity = exec.filled_quantity.as_double();
-
     // TransactionCostManager is the single source of truth.
     // Keep fill_price as pure reference price (no embedded slippage).
     exec.fill_price = market_price;
 
+    // E2-F29: pass the SIGNED quantity. TransactionCostManager takes |qty| for every cost
+    // term except the SEC/TAF regulatory fees, which are sell-side only and are gated on
+    // `quantity < 0`. Passing |quantity_change| made that gate unreachable, so a config with
+    // apply_regulatory_fees charged a sell exactly what it charged a buy.
     auto cost_result = cost_manager_->calculate_costs(
-        symbol, abs_quantity, market_price);
+        symbol, quantity_change, market_price);
 
     exec.commissions_fees = Decimal(cost_result.commissions_fees);
     exec.implicit_price_impact = Decimal(cost_result.implicit_price_impact);
@@ -157,16 +201,30 @@ void ExecutionManager::update_market_data(const std::string& symbol, double volu
 }
 
 std::string ExecutionManager::generate_date_string(const Timestamp& timestamp) {
-    // Convert timestamp to time_t
+    // UTC, because this is the RUN DATE and every other artefact of the same run
+    // is stamped in UTC: the equity runner parses the CLI date as UTC midnight
+    // (95679ea2) and formats `now_tm` with gmtime_r at every consumer, and the
+    // rows this id belongs to are keyed on that UTC date.
+    //
+    // std::localtime here took the previous calendar day on any negative-offset
+    // host -- the 2026-06-15 run wrote DAILY_AAPL_20260614 (E2-F46). That id is
+    // what delete_stale_executions matches on and what a broker statement is
+    // reconciled against, so naming the wrong day is not cosmetic.
+    //
+    // Futures are unmoved: they still pass local midnight (E2-F42), which lands
+    // at 04:00/05:00Z on the same calendar day, so reading it in UTC yields the
+    // YYYYMMDD they always got. gmtime_r, not std::gmtime: this is called from
+    // the same paths the thread-safety sweep covered.
     std::time_t time = std::chrono::system_clock::to_time_t(timestamp);
-    std::tm* tm = std::localtime(&time);
+    std::tm tm{};
+    if (gmtime_r(&time, &tm) == nullptr) return std::string();
 
     // Create date string in YYYYMMDD format
     std::stringstream date_ss;
     date_ss << std::setfill('0')
-            << std::setw(4) << (tm->tm_year + 1900)
-            << std::setw(2) << (tm->tm_mon + 1)
-            << std::setw(2) << tm->tm_mday;
+            << std::setw(4) << (tm.tm_year + 1900)
+            << std::setw(2) << (tm.tm_mon + 1)
+            << std::setw(2) << tm.tm_mday;
     return date_ss.str();
 }
 

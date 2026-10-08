@@ -66,7 +66,8 @@ int main() {
     std::vector<std::string> order_ids = {"TEST_ORDER_1", "TEST_ORDER_2", "TEST_ORDER_3"};
     auto now = std::chrono::system_clock::now();
 
-    auto delete_result = db->delete_stale_executions(order_ids, now, "trading.executions");
+    auto delete_result = db->delete_stale_executions(order_ids, now, "TEST_STRATEGY",
+                                                     "TEST_PORTFOLIO", "trading.executions");
     if (delete_result.is_error()) {
         std::cout << "  Warning (expected if no matching records): "
                   << delete_result.error()->what() << std::endl;

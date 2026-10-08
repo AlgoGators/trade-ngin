@@ -224,7 +224,11 @@ int main(int argc, char* argv[]) {
         // Sort strategy names for deterministic combined ID (Tier 2)
         std::sort(strategy_names.begin(), strategy_names.end());
 
-        // Generate combined strategy_id: LIVE_<sorted_names_joined_by_&>
+        // Generate combined strategy_id: LIVE_<sorted_names_joined_by_underscore>.
+        // NEW-2: this line said "&" while the loop below has joined with "_" since
+        // a88085ec, and "&" was never the separator in tree. The orphaned "&"-keyed
+        // rows in the DB come from an out-of-tree binary; no runner can read them back
+        // because the id is matched exactly.
         std::string combined_strategy_id = "LIVE_";
         for (size_t i = 0; i < strategy_names.size(); ++i) {
             if (i > 0)
@@ -735,7 +739,19 @@ int main(int argc, char* argv[]) {
         bool is_sunday = (day_of_week == 0);
 
         // Check if yesterday was a holiday using HolidayChecker
-        HolidayChecker holiday_checker("include/trade_ngin/core/holidays.json");
+        // Phase 6 §6a: path resolved via HolidayChecker::resolve_holidays_path.
+        HolidayChecker holiday_checker(HolidayChecker::resolve_holidays_path());
+        // BA-1: fail closed on a calendar that did not load fully. is_holiday
+        // cannot distinguish "the market was open" from "the calendar is
+        // missing", so a partial load silently turns a closure into a trading
+        // day and the non-trading-day branch below never fires.
+        if (!holiday_checker.loaded()) {
+            std::cerr << "FATAL: market holiday calendar failed to load from "
+                      << HolidayChecker::resolve_holidays_path()
+                      << " - refusing to run. Every date would report as a trading day."
+                      << std::endl;
+            return 1;
+        }
         auto yesterday_for_check = now - std::chrono::hours(24);
         auto yesterday_time_t_check = std::chrono::system_clock::to_time_t(yesterday_for_check);
         std::tm yesterday_tm_check = *std::gmtime(&yesterday_time_t_check);
@@ -1479,7 +1495,8 @@ int main(int argc, char* argv[]) {
 
                         // Use the delete_stale_executions method with strategy name
                         auto del_res = db->delete_stale_executions(
-                            order_ids_vector, now, strategy_name, "trading.executions");
+                            order_ids_vector, now, strategy_name, portfolio_id,
+                            "trading.executions");
                         if (del_res.is_error()) {
                             WARN("Failed to delete stale executions for strategy " + strategy_name +
                                  ": " + std::string(del_res.error()->what()));
@@ -1943,9 +1960,17 @@ int main(int argc, char* argv[]) {
             int trading_days_count = 1;
             try {
                 // Call PostgreSQL function to calculate trading days
+                // E2-F6: portfolio-scoped (3-arg) form. The 2-arg overload keys on
+                // strategy_id alone with `ORDER BY live_start_date LIMIT 1` and NO portfolio
+                // predicate, so it takes the earliest row across ALL portfolios.
+                // LIVE_TREND_FOLLOWING has a metadata row under both BASE_PORTFOLIO and
+                // CONSERVATIVE_PORTFOLIO; they agree only because both carry
+                // live_start_date = 2025-10-05. Add or edit a BASE row with an earlier date
+                // and the conservative book's annualization changes silently -- no error, no
+                // log line. Definition is versioned in migrations/004.
                 std::string trading_days_query = "SELECT trading.get_trading_days('" +
                                                  combined_strategy_id + "', DATE '" +
-                                                 yesterday_date_ss.str() + "')";
+                                                 yesterday_date_ss.str() + "', '" + portfolio_id + "')";
 
                 INFO("TRADING_DAYS_CALC [Day T-1]: Querying trading days...");
                 INFO("TRADING_DAYS_CALC [Day T-1]: Query: " + trading_days_query);
@@ -2518,9 +2543,17 @@ int main(int argc, char* argv[]) {
             now_date_ss << std::put_time(std::gmtime(&now_time_t_for_query), "%Y-%m-%d");
 
             // Call PostgreSQL function to calculate trading days
+            // E2-F6: portfolio-scoped (3-arg) form. The 2-arg overload keys on
+            // strategy_id alone with `ORDER BY live_start_date LIMIT 1` and NO portfolio
+            // predicate, so it takes the earliest row across ALL portfolios.
+            // LIVE_TREND_FOLLOWING has a metadata row under both BASE_PORTFOLIO and
+            // CONSERVATIVE_PORTFOLIO; they agree only because both carry
+            // live_start_date = 2025-10-05. Add or edit a BASE row with an earlier date
+            // and the conservative book's annualization changes silently -- no error, no
+            // log line. Definition is versioned in migrations/004.
             std::string trading_days_query = "SELECT trading.get_trading_days('" +
                                              combined_strategy_id + "', DATE '" +
-                                             now_date_ss.str() + "')";
+                                             now_date_ss.str() + "', '" + portfolio_id + "')";
 
             INFO("TRADING_DAYS_CALC [Day T]: Querying trading days...");
             INFO("TRADING_DAYS_CALC [Day T]: Query: " + trading_days_query);

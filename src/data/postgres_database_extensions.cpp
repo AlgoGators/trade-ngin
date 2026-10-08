@@ -17,6 +17,7 @@ namespace trade_ngin {
 Result<void> PostgresDatabase::delete_stale_executions(const std::vector<std::string>& order_ids,
                                                        const Timestamp& date,
                                                        const std::string& strategy_name,
+                                                       const std::string& portfolio_id,
                                                        const std::string& table_name) {
     std::lock_guard<std::mutex> lock(mutex_);
 
@@ -48,14 +49,21 @@ Result<void> PostgresDatabase::delete_stale_executions(const std::vector<std::st
             in_list += txn.quote(order_ids[i]);
         }
 
+        // E2-F4: scoped by portfolio_id. Without it this reaches across books -- order_id
+        // is portfolio-independent and TREND_FOLLOWING runs in both. See the header.
+        // F-C: no calendar-date predicate. order_id is deterministic and already carries
+        // the trading date (DAILY_<symbol>_<yyyymmdd>, CORPACTION_<symbol>_<ex_date>), while
+        // execution_time is a wall-clock instant: a run at 19:00 EDT stores Monday UTC and a
+        // re-run at 21:00 EDT asked for Tuesday UTC, so the first run's rows never matched
+        // and the re-run inserted duplicates. Scoping by portfolio and strategy_name stays.
+        (void)date;
         std::string query = "DELETE FROM " + table_name +
-                            " WHERE DATE(execution_time) = $1 "
-                            " AND strategy_name = $2 "
+                            " WHERE strategy_name = $1 "
+                            " AND portfolio_id = $2 "
                             " AND order_id IN (" +
                             in_list + ")";
 
-        // Execute delete for the specified date (YYYY-MM-DD)
-        txn.exec(query, pqxx::params{format_timestamp(date).substr(0, 10), strategy_name});
+        txn.exec(query, pqxx::params{strategy_name, portfolio_id});
 
         txn.commit();
 
@@ -196,7 +204,8 @@ Result<void> PostgresDatabase::store_backtest_equity_curve_batch(
 Result<void> PostgresDatabase::store_backtest_positions(const std::vector<Position>& positions,
                                                         const std::string& run_id,
                                                         const std::string& portfolio_id,
-                                                        const std::string& table_name) {
+                                                        const std::string& table_name,
+                                                        bool keep_closed_rows) {
     std::lock_guard<std::mutex> lock(mutex_);
 
     // Validate connection
@@ -276,9 +285,16 @@ Result<void> PostgresDatabase::store_backtest_positions(const std::vector<Positi
         std::vector<std::string> position_values;
 
         for (const auto& pos : positions) {
-            // Skip zero positions
+            // Skip zero positions. E2-F54: a cash book passes keep_closed_rows so that a
+            // position closed to zero keeps the row carrying that bar's realized flow --
+            // dropping it strands the exit's P&L. The rule is the live one
+            // (LiveDailyCycle::is_dead_row): dead means no quantity AND no realized.
+            // Futures leave the flag false and keep the original unconditional filter.
             if (std::abs(static_cast<double>(pos.quantity)) < 1e-10) {
-                continue;
+                if (!keep_closed_rows ||
+                    std::abs(static_cast<double>(pos.realized_pnl)) < 1e-10) {
+                    continue;
+                }
             }
 
             // Extract date from last_update timestamp
@@ -432,8 +448,9 @@ Result<void> PostgresDatabase::store_backtest_positions_with_strategy(
                      txn.quote(pos.symbol) + ", " +
                      std::to_string(static_cast<double>(pos.quantity)) + ", " +
                      std::to_string(static_cast<double>(pos.average_price)) + ", " +
-                     std::to_string(static_cast<double>(pos.realized_pnl)) + ", " +
-                     std::to_string(static_cast<double>(pos.unrealized_pnl)) + ", " + "'" +
+                     // Column order is (unrealized_pnl, realized_pnl) -- emit values to match.
+                     std::to_string(static_cast<double>(pos.unrealized_pnl)) + ", " +
+                     std::to_string(static_cast<double>(pos.realized_pnl)) + ", " + "'" +
                      last_update_str + "', " +      // last_update
                      "'" + last_update_str + "'" +  // updated_at (same as last_update)
                      ")";
@@ -460,6 +477,15 @@ Result<void> PostgresDatabase::update_live_results(
     const std::unordered_map<std::string, double>& updates, const std::string& portfolio_id,
     const std::string& table_name) {
     std::lock_guard<std::mutex> lock(mutex_);
+
+    // Column names are concatenated into the statement (Postgres cannot bind
+    // identifiers), so allow-list every key before anything else happens.
+    for (const auto& [column, value] : updates) {
+        auto column_validation = validate_identifier(column);
+        if (column_validation.is_error()) {
+            return column_validation;
+        }
+    }
 
     // Validate connection
     auto validation = validate_connection();
@@ -673,6 +699,21 @@ Result<void> PostgresDatabase::store_live_results_complete(
     const std::unordered_map<std::string, int>& int_metrics, const nlohmann::json& config,
     const std::string& portfolio_id, const std::string& table_name) {
     std::lock_guard<std::mutex> lock(mutex_);
+
+    // Column names are concatenated into the statement (Postgres cannot bind
+    // identifiers), so allow-list every key before anything else happens.
+    for (const auto& [column, value] : metrics) {
+        auto column_validation = validate_identifier(column);
+        if (column_validation.is_error()) {
+            return column_validation;
+        }
+    }
+    for (const auto& [column, value] : int_metrics) {
+        auto column_validation = validate_identifier(column);
+        if (column_validation.is_error()) {
+            return column_validation;
+        }
+    }
 
     // Validate connection
     auto validation = validate_connection();

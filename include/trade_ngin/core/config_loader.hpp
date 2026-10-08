@@ -104,8 +104,13 @@ struct DatabaseConfig {
 
 /**
  * @brief Execution configuration
+ *
+ * Named ExecutionSettingsConfig, not ExecutionConfig: the execution engine owns
+ * trade_ngin::ExecutionConfig (execution_engine.hpp). Two classes with one mangled
+ * name is an ODR violation — the linker folds their ctors/dtors and corrupts
+ * whichever object loses the coin toss.
  */
-struct ExecutionConfig {
+struct ExecutionSettingsConfig {
     double commission_rate{0.0005};
     double slippage_bps{1.0};
     double position_limit_backtest{1000.0};
@@ -159,16 +164,43 @@ struct BacktestSpecificConfig {
  */
 struct LiveSpecificConfig {
     int historical_days{300};
+    // Max age (calendar days) of the latest OHLCV bar before a live run is treated
+    // as running on stale data. WARNs in historical-replay mode, ERRORs in true-live
+    // mode (review T2.9). Default absorbs a weekend plus a holiday.
+    int data_staleness_tolerance_days{4};
+    // How old (calendar days) a substituted close may be when a symbol has no T-1
+    // print and is about to trade. Five covers every ordinary session gap -- a
+    // three-day weekend plus a further holiday reaches Wednesday -- so anything
+    // beyond it means the symbol is halted or missing from the feed, not merely
+    // between sessions. Symbols exceeding the bound are not traded.
+    int execution_price_max_staleness_days{5};
+    // E2-F31. What to do with a company a spinoff hands you that you never chose to own:
+    // "liquidate_at_first_close" (default) books the child and sells it at its first close;
+    // "hold" keeps it, which is only safe when the child is itself in the configured
+    // universe -- otherwise no bars are loaded for it and the next run reports "Missing T-1
+    // price for symbol with a non-zero position" and rolls the target back forever (F-4).
+    // Unrecognised text takes the default; the runner logs which policy is in force.
+    std::string spinoff_child_policy{"liquidate_at_first_close"};
 
     nlohmann::json to_json() const {
         nlohmann::json j;
         j["historical_days"] = historical_days;
+        j["data_staleness_tolerance_days"] = data_staleness_tolerance_days;
+        j["execution_price_max_staleness_days"] = execution_price_max_staleness_days;
+        j["spinoff_child_policy"] = spinoff_child_policy;
         return j;
     }
 
     void from_json(const nlohmann::json& j) {
         if (j.contains("historical_days"))
             historical_days = j.at("historical_days").get<int>();
+        if (j.contains("data_staleness_tolerance_days"))
+            data_staleness_tolerance_days = j.at("data_staleness_tolerance_days").get<int>();
+        if (j.contains("execution_price_max_staleness_days"))
+            execution_price_max_staleness_days =
+                j.at("execution_price_max_staleness_days").get<int>();
+        if (j.contains("spinoff_child_policy"))
+            spinoff_child_policy = j.at("spinoff_child_policy").get<std::string>();
     }
 };
 
@@ -183,7 +215,7 @@ struct StrategyDefaultsConfig {
     bool use_optimization{true};
     bool use_risk_management{true};
     double carver_buffer_floor{0.5};
-    double carver_buffer_position_factor{0.2};
+    double carver_buffer_position_factor{0.0};
 
     nlohmann::json to_json() const {
         nlohmann::json j;
@@ -245,7 +277,7 @@ struct AppConfig {
     DatabaseConfig database;
 
     // Execution configuration
-    ExecutionConfig execution;
+    ExecutionSettingsConfig execution;
 
     // Optimization configuration
     DynamicOptConfig opt_config;

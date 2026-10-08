@@ -29,7 +29,7 @@ struct TrendFollowingConfig {
     // Position-proportional buffer: buffer_width = max(floor, factor × |raw_position|).
     // Targets high-magnitude positions (MBT/M2K/MYM) where day-over-day raw can move
     // > 0.5 contracts, breaching the floor. Set to 0.0 to disable (floor-only).
-    double carver_buffer_position_factor{0.2};
+    double carver_buffer_position_factor{0.0};
     std::vector<std::pair<int, int>> ema_windows{
         // EMA window pairs for crossovers
         {2, 8}, {4, 16}, {8, 32}, {16, 64}, {32, 128}, {64, 256}};
@@ -194,6 +194,13 @@ public:
      */
     int get_max_required_lookback() const;
 
+    /**
+     * @brief Get sector-budgeted symbol weights for position sizing
+     * @return Map of symbol to weight (sums to 1.0; per-symbol capped at 50% of
+     *         its sector allocation). Public so tests can pin the cap invariant.
+     */
+    std::unordered_map<std::string, double> get_weights() const;
+
 protected:
     /**
      * @brief Validate strategy configuration
@@ -212,7 +219,6 @@ private:
     std::unordered_map<std::string, InstrumentData> instrument_data_;
 
     // Previous day positions for PnL calculation
-    std::unordered_map<std::string, Position> previous_positions_;
 
     /**
      * @brief Calculate EWMA for a price series
@@ -293,12 +299,6 @@ private:
      */
     std::vector<double> get_scaled_combined_forecast(
         const std::vector<double>& raw_combined_forecast) const;
-
-    /**
-     * @brief Get weights for position sizing
-     * @return Map of symbol to weight
-     */
-    std::unordered_map<std::string, double> get_weights() const;
 
     /**
      * @brief Calculate position for a symbol

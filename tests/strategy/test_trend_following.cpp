@@ -1,9 +1,13 @@
 #include <gtest/gtest.h>
 #include <algorithm>
 #include <cmath>
+#include <filesystem>
+#include <fstream>
 #include <memory>
 #include <numeric>
 #include <vector>
+#include <nlohmann/json.hpp>
+#include "trade_ngin/core/config_loader.hpp"
 #include "../core/test_base.hpp"
 #include "../data/test_db_utils.hpp"
 #include "trade_ngin/data/database_interface.hpp"
@@ -250,12 +254,113 @@ protected:
     double last_position_{0.0};
 };
 
-// Pin Carver buffer constants. If anyone tunes these defaults silently, this test fires
-// and forces them to also update PositionBuffering test bounds + buffering docs.
+// Pin Carver buffer constants. Production truth is floor-only buffering
+// (factor 0.0, floor 0.5) — the May 2026 churn-tuned values. The struct defaults,
+// the loader defaults, and the shipped config_template must all agree; a silent
+// change to any of them fires here.
 TEST(TrendFollowingConfigDefaults, CarverBufferConstantsArePinned) {
     TrendFollowingConfig cfg;
-    EXPECT_DOUBLE_EQ(cfg.carver_buffer_position_factor, 0.2);
+    EXPECT_DOUBLE_EQ(cfg.carver_buffer_position_factor, 0.0);
     EXPECT_DOUBLE_EQ(cfg.carver_buffer_floor, 0.5);
+
+    StrategyDefaultsConfig loader_defaults;
+    EXPECT_DOUBLE_EQ(loader_defaults.carver_buffer_position_factor,
+                     cfg.carver_buffer_position_factor);
+    EXPECT_DOUBLE_EQ(loader_defaults.carver_buffer_floor, cfg.carver_buffer_floor);
+
+    // Guard the tracked config_template against drifting from the code defaults.
+    // Walk up from cwd so the test works from build/, build/tests/, or repo root.
+    namespace fs = std::filesystem;
+    fs::path dir = fs::current_path();
+    fs::path tmpl;
+    for (int i = 0; i < 8 && !dir.empty(); ++i) {
+        if (fs::exists(dir / "config_template" / "defaults.json")) {
+            tmpl = dir / "config_template" / "defaults.json";
+            break;
+        }
+        dir = dir.parent_path();
+    }
+    if (tmpl.empty()) {
+        GTEST_SKIP() << "config_template/defaults.json not reachable from cwd";
+    }
+    std::ifstream in(tmpl);
+    nlohmann::json j = nlohmann::json::parse(in);
+    const auto& sd = j.at("strategy_defaults");
+    EXPECT_DOUBLE_EQ(sd.at("carver_buffer_position_factor").get<double>(),
+                     cfg.carver_buffer_position_factor);
+    EXPECT_DOUBLE_EQ(sd.at("carver_buffer_floor").get<double>(),
+                     cfg.carver_buffer_floor);
+}
+
+namespace {
+
+// Mock DB whose contract metadata contains a single-symbol sector, so the
+// 50%-of-sector cap in get_weights() actually fires.
+class SectorMetadataMockDb : public MockPostgresDatabase {
+public:
+    using MockPostgresDatabase::MockPostgresDatabase;
+
+    Result<std::shared_ptr<arrow::Table>> get_contract_metadata() const override {
+        arrow::StringBuilder sector_b;
+        arrow::StringBuilder symbol_b;
+        const std::vector<std::pair<std::string, std::string>> rows = {
+            {"Metals", "GC"}, {"Metals", "SI"}, {"Metals", "HG"}, {"Crypto", "MBT"}};
+        for (const auto& [sec, sym] : rows) {
+            (void)sector_b.Append(sec);
+            (void)symbol_b.Append(sym);
+        }
+        std::shared_ptr<arrow::Array> sector_arr;
+        std::shared_ptr<arrow::Array> symbol_arr;
+        (void)sector_b.Finish(&sector_arr);
+        (void)symbol_b.Finish(&symbol_arr);
+        auto schema = arrow::schema({arrow::field("Sector", arrow::utf8()),
+                                     arrow::field("Databento Symbol", arrow::utf8())});
+        return Result<std::shared_ptr<arrow::Table>>(
+            arrow::Table::Make(schema, {sector_arr, symbol_arr}));
+    }
+
+    Result<std::vector<std::string>> get_symbols(AssetClass asset_class, DataFrequency freq,
+                                                 const std::string& data_type) override {
+        (void)asset_class;
+        (void)freq;
+        (void)data_type;
+        return Result<std::vector<std::string>>({"GC.v.0", "SI.v.0", "HG.v.0", "MBT.v.0"});
+    }
+};
+
+}  // namespace
+
+// The sector cap must survive normalization: a single-symbol sector is capped to
+// 50% of its sector budget and the freed weight goes to OTHER symbols only.
+// Pre-fix, the closing renormalization re-inflated the capped symbol (MBT landed
+// at 1/3 instead of 1/4).
+TEST(TrendFollowingWeights, SectorCapSurvivesNormalization) {
+    StateManager::reset_instance();
+    auto db = std::make_shared<SectorMetadataMockDb>("mock://sector");
+    ASSERT_TRUE(db->connect().is_ok());
+
+    StrategyConfig cfg;
+    cfg.capital_allocation = 1000000.0;
+    cfg.asset_classes = {AssetClass::FUTURES};
+    cfg.frequencies = {DataFrequency::DAILY};
+    TrendFollowingConfig tf;
+    TrendFollowingStrategy strat("TEST_WEIGHTS_CAP", cfg, tf, db);
+
+    auto weights = strat.get_weights();
+    ASSERT_EQ(weights.size(), 4u);
+
+    double sum = 0.0;
+    for (const auto& [sym, w] : weights) {
+        sum += w;
+    }
+    EXPECT_NEAR(sum, 1.0, 1e-9);
+
+    // 2 sectors -> sector budget 0.5 each. MBT alone in Crypto: capped at 0.25.
+    EXPECT_NEAR(weights.at("MBT"), 0.25, 1e-9)
+        << "capped symbol was re-inflated by normalization";
+    for (const auto* metal : {"GC", "SI", "HG"}) {
+        EXPECT_NEAR(weights.at(metal), 0.25, 1e-9);
+    }
 }
 
 // Test initialization and valid configuration
@@ -577,7 +682,13 @@ TEST_F(TrendFollowingTest, PositionBuffering) {
         const double position_term =
             trend_config_.carver_buffer_position_factor * std::abs(prev);
         const double slack = 10.0;  // floor + small raw_buffer_width contributions
-        return (first_step ? 3.0 : 1.0) * position_term + slack;
+        if (first_step) {
+            // Under floor-only buffering (position factor 0.0) the first live tick
+            // settles the warm-up forecast in one re-track; bound it relative to
+            // |prev| instead of the (now zero) position term.
+            return std::max(3.0 * position_term, 0.25 * std::abs(prev)) + slack;
+        }
+        return position_term + slack;
     };
 
     // Create small update data with minimal price changes

@@ -175,7 +175,7 @@ Result<RiskResult> RiskManager::process_positions(
         // Surface both forms each cycle so anyone investigating a divergence
         // between the displayed "Volatility" and the gate's behavior can see
         // them side-by-side along with the per-instrument weights and σᵢ.
-        INFO("VAR_DEBUG: gate_sigma=" + std::to_string(gate_sigma) +
+        DEBUG("VAR_DEBUG: gate_sigma=" + std::to_string(gate_sigma) +
              " reported_sigma=" + std::to_string(result.portfolio_var) +
              " var_limit=" + std::to_string(config_.var_limit) +
              " portfolio_mult=" + std::to_string(result.portfolio_multiplier));
@@ -188,7 +188,7 @@ Result<RiskResult> RiskManager::process_positions(
                 const std::string& sym = i < market_data.ordered_symbols.size()
                                              ? market_data.ordered_symbols[i]
                                              : std::string("?");
-                INFO("VAR_DEBUG:   " + sym +
+                DEBUG("VAR_DEBUG:   " + sym +
                      " w_true=" + std::to_string(weights[i]) +
                      " w_vol=" + std::to_string(vol_weights[i]) +
                      " sigma_i=" + std::to_string(sigma_i));

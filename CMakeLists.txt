@@ -48,6 +48,12 @@ endif()
 
 # Options
 option(BUILD_TESTING "Build tests" OFF)
+# RPATH: executables and libtrade_ngin.dylib share an output directory, so
+# resolve @rpath next to the loading binary. Without this, the build picks up
+# whatever rpath leaks from the environment (e.g. an active conda env's lib
+# dir) and binaries fail to find libtrade_ngin.dylib at launch.
+set(CMAKE_BUILD_RPATH "@loader_path")
+set(CMAKE_BUILD_WITH_INSTALL_RPATH OFF)
 
 # Find packages
 if(BUILD_TESTING)
@@ -116,6 +122,7 @@ set(TRADE_NGIN_SOURCES
     src/data/conversion_utils.cpp
     src/data/credential_store.cpp
     src/data/database_pooling.cpp
+    src/data/market_data_utils.cpp
     src/instruments/futures.cpp
     src/instruments/equity.cpp
     src/instruments/option.cpp
@@ -143,6 +150,7 @@ set(TRADE_NGIN_SOURCES
     src/strategy/trend_following.cpp
     src/strategy/trend_following_slow.cpp
     src/strategy/trend_following_fast.cpp
+    src/strategy/mean_reversion.cpp
     src/strategy/regime_detector.cpp
     src/storage/results_manager_base.cpp
     src/storage/backtest_results_manager.cpp
@@ -154,8 +162,14 @@ set(TRADE_NGIN_SOURCES
     src/live/live_price_manager.cpp
     src/live/live_pnl_manager.cpp
     src/live/execution_manager.cpp
+    src/live/execution_price_resolver.cpp
     src/live/margin_manager.cpp
     src/live/csv_exporter.cpp
+    src/live/corporate_actions_applier.cpp
+    src/live/corporate_actions_classification.cpp
+    src/live/corporate_actions_lifecycle.cpp
+    src/live/corporate_actions_audit_log.cpp
+    src/live/broker_frame.cpp
     src/statistics/utils/statistics_utils.cpp
     src/statistics/transformers/normalizer.cpp
     src/statistics/transformers/pca.cpp

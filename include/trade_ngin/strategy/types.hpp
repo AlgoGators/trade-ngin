@@ -209,23 +209,23 @@ struct StrategyConfig : public ConfigBase {
  * @brief Performance metrics for a strategy
  */
 struct StrategyMetrics {
-    double unrealized_pnl;      // Total unrealized profit/loss
-    double realized_pnl;        // Total realized profit/loss
-    double total_pnl;           // Total profit/loss
-    double sharpe_ratio;        // Sharpe ratio
-    double sortino_ratio;       // Sortino ratio
-    double max_drawdown;        // Maximum drawdown
-    double win_rate;            // Win rate
-    double profit_factor;       // Profit factor
-    int total_trades;           // Total number of trades
-    double avg_trade;           // Average profit per trade
-    double avg_winner;          // Average winning trade
-    double avg_loser;           // Average losing trade
-    double max_winner;          // Largest winning trade
-    double max_loser;           // Largest losing trade
-    double avg_holding_period;  // Average holding period
-    double turnover;            // Portfolio turnover
-    double volatility;          // Portfolio volatility
+    double unrealized_pnl{0.0};      // Total unrealized profit/loss
+    double realized_pnl{0.0};        // Total realized profit/loss
+    double total_pnl{0.0};           // Total profit/loss
+    double sharpe_ratio{0.0};        // Sharpe ratio
+    double sortino_ratio{0.0};       // Sortino ratio
+    double max_drawdown{0.0};        // Maximum drawdown
+    double win_rate{0.0};            // Win rate
+    double profit_factor{0.0};       // Profit factor
+    int total_trades{0};           // Total number of trades
+    double avg_trade{0.0};           // Average profit per trade
+    double avg_winner{0.0};          // Average winning trade
+    double avg_loser{0.0};           // Average losing trade
+    double max_winner{0.0};          // Largest winning trade
+    double max_loser{0.0};           // Largest losing trade
+    double avg_holding_period{0.0};  // Average holding period
+    double turnover{0.0};            // Portfolio turnover
+    double volatility{0.0};          // Portfolio volatility
 };
 
 }  // namespace trade_ngin

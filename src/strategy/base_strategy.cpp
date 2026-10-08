@@ -1,6 +1,8 @@
 // src/strategy/base_strategy.cpp
 
 #include "trade_ngin/strategy/base_strategy.hpp"
+#include <algorithm>
+#include <cmath>
 #include <iostream>
 #include <sstream>
 #include "trade_ngin/core/logger.hpp"
@@ -214,18 +216,32 @@ Result<void> BaseStrategy::on_execution(const ExecutionReport& report) {
     try {
         auto& pos = positions_[report.symbol];
 
-        // Calculate realized PnL if closing position
+        // Calculate realized PnL if closing position.
+        //
+        // E2-F27 / T-OR.4: realize on the CLOSED quantity, not on the whole fill. A fill that
+        // crosses zero -- long 100, SELL 150 -- closes 100 shares against the existing basis and
+        // OPENS 50 new ones at the fill price. Multiplying the price difference by the full 150
+        // books P&L on 50 shares that were never held (measured: 3000 where the trade made 2000),
+        // and the overstatement is permanent: it lands in pos.realized_pnl and metrics_.realized_pnl,
+        // which live_results and trading.positions.daily_realized_pnl are built from.
+        //
+        // Latent rather than live today only because MeanReversionStrategy cannot flip in a single
+        // bar and TF/TFF/TFS override on_execution; an optimizer-driven QP_FLIP/RISK_SCALE_FLIP on
+        // any non-overriding strategy reaches this path.
         if ((pos.quantity > 0 && report.side == Side::SELL) ||
             (pos.quantity < 0 && report.side == Side::BUY)) {
+            const double closed_quantity =
+                std::min(std::abs(static_cast<double>(pos.quantity)),
+                         static_cast<double>(report.filled_quantity));
             double realized_pnl = 0.0;
             if (report.side == Side::SELL) {
                 realized_pnl = (static_cast<double>(report.fill_price) -
                                 static_cast<double>(pos.average_price)) *
-                               static_cast<double>(report.filled_quantity);
+                               closed_quantity;
             } else {
                 realized_pnl = (static_cast<double>(pos.average_price) -
                                 static_cast<double>(report.fill_price)) *
-                               static_cast<double>(report.filled_quantity);
+                               closed_quantity;
             }
 
             pos.realized_pnl += Decimal(realized_pnl);
@@ -272,10 +288,25 @@ Result<void> BaseStrategy::on_execution(const ExecutionReport& report) {
 
         pos.last_update = report.fill_time;
 
-        // Always subtract transaction costs from realized PnL (for all trades, not just closing)
-        // This ensures transaction costs are accounted for in opening positions too
+        // E2-F1 / E2-F9: `pos.realized_pnl` is GROSS trade P&L. Transaction costs are NOT
+        // netted into it.
+        //
+        // This field is persisted as trading.positions.daily_realized_pnl (via
+        // LiveDailyCycle::resolve_and_apply_basis), while live_results carries costs in
+        // their own column. Netting costs here made the row net-of-cost and the aggregate
+        // net-of-commission-only, so the two reconciled against different cost bases in the
+        // same run and the row-sums-to-aggregate check could never be exact.
+        //
+        // The reporting model now mirrors futures: realized is gross, costs are a separate
+        // column, and the consumer subtracts once --
+        //     daily_pnl = (daily_realized_pnl - daily_transaction_costs) + daily_unrealized_pnl
+        // Netting here as well would subtract them twice.
+        //
+        // metrics_ is deliberately left net. It is internal strategy bookkeeping, and
+        // metrics_.total_pnl feeds the drawdown gate in check_risk_limits(); making that
+        // gross would quietly loosen a risk limit, which is outside this fix. The asymmetry
+        // is intentional: metrics_ is a risk input, pos.realized_pnl is a reported figure.
         double transaction_cost = static_cast<double>(report.total_transaction_costs);
-        pos.realized_pnl -= Decimal(transaction_cost);
         metrics_.realized_pnl -= transaction_cost;
         metrics_.total_pnl -= transaction_cost;
 

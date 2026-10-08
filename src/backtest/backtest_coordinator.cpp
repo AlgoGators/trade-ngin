@@ -7,8 +7,10 @@
 #include "trade_ngin/core/time_utils.hpp"
 #include "trade_ngin/data/market_data_bus.hpp"
 #include "trade_ngin/storage/backtest_results_manager.hpp"
+#include "trade_ngin/strategy/base_strategy.hpp"
 #include "trade_ngin/strategy/trend_following.hpp"
 #include "trade_ngin/strategy/trend_following_fast.hpp"
+#include "trade_ngin/strategy/types.hpp"
 
 namespace trade_ngin {
 namespace backtest {
@@ -438,15 +440,17 @@ Result<void> BacktestCoordinator::process_day(
                 current_positions_, new_positions, price_manager_->get_all_previous_day_prices(),
                 timestamp);
 
-            // Update current positions
-            for (const auto& [symbol, pos] : new_positions) {
-                current_positions_[symbol] = pos;
-            }
-
-            // Notify strategy of fills
+            // Generate executions first, then notify strategy of fills
             for (const auto& exec : new_executions) {
                 strategy->on_execution(exec);
                 executions.push_back(exec);
+            }
+
+            // Update current positions AFTER on_execution so average_price
+            // and unrealized_pnl reflect fill-updated values (not stale on_data values)
+            const auto& updated_positions = strategy->get_positions();
+            for (const auto& [symbol, pos] : updated_positions) {
+                current_positions_[symbol] = pos;
             }
         }
 
@@ -459,12 +463,37 @@ Result<void> BacktestCoordinator::process_day(
             double volume = static_cast<double>(bar.volume);
 
             // Get previous close for log return calculation
-            double prev_close = close;  // Default to current if no previous
+            double prev_close = 0.0;
+            bool found_prev = false;
             for (const auto& prev_bar : previous_bars_) {
                 if (prev_bar.symbol == bar.symbol) {
                     prev_close = static_cast<double>(prev_bar.close);
+                    found_prev = true;
                     break;
                 }
+            }
+            if (!found_prev) {
+                // E2-F3: record the VOLUME anyway; omit only the return.
+                //
+                // This used to `continue`, dropping update_volume along with the log return.
+                // Today's volume is a valid, correct observation regardless of whether a
+                // prior bar exists, and ADV is what sizes market impact. Dropping it left a
+                // 20-observation ADV window that systematically excluded Mondays for the ten
+                // agricultural/livestock symbols, which have no Sunday session while the rest
+                // of the universe does -- 6.7% of all symbol-days, but ~21% of trading days
+                // for those ten. KE.v.0 sits on the 20,000 ADV bucket boundary (20,092 with
+                // Mondays, 19,948 without), so its impact coefficient flipped 60 -> 80 bps
+                // purely as a function of which days got counted.
+                //
+                // Passing prev_close = 0.0 is deliberate and sufficient: update_market_data
+                // records volume unconditionally and gates update_log_returns on
+                // `prev_close_price > 0.0`, so the return is omitted rather than fabricated.
+                //
+                // Do NOT restore `prev_close = close` (what main does). That injects a
+                // log(close/close) = 0 return -- a false observation that biases the
+                // volatility estimate downward on 1 day in 5 for the affected symbols.
+                WARN("No T-1 bar found for " + bar.symbol +
+                     " -- recording volume, omitting the return");
             }
 
             execution_manager_->update_market_data(bar.symbol, volume, close, prev_close);
@@ -536,12 +565,37 @@ Result<void> BacktestCoordinator::process_portfolio_day(
             double volume = static_cast<double>(bar.volume);
 
             // Get previous close for log return calculation
-            double prev_close = close;  // Default to current if no previous
+            double prev_close = 0.0;
+            bool found_prev = false;
             for (const auto& prev_bar : portfolio_previous_bars_) {
                 if (prev_bar.symbol == bar.symbol) {
                     prev_close = static_cast<double>(prev_bar.close);
+                    found_prev = true;
                     break;
                 }
+            }
+            if (!found_prev) {
+                // E2-F3: record the VOLUME anyway; omit only the return.
+                //
+                // This used to `continue`, dropping update_volume along with the log return.
+                // Today's volume is a valid, correct observation regardless of whether a
+                // prior bar exists, and ADV is what sizes market impact. Dropping it left a
+                // 20-observation ADV window that systematically excluded Mondays for the ten
+                // agricultural/livestock symbols, which have no Sunday session while the rest
+                // of the universe does -- 6.7% of all symbol-days, but ~21% of trading days
+                // for those ten. KE.v.0 sits on the 20,000 ADV bucket boundary (20,092 with
+                // Mondays, 19,948 without), so its impact coefficient flipped 60 -> 80 bps
+                // purely as a function of which days got counted.
+                //
+                // Passing prev_close = 0.0 is deliberate and sufficient: update_market_data
+                // records volume unconditionally and gates update_log_returns on
+                // `prev_close_price > 0.0`, so the return is omitted rather than fabricated.
+                //
+                // Do NOT restore `prev_close = close` (what main does). That injects a
+                // log(close/close) = 0 return -- a false observation that biases the
+                // volatility estimate downward on 1 day in 5 for the affected symbols.
+                WARN("No T-1 bar found for " + bar.symbol +
+                     " -- recording volume, omitting the return");
             }
 
             execution_manager_->update_market_data(bar.symbol, volume, close, prev_close);
@@ -620,7 +674,13 @@ Result<void> BacktestCoordinator::process_portfolio_day(
 
                 // TransactionCostManager is the single source of truth.
                 double ref_price = static_cast<double>(exec.fill_price);
+                // E2-F29: sign the quantity from the report's side. filled_quantity is always
+                // positive, so passing it raw made the sell-side-only SEC/TAF gate
+                // (`quantity < 0`) unreachable; every other cost term takes |qty|.
                 double qty = static_cast<double>(exec.filled_quantity);
+                if (exec.side == Side::SELL) {
+                    qty = -qty;
+                }
 
                 auto cost_result =
                     execution_manager_->get_transaction_cost_manager().calculate_costs(
@@ -669,13 +729,119 @@ Result<void> BacktestCoordinator::process_portfolio_day(
         // Calculate PnL for each strategy using its individual quantities
         auto strategy_positions = portfolio->get_strategy_positions();
 
+        // Phase 4 §1.14: build per-strategy PnL accounting method lookup so
+        // we can branch on REALIZED_ONLY (futures: daily MTM IS realized) vs
+        // MIXED/UNREALIZED_ONLY (equities: realized_pnl only on actual close,
+        // written by on_execution -- coordinator must NOT stamp realized_pnl
+        // here for equities).
+        std::unordered_map<std::string, PnLAccountingMethod> pnl_method_by_strategy;
+        // E2-F8: and a lookup of each strategy's OWN fill-maintained holdings, which is
+        // where a real cost basis lives.
+        //
+        // The positions this loop iterates come from get_strategy_positions() ==
+        // info.current_positions == the TARGET positions the strategy produced, and
+        // MeanReversionStrategy::get_target_positions() sets
+        // `pos.average_price = inst_data.current_price` (mean_reversion.cpp:214) -- a MARK,
+        // not a basis. Measured: the mark implied by day D's stored unrealized equals day
+        // D+1's stored average_price on ~87% of consecutive rows, i.e. the column was a
+        // one-day mark change rather than a position-lifetime unrealized.
+        //
+        // BaseStrategy::on_execution() is the sole legitimate writer of a volume-weighted
+        // basis (base_strategy.cpp:216-252) and keeps it in positions_, which
+        // get_target_positions() deliberately does NOT read. on_execution has already run
+        // for this bar by the time we get here (executions are applied ~40 lines above), so
+        // positions_ carries the post-fill basis.
+        //
+        // This is the backtest half of the fix documented in docs/AVERAGE_PRICE_LIFECYCLE.md
+        // -- the live path closes the same gap in LiveDailyCycle::resolve_and_apply_basis
+        // (its "step 8"), and the backtest never had an equivalent.
+        //
+        // Futures are unaffected: TrendFollowingStrategy::on_execution only bumps a counter
+        // and never populates positions_, so the lookup misses and the basis is untouched --
+        // and under REALIZED_ONLY the basis is not consulted at all.
+        std::unordered_map<std::string, const std::unordered_map<std::string, Position>*>
+            fill_positions_by_strategy;
+        for (const auto& s : portfolio->get_strategies()) {
+            if (auto bs = std::dynamic_pointer_cast<BaseStrategy>(s)) {
+                pnl_method_by_strategy[bs->get_metadata().id] = bs->get_pnl_accounting().method;
+                fill_positions_by_strategy[bs->get_metadata().id] = &bs->get_positions();
+            }
+        }
+
         for (const auto& [strategy_id, positions_map] : strategy_positions) {
+            // E2-F54: the accounting method decides whether this strategy's rows carry a
+            // realized FLOW at all. Everything added below is gated on it, so futures
+            // (REALIZED_ONLY) take exactly the path they took before.
+            auto strategy_method_it = pnl_method_by_strategy.find(strategy_id);
+            const PnLAccountingMethod strategy_method =
+                (strategy_method_it != pnl_method_by_strategy.end())
+                    ? strategy_method_it->second
+                    : PnLAccountingMethod::REALIZED_ONLY;
+
             for (const auto& [symbol, pos] : positions_map) {
                 double qty = static_cast<double>(pos.quantity);
 
-                // Skip zero quantity positions
-                if (std::abs(qty) < 1e-8)
+                // E2-F54 (a): the cumulative comes from the strategy's FILL-maintained
+                // record, not the target snapshot this loop iterates. `pos` was copied
+                // before on_execution ran (~40 lines above), so `pos.realized_pnl` is
+                // realized through YESTERDAY's fills -- reading it here puts a sale on the
+                // next bar.
+                //
+                // E2-F59: the ledger is advanced ONLY where the row is actually written.
+                // Three paths below return without writing (no close for this symbol, no
+                // previous close, invalid P&L); advancing before them does not defer the
+                // realized, it loses it. Hence peek here, commit at each write site.
+                const std::string flow_key = strategy_id + "|" + symbol;
+                auto fill_cumulative = [&]() {
+                    double cumulative = static_cast<double>(pos.realized_pnl);
+                    auto flow_it = fill_positions_by_strategy.find(strategy_id);
+                    if (flow_it != fill_positions_by_strategy.end() && flow_it->second) {
+                        auto held = flow_it->second->find(symbol);
+                        if (held != flow_it->second->end()) {
+                            cumulative = static_cast<double>(held->second.realized_pnl);
+                        }
+                    }
+                    return cumulative;
+                };
+
+                // Skip zero quantity positions -- unless this is the close-day row and it
+                // realized something (E2-F54 (c): the live is_dead_row rule). Futures are
+                // unaffected: under REALIZED_ONLY this is the original unconditional skip.
+                if (std::abs(qty) < 1e-8) {
+                    if (strategy_method == PnLAccountingMethod::REALIZED_ONLY) continue;
+                    // The exit's P&L needs somewhere to live. AVERAGE_PRICE_LIFECYCLE
+                    // rule 5: a closed row carries no basis and no mark.
+                    //
+                    // The flow is written back on EVERY flat bar, not only the closing one,
+                    // and it is 0 on the bars after the close. That is not redundant:
+                    // update_strategy_position writes into current_positions, and
+                    // save_daily_positions persists that whole map once per bar. Skipping
+                    // the write on a later flat bar leaves the CLOSING bar's realized
+                    // sitting in the map, and it is then re-persisted every day for the
+                    // rest of the backtest -- measured on DD, whose 76.145406 exit repeated
+                    // on all 22 rows from 2026-08-03 to 2026-09-02 and made the column sum
+                    // to 137x the position's actual realized. Writing the zero lets the
+                    // persist layer's dead-row filter drop the row instead.
+                    const double closed_cumulative = fill_cumulative();
+                    const auto closed_flow = BacktestPnLManager::realized_row_peek(
+                        qty, closed_cumulative, last_cumulative_realized_[flow_key]);
+                    Position closed_row = pos;
+                    closed_row.quantity = Decimal(0.0);
+                    closed_row.average_price = Decimal(0.0);
+                    closed_row.unrealized_pnl = Decimal(0.0);
+                    closed_row.realized_pnl =
+                        Decimal(closed_flow.keep ? closed_flow.flow : 0.0);
+                    auto closed_update =
+                        portfolio->update_strategy_position(strategy_id, symbol, closed_row);
+                    if (closed_update.is_error()) {
+                        WARN("Failed to write close-day row for " + symbol + ": " +
+                             std::string(closed_update.error()->what()));
+                    }
+                    // The row was written (or deliberately zeroed): the ledger may advance.
+                    BacktestPnLManager::commit_realized_row(closed_cumulative,
+                                                            last_cumulative_realized_[flow_key]);
                     continue;
+                }
 
                 // Get current close price
                 auto curr_it = current_close_prices.find(symbol);
@@ -699,8 +865,87 @@ Result<void> BacktestCoordinator::process_portfolio_day(
                 if (pnl_result.valid) {
                     // Update this strategy's position with calculated PnL
                     Position updated_pos = pos;
-                    updated_pos.realized_pnl = Decimal(pnl_result.daily_pnl);
-                    updated_pos.unrealized_pnl = Decimal(0.0);
+                    // Phase 4 §1.14: only stamp realized_pnl with daily MTM
+                    // when the strategy uses REALIZED_ONLY accounting
+                    // (futures). For equities (MIXED / UNREALIZED_ONLY),
+                    // leave realized_pnl untouched -- on_execution writes
+                    // realized when positions actually close. total_portfolio_pnl
+                    // below still aggregates daily_pnl independently so equity
+                    // curve totals are unchanged.
+                    auto pnl_method_it = pnl_method_by_strategy.find(strategy_id);
+                    PnLAccountingMethod method = (pnl_method_it != pnl_method_by_strategy.end())
+                                                     ? pnl_method_it->second
+                                                     : PnLAccountingMethod::REALIZED_ONLY;
+                    // The §1.14 branch itself lives in BacktestPnLManager::realized_for_row
+                    // so it can be asserted; the pin 7e3d07c2 claimed for it tested only the
+                    // accessor and passed with this file reverted (C-5 §9-A2).
+                    if (method == PnLAccountingMethod::REALIZED_ONLY) {
+                        updated_pos.realized_pnl = Decimal(BacktestPnLManager::realized_for_row(
+                            method, pnl_result.daily_pnl, 0.0));
+                    } else {
+                        // E2-F19 / E2-F54 / E2-F59: a per-bar FLOW, taken from the
+                        // fill-maintained record and computed HERE -- on the path that
+                        // actually writes the row -- so a bar the symbol had no close for
+                        // defers its realized to the next written row instead of losing it.
+                        const double held_cumulative = fill_cumulative();
+                        const auto held_flow = BacktestPnLManager::realized_row_peek(
+                            qty, held_cumulative, last_cumulative_realized_[flow_key]);
+                        updated_pos.realized_pnl = Decimal(BacktestPnLManager::realized_for_row(
+                            method, pnl_result.daily_pnl, held_flow.flow));
+                        BacktestPnLManager::commit_realized_row(
+                            held_cumulative, last_cumulative_realized_[flow_key]);
+                    }
+                    // E2-F8: prefer the strategy's fill-maintained basis over the target
+                    // position's average_price, which for mean reversion is the day's close
+                    // (a mark) rather than what the position cost. A basis of 0 means "no
+                    // basis known" and is left as such -- it must never be replaced by a
+                    // mark, which is the substitution this fix exists to remove.
+                    double cost_basis = static_cast<double>(pos.average_price);
+                    if (method != PnLAccountingMethod::REALIZED_ONLY) {
+                        auto fp_it = fill_positions_by_strategy.find(strategy_id);
+                        if (fp_it != fill_positions_by_strategy.end() && fp_it->second) {
+                            auto held = fp_it->second->find(symbol);
+                            if (held != fp_it->second->end()) {
+                                cost_basis = static_cast<double>(held->second.average_price);
+                            }
+                        }
+                        // DELIBERATELY NOT WRITTEN BACK: `updated_pos.average_price` keeps
+                        // whatever the target position carried. The basis is used ONLY to
+                        // measure unrealized, just above.
+                        //
+                        // Writing the basis into average_price looks right -- it would make
+                        // the stored row self-consistent, so a reader recomputing
+                        // qty * (close - average_price) would reproduce unrealized_pnl. It is
+                        // wrong, and measurably so. This position goes to
+                        // PortfolioManager::update_strategy_position() -> current_positions,
+                        // and RiskManager reads average_price off those as a MARK to size
+                        // notional and leverage (risk_manager.cpp:64, :236, :243). On a book
+                        // holding gains the basis sits below the mark, so leverage is
+                        // understated, less risk scaling is applied, and positions come out
+                        // bigger.
+                        //
+                        // NOTE ON EVIDENCE: an equity-backtest sizing shift of 1.29x-1.75x was
+                        // observed in the same run this was written in, and initially blamed on
+                        // this line. Reverting it did NOT restore the baseline, so this is NOT
+                        // the cause of that shift -- the reasoning below stands on the code
+                        // path alone, not on a measurement.
+                        //
+                        // This is exactly the ambiguity docs/AVERAGE_PRICE_LIFECYCLE.md maps:
+                        // the field carries THREE meanings and risk wants the mark while P&L
+                        // wants the basis. Consuming the basis locally is safe; storing it is
+                        // not. If the stored row must ever be made self-consistent, the basis
+                        // needs its OWN column -- do not reuse this one.
+                    }
+
+                    // E2-F2: unrealized is gated on the SAME accounting method as
+                    // realized, and dollarised with point_value. Both were missing here:
+                    // futures rows carried the settled move a second time, divided by the
+                    // contract multiplier. The rule and the full rationale live in
+                    // BacktestPnLManager::unrealized_for_accounting -- read it before
+                    // changing this line.
+                    updated_pos.unrealized_pnl =
+                        Decimal(BacktestPnLManager::unrealized_for_accounting(
+                            method, qty, cost_basis, current_close, pnl_result.point_value));
 
                     auto update_result =
                         portfolio->update_strategy_position(strategy_id, symbol, updated_pos);
@@ -714,6 +959,47 @@ Result<void> BacktestCoordinator::process_portfolio_day(
 
         // Update previous closes for next iteration
         pnl_manager_->update_previous_closes(current_close_prices);
+
+        // Phase 2 §3.2: accrue overnight borrow fees on open short equity
+        // positions. Per-strategy attribution: iterate strategy_positions,
+        // compute each strategy's borrow fee on its own shorts, both add to
+        // today's transaction costs (equity curve) AND emit a synthetic
+        // zero-quantity ExecutionReport so the DB / CSV / metrics audit
+        // trail stays in sync with the equity-curve drop.
+        // No-op when no shorts are open (the common case for long-only).
+        if (execution_manager_ && registry_) {
+            auto& tcm = execution_manager_->get_transaction_cost_manager();
+            auto strategy_positions_for_borrow = portfolio->get_strategy_positions();
+            for (const auto& [strategy_id, strat_positions] : strategy_positions_for_borrow) {
+                auto strat_borrow_fees = tcm.calculate_overnight_borrow_fees(
+                    strat_positions, current_close_prices, *registry_);
+                for (const auto& [sym, fee] : strat_borrow_fees) {
+                    if (fee <= 0.0) continue;
+                    total_transaction_costs += fee;
+
+                    // Synthesize a zero-quantity exec so per-strategy and
+                    // per-symbol metrics (profit_factor, win_rate, symbol
+                    // PnL) include the borrow drag instead of silently
+                    // excluding it.
+                    ExecutionReport borrow_exec;
+                    borrow_exec.exec_id = "BORROW_" + strategy_id + "_" + sym;
+                    borrow_exec.order_id = borrow_exec.exec_id;
+                    borrow_exec.symbol = sym;
+                    borrow_exec.side = Side::SELL;
+                    borrow_exec.filled_quantity = Quantity(0.0);
+                    auto price_it = current_close_prices.find(sym);
+                    borrow_exec.fill_price = Price(
+                        price_it != current_close_prices.end() ? price_it->second : 0.0);
+                    borrow_exec.fill_time = timestamp;
+                    borrow_exec.commissions_fees = Decimal(fee);
+                    borrow_exec.implicit_price_impact = Decimal(0.0);
+                    borrow_exec.slippage_market_impact = Decimal(0.0);
+                    borrow_exec.total_transaction_costs = Decimal(fee);
+                    borrow_exec.is_partial = false;
+                    portfolio->append_synthetic_execution(strategy_id, borrow_exec);
+                }
+            }
+        }
 
         // Calculate portfolio value: previous value + daily PnL - transaction costs
         double portfolio_value =
@@ -910,6 +1196,9 @@ void BacktestCoordinator::reset_portfolio_state() {
     portfolio_previous_bars_.clear();
     current_run_id_.clear();
     portfolio_previous_positions_.clear();
+    // E2-F54 (c): without this, a second portfolio backtest in the same process opens with
+    // the previous book's cumulative realized and reports its first bar as a difference.
+    last_cumulative_realized_.clear();
     csv_exporter_.reset();
 }
 
@@ -940,19 +1229,27 @@ Result<void> BacktestCoordinator::save_daily_positions(std::shared_ptr<Portfolio
             Position pos_with_date = pos;
             pos_with_date.last_update = timestamp;
             positions_vec.push_back(pos_with_date);
+        }
 
-            // STICKY_DEBUG: Trace average_price at DB save point
-            if (symbol == "MBT.v.0" || symbol == "NQ.v.0") {
-                INFO("STICKY_DEBUG_SAVE: strategy=" + strategy_id + " symbol=" + symbol +
-                     " avg_price=" + std::to_string(static_cast<double>(pos.average_price)) +
-                     " qty=" + std::to_string(static_cast<double>(pos.quantity)));
+        // E2-F54: a cash book keeps the close-day row so the exit's realized flow has a
+        // date to live on. Futures (REALIZED_ONLY) keep the historical filter, which drops
+        // every zero-quantity row, so their stored rows are unchanged.
+        bool keep_closed_rows = false;
+        for (const auto& s : portfolio->get_strategies()) {
+            if (auto bs = std::dynamic_pointer_cast<BaseStrategy>(s)) {
+                if (bs->get_metadata().id == strategy_id) {
+                    keep_closed_rows =
+                        bs->get_pnl_accounting().method != PnLAccountingMethod::REALIZED_ONLY;
+                    break;
+                }
             }
         }
 
         if (!positions_vec.empty()) {
             std::string composite_run_id = run_id + "|" + strategy_id;
             auto save_result = db_->store_backtest_positions(
-                positions_vec, composite_run_id, config_.portfolio_id, "backtest.final_positions");
+                positions_vec, composite_run_id, config_.portfolio_id, "backtest.final_positions",
+                keep_closed_rows);
 
             if (save_result.is_error()) {
                 WARN("Failed to save daily positions for strategy " + strategy_id +

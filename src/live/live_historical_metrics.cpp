@@ -178,5 +178,32 @@ HistoricalMetrics LiveHistoricalMetricsCalculator::calculate(
     return metrics;
 }
 
+std::unordered_map<std::string, double> historical_metrics_double_columns(
+    const HistoricalMetrics& m) {
+    return {
+        {"volatility", m.volatility},
+        {"sharpe_ratio", m.sharpe_ratio},
+        {"sortino_ratio", m.sortino_ratio},
+        {"max_drawdown", m.max_drawdown},
+        {"downside_deviation", m.downside_deviation},
+        {"win_rate", m.win_rate},
+        {"avg_win", m.avg_win},
+        {"avg_loss", m.avg_loss},
+        {"profit_factor", m.profit_factor},
+        {"best_day", m.best_day},
+        {"worst_day", m.worst_day},
+        {"gross_profit", m.gross_profit},
+        {"gross_loss", m.gross_loss},
+    };
+}
+
+std::unordered_map<std::string, int> historical_metrics_int_columns(const HistoricalMetrics& m) {
+    return {
+        {"winning_days", m.winning_days},
+        {"losing_days", m.losing_days},
+        {"total_days", m.total_days},
+    };
+}
+
 }  // namespace trade_ngin
 

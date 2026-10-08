@@ -173,23 +173,6 @@ public:
         const std::string& portfolio_id = "BASE_PORTFOLIO",
         const std::string& table_name = "backtest.signals") = 0;
 
-    /**
-     * @brief Store backtest run metadata
-     * @param run_id Backtest run identifier
-     * @param name Run name
-     * @param description Run description
-     * @param start_date Start date
-     * @param end_date End date
-     * @param hyperparameters JSON configuration
-     * @param table_name Name of the table to insert into
-     * @return Result indicating success or failure
-     */
-    virtual Result<void> store_backtest_metadata(
-        const std::string& run_id, const std::string& name, const std::string& description,
-        const Timestamp& start_date, const Timestamp& end_date,
-        const nlohmann::json& hyperparameters, const std::string& portfolio_id = "BASE_PORTFOLIO",
-        const std::string& table_name = "backtest.run_metadata") = 0;
-
     // ============================================================================
     // NEW METHODS FOR LIVE TRADING DATA STORAGE
     // ============================================================================

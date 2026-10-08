@@ -42,13 +42,13 @@ size_t read_callback(char* buffer, size_t size, size_t nitems, void* userdata) {
 EmailSender::EmailSender(std::shared_ptr<CredentialStore> credentials)
     : credentials_(std::move(credentials)),
       initialized_(false),
-      holiday_checker_("include/trade_ngin/core/holidays.json") {}
+      holiday_checker_(HolidayChecker::resolve_holidays_path()) {}
 
 EmailSender::EmailSender(const EmailSenderConfig& config)
     : credentials_(nullptr),
       config_(config),
       initialized_(false),
-      holiday_checker_("include/trade_ngin/core/holidays.json") {}
+      holiday_checker_(HolidayChecker::resolve_holidays_path()) {}
 
 Result<void> EmailSender::initialize() {
     if (credentials_) {
@@ -523,7 +523,9 @@ std::string EmailSender::generate_trading_report_body(
     const std::unordered_map<std::string, Position>& yesterday_positions,
     const std::unordered_map<std::string, double>& yesterday_close_prices,
     const std::unordered_map<std::string, double>& two_days_ago_close_prices,
-    const std::map<std::string, double>& yesterday_daily_metrics) {
+    const std::map<std::string, double>& yesterday_daily_metrics,
+    const std::string& chart_strategy_id,
+    const std::string& chart_portfolio_id) {
     (void)risk_metrics;
     std::ostringstream html;
 
@@ -758,13 +760,13 @@ std::string EmailSender::generate_trading_report_body(
 
     html << "<h2>Charts</h2>\n";
     if (db) {
-        // This overload has no portfolio_name parameter and no production callers; passing
-        // empty portfolio_id means chart queries filter by strategy_id + empty portfolio_id
-        // (returns no rows). Kept compiling for legacy / future use.
-        const std::string chart_portfolio_id_legacy = "";
+        // E2-F11: the caller names the book the charts query. This overload IS used in
+        // production (the live equity runner); with the old hardcoded trend-following
+        // strategy id and empty portfolio every chart query returned no rows.
+        const std::string chart_portfolio_id_legacy = chart_portfolio_id;
         // Generate equity curve chart
-        chart_base64_ = ChartGenerator::generate_equity_curve_chart(db, "LIVE_TREND_FOLLOWING",
-                                                                    chart_portfolio_id_legacy, 30);
+        chart_base64_ = ChartGenerator::generate_equity_curve_chart(
+            db, chart_strategy_id, chart_portfolio_id_legacy, 30);
         if (!chart_base64_.empty()) {
             html << "<h3 style=\"margin-top: 20px; color: #333;\">Equity Curve</h3>\n";
             html << "<div style=\"width: 100%; max-width: 1000px; margin: 20px auto; text-align: "
@@ -777,8 +779,9 @@ std::string EmailSender::generate_trading_report_body(
 
         // Generate PnL by symbol chart - ONLY if show_yesterday_pnl is true
         if (show_yesterday_pnl) {
-            pnl_by_symbol_base64_ = ChartGenerator::generate_pnl_by_symbol_chart(
-                db, "LIVE_TREND_FOLLOWING", chart_portfolio_id_legacy, date);
+            pnl_by_symbol_base64_ =
+                ChartGenerator::generate_pnl_by_symbol_chart(
+                    db, chart_strategy_id, chart_portfolio_id_legacy, date);
             if (!pnl_by_symbol_base64_.empty()) {
                 html << "<h3 style=\"margin-top: 20px; color: #333;\">Yesterday's PnL by "
                         "Symbol</h3>\n";
@@ -792,8 +795,9 @@ std::string EmailSender::generate_trading_report_body(
         }
 
         // Generate daily PnL chart
-        daily_pnl_base64_ = ChartGenerator::generate_daily_pnl_chart(
-            db, "LIVE_TREND_FOLLOWING", chart_portfolio_id_legacy, date, 30);
+        daily_pnl_base64_ =
+            ChartGenerator::generate_daily_pnl_chart(
+                db, chart_strategy_id, chart_portfolio_id_legacy, date, 30);
         if (!daily_pnl_base64_.empty()) {
             html << "<h3 style=\"margin-top: 20px; color: #333;\">Daily PnL (Last 30 Days)</h3>\n";
             html << "<div style=\"width: 100%; max-width: 1000px; margin: 20px auto; text-align: "
@@ -1079,14 +1083,58 @@ std::string EmailSender::format_positions_table(
                     throw std::runtime_error("Invalid multiplier for: " + lookup_sym);
                 }
 
-                double contracts_abs = std::abs(position.quantity.as_double());
-                double initial_margin_per_contract = instrument->get_margin_requirement();
-                if (initial_margin_per_contract <= 0) {
-                    ERROR("CRITICAL: Invalid margin requirement " +
-                          std::to_string(initial_margin_per_contract) + " for " + lookup_sym);
-                    throw std::runtime_error("Invalid margin requirement for: " + lookup_sym);
+                // Use the price/quantity overload so equities get
+                // account-mode-aware margin (CASH = full notional, REG_T = 50%
+                // long / 150% short) and futures get total dollars (now
+                // multiplied internally by FuturesInstrument's new override).
+                const double signed_qty = position.quantity.as_double();
+
+                // D9 / BA-16: margin is priced from a MARK, not a cost basis.
+                //
+                // This read average_price only. On the equity path that column is a
+                // cost basis, and 0 is its documented "no basis known" value
+                // (AVERAGE_PRICE_LIFECYCLE rule 5) -- reachable for a held position
+                // whose basis could not be resolved, which the runner already reports
+                // as an ERROR. get_margin_requirement(0, qty) then returns 0, this
+                // threw, and the bare `throw;` below aborted the WHOLE daily email:
+                // one unpriceable row and nobody gets a report at all.
+                //
+                // Margin asks what the position is worth now, so the current close is
+                // the right input and average_price is the fallback -- the same
+                // preference the notional/market-price block below already applies.
+                double price_for_margin = 0.0;
+                auto margin_price_it = current_prices.find(symbol);
+                if (margin_price_it != current_prices.end() && margin_price_it->second > 0.0) {
+                    price_for_margin = margin_price_it->second;
+                } else if (position.average_price.as_double() > 0.0) {
+                    price_for_margin = position.average_price.as_double();
                 }
-                total_margin_posted += contracts_abs * initial_margin_per_contract;
+
+                if (price_for_margin <= 0.0) {
+                    // Neither a close nor a basis. Report it and leave this row out of
+                    // the margin total; the email still goes out, and the row still
+                    // appears with the figures that ARE known.
+                    WARN("Daily email: no usable price for " + lookup_sym +
+                         " (quantity " + std::to_string(signed_qty) +
+                         ", no current close and average_price is 0) -- excluded from the "
+                         "margin total. The email is still sent; margin posted is "
+                         "understated by this position.");
+                } else {
+                    double total_initial_margin =
+                        instrument->get_margin_requirement(price_for_margin, signed_qty);
+                    if (total_initial_margin <= 0) {
+                        // A positive price that still yields no margin is an instrument
+                        // configuration problem, not a missing-data problem. Report it
+                        // and carry on rather than suppressing the whole report.
+                        WARN("Daily email: instrument " + lookup_sym +
+                             " returned margin " + std::to_string(total_initial_margin) +
+                             " for price=" + std::to_string(price_for_margin) +
+                             ", qty=" + std::to_string(signed_qty) +
+                             " -- excluded from the margin total.");
+                    } else {
+                        total_margin_posted += total_initial_margin;
+                    }
+                }
 
             } catch (const std::exception& e) {
                 ERROR("CRITICAL: Failed to get instrument data for " + position.symbol + ": " +
@@ -3114,14 +3162,20 @@ std::string EmailSender::format_single_strategy_table(
                     throw std::runtime_error("Invalid multiplier for: " + lookup_sym);
                 }
 
-                double contracts_abs = std::abs(position.quantity.as_double());
-                double initial_margin_per_contract = instrument->get_margin_requirement();
-                if (initial_margin_per_contract <= 0) {
+                // Price/qty overload: returns total dollars for both equities
+                // (account-mode-aware notional fraction) and futures (|qty| ×
+                // per-contract margin, after the FuturesInstrument override).
+                const double signed_qty = position.quantity.as_double();
+                const double price_for_margin = position.average_price.as_double();
+                margin_for_position =
+                    instrument->get_margin_requirement(price_for_margin, signed_qty);
+                if (margin_for_position <= 0) {
                     ERROR("CRITICAL: Invalid margin requirement " +
-                          std::to_string(initial_margin_per_contract) + " for " + lookup_sym);
+                          std::to_string(margin_for_position) + " for " + lookup_sym +
+                          " (price=" + std::to_string(price_for_margin) +
+                          ", qty=" + std::to_string(signed_qty) + ")");
                     throw std::runtime_error("Invalid margin requirement for: " + lookup_sym);
                 }
-                margin_for_position = contracts_abs * initial_margin_per_contract;
                 total_margin_posted += margin_for_position;
 
             } catch (const std::exception& e) {
@@ -3262,9 +3316,13 @@ std::string EmailSender::format_strategy_positions_tables(
                                           position.average_price.as_double() * contract_multiplier;
                         portfolio_total_notional += std::abs(notional);
 
-                        double contracts_abs = std::abs(position.quantity.as_double());
-                        double initial_margin = instrument->get_margin_requirement();
-                        portfolio_total_margin += contracts_abs * initial_margin;
+                        // Use the price/qty overload (returns total dollars).
+                        // Required for equities to get account-mode-aware
+                        // margin instead of the legacy 0.0 sentinel.
+                        const double signed_qty = position.quantity.as_double();
+                        const double price_for_margin = position.average_price.as_double();
+                        portfolio_total_margin +=
+                            instrument->get_margin_requirement(price_for_margin, signed_qty);
                     }
                 } catch (...) {
                     // Already logged in format_single_strategy_table

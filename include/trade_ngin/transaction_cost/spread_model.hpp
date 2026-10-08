@@ -89,6 +89,18 @@ public:
     double get_volatility_multiplier(const std::string& symbol) const;
 
     /**
+     * @brief Get annualized volatility for a symbol from stored log returns.
+     *
+     * Computes sample std dev (n-1) of log returns, annualized by sqrt(252).
+     * Used by TransactionCostManager::calculate_overnight_borrow_fees for
+     * the borrow-rate volatility multiplier.
+     *
+     * @param symbol Instrument symbol
+     * @return Annualized volatility, or 0.25 (25%) if insufficient data
+     */
+    double get_annual_volatility(const std::string& symbol) const;
+
+    /**
      * @brief Clear stored data for a symbol
      */
     void clear_symbol_data(const std::string& symbol);

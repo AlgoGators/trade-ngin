@@ -346,7 +346,12 @@ ChartData ChartGenerator::fetch_pnl_by_symbol_data(
             "FROM trading.positions "
             "WHERE strategy_id = '" + strategy_id + "' "
             "AND portfolio_id = '" + portfolio_id + "' "
-            "AND DATE(last_update) = DATE('" + date + "') - INTERVAL '1 day' "
+            // E2-F19 R-6: the previous SESSION, not the previous calendar day -- a Monday
+            // report used to read Sunday's carried rows.
+            "AND DATE(last_update) = (SELECT MAX(DATE(last_update)) FROM trading.positions "
+            "                         WHERE strategy_id = '" + strategy_id + "' "
+            "                           AND portfolio_id = '" + portfolio_id + "' "
+            "                           AND DATE(last_update) < DATE('" + date + "')) "
             "ORDER BY last_update DESC";
 
         INFO("Querying realized PnL by symbol with: " + query);

@@ -184,14 +184,6 @@ Result<void> TrendFollowingStrategy::on_data(const std::vector<Bar>& data) {
             for (const auto& bar : symbol_bars) {
                 instrument_data.price_history.push_back(static_cast<double>(bar.close));
 
-                // STICKY_DEBUG: Trace on_data push for MBT
-                if (symbol == "MBT.v.0") {
-                    INFO("STICKY_DEBUG_ONDATA: symbol=" + symbol + " bar.close=" +
-                         std::to_string(static_cast<double>(bar.close)) + " price_history.size()=" +
-                         std::to_string(instrument_data.price_history.size()) + " bar.timestamp=" +
-                         std::to_string(std::chrono::system_clock::to_time_t(bar.timestamp)));
-                }
-
                 // MEMORY FIX: Limit price history to maximum needed lookback
                 if (instrument_data.price_history.size() > trend_config_.max_history_size) {
                     instrument_data.price_history.pop_front();
@@ -222,6 +214,9 @@ Result<void> TrendFollowingStrategy::on_data(const std::vector<Bar>& data) {
         for (const auto& bar : data) {
             bars_by_symbol[bar.symbol].push_back(bar);
         }
+
+        // Cache weights once per on_data() call to avoid repeated DB queries
+        auto cached_weights = get_weights();
 
         // Process each symbol for signal generation
         for (const auto& [symbol, symbol_bars] : bars_by_symbol) {
@@ -348,10 +343,11 @@ Result<void> TrendFollowingStrategy::on_data(const std::vector<Bar>& data) {
                         lookup_symbol = "MYM";
                     }
 
-                    // Get weight
-                    const auto& weights = get_weights();
-                    if (weights.count(lookup_symbol) > 0) {
-                        instrument_data.weight = weights.at(lookup_symbol);
+                    // Get weight from the per-call hoisted copy (get_weights() itself
+                    // caches internally; hoisting avoids a map copy per symbol)
+                    auto weight_it = cached_weights.find(lookup_symbol);
+                    if (weight_it != cached_weights.end()) {
+                        instrument_data.weight = weight_it->second;
                     } else {
                         WARN("Weight not found for " + symbol);
                     }
@@ -453,27 +449,18 @@ Result<void> TrendFollowingStrategy::on_data(const std::vector<Bar>& data) {
             // Get current market price
             double current_price = static_cast<double>(symbol_bars.back().close);
 
-            // Get previous position for PnL calculation
-            // First try previous_positions_ (DB data for live trading first day)
-            // Then fall back to positions_ (in-memory data for backtest/subsequent days)
-            auto prev_pos_it = previous_positions_.find(symbol);
+            // Get previous position for PnL calculation from positions_: seeded via
+            // seed_positions() on live first day, maintained by update_position()
+            // on every prior bar.
             double previous_quantity = 0.0;
             double previous_avg_price = current_price;
             double previous_realized_pnl = 0.0;
 
-            if (prev_pos_it != previous_positions_.end()) {
-                // Use DB-loaded previous positions (live trading first day)
-                previous_quantity = static_cast<double>(prev_pos_it->second.quantity);
-                previous_avg_price = static_cast<double>(prev_pos_it->second.average_price);
-                previous_realized_pnl = static_cast<double>(prev_pos_it->second.realized_pnl);
-            } else {
-                // Fallback to in-memory positions (backtest or subsequent live days)
-                auto pos_it = positions_.find(symbol);
-                if (pos_it != positions_.end()) {
-                    previous_quantity = static_cast<double>(pos_it->second.quantity);
-                    previous_avg_price = static_cast<double>(pos_it->second.average_price);
-                    previous_realized_pnl = static_cast<double>(pos_it->second.realized_pnl);
-                }
+            auto pos_it = positions_.find(symbol);
+            if (pos_it != positions_.end()) {
+                previous_quantity = static_cast<double>(pos_it->second.quantity);
+                previous_avg_price = static_cast<double>(pos_it->second.average_price);
+                previous_realized_pnl = static_cast<double>(pos_it->second.realized_pnl);
             }
 
             // Calculate realized PnL from position changes
@@ -599,10 +586,6 @@ Result<void> TrendFollowingStrategy::on_data(const std::vector<Bar>& data) {
                 // Continue processing despite position update failure
             }
 
-            // Update previous_positions_ for next iteration
-            // This ensures PnL accumulates correctly in backtests and subsequent live days
-            previous_positions_[symbol] = pos;
-
             instrument_data.last_update = symbol_bars.back().timestamp;
         }
 
@@ -644,17 +627,6 @@ std::unordered_map<std::string, Position> TrendFollowingStrategy::get_target_pos
 
         pos.last_update = instrument_data.last_update;
         target_positions[symbol] = pos;
-
-        // STICKY_DEBUG: Trace average_price at get_target_positions stage
-        if (symbol == "MBT.v.0" || symbol == "NQ.v.0") {
-            INFO("STICKY_DEBUG_GTP: symbol=" + symbol + " price_history.size()=" +
-                 std::to_string(instrument_data.price_history.size()) + " price_history.back()=" +
-                 (instrument_data.price_history.empty()
-                      ? "EMPTY"
-                      : std::to_string(instrument_data.price_history.back())) +
-                 " pos.average_price=" + std::to_string(static_cast<double>(pos.average_price)) +
-                 " pos.quantity=" + std::to_string(static_cast<double>(pos.quantity)));
-        }
     }
 
     return target_positions;
@@ -1118,6 +1090,10 @@ std::unordered_map<std::string, double> TrendFollowingStrategy::get_weights() co
     // Maximum weight any single symbol can have within its sector (50% of sector weight)
     const double MAX_SYMBOL_TO_SECTOR_RATIO = 0.50;
 
+    // Symbols capped below their equal share; the closing normalization must not
+    // re-inflate them.
+    std::unordered_set<std::string> capped_symbols;
+
     for (const auto& [sector, symbols] : sector_to_symbols) {
         int num_symbols = static_cast<int>(symbols.size());
         if (num_symbols == 0)
@@ -1134,6 +1110,7 @@ std::unordered_map<std::string, double> TrendFollowingStrategy::get_weights() co
 
             // Log when a symbol's weight is capped
             if (capped_weight < per_symbol_weight) {
+                capped_symbols.insert(symbol);
                 INFO("Symbol " + symbol + " in sector " + sector +
                      " weight capped from " + std::to_string(per_symbol_weight * 100.0) +
                      "% to " + std::to_string(capped_weight * 100.0) +
@@ -1142,14 +1119,29 @@ std::unordered_map<std::string, double> TrendFollowingStrategy::get_weights() co
         }
     }
 
-    // Normalize weights to sum to 100% (compensates for capping leakage)
-    double weight_sum = 0.0;
+    // Normalize weights to sum to 100%. Scale only the uncapped symbols over the
+    // budget the caps freed; scaling everything re-inflates capped symbols past
+    // MAX_SYMBOL_TO_SECTOR_RATIO of their sector allocation.
+    double capped_sum = 0.0;
+    double uncapped_sum = 0.0;
     for (const auto& [symbol, weight] : symbol_weights) {
-        weight_sum += weight;
+        (capped_symbols.count(symbol) ? capped_sum : uncapped_sum) += weight;
     }
+    const double weight_sum = capped_sum + uncapped_sum;
     if (weight_sum > 0.0 && std::abs(weight_sum - 1.0) > 0.001) {
-        for (auto& [symbol, weight] : symbol_weights) {
-            weight /= weight_sum;
+        if (uncapped_sum > 0.0 && capped_sum < 1.0) {
+            const double scale = (1.0 - capped_sum) / uncapped_sum;
+            for (auto& [symbol, weight] : symbol_weights) {
+                if (capped_symbols.count(symbol) == 0) {
+                    weight *= scale;
+                }
+            }
+        } else {
+            // Every symbol capped (all sectors single-symbol): plain scaling is the
+            // only way back to a fully-invested portfolio.
+            for (auto& [symbol, weight] : symbol_weights) {
+                weight /= weight_sum;
+            }
         }
     }
 
@@ -1370,9 +1362,9 @@ double TrendFollowingStrategy::apply_position_buffer(const std::string& symbol, 
         decision = "KEEP";
     }
 
-    // TEMP-DEBUG (BUFFER_TRACE): empirical proof of buffer-state-restart bug.
+    // BUFFER_TRACE: per-symbol buffer-state diagnostic (DEBUG level).
     // Logs full buffer state per call so we can diagnose churn root cause.
-    INFO("BUFFER_TRACE: sym=" + symbol +
+    DEBUG("BUFFER_TRACE: sym=" + symbol +
          " pos_found=" + std::string(pos_found ? "Y" : "N") +
          " current=" + std::to_string(current_position) +
          " raw=" + std::to_string(raw_position) +

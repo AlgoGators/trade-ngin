@@ -99,7 +99,6 @@ public:
     Result<void> save_final_positions(const std::string& run_id);
     Result<void> save_executions_batch(const std::string& run_id);
     Result<void> save_signals_batch(const std::string& run_id);
-    Result<void> save_metadata(const std::string& run_id);
 
     // Multi-strategy storage methods
     Result<void> save_strategy_positions(const std::string& portfolio_run_id);

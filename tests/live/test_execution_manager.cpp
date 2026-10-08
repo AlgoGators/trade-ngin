@@ -104,15 +104,74 @@ TEST_F(ExecutionManagerTest, ClosedShortPositionGeneratesBuyExecution) {
     EXPECT_EQ(r.value()[0].side, Side::BUY);
 }
 
-TEST_F(ExecutionManagerTest, MissingMarketPriceFallsBackToAveragePrice) {
+// This test used to be MissingMarketPriceFallsBackToAveragePrice and asserted that a
+// symbol with no market price was filled at its average_price. That fallback was the
+// bug: average_price is a COST BASIS, and for a position opened today it is 0 until
+// the fill being priced has been processed -- so the fallback booked fills at zero,
+// persisted the zero as the new basis, and reloaded it the next session as a carried
+// basis of zero. The old assertion passed only because the fixture handed it a
+// pre-set basis of 4500.0, which production does not have for a new position.
+//
+// A symbol we cannot price is a symbol we must not trade.
+TEST_F(ExecutionManagerTest, MissingMarketPriceSkipsTheExecutionRatherThanPricingItFromBasis) {
     ExecutionManager em;
     std::unordered_map<std::string, Position> curr{{"ES", make_position("ES", 2.0, 4500.0)}};
     std::unordered_map<std::string, Position> prev;
     std::unordered_map<std::string, double> prices;  // no price for ES
-    auto r = em.generate_daily_executions(curr, prev, prices, std::chrono::system_clock::now());
+    std::vector<std::string> unpriced;
+    auto r = em.generate_daily_executions(curr, prev, prices, std::chrono::system_clock::now(),
+                                          PricingPolicy::STRICT, &unpriced);
     ASSERT_TRUE(r.is_ok());
-    ASSERT_EQ(r.value().size(), 1u);
-    EXPECT_DOUBLE_EQ(r.value()[0].fill_price.as_double(), 4500.0);
+    EXPECT_TRUE(r.value().empty()) << "an unpriceable symbol must not generate an execution";
+    ASSERT_EQ(unpriced.size(), 1u);
+    EXPECT_EQ(unpriced[0], "ES");
+}
+
+// A brand-new position has no basis at all. This is the production shape the old
+// fallback actually met, and the one that made the zero self-sustaining.
+TEST_F(ExecutionManagerTest, MissingMarketPriceOnAZeroBasisPositionDoesNotFillAtZero) {
+    ExecutionManager em;
+    std::unordered_map<std::string, Position> curr{{"ES", make_position("ES", 2.0, 0.0)}};
+    std::unordered_map<std::string, Position> prev;
+    std::unordered_map<std::string, double> prices;
+    auto r = em.generate_daily_executions(curr, prev, prices, std::chrono::system_clock::now(),
+                                          PricingPolicy::STRICT);
+    ASSERT_TRUE(r.is_ok());
+    for (const auto& e : r.value()) {
+        EXPECT_GT(e.fill_price.as_double(), 0.0) << "fill booked at a non-positive price";
+    }
+    EXPECT_TRUE(r.value().empty());
+}
+
+// A price that is present but non-positive is not a price either.
+TEST_F(ExecutionManagerTest, NonPositiveMarketPriceIsRefused) {
+    ExecutionManager em;
+    std::unordered_map<std::string, Position> curr{{"ES", make_position("ES", 2.0, 4500.0)}};
+    std::unordered_map<std::string, Position> prev;
+    std::unordered_map<std::string, double> prices{{"ES", 0.0}};
+    std::vector<std::string> unpriced;
+    auto r = em.generate_daily_executions(curr, prev, prices, std::chrono::system_clock::now(),
+                                          PricingPolicy::STRICT, &unpriced);
+    ASSERT_TRUE(r.is_ok());
+    EXPECT_TRUE(r.value().empty());
+    ASSERT_EQ(unpriced.size(), 1u);
+    EXPECT_EQ(unpriced[0], "ES");
+}
+
+// A close-out with no price must not book a fill at the position's own basis, which
+// would silently report zero realized PnL on the exit.
+TEST_F(ExecutionManagerTest, MissingMarketPriceOnCloseOutSkipsRatherThanUsingBasis) {
+    ExecutionManager em;
+    std::unordered_map<std::string, Position> curr;
+    std::unordered_map<std::string, Position> prev{{"ES", make_position("ES", 3.0, 4500.0)}};
+    std::unordered_map<std::string, double> prices;  // no price for ES
+    std::vector<std::string> unpriced;
+    auto r = em.generate_daily_executions(curr, prev, prices, std::chrono::system_clock::now(),
+                                          PricingPolicy::STRICT, &unpriced);
+    ASSERT_TRUE(r.is_ok());
+    EXPECT_TRUE(r.value().empty());
+    ASSERT_EQ(unpriced.size(), 1u);
+    EXPECT_EQ(unpriced[0], "ES");
 }
 
 // ===== generate_execution =====
@@ -158,4 +217,191 @@ TEST_F(ExecutionManagerTest, UpdateMarketDataDoesNotThrow) {
     ExecutionManager em;
     EXPECT_NO_THROW(em.update_market_data("ES", 1000.0, 4500.0));
     EXPECT_NO_THROW(em.update_market_data("ES", 1100.0, 4510.0));
+}
+
+// ---------------------------------------------------------------------------
+// Futures behaviour preservation.
+//
+// TrendFollowingStrategy sets Position::average_price to price_history.back() --
+// the latest mark, by design (trend_following.cpp:623, REALIZED_ONLY daily
+// settlement). So for futures the mark fallback prices the fill at a real,
+// one-session-stale close, and removing it would replace a correct fill with a
+// skip. MARK_FALLBACK is the default precisely so the two futures runners, which
+// pass no policy argument, keep the behaviour they have always had.
+// ---------------------------------------------------------------------------
+
+TEST_F(ExecutionManagerTest, MarkFallbackPricesFuturesFillFromTheLatestMark) {
+    ExecutionManager em;
+    // ZC on a Monday with no Sunday print: average_price holds Friday's close.
+    std::unordered_map<std::string, Position> curr{{"ZC", make_position("ZC", 10.0, 450.25)}};
+    std::unordered_map<std::string, Position> prev;
+    std::unordered_map<std::string, double> prices;  // no T-1 print
+
+    auto r = em.generate_daily_executions(curr, prev, prices, std::chrono::system_clock::now());
+
+    ASSERT_TRUE(r.is_ok());
+    ASSERT_EQ(r.value().size(), 1u) << "futures must still generate the execution";
+    EXPECT_DOUBLE_EQ(r.value()[0].fill_price.as_double(), 450.25)
+        << "fill must be priced at the mark, exactly as before the STRICT policy existed";
+    EXPECT_DOUBLE_EQ(r.value()[0].filled_quantity.as_double(), 10.0);
+}
+
+TEST_F(ExecutionManagerTest, MarkFallbackClosesFuturesPositionAtTheLatestMark) {
+    ExecutionManager em;
+    std::unordered_map<std::string, Position> curr;
+    std::unordered_map<std::string, Position> prev{{"ZC", make_position("ZC", 10.0, 450.25)}};
+    std::unordered_map<std::string, double> prices;
+
+    auto r = em.generate_daily_executions(curr, prev, prices, std::chrono::system_clock::now());
+
+    ASSERT_TRUE(r.is_ok());
+    ASSERT_EQ(r.value().size(), 1u) << "the close-out must still be generated for futures";
+    EXPECT_DOUBLE_EQ(r.value()[0].fill_price.as_double(), 450.25);
+}
+
+// The default must remain MARK_FALLBACK. If this flips, both futures runners
+// silently change behaviour without their call sites being touched.
+TEST_F(ExecutionManagerTest, DefaultPolicyIsMarkFallbackSoFuturesCallersAreUnaffected) {
+    ExecutionManager em;
+    std::unordered_map<std::string, Position> curr{{"ES", make_position("ES", 1.0, 4500.0)}};
+    std::unordered_map<std::string, Position> prev;
+    std::unordered_map<std::string, double> prices;
+
+    auto defaulted = em.generate_daily_executions(curr, prev, prices,
+                                                  std::chrono::system_clock::now());
+    auto explicit_mark = em.generate_daily_executions(curr, prev, prices,
+                                                      std::chrono::system_clock::now(),
+                                                      PricingPolicy::MARK_FALLBACK);
+    ASSERT_TRUE(defaulted.is_ok());
+    ASSERT_TRUE(explicit_mark.is_ok());
+    ASSERT_EQ(defaulted.value().size(), explicit_mark.value().size());
+    ASSERT_EQ(defaulted.value().size(), 1u);
+    EXPECT_DOUBLE_EQ(defaulted.value()[0].fill_price.as_double(),
+                     explicit_mark.value()[0].fill_price.as_double());
+}
+
+// ============================================================================
+// E2-F29: SEC/TAF regulatory fees must reach a SELL fill.
+//
+// TransactionCostManager gates the fees on `quantity < 0`; the live caller passed
+// |quantity| for both sides, so on a config with apply_regulatory_fees the sell
+// side was charged exactly what the buy side was. SELL cost - BUY cost must equal
+// sec_fee + taf for the same clip.
+// ============================================================================
+TEST_F(ExecutionManagerTest, SellSideCarriesRegulatoryFeesWhenConfigured) {
+    ExecutionManager em;
+    transaction_cost::AssetCostConfig cfg;
+    cfg.symbol = "TIERD";
+    cfg.asset_type = AssetType::EQUITY;
+    cfg.commission_per_unit = 0.0035;
+    cfg.min_commission_per_order = 0.35;
+    cfg.max_commission_per_order = 1e9;
+    cfg.apply_regulatory_fees = true;
+    cfg.sec_fee_per_million = 20.60;
+    cfg.finra_taf_per_share = 0.000195;
+    cfg.finra_taf_cap_per_trade = 9.79;
+    em.get_transaction_cost_manager().register_asset_config(cfg);
+
+    const double qty = 1000.0, px = 50.0;
+    std::unordered_map<std::string, double> prices{{"TIERD", px}};
+    std::unordered_map<std::string, Position> flat;
+    std::unordered_map<std::string, Position> held{{"TIERD", make_position("TIERD", qty, px)}};
+
+    auto buy = em.generate_daily_executions(held, flat, prices, std::chrono::system_clock::now());
+    auto sell = em.generate_daily_executions(flat, held, prices, std::chrono::system_clock::now());
+    ASSERT_TRUE(buy.is_ok() && sell.is_ok());
+    ASSERT_EQ(buy.value().size(), 1u);
+    ASSERT_EQ(sell.value().size(), 1u);
+    ASSERT_EQ(buy.value()[0].side, Side::BUY);
+    ASSERT_EQ(sell.value()[0].side, Side::SELL);
+
+    const double sec_fee = (qty * px / 1e6) * cfg.sec_fee_per_million;   // 1.03
+    const double taf = std::min(qty * cfg.finra_taf_per_share, cfg.finra_taf_cap_per_trade);  // 0.195
+    EXPECT_NEAR(sell.value()[0].commissions_fees.as_double() - buy.value()[0].commissions_fees.as_double(),
+                sec_fee + taf, 1e-9)
+        << "SELL must carry SEC + TAF on top of the BUY-side commission";
+    EXPECT_NEAR(sell.value()[0].total_transaction_costs.as_double() -
+                    buy.value()[0].total_transaction_costs.as_double(),
+                sec_fee + taf, 1e-9);
+}
+
+// ──────────────────────────────────────────────────────────────────────────
+// E2-F46 -- the order-id date must be the RUN date, in the run date's frame.
+//
+// generate_date_string formatted the run timestamp with std::localtime while
+// the equity runner passes UTC midnight (95679ea2) and stamps every other
+// artefact of the same run with gmtime. On a negative-offset host that is the
+// previous evening locally, so the id took the previous calendar day: the
+// 2026-06-15 run wrote DAILY_AAPL_20260614. The id is what
+// delete_stale_executions matches on and what a broker statement is
+// reconciled against, so an id naming the wrong day is not cosmetic.
+//
+// Both frames are pinned: UTC midnight is what the equity runner passes, local
+// midnight is what live_portfolio*.cpp:60 still passes (E2-F42). Both must
+// produce the run date's own YYYYMMDD, or fixing equities would move futures.
+// ──────────────────────────────────────────────────────────────────────────
+
+namespace {
+
+class OrderIdDateFrameTest : public ::testing::Test {
+protected:
+    void SetUp() override {
+        if (const char* tz = std::getenv("TZ")) {
+            had_tz_ = true;
+            saved_tz_ = tz;
+        }
+        setenv("TZ", "America/New_York", 1);
+        tzset();
+    }
+    void TearDown() override {
+        if (had_tz_) {
+            setenv("TZ", saved_tz_.c_str(), 1);
+        } else {
+            unsetenv("TZ");
+        }
+        tzset();
+    }
+    static Timestamp utc_midnight(int y, int m, int d) {
+        std::tm tm{};
+        tm.tm_year = y - 1900;
+        tm.tm_mon = m - 1;
+        tm.tm_mday = d;
+        return std::chrono::system_clock::from_time_t(timegm(&tm));
+    }
+    static Timestamp local_midnight(int y, int m, int d) {
+        std::tm tm{};
+        tm.tm_year = y - 1900;
+        tm.tm_mon = m - 1;
+        tm.tm_mday = d;
+        tm.tm_isdst = -1;
+        return std::chrono::system_clock::from_time_t(std::mktime(&tm));
+    }
+    bool had_tz_ = false;
+    std::string saved_tz_;
+};
+
+}  // namespace
+
+TEST_F(OrderIdDateFrameTest, UtcMidnightRunDateStampsItsOwnDay) {
+    EXPECT_EQ(ExecutionManager::generate_date_string(utc_midnight(2026, 6, 15)), "20260615")
+        << "the 2026-06-15 run wrote DAILY_<SYM>_20260614";
+    EXPECT_EQ(ExecutionManager::generate_date_string(utc_midnight(2026, 1, 1)), "20260101")
+        << "a year boundary is where the off-by-one is most expensive";
+}
+
+// Futures preservation: a local-midnight run date lands at 04:00/05:00Z on the
+// same calendar day, so reading it in UTC gives the same YYYYMMDD it always did.
+TEST_F(OrderIdDateFrameTest, LocalMidnightRunDateStampsTheSameDay) {
+    EXPECT_EQ(ExecutionManager::generate_date_string(local_midnight(2026, 6, 15)), "20260615");
+    EXPECT_EQ(ExecutionManager::generate_date_string(local_midnight(2026, 1, 1)), "20260101");
+}
+
+// The whole point of the id: two runs on different days must not collide, and a
+// run's id must match the date its rows are keyed on.
+TEST_F(OrderIdDateFrameTest, ConsecutiveRunDatesProduceDistinctStamps) {
+    const auto a = ExecutionManager::generate_date_string(utc_midnight(2026, 6, 15));
+    const auto b = ExecutionManager::generate_date_string(utc_midnight(2026, 6, 16));
+    EXPECT_EQ(a, "20260615");
+    EXPECT_EQ(b, "20260616");
+    EXPECT_NE(a, b);
 }

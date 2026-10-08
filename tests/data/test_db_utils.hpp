@@ -70,6 +70,21 @@ public:
           connected_(false),
           simulate_error_(false) {}
 
+    // The three columns every live row is keyed by. Captured so tests can pin the
+    // key a component actually writes with, not merely that it wrote something.
+    struct StorageKey {
+        std::string strategy_id;
+        std::string strategy_name;
+        std::string portfolio_id;
+    };
+
+    // Key of the most recent call to `op` ("store_positions", "store_executions",
+    // "store_signals"). Empty strings if `op` was never called.
+    StorageKey last_key(const std::string& op) const {
+        auto it = last_keys_.find(op);
+        return it == last_keys_.end() ? StorageKey{} : it->second;
+    }
+
     // Connection management
     Result<void> connect() override {
         connected_ = true;
@@ -110,7 +125,8 @@ public:
                                   const std::string& strategy_id, const std::string& strategy_name,
                                   const std::string& portfolio_id,
                                   const std::string& table_name) override {
-        (void)executions; (void)strategy_id; (void)strategy_name; (void)portfolio_id;
+        (void)executions;
+        record_key("store_executions", strategy_id, strategy_name, portfolio_id);
         if (!connected_)
             return make_error<void>(ErrorCode::DATABASE_ERROR, "Not connected");
         if (table_name != "trading.executions") {
@@ -124,7 +140,7 @@ public:
                                  const std::string& strategy_id, const std::string& strategy_name,
                                  const std::string& portfolio_id,
                                  const std::string& table_name) override {
-        (void)strategy_id; (void)strategy_name; (void)portfolio_id;
+        record_key("store_positions", strategy_id, strategy_name, portfolio_id);
         if (!connected_)
             return make_error<void>(ErrorCode::DATABASE_ERROR, "Not connected");
         if (table_name != "trading.positions") {
@@ -147,11 +163,9 @@ public:
                                const std::string& portfolio_id, const Timestamp& timestamp,
                                const std::string& table_name) override {
         (void)signals;
-        (void)strategy_id;
-        (void)strategy_name;
-        (void)portfolio_id;
         (void)timestamp;
         (void)table_name;
+        record_key("store_signals", strategy_id, strategy_name, portfolio_id);
         if (!connected_)
             return make_error<void>(ErrorCode::DATABASE_ERROR, "Not connected");
 
@@ -214,18 +228,6 @@ public:
         (void)signals; (void)strategy_id; (void)run_id;
         (void)timestamp; (void)portfolio_id; (void)table_name;
         return record_call("store_backtest_signals");
-    }
-
-    Result<void> store_backtest_metadata(const std::string& run_id, const std::string& name,
-                                         const std::string& description,
-                                         const Timestamp& start_date, const Timestamp& end_date,
-                                         const nlohmann::json& hyperparameters,
-                                         const std::string& portfolio_id,
-                                         const std::string& table_name) override {
-        (void)run_id; (void)name; (void)description;
-        (void)start_date; (void)end_date; (void)hyperparameters;
-        (void)portfolio_id; (void)table_name;
-        return record_call("store_backtest_metadata");
     }
 
     // Live trading data storage methods
@@ -310,8 +312,10 @@ public:
     Result<void> store_backtest_positions(
         const std::vector<Position>& positions, const std::string& run_id,
         const std::string& portfolio_id = "BASE_PORTFOLIO",
-        const std::string& table_name = "backtest.final_positions") override {
+        const std::string& table_name = "backtest.final_positions",
+        bool keep_closed_rows = false) override {
         (void)positions; (void)run_id; (void)portfolio_id; (void)table_name;
+        (void)keep_closed_rows;
         return record_call("store_backtest_positions");
     }
 
@@ -367,9 +371,9 @@ public:
 
     Result<void> delete_stale_executions(
         const std::vector<std::string>& order_ids, const Timestamp& date,
-        const std::string& strategy_name,
+        const std::string& strategy_name, const std::string& portfolio_id,
         const std::string& table_name = "trading.executions") override {
-        (void)order_ids; (void)date; (void)strategy_name; (void)table_name;
+        (void)order_ids; (void)date; (void)strategy_name; (void)portfolio_id; (void)table_name;
         return record_call("delete_stale_executions");
     }
 
@@ -447,6 +451,12 @@ private:
     std::vector<Position> mock_positions_;
     bool simulate_error_;
     mutable std::unordered_map<std::string, int> call_counts_;
+    std::unordered_map<std::string, StorageKey> last_keys_;
+
+    void record_key(const std::string& op, const std::string& strategy_id,
+                    const std::string& strategy_name, const std::string& portfolio_id) {
+        last_keys_[op] = StorageKey{strategy_id, strategy_name, portfolio_id};
+    }
     std::string fail_on_call_for_;
 };
 

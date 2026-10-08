@@ -96,17 +96,11 @@ Result<void> BacktestResultsManager::save_all_results(const std::string& run_id,
         // Non-fatal, continue
     }
 
-    // 6. Save metadata (skip for portfolio runs - we save per-strategy metadata separately)
-    // Portfolio runs are identified by run_id containing '&' (multiple strategies)
-    if (run_id.find('&') == std::string::npos) {
-        result = save_metadata(run_id);
-        if (result.is_error()) {
-            ERROR("Failed to save metadata: " + std::string(result.error()->what()));
-            // Non-fatal
-        }
-    } else {
-        DEBUG("Skipping portfolio-level metadata (using per-strategy metadata instead)");
-    }
+    // Metadata is written per-strategy by BacktestCoordinator::save_portfolio_results_to_db
+    // via save_strategy_metadata() (correct ON CONFLICT (run_id, strategy_id)). The portfolio-level
+    // pair save_metadata()/store_backtest_metadata() used ON CONFLICT (run_id), which has no
+    // matching unique constraint on backtest.run_metadata, and omitted the NOT NULL strategy_id --
+    // it could never succeed, and its only caller was a unit test. Both were deleted (F-5).
 
     INFO("Successfully saved all backtest results for run_id: " + run_id);
     return Result<void>();
@@ -211,24 +205,6 @@ Result<void> BacktestResultsManager::save_signals_batch(const std::string& run_i
     }
 
     return Result<void>();
-}
-
-Result<void> BacktestResultsManager::save_metadata(const std::string& run_id) {
-    if (!store_enabled_) {
-        return Result<void>();
-    }
-
-    if (hyperparameters_.empty()) {
-        DEBUG("No metadata to save for run_id: " + run_id);
-        return Result<void>();
-    }
-
-    INFO("Saving metadata for run_id: " + run_id);
-
-    // Use existing database method
-    return db_->store_backtest_metadata(run_id, run_name_, run_description_,
-                                       start_date_, end_date_, hyperparameters_,
-                                       portfolio_id_, "backtest.run_metadata");
 }
 
 Result<void> BacktestResultsManager::save_strategy_positions(const std::string& portfolio_run_id) {

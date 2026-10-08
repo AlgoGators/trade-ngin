@@ -1,5 +1,24 @@
 // include/trade_ngin/live/live_data_loader.hpp
-// Data loading component for live trading - encapsulates all SELECT queries
+// Data loading component for live trading - encapsulates all SELECT queries.
+//
+// Timezone contract (Phase 5 §5c):
+//   All `Timestamp` parameters and all `YYYY-MM-DD` keys produced by this
+//   module are UTC. Provider date columns (e.g. `equities_data.corporate_action.date`)
+//   are interpreted as calendar dates with no timezone shift -- they are
+//   text/date values whose semantics are determined by the ingest pipeline,
+//   not by this loader. If a strategy needs market-local semantics, convert
+//   at the strategy boundary, not here.
+//
+//   Date-string keys MUST be produced via `trade_ngin::core::format_utc_date`;
+//   direct `std::gmtime` / `std::put_time` use is forbidden (non-thread-safe
+//   and locale-dependent).
+//
+// Decoding contract (Phase 5 §1.17a + §5d):
+//   Numeric columns from `convert_generic_to_arrow` are stored as utf8.
+//   Implementations use `DataConversionUtils::safe_get_*` which dispatches
+//   on the actual Arrow type, falls back to `std::stod`/`std::stoll` for
+//   string storage (logging WARN on parse failures), and returns a typed
+//   `Result` on null/type-mismatch -- never a silent 0.0.
 
 #pragma once
 
@@ -233,10 +252,18 @@ public:
 
     // ========== Commission Methods ==========
 
-    // Note: load_commissions_by_symbol was deleted - it was dead code that referenced
-    // a non-existent "commission" column and the result map was never used downstream.
-    // All real transaction-cost data flows through cost_manager_->calculate_costs()
-    // at execution time and is stored on trading.executions / trading.live_results.
+    /**
+     * @brief Load commissions grouped by symbol for a date
+     * @param date Target date
+     * @return Map of symbol to total commission or error
+     *
+     * Dead on the futures line (deleted there), but the equity live runner calls it
+     * for commission reporting. FIXME(4.2): trading.executions has no "commission"
+     * column today -- the query errors at runtime and callers degrade gracefully;
+     * commission sourcing is reworked with the equity data layer.
+     */
+    Result<std::unordered_map<std::string, double>> load_commissions_by_symbol(
+        const std::string& portfolio_id, const Timestamp& date);
 
     /**
      * @brief Load total daily transaction costs for a strategy

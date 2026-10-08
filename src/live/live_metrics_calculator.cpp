@@ -288,6 +288,11 @@ CalculatedMetrics LiveMetricsCalculator::calculate_all_metrics(
     int trading_days,
     double daily_transaction_costs) const {
 
+    // E2-C8: intentionally unused. The caller passes daily_pnl ALREADY net of costs
+    // (live_equity_mean_reversion.cpp computes `(realized - costs) + change in mark` before
+    // calling), so subtracting daily_transaction_costs again here would double-charge it.
+    // The parameter is retained for signature stability across both asset classes' callers
+    // and as documentation of what the caller has already applied.
     (void)daily_transaction_costs;
     CalculatedMetrics metrics;
 
@@ -334,6 +339,8 @@ CalculatedMetrics LiveMetricsCalculator::calculate_finalization_metrics(
     int trading_days,
     double commissions) const {
 
+    // E2-C8: intentionally unused, same reason as above -- realized_pnl arrives net of
+    // costs, so applying `commissions` here would subtract them a second time.
     (void)commissions;
     CalculatedMetrics metrics;
 
