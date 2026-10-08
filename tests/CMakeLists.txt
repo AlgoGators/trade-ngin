@@ -118,6 +118,7 @@ set(TEST_SOURCES
     backtest/test_backtest_k01_feed.cpp
     backtest/test_backtest_change_bar_hold.cpp
     backtest/test_backtest_change_bar_pnl.cpp
+    backtest/test_backtest_no_bar_row.cpp
     backtest/test_consumed_series_record.cpp
     backtest/test_backtest_equity_cost_retier.cpp
     backtest/test_backtest_futures_cost_feed.cpp

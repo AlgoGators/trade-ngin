@@ -1328,9 +1328,28 @@ Result<void> BacktestCoordinator::process_portfolio_day(
                     continue;
                 }
 
+                // A futures row (REALIZED_ONLY) the day has no P&L for books nothing that day: its
+                // realized P&L is 0, quantity and average price kept. Without this write the row
+                // the PortfolioManager rebuilt this cycle keeps the sleeve's own figure (its
+                // unrounded position times its last bar's move), on a day the symbol printed no
+                // bar. The other accounting methods defer their realized flow to the next written
+                // row (E2-F59) and are not written here.
+                auto write_unbooked_row = [&]() {
+                    if (strategy_method != PnLAccountingMethod::REALIZED_ONLY) return;
+                    Position unbooked = pos;
+                    unbooked.realized_pnl = Decimal(0.0);
+                    auto unbooked_update =
+                        portfolio->update_strategy_position(strategy_id, symbol, unbooked);
+                    if (unbooked_update.is_error()) {
+                        WARN("Failed to write the no-bar row for " + symbol + ": " +
+                             std::string(unbooked_update.error()->what()));
+                    }
+                };
+
                 // Get current close price
                 auto curr_it = current_close_prices.find(symbol);
                 if (curr_it == current_close_prices.end()) {
+                    write_unbooked_row();
                     continue;
                 }
                 double current_close = curr_it->second;
@@ -1338,6 +1357,7 @@ Result<void> BacktestCoordinator::process_portfolio_day(
                 // Check if we have previous close (a withheld bar never becomes one: K-01)
                 if (!pnl_manager_->has_previous_close(symbol)) {
                     if (!mark_withheld_.count(symbol)) pnl_manager_->set_previous_close(symbol, current_close);
+                    write_unbooked_row();
                     continue;
                 }
 
