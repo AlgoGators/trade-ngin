@@ -822,3 +822,48 @@ TEST(ListingDates, TheRatioIsWholeAndEqualsTheTwoContractsSizes) {
     EXPECT_NE(ListingDates::ratio_error(mes, 50.0, 0.0), "") << "a size that is not positive is refused";
     EXPECT_NE(ListingDates::ratio_error(mes, 20.0, 5.0), "");
 }
+
+// A declared relabel that rewrites nothing, or whose date is a bar late, is said out loud: one line
+// each, on the bars as stored. The four real entries on their real bars say nothing.
+TEST(InstrumentIdRelabel, AnEntryThatMatchesNothingOrIsLateIsReported) {
+    Guard guard;
+    auto& rule = ListingDates::instance();
+    using namespace std::chrono_literals;
+    auto bar = [](const std::string& symbol, std::chrono::sys_days d, const std::string& id) {
+        Bar b;
+        b.symbol = symbol;
+        b.timestamp = d + std::chrono::hours(0);
+        b.close = Decimal(100.0);
+        b.instrument_id = id;
+        return b;
+    };
+    const std::vector<Bar> bars = {bar("MES.v.0", 2026y / 2 / 19, "42140878"), bar("MES.v.0", 2026y / 2 / 20, "42140878"),
+                                   bar("MES.v.0", 2026y / 2 / 22, "42003800"), bar("MES.v.0", 2026y / 2 / 23, "42003800"),
+                                   bar("ZN.v.0", 2026y / 2 / 20, "1"), bar("ZN.v.0", 2026y / 2 / 23, "1")};
+    EXPECT_TRUE(rule.relabel_findings(bars).empty()) << "nothing declared";
+    rule.set_relabels({{"MES", "2026-02-22", "42140878", "42003800"}});
+    EXPECT_TRUE(rule.relabel_findings(bars).empty()) << "the real entry on the real bars";
+
+    rule.set_relabels({{"MES", "2026-02-22", "42140878", "42003801"}});  // a wrong new id
+    auto lines = rule.relabel_findings(bars);
+    ASSERT_EQ(lines.size(), 1u);
+    EXPECT_EQ(lines[0],
+              "RELABEL_UNMATCHED instrument_id_relabels entry MES 2026-02-22 42140878 -> 42003801: no bar of "
+              "MES dated on or after 2026-02-22 carries id 42003801 in a load that spans the date; the entry "
+              "rewrites nothing");
+
+    rule.set_relabels({{"MES", "2026-02-23", "42140878", "42003800"}});  // declared one bar late
+    lines = rule.relabel_findings(bars);
+    ASSERT_EQ(lines.size(), 1u);
+    EXPECT_EQ(lines[0],
+              "RELABEL_LATE instrument_id_relabels entry MES 2026-02-23 42140878 -> 42003800: a bar dated "
+              "2026-02-22, before the entry's date, already carries id 42003800; the entry's date is late and "
+              "the change would be read as a flip");
+
+    // a load that does not span the date (a window that ends before it) says nothing
+    rule.set_relabels({{"MES", "2026-02-22", "42140878", "42003801"}});
+    EXPECT_TRUE(rule.relabel_findings({bars[0], bars[1]}).empty());
+    // a symbol that is not in the load says nothing
+    rule.set_relabels({{"M2K", "2026-02-22", "1", "2"}});
+    EXPECT_TRUE(rule.relabel_findings(bars).empty());
+}

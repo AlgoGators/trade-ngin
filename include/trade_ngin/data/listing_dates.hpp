@@ -177,6 +177,12 @@ public:
     void apply_relabels(std::vector<Bar>& bars) const;
     void apply_relabels(std::vector<market_data_utils::FuturesInstrumentId>& ids) const;
     bool has_relabels() const;
+    /// What is wrong with the declared relabels on a load of bars AS STORED (before apply_relabels):
+    /// one line for an entry that rewrites no bar although the load holds a bar of the symbol on
+    /// each side of its date (a wrong id, or nothing to relabel), and one for an entry whose new
+    /// id is already on a bar dated BEFORE its date (the date is late: the true change bar would
+    /// keep the new id and the next be read as the old one, a flip). Empty when all is well.
+    std::vector<std::string> relabel_findings(const std::vector<Bar>& bars) const;
 
     /// The instrument-id rows of a load as every consumer reads them, backtest and live: the declared
     /// relabels applied, then every predecessor in `symbols` given the rows of its listed contract.

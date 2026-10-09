@@ -4,6 +4,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <cstdio>
 #include <set>
 #include <stdexcept>
 
@@ -359,6 +360,44 @@ std::string ListingDates::read_id(const std::string& symbol, const Timestamp& ba
         }
     }
     return id;
+}
+
+std::vector<std::string> ListingDates::relabel_findings(const std::vector<Bar>& bars) const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    std::vector<std::string> lines;
+    for (const auto& e : relabels_) {
+        bool before = false, on_or_after = false, rewrites = false;
+        std::string early;  // the first bar before the date that already carries the new id
+        for (const auto& bar : bars) {
+            if (root_of(bar.symbol) != e.relabel.symbol) continue;
+            if (bar.timestamp < e.from_time) {
+                before = true;
+                if (bar.instrument_id == e.relabel.to && early.empty()) {
+                    const std::chrono::year_month_day d{std::chrono::floor<std::chrono::days>(bar.timestamp)};
+                    char text[11];
+                    std::snprintf(text, sizeof(text), "%04d-%02u-%02u", static_cast<int>(d.year()),
+                                  static_cast<unsigned>(d.month()), static_cast<unsigned>(d.day()));
+                    early = text;
+                }
+            } else {
+                on_or_after = true;
+                rewrites = rewrites || bar.instrument_id == e.relabel.to;
+            }
+        }
+        const std::string entry = "instrument_id_relabels entry " + e.relabel.symbol + " " +
+                                  e.relabel.date + " " + e.relabel.from + " -> " + e.relabel.to;
+        if (!early.empty()) {
+            lines.push_back("RELABEL_LATE " + entry + ": a bar dated " + early +
+                            ", before the entry's date, already carries id " + e.relabel.to +
+                            "; the entry's date is late and the change would be read as a flip");
+        }
+        if (before && on_or_after && !rewrites) {
+            lines.push_back("RELABEL_UNMATCHED " + entry + ": no bar of " + e.relabel.symbol +
+                            " dated on or after " + e.relabel.date + " carries id " + e.relabel.to +
+                            " in a load that spans the date; the entry rewrites nothing");
+        }
+    }
+    return lines;
 }
 
 void ListingDates::apply_relabels(std::vector<Bar>& bars) const {

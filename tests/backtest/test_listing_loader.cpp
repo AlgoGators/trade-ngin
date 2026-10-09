@@ -16,6 +16,7 @@
 #include "../core/test_base.hpp"
 #include "../data/test_db_utils.hpp"
 #include "trade_ngin/backtest/backtest_data_loader.hpp"
+#include "trade_ngin/core/logger.hpp"
 #include "trade_ngin/data/listing_dates.hpp"
 
 using namespace trade_ngin;
@@ -183,4 +184,24 @@ TEST_F(ListingLoaderTest, ADeclaredRelabelIsReadOnTheLoadedBars) {
     ASSERT_TRUE(paired.is_ok()) << paired.error()->what();
     EXPECT_EQ(view(paired.value(), "ES.v.0"),
               (std::vector<std::string>{"2-20 6924 42140878", "2-22 6906 42140878", "2-23 6857 42140878"}));
+}
+
+// The loader reports a declared relabel that rewrites no stored bar (a wrong id) on the load.
+TEST_F(ListingLoaderTest, ARelabelThatMatchesNothingIsReportedByTheLoader) {
+    ListingDates::instance().set_relabels({{"MES", "2026-02-22", "42140878", "42009999"}});
+    BacktestDataLoader loader(db_);
+    LoggerConfig lc;
+    lc.destination = LogDestination::CONSOLE;
+    lc.min_level = LogLevel::INFO;
+    lc.include_timestamp = false;
+    Logger::instance().initialize(lc);
+    ::testing::internal::CaptureStdout();
+    ::testing::internal::CaptureStderr();
+    const auto loaded = loader.load_market_data(config_for({"MES.v.0", "ZN.v.0"}));
+    const std::string out = ::testing::internal::GetCapturedStdout() + ::testing::internal::GetCapturedStderr();
+    ASSERT_TRUE(loaded.is_ok());
+    EXPECT_NE(out.find("RELABEL_UNMATCHED instrument_id_relabels entry MES 2026-02-22 42140878 -> 42009999"),
+              std::string::npos)
+        << out;
+    EXPECT_EQ(view(loaded.value(), "MES.v.0").back(), "2-23 6857 42003800") << "and nothing is rewritten";
 }

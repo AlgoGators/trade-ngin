@@ -71,6 +71,7 @@ Result<std::vector<Bar>> BacktestDataLoader::load_market_data(const DataLoadConf
 
     // Declared vendor relabellings (portfolio.json instrument_id_relabels; a no-op when absent) are
     // read first, so a predecessor's copy carries the same ids.
+    for (const auto& line : ListingDates::instance().relabel_findings(all_bars)) WARN(line);
     ListingDates::instance().apply_relabels(all_bars);
     ListingDates::instance().add_predecessor_bars(config.symbols, all_bars);
 

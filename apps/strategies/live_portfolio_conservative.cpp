@@ -952,6 +952,7 @@ int main(int argc, char* argv[]) {
 
         auto all_bars = conversion_result.value();
         // a declared vendor relabel is read on every loaded bar (a no-op with none declared)
+        for (const auto& line : ListingDates::instance().relabel_findings(all_bars)) WARN(line);
         ListingDates::instance().apply_relabels(all_bars);
         INFO("Loaded " + std::to_string(all_bars.size()) + " total bars");
 
