@@ -15,6 +15,7 @@
 #include "trade_ngin/core/holiday_checker.hpp"
 #include "trade_ngin/core/logger.hpp"
 #include "trade_ngin/instruments/instrument_registry.hpp"
+#include "trade_ngin/transaction_cost/netting.hpp"
 
 namespace trade_ngin {
 
@@ -922,8 +923,9 @@ std::string EmailSender::format_executions_table(const std::vector<ExecutionRepo
 
     for (const auto& exec : executions) {
         // T-ROLLX: every row's cost counts; a ROLL leg is listed in its own block below, never
-        // as a trade and never in the traded notional.
-        total_transaction_cost += exec.total_transaction_costs.as_double();
+        // as a trade and never in the traded notional. The total is what the account was charged:
+        // each row's cost after netting (the row's own cost stays in its cell).
+        total_transaction_cost += transaction_cost::net_cost(exec).as_double();
         if (exec.execution_type != ExecutionType::STRATEGY) continue;
         ++strategy_trades;
         // Get contract multiplier for proper notional calculation
@@ -3468,7 +3470,8 @@ std::string EmailSender::format_single_strategy_executions_table(
     size_t strategy_trades = 0;
 
     for (const auto& exec : executions) {
-        total_transaction_costs += exec.total_transaction_costs.as_double();  // every row's cost
+        // Every row's cost after netting: the sleeve's share of what the account was charged.
+        total_transaction_costs += transaction_cost::net_cost(exec).as_double();
         if (exec.execution_type != ExecutionType::STRATEGY) continue;        // T-ROLLX
         ++strategy_trades;
         double contract_multiplier = 1.0;
@@ -3601,8 +3604,8 @@ std::string EmailSender::format_strategy_executions_tables(
         // Accumulate portfolio totals (T-ROLLX: trades and notional over STRATEGY rows; costs over
         // every row, the ROLL part shown beside)
         for (const auto& exec : executions) {
-            portfolio_total_transaction_costs += exec.total_transaction_costs.as_double();
-            if (exec.execution_type == ExecutionType::ROLL) {
+            portfolio_total_transaction_costs += transaction_cost::net_cost(exec).as_double();
+            if (exec.execution_type == ExecutionType::ROLL) {  // never netted: its own cost
                 portfolio_total_roll_costs += exec.total_transaction_costs.as_double();
                 ++portfolio_total_roll_fills;
             }

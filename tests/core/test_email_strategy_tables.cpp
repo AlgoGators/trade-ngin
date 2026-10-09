@@ -352,6 +352,32 @@ TEST_F(EmailStrategyTablesTest, RollLegsAreTheirOwnBlockNotTradesAndTheirCostIsI
     EXPECT_NE(all.find("<strong>Roll Fills:</strong> 2 | <strong>Roll Costs (upper bound):</strong> $8.00"), std::string::npos) << all;
 }
 
+// The cost after netting (HD 2026-10-09): every cost TOTAL of the email is what the account was
+// charged, each row's own cost minus its signed adjustment; a row's own cost stays in its cell.
+//   FAST  SELL 1 own 4.50 adjustment -0.915 (same side: charged 5.415)
+//   TREND SELL 1 own 4.50 adjustment -0.915
+//   TREND BUY 1 / FAST SELL 1 of another symbol, own 1.62 each, a full cross: charged 0
+// RED on the own costs (12.24), and on a dropped or clamped negative adjustment (9.00).
+TEST_F(EmailStrategyTablesTest, TheCostTotalsAreTheCostAfterNetting) {
+    auto row = [](const std::string& symbol, Side side, double cost, double adjustment) {
+        auto e = typed(symbol, side, 1.0, 103.0, cost, ExecutionType::STRATEGY, "EXEC_" + symbol, "");
+        e.netting_adjustment = Decimal(adjustment);
+        return e;
+    };
+    const std::vector<ExecutionReport> fast = {row("ZFGOOD.v.0", Side::SELL, 4.50, -0.915),
+                                               row("ZFGOOD.v.0", Side::SELL, 1.62, 1.62)};
+    const std::vector<ExecutionReport> trend = {row("ZFGOOD.v.0", Side::SELL, 4.50, -0.915),
+                                                row("ZFGOOD.v.0", Side::BUY, 1.62, 1.62)};
+    const std::string single = sender_.format_executions_table(fast);
+    EXPECT_NE(single.find("<strong>Transaction Costs:</strong> $5.42"), std::string::npos) << single;
+    const std::string per = sender_.format_single_strategy_executions_table("TREND_FOLLOWING", trend);
+    EXPECT_NE(per.find("<strong>Transaction Costs:</strong> $5.42"), std::string::npos) << per;
+    std::unordered_map<std::string, std::vector<ExecutionReport>> by_sleeve{
+        {"TREND_FOLLOWING_FAST", fast}, {"TREND_FOLLOWING", trend}};
+    const std::string all = sender_.format_strategy_executions_tables(by_sleeve);
+    EXPECT_NE(all.find("<strong>Total Transaction Costs:</strong> $10.83"), std::string::npos) << all;
+}
+
 TEST_F(EmailStrategyTablesTest, WithoutRollLegsTheTablesAreAsBefore) {
     const std::vector<ExecutionReport> execs = {
         typed("ZFGOOD.v.0", Side::BUY, 1.0, 103.0, 3.0, ExecutionType::STRATEGY, "EXEC_ZFGOOD.v.0_20251028", ""),
