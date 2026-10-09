@@ -29,6 +29,7 @@
 #include "trade_ngin/portfolio/portfolio_manager.hpp"
 #include "trade_ngin/strategy/trend_following.hpp"
 #undef private
+#include "trade_ngin/strategy/sleeve_config.hpp"
 
 using namespace trade_ngin;
 using namespace trade_ngin::testing;
@@ -505,4 +506,66 @@ TEST(TradingRuleRemovals, TheEstimatorRecordKeepsEveryPairsColumn) {
         EXPECT_EQ(std::stod(values[at + 2 + k]), left[k]) << names[at + 2 + k];
     }
     std::filesystem::remove_all(dir);
+}
+
+// The list reaches the sleeve through one function, called by every futures runner. The function
+// carries the loaded list across, and a sleeve built from what it fills runs the pairs left.
+TEST(TradingRuleRemovals, TheHandOverCarriesTheLoadedListToTheSleeve) {
+    AppConfig app;
+    app.trading_rule_removals = fastest(2);
+    TrendFollowingConfig handed;
+    ASSERT_TRUE(handed.rule_removals.empty());
+    hand_over_trading_rule_removals(app, handed);
+    EXPECT_EQ(handed.rule_removals, fastest(2)) << "the list did not reach the sleeve's config";
+
+    const auto bars = mixed();
+    StateManager::reset_instance();
+    Sleeve plain("RULES_handed_plain", kSix, {});
+    const double six = plain.forecast(bars);
+    StateManager::reset_instance();
+    Sleeve cut("RULES_handed_cut", kSix, {}, kSlowPairs, true, handed.rule_removals);
+    EXPECT_NE(cut.forecast(bars), six);
+    EXPECT_EQ(cut.scaled().size(), 4u);
+
+    // an absent block hands over nothing and leaves the sleeve's config as it was
+    TrendFollowingConfig untouched;
+    hand_over_trading_rule_removals(AppConfig{}, untouched);
+    EXPECT_TRUE(untouched.rule_removals.empty());
+}
+
+// Every futures runner makes the hand-over, once, where it builds its trend sleeve, and none
+// assigns the list by itself: a runner that lost the call would parse the block and ignore it.
+TEST(TradingRuleRemovals, EveryFuturesRunnerCallsTheHandOverOnce) {
+    std::filesystem::path root = std::filesystem::current_path();
+    while (!(std::filesystem::exists(root / "CMakeLists.txt") &&
+             std::filesystem::exists(root / "config_template"))) {
+        ASSERT_NE(root, root.parent_path()) << "repository root not found";
+        root = root.parent_path();
+    }
+    auto count = [](const std::string& text, const std::string& what) {
+        std::size_t n = 0;
+        for (std::size_t at = text.find(what); at != std::string::npos; at = text.find(what, at + 1)) ++n;
+        return n;
+    };
+    for (const char* runner : {"apps/backtest/bt_portfolio.cpp", "apps/backtest/bt_portfolio_conservative.cpp",
+                               "apps/strategies/live_portfolio.cpp",
+                               "apps/strategies/live_portfolio_conservative.cpp"}) {
+        std::ifstream in(root / runner);
+        ASSERT_TRUE(in.good()) << runner;
+        std::stringstream text;
+        text << in.rdbuf();
+        const std::string source = text.str();
+        EXPECT_EQ(count(source, "hand_over_trading_rule_removals(app_config, trend_config);"), 1u) << runner;
+        EXPECT_EQ(count(source, "rule_removals ="), 0u) << runner << " assigns the list itself";
+        // the call sits in the branch that builds the TrendFollowingStrategy sleeve, before the
+        // fast sleeve's branch
+        const std::size_t call = source.find("hand_over_trading_rule_removals(");
+        const std::size_t trend = source.find("strategy_type == \"TrendFollowingStrategy\"");
+        const std::size_t fast = source.find("strategy_type == \"TrendFollowingFastStrategy\"");
+        ASSERT_NE(call, std::string::npos) << runner;
+        ASSERT_NE(trend, std::string::npos) << runner;
+        ASSERT_NE(fast, std::string::npos) << runner;
+        EXPECT_LT(trend, call) << runner;
+        EXPECT_LT(call, fast) << runner;
+    }
 }

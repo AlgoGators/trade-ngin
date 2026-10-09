@@ -10,6 +10,7 @@
 
 #include <nlohmann/json.hpp>
 
+#include "trade_ngin/core/config_loader.hpp"
 #include "trade_ngin/core/error.hpp"
 #include "trade_ngin/strategy/trend_following.hpp"
 
@@ -47,6 +48,15 @@ inline Result<void> read_required_sleeve_keys(const std::string& sleeve_id,
     out.idm = cfg["idm"].get<double>();
     out.vol_lookback_short = cfg["vol_lookback_short"].get<int>();
     return Result<void>();
+}
+
+/// The hand-over of portfolio.json's trading_rule_removals from the loaded application config to
+/// the trend sleeve's config. It is the ONE place the list crosses from the loader to a sleeve:
+/// every futures runner, backtest and live, calls it where it builds its TrendFollowingStrategy
+/// sleeve, and a runner that does not would parse the block and run every contract on every pair.
+/// An absent block is an empty map and changes no value.
+inline void hand_over_trading_rule_removals(const AppConfig& app_config, TrendFollowingConfig& out) {
+    out.rule_removals = app_config.trading_rule_removals;
 }
 
 }  // namespace trade_ngin

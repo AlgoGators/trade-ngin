@@ -403,8 +403,8 @@ int main() {
                 if (strategy_id == strategy_names.front()) {
                     trend_config.equity_slow_symbols = app_config.equity_slow_rule.symbols;
                     trend_config.equity_slow_pairs = app_config.equity_slow_rule.pairs;
-                    // Trading rules removed by cost (nothing without trading_rule_removals).
-                    trend_config.rule_removals = app_config.trading_rule_removals;
+                    // Trading rules removed by cost (no value changes without the block).
+                    trade_ngin::hand_over_trading_rule_removals(app_config, trend_config);
                     // The first sleeve's own series and its risk target feed the risk overlay
                     // (LOOP_SPEC section 4: the three risk limits are ratios to this tau).
                     portfolio_config.overlay_sleeve = strategy_id;
