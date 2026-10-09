@@ -1,0 +1,31 @@
+# desk-agent: the gRPC command channel from AlgoLens to the engine (docs/design/desk-agent.md).
+#
+# Same image as the cron runner, second entrypoint. Merge into the host's compose project
+# (/home/ubuntu/docker-compose/trade-ngin) or run alongside it:
+#
+#   docker network create qt        # once per host; AlgoLens' backend joins it too
+#   docker compose -f docker-compose.yml -f desk-agent.compose.yml up -d desk-agent
+#
+# No host port is published: AlgoLens reaches it as desk-agent:50051 on the `qt` network only.
+services:
+  desk-agent:
+    image: ghcr.io/algogators/trade-ngin:${TAG:-latest}
+    container_name: desk-agent
+    command: desk-agent
+    # DB_HOST / DB_PORT / DB_USER / DB_PASSWORD / DB_NAME (or mount the runner's config dir and
+    # set TRADING_CONFIG_DIR). Optional: DESK_AGENT_LISTEN (default 0.0.0.0:50051).
+    env_file: .env
+    networks: [qt]
+    mem_limit: 128m
+    restart: unless-stopped
+    # The image's HEALTHCHECK watches cron, which this container does not run.
+    healthcheck:
+      test: ["CMD", "sh", "-c", "cd /opt/desk-agent/app && exec /opt/desk-agent/venv/bin/python -m desk_agent.healthcheck"]
+      interval: 1m
+      timeout: 10s
+      start_period: 20s
+      retries: 3
+
+networks:
+  qt:
+    external: true

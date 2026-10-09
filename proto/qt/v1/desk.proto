@@ -1,0 +1,196 @@
+// desk.proto -- the command channel from AlgoLens to the trade-ngin engine.
+//
+// Owned by the engine (trade-ngin). AlgoLens vendors the generated Python stubs at a pinned
+// commit. See docs/design/desk-agent.md for the transport, ports and how to regenerate stubs.
+//
+// References in the comments below:
+//   "plan 3b"   docs/design/qt-platform-analysis-and-plan.md, section 3b (decisions 2026-10-08)
+//   "Dn"        docs/design/qt-platform-design.md, section 2 (decisions D1..D22)
+//   "ruling N"  the QT platform master document (2026-10-08), numbered rulings
+//
+// Ground rules (plan 3b, "gRPC command channel"):
+//   * Postgres stays the record: books, audit trail, settings and run metadata. gRPC carries
+//     commands only; no reply here is the record of anything.
+//   * Every mutating command is idempotent and keyed on its trading.position_overrides row
+//     (audit_id). AlgoLens writes that row FIRST, then calls. A retried call with the same
+//     audit_id must not do the work twice. On startup the engine re-drives every row still
+//     pending, so a dropped call loses nothing (ruling 26: no job table; position_overrides is
+//     both the log and the queue).
+//   * The engine refuses rather than guesses (ruling 24): an RPC that cannot do what it was
+//     asked returns REFUSED or FAILED with a message, never a fabricated success.
+
+syntax = "proto3";
+
+package algogators.qt.v1;
+
+import "google/protobuf/timestamp.proto";
+
+// The health service is the standard grpc.health.v1.Health (grpc_health/v1/health.proto),
+// registered by the server next to DeskService. Service name for a targeted check:
+// "algogators.qt.v1.DeskService"; "" checks the server as a whole.
+
+service DeskService {
+  // A desk save: run the desk loop on the whole qt_proposal and book the result as qt with
+  // source=desk, per-symbol asked/given/step (plan 3b; plan E5/E6). Never sends mail
+  // (ruling 15). Refused when no proposal has been seeded for the day (ruling 14).
+  rpc RunDesk(RunDeskRequest) returns (RunDeskReply);
+
+  // E-mails the VP and the President a signed, single-use approval link for a breaching
+  // selection (D4, D5; plan A5/E7).
+  rpc RequestOverride(OverrideRequest) returns (CommandReply);
+
+  // A link click recorded by AlgoLens; on approval the engine books the override as qt with
+  // source=override (D5, D17; plan 3b Q3).
+  rpc RecordDecision(DecisionRequest) returns (CommandReply);
+
+  // Finalise the day's qt book, send the e-mail and CSV, write published_by/published_at on
+  // trading.live_run_metadata (D7; plan A6/E8). A missed day is caught up first (ruling 29).
+  rpc Publish(PublishRequest) returns (CommandReply);
+
+  // The model run's state for one book and day, read from trading.live_run_metadata, for the
+  // desk pages (AlgoLens #97). Read-only; D18: no desk window opens unless the run succeeded.
+  rpc GetRunStatus(RunStatusRequest) returns (RunStatus);
+}
+
+// Outcome of a command. Shared by RunDeskReply and CommandReply.
+enum CommandStatus {
+  COMMAND_STATUS_UNSPECIFIED = 0;
+  // Taken and queued against its position_overrides row; the work completes asynchronously and
+  // its result lands in Postgres (plan 3b: Postgres stays the record).
+  COMMAND_STATUS_ACCEPTED = 1;
+  // The work is done (or was already done for this audit_id: idempotent replay, plan 3b).
+  COMMAND_STATUS_DONE = 2;
+  // The engine declined on a rule, with the reason in `message` (ruling 24: refuse, never guess;
+  // ruling 14: no seeded proposal). Not retryable as-is.
+  COMMAND_STATUS_REFUSED = 3;
+  // The engine tried and failed (crash, database error). Retryable with the same audit_id.
+  COMMAND_STATUS_FAILED = 4;
+}
+
+// Which writer produced the day's qt book (plan 3b Q3).
+enum BookSource {
+  BOOK_SOURCE_UNSPECIFIED = 0;
+  // The model run wrote qt as a copy of system (no save that day).
+  BOOK_SOURCE_MODEL = 1;
+  // A desk save overwrote qt with the desk loop's result.
+  BOOK_SOURCE_DESK = 2;
+  // An approved override booked qt_proposal exactly (D4, D5).
+  BOOK_SOURCE_OVERRIDE = 3;
+}
+
+message RunDeskRequest {
+  // trading.live_run_metadata.portfolio_id of the book, e.g. "CONSERVATIVE_PORTFOLIO". Futures
+  // books only for now (ruling 13).
+  string portfolio_id = 1;
+  // Trading date of the book, "YYYY-MM-DD". Only day T is editable, never history (D3).
+  string date = 2;
+  // trading.position_overrides.id of the save event AlgoLens wrote before calling. The
+  // idempotency key (plan 3b; ruling 26). Must be > 0.
+  int64 audit_id = 3;
+  // AlgoLens user who saved; carried for the audit trail (D10). The record of who is the
+  // position_overrides row, not this field.
+  string requested_by = 4;
+}
+
+// How the desk loop treated one symbol of the saved selection (plan E5: asked vs given).
+message SymbolOutcome {
+  string symbol = 1;
+  // Quantity the desk asked for in qt_proposal. Quantities only, signed; 0 means flatten
+  // (ruling 13, ruling 16).
+  double asked = 2;
+  // Quantity booked into qt.
+  double given = 3;
+  // The one-pass step that moved the symbol from asked to given (cap_bound, sign_closed,
+  // clipped, trimmed, by_hold, ...); empty when given == asked (plan E5 one_pass::attribute).
+  string moved_by = 4;
+}
+
+message RunDeskReply {
+  CommandStatus status = 1;
+  // Writer of the day's qt book after this command (plan 3b Q3).
+  BookSource source = 2;
+  // Human-readable reason for REFUSED/FAILED, or a summary for DONE. Never contains secrets.
+  string message = 3;
+  // Per-symbol outcome, one per symbol in the saved selection. Empty unless status is DONE.
+  repeated SymbolOutcome outcomes = 4;
+}
+
+message OverrideRequest {
+  string portfolio_id = 1;
+  // "YYYY-MM-DD" (D3).
+  string date = 2;
+  // position_overrides.id of the override-request event (plan 3b; ruling 26).
+  int64 audit_id = 3;
+  // The requester. They can never approve their own request (D17).
+  string requested_by = 4;
+  // The written reason every desk change carries (D10). Required, non-empty.
+  string reason = 5;
+}
+
+message DecisionRequest {
+  // position_overrides.id of the override REQUEST being decided. AlgoLens records the decision
+  // itself as an insert (the #55 table has an UPDATE ... DO INSTEAD NOTHING rule; plan finding 6).
+  int64 audit_id = 1;
+  // The VP or President who clicked the link (D5, D17: roles in AlgoLens, never the requester,
+  // no delegate).
+  string approver = 2;
+  // true = approve, false = reject. Either rejection ends the request (design section 6).
+  bool approved = 3;
+  // The signed single-use token from the e-mailed link (D5). Verified by the engine, never
+  // logged.
+  string token = 4;
+}
+
+message PublishRequest {
+  string portfolio_id = 1;
+  // "YYYY-MM-DD" (D7). A missed earlier day is caught up first (ruling 29).
+  string date = 2;
+  // Written to live_run_metadata.published_by (plan A6/E8).
+  string published_by = 3;
+}
+
+message CommandReply {
+  CommandStatus status = 1;
+  // Reason for REFUSED/FAILED, or a summary. Never contains secrets.
+  string message = 2;
+}
+
+message RunStatusRequest {
+  string portfolio_id = 1;
+  // "YYYY-MM-DD".
+  string date = 2;
+}
+
+// State of the model run for one book and day (D16, D18).
+enum RunState {
+  RUN_STATE_UNSPECIFIED = 0;
+  // No trading.live_run_metadata row for the book and date: the run has not started (or died
+  // before writing its first row). D18: no desk window.
+  RUN_STATE_NOT_STARTED = 1;
+  // A metadata row exists but the run's last write (its trading.live_results row for the date)
+  // has not landed yet. A run that crashed mid-way also reads as RUNNING; the watchdog
+  // (scripts/check_live_trading.py) is what alerts on that.
+  RUN_STATE_RUNNING = 2;
+  // The metadata row carries no refusal mark and the live_results row for the date exists.
+  RUN_STATE_SUCCEEDED = 3;
+  // The row is marked `risk_refusal` (run_metadata_marks.hpp; T-RISK-ARCH Q2): the book was
+  // held at the previous day's positions, not measured.
+  RUN_STATE_REFUSED = 4;
+  // The row is marked `strict_assertion`: the run stored no book (T-7b-1 C7b R4).
+  RUN_STATE_FAILED = 5;
+}
+
+message RunStatus {
+  RunState state = 1;
+  // Earliest created_at of the day's live_run_metadata rows. Unset when absent.
+  google.protobuf.Timestamp started_at = 2;
+  // created_at of the day's live_results row (the run's last write). Unset when absent.
+  google.protobuf.Timestamp finished_at = 3;
+  // The refusal reason from the mark, or a short description of the state.
+  string message = 4;
+  // Publication fields (plan A6/E8). The live_run_metadata columns do not exist until the
+  // publish migration lands; until then published is false and the others are unset/empty.
+  bool published = 5;
+  string published_by = 6;
+  google.protobuf.Timestamp published_at = 7;
+}

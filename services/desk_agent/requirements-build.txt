@@ -1,0 +1,3 @@
+# Stub generation (gen.sh). Needed at build time only; not in the runtime image.
+-r requirements.txt
+grpcio-tools==1.83.1
