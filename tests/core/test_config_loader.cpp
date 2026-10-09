@@ -1519,3 +1519,39 @@ TEST_F(ConfigLoaderTest, TheConservativeTemplateDeclaresThePairsAndTheRelabels) 
     EXPECT_TRUE(base.value().listing_dates.empty());
     EXPECT_TRUE(base.value().instrument_id_relabels.empty());
 }
+
+// A key that is not one of the block's own is refused: a misspelt key would be read as absent and a
+// default would apply. A key starting with an underscore is a note. A misspelt block name is refused
+// too, and so is a relabel named twice.
+TEST_F(ConfigLoaderTest, UnknownKeysInsideTheListingAndRelabelBlocksAreRefused) {
+    const nlohmann::json contract = {{"symbol", "MES"}, {"listed", "2019-05-06"}, {"before", "ES"}, {"ratio", 10}};
+    const nlohmann::json relabel = {{"symbol", "MES"}, {"date", "2026-02-22"}, {"from", "42140878"}, {"to", "42003800"}};
+    auto refused = [&](const nlohmann::json& portfolio, const std::string& named) {
+        write_full_set("base", nlohmann::json::object(), portfolio);
+        auto r = ConfigLoader::load(base_, "base");
+        ASSERT_TRUE(r.is_error()) << portfolio.dump();
+        EXPECT_NE(std::string(r.error()->what()).find(named), std::string::npos) << r.error()->what();
+    };
+    // the misspelt rule key: without the check the default rule would apply silently
+    refused({{"listing_dates", {{"contracts", nlohmann::json::array({contract})}, {"switch_rules", "convert"}}}},
+            "unknown key \"switch_rules\"");
+    nlohmann::json bad_contract = contract;
+    bad_contract["listed_on"] = "2019-05-06";
+    refused({{"listing_dates", {{"contracts", nlohmann::json::array({bad_contract})}}}}, "unknown key \"listed_on\"");
+    nlohmann::json bad_relabel = relabel;
+    bad_relabel["form"] = "x";
+    refused({{"instrument_id_relabels", nlohmann::json::array({bad_relabel})}}, "unknown key \"form\"");
+    refused({{"instrument_id_relabels", nlohmann::json::array({relabel, relabel})}}, "named twice");
+    refused({{"listing_date", {{"contracts", nlohmann::json::array({contract})}}}}, "\"listing_date\"");
+    refused({{"instrument_id_relabel", nlohmann::json::array({relabel})}}, "\"instrument_id_relabel\"");
+
+    // notes are allowed, and the blocks still parse
+    nlohmann::json noted = contract;
+    noted["_note"] = "CME listed the micros on this date";
+    write_full_set("base", nlohmann::json::object(),
+                   {{"listing_dates", {{"contracts", nlohmann::json::array({noted})}, {"_note", "x"}}},
+                    {"_listing_dates_note", "a note beside the block is not a misspelt block"}});
+    auto ok = ConfigLoader::load(base_, "base");
+    ASSERT_TRUE(ok.is_ok()) << (ok.error() ? ok.error()->what() : "");
+    EXPECT_EQ(ok.value().listing_dates.size(), 1u);
+}

@@ -304,6 +304,12 @@ std::vector<ListingDates::RelabelEntry> ListingDates::build_relabels(
             throw std::invalid_argument("instrument_id_relabels: \"date\" of " + r.symbol +
                                         " is not a YYYY-MM-DD date: " + r.date);
         }
+        for (const auto& earlier : out) {
+            if (earlier.relabel.symbol == r.symbol && earlier.relabel.to == r.to) {
+                throw std::invalid_argument("instrument_id_relabels: " + r.symbol + " id " + r.to +
+                                            " is named twice");
+            }
+        }
         out.push_back(std::move(e));
     }
     return out;

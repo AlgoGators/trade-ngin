@@ -1,6 +1,7 @@
 // src/core/config_loader.cpp
 
 #include "trade_ngin/core/config_loader.hpp"
+#include <cstring>
 
 #include <algorithm>
 #include <cctype>
@@ -333,6 +334,37 @@ Result<AppConfig> ConfigLoader::extract_config(const nlohmann::json& merged) {
             config.equity_slow_rule = rule;
         }
 
+        // The two blocks below are optional and strict: a key that is not one of the block's own is
+        // refused (a misspelt key would otherwise be read as absent and a default would apply); a key
+        // starting with an underscore is a note. A top-level key that is a near miss of a block's
+        // name is refused too, since a misspelt block is an absent block.
+        auto unknown_key = [](const nlohmann::json& object,
+                              std::initializer_list<const char*> known) -> std::string {
+            for (auto it = object.begin(); it != object.end(); ++it) {
+                const std::string& key = it.key();
+                if (!key.empty() && key[0] == '_') continue;
+                if (std::find_if(known.begin(), known.end(),
+                                 [&](const char* k) { return key == k; }) == known.end()) {
+                    return key;
+                }
+            }
+            return {};
+        };
+        for (auto it = merged.begin(); it != merged.end(); ++it) {
+            const std::string& key = it.key();
+            for (const char* block : {"listing_dates", "instrument_id_relabels"}) {
+                // "listing_date...", "instrument_id_relabel...": the block's name less its last letter
+                const std::string stem(block, std::strlen(block) - 1);
+                if (key != block && key.rfind(stem, 0) == 0) {
+                    return make_error<AppConfig>(
+                        ErrorCode::INVALID_DATA,
+                        "config for " + config.portfolio_id + ": portfolio.json has a key \"" + key +
+                            "\" that is not \"" + block + "\" (a misspelt block is an absent block)",
+                        "ConfigLoader");
+                }
+            }
+        }
+
         // Declared vendor id relabellings: optional; parsed strictly when present.
         if (merged.contains("instrument_id_relabels")) {
             const auto& v = merged.at("instrument_id_relabels");
@@ -347,6 +379,10 @@ Result<AppConfig> ConfigLoader::extract_config(const nlohmann::json& merged) {
             };
             if (!v.is_array()) return bad("must be a list");
             for (const auto& entry : v) {
+                if (entry.is_object()) {
+                    const std::string extra = unknown_key(entry, {"symbol", "date", "from", "to"});
+                    if (!extra.empty()) return bad("names an entry with an unknown key \"" + extra + "\"");
+                }
                 for (const char* key : {"symbol", "date", "from", "to"}) {
                     if (!entry.is_object() || !entry.contains(key) || !entry.at(key).is_string()) {
                         return bad("names an entry without string \"symbol\", \"date\", \"from\" and \"to\"");
@@ -378,6 +414,9 @@ Result<AppConfig> ConfigLoader::extract_config(const nlohmann::json& merged) {
             if (!v.is_object() || !v.contains("contracts") || !v.at("contracts").is_array()) {
                 return bad("must be an object with a \"contracts\" list");
             }
+            if (const std::string extra = unknown_key(v, {"contracts", "switch_rule"}); !extra.empty()) {
+                return bad("has an unknown key \"" + extra + "\"");
+            }
             if (v.contains("switch_rule") &&
                 (!v.at("switch_rule").is_string() ||
                  !parse_listing_switch_rule(v.at("switch_rule").get<std::string>(),
@@ -386,6 +425,10 @@ Result<AppConfig> ConfigLoader::extract_config(const nlohmann::json& merged) {
                            "\"carry_to_target\"");
             }
             for (const auto& entry : v.at("contracts")) {
+                if (entry.is_object()) {
+                    const std::string extra = unknown_key(entry, {"symbol", "listed", "before", "ratio"});
+                    if (!extra.empty()) return bad("names a contract with an unknown key \"" + extra + "\"");
+                }
                 if (!entry.is_object() || !entry.contains("symbol") || !entry.contains("listed") ||
                     !entry.contains("before") || !entry.at("symbol").is_string() ||
                     !entry.at("listed").is_string() || !entry.at("before").is_string() ||
