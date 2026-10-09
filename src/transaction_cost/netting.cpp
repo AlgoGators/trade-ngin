@@ -162,5 +162,10 @@ NettingReport apply_netting_adjustments(
     return rep;
 }
 
+double add_net_costs(double running, const std::vector<ExecutionReport>& fills, size_t from) {
+    for (size_t i = from; i < fills.size(); ++i) running += static_cast<double>(net_cost(fills[i]));
+    return running;
+}
+
 }  // namespace transaction_cost
 }  // namespace trade_ngin

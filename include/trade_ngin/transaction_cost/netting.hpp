@@ -86,5 +86,20 @@ NettingReport apply_netting_adjustments(
     const std::function<double(const std::string& symbol, double signed_quantity,
                                double fill_price)>& cost_of);
 
+/// The cost a fill contributes to every total, P&L and statistic (HD 2026-10-09): its own cost
+/// MINUS the signed netting adjustment already on the fill. A positive adjustment (the sleeves
+/// offset) lowers it, a negative one (one account order of the summed size costs more) raises it;
+/// a fill that was never netted (one sleeve row, a ROLL leg, a BORROW row, rows at different
+/// prices) carries 0 and contributes its own cost. Computes nothing new: it never prices and never
+/// nets, so it is only right AFTER apply_netting_adjustments has run over the fill's symbol-day.
+/// The stored row keeps both columns; this is the one place they are combined.
+inline Decimal net_cost(const ExecutionReport& fill) {
+    return fill.total_transaction_costs - fill.netting_adjustment;
+}
+
+/// One day's (live) or one bar's (backtest) charge: `running` plus the net cost of every fill, added
+/// in the order given.
+double add_net_costs(double running, const std::vector<ExecutionReport>& fills, size_t from = 0);
+
 }  // namespace transaction_cost
 }  // namespace trade_ngin
