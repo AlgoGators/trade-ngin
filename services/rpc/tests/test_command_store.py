@@ -65,7 +65,12 @@ class FakeConn:
 def make(replies):
     cur = FakeCursor(replies)
     store = PostgresCommandStore(DbConfig("h", "5432", "u", "n", "pw"))
-    store._connect = lambda: FakeConn(cur)
+    store.autocommit = []
+
+    def connect(autocommit=True):
+        store.autocommit.append(autocommit)
+        return FakeConn(cur)
+    store._connect = connect
     return store, cur
 
 
@@ -104,29 +109,59 @@ def test_finish_only_moves_a_running_row_and_wraps_result():
         store.finish(7, "running", None, "x")
 
 
-def test_set_token_uses_now_plus_hours():
+def test_record_mail_stores_token_expiry_and_result_together():
     store, cur = make([[(T0,)]])
-    assert store.set_token(7, "ab" * 32, 48) == T0
-    assert "token_expires_at = now() + make_interval(hours => %s)" in cur.sql[0]
-    assert cur.params[0] == ("ab" * 32, 48, 7)
+    assert store.record_mail(7, "ab" * 32, 48, {"emailed": ["vp"], "emailed_at": "t"}) == T0
+    sql = cur.sql[0]
+    assert "token_expires_at = now() + make_interval(hours => %s)" in sql
+    assert "result = %s" in sql and "WHERE id = %s AND status = 'running'" in sql
+    token_hash, hours, result, audit_id = cur.params[0]
+    assert (token_hash, hours, audit_id) == ("ab" * 32, 48, 7)
+    assert result.obj == {"emailed": ["vp"], "emailed_at": "t"}
+    store, _ = make([[]])
+    assert store.record_mail(7, "h", 48, {}) is None
 
 
-def test_reset_running_and_pending_rows():
-    store, cur = make([[(3,), (2,)], [record(2), record(3, kind="publish")]])
-    assert store.reset_running() == [2, 3]
-    assert "WHERE status = 'running'" in cur.sql[0]
-    assert "message = 're-driven after agent restart'" in cur.sql[0]
+def test_running_rows_carry_their_age_by_the_database_clock():
+    store, cur = make([[record(2, status="running") + (12.5,),
+                        record(3, status="running") + (None,)]])
+    rows = store.running_rows()
+    assert [(r.id, age) for r, age in rows] == [(2, 12.5), (3, None)]
+    assert "extract(epoch FROM now() - started_at)" in cur.sql[0]
+    assert "WHERE status = 'running' ORDER BY id" in cur.sql[0]
+
+
+def test_requeue_runs_in_a_transaction_that_marks_recovery():
+    store, cur = make([[], [(4,)]])
+    assert store.requeue(4, "re-driven") is True
+    assert store.autocommit == [False]       # SET LOCAL needs a transaction
+    assert cur.sql[0] == "SET LOCAL algogators.recovery = 'on'"
+    assert "SET status = 'pending', started_at = NULL" in cur.sql[1]
+    assert "WHERE id = %s AND status = 'running'" in cur.sql[1]
+    assert cur.params[1] == ("re-driven", 4)
+    store, _ = make([[], []])
+    assert store.requeue(4, "x") is False
+
+
+def test_pending_rows_and_decisions_and_published():
+    store, cur = make([[record(2), record(3, kind="publish")],
+                       [record(5, kind="override_decision")], [(T0,)]])
     rows = store.pending_rows()
     assert [r.id for r in rows] == [2, 3] and rows[1].kind == "publish"
-    assert "WHERE status = 'pending' ORDER BY id" in cur.sql[1]
+    assert "WHERE status = 'pending' ORDER BY id" in cur.sql[0]
+    assert [r.id for r in store.decisions_for(4)] == [5]
+    assert "kind = 'override_decision' AND parent_id = %s" in cur.sql[1]
+    assert cur.params[1] == (4,)
+    assert store.published_at("P", DAY) == T0
+    assert "FROM trading.live_run_metadata" in cur.sql[2] and cur.params[2] == ("P", DAY)
 
 
 def test_every_update_touches_only_engine_columns():
-    store, cur = make([[record()], [(1,)], [(T0,)], []])
+    store, cur = make([[record()], [(1,)], [(T0,)], [], [(1,)]])
     store.claim(1)
     store.finish(1, "done", None, "m")
-    store.set_token(1, "h", 48)
-    store.reset_running()
+    store.record_mail(1, "h", 48, {})
+    store.requeue(1, "m")
     updates = [s for s in cur.sql if s.startswith("UPDATE")]
     assert len(updates) == 4
     for sql in updates:

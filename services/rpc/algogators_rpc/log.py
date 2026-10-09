@@ -11,7 +11,7 @@ from datetime import datetime, timezone
 # which is also what keeps a stray secret in a record attribute out of the log.
 _FIELDS = ("rpc", "method", "code", "api_version", "services", "task", "portfolio_id", "date",
            "audit_id", "status", "state", "elapsed_ms", "listen", "db", "error", "count", "kind",
-           "mode", "rc", "timed_out", "argv", "stdout_tail", "stderr_tail")
+           "mode", "rc", "timed_out", "argv", "stdout_tail", "stderr_tail", "reason")
 
 
 class JsonFormatter(logging.Formatter):

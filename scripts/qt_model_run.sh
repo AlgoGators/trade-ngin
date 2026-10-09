@@ -1,7 +1,10 @@
 #!/usr/bin/env bash
-# QT daily model run (docs/design/qt-contract.md section 1): runs the conservative runner's model
-# run for each portfolio config dir given, for today's date in America/New_York (or QT_RUN_DATE),
-# inside the qt-engine (engine-rpc) container. Each portfolio takes the same lock the desk service
+# QT model run BY HAND (docs/design/qt-contract.md section 1): runs the conservative runner's
+# model run for each portfolio config dir given, for today's date in America/New_York (or
+# QT_RUN_DATE), inside the qt-engine (engine-rpc) container. The scheduled runs are the catch-up
+# scheduler's (contract C6; scripts/qt_catchup.sh, desk-service.md), which runs exactly this
+# command line under the same lock but first checks the day is due: this script does not, so do
+# not use it on a day that already has a book unless you mean to re-run it. Each portfolio takes the same lock the desk service
 # takes for its commands (QT_LOCK_DIR/<portfolio_id>.lock), so a model run never overlaps a desk
 # run of the same portfolio.
 #

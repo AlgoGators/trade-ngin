@@ -20,13 +20,20 @@ import json
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Mapping, Optional
+import datetime as dt
+from typing import Mapping, Optional, Tuple
 
 DEFAULT_CONFIG_DIR = "/app/config"
 DEFAULT_ENGINE_BINARY = "/app/build/bin/Release/live_portfolio_conservative"
 DEFAULT_ENGINE_CWD = "/app"
 DEFAULT_LOCK_DIR = "/tmp/qt-locks"
 DEFAULT_APPROVE_URL_BASE = "https://algolens.algogators.com/qt/approve"
+DEFAULT_LOG_DIR = "/var/log/qt-engine"
+DEFAULT_CATCHUP_PORTFOLIOS = ("qt_conservative", "qt_conservative_model")
+# Every connection of the desk (both stores) gives up after these (R#9): a database that does
+# not answer never pins a gRPC worker for long.
+CONNECT_TIMEOUT_S = 5
+STATEMENT_TIMEOUT_MS = 30000
 
 
 class ConfigError(RuntimeError):
@@ -42,7 +49,7 @@ class DbConfig:
     password: str = field(repr=False)
     source: str = "env"
 
-    def conninfo_kwargs(self, connect_timeout: int = 10) -> dict:
+    def conninfo_kwargs(self, connect_timeout: int = CONNECT_TIMEOUT_S) -> dict:
         return {
             "host": self.host,
             "port": self.port,
@@ -50,6 +57,7 @@ class DbConfig:
             "password": self.password,
             "dbname": self.dbname,
             "connect_timeout": connect_timeout,
+            "options": f"-c statement_timeout={STATEMENT_TIMEOUT_MS}",
             "application_name": "engine-rpc/desk",
         }
 
@@ -76,13 +84,43 @@ class CommandSettings:
     # fails that row (with a message) instead of stopping the agent.
     approvers: str = ""
     approve_url_base: str = DEFAULT_APPROVE_URL_BASE
+    # QT_EMAIL_DISABLED=1, and only that: the override request then stores the mail (link and
+    # token included) in the row's result. Any other e-mail misconfiguration fails the row (C1).
     email_disabled: bool = False
+    # A 'running' row with no live job in this process is re-driven once it is older than
+    # job_timeout_s + stale_grace_s (it may belong to an engine started by hand).
+    stale_grace_s: float = 300.0
+    # Dated catch-up and alert logs (bind mount on the host; deploy/qt-engine.logrotate).
+    log_dir: str = DEFAULT_LOG_DIR
+
+
+@dataclass(frozen=True)
+class CatchupSettings:
+    """The catch-up scheduler (contract C6, catchup.py). Times are America/New_York."""
+
+    enabled: bool = True
+    # Portfolio config directories under <TRADING_CONFIG_DIR>/portfolios/, as the old cron
+    # passed them to qt_model_run.sh.
+    portfolios: Tuple[str, ...] = DEFAULT_CATCHUP_PORTFOLIOS
+    window_start: dt.time = dt.time(6, 0)
+    window_end: dt.time = dt.time(22, 0)
+    every_minutes: int = 30
+    # Today's model run on a trading day waits for T-1 data: not before this time (the old
+    # cron's 10:15). Earlier days, and today on a non-trading day, run at once.
+    today_not_before: dt.time = dt.time(10, 15)
+    # A trading day still unpublished this long after its model run gets a reminder e-mail.
+    reminder_after_h: float = 24.0
+    # How long a pass waits for a portfolio's flock (a desk job may hold it) before it skips
+    # that portfolio until the next pass.
+    lock_wait_s: float = 600.0
+    timezone: str = "America/New_York"
 
 
 @dataclass(frozen=True)
 class Settings:
     db: DbConfig
     commands: CommandSettings = field(default_factory=CommandSettings)
+    catchup: CatchupSettings = field(default_factory=CatchupSettings)
 
 
 def _db_from_env(env: Mapping[str, str]) -> Optional[DbConfig]:
@@ -124,7 +162,7 @@ def load_settings(env: Optional[Mapping[str, str]] = None) -> Settings:
     if db is None:
         raise ConfigError("no database credentials: set DB_HOST/DB_USER/DB_PASSWORD/DB_NAME or "
                           "mount defaults.json under TRADING_CONFIG_DIR")
-    return Settings(db=db, commands=command_settings(env))
+    return Settings(db=db, commands=command_settings(env), catchup=catchup_settings(env))
 
 
 def _positive(env: Mapping[str, str], name: str, default: float) -> float:
@@ -153,4 +191,50 @@ def command_settings(env: Optional[Mapping[str, str]] = None) -> CommandSettings
         approvers=env.get("QT_APPROVERS") or "",
         approve_url_base=env.get("QT_APPROVE_URL_BASE") or DEFAULT_APPROVE_URL_BASE,
         email_disabled=(env.get("QT_EMAIL_DISABLED") or "").strip() == "1",
+        stale_grace_s=_positive(env, "QT_STALE_GRACE_S", 300.0),
+        log_dir=env.get("QT_LOG_DIR") or DEFAULT_LOG_DIR,
+    )
+
+
+def _clock(env: Mapping[str, str], name: str, default: dt.time) -> dt.time:
+    raw = (env.get(name) or "").strip()
+    if not raw:
+        return default
+    try:
+        hh, mm = raw.split(":")
+        return dt.time(int(hh), int(mm))
+    except ValueError:
+        raise ConfigError(f"{name} must be HH:MM (America/New_York)") from None
+
+
+def catchup_settings(env: Optional[Mapping[str, str]] = None) -> CatchupSettings:
+    """QT_CATCHUP_ENABLED (default 1), QT_CATCHUP_PORTFOLIOS (comma-separated config dirs),
+    QT_CATCHUP_WINDOW ("06:00-22:00"), QT_CATCHUP_EVERY_MIN (30), QT_CATCHUP_TODAY_NOT_BEFORE
+    ("10:15"), QT_UNPUBLISHED_REMINDER_H (24), QT_CATCHUP_LOCK_WAIT_S (600)."""
+    env = os.environ if env is None else env
+    enabled = (env.get("QT_CATCHUP_ENABLED") or "1").strip() != "0"
+    raw = env.get("QT_CATCHUP_PORTFOLIOS")
+    portfolios = (tuple(p.strip() for p in raw.split(",") if p.strip()) if raw is not None
+                  else DEFAULT_CATCHUP_PORTFOLIOS)
+    if enabled and not portfolios:
+        raise ConfigError("QT_CATCHUP_PORTFOLIOS names no portfolio; set QT_CATCHUP_ENABLED=0 "
+                          "to turn the catch-up scheduler off")
+    window = (env.get("QT_CATCHUP_WINDOW") or "06:00-22:00").strip()
+    try:
+        start_raw, end_raw = window.split("-")
+    except ValueError:
+        raise ConfigError("QT_CATCHUP_WINDOW must be HH:MM-HH:MM") from None
+    start = _clock({"QT_CATCHUP_WINDOW": start_raw}, "QT_CATCHUP_WINDOW", dt.time(6, 0))
+    end = _clock({"QT_CATCHUP_WINDOW": end_raw}, "QT_CATCHUP_WINDOW", dt.time(22, 0))
+    if end <= start:
+        raise ConfigError("QT_CATCHUP_WINDOW must end after it starts")
+    every = _positive(env, "QT_CATCHUP_EVERY_MIN", 30)
+    if int(every) != every or 60 % int(every):
+        raise ConfigError("QT_CATCHUP_EVERY_MIN must divide 60 (e.g. 15, 30, 60)")
+    return CatchupSettings(
+        enabled=enabled, portfolios=portfolios, window_start=start, window_end=end,
+        every_minutes=int(every),
+        today_not_before=_clock(env, "QT_CATCHUP_TODAY_NOT_BEFORE", dt.time(10, 15)),
+        reminder_after_h=_positive(env, "QT_UNPUBLISHED_REMINDER_H", 24.0),
+        lock_wait_s=_positive(env, "QT_CATCHUP_LOCK_WAIT_S", 600.0),
     )

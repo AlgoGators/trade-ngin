@@ -1,0 +1,17 @@
+# QT engine logs on the host (bind mount ./logs of deploy/engine-rpc.compose.yml).
+# Install as /etc/logrotate.d/algogators-qt (root:root 0644).
+#
+# Every file is rotated daily into a dated file (qt-catchup.log-20261009.gz, named for the day
+# its lines were written) and kept 60 days. The writers open, append and close on every write,
+# so a plain rename is safe (no copytruncate). logs/ must not be group- or world-writable.
+/home/ubuntu/qt-engine/logs/*.log {
+    daily
+    dateext
+    dateyesterday
+    rotate 60
+    maxage 60
+    compress
+    delaycompress
+    missingok
+    notifempty
+}

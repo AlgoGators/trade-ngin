@@ -1,0 +1,10 @@
+# QT catch-up watchdog (docs/design/desk-service.md, "Catch-up scheduler"), new_algo_data only.
+# Install as /etc/cron.d/algogators-qt (root:root 0644), replacing the old 10:15 model run.
+#
+# The model runs are scheduled inside engine-rpc (background task desk.catchup: every 30 min,
+# 06:00-22:00 America/New_York, every day). This cron only checks that a pass ran in the last
+# 75 minutes and, if not (the server's thread died, or it was down), runs one itself through the
+# same code and locks. It fires every 30 minutes around the clock; outside the window it does
+# nothing. The host clock is UTC; the window is checked in New York time by the script.
+SHELL=/bin/bash
+7,37 * * * * ubuntu docker exec engine-rpc /app/scripts/qt_catchup.sh watchdog >> /home/ubuntu/qt-engine/logs/qt-watchdog.log 2>&1

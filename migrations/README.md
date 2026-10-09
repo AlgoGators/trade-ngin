@@ -32,6 +32,7 @@ qt-platform-preview) and are retired, so the numbers are never reused (see the h
 | 022 | `022_strategy_config.sql` | `trading.strategy_config` (desk settings: versioned, one active row per portfolio); `settings_used`, `published_by`, `published_at` on `trading.live_run_metadata` | `test_022_strategy_config.sh` | 2026-10-09 | |
 | 023 | `023_qt_command_log.sql` | `trading.position_overrides` rebuilt as the desk command log; `live_results.book_source`; `strategy_registry.portfolio_group` and `desk_editable`, and the two QT portfolios | `test_023_qt_command_log.sh` | 2026-10-09 | |
 | 024 | `024_drop_retired_qt_tables.sql` | Drops `risk_limits`, `portfolios`, `strategy_book_memberships` and `portfolio_assignments` (ruling 28). Irreversible; no rollback file | `test_023_qt_command_log.sh` | | |
+| 025 | `025_qt_command_log_hardening.sql` | QT contract C2 and C4 on `trading.position_overrides`: one live decision per request, one open publish and one open override request per day (unique partial indexes); inserts must be `pending` with the engine columns NULL; status moves pending -> running -> done/refused/failed, running -> pending only under `algogators.recovery = 'on'`; terminal rows final; TRUNCATE refused. Grants: PUBLIC loses everything on `trading.live_run_metadata` and its sequence (explicit grants kept or added first); `svc_algolens` loses UPDATE, DELETE, TRUNCATE on `position_overrides` | `test_025_qt_command_log_hardening.sh` (postgres:16, throwaway server only; CI `rpc.yml`) | | |
 
 ## Deploy notes
 
@@ -39,3 +40,20 @@ qt-platform-preview) and are retired, so the numbers are never reused (see the h
   The binary from 021 on names `portfolio_type` in every read, write and delete of positions,
   executions, live_results and equity_curve, and fails against a database without 021.
 - A rollback refuses while it would lose rows a later book wrote; read its header first.
+- **025** ships with the desk service of its commit: the service's recovery sets
+  `algogators.recovery = 'on'` to put a stale `running` row back to `pending`, which 025 refuses
+  otherwise. An older service only loses that recovery (its startup reset is refused and
+  logged); nothing else it does is refused. Apply 025 before or with that image. Grants, on
+  new_algo_data as checked 2026-10-09: on `trading.live_run_metadata`, PUBLIC held `arwdDxt`
+  (and `rU` on the sequence). After 025, `fund_member`, `quant_dev`, `quant_research_ro`,
+  `leadership_ro` and `investor_relations_ro` keep SELECT; `quant_dev_rw`, `quant_trading_rw`,
+  `leadership_rw`, `svc_algolens` and (newly explicit) `svc_trade_ngin` keep SELECT, INSERT,
+  UPDATE, DELETE and the sequence; `qt_algolens_app` and `qt_engine_app` inherit theirs;
+  `svc_airflow` and `svc_data_ngin` have no USAGE on schema `trading` and lose nothing. On
+  `trading.position_overrides`, `svc_algolens` keeps SELECT, INSERT and the sequence, and
+  `svc_trade_ngin` gets SELECT, INSERT, UPDATE, DELETE explicitly. Today both services connect
+  as `postgres`, so the grants take effect when they move to `qt_algolens_app` /
+  `qt_engine_app`.
+- **Not done, on purpose:** SET NOT NULL on columns that hold NULLs today. The spec left it;
+  `live_run_metadata.portfolio_id` is already NOT NULL on new_algo_data (0 NULL rows of 514 on
+  2026-10-09), and no NOT NULL was added to `position_overrides`.

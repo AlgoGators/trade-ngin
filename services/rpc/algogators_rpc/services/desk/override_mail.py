@@ -3,18 +3,20 @@
 Done in Python, not by the engine. The worker:
 
 1. reads the approvers from QT_APPROVERS ("vp=<email>,president=<email>", both required);
-2. generates a one-time token, stores sha256(token) and an expiry 48 h from now() on the row;
+2. generates a one-time token;
 3. builds an HTML e-mail with the approval link and the three books side by side (model =
    system, desk request = qt_proposal, the engine's desk result = qt with moved_by);
-4. sends it through the portfolio's email.json SMTP settings, or, when e-mail is disabled,
-   writes it into the row's result so an operator can still approve.
+4. sends it through the portfolio's email.json SMTP settings, or, only when QT_EMAIL_DISABLED=1,
+   writes it into the row's result so an operator can still approve;
+5. stores sha256(token), an expiry 48 h from now() and the result in one UPDATE.
 
 The token and the SMTP password are never logged. The token appears only in the e-mail (and in
-the result when e-mail is disabled, by design), and only its hash is stored.
+the result under QT_EMAIL_DISABLED=1, by design), and only its hash is stored.
 """
 
 from __future__ import annotations
 
+import datetime as dt
 import hashlib
 import html
 import json
@@ -176,35 +178,60 @@ class MailOutcome:
     message: str
 
 
+def _now_iso() -> str:
+    return dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds")
+
+
 def run_override_request(row: CommandRow, portfolio_dir: str, settings: CommandSettings,
                          store, sender: Sender = send_smtp) -> MailOutcome:
-    """Everything after the claim. The caller records the outcome on the row."""
+    """Everything after the claim. The caller records the outcome on the row.
+
+    Order (R#4): build the token and the mail, send it, then store sha256(token), the expiry and
+    the result (`emailed_at`) in one UPDATE, and only then mark the row done. A crash before
+    that UPDATE leaves no token behind (the mailed link cannot work) and the re-drive sends a
+    fresh mail; a crash after it finds token_hash set and marks the row done without sending.
+
+    E-mail disabled (contract C1): only QT_EMAIL_DISABLED=1 puts the mail, link and token
+    included, in the row's result. Any other missing or broken SMTP configuration fails the
+    row with the reason, and no token is stored.
+    """
     try:
         approvers = parse_approvers(settings.approvers)
     except ApproverError as exc:
         return MailOutcome("failed", None, str(exc))
+    smtp, why = load_smtp(settings, portfolio_dir)
+    if smtp is None and not settings.email_disabled:
+        log.error("override e-mail not configured",
+                  extra={"audit_id": row.id, "portfolio_id": row.portfolio_id, "error": why})
+        return MailOutcome("failed", None,
+                           f"override e-mail not sent: {why}. Fix the portfolio's email.json, "
+                           "or set QT_EMAIL_DISABLED=1 to keep the approval link in the row's "
+                           "result instead")
     books = store.books(row.portfolio_id, row.date)
     token = secrets.token_urlsafe(32)
-    expires = store.set_token(row.id, hash_token(token), TOKEN_HOURS)
-    if expires is None:
-        return MailOutcome("failed", None, "could not store the approval token (row no longer "
-                                           "running)")
     subject, body = build_email(row, books, approve_link(settings.approve_url_base, token))
     to: List[str] = [approvers[r] for r in ROLES]
-    smtp, why = load_smtp(settings, portfolio_dir)
-    if smtp is None:
+    if smtp is None:  # QT_EMAIL_DISABLED=1, explicitly
+        result = {"emailed": [], "email_disabled": True,
+                  "email": {"to": to, "subject": subject, "body": body}}
+        message = "e-mail disabled (QT_EMAIL_DISABLED=1): body logged in result"
         log.info("override e-mail disabled; body written to the row's result",
                  extra={"audit_id": row.id, "portfolio_id": row.portfolio_id, "error": why})
-        return MailOutcome("done", {"emailed": [], "email_disabled": True,
-                                    "email": {"to": to, "subject": subject, "body": body}},
-                           "e-mail disabled: body logged in result")
-    try:
-        sender(smtp, to, subject, body)
-    except Exception as exc:  # smtplib errors can echo the server reply, never our password
-        log.error("override e-mail failed",
-                  extra={"audit_id": row.id, "portfolio_id": row.portfolio_id,
-                         "error": type(exc).__name__})
-        return MailOutcome("failed", None, f"override e-mail failed: {type(exc).__name__}")
-    log.info("override e-mail sent", extra={"audit_id": row.id,
-                                            "portfolio_id": row.portfolio_id})
-    return MailOutcome("done", {"emailed": list(ROLES)}, "override e-mail sent to vp and president")
+    else:
+        try:
+            sender(smtp, to, subject, body)
+        except Exception as exc:  # smtplib errors can echo the server reply, never our password
+            log.error("override e-mail failed",
+                      extra={"audit_id": row.id, "portfolio_id": row.portfolio_id,
+                             "error": type(exc).__name__})
+            return MailOutcome("failed", None, f"override e-mail failed: {type(exc).__name__}")
+        result = {"emailed": list(ROLES), "emailed_at": _now_iso()}
+        message = "override e-mail sent to vp and president"
+        log.info("override e-mail sent", extra={"audit_id": row.id,
+                                                "portfolio_id": row.portfolio_id})
+    expires = store.record_mail(row.id, hash_token(token), TOKEN_HOURS, result)
+    if expires is None:
+        return MailOutcome("failed", None, "the approval token could not be stored (the row is "
+                                           "no longer running); the link cannot work: request "
+                                           "the override again")
+    return MailOutcome("done", result, message)

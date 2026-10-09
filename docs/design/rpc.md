@@ -80,20 +80,32 @@ retry it.
 - **Bind.** `RPC_LISTEN`, default `0.0.0.0:50051`, plaintext. The container is `engine-rpc` on the
   private Docker network `qt`; no host port is published. The network alias `desk-agent` keeps
   the old address for one release.
-- **Settings.** `RPC_MAX_WORKERS` (default 4) and `RPC_SERVICES` (default `desk`).
+- **Settings.** `RPC_MAX_WORKERS` (default 8), `RPC_HEALTH_LISTEN` (default
+  `127.0.0.1:50052`; `off` disables it) and `RPC_SERVICES` (default `desk`).
   `DESK_AGENT_LISTEN` and `DESK_AGENT_MAX_WORKERS` are still read when the `RPC_` names are
   unset, for one release.
 - **Entrypoint.** `command: rpc` (`scripts/docker-entrypoint.sh`); `desk-agent` is an alias for
   one release. Compose: `deploy/engine-rpc.compose.yml`.
 - **Health.** `grpc.health.v1` reports `""` (the whole server) and each service's full name
   (and legacy names). Everything is `SERVING` once all services are registered and goes
-  `NOT_SERVING` at shutdown. The container healthcheck is `python -m algogators_rpc.healthcheck`.
+  `NOT_SERVING` at shutdown. The same health service is also served alone on
+  `RPC_HEALTH_LISTEN` (loopback, its own two threads), so calls that occupy every main worker
+  never starve it. The container healthcheck, `python -m algogators_rpc.healthcheck`, dials that
+  port.
+- **Background tasks.** A service's `BackgroundTask`s run in daemon threads: `on_start` once
+  before the server serves, then `run` every `interval_s`. Exceptions are logged and swallowed,
+  so a task whose start hook failed (a database down at startup) must retry that work in `run`
+  (the desk's recovery does). A long `run` (the desk's catch-up pass runs engines for minutes)
+  delays only its own thread.
+- **Processes.** Services may spawn processes (the desk runs the engine). Run the container
+  with `init: true` so they are reaped, and never read a child's output into memory unbounded.
 - **Logs.** One JSON object per line on stdout. Each call gets one `rpc call` line with
   `method`, `code`, `elapsed_ms` and the `api_version` header the client sent, never the request
-  or reply. Health checks are not logged.
+  or reply. Health checks are not logged. Compose caps `docker logs` with json-file
+  `max-size: 10m`, `max-file: 3` per service (never in the Docker daemon's config).
 - **Startup.** Read settings. Each service in `RPC_SERVICES` registers itself; a service that
-  cannot be configured stops the server (exit 2). Run every background task's `on_start`. Start
-  the periodic loops. Serve.
+  cannot be configured stops the server (exit 2). Start the health-only server. Run every
+  background task's `on_start`. Start the periodic loops. Serve.
 - **Shutdown.** On SIGTERM or SIGINT: health goes `NOT_SERVING`, background loops stop, and
   in-flight calls get 10 s.
 

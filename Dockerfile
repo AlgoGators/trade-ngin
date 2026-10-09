@@ -102,7 +102,7 @@ RUN PYTHON=/tmp/gen/bin/python OUT_DIR=/opt/rpc/app sh /src/services/rpc/gen.sh 
     cp -r /src/services/rpc/algogators_rpc /opt/rpc/app/ && \
     find /opt/rpc/app -name __pycache__ -prune -exec rm -rf {} + && \
     cd /opt/rpc/app && /opt/rpc/venv/bin/python -c \
-        "import algogators_rpc.server, algogators_rpc.services.desk.service, psycopg"
+        "import algogators_rpc.server, algogators_rpc.services.desk.service, algogators_rpc.services.desk.catchup, psycopg, zoneinfo; zoneinfo.ZoneInfo('America/New_York')"
 
 FROM ubuntu:24.04
 
@@ -145,7 +145,7 @@ WORKDIR /app
 COPY live_portfolio.cron /etc/cron.d/live_portfolio
 RUN chmod 0644 /etc/cron.d/live_portfolio && \
     crontab /etc/cron.d/live_portfolio && \
-    chmod 0755 /app/scripts/run_live_portfolio.sh /app/scripts/docker-entrypoint.sh
+    chmod 0755 /app/scripts/run_live_portfolio.sh /app/scripts/docker-entrypoint.sh         /app/scripts/qt_model_run.sh /app/scripts/qt_catchup.sh
 
 # The container's only job is running cron. If the cron daemon dies, the container
 # can sit there looking alive while nothing is scheduled -- externally

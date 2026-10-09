@@ -6,10 +6,15 @@ portfolios run concurrently. An engine job spawns
     flock <lock_dir>/<portfolio_id>.lock <engine_binary> --<mode> --portfolio-config <dir>
           --date YYYY-MM-DD --audit-id N
 
-in <engine_cwd>. The daily cron model run takes the same lock, so a desk command and the model
-run never overlap. The binary records the row's outcome itself (status, result, message,
-finished_at); exit 0 = done, 2 = refused, anything else = failed. If the row is still 'running'
-after the process exits (a crash, a kill, a timeout), the agent marks it failed.
+in <engine_cwd>. The catch-up scheduler (catchup.py) takes the same lock file for its model runs,
+so a desk command and a model run never overlap. The binary records the row's outcome itself
+(status, result, message, finished_at); exit 0 = done, 2 = refused, anything else = failed. If
+the row is still 'running' after the process exits (a crash, a kill, a timeout), the agent marks
+it failed. If even that write fails (the database is down), the row is reported back to the
+dispatcher as abandoned, and the recovery task re-drives it (recovery.py).
+
+The process's stdout and stderr go to temporary files, never to memory, so a chatty engine
+cannot exhaust the container (R#8); only the last lines are read back for the log.
 """
 
 from __future__ import annotations
@@ -19,9 +24,10 @@ import os
 import queue
 import signal
 import subprocess
+import tempfile
 import threading
 from collections import deque
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Callable, Dict, List, Optional, Sequence
 
 from .command_store import CommandStore
@@ -30,12 +36,15 @@ from .config import CommandSettings
 log = logging.getLogger("desk.jobs")
 
 TAIL_LINES = 40
+# How much of the end of each output file is read back for the tail.
+TAIL_BYTES = 64 * 1024
 MODES = ("desk", "override", "publish")
 
 
 @dataclass(frozen=True)
 class RunResult:
     rc: Optional[int]
+    # The last TAIL_BYTES of each stream (never the whole output).
     stdout: str = ""
     stderr: str = ""
     timed_out: bool = False
@@ -50,30 +59,55 @@ class Runner:
         raise NotImplementedError
 
 
+def _read_tail(f, limit: int = TAIL_BYTES) -> str:
+    f.flush()
+    size = f.seek(0, os.SEEK_END)
+    f.seek(max(0, size - limit))
+    data = f.read()
+    text = data.decode("utf-8", errors="replace")
+    if size > limit:  # drop the partial first line
+        text = text.split("\n", 1)[-1]
+    return text
+
+
 class SubprocessRunner(Runner):
-    def run(self, argv: Sequence[str], cwd: str, timeout: float) -> RunResult:
+    """Runs argv in its own session with stdout/stderr in temporary files. `copy_to`, when set,
+    is a file object the full stdout+stderr is appended to afterwards (the catch-up log)."""
+
+    def run(self, argv: Sequence[str], cwd: str, timeout: float,
+            copy_to=None) -> RunResult:
         posix = os.name == "posix"
-        try:
-            # A new session, so a timeout kills flock and the engine under it together.
-            proc = subprocess.Popen(list(argv), cwd=cwd, stdout=subprocess.PIPE,
-                                    stderr=subprocess.PIPE, stdin=subprocess.DEVNULL,
-                                    text=True, errors="replace", start_new_session=posix)
-        except OSError as exc:
-            return RunResult(rc=None, error=f"{type(exc).__name__}: {exc.strerror or exc}")
-        try:
-            out, err = proc.communicate(timeout=timeout)
-            return RunResult(rc=proc.returncode, stdout=out or "", stderr=err or "")
-        except subprocess.TimeoutExpired:
-            if posix:
-                try:
-                    os.killpg(proc.pid, signal.SIGKILL)
-                except OSError:
+        with tempfile.TemporaryFile() as out, tempfile.TemporaryFile() as err:
+            try:
+                # A new session, so a timeout kills flock and the engine under it together.
+                proc = subprocess.Popen(list(argv), cwd=cwd, stdout=out, stderr=err,
+                                        stdin=subprocess.DEVNULL, start_new_session=posix)
+            except OSError as exc:
+                return RunResult(rc=None,
+                                 error=f"{type(exc).__name__}: {exc.strerror or exc}")
+            timed_out = False
+            try:
+                proc.wait(timeout=timeout)
+            except subprocess.TimeoutExpired:
+                timed_out = True
+                if posix:
+                    try:
+                        os.killpg(proc.pid, signal.SIGKILL)
+                    except OSError:
+                        proc.kill()
+                else:
                     proc.kill()
-            else:
-                proc.kill()
-            out, err = proc.communicate()
-            return RunResult(rc=proc.returncode, stdout=out or "", stderr=err or "",
-                             timed_out=True)
+                proc.wait()
+            if copy_to is not None:
+                for f in (out, err):
+                    f.seek(0)
+                    while True:
+                        chunk = f.read(1 << 16)
+                        if not chunk:
+                            break
+                        copy_to.write(chunk.decode("utf-8", errors="replace"))
+            return RunResult(rc=proc.returncode, stdout=_read_tail(out), stderr=_read_tail(err),
+                             timed_out=timed_out)
 
 
 def tail(text: str, n: int = TAIL_LINES) -> List[str]:
@@ -91,12 +125,15 @@ def engine_argv(settings: CommandSettings, mode: str, portfolio_id: str, portfol
 
 @dataclass
 class Job:
-    """A unit of work for one portfolio's queue."""
+    """A unit of work for one portfolio's queue. `on_done(abandoned)` runs after the work,
+    whatever happened; `abandoned` is True when the row may still be 'running' with nobody
+    on it (the outcome could not be recorded)."""
 
     portfolio_id: str
     audit_id: int
     kind: str
     work: Callable[[], None]
+    on_done: Optional[Callable[[bool], None]] = field(default=None, repr=False)
 
     def run(self) -> None:
         self.work()
@@ -110,6 +147,7 @@ class JobManager:
         self._runner = runner or SubprocessRunner()
         self._queues: Dict[str, "queue.Queue[Job]"] = {}
         self._lock = threading.Lock()
+        self._abandoned = threading.local()
 
     # -- queueing ------------------------------------------------------------------------------
 
@@ -135,6 +173,7 @@ class JobManager:
     def _worker(self, portfolio_id: str, q: "queue.Queue[Job]") -> None:
         while True:
             job = q.get()
+            self._abandoned.value = False
             try:
                 job.run()
             except Exception as exc:
@@ -144,15 +183,27 @@ class JobManager:
                 self._fail_if_running(job.audit_id, f"agent error running the job: "
                                                     f"{type(exc).__name__}")
             finally:
+                abandoned = bool(getattr(self._abandoned, "value", False))
+                if job.on_done is not None:
+                    try:
+                        job.on_done(abandoned)
+                    except Exception:  # never let bookkeeping kill the worker
+                        log.error("job completion hook failed", exc_info=True,
+                                  extra={"audit_id": job.audit_id})
                 q.task_done()
+
+    def mark_abandoned(self) -> None:
+        """Called from inside a job: its outcome could not be recorded."""
+        self._abandoned.value = True
 
     # -- engine jobs ---------------------------------------------------------------------------
 
     def engine_job(self, mode: str, portfolio_id: str, portfolio_dir: str, date: str,
-                   audit_id: int, kind: str) -> Job:
+                   audit_id: int, kind: str,
+                   on_done: Optional[Callable[[bool], None]] = None) -> Job:
         argv = engine_argv(self._settings, mode, portfolio_id, portfolio_dir, date, audit_id)
         return Job(portfolio_id, audit_id, kind,
-                   lambda: self._run_engine(argv, portfolio_id, audit_id, mode))
+                   lambda: self._run_engine(argv, portfolio_id, audit_id, mode), on_done)
 
     def _run_engine(self, argv: List[str], portfolio_id: str, audit_id: int, mode: str) -> None:
         s = self._settings
@@ -178,7 +229,8 @@ class JobManager:
         self._fail_if_running(audit_id, message)
 
     def _fail_if_running(self, audit_id: int, message: str) -> None:
-        """The engine owns the outcome; only a row it left 'running' is failed here."""
+        """The engine owns the outcome; only a row it left 'running' is failed here. If the
+        database cannot be read or written, the row is abandoned for the recovery task."""
         try:
             row = self._store.get_row(audit_id)
             if row is not None and row.status == "running":
@@ -187,5 +239,6 @@ class JobManager:
                                 extra={"audit_id": audit_id, "status": "failed",
                                        "error": message})
         except Exception as exc:
-            log.error("cannot record the job outcome",
+            self.mark_abandoned()
+            log.error("cannot record the job outcome; the recovery task will re-drive the row",
                       extra={"audit_id": audit_id, "error": type(exc).__name__})

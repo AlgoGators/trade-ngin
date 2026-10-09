@@ -22,7 +22,7 @@ import datetime as dt
 from dataclasses import dataclass, field
 from typing import Optional, Protocol, Sequence
 
-from .config import DbConfig
+from .config import CONNECT_TIMEOUT_S, DbConfig
 
 METADATA_TABLE = ("trading", "live_run_metadata")
 RESULTS_TABLE = ("trading", "live_results")
@@ -55,7 +55,7 @@ class RunStatusStore(Protocol):
 
 
 class PostgresRunStatusStore:
-    def __init__(self, db: DbConfig, connect_timeout: int = 10):
+    def __init__(self, db: DbConfig, connect_timeout: int = CONNECT_TIMEOUT_S):
         self._db = db
         self._connect_timeout = connect_timeout
 

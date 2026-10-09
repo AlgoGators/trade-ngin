@@ -51,34 +51,52 @@ def make_row(id, kind, **kw):
 
 
 class FakeCommandStore:
-    """trading.position_overrides in memory, with the claim semantics of the real UPDATEs."""
+    """trading.position_overrides in memory, with the claim semantics of the real UPDATEs and
+    the 025 transitions (pending -> running -> done/refused/failed; running -> pending only by
+    requeue; terminal rows final). `error` makes every call fail like a database that is down;
+    `fail` maps a method name to how many of its next calls fail."""
+
+    TERMINAL = ("done", "refused", "failed")
 
     def __init__(self, rows=()):
         self.rows = {r.id: r for r in rows}
         self.book_data = {"system": {}, "qt_proposal": {}, "qt": {}}
+        self.published = {}          # (portfolio_id, date) -> published_at
         self.lock = threading.Lock()
         self.claims = []
+        self.requeues = []
         self.error = None
+        self.fail = {}
 
     def add(self, row):
         self.rows[row.id] = row
         return row
 
-    def _check(self):
+    def _check(self, name=""):
         if self.error:
             raise StoreError(self.error)
+        if self.fail.get(name):
+            self.fail[name] -= 1
+            raise StoreError(f"database error (OperationalError) in {name}")
 
     def _set(self, audit_id, **changes):
-        self.rows[audit_id] = dataclasses.replace(self.rows[audit_id], **changes)
+        old = self.rows[audit_id]
+        new_status = changes.get("status", old.status)
+        assert old.status not in self.TERMINAL, f"row {audit_id} is final ({old.status})"
+        assert (old.status, new_status) in (("pending", "running"), ("running", "done"),
+                                            ("running", "refused"), ("running", "failed"),
+                                            ("running", "pending"), ("running", "running"),
+                                            ("pending", "pending")), (old.status, new_status)
+        self.rows[audit_id] = dataclasses.replace(old, **changes)
         return self.rows[audit_id]
 
     def get_row(self, audit_id):
-        self._check()
+        self._check("get_row")
         with self.lock:
             return self.rows.get(audit_id)
 
     def claim(self, audit_id):
-        self._check()
+        self._check("claim")
         with self.lock:
             row = self.rows.get(audit_id)
             if row is None or row.status != "pending":
@@ -87,6 +105,7 @@ class FakeCommandStore:
             return self._set(audit_id, status="running", started_at=now())
 
     def finish(self, audit_id, status, result, message):
+        self._check("finish")
         with self.lock:
             row = self.rows.get(audit_id)
             if row is None or row.status != "running":
@@ -95,34 +114,57 @@ class FakeCommandStore:
                       finished_at=now())
             return True
 
-    def set_token(self, audit_id, token_hash, hours):
+    def record_mail(self, audit_id, token_hash, hours, result):
+        self._check("record_mail")
         with self.lock:
             row = self.rows.get(audit_id)
             if row is None or row.status != "running":
                 return None
-            return self._set(audit_id, token_hash=token_hash,
+            return self._set(audit_id, token_hash=token_hash, result=result,
                              token_expires_at=now() + dt.timedelta(hours=hours)).token_expires_at
 
-    def reset_running(self):
+    def running_rows(self):
+        self._check("running_rows")
         with self.lock:
-            ids = sorted(i for i, r in self.rows.items() if r.status == "running")
-            for i in ids:
-                self._set(i, status="pending", started_at=None,
-                          message="re-driven after agent restart")
-            return ids
+            t = now()
+            return [(r, None if r.started_at is None else (t - r.started_at).total_seconds())
+                    for _, r in sorted(self.rows.items()) if r.status == "running"]
+
+    def requeue(self, audit_id, message):
+        self._check("requeue")
+        with self.lock:
+            row = self.rows.get(audit_id)
+            if row is None or row.status != "running":
+                return False
+            self.requeues.append(audit_id)
+            self._set(audit_id, status="pending", started_at=None, finished_at=None,
+                      message=message)
+            return True
 
     def pending_rows(self):
-        self._check()
+        self._check("pending_rows")
         with self.lock:
             return [r for _, r in sorted(self.rows.items()) if r.status == "pending"]
 
+    def decisions_for(self, parent_id):
+        self._check("decisions_for")
+        with self.lock:
+            return [r for _, r in sorted(self.rows.items())
+                    if r.kind == "override_decision" and r.parent_id == parent_id]
+
+    def published_at(self, portfolio_id, date):
+        self._check("published_at")
+        return self.published.get((portfolio_id, date))
+
     def newest_pending_publish(self, portfolio_id, date):
+        self._check("newest_pending_publish")
         with self.lock:
             rows = [r for r in self.rows.values() if r.kind == "publish" and r.status == "pending"
                     and r.portfolio_id == portfolio_id and r.date == date]
             return max(rows, key=lambda r: r.id) if rows else None
 
     def books(self, portfolio_id, date):
+        self._check("books")
         return {k: dict(v) for k, v in self.book_data.items()}
 
 
@@ -143,7 +185,7 @@ class FakeRunner:
             return RunResult(rc=rc, stdout="ok\n", stderr="")
         return behave
 
-    def run(self, argv, cwd, timeout):
+    def run(self, argv, cwd, timeout, copy_to=None):
         with self.lock:
             self.calls.append((list(argv), cwd, timeout))
         return self.behave(list(argv))
