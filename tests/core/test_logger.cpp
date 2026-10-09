@@ -13,6 +13,9 @@ protected:
     void SetUp() override {
         // Reset logger first to close any existing file handles
         Logger::reset_for_tests();
+        // The component prefix is the calling thread's, and reset_for_tests does not clear it: in
+        // one process an earlier suite's register_component would prefix every line asserted here.
+        Logger::register_component("");
 
         // Redirect cout to capture console output
         original_cout = std::cout.rdbuf();
