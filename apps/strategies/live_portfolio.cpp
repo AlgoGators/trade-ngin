@@ -86,14 +86,17 @@ int main(int argc, char* argv[]) {
                 send_email = true;
                 continue;
             }
-            if (arg == "--desk" || arg == "--override" || arg == "--publish") {
+            if (arg == "--desk" || arg == "--override" || arg == "--publish" ||
+                arg == "--finalize-system") {
                 if (qt_mode != qt::Mode::MODEL) {
-                    std::cerr << "Only one of --desk, --override and --publish" << std::endl;
+                    std::cerr << "Only one of --desk, --override, --publish and --finalize-system"
+                              << std::endl;
                     return 1;
                 }
-                qt_mode = arg == "--desk" ? qt::Mode::DESK
-                                          : (arg == "--override" ? qt::Mode::OVERRIDE
-                                                                 : qt::Mode::PUBLISH);
+                qt_mode = arg == "--desk"       ? qt::Mode::DESK
+                          : arg == "--override" ? qt::Mode::OVERRIDE
+                          : arg == "--publish"  ? qt::Mode::PUBLISH
+                                                : qt::Mode::FINALIZE_SYSTEM;
                 continue;
             }
             if (arg == "--portfolio-config" || arg == "--audit-id" || arg == "--date") {
@@ -183,7 +186,16 @@ int main(int argc, char* argv[]) {
         if (!use_override_date) {
             send_email = true;
         }
-        if (qt_mode != qt::Mode::MODEL) {
+        if (qt_mode == qt::Mode::FINALIZE_SYSTEM) {
+            // Ruling 17: the model run of a desk-editable portfolio runs this child first, so the
+            // system book's Day T-1 rows are finalised from system's own rows. It writes nothing
+            // else and never e-mails.
+            if (!use_override_date) {
+                std::cerr << "--finalize-system needs --date YYYY-MM-DD" << std::endl;
+                return 1;
+            }
+            send_email = false;
+        } else if (qt_mode != qt::Mode::MODEL) {
             if (!use_override_date || qt_audit_id <= 0) {
                 std::cerr << "--" << qt::mode_name(qt_mode)
                           << " needs --date YYYY-MM-DD and --audit-id N" << std::endl;
@@ -459,7 +471,7 @@ int main(int argc, char* argv[]) {
             }
             return kQtRefusedExitCode;
         };
-        if (qt_mode != qt::Mode::MODEL) {
+        if (qt_mode != qt::Mode::MODEL && qt_mode != qt::Mode::FINALIZE_SYSTEM) {
             auto row = qt::load_audit_row(*db, qt_audit_id);
             if (row.is_error()) {
                 ERROR("QT: " + std::string(row.error()->what()));
@@ -497,8 +509,9 @@ int main(int argc, char* argv[]) {
             }
         }
         std::string qt_read_book = "system";
-        const std::string qt_write_book = qt_mode == qt::Mode::MODEL ? "system" : "qt";
-        if (qt_desk_editable) {
+        const std::string qt_write_book =
+            qt_mode == qt::Mode::MODEL || qt_mode == qt::Mode::FINALIZE_SYSTEM ? "system" : "qt";
+        if (qt_desk_editable && qt_mode != qt::Mode::FINALIZE_SYSTEM) {
             auto had_qt = qt::book_has_day_before(*db, portfolio_id, combined_strategy_id, "qt",
                                                   qt_date);
             if (had_qt.is_error()) {
@@ -550,18 +563,39 @@ int main(int argc, char* argv[]) {
         // What each mode writes: the model run every book row it always wrote; a desk or override
         // run only Day T of qt (the model run finalised Day T-1); publish no book row at all.
         const bool qt_model_records = qt_mode == qt::Mode::MODEL;
-        const bool qt_write_t1 = qt_mode == qt::Mode::MODEL;
-        const bool qt_write_day = qt_mode != qt::Mode::PUBLISH;
+        const bool qt_write_t1 =
+            qt_mode == qt::Mode::MODEL || qt_mode == qt::Mode::FINALIZE_SYSTEM;
+        const bool qt_write_day =
+            qt_mode != qt::Mode::PUBLISH && qt_mode != qt::Mode::FINALIZE_SYSTEM;
         const bool qt_export_csv = qt_mode == qt::Mode::MODEL || qt_mode == qt::Mode::PUBLISH;
         const std::string qt_read_sql = " AND portfolio_type = " + qt::sql_literal(qt_read_book);
         INFO("QT_BOOKS mode=" + qt::mode_name(qt_mode) + " portfolio=" + portfolio_id +
              " desk_editable=" + (qt_desk_editable ? "true" : "false") + " read=" + qt_read_book +
              " write=" + (qt_write_day ? qt_write_book : std::string("none")));
+        // Ruling 15: on a desk-editable portfolio the daily e-mail is publish's, never the model's.
+        if (qt_desk_editable && qt_mode == qt::Mode::MODEL) send_email = false;
+        // Ruling 17: each book is finalised into its own rows. The day starts from qt, so this run
+        // finalises qt's Day T-1; the system book's Day T-1 is finalised from system's own rows by
+        // the same binary in --finalize-system (Day T-1 rows of system only), run first.
+        bool qt_finalize_failed = false;
+        if (qt_mode == qt::Mode::MODEL && qt_read_book == "qt") {
+            const int rc = qt::run_finalize_system(qt_portfolio_dir, qt_date);
+            if (rc != 0) {
+                ERROR("QT_ALERT " + portfolio_id + ": the system book's Day T-1 (" + qt_prev_date +
+                      ") could not be finalised (--finalize-system exit " + std::to_string(rc) +
+                      "); the qt day runs, and this run exits 1");
+                qt_finalize_failed = true;
+            } else {
+                INFO("QT_FINALIZE_SYSTEM " + portfolio_id + " " + qt_prev_date +
+                     ": the system book's Day T-1 rows are finalised from system's own rows");
+            }
+        }
 
         // The desk's book for --desk / --override / --publish (ruling 14: no seeded proposal,
         // no desk run).
         std::map<std::string, double> qt_desk_totals;
         SleeveQuantities qt_publish_book;
+        std::set<std::string> qt_zero_keep;  // "sleeve|symbol" kept at 0 in qt (ruling 16)
         if (qt_mode == qt::Mode::DESK || qt_mode == qt::Mode::OVERRIDE) {
             if (qt_mode == qt::Mode::OVERRIDE) {
                 auto approved = qt::check_override_decision(*db, *qt_audit);
@@ -585,6 +619,24 @@ int main(int argc, char* argv[]) {
                                  ": the day's model run has not seeded the desk's book (ruling 14)");
             }
             qt_desk_totals = qt::book_totals(proposal.value());
+            // Ruling 16: a close is stored as a zero-quantity row. Every (sleeve, symbol) of the
+            // desk's proposal or of yesterday's book keeps its qt row at 0 when the stored
+            // quantity is 0.
+            for (const auto& [sleeve, rows] : proposal.value()) {
+                for (const auto& [symbol, quantity] : rows) {
+                    (void)quantity;
+                    qt_zero_keep.insert(sleeve + "|" + symbol);
+                }
+            }
+            auto yesterday = qt::load_book(*db, portfolio_id, combined_strategy_id, qt_read_book,
+                                           qt_prev_date);
+            if (yesterday.is_ok()) {
+                for (const auto& [sleeve, rows] : yesterday.value()) {
+                    for (const auto& [symbol, quantity] : rows) {
+                        if (quantity != 0.0) qt_zero_keep.insert(sleeve + "|" + symbol);
+                    }
+                }
+            }
         } else if (qt_mode == qt::Mode::PUBLISH) {
             auto has_qt = qt::book_has_day(*db, portfolio_id, combined_strategy_id, "qt", qt_date);
             if (has_qt.is_error()) {
@@ -2069,7 +2121,8 @@ int main(int argc, char* argv[]) {
             }
             // T-7b-3 R-3: on a sizing hold the PortfolioManager is not run, so every strategy
             // keeps the seeded T-1 book above (no rebalance, no order, no signal stored today).
-            if (qt_mode != qt::Mode::MODEL) {
+            if (qt_mode == qt::Mode::DESK || qt_mode == qt::Mode::OVERRIDE ||
+                qt_mode == qt::Mode::PUBLISH) {
                 // QT plan E5 (rulings 6 to 8): the pass runs on the desk's totals; the split back
                 // to the sleeves follows plan section 3b, Q2. Publish re-books the stored qt book
                 // exactly, split as it is stored, so the e-mail is built from that book.
@@ -3191,13 +3244,30 @@ int main(int argc, char* argv[]) {
 
             INFO("DEBUG PHASE 4: Strategy '" + strategy_name + "' has " +
                  std::to_string(positions_map.size()) + " positions");
+            // Ruling 16: a closed (sleeve, symbol) the PM no longer lists is still stored at 0.
+            for (const auto& key : qt_zero_keep) {
+                const auto bar = key.find('|');
+                if (key.substr(0, bar) != strategy_name) continue;
+                const std::string symbol = key.substr(bar + 1);
+                if (positions_map.count(symbol) != 0) continue;
+                Position zero;
+                zero.symbol = symbol;
+                zero.quantity = Decimal(0.0);
+                zero.last_update = now;
+                zero.realized_pnl = Decimal(0.0);
+                zero.unrealized_pnl = Decimal(0.0);
+                zero.average_price = Decimal(previous_day_close_prices.count(symbol) != 0
+                                                 ? previous_day_close_prices[symbol]
+                                                 : 0.0);
+                strategy_positions_vec.push_back(zero);
+            }
 
             for (const auto& [symbol, pos] : positions_map) {
                 // Only save positions with non-zero quantity
                 // Zero-quantity positions (closed positions) should NOT be stored
                 bool has_quantity = std::abs(pos.quantity.as_double()) > 1e-10;
 
-                if (!has_quantity) {
+                if (!has_quantity && qt_zero_keep.count(strategy_name + "|" + symbol) == 0) {
                     DEBUG("Skipping zero-quantity position: " + symbol);
                     continue;
                 }
@@ -3258,6 +3328,10 @@ int main(int argc, char* argv[]) {
                     }
                 }
 
+                if (!has_quantity && previous_day_close_prices.count(symbol) != 0) {
+                    // Ruling 16: the close's row is priced at the latest known price.
+                    validated_position.average_price = Decimal(previous_day_close_prices[symbol]);
+                }
                 strategy_positions_vec.push_back(validated_position);
 
                 INFO("DEBUG PHASE 4: " + strategy_name + " - " + symbol + " qty=" +
@@ -4676,6 +4750,36 @@ int main(int argc, char* argv[]) {
                 } else {
                     INFO("QT_SEED " + portfolio_id + " " + qt_date +
                          ": qt_proposal seeded and qt written from system (book_source model)");
+                    // T-1 a weekend day or a holiday on the runner's calendar, or no symbol
+                    // printed on T-1 (the whole book carried).
+                    const std::time_t qt_t1_time =
+                        std::chrono::system_clock::to_time_t(now - std::chrono::hours(24));
+                    const int qt_t1_wday = std::gmtime(&qt_t1_time)->tm_wday;
+                    const bool qt_non_trading_day = skip_strategy_processing || qt_t1_wday == 0 ||
+                                                    qt_t1_wday == 6 || is_yesterday_holiday;
+                    if (qt_non_trading_day) {
+                        // Ruling 29 on a non-trading day: nobody is at the desk, so the day is
+                        // published by the model run itself, with no e-mail (the books are the
+                        // model's: carried, or moved only by a symbol that prints on weekends).
+                        // Only trading days wait for the desk's publish.
+                        auto already = qt::published_at(*db, portfolio_id, combined_strategy_id,
+                                                        qt_date);
+                        auto published =
+                            already.is_ok() && !already.value().empty()
+                                ? Result<void>()
+                                : qt::set_published(*db, portfolio_id, combined_strategy_id,
+                                                    qt_date, "system:non-trading-day");
+                        if (already.is_error() || published.is_error()) {
+                            ERROR("QT_SEED the non-trading day " + qt_date +
+                                  " could not be published: " +
+                                  std::string(already.is_error() ? already.error()->what()
+                                                                 : published.error()->what()));
+                            qt_failed = true;
+                        } else {
+                            INFO("QT_PUBLISH " + portfolio_id + " " + qt_date +
+                                 " published by system:non-trading-day (no e-mail)");
+                        }
+                    }
                 }
             }
         }
@@ -5226,6 +5330,10 @@ int main(int argc, char* argv[]) {
         }
         if (qt_failed) {
             ERROR("QT_SEED the desk's books for " + qt_date + " were not written; exiting 1");
+            return 1;
+        }
+        if (qt_finalize_failed) {
+            ERROR("QT_ALERT the system book's Day T-1 was not finalised; exiting 1");
             return 1;
         }
 

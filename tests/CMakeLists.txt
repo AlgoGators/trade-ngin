@@ -65,6 +65,7 @@ set(TEST_SOURCES
     optimization/test_one_pass_attribute.cpp
     portfolio/test_one_pass_book.cpp
     portfolio/test_desk_book.cpp
+    live/test_qt_runner_modes.cpp
     portfolio/test_loop_fixups.cpp
     portfolio/test_worked_days.cpp
     portfolio/test_portfolio_config_keys.cpp

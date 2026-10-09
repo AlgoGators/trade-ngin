@@ -2302,6 +2302,10 @@ PortfolioManager::OnePassBuild PortfolioManager::build_one_pass_inputs(
                 const auto asked = desk->totals.find(symbols[i]);
                 in.target[i] = asked == desk->totals.end() ? 0.0 : asked->second;
                 in.signalling[i] = 1;
+                // Ruling 6: no strategy forecast enters the desk's pass; the band is off and the
+                // sign close follows the desk's target.
+                in.first_forecast[i] = in.target[i];
+                in.first_signalling[i] = 1;
             }
         }
 

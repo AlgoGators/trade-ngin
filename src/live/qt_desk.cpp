@@ -6,8 +6,12 @@
 #include <algorithm>
 #include <cctype>
 #include <cmath>
+#include <cstdio>
 #include <cstdlib>
 #include <fstream>
+
+#include <sys/wait.h>
+#include <unistd.h>
 
 namespace trade_ngin {
 namespace qt {
@@ -97,8 +101,27 @@ std::string mode_name(Mode mode) {
         case Mode::DESK: return "desk";
         case Mode::OVERRIDE: return "override";
         case Mode::PUBLISH: return "publish";
+        case Mode::FINALIZE_SYSTEM: return "finalize-system";
     }
     return "model";
+}
+
+int run_finalize_system(const std::string& portfolio_dir, const std::string& date) {
+    std::vector<std::string> args = {"live_portfolio", "--finalize-system", "--portfolio-config",
+                                     portfolio_dir, "--date", date};
+    std::vector<char*> argv;
+    for (auto& a : args) argv.push_back(a.data());
+    argv.push_back(nullptr);
+    std::fflush(nullptr);
+    const pid_t pid = fork();
+    if (pid < 0) return -1;
+    if (pid == 0) {
+        execv("/proc/self/exe", argv.data());
+        _exit(127);
+    }
+    int status = 0;
+    if (waitpid(pid, &status, 0) < 0) return -1;
+    return WIFEXITED(status) ? WEXITSTATUS(status) : -1;
 }
 
 std::string sql_literal(const std::string& text) {

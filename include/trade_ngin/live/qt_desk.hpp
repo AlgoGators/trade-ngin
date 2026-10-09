@@ -23,9 +23,13 @@ namespace trade_ngin {
 namespace qt {
 
 /// The runner's mode (contract section 6). MODEL is the daily model run.
-enum class Mode { MODEL, DESK, OVERRIDE, PUBLISH };
+enum class Mode { MODEL, DESK, OVERRIDE, PUBLISH, FINALIZE_SYSTEM };
 
 std::string mode_name(Mode mode);
+
+/// Ruling 17: runs this binary (/proc/self/exe) with --finalize-system --portfolio-config <dir>
+/// --date <date> and returns its exit status (-1: it could not be started).
+int run_finalize_system(const std::string& portfolio_dir, const std::string& date);
 
 /// `"text"` as a SQL string literal (quotes doubled).
 std::string sql_literal(const std::string& text);
