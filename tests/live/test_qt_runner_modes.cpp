@@ -346,6 +346,8 @@ TEST(QtCutoff, TheSendIsForAPublishedDayAndOnce) {
         EXPECT_LT(at(src, "return 0;", sent), at(src, "auto book = qt::load_book(", block)) << runner;
         EXPECT_NE(at(src, "qt_mode == qt::Mode::SEND && !qt_desk_editable)"), npos)
             << runner << ": the model twin's send reads its system book";
+        // the system book's live_results row has book_source NULL: never read with value()
+        EXPECT_EQ(at(src, "stored_row.value(\"book_source\""), npos) << runner;
     }
 }
 

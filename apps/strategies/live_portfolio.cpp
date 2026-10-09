@@ -4952,7 +4952,9 @@ int main(int argc, char* argv[]) {
                  " day of " + qt_date +
                  ": " + std::to_string(positions.size()) + " symbol(s), " +
                  std::to_string(stored_fill_count) + " execution(s), book_source " +
-                 stored_row.value("book_source", std::string("?")));
+                 (stored_row.contains("book_source") && stored_row.at("book_source").is_string()
+                      ? stored_row.at("book_source").get<std::string>()
+                      : std::string("none (the system book)")));
         }
         auto current_export_result =
             qt_export_csv ? export_positions_file() : Result<std::string>(std::string());
