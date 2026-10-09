@@ -129,6 +129,9 @@ Result<void> set_published(PostgresDatabase& db, const std::string& portfolio_id
 nlohmann::json desk_result_json(const std::vector<DeskSymbolOutcome>& outcomes,
                                 const std::string& book_source);
 
+/// The desk book's positions CSV without the model's columns (forecast and after; ruling 15).
+Result<void> strip_model_columns(const std::string& csv_path);
+
 /// True when the e-mail block cannot send: QT_EMAIL_DISABLED=1, or no username/password, or a
 /// template placeholder ("YOUR_...").
 bool email_disabled(const std::string& username, const std::string& password);

@@ -349,6 +349,9 @@ Result<void> copy_book_day(PostgresDatabase& db, const std::string& portfolio_id
                 has_book = true;
             } else if (name == "moved_by") {
                 value = "NULL";
+            } else if (name == "order_id" && table.name == "executions") {
+                // the order id carries the book (master document, final schema)
+                value = sql_literal(to_book + "-") + " || " + quoted;
             } else if (name == "book_source") {
                 value = to_book == "qt" && !book_source.empty() ? sql_literal(book_source) : "NULL";
             }
@@ -472,6 +475,44 @@ nlohmann::json desk_result_json(const std::vector<DeskSymbolOutcome>& outcomes,
                            {"moved_by", o.moved_by}});
     }
     return {{"symbols", symbols}, {"book_source", book_source}};
+}
+
+Result<void> strip_model_columns(const std::string& csv_path) {
+    std::ifstream in(csv_path);
+    if (!in) {
+        return make_error<void>(ErrorCode::FILE_NOT_FOUND, "cannot read " + csv_path, "QtDesk");
+    }
+    std::vector<std::string> lines;
+    std::string line;
+    std::size_t keep = std::string::npos;  // the number of fields kept, once the header is seen
+    while (std::getline(in, line)) {
+        if (!line.empty() && line[0] != '#') {
+            std::vector<std::string> fields;
+            std::size_t start = 0;
+            while (true) {
+                const std::size_t comma = line.find(',', start);
+                fields.push_back(line.substr(start, comma - start));
+                if (comma == std::string::npos) break;
+                start = comma + 1;
+            }
+            if (keep == std::string::npos) {
+                const auto f = std::find(fields.begin(), fields.end(), "forecast");
+                if (f != fields.end()) keep = static_cast<std::size_t>(f - fields.begin());
+            }
+            if (keep != std::string::npos && fields.size() > keep) {
+                fields.resize(keep);
+                line.clear();
+                for (std::size_t i = 0; i < fields.size(); ++i) {
+                    line += (i == 0 ? "" : ",") + fields[i];
+                }
+            }
+        }
+        lines.push_back(line);
+    }
+    in.close();
+    std::ofstream out(csv_path, std::ios::trunc);
+    for (const auto& l : lines) out << l << "\n";
+    return Result<void>();
 }
 
 bool email_disabled(const std::string& username, const std::string& password) {

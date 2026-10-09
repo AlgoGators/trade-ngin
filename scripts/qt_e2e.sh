@@ -7,7 +7,7 @@
 #
 # Steps: model run -> desk save (qt_proposal upsert + 'save' row) -> RunDesk -> qt differs from
 # system for the edited symbol, moved_by set, book_source desk -> override request (token row,
-# e-mail sent or kept in the row) -> a self-approval is refused -> decision by the approver ->
+# e-mail sent or kept in the row; driven by the 60 s re-drive sweep, no gRPC call) -> a self-approval is refused -> decision by the approver ->
 # qt == qt_proposal, book_source override -> publish -> published_by/at set.
 #
 # position_overrides rows are never deleted, so each run takes the latest date (on or before
@@ -87,7 +87,7 @@ check "$(q "SELECT book_source FROM trading.live_results WHERE portfolio_id = '$
 # ---- 3. override request
 echo "== 3. override request"
 REQ=$(q "INSERT INTO trading.position_overrides (portfolio_id, date, kind, requested_by, reason) VALUES ('$PID', '$D', 'override_request', '$REQUESTER', 'e2e: trade the desk book exactly') RETURNING id")
-echo "   RequestOverride -> $(call RequestOverride "{\"portfolio_id\":\"$PID\",\"date\":\"$D\",\"audit_id\":$REQ,\"requested_by\":\"$REQUESTER\",\"reason\":\"e2e\"}")"
+echo "   no RequestOverride call: the row is picked up by the desk-agent's 60 s re-drive sweep alone"
 check "$(poll "$REQ")" done "override_request row $REQ done ($(row "$REQ"))"
 check "$(q "SELECT token_hash IS NOT NULL AND token_expires_at BETWEEN now() + interval '47 hours' AND now() + interval '49 hours' FROM trading.position_overrides WHERE id = $REQ")" t "token_hash stored with a 48 h expiry"
 echo "   result: $(q "SELECT (result - 'email')::text || CASE WHEN result ? 'email' THEN ' (+ email kept in the row: subject ' || (result->'email'->>'subject') || ')' ELSE '' END FROM trading.position_overrides WHERE id = $REQ")"
@@ -116,7 +116,7 @@ check "$(q "SELECT (risk_detail->'desk'->>'report_only') FROM trading.live_resul
 # ---- 5. publish
 echo "== 5. publish"
 PUB=$(q "INSERT INTO trading.position_overrides (portfolio_id, date, kind, requested_by) VALUES ('$PID', '$D', 'publish', '$REQUESTER') RETURNING id")
-echo "   Publish -> $(call Publish "{\"portfolio_id\":\"$PID\",\"date\":\"$D\",\"published_by\":\"$REQUESTER\",\"audit_id\":$PUB}")"
+echo "   Publish (no audit_id, found by portfolio and date as AlgoLens calls it) -> $(call Publish "{\"portfolio_id\":\"$PID\",\"date\":\"$D\",\"published_by\":\"$REQUESTER\"}")"
 check "$(poll "$PUB")" done "publish row $PUB done ($(row "$PUB"))"
 check "$(q "SELECT published_by || ' ' || (published_at IS NOT NULL) FROM trading.live_run_metadata WHERE portfolio_id = '$PID' AND date = '$D'")" "$REQUESTER true" "live_run_metadata.published_by/at set"
 echo "   status: $(call GetRunStatus "{\"portfolio_id\":\"$PID\",\"date\":\"$D\"}")"

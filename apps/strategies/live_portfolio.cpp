@@ -523,6 +523,27 @@ int main(int argc, char* argv[]) {
                     }
                     return qt_refuse(why);
                 }
+                if (qt_mode == qt::Mode::MODEL) {
+                    // Ruling 29 and the master document's day: tomorrow's model run starts from
+                    // the PUBLISHED book. A missed, failed or unpublished earlier day is caught up
+                    // (published) first; until then the run refuses, nothing is sent, and the
+                    // refusal is the alert (QT_ALERT, exit 1, the cron log).
+                    auto unpublished = qt::earliest_unpublished_before(*db, portfolio_id,
+                                                                       combined_strategy_id, qt_date);
+                    if (unpublished.is_error()) {
+                        ERROR("QT: " + std::string(unpublished.error()->what()));
+                        return 1;
+                    }
+                    if (!unpublished.value().empty()) {
+                        const std::string why = "QT_ALERT " + portfolio_id + ": " +
+                                                unpublished.value() +
+                                                " is not published; publish it (catch the day up) "
+                                                "before the model run of " + qt_date + " (ruling 29)";
+                        ERROR(why);
+                        std::cerr << why << std::endl;
+                        return 1;
+                    }
+                }
                 qt_read_book = "qt";
             }
         }
@@ -1150,7 +1171,8 @@ int main(int argc, char* argv[]) {
 
         // Create Phase 4 CSV exporter with portfolio-specific directory
         INFO("Creating CSVExporter for Phase 4");
-        std::string csv_output_dir = "apps/strategies/results/" + portfolio_id;
+        std::string csv_output_dir = "apps/strategies/results/" + portfolio_id +
+                                     (qt_mode == qt::Mode::PUBLISH ? "/qt" : "");  // the model CSV is never overwritten
         std::filesystem::create_directories(csv_output_dir);
         INFO("CSV output directory: " + csv_output_dir);
         auto csv_exporter = std::make_unique<CSVExporter>(csv_output_dir);
@@ -2404,6 +2426,41 @@ int main(int argc, char* argv[]) {
             if (!book_holds.empty()) {
                 rebuild_combined_positions(positions, strategy_positions_map);
             }
+            // Ruling 21: a symbol with no model data is held and counted in risk until its data
+            // arrives; if the desk closes it, it is closed at its latest known price.
+            if (qt_mode == qt::Mode::DESK || qt_mode == qt::Mode::OVERRIDE) {
+                bool closed_any = false;
+                for (const auto& hold : book_holds) {
+                    const auto asked = qt_desk_totals.find(hold.symbol);
+                    if (asked == qt_desk_totals.end() || asked->second != 0.0 ||
+                        hold.held_quantity == 0.0) {
+                        continue;
+                    }
+                    const auto last = latest_bars_per_symbol.find(hold.symbol);
+                    if (last == latest_bars_per_symbol.end()) {
+                        WARN("QT_DESK_CLOSE " + hold.symbol +
+                             ": no known price at all; held at " +
+                             std::to_string(hold.held_quantity));
+                        continue;
+                    }
+                    const double price = static_cast<double>(last->second.close);
+                    auto& row = strategy_positions_map[hold.strategy_name][hold.symbol];
+                    row.symbol = hold.symbol;
+                    row.quantity = Decimal(0.0);
+                    if (previous_day_close_prices.count(hold.symbol) == 0) {
+                        previous_day_close_prices[hold.symbol] = price;
+                    }
+                    if (day_t_mark_prices.count(hold.symbol) == 0) {
+                        day_t_mark_prices[hold.symbol] = price;
+                    }
+                    INFO("QT_DESK_CLOSE " + hold.strategy_name + " " + hold.symbol + " " +
+                         std::to_string(hold.held_quantity) + " -> 0 at its latest known price " +
+                         std::to_string(price) + " (" +
+                         core::format_utc_date(last->second.timestamp) + ", ruling 21)");
+                    closed_any = true;
+                }
+                if (closed_any) rebuild_combined_positions(positions, strategy_positions_map);
+            }
         }
 
         // Verify we have prices for all required symbols
@@ -2839,6 +2896,17 @@ int main(int argc, char* argv[]) {
              std::to_string(total_executions));
         INFO("PHASE 4: Total daily transaction costs: $" +
              std::to_string(total_daily_transaction_costs));
+
+        // Master document, final schema: the order id carries the book. A system order id is
+        // unchanged; every other book's ids are prefixed with the book.
+        if (qt_write_book != "system") {
+            for (auto& [sleeve, executions] : all_strategy_executions) {
+                (void)sleeve;
+                for (auto& execution : executions) {
+                    execution.order_id = qt_write_book + "-" + execution.order_id;
+                }
+            }
+        }
 
         // Section 6.5: the re-run sweep by type. Every sleeve's ROLL rows dated today are deleted
         // before this run's legs are stored, so a re-run that no longer rolls leaves none.
@@ -4512,6 +4580,14 @@ int main(int argc, char* argv[]) {
         auto current_export_result =
             qt_export_csv ? export_positions_file() : Result<std::string>(std::string());
 
+        if (qt_mode == qt::Mode::PUBLISH && current_export_result.is_ok() &&
+            !current_export_result.value().empty()) {
+            // The desk's book is not the model's: its CSV leaves out the model's columns.
+            if (auto stripped = qt::strip_model_columns(current_export_result.value());
+                stripped.is_error()) {
+                ERROR("QT_PUBLISH " + std::string(stripped.error()->what()));
+            }
+        }
         if (!qt_export_csv) {
             INFO("QT: a " + qt::mode_name(qt_mode) + " run writes no CSV (ruling 15)");
         } else if (current_export_result.is_ok()) {
@@ -4606,6 +4682,19 @@ int main(int argc, char* argv[]) {
         if (qt_mode == qt::Mode::DESK || qt_mode == qt::Mode::OVERRIDE) {
             const std::string source = qt_mode == qt::Mode::DESK ? "desk" : "override";
             std::vector<DeskSymbolOutcome> outcomes = portfolio->last_desk_outcomes();
+            for (auto& o : outcomes) {
+                // The stored book is what was given back: the book gate (a non-SESSION symbol is
+                // held) and a ruling-21 close act after the pass.
+                const auto stored = positions.find(o.symbol);
+                const double final_q = stored == positions.end() ? 0.0
+                                                                 : stored->second.quantity.as_double();
+                if (std::abs(final_q - o.given) > 1e-9) {
+                    o.given = final_q;
+                    o.moved_by = std::abs(final_q - o.asked) <= 1e-9 ? "none" : "hold";
+                } else if (qt_mode == qt::Mode::OVERRIDE) {
+                    o.moved_by = std::abs(final_q - o.asked) <= 1e-9 ? "none" : "hold";
+                }
+            }
             if (outcomes.empty()) {
                 // No rebalance ran (a day with no session or a sizing hold): every row is held.
                 std::map<std::string, double> held;
@@ -4621,7 +4710,7 @@ int main(int argc, char* argv[]) {
             std::map<std::string, std::string> moved_by;
             nlohmann::json report = nlohmann::json::array();
             for (const auto& o : outcomes) {
-                moved_by[o.symbol] = qt_mode == qt::Mode::OVERRIDE ? "none" : o.moved_by;
+                moved_by[o.symbol] = o.moved_by;
                 report.push_back({{"symbol", o.symbol},
                                   {"asked", o.asked},
                                   {"given", o.given},
@@ -4662,7 +4751,6 @@ int main(int argc, char* argv[]) {
             nlohmann::json result = qt::desk_result_json(outcomes, source);
             if (qt_mode == qt::Mode::OVERRIDE) {
                 result["approved"] = true;
-                for (auto& row : result["symbols"]) row["moved_by"] = "none";
             }
             std::size_t moved_count = 0;
             for (const auto& o : outcomes) moved_count += std::abs(o.given - o.asked) > 1e-9;
