@@ -43,6 +43,7 @@
 #include "trade_ngin/live/execution_price_resolver.hpp"
 #include "trade_ngin/live/live_pnl_manager.hpp"
 #include "trade_ngin/live/execution_manager.hpp"
+#include "trade_ngin/live/live_settings.hpp"
 #include "trade_ngin/live/margin_manager.hpp"
 #include "trade_ngin/live/csv_exporter.hpp"
 
@@ -211,6 +212,29 @@ int main(int argc, char* argv[]) {
             return 1;
         }
         INFO("Successfully acquired database connection from pool");
+
+        // ========================================
+        // DESK SETTINGS (QT plan E2; rulings 2, 3, 4 and 24): the portfolio's active
+        // trading.strategy_config row, merged over its config files. A lookup that fails or a
+        // row that cannot be applied refuses the run here, before anything is stored, and the
+        // files are never used in its place. No active row is not a failure: the files run
+        // unchanged. The database settings cannot be overridden, so the connection stands.
+        // ========================================
+        LiveSettings live_settings;
+        {
+            auto resolved = resolve_live_settings(
+                "./config", "equity_mr", app_config.portfolio_id,
+                db->get_active_strategy_config(app_config.portfolio_id));
+            if (resolved.is_error()) {
+                const std::string line =
+                    live_settings_refusal_line(app_config.portfolio_id, resolved.error()->what());
+                ERROR(line);
+                std::cerr << line << std::endl;
+                return 1;
+            }
+            live_settings = resolved.value();
+        }
+        app_config = live_settings.config;
 
         // Initialize instrument registry
         INFO("Initializing instrument registry...");
@@ -694,6 +718,23 @@ int main(int argc, char* argv[]) {
                      std::string(metadata_result.error()->what()));
             } else {
                 INFO("Successfully stored live run metadata for date");
+            }
+        }
+
+        // QT plan E2: the settings this run trades on, credential-free, on the day's
+        // live_run_metadata row (settings_used), with the strategy_config version or null.
+        {
+            auto settings_result = db->store_settings_used(now, kEquityStrategyId, portfolio_id,
+                                                           live_settings.settings_used);
+            if (settings_result.is_error()) {
+                ERROR("SETTINGS_USED not recorded for " + portfolio_id + ": " +
+                      std::string(settings_result.error()->what()));
+            } else {
+                INFO("SETTINGS_USED recorded for " + portfolio_id + " (strategy_config version " +
+                     (live_settings.strategy_config_version
+                          ? std::to_string(*live_settings.strategy_config_version)
+                          : std::string("none: config files only")) +
+                     ")");
             }
         }
 
