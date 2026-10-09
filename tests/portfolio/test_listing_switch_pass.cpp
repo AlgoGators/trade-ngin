@@ -13,6 +13,7 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <chrono>
 #include <filesystem>
 #include <fstream>
@@ -388,6 +389,39 @@ TEST_F(ListingSwitchPassTest, ARefusedPassUndoesTheSwitch) {
     EXPECT_EQ(quantity(kMicro), 24.0);
 }
 
+// The same under rule convert, which asks the pass nothing beforehand: the switch is planned, the
+// pass is refused, and the plan is undone from the copies of the held book (no fill, the predecessor
+// still held, the pair not marked switched), then made on the next pass.
+TEST_F(ListingSwitchPassTest, ARefusedPassUndoesAPlannedSwitch) {
+    ListingDates::instance().set(the_pair());
+    ListingDates::instance().set_switch_rule(ListingSwitchRule::kConvert);
+    make_pm();
+    before(3.0);
+    ASSERT_TRUE(rebalance(kBefore).is_ok());
+    listed(24.4);
+    a_->rows["TOTH.v.0"] = row(1000.0, std::numeric_limits<double>::quiet_NaN(), 10.0, true);
+    auto with_other = [&](int d) {
+        std::vector<Bar> bars = {one_pass_bar(kBig, d, 100.0), one_pass_bar(kMicro, d, 100.0),
+                                 one_pass_bar("TOTH.v.0", d, 100.0)};
+        for (const auto& b : bars) {
+            pm_->update_cost_manager_market_data(b.symbol, b.volume, static_cast<double>(b.close),
+                                                 static_cast<double>(b.close));
+        }
+        return pm_->process_market_data(bars, false, one_pass_day(d + 1), nullptr);
+    };
+    ::testing::internal::CaptureStdout();
+    (void)with_other(kListed);  // refused: a target that is not a number
+    const std::string out = ::testing::internal::GetCapturedStdout();
+    EXPECT_NE(out.find("LISTING_SWITCH undone"), std::string::npos) << out;
+    EXPECT_TRUE(switch_fills().empty()) << "no switch fill on a refused day";
+    EXPECT_EQ(quantity(kBig), 2.0);
+    EXPECT_EQ(quantity(kMicro), 0.0);
+    a_->rows["TOTH.v.0"] = row(1000.0, 0.0, 10.0, true);
+    (void)with_other(kListed + 1);
+    EXPECT_EQ(switch_fills(), (std::vector<std::string>{"LC-A-0 TBIG.v.0 -2", "LO-A-0 TMIC.v.0 20"}));
+    EXPECT_EQ(quantity(kBig), 0.0);
+}
+
 // Two pairs switch on one pass (four do on 2019-05-06): each pair's two fills share a number and no
 // two pairs share one; a pair that waits a day takes the next number.
 TEST_F(ListingSwitchPassTest, TwoPairsOnOnePassGetTheirOwnFillNumbers) {
@@ -676,6 +710,22 @@ TEST_F(ListingSwitchTwoSleeveTest, BothSleevesLong) {
     expect_equal_to_one_sleeve(2.0, 24.4, 10.0);
 }
 
+// The BOOK is rounded and then split; the sleeves are not each rounded. 14.4 and 10.4 are a book of
+// round(24.8) = 25, split 15 and 10; each sleeve rounded alone would hold 14 and 10.
+TEST_F(ListingSwitchTwoSleeveTest, TheBookIsRoundedNotEachSleeve) {
+    ListingDates::instance().set(the_pair());
+    make_book(2);
+    hold("A", kBig, 1.0);
+    hold("B", kBig, 1.0);
+    listed_rows(*a_, 14.4, 10.0);
+    listed_rows(*b_, 10.4, 10.0);
+    ASSERT_TRUE(rebalance(kListed).is_ok());
+    EXPECT_EQ(rows(), (std::vector<std::string>{"LC-A-0 TBIG.v.0 -1", "LC-B-0 TBIG.v.0 -1",
+                                                "LO-A-0 TMIC.v.0 15", "LO-B-0 TMIC.v.0 10"}));
+    EXPECT_EQ(account(kMicro).first, 25.0);
+    expect_equal_to_one_sleeve(2.0, 24.8, 10.0);
+}
+
 // (ii) The sleeves opposed and the book net long: the account sells the NET 1 and buys the net 14;
 // A is credited 20 long and B 6 short (the opposed split of the deviation 14 - 14.4).
 TEST_F(ListingSwitchTwoSleeveTest, OpposedSleevesNetLong) {
@@ -726,6 +776,39 @@ TEST_F(ListingSwitchTwoSleeveTest, OpposedSleevesNetZeroCrossAtNoCost) {
     EXPECT_EQ(account(kMicro).first, 4.0);
     EXPECT_NEAR(account(kMicro).second, cost_of(kMicro, 4.0), 1e-6);
     expect_equal_to_one_sleeve(0.0, 4.0, 10.0);
+}
+
+// Rule carry_to_target on the same flat book: the listed contract is left to the pass (no LO- row),
+// and the sleeves' opposed predecessor legs are still closed against each other at no cost; neither
+// sleeve is left holding a contract that no longer trades.
+TEST_F(ListingSwitchTwoSleeveTest, CarryToTargetOnAFlatBookStillClosesTheSleevesOpposedLegs) {
+    ListingDates::instance().set(the_pair());
+    ListingDates::instance().set_switch_rule(ListingSwitchRule::kCarryToTarget);
+    make_book(2);
+    hold("A", kBig, 1.0);
+    hold("B", kBig, -1.0);
+    listed_rows(*a_, 13.0, 10.0);
+    listed_rows(*b_, -9.0, -10.0);
+    ASSERT_TRUE(rebalance(kListed).is_ok());
+    std::vector<std::string> switch_ids;
+    for (const auto& [sid, execs] : pm_->get_strategy_executions()) {
+        for (const auto& e : execs) {
+            if (e.exec_id.rfind("LO-", 0) == 0) ADD_FAILURE() << "the listed contract is the pass's: " << e.exec_id;
+            if (e.exec_id.rfind("LC-", 0) != 0) continue;
+            switch_ids.push_back(e.exec_id);
+            EXPECT_EQ(e.symbol, kBig);
+            EXPECT_GT(static_cast<double>(e.total_transaction_costs), 0.0);
+            EXPECT_EQ(e.netting_adjustment, e.total_transaction_costs) << sid << ": a full cross";
+        }
+    }
+    std::sort(switch_ids.begin(), switch_ids.end());
+    EXPECT_EQ(switch_ids, (std::vector<std::string>{"LC-A-0", "LC-B-0"}));
+    EXPECT_EQ(account(kBig).first, 0.0);
+    EXPECT_NEAR(account(kBig).second, 0.0, 1e-9);
+    EXPECT_EQ(held("A", kBig), 0.0);
+    EXPECT_EQ(held("B", kBig), 0.0);
+    EXPECT_EQ(held("A", kMicro) + held("B", kMicro), account(kMicro).first)
+        << "the listed contract is whatever the pass itself did with it";
 }
 
 // (iv) One sleeve publishing, the other not (in warm-up, or stopped): a sleeve with no contribution
@@ -800,8 +883,15 @@ TEST_F(ListingSwitchTwoSleeveTest, TheSlowRuleOnTheFirstSleeveOnlyAndTheBandOnTh
 // spread and impact dollars scale with its own contract size.
 TEST_F(ListingSwitchPassTest, EachSwitchFillIsCostedOnItsOwnContractsRow) {
     auto& registry = InstrumentRegistry::instance();
-    const auto saved = registry.instruments_;
-    const bool saved_init = registry.initialized_;
+    struct Restore {  // the registry is one object for the whole suite: put back however the test ends
+        InstrumentRegistry& registry;
+        decltype(registry.instruments_) instruments = registry.instruments_;
+        bool initialized = registry.initialized_;
+        ~Restore() {
+            registry.instruments_ = instruments;
+            registry.initialized_ = initialized;
+        }
+    } restore{registry};
     registry.instruments_.clear();
     auto add = [&](const std::string& root, double multiplier, double fee) {
         FuturesSpec spec;
@@ -846,6 +936,4 @@ TEST_F(ListingSwitchPassTest, EachSwitchFillIsCostedOnItsOwnContractsRow) {
                        own_exit.total_transaction_costs),
               1.0);
 
-    registry.instruments_ = saved;
-    registry.initialized_ = saved_init;
 }

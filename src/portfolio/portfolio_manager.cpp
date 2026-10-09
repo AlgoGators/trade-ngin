@@ -2402,31 +2402,38 @@ Result<void> PortfolioManager::rebalance_one_pass(
                 rule == ListingSwitchRule::kOpenAtTarget || rule == ListingSwitchRule::kCarryToTarget;
             if (target_rule && std::any_of(due.begin(), due.end(),
                                            [](const DueSwitch& d) { return !d.in_band; })) {
-                one_pass::DayInputs probe = in;
-                for (const auto& d : due) {
-                    if (d.in_band) probe.held[d.i_to] += d.c.ratio * probe.held[d.i_from];
-                    probe.held[d.i_from] = 0.0;
-                }
-                one_pass::DayResult dry;
-                std::string dry_refusal;
-                try {
-                    dry = one_pass::rebalance(probe);
-                    dry_refusal = dry.refusal;
-                } catch (const std::exception& e) {
-                    dry_refusal = e.what();
-                }
-                std::vector<DueSwitch> kept;
-                for (const auto& d : due) {
-                    // a pass that cannot be run, or a listed contract the pass would not treat as
-                    // a free row, makes no switch today
-                    if (!dry_refusal.empty() || (!d.in_band && !dry.free[d.i_to])) {
-                        wait(d.i_from, d.i_to);
-                        continue;
+                // A pair the dry run sends to wait stays held in the real pass, so the pass is
+                // run again without it: the pairs that switch read the m of the very book the
+                // real pass below is given.
+                for (bool settled = false; !settled && !due.empty();) {
+                    one_pass::DayInputs probe = in;
+                    for (const auto& d : due) {
+                        if (d.in_band) probe.held[d.i_to] += d.c.ratio * probe.held[d.i_from];
+                        probe.held[d.i_from] = 0.0;
                     }
-                    scaled_target[d.i_to] = dry.scaled_target[d.i_to];
-                    kept.push_back(d);
+                    one_pass::DayResult dry;
+                    std::string dry_refusal;
+                    try {
+                        dry = one_pass::rebalance(probe);
+                        dry_refusal = dry.refusal;
+                    } catch (const std::exception& e) {
+                        dry_refusal = e.what();
+                    }
+                    settled = true;
+                    std::vector<DueSwitch> kept;
+                    for (const auto& d : due) {
+                        // a pass that cannot be run, or a listed contract the pass would not treat
+                        // as a free row, makes no switch today
+                        if (!dry_refusal.empty() || (!d.in_band && !dry.free[d.i_to])) {
+                            wait(d.i_from, d.i_to);
+                            settled = false;
+                            continue;
+                        }
+                        scaled_target[d.i_to] = dry.scaled_target[d.i_to];
+                        kept.push_back(d);
+                    }
+                    due = std::move(kept);
                 }
-                due = std::move(kept);
             }
             for (const auto& d : due) {
                 const ListingConversion& c = d.c;
@@ -2446,8 +2453,15 @@ Result<void> PortfolioManager::rebalance_one_pass(
                 switched_this_pass.push_back(c.to);
                 const bool carried = rule == ListingSwitchRule::kConvert ||
                                      (target_rule && in_band && book_from != 0.0);
-                if (rule == ListingSwitchRule::kCarryToTarget && book_from == 0.0 && !carried) {
-                    continue;  // a pair the book holds none of is left to the pass
+                // carry_to_target on a pair the book holds none of leaves the listed contract to
+                // the pass. Sleeves that hold opposed legs of the predecessor on a flat book still
+                // close them against each other (a full cross, no order and no cost).
+                const bool left_to_pass =
+                    rule == ListingSwitchRule::kCarryToTarget && book_from == 0.0 && !carried;
+                if (left_to_pass) {
+                    bool any_leg = false;
+                    for (size_t s = 0; s < sids.size(); ++s) any_leg |= sleeve_held[s][i_from] != 0.0;
+                    if (!any_leg) continue;
                 }
                 // The split to the sleeves, by the book's own rule: a carried holding is each
                 // sleeve's own leg, ratio for one; otherwise the book's whole number is split in
@@ -2460,6 +2474,8 @@ Result<void> PortfolioManager::rebalance_one_pass(
                     for (size_t s = 0; s < sids.size(); ++s) {
                         sleeve_to[s] = sleeve_held[s][i_to] + c.ratio * sleeve_held[s][i_from];
                     }
+                } else if (left_to_pass) {
+                    for (size_t s = 0; s < sids.size(); ++s) sleeve_to[s] = sleeve_held[s][i_to];
                 } else {
                     double total_contribution = 0.0;
                     for (size_t s = 0; s < sids.size(); ++s) total_contribution += contribution[s][i_to];
