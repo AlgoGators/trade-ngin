@@ -1676,3 +1676,35 @@ TEST_F(ConfigLoaderTest, TheTemplatesMultiplierRowsAreTableThirtySix) {
     EXPECT_EQ(defaults["strategy_defaults"]["fdm"],
               nlohmann::json::array({{1, 1.0}, {2, 1.03}, {3, 1.08}, {4, 1.13}, {5, 1.19}, {6, 1.26}}));
 }
+
+// The shipped CONSERVATIVE template carries the owner's list (HD 2026-10-09): eighteen rules on
+// twelve contracts, each entry the contract's fastest pairs, none on an equity index contract.
+// BASE carries no list.
+TEST_F(ConfigLoaderTest, TheConservativeTemplateCarriesTheTradingRuleRemovals) {
+    using Pairs = std::vector<std::pair<int, int>>;
+    const auto tmpl = tracked_config_template();
+    ASSERT_FALSE(tmpl.empty()) << "config_template/ not found; this test must not skip";
+    auto conservative = ConfigLoader::load(tmpl, "conservative");
+    ASSERT_TRUE(conservative.is_ok()) << (conservative.is_error() ? conservative.error()->what() : "");
+    const AppConfig& c = conservative.value();
+    const Pairs one = {{2, 8}}, two = {{2, 8}, {4, 16}}, three = {{2, 8}, {4, 16}, {8, 32}};
+    const std::map<std::string, Pairs> expected = {
+        {"6L", two}, {"6M", one}, {"GF", one}, {"HE", one}, {"KE", two},   {"LE", one},
+        {"NG", one}, {"ZC", two}, {"ZL", one}, {"ZR", three}, {"ZS", one}, {"ZW", two}};
+    EXPECT_EQ(c.trading_rule_removals, expected);
+    std::size_t rules = 0;
+    for (const auto& [symbol, removed] : c.trading_rule_removals) {
+        rules += removed.size();
+        EXPECT_EQ(std::find(c.equity_slow_rule.symbols.begin(), c.equity_slow_rule.symbols.end(), symbol),
+                  c.equity_slow_rule.symbols.end())
+            << symbol << " is an equity slow rule symbol";
+        for (const auto& contract : c.listing_dates) {
+            EXPECT_NE(symbol, contract.symbol) << "a listing-date pair is on the list";
+            EXPECT_NE(symbol, contract.before) << "a listing-date pair is on the list";
+        }
+    }
+    EXPECT_EQ(rules, 18u);
+    auto base = ConfigLoader::load(tmpl, "base");
+    ASSERT_TRUE(base.is_ok()) << (base.is_error() ? base.error()->what() : "");
+    EXPECT_TRUE(base.value().trading_rule_removals.empty());
+}
