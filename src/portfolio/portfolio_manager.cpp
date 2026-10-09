@@ -2313,10 +2313,13 @@ Result<void> PortfolioManager::rebalance_one_pass(
         };
         std::vector<PendingListingSwitch> pending_switches;
         std::vector<std::string> switched_this_pass;
-        const std::vector<double> held_before_switch = in.held;
-        const std::vector<std::vector<double>> sleeve_held_before_switch = sleeve_held;
+        std::vector<double> held_before_switch;
+        std::vector<std::vector<double>> sleeve_held_before_switch;
         if (is_backtest_ && !is_warmup && scope_refusal.empty() && !sleeve_pinned &&
+            ListingDates::instance().enabled() &&
             ListingDates::instance().switch_rule() != ListingSwitchRule::kCloseReenter) {
+            held_before_switch = in.held;
+            sleeve_held_before_switch = sleeve_held;
             for (const auto& c : ListingDates::instance().conversions_due(data)) {
                 if (listing_switched_.count(c.to)) continue;
                 const auto at_from = std::find(symbols.begin(), symbols.end(), c.from);

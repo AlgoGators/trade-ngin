@@ -14,6 +14,9 @@
 #include <gtest/gtest.h>
 
 #include <chrono>
+#include <filesystem>
+#include <fstream>
+#include <sstream>
 #include <limits>
 #include <memory>
 #include <string>
@@ -488,4 +491,28 @@ TEST_F(ListingSwitchPassTest, AShortEntryIsBoundedByTheCapToo) {
     listed(-150.6, -5.0);
     ASSERT_TRUE(rebalance(kListed).is_ok());
     EXPECT_EQ(switch_fills(), (std::vector<std::string>{"LC-A-0 TBIG.v.0 -2", "LO-A-0 TMIC.v.0 -100"}));
+}
+
+// With no contracts declared the pass makes no copy of the held book for a switch and asks for no
+// conversion: the switch's code is behind the same "contracts are declared" test as the rest. The
+// source is read (the house pattern for a guard that has no value to observe).
+TEST(ListingSwitchWiring, TheSwitchIsBehindTheContractsAreDeclaredTest) {
+    namespace fs = std::filesystem;
+    const fs::path file = fs::path(__FILE__).parent_path().parent_path().parent_path() /
+                          "src/portfolio/portfolio_manager.cpp";
+    std::ifstream in(file);
+    ASSERT_TRUE(in.good()) << file;
+    std::ostringstream ss;
+    ss << in.rdbuf();
+    const std::string src = ss.str();
+    const size_t guard = src.find("ListingDates::instance().enabled() &&\n"
+                                  "            ListingDates::instance().switch_rule() != ListingSwitchRule::kCloseReenter) {");
+    ASSERT_NE(guard, std::string::npos) << "the switch's guard does not test enabled()";
+    for (const char* inside : {"held_before_switch = in.held;", "sleeve_held_before_switch = sleeve_held;",
+                               "ListingDates::instance().conversions_due(data)"}) {
+        const size_t at = src.find(inside);
+        ASSERT_NE(at, std::string::npos) << inside;
+        EXPECT_GT(at, guard) << inside << " runs outside the guard";
+        EXPECT_EQ(src.find(inside, at + 1), std::string::npos) << inside << " appears twice";
+    }
 }
