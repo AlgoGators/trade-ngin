@@ -699,16 +699,16 @@ void ConfigLoader::log_config_summary(const AppConfig& config) {
          ", live_historical_days=" + std::to_string(config.live.historical_days));
 }
 
-Result<AppConfig> ConfigLoader::load(const std::filesystem::path& config_base_path,
-                                     const std::string& portfolio_name) {
+Result<nlohmann::json> ConfigLoader::load_file_tree(const std::filesystem::path& config_base_path,
+                                                    const std::string& portfolio_name) {
     // 1. Load defaults.json
     auto defaults_path = config_base_path / "defaults.json";
     auto defaults_result = load_json_file(defaults_path);
     if (defaults_result.is_error()) {
-        return make_error<AppConfig>(defaults_result.error()->code(),
-                                     "Failed to load defaults.json: " +
-                                         std::string(defaults_result.error()->what()),
-                                     "ConfigLoader");
+        return make_error<nlohmann::json>(defaults_result.error()->code(),
+                                          "Failed to load defaults.json: " +
+                                              std::string(defaults_result.error()->what()),
+                                          "ConfigLoader");
     }
     nlohmann::json merged = defaults_result.value();
 
@@ -719,10 +719,10 @@ Result<AppConfig> ConfigLoader::load(const std::filesystem::path& config_base_pa
     auto portfolio_json_path = portfolio_path / "portfolio.json";
     auto portfolio_result = load_json_file(portfolio_json_path);
     if (portfolio_result.is_error()) {
-        return make_error<AppConfig>(portfolio_result.error()->code(),
-                                     "Failed to load portfolio.json: " +
-                                         std::string(portfolio_result.error()->what()),
-                                     "ConfigLoader");
+        return make_error<nlohmann::json>(portfolio_result.error()->code(),
+                                          "Failed to load portfolio.json: " +
+                                              std::string(portfolio_result.error()->what()),
+                                          "ConfigLoader");
     }
     merge_json(merged, portfolio_result.value());
 
@@ -730,10 +730,10 @@ Result<AppConfig> ConfigLoader::load(const std::filesystem::path& config_base_pa
     auto risk_json_path = portfolio_path / "risk.json";
     auto risk_result = load_json_file(risk_json_path);
     if (risk_result.is_error()) {
-        return make_error<AppConfig>(risk_result.error()->code(),
-                                     "Failed to load risk.json: " +
-                                         std::string(risk_result.error()->what()),
-                                     "ConfigLoader");
+        return make_error<nlohmann::json>(risk_result.error()->code(),
+                                          "Failed to load risk.json: " +
+                                              std::string(risk_result.error()->what()),
+                                          "ConfigLoader");
     }
     merged["risk"] = risk_result.value();
 
@@ -741,15 +741,24 @@ Result<AppConfig> ConfigLoader::load(const std::filesystem::path& config_base_pa
     auto email_json_path = portfolio_path / "email.json";
     auto email_result = load_json_file(email_json_path);
     if (email_result.is_error()) {
-        return make_error<AppConfig>(email_result.error()->code(),
-                                     "Failed to load email.json: " +
-                                         std::string(email_result.error()->what()),
-                                     "ConfigLoader");
+        return make_error<nlohmann::json>(email_result.error()->code(),
+                                          "Failed to load email.json: " +
+                                              std::string(email_result.error()->what()),
+                                          "ConfigLoader");
     }
     merged["email"] = email_result.value();
+    return merged;
+}
+
+Result<AppConfig> ConfigLoader::load(const std::filesystem::path& config_base_path,
+                                     const std::string& portfolio_name) {
+    auto tree = load_file_tree(config_base_path, portfolio_name);
+    if (tree.is_error()) {
+        return make_error<AppConfig>(tree.error()->code(), tree.error()->what(), "ConfigLoader");
+    }
 
     // 3. Extract config
-    auto config_result = extract_config(merged);
+    auto config_result = extract_config(tree.value());
     if (config_result.is_error()) {
         return config_result;
     }
@@ -763,6 +772,211 @@ Result<AppConfig> ConfigLoader::load(const std::filesystem::path& config_base_pa
 
     log_config_summary(config_result.value());
     return config_result;
+}
+
+namespace {
+
+std::string lower(std::string s) {
+    std::transform(s.begin(), s.end(), s.begin(),
+                   [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    return s;
+}
+
+// gen-3's secret_tree key rule (codex/config-88-49, live_config_override.cpp:23-33).
+bool secret_like(const std::string& raw) {
+    const std::string key = lower(raw);
+    return key == "database" || key == "email" || key.find("password") != std::string::npos ||
+           key.find("secret") != std::string::npos || key.find("token") != std::string::npos ||
+           key.find("credential") != std::string::npos || key.rfind("smtp", 0) == 0;
+}
+
+bool find_null(const nlohmann::json& node, const std::string& path, std::string* found) {
+    if (node.is_null()) {
+        *found = path;
+        return true;
+    }
+    if (node.is_object()) {
+        for (const auto& item : node.items()) {
+            if (find_null(item.value(), path.empty() ? item.key() : path + "." + item.key(),
+                          found)) {
+                return true;
+            }
+        }
+    } else if (node.is_array()) {
+        for (size_t i = 0; i < node.size(); ++i) {
+            if (find_null(node.at(i), path + "[" + std::to_string(i) + "]", found)) return true;
+        }
+    }
+    return false;
+}
+
+const char* json_kind(const nlohmann::json& v) {
+    if (v.is_object()) return "an object";
+    if (v.is_array()) return "an array";
+    if (v.is_number()) return "a number";
+    if (v.is_boolean()) return "a boolean";
+    if (v.is_string()) return "a string";
+    return "null";
+}
+
+// Every key of `overlay` is a key of `files` at the same place, of the same kind. Paths only in
+// messages: a value may be a credential typed into the wrong place.
+Result<void> same_shape(const nlohmann::json& overlay, const nlohmann::json& files,
+                        const std::string& path) {
+    for (const auto& item : overlay.items()) {
+        const std::string where = path.empty() ? item.key() : path + "." + item.key();
+        if (!files.is_object() || !files.contains(item.key())) {
+            return make_error<void>(ErrorCode::INVALID_DATA,
+                                    where + " is not a key of the config files (a typo, or a "
+                                            "knob this portfolio's files do not hold)",
+                                    "ConfigLoader");
+        }
+        const auto& file_value = files.at(item.key());
+        const auto& value = item.value();
+        const bool same_kind = (value.is_number() && file_value.is_number()) ||
+                               value.type() == file_value.type();
+        if (!same_kind) {
+            return make_error<void>(ErrorCode::INVALID_DATA,
+                                    where + " is " + json_kind(file_value) +
+                                        " in the config files; the override gives " +
+                                        json_kind(value),
+                                    "ConfigLoader");
+        }
+        if (value.is_object()) {
+            auto inner = same_shape(value, file_value, where);
+            if (inner.is_error()) return inner;
+        }
+    }
+    return Result<void>();
+}
+
+nlohmann::json credential_free(nlohmann::json j) {
+    j.erase("database");
+    j.erase("email");
+    return j;
+}
+
+}  // namespace
+
+bool ConfigLoader::find_secret_key(const nlohmann::json& node, const std::string& path,
+                                   std::string* found) {
+    if (node.is_object()) {
+        for (const auto& item : node.items()) {
+            const std::string child = path.empty() ? item.key() : path + "." + item.key();
+            if (secret_like(item.key())) {
+                if (found) *found = child;
+                return true;
+            }
+            if (find_secret_key(item.value(), child, found)) return true;
+        }
+    } else if (node.is_array()) {
+        for (size_t i = 0; i < node.size(); ++i) {
+            if (find_secret_key(node.at(i), path + "[" + std::to_string(i) + "]", found)) {
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
+Result<void> ConfigLoader::check_overlay(const nlohmann::json& overlay,
+                                         const nlohmann::json& files) {
+    if (!overlay.is_object()) {
+        return make_error<void>(ErrorCode::INVALID_DATA,
+                                std::string("the overrides must be a JSON object, got ") +
+                                    json_kind(overlay),
+                                "ConfigLoader");
+    }
+    std::string where;
+    if (find_null(overlay, "", &where)) {
+        return make_error<void>(ErrorCode::INVALID_DATA,
+                                where + " is null; an override never removes or resets a setting",
+                                "ConfigLoader");
+    }
+    for (const char* denied : {"database", "email", "portfolio_id"}) {
+        if (overlay.contains(denied)) {
+            return make_error<void>(ErrorCode::INVALID_DATA,
+                                    std::string(denied) +
+                                        " cannot be overridden from the database (the connection, "
+                                        "the mail account and the portfolio's identity stay in "
+                                        "the files)",
+                                    "ConfigLoader");
+        }
+    }
+    if (find_secret_key(overlay, "", &where)) {
+        return make_error<void>(ErrorCode::INVALID_DATA,
+                                where + " looks like a credential and cannot be overridden",
+                                "ConfigLoader");
+    }
+    return same_shape(overlay, files, "");
+}
+
+Result<nlohmann::json> ConfigLoader::settings_snapshot(const nlohmann::json& merged,
+                                                       const AppConfig& config) {
+    nlohmann::json snapshot = credential_free(merged);
+    std::string where;
+    if (find_secret_key(snapshot, "", &where)) {
+        return make_error<nlohmann::json>(
+            ErrorCode::INVALID_DATA,
+            "the settings used were not produced: " + where +
+                " looks like a credential (keep credentials in the database and email sections)",
+            "ConfigLoader");
+    }
+    // gen-3's parse -> rebuild -> compare guard (live_config_override.cpp:291-292): the record
+    // must be the config the run trades on, not something near it.
+    auto again = extract_config(snapshot);
+    if (again.is_error() ||
+        credential_free(again.value().to_json()) != credential_free(config.to_json())) {
+        return make_error<nlohmann::json>(
+            ErrorCode::INVALID_DATA,
+            std::string("the settings used were not produced: they do not parse back to the "
+                        "config the run trades on") +
+                (again.is_error() ? std::string(" (") + again.error()->what() + ")"
+                                  : std::string()),
+            "ConfigLoader");
+    }
+    return snapshot;
+}
+
+Result<AppConfig> ConfigLoader::load(const std::filesystem::path& config_base_path,
+                                     const std::string& portfolio_name,
+                                     const nlohmann::json* db_overlay,
+                                     nlohmann::json* settings_used) {
+    auto tree = load_file_tree(config_base_path, portfolio_name);
+    if (tree.is_error()) {
+        return make_error<AppConfig>(tree.error()->code(), tree.error()->what(), "ConfigLoader");
+    }
+    nlohmann::json merged = tree.value();
+    const std::string refused = "strategy_config overlay refused: ";
+    const std::string merged_refused = db_overlay ? refused + "the merged config: " : std::string();
+    if (db_overlay != nullptr) {
+        auto checked = check_overlay(*db_overlay, merged);
+        if (checked.is_error()) {
+            return make_error<AppConfig>(checked.error()->code(),
+                                         refused + checked.error()->what(), "ConfigLoader");
+        }
+        merge_json(merged, *db_overlay);
+    }
+    auto config = extract_config(merged);
+    if (config.is_error()) {
+        return make_error<AppConfig>(config.error()->code(),
+                                     merged_refused + config.error()->what(), "ConfigLoader");
+    }
+    auto valid = validate_config(config.value());
+    if (valid.is_error()) {
+        return make_error<AppConfig>(valid.error()->code(),
+                                     merged_refused + valid.error()->what(), "ConfigLoader");
+    }
+    if (settings_used != nullptr) {
+        auto snapshot = settings_snapshot(merged, config.value());
+        if (snapshot.is_error()) {
+            return make_error<AppConfig>(snapshot.error()->code(), snapshot.error()->what(),
+                                         "ConfigLoader");
+        }
+        *settings_used = snapshot.value();
+    }
+    log_config_summary(config.value());
+    return config;
 }
 
 Result<AppConfig> ConfigLoader::load_legacy(const std::filesystem::path& config_file_path) {
