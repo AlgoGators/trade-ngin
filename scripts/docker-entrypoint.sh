@@ -19,6 +19,15 @@
 
 set -euo pipefail
 
+# Second entrypoint of the same image: `docker run ... trade-ngin desk-agent` (compose
+# `command: desk-agent`) runs the gRPC desk-agent instead of cron (docs/design/desk-agent.md).
+# Any other command, or none, keeps the cron behaviour below unchanged.
+if [ "${1:-}" = "desk-agent" ]; then
+    shift
+    cd /opt/desk-agent/app
+    exec /opt/desk-agent/venv/bin/python -m desk_agent "$@"
+fi
+
 CRON_ENV=/app/.cron_env
 
 : > "$CRON_ENV"

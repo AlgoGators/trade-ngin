@@ -1,0 +1,3 @@
+# Tests (CI and local).
+-r requirements-build.txt
+pytest==8.4.2
