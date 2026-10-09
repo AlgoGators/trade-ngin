@@ -337,3 +337,64 @@ TEST_F(BacktestNettingOneModelTest, TheReportedRowsAreTheStoredRowsAndTheirNetSu
             << r.exec_id << ": one order of 3 costs more than orders of 2 and 1, a debit";
     }
 }
+
+// The cost after netting (HD 2026-10-09): the equity curve charges each cycle the NET cost of its
+// fills (own cost minus the signed adjustment), and the run's transaction_costs is their sum. The
+// fixture's sleeves book no position P&L (the equity curve moves on cycles with fills only), so a
+// cycle's equity change is exactly minus what it was charged:
+//
+//   | cycle | NET_A  | NET_B  | account | charged                                    |
+//   | 21    | BUY 2  | BUY 1  | BUY 3   | C(3): MORE than C(2) + C(1), plus kY's row |
+//   | 31    | SELL 2 | BUY 2  | none    | 0                                          |
+//   | 40    | BUY 3  | SELL 1 | BUY 2   | C(2): less than C(3) + C(1)                |
+//
+// RED when calculate_period_transaction_costs or the results' total goes back to the rows' own
+// costs, and (cycle 21) when a negative adjustment is dropped, clamped or made positive.
+TEST_F(BacktestNettingOneModelTest, TheEquityCurveAndTheResultsChargeTheCostAfterNetting) {
+    run();
+    std::map<Timestamp, std::vector<ExecutionReport>> fills_of;
+    for (const auto& r : results_.executions) fills_of[r.fill_time].push_back(r);
+    std::map<Timestamp, double> equity_of;
+    for (const auto& [t, e] : results_.equity_curve) equity_of[t] = e;
+
+    double total_net = 0.0, total_own = 0.0, previous = 1'000'000.0;
+    for (int d = 0; d <= kLastDay; ++d) {
+        const auto at = equity_of.find(trading_day(d));
+        if (at == equity_of.end()) continue;
+        double own = 0.0, net = 0.0, adjustment = 0.0;
+        const auto fills = fills_of.find(trading_day(d));
+        if (fills != fills_of.end()) {
+            for (const auto& r : fills->second) {
+                own += static_cast<double>(r.total_transaction_costs);
+                net += static_cast<double>(r.total_transaction_costs - r.netting_adjustment);
+                adjustment += static_cast<double>(r.netting_adjustment);
+            }
+        }
+        EXPECT_NEAR(at->second - previous, -net, 1e-9)
+            << "cycle " << d << ": the account moved by minus the net cost of the cycle's fills"
+            << " (own " << own << ", net " << net << ")";
+        if (d == kSameDirection) {
+            EXPECT_LT(adjustment, -1e-6) << "the same-side cycle carries a NEGATIVE adjustment";
+            EXPECT_GT(net, own + 1e-6) << "and is charged MORE than the rows' own costs";
+            EXPECT_GT(std::abs((at->second - previous) + own), 1e-6);
+        }
+        if (d == kFullCross) {
+            EXPECT_GT(own, 1.0) << "the crossing rows keep their own costs";
+            EXPECT_NEAR(net, 0.0, 1e-9);
+            EXPECT_DOUBLE_EQ(at->second, previous) << "a full cross costs the account nothing";
+        }
+        if (d == kPartialCross) {
+            EXPECT_LT(net, own - 1e-6);
+            EXPECT_NEAR(net, static_cast<double>(pm_cost(2.0, close_of(kX, kPartialCross - 1))), 1e-6)
+                << "the partial offset is charged the account's BUY 2";
+        }
+        total_net += net;
+        total_own += own;
+        previous = at->second;
+    }
+    EXPECT_GT(std::abs(total_own - total_net), 1.0) << "the fixture must tell own from net";
+    EXPECT_NEAR(results_.transaction_costs, total_net, 1e-9)
+        << "backtest.results.transaction_costs is the sum of the net costs";
+    EXPECT_NEAR(results_.equity_curve.back().second, 1'000'000.0 - total_net, 1e-9);
+    EXPECT_DOUBLE_EQ(results_.roll_costs, 0.0);
+}

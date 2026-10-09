@@ -821,7 +821,7 @@ Result<void> PortfolioManager::process_market_data(const std::vector<Bar>& data,
                 // sleeve reports of one symbol are one account order, the signed sum Q; each
                 // report keeps its own cost and gets its pro-rata share of sum C(q_i) - C(Q),
                 // priced by this manager's cost model at the bar's price (C(0) = 0). A symbol one
-                // sleeve trades gets 0. The equity curve still charges the reports' own costs.
+                // sleeve trades gets 0. The equity curve charges each report's cost after netting.
                 // Only in a backtest (set_backtest_mode, set by BacktestCoordinator::run_portfolio),
                 // where these reports are the fills that get stored (T-7b-2 C8b4). A live runner's
                 // pass is a fresh process whose filled ledger is empty, so its reports are each

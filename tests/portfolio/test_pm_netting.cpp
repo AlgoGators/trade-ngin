@@ -16,6 +16,7 @@
 #include <chrono>
 #include <filesystem>
 #include <fstream>
+#include <map>
 #include <memory>
 #include <sstream>
 #include <string>
@@ -28,6 +29,7 @@
 #include "trade_ngin/core/logger.hpp"
 #include "trade_ngin/portfolio/portfolio_manager.hpp"
 #include "trade_ngin/strategy/base_strategy.hpp"
+#include "trade_ngin/transaction_cost/netting.hpp"
 
 using namespace trade_ngin;
 using namespace trade_ngin::testing;
@@ -263,5 +265,19 @@ TEST(PmNettingSource, BothFuturesRunnersNetTheDaysSleeveRowsBeforeStoringThem) {
         EXPECT_NE(src.find("execution_manager->get_transaction_cost_manager().calculate_costs("),
                   std::string::npos)
             << f << ": C(Q) must be priced by the same cost manager the fills used";
+    }
+}
+
+// The cost after netting (HD 2026-10-09): the backtest's cost totals read the one helper.
+TEST(PmNettingSource, TheBacktestsCostTotalsReadTheHelper) {
+    const std::vector<std::pair<const char*, const char*>> sites = {
+        {"src/backtest/backtest_coordinator.cpp", "transaction_cost::add_net_costs(total_transaction_costs, execs, count_before)"},
+        {"src/backtest/backtest_coordinator.cpp", "results.transaction_costs += static_cast<double>(transaction_cost::net_cost(e));"},
+        {"apps/backtest/bt_equity_validation.cpp", "day_txn_costs += transaction_cost::net_cost(exec).as_double();"},
+    };
+    for (const auto& [f, text] : sites) {
+        const std::string src = read_source(f);
+        if (src.empty()) GTEST_SKIP() << f << " not found";
+        EXPECT_NE(src.find(text), std::string::npos) << f << " no longer reads: " << text;
     }
 }

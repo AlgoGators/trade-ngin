@@ -255,6 +255,27 @@ TEST_F(BaseStrategyTest, OnExecution_UpdatesPositionAndMetrics) {
     EXPECT_DOUBLE_EQ(positions.at("AAPL").average_price.as_double(), 150.0);
 }
 
+// The cost after netting (HD 2026-10-09): the strategy's own running P&L charges a fill's NET
+// cost, own cost minus the signed adjustment. RED on the own cost, and on a dropped or clamped
+// negative adjustment.
+TEST_F(BaseStrategyTest, OnExecution_ChargesTheCostAfterNetting) {
+    StrategyConfig config;
+    auto strategy = createRunningStrategy(config, std::make_shared<MockPostgresDatabase>());
+
+    auto offset = createExecution(Side::BUY, "AAPL", 100, 150.0);
+    offset.total_transaction_costs = Decimal(2.40);
+    offset.netting_adjustment = Decimal(1.64);  // the sleeves offset: charged 0.76
+    ASSERT_TRUE(strategy->on_execution(offset).is_ok());
+    EXPECT_NEAR(strategy->get_metrics().total_pnl, -0.76, 1e-9);
+
+    auto same_side = createExecution(Side::BUY, "AAPL", 100, 150.0);
+    same_side.total_transaction_costs = Decimal(4.50);
+    same_side.netting_adjustment = Decimal(-0.915);  // one larger account order: charged 5.415
+    ASSERT_TRUE(strategy->on_execution(same_side).is_ok());
+    EXPECT_NEAR(strategy->get_metrics().total_pnl, -0.76 - 5.415, 1e-9);
+    EXPECT_NEAR(strategy->get_metrics().realized_pnl, -0.76 - 5.415, 1e-9);
+}
+
 // --- Position & Risk Limits ---
 TEST_F(BaseStrategyTest, UpdatePosition_FailsIfExceedsLimit) {
     StrategyConfig config;

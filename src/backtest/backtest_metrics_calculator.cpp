@@ -2,6 +2,7 @@
 #include <map>
 #include "trade_ngin/backtest/backtest_types.hpp"
 #include "trade_ngin/core/time_utils.hpp"
+#include "trade_ngin/transaction_cost/netting.hpp"
 #include <algorithm>
 #include <cctype>
 #include <cmath>
@@ -424,7 +425,7 @@ BacktestMetricsCalculator::TradeStatistics BacktestMetricsCalculator::calculate_
         const std::string& symbol = exec.symbol;
         double fill_price = static_cast<double>(exec.fill_price);
         double quantity = static_cast<double>(exec.filled_quantity);
-        double commission = static_cast<double>(exec.total_transaction_costs);
+        double commission = static_cast<double>(transaction_cost::net_cost(exec));
 
         // Adjust quantity based on side
         double signed_qty = (exec.side == Side::BUY) ? quantity : -quantity;
@@ -546,7 +547,7 @@ std::map<std::string, double> BacktestMetricsCalculator::calculate_symbol_pnl(
         const std::string& symbol = exec.symbol;
         double fill_price = static_cast<double>(exec.fill_price);
         double quantity = static_cast<double>(exec.filled_quantity);
-        double commission = static_cast<double>(exec.total_transaction_costs);
+        double commission = static_cast<double>(transaction_cost::net_cost(exec));
 
         double signed_qty = (exec.side == Side::BUY) ? quantity : -quantity;
 

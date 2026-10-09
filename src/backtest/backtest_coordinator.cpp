@@ -22,6 +22,7 @@
 #include "trade_ngin/strategy/base_strategy.hpp"
 #include "trade_ngin/strategy/trend_following.hpp"
 #include "trade_ngin/strategy/types.hpp"
+#include "trade_ngin/transaction_cost/netting.hpp"
 
 namespace trade_ngin {
 namespace backtest {
@@ -446,9 +447,10 @@ Result<BacktestResults> BacktestCoordinator::run_portfolio(
                                                               calculated_warmup_days);
     results.warmup_days = calculated_warmup_days;
     // Migration 018: the run's cost totals from the stored rows themselves (STRATEGY + ROLL +
-    // BORROW: the sum the equity curve charged), the ROLL subset and the count of ROLL rows.
+    // BORROW: the sum the equity curve charged, each fill at its cost after netting), the ROLL
+    // subset (a ROLL leg is never netted: its own cost) and the count of ROLL rows.
     for (const auto& e : all_executions) {
-        results.transaction_costs += static_cast<double>(e.total_transaction_costs);
+        results.transaction_costs += static_cast<double>(transaction_cost::net_cost(e));
         if (e.execution_type == ExecutionType::ROLL) {
             results.roll_costs += static_cast<double>(e.total_transaction_costs);
             ++results.total_roll_fills;
@@ -1971,10 +1973,11 @@ double BacktestCoordinator::calculate_period_transaction_costs(
         size_t count_before =
             exec_counts_before.count(strategy_id) > 0 ? exec_counts_before.at(strategy_id) : 0;
 
-        // Get only the new executions (those added after count_before)
-        for (size_t i = count_before; i < execs.size(); ++i) {
-            total_transaction_costs += static_cast<double>(execs[i].total_transaction_costs);
-        }
+        // Only the new executions (those added after count_before), each at its cost after
+        // netting: the PortfolioManager set every fill's netting_adjustment inside the
+        // process_market_data call of this cycle, before these rows were read.
+        total_transaction_costs =
+            transaction_cost::add_net_costs(total_transaction_costs, execs, count_before);
     }
 
     return total_transaction_costs;
