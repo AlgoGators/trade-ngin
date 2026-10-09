@@ -1558,3 +1558,86 @@ TEST_F(ConfigLoaderTest, UnknownKeysInsideTheListingAndRelabelBlocksAreRefused) 
     ASSERT_TRUE(ok.is_ok()) << (ok.error() ? ok.error()->what() : "");
     EXPECT_EQ(ok.value().listing_dates.size(), 1u);
 }
+
+// portfolio.json's optional "trading_rule_removals" block: symbol to the EMA pairs the contract
+// does not run (removed by cost; the sleeve checks the list against its own pairs). Absent means
+// no contract; present it is parsed strictly, and only a book of one trend sleeve may carry it.
+namespace {
+nlohmann::json one_trend_sleeve() {
+    return {{"TREND_FOLLOWING",
+             {{"enabled_backtest", true}, {"enabled_live", true}, {"type", "TrendFollowingStrategy"}}}};
+}
+}  // namespace
+
+TEST_F(ConfigLoaderTest, TradingRuleRemovalsAbsentMeansNoContract) {
+    write_full_set("base");
+    auto r = ConfigLoader::load(base_, "base");
+    ASSERT_TRUE(r.is_ok()) << (r.error() ? r.error()->what() : "no error");
+    EXPECT_TRUE(r.value().trading_rule_removals.empty());
+}
+
+TEST_F(ConfigLoaderTest, TradingRuleRemovalsAreReadAsWritten) {
+    using Pairs = std::vector<std::pair<int, int>>;
+    write_full_set("base", nlohmann::json::object(),
+                   {{"strategies", one_trend_sleeve()},
+                    {"trading_rule_removals",
+                     {{"ZR", nlohmann::json::array({{2, 8}, {4, 16}, {8, 32}})},
+                      {"ZC", nlohmann::json::array({{2, 8}})},
+                      {"_note", "a note inside the block is not a contract"}}},
+                    {"_trading_rule_removals_note", "a note beside the block is not a misspelt block"}});
+    auto r = ConfigLoader::load(base_, "base");
+    ASSERT_TRUE(r.is_ok()) << (r.error() ? r.error()->what() : "no error");
+    const auto& removals = r.value().trading_rule_removals;
+    ASSERT_EQ(removals.size(), 2u);
+    EXPECT_EQ(removals.at("ZR"), (Pairs{{2, 8}, {4, 16}, {8, 32}}));
+    EXPECT_EQ(removals.at("ZC"), (Pairs{{2, 8}}));
+}
+
+TEST_F(ConfigLoaderTest, AMalformedTradingRuleRemovalsBlockIsRefused) {
+    auto refused = [&](const nlohmann::json& portfolio, const std::string& named) {
+        nlohmann::json with_sleeve = portfolio;
+        if (!with_sleeve.contains("strategies")) with_sleeve["strategies"] = one_trend_sleeve();
+        write_full_set("base", nlohmann::json::object(), with_sleeve);
+        auto r = ConfigLoader::load(base_, "base");
+        ASSERT_TRUE(r.is_error()) << portfolio.dump();
+        EXPECT_NE(std::string(r.error()->what()).find(named), std::string::npos) << r.error()->what();
+    };
+    const nlohmann::json one = nlohmann::json::array({{2, 8}});
+    refused({{"trading_rule_removals", nlohmann::json::array({"ZR"})}}, "must be an object");
+    refused({{"trading_rule_removals", {{"ZR", nlohmann::json::array()}}}}, "non-empty list of pairs for ZR");
+    refused({{"trading_rule_removals", {{"ZR", "2/8"}}}}, "non-empty list of pairs for ZR");
+    refused({{"trading_rule_removals", {{"ZR", nlohmann::json::array({2, 8})}}}}, "not two positive whole numbers");
+    refused({{"trading_rule_removals", {{"ZR", nlohmann::json::array({{2, 8, 32}})}}}}, "not two positive whole numbers");
+    refused({{"trading_rule_removals", {{"ZR", nlohmann::json::array({{0, 8}})}}}}, "not two positive whole numbers");
+    refused({{"trading_rule_removals", {{"ZR", nlohmann::json::array({{2.5, 8}})}}}}, "not two positive whole numbers");
+    refused({{"trading_rule_removals", {{"ZR.v.0", one}}}}, "not a base symbol");
+    // a misspelt block is an absent block: every contract would silently run every rule
+    refused({{"trading_rule_removal", {{"ZR", one}}}}, "\"trading_rule_removal\"");
+    refused({{"trading_rule_removals_", {{"ZR", one}}}}, "\"trading_rule_removals_\"");
+}
+
+// The rule sets the forecast weights of ONE trend sleeve: a book of several sleeves (BASE) or of
+// another kind of sleeve is refused with the block, never run as if the block were absent.
+TEST_F(ConfigLoaderTest, TradingRuleRemovalsNeedABookOfOneTrendSleeve) {
+    const nlohmann::json block = {{"ZR", nlohmann::json::array({{2, 8}})}};
+    auto error_of = [&](const nlohmann::json& strategies) {
+        write_full_set("base", nlohmann::json::object(),
+                       {{"strategies", strategies}, {"trading_rule_removals", block}});
+        auto r = ConfigLoader::load(base_, "base");
+        return r.is_ok() ? std::string() : std::string(r.error()->what());
+    };
+    EXPECT_EQ(error_of(one_trend_sleeve()), "");
+    nlohmann::json two = one_trend_sleeve();
+    two["TREND_FOLLOWING_FAST"] = {{"enabled_backtest", true}, {"enabled_live", true},
+                                   {"type", "TrendFollowingFastStrategy"}};
+    EXPECT_NE(error_of(two).find("exactly one enabled TrendFollowingStrategy sleeve; this book enables 2"),
+              std::string::npos);
+    // a second sleeve that is switched off does not count
+    two["TREND_FOLLOWING_FAST"]["enabled_backtest"] = false;
+    two["TREND_FOLLOWING_FAST"]["enabled_live"] = false;
+    EXPECT_EQ(error_of(two), "");
+    EXPECT_NE(error_of({{"FAST", {{"enabled_backtest", true}, {"type", "TrendFollowingFastStrategy"}}}})
+                  .find("exactly one enabled TrendFollowingStrategy sleeve"),
+              std::string::npos);
+    EXPECT_NE(error_of({{"TREND_FOLLOWING", {{"weight", 1.0}}}}).find("this book enables 0"), std::string::npos);
+}

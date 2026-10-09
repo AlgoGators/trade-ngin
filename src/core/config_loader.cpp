@@ -352,7 +352,8 @@ Result<AppConfig> ConfigLoader::extract_config(const nlohmann::json& merged) {
         };
         for (auto it = merged.begin(); it != merged.end(); ++it) {
             const std::string& key = it.key();
-            for (const char* block : {"listing_dates", "instrument_id_relabels"}) {
+            for (const char* block :
+                 {"listing_dates", "instrument_id_relabels", "trading_rule_removals"}) {
                 // "listing_date...", "instrument_id_relabel...": the block's name less its last letter
                 const std::string stem(block, std::strlen(block) - 1);
                 if (key != block && key.rfind(stem, 0) == 0) {
@@ -445,6 +446,70 @@ Result<AppConfig> ConfigLoader::extract_config(const nlohmann::json& merged) {
                 ListingDates::validate(config.listing_dates);  // the runner switches it on
             } catch (const std::invalid_argument& e) {
                 return bad(std::string("is not usable: ") + e.what());
+            }
+        }
+
+        // Trading rules removed from a contract by cost: optional; parsed strictly when present.
+        // The loader checks the block's form and that the book is one trend sleeve; the sleeve
+        // checks the list against its own pairs when it is built (TrendFollowingStrategy).
+        if (merged.contains("trading_rule_removals")) {
+            const auto& v = merged.at("trading_rule_removals");
+            auto bad = [&](const std::string& what) {
+                return make_error<AppConfig>(
+                    ErrorCode::INVALID_DATA,
+                    "config for " + config.portfolio_id +
+                        ": portfolio.json \"trading_rule_removals\" " + what +
+                        " (expected {\"ZR\": [[2, 8], [4, 16]], ...}: symbol to the EMA pairs it "
+                        "does not run), got " + v.dump(),
+                    "ConfigLoader");
+            };
+            if (!v.is_object()) return bad("must be an object");
+            for (auto it = v.begin(); it != v.end(); ++it) {
+                const std::string& symbol = it.key();
+                if (!symbol.empty() && symbol[0] == '_') continue;  // a note
+                if (symbol.empty() || symbol.find('.') != std::string::npos) {
+                    return bad("names a contract \"" + symbol +
+                               "\" that is not a base symbol (\"ZR\", not \"ZR.v.0\")");
+                }
+                const auto& pairs = it.value();
+                if (!pairs.is_array() || pairs.empty()) {
+                    return bad("needs a non-empty list of pairs for " + symbol +
+                               " (a contract that keeps every rule is not listed)");
+                }
+                std::vector<std::pair<int, int>> removed;
+                for (const auto& pair : pairs) {
+                    if (!pair.is_array() || pair.size() != 2 || !pair[0].is_number_integer() ||
+                        !pair[1].is_number_integer() || pair[0].get<int64_t>() <= 0 ||
+                        pair[1].get<int64_t>() <= 0) {
+                        return bad("names a pair for " + symbol +
+                                   " that is not two positive whole numbers");
+                    }
+                    removed.emplace_back(pair[0].get<int>(), pair[1].get<int>());
+                }
+                config.trading_rule_removals[symbol] = std::move(removed);
+            }
+            // The rule sets forecast weights within ONE trend sleeve. A book of several sleeves
+            // (BASE's trend and fast sleeves) has no list of its own and is refused, never read
+            // as if the block were absent.
+            int sleeves = 0;
+            bool trend_only = true;
+            if (merged.contains("strategies") && merged.at("strategies").is_object()) {
+                for (const auto& entry : merged.at("strategies").items()) {
+                    const auto& def = entry.value();
+                    if (!def.is_object()) continue;
+                    const auto flag = [&](const char* key) {
+                        return def.contains(key) && def.at(key).is_boolean() &&
+                               def.at(key).get<bool>();
+                    };
+                    if (!flag("enabled_backtest") && !flag("enabled_live")) continue;
+                    ++sleeves;
+                    trend_only = trend_only && def.contains("type") && def.at("type").is_string() &&
+                                 def.at("type").get<std::string>() == "TrendFollowingStrategy";
+                }
+            }
+            if (!config.trading_rule_removals.empty() && (sleeves != 1 || !trend_only)) {
+                return bad("applies to a book of exactly one enabled TrendFollowingStrategy "
+                           "sleeve; this book enables " + std::to_string(sleeves));
             }
         }
 
