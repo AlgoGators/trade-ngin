@@ -725,6 +725,10 @@ Result<std::unordered_map<std::string, double>> PostgresDatabase::get_latest_pri
         // Query to get latest close price for each symbol. The latest bar's raw
         // close IS its adjusted close (backward adjustment anchors factor 1 on
         // the newest bar), so equities need no special-casing here.
+        //
+        // futures_data.ohlcv_1d has no key, so the newest date can hold several copies of a
+        // bar; the futures read breaks that tie by the bar loader's keep order, never by
+        // physical row order.
         std::string query =
             "SELECT DISTINCT ON (symbol) symbol, close "
             "FROM " +
@@ -732,6 +736,9 @@ Result<std::unordered_map<std::string, double>> PostgresDatabase::get_latest_pri
             " "
             "WHERE symbol = ANY($1) "
             "ORDER BY symbol, time DESC";
+        if (asset_class == AssetClass::FUTURES) {
+            query += std::string(", ") + market_data_utils::kFuturesBarKeepOrder;
+        }
 
         auto result = txn.exec(query, pqxx::params{symbols});
         txn.commit();
@@ -959,6 +966,34 @@ std::string PostgresDatabase::asset_class_to_string(AssetClass asset_class) cons
     }
 }
 
+void PostgresDatabase::log_futures_bar_duplicates(size_t bars_returned,
+                                                  const pqxx::result& copies) const {
+    // futures_data.ohlcv_1d has no key and stores some (symbol, time) pairs up to 11
+    // times. The bar query keeps one row per pair (market_data_utils::kFuturesBarKeepOrder);
+    // this reports, once per load, how many rows that dropped, and names every pair whose
+    // copies DISAGREE, since only those make the choice of copy matter.
+    std::vector<market_data_utils::FuturesBarCopy> rows;
+    rows.reserve(copies.size());
+    for (const auto& row : copies) {
+        market_data_utils::FuturesBarCopy c;
+        c.symbol = row["symbol"].as<std::string>();
+        // Every futures bar is stamped 00:00:00 UTC and the session runs in UTC, so the
+        // text's first ten characters are the bar's UTC date.
+        c.date = row["time"].as<std::string>().substr(0, 10);
+        c.open = row["open"].as<double>();
+        c.high = row["high"].as<double>();
+        c.low = row["low"].as<double>();
+        c.close = row["close"].as<double>();
+        c.volume = row["volume"].as<double>();
+        rows.push_back(std::move(c));
+    }
+    const auto report = market_data_utils::summarise_futures_bar_duplicates(rows);
+    INFO(market_data_utils::format_futures_bar_dedup_summary(bars_returned, report));
+    for (const auto& line : report.conflicts) {
+        WARN(line);
+    }
+}
+
 Result<pqxx::result> PostgresDatabase::execute_market_data_query(
     const std::vector<std::string>& symbols, const Timestamp& start_date, const Timestamp& end_date,
     AssetClass asset_class, DataFrequency freq, const std::string& data_type,
@@ -1001,15 +1036,26 @@ Result<pqxx::result> PostgresDatabase::execute_market_data_query(
 
     if (symbols.empty()) {
         // No symbol filter. Equities compute per-bar backward adjustment in the
-        // query; other classes read plain columns.
+        // query; futures keep one bar per (symbol, time); other classes read
+        // plain columns.
         std::string query =
             (asset_class == AssetClass::EQUITIES)
                 ? market_data_utils::build_equity_adjusted_query(full_table_name, false)
+            : (asset_class == AssetClass::FUTURES)
+                ? market_data_utils::build_futures_bar_query(full_table_name, false)
                 : "SELECT " + market_data_utils::get_market_data_columns(asset_class) +
                       " FROM " + full_table_name +
                       " WHERE time BETWEEN $1 AND $2 ORDER BY time, symbol";
         try {
-            return Result<pqxx::result>(txn.exec(query, pqxx::params{start_ts, end_ts}));
+            pqxx::result bars = txn.exec(query, pqxx::params{start_ts, end_ts});
+            if (asset_class == AssetClass::FUTURES) {
+                log_futures_bar_duplicates(
+                    bars.size(),
+                    txn.exec(market_data_utils::build_futures_duplicate_copies_query(
+                                 full_table_name, false),
+                             pqxx::params{start_ts, end_ts}));
+            }
+            return Result<pqxx::result>(bars);
         } catch (const std::exception& e) {
             return make_error<pqxx::result>(ErrorCode::DATABASE_ERROR,
                                             "Query execution failed: " + std::string(e.what()));
@@ -1025,13 +1071,23 @@ Result<pqxx::result> PostgresDatabase::execute_market_data_query(
         std::string query =
             (asset_class == AssetClass::EQUITIES)
                 ? market_data_utils::build_equity_adjusted_query(full_table_name, true)
+            : (asset_class == AssetClass::FUTURES)
+                ? market_data_utils::build_futures_bar_query(full_table_name, true)
                 : "SELECT " + market_data_utils::get_market_data_columns(asset_class) +
                       " FROM " + full_table_name +
                       " WHERE time BETWEEN $1 AND $2 AND symbol = ANY($3)"
                       " ORDER BY time, symbol";
 
         try {
-            return Result<pqxx::result>(txn.exec(query, pqxx::params{start_ts, end_ts, symbols}));
+            pqxx::result bars = txn.exec(query, pqxx::params{start_ts, end_ts, symbols});
+            if (asset_class == AssetClass::FUTURES) {
+                log_futures_bar_duplicates(
+                    bars.size(),
+                    txn.exec(market_data_utils::build_futures_duplicate_copies_query(
+                                 full_table_name, true),
+                             pqxx::params{start_ts, end_ts, symbols}));
+            }
+            return Result<pqxx::result>(bars);
         } catch (const std::exception& e) {
             return make_error<pqxx::result>(ErrorCode::DATABASE_ERROR,
                                             "Query execution failed: " + std::string(e.what()));

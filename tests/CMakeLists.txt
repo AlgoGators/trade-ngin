@@ -36,6 +36,7 @@ set(TEST_SOURCES
     data/test_bar_close_uses_adjusted.cpp
     data/test_conversion_utils.cpp
     data/test_market_data_utils.cpp
+    data/test_futures_bar_dedup_db.cpp
     order/test_order_manager.cpp
     order/test_utils.cpp
     instruments/test_futures.cpp
