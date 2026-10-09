@@ -156,6 +156,10 @@ TEST(LiveListingGuard, BothLiveRunnersInstallTheBlocksAndRefuseBeforeTheFirstWri
                            "        ListingDates::instance().apply_relabels(all_bars);"),
                   std::string::npos)
             << runner << ": a relabel that matches nothing is reported before the bars are rewritten";
+        EXPECT_NE(src.find("for (const auto& line : ListingDates::instance().relabel_findings(history)) WARN(line);\n"
+                           "            ListingDates::instance().apply_relabels(history);"),
+                  std::string::npos)
+            << runner << ": and on the bars before the window";
         EXPECT_NE(src.find("ListingDates::instance().apply_relabels(history);"), std::string::npos) << runner;
         size_t id_reads = 0;
         for (size_t at = src.find("db->get_futures_instrument_ids("); at != std::string::npos;

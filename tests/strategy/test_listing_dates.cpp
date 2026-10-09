@@ -821,6 +821,7 @@ TEST(ListingDates, TheRatioIsWholeAndEqualsTheTwoContractsSizes) {
         << wrong;
     EXPECT_NE(ListingDates::ratio_error(mes, 50.0, 0.0), "") << "a size that is not positive is refused";
     EXPECT_NE(ListingDates::ratio_error(mes, 20.0, 5.0), "");
+    EXPECT_NE(ListingDates::ratio_error(mes, 0.0, 0.0), "") << "two missing sizes are not a match";
 }
 
 // A declared relabel that rewrites nothing, or whose date is a bar late, is said out loud: one line
@@ -863,9 +864,16 @@ TEST(InstrumentIdRelabel, AnEntryThatMatchesNothingOrIsLateIsReported) {
     // a load that does not span the date (a window that ends before it) says nothing
     rule.set_relabels({{"MES", "2026-02-22", "42140878", "42003801"}});
     EXPECT_TRUE(rule.relabel_findings({bars[0], bars[1]}).empty());
+    // nor does a load that starts on or after it (the bars before the window are another load)
+    EXPECT_TRUE(rule.relabel_findings({bars[2], bars[3]}).empty());
     // a symbol that is not in the load says nothing
     rule.set_relabels({{"M2K", "2026-02-22", "1", "2"}});
     EXPECT_TRUE(rule.relabel_findings(bars).empty());
+    // two relabels of one symbol to different ids are two entries, not one named twice
+    rule.set_relabels({{"MES", "2026-02-22", "42140878", "42003800"}, {"MES", "2026-06-21", "42003800", "42009000"}});
+    EXPECT_THROW(rule.set_relabels({{"MES", "2026-02-22", "42140878", "42003800"},
+                                    {"MES", "2026-06-21", "42140878", "42003800"}}),
+                 std::invalid_argument);
 }
 
 // The entered quantity is the pass's own arithmetic: over a sweep of targets and caps it equals the

@@ -204,4 +204,14 @@ TEST_F(ListingLoaderTest, ARelabelThatMatchesNothingIsReportedByTheLoader) {
               std::string::npos)
         << out;
     EXPECT_EQ(view(loaded.value(), "MES.v.0").back(), "2-23 6857 42003800") << "and nothing is rewritten";
+
+    // the entry that is right is looked at BEFORE the bars are rewritten: it is not reported
+    ListingDates::instance().set_relabels({{"MES", "2026-02-22", "42140878", "42003800"}});
+    ::testing::internal::CaptureStdout();
+    ::testing::internal::CaptureStderr();
+    const auto right = loader.load_market_data(config_for({"MES.v.0", "ZN.v.0"}));
+    const std::string quiet = ::testing::internal::GetCapturedStdout() + ::testing::internal::GetCapturedStderr();
+    ASSERT_TRUE(right.is_ok());
+    EXPECT_EQ(quiet.find("RELABEL_"), std::string::npos) << quiet;
+    EXPECT_EQ(view(right.value(), "MES.v.0").back(), "2-23 6857 42140878");
 }

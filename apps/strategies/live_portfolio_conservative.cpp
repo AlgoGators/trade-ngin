@@ -1178,6 +1178,7 @@ int main(int argc, char* argv[]) {
             // the bars before the window and their id rows are read as the window's are: a
             // declared vendor relabel applied (a no-op with none declared)
             std::vector<Bar> history = history_bars.value();
+            for (const auto& line : ListingDates::instance().relabel_findings(history)) WARN(line);
             ListingDates::instance().apply_relabels(history);
             session_classifier.add_bars(k01_classifier_history(history, start_date));
             estimator_history_bars = estimator_history_consumed(
