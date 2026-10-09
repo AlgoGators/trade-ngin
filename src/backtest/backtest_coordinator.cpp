@@ -378,6 +378,29 @@ Result<BacktestResults> BacktestCoordinator::run_portfolio(
     return results;
 }
 
+// DEAD-bt-single-strategy-path: RULING = LEAVE (stage 3, T-1, 2026-09-09).
+//
+// This function is reachable only from run_single_strategy(), which no app and
+// no test calls; the portfolio path (run_portfolio_backtest) is what every
+// backtest runner uses. So it is unreachable today, and the ledger offered
+// "leave, or class A delete of the dead overload".
+//
+// Left, for two reasons rather than inertia:
+//
+//  * run_single_strategy() is a documented public entry point -- src/strategy/
+//    README.md shows it as the way to backtest one strategy -- so deleting it
+//    removes an advertised API in a batch whose whole claim is that it changes
+//    nothing, and the deletion would have to reach into a doc as well, which
+//    this batch's commits do not do.
+//  * unlike the LivePriceManager stubs removed in the same batch, this path is
+//    not misleading: it does what its name says, and calling it would work. A
+//    stub that silently returns nothing is a trap; an unused but correct
+//    function is only unused.
+//
+// `is_warmup` is genuinely ignored inside, which is the part worth knowing if
+// this is ever revived: the caller passes it, the body does not consult it, so
+// warm-up days would be treated exactly like live days. Fix that before using
+// this for anything.
 Result<void> BacktestCoordinator::process_day(
     const Timestamp& timestamp, const std::vector<Bar>& bars,
     std::shared_ptr<StrategyInterface> strategy, std::vector<ExecutionReport>& executions,

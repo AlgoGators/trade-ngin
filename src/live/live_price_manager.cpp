@@ -5,65 +5,6 @@
 
 namespace trade_ngin {
 
-Result<std::unordered_map<std::string, double>> LivePriceManager::load_close_prices(
-    const std::vector<std::string>& symbols,
-    const Timestamp& date) const {
-
-    (void)date;
-    if (symbols.empty()) {
-        return Result<std::unordered_map<std::string, double>>({});
-    }
-
-    // TODO: Implement Arrow Table parsing
-    // For now, this is a placeholder that will be integrated with existing database patterns
-    std::unordered_map<std::string, double> prices;
-
-    INFO("LivePriceManager::load_close_prices called for " + std::to_string(symbols.size()) +
-         " symbols");  // TODO: Add date formatting
-
-    return Result<std::unordered_map<std::string, double>>(prices);
-}
-
-Result<void> LivePriceManager::load_previous_day_prices(
-    const std::vector<std::string>& symbols,
-    const Timestamp& current_date) {
-
-    // Calculate T-1 date
-    auto previous_date = current_date - std::chrono::hours(24);
-
-    auto result = load_close_prices(symbols, previous_date);
-    if (!result.is_ok()) {
-        return make_error<void>(ErrorCode::DATABASE_ERROR, "Failed to load T-1 prices");
-    }
-
-    previous_day_prices_ = result.value();
-
-    INFO("Loaded " + std::to_string(previous_day_prices_.size()) +
-         " previous day (T-1) close prices");
-
-    return Result<void>();
-}
-
-Result<void> LivePriceManager::load_two_days_ago_prices(
-    const std::vector<std::string>& symbols,
-    const Timestamp& current_date) {
-
-    // Calculate T-2 date
-    auto two_days_ago = current_date - std::chrono::hours(48);
-
-    auto result = load_close_prices(symbols, two_days_ago);
-    if (!result.is_ok()) {
-        return make_error<void>(ErrorCode::DATABASE_ERROR, "Failed to load T-2 prices");
-    }
-
-    two_days_ago_prices_ = result.value();
-
-    INFO("Loaded " + std::to_string(two_days_ago_prices_.size()) +
-         " two days ago (T-2) close prices");
-
-    return Result<void>();
-}
-
 Result<void> LivePriceManager::update_from_bars(const std::vector<Bar>& bars,
                                                 const Timestamp& reference_date,
                                                 std::optional<Timestamp> t1_date) {
@@ -185,25 +126,6 @@ Result<void> LivePriceManager::update_from_bars(const std::vector<Bar>& bars,
     INFO("Note: T-1 prices REQUIRE actual Day T-1 data (no fallback). T-2 prices can fall back for weekend/holiday gaps.");
 
     return Result<void>();
-}
-
-Result<double> LivePriceManager::get_settlement_price(
-    const std::string& symbol,
-    const Timestamp& date) const {
-
-    (void)date;
-    // Check cache first
-    // TODO: Create proper date string formatting
-    // std::string cache_key = symbol + "_" + date_string;
-    auto it = settlement_prices_.find(symbol);
-    if (it != settlement_prices_.end()) {
-        return Result<double>(it->second);
-    }
-
-    // TODO: Implement Arrow Table parsing for database query
-    // For now, return error to indicate not found
-    return make_error<double>(ErrorCode::DATA_NOT_FOUND,
-        "Settlement price lookup not yet integrated with Arrow Table");
 }
 
 Result<double> LivePriceManager::get_latest_price(const std::string& symbol) const {

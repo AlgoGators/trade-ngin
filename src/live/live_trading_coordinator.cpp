@@ -47,7 +47,7 @@ Result<void> LiveTradingCoordinator::initialize() {
             config_.strategy_name);
 
         // Initialize LivePriceManager
-        price_manager_ = std::make_unique<LivePriceManager>(db_);
+        price_manager_ = std::make_unique<LivePriceManager>();
 
         // Initialize LivePnLManager with InstrumentRegistry
         pnl_manager_ = std::make_unique<LivePnLManager>(config_.initial_capital, *registry_);

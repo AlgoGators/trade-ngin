@@ -270,19 +270,26 @@ public:
     Result<void> store_trading_equity_curve(const std::string& strategy_id,
                                             const Timestamp& timestamp, double equity,
                                             const std::string& portfolio_id,
-                                            const std::string& table_name) override {
+                                            const std::string& table_name,
+                                            const std::string& portfolio_type) override {
         (void)strategy_id; (void)timestamp; (void)equity;
         (void)portfolio_id; (void)table_name;
+        last_equity_curve_stream_ = portfolio_type;
         return record_call("store_trading_equity_curve");
     }
 
     Result<void> store_trading_equity_curve_batch(
         const std::string& strategy_id,
         const std::vector<std::pair<Timestamp, double>>& equity_points,
-        const std::string& portfolio_id, const std::string& table_name) override {
+        const std::string& portfolio_id, const std::string& table_name,
+        const std::string& portfolio_type) override {
         (void)strategy_id; (void)equity_points; (void)portfolio_id; (void)table_name;
+        last_equity_curve_stream_ = portfolio_type;
         return record_call("store_trading_equity_curve_batch");
     }
+
+    /// The portfolio_type the last equity-curve write asked for (DB-equity-curve-onconflict).
+    std::string last_equity_curve_stream() const { return last_equity_curve_stream_; }
 
     // ===== Overrides for newly-virtual methods (storage layer mocking) =====
     //
@@ -458,6 +465,8 @@ private:
         last_keys_[op] = StorageKey{strategy_id, strategy_name, portfolio_id};
     }
     std::string fail_on_call_for_;
+    // DB-equity-curve-onconflict: what stream the last equity-curve write named.
+    std::string last_equity_curve_stream_;
 };
 
 }  // namespace testing

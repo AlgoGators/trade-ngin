@@ -236,7 +236,7 @@ public:
     }
 
     static void register_component(const std::string& component) {
-        current_component_ = component;
+        current_component() = component;
     }
 
 private:
@@ -260,8 +260,28 @@ private:
     LoggerConfig config_;
     std::ofstream log_file_;
     std::atomic<bool> initialized_{false};
-    [[maybe_unused]] bool locked_initialization_{false};  // Prevent re-initialization after first call
-    static thread_local std::string current_component_;  // Thread-local component name
+    /**
+     * @brief The calling thread's component name, for the "[Component] " prefix.
+     *
+     * E2-F61. This used to be `static thread_local std::string
+     * current_component_`. A thread_local with a non-trivial destructor is
+     * destroyed alongside the static objects at process exit, in an order
+     * nothing here controls -- and PostgresDatabase::disconnect() logs
+     * "Disconnected from PostgreSQL database" from a DatabasePool that is itself
+     * a static. When the string went first, format_message() read a destroyed
+     * std::string and printed its freed bytes in front of the message. Undefined
+     * behaviour, visible as garbage on every runner's last log line.
+     *
+     * The pointer here is trivially destructible, so it has no destructor to
+     * run and the storage stays valid for the whole thread. What it points at is
+     * never freed -- one small string per thread, deliberately leaked, which is
+     * the price of being readable at any point during static destruction. The
+     * value and therefore every log line is unchanged.
+     */
+    static std::string& current_component() {
+        static thread_local std::string* component = new std::string();
+        return *component;
+    }
 
     // New members for improved file naming
     std::string current_session_timestamp_;  // Format: YYYYMMDD_HHMMSS

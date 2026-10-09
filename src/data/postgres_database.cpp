@@ -219,6 +219,17 @@ Result<void> PostgresDatabase::store_executions(const std::vector<ExecutionRepor
         }
         std::cout << "DEBUG: Table validation passed" << std::endl;
 
+        // E2-F36 / REG-F9: store_positions validates all three identifiers
+        // (postgres_database.cpp, store_positions_in) and store_executions
+        // validated none, though it concatenates the same values into SQL the
+        // same way. The asymmetry meant the two writers could disagree about
+        // whether a given run's identifiers were acceptable -- positions
+        // refused, executions written -- leaving a book whose fills have no
+        // matching position rows.
+        if (auto sv = validate_strategy_id(strategy_id); sv.is_error()) return sv;
+        if (auto sn = validate_strategy_id(strategy_name); sn.is_error()) return sn;
+        if (auto pv = validate_strategy_id(portfolio_id); pv.is_error()) return pv;
+
         // Defensive cleanup BEFORE starting the insert transaction to avoid nested transactions
         if (!executions.empty()) {
             std::vector<std::string> order_ids;
@@ -320,6 +331,46 @@ Result<void> PostgresDatabase::validate_connection() const {
     if (!is_connected() || !connection_ || !connection_->is_open()) {
         return make_error<void>(ErrorCode::CONNECTION_ERROR, "Not connected to database",
                                 "PostgresDatabase");
+    }
+
+    // C4-DbTransaction. pqxx permits ONE transaction per connection, and every
+    // self-opening method in this class begins with
+    // `pqxx::work txn(*connection_)`. Calling any of them while a DbTransaction
+    // scope is alive therefore constructs a second transaction on the same
+    // connection, and pqxx throws.
+    //
+    // What that actually produced, measured on 2026-09-09 rather than assumed:
+    // the throw is caught by the calling method's own catch-all and returned as
+    //
+    //     Failed to store positions: Started new transaction while transaction
+    //     was still active.
+    //
+    // So it is an error, not an unhandled exception, at the call sites that
+    // exist today. Two things are still wrong with it and are what this guard
+    // fixes:
+    //
+    //   * the message describes pqxx's internal state, not the caller's mistake,
+    //     and says nothing about what to do instead;
+    //   * the failure happens INSIDE the method, after it has begun its work and
+    //     with the outer unit's transaction now in an unclear state, rather than
+    //     at the door.
+    //
+    // The check goes in validate_connection() because that is the preamble every
+    // self-opening method already runs, and because the overloads that take a
+    // DbTransaction& deliberately do NOT run it -- they delegate to the *_in
+    // variants against the caller's transaction. So it covers exactly the calls
+    // that would open a second transaction and none of those meant to join the
+    // first.
+    //
+    // No futures caller opens a unit of work today, so no run that exists now
+    // reaches this branch.
+    if (in_unit_of_work_) {
+        return make_error<void>(
+            ErrorCode::DATABASE_ERROR,
+            "A unit of work is open on this connection. This call would begin a second "
+            "transaction on the same connection, which pqxx refuses. Pass the open "
+            "DbTransaction to an overload that accepts one, or commit the unit first.",
+            "PostgresDatabase");
     }
     return Result<void>();
 }
@@ -722,6 +773,17 @@ Result<std::unordered_map<std::string, Position>> PostgresDatabase::load_positio
 
     try {
         pqxx::work txn(*connection_);
+
+        // table_name is interpolated into the FROM clause below and cannot be a
+        // bound parameter, so it goes through the same allowlist every other
+        // interpolating read uses. Every caller passes a literal today; that is
+        // a property of today's callers, not of this function, and it is the
+        // only reason the omission has never been reachable.
+        auto table_validation = validate_table_name(table_name);
+        if (table_validation.is_error()) {
+            return make_error<std::unordered_map<std::string, Position>>(
+                table_validation.error()->code(), table_validation.error()->what());
+        }
 
         std::string date_str = format_timestamp(date);
         pqxx::result result;
@@ -1691,9 +1753,38 @@ Result<void> PostgresDatabase::validate_symbols(const std::vector<std::string>& 
 }
 
 Result<void> PostgresDatabase::validate_strategy_id(const std::string& strategy_id) const {
-    if (strategy_id.empty() || strategy_id.size() > 50) {
+    // E2-F36 / REG-F9. The bound was 50, which is not a property of a strategy
+    // id -- it was the width of trading.positions.strategy_id copied into a
+    // string check. That matters because the futures runners store a JOINED id:
+    // "LIVE_" plus every enabled trend strategy's name. Two strategies give 41
+    // characters, which fits. A THIRD gives
+    // "LIVE_TREND_FOLLOWING_TREND_FOLLOWING_FAST_TREND_FOLLOWING_SLOW" -- 62 --
+    // and this function rejected it before any SQL ran.
+    //
+    // 100 is the width of the widest sibling column that already exists
+    // (trading.executions.strategy_id and every strategy_name column), so the
+    // validator is no longer the tightest constraint in the system and no longer
+    // rejects an id the schema could hold.
+    //
+    // IT IS NOT, BY ITSELF, ENOUGH, and that is deliberate rather than
+    // overlooked. trading.positions.strategy_id, live_results.strategy_id and
+    // signals.strategy_id are still varchar(50), so a 62-character id now
+    // reaches the server and is refused there:
+    //     ERROR: value too long for type character varying(50)
+    // Verified against the stage-3 scratch copy of the schema on 2026-09-09.
+    //
+    // The difference is that the refusal is now the database's, with the
+    // offending value in the message, and LiveResultsManager::save_all_results
+    // collects it into "Failed to persist live results table(s): positions"
+    // rather than the run exiting 0 (that silence was closed by F-J). Making a
+    // third strategy actually work needs a migration widening those three
+    // columns, which changes the schema and is not part of a byte-identical
+    // batch. It is recorded as the other half of this row.
+    static constexpr size_t kMaxStrategyIdLength = 100;
+    if (strategy_id.empty() || strategy_id.size() > kMaxStrategyIdLength) {
         return make_error<void>(ErrorCode::INVALID_ARGUMENT,
-                                "Invalid strategy_id: must be 1-50 characters", "PostgresDatabase");
+                                "Invalid strategy_id: must be 1-100 characters",
+                                "PostgresDatabase");
     }
 
     // Allow alphanumeric, underscore, and dash
@@ -2210,78 +2301,6 @@ Result<void> PostgresDatabase::store_trading_results(
     }
 }
 
-Result<void> PostgresDatabase::store_live_results(
-    const std::string& strategy_id, const Timestamp& date, double total_return, double volatility,
-    double total_pnl, double unrealized_pnl, double realized_pnl, double current_portfolio_value,
-    double daily_realized_pnl, double daily_unrealized_pnl, double portfolio_var,
-    double net_leverage, double gross_leverage, double margin_leverage,
-    double margin_cushion, double max_correlation, double jump_risk, double risk_scale,
-    double gross_notional, double net_notional, int active_positions, double total_transaction_costs,
-    double margin_posted, double cash_available, const nlohmann::json& config,
-    const std::string& table_name) {
-    auto validation = validate_connection();
-    if (validation.is_error())
-        return validation;
-
-    try {
-        pqxx::work txn(*connection_);
-
-        // Validate table name
-        auto table_validation = validate_table_name(table_name);
-        if (table_validation.is_error()) {
-            return table_validation;
-        }
-
-        // Note: gross_leverage C++ param maps to portfolio_leverage DB column
-        // The old gross_leverage DB column is no longer written to
-        std::string query =
-            "INSERT INTO " + table_name +
-            " (strategy_id, date, total_return, volatility, total_pnl, total_unrealized_pnl, "
-            "total_realized_pnl, "
-            "current_portfolio_value, daily_realized_pnl, daily_unrealized_pnl, portfolio_var, "
-            "net_leverage, portfolio_leverage, margin_leverage, margin_cushion, "
-            "max_correlation, jump_risk, "
-            "risk_scale, gross_notional, net_notional, active_positions, total_transaction_costs, "
-            "margin_posted, cash_available, config, portfolio_id) "
-            "VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, "
-            "$17, $18, $19, $20, $21, $22, $23, $24, $25, 'BASE_PORTFOLIO') "
-            "ON CONFLICT (portfolio_id, strategy_id, date) "
-            "DO UPDATE SET total_return = EXCLUDED.total_return, volatility = EXCLUDED.volatility, "
-            "total_pnl = EXCLUDED.total_pnl, total_unrealized_pnl = EXCLUDED.total_unrealized_pnl, "
-            "total_realized_pnl = EXCLUDED.total_realized_pnl, current_portfolio_value = "
-            "EXCLUDED.current_portfolio_value, "
-            "daily_realized_pnl = EXCLUDED.daily_realized_pnl, daily_unrealized_pnl = "
-            "EXCLUDED.daily_unrealized_pnl, "
-            "portfolio_var = EXCLUDED.portfolio_var, "
-            "net_leverage = EXCLUDED.net_leverage, portfolio_leverage = "
-            "EXCLUDED.portfolio_leverage, margin_leverage = EXCLUDED.margin_leverage, "
-            "margin_cushion = EXCLUDED.margin_cushion, "
-            "max_correlation = EXCLUDED.max_correlation, jump_risk = EXCLUDED.jump_risk, "
-            "risk_scale = EXCLUDED.risk_scale, gross_notional = EXCLUDED.gross_notional, "
-            "net_notional = EXCLUDED.net_notional, active_positions = EXCLUDED.active_positions, "
-            "total_transaction_costs = EXCLUDED.total_transaction_costs, margin_posted = "
-            "EXCLUDED.margin_posted, cash_available = EXCLUDED.cash_available, config = "
-            "EXCLUDED.config";
-
-        txn.exec(query, pqxx::params{strategy_id, format_timestamp(date), total_return, volatility,
-                        total_pnl, unrealized_pnl, realized_pnl, current_portfolio_value,
-                        daily_realized_pnl, daily_unrealized_pnl, portfolio_var,
-                        net_leverage, gross_leverage, margin_leverage, margin_cushion,
-                        max_correlation, jump_risk, risk_scale, gross_notional, net_notional,
-                        active_positions, total_transaction_costs, margin_posted, cash_available,
-                        config.dump()});
-
-        txn.commit();
-        INFO("Successfully stored live results for strategy: " + strategy_id + " on " +
-             format_timestamp(date));
-        return Result<void>();
-    } catch (const std::exception& e) {
-        return make_error<void>(ErrorCode::DATABASE_ERROR,
-                                "Failed to store live results: " + std::string(e.what()),
-                                "PostgresDatabase");
-    }
-}
-
 Result<std::tuple<double, double, double>> PostgresDatabase::get_previous_live_aggregates(
     const std::string& strategy_id, const std::string& portfolio_id, const Timestamp& date,
     const std::string& table_name) {
@@ -2351,7 +2370,8 @@ Result<std::tuple<double, double, double>> PostgresDatabase::get_previous_live_a
 Result<void> PostgresDatabase::store_trading_equity_curve(const std::string& strategy_id,
                                                           const Timestamp& timestamp, double equity,
                                                           const std::string& portfolio_id,
-                                                          const std::string& table_name) {
+                                                          const std::string& table_name,
+                                                          const std::string& portfolio_type) {
     auto validation = validate_connection();
     if (validation.is_error())
         return validation;
@@ -2365,13 +2385,20 @@ Result<void> PostgresDatabase::store_trading_equity_curve(const std::string& str
             return table_validation;
         }
 
+        // portfolio_type is now written explicitly instead of being left to the
+        // column DEFAULT. The ON CONFLICT target has always named it, so an
+        // INSERT that did not supply it was relying on the default matching the
+        // conflict key -- true today ('system'), and silently wrong the moment a
+        // second stream exists. Default parameter is 'system', so the row this
+        // writes is identical to the row it wrote before.
         std::string query = "INSERT INTO " + table_name +
-                            " (strategy_id, timestamp, equity, portfolio_id) "
-                            "VALUES ($1, $2, $3, $4) "
+                            " (strategy_id, timestamp, equity, portfolio_id, portfolio_type) "
+                            "VALUES ($1, $2, $3, $4, $5) "
                             "ON CONFLICT (portfolio_id, strategy_id, timestamp, portfolio_type) "
                             "DO UPDATE SET equity = EXCLUDED.equity";
 
-        txn.exec(query, pqxx::params{strategy_id, format_timestamp(timestamp), equity, portfolio_id});
+        txn.exec(query, pqxx::params{strategy_id, format_timestamp(timestamp), equity, portfolio_id,
+                                     portfolio_type});
 
         txn.commit();
         return Result<void>();
@@ -2384,7 +2411,8 @@ Result<void> PostgresDatabase::store_trading_equity_curve(const std::string& str
 
 Result<void> PostgresDatabase::store_trading_equity_curve_batch(
     const std::string& strategy_id, const std::vector<std::pair<Timestamp, double>>& equity_points,
-    const std::string& portfolio_id, const std::string& table_name) {
+    const std::string& portfolio_id, const std::string& table_name,
+    const std::string& portfolio_type) {
     auto validation = validate_connection();
     if (validation.is_error())
         return validation;
@@ -2399,13 +2427,15 @@ Result<void> PostgresDatabase::store_trading_equity_curve_batch(
         }
 
         for (const auto& [timestamp, equity] : equity_points) {
+            // Same correction as the single-point writer above.
             std::string query = "INSERT INTO " + table_name +
-                                " (strategy_id, timestamp, equity, portfolio_id) "
-                                "VALUES ($1, $2, $3, $4) "
+                                " (strategy_id, timestamp, equity, portfolio_id, portfolio_type) "
+                                "VALUES ($1, $2, $3, $4, $5) "
                                 "ON CONFLICT (portfolio_id, strategy_id, timestamp, portfolio_type) "
                                 "DO UPDATE SET equity = EXCLUDED.equity";
 
-            txn.exec(query, pqxx::params{strategy_id, format_timestamp(timestamp), equity, portfolio_id});
+            txn.exec(query, pqxx::params{strategy_id, format_timestamp(timestamp), equity,
+                                         portfolio_id, portfolio_type});
         }
 
         txn.commit();
@@ -3174,24 +3204,43 @@ Result<void> PostgresDatabase::store_applied_corp_actions_in(
     }
 }
 
-DbTransaction::DbTransaction(pqxx::connection& conn)
-    : txn_(std::make_unique<pqxx::work>(conn)) {}
+DbTransaction::DbTransaction(pqxx::connection& conn, PostgresDatabase* owner)
+    : txn_(std::make_unique<pqxx::work>(conn)), owner_(owner) {
+    // C4-DbTransaction: mark the connection busy for the life of this scope.
+    if (owner_) owner_->in_unit_of_work_ = true;
+}
 
 DbTransaction::DbTransaction(DbTransaction&& other) noexcept
-    : txn_(std::move(other.txn_)), committed_(other.committed_) {
+    : txn_(std::move(other.txn_)), committed_(other.committed_), owner_(other.owner_) {
     other.committed_ = false;
+    // The moved-from scope no longer owns the busy flag; exactly one object must
+    // clear it, or a move would end the unit early.
+    other.owner_ = nullptr;
 }
 
 DbTransaction& DbTransaction::operator=(DbTransaction&& other) noexcept {
     if (this != &other) {
+        release_owner();
         txn_ = std::move(other.txn_);
         committed_ = other.committed_;
+        owner_ = other.owner_;
         other.committed_ = false;
+        other.owner_ = nullptr;
     }
     return *this;
 }
 
+void DbTransaction::release_owner() {
+    if (owner_) {
+        owner_->in_unit_of_work_ = false;
+        owner_ = nullptr;
+    }
+}
+
 DbTransaction::~DbTransaction() {
+    // The connection is free again as soon as this scope ends, whether it
+    // committed or rolled back.
+    release_owner();
     // pqxx::work rolls back on destruction when it was never committed, which is
     // exactly the behaviour we want for an abandoned unit of work. Destroying it
     // here (rather than letting the member die silently) keeps that explicit.
@@ -3217,6 +3266,13 @@ Result<void> DbTransaction::commit() {
     try {
         txn_->commit();
         committed_ = true;
+        // The pqxx::work is finished, so the connection can carry a new
+        // transaction again -- release the busy flag HERE rather than waiting
+        // for the destructor. Holding it until scope exit would refuse a
+        // perfectly legal self-opening call made after the commit but before
+        // the scope closes, and the refusal would tell the caller to pass a
+        // transaction that no longer exists.
+        release_owner();
         return Result<void>();
     } catch (const std::exception& e) {
         return make_error<void>(ErrorCode::DATABASE_ERROR,
@@ -3236,7 +3292,7 @@ Result<std::unique_ptr<DbTransaction>> PostgresDatabase::begin_unit_of_work() {
     try {
         // `new` rather than make_unique: the constructor is private to keep
         // pqxx out of caller code, and make_unique is not a friend.
-        return Result<Scope>(Scope(new DbTransaction(*connection_)));
+        return Result<Scope>(Scope(new DbTransaction(*connection_, this)));
     } catch (const std::exception& e) {
         return make_error<Scope>(ErrorCode::DATABASE_ERROR,
                                  "Failed to begin unit of work: " + std::string(e.what()),

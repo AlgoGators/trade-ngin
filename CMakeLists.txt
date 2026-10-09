@@ -62,6 +62,70 @@ find_package(Arrow REQUIRED)
 find_package(Eigen3 REQUIRED)
 find_package(NLopt REQUIRED)
 
+# NEW-3 / M-17: scrub a stale absolute SDK path out of NLopt's imported target.
+#
+# Homebrew's NLopt ships NLoptLibraryDepends.cmake, which sets, verbatim:
+#
+#   set_target_properties(NLopt::nlopt PROPERTIES
+#     INTERFACE_LINK_LIBRARIES "/Library/Developer/CommandLineTools/SDKs/MacOSX26.sdk/usr/lib/libm.tbd")
+#
+# an absolute path baked in on the machine that built the bottle. When the local
+# Command Line Tools are a different version that directory does not exist, and
+# because it arrives through an INTERFACE property it propagates into the link
+# line of every target that links trade_ngin -- 22 generated files on this
+# checkout -- and every one of them fails to link.
+#
+# The workaround that grew around this was to reconfigure and then sed the
+# generated build tree, by hand, after every reconfigure. That is what this
+# replaces. NOTE for whoever chased the old memory note: the cause is NOT
+# Homebrew's pkgconfig. It is this one line in NLopt's own exported target file
+# (H8 in the E3 audit).
+#
+# The fix rewrites the imported target's interface: any element naming a
+# nonexistent .sdk path is dropped and, where it was libm, replaced by plain "m"
+# so the linker resolves it against whichever SDK is actually in use. Entries
+# that exist on this machine are left exactly as they are, so on a host whose
+# SDK does match, this is a no-op.
+if(APPLE AND TARGET NLopt::nlopt)
+    get_target_property(_nlopt_iface NLopt::nlopt INTERFACE_LINK_LIBRARIES)
+    if(_nlopt_iface)
+        set(_nlopt_fixed "")
+        foreach(_lib IN LISTS _nlopt_iface)
+            if(_lib MATCHES "\\.sdk/" AND NOT EXISTS "${_lib}")
+                if(_lib MATCHES "libm\\.(tbd|dylib|a)$")
+                    list(APPEND _nlopt_fixed "m")
+                    message(STATUS
+                        "NLopt: replaced stale SDK libm path with -lm (NEW-3): ${_lib}")
+                else()
+                    message(STATUS
+                        "NLopt: dropped stale SDK path from imported target (NEW-3): ${_lib}")
+                endif()
+            else()
+                list(APPEND _nlopt_fixed "${_lib}")
+            endif()
+        endforeach()
+        set_target_properties(NLopt::nlopt PROPERTIES
+                              INTERFACE_LINK_LIBRARIES "${_nlopt_fixed}")
+
+        # Self-check. If a future NLopt bottle bakes in a stale absolute path of
+        # some other shape, the scrub above will miss it and the only symptom
+        # would be a link error in 22 unrelated targets with nothing pointing
+        # back to here. Fail at configure time instead, naming the file to look
+        # at.
+        foreach(_lib IN LISTS _nlopt_fixed)
+            if(IS_ABSOLUTE "${_lib}" AND NOT EXISTS "${_lib}")
+                message(FATAL_ERROR
+                    "NLopt::nlopt still carries a nonexistent absolute path after the NEW-3 "
+                    "scrub: ${_lib}\n"
+                    "It comes from NLoptLibraryDepends.cmake in the NLopt install prefix "
+                    "(INTERFACE_LINK_LIBRARIES). Widen the scrub above to cover it.")
+            endif()
+        endforeach()
+    endif()
+    unset(_nlopt_iface)
+    unset(_nlopt_fixed)
+endif()
+
 # Try to find libpqxx via pkg-config (works with Homebrew)
 find_package(PkgConfig REQUIRED)
 pkg_check_modules(PQXX REQUIRED libpqxx)

@@ -8,6 +8,7 @@
 #include <random>
 #include <thread>
 #include <vector>
+#include "trade_ngin/core/state_manager.hpp"
 #include "trade_ngin/data/postgres_database.hpp"
 
 namespace trade_ngin {
@@ -75,6 +76,22 @@ public:
      * @return Reference to the database pool instance
      */
     static DatabasePool& instance() {
+        // E2-F30. Function-local statics are destroyed in reverse order of
+        // CONSTRUCTION, and the pool's pooled PostgresDatabase objects call
+        // StateManager::instance().unregister_component() from their own
+        // destructors (postgres_database.cpp, disconnect()). If StateManager
+        // happened to be constructed after the pool -- which it is whenever a
+        // runner touches the pool before anything registers a component -- it is
+        // destroyed BEFORE the pool, and every pooled connection's shutdown then
+        // locks a recursive_mutex inside a destroyed StateManager. That is the
+        // five "recursive mutex" warnings every live run ends with.
+        //
+        // Touching StateManager here, before `pool` is constructed, makes its
+        // construction strictly earlier and therefore its destruction strictly
+        // later, whatever order the program first reaches these singletons in.
+        // It costs one already-constructed reference per call and changes
+        // nothing about what either object does.
+        (void)StateManager::instance();
         static DatabasePool pool;
         return pool;
     }

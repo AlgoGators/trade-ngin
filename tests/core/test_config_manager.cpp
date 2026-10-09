@@ -624,11 +624,102 @@ protected:
     std::filesystem::path dir_;
 };
 
-// FIXME (production bug): ConfigManager::initialize on a non-existent
-// config_path takes std::lock_guard<std::mutex>(mutex_) at line 276, then
-// calls load_config_files → save_configs which takes the same non-recursive
-// mutex at line 507. This deadlocks. Cannot test the empty-path / seed-defaults
-// branch without fixing the bug. Captured here for a future PR.
+// TEST-config-manager-seed-branch (2026-09-09).
+//
+// The FIXME that stood here said the seed-defaults branch could not be tested:
+// initialize() took a lock_guard on a non-recursive mutex and then reached
+// save_configs(), which took the same mutex, so a non-existent config_path
+// deadlocked. That was true when it was written and is not any more -- mutex_ is
+// a std::recursive_mutex (C-16, fixed on main in May 2026 by ca8a3f9b), so the
+// re-entrant take is legal and the branch runs.
+//
+// The branch had therefore never been exercised, on a path that runs exactly
+// once per deployment: the first start against a fresh config directory. It
+// creates the directory, seeds five default component configs and writes them to
+// disk. If it were broken, the failure would land on a brand-new environment and
+// nowhere else.
+//
+// The three tests below cover it: that it completes at all (the deadlock is
+// gone), that it writes every component file with valid parseable content, and
+// that a second initialize() reads back what the first one seeded rather than
+// re-seeding over it.
+
+TEST_F(ConfigManagerInitTest, InitializeSeedsDefaultsWhenTheDirectoryDoesNotExist) {
+    ASSERT_FALSE(std::filesystem::exists(dir_)) << "the fixture must start with no directory";
+
+    auto& mgr = ConfigManager::instance();
+    auto r = mgr.initialize(dir_, Environment::DEVELOPMENT);
+
+    // Reaching this line at all is half the test: before ca8a3f9b it deadlocked
+    // here and the suite hung rather than failed.
+    ASSERT_TRUE(r.is_ok()) << (r.error() ? r.error()->what() : "no error");
+    EXPECT_TRUE(std::filesystem::exists(dir_))
+        << "the seed branch did not create the config directory";
+    EXPECT_EQ(mgr.get_environment(), Environment::DEVELOPMENT);
+}
+
+TEST_F(ConfigManagerInitTest, SeededDefaultsAreWrittenForEveryComponent) {
+    auto& mgr = ConfigManager::instance();
+    ASSERT_TRUE(mgr.initialize(dir_, Environment::DEVELOPMENT).is_ok());
+
+    // The five components load_config_files() iterates, by the names
+    // get_component_name() gives them. "data" rather than "database" is
+    // deliberate and is what the loader looks for on the next start.
+    for (const char* component : {"strategy", "risk", "execution", "data", "logging"}) {
+        const auto file = dir_ / (std::string(component) + ".json");
+        ASSERT_TRUE(std::filesystem::exists(file))
+            << "the seed branch did not write " << component << ".json, so the next start "
+               "would find a directory that exists but has nothing in it";
+        std::ifstream in(file);
+        nlohmann::json parsed;
+        ASSERT_NO_THROW(in >> parsed)
+            << component << ".json is not parseable JSON";
+        EXPECT_TRUE(parsed.is_object()) << component << ".json is not a JSON object";
+    }
+}
+
+// FINDING, pinned rather than fixed (this item is test-only).
+//
+// The seed branch writes a data.json that its OWN validator rejects, so a fresh
+// deployment starts once and then fails on every subsequent start:
+//
+//   create_default_database_config() writes connection_string, max_connections,
+//   timeout_seconds  (config_manager.cpp)
+//   DatabaseValidator requires      host, port, database, user
+//   (config_manager.cpp:232)
+//
+// The two drifted apart and nothing noticed, because the seed path returns
+// save_configs() directly and never validates what it just wrote, while the load
+// path validates everything it reads. First start: seeds, succeeds. Second
+// start: loads, and fails with
+//
+//   Configuration validation failed for data:
+//    - host: Required field missing
+//    - port: Required field missing
+//    - database: Required field missing
+//
+// This test asserts that behaviour AS IT IS, so the defect is recorded and
+// cannot regress further unnoticed. It is written to FAIL the day the defect is
+// fixed, with a message saying so -- that is the intended trigger to delete it
+// and replace it with the round-trip assertion that belongs here.
+TEST_F(ConfigManagerInitTest, SeededDefaultsDoNotSatisfyTheirOwnValidatorOnReload) {
+    auto& mgr = ConfigManager::instance();
+    ASSERT_TRUE(mgr.initialize(dir_, Environment::DEVELOPMENT).is_ok())
+        << "the first start, which seeds, is expected to succeed";
+
+    ConfigVersionManager::reset_instance();
+    auto second = mgr.initialize(dir_, Environment::DEVELOPMENT);
+
+    ASSERT_TRUE(second.is_error())
+        << "the seeded configs now load cleanly, which means create_default_database_config "
+           "and DatabaseValidator have been reconciled. Good -- delete this test and assert "
+           "the round trip instead.";
+    const std::string what = second.error()->what();
+    EXPECT_NE(what.find("data"), std::string::npos)
+        << "expected the data component to be the one that fails; got: " << what;
+    EXPECT_NE(what.find("Required field missing"), std::string::npos)
+        << "expected missing required fields; got: " << what;
+}
 
 TEST_F(ConfigManagerInitTest, InitializeReReadsExistingFiles) {
     std::filesystem::create_directories(dir_);

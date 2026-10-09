@@ -469,45 +469,18 @@ Result<void> EmailSender::send_email(const std::string& subject, const std::stri
     }
 }
 
-namespace {
-// Helper function to check if a symbol is an agricultural future
-bool is_agricultural_future(const std::string& symbol) {
-    // Extract base symbol (remove .v.0, .c.0 suffixes)
-    std::string base_symbol = symbol;
-    auto dot_pos = base_symbol.find('.');
-    if (dot_pos != std::string::npos) {
-        base_symbol = base_symbol.substr(0, dot_pos);
-    }
-
-    // Agricultural futures list
-    static const std::set<std::string> ag_futures = {
-        "ZC",  // Corn
-        "ZS",  // Soybeans
-        "ZW",  // Wheat
-        "ZL",  // Soybean Oil
-        "ZM",  // Soybean Meal
-        "ZR",  // Rough Rice
-        "KE",  // KC HRW Wheat
-        "HE",  // Lean Hogs
-        "LE",  // Live Cattle
-        "GF"   // Feeder Cattle
-    };
-
-    return ag_futures.find(base_symbol) != ag_futures.end();
-}
-
-// Helper function to filter out agricultural positions
-[[maybe_unused]] std::unordered_map<std::string, Position> filter_non_agricultural_positions(
-    const std::unordered_map<std::string, Position>& positions) {
-    std::unordered_map<std::string, Position> filtered;
-    for (const auto& [symbol, position] : positions) {
-        if (!is_agricultural_future(symbol)) {
-            filtered[symbol] = position;
-        }
-    }
-    return filtered;
-}
-}  // namespace
+// DEAD-email-ag-filter: an anonymous namespace holding is_agricultural_future()
+// and filter_non_agricultural_positions() stood here. The filter was
+// [[maybe_unused]] and had no caller anywhere in the tree; the predicate had no
+// caller except the filter. Both are deleted.
+//
+// The agricultural-symbol logic that IS live is not this one: the two futures
+// runners each define their own is_agricultural_future lambda
+// (live_portfolio.cpp and live_portfolio_conservative.cpp, around the Monday
+// carry-forward block) and use it there. This copy in the email layer was a
+// second, divergent definition of the same idea that nothing consulted -- the
+// worst kind to leave lying about, because it reads like the email report
+// filters agricultural positions, and it does not.
 
 std::string EmailSender::generate_trading_report_body(
     const std::unordered_map<std::string, Position>& positions,
