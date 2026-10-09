@@ -350,3 +350,61 @@ TEST_F(TrendFollowingFastTest, ProcessUptrendingThenDowntrendingFlipsForecastSig
     // After a sustained downtrend the forecast should not be more bullish than after the uptrend.
     EXPECT_LE(f_down, f_up);
 }
+
+// ===== E-10 (FAST-history-never-cleared) =====
+// The live runners hand every sleeve its whole history in one on_data call (more than 100 bars a
+// symbol). TrendFollowingStrategy treats such a bulk feed as a replacement and clears the symbol's
+// history first; FAST appended, so a second bulk feed in one process spliced the window onto
+// itself (2N closes, trimmed to max_history_size). Daily feeds (100 bars or fewer a symbol, the
+// backtest's path) still accumulate, as in TrendFollowingStrategy.
+
+TEST_F(TrendFollowingFastTest, BulkFeedTwiceHoldsOneHistory) {
+    EXPECT_TRUE(strategy_->start().is_ok());
+    auto bars = create_test_data("ES", 300, 100.0, 0.001);
+
+    ASSERT_TRUE(strategy_->on_data(bars).is_ok());
+    const auto once = strategy_->get_price_history().at("ES");
+    const double forecast_once = strategy_->get_forecast("ES");
+    ASSERT_EQ(once.size(), 300u);
+    EXPECT_DOUBLE_EQ(once.front(), static_cast<double>(bars.front().close));
+    EXPECT_DOUBLE_EQ(once.back(), static_cast<double>(bars.back().close));
+
+    ASSERT_TRUE(strategy_->on_data(bars).is_ok());
+    const auto twice = strategy_->get_price_history().at("ES");
+    EXPECT_EQ(twice.size(), 300u) << "a second bulk feed of the same bars must not append";
+    EXPECT_EQ(twice, once);
+    EXPECT_EQ(strategy_->get_forecast("ES"), forecast_once)
+        << "the forecast must be computed from the same history after the second feed";
+    // The bar dates the vol annualisation reads are cleared in step with the closes.
+    const auto* inst = strategy_->get_instrument_data("ES");
+    ASSERT_NE(inst, nullptr);
+    EXPECT_EQ(inst->bar_timestamps.size(), 300u);
+    EXPECT_EQ(inst->bar_timestamps.front(), bars.front().timestamp);
+    EXPECT_EQ(inst->bar_timestamps.back(), bars.back().timestamp);
+}
+
+TEST_F(TrendFollowingFastTest, BulkFeedReplacesAnEarlierDailyHistory) {
+    EXPECT_TRUE(strategy_->start().is_ok());
+    auto bars = create_test_data("ES", 300, 100.0, 0.001);
+    std::vector<Bar> first_days(bars.begin(), bars.begin() + 50);
+    ASSERT_TRUE(strategy_->on_data(first_days).is_ok());
+    ASSERT_EQ(strategy_->get_price_history().at("ES").size(), 50u);
+
+    ASSERT_TRUE(strategy_->on_data(bars).is_ok());
+    EXPECT_EQ(strategy_->get_price_history().at("ES").size(), 300u);
+    ASSERT_NE(strategy_->get_instrument_data("ES"), nullptr);
+    EXPECT_EQ(strategy_->get_instrument_data("ES")->bar_timestamps.size(), 300u);
+}
+
+TEST_F(TrendFollowingFastTest, FeedsOfAtMostOneHundredBarsAccumulate) {
+    EXPECT_TRUE(strategy_->start().is_ok());
+    auto bars = create_test_data("ES", 200, 100.0, 0.001);
+    std::vector<Bar> first(bars.begin(), bars.begin() + 100);
+    std::vector<Bar> second(bars.begin() + 100, bars.end());
+    ASSERT_TRUE(strategy_->on_data(first).is_ok());
+    ASSERT_TRUE(strategy_->on_data(second).is_ok());
+    const auto hist = strategy_->get_price_history().at("ES");
+    ASSERT_EQ(hist.size(), 200u) << "exactly 100 bars is not a bulk feed (the rule is > 100)";
+    EXPECT_DOUBLE_EQ(hist.front(), static_cast<double>(bars.front().close));
+    EXPECT_DOUBLE_EQ(hist.back(), static_cast<double>(bars.back().close));
+}

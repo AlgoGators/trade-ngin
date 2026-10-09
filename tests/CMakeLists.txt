@@ -27,6 +27,8 @@ set(TEST_SOURCES
     data/test_database_pooling.cpp
     data/test_db_transaction_atomicity.cpp
     data/test_delete_stale_executions_scope_db.cpp
+    data/test_contract_metadata_fee_column_db.cpp
+    data/test_executions_netting_column_db.cpp
     data/test_load_positions_identifier_db.cpp
     data/test_equity_curve_stream_db.cpp
     data/test_store_positions_error_db.cpp
@@ -39,6 +41,7 @@ set(TEST_SOURCES
     data/test_market_data_utils.cpp
     data/test_futures_bar_dedup_db.cpp
     data/test_session_classifier.cpp
+    data/test_session_classifier_instrument_id.cpp
     order/test_order_manager.cpp
     order/test_utils.cpp
     instruments/test_futures.cpp
@@ -52,8 +55,10 @@ set(TEST_SOURCES
     optimization/test_dynamic_optimizer.cpp
     backtest/test_transaction_cost_analysis.cpp
     transaction_cost/test_transaction_cost_manager.cpp
+    transaction_cost/test_cost_metadata_specs.cpp
     transaction_cost/test_spread_model.cpp
     transaction_cost/test_impact_model.cpp
+    transaction_cost/test_netting.cpp
     live/corp_actions/test_applier.cpp
     live/corp_actions/test_effect_classes.cpp
     live/corp_actions/test_frame_horizon.cpp
@@ -78,6 +83,7 @@ set(TEST_SOURCES
     live/corp_actions/test_spinoff_dividend_double_apply.cpp
     live/test_live_metrics_includes_dividend_income.cpp
     live/test_daily_pnl_identity.cpp
+    live/test_book_exposure.cpp
     live/test_trading_days_anchor.cpp
     backtest/test_slippage_model.cpp
     backtest/test_backtest_execution_manager.cpp
@@ -93,6 +99,8 @@ set(TEST_SOURCES
     backtest/test_backtest_unrealized_accounting.cpp
     backtest/test_equity_cost_warmup.cpp
     backtest/test_backtest_junk_signal_feed.cpp
+    backtest/test_backtest_equity_cost_retier.cpp
+    backtest/test_backtest_futures_cost_feed.cpp
     execution/test_execution_engine.cpp
     portfolio/test_portfolio_manager.cpp
     core/test_equity_portfolio_namespace.cpp
@@ -106,6 +114,7 @@ set(TEST_SOURCES
     live/test_day_t_write_ordering.cpp
     live/test_live_run_refusal_arms.cpp
     live/test_risk_module_error_path.cpp
+    live/test_sleeve_risk_module_failure.cpp
     data/test_current_holding_start_db.cpp
     data/test_current_holding_start_bound_db.cpp
     instruments/test_equity_margin_cash_regt.cpp
@@ -125,6 +134,10 @@ set(TEST_SOURCES
     portfolio/test_covariance_date_alignment.cpp
     portfolio/test_covariance_participants.cpp
     portfolio/test_pm_session_hold.cpp
+    portfolio/test_delivered_cut.cpp
+    portfolio/test_sizing_capital.cpp
+    portfolio/test_cut_delivery.cpp
+    portfolio/test_pm_netting.cpp
     storage/test_backtest_results_manager.cpp
     storage/test_live_results_manager.cpp
     storage/test_equity_fallback_stream_db.cpp
@@ -156,12 +169,14 @@ set(TEST_SOURCES
     strategy/test_regime_detector.cpp
     strategy/test_trend_following_fast.cpp
     strategy/test_trend_following_slow.cpp
+    strategy/test_buffer_weight_source.cpp
     strategy/test_mean_reversion_backtest.cpp
     strategy/test_equity_backtest_db_validation.cpp
     strategy/test_equity_pnl_accounting.cpp
     strategy/test_live_bt_signal_consistency.cpp
     strategy/test_signals_publication.cpp
     strategy/test_volatility_size_1_nan_guard.cpp
+    strategy/test_vol_annualisation.cpp
     strategy/test_stale_unrealized_pnl_zero_avg_price.cpp
     strategy/test_live_daily_cycle_seeding.cpp
     strategy/test_penny_stock_lifecycle.cpp

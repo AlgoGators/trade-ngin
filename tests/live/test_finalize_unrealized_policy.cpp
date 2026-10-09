@@ -89,9 +89,13 @@ class FinalizeUnrealizedPolicyTest : public ::testing::Test {
 protected:
     void SetUp() override {
         InstrumentRegistry::instance().instruments_["MNQ.v.0"] = make_mnq_futures();
+        // The P&L manager looks the contract up by its metadata key, the symbol without the
+        // ".v.0" suffix; with no fallback table any more (CM1) the row must be there.
+        InstrumentRegistry::instance().instruments_["MNQ"] = make_mnq_futures();
     }
     void TearDown() override {
         InstrumentRegistry::instance().instruments_.erase("MNQ.v.0");
+        InstrumentRegistry::instance().instruments_.erase("MNQ");
     }
 
     // Returns the unrealized value the finalizer wrote onto the Day T-1 row.

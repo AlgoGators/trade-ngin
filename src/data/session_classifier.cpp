@@ -2,6 +2,7 @@
 #include "trade_ngin/data/session_classifier.hpp"
 
 #include <algorithm>
+#include <cmath>
 #include <cstdio>
 #include <sstream>
 
@@ -83,15 +84,110 @@ void SessionClassifier::add_bar(const Bar& bar) {
     }
     if (changed) {
         // A bar's verdict depends on the SESSION bars before it: every cached verdict from this
-        // date on is stale.
-        if (auto fit = session_flags_.find(bar.symbol); fit != session_flags_.end()) {
-            fit->second.erase(fit->second.lower_bound(day), fit->second.end());
-        }
+        // date on is stale, and (T-7b-2 C10a) so is the previous bar's, whose id-flip test reads
+        // its next bar.
+        invalidate_flags_from_previous(bar.symbol, day);
     }
 }
 
 void SessionClassifier::add_bars(const std::vector<Bar>& bars) {
     for (const auto& bar : bars) add_bar(bar);
+}
+
+void SessionClassifier::invalidate_flags_from_previous(const std::string& symbol, Day day) {
+    auto fit = session_flags_.find(symbol);
+    if (fit == session_flags_.end()) return;
+    Day from = day;
+    if (auto sit = bars_.find(symbol); sit != bars_.end()) {
+        auto lb = sit->second.lower_bound(day);
+        if (lb != sit->second.begin()) from = std::prev(lb)->first;
+    }
+    fit->second.erase(fit->second.lower_bound(from), fit->second.end());
+}
+
+void SessionClassifier::add_instrument_id(const std::string& symbol, Day day,
+                                          const std::string& instrument_id) {
+    auto& ids = ids_[symbol];
+    auto it = ids.find(day);
+    if (it != ids.end() && it->second == instrument_id) return;
+    ids[day] = instrument_id;
+    // The bar's own flag, the previous bar's (its next id) and every later one (the norm) move.
+    invalidate_flags_from_previous(symbol, day);
+}
+
+std::size_t SessionClassifier::add_instrument_ids(
+    const std::vector<market_data_utils::FuturesInstrumentId>& rows) {
+    std::size_t taken = 0;
+    for (const auto& r : rows) {
+        if (r.date.size() < 10 || r.instrument_id.empty()) continue;
+        int y = 0;
+        unsigned m = 0, d = 0;
+        if (std::sscanf(r.date.c_str(), "%4d-%2u-%2u", &y, &m, &d) != 3) continue;
+        const std::chrono::year_month_day ymd{std::chrono::year{y}, std::chrono::month{m},
+                                              std::chrono::day{d}};
+        if (!ymd.ok()) continue;
+        add_instrument_id(r.symbol, Day{ymd}, r.instrument_id);
+        ++taken;
+    }
+    return taken;
+}
+
+std::size_t SessionClassifier::instrument_id_count() const {
+    std::size_t n = 0;
+    for (const auto& [symbol, ids] : ids_) n += ids.size();
+    return n;
+}
+
+const std::string* SessionClassifier::id_of(const std::string& symbol, const Series& series,
+                                            Series::const_iterator it) const {
+    if (it == series.end()) return nullptr;
+    auto sit = ids_.find(symbol);
+    if (sit == ids_.end()) return nullptr;
+    auto iit = sit->second.find(it->first);
+    return iit == sit->second.end() ? nullptr : &iit->second;
+}
+
+bool SessionClassifier::is_id_flip(const std::string& symbol, const Series& series,
+                                   Series::const_iterator it) const {
+    if (it == series.end() || it == series.begin()) return false;
+    const auto next = std::next(it);
+    if (next == series.end()) return false;
+    const std::string* prev_id = id_of(symbol, series, std::prev(it));
+    const std::string* id = id_of(symbol, series, it);
+    const std::string* next_id = id_of(symbol, series, next);
+    return prev_id && id && next_id && *id != *prev_id && *id != *next_id;
+}
+
+const std::string* SessionClassifier::established_id(const std::string& symbol,
+                                                     const Series& series,
+                                                     Series::const_iterator it) const {
+    if (it == series.begin()) return nullptr;
+    auto j = std::prev(it);
+    // Each step reads bars before `it` and `it` itself (a flip's next bar), never a later one.
+    while (j != series.begin() && is_id_flip(symbol, series, j)) --j;
+    return id_of(symbol, series, j);
+}
+
+bool SessionClassifier::is_unconfirmed_id_change(const std::string& symbol, const Series& series,
+                                                 Series::const_iterator it, std::string* from,
+                                                 std::string* established) const {
+    if (it == series.end() || it == series.begin()) return false;
+    const std::string* id = id_of(symbol, series, it);
+    const std::string* prev_id = id_of(symbol, series, std::prev(it));
+    if (!id || !prev_id || *id == *prev_id) return false;
+    const std::string* est = established_id(symbol, series, it);
+    // Back on the id the symbol printed before a confirmed one-day flip: not a change.
+    if (est && *est == *id) return false;
+    if (from) *from = *prev_id;
+    if (established) *established = est ? *est : std::string("unknown");
+    return true;
+}
+
+bool SessionClassifier::holds_id_change(const DayBar& bar, const std::optional<double>& nm) const {
+    const double f = config_.id_change_hold_fraction;
+    if (!(f > 0.0)) return false;
+    if (std::isinf(f) || !nm) return true;
+    return bar.volume < f * *nm;
 }
 
 std::optional<double> SessionClassifier::session_norm(const std::map<Day, DayBar>& series,
@@ -136,12 +232,24 @@ const std::map<SessionClassifier::Day, bool>& SessionClassifier::session_flags(
     auto sit = bars_.find(symbol);
     if (sit == bars_.end()) return flags;
     const auto& series = sit->second;
-    // The cached flags are a prefix of the series (add_bar drops every flag from a changed
-    // date on), so the next bar to judge is the first one after the last cached date.
+    // The cached flags are a prefix of the series (add_bar and add_instrument_id drop every flag
+    // from the bar before a changed date on), so the next bar to judge is the first one after the
+    // last cached date.
     auto it = flags.empty() ? series.begin() : series.upper_bound(flags.rbegin()->first);
     for (; it != series.end() && it->first < date; ++it) {
         const auto n = session_norm(series, flags, it->first, nullptr);
-        flags[it->first] = judge_bar(it->second, n, nullptr) == SessionVerdict::SESSION;
+        bool session = judge_bar(it->second, n, nullptr) == SessionVerdict::SESSION;
+        // T-7b-2 C10a, with hindsight: a bar whose next bar exists is judged by the confirmed
+        // rule (a one-day flip is not a session; a roll counts on its volume); the last bar
+        // (no next yet) by the day-of rule.
+        if (session) {
+            if (std::next(it) != series.end()) {
+                session = !is_id_flip(symbol, series, it);
+            } else if (is_unconfirmed_id_change(symbol, series, it)) {
+                session = !holds_id_change(it->second, n);
+            }
+        }
+        flags[it->first] = session;
     }
     return flags;
 }
@@ -205,6 +313,42 @@ SymbolDayVerdict SessionClassifier::classify_symbol_day(const std::string& symbo
             v.norm = norm(symbol, date, &v.norm_bars);
             if (v.norm && *v.norm > 0.0) v.ratio = b.volume / *v.norm;
             v.verdict = judge_bar(b, v.norm, &v.reason);
+
+            // T-7b-2 C10a: the instrument-id continuity limb. It reads the bars dated <= D only
+            // (never the next one), so live's T-1 and the backtest's signal group see the same.
+            if (const std::string* id = id_of(symbol, *series, bit)) v.instrument_id = *id;
+            if (bit != series->begin()) {
+                const auto pit = std::prev(bit);
+                if (const std::string* pid = id_of(symbol, *series, pit)) {
+                    v.previous_instrument_id = *pid;
+                }
+                // The previous bar's own day-of question, answered by this bar.
+                std::string p_from, p_est;
+                if (is_unconfirmed_id_change(symbol, *series, pit, &p_from, &p_est)) {
+                    const std::string p_id = v.previous_instrument_id;
+                    const std::string what =
+                        !is_id_flip(symbol, *series, pit)
+                            ? "confirmed a ROLL: this session keeps " + p_id
+                        : v.instrument_id == p_est
+                            ? "confirmed a ONE-DAY FLIP: this session is back on " +
+                                  v.instrument_id
+                            : "confirmed a ONE-DAY FLIP, and this session prints a third id " +
+                                  v.instrument_id;
+                    v.id_note = "the previous session's instrument id change on " +
+                                ymd(pit->first) + " (" + p_from + " -> " + p_id + ") is " + what;
+                }
+            }
+            std::string from, established;
+            if (v.verdict == SessionVerdict::SESSION &&
+                is_unconfirmed_id_change(symbol, *series, bit, &from, &established) &&
+                holds_id_change(b, v.norm)) {
+                v.verdict = SessionVerdict::JUNK;
+                v.reason = "instrument id change (" + from + " -> " + v.instrument_id +
+                           ", established " + established +
+                           ") not confirmed until the next session: a roll if the next bar keeps " +
+                           v.instrument_id + ", a one-day flip if it returns to " + established +
+                           " (" + lots(b.volume) + " lots)";
+            }
             return v;
         }
         // The latest bar strictly before `date`, for the hole's age.
@@ -321,6 +465,24 @@ std::vector<SymbolDayVerdict> classify_bar_group(const SessionClassifier& classi
     for (const auto& [symbol, day] : days) {
         out.push_back(classifier.classify_symbol_day(symbol, day, holidays));
     }
+    return out;
+}
+
+InstrumentIdFeed feed_instrument_ids(
+    SessionClassifier& classifier,
+    const Result<std::vector<market_data_utils::FuturesInstrumentId>>& rows) {
+    InstrumentIdFeed out;
+    if (rows.is_error()) {
+        out.line = "INSTRUMENT_ID_FEED no instrument ids (" + std::string(rows.error()->what()) +
+                   "): the continuity limb judges no bar on this run";
+        return out;
+    }
+    out.fed = true;
+    out.ids = classifier.add_instrument_ids(rows.value());
+    out.line = "INSTRUMENT_ID_FEED " + std::to_string(out.ids) +
+               " kept bars carry a vendor instrument id (futures_data.ohlcv_1d_raw, the same "
+               "print only); the continuity limb judges each bar's id against the previous "
+               "session's";
     return out;
 }
 

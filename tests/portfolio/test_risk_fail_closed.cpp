@@ -350,9 +350,10 @@ TEST_F(RiskFailClosedTest, AFailedScaleOnlyPortfolioModuleRefusesTheScope) {
     EXPECT_EQ(quantity("ZZA"), 2.0) << "held at the seeded book, not the ungated target";
 }
 
-// SLEEVE scope is unchanged by C5: a sleeve module that cannot refuse does not refuse when it
-// fails; its failure leaves the sleeve to the others (here, the strategy's own target).
-TEST_F(RiskFailClosedTest, AFailedScaleOnlySleeveModuleDoesNotRefuseTheSleeve) {
+// T-7b-2 C10b (HD 2026-09-24 ruling 18): at SLEEVE scope too, a module that cannot refuse DOES
+// refuse its sleeve when it fails, as the portfolio rule (T-7a C5) does for the book. Before C10b
+// this test pinned the opposite: the sleeve's own target (4 lots) shipped ungated.
+TEST_F(RiskFailClosedTest, AFailedScaleOnlySleeveModuleRefusesTheSleeve) {
     PortfolioConfig pc = base_config();
     pc.allow_fractional_positions = true;
     make_pm(pc, {{"ZZA", make_pos("ZZA", 4.0, 100.0)}});
@@ -361,13 +362,25 @@ TEST_F(RiskFailClosedTest, AFailedScaleOnlySleeveModuleDoesNotRefuseTheSleeve) {
                        {}, {{"FC_S", {std::make_shared<FailingModule>("sleeve_cutter",
                                                                       /*refuse_capable=*/false)}}})
                     .is_ok());
+    ::testing::internal::CaptureStdout();
     ASSERT_TRUE(pm_->process_market_data(three_days()).is_ok());
-    EXPECT_EQ(quantity("ZZA"), 4.0) << "the sleeve's own target, ungated but not pinned";
+    const std::string out = ::testing::internal::GetCapturedStdout();
+    EXPECT_EQ(quantity("ZZA"), 2.0) << "held at the seeded sleeve book, not the ungated 4 lots";
+    EXPECT_NE(out.find("[ERROR]"), std::string::npos) << out;
+    EXPECT_NE(out.find("Risk module sleeve_cutter failed on sleeve FC_S before the loop: the "
+                       "module failed: sleeve_cutter; a sleeve-scope module that cannot answer "
+                       "refuses its sleeve"),
+              std::string::npos)
+        << out;
+    bool found = false;
     for (const auto& row : pm_->last_risk_decisions()) {
         if (row.module_id != "sleeve_cutter" || row.phase != RiskPhase::SLEEVE) continue;
-        EXPECT_EQ(row.applied_action, RiskAction::NONE);
+        found = true;
+        EXPECT_EQ(row.applied_action, RiskAction::REFUSE)
+            << "the failed module's row is the refusal";
         EXPECT_EQ(row.error, "the module failed: sleeve_cutter");
     }
+    EXPECT_TRUE(found);
 }
 
 // The post-rounding point has the same shape and had the same hole.
@@ -733,8 +746,11 @@ TEST_F(RiskFailClosedTest, AFailedRefuseCapableModuleRefusesTheSleeve) {
     ASSERT_TRUE(pm_->process_market_data(three_days()).is_ok());
     const std::string out = ::testing::internal::GetCapturedStdout();
     EXPECT_EQ(quantity("ZZA"), 2.0) << "the sleeve is pinned to its previous book";
-    EXPECT_NE(out.find("Risk module sleeve_boom failed on sleeve FC_S before the loop and can "
-                       "refuse"),
+    // T-7b-2 C10b: the refusal line is the one every capability gets at sleeve scope (an ERROR).
+    EXPECT_NE(out.find("Risk module sleeve_boom failed on sleeve FC_S before the loop: "),
+              std::string::npos)
+        << out;
+    EXPECT_NE(out.find("a sleeve-scope module that cannot answer refuses its sleeve"),
               std::string::npos)
         << out;
 }
@@ -835,4 +851,162 @@ TEST_F(RiskFailClosedTest, ADeclinedLapIsNotReportedAsNotExceeded) {
                        "lap"),
               std::string::npos)
         << out;
+}
+
+// =============================================================================================
+// T-7b-2 C10b (HD 2026-09-24 ruling 18): a sleeve-scope module that cannot answer refuses ITS
+// sleeve (held at the seeded sleeve book, no order) and the other sleeves go on. Driven through
+// process_market_data (the sleeve step before the loop, the loop, the post-rounding point).
+// =============================================================================================
+
+namespace {
+
+/// A SCALE-only sleeve module whose on_bars throws (the sleeve's risk step failing outside
+/// evaluate).
+class ThrowsInOnBars final : public RiskModule {
+public:
+    const std::string& id() const override { return id_; }
+    const std::string& type() const override { return id_; }
+    std::set<RiskTerm> terms() const override { return {RiskTerm::CUSTOM}; }
+    std::set<RiskAction> capabilities() const override { return {RiskAction::SCALE}; }
+    void on_bars(const std::vector<Bar>& bars, const RiskContext& ctx) override {
+        (void)bars;
+        (void)ctx;
+        throw std::runtime_error("on_bars blew up");
+    }
+    Result<RiskDecision> evaluate(const Book& book, const RiskContext& ctx) override {
+        (void)book;
+        (void)ctx;
+        RiskDecision d;
+        d.module_id = id_;
+        return Result<RiskDecision>(d);
+    }
+    nlohmann::json describe() const override { return {{"id", id_}}; }
+
+private:
+    std::string id_{"bars_boom"};
+};
+
+}  // namespace
+
+class SleeveRefusalTest : public RiskFailClosedTest {
+protected:
+    /// Two sleeves: FC_S (the one with the module) seeded 2 lots asking 4, FC_T seeded 1 lot
+    /// asking 3.
+    void make_two_sleeves(std::vector<RiskModulePtr> fc_s_modules, bool seed = true) {
+        static int n = 0;
+        PortfolioConfig pc = base_config();
+        pc.allow_fractional_positions = true;
+        pm_ = std::make_unique<PortfolioManager>(std::move(pc), "PM_SLV_" + std::to_string(++n));
+        strategy_ = make_strategy("FC_S", {{{"ZZA", make_pos("ZZA", 4.0, 100.0)}}});
+        other_ = make_strategy("FC_T", {{{"ZZA", make_pos("ZZA", 3.0, 100.0)}}});
+        ASSERT_TRUE(pm_->add_strategy(strategy_, 0.5, false).is_ok());
+        ASSERT_TRUE(pm_->add_strategy(other_, 0.5, false).is_ok());
+        if (seed) {
+            ASSERT_TRUE(
+                pm_->update_strategy_position("FC_S", "ZZA", make_pos("ZZA", 2.0, 100.0)).is_ok());
+            ASSERT_TRUE(
+                pm_->update_strategy_position("FC_T", "ZZA", make_pos("ZZA", 1.0, 100.0)).is_ok());
+        }
+        ASSERT_TRUE(pm_->set_risk_modules({}, {{"FC_S", std::move(fc_s_modules)}}).is_ok());
+    }
+    double sleeve_qty(const std::string& sid) {
+        return static_cast<double>(pm_->get_strategy_positions().at(sid).at("ZZA").quantity);
+    }
+    size_t sleeve_execs(const std::string& sid) {
+        const auto all = pm_->get_strategy_executions();
+        auto it = all.find(sid);
+        return it == all.end() ? 0 : it->second.size();
+    }
+    /// Runs the day; returns stdout. Records each sleeve's executions before it. (One call: the
+    /// PM's synthetic executions are sized against its own filled ledger, which a seed does not
+    /// set, so "no order" is measured on a second day in test_sleeve_risk_module_failure.cpp;
+    /// here the held quantity is the measure.)
+    std::string run_day() {
+        s_before_ = sleeve_execs("FC_S");
+        t_before_ = sleeve_execs("FC_T");
+        ::testing::internal::CaptureStdout();
+        ok_ = pm_->process_market_data(three_days()).is_ok();
+        return ::testing::internal::GetCapturedStdout();
+    }
+    std::shared_ptr<ScriptedStrategy> other_;
+    size_t s_before_{0}, t_before_{0};
+    bool ok_{false};
+};
+
+TEST_F(SleeveRefusalTest, AFailedSleeveModuleHoldsItsSleeveAndTheOtherSleeveTrades) {
+    make_two_sleeves({std::make_shared<FailingModule>("sleeve_cutter", /*refuse_capable=*/false)});
+    const std::string out = run_day();
+    ASSERT_TRUE(ok_) << out;
+    EXPECT_EQ(sleeve_qty("FC_S"), 2.0) << "FC_S is held at its seeded 2 lots, not its 4\n" << out;
+    EXPECT_EQ(sleeve_qty("FC_T"), 3.0) << "FC_T goes on to its own 3 lots\n" << out;
+    const auto j = pm_->risk_decisions_json();
+    bool pinned_s = false, pinned_t = false;
+    for (const auto& id : j["outcome"]["pinned_scopes"]) {
+        pinned_s = pinned_s || id == "FC_S";
+        pinned_t = pinned_t || id == "FC_T";
+    }
+    EXPECT_TRUE(pinned_s);
+    EXPECT_FALSE(pinned_t);
+}
+
+TEST_F(SleeveRefusalTest, ASleeveModuleThatThrowsHoldsItsSleeveAndTheOtherSleeveTrades) {
+    make_two_sleeves({std::make_shared<FailingModule>("sleeve_thrower", /*refuse_capable=*/false,
+                                                      /*throws=*/true)});
+    const std::string out = run_day();
+    ASSERT_TRUE(ok_) << out;
+    EXPECT_EQ(sleeve_qty("FC_S"), 2.0) << out;
+    EXPECT_EQ(sleeve_qty("FC_T"), 3.0) << out;
+    bool refused = false;
+    for (const auto& row : pm_->last_risk_decisions()) {
+        if (row.scope != RiskScope::SLEEVE || row.module_id != "sleeve_thrower") continue;
+        refused = row.applied_action == RiskAction::REFUSE &&
+                  row.error == "the module threw: sleeve_thrower";
+    }
+    EXPECT_TRUE(refused);
+}
+
+TEST_F(SleeveRefusalTest, ASleeveRiskStepThatThrowsOutsideEvaluateHoldsItsSleeve) {
+    make_two_sleeves({std::make_shared<ThrowsInOnBars>()});
+    const std::string out = run_day();
+    ASSERT_TRUE(ok_) << out;
+    EXPECT_EQ(sleeve_qty("FC_S"), 2.0) << "the sleeve used to ship uncut after this ERROR\n"
+                                       << out;
+    EXPECT_EQ(sleeve_qty("FC_T"), 3.0) << out;
+    EXPECT_NE(out.find("the sleeve risk step could not answer, so the sleeve is refused"),
+              std::string::npos)
+        << out;
+    bool found = false;
+    for (const auto& row : pm_->last_risk_decisions()) {
+        if (row.scope != RiskScope::SLEEVE || row.module_id != kRiskStepModuleId) continue;
+        found = true;
+        EXPECT_EQ(row.scope_id, "FC_S");
+        EXPECT_EQ(row.applied_action, RiskAction::REFUSE);
+        EXPECT_EQ(row.error, "on_bars blew up");
+    }
+    EXPECT_TRUE(found) << "the step failure is recorded as a REFUSE row carrying the error";
+}
+
+TEST_F(SleeveRefusalTest, AFailedSleeveFinalizeHoldsItsSleeve) {
+    make_two_sleeves({std::make_shared<FailingModule>("final_boom", /*refuse_capable=*/false,
+                                                      /*throws=*/false, /*fail_finalize=*/true)});
+    const std::string out = run_day();
+    ASSERT_TRUE(ok_) << out;
+    EXPECT_EQ(sleeve_qty("FC_S"), 2.0) << "pinned at the post-rounding point\n" << out;
+    EXPECT_EQ(sleeve_qty("FC_T"), 3.0) << out;
+}
+
+TEST_F(SleeveRefusalTest, AFailedModuleOnANeverSeededLiveSleeveIsARunError) {
+    make_two_sleeves({std::make_shared<FailingModule>("sleeve_cutter", /*refuse_capable=*/false)},
+                     /*seed=*/false);
+    const std::string out = run_day();
+    EXPECT_FALSE(ok_) << "a flat sleeve must not ship as a refusal\n" << out;
+    EXPECT_NE(out.find("pinning would ship a FLAT book"), std::string::npos) << out;
+}
+
+TEST_F(SleeveRefusalTest, AStepThrowOnANeverSeededLiveSleeveIsARunError) {
+    make_two_sleeves({std::make_shared<ThrowsInOnBars>()}, /*seed=*/false);
+    const std::string out = run_day();
+    EXPECT_FALSE(ok_) << "a flat sleeve must not ship as a refusal\n" << out;
+    EXPECT_NE(out.find("never seeded"), std::string::npos) << out;
 }

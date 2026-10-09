@@ -310,8 +310,9 @@ public:
     /**
      * Get point value multiplier for a symbol
      * 
-     * Uses InstrumentRegistry first, then falls back to known values.
-     * All lookups are logged for debugging.
+     * The InstrumentRegistry's multiplier (metadata "Contract Size"). A symbol the registry does
+     * not hold returns 0 (its P&L is not booked) with an ERROR naming it once; there is no
+     * guessed fallback multiplier.
      * 
      * @param symbol Full symbol (e.g., "MYM.v.0")
      * @return Point value multiplier (e.g., 0.5 for MYM)
@@ -396,12 +397,6 @@ private:
      * Extract base symbol (remove .v./.c. suffix)
      */
     std::string extract_base_symbol(const std::string& symbol) const;
-    
-    /**
-     * Get fallback multiplier for known symbols
-     * These are calculated as: minimum_price_fluctuation / tick_size
-     */
-    double get_fallback_multiplier(const std::string& base_symbol) const;
     
     /**
      * Format timestamp as date string for logging

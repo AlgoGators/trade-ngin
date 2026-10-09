@@ -158,6 +158,12 @@ public:
     Result<void> check_risk_limits() override;
 
     /**
+     * @brief Replace config_.capital_allocation, the capital every sizing line reads (T-7b-2 9c).
+     *        Refuses a capital that is not a finite positive number and leaves the old one.
+     */
+    Result<void> set_capital_allocation(double capital) override;
+
+    /**
      * @brief Get the current signals for the strategy
      * @return Map of signals by symbol
      */

@@ -383,7 +383,8 @@ TEST_F(BacktestCSVExporterTest, ShortSignCoordinatorNetNotionalCarriesTheSign) {
         << "the net notional sums get_notional_value, a magnitude, without the position's sign";
 }
 
-// A flip through zero in the finalized file (backtest_csv_exporter.cpp, append_finalized_positions).
+// A flip through zero in the finalized file (backtest_csv_exporter.cpp,
+// append_finalized_positions).
 // The closed quantity was prev - curr, and only when |curr| < |prev|:
 //   +2 -> -3: |curr| > |prev|, so nothing was realized; the closed +2 leg was lost.
 //   -3 -> +2: closed = -5, so 5 contracts were realized where 3 closed.

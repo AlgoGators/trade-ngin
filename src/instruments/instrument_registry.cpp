@@ -1,6 +1,8 @@
 // src/instruments/instrument_registry.cpp
 #include "trade_ngin/instruments/instrument_registry.hpp"
 #include <arrow/api.h>
+#include <algorithm>
+#include <cmath>
 #include <fstream>
 #include <nlohmann/json.hpp>
 #include <unordered_set>
@@ -147,6 +149,11 @@ Result<void> InstrumentRegistry::load_instruments() {
                     INFO("    " + field->name() + ": " + (r.is_ok() ? r.value() : std::string("NULL")));
                 }
             }
+        }
+
+        if (!table->GetColumnByName("Fee Per Contract")) {
+            WARN("metadata.contract_metadata has no \"Fee Per Contract\" column (migration "
+                 "014); the cost model charges its configured fee on every future");
         }
 
         int rows_loaded = 0;
@@ -371,7 +378,6 @@ std::shared_ptr<Instrument> InstrumentRegistry::create_instrument_from_db(
         }
 
         double min_tick = get_double("Minimum Price Fluctuation");
-        std::string tick_size = get_string("Tick Size");
         // Asset-type-aware default. Futures spec doesn't carry commission; equities
         // get IBKR Pro $0.005/share to match get_equity_default_config().
         double commission = (asset_type == AssetType::EQUITY) ? 0.005 : 0.0;
@@ -384,8 +390,40 @@ std::shared_ptr<Instrument> InstrumentRegistry::create_instrument_from_db(
                 spec.exchange = exchange;
                 spec.currency = "USD";  // Default
                 spec.multiplier = contract_size;
-                spec.tick_size = min_tick;
+                // "Tick Size" is one tick in price units (the unit the close is stored in);
+                // "Minimum Price Fluctuation" is the same tick in dollars per contract, the
+                // tick value. Each goes to the field named for it.
+                spec.tick_size = get_double("Tick Size");
+                spec.tick_value = min_tick;
                 spec.commission_per_contract = commission;
+                if (spec.tick_size <= 0.0) {
+                    WARN("Metadata row " + symbol + " has no positive \"Tick Size\"");
+                    spec.tick_size = 0.0;
+                } else if (min_tick > 0.0) {
+                    // The tick value must equal the tick times the contract size. A row updated
+                    // in one column and not the other (a contract-size change without its tick)
+                    // is reported, not repaired.
+                    const double implied = spec.tick_size * contract_size;
+                    if (std::abs(implied - min_tick) > 1e-9 * std::max(1.0, std::abs(min_tick))) {
+                        WARN("Metadata row " + symbol + " is inconsistent: \"Tick Size\" " +
+                             std::to_string(spec.tick_size) + " x \"Contract Size\" " +
+                             std::to_string(contract_size) + " = " + std::to_string(implied) +
+                             " but \"Minimum Price Fluctuation\" is " + std::to_string(min_tick));
+                    }
+                }
+                // The fee the cost model charges per contract, when the table has the column
+                // (migration 014). It is also the instrument's own commission.
+                if (auto fee_col = table->GetColumnByName("Fee Per Contract")) {
+                    auto fee = DataConversionUtils::safe_get_double(fee_col, row,
+                                                                    "Fee Per Contract");
+                    if (fee.is_ok() && fee.value() >= 0.0) {
+                        spec.fee_per_contract = fee.value();
+                        spec.commission_per_contract = fee.value();
+                    } else {
+                        WARN("Metadata row " + symbol + " has no usable \"Fee Per Contract\"; "
+                             "the cost model charges its configured fee for it");
+                    }
+                }
 
                 // Extract futures-specific fields
                 spec.initial_margin = get_double("Overnight Initial Margin");

@@ -264,3 +264,42 @@ TEST_F(EmailStrategyTablesTest, AnEmptyBookRendersTheEmptyAnswer) {
     ASSERT_NO_THROW({ html = sender_.format_strategy_positions_tables({}, {}, {}); });
     EXPECT_NE(html.find("No positions"), std::string::npos);
 }
+
+// CM1 d: an execution whose contract the instrument registry does not hold shows no guessed
+// notional. The deleted fallback tables priced ZR at 2,000 and ZN at 100,000 (the metadata says
+// 1,000); now the cell reads n/a and the row is left out of the notional total, both tables.
+namespace {
+ExecutionReport fill(const std::string& symbol, double qty, double price) {
+    ExecutionReport e;
+    e.symbol = symbol;
+    e.side = Side::BUY;
+    e.filled_quantity = Quantity(qty);
+    e.fill_price = Price(price);
+    e.total_transaction_costs = Decimal(3.0);
+    return e;
+}
+}  // namespace
+
+TEST_F(EmailStrategyTablesTest, AnExecutionWhoseContractIsNotInTheRegistryShowsNoGuessedNotional) {
+    ASSERT_FALSE(InstrumentRegistry::instance().has_instrument("ZN"));
+    const std::vector<ExecutionReport> execs = {fill("ZN.v.0", 1.0, 110.5)};
+
+    const std::string single = sender_.format_executions_table(execs);
+    EXPECT_EQ(single.find("$11050000.00"), std::string::npos) << single;
+    EXPECT_NE(single.find("<td>n/a</td>"), std::string::npos) << single;
+
+    const std::string per_strategy =
+        sender_.format_single_strategy_executions_table("TREND_FOLLOWING", execs);
+    EXPECT_EQ(per_strategy.find("11,050,000.00"), std::string::npos) << per_strategy;
+    EXPECT_NE(per_strategy.find("<td>n/a</td>"), std::string::npos) << per_strategy;
+    EXPECT_NE(per_strategy.find("<strong>Notional:</strong> $0.00"), std::string::npos)
+        << per_strategy;
+}
+
+// A registered contract keeps its notional from the registry's multiplier.
+TEST_F(EmailStrategyTablesTest, AnExecutionOfARegisteredContractKeepsItsNotional) {
+    const std::vector<ExecutionReport> execs = {fill("ZFGOOD.v.0", 2.0, 100.0)};
+    const std::string per_strategy =
+        sender_.format_single_strategy_executions_table("TREND_FOLLOWING", execs);
+    EXPECT_NE(per_strategy.find("$10,000.00"), std::string::npos) << per_strategy;  // 2 x 100 x 50
+}

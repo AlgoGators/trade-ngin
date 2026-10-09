@@ -275,29 +275,42 @@ TEST_F(RiskModuleLoopTest, ANoneBookRunsNoGateAndLogsItsRuling) {
     EXPECT_FALSE(pm_->last_risk_decisions().empty());
 }
 
-// T-6b-fix F5: the written leverage policy. max_gross/net 0.29 on 1,000 of capital is 2.9 lots
-// of ZZA at 100: the gate cuts a 5-lot book toward 2.9, which no whole-contract book can equal, so
-// forced rounding ships 3 lots, over the limit -- a book no gate reading ever saw, which is why the
-// check reads the SHIPPED book at the post-rounding point. That is logged ONCE per
-// PortfolioManager, with the excess in contracts; a book under the limit logs nothing.
-TEST_F(RiskModuleLoopTest, ARoundedBookOverTheLeverageLimitWarnsOncePerRun) {
+// T-6b-fix F5, re-keyed in T-7b-2 C9w: the written leverage policy. max_gross/net 0.29 on 1,000 of
+// capital is 2.9 lots of ZZA at 100: the gate cuts a 5-lot book toward 2.9, which no whole-contract
+// book can equal, so forced rounding ships 3 lots, over the limit -- a book no gate reading ever saw,
+// which is why the check reads the FINAL book at the post-rounding point. That is logged at most ONCE
+// PER TRADING DAY (the day of the rebalance's newest bar, or its as_of), never on a warm-up rebalance,
+// with the excess in contracts; a book under the limit logs nothing. The old rule latched once per
+// run: a backtest then said nothing after its first over-limit day, and on a replaying runner the one
+// line described a replayed book, not the final one (T-6b-fix AUDIT section 8).
+TEST_F(RiskModuleLoopTest, ARoundedBookOverTheLeverageLimitWarnsOncePerTradingDay) {
     make_pm(false, {{{"ZZA", make_pos("ZZA", 5.0, 100.0)}}});
     ::testing::internal::CaptureStdout();
-    ASSERT_TRUE(pm_->process_market_data(three_days()).is_ok());
-    ASSERT_TRUE(pm_->process_market_data({make_bar("ZZA", 4, 101.0)}).is_ok());
+    ASSERT_TRUE(pm_->process_market_data(three_days()).is_ok());                 // 2026-01-04
+    ASSERT_TRUE(pm_->process_market_data({make_bar("ZZA", 4, 101.0)}).is_ok());  // 2026-01-05
+    ASSERT_TRUE(pm_->process_market_data({make_bar("ZZA", 4, 101.0)}).is_ok());  // 2026-01-05 again
+    ASSERT_TRUE(pm_->process_market_data({make_bar("ZZA", 5, 101.0)}, /*skip_execution_generation=*/true)
+                    .is_ok());                                                   // 2026-01-06, warm-up
     const std::string out = ::testing::internal::GetCapturedStdout();
     const double shipped = quantity("ZZA");
     EXPECT_EQ(shipped, std::round(shipped)) << "whole contracts";
-    EXPECT_GT(shipped * 100.0 / 1000.0, 0.29) << "the precondition: the shipped book is over";
-    EXPECT_EQ(count_of(out, "Risk module carver warning on portfolio PM_RML_"), 1u) << out;
+    EXPECT_GT(shipped * 100.0 / 1000.0, 0.29) << "the precondition: the final book is over";
+    EXPECT_EQ(count_of(out, "Risk module carver warning on portfolio PM_RML_"), 2u) << out;
+    EXPECT_EQ(count_of(out, "RISK_LEVERAGE_ROUNDED"), 2u) << "one per trading day:\n" << out;
+    EXPECT_EQ(count_of(out, "RISK_LEVERAGE_ROUNDED day=2026-01-04 "), 1u) << out;
+    EXPECT_EQ(count_of(out, "RISK_LEVERAGE_ROUNDED day=2026-01-05 "), 1u) << "the second rebalance "
+                                                                             "of the day is silent:\n"
+                                                                          << out;
+    EXPECT_EQ(count_of(out, "RISK_LEVERAGE_ROUNDED day=2026-01-06 "), 0u) << "warm-up:\n" << out;
     // 3 lots x 100 on 1,000 is 0.30 against 0.29: 3 x (0.30/0.29 - 1) = 0.1034 contracts over.
-    EXPECT_EQ(count_of(out, " after rounding: RISK_LEVERAGE_ROUNDED the book shipped after "
-                            "rounding is over its leverage limit by about 0.103448 contracts "
-                            "(1.034483x the limit on a 3-contract book; gross 0.300000, net "
-                            "0.300000)"),
-              1u)
-        << "once per run, not once per rebalance:\n" << out;
-    EXPECT_EQ(count_of(out, "logged once per run."), 1u);
+    EXPECT_EQ(count_of(out, "the final book of this rebalance, after whole-contract rounding (the "
+                            "book the runner stores), is over its leverage limit by about 0.103448 "
+                            "contracts (1.034483x the limit on a 3-contract book; gross 0.300000, net "
+                            "0.300000, capital 1000.000000)"),
+              2u)
+        << out;
+    EXPECT_EQ(count_of(out, "logged at most once per trading day, never on a warm-up rebalance."), 2u);
+    EXPECT_EQ(count_of(out, "logged once per run."), 0u) << "the old wording is gone:\n" << out;
 
     // Under the limit (2 lots = 0.2 of capital): nothing to say.
     pm_.reset();
@@ -307,6 +320,20 @@ TEST_F(RiskModuleLoopTest, ARoundedBookOverTheLeverageLimitWarnsOncePerRun) {
     const std::string under = ::testing::internal::GetCapturedStdout();
     EXPECT_EQ(quantity("ZZA"), 2.0);
     EXPECT_EQ(count_of(under, "RISK_LEVERAGE_ROUNDED"), 0u) << under;
+}
+
+// A warm-up rebalance whose final book is over the limit logs nothing, and it does not spend the
+// day: the first live rebalance of that day still warns.
+TEST_F(RiskModuleLoopTest, AWarmupRebalanceOverTheLeverageLimitLogsNothingAndKeepsTheDay) {
+    make_pm(false, {{{"ZZA", make_pos("ZZA", 5.0, 100.0)}}});
+    ::testing::internal::CaptureStdout();
+    ASSERT_TRUE(pm_->process_market_data(three_days(), /*skip_execution_generation=*/true).is_ok());
+    const std::string warm = ::testing::internal::GetCapturedStdout();
+    EXPECT_EQ(count_of(warm, "RISK_LEVERAGE_ROUNDED"), 0u) << "warm-up:\n" << warm;
+    ::testing::internal::CaptureStdout();
+    ASSERT_TRUE(pm_->process_market_data({make_bar("ZZA", 3, 99.0)}).is_ok());  // 2026-01-04 again
+    const std::string live = ::testing::internal::GetCapturedStdout();
+    EXPECT_EQ(count_of(live, "RISK_LEVERAGE_ROUNDED day=2026-01-04 "), 1u) << live;
 }
 
 TEST_F(RiskModuleLoopTest, EveryDecisionTypeIsEvaluatedAndRecordedEachLap) {

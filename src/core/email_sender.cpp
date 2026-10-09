@@ -887,6 +887,7 @@ std::string EmailSender::format_executions_table(const std::vector<ExecutionRepo
     for (const auto& exec : executions) {
         // Get contract multiplier for proper notional calculation
         double contract_multiplier = 1.0;
+        bool has_multiplier = true;
 
         try {
             auto& registry = InstrumentRegistry::instance();
@@ -902,39 +903,23 @@ std::string EmailSender::format_executions_table(const std::vector<ExecutionRepo
             }
             auto instrument = registry.get_instrument(lookup_sym);
             if (instrument) {
-                // Get multiplier from registry (primary source)
+                // The multiplier is the registry's (metadata "Contract Size"), the only source.
                 contract_multiplier = instrument->get_multiplier();
             } else {
-                // NOTE: This fallback uses static values as EmailSender doesn't have access to
-                // TrendFollowingStrategy Future improvement: pass strategy reference or create
-                // shared utility for fallback multipliers
-
-                // Fallback multipliers for common contracts (kept minimal for robustness)
-                static const std::unordered_map<std::string, double> fallback_multipliers = {
-                    {"NQ", 20.0},     {"MNQ", 2.0},     {"ES", 50.0},     {"MES", 5.0},
-                    {"YM", 5.0},      {"MYM", 0.5},     {"RTY", 50.0},    {"6A", 100000.0},
-                    {"6B", 62500.0},  {"6C", 100000.0}, {"6E", 125000.0}, {"6J", 12500000.0},
-                    {"6S", 125000.0}, {"6N", 100000.0}, {"6M", 500000.0}, {"CL", 1000.0},
-                    {"GC", 100.0},    {"HG", 25000.0},  {"PL", 50.0},     {"SI", 5000.0},
-                    {"ZC", 5000.0},   {"ZS", 5000.0},   {"ZW", 5000.0},   {"ZL", 60000.0},
-                    {"ZM", 100.0},    {"ZN", 100000.0}, {"ZB", 100000.0}, {"UB", 100000.0},
-                    {"ZR", 2000.0},   {"RB", 42000.0},  {"HO", 42000.0},  {"NG", 10000.0},
-                    {"HE", 40000.0},  {"LE", 40000.0},  {"GF", 50000.0},  {"KE", 5000.0}};
-
-                auto it = fallback_multipliers.find(lookup_sym);
-                if (it != fallback_multipliers.end()) {
-                    contract_multiplier = it->second;
-                } else {
-                    WARN("Unknown contract multiplier for " + lookup_sym +
-                         " in email formatting, using 1.0");
-                }
+                has_multiplier = false;
             }
         } catch (...) {
-            // Use default multiplier if exception occurs
+            has_multiplier = false;
+        }
+        if (!has_multiplier) {
+            ERROR("Email: " + exec.symbol + " is not in the instrument registry "
+                  "(metadata.contract_metadata); its notional is shown as n/a and left out of "
+                  "the total, not guessed");
         }
 
-        double notional =
-            exec.filled_quantity.as_double() * exec.fill_price.as_double() * contract_multiplier;
+        double notional = has_multiplier ? exec.filled_quantity.as_double() *
+                                               exec.fill_price.as_double() * contract_multiplier
+                                         : 0.0;
         total_notional_traded += notional;
         total_transaction_cost += exec.total_transaction_costs.as_double();
 
@@ -948,7 +933,11 @@ std::string EmailSender::format_executions_table(const std::vector<ExecutionRepo
              << "</td>\n";
         html << "<td>$" << std::fixed << std::setprecision(2) << exec.fill_price.as_double()
              << "</td>\n";
-        html << "<td>$" << std::fixed << std::setprecision(2) << notional << "</td>\n";
+        if (has_multiplier) {
+            html << "<td>$" << std::fixed << std::setprecision(2) << notional << "</td>\n";
+        } else {
+            html << "<td>n/a</td>\n";
+        }
         html << "<td>$" << std::fixed << std::setprecision(2)
              << exec.total_transaction_costs.as_double() << "</td>\n";
         html << "</tr>\n";
@@ -3426,6 +3415,7 @@ std::string EmailSender::format_single_strategy_executions_table(
 
     for (const auto& exec : executions) {
         double contract_multiplier = 1.0;
+        bool has_multiplier = true;
 
         try {
             auto& registry = InstrumentRegistry::instance();
@@ -3440,30 +3430,23 @@ std::string EmailSender::format_single_strategy_executions_table(
             }
             auto instrument = registry.get_instrument(lookup_sym);
             if (instrument) {
+                // The multiplier is the registry's (metadata "Contract Size"), the only source.
                 contract_multiplier = instrument->get_multiplier();
             } else {
-                static const std::unordered_map<std::string, double> fallback_multipliers = {
-                    {"NQ", 20.0},     {"MNQ", 2.0},     {"ES", 50.0},     {"MES", 5.0},
-                    {"YM", 5.0},      {"MYM", 0.5},     {"RTY", 50.0},    {"6A", 100000.0},
-                    {"6B", 62500.0},  {"6C", 100000.0}, {"6E", 125000.0}, {"6J", 12500000.0},
-                    {"6S", 125000.0}, {"6N", 100000.0}, {"6M", 500000.0}, {"CL", 1000.0},
-                    {"GC", 100.0},    {"HG", 25000.0},  {"PL", 50.0},     {"SI", 5000.0},
-                    {"ZC", 5000.0},   {"ZS", 5000.0},   {"ZW", 5000.0},   {"ZL", 60000.0},
-                    {"ZM", 100.0},    {"ZN", 100000.0}, {"ZB", 100000.0}, {"UB", 100000.0},
-                    {"ZR", 2000.0},   {"RB", 42000.0},  {"HO", 42000.0},  {"NG", 10000.0},
-                    {"HE", 40000.0},  {"LE", 40000.0},  {"GF", 50000.0},  {"KE", 5000.0}};
-
-                auto it = fallback_multipliers.find(lookup_sym);
-                if (it != fallback_multipliers.end()) {
-                    contract_multiplier = it->second;
-                }
+                has_multiplier = false;
             }
         } catch (...) {
-            // Use default multiplier if exception occurs
+            has_multiplier = false;
+        }
+        if (!has_multiplier) {
+            ERROR("Email: " + exec.symbol + " is not in the instrument registry "
+                  "(metadata.contract_metadata); its notional is shown as n/a and left out of "
+                  "the total, not guessed");
         }
 
-        double notional =
-            exec.filled_quantity.as_double() * exec.fill_price.as_double() * contract_multiplier;
+        double notional = has_multiplier ? exec.filled_quantity.as_double() *
+                                               exec.fill_price.as_double() * contract_multiplier
+                                         : 0.0;
         total_notional_traded += notional;
         total_transaction_costs += exec.total_transaction_costs.as_double();
 
@@ -3477,7 +3460,11 @@ std::string EmailSender::format_single_strategy_executions_table(
              << "</td>\n";
         html << "<td>$" << std::fixed << std::setprecision(2) << exec.fill_price.as_double()
              << "</td>\n";
-        html << "<td>$" << format_with_commas(notional) << "</td>\n";
+        if (has_multiplier) {
+            html << "<td>$" << format_with_commas(notional) << "</td>\n";
+        } else {
+            html << "<td>n/a</td>\n";
+        }
         html << "<td>$" << std::fixed << std::setprecision(2)
              << exec.total_transaction_costs.as_double() << "</td>\n";
         html << "</tr>\n";

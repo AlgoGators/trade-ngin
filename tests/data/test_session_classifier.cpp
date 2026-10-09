@@ -551,8 +551,9 @@ TEST(SessionClassifierThinBars, TheRuledVerdictOnEveryNamedCase) {
 
 TEST(SessionClassifierThinBars, SixEIsAboveBothJunkThresholdsAndTheRuleTradesIt) {
     // 6E.v.0 2025-11-05 is a one-day wrong-instrument bar (raw instrument 42040878, on no other
-    // day), but at 3,506 lots it is 2.5 % of 6E's norm and above the 1,000-lot ceiling. The rule
-    // as ruled calls it a session. The case is put to HD (SECTION_C4.md); the rule is unchanged.
+    // day), but at 3,506 lots it is 2.5 % of 6E's norm and above the 1,000-lot ceiling: the
+    // VOLUME limbs call it a session (this fixture carries no instrument ids). The instrument-id
+    // continuity limb (T-7b-2 C10a) holds it: test_session_classifier_instrument_id.cpp.
     const auto v = classify_thin(thin_case("6E.v.0", "2025-11-05"));
     EXPECT_EQ(v.verdict, SessionVerdict::SESSION);
     ASSERT_TRUE(v.ratio.has_value());

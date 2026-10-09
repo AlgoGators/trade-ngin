@@ -275,8 +275,10 @@ TEST_F(RiskLoopLogGolden, CarverLapsMatchTheCommit3Sequence) {
         "[INFO] [RiskManager] Final rounding completed. No partial contracts remain.",
         // + T-6b-fix F5: the post-rounding leverage read looks ZZA up in the registry (unregistered here)
         "[ERROR] [RiskManager] Instrument not found: ZZA. Available symbols: <registry>",
-        // + T-6b-fix F5: the shipped book is over the leverage cap (4 lots = 0.40 vs 0.35)
-        "[WARNING] [RiskManager] Risk module carver warning on portfolio PM_GOLDEN after rounding: RISK_LEVERAGE_ROUNDED the book shipped after rounding is over its leverage limit by about 0.571429 contracts (1.142857x the limit on a 4-contract book; gross 0.400000, net 0.400000). The limit is enforced to within whole-contract rounding (config_template risk rationale); logged once per run.",
+        // + T-6b-fix F5: the final book is over the leverage cap (4 lots = 0.40 vs 0.35)
+        // ~ T-7b-2 C9w: keyed per trading day (day(3) = 2026-01-04, the rebalance's newest bar), worded
+        //   on the final book, capital printed
+        "[WARNING] [RiskManager] Risk module carver warning on portfolio PM_GOLDEN after rounding: RISK_LEVERAGE_ROUNDED day=2026-01-04 lap=5 the final book of this rebalance, after whole-contract rounding (the book the runner stores), is over its leverage limit by about 0.571429 contracts (1.142857x the limit on a 4-contract book; gross 0.400000, net 0.400000, capital 1000.000000). The limit is enforced to within whole-contract rounding (config_template risk rationale); logged at most once per trading day, never on a warm-up rebalance.",
         "[INFO] [RiskManager] Generating executions for strategy GOLDEN_S, target_positions size: 1, existing executions: 1",
         "[INFO] [RiskManager] Filled-position ledger for strategy GOLDEN_S size: 1",
         "[INFO] [RiskManager] Generated execution for strategy GOLDEN_S: ZZA BUY qty=1",

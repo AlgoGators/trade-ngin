@@ -4,6 +4,7 @@
 #include <chrono>
 #include <cmath>
 #include <cstdint>
+#include <ctime>
 #include <iterator>
 #include <map>
 #include <set>
@@ -88,7 +89,6 @@ size_t CarverRiskModule::window_dates() const {
 }
 
 void CarverRiskModule::on_bars(const std::vector<Bar>& bars, const RiskContext& ctx) {
-    (void)ctx;
     // (1) APPEND ONCE PER REBALANCE, not once per lap.
     //
     // The window used to be re-filled on every lap of the optimizer/risk loop, which calls this
@@ -167,9 +167,39 @@ void CarverRiskModule::on_bars(const std::vector<Bar>& bars, const RiskContext& 
     // multi-day gap move to one date); a pairwise-overlap correlation (per-pair sample sets can
     // produce a covariance that is not positive semi-definite, and the same matrix feeds
     // w'Sigma w in the VaR gate where a negative quadratic form is swallowed by sqrt(max(0, v))).
+    // (4) THE PARTICIPANTS (T-7b-2 CGW, the E-7 mechanism in the gate). The strict rule is over
+    // the symbols the book can hold this rebalance (RiskContext::gate_participants: signalled by
+    // some strategy, or targeted or held), not over every symbol with a bar in the window: a symbol
+    // nobody signals, targets or holds has zero weight in every term the gate computes, so its
+    // columns add nothing, while its missing dates removed those dates from EVERY symbol's returns
+    // (on the frozen futures backtest the roots with no Sunday bar dropped 50 to 67 dates a day
+    // while they were still warming up). The window itself keeps every bar, so a symbol that starts
+    // to signal enters with its whole history. An empty or absent set leaves the whole window.
+    std::vector<Bar> participant_bars;
+    std::set<std::string> left_out;
+    const bool participants_only = ctx.gate_participants != nullptr && !ctx.gate_participants->empty();
+    if (participants_only) {
+        participant_bars.reserve(window_.size());
+        for (const auto& bar : window_) {
+            if (ctx.gate_participants->count(bar.symbol)) {
+                participant_bars.push_back(bar);
+            } else {
+                left_out.insert(bar.symbol);
+            }
+        }
+    }
+    const std::vector<Bar>& pool =
+        participants_only && !participant_bars.empty() ? participant_bars : window_;
+    if (&pool == &participant_bars && !left_out.empty()) {
+        std::string list;
+        for (const auto& s : left_out) list += (list.empty() ? "" : ",") + s;
+        INFO("GATE_NOT_SIGNALLING count=" + std::to_string(left_out.size()) + " symbols=" + list +
+             ": no strategy signals, targets or holds them; left out of the risk gate's window and "
+             "its date intersection this rebalance");
+    }
     std::set<std::string> symbols;
     std::map<Timestamp, std::set<std::string>> by_date;
-    for (const auto& bar : window_) {
+    for (const auto& bar : pool) {
         symbols.insert(bar.symbol);
         by_date[bar.timestamp].insert(bar.symbol);
     }
@@ -196,8 +226,8 @@ void CarverRiskModule::on_bars(const std::vector<Bar>& bars, const RiskContext& 
 
     if (f5_engaged_) {
         std::vector<Bar> filtered;
-        filtered.reserve(window_.size());
-        for (const auto& bar : window_) {
+        filtered.reserve(pool.size());
+        for (const auto& bar : pool) {
             if (complete.count(bar.timestamp)) filtered.push_back(bar);
         }
         market_data_ = rm_.create_market_data(filtered);
@@ -208,7 +238,7 @@ void CarverRiskModule::on_bars(const std::vector<Bar>& bars, const RiskContext& 
         // is the failure this change set removes, and a 2-date window additionally drives
         // create_market_data into its divide-by-(n-1)==0 branch, where the gate goes blind with
         // every multiplier at 1.0.
-        market_data_ = rm_.create_market_data(window_);
+        market_data_ = rm_.create_market_data(pool);
         market_data_built_this_rebalance_ = true;
     }
 }
@@ -353,29 +383,60 @@ void CarverRiskModule::on_applied(const RiskApplied& applied, const RiskContext&
 
 Result<RiskDecision> CarverRiskModule::finalize(
     const std::unordered_map<std::string, Position>& book, const RiskContext& ctx) {
-    (void)ctx;
     RiskDecision d;
     d.module_id = id_;
-    if (leverage_policy_warned_ || book.empty() || market_data_.symbol_indices.empty()) {
+    // A warm-up rebalance ships nothing, so it has nothing to warn about (and on a replaying runner
+    // it is a replayed book, not the day's: T-6b-fix AUDIT section 8).
+    if (ctx.is_warmup || book.empty() || market_data_.symbol_indices.empty()) {
+        return Result<RiskDecision>(std::move(d));
+    }
+    // The trading day: the context's as_of (the backtest passes it), else the newest bar of this
+    // rebalance (the live runners' dated day), else one key for the run.
+    std::optional<Timestamp> when = ctx.as_of;
+    if (!when && ctx.bars != nullptr) {
+        for (const auto& bar : *ctx.bars) {
+            if (!when || bar.timestamp > *when) when = bar.timestamp;
+        }
+    }
+    std::string day = "run";
+    if (when) {
+        const std::time_t tt = std::chrono::system_clock::to_time_t(*when);
+        std::tm tm{};
+        gmtime_r(&tt, &tm);
+        char buf[16];
+        std::strftime(buf, sizeof(buf), "%Y-%m-%d", &tm);
+        day = buf;
+    }
+    if (day == leverage_warned_day_) {
         return Result<RiskDecision>(std::move(d));
     }
     const RiskManager::LeverageReading r = rm_.leverage_of(book, market_data_);
     if (!(r.multiplier < 1.0 - 1e-9) || !(r.multiplier > 0.0)) {
         return Result<RiskDecision>(std::move(d));
     }
-    leverage_policy_warned_ = true;
+    leverage_warned_day_ = day;
     double gross_contracts = 0.0;
     for (const auto& [symbol, pos] : book) gross_contracts += std::abs(static_cast<double>(pos.quantity));
     const double ratio = 1.0 / r.multiplier;
     d.action = RiskAction::WARN;
-    d.reason = "RISK_LEVERAGE_ROUNDED the book shipped after rounding is over its leverage limit "
-               "by about " + std::to_string(gross_contracts * (ratio - 1.0)) + " contracts (" +
+    d.reason = "RISK_LEVERAGE_ROUNDED day=" + day + " lap=" + std::to_string(ctx.lap) +
+               " the final book of this rebalance, after whole-contract rounding (the book the "
+               "runner stores), is over its leverage limit by about " +
+               std::to_string(gross_contracts * (ratio - 1.0)) + " contracts (" +
                std::to_string(ratio) + "x the limit on a " +
                std::to_string(static_cast<long>(std::llround(gross_contracts))) +
                "-contract book; gross " + std::to_string(r.gross_leverage) + ", net " +
-               std::to_string(r.net_leverage) + "). The limit is enforced to within "
-               "whole-contract rounding (config_template risk rationale); logged once per run.";
+               std::to_string(r.net_leverage) + ", capital " +
+               std::to_string(static_cast<double>(rm_.get_config().capital)) +
+               "). The limit is enforced to within whole-contract rounding (config_template risk "
+               "rationale); logged at most once per trading day, never on a warm-up rebalance.";
     return Result<RiskDecision>(std::move(d));
+}
+
+Result<void> CarverRiskModule::set_capital(Decimal capital) {
+    RiskConfig config = rm_.get_config();
+    config.capital = capital;
+    return rm_.update_config(config);
 }
 
 nlohmann::json CarverRiskModule::describe() const {

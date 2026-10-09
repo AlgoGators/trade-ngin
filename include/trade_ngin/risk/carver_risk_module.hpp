@@ -39,7 +39,10 @@ public:
     /// Appends this rebalance's bars to the window ONCE (behind the explicit per-rebalance
     /// flag), trims it to the newest `lookback_period` distinct DATES, applies F5 and builds the
     /// MarketData. Runs on every lap, including a lap whose book is empty; laps 2..n re-use the
-    /// window lap 1 built rather than appending the same bars again.
+    /// window lap 1 built rather than appending the same bars again. F5's intersection and the
+    /// MarketData run over ctx.gate_participants' bars when the context carries a non-empty set
+    /// (T-7b-2 CGW: a symbol nobody signals, targets or holds no longer cuts everyone's dates), and
+    /// one GATE_NOT_SIGNALLING line names the window's symbols left out.
     void on_bars(const std::vector<Bar>& bars, const RiskContext& ctx) override;
 
     /// F5's floor. Below this many COMPLETE dates the sparse-date filter does not engage and the
@@ -72,6 +75,11 @@ public:
     Result<RiskDecision> evaluate(const std::unordered_map<std::string, Position>& book,
                                   const RiskContext& ctx) override;
     nlohmann::json describe() const override;  ///< {"id","type","terms","config"}
+    /// T-7b-2 9c: RiskConfig::capital, the denominator of the gate's gross and net leverage
+    /// (the only capital-dependent term: the portfolio, jump and correlation terms read weights
+    /// over the book's own value), follows the sizing capital. Refuses capital <= 0 and keeps
+    /// the old value (RiskManager::update_config's rule).
+    Result<void> set_capital(Decimal capital) override;
     /// Multiplies the applied level by the quantised factor when the scope was scaled (evaluate
     /// compares the raw reading with it to within kLevelQuantum), and
     /// records a PARTIAL apply: on a lap whose multiply skipped a pinned sleeve the level is
@@ -84,11 +92,15 @@ public:
     /// The written leverage policy (HD 2026-09-20): the leverage limit is enforced to within
     /// whole-contract rounding. At the PM's post-rounding point this reads the SHIPPED book's
     /// leverage with RiskManager::leverage_of (silent: process_positions is not re-run) and, the
-    /// first time in this module's life -- once per run -- that book is over its limit, returns a
-    /// WARN whose reason carries the excess in contracts. Otherwise NONE.
+    /// first time on a TRADING DAY (ctx.as_of, else the rebalance's newest bar) that the final
+    /// book is over its limit, returns a WARN whose reason names the day and carries the excess in
+    /// contracts. Never on a warm-up rebalance (ctx.is_warmup), which ships nothing. Otherwise NONE.
+    /// (T-7b-2 C9w; it latched once per run before, so a backtest said nothing after its first
+    /// over-limit day and a replaying runner's one line described a replayed book.)
     Result<RiskDecision> finalize(const std::unordered_map<std::string, Position>& book,
                                   const RiskContext& ctx) override;
-    bool leverage_policy_warned() const { return leverage_policy_warned_; }
+    /// The trading day finalize last warned on ("" before the first WARN).
+    const std::string& leverage_warned_day() const { return leverage_warned_day_; }
 
     /// SCALE iff r.risk_exceeded, with scale = r.recommended_scale bit for bit; else NONE with
     /// scale 1.0. metrics = r in both cases. Keyed on risk_exceeded, NOT on `scale != 1.0`: a NaN
@@ -135,7 +147,7 @@ private:
     double applied_level_{1.0};            ///< product of the factors applied this rebalance
     bool level_partial_{false};            ///< a multiply skipped a pinned scope: the level lies
     double last_requested_{1.0};           ///< the scale evaluate last requested this rebalance
-    bool leverage_policy_warned_{false};   ///< finalize's WARN has fired (once per run)
+    std::string leverage_warned_day_;      ///< the trading day finalize's WARN last fired on
 };
 
 }  // namespace trade_ngin

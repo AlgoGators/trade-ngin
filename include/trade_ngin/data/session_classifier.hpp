@@ -3,6 +3,7 @@
 
 #include <chrono>
 #include <functional>
+#include <limits>
 #include <map>
 #include <optional>
 #include <string>
@@ -11,8 +12,10 @@
 
 #include <nlohmann/json.hpp>
 
+#include "trade_ngin/core/error.hpp"
 #include "trade_ngin/core/holiday_checker.hpp"
 #include "trade_ngin/core/types.hpp"
+#include "trade_ngin/data/market_data_utils.hpp"
 
 namespace trade_ngin {
 
@@ -39,6 +42,18 @@ enum class SessionVerdict { SESSION, JUNK, NO_BAR_CLOSURE, NO_BAR_FEED_HOLE };
 const char* to_string(SessionVerdict verdict);
 
 /**
+ * @brief HD's ruling (2026-09-25, T-7b-2 C10a): on its own day an UNCONFIRMED instrument id change
+ *        is held only when its volume is below 0.10 of the symbol's norm. On the day a roll cannot
+ *        be told from a one-day flip; a thin print on a new id is held (6E 2025-11-05 at 0.025 of
+ *        its norm; ZN, ZF, ZT, UB 2025-09-03 below 0.01), a full-volume one trades (a real roll's
+ *        first day, as the volume leader, is at or near the norm). Measured on the clone
+ *        (T-7b-2_evidence/analysis/c10): btfut 2y 13 of 45 flips and 35 of 279 rolls held, 0 of
+ *        the OLD book's fills delayed; holding every change held all 279 rolls and delayed 3.
+ *        A ruled value like the rest of SessionClassifierConfig: nothing reads it from config.
+ */
+inline constexpr double kIdChangeHoldFraction = 0.10;
+
+/**
  * @brief The rule's numbers. The defaults are the ruled values; nothing reads them from config.
  */
 struct SessionClassifierConfig {
@@ -60,6 +75,12 @@ struct SessionClassifierConfig {
     /// A missing bar is a feed hole when the symbol printed on at least one of this many
     /// preceding same-weekday dates (MAX-of-8; immune to an outage teaching the window).
     int expected_lookback_weeks{8};
+    /// T-7b-2 C10a, the instrument-id continuity limb on the day (see classify_symbol_day): an
+    /// UNCONFIRMED id change is held when its volume is below this fraction of the norm (or the
+    /// symbol has no norm). Ruled 0.10 (kIdChangeHoldFraction). Infinity holds every unconfirmed
+    /// change (a one-day flip can only be told from a roll by the next session's bar, which no
+    /// engine has on the day); 0 holds none on the day (the limb then only confirms).
+    double id_change_hold_fraction{kIdChangeHoldFraction};
 };
 
 /// The calendar entry for a "YYYY-MM-DD" date, if the market calendar names it.
@@ -84,6 +105,12 @@ struct SymbolDayVerdict {
     std::optional<double> ratio; ///< volume / norm
     std::string last_bar_date;   ///< no bar: the symbol's latest bar strictly before `date`
     int hole_age_days{-1};       ///< no bar: calendar days from last_bar_date to `date`
+    /// T-7b-2 C10a: the bar's vendor instrument id (empty: none known) and the previous bar's.
+    std::string instrument_id;
+    std::string previous_instrument_id;
+    /// T-7b-2 C10a: set when the PREVIOUS bar was an unconfirmed id change; this bar confirms it
+    /// a roll (the id stayed) or a one-day flip (the id reverted), in words.
+    std::string id_note;
 
     bool is_session() const { return verdict == SessionVerdict::SESSION; }
 };
@@ -110,6 +137,7 @@ struct SymbolDayVerdict {
  *       their median is 0) and volume < floor_lots     -> JUNK (absolute floor, first bars)
  *     volume < 0.01 x norm AND volume < 1,000 lots      -> JUNK (corrupt print)
  *     volume < 50 AND volume < 0.25 x norm              -> JUNK (absolute floor)
+ *     an unconfirmed instrument id change (below)       -> JUNK (T-7b-2 C10a, HD 2026-09-24)
  *     otherwise                                         -> SESSION (thin or not: traded)
  *   no bar for (s, D):
  *     the calendar names D                              -> NO_BAR_CLOSURE
@@ -119,6 +147,29 @@ struct SymbolDayVerdict {
  *     s printed on >= 1 of the 8 preceding same-weekday
  *       dates                                           -> NO_BAR_FEED_HOLE
  *     otherwise                                         -> NO_BAR_CLOSURE (not expected)
+ *
+ * THE INSTRUMENT-ID CONTINUITY LIMB (T-7b-2 C10a; HD 2026-09-24 ruling 16: "a bar whose instrument
+ * id differs from the previous and the next session's is JUNK"). Each bar may carry the vendor's
+ * instrument_id (add_instrument_id; futures_data.ohlcv_1d_raw, the same print only). A bar b with a
+ * known id whose previous bar p has a known id:
+ *
+ *   a ONE-DAY FLIP   id(b) != id(p) AND id(b) != id(next bar); confirmable only once the next
+ *                    bar exists
+ *   established(b)   the id of the newest bar before b that is not a confirmed flip
+ *   an UNCONFIRMED id change   id(b) != id(p) AND id(b) != established(b) (a return from a
+ *                    confirmed flip is not a change)
+ *
+ * The verdict of the bar dated D reads only bars dated <= D, never the next one: the live runner
+ * classifies T-1 before T's bar exists, and the backtest (which already holds the next group when
+ * it classifies the signal group) must see what live sees. So on its own day an id change cannot
+ * be told from a roll, and an unconfirmed change is JUNK (held for one cycle, withheld from the
+ * signal as any JUNK bar) when its volume is below id_change_hold_fraction x norm (ruled 0.10,
+ * kIdChangeHoldFraction; a full-volume change, a roll's usual first day, trades). The next
+ * session's bar confirms it: back on the established id, it was a one-day flip; on the new id, a
+ * roll (id_note on that next bar's verdict says which). The norm's SESSION flags
+ * take each earlier bar's verdict with that hindsight (a confirmed flip never teaches the norm; a
+ * roll bar counts on its volume). A bar without an id, or whose previous bar has none, is not
+ * judged by the limb.
  *
  * NOTED, NOT ACTED ON (T-CLASSIFIER_ADVERSARIAL A2, the partial-volume day): on a handful of days a
  * year the vendor delivers a real session with a truncated VOLUME field for 8-16 symbols at once
@@ -138,6 +189,15 @@ public:
     /// Adds one bar (keyed on its UTC date). Bars may arrive in any order.
     void add_bar(const Bar& bar);
     void add_bars(const std::vector<Bar>& bars);
+
+    /// T-7b-2 C10a: the vendor instrument id of the symbol's bar on `day` (a later call for the
+    /// same day replaces it). An id for a day without a bar is kept and used once the bar arrives.
+    void add_instrument_id(const std::string& symbol, Day day, const std::string& instrument_id);
+    /// The rows PostgresDatabase::get_futures_instrument_ids returns. Returns how many were taken
+    /// (a row whose date does not parse is skipped).
+    std::size_t add_instrument_ids(const std::vector<market_data_utils::FuturesInstrumentId>& rows);
+    /// How many (symbol, day) ids the classifier holds.
+    std::size_t instrument_id_count() const;
 
     SymbolDayVerdict classify_symbol_day(const std::string& symbol, Day date,
                                          const HolidayLookup& holidays) const;
@@ -175,8 +235,32 @@ private:
     /// `date`.
     const std::map<Day, bool>& session_flags(const std::string& symbol, Day date) const;
 
+    using Series = std::map<Day, DayBar>;
+    /// The id of the symbol's bar at `it`, or nullptr (none known, or `it` is the end).
+    const std::string* id_of(const std::string& symbol, const Series& series,
+                             Series::const_iterator it) const;
+    /// True when the bar at `it` is a confirmed one-day id flip (its previous and next bars exist,
+    /// all three ids are known, and its id differs from both).
+    bool is_id_flip(const std::string& symbol, const Series& series,
+                    Series::const_iterator it) const;
+    /// The id of the newest bar before `it` that is not a confirmed flip, or nullptr.
+    const std::string* established_id(const std::string& symbol, const Series& series,
+                                      Series::const_iterator it) const;
+    /// True when the bar at `it` is an unconfirmed id change (reads no bar after `it`); fills
+    /// `from` (the previous bar's id) and `established` when given.
+    bool is_unconfirmed_id_change(const std::string& symbol, const Series& series,
+                                  Series::const_iterator it, std::string* from = nullptr,
+                                  std::string* established = nullptr) const;
+    /// The day-of limb: an unconfirmed change that id_change_hold_fraction holds.
+    bool holds_id_change(const DayBar& bar, const std::optional<double>& norm) const;
+    /// Drops every cached SESSION flag of `symbol` from the bar before `day` on (a bar's flag
+    /// reads its next bar's id).
+    void invalidate_flags_from_previous(const std::string& symbol, Day day);
+
     SessionClassifierConfig config_;
     std::unordered_map<std::string, std::map<Day, DayBar>> bars_;
+    /// T-7b-2 C10a: symbol -> day -> vendor instrument id.
+    std::unordered_map<std::string, std::map<Day, std::string>> ids_;
     mutable std::unordered_map<std::string, std::map<Day, bool>> session_flags_;
 };
 
@@ -220,5 +304,20 @@ T1Classification classify_t1(const SessionClassifier& classifier,
 std::vector<SymbolDayVerdict> classify_bar_group(const SessionClassifier& classifier,
                                                  const std::vector<Bar>& group,
                                                  const HolidayLookup& holidays = {});
+
+/**
+ * @brief T-7b-2 C10a: the instrument ids the live runners and the backtest feed the classifier,
+ *        and the one log line both engines write about it.
+ */
+struct InstrumentIdFeed {
+    bool fed{false};     ///< false: the read failed, the limb judges no bar on this run
+    std::size_t ids{0};  ///< ids taken
+    std::string line;    ///< "INSTRUMENT_ID_FEED ..."; the caller logs it (INFO fed, WARN not)
+};
+
+/// Adds the rows of PostgresDatabase::get_futures_instrument_ids (or reports its error).
+InstrumentIdFeed feed_instrument_ids(
+    SessionClassifier& classifier,
+    const Result<std::vector<market_data_utils::FuturesInstrumentId>>& rows);
 
 }  // namespace trade_ngin

@@ -31,6 +31,7 @@
 #include "trade_ngin/live/live_pnl_manager.hpp"
 #include "trade_ngin/live/live_price_manager.hpp"
 #include "trade_ngin/live/live_trading_coordinator.hpp"
+#include "trade_ngin/live/book_exposure.hpp"
 #include "trade_ngin/live/margin_manager.hpp"
 #include "trade_ngin/live/risk_module_failure.hpp"
 #include "trade_ngin/live/run_metadata_marks.hpp"
@@ -38,8 +39,10 @@
 #include "trade_ngin/live/sleeve_seeding.hpp"
 #include "trade_ngin/live/trading_days_anchor.hpp"
 #include "trade_ngin/portfolio/portfolio_manager.hpp"
+#include "trade_ngin/portfolio/sizing_capital.hpp"
 #include "trade_ngin/risk/risk_scale_report.hpp"
 #include "trade_ngin/storage/live_results_manager.hpp"
+#include "trade_ngin/transaction_cost/netting.hpp"
 #include "trade_ngin/strategy/trend_following.hpp"
 #include "trade_ngin/strategy/trend_following_fast.hpp"
 #include "trade_ngin/strategy/trend_following_slow.hpp"
@@ -1088,6 +1091,19 @@ int main(int argc, char* argv[]) {
         // ========================================
         SessionClassifier session_classifier;
         session_classifier.add_bars(all_bars);
+        // T-7b-2 C10a (HD 2026-09-24 ruling 16): the instrument-id continuity limb reads each kept
+        // bar's vendor id over the window the bars were loaded for (the backtest reads the same
+        // query). T-1's verdict reads no later bar: an id change on T-1 is held today and T's bar
+        // confirms it a roll or a one-day flip on the next run.
+        {
+            const auto id_feed = feed_instrument_ids(
+                session_classifier, db->get_futures_instrument_ids(symbols, start_date, end_date));
+            if (id_feed.fed) {
+                INFO(id_feed.line);
+            } else {
+                WARN(id_feed.line);
+            }
+        }
         const T1Classification t1_classification =
             classify_t1(session_classifier, symbols,
                         SessionClassifier::day_of(now - std::chrono::hours(24)),
@@ -1137,6 +1153,74 @@ int main(int argc, char* argv[]) {
                 if (true_live) {
                     return 1;
                 }
+            }
+        }
+
+        // ========================================
+        // SIZING CAPITAL (T-7b-2 9c; HD 2026-09-25, compounding)
+        // The book is sized on the account's equity at the close of T-1, the bar the strategies
+        // size from, the quantity the futures backtest sizes on (its equity curve's last row).
+        // Day T-1 is finalised only in STEP 4, after the rebalance, so it is rebuilt here from
+        // STEP 4's own parts (portfolio/sizing_capital.hpp): the stored value of the row before
+        // Day T-1, Day T-1's settlement move and Day T-1's stored costs. Day T-1's own stored value
+        // is never read (a replayed date's is already finalised), and STEP 5's reading is logged
+        // beside it. Every sizing input follows it: each sleeve's capital (x its allocation), the
+        // optimizer's weights, the gate's leverage and the snapshot reporter. It sits above the
+        // live_run_metadata upsert like the other refusals, so a run that cannot set it leaves no
+        // row.
+        // ========================================
+        LiveSizingEquity sizing_equity;
+        {
+            const auto sizing_t1 = now - std::chrono::hours(24);
+            auto t1_row = data_loader->load_live_results(combined_strategy_id,
+                                                         coordinator_config.portfolio_id, sizing_t1);
+            const bool t1_row_stored = t1_row.is_ok();
+            // With a Day T-1 row: the latest row before it (STEP 4's day_before). Without one: the
+            // latest row before the run date (what STEP 5 reads when STEP 4 updates nothing).
+            double day_before = initial_capital;
+            std::string day_before_source = "none stored, the initial capital";
+            auto sizing_db = std::dynamic_pointer_cast<PostgresDatabase>(db);
+            if (sizing_db) {
+                auto stored = sizing_db->get_previous_live_aggregates(
+                    combined_strategy_id, coordinator_config.portfolio_id,
+                    t1_row_stored ? sizing_t1 : now, "trading.live_results");
+                if (stored.is_ok()) {
+                    day_before = std::get<0>(stored.value());
+                    day_before_source = t1_row_stored
+                                            ? "the latest stored row before Day T-1"
+                                            : "no Day T-1 row: the latest stored row before the run date";
+                }
+            }
+            std::vector<std::unordered_map<std::string, Position>> t1_books;
+            for (const auto& sleeve : strategy_names) {
+                auto t1_book = db->load_positions_by_date(combined_strategy_id, sleeve,
+                                                          coordinator_config.portfolio_id,
+                                                          now - std::chrono::hours(24),
+                                                          "trading.positions");
+                if (t1_book.is_ok()) {
+                    t1_books.push_back(t1_book.value());
+                }
+            }
+            sizing_equity = live_sizing_equity(
+                t1_row_stored, day_before,
+                t1_row_stored ? t1_row.value().daily_transaction_costs : 0.0, t1_books,
+                price_manager->get_all_previous_day_prices(),
+                price_manager->get_all_two_days_ago_prices(),
+                [&](const std::string& symbol) { return pnl_manager->get_point_value(symbol); });
+            INFO("SIZING_CAPITAL date=" + core::format_utc_date(now) +
+                 " equity=" + std::to_string(sizing_equity.equity) +
+                 " day_before=" + std::to_string(sizing_equity.day_before) + " (" +
+                 day_before_source + ") t1_settlement=" +
+                 std::to_string(sizing_equity.t1_settlement) +
+                 " t1_costs=" + std::to_string(sizing_equity.t1_costs) +
+                 " priced=" + std::to_string(sizing_equity.priced) +
+                 " unpriced=" + std::to_string(sizing_equity.unpriced));
+            auto sized = portfolio->set_sizing_capital(sizing_equity.equity);
+            if (sized.is_error()) {
+                ERROR("SIZING_CAPITAL refused: " + std::string(sized.error()->what()) +
+                      ". Refusing to run: the book cannot be sized on the account's equity.");
+                std::cerr << "SIZING_CAPITAL refused: " << sized.error()->what() << std::endl;
+                return 1;
             }
         }
 
@@ -1272,14 +1356,24 @@ int main(int argc, char* argv[]) {
 
         {
             auto& cost_model = execution_manager->get_transaction_cost_manager();
-            const auto cost_feed = feed_futures_cost_model(cost_model, strategy_feed_bars);
+            // C8c3 (HD 2026-09-25 rulings 25 and 28): the run date decides the weekend merge's
+            // rule for a symbol whose T-1 bar is a weekend stub (futures_cost_feed.hpp).
+            const auto cost_feed = feed_futures_cost_model(cost_model, strategy_feed_bars, now);
             for (const auto& fed : cost_feed.symbols) {
                 INFO("COST_FEED " + fed.symbol + " own_day=" +
                      core::format_utc_date(fed.own_day_time) +
                      " own_day_volume=" + std::to_string(fed.own_day_volume) +
                      " bars=" + std::to_string(fed.bars) +
                      " returns=" + std::to_string(fed.returns) +
-                     " vol_mult=" + std::to_string(cost_model.get_volatility_multiplier(fed.symbol)));
+                     " vol_mult=" + std::to_string(cost_model.get_volatility_multiplier(fed.symbol)) +
+                     // C8c3 (HD 2026-09-25 rulings 25 and 28): the weekend merge, when it applied
+                     (fed.merged_weekend_bars > 0
+                          ? " weekend_merged_volume=" + std::to_string(fed.merged_weekend_volume) +
+                                " weekend_bars=" + std::to_string(fed.merged_weekend_bars) +
+                                " previous_session_volume=" +
+                                std::to_string(fed.previous_session_volume) +
+                                " participation_volume=" + std::to_string(fed.participation_volume)
+                          : std::string()));
             }
             std::string thin_list;
             for (const auto& s : cost_feed.thin) thin_list += (thin_list.empty() ? "" : ", ") + s;
@@ -1304,7 +1398,7 @@ int main(int argc, char* argv[]) {
         {
             auto& optimizer_cost_model = portfolio->get_transaction_cost_manager();
             const auto optimizer_feed =
-                feed_futures_cost_model(optimizer_cost_model, strategy_feed_bars);
+                feed_futures_cost_model(optimizer_cost_model, strategy_feed_bars, now);
             INFO("COST_FEED_OPTIMIZER fed the PortfolioManager's cost model (the optimizer's cost "
                  "vector) for " + std::to_string(optimizer_feed.symbols.size()) + " symbols (" +
                  std::to_string(optimizer_feed.returns_fed) + " log returns)");
@@ -1405,6 +1499,42 @@ int main(int argc, char* argv[]) {
                       "; the book is held at the seeded T-1 positions and no orders are sent; "
                       "the day is stored as a REFUSE day and the run exits " +
                       std::to_string(kRiskModuleFailureExitCode));
+            }
+            // T-7b-2 C10b (HD 2026-09-24 ruling 18): a SLEEVE-scope risk module that could not
+            // answer refused its sleeve, as the portfolio rule does for the book: the PM held that
+            // sleeve at its seeded T-1 book (no order for it) and the other sleeves traded. The day
+            // is flagged as a portfolio failure is (the same exit code and email flag, which the
+            // cron wrapper and the operator already read) and, unless a portfolio refusal marked it
+            // above, today's live_run_metadata row carries the sleeve's risk_refusal mark.
+            if (!risk_module_failure) {
+                risk_module_failure =
+                    sleeve_risk_module_failure(portfolio->last_risk_decisions());
+                if (risk_module_failure) {
+                    ERROR("RISK_MODULE_FAILURE sleeve risk module " +
+                          risk_module_failure->value("module", std::string()) +
+                          " could not evaluate sleeve " +
+                          risk_module_failure->value("scope_id", std::string()) + ": " +
+                          risk_module_failure->value("error", std::string()) +
+                          "; that sleeve is held at its seeded T-1 book and sends no orders, the "
+                          "other sleeves trade; the run exits " +
+                          std::to_string(kRiskModuleFailureExitCode));
+                    if (!portfolio_risk_refusal(portfolio->last_risk_decisions())) {
+                        auto sleeve_mark = db->store_live_run_metadata(
+                            now, combined_strategy_id, portfolio_id, strategy_alloc_json,
+                            portfolio_config_json =
+                                mark_risk_refusal(portfolio_config_json, *risk_module_failure,
+                                                  portfolio->risk_decisions_json()),
+                            strategy_configs);
+                        if (sleeve_mark.is_error()) {
+                            ERROR("Failed to mark today's live_run_metadata row with the sleeve "
+                                  "risk refusal: " +
+                                  std::string(sleeve_mark.error()->what()));
+                        } else {
+                            INFO("Marked today's live_run_metadata row with the sleeve risk "
+                                 "refusal");
+                        }
+                    }
+                }
             }
             if (port_process_result.is_error()) {
                 std::cerr << "Failed to process data in portfolio manager: "
@@ -1906,6 +2036,26 @@ int main(int argc, char* argv[]) {
             }
         }
 
+        // K3, the netting adjustment (T-7b-2 8b; HD 2026-09-25 item 23: two credited fills).
+        // Every sleeve row keeps its own cost; for a symbol two or more sleeves trade today the
+        // account sends ONE order, the signed sum Q, so each row's netting_adjustment is its
+        // pro-rata share of sum C(q_i) - C(Q), priced by the same cost manager and state the
+        // fills used (C(0) = 0: no order). Written into the rows before they are stored; the
+        // day's P&L cost above stays the sum of the rows' own costs (the book's P&L is gross).
+        {
+            std::vector<transaction_cost::SleeveExecution> sleeve_rows;
+            for (auto& [netting_sleeve, netting_execs] : all_strategy_executions) {
+                for (auto& e : netting_execs) sleeve_rows.push_back({netting_sleeve, &e});
+            }
+            const auto netting = transaction_cost::apply_netting_adjustments(
+                sleeve_rows, [&](const std::string& s, double q, double px) {
+                    return execution_manager->get_transaction_cost_manager().calculate_costs(
+                        s, q, px).total_transaction_costs;
+                });
+            for (const auto& line : netting.info_lines) INFO(line);
+            for (const auto& line : netting.warn_lines) WARN(line);
+        }
+
         INFO("PHASE 4: Total executions across all strategies: " +
              std::to_string(total_executions));
         INFO("PHASE 4: Total daily transaction costs: $" +
@@ -2006,51 +2156,39 @@ int main(int argc, char* argv[]) {
             // both gross_notional and total_posted_margin by ~Σ allocᵢ². Iterating per
             // strategy and accumulating against |q| restores the additive invariant:
             // total_posted_margin = Σ_strategies Σ_symbols |q| × initial_margin.
-            gross_notional = 0.0;
-            net_notional = 0.0;
-            total_posted_margin = 0.0;
-            maintenance_requirement_today = 0.0;
-            int true_active_positions = 0;
-            bool recompute_fallback = false;
-            for (const auto& [strategy_id, pos_map] : strategy_positions_map) {
-                if (recompute_fallback)
-                    break;
-                for (const auto& [symbol, pos] : pos_map) {
-                    double qty = pos.quantity.as_double();
-                    if (std::abs(qty) < 1e-6)
-                        continue;
-                    true_active_positions++;
-
-                    double price = previous_day_close_prices.count(symbol)
-                                       ? previous_day_close_prices.at(symbol)
-                                       : pos.average_price.as_double();
-
-                    auto notional_result =
-                        margin_manager->calculate_position_notional(symbol, qty, price);
-                    auto margin_result_per =
-                        margin_manager->calculate_position_margin(symbol, qty, price);
-
-                    if (notional_result.is_ok() && margin_result_per.is_ok()) {
-                        double signed_notional = notional_result.value();
-                        gross_notional += std::abs(signed_notional);
-                        net_notional += signed_notional;
-                        auto [initial_m, maint_m] = margin_result_per.value();
-                        total_posted_margin += initial_m;
-                        maintenance_requirement_today += maint_m;
-                    } else {
-                        WARN("Failed per-strategy notional/margin for " + symbol +
-                             " in strategy " + strategy_id +
-                             ", falling back to MarginManager combined values");
-                        gross_notional = metrics.gross_notional;
-                        net_notional = metrics.net_notional;
-                        total_posted_margin = metrics.total_posted_margin;
-                        maintenance_requirement_today = metrics.maintenance_requirement;
-                        recompute_fallback = true;
-                        break;
-                    }
-                }
+            // T-7b-2 8b: the account's exposure from the sleeves' books (live/book_exposure.hpp).
+            // A symbol the sleeves hold on the same side is summed per sleeve exactly as before;
+            // a symbol they hold on OPPOSITE sides is taken once, on the net, because the account
+            // holds the net and posts margin on it (HD 2026-09-19 / 2026-09-25 item 23).
+            const BookExposure exposure = account_book_exposure(
+                strategy_positions_map,
+                [&](const std::string& symbol, const Position& pos) {
+                    return previous_day_close_prices.count(symbol)
+                               ? previous_day_close_prices.at(symbol)
+                               : pos.average_price.as_double();
+                },
+                [&](const std::string& symbol, double qty, double price) {
+                    return margin_manager->calculate_position_notional(symbol, qty, price);
+                },
+                [&](const std::string& symbol, double qty, double price) {
+                    return margin_manager->calculate_position_margin(symbol, qty, price);
+                });
+            if (exposure.failed) {
+                WARN("Failed per-strategy notional/margin for " + exposure.failed_symbol +
+                     " in strategy " + exposure.failed_strategy +
+                     ", falling back to MarginManager combined values");
+                gross_notional = metrics.gross_notional;
+                net_notional = metrics.net_notional;
+                total_posted_margin = metrics.total_posted_margin;
+                maintenance_requirement_today = metrics.maintenance_requirement;
+            } else {
+                gross_notional = exposure.gross_notional;
+                net_notional = exposure.net_notional;
+                total_posted_margin = exposure.posted_margin;
+                maintenance_requirement_today = exposure.maintenance_margin;
+                for (const auto& line : exposure.net_lines) INFO(line);
             }
-            active_positions = true_active_positions;
+            active_positions = exposure.active_positions;
 
             INFO("Per-strategy recompute: gross=$" + std::to_string(gross_notional) +
                  ", net=$" + std::to_string(net_notional) +
@@ -2221,7 +2359,11 @@ int main(int argc, char* argv[]) {
 
         // Compute portfolio-level snapshot metrics using RiskManager on today's state
         INFO("Retrieving strategy metrics...");
-        trade_ngin::RiskManager snapshot_rm(risk_config);
+        // T-7b-2 9c: the reporter reads the book against the capital it was sized on, as the gate
+        // does (its leverage term divides by it).
+        RiskConfig snapshot_risk_config = risk_config;
+        snapshot_risk_config.capital = Decimal(portfolio->sizing_capital());
+        trade_ngin::RiskManager snapshot_rm(snapshot_risk_config);
         auto market_data_snapshot = snapshot_rm.create_market_data(all_bars);
         auto risk_eval = snapshot_rm.process_positions(positions, market_data_snapshot);
 
@@ -2257,6 +2399,14 @@ int main(int argc, char* argv[]) {
         INFO(trade_ngin::format_risk_scale_report(
             risk_eval.is_ok() ? risk_eval.value().recommended_scale : 1.0,
             trade_ngin::summarize_applied_risk(portfolio->last_risk_decisions())));
+        // T-7b-2 C9a (T-VOL C4): the delivered cut beside the request: the stored book's gross
+        // notional over the lap-1 optimizer book's, the PortfolioManager's measurement of the same
+        // rebalance (risk_scale_report.hpp defines each field). Log only. C9a3: final_gross is the
+        // book this runner stores, strategy_positions_map AFTER the BOOK_GATE hold (a held symbol
+        // keeps its stored T-1 quantity), not the PortfolioManager's book before it.
+        INFO(trade_ngin::format_risk_delivered(
+            trade_ngin::summarize_applied_risk(portfolio->last_risk_decisions()),
+            portfolio->delivered_cut_for_book(trade_ngin::account_book_of(strategy_positions_map))));
         // ========================================
         // STEP 3: CALCULATE TRANSACTION COSTS AND Day T PnL (ZERO)
         // ========================================
@@ -3016,6 +3166,11 @@ int main(int argc, char* argv[]) {
         } catch (const std::exception& e) {
             INFO("Could not load previous day aggregates: " + std::string(e.what()));
         }
+        // T-7b-2 9c: the equity the book was sized on, beside the finalised value it rebuilt.
+        INFO("SIZING_CAPITAL_CHECK date=" + core::format_utc_date(now) +
+             " sized_on=" + std::to_string(sizing_equity.equity) +
+             " previous_portfolio_value=" + std::to_string(previous_portfolio_value) +
+             " difference=" + std::to_string(sizing_equity.equity - previous_portfolio_value));
 
         // Calculate cumulative values for Day T
         double total_pnl = previous_total_pnl + daily_pnl_for_today;

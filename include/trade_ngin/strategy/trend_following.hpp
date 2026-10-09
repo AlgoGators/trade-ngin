@@ -9,6 +9,7 @@
 #include "trade_ngin/core/types.hpp"
 #include "trade_ngin/instruments/instrument_registry.hpp"
 #include "trade_ngin/strategy/base_strategy.hpp"
+#include "trade_ngin/strategy/vol_annualisation.hpp"
 
 namespace trade_ngin {
 
@@ -26,7 +27,10 @@ struct TrendFollowingConfig {
     // sub-tick and a no-op for integer positions. 0.5 is the smallest value that can absorb a
     // breach for typical 0-3 contract holdings; set to 0.0 to disable.
     double carver_buffer_floor{0.5};
-    // Position-proportional buffer: buffer_width = max(floor, factor × |raw_position|).
+    // Position-proportional buffer term: buffer_width = max(floor, carver, factor × |current|),
+    // where current is the HELD position (the strategy's positions_), not the raw target: a
+    // larger held position gets a wider tolerance for raw drift (T-4e 7.5, a deliberate choice
+    // for inertia). With current = 0 the term is 0 and the floor sets the entry threshold.
     // Targets high-magnitude positions (MBT/M2K/MYM) where day-over-day raw can move
     // > 0.5 contracts, breaching the floor. Set to 0.0 to disable (floor-only).
     double carver_buffer_position_factor{0.0};
@@ -59,6 +63,7 @@ struct InstrumentData {
 
     // Market data (deque for O(1) front removal)
     std::deque<double> price_history;
+    std::deque<Timestamp> bar_timestamps;  // each price_history bar's date (vol annualisation)
     std::deque<double> volatility_history;
     double current_volatility = 0.01;
 
@@ -174,6 +179,12 @@ public:
     std::unordered_map<std::string, Position> get_target_positions() const override;
 
     /**
+     * @brief false while `symbol`'s price history is shorter than the longest EMA window (on_data
+     *        skips it: no forecast and no target of its own); true from then on (T-OPT E-7)
+     */
+    bool is_signalling(const std::string& symbol) const override;
+
+    /**
      * @brief Get the correct point value multiplier for a futures symbol
      * @note Made public for use by live_trend.cpp to calculate PnL consistently
      */
@@ -235,19 +246,25 @@ private:
      * @param weight_short Weight for short-term EWMA (default: 70%).
      * @param weight_long Weight for long-term EWMA (default: 30%).
      * @param max_history Maximum historical records (default: 10 years).
+     * @param annualisation_factor sqrt(bars a year) applied to the per-bar stddev (default:
+     *        16, which the forecast divides back out; sizing passes vol_annualisation()).
      * @return Vector of blended EWMA standard deviation.
      */
     std::vector<double> blended_ewma_stddev(const std::vector<double>& prices, int N,
                                             double weight_short = 0.7, double weight_long = 0.3,
-                                            size_t max_history = 2520) const;
+                                            size_t max_history = 2520,
+                                            double annualisation_factor = kCarverAnnualisation) const;
 
     /**
      * @brief Computes the EWMA standard deviation using a lambda-based approach.
      * @param prices Vector of price data.
      * @param N Lookback period for EWMA.
+     * @param annualisation_factor sqrt(bars a year) applied to the per-bar stddev.
      * @return Vector of EWMA standard deviation values.
      */
-    std::vector<double> ewma_standard_deviation(const std::vector<double>& prices, int N) const;
+    std::vector<double> ewma_standard_deviation(
+        const std::vector<double>& prices, int N,
+        double annualisation_factor = kCarverAnnualisation) const;
 
     /**
      * @brief Computes the long-term average of EWMA standard deviations.

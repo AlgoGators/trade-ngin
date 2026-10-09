@@ -3,9 +3,43 @@
 #include <Eigen/Dense>
 #include <algorithm>
 #include <cmath>
+#include <limits>
 #include <numeric>
 
 namespace trade_ngin {
+
+namespace {
+
+// T-7b-2 9d (OPT-N1): the greedy's pass cap scales with the book. The greedy starts at zero and
+// adopts one contract of one symbol per pass, always toward that symbol's target, so symbol i moves
+// through at most ceil(|target_i| / weight_per_contract_i) contracts on its way out (it can pass a
+// fractional target by less than one contract, never more). Short asks count: the target vector
+// holds them and the long-only write-back discards them only after the optimizer. With B the sum of
+// those ceilings, a greedy that never steps back needs at most B adopted passes plus the one empty
+// pass that finds nothing. The cap is 2B + 1, the extra B passes covering a symbol that steps back
+// and forth between the two whole contracts around a fractional target; the configured
+// max_iterations stays the floor. The cap changes only when the greedy stops, never which contract
+// it picks: a greedy that converged under the configured cap converges in the same passes here.
+int greedy_pass_cap(int configured, const Eigen::VectorXd& target,
+                    const std::vector<double>& weights_per_contract) {
+    double contracts = 0.0;
+    for (Eigen::Index i = 0; i < target.size(); ++i) {
+        const double w = std::abs(weights_per_contract[static_cast<size_t>(i)]);
+        if (!(w > 0.0) || !std::isfinite(w))
+            continue;  // a zero step never improves the objective: this symbol takes no pass
+        const double c = std::abs(target(i)) / w;
+        if (std::isnan(c))
+            continue;  // a NaN target makes every comparison false: no pass is adopted on it
+        contracts += std::ceil(c);
+    }
+    const double bound = 2.0 * contracts + 1.0;
+    const double ceiling = static_cast<double>(std::numeric_limits<int>::max() - 1);
+    const int derived =
+        bound < ceiling ? static_cast<int>(bound) : std::numeric_limits<int>::max() - 1;
+    return std::max(configured, derived);
+}
+
+}  // namespace
 
 DynamicOptimizer::DynamicOptimizer(DynamicOptConfig config) : config_(std::move(config)) {
     Logger::register_component("DynamicOptimizer");
@@ -121,12 +155,13 @@ Result<OptimizationResult> DynamicOptimizer::optimize_single_period(
 
         bool improved = true;
         int iteration = 0;
+        const int pass_cap = greedy_pass_cap(config_.max_iterations, target, weights_per_contract);
 
         // Pre-extract covariance diagonal (reused across all iterations)
         Eigen::VectorXd cov_diag = cov.diagonal();
 
         // Main optimization loop - greedy coordinate descent with rank-1 updates
-        while (improved && iteration++ < config_.max_iterations) {
+        while (improved && iteration++ < pass_cap) {
             improved = false;
 
             // Pre-compute rank-1 base values for this iteration: O(N^2) + O(N)
@@ -179,6 +214,14 @@ Result<OptimizationResult> DynamicOptimizer::optimize_single_period(
                 best_tracking_error = proposed_err;
                 improved = true;
             }
+        }
+
+        // The loop left with improved still set only when the cap stopped it: say so, never
+        // truncate silently (the bound above makes this unreachable except by a pathological path).
+        if (improved) {
+            WARN("Greedy stopped at its pass cap " + std::to_string(pass_cap) +
+                 " (configured max_iterations " + std::to_string(config_.max_iterations) +
+                 "), before it converged: the answer may be truncated");
         }
 
         // --- Final Metrics ---

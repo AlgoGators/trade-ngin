@@ -1,13 +1,17 @@
 #include "trade_ngin/backtest/backtest_coordinator.hpp"
+#include "trade_ngin/backtest/equity_cost_warmup.hpp"
 #include "trade_ngin/backtest/junk_signal_feed.hpp"
 #include <unordered_set>
 #include <algorithm>
 #include <iomanip>
+#include <set>
 #include <sstream>
 #include "trade_ngin/core/logger.hpp"
 #include "trade_ngin/core/run_id_generator.hpp"
 #include "trade_ngin/core/time_utils.hpp"
+#include "trade_ngin/data/conversion_utils.hpp"
 #include "trade_ngin/data/market_data_bus.hpp"
+#include "trade_ngin/portfolio/sizing_capital.hpp"
 #include "trade_ngin/risk/risk_scale_report.hpp"
 #include "trade_ngin/storage/backtest_results_manager.hpp"
 #include "trade_ngin/strategy/base_strategy.hpp"
@@ -193,12 +197,19 @@ Result<BacktestResults> BacktestCoordinator::run_portfolio(
     // The session hold (T-7a C4) is the futures book's; the equity backtest keeps its old path.
     session_hold_enabled_ = (asset_class == AssetClass::FUTURES);
     risk_scale_report_enabled_ = (asset_class == AssetClass::FUTURES);
+    size_on_equity_enabled_ = (asset_class == AssetClass::FUTURES);
+    // K1 (T-7b-2 8c): the per-bar re-tier is the equity book's; futures roots keep their static
+    // per-root cost configs.
+    equity_cost_retier_enabled_ = (asset_class == AssetClass::EQUITIES);
+    // COST-H3 (T-7b-2 8c): the futures book's cost managers read live's own-day basis.
+    own_day_cost_feed_enabled_ = (asset_class == AssetClass::FUTURES);
 
     // Store backtest dates for later use in save_portfolio_results_to_db
     backtest_start_date_ = start_date;
     backtest_end_date_ = end_date;
 
-    // The portfolio's risk modules see RiskContext::is_backtest = true (no log, no other effect)
+    // The portfolio's risk modules see RiskContext::is_backtest = true, and the PortfolioManager nets
+    // each bar's sleeve reports (K3), which here are the fills the backtest stores (T-7b-2 C8b4)
     if (portfolio) {
         portfolio->set_backtest_mode(true);
     }
@@ -228,6 +239,29 @@ Result<BacktestResults> BacktestCoordinator::run_portfolio(
 
     auto& all_bars = data_result.value();
     auto grouped_bars = data_loader_->group_bars_by_timestamp(all_bars);
+
+    if (equity_cost_retier_enabled_) {
+        load_equity_cost_retier(symbols, start_date, end_date);
+    }
+
+    // T-7b-2 C10a (HD 2026-09-24 ruling 16): the session classifier's instrument-id continuity
+    // limb reads each kept bar's vendor id, over the window the bars were loaded for (the query
+    // the live runners read). The verdict of a bar reads no later bar, although this classifier
+    // holds the cycle's group before it classifies the signal group.
+    if (session_hold_enabled_) {
+        auto pg = std::dynamic_pointer_cast<PostgresDatabase>(db_);
+        const auto feed = feed_instrument_ids(
+            session_classifier_,
+            pg ? pg->get_futures_instrument_ids(symbols, start_date, end_date)
+               : make_error<std::vector<market_data_utils::FuturesInstrumentId>>(
+                     ErrorCode::NOT_INITIALIZED, "the backtest's database is not a PostgresDatabase",
+                     "BacktestCoordinator"));
+        if (feed.fed) {
+            INFO(feed.line);
+        } else {
+            WARN(feed.line);
+        }
+    }
 
     // Get portfolio config
     const auto& portfolio_config = portfolio->get_config();
@@ -327,6 +361,14 @@ Result<BacktestResults> BacktestCoordinator::run_portfolio(
         }
 
         day_index++;
+    }
+
+    if (equity_cost_retier_enabled_) {
+        INFO("EQUITY_COST_RETIER_SUMMARY cycles=" + std::to_string(equity_cost_retier_cycles_) +
+             " tier_changes=" + std::to_string(equity_cost_retier_changes_) +
+             " splits=" + std::to_string(equity_cost_retier_.split_count()) +
+             ": every cycle re-tiered both cost managers from the 20 bars ending at its signal "
+             "bar, in window-end share units");
     }
 
     // Sort executions by timestamp
@@ -547,6 +589,27 @@ Result<void> BacktestCoordinator::process_portfolio_day(
         // classified later (as the signal group) against strictly earlier bars only.
         if (session_hold_enabled_) session_classifier_.add_bars(bars);
 
+        // K1 (T-7b-2 8c; T-4b BT-cost-tier-warmup): before this group reaches the cost models or
+        // the PortfolioManager, both cost managers are re-tiered from the 20 bars ending at the
+        // PREVIOUS group, the signal bar whose close prices this cycle's fills (live re-tiers on
+        // every run from the 20 bars ending at T-1), in the window-end share unit
+        // (equity_cost_retier.hpp). Then this group joins the trailing windows.
+        if (equity_cost_retier_enabled_) {
+            const auto pass =
+                equity_cost_retier_.retier(execution_manager_->get_transaction_cost_manager(),
+                                           portfolio->get_transaction_cost_manager());
+            ++equity_cost_retier_cycles_;
+            for (const auto& c : pass.changes) {
+                ++equity_cost_retier_changes_;
+                INFO("EQUITY_COST_RETIER date=" + core::format_utc_date(timestamp) +
+                     " symbol=" + c.symbol + " tier " + c.from + "->" + c.to +
+                     " adv=" + std::to_string(c.adv) + " bars=" + std::to_string(c.bars) +
+                     " window=" + c.first_bar + ".." + c.last_bar +
+                     " (split-consistent shares; both cost managers)");
+            }
+            equity_cost_retier_.append(bars);
+        }
+
         // If this is the first bar set, initialize previous_bars and return early
         // to avoid processing day 1 twice (directly + as "previous bars" on day 2)
         bool had_previous_bars = portfolio_has_previous_bars_;
@@ -558,15 +621,29 @@ Result<void> BacktestCoordinator::process_portfolio_day(
             return Result<void>();  // Early return, don't process day 1
         }
 
-        // Update transaction cost manager with market data for ADV and volatility tracking
-        for (const auto& bar : bars) {
+        // Update transaction cost manager with market data for ADV and volatility tracking.
+        // COST-H3 (T-7b-2 8c): the futures book (own_day_cost_feed_enabled_) is fed below from the
+        // signal feed, live's basis. C8c4 (HD 2026-09-25 ruling 26): the equity book is fed its
+        // SIGNAL group (T-1, the bar whose close prices this cycle's fills), with each bar's return
+        // against the group fed on the previous cycle, so its 20-bar ADV and its volatility window
+        // end at T-1 as the live equity runner's do (LiveDailyCycle::feed_cost_model); it used to be
+        // fed this cycle's own group, day T, before its fills were priced (a one-bar look-ahead).
+        static const std::vector<Bar> kNotFedHere;
+        const std::vector<Bar>& signal_group_cost_feed =
+            own_day_cost_feed_enabled_ ? kNotFedHere : portfolio_previous_bars_;
+        for (const auto& bar : signal_group_cost_feed) {
             double close = static_cast<double>(bar.close);
-            double volume = static_cast<double>(bar.volume);
+            // K1 (T-7b-2 8c; T-4b ADVERSARIAL A-3): an equity's volume in the window-end share
+            // unit, so the ADV that scales participation is in the unit of the traded quantity and
+            // of the tier's ADV (live's two ADVs are the same twenty observations).
+            double volume = equity_cost_retier_enabled_
+                                ? equity_cost_retier_.split_consistent_volume(bar)
+                                : static_cast<double>(bar.volume);
 
             // Get previous close for log return calculation
             double prev_close = 0.0;
             bool found_prev = false;
-            for (const auto& prev_bar : portfolio_previous_bars_) {
+            for (const auto& prev_bar : cost_feed_previous_group_) {
                 if (prev_bar.symbol == bar.symbol) {
                     prev_close = static_cast<double>(prev_bar.close);
                     found_prev = true;
@@ -602,6 +679,7 @@ Result<void> BacktestCoordinator::process_portfolio_day(
             // Also update portfolio's cost manager for execution cost calculation
             portfolio->update_cost_manager_market_data(bar.symbol, volume, close, prev_close);
         }
+        if (!own_day_cost_feed_enabled_) cost_feed_previous_group_ = portfolio_previous_bars_;
 
         // Track strategy execution counts BEFORE processing (for commission calculation)
         std::unordered_map<std::string, size_t> strategy_exec_counts_before;
@@ -632,6 +710,10 @@ Result<void> BacktestCoordinator::process_portfolio_day(
         if (session_hold_enabled_ && had_previous_bars) {
             std::set<std::string> junk_symbols;
             for (const auto& v : classify_bar_group(session_classifier_, bars_for_signals)) {
+                if (!is_warmup && !v.id_note.empty()) {
+                    INFO("BT_SESSION_CLASSIFIER INSTRUMENT_ID " + v.symbol + " " + v.date + ": " +
+                         v.id_note);
+                }
                 if (v.is_session()) {
                     signal_group_sessions.insert(v.symbol);
                 } else {
@@ -671,6 +753,81 @@ Result<void> BacktestCoordinator::process_portfolio_day(
                 withheld_junk_signal_bars_ = std::move(junk_feed.withheld);
                 junk_adjusted_feed = std::move(junk_feed.feed);
                 signal_feed = &junk_adjusted_feed;
+            }
+        }
+
+        // COST-H3 (T-7b-2 8c; T-VOL §4 proved the parent's order: day T's bar reached both cost
+        // managers before the book was sized on the T-1 group and filled at the T-1 close). The
+        // futures book's two managers are fed the cycle's SIGNAL feed, the bars the strategies and
+        // the PortfolioManager are fed below (a JUNK bar withheld on its cycle, as live's strategy
+        // feed withholds it), on live's basis (futures_cost_feed.hpp): each symbol's own-day volume
+        // (its signal bar's) is the impact model's only observation, and its returns walk ends at
+        // that bar. So the optimizer's cost vector and every fill's cost read what a live run with
+        // this T-1 reads, and nothing of day T.
+        if (own_day_cost_feed_enabled_) {
+            // C8c3 (HD 2026-09-25 rulings 25 and 28): the participation volume is the weekend
+            // merge's on this cycle's fill day (futures_cost_feed.hpp, rules 1-3): a weekday
+            // signal bar takes the weekend stub(s) right before it; a weekend signal bar on a
+            // weekday cycle is priced on the last session before the stub(s) plus the stub(s).
+            const auto fed = feed_futures_cost_model_step(
+                execution_manager_->get_transaction_cost_manager(), *signal_feed, timestamp,
+                execution_cost_carry_);
+            feed_futures_cost_model_step(portfolio->get_transaction_cost_manager(), *signal_feed,
+                                         timestamp, portfolio_cost_carry_);
+            size_t merged_symbols = 0;
+            size_t stub_signal_symbols = 0;
+            double merged_volume = 0.0;
+            double previous_session_volume = 0.0;
+            auto count_merge = [&](const FuturesCostFeedSymbol& s) {
+                if (s.merged_weekend_bars == 0) return;
+                ++merged_symbols;
+                merged_volume += s.merged_weekend_volume;
+                if (futures_cost_feed_detail::is_weekend_day(s.own_day_time)) {
+                    ++stub_signal_symbols;
+                    previous_session_volume += s.previous_session_volume;
+                }
+            };
+            for (const auto& s : fed.symbols) count_merge(s);
+            for (const auto& s : fed.reevaluated) count_merge(s);
+            if (!is_warmup && (merged_symbols > 0 || !fed.reevaluated.empty())) {
+                INFO("BT_COST_FEED_WEEKEND_MERGE date=" + core::format_utc_date(timestamp) +
+                     " symbols=" + std::to_string(merged_symbols) +
+                     " weekend_volume=" + std::to_string(merged_volume) +
+                     " stub_signal_symbols=" + std::to_string(stub_signal_symbols) +
+                     " previous_session_volume=" + std::to_string(previous_session_volume) +
+                     " reevaluated=" + std::to_string(fed.reevaluated.size()) +
+                     ": a weekday signal bar's participation volume includes its symbol's "
+                     "weekend stub; a stub signal bar on a weekday cycle is priced on the last "
+                     "session plus the stub");
+            }
+            if (!is_warmup) {
+                INFO("BT_COST_FEED date=" + core::format_utc_date(timestamp) + " signal_group=" +
+                     (bars_for_signals.empty()
+                          ? std::string("none")
+                          : core::format_utc_date(bars_for_signals.front().timestamp)) +
+                     " symbols=" + std::to_string(fed.symbols.size()) +
+                     " returns=" + std::to_string(fed.returns_fed) +
+                     ": both cost managers read each symbol's own-day volume and the returns "
+                     "walk ending at its signal bar (live's basis)");
+            }
+        }
+
+        // T-7b-2 9c (HD 2026-09-25, compounding): the book is sized on the account's equity at the
+        // close of the signal group, i.e. the equity curve's LAST row, which is the previous
+        // cycle's (this cycle's row is appended below, after its fills and its marks). Every
+        // sizing input follows it (PortfolioManager::set_sizing_capital). Warm-up rows are flat at
+        // the initial capital, so warm-up sizes as before and is not logged.
+        if (size_on_equity_enabled_) {
+            const double sizing_equity = backtest_sizing_equity(equity_curve, initial_capital);
+            auto sized = portfolio->set_sizing_capital(sizing_equity);
+            if (sized.is_error()) {
+                return sized;
+            }
+            if (!is_warmup) {
+                INFO("SIZING_CAPITAL date=" + core::format_utc_date(timestamp) +
+                     " equity=" + std::to_string(sizing_equity) + " source=equity_curve row=" +
+                     (equity_curve.empty() ? std::string("none")
+                                           : core::format_utc_date(equity_curve.back().first)));
             }
         }
 
@@ -726,6 +883,13 @@ Result<void> BacktestCoordinator::process_portfolio_day(
                                      : portfolio->last_risk_decisions();
             INFO(format_risk_scale_report(std::string("na"), summarize_applied_risk(this_cycle),
                                           core::format_utc_date(timestamp)));
+            // T-7b-2 C9a (T-VOL C4): the delivered cut beside the request, from the same call's
+            // measurement (risk_scale_report.hpp defines each field); an all-JUNK cycle ran no
+            // rebalance and reports the empty measurement (every figure na). Log only.
+            INFO(format_risk_delivered(
+                summarize_applied_risk(this_cycle),
+                signal_feed->empty() ? DeliveredCut{} : portfolio->last_delivered_cut(),
+                core::format_utc_date(timestamp)));
         }
 
         std::vector<ExecutionReport> period_executions;
@@ -1266,12 +1430,97 @@ void BacktestCoordinator::reset_portfolio_state() {
     session_hold_enabled_ = false;
     withheld_junk_signal_bars_.clear();
     risk_scale_report_enabled_ = false;
+    size_on_equity_enabled_ = false;
+    equity_cost_retier_enabled_ = false;
+    equity_cost_retier_.reset();
+    equity_cost_retier_cycles_ = 0;
+    equity_cost_retier_changes_ = 0;
+    own_day_cost_feed_enabled_ = false;
+    execution_cost_carry_ = FuturesCostFeedCarry{};
+    portfolio_cost_carry_ = FuturesCostFeedCarry{};
+    cost_feed_previous_group_.clear();
     current_run_id_.clear();
     portfolio_previous_positions_.clear();
     // E2-F54 (c): without this, a second portfolio backtest in the same process opens with
     // the previous book's cumulative realized and reports its first bar as a difference.
     last_cumulative_realized_.clear();
     csv_exporter_.reset();
+}
+
+void BacktestCoordinator::load_equity_cost_retier(const std::vector<std::string>& symbols,
+                                                  const Timestamp& start_date,
+                                                  const Timestamp& end_date) {
+    equity_cost_retier_.reset();
+    equity_cost_retier_cycles_ = 0;
+    equity_cost_retier_changes_ = 0;
+    // The first window is the cost warm-up's (equity_cost_warmup.hpp, H-13): the 30 calendar
+    // days before start_date, ending strictly before it, so the first cycle's tier is set from
+    // bars that existed when the backtest starts.
+    const auto window = equity_cost_warmup_window(start_date);
+    const std::string from = core::format_utc_date(window.start);
+    const std::string to = core::format_utc_date(end_date);
+
+    // The split events that put a bar's volume in the window-end share unit: every ex-date from
+    // the first window's first day to end_date (the adjusted prices' frame).
+    auto actions = db_->get_per_bar_corporate_actions(symbols, from, to);
+    if (actions.is_error()) {
+        WARN("EQUITY_COST_RETIER the split events " + from + ".." + to +
+             " could not be read (" + std::string(actions.error()->what()) +
+             "): every volume stays in raw shares, so a bar before a split is tiered in its own "
+             "share unit");
+    } else {
+        for (const auto& row : actions.value()) {
+            if (row.action != "split") continue;
+            equity_cost_retier_.add_split(row.ticker, row.date_str, row.value);
+            INFO("EQUITY_COST_RETIER split symbol=" + row.ticker + " ex=" + row.date_str +
+                 " factor=" + std::to_string(row.value) +
+                 ": the volume of every earlier bar is multiplied by it");
+        }
+    }
+
+    // The bars before start_date, read with MarketDataBus publishing off (as run_portfolio reads
+    // its own window), so they reach the trailing windows and nothing else.
+    const bool publishing = MarketDataBus::instance().is_publish_enabled();
+    MarketDataBus::instance().set_publish_enabled(false);
+    Result<std::shared_ptr<arrow::Table>> seed = [&]() {
+        try {
+            return db_->get_market_data(symbols, window.start, window.end, AssetClass::EQUITIES,
+                                        DataFrequency::DAILY, "ohlcv");
+        } catch (...) {
+            MarketDataBus::instance().set_publish_enabled(publishing);
+            throw;
+        }
+    }();
+    MarketDataBus::instance().set_publish_enabled(publishing);
+
+    size_t seed_bars = 0;
+    std::set<std::string> seeded;
+    if (seed.is_error()) {
+        WARN("EQUITY_COST_RETIER the bars before start_date could not be read (" +
+             std::string(seed.error()->what()) +
+             "): the first cycles re-tier from the in-window bars only");
+    } else {
+        auto converted = DataConversionUtils::arrow_table_to_bars(seed.value());
+        if (converted.is_error()) {
+            WARN("EQUITY_COST_RETIER the bars before start_date could not be converted (" +
+                 std::string(converted.error()->what()) +
+                 "): the first cycles re-tier from the in-window bars only");
+        } else {
+            auto bars = converted.value();
+            std::stable_sort(bars.begin(), bars.end(), [](const Bar& a, const Bar& b) {
+                return a.timestamp < b.timestamp;
+            });
+            equity_cost_retier_.append(bars);
+            seed_bars = bars.size();
+            for (const auto& b : bars) seeded.insert(b.symbol);
+        }
+    }
+    INFO("EQUITY_COST_RETIER window=[" + core::format_utc_datetime(window.start) + "Z, " +
+         core::format_utc_datetime(window.end) + "Z] bars=" + std::to_string(seed_bars) +
+         " symbols=" + std::to_string(seeded.size()) + "/" + std::to_string(symbols.size()) +
+         " splits=" + std::to_string(equity_cost_retier_.split_count()) +
+         ": the first tier window; every cycle re-tiers both cost managers from the 20 bars ending "
+         "at its signal bar, in window-end share units, and feeds the impact ADV in that unit");
 }
 
 std::string BacktestCoordinator::generate_portfolio_run_id(

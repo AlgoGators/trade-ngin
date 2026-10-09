@@ -57,6 +57,19 @@ public:
     virtual Result<void> check_risk_limits() = 0;
 
     /**
+     * @brief The capital the strategy sizes on from the next on_data (T-7b-2 9c, HD 2026-09-25:
+     *        sizing uses current equity). The PortfolioManager passes the account's equity, marked
+     *        at the close of the newest bar the sizing reads, times this strategy's allocation
+     *        (PortfolioManager::set_sizing_capital). A strategy that does not implement it refuses,
+     *        so a caller that asked for compounding cannot silently keep a constant capital.
+     */
+    virtual Result<void> set_capital_allocation(double capital) {
+        (void)capital;
+        return make_error<void>(ErrorCode::STRATEGY_ERROR,
+                                "this strategy does not accept a sizing capital", "Strategy");
+    }
+
+    /**
      * @brief Set backtest mode for this strategy
      * @param is_backtest True if running in backtest mode (stores daily PnL), false for live (cumulative PnL)
      * @note Default implementation does nothing. Override in BaseStrategy for backtest-specific behavior.
@@ -70,6 +83,19 @@ public:
      * @return True if in backtest mode, false by default
      */
     virtual bool is_backtest_mode() const { return false; }
+
+    /**
+     * @brief Whether the strategy signals `symbol` yet: it has the history it needs to produce a
+     *        forecast, so a target it reports for the symbol is its own (T-OPT E-7, ledger
+     *        OPT-new-symbol-collapses-min-periods).
+     * @return true by default: a strategy without a warm-up signals every symbol it lists. The
+     *         trend strategies return false while the symbol's price history is shorter than the
+     *         longest EMA window, the same test on_data applies before it computes a forecast.
+     * @note The PortfolioManager leaves a symbol that no optimizing strategy signals out of the
+     *       optimizer (its covariance and its date intersection), so a contract still warming up
+     *       cannot shorten every other symbol's covariance window to its own history.
+     */
+    virtual bool is_signalling(const std::string& /*symbol*/) const { return true; }
 };
 
 }  // namespace trade_ngin

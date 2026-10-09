@@ -117,6 +117,18 @@ std::string build_futures_bar_query(const std::string& full_table_name, bool wit
            ") AS one_bar_per_symbol_date ORDER BY time, symbol";
 }
 
+std::string build_futures_instrument_id_query(const std::string& full_table_name,
+                                              bool with_symbol_filter) {
+    return "SELECT k.symbol, k.time, r.instrument_id FROM ("
+           "SELECT DISTINCT ON (symbol, time) symbol, time, open, high, low, close, volume"
+           " FROM " + full_table_name + futures_window_predicate(with_symbol_filter) +
+           " ORDER BY symbol, time, " + kFuturesBarKeepOrder +
+           ") AS k JOIN " + kFuturesRawBarTable +
+           " AS r ON r.symbol = k.symbol AND r.ts_event = k.time AND r.volume = k.volume"
+           " AND r.open = k.open AND r.high = k.high AND r.low = k.low AND r.close = k.close"
+           " ORDER BY k.symbol, k.time";
+}
+
 std::string build_futures_duplicate_copies_query(const std::string& full_table_name,
                                                  bool with_symbol_filter) {
     const std::string cols = get_market_data_columns(AssetClass::FUTURES);

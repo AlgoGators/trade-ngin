@@ -8,6 +8,7 @@
 #include <nlohmann/json.hpp>
 #include <numeric>
 #include <optional>
+#include <set>
 #include <unordered_map>
 #include <unordered_set>
 #include "trade_ngin/core/config_base.hpp"
@@ -24,6 +25,7 @@
 #include "trade_ngin/risk/risk_manager.hpp"
 #include "trade_ngin/risk/risk_module.hpp"
 #include "trade_ngin/risk/risk_module_config.hpp"
+#include "trade_ngin/risk/risk_scale_report.hpp"
 #include "trade_ngin/strategy/strategy_interface.hpp"
 #include "trade_ngin/strategy/trend_following.hpp"
 #include "trade_ngin/transaction_cost/transaction_cost_manager.hpp"
@@ -170,6 +172,30 @@ public:
         const std::vector<Bar>& data, bool skip_execution_generation = false,
         std::optional<Timestamp> current_timestamp = std::nullopt,
         const std::unordered_set<std::string>* session_symbols = nullptr);
+
+    /**
+     * @brief The capital the book is sized on from the next process_market_data (T-7b-2 9c,
+     *        HD 2026-09-25: compounding, sizing on current equity).
+     *
+     * Every sizing input moves together (T-4c's W-B rule: a capital change that moves the
+     * strategies but not the gate or the optimizer changes what the leverage limit means):
+     * each strategy's capital becomes capital x its allocation (the position line, the buffer
+     * width's Carver term and the notional concentration cap all read it); the optimizer's
+     * weight per contract is notional / capital; every risk module is handed the capital
+     * (the Carver gate's gross and net leverage divide by it); the RiskContext carries it.
+     * Valuation does not move: the equity curve, P&L, returns and margin are the account's.
+     *
+     * Never called, the PM sizes on PortfolioConfig::total_capital as before (the equity
+     * runner and the equity backtest do not call it). Refuses a capital that is not a finite
+     * positive number (nothing changes), and stops at the first strategy or module that refuses
+     * it (the ones before it already carry the new capital): the caller treats any error as
+     * fatal for the rebalance and never sizes on.
+     */
+    Result<void> set_sizing_capital(double capital);
+
+    /// The capital the next process_market_data sizes on (PortfolioConfig::total_capital until
+    /// set_sizing_capital is called).
+    double sizing_capital() const;
 
     /**
      * @brief Update strategy allocations
@@ -348,7 +374,27 @@ public:
     nlohmann::json risk_decisions_json() const;
 
     /**
-     * @brief Mark this manager as driven by a backtest. Read only into RiskContext::is_backtest.
+     * @brief The last process_market_data call's delivered cut (T-7b-2 C9a, T-VOL C4): the
+     *        account book's gross notional after lap 1's optimizer step and at the end of the
+     *        call, both at one notional per contract per symbol. A copy. Reset at the same
+     *        rebalance boundary as last_risk_decisions(). Log only; nothing reads it back.
+     *        Each field: DeliveredCut in risk_scale_report.hpp.
+     */
+    DeliveredCut last_delivered_cut() const;
+
+    /**
+     * @brief T-7b-2 C9a3: the same rebalance's delivered cut with final_gross measured on `stored_book` (the
+     *        account book the runner actually stores, e.g. after a live runner's BOOK_GATE hold), at the notionals
+     *        of the end-of-call measurement; a symbol those did not cover (a position the hold re-inserted) is
+     *        valued by delivered_notional_per_contract now. The lap-1 book is unchanged. Returns
+     *        last_delivered_cut() unchanged (every figure na) when no measurement ran.
+     */
+    DeliveredCut delivered_cut_for_book(const std::map<std::string, double>& stored_book) const;
+
+    /**
+     * @brief Mark this manager as driven by a backtest (BacktestCoordinator::run_portfolio). Read into
+     *        RiskContext::is_backtest and scope_is_seeded, and it switches on the per-bar netting of the
+     *        sleeves' execution reports (K3), which are the stored fills only in a backtest (T-7b-2 C8b4).
      */
     void set_backtest_mode(bool is_backtest) {
         is_backtest_ = is_backtest;
@@ -357,11 +403,20 @@ public:
 private:
     PortfolioConfig config_;
     std::string id_;
+    // T-7b-2 9c: what the book is sized on (set_sizing_capital); config_.total_capital, the
+    // configured account size, is left as configured. Guarded by mutex_.
+    Decimal sizing_capital_{Decimal(0.0)};
 
     std::unique_ptr<DynamicOptimizer> optimizer_;
     std::vector<RiskModulePtr> risk_modules_;  // portfolio scope, evaluated in order
     std::unordered_map<std::string, std::vector<RiskModulePtr>> sleeve_risk_modules_;  // by strategy id
     std::vector<RiskDecisionRecord> risk_decisions_;  // guarded by mutex_
+    // T-7b-2 C9a: the account book after lap 1's optimizer step (contracts per symbol) and the
+    // rebalance's delivered cut; both reset at the rebalance boundary. guarded by mutex_
+    std::map<std::string, double> delivered_lap1_book_;
+    bool delivered_has_lap1_{false};
+    DeliveredCut delivered_cut_;
+    std::map<std::string, double> delivered_npc_;  // the end-of-call measurement's notionals (C9a3)
     bool is_backtest_{false};
     // Per rebalance, cleared at the boundary: strategies pinned by a risk REFUSE / REPLACE (skipped
     // by the optimiser, later scales, the fraction scan, forced rounding and the final check), and
@@ -481,6 +536,19 @@ private:
      * @return Result indicating success or failure
      */
     Result<void> optimize_positions();
+
+    // T-7b-2 9e, the gate's cut delivered in whole contracts (include/trade_ngin/portfolio/
+    // cut_delivery.hpp): the account book the lap's optimizer produced before the gate, the
+    // factor the gate multiplied the book by on this lap (1 = none), and each symbol's notional
+    // per contract as the optimizer last priced it (weight per contract x sizing capital).
+    std::map<std::string, double> lap_book_before_gate_;
+    double lap_cut_factor_{1.0};
+    std::unordered_map<std::string, double> cut_notional_per_contract_;
+    void deliver_lap_cut(int lap);
+
+    /// T-7b-2 CGW: the risk gate's participants this rebalance (RiskContext::gate_participants),
+    /// rebuilt before lap 1 by gate_participants_for_rebalance.
+    std::set<std::string> gate_participants_;
 
     /**
      * @brief Build the context a risk module sees for one call
@@ -616,6 +684,17 @@ private:
      *        Σᵢ qᵢ × allocᵢ, NOT broker truth. See get_portfolio_positions().
      */
     std::unordered_map<std::string, Position> get_positions_internal() const;
+
+    /**
+     * @brief T-7b-2 C9a: one notional per contract for each symbol, for the delivered cut. The
+     *        optimizer's own figure (contract_size x the latest price of the TrendFollowingStrategy
+     *        that carries the symbol, the later strategy winning as in optimize_positions);
+     *        otherwise this manager's latest close for it (closes_by_date_) x the registry's
+     *        multiplier (1 without a registry entry); a symbol with neither is left out
+     *        (DeliveredCut::unpriced). Called with mutex_ held; logs nothing.
+     */
+    std::map<std::string, double> delivered_notional_per_contract(
+        const std::set<std::string>& symbols) const;
 };
 
 }  // namespace trade_ngin

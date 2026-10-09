@@ -62,6 +62,7 @@
 #include "trade_ngin/optimization/dynamic_optimizer.hpp"
 #include "trade_ngin/strategy/trend_following.hpp"
 #include "trade_ngin/transaction_cost/transaction_cost_manager.hpp"
+#include "../transaction_cost/session_metadata_rows.hpp"
 
 using namespace trade_ngin;
 using namespace trade_ngin::testing;
@@ -85,6 +86,14 @@ Bar bar_at(const std::string& symbol, int day_index, double close, double volume
     const Timestamp ts = std::chrono::system_clock::from_time_t(
         1700000000LL + static_cast<long long>(day_index) * 86400LL);
     return Bar(ts, close, close, close, close, volume, symbol);
+}
+
+/// The date of the run whose T-1 bar is the feed's latest bar: the day after it (the fill day the
+/// feed's weekend merge reads, T-7b-2 C8c3).
+Timestamp run_date_after(const std::vector<Bar>& bars) {
+    Timestamp latest{};
+    for (const auto& b : bars) latest = std::max(latest, b.timestamp);
+    return latest + std::chrono::hours(24);
 }
 
 /// n bars, the close stepping +step / -step alternately, every volume `volume`.
@@ -158,6 +167,8 @@ class OptimizerCostVector : public TestBase {
 protected:
     void SetUp() override {
         TestBase::SetUp();
+        // CM1: the cost model prices MES and ZF with their metadata rows.
+        trade_ngin::testing::register_session_metadata_futures();
         StateManager::reset_instance();
         std::this_thread::sleep_for(std::chrono::milliseconds(50));
         mock_db_ = std::make_shared<MockPostgresDatabase>("mock://testdb");
@@ -260,7 +271,7 @@ TEST_F(OptimizerCostVector, TheK2FeedPricesThePortfolioManagersCostModelOffTheFe
     auto bars = zigzag(kMes, 26, kMesPrice, 0.02, 150'000.0);
     bars.back().volume = 12'000.0;
     const double t1_close = static_cast<double>(bars.back().close);
-    const auto fed = feed_futures_cost_model(tcm, bars);
+    const auto fed = feed_futures_cost_model(tcm, bars, run_date_after(bars));
     ASSERT_EQ(fed.symbols.size(), 1u);
     EXPECT_EQ(fed.symbols[0].returns, 25u);
 
@@ -329,12 +340,12 @@ TEST(OptimizerCostVectorRunnerSource, BothTwinsFeedThePortfolioManagersCostModel
                                           "// NORMAL TRADING DAY PROCESSING");
         ASSERT_FALSE(block.empty());
         const auto feed = block.find(
-            "feed_futures_cost_model(optimizer_cost_model, strategy_feed_bars);");
+            "feed_futures_cost_model(optimizer_cost_model, strategy_feed_bars, now);");
         EXPECT_NE(feed, npos) << "the PortfolioManager's cost model is never fed in live";
         EXPECT_NE(block.find("auto& optimizer_cost_model = portfolio->get_transaction_cost_manager();"),
                   npos);
         // The execution manager's feed (C8a) is still there, on the same feed.
-        EXPECT_NE(block.find("feed_futures_cost_model(cost_model, strategy_feed_bars);"), npos);
+        EXPECT_NE(block.find("feed_futures_cost_model(cost_model, strategy_feed_bars, now);"), npos);
         const auto block_at = src.find("// UPDATE TRANSACTION COST MANAGER WITH MARKET DATA");
         const auto process = src.find("portfolio->process_market_data(strategy_feed_bars);");
         ASSERT_NE(process, npos);

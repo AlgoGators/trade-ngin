@@ -20,7 +20,7 @@ struct DynamicOptConfig : public ConfigBase {
     double capital;                 // Trading capital
     double cost_penalty_scalar;     // Multiplier for cost penalty (e.g., 50)
     double asymmetric_risk_buffer;  // Buffer for risk (e.g., 0.1)
-    int max_iterations;             // Maximum optimization iterations
+    int max_iterations;             // Floor on the greedy's pass cap (the cap scales with the book)
     double convergence_threshold;   // Convergence threshold
     bool use_buffering;             // Whether to use position buffering
     double buffer_size_factor;      // Factor for buffer size calculation (e.g., 0.05)

@@ -177,10 +177,12 @@ Result<void> TrendFollowingSlowStrategy::on_data(const std::vector<Bar>& data) {
             // Update price history
             for (const auto& bar : symbol_bars) {
                 instrument_data.price_history.push_back(static_cast<double>(bar.close));
+                instrument_data.bar_timestamps.push_back(bar.timestamp);
 
                 // MEMORY FIX: Limit price history to maximum needed lookback
                 if (instrument_data.price_history.size() > trend_config_.max_history_size) {
                     instrument_data.price_history.pop_front();
+                    instrument_data.bar_timestamps.pop_front();
                 }
             }
         }
@@ -232,10 +234,21 @@ Result<void> TrendFollowingSlowStrategy::on_data(const std::vector<Bar>& data) {
                 prices.assign(full_prices.begin(), full_prices.end());
             }
 
-            // Calculate volatility
+            // Calculate volatility, annualised by sqrt(bars a year) counted over the bars the
+            // estimator reads (a series with a Sunday session row has about 313 a year, not
+            // 256); the blend weights and history cap are the defaults, unchanged
+            const VolAnnualisation annualisation =
+                vol_annualisation(instrument_data.bar_timestamps, prices.size());
+            DEBUG("Symbol " + symbol + " vol annualisation: bars=" +
+                  std::to_string(annualisation.bars) +
+                  " span_days=" + std::to_string(annualisation.span_days) +
+                  " bars_per_year=" + std::to_string(annualisation.bars_per_year) +
+                  " factor=" + std::to_string(annualisation.factor) +
+                  (annualisation.fallback ? " fallback=16" : ""));
             std::vector<double> volatility;
             try {
-                volatility = blended_ewma_stddev(prices, trend_config_.vol_lookback_short);
+                volatility = blended_ewma_stddev(prices, trend_config_.vol_lookback_short, 0.7,
+                                                 0.3, 2520, annualisation.factor);
                 if (volatility.empty()) {
                     // If volatility calculation fails, use a default value
                     volatility.resize(prices.size(), 0.01);
@@ -589,6 +602,18 @@ Result<void> TrendFollowingSlowStrategy::on_data(const std::vector<Bar>& data) {
     }
 }
 
+bool TrendFollowingSlowStrategy::is_signalling(const std::string& symbol) const {
+    // on_data's warm-up test, read without a feed (T-OPT E-7): a symbol whose price history holds
+    // fewer prices than the longest EMA window gets no forecast and no target of its own.
+    int max_window = 0;
+    for (const auto& window_pair : trend_config_.ema_windows) {
+        max_window = std::max(max_window, window_pair.second);
+    }
+    auto it = instrument_data_.find(symbol);
+    return it != instrument_data_.end() &&
+           !(it->second.price_history.size() < static_cast<size_t>(max_window));
+}
+
 std::unordered_map<std::string, Position> TrendFollowingSlowStrategy::get_target_positions() const {
     std::unordered_map<std::string, Position> target_positions;
 
@@ -638,7 +663,7 @@ std::vector<double> TrendFollowingSlowStrategy::calculate_ewma(const std::vector
 }
 
 std::vector<double> TrendFollowingSlowStrategy::ewma_standard_deviation(
-    const std::vector<double>& prices, int window) const {
+    const std::vector<double>& prices, int window, double annualisation_factor) const {
     // Validation
     if (prices.empty() || window <= 0) {
         return std::vector<double>(1, 0.01);  // Return default value
@@ -691,7 +716,7 @@ std::vector<double> TrendFollowingSlowStrategy::ewma_standard_deviation(
         ewma_stddev[t] = std::sqrt(ewma_variance[t]);
 
         // Annualize the standard deviation
-        ewma_stddev[t] *= 16.0;  // Multiply by sqrt(256) for 256 trading days
+        ewma_stddev[t] *= annualisation_factor;  // sqrt(bars a year); 16 = sqrt(256)
 
         // Final safety check - ensure stddev is positive
         if (ewma_stddev[t] <= 0.0 || std::isnan(ewma_stddev[t]) || std::isinf(ewma_stddev[t])) {
@@ -740,7 +765,7 @@ double TrendFollowingSlowStrategy::compute_long_term_avg(const std::vector<doubl
 
 std::vector<double> TrendFollowingSlowStrategy::blended_ewma_stddev(
     const std::vector<double>& prices, int window, double weight_short, double weight_long,
-    size_t max_history) const {
+    size_t max_history, double annualisation_factor) const {
     if (prices.empty() || window <= 0) {
         WARN("Empty price data or invalid window for blended stddev calculation");
         return std::vector<double>(1, 0.01);  // Return default value
@@ -755,7 +780,7 @@ std::vector<double> TrendFollowingSlowStrategy::blended_ewma_stddev(
     // Calculate EWMA standard deviation with error handling
     std::vector<double> ewma_stddev;
     try {
-        ewma_stddev = ewma_standard_deviation(prices, window);
+        ewma_stddev = ewma_standard_deviation(prices, window, annualisation_factor);
         if (ewma_stddev.empty()) {
             return std::vector<double>(prices.size(), 0.01);  // Default value
         }
@@ -1269,13 +1294,19 @@ double TrendFollowingSlowStrategy::apply_position_buffer(const std::string& symb
         }
     }
 
-    double weight = std::max(0.0, trend_config_.weight);
+    // T-7b-2 C9a (T-VOL C2): the Carver term reads the SIZING weight, the per-instrument
+    // InstrumentData::weight that calculate_position reads (sector-equal, from get_weights), not
+    // the flat trend_config_.weight: Carver's band is 10 percent of the instrument's own average
+    // position. A symbol with no instrument data has no sizing weight (calculate_position sizes it
+    // at 0), so its Carver term is 0 and the floor and the position term set the width.
+    double weight = 0.0;
 
     // Get contract size from instrument registry (use cached value if available)
     double contract_size = 1.0;
     auto inst_data_it = instrument_data_.find(symbol);
     if (inst_data_it != instrument_data_.end()) {
         contract_size = inst_data_it->second.contract_size;
+        weight = std::max(0.0, inst_data_it->second.weight);
     } else {
         // Fallback: lookup from registry
         try {

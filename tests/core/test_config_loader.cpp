@@ -928,6 +928,34 @@ TEST(TrackedTemplateCovarianceStaleDates, EveryBookDeclares5) {
     }
 }
 
+// T-7b-2 9h (HD 2026-09-25): CONSERVATIVE's trend sleeve runs IDM 2.5, Carver's table row for
+// 30 or more instruments (the universe is 36 names); the subsystem-return formula, correlations
+// floored at 0, reaches the 2.5 cap on the same 36. BASE already shipped 2.5 on both sleeves.
+// Read through the loader's strategies block, which is what the futures runners size with.
+TEST(TrackedTemplateTrendIdm, ConservativeResolvesCarversThirtyPlusRowAndBaseStays25) {
+    const auto tmpl = tracked_config_template();
+    ASSERT_FALSE(tmpl.empty()) << "config_template/ not found; this test must not skip";
+
+    auto cons = ConfigLoader::load(tmpl, "conservative");
+    ASSERT_TRUE(cons.is_ok()) << (cons.is_error() ? cons.error()->what() : "");
+    const auto& tf = cons.value().strategies_config.at("TREND_FOLLOWING").at("config");
+    ASSERT_TRUE(tf.contains("idm"));
+    EXPECT_EQ(tf.at("idm").get<double>(), 2.5)
+        << "CONSERVATIVE TREND_FOLLOWING idm: Carver's row for 30+ instruments is 2.50";
+    ASSERT_TRUE(tf.contains("_idm_rationale"));
+    const auto why = tf.at("_idm_rationale").get<std::string>();
+    EXPECT_NE(why.find("30+ instruments -> 2.50"), std::string::npos) << why;
+    EXPECT_NE(why.find("36 names"), std::string::npos) << why;
+    EXPECT_NE(why.find("HD 2026-09-25"), std::string::npos) << why;
+
+    auto base = ConfigLoader::load(tmpl, "base");
+    ASSERT_TRUE(base.is_ok()) << (base.is_error() ? base.error()->what() : "");
+    for (const char* sleeve : {"TREND_FOLLOWING", "TREND_FOLLOWING_FAST"}) {
+        EXPECT_EQ(base.value().strategies_config.at(sleeve).at("config").at("idm").get<double>(), 2.5)
+            << "BASE " << sleeve << " idm";
+    }
+}
+
 TEST_F(ConfigLoaderTest, StrategyLimitsAreRequiredInRiskJson) {
     auto risk = minimal_risk();
     risk.erase("max_drawdown");

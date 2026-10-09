@@ -74,6 +74,11 @@ struct RiskContext {
     const std::vector<Bar>* bars{nullptr};  ///< THIS process_market_data call's data; never null from the PM
     std::unordered_map<std::string, double> applied;  ///< scope_id -> product of the QUANTISED factors
                                      ///< applied to that scope so far this rebalance
+    /// The symbols the book can hold this rebalance: those some strategy lists and signals
+    /// (StrategyInterface::is_signalling) and those any strategy targets or holds non-zero. The
+    /// Carver gate intersects its window's dates over these only (T-7b-2 CGW). Null (a caller that
+    /// does not set it) means every symbol of the window, the rule before CGW.
+    const std::set<std::string>* gate_participants{nullptr};
 };
 
 /// What the PM did, delivered to every module it evaluated in that scope and phase/lap.
@@ -116,6 +121,15 @@ public:
                                           const RiskContext& ctx) = 0;
     /// Verbatim enough to reconstruct the module.
     virtual nlohmann::json describe() const = 0;
+    /// T-7b-2 9c: the capital the book is sized on from the next rebalance, pushed by
+    /// PortfolioManager::set_sizing_capital (the account's equity; every module gets the
+    /// PORTFOLIO's figure, as make_risk_module gives it at construction). A module whose reading
+    /// divides by capital keeps it beside the book, so a book sized on equity is not measured
+    /// against a constant. The default reads no capital and accepts silently.
+    virtual Result<void> set_capital(Decimal capital) {
+        (void)capital;
+        return Result<void>();
+    }
     /// After the PM applied the scope's combined decision (every evaluate that returned OK).
     virtual void on_applied(const RiskApplied& applied, const RiskContext& ctx) {
         (void)applied;

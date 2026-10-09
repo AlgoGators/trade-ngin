@@ -188,15 +188,15 @@ TEST_F(LivePnLManagerTest, GetPointValueFromRegistry) {
     EXPECT_DOUBLE_EQ(mgr.get_point_value("ES"), 50.0);  // registry resolves ES → MES → 50.0
 }
 
-TEST_F(LivePnLManagerTest, GetPointValueFallbackForKnownSymbolNotInRegistry) {
+TEST_F(LivePnLManagerTest, GetPointValueHasNoAnswerForAFutureNotInRegistry) {
     LivePnLManager mgr(500000.0, InstrumentRegistry::instance());
-    // CL not registered, falls back to 1000.0
-    EXPECT_DOUBLE_EQ(mgr.get_point_value("CL"), 1000.0);
+    // CL not registered: no guessed 1000.0, point value 0 and an ERROR (CM1 d)
+    EXPECT_DOUBLE_EQ(mgr.get_point_value("CL"), 0.0);
 }
 
-TEST_F(LivePnLManagerTest, GetPointValueUnknownSymbolReturnsOne) {
+TEST_F(LivePnLManagerTest, GetPointValueUnknownFuturesSymbolReturnsZero) {
     LivePnLManager mgr(500000.0, InstrumentRegistry::instance());
-    EXPECT_DOUBLE_EQ(mgr.get_point_value("UNKNOWN_XYZ"), 1.0);
+    EXPECT_DOUBLE_EQ(mgr.get_point_value("UNKNOWN_XYZ"), 0.0);
 }
 
 TEST_F(LivePnLManagerTest, GetPointValueStripsVariantSuffix) {
@@ -225,15 +225,16 @@ TEST_F(LivePnLManagerTest, UnregisteredEquityDoesNotInheritAFuturesMultiplier) {
     EXPECT_DOUBLE_EQ(mgr.get_point_value("AAPL"), 1.0);
 }
 
-// The futures default is untouched: a manager that says nothing behaves exactly as
-// it does today, which is what keeps this change inert for both futures runners.
-TEST_F(LivePnLManagerTest, DefaultAssetTypeKeepsTheFuturesFallbackTable) {
+// A futures manager (the default) has no fallback table any more (CM1 d): a future the registry
+// does not hold has no point value (0, ERROR), where the deleted table guessed, several times
+// wrongly (GC 1000 for 100).
+TEST_F(LivePnLManagerTest, DefaultAssetTypeHasNoFuturesFallbackTable) {
     LivePnLManager mgr(500000.0, InstrumentRegistry::instance());
     EXPECT_EQ(mgr.asset_type(), AssetType::FUTURE) << "silent callers stay on futures";
-    EXPECT_DOUBLE_EQ(mgr.get_point_value("CL"), 1000.0);
-    EXPECT_DOUBLE_EQ(mgr.get_point_value("GC"), 1000.0);
-    EXPECT_DOUBLE_EQ(mgr.get_point_value("ZM"), 100.0) << "as futures, ZM IS soybean meal";
-    EXPECT_DOUBLE_EQ(mgr.get_point_value("UNKNOWN_XYZ"), 1.0) << "no match, still 1.0";
+    EXPECT_DOUBLE_EQ(mgr.get_point_value("CL"), 0.0);
+    EXPECT_DOUBLE_EQ(mgr.get_point_value("GC"), 0.0);
+    EXPECT_DOUBLE_EQ(mgr.get_point_value("ZM"), 0.0);
+    EXPECT_DOUBLE_EQ(mgr.get_point_value("UNKNOWN_XYZ"), 0.0);
 }
 
 // ===== reset_daily_tracking =====

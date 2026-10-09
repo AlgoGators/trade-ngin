@@ -388,6 +388,18 @@ Result<void> BaseStrategy::update_risk_limits(const RiskLimits& limits) {
     return check_risk_limits();
 }
 
+Result<void> BaseStrategy::set_capital_allocation(double capital) {
+    if (!std::isfinite(capital) || capital <= 0.0) {
+        return make_error<void>(ErrorCode::INVALID_ARGUMENT,
+                                "Invalid sizing capital " + std::to_string(capital) +
+                                    ": it must be a finite positive number",
+                                "BaseStrategy");
+    }
+    std::lock_guard<std::mutex> lock(mutex_);
+    config_.capital_allocation = capital;
+    return Result<void>();
+}
+
 Result<void> BaseStrategy::check_risk_limits() {
     // Calculate total position value
     double total_value = 0.0;
