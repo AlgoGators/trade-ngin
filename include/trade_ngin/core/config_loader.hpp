@@ -395,16 +395,16 @@ struct AppConfig {
         j["database"] = database.to_json();
         j["execution"] = execution.to_json();
         j["optimization"] = opt_config.to_json();
-        // The schema-2 risk object, not the resolved RiskConfig: a DB override is merged
-        // back through extract_config (PR #60), and a flat schema-1 risk block would now
-        // be rejected there and the whole override discarded with a WARN.
+        // The schema-2 risk object, not the resolved RiskConfig, so that to_json ->
+        // extract_config is lossless. It carries max_drawdown and max_leverage (when the
+        // book has one): that is their one home, the place extract_config reads them. They
+        // are NOT repeated at the top level, where no reader looks (QT plan E2, #60's limit
+        // asymmetry; on an overlay book the struct's 4.0 fallback was written there).
         j["risk"] = risk_schema.to_json();
         j["sleeve_risk_modules"] = risk_schema.sleeves_to_json();
         j["use_optimization"] = use_optimization;
         j["covariance_history_prices"] = covariance_history_prices;
         j["covariance_stale_dates"] = covariance_stale_dates;
-        j["max_drawdown"] = max_drawdown;
-        j["max_leverage"] = max_leverage;
         j["backtest"] = backtest.to_json();
         j["live"] = live.to_json();
         j["strategy_defaults"] = strategy_defaults.to_json();
