@@ -59,9 +59,12 @@ inline VolAnnualisation vol_annualisation(const std::deque<Timestamp>& timestamp
     if (n < 2) {
         return out;
     }
-    const double span_seconds =
-        std::chrono::duration_cast<std::chrono::duration<double>>(out.last - out.first).count();
-    out.span_days = span_seconds / 86400.0;
+    // The span counts DATES: a loaded bar's timestamp sits some hours into its date, and not the
+    // same hours on every date, so a span between two instants is not a whole number of days on
+    // every window. The estimator (trend_estimator.hpp) counts the same whole dates.
+    out.span_days = static_cast<double>((std::chrono::floor<std::chrono::days>(out.last) -
+                                         std::chrono::floor<std::chrono::days>(out.first))
+                                            .count());
     if (!(out.span_days > 0.0) || !std::isfinite(out.span_days)) {
         return out;
     }

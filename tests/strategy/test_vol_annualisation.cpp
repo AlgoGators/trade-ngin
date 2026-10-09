@@ -29,8 +29,6 @@
 #undef private
 
 #include "trade_ngin/strategy/trend_following.hpp"
-#include "trade_ngin/strategy/trend_following_fast.hpp"
-#include "trade_ngin/strategy/trend_following_slow.hpp"
 #include "trade_ngin/strategy/vol_annualisation.hpp"
 
 using namespace trade_ngin;
@@ -91,17 +89,19 @@ struct Traits<TrendFollowingStrategy> {
     static constexpr int kVolSpan = 32;
     static constexpr const char* kClass = "TrendFollowing";
 };
-template <>
-struct Traits<TrendFollowingFastStrategy> {
-    using Config = TrendFollowingFastConfig;
-    static constexpr int kVolSpan = 16;
-    static constexpr const char* kClass = "TrendFollowingFast";
+// The FAST sleeve is the same class on fast_trend_following_config(): a distinct C++ type here only
+// so the typed suite runs both configurations.
+struct FastTrendFollowing : TrendFollowingStrategy {
+    using TrendFollowingStrategy::TrendFollowingStrategy;
+};
+struct FastTrendConfig : TrendFollowingConfig {
+    FastTrendConfig() : TrendFollowingConfig(fast_trend_following_config()) {}
 };
 template <>
-struct Traits<TrendFollowingSlowStrategy> {
-    using Config = TrendFollowingSlowConfig;
-    static constexpr int kVolSpan = 64;
-    static constexpr const char* kClass = "TrendFollowingSlow";
+struct Traits<FastTrendFollowing> {
+    using Config = FastTrendConfig;
+    static constexpr int kVolSpan = 16;
+    static constexpr const char* kClass = "TrendFollowing";
 };
 
 // The key=value fields of every VOL_ANNUALISATION line in a captured log, in order.
@@ -144,7 +144,6 @@ protected:
         spec.commission_per_contract = 2.0;
         spec.initial_margin = 10000.0;
         spec.maintenance_margin = 8000.0;
-        spec.weight = 1.0;
         spec.trading_hours = "09:30-16:00";
         registry.instruments_[kSym] = std::make_shared<FuturesInstrument>(kSym, spec);
         registry.initialized_ = true;
@@ -177,10 +176,8 @@ protected:
         sc.position_limits[kSym] = 1000.0;
 
         typename Traits<S>::Config tc;
-        tc.weight = 1.0;
         tc.risk_target = 0.2;
         tc.idm = 2.5;
-        tc.use_position_buffering = false;
         tc.vol_lookback_short = Traits<S>::kVolSpan;
         tc.vol_lookback_long = 252;
         if (!ema_windows.empty()) {
@@ -271,7 +268,7 @@ protected:
 };
 
 using TrendStrategies =
-    ::testing::Types<TrendFollowingStrategy, TrendFollowingFastStrategy, TrendFollowingSlowStrategy>;
+    ::testing::Types<TrendFollowingStrategy, FastTrendFollowing>;
 TYPED_TEST_SUITE(VolAnnualisationTest, TrendStrategies);
 
 // A six-bar week (Sunday session row) at a known weekly variance returns the known annual vol.
@@ -293,8 +290,10 @@ TYPED_TEST(VolAnnualisationTest, FiveBarWeekReturnsKnownAnnualVol) {
     EXPECT_NEAR(vol / expected, 1.0, kTolerance) << "vol=" << vol << " expected=" << expected;
 }
 
-// The count is taken over the bars the estimator reads (the last 756 here), not the whole feed:
-// 400 hourly bars before the six-bar calendar would move a whole-feed count far off.
+// The signal bar's factor is counted over its trailing 256 bars, not the whole feed: 400 hourly
+// bars before the six-bar calendar would move a whole-feed count far off. The short-run volatility
+// reads that factor alone. (The blended volatility also reads the long-run mean of the short-run
+// values, each annualised by its own bar's factor, so the hourly bars stay in it for 2,520 values.)
 TYPED_TEST(VolAnnualisationTest, CountUsesTheEstimatorsWindowOnly) {
     std::vector<Timestamp> ts;
     for (int h = 0; h < 400; ++h) {
@@ -303,18 +302,28 @@ TYPED_TEST(VolAnnualisationTest, CountUsesTheEstimatorsWindowOnly) {
     const auto six = calendar(997, 6, /*first_day=*/21);
     ts.insert(ts.end(), six.begin(), six.end());
     const double expected = known_annual_vol(Traits<TypeParam>::kVolSpan, 6);
-    const double vol = this->vol_after(alternating_bars(ts));
+    this->vol_after(alternating_bars(ts));
+    const double vol = this->strategy_->get_instrument_data(kSym)->estimate.sigma_short;
     EXPECT_NEAR(vol / expected, 1.0, kTolerance) << "vol=" << vol << " expected=" << expected;
 }
 
-// The forecast divides by the per-bar vol, which does not depend on the calendar: the same
-// prices on a six-bar and a five-bar calendar give the same forecast, bit for bit.
-TYPED_TEST(VolAnnualisationTest, ForecastDoesNotDependOnTheCalendar) {
+// The forecast divides by its own vol, annualised by the fixed 16, which does not depend on the
+// calendar: the same prices on a six-bar and a five-bar calendar give the same forecast vol, bit
+// for bit. (The attenuation reads the sizing vol's quantile, which reads each bar's counted factor,
+// so the forecast itself is the same only up to its attenuation.)
+TYPED_TEST(VolAnnualisationTest, ForecastVolDoesNotDependOnTheCalendar) {
     const double f6 = this->forecast_after(alternating_bars(calendar(997, 6)));
+    const auto e6 = this->strategy_->get_instrument_data(kSym)->estimate;
     this->strategy_->stop();
     this->strategy_.reset();
     const double f5 = this->forecast_after(alternating_bars(calendar(997, 5)));
-    EXPECT_EQ(f6, f5);
+    const auto e5 = this->strategy_->get_instrument_data(kSym)->estimate;
+    EXPECT_EQ(e6.forecast_sigma, e5.forecast_sigma);
+    ASSERT_GT(e6.attenuation, 0.0);
+    ASSERT_GT(e5.attenuation, 0.0);
+    // No scaled forecast is at its cap on this series, so the forecast is linear in the attenuation.
+    for (double scaled : e6.scaled) ASSERT_LT(std::abs(scaled), 20.0);
+    EXPECT_NEAR(f6 / e6.attenuation, f5 / e5.attenuation, 1e-12 * std::abs(f6 / e6.attenuation));
 }
 
 // R-4 (T-7b-3): the factor is written to the log, per symbol per signal computation, with the
@@ -327,7 +336,7 @@ TYPED_TEST(VolAnnualisationTest, ForecastDoesNotDependOnTheCalendar) {
 // (2023-05-17..2024-03-10, 298 days): 255 returns x 365.25 / 298 = 312.5420 bars a year.
 TYPED_TEST(VolAnnualisationTest, LogLineCarriesTheWindowAndTheFactorUsed) {
     const std::string log6 = this->feed_and_capture(alternating_bars(calendar(997, 6)));
-    const double vol6 = this->strategy_->get_instrument_data(kSym)->current_volatility;
+    const double vol6 = this->strategy_->get_instrument_data(kSym)->estimate.sigma_short;
     const auto lines6 = vol_annualisation_lines(log6);
     ASSERT_EQ(lines6.size(), 98u) << "one VOL_ANNUALISATION line per signal computation\n"
                                   << log6.substr(0, 2000);
@@ -356,12 +365,12 @@ TYPED_TEST(VolAnnualisationTest, LogLineCarriesTheWindowAndTheFactorUsed) {
     EXPECT_NEAR(std::stod(last6.at("factor")), std::sqrt(bpy), 1e-9);
 
     // The same prices on a five-bar calendar: the per-bar vol is the same, so the two strategies'
-    // annual vols differ by exactly the ratio of the factors they used. The printed factors must
-    // reproduce that ratio.
+    // short-run annual vols differ by exactly the ratio of the factors they used. The printed
+    // factors must reproduce that ratio.
     this->strategy_->stop();
     this->strategy_.reset();
     const std::string log5 = this->feed_and_capture(alternating_bars(calendar(997, 5)));
-    const double vol5 = this->strategy_->get_instrument_data(kSym)->current_volatility;
+    const double vol5 = this->strategy_->get_instrument_data(kSym)->estimate.sigma_short;
     const auto lines5 = vol_annualisation_lines(log5);
     ASSERT_EQ(lines5.size(), 98u);
     const auto& last5 = lines5.back();

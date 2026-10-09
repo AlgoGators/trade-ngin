@@ -27,6 +27,7 @@
 #include "trade_ngin/risk/risk_module_config.hpp"
 #include "trade_ngin/risk/risk_scale_report.hpp"
 #include "trade_ngin/strategy/strategy_interface.hpp"
+#include "trade_ngin/risk/risk_detail.hpp"
 #include "trade_ngin/strategy/trend_following.hpp"
 #include "trade_ngin/transaction_cost/transaction_cost_manager.hpp"
 
@@ -42,6 +43,27 @@ struct PortfolioConfig : public ConfigBase {
     double min_strategy_allocation{
         0.0};  // Minimum allocation to any strategy (keep as double - it's a ratio)
     bool use_optimization{false};     // Whether to use position optimization
+    // LOOP_SPEC section 4: the sleeve whose own series feed the risk overlay (the book's FIRST
+    // sleeve) and that sleeve's risk target tau, the unit the overlay's three risk limits are
+    // ratios to. Empty and 0: the book supplies no overlay inputs, and its risk modules read the
+    // book as they did before.
+    std::string overlay_sleeve;
+    double overlay_tau{0.0};
+    // LOOP_SPEC sections 5.2, 5.3, 6.4 and 12, the one pass's constants on a book that names an
+    // overlay sleeve: the per-name cap L on the sizing capital, the deferral band (a sign close
+    // waits while |F| is below it), B_sigma's floor as a ratio to tau and the most contracts the
+    // trim removes in a day. The search's cost multiplier and the floor on its pass cap are
+    // opt_config.cost_penalty_scalar and opt_config.max_iterations.
+    double per_name_cap{2.0};
+    double sign_close_band{2.0};
+    double b_sigma_floor{0.05};
+    int trim_max{5};
+    // LOOP_SPEC sections 7.5 and 7.5.1: the design keys a futures book records with every run
+    // (to_json below): how the book is sized and the equity slow rule of its first sleeve, as its
+    // files state them (portfolio/loop_config.hpp fills both).
+    std::string sizing_mode;
+    std::vector<std::string> equity_slow_symbols;
+    std::vector<std::pair<int, int>> equity_slow_pairs;
     // The risk modules this book runs, portfolio scope, in evaluation order. There is
     // no boolean any more: a book that runs no risk layer carries a single `none`
     // assignment naming who ruled it and when, and an EMPTY list is a configuration
@@ -99,6 +121,37 @@ struct PortfolioConfig : public ConfigBase {
         j["opt_config"] = opt_config.to_json();
         j["risk_config"] = risk_config.to_json();
         j["version"] = version;
+        // LOOP_SPEC section 7.5.1: a book that names an overlay sleeve records the loop's design
+        // keys, and none of the retired ones. A book with no overlay sleeve writes the object it
+        // always wrote.
+        if (!overlay_sleeve.empty()) {
+            auto& opt = j["opt_config"];
+            for (const char* retired : {"tau", "asymmetric_risk_buffer", "buffer_size_factor"}) {
+                opt.erase(retired);
+            }
+            opt["sign_close_band"] = sign_close_band;
+            opt["b_sigma_floor"] = b_sigma_floor;
+            auto& risk = j["risk_config"];
+            for (const char* retired : {"var_limit", "jump_risk_limit", "max_correlation"}) {
+                risk.erase(retired);
+            }
+            for (const auto& module : risk_modules) {
+                const auto* carver = std::get_if<CarverModuleConfig>(&module.params);
+                if (carver == nullptr || !carver->overlay_limits()) continue;
+                risk["R_max"] = carver->r_max;
+                risk["R_jump_max"] = carver->r_jump_max;
+                risk["R_shock_max"] = carver->r_shock_max;
+            }
+            risk["per_name_cap"] = per_name_cap;
+            risk["trim_max"] = trim_max;
+            j["sizing_mode"] = sizing_mode;
+            nlohmann::json pairs = nlohmann::json::array();
+            for (const auto& [fast, slow] : equity_slow_pairs) {
+                pairs.push_back(nlohmann::json::array({fast, slow}));
+            }
+            j["equity_slow_rule"] = {{"symbols", equity_slow_symbols}, {"pairs", pairs}};
+            j["oracle_hash_list"] = "oracle_sha256_frozen_v6_4.txt";
+        }
         return j;
     }
 
@@ -133,20 +186,6 @@ struct PortfolioConfig : public ConfigBase {
 };
 
 /**
- * @brief T-7b-3 rulings 7 and 8 (HD 2026-09-27): every cut lap is delivered once and ends the
- *        loop. When its cut rule fixed symbols the BOOK_GATE will hold, the cuttable symbols are
- *        exhausted and the held contracts alone keep the cut book's gross notional above the gate's
- *        level, the day is stored over the limit: this record says so (RISK_OVER_LIMIT_BY_HOLD).
- */
-struct OverLimitByHold {
-    bool over_limit_by_hold = false;
-    std::vector<std::string> symbols;  ///< the held symbols the cut rule fixed, sorted
-    double target = 0.0;               ///< the gate's level: factor x the lap book's gross notional
-    double cut_book = 0.0;             ///< the cut book's gross notional
-    int lap = 0;
-};
-
-/**
  * @brief Manages multiple strategies and their allocations
  * Optionally applies optimization and risk management
  */
@@ -175,11 +214,11 @@ public:
      * @param data New market data
      * @param skip_execution_generation If true, skip execution generation (used during warmup)
      * @param current_timestamp Optional current day's timestamp for execution fill_time (if not provided, uses data[0].timestamp)
-     * @param session_symbols Optional (T-7a C4, the backtest predicate): the symbols whose bar in
-     *        `data` is a SESSION. When given, a symbol NOT in it gets no fill AND no book change:
-     *        its current_positions entry is held at the filled-ledger quantity (a symbol with no
-     *        bar, or a JUNK bar, in the signal group). Null (the default, every live caller and the
-     *        equity backtest) keeps the old skip: no fill, the book moves to the target.
+     * @param session_symbols Optional: the symbols whose bar in `data` is a SESSION (the futures
+     *        backtest passes it). On a book that names an overlay sleeve a symbol NOT in it joins
+     *        the hold set of the rebalance (LOOP_SPEC section 6.1): its row is fixed at the held
+     *        quantity, never opened, searched, trimmed or filled. A book with no overlay sleeve
+     *        does not read it.
      * @return Result indicating success or failure
      */
     Result<void> process_market_data(
@@ -206,6 +245,12 @@ public:
      * fatal for the rebalance and never sizes on.
      */
     Result<void> set_sizing_capital(double capital);
+
+    /// Hands every sleeve the consumed bars that precede the first bar it will be fed, for the
+    /// estimators whose window reaches back before a run's own window (StrategyInterface::
+    /// seed_history). It reaches the sleeves' own histories only: the manager's price history, its
+    /// cost model and its risk modules are not fed these bars. The first refusal stops the call.
+    Result<void> seed_strategy_history(const std::vector<Bar>& bars);
 
     /// The capital the next process_market_data sizes on (PortfolioConfig::total_capital until
     /// set_sizing_capital is called).
@@ -292,8 +337,8 @@ public:
                                          double close_price, double prev_close_price);
 
     /**
-     * @brief This manager's own cost model: it prices the optimizer's cost vector
-     *        (calculate_trading_costs) and the executions this manager generates.
+     * @brief This manager's own cost model: it prices the one pass's cost vector (the cost of one
+     *        contract of every symbol the pass weighs) and the executions this manager generates.
      *
      * H-2 (T-7b-1 C8d): the backtest feeds it through update_cost_manager_market_data; the live
      * futures runners feed it through feed_futures_cost_model (futures_cost_feed.hpp), the same
@@ -340,6 +385,18 @@ public:
      * @return Map of strategy ID to map of symbol to position
      */
     std::unordered_map<std::string, std::unordered_map<std::string, Position>> get_strategy_positions() const;
+
+    /**
+     * @brief The book each strategy has actually traded into: the filled-position ledger, per
+     *        strategy and symbol, as Positions carrying the symbol and the filled quantity.
+     *
+     * get_strategy_positions() returns the sleeves' current TARGETS, which a cycle that generates
+     * no executions (the backtest's warm-up) sets without filling them. A consumer that needs the
+     * book HELD at the start of a bar (the roll legs, LOOP_SPEC section 6.5) reads this one: a
+     * target no fill stands behind is not a position, and has nothing to roll.
+     */
+    std::unordered_map<std::string, std::unordered_map<std::string, Position>>
+    get_filled_strategy_positions() const;
 
     /**
      * @brief Update a specific position for a strategy (e.g., to update PnL values)
@@ -403,12 +460,9 @@ public:
      */
     DeliveredCut last_delivered_cut() const;
 
-    /**
-     * @brief T-7b-3 ruling 7: the last process_market_data call's over-limit-by-hold record (see
-     *        OverLimitByHold). Reset at the start of every call; set only when the BOOK_GATE holds
-     *        left the delivered cut book above the gate's level. A copy.
-     */
-    OverLimitByHold last_over_limit_by_hold() const;
+    /// The last process_market_data call's one-pass record (OnePassDay). A copy; reset at the start
+    /// of every call.
+    OnePassDay last_one_pass() const;
 
     /**
      * @brief T-7b-2 C9a3: the same rebalance's delivered cut with final_gross measured on `stored_book` (the
@@ -420,6 +474,17 @@ public:
     DeliveredCut delivered_cut_for_book(const std::map<std::string, double>& stored_book) const;
 
     /**
+     * @brief The delivered scale of the last one pass, measured on the book the runner STORES
+     *        (LOOP_SPEC sections 7.2 and 10): that book's gross weight over the gross weight of
+     *        the capped target the overlay read, both at the pass's own weight per contract (the
+     *        raw signal closes), over the pass's participants. A runner step after the pass that
+     *        changes a row (the live STRICT roll-back) is therefore in the numerator. A flat
+     *        capped target has nothing to deliver against and stores 1, as a day with no
+     *        rebalance does.
+     */
+    double delivered_scale_for_book(const std::map<std::string, double>& stored_book) const;
+
+    /**
      * @brief Mark this manager as driven by a backtest (BacktestCoordinator::run_portfolio). Read into
      *        RiskContext::is_backtest and scope_is_seeded, and it switches on the per-bar netting of the
      *        sleeves' execution reports (K3), which are the stored fills only in a backtest (T-7b-2 C8b4).
@@ -429,19 +494,18 @@ public:
     }
 
     /**
-     * @brief The symbols whose book the caller's BOOK_GATE will hold at the held quantity after the
-     *        next process_market_data returns (T-7b-3 D-1b, HD 2026-09-27). A lap the risk gate cuts
-     *        fixes each of them at its held quantity and never cuts it (cut_delivery.hpp), so the cut
-     *        is taken from contracts that can trade. The live futures runners pass every symbol whose
-     *        T-1 verdict is not SESSION, the key hold_non_session_symbols uses.
+     * @brief The caller's part of the hold set of the next process_market_data (LOOP_SPEC section
+     *        6.1): the symbols whose last verdict is not SESSION and the change-bar symbols (D37).
+     *        A held symbol's row is fixed at its held quantity: it is counted in every reading,
+     *        never scaled, searched, trimmed or filled. The live futures runners pass the set; the
+     *        futures backtest gives it through process_market_data's session_symbols.
      *
      * One call, one rebalance: the next process_market_data takes the set when it starts and leaves
-     * it empty, so a later call without the setter holds nothing. Each call replaces the set. The
-     * futures backtest does not need it: there process_market_data's session_symbols gives the set.
+     * it empty. Each call replaces the set. Read only by a book that names an overlay sleeve.
      */
-    void set_book_gate_holds(std::unordered_set<std::string> symbols) {
+    void set_hold_set(std::unordered_set<std::string> symbols) {
         std::lock_guard<std::mutex> lock(mutex_);
-        pending_book_gate_holds_ = std::move(symbols);
+        pending_hold_set_ = std::move(symbols);
     }
 
 private:
@@ -455,8 +519,10 @@ private:
     std::vector<RiskModulePtr> risk_modules_;  // portfolio scope, evaluated in order
     std::unordered_map<std::string, std::vector<RiskModulePtr>> sleeve_risk_modules_;  // by strategy id
     std::vector<RiskDecisionRecord> risk_decisions_;  // guarded by mutex_
-    // T-7b-2 C9a: the account book after lap 1's optimizer step (contracts per symbol) and the
-    // rebalance's delivered cut; both reset at the rebalance boundary. guarded by mutex_
+    // The book the delivered scale is measured against (contracts per symbol): after the
+    // optimizer's step on a book with no overlay sleeve, the capped target with the held rows on
+    // one that has one; and the rebalance's delivered cut. Both reset at the rebalance boundary.
+    // guarded by mutex_
     std::map<std::string, double> delivered_lap1_book_;
     bool delivered_has_lap1_{false};
     DeliveredCut delivered_cut_;
@@ -507,6 +573,13 @@ private:
     // config_.covariance_history_prices dates per symbol, oldest dropped first. A symbol that
     // leaves the feed keeps its series, which stops growing. No strategy's history is read.
     std::unordered_map<std::string, std::map<int64_t, double>> closes_by_date_;
+    /// The last one pass's participants in symbol order, each with the weight of one contract on
+    /// the sizing capital, and the capped target's gross weight (delivered_scale_for_book).
+    std::vector<std::pair<std::string, double>> one_pass_weights_;
+    double one_pass_target_gross_{0.0};
+    /// Per symbol, the raw close and the multiplier the last pass that could weigh it valued it
+    /// on: what a held row that cannot be weighed today is valued at (section 6.1).
+    std::unordered_map<std::string, std::pair<double, double>> one_pass_valued_;
     /// T-ROLLX: each stored close's vendor instrument id (empty when unknown), the same keys as
     /// closes_by_date_, so the optimizer's covariance reads the ADJUSTED returns (roll_series.hpp).
     std::unordered_map<std::string, std::map<int64_t, std::string>> ids_by_date_;
@@ -604,27 +677,39 @@ private:
      */
     Result<void> optimize_positions();
 
-    // T-7b-2 9e, the gate's cut delivered in whole contracts (include/trade_ngin/portfolio/
-    // cut_delivery.hpp): the account book the lap's optimizer produced before the gate, the
-    // factor the gate multiplied the book by on this lap (1 = none), and each symbol's notional
-    // per contract as the optimizer last priced it (weight per contract x sizing capital).
-    std::map<std::string, double> lap_book_before_gate_;
-    double lap_cut_factor_{1.0};
-    std::unordered_map<std::string, double> cut_notional_per_contract_;
-    // T-7b-3 D-1b: the symbols the BOOK_GATE will hold, which the cut fixes at their held
-    // quantity: every symbol in `holds` (set_book_gate_holds), and, when `session_symbols` is
-    // given, every symbol of the lap or held book not in it.
-    // Sets over_limit_by_hold_ when those held symbols keep the cut book above the gate's level
-    // (ruling 7). The loop ends on every lap that calls it (ruling 8).
-    void deliver_lap_cut(int lap, const std::unordered_set<std::string>& holds,
-                         const std::unordered_set<std::string>* session_symbols);
-    OverLimitByHold over_limit_by_hold_;
-    // set_book_gate_holds' set, taken (and emptied) by the next process_market_data.
-    std::unordered_set<std::string> pending_book_gate_holds_;
+    // set_hold_set's set, taken (and emptied) by the next process_market_data.
+    std::unordered_set<std::string> pending_hold_set_;
 
     /// T-7b-2 CGW: the risk gate's participants this rebalance (RiskContext::gate_participants),
     /// rebuilt before lap 1 by gate_participants_for_rebalance.
     std::set<std::string> gate_participants_;
+    /// The symbols some sleeve has signalled on an earlier rebalance (LOOP_SPEC section 6.2: a
+    /// symbol nobody signals any more is closed out only if one did).
+    std::set<std::string> ever_signalled_;
+    OnePassDay one_pass_day_;  // guarded by mutex_
+
+    /// True on a book that names an overlay sleeve it holds, with a positive tau: its rebalance is
+    /// the one pass (rebalance_one_pass), and no other optimiser or risk step runs on it.
+    bool one_pass_book() const;
+
+    /**
+     * @brief LOOP_SPEC sections 4 to 6, one rebalance of a book that names an overlay sleeve: the
+     *        capped target, the overlay once, the deferral band, the forecast-sign close, the search
+     *        from the held book, the buffer and the rounding, the cap, the trim, the split back to
+     *        the sleeves and the fills (optimization/one_pass.hpp is the arithmetic).
+     * @param is_warmup A cycle that trades nothing: the book follows the search, no hold applies,
+     *        no fill is generated.
+     * @param session_symbols The backtest's SESSION symbols; a symbol outside it is held.
+     * @param caller_holds set_hold_set's symbols.
+     * @param prev_positions Each sleeve's book before this call (the seeded book of a live run).
+     * @return An error only for a refusal on a scope whose previous book was never seeded.
+     */
+    Result<void> rebalance_one_pass(
+        const std::vector<Bar>& data, bool is_warmup, std::optional<Timestamp> as_of,
+        const std::unordered_set<std::string>* session_symbols,
+        const std::unordered_set<std::string>& caller_holds,
+        const std::unordered_map<std::string, std::unordered_map<std::string, Position>>&
+            prev_positions);
 
     /**
      * @brief Build the context a risk module sees for one call
@@ -677,7 +762,7 @@ private:
                               RiskDecision requested, RiskAction applied_action,
                               Decimal applied_factor, bool empty_book, std::string error);
 
-    /// One scope's evaluate (or finalize) pass, fail-CLOSED. Every module is called; one that
+    /// One scope's evaluate pass, fail-CLOSED. Every module is called; one that
     /// returns an error Result OR THROWS contributes a NONE decision and its message to
     /// `errors[k]`, and the scope then combines and applies what the HEALTHY modules returned.
     /// A REFUSE or a SCALE a module already returned is never discarded because a later module
@@ -686,7 +771,7 @@ private:
     std::vector<RiskDecision> evaluate_scope_modules(
         std::vector<RiskModulePtr>& modules,
         const std::unordered_map<std::string, Position>& book, const RiskContext& ctx,
-        bool finalize_phase, std::vector<std::string>& errors);
+        std::vector<std::string>& errors);
 
     /// The other half of fail-closed: a module that FAILED is treated as a refusal of its scope,
     /// because its silence cannot be read as consent. At PORTFOLIO scope that holds for a module
@@ -711,12 +796,6 @@ private:
     /// own targets. A no-op when no sleeve has modules.
     Result<void> apply_sleeve_risk(
         const std::vector<Bar>& data,
-        const std::unordered_map<std::string, std::unordered_map<std::string, Position>>& prev_positions,
-        std::optional<Timestamp> as_of, bool is_warmup);
-
-    /// The post-rounding point: finalize() on the final book, portfolio and sleeves.
-    Result<void> apply_post_rounding_risk(
-        const std::vector<Bar>& data, int lap,
         const std::unordered_map<std::string, std::unordered_map<std::string, Position>>& prev_positions,
         std::optional<Timestamp> as_of, bool is_warmup);
 
@@ -762,9 +841,10 @@ private:
     std::unordered_map<std::string, Position> get_positions_internal() const;
 
     /**
-     * @brief T-7b-2 C9a: one notional per contract for each symbol, for the delivered cut. The
-     *        optimizer's own figure (contract_size x the latest price of the TrendFollowingStrategy
-     *        that carries the symbol, the later strategy winning as in optimize_positions);
+     * @brief T-7b-2 C9a: one notional per contract for each symbol, for the delivered cut. A trend
+     *        sleeve's own figure (contract_size x its latest price): on a book that names an
+     *        overlay sleeve, THAT sleeve's row and no other; on any other book the sleeves in id
+     *        order, the first that carries the symbol (never whichever an unordered walk visits last);
      *        otherwise this manager's latest close for it (closes_by_date_) x the registry's
      *        multiplier (1 without a registry entry); a symbol with neither is left out
      *        (DeliveredCut::unpriced). Called with mutex_ held; logs nothing.

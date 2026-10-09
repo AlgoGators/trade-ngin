@@ -173,7 +173,55 @@ Result<AppConfig> ConfigLoader::extract_config(const nlohmann::json& merged) {
 
         // Optimization configuration
         if (merged.contains("optimization")) {
-            config.opt_config.from_json(merged.at("optimization"));
+            const auto& optimization = merged.at("optimization");
+            config.opt_config.from_json(optimization);
+            // LOOP_SPEC section 7.7: the one pass's keys, strictly when present (a futures book
+            // requires them: require_loop_keys), and the optimiser's retired keys, noted.
+            config.has_cost_penalty_scalar = optimization.contains("cost_penalty_scalar");
+            for (const char* key : {"sign_close_band", "b_sigma_floor"}) {
+                if (!optimization.contains(key)) continue;
+                const auto& v = optimization.at(key);
+                if (!v.is_number() || !(v.get<double>() > 0.0)) {
+                    return make_error<AppConfig>(
+                        ErrorCode::INVALID_DATA,
+                        "config for " + config.portfolio_id + ": defaults.json optimization." +
+                            key + " must be a positive number, got " + v.dump(),
+                        "ConfigLoader");
+                }
+                (std::string(key) == "sign_close_band" ? config.sign_close_band
+                                                       : config.b_sigma_floor) = v.get<double>();
+            }
+            for (const char* key : {"tau", "asymmetric_risk_buffer", "buffer_size_factor"}) {
+                if (optimization.contains(key)) {
+                    config.retired_loop_keys.push_back(std::string("defaults.json optimization: ") +
+                                                       key);
+                }
+            }
+        }
+        if (merged.contains("strategy_defaults") && merged.at("strategy_defaults").is_object()) {
+            for (const char* key : {"carver_buffer_floor", "carver_buffer_position_factor"}) {
+                if (merged.at("strategy_defaults").contains(key)) {
+                    config.retired_loop_keys.push_back(
+                        std::string("defaults.json strategy_defaults: ") + key);
+                }
+            }
+        }
+        if (merged.contains("strategies") && merged.at("strategies").is_object()) {
+            const nlohmann::json& sleeves = merged.at("strategies");
+            for (const auto& sleeve : sleeves.items()) {
+                if (!sleeve.value().is_object() || !sleeve.value().contains("config") ||
+                    !sleeve.value().at("config").is_object()) {
+                    continue;
+                }
+                for (const char* key :
+                     {"weight", "max_symbol_concentration", "use_position_buffering",
+                      "carver_buffer_floor", "carver_buffer_position_factor"}) {
+                    if (sleeve.value().at("config").contains(key)) {
+                        config.retired_loop_keys.push_back("portfolio.json strategies." +
+                                                           sleeve.key() + ".config: " + key);
+                    }
+                }
+            }
         }
         // Set capital in opt_config
         config.opt_config.capital = config.initial_capital;
@@ -240,6 +288,86 @@ Result<AppConfig> ConfigLoader::extract_config(const nlohmann::json& merged) {
                     "ConfigLoader");
             }
             config.covariance_stale_dates = v.get<size_t>();
+        }
+
+        // LOOP_SPEC sections 2.5 and 7.7 (D40): the equity slow rule. Parsed strictly when present;
+        // the futures runners require it (require_loop_keys).
+        if (merged.contains("equity_slow_rule")) {
+            const auto& v = merged.at("equity_slow_rule");
+            auto bad = [&](const std::string& what) {
+                return make_error<AppConfig>(
+                    ErrorCode::INVALID_DATA,
+                    "config for " + config.portfolio_id +
+                        ": portfolio.json \"equity_slow_rule\" " + what +
+                        " (expected {\"symbols\": [\"MES\", ...], \"pairs\": [[32, 128], [64, 256]]}), "
+                        "got " + v.dump(),
+                    "ConfigLoader");
+            };
+            if (!v.is_object() || !v.contains("symbols") || !v.contains("pairs")) {
+                return bad("must be an object with \"symbols\" and \"pairs\"");
+            }
+            const auto& symbols = v.at("symbols");
+            const auto& pairs = v.at("pairs");
+            if (!symbols.is_array() || symbols.empty()) {
+                return bad("needs a non-empty \"symbols\" list");
+            }
+            if (!pairs.is_array() || pairs.empty()) {
+                return bad("needs a non-empty \"pairs\" list");
+            }
+            EquitySlowRule rule;
+            rule.present = true;
+            for (const auto& symbol : symbols) {
+                if (!symbol.is_string() || symbol.get<std::string>().empty()) {
+                    return bad("names a symbol that is not a non-empty string");
+                }
+                rule.symbols.push_back(symbol.get<std::string>());
+            }
+            for (const auto& pair : pairs) {
+                if (!pair.is_array() || pair.size() != 2 || !pair[0].is_number_integer() ||
+                    !pair[1].is_number_integer() || pair[0].get<int64_t>() <= 0 ||
+                    pair[1].get<int64_t>() <= 0) {
+                    return bad("names a pair that is not two positive whole numbers");
+                }
+                rule.pairs.emplace_back(pair[0].get<int>(), pair[1].get<int>());
+            }
+            config.equity_slow_rule = rule;
+        }
+
+        // LOOP_SPEC sections 3.1 and 7.7 (D19): the sizing mode and the starting capital. Parsed
+        // strictly when present; the futures runners require both (require_loop_keys).
+        if (merged.contains("sizing_mode")) {
+            const auto& v = merged.at("sizing_mode");
+            if (!v.is_string() || v.get<std::string>() != "half_compounding") {
+                return make_error<AppConfig>(
+                    ErrorCode::INVALID_DATA,
+                    "config for " + config.portfolio_id +
+                        ": portfolio.json \"sizing_mode\" must be \"half_compounding\" (the one "
+                        "sizing mode), got " + v.dump(),
+                    "ConfigLoader");
+            }
+            config.sizing_mode = v.get<std::string>();
+        }
+        if (merged.contains("starting_capital")) {
+            const auto& v = merged.at("starting_capital");
+            if (!v.is_number() || !(v.get<double>() > 0.0)) {
+                return make_error<AppConfig>(
+                    ErrorCode::INVALID_DATA,
+                    "config for " + config.portfolio_id +
+                        ": portfolio.json \"starting_capital\" must be a positive number, got " +
+                        v.dump(),
+                    "ConfigLoader");
+            }
+            config.starting_capital = v.get<double>();
+            if (config.starting_capital != config.initial_capital) {
+                return make_error<AppConfig>(
+                    ErrorCode::INVALID_DATA,
+                    "config for " + config.portfolio_id +
+                        ": portfolio.json \"starting_capital\" (" + v.dump() +
+                        ") must equal \"initial_capital\" (" +
+                        std::to_string(config.initial_capital) +
+                        "): the starting capital of the sizing is the book's capital",
+                    "ConfigLoader");
+            }
         }
 
         if (!merged.contains("risk")) {
@@ -412,6 +540,85 @@ Result<void> ConfigLoader::validate_config(const AppConfig& config) {
         }
     }
 
+    return Result<void>();
+}
+
+Result<void> ConfigLoader::require_loop_keys(const AppConfig& config) {
+    if (!config.equity_slow_rule.present) {
+        return make_error<void>(
+            ErrorCode::INVALID_DATA,
+            "config for " + config.portfolio_id +
+                ": portfolio.json \"equity_slow_rule\" is required on a futures book "
+                "({\"symbols\": [\"M2K\", \"MES\", \"MNQ\", \"MYM\"], \"pairs\": [[32, 128], [64, 256]]})",
+            "ConfigLoader");
+    }
+    // LOOP_SPEC sections 4, 7.7 and 12: the overlay's limits. The book's carver module carries
+    // R_max, R_jump_max and R_shock_max (ratios to tau); its max_gross_leverage and
+    // max_net_leverage are L_max and L_net_max.
+    {
+        bool carries = false;
+        for (const auto& module : config.risk_schema.portfolio) {
+            if (const auto* carver = std::get_if<CarverModuleConfig>(&module.params)) {
+                carries = carries || carver->overlay_limits();
+            }
+        }
+        if (!carries) {
+            return make_error<void>(
+                ErrorCode::INVALID_DATA,
+                "config for " + config.portfolio_id +
+                    ": risk.json's carver module needs \"R_max\", \"R_jump_max\" and "
+                    "\"R_shock_max\" on a futures book (the overlay's risk limits as ratios to "
+                    "tau: 2.25, 4.5, 4.0)",
+                "ConfigLoader");
+        }
+    }
+    if (config.sizing_mode.empty()) {
+        return make_error<void>(ErrorCode::INVALID_DATA,
+                                "config for " + config.portfolio_id +
+                                    ": portfolio.json \"sizing_mode\" is required on a futures "
+                                    "book (\"half_compounding\")",
+                                "ConfigLoader");
+    }
+    if (!(config.starting_capital > 0.0)) {
+        return make_error<void>(ErrorCode::INVALID_DATA,
+                                "config for " + config.portfolio_id +
+                                    ": portfolio.json \"starting_capital\" is required on a "
+                                    "futures book (the book's initial_capital)",
+                                "ConfigLoader");
+    }
+    // The one pass's constants (sections 5.2, 5.3 and 6.4). The carver module's per_name_cap and
+    // trim_max come with its overlay limits (the schema requires them together).
+    if (!config.has_cost_penalty_scalar) {
+        return make_error<void>(ErrorCode::INVALID_DATA,
+                                "config for " + config.portfolio_id +
+                                    ": defaults.json optimization.cost_penalty_scalar is required "
+                                    "on a futures book (the search's cost multiplier: 100)",
+                                "ConfigLoader");
+    }
+    if (!(config.sign_close_band > 0.0)) {
+        return make_error<void>(ErrorCode::INVALID_DATA,
+                                "config for " + config.portfolio_id +
+                                    ": defaults.json optimization.sign_close_band is required on "
+                                    "a futures book (the deferral band of the forecast-sign "
+                                    "close: 2)",
+                                "ConfigLoader");
+    }
+    if (!(config.b_sigma_floor > 0.0)) {
+        return make_error<void>(ErrorCode::INVALID_DATA,
+                                "config for " + config.portfolio_id +
+                                    ": defaults.json optimization.b_sigma_floor is required on a "
+                                    "futures book (B_sigma's floor as a ratio to tau: 0.05)",
+                                "ConfigLoader");
+    }
+    // Section 7.7: a retired key is refused, never ignored.
+    if (!config.retired_loop_keys.empty()) {
+        std::string list;
+        for (const auto& key : config.retired_loop_keys) list += (list.empty() ? "" : "; ") + key;
+        return make_error<void>(ErrorCode::INVALID_DATA,
+                                "config for " + config.portfolio_id +
+                                    ": retired key(s) on a futures book, remove them: " + list,
+                                "ConfigLoader");
+    }
     return Result<void>();
 }
 

@@ -15,7 +15,6 @@ namespace trade_ngin {
 // Forward declarations
 class IDatabase;
 class TrendFollowingStrategy;
-class TrendFollowingSlowStrategy;
 // Base interface for trend following strategies (both standard and slow)
 class BaseStrategy;
 typedef BaseStrategy

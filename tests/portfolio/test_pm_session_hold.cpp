@@ -1,13 +1,10 @@
-// The backtest predicate (T-7a commit 4; T-4c J1 re-keyed on the session classifier).
+// The session set and a book with NO overlay sleeve.
 //
-// In the portfolio backtest the PM sizes orders as (target - filled ledger) and prices them from
-// the SIGNAL group (the previous day's bars). A symbol with no bar there used to be skipped for
-// the FILL only: `info.current_positions = info.target_positions` had already moved the BOOK, so
-// the equity curve earned P&L on contracts never bought (T-4c: 6L 2025-06-30 -85.00, MYM
-// 2026-04-24 -154.00). With a session set (the coordinator passes it for FUTURES), a symbol whose
-// signal-group bar is not a SESSION -- no bar, or a JUNK bar -- gets no fill and no book change:
-// its book is held at the filled ledger. Without a set (every live caller, the equity backtest)
-// the old skip is unchanged.
+// A futures book is rebalanced by the one pass, which carries the hold set of LOOP_SPEC section
+// 6.1 itself (tests/portfolio/test_one_pass_book.cpp: a symbol outside the session set is held,
+// never opened at a stale price, and fills on its next session). A book that names no overlay
+// sleeve (the equity book; no caller passes it a session set) keeps the plain rule these tests
+// pin: no usable price means no fill, and the book moves to the target.
 
 #include <gtest/gtest.h>
 #include "../risk/risk_module_test_helpers.hpp"
@@ -194,54 +191,6 @@ protected:
     std::shared_ptr<ScriptedStrategy> strategy_;
 };
 
-// A JUNK bar: the symbol HAS a bar (and a price) in the signal group, but it is not a session.
-TEST_F(PmSessionHoldTest, AJunkSignalBarGivesNoFillAndNoBookChange) {
-    make_pm({{{"ZZA", make_pos("ZZA", 2, 100)}, {"ZZB", make_pos("ZZB", 3, 50)}},
-             {{"ZZA", make_pos("ZZA", 4, 100)}, {"ZZB", make_pos("ZZB", 5, 50)}}});
-    const std::unordered_set<std::string> both{"ZZA", "ZZB"};
-    ASSERT_TRUE(pm_->process_market_data({make_bar("ZZA", 1, 100), make_bar("ZZB", 1, 50)}, false,
-                                         day(2), &both)
-                    .is_ok());
-    ASSERT_EQ(executions_of("ZZB"), 1u);
-    ASSERT_DOUBLE_EQ(quantity("ZZB"), 3.0);
-
-    const std::unordered_set<std::string> zza_only{"ZZA"};  // ZZB's day-2 bar is JUNK
-    ::testing::internal::CaptureStdout();
-    ASSERT_TRUE(pm_->process_market_data({make_bar("ZZA", 2, 101), make_bar("ZZB", 2, 51, 3)},
-                                         false, day(3), &zza_only)
-                    .is_ok());
-    const std::string out = ::testing::internal::GetCapturedStdout();
-    EXPECT_EQ(executions_of("ZZB"), 1u) << "no fill at the junk print";
-    EXPECT_DOUBLE_EQ(quantity("ZZB"), 3.0) << "and no book change: held at the filled ledger";
-    EXPECT_EQ(executions_of("ZZA"), 2u) << "every other symbol trades normally";
-    EXPECT_DOUBLE_EQ(quantity("ZZA"), 4.0);
-    EXPECT_NE(out.find("BOOK_GATE backtest ZZB (SH_S): no SESSION bar in the signal group -- book "
-                       "held at filled qty=3.000000 instead of target 5.000000"),
-              std::string::npos)
-        << out;
-}
-
-TEST_F(PmSessionHoldTest, ASymbolWithNoSignalBarIsHeldWhenTheSetIsGiven) {
-    make_pm({{{"ZZA", make_pos("ZZA", 2, 100)}, {"ZZB", make_pos("ZZB", 3, 50)}},
-             {{"ZZA", make_pos("ZZA", 2, 100)}, {"ZZB", make_pos("ZZB", 4, 50)}},
-             {{"ZZA", make_pos("ZZA", 2, 100)}, {"ZZB", make_pos("ZZB", 4, 50)}}});
-    const std::unordered_set<std::string> both{"ZZA", "ZZB"};
-    ASSERT_TRUE(pm_->process_market_data({make_bar("ZZA", 1, 100), make_bar("ZZB", 1, 50)}, false,
-                                         day(2), &both)
-                    .is_ok());
-    const std::unordered_set<std::string> zza_only{"ZZA"};
-    ASSERT_TRUE(
-        pm_->process_market_data({make_bar("ZZA", 2, 101)}, false, day(3), &zza_only).is_ok());
-    EXPECT_DOUBLE_EQ(quantity("ZZB"), 3.0) << "the book does not run ahead of its fill";
-    EXPECT_EQ(executions_of("ZZB"), 1u);
-    // The next cycle whose signal group carries a ZZB session trades the gap at that bar.
-    ASSERT_TRUE(pm_->process_market_data({make_bar("ZZA", 3, 102), make_bar("ZZB", 3, 52)}, false,
-                                         day(4), &both)
-                    .is_ok());
-    EXPECT_DOUBLE_EQ(quantity("ZZB"), 4.0);
-    EXPECT_EQ(executions_of("ZZB"), 2u);
-}
-
 // The parent's behaviour, kept for every caller that passes no set (live runners, equities).
 TEST_F(PmSessionHoldTest, WithoutASetTheOldSkipStillMovesTheBookWithoutAFill) {
     make_pm({{{"ZZA", make_pos("ZZA", 2, 100)}, {"ZZB", make_pos("ZZB", 3, 50)}},
@@ -252,93 +201,6 @@ TEST_F(PmSessionHoldTest, WithoutASetTheOldSkipStillMovesTheBookWithoutAFill) {
     ASSERT_TRUE(pm_->process_market_data({make_bar("ZZA", 2, 101)}, false, day(3)).is_ok());
     EXPECT_DOUBLE_EQ(quantity("ZZB"), 4.0) << "no set: the book moves to the target";
     EXPECT_EQ(executions_of("ZZB"), 1u) << "and no fill";
-}
-
-// T-7b-2 9 (J1; T-4c section 8 condition 3(a), T-4c ADVERSARIAL J1-E): the PM's gate walked the
-// target map only, so a symbol the ledger holds but the target map no longer carries was never
-// visited, and `current_positions = target_positions` dropped it from the BOOK with no fill. Live
-// re-inserts such a symbol from its stored row when its T-1 is not a session
-// (hold_non_session_symbols' second loop) and closes it out at its T-1 close when it is (the
-// execution step's close-out loop). With a session set the backtest now does the same.
-TEST_F(PmSessionHoldTest, AHeldSymbolAbsentFromTheTargetIsHeldWhenItsSignalBarIsNotASession) {
-    make_pm({{{"ZZA", make_pos("ZZA", 2, 100)}, {"ZZB", make_pos("ZZB", 3, 50)}},
-             {{"ZZA", make_pos("ZZA", 2, 100)}},
-             {{"ZZA", make_pos("ZZA", 2, 100)}}});
-    const std::unordered_set<std::string> both{"ZZA", "ZZB"};
-    ASSERT_TRUE(pm_->process_market_data({make_bar("ZZA", 1, 100), make_bar("ZZB", 1, 50)}, false,
-                                         day(2), &both)
-                    .is_ok());
-    ASSERT_EQ(executions_of("ZZB"), 1u);
-    ASSERT_DOUBLE_EQ(book_quantity("ZZB"), 3.0);
-
-    // ZZB has no bar in the signal group (a feed hole or a closure) and has left the target map.
-    const std::unordered_set<std::string> zza_only{"ZZA"};
-    ::testing::internal::CaptureStdout();
-    ASSERT_TRUE(
-        pm_->process_market_data({make_bar("ZZA", 2, 101)}, false, day(3), &zza_only).is_ok());
-    const std::string out = ::testing::internal::GetCapturedStdout();
-    EXPECT_DOUBLE_EQ(book_quantity("ZZB"), 3.0)
-        << "held at the filled ledger: the book does not drop a contract it never sold";
-    EXPECT_EQ(executions_of("ZZB"), 1u) << "and no fill";
-    EXPECT_NE(out.find("BOOK_GATE backtest ZZB (SH_S): no SESSION bar in the signal group -- "
-                       "absent from the target, book held at filled qty=3.000000; no close-out"),
-              std::string::npos)
-        << out;
-}
-
-TEST_F(PmSessionHoldTest, AHeldSymbolAbsentFromTheTargetIsClosedOutWithAFillOnASession) {
-    make_pm({{{"ZZA", make_pos("ZZA", 2, 100)}, {"ZZB", make_pos("ZZB", 3, 50)}},
-             {{"ZZA", make_pos("ZZA", 2, 100)}},
-             {{"ZZA", make_pos("ZZA", 2, 100)}}});
-    const std::unordered_set<std::string> both{"ZZA", "ZZB"};
-    ASSERT_TRUE(pm_->process_market_data({make_bar("ZZA", 1, 100), make_bar("ZZB", 1, 50)}, false,
-                                         day(2), &both)
-                    .is_ok());
-    ASSERT_EQ(executions_of("ZZB"), 1u);
-
-    // ZZB prints a session bar and has left the target map: live's close-out loop sells it to
-    // flat at the T-1 close; the backtest fills the close-out at the signal group's close.
-    ASSERT_TRUE(pm_->process_market_data({make_bar("ZZA", 2, 101), make_bar("ZZB", 2, 51)}, false,
-                                         day(3), &both)
-                    .is_ok());
-    ASSERT_EQ(executions_of("ZZB"), 2u) << "the close-out is a fill";
-    const ExecutionReport close_out = execution_of("ZZB", 1);
-    EXPECT_EQ(close_out.side, Side::SELL);
-    EXPECT_DOUBLE_EQ(static_cast<double>(close_out.filled_quantity), 3.0);
-    EXPECT_DOUBLE_EQ(static_cast<double>(close_out.fill_price), 51.0);
-    EXPECT_EQ(close_out.fill_time, day(3));
-    EXPECT_DOUBLE_EQ(book_quantity("ZZB"), 0.0);
-
-    // The ledger is flat: a later session cycle with ZZB still absent trades nothing more.
-    ASSERT_TRUE(pm_->process_market_data({make_bar("ZZA", 3, 102), make_bar("ZZB", 3, 52)}, false,
-                                         day(4), &both)
-                    .is_ok());
-    EXPECT_EQ(executions_of("ZZB"), 2u);
-    EXPECT_DOUBLE_EQ(book_quantity("ZZB"), 0.0);
-}
-
-// Live's STRICT rollback (execute_strategy_day_strict): a change that could not be priced is
-// rolled back to the stored row. With a session set the backtest's unpriced skip holds the book
-// at the filled ledger too, instead of moving it to the target with no fill.
-TEST_F(PmSessionHoldTest, AnUnpricedChangeIsHeldAtTheLedgerWhenTheSetIsGiven) {
-    make_pm({{{"ZZA", make_pos("ZZA", 2, 100)}, {"ZZB", make_pos("ZZB", 3, 50)}},
-             {{"ZZA", make_pos("ZZA", 2, 100)}, {"ZZB", make_pos("ZZB", 5, 50)}}});
-    const std::unordered_set<std::string> both{"ZZA", "ZZB"};
-    ASSERT_TRUE(pm_->process_market_data({make_bar("ZZA", 1, 100), make_bar("ZZB", 1, 50)}, false,
-                                         day(2), &both)
-                    .is_ok());
-    // ZZB is in the set but its signal-group bar carries no usable close.
-    ::testing::internal::CaptureStdout();
-    ASSERT_TRUE(pm_->process_market_data({make_bar("ZZA", 2, 101), make_bar("ZZB", 2, 0.0)}, false,
-                                         day(3), &both)
-                    .is_ok());
-    const std::string out = ::testing::internal::GetCapturedStdout();
-    EXPECT_EQ(executions_of("ZZB"), 1u) << "no fill without a price";
-    EXPECT_DOUBLE_EQ(book_quantity("ZZB"), 3.0) << "and no book change without a fill";
-    EXPECT_NE(out.find("BOOK_GATE backtest ZZB (SH_S): no usable close in the signal group -- "
-                       "book held at filled qty=3.000000 instead of target 5.000000"),
-              std::string::npos)
-        << out;
 }
 
 // Controls: without a set (every live caller, the equity backtest) both paths keep the parent's

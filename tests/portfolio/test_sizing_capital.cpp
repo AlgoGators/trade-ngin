@@ -27,6 +27,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <ctime>
 #include <deque>
 #include <filesystem>
 #include <fstream>
@@ -112,14 +113,9 @@ protected:
         sc.asset_classes = {AssetClass::FUTURES};
         sc.frequencies = {DataFrequency::DAILY};
         TrendFollowingConfig tc;
-        tc.weight = kWeight;  // the buffer's weight before and after C9a's C2 is the same number
         tc.idm = 2.5;
         tc.risk_target = 0.2;
         tc.fx_rate = 1.0;
-        tc.max_symbol_concentration = concentration;
-        tc.use_position_buffering = true;
-        tc.carver_buffer_floor = 0.0;             // the Carver term alone sets the width
-        tc.carver_buffer_position_factor = 0.0;
         trend_ = std::make_shared<TrendFollowingStrategy>("TF_SIZING_" + std::to_string(++n), sc,
                                                           tc, db_, nullptr);
         trend_->instrument_data_[kSym].contract_size = 1.0;
@@ -147,31 +143,6 @@ TEST_F(StrategySizingCapital, ThePositionLineReadsTheCapitalItWasGivenToday) {
     ASSERT_TRUE(trend_->set_capital_allocation(450'000.0).is_ok());
     EXPECT_NEAR(position_at(10.0), 450.0, 1e-9);
     EXPECT_NEAR(position_at(-10.0), -450.0, 1e-9) << "a short scales the same way";
-}
-
-TEST_F(StrategySizingCapital, TheNotionalConcentrationCapFollowsTheCapital) {
-    // cap = capital x max_leverage x concentration = 500,000 x 1.0 x 0.1 = 50,000 of notional
-    // = 200 contracts at 250; the uncapped 500 is cut to it.
-    make(/*max_leverage=*/1.0, /*concentration=*/0.1);
-    EXPECT_NEAR(position_at(10.0), 200.0, 1e-9);
-    ASSERT_TRUE(trend_->set_capital_allocation(600'000.0).is_ok());
-    EXPECT_NEAR(position_at(10.0), 240.0, 1e-9)
-        << "600,000 x 1.0 x 0.1 = 60,000 of notional = 240 contracts";
-}
-
-TEST_F(StrategySizingCapital, TheBufferWidthsCarverTermFollowsTheCapital) {
-    make(10.0, 0.15);
-    Position held;
-    held.symbol = kSym;
-    held.quantity = Decimal(55.0);
-    held.average_price = Decimal(kPrice);
-    ASSERT_TRUE(trend_->seed_positions({{kSym, held}}).is_ok());
-    // Target 0, holding 55. At 500,000 the width is 50: 55 is outside [-50, 50], so the buffer
-    // trades down to the edge, 50.
-    EXPECT_NEAR(trend_->apply_position_buffer(kSym, 0.0, kPrice, kVol), 50.0, 1e-9);
-    // At 600,000 the width is 60: 55 is inside [-60, 60], so the buffer keeps 55.
-    ASSERT_TRUE(trend_->set_capital_allocation(600'000.0).is_ok());
-    EXPECT_NEAR(trend_->apply_position_buffer(kSym, 0.0, kPrice, kVol), 55.0, 1e-9);
 }
 
 TEST_F(StrategySizingCapital, ABadCapitalIsRefusedAndTheOldOneKept) {
@@ -304,14 +275,16 @@ TEST_F(PortfolioSizingCapital, EverySizingInputMovesWithTheCapital) {
     EXPECT_DOUBLE_EQ(a_->get_config().capital_allocation, 528'000.0);
 }
 
-TEST_F(PortfolioSizingCapital, TheOptimizersWeightPerContractFollowsTheCapital) {
-    // optimize_positions divides a contract's notional by the sizing capital (not total_capital).
-    const std::string src = [] {
+TEST_F(PortfolioSizingCapital, TheWeightPerContractFollowsTheCapital) {
+    // The one pass weighs a contract on the sizing capital (not total_capital): the manager hands
+    // the pass sizing_capital_, and the pass divides a contract's notional by it. The generic
+    // optimiser step, which only a book with no overlay sleeve reaches, reads no capital at all.
+    const auto read = [](const std::string& relative) {
         namespace fs = std::filesystem;
         fs::path dir = fs::current_path();
         for (int i = 0; i < 8 && !dir.empty(); ++i) {
-            if (fs::exists(dir / "src/portfolio/portfolio_manager.cpp")) {
-                std::ifstream in(dir / "src/portfolio/portfolio_manager.cpp");
+            if (fs::exists(dir / relative)) {
+                std::ifstream in(dir / relative);
                 std::ostringstream ss;
                 ss << in.rdbuf();
                 return ss.str();
@@ -319,15 +292,19 @@ TEST_F(PortfolioSizingCapital, TheOptimizersWeightPerContractFollowsTheCapital) 
             dir = dir.parent_path();
         }
         return std::string();
-    }();
+    };
+    const std::string src = read("src/portfolio/portfolio_manager.cpp");
     ASSERT_FALSE(src.empty());
+    const auto pass = src.find("Result<void> PortfolioManager::rebalance_one_pass(");
+    ASSERT_NE(pass, npos);
+    EXPECT_NE(src.find("in.capital = static_cast<double>(sizing_capital_);", pass), npos);
+    const std::string one_pass = read("src/optimization/one_pass.cpp");
+    EXPECT_NE(one_pass.find("out.u[i] = in.multiplier[i] * in.close[i] / in.capital;"), npos);
     const auto opt = src.find("Result<void> PortfolioManager::optimize_positions()");
     ASSERT_NE(opt, npos);
-    const auto end = src.find("Result<void> PortfolioManager::validate_risk_modules(", opt);
+    const auto end = src.find("bool PortfolioManager::one_pass_book() const", opt);
+    ASSERT_NE(end, npos);
     const std::string body = src.substr(opt, end - opt);
-    EXPECT_NE(body.find("notional_per_contract /\n                                                   "
-                        "static_cast<double>(sizing_capital_)"),
-              npos);
     EXPECT_EQ(body.find("config_.total_capital"), npos)
         << "no sizing read of the constant is left in the optimizer";
 }
@@ -398,7 +375,6 @@ protected:
         spec.commission_per_contract = 2.0;
         spec.initial_margin = 1000.0;
         spec.maintenance_margin = 800.0;
-        spec.weight = 1.0;
         spec.trading_hours = "09:30-16:00";
         auto& registry = InstrumentRegistry::instance();
         registry.instruments_["XX"] = std::make_shared<FuturesInstrument>("XX", spec);
@@ -455,23 +431,32 @@ TEST_F(BacktestSizingCapital, EachCycleSizesOnThePreviousRowNeverOnTheRowItWrite
     const double closes[] = {100.0, 110.0, 104.0, 121.0, 97.0};
     cycle(0, closes[0]);  // the first group is stored, not processed: one flat row
     ASSERT_EQ(equity_.size(), 1u);
+    bool below_start = false;
     for (int d = 1; d < 5; ++d) {
-        const double before = equity_.back().second;  // the row the cycle must size on
+        // The capital the cycle must size on: the half compounding of the curve as it stands, whose
+        // last row is the previous cycle's (LOOP_SPEC section 3.1).
+        const double before = backtest_sizing_equity(equity_, 1'000'000.0);
+        const double before_row = equity_.back().second;
         const size_t seen_before = probe_->seen.size();
         cycle(d, closes[d]);
         ASSERT_EQ(probe_->seen.size(), seen_before + 1);
         const double written = equity_.back().second;  // the row this cycle appended
         EXPECT_DOUBLE_EQ(probe_->seen.back(), before * 0.5)
-            << "cycle " << d << " sizes on the previous row x the allocation";
+            << "cycle " << d << " sizes on the capital through the previous row x the allocation";
+        EXPECT_LE(probe_->seen.back(), 1'000'000.0 * 0.5) << "never above the starting capital";
         if (d >= 2) {
-            ASSERT_NE(written, before) << "cycle " << d << " holds XX through a price move";
-            EXPECT_NE(probe_->seen.back(), written * 0.5)
-                << "cycle " << d << " must not size on the row it writes (look-ahead)";
+            ASSERT_NE(written, before_row) << "cycle " << d << " holds XX through a price move";
+            const double with_own_row = backtest_sizing_equity(equity_, 1'000'000.0);
+            if (with_own_row != before) {
+                EXPECT_NE(probe_->seen.back(), with_own_row * 0.5)
+                    << "cycle " << d << " must not size on the row it writes (look-ahead)";
+            }
         }
+        below_start = below_start || probe_->seen.back() < 1'000'000.0 * 0.5;
     }
-    // Cycle 2 onward the probe held one XX (multiplier 10): the rows moved with the price, so
-    // the capital it sized on moved with them rather than staying at 500,000.
-    EXPECT_NE(probe_->seen.back(), 500'000.0);
+    // Cycle 2 onward the probe held one XX (multiplier 10) through a rise and then a fall: the
+    // fall came off the capital, so some cycle sized below the starting capital.
+    EXPECT_TRUE(below_start);
 }
 
 // Control (passes on the parent too): the equity backtest keeps the constant capital.
@@ -505,7 +490,6 @@ std::shared_ptr<FuturesInstrument> future(const std::string& root, double multip
     spec.commission_per_contract = 2.0;
     spec.initial_margin = 1000.0;
     spec.maintenance_margin = 800.0;
-    spec.weight = 1.0;
     return std::make_shared<FuturesInstrument>(root, spec);
 }
 
@@ -645,10 +629,59 @@ TEST_F(LiveSizingCapital, APositionMissingEitherCloseSettlesNothingAsPhase5Books
     EXPECT_EQ(r.unpriced, 1);
 }
 
-TEST(BacktestSizingEquity, TheCurvesLastRowOrTheInitialCapital) {
-    EXPECT_DOUBLE_EQ(backtest_sizing_equity({}, 500'000.0), 500'000.0);
-    EXPECT_DOUBLE_EQ(backtest_sizing_equity({{wday(0), 500'000.0}, {wday(1), 503'125.5}}, 500'000.0),
-                     503'125.5);
+// LOOP_SPEC section 3.1 (D19): the backtest sizes on the half-compounded capital of its own curve.
+// A profit is never sized on (the capital stays at the starting capital); a loss comes off at
+// once; row by row the capital follows min(S_0, capital + net).
+TEST(BacktestSizingEquity, AProfitThenALossFollowsTheHalfCompoundingRowByRow) {
+    const double s0 = 500'000.0;
+    EXPECT_DOUBLE_EQ(backtest_sizing_equity({}, s0), s0);
+    // the start, a profit, a larger profit, a loss, a loss below the start, a recovery, a new high
+    const std::vector<double> rows = {500'000.0, 503'125.5, 507'900.0, 504'000.0,
+                                      498'250.25, 501'000.0, 509'100.0};
+    std::vector<std::pair<Timestamp, double>> curve;
+    double capital = s0;  // the recursion, applied beside the closed form
+    for (size_t k = 0; k < rows.size(); ++k) {
+        if (k > 0) capital = std::min(s0, capital + (rows[k] - rows[k - 1]));
+        curve.emplace_back(wday(static_cast<int>(k)), rows[k]);
+        EXPECT_NEAR(backtest_sizing_equity(curve, s0), capital, 1e-6) << "row " << k;
+    }
+    // A profit is not sized on: after the first two rows the capital is still the starting capital.
+    EXPECT_DOUBLE_EQ(backtest_sizing_equity({{wday(0), s0}, {wday(1), 503'125.5}}, s0), s0);
+    // A loss from a high comes off the starting capital, not off the high.
+    EXPECT_NEAR(backtest_sizing_equity({{wday(0), s0}, {wday(1), 507'900.0}, {wday(2), 504'000.0}}, s0),
+                s0 - 3'900.0, 1e-6);
+    const auto h = backtest_half_compounding(curve, s0);
+    EXPECT_NEAR(h.account, 509'100.0, 1e-6);
+    EXPECT_NEAR(h.peak, 9'100.0, 1e-6);
+    EXPECT_NEAR(h.cumulative, 9'100.0, 1e-6);
+    EXPECT_NEAR(h.capital, s0, 1e-6);
+}
+
+// The closed form over a list of settled nets, the recursion beside it, and a seeded start.
+TEST(HalfCompounding, TheClosedFormIsTheRecursionInDateOrder) {
+    const double s0 = 500'000.0;
+    const std::vector<double> nets = {1200.0, -300.5, -2500.0, 800.0, 4100.25, -50.0, -6000.0, 9000.0};
+    for (double d0 : {0.0, 12'500.0}) {
+        double capital = s0 - d0;
+        std::vector<double> seen;
+        EXPECT_NEAR(half_compounded_capital(s0, seen, d0).capital, capital, 1e-9);
+        for (double net : nets) {
+            capital = std::min(s0, capital + net);
+            seen.push_back(net);
+            const auto h = half_compounded_capital(s0, seen, d0);
+            EXPECT_NEAR(h.capital, capital, 1e-6) << "after " << seen.size() << " nets, D_0 " << d0;
+            EXPECT_LE(h.capital, s0);
+        }
+    }
+    // A seeded chain (D_0 > 0): the capital starts at the seed and a profit rebuilds it only up
+    // to the starting capital.
+    EXPECT_NEAR(half_compounded_capital(s0, {}, 12'500.0).capital, 487'500.0, 1e-9);
+    EXPECT_NEAR(half_compounded_capital(s0, {5'000.0}, 12'500.0).capital, 492'500.0, 1e-9);
+    EXPECT_NEAR(half_compounded_capital(s0, {5'000.0, 20'000.0}, 12'500.0).capital, s0, 1e-9);
+    EXPECT_NEAR(half_compounded_capital(s0, {5'000.0, 20'000.0, -1'000.0}, 12'500.0).capital,
+                s0 - 1'000.0, 1e-9);
+    // The account the history gives is the starting capital plus the cumulative settled P&L.
+    EXPECT_NEAR(half_compounded_capital(s0, nets).account, s0 + 6249.75, 1e-9);
 }
 
 // ------------------------------------------------------------------------------------------------
@@ -675,9 +708,39 @@ public:
     std::vector<Timestamp> previous_asked;  // the dates get_previous_live_aggregates was given
     int book_loads = 0;
 
-    // load_live_results' query (the only live_results SELECT the loader sends here).
+    // The stored P&L history before Day T-1 (load_sizing_pnl_history): date, daily_pnl, positions.
+    std::vector<std::tuple<std::string, double, int>> history;
+    bool history_error = false;
+    int history_reads = 0;
+
+    // load_live_results' query and the sizing history's query (the two live_results SELECTs the
+    // loader sends here).
     Result<std::shared_ptr<arrow::Table>> execute_query(const std::string& query) override {
         if (query.find(".live_results") == npos) return MockPostgresDatabase::execute_query(query);
+        if (query.find("sizing_history_date") != npos) {
+            ++history_reads;
+            if (history_error) {
+                return make_error<std::shared_ptr<arrow::Table>>(
+                    ErrorCode::DATABASE_ERROR, "canceling statement due to statement timeout",
+                    "PostgresDatabase");
+            }
+            // Every column a string, as the production converter builds a generic result.
+            arrow::StringBuilder d, p, a;
+            for (const auto& [date, pnl, held_positions] : history) {
+                ARROW_CHECK_OK(d.Append(date));
+                ARROW_CHECK_OK(p.Append(std::to_string(pnl)));
+                ARROW_CHECK_OK(a.Append(std::to_string(held_positions)));
+            }
+            std::shared_ptr<arrow::Array> da, pa, aa;
+            ARROW_CHECK_OK(d.Finish(&da));
+            ARROW_CHECK_OK(p.Finish(&pa));
+            ARROW_CHECK_OK(a.Finish(&aa));
+            return Result<std::shared_ptr<arrow::Table>>(arrow::Table::Make(
+                arrow::schema({arrow::field("sizing_history_date", arrow::utf8()),
+                               arrow::field("daily_pnl", arrow::utf8()),
+                               arrow::field("active_positions", arrow::utf8())}),
+                {da, pa, aa}));
+        }
         if (t1 == T1::kError) {
             return make_error<std::shared_ptr<arrow::Table>>(
                 ErrorCode::DATABASE_ERROR, "server closed the connection unexpectedly",
@@ -757,8 +820,22 @@ protected:
             *loader_, *db_, "LIVE_TREND_FOLLOWING", "BASE_PORTFOLIO", {"A", "B"}, now_, 500'000.0,
             {{"MES.v.0", 7252.50}, {"ZN.v.0", 110.703125}},
             {{"MES.v.0", 7230.00}, {"ZN.v.0", 110.906250}},
-            [&](const std::string& s) { return pnl_.get_point_value(s); }, {});
+            [&](const std::string& s) { return pnl_.get_point_value(s); }, {}, calendar_);
     }
+    // The dates the run loaded a bar on: every weekday of April 2026 (2026-04-27, Day T-1, among
+    // them), so every stored day of the fixtures is a settled one unless a test removes its date.
+    LiveSizingCalendar calendar_ = [] {
+        LiveSizingCalendar c;
+        for (int d = 1; d <= 30; ++d) {
+            const int weekday = (d + 2) % 7;  // 2026-04-01 is a Wednesday (3)
+            if (weekday == 0 || weekday == 6) continue;
+            char buf[16];
+            std::snprintf(buf, sizeof(buf), "2026-04-%02d", d);
+            c.bar_dates.insert(buf);
+        }
+        c.first_bar_date = *c.bar_dates.begin();
+        return c;
+    }();
     const Timestamp now_ = Timestamp(std::chrono::seconds(1777334400LL));  // 2026-04-28
     LivePnLManager pnl_{500'000.0, InstrumentRegistry::instance()};
     std::shared_ptr<SizingReadDatabase> db_;
@@ -993,7 +1070,12 @@ TEST(SizingCapitalWiring, BothFuturesRunnersSizeOnTheEquityBeforeTheRebalance) {
         ASSERT_FALSE(blocks[i].empty()) << runners[i] << ": no sizing block before the metadata row";
         const auto block_at = src.find("// SIZING CAPITAL (T-7b-2 9c");
         EXPECT_LT(block_at, src.find("portfolio->process_market_data(")) << runners[i];
-        EXPECT_NE(blocks[i].find("portfolio->set_sizing_capital(sizing_equity.equity)"), npos);
+        // LOOP_SPEC section 3.1: the book is sized on the half-compounded capital the read returns,
+        // never on the account's rebuilt value.
+        EXPECT_NE(blocks[i].find("portfolio->set_sizing_capital(sizing_read.capital.capital)"), npos);
+        EXPECT_EQ(blocks[i].find("set_sizing_capital(sizing_equity.equity)"), npos);
+        EXPECT_NE(blocks[i].find("INFO(sizing_capital_log_line("), npos);
+        EXPECT_NE(blocks[i].find("WARN(sizing_capital_unsettled_log_line("), npos);
         // Day T-1 and Day T-2 closes only: the day being sized has no mark yet. Since T-ROLLX-FIX
         // commit 4 (D-B) they are the T-1 settlement on the consumed bars, built from the price
         // manager's two maps above the block, the settlement PHASE 5 finalises with.
@@ -1033,7 +1115,17 @@ TEST(SizingCapitalWiring, BothFuturesRunnersSizeOnTheEquityBeforeTheRebalance) {
     EXPECT_NE(helper.find("data_loader.load_live_results(strategy_id, portfolio_id, sizing_t1);"), npos);
     EXPECT_NE(helper.find("t1_row_stored ? sizing_t1 : now,"), npos);
     EXPECT_NE(helper.find("t1_row_stored ? t1_row.value().daily_transaction_costs : 0.0"), npos);
-    EXPECT_EQ(helper.find("current_portfolio_value"), npos);
+    // (its code: the no-bar-day comment names the column, which already carries the costs)
+    {
+        std::istringstream lines(helper);
+        for (std::string line; std::getline(lines, line);) {
+            const auto first = line.find_first_not_of(" \t");
+            if (first == npos) continue;
+            const std::string text = line.substr(first);
+            if (text.rfind("//", 0) == 0 || text.rfind("*", 0) == 0 || text.rfind("/*", 0) == 0) continue;
+            EXPECT_EQ(text.find("current_portfolio_value"), npos) << text;
+        }
+    }
 }
 
 // T-ROLLX-FIX commit 5 (finding 12; D-B): the other half of the wiring. PHASE 5 finalises Day T-1 on
@@ -1143,10 +1235,281 @@ TEST(SizingCapitalWiring, TheBacktestCompoundsForFuturesOnly) {
     const std::string day = between(src, "Result<void> BacktestCoordinator::process_portfolio_day(",
                                     "equity_curve.emplace_back(timestamp, portfolio_value);");
     ASSERT_FALSE(day.empty());
-    const auto set_at = day.find("portfolio->set_sizing_capital(sizing_equity)");
+    EXPECT_NE(day.find("backtest_half_compounding(equity_curve, initial_capital)"), npos);
+    const auto set_at = day.find("portfolio->set_sizing_capital(sizing.capital)");
     ASSERT_NE(set_at, npos);
     EXPECT_LT(set_at, day.find("portfolio->process_market_data(*signal_feed"))
         << "sized before the rebalance, on the curve as it stands (this cycle's row comes after)";
 }
 
 }  // namespace
+
+// ------------------------------------------------------------------------------------------------
+// LOOP_SPEC section 3.1 (D19): the live runner's sizing capital. The half compounding of the book's
+// settled daily P&L, recomputed on every run from the stored rows before Day T-1 plus Day T-1's
+// rebuilt net; on a failure path the last settled capital is kept and nothing is added for the
+// unsettled day; the run after it catches up from the stored history alone.
+// ------------------------------------------------------------------------------------------------
+
+class LiveHalfCompounding : public LiveSizingReads {
+protected:
+    // Day T-1's rebuilt net in this fixture: +225.00 - 203.125 - 16.3516.
+    const double t1_net_ = 2.0 * (7252.50 - 7230.00) * 5.0 + 1.0 * (110.703125 - 110.906250) * 1000.0 - 16.3516;
+};
+
+// A profit then a loss in the stored history, then Day T-1: the capital follows min(S_0, E + net)
+// row by row, and the account on the line is the starting capital plus the settled cumulative P&L.
+TEST_F(LiveHalfCompounding, TheCapitalIsTheHalfCompoundingOfTheSettledHistoryAndDayT1) {
+    db_->history = {{"2026-04-21", 0.0, 0}, {"2026-04-22", 4'000.0, 2}, {"2026-04-23", -1'500.0, 2},
+                    {"2026-04-24", -3'200.0, 2}};
+    const auto r = read();
+    ASSERT_EQ(r.outcome, LiveSizingOutcome::kSized) << outcome_of(r);
+    EXPECT_EQ(db_->history_reads, 1);
+    double capital = 500'000.0, cumulative = 0.0;
+    for (double net : {0.0, 4'000.0, -1'500.0, -3'200.0, t1_net_}) {
+        capital = std::min(500'000.0, capital + net);
+        cumulative += net;
+    }
+    EXPECT_NEAR(r.capital.capital, capital, 1e-6);
+    EXPECT_NEAR(r.capital.capital, 500'000.0 - 4'700.0 + t1_net_, 1e-6)
+        << "the 4,000 profit is not sized on; the two losses and Day T-1 come off the start";
+    EXPECT_NEAR(r.capital.account, 500'000.0 + cumulative, 1e-6);
+    EXPECT_NEAR(r.capital.peak, 4'000.0, 1e-6);
+    EXPECT_EQ(r.settled_through, "2026-04-27");
+    EXPECT_EQ(r.settled_rows, 5);
+    EXPECT_FALSE(r.t1_unsettled);
+    const std::string line = sizing_capital_log_line("2026-04-28", r);
+    EXPECT_NE(line.find("SIZING_CAPITAL date=2026-04-28 capital="), std::string::npos) << line;
+    EXPECT_NE(line.find(" account="), std::string::npos);
+    EXPECT_NE(line.find(" peak=4000.000000"), std::string::npos) << line;
+    EXPECT_NE(line.find(" settled_through=2026-04-27"), std::string::npos) << line;
+}
+
+// Failure path 1: no T-1 closes with positions held. The last settled capital is kept, nothing is
+// added for Day T-1 (not even its stored costs), and the WARN line names the date.
+TEST_F(LiveHalfCompounding, NoT1ClosesKeepsTheLastSettledCapital) {
+    db_->history = {{"2026-04-23", 4'000.0, 2}, {"2026-04-24", -3'200.0, 2}};
+    calendar_.no_t1_closes = true;
+    const auto r = read();
+    ASSERT_EQ(r.outcome, LiveSizingOutcome::kSized) << outcome_of(r);
+    EXPECT_TRUE(r.t1_unsettled);
+    EXPECT_EQ(r.t1_unsettled_reason, "no T-1 closes");
+    EXPECT_NEAR(r.capital.capital, 496'800.0, 1e-6);
+    EXPECT_EQ(r.settled_through, "2026-04-24");
+    const std::string warn = sizing_capital_unsettled_log_line("2026-04-28", r);
+    EXPECT_NE(warn.find("SIZING_CAPITAL_UNSETTLED date=2026-04-28 unsettled=2026-04-27 "
+                        "reason=\"no T-1 closes\" capital=496800.000000"),
+              std::string::npos)
+        << warn;
+}
+
+// The same test with a flat book is not a failure path: there is no move to measure, and Day
+// T-1's net is its stored costs.
+TEST_F(LiveHalfCompounding, NoT1ClosesOnAFlatBookIsNotAFailurePath) {
+    db_->history = {{"2026-04-24", -3'200.0, 2}};
+    db_->books.clear();
+    calendar_.no_t1_closes = true;
+    const auto r = read();
+    ASSERT_EQ(r.outcome, LiveSizingOutcome::kSized) << outcome_of(r);
+    EXPECT_FALSE(r.t1_unsettled);
+    EXPECT_NEAR(r.capital.capital, 496'800.0 - 16.3516, 1e-6);
+    EXPECT_EQ(r.settled_through, "2026-04-27");
+}
+
+// Failure path 2: no T-2 closes.
+TEST_F(LiveHalfCompounding, NoT2ClosesKeepsTheLastSettledCapital) {
+    db_->history = {{"2026-04-23", 4'000.0, 2}, {"2026-04-24", -3'200.0, 2}};
+    calendar_.no_t2_closes = true;
+    const auto r = read();
+    ASSERT_EQ(r.outcome, LiveSizingOutcome::kSized) << outcome_of(r);
+    EXPECT_TRUE(r.t1_unsettled);
+    EXPECT_EQ(r.t1_unsettled_reason, "no T-2 closes");
+    EXPECT_NEAR(r.capital.capital, 496'800.0, 1e-6);
+    EXPECT_NE(sizing_capital_unsettled_log_line("2026-04-28", r).find("unsettled=2026-04-27"),
+              std::string::npos);
+}
+
+// Failure path 3: no Day T-1 row on a book that has rows. A book's first run (no row at all) is not
+// one: there is nothing to settle and the capital is the starting capital.
+TEST_F(LiveHalfCompounding, NoDayT1RowKeepsTheLastSettledCapital) {
+    db_->history = {{"2026-04-23", 4'000.0, 2}, {"2026-04-24", -3'200.0, 2}};
+    db_->t1 = SizingReadDatabase::T1::kNoRow;
+    auto r = read();
+    ASSERT_EQ(r.outcome, LiveSizingOutcome::kSized) << outcome_of(r);
+    EXPECT_TRUE(r.t1_unsettled);
+    EXPECT_EQ(r.t1_unsettled_reason, "no Day T-1 row");
+    EXPECT_NEAR(r.capital.capital, 496'800.0, 1e-6);
+
+    db_->history.clear();
+    db_->previous_value.reset();
+    r = read();
+    ASSERT_EQ(r.outcome, LiveSizingOutcome::kSized) << outcome_of(r);
+    EXPECT_FALSE(r.t1_unsettled) << "a book's first run has nothing unsettled";
+    EXPECT_DOUBLE_EQ(r.capital.capital, 500'000.0);
+    EXPECT_EQ(r.settled_through, "none");
+}
+
+// The no-bar-day rule. A held day on which no symbol prints (a Saturday) is never finalized: its
+// stored daily_pnl, the costs of that day's fills, is final. It stays out only while no bar dated
+// after it is loaded, and from the next run that has a later bar it counts in its own date's place.
+//
+// The nets are chosen so that the PLACE matters: the cap at 500,000 binds in the middle of the
+// sequence. In date order the capital is 500,000 (the 4,000 profit is not sized on), 499,997,
+// 499,957 after the Saturday's 40.00, and 499,962.5234 after Day T-1's 5.5234. With the late day
+// appended after Day T-1 instead, Day T-1's profit would be cut off at the cap first (499,997 +
+// 5.5234 capped to 500,000) and the answer would be 499,960: 2.5234 less.
+TEST_F(LiveHalfCompounding, ANoBarDayCountsFromTheNextRunThatHasALaterBar) {
+    // 2026-04-25 is a Saturday: the book held positions, its fills cost 40.00, no bar is dated it.
+    db_->history = {{"2026-04-23", 4'000.0, 2}, {"2026-04-24", -3.0, 2}, {"2026-04-25", -40.0, 2}};
+    // Read 1: no bar after the Saturday is loaded yet (Day T-1 has no closes either).
+    for (const char* later : {"2026-04-27", "2026-04-28", "2026-04-29", "2026-04-30"}) {
+        calendar_.bar_dates.erase(later);
+    }
+    calendar_.no_t1_closes = true;
+    auto r = read();
+    ASSERT_EQ(r.outcome, LiveSizingOutcome::kSized) << outcome_of(r);
+    ASSERT_EQ(r.earlier_unsettled, std::vector<std::string>{"2026-04-25"});
+    EXPECT_TRUE(r.t1_unsettled);
+    EXPECT_NEAR(r.capital.capital, 499'997.0, 1e-6) << "no later bar: the Saturday adds nothing yet";
+    EXPECT_NE(sizing_capital_log_line("2026-04-28", r).find(" earlier_unsettled=1 "), std::string::npos);
+
+    // Read 2: a bar dated after the Saturday is loaded. No bar is dated the Saturday itself, and
+    // none ever will be.
+    calendar_.bar_dates.insert("2026-04-27");
+    calendar_.no_t1_closes = false;
+    r = read();
+    EXPECT_TRUE(r.earlier_unsettled.empty()) << "the Saturday counts once a later bar is loaded";
+    EXPECT_EQ(calendar_.bar_dates.count("2026-04-25"), 0u);
+    double in_its_place = 500'000.0, appended_last = 500'000.0;
+    for (double net : {4'000.0, -3.0, -40.0, t1_net_}) in_its_place = std::min(500'000.0, in_its_place + net);
+    for (double net : {4'000.0, -3.0, t1_net_, -40.0}) appended_last = std::min(500'000.0, appended_last + net);
+    ASSERT_NEAR(in_its_place, 499'962.5234, 1e-6);
+    ASSERT_NEAR(appended_last, 499'960.0, 1e-6);
+    ASSERT_GT(in_its_place - appended_last, 2.5) << "the fixture tells the two orders apart";
+    EXPECT_NEAR(r.capital.capital, in_its_place, 1e-6) << "the Saturday's costs in its own date's place";
+    EXPECT_GT(std::abs(r.capital.capital - appended_last), 2.5) << "not appended after Day T-1";
+    EXPECT_NEAR(r.capital.account, 500'000.0 + 4'000.0 - 3.0 - 40.0 + t1_net_, 1e-6)
+        << "the account is the stored one: the Saturday's costs are in it";
+    EXPECT_EQ(r.settled_rows, 4);
+
+    // A day with a FLAT book is settled whatever is loaded: with no bar dated after it either
+    // (the later dates erased again), only the flat book settles it. The same day with a held
+    // book and the same calendar is the unsettled one of read 1.
+    calendar_.bar_dates.erase("2026-04-27");
+    db_->history = {{"2026-04-25", -40.0, 0}};
+    r = read();
+    EXPECT_TRUE(r.earlier_unsettled.empty()) << "a flat book has nothing to settle";
+    EXPECT_NEAR(r.capital.capital, 500'000.0 - 40.0 + t1_net_, 1e-6);
+    db_->history = {{"2026-04-25", -40.0, 2}};
+    r = read();
+    EXPECT_EQ(r.earlier_unsettled, std::vector<std::string>{"2026-04-25"});
+    EXPECT_NEAR(r.capital.capital, 500'000.0, 1e-6) << "the 40.00 stays out; Day T-1's profit is capped";
+}
+
+// The stored rows and the stored value should tell one story: the starting capital plus every
+// stored daily_pnl before Day T-1 is the stored value of the row before Day T-1. When they part by
+// more than a cent (a spliced or missing row in the history) the read says so, for a WARN line
+// beside SIZING_CAPITAL; the capital is still the rows'.
+TEST_F(LiveHalfCompounding, AHistoryThatDoesNotSumToTheStoredValueIsNamed) {
+    db_->history = {{"2026-04-22", 4'000.0, 2}, {"2026-04-23", -1'500.0, 2}, {"2026-04-24", -3'200.0, 2}};
+    db_->previous_value = 500'000.0 + 4'000.0 - 1'500.0 - 3'200.0;  // the rows' own sum
+    auto r = read();
+    ASSERT_EQ(r.outcome, LiveSizingOutcome::kSized) << outcome_of(r);
+    EXPECT_TRUE(r.history_compared);
+    EXPECT_NEAR(r.history_gap, 0.0, 1e-9);
+    EXPECT_FALSE(sizing_history_mismatch(r));
+    const double capital = r.capital.capital;
+
+    db_->previous_value = 500'000.0 + 4'000.0 - 1'500.0 - 3'200.0 - 244.76;  // the value carries less
+    r = read();
+    EXPECT_NEAR(r.history_gap, 244.76, 1e-6);
+    EXPECT_TRUE(sizing_history_mismatch(r));
+    EXPECT_DOUBLE_EQ(r.capital.capital, capital) << "the capital is built from the rows either way";
+    const std::string line = sizing_capital_history_log_line("2026-04-28", r);
+    EXPECT_EQ(line.rfind("SIZING_CAPITAL_HISTORY date=2026-04-28 gap=244.760000 day_before=", 0), 0u) << line;
+
+    db_->previous_value = 500'000.0 + 4'000.0 - 1'500.0 - 3'200.0 + 0.005;  // inside a cent
+    EXPECT_FALSE(sizing_history_mismatch(read()));
+    // no Day T-1 row: the row before the run date is not the row before Day T-1, nothing is compared
+    db_->t1 = SizingReadDatabase::T1::kNoRow;
+    EXPECT_FALSE(read().history_compared);
+}
+
+// The capital does not step when a no-bar day leaves the loaded window: the same stored history
+// read with a long calendar (the Saturday inside it) and a short one (the Saturday before its
+// first bar) gives one capital.
+TEST_F(LiveHalfCompounding, TheCapitalDoesNotStepWhenANoBarDayLeavesTheLoadedWindow) {
+    // 2024-06-01 and 2026-01-17 are Saturdays on which the book held positions and paid costs.
+    db_->history = {{"2024-06-01", -75.0, 3}, {"2026-01-17", -25.0, 2}, {"2026-04-24", -3'200.0, 2}};
+    const auto weekdays_from = [](int days_back) {
+        LiveSizingCalendar c;
+        const std::time_t t1 = 1777248000;  // 2026-04-27 00:00 UTC, Day T-1
+        for (int back = days_back; back >= 0; --back) {
+            const std::time_t day = t1 - static_cast<std::time_t>(back) * 86400;
+            std::tm tm{};
+            gmtime_r(&day, &tm);
+            if (tm.tm_wday == 0 || tm.tm_wday == 6) continue;
+            char buf[16];
+            std::strftime(buf, sizeof(buf), "%Y-%m-%d", &tm);
+            c.bar_dates.insert(buf);
+        }
+        c.first_bar_date = *c.bar_dates.begin();
+        return c;
+    };
+    calendar_ = weekdays_from(730);
+    ASSERT_LT(calendar_.first_bar_date, std::string("2024-06-01"));
+    const auto wide = read();
+    calendar_ = weekdays_from(100);
+    ASSERT_GT(calendar_.first_bar_date, std::string("2024-06-01"));
+    ASSERT_GT(calendar_.first_bar_date, std::string("2026-01-17"));
+    const auto narrow = read();
+    ASSERT_EQ(wide.outcome, LiveSizingOutcome::kSized) << outcome_of(wide);
+    ASSERT_EQ(narrow.outcome, LiveSizingOutcome::kSized) << outcome_of(narrow);
+    EXPECT_TRUE(wide.earlier_unsettled.empty());
+    EXPECT_TRUE(narrow.earlier_unsettled.empty());
+    EXPECT_NEAR(wide.capital.capital, 500'000.0 - 75.0 - 25.0 - 3'200.0 + t1_net_, 1e-6);
+    EXPECT_DOUBLE_EQ(wide.capital.capital, narrow.capital.capital);
+    EXPECT_DOUBLE_EQ(wide.capital.account, narrow.capital.account);
+    EXPECT_EQ(wide.settled_rows, narrow.settled_rows);
+}
+
+// The three failure paths of Day T-1 still keep the last settled capital for their one run, and
+// that capital now holds an earlier no-bar day's costs: only Day T-1 itself is withheld.
+TEST_F(LiveHalfCompounding, TheFailurePathsWithholdOnlyDayT1) {
+    // 2026-04-18 is a Saturday: held, 40.00 of costs, no bar; the week after it printed.
+    const std::vector<std::tuple<std::string, double, int>> history = {
+        {"2026-04-17", 4'000.0, 2}, {"2026-04-18", -40.0, 2}, {"2026-04-24", -3'200.0, 2}};
+    const double last_settled = 500'000.0 - 40.0 - 3'200.0;
+    const auto base_calendar = calendar_;
+    for (const std::string path : {"no T-1 closes", "no T-2 closes", "no Day T-1 row"}) {
+        db_->history = history;
+        db_->t1 = SizingReadDatabase::T1::kRow;
+        calendar_ = base_calendar;
+        if (path == "no T-1 closes") {
+            calendar_.no_t1_closes = true;
+        } else if (path == "no T-2 closes") {
+            calendar_.no_t2_closes = true;
+        } else {
+            db_->t1 = SizingReadDatabase::T1::kNoRow;
+        }
+        const auto r = read();
+        ASSERT_EQ(r.outcome, LiveSizingOutcome::kSized) << path << ": " << outcome_of(r);
+        EXPECT_TRUE(r.t1_unsettled) << path;
+        EXPECT_EQ(r.t1_unsettled_reason, path);
+        EXPECT_TRUE(r.earlier_unsettled.empty()) << path;
+        EXPECT_NEAR(r.capital.capital, last_settled, 1e-6) << path;
+        EXPECT_EQ(r.settled_through, "2026-04-24") << path;
+        EXPECT_EQ(r.settled_rows, 3) << path;
+    }
+}
+
+// A history that cannot be read is an equity read that failed: the book is held, never sized on a
+// capital built from part of the history.
+TEST_F(LiveHalfCompounding, AFailedHistoryReadHoldsTheBook) {
+    db_->history_error = true;
+    const auto r = read();
+    ASSERT_EQ(r.outcome, LiveSizingOutcome::kHoldBook) << outcome_of(r);
+    EXPECT_NE(r.failure.find("the stored P&L history before Day T-1 could not be read"),
+              std::string::npos)
+        << r.failure;
+}

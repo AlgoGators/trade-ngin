@@ -189,7 +189,8 @@ inline DeliveredCut measure_delivered_cut(const std::map<std::string, double>* l
 ///   unpriced     DeliveredCut::unpriced.
 /// A non-empty `date` appends " date=<date>" (the backtest's form).
 inline std::string format_risk_delivered(const RiskScaleSummary& s, const DeliveredCut& d,
-                                         const std::string& date = std::string()) {
+                                         const std::string& date = std::string(),
+                                         const std::string& denominator = "lap1_gross") {
     auto num = [](double v) {
         char buf[64];
         std::snprintf(buf, sizeof(buf), "%.17g", v);
@@ -199,7 +200,7 @@ inline std::string format_risk_delivered(const RiskScaleSummary& s, const Delive
     std::string line = "RISK_DELIVERED requested=" + num(s.applied_cumulative) +
                        " delivered=" + (ratio ? num(d.final_gross / d.lap1_gross) : "na") +
                        " final_gross=" + (d.has_final ? num(d.final_gross) : "na") +
-                       " lap1_gross=" + (d.has_lap1 ? num(d.lap1_gross) : "na") +
+                       " " + denominator + "=" + (d.has_lap1 ? num(d.lap1_gross) : "na") +
                        " unpriced=" + std::to_string(d.unpriced);
     if (!date.empty()) line += " date=" + date;
     return line;

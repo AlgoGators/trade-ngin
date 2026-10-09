@@ -45,8 +45,6 @@
 #define private public
 #include "trade_ngin/portfolio/portfolio_manager.hpp"
 #include "trade_ngin/strategy/trend_following.hpp"
-#include "trade_ngin/strategy/trend_following_fast.hpp"
-#include "trade_ngin/strategy/trend_following_slow.hpp"
 #undef private
 
 #include "trade_ngin/core/logger.hpp"
@@ -175,18 +173,22 @@ private:
     size_t calls_{0};
 };
 
-// A trend sleeve (TrendFollowingStrategy, or its FAST / SLOW twin) that holds a fixed book and a
-// hand-set price history per symbol: on_data only counts the call, so the history is exactly what
-// the test sets. The strategy's own warm-up test (on_data: fewer prices than the longest EMA
-// window means no forecast and no target of its own) reads that history. T-OPT E-7.
-template <class Trend, class TrendConfig>
-class ParticipantsWarmupStrategy : public Trend {
+// A sleeve with a trend sleeve's warm-up rule (it signals a symbol once its own history holds as
+// many prices as the longest EMA window of the TREND or the FAST configuration) that holds a fixed
+// book and a hand-set price count per symbol: on_data only counts the call. T-OPT E-7.
+// It is NOT a TrendFollowingStrategy: a book that holds one and names no overlay sleeve is refused
+// (PortfolioManager::process_market_data), and these cases are the generic step's participant
+// rule, which reads a sleeve through is_signalling() alone.
+template <class TrendConfig>
+class ParticipantsWarmupStrategy : public BaseStrategy {
 public:
     ParticipantsWarmupStrategy(std::string id, StrategyConfig config,
                                std::shared_ptr<DatabaseInterface> db, Book book)
-        : Trend(std::move(id), std::move(config), TrendConfig{},
-                std::static_pointer_cast<trade_ngin::PostgresDatabase>(db), nullptr),
-          book_(std::move(book)) {}
+        : BaseStrategy(std::move(id), std::move(config),
+                       std::static_pointer_cast<trade_ngin::PostgresDatabase>(db)),
+          book_(std::move(book)) {
+        metadata_.name = "Covariance Participants Warm-up Strategy";
+    }
     Result<void> on_data(const std::vector<Bar>& data) override {
         (void)data;
         ++calls_;
@@ -195,25 +197,33 @@ public:
     std::unordered_map<std::string, Position> get_target_positions() const override {
         return calls_ == 0 ? Book{} : book_;
     }
-    // `prices` closes of 100.0 in the sleeve's own history of `symbol`.
-    void set_prices(const std::string& symbol, size_t prices) {
-        this->instrument_data_[symbol].price_history.assign(prices, 100.0);
-    }
-    // The longest EMA window: the prices on_data waits for before it signals.
+    // `prices` closes in the sleeve's own history of `symbol`.
+    void set_prices(const std::string& symbol, size_t prices) { prices_[symbol] = prices; }
+    // The longest EMA window: the prices a trend sleeve waits for before it signals.
     size_t warmup_prices() const {
         int max_window = 0;
-        for (const auto& w : this->trend_config_.ema_windows) max_window = std::max(max_window, w.second);
+        for (const auto& w : trend_config_.ema_windows) max_window = std::max(max_window, w.second);
         return static_cast<size_t>(max_window);
+    }
+    // TrendFollowingStrategy::is_signalling's rule on the hand-set count.
+    bool is_signalling(const std::string& symbol) const override {
+        const auto it = prices_.find(symbol);
+        return it != prices_.end() && !(it->second < warmup_prices());
     }
 
 private:
     Book book_;
     size_t calls_{0};
+    TrendConfig trend_config_{};
+    std::unordered_map<std::string, size_t> prices_;
 };
 
-using TrendWarmup = ParticipantsWarmupStrategy<TrendFollowingStrategy, TrendFollowingConfig>;
-using FastWarmup = ParticipantsWarmupStrategy<TrendFollowingFastStrategy, TrendFollowingFastConfig>;
-using SlowWarmup = ParticipantsWarmupStrategy<TrendFollowingSlowStrategy, TrendFollowingSlowConfig>;
+using TrendWarmup = ParticipantsWarmupStrategy<TrendFollowingConfig>;
+// The FAST sleeve's configuration: fast_trend_following_config().
+struct FastTrendConfig : TrendFollowingConfig {
+    FastTrendConfig() : TrendFollowingConfig(fast_trend_following_config()) {}
+};
+using FastWarmup = ParticipantsWarmupStrategy<FastTrendConfig>;
 
 PortfolioConfig participants_config(bool optimization = true, bool carver = false) {
     PortfolioConfig pc{1'000'000.0, 1.0, 0.0, optimization};
@@ -318,11 +328,11 @@ protected:
         return *pms_.back();
     }
 
-    // One sleeve spec for run_sleeves: a trend strategy of type S (TrendWarmup, FastWarmup or
-    // SlowWarmup) at `allocation`, and each symbol's price count in ITS OWN history (a symbol not
+    // One sleeve spec for run_sleeves: a trend strategy of type S (TrendWarmup or
+    // FastWarmup) at `allocation`, and each symbol's price count in ITS OWN history (a symbol not
     // listed gets the sleeve's full warm-up). The book is every fed symbol at its Feed quantity.
     struct Sleeve {
-        std::string kind;  // "trend", "fast" or "slow"
+        std::string kind;  // "trend" or "fast"
         double allocation{1.0};
         std::map<std::string, long> prices_vs_warmup;  // symbol -> offset from the warm-up count
     };
@@ -362,10 +372,6 @@ protected:
             };
             if (sl.kind == "fast") {
                 auto t = std::make_shared<FastWarmup>(id, sc, mock_db_, book);
-                fill(t);
-                s = t;
-            } else if (sl.kind == "slow") {
-                auto t = std::make_shared<SlowWarmup>(id, sc, mock_db_, book);
                 fill(t);
                 s = t;
             } else {
@@ -669,17 +675,6 @@ TEST_F(CovarianceParticipants, ANewSymbolTheFastSleeveDoesNotSignalIsLeftOut) {
     const auto fresh = last_n(w, 30);
     auto& pm = run_sleeves({{"AAA", w, 1.0}, {"BBB", w, 1.0}, {"NEW", fresh, 0.0}},
                            {{"fast", 1.0, {{"NEW", -1}}}}, participants_config());
-    ASSERT_TRUE(pm.covariance_cache_valid_);
-    EXPECT_EQ(pm.cached_symbols_, (std::vector<std::string>{"AAA", "BBB"}));
-}
-
-// The SLOW twin, the same.
-//   parent: NEW is in the matrix.
-TEST_F(CovarianceParticipants, ANewSymbolTheSlowSleeveDoesNotSignalIsLeftOut) {
-    const auto w = weekdays(60);
-    const auto fresh = last_n(w, 30);
-    auto& pm = run_sleeves({{"AAA", w, 1.0}, {"BBB", w, 1.0}, {"NEW", fresh, 0.0}},
-                           {{"slow", 1.0, {{"NEW", -1}}}}, participants_config());
     ASSERT_TRUE(pm.covariance_cache_valid_);
     EXPECT_EQ(pm.cached_symbols_, (std::vector<std::string>{"AAA", "BBB"}));
 }

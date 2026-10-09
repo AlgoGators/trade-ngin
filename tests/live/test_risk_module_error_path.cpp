@@ -140,9 +140,6 @@ public:
     void on_applied(const RiskApplied& applied, const RiskContext& ctx) override {
         inner_.on_applied(applied, ctx);
     }
-    Result<RiskDecision> finalize(const Book& book, const RiskContext& ctx) override {
-        return inner_.finalize(book, ctx);
-    }
 
 private:
     CarverRiskModule inner_;

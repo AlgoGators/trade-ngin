@@ -253,8 +253,22 @@ Result<void> PostgresDatabase::store_backtest_summary(
 
 Result<void> PostgresDatabase::store_backtest_equity_curve_batch(
     const std::string& run_id, const std::vector<std::pair<Timestamp, double>>& equity_points,
-    const std::string& portfolio_id, const std::string& table_name) {
+    const std::string& portfolio_id, const std::string& table_name,
+    const std::vector<std::string>& risk_detail) {
     std::lock_guard<std::mutex> lock(mutex_);
+
+    // risk_detail (migration 020) carries one entry per point (a futures book) or none at all (the
+    // equity book). Any other length would write the curve without the column and lose the day
+    // records without a word: refused.
+    if (!risk_detail.empty() && risk_detail.size() != equity_points.size()) {
+        return make_error<void>(ErrorCode::INVALID_ARGUMENT,
+                                "store_backtest_equity_curve_batch: " +
+                                    std::to_string(risk_detail.size()) +
+                                    " risk_detail entries for " +
+                                    std::to_string(equity_points.size()) +
+                                    " equity points; one per point or none",
+                                "PostgresDatabase");
+    }
 
     // Validate connection
     auto validation = validate_connection();
@@ -277,16 +291,25 @@ Result<void> PostgresDatabase::store_backtest_equity_curve_batch(
 
         std::string actual_portfolio_id = portfolio_id.empty() ? "BASE_PORTFOLIO" : portfolio_id;
 
-        // Build batch INSERT query
-        std::string query =
-            "INSERT INTO " + table_name + " (run_id, portfolio_id, timestamp, equity) VALUES ";
+        // Build batch INSERT query. risk_detail is named only when the caller carries one entry
+        // per point; an empty entry is a NULL cell. A caller that passes none (the equity book)
+        // writes the statement it always wrote.
+        const bool with_detail = !risk_detail.empty();
+        std::string query = "INSERT INTO " + table_name +
+                            (with_detail ? " (run_id, portfolio_id, timestamp, equity, risk_detail) VALUES "
+                                         : " (run_id, portfolio_id, timestamp, equity) VALUES ");
 
         for (size_t i = 0; i < equity_points.size(); ++i) {
             if (i > 0)
                 query += ", ";
             query += "(" + txn.quote(run_id) + ", " + txn.quote(actual_portfolio_id) + ", '" +
                      format_timestamp(equity_points[i].first) + "', " +
-                     std::to_string(equity_points[i].second) + ")";
+                     std::to_string(equity_points[i].second);
+            if (with_detail) {
+                query += risk_detail[i].empty() ? std::string(", NULL")
+                                                : ", " + txn.quote(risk_detail[i]) + "::jsonb";
+            }
+            query += ")";
         }
 
         txn.exec(query);
@@ -801,7 +824,8 @@ Result<void> PostgresDatabase::store_live_results_complete(
     const std::string& strategy_id, const Timestamp& date,
     const std::unordered_map<std::string, double>& metrics,
     const std::unordered_map<std::string, int>& int_metrics, const nlohmann::json& config,
-    const std::string& portfolio_id, const std::string& table_name) {
+    const std::string& portfolio_id, const std::string& table_name,
+    const nlohmann::json& risk_detail) {
     std::lock_guard<std::mutex> lock(mutex_);
 
     // Column names are concatenated into the statement (Postgres cannot bind
@@ -864,6 +888,13 @@ Result<void> PostgresDatabase::store_live_results_complete(
         if (!config.is_null()) {
             columns += ", config";
             values += ", " + txn.quote(config.dump());
+        }
+
+        // risk_detail (migration 020): named only on a row that carries one (a futures row of
+        // a sized rebalance); every other row leaves the cell NULL and its statement unchanged.
+        if (!risk_detail.is_null()) {
+            columns += ", risk_detail";
+            values += ", " + txn.quote(risk_detail.dump()) + "::jsonb";
         }
 
         std::string query =

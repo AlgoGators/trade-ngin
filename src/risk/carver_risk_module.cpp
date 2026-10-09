@@ -263,14 +263,13 @@ RiskDecision CarverRiskModule::to_decision(const RiskResult& r, const std::strin
 
 Result<RiskDecision> CarverRiskModule::evaluate(
     const std::unordered_map<std::string, Position>& book, const RiskContext& ctx) {
-    (void)ctx;
     auto result = rm_.process_positions(book, market_data_, {});
     if (result.is_error()) {
         return make_error<RiskDecision>(result.error()->code(), result.error()->what(),
                                         "RiskManager");
     }
 
-    const auto& risk_result = result.value();
+    RiskResult risk_result = result.value();
     // What the gate actually read: the window AFTER F5's filter, with the unfiltered span
     // recoverable as window_dates. `dates` is the number of dates create_market_data saw.
     INFO("T4_RISK_WINDOW dates=" +
@@ -383,58 +382,6 @@ void CarverRiskModule::on_applied(const RiskApplied& applied, const RiskContext&
         // sleeve's share. Zero laps on every shipped book (no sleeve module is assigned).
         if (applied.partial) level_partial_ = true;
     }
-}
-
-Result<RiskDecision> CarverRiskModule::finalize(
-    const std::unordered_map<std::string, Position>& book, const RiskContext& ctx) {
-    RiskDecision d;
-    d.module_id = id_;
-    // A warm-up rebalance ships nothing, so it has nothing to warn about (and on a replaying runner
-    // it is a replayed book, not the day's: T-6b-fix AUDIT section 8).
-    if (ctx.is_warmup || book.empty() || market_data_.symbol_indices.empty()) {
-        return Result<RiskDecision>(std::move(d));
-    }
-    // The trading day: the context's as_of (the backtest passes it), else the newest bar of this
-    // rebalance (the live runners' dated day), else one key for the run.
-    std::optional<Timestamp> when = ctx.as_of;
-    if (!when && ctx.bars != nullptr) {
-        for (const auto& bar : *ctx.bars) {
-            if (!when || bar.timestamp > *when) when = bar.timestamp;
-        }
-    }
-    std::string day = "run";
-    if (when) {
-        const std::time_t tt = std::chrono::system_clock::to_time_t(*when);
-        std::tm tm{};
-        gmtime_r(&tt, &tm);
-        char buf[16];
-        std::strftime(buf, sizeof(buf), "%Y-%m-%d", &tm);
-        day = buf;
-    }
-    if (day == leverage_warned_day_) {
-        return Result<RiskDecision>(std::move(d));
-    }
-    const RiskManager::LeverageReading r = rm_.leverage_of(book, market_data_);
-    if (!(r.multiplier < 1.0 - 1e-9) || !(r.multiplier > 0.0)) {
-        return Result<RiskDecision>(std::move(d));
-    }
-    leverage_warned_day_ = day;
-    double gross_contracts = 0.0;
-    for (const auto& [symbol, pos] : book) gross_contracts += std::abs(static_cast<double>(pos.quantity));
-    const double ratio = 1.0 / r.multiplier;
-    d.action = RiskAction::WARN;
-    d.reason = "RISK_LEVERAGE_ROUNDED day=" + day + " lap=" + std::to_string(ctx.lap) +
-               " the final book of this rebalance, after whole-contract rounding (the book the "
-               "runner stores), is over its leverage limit by about " +
-               std::to_string(gross_contracts * (ratio - 1.0)) + " contracts (" +
-               std::to_string(ratio) + "x the limit on a " +
-               std::to_string(static_cast<long>(std::llround(gross_contracts))) +
-               "-contract book; gross " + std::to_string(r.gross_leverage) + ", net " +
-               std::to_string(r.net_leverage) + ", capital " +
-               std::to_string(static_cast<double>(rm_.get_config().capital)) +
-               "). The limit is enforced to within whole-contract rounding (config_template risk "
-               "rationale); logged at most once per trading day, never on a warm-up rebalance.";
-    return Result<RiskDecision>(std::move(d));
 }
 
 Result<void> CarverRiskModule::set_capital(Decimal capital) {

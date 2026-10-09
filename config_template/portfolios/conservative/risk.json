@@ -1,20 +1,22 @@
 {
   "_description": "Risk configuration for CONSERVATIVE_PORTFOLIO",
-  "_leverage_policy": "The net-leverage limit is enforced to within whole-contract rounding, not exactly (HD 2026-09-20). Measured on the futures backtest 2024-05-03..2026-05-03 with the ARM 1 risk loop: worst excess 1.61 contracts (9.5 %) on a 17-contract book, 40 of 55 over-limit days within one contract (excess = gross contracts x (1/leverage_mult - 1) at the gate's last reading; a proxy, since contracts differ in notional). Hard constraints in the optimiser's integer search were measured and not taken (more churn than today); they are re-measured after the cost penalty is fed. A trading day whose final rounded book is over the limit logs one RISK_LEVERAGE_ROUNDED WARN with the day and the excess in contracts (never on a warm-up rebalance; T-7b-2 C9w).",
   "schema": 2,
   "modules": [
     {
       "id": "carver",
       "type": "carver",
-      "var_limit": 0.25,
-      "jump_risk_limit": 0.05,
-      "max_correlation": 0.85,
-      "max_gross_leverage": 4.0,
-      "max_net_leverage": 2.0,
+      "max_gross_leverage": 8.0,
+      "max_net_leverage": 6.0,
       "confidence_level": 0.99,
       "lookback_period": 252,
       "lookback_unit": "dates",
       "min_gate_dates": 21,
+      "R_max": 2.25,
+      "R_jump_max": 4.5,
+      "R_shock_max": 4.0,
+      "per_name_cap": 2,
+      "trim_max": 5,
+      "_overlay_limits_note": "the overlay reads the book in capital terms (weights on the sizing capital): R_max, R_jump_max and R_shock_max are ratios to the first sleeve's risk target tau; max_gross_leverage and max_net_leverage are the gross and net leverage limits; per_name_cap is the cap on one symbol's weight; trim_max is the most contracts the trim removes in a day. All required on a futures book; var_limit, jump_risk_limit and max_correlation are retired here and in risk_reporting, and max_leverage at the top level, and each is refused",
       "missing_symbol_policy": "ignore",
       "_missing_symbol_policy_reason": "Schema-1 behaviour, migrated literally: risk_manager.cpp:55-58 gates the book on the subset of its symbols present in the window (T-4 §10). Changing it is its own measured commit."
     }
@@ -22,15 +24,11 @@
   "risk_reporting": {
     "type": "carver",
     "window": "all_bars",
-    "var_limit": 0.25,
-    "jump_risk_limit": 0.05,
-    "max_correlation": 0.85,
-    "max_gross_leverage": 4.0,
-    "max_net_leverage": 2.0,
+    "max_gross_leverage": 8.0,
+    "max_net_leverage": 6.0,
     "confidence_level": 0.99,
     "lookback_period": 252,
     "_note": "RA-01: the live runners' snapshot RiskManager reads this block through AppConfig::risk_config; on day one it mirrors the gate (HD Q5)."
   },
-  "max_drawdown": 0.3,
-  "max_leverage": 2.0
+  "max_drawdown": 0.3
 }

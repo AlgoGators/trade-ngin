@@ -174,9 +174,11 @@ set(TRADE_NGIN_SOURCES
     src/risk/risk_manager.cpp
     src/risk/risk_module.cpp
     src/risk/carver_risk_module.cpp
+    src/risk/overlay.cpp
     src/risk/basic_risk_modules.cpp
     src/risk/risk_module_config.cpp
     src/optimization/dynamic_optimizer.cpp
+    src/optimization/one_pass.cpp
     src/execution/execution_engine.cpp
     src/portfolio/portfolio_manager.cpp
     src/backtest/transaction_cost_analysis.cpp
@@ -185,7 +187,6 @@ set(TRADE_NGIN_SOURCES
     src/backtest/backtest_metrics_calculator.cpp
     src/backtest/backtest_execution_manager.cpp
     src/backtest/backtest_data_loader.cpp
-    src/backtest/backtest_portfolio_constraints.cpp
     src/backtest/backtest_coordinator.cpp
     src/backtest/backtest_csv_exporter.cpp
     src/backtest/slippage_model.cpp
@@ -197,8 +198,7 @@ set(TRADE_NGIN_SOURCES
     src/transaction_cost/netting.cpp
     src/strategy/base_strategy.cpp
     src/strategy/trend_following.cpp
-    src/strategy/trend_following_slow.cpp
-    src/strategy/trend_following_fast.cpp
+    src/strategy/trend_estimator.cpp
     src/strategy/mean_reversion.cpp
     src/strategy/regime_detector.cpp
     src/storage/results_manager_base.cpp

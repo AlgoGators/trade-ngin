@@ -213,41 +213,19 @@ protected:
 }  // namespace
 
 // -----------------------------------------------------------------------------------------------
-// F4: the entry is the cost of one contract over that contract's notional
+// The generic optimiser step's cost vector reads no trend sleeve
 // -----------------------------------------------------------------------------------------------
 
-TEST_F(OptimizerCostVector, AnEntryIsTheCostOfOneContractOverItsNotional) {
-    const auto costs = pm_->calculate_trading_costs({kMes, kZf}, kCapital);
-    ASSERT_EQ(costs.size(), 2u);
-
-    const double mes_cost = cost_per_contract(kMes, kMesPrice);
-    const double zf_cost = cost_per_contract(kZf, kZfPrice);
-    ASSERT_GT(mes_cost, 0.0);
-    ASSERT_GT(zf_cost, 0.0);
-
-    // MES: $mes_cost / $36,262.50; ZF: $zf_cost / $107,850. The parent's entries were
-    // $mes_cost / $500,000 and $zf_cost / $500,000.
-    EXPECT_DOUBLE_EQ(costs[0], mes_cost / (kMesSize * kMesPrice));
-    EXPECT_DOUBLE_EQ(costs[1], zf_cost / (kZfSize * kZfPrice));
-    EXPECT_NE(costs[0], mes_cost / kCapital) << "the parent's unit: cost / capital";
-}
-
-TEST_F(OptimizerCostVector, OneContractsPenaltyIsItsDollarCostAsAFractionOfCapital) {
-    // The optimizer charges |dw| x costs[i]; one contract is dw = weights_per_contract[i], the
-    // notional over capital that optimize_positions uses. So one contract's penalty (before the
-    // scalar) must be its own dollar cost as a fraction of capital, whatever its notional.
-    const auto costs = pm_->calculate_trading_costs({kMes, kZf}, kCapital);
-    ASSERT_EQ(costs.size(), 2u);
-    const double mes_wpc = kMesSize * kMesPrice / kCapital;
-    const double zf_wpc = kZfSize * kZfPrice / kCapital;
-    EXPECT_NEAR(mes_wpc * costs[0], cost_per_contract(kMes, kMesPrice) / kCapital, 1e-15);
-    EXPECT_NEAR(zf_wpc * costs[1], cost_per_contract(kZf, kZfPrice) / kCapital, 1e-15);
-}
-
-TEST_F(OptimizerCostVector, ASymbolTheSleeveDoesNotHoldIsPricedAtZero) {
-    const auto costs = pm_->calculate_trading_costs({"NOT_HELD.v.0"}, kCapital);
-    ASSERT_EQ(costs.size(), 1u);
-    EXPECT_EQ(costs[0], 0.0);
+// F4's unit (the cost of one contract over its notional) lived in the branch of
+// calculate_trading_costs that read a trend sleeve's contract size and price. A book with a trend
+// sleeve names an overlay sleeve and is rebalanced by the one pass, which prices each contract
+// through the cost model itself (test_one_pass_book.cpp), so no book reached that branch and it is
+// gone: the generic step's vector is zero for every symbol, the trend sleeve's own included.
+TEST_F(OptimizerCostVector, TheGenericStepsVectorReadsNoTrendSleeve) {
+    ASSERT_GT(cost_per_contract(kMes, kMesPrice), 0.0) << "the cost model itself prices MES";
+    const auto costs = pm_->calculate_trading_costs({kMes, kZf, "NOT_HELD.v.0"}, kCapital);
+    ASSERT_EQ(costs.size(), 3u);
+    EXPECT_EQ(costs, (std::vector<double>{0.0, 0.0, 0.0}));
 }
 
 // -----------------------------------------------------------------------------------------------
@@ -280,14 +258,13 @@ TEST_F(OptimizerCostVector, TheK2FeedPricesThePortfolioManagersCostModelOffTheFe
     EXPECT_DOUBLE_EQ(tcm.get_adv(kMes), 12'000.0) << "the fill day's own volume";
     EXPECT_DOUBLE_EQ(tcm.get_volatility_multiplier(kMes), vm) << "the last 20 returns";
 
-    // The cost vector entry is now priced off the fed state (at the sleeve's latest close).
-    trend_->instrument_data_[kMes].price_history.push_back(t1_close);
+    // The manager's cost of one contract is now priced off the fed state: what the one pass reads
+    // for its cost vector and prices its fills with.
     const double fed_cost =
         tcm.calculate_costs(kMes, 1.0, t1_close, 12'000.0, vm).total_transaction_costs;
     EXPECT_DOUBLE_EQ(cost_per_contract(kMes, t1_close), fed_cost);
-    const auto costs = pm_->calculate_trading_costs({kMes}, kCapital);
-    ASSERT_EQ(costs.size(), 1u);
-    EXPECT_DOUBLE_EQ(costs[0], fed_cost / (kMesSize * t1_close));
+    EXPECT_TRUE(tcm.has_volume_history(kMes));
+    EXPECT_FALSE(tcm.has_volume_history(kZf)) << "ZF was never fed";
     EXPECT_GT(fed_cost, tcm.calculate_costs(kMes, 1.0, t1_close, 100000.0, 1.0).total_transaction_costs)
         << "a thin session costs more than the 100,000-lot fallback";
 }
@@ -317,12 +294,13 @@ TEST(OptimizerCostPenaltyScalarConfig, AnIntegerScalarIsUnchangedAndTheDefaultIs
     EXPECT_DOUBLE_EQ(c.cost_penalty_scalar, 0.0);
 }
 
-TEST(OptimizerCostPenaltyScalarConfig, TheTrackedTemplateCarriesFifty) {
+// LOOP_SPEC sections 5.2 and 12 (D38): the search's cost multiplier is 100.
+TEST(OptimizerCostPenaltyScalarConfig, TheTrackedTemplateCarriesOneHundred) {
     const std::string src = read_source("config_template/defaults.json");
     if (src.empty()) GTEST_SKIP() << "config_template/defaults.json not found";
     const auto j = nlohmann::json::parse(src);
     ASSERT_TRUE(j.contains("optimization"));
-    EXPECT_DOUBLE_EQ(j.at("optimization").at("cost_penalty_scalar").get<double>(), 50.0);
+    EXPECT_DOUBLE_EQ(j.at("optimization").at("cost_penalty_scalar").get<double>(), 100.0);
 }
 
 // -----------------------------------------------------------------------------------------------

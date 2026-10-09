@@ -365,8 +365,12 @@ TEST(NoSilentDefaults, TheSettlementSizingAndHoldInputsAreRequired) {
     EXPECT_TRUE((kSizes<bool, double, double, Books, Closes, Closes, PointValue, Symbols>));
 
     EXPECT_FALSE((kReadsSizing<LiveDataLoader&, DatabaseInterface&, const std::string&, const std::string&, Names,
-                               const Timestamp&, double, Closes, Closes, PointValue>))
+                               const Timestamp&, double, Closes, Closes, PointValue, const LiveSizingCalendar&>))
         << "read_live_sizing_equity compiles without the zero-settlement set";
+    EXPECT_FALSE((kReadsSizing<LiveDataLoader&, DatabaseInterface&, const std::string&, const std::string&, Names,
+                               const Timestamp&, double, Closes, Closes, PointValue, Symbols>))
+        << "read_live_sizing_equity compiles without the bar calendar its settled test reads";
     EXPECT_TRUE((kReadsSizing<LiveDataLoader&, DatabaseInterface&, const std::string&, const std::string&, Names,
-                              const Timestamp&, double, Closes, Closes, PointValue, Symbols>));
+                              const Timestamp&, double, Closes, Closes, PointValue, Symbols,
+                              const LiveSizingCalendar&>));
 }

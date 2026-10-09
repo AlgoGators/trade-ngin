@@ -226,12 +226,15 @@ auto result = cost_manager->calculate_costs("ES", 10, 5000.0);
 
 The `PortfolioManager` uses the cost manager in two places:
 
-1. **Optimization Costs** (`calculate_trading_costs`)
+1. **The one pass's cost vector** (`PortfolioManager::rebalance_one_pass`, futures books)
    ```cpp
-   // Pass costs to DynamicOptimizer
-   costs = calculate_trading_costs(symbols, capital);
-   optimizer->optimize(current_pos, target_pos, costs, ...);
+   // The cost of ONE contract of every symbol the pass weighs, at its signal close.
+   // A symbol with no usable volume in the cost model is held, never priced on a generic ADV.
+   if (cost_manager_.has_usable_volume(symbol))
+       cost = cost_manager_.calculate_costs(symbol, 1.0, close).total_transaction_costs;
    ```
+   `calculate_trading_costs`, the generic optimiser step's vector, is zero for every symbol; only a
+   book with no overlay sleeve (the equity book) reaches it.
 
 2. **Execution Recording**
    ```cpp

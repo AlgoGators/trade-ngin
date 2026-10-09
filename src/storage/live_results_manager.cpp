@@ -233,7 +233,7 @@ Result<void> LiveResultsManager::save_live_results(const Timestamp& date) {
     // Use the new database extension method - pass portfolio_id_ for proper storage
     auto result =
         db_->store_live_results_complete(strategy_id_, date, double_metrics_, int_metrics_, config_,
-                                         portfolio_id_, "trading.live_results");
+                                         portfolio_id_, "trading.live_results", risk_detail_);
     if (result.is_error()) {
         ERROR("store_live_results_complete FAILED: " + std::string(result.error()->what()));
     } else {

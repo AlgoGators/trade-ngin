@@ -6,8 +6,11 @@
 // quantity; the confirming bar ends the hold. The status is taken on the CONSUMED sequence (a
 // withheld bar never walks it) and persists across cycles that consume no bar of the symbol.
 //
-// The strategy targets n contracts of XX on its n-th call, so every cycle that is not held fills
-// exactly one contract and a held cycle fills none.
+// The book is rebalanced by the one pass (LOOP_SPEC sections 4 to 6), which carries the hold: the
+// coordinator leaves a pending symbol out of the session set and the pass fixes its row. The sleeve
+// targets 3n contracts of XX on its n-th call (a contract of XX is a tenth of the book, so every
+// step is beyond the no-trade buffer): every cycle that is not held fills, and a held cycle fills
+// none.
 
 #include <gtest/gtest.h>
 #include "../risk/risk_module_test_helpers.hpp"
@@ -20,6 +23,7 @@
 
 #include "../core/test_base.hpp"
 #include "../data/test_db_utils.hpp"
+#include "../portfolio/one_pass_test_fixture.hpp"
 #include "trade_ngin/core/logger.hpp"
 #include "trade_ngin/strategy/base_strategy.hpp"
 
@@ -50,38 +54,27 @@ Bar bar(const std::string& symbol, int d, double close, const std::string& id, b
     return b;
 }
 
-class StepStrategy : public BaseStrategy {
+class StepStrategy : public OverlayStubStrategy {
 public:
     StepStrategy(std::string id, StrategyConfig config, std::shared_ptr<DatabaseInterface> db)
-        : BaseStrategy(std::move(id), std::move(config),
-                       std::static_pointer_cast<trade_ngin::PostgresDatabase>(db)) {
+        : OverlayStubStrategy(std::move(id), std::move(config), std::move(db)) {
         metadata_.name = "Step Strategy";
     }
     Result<void> on_data(const std::vector<Bar>& data) override {
-        (void)data;
         ++calls_;
+        Row& row = rows["XX"];
+        row.multiplier = 1000.0;
+        row.optimal = 3.0 * static_cast<double>(calls_);
+        row.forecast = 10.0;
+        for (const auto& b : data) {
+            if (b.symbol == "XX") row.close = static_cast<double>(b.close);
+        }
         return Result<void>();
-    }
-    std::unordered_map<std::string, Position> get_target_positions() const override {
-        Position p;
-        p.symbol = "XX";
-        p.quantity = Decimal(static_cast<double>(calls_));
-        p.average_price = Decimal(100.0);
-        p.last_update = wday(0);
-        return {{"XX", p}};
     }
 
 private:
     size_t calls_{0};
 };
-
-PortfolioConfig plain_config() {
-    PortfolioConfig c{1'000'000.0, 1.0, 0.0, false};
-    c.opt_config.capital = 1'000'000.0;
-    c.risk_config.capital = 1'000'000.0;
-    c.risk_modules = {test_none_module()};
-    return c;
-}
 
 }  // namespace
 
@@ -103,7 +96,9 @@ protected:
         ASSERT_TRUE(coord_->initialize().is_ok());
         coord_->reset_portfolio_state();
         coord_->session_hold_enabled_ = true;
-        pm_ = std::make_shared<PortfolioManager>(plain_config(), "PM_HOLD_" + std::to_string(++n));
+        pm_ = std::make_shared<PortfolioManager>(one_pass_config("HOLD_S", 1'000'000.0),
+                                                 "PM_HOLD_" + std::to_string(++n));
+        pm_->set_backtest_mode(true);
         StrategyConfig sc;
         sc.capital_allocation = 1'000'000.0;
         sc.max_leverage = 10.0;
@@ -112,7 +107,7 @@ protected:
         auto s = std::make_shared<StepStrategy>("HOLD_S", sc, db_);
         ASSERT_TRUE(s->initialize().is_ok());
         ASSERT_TRUE(s->start().is_ok());
-        ASSERT_TRUE(pm_->add_strategy(s, 1.0, false).is_ok());
+        ASSERT_TRUE(pm_->add_strategy(s, 1.0, true).is_ok());
     }
     void TearDown() override {
         coord_.reset();
@@ -123,9 +118,9 @@ protected:
         TestBase::TearDown();
     }
 
-    // Feeds XX's bars one group a day (day 0 first) and returns the contracts filled on each cycle
-    // after the first (cycle d's fills sit on day d's timestamp): the STRATEGY fills only (a
-    // confirmed roll's two ROLL legs are not the strategy's trading).
+    // Feeds XX's bars one group a day (day 0 first) and returns, for each cycle after the first,
+    // whether it filled (1) or was held (0) (cycle d's fills sit on day d's timestamp): the STRATEGY
+    // fills only (a confirmed roll's two ROLL legs are not the strategy's trading).
     std::vector<double> run(const std::vector<Bar>& xx) {
         std::vector<double> filled;
         for (size_t d = 0; d < xx.size(); ++d) {
@@ -142,7 +137,7 @@ protected:
                     }
                 }
             }
-            if (d > 0) filled.push_back(q);
+            if (d > 0) filled.push_back(q > 0.0 ? 1.0 : 0.0);
         }
         return filled;
     }
@@ -156,18 +151,18 @@ protected:
 };
 
 // Days 0-1 on A, day 2 the change bar onto B, day 3 confirms B. The cycle whose signal bar is day 2
-// (cycle 3) is held; every other cycle fills one contract.
+// (cycle 3) is held; every other cycle fills.
 TEST_F(BacktestChangeBarHoldTest, ThePendingChangeBarHoldsAndTheConfirmReleases) {
     const auto f = run({bar("XX", 0, 100, "A"), bar("XX", 1, 101, "A"), bar("XX", 2, 120, "B"),
                         bar("XX", 3, 121, "B"), bar("XX", 4, 122, "B")});
-    EXPECT_EQ(f, (std::vector<double>{1, 1, 0, 2})) << "cycle 3 (signal bar day 2) held; cycle 4 catches up";
+    EXPECT_EQ(f, (std::vector<double>{1, 1, 0, 1})) << "cycle 3 (signal bar day 2) held; cycle 4 trades";
 }
 
 // D2: an id-less bar right after the change bar leaves the roll pending: held on its cycle too.
 TEST_F(BacktestChangeBarHoldTest, AnIdLessBarInsideAPendingRollIsHeld) {
     const auto f = run({bar("XX", 0, 100, "A"), bar("XX", 1, 101, "A"), bar("XX", 2, 120, "B"),
                         bar("XX", 3, 121, ""), bar("XX", 4, 122, "B"), bar("XX", 5, 123, "B")});
-    EXPECT_EQ(f, (std::vector<double>{1, 1, 0, 0, 3}))
+    EXPECT_EQ(f, (std::vector<double>{1, 1, 0, 0, 1}))
         << "cycles 3 (change bar) and 4 (id-less, still pending) held; cycle 5 (confirm) trades";
 }
 

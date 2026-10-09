@@ -16,13 +16,13 @@
     "position_limit_live": 500
   },
   "optimization": {
-    "tau": 1,
-    "cost_penalty_scalar": 50,
-    "asymmetric_risk_buffer": 0.1,
+    "cost_penalty_scalar": 100,
+    "sign_close_band": 2,
+    "b_sigma_floor": 0.05,
+    "_one_pass_note": "required on a futures book: cost_penalty_scalar is the cost multiplier of the one optimisation pass, sign_close_band the forecast below which a sign close waits, b_sigma_floor the floor of the no-trade buffer as a ratio to the risk target; the retired keys tau, asymmetric_risk_buffer and buffer_size_factor are refused there",
     "max_iterations": 100,
     "convergence_threshold": 0.000001,
-    "use_buffering": true,
-    "buffer_size_factor": 0.01
+    "use_buffering": true
   },
   "backtest": {
     "lookback_years": 2,
@@ -39,8 +39,6 @@
   "strategy_defaults": {
     "fdm": [[1, 1], [2, 1.03], [3, 1.08], [4, 1.13], [5, 1.19], [6, 1.26]],
     "max_strategy_allocation": 1,
-    "min_strategy_allocation": 0.1,
-    "carver_buffer_floor": 0.5,
-    "carver_buffer_position_factor": 0.0
+    "min_strategy_allocation": 0.1
   }
 }

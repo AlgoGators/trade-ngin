@@ -79,7 +79,6 @@ TEST_F(BacktestCoordinatorTest, ComponentGettersAreNullBeforeInitialize) {
     EXPECT_EQ(coord.get_price_manager(), nullptr);
     EXPECT_EQ(coord.get_pnl_manager(), nullptr);
     EXPECT_EQ(coord.get_execution_manager(), nullptr);
-    EXPECT_EQ(coord.get_constraints_manager(), nullptr);
 }
 
 TEST_F(BacktestCoordinatorTest, InitializeWithNullDatabaseFailsWithConnectionError) {
@@ -123,19 +122,6 @@ TEST_F(BacktestCoordinatorTest, InitializeCreatesAllSubComponents) {
     EXPECT_NE(coord.get_price_manager(), nullptr);
     EXPECT_NE(coord.get_pnl_manager(), nullptr);
     EXPECT_NE(coord.get_execution_manager(), nullptr);
-    EXPECT_NE(coord.get_constraints_manager(), nullptr);
-}
-
-TEST_F(BacktestCoordinatorTest, ConstraintsRespectConfigEnableFlags) {
-    auto cfg = default_config();
-    cfg.use_optimization = true;
-    BacktestCoordinator coord(db_, registry_, cfg);
-    ASSERT_TRUE(coord.initialize().is_ok());
-    auto* cm = coord.get_constraints_manager();
-    ASSERT_NE(cm, nullptr);
-    // The optimization flag is forwarded but the optimizer dependency is still null
-    // (nothing injects it), so the enabled-check remains false.
-    EXPECT_FALSE(cm->is_optimization_enabled());
 }
 
 TEST_F(BacktestCoordinatorTest, ResetRestoresPortfolioValueToInitialCapital) {

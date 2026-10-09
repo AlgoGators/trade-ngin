@@ -25,6 +25,7 @@ private:
 
     // Configuration
     nlohmann::json config_;
+    nlohmann::json risk_detail_;  // null: the row's risk_detail cell is left NULL
 
     // Equity tracking
     double current_equity_;
@@ -62,6 +63,12 @@ public:
 
     void set_config(const nlohmann::json& config) {
         config_ = config;
+    }
+
+    /// The row's risk_detail object (migration 020; LOOP_SPEC section 7.3). Never called, or
+    /// called with null, the cell is NULL.
+    void set_risk_detail(const nlohmann::json& risk_detail) {
+        risk_detail_ = risk_detail;
     }
 
     void set_equity(double equity) {

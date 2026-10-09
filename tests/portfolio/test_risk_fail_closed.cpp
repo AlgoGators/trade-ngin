@@ -114,7 +114,7 @@ public:
         }
         return fail();
     }
-    Result<RiskDecision> finalize(const Book& book, const RiskContext& ctx) override {
+    Result<RiskDecision> finalize(const Book& book, const RiskContext& ctx) {
         (void)book;
         (void)ctx;
         if (!fail_finalize_) {
@@ -381,51 +381,6 @@ TEST_F(RiskFailClosedTest, AFailedScaleOnlySleeveModuleRefusesTheSleeve) {
         EXPECT_EQ(row.error, "the module failed: sleeve_cutter");
     }
     EXPECT_TRUE(found);
-}
-
-// The post-rounding point has the same shape and had the same hole.
-TEST_F(RiskFailClosedTest, AFinalizeFailureDoesNotDiscardAFinalizeRefusal) {
-    make_pm(base_config(), {{"ZZA", make_pos("ZZA", 5.0, 100.0)}});
-    ASSERT_TRUE(pm_->update_strategy_position("FC_S", "ZZA", make_pos("ZZA", 3.0, 100.0)).is_ok());
-    // The refusal fires only at POST_ROUNDING (the book there is whole); the failure sits after it.
-    class FinalizeRefuse final : public RiskModule {
-    public:
-        const std::string& id() const override { return id_; }
-        const std::string& type() const override { return id_; }
-        std::set<RiskTerm> terms() const override { return {RiskTerm::CUSTOM}; }
-        std::set<RiskAction> capabilities() const override { return {RiskAction::REFUSE}; }
-        Result<RiskDecision> evaluate(const Book& book, const RiskContext& ctx) override {
-            (void)book;
-            (void)ctx;
-            RiskDecision d;
-            d.module_id = id_;
-            return Result<RiskDecision>(d);
-        }
-        Result<RiskDecision> finalize(const Book& book, const RiskContext& ctx) override {
-            (void)book;
-            (void)ctx;
-            RiskDecision d;
-            d.module_id = id_;
-            d.action = RiskAction::REFUSE;
-            d.reason = "the rounded book is not acceptable";
-            return Result<RiskDecision>(d);
-        }
-        nlohmann::json describe() const override { return {{"id", id_}}; }
-
-    private:
-        std::string id_{"final_stop"};
-    };
-    ASSERT_TRUE(pm_->set_risk_modules({std::make_shared<FinalizeRefuse>(),
-                                       std::make_shared<FailingModule>(
-                                           "boom", /*refuse_capable=*/false, /*throws=*/false,
-                                           /*fail_finalize=*/true)})
-                    .is_ok());
-
-    ::testing::internal::CaptureStdout();
-    ASSERT_TRUE(pm_->process_market_data(three_days()).is_ok());
-    const std::string out = ::testing::internal::GetCapturedStdout();
-    EXPECT_EQ(quantity("ZZA"), 3.0) << "pinned by the post-rounding refusal";
-    EXPECT_NE(out.find("Risk module final_stop refused portfolio"), std::string::npos) << out;
 }
 
 // ===== D-1 / A-3: the constructor validates, and rethrows =====
@@ -716,7 +671,7 @@ public:
         d.module_id = id_;
         return Result<RiskDecision>(d);
     }
-    Result<RiskDecision> finalize(const Book& book, const RiskContext& ctx) override {
+    Result<RiskDecision> finalize(const Book& book, const RiskContext& ctx) {
         (void)book;
         (void)ctx;
         RiskDecision d;
@@ -789,20 +744,6 @@ TEST_F(RiskFailClosedTest, ARefuseOnANeverSeededLiveSleeveIsAnError) {
     EXPECT_NE(out.find("pinning would ship a FLAT book"), std::string::npos) << out;
 }
 
-// A-2 at the POST-ROUNDING point, which has its own unseeded branch.
-TEST_F(RiskFailClosedTest, APostRoundingRefuseOnANeverSeededLiveScopeIsAnError) {
-    make_pm(base_config(), {{"ZZA", make_pos("ZZA", 5.0, 100.0)}});
-    ASSERT_TRUE(pm_->set_risk_modules({std::make_shared<FinalizeOnlyRefuse>()}).is_ok());
-    ::testing::internal::CaptureStdout();
-    const auto result = pm_->process_market_data(three_days());
-    const std::string out = ::testing::internal::GetCapturedStdout();
-    ASSERT_TRUE(result.is_error()) << out;
-    EXPECT_NE(std::string(result.error()->what()).find("never seeded"), std::string::npos)
-        << result.error()->what();
-    EXPECT_NE(out.find("Risk module final_stop refused portfolio"), std::string::npos) << out;
-    EXPECT_NE(out.find("after rounding"), std::string::npos) << out;
-}
-
 // C-2 in the SHARED validator: the loader refused a carver at sleeve scope, the constructor and
 // set_risk_modules did not. A carver divides by the portfolio's capital, so on a sleeve its
 // leverage limits would be read against the whole book's money.
@@ -828,29 +769,6 @@ TEST_F(RiskFailClosedTest, ACarverAtSleeveScopeIsRefusedBySetRiskModules) {
     EXPECT_NE(std::string(r.error()->what()).find("only valid at portfolio scope"),
               std::string::npos)
         << r.error()->what();
-}
-
-// B-4: on a lap the gate reads as over its limits but the level cut declines (already cut to
-// this level or deeper), the log must not say "not exceeded" under "risk_exceeded=1".
-TEST_F(RiskFailClosedTest, ADeclinedLapIsNotReportedAsNotExceeded) {
-    // VaR binds (tight var limit), leverage never does; 2.5 lots never become whole, so lap 2
-    // reads the same invariant term off the same composition and declines.
-    PortfolioConfig pc = base_config();
-    pc.risk_config.var_limit = 1e-6;
-    pc.risk_modules = {test_carver_module(pc.risk_config)};
-    make_pm(pc, {{"ZZA", make_pos("ZZA", 2.5, 100.0)}});
-    std::vector<Bar> bars;
-    for (int d = 1; d <= 30; ++d) bars.push_back(make_bar("ZZA", d, 100.0 + 3.0 * std::sin(d)));
-    ::testing::internal::CaptureStdout();
-    ASSERT_TRUE(pm_->process_market_data(bars).is_ok());
-    const std::string out = ::testing::internal::GetCapturedStdout();
-    ASSERT_NE(out.find("RISK_APPLIED lap=2 "), std::string::npos) << "the precondition: a lap 2\n"
-                                                                   << out;
-    EXPECT_EQ(out.find("Risk limits not exceeded, no scaling needed"), std::string::npos) << out;
-    EXPECT_NE(out.find("Risk cut already applied at this level or deeper; no further scaling this "
-                       "lap"),
-              std::string::npos)
-        << out;
 }
 
 // =============================================================================================
@@ -985,15 +903,6 @@ TEST_F(SleeveRefusalTest, ASleeveRiskStepThatThrowsOutsideEvaluateHoldsItsSleeve
         EXPECT_EQ(row.error, "on_bars blew up");
     }
     EXPECT_TRUE(found) << "the step failure is recorded as a REFUSE row carrying the error";
-}
-
-TEST_F(SleeveRefusalTest, AFailedSleeveFinalizeHoldsItsSleeve) {
-    make_two_sleeves({std::make_shared<FailingModule>("final_boom", /*refuse_capable=*/false,
-                                                      /*throws=*/false, /*fail_finalize=*/true)});
-    const std::string out = run_day();
-    ASSERT_TRUE(ok_) << out;
-    EXPECT_EQ(sleeve_qty("FC_S"), 2.0) << "pinned at the post-rounding point\n" << out;
-    EXPECT_EQ(sleeve_qty("FC_T"), 3.0) << out;
 }
 
 TEST_F(SleeveRefusalTest, AFailedModuleOnANeverSeededLiveSleeveIsARunError) {

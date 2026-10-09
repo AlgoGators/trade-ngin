@@ -1,4 +1,6 @@
 #include "trade_ngin/backtest/backtest_coordinator.hpp"
+#include "trade_ngin/live/live_estimator_history.hpp"
+#include "trade_ngin/strategy/trend_estimator.hpp"
 #include "trade_ngin/backtest/equity_cost_warmup.hpp"
 #include "trade_ngin/backtest/junk_signal_feed.hpp"
 #include <unordered_set>
@@ -17,7 +19,6 @@
 #include "trade_ngin/storage/backtest_results_manager.hpp"
 #include "trade_ngin/strategy/base_strategy.hpp"
 #include "trade_ngin/strategy/trend_following.hpp"
-#include "trade_ngin/strategy/trend_following_fast.hpp"
 #include "trade_ngin/strategy/types.hpp"
 
 namespace trade_ngin {
@@ -71,11 +72,6 @@ Result<void> BacktestCoordinator::create_components() {
     // Create execution manager
     BacktestExecutionConfig exec_config;
     execution_manager_ = std::make_unique<BacktestExecutionManager>(exec_config);
-
-    // Create portfolio constraints manager
-    PortfolioConstraintsConfig constraints_config;
-    constraints_config.use_optimization = config_.use_optimization;
-    constraints_manager_ = std::make_unique<BacktestPortfolioConstraints>(constraints_config);
 
     return Result<void>();
 }
@@ -273,6 +269,18 @@ Result<BacktestResults> BacktestCoordinator::run_portfolio(
         }
     }
 
+    // The estimators' window reaches back W consumed bars before the first sized day: the bars
+    // before the backtest's window are judged by a classifier of their own, K-01 applied, and
+    // handed to the sleeves as history. They are no cycle: nothing is marked, sized or stored on
+    // them, and the window's own classifier and roll status start at the window as before.
+    if (session_hold_enabled_) {
+        auto seeded = seed_estimator_history(portfolio, symbols, start_date, asset_class, data_freq);
+        if (seeded.is_error()) {
+            return make_error<BacktestResults>(seeded.error()->code(), seeded.error()->what(),
+                                               "BacktestCoordinator");
+        }
+    }
+
     // Get portfolio config
     const auto& portfolio_config = portfolio->get_config();
     double initial_capital = static_cast<double>(portfolio_config.total_capital);
@@ -430,6 +438,12 @@ Result<BacktestResults> BacktestCoordinator::run_portfolio(
     // Add executions and equity curve to results
     results.executions = std::move(all_executions);
     results.equity_curve = std::move(equity_curve);
+    if (!equity_risk_detail_.empty()) {
+        results.equity_risk_detail.assign(results.equity_curve.size(), std::string());
+        for (const auto& [index, detail] : equity_risk_detail_) {
+            if (index < results.equity_risk_detail.size()) results.equity_risk_detail[index] = detail;
+        }
+    }
 
     // Get final portfolio positions: sum per-strategy quantities (Σ qᵢ).
     // get_portfolio_positions() applies allocation a second time, producing
@@ -585,17 +599,6 @@ Result<void> BacktestCoordinator::process_day(
 
         // Update equity curve
         equity_curve.emplace_back(timestamp, portfolio_value);
-
-        // Apply portfolio constraints if enabled (updates current_positions_)
-        if (constraints_manager_ && constraints_manager_->is_optimization_enabled()) {
-            constraints_manager_->update_historical_returns(bars);
-            auto constraint_result =
-                constraints_manager_->apply_constraints(bars, current_positions_, risk_metrics);
-            if (constraint_result.is_error()) {
-                WARN("Constraint application failed: " +
-                     std::string(constraint_result.error()->what()));
-            }
-        }
 
         // Store previous bars for next iteration
         previous_bars_ = bars;
@@ -901,30 +904,37 @@ Result<void> BacktestCoordinator::process_portfolio_day(
             }
         }
 
-        // T-7b-2 9c (HD 2026-09-25, compounding): the book is sized on the account's equity at the
-        // close of the signal group, i.e. the equity curve's LAST row, which is the previous
-        // cycle's (this cycle's row is appended below, after its fills and its marks). Every
-        // sizing input follows it (PortfolioManager::set_sizing_capital). Warm-up rows are flat at
-        // the initial capital, so warm-up sizes as before and is not logged.
+        // LOOP_SPEC section 3.1 (D19, half compounding): the book is sized on the starting capital
+        // less the drawdown of the cumulative net P&L from its running peak, never above the
+        // starting capital. The settled history is the equity curve's own rows up to its LAST row,
+        // the previous cycle's (this cycle's row is appended below, after its fills and its marks);
+        // it is recomputed from the curve on every cycle and nothing persists it. Every sizing
+        // input follows it (PortfolioManager::set_sizing_capital). Warm-up rows are flat at the
+        // initial capital, so warm-up sizes on it and is not logged.
         if (size_on_equity_enabled_) {
-            const double sizing_equity = backtest_sizing_equity(equity_curve, initial_capital);
-            auto sized = portfolio->set_sizing_capital(sizing_equity);
+            const HalfCompounding sizing = backtest_half_compounding(equity_curve, initial_capital);
+            cycle_account_value_ = sizing.account;
+            auto sized = portfolio->set_sizing_capital(sizing.capital);
             if (sized.is_error()) {
                 return sized;
             }
             if (!is_warmup) {
                 INFO("SIZING_CAPITAL date=" + core::format_utc_date(timestamp) +
-                     " equity=" + std::to_string(sizing_equity) + " source=equity_curve row=" +
+                     " capital=" + std::to_string(sizing.capital) +
+                     " account=" + std::to_string(sizing.account) +
+                     " peak=" + std::to_string(sizing.peak) + " settled_through=" +
                      (equity_curve.empty() ? std::string("none")
-                                           : core::format_utc_date(equity_curve.back().first)));
+                                           : core::format_utc_date(equity_curve.back().first)) +
+                     " source=equity_curve");
             }
         }
 
         // Section 6.5: the held book at the START of the bar, per sleeve, the quantity the roll legs
-        // are booked at.
+        // are booked at. The book is the FILLED one: a sleeve's target that warm-up set and no fill
+        // stands behind is not held, and a roll confirmed on the first traded cycle has no leg.
         const auto start_of_bar_book = confirmed_now.empty()
                                            ? std::unordered_map<std::string, std::unordered_map<std::string, Position>>{}
-                                           : portfolio->get_strategy_positions();
+                                           : portfolio->get_filled_strategy_positions();
         // F-3 (commit 5): the rolls owed from here until the legs are booked below (the tracker has
         // consumed their confirming bars); the day's catch and the run loop's read it.
         if (!is_warmup) {
@@ -1096,7 +1106,7 @@ Result<void> BacktestCoordinator::process_portfolio_day(
             INFO(format_risk_delivered(
                 summarize_applied_risk(this_cycle),
                 signal_feed->empty() ? DeliveredCut{} : portfolio->last_delivered_cut(),
-                core::format_utc_date(timestamp)));
+                core::format_utc_date(timestamp), "capped_target_gross"));
         }
 
         std::vector<ExecutionReport> period_executions;
@@ -1490,6 +1500,15 @@ Result<void> BacktestCoordinator::process_portfolio_day(
 
         // Add to equity curve
         equity_curve.emplace_back(timestamp, portfolio_value);
+        // Section 7.3: the row of a sized rebalance carries the loop's record of it. An all-JUNK
+        // cycle ran no rebalance and a refused one stores none: both rows stay NULL.
+        if (!signal_feed->empty()) {
+            const OnePassDay one_pass = portfolio->last_one_pass();
+            if (one_pass.stores_detail()) {
+                equity_risk_detail_[equity_curve.size() - 1] =
+                    risk_detail_json(one_pass, cycle_account_value_).dump();
+            }
+        }
 
         // Build the portfolio-level positions map by simple per-strategy sum
         // (Σ qᵢ). get_portfolio_positions() applies allocation a second time,
@@ -1572,6 +1591,50 @@ Result<void> BacktestCoordinator::process_portfolio_day(
     }
 }
 
+Result<void> BacktestCoordinator::seed_estimator_history(
+    std::shared_ptr<PortfolioManager> portfolio, const std::vector<std::string>& symbols,
+    const Timestamp& start_date, AssetClass asset_class, DataFrequency data_freq) {
+    // Every bar dated before the window's first instant, back to the history start.
+    DataLoadConfig load_config;
+    load_config.symbols = symbols;
+    load_config.start_date = estimator_history_start(start_date);
+    load_config.end_date = start_date - std::chrono::seconds(1);
+    load_config.asset_class = asset_class;
+    load_config.data_freq = data_freq;
+    MarketDataBus::instance().set_publish_enabled(false);
+    auto loaded = data_loader_->load_market_data(load_config);
+    MarketDataBus::instance().set_publish_enabled(true);
+    if (loaded.is_error()) {
+        // No bar before the window is not an error: the symbols start at their first bar. (The
+        // loader reports an empty load as an error; any other failure refuses the run.)
+        const std::string what = loaded.error()->what();
+        if (what.find("No market data loaded") != std::string::npos ||
+            what.find("returned an empty table") != std::string::npos) {
+            INFO("ESTIMATOR_HISTORY empty: no bar before the window, every symbol's estimators "
+                 "start at its first bar in the window");
+            return Result<void>();
+        }
+        return make_error<void>(loaded.error()->code(),
+                                "the bars before the backtest's window could not be loaded: " +
+                                    std::string(loaded.error()->what()),
+                                "BacktestCoordinator");
+    }
+    // The same rule as the live runners' (live/live_estimator_history.hpp): the history's bars are
+    // judged in date order by their own classifier, with their vendor ids, each against the bars
+    // before it; the withheld ones (K-01) are never consumed.
+    auto pg = std::dynamic_pointer_cast<PostgresDatabase>(db_);
+    std::vector<SymbolDayVerdict> withheld;
+    const std::vector<Bar> history = estimator_history_consumed(
+        loaded.value(), start_date,
+        pg ? pg->get_futures_instrument_ids(symbols, estimator_history_start(start_date), start_date)
+           : make_error<std::vector<market_data_utils::FuturesInstrumentId>>(
+                 ErrorCode::NOT_INITIALIZED, "the backtest's database is not a PostgresDatabase",
+                 "BacktestCoordinator"),
+        &withheld);
+    consumed_record_.add_history(withheld, history);
+    return portfolio->seed_strategy_history(history);
+}
+
 Result<void> BacktestCoordinator::roll_owed_stop(const std::string& what) {
     if (cycle_rolls_owed_.empty()) return Result<void>();
     std::string owed;
@@ -1598,9 +1661,6 @@ void BacktestCoordinator::reset() {
     }
     if (execution_manager_) {
         execution_manager_->reset();
-    }
-    if (constraints_manager_) {
-        constraints_manager_->reset();
     }
 }
 
@@ -1651,18 +1711,10 @@ int BacktestCoordinator::calculate_warmup_days(
             continue;
         }
 
-        // Try to cast to TrendFollowingStrategy
+        // A trend sleeve (TREND or FAST: one class, two configurations)
         auto trend_following = std::dynamic_pointer_cast<TrendFollowingStrategy>(strat);
         if (trend_following) {
             int strat_lookback = trend_following->get_max_required_lookback();
-            max_lookback = std::max(max_lookback, strat_lookback);
-            continue;
-        }
-
-        // Try to cast to TrendFollowingFastStrategy
-        auto trend_following_fast = std::dynamic_pointer_cast<TrendFollowingFastStrategy>(strat);
-        if (trend_following_fast) {
-            int strat_lookback = trend_following_fast->get_max_required_lookback();
             max_lookback = std::max(max_lookback, strat_lookback);
             continue;
         }
@@ -1687,6 +1739,8 @@ void BacktestCoordinator::reset_portfolio_state() {
     mark_change_.clear();
     row_held_id_.clear();
     risk_scale_report_enabled_ = false;
+    equity_risk_detail_.clear();
+    cycle_account_value_ = 0.0;
     size_on_equity_enabled_ = false;
     equity_cost_retier_enabled_ = false;
     equity_cost_retier_.reset();
@@ -1957,6 +2011,7 @@ Result<void> BacktestCoordinator::save_portfolio_results_to_db(
         equity_points.push_back({timestamp, equity});
     }
     results_manager->set_equity_curve(equity_points);
+    results_manager->set_equity_risk_detail(results.equity_risk_detail);
 
     // Collect per-strategy executions from PortfolioManager
     if (portfolio) {

@@ -33,6 +33,19 @@ What it will not do: invent a value. A book whose risk.json has no max_leverage,
 whose use_risk_management resolves to false, is refused with the reason, because writing
 a default into a file is exactly the failure schema 2 exists to end.
 
+What it does not do: write a futures book's loop keys (LOOP_SPEC section 7.7). The file it
+produces is a schema-2 file of the gate as it was: a futures book then needs, by hand, on its
+carver module R_max, R_jump_max, R_shock_max, per_name_cap and trim_max, with var_limit,
+jump_risk_limit and max_correlation REMOVED from that module and from risk_reporting and
+max_leverage removed from the top level (the loader refuses each retired key on a futures
+book); in portfolio.json equity_slow_rule, sizing_mode and starting_capital, with weight,
+max_symbol_concentration, use_position_buffering, carver_buffer_floor and
+carver_buffer_position_factor removed from every sleeve; in defaults.json's optimization
+block cost_penalty_scalar, sign_close_band and b_sigma_floor, with tau,
+asymmetric_risk_buffer and buffer_size_factor removed, and carver_buffer_floor and
+carver_buffer_position_factor removed from strategy_defaults. config_template/ shows each.
+An equity book's files are unchanged by any of this.
+
 Every printed diff redacts the value of any key named "password": defaults.json carries
 the database password, and a re-indented file would otherwise print it as context.
 """

@@ -5,6 +5,7 @@
 #include "trade_ngin/backtest/backtest_coordinator.hpp"
 #include "trade_ngin/backtest/transaction_cost_analysis.hpp"
 #include "trade_ngin/core/config_loader.hpp"
+#include "trade_ngin/portfolio/loop_config.hpp"
 #include "trade_ngin/core/logger.hpp"
 #include "trade_ngin/core/run_id_generator.hpp"
 #include "trade_ngin/core/time_utils.hpp"
@@ -12,8 +13,9 @@
 #include "trade_ngin/data/postgres_database.hpp"
 #include "trade_ngin/instruments/instrument_registry.hpp"
 #include "trade_ngin/portfolio/portfolio_manager.hpp"
+#include "trade_ngin/strategy/short_window_log.hpp"
+#include "trade_ngin/strategy/sleeve_config.hpp"
 #include "trade_ngin/strategy/trend_following.hpp"
-#include "trade_ngin/strategy/trend_following_fast.hpp"
 
 using namespace trade_ngin;
 using namespace trade_ngin::backtest;
@@ -54,6 +56,13 @@ int main() {
             return 1;
         }
         auto app_config = app_config_result.value();
+        // The loop's keys are required on a futures book (LOOP_SPEC section 7.7): a book without
+        // one of them does not run.
+        if (auto loop_keys = ConfigLoader::require_loop_keys(app_config); loop_keys.is_error()) {
+            ERROR("Failed to load configuration: " + std::string(loop_keys.error()->what()));
+            std::cerr << "Failed to load configuration: " << loop_keys.error()->what() << std::endl;
+            return 1;
+        }
         INFO("Configuration loaded successfully for portfolio: " + app_config.portfolio_id);
 
         // ========================================
@@ -225,6 +234,7 @@ int main() {
         portfolio_config.sleeve_risk_modules = app_config.risk_schema.sleeves;
         portfolio_config.opt_config = config.portfolio_config.opt_config;
         portfolio_config.risk_config = config.portfolio_config.risk_config;
+        apply_loop_config(app_config, portfolio_config);
 
         // ========================================
         // LOAD STRATEGIES FROM CONFIG
@@ -287,7 +297,9 @@ int main() {
         base_strategy_config.asset_classes = {trade_ngin::AssetClass::FUTURES};
         base_strategy_config.frequencies = {config.strategy_config.data_freq};
         base_strategy_config.max_drawdown = app_config.max_drawdown;
-        base_strategy_config.max_leverage = app_config.max_leverage;
+        // The sleeves' own leverage limit is the book's gross leverage limit L_max (risk.json's
+        // max_leverage is retired on a futures book).
+        base_strategy_config.max_leverage = loop_gross_leverage_limit(app_config);
 
         // Add position limits from config
         for (const auto& symbol : config.strategy_config.symbols) {
@@ -310,18 +322,20 @@ int main() {
 
             if (strategy_type == "TrendFollowingStrategy") {
                 trade_ngin::TrendFollowingConfig trend_config;
+                // LOOP_SPEC section 7.7: a futures sleeve's risk_target, idm and vol_lookback_short
+                // are required (strategy/sleeve_config.hpp): no in-code default.
+                {
+                    auto sleeve_keys =
+                        trade_ngin::read_required_sleeve_keys(strategy_id, strategy_def, trend_config);
+                    if (sleeve_keys.is_error()) {
+                        Logger::register_component("SleeveConfig");
+                        ERROR(std::string(sleeve_keys.error()->what()));
+                        std::cerr << sleeve_keys.error()->what() << std::endl;
+                        return 1;
+                    }
+                }
                 if (strategy_def.contains("config")) {
                     const auto& cfg = strategy_def["config"];
-                    trend_config.weight = cfg.value("weight", 0.03);
-                    trend_config.risk_target = cfg.value("risk_target", 0.2);
-                    trend_config.idm = cfg.value("idm", 2.5);
-                    trend_config.max_symbol_concentration = cfg.value("max_symbol_concentration", 0.15);
-                    trend_config.use_position_buffering = cfg.value("use_position_buffering", true);
-                    trend_config.carver_buffer_floor = cfg.value(
-                        "carver_buffer_floor", app_config.strategy_defaults.carver_buffer_floor);
-                    trend_config.carver_buffer_position_factor =
-                        cfg.value("carver_buffer_position_factor",
-                                  app_config.strategy_defaults.carver_buffer_position_factor);
                     if (cfg.contains("ema_windows")) {
                         trend_config.ema_windows.clear();
                         for (const auto& window : cfg["ema_windows"]) {
@@ -329,7 +343,6 @@ int main() {
                                 {window[0].get<int>(), window[1].get<int>()});
                         }
                     }
-                    trend_config.vol_lookback_short = cfg.value("vol_lookback_short", 32);
                     trend_config.vol_lookback_long = cfg.value("vol_lookback_long", 252);
                 }
                 // Set FDM from strategy_defaults
@@ -337,24 +350,37 @@ int main() {
                     trend_config.fdm = app_config.strategy_defaults.fdm;
                 }
 
+                // The equity slow rule acts on the book's first sleeve only (LOOP_SPEC section 2.5,
+                // D40); a first sleeve that does not carry the rule's pairs is refused when built.
+                if (strategy_id == strategy_names.front()) {
+                    trend_config.equity_slow_symbols = app_config.equity_slow_rule.symbols;
+                    trend_config.equity_slow_pairs = app_config.equity_slow_rule.pairs;
+                    // The first sleeve's own series and its risk target feed the risk overlay
+                    // (LOOP_SPEC section 4: the three risk limits are ratios to this tau).
+                    portfolio_config.overlay_sleeve = strategy_id;
+                    portfolio_config.overlay_tau = trend_config.risk_target;
+                }
                 strategy = std::make_shared<trade_ngin::TrendFollowingStrategy>(
                     strategy_id, base_strategy_config, trend_config, db, registry_ptr);
 
             } else if (strategy_type == "TrendFollowingFastStrategy") {
-                trade_ngin::TrendFollowingFastConfig trend_config;
+                // The FAST sleeve: TrendFollowingStrategy on the fast configuration
+                trade_ngin::TrendFollowingConfig trend_config =
+                    trade_ngin::fast_trend_following_config();
+                // LOOP_SPEC section 7.7: a futures sleeve's risk_target, idm and vol_lookback_short
+                // are required (strategy/sleeve_config.hpp): no in-code default.
+                {
+                    auto sleeve_keys =
+                        trade_ngin::read_required_sleeve_keys(strategy_id, strategy_def, trend_config);
+                    if (sleeve_keys.is_error()) {
+                        Logger::register_component("SleeveConfig");
+                        ERROR(std::string(sleeve_keys.error()->what()));
+                        std::cerr << sleeve_keys.error()->what() << std::endl;
+                        return 1;
+                    }
+                }
                 if (strategy_def.contains("config")) {
                     const auto& cfg = strategy_def["config"];
-                    trend_config.weight = cfg.value("weight", 0.03);
-                    trend_config.risk_target = cfg.value("risk_target", 0.25);
-                    trend_config.idm = cfg.value("idm", 2.5);
-                    trend_config.max_symbol_concentration = cfg.value("max_symbol_concentration", 0.15);
-                    trend_config.use_position_buffering =
-                        cfg.value("use_position_buffering", false);
-                    trend_config.carver_buffer_floor = cfg.value(
-                        "carver_buffer_floor", app_config.strategy_defaults.carver_buffer_floor);
-                    trend_config.carver_buffer_position_factor =
-                        cfg.value("carver_buffer_position_factor",
-                                  app_config.strategy_defaults.carver_buffer_position_factor);
                     if (cfg.contains("ema_windows")) {
                         trend_config.ema_windows.clear();
                         for (const auto& window : cfg["ema_windows"]) {
@@ -362,7 +388,6 @@ int main() {
                                 {window[0].get<int>(), window[1].get<int>()});
                         }
                     }
-                    trend_config.vol_lookback_short = cfg.value("vol_lookback_short", 16);
                     trend_config.vol_lookback_long = cfg.value("vol_lookback_long", 252);
                 }
                 // Set FDM from strategy_defaults
@@ -370,7 +395,17 @@ int main() {
                     trend_config.fdm = app_config.strategy_defaults.fdm;
                 }
 
-                strategy = std::make_shared<trade_ngin::TrendFollowingFastStrategy>(
+                // The equity slow rule acts on the book's first sleeve only (LOOP_SPEC section 2.5,
+                // D40); a first sleeve that does not carry the rule's pairs is refused when built.
+                if (strategy_id == strategy_names.front()) {
+                    trend_config.equity_slow_symbols = app_config.equity_slow_rule.symbols;
+                    trend_config.equity_slow_pairs = app_config.equity_slow_rule.pairs;
+                    // The first sleeve's own series and its risk target feed the risk overlay
+                    // (LOOP_SPEC section 4: the three risk limits are ratios to this tau).
+                    portfolio_config.overlay_sleeve = strategy_id;
+                    portfolio_config.overlay_tau = trend_config.risk_target;
+                }
+                strategy = std::make_shared<trade_ngin::TrendFollowingStrategy>(
                     strategy_id, base_strategy_config, trend_config, db, registry_ptr);
 
             } else {
@@ -442,6 +477,7 @@ int main() {
         }
 
         INFO("Backtest completed successfully");
+        INFO(trade_ngin::estimator_short_window_line(strategies));
 
         // Analyze and display results
         const auto& backtest_results = result.value();

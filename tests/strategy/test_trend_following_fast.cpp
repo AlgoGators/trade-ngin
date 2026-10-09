@@ -14,8 +14,10 @@
 #include "trade_ngin/instruments/instrument_registry.hpp"
 #undef private
 
-#include "trade_ngin/strategy/trend_following_fast.hpp"
+#include "trade_ngin/strategy/trend_following.hpp"
 
+// The FAST sleeve is TrendFollowingStrategy on fast_trend_following_config(): these are that
+// configuration's tests.
 using namespace trade_ngin;
 using namespace trade_ngin::testing;
 
@@ -77,8 +79,8 @@ protected:
 
         static int test_id = 0;
         std::string id = "TEST_TF_FAST_" + std::to_string(++test_id);
-        strategy_ = std::make_unique<TrendFollowingFastStrategy>(
-            id, strategy_config_, TrendFollowingFastConfig{}, db_, registry_ptr_);
+        strategy_ = std::make_unique<TrendFollowingStrategy>(
+            id, strategy_config_, fast_trend_following_config(), db_, registry_ptr_);
         ASSERT_TRUE(strategy_->initialize().is_ok());
         ASSERT_TRUE(strategy_->update_risk_limits(risk_limits_).is_ok());
     }
@@ -134,7 +136,7 @@ protected:
     std::shared_ptr<InstrumentRegistry> registry_ptr_;
     StrategyConfig strategy_config_;
     RiskLimits risk_limits_;
-    std::unique_ptr<TrendFollowingFastStrategy> strategy_;
+    std::unique_ptr<TrendFollowingStrategy> strategy_;
 };
 
 TEST_F(TrendFollowingFastTest, InitializeSucceedsAndStartTransitionsState) {

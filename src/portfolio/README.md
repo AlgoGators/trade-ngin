@@ -82,7 +82,7 @@ sequenceDiagram
     S2-->>PM: positions_2
     
     PM->>PM: aggregate_positions()
-    PM->>TCM: calculate_trading_costs()
+    Note over PM,TCM: futures book: the one pass asks the cost model for the cost of one contract per symbol (calculate_costs), the generic step's cost vector is zero
     PM->>Opt: optimize(aggregated, costs)
     Opt-->>PM: optimized_positions
     

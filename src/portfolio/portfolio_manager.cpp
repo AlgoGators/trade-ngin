@@ -1,8 +1,9 @@
 // src/portfolio/portfolio_manager.cpp
+#include "trade_ngin/optimization/one_pass_record.hpp"
 #include "trade_ngin/data/roll_series.hpp"
 #include "trade_ngin/portfolio/portfolio_manager.hpp"
 #include "trade_ngin/portfolio/allocation_split.hpp"
-#include "trade_ngin/portfolio/cut_delivery.hpp"
+#include "trade_ngin/optimization/one_pass_log.hpp"
 #include "trade_ngin/transaction_cost/netting.hpp"
 #include <unordered_set>
 #include <algorithm>
@@ -273,23 +274,13 @@ Result<void> PortfolioManager::process_market_data(const std::vector<Bar>& data,
         // Per-strategy snapshot of the optimizer's prior-cycle output, consumed by the
         // chop-source attribution pass at end of cycle.
         std::unordered_map<std::string, std::unordered_map<std::string, Position>> prev_positions;
-        // Chop-source attribution snapshots: integer position values at each pipeline phase,
-        // used at end of cycle to tag each integer transition with its trigger.
-        std::unordered_map<std::string, std::unordered_map<std::string, double>> attr_strategy_target;
-        std::unordered_map<std::string, std::unordered_map<std::string, double>> attr_post_qp;
-        // T-7b-3 D-1b: the symbols the BOOK_GATE will hold after this call, which a delivered cut
-        // fixes at their held quantity (deliver_lap_cut). The caller's set (set_book_gate_holds,
-        // the live futures runners) is this call's only; with a session set (the futures backtest)
-        // a symbol of the lap or held book outside it is held too, on a cycle that generates
-        // executions (the BOOK_GATE below runs only then; a warm-up cycle holds nothing).
-        std::unordered_set<std::string> book_gate_holds;
-        const std::unordered_set<std::string>* hold_unless_session =
-            skip_execution_generation ? nullptr : session_symbols;
+        // The caller's part of this rebalance's hold set (set_hold_set), this call's only.
+        std::unordered_set<std::string> caller_holds;
         {
             std::lock_guard<std::mutex> lock(mutex_);
-            book_gate_holds.swap(pending_book_gate_holds_);
-            pending_book_gate_holds_.clear();
-            over_limit_by_hold_ = OverLimitByHold{};
+            caller_holds.swap(pending_hold_set_);
+            pending_hold_set_.clear();
+            one_pass_day_ = OnePassDay{};
         }
         {
             std::lock_guard<std::mutex> lock(mutex_);
@@ -405,11 +396,6 @@ Result<void> PortfolioManager::process_market_data(const std::vector<Bar>& data,
                     DEBUG("Retrieved " + std::to_string(info.target_positions.size()) +
                           " target positions from strategy " + id);
 
-                    // Chop-source attribution: snapshot strategy's integer target before optimizer runs
-                    for (const auto& [sym, pos] : info.target_positions) {
-                        attr_strategy_target[id][sym] = static_cast<double>(pos.quantity);
-                    }
-
                     processed_strategies.push_back(id);
 
                 } catch (const std::exception& e) {
@@ -426,10 +412,6 @@ Result<void> PortfolioManager::process_market_data(const std::vector<Bar>& data,
             // bars (T-6c commit B); no strategy's get_price_history() is read.
             update_historical_returns(data);
         }
-
-        //  Iterative dynamic opt + risk management loop
-        // Up to 5 iterations for convergence to fully integer positions. The final rounding step
-        // can cause minor tracking error/risk profile deviation
 
         // Rebalance boundary (silent): the risk decisions recorded, the pinned strategies and
         // the applied factors are this call's only, and every risk module starts its rebalance
@@ -510,52 +492,56 @@ Result<void> PortfolioManager::process_market_data(const std::vector<Bar>& data,
             if (sleeve_result.is_error()) return sleeve_result;
         }
 
-        int max_iterations = 5;
-        int iteration = 0;
-        bool done = false;
+        // A book that names an overlay sleeve is rebalanced by the one pass (LOOP_SPEC sections 4
+        // to 6): the overlay once on the capped target, one search from the held book, one
+        // rounding, the trim, the fills. Nothing below this block changes its book.
+        const bool one_pass = one_pass_book();
+        if (!one_pass) {
+            // A trend sleeve is rebalanced by the one pass and by nothing else. A book that holds
+            // one and names no overlay sleeve (or names one that is not registered, or no tau)
+            // would go through the generic step below on a placeholder weight and no cost:
+            // refused, never optimised on defaults.
+            std::lock_guard<std::mutex> lock(mutex_);
+            for (const auto& [sid, info] : strategies_) {
+                if (std::dynamic_pointer_cast<TrendFollowingStrategy>(info.strategy)) {
+                    return make_error<void>(
+                        ErrorCode::INVALID_ARGUMENT,
+                        "Portfolio " + id_ + " holds the trend sleeve " + sid +
+                            " and names no overlay sleeve the one pass can run on (overlay_sleeve "
+                            "'" + config_.overlay_sleeve + "', overlay_tau " +
+                            std::to_string(config_.overlay_tau) +
+                            "); a trend sleeve is not rebalanced by the generic optimiser step",
+                        "PortfolioManager");
+                }
+            }
+        }
         RiskLapOutcome risk_outcome;  // pin_all set by a portfolio-scope REFUSE / REPLACE
-
-        while (!done && iteration++ < max_iterations) {
-            INFO("Iteration " + std::to_string(iteration) + " of dynamic optimization + risk loop");
-
-            // Dynamic Optimization step
+        if (one_pass) {
+            auto passed = rebalance_one_pass(data, skip_execution_generation, current_timestamp,
+                                             session_symbols, caller_holds, prev_positions);
+            if (passed.is_error()) return passed;
+        } else {
+            // Every other book: the optimiser's step, then the portfolio risk step, each once.
+            // The log lines of this path are the ones its single pass always wrote (the equity
+            // book's logs do not move), which is why they still say "iteration 1".
+            INFO("Iteration 1 of dynamic optimization + risk loop");
             if (config_.use_optimization && optimizer_) {
                 try {
                     Logger::register_component("DynamicOptimizer");
                     auto opt_result = optimize_positions();
-                    {
-                        // 9e: the lap's book before the gate, the base of a cut this lap delivers.
-                        std::lock_guard<std::mutex> lock(mutex_);
-                        lap_book_before_gate_.clear();
-                        for (const auto& [sid, sinfo] : strategies_) {
-                            if (!sinfo.use_optimization || pinned_scopes_.count(sid)) continue;
-                            for (const auto& [sym, pos] : sinfo.target_positions) {
-                                lap_book_before_gate_[sym] += static_cast<double>(pos.quantity);
-                            }
-                        }
-                    }
                     if (opt_result.is_error()) {
-                        WARN("Portfolio optimization failed in iteration " +
-                             std::to_string(iteration) + ": " +
+                        WARN("Portfolio optimization failed in iteration 1: " +
                              std::string(opt_result.error()->what()) +
                              ", continuing without optimization");
                     }
                 } catch (const std::exception& e) {
-                    WARN("Exception during portfolio optimization in iteration " +
-                         std::to_string(iteration) + ": " + std::string(e.what()) +
-                         ", continuing without optimization");
+                    WARN("Exception during portfolio optimization in iteration 1: " +
+                         std::string(e.what()) + ", continuing without optimization");
                 }
             }
-            // Chop-source attribution: snapshot first optimizer call output (before risk manager)
-            if (iteration == 1) {
+            {
                 std::lock_guard<std::mutex> lock(mutex_);
-                for (const auto& [id, info] : strategies_) {
-                    for (const auto& [sym, pos] : info.target_positions) {
-                        attr_post_qp[id][sym] = static_cast<double>(pos.quantity);
-                    }
-                }
-                // T-7b-2 C9a: the same book summed into the account's contracts per symbol, the
-                // book lap 1's portfolio risk step reads (the delivered cut's denominator).
+                // The book the portfolio risk step reads (the delivered cut's denominator).
                 for (const auto& [id, info] : strategies_) {
                     for (const auto& [sym, pos] : info.target_positions) {
                         delivered_lap1_book_[sym] += static_cast<double>(pos.quantity);
@@ -564,21 +550,16 @@ Result<void> PortfolioManager::process_market_data(const std::vector<Bar>& data,
                 delivered_has_lap1_ = true;
             }
 
-            // Risk Management step
-            lap_cut_factor_ = 1.0;
-            bool has_risk_manager = !risk_modules_.empty();
-            if (has_risk_manager) {
+            if (!risk_modules_.empty()) {
                 // A portfolio-scope risk step that cannot answer REFUSES the scope (HD 2026-09-21,
-                // option b): every strategy is held at its previous book and no order is sent.
-                // The old WARN that went on WITHOUT risk management is gone. A module whose
-                // evaluate fails is refused inside apply_risk_management
+                // option b): every strategy is held at its previous book and no order is sent. A
+                // module whose evaluate fails is refused inside apply_risk_management
                 // (refuse_on_failed_gatekeeper); what fails the step itself (a module's on_bars
                 // throwing, an exception after evaluate) is refused here, recorded as a REFUSE
                 // row carrying the error, so the runner's metadata mark and exit code see it.
                 const RiskContext lap_ctx =
-                    make_risk_context(RiskPhase::LAP, iteration, RiskScope::PORTFOLIO, id_,
-                                      sizing_capital_, data, current_timestamp,
-                                      skip_execution_generation);
+                    make_risk_context(RiskPhase::LAP, 1, RiskScope::PORTFOLIO, id_, sizing_capital_,
+                                      data, current_timestamp, skip_execution_generation);
                 std::string step_failure;
                 try {
                     Logger::register_component("RiskManager");
@@ -586,16 +567,14 @@ Result<void> PortfolioManager::process_market_data(const std::vector<Bar>& data,
                     if (risk_result.is_error()) {
                         step_failure = risk_result.error()->what();
                     } else {
-                        INFO("Portfolio risk management applied successfully in iteration " +
-                             std::to_string(iteration));
+                        INFO("Portfolio risk management applied successfully in iteration 1");
                     }
                 } catch (const std::exception& e) {
                     step_failure = e.what();
                 }
                 if (!step_failure.empty() && !risk_outcome.pin_all &&
                     !risk_outcome.refuse_unseeded) {
-                    ERROR("Portfolio risk management failed in iteration " +
-                          std::to_string(iteration) + ": " + step_failure +
+                    ERROR("Portfolio risk management failed in iteration 1: " + step_failure +
                           "; the portfolio risk step could not answer, so the scope is refused: "
                           "every strategy is held at its previous book and no orders are sent");
                     RiskDecision none;
@@ -612,12 +591,11 @@ Result<void> PortfolioManager::process_market_data(const std::vector<Bar>& data,
                     risk_outcome.module_id = kRiskStepModuleId;
                 }
             } else {
-                INFO("Risk management not enabled, skipping risk checks in iteration " +
-                     std::to_string(iteration));
+                INFO("Risk management not enabled, skipping risk checks in iteration 1");
             }
 
-            // A portfolio-scope REFUSE (or REPLACE) pins every strategy and ends the loop. The
-            // strategies' own targets and signals are untouched; process_market_data returns OK.
+            // A portfolio-scope REFUSE (or REPLACE) pins every strategy. The strategies' own
+            // targets and signals are untouched; process_market_data returns OK.
             if (risk_outcome.refuse_unseeded) {
                 return make_error<void>(
                     ErrorCode::RISK_LIMIT_EXCEEDED,
@@ -647,200 +625,39 @@ Result<void> PortfolioManager::process_market_data(const std::vector<Bar>& data,
                 }
                 if (risk_outcome.action == RiskAction::REPLACE && distributable) {
                     INFO("Risk replacement: the strategy's targets replaced by risk module " +
-                         risk_outcome.module_id + " after iteration " + std::to_string(iteration) +
-                         "; leaving the loop");
+                         risk_outcome.module_id + " after iteration 1; leaving the loop");
                 } else {
                     INFO("Risk refusal: every strategy pinned to its previous positions after "
-                         "iteration " + std::to_string(iteration) + "; leaving the loop");
+                         "iteration 1; leaving the loop");
                 }
-                done = true;
-                break;
             }
 
-            // 9e: a lap the gate cut delivers the cut in whole contracts (cut_delivery.hpp); a
-            // symbol the BOOK_GATE will hold is fixed at its held quantity and never cut (D-1b).
-            // T-7b-3 rulings 7 and 8 (HD 2026-09-27): the cut is the gate's level applied once and
-            // the loop ends on the lap that delivers it. No later lap re-reads the cut book: the
-            // residual between the whole-contract book and the level is within whole-contract
-            // rounding and is not re-cut (a re-read gate asked 0.98-0.999 and each re-cut removed
-            // one more contract, btfut 2025-09-30), and the held book's deadband never sees the cut
-            // (D-1). No forced rounding follows: the cut book is whole. A book the BOOK_GATE holds
-            // keep above the level was marked by deliver_lap_cut (RISK_OVER_LIMIT_BY_HOLD). A
-            // portfolio REFUSE or REPLACE leaves the loop above, before any cut, so no lap can run
-            // after a delivered cut.
-            if (lap_cut_factor_ < 1.0 && !config_.allow_fractional_positions &&
-                config_.use_optimization && optimizer_) {
-                deliver_lap_cut(iteration, book_gate_holds, hold_unless_session);
-                INFO("RISK_CUT_ONCE lap=" + std::to_string(iteration) +
-                     ": the cut is delivered once; the loop ends");
-                done = true;
-                break;
-            }
-
-            // Check for partial contracts in final positions.
-            // When the portfolio permits fractional positions there is nothing to
-            // converge to, so a fraction is the answer rather than a reason to
-            // iterate. Re-entering the loop would re-apply the risk scale to an
-            // already-scaled book, compounding it once per lap (E2-F1); the gate
-            // is scale-invariant (E2-F2) so shrinking never satisfies it and the
-            // position decays to zero. Futures leave the flag false and are
-            // unaffected: whole contracts already converge on the first pass.
-            bool partials_found = false;
-            if (!config_.allow_fractional_positions) {
+            // A book of whole contracts stores whole contracts: after the one risk step every
+            // quantity of an unpinned strategy is rounded to the nearest whole contract, once.
+            if (risk_outcome.pin_all) {
+                INFO("Final positions pinned by a risk " +
+                     std::string(risk_outcome.action == RiskAction::REPLACE ? "replacement"
+                                                                            : "refusal") +
+                     " after 1 iterations; rounding skipped.");
+            } else if (config_.allow_fractional_positions) {
+                INFO("Fractional positions permitted; accepting iteration 1 output as final (risk "
+                     "scale applied once). Converged!");
+                INFO("Final positions fully integer after 1 iterations.");
+            } else {
                 std::lock_guard<std::mutex> lock(mutex_);
-                for (const auto& [id, info] : strategies_) {
+                for (auto& [id, info] : strategies_) {
                     if (pinned_scopes_.count(id)) continue;  // pinned by a risk module
-                    for (const auto& [symbol, pos] : info.target_positions) {
-                        double fractional = std::abs(static_cast<double>(pos.quantity) -
-                                                     std::round(static_cast<double>(pos.quantity)));
-                        if (fractional > 1e-6) {
-                            partials_found = true;
-                            INFO("Fractional contract detected in iteration " +
-                                 std::to_string(iteration) + ": " + symbol +
-                                 ", quantity=" + std::to_string(pos.quantity));
-                            break;
-                        }
-                    }
-                    if (partials_found)
-                        break;
-                }
-            }
-
-            if (!partials_found) {
-                if (config_.allow_fractional_positions) {
-                    INFO("Fractional positions permitted; accepting iteration " +
-                         std::to_string(iteration) +
-                         " output as final (risk scale applied once). Converged!");
-                } else {
-                    INFO("No partial contracts after iteration " + std::to_string(iteration) +
-                         ". Converged!");
-                    // The 1e-6 test above is a convergence test, not a guard: a quantity it
-                    // passed as whole may still hold a fraction (a SCALE of 0.9999999 on a 1-lot
-                    // gives 0.9999999), from either term. Store the whole contract it was judged
-                    // to be, once, here, for every unpinned scope; an exact integer is untouched.
-                    int snapped = 0;
-                    {
-                        std::lock_guard<std::mutex> lock(mutex_);
-                        for (auto& [id, info] : strategies_) {
-                            if (pinned_scopes_.count(id)) continue;  // pinned by a risk module
-                            for (auto& [symbol, pos] : info.target_positions) {
-                                const double q = static_cast<double>(pos.quantity);
-                                const double whole = std::round(q);
-                                if (q != whole) {
-                                    pos.quantity = static_cast<Decimal>(whole);
-                                    ++snapped;
-                                }
-                            }
-                        }
-                    }
-                    if (snapped > 0) {
-                        INFO("RISK_CONVERGED_SNAP symbols=" + std::to_string(snapped) +
-                             " iteration=" + std::to_string(iteration) +
-                             ": quantities within 1e-6 of a whole contract stored as that whole "
-                             "contract on the converged exit");
+                    for (auto& [symbol, pos] : info.target_positions) {
+                        pos.quantity =
+                            static_cast<Decimal>(std::round(static_cast<double>(pos.quantity)));
                     }
                 }
-                done = true;
+                INFO("Final positions fully integer after 1 iterations.");
             }
         }
 
-        // This safeguard forcibly rounds all final positions to integers in case of conflicting
-        // rounding logic
-        if (!done) {
-            WARN("Max iterations reached (" + std::to_string(max_iterations) +
-                 "). Forcing final rounding to remove any partial contracts.");
-
-            std::lock_guard<std::mutex> lock(mutex_);
-            for (auto& [id, info] : strategies_) {
-                if (pinned_scopes_.count(id)) continue;  // pinned by a risk module
-                for (auto& [symbol, pos] : info.target_positions) {
-                    double original_quantity = static_cast<double>(pos.quantity);
-                    pos.quantity =
-                        static_cast<Decimal>(std::round(static_cast<double>(pos.quantity)));
-                    if (std::abs(original_quantity - static_cast<double>(pos.quantity)) > 1e-6) {
-                        INFO("Final forced rounding for " + symbol + ": " +
-                             std::to_string(original_quantity) + " -> " +
-                             std::to_string(pos.quantity));
-                    }
-                }
-            }
-            INFO("Final rounding completed. No partial contracts remain.");
-        } else if (risk_outcome.pin_all) {
-            INFO("Final positions pinned by a risk " +
-                 std::string(risk_outcome.action == RiskAction::REPLACE ? "replacement"
-                                                                        : "refusal") +
-                 " after " + std::to_string(iteration) + " iterations; rounding skipped.");
-        } else {
-            INFO("Final positions fully integer after " + std::to_string(iteration) +
-                 " iterations.");
-        }
-
-        // Post-rounding risk point: finalize() on the final book, before the final check, the
-        // chop-source attribution and the current-positions copy below all read it (silent
-        // unless a module warns, refuses or is rejected).
-        if (!risk_modules_.empty() || !sleeve_risk_modules_.empty()) {
-            auto post_result =
-                apply_post_rounding_risk(data, std::min(iteration, max_iterations), prev_positions,
-                                         current_timestamp, skip_execution_generation);
-            if (post_result.is_error()) return post_result;
-        }
-
-        // Final verification of all positions for partial contracts.
-        // Diagnostic only -- it reports, it does not alter the position. Skipped when the
-        // portfolio permits fractional positions, where a fraction is the intended result
-        // and not an anomaly: reporting it would emit an ERROR per symbol per bar (1,702
-        // in one equity run) and bury the errors that do matter.
         {
             std::lock_guard<std::mutex> lock(mutex_);
-            if (!config_.allow_fractional_positions) {
-                for (const auto& [id, info] : strategies_) {
-                    if (pinned_scopes_.count(id)) continue;  // pinned by a risk module
-                    for (const auto& [symbol, pos] : info.target_positions) {
-                        double fractional = std::abs(static_cast<double>(pos.quantity) -
-                                                     std::round(static_cast<double>(pos.quantity)));
-                        if (fractional > 1e-6) {
-                            ERROR("FINAL CHECK: Fractional contract detected for " + symbol +
-                                  " after all iterations. Quantity=" + std::to_string(pos.quantity));
-                        }
-                    }
-                }
-            }
-
-            // Chop-source attribution: classify each integer position transition for trades
-            // about to be generated (final integer != prev integer). Tags with which pipeline
-            // layer caused the change (strategy / QP / risk-scale / unclassified).
-            for (auto& [id, info] : strategies_) {
-                auto prev_it = prev_positions.find(id);
-                if (prev_it == prev_positions.end()) continue;
-                for (const auto& [sym, target_pos] : info.target_positions) {
-                    double final_q = std::round(static_cast<double>(target_pos.quantity));
-                    double prev_q = 0.0;
-                    auto pp = prev_it->second.find(sym);
-                    if (pp != prev_it->second.end()) {
-                        prev_q = std::round(static_cast<double>(pp->second.quantity));
-                    }
-                    if (std::abs(final_q - prev_q) < 0.5) continue;  // No trade
-
-                    double strat_q = std::round(attr_strategy_target[id][sym]);
-                    double qp_q = std::round(attr_post_qp[id][sym]);
-                    std::string source;
-                    if (std::abs(strat_q - prev_q) >= 0.5) {
-                        source = "STRATEGY_FLIP";
-                    } else if (std::abs(qp_q - strat_q) >= 0.5) {
-                        source = "QP_FLIP";
-                    } else if (std::abs(final_q - qp_q) >= 0.5) {
-                        source = "RISK_SCALE_FLIP";
-                    } else {
-                        source = "UNCLASSIFIED";
-                    }
-                    DEBUG("CHOP_SOURCE: symbol=" + sym + " source=" + source +
-                         " prev=" + std::to_string(prev_q) +
-                         " strat=" + std::to_string(strat_q) +
-                         " qp=" + std::to_string(qp_q) +
-                         " final=" + std::to_string(final_q));
-                }
-            }
-
             // CRITICAL FIX: Update current_positions with optimized/rounded target_positions
             // This ensures get_strategy_positions() returns integer positions, not fractional ones
             for (auto& [id, info] : strategies_) {
@@ -889,8 +706,10 @@ Result<void> PortfolioManager::process_market_data(const std::vector<Bar>& data,
                 }
 
                 // Generate execution reports per strategy (before aggregation)
-                // This allows accurate per-strategy execution tracking
+                // This allows accurate per-strategy execution tracking. The one pass has already
+                // generated its own fills (rebalance_one_pass).
                 for (auto& [strategy_id, info] : strategies_) {
+                    if (one_pass) break;
                     auto& strategy_execs = strategy_executions_[strategy_id];
                     // Start counter from current size to ensure unique IDs across all periods.
                     // T-ROLLX: the ROLL legs (RL-<sid>-<n>, inserted ahead of a bar's fills) are
@@ -979,26 +798,6 @@ Result<void> PortfolioManager::process_market_data(const std::vector<Bar>& data,
                         // been filled. Establishing a position from flat is simply
                         // current_qty == 0 and needs no special case.
                         if (std::abs(trade_size) > 1e-6) {
-                            // The backtest predicate (T-7a C4; T-4c J1 re-keyed on the session
-                            // classifier): a symbol whose signal-group bar is not a SESSION (no
-                            // bar, or a JUNK bar) gets no fill and NO BOOK CHANGE. Its book is
-                            // held at what has actually been filled, so it cannot earn P&L on
-                            // contracts it never bought. The hold does not queue the change: a
-                            // later cycle trades only if its own re-anchored target, computed on
-                            // that cycle's bars, still differs from the ledger, so a hold can
-                            // outlast the gap or never trade at all (T-4c E13 / ADVERSARIAL F5).
-                            if (session_symbols && !session_symbols->count(symbol)) {
-                                auto book_it = info.current_positions.find(symbol);
-                                if (book_it != info.current_positions.end()) {
-                                    book_it->second.quantity = Decimal(current_qty);
-                                }
-                                INFO("BOOK_GATE backtest " + symbol + " (" + strategy_id +
-                                     "): no SESSION bar in the signal group -- book held at "
-                                     "filled qty=" + std::to_string(current_qty) +
-                                     " instead of target " + std::to_string(new_qty));
-                                continue;
-                            }
-
                             // The symbol's LATEST-dated bar in this call (the signal group's
                             // close). T-7b-1 7a: on a release cycle the backtest feeds a withheld
                             // JUNK bar ahead of the symbol's new bar, so the first bar is not the
@@ -1006,20 +805,6 @@ Result<void> PortfolioManager::process_market_data(const std::vector<Bar>& data,
                             const double latest_price = latest_close_of(data, symbol);
 
                             if (latest_price == 0.0) {
-                                // T-7b-2 9 (J1): with a session set, no fill means no book
-                                // change, as live's STRICT rollback puts an unpriced change back
-                                // to its stored row (execute_strategy_day_strict). Without a set
-                                // (live callers, the equity backtest) the old skip is kept.
-                                if (session_symbols) {
-                                    auto book_it = info.current_positions.find(symbol);
-                                    if (book_it != info.current_positions.end()) {
-                                        book_it->second.quantity = Decimal(current_qty);
-                                    }
-                                    WARN("BOOK_GATE backtest " + symbol + " (" + strategy_id +
-                                         "): no usable close in the signal group -- book held "
-                                         "at filled qty=" + std::to_string(current_qty) +
-                                         " instead of target " + std::to_string(new_qty));
-                                }
                                 continue;  // Skip if price not available
                             }
 
@@ -1027,53 +812,6 @@ Result<void> PortfolioManager::process_market_data(const std::vector<Bar>& data,
                         }
                     }
 
-                    // T-7b-2 9 (J1; T-4c section 8 condition 3(a), ADVERSARIAL J1-E): a symbol the
-                    // ledger holds that the target map no longer carries is never visited by the
-                    // loop above, and `current_positions = target_positions` has already dropped
-                    // it from the book with no fill. With a session set it is treated as live
-                    // treats it: not a SESSION -> re-inserted at the filled quantity from the
-                    // previous book (hold_non_session_symbols' second loop, no close-out); a
-                    // SESSION -> closed out to flat at the signal group's close (the execution
-                    // step's close-out loop). Sorted, after the target loop, so the target loop's
-                    // fills keep their order and ids. Without a set the parent's drop is kept.
-                    if (session_symbols) {
-                        std::vector<std::string> absent;
-                        for (const auto& [symbol, filled_qty] : strategy_filled) {
-                            if (std::abs(filled_qty) <= 1e-6) continue;
-                            if (info.target_positions.count(symbol)) continue;
-                            absent.push_back(symbol);
-                        }
-                        std::sort(absent.begin(), absent.end());
-                        for (const auto& symbol : absent) {
-                            const double current_qty = strategy_filled.at(symbol);
-                            const double latest_price = session_symbols->count(symbol)
-                                                            ? latest_close_of(data, symbol)
-                                                            : 0.0;
-                            if (latest_price != 0.0) {
-                                INFO("BOOK_GATE backtest " + symbol + " (" + strategy_id +
-                                     "): absent from the target on a SESSION bar -- closed out "
-                                     "from filled qty=" + std::to_string(current_qty) +
-                                     " at the signal group's close");
-                                generate_fill(symbol, current_qty, 0.0, latest_price);
-                                continue;
-                            }
-                            Position held;
-                            auto prev_strategy = prev_positions.find(strategy_id);
-                            if (prev_strategy != prev_positions.end()) {
-                                auto prev_row = prev_strategy->second.find(symbol);
-                                if (prev_row != prev_strategy->second.end()) held = prev_row->second;
-                            }
-                            held.symbol = symbol;
-                            held.quantity = Decimal(current_qty);
-                            info.current_positions[symbol] = held;
-                            INFO("BOOK_GATE backtest " + symbol + " (" + strategy_id + "): " +
-                                 (session_symbols->count(symbol)
-                                      ? std::string("no usable close in the signal group")
-                                      : std::string("no SESSION bar in the signal group")) +
-                                 " -- absent from the target, book held at filled qty=" +
-                                 std::to_string(current_qty) + "; no close-out");
-                        }
-                    }
                     INFO("Total executions generated for strategy " + strategy_id + ": " +
                          std::to_string(strategy_execs.size()));
                 }
@@ -1088,7 +826,7 @@ Result<void> PortfolioManager::process_market_data(const std::vector<Bar>& data,
                 // pass is a fresh process whose filled ledger is empty, so its reports are each
                 // sleeve's whole held book: no order, never stored; the runners net the rows they
                 // store themselves, after PHASE 4.
-                if (is_backtest_) {
+                if (is_backtest_ && !one_pass) {
                     std::vector<transaction_cost::SleeveExecution> bar_rows;
                     for (auto& [sid, execs] : strategy_executions_) {
                         auto from = netting_bar_start.find(sid);
@@ -1251,50 +989,15 @@ std::vector<double> PortfolioManager::calculate_weights_per_contract(
 
 std::vector<double> PortfolioManager::calculate_trading_costs(
     const std::vector<std::string>& symbols, [[maybe_unused]] double capital) const {
+    // The generic optimiser step's cost vector. Only a book that names no overlay sleeve reaches
+    // it (a futures book is rebalanced by the one pass, which prices each contract through the
+    // cost model itself), and such a book has no trend sleeve to read a contract size and price
+    // from: every entry is zero, named once per symbol as it always was. The branch that read a
+    // trend sleeve's instrument data was reached by no book after the one pass and is gone.
     std::vector<double> costs(symbols.size(), 0.0);
-
-    // Collect all trading data once
-    std::unordered_map<std::string, const InstrumentData*> all_trading_data;
-    for (const auto& [strategy_id, info] : strategies_) {
-        auto trend_strategy = std::dynamic_pointer_cast<TrendFollowingStrategy>(info.strategy);
-        if (trend_strategy) {
-            const auto& strategy_data = trend_strategy->get_all_instrument_data();
-            for (const auto& [symbol, data] : strategy_data) {
-                all_trading_data[symbol] = &data;
-            }
-        }
+    for (const auto& symbol : symbols) {
+        WARN("Symbol " + symbol + " not found in trading data, using zero cost");
     }
-
-    for (size_t i = 0; i < symbols.size(); ++i) {
-        const std::string& symbol = symbols[i];
-
-        // Get contract size and price for this symbol
-        auto it = all_trading_data.find(symbol);
-        if (it != all_trading_data.end()) {
-            const auto& data = *(it->second);
-            double contract_size = data.contract_size;
-            double price = data.price_history.empty() ? 1.0 : data.price_history.back();
-            double fx_rate = 1.0;  // Default exchange rate
-
-            // F4 (T-7b-1 C8d, ledger M-04): the entry is the cost of ONE contract over that
-            // contract's notional. The optimizer charges |dw| x costs[i] with dw in weight
-            // (notional / capital); n contracts are dw = n x notional / capital and cost
-            // n x cost_per_contract dollars, n x cost_per_contract / capital of capital, which is
-            // |dw| x cost_per_contract / notional. The entry was cost_per_contract / capital,
-            // which understated the penalty by capital / notional (13.8x for MES at 7,252.5 on
-            // $500,000, 4.6x for ZF at 107.85). notional uses the same contract_size and price
-            // as the weights per contract in optimize_positions.
-            double notional_per_contract = contract_size * price * fx_rate;
-            auto cost_result = cost_manager_.calculate_costs(symbol, 1.0, price);
-            double cost_per_contract = cost_result.total_transaction_costs;
-            costs[i] = (notional_per_contract > 0.0) ? (cost_per_contract / notional_per_contract)
-                                                     : 0.0;
-        } else {
-            WARN("Symbol " + symbol + " not found in trading data, using zero cost");
-            costs[i] = 0.0;
-        }
-    }
-
     return costs;
 }
 
@@ -1986,259 +1689,10 @@ SleeveDistribution distribute_optimizer_contracts(double optimizer_contracts,
     return d;
 }
 
-CutDelivery deliver_cut_in_whole_contracts(const CutDeliveryInput& in) {
-    CutDelivery out;
-    const double f = in.factor;
-    auto held = [&in](const std::string& sym) {
-        auto it = in.held.find(sym);
-        return it == in.held.end() ? 0.0 : std::round(it->second);
-    };
-    auto notional = [&in](const std::string& sym) {
-        auto it = in.notional_per_contract.find(sym);
-        return it == in.notional_per_contract.end() ? -1.0 : it->second;
-    };
-    std::map<std::string, double>& R = out.book;
-    for (const auto& [sym, q] : in.lap_book) R[sym] = std::round(q);
-    for (const auto& [sym, q] : R) {
-        const double n = notional(sym);
-        if (n <= 0.0) {
-            if (q != 0.0) ++out.unknown_notional;
-            continue;
-        }
-        out.lap_notional += std::abs(q) * n;
-        out.held_notional += std::abs(held(sym)) * n;
-    }
-    out.target_notional = f * out.lap_notional;
-
-    // D-1b: a symbol the BOOK_GATE will hold stores its held quantity whatever the cut does, so it
-    // starts there and is never a removal candidate; the notionals above stay the lap book's.
-    auto fixed = [&in](const std::string& sym) { return in.book_gate_holds.count(sym) > 0; };
-    for (const auto& sym : in.book_gate_holds) {
-        auto it = R.find(sym);
-        if (it == R.end()) continue;
-        const double lap_q = it->second;
-        it->second = held(sym);
-        if (lap_q != 0.0 || it->second != 0.0) out.book_gate_fixed.emplace_back(sym, lap_q);
-    }
-
-    // The covariance's index by symbol (empty without a covariance: best fit only).
-    std::unordered_map<std::string, size_t> cix;
-    if (!in.covariance_symbols.empty() && in.covariance.size() == in.covariance_symbols.size()) {
-        for (size_t i = 0; i < in.covariance_symbols.size(); ++i) cix[in.covariance_symbols[i]] = i;
-    }
-    const double cap = in.capital;
-    // Squared tracking error of the book R against the gate's target f x (the lap's book), in the
-    // optimizer's weight space (contracts x notional / capital).
-    auto te_sq = [&]() {
-        const size_t m = in.covariance_symbols.size();
-        std::vector<double> e(m, 0.0);
-        for (const auto& [sym, idx] : cix) {
-            auto it = R.find(sym);
-            const double n = notional(sym);
-            if (it == R.end() || n <= 0.0) continue;
-            auto bt = in.lap_book.find(sym);
-            const double b = bt == in.lap_book.end() ? 0.0 : bt->second;
-            e[idx] = (f * b - it->second) * n / cap;
-        }
-        double t = 0.0;
-        for (size_t i = 0; i < m; ++i)
-            for (size_t j = 0; j < m; ++j) t += e[i] * in.covariance[i][j] * e[j];
-        return t;
-    };
-    auto gross = [&]() {
-        double g = 0.0;
-        for (const auto& [sym, q] : R) {
-            const double n = notional(sym);
-            if (n > 0.0) g += std::abs(q) * n;
-        }
-        return g;
-    };
-    // A contract beyond the held book on the same side (or the whole position when the held book is
-    // flat or on the other side) is one the day's request added.
-    auto is_new = [&](const std::string& sym, double q) {
-        const double h = held(sym);
-        if (h == 0.0 || (h > 0.0) != (q > 0.0)) return true;
-        return std::abs(q) > std::abs(h);
-    };
-
-    double g = gross();
-    while (g > out.target_notional + 1e-6) {
-        const double excess = g - out.target_notional;
-        std::string pick;
-        bool pick_new = false;
-        for (int pass = 0; pass < 2 && pick.empty(); ++pass) {
-            // pass 0: the contracts the day's request added; pass 1: held contracts.
-            double best_cover = -1.0, best_large = -1.0;
-            std::string cover, large;
-            for (const auto& [sym, q] : R) {
-                const double n = notional(sym);
-                if (q == 0.0 || n <= 0.0 || fixed(sym)) continue;
-                if ((pass == 0) != is_new(sym, q)) continue;
-                if (n >= excess && (best_cover < 0.0 || n < best_cover)) {
-                    best_cover = n;
-                    cover = sym;
-                }
-                if (n > best_large) {
-                    best_large = n;
-                    large = sym;
-                }
-            }
-            pick = !cover.empty() ? cover : large;
-            if (!pick.empty()) {
-                // Inside the class, the removal that leaves the book nearest the target in tracking
-                // error; a symbol outside the covariance is not ranked.
-                double best = -1.0;
-                std::string te_pick;
-                for (auto& [sym, q] : R) {
-                    const double n = notional(sym);
-                    if (q == 0.0 || n <= 0.0 || !cix.count(sym) || fixed(sym)) continue;
-                    if ((pass == 0) != is_new(sym, q)) continue;
-                    const double step = q > 0.0 ? 1.0 : -1.0;
-                    q -= step;
-                    const double t = te_sq();
-                    q += step;
-                    if (best < 0.0 || t < best - 1e-18) {
-                        best = t;
-                        te_pick = sym;
-                    }
-                }
-                if (!te_pick.empty()) pick = te_pick;
-                pick_new = is_new(pick, R[pick]);
-            }
-        }
-        if (pick.empty()) break;
-        R[pick] -= (R[pick] > 0.0 ? 1.0 : -1.0);
-        (pick_new ? out.removed_new : out.removed_held) += 1;
-        out.removed.emplace_back(pick, pick_new);
-        g = gross();
-    }
-    for (const auto& [sym, q] : R) {
-        const double n = notional(sym);
-        if (n > 0.0) out.cut_notional += std::abs(q) * n;
-    }
-    return out;
-}
-
-// 9e: deliver this lap's cut in whole contracts (deliver_cut_in_whole_contracts), write the cut
-// book into the optimizing sleeves' targets (split by largest remainder of each sleeve's cut
-// target), which is the book the call stores (the loop ends on this lap), and log it as
-// RISK_CUT_BOOK, followed by RISK_CUT_BOOK_GATE when a symbol the BOOK_GATE will hold was fixed at
-// its held quantity and RISK_OVER_LIMIT_BY_HOLD when those holds keep the book above the level.
-void PortfolioManager::deliver_lap_cut(int lap, const std::unordered_set<std::string>& holds,
-                                       const std::unordered_set<std::string>* session_symbols) {
-    std::lock_guard<std::mutex> lock(mutex_);
-    CutDeliveryInput in;
-    in.lap_book = lap_book_before_gate_;
-    for (const auto& [sid, sinfo] : strategies_) {
-        if (!sinfo.use_optimization || pinned_scopes_.count(sid)) continue;
-        for (const auto& [sym, pos] : sinfo.current_positions) {
-            in.held[sym] += static_cast<double>(pos.quantity);
-        }
-    }
-    in.book_gate_holds.insert(holds.begin(), holds.end());
-    if (session_symbols) {
-        for (const auto& [sym, q] : in.lap_book) {
-            (void)q;
-            if (!session_symbols->count(sym)) in.book_gate_holds.insert(sym);
-        }
-        for (const auto& [sym, q] : in.held) {
-            (void)q;
-            if (!session_symbols->count(sym)) in.book_gate_holds.insert(sym);
-        }
-    }
-    in.notional_per_contract = cut_notional_per_contract_;
-    in.factor = lap_cut_factor_;
-    in.capital = static_cast<double>(sizing_capital_);
-    if (covariance_cache_valid_) {
-        in.covariance_symbols = cached_symbols_;
-        in.covariance = cached_covariance_;
-    }
-    const CutDelivery d = deliver_cut_in_whole_contracts(in);
-
-    std::string removed;
-    for (const auto& [sym, added] : d.removed) removed += " " + sym + (added ? "(new)" : "(held)");
-    auto held = [&in](const std::string& sym) {
-        auto it = in.held.find(sym);
-        return it == in.held.end() ? 0.0 : std::round(it->second);
-    };
-    std::string changed;
-    for (const auto& [sym, q] : d.book) {
-        const double b = std::round(in.lap_book.at(sym));
-        if (q != b || q != held(sym)) {
-            std::ostringstream c;
-            c << " " << sym << " held=" << held(sym) << " lap=" << b << " cut=" << q;
-            changed += c.str();
-        }
-    }
-    for (const auto& [sym, q] : d.book) {
-        std::vector<SleeveContribution> contributions;
-        for (auto& [sid, sinfo] : strategies_) {
-            if (!sinfo.use_optimization || pinned_scopes_.count(sid)) continue;
-            if (!sinfo.target_positions.count(sym)) continue;
-            const double target = static_cast<double>(sinfo.target_positions.at(sym).quantity);
-            contributions.push_back({sid, target, target});
-        }
-        if (contributions.empty()) continue;
-        const SleeveDistribution split = distribute_optimizer_contracts(q, contributions);
-        for (size_t k = 0; k < contributions.size(); ++k) {
-            strategies_.at(contributions[k].strategy_id).target_positions[sym].quantity =
-                static_cast<Decimal>(static_cast<double>(split.stored[k]));
-        }
-    }
-    char buf[512];
-    std::snprintf(buf, sizeof(buf),
-                  "RISK_CUT_BOOK lap=%d factor=%.10f notional lap_book=%.2f held=%.2f "
-                  "target=%.2f cut_book=%.2f delivered=%.6f removed_new=%d removed_held=%d "
-                  "unknown_notional=%d",
-                  lap, lap_cut_factor_,
-                  d.lap_notional, d.held_notional, d.target_notional, d.cut_notional,
-                  d.lap_notional > 0.0 ? d.cut_notional / d.lap_notional : 1.0, d.removed_new,
-                  d.removed_held, d.unknown_notional);
-    INFO(std::string(buf) + " removed:" + removed + " |" + changed);
-    if (!d.book_gate_fixed.empty()) {
-        std::ostringstream g;
-        g << "RISK_CUT_BOOK_GATE lap=" << lap << " held_by_book_gate=" << d.book_gate_fixed.size()
-          << ":";
-        for (const auto& [sym, lap_q] : d.book_gate_fixed) {
-            g << " " << sym << " held=" << held(sym) << " lap=" << lap_q;
-        }
-        INFO(g.str());
-    }
-    // Ruling 7: the cuttable symbols are exhausted and the held contracts keep the cut book above
-    // the gate's level. The book is stored over the limit, warned and recorded for the runner.
-    // Without a fixed hold the rule can always reach the level: removing every cuttable contract
-    // leaves a gross of 0 <= factor x the lap book's, so only a hold can leave it above.
-    if (!d.book_gate_fixed.empty() && d.cut_notional > d.target_notional + 1e-6) {
-        over_limit_by_hold_ = OverLimitByHold{};
-        over_limit_by_hold_.over_limit_by_hold = true;
-        over_limit_by_hold_.target = d.target_notional;
-        over_limit_by_hold_.cut_book = d.cut_notional;
-        over_limit_by_hold_.lap = lap;
-        std::string names;
-        for (const auto& [sym, lap_q] : d.book_gate_fixed) {
-            (void)lap_q;
-            over_limit_by_hold_.symbols.push_back(sym);
-            names += (names.empty() ? "" : ",") + sym;
-        }
-        char w[256];
-        std::snprintf(w, sizeof(w), "RISK_OVER_LIMIT_BY_HOLD lap=%d target=%.2f cut_book=%.2f held=",
-                      lap, d.target_notional, d.cut_notional);
-        WARN(std::string(w) + names +
-             ": the cuttable symbols are exhausted and the BOOK_GATE holds keep the book above the "
-             "gate's level; the book is stored over the limit");
-    }
-}
-
-OverLimitByHold PortfolioManager::last_over_limit_by_hold() const {
-    std::lock_guard<std::mutex> lock(mutex_);
-    return over_limit_by_hold_;
-}
-
 Result<void> PortfolioManager::optimize_positions() {
     try {
         // Get unique symbols across all strategies and collect data under lock
         std::vector<std::string> symbols;
-        std::unordered_map<std::string, const InstrumentData*> all_trading_data;
         std::vector<double> current_weights;
         std::vector<double> target_weights;
         std::vector<double> weights_per_contract;
@@ -2353,38 +1807,15 @@ Result<void> PortfolioManager::optimize_positions() {
                 return Result<void>();
             }
 
-            // Collect all instrument data
-            for (const auto& [id, info] : strategies_) {
-                auto trend_strategy =
-                    std::dynamic_pointer_cast<TrendFollowingStrategy>(info.strategy);
-                if (trend_strategy) {
-                    const auto& strategy_data = trend_strategy->get_all_instrument_data();
-                    for (const auto& [symbol, data] : strategy_data) {
-                        all_trading_data[symbol] = &data;
-                    }
-                }
-            }
-
-            // Calculate weights per contract (only for valid symbols)
+            // Calculate weights per contract (only for valid symbols). Only a book that names no
+            // overlay sleeve reaches this step, and it has no trend sleeve to read a contract size
+            // and price from (the branch that did was reached by no book after the one pass and
+            // is gone): every symbol takes the default weight, named as it always was.
             weights_per_contract.reserve(symbols.size());
 
             for (auto const& symbol : symbols) {
-                // Get contract size and price for this symbol
-                auto it = all_trading_data.find(symbol);
-                if (it != all_trading_data.end()) {
-                    const auto& data = *(it->second);
-                    double contract_size = data.contract_size;
-                    double price = data.price_history.empty() ? 1.0 : data.price_history.back();
-                    double fx_rate = 1.0;  // Default exchange rate
-
-                    // Calculate notional per contract
-                    double notional_per_contract = contract_size * price * fx_rate;
-                    weights_per_contract.push_back(notional_per_contract /
-                                                   static_cast<double>(sizing_capital_));
-                } else {
-                    WARN("Symbol " + symbol + " not found in trading data, using default weight");
-                    weights_per_contract.push_back(0.01);  // Reasonable default
-                }
+                WARN("Symbol " + symbol + " not found in trading data, using default weight");
+                weights_per_contract.push_back(0.01);  // Reasonable default
             }
 
             // Build current and target in weight space (only for valid symbols)
@@ -2436,12 +1867,6 @@ Result<void> PortfolioManager::optimize_positions() {
 
             // Calculate trading costs (inside lock since it accesses strategies_)
             costs = calculate_trading_costs(symbols, static_cast<double>(sizing_capital_));
-
-            // 9e: the notional per contract a delivered cut is measured in, as priced here.
-            for (size_t i = 0; i < symbols.size(); ++i) {
-                cut_notional_per_contract_[symbols[i]] =
-                    weights_per_contract[i] * static_cast<double>(sizing_capital_);
-            }
         }  // End of mutex lock scope
 
         // Use cached covariance if valid, otherwise compute and cache
@@ -2554,20 +1979,6 @@ Result<void> PortfolioManager::optimize_positions() {
                     }
                 }
 
-                // Get original position from before optimization (stored in your trading data)
-                for (const auto& [_, info] : strategies_) {
-                    auto trend_strategy =
-                        std::dynamic_pointer_cast<TrendFollowingStrategy>(info.strategy);
-                    if (trend_strategy) {
-                        const auto& data = trend_strategy->get_all_instrument_data();
-                        auto it = data.find(symbol);
-                        if (it != data.end()) {
-                            original_position = it->second.final_position;
-                            break;
-                        }
-                    }
-                }
-
                 INFO("Symbol " + symbol + ": raw=" + std::to_string(original_position) +
                      ", optimized=" + std::to_string(optimized_position) +
                      ", change=" + std::to_string(optimized_position - original_position));
@@ -2583,6 +1994,608 @@ Result<void> PortfolioManager::optimize_positions() {
                                 std::string("Error during optimization: ") + e.what(),
                                 "PortfolioManager");
     }
+}
+
+bool PortfolioManager::one_pass_book() const {
+    return !config_.overlay_sleeve.empty() && config_.overlay_tau > 0.0 &&
+           strategies_.count(config_.overlay_sleeve) > 0;
+}
+
+OnePassDay PortfolioManager::last_one_pass() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return one_pass_day_;
+}
+
+Result<void> PortfolioManager::rebalance_one_pass(
+    const std::vector<Bar>& data, bool is_warmup, std::optional<Timestamp> as_of,
+    const std::unordered_set<std::string>* session_symbols,
+    const std::unordered_set<std::string>& caller_holds,
+    const std::unordered_map<std::string, std::unordered_map<std::string, Position>>&
+        prev_positions) {
+    // The decision row of this rebalance, recorded after the lock is released.
+    RiskDecision decision;
+    RiskAction applied = RiskAction::NONE;
+    Decimal applied_factor{Decimal(1.0)};
+    RiskPhase phase = RiskPhase::LAP;
+    std::string failure;
+    bool unseeded = false;
+    std::string overlay_module_id;
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        const auto first = strategies_.find(config_.overlay_sleeve);
+
+        // The overlay's limits: the book's one carver module carries them (ratios to tau and the
+        // two leverage limits). A book that names an overlay sleeve runs the overlay and nothing
+        // else at portfolio scope.
+        const CarverRiskModule* carver = nullptr;
+        for (const auto& module : risk_modules_) {
+            const auto* candidate = dynamic_cast<const CarverRiskModule*>(module.get());
+            if (candidate == nullptr || !candidate->overlay_limits().set() || carver != nullptr ||
+                risk_modules_.size() != 1) {
+                return make_error<void>(
+                    ErrorCode::INVALID_ARGUMENT,
+                    "A book that names an overlay sleeve runs one carver risk module carrying the "
+                    "overlay's limits (R_max, R_jump_max, R_shock_max) and no other portfolio "
+                    "module",
+                    "PortfolioManager");
+            }
+            carver = candidate;
+        }
+        if (carver == nullptr) {
+            return make_error<void>(ErrorCode::INVALID_ARGUMENT,
+                                    "A book that names an overlay sleeve has no carver risk module "
+                                    "carrying the overlay's limits",
+                                    "PortfolioManager");
+        }
+        overlay_module_id = carver->id();
+
+        // The sleeves in id order, and each sleeve's held book: the filled ledger in a backtest,
+        // the book the call started with (the seeded T-1 book of a live run) otherwise.
+        std::vector<std::string> sids;
+        for (const auto& [sid, info] : strategies_) {
+            (void)info;
+            sids.push_back(sid);
+        }
+        std::sort(sids.begin(), sids.end());
+        auto held_of = [&](const std::string& sid, const std::string& symbol) {
+            if (is_backtest_) {
+                const auto ledger = filled_positions_.find(sid);
+                if (ledger == filled_positions_.end()) return 0.0;
+                const auto q = ledger->second.find(symbol);
+                return q == ledger->second.end() ? 0.0 : q->second;
+            }
+            const auto book = prev_positions.find(sid);
+            if (book == prev_positions.end()) return 0.0;
+            const auto q = book->second.find(symbol);
+            return q == book->second.end() ? 0.0 : static_cast<double>(q->second.quantity);
+        };
+
+        // The symbols: everything a sleeve lists or holds (section 5.1: no silent default). One the
+        // first sleeve has no series, close or multiplier for cannot be weighed: with no position
+        // it is named and left alone; with a held position it enters the pass as a FIXED row at
+        // its last usable close. One it weighs but the cost model cannot price is held (below).
+        std::set<std::string> listed;
+        for (const auto& sid : sids) {
+            for (const auto& [symbol, pos] : strategies_.at(sid).target_positions) {
+                (void)pos;
+                listed.insert(symbol);
+            }
+            if (is_backtest_) {
+                const auto ledger = filled_positions_.find(sid);
+                if (ledger != filled_positions_.end()) {
+                    for (const auto& [symbol, q] : ledger->second) {
+                        if (q != 0.0) listed.insert(symbol);
+                    }
+                }
+            } else {
+                const auto book = prev_positions.find(sid);
+                if (book != prev_positions.end()) {
+                    for (const auto& [symbol, pos] : book->second) {
+                        if (static_cast<double>(pos.quantity) != 0.0) listed.insert(symbol);
+                    }
+                }
+            }
+        }
+        // A stopped overlay sleeve leaves the book with no series to weigh anything on: the scope is
+        // refused (the held book stored, REFUSE recorded), never stored as a clean day.
+        std::string scope_refusal;
+        const bool overlay_running = first->second.strategy &&
+                                     first->second.strategy->get_state() == StrategyState::RUNNING;
+        if (!overlay_running) {
+            scope_refusal = "the overlay sleeve " + config_.overlay_sleeve +
+                            " is not RUNNING, so the book cannot be weighed";
+        }
+        std::vector<std::string> symbols;
+        std::vector<StrategyInterface::OverlaySeries> own;
+        std::vector<double> costs;
+        std::vector<std::string> unpriced;       // not passed: every sleeve keeps its held quantity
+        std::vector<char> unweighed_held;        // per passed symbol: a held row fixed at its last close
+        std::vector<std::string> unweighed_lines;
+        for (const auto& symbol : listed) {
+            if (!overlay_running) {
+                unpriced.push_back(symbol);
+                continue;
+            }
+            StrategyInterface::OverlaySeries series;
+            const bool has_series = first->second.strategy->overlay_series(symbol, &series);
+            const bool weighed = has_series && series.close > 0.0 && series.multiplier > 0.0 &&
+                                 std::isfinite(series.close) && std::isfinite(series.multiplier);
+            // The cost of one contract bought at the signal close, as the cost model prices it. A
+            // symbol the cost model has no usable volume for (never fed, or fed nothing but zero
+            // volume) has no cost: the model would price it on a generic ADV, which is not a price.
+            const bool cost_fed = cost_manager_.has_usable_volume(symbol);
+            const double cost =
+                weighed && cost_fed ? cost_manager_.calculate_costs(symbol, 1.0, series.close)
+                                          .total_transaction_costs
+                                    : 0.0;
+            if (weighed && cost_fed && std::isfinite(cost) && cost > 0.0) {
+                symbols.push_back(symbol);
+                own.push_back(std::move(series));
+                costs.push_back(cost);
+                unweighed_held.push_back(0);
+                continue;
+            }
+            if (weighed) {
+                // The sleeve weighs it but the cost model has no cost of its own for it (it was
+                // never fed the symbol, or prices it at nothing). It stays in the pass, a
+                // participant whose dates count in the overlay's window, as a HELD row at its held
+                // quantity (zero included): it cannot be opened or traded on a default cost.
+                unweighed_lines.push_back(
+                    "BOOK_UNPRICED " + symbol + ": the cost model has no cost for it (" +
+                    (cost_fed ? "a cost that is not a positive number"
+                              : (cost_manager_.has_volume_history(symbol)
+                                     ? "its fed volume is zero"
+                                     : "never fed its volume")) +
+                    "); held at the held quantity as a fixed row, no fill");
+                symbols.push_back(symbol);
+                own.push_back(std::move(series));
+                costs.push_back(0.0);
+                unweighed_held.push_back(1);
+                continue;
+            }
+            bool held_row = false;
+            for (const auto& sid : sids) held_row = held_row || held_of(sid, symbol) != 0.0;
+            if (!held_row) {
+                unpriced.push_back(symbol);
+                continue;
+            }
+            // Section 6.1: a held symbol that cannot be weighed today is valued at its last usable
+            // close and its stored multiplier and enters the pass as a FIXED row at its held
+            // quantity, so it is in the leverage readings, the cap check and both sides of the
+            // delivered scale; it gets no fill. With no usable close at all the scope is refused.
+            StrategyInterface::OverlaySeries fixed_row;
+            {
+                // The last usable close: this manager's latest stored close of the symbol, else
+                // the close the last pass valued it on. The stored multiplier: the last pass's,
+                // else the registry's.
+                fixed_row.close = 0.0;
+                fixed_row.multiplier = 0.0;
+                const auto valued = one_pass_valued_.find(symbol);
+                if (valued != one_pass_valued_.end()) {
+                    fixed_row.close = valued->second.first;
+                    fixed_row.multiplier = valued->second.second;
+                } else if (registry_ && registry_->has_instrument(symbol)) {
+                    auto instrument = registry_->get_instrument(symbol);
+                    if (instrument) fixed_row.multiplier = instrument->get_multiplier();
+                }
+                const auto closes = closes_by_date_.find(symbol);
+                if (closes != closes_by_date_.end() && !closes->second.empty() &&
+                    closes->second.rbegin()->second > 0.0) {
+                    fixed_row.close = closes->second.rbegin()->second;
+                }
+            }
+            if (!(fixed_row.close > 0.0) || !(fixed_row.multiplier > 0.0) ||
+                !std::isfinite(fixed_row.close) || !std::isfinite(fixed_row.multiplier)) {
+                if (scope_refusal.empty()) {
+                    scope_refusal = "the held symbol " + symbol +
+                                    " cannot be weighed today and has no usable close or multiplier";
+                }
+                unpriced.push_back(symbol);
+                continue;
+            }
+            unweighed_lines.push_back(
+                "BOOK_UNPRICED " + symbol + ": no series, close or multiplier for it today; "
+                "held as a fixed row valued at its last usable close " +
+                std::to_string(fixed_row.close) + " x multiplier " +
+                std::to_string(fixed_row.multiplier) + ", no fill");
+            symbols.push_back(symbol);
+            own.push_back(std::move(fixed_row));
+            costs.push_back(0.0);
+            unweighed_held.push_back(1);
+        }
+        const size_t n = symbols.size();
+
+        one_pass::DayInputs in;
+        in.capital = static_cast<double>(sizing_capital_);
+        in.tau = config_.overlay_tau;
+        in.cap = config_.per_name_cap;
+        in.cost_multiplier = config_.opt_config.cost_penalty_scalar;
+        in.sign_band = config_.sign_close_band;
+        in.b_sigma_floor = config_.b_sigma_floor;
+        in.trim_max = config_.trim_max;
+        in.max_iterations = config_.opt_config.max_iterations;
+        {
+            const auto& ratios = carver->overlay_limits();
+            in.limits = {ratios.risk * in.tau, ratios.jump * in.tau, ratios.shock * in.tau,
+                         ratios.gross, ratios.net};
+        }
+        in.multiplier.assign(n, 1.0);
+        in.close.assign(n, 0.0);
+        in.held.assign(n, 0.0);
+        in.target.assign(n, 0.0);
+        in.first_forecast.assign(n, 0.0);
+        in.cost = costs;
+        in.signalling.assign(n, 0);
+        in.first_signalling.assign(n, 0);
+        in.hold.assign(n, 0);
+        in.has_bar.assign(n, 0);
+        in.ever_signalled.assign(n, 0);
+        in.jump_sigma_daily.assign(n, 0.0);
+        std::unordered_set<std::string> fed;
+        for (const auto& bar : data) fed.insert(bar.symbol);
+        // Each sleeve's unrounded contribution N*_s and held quantity, per symbol.
+        std::vector<std::vector<double>> contribution(sids.size(), std::vector<double>(n, 0.0));
+        std::vector<std::vector<double>> sleeve_held(sids.size(), std::vector<double>(n, 0.0));
+        one_pass::Mask slow_zeroed(n, 0);
+        std::vector<overlay::ParticipantSeries> views(n);
+        bool sleeve_pinned = false;
+        for (size_t i = 0; i < n; ++i) {
+            const std::string& symbol = symbols[i];
+            in.multiplier[i] = own[i].multiplier;
+            in.close[i] = own[i].close;
+            if (!unweighed_held[i]) one_pass_valued_[symbol] = {own[i].close, own[i].multiplier};
+            in.first_forecast[i] = own[i].forecast;
+            in.first_signalling[i] = own[i].signalling;
+            in.jump_sigma_daily[i] = own[i].jump_sigma_daily;
+            slow_zeroed[i] = own[i].slow_rule_zeroed;
+            in.has_bar[i] = fed.count(symbol) > 0;
+            // Section 6.1: the hold applies on sized days only (in warm-up the book follows the
+            // search): the caller's set, and in the backtest every symbol outside the session set.
+            in.hold[i] = unweighed_held[i] ||
+                         (!is_warmup &&
+                          (caller_holds.count(symbol) > 0 ||
+                           (session_symbols != nullptr && session_symbols->count(symbol) == 0)));
+            for (size_t s = 0; s < sids.size(); ++s) {
+                const auto& info = strategies_.at(sids[s]);
+                sleeve_held[s][i] = held_of(sids[s], symbol);
+                in.held[i] += sleeve_held[s][i];
+                if (pinned_scopes_.count(sids[s])) sleeve_pinned = true;
+                // A sleeve that is not RUNNING signals nothing: its held rows close on the next
+                // SESSION bar (D33) through the split below.
+                if (!info.strategy || info.strategy->get_state() != StrategyState::RUNNING) continue;
+                StrategyInterface::OverlaySeries sleeve;
+                if (!info.strategy->overlay_series(symbol, &sleeve) || !sleeve.signalling) continue;
+                const auto scaled = rebalance_applied_.find(sids[s]);
+                contribution[s][i] = sleeve.optimal_position *
+                                     (scaled == rebalance_applied_.end() ? 1.0 : scaled->second);
+                in.signalling[i] = 1;
+                in.target[i] += contribution[s][i];
+            }
+            // A fresh process keeps no memory of earlier signals: a held position stands for one.
+            in.ever_signalled[i] = ever_signalled_.count(symbol) > 0 ||
+                                   (!is_backtest_ && in.held[i] != 0.0);
+            views[i].present = true;
+            views[i].day = &own[i].day;
+            views[i].returns = &own[i].returns;
+        }
+        const overlay::Inputs window = overlay::build_inputs(in.tau, symbols, views);
+        in.returns = window.returns;
+        in.ordinals = window.ordinals;
+        // the optimiser's closes and levels on the union of the symbols' own dates
+        for (size_t i = 0; i < n; ++i) {
+            in.opt_ordinals.insert(in.opt_ordinals.end(), own[i].opt_day.begin(), own[i].opt_day.end());
+        }
+        std::sort(in.opt_ordinals.begin(), in.opt_ordinals.end());
+        in.opt_ordinals.erase(std::unique(in.opt_ordinals.begin(), in.opt_ordinals.end()),
+                              in.opt_ordinals.end());
+        const double nan = std::numeric_limits<double>::quiet_NaN();
+        in.opt_closes.assign(in.opt_ordinals.size(), std::vector<double>(n, nan));
+        in.opt_levels.assign(in.opt_ordinals.size(), std::vector<double>(n, nan));
+        for (size_t i = 0; i < n; ++i) {
+            for (size_t k = 0; k < own[i].opt_day.size(); ++k) {
+                const auto row = static_cast<size_t>(
+                    std::lower_bound(in.opt_ordinals.begin(), in.opt_ordinals.end(), own[i].opt_day[k]) -
+                    in.opt_ordinals.begin());
+                in.opt_closes[row][i] = own[i].opt_close[k];
+                in.opt_levels[row][i] = own[i].opt_level[k];
+            }
+        }
+
+        // The pass. A sleeve its own risk module refused cannot be held apart from one search on
+        // the summed book, so its refusal refuses the book; anything the arithmetic throws does too.
+        auto held_book = [&](const std::string& why) {
+            one_pass::DayResult held;
+            held.u.assign(n, 0.0);
+            for (auto* mask : {&held.free, &held.fixed, &held.band, &held.closeout,
+                               &held.participant, &held.sign_closed, &held.clipped, &held.by_hold}) {
+                mask->assign(n, 0);
+            }
+            for (auto* vector : {&held.capped_target, &held.scaled_target, &held.trimmed,
+                                 &held.sign_fill, &held.rest_fill}) {
+                vector->assign(n, 0.0);
+            }
+            // Every per-symbol vector the rebalance's record writes is sized: a refused day has a
+            // record row too (nothing capped, the search's and the pre-trim book the held book).
+            held.cap_bound.assign(n, 0);
+            held.search_book = in.held;
+            held.pre_trim = in.held;
+            held.book = in.held;
+            held.refusal = why;
+            return held;
+        };
+        one_pass::DayResult result;
+        if (!scope_refusal.empty()) {
+            result = held_book(scope_refusal);
+        } else if (sleeve_pinned) {
+            result = held_book("a sleeve of the book was refused by its own risk module");
+        } else {
+            try {
+                result = one_pass::rebalance(in);
+            } catch (const std::exception& e) {
+                result = held_book(std::string("the one pass failed: ") + e.what());
+            }
+        }
+        const bool refused = !result.refusal.empty();
+        for (size_t i = 0; i < n; ++i) {
+            if (in.signalling[i]) ever_signalled_.insert(symbols[i]);
+        }
+        const std::string day = as_of ? core::format_utc_date(*as_of) : std::string("none");
+        one_pass::append_one_pass_record(id_, day, is_warmup, symbols, in, result);
+
+        // The log lines (section 7.7).
+        Logger::register_component("RiskManager");
+        INFO(one_pass::overlay_line(symbols, in, result));
+        if (!refused && result.window.blind()) {
+            // Section 4 (D27): a BLIND window is warned. The three covariance multipliers are 1 and
+            // only the leverage term can cut.
+            WARN("OVERLAY_BLIND complete_dates=" + std::to_string(result.window.complete_dates) +
+                 " of " + std::to_string(result.window.window_dates) +
+                 " window dates: the covariance readings are blind (multipliers 1), the leverage "
+                 "term still applies");
+        }
+        if (!refused) {
+            Logger::register_component("DynamicOptimizer");
+            INFO(one_pass::optimiser_line(symbols, result));
+            if (result.pass_capped) {
+                WARN("OPTIMISER_PASS_CAP the search stopped at its pass cap after " +
+                     std::to_string(result.passes) + " passes");
+            }
+            INFO(one_pass::book_line(symbols, in, result, slow_zeroed));
+            const one_pass::KeptLines kept = one_pass::kept_lines(symbols, in, result);
+            for (const auto& line : kept.info) INFO(line);
+            for (const auto& line : kept.warn) WARN(line);
+            // The marks of section 6.4 are the risk layer's lines, and the risk layer's tag is the
+            // one the rebalance leaves registered, as it always was: every line a caller logs after
+            // this call keeps the tag it had.
+            Logger::register_component("RiskManager");
+            if (!is_warmup && !result.over_limit.empty()) {
+                WARN(one_pass::risk_trim_line(symbols, result));
+            }
+            if (!is_warmup && !result.by_hold_terms.empty()) {
+                WARN(one_pass::over_limit_by_hold_line(symbols, result));
+            }
+        }
+        for (const auto& symbol : unpriced) {
+            // Left out of the pass: with no position there is nothing to hold; with one (a refused
+            // scope) every sleeve keeps its held quantity.
+            bool held_row = false;
+            for (const auto& sid : sids) held_row = held_row || held_of(sid, symbol) != 0.0;
+            WARN("BOOK_UNPRICED " + symbol +
+                 (held_row ? ": it cannot be weighed today; left out of the pass, every sleeve "
+                             "keeps its held quantity, no fill"
+                           : ": the overlay sleeve has no series, close or multiplier for it and "
+                             "no sleeve holds it; left out of the pass, not opened"));
+        }
+        for (const auto& line : unweighed_lines) WARN(line);
+
+        // The record the runners store, and the decision row.
+        OnePassDay record;
+        record.ran = true;
+        record.sized = !is_warmup;
+        record.refused = refused;
+        record.sizing_capital = in.capital;
+        decision.module_id = overlay_module_id;
+        if (refused) {
+            phase = result.refusal_on_reread ? RiskPhase::POST_ROUNDING : RiskPhase::LAP;
+            if (sleeve_pinned) phase = RiskPhase::LAP;
+            decision.action = RiskAction::REFUSE;
+            decision.reason = result.refusal;
+            applied = RiskAction::REFUSE;
+            failure = result.refusal;
+            ERROR("Risk overlay refused portfolio " + id_ + ": " + result.refusal +
+                  "; every sleeve is held at its previous book and no order is sent");
+            unseeded = !scope_is_seeded(id_);
+        } else {
+            record.risk_requested = result.multiplier.m;
+            record.binding_term = result.multiplier.binding;
+            record.overlay_blind = result.window.blind();
+            for (const auto& [term, excess] : result.over_limit) {
+                (void)excess;
+                record.over_limit_after_rounding_terms +=
+                    (record.over_limit_after_rounding_terms.empty() ? "" : ";") + term;
+            }
+            record.over_limit_after_rounding_excess = result.over_limit_excess_units;
+            for (const auto& term : result.by_hold_terms) {
+                record.over_limit_by_hold_terms +=
+                    (record.over_limit_by_hold_terms.empty() ? "" : ";") + term;
+            }
+            for (size_t i = 0; i < n; ++i) {
+                if (!result.by_hold[i]) continue;
+                record.over_limit_by_hold_symbols +=
+                    (record.over_limit_by_hold_symbols.empty() ? "" : " ") + symbols[i];
+            }
+            record.risk_scale = result.risk_scale;
+            record.capped_target_gross = result.target_gross * in.capital;
+            record.stored_gross = result.stored_gross * in.capital;
+            one_pass_weights_.clear();
+            for (const std::size_t i : result.participants) {
+                one_pass_weights_.emplace_back(symbols[i], result.u[i]);
+            }
+            one_pass_target_gross_ = result.target_gross;
+            decision.blind = record.overlay_blind;
+            if (result.multiplier.m < 1.0) {
+                decision.action = RiskAction::SCALE;
+                decision.scale = result.multiplier.m;
+                applied = RiskAction::SCALE;
+                applied_factor = Decimal(result.multiplier.m);
+            }
+            // The book the delivered scale is measured against, and its notionals per contract.
+            for (size_t i = 0; i < n; ++i) {
+                delivered_npc_[symbols[i]] = in.multiplier[i] * in.close[i];
+                if (!result.participant[i]) continue;
+                delivered_lap1_book_[symbols[i]] =
+                    result.free[i] ? result.capped_target[i]
+                                   : (result.closeout[i] ? 0.0 : in.held[i]);
+            }
+            delivered_has_lap1_ = true;
+        }
+
+        // The split back to the sleeves (section 5.4) and each sleeve's new book. A row the pass
+        // did not move (a held row, a refused day, an unpriced symbol) keeps every sleeve's held
+        // quantity; a moved row is split in proportion to the sleeves' unrounded contributions by
+        // largest remainder.
+        std::vector<std::vector<double>> sleeve_new = sleeve_held;
+        if (!refused) {
+            for (size_t i = 0; i < n; ++i) {
+                if (!result.free[i] && !result.closeout[i]) continue;
+                // A row with no contribution is a symbol no sleeve targets any more (a zero
+                // forecast, a close-out) or one whose contributions sum to nothing a share can be
+                // formed on (|sum N*| <= 1e-8). Its book is split in proportion to what each sleeve
+                // holds; taken to flat, every sleeve stores 0.
+                double total_contribution = 0.0;
+                for (size_t s = 0; s < sids.size(); ++s) total_contribution += contribution[s][i];
+                const bool any_contribution = std::abs(total_contribution) > 1e-8;
+                if (!any_contribution && result.book[i] == 0.0) {
+                    for (size_t s = 0; s < sids.size(); ++s) sleeve_new[s][i] = 0.0;
+                    continue;
+                }
+                std::vector<SleeveContribution> parts;
+                for (size_t s = 0; s < sids.size(); ++s) {
+                    parts.push_back(
+                        {sids[s], any_contribution ? contribution[s][i] : sleeve_held[s][i]});
+                }
+                const SleeveDistribution split = distribute_optimizer_contracts(result.book[i], parts);
+                for (size_t s = 0; s < sids.size(); ++s) {
+                    sleeve_new[s][i] = static_cast<double>(split.stored[s]);
+                }
+            }
+        }
+        for (size_t s = 0; s < sids.size(); ++s) {
+            auto& info = strategies_.at(sids[s]);
+            const auto prev_book = prev_positions.find(sids[s]);
+            std::unordered_map<std::string, Position> book;
+            // The row is the sleeve's own row of today (its mark and its fields, as the book always
+            // carried them) with the pass's quantity; a symbol the sleeve no longer lists keeps the
+            // row it was held with.
+            auto row = [&](const std::string& symbol, double quantity) {
+                Position pos;
+                const auto target = info.target_positions.find(symbol);
+                if (target != info.target_positions.end()) {
+                    pos = target->second;
+                } else if (prev_book != prev_positions.end()) {
+                    const auto p = prev_book->second.find(symbol);
+                    if (p != prev_book->second.end()) pos = p->second;
+                }
+                pos.symbol = symbol;
+                pos.quantity = Decimal(quantity);
+                book[symbol] = pos;
+            };
+            for (size_t i = 0; i < n; ++i) {
+                const bool listed_by_sleeve = info.target_positions.count(symbols[i]) > 0;
+                if (!listed_by_sleeve && sleeve_new[s][i] == 0.0 && sleeve_held[s][i] == 0.0) continue;
+                row(symbols[i], sleeve_new[s][i]);
+            }
+            for (const auto& symbol : unpriced) {
+                const double held = held_of(sids[s], symbol);
+                if (held == 0.0 && info.target_positions.count(symbol) == 0) continue;
+                row(symbol, held);
+            }
+            info.target_positions = book;
+            info.current_positions = std::move(book);
+            if (refused) pinned_scopes_.insert(sids[s]);
+        }
+
+        // The fills (section 6.3), on a rebalance that trades: per sleeve and symbol, the
+        // forecast-sign close to flat and then the move to the new book, each at the signal close
+        // and priced by this manager's cost model. The sign closes of one symbol are netted among
+        // the sleeves, and the other fills among themselves; ROLL legs are never in either set.
+        if (!refused && !is_warmup) {
+            std::vector<std::pair<std::string, size_t>> sign_rows, rest_rows;
+            for (size_t s = 0; s < sids.size(); ++s) {
+                const std::string& sid = sids[s];
+                auto& execs = strategy_executions_[sid];
+                auto& ledger = filled_positions_[sid];
+                int counter = static_cast<int>(
+                    std::count_if(execs.begin(), execs.end(), [](const ExecutionReport& e) {
+                        return e.execution_type != ExecutionType::ROLL;
+                    }));
+                auto fill = [&](const std::string& symbol, double quantity, double price) {
+                    ExecutionReport exec;
+                    exec.order_id = "PM-" + sid + "-" + std::to_string(counter);
+                    exec.exec_id = "EX-" + sid + "-" + std::to_string(counter);
+                    exec.symbol = symbol;
+                    exec.side = quantity > 0.0 ? Side::BUY : Side::SELL;
+                    exec.filled_quantity = std::abs(quantity);
+                    exec.fill_price = price;
+                    exec.fill_time = as_of ? *as_of
+                                           : (data.empty() ? std::chrono::system_clock::now()
+                                                           : data[0].timestamp);
+                    const auto cost = cost_manager_.calculate_costs(symbol, quantity, price);
+                    exec.commissions_fees = Decimal(cost.commissions_fees);
+                    exec.implicit_price_impact = Decimal(cost.implicit_price_impact);
+                    exec.slippage_market_impact = Decimal(cost.slippage_market_impact);
+                    exec.total_transaction_costs = Decimal(cost.total_transaction_costs);
+                    exec.is_partial = false;
+                    execs.push_back(exec);
+                    ++counter;
+                };
+                for (size_t i = 0; i < n; ++i) {
+                    double from = sleeve_held[s][i];
+                    if (result.sign_closed[i] && from != 0.0) {
+                        fill(symbols[i], -from, in.close[i]);
+                        sign_rows.emplace_back(sid, execs.size() - 1);
+                        record.sign_closes[sid][symbols[i]] = -from;
+                        from = 0.0;
+                    }
+                    if (sleeve_new[s][i] != from) {
+                        fill(symbols[i], sleeve_new[s][i] - from, in.close[i]);
+                        rest_rows.emplace_back(sid, execs.size() - 1);
+                    }
+                    if (sleeve_new[s][i] != sleeve_held[s][i] || ledger.count(symbols[i]) > 0) {
+                        ledger[symbols[i]] = sleeve_new[s][i];
+                    }
+                }
+            }
+            if (is_backtest_) {
+                for (auto* group : {&sign_rows, &rest_rows}) {
+                    std::vector<transaction_cost::SleeveExecution> bar_rows;
+                    for (const auto& [sid, index] : *group) {
+                        bar_rows.push_back({sid, &strategy_executions_[sid][index]});
+                    }
+                    const auto netting = transaction_cost::apply_netting_adjustments(
+                        bar_rows, [this](const std::string& sym, double q, double px) {
+                            return cost_manager_.calculate_costs(sym, q, px).total_transaction_costs;
+                        });
+                    for (const auto& line : netting.info_lines) INFO(line);
+                    for (const auto& line : netting.warn_lines) WARN(line);
+                }
+            }
+        }
+        one_pass_day_ = std::move(record);
+    }
+
+    RiskContext ctx = make_risk_context(phase, 1, RiskScope::PORTFOLIO, id_, sizing_capital_, data,
+                                        as_of, is_warmup);
+    record_risk_decision(ctx, overlay_module_id, std::move(decision), applied, applied_factor, false,
+                         failure);
+    if (unseeded) {
+        return make_error<void>(ErrorCode::RISK_LIMIT_EXCEEDED,
+                                "The risk overlay refused portfolio " + id_ +
+                                    ", whose previous book was never seeded; refusing the run "
+                                    "rather than shipping a flat book",
+                                "PortfolioManager");
+    }
+    return Result<void>();
 }
 
 RiskContext PortfolioManager::make_risk_context(RiskPhase phase, int lap, RiskScope scope,
@@ -2740,15 +2753,44 @@ DeliveredCut PortfolioManager::delivered_cut_for_book(
                                  npc);
 }
 
+double PortfolioManager::delivered_scale_for_book(
+    const std::map<std::string, double>& stored_book) const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (!(one_pass_target_gross_ > 0.0)) return 1.0;
+    // The pass's own sum, in its order, so an unchanged book reads the pass's figure to the bit.
+    double stored_gross = 0.0;
+    for (const auto& [symbol, u] : one_pass_weights_) {
+        const auto row = stored_book.find(symbol);
+        const double quantity = row == stored_book.end() ? 0.0 : row->second;
+        stored_gross += std::abs(quantity * u);
+    }
+    return stored_gross / one_pass_target_gross_;
+}
+
 std::map<std::string, double> PortfolioManager::delivered_notional_per_contract(
     const std::set<std::string>& symbols) const {
     std::map<std::string, double> out;
+    // The trend sleeves' own contract size and last price. A book that names an overlay sleeve
+    // reads THAT sleeve alone (the sleeve the pass weighs the book on); any other book reads its
+    // sleeves in id order, the first that holds the symbol. Never whichever sleeve an unordered
+    // walk visits last: two sleeves can carry different rows for one symbol.
     std::unordered_map<std::string, const InstrumentData*> trend_data;
-    for (const auto& [id, info] : strategies_) {
-        auto trend_strategy = std::dynamic_pointer_cast<TrendFollowingStrategy>(info.strategy);
+    std::vector<std::string> sleeve_ids;
+    if (!config_.overlay_sleeve.empty() && strategies_.count(config_.overlay_sleeve) > 0) {
+        sleeve_ids.push_back(config_.overlay_sleeve);
+    } else {
+        for (const auto& [id, info] : strategies_) {
+            (void)info;
+            sleeve_ids.push_back(id);
+        }
+        std::sort(sleeve_ids.begin(), sleeve_ids.end());
+    }
+    for (const auto& id : sleeve_ids) {
+        auto trend_strategy =
+            std::dynamic_pointer_cast<TrendFollowingStrategy>(strategies_.at(id).strategy);
         if (!trend_strategy) continue;
         for (const auto& [symbol, data] : trend_strategy->get_all_instrument_data()) {
-            trend_data[symbol] = &data;
+            trend_data.emplace(symbol, &data);
         }
     }
     for (const auto& symbol : symbols) {
@@ -2930,7 +2972,7 @@ PortfolioManager::RiskVerdict PortfolioManager::combine_risk_decisions(
 
 std::vector<RiskDecision> PortfolioManager::evaluate_scope_modules(
     std::vector<RiskModulePtr>& modules, const std::unordered_map<std::string, Position>& book,
-    const RiskContext& ctx, bool finalize_phase, std::vector<std::string>& errors) {
+    const RiskContext& ctx, std::vector<std::string>& errors) {
     std::vector<RiskDecision> decisions;
     decisions.reserve(modules.size());
     errors.assign(modules.size(), std::string());
@@ -2939,8 +2981,7 @@ std::vector<RiskDecision> PortfolioManager::evaluate_scope_modules(
         decision.module_id = modules[k]->id();
         std::string failure;
         try {
-            auto result = finalize_phase ? modules[k]->finalize(book, ctx)
-                                         : modules[k]->evaluate(book, ctx);
+            auto result = modules[k]->evaluate(book, ctx);
             if (result.is_error()) {
                 failure = result.error()->what();
             } else {
@@ -3101,7 +3142,7 @@ Result<void> PortfolioManager::apply_risk_management(const std::vector<Bar>& dat
             // one module already returned is applied even if a later module then fails.
             std::vector<std::string> errors;
             std::vector<RiskDecision> decisions =
-                evaluate_scope_modules(risk_modules_, portfolio_positions, lap_ctx, false, errors);
+                evaluate_scope_modules(risk_modules_, portfolio_positions, lap_ctx, errors);
 
             // T-7b-1 7d: the optimizer's and the risk gate's max |rho| side by side, once per
             // rebalance. Lap 1 is the one lap every rebalance with a book has; both numbers are
@@ -3195,7 +3236,6 @@ Result<void> PortfolioManager::apply_risk_management(const std::vector<Bar>& dat
                 pinned = true;
             } else if (verdict.action == RiskAction::SCALE) {
                 const double scale = verdict.scale;
-                lap_cut_factor_ = scale;
                 WARN("Risk limits exceeded, scaling positions by " + std::to_string(scale));
 
                 // DESIGN DECISION: Risk scaling applies to target_positions only (Approach A)
@@ -3349,7 +3389,7 @@ Result<void> PortfolioManager::apply_sleeve_risk(
             // because one of its modules failed, which discarded any REFUSE the others returned.
             std::vector<std::string> errors;
             std::vector<RiskDecision> decisions =
-                evaluate_scope_modules(modules, book, ctx, false, errors);
+                evaluate_scope_modules(modules, book, ctx, errors);
 
             RiskVerdict verdict = combine_risk_decisions(decisions, ctx);
             std::string failed_gatekeeper;
@@ -3463,142 +3503,17 @@ Result<void> PortfolioManager::apply_sleeve_risk(
     return Result<void>();
 }
 
-Result<void> PortfolioManager::apply_post_rounding_risk(
-    const std::vector<Bar>& data, int lap,
-    const std::unordered_map<std::string, std::unordered_map<std::string, Position>>& prev_positions,
-    std::optional<Timestamp> as_of, bool is_warmup) {
-    if (risk_modules_.empty() && sleeve_risk_modules_.empty()) return Result<void>();
-    // A scope refused here whose previous book was never seeded, as at the lap sites.
-    std::string unseeded_refusal;
-
-    // One scope's finalize: NONE and WARN pass, REFUSE pins, SCALE and REPLACE are rejected.
-    // Returns true when the scope must be pinned.
-    auto finalize_scope = [&](std::vector<RiskModulePtr>& modules,
-                              const std::unordered_map<std::string, Position>& book,
-                              const RiskContext& ctx) -> bool {
-        // Fail CLOSED, as the two evaluate sites: a module whose finalize fails no longer
-        // discards a REFUSE another module returned on the rounded book.
-        std::vector<std::string> errors;
-        std::vector<RiskDecision> decisions =
-            evaluate_scope_modules(modules, book, ctx, true, errors);
-        // SCALE and REPLACE are not applied at this point: reject them before combining.
-        std::vector<RiskDecision> honoured = decisions;
-        for (auto& d : honoured) {
-            if (d.action == RiskAction::SCALE || d.action == RiskAction::REPLACE) {
-                ERROR("Risk module " + d.module_id + " returned " + risk_action_name(d.action) +
-                      " at the post-rounding point; only NONE, WARN and REFUSE are applied there");
-                d.action = RiskAction::NONE;
-            }
+Result<void> PortfolioManager::seed_strategy_history(const std::vector<Bar>& bars) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    for (auto& [id, info] : strategies_) {
+        if (!info.strategy) continue;
+        auto r = info.strategy->seed_history(bars);
+        if (r.is_error()) {
+            return make_error<void>(r.error()->code(),
+                                    "Strategy " + id + " refused the seeded history: " +
+                                        std::string(r.error()->what()),
+                                    "PortfolioManager");
         }
-        RiskVerdict verdict = combine_risk_decisions(honoured, ctx);
-        std::string failed_gatekeeper;
-        const bool refused_by_failure =
-            refuse_on_failed_gatekeeper(modules, errors, ctx, verdict, failed_gatekeeper);
-        const bool refuse = verdict.action == RiskAction::REFUSE;
-        if (refuse && !scope_is_seeded(ctx.scope_id)) {
-            ERROR("Risk module " +
-                  (refused_by_failure ? failed_gatekeeper : decisions[verdict.winner].module_id) +
-                  " refused " + risk_scope_name(ctx.scope) + " " + ctx.scope_id + " " +
-                  risk_location(ctx) +
-                  ", but this scope's previous book was never seeded: pinning would ship a FLAT "
-                  "book, not yesterday's. Seed it with update_strategy_position before "
-                  "process_market_data.");
-            deliver_and_record(modules, decisions, verdict, ctx, false, errors);
-            unseeded_refusal = ctx.scope_id;
-            return false;
-        }
-        if (refuse && !refused_by_failure) {
-            const RiskDecision& d = decisions[verdict.winner];
-            WARN("Risk module " + d.module_id + " refused " + risk_scope_name(ctx.scope) + " " +
-                 ctx.scope_id + " " + risk_location(ctx) + ": " + d.reason +
-                 "; positions pinned to the previous book");
-        }
-        deliver_and_record(modules, decisions, verdict, ctx, refuse, errors);
-        return refuse;
-    };
-
-    auto record_empty = [&](const std::vector<RiskModulePtr>& modules, const RiskContext& ctx) {
-        for (const auto& module : modules) {
-            RiskDecision none;
-            none.module_id = module->id();
-            record_risk_decision(ctx, module->id(), std::move(none), RiskAction::NONE,
-                                 Decimal(1.0), true, "");
-        }
-    };
-
-    auto pin = [&](const std::string& sid) {
-        auto prev = prev_positions.find(sid);
-        strategies_.at(sid).target_positions =
-            prev != prev_positions.end() ? prev->second
-                                         : std::unordered_map<std::string, Position>{};
-        pinned_scopes_.insert(sid);
-    };
-
-    try {
-        if (!risk_modules_.empty()) {
-            std::unordered_map<std::string, Position> book;
-            {
-                std::lock_guard<std::mutex> lock(mutex_);
-                for (const auto& [_, info] : strategies_) {
-                    for (const auto& [symbol, pos] : info.target_positions) {
-                        auto it = book.find(symbol);
-                        if (it == book.end()) {
-                            book[symbol] = pos;
-                        } else {
-                            it->second.quantity += pos.quantity;
-                        }
-                    }
-                }
-            }
-            const RiskContext ctx =
-                make_risk_context(RiskPhase::POST_ROUNDING, lap, RiskScope::PORTFOLIO, id_,
-                                  sizing_capital_, data, as_of, is_warmup);
-            if (book.empty()) {
-                record_empty(risk_modules_, ctx);
-            } else if (finalize_scope(risk_modules_, book, ctx)) {
-                std::lock_guard<std::mutex> lock(mutex_);
-                for (auto& [sid, _] : strategies_) pin(sid);
-            }
-        }
-
-        std::vector<std::pair<std::string, double>> sleeves;
-        {
-            std::lock_guard<std::mutex> lock(mutex_);
-            for (const auto& [sid, info] : strategies_) {
-                if (sleeve_risk_modules_.count(sid) && !pinned_scopes_.count(sid)) {
-                    sleeves.emplace_back(sid, info.allocation);
-                }
-            }
-        }
-        for (const auto& [sid, allocation] : sleeves) {
-            auto& modules = sleeve_risk_modules_.at(sid);
-            if (modules.empty()) continue;
-            std::unordered_map<std::string, Position> book;
-            {
-                std::lock_guard<std::mutex> lock(mutex_);
-                book = strategies_.at(sid).target_positions;
-            }
-            const RiskContext ctx = make_risk_context(
-                RiskPhase::POST_ROUNDING, lap, RiskScope::SLEEVE, sid,
-                Decimal(static_cast<double>(sizing_capital_) * allocation), data, as_of,
-                is_warmup);
-            if (book.empty()) {
-                record_empty(modules, ctx);
-            } else if (finalize_scope(modules, book, ctx)) {
-                std::lock_guard<std::mutex> lock(mutex_);
-                pin(sid);
-            }
-        }
-    } catch (const std::exception& e) {
-        ERROR("Exception during post-rounding risk management: " + std::string(e.what()));
-    }
-    if (!unseeded_refusal.empty()) {
-        return make_error<void>(ErrorCode::RISK_LIMIT_EXCEEDED,
-                                "A risk module refused scope " + unseeded_refusal +
-                                    " at the post-rounding point, but its previous book was "
-                                    "never seeded; refusing the run rather than shipping a flat "
-                                    "book",
-                                "PortfolioManager");
     }
     return Result<void>();
 }
@@ -3855,6 +3770,22 @@ PortfolioManager::get_strategy_positions() const {
         result[strategy_id] = info.current_positions;  // These are the optimized positions
     }
 
+    return result;
+}
+
+std::unordered_map<std::string, std::unordered_map<std::string, Position>>
+PortfolioManager::get_filled_strategy_positions() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    std::unordered_map<std::string, std::unordered_map<std::string, Position>> result;
+    for (const auto& [strategy_id, filled] : filled_positions_) {
+        auto& book = result[strategy_id];
+        for (const auto& [symbol, quantity] : filled) {
+            Position pos;
+            pos.symbol = symbol;
+            pos.quantity = Quantity(quantity);
+            book[symbol] = pos;
+        }
+    }
     return result;
 }
 
