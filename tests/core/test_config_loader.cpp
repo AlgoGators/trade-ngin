@@ -69,7 +69,7 @@ nlohmann::json carver_module(const char* id = "carver") {
         {"max_net_leverage", 2.0},
         {"confidence_level", 0.99},
         {"lookback_period", 252},
-        {"lookback_unit", "bars"},
+        {"lookback_unit", "dates"},
         {"min_gate_dates", 21},
         {"missing_symbol_policy", "ignore"},
         {"_missing_symbol_policy_reason", "unit test"},
@@ -603,6 +603,7 @@ struct ResolvedRiskExpectation {
     int lookback_period;
     double capital;            // risk_config.capital = initial_capital
     bool use_optimization;     // portfolio.json's top level, as resolved
+    const char* none_ruled_on = nullptr;  // set when the book is assigned `none` (commit 8)
 };
 
 void expect_resolved_risk_config(const ResolvedRiskExpectation& e) {
@@ -643,6 +644,19 @@ void expect_resolved_risk_config(const ResolvedRiskExpectation& e) {
     // books rather than on a fixture.
     ASSERT_EQ(c.risk_schema.portfolio.size(), 1u) << b << ": one portfolio-scope module";
     const RiskModuleConfig& m = c.risk_schema.portfolio.front();
+    EXPECT_TRUE(c.risk_schema.sleeves.empty()) << b << ": no shipped book assigns a sleeve module";
+    if (e.none_ruled_on != nullptr) {
+        // T-6b commit 8 (HD 2026-09-18): this book runs NO risk module. The seven values above
+        // are the reporter's (risk_reporting still measures the book); the module is `none`
+        // with the ruling on it, and there is no carver whose values could be compared.
+        EXPECT_EQ(m.type, "none") << b << ": module type";
+        const auto* none = std::get_if<NoneModuleConfig>(&m.params);
+        ASSERT_NE(none, nullptr) << b << ": module params";
+        EXPECT_EQ(none->ruled_by, "HD") << b << ": _ruled_by";
+        EXPECT_EQ(none->ruled_on, e.none_ruled_on) << b << ": _ruled_on";
+        EXPECT_FALSE(none->reason.empty()) << b << ": _reason";
+        return;
+    }
     EXPECT_EQ(m.type, "carver") << b << ": module type";
     const auto* carver = std::get_if<CarverModuleConfig>(&m.params);
     ASSERT_NE(carver, nullptr) << b << ": module params";
@@ -654,12 +668,11 @@ void expect_resolved_risk_config(const ResolvedRiskExpectation& e) {
     EXPECT_EQ(carver->max_net_leverage, e.max_net_leverage) << b << ": module.max_net_leverage";
     EXPECT_EQ(carver->confidence_level, e.confidence_level) << b << ": module.confidence_level";
     EXPECT_EQ(carver->lookback_period, e.lookback_period) << b << ": module.lookback_period";
-    EXPECT_EQ(carver->lookback_unit, "bars") << b << ": module.lookback_unit";
+    EXPECT_EQ(carver->lookback_unit, "dates") << b << ": module.lookback_unit";
     EXPECT_EQ(carver->min_gate_dates, 21) << b << ": module.min_gate_dates";
     EXPECT_EQ(carver->missing_symbol_policy, "ignore") << b << ": module.missing_symbol_policy";
     EXPECT_FALSE(carver->missing_symbol_policy_reason.empty())
         << b << ": \"ignore\" is the fail-open policy and must say why it is chosen";
-    EXPECT_TRUE(c.risk_schema.sleeves.empty()) << b << ": no shipped book assigns a sleeve module";
 }
 
 }  // namespace
@@ -699,7 +712,8 @@ TEST(TrackedTemplateResolvedRiskConfig, EquityMr) {
                                  /*max_gross*/ 1.0, /*max_net*/ 1.0,
                                  /*confidence*/ 0.99, /*lookback*/ 252,
                                  /*capital*/ 100000.0,
-                                 /*use_optimization*/ false});
+                                 /*use_optimization*/ false,
+                                 /*none_ruled_on*/ "2026-09-18"});
 }
 
 // The max_correlation trap, closed. Under schema 1 base/risk.json and equity_mr/risk.json
@@ -730,7 +744,10 @@ TEST(TrackedTemplateResolvedRiskConfig, EveryGatingValueIsLiteralInTheBooksOwnRi
         const auto risk = nlohmann::json::parse(in);
         ASSERT_TRUE(risk.contains("modules")) << b.dir << ": risk.json must be schema 2";
         ASSERT_EQ(risk.at("modules").size(), 1u) << b.dir;
-        const auto& module = risk.at("modules").at(0);
+        // A `none` book (EQUITY_MR since T-6b commit 8) has no gating module; its values are
+        // written literally in its reporter block, which is what still measures it.
+        const bool none_book = risk.at("modules").at(0).at("type") == "none";
+        const auto& module = none_book ? risk.at("risk_reporting") : risk.at("modules").at(0);
         for (const char* field : {"var_limit", "jump_risk_limit", "max_correlation",
                                   "max_gross_leverage", "max_net_leverage",
                                   "confidence_level", "lookback_period"}) {

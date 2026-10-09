@@ -38,7 +38,7 @@ inline RiskModuleConfig test_carver_module(const RiskConfig& config, std::string
     c.max_net_leverage = config.max_net_leverage;
     c.confidence_level = config.confidence_level;
     c.lookback_period = config.lookback_period;
-    c.lookback_unit = "bars";
+    c.lookback_unit = "dates";
     c.min_gate_dates = min_gate_dates;
     c.missing_symbol_policy = "ignore";
     c.missing_symbol_policy_reason = "unit test";

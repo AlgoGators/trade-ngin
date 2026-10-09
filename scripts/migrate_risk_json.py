@@ -18,8 +18,13 @@ rollback for going back to a pre-commit-7 build.
 
     python3 scripts/migrate_risk_json.py config --out DIR    # write a migrated copy
 
+A schema-2 file written before T-6b commit 9 says "lookback_unit": "bars". The Carver
+window has been capped at lookback_period distinct DATES since that commit and the loader
+refuses "bars", so the script upgrades such a file to "dates" (the only change it makes to
+a schema-2 file), keeping a <file>.bars.bak rollback copy.
+
 Exit codes
-    0   nothing to do (already schema 2), or written
+    0   nothing to do (already schema 2 with "dates"), or written
     2   refused before reading content: usage, an existing .bak, a non-empty --out
     3   refused on content: the file does not say enough to migrate it safely
     10  dry run with changes pending
@@ -73,6 +78,40 @@ USE_OPTIMIZATION_NOTE = (
 
 MIN_GATE_DATES = 21
 BAK_SUFFIX = ".schema1.bak"
+# The rollback copy of a schema-2 file whose lookback_unit is upgraded from "bars" to "dates".
+# A different suffix, because a file migrated from schema 1 already has its .schema1.bak.
+BARS_BAK_SUFFIX = ".bars.bak"
+LOOKBACK_BARS = re.compile(r'("lookback_unit"\s*:\s*)"bars"')
+
+
+# The tracked templates beside this script: what each book is ASSIGNED in the repository.
+TEMPLATE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), os.pardir,
+                            "config_template", "portfolios")
+
+
+def template_none_ruling(name):
+    """(ruled_by, ruled_on) when config_template assigns book `name` a lone `none`, else None."""
+    path = os.path.join(TEMPLATE_DIR, name, "risk.json")
+    try:
+        with open(path, "r", encoding="utf-8") as handle:
+            modules = json.load(handle).get("modules", [])
+    except (OSError, ValueError):
+        return None
+    if len(modules) == 1 and isinstance(modules[0], dict) and modules[0].get("type") == "none":
+        return modules[0].get("_ruled_by", "?"), modules[0].get("_ruled_on", "?")
+    return None
+
+
+def note_if_template_says_none(name, log):
+    """The script writes a carver for every book and will not invent a ruling. When the tracked
+    template assigns this book `none`, the deployed file and the template now disagree, and only
+    a person can copy the ruling across (T-6b INTERIM ADVERSARIAL D-1)."""
+    ruling = template_none_ruling(name)
+    if ruling:
+        log("  NOTE: %s: this file keeps a carver module, but config_template/portfolios/%s/"
+            "risk.json assigns this book `none` (_ruled_by %s, _ruled_on %s). The script will "
+            "not invent that ruling: copy the none module into modules by hand (the runbook "
+            "step in config_template/README.md)." % (name, name, ruling[0], ruling[1]))
 
 
 class Refused(Exception):
@@ -170,10 +209,10 @@ def redact(line):
     return PASSWORD_LINE.sub(r'\1"<redacted>"', line)
 
 
-def print_diff(path, before, after):
+def print_diff(path, before, after, labels=("schema 1", "schema 2")):
     diff = difflib.unified_diff(
         before.splitlines(True), after.splitlines(True),
-        fromfile=path + " (schema 1)", tofile=path + " (schema 2)",
+        fromfile="%s (%s)" % (path, labels[0]), tofile="%s (%s)" % (path, labels[1]),
     )
     for line in diff:
         sys.stdout.write(redact(line.rstrip("\n")) + "\n")
@@ -228,7 +267,28 @@ def migrate_portfolio(name, risk_text, risk, portfolio_text, portfolio, defaults
         if "use_optimization" not in portfolio:
             raise Refused("%s/risk.json is schema 2 but portfolio.json has no top-level "
                           "use_optimization" % name)
+        # The one change a schema-2 file can need: "bars" -> "dates" on its carver modules.
+        # Text-level, so every other byte of the operator's file (spacing, key order, numbers
+        # spelled as written) is untouched; the reparse proves nothing else moved.
+        upgraded, count = LOOKBACK_BARS.subn(r'\1"dates"', risk_text)
+        if count:
+            before, after = json.loads(risk_text), json.loads(upgraded)
+            for m in before.get("modules", []):
+                if isinstance(m, dict) and m.get("lookback_unit") == "bars":
+                    m["lookback_unit"] = "dates"
+            if before != after:
+                raise Refused("%s/risk.json: upgrading lookback_unit would change more than that "
+                              "key -- fix it by hand" % name)
+            log("  %s: schema 2; lookback_unit \"bars\" -> \"dates\" on %d module(s) (the "
+                "window has been date-keyed since T-6b commit 9)" % (name, count))
+            if any(isinstance(m, dict) and m.get("type") == "carver"
+                   for m in after.get("modules", [])):
+                note_if_template_says_none(name, log)
+            return upgraded, portfolio_text
         log("  %s: already schema 2, nothing to do" % name)
+        if any(isinstance(m, dict) and m.get("type") == "carver"
+               for m in json.loads(risk_text).get("modules", [])):
+            note_if_template_says_none(name, log)
         return None, None
 
     # 1. use_risk_management: a false anywhere is a decision the script will not invent
@@ -276,13 +336,14 @@ def migrate_portfolio(name, risk_text, risk, portfolio_text, portfolio, defaults
         log("  %s: portfolio.json has a \"risk\" key, which today's loader discards "
             "(risk.json replaces it wholesale); it is NOT used" % name)
 
-    # 3. The new risk.json.
+    # 3. The new risk.json: always a carver module (the only gate schema 1 had).
+    note_if_template_says_none(name, log)
     new_risk = comments_of(risk)
     new_risk["schema"] = Raw("2")
     module = {"id": "carver", "type": "carver"}
     for field in GATING_FIELDS:
         module[field] = resolved[field]
-    module["lookback_unit"] = "bars"
+    module["lookback_unit"] = "dates"
     module["min_gate_dates"] = Raw(str(MIN_GATE_DATES))
     module["missing_symbol_policy"] = "ignore"
     module["_missing_symbol_policy_reason"] = MISSING_SYMBOL_REASON
@@ -395,6 +456,7 @@ def main(argv=None):
     defaults_has_risk_defaults = "risk_defaults" in defaults
 
     written = {}  # path -> new text
+    upgrades = set()  # schema-2 risk.json files whose only change is lookback_unit
     try:
         for name in names:
             pdir = os.path.join(portfolios_dir, name)
@@ -410,6 +472,8 @@ def main(argv=None):
                 defaults_has_risk_defaults, log)
             if new_risk is None:
                 continue
+            if "schema" in risk:
+                upgrades.add(risk_path)
             if new_risk != risk_text:
                 written[risk_path] = (risk_text, new_risk)
             if new_portfolio != portfolio_text:
@@ -430,7 +494,9 @@ def main(argv=None):
     log("")
     for path in sorted(written):
         before, after = written[path]
-        print_diff(path, before, after)
+        print_diff(path, before, after,
+                   ("lookback_unit bars", "lookback_unit dates") if path in upgrades
+                   else ("schema 1", "schema 2"))
 
     if args.out:
         _copy_tree(config_dir, args.out)
@@ -446,18 +512,20 @@ def main(argv=None):
         # The .bak check is here, not at the top: a SECOND --in-place on an
         # already-migrated tree writes nothing and exits 0 (idempotence), while a run that
         # would overwrite an existing rollback copy is refused.
+        def bak(path):
+            return path + (BARS_BAK_SUFFIX if path in upgrades else BAK_SUFFIX)
         for path in written:
-            if os.path.exists(path + BAK_SUFFIX):
+            if os.path.exists(bak(path)):
                 print("refused: %s already exists; this run would overwrite the rollback copy"
-                      % (path + BAK_SUFFIX), file=sys.stderr)
+                      % bak(path), file=sys.stderr)
                 return 2
         for path, (before, after) in sorted(written.items()):
-            shutil.copy2(path, path + BAK_SUFFIX)
+            shutil.copy2(path, bak(path))
             with open(path, "w", encoding="utf-8") as handle:
                 handle.write(after)
         log("")
         log("Wrote %d file(s) in place; the %s copies are the rollback."
-            % (len(written), BAK_SUFFIX))
+            % (len(written), " / ".join(sorted({bak(p)[len(p):] for p in written}))))
         return 0
 
     log("")

@@ -19,6 +19,7 @@
 
 #include "trade_ngin/core/config_base.hpp"
 #include "trade_ngin/core/error.hpp"
+#include "trade_ngin/core/logger.hpp"
 #include "trade_ngin/core/types.hpp"
 
 #define private public
@@ -466,14 +467,13 @@ TEST_F(RiskManagerExtendedTest, RecommendedScaleIsMinimumOfMultipliers) {
 
 // ===== Net-leverage sign (ledger RISK-net-short-ungated) =====
 //
-// calculate_leverage_multiplier compares the SIGNED result.net_leverage with
-// max_net_leverage, so a net-SHORT book is never cut by the net term however
-// large |net| grows; only the gross term can bind it. These two tests pin the
-// behaviour of today's source through the public API. The fix -- std::abs for
-// the comparison and the ratio, result.net_leverage left SIGNED so the stored
-// net_leverage column and the email are unchanged -- lands in T-6b commit 9
-// (the risk-loop set, ARM 1), which must flip the net-short assertion below to
-// leverage_multiplier == max_net / |net|. The net-long mirror must not move.
+// calculate_leverage_multiplier used to compare the SIGNED result.net_leverage
+// with max_net_leverage, so a net-SHORT book was never cut by the net term
+// however large |net| grew; only the gross term could bind it. The fix (T-6b-fix
+// F3) takes std::abs for the comparison and the ratio and leaves
+// result.net_leverage SIGNED, so the stored net_leverage column and the email are
+// unchanged. The net-short book is now cut to max_net / |net|; the net-long
+// mirror does not move.
 //
 // Both books are 2.6x of capital: gross 2.6 < max_gross 4.0, so the gross term
 // never binds and the net term is the only one that can move
@@ -503,7 +503,7 @@ std::unordered_map<std::string, Position> two_positions(double aapl_qty, double 
 
 }  // namespace
 
-TEST_F(RiskManagerExtendedTest, NetShortBookOverNetLimitIsNotCutToday) {
+TEST_F(RiskManagerExtendedTest, NetShortBookOverNetLimitIsCutToMaxNetOverAbsNet) {
     RiskManager mgr(default_config());  // max_gross 4.0, max_net 2.0, capital 1,000,000
     const auto md = two_symbol_market_data(mgr);
     auto r = mgr.process_positions(two_positions(-15000.0, -5000.0), md);
@@ -516,19 +516,18 @@ TEST_F(RiskManagerExtendedTest, NetShortBookOverNetLimitIsNotCutToday) {
     ASSERT_LT(res.gross_leverage, mgr.get_config().max_gross_leverage);
 
     // The stored net_leverage is SIGNED: negative for a net-short book, and it
-    // must stay signed after the fix (the column and the email read it).
+    // stays signed after the fix (the column and the email read it).
     EXPECT_LT(res.net_leverage, 0.0);
     EXPECT_DOUBLE_EQ(res.net_leverage, -2.6);
     EXPECT_GT(std::abs(res.net_leverage), mgr.get_config().max_net_leverage)
         << "|net| 2.6 is over max_net_leverage 2.0";
 
-    // TODAY'S BEHAVIOUR (ledger RISK-net-short-ungated): -2.6 > 2.0 is false,
-    // so the net term returns 1.0 and the book is not cut at all. T-6b commit 9
-    // must flip this to EXPECT_DOUBLE_EQ(res.leverage_multiplier, 2.0 / 2.6).
-    EXPECT_EQ(res.leverage_multiplier, 1.0)
-        << "RISK-net-short-ungated: a net-short book over max_net_leverage is not cut "
-           "by today's signed comparison; if this fails, the sign fix has landed and "
-           "this pin must be flipped in the same commit";
+    // |net| 2.6 > 2.0, so the net term cuts to 2.0 / 2.6 -- the value the long
+    // mirror below gets -- and the gate says the book is over its limits.
+    EXPECT_DOUBLE_EQ(res.leverage_multiplier, 2.0 / 2.6)
+        << "RISK-net-short-ungated: a net-short book over max_net_leverage must be cut by "
+           "max_net / |net|, as its long mirror is";
+    EXPECT_TRUE(res.risk_exceeded);
 }
 
 TEST_F(RiskManagerExtendedTest, NetLongBookOverNetLimitIsCutToMaxNetOverNet) {
@@ -549,6 +548,50 @@ TEST_F(RiskManagerExtendedTest, NetLongBookOverNetLimitIsCutToMaxNetOverNet) {
     EXPECT_DOUBLE_EQ(res.leverage_multiplier, 2.0 / 2.6);
     EXPECT_LE(res.recommended_scale, res.leverage_multiplier);
     EXPECT_TRUE(res.risk_exceeded);
+}
+
+
+// ===== T-6b-fix F6: the process_positions guard (POSGUARD) had no test =====
+//
+// A holding whose symbol has no bar in the gate's window is excluded from the measurement (the
+// gate stays fail-open by construction); commit 9's guard makes that visible: one POSGUARD_MISS
+// per dropped non-zero holding, and ONE POSGUARD summary per run, repeated only when a later call
+// drops more non-zero holdings than any call before it.
+TEST_F(RiskManagerExtendedTest, PosguardNamesADroppedHoldingAndSummarisesOncePerHighWater) {
+    LoggerConfig lc;
+    lc.destination = LogDestination::CONSOLE;
+    lc.min_level = LogLevel::INFO;
+    lc.include_timestamp = false;
+    Logger::instance().initialize(lc);
+    RiskManager mgr(default_config());
+    const auto md = two_symbol_market_data(mgr);
+    auto book = two_positions(10.0, 10.0);
+    book["ZZZ"] = Position("ZZZ", Quantity(7.0), Price(50.0), Decimal(0.0), Decimal(0.0),
+                           Timestamp{});
+    auto count = [](const std::string& out, const std::string& needle) {
+        size_t n = 0;
+        for (size_t at = out.find(needle); at != std::string::npos; at = out.find(needle, at + 1))
+            ++n;
+        return n;
+    };
+
+    ::testing::internal::CaptureStdout();
+    ASSERT_TRUE(mgr.process_positions(book, md).is_ok());
+    ASSERT_TRUE(mgr.process_positions(book, md).is_ok());  // same drop: no second summary
+    std::string out = ::testing::internal::GetCapturedStdout();
+    EXPECT_EQ(count(out, "POSGUARD_MISS symbol=ZZZ qty=7.000000 reason=absent_from_window "
+                         "window_symbols=2"),
+              2u)
+        << out;
+    EXPECT_EQ(count(out, "POSGUARD holdings=3 mapped=2 dropped=1 dropped_nonzero=1"), 1u) << out;
+
+    book["YYY"] = Position("YYY", Quantity(-3.0), Price(20.0), Decimal(0.0), Decimal(0.0),
+                           Timestamp{});
+    ::testing::internal::CaptureStdout();
+    ASSERT_TRUE(mgr.process_positions(book, md).is_ok());
+    out = ::testing::internal::GetCapturedStdout();
+    EXPECT_EQ(count(out, "POSGUARD holdings=4 mapped=2 dropped=2 dropped_nonzero=2"), 1u)
+        << "a new high-water mark prints again:\n" << out;
 }
 
 }  // namespace risk_manager_extended_detail

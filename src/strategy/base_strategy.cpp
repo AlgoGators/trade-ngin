@@ -440,12 +440,17 @@ Result<void> BaseStrategy::check_risk_limits() {
     double drawdown = (metrics_.total_pnl / config_.capital_allocation);
     const double MIN_DRAWDOWN_THRESHOLD = 0.001;  // Only trigger if drawdown is at least 0.1%
 
-    // Only trigger error if drawdown exceeds limit AND is greater than minimum threshold
+    // A breach WARNS; it does not fail the strategy (HD's ruling, STAGE3_PLAN §27/§28b item 11).
+    // Returning an error here failed on_data and every caller above it, so a drawdown past the
+    // limit stopped the strategy from updating its targets -- a kill switch nobody configured as
+    // one, reachable from realised P&L alone. Sizing and the risk modules own the response to a
+    // loss; this line makes the breach visible. Byte-identical on every stored run: no run of the
+    // gate has ever reached it (0 "Drawdown exceeds limit" lines).
     if (drawdown < -static_cast<double>(risk_limits_.max_drawdown) &&
         std::abs(drawdown) > MIN_DRAWDOWN_THRESHOLD) {
-        return make_error<void>(ErrorCode::RISK_LIMIT_EXCEEDED,
-                                "Drawdown exceeds limit: " + std::to_string(drawdown),
-                                "BaseStrategy");
+        WARN("Drawdown exceeds limit: " + std::to_string(drawdown) + " against max_drawdown " +
+             std::to_string(static_cast<double>(risk_limits_.max_drawdown)) +
+             " (warning only; the strategy keeps running)");
     }
 
     return Result<void>();

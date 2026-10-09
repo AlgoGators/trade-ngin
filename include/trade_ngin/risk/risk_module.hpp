@@ -86,6 +86,12 @@ struct RiskApplied {
                                           ///< truncation toward zero. 1 when nothing was multiplied.
     bool won{false};                      ///< this module's request is the one applied
     bool pinned{false};                   ///< the scope is pinned after this apply
+    /// The multiply did NOT reach every strategy of the scope: `scopes_skipped` of them were
+    /// already pinned by a sleeve REFUSE or REPLACE and were skipped. The book the module
+    /// measured was therefore cut by LESS than `factor`, and a module that keeps a cumulative
+    /// level must not claim otherwise (T-6a ADVERSARIAL A-5, before commit 9 reads the level).
+    bool partial{false};
+    size_t scopes_skipped{0};
 };
 
 class RiskModule {

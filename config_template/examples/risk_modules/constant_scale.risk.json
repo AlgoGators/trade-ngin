@@ -1,6 +1,10 @@
 {
   "_description": "EXAMPLE, placeholder values. A fixed cut applied once per rebalance (set every_lap true to reproduce the loop's per-lap compounding instead).",
   "schema": 2,
+  "_ruled_by_note": "R10: no module of this book is a \"carver\", so nothing here can cut it. That has to be a decision somebody signed, not an omission, and the loader refuses the file without the two keys below.",
+  "_ruled_reason": "PLACEHOLDER: say why a fixed cut, and not the Carver gate, is the right risk layer for this book.",
+  "_ruled_by": "PLACEHOLDER: who decided",
+  "_ruled_on": "2026-01-01",
   "modules": [
     {
       "id": "half_size",

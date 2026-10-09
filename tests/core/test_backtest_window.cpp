@@ -282,7 +282,7 @@ struct TempConfigTree {
                             {"var_limit", 0.15}, {"jump_risk_limit", 0.10},
                             {"max_correlation", 0.7}, {"max_gross_leverage", 4.0},
                             {"max_net_leverage", 2.0}, {"confidence_level", 0.99},
-                            {"lookback_period", 252}, {"lookback_unit", "bars"},
+                            {"lookback_period", 252}, {"lookback_unit", "dates"},
                             {"min_gate_dates", 21}, {"missing_symbol_policy", "ignore"},
                             {"_missing_symbol_policy_reason", "G-03 probe"}}})},
             {"risk_reporting", {{"type", "carver"}, {"window", "all_bars"},

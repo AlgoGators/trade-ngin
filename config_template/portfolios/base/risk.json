@@ -1,5 +1,6 @@
 {
   "_description": "Risk configuration for BASE_PORTFOLIO",
+  "_leverage_policy": "The net-leverage limit is enforced to within whole-contract rounding, not exactly (HD 2026-09-20). Measured on the futures backtest 2024-05-03..2026-05-03 with the ARM 1 risk loop: worst excess 1.61 contracts (9.5 %) on a 17-contract book, 40 of 55 over-limit days within one contract (excess = gross contracts x (1/leverage_mult - 1) at the gate's last reading; a proxy, since contracts differ in notional). Hard constraints in the optimiser's integer search were measured and not taken (more churn than today); they are re-measured after the cost penalty is fed. A run whose rounded book ends over the limit logs one RISK_LEVERAGE_ROUNDED WARN with the excess in contracts.",
   "schema": 2,
   "modules": [
     {
@@ -12,7 +13,7 @@
       "max_net_leverage": 2,
       "confidence_level": 0.99,
       "lookback_period": 252,
-      "lookback_unit": "bars",
+      "lookback_unit": "dates",
       "min_gate_dates": 21,
       "missing_symbol_policy": "ignore",
       "_missing_symbol_policy_reason": "Schema-1 behaviour, migrated literally: risk_manager.cpp:55-58 gates the book on the subset of its symbols present in the window (T-4 §10). Changing it is its own measured commit."

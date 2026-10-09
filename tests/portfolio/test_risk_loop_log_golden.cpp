@@ -164,7 +164,10 @@ TEST_F(RiskLoopLogGolden, CarverLapsMatchTheCommit3Sequence) {
         if (at != std::string::npos) l = l.substr(0, at) + "Available symbols: <registry>";
     }
 
-    // Pinned on 9d65e3fd (C3b) from this test's own capture.
+    // Pinned on 9d65e3fd (C3b) from this test's own capture. Re-pinned in T-6b-fix F6: the pin had
+    // failed since T-6b commits 7e and 9 added lines without re-pinning it. Every line is the
+    // commit-3 pin in order, plus exactly the lines marked `+`, each with the commit that added it;
+    // no commit-3 line was removed or changed.
     const std::vector<std::string> expected = {
         "[INFO] [RiskManager] Risk manager initialized successfully with capital=1000",
         "[INFO] [PortfolioManager] Added subscription for PORTFOLIO_MANAGER with 2 event types and 0 symbols",
@@ -172,6 +175,8 @@ TEST_F(RiskLoopLogGolden, CarverLapsMatchTheCommit3Sequence) {
         "[INFO] [Scripted Strategy] Total historical data: 0 returns across 0 symbols",
         "[INFO] [Scripted Strategy] Iteration 1 of dynamic optimization + risk loop",
         "[INFO] [RiskManager] Using risk manager",
+        // + T-6b-fix F6: F5's fallback WARN, on entering the fallback
+        "[WARNING] [RiskManager] T4_F5_FALLBACK complete_dates=1 window_dates=1 floor=120: the gate reads the UNFILTERED window (sparse dates zero-filled) until it holds the floor's complete dates; logged on entering the fallback, not per lap",
         "[INFO] [RiskManager] No positions to apply risk management to",
         "[INFO] [RiskManager] Portfolio risk management applied successfully in iteration 1",
         "[INFO] [RiskManager] No partial contracts after iteration 1. Converged!",
@@ -183,12 +188,18 @@ TEST_F(RiskLoopLogGolden, CarverLapsMatchTheCommit3Sequence) {
         "[INFO] [Scripted Strategy] Iteration 1 of dynamic optimization + risk loop",
         "[INFO] [RiskManager] Using risk manager",
         "[WARNING] [RiskManager] RiskManager: Market data not available, returning default result",
+        // + T-6b commit 9: what the gate read, one per evaluation
+        "[INFO] [RiskManager] T4_RISK_WINDOW dates=1 symbols=1 returns_rows=0 dates_dropped=0 f5_engaged=0 window_dates=1 window_bars=2",
         "[INFO] [RiskManager] Risk management result: risk_exceeded=0, scale=1.000000, portfolio_mult=1.000000, jump_mult=1.000000, correlation_mult=1.000000, leverage_mult=1.000000",
         "[INFO] [RiskManager] Risk limits not exceeded, no scaling needed",
+        // + T-6b commit 7e: requested and applied scale, one per lap
+        "[INFO] [RiskManager] RISK_APPLIED lap=1 requested=1 applied=1 cumulative=1 action=NONE module=- scope=portfolio scope_id=PM_GOLDEN invariant=1 leverage=1",
         "[INFO] [RiskManager] Risk management applied successfully",
         "[INFO] [RiskManager] Portfolio risk management applied successfully in iteration 1",
         "[INFO] [RiskManager] No partial contracts after iteration 1. Converged!",
         "[INFO] [RiskManager] Final positions fully integer after 1 iterations.",
+        // + T-6b-fix F5: the post-rounding leverage read looks ZZA up in the registry (unregistered here)
+        "[ERROR] [RiskManager] Instrument not found: ZZA. Available symbols: <registry>",
         "[INFO] [RiskManager] Generating executions for strategy GOLDEN_S, target_positions size: 1, existing executions: 0",
         "[INFO] [RiskManager] Filled-position ledger for strategy GOLDEN_S size: 0",
         "[INFO] [RiskManager] Generated execution for strategy GOLDEN_S: ZZA BUY qty=3",
@@ -197,46 +208,72 @@ TEST_F(RiskLoopLogGolden, CarverLapsMatchTheCommit3Sequence) {
         "[INFO] [Scripted Strategy] Iteration 1 of dynamic optimization + risk loop",
         "[INFO] [RiskManager] Using risk manager",
         "[ERROR] [RiskManager] Instrument not found: ZZA. Available symbols: <registry>",
+        // + T-6b commit 9: the process_positions guard, once per run
+        "[INFO] [RiskManager] POSGUARD holdings=1 mapped=1 dropped=0 dropped_nonzero=0",
+        // + T-6b commit 9: what the gate read, one per evaluation
+        "[INFO] [RiskManager] T4_RISK_WINDOW dates=4 symbols=1 returns_rows=3 dates_dropped=0 f5_engaged=0 window_dates=4 window_bars=5",
         "[INFO] [RiskManager] Risk management result: risk_exceeded=1, scale=0.700000, portfolio_mult=1.000000, jump_mult=1.000000, correlation_mult=1.000000, leverage_mult=0.700000",
         "[WARNING] [RiskManager] Risk limits exceeded, scaling positions by 0.700000",
+        // + T-6b commit 7e: requested and applied scale, one per lap
+        "[INFO] [RiskManager] RISK_APPLIED lap=1 requested=0.69999999999999996 applied=0.69999999999999996 cumulative=0.69999999999999996 action=SCALE module=carver scope=portfolio scope_id=PM_GOLDEN invariant=1 leverage=0.69999999999999996",
         "[INFO] [RiskManager] Risk management applied successfully",
         "[INFO] [RiskManager] Portfolio risk management applied successfully in iteration 1",
         "[INFO] [RiskManager] Fractional contract detected in iteration 1: ZZA, quantity=3.5",
         "[INFO] [RiskManager] Iteration 2 of dynamic optimization + risk loop",
         "[INFO] [RiskManager] Using risk manager",
         "[ERROR] [RiskManager] Instrument not found: ZZA. Available symbols: <registry>",
+        // + T-6b commit 9: what the gate read, one per evaluation
+        "[INFO] [RiskManager] T4_RISK_WINDOW dates=4 symbols=1 returns_rows=3 dates_dropped=0 f5_engaged=0 window_dates=4 window_bars=5",
         "[INFO] [RiskManager] Risk management result: risk_exceeded=0, scale=1.000000, portfolio_mult=1.000000, jump_mult=1.000000, correlation_mult=1.000000, leverage_mult=1.000000",
         "[INFO] [RiskManager] Risk limits not exceeded, no scaling needed",
+        // + T-6b commit 7e: requested and applied scale, one per lap
+        "[INFO] [RiskManager] RISK_APPLIED lap=2 requested=1 applied=1 cumulative=0.69999999999999996 action=NONE module=- scope=portfolio scope_id=PM_GOLDEN invariant=1 leverage=1",
         "[INFO] [RiskManager] Risk management applied successfully",
         "[INFO] [RiskManager] Portfolio risk management applied successfully in iteration 2",
         "[INFO] [RiskManager] Fractional contract detected in iteration 2: ZZA, quantity=3.5",
         "[INFO] [RiskManager] Iteration 3 of dynamic optimization + risk loop",
         "[INFO] [RiskManager] Using risk manager",
         "[ERROR] [RiskManager] Instrument not found: ZZA. Available symbols: <registry>",
+        // + T-6b commit 9: what the gate read, one per evaluation
+        "[INFO] [RiskManager] T4_RISK_WINDOW dates=4 symbols=1 returns_rows=3 dates_dropped=0 f5_engaged=0 window_dates=4 window_bars=5",
         "[INFO] [RiskManager] Risk management result: risk_exceeded=0, scale=1.000000, portfolio_mult=1.000000, jump_mult=1.000000, correlation_mult=1.000000, leverage_mult=1.000000",
         "[INFO] [RiskManager] Risk limits not exceeded, no scaling needed",
+        // + T-6b commit 7e: requested and applied scale, one per lap
+        "[INFO] [RiskManager] RISK_APPLIED lap=3 requested=1 applied=1 cumulative=0.69999999999999996 action=NONE module=- scope=portfolio scope_id=PM_GOLDEN invariant=1 leverage=1",
         "[INFO] [RiskManager] Risk management applied successfully",
         "[INFO] [RiskManager] Portfolio risk management applied successfully in iteration 3",
         "[INFO] [RiskManager] Fractional contract detected in iteration 3: ZZA, quantity=3.5",
         "[INFO] [RiskManager] Iteration 4 of dynamic optimization + risk loop",
         "[INFO] [RiskManager] Using risk manager",
         "[ERROR] [RiskManager] Instrument not found: ZZA. Available symbols: <registry>",
+        // + T-6b commit 9: what the gate read, one per evaluation
+        "[INFO] [RiskManager] T4_RISK_WINDOW dates=4 symbols=1 returns_rows=3 dates_dropped=0 f5_engaged=0 window_dates=4 window_bars=5",
         "[INFO] [RiskManager] Risk management result: risk_exceeded=0, scale=1.000000, portfolio_mult=1.000000, jump_mult=1.000000, correlation_mult=1.000000, leverage_mult=1.000000",
         "[INFO] [RiskManager] Risk limits not exceeded, no scaling needed",
+        // + T-6b commit 7e: requested and applied scale, one per lap
+        "[INFO] [RiskManager] RISK_APPLIED lap=4 requested=1 applied=1 cumulative=0.69999999999999996 action=NONE module=- scope=portfolio scope_id=PM_GOLDEN invariant=1 leverage=1",
         "[INFO] [RiskManager] Risk management applied successfully",
         "[INFO] [RiskManager] Portfolio risk management applied successfully in iteration 4",
         "[INFO] [RiskManager] Fractional contract detected in iteration 4: ZZA, quantity=3.5",
         "[INFO] [RiskManager] Iteration 5 of dynamic optimization + risk loop",
         "[INFO] [RiskManager] Using risk manager",
         "[ERROR] [RiskManager] Instrument not found: ZZA. Available symbols: <registry>",
+        // + T-6b commit 9: what the gate read, one per evaluation
+        "[INFO] [RiskManager] T4_RISK_WINDOW dates=4 symbols=1 returns_rows=3 dates_dropped=0 f5_engaged=0 window_dates=4 window_bars=5",
         "[INFO] [RiskManager] Risk management result: risk_exceeded=0, scale=1.000000, portfolio_mult=1.000000, jump_mult=1.000000, correlation_mult=1.000000, leverage_mult=1.000000",
         "[INFO] [RiskManager] Risk limits not exceeded, no scaling needed",
+        // + T-6b commit 7e: requested and applied scale, one per lap
+        "[INFO] [RiskManager] RISK_APPLIED lap=5 requested=1 applied=1 cumulative=0.69999999999999996 action=NONE module=- scope=portfolio scope_id=PM_GOLDEN invariant=1 leverage=1",
         "[INFO] [RiskManager] Risk management applied successfully",
         "[INFO] [RiskManager] Portfolio risk management applied successfully in iteration 5",
         "[INFO] [RiskManager] Fractional contract detected in iteration 5: ZZA, quantity=3.5",
         "[WARNING] [RiskManager] Max iterations reached (5). Forcing final rounding to remove any partial contracts.",
         "[INFO] [RiskManager] Final forced rounding for ZZA: 3.500000 -> 4",
         "[INFO] [RiskManager] Final rounding completed. No partial contracts remain.",
+        // + T-6b-fix F5: the post-rounding leverage read looks ZZA up in the registry (unregistered here)
+        "[ERROR] [RiskManager] Instrument not found: ZZA. Available symbols: <registry>",
+        // + T-6b-fix F5: the shipped book is over the leverage cap (4 lots = 0.40 vs 0.35)
+        "[WARNING] [RiskManager] Risk module carver warning on portfolio PM_GOLDEN after rounding: RISK_LEVERAGE_ROUNDED the book shipped after rounding is over its leverage limit by about 0.571429 contracts (1.142857x the limit on a 4-contract book; gross 0.400000, net 0.400000). The limit is enforced to within whole-contract rounding (config_template risk rationale); logged once per run.",
         "[INFO] [RiskManager] Generating executions for strategy GOLDEN_S, target_positions size: 1, existing executions: 1",
         "[INFO] [RiskManager] Filled-position ledger for strategy GOLDEN_S size: 1",
         "[INFO] [RiskManager] Generated execution for strategy GOLDEN_S: ZZA BUY qty=1",

@@ -147,8 +147,34 @@ public:
      */
     MarketData create_market_data(const std::vector<Bar>& data);
 
+    /// Gross and net leverage of a book and the leverage multiplier the gate would give it,
+    /// valued exactly as process_positions values it (average price x contract multiplier, over
+    /// the holdings the window maps), logging nothing of its own and touching no state. The one
+    /// exception is the registry's: a symbol it does not know makes InstrumentRegistry log its
+    /// own "Instrument not found" ERROR, exactly as it does inside process_positions (0 such
+    /// lines on every futures run of the gate). For reading a book the gate did not see -- the
+    /// one shipped after rounding.
+    struct LeverageReading {
+        double gross_leverage{0.0};
+        double net_leverage{0.0};  ///< signed
+        double multiplier{1.0};    ///< min(1, max_gross / gross, max_net / |net|)
+    };
+    LeverageReading leverage_of(const std::unordered_map<std::string, Position>& positions,
+                                const MarketData& market_data) const;
+
+    /// The InstrumentRegistry's contract multiplier for a symbol (variant suffix stripped), 1.0
+    /// when the registry has none. The one lookup process_positions and leverage_of share.
+    static double contract_multiplier_for(const std::string& symbol);
+
 private:
     RiskConfig config_;
+
+    // POSGUARD's per-run state. process_positions filters out any holding whose symbol has no
+    // bar in the gate's window, silently; the guard reports that once per run rather than once
+    // per call (it was 19.5 % of the live equity log as a per-call line), and again whenever a
+    // later call drops MORE non-zero holdings than any before it.
+    mutable size_t posguard_high_water_{0};
+    mutable bool posguard_reported_{false};
 
     /**
      * @brief Calculate position weights
