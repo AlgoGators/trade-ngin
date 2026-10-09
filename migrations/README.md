@@ -10,6 +10,9 @@ same PR or straight after. A blank cell means "not recorded", not "not applied".
 
 007 to 011 are unused on main: they were taken on unmerged branches (#55, config-from-database,
 qt-platform-preview) and are retired, so the numbers are never reused (see the header of 012).
+026 is taken by the open PR #172 (`026_contract_metadata_ibkr_fees.sql`, stage 3 fees) and 031
+by #151, so the daily cutoff took 027, the next number free across main and the open PRs on
+2026-10-09.
 
 | # | File | What it does | Test | new_algo_data | algo_data |
 |---|---|---|---|---|---|
@@ -33,6 +36,7 @@ qt-platform-preview) and are retired, so the numbers are never reused (see the h
 | 023 | `023_qt_command_log.sql` | `trading.position_overrides` rebuilt as the desk command log; `live_results.book_source`; `strategy_registry.portfolio_group` and `desk_editable`, and the two QT portfolios | `test_023_qt_command_log.sh` | 2026-10-09 | |
 | 024 | `024_drop_retired_qt_tables.sql` | Drops `risk_limits`, `portfolios`, `strategy_book_memberships` and `portfolio_assignments` (ruling 28). Irreversible; no rollback file | `test_023_qt_command_log.sh` | | |
 | 025 | `025_qt_command_log_hardening.sql` | QT contract C2 and C4 on `trading.position_overrides`: one live decision per request, one open publish and one open override request per day (unique partial indexes); inserts must be `pending` with the engine columns NULL; status moves pending -> running -> done/refused/failed, running -> pending only under `algogators.recovery = 'on'`; terminal rows final; TRUNCATE refused. Grants: PUBLIC loses everything on `trading.live_run_metadata` and its sequence (explicit grants kept or added first); `svc_algolens` loses UPDATE, DELETE, TRUNCATE on `position_overrides` | `test_025_qt_command_log_hardening.sh` (postgres:16, throwaway server only; CI `rpc.yml`) | 2026-10-09 | |
+| 027 | `027_qt_daily_cutoff.sql` | QT contract C7 (the daily cutoff, rulings 18 and 29 amended): `publish_source` (CHECK desk/fallback/model-only) and `sent_at` on `trading.live_run_metadata`, NULL for days published before it. Grants: svc_trade_ngin reads and writes them; svc_algolens' table-wide INSERT and UPDATE become column grants on every other column, so it reads the two columns only | `test_027_qt_daily_cutoff.sh` (postgres:16, throwaway server only; CI `rpc.yml`) | | |
 
 ## Deploy notes
 
@@ -54,6 +58,13 @@ qt-platform-preview) and are retired, so the numbers are never reused (see the h
   `svc_trade_ngin` gets SELECT, INSERT, UPDATE, DELETE explicitly. Today both services connect
   as `postgres`, so the grants take effect when they move to `qt_algolens_app` /
   `qt_engine_app`.
+- **027** ships with the engine and desk service of its commit, and goes first: the new engine
+  reads and writes `publish_source` and `sent_at` on every approval, fallback and send (it fails
+  with "needs migration 027" without them), and the desk service's scheduler reads `sent_at`.
+  An older engine ignores the columns. The rollback refuses while any day carries
+  `publish_source` or `sent_at` unless the session sets `migration.force_rollback = 'yes'`; roll
+  the image back first (an older engine does not know a day was sent). AlgoLens (#118) reads the
+  columns when they are there and falls back to `published_by` `system:fallback-*` otherwise.
 - **Not done, on purpose:** SET NOT NULL on columns that hold NULLs today. The spec left it;
   `live_run_metadata.portfolio_id` is already NOT NULL on new_algo_data (0 NULL rows of 514 on
   2026-10-09), and no NOT NULL was added to `position_overrides`.

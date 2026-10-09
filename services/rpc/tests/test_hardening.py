@@ -16,7 +16,7 @@ import grpc
 import pytest
 from grpc_health.v1 import health_pb2, health_pb2_grpc
 
-from conftest import PID, FakeStore, make_row, now, write_portfolio
+from conftest import DISPATCH_AT, PID, FakeStore, make_row, now, write_portfolio
 from algogators import desk_pb2 as pb
 from algogators import desk_pb2_grpc
 from algogators_rpc.client import versioned_channel
@@ -302,12 +302,19 @@ def test_published_day_refuses_save_and_override_request(stub, agent, cstore, ru
     assert cstore.rows[60].status == "refused" and runner.calls == [] and agent.sent == []
 
 
-def test_publish_rows_are_left_to_the_engine_on_a_published_day(agent, cstore, runner):
+def test_an_approval_of_a_published_day_is_refused_unless_it_approved_it(agent, cstore, runner):
+    """Contract C7: once published, an approval is refused (the engine refuses too); a re-run of
+    the row that approved the day (its result carries published_at) goes on to its send."""
     cstore.published[(PID, DAY)] = now()
     cstore.add(make_row(61, "publish"))
-    assert agent.dispatcher.dispatch(cstore.rows[61]).status == "accepted"
+    out = agent.dispatcher.dispatch(cstore.rows[61])
+    assert out.status == "refused" and "already published" in out.message
+    cstore.add(make_row(62, "publish", result={"published_at": "x", "publish_source": "desk"}))
+    agent.now = DISPATCH_AT.replace(hour=9, minute=40)
+    assert agent.dispatcher.dispatch(cstore.rows[62]).status == "accepted"
     agent.wait()
-    assert [c[0][3] for c in runner.calls] == ["--publish"]
+    assert [c[0][3:] for c in runner.calls][0][0] == "--publish"
+    assert runner.calls[0][0][-1] == "--send-now"
 
 
 # -- 3. override request: re-drive and the e-mail-disabled rule (C1, R#4, R#6) --------------
@@ -476,8 +483,10 @@ def test_connections_have_timeouts():
 def test_catchup_settings():
     s = catchup_settings({})
     assert s.enabled and s.portfolios == ("qt_conservative", "qt_conservative_model")
-    assert (s.window_start, s.window_end, s.every_minutes) == (dt.time(6), dt.time(22), 30)
-    assert s.today_not_before == dt.time(10, 15) and s.reminder_after_h == 24
+    assert (s.window_start, s.window_end, s.every_minutes) == (dt.time(6, 30), dt.time(22), 30)
+    assert (s.busy_start, s.busy_end, s.busy_every_minutes) == (dt.time(6, 30), dt.time(10, 30), 5)
+    assert s.today_not_before == dt.time(6, 45) and s.model_retry_minutes == 15
+    assert s.model_alert_at == dt.time(8, 30)
     s = catchup_settings({"QT_CATCHUP_PORTFOLIOS": "a, b", "QT_CATCHUP_WINDOW": "07:30-20:00",
                           "QT_CATCHUP_EVERY_MIN": "15", "QT_CATCHUP_TODAY_NOT_BEFORE": "11:00"})
     assert s.portfolios == ("a", "b") and s.window_start == dt.time(7, 30)
@@ -485,7 +494,8 @@ def test_catchup_settings():
     assert catchup_settings({"QT_CATCHUP_ENABLED": "0", "QT_CATCHUP_PORTFOLIOS": ""}).enabled \
         is False
     for bad in ({"QT_CATCHUP_WINDOW": "22:00-06:00"}, {"QT_CATCHUP_EVERY_MIN": "45"},
-                {"QT_CATCHUP_TODAY_NOT_BEFORE": "noon"}, {"QT_CATCHUP_PORTFOLIOS": " , "}):
+                {"QT_CATCHUP_TODAY_NOT_BEFORE": "noon"}, {"QT_CATCHUP_PORTFOLIOS": " , "},
+                {"QT_CATCHUP_BUSY_WINDOW": "10:30-06:30"}, {"QT_CATCHUP_BUSY_EVERY_MIN": "7"}):
         with pytest.raises(ConfigError):
             catchup_settings(bad)
 

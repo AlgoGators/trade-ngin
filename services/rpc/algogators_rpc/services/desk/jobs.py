@@ -4,7 +4,9 @@ Jobs for the same portfolio run one at a time, in the order they were queued; di
 portfolios run concurrently. An engine job spawns
 
     flock <lock_dir>/<portfolio_id>.lock <engine_binary> --<mode> --portfolio-config <dir>
-          --date YYYY-MM-DD --audit-id N
+          --date YYYY-MM-DD --audit-id N [--send-now]
+
+(--send-now: an approval from 09:30 to 10:00, or a re-driven 10:00 fallback; contract C7)
 
 in <engine_cwd>. The catch-up scheduler (catchup.py) takes the same lock file for its model runs,
 so a desk command and a model run never overlap. The binary records the row's outcome itself
@@ -38,7 +40,7 @@ log = logging.getLogger("desk.jobs")
 TAIL_LINES = 40
 # How much of the end of each output file is read back for the tail.
 TAIL_BYTES = 64 * 1024
-MODES = ("desk", "override", "publish")
+MODES = ("desk", "override", "publish", "fallback")
 
 
 @dataclass(frozen=True)
@@ -115,12 +117,15 @@ def tail(text: str, n: int = TAIL_LINES) -> List[str]:
 
 
 def engine_argv(settings: CommandSettings, mode: str, portfolio_id: str, portfolio_dir: str,
-                date: str, audit_id: int) -> List[str]:
+                date: str, audit_id: int, send_now: bool = False) -> List[str]:
     if mode not in MODES:
         raise ValueError(f"unknown engine mode {mode}")
+    if send_now and mode not in ("publish", "fallback"):
+        raise ValueError("--send-now goes with --publish or --fallback")
     lock = os.path.join(settings.lock_dir, f"{portfolio_id}.lock")
     return [settings.flock, lock, settings.engine_binary, f"--{mode}",
-            "--portfolio-config", portfolio_dir, "--date", date, "--audit-id", str(audit_id)]
+            "--portfolio-config", portfolio_dir, "--date", date, "--audit-id", str(audit_id)] + (
+                ["--send-now"] if send_now else [])
 
 
 @dataclass
@@ -200,8 +205,10 @@ class JobManager:
 
     def engine_job(self, mode: str, portfolio_id: str, portfolio_dir: str, date: str,
                    audit_id: int, kind: str,
-                   on_done: Optional[Callable[[bool], None]] = None) -> Job:
-        argv = engine_argv(self._settings, mode, portfolio_id, portfolio_dir, date, audit_id)
+                   on_done: Optional[Callable[[bool], None]] = None,
+                   send_now: bool = False) -> Job:
+        argv = engine_argv(self._settings, mode, portfolio_id, portfolio_dir, date, audit_id,
+                           send_now)
         return Job(portfolio_id, audit_id, kind,
                    lambda: self._run_engine(argv, portfolio_id, audit_id, mode), on_done)
 

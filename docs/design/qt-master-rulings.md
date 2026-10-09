@@ -13,7 +13,8 @@
 1. Model run stores system and seeds qt_proposal. No desk save -> qt = model result as-is (same positions, executions, costs); loop not rerun.
 2. Desk changes quantities + reason, saves. Engine runs its ONE pass on the desk's whole book and stores qt, with per-symbol record of asked / given back / which step moved it. Save repeatable, sends nothing.
 3. Override: either VP or President approves via link in email (recorded in AlgoLens). Request then trades exactly; risk/optimisation still computed and stored as report.
-4. Desk publishes every day, edited or not. Publish finalises desk's book, sends email, one record per portfolio+date (on live_run_metadata). Engine sends and writes.
+4. ~~Desk publishes every day, edited or not. Publish finalises desk's book, sends email, one record per portfolio+date (on live_run_metadata). Engine sends and writes.~~
+   **Amended 2026-10-09 (Dom), the daily cutoff (`qt-contract.md` C7):** every calendar day, weekends and holidays included, America/New_York. The desk approves the day (the Publish command, "Approve" in AlgoLens) by 09:30: the approval freezes the day; the e-mail goes at 09:30 (an approval from 09:30 to 10:00 is sent at once). A day not approved by 10:00 is reset to the model's book, published (`system:fallback-10am`) and sent at once, and the President is alerted. From 10:00 the day is frozen. Still one publish record per portfolio+date on live_run_metadata (`publish_source`, `sent_at`, migration 027); the engine sends and writes.
 5. Tomorrow's model run starts from published book.
 
 ## Rulings 2026-10-08 (HD)
@@ -34,7 +35,8 @@
 15 Desk run never sends daily email; publish does. Model CSV unchanged.
 16 Desk change not a standing override. Close stored as zero-quantity row.
 17 Each book finalised into its own rows. Finalisation, P&L, loop stay in engine.
-18 No clock cutoff. Publish every day; finalises, emails, one record per portfolio+date. Engine sends and writes.
+18 ~~No clock cutoff.~~ Publish every day; finalises, emails, one record per portfolio+date. Engine sends and writes.
+   **Amended 2026-10-09 (Dom):** there is a clock cutoff, every calendar day, New York time: approve by 09:30 (the approval freezes the day; the e-mail goes at 09:30, at once from 09:30 to 10:00); not approved by 10:00 -> the fallback resets qt to the MODEL's book, publishes it (`publish_source='fallback'`, `system:fallback-10am`) and sends it; after 10:00 approving, saving or overriding the day is refused. See `qt-contract.md` C7.
 19 Untouched model = second portfolio, desk editing off. No benchmark tables / replay tool.
 20 AlgoLens opens on qt; portfolio switcher; related portfolios grouped; view flips system / qt_proposal / qt.
 21 Symbol with no model data: held and counted in risk until data arrives; close at latest known price.
@@ -45,7 +47,8 @@
 26 One new table strategy_config (versioned, one active per portfolio, reason, author). No migrations table, publish table, run-settings table, desk results table. Publish record + settings used go on live_run_metadata. Ordered migration list in migrations README.
 27 No history copied into qt. First desk day starts from model book.
 28 Keep position_overrides (needs more cols). Drop risk_limits, portfolios, strategy_book_memberships, portfolio_assignments. Keep AlgoLens strategy_registry (+1 grouping column) and strategy_lifecycle_log.
-29 Missed/failed day caught up before next day's run; until then nothing sent and alert fires.
+29 Missed/failed day caught up before next day's run; until then ~~nothing sent and~~ alert fires.
+   **Amended 2026-10-09 (Dom):** "nothing is sent until published" now means a day is sent only once published, and every day is published by 10:00 at the latest (the fallback). The model run no longer auto-publishes non-trading days (`system:non-trading-day` is gone): weekends and holidays follow the same approve-or-fallback flow. A missed past day (engine down) is caught up by the model run and published with the model's book (`system:fallback-catchup`), never e-mailed, with one alert. Alerts for model-run failures and refusals stay; the 24 h unpublished reminder is gone. The chain rule (an earlier unpublished day refuses the next run) stays.
 Also (10-07): one portfolio is one book; AlgoLens finds a book by portfolio id; strategy id is description, never key (#154).
 Also: engine trading logic does not change for QT platform.
 

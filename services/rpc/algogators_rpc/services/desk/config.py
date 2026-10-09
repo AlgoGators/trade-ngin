@@ -96,20 +96,27 @@ class CommandSettings:
 
 @dataclass(frozen=True)
 class CatchupSettings:
-    """The catch-up scheduler (contract C6, catchup.py). Times are America/New_York."""
+    """The scheduler (contract C6, C7; catchup.py). Times are America/New_York. The 09:30 send
+    and the 10:00 cutoff are fixed (cutoff.py), not settings."""
 
     enabled: bool = True
     # Portfolio config directories under <TRADING_CONFIG_DIR>/portfolios/, as the old cron
     # passed them to qt_model_run.sh.
     portfolios: Tuple[str, ...] = DEFAULT_CATCHUP_PORTFOLIOS
-    window_start: dt.time = dt.time(6, 0)
+    window_start: dt.time = dt.time(6, 30)
     window_end: dt.time = dt.time(22, 0)
     every_minutes: int = 30
-    # Today's model run on a trading day waits for T-1 data: not before this time (the old
-    # cron's 10:15). Earlier days, and today on a non-trading day, run at once.
-    today_not_before: dt.time = dt.time(10, 15)
-    # A trading day still unpublished this long after its model run gets a reminder e-mail.
-    reminder_after_h: float = 24.0
+    # Around the model run, the 09:30 send and the 10:00 fallback a pass is due more often.
+    busy_start: dt.time = dt.time(6, 30)
+    busy_end: dt.time = dt.time(10, 30)
+    busy_every_minutes: int = 5
+    # Today's model run waits for the day's data (data-ngin's DAG at 06:45), every day.
+    # Earlier days run at once.
+    today_not_before: dt.time = dt.time(6, 45)
+    # A failed model run, fallback or send is retried after this many minutes.
+    model_retry_minutes: float = 15.0
+    # No model book for today by then: an alert to the President.
+    model_alert_at: dt.time = dt.time(8, 30)
     # How long a pass waits for a portfolio's flock (a desk job may hold it) before it skips
     # that portfolio until the next pass.
     lock_wait_s: float = 600.0
@@ -207,10 +214,32 @@ def _clock(env: Mapping[str, str], name: str, default: dt.time) -> dt.time:
         raise ConfigError(f"{name} must be HH:MM (America/New_York)") from None
 
 
+def _window(env: Mapping[str, str], name: str, default: str) -> Tuple[dt.time, dt.time]:
+    raw = (env.get(name) or default).strip()
+    try:
+        start_raw, end_raw = raw.split("-")
+    except ValueError:
+        raise ConfigError(f"{name} must be HH:MM-HH:MM") from None
+    start = _clock({name: start_raw}, name, dt.time(0, 0))
+    end = _clock({name: end_raw}, name, dt.time(0, 0))
+    if end <= start:
+        raise ConfigError(f"{name} must end after it starts")
+    return start, end
+
+
+def _every(env: Mapping[str, str], name: str, default: int) -> int:
+    every = _positive(env, name, default)
+    if int(every) != every or 60 % int(every):
+        raise ConfigError(f"{name} must divide 60 (e.g. 5, 15, 30, 60)")
+    return int(every)
+
+
 def catchup_settings(env: Optional[Mapping[str, str]] = None) -> CatchupSettings:
     """QT_CATCHUP_ENABLED (default 1), QT_CATCHUP_PORTFOLIOS (comma-separated config dirs),
-    QT_CATCHUP_WINDOW ("06:00-22:00"), QT_CATCHUP_EVERY_MIN (30), QT_CATCHUP_TODAY_NOT_BEFORE
-    ("10:15"), QT_UNPUBLISHED_REMINDER_H (24), QT_CATCHUP_LOCK_WAIT_S (600)."""
+    QT_CATCHUP_WINDOW ("06:30-22:00"), QT_CATCHUP_EVERY_MIN (30), QT_CATCHUP_BUSY_WINDOW
+    ("06:30-10:30"), QT_CATCHUP_BUSY_EVERY_MIN (5), QT_CATCHUP_TODAY_NOT_BEFORE ("06:45"),
+    QT_MODEL_RETRY_MIN (15), QT_MODEL_ALERT_AT ("08:30"), QT_CATCHUP_LOCK_WAIT_S (600).
+    QT_UNPUBLISHED_REMINDER_H is no longer read (the 10:00 fallback replaced the reminder)."""
     env = os.environ if env is None else env
     enabled = (env.get("QT_CATCHUP_ENABLED") or "1").strip() != "0"
     raw = env.get("QT_CATCHUP_PORTFOLIOS")
@@ -219,22 +248,15 @@ def catchup_settings(env: Optional[Mapping[str, str]] = None) -> CatchupSettings
     if enabled and not portfolios:
         raise ConfigError("QT_CATCHUP_PORTFOLIOS names no portfolio; set QT_CATCHUP_ENABLED=0 "
                           "to turn the catch-up scheduler off")
-    window = (env.get("QT_CATCHUP_WINDOW") or "06:00-22:00").strip()
-    try:
-        start_raw, end_raw = window.split("-")
-    except ValueError:
-        raise ConfigError("QT_CATCHUP_WINDOW must be HH:MM-HH:MM") from None
-    start = _clock({"QT_CATCHUP_WINDOW": start_raw}, "QT_CATCHUP_WINDOW", dt.time(6, 0))
-    end = _clock({"QT_CATCHUP_WINDOW": end_raw}, "QT_CATCHUP_WINDOW", dt.time(22, 0))
-    if end <= start:
-        raise ConfigError("QT_CATCHUP_WINDOW must end after it starts")
-    every = _positive(env, "QT_CATCHUP_EVERY_MIN", 30)
-    if int(every) != every or 60 % int(every):
-        raise ConfigError("QT_CATCHUP_EVERY_MIN must divide 60 (e.g. 15, 30, 60)")
+    start, end = _window(env, "QT_CATCHUP_WINDOW", "06:30-22:00")
+    busy_start, busy_end = _window(env, "QT_CATCHUP_BUSY_WINDOW", "06:30-10:30")
     return CatchupSettings(
         enabled=enabled, portfolios=portfolios, window_start=start, window_end=end,
-        every_minutes=int(every),
-        today_not_before=_clock(env, "QT_CATCHUP_TODAY_NOT_BEFORE", dt.time(10, 15)),
-        reminder_after_h=_positive(env, "QT_UNPUBLISHED_REMINDER_H", 24.0),
+        every_minutes=_every(env, "QT_CATCHUP_EVERY_MIN", 30),
+        busy_start=busy_start, busy_end=busy_end,
+        busy_every_minutes=_every(env, "QT_CATCHUP_BUSY_EVERY_MIN", 5),
+        today_not_before=_clock(env, "QT_CATCHUP_TODAY_NOT_BEFORE", dt.time(6, 45)),
+        model_retry_minutes=_positive(env, "QT_MODEL_RETRY_MIN", 15.0),
+        model_alert_at=_clock(env, "QT_MODEL_ALERT_AT", dt.time(8, 30)),
         lock_wait_s=_positive(env, "QT_CATCHUP_LOCK_WAIT_S", 600.0),
     )

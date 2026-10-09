@@ -5,9 +5,10 @@ The desk owns two background tasks:
 * `desk.redrive` (recovery.py): at start and every QT_REDRIVE_INTERVAL_S (default 60 s), the
   recovery of orphaned and stale 'running' rows (retried until the startup pass succeeds), then
   the dispatch of every pending row of trading.position_overrides.
-* `desk.catchup` (catchup.py): every minute it checks whether a catch-up pass is due (every
-  QT_CATCHUP_EVERY_MIN inside QT_CATCHUP_WINDOW, New York time) and runs the QT model runs that
-  are missing (contract C6). QT_CATCHUP_ENABLED=0 leaves it out.
+* `desk.catchup` (catchup.py): every minute it checks whether a pass is due (every 5 minutes
+  from 06:30 to 10:30 New York time, then every 30 until 22:00) and runs the QT model runs that
+  are missing, the 09:30 send and the 10:00 fallback (contracts C6, C7). QT_CATCHUP_ENABLED=0
+  leaves it out (then nothing runs the model, sends at 09:30 or falls back at 10:00).
 """
 
 from __future__ import annotations
@@ -68,7 +69,7 @@ def register(registry: Registry, env: Mapping[str, str]) -> Service:
     catchup = None
     if settings.catchup.enabled:
         catchup = CatchupScheduler(PostgresDayStore(settings.db), settings.commands,
-                                   settings.catchup)
+                                   settings.catchup, dispatcher=dispatcher)
     service = registry.register(build_service(
         store, dispatcher, commands, settings.commands.redrive_interval_s, catchup))
     log.info("desk service registered",

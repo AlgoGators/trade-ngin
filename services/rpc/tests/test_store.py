@@ -103,6 +103,20 @@ def test_publish_columns_present():
     assert facts.metadata[0].published_by == "dom" and facts.metadata[0].published_at == T1
 
 
+def test_cutoff_columns_present():
+    """Migration 027 (contract C7): publish_source and sent_at are read when they exist."""
+    cur = FakeCursor({"live_run_metadata": BASE_META + ["created_at", "published_by",
+                                                        "published_at", "publish_source",
+                                                        "sent_at"],
+                      "live_results": ["created_at"]},
+                     meta_rows=[({}, T0, "system:fallback-10am", T1, "fallback", T1)],
+                     results=(1, T1))
+    facts = make_store(cur).run_facts("P", DAY)
+    meta_sql = next(s for s in cur.sql if "FROM trading.live_run_metadata" in s)
+    assert '"sent_at"::timestamptz' in meta_sql and '"publish_source"' in meta_sql
+    assert facts.metadata[0].publish_source == "fallback" and facts.metadata[0].sent_at == T1
+
+
 def test_missing_metadata_table_is_a_store_error():
     cur = FakeCursor({}, meta_rows=[], results=(0, None))
     with pytest.raises(StoreError, match="live_run_metadata not found"):

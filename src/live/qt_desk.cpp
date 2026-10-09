@@ -106,6 +106,8 @@ std::string mode_name(Mode mode) {
         case Mode::OVERRIDE: return "override";
         case Mode::PUBLISH: return "publish";
         case Mode::FINALIZE_SYSTEM: return "finalize-system";
+        case Mode::FALLBACK: return "fallback";
+        case Mode::SEND: return "send";
     }
     return "model";
 }
@@ -171,8 +173,9 @@ Result<AuditRow> load_audit_row(PostgresDatabase& db, long id) {
         db,
         "SELECT id::text, portfolio_id, to_char(date, 'YYYY-MM-DD'), kind, status, requested_by, "
         "COALESCE(reason, ''), payload::text, COALESCE(parent_id::text, '0'), "
-        "COALESCE(approver_role, ''), COALESCE(token_expires_at::text, ''), created_at::text "
-        "FROM trading.position_overrides WHERE id = " + std::to_string(id));
+        "COALESCE(approver_role, ''), COALESCE(token_expires_at::text, ''), created_at::text, "
+        "COALESCE(result::text, '{}') FROM trading.position_overrides WHERE id = " +
+            std::to_string(id));
     if (rows.is_error()) {
         return make_error<AuditRow>(rows.error()->code(), rows.error()->what(), "QtDesk");
     }
@@ -199,6 +202,12 @@ Result<AuditRow> load_audit_row(PostgresDatabase& db, long id) {
     row.approver_role = cell(r[9]);
     row.token_expires_at = cell(r[10]);
     row.created_at = cell(r[11]);
+    try {
+        row.result = nlohmann::json::parse(cell(r[12]).empty() ? "{}" : cell(r[12]));
+        if (!row.result.is_object()) row.result = nlohmann::json::object();
+    } catch (const std::exception&) {
+        row.result = nlohmann::json::object();
+    }
     return Result<AuditRow>(row);
 }
 
@@ -876,23 +885,121 @@ Result<std::string> published_at(PostgresDatabase& db, const std::string& portfo
     return Result<std::string>(rows.value().empty() ? std::string() : cell(rows.value()[0][0]));
 }
 
-Result<void> set_published(PostgresDatabase& db, const std::string& portfolio_id,
-                           const std::string& strategy_id, const std::string& date,
-                           const std::string& published_by) {
-    auto rows = db.execute_direct_query(
-        "UPDATE trading.live_run_metadata SET published_by = " + sql_literal(published_by) +
-        ", published_at = now() WHERE portfolio_id = " + sql_literal(portfolio_id) +
-        " AND strategy_id = " + sql_literal(strategy_id) + " AND date = " + sql_literal(date) +
-        "::date");
+namespace {
+// A missing 027 column names the migration in the error.
+std::string with_027_hint(const std::string& what) {
+    if (what.find("publish_source") != std::string::npos ||
+        what.find("sent_at") != std::string::npos) {
+        return what + " (trading.live_run_metadata needs migration 027)";
+    }
+    return what;
+}
+
+std::string metadata_where(const std::string& portfolio_id, const std::string& strategy_id,
+                           const std::string& date) {
+    return " WHERE portfolio_id = " + sql_literal(portfolio_id) + " AND strategy_id = " +
+           sql_literal(strategy_id) + " AND date = " + sql_literal(date) + "::date";
+}
+}  // namespace
+
+Result<PublishState> publish_state(PostgresDatabase& db, const std::string& portfolio_id,
+                                   const std::string& strategy_id, const std::string& date) {
+    if (!valid_date(date)) {
+        return make_error<PublishState>(ErrorCode::INVALID_ARGUMENT, "bad date '" + date + "'",
+                                        "QtDesk");
+    }
+    auto rows = query_rows(
+        db, "SELECT COALESCE(published_at::text, ''), COALESCE(published_by, ''), "
+            "COALESCE(publish_source, ''), COALESCE(sent_at::text, '') FROM "
+            "trading.live_run_metadata" + metadata_where(portfolio_id, strategy_id, date));
     if (rows.is_error()) {
-        return make_error<void>(rows.error()->code(), rows.error()->what(), "QtDesk");
+        return make_error<PublishState>(rows.error()->code(),
+                                        with_027_hint(rows.error()->what()), "QtDesk");
     }
-    if (rows.value() != 1) {
-        return make_error<void>(ErrorCode::DATABASE_ERROR,
-                                "no live_run_metadata row for " + portfolio_id + " on " + date,
-                                "QtDesk");
+    PublishState state;
+    if (!rows.value().empty()) {
+        const auto& r = rows.value().front();
+        state.published_at = cell(r[0]);
+        state.published_by = cell(r[1]);
+        state.publish_source = cell(r[2]);
+        state.sent_at = cell(r[3]);
     }
-    return Result<void>();
+    return Result<PublishState>(state);
+}
+
+Result<std::string> approve_day(PostgresDatabase& db, long row_id, const std::string& portfolio_id,
+                                const std::string& strategy_id, const std::string& date,
+                                const std::string& published_by, const std::string& source) {
+    if (!valid_date(date)) {
+        return make_error<std::string>(ErrorCode::INVALID_ARGUMENT, "bad date '" + date + "'",
+                                       "QtDesk");
+    }
+    const std::string id = std::to_string(row_id);
+    const std::string open_row = "(SELECT 1 FROM trading.position_overrides WHERE id = " + id +
+                                 " AND status IN ('pending', 'running'))";
+    auto rows = query_rows(
+        db, "WITH m AS (UPDATE trading.live_run_metadata SET published_by = " +
+                sql_literal(published_by) + ", published_at = now(), publish_source = " +
+                sql_literal(source) + metadata_where(portfolio_id, strategy_id, date) +
+                " AND published_at IS NULL" +
+                (row_id > 0 ? " AND EXISTS " + open_row : std::string()) +
+                " RETURNING published_at), r AS (UPDATE trading.position_overrides SET result = "
+                "COALESCE(result, '{}'::jsonb) || jsonb_build_object('published_at', "
+                "(SELECT max(published_at) FROM m)::text, 'publish_source', " +
+                sql_literal(source) + ") WHERE id = " + id +
+                " AND status IN ('pending', 'running') AND EXISTS (SELECT 1 FROM m) RETURNING id) "
+                "SELECT (SELECT count(*) FROM m)::text, COALESCE((SELECT max(published_at) FROM "
+                "m)::text, ''), (SELECT count(*) FROM r)::text");
+    if (rows.is_error()) {
+        return make_error<std::string>(rows.error()->code(), with_027_hint(rows.error()->what()),
+                                       "QtDesk");
+    }
+    if (rows.value().empty() || cell(rows.value()[0][0]) != "1") {
+        return make_error<std::string>(
+            ErrorCode::DATABASE_ERROR,
+            portfolio_id + " " + date +
+                " was not approved: its live_run_metadata row is missing or already published" +
+                (row_id > 0 ? ", or command row " + id + " is not open" : std::string()),
+            "QtDesk");
+    }
+    return Result<std::string>(cell(rows.value()[0][1]));
+}
+
+Result<std::string> record_sent(PostgresDatabase& db, long row_id, const std::string& portfolio_id,
+                                const std::string& strategy_id, const std::string& date) {
+    if (!valid_date(date)) {
+        return make_error<std::string>(ErrorCode::INVALID_ARGUMENT, "bad date '" + date + "'",
+                                       "QtDesk");
+    }
+    auto rows = query_rows(
+        db, "WITH m AS (UPDATE trading.live_run_metadata SET sent_at = now()" +
+                metadata_where(portfolio_id, strategy_id, date) +
+                " AND sent_at IS NULL RETURNING sent_at), r AS (UPDATE trading.position_overrides "
+                "SET result = COALESCE(result, '{}'::jsonb) || jsonb_build_object('email_sent_at', "
+                "now()::text) WHERE id = " + std::to_string(row_id) +
+                " AND kind = 'publish' AND status IN ('pending', 'running') RETURNING id) "
+                "SELECT COALESCE((SELECT max(sent_at) FROM m)::text, ''), "
+                "(SELECT count(*) FROM r)::text");
+    if (rows.is_error()) {
+        return make_error<std::string>(rows.error()->code(), with_027_hint(rows.error()->what()),
+                                       "QtDesk");
+    }
+    std::string at = rows.value().empty() ? std::string() : cell(rows.value()[0][0]);
+    if (at.empty()) {
+        // Already recorded (the caller checks sent_at before it sends), or no metadata row.
+        auto state = publish_state(db, portfolio_id, strategy_id, date);
+        if (state.is_error()) {
+            return make_error<std::string>(state.error()->code(), state.error()->what(), "QtDesk");
+        }
+        if (state.value().sent_at.empty()) {
+            return make_error<std::string>(ErrorCode::DATABASE_ERROR,
+                                           "no live_run_metadata row for " + portfolio_id +
+                                               " on " + date + "; sent_at not written",
+                                           "QtDesk");
+        }
+        at = state.value().sent_at;
+    }
+    return Result<std::string>(at);
 }
 
 nlohmann::json desk_result_json(const std::vector<DeskSymbolOutcome>& outcomes,

@@ -7,8 +7,8 @@ implementation reads:
   (PostgresDatabase::store_live_run_metadata): date, strategy_id, portfolio_id,
   strategy_allocations, portfolio_config, strategy_configs, plus created_at. A run's refusal is
   a key in portfolio_config (`risk_refusal`, `strict_assertion`; run_metadata_marks.hpp).
-  published_by / published_at arrive with the publish migration (plan E8); until then they are
-  absent and reported as such.
+  published_by / published_at arrive with the publish migration (022), publish_source / sent_at
+  with 027 (contract C7); until then they are absent and reported as such.
 * trading.live_results for the same key: a completed run writes that row last
   (scripts/check_live_trading.py), so its presence is the "finished" signal.
 
@@ -26,7 +26,8 @@ from .config import CONNECT_TIMEOUT_S, DbConfig
 
 METADATA_TABLE = ("trading", "live_run_metadata")
 RESULTS_TABLE = ("trading", "live_results")
-_OPTIONAL_METADATA_COLUMNS = ("created_at", "published_by", "published_at")
+_OPTIONAL_METADATA_COLUMNS = ("created_at", "published_by", "published_at", "publish_source",
+                              "sent_at")
 
 
 class StoreError(RuntimeError):
@@ -39,6 +40,8 @@ class MetadataRow:
     created_at: Optional[dt.datetime] = None
     published_by: Optional[str] = None
     published_at: Optional[dt.datetime] = None
+    publish_source: Optional[str] = None
+    sent_at: Optional[dt.datetime] = None
 
 
 @dataclass(frozen=True)
@@ -98,7 +101,9 @@ class PostgresRunStatusStore:
                         portfolio_config=values["portfolio_config"],
                         created_at=values.get("created_at"),
                         published_by=values.get("published_by"),
-                        published_at=values.get("published_at")))
+                        published_at=values.get("published_at"),
+                        publish_source=values.get("publish_source"),
+                        sent_at=values.get("sent_at")))
 
                 res_cols = self._columns(cur, *RESULTS_TABLE)
                 has_results, written_at = False, None

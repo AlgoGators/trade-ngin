@@ -7,7 +7,10 @@
 //   2   clear_desk_day deletes the qt day's non-ROLL executions (never ROLL, never another book)
 //       and clears the completion marker;
 //   3   publish_blocker refuses an unmarked qt day and a day whose last desk command failed;
-//   7   mark_email_sent / publish_email_sent record and find a publish e-mail.
+//   7   mark_email_sent / publish_email_sent record and find a publish e-mail;
+//   C7  approve_day freezes a day once (publish_source, and published_at on its row),
+//       record_sent records the send once, and the fallback's reset copies the model's book over
+//       a desk save (needs migration 027; skipped without it).
 //
 // The database needs the trading schema with migrations 021 and 023 (trading.position_overrides
 // and live_results.book_source), e.g. a throwaway restore. position_overrides rows are never
@@ -108,7 +111,8 @@ protected:
     void purge() {
         pqxx::connection c(conn_);
         pqxx::work w(c);
-        for (const char* t : {"trading.positions", "trading.executions", "trading.live_results"}) {
+        for (const char* t : {"trading.positions", "trading.executions", "trading.live_results",
+                              "trading.live_run_metadata", "trading.equity_curve"}) {
             w.exec(std::string("DELETE FROM ") + t + " WHERE portfolio_id = $1",
                    pqxx::params{pid_});
         }
@@ -168,6 +172,17 @@ protected:
         proposal_row("6A.v.0", -2);
         proposal_row("MES.v.0", 0);
         proposal_row("6A.v.0", -9, "system");
+    }
+
+    bool has_027() {
+        return scalar("SELECT count(*)::text FROM information_schema.columns WHERE table_schema = "
+                      "'trading' AND table_name = 'live_run_metadata' AND column_name IN "
+                      "('publish_source', 'sent_at')") == "2";
+    }
+    void metadata() {
+        scalar("INSERT INTO trading.live_run_metadata (date, strategy_id, portfolio_id, "
+               "strategy_allocations) VALUES (" + lit(kDate) + ", " + lit(kSid) + ", " + lit(pid_) +
+               ", '{}') RETURNING id");
     }
 
     qt::AuditRow row(long id) {
@@ -306,6 +321,95 @@ TEST_F(QtDeskDb, ThePublishEmailIsFoundFromAnyPublishRowOfTheDay) {
     ASSERT_TRUE(found.is_ok());
     EXPECT_EQ(found.value().row_id, first);
     EXPECT_FALSE(found.value().at.empty());
+}
+
+// C7: an approval writes the publish record and its row's result in one statement, once.
+TEST_F(QtDeskDb, AnApprovalFreezesTheDayOnceAndMarksItsRow) {
+    if (!has_027()) GTEST_SKIP() << "the test database lacks migration 027";
+    metadata();
+    auto none = qt::publish_state(*db_, pid_, kSid, kDate);
+    ASSERT_TRUE(none.is_ok()) << none.error()->what();
+    EXPECT_TRUE(none.value().published_at.empty());
+
+    const long pub = command("publish");
+    move(pub, "running");
+    auto at = qt::approve_day(*db_, pub, pid_, kSid, kDate, "desk@x.org", qt::kSourceDesk);
+    ASSERT_TRUE(at.is_ok()) << at.error()->what();
+    auto state = qt::publish_state(*db_, pid_, kSid, kDate);
+    ASSERT_TRUE(state.is_ok());
+    EXPECT_EQ(state.value().published_at, at.value());
+    EXPECT_EQ(state.value().published_by, "desk@x.org");
+    EXPECT_EQ(state.value().publish_source, "desk");
+    EXPECT_TRUE(state.value().sent_at.empty()) << "an approval sends nothing";
+    EXPECT_TRUE(row(pub).result.contains("published_at")) << "a re-run of the row knows it approved";
+    ASSERT_TRUE(qt::finish_audit_row(*db_, pub, "done", {{"published", true}}, "approved").is_ok());
+
+    // frozen: the 10:00 fallback (or any second approval) is refused and changes nothing
+    const long late = command("publish", "{}", 0, "system:fallback-10am");
+    move(late, "running");
+    EXPECT_TRUE(qt::approve_day(*db_, late, pid_, kSid, kDate, "system:fallback-10am",
+                                qt::kSourceFallback)
+                    .is_error());
+    EXPECT_EQ(qt::publish_state(*db_, pid_, kSid, kDate).value().publish_source, "desk");
+    EXPECT_FALSE(row(late).result.contains("published_at"));
+    ASSERT_TRUE(qt::finish_audit_row(*db_, late, "refused", nlohmann::json::object(), "x").is_ok());
+
+    // 027's CHECK: only desk, fallback and model-only
+    EXPECT_TRUE(qt::approve_day(*db_, 0, pid_ + "_X", kSid, kDate, "x", "bogus").is_error());
+}
+
+// C7: the e-mail is recorded once; the row's email_sent_at is written with it.
+TEST_F(QtDeskDb, TheSendIsRecordedOnce) {
+    if (!has_027()) GTEST_SKIP() << "the test database lacks migration 027";
+    metadata();
+    ASSERT_TRUE(qt::approve_day(*db_, 0, pid_, kSid, kDate, "system:model-only", "model-only").is_ok());
+    const long pub = command("publish");
+    move(pub, "running");
+    auto first = qt::record_sent(*db_, pub, pid_, kSid, kDate);
+    ASSERT_TRUE(first.is_ok()) << first.error()->what();
+    EXPECT_FALSE(first.value().empty());
+    EXPECT_EQ(qt::publish_state(*db_, pid_, kSid, kDate).value().sent_at, first.value());
+    EXPECT_TRUE(row(pub).result.contains("email_sent_at"));
+    auto again = qt::record_sent(*db_, 0, pid_, kSid, kDate);
+    ASSERT_TRUE(again.is_ok());
+    EXPECT_EQ(again.value(), first.value()) << "sent_at is never moved";
+    ASSERT_TRUE(qt::finish_audit_row(*db_, pub, "done", {{"emailed", true}}, "sent").is_ok());
+    EXPECT_TRUE(qt::record_sent(*db_, 0, pid_ + "_NONE", kSid, kDate).is_error())
+        << "no metadata row";
+}
+
+// C7: the fallback's reset is the model run's seed copy: qt takes system's rows of the date again
+// (book_source 'model'), so an unapproved desk save is discarded.
+TEST_F(QtDeskDb, TheFallbacksResetDiscardsADeskSave) {
+    proposal_row("ZN.v.0", 15, "system");
+    proposal_row("ZN.v.0", 3, "qt");
+    proposal_row("CL.v.0", 2, "qt");
+    const std::unordered_map<std::string, double> m{{"current_portfolio_value", 500000.0}};
+    for (const char* book : {"system", "qt"}) {
+        ASSERT_TRUE(db_->store_live_results_complete(kSid, day_at(), m, {}, nlohmann::json(), pid_,
+                                                     "trading.live_results", nlohmann::json(), book)
+                        .is_ok());
+    }
+    scalar("UPDATE trading.live_results SET book_source = 'desk' WHERE portfolio_id = " + lit(pid_) +
+           " AND portfolio_type = 'qt' RETURNING 1");
+    ASSERT_TRUE(db_->store_executions({fill("CL.v.0", ExecutionType::STRATEGY, "")}, kSid, kSleeve,
+                                      pid_, "trading.executions", "qt")
+                    .is_ok());
+    ASSERT_TRUE(db_->store_executions({fill("ZN.v.0", ExecutionType::STRATEGY, "")}, kSid, kSleeve,
+                                      pid_, "trading.executions", "system")
+                    .is_ok());
+
+    ASSERT_TRUE(qt::copy_book_day(*db_, pid_, kSid, kDate, "system", "qt", true, "model").is_ok());
+    EXPECT_EQ(scalar("SELECT string_agg(symbol || ':' || quantity::int, ',' ORDER BY symbol) FROM "
+                     "trading.positions WHERE portfolio_id = " + lit(pid_) +
+                     " AND portfolio_type = 'qt'"),
+              "ZN.v.0:15");
+    EXPECT_EQ(scalar("SELECT book_source FROM trading.live_results WHERE portfolio_id = " +
+                     lit(pid_) + " AND portfolio_type = 'qt'"),
+              "model");
+    EXPECT_EQ(scalar("SELECT string_agg(symbol, ',') FROM trading.executions WHERE portfolio_id = " +
+                     lit(pid_) + " AND portfolio_type = 'qt'"),
+              "ZN.v.0");
 }
 
 // Item 2: the desk's clear takes the qt day's non-ROLL executions and the marker, nothing else.

@@ -10,7 +10,12 @@ time.
 | override_request  | the override e-mail, in Python (override_mail.py)                 |
 | override_decision | checks here; rejection -> done {"approved": false}; approval ->   |
 |                   | engine `--override` with the decision row's id                    |
-| publish           | engine `--publish` with the publish row's id                      |
+| publish           | the desk's approval (contract C7): refused when the day is        |
+|                   | published or the row was created at or after 10:00 New York on    |
+|                   | its date; else engine `--publish`, with `--send-now` from 09:30.  |
+|                   | A scheduler fallback row (requested_by system:fallback-...)       |
+|                   | re-driven here runs engine `--fallback` (`--send-now` for         |
+|                   | today's 10:00 fallback; a past day is never e-mailed).            |
 
 Ownership. This process owns a row from the moment a dispatcher takes it until its outcome is
 recorded (or its job ends). A 'running' row nobody here owns is an orphan when the startup
@@ -28,8 +33,9 @@ import datetime as dt
 import logging
 import threading
 from dataclasses import dataclass
-from typing import Iterable, List, Optional, Set, Tuple
+from typing import Callable, Iterable, List, Optional, Set, Tuple
 
+from . import cutoff
 from .command_store import CommandRow, CommandStore
 from .config import CommandSettings
 from .jobs import Job, JobManager
@@ -42,8 +48,8 @@ ACCEPTED, DONE, REFUSED, FAILED = "accepted", "done", "refused", "failed"
 
 ENGINE_MODE = {"save": "desk", "override_decision": "override", "publish": "publish"}
 
-# Kinds refused by the agent on a published day (contract C3). A publish row is left to the
-# engine, which refuses a second publish but can still complete one whose run already published.
+# Kinds refused by the agent on a published day (contract C3). A publish row is checked on its
+# own (_publish_plan): a re-run of a row that already approved the day goes on to its send.
 FROZEN_WHEN_PUBLISHED = ("save", "override_request", "override_decision")
 
 
@@ -55,11 +61,13 @@ class Outcome:
 
 class Dispatcher:
     def __init__(self, store: CommandStore, jobs: JobManager, settings: CommandSettings,
-                 sender: Sender = send_smtp):
+                 sender: Sender = send_smtp,
+                 clock: Optional[Callable[[], dt.datetime]] = None):
         self._store = store
         self._jobs = jobs
         self._settings = settings
         self._sender = sender
+        self._clock = clock or (lambda: dt.datetime.now(dt.timezone.utc))
         self._lock = threading.Lock()
         self._owned: Set[int] = set()
         self._abandoned: Set[int] = set()
@@ -90,6 +98,14 @@ class Dispatcher:
     def live_ids(self) -> Set[int]:
         with self._lock:
             return set(self._owned)
+
+    def hold(self, audit_id: int) -> bool:
+        """The catch-up scheduler runs a fallback row itself: while it does, the row is owned
+        here, so neither the recovery nor an RPC treats it as an orphan."""
+        return self._take(audit_id)
+
+    def release(self, audit_id: int) -> None:
+        self._release(audit_id)
 
     def is_orphan(self, row: CommandRow, age_s: Optional[float],
                   taken_here: bool = False) -> bool:
@@ -220,6 +236,11 @@ class Dispatcher:
         refused = self._published_refusal(claimed)
         if refused:
             return refused, False
+        mode, send_now = ENGINE_MODE.get(claimed.kind, ""), False
+        if claimed.kind == "publish":
+            mode, send_now, why = self._publish_plan(claimed)
+            if why:
+                return self._finish(claimed, REFUSED, None, why), False
         portfolio_dir, refused = self._portfolio_dir(claimed)
         if refused:
             return refused, False
@@ -228,7 +249,7 @@ class Dispatcher:
                                   lambda: self._override_mail(claimed, portfolio_dir),
                                   self._on_done(claimed.id)))
             return Outcome(ACCEPTED, f"override request {claimed.id} queued"), True
-        return self._engine(claimed, portfolio_dir), True
+        return self._engine(claimed, portfolio_dir, mode, send_now), True
 
     def _on_done(self, audit_id: int):
         return lambda abandoned: self._release(audit_id, abandoned)
@@ -263,12 +284,37 @@ class Dispatcher:
         except PortfolioConfigError as exc:
             return "", self._finish(row, REFUSED, None, str(exc))
 
-    def _engine(self, row: CommandRow, portfolio_dir: str) -> Outcome:
-        mode = ENGINE_MODE[row.kind]
+    def _engine(self, row: CommandRow, portfolio_dir: str, mode: str = "",
+                send_now: bool = False) -> Outcome:
+        mode = mode or ENGINE_MODE[row.kind]
         self._jobs.submit(self._jobs.engine_job(mode, row.portfolio_id, portfolio_dir,
                                                 row.date.isoformat(), row.id, row.kind,
-                                                self._on_done(row.id)))
-        return Outcome(ACCEPTED, f"{row.kind} {row.id} queued for the engine (--{mode})")
+                                                self._on_done(row.id), send_now=send_now))
+        return Outcome(ACCEPTED, f"{row.kind} {row.id} queued for the engine (--{mode}"
+                                 f"{' --send-now' if send_now else ''})")
+
+    # -- the approval (contract C7) --------------------------------------------------------------
+
+    def _publish_plan(self, row: CommandRow) -> Tuple[str, bool, str]:
+        """(engine mode, --send-now, refusal). The desk's approval: before 09:30 New York it only
+        freezes the day (the 09:30 send e-mails it), from 09:30 it also sends; a row created at
+        or after 10:00 on its date, or on a published day, is refused. A row that already
+        approved (a re-run: its result carries published_at) goes on to its send."""
+        now = self._clock()
+        if cutoff.is_fallback(row.requested_by):
+            today = now.astimezone(cutoff.zone()).date()
+            send = row.requested_by == cutoff.FALLBACK_10AM and row.date >= today
+            return "fallback", send, ""
+        approved_here = isinstance(row.result, dict) and "published_at" in row.result
+        if not approved_here:
+            published = self._store.published_at(row.portfolio_id, row.date)
+            if published is not None:
+                return "", False, (f"{row.portfolio_id} {row.date} was already published at "
+                                   f"{published.isoformat()}; a published day is frozen")
+            created = row.created_at or now
+            if cutoff.window(row.date, created) == cutoff.CLOSED:
+                return "", False, cutoff.deadline_message(row.date)
+        return "publish", cutoff.window(row.date, now) != cutoff.BEFORE_SEND, ""
 
     def _override_mail(self, row: CommandRow, portfolio_dir: str) -> None:
         out = run_override_request(row, portfolio_dir, self._settings, self._store,

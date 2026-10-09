@@ -36,6 +36,8 @@ TEST(QtRunnerModes, ModeNames) {
     using trade_ngin::qt::Mode;
     EXPECT_EQ(trade_ngin::qt::mode_name(Mode::FINALIZE_SYSTEM), "finalize-system");
     EXPECT_EQ(trade_ngin::qt::mode_name(Mode::PUBLISH), "publish");
+    EXPECT_EQ(trade_ngin::qt::mode_name(Mode::FALLBACK), "fallback");
+    EXPECT_EQ(trade_ngin::qt::mode_name(Mode::SEND), "send");
 }
 
 // Ruling 17: each book is finalised into its own rows. The model run of an editable portfolio
@@ -51,23 +53,26 @@ TEST(QtRunnerModes, TheSystemBooksDayTMinusOneIsFinalisedOnAnEditablePortfolio) 
         EXPECT_NE(src.find("qt_mode == qt::Mode::MODEL || qt_mode == qt::Mode::FINALIZE_SYSTEM;"),
                   npos)
             << runner << ": --finalize-system writes Day T-1";
-        EXPECT_NE(src.find("qt_mode != qt::Mode::PUBLISH && qt_mode != qt::Mode::FINALIZE_SYSTEM;"),
+        EXPECT_NE(src.find("qt_mode != qt::Mode::PUBLISH && qt_mode != qt::Mode::FINALIZE_SYSTEM &&\n"
+                           "            qt_mode != qt::Mode::FALLBACK && qt_mode != qt::Mode::SEND;"),
                   npos)
-            << runner << ": --finalize-system writes no Day T row";
+            << runner << ": --finalize-system, --publish, --fallback and --send write no Day T row";
         EXPECT_NE(src.find("if (qt_desk_editable && qt_mode != qt::Mode::FINALIZE_SYSTEM) {"), npos)
             << runner << ": --finalize-system reads the system book";
     }
 }
 
-// Ruling 29: a non-trading day is published by the model run itself, with no e-mail.
-TEST(QtRunnerModes, ANonTradingDayIsPublishedByTheModelRun) {
+// Contract C7 (amends ruling 29's non-trading-day auto-publish): the model run publishes no day,
+// weekends and holidays included; every day waits for the desk's approval or the 10:00 fallback.
+TEST(QtRunnerModes, TheModelRunPublishesNoDay) {
     for (const char* runner : kRunners) {
         const std::string src = read_source(runner);
         if (src.empty()) GTEST_SKIP() << "runner source not found";
-        const auto rule =
-            src.find("const bool qt_non_trading_day = qt_day_kind == qt::DayKind::CALENDAR_CLOSED;");
-        ASSERT_NE(rule, npos) << runner;
-        EXPECT_NE(src.find("\"system:non-trading-day\"", rule), npos) << runner;
+        EXPECT_EQ(src.find("system:non-trading-day"), npos) << runner;
+        EXPECT_EQ(src.find("qt::set_published("), npos) << runner;
+        EXPECT_NE(src.find("the day waits for the desk's approval (09:30) or the 10:00 fallback"),
+                  npos)
+            << runner;
         EXPECT_NE(src.find("if (qt_desk_editable && qt_mode == qt::Mode::MODEL) send_email = false;"),
                   npos)
             << runner << ": ruling 15";
@@ -223,8 +228,8 @@ TEST(QtHardening, AFailedStoreFailsTheRunAndTheCommandRow) {
             << runner;
         EXPECT_NE(at(src, "qt_store_failure_list() + \"); exiting 1\");"), npos) << runner;
         // publish: refused unless the day is complete and its last desk command finished
-        const auto blocker = at(src, "auto blocker = qt::publish_blocker(*db, portfolio_id, "
-                                     "combined_strategy_id, qt_date);");
+        const auto blocker = at(src, "qt::publish_blocker(*db, portfolio_id, combined_strategy_id, "
+                                     "qt_date);");
         ASSERT_NE(blocker, npos) << runner;
         EXPECT_NE(at(src, "if (!blocker.value().empty()) return qt_refuse(blocker.value());",
                      blocker),
@@ -244,7 +249,8 @@ TEST(QtHardening, PublishReadsTheStoredQtDay) {
         const auto export_call = at(src, "auto current_export_result =");
         EXPECT_LT(load, export_call) << runner;
         EXPECT_LT(at(src, "auto stored_day = qt::load_book_results(*db, portfolio_id, "
-                          "combined_strategy_id, \"qt\","),
+                          "combined_strategy_id,\n                                                    "
+                          "qt_write_book, qt_date);"),
                   export_call)
             << runner;
         const auto positions = at(src, "strategy_positions_map[sleeve] = stored.value();");
@@ -268,8 +274,8 @@ TEST(QtHardening, APublishedDayIsFrozen) {
         ASSERT_NE(frozen, npos) << runner;
         EXPECT_LT(frozen, at(src, "auto approved = qt::check_override_decision(*db, *qt_audit);"))
             << runner << ": checked before the decision is read";
-        EXPECT_NE(at(src, "return qt_refuse(qt_date + \" was already published at \" + "
-                          "already.value());"),
+        EXPECT_NE(at(src, "return qt_refuse(qt_date + \" was already published at \" + already + "
+                          "\" by \" +"),
                   npos)
             << runner << ": a second publish is refused";
         const auto kept =
@@ -279,16 +285,80 @@ TEST(QtHardening, APublishedDayIsFrozen) {
     }
 }
 
+// ===== Contract C7: the daily cutoff (2026-10-09) =====
+
+// An approval before 09:30 freezes the day and sends nothing: it returns before any market data
+// is loaded, after the publish record is written.
+TEST(QtCutoff, AnApprovalFreezesTheDayWithoutSending) {
+    for (const char* runner : kRunners) {
+        const std::string src = read_source(runner);
+        if (src.empty()) GTEST_SKIP() << "runner source not found";
+        const auto block = at(src, "} else if (qt_mode == qt::Mode::PUBLISH || qt_mode == qt::Mode::FALLBACK) {");
+        ASSERT_NE(block, npos) << runner;
+        const auto approve = at(src, "auto approved = qt::approve_day(*db, qt_audit_id, portfolio_id,", block);
+        const auto no_send = at(src, "if (!qt_send_now) {", block);
+        const auto early = at(src, "return 0;", no_send);
+        const auto market = at(src, "INFO(\"Loading market data for daily processing...\");");
+        ASSERT_NE(approve, npos) << runner;
+        EXPECT_LT(approve, no_send) << runner;
+        EXPECT_LT(early, market) << runner << ": an approval alone loads no market data";
+        EXPECT_NE(at(src, "send_email =\n                (qt_mode == qt::Mode::PUBLISH || "
+                          "qt_mode == qt::Mode::FALLBACK) && qt_send_now;"),
+                  npos)
+            << runner << ": --publish and --fallback e-mail only with --send-now";
+        EXPECT_NE(at(src, "the daily e-mail goes at 09:30 \"\n"), npos) << runner;
+    }
+}
+
+// The fallback publishes the model's book: qt is copied again from system (the seed copy) before
+// the approval, and only the scheduler's rows may run it. A past day's fallback is not e-mailed.
+TEST(QtCutoff, TheFallbackResetsQtToTheModelsBook) {
+    for (const char* runner : kRunners) {
+        const std::string src = read_source(runner);
+        if (src.empty()) GTEST_SKIP() << "runner source not found";
+        const auto reset = at(src, "auto reset = qt::copy_book_day(*db, portfolio_id, combined_strategy_id,\n"
+                                   "                                                   qt_date, \"system\", \"qt\", true, \"model\");");
+        ASSERT_NE(reset, npos) << runner;
+        const auto branch = src.rfind("} else {", reset);
+        EXPECT_LT(src.rfind("if (!fallback) {", reset), branch) << runner;
+        EXPECT_LT(reset, at(src, "auto approved = qt::approve_day(", reset)) << runner;
+        EXPECT_NE(at(src, "qt_audit->requested_by.rfind(qt::kFallbackRequester, 0) != 0) {"), npos)
+            << runner;
+        EXPECT_NE(at(src, "result[\"send_skipped\"] = \"past day\";"), npos) << runner;
+    }
+}
+
+// --send e-mails only a published day, once: an unpublished day is refused, a day with sent_at is
+// left alone, and sent_at is recorded right after the send.
+TEST(QtCutoff, TheSendIsForAPublishedDayAndOnce) {
+    for (const char* runner : kRunners) {
+        const std::string src = read_source(runner);
+        if (src.empty()) GTEST_SKIP() << "runner source not found";
+        const auto approval =
+            at(src, "} else if (qt_mode == qt::Mode::PUBLISH || qt_mode == qt::Mode::FALLBACK) {");
+        const auto block = at(src, "} else if (qt_mode == qt::Mode::SEND) {", approval);
+        ASSERT_NE(approval, npos) << runner;
+        ASSERT_NE(block, npos) << runner;
+        const auto unpublished = at(src, "if (state.value().published_at.empty()) {", block);
+        const auto sent = at(src, "if (!state.value().sent_at.empty()) {", block);
+        ASSERT_NE(unpublished, npos) << runner;
+        ASSERT_NE(sent, npos) << runner;
+        EXPECT_LT(at(src, "return 0;", sent), at(src, "auto book = qt::load_book(", block)) << runner;
+        EXPECT_NE(at(src, "qt_mode == qt::Mode::SEND && !qt_desk_editable)"), npos)
+            << runner << ": the model twin's send reads its system book";
+    }
+}
+
 // Item 7: the publish e-mail is sent at most once.
 TEST(QtHardening, ThePublishEmailIsSentOnce) {
     for (const char* runner : kRunners) {
         const std::string src = read_source(runner);
         if (src.empty()) GTEST_SKIP() << "runner source not found";
-        const auto sent =
-            at(src, "qt_emailed = true;\n                        if (qt_mode == qt::Mode::PUBLISH) {");
+        const auto sent = at(src, "qt_emailed = true;\n                        if (qt_sends) {");
         ASSERT_NE(sent, npos) << runner;
-        EXPECT_LT(at(src, "auto marked = qt::mark_email_sent(*db, qt_audit_id);", sent) - sent, 300u)
-            << runner << ": email_sent_at is written right after the send";
+        EXPECT_LT(at(src, "auto marked = qt::record_sent(*db, qt_audit ? qt_audit_id : 0,", sent) - sent,
+                  300u)
+            << runner << ": sent_at is written right after the send";
         const auto before = at(src, "auto sent = qt::publish_email_sent(*db, portfolio_id, qt_date);");
         ASSERT_NE(before, npos) << runner;
         const auto off = at(src, "send_email = false;", before);
