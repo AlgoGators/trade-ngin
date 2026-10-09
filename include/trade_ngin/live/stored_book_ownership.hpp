@@ -33,15 +33,17 @@ namespace trade_ngin {
 inline Result<std::vector<std::string>> stored_positions_outside_run(
     DatabaseInterface& db, const std::string& portfolio_id, const std::string& strategy_id,
     const std::vector<std::string>& sleeves, const Timestamp& now,
-    const std::string& schema = "trading") {
+    const std::string& schema = "trading", const std::string& book = "") {
+    // QT plan E3: with a book, only that book's rows are read (empty: every book, as before).
+    const std::string in_book = book.empty() ? std::string() : " AND portfolio_type = '" + book + "'";
     using Rows = std::vector<std::string>;
     const std::string run_date = core::format_utc_date(now);
     const std::string query =
         "SELECT to_char(date, 'YYYY-MM-DD') AS stored_book_date, strategy_id, strategy_name, symbol, "
         "quantity::text AS quantity FROM " + schema + ".positions "
-        "WHERE portfolio_id = '" + portfolio_id + "' AND quantity <> 0 "
+        "WHERE portfolio_id = '" + portfolio_id + "' AND quantity <> 0 " + in_book + " "
         "AND DATE(date) = (SELECT MAX(DATE(date)) FROM " + schema + ".positions "
-        "WHERE portfolio_id = '" + portfolio_id + "' AND DATE(date) < '" + run_date + "') "
+        "WHERE portfolio_id = '" + portfolio_id + "' AND DATE(date) < '" + run_date + "'" + in_book + ") "
         "ORDER BY strategy_id, strategy_name, symbol";
     auto result = db.execute_query(query);
     if (result.is_error()) {
