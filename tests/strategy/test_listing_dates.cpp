@@ -889,3 +889,69 @@ TEST(ListingDates, TheEntryIsThePassesOwnCapRoundingAndClip) {
     EXPECT_EQ(plan_listing_switch(ListingSwitchRule::kOpenAtTarget, 10.0, 0.0, 0.0, 0.49999999999999994, 0.0).new_to,
               one_pass::round_half_away(0.49999999999999994));
 }
+
+// ---- the pair is ONE instrument in the sleeve: one weight and one slow-rule membership ----
+
+// The predecessor takes its listed contract's instrument weight. The weight table names the listed
+// contract only (as the real one does: weights come from the symbols that have bars); without the
+// pair's root the predecessor would find no weight and size on the default 1.0.
+TEST(ListingDates, ThePredecessorTakesItsListedContractsWeight) {
+    Guard guard;
+    StateManager::reset_instance();
+    ListingDates::instance().set(pair());
+    Sleeve sleeve("LISTING_weight");
+    sleeve.strategy->weight_cache_ = {{"TMIC", 0.25}, {"TOTH", 1.0}};
+    sleeve.feed_history(kListedBar - 1);
+    sleeve.feed_day(kListedBar - 1);
+    ASSERT_TRUE(sleeve.strategy->is_signalling(kBig));
+    ASSERT_GT(sleeve.target(kOther), 1.0);
+    EXPECT_EQ(sleeve.strategy->get_all_instrument_data().at(kBig).weight, 0.25);
+    // a tenth of the contracts (the multiplier is ten times) at a quarter of the weight
+    EXPECT_NEAR(sleeve.target(kBig) * 10.0, 0.25 * sleeve.target(kOther), 1e-9 * sleeve.target(kOther));
+    sleeve.feed_day(kListedBar);
+    EXPECT_EQ(sleeve.strategy->get_all_instrument_data().at(kMicro).weight, 0.25);
+    EXPECT_NEAR(sleeve.target(kMicro), 0.25 * sleeve.target(kOther), 1e-9 * sleeve.target(kOther));
+}
+
+// The equity slow rule names the listed contract; it rules the predecessor too. On a long rise
+// followed by a sharp fall the combined forecast is negative while the slowest speed is still
+// positive: the rule zeroes the predecessor's forecast as it would the micro's, and leaves a
+// symbol it does not name short.
+TEST(ListingDates, TheEquitySlowRuleRulesThePredecessorThroughItsListedContract) {
+    Guard guard;
+    StateManager::reset_instance();
+    ListingDates::instance().set({{"TMIC", "TBIG", ymd(day(2000)), 10.0}});  // far ahead: the predecessor trades
+    Sleeve sleeve("LISTING_slow");
+    sleeve.strategy->trend_config_.equity_slow_symbols = {"TMIC"};
+    sleeve.strategy->trend_config_.equity_slow_pairs = {{32, 128}, {64, 256}};
+    auto falling = [](const std::string& symbol, int n) {
+        std::vector<Bar> bars;
+        double p = 1000.0;
+        for (int k = 0; k < n; ++k) {
+            p *= k < 340 ? 1.003 : 0.985;  // a year of rise, then a sharp fall
+            Bar b;
+            b.symbol = symbol;
+            b.timestamp = day(k);
+            b.open = b.high = b.low = b.close = Decimal(p * (1.0 + 0.0005 * ((k * 7) % 5 - 2)));
+            b.volume = 100000.0;
+            bars.push_back(b);
+        }
+        return bars;
+    };
+    const int n = 372;
+    std::vector<Bar> all;
+    for (const auto& symbol : {kMicro, kBig, kOther}) {
+        auto bars = falling(symbol, n - 1);
+        all.insert(all.end(), bars.begin(), bars.end());
+    }
+    ASSERT_TRUE(sleeve.strategy->on_data(all).is_ok());
+    std::vector<Bar> last;
+    for (const auto& symbol : {kMicro, kBig, kOther}) last.push_back(falling(symbol, n).back());
+    ASSERT_TRUE(sleeve.strategy->on_data(last).is_ok());
+    const auto& data = sleeve.strategy->get_all_instrument_data();
+    ASSERT_LT(sleeve.target(kOther), 0.0) << "the path does not make a short: the test's premise";
+    ASSERT_FALSE(data.at(kOther).slow_rule_zeroed);
+    EXPECT_TRUE(data.at(kBig).slow_rule_zeroed) << "the predecessor is ruled as its listed contract is";
+    EXPECT_EQ(data.at(kBig).current_forecast, 0.0);
+    EXPECT_EQ(sleeve.target(kBig), 0.0);
+}
