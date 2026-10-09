@@ -281,3 +281,101 @@ TEST(PmNettingSource, TheBacktestsCostTotalsReadTheHelper) {
         EXPECT_NE(src.find(text), std::string::npos) << f << " no longer reads: " << text;
     }
 }
+
+// The cost after netting (HD 2026-10-09), live: the day's transaction cost is added up AFTER the
+// runner has written every fill's netting_adjustment, from the rows it stores, through the one
+// helper; nothing adds a fill's own cost to the day's total.
+TEST(PmNettingSource, BothFuturesRunnersAddUpTheDaysCostAfterNettingThroughTheHelper) {
+    for (const char* f : {"apps/strategies/live_portfolio.cpp",
+                          "apps/strategies/live_portfolio_conservative.cpp"}) {
+        const std::string src = read_source(f);
+        if (src.empty()) GTEST_SKIP() << f << " not found";
+        const auto last_net = src.rfind("transaction_cost::apply_netting_adjustments(");
+        const auto sum = src.find("total_daily_transaction_costs = transaction_cost::add_net_costs(");
+        const auto store = src.find("db->store_executions(executions,");
+        ASSERT_NE(last_net, std::string::npos) << f;
+        ASSERT_NE(sum, std::string::npos) << f << ": the day's cost is not the sum of the net costs";
+        ASSERT_NE(store, std::string::npos) << f;
+        EXPECT_LT(last_net, sum) << f << ": the sum is taken before the adjustment is on the fills";
+        EXPECT_LT(sum, store) << f;
+        EXPECT_EQ(src.find("total_daily_transaction_costs +="), std::string::npos)
+            << f << ": something adds to the day's cost beside the helper";
+        size_t calls = 0;
+        for (auto at = src.find("add_net_costs("); at != std::string::npos;
+             at = src.find("add_net_costs(", at + 1)) {
+            ++calls;
+        }
+        EXPECT_EQ(calls, 1u)
+            << f << ": the day's cost is added up twice";
+    }
+}
+
+// The equity runner (one strategy, never netted) adds its day's cost through the same helper.
+TEST(PmNettingSource, TheEquityRunnerAddsUpTheDaysCostThroughTheHelper) {
+    const char* f = "apps/strategies/live_equity_mean_reversion.cpp";
+    const std::string src = read_source(f);
+    if (src.empty()) GTEST_SKIP() << f << " not found";
+    EXPECT_NE(src.find("transaction_cost::add_net_costs(total_daily_commissions, daily_executions)"),
+              std::string::npos);
+    EXPECT_EQ(src.find("total_daily_commissions +="), std::string::npos);
+}
+
+// The live day, as the runners add it up: per-sleeve fills (a ROLL leg ahead of the sleeve's
+// trades), netted by symbol, then summed sleeve by sleeve. The three symbol-days are real rows of
+// the BASE lookback-3 backtest; the cost table is the cost model's own prices for them.
+//
+//   | contract | FAST   | TREND  | account | own costs   | adjustments     | charged |
+//   | MES      | SELL 1 | BUY 1  | none    | 1.62 + 1.62 | 1.62 + 1.62     | 0.00    |
+//   | MYM      | BUY 1  | SELL 2 | SELL 1  | 1.10 + 2.40 | 0.754 + 1.646   | 1.10    |
+//   | MBT      | SELL 1 | SELL 1 | SELL 2  | 4.50 + 4.50 | -0.915 - 0.915  | 10.83   |
+//   | ZN (roll)| -      | 2 legs | -       | 3.00 + 3.00 | never netted    | 6.00    |
+TEST(LiveDayCost, TheDaysCostIsTheSumOfTheNetCostsOfTheStoredRows) {
+    auto row = [](const std::string& symbol, Side side, double q, double px, double cost,
+                  ExecutionType type = ExecutionType::STRATEGY) {
+        ExecutionReport e;
+        e.symbol = symbol;
+        e.side = side;
+        e.filled_quantity = Quantity(q);
+        e.fill_price = Price(px);
+        e.total_transaction_costs = Decimal(cost);
+        e.execution_type = type;
+        return e;
+    };
+    std::unordered_map<std::string, std::vector<ExecutionReport>> day;
+    day["TREND_FOLLOWING"] = {row("ZN.v.0", Side::SELL, 2, 112.0, 3.00, ExecutionType::ROLL),
+                              row("ZN.v.0", Side::BUY, 2, 112.5, 3.00, ExecutionType::ROLL),
+                              row("MES.v.0", Side::BUY, 1, 6650, 1.62),
+                              row("MYM.v.0", Side::SELL, 2, 49000, 2.40),
+                              row("MBT.v.0", Side::SELL, 1, 115000, 4.50)};
+    day["TREND_FOLLOWING_FAST"] = {row("MES.v.0", Side::SELL, 1, 6650, 1.62),
+                                   row("MYM.v.0", Side::BUY, 1, 49000, 1.10),
+                                   row("MBT.v.0", Side::SELL, 1, 115000, 4.50)};
+    const std::vector<std::string> sleeves_filled{"TREND_FOLLOWING", "TREND_FOLLOWING_FAST"};
+
+    std::map<std::pair<std::string, double>, double> price{
+        {{"MYM.v.0", -1.0}, 1.10}, {{"MBT.v.0", -2.0}, 10.83}};
+    std::vector<transaction_cost::SleeveExecution> rows;
+    for (auto& [sleeve, execs] : day)
+        for (auto& e : execs)
+            if (e.execution_type == ExecutionType::STRATEGY) rows.push_back({sleeve, &e});
+    transaction_cost::apply_netting_adjustments(
+        rows, [&](const std::string& s, double q, double) { return price.at({s, q}); });
+
+    double own = 0.0, charged = 0.0;
+    for (const auto& sleeve : sleeves_filled) {
+        for (const auto& e : day.at(sleeve)) own += static_cast<double>(e.total_transaction_costs);
+        charged = transaction_cost::add_net_costs(charged, day.at(sleeve));
+    }
+    EXPECT_NEAR(own, 6.00 + 3.24 + 3.50 + 9.00, 1e-9);
+    EXPECT_NEAR(charged, 6.00 + 0.00 + 1.10 + 10.83, 1e-9)
+        << "the roll legs' own cost, nothing for the cross, the account's order for the other two";
+
+    // The identity per symbol: the legs' net costs sum to the account order's cost.
+    std::map<std::string, Decimal> net_of;
+    for (const auto& [sleeve, execs] : day)
+        for (const auto& e : execs)
+            if (e.execution_type == ExecutionType::STRATEGY) net_of[e.symbol] += transaction_cost::net_cost(e);
+    EXPECT_EQ(net_of["MES.v.0"], Decimal());
+    EXPECT_EQ(net_of["MYM.v.0"], Decimal(1.10));
+    EXPECT_EQ(net_of["MBT.v.0"], Decimal(10.83)) << "same side: above the 9.00 of the rows' own costs";
+}

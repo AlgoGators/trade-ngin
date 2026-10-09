@@ -2344,6 +2344,9 @@ int main(int argc, char* argv[]) {
         std::unordered_map<std::string, std::vector<ExecutionReport>> all_strategy_executions;
         int total_executions = 0;
         // total_daily_transaction_costs already declared earlier at line 881
+        // The sleeves whose fills were generated, in the order of this loop: the day's cost is
+        // added up in that order, after the netting below.
+        std::vector<std::string> sleeves_filled;
 
         // PricingPolicy::STRICT (T-7a C4): a fill is priced from a real T-1 close or not at
         // all. With the book gate above every changed symbol has one, so nothing is unpriced
@@ -2452,11 +2455,10 @@ int main(int argc, char* argv[]) {
                          std::to_string(exec.filled_quantity.as_double()) + " @ " +
                          std::to_string(exec.fill_price) + " commission=$" +
                          std::to_string(exec.total_transaction_costs.as_double()));
-
-                    total_daily_transaction_costs += exec.total_transaction_costs.as_double();
                 }
 
                 all_strategy_executions[strategy_name] = strategy_executions;
+                sleeves_filled.push_back(strategy_name);
                 total_executions += strategy_executions.size();
             } else {
                 ERROR("Failed to generate executions for strategy " + strategy_name + ": " +
@@ -2540,8 +2542,8 @@ int main(int argc, char* argv[]) {
         // Every sleeve row keeps its own cost; for a symbol two or more sleeves trade today the
         // account sends ONE order, the signed sum Q, so each row's netting_adjustment is its
         // pro-rata share of sum C(q_i) - C(Q), priced by the same cost manager and state the
-        // fills used (C(0) = 0: no order). Written into the rows before they are stored; the
-        // day's P&L cost above stays the sum of the rows' own costs (the book's P&L is gross).
+        // fills used (C(0) = 0: no order). Written into the rows before they are stored and
+        // before the day's cost is added up below.
         // Section 5.2: the sleeves' forecast-sign closes of one symbol are one account order and
         // their other fills another; a close is never netted against the fill that follows it.
         for (const bool sign_close_group : {true, false}) {
@@ -2562,6 +2564,16 @@ int main(int argc, char* argv[]) {
                 });
             for (const auto& line : netting.info_lines) INFO(line);
             for (const auto& line : netting.warn_lines) WARN(line);
+        }
+
+        // The day's transaction cost (HD 2026-10-09): every fill at its cost AFTER netting, its
+        // own cost minus the signed adjustment just written on it, so the day's P&L, the account
+        // value and the cumulative total charge what the account's orders cost. Taken here, after
+        // the netting, from the rows that are stored below; a ROLL leg and a symbol one sleeve
+        // trades carry an adjustment of 0 and are charged their own cost.
+        for (const auto& sleeve : sleeves_filled) {
+            total_daily_transaction_costs = transaction_cost::add_net_costs(
+                total_daily_transaction_costs, all_strategy_executions.at(sleeve));
         }
 
         INFO("PHASE 4: Total executions across all strategies: " +
