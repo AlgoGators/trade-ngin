@@ -401,6 +401,11 @@ struct Position {
     /// consumed sequence (roll_series.hpp), still the old contract on a pending change bar.
     /// Empty (stored NULL) when unknown and on every equity row.
     std::string instrument_id;
+    /// qt book only (trading.positions.moved_by, migration 021): the one-pass step that moved the
+    /// symbol from the desk's request to what the engine gave back. Empty (stored NULL) when
+    /// nothing moved it and on every system and qt_proposal row; storing a non-empty value on
+    /// another book is refused.
+    std::string moved_by;
     // Note: previous_price and contract_size fields removed
 
     // Constructors

@@ -236,7 +236,8 @@ Result<void> PostgresDatabase::store_executions(const std::vector<ExecutionRepor
                                                 const std::string& strategy_id,
                                                 const std::string& strategy_name,
                                                 const std::string& portfolio_id,
-                                                const std::string& table_name) {
+                                                const std::string& table_name,
+                                                const std::string& book) {
     std::cout << "DEBUG: store_executions called with " << executions.size() << " executions"
               << " for strategy_id: " << strategy_id << " strategy_name: " << strategy_name
               << " portfolio_id: " << portfolio_id << std::endl;
@@ -269,6 +270,7 @@ Result<void> PostgresDatabase::store_executions(const std::vector<ExecutionRepor
         if (auto sv = validate_strategy_id(strategy_id); sv.is_error()) return sv;
         if (auto sn = validate_strategy_id(strategy_name); sn.is_error()) return sn;
         if (auto pv = validate_strategy_id(portfolio_id); pv.is_error()) return pv;
+        if (auto bv = validate_book(book); bv.is_error()) return bv;
 
         // Defensive cleanup BEFORE starting the insert transaction to avoid nested transactions
         if (!executions.empty()) {
@@ -288,8 +290,10 @@ Result<void> PostgresDatabase::store_executions(const std::vector<ExecutionRepor
             // defensive pre-insert cleanup silently deleted zero rows for years. Fixing
             // the argument order without also scoping by portfolio would have ARMED the
             // cross-portfolio delete this masked; both land together.
+            // Migration 021: scoped to this call's book, so a desk book's re-run never takes the
+            // system rows carrying the same (system) order ids, and the reverse.
             auto del_result = delete_stale_executions(order_ids, date_for_delete, strategy_name,
-                                                      portfolio_id, table_name);
+                                                      portfolio_id, table_name, book);
             if (del_result.is_error()) {
                 std::cout << "DEBUG: Pre-insert delete_stale_executions failed: "
                           << del_result.error()->what() << std::endl;
@@ -299,8 +303,8 @@ Result<void> PostgresDatabase::store_executions(const std::vector<ExecutionRepor
 
         pqxx::work txn(*connection_);
 
-        auto inserted =
-            insert_executions_in(txn, executions, strategy_id, strategy_name, portfolio_id, table_name);
+        auto inserted = insert_executions_in(txn, executions, strategy_id, strategy_name,
+                                             portfolio_id, table_name, book);
         if (inserted.is_error()) return inserted;
 
         std::cout << "DEBUG: About to commit transaction" << std::endl;
@@ -321,7 +325,9 @@ Result<void> PostgresDatabase::insert_executions_in(pqxx::work& txn,
                                                     const std::string& strategy_id,
                                                     const std::string& strategy_name,
                                                     const std::string& portfolio_id,
-                                                    const std::string& table_name) {
+                                                    const std::string& table_name,
+                                                    const std::string& book) {
+    if (auto bv = validate_book(book); bv.is_error()) return bv;
     for (const auto& exec : executions) {
         std::cout << "DEBUG: Processing execution for symbol: " << exec.symbol << std::endl;
 
@@ -344,9 +350,9 @@ Result<void> PostgresDatabase::insert_executions_in(pqxx::work& txn,
                             "execution_time, commissions_fees, implicit_price_impact, "
                             "slippage_market_impact, total_transaction_costs, is_partial, "
                             "strategy_id, strategy_name, date, portfolio_id, "
-                            "netting_adjustment, execution_type, instrument_id) VALUES "
-                            "($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, "
-                            "$15, $16, $17, $18, $19)";
+                            "netting_adjustment, execution_type, instrument_id, portfolio_type) "
+                            "VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, "
+                            "$15, $16, $17, $18, $19, $20)";
 
         std::cout << "DEBUG: About to execute SQL query" << std::endl;
         std::cout << "DEBUG: Query: " << query << std::endl;
@@ -369,7 +375,8 @@ Result<void> PostgresDatabase::insert_executions_in(pqxx::work& txn,
             static_cast<double>(exec.netting_adjustment),  // $17 - K3, migration 013
             std::string(to_string(exec.execution_type)),   // $18 - migration 015 (T-ROLLX)
             exec.instrument_id.empty() ? std::optional<std::string>{}
-                                       : std::optional<std::string>{exec.instrument_id}});  // $19
+                                       : std::optional<std::string>{exec.instrument_id},  // $19
+            book});  // $20 - the book (migration 021)
 
         std::cout << "DEBUG: SQL executed successfully for " << exec.symbol << std::endl;
     }
@@ -379,8 +386,9 @@ Result<void> PostgresDatabase::insert_executions_in(pqxx::work& txn,
 Result<void> PostgresDatabase::replace_roll_day_executions(
     const std::vector<std::pair<std::string, std::vector<ExecutionReport>>>& sleeves,
     const std::string& strategy_id, const std::string& portfolio_id, const Timestamp& date,
-    const std::string& table_name) {
+    const std::string& table_name, const std::string& book) {
     std::lock_guard<std::mutex> lock(mutex_);
+    if (auto bv = validate_book(book); bv.is_error()) return bv;
     auto validation = validate_connection();
     if (validation.is_error()) return validation;
     auto table_validation = validate_table_name(table_name);
@@ -398,9 +406,9 @@ Result<void> PostgresDatabase::replace_roll_day_executions(
         for (const auto& [strategy_name, executions] : sleeves) {
             txn.exec("DELETE FROM " + table_name +
                          " WHERE strategy_name = $1 AND portfolio_id = $2 AND date = $3::date"
-                         " AND execution_type = 'ROLL'",
+                         " AND execution_type = 'ROLL' AND portfolio_type = $4",
                      pqxx::params{strategy_name, portfolio_id,
-                                  trade_ngin::core::format_utc_date(date)});
+                                  trade_ngin::core::format_utc_date(date), book});
             std::vector<std::string> order_ids;
             order_ids.reserve(executions.size());
             for (const auto& e : executions) order_ids.push_back(e.order_id);
@@ -415,12 +423,13 @@ Result<void> PostgresDatabase::replace_roll_day_executions(
                 // The same predicate as delete_stale_executions (E2-F4, F-C): by portfolio, sleeve
                 // and order id, no calendar date.
                 txn.exec("DELETE FROM " + table_name +
-                             " WHERE strategy_name = $1 AND portfolio_id = $2 AND order_id IN (" +
+                             " WHERE strategy_name = $1 AND portfolio_id = $2"
+                             " AND portfolio_type = $3 AND order_id IN (" +
                              in_list + ")",
-                         pqxx::params{strategy_name, portfolio_id});
+                         pqxx::params{strategy_name, portfolio_id, book});
             }
             auto inserted = insert_executions_in(txn, executions, strategy_id, strategy_name,
-                                                 portfolio_id, table_name);
+                                                 portfolio_id, table_name, book);
             if (inserted.is_error()) return inserted;
         }
         txn.commit();
@@ -434,8 +443,11 @@ Result<void> PostgresDatabase::replace_roll_day_executions(
 
 Result<std::vector<StoredRealisedRow>> PostgresDatabase::get_stored_realised_rows(
     const std::string& strategy_id, const std::string& portfolio_id, const std::string& after_date,
-    const std::string& before_date, const std::string& table_name) {
+    const std::string& before_date, const std::string& table_name, const std::string& book) {
     using Rows = std::vector<StoredRealisedRow>;
+    if (auto bv = validate_book(book); bv.is_error()) {
+        return make_error<Rows>(bv.error()->code(), bv.error()->what(), "PostgresDatabase");
+    }
     auto validation = validate_connection();
     if (validation.is_error()) {
         return make_error<Rows>(validation.error()->code(), validation.error()->what());
@@ -451,8 +463,8 @@ Result<std::vector<StoredRealisedRow>> PostgresDatabase::get_stored_realised_row
             "SELECT symbol, COALESCE(strategy_name, ''), date::text, quantity,"
             " COALESCE(daily_realized_pnl, 0) FROM " + table_name +
                 " WHERE strategy_id = $1 AND portfolio_id = $2 AND date > $3::date AND date < $4::date"
-                " ORDER BY date, symbol, strategy_name",
-            pqxx::params{strategy_id, actual_portfolio_id, after_date, before_date});
+                " AND portfolio_type = $5 ORDER BY date, symbol, strategy_name",
+            pqxx::params{strategy_id, actual_portfolio_id, after_date, before_date, book});
         txn.commit();
         Rows out;
         out.reserve(result.size());
@@ -529,7 +541,8 @@ Result<void> PostgresDatabase::store_positions(const std::vector<Position>& posi
                                                const std::string& strategy_id,
                                                const std::string& strategy_name,
                                                const std::string& portfolio_id,
-                                               const std::string& table_name) {
+                                               const std::string& table_name,
+                                               const std::string& book) {
     auto validation = validate_connection();
     if (validation.is_error())
         return validation;
@@ -537,7 +550,7 @@ Result<void> PostgresDatabase::store_positions(const std::vector<Position>& posi
     try {
         pqxx::work txn(*connection_);
         auto stored = store_positions_in(txn, positions, strategy_id, strategy_name, portfolio_id,
-                                         table_name);
+                                         table_name, book);
         if (stored.is_error())
             return stored;
         txn.commit();
@@ -556,14 +569,15 @@ Result<void> PostgresDatabase::store_positions(DbTransaction& txn,
                                                const std::string& strategy_id,
                                                const std::string& strategy_name,
                                                const std::string& portfolio_id,
-                                               const std::string& table_name) {
+                                               const std::string& table_name,
+                                               const std::string& book) {
     if (!txn.valid()) {
         return make_error<void>(ErrorCode::DATABASE_ERROR,
                                 "store_positions called with a moved-from unit of work",
                                 "PostgresDatabase");
     }
     return store_positions_in(txn.work(), positions, strategy_id, strategy_name, portfolio_id,
-                              table_name);
+                              table_name, book);
 }
 
 Result<void> PostgresDatabase::store_positions_in(pqxx::work& txn,
@@ -571,12 +585,25 @@ Result<void> PostgresDatabase::store_positions_in(pqxx::work& txn,
                                                   const std::string& strategy_id,
                                                   const std::string& strategy_name,
                                                   const std::string& portfolio_id,
-                                                  const std::string& table_name) {
+                                                  const std::string& table_name,
+                                                  const std::string& book) {
     try {
         // Validate table name
         auto table_validation = validate_table_name(table_name);
         if (table_validation.is_error()) {
             return table_validation;
+        }
+        // Migration 021: the book scopes the DELETE below and is written on every row. A bad
+        // book, or a moved_by on any book but qt (the one-pass step only exists between the
+        // desk's request and what the engine gave back), is refused before anything is deleted.
+        if (auto bv = validate_book(book); bv.is_error()) return bv;
+        for (const auto& pos : positions) {
+            if (!pos.moved_by.empty() && book != "qt") {
+                return make_error<void>(ErrorCode::INVALID_ARGUMENT,
+                                        "moved_by is set on " + pos.symbol + " in the " + book +
+                                            " book; only qt rows carry the step that moved them",
+                                        "PostgresDatabase");
+            }
         }
         // Phase 5 §5b: defense-in-depth -- validate ALL string identifiers
         // that flow into SQL via concatenation (positions VALUES tuple is
@@ -604,10 +631,11 @@ Result<void> PostgresDatabase::store_positions_in(pqxx::work& txn,
                 const std::string delete_query =
                     "DELETE FROM " + table_name +
                     " WHERE strategy_id = $1 AND strategy_name = $2"
-                    " AND portfolio_id = $3 AND DATE(last_update) = $4";
+                    " AND portfolio_id = $3 AND DATE(last_update) = $4"
+                    " AND portfolio_type = $5";
                 DEBUG("Deleting existing positions with query: " + delete_query);
-                txn.exec(delete_query,
-                         pqxx::params{strategy_id, strategy_name, portfolio_id, position_date});
+                txn.exec(delete_query, pqxx::params{strategy_id, strategy_name, portfolio_id,
+                                                    position_date, book});
             }
         } catch (const std::exception& e) {
             // E2-F5: FAIL, do not "recover" by deleting more.
@@ -682,7 +710,10 @@ Result<void> PostgresDatabase::store_positions_in(pqxx::work& txn,
                << "'" << portfolio_id << "', "                       // portfolio_id
                << (pos.instrument_id.empty() ? std::string("NULL")
                                              : txn.quote(pos.instrument_id))
-               << ")";  // instrument_id (016; NULL when unknown or not a futures row)
+               << ", "  // instrument_id (016; NULL when unknown or not a futures row)
+               << txn.quote(book) << ", "  // portfolio_type (021; validated above)
+               << (pos.moved_by.empty() ? std::string("NULL") : txn.quote(pos.moved_by))
+               << ")";  // moved_by (021; qt only, NULL when nothing moved the symbol)
 
             position_values.push_back(ss.str());
         }
@@ -693,7 +724,8 @@ Result<void> PostgresDatabase::store_positions_in(pqxx::work& txn,
                 std::string query = "INSERT INTO " + table_name +
                                     " (symbol, quantity, average_price, daily_unrealized_pnl, "
                                     "daily_realized_pnl, last_update, updated_at, strategy_id, "
-                                    "strategy_name, date, portfolio_id, instrument_id) VALUES " +
+                                    "strategy_name, date, portfolio_id, instrument_id, "
+                                    "portfolio_type, moved_by) VALUES " +
                                     join(position_values, ", ");
 
                 DEBUG("Executing position insert query: " + query);
@@ -970,11 +1002,16 @@ Result<std::unordered_map<std::string, double>> PostgresDatabase::get_latest_pri
 
 Result<std::unordered_map<std::string, Position>> PostgresDatabase::load_positions_by_date(
     const std::string& strategy_id, const std::string& strategy_name,
-    const std::string& portfolio_id, const Timestamp& date, const std::string& table_name) {
+    const std::string& portfolio_id, const Timestamp& date, const std::string& table_name,
+    const std::string& book) {
     auto validation = validate_connection();
     if (validation.is_error()) {
         return make_error<std::unordered_map<std::string, Position>>(validation.error()->code(),
                                                                      validation.error()->what());
+    }
+    if (auto bv = validate_book(book); bv.is_error()) {
+        return make_error<std::unordered_map<std::string, Position>>(
+            bv.error()->code(), bv.error()->what(), "PostgresDatabase");
     }
 
     try {
@@ -1003,33 +1040,37 @@ Result<std::unordered_map<std::string, Position>> PostgresDatabase::load_positio
         if (!strategy_name.empty()) {
             std::string query =
                 "SELECT symbol, quantity, average_price, daily_unrealized_pnl, daily_realized_pnl, "
-                "last_update, instrument_id "
+                "last_update, instrument_id, moved_by "
                 "FROM " +
                 table_name +
                 " "
                 "WHERE strategy_id = $1 AND strategy_name = $2 AND portfolio_id = $3 AND "
-                "DATE(last_update) = DATE($4)";
+                "DATE(last_update) = DATE($4) AND portfolio_type = $5";
 
             DEBUG("Querying positions for strategy_id: " + strategy_id + ", strategy_name: " +
-                  strategy_name + ", portfolio_id: " + actual_portfolio_id + ", date: " + date_str);
+                  strategy_name + ", portfolio_id: " + actual_portfolio_id + ", date: " + date_str +
+                  ", book: " + book);
             DEBUG("Full query: " + query);
-            result =
-                txn.exec(query, pqxx::params{strategy_id, strategy_name, actual_portfolio_id, date_str});
+            result = txn.exec(query, pqxx::params{strategy_id, strategy_name, actual_portfolio_id,
+                                                  date_str, book});
         } else {
             // If strategy_name is empty, filter by strategy_id and portfolio_id (for aggregate
             // loading)
             std::string query =
                 "SELECT symbol, quantity, average_price, daily_unrealized_pnl, daily_realized_pnl, "
-                "last_update, instrument_id "
+                "last_update, instrument_id, moved_by "
                 "FROM " +
                 table_name +
                 " "
-                "WHERE strategy_id = $1 AND portfolio_id = $2 AND DATE(last_update) = DATE($3)";
+                "WHERE strategy_id = $1 AND portfolio_id = $2 AND DATE(last_update) = DATE($3) "
+                "AND portfolio_type = $4";
 
             DEBUG("Querying positions for strategy_id: " + strategy_id +
-                  ", portfolio_id: " + actual_portfolio_id + ", date: " + date_str);
+                  ", portfolio_id: " + actual_portfolio_id + ", date: " + date_str +
+                  ", book: " + book);
             DEBUG("Full query: " + query);
-            result = txn.exec(query, pqxx::params{strategy_id, actual_portfolio_id, date_str});
+            result =
+                txn.exec(query, pqxx::params{strategy_id, actual_portfolio_id, date_str, book});
         }
         txn.commit();
 
@@ -1071,6 +1112,7 @@ Result<std::unordered_map<std::string, Position>> PostgresDatabase::load_positio
             pos.realized_pnl = Decimal(realized_pnl);
             pos.last_update = last_update;
             if (!row[6].is_null()) pos.instrument_id = row[6].as<std::string>();  // 016
+            if (!row[7].is_null()) pos.moved_by = row[7].as<std::string>();       // 021
 
             positions[symbol] = pos;
         }
@@ -2082,6 +2124,16 @@ Result<void> PostgresDatabase::validate_symbols(const std::vector<std::string>& 
     return Result<void>();
 }
 
+Result<void> PostgresDatabase::validate_book(const std::string& book) const {
+    if (!is_valid_book(book)) {
+        return make_error<void>(ErrorCode::INVALID_ARGUMENT,
+                                "Invalid book '" + book +
+                                    "': must be one of system, qt_proposal, qt (migration 021)",
+                                "PostgresDatabase");
+    }
+    return Result<void>();
+}
+
 Result<void> PostgresDatabase::validate_strategy_id(const std::string& strategy_id) const {
     // E2-F36 / REG-F9. The bound was 50, which is not a property of a strategy
     // id -- it was the width of trading.positions.strategy_id copied into a
@@ -2655,11 +2707,16 @@ Result<void> PostgresDatabase::store_trading_results(
 
 Result<std::tuple<double, double, double>> PostgresDatabase::get_previous_live_aggregates(
     const std::string& strategy_id, const std::string& portfolio_id, const Timestamp& date,
-    const std::string& table_name) {
+    const std::string& table_name, const std::string& book) {
     auto validation = validate_connection();
     if (validation.is_error()) {
         return make_error<std::tuple<double, double, double>>(validation.error()->code(),
                                                               validation.error()->what());
+    }
+    if (auto bv = validate_book(book); bv.is_error()) {
+        return make_error<std::tuple<double, double, double>>(bv.error()->code(),
+                                                              bv.error()->what(),
+                                                              "PostgresDatabase");
     }
 
     try {
@@ -2683,10 +2740,11 @@ Result<std::tuple<double, double, double>> PostgresDatabase::get_previous_live_a
             "FROM " +
             table_name +
             " WHERE strategy_id = $1 AND portfolio_id = $2 AND DATE(date) < DATE($3) "
+            "AND portfolio_type = $4 "
             "ORDER BY date DESC, created_at DESC LIMIT 1";
 
-        auto result =
-            txn.exec(query, pqxx::params{strategy_id, actual_portfolio_id, format_timestamp(date)});
+        auto result = txn.exec(
+            query, pqxx::params{strategy_id, actual_portfolio_id, format_timestamp(date), book});
         txn.commit();
 
         if (result.empty()) {
@@ -2727,6 +2785,7 @@ Result<void> PostgresDatabase::store_trading_equity_curve(const std::string& str
     auto validation = validate_connection();
     if (validation.is_error())
         return validation;
+    if (auto bv = validate_book(portfolio_type); bv.is_error()) return bv;  // migration 021
 
     try {
         pqxx::work txn(*connection_);
@@ -2768,6 +2827,7 @@ Result<void> PostgresDatabase::store_trading_equity_curve_batch(
     auto validation = validate_connection();
     if (validation.is_error())
         return validation;
+    if (auto bv = validate_book(portfolio_type); bv.is_error()) return bv;  // migration 021
 
     try {
         pqxx::work txn(*connection_);

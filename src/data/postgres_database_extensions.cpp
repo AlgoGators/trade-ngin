@@ -18,8 +18,10 @@ Result<void> PostgresDatabase::delete_stale_executions(const std::vector<std::st
                                                        const Timestamp& date,
                                                        const std::string& strategy_name,
                                                        const std::string& portfolio_id,
-                                                       const std::string& table_name) {
+                                                       const std::string& table_name,
+                                                       const std::string& book) {
     std::lock_guard<std::mutex> lock(mutex_);
+    if (auto bv = validate_book(book); bv.is_error()) return bv;  // migration 021
 
     // Validate connection
     auto validation = validate_connection();
@@ -56,14 +58,17 @@ Result<void> PostgresDatabase::delete_stale_executions(const std::vector<std::st
         // execution_time is a wall-clock instant: a run at 19:00 EDT stores Monday UTC and a
         // re-run at 21:00 EDT asked for Tuesday UTC, so the first run's rows never matched
         // and the re-run inserted duplicates. Scoping by portfolio and strategy_name stays.
+        // Migration 021: and by book. Order ids are the same in every book (the system ids are
+        // not changed), so without it a desk book's cleanup would take the system rows.
         (void)date;
         std::string query = "DELETE FROM " + table_name +
                             " WHERE strategy_name = $1 "
                             " AND portfolio_id = $2 "
+                            " AND portfolio_type = $3 "
                             " AND order_id IN (" +
                             in_list + ")";
 
-        txn.exec(query, pqxx::params{strategy_name, portfolio_id});
+        txn.exec(query, pqxx::params{strategy_name, portfolio_id, book});
 
         txn.commit();
 
@@ -81,8 +86,10 @@ Result<void> PostgresDatabase::delete_stale_executions(const std::vector<std::st
 Result<void> PostgresDatabase::delete_roll_executions(const Timestamp& date,
                                                       const std::string& strategy_name,
                                                       const std::string& portfolio_id,
-                                                      const std::string& table_name) {
+                                                      const std::string& table_name,
+                                                      const std::string& book) {
     std::lock_guard<std::mutex> lock(mutex_);
+    if (auto bv = validate_book(book); bv.is_error()) return bv;  // migration 021
     auto validation = validate_connection();
     if (validation.is_error()) return validation;
     auto table_validation = validate_table_name(table_name);
@@ -92,8 +99,8 @@ Result<void> PostgresDatabase::delete_roll_executions(const Timestamp& date,
         const std::string day = trade_ngin::core::format_utc_date(date);
         const auto r = txn.exec("DELETE FROM " + table_name +
                                     " WHERE strategy_name = $1 AND portfolio_id = $2 AND date = $3::date"
-                                    " AND execution_type = 'ROLL'",
-                                pqxx::params{strategy_name, portfolio_id, day});
+                                    " AND execution_type = 'ROLL' AND portfolio_type = $4",
+                                pqxx::params{strategy_name, portfolio_id, day, book});
         txn.commit();
         (void)r;  // the sweep writes no log line: its rows are re-stored right after (section 7)
         return Result<void>();
@@ -107,10 +114,14 @@ Result<double> PostgresDatabase::get_previous_total_roll_costs(const std::string
                                                                const std::string& portfolio_id,
                                                                const Timestamp& date,
                                                                const std::string& table_name,
-                                                               const std::string& executions_table) {
+                                                               const std::string& executions_table,
+                                                               const std::string& book) {
     auto validation = validate_connection();
     if (validation.is_error()) {
         return make_error<double>(validation.error()->code(), validation.error()->what());
+    }
+    if (auto bv = validate_book(book); bv.is_error()) {
+        return make_error<double>(bv.error()->code(), bv.error()->what(), "PostgresDatabase");
     }
     try {
         pqxx::work txn(*connection_);
@@ -128,12 +139,13 @@ Result<double> PostgresDatabase::get_previous_total_roll_costs(const std::string
             "WITH prev AS (SELECT DATE(date) AS d, COALESCE(total_roll_costs, 0) AS t FROM " +
                 table_name +
                 " WHERE strategy_id = $1 AND portfolio_id = $2 AND DATE(date) < DATE($3)"
-                " ORDER BY date DESC, created_at DESC LIMIT 1)"
+                " AND portfolio_type = $4 ORDER BY date DESC, created_at DESC LIMIT 1)"
                 " SELECT COALESCE((SELECT t FROM prev), 0) + COALESCE((SELECT SUM(total_transaction_costs)"
                 " FROM " + executions_table +
                 " WHERE strategy_id = $1 AND portfolio_id = $2 AND execution_type = 'ROLL'"
+                " AND portfolio_type = $4"
                 " AND date < DATE($3) AND date > COALESCE((SELECT d FROM prev), DATE '-infinity')), 0)",
-            pqxx::params{strategy_id, actual_portfolio_id, format_timestamp(date)});
+            pqxx::params{strategy_id, actual_portfolio_id, format_timestamp(date), book});
         txn.commit();
         if (result.empty() || result[0][0].is_null()) return Result<double>(0.0);
         return Result<double>(result[0][0].as<double>());
@@ -146,11 +158,14 @@ Result<double> PostgresDatabase::get_previous_total_roll_costs(const std::string
 
 Result<std::unordered_map<std::string, std::string>> PostgresDatabase::get_stored_roll_contracts(
     const std::string& strategy_id, const std::string& portfolio_id, const Timestamp& date,
-    const std::string& table_name) {
+    const std::string& table_name, const std::string& book) {
     using Contracts = std::unordered_map<std::string, std::string>;
     auto validation = validate_connection();
     if (validation.is_error()) {
         return make_error<Contracts>(validation.error()->code(), validation.error()->what());
+    }
+    if (auto bv = validate_book(book); bv.is_error()) {
+        return make_error<Contracts>(bv.error()->code(), bv.error()->what(), "PostgresDatabase");
     }
     try {
         pqxx::work txn(*connection_);
@@ -165,8 +180,10 @@ Result<std::unordered_map<std::string, std::string>> PostgresDatabase::get_store
         auto result = txn.exec(
             "SELECT DISTINCT ON (symbol) symbol, COALESCE(instrument_id, '') FROM " + table_name +
                 " WHERE strategy_id = $1 AND portfolio_id = $2 AND date = $3::date"
+                " AND portfolio_type = $4"
                 " AND execution_type = 'ROLL' AND exec_id LIKE '%\\_RC' ORDER BY symbol, exec_id",
-            pqxx::params{strategy_id, actual_portfolio_id, trade_ngin::core::format_utc_date(date)});
+            pqxx::params{strategy_id, actual_portfolio_id, trade_ngin::core::format_utc_date(date),
+                         book});
         txn.commit();
         Contracts out;
         for (const auto& row : result) out[row[0].as<std::string>()] = row[1].as<std::string>();
@@ -602,8 +619,9 @@ Result<void> PostgresDatabase::store_backtest_positions_with_strategy(
 Result<void> PostgresDatabase::update_live_results(
     const std::string& strategy_id, const Timestamp& date,
     const std::unordered_map<std::string, double>& updates, const std::string& portfolio_id,
-    const std::string& table_name) {
+    const std::string& table_name, const std::string& book) {
     std::lock_guard<std::mutex> lock(mutex_);
+    if (auto bv = validate_book(book); bv.is_error()) return bv;  // migration 021
 
     // Column names are concatenated into the statement (Postgres cannot bind
     // identifiers), so allow-list every key before anything else happens.
@@ -653,11 +671,13 @@ Result<void> PostgresDatabase::update_live_results(
             first = false;
         }
 
-        query += " WHERE strategy_id = " + txn.quote(strategy_id) +
-                 " AND portfolio_id = " + txn.quote(actual_portfolio_id) + " AND DATE(date) = '" +
-                 format_timestamp(date).substr(0, 10) + "'";
+        // The key values are bound; only the allow-listed column names and the numbers above are
+        // in the text. Migration 021: scoped to the book.
+        query += " WHERE strategy_id = $1 AND portfolio_id = $2 AND DATE(date) = $3::date"
+                 " AND portfolio_type = $4";
 
-        auto result = txn.exec(query);
+        auto result = txn.exec(query, pqxx::params{strategy_id, actual_portfolio_id,
+                                                   format_timestamp(date).substr(0, 10), book});
         txn.commit();
 
         INFO("Updated live results for " + strategy_id + " on " + format_timestamp(date) + " (" +
@@ -674,8 +694,10 @@ Result<void> PostgresDatabase::update_live_results(
 Result<void> PostgresDatabase::update_live_equity_curve(const std::string& strategy_id,
                                                         const Timestamp& date, double equity,
                                                         const std::string& portfolio_id,
-                                                        const std::string& table_name) {
+                                                        const std::string& table_name,
+                                                        const std::string& book) {
     std::lock_guard<std::mutex> lock(mutex_);
+    if (auto bv = validate_book(book); bv.is_error()) return bv;  // migration 021
 
     // Validate connection
     auto validation = validate_connection();
@@ -702,11 +724,11 @@ Result<void> PostgresDatabase::update_live_equity_curve(const std::string& strat
         std::string actual_portfolio_id = portfolio_id.empty() ? "BASE_PORTFOLIO" : portfolio_id;
 
         std::string query = "UPDATE " + table_name + " SET equity = " + std::to_string(equity) +
-                            " WHERE strategy_id = " + txn.quote(strategy_id) +
-                            " AND portfolio_id = " + txn.quote(actual_portfolio_id) +
-                            " AND DATE(timestamp) = '" + format_timestamp(date).substr(0, 10) + "'";
+                            " WHERE strategy_id = $1 AND portfolio_id = $2"
+                            " AND DATE(timestamp) = $3::date AND portfolio_type = $4";
 
-        auto result = txn.exec(query);
+        auto result = txn.exec(query, pqxx::params{strategy_id, actual_portfolio_id,
+                                                   format_timestamp(date).substr(0, 10), book});
         txn.commit();
 
         INFO("Updated equity curve for " + strategy_id + " on " + format_timestamp(date) + " (" +
@@ -723,8 +745,10 @@ Result<void> PostgresDatabase::update_live_equity_curve(const std::string& strat
 Result<void> PostgresDatabase::delete_live_results(const std::string& strategy_id,
                                                    const Timestamp& date,
                                                    const std::string& portfolio_id,
-                                                   const std::string& table_name) {
+                                                   const std::string& table_name,
+                                                   const std::string& book) {
     std::lock_guard<std::mutex> lock(mutex_);
+    if (auto bv = validate_book(book); bv.is_error()) return bv;  // migration 021
 
     // Validate connection
     auto validation = validate_connection();
@@ -750,12 +774,13 @@ Result<void> PostgresDatabase::delete_live_results(const std::string& strategy_i
         // Use actual portfolio_id or default to BASE_PORTFOLIO for backward compatibility
         std::string actual_portfolio_id = portfolio_id.empty() ? "BASE_PORTFOLIO" : portfolio_id;
 
+        // Migration 021: scoped to the book, so a desk book's re-run never deletes the system row.
         std::string query = "DELETE FROM " + table_name +
-                            " WHERE strategy_id = " + txn.quote(strategy_id) +
-                            " AND portfolio_id = " + txn.quote(actual_portfolio_id) +
-                            " AND DATE(date) = '" + format_timestamp(date).substr(0, 10) + "'";
+                            " WHERE strategy_id = $1 AND portfolio_id = $2"
+                            " AND DATE(date) = $3::date AND portfolio_type = $4";
 
-        auto result = txn.exec(query);
+        auto result = txn.exec(query, pqxx::params{strategy_id, actual_portfolio_id,
+                                                   format_timestamp(date).substr(0, 10), book});
         txn.commit();
 
         INFO("Deleted live results for " + strategy_id + " (portfolio: " + actual_portfolio_id +
@@ -773,8 +798,10 @@ Result<void> PostgresDatabase::delete_live_results(const std::string& strategy_i
 Result<void> PostgresDatabase::delete_live_equity_curve(const std::string& strategy_id,
                                                         const Timestamp& date,
                                                         const std::string& portfolio_id,
-                                                        const std::string& table_name) {
+                                                        const std::string& table_name,
+                                                        const std::string& book) {
     std::lock_guard<std::mutex> lock(mutex_);
+    if (auto bv = validate_book(book); bv.is_error()) return bv;  // migration 021
 
     // Validate connection
     auto validation = validate_connection();
@@ -800,12 +827,13 @@ Result<void> PostgresDatabase::delete_live_equity_curve(const std::string& strat
         // Use actual portfolio_id or default to BASE_PORTFOLIO for backward compatibility
         std::string actual_portfolio_id = portfolio_id.empty() ? "BASE_PORTFOLIO" : portfolio_id;
 
+        // Migration 021: scoped to the book (the stream), like the upsert that writes the row.
         std::string query = "DELETE FROM " + table_name +
-                            " WHERE strategy_id = " + txn.quote(strategy_id) +
-                            " AND portfolio_id = " + txn.quote(actual_portfolio_id) +
-                            " AND DATE(timestamp) = '" + format_timestamp(date).substr(0, 10) + "'";
+                            " WHERE strategy_id = $1 AND portfolio_id = $2"
+                            " AND DATE(timestamp) = $3::date AND portfolio_type = $4";
 
-        auto result = txn.exec(query);
+        auto result = txn.exec(query, pqxx::params{strategy_id, actual_portfolio_id,
+                                                   format_timestamp(date).substr(0, 10), book});
         txn.commit();
 
         INFO("Deleted equity curve for " + strategy_id + " (portfolio: " + actual_portfolio_id +
@@ -825,8 +853,9 @@ Result<void> PostgresDatabase::store_live_results_complete(
     const std::unordered_map<std::string, double>& metrics,
     const std::unordered_map<std::string, int>& int_metrics, const nlohmann::json& config,
     const std::string& portfolio_id, const std::string& table_name,
-    const nlohmann::json& risk_detail) {
+    const nlohmann::json& risk_detail, const std::string& book) {
     std::lock_guard<std::mutex> lock(mutex_);
+    if (auto bv = validate_book(book); bv.is_error()) return bv;  // migration 021
 
     // Column names are concatenated into the statement (Postgres cannot bind
     // identifiers), so allow-list every key before anything else happens.
@@ -868,9 +897,10 @@ Result<void> PostgresDatabase::store_live_results_complete(
         std::string actual_portfolio_id = portfolio_id.empty() ? "BASE_PORTFOLIO" : portfolio_id;
 
         // Build column list and values - include portfolio_id
-        std::string columns = "strategy_id, portfolio_id, date";
+        // portfolio_type (migration 021): the book, validated above, always named.
+        std::string columns = "strategy_id, portfolio_id, date, portfolio_type";
         std::string values = txn.quote(strategy_id) + ", " + txn.quote(actual_portfolio_id) +
-                             ", '" + format_timestamp(date) + "'";
+                             ", '" + format_timestamp(date) + "', " + txn.quote(book);
 
         // Add double metrics
         for (const auto& [column, value] : metrics) {

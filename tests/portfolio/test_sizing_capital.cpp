@@ -765,8 +765,9 @@ public:
 
     Result<std::tuple<double, double, double>> get_previous_live_aggregates(
         const std::string& strategy_id, const std::string& portfolio_id, const Timestamp& date,
-        const std::string& table_name) override {
+        const std::string& table_name, const std::string& book) override {
         (void)table_name;
+        (void)book;
         previous_asked.push_back(date);
         if (previous_error) {
             return make_error<std::tuple<double, double, double>>(
@@ -787,8 +788,8 @@ public:
     Result<std::unordered_map<std::string, Position>> load_positions_by_date(
         const std::string& strategy_id, const std::string& strategy_name,
         const std::string& portfolio_id, const Timestamp& date,
-        const std::string& table_name) override {
-        (void)strategy_id; (void)portfolio_id; (void)date; (void)table_name;
+        const std::string& table_name, const std::string& book) override {
+        (void)strategy_id; (void)portfolio_id; (void)date; (void)table_name; (void)book;
         ++book_loads;
         if (failing_sleeves.count(strategy_name)) {
             return make_error<std::unordered_map<std::string, Position>>(

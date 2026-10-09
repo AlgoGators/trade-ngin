@@ -189,7 +189,8 @@ public:
     Result<std::unordered_map<std::string, Position>> load_positions_by_date(
         const std::string& strategy_id, const std::string& strategy_name,
         const std::string& portfolio_id, const Timestamp& date,
-        const std::string& table_name = "trading.positions") override;
+        const std::string& table_name = "trading.positions",
+        const std::string& book = kDefaultBook) override;
 
     /**
      * @brief Store execution reports in the database
@@ -203,7 +204,8 @@ public:
     Result<void> store_executions(const std::vector<ExecutionReport>& executions,
                                   const std::string& strategy_id, const std::string& strategy_name,
                                   const std::string& portfolio_id,
-                                  const std::string& table_name) override;
+                                  const std::string& table_name = "trading.executions",
+                                  const std::string& book = kDefaultBook) override;
 
     /**
      * @brief Store positions in the database
@@ -217,7 +219,8 @@ public:
     Result<void> store_positions(const std::vector<Position>& positions,
                                  const std::string& strategy_id, const std::string& strategy_name,
                                  const std::string& portfolio_id,
-                                 const std::string& table_name) override;
+                                 const std::string& table_name = "trading.positions",
+                                 const std::string& book = kDefaultBook) override;
 
     /**
      * @brief Open a scope in which several writes commit or roll back together.
@@ -235,7 +238,8 @@ public:
      */
     Result<void> store_positions(DbTransaction& txn, const std::vector<Position>& positions,
                                  const std::string& strategy_id, const std::string& strategy_name,
-                                 const std::string& portfolio_id, const std::string& table_name);
+                                 const std::string& portfolio_id, const std::string& table_name,
+                                 const std::string& book = kDefaultBook);
 
     /**
      * @brief Store signals in the database
@@ -369,7 +373,8 @@ public:
 
     Result<std::tuple<double, double, double>> get_previous_live_aggregates(
         const std::string& strategy_id, const std::string& portfolio_id, const Timestamp& date,
-        const std::string& table_name = "trading.live_results") override;
+        const std::string& table_name = "trading.live_results",
+        const std::string& book = kDefaultBook) override;
 
     /**
      * @brief Store live trading equity curve point
@@ -435,7 +440,8 @@ public:
                                                   const Timestamp& date,
                                                   const std::string& strategy_name,
                                                   const std::string& portfolio_id,
-                                                  const std::string& table_name = "trading.executions");
+                                                  const std::string& table_name = "trading.executions",
+                                                  const std::string& book = kDefaultBook);
 
     /**
      * @brief T-ROLLX (LOOP_SPEC v6.1 section 6.5): the re-run sweep of a day's ROLL legs by type.
@@ -444,7 +450,8 @@ public:
      */
     virtual Result<void> delete_roll_executions(const Timestamp& date, const std::string& strategy_name,
                                                 const std::string& portfolio_id,
-                                                const std::string& table_name = "trading.executions");
+                                                const std::string& table_name = "trading.executions",
+                                                const std::string& book = kDefaultBook);
 
     /**
      * @brief T-ROLLX-FIX commits 5 and 6 (LOOP_SPEC v6.2 section 6.5): the executions of every
@@ -460,7 +467,7 @@ public:
     virtual Result<void> replace_roll_day_executions(
         const std::vector<std::pair<std::string, std::vector<ExecutionReport>>>& sleeves,
         const std::string& strategy_id, const std::string& portfolio_id, const Timestamp& date,
-        const std::string& table_name);
+        const std::string& table_name, const std::string& book = kDefaultBook);
 
     /**
      * @brief T-ROLLX-FIX commit 6 (section 6.5, a late roll's settlement): the stored positions
@@ -472,7 +479,7 @@ public:
     virtual Result<std::vector<StoredRealisedRow>> get_stored_realised_rows(
         const std::string& strategy_id, const std::string& portfolio_id,
         const std::string& after_date, const std::string& before_date,
-        const std::string& table_name);
+        const std::string& table_name, const std::string& book = kDefaultBook);
 
     /**
      * @brief T-ROLLX (migration 017): the cumulative ROLL cost of the book before `date`: the latest
@@ -486,7 +493,8 @@ public:
     virtual Result<double> get_previous_total_roll_costs(
         const std::string& strategy_id, const std::string& portfolio_id, const Timestamp& date,
         const std::string& table_name = "trading.live_results",
-        const std::string& executions_table = "trading.executions");
+        const std::string& executions_table = "trading.executions",
+        const std::string& book = kDefaultBook);
 
     /**
      * @brief T-ROLLX-FIX (LOOP_SPEC v6.2 section 6.5, legs by STATE): per symbol, the contract the
@@ -498,7 +506,8 @@ public:
      */
     virtual Result<std::unordered_map<std::string, std::string>> get_stored_roll_contracts(
         const std::string& strategy_id, const std::string& portfolio_id, const Timestamp& date,
-        const std::string& table_name = "trading.executions");
+        const std::string& table_name = "trading.executions",
+        const std::string& book = kDefaultBook);
 
     /**
      * @brief Store backtest summary results (replaces raw SQL INSERT)
@@ -567,7 +576,8 @@ public:
         const std::string& strategy_id, const Timestamp& date,
         const std::unordered_map<std::string, double>& updates,
         const std::string& portfolio_id,
-        const std::string& table_name = "trading.live_results");
+        const std::string& table_name = "trading.live_results",
+        const std::string& book = kDefaultBook);
 
     /**
      * @brief Update live equity curve (replaces raw SQL UPDATE)
@@ -581,7 +591,8 @@ public:
     virtual Result<void> update_live_equity_curve(
         const std::string& strategy_id, const Timestamp& date, double equity,
         const std::string& portfolio_id,
-        const std::string& table_name = "trading.equity_curve");
+        const std::string& table_name = "trading.equity_curve",
+        const std::string& book = kDefaultBook);
 
     /**
      * @brief Delete existing live results for a date (replaces raw SQL DELETE)
@@ -594,7 +605,8 @@ public:
     virtual Result<void> delete_live_results(
         const std::string& strategy_id, const Timestamp& date,
         const std::string& portfolio_id,
-        const std::string& table_name = "trading.live_results");
+        const std::string& table_name = "trading.live_results",
+        const std::string& book = kDefaultBook);
 
     /**
      * @brief Delete existing equity curve entry for a date (replaces raw SQL DELETE)
@@ -607,7 +619,8 @@ public:
     virtual Result<void> delete_live_equity_curve(
         const std::string& strategy_id, const Timestamp& date,
         const std::string& portfolio_id,
-        const std::string& table_name = "trading.equity_curve");
+        const std::string& table_name = "trading.equity_curve",
+        const std::string& book = kDefaultBook);
 
     /**
      * @brief Store complete live results row with all metrics (replaces raw SQL INSERT)
@@ -623,7 +636,8 @@ public:
         const std::unordered_map<std::string, int>& int_metrics, const nlohmann::json& config,
         const std::string& portfolio_id = "BASE_PORTFOLIO",
         const std::string& table_name = "trading.live_results",
-        const nlohmann::json& risk_detail = nlohmann::json());
+        const nlohmann::json& risk_detail = nlohmann::json(),
+        const std::string& book = kDefaultBook);
 
     /**
      * @brief Store live trading run metadata
@@ -1017,6 +1031,12 @@ public:
     Result<void> validate_strategy_id(const std::string& strategy_id) const;
 
     /**
+     * @brief Refuse a book outside system / qt_proposal / qt (migration 021's CHECK) before any
+     *        statement runs, so a bad book never reaches a DELETE.
+     */
+    Result<void> validate_book(const std::string& book) const;
+
+    /**
      * @brief Validate a generic SQL identifier (table name fragment, column
      *        name) against a strict allowlist: `[A-Za-z_][A-Za-z0-9_.]*`.
      *        Phase 5 §5b -- use this when an identifier MUST be string-
@@ -1069,12 +1089,14 @@ private:
     /// replace_roll_day_executions share it).
     Result<void> insert_executions_in(pqxx::work& txn, const std::vector<ExecutionReport>& executions,
                                       const std::string& strategy_id, const std::string& strategy_name,
-                                      const std::string& portfolio_id, const std::string& table_name);
+                                      const std::string& portfolio_id, const std::string& table_name,
+                                      const std::string& book);
     Result<void> store_positions_in(pqxx::work& txn, const std::vector<Position>& positions,
                                     const std::string& strategy_id,
                                     const std::string& strategy_name,
                                     const std::string& portfolio_id,
-                                    const std::string& table_name);
+                                    const std::string& table_name,
+                                    const std::string& book);
 
     /**
      * @brief Dedup-write statements, executed in a transaction that is NOT
