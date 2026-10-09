@@ -30,8 +30,10 @@
 
 // the two-sleeve cases set each sleeve's filled ledger directly and read the manager's cost model
 #define private public
+#include "trade_ngin/instruments/instrument_registry.hpp"
 #include "trade_ngin/portfolio/portfolio_manager.hpp"
 #undef private
+#include "trade_ngin/instruments/futures.hpp"
 
 #include "one_pass_test_fixture.hpp"
 #include "trade_ngin/core/logger.hpp"
@@ -790,4 +792,60 @@ TEST_F(ListingSwitchTwoSleeveTest, TheSlowRuleOnTheFirstSleeveOnlyAndTheBandOnTh
     for (const auto& [sid, execs] : pm_->get_strategy_executions()) {
         for (const auto& e : execs) EXPECT_NE(e.exec_id.rfind("EX-", 0), 0u) << "no ordinary fill: " << e.exec_id;
     }
+}
+
+// Each switch fill is costed on ITS OWN contract's row: two registry rows of different fee and
+// contract size, and each fill's commission is its own row's fee times its quantity (the exit on
+// the predecessor's 2.25 a contract, the entry on the listed contract's 0.60), and each fill's
+// spread and impact dollars scale with its own contract size.
+TEST_F(ListingSwitchPassTest, EachSwitchFillIsCostedOnItsOwnContractsRow) {
+    auto& registry = InstrumentRegistry::instance();
+    const auto saved = registry.instruments_;
+    const bool saved_init = registry.initialized_;
+    registry.instruments_.clear();
+    auto add = [&](const std::string& root, double multiplier, double fee) {
+        FuturesSpec spec;
+        spec.root_symbol = root;
+        spec.exchange = "CME";
+        spec.currency = "USD";
+        spec.multiplier = multiplier;
+        spec.tick_size = 0.25;
+        spec.commission_per_contract = fee;
+        spec.fee_per_contract = fee;
+        registry.instruments_[root] = std::make_shared<FuturesInstrument>(root, spec);
+    };
+    add("TBIG", 1000.0, 2.25);
+    add("TMIC", 100.0, 0.60);
+    registry.initialized_ = true;
+
+    ListingDates::instance().set(the_pair());
+    make_pm();
+    // the book holds 2 of the predecessor, which traded earlier in the run (set directly: with real
+    // contract rows the fixture's one-contract steps are no longer worth their cost)
+    pm_->filled_positions_["A"][kBig] = 2.0;
+    pm_->listing_predecessor_traded_.insert(kBig);
+    pm_->ever_signalled_.insert(kBig);
+    listed(24.4);
+    ASSERT_TRUE(rebalance(kListed).is_ok());
+    ExecutionReport exit_fill, entry_fill;
+    for (const auto& e : executions()) {
+        if (e.exec_id == "LC-A-0") exit_fill = e;
+        if (e.exec_id == "LO-A-0") entry_fill = e;
+    }
+    ASSERT_EQ(exit_fill.symbol, kBig);
+    ASSERT_EQ(entry_fill.symbol, kMicro);
+    EXPECT_NEAR(static_cast<double>(exit_fill.commissions_fees), 2.0 * 2.25, 1e-9) << "2 contracts on the predecessor's fee";
+    EXPECT_NEAR(static_cast<double>(entry_fill.commissions_fees), 24.0 * 0.60, 1e-9) << "24 contracts on the listed contract's fee";
+    // the same call the manager makes for any fill of that symbol and size
+    const auto own_exit = pm_->cost_manager_.calculate_costs(kBig, -2.0, 100.0);
+    const auto own_entry = pm_->cost_manager_.calculate_costs(kMicro, 24.0, 100.0);
+    EXPECT_NEAR(static_cast<double>(exit_fill.total_transaction_costs), own_exit.total_transaction_costs, 1e-6);
+    EXPECT_NEAR(static_cast<double>(entry_fill.total_transaction_costs), own_entry.total_transaction_costs, 1e-6);
+    // priced on the other contract's row either would differ
+    EXPECT_GT(std::abs(pm_->cost_manager_.calculate_costs(kMicro, -2.0, 100.0).total_transaction_costs -
+                       own_exit.total_transaction_costs),
+              1.0);
+
+    registry.instruments_ = saved;
+    registry.initialized_ = saved_init;
 }
