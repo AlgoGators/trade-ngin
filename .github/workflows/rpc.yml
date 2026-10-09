@@ -2,7 +2,8 @@ name: rpc
 
 # Generates the gRPC stubs (and algogators/versions.py, from the .proto version headers) from
 # proto/algogators/*.proto and runs the shared rpc layer's tests, the desk service's included.
-# Also runs migration 025's test (the command log the desk service writes) on postgres:16.
+# Also runs the tests of migrations 025 (the command log the desk service writes) and 027 (the
+# daily cutoff's publish_source and sent_at) on postgres:16.
 # The C++ pipeline (ci-cd-pipeline.yml) is untouched; the Docker image build there also
 # exercises gen.sh through the rpc-build stage.
 
@@ -14,6 +15,7 @@ on:
       - "services/rpc/**"
       - "migrations/023_*"
       - "migrations/*025_*"
+      - "migrations/*027_*"
       - ".github/workflows/rpc.yml"
   pull_request:
     branches:
@@ -27,6 +29,7 @@ on:
       - "deploy/**"
       - "migrations/023_*"
       - "migrations/*025_*"
+      - "migrations/*027_*"
       - ".github/workflows/rpc.yml"
 
 permissions:
@@ -64,3 +67,15 @@ jobs:
           for i in $(seq 1 60); do docker exec pg025 pg_isready -h 127.0.0.1 -U postgres && break; sleep 1; done
           docker cp migrations pg025:/m
           docker exec -e QT_MIGRATION_TEST_THROWAWAY=1 -u postgres pg025 bash /m/test_025_qt_command_log_hardening.sh
+
+  migration-027:
+    name: migration 027 on postgres 16
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Test 027 and its rollback on a throwaway postgres:16
+        run: |
+          docker run -d --name pg027 -e POSTGRES_PASSWORD=x postgres:16
+          for i in $(seq 1 60); do docker exec pg027 pg_isready -h 127.0.0.1 -U postgres && break; sleep 1; done
+          docker cp migrations pg027:/m
+          docker exec -e QT_MIGRATION_TEST_THROWAWAY=1 -u postgres pg027 bash /m/test_027_qt_daily_cutoff.sh

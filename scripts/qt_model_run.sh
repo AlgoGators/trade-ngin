@@ -10,7 +10,9 @@
 #
 #   docker exec engine-rpc /app/scripts/qt_model_run.sh qt_conservative qt_conservative_model
 #
-# The model run never e-mails (ruling 15: publish does). Exit status: the worst of the runs.
+# The model run never e-mails and publishes no day (ruling 15; contract C7: the desk approves by
+# 09:30, or the scheduler's 10:00 fallback publishes the model's book). Exit status: the worst of
+# the runs.
 set -uo pipefail
 
 BINARY="${QT_ENGINE_BINARY:-/app/build/bin/Release/live_portfolio_conservative}"

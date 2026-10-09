@@ -456,7 +456,7 @@ TEST(CarriedDaySource, BothTwinsWriteTheCarriedFileOnADayWithNoSession) {
         if (src.empty()) GTEST_SKIP() << "runner source not found";
         const std::string block =
             between(src, "        // Export current positions with per-strategy breakdown\n",
-                    "        if (qt_mode == qt::Mode::PUBLISH && current_export_result.is_ok() &&");
+                    "        if (qt_sends && qt_desk_editable && current_export_result.is_ok() &&");
         ASSERT_FALSE(block.empty());
         EXPECT_NE(block.find("if (!skip_strategy_processing) {"), npos)
             << "the file does not tell a day with no session apart";

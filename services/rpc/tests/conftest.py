@@ -21,6 +21,12 @@ UTC = dt.timezone.utc
 PID = "QT_CONSERVATIVE_PORTFOLIO"
 PDIR = "qt_conservative"
 DAY = dt.date(2026, 10, 7)
+NY = __import__("zoneinfo").ZoneInfo("America/New_York")
+# Contract C7: an approval counts by its row's created_at against 10:00 New York on its date, and
+# the dispatcher's clock decides --send-now (09:30). The fixtures approve at 08:00 and dispatch at
+# 08:30 on DAY, before the send; tests of the cutoff move both.
+PUBLISH_CREATED = dt.datetime(2026, 10, 7, 8, 0, tzinfo=NY)
+DISPATCH_AT = dt.datetime(2026, 10, 7, 8, 30, tzinfo=NY)
 
 
 class FakeStore:
@@ -45,7 +51,7 @@ def now():
 def make_row(id, kind, **kw):
     base = dict(id=id, portfolio_id=PID, date=DAY, kind=kind, status="pending",
                 requested_by="desk@algogators.com", reason="test reason", payload={},
-                created_at=now())
+                created_at=PUBLISH_CREATED if kind == "publish" else now())
     base.update(kw)
     return CommandRow(**base)
 
@@ -237,10 +243,12 @@ class Agent:
     def __init__(self, cstore, runner, settings):
         self.store, self.runner, self.settings = cstore, runner, settings
         self.sent = []
+        self.now = DISPATCH_AT
         self.jobs = JobManager(cstore, settings, runner)
         self.dispatcher = Dispatcher(cstore, self.jobs, settings,
                                      sender=lambda cfg, to, subject, body:
-                                     self.sent.append((cfg, list(to), subject, body)))
+                                     self.sent.append((cfg, list(to), subject, body)),
+                                     clock=lambda: self.now)
 
     def wait(self):
         self.jobs.wait_idle()

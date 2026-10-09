@@ -1,32 +1,41 @@
-"""The QT catch-up scheduler (contract C6, ruling 29): the model runs, in the rpc host.
+"""The QT scheduler (contract C6, C7; rulings 18 and 29 as amended 2026-10-09), in the rpc host.
 
-It replaces the host cron's single 10:15 model run. A background task of the desk service
-(`desk.catchup`, service.py) ticks every minute; a pass is due once per QT_CATCHUP_EVERY_MIN
-(30) slot inside QT_CATCHUP_WINDOW (06:00-22:00 America/New_York), every day. A pass holds
-<QT_LOCK_DIR>/qt-catchup.lock (so the host watchdog's pass and the in-process one never overlap)
-and walks each portfolio of QT_CATCHUP_PORTFOLIOS:
+A background task of the desk service (`desk.catchup`, service.py) ticks every minute. A pass is
+due once per slot inside QT_CATCHUP_WINDOW (06:30-22:00 America/New_York), every calendar day:
+every QT_CATCHUP_BUSY_EVERY_MIN (5) minutes inside QT_CATCHUP_BUSY_WINDOW (06:30-10:30), every
+QT_CATCHUP_EVERY_MIN (30) after. A pass holds <QT_LOCK_DIR>/qt-catchup.lock (so the host
+watchdog's pass and the in-process one never overlap) and, for each portfolio of
+QT_CATCHUP_PORTFOLIOS, under that portfolio's flock, takes one step at a time until it has
+nothing to do. Every step is decided from the database and the clock, so a pass that runs late
+(a restart, a missed tick: 10:07) does what the missed one would have.
 
-    last = the newest date with a book (qt on a desk-editable portfolio, else system; a
-           desk-editable portfolio with no qt book yet starts after its newest system day)
-    while last < today:
-        desk-editable and `last` unpublished:
-            a trading day      -> wait for the desk's publish (no alert; a reminder after 24 h)
-            a non-trading day  -> alert (the model run should have auto-published it)
-        day = last + 1
-        today, a trading day, before QT_CATCHUP_TODAY_NOT_BEFORE (10:15) -> wait (T-1 data)
-        run the model for `day`; exit 0 with a book written -> last = day, continue
-        anything else -> alert, stop this portfolio until the next pass
+A desk-editable portfolio (its day D: model run ~07:00, approve by 09:30, fallback at 10:00):
 
-A "trading day" is a book date whose T-1 is an open session on the runner's calendar
-(holidays.json, the file HolidayChecker reads; weekends closed), the same test the engine uses
-to auto-publish a non-trading day (C5). A calendar that does not cover the dates is an alert,
-never a guess.
+    last = the newest qt day (none yet: the newest system day; ruling 27)
+    last unpublished, last < today      -> FALLBACK last: catch-up of a missed past day
+                                           (system:fallback-catchup; qt = the model's book; not
+                                           e-mailed; one alert)
+    last unpublished, today, >= 10:00   -> FALLBACK today: qt = the model's book, published
+                                           (system:fallback-10am) and e-mailed at once; an alert
+                                           to the President
+    last < today                        -> RUN the model for last + 1 (today's not before 06:45,
+                                           retried every QT_MODEL_RETRY_MIN after a failure)
+    today approved, not sent, >= 09:30  -> SEND today (engine --send: from the stored rows, once)
+    otherwise                           -> wait for the desk's approval, or up to date
+
+The model twin (desk editing off) runs the same model runs; each day it writes is published at
+once as system:model-only (publish_source 'model-only') and, today, sent at 09:30 when its
+email.json names recipients. At QT_MODEL_ALERT_AT (08:30) a portfolio with no model book for
+today raises an alert. The 24 h unpublished reminder is gone: the 10:00 fallback publishes every
+day. A failure or refusal (anything the engine declines) alerts (ruling 29), and the step is
+retried on a later pass.
 
 Each model run is exactly what scripts/qt_model_run.sh runs: `<QT_ENGINE_BINARY>
---portfolio-config <dir> --date <day>` in QT_ENGINE_CWD, under <QT_LOCK_DIR>/<portfolio_id>.lock,
-the lock desk jobs take. The scheduler holds that flock itself (flock(2), the same lock flock(1)
-takes) around a re-check of the database and the run, so a day another run has just written is
-never run twice. QT_JOB_TIMEOUT_S bounds the run.
+--portfolio-config <dir> --date <day>` in QT_ENGINE_CWD; the fallback is `--fallback ...
+--audit-id <its publish row> [--send-now]`, the send `--send --portfolio-config <dir> --date
+<day>`. The scheduler holds <QT_LOCK_DIR>/<portfolio_id>.lock (flock(2), the lock flock(1) takes
+for desk jobs) around each step and re-reads the database under it, so nothing runs twice.
+QT_JOB_TIMEOUT_S bounds every run.
 
 Alerts: one line in <QT_LOG_DIR>/qt-catchup.log and an e-mail to the president address of
 QT_APPROVERS through the portfolio's email.json (not when QT_EMAIL_DISABLED=1), at most once per
@@ -47,11 +56,12 @@ import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable, Dict, Iterator, List, Optional, Protocol, Sequence, Set, Tuple
+from typing import (Any, Callable, Dict, Iterator, List, Optional, Protocol, Sequence, Tuple)
 
+from . import cutoff
 from .config import (CONNECT_TIMEOUT_S, CatchupSettings, CommandSettings, ConfigError, DbConfig,
                      load_settings)
-from .jobs import Runner, SubprocessRunner, tail
+from .jobs import Runner, RunResult, SubprocessRunner, tail
 from .override_mail import ApproverError, Sender, load_smtp, parse_approvers, send_smtp
 from .portfolios import portfolios_root
 
@@ -63,7 +73,7 @@ ENGINE_LOG = "qt-engine-runs.log"
 ALERT_STATE = "qt-alerts.json"
 HEARTBEAT = "qt-catchup.heartbeat"
 SCHEDULER_LOCK = "qt-catchup.lock"
-# A pass never walks further than this many days in one go (a sanity bound, not a policy).
+# A pass never takes more than this many steps per portfolio (a sanity bound, not a policy).
 MAX_DAYS_PER_PASS = 62
 
 
@@ -73,61 +83,6 @@ def _zone(name: str):
     return ZoneInfo(name)
 
 
-# -- the calendar -------------------------------------------------------------------------------
-
-class CalendarError(RuntimeError):
-    pass
-
-
-def holidays_path(engine_cwd: str, env=None) -> str:
-    """HolidayChecker::resolve_holidays_path, from the engine's working directory."""
-    env = os.environ if env is None else env
-    if env.get("TRADE_NGIN_HOLIDAYS_JSON"):
-        return env["TRADE_NGIN_HOLIDAYS_JSON"]
-    candidates = [os.path.join(engine_cwd, "include/trade_ngin/core/holidays.json"),
-                  os.path.join(engine_cwd, "holidays.json"), "/etc/trade_ngin/holidays.json"]
-    for path in candidates:
-        if os.path.exists(path):
-            return path
-    return candidates[0]
-
-
-class Calendar:
-    """The runner's market calendar: weekends and the holidays.json closures."""
-
-    def __init__(self, holidays: Set[dt.date], years: Set[int]):
-        self._holidays = holidays
-        self._years = years
-
-    @classmethod
-    def load(cls, path: str) -> "Calendar":
-        try:
-            data = json.loads(Path(path).read_text(encoding="utf-8"))
-            holidays, years = set(), set()
-            for year, items in data.items():
-                years.add(int(year))
-                for item in items:
-                    holidays.add(dt.date.fromisoformat(item["date"]))
-        except (OSError, ValueError, KeyError, TypeError, AttributeError) as exc:
-            raise CalendarError(f"cannot load the market calendar {path}: "
-                                f"{type(exc).__name__}") from None
-        if not years:
-            raise CalendarError(f"the market calendar {path} is empty")
-        return cls(holidays, years)
-
-    def covers(self, day: dt.date) -> bool:
-        return day.year in self._years
-
-    def is_session(self, day: dt.date) -> bool:
-        if not self.covers(day):
-            raise CalendarError(f"the market calendar does not cover {day}")
-        return day.weekday() < 5 and day not in self._holidays
-
-    def is_trading_day(self, book_date: dt.date) -> bool:
-        """A book date is a trading day when its T-1 was an open session (C5)."""
-        return self.is_session(book_date - dt.timedelta(days=1))
-
-
 # -- the database -------------------------------------------------------------------------------
 
 class DayStore(Protocol):
@@ -135,8 +90,23 @@ class DayStore(Protocol):
 
     def published_at(self, portfolio_id: str, date: dt.date) -> Optional[dt.datetime]: ...
 
+    def sent_at(self, portfolio_id: str, date: dt.date) -> Optional[dt.datetime]: ...
+
     def book_written_at(self, portfolio_id: str, date: dt.date,
                         book: str) -> Optional[dt.datetime]: ...
+
+    def publish_model_only(self, portfolio_id: str, date: dt.date) -> bool:
+        """The model twin's day: published_by system:model-only, publish_source 'model-only',
+        published_at now(), while unpublished. True when it published."""
+
+    def insert_fallback(self, portfolio_id: str, date: dt.date, requested_by: str) -> Optional[int]:
+        """A 'publish' row for the fallback, inserted pending and moved to running in one
+        transaction (migration 025's rules). None when another publish row of the day is open."""
+
+    def command_outcome(self, audit_id: int) -> Tuple[str, Dict[str, Any], str]:
+        """(status, result, message) of a command row."""
+
+    def fail_running(self, audit_id: int, message: str) -> bool: ...
 
 
 class PostgresDayStore:
@@ -144,18 +114,23 @@ class PostgresDayStore:
         self._db = db
         self._connect_timeout = connect_timeout
 
-    def _one(self, sql: str, args):
+    def _run(self, fn, autocommit: bool = True):
         import psycopg
 
         from .store import StoreError
         try:
             with psycopg.connect(**self._db.conninfo_kwargs(self._connect_timeout),
-                                 autocommit=True) as conn, conn.cursor() as cur:
-                cur.execute(sql, args)
-                rec = cur.fetchone()
-                return rec[0] if rec else None
+                                 autocommit=autocommit) as conn, conn.cursor() as cur:
+                return fn(cur)
         except Exception as exc:
             raise StoreError(f"database error ({type(exc).__name__})") from exc
+
+    def _one(self, sql: str, args):
+        def q(cur):
+            cur.execute(sql, args)
+            rec = cur.fetchone()
+            return rec[0] if rec else None
+        return self._run(q)
 
     def last_book_date(self, portfolio_id, book):
         return self._one("SELECT max(date) FROM trading.live_results "
@@ -165,11 +140,61 @@ class PostgresDayStore:
         return self._one("SELECT max(published_at) FROM trading.live_run_metadata "
                          "WHERE portfolio_id = %s AND date = %s", (portfolio_id, date))
 
+    def sent_at(self, portfolio_id, date):
+        return self._one("SELECT max(sent_at) FROM trading.live_run_metadata "
+                         "WHERE portfolio_id = %s AND date = %s", (portfolio_id, date))
+
     def book_written_at(self, portfolio_id, date, book):
         # created_at is timestamp without time zone in the writer's session zone (R12).
         return self._one("SELECT max(created_at)::timestamptz FROM trading.live_results "
                          "WHERE portfolio_id = %s AND date = %s AND portfolio_type = %s",
                          (portfolio_id, date, book))
+
+    def publish_model_only(self, portfolio_id, date):
+        def q(cur):
+            cur.execute("UPDATE trading.live_run_metadata SET published_by = %s, "
+                        "published_at = now(), publish_source = 'model-only' "
+                        "WHERE portfolio_id = %s AND date = %s AND published_at IS NULL "
+                        "RETURNING id", (cutoff.MODEL_ONLY, portfolio_id, date))
+            return cur.fetchone() is not None
+        return self._run(q)
+
+    def insert_fallback(self, portfolio_id, date, requested_by):
+        import psycopg
+
+        def q(cur):
+            try:
+                cur.execute("INSERT INTO trading.position_overrides "
+                            "(portfolio_id, date, kind, requested_by) "
+                            "VALUES (%s, %s, 'publish', %s) RETURNING id",
+                            (portfolio_id, date, requested_by))
+            except psycopg.errors.UniqueViolation:
+                cur.connection.rollback()  # migration 025: another publish row is open
+                return None
+            audit_id = cur.fetchone()[0]
+            cur.execute("UPDATE trading.position_overrides SET status = 'running', "
+                        "started_at = now() WHERE id = %s AND status = 'pending'", (audit_id,))
+            return audit_id
+        return self._run(q, autocommit=False)
+
+    def command_outcome(self, audit_id):
+        def q(cur):
+            cur.execute("SELECT status, result, message FROM trading.position_overrides "
+                        "WHERE id = %s", (audit_id,))
+            rec = cur.fetchone()
+            if rec is None:
+                return ("missing", {}, "")
+            result = rec[1] if isinstance(rec[1], dict) else {}
+            return (rec[0], result, rec[2] or "")
+        return self._run(q)
+
+    def fail_running(self, audit_id, message):
+        def q(cur):
+            cur.execute("UPDATE trading.position_overrides SET status = 'failed', message = %s, "
+                        "finished_at = now() WHERE id = %s AND status = 'running' RETURNING id",
+                        (message, audit_id))
+            return cur.fetchone() is not None
+        return self._run(q)
 
 
 # -- logs, locks, alerts ----------------------------------------------------------------------
@@ -270,7 +295,7 @@ class Alerter:
             log.error("cannot write the alert state", extra={"error": type(exc).__name__})
 
     def alert(self, portfolio_dir: str, portfolio_id: str, date: Optional[dt.date], reason: str,
-              message: str) -> bool:
+              message: str, subject: Optional[str] = None) -> bool:
         """Returns True when this call raised the alert (False: already raised today)."""
         today = self._clock().astimezone(self._tz).date()
         key = f"{portfolio_id}|{date or '-'}|{reason}"
@@ -282,7 +307,7 @@ class Alerter:
         self._files.line(f"ALERT {portfolio_id} {date or '-'} {reason}: {message}")
         log.warning("catch-up alert", extra={"portfolio_id": portfolio_id, "date": str(date),
                                              "reason": reason, "error": message})
-        mailed, why = self._mail(portfolio_dir, portfolio_id, date, reason, message)
+        mailed, why = self._mail(portfolio_dir, portfolio_id, date, reason, message, subject)
         if mailed:
             self._files.line(f"ALERT {portfolio_id} {date or '-'} {reason}: e-mailed to the "
                              "president")
@@ -294,7 +319,8 @@ class Alerter:
         self._save(state, today)
         return True
 
-    def _mail(self, portfolio_dir, portfolio_id, date, reason, message) -> Tuple[bool, str]:
+    def _mail(self, portfolio_dir, portfolio_id, date, reason, message,
+              subject) -> Tuple[bool, str]:
         if self._settings.email_disabled:
             return False, "QT_EMAIL_DISABLED=1"
         try:
@@ -306,12 +332,12 @@ class Alerter:
             return False, why
         import html
 
-        subject = f"QT alert: {portfolio_id} {date or ''} {reason}".strip()
+        subject = subject or f"QT alert: {portfolio_id} {date or ''} {reason}".strip()
         body = ("<html><body>"
                 f"<p><b>{html.escape(portfolio_id)}</b>, book date "
                 f"<b>{html.escape(str(date or '-'))}</b>: {html.escape(reason)}</p>"
                 f"<pre>{html.escape(message)}</pre>"
-                "<p>From the QT catch-up scheduler on engine-rpc. Details: "
+                "<p>From the QT scheduler on engine-rpc. Details: "
                 "/home/ubuntu/qt-engine/logs/qt-catchup.log and qt-engine-runs.log. This alert "
                 "is sent at most once a day per portfolio, date and reason.</p>"
                 "</body></html>")
@@ -324,8 +350,10 @@ class Alerter:
 
 # -- the scheduler ------------------------------------------------------------------------------
 
-RUN, WAIT_PUBLISH, WAIT_TIME, UP_TO_DATE, ALERT = (
-    "run", "wait_publish", "wait_time", "up_to_date", "alert")
+(RUN, FALLBACK, SEND, PUBLISH_MODEL, WAIT_PUBLISH, WAIT_TIME, UP_TO_DATE, ALERT) = (
+    "run", "fallback", "send", "publish_model", "wait_publish", "wait_time", "up_to_date",
+    "alert")
+ACTIONS = (RUN, FALLBACK, SEND, PUBLISH_MODEL)
 
 
 @dataclass(frozen=True)
@@ -342,6 +370,11 @@ class PortfolioInfo:
     portfolio_id: str
     desk_editable: bool
 
+    @property
+    def book(self) -> str:
+        """The book the day goes out from: qt on a desk-editable portfolio, else system."""
+        return "qt" if self.desk_editable else "system"
+
 
 def read_portfolio(config_dir: str, portfolio_dir: str) -> PortfolioInfo:
     path = portfolios_root(config_dir) / portfolio_dir / "portfolio.json"
@@ -356,24 +389,37 @@ def read_portfolio(config_dir: str, portfolio_dir: str) -> PortfolioInfo:
     return PortfolioInfo(portfolio_dir, pid, qt.get("desk_editable") is True)
 
 
+def recipients(config_dir: str, portfolio_dir: str) -> List[str]:
+    """The daily e-mail's recipients: to_emails of the portfolio's email.json ([] when none)."""
+    path = portfolios_root(config_dir) / portfolio_dir / "email.json"
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return []
+    to = data.get("to_emails") if isinstance(data, dict) else None
+    return [t for t in to if isinstance(t, str) and t.strip()] if isinstance(to, list) else []
+
+
 class CatchupScheduler:
     def __init__(self, store: DayStore, settings: CommandSettings, catchup: CatchupSettings,
                  runner: Optional[Runner] = None, sender: Sender = send_smtp,
                  clock: Optional[Callable[[], dt.datetime]] = None,
-                 calendar_loader: Optional[Callable[[], Calendar]] = None,
-                 lock: Optional[LockFactory] = None):
+                 lock: Optional[LockFactory] = None, dispatcher=None):
         self._store = store
         self._settings = settings
         self._catchup = catchup
         self._runner = runner or SubprocessRunner()
         self._clock = clock or (lambda: dt.datetime.now(UTC))
         self._tz = _zone(catchup.timezone)
-        self._calendar_loader = calendar_loader or (
-            lambda: Calendar.load(holidays_path(settings.engine_cwd)))
         self._lock = lock or file_lock
+        # The desk service's dispatcher, when the scheduler runs in the server: a fallback row is
+        # held there while the scheduler runs it, so the recovery never takes it for an orphan.
+        self._dispatcher = dispatcher
         self.files = FileLog(settings.log_dir, self._clock)
         self.alerter = Alerter(settings, self.files, sender, self._clock, self._tz)
         self._last_slot: Optional[Tuple[dt.date, int, int]] = None
+        # (portfolio_id, date, action) -> not before (UTC): a failed run waits before its retry.
+        self._retry_after: Dict[Tuple[str, dt.date, str], dt.datetime] = {}
 
     # -- when -----------------------------------------------------------------------------------
 
@@ -384,8 +430,16 @@ class CatchupScheduler:
         t = now_local.time()
         return self._catchup.window_start <= t <= self._catchup.window_end
 
+    def in_busy_window(self, now_local: dt.datetime) -> bool:
+        t = now_local.time()
+        return self._catchup.busy_start <= t < self._catchup.busy_end
+
+    def every_minutes(self, now_local: dt.datetime) -> int:
+        return (self._catchup.busy_every_minutes if self.in_busy_window(now_local)
+                else self._catchup.every_minutes)
+
     def _slot(self, now_local: dt.datetime) -> Tuple[dt.date, int, int]:
-        every = self._catchup.every_minutes
+        every = self.every_minutes(now_local)
         return (now_local.date(), now_local.hour, now_local.minute // every * every)
 
     def tick(self) -> bool:
@@ -409,6 +463,13 @@ class CatchupScheduler:
         except (OSError, ValueError):
             return None
         return (self._clock() - stamp).total_seconds()
+
+    def watchdog_limit_s(self, now_local: dt.datetime) -> float:
+        """How old the last pass may be before the watchdog runs one: two slots and a margin
+        (5 min in the busy window, so the 09:30 send and the 10:00 fallback are at most ~15 min
+        late when the in-process scheduler is down)."""
+        every = self.every_minutes(now_local)
+        return 2 * every * 60 + (300 if self.in_busy_window(now_local) else 900)
 
     # -- a pass ---------------------------------------------------------------------------------
 
@@ -441,17 +502,12 @@ class CatchupScheduler:
             return outcomes
 
     def catch_up(self, portfolio_dir: str) -> Step:
-        """Walk one portfolio forward. Returns the step it stopped on."""
+        """Step one portfolio forward until it has nothing to do. Returns the last step."""
         try:
             info = read_portfolio(self._settings.config_dir, portfolio_dir)
         except ConfigError as exc:
             self.alerter.alert(portfolio_dir, portfolio_dir, None, "config", str(exc))
             return Step(ALERT, reason="config", message=str(exc))
-        try:
-            calendar = self._calendar_loader()
-        except CalendarError as exc:
-            self.alerter.alert(portfolio_dir, info.portfolio_id, None, "calendar", str(exc))
-            return Step(ALERT, reason="calendar", message=str(exc))
         lock_path = os.path.join(self._settings.lock_dir, f"{info.portfolio_id}.lock")
         step = Step(UP_TO_DATE)
         for _ in range(MAX_DAYS_PER_PASS):
@@ -459,102 +515,235 @@ class CatchupScheduler:
                 if not held:
                     self.files.line(f"{info.portfolio_id}: busy (its lock is held); next pass")
                     return Step(WAIT_TIME, reason="busy")
-                step = self.next_step(info, calendar)
-                if step.action != RUN:
+                step = self.next_step(info)
+                if step.action not in ACTIONS:
                     break
-                result_step = self._run_model(info, step.date)
+                result_step = self._act(info, step)
             if result_step is not None:
                 step = result_step
                 break
-        self._report(info, step, calendar)
+        self._model_book_check(info)
+        self._report(info, step)
         return step
 
-    def next_step(self, info: PortfolioInfo, calendar: Calendar) -> Step:
+    def _blocked(self, pid: str, day: dt.date, action: str) -> Optional[Step]:
+        until = self._retry_after.get((pid, day, action))
+        if until is not None and self._clock() < until:
+            return Step(WAIT_TIME, day, "retry",
+                        f"{action} of {day} failed; retried after "
+                        f"{until.astimezone(self._tz):%H:%M}")
+        return None
+
+    def _failed(self, pid: str, day: dt.date, action: str) -> None:
+        self._retry_after[(pid, day, action)] = (
+            self._clock() + dt.timedelta(minutes=self._catchup.model_retry_minutes))
+
+    def next_step(self, info: PortfolioInfo) -> Step:
         now_local = self.local_now()
         today = now_local.date()
         pid = info.portfolio_id
-        book = "qt" if info.desk_editable else "system"
-        last = self._store.last_book_date(pid, book)
+        last = self._store.last_book_date(pid, info.book)
         from_system = False
         if last is None and info.desk_editable:
             last = self._store.last_book_date(pid, "system")  # the first desk day (ruling 27)
             from_system = last is not None
-        try:
-            if last is not None and last >= today:
-                return Step(UP_TO_DATE, last)
-            if last is not None and info.desk_editable and not from_system:
-                if self._store.published_at(pid, last) is None:
-                    if calendar.is_trading_day(last):
-                        return Step(WAIT_PUBLISH, last, "unpublished",
-                                    f"{last} is waiting for the desk's publish")
-                    return Step(ALERT, last, "not_auto_published",
-                                f"{last} is a non-trading day but its model run did not "
-                                "publish it (system:non-trading-day); the next day cannot run")
-            day = today if last is None else last + dt.timedelta(days=1)
-            trading = calendar.is_trading_day(day)
-        except CalendarError as exc:
-            return Step(ALERT, last, "calendar", str(exc))
-        if day == today and trading and now_local.time() < self._catchup.today_not_before:
-            return Step(WAIT_TIME, day, "before_data",
-                        f"today's run waits until {self._catchup.today_not_before:%H:%M}")
-        return Step(RUN, day)
+        if last is not None and last > today:
+            return Step(UP_TO_DATE, last)
+        if info.desk_editable and last is not None and not from_system \
+                and self._store.published_at(pid, last) is None:
+            if last < today:
+                return self._blocked(pid, last, FALLBACK) or Step(
+                    FALLBACK, last, "caught_up", f"{last} was never approved")
+            if now_local >= cutoff.cutoff_time(today):
+                return self._blocked(pid, last, FALLBACK) or Step(
+                    FALLBACK, last, "fallback", f"{last} was not approved by 10:00")
+            return Step(WAIT_PUBLISH, last, "unpublished",
+                        f"{last} waits for the desk's approval (by 09:30; the 10:00 fallback "
+                        "sends the model's book)")
+        if last is None or last < today or from_system:
+            # (from_system and last == today: today's model run wrote system but no qt; again)
+            day = today if last is None or last >= today else last + dt.timedelta(days=1)
+            if day == today and now_local.time() < self._catchup.today_not_before:
+                return Step(WAIT_TIME, day, "before_data",
+                            f"today's run waits until {self._catchup.today_not_before:%H:%M}")
+            return self._blocked(pid, day, RUN) or Step(RUN, day)
+        # today has its book
+        if not info.desk_editable and self._store.published_at(pid, today) is None:
+            return Step(PUBLISH_MODEL, today)
+        published = self._store.published_at(pid, today)
+        if published is not None and now_local >= cutoff.send_time(today) \
+                and self._store.sent_at(pid, today) is None:
+            why = self._not_sendable(info)
+            if why:
+                return Step(UP_TO_DATE, today, "not_sent", why)
+            return self._blocked(pid, today, SEND) or Step(SEND, today)
+        return Step(UP_TO_DATE, today)
 
-    def _run_model(self, info: PortfolioInfo, day: dt.date) -> Optional[Step]:
-        """Run the model for `day` (the portfolio lock is held). None when the book was written,
-        else the alert step."""
+    def _not_sendable(self, info: PortfolioInfo) -> str:
+        if self._settings.email_disabled:
+            return "QT_EMAIL_DISABLED=1: the daily e-mail is not sent"
+        if not recipients(self._settings.config_dir, info.dir):
+            return "its email.json names no recipients (to_emails): not sent"
+        smtp, why = load_smtp(self._settings, info.dir)
+        if smtp is None:
+            return f"the daily e-mail cannot be sent: {why}"
+        return ""
+
+    # -- the steps ------------------------------------------------------------------------------
+
+    def _act(self, info: PortfolioInfo, step: Step) -> Optional[Step]:
+        """Run one step (the portfolio lock is held). None when it did its work, else the step
+        to stop on (an alert or a wait)."""
+        if step.action == RUN:
+            return self._run_model(info, step.date)
+        if step.action == FALLBACK:
+            return self._fallback(info, step.date, send=step.reason == "fallback")
+        if step.action == SEND:
+            return self._send(info, step.date)
+        if self._store.publish_model_only(info.portfolio_id, step.date):
+            self.files.line(f"{info.portfolio_id}: {step.date} published "
+                            f"({cutoff.MODEL_ONLY})")
+        return None
+
+    def _engine(self, info: PortfolioInfo, argv: List[str], what: str,
+                day: dt.date) -> Tuple[RunResult, str, float]:
         s = self._settings
-        argv = [s.engine_binary, "--portfolio-config", info.dir, "--date", day.isoformat()]
-        self.files.line(f"{info.portfolio_id}: model run {day} ({' '.join(argv)})")
+        self.files.line(f"{info.portfolio_id}: {what} {day} ({' '.join(argv)})")
         started = time.monotonic()
         with self.files.append(ENGINE_LOG) as f:
             if f is not None:
                 f.write(f"=== {self._clock().isoformat(timespec='seconds')} {info.portfolio_id} "
-                        f"({info.dir}) model run {day}\n")
+                        f"({info.dir}) {what} {day}\n")
             res = self._runner.run(argv, s.engine_cwd, s.job_timeout_s, copy_to=f)
             if f is not None:
                 f.write(f"=== exit {res.rc}{' (timed out)' if res.timed_out else ''}\n")
         err = tail(res.stderr, 5) or tail(res.stdout, 5)
         elapsed = round(time.monotonic() - started, 1)
-        log.info("catch-up model run", extra={"portfolio_id": info.portfolio_id,
-                                              "date": str(day), "rc": res.rc,
-                                              "timed_out": res.timed_out, "error": res.error,
-                                              "elapsed_ms": elapsed * 1000,
-                                              "stderr_tail": err})
-        self.files.line(f"{info.portfolio_id}: model run {day} exit {res.rc} in {elapsed}s")
-        detail = "\n".join(err)
+        log.info("catch-up engine run", extra={"portfolio_id": info.portfolio_id,
+                                               "mode": what, "date": str(day), "rc": res.rc,
+                                               "timed_out": res.timed_out, "error": res.error,
+                                               "elapsed_ms": elapsed * 1000,
+                                               "stderr_tail": err})
+        self.files.line(f"{info.portfolio_id}: {what} {day} exit {res.rc} in {elapsed}s")
+        return res, "\n".join(err), elapsed
+
+    def _run_model(self, info: PortfolioInfo, day: dt.date) -> Optional[Step]:
+        s = self._settings
+        argv = [s.engine_binary, "--portfolio-config", info.dir, "--date", day.isoformat()]
+        res, detail, _ = self._engine(info, argv, "model run", day)
         if res.error is not None:
+            self._failed(info.portfolio_id, day, RUN)
             return Step(ALERT, day, "engine_not_started", res.error)
         if res.timed_out:
+            self._failed(info.portfolio_id, day, RUN)
             return Step(ALERT, day, "timeout",
                         f"the model run was killed after {s.job_timeout_s:g}s\n{detail}")
         if res.rc != 0:
+            self._failed(info.portfolio_id, day, RUN)
             reason = "refused" if res.rc == 2 or "QT_REFUSED" in detail or \
                 "QT_ALERT" in detail else "failed"
             return Step(ALERT, day, reason, f"the model run exited {res.rc}\n{detail}")
-        book = "qt" if info.desk_editable else "system"
-        latest = self._store.last_book_date(info.portfolio_id, book)
+        latest = self._store.last_book_date(info.portfolio_id, info.book)
         if latest is None or latest < day:
+            self._failed(info.portfolio_id, day, RUN)
             return Step(ALERT, day, "no_book",
-                        f"the model run exited 0 but wrote no {book} book for {day}\n{detail}")
+                        f"the model run exited 0 but wrote no {info.book} book for {day}\n"
+                        f"{detail}")
+        if not info.desk_editable and self._store.publish_model_only(info.portfolio_id, day):
+            self.files.line(f"{info.portfolio_id}: {day} published ({cutoff.MODEL_ONLY})")
         return None
 
-    def _report(self, info: PortfolioInfo, step: Step, calendar: Calendar) -> None:
+    def _fallback(self, info: PortfolioInfo, day: dt.date, send: bool) -> Optional[Step]:
+        """Contract C7: qt reset to the model's book and published by the engine (--fallback),
+        e-mailed at once for today (10:00) and never for a past day (the catch-up)."""
+        pid = info.portfolio_id
+        requested_by = cutoff.FALLBACK_10AM if send else cutoff.FALLBACK_CATCHUP
+        audit_id = self._store.insert_fallback(pid, day, requested_by)
+        if audit_id is None:
+            return Step(WAIT_TIME, day, "publish_open",
+                        f"{day} has an open publish row (an approval is being run); the next "
+                        "pass looks again")
+        held = self._dispatcher.hold(audit_id) if self._dispatcher is not None else False
+        try:
+            argv = [self._settings.engine_binary, "--fallback", "--portfolio-config", info.dir,
+                    "--date", day.isoformat(), "--audit-id", str(audit_id)]
+            if send:
+                argv.append("--send-now")
+            res, detail, _ = self._engine(info, argv, "fallback", day)
+            status, result, message = self._store.command_outcome(audit_id)
+            if status == "running":
+                why = (res.error and f"cannot start the engine: {res.error}") or (
+                    res.timed_out and f"engine timed out after {self._settings.job_timeout_s:g}s")\
+                    or f"engine exited {res.rc} without recording an outcome: " \
+                       f"{detail.splitlines()[-1] if detail else '(no output)'}"
+                self._store.fail_running(audit_id, why)
+                status, message = "failed", why
+        finally:
+            if held:
+                self._dispatcher.release(audit_id)
+        when = self.local_now()
+        if status == "refused" and "already published" in message:
+            self.files.line(f"{pid}: fallback of {day} not needed: {message}")
+            return None
+        if status != "done":
+            self._failed(pid, day, FALLBACK)
+            return Step(ALERT, day, f"fallback_{status}",
+                        f"the fallback (publish row {audit_id}) is {status}: {message}\n{detail}")
+        if not send:
+            self.alerter.alert(info.dir, pid, day, "caught_up",
+                               f"{pid} {day} was not approved, and its day had passed: it was "
+                               f"caught up with the model's book ({cutoff.FALLBACK_CATCHUP}, "
+                               f"publish row {audit_id}) and not e-mailed")
+            return None
+        if result.get("emailed"):
+            text = (f"QT did not approve {pid} {day}; the model's book was sent at "
+                    f"{when:%H:%M}")
+        elif result.get("email_disabled"):
+            text = (f"QT did not approve {pid} {day}; the model's book was published at "
+                    f"{when:%H:%M} (e-mail disabled on the engine: not sent)")
+        else:
+            self._failed(pid, day, SEND)
+            text = (f"QT did not approve {pid} {day}; the model's book was published at "
+                    f"{when:%H:%M}, but the e-mail could not be sent ({message}); the scheduler "
+                    "retries the send")
+        self.alerter.alert(info.dir, pid, day, "fallback", text + f" (publish row {audit_id})",
+                           subject=text)
+        return None
+
+    def _send(self, info: PortfolioInfo, day: dt.date) -> Optional[Step]:
+        argv = [self._settings.engine_binary, "--send", "--portfolio-config", info.dir,
+                "--date", day.isoformat()]
+        res, detail, _ = self._engine(info, argv, "send", day)
+        if res.rc == 0 and self._store.sent_at(info.portfolio_id, day) is not None:
+            self.files.line(f"{info.portfolio_id}: {day} e-mailed")
+            return None
+        self._failed(info.portfolio_id, day, SEND)
+        why = (res.error and f"cannot start the engine: {res.error}") or (
+            res.timed_out and "the send timed out") or (
+            f"the send exited {res.rc}" + (" without recording sent_at" if res.rc == 0 else ""))
+        return Step(ALERT, day, "send_failed", f"{why}\n{detail}")
+
+    def _model_book_check(self, info: PortfolioInfo) -> None:
+        """08:30: today has no model book yet -> alert the President."""
+        now_local = self.local_now()
+        if now_local.time() < self._catchup.model_alert_at:
+            return
+        today = now_local.date()
+        if self._store.book_written_at(info.portfolio_id, today, info.book) is not None:
+            return
+        self.alerter.alert(info.dir, info.portfolio_id, today, "model_not_done",
+                           f"model run not done: {info.portfolio_id} has no model book for "
+                           f"{today} at {now_local:%H:%M} New York (the desk cannot approve "
+                           "it, and the 10:00 fallback has nothing to send)")
+
+    def _report(self, info: PortfolioInfo, step: Step) -> None:
         pid = info.portfolio_id
         if step.action == ALERT:
             self.alerter.alert(info.dir, pid, step.date, step.reason, step.message)
-        elif step.action == WAIT_PUBLISH:
-            self.files.line(f"{pid}: {step.message}")
-            written = self._store.book_written_at(pid, step.date, "qt")
-            if written is not None:
-                waited_h = (self._clock() - written).total_seconds() / 3600
-                if waited_h > self._catchup.reminder_after_h:
-                    self.alerter.alert(info.dir, pid, step.date, "unpublished_reminder",
-                                       f"{step.date} has waited {waited_h:.0f} h for the desk's "
-                                       "publish (its model run finished at "
-                                       f"{written.isoformat(timespec='minutes')}); the days "
-                                       "after it cannot run until it is published")
-        elif step.action == WAIT_TIME:
+        elif step.action in (WAIT_PUBLISH, WAIT_TIME):
             self.files.line(f"{pid}: {step.message or step.reason}")
+        elif step.reason == "not_sent":
+            self.files.line(f"{pid}: {step.date}: {step.message}")
         else:
             self.files.line(f"{pid}: up to date ({step.date})")
 
@@ -586,11 +775,12 @@ def main(argv: Optional[Sequence[str]] = None, scheduler: Optional[CatchupSchedu
         if not scheduler._catchup.enabled:
             print("catch-up: disabled (QT_CATCHUP_ENABLED=0)")
             return 0
-        if not scheduler.in_window(scheduler.local_now()):
+        now_local = scheduler.local_now()
+        if not scheduler.in_window(now_local):
             print("catch-up: outside the window")
             return 0
         age = scheduler.heartbeat_age_s()
-        limit = 2 * scheduler._catchup.every_minutes * 60 + 900
+        limit = scheduler.watchdog_limit_s(now_local)
         if age is not None and age <= limit:
             print(f"catch-up: ok (last pass {age / 60:.0f} min ago)")
             return 0

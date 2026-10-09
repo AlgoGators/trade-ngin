@@ -164,8 +164,9 @@ class DeskServicer(desk_pb2_grpc.DeskServiceServicer):
         derived = st.derive(facts, pid, day)
         reply = desk_pb2.RunStatus(state=_STATE[derived.state], message=derived.message,
                                    published=derived.published,
-                                   published_by=derived.published_by)
-        for name in ("started_at", "finished_at", "published_at"):
+                                   published_by=derived.published_by,
+                                   publish_source=derived.publish_source)
+        for name in ("started_at", "finished_at", "published_at", "sent_at"):
             ts = _ts(getattr(derived, name))
             if ts is not None:
                 getattr(reply, name).CopyFrom(ts)

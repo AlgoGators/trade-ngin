@@ -27,10 +27,12 @@ services:
     # /app/config/defaults.json. Optional: QT_ENGINE_BINARY, QT_ENGINE_CWD, QT_LOCK_DIR,
     # QT_JOB_TIMEOUT_S, QT_STALE_GRACE_S, QT_REDRIVE_INTERVAL_S, QT_APPROVE_URL_BASE,
     # QT_EMAIL_DISABLED=1 (the only way the override link may land in a row's result).
-    # Catch-up: QT_CATCHUP_ENABLED (1), QT_CATCHUP_PORTFOLIOS
-    # (qt_conservative,qt_conservative_model), QT_CATCHUP_WINDOW (06:00-22:00),
-    # QT_CATCHUP_EVERY_MIN (30), QT_CATCHUP_TODAY_NOT_BEFORE (10:15),
-    # QT_UNPUBLISHED_REMINDER_H (24), QT_CATCHUP_LOCK_WAIT_S (600); New York time.
+    # Scheduler (model runs, the 09:30 send, the 10:00 fallback; contract C7):
+    # QT_CATCHUP_ENABLED (1), QT_CATCHUP_PORTFOLIOS (qt_conservative,qt_conservative_model),
+    # QT_CATCHUP_WINDOW (06:30-22:00), QT_CATCHUP_EVERY_MIN (30), QT_CATCHUP_BUSY_WINDOW
+    # (06:30-10:30), QT_CATCHUP_BUSY_EVERY_MIN (5), QT_CATCHUP_TODAY_NOT_BEFORE (06:45),
+    # QT_MODEL_RETRY_MIN (15), QT_MODEL_ALERT_AT (08:30), QT_CATCHUP_LOCK_WAIT_S (600); New York
+    # time. The 09:30 send and 10:00 cutoff are fixed. QT_UNPUBLISHED_REMINDER_H is no longer read.
     env_file: .env
     environment:
       # "vp=<email>,president=<email>": the override approvers (contract section 6); the

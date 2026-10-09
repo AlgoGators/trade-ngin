@@ -24,8 +24,12 @@
 namespace trade_ngin {
 namespace qt {
 
-/// The runner's mode (contract section 6). MODEL is the daily model run.
-enum class Mode { MODEL, DESK, OVERRIDE, PUBLISH, FINALIZE_SYSTEM };
+/// The runner's mode (contract section 6 and the 2026-10-09 daily cutoff, contract C7). MODEL is
+/// the daily model run. PUBLISH is the desk's approval (--publish: freeze the day; with
+/// --send-now it also sends the e-mail). FALLBACK resets qt to the model's book and publishes it
+/// (the 10:00 fallback and the catch-up of a past day). SEND e-mails a published day from its
+/// stored rows, once.
+enum class Mode { MODEL, DESK, OVERRIDE, PUBLISH, FINALIZE_SYSTEM, FALLBACK, SEND };
 
 std::string mode_name(Mode mode);
 
@@ -54,6 +58,7 @@ struct AuditRow {
     std::string approver_role;
     std::string token_expires_at;  ///< empty: none
     std::string created_at;
+    nlohmann::json result = nlohmann::json::object();  ///< what the engine wrote so far
 };
 
 Result<AuditRow> load_audit_row(PostgresDatabase& db, long id);
@@ -165,6 +170,38 @@ Result<EmailSent> publish_email_sent(PostgresDatabase& db, const std::string& po
 /// right after the send; returns the time written.
 Result<std::string> mark_email_sent(PostgresDatabase& db, long id);
 
+/// The day's publish record on live_run_metadata (migrations 022 and 027). Empty strings: unset.
+struct PublishState {
+    std::string published_at;
+    std::string published_by;
+    std::string publish_source;  ///< desk, fallback or model-only
+    std::string sent_at;
+};
+Result<PublishState> publish_state(PostgresDatabase& db, const std::string& portfolio_id,
+                                   const std::string& strategy_id, const std::string& date);
+
+/// Contract C7: the approval. One statement: live_run_metadata.published_by, published_at =
+/// now() and publish_source for the date's row, only while it is unpublished, and the same
+/// published_at and publish_source merged into the (pending or running) command row's result,
+/// so a re-run of that row knows it already approved. Returns published_at. An already
+/// published day, or a date without its metadata row, is an error.
+Result<std::string> approve_day(PostgresDatabase& db, long row_id, const std::string& portfolio_id,
+                                const std::string& strategy_id, const std::string& date,
+                                const std::string& published_by, const std::string& source);
+
+/// Contract C7: the day's e-mail went out. One statement: live_run_metadata.sent_at = now() while
+/// it is NULL, and (row_id > 0) result.email_sent_at on the pending or running command row.
+/// Returns sent_at. Committed on its own, right after the send.
+Result<std::string> record_sent(PostgresDatabase& db, long row_id, const std::string& portfolio_id,
+                                const std::string& strategy_id, const std::string& date);
+
+/// The publish_source of an approval by the desk and of the fallback.
+inline const char* kSourceDesk = "desk";
+inline const char* kSourceFallback = "fallback";
+/// The requested_by prefix of the scheduler's fallback rows (system:fallback-10am,
+/// system:fallback-catchup); --fallback refuses any other row.
+inline const char* kFallbackRequester = "system:fallback";
+
 /// Contract C5: what kind of day a desk-editable portfolio's model run is on. Only the runner's
 /// calendar closes a day (T-1 a Saturday, a Sunday or a holiday). A day the whole book is carried
 /// on (no T-1 price) that the calendar says was a trading day is a feed hole.
@@ -203,11 +240,6 @@ Result<std::string> earliest_unpublished_before(PostgresDatabase& db,
 /// When the date was published already (empty: not yet).
 Result<std::string> published_at(PostgresDatabase& db, const std::string& portfolio_id,
                                   const std::string& strategy_id, const std::string& date);
-
-/// live_run_metadata.published_by / published_at = now() for the date's row.
-Result<void> set_published(PostgresDatabase& db, const std::string& portfolio_id,
-                           const std::string& strategy_id, const std::string& date,
-                           const std::string& published_by);
 
 /// The JSON a desk run writes into its command row (contract section 6).
 nlohmann::json desk_result_json(const std::vector<DeskSymbolOutcome>& outcomes,

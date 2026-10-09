@@ -8,7 +8,8 @@
 # Steps: model run -> desk save (qt_proposal upsert + 'save' row) -> RunDesk -> qt differs from
 # system for the edited symbol, moved_by set, book_source desk -> override request (token row,
 # e-mail sent or kept in the row; driven by the 60 s re-drive sweep, no gRPC call) -> a self-approval is refused -> decision by the approver ->
-# qt == qt_proposal, book_source override -> publish -> published_by/at set.
+# qt == qt_proposal, book_source override -> approval (Publish) of the past day refused by the
+# 10:00 cutoff (contract C7) -> the catch-up fallback publishes the model's book, no e-mail.
 #
 # position_overrides rows are never deleted, so each run takes the latest date (on or before
 # QT_E2E_LAST_DATE) that has no command rows yet, and clears the e2e portfolio's book rows first so
@@ -113,12 +114,19 @@ check "$DIFF" 0 "qt == qt_proposal on every symbol"
 check "$(q "SELECT book_source FROM trading.live_results WHERE portfolio_id = '$PID' AND date = '$D' AND portfolio_type = 'qt'")" override "qt book_source = override"
 check "$(q "SELECT (risk_detail->'desk'->>'report_only') FROM trading.live_results WHERE portfolio_id = '$PID' AND date = '$D' AND portfolio_type = 'qt'")" true "the one pass is kept as a report in risk_detail"
 
-# ---- 5. publish
-echo "== 5. publish"
+# ---- 5. approval and fallback (contract C7)
+echo "== 5. approval and fallback"
+# The e2e day is in the past, so its 10:00 New York deadline has passed: the approval is refused.
 PUB=$(q "INSERT INTO trading.position_overrides (portfolio_id, date, kind, requested_by) VALUES ('$PID', '$D', 'publish', '$REQUESTER') RETURNING id")
 echo "   Publish (no audit_id, found by portfolio and date as AlgoLens calls it) -> $(call Publish "{\"portfolio_id\":\"$PID\",\"date\":\"$D\",\"published_by\":\"$REQUESTER\"}")"
-check "$(poll "$PUB")" done "publish row $PUB done ($(row "$PUB"))"
-check "$(q "SELECT published_by || ' ' || (published_at IS NOT NULL) FROM trading.live_run_metadata WHERE portfolio_id = '$PID' AND date = '$D'")" "$REQUESTER true" "live_run_metadata.published_by/at set"
+check "$(poll "$PUB")" refused "an approval after the 10:00 cutoff is refused ($(row "$PUB"))"
+# The scheduler's catch-up of a missed past day, driven through the same RPC: qt reset to the
+# model's book, published as system:fallback-catchup, never e-mailed.
+FB=$(q "INSERT INTO trading.position_overrides (portfolio_id, date, kind, requested_by) VALUES ('$PID', '$D', 'publish', 'system:fallback-catchup') RETURNING id")
+echo "   Publish (the fallback row) -> $(call Publish "{\"portfolio_id\":\"$PID\",\"date\":\"$D\",\"published_by\":\"system:fallback-catchup\",\"audit_id\":$FB}")"
+check "$(poll "$FB")" done "fallback row $FB done ($(row "$FB"))"
+check "$(q "SELECT published_by || ' ' || publish_source || ' ' || (sent_at IS NULL) FROM trading.live_run_metadata WHERE portfolio_id = '$PID' AND date = '$D'")" "system:fallback-catchup fallback true" "published with the model's book, not e-mailed"
+check "$(q "SELECT book_source FROM trading.live_results WHERE portfolio_id = '$PID' AND date = '$D' AND portfolio_type = 'qt'")" model "the fallback discarded the desk's override: qt book_source = model"
 echo "   status: $(call GetRunStatus "{\"portfolio_id\":\"$PID\",\"date\":\"$D\"}")"
 
 echo "== $([ "$FAILS" -eq 0 ] && echo "ALL PASSED" || echo "$FAILS FAILED")"

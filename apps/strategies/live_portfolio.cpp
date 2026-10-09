@@ -73,7 +73,13 @@ int main(int argc, char* argv[]) {
         //   --date YYYY-MM-DD         the run date (the positional date still works)
         //   --desk | --override | --publish --audit-id N   a command row of
         //                             trading.position_overrides (the desk-agent passes it)
+        //   --fallback --audit-id N   the scheduler's fallback row: qt reset to the model's book,
+        //                             then published (contract C7)
+        //   --send                    e-mail a published day from its stored rows, once (C7)
+        //   --send-now                with --publish or --fallback: send the e-mail in the same
+        //                             run (an approval from 09:30 to 10:00, the 10:00 fallback)
         qt::Mode qt_mode = qt::Mode::MODEL;
+        bool qt_send_now = false;
         std::string qt_portfolio_dir = "base";
         long qt_audit_id = 0;
 
@@ -86,16 +92,23 @@ int main(int argc, char* argv[]) {
                 send_email = true;
                 continue;
             }
+            if (arg == "--send-now") {
+                qt_send_now = true;
+                continue;
+            }
             if (arg == "--desk" || arg == "--override" || arg == "--publish" ||
-                arg == "--finalize-system") {
+                arg == "--finalize-system" || arg == "--fallback" || arg == "--send") {
                 if (qt_mode != qt::Mode::MODEL) {
-                    std::cerr << "Only one of --desk, --override, --publish and --finalize-system"
+                    std::cerr << "Only one of --desk, --override, --publish, --fallback, --send "
+                                 "and --finalize-system"
                               << std::endl;
                     return 1;
                 }
                 qt_mode = arg == "--desk"       ? qt::Mode::DESK
                           : arg == "--override" ? qt::Mode::OVERRIDE
                           : arg == "--publish"  ? qt::Mode::PUBLISH
+                          : arg == "--fallback" ? qt::Mode::FALLBACK
+                          : arg == "--send"     ? qt::Mode::SEND
                                                 : qt::Mode::FINALIZE_SYSTEM;
                 continue;
             }
@@ -195,15 +208,33 @@ int main(int argc, char* argv[]) {
                 return 1;
             }
             send_email = false;
+        } else if (qt_mode == qt::Mode::SEND) {
+            // Contract C7: the 09:30 send of a published day, from its stored rows. No command row.
+            if (!use_override_date || qt_audit_id > 0) {
+                std::cerr << "--send needs --date YYYY-MM-DD and takes no --audit-id" << std::endl;
+                return 1;
+            }
+            send_email = true;
         } else if (qt_mode != qt::Mode::MODEL) {
             if (!use_override_date || qt_audit_id <= 0) {
                 std::cerr << "--" << qt::mode_name(qt_mode)
                           << " needs --date YYYY-MM-DD and --audit-id N" << std::endl;
                 return 1;
             }
-            // Ruling 15: a desk run never sends the daily e-mail; publish does.
-            send_email = qt_mode == qt::Mode::PUBLISH;
+            // Ruling 15: a desk run never sends the daily e-mail. Contract C7: an approval
+            // (--publish) or the fallback sends it only with --send-now; otherwise the 09:30 send
+            // does (and a past day's fallback never does).
+            send_email =
+                (qt_mode == qt::Mode::PUBLISH || qt_mode == qt::Mode::FALLBACK) && qt_send_now;
         }
+        if (qt_send_now && qt_mode != qt::Mode::PUBLISH && qt_mode != qt::Mode::FALLBACK) {
+            std::cerr << "--send-now goes with --publish or --fallback" << std::endl;
+            return 1;
+        }
+        // The runs that rebuild the day from its stored rows and e-mail it (contract C7).
+        const bool qt_sends =
+            qt_mode == qt::Mode::SEND ||
+            ((qt_mode == qt::Mode::PUBLISH || qt_mode == qt::Mode::FALLBACK) && qt_send_now);
 
         if (send_email && use_override_date) {
             std::cout << "Email sending enabled for historical run" << std::endl;
@@ -487,7 +518,8 @@ int main(int argc, char* argv[]) {
             }
             return 1;
         };
-        if (qt_mode != qt::Mode::MODEL && qt_mode != qt::Mode::FINALIZE_SYSTEM) {
+        if (qt_mode != qt::Mode::MODEL && qt_mode != qt::Mode::FINALIZE_SYSTEM &&
+            qt_mode != qt::Mode::SEND) {
             auto row = qt::load_audit_row(*db, qt_audit_id);
             if (row.is_error()) {
                 ERROR("QT: " + std::string(row.error()->what()));
@@ -523,6 +555,12 @@ int main(int argc, char* argv[]) {
                 return qt_refuse("portfolio " + portfolio_id + " is not desk-editable "
                                  "(portfolio.json qt.desk_editable)");
             }
+            if (qt_mode == qt::Mode::FALLBACK &&
+                qt_audit->requested_by.rfind(qt::kFallbackRequester, 0) != 0) {
+                return qt_refuse("--fallback runs only the scheduler's fallback rows (requested_by " +
+                                 std::string(qt::kFallbackRequester) + "-...), not row " +
+                                 std::to_string(qt_audit_id) + " of " + qt_audit->requested_by);
+            }
             // Contract C3: a published day is frozen; no desk run or override rewrites its qt.
             if (qt_mode == qt::Mode::DESK || qt_mode == qt::Mode::OVERRIDE) {
                 auto published =
@@ -535,8 +573,12 @@ int main(int argc, char* argv[]) {
             }
         }
         std::string qt_read_book = "system";
+        // A send of a non-editable portfolio (the model twin) e-mails its system book.
         const std::string qt_write_book =
-            qt_mode == qt::Mode::MODEL || qt_mode == qt::Mode::FINALIZE_SYSTEM ? "system" : "qt";
+            qt_mode == qt::Mode::MODEL || qt_mode == qt::Mode::FINALIZE_SYSTEM ||
+                    (qt_mode == qt::Mode::SEND && !qt_desk_editable)
+                ? "system"
+                : "qt";
         if (qt_desk_editable && qt_mode != qt::Mode::FINALIZE_SYSTEM) {
             auto had_qt = qt::book_has_day_before(*db, portfolio_id, combined_strategy_id, "qt",
                                                   qt_date);
@@ -587,13 +629,15 @@ int main(int argc, char* argv[]) {
             }
         }
         // What each mode writes: the model run every book row it always wrote; a desk or override
-        // run only Day T of qt (the model run finalised Day T-1); publish no book row at all.
+        // run only Day T of qt (the model run finalised Day T-1); publish, fallback and send no
+        // book row at all (the fallback's reset is the model run's seed copy, below).
         const bool qt_model_records = qt_mode == qt::Mode::MODEL;
         const bool qt_write_t1 =
             qt_mode == qt::Mode::MODEL || qt_mode == qt::Mode::FINALIZE_SYSTEM;
         const bool qt_write_day =
-            qt_mode != qt::Mode::PUBLISH && qt_mode != qt::Mode::FINALIZE_SYSTEM;
-        const bool qt_export_csv = qt_mode == qt::Mode::MODEL || qt_mode == qt::Mode::PUBLISH;
+            qt_mode != qt::Mode::PUBLISH && qt_mode != qt::Mode::FINALIZE_SYSTEM &&
+            qt_mode != qt::Mode::FALLBACK && qt_mode != qt::Mode::SEND;
+        const bool qt_export_csv = qt_mode == qt::Mode::MODEL || qt_sends;
         // Item 3: on a desk-editable portfolio a store that fails (positions, executions,
         // live_results, the equity curve, the run's metadata) is never a "done" over a partial
         // book: the run exits non-zero, a desk or override run fails its command row, and a model
@@ -677,55 +721,146 @@ int main(int argc, char* argv[]) {
                     }
                 }
             }
-        } else if (qt_mode == qt::Mode::PUBLISH) {
+        } else if (qt_mode == qt::Mode::PUBLISH || qt_mode == qt::Mode::FALLBACK) {
+            // Contract C7 (the daily cutoff, 2026-10-09). --publish is the desk's approval;
+            // --fallback is the scheduler's (10:00, or the catch-up of a past day). Both freeze
+            // the day. The e-mail goes in this run only with --send-now; otherwise an approval is
+            // e-mailed by the 09:30 send, and a past day's fallback is never e-mailed.
+            const bool fallback = qt_mode == qt::Mode::FALLBACK;
+            const std::string source = fallback ? qt::kSourceFallback : qt::kSourceDesk;
             auto has_qt = qt::book_has_day(*db, portfolio_id, combined_strategy_id, "qt", qt_date);
-            if (has_qt.is_error()) {
-                ERROR("QT: " + std::string(has_qt.error()->what()));
-                return 1;
-            }
+            if (has_qt.is_error()) return qt_fail(has_qt.error()->what());
             if (!has_qt.value()) {
                 return qt_refuse("no qt book for " + portfolio_id + " on " + qt_date +
                                  ": the day's model run has not run");
             }
-            auto already = qt::published_at(*db, portfolio_id, combined_strategy_id, qt_date);
-            if (already.is_error()) {
-                ERROR("QT: " + std::string(already.error()->what()));
-                return 1;
+            auto state = qt::publish_state(*db, portfolio_id, combined_strategy_id, qt_date);
+            if (state.is_error()) return qt_fail(state.error()->what());
+            // A re-run of this very row after it approved (it died before its outcome was
+            // written) goes on to the send; any other published day is frozen.
+            const bool approved_here = qt_audit->result.contains("published_at");
+            const std::string already = state.value().published_at;
+            if (!already.empty() && !approved_here) {
+                return qt_refuse(qt_date + " was already published at " + already + " by " +
+                                 state.value().published_by + "; a published day is frozen");
             }
-            if (!already.value().empty()) {
-                return qt_refuse(qt_date + " was already published at " + already.value());
+            if (!approved_here) {
+                auto earlier = qt::earliest_unpublished_before(*db, portfolio_id,
+                                                               combined_strategy_id, qt_date);
+                if (earlier.is_error()) return qt_fail(earlier.error()->what());
+                if (!earlier.value().empty()) {
+                    return qt_refuse("an earlier day, " + earlier.value() +
+                                     ", is not published (no qt book, or never published): "
+                                     "publish it first (ruling 29)");
+                }
+                if (!fallback) {
+                    // Item 3: the qt day is approved only when its last writer finished it.
+                    auto blocker =
+                        qt::publish_blocker(*db, portfolio_id, combined_strategy_id, qt_date);
+                    if (blocker.is_error()) return qt_fail(blocker.error()->what());
+                    if (!blocker.value().empty()) return qt_refuse(blocker.value());
+                } else {
+                    // The fallback publishes the MODEL's book: qt (positions, executions,
+                    // live_results, equity) is copied again from system, exactly as the model run
+                    // seeds it (book_source 'model'). An unapproved desk save or override of the
+                    // day is discarded.
+                    auto reset = qt::copy_book_day(*db, portfolio_id, combined_strategy_id,
+                                                   qt_date, "system", "qt", true, "model");
+                    if (reset.is_error()) {
+                        return qt_fail("qt could not be reset to the model's book: " +
+                                       std::string(reset.error()->what()));
+                    }
+                    INFO("QT_FALLBACK " + portfolio_id + " " + qt_date +
+                         ": qt reset to the model's book (book_source model)");
+                }
+                auto approved = qt::approve_day(*db, qt_audit_id, portfolio_id,
+                                                combined_strategy_id, qt_date,
+                                                qt_audit->requested_by, source);
+                if (approved.is_error()) return qt_fail(approved.error()->what());
+                INFO("QT_APPROVE " + portfolio_id + " " + qt_date + " published at " +
+                     approved.value() + " by " + qt_audit->requested_by + " (publish_source " +
+                     source + ")");
             }
-            auto earlier = qt::earliest_unpublished_before(*db, portfolio_id, combined_strategy_id,
-                                                           qt_date);
-            if (earlier.is_error()) {
-                ERROR("QT: " + std::string(earlier.error()->what()));
-                return 1;
+            if (!qt_send_now) {
+                nlohmann::json result = {
+                    {"published", true}, {"publish_source", source}, {"emailed", false}};
+                std::string message = "approved " + qt_date +
+                                      ": the day is frozen; the daily e-mail goes at 09:30 "
+                                      "New York";
+                if (fallback) {
+                    result["send_skipped"] = "past day";
+                    message = "published " + qt_date + " with the model's book (" +
+                              qt_audit->requested_by + "); a past day is not e-mailed";
+                }
+                auto finished = qt::finish_audit_row(*db, qt_audit_id, "done", result, message);
+                if (finished.is_error()) {
+                    ERROR("QT: " + std::string(finished.error()->what()));
+                    return 1;
+                }
+                INFO("QT_" + std::string(fallback ? "FALLBACK" : "APPROVE") + " done " +
+                     portfolio_id + " " + qt_date + ": " + message);
+                return 0;
             }
-            if (!earlier.value().empty()) {
-                return qt_refuse("an earlier day, " + earlier.value() +
-                                 ", is not published (no qt book, or never published): publish "
-                                 "it first (ruling 29)");
+            // Item 7 and C7: the e-mail is sent at most once. A day whose send was recorded
+            // (sent_at, or a publish row's email_sent_at) is not sent again.
+            if (!state.value().sent_at.empty()) {
+                qt_email_sent_before.at = state.value().sent_at;
+            } else {
+                auto sent = qt::publish_email_sent(*db, portfolio_id, qt_date);
+                if (sent.is_error()) return qt_fail(sent.error()->what());
+                qt_email_sent_before = sent.value();
             }
-            // Item 3: the qt day is published only when its last writer finished it.
-            auto blocker = qt::publish_blocker(*db, portfolio_id, combined_strategy_id, qt_date);
-            if (blocker.is_error()) return qt_fail(blocker.error()->what());
-            if (!blocker.value().empty()) return qt_refuse(blocker.value());
-            // Item 7: the e-mail is sent at most once. A publish row of the day that recorded
-            // its send means this one only publishes.
-            auto sent = qt::publish_email_sent(*db, portfolio_id, qt_date);
-            if (sent.is_error()) return qt_fail(sent.error()->what());
-            qt_email_sent_before = sent.value();
             if (!qt_email_sent_before.at.empty()) {
-                INFO("QT_PUBLISH the e-mail of " + qt_date + " was sent at " +
-                     qt_email_sent_before.at + " (publish row " +
-                     std::to_string(qt_email_sent_before.row_id) +
-                     "); it is not sent again, the day is only published");
+                INFO("QT_SEND the e-mail of " + qt_date + " was sent at " +
+                     qt_email_sent_before.at + "; it is not sent again");
                 send_email = false;
             }
             auto book = qt::load_book(*db, portfolio_id, combined_strategy_id, "qt", qt_date);
             if (book.is_error()) return qt_fail(book.error()->what());
             qt_publish_book = book.value();
             qt_desk_totals = qt::book_totals(qt_publish_book);
+        } else if (qt_mode == qt::Mode::SEND) {
+            // Contract C7: the 09:30 send. Only a published day is sent, and only once.
+            auto state = qt::publish_state(*db, portfolio_id, combined_strategy_id, qt_date);
+            if (state.is_error()) return qt_fail(state.error()->what());
+            if (state.value().published_at.empty()) {
+                return qt_refuse(qt_date + " is not published: nothing is e-mailed before the "
+                                 "approval or the 10:00 fallback");
+            }
+            if (!state.value().sent_at.empty()) {
+                INFO("QT_SEND " + portfolio_id + " " + qt_date + " was already sent at " +
+                     state.value().sent_at + "; not sent again");
+                std::cerr << "QT_SEND already sent at " << state.value().sent_at << std::endl;
+                return 0;
+            }
+            auto legacy = qt::publish_email_sent(*db, portfolio_id, qt_date);
+            if (legacy.is_error()) return qt_fail(legacy.error()->what());
+            if (!legacy.value().at.empty()) {
+                // Sent by a publish row before migration 027: recorded, not sent again.
+                auto recorded =
+                    qt::record_sent(*db, 0, portfolio_id, combined_strategy_id, qt_date);
+                if (recorded.is_error()) return qt_fail(recorded.error()->what());
+                INFO("QT_SEND " + qt_date + " was sent at " + legacy.value().at +
+                     " (publish row " + std::to_string(legacy.value().row_id) +
+                     "); sent_at recorded, not sent again");
+                return 0;
+            }
+            auto has_day = qt::book_has_day(*db, portfolio_id, combined_strategy_id,
+                                            qt_write_book, qt_date);
+            if (has_day.is_error()) return qt_fail(has_day.error()->what());
+            if (!has_day.value()) {
+                return qt_refuse("no " + qt_write_book + " book for " + portfolio_id + " on " +
+                                 qt_date);
+            }
+            auto book = qt::load_book(*db, portfolio_id, combined_strategy_id, qt_write_book,
+                                      qt_date);
+            if (book.is_error()) return qt_fail(book.error()->what());
+            qt_publish_book = book.value();
+            qt_desk_totals = qt::book_totals(qt_publish_book);
+            INFO("QT_SEND " + portfolio_id + " " + qt_date + ": published at " +
+                 state.value().published_at + " by " + state.value().published_by +
+                 " (publish_source " + state.value().publish_source + "); e-mailing the stored " +
+                 qt_write_book + " book");
         }
 
         // E2-F8, futures side (with B-3 F-2's exit-0 half). A SKIPPED DAY MUST NOT
@@ -1277,7 +1412,8 @@ int main(int argc, char* argv[]) {
         // Create Phase 4 CSV exporter with portfolio-specific directory
         INFO("Creating CSVExporter for Phase 4");
         std::string csv_output_dir = "apps/strategies/results/" + portfolio_id +
-                                     (qt_mode == qt::Mode::PUBLISH ? "/qt" : "");  // the model CSV is never overwritten
+                                     (qt_sends ? (qt_desk_editable ? "/qt" : "/sent")
+                                               : "");  // the model CSV is never overwritten
         std::filesystem::create_directories(csv_output_dir);
         INFO("CSV output directory: " + csv_output_dir);
         auto csv_exporter = std::make_unique<CSVExporter>(csv_output_dir);
@@ -2194,15 +2330,14 @@ int main(int argc, char* argv[]) {
             }
             // T-7b-3 R-3: on a sizing hold the PortfolioManager is not run, so every strategy
             // keeps the seeded T-1 book above (no rebalance, no order, no signal stored today).
-            if (qt_mode == qt::Mode::DESK || qt_mode == qt::Mode::OVERRIDE ||
-                qt_mode == qt::Mode::PUBLISH) {
+            if (qt_mode == qt::Mode::DESK || qt_mode == qt::Mode::OVERRIDE || qt_sends) {
                 // QT plan E5 (rulings 6 to 8): the pass runs on the desk's totals; the split back
-                // to the sleeves follows plan section 3b, Q2. Publish re-books the stored qt book
+                // to the sleeves follows plan section 3b, Q2. A send re-books the stored book
                 // exactly, split as it is stored, so the e-mail is built from that book.
                 DeskBook desk;
                 desk.totals = qt_desk_totals;
                 desk.exact = qt_mode != qt::Mode::DESK;
-                if (qt_mode == qt::Mode::PUBLISH) {
+                if (qt_sends) {
                     for (const auto& [sleeve, rows] : qt_publish_book) {
                         for (const auto& [symbol, quantity] : rows) {
                             if (quantity != 0.0) desk.weights[symbol][sleeve] = std::abs(quantity);
@@ -4743,17 +4878,18 @@ int main(int argc, char* argv[]) {
                 now, strategy_positions_map, last_marks, last_forecasts, current_portfolio_value,
                 gross_notional, net_notional, carried_day_note);
         };
-        // Item 4 (review E#3, E#11): publish e-mails and exports the qt day AS STORED (positions,
-        // executions and the live_results row of the date), never what this run's pass computed:
-        // the book, its fills and its figures are read back here, over the pipeline's. Only the
-        // market data (the marks, T-1 and T-2 closes) is this run's.
+        // Item 4 (review E#3, E#11): a send e-mails and exports the day AS STORED (positions,
+        // executions and the live_results row of the date; qt, or system on the model twin),
+        // never what this run's pass computed: the book, its fills and its figures are read back
+        // here, over the pipeline's. Only the market data (the marks, T-1 and T-2 closes) is
+        // this run's.
         std::optional<nlohmann::json> qt_stored_results;
-        if (qt_mode == qt::Mode::PUBLISH) {
+        if (qt_sends) {
             strategy_positions_map.clear();
             for (const auto& sleeve : strategy_names) {
                 auto stored = db->load_positions_by_date(combined_strategy_id, sleeve,
                                                          coordinator_config.portfolio_id, now,
-                                                         "trading.positions", "qt");
+                                                         "trading.positions", qt_write_book);
                 if (stored.is_error()) {
                     return qt_fail("the stored qt positions could not be read: " +
                                    std::string(stored.error()->what()));
@@ -4767,7 +4903,7 @@ int main(int argc, char* argv[]) {
             }
             rebuild_combined_positions(positions, strategy_positions_map);
             auto stored_fills = qt::load_book_executions(*db, portfolio_id, combined_strategy_id,
-                                                         "qt", qt_date);
+                                                         qt_write_book, qt_date);
             if (stored_fills.is_error()) {
                 return qt_fail("the stored qt executions could not be read: " +
                                std::string(stored_fills.error()->what()));
@@ -4777,8 +4913,8 @@ int main(int argc, char* argv[]) {
             for (const auto& [sleeve, fills] : stored_fills.value()) {
                 all_strategy_executions[sleeve] = fills;
             }
-            auto stored_day = qt::load_book_results(*db, portfolio_id, combined_strategy_id, "qt",
-                                                    qt_date);
+            auto stored_day = qt::load_book_results(*db, portfolio_id, combined_strategy_id,
+                                                    qt_write_book, qt_date);
             if (stored_day.is_error()) {
                 return qt_fail("the stored qt live_results row could not be read: " +
                                std::string(stored_day.error()->what()));
@@ -4812,15 +4948,18 @@ int main(int argc, char* argv[]) {
                 (void)sleeve;
                 stored_fill_count += fills.size();
             }
-            INFO("QT_PUBLISH the e-mail and CSV are built from the stored qt day of " + qt_date +
+            INFO("QT_SEND the e-mail and CSV are built from the stored " + qt_write_book +
+                 " day of " + qt_date +
                  ": " + std::to_string(positions.size()) + " symbol(s), " +
                  std::to_string(stored_fill_count) + " execution(s), book_source " +
-                 stored_row.value("book_source", std::string("?")));
+                 (stored_row.contains("book_source") && stored_row.at("book_source").is_string()
+                      ? stored_row.at("book_source").get<std::string>()
+                      : std::string("none (the system book)")));
         }
         auto current_export_result =
             qt_export_csv ? export_positions_file() : Result<std::string>(std::string());
 
-        if (qt_mode == qt::Mode::PUBLISH && current_export_result.is_ok() &&
+        if (qt_sends && qt_desk_editable && current_export_result.is_ok() &&
             !current_export_result.value().empty()) {
             // The desk's book is not the model's: its CSV leaves out the model's columns.
             if (auto stripped = qt::strip_model_columns(current_export_result.value());
@@ -4924,34 +5063,14 @@ int main(int argc, char* argv[]) {
                                                           : desk_book.error()->what()));
                     qt_failed = true;
                 } else {
+                    // Contract C7: every day, weekends and holidays included, waits for the
+                    // desk's approval or the 10:00 fallback; the model run publishes nothing.
                     INFO("QT_SEED " + portfolio_id + " " + qt_date +
-                         ": qt_proposal seeded and qt written from system (book_source model)");
-                    // Contract C5: T-1 a weekend day or a holiday on the runner's calendar,
-                    // and nothing else (a feed hole refused the run above).
-                    const bool qt_non_trading_day = qt_day_kind == qt::DayKind::CALENDAR_CLOSED;
-                    if (qt_non_trading_day) {
-                        // Ruling 29 on a non-trading day: nobody is at the desk, so the day is
-                        // published by the model run itself, with no e-mail (the books are the
-                        // model's: carried, or moved only by a symbol that prints on weekends).
-                        // Only trading days wait for the desk's publish.
-                        auto already = qt::published_at(*db, portfolio_id, combined_strategy_id,
-                                                        qt_date);
-                        auto published =
-                            already.is_ok() && !already.value().empty()
-                                ? Result<void>()
-                                : qt::set_published(*db, portfolio_id, combined_strategy_id,
-                                                    qt_date, "system:non-trading-day");
-                        if (already.is_error() || published.is_error()) {
-                            ERROR("QT_SEED the non-trading day " + qt_date +
-                                  " could not be published: " +
-                                  std::string(already.is_error() ? already.error()->what()
-                                                                 : published.error()->what()));
-                            qt_failed = true;
-                        } else {
-                            INFO("QT_PUBLISH " + portfolio_id + " " + qt_date +
-                                 " published by system:non-trading-day (no e-mail)");
-                        }
-                    }
+                         ": qt_proposal seeded and qt written from system (book_source model); "
+                         "the day waits for the desk's approval (09:30) or the 10:00 fallback" +
+                         (qt_day_kind == qt::DayKind::CALENDAR_CLOSED
+                              ? std::string(" (T-1 was closed on the runner's calendar)")
+                              : std::string()));
                 }
             }
         }
@@ -5446,19 +5565,19 @@ int main(int argc, char* argv[]) {
                         email_body = flag_email_body_for_carried_day(email_body, carried_day_note);
                     }
 
-                    if (qt_mode == qt::Mode::PUBLISH) {
+                    if (qt_sends) {
                         subject = "[QT " + portfolio_id + "] " + subject;
                     }
                     const bool qt_mail_off =
-                        qt_mode == qt::Mode::PUBLISH &&
-                        qt::email_disabled(email_config.username, email_config.password);
+                        qt_sends && qt::email_disabled(email_config.username, email_config.password);
                     if (qt_mail_off) {
                         // No SMTP for the QT engine: the e-mail is kept in the command row.
                         qt_email_logged = nlohmann::json{{"to", email_config.to_emails},
                                                          {"subject", subject},
                                                          {"attachments", attachments},
                                                          {"body", email_body}};
-                        INFO("QT_PUBLISH e-mail disabled: the body is kept in the command row");
+                        INFO("QT_SEND e-mail disabled: not sent (the body is kept in the command "
+                             "row, if any)");
                     }
                     auto send_result =
                         qt_mail_off ? Result<void>()
@@ -5468,12 +5587,15 @@ int main(int argc, char* argv[]) {
                         ERROR("Failed to send email: " + std::string(send_result.error()->what()));
                     } else if (!qt_mail_off) {
                         qt_emailed = true;
-                        if (qt_mode == qt::Mode::PUBLISH) {
-                            // Item 7: recorded on its own, committed, before anything else.
-                            auto marked = qt::mark_email_sent(*db, qt_audit_id);
+                        if (qt_sends) {
+                            // Item 7 and C7: recorded on its own, committed, before anything else
+                            // (live_run_metadata.sent_at, and the row's email_sent_at).
+                            auto marked = qt::record_sent(*db, qt_audit ? qt_audit_id : 0,
+                                                          portfolio_id, combined_strategy_id,
+                                                          qt_date);
                             if (marked.is_error()) {
-                                ERROR("QT_PUBLISH the e-mail was sent but email_sent_at could "
-                                      "not be recorded: " +
+                                ERROR("QT_SEND the e-mail was sent but sent_at could not be "
+                                      "recorded: " +
                                       std::string(marked.error()->what()));
                             } else {
                                 qt_email_sent_at = marked.value();
@@ -5497,49 +5619,59 @@ int main(int argc, char* argv[]) {
         std::cerr << "At end of main: initialized=" << Logger::instance().is_initialized()
                   << std::endl;
 
-        if (qt_mode == qt::Mode::PUBLISH) {
-            // Contract section 6: the day's publish record on live_run_metadata, then the row.
+        if (qt_sends) {
+            // Contract C7: the day was published before the pipeline ran (an approval or the
+            // fallback, above) or before this run (--send); this is the e-mail's outcome.
             const bool qt_sent_before = !qt_email_sent_before.at.empty();
-            if (!qt_emailed && !qt_email_logged && !qt_sent_before) {
-                const std::string why = "the daily e-mail could not be sent; nothing is published";
-                ERROR("QT_PUBLISH " + why);
-                (void)qt::finish_audit_row(*db, qt_audit_id, "failed",
-                                           nlohmann::json{{"emailed", false}}, why);
-                return 1;
-            }
-            auto published = qt::set_published(*db, portfolio_id, combined_strategy_id, qt_date,
-                                               qt_audit->requested_by);
-            if (published.is_error()) {
-                ERROR("QT_PUBLISH " + std::string(published.error()->what()));
-                (void)qt::finish_audit_row(*db, qt_audit_id, "failed",
-                                           nlohmann::json{{"emailed", qt_emailed || qt_sent_before}},
-                                           published.error()->what());
-                return 1;
-            }
             nlohmann::json result = {{"emailed", qt_emailed || qt_sent_before}};
+            if (qt_audit) {
+                result["published"] = true;
+                result["publish_source"] =
+                    qt_mode == qt::Mode::FALLBACK ? qt::kSourceFallback : qt::kSourceDesk;
+            }
             if (qt_sent_before) {
                 result["email_sent_at"] = qt_email_sent_before.at;
-                result["email_sent_by"] = qt_email_sent_before.row_id;
+                if (qt_email_sent_before.row_id > 0) {
+                    result["email_sent_by"] = qt_email_sent_before.row_id;
+                }
             }
             if (qt_email_logged) {
                 result["email_disabled"] = true;
                 result["email"] = *qt_email_logged;
             }
-            auto finished = qt::finish_audit_row(
-                *db, qt_audit_id, "done", result,
-                qt_sent_before
-                    ? "published " + qt_date + ": the daily e-mail had already been sent (publish "
-                                               "row " + std::to_string(qt_email_sent_before.row_id) +
-                          ", " + qt_email_sent_before.at + "); not sent again"
-                : qt_emailed
-                    ? "published " + qt_date + ": daily e-mail and CSV sent from the stored qt book"
-                    : "published " + qt_date +
-                          ": e-mail disabled on this engine, the body is in result.email");
-            if (finished.is_error()) {
-                ERROR("QT: " + std::string(finished.error()->what()));
+            const std::string what = qt_mode == qt::Mode::FALLBACK
+                                         ? "published " + qt_date + " with the model's book (" +
+                                               (qt_audit ? qt_audit->requested_by : "") + ")"
+                                     : qt_mode == qt::Mode::PUBLISH ? "approved " + qt_date
+                                                                    : "sent " + qt_date;
+            if (!qt_emailed && !qt_email_logged && !qt_sent_before) {
+                // The day stays published (frozen); the scheduler's next send retries the e-mail.
+                const std::string why = "the daily e-mail could not be sent";
+                ERROR("QT_SEND " + portfolio_id + " " + qt_date + ": " + why);
+                if (qt_audit) {
+                    result["send_error"] = why;
+                    (void)qt::finish_audit_row(*db, qt_audit_id, "done", result,
+                                               what + "; " + why +
+                                                   ": the scheduler's next send retries it");
+                }
                 return 1;
             }
-            INFO("QT_PUBLISH done " + portfolio_id + " " + qt_date);
+            if (qt_audit) {
+                auto finished = qt::finish_audit_row(
+                    *db, qt_audit_id, "done", result,
+                    qt_sent_before
+                        ? what + ": the daily e-mail had already been sent (" +
+                              qt_email_sent_before.at + "); not sent again"
+                    : qt_emailed
+                        ? what + ": daily e-mail and CSV sent from the stored qt book"
+                        : what + ": e-mail disabled on this engine, the body is in result.email");
+                if (finished.is_error()) {
+                    ERROR("QT: " + std::string(finished.error()->what()));
+                    return 1;
+                }
+            }
+            INFO("QT_SEND done " + portfolio_id + " " + qt_date + ": " +
+                 (qt_emailed ? "e-mailed" : qt_sent_before ? "already sent" : "e-mail disabled"));
         }
         if (qt_failed) {
             ERROR("QT_SEED the desk's books for " + qt_date + " were not written; exiting 1");

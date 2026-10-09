@@ -1,6 +1,6 @@
 // AlgoGators gRPC API
 // API: desk
-// Version: 1.0.0
+// Version: 1.1.0
 // Compatibility: a client must send x-algogators-api-version: desk=<major>.<minor>.<patch>; the
 // server refuses a different major and accepts any minor/patch (docs/design/rpc.md).
 //
@@ -39,6 +39,10 @@ import "google/protobuf/timestamp.proto";
 // Version history (bump Version above; a major bump is a breaking change, see docs/design/rpc.md):
 //   1.0.0  2026-10-09  first versioned release. Same messages and field numbers as the earlier
 //                      unversioned algogators.qt.v1 package, so the wire format is unchanged.
+//   1.1.0  2026-10-09  the daily cutoff (qt-contract.md C7): RunStatus gains publish_source (8)
+//                      and sent_at (9). Publish is the desk's approval ("Approve"): before 09:30
+//                      New York it freezes the day and sends nothing, 09:30-10:00 it also sends,
+//                      after 10:00 (or on a published day) it is refused. No field changed.
 
 service DeskService {
   // A desk save: run the desk loop on the whole qt_proposal and book the result as qt with
@@ -54,8 +58,12 @@ service DeskService {
   // source=override (D5, D17; plan 3b Q3).
   rpc RecordDecision(DecisionRequest) returns (CommandReply);
 
-  // Finalise the day's qt book, send the e-mail and CSV, write published_by/published_at on
-  // trading.live_run_metadata (D7; plan A6/E8). A missed day is caught up first (ruling 29).
+  // The desk's approval ("Approve" in AlgoLens; contract C7, amending ruling 18): freezes the
+  // day's qt book and writes published_by/published_at and publish_source='desk' on
+  // trading.live_run_metadata. Before 09:30 America/New_York it sends nothing (the 09:30 send
+  // e-mails it); from 09:30 to 10:00 it also sends the e-mail and CSV built from the stored rows.
+  // Refused after 10:00 on the book date (the row's created_at decides) and on a published day.
+  // An earlier unpublished day refuses it (ruling 29).
   rpc Publish(PublishRequest) returns (CommandReply);
 
   // The model run's state for one book and day, read from trading.live_run_metadata, for the
@@ -210,4 +218,12 @@ message RunStatus {
   bool published = 5;
   string published_by = 6;
   google.protobuf.Timestamp published_at = 7;
+  // Since 1.1.0 (contract C7, migration 027). Who published the day: "desk" (the desk's
+  // approval), "fallback" (not approved by 10:00 New York: the model's book was published, or a
+  // missed past day was caught up), "model-only" (the untouched model twin). Empty: not
+  // published, or published before migration 027.
+  string publish_source = 8;
+  // Since 1.1.0. When the day's e-mail went out. Unset: not sent (an approval before 09:30, a
+  // past day caught up, or e-mail disabled).
+  google.protobuf.Timestamp sent_at = 9;
 }

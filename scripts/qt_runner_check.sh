@@ -9,9 +9,13 @@
 # Checks:
 #   ruling 17  the model run of an editable portfolio finalises system's Day T-1 from system's own
 #              rows (system 10-01 == qt 10-01 once 10-02 has run: the two books were identical);
-#   ruling 29  a non-trading day (T-1 a weekend) is published by the model run itself
-#              (published_by system:non-trading-day), and the next trading day runs without a
-#              desk publish of it; an unpublished trading day refuses the next run;
+#   ruling 29  an unpublished day refuses the next run;
+#   C7         the daily cutoff: --publish (the desk's approval) freezes the day and sends nothing
+#              (publish_source desk, no sent_at); --send-now sends from the stored rows; the model
+#              run publishes no day, weekends included; --fallback resets qt to the model's book
+#              over a desk save and publishes it (publish_source fallback), a past day without an
+#              e-mail (send_skipped); --send refuses an unpublished day; --fallback refuses a desk
+#              row. Migration 027 must be applied;
 #   ruling 16  a desk flatten of a held symbol stores a 0-quantity qt row priced at the latest
 #              known price, with moved_by;
 #   hardening  the override replaces the qt day's fills and marks the day last; an approval of a
@@ -27,10 +31,20 @@ check() {
     if [ "$1" = "$2" ]; then echo "PASS  $3"; else echo "FAIL  $3: got '$1', want '$2'"; FAILS=$((FAILS + 1)); fi
 }
 publish() {
-    local id
-    id=$(q "INSERT INTO trading.position_overrides (portfolio_id, date, kind, requested_by) VALUES ('$PID', '$1', 'publish', 'check@x.org') RETURNING id")
-    check "$(run --publish --portfolio-config $DIR --date "$1" --audit-id "$id")" 0 "publish $1"
+    local id day="$1"; shift
+    id=$(q "INSERT INTO trading.position_overrides (portfolio_id, date, kind, requested_by) VALUES ('$PID', '$day', 'publish', 'check@x.org') RETURNING id")
+    check "$(run --publish --portfolio-config $DIR --date "$day" --audit-id "$id" "$@")" 0 "approve $day $*"
+    LAST_PUB=$id
 }
+# fallback <day> <requested_by> [--send-now]
+fallback() {
+    local id day="$1" by="$2"; shift 2
+    id=$(q "INSERT INTO trading.position_overrides (portfolio_id, date, kind, requested_by) VALUES ('$PID', '$day', 'publish', '$by') RETURNING id")
+    check "$(run --fallback --portfolio-config $DIR --date "$day" --audit-id "$id" "$@")" 0 "fallback $day ($by) $*"
+    LAST_PUB=$id
+}
+meta() { q "SELECT COALESCE(published_by, '-') || ' ' || COALESCE(publish_source, '-') || ' ' || (sent_at IS NOT NULL)::text FROM trading.live_run_metadata WHERE portfolio_id = '$PID' AND date = '$1'"; }
+book() { q "SELECT md5(string_agg(strategy_name || ':' || symbol || ':' || quantity::text, ',' ORDER BY strategy_name, symbol)) FROM trading.positions WHERE portfolio_id = '$PID' AND date = '$1' AND portfolio_type = '$2'"; }
 row() {
     q "SELECT round(daily_pnl::numeric, 4) || ' ' || round(total_pnl::numeric, 4) || ' ' || round(current_portfolio_value::numeric, 4) FROM trading.live_results WHERE portfolio_id = '$PID' AND date = '$1' AND portfolio_type = '$2'"
 }
@@ -43,6 +57,8 @@ done
 echo "== first desk day and ruling 17"
 check "$(run --portfolio-config $DIR --date 2026-10-01)" 0 "model 10-01 (first desk day, from system)"
 publish 2026-10-01
+check "$(meta 2026-10-01)" "check@x.org desk false" "an approval freezes the day (publish_source desk) and sends nothing"
+check "$(q "SELECT status || ' ' || (result->>'emailed') || ' ' || (result ? 'published_at')::text FROM trading.position_overrides WHERE id = $LAST_PUB")" "done false true" "the approval row: done, not e-mailed"
 SYS_BEFORE=$(row 2026-10-01 system)
 check "$(run --portfolio-config $DIR --date 2026-10-02)" 0 "model 10-02 (from qt)"
 SYS_AFTER=$(row 2026-10-01 system)
@@ -51,19 +67,34 @@ echo "   system 10-01 before: $SYS_BEFORE; after: $SYS_AFTER; qt 10-01: $QT_AFTE
 check "$SYS_AFTER" "$QT_AFTER" "system's Day T-1 finalised like qt's (identical books)"
 check "$(q "SELECT round(e.equity::numeric, 4) = round(g.equity::numeric, 4) FROM trading.equity_curve e JOIN trading.equity_curve g USING (portfolio_id, strategy_id, \"timestamp\") WHERE e.portfolio_id = '$PID' AND DATE(e.\"timestamp\") = '2026-10-01' AND e.portfolio_type = 'system' AND g.portfolio_type = 'qt'")" t "system equity 10-01 == qt equity 10-01"
 
-echo "== ruling 29"
+echo "== ruling 29 and the daily cutoff (C7)"
 check "$(run --portfolio-config $DIR --date 2026-10-03)" 1 "model 10-03 refuses while 10-02 is unpublished"
-publish 2026-10-02
+publish 2026-10-02 --send-now
+check "$(q "SELECT (result->>'email_disabled') || ' ' || (result ? 'published_at')::text FROM trading.position_overrides WHERE id = $LAST_PUB")" "true true" "an approval with --send-now builds the e-mail from the stored rows (e-mail disabled: kept in the row)"
 check "$(run --portfolio-config $DIR --date 2026-10-03)" 0 "model 10-03 after the catch-up"
 publish 2026-10-03
 check "$(run --portfolio-config $DIR --date 2026-10-04)" 0 "model 10-04 (T-1 Saturday)"
-check "$(q "SELECT published_by FROM trading.live_run_metadata WHERE portfolio_id = '$PID' AND date = '2026-10-04'")" system:non-trading-day "10-04 published by the model run"
-check "$(q "SELECT book_source FROM trading.live_results WHERE portfolio_id = '$PID' AND date = '2026-10-04' AND portfolio_type = 'qt'")" model "10-04 qt book_source model"
+check "$(meta 2026-10-04)" "- - false" "the model run publishes no day, a weekend day included"
+check "$(run --send --portfolio-config $DIR --date 2026-10-04)" 2 "--send refuses an unpublished day"
+check "$(run --portfolio-config $DIR --date 2026-10-05)" 1 "model 10-05 refuses while 10-04 is unpublished"
+fallback 2026-10-04 system:fallback-catchup
+check "$(meta 2026-10-04)" "system:fallback-catchup fallback false" "a past day's fallback publishes the model's book, no e-mail"
+check "$(q "SELECT result->>'send_skipped' FROM trading.position_overrides WHERE id = $LAST_PUB")" "past day" "send_skipped recorded"
 check "$(run --portfolio-config $DIR --date 2026-10-05)" 0 "model 10-05"
-P5=$(q "SELECT COALESCE(published_by, '') FROM trading.live_run_metadata WHERE portfolio_id = '$PID' AND date = '2026-10-05'")
-echo "   10-05 published_by: '${P5}'"
-[ -z "$P5" ] && publish 2026-10-05
-check "$(run --portfolio-config $DIR --date 2026-10-06)" 0 "model 10-06 runs with no desk publish of the weekend"
+# a desk save of 10-05 that is never approved: the 10:00 fallback discards it
+q "UPDATE trading.positions SET quantity = quantity + 1 WHERE portfolio_id = '$PID' AND date = '2026-10-05' AND portfolio_type = 'qt_proposal' AND symbol = (SELECT min(symbol) FROM trading.positions WHERE portfolio_id = '$PID' AND date = '2026-10-05' AND portfolio_type = 'qt_proposal' AND quantity <> 0)" >/dev/null
+SAVE5=$(q "INSERT INTO trading.position_overrides (portfolio_id, date, kind, requested_by, reason, payload) VALUES ('$PID', '2026-10-05', 'save', 'check@x.org', 'check: never approved', '{}') RETURNING id")
+check "$(run --desk --portfolio-config $DIR --date 2026-10-05 --audit-id "$SAVE5")" 0 "desk save 10-05"
+check "$(q "SELECT book_source FROM trading.live_results WHERE portfolio_id = '$PID' AND date = '2026-10-05' AND portfolio_type = 'qt'")" desk "10-05 qt is the desk's"
+DESKROW=$(q "INSERT INTO trading.position_overrides (portfolio_id, date, kind, requested_by) VALUES ('$PID', '2026-10-05', 'publish', 'check@x.org') RETURNING id")
+check "$(run --fallback --portfolio-config $DIR --date 2026-10-05 --audit-id "$DESKROW")" 2 "--fallback refuses a desk row"
+fallback 2026-10-05 system:fallback-10am --send-now
+check "$(meta 2026-10-05)" "system:fallback-10am fallback false" "the 10:00 fallback publishes the model's book (e-mail disabled: no sent_at)"
+check "$(book 2026-10-05 qt)" "$(book 2026-10-05 system)" "the fallback reset qt to the model's book over the desk save"
+check "$(q "SELECT book_source FROM trading.live_results WHERE portfolio_id = '$PID' AND date = '2026-10-05' AND portfolio_type = 'qt'")" model "10-05 qt book_source model"
+check "$(q "SELECT (result->>'email_disabled') FROM trading.position_overrides WHERE id = $LAST_PUB")" true "the fallback built its e-mail from the stored rows"
+check "$(run --send --portfolio-config $DIR --date 2026-10-05)" 0 "--send of a published day (e-mail disabled: nothing sent)"
+check "$(run --portfolio-config $DIR --date 2026-10-06)" 0 "model 10-06"
 
 echo "== ruling 16"
 read -r SLEEVE SYM HELD <<<"$(q "SELECT strategy_name, symbol, quantity FROM trading.positions WHERE portfolio_id = '$PID' AND date = '2026-10-05' AND portfolio_type = 'qt' AND quantity <> 0 ORDER BY abs(quantity) DESC, symbol LIMIT 1" | tr '|' ' ')"

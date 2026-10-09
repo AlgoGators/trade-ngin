@@ -10,8 +10,9 @@ version header check, health, call logs and shutdown. Before 2026-10-09 it ran a
 ## Contract
 
 `proto/algogators/desk.proto`, package `algogators.desk`, API `desk`, version in the file's
-header block (`Version: 1.0.0`). Every call sends `x-algogators-api-version: desk=1.0.0` (any
-`1.x.y` is accepted; see `rpc.md`). The engine owns the file. AlgoLens vendors it byte for byte
+header block (`Version: 1.1.0`; 1.1.0 added RunStatus `publish_source` and `sent_at` for the
+daily cutoff, contract C7). Every call sends `x-algogators-api-version: desk=1.1.0` (any `1.x.y`
+is accepted, so a 1.0.0 client still works; see `rpc.md`). The engine owns the file. AlgoLens vendors it byte for byte
 at a pinned trade-ngin commit and commits the stubs it generates.
 
 Until AlgoLens moves over, the server also answers the old name `algogators.qt.v1.DeskService`
@@ -24,7 +25,7 @@ release.
 | `RunDesk` | `save` | Engine `--desk` |
 | `RequestOverride` | `override_request` | In Python: token, 48 h expiry, e-mail to `QT_APPROVERS` |
 | `RecordDecision` | `override_decision` (its `parent_id` is the request) | Checks; rejection -> `done {"approved":false}`; approval -> engine `--override` |
-| `Publish` | `publish` (`audit_id = 0`: newest pending publish row for the day) | Engine `--publish` |
+| `Publish` | `publish` (`audit_id = 0`: newest pending publish row for the day) | The desk's approval (C7): engine `--publish` before 09:30 New York, `--publish --send-now` from 09:30; refused from 10:00 or on a published day |
 | `grpc.health.v1.Health/Check` | n/a | Liveness, for `""` and `algogators.desk.DeskService` (no version header) |
 
 How replies work:
@@ -54,9 +55,11 @@ How replies work:
   or several: the row is refused), then runs, in `QT_ENGINE_CWD` (default `/app`):
 
   ```
-  flock $QT_LOCK_DIR/<portfolio_id>.lock $QT_ENGINE_BINARY --desk|--override|--publish \
-        --portfolio-config <dir> --date YYYY-MM-DD --audit-id <row id>
+  flock $QT_LOCK_DIR/<portfolio_id>.lock $QT_ENGINE_BINARY --desk|--override|--publish|--fallback \
+        --portfolio-config <dir> --date YYYY-MM-DD --audit-id <row id> [--send-now]
   ```
+
+  (`--fallback` only for a scheduler fallback row re-driven here, see "The daily cutoff".)
 
   `QT_ENGINE_BINARY` defaults to `/app/build/bin/Release/live_portfolio_conservative` and
   `QT_LOCK_DIR` to `/tmp/qt-locks`. The catch-up scheduler's model runs take the same lock. The binary
@@ -86,8 +89,18 @@ How replies work:
   stores no token.
 - **Published days** (contract C3). A `save`, `override_request` or `override_decision` row for
   a day whose `live_run_metadata.published_at` is set is refused before anything runs
-  (`... was published at ...; a published day is frozen`). `publish` rows go to the engine,
-  which refuses a second publish.
+  (`... was published at ...; a published day is frozen`). A `publish` row on a published day
+  is refused too (`... was already published at ...`), unless its own result carries
+  `published_at` (a re-run of the row that approved the day goes on to its send); the engine
+  refuses a second publish as well.
+- **The approval** (contract C7, `services/desk/cutoff.py`). A desk `publish` row is the desk's
+  approval of its day D. A row created at or after 10:00 America/New_York on D is refused
+  (`the approval deadline for D passed at 10:00 New York; ...`), whenever it is dispatched.
+  Otherwise the engine runs `--publish` (freeze, `publish_source='desk'`, no e-mail) when the
+  dispatch is before 09:30 on D, and `--publish --send-now` (freeze and send at once) from
+  09:30. A row whose `requested_by` starts `system:fallback` is the scheduler's (it runs it
+  itself); re-driven here it runs `--fallback`, with `--send-now` only for
+  `system:fallback-10am` on today's date.
 - **Decision checks** (contract C2; the engine re-checks): the parent is an `override_request`
   for the same portfolio and date; the decider is not the requester (case-insensitive) ->
   `the requester may not approve their own request`; `approver_role` is vp or president;
@@ -115,8 +128,12 @@ These marks are the same ones `scripts/check_live_trading.py` reads (`run_metada
 - `started_at` is the earliest `created_at` of the day's metadata rows.
 - `finished_at` is the `created_at` of the day's `live_results` row.
 - `published_by` and `published_at` come from columns that only arrive with the publish
-  migration (plan E8). The desk checks `information_schema` on every call. Until those columns
+  migration (022). The desk checks `information_schema` on every call. Until those columns
   exist, `published` is false and the other two fields are unset.
+- `publish_source` (`desk`, `fallback`, `model-only`) and `sent_at` (1.1.0) come from migration
+  027's columns, read the same way: empty and unset before 027, and for days published before
+  it. Approved = `publish_source` desk; fallback = `publish_source` fallback; sent = `sent_at`
+  set.
 
 ## Idempotency and recovery
 
@@ -146,52 +163,69 @@ These marks are the same ones `scripts/check_live_trading.py` reads (`run_metada
 - The claim makes double dispatch impossible. The engine must therefore tolerate re-running a
   command whose earlier attempt died midway.
 
-## Catch-up scheduler (contract C6)
+## Scheduler: model runs, the 09:30 send, the 10:00 fallback (contracts C6, C7)
 
-The QT model runs are scheduled by the desk service itself: the background task `desk.catchup`
-(`services/desk/catchup.py`), not a host cron. It already has the database, the SMTP settings
-and the locks.
+The QT model runs, the 09:30 send and the 10:00 fallback are scheduled by the desk service
+itself: the background task `desk.catchup` (`services/desk/catchup.py`), not a host cron. It
+already has the database, the SMTP settings and the locks.
 
-- **When.** The task ticks every minute; a pass is due once per `QT_CATCHUP_EVERY_MIN` (30)
-  slot inside `QT_CATCHUP_WINDOW` (`06:00-22:00`), America/New_York, every day. A pass holds
-  `$QT_LOCK_DIR/qt-catchup.lock`; a second pass (the watchdog) skips while one runs.
+### The daily cutoff (C7, from 2026-10-09)
+
+Every calendar day D, weekends and holidays included, New York time. For each portfolio in
+`QT_CATCHUP_PORTFOLIOS`, under its flock, a pass takes one step at a time, each decided from the
+database and the clock (a pass that runs late, 10:07, still does what 10:00 would have):
+
+| Step | When | What |
+|---|---|---|
+| fallback of a past day | the newest qt day < today is unpublished | publish row `system:fallback-catchup` (inserted pending, moved to running in one transaction, held in the dispatcher while it runs), engine `--fallback` without `--send-now`: qt reset to the model's book, published `publish_source='fallback'`, never e-mailed (`send_skipped='past day'`); alert `caught_up` once |
+| model run | the next day has no book; today's not before `QT_CATCHUP_TODAY_NOT_BEFORE` (06:45) | `scripts/qt_model_run.sh`'s command; a failure alerts and is retried after `QT_MODEL_RETRY_MIN` (15). On the model twin each day written is published `system:model-only` at once |
+| model book check | from `QT_MODEL_ALERT_AT` (08:30) | no book for today: alert `model_not_done` |
+| send | today is published, `sent_at` is NULL, from 09:30 | engine `--send --date D` (from the stored rows, once); skipped with `QT_EMAIL_DISABLED=1`, without SMTP settings, or when `email.json` has no `to_emails`; a failure alerts `send_failed` and is retried after 15 min |
+| fallback of today | today is unpublished at 10:00 | publish row `system:fallback-10am`, engine `--fallback --send-now`; alert `fallback` ("QT did not approve <portfolio> <D>; the model's book was sent at HH:MM"). An open publish row of the day (the desk's approval being run) makes it wait for the next pass; a refusal "already published" is not an alert |
+
+The 24 h unpublished reminder and the trading calendar (`holidays.json`) are gone from the
+scheduler: every day is published by 10:00, and every day runs from 06:45 (the engine still
+refuses a feed hole, C5).
+
+### Passes, logs and the watchdog
+
+- **When.** The task ticks every minute; a pass is due once per slot inside
+  `QT_CATCHUP_WINDOW` (`06:30-22:00`), America/New_York, every day: every
+  `QT_CATCHUP_BUSY_EVERY_MIN` (5) minutes inside `QT_CATCHUP_BUSY_WINDOW` (`06:30-10:30`), every
+  `QT_CATCHUP_EVERY_MIN` (30) after. A pass holds `$QT_LOCK_DIR/qt-catchup.lock`; a second pass
+  (the watchdog) skips while one runs.
 - **What.** For each config directory in `QT_CATCHUP_PORTFOLIOS`
-  (`qt_conservative,qt_conservative_model`): `last` is the newest date with a book in
-  `trading.live_results` (`qt` on a desk-editable portfolio, `system` otherwise; a desk-editable
-  portfolio with no qt book yet starts after its newest system day, ruling 27). While
-  `last < today`:
-  - desk-editable and `last` unpublished: on a trading day, wait for the desk's publish (no
-    alert); on a non-trading day, alert (the model run should have auto-published it);
-  - the next day is today, a trading day, and it is before `QT_CATCHUP_TODAY_NOT_BEFORE`
-    (10:15, the old cron time, for T-1 data): wait;
-  - otherwise run the model run for the next day; exit 0 with the book written moves on, and
-    anything else is an alert and ends this portfolio's walk until the next pass.
-
-  A trading day is a book date whose T-1 is an open session on the runner's calendar
-  (weekends and `holidays.json`, found as HolidayChecker finds it, from `QT_ENGINE_CWD`). A
-  calendar that does not cover the dates is an alert.
-- **How.** Exactly `scripts/qt_model_run.sh`'s command,
-  `$QT_ENGINE_BINARY --portfolio-config <dir> --date <day>` in `QT_ENGINE_CWD`, bounded by
-  `QT_JOB_TIMEOUT_S`. The scheduler takes `$QT_LOCK_DIR/<portfolio_id>.lock` itself (flock(2),
-  the lock flock(1) takes for desk jobs; it waits up to `QT_CATCHUP_LOCK_WAIT_S`, 600 s, then
-  skips the portfolio until the next pass) and re-reads the database under it, so a day another
-  run has just written is never run twice.
-- **Alerts.** A refusal, failure, timeout, missing book, calendar or configuration problem
-  writes `ALERT <portfolio> <date> <reason>: <message>` to `$QT_LOG_DIR/qt-catchup.log` and
-  e-mails the president of `QT_APPROVERS` through the portfolio's `email.json` (not when
+  (`qt_conservative,qt_conservative_model`) the steps of "The daily cutoff" above. `last` is the
+  newest date with a book in `trading.live_results` (`qt` on a desk-editable portfolio, `system`
+  otherwise; a desk-editable portfolio with no qt book yet starts after its newest system day,
+  ruling 27).
+- **How.** The model run is exactly `scripts/qt_model_run.sh`'s command,
+  `$QT_ENGINE_BINARY --portfolio-config <dir> --date <day>` in `QT_ENGINE_CWD`; the fallback and
+  the send run the same binary with `--fallback ... --audit-id <row> [--send-now]` and `--send`.
+  Each is bounded by `QT_JOB_TIMEOUT_S`. The scheduler takes `$QT_LOCK_DIR/<portfolio_id>.lock`
+  itself (flock(2), the lock flock(1) takes for desk jobs; it waits up to
+  `QT_CATCHUP_LOCK_WAIT_S`, 600 s, then skips the portfolio until the next pass) and re-reads the
+  database under it, so nothing another run has just done is done twice. A fallback row the
+  engine left `running` is failed by the scheduler.
+- **Alerts.** A refusal, failure, timeout, missing book, the fallback, a caught-up day, a model
+  book missing at 08:30 or a configuration problem writes
+  `ALERT <portfolio> <date> <reason>: <message>` to `$QT_LOG_DIR/qt-catchup.log` and e-mails the
+  president of `QT_APPROVERS` through the portfolio's `email.json` (not when
   `QT_EMAIL_DISABLED=1` or the SMTP settings are unusable; the log line says why). At most one
-  alert per (portfolio, date, reason) per New York day (`$QT_LOG_DIR/qt-alerts.json`); the run
-  is still retried every pass. A trading day unpublished more than `QT_UNPUBLISHED_REMINDER_H`
-  (24) hours after its model run gets the `unpublished_reminder` alert, daily.
+  alert per (portfolio, date, reason) per New York day (`$QT_LOG_DIR/qt-alerts.json`); a failed
+  step is retried after 15 minutes. The `unpublished_reminder` is gone (C7).
 - **Logs.** `$QT_LOG_DIR` (default `/var/log/qt-engine`, the host's
   `/home/ubuntu/qt-engine/logs`): `qt-catchup.log` (passes, decisions, alerts),
   `qt-engine-runs.log` (the full output of every model run), `qt-catchup.heartbeat` (the last
   pass) and `qt-alerts.json`. `deploy/qt-engine.logrotate` rotates them daily into dated files.
 - **Watchdog.** `deploy/qt-engine.cron` runs
-  `docker exec engine-rpc /app/scripts/qt_catchup.sh watchdog` at :07 and :37. Inside the
-  window, if the heartbeat is older than 75 minutes, it runs one pass through the same code and
-  locks. `qt_catchup.sh run-once` runs a pass by hand at any hour.
-- `QT_CATCHUP_ENABLED=0` turns the scheduler off (then nothing runs the model).
+  `docker exec engine-rpc /app/scripts/qt_catchup.sh watchdog` every 5 minutes. Inside the
+  window, if the heartbeat is older than 15 minutes (06:30-10:30) or 75 minutes (after), it runs
+  one pass through the same code and locks, so the 09:30 send and the 10:00 fallback are at most
+  about 15 minutes late if the in-process scheduler is down. `qt_catchup.sh run-once` runs a
+  pass by hand at any hour.
+- `QT_CATCHUP_ENABLED=0` turns the scheduler off (then nothing runs the model, sends at 09:30
+  or falls back at 10:00).
 - Postgres stays the record. A reply is a convenience, never the record of anything.
 
 ## Deployment

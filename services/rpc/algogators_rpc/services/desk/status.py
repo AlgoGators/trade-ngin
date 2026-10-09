@@ -22,6 +22,9 @@ class DerivedStatus:
     published: bool = False
     published_by: str = ""
     published_at: Optional[dt.datetime] = None
+    # Contract C7 (027): desk | fallback | model-only, and when the e-mail went out.
+    publish_source: str = ""
+    sent_at: Optional[dt.datetime] = None
 
 
 def _config(row) -> dict:
@@ -50,14 +53,17 @@ def derive(facts: RunFacts, portfolio_id: str, date: dt.date) -> DerivedStatus:
 
     started = min((r.created_at for r in rows if r.created_at is not None), default=None)
     published_at = None
-    published_by = ""
+    published_by = publish_source = ""
     if facts.has_publish_columns:
         pubs = [r for r in rows if r.published_at is not None]
         if pubs:
             last = max(pubs, key=lambda r: r.published_at)
             published_at, published_by = last.published_at, last.published_by or ""
+            publish_source = last.publish_source or ""
+    sent_at = max((r.sent_at for r in rows if r.sent_at is not None), default=None)
     common = dict(started_at=started, published=published_at is not None,
                   published_by=published_by, published_at=published_at,
+                  publish_source=publish_source, sent_at=sent_at,
                   finished_at=facts.results_written_at)
 
     configs = [_config(r) for r in rows]
