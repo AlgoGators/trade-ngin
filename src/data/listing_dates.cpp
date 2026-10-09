@@ -1,6 +1,8 @@
 // src/data/listing_dates.cpp
 #include "trade_ngin/data/listing_dates.hpp"
 
+#include "trade_ngin/optimization/one_pass.hpp"
+
 #include <algorithm>
 #include <chrono>
 #include <cmath>
@@ -261,12 +263,13 @@ ListingSwitch plan_listing_switch(ListingSwitchRule rule, double ratio, double h
     if (rule == ListingSwitchRule::kConvert) {
         plan.new_to = held_to + ratio * held_from;
     } else {
-        double target = target_to;
-        if (cap_to > 0.0 && std::abs(target) > cap_to) target = target > 0.0 ? cap_to : -cap_to;
-        // nearest whole contract, a half away from zero; never beyond the cap
-        // (the pass's own rounding, optimization/one_pass.cpp)
-        double whole = (target < 0.0 ? -1.0 : 1.0) * std::floor(std::abs(target) + 0.5);
-        if (cap_to > 0.0 && std::abs(whole) > cap_to) whole = std::trunc(target);
+        // the pass's own arithmetic (optimization/one_pass.hpp), called, not copied: the target
+        // capped as section 4 caps it, rounded half away from zero as section 5.3 rounds, and a
+        // rounded number beyond the cap clipped toward zero as section 5.3 clips. The cap is given
+        // in contracts, so the weight of one contract is 1 here.
+        double whole = one_pass::round_half_away(
+            cap_to > 0.0 ? one_pass::cap_target({target_to}, {1.0}, cap_to).first[0] : target_to);
+        if (cap_to > 0.0) whole = one_pass::clip_to_cap({whole}, {1.0}, cap_to, {1}).first[0];
         plan.new_to = whole;
     }
     plan.trade_to = plan.new_to - held_to;

@@ -867,3 +867,25 @@ TEST(InstrumentIdRelabel, AnEntryThatMatchesNothingOrIsLateIsReported) {
     rule.set_relabels({{"M2K", "2026-02-22", "1", "2"}});
     EXPECT_TRUE(rule.relabel_findings(bars).empty());
 }
+
+// The entered quantity is the pass's own arithmetic: over a sweep of targets and caps it equals the
+// pass's cap on the target, its rounding and its clip, called on the same numbers.
+TEST(ListingDates, TheEntryIsThePassesOwnCapRoundingAndClip) {
+    for (const double cap : {0.0, 0.4, 1.0, 2.5, 7.0, 39.9, 57.3}) {
+        for (double target = -60.0; target <= 60.0; target += 0.125) {
+            double expected = target;
+            if (cap > 0.0) expected = one_pass::cap_target({target}, {1.0}, cap).first[0];
+            expected = one_pass::round_half_away(expected);
+            if (cap > 0.0) expected = one_pass::clip_to_cap({expected}, {1.0}, cap, {1}).first[0];
+            const ListingSwitch p =
+                plan_listing_switch(ListingSwitchRule::kOpenAtTarget, 10.0, 0.0, 0.0, target, cap);
+            ASSERT_EQ(p.new_to, expected) << "target " << target << " cap " << cap;
+            if (cap > 0.0) ASSERT_LE(std::abs(p.new_to), cap) << "target " << target << " cap " << cap;
+        }
+    }
+    // the halves, away from zero on both sides
+    EXPECT_EQ(plan_listing_switch(ListingSwitchRule::kOpenAtTarget, 10.0, 0.0, 0.0, 2.5, 0.0).new_to, 3.0);
+    EXPECT_EQ(plan_listing_switch(ListingSwitchRule::kOpenAtTarget, 10.0, 0.0, 0.0, -2.5, 0.0).new_to, -3.0);
+    EXPECT_EQ(plan_listing_switch(ListingSwitchRule::kOpenAtTarget, 10.0, 0.0, 0.0, 0.49999999999999994, 0.0).new_to,
+              one_pass::round_half_away(0.49999999999999994));
+}
