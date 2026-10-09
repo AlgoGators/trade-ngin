@@ -516,3 +516,31 @@ TEST(ListingSwitchWiring, TheSwitchIsBehindTheContractsAreDeclaredTest) {
         EXPECT_EQ(src.find(inside, at + 1), std::string::npos) << inside << " appears twice";
     }
 }
+
+// On a day the overlay cuts the book the listed contract is entered at the SCALED target (the
+// capped target times the overlay's scalar), so the switch lands on the cut target and the pass has
+// nothing left to trade in the pair. Three other symbols at the cap (a weight of 2 each) and the
+// listed contract's target of 100 (a weight of 2) make a net leverage of 8 against the limit of 6:
+// m = 0.75, and the entry is 75, not 100.
+TEST_F(ListingSwitchPassTest, OnACutDayTheEntryIsTheScaledTarget) {
+    ListingDates::instance().set(the_pair());
+    make_pm();
+    before(3.0);
+    ASSERT_TRUE(rebalance(kBefore).is_ok());
+    ASSERT_EQ(quantity(kBig), 2.0);
+    listed(100.0);
+    for (const char* other : {"TO1.v.0", "TO2.v.0", "TO3.v.0"}) a_->rows[other] = row(1000.0, 10.0, 10.0, true);
+    std::vector<Bar> bars = {one_pass_bar(kBig, kListed, 100.0), one_pass_bar(kMicro, kListed, 100.0)};
+    for (const char* other : {"TO1.v.0", "TO2.v.0", "TO3.v.0"}) bars.push_back(one_pass_bar(other, kListed, 100.0));
+    for (const auto& b : bars) {
+        pm_->update_cost_manager_market_data(b.symbol, b.volume, static_cast<double>(b.close),
+                                             static_cast<double>(b.close));
+    }
+    ::testing::internal::CaptureStdout();
+    ASSERT_TRUE(pm_->process_market_data(bars, false, one_pass_day(kListed + 1), nullptr).is_ok());
+    const std::string out = ::testing::internal::GetCapturedStdout();
+    EXPECT_NE(out.find("OVERLAY m=0.75"), std::string::npos) << "the fixture's overlay does not cut to 0.75";
+    EXPECT_EQ(switch_fills(), (std::vector<std::string>{"LC-A-0 TBIG.v.0 -2", "LO-A-0 TMIC.v.0 75"}));
+    EXPECT_EQ(quantity(kMicro), 75.0) << "the pass has nothing left to trade in the pair";
+    for (const auto& line : fills("EX-")) EXPECT_EQ(line.find("TMIC"), std::string::npos) << line;
+}

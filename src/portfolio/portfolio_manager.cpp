@@ -2284,13 +2284,37 @@ Result<void> PortfolioManager::rebalance_one_pass(
             views[i].day = &own[i].day;
             views[i].returns = &own[i].returns;
         }
+        const overlay::Inputs window = overlay::build_inputs(in.tau, symbols, views);
+        in.returns = window.returns;
+        in.ordinals = window.ordinals;
+        // the optimiser's closes and levels on the union of the symbols' own dates
+        for (size_t i = 0; i < n; ++i) {
+            in.opt_ordinals.insert(in.opt_ordinals.end(), own[i].opt_day.begin(), own[i].opt_day.end());
+        }
+        std::sort(in.opt_ordinals.begin(), in.opt_ordinals.end());
+        in.opt_ordinals.erase(std::unique(in.opt_ordinals.begin(), in.opt_ordinals.end()),
+                              in.opt_ordinals.end());
+        const double nan = std::numeric_limits<double>::quiet_NaN();
+        in.opt_closes.assign(in.opt_ordinals.size(), std::vector<double>(n, nan));
+        in.opt_levels.assign(in.opt_ordinals.size(), std::vector<double>(n, nan));
+        for (size_t i = 0; i < n; ++i) {
+            for (size_t k = 0; k < own[i].opt_day.size(); ++k) {
+                const auto row = static_cast<size_t>(
+                    std::lower_bound(in.opt_ordinals.begin(), in.opt_ordinals.end(), own[i].opt_day[k]) -
+                    in.opt_ordinals.begin());
+                in.opt_closes[row][i] = own[i].opt_close[k];
+                in.opt_levels[row][i] = own[i].opt_level[k];
+            }
+        }
+
         // Listing dates (nothing is ever due without portfolio.json's listing_dates, and rule
         // close_reenter leaves the switch to the close-out and the pass below). Once per pair, on
         // the first sized rebalance whose signal feed holds the listed contract's bar dated on or
         // after its listing date with both contracts free to trade (a non-session bar or a pending
         // roll holds both: they read one series) and the listed contract signalling: the held
         // predecessor is closed and the listed contract's held quantity is set by the rule, BEFORE
-        // the pass, which then starts from that held book. Each move is a fill at the signal close,
+        // the pass, which then starts from that held book (the block sits after the pass's inputs are
+        // built and before the pass: nothing between reads the held book). Each move is a fill at the signal close,
         // priced by this manager's cost model on its own contract's terms (ids LC- and LO-). A pair
         // whose predecessor never signalled on a sized rebalance of this run (the run starts
         // trading after the listing date) has no switch: the listed contract is an ordinary symbol.
@@ -2320,6 +2344,23 @@ Result<void> PortfolioManager::rebalance_one_pass(
             ListingDates::instance().switch_rule() != ListingSwitchRule::kCloseReenter) {
             held_before_switch = in.held;
             sleeve_held_before_switch = sleeve_held;
+            // The pairs whose switch is made on this pass, with the band read on the book before any
+            // of them is switched.
+            struct DueSwitch {
+                ListingConversion c;
+                size_t i_from, i_to;
+                bool in_band;
+            };
+            std::vector<DueSwitch> due;
+            auto wait = [&](size_t i_from, size_t i_to) {
+                // waits for the next rebalance on which both can trade; a held predecessor is HELD
+                // meanwhile, never closed by the close-out, and the listed contract is not opened
+                // beside it by the pass
+                if (in.held[i_from] != 0.0) {
+                    in.hold[i_from] = 1;
+                    in.hold[i_to] = 1;
+                }
+            };
             for (const auto& c : ListingDates::instance().conversions_due(data)) {
                 if (listing_switched_.count(c.to)) continue;
                 const auto at_from = std::find(symbols.begin(), symbols.end(), c.from);
@@ -2339,22 +2380,60 @@ Result<void> PortfolioManager::rebalance_one_pass(
                 }
                 if (in.hold[i_from] || in.hold[i_to] || !in.has_bar[i_from] || !in.has_bar[i_to] ||
                     !in.signalling[i_to] || !std::isfinite(in.target[i_to])) {
-                    // waits for the next rebalance on which both can trade; a held predecessor is
-                    // HELD meanwhile, never closed by the close-out, and the listed contract is not
-                    // opened beside it by the pass
-                    if (in.held[i_from] != 0.0) {
-                        in.hold[i_from] = 1;
-                        in.hold[i_to] = 1;
-                    }
+                    wait(i_from, i_to);
                     continue;
                 }
-                const double u_to = in.multiplier[i_to] * in.close[i_to] / in.capital;
-                // the deferral band (section 5.2) on the predecessor's holding, read on the book
-                // before any sleeve is switched: the listed contract's first-sleeve forecast is
-                // weaker than the band and against the holding
+                // the deferral band (section 5.2) on the predecessor's holding: the listed
+                // contract's first-sleeve forecast is weaker than the band and against the holding
                 const bool in_band = in.first_signalling[i_to] &&
                                      in.held[i_from] * in.first_forecast[i_to] < 0.0 &&
                                      std::abs(in.first_forecast[i_to]) < in.sign_band;
+                due.push_back({c, i_from, i_to, in_band});
+            }
+            // The target the listed contract is entered at is the pass's own SCALED target, the
+            // capped target times the overlay's scalar m (section 4), so that on a day the overlay
+            // cuts the book the switch lands on the cut target and nothing is left to trim. m is a
+            // reading of the target book with every due predecessor exited (a free row enters at
+            // its target whatever is held), so it is taken from the pass itself, run once on that
+            // book: the same m, cap and target the pass below computes.
+            std::vector<double> scaled_target(n, 0.0);
+            const ListingSwitchRule rule = ListingDates::instance().switch_rule();
+            const bool target_rule =
+                rule == ListingSwitchRule::kOpenAtTarget || rule == ListingSwitchRule::kCarryToTarget;
+            if (target_rule && std::any_of(due.begin(), due.end(),
+                                           [](const DueSwitch& d) { return !d.in_band; })) {
+                one_pass::DayInputs probe = in;
+                for (const auto& d : due) {
+                    if (d.in_band) probe.held[d.i_to] += d.c.ratio * probe.held[d.i_from];
+                    probe.held[d.i_from] = 0.0;
+                }
+                one_pass::DayResult dry;
+                std::string dry_refusal;
+                try {
+                    dry = one_pass::rebalance(probe);
+                    dry_refusal = dry.refusal;
+                } catch (const std::exception& e) {
+                    dry_refusal = e.what();
+                }
+                std::vector<DueSwitch> kept;
+                for (const auto& d : due) {
+                    // a pass that cannot be run, or a listed contract the pass would not treat as
+                    // a free row, makes no switch today
+                    if (!dry_refusal.empty() || (!d.in_band && !dry.free[d.i_to])) {
+                        wait(d.i_from, d.i_to);
+                        continue;
+                    }
+                    scaled_target[d.i_to] = dry.scaled_target[d.i_to];
+                    kept.push_back(d);
+                }
+                due = std::move(kept);
+            }
+            for (const auto& d : due) {
+                const ListingConversion& c = d.c;
+                const size_t i_from = d.i_from;
+                const size_t i_to = d.i_to;
+                const bool in_band = d.in_band;
+                const double u_to = in.multiplier[i_to] * in.close[i_to] / in.capital;
                 // rule open_at_target puts the whole rounded target on the first sleeve that
                 // signals the listed contract (a one-sleeve book: its sleeve)
                 size_t target_sleeve = 0;
@@ -2366,8 +2445,8 @@ Result<void> PortfolioManager::rebalance_one_pass(
                 }
                 for (size_t s = 0; s < sids.size(); ++s) {
                     const ListingSwitch plan = plan_listing_switch(
-                        ListingDates::instance().switch_rule(), c.ratio, sleeve_held[s][i_from],
-                        sleeve_held[s][i_to], s == target_sleeve ? in.target[i_to] : 0.0,
+                        rule, c.ratio, sleeve_held[s][i_from], sleeve_held[s][i_to],
+                        s == target_sleeve ? scaled_target[i_to] : 0.0,
                         u_to > 0.0 ? in.cap / u_to : 0.0, in_band);
                     if (plan.close_from == 0.0 && plan.trade_to == 0.0) continue;
                     const std::string& sid = sids[s];
@@ -2396,7 +2475,8 @@ Result<void> PortfolioManager::rebalance_one_pass(
                             " id=" + leg.exec_id + " rule=" +
                             to_string(ListingDates::instance().switch_rule()) +
                             (in_band ? " (deferral band: carried)" : "") + " target=" +
-                            std::to_string(in.target[i_to]) + " (" + c.from + " " +
+                            std::to_string(in.target[i_to]) + " scaled=" +
+                            std::to_string(scaled_target[i_to]) + " (" + c.from + " " +
                             std::to_string(sleeve_held[s][i_from]) + " -> 0; " + c.to + " " +
                             std::to_string(sleeve_held[s][i_to]) + " -> " +
                             std::to_string(plan.new_to) + ")");
@@ -2409,29 +2489,6 @@ Result<void> PortfolioManager::rebalance_one_pass(
                 }
                 listing_switched_.insert(c.to);
                 switched_this_pass.push_back(c.to);
-            }
-        }
-
-        const overlay::Inputs window = overlay::build_inputs(in.tau, symbols, views);
-        in.returns = window.returns;
-        in.ordinals = window.ordinals;
-        // the optimiser's closes and levels on the union of the symbols' own dates
-        for (size_t i = 0; i < n; ++i) {
-            in.opt_ordinals.insert(in.opt_ordinals.end(), own[i].opt_day.begin(), own[i].opt_day.end());
-        }
-        std::sort(in.opt_ordinals.begin(), in.opt_ordinals.end());
-        in.opt_ordinals.erase(std::unique(in.opt_ordinals.begin(), in.opt_ordinals.end()),
-                              in.opt_ordinals.end());
-        const double nan = std::numeric_limits<double>::quiet_NaN();
-        in.opt_closes.assign(in.opt_ordinals.size(), std::vector<double>(n, nan));
-        in.opt_levels.assign(in.opt_ordinals.size(), std::vector<double>(n, nan));
-        for (size_t i = 0; i < n; ++i) {
-            for (size_t k = 0; k < own[i].opt_day.size(); ++k) {
-                const auto row = static_cast<size_t>(
-                    std::lower_bound(in.opt_ordinals.begin(), in.opt_ordinals.end(), own[i].opt_day[k]) -
-                    in.opt_ordinals.begin());
-                in.opt_closes[row][i] = own[i].opt_close[k];
-                in.opt_levels[row][i] = own[i].opt_level[k];
             }
         }
 
