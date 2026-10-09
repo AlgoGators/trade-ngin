@@ -188,6 +188,7 @@ set(TEST_SOURCES
     live/test_live_roll_legs.cpp
     live/test_live_k01_history.cpp
     live/test_live_roll_write_order.cpp
+    live/test_live_listing_guard.cpp
     live/test_execution_price_integrity.cpp
     live/test_margin_manager.cpp
     live/test_live_metrics_calculator.cpp

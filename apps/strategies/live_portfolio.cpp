@@ -28,6 +28,7 @@
 #include "trade_ngin/live/execution_manager.hpp"
 #include "trade_ngin/live/finalized_books_read.hpp"
 #include "trade_ngin/live/late_bar_warning.hpp"
+#include "trade_ngin/live/live_listing_guard.hpp"
 #include "trade_ngin/live/futures_cost_feed.hpp"
 #include "trade_ngin/live/live_data_loader.hpp"
 #include "trade_ngin/live/live_historical_metrics.hpp"
@@ -516,6 +517,60 @@ int main(int argc, char* argv[]) {
         auto symbols = symbols_result.value();
 
         if (symbols_result.is_ok()) {
+            // Declared instrument-id relabels and listing dates (data/listing_dates.hpp; nothing
+            // happens without portfolio.json's instrument_id_relabels and listing_dates). The
+            // relabels are installed here, before any bar or id row is loaded. With contracts
+            // declared the run reads the same tradeable windows the backtest reads, and the guard
+            // (live/live_listing_guard.hpp) judges the symbol list as the database gives it and
+            // the stored Day T-1 book: a refusal sits above the live_run_metadata upsert like the
+            // other refusals, so a refused run leaves no row.
+            if (!app_config.instrument_id_relabels.empty()) {
+                ListingDates::instance().set_relabels(app_config.instrument_id_relabels);
+                std::string line = "INSTRUMENT_ID_RELABELS in force (not rolls):";
+                for (const auto& r : app_config.instrument_id_relabels) {
+                    line += " " + r.symbol + " from " + r.date + " id " + r.to + " is read as " + r.from + ";";
+                }
+                INFO(line);
+            }
+            if (!app_config.listing_dates.empty()) {
+                ListingDates::instance().set(app_config.listing_dates);
+                // each sleeve's stored book on its own (one sleeve's zero row must not hide
+                // another's holding), every non-zero row kept
+                std::unordered_map<std::string, Position> listing_book;
+                for (const auto& sleeve : strategy_names) {
+                    auto sleeve_book = db->load_positions_by_date(
+                        combined_strategy_id, sleeve, portfolio_id, now - std::chrono::hours(24),
+                        "trading.positions");
+                    if (sleeve_book.is_error()) {
+                        const std::string line =
+                            "LISTING_DATE_REFUSAL sleeve " + sleeve +
+                            "'s stored Day T-1 book is unreadable (" +
+                            std::string(sleeve_book.error()->what()) +
+                            "). Refusing to run: it cannot be checked for a predecessor contract.";
+                        ERROR(line);
+                        std::cerr << line << std::endl;
+                        return 1;
+                    }
+                    for (const auto& [symbol, position] : sleeve_book.value()) {
+                        if (position.quantity.as_double() != 0.0) listing_book[symbol] = position;
+                    }
+                }
+                const auto listing_refusals = live_listing_refusals(
+                    app_config.listing_dates, symbols, listing_book,
+                    SessionClassifier::ymd(SessionClassifier::day_of(now - std::chrono::hours(24))));
+                for (const auto& line : listing_refusals) {
+                    ERROR(line);
+                    std::cerr << line << std::endl;
+                }
+                if (!listing_refusals.empty()) {
+                    return 1;
+                }
+                std::string line = "LISTING_DATES in force:";
+                for (const auto& c : app_config.listing_dates) {
+                    line += " " + c.symbol + " from " + c.listed + " (before it " + c.before + ");";
+                }
+                INFO(line);
+            }
             // Remove continuous contract variants (.c.0) and full-size ES
             // Using remove_if to avoid undefined behavior from erase-during-iteration
             symbols.erase(
@@ -896,6 +951,8 @@ int main(int argc, char* argv[]) {
         }
 
         auto all_bars = conversion_result.value();
+        // a declared vendor relabel is read on every loaded bar (a no-op with none declared)
+        ListingDates::instance().apply_relabels(all_bars);
         INFO("Loaded " + std::to_string(all_bars.size()) + " total bars");
 
         // Update price manager with bars to extract T-1 and T-2 prices
@@ -1117,20 +1174,26 @@ int main(int argc, char* argv[]) {
                       ". Refusing to run: the window's first bars cannot be judged.");
                 return 1;
             }
-            session_classifier.add_bars(k01_classifier_history(history_bars.value(), start_date));
+            // the bars before the window and their id rows are read as the window's are: a
+            // declared vendor relabel applied (a no-op with none declared)
+            std::vector<Bar> history = history_bars.value();
+            ListingDates::instance().apply_relabels(history);
+            session_classifier.add_bars(k01_classifier_history(history, start_date));
             estimator_history_bars = estimator_history_consumed(
-                history_bars.value(), start_date,
-                db->get_futures_instrument_ids(symbols, estimator_history_start(start_date),
-                                               start_date));
+                history, start_date,
+                ListingDates::instance().read_ids(
+                    symbols, db->get_futures_instrument_ids(
+                                 symbols, estimator_history_start(start_date), start_date)));
         }
         // T-7b-2 C10a (HD 2026-09-24 ruling 16): the instrument-id continuity limb reads each kept
         // bar's vendor id over the window the bars were loaded for (the backtest reads the same
         // query). T-1's verdict reads no later bar: an id change on T-1 is held today and T's bar
         // confirms it a roll or a one-day flip on the next run.
         {
-            const auto id_feed = feed_instrument_ids(
-                session_classifier,
+            const auto id_rows = ListingDates::instance().read_ids(
+                symbols,
                 db->get_futures_instrument_ids(symbols, k01_history_start, end_date));
+            const auto id_feed = feed_instrument_ids(session_classifier, id_rows);
             if (id_feed.fed) {
                 INFO(id_feed.line);
             } else {
@@ -1251,7 +1314,11 @@ int main(int argc, char* argv[]) {
                 for (const auto& [symbol, position] : stored_book.value()) {
                     if (position.quantity.as_double() == 0.0) continue;
                     auto& contract = recorded_contract[symbol];
-                    if (contract.empty()) contract = position.instrument_id;
+                    // a stored id is read as the bars are: through the declared relabels
+                    if (contract.empty()) {
+                        contract = ListingDates::instance().read_id(
+                            symbol, now - std::chrono::hours(24), position.instrument_id);
+                    }
                 }
             }
             auto stored_legs = db->get_stored_roll_contracts(combined_strategy_id, portfolio_id, now,
@@ -1264,7 +1331,9 @@ int main(int argc, char* argv[]) {
             }
             for (const auto& [symbol, contract] : stored_legs.value()) {
                 const auto held = recorded_contract.find(symbol);
-                if (held != recorded_contract.end() && !contract.empty()) held->second = contract;
+                if (held != recorded_contract.end() && !contract.empty()) {
+                    held->second = ListingDates::instance().read_id(symbol, now, contract);
+                }
             }
             roll_state = live_rolls_by_state(strategy_feed_bars, recorded_contract,
                                              t1_classification.t1_date);
