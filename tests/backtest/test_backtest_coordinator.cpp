@@ -19,7 +19,6 @@ namespace {
 BacktestCoordinatorConfig default_config() {
     BacktestCoordinatorConfig c;
     c.initial_capital = 1'000'000.0;
-    c.use_risk_management = false;
     c.use_optimization = false;
     c.store_results = false;
     c.warmup_days = 0;
@@ -129,15 +128,13 @@ TEST_F(BacktestCoordinatorTest, InitializeCreatesAllSubComponents) {
 
 TEST_F(BacktestCoordinatorTest, ConstraintsRespectConfigEnableFlags) {
     auto cfg = default_config();
-    cfg.use_risk_management = true;
     cfg.use_optimization = true;
     BacktestCoordinator coord(db_, registry_, cfg);
     ASSERT_TRUE(coord.initialize().is_ok());
     auto* cm = coord.get_constraints_manager();
     ASSERT_NE(cm, nullptr);
-    // Flags are forwarded but dependencies (risk_manager/optimizer) are still null
-    // until the run_* path injects them, so the enabled-checks remain false.
-    EXPECT_FALSE(cm->is_risk_management_enabled());
+    // The optimization flag is forwarded but the optimizer dependency is still null
+    // (nothing injects it), so the enabled-check remains false.
     EXPECT_FALSE(cm->is_optimization_enabled());
 }
 

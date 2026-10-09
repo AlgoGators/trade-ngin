@@ -585,8 +585,9 @@ int main(int argc, char* argv[]) {
             app_config.strategy_defaults.max_strategy_allocation;
         portfolio_config.min_strategy_allocation =
             app_config.strategy_defaults.min_strategy_allocation;
-        portfolio_config.use_optimization = app_config.strategy_defaults.use_optimization;
-        portfolio_config.use_risk_management = app_config.strategy_defaults.use_risk_management;
+        portfolio_config.use_optimization = app_config.use_optimization;
+        portfolio_config.risk_modules = app_config.risk_schema.portfolio;
+        portfolio_config.sleeve_risk_modules = app_config.risk_schema.sleeves;
         portfolio_config.opt_config = opt_config;
         portfolio_config.risk_config = risk_config;
 
@@ -808,8 +809,7 @@ int main(int argc, char* argv[]) {
                  std::to_string(allocation * 100.0) + "%");
 
             auto add_result =
-                portfolio->add_strategy(strategy, allocation, portfolio_config.use_optimization,
-                                        portfolio_config.use_risk_management);
+                portfolio->add_strategy(strategy, allocation, portfolio_config.use_optimization);
 
             if (add_result.is_error()) {
                 ERROR("Failed to add strategy " + strat_name +
@@ -1080,7 +1080,6 @@ int main(int argc, char* argv[]) {
             portfolio_config_json["reserve_capital"] =
                 static_cast<double>(portfolio_config.reserve_capital);
             portfolio_config_json["use_optimization"] = portfolio_config.use_optimization;
-            portfolio_config_json["use_risk_management"] = portfolio_config.use_risk_management;
 
             // Convert strategy_allocations to JSON
             nlohmann::json strategy_alloc_json(strategy_allocations);
@@ -1246,7 +1245,7 @@ int main(int argc, char* argv[]) {
         // Only run strategy calculations if NOT a non-trading day
         // ========================================
         if (!skip_strategy_processing) {
-            // FIX: Seed strategy's positions_ from yesterday's DB snapshot BEFORE prewarm.
+            // FIX: Seed strategy's positions_ from yesterday's DB snapshot BEFORE its feed.
             // Each live invocation is a fresh process where positions_ defaults to zero.
             // The Carver position buffer reads positions_ as the comparison anchor; without
             // seeding it correctly the buffer can't absorb small day-to-day signal jitter
@@ -1293,15 +1292,6 @@ int main(int argc, char* argv[]) {
                     INFO("No yesterday positions to seed for strategy " +
                          seed_strategy_name + " (first run or no data)");
                 }
-            }
-
-            // Pre-warm strategy state so portfolio can pull price history for optimization/risk
-            INFO("Preprocessing data in strategy to populate price history...");
-            auto strat_prewarm = tf_strategy->on_data(all_bars);
-            if (strat_prewarm.is_error()) {
-                std::cerr << "Failed to preprocess data in strategy: "
-                          << strat_prewarm.error()->what() << std::endl;
-                return 1;
             }
 
             // Process data through portfolio pipeline (optimization + risk), mirroring backtest

@@ -95,7 +95,6 @@ struct StrategyBacktestConfig : public ConfigBase {
  */
 struct PortfolioBacktestConfig : public ConfigBase {
     Decimal initial_capital{Decimal(1000000.0)};  // Initial capital for portfolio
-    bool use_risk_management{false};              // Enable risk management
     bool use_optimization{false};                 // Enable optimization
     RiskConfig risk_config;
     DynamicOptConfig opt_config;
@@ -112,7 +111,6 @@ struct PortfolioBacktestConfig : public ConfigBase {
     nlohmann::json to_json() const override {
         nlohmann::json j;
         j["initial_capital"] = static_cast<double>(initial_capital);
-        j["use_risk_management"] = use_risk_management;
         j["use_optimization"] = use_optimization;
         j["risk_config"] = risk_config.to_json();
         j["opt_config"] = opt_config.to_json();
@@ -126,8 +124,6 @@ struct PortfolioBacktestConfig : public ConfigBase {
     void from_json(const nlohmann::json& j) override {
         if (j.contains("initial_capital"))
             initial_capital = Decimal(j.at("initial_capital").get<double>());
-        if (j.contains("use_risk_management"))
-            use_risk_management = j.at("use_risk_management").get<bool>();
         if (j.contains("use_optimization"))
             use_optimization = j.at("use_optimization").get<bool>();
         if (j.contains("risk_config"))

@@ -21,5 +21,6 @@
         "vol_lookback_long": 252
       }
     }
-  }
+  },
+  "use_optimization": true
 }

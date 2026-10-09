@@ -102,5 +102,27 @@ inline Result<std::vector<EquityStrategyEntry>> collect_enabled_equity_strategie
     return Result<std::vector<EquityStrategyEntry>>(std::move(entries));
 }
 
+/**
+ * @brief Refuse to start when the config asks for the optimizer on an equity book.
+ *
+ * Both equity runners hard-code PortfolioConfig::use_optimization to false (HD
+ * 2026-09-01: the dynamic optimizer is a trend-following construct that cannot even see
+ * an equity strategy). Schema 2 makes `use_optimization` an explicit, required key in
+ * portfolio.json, which creates a contradiction the hard-code would win silently -- the
+ * operator would read `true` in the file and believe it. So the runner stops instead.
+ *
+ * Shared rather than written twice so the live and backtest runners cannot drift.
+ *
+ * @return an error carrying the refusal message, or OK (and silence) when false.
+ */
+inline Result<void> refuse_if_optimizer_requested(bool config_use_optimization) {
+    if (!config_use_optimization) return Result<void>();
+    return make_error<void>(
+        ErrorCode::INVALID_DATA,
+        "Refusing to start: portfolio.json sets use_optimization=true, but the equity runners "
+        "do not run the optimizer (HD 2026-09-01; see the comment at the hard-code).",
+        "equity_strategy_builder");
+}
+
 }  // namespace apps
 }  // namespace trade_ngin

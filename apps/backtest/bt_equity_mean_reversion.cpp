@@ -162,6 +162,16 @@ int main() {
         // be in a portfolio with max_gross_leverage > 1.0 -- cash accounts
         // can't borrow, so a leverage cap above 1.0 is structurally invalid.
         // Fail fast at startup rather than silently producing nonsense margin.
+        // The optimizer is hard-coded off below (HD 2026-09-01). A config that says
+        // otherwise is a contradiction, and silently winning it would leave the operator
+        // believing a setting that does nothing. Silent on today's config, which says false.
+        if (auto optimizer_guard =
+                apps::refuse_if_optimizer_requested(app_config.use_optimization);
+            optimizer_guard.is_error()) {
+            ERROR(std::string(optimizer_guard.error()->what()));
+            return 1;
+        }
+
         if (app_config.risk_config.max_gross_leverage > 1.0) {
             for (const auto& symbol : symbols) {
                 auto inst = registry.get_equity_instrument(symbol);
@@ -213,8 +223,7 @@ int main() {
         // ========================================
         BacktestCoordinatorConfig coord_config;
         coord_config.initial_capital = initial_capital;
-        coord_config.use_risk_management = app_config.strategy_defaults.use_risk_management;
-        coord_config.use_optimization = app_config.strategy_defaults.use_optimization;
+        coord_config.use_optimization = app_config.use_optimization;
         coord_config.store_trade_details = app_config.backtest.store_trade_details;
         coord_config.portfolio_id = app_config.portfolio_id;
 
@@ -297,7 +306,8 @@ int main() {
         portfolio_config.total_capital = Decimal(initial_capital);
         portfolio_config.reserve_capital = Decimal(initial_capital * app_config.reserve_capital_pct);
         portfolio_config.use_optimization = false;
-        portfolio_config.use_risk_management = app_config.strategy_defaults.use_risk_management;
+        portfolio_config.risk_modules = app_config.risk_schema.portfolio;
+        portfolio_config.sleeve_risk_modules = app_config.risk_schema.sleeves;
         portfolio_config.allow_fractional_positions = any_fractional_shares;
         portfolio_config.risk_config = app_config.risk_config;
         INFO(std::string("Fractional positions permitted: ") +
@@ -306,8 +316,7 @@ int main() {
         auto portfolio = std::make_shared<PortfolioManager>(portfolio_config);
 
         for (const auto& [strategy, weight] : strategies) {
-            auto add_result = portfolio->add_strategy(strategy, weight, false,
-                                                       portfolio_config.use_risk_management);
+            auto add_result = portfolio->add_strategy(strategy, weight, false);
             if (add_result.is_error()) {
                 ERROR("Failed to add strategy to portfolio: " +
                       std::string(add_result.error()->what()));
