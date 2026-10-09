@@ -13,7 +13,10 @@
 #              (published_by system:non-trading-day), and the next trading day runs without a
 #              desk publish of it; an unpublished trading day refuses the next run;
 #   ruling 16  a desk flatten of a held symbol stores a 0-quantity qt row priced at the latest
-#              known price, with moved_by.
+#              known price, with moved_by;
+#   hardening  the override replaces the qt day's fills and marks the day last; an approval of a
+#              proposal that moved after its snapshot is refused (C1); a published day refuses a second publish and a desk run, and a
+#              model re-run leaves its qt and qt_proposal alone (C3).
 set -uo pipefail
 PID=QT_E2E_PORTFOLIO
 DIR=qt_e2e
@@ -70,16 +73,44 @@ SAVE=$(q "INSERT INTO trading.position_overrides (portfolio_id, date, kind, requ
 check "$(run --desk --portfolio-config $DIR --date 2026-10-06 --audit-id "$SAVE")" 0 "desk run 10-06"
 echo "   desk run gave $SYM: $(q "SELECT s->>'given' || ' moved_by ' || (s->>'moved_by') FROM trading.position_overrides, jsonb_array_elements(result->'symbols') s WHERE id = $SAVE AND s->>'symbol' = '$SYM'")"
 # the loop may keep it (the no-trade buffer); an approved override trades the flatten exactly
-# Migration 025: a row is inserted pending and moves pending -> running -> done (the e-mail step).
-REQ=$(q "INSERT INTO trading.position_overrides (portfolio_id, date, kind, requested_by, reason) VALUES ('$PID', '2026-10-06', 'override_request', 'check@x.org', 'check: flatten exactly') RETURNING id")
+# The request as AlgoLens writes it (contract C1): the day's qt_proposal snapshot, sorted by
+# (strategy_name, symbol, quantity), and the SHA-256 of its json.dumps(separators=(",", ":")) bytes;
+# inserted pending, then e-mailed (running, token, done) as the agent moves it.
+SNAP="(SELECT '[' || COALESCE(string_agg(format('{\"strategy_name\":%s,\"symbol\":%s,\"quantity\":%s}', to_json(strategy_name)::text, to_json(symbol)::text, trunc(quantity)::bigint), ',' ORDER BY strategy_name COLLATE \"C\", symbol COLLATE \"C\", trunc(quantity)), '') || ']' AS s FROM trading.positions WHERE portfolio_id = '$PID' AND date = '2026-10-06' AND portfolio_type = 'qt_proposal')"
+REQ=$(q "INSERT INTO trading.position_overrides (portfolio_id, date, kind, requested_by, reason, payload) SELECT '$PID', '2026-10-06', 'override_request', 'check@x.org', 'check: flatten exactly', jsonb_build_object('proposal', s::jsonb, 'proposal_sha256', encode(sha256(convert_to(s, 'UTF8')), 'hex')) FROM $SNAP x RETURNING id")
 q "UPDATE trading.position_overrides SET status = 'running', started_at = now() WHERE id = $REQ" >/dev/null
-q "UPDATE trading.position_overrides SET status = 'done', finished_at = now(), token_hash = 'x', token_expires_at = now() + interval '48 hours' WHERE id = $REQ" >/dev/null
+q "UPDATE trading.position_overrides SET status = 'done', finished_at = now(), token_hash = md5(random()::text), token_expires_at = now() + interval '48 hours' WHERE id = $REQ" >/dev/null
 DEC=$(q "INSERT INTO trading.position_overrides (portfolio_id, date, kind, requested_by, payload, parent_id, approver_role) VALUES ('$PID', '2026-10-06', 'override_decision', 'vp@x.org', '{\"approved\":true}', $REQ, 'vp') RETURNING id")
 check "$(run --override --portfolio-config $DIR --date 2026-10-06 --audit-id "$DEC")" 0 "override run 10-06"
 ZERO=$(q "SELECT count(*) || ' ' || bool_and(quantity = 0)::text || ' ' || bool_and(average_price > 0)::text || ' ' || bool_and(moved_by IS NOT NULL)::text FROM trading.positions WHERE portfolio_id = '$PID' AND date = '2026-10-06' AND portfolio_type = 'qt' AND symbol = '$SYM'")
 echo "   qt rows of $SYM: $ZERO (count, all zero, priced, moved_by)"
 check "$(echo "$ZERO" | cut -d' ' -f2-)" "true true true" "the close is a zero-quantity qt row, priced, with moved_by"
 check "$(q "SELECT count(*) > 0 FROM trading.executions WHERE portfolio_id = '$PID' AND date = '2026-10-06' AND portfolio_type = 'qt' AND symbol = '$SYM' AND order_id LIKE 'qt-%'")" t "the close traded in qt with a qt- order id"
+
+echo "== hardening (contract C1 to C5)"
+# item 2: the override replaced the qt day's executions: no qt fill of a symbol the book did not
+# trade survives from the model's copy (every non-ROLL qt fill of the day was written by this run)
+check "$(q "SELECT count(*) FROM trading.executions e WHERE e.portfolio_id = '$PID' AND e.date = '2026-10-06' AND e.portfolio_type = 'qt' AND e.execution_type <> 'ROLL' AND e.symbol = '$SYM' AND e.side = (SELECT CASE WHEN $HELD > 0 THEN 'BUY' ELSE 'SELL' END)")" 0 "no copied model fill of $SYM in the same direction survives the override"
+check "$(q "SELECT book_source FROM trading.live_results WHERE portfolio_id = '$PID' AND date = '2026-10-06' AND portfolio_type = 'qt'")" override "the override marked its day last"
+# C1: a request whose proposal moved after it was snapshotted cannot be approved (a second
+# decision on the first request is refused by migration 025's unique index, and by the engine)
+REQ2=$(q "INSERT INTO trading.position_overrides (portfolio_id, date, kind, requested_by, reason, payload) SELECT '$PID', '2026-10-06', 'override_request', 'check@x.org', 'check: a moved proposal', jsonb_build_object('proposal', s::jsonb, 'proposal_sha256', encode(sha256(convert_to(s, 'UTF8')), 'hex')) FROM $SNAP x RETURNING id")
+q "UPDATE trading.position_overrides SET status = 'running', started_at = now() WHERE id = $REQ2" >/dev/null
+q "UPDATE trading.position_overrides SET status = 'done', finished_at = now(), token_hash = md5(random()::text), token_expires_at = now() + interval '48 hours' WHERE id = $REQ2" >/dev/null
+q "UPDATE trading.positions SET quantity = quantity + 1 WHERE portfolio_id = '$PID' AND date = '2026-10-06' AND portfolio_type = 'qt_proposal' AND symbol = '$SYM'" >/dev/null
+DEC2=$(q "INSERT INTO trading.position_overrides (portfolio_id, date, kind, requested_by, payload, parent_id, approver_role) VALUES ('$PID', '2026-10-06', 'override_decision', 'pres@x.org', '{\"approved\":true}', $REQ2, 'president') RETURNING id")
+check "$(run --override --portfolio-config $DIR --date 2026-10-06 --audit-id "$DEC2")" 2 "an approval of a moved proposal is refused"
+check "$(q "SELECT status || ' | ' || message FROM trading.position_overrides WHERE id = $DEC2")" "refused | the proposal changed after the override was requested; request a new override" "its row is refused with the contract's message"
+publish 2026-10-06
+# C3: a published day is frozen
+PUB2=$(q "INSERT INTO trading.position_overrides (portfolio_id, date, kind, requested_by) VALUES ('$PID', '2026-10-06', 'publish', 'check@x.org') RETURNING id")
+check "$(run --publish --portfolio-config $DIR --date 2026-10-06 --audit-id "$PUB2")" 2 "a second publish of 10-06 is refused"
+SAVE2=$(q "INSERT INTO trading.position_overrides (portfolio_id, date, kind, requested_by, reason, payload) VALUES ('$PID', '2026-10-06', 'save', 'check@x.org', 'check: after publish', '{}') RETURNING id")
+check "$(run --desk --portfolio-config $DIR --date 2026-10-06 --audit-id "$SAVE2")" 2 "a desk run on a published day is refused"
+FP="SELECT md5(string_agg(t, ';' ORDER BY t)) FROM (SELECT to_jsonb(p)::text t FROM trading.positions p WHERE portfolio_id = '$PID' AND date = '2026-10-06' AND portfolio_type IN ('qt', 'qt_proposal') UNION ALL SELECT (to_jsonb(r) - 'id' - 'created_at')::text FROM trading.live_results r WHERE portfolio_id = '$PID' AND date = '2026-10-06' AND portfolio_type = 'qt') x"
+BEFORE=$(q "$FP")
+check "$(run --portfolio-config $DIR --date 2026-10-06)" 0 "a model re-run of the published 10-06"
+check "$(q "$FP")" "$BEFORE" "the re-run left the published day's qt and qt_proposal alone"
 
 echo "== $([ "$FAILS" -eq 0 ] && echo "ALL PASSED" || echo "$FAILS FAILED")"
 exit "$FAILS"

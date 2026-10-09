@@ -903,6 +903,16 @@ Result<void> ConfigLoader::check_overlay(const nlohmann::json& overlay,
                                     "ConfigLoader");
         }
     }
+    // Review E#12: the QT block (qt.desk_editable and anything under qt) is read from
+    // portfolio.json by the runner itself, never from the merged config, so an override of it
+    // would be recorded in settings_used and ignored by the run.
+    if (overlay.contains("qt")) {
+        return make_error<void>(ErrorCode::INVALID_DATA,
+                                "qt (the desk settings, e.g. qt.desk_editable) cannot be "
+                                "overridden from the database: the runner reads them from "
+                                "portfolio.json only",
+                                "ConfigLoader");
+    }
     if (find_secret_key(overlay, "", &where)) {
         return make_error<void>(ErrorCode::INVALID_DATA,
                                 where + " looks like a credential and cannot be overridden",
