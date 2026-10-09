@@ -70,7 +70,7 @@ Constraints and indexes:
   - Rebuild `position_overrides` as in §4.
   - Add `live_results.book_source text check in ('model','desk','override')`.
   - Add `strategy_registry.portfolio_group text` and `strategy_registry.desk_editable boolean not null default false`. (The engine never reads `strategy_registry`. It ships here only because trade-ngin owns the migration chain.)
-  - Drop `trading.risk_limits`, `trading.portfolios`, `trading.strategy_book_memberships` and `trading.portfolio_assignments` (ruling 28). First confirm that AlgoLens main does not reference them.
+- **024**: drop `trading.risk_limits`, `trading.portfolios`, `trading.strategy_book_memberships` and `trading.portfolio_assignments` (ruling 28). It is applied separately and is irreversible; the pre-QT backup on the host holds them. First confirm that AlgoLens main does not reference them.
   - Register the two QT portfolios in `strategy_registry`.
 
 ## 6. gRPC (`proto/qt/v1/desk.proto`, #160)

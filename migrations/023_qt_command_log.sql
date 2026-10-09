@@ -13,12 +13,11 @@
 --      Master doc ruling 9: each day's record says which happened.
 --   3. trading.strategy_registry.portfolio_group and desk_editable (ruling 20 and section 2 of the
 --      contract), and the two QT portfolios.
---   4. Drop trading.risk_limits, trading.portfolios, trading.strategy_book_memberships and
---      trading.portfolio_assignments: added outside merged PRs, read by nothing on main in either
---      repo (ruling 28).
 --
--- SAFETY: transactional; refuses on a non-empty position_overrides; the drops are of tables no
--- code on main reads.
+-- The ruling-28 drops (risk_limits, portfolios, strategy_book_memberships, portfolio_assignments)
+-- are in 024, applied separately.
+--
+-- SAFETY: transactional; refuses on a non-empty position_overrides; otherwise additive.
 
 BEGIN;
 
@@ -115,10 +114,5 @@ VALUES
      'live', 'qt_conservative', false)
 ON CONFLICT (id) DO NOTHING;
 
--- 4. Tables ruling 28 drops.
-DROP TABLE IF EXISTS trading.portfolio_assignments;
-DROP TABLE IF EXISTS trading.strategy_book_memberships;
-DROP TABLE IF EXISTS trading.portfolios;
-DROP TABLE IF EXISTS trading.risk_limits;
 
 COMMIT;

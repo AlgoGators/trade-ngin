@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Verifies migration 023 (the QT command log, live_results.book_source, the registry columns and QT
-# portfolios, and the ruling-28 drops) and its rollback on a real PostgreSQL.
+# Verifies migrations 023 (the QT command log, live_results.book_source, the registry columns and QT
+# portfolios) and 024 (the ruling-28 drops), and the 023 rollback, on a real PostgreSQL.
 #
 #   PGHOST=... PGPORT=... PGUSER=... PGPASSWORD=... migrations/test_023_qt_command_log.sh
 #
@@ -70,6 +70,7 @@ refuses "INSERT INTO trading.live_results (strategy_id, portfolio_id, date, book
     || fail "bad book_source accepted"
 [ "$(q "SELECT count(*) FROM trading.strategy_registry WHERE portfolio_group='qt_conservative'")" = "2" ] || fail "QT portfolios missing"
 [ "$(q "SELECT desk_editable FROM trading.strategy_registry WHERE id='trendfollowing'")" = "f" ] || fail "desk_editable default"
+psql -X -q -v ON_ERROR_STOP=1 -d "$DB" -f "$HERE/024_drop_retired_qt_tables.sql" >/dev/null
 for t in risk_limits portfolios strategy_book_memberships portfolio_assignments; do
     [ -z "$(q "SELECT to_regclass('trading.$t')")" ] || fail "trading.$t not dropped"
 done
