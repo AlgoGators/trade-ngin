@@ -1,5 +1,6 @@
 # Migrations
 
+<<<<<<< HEAD
 Apply in the order below. Each `NNN_name.sql` has a `NNN_name_rollback.sql` beside it, and most
 have a `test_NNN_*.sh` that runs the migration and its rollback against a throwaway database
 (each script says how to call it and refuses production by name).
@@ -36,3 +37,12 @@ qt-platform-preview) and are retired, so the numbers are never reused (see the h
   The binary from 021 on names `portfolio_type` in every read, write and delete of positions,
   executions, live_results and equity_curve, and fails against a database without 021.
 - A rollback refuses while it would lose rows a later book wrote; read its header first.
+=======
+Apply in number order. Each `NNN_name.sql` has a `NNN_name_rollback.sql`; where a
+`test_NNN_*.sh` exists it applies and rolls back the migration on a throwaway database
+(`MIGRATION_TEST_DB` = `PGDATABASE`).
+
+| No. | File | What it does |
+|-----|------|--------------|
+| 022 | `022_strategy_config.sql` | `trading.strategy_config` (desk settings, versioned, one active row per portfolio); `settings_used`, `published_by`, `published_at` on `trading.live_run_metadata` (QT plan E2) |
+>>>>>>> 5c7c768d (migrations: 022 strategy_config and settings_used on live_run_metadata)
