@@ -88,7 +88,10 @@ def test_run_desk_is_idempotent(stub, agent, cstore, runner):
 
 @pytest.mark.parametrize("status", ["running", "refused", "failed"])
 def test_run_desk_never_reruns_a_claimed_row(stub, agent, cstore, runner, status):
-    cstore.add(make_row(12, "save", status=status))
+    # A young 'running' row after the startup recovery may be an engine started by hand; an
+    # orphaned one is re-driven (test_hardening.py).
+    agent.dispatcher.recovered = True
+    cstore.add(make_row(12, "save", status=status, started_at=now()))
     reply = run_desk(stub, 12)
     assert reply.status == pb.COMMAND_STATUS_ACCEPTED and f"already {status}" in reply.message
     agent.wait()
@@ -236,7 +239,8 @@ def test_override_with_email_disabled_writes_the_mail_into_result(stub, agent, c
     assert reply.status == pb.COMMAND_STATUS_ACCEPTED
     agent.wait()
     row = cstore.rows[40]
-    assert row.status == "done" and row.message == "e-mail disabled: body logged in result"
+    assert row.status == "done"
+    assert row.message == "e-mail disabled (QT_EMAIL_DISABLED=1): body logged in result"
     assert row.result["emailed"] == [] and row.result["email_disabled"] is True
     mail = row.result["email"]
     assert mail["to"] == ["vp@algogators.com", "pres@algogators.com"]
@@ -267,7 +271,8 @@ def test_override_email_sent(stub, agent, cstore, settings, config_dir, caplog):
     request_override(stub, 40)
     agent.wait()
     row = cstore.rows[40]
-    assert row.status == "done" and row.result == {"emailed": ["vp", "president"]}
+    assert row.status == "done" and row.result["emailed"] == ["vp", "president"]
+    assert dt.datetime.fromisoformat(row.result["emailed_at"]) <= now()
     assert row.message == "override e-mail sent to vp and president"
     cfg, to, subject, body = agent.sent[0]
     assert to == ["vp@algogators.com", "pres@algogators.com"]

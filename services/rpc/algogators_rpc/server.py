@@ -3,9 +3,13 @@
     python -m algogators_rpc          (the image: `docker run ... trade-ngin rpc`)
 
 Startup: read the server settings, let each configured service register itself, run every
-background task's on_start hook (the desk re-drives pending rows here), start the periodic
-background threads, then serve. SIGTERM/SIGINT: health goes NOT_SERVING, background loops stop,
-in-flight calls get 10 s to finish.
+background task's on_start hook (the desk recovers and re-drives its command rows here), start
+the periodic background threads, then serve. SIGTERM/SIGINT: health goes
+NOT_SERVING, background loops stop, in-flight calls get 10 s to finish.
+
+grpc.health.v1 is served twice by one HealthServicer: on the main port, and on a health-only
+port (RPC_HEALTH_LISTEN, default 127.0.0.1:50052) with its own two threads, which the container
+healthcheck dials. A main pool busy with slow calls can delay health on 50051 but never there.
 """
 
 from __future__ import annotations
@@ -54,7 +58,18 @@ def set_health(health_servicer, registry: Registry, status) -> None:
         health_servicer.set(name, status)
 
 
-def build_server(registry: Registry, address: str, max_workers: int = 4):
+def build_health_server(health_servicer, address: str, max_workers: int = 2):
+    """A server with grpc.health.v1 only, on its own small pool. Returns (server, port)."""
+    server = grpc.server(futures.ThreadPoolExecutor(max_workers=max_workers,
+                                                    thread_name_prefix="health"))
+    health_pb2_grpc.add_HealthServicer_to_server(health_servicer, server)
+    port = server.add_insecure_port(address)
+    if port == 0:
+        raise RuntimeError(f"cannot bind {address}")
+    return server, port
+
+
+def build_server(registry: Registry, address: str, max_workers: int = 8):
     """Returns (server, health_servicer, bound_port). The server is not started."""
     server = grpc.server(futures.ThreadPoolExecutor(max_workers=max_workers),
                          interceptors=[LoggingInterceptor(), VersionInterceptor(registry)])
@@ -118,6 +133,10 @@ def main(env=None) -> int:
         log.error("refusing to start: configuration", extra={"error": str(exc)})
         return 2
     server, health_servicer, _ = build_server(registry, settings.listen, settings.max_workers)
+    health_server = None
+    if settings.health_listen:
+        health_server, _ = build_health_server(health_servicer, settings.health_listen)
+        health_server.start()
     stop = threading.Event()
     run_start_hooks(registry)
     start_background_tasks(registry, stop)
@@ -131,4 +150,6 @@ def main(env=None) -> int:
     log.info("shutting down")
     set_health(health_servicer, registry, health_pb2.HealthCheckResponse.NOT_SERVING)
     server.stop(grace=SHUTDOWN_GRACE_S).wait()
+    if health_server is not None:
+        health_server.stop(grace=None)
     return 0

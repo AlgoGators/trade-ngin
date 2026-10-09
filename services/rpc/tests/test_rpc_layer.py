@@ -254,7 +254,9 @@ def test_background_tasks_start_hook_then_loop():
 
 def test_server_settings_defaults_and_legacy_names():
     s = load_server_settings({})
-    assert (s.listen, s.max_workers, s.services) == ("0.0.0.0:50051", 4, ("desk",))
+    assert (s.listen, s.max_workers, s.services) == ("0.0.0.0:50051", 8, ("desk",))
+    assert s.health_listen == "127.0.0.1:50052"
+    assert load_server_settings({"RPC_HEALTH_LISTEN": "off"}).health_listen is None
     s = load_server_settings({"DESK_AGENT_LISTEN": "0.0.0.0:6000", "DESK_AGENT_MAX_WORKERS": "2"})
     assert (s.listen, s.max_workers) == ("0.0.0.0:6000", 2)
     s = load_server_settings({"RPC_LISTEN": "127.0.0.1:7000", "DESK_AGENT_LISTEN": "x:1",

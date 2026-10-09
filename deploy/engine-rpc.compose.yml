@@ -1,39 +1,53 @@
 # engine-rpc: the engine's gRPC server (docs/design/rpc.md). Its first service is the QT desk,
-# AlgoLens' command channel to the engine (docs/design/desk-service.md).
+# AlgoLens' command channel to the engine (docs/design/desk-service.md), which also runs the QT
+# catch-up scheduler (the model runs; contract C6).
 #
 # Same image as the cron runner, second entrypoint. Merge into the host's compose project or run
 # alongside it:
 #
 #   docker network create qt        # once per host; AlgoLens' backend joins it too
+#   install -d -m 0755 logs         # the catch-up logs (deploy/qt-engine.logrotate)
 #   docker compose -f docker-compose.yml -f engine-rpc.compose.yml up -d engine-rpc
 #
 # No host port is published: clients reach it as engine-rpc:50051 on the `qt` network only. The
 # alias desk-agent keeps the old address working for one release.
-# The desk runs the engine binary (--desk / --override / --publish) inside this container, so it
-# needs the runner's config directory and enough memory for one engine run.
+# The desk runs the engine binary (--desk / --override / --publish, and the model runs of the
+# catch-up scheduler) inside this container, so it needs the runner's config directory and
+# enough memory for one engine run.
 services:
   engine-rpc:
     image: ghcr.io/algogators/trade-ngin:${TAG:-latest}
     container_name: engine-rpc
     command: rpc
-    # Server: RPC_LISTEN (default 0.0.0.0:50051), RPC_MAX_WORKERS (4), RPC_SERVICES (desk).
+    # tini as PID 1: reaps the engine and flock processes the server spawns (no zombies).
+    init: true
+    # Server: RPC_LISTEN (default 0.0.0.0:50051), RPC_MAX_WORKERS (8), RPC_HEALTH_LISTEN
+    # (127.0.0.1:50052, health only, for the healthcheck), RPC_SERVICES (desk).
     # Desk: DB_HOST / DB_PORT / DB_USER / DB_PASSWORD / DB_NAME, or the database block of
     # /app/config/defaults.json. Optional: QT_ENGINE_BINARY, QT_ENGINE_CWD, QT_LOCK_DIR,
-    # QT_JOB_TIMEOUT_S, QT_REDRIVE_INTERVAL_S, QT_APPROVE_URL_BASE, QT_EMAIL_DISABLED=1.
+    # QT_JOB_TIMEOUT_S, QT_STALE_GRACE_S, QT_REDRIVE_INTERVAL_S, QT_APPROVE_URL_BASE,
+    # QT_EMAIL_DISABLED=1 (the only way the override link may land in a row's result).
+    # Catch-up: QT_CATCHUP_ENABLED (1), QT_CATCHUP_PORTFOLIOS
+    # (qt_conservative,qt_conservative_model), QT_CATCHUP_WINDOW (06:00-22:00),
+    # QT_CATCHUP_EVERY_MIN (30), QT_CATCHUP_TODAY_NOT_BEFORE (10:15),
+    # QT_UNPUBLISHED_REMINDER_H (24), QT_CATCHUP_LOCK_WAIT_S (600); New York time.
     env_file: .env
     environment:
-      # "vp=<email>,president=<email>": the override approvers (contract section 6). Passed
-      # through from the shell or .env; without it override requests fail with a message.
+      # "vp=<email>,president=<email>": the override approvers (contract section 6); the
+      # president also gets the catch-up alerts. Passed through from the shell or .env; without
+      # it override requests fail with a message and alerts are only logged.
       QT_APPROVERS: ${QT_APPROVERS:-}
+      QT_LOG_DIR: /var/log/qt-engine
     volumes:
       # portfolios/<dir>/portfolio.json (portfolio_id -> --portfolio-config <dir>), email.json
-      # (override e-mail SMTP) and defaults.json, read-only.
+      # (override e-mail and alert SMTP) and defaults.json, read-only.
       - ./config:/app/config:ro
       # Credential store read by EmailSender for the publish e-mail ({"database", "email"}, mode 600).
       - ./config.json:/app/config.json:ro
-      # flock(1) locks shared with the cron model run, so a desk command never overlaps it.
-      # Mount the same volume at the same path wherever that cron runs.
+      # flock(1) locks: desk jobs, the catch-up model runs and the watchdog all take them here.
       - qt-locks:/tmp/qt-locks
+      # qt-catchup.log, qt-engine-runs.log, qt-alerts.json, qt-catchup.heartbeat.
+      - ./logs:/var/log/qt-engine
     networks:
       qt:
         # The pre-rename DNS name, for AlgoLens builds that still dial desk-agent:50051.
@@ -41,7 +55,14 @@ services:
         aliases: [desk-agent]
     mem_limit: 512m
     restart: unless-stopped
-    # The image's HEALTHCHECK watches cron, which this container does not run.
+    # Bounded `docker logs` (never the daemon config: restarting dockerd restarts live trading).
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    # The image's HEALTHCHECK watches cron, which this container does not run. This dials the
+    # health-only port, which has its own threads.
     healthcheck:
       test: ["CMD", "sh", "-c", "cd /opt/rpc/app && exec /opt/rpc/venv/bin/python -m algogators_rpc.healthcheck"]
       interval: 1m

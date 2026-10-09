@@ -2,6 +2,7 @@ name: rpc
 
 # Generates the gRPC stubs (and algogators/versions.py, from the .proto version headers) from
 # proto/algogators/*.proto and runs the shared rpc layer's tests, the desk service's included.
+# Also runs migration 025's test (the command log the desk service writes) on postgres:16.
 # The C++ pipeline (ci-cd-pipeline.yml) is untouched; the Docker image build there also
 # exercises gen.sh through the rpc-build stage.
 
@@ -11,6 +12,8 @@ on:
     paths:
       - "proto/**"
       - "services/rpc/**"
+      - "migrations/023_*"
+      - "migrations/*025_*"
       - ".github/workflows/rpc.yml"
   pull_request:
     branches:
@@ -20,6 +23,10 @@ on:
       - "services/rpc/**"
       - "scripts/docker-entrypoint.sh"
       - "scripts/qt_grpc_call.py"
+      - "scripts/qt_catchup.sh"
+      - "deploy/**"
+      - "migrations/023_*"
+      - "migrations/*025_*"
       - ".github/workflows/rpc.yml"
 
 permissions:
@@ -44,3 +51,16 @@ jobs:
         run: python -m pytest -q
       - name: qt_grpc_call.py imports against the generated stubs
         run: PYTHONPATH=services/rpc python -c "import importlib.util as u; s = u.spec_from_file_location('call', 'scripts/qt_grpc_call.py'); s.loader.exec_module(u.module_from_spec(s))"
+
+  migration-025:
+    name: migration 025 on postgres 16
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Test 025 and its rollback on a throwaway postgres:16
+        run: |
+          docker run -d --name pg025 -e POSTGRES_PASSWORD=x postgres:16
+          # TCP: the image's init-time server listens on the socket only, so this waits for the real one.
+          for i in $(seq 1 60); do docker exec pg025 pg_isready -h 127.0.0.1 -U postgres && break; sleep 1; done
+          docker cp migrations pg025:/m
+          docker exec -e QT_MIGRATION_TEST_THROWAWAY=1 -u postgres pg025 bash /m/test_025_qt_command_log_hardening.sh

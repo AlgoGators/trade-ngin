@@ -7,15 +7,20 @@ result, message, started_at, finished_at, token_hash and token_expires_at.
 
 Claiming is `UPDATE ... SET status='running' WHERE id = %s AND status = 'pending' RETURNING ...`,
 so two dispatchers (an RPC and the re-drive sweep, or two agents) can never both run a row.
+
+The status moves the 025 trigger allows (contract C4): pending -> running; running -> done,
+refused or failed; running -> pending only for the agent's recovery of a stale or orphaned row,
+which sets `algogators.recovery = 'on'` for its own transaction (`requeue`). Terminal rows are
+final.
 """
 
 from __future__ import annotations
 
 import datetime as dt
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional, Protocol
+from typing import Any, Dict, List, Optional, Protocol, Tuple
 
-from .config import DbConfig
+from .config import CONNECT_TIMEOUT_S, DbConfig
 from .store import StoreError
 
 KINDS = ("save", "override_request", "override_decision", "publish")
@@ -76,13 +81,26 @@ class CommandStore(Protocol):
                message: str) -> bool:
         """running -> done/refused/failed. False if the row was no longer running."""
 
-    def set_token(self, audit_id: int, token_hash: str, hours: int) -> Optional[dt.datetime]:
-        """Store the token hash and an expiry `hours` from now(); returns the expiry."""
+    def record_mail(self, audit_id: int, token_hash: str, hours: int,
+                    result: Dict[str, Any]) -> Optional[dt.datetime]:
+        """On a running override request: the token hash, an expiry `hours` from now() and the
+        result, in one UPDATE (the mail has gone out). Returns the expiry, None if the row was
+        no longer running."""
 
-    def reset_running(self) -> List[int]:
-        """running -> pending for every row (orphans of a previous agent). Returns their ids."""
+    def running_rows(self) -> List[Tuple[CommandRow, Optional[float]]]:
+        """Every 'running' row with its age in seconds (now() - started_at, by the database's
+        clock; None when started_at is NULL), oldest first."""
+
+    def requeue(self, audit_id: int, message: str) -> bool:
+        """running -> pending (the agent's recovery). False if the row was no longer running."""
 
     def pending_rows(self) -> List[CommandRow]: ...
+
+    def decisions_for(self, parent_id: int) -> List[CommandRow]:
+        """Every override_decision row whose parent is `parent_id`, oldest first."""
+
+    def published_at(self, portfolio_id: str, date: dt.date) -> Optional[dt.datetime]:
+        """live_run_metadata.published_at for the day (contract C3), None if unpublished."""
 
     def newest_pending_publish(self, portfolio_id: str, date: dt.date) -> Optional[CommandRow]: ...
 
@@ -90,19 +108,21 @@ class CommandStore(Protocol):
 
 
 class PostgresCommandStore:
-    def __init__(self, db: DbConfig, connect_timeout: int = 10):
+    def __init__(self, db: DbConfig, connect_timeout: int = CONNECT_TIMEOUT_S):
         self._db = db
         self._connect_timeout = connect_timeout
 
-    def _connect(self):
+    def _connect(self, autocommit: bool = True):
         import psycopg
 
         return psycopg.connect(**self._db.conninfo_kwargs(self._connect_timeout),
-                               autocommit=True)
+                               autocommit=autocommit)
 
-    def _run(self, fn):
+    def _run(self, fn, autocommit: bool = True):
         try:
-            with self._connect() as conn, conn.cursor() as cur:
+            # Without autocommit, leaving the `with` commits (or rolls back on an exception).
+            conn = self._connect() if autocommit else self._connect(False)
+            with conn, conn.cursor() as cur:
                 return fn(cur)
         except StoreError:
             raise
@@ -144,30 +164,59 @@ class PostgresCommandStore:
             return cur.fetchone() is not None
         return self._run(q)
 
-    def set_token(self, audit_id: int, token_hash: str, hours: int) -> Optional[dt.datetime]:
+    def record_mail(self, audit_id: int, token_hash: str, hours: int,
+                    result: Dict[str, Any]) -> Optional[dt.datetime]:
         def q(cur):
+            from psycopg.types.json import Jsonb
+
             cur.execute("UPDATE trading.position_overrides "
-                        "SET token_hash = %s, token_expires_at = now() + make_interval(hours => %s) "
+                        "SET token_hash = %s, token_expires_at = now() + make_interval(hours => %s), "
+                        "result = %s "
                         "WHERE id = %s AND status = 'running' RETURNING token_expires_at",
-                        (token_hash, hours, audit_id))
+                        (token_hash, hours, Jsonb(result), audit_id))
             rec = cur.fetchone()
             return rec[0] if rec else None
         return self._run(q)
 
-    def reset_running(self) -> List[int]:
+    def running_rows(self) -> List[Tuple[CommandRow, Optional[float]]]:
         def q(cur):
-            cur.execute("UPDATE trading.position_overrides "
-                        "SET status = 'pending', started_at = NULL, "
-                        "message = 're-driven after agent restart' "
-                        "WHERE status = 'running' RETURNING id")
-            return sorted(r[0] for r in cur.fetchall())
+            cur.execute(f"SELECT {_SELECT}, extract(epoch FROM now() - started_at)::float8 "
+                        "FROM trading.position_overrides WHERE status = 'running' ORDER BY id")
+            return [(CommandRow.from_record(r[:-1]), r[-1]) for r in cur.fetchall()]
         return self._run(q)
+
+    def requeue(self, audit_id: int, message: str) -> bool:
+        def q(cur):
+            # The 025 trigger allows running -> pending only inside a transaction that set this.
+            cur.execute("SET LOCAL algogators.recovery = 'on'")
+            cur.execute("UPDATE trading.position_overrides "
+                        "SET status = 'pending', started_at = NULL, finished_at = NULL, "
+                        "message = %s WHERE id = %s AND status = 'running' RETURNING id",
+                        (message, audit_id))
+            return cur.fetchone() is not None
+        return self._run(q, autocommit=False)
 
     def pending_rows(self) -> List[CommandRow]:
         def q(cur):
             cur.execute(f"SELECT {_SELECT} FROM trading.position_overrides "
                         "WHERE status = 'pending' ORDER BY id")
             return [CommandRow.from_record(r) for r in cur.fetchall()]
+        return self._run(q)
+
+    def decisions_for(self, parent_id: int) -> List[CommandRow]:
+        def q(cur):
+            cur.execute(f"SELECT {_SELECT} FROM trading.position_overrides "
+                        "WHERE kind = 'override_decision' AND parent_id = %s ORDER BY id",
+                        (parent_id,))
+            return [CommandRow.from_record(r) for r in cur.fetchall()]
+        return self._run(q)
+
+    def published_at(self, portfolio_id: str, date: dt.date) -> Optional[dt.datetime]:
+        def q(cur):
+            cur.execute("SELECT max(published_at) FROM trading.live_run_metadata "
+                        "WHERE portfolio_id = %s AND date = %s", (portfolio_id, date))
+            rec = cur.fetchone()
+            return rec[0] if rec else None
         return self._run(q)
 
     def newest_pending_publish(self, portfolio_id: str, date: dt.date) -> Optional[CommandRow]:

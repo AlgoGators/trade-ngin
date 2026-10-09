@@ -70,7 +70,10 @@ SAVE=$(q "INSERT INTO trading.position_overrides (portfolio_id, date, kind, requ
 check "$(run --desk --portfolio-config $DIR --date 2026-10-06 --audit-id "$SAVE")" 0 "desk run 10-06"
 echo "   desk run gave $SYM: $(q "SELECT s->>'given' || ' moved_by ' || (s->>'moved_by') FROM trading.position_overrides, jsonb_array_elements(result->'symbols') s WHERE id = $SAVE AND s->>'symbol' = '$SYM'")"
 # the loop may keep it (the no-trade buffer); an approved override trades the flatten exactly
-REQ=$(q "INSERT INTO trading.position_overrides (portfolio_id, date, kind, requested_by, reason, status, token_hash, token_expires_at) VALUES ('$PID', '2026-10-06', 'override_request', 'check@x.org', 'check: flatten exactly', 'done', 'x', now() + interval '48 hours') RETURNING id")
+# Migration 025: a row is inserted pending and moves pending -> running -> done (the e-mail step).
+REQ=$(q "INSERT INTO trading.position_overrides (portfolio_id, date, kind, requested_by, reason) VALUES ('$PID', '2026-10-06', 'override_request', 'check@x.org', 'check: flatten exactly') RETURNING id")
+q "UPDATE trading.position_overrides SET status = 'running', started_at = now() WHERE id = $REQ" >/dev/null
+q "UPDATE trading.position_overrides SET status = 'done', finished_at = now(), token_hash = 'x', token_expires_at = now() + interval '48 hours' WHERE id = $REQ" >/dev/null
 DEC=$(q "INSERT INTO trading.position_overrides (portfolio_id, date, kind, requested_by, payload, parent_id, approver_role) VALUES ('$PID', '2026-10-06', 'override_decision', 'vp@x.org', '{\"approved\":true}', $REQ, 'vp') RETURNING id")
 check "$(run --override --portfolio-config $DIR --date 2026-10-06 --audit-id "$DEC")" 0 "override run 10-06"
 ZERO=$(q "SELECT count(*) || ' ' || bool_and(quantity = 0)::text || ' ' || bool_and(average_price > 0)::text || ' ' || bool_and(moved_by IS NOT NULL)::text FROM trading.positions WHERE portfolio_id = '$PID' AND date = '2026-10-06' AND portfolio_type = 'qt' AND symbol = '$SYM'")
