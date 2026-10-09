@@ -23,6 +23,23 @@
   "starting_capital": 500000.0,
   "_sizing_note": "required; half_compounding: the book is sized on starting_capital less the drawdown of its cumulative settled net P&L from its running peak, never above starting_capital; starting_capital must equal initial_capital",
   "_equity_slow_rule_note": "required; on the book's first sleeve a negative combined forecast of these symbols stands only when the scaled forecast of every pair named is negative, and is 0 otherwise",
+  "listing_dates": {
+    "switch_rule": "open_at_target",
+    "contracts": [
+      {"symbol": "MES", "listed": "2019-05-06", "before": "ES", "ratio": 10},
+      {"symbol": "MNQ", "listed": "2019-05-06", "before": "NQ", "ratio": 10},
+      {"symbol": "MYM", "listed": "2019-05-06", "before": "YM", "ratio": 10},
+      {"symbol": "M2K", "listed": "2019-05-06", "before": "RTY", "ratio": 10}
+    ]
+  },
+  "_listing_dates_note": "optional; a contract trades only from its listing date and the book trades the contract named in before until then, on the price history stored under the listed contract's symbol, with the pair counted as one instrument. A backtest whose window starts trading before a listing date switches on that date by switch_rule (open_at_target when the key is absent: a held predecessor is exited and the listed contract entered at that day's capped target rounded to whole contracts, with fill ids LC- and LO-; close_reenter, convert and carry_to_target are kept for comparison). A live run trades no predecessor and refuses one in its universe or its stored book on or after the listing date",
+  "instrument_id_relabels": [
+    {"symbol": "MES", "date": "2026-02-22", "from": "42140878", "to": "42003800"},
+    {"symbol": "MNQ", "date": "2026-02-22", "from": "42002475", "to": "42004946"},
+    {"symbol": "MYM", "date": "2026-02-22", "from": "42005850", "to": "42001953"},
+    {"symbol": "M2K", "date": "2026-02-22", "from": "42005017", "to": "42002147"}
+  ],
+  "_instrument_id_relabels_note": "optional; vendor instrument-id changes that are NOT rolls: from date the vendor labels the same contract of symbol with id to where it had used from. Backtest and live read a bar, an id row or a stored contract carrying to as carrying from, so no change bar is held, no ROLL legs or roll costs are booked and that day's move is booked as on any day; the stored instrument_id stays from until the next real roll",
   "use_optimization": true,
   "covariance_history_prices": 756,
   "_covariance_history_prices_note": "daily closes per symbol the PortfolioManager keeps for the optimiser covariance, one per date, oldest dropped first; absent means 756 (the trend sleeve own cap); at least 2",

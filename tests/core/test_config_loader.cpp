@@ -1483,3 +1483,39 @@ TEST_F(ConfigLoaderTest, InstrumentIdRelabelsAreParsedAndAbsentMeansNone) {
             << refused.error()->what();
     }
 }
+
+// The shipped CONSERVATIVE template declares the four equity index pairs with the default rule
+// written out and the four relabels of 2026-02-22; BASE declares neither block.
+TEST_F(ConfigLoaderTest, TheConservativeTemplateDeclaresThePairsAndTheRelabels) {
+    const auto tmpl = tracked_config_template();
+    ASSERT_FALSE(tmpl.empty()) << "config_template/ not found; this test must not skip";
+    auto conservative = ConfigLoader::load(tmpl, "conservative");
+    ASSERT_TRUE(conservative.is_ok()) << (conservative.is_error() ? conservative.error()->what() : "");
+    const AppConfig& c = conservative.value();
+    EXPECT_EQ(c.listing_switch_rule, ListingSwitchRule::kOpenAtTarget);
+    std::vector<std::string> pairs;
+    for (const auto& contract : c.listing_dates) {
+        pairs.push_back(contract.symbol + " " + contract.before + " " + contract.listed + " " +
+                        std::to_string(static_cast<int>(contract.ratio)));
+    }
+    EXPECT_EQ(pairs, (std::vector<std::string>{"MES ES 2019-05-06 10", "MNQ NQ 2019-05-06 10",
+                                               "MYM YM 2019-05-06 10", "M2K RTY 2019-05-06 10"}));
+    std::vector<std::string> relabels;
+    for (const auto& r : c.instrument_id_relabels) {
+        relabels.push_back(r.symbol + " " + r.date + " " + r.from + " " + r.to);
+    }
+    EXPECT_EQ(relabels,
+              (std::vector<std::string>{"MES 2026-02-22 42140878 42003800", "MNQ 2026-02-22 42002475 42004946",
+                                        "MYM 2026-02-22 42005850 42001953", "M2K 2026-02-22 42005017 42002147"}));
+    // every listed contract is one of the book's equity slow rule symbols: the pair is ruled as one
+    for (const auto& contract : c.listing_dates) {
+        EXPECT_NE(std::find(c.equity_slow_rule.symbols.begin(), c.equity_slow_rule.symbols.end(),
+                            contract.symbol),
+                  c.equity_slow_rule.symbols.end())
+            << contract.symbol;
+    }
+    auto base = ConfigLoader::load(tmpl, "base");
+    ASSERT_TRUE(base.is_ok()) << (base.is_error() ? base.error()->what() : "");
+    EXPECT_TRUE(base.value().listing_dates.empty());
+    EXPECT_TRUE(base.value().instrument_id_relabels.empty());
+}
