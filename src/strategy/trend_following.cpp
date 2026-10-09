@@ -456,8 +456,8 @@ Result<void> TrendFollowingStrategy::on_data(const std::vector<Bar>& data) {
                     std::chrono::floor<std::chrono::days>(ts).time_since_epoch().count()));
             }
             // The contract's own pairs: the sleeve's, less the trading rules removed from this
-            // contract by cost (nothing is removed, and nothing here is reached, without
-            // portfolio.json's trading_rule_removals). The pairs left weigh equally and the
+            // contract by cost (without portfolio.json's trading_rule_removals nothing is removed
+            // and no value changes). The pairs left weigh equally and the
             // multiplier is the table's for their number; validate_config refused any list that
             // does not leave the slowest pairs.
             std::vector<std::pair<int, int>> own_pairs;
