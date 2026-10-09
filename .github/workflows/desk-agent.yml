@@ -1,0 +1,42 @@
+name: desk-agent
+
+# Generates the gRPC stubs from proto/qt/v1/desk.proto and runs the desk-agent tests.
+# The C++ pipeline (ci-cd-pipeline.yml) is untouched; the Docker image build there also
+# exercises gen.sh through the desk-agent-build stage.
+
+on:
+  push:
+    branches: [main, prod, staging]
+    paths:
+      - "proto/**"
+      - "services/desk_agent/**"
+      - ".github/workflows/desk-agent.yml"
+  pull_request:
+    branches:
+      - "**"
+    paths:
+      - "proto/**"
+      - "services/desk_agent/**"
+      - "scripts/docker-entrypoint.sh"
+      - ".github/workflows/desk-agent.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: desk-agent stubs and tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v5
+        with:
+          # Ubuntu 24.04's python3, the interpreter the image runs.
+          python-version: "3.12"
+      - name: Install
+        run: python -m pip install -r services/desk_agent/requirements-dev.txt
+      - name: Generate stubs
+        run: PYTHON=python sh services/desk_agent/gen.sh
+      - name: Test
+        working-directory: services/desk_agent
+        run: python -m pytest -q
