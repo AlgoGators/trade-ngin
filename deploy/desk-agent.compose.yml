@@ -27,6 +27,8 @@ services:
       # portfolios/<dir>/portfolio.json (portfolio_id -> --portfolio-config <dir>), email.json
       # (override e-mail SMTP) and defaults.json, read-only.
       - ./config:/app/config:ro
+      # Credential store read by EmailSender for the publish e-mail ({"database", "email"}, mode 600).
+      - ./config.json:/app/config.json:ro
       # flock(1) locks shared with the cron model run, so a desk command never overlaps it.
       # Mount the same volume at the same path wherever that cron runs.
       - qt-locks:/tmp/qt-locks

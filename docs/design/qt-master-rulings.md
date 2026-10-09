@@ -1,7 +1,8 @@
 # QT platform master document (2026-10-08) — rulings excerpt
 
 ## Shape
-- Engine (trade-ngin) and dashboard (AlgoLens) never call each other; they meet only in shared Postgres tables.
+- ~~Engine (trade-ngin) and dashboard (AlgoLens) never call each other; they meet only in shared Postgres tables.~~
+  **Amended 2026-10-09 (Dom):** the two systems call each other. AlgoLens calls the engine's desk-agent over gRPC (`proto/qt/v1/desk.proto`: RunDesk, RequestOverride, RecordDecision, Publish, GetRunStatus) on the private Docker network `qt`. Postgres stays the record: the books, the command log (`position_overrides`), the settings and the publish record all live in the shared tables, and the engine answers by writing them.
 - Three books per editable portfolio per day, same tables, told apart by one column (stream/book):
   - system: model's answer, built from yesterday's FINAL (qt) book. Written by model run.
   - qt_proposal: what the desk asked for. Seeded from system each day by model run; AlgoLens writes desk changes.
