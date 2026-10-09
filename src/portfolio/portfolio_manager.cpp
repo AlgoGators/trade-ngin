@@ -19,6 +19,17 @@ PortfolioManager::PortfolioManager(PortfolioConfig config, std::string id,
       cost_manager_() {
     Logger::register_component("PortfolioManager");
 
+    // The covariance history cap (portfolio.json "covariance_history_prices"). The loader
+    // refuses a value below 2; a PortfolioConfig built in code is held to the same rule,
+    // because a one-price series gives no return and the optimiser would silently drop
+    // every symbol.
+    if (config_.covariance_history_prices < 2) {
+        throw std::invalid_argument(
+            "PortfolioConfig.covariance_history_prices is " +
+            std::to_string(config_.covariance_history_prices) +
+            ": at least 2 prices are needed to compute a return");
+    }
+
     // Initialize optimizer if enabled
     if (config_.use_optimization) {
         optimizer_ = std::make_unique<DynamicOptimizer>(config_.opt_config);
@@ -217,8 +228,7 @@ Result<void> PortfolioManager::add_strategy(std::shared_ptr<StrategyInterface> s
         initial_allocation,
         use_optimization && config_.use_optimization,
         {},  // current positions
-        {},  // target positions
-        next_registration_index_++  // registration order
+        {}   // target positions
     };
 
     strategies_[metadata.id] = std::move(info);
@@ -361,12 +371,12 @@ Result<void> PortfolioManager::process_market_data(const std::vector<Bar>& data,
                 }
             }
 
-            // PM-price-history. The history is read AFTER every strategy has seen this
-            // call's bars (update_historical_returns() copies each strategy's
-            // get_price_history(), which only its on_data() fills), so the optimiser's
-            // newest bar is the bar the strategy signals from. The futures runners'
-            // prewarm, which used to fill the history before this call, is gone with
-            // it. Ruled class C (STAGE3_PLAN §25a.2, §28b.3) and measured (T-4e).
+            // PM-price-history. The history is updated AFTER every strategy has seen this
+            // call's bars, from this call's bars, so the optimiser's newest bar is the bar
+            // the strategy signals from. The futures runners' prewarm, which used to fill
+            // the history before this call, is gone with it. Ruled class C (STAGE3_PLAN
+            // §25a.2, §28b.3) and measured (T-4e). The PM keeps its own history from the
+            // bars (T-6c commit B); no strategy's get_price_history() is read.
             update_historical_returns(data);
         }
 
@@ -1004,81 +1014,72 @@ void PortfolioManager::update_historical_returns(const std::vector<Bar>& data) {
     if (data.empty())
         return;
 
-    // Collect symbols from the data for lookup
-    std::set<std::string> data_symbols;
-    for (const auto& bar : data) {
-        data_symbols.insert(bar.symbol);
-    }
-
-    // Get price history from strategies.
+    // Record this call's closes (T-6c commit B; T-BASE_ADVERSARIAL finding 4, option 4). The
+    // PM keeps its own price history from the bars it is fed -- the same bars every strategy
+    // receives in the loop above -- instead of borrowing the strategies' histories. It used to
+    // copy each strategy's get_price_history() and, when two strategies offered different
+    // series for one symbol, keep the first-registered one; the series then depended on which
+    // sleeve was registered first and on what each sleeve chose to keep (a mean-reversion
+    // sleeve trims to 40 prices, a fast trend sleeve never clears). Now no sleeve is read.
     //
-    // First-registered wins per symbol within THIS call (T-BASE_ADVERSARIAL finding 4; HD's
-    // ruling of 2026-09-19 replaced option 2's keep-longest). The first strategy to supply a
-    // symbol in this call overwrites price_history_[symbol] exactly as before, whatever an
-    // earlier call left there; a later strategy's DIFFERENT series for the same symbol
-    // replaces it only if that strategy was registered (add_strategy) earlier. Without the
-    // rule the winner was whichever strategy strategies_ (an unordered_map) happened to
-    // iterate last. A book whose symbols each come from one strategy (every single-sleeve
-    // book) sees no change. When two strategies offer different series for one symbol, the
-    // symbol is logged once below with the series kept and every offer.
-    std::unordered_map<std::string, std::string> merged_from;  // symbol -> strategy kept this call
-    std::map<std::string, std::vector<std::pair<std::string, size_t>>> contested;  // symbol -> offers
-    bool got_history = false;
-    for (const auto& [id, info] : strategies_) {
-        // Try to get price history from this strategy
-        auto price_history = info.strategy->get_price_history();
-
-        if (!price_history.empty()) {
-            INFO("Retrieved price history from strategy " + id + " for " +
-                 std::to_string(price_history.size()) + " symbols");
-
-            // For each symbol, update our price history
-            for (const auto& [symbol, prices] : price_history) {
-                auto merged = merged_from.find(symbol);
-                if (merged == merged_from.end()) {
-                    // First supply of this symbol in this call: take it
-                    price_history_[symbol] = prices;
-                    merged_from.emplace(symbol, id);
-
-                    DEBUG("Updated price history for " + symbol + " with " +
-                          std::to_string(prices.size()) + " points");
-                } else {
-                    auto& kept = price_history_[symbol];
-                    if (prices != kept) {
-                        // A contest the rule decides: record the first taker once, then this offer
-                        auto& offers = contested[symbol];
-                        if (offers.empty()) {
-                            offers.emplace_back(merged->second, kept.size());
-                        }
-                        offers.emplace_back(id, prices.size());
-                        if (info.registration_index <
-                            strategies_.at(merged->second).registration_index) {
-                            kept = prices;
-                            merged->second = id;
-
-                            DEBUG("Updated price history for " + symbol + " with " +
-                                  std::to_string(prices.size()) + " points");
-                        }
-                    }
-                }
-
-                got_history = true;
-            }
+    // Rules:
+    //  * one close per symbol per DATE (the bar's UTC calendar day): a repeated date
+    //    overwrites the earlier close, so a duplicate bar cannot lengthen a series. This is
+    //    the second line of defence: the futures loader already returns one bar per symbol
+    //    per date (T-6c commit B0), so an overwrite should never happen. When it does -- the
+    //    same date twice in ONE call, or a later call bringing a DIFFERENT close for a stored
+    //    date -- it is logged as PM_HISTORY_REPEATED_DATE. A later call re-feeding a stored
+    //    date with the same close (the BASE and equity runners' bar replay followed by their
+    //    final feed) is the normal case and silent;
+    //  * at most config_.covariance_history_prices dates per symbol, the oldest date dropped
+    //    first (756 by default, the trend sleeve's own cap);
+    //  * a symbol that leaves the feed keeps its series, which simply stops growing; its
+    //    returns are still computed below, and the covariance's truncation to the shortest
+    //    symbol is unchanged.
+    // The returns below are computed from the kept closes in date order exactly as before
+    // (tail-by-count alignment, the 2,520-return cap).
+    const size_t max_prices = config_.covariance_history_prices;
+    std::set<std::string> touched;
+    std::set<std::pair<std::string, int64_t>> seen_this_call;
+    for (const auto& bar : data) {
+        if (bar.symbol.empty())
+            continue;
+        const auto day_point = std::chrono::floor<std::chrono::days>(bar.timestamp);
+        const int64_t day = day_point.time_since_epoch().count();
+        const double close = static_cast<double>(bar.close);
+        auto& series = closes_by_date_[bar.symbol];
+        auto stored = series.find(day);
+        const bool repeated_in_call = !seen_this_call.emplace(bar.symbol, day).second;
+        if (stored != series.end() && (repeated_in_call || stored->second != close)) {
+            const std::chrono::year_month_day ymd{day_point};
+            char date_buf[16];
+            std::snprintf(date_buf, sizeof(date_buf), "%04d-%02u-%02u", static_cast<int>(ymd.year()),
+                          static_cast<unsigned>(ymd.month()), static_cast<unsigned>(ymd.day()));
+            char close_buf[64];
+            std::snprintf(close_buf, sizeof(close_buf), "old_close=%.10g new_close=%.10g",
+                          stored->second, close);
+            WARN("PM_HISTORY_REPEATED_DATE symbol=" + bar.symbol + " date=" + date_buf + " " +
+                 close_buf + " in_call=" + (repeated_in_call ? "1" : "0") +
+                 ": a stored date's close was overwritten");
         }
+        series[day] = close;
+        touched.insert(bar.symbol);
     }
-    (void)got_history;
-
-    for (const auto& [symbol, offers] : contested) {
-        std::string offered;
-        for (const auto& [offer_id, offer_len] : offers) {
-            offered += (offered.empty() ? "" : ",") + offer_id + ":" + std::to_string(offer_len);
+    for (const auto& symbol : touched) {
+        auto& series = closes_by_date_.at(symbol);
+        while (series.size() > max_prices) {
+            series.erase(series.begin());
         }
-        INFO("PM_HISTORY_MERGE symbol=" + symbol + " kept=" + merged_from.at(symbol) +
-             " len=" + std::to_string(price_history_.at(symbol).size()) + " offers=" + offered);
     }
 
     // Now calculate returns for each symbol that has price history
-    for (const auto& [symbol, prices] : price_history_) {
+    for (const auto& [symbol, series] : closes_by_date_) {
+        std::vector<double> prices;
+        prices.reserve(series.size());
+        for (const auto& [day, close] : series) {
+            prices.push_back(close);
+        }
+
         // Clear previous returns for this symbol BEFORE the two-price guard, so a symbol
         // whose history dropped below two prices loses its stale returns instead of keeping
         // those of an older, longer series. find(), not operator[]: a symbol that never had

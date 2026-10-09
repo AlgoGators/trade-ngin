@@ -107,6 +107,7 @@ set(TEST_SOURCES
     portfolio/test_portfolio_manager_internals.cpp
     portfolio/test_fractional_position_convergence.cpp
     portfolio/test_price_history_ordering.cpp
+    portfolio/test_pm_own_price_history.cpp
     portfolio/test_risk_loop_log_golden.cpp
     portfolio/test_risk_module_loop.cpp
     portfolio/test_risk_fail_closed.cpp

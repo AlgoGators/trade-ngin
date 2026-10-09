@@ -329,6 +329,12 @@ struct AppConfig {
     // switched on by a value nobody wrote.
     bool use_optimization{false};
 
+    // portfolio.json's top-level covariance_history_prices: how many daily closes per symbol
+    // the PortfolioManager keeps for the optimiser's covariance (PortfolioConfig::
+    // covariance_history_prices). Absent means 756; a value that is not a whole number of at
+    // least 2 is a load error.
+    size_t covariance_history_prices{756};
+
     // Backtest settings
     BacktestSpecificConfig backtest;
 
@@ -361,6 +367,7 @@ struct AppConfig {
         j["risk"] = risk_schema.to_json();
         j["sleeve_risk_modules"] = risk_schema.sleeves_to_json();
         j["use_optimization"] = use_optimization;
+        j["covariance_history_prices"] = covariance_history_prices;
         j["max_drawdown"] = max_drawdown;
         j["max_leverage"] = max_leverage;
         j["backtest"] = backtest.to_json();
