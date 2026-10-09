@@ -20,6 +20,7 @@
 #include "../core/test_base.hpp"
 #include "../data/test_db_utils.hpp"
 #include "../risk/risk_module_test_helpers.hpp"
+#include "trade_ngin/data/listing_dates.hpp"
 #include "trade_ngin/instruments/futures.hpp"
 
 #define private public
@@ -118,6 +119,13 @@ struct Sleeve {
         spec.maintenance_margin = 8000.0;
         spec.trading_hours = "09:30-16:00";
         registry.instruments_[kSym] = std::make_shared<FuturesInstrument>(kSym, spec);
+        // further contracts a removal list may name: one the fixture feeds no bar of, and the
+        // two sides of a listing-date pair
+        for (const char* other : {"OTHER", "MES", "ES"}) {
+            FuturesSpec named = spec;
+            named.root_symbol = other;
+            registry.instruments_[other] = std::make_shared<FuturesInstrument>(other, named);
+        }
         registry.initialized_ = true;
         auto registry_ptr = std::shared_ptr<InstrumentRegistry>(&registry, [](InstrumentRegistry*) {});
         strategy = std::make_unique<TrendFollowingStrategy>(id, sc, tc, db, registry_ptr);
@@ -318,7 +326,7 @@ TEST(TradingRuleRemovals, AContractTheListDoesNotNameIsUntouched) {
     Sleeve plain("RULES_other_plain", kSix, {});
     const double six = plain.forecast(bars);
     StateManager::reset_instance();
-    Sleeve other("RULES_other", kSix, {}, kSlowPairs, true, {{"ZR", {{2, 8}, {4, 16}}}});
+    Sleeve other("RULES_other", kSix, {}, kSlowPairs, true, {{"OTHER", {{2, 8}, {4, 16}}}});
     EXPECT_EQ(other.forecast(bars), six);
     EXPECT_EQ(other.scaled(), plain.scaled());
     EXPECT_EQ(other.position(), plain.position());
@@ -356,6 +364,8 @@ TEST(TradingRuleRemovals, AListThatIsNotTheFastestRulesIsRefused) {
     EXPECT_NE(refusal_of({{kSym, {{2, 8}, {2, 8}}}}).find("named twice"), std::string::npos);
     EXPECT_NE(refusal_of({{kSym, {}}}).find("no pair is named"), std::string::npos);
     EXPECT_NE(refusal_of({{kSym + ".v.0", {{2, 8}}}}).find("base symbol"), std::string::npos);
+    // a mistyped contract would remove nothing and say nothing
+    EXPECT_NE(refusal_of({{"RZ", {{2, 8}}}}).find("holds no contract of that name"), std::string::npos);
     // the table has no row for the number left: without the refusal the multiplier would be 1
     EXPECT_NE(refusal_of(fastest(2), {}, {{1, 1.0}, {2, 1.03}, {3, 1.08}, {5, 1.19}, {6, 1.26}})
                   .find("no row for 4 rules"),
@@ -385,4 +395,25 @@ TEST(TradingRuleRemovals, ASpeedTheEquitySlowRuleReadsIsNeverRemoved) {
     StateManager::reset_instance();
     Sleeve stands("RULES_slow_stands", kSix, {kSym}, kSlowPairs, true, fastest(1));
     EXPECT_EQ(stands.forecast(all_down), short_forecast);
+}
+
+// The two contracts of a listing-date pair run one price history as one instrument: a list that
+// takes a rule from one side only would step the forecast on the listing date, and is refused.
+TEST(TradingRuleRemovals, BothContractsOfAListingDatePairLoseTheSameRules) {
+    struct Listed {
+        Listed() { ListingDates::instance().set({{"MES", "ES", "2019-05-06", 10.0}}); }
+        ~Listed() { ListingDates::instance().clear(); }
+    } listed;
+    const std::vector<std::pair<int, int>> one = {{2, 8}}, two = {{2, 8}, {4, 16}};
+    EXPECT_NE(refusal_of({{"MES", one}}).find("must lose the same rules"), std::string::npos);
+    EXPECT_NE(refusal_of({{"ES", one}}).find("must lose the same rules"), std::string::npos);
+    EXPECT_NE(refusal_of({{"MES", one}, {"ES", two}}).find("must lose the same rules"), std::string::npos);
+    EXPECT_EQ(refusal_of({{"MES", two}, {"ES", {{4, 16}, {2, 8}}}}), "");
+    EXPECT_EQ(refusal_of({{kSym, one}}), "") << "a contract outside every pair is not concerned";
+    // the equity slow rule covers the pair under the listed contract's name
+    EXPECT_NE(refusal_of({{"MES", std::vector<std::pair<int, int>>(kSix.begin(), kSix.begin() + 5)},
+                          {"ES", std::vector<std::pair<int, int>>(kSix.begin(), kSix.begin() + 5)}},
+                         {"MES"})
+                  .find("read by the equity slow rule"),
+              std::string::npos);
 }

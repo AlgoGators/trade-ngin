@@ -109,6 +109,10 @@ Result<void> TrendFollowingStrategy::validate_config() const {
         if (removed.empty()) {
             return refuse("no pair is named (a contract that keeps every rule is not listed)");
         }
+        // A name the metadata does not hold is a mistyped contract, which would remove nothing.
+        if (registry_ && !registry_->has_instrument(removal_symbol)) {
+            return refuse("the instrument registry holds no contract of that name");
+        }
         std::string why;
         const auto left =
             trend_estimator::pairs_after_removal(trend_config_.ema_windows, removed, &why);
@@ -137,6 +141,28 @@ Result<void> TrendFollowingStrategy::validate_config() const {
         }
     }
 
+    // The two contracts of a listing-date pair run one price history as one instrument: the same
+    // rules are removed from both, or from neither.
+    for (const auto& contract : ListingDates::instance().contracts()) {
+        const auto listed = trend_config_.rule_removals.find(contract.symbol);
+        const auto before = trend_config_.rule_removals.find(contract.before);
+        const bool has_listed = listed != trend_config_.rule_removals.end();
+        const bool has_before = before != trend_config_.rule_removals.end();
+        auto same = [](std::vector<std::pair<int, int>> a, std::vector<std::pair<int, int>> b) {
+            std::sort(a.begin(), a.end());
+            std::sort(b.begin(), b.end());
+            return a == b;
+        };
+        if (has_listed != has_before || (has_listed && !same(listed->second, before->second))) {
+            return make_error<void>(ErrorCode::INVALID_ARGUMENT,
+                                    "Trading rule removals for " + contract.symbol + " and " +
+                                        contract.before +
+                                        ": the two contracts of a listing-date pair must lose "
+                                        "the same rules",
+                                    "TrendFollowingStrategy");
+        }
+    }
+
     return Result<void>();
 }
 
@@ -158,7 +184,10 @@ Result<void> TrendFollowingStrategy::initialize() {
         const auto left = trend_estimator::pairs_after_removal(trend_config_.ema_windows, removed);
         double fdm = 1.0;
         for (const auto& row : trend_config_.fdm) {
-            if (row.first == static_cast<int>(left.size())) fdm = row.second;
+            if (row.first == static_cast<int>(left.size())) {
+                fdm = row.second;
+                break;
+            }
         }
         std::string fast;
         for (const auto& pair : removed) {
@@ -438,6 +467,14 @@ Result<void> TrendFollowingStrategy::on_data(const std::vector<Bar>& data) {
                 if (removal != trend_config_.rule_removals.end()) {
                     own_pairs = trend_estimator::pairs_after_removal(trend_config_.ema_windows,
                                                                      removal->second);
+                    if (own_pairs.empty()) {
+                        // validate_config refused such a list; never run a listed contract on
+                        // every pair because the list could not be read.
+                        return make_error<void>(ErrorCode::INVALID_ARGUMENT,
+                                                "Trading rule removals for " + symbol +
+                                                    " cannot be applied",
+                                                "TrendFollowingStrategy");
+                    }
                 }
             }
             const std::vector<std::pair<int, int>>& symbol_pairs =
@@ -485,7 +522,7 @@ Result<void> TrendFollowingStrategy::on_data(const std::vector<Bar>& data) {
             // The attenuation the forecasts were multiplied by, once per pair, where the window
             // holds a year of bars
             if (prices.size() >= trend_estimator::kAttenuationMinValues) {
-                for (size_t pair = 0; pair < trend_config_.ema_windows.size(); ++pair) {
+                for (size_t pair = 0; pair < symbol_pairs.size(); ++pair) {
                     INFO("EWMA volatility multiplier: " + std::to_string(estimate.attenuation) +
                          " with quantile: " + std::to_string(estimate.smoothed_quantile));
                 }
