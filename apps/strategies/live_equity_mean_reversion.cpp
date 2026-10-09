@@ -4936,6 +4936,7 @@ int main(int argc, char* argv[]) {
                 "         COALESCE(total_realized_pnl, 0.0) as prev_total_realized "
                 "  FROM trading.live_results "
                 "  WHERE strategy_id = 'LIVE_EQUITY_MEAN_REVERSION' AND portfolio_id = '" + portfolio_id + "' AND DATE(date) < '" + yesterday_date_str + "' "
+                "  AND portfolio_type = 'system' "  // migration 021: the model run's book only
                 "  ORDER BY date DESC LIMIT 1"
                 ") "
                 "UPDATE trading.live_results SET "
@@ -4962,7 +4963,8 @@ int main(int argc, char* argv[]) {
                 "cash_available = " + std::to_string(initial_capital) + " "
                 "             + (COALESCE((SELECT prev_total_realized FROM day_before), 0.0) + COALESCE(daily_realized_pnl, 0.0) "
                 "                - COALESCE(total_transaction_costs, 0.0)) + " + std::to_string(yesterday_finalized_unrealized) + " - COALESCE(margin_posted, 0.0) "
-                "WHERE strategy_id = 'LIVE_EQUITY_MEAN_REVERSION' AND portfolio_id = '" + portfolio_id + "' AND DATE(date) = '" + yesterday_date_str + "'";
+                "WHERE strategy_id = 'LIVE_EQUITY_MEAN_REVERSION' AND portfolio_id = '" + portfolio_id + "' AND DATE(date) = '" + yesterday_date_str + "' "
+                "AND portfolio_type = 'system'";  // migration 021: the model run's book only
 
             INFO("Executing UPDATE query for Day T-1 live_results...");
             INFO("UPDATE will set current_portfolio_value for date: " + yesterday_date_str);
@@ -5005,7 +5007,8 @@ int main(int argc, char* argv[]) {
             // Query the current portfolio value from updated live_results
             std::string get_equity_query =
                 "SELECT current_portfolio_value FROM trading.live_results "
-                "WHERE strategy_id = 'LIVE_EQUITY_MEAN_REVERSION' AND portfolio_id = '" + portfolio_id + "' AND DATE(date) = '" + yesterday_date_str + "'";
+                "WHERE strategy_id = 'LIVE_EQUITY_MEAN_REVERSION' AND portfolio_id = '" + portfolio_id + "' AND DATE(date) = '" + yesterday_date_str + "' "
+                "AND portfolio_type = 'system'";  // migration 021: the model run's book only
 
             INFO("Querying for portfolio value with date: " + yesterday_date_str);
 
@@ -5207,7 +5210,8 @@ int main(int argc, char* argv[]) {
                     "SELECT daily_return, daily_pnl, daily_realized_pnl, daily_unrealized_pnl, "
                     "portfolio_leverage, equity_to_margin_ratio "
                     "FROM trading.live_results "
-                    "WHERE strategy_id = 'LIVE_EQUITY_MEAN_REVERSION' AND portfolio_id = '" + portfolio_id + "' AND DATE(date) = '" + yesterday_date_str + "'";
+                    "WHERE strategy_id = 'LIVE_EQUITY_MEAN_REVERSION' AND portfolio_id = '" + portfolio_id + "' AND DATE(date) = '" + yesterday_date_str + "' "
+                "AND portfolio_type = 'system'";  // migration 021: the model run's book only
 
                 INFO("Loading yesterday's metrics from database with query: " + metrics_query);
                 auto metrics_result = db->execute_query(metrics_query);
@@ -5957,7 +5961,8 @@ int main(int argc, char* argv[]) {
                 "DELETE FROM trading.positions WHERE strategy_id = '" +
                 std::string(kEquityStrategyId) + "' AND strategy_name = '" +
                 std::string(kEquityStrategyName) + "' AND portfolio_id = '" + portfolio_id +
-                "' AND DATE(last_update) = '" + today_date_str + "'";
+                "' AND DATE(last_update) = '" + today_date_str +
+                "' AND portfolio_type = 'system'";  // migration 021: never another book's rows
             auto cleared = db->execute_direct_query(clear_today);
             if (cleared.is_error()) {
                 ERROR("Failed to clear today's position rows before the day-T write: " +

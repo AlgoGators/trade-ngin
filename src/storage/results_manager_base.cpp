@@ -90,7 +90,7 @@ Result<void> ResultsManagerBase::save_positions(const std::vector<Position>& pos
     } else {
         // For live trading, use regular store_positions
         return db_->store_positions(positions, strategy_id_, strategy_name_, portfolio_id_,
-                                    table_name);
+                                    table_name, book_);
     }
 }
 
@@ -125,7 +125,7 @@ Result<void> ResultsManagerBase::save_executions(const std::vector<ExecutionRepo
         return db_->store_backtest_executions(executions, run_id, "BASE_PORTFOLIO", table_name);
     } else {
         return db_->store_executions(executions, strategy_id_, strategy_name_, portfolio_id_,
-                                     table_name);
+                                     table_name, book_);
     }
 }
 

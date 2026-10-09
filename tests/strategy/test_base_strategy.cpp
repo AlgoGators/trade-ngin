@@ -40,7 +40,9 @@ public:
     Result<void> store_executions(const std::vector<ExecutionReport>& executions,
                                   const std::string& strategy_id, const std::string& strategy_name,
                                   const std::string& portfolio_id,
-                                  const std::string& table_name) override {
+                                  const std::string& table_name,
+                                  const std::string& book) override {
+        (void)book;
         (void)strategy_id;
         (void)strategy_name;
         (void)portfolio_id;
@@ -50,7 +52,7 @@ public:
     }
     Result<void> store_positions(const std::vector<Position>& positions, const std::string&,
                                  const std::string&, const std::string&,
-                                 const std::string&) override {
+                                 const std::string&, const std::string&) override {
         positions_stored = positions;
         return Result<void>();
     }

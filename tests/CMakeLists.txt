@@ -28,6 +28,7 @@ set(TEST_SOURCES
     data/test_database_pooling.cpp
     data/test_db_transaction_atomicity.cpp
     data/test_delete_stale_executions_scope_db.cpp
+    data/test_qt_books_db.cpp
     data/test_contract_metadata_fee_column_db.cpp
     data/test_executions_netting_column_db.cpp
     data/test_load_positions_identifier_db.cpp

@@ -35,6 +35,9 @@ protected:
     std::string strategy_name_;
     std::string portfolio_id_;
     std::string component_id_;
+    // The book every live write and delete names (portfolio_type; migration 021). "system"
+    // unless set_book() says otherwise, so a manager that never sets it behaves as before.
+    std::string book_ = kDefaultBook;
 
     // Common validation methods
     Result<void> validate_database_connection() const;
@@ -69,6 +72,22 @@ public:
     }
     std::string get_portfolio_id() const {
         return portfolio_id_;
+    }
+
+    /// Set the book (system, qt_proposal or qt) this manager's live rows belong to. Anything
+    /// else is refused and the book is left unchanged.
+    Result<void> set_book(const std::string& book) {
+        if (!is_valid_book(book)) {
+            return make_error<void>(ErrorCode::INVALID_ARGUMENT,
+                                    "Invalid book '" + book +
+                                        "': must be one of system, qt_proposal, qt",
+                                    component_id_);
+        }
+        book_ = book;
+        return Result<void>();
+    }
+    const std::string& get_book() const {
+        return book_;
     }
 
     // Common storage operations (can be overridden if needed)

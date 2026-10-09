@@ -118,14 +118,15 @@ Result<void> LiveResultsManager::delete_stale_data(const Timestamp& date) {
 
     // Delete stale live results for re-runs
     auto result =
-        db_->delete_live_results(strategy_id_, date, portfolio_id_, "trading.live_results");
+        db_->delete_live_results(strategy_id_, date, portfolio_id_, "trading.live_results", book_);
     if (result.is_error()) {
         WARN("Failed to delete stale live results: " + std::string(result.error()->what()));
     }
 
     // Delete stale equity curve entries
     result =
-        db_->delete_live_equity_curve(strategy_id_, date, portfolio_id_, "trading.equity_curve");
+        db_->delete_live_equity_curve(strategy_id_, date, portfolio_id_, "trading.equity_curve",
+                                      book_);
     if (result.is_error()) {
         WARN("Failed to delete stale equity curve: " + std::string(result.error()->what()));
     }
@@ -148,7 +149,7 @@ Result<void> LiveResultsManager::delete_stale_data(const Timestamp& date) {
         // strategy_name_ falls back to strategy_id_ when unset, so callers that never
         // populate the name -- the futures runners -- pass exactly what they passed before.
         result = db_->delete_stale_executions(order_ids, date, strategy_name_, portfolio_id_,
-                                             "trading.executions");
+                                             "trading.executions", book_);
         if (result.is_error()) {
             WARN("Failed to delete stale executions: " + std::string(result.error()->what()));
         }
@@ -233,7 +234,8 @@ Result<void> LiveResultsManager::save_live_results(const Timestamp& date) {
     // Use the new database extension method - pass portfolio_id_ for proper storage
     auto result =
         db_->store_live_results_complete(strategy_id_, date, double_metrics_, int_metrics_, config_,
-                                         portfolio_id_, "trading.live_results", risk_detail_);
+                                         portfolio_id_, "trading.live_results", risk_detail_,
+                                         book_);
     if (result.is_error()) {
         ERROR("store_live_results_complete FAILED: " + std::string(result.error()->what()));
     } else {
@@ -274,11 +276,14 @@ Result<void> LiveResultsManager::save_equity_curve(const Timestamp& date) {
         // invented number with no run behind it, laundered through a path whose
         // whole job is to avoid writing garbage. One stream exists today, so
         // adding the predicate selects the same row it selected before.
+        //
+        // Migration 021: the stream is the manager's book (system unless set_book() said
+        // otherwise; set_book() admits only the three book names, so the literal is safe).
         std::string get_prev_equity_query =
             "SELECT equity FROM trading.equity_curve "
             "WHERE strategy_id = '" +
             strategy_id_ + "' AND portfolio_id = '" + portfolio_id_ +
-            "' AND portfolio_type = '" + std::string(kDefaultEquityCurveStream) +
+            "' AND portfolio_type = '" + book_ +
             "' "
             "AND equity >= 1000.0 "
             "ORDER BY timestamp DESC LIMIT 1";
@@ -306,7 +311,7 @@ Result<void> LiveResultsManager::save_equity_curve(const Timestamp& date) {
     INFO("Saving equity curve point: " + std::to_string(equity_to_save));
 
     auto result = db_->store_trading_equity_curve(strategy_id_, date, equity_to_save, portfolio_id_,
-                                                  "trading.equity_curve");
+                                                  "trading.equity_curve", book_);
 
     return result;
 }
@@ -324,7 +329,7 @@ Result<void> LiveResultsManager::update_live_results(
     INFO("Updating live results with " + std::to_string(updates.size()) + " fields");
 
     return db_->update_live_results(strategy_id_, date, updates, portfolio_id_,
-                                    "trading.live_results");
+                                    "trading.live_results", book_);
 }
 
 Result<void> LiveResultsManager::update_equity_curve(const Timestamp& date, double equity) {
@@ -335,7 +340,7 @@ Result<void> LiveResultsManager::update_equity_curve(const Timestamp& date, doub
     INFO("Updating equity curve: " + std::to_string(equity));
 
     return db_->update_live_equity_curve(strategy_id_, date, equity, portfolio_id_,
-                                         "trading.equity_curve");
+                                         "trading.equity_curve", book_);
 }
 
 bool LiveResultsManager::needs_finalization(const Timestamp& current_date,

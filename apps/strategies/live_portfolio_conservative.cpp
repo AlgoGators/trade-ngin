@@ -3202,7 +3202,7 @@ int main(int argc, char* argv[]) {
                 "  WHERE strategy_id = '" +
                 combined_strategy_id + "' AND portfolio_id = '" + coordinator_config.portfolio_id +
                 "' AND DATE(date) < '" + yesterday_date_ss.str() +
-                "' "
+                "' AND portfolio_type = 'system' "  // migration 021: the model run's book only
                 "  ORDER BY date DESC LIMIT 1"
                 ") "
                 "UPDATE trading.live_results SET "
@@ -3252,7 +3252,8 @@ int main(int argc, char* argv[]) {
                 " - COALESCE(daily_transaction_costs, 0.0)) - COALESCE(margin_posted, 0.0) "
                 "WHERE strategy_id = '" +
                 combined_strategy_id + "' AND portfolio_id = '" + coordinator_config.portfolio_id +
-                "' AND DATE(date) = '" + yesterday_date_ss.str() + "'";
+                "' AND DATE(date) = '" + yesterday_date_ss.str() +
+                "' AND portfolio_type = 'system'";  // migration 021: the model run's book only
 
             INFO("Executing UPDATE query for Day T-1 live_results...");
             INFO("UPDATE will set current_portfolio_value for date: " + yesterday_date_ss.str());
@@ -3288,7 +3289,8 @@ int main(int argc, char* argv[]) {
                 "SELECT current_portfolio_value FROM trading.live_results "
                 "WHERE strategy_id = '" +
                 combined_strategy_id + "' AND portfolio_id = '" + coordinator_config.portfolio_id +
-                "' AND DATE(date) = '" + yesterday_date_ss.str() + "'";
+                "' AND DATE(date) = '" + yesterday_date_ss.str() +
+                "' AND portfolio_type = 'system'";  // migration 021: the model run's book only
 
             INFO("Querying for portfolio value with date: " + yesterday_date_ss.str());
 

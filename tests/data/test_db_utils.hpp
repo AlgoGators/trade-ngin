@@ -4,6 +4,7 @@
 #include <arrow/api.h>
 #include <arrow/status.h>
 #include <arrow/util/logging.h>
+#include <map>
 #include <memory>
 #include <nlohmann/json.hpp>
 #include <pqxx/pqxx>
@@ -78,6 +79,12 @@ public:
         std::string portfolio_id;
     };
 
+    // The book (portfolio_type) the most recent call to `op` named; empty if never called.
+    std::string last_book(const std::string& op) const {
+        auto it = last_books_.find(op);
+        return it == last_books_.end() ? std::string() : it->second;
+    }
+
     // Key of the most recent call to `op` ("store_positions", "store_executions",
     // "store_signals"). Empty strings if `op` was never called.
     StorageKey last_key(const std::string& op) const {
@@ -124,9 +131,11 @@ public:
     Result<void> store_executions(const std::vector<ExecutionReport>& executions,
                                   const std::string& strategy_id, const std::string& strategy_name,
                                   const std::string& portfolio_id,
-                                  const std::string& table_name) override {
+                                  const std::string& table_name,
+                                  const std::string& book = kDefaultBook) override {
         (void)executions;
         record_key("store_executions", strategy_id, strategy_name, portfolio_id);
+        last_books_["store_executions"] = book;
         if (!connected_)
             return make_error<void>(ErrorCode::DATABASE_ERROR, "Not connected");
         if (table_name != "trading.executions") {
@@ -139,8 +148,10 @@ public:
     Result<void> store_positions(const std::vector<Position>& positions,
                                  const std::string& strategy_id, const std::string& strategy_name,
                                  const std::string& portfolio_id,
-                                 const std::string& table_name) override {
+                                 const std::string& table_name,
+                                 const std::string& book = kDefaultBook) override {
         record_key("store_positions", strategy_id, strategy_name, portfolio_id);
+        last_books_["store_positions"] = book;
         if (!connected_)
             return make_error<void>(ErrorCode::DATABASE_ERROR, "Not connected");
         if (table_name != "trading.positions") {
@@ -365,24 +376,30 @@ public:
     Result<void> delete_live_results(
         const std::string& strategy_id, const Timestamp& date,
         const std::string& portfolio_id,
-        const std::string& table_name = "trading.live_results") override {
+        const std::string& table_name = "trading.live_results",
+        const std::string& book = kDefaultBook) override {
         (void)strategy_id; (void)date; (void)portfolio_id; (void)table_name;
+        last_books_["delete_live_results"] = book;
         return record_call("delete_live_results");
     }
 
     Result<void> delete_live_equity_curve(
         const std::string& strategy_id, const Timestamp& date,
         const std::string& portfolio_id,
-        const std::string& table_name = "trading.equity_curve") override {
+        const std::string& table_name = "trading.equity_curve",
+        const std::string& book = kDefaultBook) override {
         (void)strategy_id; (void)date; (void)portfolio_id; (void)table_name;
+        last_books_["delete_live_equity_curve"] = book;
         return record_call("delete_live_equity_curve");
     }
 
     Result<void> delete_stale_executions(
         const std::vector<std::string>& order_ids, const Timestamp& date,
         const std::string& strategy_name, const std::string& portfolio_id,
-        const std::string& table_name = "trading.executions") override {
+        const std::string& table_name = "trading.executions",
+        const std::string& book = kDefaultBook) override {
         (void)order_ids; (void)date; (void)strategy_name; (void)portfolio_id; (void)table_name;
+        last_books_["delete_stale_executions"] = book;
         return record_call("delete_stale_executions");
     }
 
@@ -397,10 +414,12 @@ public:
         const nlohmann::json& config,
         const std::string& portfolio_id = "BASE_PORTFOLIO",
         const std::string& table_name = "trading.live_results",
-        const nlohmann::json& risk_detail = nlohmann::json()) override {
+        const nlohmann::json& risk_detail = nlohmann::json(),
+        const std::string& book = kDefaultBook) override {
         (void)strategy_id; (void)date; (void)metrics; (void)int_metrics; (void)config;
         (void)portfolio_id; (void)table_name;
         last_live_risk_detail = risk_detail;
+        last_books_["store_live_results_complete"] = book;
         return record_call("store_live_results_complete");
     }
 
@@ -408,7 +427,9 @@ public:
         const std::string& strategy_id, const Timestamp& date,
         const std::unordered_map<std::string, double>& updates,
         const std::string& portfolio_id,
-        const std::string& table_name = "trading.live_results") override {
+        const std::string& table_name = "trading.live_results",
+        const std::string& book = kDefaultBook) override {
+        last_books_["update_live_results"] = book;
         (void)strategy_id; (void)date; (void)updates;
         (void)portfolio_id; (void)table_name;
         return record_call("update_live_results");
@@ -417,7 +438,9 @@ public:
     Result<void> update_live_equity_curve(
         const std::string& strategy_id, const Timestamp& date, double equity,
         const std::string& portfolio_id,
-        const std::string& table_name = "trading.equity_curve") override {
+        const std::string& table_name = "trading.equity_curve",
+        const std::string& book = kDefaultBook) override {
+        last_books_["update_live_equity_curve"] = book;
         (void)strategy_id; (void)date; (void)equity;
         (void)portfolio_id; (void)table_name;
         return record_call("update_live_equity_curve");
@@ -473,6 +496,7 @@ private:
         last_keys_[op] = StorageKey{strategy_id, strategy_name, portfolio_id};
     }
     std::string fail_on_call_for_;
+    std::map<std::string, std::string> last_books_;
     // DB-equity-curve-onconflict: what stream the last equity-curve write named.
     std::string last_equity_curve_stream_;
 };

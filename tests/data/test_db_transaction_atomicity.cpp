@@ -158,7 +158,8 @@ protected:
                        "  daily_unrealized_pnl double precision, daily_realized_pnl double precision,"
                        "  last_update timestamptz, updated_at timestamptz, strategy_id text,"
                        "  strategy_name text, date date, portfolio_id text,"
-                       "  instrument_id text)");  // 016 (T-ROLLX): the positions writer names it
+                       "  instrument_id text,"  // 016 (T-ROLLX): the positions writer names it
+                       "  portfolio_type text NOT NULL DEFAULT 'system', moved_by text)");  // 021
     }
 
     void drop_scratch_table() { run_raw(std::string("DROP TABLE IF EXISTS ") + kScratchTable); }
