@@ -3022,7 +3022,7 @@ int main(int argc, char* argv[]) {
         // ========================================
         INFO("STEP 3: Calculating transaction costs and Day T PnL...");
 
-        // total_daily_transaction_costs already calculated in per-strategy executions loop above
+        // total_daily_transaction_costs was added up in PHASE 4, after the netting: the fills' net costs
         INFO("Total daily transaction costs (from per-strategy executions): $" +
              std::to_string(total_daily_transaction_costs));
 
