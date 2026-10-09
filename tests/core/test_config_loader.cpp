@@ -1654,3 +1654,25 @@ TEST_F(ConfigLoaderTest, TradingRuleRemovalsNeedABookOfOneTrendSleeve) {
     }
     EXPECT_NE(error_of({{"TREND_FOLLOWING", {{"weight", 1.0}}}}).find("this book enables 0"), std::string::npos);
 }
+
+// A run takes the forecast diversification multiplier rows from defaults.json. With trading rule
+// removals the rows for five, four, three, two and one rule size real contracts, so the shipped
+// file's six values are pinned: Carver's table 36.
+TEST_F(ConfigLoaderTest, TheTemplatesMultiplierRowsAreTableThirtySix) {
+    const auto tmpl = tracked_config_template();
+    ASSERT_FALSE(tmpl.empty()) << "config_template/ not found; this test must not skip";
+    const std::vector<std::pair<int, double>> table = {{1, 1.0},  {2, 1.03}, {3, 1.08},
+                                                       {4, 1.13}, {5, 1.19}, {6, 1.26}};
+    for (const char* book : {"conservative", "base"}) {
+        auto loaded = ConfigLoader::load(tmpl, book);
+        ASSERT_TRUE(loaded.is_ok()) << book << ": " << (loaded.is_error() ? loaded.error()->what() : "");
+        EXPECT_EQ(loaded.value().strategy_defaults.fdm, table) << book;
+    }
+    // and the file itself, not a default the loader fell back on
+    std::ifstream in(tmpl / "defaults.json");
+    ASSERT_TRUE(in.good());
+    const nlohmann::json defaults = nlohmann::json::parse(in);
+    ASSERT_TRUE(defaults.contains("strategy_defaults") && defaults["strategy_defaults"].contains("fdm"));
+    EXPECT_EQ(defaults["strategy_defaults"]["fdm"],
+              nlohmann::json::array({{1, 1.0}, {2, 1.03}, {3, 1.08}, {4, 1.13}, {5, 1.19}, {6, 1.26}}));
+}
