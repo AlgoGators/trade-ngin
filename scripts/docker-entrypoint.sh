@@ -19,13 +19,14 @@
 
 set -euo pipefail
 
-# Second entrypoint of the same image: `docker run ... trade-ngin desk-agent` (compose
-# `command: desk-agent`) runs the gRPC desk-agent instead of cron (docs/design/desk-agent.md).
-# Any other command, or none, keeps the cron behaviour below unchanged.
-if [ "${1:-}" = "desk-agent" ]; then
+# Second entrypoint of the same image: `docker run ... trade-ngin rpc` (compose `command: rpc`)
+# runs the engine's gRPC server instead of cron (docs/design/rpc.md). `desk-agent` is the old
+# name of the same command, kept for one release. Any other command, or none, keeps the cron
+# behaviour below unchanged.
+if [ "${1:-}" = "rpc" ] || [ "${1:-}" = "desk-agent" ]; then
     shift
-    cd /opt/desk-agent/app
-    exec /opt/desk-agent/venv/bin/python -m desk_agent "$@"
+    cd /opt/rpc/app
+    exec /opt/rpc/venv/bin/python -m algogators_rpc "$@"
 fi
 
 CRON_ENV=/app/.cron_env

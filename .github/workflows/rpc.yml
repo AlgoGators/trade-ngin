@@ -1,0 +1,46 @@
+name: rpc
+
+# Generates the gRPC stubs (and algogators/versions.py, from the .proto version headers) from
+# proto/algogators/*.proto and runs the shared rpc layer's tests, the desk service's included.
+# The C++ pipeline (ci-cd-pipeline.yml) is untouched; the Docker image build there also
+# exercises gen.sh through the rpc-build stage.
+
+on:
+  push:
+    branches: [main, prod, staging]
+    paths:
+      - "proto/**"
+      - "services/rpc/**"
+      - ".github/workflows/rpc.yml"
+  pull_request:
+    branches:
+      - "**"
+    paths:
+      - "proto/**"
+      - "services/rpc/**"
+      - "scripts/docker-entrypoint.sh"
+      - "scripts/qt_grpc_call.py"
+      - ".github/workflows/rpc.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: rpc stubs and tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v5
+        with:
+          # Ubuntu 24.04's python3, the interpreter the image runs.
+          python-version: "3.12"
+      - name: Install
+        run: python -m pip install -r services/rpc/requirements-dev.txt
+      - name: Generate stubs
+        run: PYTHON=python sh services/rpc/gen.sh
+      - name: Test
+        working-directory: services/rpc
+        run: python -m pytest -q
+      - name: qt_grpc_call.py imports against the generated stubs
+        run: PYTHONPATH=services/rpc python -c "import importlib.util as u; s = u.spec_from_file_location('call', 'scripts/qt_grpc_call.py'); s.loader.exec_module(u.module_from_spec(s))"

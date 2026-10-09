@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 # QT daily model run (docs/design/qt-contract.md section 1): runs the conservative runner's model
 # run for each portfolio config dir given, for today's date in America/New_York (or QT_RUN_DATE),
-# inside the qt-engine (desk-agent) container. Each portfolio takes the same lock the desk-agent
+# inside the qt-engine (engine-rpc) container. Each portfolio takes the same lock the desk service
 # takes for its commands (QT_LOCK_DIR/<portfolio_id>.lock), so a model run never overlaps a desk
 # run of the same portfolio.
 #
-#   docker exec desk-agent /app/scripts/qt_model_run.sh qt_conservative qt_conservative_model
+#   docker exec engine-rpc /app/scripts/qt_model_run.sh qt_conservative qt_conservative_model
 #
 # The model run never e-mails (ruling 15: publish does). Exit status: the worst of the runs.
 set -uo pipefail

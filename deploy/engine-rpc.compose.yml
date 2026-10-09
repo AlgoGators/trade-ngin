@@ -1,0 +1,58 @@
+# engine-rpc: the engine's gRPC server (docs/design/rpc.md). Its first service is the QT desk,
+# AlgoLens' command channel to the engine (docs/design/desk-service.md).
+#
+# Same image as the cron runner, second entrypoint. Merge into the host's compose project or run
+# alongside it:
+#
+#   docker network create qt        # once per host; AlgoLens' backend joins it too
+#   docker compose -f docker-compose.yml -f engine-rpc.compose.yml up -d engine-rpc
+#
+# No host port is published: clients reach it as engine-rpc:50051 on the `qt` network only. The
+# alias desk-agent keeps the old address working for one release.
+# The desk runs the engine binary (--desk / --override / --publish) inside this container, so it
+# needs the runner's config directory and enough memory for one engine run.
+services:
+  engine-rpc:
+    image: ghcr.io/algogators/trade-ngin:${TAG:-latest}
+    container_name: engine-rpc
+    command: rpc
+    # Server: RPC_LISTEN (default 0.0.0.0:50051), RPC_MAX_WORKERS (4), RPC_SERVICES (desk).
+    # Desk: DB_HOST / DB_PORT / DB_USER / DB_PASSWORD / DB_NAME, or the database block of
+    # /app/config/defaults.json. Optional: QT_ENGINE_BINARY, QT_ENGINE_CWD, QT_LOCK_DIR,
+    # QT_JOB_TIMEOUT_S, QT_REDRIVE_INTERVAL_S, QT_APPROVE_URL_BASE, QT_EMAIL_DISABLED=1.
+    env_file: .env
+    environment:
+      # "vp=<email>,president=<email>": the override approvers (contract section 6). Passed
+      # through from the shell or .env; without it override requests fail with a message.
+      QT_APPROVERS: ${QT_APPROVERS:-}
+    volumes:
+      # portfolios/<dir>/portfolio.json (portfolio_id -> --portfolio-config <dir>), email.json
+      # (override e-mail SMTP) and defaults.json, read-only.
+      - ./config:/app/config:ro
+      # Credential store read by EmailSender for the publish e-mail ({"database", "email"}, mode 600).
+      - ./config.json:/app/config.json:ro
+      # flock(1) locks shared with the cron model run, so a desk command never overlaps it.
+      # Mount the same volume at the same path wherever that cron runs.
+      - qt-locks:/tmp/qt-locks
+    networks:
+      qt:
+        # The pre-rename DNS name, for AlgoLens builds that still dial desk-agent:50051.
+        # Remove in the next release.
+        aliases: [desk-agent]
+    mem_limit: 512m
+    restart: unless-stopped
+    # The image's HEALTHCHECK watches cron, which this container does not run.
+    healthcheck:
+      test: ["CMD", "sh", "-c", "cd /opt/rpc/app && exec /opt/rpc/venv/bin/python -m algogators_rpc.healthcheck"]
+      interval: 1m
+      timeout: 10s
+      start_period: 20s
+      retries: 3
+
+volumes:
+  qt-locks:
+    name: qt-locks
+
+networks:
+  qt:
+    external: true
