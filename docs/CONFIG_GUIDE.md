@@ -73,7 +73,7 @@ Contains settings shared across all portfolios. Edit this file to change:
 ```json
 {
   "database": {
-    "host": "13.58.153.216",
+    "host": "18.118.225.224",
     "port": "5432",
     "username": "postgres",
     "password": "your_password",
