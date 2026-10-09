@@ -312,3 +312,44 @@ TEST_F(LiveResultsManagerKeyTest, SaveAllResultsSucceedsWhenEveryTableWrites) {
 
     EXPECT_TRUE(mgr->save_all_results("RUN_1", date_at(2026, 3, 15)).is_ok());
 }
+
+// QT E1: with no book set the manager names system on every write and delete (byte-identical to
+// before, where the book was implicit); set to qt it names qt on every one of them, the stale-data
+// deletes included, so a desk save never clears or overwrites the system book.
+TEST_F(LiveResultsManagerTest, EveryWriteAndDeleteNamesTheManagersBook) {
+    const char* ops[] = {"store_positions", "store_executions", "store_live_results_complete",
+                         "delete_live_results", "delete_live_equity_curve",
+                         "delete_stale_executions", "update_live_results",
+                         "update_live_equity_curve"};
+    auto run = [&](LiveResultsManager& m) {
+        m.set_positions({make_pos("ES.v.0", 2.0)});
+        m.set_executions({make_exec("ES.v.0", 2.0, 100.0)});
+        m.set_metrics({{"total_pnl", 1.0}});
+        m.set_equity(500000.0);
+        ASSERT_TRUE(m.save_all_results("run", date_at(2026, 4, 24)).is_ok());
+        ASSERT_TRUE(m.update_live_results(date_at(2026, 4, 24), {{"total_pnl", 2.0}}).is_ok());
+        ASSERT_TRUE(m.update_equity_curve(date_at(2026, 4, 24), 500001.0).is_ok());
+    };
+
+    EXPECT_EQ(mgr_->get_book(), "system");
+    run(*mgr_);
+    for (const char* op : ops) EXPECT_EQ(db_->last_book(op), "system") << op;
+    EXPECT_EQ(db_->last_equity_curve_stream(), "system");
+
+    LiveResultsManager qt(db_, true, "STRAT_X", "PORT_Y");
+    ASSERT_TRUE(qt.set_book("qt").is_ok());
+    run(qt);
+    for (const char* op : ops) EXPECT_EQ(db_->last_book(op), "qt") << op;
+    EXPECT_EQ(db_->last_equity_curve_stream(), "qt");
+}
+
+TEST_F(LiveResultsManagerTest, SetBookRefusesAnythingButTheThreeBooks) {
+    for (const char* bad : {"", "desk", "QT", "qt "}) {
+        EXPECT_TRUE(mgr_->set_book(bad).is_error()) << bad;
+        EXPECT_EQ(mgr_->get_book(), "system") << "a refused book must leave the book unchanged";
+    }
+    for (const char* ok : {"qt_proposal", "qt", "system"}) {
+        EXPECT_TRUE(mgr_->set_book(ok).is_ok()) << ok;
+        EXPECT_EQ(mgr_->get_book(), ok);
+    }
+}
