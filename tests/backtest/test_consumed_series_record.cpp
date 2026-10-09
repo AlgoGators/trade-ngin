@@ -113,6 +113,57 @@ TEST(ConsumedSeriesRecord, TheFourFilesCarryTheCyclesAndTheSeriesOfTheFedBarsOnl
     std::filesystem::remove_all(dir);
 }
 
+// LOOP_SPEC section 6.1: a symbol with no verdict in the signal group is held, and the hold set the
+// reference is fed must say so. hold.csv listed only the symbols with a bad bar, so a checker fed
+// the file alone traded a symbol on a day it printed no bar.
+TEST(ConsumedSeriesRecord, ASymbolThatPrintsNoBarInTheGroupIsInTheHoldSet) {
+    const auto dir = std::filesystem::temp_directory_path() / "tngin_csr_no_bar_hold";
+    std::filesystem::remove_all(dir);
+    std::filesystem::create_directories(dir);
+    ConsumedSeriesRecord r;
+    r.enable(dir.string());
+    // XH is known from the history before the window; XA and XB print on the first cycle.
+    r.add_history({}, {bar("XH", -1, 50, "H")});
+    r.add_cycle("2026-01-05",
+                {verdict("XA", 0, SessionVerdict::SESSION), verdict("XB", 0, SessionVerdict::SESSION)}, {},
+                {bar("XA", 0, 100, "A"), bar("XB", 0, 200, "B")});
+    // The second cycle: XA prints a session, XB prints a bar that is withheld, XH prints nothing
+    // again, and XN prints for the first time.
+    r.add_cycle("2026-01-06",
+                {verdict("XA", 1, SessionVerdict::SESSION), verdict("XB", 1, SessionVerdict::JUNK),
+                 verdict("XN", 1, SessionVerdict::SESSION)},
+                {bar("XB", 1, 1, "B")}, {bar("XA", 1, 101, "A"), bar("XN", 1, 10, "N")});
+    // The third cycle: only XA prints. XB (last seen withheld) and XN are held with XH.
+    r.add_cycle("2026-01-07", {verdict("XA", 2, SessionVerdict::SESSION)}, {}, {bar("XA", 2, 102, "A")});
+    ASSERT_TRUE(r.write());
+    EXPECT_EQ(lines(dir / "hold.csv"),
+              (std::vector<std::string>{"date,symbol", "2026-01-05,XH", "2026-01-06,XH", "2026-01-07,XB",
+                                        "2026-01-07,XH", "2026-01-07,XN"}))
+        << "every known symbol with no bar in the group; a withheld bar's date has no row (L-07); "
+           "a symbol is not held before its first bar";
+    std::filesystem::remove_all(dir);
+}
+
+// A run starts from empty files: enabling the record removes every record file an earlier run
+// left in the directory, so a run that stops before its last write cannot leave its one-pass rows
+// beside the earlier run's series. Files that are not the record's are left alone.
+TEST(ConsumedSeriesRecord, EnablingTheRecordRemovesAnEarlierRunsFiles) {
+    const auto dir = std::filesystem::temp_directory_path() / "tngin_csr_second_run";
+    std::filesystem::remove_all(dir);
+    std::filesystem::create_directories(dir);
+    const std::vector<std::string> record = {"calendar.csv", "hold.csv", "withheld.csv", "series.csv",
+                                             "history.csv", "final_marks.csv", "onepass_days_PM.csv",
+                                             "onepass_book_PM.csv", "estimator_TREND_FOLLOWING.csv"};
+    const std::vector<std::string> other = {"notes.txt", "series.csv.gz", "estimator.txt"};
+    for (const auto& name : record) std::ofstream(dir / name) << "an earlier run\n";
+    for (const auto& name : other) std::ofstream(dir / name) << "not the record's\n";
+    ConsumedSeriesRecord r;
+    r.enable(dir.string());
+    for (const auto& name : record) EXPECT_FALSE(std::filesystem::exists(dir / name)) << name;
+    for (const auto& name : other) EXPECT_TRUE(std::filesystem::exists(dir / name)) << name;
+    std::filesystem::remove_all(dir);
+}
+
 // T-ROLLX-FIX commit 2: the last marked group (never a signal group) is written with the marks' own
 // reading: withheld, change, the contract held after the bar.
 TEST(ConsumedSeriesRecord, TheFinalMarkedGroupIsWrittenWithTheMarksReading) {

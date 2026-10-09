@@ -1,5 +1,6 @@
 #include "trade_ngin/backtest/backtest_coordinator.hpp"
 #include "trade_ngin/live/live_estimator_history.hpp"
+#include "trade_ngin/live/live_roll_legs.hpp"
 #include "trade_ngin/strategy/trend_estimator.hpp"
 #include "trade_ngin/backtest/equity_cost_warmup.hpp"
 #include "trade_ngin/backtest/junk_signal_feed.hpp"
@@ -253,12 +254,15 @@ Result<BacktestResults> BacktestCoordinator::run_portfolio(
     // T-7b-2 C10a (HD 2026-09-24 ruling 16): the session classifier's instrument-id continuity
     // limb reads each kept bar's vendor id, over the window the bars were loaded for (the query
     // the live runners read). The verdict of a bar reads no later bar, although this classifier
-    // holds the cycle's group before it classifies the signal group.
+    // holds the cycle's group before it classifies the signal group. The ids are read from the
+    // start of the classifier's history prefix (seed_estimator_history feeds its bars), as the
+    // live runners read them, so the id limb judges the window's first bars as live does.
     if (session_hold_enabled_) {
         auto pg = std::dynamic_pointer_cast<PostgresDatabase>(db_);
         const auto feed = feed_instrument_ids(
             session_classifier_,
-            pg ? pg->get_futures_instrument_ids(symbols, start_date, end_date)
+            pg ? pg->get_futures_instrument_ids(symbols, k01_classifier_history_start(start_date),
+                                                end_date)
                : make_error<std::vector<market_data_utils::FuturesInstrumentId>>(
                      ErrorCode::NOT_INITIALIZED, "the backtest's database is not a PostgresDatabase",
                      "BacktestCoordinator"));
@@ -396,7 +400,10 @@ Result<BacktestResults> BacktestCoordinator::run_portfolio(
 
         day_index++;
     }
-    (void)consumed_record_.write();
+    if (!consumed_record_.write()) {
+        record_file::report_failure(consumed_record_.dir(),
+                                    "a file of the consumed series record could not be written");
+    }
 
     if (equity_cost_retier_enabled_) {
         INFO("EQUITY_COST_RETIER_SUMMARY cycles=" + std::to_string(equity_cost_retier_cycles_) +
@@ -958,6 +965,11 @@ Result<void> BacktestCoordinator::process_portfolio_day(
                  SessionClassifier::ymd(SessionClassifier::day_of(timestamp)) +
                  " holds only JUNK bars: nothing is fed to the strategies or the PortfolioManager "
                  "on this cycle");
+            if (consumed_record_.enabled() && had_previous_bars) {
+                portfolio->record_no_pass(
+                    SessionClassifier::ymd(SessionClassifier::day_of(bars_for_signals.front().timestamp)),
+                    timestamp, is_warmup);
+            }
         } else {
             auto data_result = portfolio->process_market_data(*signal_feed, is_warmup, timestamp,
                                                               session_symbols);
@@ -1320,9 +1332,28 @@ Result<void> BacktestCoordinator::process_portfolio_day(
                     continue;
                 }
 
+                // A futures row (REALIZED_ONLY) the day has no P&L for books nothing that day: its
+                // realized P&L is 0, quantity and average price kept. Without this write the row
+                // the PortfolioManager rebuilt this cycle keeps the sleeve's own figure (its
+                // unrounded position times its last bar's move), on a day the symbol printed no
+                // bar. The other accounting methods defer their realized flow to the next written
+                // row (E2-F59) and are not written here.
+                auto write_unbooked_row = [&]() {
+                    if (strategy_method != PnLAccountingMethod::REALIZED_ONLY) return;
+                    Position unbooked = pos;
+                    unbooked.realized_pnl = Decimal(0.0);
+                    auto unbooked_update =
+                        portfolio->update_strategy_position(strategy_id, symbol, unbooked);
+                    if (unbooked_update.is_error()) {
+                        WARN("Failed to write the no-bar row for " + symbol + ": " +
+                             std::string(unbooked_update.error()->what()));
+                    }
+                };
+
                 // Get current close price
                 auto curr_it = current_close_prices.find(symbol);
                 if (curr_it == current_close_prices.end()) {
+                    write_unbooked_row();
                     continue;
                 }
                 double current_close = curr_it->second;
@@ -1330,6 +1361,7 @@ Result<void> BacktestCoordinator::process_portfolio_day(
                 // Check if we have previous close (a withheld bar never becomes one: K-01)
                 if (!pnl_manager_->has_previous_close(symbol)) {
                     if (!mark_withheld_.count(symbol)) pnl_manager_->set_previous_close(symbol, current_close);
+                    write_unbooked_row();
                     continue;
                 }
 
@@ -1619,6 +1651,14 @@ Result<void> BacktestCoordinator::seed_estimator_history(
                                     std::string(loaded.error()->what()),
                                 "BacktestCoordinator");
     }
+    // LOOP_SPEC v6.2 section 2.1 (N-2): a bar's K-01 verdict reads the classifier's trailing
+    // history, the same in every engine. The window's classifier is given the prefix the live
+    // runners give theirs (live/live_roll_legs.hpp: the bars of kK01ClassifierHistoryDays
+    // calendar days before the window), from the history loaded here, so the window's first bars
+    // are judged on a warm norm: a thin first print of the window is withheld by a 2-year run as
+    // it is by a longer run and by live. The prefix's bars are not cycles and are consumed by
+    // nothing else; the window's roll status still starts at the window.
+    session_classifier_.add_bars(k01_classifier_history(loaded.value(), start_date));
     // The same rule as the live runners' (live/live_estimator_history.hpp): the history's bars are
     // judged in date order by their own classifier, with their vendor ids, each against the bars
     // before it; the withheld ones (K-01) are never consumed.

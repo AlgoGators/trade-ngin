@@ -556,7 +556,7 @@ TEST(SessionBookGateSource, TheTwinsCarryTheSameClassifierGateAndStrictBlocks) {
     if (cons.empty() || base.empty()) GTEST_SKIP() << "runner source not found";
     const std::vector<std::pair<std::string, std::string>> blocks = {
         {"bool is_yesterday_holiday = holiday_checker.is_holiday(", "// STORE LIVE RUN METADATA"},
-        {"if (early_previous_day_close_prices.empty()) {",
+        {"if (early_previous_day_close_prices.empty() || no_t1_bar_consumed) {",
          "// UPDATE TRANSACTION COST MANAGER WITH MARKET DATA"},
         {"// JUNK (T-7a C4):", "// T-RISK-ARCH Q2 (ruled yes)"},
         {"// PREVIOUS DAY PER-STRATEGY BOOKS (Option A)", "// PHASE 5: PER-STRATEGY DAY T-1"},

@@ -701,6 +701,83 @@ TEST_F(OnePassBookTest, ARefusedDayWritesItsRecordRowAndDoesNotCrash) {
     std::filesystem::remove_all(dir);
 }
 
+// The rebalance's record: a run starts from empty files (the first row a process writes into a
+// directory removes what an earlier run left there, where it used to append to it), and a row is
+// dated by the newest bar the call was fed, the cycle's own signal date.
+TEST_F(OnePassBookTest, TheRecordStartsFromEmptyFilesAndIsDatedByTheBarFed) {
+    const std::filesystem::path dir =
+        std::filesystem::temp_directory_path() / ("trade_ngin_record_files_" + std::to_string(::getpid()));
+    std::filesystem::remove_all(dir);
+    std::filesystem::create_directories(dir);
+    const std::string id = "PM_RECORD_FILES";
+    for (const char* name : {"onepass_days_PM_RECORD_FILES.csv", "onepass_book_PM_RECORD_FILES.csv",
+                             "onepass_days_ANOTHER_BOOK.csv", "estimator_A.csv", "series.csv"}) {
+        std::ofstream(dir / name) << "header of an earlier run\nrow of an earlier run\n";
+    }
+    pm_ = std::make_unique<PortfolioManager>(one_pass_config("A"), id);
+    pm_->set_backtest_mode(false);
+    a_ = make_overlay_stub("A", 500000.0, db_);
+    ASSERT_TRUE(a_->initialize().is_ok());
+    ASSERT_TRUE(a_->start().is_ok());
+    ASSERT_TRUE(pm_->add_strategy(a_, 1.0, true).is_ok());
+    a_->rows["AAA"] = row(9.0);
+    a_->rows["BBB"] = row(9.0);
+
+    ::setenv("TRADE_NGIN_SERIES_DUMP_DIR", dir.c_str(), 1);
+    const auto first = process({one_pass_bar("AAA", 1, 100.0), one_pass_bar("BBB", 1, 100.0)});
+    const auto second = process({one_pass_bar("AAA", 3, 100.0), one_pass_bar("BBB", 2, 100.0)});
+    ::unsetenv("TRADE_NGIN_SERIES_DUMP_DIR");
+    ASSERT_TRUE(first.is_ok());
+    ASSERT_TRUE(second.is_ok());
+
+    auto lines = [](const std::filesystem::path& p) {
+        std::ifstream in(p);
+        std::vector<std::string> out;
+        for (std::string line; std::getline(in, line);) out.push_back(line);
+        return out;
+    };
+    const auto days = lines(dir / ("onepass_days_" + id + ".csv"));
+    const auto book = lines(dir / ("onepass_book_" + id + ".csv"));
+    ASSERT_EQ(days.size(), 3u) << "the header and this run's two days, nothing of the earlier run";
+    ASSERT_EQ(book.size(), 5u) << "the header and two symbols on each day";
+    EXPECT_EQ(days[0].rfind("date,cycle_date,warmup,", 0), 0u);
+    EXPECT_EQ(days[1].rfind(core::format_utc_date(one_pass_day(1)) + ",", 0), 0u) << days[1];
+    EXPECT_EQ(days[2].rfind(core::format_utc_date(one_pass_day(3)) + ",", 0), 0u)
+        << "the newest bar fed, whatever the overlay's window ends on: " << days[2];
+    EXPECT_EQ(book[1].rfind(core::format_utc_date(one_pass_day(1)) + ",AAA,", 0), 0u) << book[1];
+    EXPECT_EQ(book[4].rfind(core::format_utc_date(one_pass_day(3)) + ",BBB,", 0), 0u) << book[4];
+    for (const char* gone : {"onepass_days_ANOTHER_BOOK.csv", "estimator_A.csv", "series.csv"}) {
+        EXPECT_FALSE(std::filesystem::exists(dir / gone)) << gone;
+    }
+    std::filesystem::remove_all(dir);
+}
+
+// A cycle that runs no pass (every bar of its signal group withheld) has a day row saying so: the
+// record used to have no row for it, so a reader had to guess which calendar date was missing.
+TEST_F(OnePassBookTest, ACycleWithNoPassHasADayRowSayingSo) {
+    const std::filesystem::path dir =
+        std::filesystem::temp_directory_path() / ("trade_ngin_no_pass_row_" + std::to_string(::getpid()));
+    std::filesystem::remove_all(dir);
+    std::filesystem::create_directories(dir);
+    const std::string id = "PM_NO_PASS_ROW";
+    pm_ = std::make_unique<PortfolioManager>(one_pass_config("A"), id);
+    ::setenv("TRADE_NGIN_SERIES_DUMP_DIR", dir.c_str(), 1);
+    pm_->record_no_pass("2014-08-24", one_pass_day(2), false);
+    ::unsetenv("TRADE_NGIN_SERIES_DUMP_DIR");
+    pm_->record_no_pass("2014-08-25", one_pass_day(3), false);  // no directory named: nothing written
+
+    std::ifstream in(dir / ("onepass_days_" + id + ".csv"));
+    std::vector<std::string> days;
+    for (std::string line; std::getline(in, line);) days.push_back(line);
+    ASSERT_EQ(days.size(), 2u) << "the header and the one no-pass day";
+    EXPECT_EQ(days[1].rfind("2014-08-24," + core::format_utc_date(one_pass_day(2)) + ",0,,no_pass,", 0), 0u)
+        << days[1];
+    EXPECT_EQ(std::count(days[1].begin(), days[1].end(), ','), std::count(days[0].begin(), days[0].end(), ','))
+        << "one cell for every column of the header";
+    EXPECT_FALSE(std::filesystem::exists(dir / ("onepass_book_" + id + ".csv"))) << "no symbol row";
+    std::filesystem::remove_all(dir);
+}
+
 // A symbol the cost model was fed nothing but zero volume has no volume of its own either: the
 // model would price it on the same generic volume as a symbol it was never fed. Held, named, not
 // opened; a symbol fed a real volume beside it trades.

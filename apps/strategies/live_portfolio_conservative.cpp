@@ -26,6 +26,8 @@
 #include "trade_ngin/live/csv_exporter.hpp"
 #include "trade_ngin/live/data_freshness.hpp"
 #include "trade_ngin/live/execution_manager.hpp"
+#include "trade_ngin/live/finalized_books_read.hpp"
+#include "trade_ngin/live/late_bar_warning.hpp"
 #include "trade_ngin/live/futures_cost_feed.hpp"
 #include "trade_ngin/live/live_data_loader.hpp"
 #include "trade_ngin/live/live_historical_metrics.hpp"
@@ -1217,6 +1219,13 @@ int main(int argc, char* argv[]) {
             auto& last = last_consumed_date[bar.symbol];
             if (d > last) last = d;
         }
+        // LOOP_SPEC v6.2 sections 7.2, 7.7: a day none of whose T-1 bars is consumed (T-1 printed
+        // no bar, or every bar it printed is withheld) is not a rebalance. The backtest feeds
+        // nothing on such a cycle (BT_JUNK_FEED): no OVERLAY, OPTIMISER or BOOK line and no
+        // risk_detail. Live carries the whole book on it, below.
+        const bool no_t1_bar_consumed =
+            std::none_of(last_consumed_date.begin(), last_consumed_date.end(),
+                         [&](const auto& entry) { return entry.second == t1_classification.t1_date; });
         // LOOP_SPEC v6.2 section 6.5 (L-09, D3, B8): the rolls this run legs, by STATE: every roll a
         // consumed bar confirmed since the contract recorded on the symbol's stored T-1 positions
         // row (live/live_roll_legs.hpp), never the rolls of a calendar span, so a late (back-filled)
@@ -1497,8 +1506,9 @@ int main(int argc, char* argv[]) {
 
         // The book-level rule (HD 2026-09-17): carry the whole book when NO symbol printed on T-1,
         // i.e. the T-1 price map is empty. It is a carry on every such day, never an abort; the
-        // classifier names the reason (a closure is INFO, a feed hole an ERROR).
-        if (early_previous_day_close_prices.empty()) {
+        // classifier names the reason (a closure is INFO, a feed hole an ERROR). A T-1 whose
+        // every bar is withheld is carried the same way: no bar of it is consumed.
+        if (early_previous_day_close_prices.empty() || no_t1_bar_consumed) {
             // ========================================
             // No symbol has a T-1 price: reuse previous positions, skip strategy processing
             // ========================================
@@ -1987,6 +1997,45 @@ int main(int argc, char* argv[]) {
                 INFO("No previous positions found for strategy: " + strategy_name +
                      " (first run or no data): " + std::string(prev_result.error()->what()));
                 previous_strategy_positions[strategy_name] = {};
+            }
+        }
+
+        // A LATE BAR (HD 2026-10-07: a warning, no catch-up and no refusal). A held symbol's bar
+        // that arrived after the run that should have settled it: the stored row of its date books
+        // 0 and this run settles Day T-1 against its close, so its own move is on no stored row.
+        // The run that first consumes it names it once (live/late_bar_warning.hpp). Nothing stored
+        // changes.
+        {
+            std::unordered_set<std::string> held_symbols;
+            for (const auto& [strategy_name, book] : previous_strategy_positions) {
+                for (const auto& [symbol, row] : book) {
+                    if (row.quantity.as_double() != 0.0) held_symbols.insert(symbol);
+                }
+            }
+            std::unordered_set<std::string> late_roll_symbols;
+            for (const auto& [symbol, late] : roll_state.late) late_roll_symbols.insert(symbol);
+            std::map<Timestamp, std::vector<Position>> rows_by_date;
+            const auto late_bars = find_late_bars(
+                strategy_feed_bars, t1_classification.t1_date, held_symbols, late_roll_symbols,
+                [&](const Timestamp& bar_time) {
+                    const auto cached = rows_by_date.find(bar_time);
+                    if (cached != rows_by_date.end()) return cached->second;
+                    std::vector<Position> rows;
+                    for (const auto& [strategy_name, book] : previous_strategy_positions) {
+                        auto stored = db->load_positions_by_date(
+                            combined_strategy_id, strategy_name, coordinator_config.portfolio_id,
+                            bar_time, "trading.positions");
+                        if (stored.is_error()) continue;
+                        for (const auto& [symbol, stored_row] : stored.value()) {
+                            Position row = stored_row;
+                            row.symbol = symbol;
+                            rows.push_back(std::move(row));
+                        }
+                    }
+                    return rows_by_date.emplace(bar_time, std::move(rows)).first->second;
+                });
+            for (const auto& bar : late_bars) {
+                WARN(late_bar_warning_line(bar, pnl_manager->get_point_value(bar.symbol)));
             }
         }
 
@@ -2606,8 +2655,10 @@ int main(int argc, char* argv[]) {
         // Use MarginManager for margin calculations
         INFO("Using MarginManager to calculate margin requirements...");
 
+        // The stored exposure cells value a held symbol at the Day T mark: its last consumed
+        // close when its T-1 print is withheld (day_t_mark_prices), never the withheld print.
         auto margin_result = margin_manager->calculate_margin_requirements(
-            positions, previous_day_close_prices, initial_capital);
+            positions, day_t_mark_prices, initial_capital);
 
         double gross_notional = 0.0;
         double net_notional = 0.0;
@@ -2631,8 +2682,8 @@ int main(int argc, char* argv[]) {
             const BookExposure exposure = account_book_exposure(
                 strategy_positions_map,
                 [&](const std::string& symbol, const Position& pos) {
-                    return previous_day_close_prices.count(symbol)
-                               ? previous_day_close_prices.at(symbol)
+                    return day_t_mark_prices.count(symbol)
+                               ? day_t_mark_prices.at(symbol)
                                : pos.average_price.as_double();
                 },
                 [&](const std::string& symbol, double qty, double price) {
@@ -4107,7 +4158,7 @@ int main(int argc, char* argv[]) {
             if (!skip_strategy_processing) {
                 return csv_exporter->export_current_positions(
                     now, strategy_positions_map,
-                    previous_day_close_prices,  // Market prices (Day T-1 close)
+                    day_t_mark_prices,  // Market prices (the Day T mark)
                     current_portfolio_value, gross_notional, net_notional,
                     strategy_instances_map);
             }
@@ -4145,6 +4196,17 @@ int main(int argc, char* argv[]) {
                   std::string(current_export_result.error()->what()));
         }
 
+        // The Day T-1 books as stored after the finalize write above. previous_strategy_positions
+        // was loaded before it (the no-session hold needs the stored book early), so its realized
+        // P&L is still yesterday's placeholder: the yesterday CSV and the email's "Yesterday's
+        // Finalized Position Results" table print the rows read back here.
+        const SleeveBooks finalized_strategy_positions = read_back_finalized_books(
+            previous_strategy_positions, [&](const std::string& strategy_name) {
+                return db->load_positions_by_date(combined_strategy_id, strategy_name,
+                                                  coordinator_config.portfolio_id, previous_date,
+                                                  "trading.positions");
+            });
+
         // Export yesterday's finalized positions with per-strategy breakdown (if not first trading
         // day)
         std::string yesterday_filename;
@@ -4154,7 +4216,7 @@ int main(int argc, char* argv[]) {
             auto yesterday_time = now - std::chrono::hours(24);
 
             auto finalized_export_result = csv_exporter->export_finalized_positions(
-                now, yesterday_time, previous_strategy_positions,
+                now, yesterday_time, finalized_strategy_positions,
                 two_days_ago_close_prices,  // Entry prices (T-2)
                 previous_day_close_prices   // Exit prices (T-1)
             );
@@ -4526,14 +4588,14 @@ int main(int argc, char* argv[]) {
                         strategy_metrics, all_strategy_executions, date_str,
                         portfolio_id,                 // Portfolio name for email header
                         true,                         // is_daily_strategy
-                        previous_day_close_prices,    // Pass Day T-1 close prices for today's
-                                                      // positions
+                        day_t_mark_prices,            // The Day T mark of today's positions
                         db,                           // Pass database for symbols reference table
-                        previous_strategy_positions,  // Per-strategy yesterday's positions for
-                                                      // grouped tables
+                        finalized_strategy_positions,  // Per-strategy yesterday's positions,
+                                                       // read back after the finalize
                         yesterday_exit_prices,   // Day T-1 close prices for yesterday's positions
                         yesterday_entry_prices,  // Day T-2 close prices for yesterday's positions
-                        yesterday_daily_metrics_final  // Yesterday's metrics
+                        yesterday_daily_metrics_final,  // Yesterday's metrics
+                        combined_strategy_id            // The charts query this run's own rows
                     );
 
                     // Send email with CSV attachments: today's positions and yesterday's finalized

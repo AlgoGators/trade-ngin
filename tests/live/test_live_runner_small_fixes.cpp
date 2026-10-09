@@ -439,3 +439,91 @@ TEST(C7bBookGate, TheCombinedMapOfTwoSleevesIsTheirSum) {
     EXPECT_DOUBLE_EQ(combined.at("6L.v.0").quantity.as_double(), 2.0);
     EXPECT_DOUBLE_EQ(combined.at("MES.v.0").quantity.as_double(), -2.0);
 }
+
+// =============================================================================================
+// The late-bar warning (T-FIX; HD 2026-10-07: a warning, no catch-up, no refusal). A held symbol's
+// bar that arrives after the run that settles its date is on no stored row; both runners name it,
+// identically, once the stored T-1 books are loaded and before the finalize.
+// (The rule itself: tests/live/test_late_bar_warning.cpp.)
+// =============================================================================================
+
+TEST(LateBarWarningSource, BothTwinsNameALateBarAfterTheStoredBooksAreLoaded) {
+    std::vector<std::string> blocks;
+    for (const char* runner : kFuturesRunners) {
+        SCOPED_TRACE(runner);
+        const std::string src = read_source(runner);
+        if (src.empty()) GTEST_SKIP() << "runner source not found";
+        const auto books = src.find("previous_strategy_positions[strategy_name] = prev_result.value();");
+        const auto call = src.find("find_late_bars(");
+        const auto finalize = src.find("PHASE 5: Finalizing Day T-1 PnL per-strategy");
+        ASSERT_NE(books, npos);
+        ASSERT_NE(finalize, npos);
+        ASSERT_NE(call, npos) << "a late bar of a held symbol is lost without a line";
+        EXPECT_GT(call, books) << "the held symbols are the stored T-1 books'";
+        EXPECT_LT(call, finalize);
+        EXPECT_NE(src.find("WARN(late_bar_warning_line(bar, pnl_manager->get_point_value(bar.symbol)));"),
+                  npos)
+            << "the line is not printed at WARNING with the symbol's point value";
+        blocks.push_back(between(src, "// A LATE BAR (HD 2026-10-07", "// BOOK GATE (T-7a C4"));
+    }
+    ASSERT_EQ(blocks.size(), 2u);
+    ASSERT_FALSE(blocks[0].empty());
+    EXPECT_EQ(blocks[0], blocks[1]);
+}
+
+// =============================================================================================
+// The stored exposure cells value a held symbol at the Day T mark (T-FIX). A held symbol whose T-1
+// print is withheld was valued at the withheld print in gross and net notional and in leverage:
+// the runner built day_t_mark_prices (the last consumed close of such a symbol) and four call
+// sites still passed the raw T-1 closes.
+// =============================================================================================
+
+TEST(ExposureMarkSource, BothTwinsValueTheBookAtTheDayTMarkAtTheFourExposureSites) {
+    std::vector<std::string> sites;
+    for (const char* runner : kFuturesRunners) {
+        SCOPED_TRACE(runner);
+        const std::string src = read_source(runner);
+        if (src.empty()) GTEST_SKIP() << "runner source not found";
+        const std::string margin =
+            between(src, "margin_manager->calculate_margin_requirements(", ");");
+        const std::string exposure = between(src, "const BookExposure exposure = account_book_exposure(",
+                                             "[&](const std::string& symbol, double qty, double price)");
+        const std::string csv = between(src, "return csv_exporter->export_current_positions(", ");");
+        const std::string email = between(src, "email_sender->generate_trading_report_body(", ");");
+        for (const std::string* site : {&margin, &exposure, &csv, &email}) {
+            ASSERT_FALSE(site->empty());
+            EXPECT_NE(site->find("day_t_mark_prices"), npos)
+                << "a withheld T-1 print still values the book here: " << *site;
+            EXPECT_EQ(site->find("previous_day_close_prices"), npos) << *site;
+        }
+        sites.push_back(margin + exposure + csv);
+    }
+    ASSERT_EQ(sites.size(), 2u);
+    EXPECT_EQ(sites[0], sites[1]);
+}
+
+// =============================================================================================
+// A day none of whose T-1 bars is consumed is carried (T-FIX; LOOP_SPEC sections 7.2, 7.7). A T-1
+// whose every bar was withheld ran the rebalance on the window's earlier bars with every symbol
+// held: it printed OVERLAY, OPTIMISER and BOOK and stored risk_detail, where the backtest feeds
+// nothing on such a cycle and stores NULL. One condition, the carry's, in both runners.
+// =============================================================================================
+
+TEST(AllWithheldDaySource, BothTwinsCarryADayNoneOfWhoseT1BarsIsConsumed) {
+    std::vector<std::string> blocks;
+    for (const char* runner : kFuturesRunners) {
+        SCOPED_TRACE(runner);
+        const std::string src = read_source(runner);
+        if (src.empty()) GTEST_SKIP() << "runner source not found";
+        EXPECT_NE(src.find("if (early_previous_day_close_prices.empty() || no_t1_bar_consumed) {"), npos)
+            << "the carry still tests the raw T-1 price map alone, which holds a withheld bar";
+        const std::string rule = between(src, "const bool no_t1_bar_consumed =", ";\n");
+        ASSERT_FALSE(rule.empty());
+        EXPECT_NE(rule.find("last_consumed_date"), npos) << "the test is on the CONSUMED bars";
+        EXPECT_NE(rule.find("t1_classification.t1_date"), npos);
+        EXPECT_LT(src.find("const bool no_t1_bar_consumed ="), src.find("NON-TRADING DAY DETECTED"));
+        blocks.push_back(rule);
+    }
+    ASSERT_EQ(blocks.size(), 2u);
+    EXPECT_EQ(blocks[0], blocks[1]);
+}

@@ -2001,6 +2001,11 @@ bool PortfolioManager::one_pass_book() const {
            strategies_.count(config_.overlay_sleeve) > 0;
 }
 
+void PortfolioManager::record_no_pass(const std::string& signal_date, Timestamp cycle,
+                                      bool is_warmup) const {
+    one_pass::append_no_pass_record(id_, signal_date, core::format_utc_date(cycle), is_warmup);
+}
+
 OnePassDay PortfolioManager::last_one_pass() const {
     std::lock_guard<std::mutex> lock(mutex_);
     return one_pass_day_;
@@ -2340,7 +2345,14 @@ Result<void> PortfolioManager::rebalance_one_pass(
             if (in.signalling[i]) ever_signalled_.insert(symbols[i]);
         }
         const std::string day = as_of ? core::format_utc_date(*as_of) : std::string("none");
-        one_pass::append_one_pass_record(id_, day, is_warmup, symbols, in, result);
+        // The record's signal date: the date of the newest bar this call was fed.
+        std::string signal_date = "none";
+        if (!data.empty()) {
+            Timestamp newest = data.front().timestamp;
+            for (const auto& bar : data) newest = std::max(newest, bar.timestamp);
+            signal_date = core::format_utc_date(newest);
+        }
+        one_pass::append_one_pass_record(id_, signal_date, day, is_warmup, symbols, in, result);
 
         // The log lines (section 7.7).
         Logger::register_component("RiskManager");

@@ -3663,7 +3663,8 @@ std::string EmailSender::generate_trading_report_body(
     std::shared_ptr<DatabaseInterface> db, const StrategyPositionsMap& yesterday_strategy_positions,
     const std::unordered_map<std::string, double>& yesterday_close_prices,
     const std::unordered_map<std::string, double>& two_days_ago_close_prices,
-    const std::map<std::string, double>& yesterday_daily_metrics) {
+    const std::map<std::string, double>& yesterday_daily_metrics,
+    const std::string& chart_strategy_id) {
     (void)risk_metrics;
     std::ostringstream html;
 
@@ -3898,12 +3899,13 @@ std::string EmailSender::generate_trading_report_body(
         // portfolio_name carries the portfolio_id from the live runner (e.g.
         // "CONSERVATIVE_PORTFOLIO"). Pass it to chart queries so they correctly filter on
         // (strategy_id, portfolio_id) — without this they pulled cross-portfolio rows and
-        // the email charts double-rendered every date.
+        // the email charts double-rendered every date. The strategy id is the run's own
+        // (chart_strategy_id): a book of two sleeves stores its rows under its combined id.
         const std::string& chart_portfolio_id = portfolio_name;
 
         // Generate equity curve chart
         chart_base64_ = ChartGenerator::generate_equity_curve_chart(
-            db, "LIVE_TREND_FOLLOWING", chart_portfolio_id, 30);
+            db, chart_strategy_id, chart_portfolio_id, 30);
         if (!chart_base64_.empty()) {
             html << "<h3 style=\"margin-top: 20px; color: #333;\">Equity Curve</h3>\n";
             html << "<div style=\"width: 100%; max-width: 1000px; margin: 20px auto; text-align: "
@@ -3917,7 +3919,7 @@ std::string EmailSender::generate_trading_report_body(
         // Generate PnL by symbol chart - ONLY if show_yesterday_pnl is true
         if (show_yesterday_pnl) {
             pnl_by_symbol_base64_ = ChartGenerator::generate_pnl_by_symbol_chart(
-                db, "LIVE_TREND_FOLLOWING", chart_portfolio_id, date);
+                db, chart_strategy_id, chart_portfolio_id, date);
             if (!pnl_by_symbol_base64_.empty()) {
                 html << "<h3 style=\"margin-top: 20px; color: #333;\">Yesterday's PnL by "
                         "Symbol</h3>\n";
@@ -3932,7 +3934,7 @@ std::string EmailSender::generate_trading_report_body(
 
         // Generate daily PnL chart
         daily_pnl_base64_ = ChartGenerator::generate_daily_pnl_chart(
-            db, "LIVE_TREND_FOLLOWING", chart_portfolio_id, date, 30);
+            db, chart_strategy_id, chart_portfolio_id, date, 30);
         if (!daily_pnl_base64_.empty()) {
             html << "<h3 style=\"margin-top: 20px; color: #333;\">Daily PnL (Last 30 Days)</h3>\n";
             html << "<div style=\"width: 100%; max-width: 1000px; margin: 20px auto; text-align: "
@@ -3943,7 +3945,7 @@ std::string EmailSender::generate_trading_report_body(
         }
 
         total_transaction_costs_base64_ = ChartGenerator::generate_total_transaction_costs_chart(
-            db, "LIVE_TREND_FOLLOWING", chart_portfolio_id, date);
+            db, chart_strategy_id, chart_portfolio_id, date);
         if (!total_transaction_costs_base64_.empty()) {
             html << "<h3 style=\"margin-top: 20px; color: #333;\">Cost per $1M Traded (Efficiency "
                     "Metric)</h3>\n";
@@ -3956,7 +3958,7 @@ std::string EmailSender::generate_trading_report_body(
         }
 
         margin_posted_base64_ = ChartGenerator::generate_margin_posted_chart(
-            db, "LIVE_TREND_FOLLOWING", chart_portfolio_id, date);
+            db, chart_strategy_id, chart_portfolio_id, date);
         if (!margin_posted_base64_.empty()) {
             html << "<h3 style=\"margin-top: 20px; color: #333;\">Margin Posted</h3>\n";
             html << "<div style=\"width: 100%; max-width: 1000px; margin: 20px auto; text-align: "
@@ -3980,7 +3982,7 @@ std::string EmailSender::generate_trading_report_body(
         }
 
         cumulative_pnl_by_symbol_base64_ = ChartGenerator::generate_cumulative_pnl_by_symbol_chart(
-            db, "LIVE_TREND_FOLLOWING", chart_portfolio_id, date);
+            db, chart_strategy_id, chart_portfolio_id, date);
         if (!cumulative_pnl_by_symbol_base64_.empty()) {
             html << "<h3 style=\"margin-top: 20px; color: #333;\">Cumulative PnL by Symbol "
                     "(All-Time)</h3>\n";

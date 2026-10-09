@@ -464,6 +464,11 @@ public:
     /// of every call.
     OnePassDay last_one_pass() const;
 
+    /// The acceptance record's day row for a cycle that runs no pass (one_pass_record.hpp): the
+    /// caller did not call process_market_data because every bar of the signal group was withheld.
+    /// Nothing unless TRADE_NGIN_SERIES_DUMP_DIR names a directory.
+    void record_no_pass(const std::string& signal_date, Timestamp cycle, bool is_warmup) const;
+
     /**
      * @brief T-7b-2 C9a3: the same rebalance's delivered cut with final_gross measured on `stored_book` (the
      *        account book the runner actually stores, e.g. after a live runner's BOOK_GATE hold), at the notionals

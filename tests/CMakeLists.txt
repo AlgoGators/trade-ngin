@@ -1,6 +1,7 @@
 # Set test source files
 set(TEST_SOURCES
     core/test_decimal.cpp
+    core/test_email_chart_strategy_id.cpp
     core/test_time_utils_parse.cpp
     core/test_result.cpp
     core/test_state_manager.cpp
@@ -117,6 +118,7 @@ set(TEST_SOURCES
     backtest/test_backtest_k01_feed.cpp
     backtest/test_backtest_change_bar_hold.cpp
     backtest/test_backtest_change_bar_pnl.cpp
+    backtest/test_backtest_no_bar_row.cpp
     backtest/test_consumed_series_record.cpp
     backtest/test_backtest_equity_cost_retier.cpp
     backtest/test_backtest_futures_cost_feed.cpp
@@ -133,6 +135,8 @@ set(TEST_SOURCES
     live/test_feed_freshness_universe.cpp
     live/test_feed_ingestion_assertion.cpp
     live/test_day_t_write_ordering.cpp
+    live/test_finalized_books_read.cpp
+    live/test_late_bar_warning.cpp
     live/test_live_run_refusal_arms.cpp
     live/test_risk_module_error_path.cpp
     live/test_sleeve_risk_module_failure.cpp
@@ -189,6 +193,7 @@ set(TEST_SOURCES
     live/test_finalize_realized_policy.cpp
     live/test_realized_row_retention.cpp
     live/test_unrealized_cost_basis.cpp
+    live/test_yesterday_rows_source.cpp
     live/test_live_data_loader.cpp
     live/test_live_results_roll_cost_columns.cpp
     live/test_csv_exporter.cpp
