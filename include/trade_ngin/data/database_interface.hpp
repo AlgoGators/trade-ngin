@@ -29,6 +29,23 @@ namespace trade_ngin {
  */
 inline constexpr const char* kDefaultEquityCurveStream = "system";
 
+/**
+ * @brief The book a live trading row belongs to (portfolio_type; migration 021).
+ *
+ * Three books live side by side in trading.positions, trading.executions,
+ * trading.live_results and trading.equity_curve: "system" (the model run's answer),
+ * "qt_proposal" (the desk's request) and "qt" (what the engine gave back, what goes out).
+ * Every read, write and delete of those tables names exactly one book, and every call that
+ * names none means "system" -- the only book that existed before 021, so a caller that does
+ * not know about books reads and writes exactly what it did before.
+ */
+inline constexpr const char* kDefaultBook = "system";
+
+/// True for the three books migration 021 allows, and nothing else (case-sensitive, exact).
+inline bool is_valid_book(const std::string& book) {
+    return book == "system" || book == "qt_proposal" || book == "qt";
+}
+
 class DatabaseInterface {
 public:
     virtual ~DatabaseInterface() = default;
@@ -71,13 +88,15 @@ public:
      * @param strategy_name Individual strategy name (e.g., TREND_FOLLOWING)
      * @param portfolio_id Portfolio identifier (e.g., BASE_PORTFOLIO, CONSERVATIVE_PORTFOLIO)
      * @param table_name Name of the table to insert into
+     * @param book system, qt_proposal or qt (migration 021); anything else is refused
      * @return Result indicating success or failure
      */
     virtual Result<void> store_executions(const std::vector<ExecutionReport>& executions,
                                           const std::string& strategy_id,
                                           const std::string& strategy_name,
                                           const std::string& portfolio_id,
-                                          const std::string& table_name = "trading.executions") = 0;
+                                          const std::string& table_name = "trading.executions",
+                                          const std::string& book = kDefaultBook) = 0;
 
     /**
      * @brief Store position data
@@ -87,13 +106,15 @@ public:
      * @param strategy_name Individual strategy name (e.g., TREND_FOLLOWING)
      * @param portfolio_id Portfolio identifier (e.g., BASE_PORTFOLIO, CONSERVATIVE_PORTFOLIO)
      * @param table_name Name of the table to insert into
+     * @param book system, qt_proposal or qt (migration 021); the re-run DELETE is scoped to it
      * @return Result indicating success or failure
      */
     virtual Result<void> store_positions(const std::vector<Position>& positions,
                                          const std::string& strategy_id,
                                          const std::string& strategy_name,
                                          const std::string& portfolio_id,
-                                         const std::string& table_name = "trading.positions") = 0;
+                                         const std::string& table_name = "trading.positions",
+                                         const std::string& book = kDefaultBook) = 0;
 
     /**
      * @brief Get latest market prices for symbols
@@ -116,12 +137,14 @@ public:
      * @param portfolio_id Portfolio identifier (e.g., BASE_PORTFOLIO, CONSERVATIVE_PORTFOLIO)
      * @param date Date to load positions for
      * @param table_name Name of the positions table
+     * @param book system, qt_proposal or qt (migration 021): only that book's rows are read
      * @return Result containing map of symbol to position
      */
     virtual Result<std::unordered_map<std::string, Position>> load_positions_by_date(
         const std::string& strategy_id, const std::string& strategy_name,
         const std::string& portfolio_id, const Timestamp& date,
-        const std::string& table_name = "trading.positions") = 0;
+        const std::string& table_name = "trading.positions",
+        const std::string& book = kDefaultBook) = 0;
 
     /**
      * @brief Store strategy signals
@@ -237,7 +260,8 @@ public:
      */
     virtual Result<std::tuple<double, double, double>> get_previous_live_aggregates(
         const std::string& strategy_id, const std::string& portfolio_id, const Timestamp& date,
-        const std::string& table_name = "trading.live_results") = 0;
+        const std::string& table_name = "trading.live_results",
+        const std::string& book = kDefaultBook) = 0;
 
     /**
      * @brief Store live trading equity curve point
