@@ -1,0 +1,77 @@
+{
+  "_description": "QT_E2E_PORTFOLIO: end-to-end test book for scripts/qt_e2e.sh (desk editing on; not in strategy_registry). A copy of CONSERVATIVE_PORTFOLIO.",
+  "portfolio_id": "QT_E2E_PORTFOLIO",
+  "qt": {
+    "desk_editable": true
+  },
+  "_qt_note": "QT platform (docs/design/qt-contract.md): desk_editable turns on the three books (system, qt_proposal, qt) and the desk commands; false runs and stores the system book only",
+  "initial_capital": 500000.0,
+  "strategies": {
+    "TREND_FOLLOWING": {
+      "enabled_backtest": true,
+      "enabled_live": true,
+      "default_allocation": 1.0,
+      "type": "TrendFollowingStrategy",
+      "config": {
+        "risk_target": 0.2,
+        "idm": 2.5,
+        "_idm_rationale": "Carver Table 16 (Advanced Futures Trading Strategies, p.125): 30+ instruments -> 2.50; the universe is 36 names. The formula 1/sqrt(w'Hw), H the correlation of the instruments' subsystem returns floored at 0, reaches the 2.5 cap on the 36 names. HD 2026-09-25",
+        "ema_windows": [
+          [
+            2,
+            8
+          ],
+          [
+            4,
+            16
+          ],
+          [
+            8,
+            32
+          ],
+          [
+            16,
+            64
+          ],
+          [
+            32,
+            128
+          ],
+          [
+            64,
+            256
+          ]
+        ],
+        "vol_lookback_short": 32,
+        "vol_lookback_long": 252
+      }
+    }
+  },
+  "equity_slow_rule": {
+    "symbols": [
+      "M2K",
+      "MES",
+      "MNQ",
+      "MYM"
+    ],
+    "pairs": [
+      [
+        32,
+        128
+      ],
+      [
+        64,
+        256
+      ]
+    ]
+  },
+  "sizing_mode": "half_compounding",
+  "starting_capital": 500000.0,
+  "_sizing_note": "required; half_compounding: the book is sized on starting_capital less the drawdown of its cumulative settled net P&L from its running peak, never above starting_capital; starting_capital must equal initial_capital",
+  "_equity_slow_rule_note": "required; on the book's first sleeve a negative combined forecast of these symbols stands only when the scaled forecast of every pair named is negative, and is 0 otherwise",
+  "use_optimization": true,
+  "covariance_history_prices": 756,
+  "_covariance_history_prices_note": "daily closes per symbol the PortfolioManager keeps for the optimiser covariance, one per date, oldest dropped first; absent means 756 (the trend sleeve own cap); at least 2",
+  "covariance_stale_dates": 5,
+  "_covariance_stale_dates_note": "how many dates of the union of the covariance symbols' dates a symbol's last close may trail the newest before the optimiser leaves it out of the date intersection (its column becomes the guarded 0.01 variance, WARN COVARIANCE_STALE_PARTICIPANT); at exactly this many it stays; absent means 5; a whole number of at least 0, e.g. 3 to leave out a symbol more than three dates stale"
+}
