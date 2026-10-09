@@ -355,6 +355,9 @@ struct AppConfig {
     //   "listing_dates": {"contracts": [{"symbol": "MES", "listed": "2019-05-06", "before": "ES", "ratio": 10}]}
     // Absent means empty, and an empty list changes nothing anywhere.
     std::vector<ListedContract> listing_dates;
+    // portfolio.json's optional top-level instrument_id_relabels (data/listing_dates.hpp): vendor id
+    // changes that are not rolls. Absent means empty, and an empty list changes nothing.
+    std::vector<InstrumentIdRelabel> instrument_id_relabels;
     // listing_dates' optional "switch_rule": "open_at_target" (the default), "close_reenter", "convert" or "carry_to_target".
     ListingSwitchRule listing_switch_rule{ListingSwitchRule::kOpenAtTarget};
 

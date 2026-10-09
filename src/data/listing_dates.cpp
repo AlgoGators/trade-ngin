@@ -289,6 +289,86 @@ std::vector<ExecutionReport> make_listing_switch_fills(
     return legs;
 }
 
+std::vector<ListingDates::RelabelEntry> ListingDates::build_relabels(
+    const std::vector<InstrumentIdRelabel>& relabels) {
+    std::vector<RelabelEntry> out;
+    for (const auto& r : relabels) {
+        RelabelEntry e;
+        e.relabel = r;
+        if (r.symbol.empty() || r.symbol.find('.') != std::string::npos || r.from.empty() ||
+            r.to.empty() || r.from == r.to) {
+            throw std::invalid_argument(
+                "instrument_id_relabels: \"symbol\" is a root and \"from\" and \"to\" are two ids");
+        }
+        if (!parse_ymd(r.date, &e.from_time)) {
+            throw std::invalid_argument("instrument_id_relabels: \"date\" of " + r.symbol +
+                                        " is not a YYYY-MM-DD date: " + r.date);
+        }
+        out.push_back(std::move(e));
+    }
+    return out;
+}
+
+void ListingDates::validate_relabels(const std::vector<InstrumentIdRelabel>& relabels) {
+    (void)build_relabels(relabels);
+}
+
+void ListingDates::set_relabels(const std::vector<InstrumentIdRelabel>& relabels) {
+    auto built = build_relabels(relabels);
+    std::lock_guard<std::mutex> lock(mutex_);
+    relabels_ = std::move(built);
+}
+
+bool ListingDates::has_relabels() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return !relabels_.empty();
+}
+
+std::string ListingDates::read_id(const std::string& symbol, const Timestamp& bar_time,
+                                  const std::string& instrument_id) const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (relabels_.empty()) return instrument_id;
+    const std::string root = root_of(symbol);
+    std::string id = instrument_id;
+    for (const auto& e : relabels_) {
+        if (root == e.relabel.symbol && id == e.relabel.to && !(bar_time < e.from_time)) {
+            id = e.relabel.from;
+        }
+    }
+    return id;
+}
+
+void ListingDates::apply_relabels(std::vector<Bar>& bars) const {
+    if (!has_relabels()) return;
+    for (auto& bar : bars) bar.instrument_id = read_id(bar.symbol, bar.timestamp, bar.instrument_id);
+}
+
+void ListingDates::apply_relabels(std::vector<market_data_utils::FuturesInstrumentId>& ids) const {
+    if (!has_relabels()) return;
+    for (auto& row : ids) {
+        Timestamp at;
+        if (!parse_ymd(row.date, &at)) continue;
+        row.instrument_id = read_id(row.symbol, at, row.instrument_id);
+    }
+}
+
+Result<std::vector<market_data_utils::FuturesInstrumentId>> ListingDates::read_ids(
+    const std::vector<std::string>& symbols,
+    Result<std::vector<market_data_utils::FuturesInstrumentId>> ids) const {
+    if (ids.is_error() || (!enabled() && !has_relabels())) return ids;
+    auto rows = ids.value();
+    // a predecessor reads its listed contract's rows and no other: rows stored under its own symbol
+    // are left out, as the bar loader leaves its bars out
+    rows.erase(std::remove_if(rows.begin(), rows.end(),
+                              [&](const market_data_utils::FuturesInstrumentId& row) {
+                                  return is_predecessor(row.symbol);
+                              }),
+               rows.end());
+    apply_relabels(rows);
+    add_predecessor_ids(symbols, rows);
+    return Result<std::vector<market_data_utils::FuturesInstrumentId>>(std::move(rows));
+}
+
 void ListingDates::add_predecessor_bars(const std::vector<std::string>& symbols,
                                         std::vector<Bar>& bars) const {
     std::lock_guard<std::mutex> lock(mutex_);

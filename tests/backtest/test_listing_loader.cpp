@@ -1,7 +1,8 @@
 // Listing dates at the backtest's bar loader (data/listing_dates.hpp): a predecessor contract has
 // no stored rows of its own, so the loader leaves it out of the query and hands it the rows stored
 // under its listed contract's symbol. With nothing declared the loader asks for and returns exactly
-// what it did before.
+// what it did before. A declared vendor relabel (instrument_id_relabels) is read here too, before
+// the predecessor's copy is made, so every consumer of the backtest sees one contract.
 
 #include <gtest/gtest.h>
 
@@ -125,6 +126,7 @@ protected:
     }
     static void reset() {
         ListingDates::instance().clear();
+        ListingDates::instance().set_relabels({});
     }
     std::shared_ptr<BarTableDatabase> db_;
 };
@@ -161,4 +163,24 @@ TEST_F(ListingLoaderTest, AListedContractWhosePredecessorIsNotASymbolOfTheRunGet
     ASSERT_TRUE(loaded.is_ok()) << loaded.error()->what();
     EXPECT_EQ(loaded.value().size(), 5u);
     EXPECT_TRUE(view(loaded.value(), "ES.v.0").empty());
+}
+
+// A declared relabel: from its date the new id is read as the old one on the loaded bars of that
+// symbol only; closes and dates are untouched, and a predecessor's copy carries the same ids.
+TEST_F(ListingLoaderTest, ADeclaredRelabelIsReadOnTheLoadedBars) {
+    ListingDates::instance().set_relabels({{"MES", "2026-02-22", "42140878", "42003800"}});
+    BacktestDataLoader loader(db_);
+    const auto loaded = loader.load_market_data(config_for({"MES.v.0", "ZN.v.0"}));
+    ASSERT_TRUE(loaded.is_ok()) << loaded.error()->what();
+    EXPECT_EQ(view(loaded.value(), "MES.v.0"),
+              (std::vector<std::string>{"2-20 6924 42140878", "2-22 6906 42140878", "2-23 6857 42140878"}));
+    EXPECT_EQ(view(loaded.value(), "ZN.v.0"),
+              (std::vector<std::string>{"2-20 112 42003800", "2-23 113 42003800"}))
+        << "another symbol carrying the same id is not touched";
+
+    ListingDates::instance().set({{"MES", "ES", "2026-02-22", 10.0}});
+    const auto paired = loader.load_market_data(config_for({"MES.v.0", "ZN.v.0", "ES.v.0"}));
+    ASSERT_TRUE(paired.is_ok()) << paired.error()->what();
+    EXPECT_EQ(view(paired.value(), "ES.v.0"),
+              (std::vector<std::string>{"2-20 6924 42140878", "2-22 6906 42140878", "2-23 6857 42140878"}));
 }

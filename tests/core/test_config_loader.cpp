@@ -1433,3 +1433,53 @@ TEST_F(ConfigLoaderTest, AnUnusableListingDatesBlockRefusesTheConfig) {
             << r.error()->what();
     }
 }
+
+// portfolio.json's optional "instrument_id_relabels" list (data/listing_dates.hpp): absent means
+// none; present it is parsed strictly.
+TEST_F(ConfigLoaderTest, InstrumentIdRelabelsAreParsedAndAbsentMeansNone) {
+    write_full_set("base");
+    auto none = ConfigLoader::load(base_, "base");
+    ASSERT_TRUE(none.is_ok()) << (none.error() ? none.error()->what() : "no error");
+    EXPECT_TRUE(none.value().instrument_id_relabels.empty());
+
+    const nlohmann::json good = {{"symbol", "MES"}, {"date", "2026-02-22"}, {"from", "42140878"}, {"to", "42003800"}};
+    write_full_set("base", nlohmann::json::object(),
+                   {{"instrument_id_relabels", nlohmann::json::array({good})}});
+    auto r = ConfigLoader::load(base_, "base");
+    ASSERT_TRUE(r.is_ok()) << (r.error() ? r.error()->what() : "no error");
+    ASSERT_EQ(r.value().instrument_id_relabels.size(), 1u);
+    EXPECT_EQ(r.value().instrument_id_relabels[0].symbol, "MES");
+    EXPECT_EQ(r.value().instrument_id_relabels[0].date, "2026-02-22");
+    EXPECT_EQ(r.value().instrument_id_relabels[0].from, "42140878");
+    EXPECT_EQ(r.value().instrument_id_relabels[0].to, "42003800");
+    EXPECT_TRUE(r.value().listing_dates.empty()) << "the two blocks are independent";
+
+    std::vector<nlohmann::json> bad;
+    bad.push_back(good);  // an object, not a list
+    for (const char* key : {"symbol", "date", "from", "to"}) {
+        nlohmann::json entry = good;
+        entry.erase(key);
+        bad.push_back(nlohmann::json::array({entry}));
+    }
+    {
+        nlohmann::json entry = good;
+        entry["from"] = 42140878;  // an id is text
+        bad.push_back(nlohmann::json::array({entry}));
+        entry = good;
+        entry["date"] = "2026-2-22";
+        bad.push_back(nlohmann::json::array({entry}));
+        entry = good;
+        entry["to"] = entry["from"];
+        bad.push_back(nlohmann::json::array({entry}));
+        entry = good;
+        entry["symbol"] = "MES.v.0";
+        bad.push_back(nlohmann::json::array({entry}));
+    }
+    for (const auto& block : bad) {
+        write_full_set("base", nlohmann::json::object(), {{"instrument_id_relabels", block}});
+        auto refused = ConfigLoader::load(base_, "base");
+        ASSERT_TRUE(refused.is_error()) << block.dump();
+        EXPECT_NE(std::string(refused.error()->what()).find("\"instrument_id_relabels\""), std::string::npos)
+            << refused.error()->what();
+    }
+}

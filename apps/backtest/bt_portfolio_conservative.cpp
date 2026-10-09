@@ -161,6 +161,15 @@ int main() {
                                s == "ES.v.0";
                     }),
                 symbols.end());
+            // Declared vendor id relabellings (nothing happens without instrument_id_relabels).
+            if (!app_config.instrument_id_relabels.empty()) {
+                ListingDates::instance().set_relabels(app_config.instrument_id_relabels);
+                std::string line = "INSTRUMENT_ID_RELABELS in force (not rolls):";
+                for (const auto& r : app_config.instrument_id_relabels) {
+                    line += " " + r.symbol + " from " + r.date + " id " + r.to + " is read as " + r.from + ";";
+                }
+                WARN(line);
+            }
             // Listing dates (nothing happens without portfolio.json's listing_dates):
             // a window that starts before a contract's listing date also runs the contract traded
             // before it, on the rows stored under the listed contract's symbol.
@@ -534,6 +543,13 @@ int main() {
             nlohmann::json portfolio_config_json = portfolio_config.to_json();
             portfolio_config_json["strategy_allocations"] = strategy_allocations;
             portfolio_config_json["strategy_names"] = strategy_names;
+            if (!app_config.instrument_id_relabels.empty()) {
+                auto relabels = nlohmann::json::array();
+                for (const auto& r : app_config.instrument_id_relabels) {
+                    relabels.push_back({{"symbol", r.symbol}, {"date", r.date}, {"from", r.from}, {"to", r.to}});
+                }
+                portfolio_config_json["instrument_id_relabels"] = relabels;
+            }
             if (!app_config.listing_dates.empty()) {
                 auto contracts = nlohmann::json::array();
                 for (const auto& c : app_config.listing_dates) {

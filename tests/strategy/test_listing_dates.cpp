@@ -73,8 +73,13 @@ std::vector<Bar> path(const std::string& symbol, int n = kBars) {
 }
 
 struct Guard {
-    Guard() { ListingDates::instance().clear(); }
-    ~Guard() { ListingDates::instance().clear(); }
+    Guard() { reset(); }
+    ~Guard() { reset(); }
+    static void reset() {
+        ListingDates::instance().clear();
+        ListingDates::instance().set_relabels({});
+        ListingDates::instance().set_switch_rule(ListingSwitchRule::kOpenAtTarget);
+    }
 };
 
 // A trend sleeve over the micro, its predecessor and one unrelated symbol.
@@ -658,6 +663,110 @@ TEST(ListingDates, AHoldingInsideTheDeferralBandIsCarriedUnderTheTargetRules) {
     EXPECT_EQ(plan_listing_switch(ListingSwitchRule::kCarryToTarget, 10.0, 0.0, 0.0, 2.0, 40.0, true).trade_to, 0.0);
     // the carry itself is unchanged by the flag
     EXPECT_EQ(plan_listing_switch(ListingSwitchRule::kConvert, 10.0, -1.0, 0.0, 0.24, 40.0, true).new_to, -10.0);
+}
+
+// A declared vendor relabelling is not a roll: from its date the new id is read as the old one, for
+// that symbol only, so the roll tracker sees no change bar (no hold, no legs) on that day, and still
+// sees the real roll that follows. Off when nothing is declared.
+#include "trade_ngin/data/roll_series.hpp"
+TEST(InstrumentIdRelabel, ADeclaredRelabelIsReadAsTheOldIdAndIsNotARoll) {
+    Guard guard;
+    auto& rule = ListingDates::instance();
+    using std::chrono::sys_days;
+    using namespace std::chrono_literals;
+    auto bar = [](const std::string& symbol, std::chrono::sys_days d, double close, const std::string& id) {
+        Bar b;
+        b.symbol = symbol;
+        b.timestamp = d + std::chrono::hours(0);
+        b.close = Decimal(close);
+        b.instrument_id = id;
+        return b;
+    };
+    // MES around the real change: Friday 02-20 on the old id, the Sunday bar 02-22 on the new one
+    std::vector<Bar> bars = {bar("MES.v.0", 2026y / 2 / 19, 6880.0, "42140878"),
+                             bar("MES.v.0", 2026y / 2 / 20, 6924.75, "42140878"),
+                             bar("MES.v.0", 2026y / 2 / 22, 6906.5, "42003800"),
+                             bar("MES.v.0", 2026y / 2 / 23, 6857.25, "42003800"),
+                             bar("MES.v.0", 2026y / 3 / 17, 6700.0, "42003800"),
+                             bar("MES.v.0", 2026y / 3 / 18, 6760.0, "42005163"),
+                             bar("MES.v.0", 2026y / 3 / 19, 6765.0, "42005163"),
+                             bar("ZN.v.0", 2026y / 2 / 22, 112.0, "42003800")};
+    const std::vector<Bar> stored = bars;
+    auto walk = [](const std::vector<Bar>& series) {
+        roll_series::RollTracker tracker;
+        std::vector<int> change;
+        int confirms = 0;
+        for (const auto& b : series) {
+            if (b.symbol != "MES.v.0") continue;
+            const auto st = tracker.add(b.instrument_id, static_cast<double>(b.close));
+            change.push_back(st.change ? 1 : 0);
+            confirms += st.confirm ? 1 : 0;
+        }
+        return std::make_pair(change, confirms);
+    };
+    // nothing declared: the engine reads two rolls (02-22 and 03-18)
+    rule.apply_relabels(bars);
+    EXPECT_EQ(bars[2].instrument_id, "42003800") << "off: the ids are untouched";
+    EXPECT_FALSE(rule.has_relabels());
+    EXPECT_EQ(walk(bars).first, (std::vector<int>{0, 0, 1, 0, 0, 1, 0}));
+    EXPECT_EQ(walk(bars).second, 2);
+    // declared: one roll, the real one
+    rule.set_relabels({{"MES", "2026-02-22", "42140878", "42003800"}});
+    rule.apply_relabels(bars);
+    EXPECT_EQ(bars[1].instrument_id, "42140878");
+    EXPECT_EQ(bars[2].instrument_id, "42140878");
+    EXPECT_EQ(bars[4].instrument_id, "42140878");
+    EXPECT_EQ(bars[5].instrument_id, "42005163") << "the next id is a real roll and is kept";
+    EXPECT_EQ(bars[7].instrument_id, "42003800") << "another symbol with the same id is not touched";
+    EXPECT_EQ(walk(bars).first, (std::vector<int>{0, 0, 0, 0, 0, 1, 0}));
+    EXPECT_EQ(walk(bars).second, 1);
+    for (size_t i = 0; i < bars.size(); ++i) EXPECT_EQ(bars[i].close, stored[i].close);
+    // a bar dated before the relabel that carries the new id is not rewritten
+    EXPECT_EQ(rule.read_id("MES.v.0", sys_days{2026y / 2 / 21}, "42003800"), "42003800");
+    EXPECT_EQ(rule.read_id("MES.v.0", sys_days{2026y / 2 / 22}, "42003800"), "42140878");
+    // the id rows the classifier is fed are read the same way
+    std::vector<market_data_utils::FuturesInstrumentId> ids = {
+        {"MES.v.0", "2026-02-20", "42140878"}, {"MES.v.0", "2026-02-22", "42003800"}, {"MNQ.v.0", "2026-02-22", "42004946"}};
+    rule.apply_relabels(ids);
+    EXPECT_EQ(ids[1].instrument_id, "42140878");
+    EXPECT_EQ(ids[2].instrument_id, "42004946");
+    EXPECT_THROW(rule.set_relabels({{"MES", "2026-2-22", "a", "b"}}), std::invalid_argument);
+    EXPECT_THROW(rule.set_relabels({{"MES", "2026-02-22", "a", "a"}}), std::invalid_argument);
+    EXPECT_THROW(rule.set_relabels({{"MES.v.0", "2026-02-22", "a", "b"}}), std::invalid_argument);
+}
+
+// The id rows of a load are read through one function by the backtest and by live: the identity
+// with nothing declared, the relabels applied and a predecessor given its listed contract's rows
+// otherwise; an error is passed through untouched.
+TEST(InstrumentIdRelabel, TheIdRowsAreReadThroughOneFunction) {
+    Guard guard;
+    auto& rule = ListingDates::instance();
+    using Rows = std::vector<market_data_utils::FuturesInstrumentId>;
+    const Rows stored = {{"MES.v.0", "2026-02-20", "42140878"}, {"MES.v.0", "2026-02-22", "42003800"}};
+    auto view = [](const Result<Rows>& r) {
+        std::vector<std::string> out;
+        for (const auto& row : r.value()) out.push_back(row.symbol + " " + row.date + " " + row.instrument_id);
+        return out;
+    };
+    EXPECT_EQ(view(rule.read_ids({"MES.v.0"}, Result<Rows>(stored))),
+              (std::vector<std::string>{"MES.v.0 2026-02-20 42140878", "MES.v.0 2026-02-22 42003800"}));
+    rule.set_relabels({{"MES", "2026-02-22", "42140878", "42003800"}});
+    EXPECT_EQ(view(rule.read_ids({"MES.v.0"}, Result<Rows>(stored))),
+              (std::vector<std::string>{"MES.v.0 2026-02-20 42140878", "MES.v.0 2026-02-22 42140878"}));
+    rule.set({{"MES", "ES", "2019-05-06", 10.0}});
+    EXPECT_EQ(view(rule.read_ids({"MES.v.0", "ES.v.0"}, Result<Rows>(stored))),
+              (std::vector<std::string>{"MES.v.0 2026-02-20 42140878", "MES.v.0 2026-02-22 42140878",
+                                        "ES.v.0 2026-02-20 42140878", "ES.v.0 2026-02-22 42140878"}));
+    // a row stored under the predecessor's own symbol is left out: it reads its listed contract's rows
+    Rows with_own = stored;
+    with_own.push_back({"ES.v.0", "2026-02-21", "999"});
+    EXPECT_EQ(view(rule.read_ids({"MES.v.0", "ES.v.0"}, Result<Rows>(with_own))),
+              (std::vector<std::string>{"MES.v.0 2026-02-20 42140878", "MES.v.0 2026-02-22 42140878",
+                                        "ES.v.0 2026-02-20 42140878", "ES.v.0 2026-02-22 42140878"}));
+    const auto failed = rule.read_ids(
+        {"MES.v.0"}, make_error<Rows>(ErrorCode::DATABASE_ERROR, "the id query failed", "test"));
+    ASSERT_TRUE(failed.is_error());
+    EXPECT_NE(std::string(failed.error()->what()).find("the id query failed"), std::string::npos);
 }
 
 // The cap on the short side, no cap at all, and the fill as the difference from what is already held.

@@ -27,15 +27,12 @@ namespace trade_ngin {
 namespace backtest {
 
 namespace {
-// Listing dates (the identity without portfolio.json's listing_dates): a predecessor
-// contract's vendor ids are the rows stored under its listed contract's symbol.
+// Listing dates and declared id relabels (the identity without portfolio.json's listing_dates and
+// instrument_id_relabels): the id rows as data/listing_dates.hpp reads them.
 Result<std::vector<market_data_utils::FuturesInstrumentId>> with_predecessor_ids(
     const std::vector<std::string>& symbols,
     Result<std::vector<market_data_utils::FuturesInstrumentId>> ids) {
-    if (ids.is_error() || !ListingDates::instance().enabled()) return ids;
-    auto rows = ids.value();
-    ListingDates::instance().add_predecessor_ids(symbols, rows);
-    return Result<std::vector<market_data_utils::FuturesInstrumentId>>(std::move(rows));
+    return ListingDates::instance().read_ids(symbols, std::move(ids));
 }
 }  // namespace
 

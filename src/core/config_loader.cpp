@@ -333,6 +333,36 @@ Result<AppConfig> ConfigLoader::extract_config(const nlohmann::json& merged) {
             config.equity_slow_rule = rule;
         }
 
+        // Declared vendor id relabellings: optional; parsed strictly when present.
+        if (merged.contains("instrument_id_relabels")) {
+            const auto& v = merged.at("instrument_id_relabels");
+            auto bad = [&](const std::string& what) {
+                return make_error<AppConfig>(
+                    ErrorCode::INVALID_DATA,
+                    "config for " + config.portfolio_id +
+                        ": portfolio.json \"instrument_id_relabels\" " + what +
+                        " (expected [{\"symbol\": \"MES\", \"date\": \"2026-02-22\", \"from\": "
+                        "\"42140878\", \"to\": \"42003800\"}]), got " + v.dump(),
+                    "ConfigLoader");
+            };
+            if (!v.is_array()) return bad("must be a list");
+            for (const auto& entry : v) {
+                for (const char* key : {"symbol", "date", "from", "to"}) {
+                    if (!entry.is_object() || !entry.contains(key) || !entry.at(key).is_string()) {
+                        return bad("names an entry without string \"symbol\", \"date\", \"from\" and \"to\"");
+                    }
+                }
+                config.instrument_id_relabels.push_back(
+                    {entry.at("symbol").get<std::string>(), entry.at("date").get<std::string>(),
+                     entry.at("from").get<std::string>(), entry.at("to").get<std::string>()});
+            }
+            try {
+                ListingDates::validate_relabels(config.instrument_id_relabels);
+            } catch (const std::invalid_argument& e) {
+                return bad(std::string("is not usable: ") + e.what());
+            }
+        }
+
         // Listing dates: optional; parsed strictly when present.
         if (merged.contains("listing_dates")) {
             const auto& v = merged.at("listing_dates");

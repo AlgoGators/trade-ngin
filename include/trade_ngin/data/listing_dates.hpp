@@ -6,6 +6,7 @@
 #include <string>
 #include <vector>
 
+#include "trade_ngin/core/error.hpp"
 #include "trade_ngin/core/types.hpp"
 #include "trade_ngin/data/market_data_utils.hpp"
 
@@ -42,6 +43,19 @@ struct ListingLegCost {
     double implicit_price_impact{0.0};
     double slippage_market_impact{0.0};
     double total_transaction_costs{0.0};
+};
+
+/// A vendor instrument-id change that is NOT a roll: from `date` the vendor labels the SAME contract
+/// of `symbol` (a root) with id `to` where it had used `from`. portfolio.json's optional block:
+///   "instrument_id_relabels": [{"symbol": "MES", "date": "2026-02-22", "from": "42140878", "to": "42003800"}]
+/// Every bar of the symbol dated on or after `date` that carries `to` is read as carrying `from`, at
+/// the loader, so no consumer sees a change: no change bar, no hold, no ROLL legs or costs, the
+/// day's move booked as on any day, and the adjusted series keeps that day's return.
+struct InstrumentIdRelabel {
+    std::string symbol;
+    std::string date;  ///< YYYY-MM-DD, the first bar that carries the new id
+    std::string from;
+    std::string to;
 };
 
 /// How the book moves from the predecessor to the listed contract on the switch rebalance.
@@ -140,6 +154,26 @@ public:
     void add_predecessor_ids(const std::vector<std::string>& symbols,
                              std::vector<market_data_utils::FuturesInstrumentId>& ids) const;
 
+    /// Replaces the declared relabellings (empty: none). Throws std::invalid_argument on an entry
+    /// with an empty field or a date that is not YYYY-MM-DD. Independent of the contracts.
+    void set_relabels(const std::vector<InstrumentIdRelabel>& relabels);
+    static void validate_relabels(const std::vector<InstrumentIdRelabel>& relabels);
+    /// The id a bar of `symbol` at `bar_time` is read with: `from` where a relabel names its id as
+    /// `to` on or after the relabel's date, the id itself otherwise.
+    std::string read_id(const std::string& symbol, const Timestamp& bar_time,
+                        const std::string& instrument_id) const;
+    /// read_id applied to every bar / id row (the row's date for an id row). No-ops with no relabel.
+    void apply_relabels(std::vector<Bar>& bars) const;
+    void apply_relabels(std::vector<market_data_utils::FuturesInstrumentId>& ids) const;
+    bool has_relabels() const;
+
+    /// The instrument-id rows of a load as every consumer reads them, backtest and live: the declared
+    /// relabels applied, then every predecessor in `symbols` given the rows of its listed contract.
+    /// The identity with nothing declared; an error is passed through.
+    Result<std::vector<market_data_utils::FuturesInstrumentId>> read_ids(
+        const std::vector<std::string>& symbols,
+        Result<std::vector<market_data_utils::FuturesInstrumentId>> ids) const;
+
     /// The conversions this signal feed makes due (see ListingConversion), in the contracts' order.
     std::vector<ListingConversion> conversions_due(const std::vector<Bar>& signal_feed) const;
 
@@ -159,6 +193,12 @@ private:
 
     mutable std::mutex mutex_;
     std::vector<Entry> entries_;
+    struct RelabelEntry {
+        InstrumentIdRelabel relabel;
+        Timestamp from_time;
+    };
+    static std::vector<RelabelEntry> build_relabels(const std::vector<InstrumentIdRelabel>& relabels);
+    std::vector<RelabelEntry> relabels_;
     ListingSwitchRule rule_{ListingSwitchRule::kOpenAtTarget};
 };
 
