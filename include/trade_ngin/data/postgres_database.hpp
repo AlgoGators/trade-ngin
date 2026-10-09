@@ -32,6 +32,7 @@
 #include "trade_ngin/core/types.hpp"
 #include "trade_ngin/data/database_interface.hpp"
 #include "trade_ngin/data/market_data_utils.hpp"
+#include "trade_ngin/data/strategy_config_row.hpp"
 
 namespace trade_ngin {
 
@@ -655,6 +656,26 @@ public:
         const nlohmann::json& strategy_allocations, const nlohmann::json& portfolio_config,
         const nlohmann::json& strategy_configs,
         const std::string& table_name = "trading.live_run_metadata");
+
+    /**
+     * @brief The portfolio's active trading.strategy_config row (migration 022, QT plan E2).
+     * @return the row, std::nullopt when the portfolio has no active row (the run uses its
+     *         files unchanged), or an error when the lookup fails. A caller must refuse on the
+     *         error (ruling 24): it never stands for "no row".
+     *         Implemented in postgres_strategy_config.cpp.
+     */
+    Result<std::optional<StrategyConfigRow>> get_active_strategy_config(
+        const std::string& portfolio_id);
+
+    /**
+     * @brief Write the run's settings used into the day's trading.live_run_metadata row
+     *        (written first by store_live_run_metadata). Refuses an object carrying a key that
+     *        looks like a credential (ConfigLoader::find_secret_key), and errors unless exactly
+     *        one row is updated. Implemented in postgres_strategy_config.cpp.
+     */
+    Result<void> store_settings_used(const Timestamp& date, const std::string& strategy_id,
+                                     const std::string& portfolio_id,
+                                     const nlohmann::json& settings_used);
 
     /**
      * @brief Get contract metadata for trading instruments

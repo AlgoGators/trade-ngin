@@ -159,6 +159,7 @@ set(TRADE_NGIN_SOURCES
     src/core/run_id_generator.cpp
     src/data/postgres_database.cpp
     src/data/postgres_database_extensions.cpp
+    src/data/postgres_strategy_config.cpp
     src/data/market_data_bus.cpp
     src/data/conversion_utils.cpp
     src/data/credential_store.cpp
@@ -205,6 +206,7 @@ set(TRADE_NGIN_SOURCES
     src/storage/backtest_results_manager.cpp
     src/storage/live_results_manager.cpp
     src/live/live_data_loader.cpp
+    src/live/live_settings.cpp
     src/live/live_historical_metrics.cpp
     src/live/live_metrics_calculator.cpp
     src/live/live_trading_coordinator.cpp
