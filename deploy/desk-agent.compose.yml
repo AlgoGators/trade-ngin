@@ -7,16 +7,31 @@
 #   docker compose -f docker-compose.yml -f desk-agent.compose.yml up -d desk-agent
 #
 # No host port is published: AlgoLens reaches it as desk-agent:50051 on the `qt` network only.
+# The agent runs the engine binary (--desk / --override / --publish) inside this container, so
+# it needs the runner's config directory and enough memory for one engine run.
 services:
   desk-agent:
     image: ghcr.io/algogators/trade-ngin:${TAG:-latest}
     container_name: desk-agent
     command: desk-agent
-    # DB_HOST / DB_PORT / DB_USER / DB_PASSWORD / DB_NAME (or mount the runner's config dir and
-    # set TRADING_CONFIG_DIR). Optional: DESK_AGENT_LISTEN (default 0.0.0.0:50051).
+    # DB_HOST / DB_PORT / DB_USER / DB_PASSWORD / DB_NAME, or the database block of
+    # /app/config/defaults.json. Optional: DESK_AGENT_LISTEN (default 0.0.0.0:50051),
+    # QT_ENGINE_BINARY, QT_ENGINE_CWD, QT_LOCK_DIR, QT_JOB_TIMEOUT_S, QT_REDRIVE_INTERVAL_S,
+    # QT_APPROVE_URL_BASE, QT_EMAIL_DISABLED=1.
     env_file: .env
+    environment:
+      # "vp=<email>,president=<email>": the override approvers (contract section 6). Passed
+      # through from the shell or .env; without it override requests fail with a message.
+      QT_APPROVERS: ${QT_APPROVERS:-}
+    volumes:
+      # portfolios/<dir>/portfolio.json (portfolio_id -> --portfolio-config <dir>), email.json
+      # (override e-mail SMTP) and defaults.json, read-only.
+      - ./config:/app/config:ro
+      # flock(1) locks shared with the cron model run, so a desk command never overlaps it.
+      # Mount the same volume at the same path wherever that cron runs.
+      - qt-locks:/tmp/qt-locks
     networks: [qt]
-    mem_limit: 128m
+    mem_limit: 512m
     restart: unless-stopped
     # The image's HEALTHCHECK watches cron, which this container does not run.
     healthcheck:
@@ -25,6 +40,10 @@ services:
       timeout: 10s
       start_period: 20s
       retries: 3
+
+volumes:
+  qt-locks:
+    name: qt-locks
 
 networks:
   qt:

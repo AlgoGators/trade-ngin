@@ -167,7 +167,7 @@ inline LiveSizingRead read_live_sizing_equity(
     out.day_before_source = "none stored, the initial capital";
     auto stored = db.get_previous_live_aggregates(strategy_id, portfolio_id,
                                                   t1_row_stored ? sizing_t1 : now,
-                                                  "trading.live_results");
+                                                  "trading.live_results", data_loader.get_book());
     if (stored.is_ok()) {
         day_before = std::get<0>(stored.value());
         out.day_before_source = t1_row_stored
@@ -190,7 +190,8 @@ inline LiveSizingRead read_live_sizing_equity(
     std::vector<std::unordered_map<std::string, Position>> t1_books;
     for (const auto& sleeve : sleeves) {
         auto t1_book =
-            db.load_positions_by_date(strategy_id, sleeve, portfolio_id, sizing_t1, "trading.positions");
+            db.load_positions_by_date(strategy_id, sleeve, portfolio_id, sizing_t1, "trading.positions",
+                                      data_loader.get_book());  // QT plan E3: the loader's book
         if (t1_book.is_error()) {
             out.outcome = LiveSizingOutcome::kRefuseRun;
             out.failure = "sleeve " + sleeve + "'s Day T-1 book could not be read (" +

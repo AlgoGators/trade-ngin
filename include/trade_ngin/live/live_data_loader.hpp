@@ -115,11 +115,19 @@ class LiveDataLoader {
 private:
     std::shared_ptr<PostgresDatabase> db_;
     std::string schema_;  // "trading" or "backtest"
+    // QT plan E3: the book (portfolio_type) every live_results, equity_curve, positions and
+    // executions read is scoped to. "system" unless set_book() says otherwise; on the backtest
+    // schema no book column exists and no filter is applied.
+    std::string book_{"system"};
+    std::string book_filter() const;
 
     // Helper method to check database connection
     Result<void> validate_connection() const;
 
 public:
+    /// The book (system, qt_proposal or qt) the reads below are scoped to (QT plan E3).
+    void set_book(const std::string& book) { book_ = book; }
+    const std::string& get_book() const { return book_; }
     /**
      * @brief Construct a new LiveDataLoader
      * @param db Shared database connection

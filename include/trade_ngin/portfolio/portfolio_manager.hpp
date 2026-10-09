@@ -21,6 +21,8 @@
 #include "trade_ngin/data/postgres_database.hpp"
 #include "trade_ngin/instruments/instrument_registry.hpp"
 #include "trade_ngin/optimization/dynamic_optimizer.hpp"
+#include "trade_ngin/optimization/one_pass.hpp"
+#include "trade_ngin/portfolio/desk_book.hpp"
 #include "trade_ngin/risk/carver_risk_module.hpp"
 #include "trade_ngin/risk/risk_manager.hpp"
 #include "trade_ngin/risk/risk_module.hpp"
@@ -464,6 +466,18 @@ public:
     /// of every call.
     OnePassDay last_one_pass() const;
 
+    /**
+     * @brief QT plan E5: rebalance the next book on the desk's totals instead of the sleeves'
+     *        targets (rulings 6 to 8). The pass is the same one pass; the target is the desk's,
+     *        every row is signalled and the deferral band is off in memory. With `exact` (an
+     *        approved override) the desk's totals are stored as they are and the pass is a
+     *        report. std::nullopt (the default) is the model run.
+     */
+    void set_desk_book(std::optional<DeskBook> desk);
+
+    /// The desk caller's per-symbol record of the last rebalance (asked, given, moved_by).
+    std::vector<DeskSymbolOutcome> last_desk_outcomes() const;
+
     /// The acceptance record's day row for a cycle that runs no pass (one_pass_record.hpp): the
     /// caller did not call process_market_data because every bar of the signal group was withheld.
     /// Nothing unless TRADE_NGIN_SERIES_DUMP_DIR names a directory.
@@ -692,6 +706,8 @@ private:
     /// symbol nobody signals any more is closed out only if one did).
     std::set<std::string> ever_signalled_;
     OnePassDay one_pass_day_;  // guarded by mutex_
+    std::optional<DeskBook> desk_book_;            // guarded by mutex_ (QT plan E5)
+    std::vector<DeskSymbolOutcome> desk_outcomes_;  // guarded by mutex_
 
     /// True on a book that names an overlay sleeve it holds, with a positive tau: its rebalance is
     /// the one pass (rebalance_one_pass), and no other optimiser or risk step runs on it.
@@ -715,6 +731,47 @@ private:
         const std::unordered_set<std::string>& caller_holds,
         const std::unordered_map<std::string, std::unordered_map<std::string, Position>>&
             prev_positions);
+
+    /// QT plan E5: the second caller of the one pass, on the desk's book (set_desk_book).
+    Result<void> rebalance_desk(
+        const DeskBook& desk, const std::vector<Bar>& data, bool is_warmup,
+        std::optional<Timestamp> as_of, const std::unordered_set<std::string>* session_symbols,
+        const std::unordered_set<std::string>& caller_holds,
+        const std::unordered_map<std::string, std::unordered_map<std::string, Position>>&
+            prev_positions);
+
+    /// The one body of both callers: `desk` null is the model run.
+    Result<void> rebalance_book(
+        const std::vector<Bar>& data, bool is_warmup, std::optional<Timestamp> as_of,
+        const std::unordered_set<std::string>* session_symbols,
+        const std::unordered_set<std::string>& caller_holds,
+        const std::unordered_map<std::string, std::unordered_map<std::string, Position>>&
+            prev_positions,
+        const DeskBook* desk);
+
+    /// Everything one rebalance hands the one pass (the input builder both callers share).
+    struct OnePassBuild {
+        std::vector<std::string> sids;     ///< the sleeves in id order
+        std::vector<std::string> symbols;  ///< the passed symbols, in the pass's order
+        std::vector<StrategyInterface::OverlaySeries> own;
+        std::vector<std::string> unpriced;         ///< not passed: every sleeve keeps its held
+        std::vector<std::string> unweighed_lines;  ///< BOOK_UNPRICED lines of fixed rows
+        std::string scope_refusal;
+        bool sleeve_pinned{false};
+        one_pass::DayInputs in;
+        std::vector<std::vector<double>> contribution;  ///< [sleeve][symbol] N*_s
+        std::vector<std::vector<double>> sleeve_held;   ///< [sleeve][symbol]
+        one_pass::Mask slow_zeroed;
+    };
+
+    /// Builds the pass's inputs; called with mutex_ held. `desk` non-null sets the desk's target.
+    OnePassBuild build_one_pass_inputs(
+        const std::vector<Bar>& data, bool is_warmup,
+        const std::unordered_set<std::string>* session_symbols,
+        const std::unordered_set<std::string>& caller_holds,
+        const std::unordered_map<std::string, std::unordered_map<std::string, Position>>&
+            prev_positions,
+        const CarverRiskModule* carver, const DeskBook* desk);
 
     /**
      * @brief Build the context a risk module sees for one call

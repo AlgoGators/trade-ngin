@@ -55,6 +55,10 @@ std::string quote_literal(const std::string& value) {
 
 }  // namespace
 
+std::string LiveDataLoader::book_filter() const {
+    return schema_ == "trading" ? "portfolio_type = " + quote_literal(book_) + " AND " : std::string();
+}
+
 LiveDataLoader::LiveDataLoader(std::shared_ptr<PostgresDatabase> db, const std::string& schema)
     : db_(std::move(db)), schema_(schema) {
     if (!db_) {
@@ -108,7 +112,7 @@ Result<double> LiveDataLoader::load_previous_portfolio_value(const std::string& 
         "WHERE strategy_id = '" +
         strategy_id +
         "' "
-        "AND portfolio_id = '" +
+        "AND " + book_filter() + "portfolio_id = '" +
         actual_portfolio_id +
         "' "
         "AND DATE(date) < '" +
@@ -167,7 +171,7 @@ Result<double> LiveDataLoader::load_portfolio_value(const std::string& strategy_
         "WHERE strategy_id = '" +
         strategy_id +
         "' "
-        "AND portfolio_id = '" +
+        "AND " + book_filter() + "portfolio_id = '" +
         actual_portfolio_id +
         "' "
         "AND DATE(date) = '" +
@@ -234,7 +238,7 @@ Result<LiveResultsRow> LiveDataLoader::load_live_results(const std::string& stra
         "WHERE strategy_id = '" +
         strategy_id +
         "' "
-        "AND portfolio_id = '" +
+        "AND " + book_filter() + "portfolio_id = '" +
         actual_portfolio_id +
         "' "
         "AND DATE(date) = '" +
@@ -368,7 +372,7 @@ Result<PreviousDayData> LiveDataLoader::load_previous_day_data(const std::string
         "WHERE strategy_id = '" +
         strategy_id +
         "' "
-        "AND portfolio_id = '" +
+        "AND " + book_filter() + "portfolio_id = '" +
         actual_portfolio_id +
         "' "
         "AND DATE(date) < '" +
@@ -456,7 +460,7 @@ Result<bool> LiveDataLoader::has_live_results(const std::string& strategy_id,
                         "WHERE strategy_id = '" +
                         strategy_id +
                         "' "
-                        "AND portfolio_id = '" +
+                        "AND " + book_filter() + "portfolio_id = '" +
                         actual_portfolio_id +
                         "' "
                         "AND DATE(date) = '" +
@@ -500,7 +504,7 @@ Result<int> LiveDataLoader::get_live_results_count(const std::string& strategy_i
                         "WHERE strategy_id = '" +
                         strategy_id +
                         "' "
-                        "AND portfolio_id = '" +
+                        "AND " + book_filter() + "portfolio_id = '" +
                         actual_portfolio_id + "'";
 
     auto result = db_->execute_query(query);
@@ -548,7 +552,7 @@ Result<std::vector<double>> LiveDataLoader::load_daily_returns_history(
         "WHERE strategy_id = '" +
         strategy_id +
         "' "
-        "AND portfolio_id = '" +
+        "AND " + book_filter() + "portfolio_id = '" +
         actual_portfolio_id +
         "' "
         "AND DATE(date) <= '" +
@@ -613,7 +617,7 @@ Result<std::vector<double>> LiveDataLoader::load_daily_pnl_history(const std::st
         "WHERE strategy_id = '" +
         strategy_id +
         "' "
-        "AND portfolio_id = '" +
+        "AND " + book_filter() + "portfolio_id = '" +
         actual_portfolio_id +
         "' "
         "AND DATE(date) <= '" +
@@ -673,7 +677,7 @@ Result<std::vector<LiveDataLoader::PnlHistoryRow>> LiveDataLoader::load_sizing_p
         "COALESCE(active_positions, 0) AS active_positions "
         "FROM " + schema_ + ".live_results "
         "WHERE strategy_id = '" + strategy_id + "' "
-        "AND portfolio_id = '" + actual_portfolio_id + "' "
+        "AND " + book_filter() + "portfolio_id = '" + actual_portfolio_id + "' "
         "AND DATE(date) < '" + date_str + "' "
         "AND DATE(date) >= COALESCE((SELECT MIN(live_start_date) FROM " + schema_ +
         ".strategy_trading_days_metadata WHERE strategy_id = '" + strategy_id +
@@ -735,7 +739,7 @@ Result<std::vector<double>> LiveDataLoader::load_equity_curve_history(
         "WHERE strategy_id = '" +
         strategy_id +
         "' "
-        "AND portfolio_id = '" +
+        "AND " + book_filter() + "portfolio_id = '" +
         actual_portfolio_id +
         "' "
         "AND DATE(timestamp) <= '" +
@@ -799,7 +803,7 @@ Result<int> LiveDataLoader::load_total_trades_count(const std::string& strategy_
         "WHERE strategy_id = '" +
         strategy_id +
         "' "
-        "AND portfolio_id = '" +
+        "AND " + book_filter() + "portfolio_id = '" +
         actual_portfolio_id +
         "' "
         "AND DATE(execution_time) <= '" +
@@ -859,7 +863,7 @@ Result<std::vector<Position>> LiveDataLoader::load_positions(const std::string& 
         "WHERE strategy_id = '" +
         strategy_id +
         "' "
-        "AND portfolio_id = '" +
+        "AND " + book_filter() + "portfolio_id = '" +
         actual_portfolio_id +
         "' "
         "AND DATE(last_update) = '" +
@@ -955,7 +959,7 @@ Result<std::unordered_map<std::string, double>> LiveDataLoader::load_commissions
         "FROM " +
         schema_ +
         ".executions "
-        "WHERE portfolio_id = " +
+        "WHERE " + book_filter() + "portfolio_id = " +
         quote_literal(actual_portfolio_id) + " AND DATE(execution_time) = " +
         quote_literal(date_str) +
         " "
@@ -1017,7 +1021,7 @@ Result<double> LiveDataLoader::load_daily_transaction_costs(const std::string& s
         "WHERE strategy_id = '" +
         strategy_id +
         "' "
-        "AND portfolio_id = '" +
+        "AND " + book_filter() + "portfolio_id = '" +
         actual_portfolio_id +
         "' "
         "AND DATE(date) = '" +
@@ -1073,7 +1077,7 @@ Result<MarginMetrics> LiveDataLoader::load_margin_metrics(const std::string& str
         "WHERE strategy_id = '" +
         strategy_id +
         "' "
-        "AND portfolio_id = '" +
+        "AND " + book_filter() + "portfolio_id = '" +
         actual_portfolio_id +
         "' "
         "AND DATE(date) = '" +
@@ -1151,7 +1155,7 @@ Result<std::unordered_map<std::string, double>> LiveDataLoader::load_daily_metri
         "WHERE strategy_id = '" +
         strategy_id +
         "' "
-        "AND portfolio_id = '" +
+        "AND " + book_filter() + "portfolio_id = '" +
         actual_portfolio_id +
         "' "
         "AND DATE(date) = '" +

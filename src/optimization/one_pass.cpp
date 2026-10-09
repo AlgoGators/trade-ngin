@@ -637,5 +637,52 @@ DayResult rebalance(const DayInputs& in) {
     return out;
 }
 
+std::vector<std::string> attribute(const DayInputs& in, const DayResult& out) {
+    const std::size_t n = in.target.size();
+    std::vector<std::string> moved(n, "none");
+    auto at = [](const Vector& v, std::size_t i, double fallback) {
+        return i < v.size() ? v[i] : fallback;
+    };
+    auto flag = [](const Mask& m, std::size_t i) { return i < m.size() && m[i] != 0; };
+    const bool refused = !out.refusal.empty();
+    for (std::size_t i = 0; i < n; ++i) {
+        const double asked = in.target[i];
+        const double held = at(in.held, i, 0.0);
+        const double given = at(out.book, i, held);
+        if (std::abs(given - asked) <= 1e-9) continue;
+        if (refused || !flag(out.free, i)) {
+            moved[i] = "hold";
+            continue;
+        }
+        if (flag(out.sign_closed, i) && given == 0.0) {
+            moved[i] = "sign_close";
+            continue;
+        }
+        const double closed = flag(out.sign_closed, i) ? 0.0 : held;
+        const double capped = at(out.capped_target, i, asked);
+        const double scaled = at(out.scaled_target, i, capped);
+        const double searched = at(out.search_book, i, scaled);
+        const double buffered = out.traded ? closed + out.a * (searched - closed) : closed;
+        const double rounded = out.traded ? round_half_away(buffered) : closed;
+        const double clipped = at(out.pre_trim, i, rounded);
+        const std::vector<std::pair<const char*, double>> chain = {
+            {"cap", capped},     {"overlay", scaled},   {"search", searched}, {"buffer", buffered},
+            {"rounding", rounded}, {"clip", clipped},   {"trim", given}};
+        double previous = asked;
+        double largest = 0.0;
+        const char* step = "search";
+        for (const auto& [name, value] : chain) {
+            const double change = std::abs(value - previous);
+            if (change > largest + 1e-12) {
+                largest = change;
+                step = name;
+            }
+            previous = value;
+        }
+        moved[i] = step;
+    }
+    return moved;
+}
+
 }  // namespace one_pass
 }  // namespace trade_ngin

@@ -295,7 +295,8 @@ TEST_F(PortfolioSizingCapital, TheWeightPerContractFollowsTheCapital) {
     };
     const std::string src = read("src/portfolio/portfolio_manager.cpp");
     ASSERT_FALSE(src.empty());
-    const auto pass = src.find("Result<void> PortfolioManager::rebalance_one_pass(");
+    // QT plan E5: the pass's inputs are built in build_one_pass_inputs, shared by both callers.
+    const auto pass = src.find("PortfolioManager::OnePassBuild PortfolioManager::build_one_pass_inputs(");
     ASSERT_NE(pass, npos);
     EXPECT_NE(src.find("in.capital = static_cast<double>(sizing_capital_);", pass), npos);
     const std::string one_pass = read("src/optimization/one_pass.cpp");

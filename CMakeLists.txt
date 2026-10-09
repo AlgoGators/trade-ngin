@@ -182,6 +182,7 @@ set(TRADE_NGIN_SOURCES
     src/optimization/one_pass.cpp
     src/execution/execution_engine.cpp
     src/portfolio/portfolio_manager.cpp
+    src/portfolio/desk_book.cpp
     src/backtest/transaction_cost_analysis.cpp
     src/backtest/backtest_pnl_manager.cpp
     src/backtest/backtest_price_manager.cpp
@@ -207,6 +208,7 @@ set(TRADE_NGIN_SOURCES
     src/storage/live_results_manager.cpp
     src/live/live_data_loader.cpp
     src/live/live_settings.cpp
+    src/live/qt_desk.cpp
     src/live/live_historical_metrics.cpp
     src/live/live_metrics_calculator.cpp
     src/live/live_trading_coordinator.cpp

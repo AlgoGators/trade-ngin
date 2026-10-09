@@ -1,21 +1,21 @@
 # desk-agent
 
 The command channel from AlgoLens to the engine. Decided 2026-10-08 (QT plan, section 3b,
-"gRPC command channel"); this PR adds the contract and a skeleton server.
+"gRPC command channel"). `docs/design/qt-contract.md` sections 4 and 6 are binding.
 
 ## Contract
 
 `proto/qt/v1/desk.proto`, package `algogators.qt.v1`. The engine owns it. AlgoLens vendors the
 generated Python stubs at a pinned trade-ngin commit.
 
-| RPC | Purpose | State in this PR |
+| RPC | Row kind (`audit_id`) | What the agent does |
 |---|---|---|
-| `GetRunStatus` | Model-run state for one book and day, for the desk pages | Implemented |
-| `RunDesk` | Desk save: run the desk loop on qt_proposal and book qt with `source=desk` | Refuses: `not implemented yet` |
-| `RequestOverride` | E-mail the VP and President a signed single-use approval link | Refuses |
-| `RecordDecision` | Record a link click; on approval, book the override | Refuses |
-| `Publish` | Finalise qt, send the e-mail and CSV, write `published_by/at` | Refuses |
-| `grpc.health.v1.Health/Check` | Liveness, for `""` and `algogators.qt.v1.DeskService` | Implemented |
+| `GetRunStatus` | n/a | Reads model-run state for one book and day |
+| `RunDesk` | `save` | Engine `--desk` |
+| `RequestOverride` | `override_request` | In Python: token, 48 h expiry, e-mail to `QT_APPROVERS` |
+| `RecordDecision` | `override_decision` (its `parent_id` is the request) | Checks; rejection -> `done {"approved":false}`; approval -> engine `--override` |
+| `Publish` | `publish` (`audit_id = 0`: newest pending publish row for the day) | Engine `--publish` |
+| `grpc.health.v1.Health/Check` | n/a | Liveness, for `""` and `algogators.qt.v1.DeskService` |
 
 How replies work:
 
@@ -24,9 +24,50 @@ How replies work:
 - A command the engine declines returns `status = COMMAND_STATUS_REFUSED` with a reason in
   `message`. A command that broke returns `COMMAND_STATUS_FAILED`, and can be retried with the
   same `audit_id`.
-- No RPC reports success for work it did not do. The four unimplemented commands refuse with
-  `not implemented yet: <rulings they wait on>`.
-- `GetRunStatus` returns `UNAVAILABLE` when the database cannot answer.
+- No RPC reports success for work it did not do. A command whose row is pending is claimed
+  (`UPDATE ... SET status='running' WHERE id=%s AND status='pending'`) and queued, and the reply
+  is `ACCEPTED` at once (`RunDesk` also says `source = BOOK_SOURCE_DESK`). The outcome lands on
+  the row; AlgoLens polls it. A row that is already running, done, refused or failed is never
+  run again: the reply is `ACCEPTED` with its current status in `message`.
+- A call that does not match its row (unknown id, another kind, another portfolio or date) is
+  `REFUSED` and the row is left alone. A rejected decision answers `DONE`.
+- `GetRunStatus` returns `UNAVAILABLE` when the database cannot answer; so do the commands.
+
+### Commands
+
+- **Engine jobs.** The agent maps `portfolio_id` to the directory under
+  `$TRADING_CONFIG_DIR/portfolios/` (default `/app/config`) whose `portfolio.json` names it (none
+  or several: the row is refused), then runs, in `QT_ENGINE_CWD` (default `/app`):
+
+  ```
+  flock $QT_LOCK_DIR/<portfolio_id>.lock $QT_ENGINE_BINARY --desk|--override|--publish \
+        --portfolio-config <dir> --date YYYY-MM-DD --audit-id <row id>
+  ```
+
+  `QT_ENGINE_BINARY` defaults to `/app/build/bin/Release/live_portfolio_conservative` and
+  `QT_LOCK_DIR` to `/tmp/qt-locks`. The daily cron model run takes the same lock. The binary
+  writes the row's status, result, message and finished_at itself (exit 0 = done, 2 = refused,
+  else failed). If the row is still `running` when it exits, the agent marks it `failed` with
+  `engine exited <rc> without recording an outcome: <last stderr line>`. After
+  `QT_JOB_TIMEOUT_S` (default 1800) the process group is killed and the row failed. The last 40
+  lines of stdout and stderr go to the agent log.
+- **One job at a time per portfolio.** Each portfolio has a FIFO queue and a worker thread;
+  different portfolios run concurrently.
+- **Override e-mail.** `token = secrets.token_urlsafe(32)`; the row gets
+  `token_hash = sha256(token)` and `token_expires_at = now() + 48 h`. The e-mail goes to
+  `QT_APPROVERS="vp=<email>,president=<email>"` (both required, else the row fails) with the link
+  `$QT_APPROVE_URL_BASE?token=<token>` (default `https://algolens.algogators.com/qt/approve`) and
+  a per-symbol table: model book (system), desk request (qt_proposal), engine desk result (qt)
+  and `moved_by`. It is sent through the portfolio's `email.json`. E-mail is disabled by
+  `QT_EMAIL_DISABLED=1`, a missing `email.json`, `"enabled": false`, or empty or `YOUR_...`
+  credentials; then the row's result carries the mail instead
+  (`{"emailed":[], "email_disabled":true, "email":{"to","subject","body"}}`) so an operator can
+  still approve. Sent: `{"emailed":["vp","president"]}`.
+- **Decision checks** (the engine re-checks): the parent is an `override_request` for the same
+  portfolio and date; the decider is not the requester (case-insensitive) ->
+  `the requester may not approve their own request`; `approver_role` is vp or president; the
+  parent's link had not expired when the decision row was created; `payload.approved` is a
+  boolean.
 
 ### GetRunStatus
 
@@ -55,9 +96,12 @@ These marks are the same ones `scripts/check_live_trading.py` reads (`run_metada
   table (ruling 26).
 - A repeated call with the same `audit_id` must not repeat the work. It returns the outcome
   already recorded.
-- On startup the agent re-drives every row still pending, so a call dropped by a restart
-  loses nothing. In this PR that is a logged stub (`desk_agent/recovery.py`), because there is
-  nothing to drive yet.
+- On startup, rows still `running` are orphans of the previous agent process: they go back to
+  `pending` (message `re-driven after agent restart`). Then every pending row is dispatched by
+  kind, oldest first, and the sweep repeats every `QT_REDRIVE_INTERVAL_S` (default 60 s), so a
+  call dropped by a restart or a gRPC outage loses nothing (`desk_agent/recovery.py`). The claim
+  makes double dispatch impossible. The engine must therefore tolerate re-running a command
+  whose earlier attempt died midway.
 - Postgres stays the record. A reply is a convenience, never the record of anything.
 
 ## Deployment
@@ -68,20 +112,20 @@ These marks are the same ones `scripts/check_live_trading.py` reads (`run_metada
 - **Port.** The agent listens on `0.0.0.0:50051` inside the container (`DESK_AGENT_LISTEN`),
   plaintext, on the private Docker network `qt` shared with `algolens-backend`. No host port is
   published.
-- **Compose.** See `deploy/desk-agent.compose.yml`: `mem_limit 128m`, `restart: unless-stopped`,
-  and a gRPC healthcheck in place of the image's cron healthcheck.
+- **Compose.** See `deploy/desk-agent.compose.yml`: `mem_limit 512m` (the engine runs inside
+  the container), `./config:/app/config:ro`, `QT_APPROVERS` passed through, a `qt-locks` volume
+  for the flock files, `restart: unless-stopped`, and a gRPC healthcheck in place of the image's
+  cron healthcheck. The cron model run must take its lock in the same directory.
 - **Database credentials.** The agent reads `DB_HOST`, `DB_PORT`, `DB_USER`, `DB_PASSWORD` and
   `DB_NAME`, the variables the watchdog reads and the entrypoint passes to cron. Without them it
   reads the `database` block of `$TRADING_CONFIG_DIR/defaults.json` (default `/app/config`), the
   same file the C++ runners load. If neither is complete, it refuses to start. The password is
   never logged.
-- **Logs.** One JSON object per line on stdout (`docker logs desk-agent`). The decision token
-  is never logged.
+- **Logs.** One JSON object per line on stdout (`docker logs desk-agent`). The approval token
+  and the SMTP password are never logged.
 - **Image.** The agent is built in its own Docker stage (`desk-agent-build`): a venv installed
   from wheels only, with stubs generated by `gen.sh`. The runtime stage adds `python3` and
   copies `/opt/desk-agent`, about 43 MB. The C++ build stage is unchanged.
-- **Later.** `RunDesk` and `Publish` will shell out to the C++ runner in `--desk` and
-  `--publish` modes, which do not exist yet (plan E6, E8).
 
 ## Calling it from AlgoLens
 

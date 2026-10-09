@@ -22,6 +22,14 @@
 
 namespace trade_ngin {
 
+namespace {
+// QT plan E3: the book every chart query reads (ChartGenerator::set_book); "system" by default.
+std::string g_chart_book = "system";
+const std::string& chart_book() { return g_chart_book; }
+}  // namespace
+
+void ChartGenerator::set_book(const std::string& book) { g_chart_book = book; }
+
 // ============================================================================
 // ChartHelpers Implementation
 // ============================================================================
@@ -108,7 +116,7 @@ ChartData ChartGenerator::fetch_equity_curve_data(
             "SELECT timestamp, equity "
             "FROM trading.equity_curve "
             "WHERE strategy_id = '" + strategy_id + "' "
-            "AND portfolio_id = '" + portfolio_id + "' "
+            "AND portfolio_id = '" + portfolio_id + "' AND portfolio_type = '" + chart_book() + "' "
             "ORDER BY timestamp DESC "
             "LIMIT " + std::to_string(lookback_days);
 
@@ -345,12 +353,12 @@ ChartData ChartGenerator::fetch_pnl_by_symbol_data(
             "SELECT symbol, daily_realized_pnl "
             "FROM trading.positions "
             "WHERE strategy_id = '" + strategy_id + "' "
-            "AND portfolio_id = '" + portfolio_id + "' "
+            "AND portfolio_id = '" + portfolio_id + "' AND portfolio_type = '" + chart_book() + "' "
             // E2-F19 R-6: the previous SESSION, not the previous calendar day -- a Monday
             // report used to read Sunday's carried rows.
             "AND DATE(last_update) = (SELECT MAX(DATE(last_update)) FROM trading.positions "
             "                         WHERE strategy_id = '" + strategy_id + "' "
-            "                           AND portfolio_id = '" + portfolio_id + "' "
+            "                           AND portfolio_id = '" + portfolio_id + "' AND portfolio_type = '" + chart_book() + "' "
             "                           AND DATE(last_update) < DATE('" + date + "')) "
             "ORDER BY last_update DESC";
 
@@ -494,7 +502,7 @@ ChartData ChartGenerator::fetch_daily_pnl_data(
             "SELECT date, daily_pnl "
             "FROM trading.live_results "
             "WHERE strategy_id = '" + strategy_id + "' "
-            "AND portfolio_id = '" + portfolio_id + "' "
+            "AND portfolio_id = '" + portfolio_id + "' AND portfolio_type = '" + chart_book() + "' "
             "AND DATE(date) < DATE('" + date + "') "
             "ORDER BY date DESC "
             "LIMIT " + std::to_string(lookback_days);
@@ -647,7 +655,7 @@ ChartData ChartGenerator::fetch_cumulative_transaction_costs_data(
             "    GROUP BY DATE(execution_time) "
             ") trade_counts ON DATE(lr.date) = trade_counts.trade_date "
             "WHERE lr.strategy_id = '" + strategy_id + "' "
-            "AND lr.portfolio_id = '" + portfolio_id + "' "
+            "AND lr.portfolio_id = '" + portfolio_id + "' AND lr.portfolio_type = '" + chart_book() + "' "
             "AND DATE(lr.date) <= DATE('" + date + "') "
             "ORDER BY lr.date ASC";
 
@@ -873,7 +881,7 @@ ChartData ChartGenerator::fetch_margin_posted_data(
             "SELECT date, margin_posted "
             "FROM trading.live_results "
             "WHERE strategy_id = '" + strategy_id + "' "
-            "AND portfolio_id = '" + portfolio_id + "' "
+            "AND portfolio_id = '" + portfolio_id + "' AND portfolio_type = '" + chart_book() + "' "
             "AND DATE(date) <= DATE('" + date + "') "
             "ORDER BY date ASC";
 
@@ -1116,7 +1124,7 @@ ChartData ChartGenerator::fetch_cumulative_pnl_by_symbol_data(
             "SELECT symbol, SUM(daily_realized_pnl) as cumulative_pnl "
             "FROM trading.positions "
             "WHERE strategy_id = '" + strategy_id + "' "
-            "AND portfolio_id = '" + portfolio_id + "' "
+            "AND portfolio_id = '" + portfolio_id + "' AND portfolio_type = '" + chart_book() + "' "
             "AND DATE(last_update) <= DATE('" + date + "') "
             "GROUP BY symbol "
             "HAVING SUM(daily_realized_pnl) IS NOT NULL "

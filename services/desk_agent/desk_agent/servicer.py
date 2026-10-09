@@ -1,18 +1,21 @@
 """DeskService implementation.
 
-Implemented: GetRunStatus (reads Postgres). RunDesk, RequestOverride, RecordDecision and
-Publish validate their input and then REFUSE with "not implemented yet: <ruling>". They never
-report success for work that was not done (ruling 24). They will shell out to the C++ binary in
---desk / --publish modes (plan 3b) in later PRs (plan E6, E7, E8).
+GetRunStatus reads Postgres. The four commands check their trading.position_overrides row,
+claim it and queue the work (commands.py), then answer ACCEPTED at once; the outcome lands on
+the row, which AlgoLens polls (contract section 6). A row that is not pending is never run
+again: the reply says its current status. A request that does not match its row (unknown id,
+wrong kind, another portfolio or date) is REFUSED and the row is left alone.
 
 Malformed input is answered with gRPC status INVALID_ARGUMENT on every RPC, so a caller bug is
-never confused with an engine refusal.
+never confused with an engine refusal. A database that cannot answer is UNAVAILABLE: retry with
+the same audit_id.
 """
 
 from __future__ import annotations
 
 import logging
 import time
+from typing import Optional
 
 import grpc
 from google.protobuf.timestamp_pb2 import Timestamp
@@ -21,6 +24,7 @@ from qt.v1 import desk_pb2, desk_pb2_grpc
 
 from . import status as st
 from . import validation as v
+from .commands import ACCEPTED, DONE, FAILED, REFUSED, Dispatcher, Outcome
 from .store import RunStatusStore, StoreError
 
 log = logging.getLogger("desk_agent.rpc")
@@ -33,13 +37,14 @@ _STATE = {
     st.FAILED: desk_pb2.RUN_STATE_FAILED,
 }
 
-# What each unimplemented command waits on.
-NOT_IMPLEMENTED = {
-    "RunDesk": "not implemented yet: desk loop (plan 3b; plan E5/E6, rulings 14, 15)",
-    "RequestOverride": "not implemented yet: override e-mail (D4, D5; plan A5/E7)",
-    "RecordDecision": "not implemented yet: override decision (D5, D17; plan A5/E7)",
-    "Publish": "not implemented yet: publish (D7, ruling 29; plan A6/E8)",
+_COMMAND_STATUS = {
+    ACCEPTED: desk_pb2.COMMAND_STATUS_ACCEPTED,
+    DONE: desk_pb2.COMMAND_STATUS_DONE,
+    REFUSED: desk_pb2.COMMAND_STATUS_REFUSED,
+    FAILED: desk_pb2.COMMAND_STATUS_FAILED,
 }
+
+NO_DISPATCHER = "commands are not configured on this agent"
 
 
 def _ts(value):
@@ -51,8 +56,9 @@ def _ts(value):
 
 
 class DeskServicer(desk_pb2_grpc.DeskServiceServicer):
-    def __init__(self, store: RunStatusStore):
+    def __init__(self, store: RunStatusStore, dispatcher: Optional[Dispatcher] = None):
         self._store = store
+        self._dispatcher = dispatcher
 
     # -- helpers ---------------------------------------------------------------------------
 
@@ -62,58 +68,82 @@ class DeskServicer(desk_pb2_grpc.DeskServiceServicer):
                                               "error": str(exc), **fields})
         context.abort(grpc.StatusCode.INVALID_ARGUMENT, str(exc))
 
-    def _refuse_unimplemented(self, rpc: str, reply_type, **fields):
-        message = NOT_IMPLEMENTED[rpc]
-        log.info("command refused", extra={"rpc": rpc, "status": "REFUSED", **fields})
-        return reply_type(status=desk_pb2.COMMAND_STATUS_REFUSED, message=message)
+    def _command(self, rpc: str, context, call, **fields) -> Outcome:
+        started = time.monotonic()
+        if self._dispatcher is None:
+            out = Outcome(REFUSED, NO_DISPATCHER)
+        else:
+            try:
+                out = call(self._dispatcher)
+            except StoreError as exc:
+                log.error("command log unavailable",
+                          extra={"rpc": rpc, "error": str(exc), **fields})
+                context.abort(grpc.StatusCode.UNAVAILABLE, f"command log unavailable: {exc}")
+        log.info("command", extra={
+            "rpc": rpc, "status": out.status.upper(), "error": out.message, **fields,
+            "elapsed_ms": round((time.monotonic() - started) * 1000, 1)})
+        return out
 
-    # -- commands (refused until their PRs land) ---------------------------------------------
+    # -- commands ------------------------------------------------------------------------------
 
     def RunDesk(self, request, context):
         try:
-            v.portfolio_id(request.portfolio_id)
-            v.date(request.date)
+            pid = v.portfolio_id(request.portfolio_id)
+            day = v.date(request.date)
             v.audit_id(request.audit_id)
             v.text("requested_by", request.requested_by)
         except v.InvalidArgument as exc:
             self._invalid(context, "RunDesk", exc, audit_id=request.audit_id)
-        return self._refuse_unimplemented(
-            "RunDesk", desk_pb2.RunDeskReply, portfolio_id=request.portfolio_id,
-            date=request.date, audit_id=request.audit_id)
+        out = self._command("RunDesk", context,
+                            lambda d: d.run_desk(request.audit_id, pid, day),
+                            portfolio_id=pid, date=str(day), audit_id=request.audit_id)
+        source = (desk_pb2.BOOK_SOURCE_DESK if out.status == ACCEPTED
+                  else desk_pb2.BOOK_SOURCE_UNSPECIFIED)
+        return desk_pb2.RunDeskReply(status=_COMMAND_STATUS[out.status], source=source,
+                                     message=out.message)
 
     def RequestOverride(self, request, context):
         try:
-            v.portfolio_id(request.portfolio_id)
-            v.date(request.date)
+            pid = v.portfolio_id(request.portfolio_id)
+            day = v.date(request.date)
             v.audit_id(request.audit_id)
             v.text("requested_by", request.requested_by)
             v.text("reason", request.reason)
         except v.InvalidArgument as exc:
             self._invalid(context, "RequestOverride", exc, audit_id=request.audit_id)
-        return self._refuse_unimplemented(
-            "RequestOverride", desk_pb2.CommandReply, portfolio_id=request.portfolio_id,
-            date=request.date, audit_id=request.audit_id)
+        out = self._command("RequestOverride", context,
+                            lambda d: d.request_override(request.audit_id, pid, day),
+                            portfolio_id=pid, date=str(day), audit_id=request.audit_id)
+        return desk_pb2.CommandReply(status=_COMMAND_STATUS[out.status], message=out.message)
 
     def RecordDecision(self, request, context):
-        # The token is a credential: it is checked for presence and never logged.
+        # The token is a credential: it is checked for presence and never logged. audit_id is
+        # the override_decision row AlgoLens inserted; that row's fields (approver_role,
+        # requested_by, payload.approved), not the request's, are what is checked and run.
         try:
             v.audit_id(request.audit_id)
             v.text("approver", request.approver)
             v.text("token", request.token)
         except v.InvalidArgument as exc:
             self._invalid(context, "RecordDecision", exc, audit_id=request.audit_id)
-        return self._refuse_unimplemented("RecordDecision", desk_pb2.CommandReply,
-                                          audit_id=request.audit_id)
+        out = self._command("RecordDecision", context,
+                            lambda d: d.record_decision(request.audit_id),
+                            audit_id=request.audit_id)
+        return desk_pb2.CommandReply(status=_COMMAND_STATUS[out.status], message=out.message)
 
     def Publish(self, request, context):
         try:
-            v.portfolio_id(request.portfolio_id)
-            v.date(request.date)
+            pid = v.portfolio_id(request.portfolio_id)
+            day = v.date(request.date)
             v.text("published_by", request.published_by)
+            if request.audit_id != 0:  # 0: the newest pending publish row for the day
+                v.audit_id(request.audit_id)
         except v.InvalidArgument as exc:
             self._invalid(context, "Publish", exc)
-        return self._refuse_unimplemented("Publish", desk_pb2.CommandReply,
-                                          portfolio_id=request.portfolio_id, date=request.date)
+        out = self._command("Publish", context,
+                            lambda d: d.publish(request.audit_id, pid, day),
+                            portfolio_id=pid, date=str(day), audit_id=request.audit_id)
+        return desk_pb2.CommandReply(status=_COMMAND_STATUS[out.status], message=out.message)
 
     # -- read ----------------------------------------------------------------------------------
 

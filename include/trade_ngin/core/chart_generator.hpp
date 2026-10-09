@@ -75,6 +75,9 @@ struct ChartConfig {
  */
 class ChartGenerator {
 public:
+    /// QT plan E3: the book (portfolio_type) the chart queries read; "system" unless set.
+    static void set_book(const std::string& book);
+
     // ========================================================================
     // MODULAR CHART COMPONENTS - Mix and match data fetchers with renderers
     // ========================================================================

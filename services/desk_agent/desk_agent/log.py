@@ -10,7 +10,8 @@ from datetime import datetime, timezone
 # Fields passed through `extra=` that are copied into the JSON line. Anything else is ignored,
 # which is also what keeps a stray secret in a record attribute out of the log.
 _FIELDS = ("rpc", "portfolio_id", "date", "audit_id", "status", "state", "elapsed_ms",
-           "listen", "db", "error", "count")
+           "listen", "db", "error", "count", "kind", "mode", "rc", "timed_out", "argv",
+           "stdout_tail", "stderr_tail")
 
 
 class JsonFormatter(logging.Formatter):

@@ -22,6 +22,10 @@ from typing import Mapping, Optional
 
 DEFAULT_LISTEN = "0.0.0.0:50051"
 DEFAULT_CONFIG_DIR = "/app/config"
+DEFAULT_ENGINE_BINARY = "/app/build/bin/Release/live_portfolio_conservative"
+DEFAULT_ENGINE_CWD = "/app"
+DEFAULT_LOCK_DIR = "/tmp/qt-locks"
+DEFAULT_APPROVE_URL_BASE = "https://algolens.algogators.com/qt/approve"
 
 
 class ConfigError(RuntimeError):
@@ -54,10 +58,32 @@ class DbConfig:
 
 
 @dataclass(frozen=True)
+class CommandSettings:
+    """How commands are run: the engine binary, its lock and the override e-mail.
+
+    Every field has the production default, so tests can build one with only what they change.
+    """
+
+    engine_binary: str = DEFAULT_ENGINE_BINARY
+    engine_cwd: str = DEFAULT_ENGINE_CWD
+    config_dir: str = DEFAULT_CONFIG_DIR
+    lock_dir: str = DEFAULT_LOCK_DIR
+    flock: str = "flock"
+    job_timeout_s: float = 1800.0
+    redrive_interval_s: float = 60.0
+    # "vp=<email>,president=<email>"; parsed when an override e-mail is built, so a missing value
+    # fails that row (with a message) instead of stopping the agent.
+    approvers: str = ""
+    approve_url_base: str = DEFAULT_APPROVE_URL_BASE
+    email_disabled: bool = False
+
+
+@dataclass(frozen=True)
 class Settings:
     listen: str
     db: DbConfig
     max_workers: int
+    commands: CommandSettings = field(default_factory=CommandSettings)
 
 
 def _db_from_env(env: Mapping[str, str]) -> Optional[DbConfig]:
@@ -106,4 +132,33 @@ def load_settings(env: Optional[Mapping[str, str]] = None) -> Settings:
     if max_workers < 1:
         raise ConfigError("DESK_AGENT_MAX_WORKERS must be >= 1")
     return Settings(listen=env.get("DESK_AGENT_LISTEN") or DEFAULT_LISTEN, db=db,
-                    max_workers=max_workers)
+                    max_workers=max_workers, commands=command_settings(env))
+
+
+def _positive(env: Mapping[str, str], name: str, default: float) -> float:
+    raw = env.get(name)
+    if not raw:
+        return default
+    try:
+        value = float(raw)
+    except ValueError:
+        raise ConfigError(f"{name} must be a number of seconds") from None
+    if value <= 0:
+        raise ConfigError(f"{name} must be > 0")
+    return value
+
+
+def command_settings(env: Optional[Mapping[str, str]] = None) -> CommandSettings:
+    env = os.environ if env is None else env
+    return CommandSettings(
+        engine_binary=env.get("QT_ENGINE_BINARY") or DEFAULT_ENGINE_BINARY,
+        engine_cwd=env.get("QT_ENGINE_CWD") or DEFAULT_ENGINE_CWD,
+        config_dir=env.get("TRADING_CONFIG_DIR") or DEFAULT_CONFIG_DIR,
+        lock_dir=env.get("QT_LOCK_DIR") or DEFAULT_LOCK_DIR,
+        flock=env.get("QT_FLOCK") or "flock",
+        job_timeout_s=_positive(env, "QT_JOB_TIMEOUT_S", 1800.0),
+        redrive_interval_s=_positive(env, "QT_REDRIVE_INTERVAL_S", 60.0),
+        approvers=env.get("QT_APPROVERS") or "",
+        approve_url_base=env.get("QT_APPROVE_URL_BASE") or DEFAULT_APPROVE_URL_BASE,
+        email_disabled=(env.get("QT_EMAIL_DISABLED") or "").strip() == "1",
+    )

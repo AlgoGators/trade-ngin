@@ -2,6 +2,7 @@
 #include "trade_ngin/optimization/one_pass_record.hpp"
 #include "trade_ngin/data/roll_series.hpp"
 #include "trade_ngin/portfolio/portfolio_manager.hpp"
+#include "trade_ngin/portfolio/desk_book.hpp"
 #include "trade_ngin/portfolio/allocation_split.hpp"
 #include "trade_ngin/optimization/one_pass_log.hpp"
 #include "trade_ngin/transaction_cost/netting.hpp"
@@ -517,8 +518,17 @@ Result<void> PortfolioManager::process_market_data(const std::vector<Bar>& data,
         }
         RiskLapOutcome risk_outcome;  // pin_all set by a portfolio-scope REFUSE / REPLACE
         if (one_pass) {
-            auto passed = rebalance_one_pass(data, skip_execution_generation, current_timestamp,
-                                             session_symbols, caller_holds, prev_positions);
+            std::optional<DeskBook> desk;
+            {
+                std::lock_guard<std::mutex> lock(mutex_);
+                desk = desk_book_;
+            }
+            auto passed = desk ? rebalance_desk(*desk, data, skip_execution_generation,
+                                                current_timestamp, session_symbols, caller_holds,
+                                                prev_positions)
+                               : rebalance_one_pass(data, skip_execution_generation,
+                                                    current_timestamp, session_symbols,
+                                                    caller_holds, prev_positions);
             if (passed.is_error()) return passed;
         } else {
             // Every other book: the optimiser's step, then the portfolio risk step, each once.
@@ -2011,49 +2021,16 @@ OnePassDay PortfolioManager::last_one_pass() const {
     return one_pass_day_;
 }
 
-Result<void> PortfolioManager::rebalance_one_pass(
-    const std::vector<Bar>& data, bool is_warmup, std::optional<Timestamp> as_of,
+PortfolioManager::OnePassBuild PortfolioManager::build_one_pass_inputs(
+    const std::vector<Bar>& data, bool is_warmup,
     const std::unordered_set<std::string>* session_symbols,
     const std::unordered_set<std::string>& caller_holds,
     const std::unordered_map<std::string, std::unordered_map<std::string, Position>>&
-        prev_positions) {
-    // The decision row of this rebalance, recorded after the lock is released.
-    RiskDecision decision;
-    RiskAction applied = RiskAction::NONE;
-    Decimal applied_factor{Decimal(1.0)};
-    RiskPhase phase = RiskPhase::LAP;
-    std::string failure;
-    bool unseeded = false;
-    std::string overlay_module_id;
-    {
-        std::lock_guard<std::mutex> lock(mutex_);
-        const auto first = strategies_.find(config_.overlay_sleeve);
-
-        // The overlay's limits: the book's one carver module carries them (ratios to tau and the
-        // two leverage limits). A book that names an overlay sleeve runs the overlay and nothing
-        // else at portfolio scope.
-        const CarverRiskModule* carver = nullptr;
-        for (const auto& module : risk_modules_) {
-            const auto* candidate = dynamic_cast<const CarverRiskModule*>(module.get());
-            if (candidate == nullptr || !candidate->overlay_limits().set() || carver != nullptr ||
-                risk_modules_.size() != 1) {
-                return make_error<void>(
-                    ErrorCode::INVALID_ARGUMENT,
-                    "A book that names an overlay sleeve runs one carver risk module carrying the "
-                    "overlay's limits (R_max, R_jump_max, R_shock_max) and no other portfolio "
-                    "module",
-                    "PortfolioManager");
-            }
-            carver = candidate;
-        }
-        if (carver == nullptr) {
-            return make_error<void>(ErrorCode::INVALID_ARGUMENT,
-                                    "A book that names an overlay sleeve has no carver risk module "
-                                    "carrying the overlay's limits",
-                                    "PortfolioManager");
-        }
-        overlay_module_id = carver->id();
-
+        prev_positions,
+    const CarverRiskModule* carver, const DeskBook* desk) {
+    // Called with mutex_ held (rebalance_book). Everything the one pass is given for one
+    // rebalance, from the sleeves, their held books and this manager's series and cost model.
+    const auto first = strategies_.find(config_.overlay_sleeve);
         // The sleeves in id order, and each sleeve's held book: the filled ledger in a backtest,
         // the book the call started with (the seeded T-1 book of a live run) otherwise.
         std::vector<std::string> sids;
@@ -2099,6 +2076,14 @@ Result<void> PortfolioManager::rebalance_one_pass(
                         if (static_cast<double>(pos.quantity) != 0.0) listed.insert(symbol);
                     }
                 }
+            }
+        }
+        // QT plan E5: the desk's symbols are in the pass too, a symbol only the desk names
+        // included (it is weighed on the overlay sleeve's series like any other).
+        if (desk != nullptr) {
+            for (const auto& [symbol, quantity] : desk->totals) {
+                (void)quantity;
+                listed.insert(symbol);
             }
         }
         // A stopped overlay sleeve leaves the book with no series to weigh anything on: the scope is
@@ -2306,6 +2291,139 @@ Result<void> PortfolioManager::rebalance_one_pass(
             }
         }
 
+        // QT plan E5, the desk caller (rulings 6 and 7; plan finding 8): the target is the desk's
+        // book, every row the pass sees is signalled (a symbol only the desk names would otherwise
+        // be a close-out), and the forecast deferral band does not apply (in memory only; the
+        // config keeps its band for the model run). The sign close then follows the sign of the
+        // desk's position, the uncapped target.
+        if (desk != nullptr) {
+            in.sign_band = 0.0;
+            for (size_t i = 0; i < n; ++i) {
+                const auto asked = desk->totals.find(symbols[i]);
+                in.target[i] = asked == desk->totals.end() ? 0.0 : asked->second;
+                in.signalling[i] = 1;
+                // Ruling 6: no strategy forecast enters the desk's pass; the band is off and the
+                // sign close follows the desk's target.
+                in.first_forecast[i] = in.target[i];
+                in.first_signalling[i] = 1;
+            }
+        }
+
+        OnePassBuild built;
+        built.sids = std::move(sids);
+        built.symbols = std::move(symbols);
+        built.own = std::move(own);
+        built.unpriced = std::move(unpriced);
+        built.unweighed_lines = std::move(unweighed_lines);
+        built.scope_refusal = std::move(scope_refusal);
+        built.sleeve_pinned = sleeve_pinned;
+        built.in = std::move(in);
+        built.contribution = std::move(contribution);
+        built.sleeve_held = std::move(sleeve_held);
+        built.slow_zeroed = std::move(slow_zeroed);
+        return built;
+}
+
+Result<void> PortfolioManager::rebalance_one_pass(
+    const std::vector<Bar>& data, bool is_warmup, std::optional<Timestamp> as_of,
+    const std::unordered_set<std::string>* session_symbols,
+    const std::unordered_set<std::string>& caller_holds,
+    const std::unordered_map<std::string, std::unordered_map<std::string, Position>>&
+        prev_positions) {
+    return rebalance_book(data, is_warmup, as_of, session_symbols, caller_holds, prev_positions,
+                          nullptr);
+}
+
+Result<void> PortfolioManager::rebalance_desk(
+    const DeskBook& desk, const std::vector<Bar>& data, bool is_warmup,
+    std::optional<Timestamp> as_of, const std::unordered_set<std::string>* session_symbols,
+    const std::unordered_set<std::string>& caller_holds,
+    const std::unordered_map<std::string, std::unordered_map<std::string, Position>>&
+        prev_positions) {
+    return rebalance_book(data, is_warmup, as_of, session_symbols, caller_holds, prev_positions,
+                          &desk);
+}
+
+void PortfolioManager::set_desk_book(std::optional<DeskBook> desk) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    desk_book_ = std::move(desk);
+    desk_outcomes_.clear();
+}
+
+std::vector<DeskSymbolOutcome> PortfolioManager::last_desk_outcomes() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return desk_outcomes_;
+}
+
+Result<void> PortfolioManager::rebalance_book(
+    const std::vector<Bar>& data, bool is_warmup, std::optional<Timestamp> as_of,
+    const std::unordered_set<std::string>* session_symbols,
+    const std::unordered_set<std::string>& caller_holds,
+    const std::unordered_map<std::string, std::unordered_map<std::string, Position>>&
+        prev_positions,
+    const DeskBook* desk) {
+    // The decision row of this rebalance, recorded after the lock is released.
+    RiskDecision decision;
+    RiskAction applied = RiskAction::NONE;
+    Decimal applied_factor{Decimal(1.0)};
+    RiskPhase phase = RiskPhase::LAP;
+    std::string failure;
+    bool unseeded = false;
+    std::string overlay_module_id;
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+
+        // The overlay's limits: the book's one carver module carries them (ratios to tau and the
+        // two leverage limits). A book that names an overlay sleeve runs the overlay and nothing
+        // else at portfolio scope.
+        const CarverRiskModule* carver = nullptr;
+        for (const auto& module : risk_modules_) {
+            const auto* candidate = dynamic_cast<const CarverRiskModule*>(module.get());
+            if (candidate == nullptr || !candidate->overlay_limits().set() || carver != nullptr ||
+                risk_modules_.size() != 1) {
+                return make_error<void>(
+                    ErrorCode::INVALID_ARGUMENT,
+                    "A book that names an overlay sleeve runs one carver risk module carrying the "
+                    "overlay's limits (R_max, R_jump_max, R_shock_max) and no other portfolio "
+                    "module",
+                    "PortfolioManager");
+            }
+            carver = candidate;
+        }
+        if (carver == nullptr) {
+            return make_error<void>(ErrorCode::INVALID_ARGUMENT,
+                                    "A book that names an overlay sleeve has no carver risk module "
+                                    "carrying the overlay's limits",
+                                    "PortfolioManager");
+        }
+        overlay_module_id = carver->id();
+
+        OnePassBuild built = build_one_pass_inputs(data, is_warmup, session_symbols, caller_holds,
+                                                   prev_positions, carver, desk);
+        const std::vector<std::string>& sids = built.sids;
+        const std::vector<std::string>& symbols = built.symbols;
+        const std::vector<std::string>& unpriced = built.unpriced;
+        const std::vector<std::string>& unweighed_lines = built.unweighed_lines;
+        const std::string& scope_refusal = built.scope_refusal;
+        const bool sleeve_pinned = built.sleeve_pinned;
+        const one_pass::DayInputs& in = built.in;
+        const std::vector<std::vector<double>>& contribution = built.contribution;
+        const std::vector<std::vector<double>>& sleeve_held = built.sleeve_held;
+        const one_pass::Mask& slow_zeroed = built.slow_zeroed;
+        const size_t n = symbols.size();
+        auto held_of = [&](const std::string& sid, const std::string& symbol) {
+            if (is_backtest_) {
+                const auto ledger = filled_positions_.find(sid);
+                if (ledger == filled_positions_.end()) return 0.0;
+                const auto q = ledger->second.find(symbol);
+                return q == ledger->second.end() ? 0.0 : q->second;
+            }
+            const auto book = prev_positions.find(sid);
+            if (book == prev_positions.end()) return 0.0;
+            const auto q = book->second.find(symbol);
+            return q == book->second.end() ? 0.0 : static_cast<double>(q->second.quantity);
+        };
+
         // The pass. A sleeve its own risk module refused cannot be held apart from one search on
         // the summed book, so its refusal refuses the book; anything the arithmetic throws does too.
         auto held_book = [&](const std::string& why) {
@@ -2341,6 +2459,45 @@ Result<void> PortfolioManager::rebalance_one_pass(
             }
         }
         const bool refused = !result.refusal.empty();
+        // QT plan E5 (ruling 10): per symbol, what the desk asked, what the pass gives back and
+        // the step that moved it. On an override (exact) the stored book is the ask itself and
+        // the pass is the report.
+        const bool exact = desk != nullptr && desk->exact;
+        if (desk != nullptr) {
+            desk_outcomes_.clear();
+            const std::vector<std::string> moved = one_pass::attribute(in, result);
+            for (size_t i = 0; i < n; ++i) {
+                const bool named = desk->totals.count(symbols[i]) > 0;
+                if (!named && in.target[i] == 0.0 && result.book[i] == 0.0 && in.held[i] == 0.0) {
+                    continue;
+                }
+                DeskSymbolOutcome outcome;
+                outcome.symbol = symbols[i];
+                outcome.asked = in.target[i];
+                outcome.pass_given = result.book[i];
+                outcome.given = exact ? one_pass::round_half_away(in.target[i]) : result.book[i];
+                outcome.moved_by = moved[i];
+                desk_outcomes_.push_back(outcome);
+            }
+            for (const auto& symbol : unpriced) {
+                double held = 0.0;
+                for (const auto& sid : sids) held += held_of(sid, symbol);
+                const auto asked = desk->totals.find(symbol);
+                if (asked == desk->totals.end() && held == 0.0) continue;
+                DeskSymbolOutcome outcome;
+                outcome.symbol = symbol;
+                outcome.asked = asked == desk->totals.end() ? 0.0 : asked->second;
+                outcome.given = held;
+                outcome.pass_given = held;
+                outcome.moved_by = outcome.asked == held ? "none" : "hold";
+                if (exact && outcome.asked != held) {
+                    WARN("QT_OVERRIDE " + symbol + " cannot be weighed today: held at " +
+                         std::to_string(held) + ", not the approved " +
+                         std::to_string(outcome.asked));
+                }
+                desk_outcomes_.push_back(outcome);
+            }
+        }
         for (size_t i = 0; i < n; ++i) {
             if (in.signalling[i]) ever_signalled_.insert(symbols[i]);
         }
@@ -2466,9 +2623,38 @@ Result<void> PortfolioManager::rebalance_one_pass(
         // did not move (a held row, a refused day, an unpriced symbol) keeps every sleeve's held
         // quantity; a moved row is split in proportion to the sleeves' unrounded contributions by
         // largest remainder.
-        std::vector<std::vector<double>> sleeve_new = sleeve_held;
-        if (!refused) {
+        if (exact) {
+            // An approved override trades the desk's book exactly (master document, day step
+            // 3): every row the pass sees is stored at the ask, with no forecast-sign close.
             for (size_t i = 0; i < n; ++i) {
+                result.book[i] = one_pass::round_half_away(in.target[i]);
+                result.sign_closed[i] = 0;
+            }
+        }
+        std::vector<std::vector<double>> sleeve_new = sleeve_held;
+        if (!refused || exact) {
+            for (size_t i = 0; i < n; ++i) {
+                if (desk != nullptr) {
+                    // QT plan section 3b, Q2: the stored total split by the weights the caller
+                    // resolved (the model's sleeves that day, else yesterday's, else the first
+                    // sleeve whose universe holds the symbol); a row the pass did not move keeps
+                    // every sleeve's held quantity.
+                    if (result.book[i] == in.held[i]) continue;
+                    std::map<std::string, double> weights;
+                    const auto w = desk->weights.find(symbols[i]);
+                    if (w != desk->weights.end()) weights = w->second;
+                    if (weights.empty()) {
+                        for (size_t s = 0; s < sids.size(); ++s) {
+                            if (sleeve_held[s][i] != 0.0) {
+                                weights[sids[s]] = std::abs(sleeve_held[s][i]);
+                            }
+                        }
+                    }
+                    const std::vector<double> split =
+                        split_desk_quantity(result.book[i], sids, weights);
+                    for (size_t s = 0; s < sids.size(); ++s) sleeve_new[s][i] = split[s];
+                    continue;
+                }
                 if (!result.free[i] && !result.closeout[i]) continue;
                 // A row with no contribution is a symbol no sleeve targets any more (a zero
                 // forecast, a close-out) or one whose contributions sum to nothing a share can be
@@ -2524,14 +2710,14 @@ Result<void> PortfolioManager::rebalance_one_pass(
             }
             info.target_positions = book;
             info.current_positions = std::move(book);
-            if (refused) pinned_scopes_.insert(sids[s]);
+            if (refused && !exact) pinned_scopes_.insert(sids[s]);
         }
 
         // The fills (section 6.3), on a rebalance that trades: per sleeve and symbol, the
         // forecast-sign close to flat and then the move to the new book, each at the signal close
         // and priced by this manager's cost model. The sign closes of one symbol are netted among
         // the sleeves, and the other fills among themselves; ROLL legs are never in either set.
-        if (!refused && !is_warmup) {
+        if ((!refused || exact) && !is_warmup) {
             std::vector<std::pair<std::string, size_t>> sign_rows, rest_rows;
             for (size_t s = 0; s < sids.size(); ++s) {
                 const std::string& sid = sids[s];
