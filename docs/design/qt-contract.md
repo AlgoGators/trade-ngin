@@ -75,7 +75,7 @@ Constraints and indexes:
 
 ## 6. gRPC (`proto/qt/v1/desk.proto`, #160)
 
-AlgoLens always inserts the `position_overrides` row first, then calls the RPC with its `audit_id`. The RPCs return `ACCEPTED` immediately: the engine works asynchronously, and AlgoLens polls the row (`status`, `result`) every 2 s. If gRPC is down, the row stays `pending`, and desk-agent re-drives pending rows on startup and every 60 s. So the RPC is a fast path, never the only path.
+AlgoLens always inserts the `position_overrides` row first, then calls the RPC with its `audit_id`. The RPCs return `ACCEPTED` immediately: the engine works asynchronously, and AlgoLens polls the row (`status`, `result`) every 2 s. If gRPC is down, the row stays `pending`, and desk-agent re-drives pending rows on startup and every 60 s. gRPC is the channel AlgoLens uses to call the engine (decided 2026-10-09; it amends the master document's "never call each other"). The re-drive guarantees a dropped call loses nothing.
 
 | RPC | Engine action | `result` written |
 |---|---|---|
@@ -85,7 +85,7 @@ AlgoLens always inserts the `position_overrides` row first, then calls the RPC w
 | Publish(audit_id) | Finalise the qt book, send the daily e-mail and CSV built from the qt book, and set `live_run_metadata.published_by/published_at`. Refuse if a previous day is unpublished or failed: catch it up first (ruling 29). | `{"emailed":true}` |
 | GetRunStatus(portfolio_id, date) | Model-run state for the desk page header. | n/a |
 
-Approver addresses come from the env var `QT_APPROVERS="vp=<email>,president=<email>"` on the qt-engine container. The requester may not approve their own request: AlgoLens refuses it, and the engine re-checks.
+Approver addresses come from the env var `QT_APPROVERS="vp=<email>,president=<email>"`, set on both the qt-engine container and AlgoLens (host env files, not the repo). The requester may not approve their own request: AlgoLens refuses it, and the engine re-checks.
 
 ## 7. AlgoLens rules (rulings 13, 14, 16, 20, 21, 22)
 
