@@ -93,6 +93,7 @@ class LoggingInterceptor(grpc.ServerInterceptor):
         if handler is None or service_of(method) == HEALTH_SERVICE:
             return handler
         sent = _metadata_value(handler_call_details, HEADER)
+        sent = sent[:200] if sent else sent  # client-controlled; keep log lines bounded
 
         def wrap(behavior):
             def logged(request, context):

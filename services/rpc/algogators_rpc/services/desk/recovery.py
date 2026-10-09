@@ -5,8 +5,8 @@ died with the container): they go back to 'pending' with the message 're-driven 
 restart'. Then every 'pending' row is dispatched, oldest first, by kind. The pending sweep
 repeats every QT_REDRIVE_INTERVAL_S (default 60 s) as a background task of the desk service
 (service.py; the shared server runs it), so a row whose RPC never arrived (gRPC down, AlgoLens
-restarted) still runs. The claim (`... WHERE status = 'pending'`)
-makes double dispatch impossible.
+restarted) still runs. The claim (`... WHERE status = 'pending'`) makes double dispatch
+impossible.
 """
 
 from __future__ import annotations
