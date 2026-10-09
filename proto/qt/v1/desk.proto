@@ -128,16 +128,19 @@ message OverrideRequest {
 }
 
 message DecisionRequest {
-  // position_overrides.id of the override REQUEST being decided. AlgoLens records the decision
-  // itself as an insert (the #55 table has an UPDATE ... DO INSTEAD NOTHING rule; plan finding 6).
+  // position_overrides.id of the override_decision row AlgoLens inserted for this click
+  // (contract section 6); its parent_id names the override request. The row, not this message,
+  // is the record: the engine checks the row's approver_role, requested_by and
+  // payload.approved.
   int64 audit_id = 1;
   // The VP or President who clicked the link (D5, D17: roles in AlgoLens, never the requester,
   // no delegate).
   string approver = 2;
   // true = approve, false = reject. Either rejection ends the request (design section 6).
   bool approved = 3;
-  // The signed single-use token from the e-mailed link (D5). Verified by the engine, never
-  // logged.
+  // The single-use token from the e-mailed link (D5). AlgoLens checks sha256(token) against the
+  // request row's token_hash before it inserts the decision row; the agent requires it to be
+  // present and never logs it (a re-driven decision has no token, so the row is the record).
   string token = 4;
 }
 
@@ -147,6 +150,9 @@ message PublishRequest {
   string date = 2;
   // Written to live_run_metadata.published_by (plan A6/E8).
   string published_by = 3;
+  // position_overrides.id of the 'publish' row AlgoLens wrote before calling (contract section
+  // 6). 0 = the newest pending publish row for portfolio_id + date.
+  int64 audit_id = 4;
 }
 
 message CommandReply {

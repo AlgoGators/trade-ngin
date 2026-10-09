@@ -147,7 +147,7 @@ def test_run_status_invalid_argument(stub, store, pid, date):
     assert store.calls == []
 
 
-# -- commands: refused until implemented, never a fake success ---------------------------------
+# -- commands: input validation, and a call with no row behind it ------------------------------
 
 GOOD = {
     "RunDesk": pb.RunDeskRequest(portfolio_id=PID, date="2026-10-07", audit_id=42,
@@ -161,11 +161,11 @@ GOOD = {
 
 
 @pytest.mark.parametrize("rpc", sorted(GOOD))
-def test_unimplemented_commands_refuse(stub, rpc):
+def test_commands_without_their_row_refuse(stub, rpc):
+    # No position_overrides row behind the call: refused with the reason, never a fake success.
     reply = getattr(stub, rpc)(GOOD[rpc], timeout=5)
     assert reply.status == pb.COMMAND_STATUS_REFUSED
-    assert reply.message.startswith("not implemented yet: ")
-    assert "plan" in reply.message  # cites what it waits on
+    assert "position_overrides" in reply.message
     if rpc == "RunDesk":
         assert len(reply.outcomes) == 0
         assert reply.source == pb.BOOK_SOURCE_UNSPECIFIED
