@@ -26,25 +26,34 @@
 
 using namespace trade_ngin;
 
-// The live defect, stated as data.
-TEST(TradingDaysAnchor, AMetadataRowLaterThanTheBookIsCaught) {
+// The live defect, stated as data. The mismatch is REPORTED; the metadata row stays
+// the anchor (HD 2026-09-10): a stray backdated result row must never be able to
+// move the annualisation start, so the fix for a wrong row is in the data.
+TEST(TradingDaysAnchor, AMetadataRowLaterThanTheBookIsCaughtButNotOverridden) {
     const auto a = assess_trading_days_anchor("2026-07-24", "2026-04-01");
 
     ASSERT_TRUE(a.has_metadata);
     EXPECT_TRUE(a.anchor_is_late)
         << "an anchor 114 days after the book's first day is the E2-F32 shape";
-    EXPECT_EQ(a.effective_anchor, "2026-04-01")
-        << "annualization must anchor to the book, not to a hand-seeded row";
+    EXPECT_EQ(a.effective_anchor, "2026-07-24")
+        << "the metadata row is authoritative; the runner warns and does not move it";
 
-    // What the DB function returns today vs what it should: on 2026-07-27 the
-    // stored anchor gives 4 days, which is what produced -1674 %.
-    EXPECT_EQ(trading_days_from_anchor(a.metadata_anchor, "2026-07-27"), 4);
-    EXPECT_EQ(trading_days_from_anchor(a.effective_anchor, "2026-07-27"), 118);
+    // The count the function returns from that row, and the one a backdated row
+    // would have imposed had the helper preferred the earlier date.
+    EXPECT_EQ(trading_days_from_anchor(a.effective_anchor, "2026-07-27"), 4);
+    EXPECT_EQ(trading_days_from_anchor(a.earliest_result, "2026-07-27"), 118);
+}
 
-    // And on any date before the stored anchor the function floors at 1, which is
-    // why 115 rows show annualized == cumulative rather than an obvious error.
-    EXPECT_EQ(trading_days_from_anchor(a.metadata_anchor, "2026-05-01"), 1);
-    EXPECT_EQ(trading_days_from_anchor(a.effective_anchor, "2026-05-01"), 31);
+// The production shape that motivated the rule: BASE_PORTFOLIO's multi-strategy
+// stream carries two rows dated 2025-01-29/02-06 that were written on 2026-02-08,
+// nine months before its metadata start of 2025-11-11. Preferring the earlier date
+// would annualise over 450 days for a stream that has traded 164.
+TEST(TradingDaysAnchor, ABackdatedResultRowCannotMoveTheAnchor) {
+    const auto a = assess_trading_days_anchor("2025-11-11", "2025-01-29");
+    EXPECT_TRUE(a.anchor_is_late) << "the mismatch is still reported";
+    EXPECT_EQ(a.effective_anchor, "2025-11-11");
+    EXPECT_EQ(trading_days_from_anchor(a.effective_anchor, "2026-04-23"), 164);
+    EXPECT_EQ(trading_days_from_anchor(a.earliest_result, "2026-04-23"), 450);
 }
 
 // The sound case must stay silent, or the check is noise on every futures run.

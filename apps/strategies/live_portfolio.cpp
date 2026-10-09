@@ -19,6 +19,7 @@
 #include "trade_ngin/instruments/futures.hpp"
 #include "trade_ngin/instruments/instrument_registry.hpp"
 #include "trade_ngin/live/csv_exporter.hpp"
+#include "trade_ngin/live/data_freshness.hpp"
 #include "trade_ngin/live/execution_manager.hpp"
 #include "trade_ngin/live/live_data_loader.hpp"
 #include "trade_ngin/live/live_historical_metrics.hpp"
@@ -27,6 +28,7 @@
 #include "trade_ngin/live/live_price_manager.hpp"
 #include "trade_ngin/live/live_trading_coordinator.hpp"
 #include "trade_ngin/live/margin_manager.hpp"
+#include "trade_ngin/live/trading_days_anchor.hpp"
 #include "trade_ngin/portfolio/portfolio_manager.hpp"
 #include "trade_ngin/storage/live_results_manager.hpp"
 #include "trade_ngin/strategy/trend_following.hpp"
@@ -52,7 +54,39 @@ int main(int argc, char* argv[]) {
                 continue;
             }
 
-            // Try to parse as date
+            // Try to parse as date.
+            //
+            // E2-F42 / M-08 IS STILL OPEN HERE, AND THIS std::mktime IS STILL WRONG.
+            // It reads the operator's date as LOCAL midnight while every consumer of
+            // target_date -- the position date, the T-1 lookup, the order-id stamp, the
+            // trading-days target -- formats it back through gmtime, so on a host at a
+            // positive UTC offset the whole run lands a day early. A New York host hides
+            // it, which is why it has survived.
+            //
+            // The fix (parse_utc_date here, gmtime_r for now_tm below) was made in T-2,
+            // MEASURED, and REVERTED, because it is not the class A change the ledger
+            // expected. Moving `now` from 04:00/05:00Z to 00:00Z on this host also moves:
+            //
+            //   * the 730-day bar window. get_market_data asks `time BETWEEN start_ts AND
+            //     end_ts` and futures bars are keyed at 00:00:00Z, so the start edge
+            //     gained exactly one extra bar per symbol. Measured on the ten-day
+            //     conservative chain from 2026-04-24: 225 of 6,480 stored signal_values
+            //     moved, by up to 1.42 on a forecast that runs to about +/-20 -- not a
+            //     rounding artefact. Quantities happened not to cross a rounding boundary
+            //     on this window; on another window they would.
+            //   * trading.equity_curve. Its ON CONFLICT key is (portfolio_id, strategy_id,
+            //     timestamp, portfolio_type), so the Day T-1 rewrite no longer matched the
+            //     existing row and INSERTED a second one: 2026-04-23 appeared twice, at
+            //     05:00Z and 00:00Z, with the same equity. Every replay boundary would
+            //     double a day.
+            //   * positions.last_update and signals.timestamp (130 and 288 rows on that
+            //     chain), and executions.exec_id / execution_time, which embed the instant.
+            //   * live_results.portfolio_var, max_correlation and risk_scale.
+            //
+            // So it belongs with the class C set, not with the guards: it needs a decision
+            // on the bar-window boundary, a decision on the stored time-of-day contract
+            // (E2-F22's lineage), and a plan for the equity_curve key, and its own A/B.
+            // Reverted in this batch and reported; see the T-2 report, item A4.
             std::tm tm = {};
             std::istringstream ss(arg);
             ss >> std::get_time(&tm, "%Y-%m-%d");
@@ -262,6 +296,191 @@ int main(int argc, char* argv[]) {
         INFO("DEBUG: End date: " + std::to_string(std::chrono::system_clock::to_time_t(end_date)));
         INFO("DEBUG: Target date (now): " +
              std::to_string(std::chrono::system_clock::to_time_t(now)));
+
+        // E2-F8, futures side (with B-3 F-2's exit-0 half). A SKIPPED DAY MUST NOT
+        // OPEN THE BOOK FROM FLAT.
+        //
+        // Every position this runner writes is sized as a DELTA from the previous
+        // calendar day's book, which it reads with `load_positions_by_date(now - 24h)`
+        // -- at the seed below, at the PnL lookup, at the T-1 finalization. When that
+        // read comes back empty the runner does not distinguish "the strategy holds
+        // nothing" from "nobody ran yesterday, so nothing was written". It seeds flat,
+        // sizes the whole book as a fresh entry against contracts the broker still
+        // holds, stores that, and exits 0. A monitor watching exit codes sees a clean
+        // run while the book is being abandoned. That is the equity defect E2-F8, whose
+        // guard has been at live_equity_mean_reversion.cpp:1125 since the equities
+        // campaign, and B-3 F-2's complaint that the failure is not even distinguishable
+        // at the exit-code level from a normal quiet day.
+        //
+        // The discriminator is NOT "are there positions" -- a flat book has none and is
+        // a perfectly valid state. It is "did a run HAPPEN for that date". Every run
+        // writes a live_results row whether or not it holds anything, so that row is the
+        // evidence, and it is what this asks for.
+        //
+        // Deliberately NOT resolved by falling back to MAX(date): that would paper over
+        // a broken invariant and could silently revive a stale book. Runs must be
+        // sequential and complete -- inherent to the T-1 lag model, where day T's P&L is
+        // finalized by day T+1's run -- so a hole means a run was missed, and the remedy
+        // is to replay the missing dates in order, which works and needs no code. What
+        // was missing was being TOLD.
+        //
+        // Placed here, before the run-metadata write and before any bar is loaded, so a
+        // refused run writes nothing at all. On a consecutive chain the first query
+        // returns a row and this block is silent.
+        {
+            const std::string prev_date_str = core::format_utc_date(now - std::chrono::hours(24));
+            const std::string today_date_str = core::format_utc_date(now);
+
+            auto first_cell = [](const Result<std::shared_ptr<arrow::Table>>& r) -> std::string {
+                if (r.is_error() || !r.value() || r.value()->num_rows() == 0) return {};
+                auto col = std::static_pointer_cast<arrow::StringArray>(
+                    r.value()->column(0)->chunk(0));
+                if (!col || col->length() == 0 || col->IsNull(0)) return {};
+                return std::string(col->GetView(0));
+            };
+
+            auto prev_run = db->execute_query(
+                "SELECT count(*)::text FROM trading.live_results "
+                "WHERE strategy_id = '" + combined_strategy_id + "'"
+                " AND portfolio_id = '" + portfolio_id + "'"
+                " AND date = '" + prev_date_str + "'");
+
+            long prev_run_rows = 0;
+            const std::string prev_cell = first_cell(prev_run);
+            if (!prev_cell.empty()) prev_run_rows = std::stol(prev_cell);
+
+            if (prev_run.is_error()) {
+                // Cannot establish the invariant either way. Say so rather than
+                // treating an unanswered question as a clean answer.
+                WARN("Could not check whether the previous day (" + prev_date_str +
+                     ") ran: " + std::string(prev_run.error()->what()) +
+                     ". Proceeding; verify the book by hand if this run writes "
+                     "unexpected executions.");
+            } else if (prev_run_rows == 0) {
+                // No live_results row for T-1. Before refusing, ask whether the BOOK is
+                // there anyway.
+                //
+                // The equity guard reaches its "did a run happen" question only from
+                // inside `if (previous_positions.empty())`, so a day whose positions were
+                // written but whose live_results write failed -- which the runner logs as
+                // an ERROR and then exits 0 (live_portfolio.cpp, "Failed to save live
+                // results") -- does not stop the next day there. This guard runs before
+                // the book is loaded, so without this second question it would be
+                // STRICTER than the guard it claims to port, and it would refuse a run
+                // that has a complete book to seed from. Measured on the scratch copy of
+                // production: 13 such dates exist, all on BASE_PORTFOLIO, 2 of them
+                // immediately before a day that did run.
+                //
+                // Asking the database rather than loading the book keeps the guard where
+                // it is, ahead of every write.
+                auto prev_book = db->execute_query(
+                    "SELECT count(*)::text FROM trading.positions "
+                    "WHERE strategy_id = '" + combined_strategy_id + "'"
+                    " AND portfolio_id = '" + portfolio_id + "'"
+                    " AND date = '" + prev_date_str + "'");
+                long prev_book_rows = 0;
+                const std::string book_cell = first_cell(prev_book);
+                if (!book_cell.empty()) prev_book_rows = std::stol(book_cell);
+
+                if (prev_book_rows > 0) {
+                    WARN("No live_results row for the previous day (" + prev_date_str +
+                         "), but " + std::to_string(prev_book_rows) +
+                         " position row(s) are stored for it, so the book is intact and this "
+                         "run can seed from it. That day's results write did not complete; "
+                         "its reported numbers are missing and should be back-filled.");
+                    // fall through and run
+                } else {
+                    auto last_run = db->execute_query(
+                        "SELECT COALESCE(MAX(date)::text, '') FROM trading.live_results "
+                        "WHERE strategy_id = '" + combined_strategy_id + "'"
+                        " AND portfolio_id = '" + portfolio_id + "'"
+                        " AND date < '" + today_date_str + "'");
+                    const std::string last_run_date = first_cell(last_run);
+
+                    if (!last_run_date.empty()) {
+                        ERROR("No run was recorded for the previous day (" + prev_date_str +
+                              ") and no positions are stored for it either, but " +
+                              combined_strategy_id + " / " + portfolio_id + " last ran on " +
+                              last_run_date +
+                              ". A run was missed. Replay every date from " + last_run_date +
+                              " forward, in order, before running " + today_date_str +
+                              " -- continuing would seed the book flat and size every "
+                              "position as a fresh entry against contracts the broker still "
+                              "holds. Refusing to run.");
+                        return 1;
+                    }
+                    INFO("No prior run anywhere for " + combined_strategy_id + " / " +
+                         portfolio_id + " -- genuine first run.");
+                }
+            }
+        }
+
+        // FUT-anchor-row / E2-F32, futures side. Is the annualization anchor consistent
+        // with the book it annualizes?
+        //
+        // trading.get_trading_days(strategy, target, portfolio) takes its start date from
+        // trading.strategy_trading_days_metadata.live_start_date and falls back to
+        // MIN(date) over live_results only when NO row exists. A row LATER than the
+        // book's own first day is therefore strictly worse than no row at all, and the
+        // function cannot notice because it stops looking the moment it finds one: every
+        // date before the anchor gets GREATEST(1, target - start + 1) = 1 trading day, so
+        // total_annualized_return collapses onto total_cumulative_return, and just after
+        // the anchor a small cumulative return annualizes into a number with no meaning.
+        // On this book today, LIVE_TREND_FOLLOWING_TREND_FOLLOWING_FAST / BASE_PORTFOLIO
+        // is anchored at 2025-11-11 against live_results starting 2025-01-29.
+        //
+        // The equity runner has gone through assess_trading_days_anchor since E2-F32; the
+        // helper was written to be shared and says so in its own header. This wires the
+        // futures runners to it: the same comparison and the same WARN. The metadata row
+        // stays authoritative; the count is never recomputed here.
+        //
+        // The metadata row itself is a one-row data correction on production and is NOT
+        // made here.
+        {
+            auto anchor_cell = [](const Result<std::shared_ptr<arrow::Table>>& r) -> std::string {
+                if (r.is_error() || !r.value() || r.value()->num_rows() == 0) return {};
+                auto col = std::static_pointer_cast<arrow::StringArray>(
+                    r.value()->column(0)->chunk(0));
+                if (!col || col->length() == 0 || col->IsNull(0)) return {};
+                return std::string(col->GetView(0));
+            };
+
+            auto anchor_q = db->execute_query(
+                "SELECT COALESCE(MIN(live_start_date)::text, '') "
+                "FROM trading.strategy_trading_days_metadata "
+                "WHERE strategy_id = '" + combined_strategy_id + "'"
+                " AND portfolio_id = '" + portfolio_id + "'");
+            auto first_q = db->execute_query(
+                "SELECT COALESCE(MIN(date)::text, '') FROM trading.live_results "
+                "WHERE strategy_id = '" + combined_strategy_id + "'"
+                " AND portfolio_id = '" + portfolio_id + "'");
+
+            if (anchor_q.is_error() || first_q.is_error()) {
+                WARN("Could not check the annualization anchor for " + portfolio_id +
+                     "; total_annualized_return is reported as the DB function computes it.");
+            } else {
+                const auto anchor = assess_trading_days_anchor(anchor_cell(anchor_q),
+                                                               anchor_cell(first_q));
+                if (anchor.anchor_is_late) {
+                    WARN("Annualization anchor is LATER than the book it annualizes: "
+                         "strategy_trading_days_metadata.live_start_date = " +
+                         anchor.metadata_anchor + " but live_results for " +
+                         combined_strategy_id + " / " + portfolio_id + " start " +
+                         anchor.earliest_result +
+                         ". trading.get_trading_days would return 1 for every date before "
+                         "the anchor and explode total_annualized_return just after it "
+                         "(E2-F32). The anchor is NOT moved: the metadata row is authoritative and "
+                         "the function's count stands. Fix the data: correct the row if it is "
+                         "wrong, or remove the stray results if they are.");
+                } else {
+                    INFO("Annualization anchor " +
+                         (anchor.effective_anchor.empty() ? std::string("(none yet)")
+                                                          : anchor.effective_anchor) +
+                         " is consistent with the book for " + combined_strategy_id + " / " +
+                         portfolio_id);
+                }
+            }
+        }
 
         double initial_capital = app_config.initial_capital;
 
@@ -602,38 +821,6 @@ int main(int argc, char* argv[]) {
 
         INFO("All " + std::to_string(strategies.size()) + " strategies added to portfolio");
 
-        // ========================================
-        // STORE LIVE RUN METADATA
-        // Save run metadata (allocations, configs) for this trading day
-        // ========================================
-        INFO("Storing live run metadata for this trading day...");
-        {
-            // Build portfolio config JSON
-            nlohmann::json portfolio_config_json;
-            portfolio_config_json["total_capital"] =
-                static_cast<double>(portfolio_config.total_capital);
-            portfolio_config_json["reserve_capital"] =
-                static_cast<double>(portfolio_config.reserve_capital);
-            portfolio_config_json["use_optimization"] = portfolio_config.use_optimization;
-            portfolio_config_json["use_risk_management"] = portfolio_config.use_risk_management;
-
-            // Convert strategy_allocations to JSON
-            nlohmann::json strategy_alloc_json(strategy_allocations);
-
-            // strategy_configs is already nlohmann::json
-            auto metadata_result = db->store_live_run_metadata(
-                now, combined_strategy_id, portfolio_id, strategy_alloc_json, portfolio_config_json,
-                strategy_configs  // already nlohmann::json
-            );
-
-            if (metadata_result.is_error()) {
-                WARN("Failed to store live run metadata: " +
-                     std::string(metadata_result.error()->what()));
-            } else {
-                INFO("Successfully stored live run metadata for date");
-            }
-        }
-
         // Create LiveTradingCoordinator to manage all live trading components
         INFO("Creating LiveTradingCoordinator for centralized component management");
         LiveTradingConfig coordinator_config;
@@ -721,6 +908,91 @@ int main(int argc, char* argv[]) {
             return 1;
         }
 
+        // DB-FUT-freshness: the equity runner's data-freshness guard (review T2.9,
+        // corrected by BA-12), ported verbatim in policy to the futures runners.
+        //
+        // Nothing here ever asked how CURRENT the bars are. The check above only asks
+        // whether ANY bar came back, so a feed that stopped three weeks ago passes it:
+        // the 730-day window still returns tens of thousands of rows, every T-1 price
+        // is a three-week-old close, and the book is re-sized against it and stored
+        // without a word. `DB_AND_DATA_AUDIT_2026-08-27` R5.1/R5.2 decision 5.
+        //
+        // Measured from the STALEST symbol, not the freshest (BA-12): one symbol
+        // printing today would otherwise report the whole feed current however far
+        // behind the other thirty-five are, and a guard that cannot fail is not a
+        // guard. The universe handed to `assess_feed_freshness` is the one this run
+        // ASKED for, so a symbol that returned no rows at all is seen as absent
+        // rather than being invisible to a map built from what came back.
+        //
+        // Thresholds and severity are the equity runner's, unchanged: WARN in
+        // historical-replay mode, refuse in true-live mode, tolerance from
+        // `live.data_staleness_tolerance_days`.
+        {
+            std::unordered_map<std::string, std::string> last_bar_date;
+            for (const auto& bar : all_bars) {
+                const std::string d = core::format_utc_date(bar.timestamp);
+                auto it = last_bar_date.find(bar.symbol);
+                if (it == last_bar_date.end() || d > it->second) last_bar_date[bar.symbol] = d;
+            }
+
+            const int tolerance_days = app_config.live.data_staleness_tolerance_days;
+            const std::string as_of_ymd = core::format_utc_date(end_date);
+            const auto freshness = assess_feed_freshness(last_bar_date, as_of_ymd, symbols);
+
+            if (freshness.absent > 0) {
+                // Absence is not "a few days behind" -- there is no date to measure. It
+                // is reported on its own terms and treated as stale regardless of the
+                // tolerance.
+                const std::string msg =
+                    "Futures feed is missing " + std::to_string(freshness.absent) + " of " +
+                    std::to_string(freshness.symbols) +
+                    " requested symbol(s) entirely, first: " + freshness.absent_symbol +
+                    " (no bar of any date as of " + as_of_ymd + ").";
+                if (use_override_date) {
+                    WARN(msg + " Proceeding in historical-replay mode.");
+                } else {
+                    ERROR(msg + " Refusing to run live with an incomplete universe. "
+                                "Refresh the OHLCV feed or remove the symbol from config.");
+                    return 1;
+                }
+            }
+
+            if (!freshness.any_data) {
+                const std::string msg =
+                    "Futures data freshness cannot be established: none of the " +
+                    std::to_string(freshness.symbols) +
+                    " loaded symbols carries a usable bar date as of " + as_of_ymd + ".";
+                if (use_override_date) {
+                    WARN(msg + " Proceeding in historical-replay mode.");
+                } else {
+                    ERROR(msg + " Refusing to run live without a feed. Refresh the OHLCV "
+                                "feed.");
+                    return 1;
+                }
+            } else if (freshness.days_behind > tolerance_days) {
+                const std::string msg =
+                    "Futures data is stale: the stalest of " +
+                    std::to_string(freshness.symbols) + " symbols (" +
+                    freshness.stalest_symbol + ") last printed " + freshness.stalest_date +
+                    ", " + std::to_string(freshness.days_behind) +
+                    " calendar days before " + as_of_ymd + " (tolerance " +
+                    std::to_string(tolerance_days) + " days).";
+                if (use_override_date) {
+                    WARN(msg + " Proceeding in historical-replay mode.");
+                } else {
+                    ERROR(msg + " Refusing to run live on stale data. Refresh the OHLCV "
+                                "feed or raise live.data_staleness_tolerance_days.");
+                    return 1;
+                }
+            } else {
+                INFO("Futures feed freshness: stalest of " +
+                     std::to_string(freshness.symbols) + " symbols (" +
+                     freshness.stalest_symbol + ") at " + freshness.stalest_date + ", " +
+                     std::to_string(freshness.days_behind) + " days behind " + as_of_ymd +
+                     " (tolerance " + std::to_string(tolerance_days) + ").");
+            }
+        }
+
         // ========================================
         // NON-TRADING DAY DETECTION
         // Check if yesterday was a non-trading day (weekend or holiday)
@@ -753,6 +1025,77 @@ int main(int argc, char* argv[]) {
         std::ostringstream yesterday_oss_check;
         yesterday_oss_check << std::put_time(&yesterday_tm_check, "%Y-%m-%d");
         std::string yesterday_date_str_check = yesterday_oss_check.str();
+
+        // FUT-covers_date (C-5 B4). `loaded()` above says the FILE parsed. It says
+        // nothing about whether the calendar reaches the date being asked about, and
+        // outside the covered years `is_holiday` returns false because the answer is
+        // UNKNOWN, not because the market was open. A run past the end of the calendar
+        // would therefore treat every closure as a trading day, take the normal-day
+        // branch on a holiday, and write executions for a day the exchange was shut --
+        // with no error and no log line, because nothing here ever asked.
+        //
+        // The equity runner has failed closed on this since BA-1
+        // (live_equity_mean_reversion.cpp:332). Same check here, on the two dates this
+        // runner actually asks the calendar about: the run date, which fixes the data
+        // window, and the previous calendar day, which is the argument `is_holiday`
+        // is given directly below. Both, because coverage is per YEAR and a run on
+        // 1 January asks about 31 December of the year before.
+        {
+            char cov_buf[11];
+            std::tm cov_tm{};
+            auto cov_t = std::chrono::system_clock::to_time_t(now);
+            gmtime_r(&cov_t, &cov_tm);
+            std::strftime(cov_buf, sizeof(cov_buf), "%Y-%m-%d", &cov_tm);
+            for (const std::string& cov_date : {std::string(cov_buf), yesterday_date_str_check}) {
+                if (!holiday_checker.covers_date(cov_date)) {
+                    ERROR("Holiday calendar does not cover " + cov_date + " (loaded: " +
+                          holiday_checker.coverage_description() + ", " +
+                          std::to_string(holiday_checker.coverage_years()) +
+                          " year(s)). Trading-day arithmetic would treat market closures "
+                          "as open days. Extend the calendar via "
+                          "scripts/generate_market_holidays.py before running this date.");
+                    return 1;
+                }
+            }
+        }
+        // ========================================
+        // STORE LIVE RUN METADATA
+        // Save run metadata (allocations, configs) for this trading day. Written only
+        // now, after the run-gap (A3), feed-freshness (A2) and calendar-coverage (A1)
+        // guards have all passed: a refused run must leave no row, because
+        // scripts/check_live_trading.py reads max(created_at) of this table as proof
+        // that the day's run happened.
+        // ========================================
+        INFO("Storing live run metadata for this trading day...");
+        {
+            // Build portfolio config JSON
+            nlohmann::json portfolio_config_json;
+            portfolio_config_json["total_capital"] =
+                static_cast<double>(portfolio_config.total_capital);
+            portfolio_config_json["reserve_capital"] =
+                static_cast<double>(portfolio_config.reserve_capital);
+            portfolio_config_json["use_optimization"] = portfolio_config.use_optimization;
+            portfolio_config_json["use_risk_management"] = portfolio_config.use_risk_management;
+
+            // Convert strategy_allocations to JSON
+            nlohmann::json strategy_alloc_json(strategy_allocations);
+
+            // strategy_configs is already nlohmann::json
+            auto metadata_result = db->store_live_run_metadata(
+                now, combined_strategy_id, portfolio_id, strategy_alloc_json, portfolio_config_json,
+                strategy_configs  // already nlohmann::json
+            );
+
+            if (metadata_result.is_error()) {
+                WARN("Failed to store live run metadata: " +
+                     std::string(metadata_result.error()->what()));
+            } else {
+                INFO("Successfully stored live run metadata for date");
+            }
+        }
+
+
+
         bool is_yesterday_holiday = holiday_checker.is_holiday(yesterday_date_str_check);
 
         // Yesterday was non-trading if: today is Sunday (Sat was non-trading) OR yesterday was
@@ -1630,18 +1973,26 @@ int main(int argc, char* argv[]) {
                 "instrument metadata.");
         }
         // Equity-to-Margin Ratio = portfolio_equity / total_posted_margin.
-        // Higher = safer (more equity per dollar of margin posted). The earlier
-        // formula here used gross_notional in the numerator, which is actually
-        // a leverage-to-margin metric, not equity-to-margin. We use
-        // initial_capital as the equity proxy (current_portfolio_value is not
-        // yet computed at this point in the run; it's the same proxy the
-        // MarginManager already uses for gross_leverage).
-        double equity_to_margin_ratio =
-            (total_posted_margin > 0.0) ? (initial_capital / total_posted_margin) : 0.0;
-        if (equity_to_margin_ratio <= 1.0 && active_positions > 0) {
-            WARN("Equity-to-Margin Ratio is <= 1.0 (account equity at or below "
-                 "posted margin); verify margins and sizing.");
-        }
+        // Higher = safer (more equity per dollar of margin posted).
+        //
+        // MAIN-post-#55, margin numerator. This was computed HERE, from
+        // initial_capital, because current_portfolio_value is not known yet at this
+        // point in the run -- and the comment said as much and called it a proxy. It is
+        // not a proxy for a reported column: it is a constant. As the book gains or
+        // loses money, the equity in "equity to margin" never moves, so the ratio that
+        // reaches trading.live_results and the daily email answers a different question
+        // from the one its name asks, and disagrees with the two other producers of the
+        // same quantity -- live_metrics_calculator.cpp:307, which the main audit named
+        // the reconciliation target, and MarginManager. L1-Q3 of MAIN_AUDIT_2026-08-27.
+        //
+        // The numerator is now current_portfolio_value, and the computation therefore
+        // moves down to where that value exists, immediately below its own INFO block.
+        // Only the declaration stays here, so the value is still in scope for the
+        // storage and email sites further down that already read it.
+        //
+        // The <= 1.0 alarm moves with it: an alarm on a number that has not been
+        // computed yet would fire on the constant, not on the account.
+        double equity_to_margin_ratio = 0.0;
 
         // ========================================
         // PHASE 4: PER-STRATEGY POSITIONS STORAGE
@@ -2383,30 +2734,87 @@ int main(int argc, char* argv[]) {
                 if (metrics_result.is_ok() && metrics_result.value()->num_rows() > 0) {
                     auto table = metrics_result.value();
                     if (table->num_columns() >= 4) {
-                        auto daily_return_arr = std::static_pointer_cast<arrow::DoubleArray>(
-                            table->column(0)->chunk(0));
-                        auto daily_pnl_arr = std::static_pointer_cast<arrow::DoubleArray>(
-                            table->column(1)->chunk(0));
-                        auto daily_realized_arr = std::static_pointer_cast<arrow::DoubleArray>(
-                            table->column(2)->chunk(0));
-                        auto daily_unrealized_arr = std::static_pointer_cast<arrow::DoubleArray>(
-                            table->column(3)->chunk(0));
+                        // FUT-email-UB (C-5 B1). These four columns were read by
+                        // static_pointer_cast<arrow::DoubleArray> on arrays that are NOT
+                        // DoubleArrays. execute_query goes through convert_generic_to_arrow,
+                        // which builds a StringBuilder for every column and stamps utf8 on
+                        // the field (postgres_database.cpp, "Build a string array for all
+                        // columns"), so every one of these is a StringArray. static_pointer_cast
+                        // does not check; Value(0) then reads the string array's OFFSETS
+                        // buffer as if it were a double. That is undefined behaviour, and on
+                        // this host it printed 0.000000 for a row that held daily_return
+                        // 1.2767 and daily_pnl 6347.25.
+                        //
+                        // Read by the array's actual type instead, the way chart_generator.cpp
+                        // has always done it (:188-196). Dispatching rather than assuming utf8
+                        // is deliberate: it stays correct if convert_generic_to_arrow is ever
+                        // given real column types, which is the change condition 2 of
+                        // STAGE3_PLAN section 20 pairs with this one.
+                        auto numeric_cell = [](const std::shared_ptr<arrow::Table>& t, int col,
+                                               double& out) -> bool {
+                            if (!t || col >= t->num_columns()) return false;
+                            auto column = t->column(col);
+                            if (!column || column->num_chunks() == 0) return false;
+                            auto chunk = column->chunk(0);
+                            if (!chunk || chunk->length() == 0 || chunk->IsNull(0)) return false;
+                            switch (chunk->type_id()) {
+                                case arrow::Type::STRING: {
+                                    auto a = std::static_pointer_cast<arrow::StringArray>(chunk);
+                                    try {
+                                        out = std::stod(a->GetString(0));
+                                    } catch (const std::exception&) {
+                                        return false;
+                                    }
+                                    return true;
+                                }
+                                case arrow::Type::LARGE_STRING: {
+                                    auto a =
+                                        std::static_pointer_cast<arrow::LargeStringArray>(chunk);
+                                    try {
+                                        out = std::stod(a->GetString(0));
+                                    } catch (const std::exception&) {
+                                        return false;
+                                    }
+                                    return true;
+                                }
+                                case arrow::Type::DOUBLE: {
+                                    auto a = std::static_pointer_cast<arrow::DoubleArray>(chunk);
+                                    out = a->Value(0);
+                                    return true;
+                                }
+                                case arrow::Type::FLOAT: {
+                                    auto a = std::static_pointer_cast<arrow::FloatArray>(chunk);
+                                    out = static_cast<double>(a->Value(0));
+                                    return true;
+                                }
+                                case arrow::Type::INT64: {
+                                    auto a = std::static_pointer_cast<arrow::Int64Array>(chunk);
+                                    out = static_cast<double>(a->Value(0));
+                                    return true;
+                                }
+                                case arrow::Type::INT32: {
+                                    auto a = std::static_pointer_cast<arrow::Int32Array>(chunk);
+                                    out = static_cast<double>(a->Value(0));
+                                    return true;
+                                }
+                                default:
+                                    return false;
+                            }
+                        };
 
-                        if (daily_return_arr && daily_return_arr->length() > 0 &&
-                            !daily_return_arr->IsNull(0)) {
-                            yesterday_daily_return_for_email = daily_return_arr->Value(0);
+                        double cell = 0.0;
+                        if (numeric_cell(table, 0, cell)) {
+                            yesterday_daily_return_for_email = cell;
                             INFO("Loaded yesterday's daily_return: " +
                                  std::to_string(yesterday_daily_return_for_email));
                         }
-                        if (daily_pnl_arr && daily_pnl_arr->length() > 0 &&
-                            !daily_pnl_arr->IsNull(0)) {
-                            yesterday_daily_pnl_for_email = daily_pnl_arr->Value(0);
+                        if (numeric_cell(table, 1, cell)) {
+                            yesterday_daily_pnl_for_email = cell;
                             INFO("Loaded yesterday's daily_pnl: " +
                                  std::to_string(yesterday_daily_pnl_for_email));
                         }
-                        if (daily_realized_arr && daily_realized_arr->length() > 0 &&
-                            !daily_realized_arr->IsNull(0)) {
-                            yesterday_realized_pnl_for_email = daily_realized_arr->Value(0);
+                        if (numeric_cell(table, 2, cell)) {
+                            yesterday_realized_pnl_for_email = cell;
                             INFO("Loaded yesterday's daily_realized_pnl: " +
                                  std::to_string(yesterday_realized_pnl_for_email));
                         } else {
@@ -2417,9 +2825,8 @@ int main(int argc, char* argv[]) {
                                 "Using calculated aggregate_yesterday_total_pnl as realized PnL: " +
                                 std::to_string(yesterday_realized_pnl_for_email));
                         }
-                        if (daily_unrealized_arr && daily_unrealized_arr->length() > 0 &&
-                            !daily_unrealized_arr->IsNull(0)) {
-                            yesterday_unrealized_pnl_for_email = daily_unrealized_arr->Value(0);
+                        if (numeric_cell(table, 3, cell)) {
+                            yesterday_unrealized_pnl_for_email = cell;
                             INFO("Loaded yesterday's daily_unrealized_pnl: " +
                                  std::to_string(yesterday_unrealized_pnl_for_email));
                         }
@@ -2593,6 +3000,17 @@ int main(int argc, char* argv[]) {
         INFO("  Daily return: " + std::to_string(daily_return) + "%");
         INFO("  Annualized return: " + std::to_string(total_return_annualized) + "%");
 
+        // MAIN-post-#55: the equity-to-margin numerator, computed where the equity is
+        // known. Same formula and same guard as before, current_portfolio_value in place
+        // of the initial_capital constant, matching LiveMetricsCalculator's
+        // calculate_equity_to_margin_ratio(current_portfolio_value, margin_posted).
+        equity_to_margin_ratio =
+            (total_posted_margin > 0.0) ? (current_portfolio_value / total_posted_margin) : 0.0;
+        if (equity_to_margin_ratio <= 1.0 && active_positions > 0) {
+            WARN("Equity-to-Margin Ratio is <= 1.0 (account equity at or below "
+                 "posted margin); verify margins and sizing.");
+        }
+
         std::cout << "Total P&L: $" << std::fixed << std::setprecision(2) << total_pnl << std::endl;
         std::cout << "Realized P&L: $" << std::fixed << std::setprecision(2) << total_realized_pnl
                   << std::endl;
@@ -2671,15 +3089,6 @@ int main(int argc, char* argv[]) {
         try {
             // Calculate current date for results (use override date if specified)
             auto current_date = now;
-
-            // Use the calculated returns from above
-            [[maybe_unused]] double volatility = 0.0;
-
-            // Get volatility from risk evaluation if available
-            if (risk_eval.is_ok()) {
-                const auto& r = risk_eval.value();
-                volatility = r.portfolio_var * 100.0;  // Convert to percentage
-            }
 
             // Create configuration JSON
             nlohmann::json report_config_json;
@@ -2765,9 +3174,6 @@ int main(int argc, char* argv[]) {
                     historical_metrics =
                         hist_calc.calculate(returns_hist, pnl_hist, equity_hist,
                                             total_return_annualized, total_trades_hist);
-
-                    // Keep volatility variable aligned with return-volatility definition
-                    volatility = historical_metrics.volatility;
 
                     // Override total_days with authoritative trading days count from
                     // get_trading_days() DB function, which uses strategy_trading_days_metadata

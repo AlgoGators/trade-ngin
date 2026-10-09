@@ -103,6 +103,29 @@ public:
 };
 
 /**
+ * @brief Validator for the logging component.
+ *
+ * CFG-seed-invalid-data-json, second half. LOGGING is one of the five components
+ * load_config_files() seeds and reads back, and it was the one ConfigType with no
+ * validator registered, so validate_config returned INVALID_ARGUMENT -- "No validator
+ * found for component: logging" -- for every start that reached it. The data.json shape
+ * defect hid this one: validation failed on `data` first and never got as far as
+ * `logging`.
+ *
+ * Accepting anything for a component nobody wrote a validator for would be the other way
+ * to make the start succeed, and it is worse: it turns "this component is unvalidated"
+ * into a silent property of the enum rather than a decision. This validates what
+ * create_default_logging_config writes and what LoggerConfig can actually consume.
+ */
+class LoggingValidator : public ConfigValidator {
+public:
+    std::vector<ConfigValidationError> validate(const nlohmann::json& config) const override;
+    ConfigType get_type() const override {
+        return ConfigType::LOGGING;
+    }
+};
+
+/**
  * @brief Configuration manager for system-wide settings
  */
 class ConfigManager {

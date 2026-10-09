@@ -24,9 +24,14 @@ namespace trade_ngin {
  *   -1674 %. The run exits 0 and the number is stored.
  *
  * The check is one comparison the DB function cannot make, because the function
- * stops looking the moment it finds a metadata row. `effective_anchor` is the
- * anchor that should have been used: the earlier of the two, which is the metadata
- * row when it is sound and the book's own first day when it is not.
+ * stops looking the moment it finds a metadata row. The metadata row is the
+ * authoritative anchor (HD, 2026-09-10): `effective_anchor` is the row when there
+ * is one and the book's own first day only when there is none. A mismatch is
+ * reported through `anchor_is_late` so the runner can WARN, but it never moves
+ * the anchor by itself: a stray backdated row (BASE_PORTFOLIO carries two rows
+ * dated 2025-01-29/02-06 that were written on 2026-02-08, nine months before
+ * the stream's real start) would otherwise annualise the book over a span it
+ * never traded. Bad data is fixed in the data, not by the runner.
  *
  * This is NOT equity-specific. Futures carries the same shape -- as of 2026-09-03
  * LIVE_TREND_FOLLOWING_TREND_FOLLOWING_FAST / BASE_PORTFOLIO is anchored at
@@ -41,9 +46,9 @@ struct TradingDaysAnchor {
     std::string metadata_anchor;
     /// MIN(date) over this portfolio's live_results, YYYY-MM-DD. Empty when the book is new.
     std::string earliest_result;
-    /// The anchor annualization should use.
+    /// The anchor annualization uses: the metadata row when one exists, else the book's first day.
     std::string effective_anchor;
-    /// True when the metadata row is LATER than the book's own first day -- the defect.
+    /// True when the metadata row is LATER than the book's own first day. Reported, never acted on.
     bool anchor_is_late{false};
 };
 
@@ -78,7 +83,7 @@ inline TradingDaysAnchor assess_trading_days_anchor(const std::string& metadata_
     }
 
     a.anchor_is_late = metadata_anchor > earliest_result;
-    a.effective_anchor = a.anchor_is_late ? earliest_result : metadata_anchor;
+    a.effective_anchor = metadata_anchor;
     return a;
 }
 
