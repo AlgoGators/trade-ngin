@@ -74,14 +74,18 @@ const char* to_string(ListingSwitchRule rule);
 /// "close_reenter", "convert", "open_at_target", "carry_to_target"; false on anything else.
 bool parse_listing_switch_rule(const std::string& text, ListingSwitchRule* out);
 
-/// One sleeve's switch: the fill that closes the predecessor (signed; 0 when none is held), the
-/// fill in the listed contract (signed; 0 when none), and the listed contract's held quantity after.
+/// A switch, of the book (as plan_listing_switch plans it) or of one sleeve's part of it: the fill
+/// that closes the predecessor (signed; 0 when none is held), the fill in the listed contract
+/// (signed; 0 when none), and the listed contract's held quantity after.
 struct ListingSwitch {
     double close_from{0.0};
     double trade_to{0.0};
     double new_to{0.0};
 };
-/// `target_to` is the listed contract's unrounded target in contracts and `cap_to` the per-name cap
+/// The BOOK's switch (LOOP_SPEC section 5.4: the pass runs on the portfolio book and its whole
+/// numbers are split to the sleeves afterwards). `held_from` and `held_to` are the book's net
+/// holdings; `target_to` is the listed contract's SCALED target in contracts (the capped target
+/// times the overlay's scalar, section 4) and `cap_to` the per-name cap
 /// in contracts (0 = none); both are read by kOpenAtTarget and kCarryToTarget only. kCloseReenter plans nothing.
 /// `in_deferral_band`: the held predecessor is on the other side of a forecast weaker than the
 /// deferral band (LOOP_SPEC 5.2, D39), a holding the pass would HOLD. The two target rules then

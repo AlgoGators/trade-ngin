@@ -26,6 +26,13 @@
 
 #include "../core/test_base.hpp"
 #include "../data/test_db_utils.hpp"
+#include "../risk/risk_module_test_helpers.hpp"
+
+// the two-sleeve cases set each sleeve's filled ledger directly and read the manager's cost model
+#define private public
+#include "trade_ngin/portfolio/portfolio_manager.hpp"
+#undef private
+
 #include "one_pass_test_fixture.hpp"
 #include "trade_ngin/core/logger.hpp"
 #include "trade_ngin/data/listing_dates.hpp"
@@ -543,4 +550,244 @@ TEST_F(ListingSwitchPassTest, OnACutDayTheEntryIsTheScaledTarget) {
     EXPECT_EQ(switch_fills(), (std::vector<std::string>{"LC-A-0 TBIG.v.0 -2", "LO-A-0 TMIC.v.0 75"}));
     EXPECT_EQ(quantity(kMicro), 75.0) << "the pass has nothing left to trade in the pair";
     for (const auto& line : fills("EX-")) EXPECT_EQ(line.find("TMIC"), std::string::npos) << line;
+}
+
+// ---- a book of two sleeves: the switch follows the book's own rule (LOOP_SPEC section 5.4) ----
+//
+// The book's net predecessor holding is exited and the listed contract entered at the BOOK's summed
+// scaled target; the book's whole number is split to the sleeves by the function the pass's own
+// split uses; the rows are stored one per sleeve and netted as every bar's rows are, so the account
+// sends ONE order per symbol and the net costs of a symbol's rows sum to the cost of that order.
+// Sleeve A is the first sleeve (the overlay's, whose forecast the deferral band reads), B the other.
+// The worked tables are in lead2/evidence/T-LISTING/fix_round/ITEM5_WORKED_CASES.md.
+class ListingSwitchTwoSleeveTest : public ListingSwitchPassTest {
+protected:
+    void make_book(int sleeves) {
+        static int n = 0;
+        pm_ = std::make_unique<PortfolioManager>(one_pass_config("A"), "PM_LS2_" + std::to_string(++n));
+        pm_->set_backtest_mode(true);
+        a_ = make_overlay_stub("A", 500000.0 / sleeves, db_);
+        ASSERT_TRUE(a_->initialize().is_ok());
+        ASSERT_TRUE(a_->start().is_ok());
+        ASSERT_TRUE(pm_->add_strategy(a_, 1.0 / sleeves, true).is_ok());
+        if (sleeves == 2) {
+            b_ = make_overlay_stub("B", 250000.0, db_);
+            ASSERT_TRUE(b_->initialize().is_ok());
+            ASSERT_TRUE(b_->start().is_ok());
+            ASSERT_TRUE(pm_->add_strategy(b_, 0.5, true).is_ok());
+        }
+        // the predecessor traded on an earlier sized pass of this run
+        pm_->listing_predecessor_traded_.insert(kBig);
+        pm_->ever_signalled_.insert(kBig);
+    }
+    void TearDown() override {
+        b_.reset();
+        ListingSwitchPassTest::TearDown();
+    }
+    void hold(const std::string& sleeve, const std::string& symbol, double quantity) {
+        pm_->filled_positions_[sleeve][symbol] = quantity;
+    }
+    /// The listing date's rows: the predecessor signals for nobody; each sleeve's N* and forecast
+    /// for the listed contract (signalling false: the sleeve does not publish it).
+    void listed_rows(OverlayStubStrategy& sleeve, double optimal, double forecast, bool signalling = true) {
+        sleeve.rows[kBig] = row(1000.0, 0.0, 0.0, false);
+        sleeve.rows[kMicro] = row(100.0, optimal, forecast, signalling);
+    }
+    double held(const std::string& sleeve, const std::string& symbol) {
+        const auto books = pm_->get_strategy_positions();
+        const auto it = books.at(sleeve).find(symbol);
+        return it == books.at(sleeve).end() ? 0.0 : static_cast<double>(it->second.quantity);
+    }
+    /// Every LC- / LO- row of every sleeve: "id symbol signed-quantity", in sleeve then fill order.
+    std::vector<std::string> rows() {
+        std::vector<std::string> out;
+        const auto all = pm_->get_strategy_executions();
+        for (const auto& [sid, execs] : all) {
+            for (const auto& e : execs) {
+                if (e.exec_id.rfind("LC-", 0) != 0 && e.exec_id.rfind("LO-", 0) != 0) continue;
+                const double q = static_cast<double>(e.filled_quantity) * (e.side == Side::BUY ? 1.0 : -1.0);
+                out.push_back(e.exec_id + " " + e.symbol + " " + std::to_string(static_cast<int>(q)));
+            }
+        }
+        std::sort(out.begin(), out.end());
+        return out;
+    }
+    /// The account's order in `symbol` (the signed sum of the rows) and the rows' net cost (own
+    /// cost less netting_adjustment), over every fill of the symbol so far.
+    std::pair<double, double> account(const std::string& symbol) {
+        double q = 0.0, net = 0.0;
+        for (const auto& [sid, execs] : pm_->get_strategy_executions()) {
+            for (const auto& e : execs) {
+                if (e.symbol != symbol) continue;
+                q += static_cast<double>(e.filled_quantity) * (e.side == Side::BUY ? 1.0 : -1.0);
+                net += static_cast<double>(e.total_transaction_costs) - static_cast<double>(e.netting_adjustment);
+            }
+        }
+        return {q, net};
+    }
+    double cost_of(const std::string& symbol, double q) {
+        return q == 0.0 ? 0.0 : pm_->cost_manager_.calculate_costs(symbol, q, 100.0).total_transaction_costs;
+    }
+    /// The book and the account must be what ONE sleeve given the summed target and the net holding
+    /// produces: the same stored quantities, the same account orders, the same net cost.
+    void expect_equal_to_one_sleeve(double net_held_big, double summed_optimal, double first_forecast) {
+        const double two_big = held("A", kBig) + held("B", kBig);
+        const double two_micro = held("A", kMicro) + held("B", kMicro);
+        const auto two_acct_big = account(kBig);
+        const auto two_acct_micro = account(kMicro);
+        pm_.reset();
+        a_.reset();
+        b_.reset();
+        make_book(1);
+        if (net_held_big != 0.0) hold("A", kBig, net_held_big);
+        listed_rows(*a_, summed_optimal, first_forecast);
+        ASSERT_TRUE(rebalance(kListed).is_ok());
+        EXPECT_EQ(held("A", kBig), two_big);
+        EXPECT_EQ(held("A", kMicro), two_micro);
+        EXPECT_EQ(account(kBig).first, two_acct_big.first);
+        EXPECT_EQ(account(kMicro).first, two_acct_micro.first);
+        EXPECT_NEAR(account(kBig).second, two_acct_big.second, 1e-6);
+        EXPECT_NEAR(account(kMicro).second, two_acct_micro.second, 1e-6);
+    }
+    std::shared_ptr<OverlayStubStrategy> b_;
+};
+
+// (i) Both sleeves long the predecessor: the account sells 2 and buys round(24.4) = 24, split 14 and
+// 10 by largest remainder (quotas 14.16 and 9.84).
+TEST_F(ListingSwitchTwoSleeveTest, BothSleevesLong) {
+    ListingDates::instance().set(the_pair());
+    make_book(2);
+    hold("A", kBig, 1.0);
+    hold("B", kBig, 1.0);
+    listed_rows(*a_, 14.4, 10.0);
+    listed_rows(*b_, 10.0, 10.0);
+    ASSERT_TRUE(rebalance(kListed).is_ok());
+    EXPECT_EQ(rows(), (std::vector<std::string>{"LC-A-0 TBIG.v.0 -1", "LC-B-0 TBIG.v.0 -1",
+                                                "LO-A-0 TMIC.v.0 14", "LO-B-0 TMIC.v.0 10"}));
+    EXPECT_EQ(held("A", kMicro), 14.0);
+    EXPECT_EQ(held("B", kMicro), 10.0);
+    EXPECT_EQ(held("A", kBig) + held("B", kBig), 0.0);
+    EXPECT_EQ(account(kBig).first, -2.0);
+    EXPECT_NEAR(account(kBig).second, cost_of(kBig, -2.0), 1e-6) << "the rows' net cost is the cost of ONE order of 2";
+    EXPECT_EQ(account(kMicro).first, 24.0);
+    EXPECT_NEAR(account(kMicro).second, cost_of(kMicro, 24.0), 1e-6);
+    expect_equal_to_one_sleeve(2.0, 24.4, 10.0);
+}
+
+// (ii) The sleeves opposed and the book net long: the account sells the NET 1 and buys the net 14;
+// A is credited 20 long and B 6 short (the opposed split of the deviation 14 - 14.4).
+TEST_F(ListingSwitchTwoSleeveTest, OpposedSleevesNetLong) {
+    ListingDates::instance().set(the_pair());
+    make_book(2);
+    hold("A", kBig, 2.0);
+    hold("B", kBig, -1.0);
+    listed_rows(*a_, 20.4, 10.0);
+    listed_rows(*b_, -6.0, -10.0);
+    ASSERT_TRUE(rebalance(kListed).is_ok());
+    EXPECT_EQ(rows(), (std::vector<std::string>{"LC-A-0 TBIG.v.0 -2", "LC-B-0 TBIG.v.0 1",
+                                                "LO-A-0 TMIC.v.0 20", "LO-B-0 TMIC.v.0 -6"}));
+    EXPECT_EQ(held("A", kMicro), 20.0);
+    EXPECT_EQ(held("B", kMicro), -6.0);
+    EXPECT_EQ(account(kBig).first, -1.0) << "one order for the net, never two offsetting orders";
+    EXPECT_NEAR(account(kBig).second, cost_of(kBig, -1.0), 1e-6);
+    EXPECT_EQ(account(kMicro).first, 14.0);
+    EXPECT_NEAR(account(kMicro).second, cost_of(kMicro, 14.0), 1e-6);
+    expect_equal_to_one_sleeve(1.0, 14.4, 10.0);
+}
+
+// (iii) The sleeves opposed and the book net ZERO in the predecessor: no exit order reaches the
+// market; each sleeve's own leg is closed against the other at a net cost of nothing (a full cross:
+// each row's adjustment is its own cost). The listed contract is entered at the book's net 4.
+TEST_F(ListingSwitchTwoSleeveTest, OpposedSleevesNetZeroCrossAtNoCost) {
+    ListingDates::instance().set(the_pair());
+    make_book(2);
+    hold("A", kBig, 1.0);
+    hold("B", kBig, -1.0);
+    listed_rows(*a_, 13.0, 10.0);
+    listed_rows(*b_, -9.0, -10.0);
+    ASSERT_TRUE(rebalance(kListed).is_ok());
+    EXPECT_EQ(rows(), (std::vector<std::string>{"LC-A-0 TBIG.v.0 -1", "LC-B-0 TBIG.v.0 1",
+                                                "LO-A-0 TMIC.v.0 13", "LO-B-0 TMIC.v.0 -9"}));
+    EXPECT_EQ(account(kBig).first, 0.0) << "no order in the predecessor";
+    EXPECT_NEAR(account(kBig).second, 0.0, 1e-9) << "the crossed legs cost nothing";
+    for (const auto& [sid, execs] : pm_->get_strategy_executions()) {
+        for (const auto& e : execs) {
+            if (e.symbol != kBig) continue;
+            EXPECT_GT(static_cast<double>(e.total_transaction_costs), 0.0) << "the row keeps its own cost";
+            EXPECT_EQ(e.netting_adjustment, e.total_transaction_costs) << sid << ": the whole of it is credited";
+        }
+    }
+    EXPECT_EQ(held("A", kBig), 0.0);
+    EXPECT_EQ(held("B", kBig), 0.0);
+    EXPECT_EQ(held("A", kMicro), 13.0);
+    EXPECT_EQ(held("B", kMicro), -9.0);
+    EXPECT_EQ(account(kMicro).first, 4.0);
+    EXPECT_NEAR(account(kMicro).second, cost_of(kMicro, 4.0), 1e-6);
+    expect_equal_to_one_sleeve(0.0, 4.0, 10.0);
+}
+
+// (iv) One sleeve publishing, the other not (in warm-up, or stopped): a sleeve with no contribution
+// has no share of the listed contract; a leg it still holds in the predecessor is exited with the
+// book's.
+TEST_F(ListingSwitchTwoSleeveTest, OneSleevePublishingTheOtherNot) {
+    ListingDates::instance().set(the_pair());
+    make_book(2);
+    hold("A", kBig, 2.0);
+    listed_rows(*a_, 24.4, 10.0);
+    listed_rows(*b_, 0.0, 0.0, /*signalling=*/false);
+    ASSERT_TRUE(rebalance(kListed).is_ok());
+    EXPECT_EQ(rows(), (std::vector<std::string>{"LC-A-0 TBIG.v.0 -2", "LO-A-0 TMIC.v.0 24"}));
+    EXPECT_EQ(held("B", kMicro), 0.0);
+    for (const auto& [sid, execs] : pm_->get_strategy_executions()) {
+        for (const auto& e : execs) EXPECT_EQ(e.netting_adjustment, Decimal()) << "one row a symbol: nothing to net";
+    }
+
+    pm_.reset();
+    a_.reset();
+    b_.reset();
+    make_book(2);
+    hold("A", kBig, 2.0);
+    hold("B", kBig, 1.0);  // B no longer publishes and still holds a leg
+    listed_rows(*a_, 24.4, 10.0);
+    listed_rows(*b_, 0.0, 0.0, /*signalling=*/false);
+    ASSERT_TRUE(rebalance(kListed).is_ok());
+    EXPECT_EQ(rows(), (std::vector<std::string>{"LC-A-0 TBIG.v.0 -2", "LC-B-0 TBIG.v.0 -1", "LO-A-0 TMIC.v.0 24"}));
+    EXPECT_EQ(account(kBig).first, -3.0);
+    EXPECT_NEAR(account(kBig).second, cost_of(kBig, -3.0), 1e-6);
+    EXPECT_EQ(held("A", kMicro), 24.0);
+    EXPECT_EQ(held("B", kMicro), 0.0);
+    EXPECT_EQ(held("B", kBig), 0.0);
+}
+
+// (v) The equity slow rule zeroes the first sleeve's forecast and not the other's: the first
+// sleeve publishes nothing, the book's target is the other sleeve's short, and a zero forecast has
+// no sign, so the band holds nothing. With a WEAK forecast of the first sleeve against the book's
+// holding the band reads the first sleeve's forecast and the book's holding (section 5.2): the
+// holding is carried ratio for one on the sleeve that holds it and the pass holds it.
+TEST_F(ListingSwitchTwoSleeveTest, TheSlowRuleOnTheFirstSleeveOnlyAndTheBandOnTheBook) {
+    ListingDates::instance().set(the_pair());
+    make_book(2);
+    hold("B", kBig, -1.0);
+    listed_rows(*a_, 0.0, 0.0);
+    a_->rows[kMicro].slow_rule_zeroed = true;
+    listed_rows(*b_, -8.2, -10.0);
+    ASSERT_TRUE(rebalance(kListed).is_ok());
+    EXPECT_EQ(rows(), (std::vector<std::string>{"LC-B-0 TBIG.v.0 1", "LO-B-0 TMIC.v.0 -8"}));
+    EXPECT_EQ(held("A", kMicro), 0.0);
+    EXPECT_EQ(held("B", kMicro), -8.0);
+
+    pm_.reset();
+    a_.reset();
+    b_.reset();
+    make_book(2);
+    hold("B", kBig, -1.0);
+    listed_rows(*a_, 1.3, 1.0);  // weak, against the book's short: the band
+    listed_rows(*b_, -8.2, -10.0);
+    ASSERT_TRUE(rebalance(kListed).is_ok());
+    EXPECT_EQ(rows(), (std::vector<std::string>{"LC-B-0 TBIG.v.0 1", "LO-B-0 TMIC.v.0 -10"}));
+    EXPECT_EQ(held("B", kMicro), -10.0) << "carried ten for one and held by the pass";
+    EXPECT_EQ(held("A", kMicro), 0.0);
+    for (const auto& [sid, execs] : pm_->get_strategy_executions()) {
+        for (const auto& e : execs) EXPECT_NE(e.exec_id.rfind("EX-", 0), 0u) << "no ordinary fill: " << e.exec_id;
+    }
 }

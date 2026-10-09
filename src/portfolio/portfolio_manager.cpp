@@ -2434,20 +2434,59 @@ Result<void> PortfolioManager::rebalance_one_pass(
                 const size_t i_to = d.i_to;
                 const bool in_band = d.in_band;
                 const double u_to = in.multiplier[i_to] * in.close[i_to] / in.capital;
-                // rule open_at_target puts the whole rounded target on the first sleeve that
-                // signals the listed contract (a one-sleeve book: its sleeve)
-                size_t target_sleeve = 0;
-                for (size_t s = 0; s < sids.size(); ++s) {
-                    if (contribution[s][i_to] != 0.0) {
-                        target_sleeve = s;
-                        break;
+                // The BOOK's move (section 5.4: one pass on the portfolio book): the book's net
+                // predecessor holding is exited and the listed contract entered at the book's
+                // scaled target, whole contracts for the book.
+                const double book_from = in.held[i_from];
+                const double book_to = in.held[i_to];
+                const ListingSwitch book = plan_listing_switch(
+                    rule, c.ratio, book_from, book_to, scaled_target[i_to],
+                    u_to > 0.0 ? in.cap / u_to : 0.0, in_band);
+                listing_switched_.insert(c.to);
+                switched_this_pass.push_back(c.to);
+                const bool carried = rule == ListingSwitchRule::kConvert ||
+                                     (target_rule && in_band && book_from != 0.0);
+                if (rule == ListingSwitchRule::kCarryToTarget && book_from == 0.0 && !carried) {
+                    continue;  // a pair the book holds none of is left to the pass
+                }
+                // The split to the sleeves, by the book's own rule: a carried holding is each
+                // sleeve's own leg, ratio for one; otherwise the book's whole number is split in
+                // proportion to the sleeves' unrounded contributions by largest remainder
+                // (distribute_optimizer_contracts, the function the pass's own split calls), and
+                // a row no sleeve contributes to that the book takes to flat leaves every sleeve
+                // flat. Every sleeve's predecessor leg goes to flat.
+                std::vector<double> sleeve_to(sids.size(), 0.0);
+                if (carried) {
+                    for (size_t s = 0; s < sids.size(); ++s) {
+                        sleeve_to[s] = sleeve_held[s][i_to] + c.ratio * sleeve_held[s][i_from];
+                    }
+                } else {
+                    double total_contribution = 0.0;
+                    for (size_t s = 0; s < sids.size(); ++s) total_contribution += contribution[s][i_to];
+                    const bool any_contribution = std::abs(total_contribution) > 1e-8;
+                    if (any_contribution || book.new_to != 0.0) {
+                        std::vector<SleeveContribution> parts;
+                        for (size_t s = 0; s < sids.size(); ++s) {
+                            parts.push_back({sids[s], any_contribution ? contribution[s][i_to]
+                                                                       : sleeve_held[s][i_to]});
+                        }
+                        const SleeveDistribution split = distribute_optimizer_contracts(book.new_to, parts);
+                        for (size_t s = 0; s < sids.size(); ++s) {
+                            sleeve_to[s] = static_cast<double>(split.stored[s]);
+                        }
                     }
                 }
+                // The rows as stored: one per sleeve and contract, each priced as if that sleeve
+                // traded alone (ids LC- the predecessor's leg to flat, LO- the listed contract's
+                // move), then netted as every bar's rows are (transaction_cost/netting.hpp): the
+                // account sends ONE order per symbol, the signed sum of the sleeves' rows, and
+                // each row's netting_adjustment is its share of what the account did not pay.
+                const size_t first_pending = pending_switches.size();
                 for (size_t s = 0; s < sids.size(); ++s) {
-                    const ListingSwitch plan = plan_listing_switch(
-                        rule, c.ratio, sleeve_held[s][i_from], sleeve_held[s][i_to],
-                        s == target_sleeve ? scaled_target[i_to] : 0.0,
-                        u_to > 0.0 ? in.cap / u_to : 0.0, in_band);
+                    ListingSwitch plan;
+                    plan.close_from = -sleeve_held[s][i_from];
+                    plan.trade_to = sleeve_to[s] - sleeve_held[s][i_to];
+                    plan.new_to = sleeve_to[s];
                     if (plan.close_from == 0.0 && plan.trade_to == 0.0) continue;
                     const std::string& sid = sids[s];
                     size_t seq = listing_leg_seq_[sid];
@@ -2472,23 +2511,41 @@ Result<void> PortfolioManager::rebalance_one_pass(
                             std::to_string(static_cast<double>(leg.filled_quantity)) + " px=" +
                             std::to_string(static_cast<double>(leg.fill_price)) + " cost=" +
                             std::to_string(static_cast<double>(leg.total_transaction_costs)) +
-                            " id=" + leg.exec_id + " rule=" +
-                            to_string(ListingDates::instance().switch_rule()) +
+                            " id=" + leg.exec_id + " rule=" + to_string(rule) +
                             (in_band ? " (deferral band: carried)" : "") + " target=" +
                             std::to_string(in.target[i_to]) + " scaled=" +
-                            std::to_string(scaled_target[i_to]) + " (" + c.from + " " +
-                            std::to_string(sleeve_held[s][i_from]) + " -> 0; " + c.to + " " +
-                            std::to_string(sleeve_held[s][i_to]) + " -> " +
+                            std::to_string(scaled_target[i_to]) + " book " + c.from + " " +
+                            std::to_string(book_from) + " -> 0, " + c.to + " " +
+                            std::to_string(book_to) + " -> " + std::to_string(book.new_to) +
+                            " (sleeve " + c.from + " " + std::to_string(sleeve_held[s][i_from]) +
+                            " -> 0; " + c.to + " " + std::to_string(sleeve_held[s][i_to]) + " -> " +
                             std::to_string(plan.new_to) + ")");
                     }
-                    in.held[i_from] -= sleeve_held[s][i_from];
-                    in.held[i_to] += plan.new_to - sleeve_held[s][i_to];
-                    sleeve_held[s][i_from] = 0.0;
-                    sleeve_held[s][i_to] = plan.new_to;
                     pending_switches.push_back(std::move(pending));
                 }
-                listing_switched_.insert(c.to);
-                switched_this_pass.push_back(c.to);
+                {
+                    std::vector<transaction_cost::SleeveExecution> rows;
+                    for (size_t k = first_pending; k < pending_switches.size(); ++k) {
+                        for (auto& leg : pending_switches[k].legs) rows.push_back({pending_switches[k].sid, &leg});
+                    }
+                    const auto netting = transaction_cost::apply_netting_adjustments(
+                        rows, [this](const std::string& sym, double q, double px) {
+                            return cost_manager_.calculate_costs(sym, q, px).total_transaction_costs;
+                        });
+                    if (first_pending < pending_switches.size()) {
+                        for (const auto& line : netting.info_lines) {
+                            pending_switches[first_pending].lines.push_back(line);
+                        }
+                    }
+                    for (const auto& line : netting.warn_lines) WARN(line);
+                }
+                in.held[i_from] = 0.0;
+                in.held[i_to] = 0.0;
+                for (size_t s = 0; s < sids.size(); ++s) {
+                    sleeve_held[s][i_from] = 0.0;
+                    sleeve_held[s][i_to] = sleeve_to[s];
+                    in.held[i_to] += sleeve_to[s];
+                }
             }
         }
 
