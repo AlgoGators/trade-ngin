@@ -44,8 +44,8 @@ What is computed, and on what window:
                         cost / (close x multiplier) / sigma. For the contract a listed contract
                         replaced (ES before MES), the last COST_ROWS signal days BEFORE the
                         listing date: the days it was traded.
-  rolls a year          The confirmed rolls of the contract's whole consumed series over its span
-                        in years.
+  rolls a year          The rolls the engine confirmed (and booked) on the contract's consumed
+                        series in the run, over that series' span in years.
 
 When the list is recomputed: whenever metadata.contract_metadata's fees change, whenever the cost
 model changes (transaction_cost/), whenever the universe or the listing dates change, and otherwise
@@ -100,7 +100,8 @@ def main():
     args = ap.parse_args()
 
     portfolio = json.load(open(args.portfolio))
-    sleeves = [v for v in portfolio["strategies"].values() if isinstance(v, dict)]
+    sleeves = [v for v in portfolio["strategies"].values()
+               if isinstance(v, dict) and (v.get("enabled_backtest") or v.get("enabled_live"))]
     if len(sleeves) != 1:
         sys.exit("the rule applies to a book of one trend sleeve")
     pairs = [tuple(p) for p in sleeves[0]["config"]["ema_windows"]]
@@ -125,6 +126,9 @@ def main():
             s, price = float(row["sigma"]), float(row["price"])
             if not (s > 0.0 and price > 0.0):
                 sys.exit("unusable estimator row %s %s" % (row["date"], row["symbol"]))
+            if not all(math.isfinite(float(row[c])) for c in columns):
+                sys.exit("%s %s has a speed without a forecast: the measuring run must be made "
+                         "WITHOUT trading_rule_removals" % (row["date"], row["symbol"]))
             if row["date"] in sigma.setdefault(instrument, {}):
                 sys.exit("two estimator rows for %s on %s" % (instrument, row["date"]))
             sigma[instrument][row["date"]] = s
@@ -268,6 +272,8 @@ def main():
                 w.writerow([i, first, last, n] + [repr(t) for t in each])
             w.writerow(["MEAN", "", "", len(instruments)] + [repr(t) for t in turnover])
 
+    if pair_sides:
+        sys.exit(2)
     if args.check:
         committed = {k: v for k, v in portfolio.get("trading_rule_removals", {}).items()
                      if not k.startswith("_")}
@@ -276,8 +282,6 @@ def main():
                              "committed: %s\ncomputed:  %s\n" % (json.dumps(committed, sort_keys=True), block))
             sys.exit(1)
         sys.stderr.write("check: portfolio.json's trading_rule_removals equals this output\n")
-    if pair_sides:
-        sys.exit(2)
 
 
 if __name__ == "__main__":
