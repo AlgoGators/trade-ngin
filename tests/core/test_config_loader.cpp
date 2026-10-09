@@ -1072,6 +1072,39 @@ TEST_F(ConfigLoaderTest, AppConfigToJsonRoundTripsThroughExtractConfig) {
     EXPECT_EQ(b.risk_schema.to_json(), a.risk_schema.to_json());
 }
 
+// #60's limit asymmetry (QT plan E2): to_json wrote max_drawdown / max_leverage at the top
+// level, where extract_config never reads them, beside the risk object's copies, which it
+// does. A re-extract read the risk object, so the top-level pair was a second, unread
+// statement of the limits (on CONSERVATIVE an invented 4.0, the struct fallback, since its
+// risk.json retires max_leverage). The limits have one home, the risk object, and a shipped
+// book's config must survive to_json -> extract_config with nothing moved.
+TEST(TrackedTemplateRoundTrip, EveryBookSurvivesToJsonThenExtractWithItsOwnLimits) {
+    const auto tmpl = tracked_config_template();
+    ASSERT_FALSE(tmpl.empty()) << "config_template/ not found; this test must not skip";
+    for (const char* book : {"conservative", "base", "equity_mr"}) {
+        auto direct = ConfigLoader::load(tmpl, book);
+        ASSERT_TRUE(direct.is_ok()) << book << ": " << (direct.is_error() ? direct.error()->what() : "");
+        const nlohmann::json j = direct.value().to_json();
+        EXPECT_FALSE(j.contains("max_drawdown"))
+            << book << ": to_json states max_drawdown outside the risk object, where no reader looks";
+        EXPECT_FALSE(j.contains("max_leverage"))
+            << book << ": to_json states max_leverage outside the risk object, where no reader looks";
+        auto again = ConfigLoader::extract_config(j);
+        ASSERT_TRUE(again.is_ok()) << book << ": " << (again.is_error() ? again.error()->what() : "");
+        EXPECT_EQ(again.value().max_drawdown, direct.value().max_drawdown) << book;
+        EXPECT_EQ(again.value().max_leverage, direct.value().max_leverage) << book;
+        EXPECT_EQ(again.value().risk_schema.max_drawdown, direct.value().risk_schema.max_drawdown) << book;
+        EXPECT_EQ(again.value().risk_schema.max_leverage, direct.value().risk_schema.max_leverage) << book;
+        EXPECT_EQ(again.value().to_json(), j) << book << ": to_json -> extract_config is not lossless";
+    }
+    // The values the books' own risk.json files carry.
+    auto conservative = ConfigLoader::load(tmpl, "conservative");
+    ASSERT_TRUE(conservative.is_ok());
+    EXPECT_EQ(conservative.value().to_json().at("risk").at("max_drawdown"), 0.3);
+    EXPECT_FALSE(conservative.value().to_json().at("risk").contains("max_leverage"))
+        << "CONSERVATIVE's risk.json retires max_leverage (overlay book); none may be invented";
+}
+
 // Ruling 7: the equity runners keep the hard-coded false AND refuse to start on a config
 // true. The guard is shared by both runners so they cannot drift; this is it.
 TEST(EquityOptimizerGuard, RefusesOnlyWhenTheConfigAsksForTheOptimizer) {
