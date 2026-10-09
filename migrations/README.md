@@ -29,6 +29,9 @@ qt-platform-preview) and are retired, so the numbers are never reused (see the h
 | 019 | `019_contract_metadata_fixes.sql` | Data fix of nine contract metadata rows | `test_019_contract_metadata_fixes.sh` | | |
 | 020 | `020_risk_detail.sql` | `risk_detail` jsonb on `trading.live_results` and `backtest.equity_curve` | `test_020_risk_detail.sh` | | |
 | 021 | `021_qt_books.sql` | Three books: `qt_proposal` allowed in positions and equity_curve; `portfolio_type` on executions and live_results and in their keys; `positions.moved_by` | `test_021_qt_books.sh` | | |
+| 022 | `022_strategy_config.sql` | `trading.strategy_config` (desk settings, versioned, one active row per portfolio); `settings_used`, `published_by`, `published_at` on `trading.live_run_metadata` | | applied | |
+| 023 | `023_qt_command_log.sql` | Rebuild `trading.position_overrides` as the QT command log; `live_results.book_source`; `strategy_registry.portfolio_group`/`desk_editable` | | applied | |
+| 024 | `024_drop_retired_qt_tables.sql` | Ruling-28 drops (risk_limits, portfolios, strategy_book_memberships, portfolio_assignments) | | not applied | |
 
 ## Deploy notes
 

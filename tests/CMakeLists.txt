@@ -16,6 +16,7 @@ set(TEST_SOURCES
     core/test_email_strategy_tables.cpp
     core/test_run_id_generator.cpp
     core/test_config_loader.cpp
+    core/test_config_loader_db_overlay.cpp
     core/test_reserve_capital_deleted.cpp
     core/test_backtest_window.cpp
     core/test_static_destruction_order_db.cpp
@@ -47,6 +48,7 @@ set(TEST_SOURCES
     data/test_roll_series.cpp
     data/test_roll_legs.cpp
     data/test_executions_execution_type_db.cpp
+    data/test_strategy_config_db.cpp
     data/test_futures_bar_instrument_id_db.cpp
     data/test_positions_instrument_id_db.cpp
     data/test_roll_state_db.cpp
@@ -76,6 +78,7 @@ set(TEST_SOURCES
     transaction_cost/test_spread_model.cpp
     transaction_cost/test_impact_model.cpp
     transaction_cost/test_netting.cpp
+    live/test_strategy_config_live_only.cpp
     live/corp_actions/test_applier.cpp
     live/corp_actions/test_effect_classes.cpp
     live/corp_actions/test_frame_horizon.cpp

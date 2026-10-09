@@ -395,16 +395,16 @@ struct AppConfig {
         j["database"] = database.to_json();
         j["execution"] = execution.to_json();
         j["optimization"] = opt_config.to_json();
-        // The schema-2 risk object, not the resolved RiskConfig: a DB override is merged
-        // back through extract_config (PR #60), and a flat schema-1 risk block would now
-        // be rejected there and the whole override discarded with a WARN.
+        // The schema-2 risk object, not the resolved RiskConfig, so that to_json ->
+        // extract_config is lossless. It carries max_drawdown and max_leverage (when the
+        // book has one): that is their one home, the place extract_config reads them. They
+        // are NOT repeated at the top level, where no reader looks (QT plan E2, #60's limit
+        // asymmetry; on an overlay book the struct's 4.0 fallback was written there).
         j["risk"] = risk_schema.to_json();
         j["sleeve_risk_modules"] = risk_schema.sleeves_to_json();
         j["use_optimization"] = use_optimization;
         j["covariance_history_prices"] = covariance_history_prices;
         j["covariance_stale_dates"] = covariance_stale_dates;
-        j["max_drawdown"] = max_drawdown;
-        j["max_leverage"] = max_leverage;
         j["backtest"] = backtest.to_json();
         j["live"] = live.to_json();
         j["strategy_defaults"] = strategy_defaults.to_json();
@@ -435,6 +435,38 @@ public:
      */
     static Result<AppConfig> load(const std::filesystem::path& config_base_path,
                                   const std::string& portfolio_name);
+
+    /**
+     * @brief Load a LIVE run's configuration: the files, with a desk override merged in
+     *        (QT plan E2; rulings 2, 3 and 24). Backtests never call this (ruling 4).
+     *
+     * @param db_overlay the active trading.strategy_config row's overrides, or nullptr when the
+     *        portfolio has none (the files are used unchanged). It is deep-merged into the
+     *        merged file JSON after email.json and before extract_config; the result then goes
+     *        through extract_config and validate_config like the files alone. It is REFUSED,
+     *        never dropped, when it is not an object; carries a null anywhere; names the
+     *        database or email section, portfolio_id, or a credential-like key
+     *        (find_secret_key); names a key the files do not hold (ruling 3: any knob the files
+     *        hold; a key they do not is a typo); changes an object to a non-object or the reverse,
+     *        or a value's JSON type; or the merged config fails extract or validate.
+     * @param settings_used out: the credential-free effective config (the merged JSON without
+     *        the database and email sections). Producing it refuses when a credential-like key
+     *        remains, or when it does not parse back (extract_config) to the same config.
+     */
+    static Result<AppConfig> load(const std::filesystem::path& config_base_path,
+                                  const std::string& portfolio_name,
+                                  const nlohmann::json* db_overlay,
+                                  nlohmann::json* settings_used = nullptr);
+
+    /**
+     * @brief Finds a key that looks like a credential anywhere below `node` (gen-3's secret
+     *        scan): database, email, anything containing password, secret, token or credential,
+     *        and anything starting with smtp, case-insensitively. Keys only; values are never
+     *        read or reported.
+     * @param found set to the key's path (a.b[2].c) when one is found
+     */
+    static bool find_secret_key(const nlohmann::json& node, const std::string& path,
+                                std::string* found);
 
     /**
      * @brief Load configuration from legacy single-file format
@@ -486,6 +518,17 @@ private:
      * @return Result containing parsed JSON or error
      */
     static Result<nlohmann::json> load_json_file(const std::filesystem::path& file_path);
+
+    /// defaults.json + portfolio.json, with risk.json under "risk" and email.json under "email".
+    static Result<nlohmann::json> load_file_tree(const std::filesystem::path& config_base_path,
+                                                 const std::string& portfolio_name);
+
+    /// The overlay checks of the db-aware load (everything but extract and validate).
+    static Result<void> check_overlay(const nlohmann::json& overlay, const nlohmann::json& files);
+
+    /// The credential-free settings used, with the parse -> rebuild -> compare guard.
+    static Result<nlohmann::json> settings_snapshot(const nlohmann::json& merged,
+                                                    const AppConfig& config);
 
     /**
      * @brief Recursively merge JSON objects
