@@ -247,5 +247,22 @@ struct DayResult {
 
 DayResult rebalance(const DayInputs& in);
 
+/**
+ * QT plan E5 (rulings 10 and 12, contract section 5): the step of the pass that moved each symbol
+ * from what was asked (`in.target`, the desk's quantity on a desk run) to what was stored
+ * (`out.book`). One of: none, hold, cap, overlay, sign_close, search, buffer, rounding, clip,
+ * trim. Pure; nothing is re-run.
+ *
+ *   - none: the stored quantity is the asked one (within 1e-9).
+ *   - hold: the row was not free (the engine's hold set, the deferral band, a fixed or
+ *     unweighed row) or the day was refused, so the held quantity was stored.
+ *   - sign_close: the held position was closed to flat before the search and the row stored
+ *     flat against a non-zero ask.
+ *   - otherwise the step whose own change to the row was largest, ties to the earlier step, along
+ *     the chain asked -> capped (cap) -> scaled (overlay) -> searched (search) -> buffered
+ *     unrounded (buffer) -> rounded (rounding) -> clipped (clip) -> trimmed (trim).
+ */
+std::vector<std::string> attribute(const DayInputs& in, const DayResult& out);
+
 }  // namespace one_pass
 }  // namespace trade_ngin
