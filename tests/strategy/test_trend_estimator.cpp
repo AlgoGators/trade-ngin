@@ -312,3 +312,81 @@ TEST(TrendEstimator, TheEquitySlowRule) {
     // a rule pair the sleeve does not carry counts as not negative
     EXPECT_EQ(equity_slow_ruled(-7.0, {-9, -9, -9, -9}, {{2, 8}, {4, 16}, {8, 32}, {16, 64}}, slow), 0.0);
 }
+
+// Trading rules removed from a contract by cost (strategy nine, "Removing expensive trading
+// rules"): the rules removed are the contract's fastest, and what is left is the sleeve's slowest.
+TEST(TrendEstimator, PairsAfterRemovalLeavesTheSlowestPairs) {
+    using trade_ngin::trend_estimator::pairs_after_removal;
+    using Pairs = std::vector<std::pair<int, int>>;
+    std::string why = "unset";
+    EXPECT_EQ(pairs_after_removal(kTrendPairs, {{2, 8}}, &why),
+              (Pairs{{4, 16}, {8, 32}, {16, 64}, {32, 128}, {64, 256}}));
+    EXPECT_EQ(why, "unset") << "a usable removal writes no refusal";
+    EXPECT_EQ(pairs_after_removal(kTrendPairs, {{2, 8}, {4, 16}}),
+              (Pairs{{8, 32}, {16, 64}, {32, 128}, {64, 256}}));
+    // the order the list names them in does not matter
+    EXPECT_EQ(pairs_after_removal(kTrendPairs, {{8, 32}, {2, 8}, {4, 16}}),
+              (Pairs{{16, 64}, {32, 128}, {64, 256}}));
+    EXPECT_EQ(pairs_after_removal(kTrendPairs, {{2, 8}, {4, 16}, {8, 32}, {16, 64}, {32, 128}}),
+              (Pairs{{64, 256}}));
+    EXPECT_EQ(pairs_after_removal(kTrendPairs, {}), kTrendPairs);
+}
+
+TEST(TrendEstimator, PairsAfterRemovalRefusesWhatTheMultiplierTableDoesNotName) {
+    using trade_ngin::trend_estimator::pairs_after_removal;
+    auto refused = [](const std::vector<std::pair<int, int>>& pairs,
+                      const std::vector<std::pair<int, int>>& removed, const std::string& named) {
+        std::string why;
+        EXPECT_TRUE(pairs_after_removal(pairs, removed, &why).empty());
+        EXPECT_NE(why.find(named), std::string::npos) << why;
+    };
+    // a slower rule removed while a faster one is kept: the table has no multiplier for that set
+    refused(kTrendPairs, {{4, 16}}, "(2, 8) is kept while a slower pair is removed");
+    refused(kTrendPairs, {{2, 8}, {8, 32}}, "(4, 16) is kept while a slower pair is removed");
+    refused(kTrendPairs, {{64, 256}}, "(2, 8) is kept while a slower pair is removed");
+    // every rule removed: the contract leaves the universe, it is not listed
+    refused(kTrendPairs, kTrendPairs, "no pair is left");
+    refused(kTrendPairs, {{128, 512}}, "(128, 512) is not one of the sleeve's pairs");
+    refused(kTrendPairs, {{2, 8}, {2, 8}}, "(2, 8) is named twice");
+    // a sleeve whose pairs are not written fastest first cannot say which are its fastest
+    refused({{4, 16}, {2, 8}, {8, 32}}, {{2, 8}}, "not in order of speed");
+}
+
+// The estimator on the pairs left: each is scaled and capped exactly as among all six, they weigh
+// equally, and the multiplier passed is applied once.
+TEST(TrendEstimator, TheCombinedForecastOfThePairsLeftIsTheirEqualWeightMeanTimesTheMultiplier) {
+    std::vector<double> returns(900, 0.0);
+    unsigned state = 2463534242u;
+    for (auto& r : returns) {
+        state ^= state << 13;
+        state ^= state >> 17;
+        state ^= state << 5;
+        r = 0.012 * (static_cast<double>(state % 100000u) / 100000.0 - 0.5) + 0.0006;
+    }
+    const Window w = window_of(returns);
+    const Estimate all = trend_estimator::estimate(w, 32, kTrendPairs, 1.26);
+    ASSERT_EQ(all.scaled.size(), 6u);
+    const double table[] = {0.0, 1.0, 1.03, 1.08, 1.13, 1.19, 1.26};
+    for (std::size_t removed = 1; removed <= 5; ++removed) {
+        const std::vector<std::pair<int, int>> fastest(kTrendPairs.begin(),
+                                                       kTrendPairs.begin() + static_cast<long>(removed));
+        const auto left = trend_estimator::pairs_after_removal(kTrendPairs, fastest);
+        ASSERT_EQ(left.size(), 6 - removed);
+        const double fdm = table[left.size()];
+        const Estimate e = trend_estimator::estimate(w, 32, left, fdm);
+        ASSERT_EQ(e.scaled.size(), left.size());
+        double sum = 0.0;
+        for (std::size_t k = 0; k < left.size(); ++k) {
+            EXPECT_EQ(e.scaled[k], all.scaled[k + removed]) << "pair " << k + removed;
+            sum += all.scaled[k + removed];
+        }
+        const double mean = sum / static_cast<double>(left.size());
+        EXPECT_EQ(e.mean_scaled, mean);
+        EXPECT_EQ(e.combined, std::clamp(fdm * mean, -20.0, 20.0));
+        EXPECT_NE(e.combined, all.combined) << "the fixture does not tell the sets apart";
+        // nothing but the forecast combination moves
+        EXPECT_EQ(e.sigma, all.sigma);
+        EXPECT_EQ(e.forecast_sigma, all.forecast_sigma);
+        EXPECT_EQ(e.attenuation, all.attenuation);
+    }
+}

@@ -10,6 +10,7 @@
 #include <chrono>
 #include <cmath>
 #include <filesystem>
+#include <map>
 #include <fstream>
 #include <memory>
 #include <sstream>
@@ -84,7 +85,10 @@ struct Sleeve {
 
     Sleeve(const std::string& id, const std::vector<std::pair<int, int>>& pairs,
            const std::vector<std::string>& ruled_symbols,
-           const std::vector<std::pair<int, int>>& rule_pairs = kSlowPairs, bool start = true) {
+           const std::vector<std::pair<int, int>>& rule_pairs = kSlowPairs, bool start = true,
+           const std::map<std::string, std::vector<std::pair<int, int>>>& removals = {},
+           const std::vector<std::pair<int, double>>& fdm = {{1, 1.0},  {2, 1.03}, {3, 1.08},
+                                                             {4, 1.13}, {5, 1.19}, {6, 1.26}}) {
         db = std::make_shared<MockPostgresDatabase>("mock://testdb");
         EXPECT_TRUE(db->connect().is_ok());
         StrategyConfig sc;
@@ -99,8 +103,9 @@ struct Sleeve {
         tc.idm = 2.5;
         tc.ema_windows = pairs;
         tc.vol_lookback_short = pairs.size() == 4 ? 16 : 32;
-        tc.fdm = {{1, 1.0}, {2, 1.03}, {3, 1.08}, {4, 1.13}, {5, 1.19}, {6, 1.26}};
+        tc.fdm = fdm;
         if (!ruled_symbols.empty()) rule(tc, ruled_symbols, rule_pairs);
+        if constexpr (requires { tc.rule_removals; }) tc.rule_removals = removals;
         auto& registry = InstrumentRegistry::instance();
         FuturesSpec spec;
         spec.root_symbol = kSym;
@@ -140,6 +145,9 @@ struct Sleeve {
         return strategy->get_forecast(kSym);
     }
     double position() const { return strategy->get_all_instrument_data().at(kSym).raw_position; }
+    std::vector<double> scaled() const {
+        return strategy->get_all_instrument_data().at(kSym).estimate.scaled;
+    }
 };
 
 // A long fall: every speed is negative.
@@ -241,4 +249,140 @@ TEST(EquitySlowRule, TheFuturesTemplatesCarryTheRule) {
                   nlohmann::json::array({{32, 128}, {64, 256}}))
             << book;
     }
+}
+
+// ---------------------------------------------------------------------------------------------
+// Trading rules removed from a contract by cost (Carver, strategy nine, "Removing expensive
+// trading rules"; portfolio.json's trading_rule_removals). A contract the list names runs the
+// pairs left at equal weight with the multiplier for their number; every other contract, and
+// every contract without a list, runs all six exactly as before.
+// ---------------------------------------------------------------------------------------------
+namespace {
+
+using Removals = std::map<std::string, std::vector<std::pair<int, int>>>;
+const double kMultiplier[] = {0.0, 1.0, 1.03, 1.08, 1.13, 1.19, 1.26};
+
+// A path on which the six speeds differ in size and the fast ones in sign from the slow ones.
+std::vector<Bar> mixed() { return path(700, 660, 0.0011, 0.0035); }
+
+Removals fastest(std::size_t n) {
+    return {{kSym, std::vector<std::pair<int, int>>(kSix.begin(), kSix.begin() + static_cast<long>(n))}};
+}
+
+std::string refusal_of(const Removals& removals, const std::vector<std::string>& ruled = {},
+                       const std::vector<std::pair<int, double>>& fdm = {
+                           {1, 1.0}, {2, 1.03}, {3, 1.08}, {4, 1.13}, {5, 1.19}, {6, 1.26}}) {
+    StateManager::reset_instance();
+    Sleeve sleeve("RULES_refused", kSix, ruled, kSlowPairs, /*start=*/false, removals, fdm);
+    return sleeve.initialized.is_error() ? std::string(sleeve.initialized.error()->what()) : "";
+}
+
+}  // namespace
+
+// The removed speeds contribute nothing: the combined forecast is the multiplier for the number
+// left times the plain mean of the speeds left, each of them the value it has among all six.
+TEST(TradingRuleRemovals, TheForecastIsTheEqualWeightMeanOfThePairsLeftTimesTheirMultiplier) {
+    const auto bars = mixed();
+    StateManager::reset_instance();
+    Sleeve plain("RULES_plain", kSix, {});
+    const double six = plain.forecast(bars);
+    const std::vector<double> all = plain.scaled();
+    ASSERT_EQ(all.size(), 6u);
+    const double plain_position = plain.position();
+    ASSERT_NE(plain_position, 0.0);
+    for (std::size_t removed = 1; removed <= 5; ++removed) {
+        StateManager::reset_instance();
+        Sleeve cut("RULES_cut_" + std::to_string(removed), kSix, {}, kSlowPairs, true, fastest(removed));
+        const double forecast = cut.forecast(bars);
+        const std::vector<double> left = cut.scaled();
+        ASSERT_EQ(left.size(), 6 - removed);
+        double sum = 0.0;
+        for (std::size_t k = 0; k < left.size(); ++k) {
+            EXPECT_EQ(left[k], all[k + removed]) << removed << " removed, pair " << k + removed;
+            sum += all[k + removed];
+        }
+        const double expected =
+            std::clamp(kMultiplier[left.size()] * (sum / static_cast<double>(left.size())), -20.0, 20.0);
+        EXPECT_EQ(forecast, expected) << removed << " removed";
+        EXPECT_NE(forecast, six) << "the fixture does not tell " << removed << " removed from none";
+        // the position follows the forecast and nothing else moves
+        EXPECT_NEAR(cut.position() / plain_position, forecast / six, 1e-12) << removed << " removed";
+    }
+}
+
+// A contract the list does not name is untouched to the last bit, and so is every contract when
+// the list is empty.
+TEST(TradingRuleRemovals, AContractTheListDoesNotNameIsUntouched) {
+    const auto bars = mixed();
+    StateManager::reset_instance();
+    Sleeve plain("RULES_other_plain", kSix, {});
+    const double six = plain.forecast(bars);
+    StateManager::reset_instance();
+    Sleeve other("RULES_other", kSix, {}, kSlowPairs, true, {{"ZR", {{2, 8}, {4, 16}}}});
+    EXPECT_EQ(other.forecast(bars), six);
+    EXPECT_EQ(other.scaled(), plain.scaled());
+    EXPECT_EQ(other.position(), plain.position());
+    StateManager::reset_instance();
+    Sleeve empty("RULES_empty", kSix, {}, kSlowPairs, true, Removals{});
+    EXPECT_EQ(empty.forecast(bars), six);
+    EXPECT_EQ(empty.position(), plain.position());
+}
+
+// The multiplier is the table's row for the number of rules left, read from the sleeve's table.
+TEST(TradingRuleRemovals, TheMultiplierIsTheTablesRowForTheNumberLeft) {
+    const auto bars = mixed();
+    StateManager::reset_instance();
+    Sleeve table("RULES_table", kSix, {}, kSlowPairs, true, fastest(2));
+    const double with_table = table.forecast(bars);
+    StateManager::reset_instance();
+    Sleeve other_row("RULES_other_row", kSix, {}, kSlowPairs, true, fastest(2),
+                   {{1, 1.0}, {2, 1.03}, {3, 1.08}, {4, 1.50}, {5, 1.19}, {6, 1.26}});
+    ASSERT_LT(std::abs(with_table), 13.0) << "the fixture is near the cap";
+    EXPECT_NEAR(other_row.forecast(bars) / with_table, 1.50 / 1.13, 1e-12);
+    // Carver's table 36, the rows the sleeve's default table carries
+    const TrendFollowingConfig defaults;
+    EXPECT_EQ(defaults.fdm, (std::vector<std::pair<int, double>>{
+                                {1, 1.0}, {2, 1.03}, {3, 1.08}, {4, 1.13}, {5, 1.19}, {6, 1.26}}));
+}
+
+// A list the sleeve cannot run as written is refused when the sleeve is built, never bent.
+TEST(TradingRuleRemovals, AListThatIsNotTheFastestRulesIsRefused) {
+    EXPECT_EQ(refusal_of(fastest(1)), "");
+    EXPECT_EQ(refusal_of(fastest(5)), "");
+    EXPECT_NE(refusal_of({{kSym, {{4, 16}}}}).find("(2, 8) is kept while a slower pair is removed"),
+              std::string::npos);
+    EXPECT_NE(refusal_of(fastest(6)).find("no pair is left"), std::string::npos);
+    EXPECT_NE(refusal_of({{kSym, {{128, 512}}}}).find("not one of the sleeve's pairs"), std::string::npos);
+    EXPECT_NE(refusal_of({{kSym, {{2, 8}, {2, 8}}}}).find("named twice"), std::string::npos);
+    EXPECT_NE(refusal_of({{kSym, {}}}).find("no pair is named"), std::string::npos);
+    EXPECT_NE(refusal_of({{kSym + ".v.0", {{2, 8}}}}).find("base symbol"), std::string::npos);
+    // the table has no row for the number left: without the refusal the multiplier would be 1
+    EXPECT_NE(refusal_of(fastest(2), {}, {{1, 1.0}, {2, 1.03}, {3, 1.08}, {5, 1.19}, {6, 1.26}})
+                  .find("no row for 4 rules"),
+              std::string::npos);
+}
+
+// The equity slow rule reads the two slow speeds: a list may take a ruled symbol's fast rules, and
+// the rule goes on acting on what is left, but it may not take a speed the rule reads.
+TEST(TradingRuleRemovals, ASpeedTheEquitySlowRuleReadsIsNeverRemoved) {
+    EXPECT_NE(refusal_of(fastest(5), {kSym}).find("read by the equity slow rule"), std::string::npos);
+    EXPECT_EQ(refusal_of(fastest(4), {kSym}), "");
+    // the same list on a symbol the rule does not name is usable
+    EXPECT_EQ(refusal_of(fastest(5), {"MES"}), "");
+
+    const auto bars = rise_then_drop();
+    StateManager::reset_instance();
+    Sleeve unruled("RULES_slow_unruled", kSix, {}, kSlowPairs, true, fastest(1));
+    ASSERT_LT(unruled.forecast(bars), -1.0) << "the fixture's five-speed forecast is not negative";
+    StateManager::reset_instance();
+    Sleeve ruled("RULES_slow_ruled", kSix, {kSym}, kSlowPairs, true, fastest(1));
+    EXPECT_EQ(ruled.forecast(bars), 0.0) << "the slowest speed is positive: the short is zeroed";
+    EXPECT_EQ(ruled.position(), 0.0);
+    const auto all_down = falling();
+    StateManager::reset_instance();
+    Sleeve stands_plain("RULES_slow_stands_plain", kSix, {}, kSlowPairs, true, fastest(1));
+    const double short_forecast = stands_plain.forecast(all_down);
+    StateManager::reset_instance();
+    Sleeve stands("RULES_slow_stands", kSix, {kSym}, kSlowPairs, true, fastest(1));
+    EXPECT_EQ(stands.forecast(all_down), short_forecast);
 }
