@@ -1610,6 +1610,11 @@ TEST_F(ConfigLoaderTest, AMalformedTradingRuleRemovalsBlockIsRefused) {
     refused({{"trading_rule_removals", {{"ZR", nlohmann::json::array({{2, 8, 32}})}}}}, "not two positive whole numbers");
     refused({{"trading_rule_removals", {{"ZR", nlohmann::json::array({{0, 8}})}}}}, "not two positive whole numbers");
     refused({{"trading_rule_removals", {{"ZR", nlohmann::json::array({{2.5, 8}})}}}}, "not two positive whole numbers");
+    refused({{"trading_rule_removals", {{"ZR", nlohmann::json::array({{2, 0}})}}}}, "not two positive whole numbers");
+    refused({{"trading_rule_removals", {{"ZR", nlohmann::json::array({{2, -8}})}}}}, "not two positive whole numbers");
+    refused({{"trading_rule_removals", {{"ZR", nlohmann::json::array({{2, 8.5}})}}}}, "not two positive whole numbers");
+    refused({{"trading_rule_removals", {{"ZR", nlohmann::json::array({{2, 4294967304LL}})}}}},
+            "not two positive whole numbers");
     refused({{"trading_rule_removals", {{"ZR", nlohmann::json::array({{4294967298LL, 8}})}}}},
             "not two positive whole numbers");
     refused({{"trading_rule_removals", {{"ZR.v.0", one}}}}, "not a base symbol");
@@ -1639,7 +1644,13 @@ TEST_F(ConfigLoaderTest, TradingRuleRemovalsNeedABookOfOneTrendSleeve) {
     two["TREND_FOLLOWING_FAST"]["enabled_live"] = false;
     EXPECT_EQ(error_of(two), "");
     EXPECT_NE(error_of({{"FAST", {{"enabled_backtest", true}, {"type", "TrendFollowingFastStrategy"}}}})
-                  .find("exactly one enabled TrendFollowingStrategy sleeve"),
+                  .find("exactly one enabled TrendFollowingStrategy sleeve; this book enables 1"),
               std::string::npos);
+    // two trend sleeves are two sleeves, whichever of the two flags enables the second
+    for (const char* flag : {"enabled_backtest", "enabled_live"}) {
+        nlohmann::json both = one_trend_sleeve();
+        both["TREND_FOLLOWING_2"] = {{flag, true}, {"type", "TrendFollowingStrategy"}};
+        EXPECT_NE(error_of(both).find("this book enables 2"), std::string::npos) << flag;
+    }
     EXPECT_NE(error_of({{"TREND_FOLLOWING", {{"weight", 1.0}}}}).find("this book enables 0"), std::string::npos);
 }

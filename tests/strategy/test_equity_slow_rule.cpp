@@ -9,6 +9,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <cstdlib>
 #include <filesystem>
 #include <map>
 #include <fstream>
@@ -106,7 +107,7 @@ struct Sleeve {
         tc.vol_lookback_short = pairs.size() == 4 ? 16 : 32;
         tc.fdm = fdm;
         if (!ruled_symbols.empty()) rule(tc, ruled_symbols, rule_pairs);
-        if constexpr (requires { tc.rule_removals; }) tc.rule_removals = removals;
+        tc.rule_removals = removals;
         auto& registry = InstrumentRegistry::instance();
         FuturesSpec spec;
         spec.root_symbol = kSym;
@@ -270,8 +271,25 @@ namespace {
 using Removals = std::map<std::string, std::vector<std::pair<int, int>>>;
 const double kMultiplier[] = {0.0, 1.0, 1.03, 1.08, 1.13, 1.19, 1.26};
 
-// A path on which the six speeds differ in size and the fast ones in sign from the slow ones.
-std::vector<Bar> mixed() { return path(700, 660, 0.0011, 0.0035); }
+// A noisy rise and a fall of twenty bars: the six speeds all differ, the fast ones are negative
+// and the slow ones positive, and none sits on the cap (the first test asserts it), so each
+// speed's presence and each multiplier shows in the combined forecast.
+std::vector<Bar> mixed() {
+    std::vector<Bar> bars = path(700, 680, 0.0, 0.0);
+    double p = 100.0;
+    unsigned state = 88172645u;
+    for (int k = 0; k < 700; ++k) {
+        state ^= state << 13;
+        state ^= state >> 17;
+        state ^= state << 5;
+        const double u = static_cast<double>(state % 100000u) / 100000.0 - 0.5;
+        p *= 1.0 + 0.05 * u + (k < 680 ? 0.0015 : -0.0050);
+        bars[k].open = bars[k].close = Decimal(p);
+        bars[k].high = Decimal(p * 1.002);
+        bars[k].low = Decimal(p * 0.998);
+    }
+    return bars;
+}
 
 Removals fastest(std::size_t n) {
     return {{kSym, std::vector<std::pair<int, int>>(kSix.begin(), kSix.begin() + static_cast<long>(n))}};
@@ -296,6 +314,10 @@ TEST(TradingRuleRemovals, TheForecastIsTheEqualWeightMeanOfThePairsLeftTimesThei
     const double six = plain.forecast(bars);
     const std::vector<double> all = plain.scaled();
     ASSERT_EQ(all.size(), 6u);
+    for (std::size_t k = 0; k < 6; ++k) {
+        ASSERT_LT(std::abs(all[k]), 20.0) << "speed " << k << " sits on the cap";
+        for (std::size_t j = 0; j < k; ++j) ASSERT_NE(all[k], all[j]) << "two speeds agree";
+    }
     const double plain_position = plain.position();
     ASSERT_NE(plain_position, 0.0);
     for (std::size_t removed = 1; removed <= 5; ++removed) {
@@ -313,6 +335,7 @@ TEST(TradingRuleRemovals, TheForecastIsTheEqualWeightMeanOfThePairsLeftTimesThei
             std::clamp(kMultiplier[left.size()] * (sum / static_cast<double>(left.size())), -20.0, 20.0);
         EXPECT_EQ(forecast, expected) << removed << " removed";
         EXPECT_NE(forecast, six) << "the fixture does not tell " << removed << " removed from none";
+        EXPECT_LT(std::abs(forecast), 20.0) << "the cap hides the multiplier";
         // the position follows the forecast and nothing else moves
         EXPECT_NEAR(cut.position() / plain_position, forecast / six, 1e-12) << removed << " removed";
     }
@@ -333,6 +356,7 @@ TEST(TradingRuleRemovals, AContractTheListDoesNotNameIsUntouched) {
     StateManager::reset_instance();
     Sleeve empty("RULES_empty", kSix, {}, kSlowPairs, true, Removals{});
     EXPECT_EQ(empty.forecast(bars), six);
+    EXPECT_EQ(empty.scaled(), plain.scaled());
     EXPECT_EQ(empty.position(), plain.position());
 }
 
@@ -416,4 +440,69 @@ TEST(TradingRuleRemovals, BothContractsOfAListingDatePairLoseTheSameRules) {
                          {"MES"})
                   .find("read by the equity slow rule"),
               std::string::npos);
+}
+// The list names a contract by its base symbol and the bars carry the continuous symbol: "X" in
+// the list is "X.v.0" in the feed.
+TEST(TradingRuleRemovals, TheListsBaseSymbolIsTheFeedsContinuousSymbol) {
+    const std::string fed = kSym + ".v.0";
+    auto bars = mixed();
+    for (auto& bar : bars) bar.symbol = fed;
+    auto run = [&](const std::string& id, const Removals& removals) {
+        StateManager::reset_instance();
+        Sleeve sleeve(id, kSix, {}, kSlowPairs, true, removals);
+        EXPECT_TRUE(sleeve.strategy->on_data(bars).is_ok());
+        return std::make_pair(sleeve.strategy->get_forecast(fed),
+                              sleeve.strategy->get_all_instrument_data().at(fed).estimate.scaled);
+    };
+    const auto plain = run("RULES_fed_plain", {});
+    const auto cut = run("RULES_fed_cut", fastest(2));
+    ASSERT_EQ(plain.second.size(), 6u);
+    ASSERT_EQ(cut.second.size(), 4u) << "the list was not found under the feed's symbol";
+    const double mean = (plain.second[2] + plain.second[3] + plain.second[4] + plain.second[5]) / 4.0;
+    EXPECT_EQ(cut.first, std::clamp(1.13 * mean, -20.0, 20.0));
+    EXPECT_NE(cut.first, plain.first);
+}
+
+// The sleeve's own record keeps one column a pair of the SLEEVE: a pair removed from the contract
+// prints nan under its own header and the pairs left keep theirs.
+TEST(TradingRuleRemovals, TheEstimatorRecordKeepsEveryPairsColumn) {
+    const auto dir = std::filesystem::temp_directory_path() / "tn_rule_removals_record";
+    std::filesystem::remove_all(dir);
+    std::filesystem::create_directories(dir);
+    setenv("TRADE_NGIN_SERIES_DUMP_DIR", dir.c_str(), 1);
+    std::vector<double> left;
+    {
+        StateManager::reset_instance();
+        Sleeve cut("RULES_record", kSix, {}, kSlowPairs, true, fastest(2));
+        cut.forecast(mixed());
+        left = cut.scaled();
+    }
+    unsetenv("TRADE_NGIN_SERIES_DUMP_DIR");
+    std::ifstream in(dir / "estimator_RULES_record.csv");
+    ASSERT_TRUE(in.good());
+    std::string header, row, line;
+    std::getline(in, header);
+    while (std::getline(in, line)) {
+        if (!line.empty()) row = line;
+    }
+    auto cells = [](const std::string& text) {
+        std::vector<std::string> out;
+        std::stringstream ss(text);
+        std::string cell;
+        while (std::getline(ss, cell, ',')) out.push_back(cell);
+        return out;
+    };
+    const auto names = cells(header), values = cells(row);
+    ASSERT_EQ(names.size(), values.size());
+    ASSERT_GE(names.size(), 6u);
+    const std::size_t at = names.size() - 6;
+    EXPECT_EQ(names[at], "scaled_2_8");
+    EXPECT_EQ(names[at + 5], "scaled_64_256");
+    EXPECT_EQ(values[at], "nan");
+    EXPECT_EQ(values[at + 1], "nan");
+    ASSERT_EQ(left.size(), 4u);
+    for (std::size_t k = 0; k < 4; ++k) {
+        EXPECT_EQ(std::stod(values[at + 2 + k]), left[k]) << names[at + 2 + k];
+    }
+    std::filesystem::remove_all(dir);
 }
