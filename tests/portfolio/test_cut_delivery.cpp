@@ -314,3 +314,103 @@ TEST(CutDelivery, UnknownNotionalAndNoCut) {
     EXPECT_EQ(e.book.at("X"), 3.0);
     EXPECT_EQ(e.book.at("A"), 0.0);
 }
+
+// ---- T-7b-3 D-1b (HD 2026-09-27): a symbol the BOOK_GATE will hold is never cut ----------------
+
+// HeldWhenNothingAdded's book with A in book_gate_holds. Without the set the best removal is a held
+// A contract (the smallest that covers the excess 7); A is held by the BOOK_GATE, so the cut takes B
+// instead and A keeps its held 2.
+TEST(CutDelivery, ABookGateHoldIsNeverCut) {
+    CutDeliveryInput in;
+    in.factor = 0.9;
+    in.capital = 1000.0;
+    in.lap_book = {{"A", 2.0}, {"B", 1.0}};
+    in.held = {{"A", 2.0}, {"B", 1.0}};
+    in.notional_per_contract = {{"A", 10.0}, {"B", 50.0}};
+    const CutDelivery without = deliver_cut_in_whole_contracts(in);  // 70 -> 63
+    ASSERT_EQ(without.removed.size(), 1u);
+    EXPECT_EQ(without.removed[0].first, "A") << "the control: the rule's own pick is a held A";
+
+    in.book_gate_holds = {"A"};
+    const CutDelivery d = deliver_cut_in_whole_contracts(in);
+    ASSERT_EQ(d.removed.size(), 1u);
+    EXPECT_EQ(d.removed[0].first, "B");
+    EXPECT_FALSE(d.removed[0].second);
+    EXPECT_EQ(d.book.at("A"), 2.0);
+    EXPECT_EQ(d.book.at("B"), 0.0);
+    EXPECT_EQ(d.removed_held, 1);
+    ASSERT_EQ(d.book_gate_fixed.size(), 1u);
+    EXPECT_EQ(d.book_gate_fixed[0].first, "A");
+    EXPECT_EQ(d.book_gate_fixed[0].second, 2.0);
+    // The notionals are the lap book's, as without the set.
+    EXPECT_EQ(d.lap_notional, without.lap_notional);
+    EXPECT_EQ(d.held_notional, without.held_notional);
+    EXPECT_EQ(d.target_notional, without.target_notional);
+}
+
+// A hold symbol whose lap quantity differs from held starts at held (what the hold will store),
+// before any removal: A lap 3, held 1. The lap, held and target notionals stay the lap book's
+// (50, 30, 40); with A at 1 the book is 30, already at or below 40, so nothing is removed. Without
+// the set the rule cuts one added A (50 -> 40) and keeps A 2, which the hold would put back to 1.
+// A hold symbol absent from the lap book (C) is not added; one flat in both (D) is not reported.
+TEST(CutDelivery, ABookGateHoldStartsAtItsHeldQuantity) {
+    CutDeliveryInput in;
+    in.factor = 0.8;
+    in.capital = 1000.0;
+    in.lap_book = {{"A", 3.0}, {"B", 2.0}, {"D", 0.0}};
+    in.held = {{"A", 1.0}, {"B", 2.0}, {"C", 1.0}};
+    in.notional_per_contract = {{"A", 10.0}, {"B", 10.0}, {"C", 10.0}, {"D", 10.0}};
+    const CutDelivery without = deliver_cut_in_whole_contracts(in);
+    EXPECT_EQ(without.book.at("A"), 2.0) << "the control: the rule cuts one added A";
+
+    in.book_gate_holds = {"A", "C", "D"};
+    const CutDelivery d = deliver_cut_in_whole_contracts(in);
+    EXPECT_EQ(d.book.at("A"), 1.0);
+    EXPECT_EQ(d.book.at("B"), 2.0);
+    EXPECT_EQ(d.book.count("C"), 0u) << "a held symbol absent from the lap book is not added";
+    EXPECT_EQ(d.book.at("D"), 0.0);
+    EXPECT_TRUE(d.removed.empty());
+    EXPECT_EQ(d.lap_notional, 50.0);
+    EXPECT_EQ(d.held_notional, 30.0);
+    EXPECT_EQ(d.target_notional, 40.0);
+    EXPECT_EQ(d.cut_notional, 30.0);
+    ASSERT_EQ(d.book_gate_fixed.size(), 1u) << "D is flat in both books: nothing was fixed";
+    EXPECT_EQ(d.book_gate_fixed[0].first, "A");
+    EXPECT_EQ(d.book_gate_fixed[0].second, 3.0) << "the lap quantity it had";
+}
+
+// Every symbol is held by the BOOK_GATE: nothing can be cut, and the book is the held book.
+TEST(CutDelivery, NothingIsCutWhenEverySymbolIsHeld) {
+    CutDeliveryInput in;
+    in.factor = 0.5;
+    in.capital = 1000.0;
+    in.lap_book = {{"A", 2.0}, {"B", -1.0}};
+    in.held = {{"A", 1.0}, {"B", -1.0}};
+    in.notional_per_contract = {{"A", 10.0}, {"B", 10.0}};
+    in.book_gate_holds = {"A", "B"};
+    const CutDelivery d = deliver_cut_in_whole_contracts(in);
+    EXPECT_TRUE(d.removed.empty());
+    EXPECT_EQ(d.book.at("A"), 1.0);
+    EXPECT_EQ(d.book.at("B"), -1.0);
+    EXPECT_EQ(d.book_gate_fixed.size(), 2u);
+}
+
+// T-7b-3 ruling 8: without a hold the rule always reaches the level, since removing every cuttable
+// contract leaves a gross of 0 <= factor x the lap book's; so only a hold can leave a delivered cut
+// book above the level (RISK_OVER_LIMIT_BY_HOLD).
+TEST(CutDelivery, WithoutHoldsTheCutAlwaysReachesTheLevel) {
+    CutDeliveryInput in;
+    in.capital = 1000.0;
+    in.lap_book = {{"A", 3.0}, {"B", -2.0}, {"C", 1.0}};
+    in.held = {{"A", 3.0}, {"B", -2.0}};
+    in.notional_per_contract = {{"A", 70.0}, {"B", 45.0}, {"C", 130.0}};
+    for (double f : {0.99, 0.5, 0.1, 0.01, 0.0}) {
+        in.factor = f;
+        const CutDelivery d = deliver_cut_in_whole_contracts(in);
+        EXPECT_LE(d.cut_notional, d.target_notional + 1e-6) << "factor " << f;
+        EXPECT_TRUE(d.book_gate_fixed.empty());
+    }
+    in.factor = 0.0;
+    const CutDelivery flat = deliver_cut_in_whole_contracts(in);
+    for (const auto& [sym, q] : flat.book) EXPECT_EQ(q, 0.0) << sym;
+}

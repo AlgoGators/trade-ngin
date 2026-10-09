@@ -14,10 +14,11 @@ namespace {
 // adopts one contract of one symbol per pass, always toward that symbol's target, so symbol i moves
 // through at most ceil(|target_i| / weight_per_contract_i) contracts on its way out (it can pass a
 // fractional target by less than one contract, never more). Short asks count: the target vector
-// holds them and the long-only write-back discards them only after the optimizer. With B the sum of
-// those ceilings, a greedy that never steps back needs at most B adopted passes plus the one empty
-// pass that finds nothing. The cap is 2B + 1, the extra B passes covering a symbol that steps back
-// and forth between the two whole contracts around a fractional target; the configured
+// holds them, and only after the optimizer does the sleeve split give a symbol's answer to no
+// sleeve, when the sleeves' contributions total at or below 1e-8 (allocation_split.hpp). With B
+// the sum of those ceilings, a greedy that never steps back needs at most B adopted passes plus the
+// one empty pass that finds nothing. The cap is 2B + 1, the extra B passes covering a symbol that
+// steps back and forth between the two whole contracts around a fractional target; the configured
 // max_iterations stays the floor. The cap changes only when the greedy stops, never which contract
 // it picks: a greedy that converged under the configured cap converges in the same passes here.
 int greedy_pass_cap(int configured, const Eigen::VectorXd& target,

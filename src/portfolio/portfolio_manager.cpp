@@ -276,6 +276,20 @@ Result<void> PortfolioManager::process_market_data(const std::vector<Bar>& data,
         // used at end of cycle to tag each integer transition with its trigger.
         std::unordered_map<std::string, std::unordered_map<std::string, double>> attr_strategy_target;
         std::unordered_map<std::string, std::unordered_map<std::string, double>> attr_post_qp;
+        // T-7b-3 D-1b: the symbols the BOOK_GATE will hold after this call, which a delivered cut
+        // fixes at their held quantity (deliver_lap_cut). The caller's set (set_book_gate_holds,
+        // the live futures runners) is this call's only; with a session set (the futures backtest)
+        // a symbol of the lap or held book outside it is held too, on a cycle that generates
+        // executions (the BOOK_GATE below runs only then; a warm-up cycle holds nothing).
+        std::unordered_set<std::string> book_gate_holds;
+        const std::unordered_set<std::string>* hold_unless_session =
+            skip_execution_generation ? nullptr : session_symbols;
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            book_gate_holds.swap(pending_book_gate_holds_);
+            pending_book_gate_holds_.clear();
+            over_limit_by_hold_ = OverLimitByHold{};
+        }
         {
             std::lock_guard<std::mutex> lock(mutex_);
 
@@ -328,6 +342,15 @@ Result<void> PortfolioManager::process_market_data(const std::vector<Bar>& data,
                     if (info.strategy->get_state() != StrategyState::RUNNING) {
                         WARN("Strategy " + id + " is not RUNNING; it takes no part in this "
                              "cycle and its target positions are not read");
+                        // Not reading the targets is not enough: the map this manager keeps for
+                        // the sleeve still holds the previous rebalance's targets, and everything
+                        // after this loop in the same call reads it (the optimizer, the risk
+                        // steps, the rounding, the book copy and execution generation). Empty it,
+                        // so the stopped sleeve contributes no target (ledger row
+                        // DA96324A-stopped-sleeve-map). Unreachable in every runner today: each
+                        // starts its strategies before the first call and stops them after the
+                        // last.
+                        info.target_positions.clear();
                         continue;
                     }
 
@@ -633,15 +656,24 @@ Result<void> PortfolioManager::process_market_data(const std::vector<Bar>& data,
                 break;
             }
 
-            // 9e: a lap the gate cut delivers the cut in whole contracts (cut_delivery.hpp): the
-            // cut book is the next lap's input, so the next lap re-optimises it from the held
-            // anchor and re-reads the gate, and neither its deadband nor forced rounding can undo
-            // the cut.
-            bool cut_delivered = false;
+            // 9e: a lap the gate cut delivers the cut in whole contracts (cut_delivery.hpp); a
+            // symbol the BOOK_GATE will hold is fixed at its held quantity and never cut (D-1b).
+            // T-7b-3 rulings 7 and 8 (HD 2026-09-27): the cut is the gate's level applied once and
+            // the loop ends on the lap that delivers it. No later lap re-reads the cut book: the
+            // residual between the whole-contract book and the level is within whole-contract
+            // rounding and is not re-cut (a re-read gate asked 0.98-0.999 and each re-cut removed
+            // one more contract, btfut 2025-09-30), and the held book's deadband never sees the cut
+            // (D-1). No forced rounding follows: the cut book is whole. A book the BOOK_GATE holds
+            // keep above the level was marked by deliver_lap_cut (RISK_OVER_LIMIT_BY_HOLD). A
+            // portfolio REFUSE or REPLACE leaves the loop above, before any cut, so no lap can run
+            // after a delivered cut.
             if (lap_cut_factor_ < 1.0 && !config_.allow_fractional_positions &&
                 config_.use_optimization && optimizer_) {
-                deliver_lap_cut(iteration);
-                cut_delivered = true;
+                deliver_lap_cut(iteration, book_gate_holds, hold_unless_session);
+                INFO("RISK_CUT_ONCE lap=" + std::to_string(iteration) +
+                     ": the cut is delivered once; the loop ends");
+                done = true;
+                break;
             }
 
             // Check for partial contracts in final positions.
@@ -673,7 +705,7 @@ Result<void> PortfolioManager::process_market_data(const std::vector<Bar>& data,
                 }
             }
 
-            if (!partials_found && !cut_delivered) {
+            if (!partials_found) {
                 if (config_.allow_fractional_positions) {
                     INFO("Fractional positions permitted; accepting iteration " +
                          std::to_string(iteration) +
@@ -1908,6 +1940,17 @@ CutDelivery deliver_cut_in_whole_contracts(const CutDeliveryInput& in) {
     }
     out.target_notional = f * out.lap_notional;
 
+    // D-1b: a symbol the BOOK_GATE will hold stores its held quantity whatever the cut does, so it
+    // starts there and is never a removal candidate; the notionals above stay the lap book's.
+    auto fixed = [&in](const std::string& sym) { return in.book_gate_holds.count(sym) > 0; };
+    for (const auto& sym : in.book_gate_holds) {
+        auto it = R.find(sym);
+        if (it == R.end()) continue;
+        const double lap_q = it->second;
+        it->second = held(sym);
+        if (lap_q != 0.0 || it->second != 0.0) out.book_gate_fixed.emplace_back(sym, lap_q);
+    }
+
     // The covariance's index by symbol (empty without a covariance: best fit only).
     std::unordered_map<std::string, size_t> cix;
     if (!in.covariance_symbols.empty() && in.covariance.size() == in.covariance_symbols.size()) {
@@ -1959,7 +2002,7 @@ CutDelivery deliver_cut_in_whole_contracts(const CutDeliveryInput& in) {
             std::string cover, large;
             for (const auto& [sym, q] : R) {
                 const double n = notional(sym);
-                if (q == 0.0 || n <= 0.0) continue;
+                if (q == 0.0 || n <= 0.0 || fixed(sym)) continue;
                 if ((pass == 0) != is_new(sym, q)) continue;
                 if (n >= excess && (best_cover < 0.0 || n < best_cover)) {
                     best_cover = n;
@@ -1978,7 +2021,7 @@ CutDelivery deliver_cut_in_whole_contracts(const CutDeliveryInput& in) {
                 std::string te_pick;
                 for (auto& [sym, q] : R) {
                     const double n = notional(sym);
-                    if (q == 0.0 || n <= 0.0 || !cix.count(sym)) continue;
+                    if (q == 0.0 || n <= 0.0 || !cix.count(sym) || fixed(sym)) continue;
                     if ((pass == 0) != is_new(sym, q)) continue;
                     const double step = q > 0.0 ? 1.0 : -1.0;
                     q -= step;
@@ -2007,9 +2050,12 @@ CutDelivery deliver_cut_in_whole_contracts(const CutDeliveryInput& in) {
 }
 
 // 9e: deliver this lap's cut in whole contracts (deliver_cut_in_whole_contracts), write the cut
-// book into the optimizing sleeves' targets as the next lap's input (split by largest remainder of
-// each sleeve's cut target), and log it as RISK_CUT_BOOK.
-void PortfolioManager::deliver_lap_cut(int lap) {
+// book into the optimizing sleeves' targets (split by largest remainder of each sleeve's cut
+// target), which is the book the call stores (the loop ends on this lap), and log it as
+// RISK_CUT_BOOK, followed by RISK_CUT_BOOK_GATE when a symbol the BOOK_GATE will hold was fixed at
+// its held quantity and RISK_OVER_LIMIT_BY_HOLD when those holds keep the book above the level.
+void PortfolioManager::deliver_lap_cut(int lap, const std::unordered_set<std::string>& holds,
+                                       const std::unordered_set<std::string>* session_symbols) {
     std::lock_guard<std::mutex> lock(mutex_);
     CutDeliveryInput in;
     in.lap_book = lap_book_before_gate_;
@@ -2017,6 +2063,17 @@ void PortfolioManager::deliver_lap_cut(int lap) {
         if (!sinfo.use_optimization || pinned_scopes_.count(sid)) continue;
         for (const auto& [sym, pos] : sinfo.current_positions) {
             in.held[sym] += static_cast<double>(pos.quantity);
+        }
+    }
+    in.book_gate_holds.insert(holds.begin(), holds.end());
+    if (session_symbols) {
+        for (const auto& [sym, q] : in.lap_book) {
+            (void)q;
+            if (!session_symbols->count(sym)) in.book_gate_holds.insert(sym);
+        }
+        for (const auto& [sym, q] : in.held) {
+            (void)q;
+            if (!session_symbols->count(sym)) in.book_gate_holds.insert(sym);
         }
     }
     in.notional_per_contract = cut_notional_per_contract_;
@@ -2068,6 +2125,43 @@ void PortfolioManager::deliver_lap_cut(int lap) {
                   d.lap_notional > 0.0 ? d.cut_notional / d.lap_notional : 1.0, d.removed_new,
                   d.removed_held, d.unknown_notional);
     INFO(std::string(buf) + " removed:" + removed + " |" + changed);
+    if (!d.book_gate_fixed.empty()) {
+        std::ostringstream g;
+        g << "RISK_CUT_BOOK_GATE lap=" << lap << " held_by_book_gate=" << d.book_gate_fixed.size()
+          << ":";
+        for (const auto& [sym, lap_q] : d.book_gate_fixed) {
+            g << " " << sym << " held=" << held(sym) << " lap=" << lap_q;
+        }
+        INFO(g.str());
+    }
+    // Ruling 7: the cuttable symbols are exhausted and the held contracts keep the cut book above
+    // the gate's level. The book is stored over the limit, warned and recorded for the runner.
+    // Without a fixed hold the rule can always reach the level: removing every cuttable contract
+    // leaves a gross of 0 <= factor x the lap book's, so only a hold can leave it above.
+    if (!d.book_gate_fixed.empty() && d.cut_notional > d.target_notional + 1e-6) {
+        over_limit_by_hold_ = OverLimitByHold{};
+        over_limit_by_hold_.over_limit_by_hold = true;
+        over_limit_by_hold_.target = d.target_notional;
+        over_limit_by_hold_.cut_book = d.cut_notional;
+        over_limit_by_hold_.lap = lap;
+        std::string names;
+        for (const auto& [sym, lap_q] : d.book_gate_fixed) {
+            (void)lap_q;
+            over_limit_by_hold_.symbols.push_back(sym);
+            names += (names.empty() ? "" : ",") + sym;
+        }
+        char w[256];
+        std::snprintf(w, sizeof(w), "RISK_OVER_LIMIT_BY_HOLD lap=%d target=%.2f cut_book=%.2f held=",
+                      lap, d.target_notional, d.cut_notional);
+        WARN(std::string(w) + names +
+             ": the cuttable symbols are exhausted and the BOOK_GATE holds keep the book above the "
+             "gate's level; the book is stored over the limit");
+    }
+}
+
+OverLimitByHold PortfolioManager::last_over_limit_by_hold() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return over_limit_by_hold_;
 }
 
 Result<void> PortfolioManager::optimize_positions() {

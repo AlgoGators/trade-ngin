@@ -13,10 +13,10 @@
 -- column exists the instrument registry reads it into each futures contract and the cost model
 -- charges it; the code default remains only for a database without the column.
 --
--- 1.50 is the IB-measured all-in fee per contract (HD 2026-09-25 ruling 30), so every existing
--- row gets it and every fill is priced exactly as before: the column is number-neutral when
--- applied. A micro or mini contract whose broker fee differs is updated row by row by the migration
--- that changes that row's contract, with its source.
+-- Every existing row gets the configured default fee per contract, 1.50, the reference until
+-- per-row fees land (HD ruling 33, 2026-09-26), so every fill is priced exactly as before: the
+-- column is number-neutral when applied. A micro or mini contract whose broker fee differs is
+-- updated row by row by the migration that changes that row's contract, with its source.
 --
 -- The column is text, like every other column of the table; the loader converts it to a double
 -- by name (PostgresDatabase::convert_metadata_to_arrow), so the loader's positional indices of
@@ -70,8 +70,9 @@ ALTER TABLE metadata.contract_metadata
 
 COMMENT ON COLUMN metadata.contract_metadata."Fee Per Contract" IS
     'Dollars per contract per side that the transaction cost model charges for a fill of this '
-    'contract (explicit fee: broker commission plus exchange and clearing, all-in). 1.50 is the '
-    'IB-measured all-in fee (HD 2026-09-25). Read by the instrument registry by name; a database '
-    'without this column prices every fill at the code default 1.50 (migration 014).';
+    'contract (explicit fee: broker commission plus exchange and clearing, all-in). Every row '
+    'starts at the configured default fee per contract, 1.50, the reference until per-row fees '
+    'land (HD ruling 33, 2026-09-26). Read by the instrument registry by name; a database without '
+    'this column prices every fill at the code default 1.50 (migration 014).';
 
 COMMIT;

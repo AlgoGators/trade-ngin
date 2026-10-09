@@ -914,36 +914,15 @@ Result<void> BacktestCoordinator::process_portfolio_day(
             }
         }
 
-        // Apply transaction costs to executions
-        for (auto& exec : period_executions) {
-            try {
-                exec.fill_time = timestamp;
-
-                // TransactionCostManager is the single source of truth.
-                double ref_price = static_cast<double>(exec.fill_price);
-                // E2-F29: sign the quantity from the report's side. filled_quantity is always
-                // positive, so passing it raw made the sell-side-only SEC/TAF gate
-                // (`quantity < 0`) unreachable; every other cost term takes |qty|.
-                double qty = static_cast<double>(exec.filled_quantity);
-                if (exec.side == Side::SELL) {
-                    qty = -qty;
-                }
-
-                auto cost_result =
-                    execution_manager_->get_transaction_cost_manager().calculate_costs(
-                        exec.symbol, qty, ref_price);
-
-                exec.commissions_fees = Decimal(cost_result.commissions_fees);
-                exec.implicit_price_impact = Decimal(cost_result.implicit_price_impact);
-                exec.slippage_market_impact = Decimal(cost_result.slippage_market_impact);
-                exec.total_transaction_costs = Decimal(cost_result.total_transaction_costs);
-
-                executions.push_back(exec);
-            } catch (const std::exception& e) {
-                WARN("Exception processing execution for " + exec.symbol + ": " +
-                     std::string(e.what()));
-            }
-        }
+        // The period's fills are reported as the PortfolioManager stored them (T-7b-3 R-2): these
+        // reports are the rows save_portfolio_results_to_db writes to backtest.executions and the
+        // costs the equity curve charges (calculate_period_transaction_costs), priced by the
+        // PortfolioManager's cost model and netted per symbol-day with that same model (K3), and
+        // stamped with this cycle's timestamp (process_market_data's current_timestamp). They are
+        // not re-priced here: a second model's costs beside the first model's netting_adjustment
+        // would break "the net costs of a symbol-day sum to C(Q)" on the rows the trade statistics
+        // and the strategies' on_execution read, and would part them from the stored rows.
+        executions.insert(executions.end(), period_executions.begin(), period_executions.end());
 
         // Feed executions back to strategies
         for (const auto& exec : period_executions) {

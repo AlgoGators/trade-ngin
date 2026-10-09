@@ -174,6 +174,14 @@ Result<void> TrendFollowingSlowStrategy::on_data(const std::vector<Bar>& data) {
         for (const auto& [symbol, symbol_bars] : bars_by_symbol) {
             auto& instrument_data = instrument_data_[symbol];
 
+            // Clear price history ONLY if processing bulk historical data (live mode)
+            // In backtest mode, on_data is called daily with small batches, so we accumulate
+            // Heuristic: if processing >100 bars for this symbol, it's bulk mode
+            if (symbol_bars.size() > 100) {
+                instrument_data.price_history.clear();
+                instrument_data.bar_timestamps.clear();
+            }
+
             // Update price history
             for (const auto& bar : symbol_bars) {
                 instrument_data.price_history.push_back(static_cast<double>(bar.close));
@@ -234,17 +242,20 @@ Result<void> TrendFollowingSlowStrategy::on_data(const std::vector<Bar>& data) {
                 prices.assign(full_prices.begin(), full_prices.end());
             }
 
-            // Calculate volatility, annualised by sqrt(bars a year) counted over the bars the
-            // estimator reads (a series with a Sunday session row has about 313 a year, not
-            // 256); the blend weights and history cap are the defaults, unchanged
+            // Calculate volatility, annualised by sqrt(bars a year) counted over the trailing 256
+            // bars the estimator has, or all of them when it has fewer (a series with a Sunday
+            // session row has about 313 a year, not 256; HD ruling 11: the same count in every
+            // engine); the blend weights and history cap are the defaults, unchanged
             const VolAnnualisation annualisation =
-                vol_annualisation(instrument_data.bar_timestamps, prices.size());
+                trailing_vol_annualisation(instrument_data.bar_timestamps, prices.size());
             DEBUG("Symbol " + symbol + " vol annualisation: bars=" +
                   std::to_string(annualisation.bars) +
                   " span_days=" + std::to_string(annualisation.span_days) +
                   " bars_per_year=" + std::to_string(annualisation.bars_per_year) +
                   " factor=" + std::to_string(annualisation.factor) +
                   (annualisation.fallback ? " fallback=16" : ""));
+            INFO(vol_annualisation_log_line("TrendFollowingSlow", id_, symbol,
+                                            symbol_bars.back().timestamp, annualisation));
             std::vector<double> volatility;
             try {
                 volatility = blended_ewma_stddev(prices, trend_config_.vol_lookback_short, 0.7,

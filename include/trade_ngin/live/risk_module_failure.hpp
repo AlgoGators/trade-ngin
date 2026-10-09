@@ -130,6 +130,17 @@ inline std::string risk_module_failure_email_banner(const nlohmann::json& failur
         html += "</div>\n";
         return html;
     }
+    // T-7b-3 R-3 (HD 2026-09-27 ruling 5): a sizing read failed (live/live_sizing_read.hpp).
+    if (failure.value("scope", std::string()) == "sizing") {
+        html += "<strong>SIZING READ FAILED - BOOK HELD:</strong> the account's equity could not "
+                "be read to size today's book (" +
+                detail::html_escape(error) +
+                "). Every strategy is held at the previous day's positions and no orders were "
+                "generated. The run exited with code " +
+                std::to_string(kRiskModuleFailureExitCode) + ".\n";
+        html += "</div>\n";
+        return html;
+    }
     html += "<strong>RISK MODULE FAILED - BOOK HELD:</strong> the portfolio risk module " +
             detail::html_escape(module) + " could not evaluate today's book (" +
             detail::html_escape(error) +

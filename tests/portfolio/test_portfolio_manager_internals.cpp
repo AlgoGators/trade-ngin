@@ -587,3 +587,65 @@ TEST_F(PortfolioManagerInternalsTest, ProcessSkipsAStoppedStrategyWithoutFailing
         }
     }
 }
+
+// Ledger row DA96324A-stopped-sleeve-map, the clearing half (T-7b-3 commit d). The skip above
+// stops the stopped sleeve's targets from being READ, but the map the manager keeps for it
+// (info.target_positions) still holds what the previous rebalance left there, and everything
+// after the skip in the same call (the optimizer, the risk steps, the rounding, the book copy and
+// execution generation) reads that map. A sleeve stopped between two rebalances must contribute
+// an EMPTY target map on the second. Two sleeves on different symbols, so the running sleeve's
+// map shows the clear is confined to the stopped one.
+TEST_F(PortfolioManagerInternalsTest, AStoppedSleeveContributesAnEmptyTargetMap) {
+    auto a = make_strategy("RUNNING_SLEEVE", {"AAPL"});
+    auto b = make_strategy("STOPPED_SLEEVE", {"MSFT"});
+    ASSERT_TRUE(manager_->add_strategy(a.strat, 0.5).is_ok());
+    ASSERT_TRUE(manager_->add_strategy(b.strat, 0.5).is_ok());
+    const auto t0 = std::chrono::system_clock::now() - std::chrono::hours(24 * 300);
+    auto both = [&](int n, std::chrono::system_clock::time_point from) {
+        auto v = bars("AAPL", n, from);
+        auto m = bars("MSFT", n, from);
+        v.insert(v.end(), m.begin(), m.end());
+        return v;
+    };
+
+    // Rebalance 1: both sleeves RUNNING, so both hold a target map.
+    ASSERT_TRUE(manager_->process_market_data(both(300, t0)).is_ok());
+    ASSERT_FALSE(manager_->strategies_.at(a.id).target_positions.empty());
+    ASSERT_FALSE(manager_->strategies_.at(b.id).target_positions.empty())
+        << "precondition: the second sleeve must hold a target map before it is stopped";
+    ASSERT_TRUE(manager_->strategies_.at(b.id).target_positions.count("MSFT"));
+
+    // Stopped between the two rebalances.
+    ASSERT_TRUE(b.strat->stop().is_ok());
+    ASSERT_NE(b.strat->get_state(), StrategyState::RUNNING);
+
+    // Rebalance 2. Flat bars at each symbol's last close: the mock's base on_data books any
+    // unrealised loss against a max_drawdown of 0 and refuses, which would stop the cycle before
+    // the stopped sleeve's map is reached. Flat bars keep the running sleeve's P&L at 0.
+    const auto first = both(300, t0);
+    std::vector<Bar> flat;
+    for (const std::string sym : {"AAPL", "MSFT"}) {
+        Bar last{};
+        for (const auto& bar : first)
+            if (bar.symbol == sym) last = bar;
+        for (int i = 1; i <= 5; ++i) {
+            Bar b = last;
+            b.timestamp = last.timestamp + std::chrono::hours(24 * i);
+            flat.push_back(b);
+        }
+    }
+    ASSERT_TRUE(manager_->process_market_data(flat).is_ok());
+
+    const auto& stopped = manager_->strategies_.at(b.id).target_positions;
+    EXPECT_TRUE(stopped.empty())
+        << "the stopped sleeve contributed the stale target map of the previous rebalance ("
+        << stopped.size() << " symbol(s), MSFT present: " << stopped.count("MSFT") << ")";
+    const auto by_strategy = manager_->get_strategy_positions();
+    const auto bit = by_strategy.find(b.id);
+    if (bit != by_strategy.end()) {
+        EXPECT_EQ(bit->second.count("MSFT"), 0u)
+            << "the stale target reached the stopped sleeve's book through the rebalance";
+    }
+    // The running sleeve is untouched by the clear.
+    EXPECT_TRUE(manager_->strategies_.at(a.id).target_positions.count("AAPL"));
+}

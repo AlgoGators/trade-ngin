@@ -88,4 +88,26 @@ inline nlohmann::json mark_strict_assertion(nlohmann::json portfolio_config,
     return portfolio_config;
 }
 
+/**
+ * @brief The run's portfolio_config JSON with an over-limit-by-hold mark written into it (T-7b-3
+ *        ruling 7, HD 2026-09-27). The risk gate cut the book once with the symbols the BOOK_GATE
+ *        holds fixed at their held quantity, and those held contracts alone kept the book above the
+ *        gate's level (PortfolioManager::last_over_limit_by_hold). The day is stored as it is; the
+ *        mark names the held symbols, the gate's level and the cut book's gross notional. Every
+ *        other key of the first upsert is kept verbatim.
+ */
+inline nlohmann::json mark_over_limit_by_hold(nlohmann::json portfolio_config,
+                                              const std::vector<std::string>& held_symbols,
+                                              double target, double cut_book, int lap) {
+    portfolio_config["over_limit_by_hold"] = {
+        {"reason",
+         "the risk gate's cut was delivered once with the BOOK_GATE holds fixed; the cuttable "
+         "symbols were exhausted and the held contracts keep the book above the gate's level"},
+        {"symbols", held_symbols},
+        {"target", target},
+        {"cut_book", cut_book},
+        {"lap", lap}};
+    return portfolio_config;
+}
+
 }  // namespace trade_ngin

@@ -133,6 +133,20 @@ struct PortfolioConfig : public ConfigBase {
 };
 
 /**
+ * @brief T-7b-3 rulings 7 and 8 (HD 2026-09-27): every cut lap is delivered once and ends the
+ *        loop. When its cut rule fixed symbols the BOOK_GATE will hold, the cuttable symbols are
+ *        exhausted and the held contracts alone keep the cut book's gross notional above the gate's
+ *        level, the day is stored over the limit: this record says so (RISK_OVER_LIMIT_BY_HOLD).
+ */
+struct OverLimitByHold {
+    bool over_limit_by_hold = false;
+    std::vector<std::string> symbols;  ///< the held symbols the cut rule fixed, sorted
+    double target = 0.0;               ///< the gate's level: factor x the lap book's gross notional
+    double cut_book = 0.0;             ///< the cut book's gross notional
+    int lap = 0;
+};
+
+/**
  * @brief Manages multiple strategies and their allocations
  * Optionally applies optimization and risk management
  */
@@ -383,6 +397,13 @@ public:
     DeliveredCut last_delivered_cut() const;
 
     /**
+     * @brief T-7b-3 ruling 7: the last process_market_data call's over-limit-by-hold record (see
+     *        OverLimitByHold). Reset at the start of every call; set only when the BOOK_GATE holds
+     *        left the delivered cut book above the gate's level. A copy.
+     */
+    OverLimitByHold last_over_limit_by_hold() const;
+
+    /**
      * @brief T-7b-2 C9a3: the same rebalance's delivered cut with final_gross measured on `stored_book` (the
      *        account book the runner actually stores, e.g. after a live runner's BOOK_GATE hold), at the notionals
      *        of the end-of-call measurement; a symbol those did not cover (a position the hold re-inserted) is
@@ -398,6 +419,22 @@ public:
      */
     void set_backtest_mode(bool is_backtest) {
         is_backtest_ = is_backtest;
+    }
+
+    /**
+     * @brief The symbols whose book the caller's BOOK_GATE will hold at the held quantity after the
+     *        next process_market_data returns (T-7b-3 D-1b, HD 2026-09-27). A lap the risk gate cuts
+     *        fixes each of them at its held quantity and never cuts it (cut_delivery.hpp), so the cut
+     *        is taken from contracts that can trade. The live futures runners pass every symbol whose
+     *        T-1 verdict is not SESSION, the key hold_non_session_symbols uses.
+     *
+     * One call, one rebalance: the next process_market_data takes the set when it starts and leaves
+     * it empty, so a later call without the setter holds nothing. Each call replaces the set. The
+     * futures backtest does not need it: there process_market_data's session_symbols gives the set.
+     */
+    void set_book_gate_holds(std::unordered_set<std::string> symbols) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        pending_book_gate_holds_ = std::move(symbols);
     }
 
 private:
@@ -544,7 +581,16 @@ private:
     std::map<std::string, double> lap_book_before_gate_;
     double lap_cut_factor_{1.0};
     std::unordered_map<std::string, double> cut_notional_per_contract_;
-    void deliver_lap_cut(int lap);
+    // T-7b-3 D-1b: the symbols the BOOK_GATE will hold, which the cut fixes at their held
+    // quantity: every symbol in `holds` (set_book_gate_holds), and, when `session_symbols` is
+    // given, every symbol of the lap or held book not in it.
+    // Sets over_limit_by_hold_ when those held symbols keep the cut book above the gate's level
+    // (ruling 7). The loop ends on every lap that calls it (ruling 8).
+    void deliver_lap_cut(int lap, const std::unordered_set<std::string>& holds,
+                         const std::unordered_set<std::string>* session_symbols);
+    OverLimitByHold over_limit_by_hold_;
+    // set_book_gate_holds' set, taken (and emptied) by the next process_market_data.
+    std::unordered_set<std::string> pending_book_gate_holds_;
 
     /// T-7b-2 CGW: the risk gate's participants this rebalance (RiskContext::gate_participants),
     /// rebuilt before lap 1 by gate_participants_for_rebalance.

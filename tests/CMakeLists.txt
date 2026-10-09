@@ -101,6 +101,7 @@ set(TEST_SOURCES
     backtest/test_backtest_junk_signal_feed.cpp
     backtest/test_backtest_equity_cost_retier.cpp
     backtest/test_backtest_futures_cost_feed.cpp
+    backtest/test_backtest_netting_one_model.cpp
     execution/test_execution_engine.cpp
     portfolio/test_portfolio_manager.cpp
     core/test_equity_portfolio_namespace.cpp
@@ -137,6 +138,7 @@ set(TEST_SOURCES
     portfolio/test_delivered_cut.cpp
     portfolio/test_sizing_capital.cpp
     portfolio/test_cut_delivery.cpp
+    portfolio/test_cut_stands.cpp
     portfolio/test_pm_netting.cpp
     storage/test_backtest_results_manager.cpp
     storage/test_live_results_manager.cpp

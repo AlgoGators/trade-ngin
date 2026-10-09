@@ -30,6 +30,7 @@
 #include "trade_ngin/live/live_metrics_calculator.hpp"
 #include "trade_ngin/live/live_pnl_manager.hpp"
 #include "trade_ngin/live/live_price_manager.hpp"
+#include "trade_ngin/live/live_sizing_read.hpp"
 #include "trade_ngin/live/live_trading_coordinator.hpp"
 #include "trade_ngin/live/book_exposure.hpp"
 #include "trade_ngin/live/margin_manager.hpp"
@@ -1170,57 +1171,49 @@ int main(int argc, char* argv[]) {
         // row.
         // ========================================
         LiveSizingEquity sizing_equity;
+        // T-7b-3 R-3 (HD 2026-09-27 ruling 5; live/live_sizing_read.hpp): each read's own "nothing
+        // stored" answer sizes as before (no Day T-1 row, no row before it, a sleeve with no stored
+        // book). A sleeve book that fails to load refuses the run here (exit 1, no row: nothing to
+        // hold). With every book loaded, a failed Day T-1 row or previous-row read is a SIZING
+        // HOLD: no figure is set, every strategy is held at its seeded T-1 book with no rebalance
+        // and no order, today's live_run_metadata row is marked, the email is flagged and the run
+        // exits kRiskModuleFailureExitCode, as a RISK_MODULE_FAILURE day does.
+        std::optional<nlohmann::json> sizing_hold;
         {
-            const auto sizing_t1 = now - std::chrono::hours(24);
-            auto t1_row = data_loader->load_live_results(combined_strategy_id,
-                                                         coordinator_config.portfolio_id, sizing_t1);
-            const bool t1_row_stored = t1_row.is_ok();
-            // With a Day T-1 row: the latest row before it (STEP 4's day_before). Without one: the
-            // latest row before the run date (what STEP 5 reads when STEP 4 updates nothing).
-            double day_before = initial_capital;
-            std::string day_before_source = "none stored, the initial capital";
-            auto sizing_db = std::dynamic_pointer_cast<PostgresDatabase>(db);
-            if (sizing_db) {
-                auto stored = sizing_db->get_previous_live_aggregates(
-                    combined_strategy_id, coordinator_config.portfolio_id,
-                    t1_row_stored ? sizing_t1 : now, "trading.live_results");
-                if (stored.is_ok()) {
-                    day_before = std::get<0>(stored.value());
-                    day_before_source = t1_row_stored
-                                            ? "the latest stored row before Day T-1"
-                                            : "no Day T-1 row: the latest stored row before the run date";
-                }
-            }
-            std::vector<std::unordered_map<std::string, Position>> t1_books;
-            for (const auto& sleeve : strategy_names) {
-                auto t1_book = db->load_positions_by_date(combined_strategy_id, sleeve,
-                                                          coordinator_config.portfolio_id,
-                                                          now - std::chrono::hours(24),
-                                                          "trading.positions");
-                if (t1_book.is_ok()) {
-                    t1_books.push_back(t1_book.value());
-                }
-            }
-            sizing_equity = live_sizing_equity(
-                t1_row_stored, day_before,
-                t1_row_stored ? t1_row.value().daily_transaction_costs : 0.0, t1_books,
-                price_manager->get_all_previous_day_prices(),
+            auto sizing_read = read_live_sizing_equity(
+                *data_loader, *db, combined_strategy_id, coordinator_config.portfolio_id,
+                strategy_names, now, initial_capital, price_manager->get_all_previous_day_prices(),
                 price_manager->get_all_two_days_ago_prices(),
                 [&](const std::string& symbol) { return pnl_manager->get_point_value(symbol); });
-            INFO("SIZING_CAPITAL date=" + core::format_utc_date(now) +
-                 " equity=" + std::to_string(sizing_equity.equity) +
-                 " day_before=" + std::to_string(sizing_equity.day_before) + " (" +
-                 day_before_source + ") t1_settlement=" +
-                 std::to_string(sizing_equity.t1_settlement) +
-                 " t1_costs=" + std::to_string(sizing_equity.t1_costs) +
-                 " priced=" + std::to_string(sizing_equity.priced) +
-                 " unpriced=" + std::to_string(sizing_equity.unpriced));
-            auto sized = portfolio->set_sizing_capital(sizing_equity.equity);
-            if (sized.is_error()) {
-                ERROR("SIZING_CAPITAL refused: " + std::string(sized.error()->what()) +
-                      ". Refusing to run: the book cannot be sized on the account's equity.");
-                std::cerr << "SIZING_CAPITAL refused: " << sized.error()->what() << std::endl;
+            if (sizing_read.outcome == LiveSizingOutcome::kRefuseRun) {
+                ERROR("SIZING_CAPITAL refused: " + sizing_read.failure +
+                      ". Refusing to run: the book cannot be sized and there is no book to hold.");
+                std::cerr << "SIZING_CAPITAL refused: " << sizing_read.failure << std::endl;
                 return 1;
+            } else if (sizing_read.outcome == LiveSizingOutcome::kHoldBook) {
+                sizing_hold = sizing_hold_refusal(sizing_read.failure);
+                ERROR("SIZING_HOLD " + sizing_read.failure +
+                      ": the book is not sized; every strategy is held at its seeded T-1 book and "
+                      "no orders are sent; the day is stored as a REFUSE day and the run exits " +
+                      std::to_string(kRiskModuleFailureExitCode));
+            } else {
+                sizing_equity = sizing_read.equity;
+                const std::string& day_before_source = sizing_read.day_before_source;
+                INFO("SIZING_CAPITAL date=" + core::format_utc_date(now) +
+                     " equity=" + std::to_string(sizing_equity.equity) +
+                     " day_before=" + std::to_string(sizing_equity.day_before) + " (" +
+                     day_before_source + ") t1_settlement=" +
+                     std::to_string(sizing_equity.t1_settlement) +
+                     " t1_costs=" + std::to_string(sizing_equity.t1_costs) +
+                     " priced=" + std::to_string(sizing_equity.priced) +
+                     " unpriced=" + std::to_string(sizing_equity.unpriced));
+                auto sized = portfolio->set_sizing_capital(sizing_equity.equity);
+                if (sized.is_error()) {
+                    ERROR("SIZING_CAPITAL refused: " + std::string(sized.error()->what()) +
+                          ". Refusing to run: the book cannot be sized on the account's equity.");
+                    std::cerr << "SIZING_CAPITAL refused: " << sized.error()->what() << std::endl;
+                    return 1;
+                }
             }
         }
 
@@ -1241,6 +1234,11 @@ int main(int argc, char* argv[]) {
 
         // Convert strategy_allocations to JSON
         nlohmann::json strategy_alloc_json(strategy_allocations);
+        // T-7b-3 R-3: a sizing hold's row is written marked (risk_refusal, scope "sizing").
+        if (sizing_hold) {
+            portfolio_config_json = mark_risk_refusal(portfolio_config_json, *sizing_hold,
+                                                      portfolio->risk_decisions_json());
+        }
         {
             // strategy_configs is already nlohmann::json
             auto metadata_result = db->store_live_run_metadata(
@@ -1253,6 +1251,9 @@ int main(int argc, char* argv[]) {
                      std::string(metadata_result.error()->what()));
             } else {
                 INFO("Successfully stored live run metadata for date");
+                if (sizing_hold) {
+                    INFO("Marked today's live_run_metadata row with the sizing hold");
+                }
             }
         }
 
@@ -1459,7 +1460,20 @@ int main(int argc, char* argv[]) {
                      std::to_string(withheld_junk_bars.size()) + " symbol(s) from the strategy "
                      "and portfolio feed (signal not updated today): " + withheld_list);
             }
-            auto port_process_result = portfolio->process_market_data(strategy_feed_bars);
+            // T-7b-3 D-1b (HD 2026-09-27): a symbol whose T-1 verdict is not SESSION is held at
+            // its stored T-1 quantity after the rebalance (hold_non_session_symbols, the same
+            // key), so a lap the risk gate cuts fixes it at its held quantity and never cuts it.
+            {
+                std::unordered_set<std::string> book_gate_holds;
+                for (const auto& symbol : symbols) {
+                    if (!t1_classification.is_session(symbol)) book_gate_holds.insert(symbol);
+                }
+                portfolio->set_book_gate_holds(std::move(book_gate_holds));
+            }
+            // T-7b-3 R-3: on a sizing hold the PortfolioManager is not run, so every strategy
+            // keeps the seeded T-1 book above (no rebalance, no order, no signal stored today).
+            auto port_process_result =
+                sizing_hold ? Result<void>() : portfolio->process_market_data(strategy_feed_bars);
             INFO("MarketDataBus publishing RE-ENABLED after process_market_data");
             MarketDataBus::instance().set_publish_enabled(true);
             // T-RISK-ARCH Q2 (ruled yes): a portfolio-scope risk REFUSE is found here, after
@@ -1534,6 +1548,25 @@ int main(int argc, char* argv[]) {
                                  "refusal");
                         }
                     }
+                }
+            }
+            // T-7b-3 ruling 7 (HD 2026-09-27): the risk gate's cut, delivered once with the
+            // BOOK_GATE holds fixed, left the book above the gate's level because the held
+            // contracts alone keep it there. The day is stored as it is and today's
+            // live_run_metadata row carries the over_limit_by_hold mark; the run goes on.
+            if (const auto hold_limit = portfolio->last_over_limit_by_hold();
+                hold_limit.over_limit_by_hold) {
+                auto hold_mark = db->store_live_run_metadata(
+                    now, combined_strategy_id, portfolio_id, strategy_alloc_json,
+                    portfolio_config_json = mark_over_limit_by_hold(
+                        portfolio_config_json, hold_limit.symbols, hold_limit.target,
+                        hold_limit.cut_book, hold_limit.lap),
+                    strategy_configs);
+                if (hold_mark.is_error()) {
+                    ERROR("Failed to mark today's live_run_metadata row over the limit by hold: " +
+                          std::string(hold_mark.error()->what()));
+                } else {
+                    INFO("Marked today's live_run_metadata row over the limit by hold");
                 }
             }
             if (port_process_result.is_error()) {
@@ -1637,6 +1670,11 @@ int main(int argc, char* argv[]) {
             INFO("DEBUG: Retrieved " + std::to_string(strategy_positions_map.size()) +
                  " strategies from PortfolioManager");
         }  // End of if (!skip_strategy_processing) - strategy processing block
+        // T-7b-3 R-3: a sizing hold is flagged and exits as a held book does (the PortfolioManager
+        // did not run, so no risk module failure competes with it).
+        if (sizing_hold) {
+            risk_module_failure = sizing_hold;
+        }
 
         // Load previous day positions for PnL calculation
         INFO("Loading previous day positions for PnL calculation...");

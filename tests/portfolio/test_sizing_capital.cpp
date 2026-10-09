@@ -47,6 +47,9 @@
 #include "../data/test_db_utils.hpp"
 #include "../risk/risk_module_test_helpers.hpp"
 #include "trade_ngin/instruments/futures.hpp"
+#include "trade_ngin/live/live_sizing_read.hpp"
+#include "trade_ngin/live/risk_module_failure.hpp"
+#include "trade_ngin/live/run_metadata_marks.hpp"
 #include "trade_ngin/portfolio/sizing_capital.hpp"
 #include "trade_ngin/strategy/base_strategy.hpp"
 
@@ -595,6 +598,310 @@ TEST(BacktestSizingEquity, TheCurvesLastRowOrTheInitialCapital) {
 }
 
 // ------------------------------------------------------------------------------------------------
+// (4b) T-7b-3 R-3: the sizing reads. "Nothing stored" sizes as before. A database error holds the
+// book (the books loaded, the equity or previous-row read failed: exit 3, mark, email flag) or
+// refuses the run (a sleeve book failed to load: exit 1, no row); HD 2026-09-27 ruling 5.
+// The runner helper is fed the REAL LiveDataLoader over a mock database, so load_live_results
+// answers exactly as it does in production (its "No live results found" for an empty result, its
+// "Failed to load live results" for a failed query).
+// ------------------------------------------------------------------------------------------------
+
+class SizingReadDatabase : public MockPostgresDatabase {
+public:
+    enum class T1 { kRow, kNoRow, kError };
+
+    SizingReadDatabase() : MockPostgresDatabase("mock://sizing_read") { (void)connect(); }
+
+    T1 t1 = T1::kRow;
+    double t1_costs = 0.0;
+    std::optional<double> previous_value;  // nullopt: no row before the date
+    bool previous_error = false;
+    std::set<std::string> failing_sleeves;
+    std::map<std::string, std::unordered_map<std::string, Position>> books;
+    std::vector<Timestamp> previous_asked;  // the dates get_previous_live_aggregates was given
+    int book_loads = 0;
+
+    // load_live_results' query (the only live_results SELECT the loader sends here).
+    Result<std::shared_ptr<arrow::Table>> execute_query(const std::string& query) override {
+        if (query.find(".live_results") == npos) return MockPostgresDatabase::execute_query(query);
+        if (t1 == T1::kError) {
+            return make_error<std::shared_ptr<arrow::Table>>(
+                ErrorCode::DATABASE_ERROR, "server closed the connection unexpectedly",
+                "PostgresDatabase");
+        }
+        // The loader's 31 SELECT columns; daily_transaction_costs is the 14th (index 13).
+        std::vector<std::shared_ptr<arrow::Field>> fields;
+        std::vector<std::shared_ptr<arrow::Array>> arrays;
+        for (int c = 0; c < 31; ++c) {
+            arrow::DoubleBuilder b;
+            if (t1 == T1::kRow) {
+                ARROW_CHECK_OK(b.Append(c == 13 ? t1_costs : 0.0));
+            }
+            std::shared_ptr<arrow::Array> a;
+            ARROW_CHECK_OK(b.Finish(&a));
+            fields.push_back(arrow::field("c" + std::to_string(c), arrow::float64()));
+            arrays.push_back(a);
+        }
+        return Result<std::shared_ptr<arrow::Table>>(
+            arrow::Table::Make(arrow::schema(fields), arrays));
+    }
+
+    Result<std::tuple<double, double, double>> get_previous_live_aggregates(
+        const std::string& strategy_id, const std::string& portfolio_id, const Timestamp& date,
+        const std::string& table_name) override {
+        (void)table_name;
+        previous_asked.push_back(date);
+        if (previous_error) {
+            return make_error<std::tuple<double, double, double>>(
+                ErrorCode::DATABASE_ERROR,
+                "Failed to fetch previous live aggregates: terminating connection due to "
+                "administrator command",
+                "PostgresDatabase");
+        }
+        if (!previous_value) {  // PostgresDatabase's own no-row answer, verbatim
+            return make_error<std::tuple<double, double, double>>(
+                ErrorCode::DATABASE_ERROR, "No previous aggregates found for strategy " +
+                                               strategy_id + " (portfolio: " + portfolio_id + ")");
+        }
+        return Result<std::tuple<double, double, double>>(
+            std::make_tuple(*previous_value, 0.0, 0.0));
+    }
+
+    Result<std::unordered_map<std::string, Position>> load_positions_by_date(
+        const std::string& strategy_id, const std::string& strategy_name,
+        const std::string& portfolio_id, const Timestamp& date,
+        const std::string& table_name) override {
+        (void)strategy_id; (void)portfolio_id; (void)date; (void)table_name;
+        ++book_loads;
+        if (failing_sleeves.count(strategy_name)) {
+            return make_error<std::unordered_map<std::string, Position>>(
+                ErrorCode::DATABASE_ERROR,
+                "Failed to load positions by date: could not receive data from server",
+                "PostgresDatabase");
+        }
+        auto it = books.find(strategy_name);
+        return Result<std::unordered_map<std::string, Position>>(
+            it == books.end() ? std::unordered_map<std::string, Position>{} : it->second);
+    }
+};
+
+class LiveSizingReads : public LiveSizingCapital {
+protected:
+    void SetUp() override {
+        LiveSizingCapital::SetUp();
+        db_ = std::make_shared<SizingReadDatabase>();
+        loader_ = std::make_unique<LiveDataLoader>(db_, "trading");
+        // The worked example of (4): the row before Day T-1 497,274.5217, Day T-1's costs 16.3516,
+        // sleeve A held MES 2 and sleeve B ZN 1 over Day T-1 (a move of +225 and -203.125).
+        db_->previous_value = 497'274.5217;
+        db_->t1_costs = 16.3516;
+        db_->books["A"] = {{"MES.v.0", held("MES.v.0", 2.0)}};
+        db_->books["B"] = {{"ZN.v.0", held("ZN.v.0", 1.0)}};
+    }
+    LiveSizingRead read() {
+        return read_live_sizing_equity(
+            *loader_, *db_, "LIVE_TREND_FOLLOWING", "BASE_PORTFOLIO", {"A", "B"}, now_, 500'000.0,
+            {{"MES.v.0", 7252.50}, {"ZN.v.0", 110.703125}},
+            {{"MES.v.0", 7230.00}, {"ZN.v.0", 110.906250}},
+            [&](const std::string& s) { return pnl_.get_point_value(s); });
+    }
+    const Timestamp now_ = Timestamp(std::chrono::seconds(1777334400LL));  // 2026-04-28
+    LivePnLManager pnl_{500'000.0, InstrumentRegistry::instance()};
+    std::shared_ptr<SizingReadDatabase> db_;
+    std::unique_ptr<LiveDataLoader> loader_;
+};
+
+std::string outcome_of(const LiveSizingRead& r) {
+    switch (r.outcome) {
+        case LiveSizingOutcome::kSized:
+            return "it sized on " + std::to_string(r.equity.equity) + " (" + r.day_before_source +
+                   ")";
+        case LiveSizingOutcome::kHoldBook: return "it held the book: " + r.failure;
+        case LiveSizingOutcome::kRefuseRun: return "it refused the run: " + r.failure;
+    }
+    return "?";
+}
+
+// Control: every read answers, the figure is (4)'s worked example.
+TEST_F(LiveSizingReads, EveryReadAnsweredSizesOnStep4sArithmetic) {
+    const auto r = read();
+    ASSERT_EQ(r.outcome, LiveSizingOutcome::kSized) << outcome_of(r);
+    EXPECT_NEAR(r.equity.equity, 497'280.0451, 1e-9);
+    EXPECT_TRUE(r.equity.t1_row);
+    EXPECT_EQ(r.day_before_source, "the latest stored row before Day T-1");
+    ASSERT_EQ(db_->previous_asked.size(), 1u);
+    EXPECT_EQ(db_->previous_asked[0], now_ - std::chrono::hours(24));
+    EXPECT_EQ(db_->book_loads, 2);
+}
+
+// The brief's case: the database drops for the run (every read fails). On f2932054 every failure
+// read as "nothing stored" and the whole book sized on 500,000 and traded on it. The positions did
+// not load, so there is no book to hold: the run refuses (exit 1, no row).
+TEST_F(LiveSizingReads, TheDatabaseDownRefusesTheRunInsteadOfSizingOnTheInitialCapital) {
+    db_->t1 = SizingReadDatabase::T1::kError;
+    db_->previous_error = true;
+    db_->failing_sleeves = {"A", "B"};
+    const auto r = read();
+    ASSERT_EQ(r.outcome, LiveSizingOutcome::kRefuseRun) << outcome_of(r);
+    EXPECT_NE(r.failure.find("sleeve A's Day T-1 book could not be read"), npos) << r.failure;
+    EXPECT_NE(r.failure.find("Day T-1's live_results row could not be read"), npos) << r.failure;
+    EXPECT_NE(r.failure.find("server closed the connection unexpectedly"), npos) << r.failure;
+}
+
+// The exit-1 path alone: one sleeve's Day T-1 book fails to load, the other reads answer. On
+// f2932054 the sleeve was dropped and the book sized without its move (497,483.1701 instead of
+// 497,280.0451).
+TEST_F(LiveSizingReads, AFailedSleeveBookLoadRefusesTheRun) {
+    db_->failing_sleeves = {"B"};
+    const auto r = read();
+    ASSERT_EQ(r.outcome, LiveSizingOutcome::kRefuseRun) << outcome_of(r);
+    EXPECT_NE(r.failure.find("sleeve B's Day T-1 book could not be read (Failed to load positions "
+                             "by date: could not receive data from server)"),
+              npos)
+        << r.failure;
+}
+
+// The hold path, the equity read: load_live_results fails (a failed query, not an empty result)
+// and every book loaded, so the book is held. On f2932054 it read as "no Day T-1 row" and sized on
+// the row before the run date, dropping Day T-1's move and costs (497,274.5217).
+TEST_F(LiveSizingReads, ADatabaseErrorOnTheDayT1RowHoldsTheBook) {
+    db_->t1 = SizingReadDatabase::T1::kError;
+    const auto r = read();
+    ASSERT_EQ(r.outcome, LiveSizingOutcome::kHoldBook) << outcome_of(r);
+    EXPECT_EQ(r.failure,
+              "Day T-1's live_results row could not be read (Failed to load live results: server "
+              "closed the connection unexpectedly)");
+    EXPECT_EQ(db_->book_loads, 2) << "the books are read: a hold needs them to have loaded";
+}
+
+// The hold path, the aggregates read: get_previous_live_aggregates fails with a Day T-1 row stored
+// and every book loaded. On f2932054 it read as "none stored" and sized on 500,000 plus Day T-1's
+// move less its costs (500,005.5234).
+TEST_F(LiveSizingReads, ADatabaseErrorOnThePreviousRowHoldsTheBook) {
+    db_->previous_error = true;
+    const auto r = read();
+    ASSERT_EQ(r.outcome, LiveSizingOutcome::kHoldBook) << outcome_of(r);
+    EXPECT_NE(r.failure.find("the latest live_results row before Day T-1 could not be read "
+                             "(Failed to fetch previous live aggregates:"),
+              npos)
+        << r.failure;
+}
+
+// A hold is marked, flagged and exits as a RISK_MODULE_FAILURE day does, and names itself: the
+// metadata row's risk_refusal says scope "sizing", module "SIZING_CAPITAL"; the exit code is
+// kRiskModuleFailureExitCode (3); the email carries the operator's flag in the subject and a
+// banner that says a sizing read failed, not a risk module.
+TEST_F(LiveSizingReads, AHoldIsMarkedFlaggedAndExitsThreeLikeARiskModuleFailure) {
+    db_->t1 = SizingReadDatabase::T1::kError;
+    const auto r = read();
+    ASSERT_EQ(r.outcome, LiveSizingOutcome::kHoldBook) << outcome_of(r);
+    const nlohmann::json hold = sizing_hold_refusal(r.failure);
+
+    EXPECT_EQ(live_run_exit_code(hold), kRiskModuleFailureExitCode);
+    EXPECT_EQ(live_run_exit_code(std::nullopt), 0);
+
+    nlohmann::json config = {{"total_capital", 500'000.0}, {"use_optimization", true}};
+    const nlohmann::json marked = mark_risk_refusal(config, hold, nlohmann::json::object());
+    ASSERT_TRUE(marked.contains("risk_refusal")) << "the watchdog reads this key";
+    EXPECT_EQ(marked["risk_refusal"]["scope"], "sizing");
+    EXPECT_EQ(marked["risk_refusal"]["module"], "SIZING_CAPITAL");
+    EXPECT_EQ(marked["risk_refusal"]["action"], "REFUSE");
+    EXPECT_EQ(marked["risk_refusal"]["error"], r.failure);
+    EXPECT_EQ(marked["total_capital"], 500'000.0) << "every other key of the row is kept";
+
+    EXPECT_EQ(risk_module_failure_email_subject("Daily Trading Report - 2026-04-28"),
+              "[RISK MODULE FAILED - BOOK HELD] Daily Trading Report - 2026-04-28");
+    const std::string flagged =
+        flag_email_body_for_risk_module_failure("<div class=\"container\">\n<h1>x</h1>", hold);
+    EXPECT_NE(flagged.find("<strong>SIZING READ FAILED - BOOK HELD:</strong> the account's equity "
+                           "could not be read to size today's book (Day T-1&#39;s live_results row "
+                           "could not be read (Failed to load live results: server closed the "
+                           "connection unexpectedly)). Every strategy is held at the previous "
+                           "day's positions and no orders were generated. The run exited with "
+                           "code 3."),
+              npos)
+        << flagged;
+    // The failure text is HTML-escaped in the body, as a risk module's error is.
+    EXPECT_EQ(flagged.find("risk module"), npos) << "the risk module wording: " << flagged;
+}
+
+// "No live results found" (the loader's answer to an empty result) is still "no Day T-1 row":
+// the figure is the latest stored row before the run date, as on f2932054.
+TEST_F(LiveSizingReads, NoLiveResultsFoundIsStillNoDayT1Row) {
+    db_->t1 = SizingReadDatabase::T1::kNoRow;
+    const auto r = read();
+    ASSERT_EQ(r.outcome, LiveSizingOutcome::kSized) << outcome_of(r);
+    EXPECT_FALSE(r.equity.t1_row);
+    EXPECT_DOUBLE_EQ(r.equity.equity, 497'274.5217);
+    EXPECT_EQ(r.day_before_source, "no Day T-1 row: the latest stored row before the run date");
+    ASSERT_EQ(db_->previous_asked.size(), 1u);
+    EXPECT_EQ(db_->previous_asked[0], now_);
+}
+
+// A first day (nothing stored at all) and sleeves with no stored book (OK and empty) size on the
+// initial capital, as on f2932054.
+TEST_F(LiveSizingReads, NothingStoredAnywhereSizesOnTheInitialCapital) {
+    db_->t1 = SizingReadDatabase::T1::kNoRow;
+    db_->previous_value.reset();
+    db_->books.clear();
+    const auto r = read();
+    ASSERT_EQ(r.outcome, LiveSizingOutcome::kSized) << outcome_of(r);
+    EXPECT_DOUBLE_EQ(r.equity.equity, 500'000.0);
+    EXPECT_EQ(r.day_before_source, "none stored, the initial capital");
+}
+
+// A Day T-1 row but no row before it (the portfolio's second day): "none stored" is the initial
+// capital, plus Day T-1's move less its costs; a sleeve with no stored book settles nothing.
+TEST_F(LiveSizingReads, NoRowBeforeDayT1AndAnEmptySleeveBookAreNotErrors) {
+    db_->previous_value.reset();
+    db_->books.erase("B");
+    const auto r = read();
+    ASSERT_EQ(r.outcome, LiveSizingOutcome::kSized) << outcome_of(r);
+    EXPECT_NEAR(r.equity.equity, 500'000.0 + 225.0 - 16.3516, 1e-9);
+    EXPECT_EQ(r.day_before_source, "none stored, the initial capital");
+    EXPECT_EQ(r.equity.priced, 1);
+}
+
+TEST(LiveSizingNoRow, OnlyTheLoadersOwnNoRowAnswersCount) {
+    EXPECT_TRUE(is_no_live_results_row(
+        TradeError(ErrorCode::INVALID_ARGUMENT, "No live results found for date 2026-04-27")));
+    EXPECT_FALSE(is_no_live_results_row(TradeError(
+        ErrorCode::DATABASE_ERROR, "Failed to load live results: server closed the connection")));
+    EXPECT_FALSE(is_no_live_results_row(
+        TradeError(ErrorCode::DATABASE_ERROR, "Database is not connected")));
+    EXPECT_FALSE(is_no_live_results_row(
+        TradeError(ErrorCode::DATABASE_ERROR, "No live results found for date 2026-04-27")));
+    EXPECT_TRUE(is_no_previous_live_aggregates(TradeError(
+        ErrorCode::DATABASE_ERROR, "No previous aggregates found for strategy S (portfolio: P)")));
+    EXPECT_FALSE(is_no_previous_live_aggregates(TradeError(
+        ErrorCode::DATABASE_ERROR, "Failed to fetch previous live aggregates: timeout")));
+    EXPECT_FALSE(is_no_previous_live_aggregates(
+        TradeError(ErrorCode::CONNECTION_ERROR, "Not connected to database")));
+}
+
+std::string read_source(const std::string& relative);
+
+// The discriminators name the loaders' own no-row answers: the message and the code each returns
+// for an empty result. A reworded loader breaks this test, not the refusal.
+TEST(LiveSizingNoRow, TheDiscriminatorsMatchTheLoadersSource) {
+    const auto code_before = [](const std::string& src, const std::string& message) {
+        const auto at = src.find(message);
+        if (at == npos) return std::string("message not found");
+        const auto code_at = src.rfind("ErrorCode::", at);
+        const auto code_end = src.find_first_of(",)", code_at);
+        return src.substr(code_at, code_end - code_at);
+    };
+    const std::string loader = read_source("src/live/live_data_loader.cpp");
+    ASSERT_FALSE(loader.empty());
+    EXPECT_EQ(code_before(loader, "\"No live results found for date \""),
+              "ErrorCode::INVALID_ARGUMENT");
+    const std::string pg = read_source("src/data/postgres_database.cpp");
+    ASSERT_FALSE(pg.empty());
+    EXPECT_EQ(code_before(pg, "\"No previous aggregates found for strategy \""),
+              "ErrorCode::DATABASE_ERROR");
+}
+
+// ------------------------------------------------------------------------------------------------
 // (5) the wiring: both futures runners, the same block, before the rebalance
 // ------------------------------------------------------------------------------------------------
 
@@ -637,12 +944,16 @@ TEST(SizingCapitalWiring, BothFuturesRunnersSizeOnTheEquityBeforeTheRebalance) {
         EXPECT_NE(blocks[i].find("price_manager->get_all_previous_day_prices()"), npos);
         EXPECT_NE(blocks[i].find("price_manager->get_all_two_days_ago_prices()"), npos);
         EXPECT_EQ(blocks[i].find("current_price"), npos);
-        // STEP 4's parts: Day T-1's row (its costs), the row before Day T-1 (date < T-1), or with no Day T-1 row
-        // the row before the run date (date < now). Day T-1's own stored value is never read.
-        EXPECT_NE(blocks[i].find("const auto sizing_t1 = now - std::chrono::hours(24);"), npos);
-        EXPECT_NE(blocks[i].find("data_loader->load_live_results(combined_strategy_id,"), npos);
-        EXPECT_NE(blocks[i].find("t1_row_stored ? sizing_t1 : now, \"trading.live_results\")"), npos);
-        EXPECT_NE(blocks[i].find("t1_row_stored ? t1_row.value().daily_transaction_costs : 0.0"), npos);
+        // STEP 4's parts are read by the runner helper (T-7b-3 R-3, pinned below); the decision
+        // is routed by SizingCapitalWiring.BothFuturesRunnersRouteTheSizingDecisionTheSameWay.
+        const auto read_at = blocks[i].find("auto sizing_read = read_live_sizing_equity(");
+        ASSERT_NE(read_at, npos) << runners[i];
+        EXPECT_NE(blocks[i].find("*data_loader, *db, combined_strategy_id, coordinator_config.portfolio_id,"),
+                  npos);
+        EXPECT_LT(read_at, blocks[i].find("sizing_equity = sizing_read.equity;"));
+        EXPECT_EQ(blocks[i].find("load_live_results"), npos) << "no read of its own in the runner";
+        EXPECT_EQ(blocks[i].find("get_previous_live_aggregates"), npos);
+        EXPECT_EQ(blocks[i].find("load_positions_by_date"), npos);
         EXPECT_EQ(blocks[i].find("current_portfolio_value"), npos);
         EXPECT_NE(blocks[i].find("return 1;"), npos) << "a run that cannot size refuses";
         EXPECT_NE(src.find("snapshot_risk_config.capital = Decimal(portfolio->sizing_capital());"),
@@ -651,6 +962,74 @@ TEST(SizingCapitalWiring, BothFuturesRunnersSizeOnTheEquityBeforeTheRebalance) {
         EXPECT_NE(src.find("SIZING_CAPITAL_CHECK"), npos) << runners[i];
     }
     EXPECT_EQ(blocks[0], blocks[1]) << "the twins' sizing blocks are byte-identical";
+    // STEP 4's parts: Day T-1's row (its costs), the row before Day T-1 (date < T-1), or with no Day T-1 row
+    // the row before the run date (date < now). Day T-1's own stored value is never read.
+    const std::string helper = read_source("include/trade_ngin/live/live_sizing_read.hpp");
+    ASSERT_FALSE(helper.empty());
+    EXPECT_NE(helper.find("const auto sizing_t1 = now - std::chrono::hours(24);"), npos);
+    EXPECT_NE(helper.find("data_loader.load_live_results(strategy_id, portfolio_id, sizing_t1);"), npos);
+    EXPECT_NE(helper.find("t1_row_stored ? sizing_t1 : now,"), npos);
+    EXPECT_NE(helper.find("t1_row_stored ? t1_row.value().daily_transaction_costs : 0.0"), npos);
+    EXPECT_EQ(helper.find("current_portfolio_value"), npos);
+}
+
+// T-7b-3 R-3 (HD 2026-09-27 ruling 5): both runners route the sizing decision the same way. A
+// failed sleeve book refuses to start (exit 1, above the metadata row, so no row); a hold marks
+// the row as it is first written, runs no rebalance (the PortfolioManager keeps the seeded book),
+// and drives the held-book exit code and email flag through risk_module_failure.
+TEST(SizingCapitalWiring, BothFuturesRunnersRouteTheSizingDecisionTheSameWay) {
+    std::string routes[2];
+    const char* const runners[] = {"apps/strategies/live_portfolio_conservative.cpp",
+                                   "apps/strategies/live_portfolio.cpp"};
+    for (int i = 0; i < 2; ++i) {
+        SCOPED_TRACE(runners[i]);
+        const std::string src = read_source(runners[i]);
+        ASSERT_FALSE(src.empty());
+        const auto refuse = src.find("if (sizing_read.outcome == LiveSizingOutcome::kRefuseRun) {");
+        const auto hold =
+            src.find("} else if (sizing_read.outcome == LiveSizingOutcome::kHoldBook) {");
+        const auto sized = src.find("sizing_equity = sizing_read.equity;");
+        ASSERT_NE(refuse, npos) << "a failed sleeve book never refuses the run";
+        ASSERT_NE(hold, npos) << "a failed equity or previous-row read never holds the book";
+        ASSERT_NE(sized, npos);
+        const auto refuse_return = src.find("return 1;", refuse);
+        EXPECT_LT(refuse_return, hold) << "the refusal exits 1 before anything else";
+        EXPECT_NE(src.find("sizing_hold = sizing_hold_refusal(sizing_read.failure);", hold), npos);
+        EXPECT_LT(src.find("sizing_hold = sizing_hold_refusal(sizing_read.failure);", hold), sized);
+        EXPECT_EQ(src.find("portfolio->set_sizing_capital(", hold),
+                  src.find("portfolio->set_sizing_capital(", sized))
+            << "a hold sets no sizing capital";
+
+        // The row: written marked, and after the refusal (a refused run leaves no row).
+        const auto upsert = src.find("db->store_live_run_metadata(");
+        const auto mark = src.find(
+            "portfolio_config_json = mark_risk_refusal(portfolio_config_json, *sizing_hold,");
+        ASSERT_NE(mark, npos) << "a hold never marks the metadata row";
+        EXPECT_LT(refuse_return, upsert);
+        EXPECT_LT(mark, upsert) << "the row is written with the mark";
+
+        // No rebalance on a hold: the PortfolioManager keeps the book seed_every_sleeve seeded.
+        const auto seed = src.find("seed_every_sleeve(strategies, strategy_names, *portfolio,");
+        const auto process = src.find(
+            "sizing_hold ? Result<void>() : portfolio->process_market_data(strategy_feed_bars);");
+        ASSERT_NE(process, npos) << "a hold still rebalances";
+        EXPECT_LT(seed, process);
+        EXPECT_LT(process, src.find("strategy_positions_map = portfolio->get_strategy_positions();"));
+
+        // The exit code and the email flag: risk_module_failure, set after the PM's own detection.
+        const auto flag = src.find("            risk_module_failure = sizing_hold;");
+        ASSERT_NE(flag, npos);
+        EXPECT_LT(src.find("}  // End of if (!skip_strategy_processing)"), flag);
+        EXPECT_LT(src.find("sleeve_risk_module_failure(portfolio->last_risk_decisions());"), flag)
+            << "set after the PortfolioManager's detection, which would reset it";
+        EXPECT_LT(flag, src.find("subject = risk_module_failure_email_subject(subject);"));
+        EXPECT_LT(flag, src.find("return live_run_exit_code(risk_module_failure);"));
+
+        routes[i] = between(src, "        std::optional<nlohmann::json> sizing_hold;",
+                            "        // STORE LIVE RUN METADATA");
+        ASSERT_FALSE(routes[i].empty());
+    }
+    EXPECT_EQ(routes[0], routes[1]) << "the twins route the sizing decision differently";
 }
 
 TEST(SizingCapitalWiring, TheBacktestCompoundsForFuturesOnly) {
