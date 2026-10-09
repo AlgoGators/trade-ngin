@@ -145,7 +145,7 @@ TEST(LiveRollWriteOrder, AFailedExecutionsStoreWithRollLegsOwedStopsBeforePositi
         const std::string leg_store = between(src, "db->replace_roll_day_executions(",
                                               "db->delete_roll_executions(now, strategy_name_rl, portfolio_id,");
         ASSERT_FALSE(leg_store.empty()) << runner << ": the legs are stored before the other sleeves are swept";
-        EXPECT_EQ(leg_store.find("leg_sleeves, combined_strategy_id, portfolio_id, now, \"trading.executions\");"),
+        EXPECT_EQ(leg_store.find("leg_sleeves, combined_strategy_id, portfolio_id, now, \"trading.executions\", qt_write_book);"),
                   leg_store.find("leg_sleeves,"))
             << runner;
         EXPECT_NE(leg_store.find("leg_sleeves,"), npos) << runner;
