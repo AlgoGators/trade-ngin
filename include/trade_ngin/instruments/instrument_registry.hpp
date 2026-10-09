@@ -106,6 +106,17 @@ public:
      */
     void register_instrument(const std::string& symbol, std::shared_ptr<Instrument> instrument);
 
+    /**
+     * @brief Switch the legacy "ES" / "YM" / "NQ" -> micro lookup rewrite on (the default) or off
+     *
+     * Off, a full-size root resolves to its own metadata row or to nothing. The backtest runner
+     * turns it off only when portfolio.json carries listing_dates (data/listing_dates.hpp).
+     */
+    void set_full_size_remap(bool enabled) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        full_size_remap_ = enabled;
+    }
+
 private:
     InstrumentRegistry() = default;  // Private constructor for singleton pattern
     InstrumentRegistry(const InstrumentRegistry&) = delete;
@@ -132,6 +143,8 @@ private:
     std::unordered_map<std::string, std::shared_ptr<Instrument>> instruments_;
     mutable std::mutex mutex_;
     bool initialized_{false};
+    /// The legacy rewrite of "ES", "YM", "NQ" lookups to the micro's row. On by default.
+    bool full_size_remap_{true};
 };
 
 }  // namespace trade_ngin

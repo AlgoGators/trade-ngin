@@ -333,6 +333,48 @@ Result<AppConfig> ConfigLoader::extract_config(const nlohmann::json& merged) {
             config.equity_slow_rule = rule;
         }
 
+        // Listing dates: optional; parsed strictly when present.
+        if (merged.contains("listing_dates")) {
+            const auto& v = merged.at("listing_dates");
+            auto bad = [&](const std::string& what) {
+                return make_error<AppConfig>(
+                    ErrorCode::INVALID_DATA,
+                    "config for " + config.portfolio_id + ": portfolio.json \"listing_dates\" " +
+                        what +
+                        " (expected {\"contracts\": [{\"symbol\": \"MES\", \"listed\": "
+                        "\"2019-05-06\", \"before\": \"ES\", \"ratio\": 10}]}), got " + v.dump(),
+                    "ConfigLoader");
+            };
+            if (!v.is_object() || !v.contains("contracts") || !v.at("contracts").is_array()) {
+                return bad("must be an object with a \"contracts\" list");
+            }
+            if (v.contains("switch_rule") &&
+                (!v.at("switch_rule").is_string() ||
+                 !parse_listing_switch_rule(v.at("switch_rule").get<std::string>(),
+                                            &config.listing_switch_rule))) {
+                return bad("\"switch_rule\" must be \"close_reenter\", \"convert\", \"open_at_target\" or "
+                           "\"carry_to_target\"");
+            }
+            for (const auto& entry : v.at("contracts")) {
+                if (!entry.is_object() || !entry.contains("symbol") || !entry.contains("listed") ||
+                    !entry.contains("before") || !entry.at("symbol").is_string() ||
+                    !entry.at("listed").is_string() || !entry.at("before").is_string() ||
+                    !entry.contains("ratio") || !entry.at("ratio").is_number()) {
+                    return bad("names a contract without string \"symbol\", \"listed\" and "
+                               "\"before\" and a number \"ratio\"");
+                }
+                config.listing_dates.push_back({entry.at("symbol").get<std::string>(),
+                                                entry.at("before").get<std::string>(),
+                                                entry.at("listed").get<std::string>(),
+                                                entry.at("ratio").get<double>()});
+            }
+            try {
+                ListingDates::validate(config.listing_dates);  // the runner switches it on
+            } catch (const std::invalid_argument& e) {
+                return bad(std::string("is not usable: ") + e.what());
+            }
+        }
+
         // LOOP_SPEC sections 3.1 and 7.7 (D19): the sizing mode and the starting capital. Parsed
         // strictly when present; the futures runners require both (require_loop_keys).
         if (merged.contains("sizing_mode")) {

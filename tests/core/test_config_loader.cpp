@@ -1369,3 +1369,67 @@ TEST_F(ConfigLoaderTest, EveryRetiredKeyIsRefusedOnAFuturesBook) {
     EXPECT_DOUBLE_EQ(plain.value().risk_config.var_limit, 0.15);
     EXPECT_DOUBLE_EQ(plain.value().max_leverage, 4.0);
 }
+
+// portfolio.json's optional "listing_dates" block (data/listing_dates.hpp): absent means no
+// contract; present it is parsed strictly, and a block that names no rule takes open_at_target.
+TEST_F(ConfigLoaderTest, ListingDatesAbsentMeansNoContract) {
+    write_full_set("base");
+    auto r = ConfigLoader::load(base_, "base");
+    ASSERT_TRUE(r.is_ok()) << (r.error() ? r.error()->what() : "no error");
+    EXPECT_TRUE(r.value().listing_dates.empty());
+    EXPECT_EQ(r.value().listing_switch_rule, ListingSwitchRule::kOpenAtTarget);
+}
+
+TEST_F(ConfigLoaderTest, ListingDatesWithNoRuleTakesOpenAtTarget) {
+    const nlohmann::json contracts = nlohmann::json::array(
+        {{{"symbol", "MES"}, {"listed", "2019-05-06"}, {"before", "ES"}, {"ratio", 10}}});
+    write_full_set("base", nlohmann::json::object(), {{"listing_dates", {{"contracts", contracts}}}});
+    auto r = ConfigLoader::load(base_, "base");
+    ASSERT_TRUE(r.is_ok()) << (r.error() ? r.error()->what() : "no error");
+    ASSERT_EQ(r.value().listing_dates.size(), 1u);
+    EXPECT_EQ(r.value().listing_dates[0].symbol, "MES");
+    EXPECT_EQ(r.value().listing_dates[0].before, "ES");
+    EXPECT_EQ(r.value().listing_dates[0].listed, "2019-05-06");
+    EXPECT_DOUBLE_EQ(r.value().listing_dates[0].ratio, 10.0);
+    EXPECT_EQ(r.value().listing_switch_rule, ListingSwitchRule::kOpenAtTarget);
+
+    for (const auto& [name, rule] : std::vector<std::pair<std::string, ListingSwitchRule>>{
+             {"close_reenter", ListingSwitchRule::kCloseReenter},
+             {"convert", ListingSwitchRule::kConvert},
+             {"open_at_target", ListingSwitchRule::kOpenAtTarget},
+             {"carry_to_target", ListingSwitchRule::kCarryToTarget}}) {
+        write_full_set("base", nlohmann::json::object(),
+                       {{"listing_dates", {{"contracts", contracts}, {"switch_rule", name}}}});
+        auto named = ConfigLoader::load(base_, "base");
+        ASSERT_TRUE(named.is_ok()) << name;
+        EXPECT_EQ(named.value().listing_switch_rule, rule) << name;
+    }
+}
+
+TEST_F(ConfigLoaderTest, AnUnusableListingDatesBlockRefusesTheConfig) {
+    const nlohmann::json good = {{"symbol", "MES"}, {"listed", "2019-05-06"}, {"before", "ES"}, {"ratio", 10}};
+    std::vector<nlohmann::json> bad_blocks;
+    bad_blocks.push_back(nlohmann::json::array({good}));                                   // not an object
+    bad_blocks.push_back({{"contracts", nlohmann::json::array({good})}, {"switch_rule", "carry"}});
+    bad_blocks.push_back({{"contracts", nlohmann::json::array({good})}, {"switch_rule", 3}});
+    for (const char* key : {"symbol", "listed", "before", "ratio"}) {
+        nlohmann::json entry = good;
+        entry.erase(key);
+        bad_blocks.push_back({{"contracts", nlohmann::json::array({entry})}});
+    }
+    {
+        nlohmann::json entry = good;
+        entry["listed"] = "2019-5-6";
+        bad_blocks.push_back({{"contracts", nlohmann::json::array({entry})}});
+        entry = good;
+        entry["ratio"] = 0;
+        bad_blocks.push_back({{"contracts", nlohmann::json::array({entry})}});
+    }
+    for (const auto& block : bad_blocks) {
+        write_full_set("base", nlohmann::json::object(), {{"listing_dates", block}});
+        auto r = ConfigLoader::load(base_, "base");
+        ASSERT_TRUE(r.is_error()) << block.dump();
+        EXPECT_NE(std::string(r.error()->what()).find("\"listing_dates\""), std::string::npos)
+            << r.error()->what();
+    }
+}

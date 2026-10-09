@@ -1,5 +1,6 @@
 #include "trade_ngin/backtest/backtest_data_loader.hpp"
 #include "trade_ngin/data/conversion_utils.hpp"
+#include "trade_ngin/data/listing_dates.hpp"
 #include "trade_ngin/core/logger.hpp"
 #include <algorithm>
 #include <set>
@@ -40,16 +41,20 @@ Result<std::vector<Bar>> BacktestDataLoader::load_market_data(const DataLoadConf
             "BacktestDataLoader");
     }
 
-    // Load market data in batches
+    // Load market data in batches. Listing dates (the identity without
+    // portfolio.json's listing_dates): a predecessor contract has no stored rows of its own, so it
+    // is left out of the query and handed the rows stored under its listed contract's symbol below.
     std::vector<Bar> all_bars;
     size_t batch_size = config.batch_size > 0 ? config.batch_size : 5;
+    const std::vector<std::string> stored_symbols =
+        ListingDates::instance().stored_symbols(config.symbols);
 
-    for (size_t i = 0; i < config.symbols.size(); i += batch_size) {
+    for (size_t i = 0; i < stored_symbols.size(); i += batch_size) {
         // Create a batch of symbols
-        size_t end_idx = std::min(i + batch_size, config.symbols.size());
+        size_t end_idx = std::min(i + batch_size, stored_symbols.size());
         std::vector<std::string> symbol_batch(
-            config.symbols.begin() + i,
-            config.symbols.begin() + end_idx);
+            stored_symbols.begin() + i,
+            stored_symbols.begin() + end_idx);
 
         // Load this batch
         auto batch_result = load_symbol_batch(symbol_batch, config);
@@ -63,6 +68,8 @@ Result<std::vector<Bar>> BacktestDataLoader::load_market_data(const DataLoadConf
         auto& batch_bars = batch_result.value();
         all_bars.insert(all_bars.end(), batch_bars.begin(), batch_bars.end());
     }
+
+    ListingDates::instance().add_predecessor_bars(config.symbols, all_bars);
 
     // Check for empty data
     if (all_bars.empty()) {

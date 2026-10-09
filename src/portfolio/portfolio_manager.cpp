@@ -1,4 +1,5 @@
 // src/portfolio/portfolio_manager.cpp
+#include "trade_ngin/data/listing_dates.hpp"
 #include "trade_ngin/optimization/one_pass_record.hpp"
 #include "trade_ngin/data/roll_series.hpp"
 #include "trade_ngin/portfolio/portfolio_manager.hpp"
@@ -2283,6 +2284,131 @@ Result<void> PortfolioManager::rebalance_one_pass(
             views[i].day = &own[i].day;
             views[i].returns = &own[i].returns;
         }
+        // Listing dates (nothing is ever due without portfolio.json's listing_dates, and rule
+        // close_reenter leaves the switch to the close-out and the pass below). Once per pair, on
+        // the first sized rebalance whose signal feed holds the listed contract's bar dated on or
+        // after its listing date with both contracts free to trade (a non-session bar or a pending
+        // roll holds both: they read one series) and the listed contract signalling: the held
+        // predecessor is closed and the listed contract's held quantity is set by the rule, BEFORE
+        // the pass, which then starts from that held book. Each move is a fill at the signal close,
+        // priced by this manager's cost model on its own contract's terms (ids LC- and LO-). A pair
+        // whose predecessor never signalled on a sized rebalance of this run (the run starts
+        // trading after the listing date) has no switch: the listed contract is an ordinary symbol.
+        if (is_backtest_ && !is_warmup && scope_refusal.empty() && ListingDates::instance().enabled()) {
+            for (size_t i = 0; i < n; ++i) {
+                // signalling on a bar fed today: a stale answer on a day its bar is withheld is not one
+                if (in.signalling[i] && in.has_bar[i] &&
+                    ListingDates::instance().is_predecessor(symbols[i])) {
+                    listing_predecessor_traded_.insert(symbols[i]);
+                }
+            }
+        }
+        // The switch's fills and ledger entries are PENDING until the pass has run: a pass that is
+        // refused sends no order, so a refused day undoes the switch and it is made on a later pass.
+        struct PendingListingSwitch {
+            std::string sid, from, to;
+            double new_to;
+            std::vector<ExecutionReport> legs;
+            std::vector<std::string> lines;
+        };
+        std::vector<PendingListingSwitch> pending_switches;
+        std::vector<std::string> switched_this_pass;
+        const std::vector<double> held_before_switch = in.held;
+        const std::vector<std::vector<double>> sleeve_held_before_switch = sleeve_held;
+        if (is_backtest_ && !is_warmup && scope_refusal.empty() && !sleeve_pinned &&
+            ListingDates::instance().switch_rule() != ListingSwitchRule::kCloseReenter) {
+            for (const auto& c : ListingDates::instance().conversions_due(data)) {
+                if (listing_switched_.count(c.to)) continue;
+                const auto at_from = std::find(symbols.begin(), symbols.end(), c.from);
+                const auto at_to = std::find(symbols.begin(), symbols.end(), c.to);
+                if (at_from == symbols.end()) continue;
+                const size_t i_from = static_cast<size_t>(at_from - symbols.begin());
+                if (at_to == symbols.end()) {
+                    if (in.held[i_from] != 0.0) in.hold[i_from] = 1;  // held, never closed out, while it waits
+                    continue;
+                }
+                const size_t i_to = static_cast<size_t>(at_to - symbols.begin());
+                if (!listing_predecessor_traded_.count(c.from) && in.held[i_from] == 0.0) {
+                    listing_switched_.insert(c.to);
+                    INFO("LISTING_SWITCH " + c.from + " -> " + c.to +
+                         ": none, the predecessor never traded in this run");
+                    continue;
+                }
+                if (in.hold[i_from] || in.hold[i_to] || !in.has_bar[i_from] || !in.has_bar[i_to] ||
+                    !in.signalling[i_to] || !std::isfinite(in.target[i_to])) {
+                    // waits for the next rebalance on which both can trade; a held predecessor is
+                    // HELD meanwhile, never closed by the close-out, and the listed contract is not
+                    // opened beside it by the pass
+                    if (in.held[i_from] != 0.0) {
+                        in.hold[i_from] = 1;
+                        in.hold[i_to] = 1;
+                    }
+                    continue;
+                }
+                const double u_to = in.multiplier[i_to] * in.close[i_to] / in.capital;
+                // the deferral band (section 5.2) on the predecessor's holding, read on the book
+                // before any sleeve is switched: the listed contract's first-sleeve forecast is
+                // weaker than the band and against the holding
+                const bool in_band = in.first_signalling[i_to] &&
+                                     in.held[i_from] * in.first_forecast[i_to] < 0.0 &&
+                                     std::abs(in.first_forecast[i_to]) < in.sign_band;
+                // rule open_at_target puts the whole rounded target on the first sleeve that
+                // signals the listed contract (a one-sleeve book: its sleeve)
+                size_t target_sleeve = 0;
+                for (size_t s = 0; s < sids.size(); ++s) {
+                    if (contribution[s][i_to] != 0.0) {
+                        target_sleeve = s;
+                        break;
+                    }
+                }
+                for (size_t s = 0; s < sids.size(); ++s) {
+                    const ListingSwitch plan = plan_listing_switch(
+                        ListingDates::instance().switch_rule(), c.ratio, sleeve_held[s][i_from],
+                        sleeve_held[s][i_to], s == target_sleeve ? in.target[i_to] : 0.0,
+                        u_to > 0.0 ? in.cap / u_to : 0.0, in_band);
+                    if (plan.close_from == 0.0 && plan.trade_to == 0.0) continue;
+                    const std::string& sid = sids[s];
+                    size_t seq = listing_leg_seq_[sid];
+                    for (const auto& p : pending_switches) seq += p.sid == sid ? 1 : 0;
+                    ListingConversion priced = c;
+                    priced.from_close = in.close[i_from];
+                    priced.to_close = in.close[i_to];
+                    PendingListingSwitch pending{sid, c.from, c.to, plan.new_to, {}, {}};
+                    pending.legs = make_listing_switch_fills(
+                        priced, plan, as_of ? *as_of : data[0].timestamp,
+                        "LC-" + sid + "-" + std::to_string(seq), "LO-" + sid + "-" + std::to_string(seq),
+                        [this](const std::string& sym, double q, double px) {
+                            const auto cost = cost_manager_.calculate_costs(sym, q, px);
+                            return ListingLegCost{cost.commissions_fees, cost.implicit_price_impact,
+                                                  cost.slippage_market_impact,
+                                                  cost.total_transaction_costs};
+                        });
+                    for (const auto& leg : pending.legs) {
+                        pending.lines.push_back(
+                            "LISTING_LEG " + sid + " " + leg.symbol + " " +
+                            (leg.side == Side::BUY ? "BUY" : "SELL") + " qty=" +
+                            std::to_string(static_cast<double>(leg.filled_quantity)) + " px=" +
+                            std::to_string(static_cast<double>(leg.fill_price)) + " cost=" +
+                            std::to_string(static_cast<double>(leg.total_transaction_costs)) +
+                            " id=" + leg.exec_id + " rule=" +
+                            to_string(ListingDates::instance().switch_rule()) +
+                            (in_band ? " (deferral band: carried)" : "") + " target=" +
+                            std::to_string(in.target[i_to]) + " (" + c.from + " " +
+                            std::to_string(sleeve_held[s][i_from]) + " -> 0; " + c.to + " " +
+                            std::to_string(sleeve_held[s][i_to]) + " -> " +
+                            std::to_string(plan.new_to) + ")");
+                    }
+                    in.held[i_from] -= sleeve_held[s][i_from];
+                    in.held[i_to] += plan.new_to - sleeve_held[s][i_to];
+                    sleeve_held[s][i_from] = 0.0;
+                    sleeve_held[s][i_to] = plan.new_to;
+                    pending_switches.push_back(std::move(pending));
+                }
+                listing_switched_.insert(c.to);
+                switched_this_pass.push_back(c.to);
+            }
+        }
+
         const overlay::Inputs window = overlay::build_inputs(in.tau, symbols, views);
         in.returns = window.returns;
         in.ordinals = window.ordinals;
@@ -2339,6 +2465,26 @@ Result<void> PortfolioManager::rebalance_one_pass(
             } catch (const std::exception& e) {
                 result = held_book(std::string("the one pass failed: ") + e.what());
             }
+        }
+        if (!result.refusal.empty() && !switched_this_pass.empty()) {
+            // a refused pass sends no order: the switch is undone and waits for a later pass
+            const bool on_reread = result.refusal_on_reread;
+            const std::string why = result.refusal;
+            in.held = held_before_switch;
+            sleeve_held = sleeve_held_before_switch;
+            for (const auto& to : switched_this_pass) listing_switched_.erase(to);
+            pending_switches.clear();
+            result = held_book(why);
+            result.refusal_on_reread = on_reread;
+            WARN("LISTING_SWITCH undone: the pass was refused (" + why + "); no switch fill is written");
+        }
+        for (auto& pending : pending_switches) {
+            ++listing_leg_seq_[pending.sid];
+            for (auto& leg : pending.legs) strategy_executions_[pending.sid].push_back(std::move(leg));
+            for (const auto& line : pending.lines) INFO(line);
+            auto& ledger = filled_positions_[pending.sid];
+            ledger[pending.from] = 0.0;
+            ledger[pending.to] = pending.new_to;
         }
         const bool refused = !result.refusal.empty();
         for (size_t i = 0; i < n; ++i) {

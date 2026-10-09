@@ -565,6 +565,12 @@ private:
     // executions this manager generates; baseline for sizing the next order as
     // (target - filled). Strategy-agnostic -- does not read strategy positions_.
     std::unordered_map<std::string, std::unordered_map<std::string, double>> filled_positions_;
+    /// Listing dates (data/listing_dates.hpp): the listed symbols whose switch from
+    /// their predecessor has been made, and the LC-/LO-<sid>-<n> counter of its fills.
+    std::unordered_set<std::string> listing_switched_;
+    /// The predecessors that signalled on a sized rebalance of this run: only their pairs switch.
+    std::unordered_set<std::string> listing_predecessor_traded_;
+    std::unordered_map<std::string, size_t> listing_leg_seq_;
     
     // Track previous day close prices for PnL Lag Model (prevents lookahead bias)
     std::unordered_map<std::string, double> previous_day_close_prices_;
