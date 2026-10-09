@@ -480,7 +480,8 @@ Result<AppConfig> ConfigLoader::extract_config(const nlohmann::json& merged) {
                 for (const auto& pair : pairs) {
                     if (!pair.is_array() || pair.size() != 2 || !pair[0].is_number_integer() ||
                         !pair[1].is_number_integer() || pair[0].get<int64_t>() <= 0 ||
-                        pair[1].get<int64_t>() <= 0) {
+                        pair[1].get<int64_t>() <= 0 || pair[0].get<int64_t>() > 100000 ||
+                        pair[1].get<int64_t>() > 100000) {
                         return bad("names a pair for " + symbol +
                                    " that is not two positive whole numbers");
                     }
@@ -494,7 +495,8 @@ Result<AppConfig> ConfigLoader::extract_config(const nlohmann::json& merged) {
             int sleeves = 0;
             bool trend_only = true;
             if (merged.contains("strategies") && merged.at("strategies").is_object()) {
-                for (const auto& entry : merged.at("strategies").items()) {
+                const nlohmann::json& strategies = merged.at("strategies");
+                for (const auto& entry : strategies.items()) {
                     const auto& def = entry.value();
                     if (!def.is_object()) continue;
                     const auto flag = [&](const char* key) {

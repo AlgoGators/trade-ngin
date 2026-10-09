@@ -1610,6 +1610,8 @@ TEST_F(ConfigLoaderTest, AMalformedTradingRuleRemovalsBlockIsRefused) {
     refused({{"trading_rule_removals", {{"ZR", nlohmann::json::array({{2, 8, 32}})}}}}, "not two positive whole numbers");
     refused({{"trading_rule_removals", {{"ZR", nlohmann::json::array({{0, 8}})}}}}, "not two positive whole numbers");
     refused({{"trading_rule_removals", {{"ZR", nlohmann::json::array({{2.5, 8}})}}}}, "not two positive whole numbers");
+    refused({{"trading_rule_removals", {{"ZR", nlohmann::json::array({{4294967298LL, 8}})}}}},
+            "not two positive whole numbers");
     refused({{"trading_rule_removals", {{"ZR.v.0", one}}}}, "not a base symbol");
     // a misspelt block is an absent block: every contract would silently run every rule
     refused({{"trading_rule_removal", {{"ZR", one}}}}, "\"trading_rule_removal\"");
