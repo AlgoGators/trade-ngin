@@ -76,32 +76,33 @@ RUN cmake -S /app -B /app/build \
         -DNLopt_DIR=/usr/lib/x86_64-linux-gnu/cmake/nlopt && \
     cmake --build /app/build --config Release -j"$(nproc)"
 
-# desk-agent (docs/design/desk-agent.md): the Python gRPC command channel, shipped in this image
-# as its second entrypoint. Built in its own stage so the C++ build above is untouched and no
-# build tool (pip, grpcio-tools, a compiler) reaches the runtime image. Wheels only.
-FROM ubuntu:24.04 AS desk-agent-build
+# rpc (docs/design/rpc.md): the engine's Python gRPC server (the QT desk is its first service),
+# shipped in this image as its second entrypoint. Built in its own stage so the C++ build above
+# is untouched and no build tool (pip, grpcio-tools, a compiler) reaches the runtime image.
+# Wheels only.
+FROM ubuntu:24.04 AS rpc-build
 
 ENV DEBIAN_FRONTEND=noninteractive
 
 RUN apt-get update && apt-get install -y --no-install-recommends python3 python3-venv \
     && rm -rf /var/lib/apt/lists/*
 
-COPY services/desk_agent/requirements.txt services/desk_agent/requirements-build.txt \
-     /src/services/desk_agent/
-RUN python3 -m venv /opt/desk-agent/venv && \
-    /opt/desk-agent/venv/bin/pip install --no-cache-dir --only-binary=:all: \
-        -r /src/services/desk_agent/requirements.txt && \
-    /opt/desk-agent/venv/bin/pip uninstall -y -q pip && \
+COPY services/rpc/requirements.txt services/rpc/requirements-build.txt /src/services/rpc/
+RUN python3 -m venv /opt/rpc/venv && \
+    /opt/rpc/venv/bin/pip install --no-cache-dir --only-binary=:all: \
+        -r /src/services/rpc/requirements.txt && \
+    /opt/rpc/venv/bin/pip uninstall -y -q pip && \
     python3 -m venv /tmp/gen && \
     /tmp/gen/bin/pip install --no-cache-dir --only-binary=:all: \
-        -r /src/services/desk_agent/requirements-build.txt
+        -r /src/services/rpc/requirements-build.txt
 
 COPY proto /src/proto
-COPY services/desk_agent /src/services/desk_agent
-RUN PYTHON=/tmp/gen/bin/python OUT_DIR=/opt/desk-agent/app sh /src/services/desk_agent/gen.sh && \
-    cp -r /src/services/desk_agent/desk_agent /opt/desk-agent/app/ && \
-    find /opt/desk-agent/app -name __pycache__ -prune -exec rm -rf {} + && \
-    cd /opt/desk-agent/app && /opt/desk-agent/venv/bin/python -c "import desk_agent.server, psycopg"
+COPY services/rpc /src/services/rpc
+RUN PYTHON=/tmp/gen/bin/python OUT_DIR=/opt/rpc/app sh /src/services/rpc/gen.sh && \
+    cp -r /src/services/rpc/algogators_rpc /opt/rpc/app/ && \
+    find /opt/rpc/app -name __pycache__ -prune -exec rm -rf {} + && \
+    cd /opt/rpc/app && /opt/rpc/venv/bin/python -c \
+        "import algogators_rpc.server, algogators_rpc.services.desk.service, psycopg"
 
 FROM ubuntu:24.04
 
@@ -133,11 +134,11 @@ RUN ldconfig
 
 COPY --from=builder /app /app
 
-# desk-agent runtime: the interpreter only; the venv comes whole from its build stage. The agent
-# runs only when the container command is `desk-agent` (scripts/docker-entrypoint.sh).
+# rpc runtime: the interpreter only; the venv comes whole from its build stage. The server runs
+# only when the container command is `rpc` (alias `desk-agent`; scripts/docker-entrypoint.sh).
 RUN apt-get update && apt-get install -y --no-install-recommends python3 \
     && rm -rf /var/lib/apt/lists/*
-COPY --from=desk-agent-build /opt/desk-agent /opt/desk-agent
+COPY --from=rpc-build /opt/rpc /opt/rpc
 
 WORKDIR /app
 

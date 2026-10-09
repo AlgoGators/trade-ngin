@@ -7,8 +7,8 @@ Status: binding for the 2026-10-09 build. The master document ("QT platform", 20
 | Piece | Where | Database | Notes |
 |---|---|---|---|
 | Live trading cron (`trade-ngin-trade-ngin-1`) | trade-ngin host | `algo_data` | **Never touched by QT work.** It runs the pre-stage-3 image at 09:30. |
-| `qt-engine` container (trade-ngin image built from main) | trade-ngin host, Docker network `qt` | `new_algo_data` | Runs `desk-agent` (gRPC on :50051, not published) plus a daily cron for the QT model run. |
-| AlgoLens (edge, frontend, backend) | trade-ngin host, backend also on network `qt` | `new_algo_data` | The backend calls `desk-agent:50051`. |
+| `qt-engine` container (trade-ngin image built from main) | trade-ngin host, Docker network `qt` | `new_algo_data` | Container `engine-rpc` (network alias `desk-agent` for one release): the engine's gRPC server (`docs/design/rpc.md`, :50051, not published) with the desk service on it, plus a daily cron for the QT model run. |
+| AlgoLens (edge, frontend, backend) | trade-ngin host, backend also on network `qt` | `new_algo_data` | The backend calls `engine-rpc:50051` (env `ENGINE_RPC_ADDR`). |
 
 ## 2. Portfolios
 
@@ -57,7 +57,7 @@ Constraints and indexes:
 
 **Who writes what:**
 - AlgoLens inserts the rows (status `pending`).
-- The engine (desk-agent) moves `status`, `started_at`, `finished_at`, `result` and `message`.
+- The engine (the desk service on `engine-rpc`) moves `status`, `started_at`, `finished_at`, `result` and `message`.
 - Nobody deletes rows. Rows other than status and result are never updated (enforced by a trigger).
 
 ## 5. Other schema changes
@@ -73,9 +73,11 @@ Constraints and indexes:
 - **024**: drop `trading.risk_limits`, `trading.portfolios`, `trading.strategy_book_memberships` and `trading.portfolio_assignments` (ruling 28). It is applied separately and is irreversible; the pre-QT backup on the host holds them. First confirm that AlgoLens main does not reference them.
   - Register the two QT portfolios in `strategy_registry`.
 
-## 6. gRPC (`proto/qt/v1/desk.proto`, #160)
+## 6. gRPC (`proto/algogators/desk.proto`, API `desk`)
 
-AlgoLens always inserts the `position_overrides` row first, then calls the RPC with its `audit_id`. The RPCs return `ACCEPTED` immediately: the engine works asynchronously, and AlgoLens polls the row (`status`, `result`) every 2 s. If gRPC is down, the row stays `pending`, and desk-agent re-drives pending rows on startup and every 60 s. gRPC is the channel AlgoLens uses to call the engine (decided 2026-10-09; it amends the master document's "never call each other"). The re-drive guarantees a dropped call loses nothing.
+The desk is one service on the engine's shared gRPC layer (`docs/design/rpc.md`): service `algogators.desk.DeskService` at `engine-rpc:50051`. Every call carries the metadata `x-algogators-api-version: desk=<version>`, where the version comes from the header block of `desk.proto` (now `1.0.0`). The server refuses a missing header or a different major version with `FAILED_PRECONDITION` and accepts any minor or patch. AlgoLens vendors `desk.proto` byte for byte at a pinned commit and sends the header from its shared client layer. The pre-versioning name `algogators.qt.v1.DeskService` is still served, with the same wire format and no header, until AlgoLens has switched; it is removed in the next release.
+
+AlgoLens always inserts the `position_overrides` row first, then calls the RPC with its `audit_id`. The RPCs return `ACCEPTED` immediately: the engine works asynchronously, and AlgoLens polls the row (`status`, `result`) every 2 s. If gRPC is down, the row stays `pending`, and the desk service re-drives pending rows on startup and every 60 s. gRPC is the channel AlgoLens uses to call the engine (decided 2026-10-09; it amends the master document's "never call each other"). The re-drive guarantees a dropped call loses nothing.
 
 | RPC | Engine action | `result` written |
 |---|---|---|

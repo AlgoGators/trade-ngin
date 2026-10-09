@@ -1,0 +1,37 @@
+// AlgoGators gRPC API
+// API: common
+// Version: 1.0.0
+// Compatibility: a client must send x-algogators-api-version: <api>=<major>.<minor>.<patch> for
+// the API it calls; the server refuses a different major and accepts any minor/patch.
+//
+// common.proto -- conventions every AlgoGators gRPC API follows, and the home for message types
+// that more than one API shares. It defines no service, so no header names it at runtime; its
+// Version only tracks changes to the shared types below.
+//
+// Conventions (docs/design/rpc.md has the full text):
+//   * One file per API: proto/algogators/<api>.proto, package algogators.<api>, at least one
+//     service. No version in any path or package name: the version lives in the header block at
+//     the top of the file (the four lines above), and only there.
+//   * The header is parsed at stub-generation time into algogators/versions.py (API_VERSIONS),
+//     which is the single source of the version on both sides of the wire.
+//   * Runtime: every call carries gRPC metadata x-algogators-api-version: <api>=<semver>
+//     (comma-separated when a client speaks several APIs, e.g. "desk=1.0.0,other=2.1.0"). The
+//     server looks up the API of the called service, refuses a missing header or a different
+//     major with FAILED_PRECONDITION, accepts any minor/patch, and echoes its own
+//     "<api>=<semver>" in the response's initial metadata.
+//   * Versioning: a change that an older peer can still parse (a new field, a new RPC, a new enum
+//     value an older client may treat as unknown) is a minor bump. Renumbering or removing a
+//     field, changing a type or the meaning of a value, or removing an RPC is a major bump.
+//     Field numbers are never reused.
+//   * Exception: health checks use the standard grpc.health.v1.Health service under its
+//     standard name, because Docker, grpc_health_probe and load balancers expect it there. It is
+//     exempt from the version header.
+//   * Postgres, not a reply, is the record of anything an RPC changes; mutating RPCs are
+//     idempotent on a key the caller wrote first.
+//
+// Version history:
+//   1.0.0  2026-10-09  conventions only; no shared types yet.
+
+syntax = "proto3";
+
+package algogators.common;

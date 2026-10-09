@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # QT end-to-end check against QT_E2E_PORTFOLIO (docs/design/qt-contract.md), run on the
-# trade-ngin host next to the desk-agent container. It does what AlgoLens does: writes the
+# trade-ngin host next to the engine-rpc container. It does what AlgoLens does: writes the
 # position_overrides rows and calls the gRPC commands, then reads the books back.
 #
 #   DB_HOST=... DB_PORT=5432 DB_USER=... DB_PASSWORD=... DB_NAME=new_algo_data scripts/qt_e2e.sh
@@ -17,7 +17,7 @@ set -uo pipefail
 
 PID=QT_E2E_PORTFOLIO
 DIR=qt_e2e
-AGENT="${QT_AGENT_CONTAINER:-desk-agent}"
+AGENT="${QT_AGENT_CONTAINER:-engine-rpc}"
 LAST_DATE="${QT_E2E_LAST_DATE:-2026-10-08}"
 REQUESTER="${QT_E2E_REQUESTER:-qt-e2e-desk@algogators.com}"
 APPROVER="${QT_E2E_APPROVER:-qt-e2e-vp@algogators.com}"
@@ -29,7 +29,7 @@ export PGHOST="${QT_E2E_PGHOST:-$DB_HOST}" PGPORT="${DB_PORT:-5432}" PGUSER="$DB
 
 q() { psql -X -v ON_ERROR_STOP=1 -Atq -c "$1"; }
 call() {
-    docker exec -e PYTHONPATH=/opt/desk-agent/app "$AGENT" /opt/desk-agent/venv/bin/python \
+    docker exec -e PYTHONPATH=/opt/rpc/app "$AGENT" /opt/rpc/venv/bin/python \
         /app/scripts/qt_grpc_call.py "$1" "$2"
 }
 poll() {
@@ -87,7 +87,7 @@ check "$(q "SELECT book_source FROM trading.live_results WHERE portfolio_id = '$
 # ---- 3. override request
 echo "== 3. override request"
 REQ=$(q "INSERT INTO trading.position_overrides (portfolio_id, date, kind, requested_by, reason) VALUES ('$PID', '$D', 'override_request', '$REQUESTER', 'e2e: trade the desk book exactly') RETURNING id")
-echo "   no RequestOverride call: the row is picked up by the desk-agent's 60 s re-drive sweep alone"
+echo "   no RequestOverride call: the row is picked up by the desk service's 60 s re-drive sweep alone"
 check "$(poll "$REQ")" done "override_request row $REQ done ($(row "$REQ"))"
 check "$(q "SELECT token_hash IS NOT NULL AND token_expires_at BETWEEN now() + interval '47 hours' AND now() + interval '49 hours' FROM trading.position_overrides WHERE id = $REQ")" t "token_hash stored with a 48 h expiry"
 echo "   result: $(q "SELECT (result - 'email')::text || CASE WHEN result ? 'email' THEN ' (+ email kept in the row: subject ' || (result->'email'->>'subject') || ')' ELSE '' END FROM trading.position_overrides WHERE id = $REQ")"
