@@ -172,9 +172,18 @@ void TransactionCostManager::update_market_data(
     double prev_close_price) {
 
     // Update volume for ADV calculation
-    impact_model_.update_volume(symbol, volume);
+    record_volume(symbol, volume);
 
     // Calculate log return and update for volatility
+    record_log_return(symbol, close_price, prev_close_price);
+}
+
+void TransactionCostManager::record_volume(const std::string& symbol, double volume) {
+    impact_model_.update_volume(symbol, volume);
+}
+
+void TransactionCostManager::record_log_return(const std::string& symbol, double close_price,
+                                               double prev_close_price) {
     if (prev_close_price > 0.0 && close_price > 0.0) {
         double log_return = std::log(close_price / prev_close_price);
         spread_model_.update_log_returns(symbol, log_return);

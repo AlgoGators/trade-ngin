@@ -18,6 +18,11 @@
 // Tie rule: the larger remainder first; on equal remainders the smaller strategy_id. A book whose
 // quotas sum below zero is split as the mirror of the long book.
 //
+// Ledger N2 (the follow-up, test_optimizer_allocation_once.cpp) then removed the allocation from
+// both ends: contribution = q x w, quota_s = (optimized / w) x share_s, book = round(optimized / w).
+// Every case below stores the same integers under both rules; the arithmetic after each "after:"
+// is S2's, and the line "N2:" gives the fixed base's.
+//
 // These tests drive a real PortfolioManager and observe only get_strategy_positions(), which
 // exists before and after the fix, so the same file is RED on the parent source and GREEN on
 // the fix. The sleeves are fixed-book strategies: every symbol is priced at the PM's default
@@ -216,6 +221,8 @@ protected:
 //   after:  quotas 1.7 x 0.875 / 0.7 = 2.125 and 1.7 x 0.125 / 0.3 = 0.708; book
 //           round(2.833) = 3; floors 2 / 0, one extra to the larger remainder (FAST 0.708):
 //           TF 2 / FAST 1, the held book, sum 3.
+//   N2:     aggregate 3 (the held book) kept; quotas 3 x 0.75 = 2.25 and 3 x 0.25 = 0.75; book 3;
+//           TF 2 / FAST 1.
 TEST_F(AllocationSplit, TwoSleevesAtSevenTenthsAndThreeTenthsSumToTheOptimizersInteger) {
     make_pm(/*use_buffering=*/true);
     add("TREND_FOLLOWING", split_book({{"ZNX", 3.0}}), 0.7);
@@ -236,6 +243,7 @@ TEST_F(AllocationSplit, TwoSleevesAtSevenTenthsAndThreeTenthsSumToTheOptimizersI
 //   before: round(0.3) = 0, so FAST round(0 x 1 / 0.3) = 0: the held lot is sold although the
 //           optimizer kept it.
 //   after:  quota 0.3 x 1 / 0.3 = 1; book 1; FAST 1.
+//   N2:     aggregate 1 kept; quota 1; FAST 1.
 TEST_F(AllocationSplit, ALoneThreeTenthsSleeveKeepsTheLotTheOptimizerHeld) {
     make_pm(/*use_buffering=*/true);
     add("TREND_FOLLOWING", split_book({{"ZNX", 0.0}}), 0.7);
@@ -252,6 +260,7 @@ TEST_F(AllocationSplit, ALoneThreeTenthsSleeveKeepsTheLotTheOptimizerHeld) {
 //   before: round(0.5) = 1; each sleeve round(1 x 0.5 / 0.5) = 1; sum 2 for an answer of 0.5.
 //   after:  quotas 0.5 / 0.5; book round(1.0) = 1; floors 0 / 0; the one extra contract goes to
 //           the smaller strategy_id on the tied remainder, whatever the registration order.
+//   N2:     aggregate 1 kept (A's held lot); quotas 0.5 / 0.5; the same split.
 TEST_F(AllocationSplit, ATieGoesToTheSmallerStrategyId) {
     make_pm(/*use_buffering=*/true);
     add("SLEEVE_Z", split_book({{"ZNX", 1.0}}), 0.5);  // registered first
@@ -283,8 +292,8 @@ TEST_F(AllocationSplit, OneSleeveAtAllocationOneIsUnchanged) {
 
 // Control: two sleeves whose quotas are whole (the greedy answer equals the aggregate target):
 // 0.7 / 0.3, both want 1 (aggregate 1.0, answer 1): quotas 1 / 1, book 2; the same before and
-// after. This is also why the split is read in the sleeves' contracts: the optimizer's 1 counts
-// allocation-weighted contracts (ledger N2), and the book both sleeves asked for is 2.
+// after. Under S2 the optimizer's 1 counted allocation-weighted contracts and the split read it
+// as the sleeves' 2; under N2 the aggregate is 2 contracts, the answer 2, the quotas 1 / 1.
 TEST_F(AllocationSplit, WholeQuotasAreStoredAsTheyAre) {
     make_pm(/*use_buffering=*/false);
     add("TREND_FOLLOWING", split_book({{"ZNX", 1.0}}), 0.7);

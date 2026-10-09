@@ -1,4 +1,5 @@
 #include "trade_ngin/backtest/backtest_coordinator.hpp"
+#include "trade_ngin/backtest/junk_signal_feed.hpp"
 #include <unordered_set>
 #include <algorithm>
 #include <iomanip>
@@ -7,6 +8,7 @@
 #include "trade_ngin/core/run_id_generator.hpp"
 #include "trade_ngin/core/time_utils.hpp"
 #include "trade_ngin/data/market_data_bus.hpp"
+#include "trade_ngin/risk/risk_scale_report.hpp"
 #include "trade_ngin/storage/backtest_results_manager.hpp"
 #include "trade_ngin/strategy/base_strategy.hpp"
 #include "trade_ngin/strategy/trend_following.hpp"
@@ -190,6 +192,7 @@ Result<BacktestResults> BacktestCoordinator::run_portfolio(
     reset_portfolio_state();
     // The session hold (T-7a C4) is the futures book's; the equity backtest keeps its old path.
     session_hold_enabled_ = (asset_class == AssetClass::FUTURES);
+    risk_scale_report_enabled_ = (asset_class == AssetClass::FUTURES);
 
     // Store backtest dates for later use in save_portfolio_results_to_db
     backtest_start_date_ = start_date;
@@ -618,22 +621,72 @@ Result<void> BacktestCoordinator::process_portfolio_day(
         // or a JUNK bar, gets no fill and no book change (the PM holds it at its filled ledger).
         std::unordered_set<std::string> signal_group_sessions;
         const std::unordered_set<std::string>* session_symbols = nullptr;
+        // T-7b-1 7a (HD 2026-09-24; T-7a_CODE_REVIEW R1): the strategies and the PM are fed as
+        // live feeds them. Live withholds a JUNK symbol's T-1 bar from process_market_data and
+        // feeds it the next day as T-2 with the rest of its window (live_portfolio*.cpp, the
+        // "JUNK (T-7a C4)" block); here the JUNK bar leaves this cycle's feed and is fed on the
+        // next cycle ahead of the symbol's next bar, in date order. Warm-up included, as the
+        // hold is. The mark, the cost feed and the classifier still see every bar.
+        const std::vector<Bar>* signal_feed = &bars_for_signals;
+        std::vector<Bar> junk_adjusted_feed;
         if (session_hold_enabled_ && had_previous_bars) {
+            std::set<std::string> junk_symbols;
             for (const auto& v : classify_bar_group(session_classifier_, bars_for_signals)) {
                 if (v.is_session()) {
                     signal_group_sessions.insert(v.symbol);
-                } else if (!is_warmup) {
-                    INFO("BT_SESSION_CLASSIFIER JUNK " + v.symbol + " " + v.date + ": " + v.reason +
-                         " -- no fill and no book change on this cycle");
+                } else {
+                    junk_symbols.insert(v.symbol);
+                    if (!is_warmup) {
+                        INFO("BT_SESSION_CLASSIFIER JUNK " + v.symbol + " " + v.date + ": " +
+                             v.reason + " -- no fill and no book change on this cycle");
+                    }
                 }
             }
             session_symbols = &signal_group_sessions;
+            if (!junk_symbols.empty() || !withheld_junk_signal_bars_.empty()) {
+                const std::string cycle = "(signal group of " +
+                                          SessionClassifier::ymd(SessionClassifier::day_of(timestamp)) +
+                                          ", warmup=" + (is_warmup ? "1" : "0") + "): ";
+                auto junk_feed =
+                    junk_delayed_signal_feed(bars_for_signals, junk_symbols, withheld_junk_signal_bars_);
+                for (const auto& b : junk_feed.released) {
+                    std::string newer;
+                    for (const auto& g : junk_feed.feed) {
+                        if (g.symbol == b.symbol && g.timestamp > b.timestamp) {
+                            newer = SessionClassifier::ymd(SessionClassifier::day_of(g.timestamp));
+                            break;
+                        }
+                    }
+                    INFO("BT_JUNK_FEED released " + b.symbol + " " +
+                         SessionClassifier::ymd(SessionClassifier::day_of(b.timestamp)) + " " + cycle +
+                         (newer.empty() ? "fed alone, no newer bar of the symbol in this signal group"
+                                        : "fed ahead of its " + newer + " bar"));
+                }
+                for (const auto& b : junk_feed.withheld) {
+                    INFO("BT_JUNK_FEED withheld " + b.symbol + " " +
+                         SessionClassifier::ymd(SessionClassifier::day_of(b.timestamp)) + " " + cycle +
+                         "kept out of the strategies and the PortfolioManager's history on this "
+                         "cycle, fed on the next (live's next run feeds it as T-2)");
+                }
+                withheld_junk_signal_bars_ = std::move(junk_feed.withheld);
+                junk_adjusted_feed = std::move(junk_feed.feed);
+                signal_feed = &junk_adjusted_feed;
+            }
         }
 
-        auto data_result = portfolio->process_market_data(bars_for_signals, is_warmup, timestamp,
-                                                          session_symbols);
-        if (data_result.is_error()) {
-            return data_result;
+        if (signal_feed->empty()) {
+            // Every bar of the signal group is JUNK and nothing is carried: live's feed would hold
+            // no new bar either, so the strategies' signals and the book stay where they are.
+            INFO("BT_JUNK_FEED the signal group of " +
+                 SessionClassifier::ymd(SessionClassifier::day_of(timestamp)) +
+                 " holds only JUNK bars: nothing is fed to the strategies or the PortfolioManager "
+                 "on this cycle");
+        } else {
+            auto data_result = portfolio->process_market_data(*signal_feed, is_warmup, timestamp,
+                                                              session_symbols);
+            if (data_result.is_error()) {
+                return data_result;
+            }
         }
 
         // WARMUP HANDLING: keep equity flat, no executions
@@ -659,6 +712,22 @@ Result<void> BacktestCoordinator::process_portfolio_day(
         }
 
         // POST-WARMUP: Normal trading logic
+
+        // RA-01 (T-7b-1 C7): the rebalance's applied risk scale, once per post-warmup cycle, from
+        // the PortfolioManager's own record of the call above (risk_scale_report.hpp defines each
+        // field). reporter=na: the backtest has no snapshot RiskManager and stores no risk figure.
+        // date = this cycle's timestamp (UTC), the date its fills and equity row carry. Log only.
+        // A cycle whose signal group held only JUNK bars never called process_market_data, so the
+        // PM's record is still the previous cycle's: this cycle ran no risk lap and reports an
+        // empty record (laps=0) rather than repeating yesterday's.
+        if (risk_scale_report_enabled_) {
+            const std::vector<RiskDecisionRecord> this_cycle =
+                signal_feed->empty() ? std::vector<RiskDecisionRecord>{}
+                                     : portfolio->last_risk_decisions();
+            INFO(format_risk_scale_report(std::string("na"), summarize_applied_risk(this_cycle),
+                                          core::format_utc_date(timestamp)));
+        }
+
         std::vector<ExecutionReport> period_executions;
 
         if (had_previous_bars) {
@@ -1195,6 +1264,8 @@ void BacktestCoordinator::reset_portfolio_state() {
     portfolio_previous_bars_.clear();
     session_classifier_ = SessionClassifier();
     session_hold_enabled_ = false;
+    withheld_junk_signal_bars_.clear();
+    risk_scale_report_enabled_ = false;
     current_run_id_.clear();
     portfolio_previous_positions_.clear();
     // E2-F54 (c): without this, a second portfolio backtest in the same process opens with

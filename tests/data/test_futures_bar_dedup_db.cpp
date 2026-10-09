@@ -28,6 +28,7 @@
 #include <pqxx/pqxx>
 #include <chrono>
 #include <cstdlib>
+#include <functional>
 #include <ctime>
 #include <iostream>
 #include <memory>
@@ -377,4 +378,67 @@ TEST_F(FuturesBarDedupTest, LoaderReturnsOneBarPerSymbolDateAndLogsWhatItDropped
         }
     }
     db->disconnect();
+}
+
+// T-7b-1 C7b, E-31 (T-6c_CODE_REVIEW CR-6): PostgresDatabase::get_latest_prices breaks the tie
+// between several copies of the NEWEST bar of a symbol by the loader's keep order (highest volume,
+// then close, open, high, low ascending), never by physical row order. The method reads
+// build_table_name(asset_class, data_type, freq) on its own connection, so the fixture is a
+// scratch table futures_data.c7b_e31_probe_1d, created and dropped by this test (the pattern of
+// tests/data/test_db_transaction_atomicity.cpp's scratch table); the rows go in with the losing
+// copy FIRST so an order-blind read returns it.
+TEST_F(FuturesBarDedupTest, C7bE31LatestPricesKeepTheLoadersCopyOfTheNewestBar) {
+    const std::string table = "futures_data.c7b_e31_probe_1d";
+    auto run = [this](const std::string& sql) {
+        pqxx::work w(*c_);
+        w.exec(sql);
+        w.commit();
+    };
+    struct DropGuard {
+        std::function<void()> f;
+        ~DropGuard() { f(); }
+    } guard{[&] {
+        try {
+            run("DROP TABLE IF EXISTS " + table);
+        } catch (...) {
+        }
+    }};
+    run("DROP TABLE IF EXISTS " + table);
+    run("CREATE TABLE " + table +
+        " (time timestamptz NOT NULL, symbol text NOT NULL, volume integer NOT NULL, "
+        "open double precision, high double precision, low double precision, "
+        "close double precision)");
+    {
+        pqxx::work w(*c_);
+        // (date, symbol, volume, open, high, low, close), in this physical order.
+        const std::vector<Fake> rows = {
+            {"2026-02-03", "E31A.v.0", 196, 0.648, 0.651, 0.646, 0.65095},   // loses: volume
+            {"2026-02-02", "E31A.v.0", 999999, 9.0, 9.0, 8.0, 9.0},         // loses: older
+            {"2026-02-03", "E31B.v.0", 100, 5.0, 5.1, 4.9, 5.0},            // loses: close
+            {"2026-02-03", "E31A.v.0", 5000, 0.66, 0.661, 0.659, 0.66},     // loses: volume
+            {"2026-02-03", "E31A.v.0", 76895, 0.6487, 0.65155, 0.64615, 0.6512},  // kept
+            {"2026-02-03", "E31B.v.0", 100, 4.0, 4.1, 3.9, 4.0},            // kept: equal volume,
+                                                                             // lower close
+        };
+        for (const auto& r : rows) {
+            w.exec("INSERT INTO " + table +
+                       " (time, symbol, volume, open, high, low, close) VALUES "
+                       "($1::timestamptz, $2, $3, $4, $5, $6, $7)",
+                   pqxx::params{std::string(r.date) + " 00:00:00+00", std::string(r.symbol),
+                                r.volume, r.open, r.high, r.low, r.close});
+        }
+        w.commit();
+    }
+
+    auto db = std::make_shared<PostgresDatabase>(conn_);
+    ASSERT_TRUE(db->connect().is_ok());
+    const auto prices = db->get_latest_prices({"E31A.v.0", "E31B.v.0"}, AssetClass::FUTURES,
+                                              DataFrequency::DAILY, "c7b_e31_probe");
+    db->disconnect();
+    ASSERT_TRUE(prices.is_ok()) << prices.error()->what();
+    ASSERT_EQ(prices.value().size(), 2u) << "one price per symbol";
+    EXPECT_DOUBLE_EQ(prices.value().at("E31A.v.0"), 0.6512)
+        << "the newest instant's highest-volume copy (76,895 lots), not the first stored";
+    EXPECT_DOUBLE_EQ(prices.value().at("E31B.v.0"), 4.0)
+        << "equal volume: the lower close, as the loader keeps it";
 }

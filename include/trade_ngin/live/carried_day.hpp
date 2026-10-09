@@ -4,6 +4,8 @@
 #include <string>
 #include <unordered_map>
 
+#include "trade_ngin/data/session_classifier.hpp"
+
 namespace trade_ngin {
 
 /**
@@ -30,5 +32,58 @@ struct CarriedForecasts {
     std::string session_date;
     std::unordered_map<std::string, double> forecasts;
 };
+
+/**
+ * @brief Why a whole-book carry had no session, from the day's T-1 classification (T-7b-1 C7b R2,
+ *        T-7a_CODE_REVIEW R2). A carry happens when no symbol has a T-1 price, so every verdict
+ *        is a no-bar one: when any of them is a feed hole the reason is the FEED HOLE and its
+ *        count (the dead Sundays 2026-05-17 and 05-24), otherwise a closure with the first
+ *        verdict's reason ("holiday: ...", "not expected: ..."). The runners used to derive it
+ *        from the weekday and the calendar, which named nothing on a feed-hole carry.
+ */
+inline std::string carried_day_reason(const T1Classification& t1) {
+    if (t1.feed_hole > 0) {
+        return "FEED HOLE: " + std::to_string(t1.feed_hole) +
+               " symbol(s) normally print on this weekday";
+    }
+    if (t1.verdicts.empty()) return "closure";
+    return "closure: " + t1.verdicts.front().reason;
+}
+
+namespace carried_day_detail {
+inline std::string html_escape(const std::string& in) {
+    std::string out;
+    out.reserve(in.size());
+    for (char c : in) {
+        switch (c) {
+            case '&': out += "&amp;"; break;
+            case '<': out += "&lt;"; break;
+            case '>': out += "&gt;"; break;
+            case '"': out += "&quot;"; break;
+            case '\'': out += "&#39;"; break;
+            default: out += c;
+        }
+    }
+    return out;
+}
+}  // namespace carried_day_detail
+
+/// `body` with the carried-day banner (the same note the positions file carries) at the top of
+/// the report, inside the container EmailSender::generate_trading_report_body opens, or in front
+/// of the body when the container is not found.
+inline std::string flag_email_body_for_carried_day(const std::string& body,
+                                                   const std::string& note) {
+    static const std::string kContainer = "<div class=\"container\">\n";
+    const std::string banner =
+        "<div class=\"alert-note\" id=\"carried-day\">\n<strong>NO SESSION - BOOK CARRIED:</strong> " +
+        carried_day_detail::html_escape(note) +
+        ". No orders were generated; every position is the previous day's, marked at its last "
+        "close.\n</div>\n";
+    const auto at = body.find(kContainer);
+    if (at == std::string::npos) return banner + body;
+    std::string flagged = body;
+    flagged.insert(at + kContainer.size(), banner);
+    return flagged;
+}
 
 }  // namespace trade_ngin

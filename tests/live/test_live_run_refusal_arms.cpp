@@ -548,6 +548,60 @@ TEST_F(RunMetadataDbFixture, TheSecondUpsertMarksTheSameRowWithTheReason) {
     EXPECT_EQ(nlohmann::json::parse(r[0][2].as<std::string>()), strategy_configs);
 }
 
+// T-7b-1 C7b R4 (T-7a_CODE_REVIEW R4): the STRICT assertion fires after the day's upsert, so the
+// runner writes the same row again with the assertion marked (the Q2 pattern) before it returns 1.
+// The mark is merged into the JSON the row already carries: a same-day risk refusal mark stays.
+TEST_F(RunMetadataDbFixture, C7bTheStrictAssertionMarksTheSameRow) {
+    const Timestamp run_date = date_at(2026, 5, 19);
+    const nlohmann::json allocations = {{"TREND_FOLLOWING", 1.0}};
+    const nlohmann::json strategy_configs = {{"TREND_FOLLOWING", {{"probe", true}}}};
+    const nlohmann::json config = first_upsert_portfolio_config();
+    ASSERT_FALSE(db_->store_live_run_metadata(run_date, kProbeStrategy, kProbePortfolio,
+                                              allocations, config, strategy_configs)
+                     .is_error());
+    // The Q2 mark first, kept in the runner's JSON as the runner now keeps it.
+    RiskDecisionRecord rec;
+    rec.phase = RiskPhase::LAP;
+    rec.lap = 1;
+    rec.scope = RiskScope::PORTFOLIO;
+    rec.scope_id = kProbePortfolio;
+    rec.module_id = "stop";
+    rec.requested.action = RiskAction::REFUSE;
+    rec.requested.module_id = "stop";
+    rec.requested.reason = "gross leverage over the stop";
+    rec.applied_action = RiskAction::REFUSE;
+    const auto refusal = portfolio_risk_refusal({rec});
+    ASSERT_TRUE(refusal.has_value());
+    nlohmann::json row_config = config;
+    ASSERT_FALSE(db_->store_live_run_metadata(
+                         run_date, kProbeStrategy, kProbePortfolio, allocations,
+                         row_config = mark_risk_refusal(row_config, *refusal,
+                                                        build_risk_decisions_json({}, {rec})),
+                         strategy_configs)
+                     .is_error());
+    const std::vector<std::string> unpriced = {"TREND_FOLLOWING/MYM.v.0"};
+    ASSERT_FALSE(db_->store_live_run_metadata(run_date, kProbeStrategy, kProbePortfolio,
+                                              allocations,
+                                              mark_strict_assertion(row_config, unpriced),
+                                              strategy_configs)
+                     .is_error());
+    pqxx::connection c(dsn_);
+    pqxx::work txn(c);
+    auto r = txn.exec(
+        "SELECT portfolio_config::text FROM trading.live_run_metadata WHERE strategy_id = " +
+        txn.quote(kProbeStrategy) + " AND portfolio_id = " + txn.quote(kProbePortfolio) +
+        " AND date = '2026-05-19'");
+    ASSERT_EQ(r.size(), 1u) << "the mark must update the day's row, not add a second one";
+    const auto stored = nlohmann::json::parse(r[0][0].as<std::string>());
+    ASSERT_TRUE(stored.contains("strict_assertion")) << stored.dump();
+    EXPECT_EQ(stored["strict_assertion"]["unpriced_book_changes"],
+              nlohmann::json::array({"TREND_FOLLOWING/MYM.v.0"}));
+    ASSERT_TRUE(stored.contains("risk_refusal")) << "the STRICT mark replaced the risk refusal mark";
+    EXPECT_EQ(stored["risk_refusal"]["module"], "stop");
+    EXPECT_TRUE(stored.contains("risk_decisions"));
+    EXPECT_EQ(stored["total_capital"], 500000.0);
+}
+
 TEST_F(RunMetadataDbFixture, ExecuteDirectQueryReportsTheRowsItTouched) {
     // A statement whose command tag carries no row count (DDL): succeeds and reports 0. At
     // ed6c4a6e this threw "Could not convert '' to int" out of execute_direct_query, AFTER the

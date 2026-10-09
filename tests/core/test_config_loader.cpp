@@ -883,6 +883,51 @@ TEST(TrackedTemplateCovarianceHistory, EveryBookDeclares756) {
     }
 }
 
+// T-7b-1 7d: portfolio.json "covariance_stale_dates", how many union dates a covariance
+// participant's last date may trail the newest before the optimizer leaves it out of the date
+// intersection. Read through to_json() so this test compiles against the parent source.
+TEST_F(ConfigLoaderTest, CovarianceStaleDatesAbsentMeans5) {
+    write_full_set("base");
+    auto r = ConfigLoader::load(base_, "base");
+    ASSERT_TRUE(r.is_ok()) << (r.error() ? r.error()->what() : "");
+    EXPECT_EQ(r.value().to_json().value("covariance_stale_dates", -1), 5)
+        << "an absent covariance_stale_dates must mean 5";
+
+    write_full_set("base", {}, {{"covariance_stale_dates", 3}});
+    auto r2 = ConfigLoader::load(base_, "base");
+    ASSERT_TRUE(r2.is_ok()) << (r2.error() ? r2.error()->what() : "");
+    EXPECT_EQ(r2.value().to_json().value("covariance_stale_dates", -1), 3);
+}
+
+TEST_F(ConfigLoaderTest, CovarianceStaleDatesNotAWholeNumberIsRefused) {
+    for (const nlohmann::json& bad : {nlohmann::json(-1), nlohmann::json(2.5), nlohmann::json("5"),
+                                      nlohmann::json(true), nlohmann::json(nullptr)}) {
+        EXPECT_EQ(load_error(minimal_risk(), {{"covariance_stale_dates", bad}}),
+                  "config for TEST_PORTFOLIO: portfolio.json \"covariance_stale_dates\" must be a "
+                  "whole number of at least 0 (union dates a covariance participant's last date "
+                  "may trail the newest before the optimiser leaves it out of the date "
+                  "intersection; absent means 5), got " + bad.dump())
+            << "value " << bad.dump();
+    }
+    EXPECT_EQ(load_error(minimal_risk(), {{"covariance_stale_dates", 0}}), "")
+        << "0 is allowed: every participant must print on the newest date";
+}
+
+TEST(TrackedTemplateCovarianceStaleDates, EveryBookDeclares5) {
+    const auto tmpl = tracked_config_template();
+    ASSERT_FALSE(tmpl.empty()) << "config_template/ not found; this test must not skip";
+    for (const char* book : {"base", "conservative", "equity_mr"}) {
+        std::ifstream f(tmpl / "portfolios" / book / "portfolio.json");
+        ASSERT_TRUE(f.good()) << book;
+        const auto portfolio = nlohmann::json::parse(f);
+        ASSERT_TRUE(portfolio.contains("covariance_stale_dates")) << book;
+        EXPECT_EQ(portfolio.at("covariance_stale_dates").get<int>(), 5) << book;
+        auto loaded = ConfigLoader::load(tmpl, book);
+        ASSERT_TRUE(loaded.is_ok()) << book << ": " << (loaded.is_error() ? loaded.error()->what() : "");
+        EXPECT_EQ(loaded.value().to_json().value("covariance_stale_dates", -1), 5) << book;
+    }
+}
+
 TEST_F(ConfigLoaderTest, StrategyLimitsAreRequiredInRiskJson) {
     auto risk = minimal_risk();
     risk.erase("max_drawdown");

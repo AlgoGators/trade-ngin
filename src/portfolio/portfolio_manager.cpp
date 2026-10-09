@@ -1,5 +1,6 @@
 // src/portfolio/portfolio_manager.cpp
 #include "trade_ngin/portfolio/portfolio_manager.hpp"
+#include "trade_ngin/portfolio/allocation_split.hpp"
 #include <unordered_set>
 #include <algorithm>
 #include <climits>
@@ -238,6 +239,23 @@ Result<void> PortfolioManager::add_strategy(std::shared_ptr<StrategyInterface> s
 
     return Result<void>();
 }
+
+namespace {
+
+// The close of `symbol`'s latest-dated bar in `data`, 0.0 when it has none. Among bars of the same
+// timestamp the first one wins, which is what the old first-match lookup returned whenever a call
+// carried one date per symbol (every backtest cycle before T-7b-1 7a).
+double latest_close_of(const std::vector<Bar>& data, const std::string& symbol) {
+    const Bar* latest = nullptr;
+    for (const auto& bar : data) {
+        if (bar.symbol == symbol && (latest == nullptr || bar.timestamp > latest->timestamp)) {
+            latest = &bar;
+        }
+    }
+    return latest ? static_cast<double>(latest->close) : 0.0;
+}
+
+}  // namespace
 
 Result<void> PortfolioManager::process_market_data(const std::vector<Bar>& data,
                                                    bool skip_execution_generation,
@@ -822,14 +840,11 @@ Result<void> PortfolioManager::process_market_data(const std::vector<Bar>& data,
                                 continue;
                             }
 
-                            // Find latest price for symbol
-                            double latest_price = 0.0;
-                            for (const auto& bar : data) {
-                                if (bar.symbol == symbol) {
-                                    latest_price = static_cast<double>(bar.close);
-                                    break;
-                                }
-                            }
+                            // The symbol's LATEST-dated bar in this call (the signal group's
+                            // close). T-7b-1 7a: on a release cycle the backtest feeds a withheld
+                            // JUNK bar ahead of the symbol's new bar, so the first bar is not the
+                            // latest; the first of equal dates is kept, as before.
+                            const double latest_price = latest_close_of(data, symbol);
 
                             if (latest_price == 0.0) {
                                 continue;  // Skip if price not available
@@ -910,14 +925,8 @@ Result<void> PortfolioManager::process_market_data(const std::vector<Bar>& data,
                             is_establishment_exec ? new_qty : (new_qty - current_qty);
                         Side side = trade_size > 0 ? Side::BUY : Side::SELL;
 
-                        // Find latest price for symbol
-                        double latest_price = 0.0;
-                        for (const auto& bar : data) {
-                            if (bar.symbol == symbol) {
-                                latest_price = static_cast<double>(bar.close);
-                                break;
-                            }
-                        }
+                        // The symbol's LATEST-dated bar in this call (see above).
+                        const double latest_price = latest_close_of(data, symbol);
 
                         if (latest_price == 0.0) {
                             continue;  // Skip if price not available
@@ -1012,7 +1021,7 @@ std::vector<double> PortfolioManager::calculate_weights_per_contract(
 }
 
 std::vector<double> PortfolioManager::calculate_trading_costs(
-    const std::vector<std::string>& symbols, double capital) const {
+    const std::vector<std::string>& symbols, [[maybe_unused]] double capital) const {
     std::vector<double> costs(symbols.size(), 0.0);
 
     // Collect all trading data once
@@ -1038,11 +1047,19 @@ std::vector<double> PortfolioManager::calculate_trading_costs(
             double price = data.price_history.empty() ? 1.0 : data.price_history.back();
             double fx_rate = 1.0;  // Default exchange rate
 
-            // Calculate notional per contract
-            [[maybe_unused]] double notional_per_contract = contract_size * price * fx_rate;
+            // F4 (T-7b-1 C8d, ledger M-04): the entry is the cost of ONE contract over that
+            // contract's notional. The optimizer charges |dw| x costs[i] with dw in weight
+            // (notional / capital); n contracts are dw = n x notional / capital and cost
+            // n x cost_per_contract dollars, n x cost_per_contract / capital of capital, which is
+            // |dw| x cost_per_contract / notional. The entry was cost_per_contract / capital,
+            // which understated the penalty by capital / notional (13.8x for MES at 7,252.5 on
+            // $500,000, 4.6x for ZF at 107.85). notional uses the same contract_size and price
+            // as the weights per contract in optimize_positions.
+            double notional_per_contract = contract_size * price * fx_rate;
             auto cost_result = cost_manager_.calculate_costs(symbol, 1.0, price);
             double cost_per_contract = cost_result.total_transaction_costs;
-            costs[i] = (capital > 0.0) ? (cost_per_contract / capital) : 0.0;
+            costs[i] = (notional_per_contract > 0.0) ? (cost_per_contract / notional_per_contract)
+                                                     : 0.0;
         } else {
             WARN("Symbol " + symbol + " not found in trading data, using zero cost");
             costs[i] = 0.0;
@@ -1189,6 +1206,41 @@ std::string covariance_day_label(int64_t day) {
     return buf;
 }
 
+// The returns calculate_covariance_matrix needs before it falls back to the 0.01 diagonal; T-7b-1
+// 7d applies the same number to the date intersection (date_aligned_returns' floor).
+constexpr size_t kCovarianceMinReturns = 20;
+
+// max |rho| over the pairs (i < j) of `symbols` in `cov` whose two legs are both in `held` (every
+// pair when `held` is null); the pair as "A/B" in `pair`. A pair with a non-positive variance or a
+// non-finite correlation is skipped and |rho| is clamped to 1, as the Carver gate's
+// calculate_correlation_multiplier does. -1 when there is no pair.
+double covariance_max_abs_rho(const std::vector<std::string>& symbols,
+                              const std::vector<std::vector<double>>& cov,
+                              const std::set<std::string>* held, std::string& pair) {
+    double best = -1.0;
+    pair = "-";
+    if (cov.size() != symbols.size()) return best;
+    for (size_t i = 0; i < symbols.size(); ++i) {
+        if (held && !held->count(symbols[i])) continue;
+        for (size_t j = i + 1; j < symbols.size(); ++j) {
+            if (held && !held->count(symbols[j])) continue;
+            const double vi = cov[i][i];
+            const double vj = cov[j][j];
+            if (!(vi > 0.0) || !(vj > 0.0)) continue;
+            const double r = cov[i][j] / std::sqrt(vi * vj);
+            if (!std::isfinite(r)) continue;
+            const double a = std::min(1.0, std::abs(r));
+            if (a > best) {
+                best = a;
+                pair = symbols[i] + "/" + symbols[j];
+            }
+        }
+    }
+    return best;
+}
+
+std::string covariance_rho_text(double v) { return v < 0.0 ? std::string("-") : std::to_string(v); }
+
 }  // namespace
 
 std::unordered_map<std::string, std::vector<double>> PortfolioManager::date_aligned_returns(
@@ -1216,44 +1268,148 @@ std::unordered_map<std::string, std::vector<double>> PortfolioManager::date_alig
     // 756-price cap is applied when the closes are recorded (update_historical_returns), before
     // this. When every symbol has the same dates this returns exactly the series the count
     // alignment used, bit for bit.
+    //
+    // T-7b-1 7d (the S3 follow-up; T-7a_S1_S3_CODE_REVIEW S3-1, S3-2) narrows the participants in
+    // two steps before the intersection is taken, and says so with a WARN per symbol left out:
+    //
+    //  * STALE: U is the union of the participants' usable dates. A participant whose last usable
+    //    date has more than k dates of U after it (k = config_.covariance_stale_dates, portfolio.json
+    //    "covariance_stale_dates", absent means 5) is left out: one symbol whose feed stopped used to
+    //    end D for every symbol. At exactly k it stays. A calendar gap nobody printed is not a date of
+    //    U; a date only one participant printed is. Decided once, on the union of all participants.
+    //  * FLOOR: while D gives fewer than kCovarianceMinReturns (20) returns, the participant with
+    //    the fewest usable dates is left out (ties: the later first usable date, then the smaller
+    //    symbol name); a participant with as many dates as the most-dated one never is, and if
+    //    leaving out the shorter ones cannot reach 20 returns nobody is left out. Before this, a D
+    //    under 20 returns sent the WHOLE matrix to calculate_covariance_matrix's 0.01 diagonal.
+    //
+    // A participant left out gets an EMPTY series, so calculate_covariance_matrix gives it the
+    // guarded column (the C-20 path: 0.01 variance, zero covariances) and every other entry is what
+    // it is without that symbol. With nobody left out this is S3's rule exactly, and the
+    // COVARIANCE_DATE_ALIGNED line is byte-identical to S3's.
     std::unordered_map<std::string, std::vector<double>> out;
     std::vector<std::string> participants;
-    size_t shortest_own_returns = SIZE_MAX;
+    std::unordered_map<std::string, std::vector<int64_t>> usable_dates;  // ascending
     for (const auto& [symbol, closes] : closes_by_symbol) {
-        size_t usable = 0;
+        std::vector<int64_t> usable;
         for (const auto& [day, close] : closes) {
-            if (std::isfinite(close) && close > 0.0) ++usable;
+            if (std::isfinite(close) && close > 0.0) usable.push_back(day);
         }
         out[symbol];  // every symbol is in the result, empty unless it takes part
-        if (usable >= 2) {
+        if (usable.size() >= 2) {
             participants.push_back(symbol);
-            shortest_own_returns = std::min(shortest_own_returns, usable - 1);
+            usable_dates[symbol] = std::move(usable);
         }
     }
     std::sort(participants.begin(), participants.end());
 
-    // The intersection, and the union's dates it leaves out (for the log line).
-    std::vector<int64_t> dates;
-    std::set<int64_t> union_dates;
+    // STALE: the participants whose last usable date trails the newest date of U by more than k.
     if (!participants.empty()) {
-        std::map<int64_t, size_t> seen;
+        std::set<int64_t> all_dates;
         for (const auto& symbol : participants) {
-            for (const auto& [day, close] : closes_by_symbol.at(symbol)) {
-                if (std::isfinite(close) && close > 0.0) {
-                    ++seen[day];
-                    union_dates.insert(day);
-                }
+            const auto& d = usable_dates.at(symbol);
+            all_dates.insert(d.begin(), d.end());
+        }
+        const std::vector<int64_t> u(all_dates.begin(), all_dates.end());
+        const size_t k = config_.covariance_stale_dates;
+        std::vector<std::string> kept;
+        for (const auto& symbol : participants) {
+            const int64_t last = usable_dates.at(symbol).back();
+            const size_t behind =
+                static_cast<size_t>(u.end() - std::upper_bound(u.begin(), u.end(), last));
+            if (behind > k) {
+                WARN("COVARIANCE_STALE_PARTICIPANT symbol=" + symbol +
+                     " last=" + covariance_day_label(last) +
+                     " newest=" + covariance_day_label(u.back()) +
+                     " dates_behind=" + std::to_string(behind) + " k=" + std::to_string(k) +
+                     ": left out of the optimizer's date intersection; its column is the guarded "
+                     "0.01 variance with zero covariances");
+            } else {
+                kept.push_back(symbol);
             }
         }
+        participants.swap(kept);
+    }
+
+    // The intersection of the participants' usable dates, with the 2,520-return cap
+    // (max_history_length_) as before: the newest cap + 1 dates. The cap cannot bind at the
+    // 756-price cap the closes are recorded under.
+    auto intersect = [&](const std::vector<std::string>& ps) {
+        std::vector<int64_t> d;
+        if (ps.empty()) return d;
+        std::map<int64_t, size_t> seen;
+        for (const auto& symbol : ps) {
+            for (int64_t day : usable_dates.at(symbol)) ++seen[day];
+        }
         for (const auto& [day, count] : seen) {
-            if (count == participants.size()) dates.push_back(day);
+            if (count == ps.size()) d.push_back(day);
         }
-        // The 2,520-return cap (max_history_length_) as before: the newest cap + 1 dates. It
-        // cannot bind at the 756-price cap the closes are recorded under.
-        if (dates.size() > max_history_length_ + 1) {
-            dates.erase(dates.begin(),
-                        dates.end() - static_cast<std::ptrdiff_t>(max_history_length_ + 1));
+        if (d.size() > max_history_length_ + 1) {
+            d.erase(d.begin(), d.end() - static_cast<std::ptrdiff_t>(max_history_length_ + 1));
         }
+        return d;
+    };
+    std::vector<int64_t> dates = intersect(participants);
+
+    // FLOOR: the 20 returns calculate_covariance_matrix needs, applied to the intersection. Only a
+    // participant with FEWER usable dates than the most-dated participant can be left out (the
+    // floor is there to stop a short participant shrinking everyone's window; leaving out a
+    // most-dated one cannot lengthen the others'), and nobody is left out unless that reaches
+    // the floor: when it cannot, every participant stays and the matrix takes the 0.01 diagonal
+    // exactly as under S3, rather than a symbol's data being thrown away for nothing.
+    if (participants.size() > 1 && dates.size() < kCovarianceMinReturns + 1) {
+        size_t most_dates = 0;
+        for (const auto& symbol : participants) {
+            most_dates = std::max(most_dates, usable_dates.at(symbol).size());
+        }
+        std::vector<std::string> left_in = participants;
+        std::vector<int64_t> left_in_dates = dates;
+        std::vector<std::pair<std::string, size_t>> left_out;  // symbol, intersection returns before
+        while (left_in_dates.size() < kCovarianceMinReturns + 1) {
+            auto shortest = left_in.end();
+            for (auto it = left_in.begin(); it != left_in.end(); ++it) {
+                const auto& d = usable_dates.at(*it);
+                if (d.size() >= most_dates) continue;
+                if (shortest == left_in.end()) {
+                    shortest = it;
+                    continue;
+                }
+                const auto& ds = usable_dates.at(*shortest);
+                if (d.size() != ds.size() ? d.size() < ds.size()
+                    : d.front() != ds.front() ? d.front() > ds.front()
+                    : *it < *shortest) {
+                    shortest = it;
+                }
+            }
+            if (shortest == left_in.end()) break;  // only most-dated participants are left
+            left_out.emplace_back(*shortest,
+                                  left_in_dates.empty() ? 0 : left_in_dates.size() - 1);
+            left_in.erase(shortest);
+            left_in_dates = intersect(left_in);
+        }
+        if (left_in_dates.size() >= kCovarianceMinReturns + 1) {
+            for (const auto& [symbol, before] : left_out) {
+                const auto& ds = usable_dates.at(symbol);
+                WARN("COVARIANCE_FLOOR_DROP symbol=" + symbol +
+                     " own_dates=" + std::to_string(ds.size()) +
+                     " first=" + covariance_day_label(ds.front()) +
+                     " intersection_returns=" + std::to_string(before) +
+                     " floor=" + std::to_string(kCovarianceMinReturns) +
+                     ": the intersection is under the floor; the participant with the fewest dates "
+                     "is left out of it, not the whole matrix; its column is the guarded 0.01 "
+                     "variance with zero covariances");
+            }
+            participants.swap(left_in);
+            dates.swap(left_in_dates);
+        }
+    }
+
+    size_t shortest_own_returns = SIZE_MAX;
+    std::set<int64_t> union_dates;  // of the participants left in, for the log line
+    for (const auto& symbol : participants) {
+        const auto& d = usable_dates.at(symbol);
+        shortest_own_returns = std::min(shortest_own_returns, d.size() - 1);
+        union_dates.insert(d.begin(), d.end());
     }
 
     size_t returns = 0;
@@ -1480,6 +1636,32 @@ std::vector<int64_t> split_largest_remainder(const std::vector<SleeveQuota>& sle
 
 }  // namespace
 
+SleeveDistribution distribute_optimizer_contracts(double optimizer_contracts,
+                                                  const std::vector<SleeveContribution>& sleeves) {
+    SleeveDistribution d;
+    double total = 0.0;
+    for (const auto& s : sleeves)
+        total += s.contribution;
+
+    const int rounded_contracts = static_cast<int>(std::round(optimizer_contracts));
+    std::vector<SleeveQuota> quotas;
+    quotas.reserve(sleeves.size());
+    for (const auto& s : sleeves) {
+        const double share = total > 1e-8 ? s.contribution / total : 0.0;
+        // A sleeve with no share has a quota of 0.
+        const double quota = share == 0.0 ? 0.0 : optimizer_contracts * share;
+        quotas.push_back({s.strategy_id, quota});
+        d.quota.push_back(quota);
+        d.per_sleeve_rounding.push_back(
+            static_cast<int64_t>(std::round(share == 0.0 ? 0.0 : rounded_contracts * share)));
+    }
+
+    d.stored = split_largest_remainder(quotas);
+    for (auto q : d.stored)
+        d.book += q;
+    return d;
+}
+
 Result<void> PortfolioManager::optimize_positions() {
     try {
         // Get unique symbols across all strategies and collect data under lock
@@ -1494,9 +1676,8 @@ Result<void> PortfolioManager::optimize_positions() {
         std::unordered_map<std::string, std::map<int64_t, double>> closes_by_symbol;
 
         // Store original contributions per strategy per symbol for proportional distribution
-        // Map: symbol -> strategy_id -> contribution (quantity * allocation * weight_per_contract)
+        // Map: symbol -> strategy_id -> contribution (quantity * weight_per_contract)
         std::unordered_map<std::string, std::unordered_map<std::string, double>> original_contribs;
-        std::unordered_map<std::string, double> total_contribs;
 
         {
             std::lock_guard<std::mutex> lock(mutex_);
@@ -1603,27 +1784,29 @@ Result<void> PortfolioManager::optimize_positions() {
             for (size_t i = 0; i < symbols.size(); ++i) {
                 const std::string& symbol = symbols[i];
 
-                // Aggregate across strategies
+                // Aggregate across strategies, in account weight (ledger N2): a sleeve sizes its
+                // contracts on its own capital slice (capital x allocation), so each of its
+                // contracts is one contract of the account's book and weighs w; the account
+                // holds the sum of the sleeves' contracts, which is the book apply_risk_management
+                // gates. The allocation is already inside the quantity and is not applied again.
                 for (const auto& [strat_id, info] : strategies_) {
                     if (!info.use_optimization || pinned_scopes_.count(strat_id))
                         continue;
 
-                    double allocation = info.allocation;
                     if (info.current_positions.count(symbol)) {
                         current_weights[i] +=
                             static_cast<double>(info.current_positions.at(symbol).quantity) *
-                            weights_per_contract[i] * allocation;
+                            weights_per_contract[i];
                     }
                     if (info.target_positions.count(symbol)) {
                         double contrib =
                             static_cast<double>(info.target_positions.at(symbol).quantity) *
-                            weights_per_contract[i] * allocation;
+                            weights_per_contract[i];
                         target_weights[i] += contrib;
 
                         // Store original contribution for proportional distribution after
                         // optimization
                         original_contribs[symbol][strat_id] = contrib;
-                        total_contribs[symbol] += contrib;
                     }
                 }
             }
@@ -1680,66 +1863,45 @@ Result<void> PortfolioManager::optimize_positions() {
             for (size_t i = 0; i < symbols.size(); ++i) {
                 const auto& symbol = symbols[i];
 
-                // The optimizer's answer in contracts of the aggregated weight, UNROUNDED. The
-                // aggregate is sum(q x allocation) per contract (ledger N2), not the book.
+                // The optimizer's answer in account contracts, UNROUNDED (ledger N2: the
+                // aggregate is the sum of the sleeves' contracts, the account's book).
                 double raw_contracts = optimized_positions[i] / weights_per_contract[i];
 
-                // Distribute proportionally based on each strategy's original contribution
-                double total_original = total_contribs[symbol];
-
-                // Each sleeve's quota, in ITS OWN contracts: its share of the optimizer's weight
-                // with the allocation undone on the weight, raw x share / allocation, unrounded.
-                // The book is the sum of the sleeves' contracts; it is rounded ONCE and split by
-                // largest remainder (split_largest_remainder), so the stored sleeve integers sum
-                // to the book's integer exactly. Before this the optimizer's answer was rounded
-                // first and every sleeve's part rounded again, and at allocations below 1.0 the
-                // sleeve integers need not sum to anything the optimizer produced (ledger
-                // OPT-N3). One sleeve at allocation 1.0 stores round(raw) as before.
-                std::vector<SleeveQuota> quotas;
-                std::vector<int64_t> per_sleeve_rounding;  // the replaced rule, for the log only
-                const int rounded_contracts = static_cast<int>(std::round(raw_contracts));
-
+                // Each sleeve's quota is its share of the answer, raw x share, unrounded; the
+                // book is rounded ONCE and split by largest remainder, so the stored sleeve
+                // integers sum to round(raw) exactly (distribute_optimizer_contracts). Before
+                // N2 the aggregate weighted each contract by its sleeve's allocation and the
+                // quota divided by it again, so one optimizer step (one w) became 1 / (sum(q x
+                // allocation) / sum(q)) contracts of book: 3.33 on a symbol only a 0.3 sleeve
+                // holds. One sleeve at allocation 1.0 stores round(raw) as before.
+                std::vector<SleeveContribution> contributions;
                 for (auto& [strat_id, info] : strategies_) {
                     if (!info.use_optimization || pinned_scopes_.count(strat_id))
                         continue;
                     if (!info.target_positions.count(symbol))
                         continue;
-
-                    // Calculate this strategy's share of the optimized position
-                    double share = 0.0;
-                    if (total_original > 1e-8 && original_contribs[symbol].count(strat_id) > 0) {
-                        share = original_contribs[symbol][strat_id] / total_original;
-                    }
-
-                    // The allocation is undone on the weight, not on a rounded contract. A sleeve
-                    // with no share has a quota of 0 (and no division by its allocation).
-                    const double quota = share == 0.0 ? 0.0 : raw_contracts * share / info.allocation;
-                    quotas.push_back({strat_id, quota});
-                    per_sleeve_rounding.push_back(static_cast<int64_t>(
-                        std::round(share == 0.0 ? 0.0 : rounded_contracts * share / info.allocation)));
+                    contributions.push_back({strat_id, original_contribs[symbol][strat_id]});
                 }
 
-                const std::vector<int64_t> split = split_largest_remainder(quotas);
+                const SleeveDistribution d =
+                    distribute_optimizer_contracts(raw_contracts, contributions);
                 bool differs = false;
-                for (size_t k = 0; k < quotas.size(); ++k) {
-                    strategies_.at(quotas[k].strategy_id).target_positions[symbol].quantity =
-                        static_cast<Decimal>(static_cast<double>(split[k]));
-                    differs = differs || split[k] != per_sleeve_rounding[k];
+                for (size_t k = 0; k < contributions.size(); ++k) {
+                    strategies_.at(contributions[k].strategy_id).target_positions[symbol].quantity =
+                        static_cast<Decimal>(static_cast<double>(d.stored[k]));
+                    differs = differs || d.stored[k] != d.per_sleeve_rounding[k];
                 }
                 if (differs) {
                     std::ostringstream line;
                     line << "ALLOCATION_SPLIT sym=" << symbol << " optimizer=" << raw_contracts
-                         << " book=";
-                    int64_t book = 0;
-                    for (auto q : split)
-                        book += q;
-                    line << book << " split:";
-                    for (size_t k = 0; k < quotas.size(); ++k)
-                        line << " " << quotas[k].strategy_id << "=" << split[k] << " (quota "
-                             << quotas[k].quota << ")";
+                         << " book=" << d.book << " split:";
+                    for (size_t k = 0; k < contributions.size(); ++k)
+                        line << " " << contributions[k].strategy_id << "=" << d.stored[k]
+                             << " (quota " << d.quota[k] << ")";
                     line << "; rounding each sleeve would store:";
-                    for (size_t k = 0; k < quotas.size(); ++k)
-                        line << " " << quotas[k].strategy_id << "=" << per_sleeve_rounding[k];
+                    for (size_t k = 0; k < contributions.size(); ++k)
+                        line << " " << contributions[k].strategy_id << "="
+                             << d.per_sleeve_rounding[k];
                     INFO(line.str());
                 }
             }
@@ -1751,12 +1913,12 @@ Result<void> PortfolioManager::optimize_positions() {
                 double original_position = 0.0;
                 double optimized_position = 0.0;
 
-                // Sum up positions across all strategies
+                // Sum up positions across all strategies: the account's contracts (ledger N2;
+                // a sleeve's contracts already carry its allocation)
                 for (const auto& [_, info] : strategies_) {
                     if (info.target_positions.count(symbol) > 0) {
                         optimized_position +=
-                            static_cast<double>(info.target_positions.at(symbol).quantity) *
-                            info.allocation;
+                            static_cast<double>(info.target_positions.at(symbol).quantity);
                     }
                 }
 
@@ -2254,6 +2416,50 @@ Result<void> PortfolioManager::apply_risk_management(const std::vector<Bar>& dat
             std::vector<std::string> errors;
             std::vector<RiskDecision> decisions =
                 evaluate_scope_modules(risk_modules_, portfolio_positions, lap_ctx, false, errors);
+
+            // T-7b-1 7d: the optimizer's and the risk gate's max |rho| side by side, once per
+            // rebalance. Lap 1 is the one lap every rebalance with a book has; both numbers are
+            // then read on the same book (the optimizer's answer, before any cut), the optimizer's
+            // matrix is the one it built this rebalance (cached for the later laps), and the gate's
+            // reading is scale-free, so a later lap's cut would not change it unless a position
+            // rounded to zero. optimizer= is over the held pairs (both legs non-zero) that the
+            // optimizer's matrix covers, the pairs the gate's correlation term reads;
+            // optimizer_all= over every pair of the optimizer's matrix. Not printed when the
+            // optimizer built no matrix this rebalance (the optimizer is off, as on the equity
+            // books, or it had no symbols).
+            if (lap_ctx.lap == 1 && covariance_cache_valid_) {
+                std::set<std::string> held;
+                for (const auto& symbol : cached_symbols_) {
+                    auto it = portfolio_positions.find(symbol);
+                    if (it != portfolio_positions.end() &&
+                        std::abs(static_cast<double>(it->second.quantity)) > 1e-12) {
+                        held.insert(symbol);
+                    }
+                }
+                std::string pair_held;
+                std::string pair_all;
+                const double rho_held =
+                    covariance_max_abs_rho(cached_symbols_, cached_covariance_, &held, pair_held);
+                const double rho_all =
+                    covariance_max_abs_rho(cached_symbols_, cached_covariance_, nullptr, pair_all);
+                std::string gate = "-";
+                std::string gate_module = "-";
+                std::string gate_blind = "-";
+                for (const auto& d : decisions) {
+                    if (!d.metrics.has_value()) continue;
+                    gate = std::to_string(static_cast<double>(d.metrics->correlation_risk));
+                    gate_module = d.module_id.empty() ? "-" : d.module_id;
+                    gate_blind = d.blind ? "1" : "0";
+                    break;
+                }
+                INFO("COVARIANCE_MAX_RHO held=" + std::to_string(held.size()) +
+                     " optimizer=" + covariance_rho_text(rho_held) + " optimizer_pair=" + pair_held +
+                     " optimizer_all=" + covariance_rho_text(rho_all) +
+                     " optimizer_all_pair=" + pair_all + " gate=" + gate +
+                     " gate_module=" + gate_module + " gate_blind=" + gate_blind +
+                     ": max |rho| on lap 1's book, the optimizer's date-aligned covariance beside "
+                     "the risk gate's own window; once per rebalance");
+            }
 
             // The decisions are applied by action (precedence REFUSE > REPLACE > SCALE > WARN).
             RiskVerdict verdict = combine_risk_decisions(decisions, lap_ctx);

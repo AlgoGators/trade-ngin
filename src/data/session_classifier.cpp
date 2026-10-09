@@ -73,10 +73,20 @@ void SessionClassifier::add_bar(const Bar& bar) {
     auto& series = bars_[bar.symbol];
     const Day day = day_of(bar.timestamp);
     auto it = series.find(day);
+    bool changed = false;
     if (it == series.end()) {
         series.emplace(day, b);
+        changed = true;
     } else if (keeps_over(b, it->second)) {
         it->second = b;
+        changed = true;
+    }
+    if (changed) {
+        // A bar's verdict depends on the SESSION bars before it: every cached verdict from this
+        // date on is stale.
+        if (auto fit = session_flags_.find(bar.symbol); fit != session_flags_.end()) {
+            fit->second.erase(fit->second.lower_bound(day), fit->second.end());
+        }
     }
 }
 
@@ -84,25 +94,97 @@ void SessionClassifier::add_bars(const std::vector<Bar>& bars) {
     for (const auto& bar : bars) add_bar(bar);
 }
 
+std::optional<double> SessionClassifier::session_norm(const std::map<Day, DayBar>& series,
+                                                      const std::map<Day, bool>& flags, Day date,
+                                                      int* bars_used) const {
+    if (bars_used) *bars_used = 0;
+    std::vector<double> window;
+    window.reserve(static_cast<std::size_t>(std::max(0, config_.norm_window_bars)));
+    // Strictly before `date`: lower_bound is the first bar at or after it. Only a weekday bar
+    // whose own verdict was SESSION counts (T-7b-1 C7b R7).
+    for (auto it = std::make_reverse_iterator(series.lower_bound(date));
+         it != series.rend() && static_cast<int>(window.size()) < config_.norm_window_bars;
+         ++it) {
+        if (!is_weekday(it->first)) continue;
+        auto f = flags.find(it->first);
+        if (f == flags.end() || !f->second) continue;
+        window.push_back(it->second.volume);
+    }
+    if (window.empty()) {
+        // No SESSION weekday bar yet: the symbol bootstraps from T-7a's norm over all its trailing
+        // weekday bars, so a thin contract (6L.v.0 in 2011, a median of 6.5 lots) can start: under
+        // the floor alone its first bars would be JUNK and none of them would ever count.
+        for (auto it = std::make_reverse_iterator(series.lower_bound(date));
+             it != series.rend() && static_cast<int>(window.size()) < config_.norm_window_bars;
+             ++it) {
+            if (is_weekday(it->first)) window.push_back(it->second.volume);
+        }
+    }
+    if (window.empty()) return std::nullopt;
+    std::sort(window.begin(), window.end());
+    const std::size_t n = window.size();
+    const double median = n % 2 == 1 ? window[n / 2] : 0.5 * (window[n / 2 - 1] + window[n / 2]);
+    // A norm of 0 would disable both volume limbs (nothing is under 1 % or 25 % of 0): no norm.
+    if (!(median > 0.0)) return std::nullopt;
+    if (bars_used) *bars_used = static_cast<int>(n);
+    return median;
+}
+
+const std::map<SessionClassifier::Day, bool>& SessionClassifier::session_flags(
+    const std::string& symbol, Day date) const {
+    auto& flags = session_flags_[symbol];
+    auto sit = bars_.find(symbol);
+    if (sit == bars_.end()) return flags;
+    const auto& series = sit->second;
+    // The cached flags are a prefix of the series (add_bar drops every flag from a changed
+    // date on), so the next bar to judge is the first one after the last cached date.
+    auto it = flags.empty() ? series.begin() : series.upper_bound(flags.rbegin()->first);
+    for (; it != series.end() && it->first < date; ++it) {
+        const auto n = session_norm(series, flags, it->first, nullptr);
+        flags[it->first] = judge_bar(it->second, n, nullptr) == SessionVerdict::SESSION;
+    }
+    return flags;
+}
+
 std::optional<double> SessionClassifier::norm(const std::string& symbol, Day date,
                                               int* bars_used) const {
     if (bars_used) *bars_used = 0;
     auto sit = bars_.find(symbol);
     if (sit == bars_.end()) return std::nullopt;
-    const auto& series = sit->second;
-    std::vector<double> window;
-    window.reserve(static_cast<std::size_t>(std::max(0, config_.norm_window_bars)));
-    // Strictly before `date`: lower_bound is the first bar at or after it.
-    for (auto it = std::make_reverse_iterator(series.lower_bound(date));
-         it != series.rend() && static_cast<int>(window.size()) < config_.norm_window_bars;
-         ++it) {
-        if (is_weekday(it->first)) window.push_back(it->second.volume);
+    return session_norm(sit->second, session_flags(symbol, date), date, bars_used);
+}
+
+SessionVerdict SessionClassifier::judge_bar(const DayBar& b, const std::optional<double>& nm,
+                                            std::string* reason) const {
+    auto say = [reason](std::string text) {
+        if (reason) *reason = std::move(text);
+    };
+    if (b.high == b.low) {
+        say("locked (high == low == " + num(b.high) + ", " + lots(b.volume) +
+            " lots): a bar the market was locked at or a stub, not traded");
+        return SessionVerdict::JUNK;
     }
-    if (window.empty()) return std::nullopt;
-    if (bars_used) *bars_used = static_cast<int>(window.size());
-    std::sort(window.begin(), window.end());
-    const std::size_t n = window.size();
-    return n % 2 == 1 ? window[n / 2] : 0.5 * (window[n / 2 - 1] + window[n / 2]);
+    if (!nm) {
+        if (b.volume < config_.floor_lots) {
+            say("absolute floor with no norm yet (" + lots(b.volume) + " lots < " +
+                lots(config_.floor_lots) + ")");
+            return SessionVerdict::JUNK;
+        }
+        say("no norm yet; " + lots(b.volume) + " lots is above the floor");
+        return SessionVerdict::SESSION;
+    }
+    if (b.volume < config_.junk_fraction * *nm && b.volume < config_.junk_ceiling_lots) {
+        say("corrupt print (" + lots(b.volume) + " lots < " + num(config_.junk_fraction) +
+            " x norm " + lots(*nm) + " and < " + lots(config_.junk_ceiling_lots) + " lots)");
+        return SessionVerdict::JUNK;
+    }
+    if (b.volume < config_.floor_lots && b.volume < config_.floor_fraction * *nm) {
+        say("absolute floor (" + lots(b.volume) + " lots < " + lots(config_.floor_lots) +
+            " and < " + num(config_.floor_fraction) + " x norm " + lots(*nm) + ")");
+        return SessionVerdict::JUNK;
+    }
+    say(lots(b.volume) + " lots against a norm of " + lots(*nm));
+    return SessionVerdict::SESSION;
 }
 
 SymbolDayVerdict SessionClassifier::classify_symbol_day(const std::string& symbol, Day date,
@@ -122,36 +204,7 @@ SymbolDayVerdict SessionClassifier::classify_symbol_day(const std::string& symbo
             v.close = b.close;
             v.norm = norm(symbol, date, &v.norm_bars);
             if (v.norm && *v.norm > 0.0) v.ratio = b.volume / *v.norm;
-
-            if (b.high == b.low) {
-                v.verdict = SessionVerdict::JUNK;
-                v.reason = "locked (high == low == " + num(b.high) + ", " + lots(b.volume) +
-                           " lots): a bar the market was locked at or a stub, not traded";
-            } else if (!v.norm) {
-                if (b.volume < config_.floor_lots) {
-                    v.verdict = SessionVerdict::JUNK;
-                    v.reason = "absolute floor with no norm yet (" + lots(b.volume) + " lots < " +
-                               lots(config_.floor_lots) + ")";
-                } else {
-                    v.verdict = SessionVerdict::SESSION;
-                    v.reason = "no norm yet; " + lots(b.volume) + " lots is above the floor";
-                }
-            } else if (b.volume < config_.junk_fraction * *v.norm &&
-                       b.volume < config_.junk_ceiling_lots) {
-                v.verdict = SessionVerdict::JUNK;
-                v.reason = "corrupt print (" + lots(b.volume) + " lots < " +
-                           num(config_.junk_fraction) + " x norm " + lots(*v.norm) + " and < " +
-                           lots(config_.junk_ceiling_lots) + " lots)";
-            } else if (b.volume < config_.floor_lots &&
-                       b.volume < config_.floor_fraction * *v.norm) {
-                v.verdict = SessionVerdict::JUNK;
-                v.reason = "absolute floor (" + lots(b.volume) + " lots < " +
-                           lots(config_.floor_lots) + " and < " + num(config_.floor_fraction) +
-                           " x norm " + lots(*v.norm) + ")";
-            } else {
-                v.verdict = SessionVerdict::SESSION;
-                v.reason = lots(b.volume) + " lots against a norm of " + lots(*v.norm);
-            }
+            v.verdict = judge_bar(b, v.norm, &v.reason);
             return v;
         }
         // The latest bar strictly before `date`, for the hole's age.
@@ -172,7 +225,10 @@ SymbolDayVerdict SessionClassifier::classify_symbol_day(const std::string& symbo
             v.reason = "holiday: " + h->name;
             return v;
         }
-        if (auto h = holidays(next); h && h->type == "fixed") {
+        // T-7b-1 C7b R8: the eve limb is for a weekend D (Christmas and New Year's Sundays).
+        // A weekday before a fixed-date holiday (Dec 24, Dec 31, Jul 2 or 3) is a session day,
+        // so a missing print there is judged like any other weekday's.
+        if (auto h = holidays(next); h && h->type == "fixed" && !is_weekday(date)) {
             v.verdict = SessionVerdict::NO_BAR_CLOSURE;
             v.reason = "eve of a fixed-date holiday: " + h->name + " (" + next + ")";
             return v;

@@ -93,6 +93,13 @@ private:
     /// (run_portfolio with AssetClass::FUTURES); the equity backtest is untouched.
     SessionClassifier session_classifier_;
     bool session_hold_enabled_ = false;
+    /// T-7b-1 7a: the JUNK signal-group bars withheld from the strategies and the PM on the last
+    /// cycle, fed on the next one ahead of their symbol's next bar (junk_signal_feed.hpp).
+    std::vector<Bar> withheld_junk_signal_bars_;
+    /// T-7b-1 C7 (RA-01): one RISK_SCALE_REPORT line per post-warmup rebalance. Futures only
+    /// (run_portfolio with AssetClass::FUTURES), like the session hold; the equity backtest's log
+    /// is untouched.
+    bool risk_scale_report_enabled_ = false;
     std::string current_run_id_;
     Timestamp backtest_start_date_;
     Timestamp backtest_end_date_;

@@ -48,6 +48,7 @@ set(TEST_SOURCES
     risk/test_risk_manager.cpp
     risk/test_risk_modules.cpp
     risk/test_risk_module_config.cpp
+    risk/test_risk_scale_report.cpp
     optimization/test_dynamic_optimizer.cpp
     backtest/test_transaction_cost_analysis.cpp
     transaction_cost/test_transaction_cost_manager.cpp
@@ -91,6 +92,7 @@ set(TEST_SOURCES
     backtest/test_backtest_realized_flow.cpp
     backtest/test_backtest_unrealized_accounting.cpp
     backtest/test_equity_cost_warmup.cpp
+    backtest/test_backtest_junk_signal_feed.cpp
     execution/test_execution_engine.cpp
     portfolio/test_portfolio_manager.cpp
     core/test_equity_portfolio_namespace.cpp
@@ -117,7 +119,11 @@ set(TEST_SOURCES
     portfolio/test_risk_module_loop.cpp
     portfolio/test_risk_fail_closed.cpp
     portfolio/test_optimizer_allocation_split.cpp
+    portfolio/test_optimizer_allocation_once.cpp
+    portfolio/test_allocation_distribution.cpp
+    portfolio/test_optimizer_cost_vector.cpp
     portfolio/test_covariance_date_alignment.cpp
+    portfolio/test_covariance_participants.cpp
     portfolio/test_pm_session_hold.cpp
     storage/test_backtest_results_manager.cpp
     storage/test_live_results_manager.cpp
@@ -132,7 +138,9 @@ set(TEST_SOURCES
     live/test_sleeve_seeding.cpp
     live/test_base_bus_off_and_carried_day.cpp
     live/test_session_book_gate.cpp
+    live/test_live_runner_small_fixes.cpp
     live/test_cost_model_feed.cpp
+    live/test_futures_cost_feed.cpp
     live/test_execution_price_integrity.cpp
     live/test_margin_manager.cpp
     live/test_live_metrics_calculator.cpp

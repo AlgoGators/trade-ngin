@@ -136,6 +136,25 @@ public:
         double prev_close_price);
 
     /**
+     * @brief The volume half of update_market_data: append one volume to the impact
+     *        model's window (the ADV that prices participation and keys the k_bps tier).
+     *
+     * update_market_data(s, v, c, p) is exactly record_volume(s, v) followed by
+     * record_log_return(s, c, p). The two halves exist so a caller can give the two cost
+     * terms different windows (T-7b-1 C8a, the live futures feed: the fill day's own
+     * volume for the impact term, a 20-return walk for the volatility term).
+     */
+    void record_volume(const std::string& symbol, double volume);
+
+    /**
+     * @brief The return half of update_market_data: append ln(close / prev_close) to the
+     *        spread model's volatility window, only when both prices are positive (a zero
+     *        prev_close means "no previous close": nothing is recorded, nothing fabricated).
+     */
+    void record_log_return(const std::string& symbol, double close_price,
+                           double prev_close_price);
+
+    /**
      * @brief Get current ADV for a symbol
      */
     double get_adv(const std::string& symbol) const;

@@ -63,6 +63,12 @@ struct PortfolioConfig : public ConfigBase {
     // constructor). Not written by to_json(): that object is stored verbatim in
     // backtest.run_metadata.portfolio_config.
     size_t covariance_history_prices{756};
+    // How many dates of the UNION of the covariance participants' dates a participant's last
+    // close may trail the newest such date before the optimiser leaves it out of the date
+    // intersection (portfolio.json "covariance_stale_dates"; absent means 5; T-7b-1 7d). A
+    // participant left out gets the guarded 0.01 variance column. Not written by to_json(), for
+    // the reason covariance_history_prices is not.
+    size_t covariance_stale_dates{5};
     DynamicOptConfig opt_config;      // Optimization configuration
     RiskConfig risk_config;           // Risk management configuration
 
@@ -111,6 +117,9 @@ struct PortfolioConfig : public ConfigBase {
         }
         if (j.contains("covariance_history_prices")) {
             covariance_history_prices = j.at("covariance_history_prices").get<size_t>();
+        }
+        if (j.contains("covariance_stale_dates")) {
+            covariance_stale_dates = j.at("covariance_stale_dates").get<size_t>();
         }
         if (j.contains("opt_config"))
             opt_config.from_json(j.at("opt_config"));
@@ -234,6 +243,19 @@ public:
      */
     void update_cost_manager_market_data(const std::string& symbol, double volume,
                                          double close_price, double prev_close_price);
+
+    /**
+     * @brief This manager's own cost model: it prices the optimizer's cost vector
+     *        (calculate_trading_costs) and the executions this manager generates.
+     *
+     * H-2 (T-7b-1 C8d): the backtest feeds it through update_cost_manager_market_data; the live
+     * futures runners feed it through feed_futures_cost_model (futures_cost_feed.hpp), the same
+     * K2 feed as the execution manager's, before process_market_data. Unfed, every entry of the
+     * cost vector is priced off the fallbacks (ADV 100,000, vol_mult 1.0).
+     */
+    transaction_cost::TransactionCostManager& get_transaction_cost_manager() {
+        return cost_manager_;
+    }
 
     /**
      * @brief Register ADV-tiered equity cost configs on THIS manager's cost model. E2-C9.
@@ -409,10 +431,13 @@ private:
                                                        double capital) const;
 
     /**
-     * @brief Calculate trading costs for each symbol
+     * @brief The optimizer's cost vector: per symbol, the cost of one contract over that
+     *        contract's notional (F4, T-7b-1 C8d), so |dw| x costs[i] with dw in weight is the
+     *        trade's dollar cost as a fraction of capital
      * @param symbols List of symbols to calculate costs for
-     * @param capital Total capital available for allocation
-     * @return Vector of trading costs for each symbol
+     * @param capital Unused since F4 (the entry does not depend on capital); kept for the call
+     * @return Vector of cost_per_contract / notional_per_contract, 0 for a symbol no trend
+     *         sleeve holds
      */
     std::vector<double> calculate_trading_costs(const std::vector<std::string>& symbols,
                                                 double capital) const;
@@ -430,7 +455,13 @@ private:
      *         symbols' dates (a date one symbol lacks is dropped for all, and the next return
      *         spans it for every symbol); all non-empty series have the same length. A symbol
      *         with fewer than two usable closes gets an empty series and does not shrink the
-     *         intersection. Logs one COVARIANCE_DATE_ALIGNED line.
+     *         intersection. T-7b-1 7d: a participant whose last usable date trails the newest
+     *         date of the participants' union by more than config_.covariance_stale_dates dates,
+     *         and (while the intersection gives fewer than 20 returns) the participant with the
+     *         fewest usable dates, is left out with an empty series and a WARN, so
+     *         calculate_covariance_matrix guards its column instead of the window ending at a
+     *         stale date or the whole matrix falling to the 0.01 diagonal. Logs one
+     *         COVARIANCE_DATE_ALIGNED line.
      */
     std::unordered_map<std::string, std::vector<double>> date_aligned_returns(
         const std::unordered_map<std::string, std::map<int64_t, double>>& closes_by_symbol) const;

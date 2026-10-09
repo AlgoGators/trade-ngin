@@ -306,6 +306,81 @@ TEST(SessionClassifierRule, ASecondCopyOfABarKeepsTheCopyTheLoaderKeeps) {
               SessionVerdict::JUNK);
 }
 
+// T-7b-1 C7b R7 (T-7a_CODE_REVIEW R7): the norm is the median of the trailing 20 weekday bars
+// whose OWN verdict was SESSION, so a run of stubs cannot teach the norm; a norm of 0 is no norm.
+TEST(SessionClassifierRule, C7bTheNormIsTakenOverSessionBarsOnly) {
+    // 30 weekdays of 100,000 lots, then 11 weekdays of a 5-lot stub, then today's 5-lot stub.
+    // Over all 20 trailing weekday bars (11 stubs, 9 real) the median is 5, and the stub today
+    // passes both volume limbs (5 is not under 1 % of 5, nor under 25 % of it): a SESSION. Each
+    // stub was JUNK against a real norm, so the SESSION-only norm stays 100,000 and today's stub
+    // is JUNK too.
+    SessionClassifier c;
+    Day d = ymd_day("2026-01-05");
+    int weekdays = 0;
+    while (weekdays < 41) {
+        const std::chrono::weekday wd{d};
+        if (wd != std::chrono::Saturday && wd != std::chrono::Sunday) {
+            c.add_bar(bar_on("STUB", SessionClassifier::ymd(d), weekdays < 30 ? 100000.0 : 5.0));
+            ++weekdays;
+        }
+        d += std::chrono::days{1};
+    }
+    while (std::chrono::weekday{d} == std::chrono::Saturday ||
+           std::chrono::weekday{d} == std::chrono::Sunday) {
+        d += std::chrono::days{1};
+    }
+    c.add_bar(bar_on("STUB", SessionClassifier::ymd(d), 5.0));
+    int used = 0;
+    const auto n = c.norm("STUB", d, &used);
+    ASSERT_TRUE(n.has_value());
+    EXPECT_DOUBLE_EQ(*n, 100000.0) << "the stubs taught the norm";
+    EXPECT_EQ(used, 20);
+    const auto v = c.classify_symbol_day("STUB", d, kNoHolidays);
+    EXPECT_EQ(v.verdict, SessionVerdict::JUNK) << v.reason;
+    EXPECT_NE(v.reason.find("corrupt print"), std::string::npos) << v.reason;
+}
+
+TEST(SessionClassifierRule, C7bANormOfZeroIsNoNormAndTheFloorDecides) {
+    // A symbol whose every earlier weekday bar printed 0 lots on a moving price (not locked).
+    // Their median is 0, and `volume < 0.01 x 0` and `volume < 0.25 x 0` are both false, so a
+    // 10-lot print was a SESSION. With no norm the floor decides: 10 lots is under 50, JUNK.
+    SessionClassifier c;
+    add_weekdays_before(c, "ZERO", "2026-03-04", 20, 0.0);
+    c.add_bar(bar_on("ZERO", "2026-03-04", 10.0));
+    const auto v = c.classify_symbol_day("ZERO", ymd_day("2026-03-04"), kNoHolidays);
+    EXPECT_FALSE(v.norm.has_value()) << "norm " << (v.norm ? *v.norm : -1.0);
+    EXPECT_EQ(v.verdict, SessionVerdict::JUNK) << v.reason;
+    EXPECT_NE(v.reason.find("absolute floor with no norm yet"), std::string::npos) << v.reason;
+}
+
+TEST(SessionClassifierRule, C7bAStubAddedEarlierInvalidatesTheLaterVerdicts) {
+    // Bars may arrive in any order: a stub added AFTER a later day was classified changes that
+    // later day's SESSION-only norm, and the answer is the one of an in-order load.
+    SessionClassifier in_order;
+    SessionClassifier late;
+    add_weekdays_before(in_order, "A", "2026-03-02", 25, 1000.0);
+    add_weekdays_before(late, "A", "2026-03-02", 25, 1000.0);
+    // Ten stubs of 1 lot on the ten weekdays 2026-03-02..03-13 (JUNK each: 1 < 50 and < 250).
+    std::vector<Bar> stubs;
+    for (Day d = ymd_day("2026-03-02"); d <= ymd_day("2026-03-13"); d += std::chrono::days{1}) {
+        const std::chrono::weekday wd{d};
+        if (wd == std::chrono::Saturday || wd == std::chrono::Sunday) continue;
+        stubs.push_back(bar_on("A", SessionClassifier::ymd(d), 1.0));
+    }
+    for (const auto& b : stubs) in_order.add_bar(b);
+    in_order.add_bar(bar_on("A", "2026-03-16", 40.0));
+    late.add_bar(bar_on("A", "2026-03-16", 40.0));
+    (void)late.classify_symbol_day("A", ymd_day("2026-03-16"), kNoHolidays);  // cached
+    for (const auto& b : stubs) late.add_bar(b);
+    const auto want = in_order.classify_symbol_day("A", ymd_day("2026-03-16"), kNoHolidays);
+    const auto got = late.classify_symbol_day("A", ymd_day("2026-03-16"), kNoHolidays);
+    EXPECT_EQ(got.verdict, want.verdict);
+    ASSERT_TRUE(got.norm.has_value());
+    EXPECT_DOUBLE_EQ(*got.norm, *want.norm);
+    EXPECT_DOUBLE_EQ(*got.norm, 1000.0);
+    EXPECT_EQ(got.verdict, SessionVerdict::JUNK) << "40 lots < 50 and < 250";
+}
+
 // ---------------------------------------------------------------------------------------------
 // No bar: closure or feed hole
 // ---------------------------------------------------------------------------------------------
@@ -338,6 +413,29 @@ TEST(SessionClassifierNoBar, TheEveOfAFixedDateHolidayIsAClosureTheEveOfAMovingO
         << xmas.reason;
     const auto mem = c.classify_symbol_day("MES", ymd_day("2026-05-24"), cal);
     EXPECT_EQ(mem.verdict, SessionVerdict::NO_BAR_FEED_HOLE) << mem.reason;
+}
+
+// T-7b-1 C7b R8 (T-7a_CODE_REVIEW R8): the D+1 fixed-date-holiday limb is for a weekend D only
+// (Christmas and New Year's Sundays). A weekday that precedes a fixed-date holiday is a normal
+// session, so a missing print there is a feed hole: 6E.v.0 and GC.v.0 on Thu 2026-07-02, the eve
+// of the observed Independence Day, printed on the Thursday before (the clone).
+TEST(SessionClassifierNoBar, C7bTheEveLimbAppliesOnlyToAWeekendEve) {
+    SessionClassifier c;
+    add_weekdays_before(c, "GC", "2026-07-02", 60, 150000);  // last bar Wed 07-01
+    const auto cal = calendar(
+        {{"2026-07-03", holiday("2026-07-03", "Independence Day (Observed)", "fixed")},
+         {"2023-12-25", holiday("2023-12-25", "Christmas Day", "fixed")}});
+    const auto thu = c.classify_symbol_day("GC", ymd_day("2026-07-02"), cal);
+    EXPECT_EQ(thu.verdict, SessionVerdict::NO_BAR_FEED_HOLE) << thu.reason;
+    EXPECT_EQ(thu.hole_age_days, 1);
+
+    // The weekend limb is unchanged: a Sunday before a fixed-date Monday holiday is a closure.
+    SessionClassifier s;
+    for (int k = 1; k <= 8; ++k) {
+        s.add_bar(bar_on("MES", SessionClassifier::ymd(ymd_day("2023-12-24") - std::chrono::days{7 * k}), 30000));
+    }
+    const auto sun = s.classify_symbol_day("MES", ymd_day("2023-12-24"), cal);
+    EXPECT_EQ(sun.verdict, SessionVerdict::NO_BAR_CLOSURE) << sun.reason;
 }
 
 TEST(SessionClassifierNoBar, AFeedHoleIsAMissingPrintOnAWeekdayTheSymbolPrintsOnMaxOfEight) {
@@ -567,6 +665,9 @@ TEST_F(SessionClassifierDb, TheLoadersBarsGiveTheReferenceVerdictsAndThe2026Coun
         {"MES.v.0", "2026-05-17", SessionVerdict::NO_BAR_FEED_HOLE},
         {"MES.v.0", "2026-05-24", SessionVerdict::NO_BAR_FEED_HOLE},
         {"ZC.v.0", "2026-05-24", SessionVerdict::NO_BAR_CLOSURE},
+        // C7b R8: a weekday eve of a fixed-date holiday is a session day
+        {"6E.v.0", "2026-07-02", SessionVerdict::NO_BAR_FEED_HOLE},
+        {"GC.v.0", "2026-07-02", SessionVerdict::NO_BAR_FEED_HOLE},
     };
     for (const auto& [s, d, want] : cases) {
         const auto v = c.classify_symbol_day(s, ymd_day(d), cal);
@@ -576,7 +677,10 @@ TEST_F(SessionClassifierDb, TheLoadersBarsGiveTheReferenceVerdictsAndThe2026Coun
     EXPECT_EQ(mym.hole_age_days, 3);
 
     // The 2026 table, as the Python reference counts it on this clone (165,037 stored rows,
-    // last date 2026-08-06): SESSION 5,950 / JUNK 51 / NO_BAR(closure) 1,498 / feed hole 349.
+    // last date 2026-08-06): SESSION 5,950 / JUNK 51 / NO_BAR(closure) 1,496 / feed hole 351.
+    // T-7b-1 C7b: R8 moves two cells, 6E.v.0 and GC.v.0 on Thu 2026-07-02 (the eve of a
+    // fixed-date holiday on a weekday), closure -> feed hole; R7 moves no 2026 verdict
+    // (T-7b-1_evidence/tooling/c7b_classify.py; T-7a's counts were 1,498 / 349).
     long stored = 0;
     std::string last;
     {
@@ -601,7 +705,7 @@ TEST_F(SessionClassifierDb, TheLoadersBarsGiveTheReferenceVerdictsAndThe2026Coun
     }
     EXPECT_EQ(counts[SessionVerdict::SESSION], 5950);
     EXPECT_EQ(counts[SessionVerdict::JUNK], 51);
-    EXPECT_EQ(counts[SessionVerdict::NO_BAR_CLOSURE], 1498);
-    EXPECT_EQ(counts[SessionVerdict::NO_BAR_FEED_HOLE], 349);
+    EXPECT_EQ(counts[SessionVerdict::NO_BAR_CLOSURE], 1496);
+    EXPECT_EQ(counts[SessionVerdict::NO_BAR_FEED_HOLE], 351);
     db->disconnect();
 }

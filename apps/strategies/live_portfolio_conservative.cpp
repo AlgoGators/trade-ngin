@@ -24,6 +24,7 @@
 #include "trade_ngin/live/csv_exporter.hpp"
 #include "trade_ngin/live/data_freshness.hpp"
 #include "trade_ngin/live/execution_manager.hpp"
+#include "trade_ngin/live/futures_cost_feed.hpp"
 #include "trade_ngin/live/live_data_loader.hpp"
 #include "trade_ngin/live/live_historical_metrics.hpp"
 #include "trade_ngin/live/live_metrics_calculator.hpp"
@@ -37,6 +38,7 @@
 #include "trade_ngin/live/sleeve_seeding.hpp"
 #include "trade_ngin/live/trading_days_anchor.hpp"
 #include "trade_ngin/portfolio/portfolio_manager.hpp"
+#include "trade_ngin/risk/risk_scale_report.hpp"
 #include "trade_ngin/storage/live_results_manager.hpp"
 #include "trade_ngin/strategy/trend_following.hpp"
 #include "trade_ngin/strategy/trend_following_fast.hpp"
@@ -593,6 +595,7 @@ int main(int argc, char* argv[]) {
             app_config.strategy_defaults.min_strategy_allocation;
         portfolio_config.use_optimization = app_config.use_optimization;
         portfolio_config.covariance_history_prices = app_config.covariance_history_prices;
+        portfolio_config.covariance_stale_dates = app_config.covariance_stale_dates;
         portfolio_config.risk_modules = app_config.risk_schema.portfolio;
         portfolio_config.sleeve_risk_modules = app_config.risk_schema.sleeves;
         portfolio_config.opt_config = opt_config;
@@ -1088,16 +1091,19 @@ int main(int argc, char* argv[]) {
             classify_t1(session_classifier, symbols,
                         SessionClassifier::day_of(now - std::chrono::hours(24)),
                         holiday_lookup(holiday_checker));
-        log_t1_classification(t1_classification);
+        log_t1_classification(t1_classification,
+                              app_config.live.data_staleness_tolerance_days);
 
         // FEED-HOLE REFUSAL (HD 2026-09-19; T-4c F4, T-5 F7): a HELD symbol with no bar for
         // longer than live.data_staleness_tolerance_days refuses the run when the run date is
         // the host's date (true live). A replay of a past date WARNs and runs. It sits above the
         // live_run_metadata upsert like the other refusals, so a refused run leaves no row.
+        // T-7b-1 C7b R3: any no-bar verdict counts, a closure too (a feed dead for more than
+        // eight weeks is reclassified as a closure and used to stop refusing).
         {
             const int hole_tolerance_days = app_config.live.data_staleness_tolerance_days;
             std::vector<HeldFeedHole> held_holes;
-            if (t1_classification.max_hole_age_days > hole_tolerance_days) {
+            if (max_no_bar_age_days(t1_classification) > hole_tolerance_days) {
                 auto held_book_result = db->load_positions_by_date(
                     combined_strategy_id, "", coordinator_config.portfolio_id,
                     now - std::chrono::hours(24), "trading.positions");
@@ -1208,16 +1214,15 @@ int main(int argc, char* argv[]) {
                     strategy_positions_map[strategy_name] = prev_result.value();
                     INFO("Loaded " + std::to_string(prev_result.value().size()) +
                          " positions for strategy: " + strategy_name);
-
-                    // Also add to combined positions map
-                    for (const auto& [symbol, pos] : prev_result.value()) {
-                        positions[symbol] = pos;
-                    }
                 } else {
                     INFO("No previous positions found for strategy: " + strategy_name);
                     strategy_positions_map[strategy_name] = {};
                 }
             }
+
+            // T-7b-1 C7b S1-3 (T-7a_S1_S3_CODE_REVIEW): the combined map is the SUM over the
+            // sleeves, as on a trading day; it used to keep whichever sleeve was loaded last.
+            rebuild_combined_positions(positions, strategy_positions_map);
 
             INFO("Total positions carried forward: " + std::to_string(positions.size()));
             INFO("═══════════════════════════════════════════════════════════════");
@@ -1228,57 +1233,81 @@ int main(int argc, char* argv[]) {
         }
 
         // ========================================
+        // THE STRATEGY FEED (T-7a C4; built here by T-7b-1 C7b R10)
+        // Every bar except the JUNK symbols' T-1 bars. The strategies and the PortfolioManager
+        // are fed it below, and so is the execution manager's cost manager (T-7a_CODE_REVIEW
+        // R10: a junk print must not enter the volume and volatility the cost model reads; K2
+        // reads this feed). A JUNK symbol is held on every book today, so it has no fill to cost.
+        // On a whole-book carry no symbol printed, so the feed is every bar.
+        // ========================================
+        std::vector<std::string> withheld_junk_bars;
+        std::vector<Bar> junk_filtered_bars;
+        if (!t1_classification.junk_symbols.empty()) {
+            junk_filtered_bars =
+                withhold_junk_t1_bars(all_bars, t1_classification, &withheld_junk_bars);
+        }
+        const std::vector<Bar>& strategy_feed_bars =
+            t1_classification.junk_symbols.empty() ? all_bars : junk_filtered_bars;
+
+        // ========================================
         // UPDATE TRANSACTION COST MANAGER WITH MARKET DATA
-        // Feed rolling ADV and volatility for accurate cost calculations
+        // K2 (T-7b-1 C8a): the fill day's own volume for participation and the impact tier,
+        // the walk of returns ending at T-1 for the volatility term (futures_cost_feed.hpp).
+        // The execution manager's cost manager is fed here, and (T-7b-1 C8d, H-2) the
+        // PortfolioManager's right after it, from the same feed.
         // ========================================
         INFO("Updating execution manager with market data for transaction cost tracking...");
 
-        // Build map of latest bars per symbol (T-1 data)
+        // Map of latest bars per symbol (T-1 data), from the strategy feed: a JUNK symbol's
+        // latest bar here is its T-2 bar. On a carried day the feed is every bar, so the
+        // carried positions file's last marks (read from this map) are unchanged.
         std::unordered_map<std::string, Bar> latest_bars_per_symbol;
-        std::unordered_map<std::string, Bar> previous_bars_per_symbol;
-
-        for (const auto& bar : all_bars) {
+        for (const auto& bar : strategy_feed_bars) {
             auto it = latest_bars_per_symbol.find(bar.symbol);
             if (it == latest_bars_per_symbol.end() || bar.timestamp > it->second.timestamp) {
-                // Save previous latest as "previous" before updating
-                if (it != latest_bars_per_symbol.end()) {
-                    previous_bars_per_symbol[bar.symbol] = it->second;
-                }
                 latest_bars_per_symbol[bar.symbol] = bar;
-            } else if (!previous_bars_per_symbol.count(bar.symbol) &&
-                       bar.timestamp < latest_bars_per_symbol[bar.symbol].timestamp) {
-                // Track the second-most-recent bar as previous
-                auto prev_it = previous_bars_per_symbol.find(bar.symbol);
-                if (prev_it == previous_bars_per_symbol.end() ||
-                    bar.timestamp > prev_it->second.timestamp) {
-                    previous_bars_per_symbol[bar.symbol] = bar;
+            }
+        }
+
+        {
+            auto& cost_model = execution_manager->get_transaction_cost_manager();
+            const auto cost_feed = feed_futures_cost_model(cost_model, strategy_feed_bars);
+            for (const auto& fed : cost_feed.symbols) {
+                INFO("COST_FEED " + fed.symbol + " own_day=" +
+                     core::format_utc_date(fed.own_day_time) +
+                     " own_day_volume=" + std::to_string(fed.own_day_volume) +
+                     " bars=" + std::to_string(fed.bars) +
+                     " returns=" + std::to_string(fed.returns) +
+                     " vol_mult=" + std::to_string(cost_model.get_volatility_multiplier(fed.symbol)));
+            }
+            std::string thin_list;
+            for (const auto& s : cost_feed.thin) thin_list += (thin_list.empty() ? "" : ", ") + s;
+            INFO("Updated transaction cost manager with market data for " +
+                 std::to_string(cost_feed.symbols.size()) + " symbols (" +
+                 std::to_string(cost_feed.returns_fed) + " log returns; fewer than 21 bars: " +
+                 (thin_list.empty() ? std::string("none") : thin_list) + ")");
+            if (!cost_feed.repeated_instants.empty()) {
+                std::string repeated;
+                for (const auto& s : cost_feed.repeated_instants) {
+                    repeated += (repeated.empty() ? "" : ", ") + s;
                 }
+                WARN("COST_FEED two bars at one instant for " + repeated +
+                     " (the loader keeps one bar per symbol-instant; fed as given)");
             }
         }
 
-        // Update execution manager with daily market data for each symbol
-        int symbols_updated = 0;
-        for (const auto& [symbol, latest_bar] : latest_bars_per_symbol) {
-            double close = static_cast<double>(latest_bar.close);
-            double volume = latest_bar.volume;
-            double prev_close = close;  // Default to same if no previous
-
-            auto prev_it = previous_bars_per_symbol.find(symbol);
-            if (prev_it != previous_bars_per_symbol.end()) {
-                prev_close = static_cast<double>(prev_it->second.close);
-            }
-
-            // Update the transaction cost manager with market data
-            execution_manager->update_market_data(symbol, volume, close);
-            symbols_updated++;
-
-            DEBUG("Updated market data for " + symbol + ": volume=" + std::to_string(volume) +
-                  ", close=" + std::to_string(close) +
-                  ", prev_close=" + std::to_string(prev_close));
+        // H-2 (T-7b-1 C8d): the PortfolioManager's own cost manager prices the optimizer's cost
+        // vector (calculate_trading_costs). Live never fed it, so every entry was priced off its
+        // fallbacks (ADV 100,000, vol_mult 1.0). It is fed the SAME K2 feed as the execution
+        // manager's, here, before process_market_data runs the optimizer below.
+        {
+            auto& optimizer_cost_model = portfolio->get_transaction_cost_manager();
+            const auto optimizer_feed =
+                feed_futures_cost_model(optimizer_cost_model, strategy_feed_bars);
+            INFO("COST_FEED_OPTIMIZER fed the PortfolioManager's cost model (the optimizer's cost "
+                 "vector) for " + std::to_string(optimizer_feed.symbols.size()) + " symbols (" +
+                 std::to_string(optimizer_feed.returns_fed) + " log returns)");
         }
-
-        INFO("Updated transaction cost manager with market data for " +
-             std::to_string(symbols_updated) + " symbols");
 
         // Set when a portfolio risk module could not answer and the PortfolioManager held the
         // book (T-7a C5, HD 2026-09-21 option b): the day is stored as a REFUSE day, the email
@@ -1325,11 +1354,8 @@ int main(int argc, char* argv[]) {
             // JUNK (T-7a C4): a JUNK symbol's T-1 bar is withheld from the strategy and the
             // portfolio stage, so its signal is not updated today (it is back in the history as
             // T-2 on the next run). The price manager already has every bar: the mark uses it.
-            std::vector<std::string> withheld_junk_bars;
-            std::vector<Bar> junk_filtered_bars;
+            // The feed (strategy_feed_bars) is built above the cost feed (T-7b-1 C7b R10).
             if (!t1_classification.junk_symbols.empty()) {
-                junk_filtered_bars =
-                    withhold_junk_t1_bars(all_bars, t1_classification, &withheld_junk_bars);
                 std::string withheld_list;
                 for (const auto& s : withheld_junk_bars) {
                     withheld_list += (withheld_list.empty() ? "" : ", ") + s;
@@ -1338,8 +1364,6 @@ int main(int argc, char* argv[]) {
                      std::to_string(withheld_junk_bars.size()) + " symbol(s) from the strategy "
                      "and portfolio feed (signal not updated today): " + withheld_list);
             }
-            const std::vector<Bar>& strategy_feed_bars =
-                t1_classification.junk_symbols.empty() ? all_bars : junk_filtered_bars;
             auto port_process_result = portfolio->process_market_data(strategy_feed_bars);
             INFO("MarketDataBus publishing RE-ENABLED after process_market_data");
             MarketDataBus::instance().set_publish_enabled(true);
@@ -1353,10 +1377,12 @@ int main(int argc, char* argv[]) {
                      risk_refusal->value("module", std::string()) + ": " +
                      risk_refusal->value("reason", std::string()) +
                      "; marking today's live_run_metadata row");
+                // T-7b-1 C7b R4: the marked JSON is kept, so a later mark on the same row (the
+                // STRICT assertion's) is added to this one instead of replacing it.
                 auto mark_result = db->store_live_run_metadata(
                     now, combined_strategy_id, portfolio_id, strategy_alloc_json,
-                    mark_risk_refusal(portfolio_config_json, *risk_refusal,
-                                      portfolio->risk_decisions_json()),
+                    portfolio_config_json = mark_risk_refusal(portfolio_config_json, *risk_refusal,
+                                                              portfolio->risk_decisions_json()),
                     strategy_configs);
                 if (mark_result.is_error()) {
                     ERROR("Failed to mark today's live_run_metadata row with the risk refusal: " +
@@ -1860,6 +1886,21 @@ int main(int argc, char* argv[]) {
                 for (const auto& s : unpriced_changes) list += (list.empty() ? "" : ", ") + s;
                 ERROR("STRICT_ASSERTION failed: book change(s) with no T-1 price and no execution "
                       "remain after the rollback: " + list + ". Refusing to store this book.");
+                // T-7b-1 C7b R4 (T-7a_CODE_REVIEW R4): today's live_run_metadata row was written
+                // above, before the book existed. The run happened and stored nothing, so the row
+                // is marked, as a portfolio risk REFUSE marks it (T-RISK-ARCH Q2), and the
+                // watchdog (scripts/check_live_trading.py) reports the mark. The mark is merged
+                // into the row's JSON as written so far, so a same-day risk_refusal mark stays.
+                auto strict_mark_result = db->store_live_run_metadata(
+                    now, combined_strategy_id, portfolio_id, strategy_alloc_json,
+                    mark_strict_assertion(portfolio_config_json, unpriced_changes),
+                    strategy_configs);
+                if (strict_mark_result.is_error()) {
+                    ERROR("Failed to mark today's live_run_metadata row with the STRICT "
+                          "assertion: " + std::string(strict_mark_result.error()->what()));
+                } else {
+                    INFO("Marked today's live_run_metadata row with the STRICT assertion");
+                }
                 return 1;
             }
         }
@@ -2204,6 +2245,14 @@ int main(int argc, char* argv[]) {
             std::cout << "Jump Risk (99th): N/A" << std::endl;
             std::cout << "Risk Scale: N/A" << std::endl;
         }
+        // RA-01 (T-7b-1 C7): beside the stored value, the scale that actually moved the book.
+        // reporter = the double stored as live_results.risk_scale below (the snapshot's
+        // recommended_scale, 1.0 when its evaluation failed); the other four fields are the
+        // PortfolioManager's own record of this run's rebalance, last_risk_decisions(), each
+        // defined in risk_scale_report.hpp. Log only: no stored value reads it.
+        INFO(trade_ngin::format_risk_scale_report(
+            risk_eval.is_ok() ? risk_eval.value().recommended_scale : 1.0,
+            trade_ngin::summarize_applied_risk(portfolio->last_risk_decisions())));
         // ========================================
         // STEP 3: CALCULATE TRANSACTION COSTS AND Day T PnL (ZERO)
         // ========================================
@@ -3379,6 +3428,11 @@ int main(int argc, char* argv[]) {
         // and each sleeve's last computed forecasts (its stored signals of the previous
         // session), with a note that no session occurred and the values are carried, not
         // computed.
+        // T-7b-1 C7b R2 (T-7a_CODE_REVIEW R2): why the day had no session is the T-1
+        // classification's answer, not the weekday's. A feed-hole carry (the dead Sundays) used
+        // to write "no session on D ()" and send an email without any banner.
+        const std::string carried_day_note = "no session on " + yesterday_date_str_check + " (" +
+                                             carried_day_reason(t1_classification) + ")";
         auto export_positions_file = [&]() -> Result<std::string> {
             if (!skip_strategy_processing) {
                 return csv_exporter->export_current_positions(
@@ -3407,13 +3461,9 @@ int main(int argc, char* argv[]) {
                                                            : carried.value().session_date));
                 last_forecasts[strategy_name] = carried.value();
             }
-            const std::string no_session_reason =
-                is_sunday ? "no session on " + yesterday_date_str_check + " (a Saturday)"
-                          : "no session on " + yesterday_date_str_check + " (" +
-                                holiday_checker.get_holiday_name(yesterday_date_str_check) + ")";
             return csv_exporter->export_carried_positions(
                 now, strategy_positions_map, last_marks, last_forecasts, current_portfolio_value,
-                gross_notional, net_notional, no_session_reason);
+                gross_notional, net_notional, carried_day_note);
         };
         auto current_export_result = export_positions_file();
 
@@ -3511,7 +3561,10 @@ int main(int argc, char* argv[]) {
                     std::string subject = "Daily Trading Report - " + date_str;
 
                     // Load yesterday's finalized positions for email display
-                    std::unordered_map<std::string, Position> yesterday_positions_finalized;
+                    // Keyed by (sleeve, symbol) (T-7b-1 C7b S1-3): two sleeves holding one
+                    // symbol are two rows; keyed by symbol, the last sleeve read won.
+                    std::map<std::pair<std::string, std::string>, Position>
+                        yesterday_positions_finalized;
                     std::map<std::string, double> yesterday_daily_metrics_final;
                     std::unordered_map<std::string, double>
                         yesterday_entry_prices;                                     // Day T-2 close
@@ -3533,7 +3586,7 @@ int main(int argc, char* argv[]) {
 
                     std::string positions_query_email =
                         "SELECT symbol, quantity, average_price, daily_realized_pnl, "
-                        "daily_unrealized_pnl, last_update "
+                        "daily_unrealized_pnl, last_update, strategy_name "
                         "FROM trading.positions "
                         "WHERE strategy_id = '" +
                         combined_strategy_id + "' AND portfolio_id = '" +
@@ -3556,6 +3609,8 @@ int main(int argc, char* argv[]) {
                             table_email->column(2)->chunk(0));
                         auto realized_pnl_arr = std::static_pointer_cast<arrow::StringArray>(
                             table_email->column(3)->chunk(0));
+                        auto strategy_name_arr = std::static_pointer_cast<arrow::StringArray>(
+                            table_email->column(6)->chunk(0));
 
                         for (int64_t i = 0; i < table_email->num_rows(); ++i) {
                             if (!symbol_arr->IsNull(i) && !quantity_arr->IsNull(i)) {
@@ -3575,7 +3630,10 @@ int main(int argc, char* argv[]) {
                                 pos.average_price = Decimal(avg_price);
                                 pos.realized_pnl = Decimal(realized_pnl);
 
-                                yesterday_positions_finalized[symbol] = pos;
+                                const std::string strategy_name =
+                                    strategy_name_arr->IsNull(i) ? std::string()
+                                                                 : strategy_name_arr->GetString(i);
+                                yesterday_positions_finalized[{strategy_name, symbol}] = pos;
 
                                 // Populate entry and exit prices
                                 if (two_days_ago_close_prices.find(symbol) !=
@@ -3667,7 +3725,7 @@ int main(int argc, char* argv[]) {
                             }
                             // Fallback: calculate from positions if database query fails
                             double yesterday_daily_realized = 0.0;
-                            for (const auto& [symbol, pos] : yesterday_positions_finalized) {
+                            for (const auto& [sleeve_symbol, pos] : yesterday_positions_finalized) {
                                 yesterday_daily_realized += pos.realized_pnl.as_double();
                             }
                             yesterday_daily_metrics_final["Daily Realized PnL"] =
@@ -3806,6 +3864,11 @@ int main(int argc, char* argv[]) {
                         subject = risk_module_failure_email_subject(subject);
                         email_body = flag_email_body_for_risk_module_failure(
                             email_body, *risk_module_failure);
+                    }
+                    // T-7b-1 C7b R2: a carried day's email opens with the reason its positions
+                    // file carries (a feed-hole carry read as a normal day with 0 executions).
+                    if (skip_strategy_processing) {
+                        email_body = flag_email_body_for_carried_day(email_body, carried_day_note);
                     }
 
                     auto send_result =

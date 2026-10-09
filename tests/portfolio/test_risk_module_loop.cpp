@@ -1356,3 +1356,26 @@ TEST_F(RiskConvergedSnapTest, AnExactlyWholeBookIsUntouchedAndSilent) {
     EXPECT_EQ(count_of(out, "No partial contracts after iteration 1. Converged!"), 1u) << out;
     EXPECT_EQ(count_of(out, "RISK_CONVERGED_SNAP"), 0u) << out;
 }
+
+// T-7b-1 C7b, E-31 (T-6c_CODE_REVIEW CR-6): the snap lives in the whole-contract branch only. A book
+// that allows fractional positions (the equity book) accepts lap 1 as final and stores its fraction:
+// a 1-lot at 0.9999999 stays 0.9999999, no snap line prints. Moving the snap out of the `else`
+// would round it to 1 and print the line; this test pins that it does not.
+TEST_F(RiskConvergedSnapTest, C7bE31AFractionalAllowedBookIsUntouchedAndSilent) {
+    make_pm(true, {{{"ZZA", make_pos("ZZA", 1.0, 100.0)}}});
+    ASSERT_TRUE(pm_->set_risk_modules({std::make_shared<LapScaleModule>(
+                                          "lev", RiskTerm::MAGNITUDE, std::vector<double>{0.9999999})})
+                    .is_ok());
+    ::testing::internal::CaptureStdout();
+    ASSERT_TRUE(pm_->process_market_data(three_days()).is_ok());
+    const std::string out = ::testing::internal::GetCapturedStdout();
+    const auto lap = rows_of(pm_->last_risk_decisions(), RiskPhase::LAP);
+    ASSERT_EQ(lap.size(), 1u) << "a fractional book is final after lap 1";
+    EXPECT_EQ(lap[0].applied_factor.raw_value(), 99999990) << "the precondition: 0.9999999 applied";
+    EXPECT_EQ(count_of(out, "Fractional positions permitted; accepting iteration 1 output as final"),
+              1u)
+        << out;
+    EXPECT_EQ(pm_->get_strategy_positions().at("RML_S").at("ZZA").quantity.raw_value(), 99999990LL)
+        << "stored " << quantity("ZZA");
+    EXPECT_EQ(count_of(out, "RISK_CONVERGED_SNAP"), 0u) << out;
+}
