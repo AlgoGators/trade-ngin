@@ -120,7 +120,8 @@ Result<void> BacktestCSVExporter::append_daily_positions(
             double notional = 0.0;
             auto instrument = registry.get_instrument(symbol);
             if (instrument) {
-                notional = instrument->get_notional_value(qty, price);
+                // get_notional_value is a magnitude (futures.cpp): a short row keeps its sign.
+                notional = std::copysign(instrument->get_notional_value(qty, price), qty);
             } else {
                 notional = qty * price;
             }
@@ -240,10 +241,20 @@ Result<void> BacktestCSVExporter::append_finalized_positions(
             }
 
             // Calculate realized PnL for closed/reduced positions
+            // The closed quantity is the part of prev_qty this change takes off, with prev_qty's
+            // sign: all of it when the position is closed or flips through zero (+2 -> -3 closes
+            // 2, -3 -> +2 closes 3; the new leg is opened, not realized), prev - curr when it is
+            // reduced on the same side, none when it grows.
             double realized_pnl = 0.0;
-            if (std::abs(prev_qty) > 1e-10 && std::abs(curr_qty) < std::abs(prev_qty)) {
-                // Position reduced or closed
-                double closed_qty = prev_qty - curr_qty;
+            double closed_qty = 0.0;
+            if (std::abs(prev_qty) > 1e-10) {
+                if (curr_qty * prev_qty <= 0.0) {
+                    closed_qty = prev_qty;
+                } else if (std::abs(curr_qty) < std::abs(prev_qty)) {
+                    closed_qty = prev_qty - curr_qty;
+                }
+            }
+            if (closed_qty != 0.0) {
                 auto instrument = InstrumentRegistry::instance().get_instrument(symbol);
                 double multiplier = instrument ? instrument->get_multiplier() : 1.0;
                 realized_pnl = closed_qty * (exit_price - entry_price) * multiplier;

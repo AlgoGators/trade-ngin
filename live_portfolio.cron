@@ -1,10 +1,15 @@
 # Daily live portfolio run.
 #
-# 09:30 Mon-Fri, America/New_York (TZ is set in the image, so this is ET not UTC).
-# The script guards against weekends too, but restricting here keeps the log clean.
+# 09:30 EVERY calendar day, America/New_York (TZ is set in the image, so this is ET not UTC).
+# The futures book runs seven days a week (HD 2026-09-17; T-5): the Saturday run books and trades
+# the Friday session, the Sunday run carries the book over the closed Saturday, and the Monday run
+# books the Sunday Globex session. A Mon-Fri schedule drops a session a week and breaks the T-1
+# chain (T-5 measured it: a phantom rebuild every Monday, or, under the run-gap guard, a refusal
+# from the first Monday on). The engine decides per symbol whether T-1 was a session; the
+# schedule does not.
 #
 # Output goes to /proc/1/fd/1 -- the container's stdout -- so `docker logs
 # trade-ngin` shows every run and every failure. The previous version wrote to
 # /var/log/cron.log inside the container, where three months of daily failures
 # accumulated unseen.
-30 9 * * 1-5 /app/scripts/run_live_portfolio.sh >> /proc/1/fd/1 2>&1
+30 9 * * * /app/scripts/run_live_portfolio.sh >> /proc/1/fd/1 2>&1

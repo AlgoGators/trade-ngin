@@ -15,6 +15,7 @@ set(TEST_SOURCES
     core/test_email_strategy_tables.cpp
     core/test_run_id_generator.cpp
     core/test_config_loader.cpp
+    core/test_reserve_capital_deleted.cpp
     core/test_backtest_window.cpp
     core/test_static_destruction_order_db.cpp
     core/test_to_json_temporary_hazard.cpp
@@ -37,6 +38,7 @@ set(TEST_SOURCES
     data/test_conversion_utils.cpp
     data/test_market_data_utils.cpp
     data/test_futures_bar_dedup_db.cpp
+    data/test_session_classifier.cpp
     order/test_order_manager.cpp
     order/test_utils.cpp
     instruments/test_futures.cpp
@@ -88,6 +90,7 @@ set(TEST_SOURCES
     backtest/test_bt_equity_validation_config.cpp
     backtest/test_backtest_realized_flow.cpp
     backtest/test_backtest_unrealized_accounting.cpp
+    backtest/test_equity_cost_warmup.cpp
     execution/test_execution_engine.cpp
     portfolio/test_portfolio_manager.cpp
     core/test_equity_portfolio_namespace.cpp
@@ -99,6 +102,8 @@ set(TEST_SOURCES
     live/test_feed_freshness_universe.cpp
     live/test_feed_ingestion_assertion.cpp
     live/test_day_t_write_ordering.cpp
+    live/test_live_run_refusal_arms.cpp
+    live/test_risk_module_error_path.cpp
     data/test_current_holding_start_db.cpp
     data/test_current_holding_start_bound_db.cpp
     instruments/test_equity_margin_cash_regt.cpp
@@ -111,6 +116,9 @@ set(TEST_SOURCES
     portfolio/test_risk_loop_log_golden.cpp
     portfolio/test_risk_module_loop.cpp
     portfolio/test_risk_fail_closed.cpp
+    portfolio/test_optimizer_allocation_split.cpp
+    portfolio/test_covariance_date_alignment.cpp
+    portfolio/test_pm_session_hold.cpp
     storage/test_backtest_results_manager.cpp
     storage/test_live_results_manager.cpp
     storage/test_equity_fallback_stream_db.cpp
@@ -120,6 +128,10 @@ set(TEST_SOURCES
     live/test_live_price_manager.cpp
     live/test_live_trading_coordinator_keying.cpp
     live/test_execution_manager.cpp
+    live/test_exec_id_determinism.cpp
+    live/test_sleeve_seeding.cpp
+    live/test_base_bus_off_and_carried_day.cpp
+    live/test_session_book_gate.cpp
     live/test_cost_model_feed.cpp
     live/test_execution_price_integrity.cpp
     live/test_margin_manager.cpp
@@ -221,3 +233,10 @@ endif()
 add_test(NAME MigrateRiskJson.ScriptSuite
          COMMAND "${MIGRATION_PYTHON}"
                  "${CMAKE_CURRENT_SOURCE_DIR}/scripts/test_migrate_risk_json.py")
+
+# T-7a C4: the seven-day cron, the wrapper without its weekend exit, and the watchdog's write
+# clock / system-book filter / calendar-day threshold. Python, so its own entry, like the one
+# above; its database case runs only with TRADE_NGIN_TEST_DSN and rolls back what it writes.
+add_test(NAME CheckLiveTrading.ScriptSuite
+         COMMAND "${MIGRATION_PYTHON}"
+                 "${CMAKE_CURRENT_SOURCE_DIR}/scripts/test_check_live_trading.py")

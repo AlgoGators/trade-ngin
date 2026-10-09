@@ -87,3 +87,15 @@ with a ruling, and the script will not invent one.
 
 `examples/risk_modules/` holds one worked example per module type. They carry placeholder
 numbers and no runner loads them.
+
+## `reserve_capital_pct` deleted (J3, T-7a commit 2a)
+
+`reserve_capital_pct` (OPT-N4) is gone from every `portfolio.json` template. Nothing sized on
+it: the last reader was removed in February 2026, and the figure was only echoed into one log
+line and into the run-metadata JSON. A deployed `portfolio.json` that still carries the key
+keeps loading; the key is ignored and each run logs one WARN naming it (`"reserve_capital_pct"
+was deleted by J3 and is no longer read`). Delete the line to silence it.
+
+Cut-over in stored rows: `trading.live_run_metadata.portfolio_config` and
+`backtest.run_metadata.portfolio_config` / `.hyperparameters` written before this commit carry
+`reserve_capital`; rows written after it do not. History is left as it was written.

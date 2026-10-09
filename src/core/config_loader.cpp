@@ -148,8 +148,17 @@ Result<AppConfig> ConfigLoader::extract_config(const nlohmann::json& merged) {
         if (merged.contains("initial_capital")) {
             config.initial_capital = merged.at("initial_capital").get<double>();
         }
-        if (merged.contains("reserve_capital_pct")) {
-            config.reserve_capital_pct = merged.at("reserve_capital_pct").get<double>();
+        // "reserve_capital_pct" (OPT-N4) is no longer read: nothing sized on it (J3, deleted
+        // T-7a). A deployed portfolio.json that still carries the key (or "reserve_capital",
+        // the name the stored run metadata used) loads unchanged, the key is ignored, and the
+        // run says so once.
+        for (const char* key : {"reserve_capital_pct", "reserve_capital"}) {
+            if (merged.contains(key)) {
+                WARN("config for " + config.portfolio_id + ": \"" + key +
+                     "\" was deleted by J3 and is no longer read (nothing sized on it); the "
+                     "value is ignored. Delete the key from portfolio.json");
+                break;
+            }
         }
 
         // Database configuration
@@ -292,11 +301,6 @@ Result<void> ConfigLoader::validate_config(const AppConfig& config) {
     if (config.initial_capital <= 0.0) {
         return make_error<void>(ErrorCode::INVALID_DATA,
                                 "initial_capital must be positive",
-                                "ConfigLoader");
-    }
-    if (config.reserve_capital_pct < 0.0 || config.reserve_capital_pct >= 1.0) {
-        return make_error<void>(ErrorCode::INVALID_DATA,
-                                "reserve_capital_pct must be in [0.0, 1.0)",
                                 "ConfigLoader");
     }
     if (config.strategies_config.is_null() || !config.strategies_config.is_object() ||
@@ -461,8 +465,7 @@ void ConfigLoader::log_config_summary(const AppConfig& config) {
         return;
     }
     INFO("Config summary: portfolio_id=" + config.portfolio_id +
-         ", initial_capital=" + std::to_string(config.initial_capital) +
-         ", reserve_pct=" + std::to_string(config.reserve_capital_pct));
+         ", initial_capital=" + std::to_string(config.initial_capital));
     INFO("Config summary: db=" + config.database.host + ":" + config.database.port +
          "/" + config.database.name +
          ", connections=" + std::to_string(config.database.num_connections));

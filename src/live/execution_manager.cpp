@@ -61,7 +61,7 @@ Result<std::vector<ExecutionReport>> ExecutionManager::generate_daily_executions
 
             // Generate execution
             ExecutionReport exec = generate_execution(
-                symbol, trade_size, market_price, timestamp, daily_executions.size());
+                symbol, trade_size, market_price, timestamp);
             daily_executions.push_back(exec);
 
             INFO("Generated execution: " + symbol + " " +
@@ -100,7 +100,7 @@ Result<std::vector<ExecutionReport>> ExecutionManager::generate_daily_executions
             // Generate execution for closing (opposite side of position)
             double trade_size = -prev_qty; // Negative because we're closing
             ExecutionReport exec = generate_execution(
-                symbol, trade_size, market_price, timestamp, daily_executions.size());
+                symbol, trade_size, market_price, timestamp);
             daily_executions.push_back(exec);
 
             INFO("Generated execution for closed position: " + symbol + " " +
@@ -134,8 +134,7 @@ ExecutionReport ExecutionManager::generate_execution(
     const std::string& symbol,
     double quantity_change,
     double market_price,
-    const Timestamp& timestamp,
-    size_t exec_sequence) {
+    const Timestamp& timestamp) {
 
     ExecutionReport exec;
 
@@ -145,7 +144,7 @@ ExecutionReport ExecutionManager::generate_execution(
     // Generate IDs
     std::string date_str = generate_date_string(timestamp);
     exec.order_id = "DAILY_" + symbol + "_" + date_str;
-    exec.exec_id = generate_exec_id(symbol, timestamp, exec_sequence);
+    exec.exec_id = generate_exec_id(symbol, timestamp);
 
     // Set basic fields
     exec.symbol = symbol;
@@ -230,15 +229,25 @@ std::string ExecutionManager::generate_date_string(const Timestamp& timestamp) {
 
 std::string ExecutionManager::generate_exec_id(
     const std::string& symbol,
-    const Timestamp& timestamp,
-    size_t sequence) {
+    const Timestamp& timestamp) {
 
-    // Get timestamp in milliseconds for uniqueness
-    auto timestamp_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
-        timestamp.time_since_epoch()).count();
-
-    // Create unique execution ID
-    return "EXEC_" + symbol + "_" + std::to_string(timestamp_ms) + "_" + std::to_string(sequence);
+    // EXEC_<symbol>_<YYYYMMDD>: the symbol and the run date, nothing else, built from the
+    // same date string as the order_id (DAILY_<symbol>_<YYYYMMDD>).
+    //
+    // It used to be EXEC_<symbol>_<run instant in ms>_<n>, where n was the fill's index
+    // in that call's output -- the iteration order of an unordered_map. The same fills
+    // could be numbered differently by another hash order, and a fill that appeared or
+    // disappeared renumbered its unrelated neighbours on the same day (T-4c F13: six
+    // fills re-keyed when one MYM execution moved). The instant added nothing either:
+    // it is one value per run, so it only encoded the time of day `now` happened to
+    // carry.
+    //
+    // Unique without a counter: one generate_daily_executions call emits a symbol at
+    // most once (the first loop walks current_positions' keys, the second only symbols
+    // absent from it), and every caller stores one call's output per (portfolio_id,
+    // strategy_id, strategy_name, date), which with exec_id is trading.executions' key.
+    // Two sleeves trading the same symbol on the same day differ in strategy_name.
+    return "EXEC_" + symbol + "_" + generate_date_string(timestamp);
 }
 
 } // namespace trade_ngin

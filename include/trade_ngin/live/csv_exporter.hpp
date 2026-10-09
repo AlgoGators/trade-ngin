@@ -8,6 +8,7 @@
 #include <vector>
 #include "trade_ngin/core/error.hpp"
 #include "trade_ngin/core/types.hpp"
+#include "trade_ngin/live/carried_day.hpp"
 
 namespace trade_ngin {
 
@@ -91,6 +92,33 @@ public:
         double gross_notional,
         double net_notional,
         const StrategyInstancesMap& strategy_instances);
+
+    /**
+     * @brief Export the day's positions file on a day with NO session: every value carried.
+     *
+     * T-7a C3 (HD 2026-09-18). Same file name as export_current_positions
+     * (YYYY-MM-DD_positions.csv) and the same columns, plus mark_date and forecast_from. A second
+     * header line states that no session occurred and that every value is carried, not computed.
+     * One row per sleeve and symbol the sleeve holds or last forecast: quantity from the held
+     * book, market_price the symbol's last mark (a held symbol with no loaded bar keeps its stored
+     * row's price, mark_date "stored row"), forecast the sleeve's last computed forecast (empty if
+     * the sleeve has none stored for that symbol). Volatility and the EMAs are not stored anywhere
+     * and are left empty rather than written as zeros.
+     *
+     * @param date Run date (for the file name)
+     * @param strategy_positions The held book per sleeve
+     * @param last_marks Symbol -> its last loaded close and that bar's date
+     * @param last_forecasts Sleeve -> its stored signals of the latest run date before today
+     * @param no_session_reason Why there was no session (written into the note)
+     * @return Result containing filename on success, or error
+     */
+    Result<std::string> export_carried_positions(
+        const std::chrono::system_clock::time_point& date,
+        const StrategyPositionsMap& strategy_positions,
+        const std::unordered_map<std::string, CarriedMark>& last_marks,
+        const std::unordered_map<std::string, CarriedForecasts>& last_forecasts,
+        double portfolio_value, double gross_notional, double net_notional,
+        const std::string& no_session_reason);
 
     /**
      * @brief Export yesterday's finalized positions to CSV (with PnL)

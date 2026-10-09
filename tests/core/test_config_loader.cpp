@@ -47,7 +47,6 @@ nlohmann::json minimal_portfolio() {
     return {
         {"portfolio_id", "TEST_PORTFOLIO"},
         {"initial_capital", 1'000'000.0},
-        {"reserve_capital_pct", 0.10},
         {"max_drawdown", 0.4},
         {"max_leverage", 4.0},
         {"use_optimization", true},
@@ -413,19 +412,6 @@ TEST_F(ConfigLoaderTest, ValidateRejectsNonPositiveInitialCapital) {
     c.database.password = "p";
     c.database.name = "n";
     c.initial_capital = 0.0;
-    c.strategies_config = {{"s", {{"w", 1.0}}}};
-    EXPECT_TRUE(ConfigLoader::validate_config(c).is_error());
-}
-
-TEST_F(ConfigLoaderTest, ValidateRejectsReserveCapitalPctOutOfRange) {
-    AppConfig c;
-    c.portfolio_id = "P";
-    c.database.host = "h";
-    c.database.username = "u";
-    c.database.password = "p";
-    c.database.name = "n";
-    c.initial_capital = 100.0;
-    c.reserve_capital_pct = 1.0;  // must be < 1.0
     c.strategies_config = {{"s", {{"w", 1.0}}}};
     EXPECT_TRUE(ConfigLoader::validate_config(c).is_error());
 }

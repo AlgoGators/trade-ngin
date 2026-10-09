@@ -266,7 +266,6 @@ struct TempConfigTree {
         nlohmann::json portfolio = {
             {"portfolio_id", "G03_TEST_PORTFOLIO"},
             {"initial_capital", 500000.0},
-            {"reserve_capital_pct", 0.1},
             // Schema 2 requires this at the top level of portfolio.json, with no default.
             {"use_optimization", true},
             {"strategies", strategies},

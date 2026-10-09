@@ -31,7 +31,6 @@ protected:
 
         PortfolioConfig config{
             1'000'000.0,  // total_capital
-            100'000.0,    // reserve_capital
             0.9,          // max_strategy_allocation (allow 0.7)
             0.05,         // min_strategy_allocation (allow 0.3)
             false         // use_optimization

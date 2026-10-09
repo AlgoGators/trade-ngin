@@ -102,7 +102,6 @@ Defines portfolio identity, capital, and strategy configuration.
 |-------|------|-------------|
 | `portfolio_id` | string | Unique identifier for the portfolio |
 | `initial_capital` | number | Starting capital in dollars |
-| `reserve_capital_pct` | number | Percentage held as reserve (0.0-1.0) |
 | `strategies` | object | Strategy definitions (see below) |
 
 **Strategy Configuration:**
@@ -181,7 +180,6 @@ Configures email notifications.
    {
      "portfolio_id": "MY_PORTFOLIO",
      "initial_capital": 100000.0,
-     "reserve_capital_pct": 0.10,
      "strategies": {
        "TREND_FOLLOWING": {
          "enabled_backtest": true,
@@ -289,7 +287,6 @@ Lower risk limits, single strategy, higher reserve:
 {
   "portfolio_id": "CONSERVATIVE_PORTFOLIO",
   "initial_capital": 300000.0,
-  "reserve_capital_pct": 0.15,
   "strategies": {
     "TREND_FOLLOWING": {
       "enabled_backtest": true,
@@ -325,7 +322,6 @@ Higher risk limits, multiple strategies:
 {
   "portfolio_id": "AGGRESSIVE_PORTFOLIO",
   "initial_capital": 500000.0,
-  "reserve_capital_pct": 0.05,
   "strategies": {
     "TREND_FOLLOWING": {
       "enabled_backtest": true,

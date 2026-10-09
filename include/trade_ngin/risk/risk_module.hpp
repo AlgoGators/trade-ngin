@@ -148,8 +148,17 @@ struct RiskDecisionRecord {
     Decimal applied_factor{Decimal(1.0)};        ///< the quantised multiplicand actually used,
                                                  ///< Decimal(scale); 1 when nothing was multiplied
     bool empty_book{false};                      ///< the book was empty: on_bars ran, evaluate did not
-    std::string error;                           ///< non-empty iff evaluate failed (fail-open, logged)
+    std::string error;                           ///< non-empty iff the module (or the risk step) failed.
+                                                 ///< At PORTFOLIO scope a failure refuses the scope and
+                                                 ///< the failed row is recorded with applied REFUSE; at
+                                                 ///< SLEEVE scope it does so only for a REFUSE-capable
+                                                 ///< module, else applied NONE (HD 2026-09-21)
 };
+
+/// The module_id of the REFUSE row the PortfolioManager records when the portfolio risk step
+/// itself fails rather than one module's evaluate (a module's on_bars throwing, an exception
+/// after evaluate). Not a configurable id: the parentheses keep it apart from every real one.
+inline constexpr const char* kRiskStepModuleId = "(risk step)";
 
 /// Pure helper. `modules` = describe() of every module, each annotated by the PM with "scope" and
 /// "scope_id". Deterministic, sorted keys; never called on a run path yet.

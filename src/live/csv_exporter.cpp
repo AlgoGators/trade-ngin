@@ -1,7 +1,9 @@
 #include "trade_ngin/live/csv_exporter.hpp"
 #include <arrow/api.h>
 #include <arrow/type.h>
+#include <cmath>
 #include <iomanip>
+#include <set>
 #include <sstream>
 #include <unordered_set>
 #include "trade_ngin/core/logger.hpp"
@@ -625,6 +627,109 @@ Result<std::string> CSVExporter::export_current_positions(
         return Result<std::string>(std::make_unique<TradeError>(
             ErrorCode::FILE_IO_ERROR,
             "Failed to export per-strategy positions: " + std::string(e.what())));
+    }
+}
+
+Result<std::string> CSVExporter::export_carried_positions(
+    const std::chrono::system_clock::time_point& date,
+    const StrategyPositionsMap& strategy_positions,
+    const std::unordered_map<std::string, CarriedMark>& last_marks,
+    const std::unordered_map<std::string, CarriedForecasts>& last_forecasts,
+    double portfolio_value, double gross_notional, double net_notional,
+    const std::string& no_session_reason) {
+    try {
+        const std::string date_str = format_date_for_filename(date);
+        const std::string filename = output_directory_ + date_str + "_positions.csv";
+        INFO("CSVExporter: no session on " + date_str + " (" + no_session_reason +
+             "): the positions file carries the held book, the last marks and the last computed "
+             "forecasts; nothing was computed");
+
+        std::ofstream file(filename);
+        if (!file.is_open()) {
+            return Result<std::string>(std::make_unique<TradeError>(
+                ErrorCode::FILE_IO_ERROR, "Failed to open file for writing: " + filename));
+        }
+
+        write_portfolio_header(file, portfolio_value, gross_notional, net_notional,
+                               format_date_for_display(date));
+        file << "# NO SESSION: " << no_session_reason
+             << ". Nothing below was computed today; every value is CARRIED, not computed: "
+                "quantity is the held book (the previous day's stored positions), market_price "
+                "is the symbol's last close (mark_date), forecast is the sleeve's last computed "
+                "forecast (its stored signals of forecast_from). Volatility and the EMAs are not "
+                "stored and are left empty.\n";
+        file << "strategy,symbol,quantity,market_price,notional,pct_of_gross_notional,"
+                "pct_of_portfolio_value,forecast,volatility,ema_8,ema_32,ema_64,ema_256,"
+                "mark_date,forecast_from\n";
+        file << std::fixed << std::setprecision(6);
+
+        // Every sleeve that holds something or has stored forecasts, alphabetically.
+        std::set<std::string> strategy_names;
+        for (const auto& [name, _] : strategy_positions) strategy_names.insert(name);
+        for (const auto& [name, _] : last_forecasts) strategy_names.insert(name);
+
+        size_t rows = 0;
+        for (const auto& strategy_name : strategy_names) {
+            const std::string display_name = format_strategy_display_name(strategy_name);
+            static const std::unordered_map<std::string, Position> kNoPositions;
+            static const CarriedForecasts kNoForecasts;
+            auto held_it = strategy_positions.find(strategy_name);
+            const auto& held = held_it == strategy_positions.end() ? kNoPositions : held_it->second;
+            auto fc_it = last_forecasts.find(strategy_name);
+            const auto& carried = fc_it == last_forecasts.end() ? kNoForecasts : fc_it->second;
+
+            // The held symbols and every symbol the sleeve last forecast, alphabetically.
+            std::set<std::string> symbols;
+            for (const auto& [symbol, _] : held) symbols.insert(symbol);
+            for (const auto& [symbol, _] : carried.forecasts) symbols.insert(symbol);
+
+            for (const auto& symbol : symbols) {
+                double quantity = 0.0;
+                auto pos_it = held.find(symbol);
+                if (pos_it != held.end()) quantity = pos_it->second.quantity.as_double();
+
+                // The last mark; a held symbol with no loaded bar keeps its stored row's price.
+                double market_price = 0.0;
+                std::string mark_date;
+                auto mark_it = last_marks.find(symbol);
+                if (mark_it != last_marks.end()) {
+                    market_price = mark_it->second.close;
+                    mark_date = mark_it->second.date;
+                } else if (pos_it != held.end()) {
+                    market_price = pos_it->second.average_price.as_double();
+                    mark_date = "stored row";
+                }
+
+                const double notional = calculate_notional(symbol, quantity, market_price);
+                const double pct_of_gross =
+                    (gross_notional != 0.0) ? (std::abs(notional) / gross_notional) * 100.0 : 0.0;
+                const double pct_of_portfolio =
+                    (portfolio_value != 0.0)
+                        ? (std::abs(notional) / std::abs(portfolio_value)) * 100.0
+                        : 0.0;
+
+                file << display_name << "," << symbol << "," << quantity << "," << market_price
+                     << "," << notional << "," << pct_of_gross << "," << pct_of_portfolio << ",";
+                auto f_it = carried.forecasts.find(symbol);
+                if (f_it != carried.forecasts.end()) file << f_it->second;
+                // volatility, ema_8, ema_32, ema_64, ema_256: not stored, left empty
+                file << ",,,,,," << mark_date << ","
+                     << (f_it != carried.forecasts.end() ? carried.session_date : std::string())
+                     << "\n";
+                ++rows;
+            }
+        }
+
+        file.close();
+        INFO("CSVExporter: Carried positions saved to " + filename + " (" + std::to_string(rows) +
+             " rows)");
+        return Result<std::string>(filename);
+
+    } catch (const std::exception& e) {
+        ERROR("CSVExporter: Exception in export_carried_positions: " + std::string(e.what()));
+        return Result<std::string>(std::make_unique<TradeError>(
+            ErrorCode::FILE_IO_ERROR,
+            "Failed to export carried positions: " + std::string(e.what())));
     }
 }
 

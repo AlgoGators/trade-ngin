@@ -35,7 +35,6 @@ namespace trade_ngin {
  */
 struct PortfolioConfig : public ConfigBase {
     Decimal total_capital{Decimal(0.0)};    // Total portfolio capital
-    Decimal reserve_capital{Decimal(0.0)};  // Capital to keep in reserve
     double max_strategy_allocation{
         1.0};  // Maximum allocation to any strategy (keep as double - it's a ratio)
     double min_strategy_allocation{
@@ -71,10 +70,9 @@ struct PortfolioConfig : public ConfigBase {
 
     PortfolioConfig() = default;
 
-    PortfolioConfig(Decimal total_capital, Decimal reserve_capital, double max_strategy_allocation,
+    PortfolioConfig(Decimal total_capital, double max_strategy_allocation,
                     double min_strategy_allocation, bool use_optimization)
         : total_capital(total_capital),
-          reserve_capital(reserve_capital),
           max_strategy_allocation(max_strategy_allocation),
           min_strategy_allocation(min_strategy_allocation),
           use_optimization(use_optimization) {}
@@ -83,7 +81,6 @@ struct PortfolioConfig : public ConfigBase {
     nlohmann::json to_json() const override {
         nlohmann::json j;
         j["total_capital"] = static_cast<double>(total_capital);
-        j["reserve_capital"] = static_cast<double>(reserve_capital);
         j["max_strategy_allocation"] = max_strategy_allocation;
         j["min_strategy_allocation"] = min_strategy_allocation;
         j["use_optimization"] = use_optimization;
@@ -100,8 +97,6 @@ struct PortfolioConfig : public ConfigBase {
     void from_json(const nlohmann::json& j) override {
         if (j.contains("total_capital"))
             total_capital = Decimal(j.at("total_capital").get<double>());
-        if (j.contains("reserve_capital"))
-            reserve_capital = Decimal(j.at("reserve_capital").get<double>());
         if (j.contains("max_strategy_allocation")) {
             max_strategy_allocation = j.at("max_strategy_allocation").get<double>();
         }
@@ -155,10 +150,17 @@ public:
      * @param data New market data
      * @param skip_execution_generation If true, skip execution generation (used during warmup)
      * @param current_timestamp Optional current day's timestamp for execution fill_time (if not provided, uses data[0].timestamp)
+     * @param session_symbols Optional (T-7a C4, the backtest predicate): the symbols whose bar in
+     *        `data` is a SESSION. When given, a symbol NOT in it gets no fill AND no book change:
+     *        its current_positions entry is held at the filled-ledger quantity (a symbol with no
+     *        bar, or a JUNK bar, in the signal group). Null (the default, every live caller and the
+     *        equity backtest) keeps the old skip: no fill, the book moves to the target.
      * @return Result indicating success or failure
      */
-    Result<void> process_market_data(const std::vector<Bar>& data, bool skip_execution_generation = false, 
-                                     std::optional<Timestamp> current_timestamp = std::nullopt);
+    Result<void> process_market_data(
+        const std::vector<Bar>& data, bool skip_execution_generation = false,
+        std::optional<Timestamp> current_timestamp = std::nullopt,
+        const std::unordered_set<std::string>* session_symbols = nullptr);
 
     /**
      * @brief Update strategy allocations
@@ -422,8 +424,22 @@ private:
     void update_historical_returns(const std::vector<Bar>& data);
 
     /**
+     * @brief The optimizer's return series, aligned by DATE (T-7a INSERT S3)
+     * @param closes_by_symbol The symbols in the matrix, each with its date-keyed closes
+     * @return Per symbol, its returns between consecutive dates of the INTERSECTION of the
+     *         symbols' dates (a date one symbol lacks is dropped for all, and the next return
+     *         spans it for every symbol); all non-empty series have the same length. A symbol
+     *         with fewer than two usable closes gets an empty series and does not shrink the
+     *         intersection. Logs one COVARIANCE_DATE_ALIGNED line.
+     */
+    std::unordered_map<std::string, std::vector<double>> date_aligned_returns(
+        const std::unordered_map<std::string, std::map<int64_t, double>>& closes_by_symbol) const;
+
+    /**
      * @brief Calculate covariance matrix from returns
-     * @param returns_by_symbol Map of symbol to returns
+     * @param returns_by_symbol Map of symbol to returns. The optimizer passes the output of
+     *        date_aligned_returns, whose series are already paired by date and of one length,
+     *        so the tail-by-count alignment here is the identity on them.
      * @return Covariance matrix
      */
     std::vector<std::vector<double>> calculate_covariance_matrix(
@@ -497,10 +513,11 @@ private:
         const std::unordered_map<std::string, Position>& book, const RiskContext& ctx,
         bool finalize_phase, std::vector<std::string>& errors);
 
-    /// The other half of fail-closed: a module that FAILED and could have REFUSED is treated as
-    /// a refusal of its scope, because its silence cannot be read as consent. Returns true when
-    /// `verdict` was upgraded to REFUSE; names the module in `module_id`. Inert for a module whose
-    /// capabilities() do not contain REFUSE (the Carver module's are {SCALE}).
+    /// The other half of fail-closed: a module that FAILED is treated as a refusal of its scope,
+    /// because its silence cannot be read as consent. At PORTFOLIO scope that holds for a module
+    /// of any capability (HD 2026-09-21, option b: the lone Carver, {SCALE, WARN}, included); at
+    /// SLEEVE scope only for a module that could have REFUSED. Returns true when `verdict` was
+    /// upgraded to REFUSE, with the failed module's row set to REFUSE; names it in `module_id`.
     bool refuse_on_failed_gatekeeper(const std::vector<RiskModulePtr>& modules,
                                      const std::vector<std::string>& errors,
                                      const RiskContext& ctx, RiskVerdict& verdict,
@@ -508,7 +525,8 @@ private:
 
     /// Tell every module evaluated in a scope what was applied, then record its row. A module
     /// whose `errors[k]` is non-empty was never evaluated: it is recorded with its error and
-    /// applied_action NONE, and its on_applied is NOT called.
+    /// applied_action NONE (REFUSE when its failure refused the scope), and its on_applied is
+    /// NOT called.
     void deliver_and_record(const std::vector<RiskModulePtr>& modules,
                             std::vector<RiskDecision>& decisions, const RiskVerdict& verdict,
                             const RiskContext& ctx, bool pinned,

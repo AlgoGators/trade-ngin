@@ -1120,4 +1120,57 @@ Result<std::unordered_map<std::string, double>> LiveDataLoader::load_daily_metri
     return Result<std::unordered_map<std::string, double>>(metrics);
 }
 
+Result<CarriedForecasts> LiveDataLoader::load_last_signals_before(
+    const std::string& strategy_id, const std::string& strategy_name,
+    const std::string& portfolio_id, const Timestamp& date) {
+    auto validation = validate_connection();
+    if (validation.is_error()) {
+        return make_error<CarriedForecasts>(ErrorCode::DATABASE_ERROR, validation.error()->what(),
+                                            "LiveDataLoader");
+    }
+
+    // UTC date-string contract: format_utc_date is the approved primitive for date keys.
+    const std::string date_str = core::format_utc_date(date);
+    const std::string where = " WHERE portfolio_id = " + quote_literal(portfolio_id) +
+                              " AND strategy_id = " + quote_literal(strategy_id) +
+                              " AND strategy_name = " + quote_literal(strategy_name);
+    const std::string query =
+        "SELECT symbol, signal_value::float8 AS signal_value, "
+        "to_char(\"timestamp\" AT TIME ZONE 'UTC', 'YYYY-MM-DD') AS session_date "
+        "FROM " +
+        schema_ + ".signals" + where + " AND \"timestamp\" = (SELECT max(\"timestamp\") FROM " +
+        schema_ + ".signals" + where + " AND \"timestamp\" < (DATE " + quote_literal(date_str) +
+        ")::timestamp AT TIME ZONE 'UTC') ORDER BY symbol";
+
+    DEBUG("Loading last signals before " + date_str + ": " + query);
+
+    auto result = db_->execute_query(query);
+    if (result.is_error()) {
+        return make_error<CarriedForecasts>(
+            ErrorCode::DATABASE_ERROR,
+            "Failed to load last signals: " + std::string(result.error()->what()),
+            "LiveDataLoader");
+    }
+
+    CarriedForecasts carried;
+    auto table = result.value();
+    if (!table || table->num_rows() == 0) {
+        return Result<CarriedForecasts>(carried);
+    }
+    for (int64_t i = 0; i < table->num_rows(); ++i) {
+        auto sym_r = DataConversionUtils::safe_get_string(table->column(0), i, "symbol");
+        auto val_r = DataConversionUtils::safe_get_double(table->column(1), i, "signal_value");
+        auto day_r = DataConversionUtils::safe_get_string(table->column(2), i, "session_date");
+        if (sym_r.is_error() || val_r.is_error() || day_r.is_error()) {
+            return make_error<CarriedForecasts>(ErrorCode::CONVERSION_ERROR,
+                                                "load_last_signals_before: unreadable row " +
+                                                    std::to_string(i),
+                                                "LiveDataLoader");
+        }
+        carried.forecasts[sym_r.value()] = val_r.value();
+        carried.session_date = day_r.value();
+    }
+    return Result<CarriedForecasts>(carried);
+}
+
 }  // namespace trade_ngin

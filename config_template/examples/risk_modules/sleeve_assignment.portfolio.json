@@ -2,7 +2,6 @@
   "_description": "EXAMPLE, placeholder values. The sleeve block lives at the TOP LEVEL of portfolio.json, not inside a strategies entry: the live runners store each strategies entry verbatim in live_run_metadata.strategy_configs, and nesting it there would move a stored column the day a sleeve module is assigned. Every key must name a strategy of this book; `type: none` is not valid at sleeve scope -- omit the sleeve's entry instead.",
   "portfolio_id": "EXAMPLE_PORTFOLIO",
   "initial_capital": 100000,
-  "reserve_capital_pct": 0.1,
   "use_optimization": true,
   "strategies": {
     "TREND_FOLLOWING_FAST": {

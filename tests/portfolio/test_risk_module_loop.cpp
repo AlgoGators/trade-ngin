@@ -171,7 +171,7 @@ size_t count_of(const std::string& text, const std::string& needle) {
 }
 
 PortfolioConfig risk_config(bool allow_fractional) {
-    PortfolioConfig pc{1000.0, 0.0, 1.0, 0.0, /*optimization=*/false};
+    PortfolioConfig pc{1000.0, 1.0, 0.0, /*optimization=*/false};
     pc.allow_fractional_positions = allow_fractional;
     pc.risk_config.capital = 1000.0;
     pc.risk_config.var_limit = 1e6;

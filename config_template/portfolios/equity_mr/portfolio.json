@@ -2,7 +2,6 @@
   "_description": "EQUITY_MR_PORTFOLIO - Equity mean reversion strategy",
   "portfolio_id": "EQUITY_MR_PORTFOLIO",
   "initial_capital": 100000,
-  "reserve_capital_pct": 0.1,
   "strategies": {
     "MEAN_REVERSION": {
       "enabled_backtest": true,

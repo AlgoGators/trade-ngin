@@ -2,7 +2,6 @@
   "_description": "CONSERVATIVE_PORTFOLIO",
   "portfolio_id": "CONSERVATIVE_PORTFOLIO",
   "initial_capital": 500000.0,
-  "reserve_capital_pct": 0.10,
   "strategies": {
     "TREND_FOLLOWING": {
       "enabled_backtest": true,

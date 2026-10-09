@@ -92,7 +92,6 @@ AppConfig config_with_portfolio_id(const std::string& id) {
     c.database.password = "p";
     c.database.name = "n";
     c.initial_capital = 500000.0;
-    c.reserve_capital_pct = 0.10;
     c.strategies_config = nlohmann::json{{"equity_mean_reversion", {{"enabled", true}}}};
     return c;
 }

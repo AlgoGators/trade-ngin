@@ -1,4 +1,5 @@
 #include "trade_ngin/backtest/backtest_coordinator.hpp"
+#include <unordered_set>
 #include <algorithm>
 #include <iomanip>
 #include <sstream>
@@ -187,6 +188,8 @@ Result<BacktestResults> BacktestCoordinator::run_portfolio(
     // Reset all state
     reset();
     reset_portfolio_state();
+    // The session hold (T-7a C4) is the futures book's; the equity backtest keeps its old path.
+    session_hold_enabled_ = (asset_class == AssetClass::FUTURES);
 
     // Store backtest dates for later use in save_portfolio_results_to_db
     backtest_start_date_ = start_date;
@@ -537,6 +540,10 @@ Result<void> BacktestCoordinator::process_portfolio_day(
                                     "BacktestCoordinator");
         }
 
+        // T-7a C4: every group enters the session classifier as it arrives, so a group is
+        // classified later (as the signal group) against strictly earlier bars only.
+        if (session_hold_enabled_) session_classifier_.add_bars(bars);
+
         // If this is the first bar set, initialize previous_bars and return early
         // to avoid processing day 1 twice (directly + as "previous bars" on day 2)
         bool had_previous_bars = portfolio_has_previous_bars_;
@@ -606,7 +613,25 @@ Result<void> BacktestCoordinator::process_portfolio_day(
         // Use previous day's bars for signal generation
         const auto& bars_for_signals = had_previous_bars ? portfolio_previous_bars_ : bars;
 
-        auto data_result = portfolio->process_market_data(bars_for_signals, is_warmup, timestamp);
+        // The backtest predicate (T-7a C4; T-4c J1 on the classifier): a symbol trades on this
+        // cycle only when its bar in the signal group is a SESSION. A symbol with no bar there,
+        // or a JUNK bar, gets no fill and no book change (the PM holds it at its filled ledger).
+        std::unordered_set<std::string> signal_group_sessions;
+        const std::unordered_set<std::string>* session_symbols = nullptr;
+        if (session_hold_enabled_ && had_previous_bars) {
+            for (const auto& v : classify_bar_group(session_classifier_, bars_for_signals)) {
+                if (v.is_session()) {
+                    signal_group_sessions.insert(v.symbol);
+                } else if (!is_warmup) {
+                    INFO("BT_SESSION_CLASSIFIER JUNK " + v.symbol + " " + v.date + ": " + v.reason +
+                         " -- no fill and no book change on this cycle");
+                }
+            }
+            session_symbols = &signal_group_sessions;
+        }
+
+        auto data_result = portfolio->process_market_data(bars_for_signals, is_warmup, timestamp,
+                                                          session_symbols);
         if (data_result.is_error()) {
             return data_result;
         }
@@ -1039,8 +1064,10 @@ Result<void> BacktestCoordinator::process_portfolio_day(
                 auto price_it = market_prices.find(symbol);
                 double price = (price_it != market_prices.end()) ? price_it->second : 0.0;
                 auto instrument = csv_registry.get_instrument(symbol);
+                // get_notional_value is a magnitude (futures.cpp): carry the position's sign so
+                // a short adds to the net notional with its sign, not as a long.
                 double notional = instrument
-                    ? instrument->get_notional_value(qty, price)
+                    ? std::copysign(instrument->get_notional_value(qty, price), qty)
                     : qty * price;
                 gross_notional += std::abs(notional);
                 net_notional += notional;
@@ -1166,6 +1193,8 @@ int BacktestCoordinator::calculate_warmup_days(
 void BacktestCoordinator::reset_portfolio_state() {
     portfolio_has_previous_bars_ = false;
     portfolio_previous_bars_.clear();
+    session_classifier_ = SessionClassifier();
+    session_hold_enabled_ = false;
     current_run_id_.clear();
     portfolio_previous_positions_.clear();
     // E2-F54 (c): without this, a second portfolio backtest in the same process opens with

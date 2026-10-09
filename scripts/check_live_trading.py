@@ -9,12 +9,37 @@ asking "did the process start", it asks "did anything actually reach the
 database". That covers every failure mode at once -- container down, cron dead,
 binary missing, credentials unavailable, engine crashing mid-run.
 
+What it reads, per book (T-5 W5 / WATCHDOG-frames, fixed in T-7a C4):
+
+  1. the RUN CLOCK: max(trading.live_results.created_at) for the book. A completed
+     run deletes and re-inserts its day's live_results row as its LAST write, and
+     created_at defaults to now(), so this is a real write clock of the last run
+     that finished. (It used to be max(live_run_metadata.created_at): an upserted
+     row that a refused run could leave behind, and that replays and future-dated
+     orphan rows also satisfy.)
+  2. the BOOK STAMP: the latest trading.live_results.date for the book that is not
+     in the future. It says which trading date the book has been run through; rows
+     dated after today (replays, orphans) are ignored.
+  3. the POSITIONS STAMP: the latest trading.positions.date for the book with
+     portfolio_type = 'system' (a desk save, portfolio_type 'qt', must never
+     satisfy the watchdog), not in the future. Checked only when the book's latest
+     results row says it holds positions (a flat book writes no position rows). A
+     run that wrote results but not its positions is a partial failure.
+
+Thresholds are CALENDAR days: the futures book runs seven days a week (the cron is
+`30 9 * * *`), so a weekend is not a gap. A signal older than
+MAX_CALENDAR_DAYS_SILENT days (default 1: today's run may still be running when
+this checks, yesterday's may not be missing) is stale.
+
 Read-only. Files or updates a GitHub issue when the answer is no.
 
 Environment:
   DB_HOST / DB_PORT / DB_USER / DB_PASSWORD / DB_NAME   required
   GITHUB_TOKEN / GITHUB_REPO                            optional; issue filing
-  MAX_BUSINESS_DAYS_SILENT                              optional; default 3
+  LIVE_PORTFOLIOS                                       optional; comma list of
+                                                        portfolio_id, default
+                                                        CONSERVATIVE_PORTFOLIO
+  MAX_CALENDAR_DAYS_SILENT                              optional; default 1
 
 Run with --self-test to exercise the staleness logic without a database.
 """
@@ -26,73 +51,79 @@ from datetime import date, datetime, timedelta, timezone
 ISSUE_LABEL = "live-trading-down"
 DEFAULT_REPO = "AlgoGators/trade-ngin"
 
-# Trading runs Mon-Fri, so calendar-day thresholds produce weekend false alarms.
-# Three business days tolerates a public holiday next to a weekend while still
-# surfacing a genuine outage inside the same week.
-MAX_BUSINESS_DAYS_SILENT = int(os.environ.get("MAX_BUSINESS_DAYS_SILENT", "3"))
+# Calendar days: the futures runner runs every calendar day, so the old weekday
+# arithmetic (which made a Friday stop alarm only on the following Thursday) is gone.
+MAX_CALENDAR_DAYS_SILENT = int(os.environ.get("MAX_CALENDAR_DAYS_SILENT", "1"))
+
+DEFAULT_PORTFOLIOS = "CONSERVATIVE_PORTFOLIO"
 
 
-def business_days_between(start: date, end: date) -> int:
-    """Weekdays strictly after `start`, up to and including `end`.
-
-    Holidays are deliberately not modelled: a market holiday makes this
-    over-count by one, which the threshold absorbs. Under-counting would be the
-    dangerous direction, and this never does that.
-    """
+def calendar_days_between(start: date, end: date) -> int:
+    """Calendar days from `start` to `end`; 0 when `end` is not after `start`."""
     if end <= start:
         return 0
-    days = 0
-    cursor = start + timedelta(days=1)
-    while cursor <= end:
-        if cursor.weekday() < 5:  # Mon-Fri
-            days += 1
-        cursor += timedelta(days=1)
-    return days
+    return (end - start).days
 
 
-def evaluate(last_run_at, last_position_at, today, threshold):
-    """Pure decision function: returns (is_stale, list_of_reasons).
+def _as_date(value):
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        return value.date()
+    return value
 
-    Takes the two independent signals -- when the engine last recorded a run, and
-    when a position row was last physically written -- because they fail
-    differently. A run that starts and dies mid-way updates one but not the other.
+
+def evaluate(book, last_run_at, last_book_date, last_position_date, last_active_positions,
+             today, threshold):
+    """Pure decision function for one book: returns (is_stale, list_of_reasons).
+
+    last_run_at            max(live_results.created_at) -- the run clock
+    last_book_date         max(live_results.date) <= today -- the book stamp
+    last_position_date     max(positions.date) <= today, portfolio_type 'system'
+    last_active_positions  active_positions on the book's latest results row
     """
     reasons = []
 
     if last_run_at is None:
-        reasons.append(
-            "trading.live_run_metadata is empty -- the engine has never recorded a run"
-        )
+        reasons.append(f"{book}: trading.live_results has no row -- the engine has never "
+                       "completed a run for this book")
     else:
-        gap = business_days_between(last_run_at.date(), today)
+        gap = calendar_days_between(_as_date(last_run_at), today)
         if gap > threshold:
-            reasons.append(
-                f"last engine run was {last_run_at:%Y-%m-%d %H:%M} "
-                f"({gap} business days ago, threshold {threshold})"
-            )
+            reasons.append(f"{book}: last completed run wrote its results at "
+                           f"{last_run_at:%Y-%m-%d %H:%M} ({gap} calendar days ago, "
+                           f"threshold {threshold})")
 
-    if last_position_at is None:
-        reasons.append(
-            "trading.positions is empty -- no positions have ever been written"
-        )
-    else:
-        gap = business_days_between(last_position_at.date(), today)
+    if last_book_date is not None:
+        gap = calendar_days_between(_as_date(last_book_date), today)
         if gap > threshold:
-            reasons.append(
-                f"last position write was {last_position_at:%Y-%m-%d %H:%M} "
-                f"({gap} business days ago, threshold {threshold})"
-            )
+            reasons.append(f"{book}: the book has been run through {last_book_date} only "
+                           f"({gap} calendar days ago, threshold {threshold})")
+
+    holds_positions = last_active_positions is not None and last_active_positions > 0
+    if holds_positions and last_book_date is not None:
+        if last_position_date is None or _as_date(last_position_date) < _as_date(last_book_date):
+            reasons.append(f"{book}: the run for {last_book_date} wrote its results "
+                           f"({last_active_positions} active positions) but no system position "
+                           f"rows (latest: {last_position_date}) -- a partial write")
 
     return bool(reasons), reasons
 
 
-def _fetch(conn):
+def _fetch(conn, book, today):
     with conn.cursor() as cur:
-        cur.execute("SELECT max(created_at) FROM trading.live_run_metadata")
+        cur.execute("SELECT max(created_at) FROM trading.live_results WHERE portfolio_id = %s",
+                    (book,))
         last_run = cur.fetchone()[0]
-        cur.execute("SELECT max(updated_at) FROM trading.positions")
+        cur.execute("SELECT date, active_positions FROM trading.live_results "
+                    "WHERE portfolio_id = %s AND date <= %s ORDER BY date DESC LIMIT 1",
+                    (book, today))
+        row = cur.fetchone()
+        last_book_date, last_active = (row[0], row[1]) if row else (None, None)
+        cur.execute("SELECT max(date) FROM trading.positions WHERE portfolio_id = %s "
+                    "AND portfolio_type = 'system' AND date <= %s", (book, today))
         last_pos = cur.fetchone()[0]
-    return last_run, last_pos
+    return last_run, last_book_date, last_pos, last_active
 
 
 def _file_issue(reasons, repo, token):
@@ -146,8 +177,8 @@ def _file_issue(reasons, repo, token):
 def self_test():
     """Exercise the staleness logic without a database.
 
-    Kept in-process rather than as a pytest suite because this is a C++ repo with
-    no Python test infrastructure; CI runs `--self-test` directly.
+    CI runs `--self-test` directly; tests/scripts/test_check_live_trading.py runs the
+    same checks and more through ctest.
     """
     failures = []
 
@@ -155,48 +186,49 @@ def self_test():
         if got != want:
             failures.append(f"{name}: got {got!r}, wanted {want!r}")
 
-    # business_days_between
-    check(
-        "Fri->Mon is 1 business day",
-        business_days_between(date(2026, 7, 24), date(2026, 7, 27)),
-        1,
-    )
-    check(
-        "Fri->Sat is 0", business_days_between(date(2026, 7, 24), date(2026, 7, 25)), 0
-    )
-    check(
-        "Mon->Fri is 4", business_days_between(date(2026, 7, 20), date(2026, 7, 24)), 4
-    )
-    check(
-        "same day is 0", business_days_between(date(2026, 7, 24), date(2026, 7, 24)), 0
-    )
-    check(
-        "backwards is 0", business_days_between(date(2026, 7, 24), date(2026, 7, 20)), 0
-    )
+    check("Fri->Mon is 3 calendar days",
+          calendar_days_between(date(2026, 7, 24), date(2026, 7, 27)), 3)
+    check("same day is 0", calendar_days_between(date(2026, 7, 24), date(2026, 7, 24)), 0)
+    check("backwards is 0", calendar_days_between(date(2026, 7, 24), date(2026, 7, 20)), 0)
 
-    monday = date(2026, 7, 27)
-    dt = lambda d: datetime(d.year, d.month, d.day, 9, 30, tzinfo=timezone.utc)
+    at = lambda d: datetime(d.year, d.month, d.day, 13, 45)
+    book = "CONSERVATIVE_PORTFOLIO"
 
-    # A Friday run seen on Monday is healthy -- the weekend must not alarm.
-    stale, _ = evaluate(dt(date(2026, 7, 24)), dt(date(2026, 7, 24)), monday, 3)
-    check("friday run, monday check => healthy", stale, False)
+    # Today's run done: healthy.
+    stale, _ = evaluate(book, at(date(2026, 7, 27)), date(2026, 7, 27), date(2026, 7, 27), 12,
+                        date(2026, 7, 27), 1)
+    check("today's run done => healthy", stale, False)
+
+    # Yesterday's run done, today's not yet: tolerated.
+    stale, _ = evaluate(book, at(date(2026, 7, 26)), date(2026, 7, 26), date(2026, 7, 26), 12,
+                        date(2026, 7, 27), 1)
+    check("yesterday done, today pending => healthy", stale, False)
+
+    # A stop after Friday's run is caught on Sunday, not on Thursday.
+    stale, reasons = evaluate(book, at(date(2026, 7, 24)), date(2026, 7, 24), date(2026, 7, 24),
+                              12, date(2026, 7, 26), 1)
+    check("friday stop seen on sunday => stale", stale, True)
+    check("friday stop names both run signals", len(reasons), 2)
 
     # The real outage: last run 2026-05-05, checked 2026-07-25.
-    stale, reasons = evaluate(
-        dt(date(2026, 5, 5)), dt(date(2026, 5, 3)), date(2026, 7, 25), 3
-    )
+    stale, _ = evaluate(book, at(date(2026, 5, 5)), date(2026, 5, 5), date(2026, 5, 3), 12,
+                        date(2026, 7, 25), 1)
     check("the actual 81-day outage => stale", stale, True)
-    check("outage reports both signals", len(reasons), 2)
 
-    # Empty tables are stale, not silently healthy.
-    stale, reasons = evaluate(None, None, monday, 3)
-    check("empty tables => stale", stale, True)
-    check("empty tables report both", len(reasons), 2)
+    # No results row at all.
+    stale, _ = evaluate(book, None, None, None, None, date(2026, 7, 27), 1)
+    check("never ran => stale", stale, True)
 
-    # Engine recorded a run but wrote no positions -- a partial failure.
-    stale, reasons = evaluate(dt(monday), dt(date(2026, 5, 3)), monday, 3)
-    check("run ok but positions stale => stale", stale, True)
-    check("partial failure names one signal", len(reasons), 1)
+    # Results written, positions not: a partial write.
+    stale, reasons = evaluate(book, at(date(2026, 7, 27)), date(2026, 7, 27), date(2026, 7, 26),
+                              12, date(2026, 7, 27), 1)
+    check("results without positions => stale", stale, True)
+    check("partial write names one signal", len(reasons), 1)
+
+    # A flat book writes no position rows: not a partial write.
+    stale, _ = evaluate(book, at(date(2026, 7, 27)), date(2026, 7, 27), None, 0,
+                        date(2026, 7, 27), 1)
+    check("flat book => healthy", stale, False)
 
     if failures:
         print("SELF-TEST FAILED:")
@@ -213,6 +245,9 @@ def main():
 
     import psycopg2
 
+    books = [b.strip() for b in os.environ.get("LIVE_PORTFOLIOS", DEFAULT_PORTFOLIOS).split(",")
+             if b.strip()]
+    today = datetime.now(timezone.utc).date()
     conn = psycopg2.connect(
         host=os.environ["DB_HOST"],
         port=os.environ.get("DB_PORT", "5432"),
@@ -221,18 +256,19 @@ def main():
         dbname=os.environ["DB_NAME"],
         connect_timeout=15,
     )
+    reasons = []
     try:
-        last_run, last_pos = _fetch(conn)
+        for book in books:
+            last_run, last_book_date, last_pos, last_active = _fetch(conn, book, today)
+            print(f"{book}: last completed run {last_run}; book run through {last_book_date}; "
+                  f"system positions through {last_pos}; active positions {last_active}")
+            _, book_reasons = evaluate(book, last_run, last_book_date, last_pos, last_active,
+                                       today, MAX_CALENDAR_DAYS_SILENT)
+            reasons.extend(book_reasons)
     finally:
         conn.close()
 
-    today = datetime.now(timezone.utc).date()
-    print(f"last engine run:     {last_run}")
-    print(f"last position write: {last_pos}")
-
-    stale, reasons = evaluate(last_run, last_pos, today, MAX_BUSINESS_DAYS_SILENT)
-
-    if not stale:
+    if not reasons:
         print("OK: live trading is writing within the expected window.")
         return 0
 

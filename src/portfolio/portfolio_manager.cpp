@@ -1,5 +1,6 @@
 // src/portfolio/portfolio_manager.cpp
 #include "trade_ngin/portfolio/portfolio_manager.hpp"
+#include <unordered_set>
 #include <algorithm>
 #include <climits>
 #include <cmath>
@@ -134,8 +135,7 @@ PortfolioManager::PortfolioManager(PortfolioConfig config, std::string id,
                        id_,  // Use the provided ID
                        "",
                        std::chrono::system_clock::now(),
-                       {{"total_capital", static_cast<double>(config_.total_capital)},
-                        {"reserve_capital", static_cast<double>(config_.reserve_capital)}}};
+                       {{"total_capital", static_cast<double>(config_.total_capital)}}};
 
     auto register_result = StateManager::instance().register_component(info);
     if (register_result.is_error()) {
@@ -241,7 +241,9 @@ Result<void> PortfolioManager::add_strategy(std::shared_ptr<StrategyInterface> s
 
 Result<void> PortfolioManager::process_market_data(const std::vector<Bar>& data,
                                                    bool skip_execution_generation,
-                                                   std::optional<Timestamp> current_timestamp) {
+                                                   std::optional<Timestamp> current_timestamp,
+                                                   const std::unordered_set<std::string>*
+                                                       session_symbols) {
     std::vector<std::string> processed_strategies;
 
     try {
@@ -470,27 +472,48 @@ Result<void> PortfolioManager::process_market_data(const std::vector<Bar>& data,
             // Risk Management step
             bool has_risk_manager = !risk_modules_.empty();
             if (has_risk_manager) {
+                // A portfolio-scope risk step that cannot answer REFUSES the scope (HD 2026-09-21,
+                // option b): every strategy is held at its previous book and no order is sent.
+                // The old WARN that went on WITHOUT risk management is gone. A module whose
+                // evaluate fails is refused inside apply_risk_management
+                // (refuse_on_failed_gatekeeper); what fails the step itself (a module's on_bars
+                // throwing, an exception after evaluate) is refused here, recorded as a REFUSE
+                // row carrying the error, so the runner's metadata mark and exit code see it.
+                const RiskContext lap_ctx =
+                    make_risk_context(RiskPhase::LAP, iteration, RiskScope::PORTFOLIO, id_,
+                                      config_.total_capital, data, current_timestamp,
+                                      skip_execution_generation);
+                std::string step_failure;
                 try {
                     Logger::register_component("RiskManager");
-                    auto risk_result = apply_risk_management(
-                        data,
-                        make_risk_context(RiskPhase::LAP, iteration, RiskScope::PORTFOLIO, id_,
-                                          config_.total_capital, data, current_timestamp,
-                                          skip_execution_generation),
-                        risk_outcome);
+                    auto risk_result = apply_risk_management(data, lap_ctx, risk_outcome);
                     if (risk_result.is_error()) {
-                        WARN("Portfolio risk management failed in iteration " +
-                             std::to_string(iteration) + ": " +
-                             std::string(risk_result.error()->what()) +
-                             ", continuing without risk management");
+                        step_failure = risk_result.error()->what();
                     } else {
                         INFO("Portfolio risk management applied successfully in iteration " +
                              std::to_string(iteration));
                     }
                 } catch (const std::exception& e) {
-                    WARN("Exception during risk management in iteration " +
-                         std::to_string(iteration) + ": " + std::string(e.what()) +
-                         ", continuing without risk management");
+                    step_failure = e.what();
+                }
+                if (!step_failure.empty() && !risk_outcome.pin_all &&
+                    !risk_outcome.refuse_unseeded) {
+                    ERROR("Portfolio risk management failed in iteration " +
+                          std::to_string(iteration) + ": " + step_failure +
+                          "; the portfolio risk step could not answer, so the scope is refused: "
+                          "every strategy is held at its previous book and no orders are sent");
+                    RiskDecision none;
+                    none.module_id = kRiskStepModuleId;
+                    record_risk_decision(lap_ctx, kRiskStepModuleId, std::move(none),
+                                         RiskAction::REFUSE, Decimal(1.0), false, step_failure);
+                    if (!scope_is_seeded(id_)) {
+                        risk_outcome.refuse_unseeded = true;
+                        risk_outcome.unseeded_scope = id_;
+                    } else {
+                        risk_outcome.pin_all = true;
+                        risk_outcome.action = RiskAction::REFUSE;
+                    }
+                    risk_outcome.module_id = kRiskStepModuleId;
                 }
             } else {
                 INFO("Risk management not enabled, skipping risk checks in iteration " +
@@ -740,7 +763,7 @@ Result<void> PortfolioManager::process_market_data(const std::vector<Bar>& data,
 
                 // Generate execution reports per strategy (before aggregation)
                 // This allows accurate per-strategy execution tracking
-                for (const auto& [strategy_id, info] : strategies_) {
+                for (auto& [strategy_id, info] : strategies_) {
                     auto& strategy_execs = strategy_executions_[strategy_id];
                     // Start counter from current size to ensure unique IDs across all periods
                     int exec_counter = static_cast<int>(strategy_execs.size());
@@ -779,6 +802,25 @@ Result<void> PortfolioManager::process_market_data(const std::vector<Bar>& data,
                         // current_qty == 0 and needs no special case.
                         if (std::abs(trade_size) > 1e-6) {
                             Side side = trade_size > 0 ? Side::BUY : Side::SELL;
+
+                            // The backtest predicate (T-7a C4; T-4c J1 re-keyed on the session
+                            // classifier): a symbol whose signal-group bar is not a SESSION (no
+                            // bar, or a JUNK bar) gets no fill and NO BOOK CHANGE. Its book is
+                            // held at what has actually been filled, so it cannot earn P&L on
+                            // contracts it never bought. The change lands on a later cycle whose
+                            // signal group carries a session bar, when the re-anchored target
+                            // still differs from the ledger.
+                            if (session_symbols && !session_symbols->count(symbol)) {
+                                auto book_it = info.current_positions.find(symbol);
+                                if (book_it != info.current_positions.end()) {
+                                    book_it->second.quantity = Decimal(current_qty);
+                                }
+                                INFO("BOOK_GATE backtest " + symbol + " (" + strategy_id +
+                                     "): no SESSION bar in the signal group -- book held at "
+                                     "filled qty=" + std::to_string(current_qty) +
+                                     " instead of target " + std::to_string(new_qty));
+                                continue;
+                            }
 
                             // Find latest price for symbol
                             double latest_price = 0.0;
@@ -1034,10 +1076,11 @@ void PortfolioManager::update_historical_returns(const std::vector<Bar>& data) {
     //  * at most config_.covariance_history_prices dates per symbol, the oldest date dropped
     //    first (756 by default, the trend sleeve's own cap);
     //  * a symbol that leaves the feed keeps its series, which simply stops growing; its
-    //    returns are still computed below, and the covariance's truncation to the shortest
-    //    symbol is unchanged.
-    // The returns below are computed from the kept closes in date order exactly as before
-    // (tail-by-count alignment, the 2,520-return cap).
+    //    returns are still computed below.
+    // The returns below are computed from the kept closes in date order exactly as before (the
+    // 2,520-return cap); they decide which symbols have enough history for the optimizer. The
+    // covariance itself is built from the closes aligned by DATE (date_aligned_returns, T-7a
+    // INSERT S3): a symbol that has left the feed ends the dates every symbol shares.
     const size_t max_prices = config_.covariance_history_prices;
     std::set<std::string> touched;
     std::set<std::pair<std::string, int64_t>> seen_this_call;
@@ -1135,6 +1178,124 @@ void PortfolioManager::update_historical_returns(const std::vector<Bar>& data) {
          std::to_string(historical_returns_.size()) + " symbols");
 }
 
+namespace {
+
+// "YYYY-MM-DD" of a closes_by_date_ key (days since the epoch of the bar's in-process instant).
+std::string covariance_day_label(int64_t day) {
+    const std::chrono::year_month_day ymd{std::chrono::sys_days{std::chrono::days{day}}};
+    char buf[16];
+    std::snprintf(buf, sizeof(buf), "%04d-%02u-%02u", static_cast<int>(ymd.year()),
+                  static_cast<unsigned>(ymd.month()), static_cast<unsigned>(ymd.day()));
+    return buf;
+}
+
+}  // namespace
+
+std::unordered_map<std::string, std::vector<double>> PortfolioManager::date_aligned_returns(
+    const std::unordered_map<std::string, std::map<int64_t, double>>& closes_by_symbol) const {
+    // T-7a INSERT S3 (ledger PM-covariance-count-aligned). The covariance used to pair each
+    // symbol's k-th-last return with every other symbol's k-th-last return: by COUNT. A symbol
+    // whose date set differs (a feed gap, a Sunday-stamped bar, MBT's weekend bars from
+    // 2026-06-13) was then paired with other days. Measured on 2026-05-01: 475 of the 480 MBT/MES
+    // rows paired different dates. The series are now aligned by DATE:
+    //
+    //  * a symbol's usable dates are those whose close is finite and above zero;
+    //  * D is the INTERSECTION of the usable dates of every symbol that has at least two of them
+    //    (a symbol missing a date contributes no return that day, and the day is dropped for all);
+    //  * every such symbol's series is r_t = (c(D[t]) - c(D[t-1])) / c(D[t-1]) for t = 1..|D|-1:
+    //    the return runs from the PREVIOUS DATE OF THE INTERSECTION, not from the symbol's own
+    //    previous date. So a return spans the same interval for every symbol, and a date only
+    //    one symbol has (a weekend bar) leaves that symbol's return across it exactly what it is
+    //    without the extra bar. It is the Carver gate's F5 rule (carver_risk_module.cpp: a date
+    //    survives only if every symbol printed on it, returns between consecutive survivors);
+    //  * a symbol with fewer than two usable closes gets an EMPTY series and does not shrink D;
+    //    calculate_covariance_matrix's empty-series and C-20 guards handle it as before.
+    //
+    // Every returned non-empty series has the same length, |D| - 1, so the count alignment in
+    // calculate_covariance_matrix is the identity on them and its min_periods is |D| - 1. The
+    // 756-price cap is applied when the closes are recorded (update_historical_returns), before
+    // this. When every symbol has the same dates this returns exactly the series the count
+    // alignment used, bit for bit.
+    std::unordered_map<std::string, std::vector<double>> out;
+    std::vector<std::string> participants;
+    size_t shortest_own_returns = SIZE_MAX;
+    for (const auto& [symbol, closes] : closes_by_symbol) {
+        size_t usable = 0;
+        for (const auto& [day, close] : closes) {
+            if (std::isfinite(close) && close > 0.0) ++usable;
+        }
+        out[symbol];  // every symbol is in the result, empty unless it takes part
+        if (usable >= 2) {
+            participants.push_back(symbol);
+            shortest_own_returns = std::min(shortest_own_returns, usable - 1);
+        }
+    }
+    std::sort(participants.begin(), participants.end());
+
+    // The intersection, and the union's dates it leaves out (for the log line).
+    std::vector<int64_t> dates;
+    std::set<int64_t> union_dates;
+    if (!participants.empty()) {
+        std::map<int64_t, size_t> seen;
+        for (const auto& symbol : participants) {
+            for (const auto& [day, close] : closes_by_symbol.at(symbol)) {
+                if (std::isfinite(close) && close > 0.0) {
+                    ++seen[day];
+                    union_dates.insert(day);
+                }
+            }
+        }
+        for (const auto& [day, count] : seen) {
+            if (count == participants.size()) dates.push_back(day);
+        }
+        // The 2,520-return cap (max_history_length_) as before: the newest cap + 1 dates. It
+        // cannot bind at the 756-price cap the closes are recorded under.
+        if (dates.size() > max_history_length_ + 1) {
+            dates.erase(dates.begin(),
+                        dates.end() - static_cast<std::ptrdiff_t>(max_history_length_ + 1));
+        }
+    }
+
+    size_t returns = 0;
+    if (dates.size() >= 2) {
+        for (const auto& symbol : participants) {
+            const auto& closes = closes_by_symbol.at(symbol);
+            auto& series = out[symbol];
+            series.reserve(dates.size() - 1);
+            for (size_t t = 1; t < dates.size(); ++t) {
+                const double prev_price = closes.at(dates[t - 1]);
+                const double curr_price = closes.at(dates[t]);
+                series.push_back((curr_price - prev_price) / prev_price);
+            }
+        }
+        returns = dates.size() - 1;
+    }
+
+    size_t dropped_inside = 0;
+    size_t dropped_after = 0;
+    if (!dates.empty()) {
+        for (int64_t day : union_dates) {
+            if (day > dates.back()) {
+                ++dropped_after;
+            } else if (day >= dates.front() &&
+                       !std::binary_search(dates.begin(), dates.end(), day)) {
+                ++dropped_inside;
+            }
+        }
+    }
+    INFO("COVARIANCE_DATE_ALIGNED symbols=" + std::to_string(participants.size()) + "/" +
+         std::to_string(closes_by_symbol.size()) + " dates=" + std::to_string(dates.size()) +
+         " returns=" + std::to_string(returns) +
+         " first=" + (dates.empty() ? std::string("-") : covariance_day_label(dates.front())) +
+         " last=" + (dates.empty() ? std::string("-") : covariance_day_label(dates.back())) +
+         " dropped_inside=" + std::to_string(dropped_inside) +
+         " dropped_after=" + std::to_string(dropped_after) + " shortest_own_returns=" +
+         (shortest_own_returns == SIZE_MAX ? std::string("-")
+                                           : std::to_string(shortest_own_returns)) +
+         ": the covariance pairs returns by date over the dates every symbol printed");
+    return out;
+}
+
 std::vector<std::vector<double>> PortfolioManager::calculate_covariance_matrix(
     const std::unordered_map<std::string, std::vector<double>>& returns_by_symbol) {
     // Get all symbols in a consistent order
@@ -1202,7 +1363,9 @@ std::vector<std::vector<double>> PortfolioManager::calculate_covariance_matrix(
             continue;
         }
 
-        // Take the most recent min_periods returns
+        // Take the most recent min_periods returns. On the optimizer's input (date_aligned_returns)
+        // every non-empty series already has min_periods returns paired by date, so this is the
+        // identity there.
         size_t start_idx = returns.size() - min_periods;
         for (size_t j = 0; j < min_periods; ++j) {
             aligned_returns[j][i] = returns[start_idx + j];
@@ -1257,6 +1420,66 @@ std::vector<std::vector<double>> PortfolioManager::calculate_covariance_matrix(
     return covariance;
 }
 
+namespace {
+
+// One sleeve's part of a symbol in the post-optimizer distribution: its contracts, unrounded.
+struct SleeveQuota {
+    std::string strategy_id;
+    double quota;
+};
+
+// Largest-remainder (Hamilton) split: the book's integer is round(sum of the quotas), rounded
+// ONCE (half away from zero, as std::round), and every sleeve gets the floor of its quota plus
+// one contract for each of the largest remainders until the integers sum to the book's integer
+// exactly. Tie rule (deterministic): the larger remainder first, remainders compared at a 1e-9
+// resolution so floating noise cannot order two equal remainders; on a tie, the smaller
+// strategy_id first. A book whose quotas sum below zero is split as the mirror image of the long
+// book (negate, split, negate), so a short is treated exactly as a long.
+std::vector<int64_t> split_largest_remainder(const std::vector<SleeveQuota>& sleeves) {
+    const size_t n = sleeves.size();
+    std::vector<int64_t> out(n, 0);
+    if (n == 0)
+        return out;
+
+    double sum = 0.0;
+    for (const auto& s : sleeves)
+        sum += s.quota;
+    const double sign = sum < 0.0 ? -1.0 : 1.0;
+
+    const int64_t book = std::llround(sign * sum);
+    int64_t floors = 0;
+    std::vector<int64_t> remainder_1e9(n, 0);
+    for (size_t k = 0; k < n; ++k) {
+        const double q = sign * sleeves[k].quota;
+        const double f = std::floor(q);
+        out[k] = static_cast<int64_t>(f);
+        floors += out[k];
+        remainder_1e9[k] = std::llround((q - f) * 1e9);
+    }
+
+    std::vector<size_t> order(n);
+    for (size_t k = 0; k < n; ++k)
+        order[k] = k;
+    std::sort(order.begin(), order.end(), [&](size_t a, size_t b) {
+        if (remainder_1e9[a] != remainder_1e9[b])
+            return remainder_1e9[a] > remainder_1e9[b];
+        return sleeves[a].strategy_id < sleeves[b].strategy_id;
+    });
+
+    // 0 <= book - floors <= n: round(sum) is within 0.5 of the sum and each floor within 1 of
+    // its quota, so no sleeve receives more than one extra contract.
+    const int64_t extra = book - floors;
+    for (int64_t k = 0; k < extra; ++k)
+        out[order[static_cast<size_t>(k) % n]] += 1;
+
+    if (sign < 0.0)
+        for (auto& q : out)
+            q = -q;
+    return out;
+}
+
+}  // namespace
+
 Result<void> PortfolioManager::optimize_positions() {
     try {
         // Get unique symbols across all strategies and collect data under lock
@@ -1266,7 +1489,9 @@ Result<void> PortfolioManager::optimize_positions() {
         std::vector<double> target_weights;
         std::vector<double> weights_per_contract;
         std::vector<double> costs;
-        std::unordered_map<std::string, std::vector<double>> returns_by_symbol;
+        // The date-keyed closes of the symbols in the matrix (T-7a INSERT S3): the covariance
+        // is built from them aligned by DATE, not from the per-symbol return vectors by count.
+        std::unordered_map<std::string, std::map<int64_t, double>> closes_by_symbol;
 
         // Store original contributions per strategy per symbol for proportional distribution
         // Map: symbol -> strategy_id -> contribution (quantity * allocation * weight_per_contract)
@@ -1305,7 +1530,14 @@ Result<void> PortfolioManager::optimize_positions() {
                 if (it != historical_returns_.end() &&
                     it->second.size() >= static_cast<size_t>(min_history_length)) {
                     symbols.push_back(symbol);
-                    returns_by_symbol[symbol] = it->second;  // Copy the data under lock
+                    // Copy the data under lock. historical_returns_[symbol] is computed from
+                    // closes_by_date_[symbol], so the entry exists whenever the returns do; a
+                    // symbol without one enters with no closes and is handled as an empty
+                    // series (the C-20 guard in calculate_covariance_matrix).
+                    auto closes = closes_by_date_.find(symbol);
+                    closes_by_symbol[symbol] = closes != closes_by_date_.end()
+                                                   ? closes->second
+                                                   : std::map<int64_t, double>{};
                 } else {
                     INFO("Symbol " + symbol +
                          " has insufficient historical data for optimization, skipping symbol");
@@ -1408,7 +1640,7 @@ Result<void> PortfolioManager::optimize_positions() {
             DEBUG("Using cached covariance matrix for convergence iteration");
         } else {
             // Compute covariance matrix (first iteration or symbols changed)
-            covariance = calculate_covariance_matrix(returns_by_symbol);
+            covariance = calculate_covariance_matrix(date_aligned_returns(closes_by_symbol));
             // Cache for subsequent iterations
             cached_symbols_ = symbols;
             cached_covariance_ = covariance;
@@ -1448,13 +1680,24 @@ Result<void> PortfolioManager::optimize_positions() {
             for (size_t i = 0; i < symbols.size(); ++i) {
                 const auto& symbol = symbols[i];
 
-                // Compute raw contract count from optimized weight
+                // The optimizer's answer in contracts of the aggregated weight, UNROUNDED. The
+                // aggregate is sum(q x allocation) per contract (ledger N2), not the book.
                 double raw_contracts = optimized_positions[i] / weights_per_contract[i];
-                // Round to integer contracts
-                int rounded_contracts = static_cast<int>(std::round(raw_contracts));
 
                 // Distribute proportionally based on each strategy's original contribution
                 double total_original = total_contribs[symbol];
+
+                // Each sleeve's quota, in ITS OWN contracts: its share of the optimizer's weight
+                // with the allocation undone on the weight, raw x share / allocation, unrounded.
+                // The book is the sum of the sleeves' contracts; it is rounded ONCE and split by
+                // largest remainder (split_largest_remainder), so the stored sleeve integers sum
+                // to the book's integer exactly. Before this the optimizer's answer was rounded
+                // first and every sleeve's part rounded again, and at allocations below 1.0 the
+                // sleeve integers need not sum to anything the optimizer produced (ledger
+                // OPT-N3). One sleeve at allocation 1.0 stores round(raw) as before.
+                std::vector<SleeveQuota> quotas;
+                std::vector<int64_t> per_sleeve_rounding;  // the replaced rule, for the log only
+                const int rounded_contracts = static_cast<int>(std::round(raw_contracts));
 
                 for (auto& [strat_id, info] : strategies_) {
                     if (!info.use_optimization || pinned_scopes_.count(strat_id))
@@ -1468,11 +1711,36 @@ Result<void> PortfolioManager::optimize_positions() {
                         share = original_contribs[symbol][strat_id] / total_original;
                     }
 
-                    // Distribute proportionally, then undo allocation scaling for storage
-                    // Strategy gets: (optimized_contracts * share) / allocation
-                    double strategy_contracts = rounded_contracts * share / info.allocation;
-                    info.target_positions[symbol].quantity =
-                        static_cast<Decimal>(std::round(strategy_contracts));
+                    // The allocation is undone on the weight, not on a rounded contract. A sleeve
+                    // with no share has a quota of 0 (and no division by its allocation).
+                    const double quota = share == 0.0 ? 0.0 : raw_contracts * share / info.allocation;
+                    quotas.push_back({strat_id, quota});
+                    per_sleeve_rounding.push_back(static_cast<int64_t>(
+                        std::round(share == 0.0 ? 0.0 : rounded_contracts * share / info.allocation)));
+                }
+
+                const std::vector<int64_t> split = split_largest_remainder(quotas);
+                bool differs = false;
+                for (size_t k = 0; k < quotas.size(); ++k) {
+                    strategies_.at(quotas[k].strategy_id).target_positions[symbol].quantity =
+                        static_cast<Decimal>(static_cast<double>(split[k]));
+                    differs = differs || split[k] != per_sleeve_rounding[k];
+                }
+                if (differs) {
+                    std::ostringstream line;
+                    line << "ALLOCATION_SPLIT sym=" << symbol << " optimizer=" << raw_contracts
+                         << " book=";
+                    int64_t book = 0;
+                    for (auto q : split)
+                        book += q;
+                    line << book << " split:";
+                    for (size_t k = 0; k < quotas.size(); ++k)
+                        line << " " << quotas[k].strategy_id << "=" << split[k] << " (quota "
+                             << quotas[k].quota << ")";
+                    line << "; rounding each sleeve would store:";
+                    for (size_t k = 0; k < quotas.size(); ++k)
+                        line << " " << quotas[k].strategy_id << "=" << per_sleeve_rounding[k];
+                    INFO(line.str());
                 }
             }
 
@@ -1856,18 +2124,33 @@ bool PortfolioManager::refuse_on_failed_gatekeeper(const std::vector<RiskModuleP
                                                    const RiskContext& ctx, RiskVerdict& verdict,
                                                    std::string& module_id) const {
     if (verdict.action == RiskAction::REFUSE) return false;
+    const bool portfolio_scope = ctx.scope == RiskScope::PORTFOLIO;
     for (size_t k = 0; k < modules.size() && k < errors.size(); ++k) {
         if (errors[k].empty()) continue;
-        if (!modules[k]->capabilities().count(RiskAction::REFUSE)) continue;
-        // A module that exists to say "do not trade" and could not answer has not said yes.
-        WARN("Risk module " + modules[k]->id() + " failed on " + risk_scope_name(ctx.scope) + " " +
-             ctx.scope_id + " " + risk_location(ctx) + " and can refuse: " + errors[k] +
-             "; the scope is refused");
+        if (portfolio_scope) {
+            // HD 2026-09-21, option (b): a PORTFOLIO-scope module of ANY capability that cannot
+            // answer refuses the scope. The shipped futures books run one Carver module
+            // ({SCALE, WARN}); its failure used to contribute NONE and ship the book uncut.
+            ERROR("Risk module " + modules[k]->id() + " failed on " + risk_scope_name(ctx.scope) +
+                  " " + ctx.scope_id + " " + risk_location(ctx) + ": " + errors[k] +
+                  "; a portfolio-scope module that cannot answer refuses the scope: every "
+                  "strategy is held at its previous book and no orders are sent");
+        } else {
+            // Sleeve scope, unchanged: only a module that exists to say "do not trade" and
+            // could not answer has not said yes.
+            if (!modules[k]->capabilities().count(RiskAction::REFUSE)) continue;
+            WARN("Risk module " + modules[k]->id() + " failed on " + risk_scope_name(ctx.scope) +
+                 " " + ctx.scope_id + " " + risk_location(ctx) + " and can refuse: " + errors[k] +
+                 "; the scope is refused");
+        }
         verdict.action = RiskAction::REFUSE;
         verdict.winner = static_cast<size_t>(-1);
         verdict.scale = 1.0;
         verdict.factor = Decimal(1.0);
         for (auto& row : verdict.rows) row = {RiskAction::NONE, Decimal(1.0)};
+        // The failed module's row is the refusal: recorded as applied REFUSE with its error, so
+        // risk_decisions_json()'s outcome and the runners' metadata mark see it.
+        if (k < verdict.rows.size()) verdict.rows[k] = {RiskAction::REFUSE, Decimal(1.0)};
         module_id = modules[k]->id();
         return true;
     }
@@ -1898,8 +2181,14 @@ void PortfolioManager::deliver_and_record(const std::vector<RiskModulePtr>& modu
     for (size_t k = 0; k < decisions.size(); ++k) {
         std::string id = decisions[k].module_id;
         const bool bad = failed(k);
+        // A failed module's row is NONE unless its failure refused the scope
+        // (refuse_on_failed_gatekeeper marks that row REFUSE).
+        const RiskAction bad_action =
+            k < verdict.rows.size() && verdict.rows[k].first == RiskAction::REFUSE
+                ? RiskAction::REFUSE
+                : RiskAction::NONE;
         record_risk_decision(ctx, id, std::move(decisions[k]),
-                             bad ? RiskAction::NONE : verdict.rows[k].first,
+                             bad ? bad_action : verdict.rows[k].first,
                              bad ? Decimal(1.0) : verdict.rows[k].second, false,
                              bad ? errors[k] : std::string());
     }
@@ -2102,8 +2391,12 @@ Result<void> PortfolioManager::apply_risk_management(const std::vector<Bar>& dat
                                        lap_ctx.scope_id, logged_invariant, logged_leverage));
             }
         } catch (const std::exception& e) {
+            // Fail closed: the loop refuses the portfolio scope on this error (HD 2026-09-21).
+            // This used to return OK, which shipped whatever the book was at the throw.
             ERROR("Exception during risk management: " + std::string(e.what()));
-            return Result<void>();  // Don't fail the entire operation
+            return make_error<void>(ErrorCode::UNKNOWN_ERROR,
+                                    std::string("Exception during risk management: ") + e.what(),
+                                    "PortfolioManager");
         }
 
         INFO("Risk management applied successfully");
@@ -2603,7 +2896,7 @@ double PortfolioManager::get_portfolio_value(
     static int call_count = 0;
     call_count++;
 
-    // Start with total capital (reserve is for margin, not excluded from portfolio value)
+    // Start with total capital
     double portfolio_value = static_cast<double>(config_.total_capital);
 
     if (call_count <= 3) {

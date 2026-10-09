@@ -67,7 +67,7 @@ Bar day_bar(const std::string& symbol, int d) { return day_bar(symbol, d, close_
 // Optimisation and risk OFF: these tests are about which prices the PM keeps, not about what
 // the optimiser does with them.
 PortfolioConfig plain_config(const nlohmann::json& extra = nlohmann::json::object()) {
-    PortfolioConfig c{1'000'000.0, 100'000.0, 1.0, 0.0, false};
+    PortfolioConfig c{1'000'000.0, 1.0, 0.0, false};
     c.opt_config.capital = 1'000'000.0;
     c.risk_config.capital = 1'000'000.0;
     c.risk_modules = {test_none_module()};

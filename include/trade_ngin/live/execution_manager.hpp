@@ -79,11 +79,12 @@ public:
      * @param timestamp Execution timestamp
      * @param pricing How to handle a symbol with no usable price in market_prices.
      *
-     *        MARK_FALLBACK (default) is the long-standing behaviour and is CORRECT for
-     *        futures: TrendFollowingStrategy sets Position::average_price to
-     *        price_history.back() -- the latest mark, by design, matching REALIZED_ONLY
-     *        daily settlement (trend_following.cpp:623). Falling back to it prices the
-     *        fill at a real, one-session-stale close.
+     *        MARK_FALLBACK (default) is the long-standing behaviour: the fill is priced at
+     *        Position::average_price, which for futures is price_history.back(), the latest
+     *        mark (trend_following.cpp). That mark can be several sessions old on a feed hole
+     *        (MYM 2026-04-24 filled at a four-day-old close), so since T-7a C4 the futures
+     *        runners pass STRICT: their book gate holds every symbol without a T-1 SESSION,
+     *        so nothing reaches this step unpriced (session_book_gate.hpp).
      *
      *        STRICT is for callers whose average_price is a weighted COST BASIS rather
      *        than a mark -- equity mean reversion. There, a position opened today has no
@@ -113,16 +114,14 @@ public:
      * @param symbol Symbol being traded
      * @param quantity_change Change in position quantity (positive for buy, negative for sell)
      * @param market_price Market price for the symbol
-     * @param timestamp Execution timestamp
-     * @param exec_sequence Sequence number for unique exec_id
+     * @param timestamp Execution timestamp (its UTC date names the ids)
      * @return Single execution report
      */
     ExecutionReport generate_execution(
         const std::string& symbol,
         double quantity_change,
         double market_price,
-        const Timestamp& timestamp,
-        size_t exec_sequence);
+        const Timestamp& timestamp);
 
     /**
      * Update market data for TransactionCostManager (ADV and volatility tracking)
@@ -143,17 +142,21 @@ public:
     static std::string generate_date_string(const Timestamp& timestamp);
 
     /**
-     * Generate unique execution ID
+     * Generate the execution ID: EXEC_<symbol>_<YYYYMMDD>, the date being
+     * generate_date_string(timestamp), the same date the order_id carries.
+     *
+     * Deterministic: a replay of the same date regenerates the same id, and a fill
+     * appearing or disappearing does not renumber another. Unique under
+     * trading.executions' key (portfolio_id, strategy_id, strategy_name, date, exec_id)
+     * because one generate_daily_executions call emits a symbol at most once.
      *
      * @param symbol Trading symbol
      * @param timestamp Execution timestamp
-     * @param sequence Sequence number
-     * @return Unique execution ID
+     * @return Execution ID
      */
     static std::string generate_exec_id(
         const std::string& symbol,
-        const Timestamp& timestamp,
-        size_t sequence);
+        const Timestamp& timestamp);
 
     transaction_cost::TransactionCostManager& get_transaction_cost_manager() {
         return *cost_manager_;

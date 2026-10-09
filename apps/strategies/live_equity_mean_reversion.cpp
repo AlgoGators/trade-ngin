@@ -555,7 +555,6 @@ int main(int argc, char* argv[]) {
 
         trade_ngin::PortfolioConfig portfolio_config;
         portfolio_config.total_capital = initial_capital;
-        portfolio_config.reserve_capital = initial_capital * app_config.reserve_capital_pct;
         portfolio_config.max_strategy_allocation = app_config.strategy_defaults.max_strategy_allocation;
         portfolio_config.min_strategy_allocation = app_config.strategy_defaults.min_strategy_allocation;
         // Mean reversion does NOT use dynamic optimization (HD, 2026-09-01). The optimizer
@@ -664,8 +663,6 @@ int main(int argc, char* argv[]) {
             nlohmann::json portfolio_config_json;
             portfolio_config_json["total_capital"] =
                 static_cast<double>(portfolio_config.total_capital);
-            portfolio_config_json["reserve_capital"] =
-                static_cast<double>(portfolio_config.reserve_capital);
             portfolio_config_json["use_optimization"] = portfolio_config.use_optimization;
             portfolio_config_json["allow_fractional_positions"] =
                 portfolio_config.allow_fractional_positions;
@@ -4969,6 +4966,11 @@ int main(int argc, char* argv[]) {
                 ERROR("Day T-1 aggregates could not be finalized. Refusing to exit 0 with a "
                       "stale mark on " + yesterday_date_str + ".");
                 return 1;
+            } else if (update_result.value() == 0) {
+                // S-4: the statement succeeded and matched no row, so nothing was finalized.
+                WARN("Day T-1 live_results UPDATE matched 0 rows for " + yesterday_date_str +
+                     ": no live_results row exists for that date, so its finalized PnL and "
+                     "metrics were NOT stored");
             } else {
                 INFO("Successfully updated Day T-1 live_results with finalized PnL and all metrics");
 

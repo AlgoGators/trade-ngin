@@ -9,6 +9,7 @@
 #include "trade_ngin/core/error.hpp"
 #include "trade_ngin/core/types.hpp"
 #include "trade_ngin/data/postgres_database.hpp"
+#include "trade_ngin/data/session_classifier.hpp"
 #include "trade_ngin/strategy/strategy_interface.hpp"
 #include "trade_ngin/portfolio/portfolio_manager.hpp"
 // Include component headers for unique_ptr (need complete types)
@@ -87,6 +88,11 @@ private:
     // Portfolio backtest state
     bool portfolio_has_previous_bars_ = false;
     std::vector<Bar> portfolio_previous_bars_;
+    /// T-7a C4, the backtest predicate: every bar group seen so far, so the signal group's bars
+    /// can be classified against each symbol's strictly prior weekday bars. Futures only
+    /// (run_portfolio with AssetClass::FUTURES); the equity backtest is untouched.
+    SessionClassifier session_classifier_;
+    bool session_hold_enabled_ = false;
     std::string current_run_id_;
     Timestamp backtest_start_date_;
     Timestamp backtest_end_date_;

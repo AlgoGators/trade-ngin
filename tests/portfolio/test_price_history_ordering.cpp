@@ -54,7 +54,7 @@ PortfolioConfig plain_config() {
     // Optimisation and risk OFF: this test is about WHEN the history is read,
     // not about what the optimiser then does with it. Leaving them on would make
     // the assertions depend on the whole solver.
-    PortfolioConfig c{1'000'000.0, 100'000.0, 0.6, 0.05, false};
+    PortfolioConfig c{1'000'000.0, 0.6, 0.05, false};
     c.opt_config.capital = 1'000'000.0;
     c.risk_config.capital = 1'000'000.0;
     c.risk_modules = {test_none_module()};

@@ -587,7 +587,6 @@ int main() {
 
         PortfolioConfig portfolio_config;
         portfolio_config.total_capital = Decimal(initial_capital);
-        portfolio_config.reserve_capital = Decimal(initial_capital * 0.05);
         portfolio_config.use_optimization = false;
         portfolio_config.covariance_history_prices = app_config.covariance_history_prices;
         // This harness measures the strategy alone, so it runs no portfolio risk layer.
