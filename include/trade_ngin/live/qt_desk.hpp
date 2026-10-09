@@ -11,11 +11,13 @@
 #include <optional>
 #include <set>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 #include <nlohmann/json.hpp>
 
 #include "trade_ngin/core/error.hpp"
+#include "trade_ngin/core/types.hpp"
 #include "trade_ngin/data/postgres_database.hpp"
 #include "trade_ngin/portfolio/desk_book.hpp"
 
@@ -59,14 +61,49 @@ Result<AuditRow> load_audit_row(PostgresDatabase& db, long id);
 /// status 'running' and started_at (kept when already set), unless the row is already finished.
 Result<void> start_audit_row(PostgresDatabase& db, long id);
 
-/// The engine's outcome: status (done, refused or failed), result, message, finished_at = now().
+/// The engine's outcome: status (done, refused or failed), message, finished_at = now(), and
+/// `result` merged over the row's result (so a key written while the row ran, e.g. a publish's
+/// email_sent_at, stays). Contract C4: only a pending or running row is finished; a row that is
+/// already terminal is an error and is left as it is.
 Result<void> finish_audit_row(PostgresDatabase& db, long id, const std::string& status,
                               const nlohmann::json& result, const std::string& message);
 
+/// Contract C1: one row of an override request's snapshot of the qt_proposal book.
+struct ProposalRow {
+    std::string strategy_name;
+    std::string symbol;
+    long long quantity{0};
+};
+
+/// The snapshot's bytes, exactly as Python writes them:
+/// json.dumps([{"strategy_name": ..., "symbol": ..., "quantity": ...}, ...],
+///            separators=(",", ":"), ensure_ascii=True), rows in the order given.
+std::string proposal_snapshot_json(const std::vector<ProposalRow>& rows);
+
+/// SHA-256 of `bytes`, lower-case hex.
+std::string sha256_hex(const std::string& bytes);
+
+/// Contract C1's proposal_sha256: the rows sorted by (strategy_name, symbol, quantity), then
+/// sha256_hex(proposal_snapshot_json(rows)).
+std::string proposal_sha256(std::vector<ProposalRow> rows);
+
+/// Every qt_proposal row of the portfolio and date (zero rows included), sorted by
+/// (strategy_name, symbol, quantity). A quantity that is not a whole number is an error.
+Result<std::vector<ProposalRow>> load_proposal_rows(PostgresDatabase& db,
+                                                    const std::string& portfolio_id,
+                                                    const std::string& date);
+
+/// The refusal message of contract C1.
+inline const char* kProposalChanged =
+    "the proposal changed after the override was requested; request a new override";
+
 /// Whether the decision row approves its override request and may be booked: the parent is an
-/// override_request of the same portfolio and date, the approver is not the requester (case
-/// insensitive), the role is vp or president, and the request's token had not expired when the
-/// decision was recorded. On refusal the error says why.
+/// override_request of the same portfolio and date and is done (it was e-mailed), no other
+/// decision of that request is done (C2: one decision per request), the approver is not the
+/// requester (case insensitive), the role is vp or president, and the request's token had not
+/// expired when the decision was recorded. The request must carry its snapshot (C1; a request
+/// without one is refused, approved or not), and for an approval the current qt_proposal rows
+/// must hash to its proposal_sha256. On refusal the error says why.
 Result<bool> check_override_decision(PostgresDatabase& db, const AuditRow& decision);
 
 /// A desk edit stands for the date: a 'save' or an approved 'override_decision' row is done.
@@ -90,6 +127,49 @@ Result<SleeveQuantities> load_book(PostgresDatabase& db, const std::string& port
 
 /// Sum over the sleeves: symbol -> quantity.
 std::map<std::string, double> book_totals(const SleeveQuantities& book);
+
+/// The stored executions of one book on one date, per sleeve (strategy_name), in exec_id order.
+Result<std::unordered_map<std::string, std::vector<ExecutionReport>>> load_book_executions(
+    PostgresDatabase& db, const std::string& portfolio_id, const std::string& strategy_id,
+    const std::string& book, const std::string& date);
+
+/// The stored live_results row of one book on one date as a JSON object (column -> value), or an
+/// error when there is none.
+Result<nlohmann::json> load_book_results(PostgresDatabase& db, const std::string& portfolio_id,
+                                         const std::string& strategy_id, const std::string& book,
+                                         const std::string& date);
+
+/// Review E#2: before a desk or override run writes its own qt day, every non-ROLL qt execution
+/// of the date (the model's copied fills, or an earlier save's) is deleted, and the qt day's
+/// completion marker (live_results.book_source) is cleared; mark_qt_day sets it again last.
+/// One transaction.
+Result<void> clear_desk_day(PostgresDatabase& db, const std::string& portfolio_id,
+                            const std::string& strategy_id, const std::string& date);
+
+/// Whether the qt day may be published (item 3): empty when it may, otherwise the reason.
+/// It may when the qt live_results row of the date carries its completion marker (book_source
+/// set) and the latest save or override_decision row of the date, if any, is done or refused.
+Result<std::string> publish_blocker(PostgresDatabase& db, const std::string& portfolio_id,
+                                    const std::string& strategy_id, const std::string& date);
+
+/// When a publish row of the portfolio and date recorded that its e-mail was sent
+/// (result.email_sent_at; the earliest), and that row's id. Empty: never sent.
+struct EmailSent {
+    std::string at;
+    long row_id{0};
+};
+Result<EmailSent> publish_email_sent(PostgresDatabase& db, const std::string& portfolio_id,
+                                     const std::string& date);
+
+/// result.email_sent_at = now() on the (pending or running) publish row, committed on its own
+/// right after the send; returns the time written.
+Result<std::string> mark_email_sent(PostgresDatabase& db, long id);
+
+/// Contract C5: what kind of day a desk-editable portfolio's model run is on. Only the runner's
+/// calendar closes a day (T-1 a Saturday, a Sunday or a holiday). A day the whole book is carried
+/// on (no T-1 price) that the calendar says was a trading day is a feed hole.
+enum class DayKind { TRADING, CALENDAR_CLOSED, FEED_HOLE };
+DayKind classify_qt_day(int t1_weekday, bool t1_holiday, bool whole_book_carried);
 
 /**
  * Contract section 3: the model's day copied into another book of the same portfolio and date,

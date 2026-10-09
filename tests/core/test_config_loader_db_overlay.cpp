@@ -210,6 +210,36 @@ TEST_F(StrategyConfigOverlay, TheDatabaseAndEmailSectionsAndThePortfolioIdAreRef
     }
 }
 
+// Review E#12: the runner reads qt.desk_editable (and the rest of the qt block) from portfolio.json
+// only, so an override of it would be recorded in settings_used and ignored by the run. Refused,
+// on a portfolio whose files hold the block and on one whose files do not.
+TEST_F(StrategyConfigOverlay, TheQtBlockIsRefused) {
+    const std::vector<Json> overlays = {Json{{"qt", {{"desk_editable", false}}}},
+                                        Json{{"qt", {{"desk_editable", true}}}},
+                                        Json{{"qt", Json::object()}}};
+    for (const Json& overlay : overlays) {
+        const std::string why = refusal(overlay, "conservative");
+        EXPECT_NE(why.find("qt (the desk settings"), std::string::npos) << why;
+    }
+    // Against a desk-editable portfolio's own portfolio.json, which holds the very same key and
+    // kind (so the shape check alone would let it through).
+    for (const char* book : {"qt_e2e", "qt_conservative"}) {
+        const Json files = file_json(book, "portfolio.json");
+        ASSERT_TRUE(files.contains("qt")) << book;
+        for (const Json& overlay : overlays) {
+            auto checked = ConfigLoader::check_overlay(overlay, files);
+            ASSERT_TRUE(checked.is_error()) << book << ": " << overlay.dump() << " was applied";
+            EXPECT_NE(std::string(checked.error()->what()).find("portfolio.json only"),
+                      std::string::npos)
+                << checked.error()->what();
+        }
+    }
+    // Another key of the same file still overrides.
+    EXPECT_TRUE(ConfigLoader::check_overlay(Json{{"initial_capital", 1.0}},
+                                            Json{{"initial_capital", 2.0}, {"qt", Json::object()}})
+                    .is_ok());
+}
+
 TEST_F(StrategyConfigOverlay, ACredentialLikeKeyAnywhereIsRefusedAndItsValueNeverEchoed) {
     for (const Json& overlay :
          {Json{{"strategies", {{"TREND_FOLLOWING", {{"config", {{"api_token", "sk-SENSITIVE"}}}}}}}},

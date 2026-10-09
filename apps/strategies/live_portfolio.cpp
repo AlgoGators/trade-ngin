@@ -471,6 +471,22 @@ int main(int argc, char* argv[]) {
             }
             return kQtRefusedExitCode;
         };
+        // Item 3: a failure (a read or a store that did not happen) fails the command row.
+        auto qt_fail = [&](const std::string& why) -> int {
+            ERROR("QT_FAILED " + qt::mode_name(qt_mode) + " " + portfolio_id + " " + qt_date +
+                  ": " + why);
+            std::cerr << "QT_FAILED " << why << std::endl;
+            if (qt_audit) {
+                auto finished = qt::finish_audit_row(
+                    *db, qt_audit->id, "failed",
+                    nlohmann::json{{"mode", qt::mode_name(qt_mode)}}, why);
+                if (finished.is_error()) {
+                    ERROR("QT: the command row could not be marked failed: " +
+                          std::string(finished.error()->what()));
+                }
+            }
+            return 1;
+        };
         if (qt_mode != qt::Mode::MODEL && qt_mode != qt::Mode::FINALIZE_SYSTEM) {
             auto row = qt::load_audit_row(*db, qt_audit_id);
             if (row.is_error()) {
@@ -506,6 +522,16 @@ int main(int argc, char* argv[]) {
             if (!qt_desk_editable) {
                 return qt_refuse("portfolio " + portfolio_id + " is not desk-editable "
                                  "(portfolio.json qt.desk_editable)");
+            }
+            // Contract C3: a published day is frozen; no desk run or override rewrites its qt.
+            if (qt_mode == qt::Mode::DESK || qt_mode == qt::Mode::OVERRIDE) {
+                auto published =
+                    qt::published_at(*db, portfolio_id, combined_strategy_id, qt_date);
+                if (published.is_error()) return qt_fail(published.error()->what());
+                if (!published.value().empty()) {
+                    return qt_refuse(qt_date + " was published at " + published.value() +
+                                     "; a published day is frozen (contract C3)");
+                }
             }
         }
         std::string qt_read_book = "system";
@@ -568,6 +594,19 @@ int main(int argc, char* argv[]) {
         const bool qt_write_day =
             qt_mode != qt::Mode::PUBLISH && qt_mode != qt::Mode::FINALIZE_SYSTEM;
         const bool qt_export_csv = qt_mode == qt::Mode::MODEL || qt_mode == qt::Mode::PUBLISH;
+        // Item 3: on a desk-editable portfolio a store that fails (positions, executions,
+        // live_results, the equity curve, the run's metadata) is never a "done" over a partial
+        // book: the run exits non-zero, a desk or override run fails its command row, and a model
+        // run does not copy a partial system day into qt. A non-editable portfolio logs as before.
+        std::vector<std::string> qt_store_failures;
+        auto qt_store_failed = [&](const std::string& what) {
+            if (qt_desk_editable) qt_store_failures.push_back(what);
+        };
+        auto qt_store_failure_list = [&]() {
+            std::string list;
+            for (const auto& f : qt_store_failures) list += (list.empty() ? "" : ", ") + f;
+            return list;
+        };
         const std::string qt_read_sql = " AND portfolio_type = " + qt::sql_literal(qt_read_book);
         INFO("QT_BOOKS mode=" + qt::mode_name(qt_mode) + " portfolio=" + portfolio_id +
              " desk_editable=" + (qt_desk_editable ? "true" : "false") + " read=" + qt_read_book +
@@ -596,6 +635,7 @@ int main(int argc, char* argv[]) {
         std::map<std::string, double> qt_desk_totals;
         SleeveQuantities qt_publish_book;
         std::set<std::string> qt_zero_keep;  // "sleeve|symbol" kept at 0 in qt (ruling 16)
+        qt::EmailSent qt_email_sent_before;  // publish: an earlier publish row sent the e-mail
         if (qt_mode == qt::Mode::DESK || qt_mode == qt::Mode::OVERRIDE) {
             if (qt_mode == qt::Mode::OVERRIDE) {
                 auto approved = qt::check_override_decision(*db, *qt_audit);
@@ -666,11 +706,24 @@ int main(int argc, char* argv[]) {
                                  ", is not published (no qt book, or never published): publish "
                                  "it first (ruling 29)");
             }
-            auto book = qt::load_book(*db, portfolio_id, combined_strategy_id, "qt", qt_date);
-            if (book.is_error()) {
-                ERROR("QT: " + std::string(book.error()->what()));
-                return 1;
+            // Item 3: the qt day is published only when its last writer finished it.
+            auto blocker = qt::publish_blocker(*db, portfolio_id, combined_strategy_id, qt_date);
+            if (blocker.is_error()) return qt_fail(blocker.error()->what());
+            if (!blocker.value().empty()) return qt_refuse(blocker.value());
+            // Item 7: the e-mail is sent at most once. A publish row of the day that recorded
+            // its send means this one only publishes.
+            auto sent = qt::publish_email_sent(*db, portfolio_id, qt_date);
+            if (sent.is_error()) return qt_fail(sent.error()->what());
+            qt_email_sent_before = sent.value();
+            if (!qt_email_sent_before.at.empty()) {
+                INFO("QT_PUBLISH the e-mail of " + qt_date + " was sent at " +
+                     qt_email_sent_before.at + " (publish row " +
+                     std::to_string(qt_email_sent_before.row_id) +
+                     "); it is not sent again, the day is only published");
+                send_email = false;
             }
+            auto book = qt::load_book(*db, portfolio_id, combined_strategy_id, "qt", qt_date);
+            if (book.is_error()) return qt_fail(book.error()->what());
             qt_publish_book = book.value();
             qt_desk_totals = qt::book_totals(qt_publish_book);
         }
@@ -1820,6 +1873,25 @@ int main(int argc, char* argv[]) {
         // row. (The day-classification refusal, S-1, is gone: a day with no T-1 price is
         // carried, never refused.)
         // ========================================
+        // Contract C5 (ruling 29): on a desk-editable portfolio only the runner's calendar closes
+        // a day. A whole-book carry (no T-1 price) on a calendar trading day is a feed hole: the
+        // model run stores nothing, publishes nothing and exits 1 (QT_ALERT), and the catch-up runs
+        // the date again once the data is in.
+        const std::time_t qt_t1_time =
+            std::chrono::system_clock::to_time_t(now - std::chrono::hours(24));
+        const qt::DayKind qt_day_kind = qt::classify_qt_day(
+            std::gmtime(&qt_t1_time)->tm_wday, is_yesterday_holiday,
+            early_previous_day_close_prices.empty() || no_t1_bar_consumed);
+        if (qt_desk_editable && qt_mode == qt::Mode::MODEL &&
+            qt_day_kind == qt::DayKind::FEED_HOLE) {
+            const std::string why =
+                "QT_ALERT " + portfolio_id + ": no T-1 price on " + yesterday_date_str_check +
+                ", a trading day on the runner's calendar (a feed hole, not a closure): " + qt_date +
+                " is not stored and not published; run it again once the data is in (contract C5)";
+            ERROR(why);
+            std::cerr << why << std::endl;
+            return 1;
+        }
         INFO("Storing live run metadata for this trading day...");
         // Kept at this scope: a portfolio risk REFUSE found by process_market_data writes
         // this row a second time, from the same values, with the refusal marked.
@@ -1845,6 +1917,7 @@ int main(int argc, char* argv[]) {
             if (metadata_result.is_error()) {
                 WARN("Failed to store live run metadata: " +
                      std::string(metadata_result.error()->what()));
+                qt_store_failed("live_run_metadata");
             } else {
                 INFO("Successfully stored live run metadata for date");
                 if (sizing_hold) {
@@ -2961,6 +3034,18 @@ int main(int argc, char* argv[]) {
             }
         }
 
+        // Review E#2 (item 2): a desk or override run replaces the qt day. Every non-ROLL qt
+        // execution of the date (the model's copied fills, or an earlier save's) is deleted before
+        // this run's own are stored, so a fill the desk's book no longer makes cannot survive; the
+        // ROLL rows are swept per sleeve below. The day's completion marker (book_source) is
+        // cleared with them and set again by mark_qt_day, last.
+        if (qt_mode == qt::Mode::DESK || qt_mode == qt::Mode::OVERRIDE) {
+            auto cleared = qt::clear_desk_day(*db, portfolio_id, combined_strategy_id, qt_date);
+            if (cleared.is_error()) {
+                return qt_fail("the qt day could not be cleared before the run wrote it: " +
+                               std::string(cleared.error()->what()));
+            }
+        }
         // Section 6.5: the re-run sweep by type. Every sleeve's ROLL rows dated today are deleted
         // before this run's legs are stored, so a re-run that no longer rolls leaves none.
         // T-ROLLX-FIX commit 5: a sleeve that stores ROLL legs on this run is swept inside the
@@ -3053,6 +3138,7 @@ int main(int argc, char* argv[]) {
                         if (del_res.is_error()) {
                             WARN("Failed to delete stale executions for strategy " + strategy_name +
                                  ": " + std::string(del_res.error()->what()));
+                            qt_store_failed("executions (stale rows) of " + strategy_name);
                         } else {
                             INFO("Stale executions (if any) deleted successfully for strategy: " +
                                  strategy_name);
@@ -3074,6 +3160,7 @@ int main(int argc, char* argv[]) {
                 if (save_result.is_error()) {
                     ERROR("Failed to store executions for strategy " + strategy_name + ": " +
                           std::string(save_result.error()->what()));
+                    qt_store_failed("executions of " + strategy_name);
                 } else {
                     INFO("Successfully stored " + std::to_string(executions.size()) +
                          " executions for strategy: " + strategy_name);
@@ -3097,6 +3184,7 @@ int main(int argc, char* argv[]) {
             if (update_result.is_error()) {
                 ERROR("Failed to update Day T-1 positions for strategy " + strategy_name + ": " +
                       std::string(update_result.error()->what()));
+                qt_store_failed("Day T-1 positions of " + strategy_name);
             } else {
                 INFO("Successfully updated " + std::to_string(finalized_positions.size()) +
                      " Day T-1 positions with finalized PnL for strategy: " + strategy_name);
@@ -3359,6 +3447,7 @@ int main(int argc, char* argv[]) {
                 if (save_result.is_error()) {
                     ERROR("Failed to store positions for strategy " + strategy_name + ": " +
                           std::string(save_result.error()->what()));
+                    qt_store_failed("positions of " + strategy_name);
                 } else {
                     INFO("Successfully stored " + std::to_string(strategy_positions_vec.size()) +
                          " positions for strategy: " + strategy_name);
@@ -3754,6 +3843,7 @@ int main(int argc, char* argv[]) {
             if (update_result.is_error()) {
                 ERROR("Failed to update Day T-1 live_results: " +
                       std::string(update_result.error()->what()));
+                qt_store_failed("Day T-1 live_results");
             } else if (update_result.value() == 0) {
                 // S-4: the statement succeeded and matched no row, so nothing was finalized.
                 WARN("Day T-1 live_results UPDATE matched 0 rows for " + yesterday_date_ss.str() +
@@ -3880,6 +3970,7 @@ int main(int argc, char* argv[]) {
                             if (update_equity_result.is_error()) {
                                 ERROR("Failed to update Day T-1 equity_curve: " +
                                       std::string(update_equity_result.error()->what()));
+                                qt_store_failed("Day T-1 equity_curve");
                             } else {
                                 INFO("Successfully updated Day T-1 equity_curve with value: " +
                                      std::to_string(portfolio_value));
@@ -3996,6 +4087,7 @@ int main(int argc, char* argv[]) {
                     if (update_metrics_result.is_error()) {
                         WARN("Failed to update historical performance metrics for Day T-1: " +
                              std::string(update_metrics_result.error()->what()));
+                        qt_store_failed("Day T-1 live_results metrics");
                     } else {
                         INFO(
                             "Successfully updated historical performance metrics for Day T-1 in "
@@ -4651,6 +4743,80 @@ int main(int argc, char* argv[]) {
                 now, strategy_positions_map, last_marks, last_forecasts, current_portfolio_value,
                 gross_notional, net_notional, carried_day_note);
         };
+        // Item 4 (review E#3, E#11): publish e-mails and exports the qt day AS STORED (positions,
+        // executions and the live_results row of the date), never what this run's pass computed:
+        // the book, its fills and its figures are read back here, over the pipeline's. Only the
+        // market data (the marks, T-1 and T-2 closes) is this run's.
+        std::optional<nlohmann::json> qt_stored_results;
+        if (qt_mode == qt::Mode::PUBLISH) {
+            strategy_positions_map.clear();
+            for (const auto& sleeve : strategy_names) {
+                auto stored = db->load_positions_by_date(combined_strategy_id, sleeve,
+                                                         coordinator_config.portfolio_id, now,
+                                                         "trading.positions", "qt");
+                if (stored.is_error()) {
+                    return qt_fail("the stored qt positions could not be read: " +
+                                   std::string(stored.error()->what()));
+                }
+                for (const auto& [symbol, position] : stored.value()) {
+                    if (day_t_mark_prices.count(symbol) == 0) {
+                        day_t_mark_prices[symbol] = static_cast<double>(position.average_price);
+                    }
+                }
+                strategy_positions_map[sleeve] = stored.value();
+            }
+            rebuild_combined_positions(positions, strategy_positions_map);
+            auto stored_fills = qt::load_book_executions(*db, portfolio_id, combined_strategy_id,
+                                                         "qt", qt_date);
+            if (stored_fills.is_error()) {
+                return qt_fail("the stored qt executions could not be read: " +
+                               std::string(stored_fills.error()->what()));
+            }
+            all_strategy_executions.clear();
+            for (const auto& sleeve : strategy_names) all_strategy_executions[sleeve] = {};
+            for (const auto& [sleeve, fills] : stored_fills.value()) {
+                all_strategy_executions[sleeve] = fills;
+            }
+            auto stored_day = qt::load_book_results(*db, portfolio_id, combined_strategy_id, "qt",
+                                                    qt_date);
+            if (stored_day.is_error()) {
+                return qt_fail("the stored qt live_results row could not be read: " +
+                               std::string(stored_day.error()->what()));
+            }
+            const nlohmann::json& stored_row = stored_day.value();
+            auto stored_value = [&](const char* column, double& target) {
+                if (stored_row.contains(column) && stored_row.at(column).is_number()) {
+                    target = stored_row.at(column).get<double>();
+                }
+            };
+            stored_value("daily_return", daily_return);
+            stored_value("daily_pnl", daily_pnl);
+            stored_value("daily_realized_pnl", daily_realized_pnl);
+            stored_value("daily_unrealized_pnl", daily_unrealized_pnl);
+            stored_value("total_cumulative_return", total_cumulative_return_pct);
+            stored_value("total_annualized_return", total_return_annualized);
+            stored_value("total_pnl", total_pnl);
+            stored_value("total_realized_pnl", total_realized_pnl);
+            stored_value("total_unrealized_pnl", total_unrealized_pnl);
+            stored_value("current_portfolio_value", current_portfolio_value);
+            stored_value("gross_notional", gross_notional);
+            stored_value("net_notional", net_notional);
+            stored_value("margin_posted", total_posted_margin);
+            stored_value("margin_cushion", margin_cushion);
+            stored_value("equity_to_margin_ratio", equity_to_margin_ratio);
+            stored_value("total_transaction_costs", total_transaction_costs_cumulative);
+            stored_value("daily_roll_costs", total_daily_roll_costs);
+            qt_stored_results = stored_row;
+            std::size_t stored_fill_count = 0;
+            for (const auto& [sleeve, fills] : all_strategy_executions) {
+                (void)sleeve;
+                stored_fill_count += fills.size();
+            }
+            INFO("QT_PUBLISH the e-mail and CSV are built from the stored qt day of " + qt_date +
+                 ": " + std::to_string(positions.size()) + " symbol(s), " +
+                 std::to_string(stored_fill_count) + " execution(s), book_source " +
+                 stored_row.value("book_source", std::string("?")));
+        }
         auto current_export_result =
             qt_export_csv ? export_positions_file() : Result<std::string>(std::string());
 
@@ -4714,6 +4880,7 @@ int main(int argc, char* argv[]) {
                                : results_manager->save_all_results(combined_strategy_id, now);
         if (save_result.is_error()) {
             ERROR("Failed to save all live results: " + std::string(save_result.error()->what()));
+            qt_store_failed("live_results and equity_curve");
         } else {
             INFO("Successfully saved all live trading results to database");
         }
@@ -4726,16 +4893,25 @@ int main(int argc, char* argv[]) {
             // The model run seeds qt_proposal and writes qt as copies of system (Q3,
             // book_source 'model'), unless the desk has already edited the day: a re-run never
             // clobbers a desk save or an approved override.
+            // Contract C3: neither is rewritten on a published day either.
             auto edited = qt::desk_edit_done(*db, portfolio_id, qt_date);
-            if (edited.is_error()) {
-                ERROR("QT_SEED could not read the command log: " +
-                      std::string(edited.error()->what()));
+            auto published = qt::published_at(*db, portfolio_id, combined_strategy_id, qt_date);
+            if (edited.is_error() || published.is_error()) {
+                ERROR("QT_SEED could not read the command log or the publish record: " +
+                      std::string(edited.is_error() ? edited.error()->what()
+                                                    : published.error()->what()));
                 qt_failed = true;
+            } else if (!published.value().empty()) {
+                INFO("QT_SEED kept: " + qt_date + " was published at " + published.value() +
+                     "; a model re-run never rewrites a published day's qt_proposal and qt");
             } else if (edited.value()) {
                 INFO("QT_SEED kept: the desk edited " + qt_date +
                      "; qt_proposal and qt are not overwritten");
-            } else if (save_result.is_error()) {
-                ERROR("QT_SEED skipped: the system book was not stored");
+            } else if (save_result.is_error() || !qt_store_failures.empty()) {
+                ERROR("QT_SEED skipped: the system book was not stored completely (" +
+                      (qt_store_failures.empty() ? std::string("live_results")
+                                                 : qt_store_failure_list()) +
+                      "); qt_proposal and qt are not written from it");
                 qt_failed = true;
             } else {
                 auto proposal = qt::copy_book_day(*db, portfolio_id, combined_strategy_id, qt_date,
@@ -4750,13 +4926,9 @@ int main(int argc, char* argv[]) {
                 } else {
                     INFO("QT_SEED " + portfolio_id + " " + qt_date +
                          ": qt_proposal seeded and qt written from system (book_source model)");
-                    // T-1 a weekend day or a holiday on the runner's calendar, or no symbol
-                    // printed on T-1 (the whole book carried).
-                    const std::time_t qt_t1_time =
-                        std::chrono::system_clock::to_time_t(now - std::chrono::hours(24));
-                    const int qt_t1_wday = std::gmtime(&qt_t1_time)->tm_wday;
-                    const bool qt_non_trading_day = skip_strategy_processing || qt_t1_wday == 0 ||
-                                                    qt_t1_wday == 6 || is_yesterday_holiday;
+                    // Contract C5: T-1 a weekend day or a holiday on the runner's calendar,
+                    // and nothing else (a feed hole refused the run above).
+                    const bool qt_non_trading_day = qt_day_kind == qt::DayKind::CALENDAR_CLOSED;
                     if (qt_non_trading_day) {
                         // Ruling 29 on a non-trading day: nobody is at the desk, so the day is
                         // published by the model run itself, with no e-mail (the books are the
@@ -4837,6 +5009,11 @@ int main(int argc, char* argv[]) {
             if (qt_mode == qt::Mode::OVERRIDE) {
                 detail["report_only"] = true;  // the pass is a report; the ask is what trades
             }
+            if (!qt_store_failures.empty()) {
+                return qt_fail("the qt book of " + qt_date + " was not stored completely (" +
+                               qt_store_failure_list() +
+                               "); it is left unmarked and cannot be published: save again");
+            }
             auto moved = qt::write_moved_by(*db, portfolio_id, combined_strategy_id, qt_date,
                                             moved_by);
             auto marked = save_result.is_error()
@@ -4906,6 +5083,7 @@ int main(int argc, char* argv[]) {
         // Send email report with trading results (based on send_email flag)
         bool qt_emailed = false;
         std::optional<nlohmann::json> qt_email_logged;
+        std::string qt_email_sent_at;  // publish: when this run's e-mail went out
         if (send_email) {
             INFO("Sending email report...");
             try {
@@ -5191,6 +5369,20 @@ int main(int argc, char* argv[]) {
                     strategy_metrics["Total Roll Costs"] = total_roll_costs_cumulative;  // 017
                     strategy_metrics["Daily Roll Costs"] = total_daily_roll_costs;
                     strategy_metrics["Current Portfolio Value"] = current_portfolio_value;
+                    if (qt_stored_results) {
+                        // Item 4: publish's figures are the stored qt day's.
+                        const auto& stored_row = *qt_stored_results;
+                        if (stored_row.contains("portfolio_var") &&
+                            stored_row.at("portfolio_var").is_number()) {
+                            strategy_metrics["Portfolio VaR"] =
+                                stored_row.at("portfolio_var").get<double>() * 100.0;
+                        }
+                        if (stored_row.contains("total_roll_costs") &&
+                            stored_row.at("total_roll_costs").is_number()) {
+                            strategy_metrics["Total Roll Costs"] =
+                                stored_row.at("total_roll_costs").get<double>();
+                        }
+                    }
 
                     // Leverage Metrics - Calculate values from position analysis
                     double gross_leverage_calc = (current_portfolio_value != 0.0)
@@ -5276,6 +5468,17 @@ int main(int argc, char* argv[]) {
                         ERROR("Failed to send email: " + std::string(send_result.error()->what()));
                     } else if (!qt_mail_off) {
                         qt_emailed = true;
+                        if (qt_mode == qt::Mode::PUBLISH) {
+                            // Item 7: recorded on its own, committed, before anything else.
+                            auto marked = qt::mark_email_sent(*db, qt_audit_id);
+                            if (marked.is_error()) {
+                                ERROR("QT_PUBLISH the e-mail was sent but email_sent_at could "
+                                      "not be recorded: " +
+                                      std::string(marked.error()->what()));
+                            } else {
+                                qt_email_sent_at = marked.value();
+                            }
+                        }
                         std::string attachment_list = today_filename;
                         if (!yesterday_filename.empty()) {
                             attachment_list += ", " + yesterday_filename;
@@ -5296,7 +5499,8 @@ int main(int argc, char* argv[]) {
 
         if (qt_mode == qt::Mode::PUBLISH) {
             // Contract section 6: the day's publish record on live_run_metadata, then the row.
-            if (!qt_emailed && !qt_email_logged) {
+            const bool qt_sent_before = !qt_email_sent_before.at.empty();
+            if (!qt_emailed && !qt_email_logged && !qt_sent_before) {
                 const std::string why = "the daily e-mail could not be sent; nothing is published";
                 ERROR("QT_PUBLISH " + why);
                 (void)qt::finish_audit_row(*db, qt_audit_id, "failed",
@@ -5308,20 +5512,29 @@ int main(int argc, char* argv[]) {
             if (published.is_error()) {
                 ERROR("QT_PUBLISH " + std::string(published.error()->what()));
                 (void)qt::finish_audit_row(*db, qt_audit_id, "failed",
-                                           nlohmann::json{{"emailed", qt_emailed}},
+                                           nlohmann::json{{"emailed", qt_emailed || qt_sent_before}},
                                            published.error()->what());
                 return 1;
             }
-            nlohmann::json result = {{"emailed", qt_emailed}};
+            nlohmann::json result = {{"emailed", qt_emailed || qt_sent_before}};
+            if (qt_sent_before) {
+                result["email_sent_at"] = qt_email_sent_before.at;
+                result["email_sent_by"] = qt_email_sent_before.row_id;
+            }
             if (qt_email_logged) {
                 result["email_disabled"] = true;
                 result["email"] = *qt_email_logged;
             }
             auto finished = qt::finish_audit_row(
                 *db, qt_audit_id, "done", result,
-                qt_emailed ? "published " + qt_date + ": daily e-mail and CSV sent from the qt book"
-                           : "published " + qt_date +
-                                 ": e-mail disabled on this engine, the body is in result.email");
+                qt_sent_before
+                    ? "published " + qt_date + ": the daily e-mail had already been sent (publish "
+                                               "row " + std::to_string(qt_email_sent_before.row_id) +
+                          ", " + qt_email_sent_before.at + "); not sent again"
+                : qt_emailed
+                    ? "published " + qt_date + ": daily e-mail and CSV sent from the stored qt book"
+                    : "published " + qt_date +
+                          ": e-mail disabled on this engine, the body is in result.email");
             if (finished.is_error()) {
                 ERROR("QT: " + std::string(finished.error()->what()));
                 return 1;
@@ -5330,6 +5543,11 @@ int main(int argc, char* argv[]) {
         }
         if (qt_failed) {
             ERROR("QT_SEED the desk's books for " + qt_date + " were not written; exiting 1");
+            return 1;
+        }
+        if (!qt_store_failures.empty()) {
+            ERROR("QT_ALERT " + portfolio_id + " " + qt_date + ": stores failed (" +
+                  qt_store_failure_list() + "); exiting 1");
             return 1;
         }
         if (qt_finalize_failed) {
