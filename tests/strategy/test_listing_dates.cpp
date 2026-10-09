@@ -805,3 +805,20 @@ TEST(ListingDates, WithTheRewriteOffAFullSizeRootWithoutARowIsNotFound) {
     registry.instruments_ = saved;
     registry.initialized_ = saved_init;
 }
+
+// The ratio is a positive whole number, and it is the two contracts' sizes: one predecessor
+// contract is exactly `ratio` listed contracts.
+TEST(ListingDates, TheRatioIsWholeAndEqualsTheTwoContractsSizes) {
+    EXPECT_THROW(ListingDates::validate({{"MES", "ES", "2019-05-06", 2.5}}), std::invalid_argument);
+    EXPECT_THROW(ListingDates::validate({{"MES", "ES", "2019-05-06", 0.1}}), std::invalid_argument);
+    ListingDates::validate({{"MES", "ES", "2019-05-06", 10.0}});
+    const ListedContract mes{"MES", "ES", "2019-05-06", 10.0};
+    EXPECT_EQ(ListingDates::ratio_error(mes, 50.0, 5.0), "");
+    EXPECT_EQ(ListingDates::ratio_error({"MYM", "YM", "2019-05-06", 10.0}, 5.0, 0.5), "");
+    const std::string wrong = ListingDates::ratio_error({"MES", "ES", "2019-05-06", 5.0}, 50.0, 5.0);
+    EXPECT_NE(wrong.find("\"ratio\" of MES is 5.000000 but one ES (contract size 50.000000) is 10.000000 MES"),
+              std::string::npos)
+        << wrong;
+    EXPECT_NE(ListingDates::ratio_error(mes, 50.0, 0.0), "") << "a size that is not positive is refused";
+    EXPECT_NE(ListingDates::ratio_error(mes, 20.0, 5.0), "");
+}

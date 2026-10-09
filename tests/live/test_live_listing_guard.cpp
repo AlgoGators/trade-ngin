@@ -202,6 +202,8 @@ TEST(ListingRunnerWiring, BothBacktestRunnersInstallTheBlocksAndTheCoordinatorRe
               "ListingDates::instance().set_switch_rule(app_config.listing_switch_rule);",
               "InstrumentRegistry::instance().set_full_size_remap(false);",
               "ListingDates::instance().predecessor_symbols(\n                    symbols, config.strategy_config.start_date);",
+              "const std::string wrong = ListingDates::ratio_error(",
+              "if (!wrong.empty()) throw std::runtime_error(wrong);",
               "if (!InstrumentRegistry::instance().has_instrument(p)) {\n                        throw std::runtime_error(",
               "symbols.push_back(p);"}) {
             EXPECT_NE(hunk.find(needed), std::string::npos) << runner << " lacks: " << needed;

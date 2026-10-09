@@ -1424,6 +1424,9 @@ TEST_F(ConfigLoaderTest, AnUnusableListingDatesBlockRefusesTheConfig) {
         entry = good;
         entry["ratio"] = 0;
         bad_blocks.push_back({{"contracts", nlohmann::json::array({entry})}});
+        entry = good;
+        entry["ratio"] = 2.5;  // a ratio is a whole number of contracts
+        bad_blocks.push_back({{"contracts", nlohmann::json::array({entry})}});
     }
     for (const auto& block : bad_blocks) {
         write_full_set("base", nlohmann::json::object(), {{"listing_dates", block}});

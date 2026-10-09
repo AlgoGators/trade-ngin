@@ -177,6 +177,16 @@ int main() {
                 ListingDates::instance().set(app_config.listing_dates);
                 ListingDates::instance().set_switch_rule(app_config.listing_switch_rule);
                 InstrumentRegistry::instance().set_full_size_remap(false);
+                // the ratio is the two contracts' sizes, wherever both have a metadata row
+                for (const auto& c : app_config.listing_dates) {
+                    auto& registry = InstrumentRegistry::instance();
+                    if (!registry.has_instrument(c.before) || !registry.has_instrument(c.symbol)) continue;
+                    const auto before = registry.get_instrument(c.before);
+                    const auto listed = registry.get_instrument(c.symbol);
+                    const std::string wrong = ListingDates::ratio_error(
+                        c, before ? before->get_multiplier() : 0.0, listed ? listed->get_multiplier() : 0.0);
+                    if (!wrong.empty()) throw std::runtime_error(wrong);
+                }
                 const auto predecessors = ListingDates::instance().predecessor_symbols(
                     symbols, config.strategy_config.start_date);
                 std::string line = std::string("LISTING_DATES in force, switch rule ") +

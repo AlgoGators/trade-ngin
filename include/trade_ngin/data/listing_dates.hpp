@@ -116,8 +116,8 @@ public:
     static ListingDates& instance();
 
     /// Replaces the contracts. An empty list switches the rule off. Throws std::invalid_argument on
-    /// an entry with an empty root, a date that is not YYYY-MM-DD, a ratio that is not positive, or a
-    /// root named twice.
+    /// an entry with an empty root, a date that is not YYYY-MM-DD, a ratio that is not a positive
+    /// whole number, or a root named twice.
     void set(const std::vector<ListedContract>& contracts);
     /// set()'s checks alone: throws std::invalid_argument, changes nothing.
     static void validate(const std::vector<ListedContract>& contracts);
@@ -131,6 +131,13 @@ public:
     /// May the symbol hold a position on a signal bar of this instant? A predecessor: only before
     /// its listing date. A listed contract: only on or after it. Any other symbol: always.
     bool tradeable(const std::string& symbol, const Timestamp& bar_time) const;
+
+    /// The ratio against the two contracts' sizes: empty when one `before` contract is exactly
+    /// `ratio` listed contracts (before_multiplier == ratio x listed_multiplier), else the line to
+    /// refuse the run with. The ratio is read by rule convert and by the deferral-band carry, so a
+    /// wrong one would carry the wrong exposure.
+    static std::string ratio_error(const ListedContract& contract, double before_multiplier,
+                                   double listed_multiplier);
 
     /// Is the symbol ("ES.v.0" or "ES") a predecessor of a listed contract?
     bool is_predecessor(const std::string& symbol) const;

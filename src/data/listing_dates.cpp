@@ -57,9 +57,10 @@ std::vector<ListingDates::Entry> ListingDates::build(const std::vector<ListedCon
             throw std::invalid_argument("listing_dates: \"listed\" of " + contract.symbol +
                                         " is not a YYYY-MM-DD date: " + contract.listed);
         }
-        if (!(contract.ratio > 0.0) || !std::isfinite(contract.ratio)) {
+        if (!(contract.ratio > 0.0) || !std::isfinite(contract.ratio) ||
+            contract.ratio != std::floor(contract.ratio)) {
             throw std::invalid_argument("listing_dates: \"ratio\" of " + contract.symbol +
-                                        " is not a positive number");
+                                        " is not a positive whole number");
         }
         if (!roots.insert(contract.symbol).second || !roots.insert(contract.before).second) {
             throw std::invalid_argument("listing_dates: a root is named twice (" + contract.symbol +
@@ -106,6 +107,22 @@ bool ListingDates::tradeable(const std::string& symbol, const Timestamp& bar_tim
         if (root == entry.contract.before) return bar_time < entry.listed_at;
     }
     return true;
+}
+
+std::string ListingDates::ratio_error(const ListedContract& contract, double before_multiplier,
+                                      double listed_multiplier) {
+    const bool sized = before_multiplier > 0.0 && listed_multiplier > 0.0 &&
+                       std::isfinite(before_multiplier) && std::isfinite(listed_multiplier);
+    if (sized && std::abs(before_multiplier - contract.ratio * listed_multiplier) <=
+                     1e-9 * before_multiplier) {
+        return {};
+    }
+    return "listing_dates: \"ratio\" of " + contract.symbol + " is " + std::to_string(contract.ratio) +
+           " but one " + contract.before + " (contract size " + std::to_string(before_multiplier) +
+           ") is " +
+           (sized ? std::to_string(before_multiplier / listed_multiplier) : std::string("not a number of")) +
+           " " + contract.symbol + " (contract size " + std::to_string(listed_multiplier) +
+           "): the ratio must equal the two contracts' sizes in metadata.contract_metadata";
 }
 
 bool ListingDates::is_predecessor(const std::string& symbol) const {
