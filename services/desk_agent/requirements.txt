@@ -1,0 +1,5 @@
+# desk-agent runtime dependencies (pinned). Installed into the image's venv.
+grpcio==1.83.1
+grpcio-health-checking==1.83.1
+protobuf==7.36.2
+psycopg[binary]==3.3.6

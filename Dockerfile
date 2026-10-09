@@ -76,6 +76,33 @@ RUN cmake -S /app -B /app/build \
         -DNLopt_DIR=/usr/lib/x86_64-linux-gnu/cmake/nlopt && \
     cmake --build /app/build --config Release -j"$(nproc)"
 
+# desk-agent (docs/design/desk-agent.md): the Python gRPC command channel, shipped in this image
+# as its second entrypoint. Built in its own stage so the C++ build above is untouched and no
+# build tool (pip, grpcio-tools, a compiler) reaches the runtime image. Wheels only.
+FROM ubuntu:24.04 AS desk-agent-build
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+RUN apt-get update && apt-get install -y --no-install-recommends python3 python3-venv \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY services/desk_agent/requirements.txt services/desk_agent/requirements-build.txt \
+     /src/services/desk_agent/
+RUN python3 -m venv /opt/desk-agent/venv && \
+    /opt/desk-agent/venv/bin/pip install --no-cache-dir --only-binary=:all: \
+        -r /src/services/desk_agent/requirements.txt && \
+    /opt/desk-agent/venv/bin/pip uninstall -y -q pip && \
+    python3 -m venv /tmp/gen && \
+    /tmp/gen/bin/pip install --no-cache-dir --only-binary=:all: \
+        -r /src/services/desk_agent/requirements-build.txt
+
+COPY proto /src/proto
+COPY services/desk_agent /src/services/desk_agent
+RUN PYTHON=/tmp/gen/bin/python OUT_DIR=/opt/desk-agent/app sh /src/services/desk_agent/gen.sh && \
+    cp -r /src/services/desk_agent/desk_agent /opt/desk-agent/app/ && \
+    find /opt/desk-agent/app -name __pycache__ -prune -exec rm -rf {} + && \
+    cd /opt/desk-agent/app && /opt/desk-agent/venv/bin/python -c "import desk_agent.server, psycopg"
+
 FROM ubuntu:24.04
 
 ENV DEBIAN_FRONTEND=noninteractive \
@@ -105,6 +132,12 @@ COPY --from=builder /usr/local/lib/ /usr/local/lib/
 RUN ldconfig
 
 COPY --from=builder /app /app
+
+# desk-agent runtime: the interpreter only; the venv comes whole from its build stage. The agent
+# runs only when the container command is `desk-agent` (scripts/docker-entrypoint.sh).
+RUN apt-get update && apt-get install -y --no-install-recommends python3 \
+    && rm -rf /var/lib/apt/lists/*
+COPY --from=desk-agent-build /opt/desk-agent /opt/desk-agent
 
 WORKDIR /app
 
