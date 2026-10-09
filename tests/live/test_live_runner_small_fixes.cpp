@@ -341,7 +341,7 @@ TEST(C7bBookGate, AHeldRowOutsideTheClassifiedUniverseIsLoggedAsSuch) {
     const auto t1 = saturday_t1();
     StrategyBooks prev{{"TREND_FOLLOWING", {{"OLD.v.0", pos("OLD.v.0", 2, 10)}}}};
     StrategyBooks today{{"TREND_FOLLOWING", {}}};
-    const auto holds = hold_non_session_symbols(today, prev, t1, Timestamp(ymd_day("2026-04-26")));
+    const auto holds = hold_non_session_symbols(today, prev, t1, Timestamp(ymd_day("2026-04-26")), {});
     ASSERT_EQ(holds.size(), 1u);
     EXPECT_DOUBLE_EQ(today["TREND_FOLLOWING"]["OLD.v.0"].quantity.as_double(), 2.0);
     console_logger();
@@ -358,7 +358,7 @@ TEST(C7bBookGate, AClassifiedClosureHoldKeepsItsLine) {
     const auto t1 = saturday_t1();
     StrategyBooks prev{{"TREND_FOLLOWING", {{"MES.v.0", pos("MES.v.0", 1, 7100)}}}};
     StrategyBooks today{{"TREND_FOLLOWING", {{"MES.v.0", pos("MES.v.0", 2, 7100)}}}};
-    const auto holds = hold_non_session_symbols(today, prev, t1, Timestamp(ymd_day("2026-04-26")));
+    const auto holds = hold_non_session_symbols(today, prev, t1, Timestamp(ymd_day("2026-04-26")), {});
     ASSERT_EQ(holds.size(), 1u);
     console_logger();
     ::testing::internal::CaptureStdout();

@@ -7,7 +7,8 @@
 //     JUNK symbol has a T-1 price); a held symbol absent from today's target is re-inserted;
 //   * executions are generated with PricingPolicy::STRICT, an unpriced symbol is rolled back to its
 //     stored row, and no book change may be left without a price;
-//   * a JUNK symbol's T-1 bar is withheld from the strategy feed (its signal is not updated);
+//   * K-01: every withheld bar of the window (JUNK, a thin first print) is kept out of the strategy
+//     feed on every run, and an unconfirmed id change the classifier holds is consumed;
 //   * a HELD symbol's feed hole older than the tolerance refuses a true-live run (the run date is
 //     the host's date) and only warns on a replay;
 //   * in the runners: the abort arm is gone, the Monday agricultural block is gone, the gate and
@@ -163,7 +164,7 @@ TEST(SessionBookGate, AFeedHoleSymbolIsHeldAndNotFilledAtItsStaleMark) {
 
     StrategyBooks today{{"TREND_FOLLOWING", {{"MYM.v.0", pos("MYM.v.0", 2, 49707)},
                                              {"MES.v.0", pos("MES.v.0", 3, 7150)}}}};
-    const auto holds = hold_non_session_symbols(today, prev, t1, run_instant());
+    const auto holds = hold_non_session_symbols(today, prev, t1, run_instant(), {});
     ASSERT_EQ(holds.size(), 1u);
     EXPECT_EQ(holds[0].symbol, "MYM.v.0");
     EXPECT_EQ(holds[0].verdict, SessionVerdict::NO_BAR_FEED_HOLE);
@@ -194,7 +195,7 @@ TEST(SessionBookGate, AJunkSymbolIsHeldAlthoughItHasAT1Price) {
         {"MES.v.0", 7150.0}, {"6L.v.0", 0.1992}, {"ZC.v.0", 462.0}};
     StrategyBooks prev{{"TREND_FOLLOWING", {{"6L.v.0", pos("6L.v.0", 2, 0.199)}}}};
     StrategyBooks today{{"TREND_FOLLOWING", {{"6L.v.0", pos("6L.v.0", 3, 0.199)}}}};
-    const auto holds = hold_non_session_symbols(today, prev, t1, run_instant());
+    const auto holds = hold_non_session_symbols(today, prev, t1, run_instant(), {});
     ASSERT_EQ(holds.size(), 1u);
     EXPECT_EQ(holds[0].verdict, SessionVerdict::JUNK);
     EXPECT_DOUBLE_EQ(today["TREND_FOLLOWING"]["6L.v.0"].quantity.as_double(), 2.0);
@@ -205,13 +206,61 @@ TEST(SessionBookGate, AJunkSymbolIsHeldAlthoughItHasAT1Price) {
     EXPECT_TRUE(r.value().executions.empty()) << "no order at the junk print";
 }
 
+// D-A (T-ROLLX-FIX commit 4; LOOP_SPEC v6.2 section 6.1, D37): the change-bar hold on EVERY
+// rebalance. ZC's T-1 bar (Thu 04-23) is a full-volume contract switch: its verdict is SESSION and
+// its last consumed bar is a pending change. On a day the risk gate does not cut, nothing but this
+// hold stands between the strategy's new target and an order at the change bar's close. The runner
+// passes the D37 set (roll_status holds()) to the book gate: ZC is held at its stored quantity on
+// both sleeves, opened from flat on neither, re-inserted where the target dropped it, and no order
+// is generated; MES, a SESSION symbol with no pending change, trades.
+TEST(SessionBookGate, ASessionChangeBarIsHeldOnADayWithoutACut) {
+    const auto t1 = april_t1();
+    ASSERT_TRUE(t1.is_session("ZC.v.0")) << "the verdict alone would let it trade";
+    auto zc = [](const std::string& date, double close, const std::string& id) {
+        Bar b = bar_on("ZC.v.0", date, close, 150000);
+        b.instrument_id = id;
+        return b;
+    };
+    const auto status = roll_series::roll_status_of(
+        {zc("2026-04-21", 459.0, "ZCK6"), zc("2026-04-22", 460.0, "ZCK6"), zc("2026-04-23", 462.0, "ZCN6")});
+    std::unordered_set<std::string> change_bar_holds;
+    for (const auto& [symbol, st] : status) {
+        if (st.holds()) change_bar_holds.insert(symbol);
+    }
+    ASSERT_EQ(change_bar_holds.count("ZC.v.0"), 1u);
+
+    const std::unordered_map<std::string, double> t1_prices{{"MES.v.0", 7150.0}, {"ZC.v.0", 462.0}};
+    StrategyBooks prev{{"TREND_FOLLOWING", {{"ZC.v.0", pos("ZC.v.0", 2, 460.0)}, {"MES.v.0", pos("MES.v.0", 1, 7100.0)}}},
+                       {"TREND_FOLLOWING_FAST", {{"ZC.v.0", pos("ZC.v.0", 1, 460.0)}}},
+                       {"FLAT_SLEEVE", {}}};
+    StrategyBooks today{{"TREND_FOLLOWING", {{"ZC.v.0", pos("ZC.v.0", 3, 462.0)}, {"MES.v.0", pos("MES.v.0", 2, 7150.0)}}},
+                        {"TREND_FOLLOWING_FAST", {}},
+                        {"FLAT_SLEEVE", {{"ZC.v.0", pos("ZC.v.0", 1, 462.0)}}}};
+    const auto holds = hold_non_session_symbols(today, prev, t1, run_instant(), change_bar_holds);
+    ASSERT_EQ(holds.size(), 3u);
+    for (const auto& h : holds) {
+        EXPECT_EQ(h.symbol, "ZC.v.0");
+        EXPECT_TRUE(h.change_bar) << "held by the change-bar rule, its T-1 a SESSION";
+    }
+    EXPECT_DOUBLE_EQ(today["TREND_FOLLOWING"]["ZC.v.0"].quantity.as_double(), 2.0);
+    EXPECT_DOUBLE_EQ(today["TREND_FOLLOWING_FAST"]["ZC.v.0"].quantity.as_double(), 1.0) << "re-inserted";
+    EXPECT_DOUBLE_EQ(today["FLAT_SLEEVE"]["ZC.v.0"].quantity.as_double(), 0.0) << "never opened from flat";
+    EXPECT_DOUBLE_EQ(today["TREND_FOLLOWING"]["MES.v.0"].quantity.as_double(), 2.0) << "MES trades";
+    for (const std::string sleeve : {"TREND_FOLLOWING", "TREND_FOLLOWING_FAST", "FLAT_SLEEVE"}) {
+        ExecutionManager em;
+        auto r = execute_strategy_day_strict(em, today[sleeve], prev[sleeve], t1_prices, run_instant());
+        ASSERT_TRUE(r.is_ok());
+        for (const auto& e : r.value().executions) EXPECT_NE(e.symbol, "ZC.v.0") << "no order on the change bar";
+    }
+}
+
 TEST(SessionBookGate, EveryPerStrategyBookIsHeldEachAtItsOwnStoredQuantity) {
     const auto t1 = april_t1();
     StrategyBooks prev{{"TREND_FOLLOWING", {{"MYM.v.0", pos("MYM.v.0", 1, 49707)}}},
                        {"TREND_FOLLOWING_FAST", {{"MYM.v.0", pos("MYM.v.0", -2, 49707)}}}};
     StrategyBooks today{{"TREND_FOLLOWING", {{"MYM.v.0", pos("MYM.v.0", 3, 49707)}}},
                         {"TREND_FOLLOWING_FAST", {{"MYM.v.0", pos("MYM.v.0", 0, 49707)}}}};
-    const auto holds = hold_non_session_symbols(today, prev, t1, run_instant());
+    const auto holds = hold_non_session_symbols(today, prev, t1, run_instant(), {});
     ASSERT_EQ(holds.size(), 2u);
     EXPECT_EQ(holds[0].strategy_name, "TREND_FOLLOWING");
     EXPECT_EQ(holds[1].strategy_name, "TREND_FOLLOWING_FAST");
@@ -226,7 +275,7 @@ TEST(SessionBookGate, AHeldSymbolAbsentFromTodaysTargetIsReinsertedNotClosedOut)
     const auto t1 = april_t1();
     StrategyBooks prev{{"TREND_FOLLOWING", {{"MYM.v.0", pos("MYM.v.0", 1, 49707)}}}};
     StrategyBooks today{{"TREND_FOLLOWING", {}}};
-    const auto holds = hold_non_session_symbols(today, prev, t1, run_instant());
+    const auto holds = hold_non_session_symbols(today, prev, t1, run_instant(), {});
     ASSERT_EQ(holds.size(), 1u);
     EXPECT_TRUE(holds[0].reinserted);
     ASSERT_TRUE(today["TREND_FOLLOWING"].count("MYM.v.0"));
@@ -248,7 +297,7 @@ TEST(SessionBookGate, APositionOpenedFromFlatWithoutASessionStaysFlat) {
     ASSERT_EQ(t1.find("ZC.v.0")->verdict, SessionVerdict::NO_BAR_CLOSURE);
     StrategyBooks prev{{"TREND_FOLLOWING", {}}};
     StrategyBooks today{{"TREND_FOLLOWING", {{"ZC.v.0", pos("ZC.v.0", 1, 448.25)}}}};
-    const auto holds = hold_non_session_symbols(today, prev, t1, run_instant());
+    const auto holds = hold_non_session_symbols(today, prev, t1, run_instant(), {});
     ASSERT_EQ(holds.size(), 1u);
     EXPECT_DOUBLE_EQ(today["TREND_FOLLOWING"]["ZC.v.0"].quantity.as_double(), 0.0);
 }
@@ -259,7 +308,7 @@ TEST(SessionBookGate, AnUnchangedHeldSymbolAndASessionSymbolAreLeftAlone) {
                                             {"ZC.v.0", pos("ZC.v.0", 1, 460)}}}};
     StrategyBooks today{{"TREND_FOLLOWING", {{"MYM.v.0", pos("MYM.v.0", 1, 49707)},
                                              {"ZC.v.0", pos("ZC.v.0", 4, 462)}}}};
-    EXPECT_TRUE(hold_non_session_symbols(today, prev, t1, run_instant()).empty());
+    EXPECT_TRUE(hold_non_session_symbols(today, prev, t1, run_instant(), {}).empty());
     EXPECT_DOUBLE_EQ(today["TREND_FOLLOWING"]["ZC.v.0"].quantity.as_double(), 4.0);
 }
 
@@ -267,7 +316,7 @@ TEST(SessionBookGate, ASymbolNobodyClassifiedIsHeld) {
     const auto t1 = april_t1();
     StrategyBooks prev{{"TREND_FOLLOWING", {}}};
     StrategyBooks today{{"TREND_FOLLOWING", {{"NEW.v.0", pos("NEW.v.0", 1, 10)}}}};
-    const auto holds = hold_non_session_symbols(today, prev, t1, run_instant());
+    const auto holds = hold_non_session_symbols(today, prev, t1, run_instant(), {});
     ASSERT_EQ(holds.size(), 1u);
     EXPECT_DOUBLE_EQ(today["TREND_FOLLOWING"]["NEW.v.0"].quantity.as_double(), 0.0);
 }
@@ -305,17 +354,52 @@ TEST(SessionBookGate, StrictRollsAnUnpricedChangeBackToTheStoredRow) {
 // The JUNK feed and the feed-hole refusal
 // =============================================================================================
 
-TEST(SessionBookGate, OnlyTheJunkSymbolsT1BarIsWithheldFromTheFeed) {
-    const auto t1 = april_t1();
-    std::vector<Bar> bars = {bar_on("6L.v.0", "2026-04-22", 0.1990, 17000),
-                             bar_on("6L.v.0", "2026-04-23", 0.1992, 107),
-                             bar_on("MES.v.0", "2026-04-23", 7150.0, 1400000)};
-    std::vector<std::string> withheld;
-    const auto feed = withhold_junk_t1_bars(bars, t1, &withheld);
-    ASSERT_EQ(feed.size(), 2u);
-    EXPECT_EQ(withheld, std::vector<std::string>{"6L.v.0"});
-    EXPECT_EQ(feed[0].symbol, "6L.v.0");  // its T-2 bar stays: history, not today's print
-    EXPECT_EQ(feed[1].symbol, "MES.v.0");
+// LOOP_SPEC v6.1 section 2.1 (K-01): the runners feed the window's CONSUMED bars. A JUNK bar is
+// withheld on whatever date of the window it sits (the parent withheld only the T-1 bar and fed an
+// older one as history), a thin first print likewise, and an unconfirmed id change the classifier
+// holds is consumed (the change bar, held under D37).
+TEST(SessionBookGate, EveryWithheldBarOfTheWindowIsKeptOutOfTheFeed) {
+    SessionClassifier c;
+    weekday_history(c, "6L.v.0", "2026-04-15", 0.199, 17000);
+    weekday_history(c, "MES.v.0", "2026-04-23", 7100.0, 1500000);
+    std::vector<Bar> bars = {bar_on("6L.v.0", "2026-04-14", 0.1985, 16000),
+                             bar_on("6L.v.0", "2026-04-15", 0.1990, 107),    // JUNK, an old date
+                             bar_on("6L.v.0", "2026-04-16", 0.1991, 18000),
+                             bar_on("6L.v.0", "2026-04-23", 0.1992, 107),    // JUNK, T-1
+                             bar_on("MES.v.0", "2026-04-23", 7150.0, 1400000),
+                             bar_on("ZT.v.0", "2026-04-23", 104.1, 10)};     // thin first print
+    c.add_bars(bars);
+    std::vector<SymbolDayVerdict> withheld;
+    const auto feed = k01_consumed_bars(c, bars, &withheld);
+    ASSERT_EQ(feed.size(), 3u);
+    EXPECT_EQ(feed[0].symbol, "6L.v.0");
+    EXPECT_EQ(SessionClassifier::ymd(SessionClassifier::day_of(feed[0].timestamp)), "2026-04-14");
+    EXPECT_EQ(SessionClassifier::ymd(SessionClassifier::day_of(feed[1].timestamp)), "2026-04-16");
+    EXPECT_EQ(feed[2].symbol, "MES.v.0");
+    ASSERT_EQ(withheld.size(), 3u);
+    EXPECT_EQ(withheld[0].symbol + " " + withheld[0].date, "6L.v.0 2026-04-15");
+    EXPECT_EQ(withheld[1].symbol + " " + withheld[1].date, "6L.v.0 2026-04-23");
+    EXPECT_EQ(withheld[2].symbol + " " + withheld[2].date, "ZT.v.0 2026-04-23");
+    for (const auto& v : withheld) EXPECT_TRUE(v.k01_withheld()) << v.symbol << " " << v.reason;
+}
+
+TEST(SessionBookGate, AnIdChangeHoldIsConsumedNotWithheld) {
+    SessionClassifier c;
+    weekday_history(c, "NG.v.0", "2026-04-23", 3.3, 200000);
+    for (Day d = ymd_day("2026-03-01"); d < ymd_day("2026-04-23"); d += std::chrono::days{1}) {
+        c.add_instrument_id("NG.v.0", d, "864");
+    }
+    const Bar change = bar_on("NG.v.0", "2026-04-23", 3.9, 9000);  // thin on a new id
+    c.add_bar(change);
+    c.add_instrument_id("NG.v.0", ymd_day("2026-04-23"), "863");
+    std::vector<SymbolDayVerdict> withheld;
+    const auto feed = k01_consumed_bars(c, {change}, &withheld);
+    const auto v = c.classify_symbol_day("NG.v.0", ymd_day("2026-04-23"), kNoHolidays);
+    ASSERT_EQ(v.verdict, SessionVerdict::JUNK) << v.reason;
+    EXPECT_TRUE(v.id_change_hold);
+    EXPECT_FALSE(v.k01_withheld());
+    EXPECT_EQ(feed.size(), 1u) << "the change bar is consumed (and held: its verdict is not SESSION)";
+    EXPECT_TRUE(withheld.empty());
 }
 
 TEST(SessionBookGate, TheFeedHoleRefusalKeysOnAHeldSymbolPastTheTolerance) {

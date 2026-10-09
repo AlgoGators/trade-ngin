@@ -106,7 +106,10 @@ inline constexpr const char* kFuturesBarKeepOrder = "volume DESC, close, open, h
  * DISTINCT ON (symbol, time) with kFuturesBarKeepOrder, wrapped so the rows come back in the
  * loader's historical order (time, symbol). A series with no repeated (symbol, time) comes
  * back exactly as the plain query returned it. Timestamps bind as $1/$2; with
- * with_symbol_filter the symbol list binds as $3.
+ * with_symbol_filter the symbol list binds as $3. T-ROLLX: an eighth column, instrument_id,
+ * the kept print's vendor contract id from kFuturesRawBarTable (the exact-print join of
+ * build_futures_instrument_id_query, as a LEFT JOIN: NULL for a print the raw table lacks),
+ * which the Arrow conversion carries into Bar::instrument_id.
  */
 std::string build_futures_bar_query(const std::string& full_table_name, bool with_symbol_filter);
 

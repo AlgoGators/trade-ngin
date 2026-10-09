@@ -4,6 +4,7 @@
 #include <map>
 #include <optional>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 #include <nlohmann/json.hpp>
 #include "trade_ngin/core/error.hpp"
@@ -14,6 +15,7 @@
 #include "trade_ngin/portfolio/portfolio_manager.hpp"
 // Include component headers for unique_ptr (need complete types)
 #include "trade_ngin/backtest/backtest_data_loader.hpp"
+#include "trade_ngin/backtest/consumed_series_record.hpp"
 #include "trade_ngin/backtest/backtest_metrics_calculator.hpp"
 #include "trade_ngin/backtest/backtest_price_manager.hpp"
 #include "trade_ngin/backtest/backtest_pnl_manager.hpp"
@@ -95,9 +97,34 @@ private:
     /// (run_portfolio with AssetClass::FUTURES); the equity backtest is untouched.
     SessionClassifier session_classifier_;
     bool session_hold_enabled_ = false;
-    /// T-7b-1 7a: the JUNK signal-group bars withheld from the strategies and the PM on the last
-    /// cycle, fed on the next one ahead of their symbol's next bar (junk_signal_feed.hpp).
-    std::vector<Bar> withheld_junk_signal_bars_;
+    /// T-ROLLX-FIX: the oracle acceptance's record of the consumed bars (consumed_series_record.hpp);
+    /// enabled only when TRADE_NGIN_SERIES_DUMP_DIR is set, never in production.
+    ConsumedSeriesRecord consumed_record_;
+    /// T-ROLLX-FIX (LOOP_SPEC v6.1 sections 2.1, 2.2, D37): each futures symbol's roll status on its
+    /// CONSUMED sequence (the bars fed to the strategies; a withheld bar never walks it), and the
+    /// status of its last consumed bar, which decides the change-bar hold of every rebalance until
+    /// the symbol's next consumed bar.
+    std::unordered_map<std::string, roll_series::RollTracker> roll_trackers_;
+    std::map<std::string, roll_series::RollTracker::Status> signal_roll_status_;
+    /// T-ROLLX-FIX (LOOP_SPEC v6.1 sections 2.1, 6.6, 7): this cycle's own bar group as the marks
+    /// consume it: the symbols whose bar is WITHHELD (K-01: no P&L, no previous close moved), the
+    /// symbols whose bar is a change bar (no P&L), and the contract each symbol is held in after
+    /// this cycle's bar (final_positions.instrument_id, every row of a futures symbol).
+    std::unordered_set<std::string> mark_withheld_;
+    std::unordered_set<std::string> mark_change_;
+    std::unordered_map<std::string, std::string> row_held_id_;
+    /// T-ROLLX-FIX (LOOP_SPEC v6.1 section 6.5): the ROLL legs booked so far per sleeve (the RL-
+    /// ids' sequence numbers); a ROLL_LEG STOP fails the run (code review X-3).
+    std::unordered_map<std::string, size_t> roll_leg_seq_;
+    bool roll_leg_stop_ = false;
+    /// T-ROLLX-FIX commit 5 (F-3, section 6.5): the rolls this cycle's signal feed confirmed for a
+    /// sleeve that holds the symbol ("<symbol> (<sleeve>) confirmed <date>"), from the moment the
+    /// roll tracker has consumed the confirming bars until the legs are booked. A cycle that ends
+    /// in between, by an error return or by an exception, would leave them un-legged for good.
+    std::vector<std::string> cycle_rolls_owed_;
+    /// The ROLL_LEG STOP of a cycle that failed with `what` while rolls are owed; an OK result
+    /// when none is. Sets roll_leg_stop_.
+    Result<void> roll_owed_stop(const std::string& what);
     /// T-7b-1 C7 (RA-01): one RISK_SCALE_REPORT line per post-warmup rebalance. Futures only
     /// (run_portfolio with AssetClass::FUTURES), like the session hold; the equity backtest's log
     /// is untouched.

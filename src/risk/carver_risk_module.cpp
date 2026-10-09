@@ -224,13 +224,17 @@ void CarverRiskModule::on_bars(const std::vector<Bar>& bars, const RiskContext& 
     }
     in_f5_fallback_ = !f5_engaged_;
 
+    // T-ROLLX (LOOP_SPEC v6.1 section 2.3): the gate's returns are adjusted. The levels are built
+    // on the WHOLE pool (every date, F5's filter not yet applied), so a contract switch on a date
+    // the filter drops is removed from the level and the return across that gap is a real move.
+    const RiskManager::AdjustedLevels adjusted = RiskManager::adjusted_levels_of(pool);
     if (f5_engaged_) {
         std::vector<Bar> filtered;
         filtered.reserve(pool.size());
         for (const auto& bar : pool) {
             if (complete.count(bar.timestamp)) filtered.push_back(bar);
         }
-        market_data_ = rm_.create_market_data(filtered);
+        market_data_ = rm_.create_market_data(filtered, &adjusted);
         market_data_built_this_rebalance_ = true;
     } else {
         // Below the floor F5 does not engage and the gate reads the UNFILTERED date-capped
@@ -238,7 +242,7 @@ void CarverRiskModule::on_bars(const std::vector<Bar>& bars, const RiskContext& 
         // is the failure this change set removes, and a 2-date window additionally drives
         // create_market_data into its divide-by-(n-1)==0 branch, where the gate goes blind with
         // every multiplier at 1.0.
-        market_data_ = rm_.create_market_data(pool);
+        market_data_ = rm_.create_market_data(pool, &adjusted);
         market_data_built_this_rebalance_ = true;
     }
 }

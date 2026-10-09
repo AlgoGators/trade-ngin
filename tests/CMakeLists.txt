@@ -42,6 +42,12 @@ set(TEST_SOURCES
     data/test_futures_bar_dedup_db.cpp
     data/test_session_classifier.cpp
     data/test_session_classifier_instrument_id.cpp
+    data/test_roll_series.cpp
+    data/test_roll_legs.cpp
+    data/test_executions_execution_type_db.cpp
+    data/test_futures_bar_instrument_id_db.cpp
+    data/test_positions_instrument_id_db.cpp
+    data/test_roll_state_db.cpp
     order/test_order_manager.cpp
     order/test_utils.cpp
     instruments/test_futures.cpp
@@ -49,6 +55,7 @@ set(TEST_SOURCES
     instruments/test_option.cpp
     instruments/test_instrument_registry.cpp
     risk/test_risk_manager.cpp
+    risk/test_risk_adjusted_returns.cpp
     risk/test_risk_modules.cpp
     risk/test_risk_module_config.cpp
     risk/test_risk_scale_report.cpp
@@ -91,6 +98,7 @@ set(TEST_SOURCES
     backtest/test_backtest_portfolio_constraints.cpp
     backtest/test_backtest_pnl_manager.cpp
     backtest/test_backtest_metrics_calculator.cpp
+    backtest/test_trade_statistics_roll_legs.cpp
     backtest/test_backtest_data_loader.cpp
     backtest/test_backtest_csv_exporter.cpp
     backtest/test_backtest_coordinator.cpp
@@ -99,9 +107,14 @@ set(TEST_SOURCES
     backtest/test_backtest_unrealized_accounting.cpp
     backtest/test_equity_cost_warmup.cpp
     backtest/test_backtest_junk_signal_feed.cpp
+    backtest/test_backtest_k01_feed.cpp
+    backtest/test_backtest_change_bar_hold.cpp
+    backtest/test_backtest_change_bar_pnl.cpp
+    backtest/test_consumed_series_record.cpp
     backtest/test_backtest_equity_cost_retier.cpp
     backtest/test_backtest_futures_cost_feed.cpp
     backtest/test_backtest_netting_one_model.cpp
+    backtest/test_backtest_roll_legs_once.cpp
     execution/test_execution_engine.cpp
     portfolio/test_portfolio_manager.cpp
     core/test_equity_portfolio_namespace.cpp
@@ -133,6 +146,8 @@ set(TEST_SOURCES
     portfolio/test_allocation_distribution.cpp
     portfolio/test_optimizer_cost_vector.cpp
     portfolio/test_covariance_date_alignment.cpp
+    portfolio/test_covariance_adjusted_returns.cpp
+    portfolio/test_allocation_share_shorts.cpp
     portfolio/test_covariance_participants.cpp
     portfolio/test_pm_session_hold.cpp
     portfolio/test_delivered_cut.cpp
@@ -156,6 +171,11 @@ set(TEST_SOURCES
     live/test_live_runner_small_fixes.cpp
     live/test_cost_model_feed.cpp
     live/test_futures_cost_feed.cpp
+    live/test_cost_feed_adjusted_returns.cpp
+    live/test_change_bar_pnl.cpp
+    live/test_live_roll_legs.cpp
+    live/test_live_k01_history.cpp
+    live/test_live_roll_write_order.cpp
     live/test_execution_price_integrity.cpp
     live/test_margin_manager.cpp
     live/test_live_metrics_calculator.cpp
@@ -165,6 +185,7 @@ set(TEST_SOURCES
     live/test_realized_row_retention.cpp
     live/test_unrealized_cost_basis.cpp
     live/test_live_data_loader.cpp
+    live/test_live_results_roll_cost_columns.cpp
     live/test_csv_exporter.cpp
     strategy/test_base_strategy.cpp
     strategy/test_trend_following.cpp
@@ -179,6 +200,7 @@ set(TEST_SOURCES
     strategy/test_signals_publication.cpp
     strategy/test_volatility_size_1_nan_guard.cpp
     strategy/test_vol_annualisation.cpp
+    strategy/test_trend_adjusted_series.cpp
     strategy/test_stale_unrealized_pnl_zero_avg_price.cpp
     strategy/test_live_daily_cycle_seeding.cpp
     strategy/test_penny_stock_lifecycle.cpp

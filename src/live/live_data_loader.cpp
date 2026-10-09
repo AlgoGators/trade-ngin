@@ -226,7 +226,8 @@ Result<LiveResultsRow> LiveDataLoader::load_live_results(const std::string& stra
         "win_rate, avg_win, avg_loss, profit_factor, best_day, worst_day, downside_deviation, "
         "gross_profit, gross_loss, "
         "active_positions, winning_days, "
-        "losing_days, total_days "
+        "losing_days, total_days, "
+        "COALESCE(daily_roll_costs, 0), COALESCE(total_roll_costs, 0) "  // T-ROLLX (017), appended
         "FROM " +
         schema_ +
         ".live_results "
@@ -269,15 +270,31 @@ Result<LiveResultsRow> LiveDataLoader::load_live_results(const std::string& stra
     // pattern below is preserved so the column ordering of the SELECT keeps
     // driving the row fields directly.
     int col = 0;
-    auto get_double = [&table, &col]() -> double {
+    // T-ROLLX-FIX (017): the two roll cost columns are appended to the SELECT; a result narrower
+    // than the SELECT (a double serving the older 31-column shape) reads them as 0 instead of
+    // reading a column past the table's end (undefined behaviour), and says so once per run: a
+    // missing migration is never silent.
+    const int n_cols = table->num_columns();
+    constexpr int kLiveResultsColumns = 33;
+    static bool warned_narrow_result = false;
+    if (n_cols < kLiveResultsColumns && !warned_narrow_result) {
+        warned_narrow_result = true;
+        WARN("ROLL_LEG load_live_results: the live_results row carries " + std::to_string(n_cols) + " of " +
+             std::to_string(kLiveResultsColumns) +
+             " columns; daily_roll_costs and total_roll_costs (migration 017) are absent and read as "
+             "0");
+    }
+    auto get_double = [&table, &col, n_cols]() -> double {
         const int this_col = col++;
+        if (this_col >= n_cols) return 0.0;
         auto r = read_double_or_zero_on_null(
             table->column(this_col), 0, "col[" + std::to_string(this_col) + "]");
         return r.is_ok() ? r.value() : 0.0;
     };
 
-    auto get_int = [&table, &col]() -> int {
+    auto get_int = [&table, &col, n_cols]() -> int {
         const int this_col = col++;
+        if (this_col >= n_cols) return 0;
         auto r = DataConversionUtils::safe_get_int64(
             table->column(this_col), 0, "col[" + std::to_string(this_col) + "]");
         if (r.is_ok()) return static_cast<int>(r.value());
@@ -318,6 +335,8 @@ Result<LiveResultsRow> LiveDataLoader::load_live_results(const std::string& stra
     row.winning_days = get_int();
     row.losing_days = get_int();
     row.total_days = get_int();
+    row.daily_roll_costs = get_double();  // T-ROLLX (017), appended to the SELECT
+    row.total_roll_costs = get_double();
 
     INFO("Loaded live results for " + date_str + ": PnL=$" + std::to_string(row.daily_pnl) +
          ", Portfolio=$" + std::to_string(row.current_portfolio_value));
@@ -726,7 +745,7 @@ Result<int> LiveDataLoader::load_total_trades_count(const std::string& strategy_
         actual_portfolio_id +
         "' "
         "AND DATE(execution_time) <= '" +
-        date_str + "'";
+        date_str + "' AND execution_type = 'STRATEGY'";  // T-ROLLX: ROLL legs are not trades
 
     DEBUG("Loading total trades count: " + query);
 
@@ -1067,7 +1086,7 @@ Result<std::unordered_map<std::string, double>> LiveDataLoader::load_daily_metri
 
     std::string query =
         "SELECT daily_return, daily_unrealized_pnl, daily_realized_pnl, daily_pnl, "
-        "daily_transaction_costs "
+        "daily_transaction_costs, COALESCE(daily_roll_costs, 0) "  // T-ROLLX (017), appended
         "FROM " +
         schema_ +
         ".live_results "
@@ -1103,13 +1122,15 @@ Result<std::unordered_map<std::string, double>> LiveDataLoader::load_daily_metri
     auto drl_r = read_double_or_zero_on_null(table->column(2), 0, "daily_realized_pnl");
     auto dt_r  = read_double_or_zero_on_null(table->column(3), 0, "daily_pnl");
     auto dtc_r = read_double_or_zero_on_null(table->column(4), 0, "daily_transaction_costs");
+    auto drc_r = read_double_or_zero_on_null(table->column(5), 0, "daily_roll_costs");
     if (dr_r.is_error() || du_r.is_error() || drl_r.is_error() ||
-        dt_r.is_error() || dtc_r.is_error()) {
+        dt_r.is_error() || dtc_r.is_error() || drc_r.is_error()) {
         return make_error<std::unordered_map<std::string, double>>(
             ErrorCode::CONVERSION_ERROR,
             "load_daily_metrics_for_email: column type mismatch", "LiveDataLoader");
     }
     metrics["Daily Return"] = dr_r.value();
+    metrics["Daily Roll Costs"] = drc_r.value();  // T-ROLLX
     metrics["Daily Unrealized PnL"] = du_r.value();
     metrics["Daily Realized PnL"] = drl_r.value();
     metrics["Daily Total PnL"] = dt_r.value();

@@ -102,7 +102,9 @@ Result<void> TrendFollowingFastStrategy::initialize() {
 }
 
 Result<void> TrendFollowingFastStrategy::on_execution(const ExecutionReport& report) {
-    (void)report;
+    // T-ROLLX (LOOP_SPEC v6.1 section 6.5): a ROLL leg (or a BORROW row) is not a trade of the
+    // strategy; nothing is counted on it.
+    if (report.execution_type != ExecutionType::STRATEGY) return Result<void>();
     // Override base class to prevent PnL corruption.
     // TrendFollowingFastStrategy calculates PnL in on_data() with proper point_value multiplier.
     // The base class on_execution() calculates PnL without point_value, which would corrupt
@@ -180,17 +182,20 @@ Result<void> TrendFollowingFastStrategy::on_data(const std::vector<Bar>& data) {
             if (symbol_bars.size() > 100) {
                 instrument_data.price_history.clear();
                 instrument_data.bar_timestamps.clear();
+                instrument_data.bar_instrument_ids.clear();
             }
 
             // Update price history
             for (const auto& bar : symbol_bars) {
                 instrument_data.price_history.push_back(static_cast<double>(bar.close));
                 instrument_data.bar_timestamps.push_back(bar.timestamp);
+                instrument_data.bar_instrument_ids.push_back(bar.instrument_id);
 
                 // MEMORY FIX: Limit price history to maximum needed lookback
                 if (instrument_data.price_history.size() > trend_config_.max_history_size) {
                     instrument_data.price_history.pop_front();
                     instrument_data.bar_timestamps.pop_front();
+                    instrument_data.bar_instrument_ids.pop_front();
                 }
             }
         }
@@ -236,11 +241,22 @@ Result<void> TrendFollowingFastStrategy::on_data(const std::vector<Bar>& data) {
             // Get price history for the symbol (limit to last 1000 days for calculations)
             const auto& full_prices = instrument_data.price_history;
             std::vector<double> prices;
+            std::vector<std::string> instrument_ids;
             if (full_prices.size() > 1000) {
                 prices.assign(full_prices.end() - 1000, full_prices.end());
+                instrument_ids.assign(instrument_data.bar_instrument_ids.end() - 1000,
+                                      instrument_data.bar_instrument_ids.end());
             } else {
                 prices.assign(full_prices.begin(), full_prices.end());
+                instrument_ids.assign(instrument_data.bar_instrument_ids.begin(),
+                                      instrument_data.bar_instrument_ids.end());
             }
+            // T-ROLLX (LOOP_SPEC v6.1 sections 2.1-2.3): the consumed bars' contract switches and
+            // the back-adjusted series. Every RETURN consumer below (the vol estimator, the EMAs,
+            // the forecast's own vol, the attenuation) reads the adjusted series; every LEVEL
+            // (the price the forecast and the sizing divide by) reads the raw close. Recomputed
+            // from the window on every call: no level persists across bars or runs.
+            const roll_series::Series series = roll_series::build_series(prices, instrument_ids);
 
             // Calculate volatility, annualised by sqrt(bars a year) counted over the trailing 256
             // bars the estimator has, or all of them when it has fewer (a series with a Sunday
@@ -258,7 +274,7 @@ Result<void> TrendFollowingFastStrategy::on_data(const std::vector<Bar>& data) {
                                             symbol_bars.back().timestamp, annualisation));
             std::vector<double> volatility;
             try {
-                volatility = blended_ewma_stddev(prices, trend_config_.vol_lookback_short, 0.7,
+                volatility = blended_ewma_stddev(series, trend_config_.vol_lookback_short, 0.7,
                                                  0.3, 2520, annualisation.factor);
                 if (volatility.empty()) {
                     // If volatility calculation fails, use a default value
@@ -294,7 +310,7 @@ Result<void> TrendFollowingFastStrategy::on_data(const std::vector<Bar>& data) {
             // Get raw combined forecast
             std::vector<double> raw_forecasts;
             try {
-                raw_forecasts = get_raw_combined_forecast(prices);
+                raw_forecasts = get_raw_combined_forecast(series);
                 if (raw_forecasts.empty()) {
                     WARN("Empty raw forecast for " + symbol);
                     // Resize to avoid issues
@@ -674,7 +690,8 @@ std::vector<double> TrendFollowingFastStrategy::calculate_ewma(const std::vector
 }
 
 std::vector<double> TrendFollowingFastStrategy::ewma_standard_deviation(
-    const std::vector<double>& prices, int window, double annualisation_factor) const {
+    const roll_series::Series& series, int window, double annualisation_factor) const {
+    const std::vector<double>& prices = series.raw;
     // Validation
     if (prices.empty() || window <= 0) {
         return std::vector<double>(1, 0.01);  // Return default value
@@ -684,20 +701,14 @@ std::vector<double> TrendFollowingFastStrategy::ewma_standard_deviation(
         return std::vector<double>(prices.size(), 0.01);  // Return default value
     }
 
-    // Calculate returns with safety checks
-    std::vector<double> returns(prices.size() - 1, 0.0);
-    for (size_t i = 1; i < prices.size(); ++i) {
-        // Avoid division by zero or negative prices
-        if (prices[i - 1] <= 0.0 || prices[i] <= 0.0) {
-            returns[i - 1] = 0.0;  // Use a neutral return
-        } else {
-            returns[i - 1] = std::log(prices[i] / prices[i - 1]);
-
-            // Check for NaN or Inf
-            if (std::isnan(returns[i - 1]) || std::isinf(returns[i - 1])) {
-                returns[i - 1] = 0.0;  // Use a neutral return
-            }
-        }
+    // T-ROLLX (LOOP_SPEC v6.1 section 2.4): the return is the adjusted change over the RAW previous
+    // close, r_t = (A_t - A_t-1) / P_t-1, exactly 0 on a change bar (the splice step is a price gap,
+    // not a return) and the raw simple return on every other bar; log returns are retired with the
+    // adjusted series, whose level can be at or below zero. roll_series::adjusted_returns gives 0
+    // where the raw previous close is not positive, as the neutral return did.
+    std::vector<double> returns = series.returns;
+    for (double& r : returns) {
+        if (std::isnan(r) || std::isinf(r)) r = 0.0;  // Use a neutral return
     }
 
     std::vector<double> ewma_stddev(returns.size(), 0.0);
@@ -774,9 +785,11 @@ double TrendFollowingFastStrategy::compute_long_term_avg(const std::vector<doubl
     return result;
 }
 
-std::vector<double> TrendFollowingFastStrategy::blended_ewma_stddev(
-    const std::vector<double>& prices, int window, double weight_short, double weight_long,
-    size_t max_history, double annualisation_factor) const {
+std::vector<double> TrendFollowingFastStrategy::blended_ewma_stddev(const roll_series::Series& series, int window,
+                                                                    double weight_short, double weight_long,
+                                                                    size_t max_history,
+                                                                    double annualisation_factor) const {
+    const std::vector<double>& prices = series.raw;
     if (prices.empty() || window <= 0) {
         WARN("Empty price data or invalid window for blended stddev calculation");
         return std::vector<double>(1, 0.01);  // Return default value
@@ -791,7 +804,7 @@ std::vector<double> TrendFollowingFastStrategy::blended_ewma_stddev(
     // Calculate EWMA standard deviation with error handling
     std::vector<double> ewma_stddev;
     try {
-        ewma_stddev = ewma_standard_deviation(prices, window, annualisation_factor);
+        ewma_stddev = ewma_standard_deviation(series, window, annualisation_factor);
         if (ewma_stddev.empty()) {
             return std::vector<double>(prices.size(), 0.01);  // Default value
         }
@@ -842,9 +855,11 @@ std::vector<double> TrendFollowingFastStrategy::blended_ewma_stddev(
     return blended_stddev;
 }
 
-std::vector<double> TrendFollowingFastStrategy::get_raw_forecast(const std::vector<double>& prices,
-                                                                 int short_window,
-                                                                 int long_window) const {
+std::vector<double> TrendFollowingFastStrategy::get_raw_forecast(const roll_series::Series& series,
+                                                                 int short_window, int long_window) const {
+    // T-ROLLX (LOOP_SPEC v6.1 section 2.3): the EMAs read the ADJUSTED level (differences only), the
+    // vol the adjusted returns, and the price the forecast divides by is the RAW close.
+    const std::vector<double>& prices = series.raw;
     // Validation
     if (prices.size() < static_cast<size_t>(std::max(short_window, long_window))) {
         ERROR("Not enough price data for raw forecast");
@@ -856,8 +871,8 @@ std::vector<double> TrendFollowingFastStrategy::get_raw_forecast(const std::vect
     std::vector<double> long_ema;
 
     try {
-        short_ema = calculate_ewma(prices, short_window);
-        long_ema = calculate_ewma(prices, long_window);
+        short_ema = calculate_ewma(series.adjusted, short_window);
+        long_ema = calculate_ewma(series.adjusted, long_window);
     } catch (const std::exception& e) {
         ERROR("Exception in get_raw_forecast: " + std::string(e.what()));
         return std::vector<double>(prices.size(), 0.0);  // Return neutral forecast
@@ -873,7 +888,7 @@ std::vector<double> TrendFollowingFastStrategy::get_raw_forecast(const std::vect
     double vol_multiplier = 1.0;  // Default value
 
     try {
-        blended_stddev = blended_ewma_stddev(prices, trend_config_.vol_lookback_short);
+        blended_stddev = blended_ewma_stddev(series, trend_config_.vol_lookback_short);
 
         // Only calculate vol_multiplier if we have sufficient data
         if (prices.size() >= 252) {
@@ -937,7 +952,8 @@ std::vector<double> TrendFollowingFastStrategy::get_scaled_forecast(
 }
 
 std::vector<double> TrendFollowingFastStrategy::get_raw_combined_forecast(
-    const std::vector<double>& prices) const {
+    const roll_series::Series& series) const {
+    const std::vector<double>& prices = series.raw;
     if (prices.size() < 2) {
         WARN("Not enough price data for combined forecast");
         return std::vector<double>(prices.size(), 0.0);  // Return neutral forecast
@@ -956,7 +972,7 @@ std::vector<double> TrendFollowingFastStrategy::get_raw_combined_forecast(
         try {
             // Calculate raw forecast for this window pair
             std::vector<double> raw_forecast =
-                get_raw_forecast(prices, window_pair.first, window_pair.second);
+                get_raw_forecast(series, window_pair.first, window_pair.second);
             // Skip if invalid
             if (raw_forecast.empty() || raw_forecast.size() != prices.size()) {
                 WARN("Invalid raw forecast for window pair (" + std::to_string(window_pair.first) +
@@ -966,7 +982,7 @@ std::vector<double> TrendFollowingFastStrategy::get_raw_combined_forecast(
             // Get volatility for scaling
             std::vector<double> blended_stddev;
             try {
-                blended_stddev = blended_ewma_stddev(prices, window_pair.first);
+                blended_stddev = blended_ewma_stddev(series, window_pair.first);
 
                 // Check if volatility calculation failed
                 if (blended_stddev.empty() || blended_stddev.size() != prices.size()) {
@@ -1547,10 +1563,14 @@ std::unordered_map<int, double> TrendFollowingFastStrategy::get_ema_values(
 
     const auto& price_deque = it->second.price_history;
     std::vector<double> price_history(price_deque.begin(), price_deque.end());
+    // T-ROLLX: the EMAs read the adjusted level (LOOP_SPEC v6.1 section 2.3), as the forecast's do.
+    const auto& id_deque = it->second.bar_instrument_ids;
+    const std::vector<std::string> instrument_ids(id_deque.begin(), id_deque.end());
+    const roll_series::Series series = roll_series::build_series(price_history, instrument_ids);
 
     // Calculate EMA for each requested window
     for (int window : windows) {
-        auto ema_series = calculate_ewma(price_history, window);
+        auto ema_series = calculate_ewma(series.adjusted, window);
         if (!ema_series.empty()) {
             // Return the most recent EMA value
             ema_values[window] = ema_series.back();

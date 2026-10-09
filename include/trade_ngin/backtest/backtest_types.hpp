@@ -204,6 +204,12 @@ struct BacktestResults {
     double max_win{0.0};
     double max_loss{0.0};
     double avg_holding_period{0.0};
+    // T-ROLLX (migration 018): the run's cost totals. transaction_costs = every fill's cost (the
+    // sum the equity curve charged: STRATEGY + ROLL + BORROW), roll_costs the ROLL subset,
+    // total_roll_fills the count of ROLL rows (two per held contract per sleeve per roll).
+    double transaction_costs{0.0};
+    double roll_costs{0.0};
+    int total_roll_fills{0};
 
     // Risk metrics
     double var_95{0.0};

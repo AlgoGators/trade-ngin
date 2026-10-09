@@ -397,9 +397,10 @@ TEST(InstrumentIdWiring, BothTwinsFeedTheIdsAfterTheBarsAndBeforeTheT1Classifica
         const std::string src = read_repo_file(runner);
         if (src.empty()) GTEST_SKIP() << "runner source not found from the test working directory";
         const auto bars = src.find("session_classifier.add_bars(all_bars);");
+        // T-ROLLX-FIX commit 4 (N-2): the ids are fed from the classifier's history start, the
+        // prefix before the window included.
         const auto feed = src.find(
-            "session_classifier, db->get_futures_instrument_ids(symbols, start_date, end_date));",
-            bars);
+            "db->get_futures_instrument_ids(symbols, k01_history_start, end_date));", bars);
         const auto t1 = src.find("classify_t1(session_classifier, symbols,", bars);
         ASSERT_NE(bars, npos);
         ASSERT_NE(feed, npos) << "the runner never feeds the instrument ids";

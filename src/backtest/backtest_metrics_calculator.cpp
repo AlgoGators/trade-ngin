@@ -1,8 +1,11 @@
 #include "trade_ngin/backtest/backtest_metrics_calculator.hpp"
+#include <map>
 #include "trade_ngin/backtest/backtest_types.hpp"
 #include "trade_ngin/core/time_utils.hpp"
 #include <algorithm>
+#include <cctype>
 #include <cmath>
+#include <stdexcept>
 #include <numeric>
 #include <sstream>
 #include <iomanip>
@@ -254,6 +257,157 @@ std::unordered_map<std::string, double> BacktestMetricsCalculator::calculate_ris
     return metrics;
 }
 
+namespace {
+
+// LOOP_SPEC v6.2 section 6.5: a trade held through a roll scores the held contracts' whole move, so
+// the open trade's entry price is carried across the roll by the leg gap,
+// entry := entry + (opening leg price - closing leg price), longs and shorts alike.
+//
+// T-ROLLX-FIX commit 5 (finding 11): the gap of a roll is read from the legs' OWN identity, never
+// from the order they arrive in. The legs of one (symbol, bar) are collected first; the bar's
+// rolls are resolved when the walk reaches the bar's first row of any type, so a STRATEGY fill
+// stored ahead of its bar's legs is scored against the carried entry too (the legs are priced on
+// the bars before it). Per leg:
+//   the role     the exec id when it carries it: the engine's RL-<sleeve>-<n> (a roll takes n and
+//                n + 1, n even: the closing leg) and the live EXEC_..._RC / _RO; otherwise the
+//                side against the tracked position (the closing leg trades against it);
+//   the pair     the exec id again (RL-<sleeve>-<n / 2>, EXEC_... without its suffix); legs whose
+//                ids carry no pair are one roll when the bar has one closing (price, contract) and
+//                one opening (price, contract).
+// The tracker is keyed by symbol over every sleeve, so one roll's gap is carried once: a second
+// pair of the same bar with the same two prices is another sleeve's copy of that roll, a pair with
+// other prices is another roll confirmed in the same cycle. Legs that cannot be paired (a closing
+// leg without its opening leg, two rolls with no pair in the ids) are an error, thrown: a guessed
+// gap would be scored into every later trade of the symbol.
+class RollEntryCarry {
+public:
+    explicit RollEntryCarry(const std::vector<ExecutionReport>& executions) {
+        for (const auto& exec : executions) {
+            if (exec.execution_type != ExecutionType::ROLL) continue;
+            bars_[{exec.symbol, exec.fill_time}].legs.push_back(&exec);
+        }
+    }
+
+    /// The gaps to add to the symbol's open entry price, one per roll of the bar (symbol,
+    /// fill_time), in the order of the rolls' first legs. Non-empty once per bar, on the first
+    /// row of it the walk reaches, and only while a trade is open (`tracked_position` != 0: with
+    /// no open entry there is nothing to carry and the legs are not read).
+    std::vector<double> take(const std::string& symbol, const Timestamp& fill_time,
+                             double tracked_position) {
+        const auto it = bars_.find({symbol, fill_time});
+        if (it == bars_.end() || it->second.taken) return {};
+        it->second.taken = true;
+        if (tracked_position == 0.0) return {};
+        return gaps_of(symbol, it->second.legs, tracked_position);
+    }
+
+private:
+    struct Bar {
+        std::vector<const ExecutionReport*> legs;
+        bool taken{false};
+    };
+    struct Roll {
+        std::string pair;  ///< empty: no pair in the ids
+        bool has_closing{false};
+        bool has_opening{false};
+        double closing_price{0.0};
+        double opening_price{0.0};
+    };
+
+    [[noreturn]] static void fail(const std::string& symbol, const std::string& why) {
+        const std::string what = "ROLL_LEG STOP: the trade statistics cannot pair the ROLL legs of " +
+                                 symbol + ": " + why;
+        ERROR(what);
+        throw std::runtime_error(what);
+    }
+
+    /// The role and pair an exec id carries: +1 closing, -1 opening, 0 none.
+    static int role_of_id(const std::string& id, std::string* pair) {
+        const auto ends_with = [&](const char* suffix) {
+            const std::string s(suffix);
+            return id.size() > s.size() && id.compare(id.size() - s.size(), s.size(), s) == 0;
+        };
+        if (ends_with("_RC") || ends_with("_RO")) {
+            *pair = id.substr(0, id.size() - 3);
+            return ends_with("_RC") ? 1 : -1;
+        }
+        const auto dash = id.rfind('-');
+        if (id.rfind("RL-", 0) == 0 && dash != std::string::npos && dash > 2 && dash + 1 < id.size() &&
+            std::all_of(id.begin() + static_cast<std::ptrdiff_t>(dash) + 1, id.end(),
+                        [](unsigned char c) { return std::isdigit(c) != 0; })) {
+            const unsigned long long n = std::stoull(id.substr(dash + 1));
+            *pair = id.substr(0, dash + 1) + std::to_string(n / 2);
+            return n % 2 == 0 ? 1 : -1;
+        }
+        return 0;
+    }
+
+    static std::vector<double> gaps_of(const std::string& symbol,
+                                       const std::vector<const ExecutionReport*>& legs,
+                                       double tracked_position) {
+        std::vector<Roll> rolls;  // by pair, in the order of the first leg
+        std::vector<std::pair<double, std::string>> loose_closing, loose_opening;
+        bool loose_placed = false;  // the id-less legs' roll, placed at their first leg
+        for (const ExecutionReport* leg : legs) {
+            const double price = static_cast<double>(leg->fill_price);
+            std::string pair;
+            int role = role_of_id(leg->exec_id, &pair);
+            if (role == 0) {
+                // No role in the id: the closing leg trades against the tracked position.
+                const bool against = (leg->side == Side::BUY) == (tracked_position < 0.0);
+                auto& side = against ? loose_closing : loose_opening;
+                const std::pair<double, std::string> key{price, leg->instrument_id};
+                if (std::find(side.begin(), side.end(), key) == side.end()) side.push_back(key);
+                if (!loose_placed) rolls.push_back(Roll{});
+                loose_placed = true;
+                continue;
+            }
+            auto roll = std::find_if(rolls.begin(), rolls.end(),
+                                     [&](const Roll& r) { return !r.pair.empty() && r.pair == pair; });
+            if (roll == rolls.end()) {
+                rolls.push_back(Roll{pair});
+                roll = rolls.end() - 1;
+            }
+            bool& has = role > 0 ? roll->has_closing : roll->has_opening;
+            if (has) fail(symbol, "two " + std::string(role > 0 ? "closing" : "opening") +
+                                      " legs carry the pair " + pair);
+            has = true;
+            (role > 0 ? roll->closing_price : roll->opening_price) = price;
+        }
+        if (!loose_closing.empty() || !loose_opening.empty()) {
+            if (loose_closing.size() != 1 || loose_opening.size() != 1) {
+                fail(symbol, std::to_string(loose_closing.size()) + " closing and " +
+                                 std::to_string(loose_opening.size()) +
+                                 " opening (price, contract) legs on one bar carry no pair in "
+                                 "their exec ids");
+            }
+            for (auto& roll : rolls) {
+                if (!roll.pair.empty() || roll.has_closing) continue;
+                roll.has_closing = roll.has_opening = true;
+                roll.closing_price = loose_closing.front().first;
+                roll.opening_price = loose_opening.front().first;
+            }
+        }
+        std::vector<double> gaps;
+        std::vector<std::pair<double, double>> carried;
+        for (const auto& roll : rolls) {
+            if (!roll.has_closing || !roll.has_opening) {
+                fail(symbol, "the pair " + roll.pair + " has " +
+                                 (roll.has_closing ? "no opening leg" : "no closing leg"));
+            }
+            const std::pair<double, double> prices{roll.closing_price, roll.opening_price};
+            if (std::find(carried.begin(), carried.end(), prices) != carried.end()) continue;
+            carried.push_back(prices);
+            gaps.push_back(prices.second - prices.first);
+        }
+        return gaps;
+    }
+
+    std::map<std::pair<std::string, Timestamp>, Bar> bars_;
+};
+
+}  // namespace
+
 // ========== Trade Statistics ==========
 
 BacktestMetricsCalculator::TradeStatistics BacktestMetricsCalculator::calculate_trade_statistics(
@@ -261,6 +415,7 @@ BacktestMetricsCalculator::TradeStatistics BacktestMetricsCalculator::calculate_
     TradeStatistics stats;
 
     std::unordered_map<std::string, double> positions;   // symbol -> net position
+    RollEntryCarry roll_carry(executions);               // the leg gap of each roll, carried once
     std::unordered_map<std::string, double> avg_prices;  // symbol -> average entry price
     std::map<std::string, Timestamp> open_times;         // symbol -> first trade time
     std::vector<double> holding_periods;
@@ -275,6 +430,29 @@ BacktestMetricsCalculator::TradeStatistics BacktestMetricsCalculator::calculate_
         double signed_qty = (exec.side == Side::BUY) ? quantity : -quantity;
 
         double current_pos = positions[symbol];
+
+        // The bar's rolls, carried into the open entry before the bar's first row is scored.
+        for (const double gap : roll_carry.take(symbol, exec.fill_time, current_pos)) {
+            avg_prices[symbol] += gap;
+        }
+
+        // T-ROLLX-FIX (LOOP_SPEC v6.2 section 6.5; code review D1): a ROLL leg is mechanical. It
+        // never moves the tracked position (the pair nets to 0 per sleeve), scores no trade and
+        // leaves the open time. The open trade's entry price is carried across the roll by the leg
+        // gap (opening leg price - closing leg price), so the trade's later close scores the move of
+        // the contracts actually held: entry to the closing leg in the old contract plus the opening
+        // leg to the exit in the new one. The tracker is keyed by symbol over every sleeve, so the
+        // gap is carried once per roll and does not wait for the summed position to pass through 0.
+        // Its cost goes to the roll total, never into a trade.
+        if (exec.execution_type == ExecutionType::ROLL) {
+            stats.roll_fills++;
+            stats.roll_costs += commission;
+            continue;
+        }
+        // X-4: a BORROW row (quantity 0) is a cost on an open short, not a trade: it moves no
+        // position, opens nothing and scores no trade.
+        if (exec.execution_type == ExecutionType::BORROW) continue;
+
         double trade_pnl = -commission;
 
         if (current_pos == 0.0) {
@@ -360,6 +538,7 @@ BacktestMetricsCalculator::TradeStatistics BacktestMetricsCalculator::calculate_
 std::map<std::string, double> BacktestMetricsCalculator::calculate_symbol_pnl(
     const std::vector<ExecutionReport>& executions) const {
     std::unordered_map<std::string, double> positions;
+    RollEntryCarry roll_carry(executions);  // the leg gap of each roll, carried once
     std::unordered_map<std::string, double> avg_prices;
     std::map<std::string, double> symbol_pnl_map;
 
@@ -372,6 +551,24 @@ std::map<std::string, double> BacktestMetricsCalculator::calculate_symbol_pnl(
         double signed_qty = (exec.side == Side::BUY) ? quantity : -quantity;
 
         double current_pos = positions[symbol];
+
+        // T-ROLLX-FIX: a roll carries the open entry price across it exactly as in
+        // calculate_trade_statistics (the leg gap, once per roll, on the bar's first row, the
+        // position untouched) and each leg's cost is charged to the symbol; no trade P&L is
+        // scored on a leg.
+        for (const double gap : roll_carry.take(symbol, exec.fill_time, current_pos)) {
+            avg_prices[symbol] += gap;
+        }
+        if (exec.execution_type == ExecutionType::ROLL) {
+            symbol_pnl_map[symbol] -= commission;
+            continue;
+        }
+        // X-4: a BORROW row charges its cost to the symbol and moves no position.
+        if (exec.execution_type == ExecutionType::BORROW) {
+            symbol_pnl_map[symbol] -= commission;
+            continue;
+        }
+
         double trade_pnl = -commission;
 
         if (current_pos == 0.0) {

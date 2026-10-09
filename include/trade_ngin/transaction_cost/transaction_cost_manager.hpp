@@ -162,7 +162,8 @@ public:
         const std::string& symbol,
         double volume,
         double close_price,
-        double prev_close_price);
+        double prev_close_price,
+        bool change_bar = false);
 
     /**
      * @brief The volume half of update_market_data: append one volume to the impact
@@ -190,9 +191,13 @@ public:
      * @brief The return half of update_market_data: append ln(close / prev_close) to the
      *        spread model's volatility window, only when both prices are positive (a zero
      *        prev_close means "no previous close": nothing is recorded, nothing fabricated).
+     *        T-ROLLX (LOOP_SPEC v6.1 section 2.3, L-08): on a CHANGE bar (the bar's contract id
+     *        differs from the previous consumed bar's) the adjusted return is exactly 0 and that
+     *        is what the window takes (the date stays in it); on every other bar the engine's
+     *        own log form on the adjusted series is ln(close / prev_close), unchanged.
      */
     void record_log_return(const std::string& symbol, double close_price,
-                           double prev_close_price);
+                           double prev_close_price, bool change_bar = false);
 
     /**
      * @brief Get current ADV for a symbol

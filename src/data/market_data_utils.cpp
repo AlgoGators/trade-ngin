@@ -110,11 +110,17 @@ bool same_values(const FuturesBarCopy& a, const FuturesBarCopy& b) {
 
 std::string build_futures_bar_query(const std::string& full_table_name, bool with_symbol_filter) {
     const std::string cols = get_market_data_columns(AssetClass::FUTURES);
-    return "SELECT " + cols + " FROM ("
+    // T-ROLLX (LOOP_SPEC v6.1 section 2.1): the kept bar carries its own print's vendor instrument
+    // id, LEFT JOINed from the raw table on the exact print (the same key as
+    // build_futures_instrument_id_query), NULL when the raw table holds no such print.
+    return "SELECT k.time, k.symbol, k.open, k.high, k.low, k.close, k.volume, r.instrument_id FROM ("
            "SELECT DISTINCT ON (symbol, time) " + cols +
            " FROM " + full_table_name + futures_window_predicate(with_symbol_filter) +
            " ORDER BY symbol, time, " + kFuturesBarKeepOrder +
-           ") AS one_bar_per_symbol_date ORDER BY time, symbol";
+           ") AS k LEFT JOIN " + kFuturesRawBarTable +
+           " AS r ON r.symbol = k.symbol AND r.ts_event = k.time AND r.volume = k.volume"
+           " AND r.open = k.open AND r.high = k.high AND r.low = k.low AND r.close = k.close"
+           " ORDER BY k.time, k.symbol";
 }
 
 std::string build_futures_instrument_id_query(const std::string& full_table_name,

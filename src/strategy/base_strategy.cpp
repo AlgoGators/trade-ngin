@@ -194,6 +194,10 @@ Result<void> BaseStrategy::on_data(const std::vector<Bar>& data) {
 }
 
 Result<void> BaseStrategy::on_execution(const ExecutionReport& report) {
+    // T-ROLLX (LOOP_SPEC v6.1 section 6.5): a ROLL leg or a BORROW row is not a trade of the
+    // strategy: no basis arithmetic, no count, no win-rate.
+    if (report.execution_type != ExecutionType::STRATEGY) return Result<void>();
+
     std::lock_guard<std::mutex> lock(mutex_);
 
     try {

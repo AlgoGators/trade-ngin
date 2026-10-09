@@ -266,13 +266,14 @@ void TransactionCostManager::update_market_data(
     const std::string& symbol,
     double volume,
     double close_price,
-    double prev_close_price) {
+    double prev_close_price,
+    bool change_bar) {
 
     // Update volume for ADV calculation
     record_volume(symbol, volume);
 
     // Calculate log return and update for volatility
-    record_log_return(symbol, close_price, prev_close_price);
+    record_log_return(symbol, close_price, prev_close_price, change_bar);
 }
 
 void TransactionCostManager::record_volume(const std::string& symbol, double volume) {
@@ -285,9 +286,10 @@ void TransactionCostManager::set_own_day_volume(const std::string& symbol, doubl
 }
 
 void TransactionCostManager::record_log_return(const std::string& symbol, double close_price,
-                                               double prev_close_price) {
+                                               double prev_close_price, bool change_bar) {
     if (prev_close_price > 0.0 && close_price > 0.0) {
-        double log_return = std::log(close_price / prev_close_price);
+        // T-ROLLX: a change bar's return is 0 (the splice step is not a return), the date kept.
+        double log_return = change_bar ? 0.0 : std::log(close_price / prev_close_price);
         spread_model_.update_log_returns(symbol, log_return);
     }
 }

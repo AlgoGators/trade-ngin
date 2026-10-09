@@ -5,6 +5,7 @@
 #include <memory>
 #include <utility>
 #include <vector>
+#include "trade_ngin/data/roll_series.hpp"
 #include "trade_ngin/core/error.hpp"
 #include "trade_ngin/core/types.hpp"
 #include "trade_ngin/instruments/instrument_registry.hpp"
@@ -64,6 +65,7 @@ struct InstrumentData {
     // Market data (deque for O(1) front removal)
     std::deque<double> price_history;
     std::deque<Timestamp> bar_timestamps;  // each price_history bar's date (vol annualisation)
+    std::deque<std::string> bar_instrument_ids;  // each bar's vendor contract id (T-ROLLX, roll_series.hpp)
     std::deque<double> volatility_history;
     double current_volatility = 0.01;
 
@@ -250,7 +252,7 @@ private:
      *        16, which the forecast divides back out; sizing passes vol_annualisation()).
      * @return Vector of blended EWMA standard deviation.
      */
-    std::vector<double> blended_ewma_stddev(const std::vector<double>& prices, int N,
+    std::vector<double> blended_ewma_stddev(const roll_series::Series& series, int N,
                                             double weight_short = 0.7, double weight_long = 0.3,
                                             size_t max_history = 2520,
                                             double annualisation_factor = kCarverAnnualisation) const;
@@ -263,7 +265,7 @@ private:
      * @return Vector of EWMA standard deviation values.
      */
     std::vector<double> ewma_standard_deviation(
-        const std::vector<double>& prices, int N,
+        const roll_series::Series& series, int N,
         double annualisation_factor = kCarverAnnualisation) const;
 
     /**
@@ -282,7 +284,7 @@ private:
      * @param long_window Longer EMA window
      * @return Vector of crossover signals
      */
-    std::vector<double> get_raw_forecast(const std::vector<double>& prices, int short_window,
+    std::vector<double> get_raw_forecast(const roll_series::Series& series, int short_window,
                                          int long_window) const;
 
     /**
@@ -299,7 +301,7 @@ private:
      * @param prices Price history
      * @return Vector of raw forecasts
      */
-    std::vector<double> get_raw_combined_forecast(const std::vector<double>& prices) const;
+    std::vector<double> get_raw_combined_forecast(const roll_series::Series& series) const;
 
     /**
      * @brief Calculate absolute value of a vector

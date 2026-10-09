@@ -24,7 +24,8 @@ Result<LivePnLManager::FinalizationResult> LivePnLManager::finalize_previous_day
     const std::unordered_map<std::string, double>& t2_close_prices,
     double previous_portfolio_value,
     double commissions,
-    UnrealizedPolicy unrealized_policy) {
+    UnrealizedPolicy unrealized_policy,
+    const std::unordered_set<std::string>& zero_pnl_symbols) {
 
     FinalizationResult result;
 
@@ -112,13 +113,12 @@ Result<LivePnLManager::FinalizationResult> LivePnLManager::finalize_previous_day
         // Get point value for the symbol
         double point_value = get_point_value(symbol);
 
-        // Calculate Day T-1 PnL
-        double yesterday_position_pnl = calculate_daily_pnl(
-            quantity,
-            day_t2_close,
-            day_t1_close,
-            point_value
-        );
+        // Calculate Day T-1 PnL. T-ROLLX-FIX (LOOP_SPEC v6.1 sections 2.1, 6.6): a change bar or a
+        // withheld bar books no settlement move (zero_pnl_symbols).
+        double yesterday_position_pnl =
+            zero_pnl_symbols.count(symbol)
+                ? 0.0
+                : calculate_daily_pnl(quantity, day_t2_close, day_t1_close, point_value);
 
         INFO("Day T-1 finalization for " + symbol +
              ": qty=" + std::to_string(quantity) +

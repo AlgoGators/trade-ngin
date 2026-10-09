@@ -25,6 +25,7 @@
 #include <functional>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -57,12 +58,18 @@ struct LiveSizingEquity {
 /// sleeves' stored books of the previous day, one map per sleeve; `t1_closes` and `t2_closes` are the price
 /// manager's Day T-1 and Day T-2 closes (the maps PHASE 5 finalises with); `point_value` is
 /// LivePnLManager::get_point_value. A zero quantity contributes nothing and is not counted.
+/// T-ROLLX-FIX commit 4 (D-B; LOOP_SPEC v6.2 sections 2.1, 3.1, 6.6): the maps and
+/// `zero_settlement_symbols` are STEP 4's own, the T-1 settlement on the CONSUMED bars
+/// (live/session_book_gate.hpp, consumed_t1_settlement): a change bar and a withheld bar settle 0 and
+/// every other bar settles against its previous consumed close, so the book is sized on the equity its
+/// stored rows will show.
 inline LiveSizingEquity live_sizing_equity(
     bool t1_row_stored, double day_before, double t1_costs,
     const std::vector<std::unordered_map<std::string, Position>>& t1_books,
     const std::unordered_map<std::string, double>& t1_closes,
     const std::unordered_map<std::string, double>& t2_closes,
-    const std::function<double(const std::string&)>& point_value) {
+    const std::function<double(const std::string&)>& point_value,
+    const std::unordered_set<std::string>& zero_settlement_symbols) {
     LiveSizingEquity out;
     out.t1_row = t1_row_stored;
     out.day_before = day_before;
@@ -81,7 +88,10 @@ inline LiveSizingEquity live_sizing_equity(
                 ++out.unpriced;
                 continue;
             }
-            out.t1_settlement += quantity * (t1->second - t2->second) * point_value(symbol);
+            // A change bar or a withheld bar settles nothing (LivePnLManager's zero_pnl_symbols).
+            if (!zero_settlement_symbols.count(symbol)) {
+                out.t1_settlement += quantity * (t1->second - t2->second) * point_value(symbol);
+            }
             ++out.priced;
         }
     }

@@ -260,6 +260,23 @@ enum class Side {
 };
 
 /**
+ * @brief The class of an execution row (executions.execution_type, migration 015; LOOP_SPEC
+ *        v6.1 sections 6.5 and 7, T-ROLLX): STRATEGY = the day's fill against the target; ROLL =
+ *        one leg of a contract roll (mechanical, outside every strategy trade measure, inside the
+ *        costs and the equity curve); BORROW = the backtest's synthetic overnight borrow-fee row
+ *        on a short equity position (quantity 0).
+ */
+enum class ExecutionType { STRATEGY, ROLL, BORROW };
+
+inline const char* to_string(ExecutionType t) {
+    switch (t) {
+        case ExecutionType::ROLL: return "ROLL";
+        case ExecutionType::BORROW: return "BORROW";
+        default: return "STRATEGY";
+    }
+}
+
+/**
  * @brief Order type enumeration
  */
 enum class OrderType { MARKET, LIMIT, STOP, STOP_LIMIT, NONE };
@@ -303,6 +320,10 @@ struct Bar {
     Price close;
     double volume;  // Keep as double for now since volume is typically not a financial calculation
     std::string symbol;
+    /// The vendor's contract id behind a futures bar (futures_data.ohlcv_1d_raw.instrument_id,
+    /// joined to the kept bar by the loader, T-ROLLX); empty when unknown and on every equity bar.
+    /// A bar whose id differs from the previous consumed bar's is a change bar (roll_series.hpp).
+    std::string instrument_id;
 
     Bar() = default;
     Bar(Timestamp ts, Price o, Price h, Price l, Price c, double v, std::string s)
@@ -375,6 +396,11 @@ struct Position {
     Decimal unrealized_pnl;
     Decimal realized_pnl;
     Timestamp last_update;
+    /// The vendor's contract id the futures position is held in (positions.instrument_id,
+    /// final_positions.instrument_id, migration 016; T-ROLLX): the confirmed id of the symbol's
+    /// consumed sequence (roll_series.hpp), still the old contract on a pending change bar.
+    /// Empty (stored NULL) when unknown and on every equity row.
+    std::string instrument_id;
     // Note: previous_price and contract_size fields removed
 
     // Constructors
@@ -439,6 +465,22 @@ struct ExecutionReport {
     Decimal netting_adjustment;
 
     bool is_partial{false};
+    /// T-ROLLX (migration 015): STRATEGY, ROLL or BORROW (see ExecutionType); and the vendor
+    /// contract id a ROLL leg traded (the outgoing contract on the closing leg, the incoming on
+    /// the opening leg), empty (stored NULL) on every other row. Last, so every positional
+    /// initialiser of the older fields stays as it is.
+    ExecutionType execution_type{ExecutionType::STRATEGY};
+    std::string instrument_id;
+};
+
+/// One stored positions row's realised P&L, as PostgresDatabase::get_stored_realised_rows reads it
+/// (T-ROLLX-FIX commit 6: what earlier runs booked of a late roll's moves, live_roll_legs.hpp).
+struct StoredRealisedRow {
+    std::string symbol;
+    std::string sleeve;
+    std::string date;  ///< YYYY-MM-DD, the row's date
+    double quantity{0.0};
+    double realised{0.0};
 };
 
 /**

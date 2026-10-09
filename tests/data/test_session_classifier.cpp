@@ -710,3 +710,53 @@ TEST_F(SessionClassifierDb, TheLoadersBarsGiveTheReferenceVerdictsAndThe2026Coun
     EXPECT_EQ(counts[SessionVerdict::NO_BAR_FEED_HOLE], 351);
     db->disconnect();
 }
+
+// ---------------------------------------------------------------------------------------------
+// LOOP_SPEC v6.1 section 2.1 (K-01, T-ROLLX-FIX): which verdicts WITHHOLD the bar from every
+// consumer. Every JUNK limb of judge_bar withholds (locked, corrupt print, the absolute floor, a
+// thin first print with no norm yet); a SESSION bar, a day without a bar and the instrument-id
+// limb's hold (the change bar, consumed and held) do not.
+// ---------------------------------------------------------------------------------------------
+
+TEST(SessionClassifierK01, EveryJudgeBarJunkLimbIsWithheld) {
+    SessionClassifier c;
+    add_weekdays_before(c, "ES", "2026-03-04", 20, 100000);
+    c.add_bar(bar_on("ES", "2026-03-04", 100.0, 100.0, 100.0, 100.0, 50000));  // locked
+    c.add_bar(bar_on("ES", "2026-03-05", 400));                                // corrupt print
+    add_weekdays_before(c, "ZR", "2026-03-04", 20, 120);
+    c.add_bar(bar_on("ZR", "2026-03-04", 20));                                 // absolute floor
+    c.add_bar(bar_on("NEW", "2026-03-04", 10));                                // thin first print
+    for (const auto& [symbol, date] : std::vector<std::pair<std::string, std::string>>{
+             {"ES", "2026-03-04"}, {"ES", "2026-03-05"}, {"ZR", "2026-03-04"}, {"NEW", "2026-03-04"}}) {
+        const auto v = c.classify_symbol_day(symbol, ymd_day(date), kNoHolidays);
+        EXPECT_EQ(v.verdict, SessionVerdict::JUNK) << symbol << " " << date << ": " << v.reason;
+        EXPECT_FALSE(v.id_change_hold) << symbol << " " << date;
+        EXPECT_TRUE(v.k01_withheld()) << symbol << " " << date << ": " << v.reason;
+    }
+}
+
+TEST(SessionClassifierK01, ASessionBarAndANoBarDayAreNotWithheld) {
+    SessionClassifier c;
+    add_weekdays_before(c, "ES", "2026-03-04", 20, 100000);
+    c.add_bar(bar_on("ES", "2026-03-04", 95000));
+    const auto session = c.classify_symbol_day("ES", ymd_day("2026-03-04"), kNoHolidays);
+    EXPECT_EQ(session.verdict, SessionVerdict::SESSION);
+    EXPECT_FALSE(session.k01_withheld());
+    const auto none = c.classify_symbol_day("ES", ymd_day("2026-03-05"), kNoHolidays);
+    EXPECT_FALSE(none.has_bar);
+    EXPECT_FALSE(none.k01_withheld()) << "a day without a bar has nothing to withhold";
+}
+
+TEST(SessionClassifierK01, TheInstrumentIdHoldIsConsumedNotWithheld) {
+    SessionClassifier c;
+    add_weekdays_before(c, "NG", "2026-03-04", 20, 200000);
+    for (Day d = ymd_day("2026-01-01"); d < ymd_day("2026-03-04"); d += std::chrono::days{1}) {
+        c.add_instrument_id("NG", d, "864");
+    }
+    c.add_bar(bar_on("NG", "2026-03-04", 9000));  // a thin print on a new id
+    c.add_instrument_id("NG", ymd_day("2026-03-04"), "863");
+    const auto v = c.classify_symbol_day("NG", ymd_day("2026-03-04"), kNoHolidays);
+    ASSERT_EQ(v.verdict, SessionVerdict::JUNK) << v.reason;
+    EXPECT_TRUE(v.id_change_hold);
+    EXPECT_FALSE(v.k01_withheld()) << "the change bar is consumed and held, never withheld";
+}
