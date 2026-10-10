@@ -133,14 +133,17 @@ protected:
                "net_notional numeric, margin_posted double precision, "
                "cash_available double precision, equity_to_margin_ratio double precision, "
                "margin_cushion double precision, portfolio_leverage numeric(8,4), "
-               "net_leverage numeric(8,4)) ON COMMIT DROP");
+               "net_leverage numeric(8,4), gross_leverage numeric(8,4)) ON COMMIT DROP");
     }
 
     // The finalize: the value settled, the four cells and the cash on it, in one statement.
+    // `with_gross_leverage` adds the clause of a book that stores gross_leverage (the equity
+    // book).
     static void finalize(pqxx::work& w, const std::string& id, const std::string& value_sql,
-                         const std::string& maintenance_sql) {
+                         const std::string& maintenance_sql, bool with_gross_leverage = false) {
         w.exec("UPDATE fake_live_results SET current_portfolio_value = " + value_sql + ", " +
                finalize_margin_columns_sql(value_sql, maintenance_sql) +
+               (with_gross_leverage ? finalize_gross_leverage_sql(value_sql) : std::string()) +
                "cash_available = " + value_sql + " - COALESCE(margin_posted, 0.0) WHERE id = '" +
                id + "'");
     }
@@ -225,4 +228,38 @@ TEST_F(MarginColumnsFinalizeDbTest, AValueOfZeroDoesNotFailTheStatement) {
     EXPECT_DOUBLE_EQ(*cell(r, "portfolio_leverage"), 0.0);
     EXPECT_DOUBLE_EQ(*cell(r, "equity_to_margin_ratio"), 0.0);
     EXPECT_FALSE(cell(r, "margin_cushion").has_value());
+}
+
+// T-8D R22: the equity book's gross_leverage is its gross notional over the finalised value;
+// a futures row, whose finalize carries no such clause, keeps the column NULL.
+TEST(MarginColumns, TheGrossLeverageClauseAssignsThatOneCell) {
+    const std::string sql = finalize_gross_leverage_sql("V");
+    EXPECT_EQ(sql, "gross_leverage = CASE WHEN CAST((V) AS numeric(15,4)) > 0 THEN gross_notional "
+                   "/ CAST((V) AS numeric(15,4)) ELSE 0.0 END, ");
+    EXPECT_EQ(finalize_margin_columns_sql("V", "M").find("gross_leverage"), std::string::npos);
+}
+
+TEST_F(MarginColumnsFinalizeDbTest, TheEquityRowsGrossLeverageIsRecomputedAndAFuturesRowsStaysNull) {
+    pqxx::work w(*c_);
+    create(w);
+    // EQUITY_MR 2026-06-15 with the risk report's leverage figures (0.1604) as stored before.
+    w.exec("INSERT INTO fake_live_results VALUES ('eq', 99327.9760, 15899.203254, 15899.203254, "
+           "16042.838059, 83285.137941, 6.19, 1, 0.1601, 0.1604, 0.1604)");
+    w.exec("INSERT INTO fake_live_results VALUES ('fut', 497239.3978, 793465.000000, "
+           "203940.000000, 45997.05, 451242.347804, 10.813756, 0.919311, 1.5952, 0.4100, NULL)");
+    finalize(w, "eq", "100000.000000 + (-214.132000)", "0.0", true);
+    finalize(w, "fut", "497239.3978 + 0.0", "40135.010000");
+
+    const pqxx::result eq = w.exec("SELECT * FROM fake_live_results WHERE id = 'eq'");
+    ASSERT_EQ(eq.size(), 1u);
+    // 15899.203254 / 99785.8680 = 0.15933...
+    EXPECT_DOUBLE_EQ(*cell(eq[0], "gross_leverage"), 0.1593);
+    EXPECT_DOUBLE_EQ(*cell(eq[0], "net_leverage"), 0.1593);
+    EXPECT_DOUBLE_EQ(*cell(eq[0], "portfolio_leverage"), 0.1593);
+    EXPECT_DOUBLE_EQ(*cell(eq[0], "margin_cushion"), 1.0);
+
+    const pqxx::result fut = w.exec("SELECT * FROM fake_live_results WHERE id = 'fut'");
+    ASSERT_EQ(fut.size(), 1u);
+    EXPECT_FALSE(cell(fut[0], "gross_leverage").has_value());
+    EXPECT_DOUBLE_EQ(*cell(fut[0], "portfolio_leverage"), 1.5957);
 }

@@ -4839,7 +4839,8 @@ int main(int argc, char* argv[]) {
             // (equity_to_margin_ratio, margin_cushion, net_leverage, portfolio_leverage) are
             // recomputed by the UPDATE below on the finalised value, from the row's own stored
             // margin_posted, gross_notional and net_notional (live/margin_columns.hpp), so the
-            // row ends on one basis with its cash_available.
+            // row ends on one basis with its cash_available. R22: gross_leverage, which this
+            // book stores, with them.
             // The expression the UPDATE assigns to current_portfolio_value.
             const std::string yesterday_finalised_value_sql =
                 std::to_string(initial_capital) + " "
@@ -4926,7 +4927,8 @@ int main(int argc, char* argv[]) {
                 "                     / COALESCE((SELECT portfolio FROM day_before), " + std::to_string(initial_capital) + ")) * 100.0 "
                 "               ELSE 0.0 END, "
                 "total_cumulative_return = " + std::to_string(yesterday_total_cumulative_return_pct) + ", "
-                + finalize_margin_columns_sql(yesterday_finalised_value_sql, yesterday_maintenance_sql) +
+                + finalize_margin_columns_sql(yesterday_finalised_value_sql, yesterday_maintenance_sql)
+                + finalize_gross_leverage_sql(yesterday_finalised_value_sql) +
                 "cash_available = " + std::to_string(initial_capital) + " "
                 "             + (COALESCE((SELECT prev_total_realized FROM day_before), 0.0) + COALESCE(daily_realized_pnl, 0.0) "
                 "                - COALESCE(total_transaction_costs, 0.0)) + " + std::to_string(yesterday_finalized_unrealized) + " - COALESCE(margin_posted, 0.0) "
@@ -5656,8 +5658,6 @@ int main(int argc, char* argv[]) {
             if (risk_eval.is_ok()) {
                 const auto& r = risk_eval.value();
                 portfolio_var = r.portfolio_var;
-                gross_leverage = r.gross_leverage;
-                net_leverage = r.net_leverage;
                 max_correlation = r.correlation_risk;
                 jump_risk = r.jump_risk;
                 risk_scale = r.recommended_scale;
@@ -5665,6 +5665,13 @@ int main(int argc, char* argv[]) {
 
             // Use LiveMetricsCalculator for portfolio metrics
             double portfolio_leverage = metrics_calculator->calculate_gross_leverage(gross_notional, current_portfolio_value);
+            // T-8D R22: gross_leverage and net_leverage are the row's notional over its portfolio
+            // value, the definition of portfolio_leverage and of the futures rows' net_leverage.
+            // (They were the risk report's figures: positions at cost basis over the configured
+            // capital.) The Day T-1 finalize recomputes both on the finalised value.
+            gross_leverage = portfolio_leverage;
+            net_leverage =
+                (current_portfolio_value > 0.0) ? (net_notional / current_portfolio_value) : 0.0;
             // equity_to_margin_ratio and margin_cushion already computed above
             
             // Use the LiveResultsManager

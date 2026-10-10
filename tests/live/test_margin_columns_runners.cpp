@@ -196,3 +196,38 @@ TEST(MarginColumnsRunners, TheEquityFinalizeRecomputesTheCushionAgainstNoMainten
     EXPECT_EQ(count_of(finalize, "yesterday_maintenance_sql = \"0.0\";"), 1u);
     EXPECT_EQ(count_of(finalize, "yesterday_maintenance_sql = \"COALESCE(margin_posted"), 0u);
 }
+
+// T-8D R22: on the equity book gross_leverage and net_leverage are the row's notional over its
+// portfolio value, at the day's write and in the finalize. They were the risk report's figures
+// (positions at cost basis over the configured capital), which the finalize never revisited.
+TEST(MarginColumnsRunners, TheEquityLeverageColumnsAreNotionalOverThePortfolioValue) {
+    const std::string src = read_source(kEquity);
+    if (src.empty()) GTEST_SKIP() << "runner source not found from the test working directory";
+
+    EXPECT_EQ(count_of(src, "gross_leverage = r.gross_leverage;"), 0u)
+        << "gross_leverage is still the risk report's figure";
+    EXPECT_EQ(count_of(src, "net_leverage = r.net_leverage;"), 0u)
+        << "net_leverage is still the risk report's figure";
+    EXPECT_EQ(count_of(src, "gross_leverage = portfolio_leverage;"), 1u);
+    EXPECT_EQ(count_of(src, "(net_notional / current_portfolio_value) : 0.0;"), 2u)
+        << "the stored cell and the email line";
+    // Both columns are still written: AlgoLens reads them.
+    EXPECT_EQ(count_of(src, "{\"gross_leverage\", gross_leverage},"), 1u);
+    EXPECT_EQ(count_of(src, "{\"net_leverage\", net_leverage},"), 1u);
+
+    const std::string finalize = finalize_step(src);
+    ASSERT_FALSE(finalize.empty());
+    EXPECT_EQ(count_of(finalize, "finalize_gross_leverage_sql(yesterday_finalised_value_sql)"), 1u)
+        << "the finalize leaves gross_leverage on the value of the day's own run";
+}
+
+// The futures rows keep gross_leverage NULL: neither write names the column.
+TEST(MarginColumnsRunners, TheFuturesRunnersDoNotWriteGrossLeverage) {
+    for (const char* runner : {kConservative, kBase}) {
+        const std::string src = read_source(runner);
+        if (src.empty()) GTEST_SKIP() << "runner source not found from the test working directory";
+        EXPECT_EQ(count_of(src, "{\"gross_leverage\""), 0u) << runner;
+        EXPECT_EQ(count_of(src, "finalize_gross_leverage_sql("), 0u) << runner;
+        EXPECT_EQ(count_of(src, "\"gross_leverage = "), 0u) << runner;
+    }
+}

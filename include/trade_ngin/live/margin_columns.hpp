@@ -69,4 +69,13 @@ inline std::string finalize_margin_columns_sql(const std::string& finalised_valu
            " ELSE NULL END, ";
 }
 
+/// The Day T-1 finalize of a book that stores gross_leverage (the equity book; the futures
+/// rows leave the column NULL): the row's gross_notional over the finalised value, the SET
+/// clause ending ", ". T-8D R22.
+inline std::string finalize_gross_leverage_sql(const std::string& finalised_value_sql) {
+    const std::string value = "CAST((" + finalised_value_sql + ") AS numeric(15,4))";
+    return "gross_leverage = CASE WHEN " + value + " > 0 THEN gross_notional / " + value +
+           " ELSE 0.0 END, ";
+}
+
 }  // namespace trade_ngin
