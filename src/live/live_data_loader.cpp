@@ -527,6 +527,17 @@ Result<int> LiveDataLoader::get_live_results_count(const std::string& strategy_i
 
 // ========== Historical Series Methods ==========
 
+// The book's start is the anchor the runner annualises from (the metadata row of the key); a
+// key with no such row has no lower bound, as trading.get_trading_days falls back to its
+// first stored day.
+std::string LiveDataLoader::on_or_after_book_start(const std::string& date_expr,
+                                                   const std::string& strategy_id,
+                                                   const std::string& portfolio_id) const {
+    return "AND " + date_expr + " >= COALESCE((SELECT MIN(live_start_date) FROM " + schema_ +
+           ".strategy_trading_days_metadata WHERE strategy_id = '" + strategy_id +
+           "' AND portfolio_id = '" + portfolio_id + "'), DATE '0001-01-01') ";
+}
+
 Result<std::vector<double>> LiveDataLoader::load_daily_returns_history(
     const std::string& strategy_id, const std::string& portfolio_id, const Timestamp& as_of_date) {
     auto validation = validate_connection();
@@ -553,7 +564,8 @@ Result<std::vector<double>> LiveDataLoader::load_daily_returns_history(
         "' "
         "AND DATE(date) <= '" +
         date_str +
-        "' "
+        "' " +
+        on_or_after_book_start("DATE(date)", strategy_id, actual_portfolio_id) +
         "ORDER BY date ASC";
 
     DEBUG("Loading daily returns history: " + query);
@@ -618,7 +630,8 @@ Result<std::vector<double>> LiveDataLoader::load_daily_pnl_history(const std::st
         "' "
         "AND DATE(date) <= '" +
         date_str +
-        "' "
+        "' " +
+        on_or_after_book_start("DATE(date)", strategy_id, actual_portfolio_id) +
         "ORDER BY date ASC";
 
     DEBUG("Loading daily PnL history: " + query);
@@ -666,7 +679,6 @@ Result<std::vector<LiveDataLoader::PnlHistoryRow>> LiveDataLoader::load_sizing_p
     }
     const std::string date_str = core::format_utc_date(before_date);
     const std::string actual_portfolio_id = portfolio_id.empty() ? "BASE_PORTFOLIO" : portfolio_id;
-    // The book's start is the anchor the runner annualises from (the metadata row of the key).
     const std::string query =
         "SELECT to_char(date, 'YYYY-MM-DD') AS sizing_history_date, "
         "COALESCE(daily_pnl, 0)::double precision AS daily_pnl, "
@@ -674,10 +686,8 @@ Result<std::vector<LiveDataLoader::PnlHistoryRow>> LiveDataLoader::load_sizing_p
         "FROM " + schema_ + ".live_results "
         "WHERE strategy_id = '" + strategy_id + "' "
         "AND portfolio_id = '" + actual_portfolio_id + "' "
-        "AND DATE(date) < '" + date_str + "' "
-        "AND DATE(date) >= COALESCE((SELECT MIN(live_start_date) FROM " + schema_ +
-        ".strategy_trading_days_metadata WHERE strategy_id = '" + strategy_id +
-        "' AND portfolio_id = '" + actual_portfolio_id + "'), DATE '0001-01-01') "
+        "AND DATE(date) < '" + date_str + "' " +
+        on_or_after_book_start("DATE(date)", strategy_id, actual_portfolio_id) +
         "ORDER BY date ASC";
     DEBUG("Loading the sizing P&L history: " + query);
     auto result = db_->execute_query(query);
@@ -727,7 +737,8 @@ Result<std::vector<double>> LiveDataLoader::load_equity_curve_history(
 
     std::string actual_portfolio_id = portfolio_id.empty() ? "BASE_PORTFOLIO" : portfolio_id;
 
-    // The row's UTC date rides with it: a date stored more than once counts once (below).
+    // The row's UTC date rides with it: a date stored more than once counts once (below), and
+    // it is the date the book's start is compared with, whatever the session's time zone.
     std::string query =
         "SELECT equity, to_char(timestamp AT TIME ZONE 'UTC', 'YYYY-MM-DD') AS utc_date "
         "FROM " +
@@ -741,7 +752,9 @@ Result<std::vector<double>> LiveDataLoader::load_equity_curve_history(
         "' "
         "AND DATE(timestamp) <= '" +
         date_str +
-        "' "
+        "' " +
+        on_or_after_book_start("DATE(timestamp AT TIME ZONE 'UTC')", strategy_id,
+                               actual_portfolio_id) +
         "ORDER BY timestamp ASC";
 
     DEBUG("Loading equity curve history: " + query);

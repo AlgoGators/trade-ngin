@@ -119,6 +119,12 @@ private:
     // Helper method to check database connection
     Result<void> validate_connection() const;
 
+    // The predicate "<date_expr> is on or after the book's start": the earliest live_start_date of
+    // <schema>.strategy_trading_days_metadata for the key, no lower bound when the key has no row.
+    std::string on_or_after_book_start(const std::string& date_expr,
+                                       const std::string& strategy_id,
+                                       const std::string& portfolio_id) const;
+
 public:
     /**
      * @brief Construct a new LiveDataLoader
@@ -192,10 +198,12 @@ public:
     // ========== Historical Series Methods (since inception, as-of date) ==========
 
     /**
-     * @brief Load daily return history (percentage) up to and including a given date.
+     * @brief Load daily return history (percentage) from the book's start up to and
+     *        including a given date.
      *
      * Each value corresponds to the `daily_return` column from trading.live_results,
-     * ordered by date ascending.
+     * ordered by date ascending. The book's start is the one load_sizing_pnl_history
+     * reads: a row dated before it enters no statistic.
      */
     Result<std::vector<double>> load_daily_returns_history(const std::string& strategy_id,
                                                            const std::string& portfolio_id,
@@ -221,21 +229,24 @@ public:
                                                                const Timestamp& before_date);
 
     /**
-     * @brief Load daily PnL history (dollars) up to and including a given date.
+     * @brief Load daily PnL history (dollars) from the book's start up to and including
+     *        a given date.
      *
      * Each value corresponds to the `daily_pnl` column from trading.live_results,
-     * ordered by date ascending.
+     * ordered by date ascending, bounded below as load_daily_returns_history is.
      */
     Result<std::vector<double>> load_daily_pnl_history(const std::string& strategy_id,
                                                        const std::string& portfolio_id,
                                                        const Timestamp& as_of_date);
 
     /**
-     * @brief Load equity curve history up to and including a given date.
+     * @brief Load equity curve history from the book's start up to and including a
+     *        given date.
      *
      * Each value corresponds to the `equity` column from trading.equity_curve,
      * ordered by timestamp ascending, one value per UTC date: where a date is stored
-     * more than once its last row is the one returned.
+     * more than once its last row is the one returned. Bounded below as
+     * load_daily_returns_history is.
      */
     Result<std::vector<double>> load_equity_curve_history(const std::string& strategy_id,
                                                           const std::string& portfolio_id,

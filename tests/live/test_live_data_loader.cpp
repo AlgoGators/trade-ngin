@@ -7,7 +7,10 @@
 
 #include <gtest/gtest.h>
 #include <chrono>
+#include <filesystem>
+#include <fstream>
 #include <memory>
+#include <sstream>
 #include "trade_ngin/data/postgres_database.hpp"
 #include "trade_ngin/live/live_data_loader.hpp"
 
@@ -260,4 +263,169 @@ TEST_F(LiveDataLoaderTest, EquityCurveHistoryQueryTakesTheUtcDateInTimestampOrde
         << db->last_query;
     EXPECT_NE(db->last_query.find("ORDER BY timestamp ASC"), std::string::npos) << db->last_query;
     EXPECT_NE(db->last_query.find("trading.equity_curve"), std::string::npos) << db->last_query;
+}
+
+// ──────────────────────────────────────────────────────────────────────────
+// T-8a (4): the three statistics histories start at the book's start, the
+// metadata row's live_start_date (T-8D ruling R9), read the one way the sizing
+// history reads it. The reads that carry the account value do not take it.
+// ──────────────────────────────────────────────────────────────────────────
+namespace {
+
+// The bound as load_sizing_pnl_history has carried it since T-LOOP, on a date expression.
+std::string book_start_bound(const std::string& date_expr) {
+    return "AND " + date_expr +
+           " >= COALESCE((SELECT MIN(live_start_date) FROM trading.strategy_trading_days_metadata "
+           "WHERE strategy_id = 'LIVE_TREND_FOLLOWING_TREND_FOLLOWING_FAST' "
+           "AND portfolio_id = 'BASE_PORTFOLIO'), DATE '0001-01-01') ";
+}
+
+// 2026-04-24 05:00:00 UTC, the futures runners' stamp.
+Timestamp april_24() {
+    std::tm utc{};
+    utc.tm_year = 126;
+    utc.tm_mon = 3;
+    utc.tm_mday = 24;
+    utc.tm_hour = 5;
+    return std::chrono::system_clock::from_time_t(timegm(&utc));
+}
+
+const char* const kBaseKey = "LIVE_TREND_FOLLOWING_TREND_FOLLOWING_FAST";
+
+}  // namespace
+
+TEST_F(LiveDataLoaderTest, DailyReturnsHistoryStartsAtTheBookStart) {
+    auto db = std::make_shared<QueryCapturingDb>();
+    LiveDataLoader loader(db, "trading");
+    ASSERT_TRUE(loader.load_daily_returns_history(kBaseKey, "BASE_PORTFOLIO", april_24()).is_ok());
+    EXPECT_NE(db->last_query.find("AND DATE(date) <= '2026-04-24' " +
+                                  book_start_bound("DATE(date)") + "ORDER BY date ASC"),
+              std::string::npos)
+        << "a live_results row dated before the book's live_start_date enters no statistic. "
+           "Query was:\n"
+        << db->last_query;
+}
+
+TEST_F(LiveDataLoaderTest, DailyPnlHistoryStartsAtTheBookStart) {
+    auto db = std::make_shared<QueryCapturingDb>();
+    LiveDataLoader loader(db, "trading");
+    ASSERT_TRUE(loader.load_daily_pnl_history(kBaseKey, "BASE_PORTFOLIO", april_24()).is_ok());
+    EXPECT_NE(db->last_query.find("AND DATE(date) <= '2026-04-24' " +
+                                  book_start_bound("DATE(date)") + "ORDER BY date ASC"),
+              std::string::npos)
+        << db->last_query;
+}
+
+TEST_F(LiveDataLoaderTest, EquityCurveHistoryStartsAtTheBookStart) {
+    auto db = std::make_shared<EquityCurveRowsDb>(std::vector<std::string>{"1"},
+                                                  std::vector<std::string>{"2026-04-24"});
+    LiveDataLoader loader(db, "trading");
+    ASSERT_TRUE(loader.load_equity_curve_history(kBaseKey, "BASE_PORTFOLIO", april_24()).is_ok());
+    EXPECT_NE(db->last_query.find("AND DATE(timestamp) <= '2026-04-24' " +
+                                  book_start_bound("DATE(timestamp AT TIME ZONE 'UTC')") +
+                                  "ORDER BY timestamp ASC"),
+              std::string::npos)
+        << "the bound reads the row's UTC date: a row stamped 00:00 UTC on the book's first day "
+           "is inside it under any session time zone. Query was:\n"
+        << db->last_query;
+}
+
+// An empty portfolio id reads BASE_PORTFOLIO in the row filter and in the bound alike.
+TEST_F(LiveDataLoaderTest, StatisticsHistoryBoundNamesTheSamePortfolioAsTheRowFilter) {
+    auto db = std::make_shared<QueryCapturingDb>();
+    LiveDataLoader loader(db, "trading");
+    ASSERT_TRUE(loader.load_daily_returns_history(kBaseKey, "", april_24()).is_ok());
+    EXPECT_NE(db->last_query.find(book_start_bound("DATE(date)")), std::string::npos)
+        << db->last_query;
+}
+
+// The sizing history is a sizing input: its query is the text T-LOOP landed, to the byte.
+TEST_F(LiveDataLoaderTest, SizingPnlHistoryQueryIsUnchangedByTheStatisticsBound) {
+    auto db = std::make_shared<QueryCapturingDb>();
+    LiveDataLoader loader(db, "trading");
+    ASSERT_TRUE(loader.load_sizing_pnl_history(kBaseKey, "BASE_PORTFOLIO", april_24()).is_ok());
+    EXPECT_EQ(db->last_query,
+              "SELECT to_char(date, 'YYYY-MM-DD') AS sizing_history_date, "
+              "COALESCE(daily_pnl, 0)::double precision AS daily_pnl, "
+              "COALESCE(active_positions, 0) AS active_positions "
+              "FROM trading.live_results "
+              "WHERE strategy_id = 'LIVE_TREND_FOLLOWING_TREND_FOLLOWING_FAST' "
+              "AND portfolio_id = 'BASE_PORTFOLIO' "
+              "AND DATE(date) < '2026-04-24' " +
+                  book_start_bound("DATE(date)") + "ORDER BY date ASC");
+}
+
+// current_portfolio_value and the sizing capital come from the latest stored row before a date,
+// whatever its date: a bound on these reads would move the book (T-8D section 11, part B).
+TEST_F(LiveDataLoaderTest, AccountValueReadsCarryNoBookStartBound) {
+    auto db = std::make_shared<QueryCapturingDb>();
+    LiveDataLoader loader(db, "trading");
+    const std::string unbounded_tail =
+        "WHERE strategy_id = 'LIVE_TREND_FOLLOWING_TREND_FOLLOWING_FAST' "
+        "AND portfolio_id = 'BASE_PORTFOLIO' "
+        "AND DATE(date) < '2026-04-24' "
+        "ORDER BY date DESC LIMIT 1";
+
+    (void)loader.load_previous_portfolio_value(kBaseKey, "BASE_PORTFOLIO", april_24());
+    EXPECT_EQ(db->last_query, "SELECT COALESCE(current_portfolio_value, 0.0) "
+                              "FROM trading.live_results " +
+                                  unbounded_tail);
+
+    (void)loader.load_previous_day_data(kBaseKey, "BASE_PORTFOLIO", april_24());
+    EXPECT_EQ(db->last_query,
+              "SELECT current_portfolio_value, total_pnl, daily_pnl, daily_transaction_costs, date "
+              "FROM trading.live_results " +
+                  unbounded_tail);
+
+    (void)loader.load_live_results(kBaseKey, "BASE_PORTFOLIO", april_24());
+    EXPECT_EQ(db->last_query.find("strategy_trading_days_metadata"), std::string::npos)
+        << db->last_query;
+}
+
+// PostgresDatabase::get_previous_live_aggregates and the finalize's day_before read build their
+// SQL beside a live connection, so the pin is on the source: neither names the metadata table.
+TEST_F(LiveDataLoaderTest, PreviousAggregatesAndTheFinalizeReadCarryNoBookStartBound) {
+    // The repository root is a parent of the test's working directory.
+    const auto read = [](const std::string& relative) -> std::string {
+        namespace fs = std::filesystem;
+        fs::path dir = fs::current_path();
+        for (int i = 0; i < 8 && !dir.empty(); ++i) {
+            if (fs::exists(dir / relative)) {
+                std::ifstream in(dir / relative);
+                std::ostringstream ss;
+                ss << in.rdbuf();
+                return ss.str();
+            }
+            dir = dir.parent_path();
+        }
+        return {};
+    };
+    const auto npos = std::string::npos;
+
+    const std::string pg = read("src/data/postgres_database.cpp");
+    const auto fn = pg.find("PostgresDatabase::get_previous_live_aggregates(");
+    ASSERT_NE(fn, npos);
+    const auto fn_end = pg.find("\nResult<void> PostgresDatabase::store_trading_equity_curve(", fn);
+    ASSERT_NE(fn_end, npos);
+    const std::string body = pg.substr(fn, fn_end - fn);
+    EXPECT_NE(body.find(" WHERE strategy_id = $1 AND portfolio_id = $2 AND DATE(date) < DATE($3) \"\n"
+                        "            \"ORDER BY date DESC, created_at DESC LIMIT 1\";"),
+              npos)
+        << "the latest stored row before the date, with no lower bound";
+    EXPECT_EQ(body.find("live_start_date"), npos);
+    EXPECT_EQ(body.find("strategy_trading_days_metadata"), npos);
+
+    for (const char* runner : {"apps/strategies/live_portfolio.cpp",
+                               "apps/strategies/live_portfolio_conservative.cpp",
+                               "apps/strategies/live_equity_mean_reversion.cpp"}) {
+        const std::string src = read(runner);
+        const auto cte = src.find("\"WITH day_before AS (\"");
+        ASSERT_NE(cte, npos) << runner;
+        const auto cte_end = src.find("\"UPDATE trading.live_results", cte);
+        ASSERT_NE(cte_end, npos) << runner;
+        const std::string day_before = src.substr(cte, cte_end - cte);
+        EXPECT_NE(day_before.find("ORDER BY date DESC"), npos) << runner;
+        EXPECT_EQ(day_before.find("live_start_date"), npos) << runner;
+        EXPECT_EQ(day_before.find("strategy_trading_days_metadata"), npos) << runner;
+    }
 }
