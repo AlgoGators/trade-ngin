@@ -30,6 +30,7 @@ set(TEST_SOURCES
     data/test_delete_stale_executions_scope_db.cpp
     data/test_contract_metadata_fee_column_db.cpp
     data/test_executions_netting_column_db.cpp
+    data/test_execution_report_validation.cpp
     data/test_load_positions_identifier_db.cpp
     data/test_equity_curve_stream_db.cpp
     data/test_store_positions_error_db.cpp
