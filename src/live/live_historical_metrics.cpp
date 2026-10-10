@@ -197,18 +197,20 @@ std::string statistics_days_warning(const HistoricalMetrics& m, const Statistics
     return text;
 }
 
-HistoricalMetrics LiveHistoricalMetricsCalculator::calculate(
-    const std::vector<double>& daily_returns_pct,
-    const std::vector<double>& daily_pnl_dollars,
-    int total_trades_executions,
-    const StatisticsSeries& grid,
-    double sessions_per_year) const {
+HistoricalMetrics LiveHistoricalMetricsCalculator::calculate(const StatisticsSeries& grid,
+                                                             double sessions_per_year,
+                                                             int total_trades_executions) const {
     HistoricalMetrics metrics;
 
     // Returns and days, on the statistics grid
     metrics.total_days = grid.size();
     metrics.total_annualized_return = grid_annualized_return_pct(grid, sessions_per_year);
     metrics.total_trades = total_trades_executions;
+
+    // An empty series: everything stays at 0
+    if (grid.returns_pct.empty()) {
+        return metrics;
+    }
 
     // Volatility, downside deviation, Sharpe and Sortino on the grid returns (% units), every
     // one annualised with the grid's own sessions a year: sample sd x sqrt(K); mean / sd x
@@ -227,42 +229,22 @@ HistoricalMetrics LiveHistoricalMetricsCalculator::calculate(
     // Max drawdown over every grid level from the book's start, the peak seeded at the base
     metrics.max_drawdown = calculate_max_drawdown_from_equity(grid.levels, grid.base);
 
-    // Winning, losing and flat days over the grid returns; win_rate = W / (W + L) in percent,
-    // so a flat session is in neither count and in no denominator (B5A D7, T-8D R10).
+    // Winning, losing and flat days over the grid returns, with the average win and loss and
+    // the best and worst day; win_rate = W / (W + L) in percent, so a flat session is in
+    // neither count and in no denominator (B5A D7, T-8D R10).
+    double sum_wins = 0.0;
+    double sum_losses_abs = 0.0;
+    metrics.best_day = grid.returns_pct.front();
+    metrics.worst_day = grid.returns_pct.front();
     for (double r : grid.returns_pct) {
         if (r > 0.0) {
             metrics.winning_days += 1;
-        } else if (r < 0.0) {
-            metrics.losing_days += 1;
-        } else {
-            metrics.flat_days += 1;
-        }
-    }
-    if (metrics.winning_days + metrics.losing_days > 0) {
-        metrics.win_rate = static_cast<double>(metrics.winning_days) /
-                           static_cast<double>(metrics.winning_days + metrics.losing_days) * 100.0;
-    }
-
-    // Early exit if no returns history – the row-based figures below stay at 0
-    if (daily_returns_pct.empty()) {
-        return metrics;
-    }
-
-    // Average win and loss, best and worst day over the stored daily returns
-    double sum_wins = 0.0;
-    double sum_losses_abs = 0.0;
-    int winning_rows = 0;
-    int losing_rows = 0;
-    metrics.best_day = daily_returns_pct.front();
-    metrics.worst_day = daily_returns_pct.front();
-
-    for (double r : daily_returns_pct) {
-        if (r > 0.0) {
-            winning_rows += 1;
             sum_wins += r;
         } else if (r < 0.0) {
-            losing_rows += 1;
+            metrics.losing_days += 1;
             sum_losses_abs += std::abs(r);
+        } else {
+            metrics.flat_days += 1;
         }
 
         if (r > metrics.best_day) {
@@ -272,30 +254,31 @@ HistoricalMetrics LiveHistoricalMetricsCalculator::calculate(
             metrics.worst_day = r;
         }
     }
-
-    if (winning_rows > 0) {
-        metrics.avg_win = sum_wins / static_cast<double>(winning_rows);
+    if (metrics.winning_days + metrics.losing_days > 0) {
+        metrics.win_rate = static_cast<double>(metrics.winning_days) /
+                           static_cast<double>(metrics.winning_days + metrics.losing_days) * 100.0;
     }
-    if (losing_rows > 0) {
-        metrics.avg_loss = sum_losses_abs / static_cast<double>(losing_rows);
+    if (metrics.winning_days > 0) {
+        metrics.avg_win = sum_wins / static_cast<double>(metrics.winning_days);
+    }
+    if (metrics.losing_days > 0) {
+        metrics.avg_loss = sum_losses_abs / static_cast<double>(metrics.losing_days);
     }
 
-    // Profit factor based on daily PnL
-    if (!daily_pnl_dollars.empty()) {
-        for (double pnl : daily_pnl_dollars) {
-            if (pnl > 0.0) {
-                metrics.gross_profit += pnl;
-            } else if (pnl < 0.0) {
-                metrics.gross_loss += std::abs(pnl);
-            }
+    // Gross profit and loss on the P&L of the grid returns: each is the difference of two grid
+    // levels, so it holds the P&L of every stored row folded into that return.
+    for (double pnl : grid.pnl) {
+        if (pnl > 0.0) {
+            metrics.gross_profit += pnl;
+        } else if (pnl < 0.0) {
+            metrics.gross_loss += std::abs(pnl);
         }
-
-        if (metrics.gross_loss > 0.0) {
-            metrics.profit_factor = metrics.gross_profit / metrics.gross_loss;
-        } else if (metrics.gross_profit > 0.0) {
-            // Convention: very large profit factor if there are no losses
-            metrics.profit_factor = 999.99;
-        }
+    }
+    if (metrics.gross_loss > 0.0) {
+        metrics.profit_factor = metrics.gross_profit / metrics.gross_loss;
+    } else if (metrics.gross_profit > 0.0) {
+        // Convention: very large profit factor if there are no losses
+        metrics.profit_factor = 999.99;
     }
 
     return metrics;

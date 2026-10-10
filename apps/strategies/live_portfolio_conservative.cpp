@@ -3648,25 +3648,12 @@ int main(int argc, char* argv[]) {
         HistoricalMetrics settled_statistics;
         try {
             if (data_loader && data_loader->is_connected()) {
-                auto returns_hist_res = data_loader->load_daily_returns_history(
-                    combined_strategy_id, coordinator_config.portfolio_id, previous_date);
-                auto pnl_hist_res = data_loader->load_daily_pnl_history(
-                    combined_strategy_id, coordinator_config.portfolio_id, previous_date);
                 auto trades_hist_res = data_loader->load_total_trades_count(
                     combined_strategy_id, coordinator_config.portfolio_id, previous_date);
                 auto t1_row = data_loader->load_live_results(
                     combined_strategy_id, coordinator_config.portfolio_id, previous_date);
 
-                std::vector<double> returns_hist;
-                std::vector<double> pnl_hist;
                 int total_trades_hist = 0;
-
-                if (returns_hist_res.is_ok()) {
-                    returns_hist = returns_hist_res.value();
-                }
-                if (pnl_hist_res.is_ok()) {
-                    pnl_hist = pnl_hist_res.value();
-                }
                 if (trades_hist_res.is_ok()) {
                     total_trades_hist = trades_hist_res.value();
                 }
@@ -3697,13 +3684,11 @@ int main(int argc, char* argv[]) {
                      std::to_string(statistics_series.size()) + " calendar_days=" +
                      std::to_string(t1_trading_days_count));
 
+                // Every statistic is taken on the series: its returns are in PERCENT and its
+                // P&L is the difference of two grid levels.
                 LiveHistoricalMetricsCalculator hist_calc;
-                // NOTE: returns_hist is already loaded in PERCENT units (e.g., 0.11 = 0.11%,
-                // not 11%) because daily_return is computed in SQL as `... * 100.0`. Do NOT
-                // multiply by 100 here -- that produced a 100x volatility / 100x lower sharpe.
                 settled_statistics =
-                    hist_calc.calculate(returns_hist, pnl_hist, total_trades_hist,
-                                        statistics_series, sessions_per_year);
+                    hist_calc.calculate(statistics_series, sessions_per_year, total_trades_hist);
 
                 if (const std::string days_warning =
                         statistics_days_warning(settled_statistics, statistics_series);

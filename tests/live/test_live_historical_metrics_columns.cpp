@@ -153,8 +153,7 @@ TEST(HistoricalMetricsColumns, TheRealAprilTwentiethRowCarriesZeroPointEightNotT
     const double ex_ante_portfolio_var_x100 = 21.8934;
 
     LiveHistoricalMetricsCalculator calc;
-    const auto m = calc.calculate(returns_pct, /*pnl*/ {}, /*executions*/ 3,
-                                  grid_of_returns(returns_pct), 252.0);
+    const auto m = calc.calculate(grid_of_returns(returns_pct), 252.0, /*executions*/ 3);
 
     // Sample sd of the twenty returns, times sqrt(252): the population figure the decisions
     // doc hand-computed, 0.797689 (0.7976864 on the fixture's rounded returns), times
@@ -210,13 +209,12 @@ TEST(HistoricalMetricsColumns, EveryColumnCarriesItsOwnMemberAndNotItsNeighbours
 // known series"). Every number below is derived on paper from the inputs, not read off the
 // implementation, so a change to the definitions has to be argued rather than absorbed.
 TEST(HistoricalMetricsColumns, KnownSeriesProducesHandComputedColumns) {
-    // Five daily returns in PERCENT -- the units trading.live_results.daily_return stores,
-    // which is why neither runner scales the loaded series by 100.
+    // Five grid returns in PERCENT on a base of 100: the levels are 101, 98.98, 101.9494,
+    // 101.9494 and 100.929906, and the P&L of a return is the difference of two levels.
     const std::vector<double> returns_pct = {1.0, -2.0, 3.0, 0.0, -1.0};
-    const std::vector<double> pnl = {100.0, -200.0, 300.0, 0.0, -100.0};
 
     LiveHistoricalMetricsCalculator calc;
-    const auto m = calc.calculate(returns_pct, pnl, 4, grid_of_returns(returns_pct), 252.0);
+    const auto m = calc.calculate(grid_of_returns(returns_pct), 252.0, 4);
 
     // mean = (1 - 2 + 3 + 0 - 1)/5 = 0.2
     // sample variance = ((0.8)^2+(-2.2)^2+(2.8)^2+(-0.2)^2+(-1.2)^2)/(5 - 1)
@@ -249,19 +247,21 @@ TEST(HistoricalMetricsColumns, KnownSeriesProducesHandComputedColumns) {
     EXPECT_EQ(m.total_days, 5);
     // Two winning and two losing sessions; the flat one is in no denominator: 2 / (2 + 2).
     EXPECT_NEAR(m.win_rate, 2.0 / 4.0 * 100.0, 1e-12);
-    EXPECT_NEAR(m.avg_win, (1.0 + 3.0) / 2.0, 1e-12);
-    EXPECT_NEAR(m.avg_loss, (2.0 + 1.0) / 2.0, 1e-12);
-    EXPECT_DOUBLE_EQ(m.best_day, 3.0);
-    EXPECT_DOUBLE_EQ(m.worst_day, -2.0);
-    EXPECT_DOUBLE_EQ(m.gross_profit, 400.0);
-    EXPECT_DOUBLE_EQ(m.gross_loss, 300.0);
-    EXPECT_NEAR(m.profit_factor, 400.0 / 300.0, 1e-12);
+    EXPECT_NEAR(m.avg_win, (1.0 + 3.0) / 2.0, 1e-9);
+    EXPECT_NEAR(m.avg_loss, (2.0 + 1.0) / 2.0, 1e-9);
+    EXPECT_NEAR(m.best_day, 3.0, 1e-9);
+    EXPECT_NEAR(m.worst_day, -2.0, 1e-9);
+    // Level differences: +1 and +2.9694 (101.9494 - 98.98); -2.02 (98.98 - 101) and
+    // -1.019494 (100.929906 - 101.9494).
+    EXPECT_NEAR(m.gross_profit, 1.0 + 2.9694, 1e-9);
+    EXPECT_NEAR(m.gross_loss, 2.02 + 1.019494, 1e-9);
+    EXPECT_NEAR(m.profit_factor, 3.9694 / 3.039494, 1e-9);
     EXPECT_EQ(m.total_trades, 4);
 
     // And the columns carry exactly those numbers.
     const auto d = historical_metrics_double_columns(m);
     EXPECT_NEAR(d.at("sharpe_ratio"), 0.2 * 252.0 / vol, 1e-9);
-    EXPECT_NEAR(d.at("gross_loss"), 300.0, 1e-12);
+    EXPECT_NEAR(d.at("gross_loss"), 3.039494, 1e-9);
     EXPECT_EQ(historical_metrics_int_columns(m).at("total_days"), 5);
 }
 

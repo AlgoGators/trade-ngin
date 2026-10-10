@@ -31,14 +31,15 @@ struct HistoricalMetrics {
     int total_days = 0;  // n: the settled grid returns from the book's start (T-8D R5)
                          // = winning_days + losing_days + flat_days
     double win_rate = 0.0;  // winning_days / (winning_days + losing_days), %
-    double avg_win = 0.0;   // average positive daily return, %
-    double avg_loss = 0.0;  // abs(average negative daily return), %
-    double best_day = 0.0;  // max daily return, %
-    double worst_day = 0.0; // min daily return, %
+    double avg_win = 0.0;   // average positive grid return, %
+    double avg_loss = 0.0;  // abs(average negative grid return), %
+    double best_day = 0.0;  // max grid return, %
+    double worst_day = 0.0; // min grid return, %
 
-    // Profit factor based on daily PnL
-    double gross_profit = 0.0;  // sum of positive daily_pnl
-    double gross_loss = 0.0;    // sum of abs(negative daily_pnl)
+    // Profit factor on the P&L of the grid returns (the difference of two grid levels, which
+    // holds the P&L of every row folded into the return)
+    double gross_profit = 0.0;  // sum of the positive grid P&L
+    double gross_loss = 0.0;    // sum of abs(negative grid P&L)
     double profit_factor = 0.0; // gross_profit / gross_loss
 
     // Trade-level stats
@@ -138,24 +139,21 @@ public:
     ~LiveHistoricalMetricsCalculator() = default;
 
     /**
-     * @brief Calculate all historical metrics.
+     * @brief Calculate all historical metrics on the statistics series.
      *
-     * @param daily_returns_pct Daily returns in percentage points (e.g. 0.5 = 0.5%).
-     * @param daily_pnl_dollars Daily PnL values in portfolio currency.
-     * @param total_trades_executions Total number of executions since inception.
-     * @param grid The statistics series: total_days is its count of returns;
-     *        total_annualized_return, volatility, downside_deviation and the Sharpe and Sortino
-     *        ratios are taken on its returns; max_drawdown on its levels from its base;
-     *        winning_days, losing_days, flat_days and win_rate count its returns.
+     * @param grid The statistics series (build_statistics_series): total_days is its count of
+     *        returns; total_annualized_return, volatility, downside_deviation and the Sharpe and
+     *        Sortino ratios are taken on its returns; max_drawdown on its levels from its base;
+     *        winning_days, losing_days, flat_days, win_rate, avg_win, avg_loss, best_day and
+     *        worst_day on its returns; gross_profit, gross_loss and profit_factor on its P&L,
+     *        the differences of its levels.
      * @param sessions_per_year The sessions a year K of the grid the series is taken on; every
      *        annualised figure of the series uses this one K.
-     * @return HistoricalMetrics structure with all fields populated.
+     * @param total_trades_executions Total number of executions since inception.
+     * @return HistoricalMetrics structure with all fields populated; zeros for an empty series.
      */
-    HistoricalMetrics calculate(const std::vector<double>& daily_returns_pct,
-                                const std::vector<double>& daily_pnl_dollars,
-                                int total_trades_executions,
-                                const StatisticsSeries& grid,
-                                double sessions_per_year) const;
+    HistoricalMetrics calculate(const StatisticsSeries& grid, double sessions_per_year,
+                                int total_trades_executions) const;
 
 private:
     static double calculate_mean(const std::vector<double>& values);

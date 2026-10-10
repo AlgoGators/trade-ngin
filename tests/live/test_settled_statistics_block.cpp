@@ -206,7 +206,7 @@ TEST(SettledStatisticsBlock, TheBlockBuildsTheStatisticsSeriesOnItsOwnGridAndSes
                       std::string::npos)
                 << runner;
         }
-        EXPECT_NE(block.find("statistics_series, sessions_per_year);"), std::string::npos)
+        EXPECT_NE(block.find("statistics_series, sessions_per_year"), std::string::npos)
             << runner << ": the calculator is not handed the series and its sessions a year";
         EXPECT_EQ(count_of(block, "INFO(\"STATISTICS_CONVENTION series="), 1u) << runner;
         EXPECT_NE(block.find("statistics_days_warning(settled_statistics, statistics_series)"),
@@ -303,5 +303,23 @@ TEST(SettledStatisticsBlock, NoRunnerOverridesTheWinRateWithACalendarCount) {
     const std::string helper = read_source("include/trade_ngin/live/live_historical_metrics.hpp");
     if (!helper.empty()) {
         EXPECT_EQ(count_of(helper, "apply_trading_days_override"), 0u);
+    }
+}
+
+// T-8a (5e): every statistic is taken on the statistics series, so no runner loads a history of
+// stored daily returns or daily P&L for a statistic, and the calculator is handed the series,
+// its sessions a year and the executions count only.
+TEST(SettledStatisticsBlock, NoRunnerLoadsAStoredReturnOrPnlHistoryForAStatistic) {
+    for (const auto& runner : kRunners) {
+        const std::string src = read_source(runner);
+        if (src.empty()) GTEST_SKIP() << "runner source not found from the test working directory";
+        EXPECT_EQ(count_of(src, "load_daily_returns_history("), 0u) << runner;
+        EXPECT_EQ(count_of(src, "load_daily_pnl_history("), 0u) << runner;
+        const std::string block = statistics_block(src);
+        ASSERT_FALSE(block.empty()) << runner;
+        EXPECT_NE(block.find("hist_calc.calculate(statistics_series, sessions_per_year, "
+                             "total_trades_hist);"),
+                  std::string::npos)
+            << runner;
     }
 }

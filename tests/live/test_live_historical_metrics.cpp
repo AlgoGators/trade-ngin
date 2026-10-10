@@ -133,7 +133,7 @@ TEST_F(LiveHistoricalMetricsTest, CalculateSortinoOfOneLosingDayDividesByItsDown
     // Grid returns in percent {-1, 5, 5}, K 252: downside = sqrt(1/3) * sqrt(252) = 9.165151390;
     // Sortino = mean x K / that = 3 x 252 / 9.165151390 = 82.486363.
     LiveHistoricalMetricsCalculator c;
-    auto m = c.calculate({}, {}, 0, grid_of_returns({-1.0, 5.0, 5.0}), 252.0);
+    auto m = c.calculate(grid_of_returns({-1.0, 5.0, 5.0}), 252.0, 0);
     EXPECT_NEAR(m.downside_deviation, 9.165151390, 1e-9);
     EXPECT_NEAR(m.sortino_ratio, 3.0 * 252.0 / 9.165151390, 1e-6);
     EXPECT_NEAR(m.sortino_ratio, 82.486363, 1e-5);
@@ -183,7 +183,7 @@ TEST_F(LiveHistoricalMetricsTest, MaxDrawdownPeakStartsAtTheSeedAndNotAtTheFirst
 
 TEST_F(LiveHistoricalMetricsTest, CalculateEmptyReturnsZeroedMetricsExceptCounts) {
     LiveHistoricalMetricsCalculator c;
-    auto m = c.calculate({}, {}, 5, flat_grid(0), 252.0);
+    auto m = c.calculate(flat_grid(0), 252.0, 5);
     EXPECT_EQ(m.total_days, 0);
     EXPECT_EQ(m.total_trades, 5);
     EXPECT_DOUBLE_EQ(m.sharpe_ratio, 0.0);
@@ -193,9 +193,14 @@ TEST_F(LiveHistoricalMetricsTest, CalculateEmptyReturnsZeroedMetricsExceptCounts
 
 TEST_F(LiveHistoricalMetricsTest, CalculatePopulatesAllAggregateStats) {
     LiveHistoricalMetricsCalculator c;
-    std::vector<double> returns{1.0, -0.5, 2.0, -1.5, 0.5};
-    std::vector<double> pnl{1000.0, -500.0, 2000.0, -1500.0, 500.0};
-    auto m = c.calculate(returns, pnl, /*trades=*/10, grid_of_returns(returns), 252.0);
+    // Grid levels on a base of 100,000: +1,000, -500, +2,000, -1,500, +500.
+    const std::vector<DatedLevel> levels = {{"2026-01-02", 101000.0}, {"2026-01-05", 100500.0},
+                                            {"2026-01-06", 102500.0}, {"2026-01-07", 101000.0},
+                                            {"2026-01-08", 101500.0}};
+    const auto grid = build_statistics_series(
+        levels, {"2026-01-02", "2026-01-05", "2026-01-06", "2026-01-07", "2026-01-08"},
+        "2026-01-01", 100000.0, "2026-01-08");
+    auto m = c.calculate(grid, 252.0, /*trades=*/10);
 
     EXPECT_EQ(m.total_days, 5);
     EXPECT_EQ(m.total_trades, 10);
@@ -204,24 +209,24 @@ TEST_F(LiveHistoricalMetricsTest, CalculatePopulatesAllAggregateStats) {
     EXPECT_NEAR(m.win_rate, 60.0, 1e-9);
     EXPECT_GT(m.volatility, 0.0);
     EXPECT_GT(m.sharpe_ratio, 0.0);
-    EXPECT_GT(m.gross_profit, 0.0);
-    EXPECT_GT(m.gross_loss, 0.0);
     EXPECT_NEAR(m.gross_profit, 3500.0, 1e-9);
     EXPECT_NEAR(m.gross_loss, 2000.0, 1e-9);
     EXPECT_NEAR(m.profit_factor, 1.75, 1e-9);
-    EXPECT_DOUBLE_EQ(m.best_day, 2.0);
-    EXPECT_DOUBLE_EQ(m.worst_day, -1.5);
+    // Best: +2,000 on 100,500; worst: -1,500 on 102,500.
+    EXPECT_NEAR(m.best_day, 2000.0 / 100500.0 * 100.0, 1e-9);
+    EXPECT_NEAR(m.worst_day, -1500.0 / 102500.0 * 100.0, 1e-9);
 }
 
 TEST_F(LiveHistoricalMetricsTest, CalculateProfitFactorIsLargeWhenNoLosses) {
     LiveHistoricalMetricsCalculator c;
-    auto m = c.calculate({1.0, 2.0}, {100.0, 200.0}, 2, flat_grid(2), 252.0);
+    auto m = c.calculate(grid_of_returns({1.0, 2.0}), 252.0, 2);
+    EXPECT_DOUBLE_EQ(m.gross_loss, 0.0);
     EXPECT_GT(m.profit_factor, 100.0);
 }
 
 TEST_F(LiveHistoricalMetricsTest, CalculateZeroVolatilityKeepsRatiosAtZero) {
     LiveHistoricalMetricsCalculator c;
-    auto m = c.calculate({0.5, 0.5, 0.5}, {}, 0, flat_grid(3), 252.0);
+    auto m = c.calculate(flat_grid(3), 252.0, 0);
     EXPECT_DOUBLE_EQ(m.volatility, 0.0);
     EXPECT_DOUBLE_EQ(m.sharpe_ratio, 0.0);
     EXPECT_DOUBLE_EQ(m.sortino_ratio, 0.0);

@@ -5153,21 +5153,13 @@ int main(int argc, char* argv[]) {
         HistoricalMetrics settled_statistics;
         try {
             if (data_loader && data_loader->is_connected()) {
-                auto returns_hist_res = data_loader->load_daily_returns_history(
-                    kEquityStrategyId, portfolio_id, previous_date);
-                auto pnl_hist_res = data_loader->load_daily_pnl_history(
-                    kEquityStrategyId, portfolio_id, previous_date);
                 auto trades_hist_res = data_loader->load_total_trades_count(
                     kEquityStrategyId, portfolio_id, previous_date);
                 auto t1_row = data_loader->load_live_results(
                     kEquityStrategyId, portfolio_id, previous_date);
 
-                std::vector<double> returns_hist;
-                std::vector<double> pnl_hist;
                 int total_trades_hist = 0;
 
-                if (returns_hist_res.is_ok()) returns_hist = returns_hist_res.value();
-                if (pnl_hist_res.is_ok()) pnl_hist = pnl_hist_res.value();
                 if (trades_hist_res.is_ok()) total_trades_hist = trades_hist_res.value();
 
                 // The statistics grid of an equity book: the NYSE sessions from the book's start,
@@ -5200,13 +5192,11 @@ int main(int argc, char* argv[]) {
                      std::to_string(statistics_series.size()) + " calendar_days=" +
                      std::to_string(t1_trading_days_count));
 
+                // Every statistic is taken on the series: its returns are in PERCENT and its
+                // P&L is the difference of two grid levels.
                 LiveHistoricalMetricsCalculator hist_calc;
-                // daily_return is stored in PERCENT (the T-1 UPDATE above multiplies by
-                // 100.0), so the series arrives in percent and must NOT be scaled again --
-                // the futures runner carries the same note after a 100x volatility bug.
                 settled_statistics =
-                    hist_calc.calculate(returns_hist, pnl_hist, total_trades_hist,
-                                        statistics_series, sessions_per_year);
+                    hist_calc.calculate(statistics_series, sessions_per_year, total_trades_hist);
 
                 if (const std::string days_warning =
                         statistics_days_warning(settled_statistics, statistics_series);
@@ -5234,7 +5224,7 @@ int main(int argc, char* argv[]) {
                      " gross_profit=" + std::to_string(settled_statistics.gross_profit) +
                      " gross_loss=" + std::to_string(settled_statistics.gross_loss) +
                      " profit_factor=" + std::to_string(settled_statistics.profit_factor) +
-                     " (returns n=" + std::to_string(returns_hist.size()) +
+                     " (grid returns n=" + std::to_string(statistics_series.size()) +
                      ", executions=" + std::to_string(total_trades_hist) + ")");
 
                 if (t1_row.is_ok()) {
