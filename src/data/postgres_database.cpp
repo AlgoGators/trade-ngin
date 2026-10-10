@@ -9,6 +9,7 @@
 #include "trade_ngin/core/state_manager.hpp"
 #include "trade_ngin/core/time_utils.hpp"
 #include "trade_ngin/data/market_data_utils.hpp"
+#include "trade_ngin/transaction_cost/netting.hpp"
 
 namespace {
 std::string join(const std::vector<std::string>& elements, const std::string& delimiter) {
@@ -2201,6 +2202,13 @@ Result<void> PostgresDatabase::validate_execution_report(const ExecutionReport& 
         return make_error<void>(ErrorCode::INVALID_ARGUMENT,
                                 "Invalid total_transaction_costs: must be between 0 and 1e12",
                                 "PostgresDatabase");
+    }
+
+    // A ROLL leg and a BORROW row are never netted: a row of either kind carrying a netting
+    // adjustment is refused, never stored and never corrected.
+    const std::string unnetted_refusal = transaction_cost::unnetted_row_refusal(exec);
+    if (!unnetted_refusal.empty()) {
+        return make_error<void>(ErrorCode::INVALID_ARGUMENT, unnetted_refusal, "PostgresDatabase");
     }
 
     return Result<void>();

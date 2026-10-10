@@ -370,3 +370,41 @@ TEST(NetCost, AddNetCostsStartsFromTheGivenFillAndKeepsTheRunningTotal) {
     EXPECT_NEAR(add_net_costs(0.0, fills, 2), 1.10, 1e-9);
     EXPECT_DOUBLE_EQ(add_net_costs(5.0, fills, fills.size()), 5.0);
 }
+
+// T-NETTING fix round: a ROLL leg and a BORROW row are never netted, so each must carry an
+// adjustment of exactly 0. One that does not is REFUSED wherever fills are summed (and by the
+// executions writer: test_executions_netting_column_db.cpp), never silently charged own cost in
+// one total and net cost in another, and never corrected.
+TEST(UnnettedRows, ARollOrBorrowRowWithAnAdjustmentIsRefusedWhereFillsAreSummed) {
+    for (const ExecutionType type : {ExecutionType::ROLL, ExecutionType::BORROW}) {
+        ExecutionReport row = exec("MES.v.0", Side::SELL, 2, 6650.0, "3.24");
+        row.exec_id = "RL-TREND_FOLLOWING-7";
+        row.execution_type = type;
+        EXPECT_TRUE(unnetted_row_refusal(row).empty()) << "adjustment 0: nothing to refuse";
+        EXPECT_EQ(unnetted_cost(row), d("3.24")) << "its cost is its own cost";
+        EXPECT_DOUBLE_EQ(add_net_costs(0.0, {row}), 3.24);
+
+        for (const char* adjustment : {"0.50", "-0.50", "0.00000001"}) {
+            row.netting_adjustment = d(adjustment);
+            const std::string refusal = unnetted_row_refusal(row);
+            EXPECT_NE(refusal.find("NETTING_REFUSED"), std::string::npos) << refusal;
+            EXPECT_NE(refusal.find("RL-TREND_FOLLOWING-7"), std::string::npos) << refusal;
+            EXPECT_NE(refusal.find(type == ExecutionType::ROLL ? "ROLL" : "BORROW"),
+                      std::string::npos)
+                << refusal;
+            EXPECT_THROW(unnetted_cost(row), std::logic_error) << adjustment;
+            EXPECT_THROW(add_net_costs(0.0, {row}), std::logic_error) << adjustment;
+            ExecutionReport ordinary = exec("ZN.v.0", Side::BUY, 1, 112.5, "5.00");
+            EXPECT_THROW(add_net_costs(0.0, {ordinary, row}), std::logic_error)
+                << "one bad row among good ones refuses the whole sum";
+            EXPECT_DOUBLE_EQ(add_net_costs(0.0, {row, ordinary}, 1), 5.00)
+                << "a row before the starting index is not summed and not judged";
+        }
+        row.netting_adjustment = Decimal();
+    }
+    // A STRATEGY row carries any adjustment: that is what netting is.
+    ExecutionReport strategy = exec("MBT.v.0", Side::SELL, 1, 115000.0, "4.50");
+    strategy.netting_adjustment = d("-0.915");
+    EXPECT_TRUE(unnetted_row_refusal(strategy).empty());
+    EXPECT_NEAR(add_net_costs(0.0, {strategy}), 5.415, 1e-12);
+}

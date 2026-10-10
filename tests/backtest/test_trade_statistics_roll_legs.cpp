@@ -384,6 +384,21 @@ TEST(TradeStatisticsNetCost, ATradeAndASymbolAreChargedTheCostAfterNetting) {
     EXPECT_NEAR(calc.calculate_trade_statistics(cross).total_loss, 0.0, 1e-12);
 }
 
+// T-NETTING fix round: the trade statistics' roll total reads the leg's OWN cost through the same
+// call as results.roll_costs, and a ROLL leg given a non-zero adjustment is refused there, not
+// scored on either basis.
+TEST(TradeStatisticsNetCost, ARollLegGivenAnAdjustmentIsRefused) {
+    BacktestMetricsCalculator calc;
+    std::vector<ExecutionReport> execs = {
+        fill("NG.v.0", Side::BUY, 1.0, 3.30, 0, 1.0),
+        fill("NG.v.0", Side::SELL, 1.0, 3.376, 4, 2.0, ExecutionType::ROLL, "864"),
+        fill("NG.v.0", Side::BUY, 1.0, 3.965, 4, 2.0, ExecutionType::ROLL, "863"),
+    };
+    EXPECT_DOUBLE_EQ(calc.calculate_trade_statistics(execs).roll_costs, 4.0);
+    execs[1].netting_adjustment = Decimal(0.75);
+    EXPECT_THROW(calc.calculate_trade_statistics(execs), std::logic_error);
+}
+
 // A ROLL leg is never netted: its adjustment is 0 and the roll total is its own cost.
 TEST(TradeStatisticsNetCost, ARollLegsCostIsItsOwn) {
     BacktestMetricsCalculator calc;

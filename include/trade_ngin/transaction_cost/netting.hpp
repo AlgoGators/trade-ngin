@@ -97,8 +97,18 @@ inline Decimal net_cost(const ExecutionReport& fill) {
     return fill.total_transaction_costs - fill.netting_adjustment;
 }
 
+/// A ROLL leg and a BORROW row are never netted: each must carry a netting adjustment of exactly 0.
+/// The refusal's text for a row that breaks that; empty for every other row.
+std::string unnetted_row_refusal(const ExecutionReport& fill);
+
+/// The cost of a ROLL leg or a BORROW row: its own cost, the one figure every roll total reads. A
+/// row of either kind that carries a non-zero adjustment is REFUSED (std::logic_error with
+/// unnetted_row_refusal's text), never corrected: nothing may charge it own cost in one total and
+/// net cost in another.
+Decimal unnetted_cost(const ExecutionReport& fill);
+
 /// One day's (live) or one bar's (backtest) charge: `running` plus the net cost of every fill, added
-/// in the order given.
+/// in the order given. Refuses (std::logic_error) a ROLL or BORROW row with a non-zero adjustment.
 double add_net_costs(double running, const std::vector<ExecutionReport>& fills, size_t from = 0);
 
 }  // namespace transaction_cost

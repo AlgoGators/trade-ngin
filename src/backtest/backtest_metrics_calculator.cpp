@@ -447,7 +447,9 @@ BacktestMetricsCalculator::TradeStatistics BacktestMetricsCalculator::calculate_
         // Its cost goes to the roll total, never into a trade.
         if (exec.execution_type == ExecutionType::ROLL) {
             stats.roll_fills++;
-            stats.roll_costs += commission;
+            // The same figure results.roll_costs reads: the leg's own cost (a leg is never netted;
+            // one carrying an adjustment is refused).
+            stats.roll_costs += static_cast<double>(transaction_cost::unnetted_cost(exec));
             continue;
         }
         // X-4: a BORROW row (quantity 0) is a cost on an open short, not a trade: it moves no

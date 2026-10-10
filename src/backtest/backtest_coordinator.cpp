@@ -448,11 +448,13 @@ Result<BacktestResults> BacktestCoordinator::run_portfolio(
     results.warmup_days = calculated_warmup_days;
     // Migration 018: the run's cost totals from the stored rows themselves (STRATEGY + ROLL +
     // BORROW: the sum the equity curve charged, each fill at its cost after netting), the ROLL
-    // subset (a ROLL leg is never netted: its own cost) and the count of ROLL rows.
+    // subset (a ROLL leg is never netted: its own cost, read through unnetted_cost, which refuses
+    // a ROLL or BORROW row carrying an adjustment) and the count of ROLL rows.
     for (const auto& e : all_executions) {
+        if (e.execution_type != ExecutionType::STRATEGY) (void)transaction_cost::unnetted_cost(e);
         results.transaction_costs += static_cast<double>(transaction_cost::net_cost(e));
         if (e.execution_type == ExecutionType::ROLL) {
-            results.roll_costs += static_cast<double>(e.total_transaction_costs);
+            results.roll_costs += static_cast<double>(transaction_cost::unnetted_cost(e));
             ++results.total_roll_fills;
         }
     }

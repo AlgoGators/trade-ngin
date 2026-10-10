@@ -179,3 +179,32 @@ TEST_F(ExecutionsNettingColumnTest, BacktestRowsStoreTheirAdjustmentOnEveryWrite
     // requires (NOT NULL), so it cannot insert into this table at all; it gets the column for
     // symmetry and is not exercised here.
 }
+
+// T-NETTING fix round: a ROLL leg and a BORROW row are never netted. A row of either kind that
+// carries a netting adjustment is REFUSED by the writer (an error naming the row), not stored and
+// not corrected to 0; the same row with adjustment 0 is stored.
+TEST_F(ExecutionsNettingColumnTest, ARollOrBorrowRowWithAnAdjustmentIsRefusedNotStored) {
+    for (const ExecutionType type : {ExecutionType::ROLL, ExecutionType::BORROW}) {
+        auto bad = make_exec("EXEC_K3_UNNETTED", Side::SELL, "3.97287664", "0.25");
+        bad.execution_type = type;
+        const auto refused = db_->store_executions({bad}, kStrategyId, "K3_UNNETTED", kPortfolio,
+                                                   "trading.executions");
+        ASSERT_TRUE(refused.is_error()) << to_string(type);
+        EXPECT_NE(std::string(refused.error()->what()).find("NETTING_REFUSED"), std::string::npos)
+            << refused.error()->what();
+        EXPECT_NE(std::string(refused.error()->what()).find("EXEC_K3_UNNETTED"), std::string::npos)
+            << "the refusal names the row: " << refused.error()->what();
+        EXPECT_EQ(trading_value("K3_UNNETTED"), "MISSING") << "nothing was stored";
+
+        const auto refused_bt = db_->store_backtest_executions_with_strategy(
+            {bad}, kRunId, "K3_UNNETTED", kPortfolio, "backtest.executions");
+        EXPECT_TRUE(refused_bt.is_error()) << to_string(type);
+        EXPECT_TRUE(backtest_values("K3_UNNETTED").empty()) << "nothing was stored";
+    }
+    auto good = make_exec("EXEC_K3_ROLL_OK", Side::SELL, "3.97287664", "0");
+    good.execution_type = ExecutionType::ROLL;
+    ASSERT_FALSE(db_->store_executions({good}, kStrategyId, "K3_UNNETTED", kPortfolio,
+                                       "trading.executions")
+                     .is_error());
+    EXPECT_EQ(trading_value("K3_UNNETTED"), "0");
+}
