@@ -241,7 +241,7 @@ TEST_F(PmNettingTest, ALiveRunnersPmPassDoesNotNetItsWholeBookReports) {
 
 TEST(PmNettingSource, TheBacktestCoordinatorMarksItsPortfolioAsBacktest) {
     const std::string src = read_source("src/backtest/backtest_coordinator.cpp");
-    if (src.empty()) GTEST_SKIP() << "backtest_coordinator.cpp not found";
+    ASSERT_FALSE(src.empty()) << "src/backtest/backtest_coordinator.cpp not found: a source-text test must be run from inside the source tree";
     const auto run = src.find("BacktestCoordinator::run_portfolio(");
     const auto mark = src.find("portfolio->set_backtest_mode(true);", run);
     ASSERT_NE(run, std::string::npos);
@@ -253,13 +253,19 @@ TEST(PmNettingSource, BothFuturesRunnersNetTheDaysSleeveRowsBeforeStoringThem) {
     for (const char* f : {"apps/strategies/live_portfolio.cpp",
                           "apps/strategies/live_portfolio_conservative.cpp"}) {
         const std::string src = read_source(f);
-        if (src.empty()) GTEST_SKIP() << f << " not found";
+        if (src.empty()) {
+            ADD_FAILURE() << f << " not found: a source-text test must be run from inside the source tree";
+            continue;
+        }
         const auto strict = src.find("STRICT_ASSERTION failed");
         const auto net = src.find("transaction_cost::apply_netting_adjustments(");
         const auto store = src.find("db->store_executions(executions,");
-        ASSERT_NE(strict, std::string::npos) << f;
-        ASSERT_NE(net, std::string::npos) << f << ": the runner never nets its sleeve rows";
-        ASSERT_NE(store, std::string::npos) << f;
+        EXPECT_NE(strict, std::string::npos) << f;
+        EXPECT_NE(net, std::string::npos) << f << ": the runner never nets its sleeve rows";
+        EXPECT_NE(store, std::string::npos) << f;
+        if (strict == std::string::npos || net == std::string::npos || store == std::string::npos) {
+            continue;  // the next file is still read
+        }
         EXPECT_LT(strict, net) << f << ": netting must see the final (post-rollback) rows";
         EXPECT_LT(net, store) << f << ": netting must happen before the rows are stored";
         EXPECT_NE(src.find("execution_manager->get_transaction_cost_manager().calculate_costs("),
@@ -277,7 +283,10 @@ TEST(PmNettingSource, TheBacktestsCostTotalsReadTheHelper) {
     };
     for (const auto& [f, text] : sites) {
         const std::string src = read_source(f);
-        if (src.empty()) GTEST_SKIP() << f << " not found";
+        if (src.empty()) {
+            ADD_FAILURE() << f << " not found: a source-text test must be run from inside the source tree";
+            continue;
+        }
         EXPECT_NE(src.find(text), std::string::npos) << f << " no longer reads: " << text;
     }
 }
@@ -289,17 +298,25 @@ TEST(PmNettingSource, BothFuturesRunnersAddUpTheDaysCostAfterNettingThroughTheHe
     for (const char* f : {"apps/strategies/live_portfolio.cpp",
                           "apps/strategies/live_portfolio_conservative.cpp"}) {
         const std::string src = read_source(f);
-        if (src.empty()) GTEST_SKIP() << f << " not found";
+        if (src.empty()) {
+            ADD_FAILURE() << f << " not found: a source-text test must be run from inside the source tree";
+            continue;
+        }
         const auto last_net = src.rfind("transaction_cost::apply_netting_adjustments(");
         const auto sum = src.find("total_daily_transaction_costs = transaction_cost::add_net_costs(");
         const auto store = src.find("db->store_executions(executions,");
-        ASSERT_NE(last_net, std::string::npos) << f;
-        ASSERT_NE(sum, std::string::npos) << f << ": the day's cost is not the sum of the net costs";
-        ASSERT_NE(store, std::string::npos) << f;
-        EXPECT_LT(last_net, sum) << f << ": the sum is taken before the adjustment is on the fills";
-        EXPECT_LT(sum, store) << f;
+        // EXPECT, not ASSERT: a failure in one runner must not end the test before its twin is
+        // read. The checks that need all three positions are skipped for that file only.
+        EXPECT_NE(last_net, std::string::npos) << f;
+        EXPECT_NE(sum, std::string::npos) << f << ": the day's cost is not the sum of the net costs";
+        EXPECT_NE(store, std::string::npos) << f;
         EXPECT_EQ(src.find("total_daily_transaction_costs +="), std::string::npos)
             << f << ": something adds to the day's cost beside the helper";
+        if (last_net == std::string::npos || sum == std::string::npos || store == std::string::npos) {
+            continue;
+        }
+        EXPECT_LT(last_net, sum) << f << ": the sum is taken before the adjustment is on the fills";
+        EXPECT_LT(sum, store) << f;
         size_t calls = 0;
         for (auto at = src.find("add_net_costs("); at != std::string::npos;
              at = src.find("add_net_costs(", at + 1)) {
@@ -314,7 +331,7 @@ TEST(PmNettingSource, BothFuturesRunnersAddUpTheDaysCostAfterNettingThroughTheHe
 TEST(PmNettingSource, TheEquityRunnerAddsUpTheDaysCostThroughTheHelper) {
     const char* f = "apps/strategies/live_equity_mean_reversion.cpp";
     const std::string src = read_source(f);
-    if (src.empty()) GTEST_SKIP() << f << " not found";
+    ASSERT_FALSE(src.empty()) << f << " not found: a source-text test must be run from inside the source tree";
     EXPECT_NE(src.find("transaction_cost::add_net_costs(total_daily_commissions, daily_executions)"),
               std::string::npos);
     EXPECT_EQ(src.find("total_daily_commissions +="), std::string::npos);
