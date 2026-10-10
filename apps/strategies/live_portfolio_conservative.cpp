@@ -14,6 +14,7 @@
 #include "trade_ngin/core/email_sender.hpp"
 #include "trade_ngin/core/holiday_checker.hpp"
 #include "trade_ngin/core/logger.hpp"
+#include "trade_ngin/core/report_risk_lines.hpp"
 #include "trade_ngin/core/resolved_sleeves.hpp"
 #include "trade_ngin/core/time_utils.hpp"
 #include "trade_ngin/data/conversion_utils.hpp"
@@ -3029,12 +3030,18 @@ int main(int argc, char* argv[]) {
                                                  strict_rolled_back.size()));
         }
 
+        // HD 2026-10-10: the report and the console print the overlay's expected risk of the
+        // stored book as a percent of the sizing capital beside the risk target, and the
+        // one-day 95 percent VaR in dollars, in place of portfolio_var (a price-weighted figure
+        // with no contract multiplier: not a VaR and not the book's risk; still stored).
+        const std::map<std::string, double> report_risk = trade_ngin::report_risk_metrics(
+            overlay_columns.overlay_risk, portfolio_config.overlay_tau, overlay_columns.var_95_1d,
+            stored_book_readings.contracts_in_risk, stored_book_readings.contracts_held);
+
         std::cout << "\n======= Strategy Metrics =======" << std::endl;
+        std::cout << trade_ngin::report_risk_console(report_risk);
         if (risk_eval.is_ok()) {
             const auto& r = risk_eval.value();
-            // Use portfolio_var as annualized volatility proxy
-            std::cout << "Volatility: " << std::fixed << std::setprecision(2)
-                      << (r.portfolio_var * 100.0) << "%" << std::endl;
             std::cout << "Gross Leverage (Risk): " << std::fixed << std::setprecision(2)
                       << r.gross_leverage << std::endl;
             std::cout << "Net Leverage: " << std::fixed << std::setprecision(2) << r.net_leverage
@@ -3046,7 +3053,6 @@ int main(int argc, char* argv[]) {
             std::cout << "Risk Scale: " << std::fixed << std::setprecision(2) << r.recommended_scale
                       << std::endl;
         } else {
-            std::cout << "Volatility: N/A" << std::endl;
             std::cout << "Gross Leverage (Risk): N/A" << std::endl;
             std::cout << "Net Leverage: N/A" << std::endl;
             std::cout << "Max Correlation: N/A" << std::endl;
@@ -4619,10 +4625,11 @@ int main(int argc, char* argv[]) {
                                             today_row.losing_days));
                         strategy_metrics["Total Days"] = static_cast<double>(today_row.total_days);
                     }
-                    // Portfolio VaR is always sourced from the live risk evaluation,
-                    // separate from historical volatility stored in live_results
-                    if (risk_eval.is_ok()) {
-                        strategy_metrics["Portfolio VaR"] = risk_eval.value().portfolio_var * 100.0;
+                    // The two risk lines of the portfolio summary: the overlay's expected risk
+                    // beside the target and the one-day VaR (report_risk_lines.hpp). A day with
+                    // no figure carries no key and prints no line.
+                    for (const auto& [name, value] : report_risk) {
+                        strategy_metrics[name] = value;
                     }
                     strategy_metrics["Total Transaction Costs"] =
                         total_transaction_costs_cumulative;

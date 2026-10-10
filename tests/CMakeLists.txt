@@ -14,6 +14,7 @@ set(TEST_SOURCES
     core/test_logger_retention.cpp
     core/test_email_positions_table.cpp
     core/test_email_strategy_tables.cpp
+    core/test_report_risk_lines.cpp
     core/test_run_id_generator.cpp
     core/test_config_loader.cpp
     core/test_reserve_capital_deleted.cpp

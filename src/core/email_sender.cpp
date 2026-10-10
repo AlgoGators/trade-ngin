@@ -1,4 +1,5 @@
 #include "trade_ngin/core/email_sender.hpp"
+#include "trade_ngin/core/report_risk_lines.hpp"
 #include <curl/curl.h>
 #include <algorithm>
 #include <cctype>
@@ -1248,11 +1249,14 @@ std::string EmailSender::format_positions_table(
 
     html << "<strong>Active Positions:</strong> " << active_positions << "<br>\n";
 
-    // Add Portfolio VaR if available in strategy metrics
-    auto var_it = strategy_metrics.find("Portfolio VaR");
-    if (var_it != strategy_metrics.end()) {
-        html << "<strong>Portfolio VaR:</strong> " << std::fixed << std::setprecision(2)
-             << var_it->second << "%<br>\n";
+    // The overlay's expected risk of the stored book beside the risk target, and the one-day 95
+    // percent VaR in dollars (report_risk_lines.hpp); a figure the metrics do not carry has no line.
+    const ReportRiskLines risk_lines = report_risk_lines(strategy_metrics);
+    if (!risk_lines.expected_risk.empty()) {
+        html << "<strong>Expected Risk:</strong> " << risk_lines.expected_risk << "<br>\n";
+    }
+    if (!risk_lines.var_95_1d.empty()) {
+        html << "<strong>1-Day 95% VaR:</strong> " << risk_lines.var_95_1d << "<br>\n";
     }
 
     html << "<strong>Total Notional:</strong> $" << format_with_commas(total_notional) << "<br>\n";
@@ -3441,11 +3445,16 @@ std::string EmailSender::format_strategy_positions_tables(
     html << "<div class=\"metric\"><strong>Active Positions:</strong> " << portfolio_total_positions
          << "</div>\n";
 
-    // Add Portfolio VaR if available in strategy metrics
-    auto var_it = strategy_metrics.find("Portfolio VaR");
-    if (var_it != strategy_metrics.end()) {
-        html << "<div class=\"metric\"><strong>Portfolio VaR:</strong> " << std::fixed
-             << std::setprecision(2) << var_it->second << "%</div>\n";
+    // The overlay's expected risk of the stored book beside the risk target, and the one-day 95
+    // percent VaR in dollars (report_risk_lines.hpp); a figure the metrics do not carry has no line.
+    const ReportRiskLines risk_lines = report_risk_lines(strategy_metrics);
+    if (!risk_lines.expected_risk.empty()) {
+        html << "<div class=\"metric\"><strong>Expected Risk:</strong> "
+             << risk_lines.expected_risk << "</div>\n";
+    }
+    if (!risk_lines.var_95_1d.empty()) {
+        html << "<div class=\"metric\"><strong>1-Day 95% VaR:</strong> " << risk_lines.var_95_1d
+             << "</div>\n";
     }
 
     html << "<div class=\"metric\"><strong>Total Notional:</strong> $"

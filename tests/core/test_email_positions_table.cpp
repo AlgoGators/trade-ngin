@@ -195,3 +195,30 @@ TEST_F(EmailPositionsTableTest, TheMarginLineFallsBackToTheCloseWithoutABasis) {
     ASSERT_NO_THROW({ html = sender_.format_positions_table(positions, true, prices, {}); });
     EXPECT_NE(html.find("<strong>Total Margin Posted:</strong> $7,500"), std::string::npos);
 }
+
+// HD 2026-10-10: the summary under the single positions table prints the overlay's expected risk
+// beside the risk target and the one-day 95 percent VaR in dollars, in place of "Portfolio VaR".
+TEST_F(EmailPositionsTableTest, TheSummaryShowsTheExpectedRiskAndTheOneDayVarAndNoPortfolioVar) {
+    const std::unordered_map<std::string, Position> positions{
+        {"ZPRICED", held("ZPRICED", 50.0, 200.0)}};
+    const std::unordered_map<std::string, double> prices{{"ZPRICED", 210.0}};
+    const std::map<std::string, double> metrics{{"Portfolio VaR", 7.12},
+                                                {"Expected Risk", 12.3449},
+                                                {"Risk Target", 20.0},
+                                                {"VaR 95 1-Day", 1234567.891},
+                                                {"Risk Contracts Covered", 9.0},
+                                                {"Risk Contracts Held", 9.0}};
+    std::string html;
+    ASSERT_NO_THROW({ html = sender_.format_positions_table(positions, true, prices, metrics); });
+    EXPECT_EQ(html.find("Portfolio VaR"), std::string::npos) << html;
+    EXPECT_NE(html.find("<strong>Expected Risk:</strong> 12.34% of the sizing capital (target "
+                        "20.00%; 9 of 9 contracts)<br>"),
+              std::string::npos)
+        << html;
+    EXPECT_NE(html.find("<strong>1-Day 95% VaR:</strong> $1,234,567.89<br>"), std::string::npos)
+        << html;
+
+    ASSERT_NO_THROW({ html = sender_.format_positions_table(positions, true, prices, {}); });
+    EXPECT_EQ(html.find("Expected Risk"), std::string::npos);
+    EXPECT_EQ(html.find("95% VaR"), std::string::npos);
+}
