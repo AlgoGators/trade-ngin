@@ -148,6 +148,8 @@ has backtest.results.correlation "lag-1 autocorrelation" "NOT a correlation with
 has backtest.results.total_trades "ACCOUNT fill" "netted across the sleeves" "DOLLARS" "non-zero net position" "a fill through zero (a reversal) is ONE account fill with one cost" "is charged to the trade it closes"
 has backtest.results "FRACTIONS" "not on the live statistics grid" "a fill through zero (a reversal) is ONE account fill with one cost"
 has backtest.final_positions "DAILY snapshot"
+has trading.live_results.total_dividend_income "THIS COLUMN IS THE DIVIDEND INCOME" "NO DIVIDEND CASH IS CREDITED ANYWHERE" "shares x average_price x dividend / (close + dividend)" "the cum-dividend close" "logs an ERROR and writes no new figure"
+has trading.corp_action_applied.qty_held "row dated ex_date - 1" "not the dividend income of the book" "Neither figure is credited as cash"
 n=0
 for o in $REDEFINED; do has "$o" "Rows written before migration 028 keep the earlier definition."; n=$((n + 1)); done
 [[ "$n" == "34" ]] || fail "$n redefined columns checked, expected 34"
