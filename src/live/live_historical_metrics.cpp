@@ -10,10 +10,6 @@
 
 namespace trade_ngin {
 
-namespace {
-constexpr double TRADING_DAYS_PER_YEAR = 252.0;
-}
-
 double LiveHistoricalMetricsCalculator::calculate_mean(const std::vector<double>& values) {
     if (values.empty()) {
         return 0.0;
@@ -23,8 +19,8 @@ double LiveHistoricalMetricsCalculator::calculate_mean(const std::vector<double>
 }
 
 double LiveHistoricalMetricsCalculator::calculate_annualized_volatility(
-    const std::vector<double>& returns_pct) {
-    if (returns_pct.size() < 2) {
+    const std::vector<double>& returns_pct, double sessions_per_year) {
+    if (returns_pct.size() < 2 || sessions_per_year <= 0.0) {
         return 0.0;
     }
 
@@ -35,14 +31,15 @@ double LiveHistoricalMetricsCalculator::calculate_annualized_volatility(
         sq_sum += diff * diff;
     }
 
-    double variance = sq_sum / static_cast<double>(returns_pct.size());
+    // The sample variance (n - 1): the returns are a sample of the book's sessions.
+    double variance = sq_sum / static_cast<double>(returns_pct.size() - 1);
     double daily_std = std::sqrt(variance);
-    return daily_std * std::sqrt(TRADING_DAYS_PER_YEAR);
+    return daily_std * std::sqrt(sessions_per_year);
 }
 
 double LiveHistoricalMetricsCalculator::calculate_annualized_downside_deviation(
-    const std::vector<double>& returns_pct, double target) {
-    if (returns_pct.size() < 2) {
+    const std::vector<double>& returns_pct, double sessions_per_year, double target) {
+    if (returns_pct.size() < 2 || sessions_per_year <= 0.0) {
         return 0.0;
     }
 
@@ -58,7 +55,7 @@ double LiveHistoricalMetricsCalculator::calculate_annualized_downside_deviation(
 
     double variance = sq_sum / static_cast<double>(returns_pct.size());
     double daily_downside_std = std::sqrt(variance);
-    return daily_downside_std * std::sqrt(TRADING_DAYS_PER_YEAR);
+    return daily_downside_std * std::sqrt(sessions_per_year);
 }
 
 double LiveHistoricalMetricsCalculator::calculate_max_drawdown_from_equity(
@@ -204,7 +201,6 @@ HistoricalMetrics LiveHistoricalMetricsCalculator::calculate(
     const std::vector<double>& daily_returns_pct,
     const std::vector<double>& daily_pnl_dollars,
     const std::vector<double>& equity_values,
-    double total_annualized_return_pct,
     int total_trades_executions,
     const StatisticsSeries& grid,
     double sessions_per_year) const {
@@ -215,21 +211,23 @@ HistoricalMetrics LiveHistoricalMetricsCalculator::calculate(
     metrics.total_annualized_return = grid_annualized_return_pct(grid, sessions_per_year);
     metrics.total_trades = total_trades_executions;
 
-    // Early exit if no returns history – keep everything at 0
-    if (daily_returns_pct.empty()) {
-        return metrics;
-    }
-
-    // Volatility and downside deviation (annualized, % units)
-    metrics.volatility = calculate_annualized_volatility(daily_returns_pct);
-    metrics.downside_deviation = calculate_annualized_downside_deviation(daily_returns_pct, 0.0);
-
-    // Sharpe and Sortino (using user formulas)
+    // Volatility, downside deviation, Sharpe and Sortino on the grid returns (% units), every
+    // one annualised with the grid's own sessions a year: sample sd x sqrt(K); mean / sd x
+    // sqrt(K), rf 0; sqrt(sum of min(r, 0)^2 over every return / n) x sqrt(K); mean x K over it.
+    metrics.volatility = calculate_annualized_volatility(grid.returns_pct, sessions_per_year);
+    metrics.downside_deviation =
+        calculate_annualized_downside_deviation(grid.returns_pct, sessions_per_year, 0.0);
+    const double grid_mean = calculate_mean(grid.returns_pct);
     if (metrics.volatility > 0.0) {
-        metrics.sharpe_ratio = total_annualized_return_pct / metrics.volatility;
+        metrics.sharpe_ratio = grid_mean * sessions_per_year / metrics.volatility;
     }
     if (metrics.downside_deviation > 0.0) {
-        metrics.sortino_ratio = total_annualized_return_pct / metrics.downside_deviation;
+        metrics.sortino_ratio = grid_mean * sessions_per_year / metrics.downside_deviation;
+    }
+
+    // Early exit if no returns history – the row-based figures below stay at 0
+    if (daily_returns_pct.empty()) {
+        return metrics;
     }
 
     // Max drawdown from equity curve (if available)

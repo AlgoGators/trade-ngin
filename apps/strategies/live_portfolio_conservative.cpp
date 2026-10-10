@@ -3121,8 +3121,6 @@ int main(int argc, char* argv[]) {
             WARN("TRADING_DAYS_CALC [Day T-1]: Failed to get trading days: " +
                  std::string(e.what()));
         }
-        // The annualised return STEP 4 stores on the Day T-1 row, when it runs.
-        std::optional<double> finalized_t1_annualized_return;
 
         if (!two_days_ago_close_prices.empty() &&
             (aggregate_yesterday_total_pnl != 0.0 || t1_zero_pnl_held) &&
@@ -3231,34 +3229,8 @@ int main(int argc, char* argv[]) {
             double yesterday_total_cumulative_return = metrics_calculator->calculate_total_return(
                 yesterday_portfolio_value_finalized, initial_capital);
 
-            double yesterday_total_return_decimal = 0.0;
-            if (initial_capital > 0.0) {
-                yesterday_total_return_decimal =
-                    (yesterday_portfolio_value_finalized - initial_capital) / initial_capital;
-            }
             double yesterday_total_cumulative_return_pct =
                 yesterday_total_cumulative_return;  // Already in %
-
-            // Calculate yesterday's annualized return using LiveMetricsCalculator
-            // Formula: annualized_return = ((1 + total_return)^(252/trading_days) - 1) * 100
-            INFO("ANNUALIZED_RETURN_CALC [Day T-1]: Calculating annualized return...");
-            INFO("ANNUALIZED_RETURN_CALC [Day T-1]: Input: total_return_decimal = " +
-                 std::to_string(yesterday_total_return_decimal) + " (" +
-                 std::to_string(yesterday_total_return_decimal * 100.0) + "%)");
-            INFO("ANNUALIZED_RETURN_CALC [Day T-1]: Input: trading_days_count = " +
-                 std::to_string(t1_trading_days_count));
-            INFO("ANNUALIZED_RETURN_CALC [Day T-1]: Formula: ((1 + " +
-                 std::to_string(yesterday_total_return_decimal) + ")^(252/" +
-                 std::to_string(t1_trading_days_count) + ") - 1) * 100");
-
-            double yesterday_total_return_annualized =
-                metrics_calculator->calculate_annualized_return(yesterday_total_return_decimal,
-                                                                t1_trading_days_count);
-
-            finalized_t1_annualized_return = yesterday_total_return_annualized;
-
-            INFO("ANNUALIZED_RETURN_CALC [Day T-1]: Result: " +
-                 std::to_string(yesterday_total_return_annualized) + "%");
 
             // Calculate yesterday's leverage and risk metrics
             // IMPORTANT: We MUST preserve existing values from the database
@@ -3731,26 +3703,13 @@ int main(int argc, char* argv[]) {
                      std::to_string(statistics_series.size()) + " calendar_days=" +
                      std::to_string(t1_trading_days_count));
 
-                // The Day T-1 annualised return the Sharpe and Sortino ratios divide: the one
-                // STEP 4 stored or, on a day STEP 4 did not run, the same formula on the stored
-                // Day T-1 level.
-                double t1_annualized_return = 0.0;
-                if (finalized_t1_annualized_return) {
-                    t1_annualized_return = *finalized_t1_annualized_return;
-                } else if (t1_row.is_ok() && initial_capital > 0.0) {
-                    t1_annualized_return = metrics_calculator->calculate_annualized_return(
-                        (t1_row.value().current_portfolio_value - initial_capital) /
-                            initial_capital,
-                        t1_trading_days_count);
-                }
-
                 LiveHistoricalMetricsCalculator hist_calc;
                 // NOTE: returns_hist is already loaded in PERCENT units (e.g., 0.11 = 0.11%,
                 // not 11%) because daily_return is computed in SQL as `... * 100.0`. Do NOT
                 // multiply by 100 here -- that produced a 100x volatility / 100x lower sharpe.
-                settled_statistics = hist_calc.calculate(returns_hist, pnl_hist, equity_hist,
-                                                         t1_annualized_return, total_trades_hist,
-                                                         statistics_series, sessions_per_year);
+                settled_statistics =
+                    hist_calc.calculate(returns_hist, pnl_hist, equity_hist, total_trades_hist,
+                                        statistics_series, sessions_per_year);
 
                 // win_rate over the calendar trading-days count; total_days is the grid's n
                 apply_trading_days_override(settled_statistics, t1_trading_days_count);

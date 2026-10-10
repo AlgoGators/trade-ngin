@@ -18,8 +18,8 @@ namespace trade_ngin {
  */
 struct HistoricalMetrics {
     // Risk-adjusted performance
-    double sharpe_ratio = 0.0;
-    double sortino_ratio = 0.0;
+    double sharpe_ratio = 0.0;   // mean(r) / sample sd(r) x sqrt(K), rf 0, on the grid returns
+    double sortino_ratio = 0.0;  // mean(r) x K / downside_deviation
     double max_drawdown = 0.0;        // % peak-to-trough from equity curve
     double volatility = 0.0;          // annualized, % units
     double downside_deviation = 0.0;  // annualized, % units
@@ -142,25 +142,29 @@ public:
      * @param daily_returns_pct Daily returns in percentage points (e.g. 0.5 = 0.5%).
      * @param daily_pnl_dollars Daily PnL values in portfolio currency.
      * @param equity_values Full equity curve values (portfolio value over time).
-     * @param total_annualized_return_pct Total annualized return (percentage) since inception.
      * @param total_trades_executions Total number of executions since inception.
-     * @param grid The statistics series: total_days is its count of returns and
-     *        total_annualized_return is taken on it.
-     * @param sessions_per_year The sessions a year of the grid the series is taken on.
+     * @param grid The statistics series: total_days is its count of returns, and
+     *        total_annualized_return, volatility, downside_deviation and the Sharpe and Sortino
+     *        ratios are taken on its returns.
+     * @param sessions_per_year The sessions a year K of the grid the series is taken on; every
+     *        annualised figure of the series uses this one K.
      * @return HistoricalMetrics structure with all fields populated.
      */
     HistoricalMetrics calculate(const std::vector<double>& daily_returns_pct,
                                 const std::vector<double>& daily_pnl_dollars,
                                 const std::vector<double>& equity_values,
-                                double total_annualized_return_pct,
                                 int total_trades_executions,
                                 const StatisticsSeries& grid,
                                 double sessions_per_year) const;
 
 private:
     static double calculate_mean(const std::vector<double>& values);
-    static double calculate_annualized_volatility(const std::vector<double>& returns_pct);
+    // Sample standard deviation (n - 1) of the returns x sqrt(sessions_per_year)
+    static double calculate_annualized_volatility(const std::vector<double>& returns_pct,
+                                                  double sessions_per_year);
+    // sqrt(sum of min(r - target, 0)^2 over EVERY return / n) x sqrt(sessions_per_year)
     static double calculate_annualized_downside_deviation(const std::vector<double>& returns_pct,
+                                                          double sessions_per_year,
                                                           double target = 0.0);
     static double calculate_max_drawdown_from_equity(const std::vector<double>& equity_values);
 };
@@ -178,9 +182,8 @@ private:
  * into that column and the chain gate compared it, so filling in NULLs must not have moved it.
  * The lead then ruled the two books may not carry two meanings in one column: both futures
  * runners store the REALISED annualised return volatility here and keep the ex-ante sigma in
- * `portfolio_var`, and equities now do the same. It also makes `sharpe_ratio` reproducible
- * from the row it is written on -- `sharpe = total_annualized_return / volatility` -- which it
- * was not while the denominator lived nowhere.
+ * `portfolio_var`, and equities now do the same. `sharpe_ratio` is the mean grid return over
+ * the same sample standard deviation, both annualised with the grid's sessions a year.
  *
  * `portfolio_var`, `var_95` and `cvar_95` are untouched: the ex-ante sigma still feeds the risk
  * gate and nothing is lost.

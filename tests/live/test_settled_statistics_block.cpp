@@ -255,3 +255,23 @@ TEST(SettledStatisticsBlock, TheConfigTemplateRecordsTheFrozenSessionsAYear) {
         EXPECT_NE(tpl.find(recorded), std::string::npos) << recorded;
     }
 }
+
+// T-8a (5b): the Sharpe family is taken on the grid, so no runner computes or carries a
+// calendar-day annualised return any more: not in the level finalize, not in the block.
+TEST(SettledStatisticsBlock, NoRunnerAnnualisesOnCalendarDaysForTheRatios) {
+    for (const auto& runner : kRunners) {
+        const std::string src = read_source(runner);
+        if (src.empty()) GTEST_SKIP() << "runner source not found from the test working directory";
+        EXPECT_EQ(count_of(src, "calculate_annualized_return("), 0u)
+            << runner << ": a 252-over-calendar-days annualised return is still computed";
+        EXPECT_EQ(count_of(src, "finalized_t1_annualized_return"), 0u) << runner;
+        const std::string block = statistics_block(src);
+        ASSERT_FALSE(block.empty()) << runner;
+        EXPECT_NE(block.find("hist_calc.calculate(returns_hist, pnl_hist, equity_hist, "
+                             "total_trades_hist,\n"
+                             "                                        statistics_series, "
+                             "sessions_per_year);"),
+                  std::string::npos)
+            << runner << ": the calculator is still handed an annualised return";
+    }
+}

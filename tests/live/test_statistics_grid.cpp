@@ -174,10 +174,10 @@ TEST(StatisticsGrid, TotalDaysIsTheCountOfSettledGridReturns) {
     LiveHistoricalMetricsCalculator calc;
     // Seven stored rows; five grid returns. The legacy row series is deliberately longer.
     const std::vector<double> rows(7, 0.1);
-    const auto m = calc.calculate(rows, rows, {}, 0.0, 0, week_through("2026-04-26"), kFuturesK);
+    const auto m = calc.calculate(rows, rows, {}, 0, week_through("2026-04-26"), kFuturesK);
     EXPECT_EQ(m.total_days, 5);
     // The Saturday row and the row as written carry Friday's n (R28, R39).
-    EXPECT_EQ(calc.calculate(rows, rows, {}, 0.0, 0, week_through("2026-04-25"), kFuturesK)
+    EXPECT_EQ(calc.calculate(rows, rows, {}, 0, week_through("2026-04-25"), kFuturesK)
                   .total_days,
               4);
     EXPECT_EQ(historical_metrics_int_columns(m).at("total_days"), 5);
@@ -186,7 +186,7 @@ TEST(StatisticsGrid, TotalDaysIsTheCountOfSettledGridReturns) {
 TEST(StatisticsGrid, AnnualizedReturnIsGeometricOnTheGridForEveryN) {
     LiveHistoricalMetricsCalculator calc;
     const auto s = week_through("2026-04-26");
-    const auto m = calc.calculate({}, {}, {}, 0.0, 0, s, kFuturesK);
+    const auto m = calc.calculate({}, {}, {}, 0, s, kFuturesK);
     // R = 501,300 / 500,000 - 1 = 0.0026; n = 5; K = 311.0574.
     const double want = (std::pow(1.0026, 311.0574 / 5.0) - 1.0) * 100.0;
     EXPECT_NEAR(m.total_annualized_return, want, 1e-9);
@@ -232,4 +232,72 @@ TEST(StatisticsGrid, TheDaysWarningFiresWhenTheCountsDoNotAddUpAndNamesCarriedSe
     EXPECT_EQ(statistics_days_warning(m, s),
               "1 session(s) of the statistics grid have no stored row and carry the last stored "
               "level (first 2026-04-21, last 2026-04-21)");
+}
+
+// ===== (5b) Sharpe, volatility, and with them the downside deviation and Sortino =====
+
+TEST(StatisticsGrid, VolatilityAndSharpeAreTakenOnTheGridReturnsWithItsSessionsAYear) {
+    LiveHistoricalMetricsCalculator calc;
+    const auto s = week_through("2026-04-26");
+    // The stored-row series handed in is deliberately different: seven rows of +9 percent.
+    const std::vector<double> rows(7, 9.0);
+    const auto m = calc.calculate(rows, {}, {}, 0, s, kFuturesK);
+
+    // The five grid returns in percent: 0.2, 0, -0.399201..., 0.400801..., 0.059880...
+    double sum = 0.0;
+    for (double r : s.returns_pct) sum += r;
+    const double mean = sum / 5.0;
+    double squares = 0.0;
+    double downside = 0.0;
+    for (double r : s.returns_pct) {
+        squares += (r - mean) * (r - mean);
+        if (r < 0.0) downside += r * r;
+    }
+    const double sd = std::sqrt(squares / 4.0);  // the sample divisor, n - 1
+    EXPECT_NEAR(m.volatility, sd * std::sqrt(311.0574), 1e-9);
+    EXPECT_NEAR(m.volatility, 5.216409, 1e-5);
+    EXPECT_NEAR(m.sharpe_ratio, mean / sd * std::sqrt(311.0574), 1e-9);
+    EXPECT_NEAR(m.sharpe_ratio, 3.118443, 1e-5);
+    // Downside: the one losing grid return squared, over ALL five grid returns.
+    const double dd = std::sqrt(downside / 5.0) * std::sqrt(311.0574);
+    EXPECT_NEAR(m.downside_deviation, dd, 1e-9);
+    EXPECT_NEAR(m.downside_deviation, 3.148673, 1e-5);
+    EXPECT_NEAR(m.sortino_ratio, mean * 311.0574 / dd, 1e-9);
+    EXPECT_NEAR(m.sortino_ratio, 5.166327, 1e-5);
+}
+
+TEST(StatisticsGrid, TheSaturdayAndTheThinDateAreNotObservationsOfTheVolatility) {
+    LiveHistoricalMetricsCalculator calc;
+    // A series through Saturday is Friday's (R28): same volatility, Sharpe and Sortino.
+    const auto friday = calc.calculate({}, {}, {}, 0, week_through("2026-04-24"), kFuturesK);
+    const auto saturday = calc.calculate({}, {}, {}, 0, week_through("2026-04-25"), kFuturesK);
+    EXPECT_DOUBLE_EQ(saturday.volatility, friday.volatility);
+    EXPECT_DOUBLE_EQ(saturday.sharpe_ratio, friday.sharpe_ratio);
+    EXPECT_DOUBLE_EQ(saturday.sortino_ratio, friday.sortino_ratio);
+    EXPECT_DOUBLE_EQ(saturday.downside_deviation, friday.downside_deviation);
+    // Sunday's observation holds Saturday's P&L: the series through Sunday has five returns.
+    const auto sunday = calc.calculate({}, {}, {}, 0, week_through("2026-04-26"), kFuturesK);
+    EXPECT_NE(sunday.volatility, friday.volatility);
+}
+
+TEST(StatisticsGrid, AnEquitySeriesIsAnnualisedWithTwoHundredFiftyTwo) {
+    LiveHistoricalMetricsCalculator calc;
+    const auto s = week_through("2026-04-26");
+    const auto fut = calc.calculate({}, {}, {}, 0, s, kFuturesK);
+    const auto eq = calc.calculate({}, {}, {}, 0, s, 252.0);
+    // One K per series, in every annualised figure of it.
+    EXPECT_NEAR(eq.volatility / fut.volatility, std::sqrt(252.0 / 311.0574), 1e-12);
+    EXPECT_NEAR(eq.sharpe_ratio / fut.sharpe_ratio, std::sqrt(252.0 / 311.0574), 1e-12);
+    EXPECT_NEAR(eq.downside_deviation / fut.downside_deviation, std::sqrt(252.0 / 311.0574),
+                1e-12);
+    EXPECT_NEAR(eq.sortino_ratio / fut.sortino_ratio, std::sqrt(252.0 / 311.0574), 1e-12);
+}
+
+TEST(StatisticsGrid, FewerThanTwoGridReturnsGiveNoVolatilityAndNoRatio) {
+    LiveHistoricalMetricsCalculator calc;
+    const auto one = calc.calculate({1.0, 2.0, 3.0}, {}, {}, 0, week_through("2026-04-20"), kFuturesK);
+    EXPECT_DOUBLE_EQ(one.volatility, 0.0);
+    EXPECT_DOUBLE_EQ(one.sharpe_ratio, 0.0);
+    EXPECT_DOUBLE_EQ(one.downside_deviation, 0.0);
+    EXPECT_DOUBLE_EQ(one.sortino_ratio, 0.0);
 }
