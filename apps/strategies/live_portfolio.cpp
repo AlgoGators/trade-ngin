@@ -14,6 +14,7 @@
 #include "trade_ngin/core/email_sender.hpp"
 #include "trade_ngin/core/holiday_checker.hpp"
 #include "trade_ngin/core/logger.hpp"
+#include "trade_ngin/core/resolved_sleeves.hpp"
 #include "trade_ngin/core/time_utils.hpp"
 #include "trade_ngin/data/conversion_utils.hpp"
 #include "trade_ngin/data/database_pooling.hpp"
@@ -703,6 +704,9 @@ int main(int argc, char* argv[]) {
 
         // Vector to hold all strategy instances
         std::vector<std::shared_ptr<trade_ngin::StrategyInterface>> strategies;
+        // Each sleeve's values as resolved here and handed to its strategy: logged once below and
+        // stored in every live_results.config the run writes (core/resolved_sleeves.hpp).
+        std::vector<trade_ngin::ResolvedSleeve> resolved_sleeves;
 
         INFO("Creating " + std::to_string(strategy_names.size()) + " strategies from config");
 
@@ -764,6 +768,8 @@ int main(int argc, char* argv[]) {
                     portfolio_config.overlay_sleeve = strategy_name;
                     portfolio_config.overlay_tau = trend_config.risk_target;
                 }
+                resolved_sleeves.push_back(
+                    {strategy_name, trend_config.idm, trend_config.risk_target, allocation});
                 strategy = std::make_shared<trade_ngin::TrendFollowingStrategy>(
                     strategy_name, strategy_config, trend_config, db, registry_ptr);
 
@@ -808,6 +814,8 @@ int main(int argc, char* argv[]) {
                     portfolio_config.overlay_sleeve = strategy_name;
                     portfolio_config.overlay_tau = trend_config.risk_target;
                 }
+                resolved_sleeves.push_back(
+                    {strategy_name, trend_config.idm, trend_config.risk_target, allocation});
                 strategy = std::make_shared<trade_ngin::TrendFollowingStrategy>(
                     strategy_name, strategy_config, trend_config, db, registry_ptr);
 
@@ -839,6 +847,7 @@ int main(int argc, char* argv[]) {
         }
 
         INFO("Successfully created " + std::to_string(strategies.size()) + " strategies");
+        INFO(trade_ngin::resolved_sleeves_log_line(portfolio_id, resolved_sleeves));
 
         // Create map from strategy name to strategy instance for CSV export
         trade_ngin::StrategyInstancesMap strategy_instances_map;
@@ -1543,6 +1552,9 @@ int main(int argc, char* argv[]) {
         // (PortfolioConfig::to_json: total_capital and use_optimization are in it), so both
         // tables carry the same design keys; the marks below are added to it.
         nlohmann::json portfolio_config_json = portfolio_config.to_json();
+        // The sessions a year this run's statistics are annualised with (LOOP_SPEC 7.5.1).
+        portfolio_config_json[trade_ngin::kStatisticsKKey] =
+            app_config.statistics.futures_sessions_per_year;
 
         // Convert strategy_allocations to JSON
         nlohmann::json strategy_alloc_json(strategy_allocations);
@@ -3938,17 +3950,17 @@ int main(int argc, char* argv[]) {
             // Calculate current date for results (use override date if specified)
             auto current_date = now;
 
-            // Create configuration JSON
-            nlohmann::json report_config_json;
-            report_config_json["strategy_type"] = combined_strategy_id;  // From config (Phase 1)
-            report_config_json["capital_allocation"] = initial_capital;
-            report_config_json["weight"] = 0.03;      // Default weight
-            report_config_json["risk_target"] = 0.2;  // Default risk target
-            report_config_json["idm"] = 2.5;          // Default IDM
-            report_config_json["active_positions"] = active_positions;
-            report_config_json["gross_notional"] = gross_notional;
-            report_config_json["net_notional"] = net_notional;
-            report_config_json["gross_leverage"] = gross_notional / initial_capital;
+            // Create configuration JSON (core/resolved_sleeves.hpp): strategy_type is the row's
+            // strategy_id; each sleeve's resolved values sit under "sleeves"; capital_allocation
+            // and gross_leverage are on the day's sizing capital E_t, risk_detail's on a row that
+            // stores it, else the capital this run read and set, and absent on a sizing hold
+            // (no capital was read).
+            nlohmann::json report_config_json = trade_ngin::futures_live_results_config_json(
+                combined_strategy_id, resolved_sleeves,
+                trade_ngin::stored_config_sizing_capital(
+                    one_pass_day.stores_detail(), one_pass_day.sizing_capital, !sizing_hold,
+                    sizing_capital_read.capital.capital),
+                active_positions, gross_notional, net_notional);
             // T-7a C4: the day's T-1 classification (counts, feed holes, held symbols).
             report_config_json["t1_classification"] =
                 t1_classification.to_json(held_symbols(book_holds));

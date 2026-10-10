@@ -13,6 +13,7 @@
 #include "trade_ngin/core/config_loader.hpp"
 #include "trade_ngin/core/holiday_checker.hpp"
 #include "trade_ngin/core/logger.hpp"
+#include "trade_ngin/core/resolved_sleeves.hpp"
 #include "trade_ngin/core/time_utils.hpp"
 #include "trade_ngin/data/database_pooling.hpp"
 #include "trade_ngin/data/postgres_database.hpp"
@@ -610,6 +611,12 @@ int main(int argc, char* argv[]) {
         std::cout << "Max leverage: " << mr_config.max_leverage << "x" << std::endl;
         std::cout << "Lookback period: " << mean_rev_config.lookback_period << " days" << std::endl;
         std::cout << "Entry threshold: " << mean_rev_config.entry_threshold << " std devs" << std::endl;
+        // The sleeve's values as resolved here: logged once and stored in every
+        // live_results.config the run writes (core/resolved_sleeves.hpp). Mean reversion has no
+        // idm; the single sleeve is added to the book at allocation 1.0.
+        const std::vector<trade_ngin::ResolvedSleeve> resolved_sleeves = {
+            {kEquityStrategyName, std::nullopt, mean_rev_config.risk_target, 1.0}};
+        INFO(trade_ngin::resolved_sleeves_log_line(portfolio_id, resolved_sleeves));
 
         // Create a shared_ptr that doesn't own the singleton registry
         auto registry_ptr =
@@ -670,6 +677,9 @@ int main(int argc, char* argv[]) {
             portfolio_config_json["use_optimization"] = portfolio_config.use_optimization;
             portfolio_config_json["allow_fractional_positions"] =
                 portfolio_config.allow_fractional_positions;
+            // The sessions a year this run's statistics are annualised with (LOOP_SPEC 7.5.1).
+            portfolio_config_json[trade_ngin::kStatisticsKKey] =
+                app_config.statistics.equity_sessions_per_year;
 
             // Single-strategy runner: the live equity path rejects more than one strategy.
             nlohmann::json strategy_alloc_json;
@@ -5631,8 +5641,11 @@ int main(int argc, char* argv[]) {
             
             // Create configuration JSON
             nlohmann::json config_json;
-            config_json["strategy_type"] = "LIVE_EQUITY_MEAN_REVERSION";
+            config_json["strategy_type"] = kEquityStrategyId;  // the row's strategy_id
+            // The equity book has no sizing capital: capital_allocation stays its configured
+            // capital and portfolio_leverage stays on it.
             config_json["capital_allocation"] = mr_config.capital_allocation;
+            config_json[trade_ngin::kSleevesKey] = trade_ngin::resolved_sleeves_json(resolved_sleeves);
             config_json["max_leverage"] = mr_config.max_leverage;
             config_json["lookback_period"] = mean_rev_config.lookback_period;
             config_json["risk_target"] = mean_rev_config.risk_target;

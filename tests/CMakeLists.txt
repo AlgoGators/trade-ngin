@@ -140,6 +140,8 @@ set(TEST_SOURCES
     live/test_feed_ingestion_assertion.cpp
     live/test_day_t_write_ordering.cpp
     live/test_settled_statistics_block.cpp
+    live/test_stored_config_runners.cpp
+    core/test_resolved_sleeves.cpp
     live/test_margin_columns.cpp
     live/test_margin_columns_runners.cpp
     live/test_finalized_books_read.cpp
