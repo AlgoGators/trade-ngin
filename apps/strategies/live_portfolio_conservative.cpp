@@ -2575,6 +2575,20 @@ int main(int argc, char* argv[]) {
             total_daily_transaction_costs = transaction_cost::add_net_costs(
                 total_daily_transaction_costs, all_strategy_executions.at(sleeve));
         }
+        // The one line of the day that adds up (the per-fill lines above print each fill's OWN
+        // cost): the same rows' own costs, their adjustments, and what the day is charged.
+        {
+            Decimal day_own_costs, day_netting_adjustments;
+            for (const auto& sleeve : sleeves_filled) {
+                for (const auto& e : all_strategy_executions.at(sleeve)) {
+                    day_own_costs += e.total_transaction_costs;
+                    day_netting_adjustments += e.netting_adjustment;
+                }
+            }
+            INFO("DAY_COST own_costs=" + day_own_costs.to_string() + " netting_adjustments=" +
+                 day_netting_adjustments.to_string() + " cost_after_netting=" +
+                 (day_own_costs - day_netting_adjustments).to_string());
+        }
 
         INFO("PHASE 4: Total executions across all strategies: " +
              std::to_string(total_executions));

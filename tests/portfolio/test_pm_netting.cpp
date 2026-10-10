@@ -429,3 +429,26 @@ TEST(EmailBodyFileSource, TheBodyFileBranchWritesTheBodyAndNeverSends) {
             << f << ": a second send";
     }
 }
+
+// T-NETTING fix round: the live log states the day's cost in one line that adds up (own costs,
+// adjustments, cost after netting), printed after the day's sum in both twins.
+TEST(PmNettingSource, BothFuturesRunnersLogTheDaysOwnCostsAdjustmentsAndCostAfterNetting) {
+    for (const char* f : {"apps/strategies/live_portfolio.cpp",
+                          "apps/strategies/live_portfolio_conservative.cpp"}) {
+        const std::string src = read_source(f);
+        if (src.empty()) {
+            ADD_FAILURE() << f << " not found: a source-text test must be run from inside the source tree";
+            continue;
+        }
+        const auto sum = src.find("total_daily_transaction_costs = transaction_cost::add_net_costs(");
+        const auto line = src.find("INFO(\"DAY_COST own_costs=\" + day_own_costs.to_string() + \" netting_adjustments=\" +");
+        EXPECT_NE(sum, std::string::npos) << f;
+        EXPECT_NE(line, std::string::npos) << f << ": no DAY_COST line";
+        if (sum == std::string::npos || line == std::string::npos) continue;
+        EXPECT_LT(sum, line) << f << ": the line is printed before the day's sum";
+        EXPECT_NE(src.find("\" cost_after_netting=\" +\n                 (day_own_costs - day_netting_adjustments).to_string());", line),
+                  std::string::npos)
+            << f << ": the line's last figure is not own costs minus adjustments";
+        EXPECT_EQ(src.find("DAY_COST own_costs=", line + 40), std::string::npos) << f << ": printed twice";
+    }
+}
