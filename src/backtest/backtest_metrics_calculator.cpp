@@ -409,35 +409,215 @@ private:
     std::map<std::pair<std::string, Timestamp>, Bar> bars_;
 };
 
+// The rank of a row inside a bar: ROLL legs, then the STRATEGY fills, then the BORROW rows
+// (LOOP_SPEC section 6.5).
+int type_rank(const ExecutionReport& e) {
+    return e.execution_type == ExecutionType::ROLL       ? 0
+           : e.execution_type == ExecutionType::STRATEGY ? 1
+                                                         : 2;
+}
+
+double signed_quantity(const ExecutionReport& e) {
+    const double quantity = static_cast<double>(e.filled_quantity);
+    return e.side == Side::BUY ? quantity : -quantity;
+}
+
+// The pairing of the account's fills into trades, the one walk the trade statistics and the
+// per-symbol P&L both read (T-8D R11), so the two cannot part. Its rows are
+// BacktestMetricsCalculator::account_fills' (the book's fills, netted between sleeves).
+//
+//   the tracker    one per contract: the account's net position and its average entry price.
+//   the rows       STRATEGY rows only. A ROLL leg and a BORROW row move no position and realise
+//                  nothing; a roll's leg gap is carried into the open entry once per contract
+//                  (section 6.5, RollEntryCarry) before the bar's first row is scored.
+//   the dollars    what the closed quantity made: quantity x (fill price - entry) x the side of the
+//                  position x the point value of the symbol, from the source the equity curve
+//                  reads (BacktestPnLManager::get_point_value: the metadata).
+//   the flip       a fill that takes the position through zero closes what was held and opens the
+//                  remainder at the fill price: the entry is reset there.
+//   flat           a position under 1e-9 contracts or shares after a fill is flat (T-8D R11 (d)):
+//                  fractional share quantities summed in binary leave a residue near 1e-14 after a
+//                  full close, which is no position; the next fill then opens, it is not a trade.
+//                  Stored quantities carry six decimals, so no real position is that small.
+class TradePairing {
+public:
+    static constexpr double kFlatBelow = 1e-9;  ///< contracts or shares
+
+    struct Fill {
+        bool is_closing{false};  ///< reduces, closes or flips the position held before it
+        double realized{0.0};    ///< dollars the closed quantity made, before any cost
+        double position_before{0.0};
+        double signed_quantity{0.0};
+        double position_after{0.0};
+    };
+
+    TradePairing(const std::vector<ExecutionReport>& account_rows,
+                 const BacktestMetricsCalculator::PointValueSource& point_value)
+        : point_value_(point_value), roll_carry_(account_rows) {}
+
+    /// The next row of the list the pairing was made on, applied to its contract's tracker.
+    Fill apply(const ExecutionReport& exec) {
+        Tracker& t = trackers_[exec.symbol];
+        Fill fill;
+        const double fill_price = static_cast<double>(exec.fill_price);
+        const double signed_qty = signed_quantity(exec);
+        const double current_pos = t.position;
+        fill.position_before = fill.position_after = current_pos;
+        fill.signed_quantity = signed_qty;
+
+        // The bar's rolls, carried into the open entry before the bar's first row is scored.
+        for (const double gap : roll_carry_.take(exec.symbol, exec.fill_time, current_pos)) {
+            t.entry_price += gap;
+        }
+        if (exec.execution_type != ExecutionType::STRATEGY) return fill;
+
+        if (current_pos == 0.0) {
+            // Opening new position
+            t.position = signed_qty;
+            t.entry_price = fill_price;
+        } else if ((current_pos > 0 && signed_qty > 0) || (current_pos < 0 && signed_qty < 0)) {
+            // Adding to existing position
+            double total_value = current_pos * t.entry_price + signed_qty * fill_price;
+            t.position = current_pos + signed_qty;
+            if (t.position != 0.0) {
+                t.entry_price = total_value / t.position;
+            }
+        } else {
+            // Reducing or closing position - realize P&L, in dollars
+            double close_qty = std::min(std::abs(signed_qty), std::abs(current_pos));
+            fill.realized = close_qty * (fill_price - t.entry_price) *
+                            (current_pos > 0 ? 1.0 : -1.0) * point_value_of(exec.symbol);
+            t.position = current_pos + signed_qty;
+            if (std::abs(t.position) < kFlatBelow) {
+                // Flat: a residue of the sum is no position and carries no entry.
+                t.position = 0.0;
+                t.entry_price = 0.0;
+            } else if ((current_pos > 0 && t.position < 0) || (current_pos < 0 && t.position > 0)) {
+                // Through zero: the remainder is a new position, opened at this fill's price.
+                t.entry_price = fill_price;
+            }
+        }
+        fill.position_after = t.position;
+        fill.is_closing = std::abs(signed_qty) > 1e-6 && current_pos != 0.0 &&
+            ((current_pos > 0 && signed_qty < 0) || (current_pos < 0 && signed_qty > 0));
+        return fill;
+    }
+
+private:
+    struct Tracker {
+        double position{0.0};
+        double entry_price{0.0};
+    };
+
+    double point_value_of(const std::string& symbol) {
+        auto it = point_values_.find(symbol);
+        if (it == point_values_.end()) it = point_values_.emplace(symbol, point_value_(symbol)).first;
+        return it->second;
+    }
+
+    const BacktestMetricsCalculator::PointValueSource& point_value_;
+    RollEntryCarry roll_carry_;
+    std::unordered_map<std::string, Tracker> trackers_;
+    std::unordered_map<std::string, double> point_values_;
+};
+
 }  // namespace
+
+// ========== The Account's Fills ==========
+
+std::vector<ExecutionReport> BacktestMetricsCalculator::account_fills(
+    const std::vector<ExecutionReport>& executions) {
+    // The STRATEGY rows of one contract on one bar, over every sleeve.
+    struct Day {
+        std::vector<const ExecutionReport*> rows;
+    };
+    std::map<std::pair<Timestamp, std::string>, Day> days;
+    std::vector<ExecutionReport> out;
+    for (const auto& exec : executions) {
+        if (exec.execution_type == ExecutionType::STRATEGY) {
+            days[{exec.fill_time, exec.symbol}].rows.push_back(&exec);
+        } else {
+            out.push_back(exec);
+        }
+    }
+    for (const auto& [key, day] : days) {
+        if (day.rows.size() == 1) {
+            out.push_back(*day.rows.front());  // one sleeve's row is the account's fill
+            continue;
+        }
+        Decimal net, own_cost, adjustment, commissions, slippage;
+        for (const ExecutionReport* row : day.rows) {
+            if (row->side == Side::BUY) {
+                net += row->filled_quantity;
+            } else {
+                net -= row->filled_quantity;
+            }
+            own_cost += row->total_transaction_costs;
+            adjustment += row->netting_adjustment;
+            commissions += row->commissions_fees;
+            slippage += row->slippage_market_impact;
+        }
+        const bool crossed = net == Decimal();
+        // A full cross: the account sent no order, so there is no fill. Its sleeves' costs after
+        // netting sum to 0 at one price; a sum that is not 0 (the sleeves filled at different
+        // prices, never netted) is kept on a row of quantity 0, which is a cost and no fill.
+        if (crossed && own_cost == adjustment) continue;
+        const Side side = crossed ? day.rows.front()->side : (Decimal() < net ? Side::BUY : Side::SELL);
+        // The price: the one price the sleeves filled at; when they differ, the quantity-weighted
+        // price of the fills on the side of the net change.
+        const ExecutionReport* first = nullptr;
+        bool one_price = true;
+        double side_quantity = 0.0, side_value = 0.0;
+        for (const ExecutionReport* row : day.rows) {
+            if (row->fill_price != day.rows.front()->fill_price) one_price = false;
+            if (row->side != side) continue;
+            if (!first) first = row;
+            side_quantity += static_cast<double>(row->filled_quantity);
+            side_value += static_cast<double>(row->filled_quantity) *
+                          static_cast<double>(row->fill_price);
+        }
+        ExecutionReport fill = *first;
+        fill.side = side;
+        fill.filled_quantity = crossed ? Decimal() : (side == Side::BUY ? net : Decimal() - net);
+        if (!one_price && side_quantity > 0.0) fill.fill_price = Price(side_value / side_quantity);
+        fill.total_transaction_costs = own_cost;
+        fill.netting_adjustment = adjustment;
+        fill.commissions_fees = commissions;
+        fill.slippage_market_impact = slippage;
+        out.push_back(std::move(fill));
+    }
+    // A stated order, whatever order the rows came in: by bar, then ROLL legs, STRATEGY fills,
+    // BORROW rows, then by contract; the legs and BORROW rows of one contract and bar by exec id
+    // (shorter first, so RL-<sleeve>-9 precedes RL-<sleeve>-10), then by what they are.
+    std::sort(out.begin(), out.end(), [](const ExecutionReport& a, const ExecutionReport& b) {
+        if (a.fill_time != b.fill_time) return a.fill_time < b.fill_time;
+        if (type_rank(a) != type_rank(b)) return type_rank(a) < type_rank(b);
+        if (a.symbol != b.symbol) return a.symbol < b.symbol;
+        if (a.exec_id.size() != b.exec_id.size()) return a.exec_id.size() < b.exec_id.size();
+        if (a.exec_id != b.exec_id) return a.exec_id < b.exec_id;
+        if (a.instrument_id != b.instrument_id) return a.instrument_id < b.instrument_id;
+        if (a.side != b.side) return a.side < b.side;
+        if (a.fill_price != b.fill_price) return a.fill_price < b.fill_price;
+        return a.filled_quantity < b.filled_quantity;
+    });
+    return out;
+}
 
 // ========== Trade Statistics ==========
 
 BacktestMetricsCalculator::TradeStatistics BacktestMetricsCalculator::calculate_trade_statistics(
-    const std::vector<ExecutionReport>& executions) const {
+    const std::vector<ExecutionReport>& executions, const PointValueSource& point_value) const {
     TradeStatistics stats;
 
-    std::unordered_map<std::string, double> positions;   // symbol -> net position
-    RollEntryCarry roll_carry(executions);               // the leg gap of each roll, carried once
-    std::unordered_map<std::string, double> avg_prices;  // symbol -> average entry price
+    // The book's fills (netted between sleeves), in the stated order; one tracker per contract.
+    const std::vector<ExecutionReport> rows = account_fills(executions);
+    TradePairing pairing(rows, point_value);
     std::map<std::string, Timestamp> open_times;         // symbol -> first trade time
     std::vector<double> holding_periods;
 
-    for (const auto& exec : executions) {
+    for (const auto& exec : rows) {
         const std::string& symbol = exec.symbol;
-        double fill_price = static_cast<double>(exec.fill_price);
-        double quantity = static_cast<double>(exec.filled_quantity);
-        double commission = static_cast<double>(transaction_cost::net_cost(exec));
-
-        // Adjust quantity based on side
-        double signed_qty = (exec.side == Side::BUY) ? quantity : -quantity;
-
-        double current_pos = positions[symbol];
-
-        // The bar's rolls, carried into the open entry before the bar's first row is scored.
-        for (const double gap : roll_carry.take(symbol, exec.fill_time, current_pos)) {
-            avg_prices[symbol] += gap;
-        }
+        const TradePairing::Fill fill = pairing.apply(exec);
 
         // T-ROLLX-FIX (LOOP_SPEC v6.2 section 6.5; code review D1): a ROLL leg is mechanical. It
         // never moves the tracked position (the pair nets to 0 per sleeve), scores no trade and
@@ -458,37 +638,24 @@ BacktestMetricsCalculator::TradeStatistics BacktestMetricsCalculator::calculate_
         // position, opens nothing and scores no trade.
         if (exec.execution_type == ExecutionType::BORROW) continue;
 
+        // The account's fills: a row of quantity 0 is a crossed day's cost, not a fill.
+        if (fill.signed_quantity != 0.0) stats.strategy_fills++;
+
+        // A trade is a closing fill: the dollars its closed quantity made less the fill's own cost
+        // after netting (the opening fills' costs are not inside a trade).
+        double commission = static_cast<double>(transaction_cost::net_cost(exec));
         double trade_pnl = -commission;
+        trade_pnl += fill.realized;
 
-        if (current_pos == 0.0) {
-            // Opening new position
-            positions[symbol] = signed_qty;
-            avg_prices[symbol] = fill_price;
+        if (fill.position_before == 0.0) {
             open_times[symbol] = exec.fill_time;
-        } else if ((current_pos > 0 && signed_qty > 0) || (current_pos < 0 && signed_qty < 0)) {
-            // Adding to existing position
-            double total_value = current_pos * avg_prices[symbol] + signed_qty * fill_price;
-            positions[symbol] = current_pos + signed_qty;
-            if (positions[symbol] != 0.0) {
-                avg_prices[symbol] = total_value / positions[symbol];
-            }
-        } else {
-            // Reducing or closing position - realize P&L
-            double close_qty = std::min(std::abs(signed_qty), std::abs(current_pos));
-            trade_pnl += close_qty * (fill_price - avg_prices[symbol]) *
-                        (current_pos > 0 ? 1.0 : -1.0);
-
-            positions[symbol] = current_pos + signed_qty;
         }
 
-        // Check if this is a position-closing trade
-        bool is_closing_trade = std::abs(signed_qty) > 1e-6 && current_pos != 0.0 &&
-            ((current_pos > 0 && signed_qty < 0) || (current_pos < 0 && signed_qty > 0));
-
-        if (is_closing_trade) {
+        if (fill.is_closing) {
             stats.actual_trades.push_back(exec);
-            INFO("DEBUG_TRADE: " + symbol + " pos=" + std::to_string(current_pos) +
-                 " qty=" + std::to_string(signed_qty) + " -> " + std::to_string(positions[symbol]));
+            INFO("DEBUG_TRADE: " + symbol + " pos=" + std::to_string(fill.position_before) +
+                 " qty=" + std::to_string(fill.signed_quantity) + " -> " +
+                 std::to_string(fill.position_after));
 
             if (trade_pnl > 0) {
                 stats.total_profit += trade_pnl;
@@ -541,58 +708,23 @@ BacktestMetricsCalculator::TradeStatistics BacktestMetricsCalculator::calculate_
 // ========== Per-Symbol Analysis ==========
 
 std::map<std::string, double> BacktestMetricsCalculator::calculate_symbol_pnl(
-    const std::vector<ExecutionReport>& executions) const {
-    std::unordered_map<std::string, double> positions;
-    RollEntryCarry roll_carry(executions);  // the leg gap of each roll, carried once
-    std::unordered_map<std::string, double> avg_prices;
+    const std::vector<ExecutionReport>& executions, const PointValueSource& point_value) const {
+    // The pairing of calculate_trade_statistics (the same walk over the account's fills: in
+    // dollars, the entry carried across a roll and reset on a flip), summed per symbol, with every
+    // row's cost charged: an opening fill's, a ROLL leg's and a BORROW row's too (X-4), each
+    // after netting. No trade P&L is scored on a leg.
+    const std::vector<ExecutionReport> rows = account_fills(executions);
+    TradePairing pairing(rows, point_value);
     std::map<std::string, double> symbol_pnl_map;
 
-    for (const auto& exec : executions) {
-        const std::string& symbol = exec.symbol;
-        double fill_price = static_cast<double>(exec.fill_price);
-        double quantity = static_cast<double>(exec.filled_quantity);
+    for (const auto& exec : rows) {
+        const TradePairing::Fill fill = pairing.apply(exec);
         double commission = static_cast<double>(transaction_cost::net_cost(exec));
 
-        double signed_qty = (exec.side == Side::BUY) ? quantity : -quantity;
-
-        double current_pos = positions[symbol];
-
-        // T-ROLLX-FIX: a roll carries the open entry price across it exactly as in
-        // calculate_trade_statistics (the leg gap, once per roll, on the bar's first row, the
-        // position untouched) and each leg's cost is charged to the symbol; no trade P&L is
-        // scored on a leg.
-        for (const double gap : roll_carry.take(symbol, exec.fill_time, current_pos)) {
-            avg_prices[symbol] += gap;
-        }
-        if (exec.execution_type == ExecutionType::ROLL) {
-            symbol_pnl_map[symbol] -= commission;
-            continue;
-        }
-        // X-4: a BORROW row charges its cost to the symbol and moves no position.
-        if (exec.execution_type == ExecutionType::BORROW) {
-            symbol_pnl_map[symbol] -= commission;
-            continue;
-        }
-
         double trade_pnl = -commission;
+        trade_pnl += fill.realized;
 
-        if (current_pos == 0.0) {
-            positions[symbol] = signed_qty;
-            avg_prices[symbol] = fill_price;
-        } else if ((current_pos > 0 && signed_qty > 0) || (current_pos < 0 && signed_qty < 0)) {
-            double total_value = current_pos * avg_prices[symbol] + signed_qty * fill_price;
-            positions[symbol] = current_pos + signed_qty;
-            if (positions[symbol] != 0.0) {
-                avg_prices[symbol] = total_value / positions[symbol];
-            }
-        } else {
-            double close_qty = std::min(std::abs(signed_qty), std::abs(current_pos));
-            trade_pnl += close_qty * (fill_price - avg_prices[symbol]) *
-                        (current_pos > 0 ? 1.0 : -1.0);
-            positions[symbol] = current_pos + signed_qty;
-        }
-
-        symbol_pnl_map[symbol] += trade_pnl;
+        symbol_pnl_map[exec.symbol] += trade_pnl;
     }
 
     return symbol_pnl_map;
@@ -672,7 +804,8 @@ std::pair<double, double> BacktestMetricsCalculator::calculate_beta_correlation(
 backtest::BacktestResults BacktestMetricsCalculator::calculate_all_metrics(
     const std::vector<std::pair<Timestamp, double>>& equity_curve,
     const std::vector<ExecutionReport>& executions,
-    int warmup_days) const {
+    int warmup_days,
+    const PointValueSource& point_value) const {
     backtest::BacktestResults results;
 
     if (equity_curve.empty()) {
@@ -741,7 +874,7 @@ backtest::BacktestResults BacktestMetricsCalculator::calculate_all_metrics(
     results.correlation = correlation;
 
     // Trade statistics
-    auto trade_stats = calculate_trade_statistics(executions);
+    auto trade_stats = calculate_trade_statistics(executions, point_value);
     results.total_trades = trade_stats.total_trades;
     results.win_rate = trade_stats.win_rate;
     results.profit_factor = trade_stats.profit_factor;
@@ -753,7 +886,7 @@ backtest::BacktestResults BacktestMetricsCalculator::calculate_all_metrics(
     results.actual_trades = trade_stats.actual_trades;
 
     // Per-symbol P&L
-    auto symbol_pnl = calculate_symbol_pnl(executions);
+    auto symbol_pnl = calculate_symbol_pnl(executions, point_value);
     for (const auto& [symbol, pnl] : symbol_pnl) {
         results.symbol_pnl[symbol] = pnl;
     }

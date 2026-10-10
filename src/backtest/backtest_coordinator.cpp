@@ -163,8 +163,8 @@ Result<BacktestResults> BacktestCoordinator::run_single_strategy(
     }
 
     // Calculate final metrics
-    auto results = metrics_calculator_->calculate_all_metrics(equity_curve, all_executions,
-                                                              config_.warmup_days);
+    auto results = metrics_calculator_->calculate_all_metrics(
+        equity_curve, all_executions, config_.warmup_days, trade_point_value_source());
 
     // Copy executions to results
     results.executions = all_executions;
@@ -437,7 +437,8 @@ Result<BacktestResults> BacktestCoordinator::run_portfolio(
 
     // Sort executions by timestamp: a stable sort that keeps the stored sub-order inside a bar,
     // ROLL legs (closing, then opening, as inserted) before the bar's STRATEGY fills and the
-    // BORROW rows after them (LOOP_SPEC v6.1 section 6.5); the trade statistics are order-dependent.
+    // BORROW rows after them (LOOP_SPEC v6.1 section 6.5). The trade statistics do not depend on
+    // it: the calculator nets these rows into the account's fills in its own stated order.
     auto type_rank = [](const ExecutionReport& e) {
         return e.execution_type == ExecutionType::ROLL       ? 0
                : e.execution_type == ExecutionType::STRATEGY ? 1
@@ -454,7 +455,9 @@ Result<BacktestResults> BacktestCoordinator::run_portfolio(
     // subset (a ROLL leg is never netted: its own cost) and the count of ROLL rows. Taken BEFORE
     // the metrics: a ROLL or BORROW row carrying a netting adjustment (a BORROW row is appended
     // after its cycle's sum, so this is where one is first seen) fails the run here, by name, as
-    // an error result, and nothing of the run is stored.
+    // an error result: no backtest.results row, no executions and no equity curve are stored. The
+    // backtest.final_positions rows the bar loop wrote day by day (here the whole window's; after
+    // a day stop, the earlier days') remain, as after a ROLL_LEG stop.
     transaction_cost::RunCostTotals cost_totals;
     try {
         cost_totals = transaction_cost::run_cost_totals(all_executions);
@@ -468,8 +471,8 @@ Result<BacktestResults> BacktestCoordinator::run_portfolio(
 
     // Calculate final metrics
     INFO("Calculating portfolio backtest metrics");
-    auto results = metrics_calculator_->calculate_all_metrics(equity_curve, all_executions,
-                                                              calculated_warmup_days);
+    auto results = metrics_calculator_->calculate_all_metrics(
+        equity_curve, all_executions, calculated_warmup_days, trade_point_value_source());
     results.warmup_days = calculated_warmup_days;
     results.transaction_costs = cost_totals.transaction_costs;
     results.roll_costs = cost_totals.roll_costs;
@@ -1987,6 +1990,14 @@ Result<void> BacktestCoordinator::save_daily_positions(std::shared_ptr<Portfolio
     }
 
     return Result<void>();
+}
+
+BacktestMetricsCalculator::PointValueSource BacktestCoordinator::trade_point_value_source() const {
+    // The source the equity curve reads (BacktestPnLManager::get_point_value), so a trade's dollars and the
+    // booked dollars are one figure.
+    return [this](const std::string& symbol) {
+        return pnl_manager_ ? pnl_manager_->get_point_value(symbol) : 1.0;
+    };
 }
 
 double BacktestCoordinator::calculate_period_transaction_costs(

@@ -15,6 +15,9 @@ using namespace trade_ngin;
 using namespace trade_ngin::testing;
 
 namespace {
+// One dollar a point: these tests' numbers are price points.
+const BacktestMetricsCalculator::PointValueSource kUnitPoints = [](const std::string&) { return 1.0; };
+
 Timestamp day(int d) {
     return std::chrono::system_clock::from_time_t(1761523200) + std::chrono::hours(24 * d);  // 2025-10-27 + d
 }
@@ -46,7 +49,7 @@ TEST(TradeStatisticsRollLegs, ARollInsideARoundTripIsNotATradeAndCarriesTheEntry
         fill("NG.v.0", Side::BUY, 1.0, 3.965, 4, 2.0, ExecutionType::ROLL, "863"),
         fill("NG.v.0", Side::SELL, 1.0, 5.10, 8, 1.0),
     };
-    const auto s = calc.calculate_trade_statistics(execs);
+    const auto s = calc.calculate_trade_statistics(execs, kUnitPoints);
     EXPECT_EQ(s.total_trades, 1) << "one strategy round trip; the legs are not trades";
     EXPECT_EQ(s.roll_fills, 2);
     EXPECT_DOUBLE_EQ(s.roll_costs, 4.0);
@@ -60,16 +63,20 @@ TEST(TradeStatisticsRollLegs, ARollInsideARoundTripIsNotATradeAndCarriesTheEntry
     EXPECT_NEAR(s.total_profit, 1.211 - 1.0, 1e-12);
     EXPECT_NEAR(s.avg_holding_period, 8.0, 1e-9) << "the clock runs from day 0: the roll did not restart it";
     // The symbol P&L charges every cost, the legs' included, and scores the same move.
-    const auto pnl = calc.calculate_symbol_pnl(execs);
+    const auto pnl = calc.calculate_symbol_pnl(execs, kUnitPoints);
     EXPECT_NEAR(pnl.at("NG.v.0"), 1.211 - 1.0 - 1.0 - 4.0, 1e-12);
 
-    // The control: the same rows all STRATEGY (the parent's reading) score two trades and
-    // realise the splice gap 3.376 - 3.30 as a trade (a loss of 1.924 after the two costs).
+    // The control: the same rows all STRATEGY. The two legs are then one day's SELL 1 and BUY 1
+    // of the contract, which net to no fill of the account (T-8a (7): the statistics are the
+    // book's), so nothing carries the entry and the close books the splice gap 3.965 - 3.376 as
+    // trading profit: 5.10 - 3.30 = 1.80 less its cost, where the held contracts made 1.211.
     auto untyped = execs;
     for (auto& e : untyped) e.execution_type = ExecutionType::STRATEGY;
-    const auto c = calc.calculate_trade_statistics(untyped);
-    EXPECT_EQ(c.total_trades, 2);
+    const auto c = calc.calculate_trade_statistics(untyped, kUnitPoints);
+    EXPECT_EQ(c.total_trades, 1);
+    EXPECT_EQ(c.strategy_fills, 2);
     EXPECT_EQ(c.roll_fills, 0);
+    EXPECT_NEAR(c.total_profit, 1.80 - 1.0, 1e-12);
 }
 
 TEST(TradeStatisticsRollLegs, ABorrowRowIsNeitherATradeNorALeg) {
@@ -79,7 +86,7 @@ TEST(TradeStatisticsRollLegs, ABorrowRowIsNeitherATradeNorALeg) {
         fill("XYZ", Side::SELL, 0.0, 20.0, 1, 0.3, ExecutionType::BORROW),
         fill("XYZ", Side::BUY, 10.0, 19.0, 2, 1.0),
     };
-    const auto s = calc.calculate_trade_statistics(execs);
+    const auto s = calc.calculate_trade_statistics(execs, kUnitPoints);
     EXPECT_EQ(s.total_trades, 1);
     EXPECT_EQ(s.roll_fills, 0);
 }
@@ -101,12 +108,12 @@ TEST(TradeStatisticsRollLegs, TwoSleevesHoldingTheSymbolCarryTheRollOnce) {
         fill("NG.v.0", Side::BUY, 1.0, 3.965, 4, 0.0, ExecutionType::ROLL, "863"),
         fill("NG.v.0", Side::SELL, 3.0, 5.10, 8, 0.0),
     };
-    const auto s = calc.calculate_trade_statistics(execs);
+    const auto s = calc.calculate_trade_statistics(execs, kUnitPoints);
     EXPECT_EQ(s.total_trades, 1);
     EXPECT_EQ(s.roll_fills, 4);
     EXPECT_NEAR(s.total_profit, 3 * 1.211, 1e-12)
         << "the close scores 3.30 -> 3.376 in the old contract plus 3.965 -> 5.10 in the new one";
-    const auto pnl = calc.calculate_symbol_pnl(execs);
+    const auto pnl = calc.calculate_symbol_pnl(execs, kUnitPoints);
     EXPECT_NEAR(pnl.at("NG.v.0"), 3 * 1.211, 1e-12);
 }
 
@@ -132,7 +139,7 @@ TEST(TradeStatisticsRollLegs, OneTradeHeldThroughTwoRollsScoresTheHeldContractsM
             fill("XA.v.0", open, 2.0, 109.0, 11, 0.0, ExecutionType::ROLL, "A3"),
             fill("XA.v.0", close, 2.0, 115.0, 20, 0.0),
         };
-        const auto s = calc.calculate_trade_statistics(execs);
+        const auto s = calc.calculate_trade_statistics(execs, kUnitPoints);
         EXPECT_EQ(s.total_trades, 1) << "one round trip; four legs are not trades";
         EXPECT_EQ(s.roll_fills, 4);
         EXPECT_NEAR(s.avg_holding_period, 20.0, 1e-9) << "the open time is kept across both rolls";
@@ -140,7 +147,7 @@ TEST(TradeStatisticsRollLegs, OneTradeHeldThroughTwoRollsScoresTheHeldContractsM
         EXPECT_NEAR(scored, (is_long ? 1.0 : -1.0) * 2.0 * (4.0 + 3.0 + 6.0), 1e-12)
             << (is_long ? "long" : "short") << ": the held contracts' move, 2 x 13 points";
         EXPECT_EQ(s.winning_trades, is_long ? 1 : 0);
-        const auto pnl = calc.calculate_symbol_pnl(execs);
+        const auto pnl = calc.calculate_symbol_pnl(execs, kUnitPoints);
         EXPECT_NEAR(pnl.at("XA.v.0"), (is_long ? 26.0 : -26.0), 1e-12);
     }
 }
@@ -160,8 +167,8 @@ TEST(TradeStatisticsRollLegs, ARollWhileFlatLeavesTheNextEntryAlone) {
                                                  ExecutionType::ROLL, "A2"));
     with_roll.insert(with_roll.begin() + 2, fill("XA.v.0", Side::SELL, 1.0, 102.0, 5, 0.0,
                                                  ExecutionType::ROLL, "A1"));
-    const auto a = calc.calculate_trade_statistics(execs);
-    const auto b = calc.calculate_trade_statistics(with_roll);
+    const auto a = calc.calculate_trade_statistics(execs, kUnitPoints);
+    const auto b = calc.calculate_trade_statistics(with_roll, kUnitPoints);
     EXPECT_EQ(b.total_trades, 2);
     EXPECT_NEAR(b.total_profit, a.total_profit, 1e-12);
     EXPECT_NEAR(b.total_profit, 1.0 + 2.0, 1e-12);
@@ -181,7 +188,9 @@ TEST(TradeStatisticsRollLegs, ARollWhileFlatLeavesTheNextEntryAlone) {
 //   day 4  roll: closing legs BUY @ 97 (old), opening legs SELL @ 91 (new); A 2 lots, B 2 lots
 //   day 6  A BUY 2 @ 90, B BUY 2 @ 90
 // Hand: each remaining short lot earns (100.8 - 97) in the old contract + (91 - 90) in the new = 4.8;
-// 4 lots = 19.2 (9.6 per closing fill). All costs 0.
+// 4 lots = 19.2. All costs 0. The statistics are the book's (T-8a (7)): day 0's two rows are the
+// account's one fill SELL 5 at the quantity-weighted 100.8 (the sleeves' prices differ here), and
+// day 6's two rows are its one fill BUY 4, one trade of 19.2.
 TEST(TradeStatisticsRollLegs, AShortInTwoSleevesWithAPartialCloseBeforeTheRoll) {
     BacktestMetricsCalculator calc;
     const std::vector<ExecutionReport> execs = {
@@ -195,13 +204,14 @@ TEST(TradeStatisticsRollLegs, AShortInTwoSleevesWithAPartialCloseBeforeTheRoll) 
         fill("ZZ", Side::BUY, 2.0, 90.0, 6, 0.0),
         fill("ZZ", Side::BUY, 2.0, 90.0, 6, 0.0),
     };
-    const auto s = calc.calculate_trade_statistics(execs);
-    EXPECT_EQ(s.total_trades, 3);
+    const auto s = calc.calculate_trade_statistics(execs, kUnitPoints);
+    EXPECT_EQ(s.total_trades, 2);
+    EXPECT_EQ(s.strategy_fills, 3);
     EXPECT_EQ(s.roll_fills, 4);
     EXPECT_NEAR(s.total_profit, 2.8 + 19.2, 1e-9);
-    EXPECT_NEAR(s.max_win, 9.6, 1e-9);
+    EXPECT_NEAR(s.max_win, 19.2, 1e-9);
     EXPECT_NEAR(s.total_loss, 0.0, 1e-12);
-    EXPECT_NEAR(calc.calculate_symbol_pnl(execs).at("ZZ"), 22.0, 1e-9);
+    EXPECT_NEAR(calc.calculate_symbol_pnl(execs, kUnitPoints).at("ZZ"), 22.0, 1e-9);
 }
 
 // The two sleeves holding DIFFERENT sizes (A 2, B 1): each sleeve's pair has the same two prices,
@@ -218,8 +228,8 @@ TEST(TradeStatisticsRollLegs, TwoSleevesOfDifferentSizeCarryOnce) {
         fill("ZZ", Side::SELL, 1.0, 91.0, 4, 0.0, ExecutionType::ROLL, "NEW"),
         fill("ZZ", Side::BUY, 3.0, 90.0, 6, 0.0),
     };
-    EXPECT_NEAR(calc.calculate_trade_statistics(execs).total_profit, 12.0, 1e-9);
-    EXPECT_NEAR(calc.calculate_symbol_pnl(execs).at("ZZ"), 12.0, 1e-9);
+    EXPECT_NEAR(calc.calculate_trade_statistics(execs, kUnitPoints).total_profit, 12.0, 1e-9);
+    EXPECT_NEAR(calc.calculate_symbol_pnl(execs, kUnitPoints).at("ZZ"), 12.0, 1e-9);
 }
 
 // A roll pair arriving for a symbol with NO open tracked trade, then an entry on the SAME bar and
@@ -232,7 +242,7 @@ TEST(TradeStatisticsRollLegs, ARollPairWithNoOpenTradeThenAnEntryOnTheSameBar) {
         fill("ZZ", Side::BUY, 1.0, 91.0, 4, 0.0),
         fill("ZZ", Side::SELL, 1.0, 95.0, 6, 0.0),
     };
-    const auto s = calc.calculate_trade_statistics(execs);
+    const auto s = calc.calculate_trade_statistics(execs, kUnitPoints);
     EXPECT_EQ(s.total_trades, 1);
     EXPECT_NEAR(s.total_profit, 4.0, 1e-9);
     EXPECT_NEAR(s.roll_costs, 1.0, 1e-12);
@@ -259,9 +269,9 @@ TEST(TradeStatisticsRollLegs, ACloseOnTheConfirmingBarStoredBeforeTheLegs) {
     };
     auto legs_first = fill_first;
     std::rotate(legs_first.begin() + 2, legs_first.begin() + 3, legs_first.begin() + 7);
-    EXPECT_NEAR(calc.calculate_trade_statistics(legs_first).total_profit, 14.0, 1e-9) << "legs first";
-    EXPECT_NEAR(calc.calculate_trade_statistics(fill_first).total_profit, 14.0, 1e-9) << "fill first";
-    EXPECT_NEAR(calc.calculate_symbol_pnl(fill_first).at("ZZ"), 14.0, 1e-9) << "fill first, by symbol";
+    EXPECT_NEAR(calc.calculate_trade_statistics(legs_first, kUnitPoints).total_profit, 14.0, 1e-9) << "legs first";
+    EXPECT_NEAR(calc.calculate_trade_statistics(fill_first, kUnitPoints).total_profit, 14.0, 1e-9) << "fill first";
+    EXPECT_NEAR(calc.calculate_symbol_pnl(fill_first, kUnitPoints).at("ZZ"), 14.0, 1e-9) << "fill first, by symbol";
 }
 
 // Two sleeves whose legs are stored grouped by LEG (closing, closing, opening, opening) instead of
@@ -278,8 +288,8 @@ TEST(TradeStatisticsRollLegs, LegsGroupedByLegNotBySleeve) {
         fill("ZZ", Side::BUY, 1.0, 110.0, 4, 0.0, ExecutionType::ROLL, "NEW"),
         fill("ZZ", Side::SELL, 2.0, 115.0, 6, 0.0),
     };
-    EXPECT_NEAR(calc.calculate_trade_statistics(execs).total_profit, 18.0, 1e-9);
-    EXPECT_NEAR(calc.calculate_symbol_pnl(execs).at("ZZ"), 18.0, 1e-9);
+    EXPECT_NEAR(calc.calculate_trade_statistics(execs, kUnitPoints).total_profit, 18.0, 1e-9);
+    EXPECT_NEAR(calc.calculate_symbol_pnl(execs, kUnitPoints).at("ZZ"), 18.0, 1e-9);
 }
 
 namespace {
@@ -311,12 +321,46 @@ TEST(TradeStatisticsRollLegs, TheEnginesExecIdsCarryTheRoleAndThePairInAnyOrder)
         {open, ro2, ro, rc, rc2, close},
     };
     for (size_t i = 0; i < orders.size(); ++i) {
-        const auto s = calc.calculate_trade_statistics(orders[i]);
+        const auto s = calc.calculate_trade_statistics(orders[i], kUnitPoints);
         EXPECT_EQ(s.total_trades, 1) << "order " << i;
         EXPECT_EQ(s.roll_fills, 4) << "order " << i;
         EXPECT_NEAR(s.total_profit, 3.0, 1e-9) << "order " << i;
-        EXPECT_NEAR(calc.calculate_symbol_pnl(orders[i]).at("ZZ"), 3.0, 1e-9) << "order " << i;
+        EXPECT_NEAR(calc.calculate_symbol_pnl(orders[i], kUnitPoints).at("ZZ"), 3.0, 1e-9) << "order " << i;
     }
+}
+
+// The statistics are the book's (HD 2026-10-10): one tracker per contract, the roll carried once per
+// contract whatever the number of sleeves that roll it, and the trade in dollars. Both sleeves hold
+// ZZ and roll it on day 4 (closing leg 104, opening leg 110: the gap is +6), at 10 dollars a point:
+//
+//   | day | rows                                               | account position (entry) | trade, dollars                     |
+//   | 0   | TREND BUY 1 at 100                                 | +1 (100)                 |                                    |
+//   | 1   | FAST BUY 2 at 91                                   | +3 (94)                  |                                    |
+//   | 4   | TREND legs SELL 1 / BUY 1, FAST legs SELL 2 / BUY 2 | +3 (94 + 6 = 100)       | the gap once, not once per sleeve  |
+//   | 6   | TREND SELL 1 at 115                                | +2                       | 1 x (115 - 100) x 10 = +150        |
+//   | 7   | FAST SELL 2 at 108                                 | 0                        | 2 x (108 - 100) x 10 = +160        |
+//
+// RED on the parent: the same walk in points (15 and 16).
+TEST(TradeStatisticsRollLegs, TheBooksEntryIsCarriedOncePerContractAndScoredInDollars) {
+    BacktestMetricsCalculator calc;
+    const BacktestMetricsCalculator::PointValueSource ten = [](const std::string&) { return 10.0; };
+    const std::vector<ExecutionReport> execs = {
+        fill("ZZ", Side::BUY, 1.0, 100.0, 0, 0.0),
+        fill("ZZ", Side::BUY, 2.0, 91.0, 1, 0.0),
+        with_id(fill("ZZ", Side::SELL, 1.0, 104.0, 4, 0.0, ExecutionType::ROLL, "OLD"), "RL-TREND-0"),
+        with_id(fill("ZZ", Side::BUY, 1.0, 110.0, 4, 0.0, ExecutionType::ROLL, "NEW"), "RL-TREND-1"),
+        with_id(fill("ZZ", Side::SELL, 2.0, 104.0, 4, 0.0, ExecutionType::ROLL, "OLD"), "RL-FAST-0"),
+        with_id(fill("ZZ", Side::BUY, 2.0, 110.0, 4, 0.0, ExecutionType::ROLL, "NEW"), "RL-FAST-1"),
+        fill("ZZ", Side::SELL, 1.0, 115.0, 6, 0.0),
+        fill("ZZ", Side::SELL, 2.0, 108.0, 7, 0.0),
+    };
+    const auto s = calc.calculate_trade_statistics(execs, ten);
+    EXPECT_EQ(s.total_trades, 2);
+    EXPECT_EQ(s.strategy_fills, 4);
+    EXPECT_EQ(s.roll_fills, 4);
+    EXPECT_NEAR(s.total_profit, 150.0 + 160.0, 1e-9);
+    EXPECT_NEAR(s.max_win, 160.0, 1e-9);
+    EXPECT_NEAR(calc.calculate_symbol_pnl(execs, ten).at("ZZ"), 310.0, 1e-9);
 }
 
 // Legs that cannot be paired fail loudly, they are never guessed: a closing leg whose opening leg
@@ -329,8 +373,8 @@ TEST(TradeStatisticsRollLegs, LegsThatCannotBePairedFailLoudly) {
     const std::vector<ExecutionReport> lone_closing = {
         open, with_id(fill("ZZ", Side::SELL, 1.0, 104.0, 4, 0.0, ExecutionType::ROLL, "OLD"), "RL-TREND-0"),
         close};
-    EXPECT_THROW(calc.calculate_trade_statistics(lone_closing), std::runtime_error);
-    EXPECT_THROW(calc.calculate_symbol_pnl(lone_closing), std::runtime_error);
+    EXPECT_THROW(calc.calculate_trade_statistics(lone_closing, kUnitPoints), std::runtime_error);
+    EXPECT_THROW(calc.calculate_symbol_pnl(lone_closing, kUnitPoints), std::runtime_error);
     const std::vector<ExecutionReport> two_rolls_no_pair = {
         open,
         fill("ZZ", Side::SELL, 1.0, 104.0, 4, 0.0, ExecutionType::ROLL, "A1"),
@@ -338,23 +382,25 @@ TEST(TradeStatisticsRollLegs, LegsThatCannotBePairedFailLoudly) {
         fill("ZZ", Side::SELL, 1.0, 112.0, 4, 0.0, ExecutionType::ROLL, "A2"),
         fill("ZZ", Side::BUY, 1.0, 109.0, 4, 0.0, ExecutionType::ROLL, "A3"),
         close};
-    EXPECT_THROW(calc.calculate_trade_statistics(two_rolls_no_pair), std::runtime_error);
+    EXPECT_THROW(calc.calculate_trade_statistics(two_rolls_no_pair, kUnitPoints), std::runtime_error);
     // The same two rolls with the engine's ids are two pairs: 100 + 6 - 3 = 103, 115 - 103 = 12.
     auto two_rolls = two_rolls_no_pair;
     for (int i = 1; i <= 4; ++i) two_rolls[i].exec_id = "RL-TREND-" + std::to_string(i - 1);
-    EXPECT_NEAR(calc.calculate_trade_statistics(two_rolls).total_profit, 12.0, 1e-9);
+    EXPECT_NEAR(calc.calculate_trade_statistics(two_rolls, kUnitPoints).total_profit, 12.0, 1e-9);
     // No open trade: nothing to carry, nothing read.
     const std::vector<ExecutionReport> flat = {lone_closing[1]};
-    EXPECT_NO_THROW(calc.calculate_trade_statistics(flat));
+    EXPECT_NO_THROW(calc.calculate_trade_statistics(flat, kUnitPoints));
 }
 
 // The cost after netting (HD 2026-10-09): a trade's P&L and a symbol's P&L charge each fill's NET
-// cost, its own cost minus the signed adjustment on the row. Two sleeves' rows of one symbol:
+// cost, its own cost minus the signed adjustment on the row. Two sleeves' rows of one symbol, which
+// since T-8a (7) are the account's ONE fill of the day (the statistics are the book's), charged the
+// sum of the rows' net costs:
 //
 //   | day | row              | own  | adjustment | net  |
 //   | 0   | BUY 2 at 100     | 2.00 | 0          | 2.00 |
 //   | 5   | SELL 1 at 103    | 1.00 | -0.25      | 1.25 | same side as the row below: charged MORE
-//   | 5   | SELL 1 at 103    | 1.00 | -0.25      | 1.25 |
+//   | 5   | SELL 1 at 103    | 1.00 | -0.25      | 1.25 | the account's fill: SELL 2, cost 2.50
 //
 // RED when either function reads the own cost, or drops or clamps the negative adjustment.
 TEST(TradeStatisticsNetCost, ATradeAndASymbolAreChargedTheCostAfterNetting) {
@@ -366,22 +412,37 @@ TEST(TradeStatisticsNetCost, ATradeAndASymbolAreChargedTheCostAfterNetting) {
     };
     execs[1].netting_adjustment = Decimal(-0.25);
     execs[2].netting_adjustment = Decimal(-0.25);
-    const auto s = calc.calculate_trade_statistics(execs);
-    EXPECT_EQ(s.total_trades, 2);
-    EXPECT_NEAR(s.total_profit, 2 * (3.0 - 1.25), 1e-12) << "each close: 3 points less its NET cost 1.25";
-    EXPECT_NEAR(s.max_win, 3.0 - 1.25, 1e-12);
-    const auto pnl = calc.calculate_symbol_pnl(execs);
+    const auto s = calc.calculate_trade_statistics(execs, kUnitPoints);
+    EXPECT_EQ(s.total_trades, 1) << "one account fill: SELL 2";
+    EXPECT_NEAR(s.total_profit, 2 * 3.0 - 2 * 1.25, 1e-12) << "2 x 3 points less the two NET costs";
+    EXPECT_NEAR(s.max_win, 6.0 - 2.5, 1e-12);
+    const auto pnl = calc.calculate_symbol_pnl(execs, kUnitPoints);
     EXPECT_NEAR(pnl.at("ES.v.0"), 6.0 - 2.0 - 1.25 - 1.25, 1e-12);
 
-    // A positive adjustment (the sleeves cross) lowers the charge: a full cross is charged nothing.
+    // A positive adjustment (the sleeves cross) lowers the charge: a full cross is charged
+    // nothing, and it is no fill of the account: nothing is scored on it.
     std::vector<ExecutionReport> cross = {
         fill("NQ.v.0", Side::BUY, 1.0, 100.0, 0, 1.5),
         fill("NQ.v.0", Side::SELL, 1.0, 100.0, 0, 1.5),
     };
     cross[0].netting_adjustment = Decimal(1.5);
     cross[1].netting_adjustment = Decimal(1.5);
-    EXPECT_NEAR(calc.calculate_symbol_pnl(cross).at("NQ.v.0"), 0.0, 1e-12);
-    EXPECT_NEAR(calc.calculate_trade_statistics(cross).total_loss, 0.0, 1e-12);
+    EXPECT_EQ(calc.calculate_symbol_pnl(cross, kUnitPoints).count("NQ.v.0"), 0u);
+    const auto c = calc.calculate_trade_statistics(cross, kUnitPoints);
+    EXPECT_EQ(c.total_trades, 0);
+    EXPECT_EQ(c.strategy_fills, 0);
+    EXPECT_NEAR(c.total_loss, 0.0, 1e-12);
+
+    // Sleeves that cross at DIFFERENT prices are never netted: each row keeps its own cost. The
+    // account still sent no order (no fill, no trade); the cost stays on the symbol.
+    std::vector<ExecutionReport> apart = {
+        fill("NQ.v.0", Side::BUY, 1.0, 100.0, 0, 1.5),
+        fill("NQ.v.0", Side::SELL, 1.0, 101.0, 0, 1.5),
+    };
+    const auto a = calc.calculate_trade_statistics(apart, kUnitPoints);
+    EXPECT_EQ(a.total_trades, 0);
+    EXPECT_EQ(a.strategy_fills, 0);
+    EXPECT_NEAR(calc.calculate_symbol_pnl(apart, kUnitPoints).at("NQ.v.0"), -3.0, 1e-12);
 }
 
 // T-NETTING fix round: the trade statistics' roll total reads the leg's OWN cost through the same
@@ -394,9 +455,9 @@ TEST(TradeStatisticsNetCost, ARollLegGivenAnAdjustmentIsRefused) {
         fill("NG.v.0", Side::SELL, 1.0, 3.376, 4, 2.0, ExecutionType::ROLL, "864"),
         fill("NG.v.0", Side::BUY, 1.0, 3.965, 4, 2.0, ExecutionType::ROLL, "863"),
     };
-    EXPECT_DOUBLE_EQ(calc.calculate_trade_statistics(execs).roll_costs, 4.0);
+    EXPECT_DOUBLE_EQ(calc.calculate_trade_statistics(execs, kUnitPoints).roll_costs, 4.0);
     execs[1].netting_adjustment = Decimal(0.75);
-    EXPECT_THROW(calc.calculate_trade_statistics(execs), std::logic_error);
+    EXPECT_THROW(calc.calculate_trade_statistics(execs, kUnitPoints), std::logic_error);
 }
 
 // A ROLL leg is never netted: its adjustment is 0 and the roll total is its own cost.
@@ -408,5 +469,5 @@ TEST(TradeStatisticsNetCost, ARollLegsCostIsItsOwn) {
         fill("NG.v.0", Side::BUY, 1.0, 3.965, 4, 2.0, ExecutionType::ROLL, "863"),
     };
     for (const auto& e : execs) EXPECT_EQ(e.netting_adjustment, Decimal());
-    EXPECT_DOUBLE_EQ(calc.calculate_trade_statistics(execs).roll_costs, 4.0);
+    EXPECT_DOUBLE_EQ(calc.calculate_trade_statistics(execs, kUnitPoints).roll_costs, 4.0);
 }
