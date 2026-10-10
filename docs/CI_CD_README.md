@@ -4,36 +4,43 @@ This document describes the comprehensive CI/CD pipeline setup for the Trade Ngi
 
 ## Overview
 
-The CI/CD pipeline consists of several GitHub Actions workflows that ensure code quality, testing, and coverage requirements are met before code can be merged.
+Continuous integration runs in GitHub Actions. The workflows are in `.github/workflows/`. There is
+one pipeline workflow that lints, builds, tests and measures coverage, and five smaller workflows.
+The `lint`, `build`, `image-generation` and `deploy-to-ec2` jobs of the pipeline run inside the CI
+image `ghcr.io/algogators/trade-ngin-ci:latest`, which carries the build dependencies.
 
 ## Workflows
 
-### 1. Main CI/CD Pipeline (`ci-cd-pipeline.yml`)
+### 1. CI/CD Pipeline (`ci-cd-pipeline.yml`)
 
-**Triggers:** Push to `main`/`develop` branches, Pull Requests to `main`/`develop`
+**Triggers:** a push to `main`, `develop`, `main-hd`, `prod` or `staging`, and a pull request onto
+any branch.
 
-**Jobs:**
-- **Lint:** Code formatting and style checks
-- **Build:** Compilation in Debug and Release modes
-- **Security Scan:** Basic security checks
-- **Report:** Summary report generation
+**Jobs, in order:**
 
-**Features:**
-- Runs on both Debug and Release builds
-- Enforces 75% code coverage threshold
-- Generates detailed reports
-- Uploads artifacts for review
+| Job (id) | Check name | What it does |
+|---|---|---|
+| `lint` | Code Linting | clang-format, clang-tidy, cppcheck and cpplint. The findings are written to a report and do not fail the job |
+| `build` | Build and Test (Debug), Build and Test (Release) | builds Debug and Release (a matrix), runs the tests in both, and on Debug also runs `ctest` under Valgrind (the launcher only: the step does not pass `--trace-children=yes`, so the test binary itself is not checked), generates coverage with lcov and gcovr, checks the coverage threshold and runs the SonarCloud scan when its token is present and the run is a pull request or a push to `main`, `prod` or `staging` |
+| `security-scan` | Security Scan | greps the sources for unsafe string functions and for words such as "password" |
+| `report` | Generate Summary Report | writes a summary of the three jobs above; runs even when one of them failed |
+| `image-generation` | Image Generation | builds and pushes the container image and scans it with Trivy; runs on pull requests and on pushes to `prod` and `staging` |
+| `schema-ownership-guard` | Schema Ownership Guard | fails if a string literal in `src/data` or `src/storage` starts with the name of a schema this repository does not own (`futures_data`, `equities_data`, `options_data`, `synthetic`, `auth`, `research`); a schema named in the middle of a query, as the read queries do, is not matched |
+| `deploy-to-ec2` | Deploy to EC2 | deploys on a push to `prod` |
 
-### 2. Code Coverage Workflow (`code-coverage.yml`)
+**Coverage:** the threshold is `COVERAGE_THRESHOLD: 10` (line coverage, percent), set at the top of
+the workflow and checked in the Debug build by the step "Check Coverage Threshold". There is no
+separate coverage workflow: coverage is a step of the `build` job.
 
-**Triggers:** Push to `main`/`develop` branches, Pull Requests to `main`/`develop`
+### 2. Other workflows
 
-**Features:**
-- Dedicated coverage analysis
-- Uploads to Codecov for historical tracking
-- Comments coverage results on PRs
-- Generates HTML and XML reports
-- Creates coverage badges
+| File | Name | Trigger | Purpose |
+|---|---|---|---|
+| `live-trading-watchdog.yml` | Live Trading Watchdog | daily schedule, manual, and pull requests that touch the watchdog | checks that the live run wrote its rows (on a pull request only the script's self-test runs); see [performance_upkeep.md](performance_upkeep.md) |
+| `branch-protection.yml` | Branch Protection Setup | daily schedule and manual | applies the branch protection settings to `main`, `develop` and `main-hd`, in a job that runs only when the actor is the repository owner |
+| `dependency-review.yml` | Dependency Review | pull requests onto `main` | fails a pull request that adds a dependency with a known vulnerability of severity high or above; no licence list is configured |
+| `sbom.yml` | Generate SBOM | push to `main`, manual | produces the software bill of materials |
+| `scorecard.yml` | OSSF Scorecard | weekly schedule, push to `main`, branch protection rule changes | supply-chain scorecard |
 
 ## Local Development Setup
 
@@ -64,14 +71,19 @@ chmod +x scripts/pre-commit-hook.sh
 
 ### Local Linting
 
-Use the existing linting scripts:
+Apart from `scripts/pre-commit-hook.sh` the repository carries no lint script (the
+`./linting/auto_fix_lint.sh` that the hook's failure message names does not exist). Run the tools
+the pipeline runs:
 
 ```bash
-# Run linting and generate report
-./linting/lint_runner.sh
+# Check formatting (what the pipeline checks)
+find src include -name "*.cpp" -o -name "*.hpp" | xargs clang-format --dry-run --Werror
 
-# Auto-fix common linting issues
-./linting/auto_fix_lint.sh
+# Fix formatting in place
+find src include -name "*.cpp" -o -name "*.hpp" | xargs clang-format -i
+
+# Style check
+cpplint --recursive --filter=-legal/copyright,-build/include_order src include
 ```
 
 ### Local Testing
@@ -87,7 +99,7 @@ cd build
 cmake .. -DCMAKE_BUILD_TYPE=Debug -DCMAKE_CXX_FLAGS="-g -O0 -fprofile-arcs -ftest-coverage"
 
 # Build
-make -j$(nproc)
+cmake --build . -j
 
 # Run tests
 ctest --output-on-failure --verbose
@@ -100,17 +112,19 @@ genhtml coverage.info --output-directory coverage_html
 
 ## Coverage Requirements
 
-- **Minimum Coverage:** 75%
+- **Threshold enforced by CI:** 10 percent line coverage (`COVERAGE_THRESHOLD` in
+  `.github/workflows/ci-cd-pipeline.yml`). A Debug build below it fails the `build` job.
 - **Coverage Tools:** lcov, gcovr
-- **Reports:** HTML, XML (Cobertura format)
-- **Integration:** Codecov for historical tracking
+- **Reports:** lcov `coverage.info`, gcovr XML (Cobertura format), gcovr text, and the SonarQube
+  generic coverage XML
+- **Integration:** the SonarCloud scan reads the coverage report when its token is configured
 
 ## Workflow Artifacts
 
 ### Available Artifacts
 
 1. **Linting Reports**
-   - Location: `linting-report-{run_number}`
+   - Location: `linting-report-{run_number}` and `linting-summary-{run_number}`
    - Contains: Detailed linting results and formatting issues
 
 2. **Coverage Reports**
@@ -137,8 +151,8 @@ genhtml coverage.info --output-directory coverage_html
 
 ### Stage 1: Linting
 - **Purpose:** Ensure code quality and consistency
-- **Tools:** clang-format, cpplint
-- **Failure:** Blocks subsequent stages
+- **Tools:** clang-format, clang-tidy, cppcheck, cpplint
+- **Failure:** findings are reported and do not fail the job; the build job waits for this job
 - **Output:** Linting report artifact
 
 ### Stage 2: Building
@@ -151,7 +165,7 @@ genhtml coverage.info --output-directory coverage_html
 - **Purpose:** Run unit tests and measure coverage
 - **Framework:** Google Test
 - **Coverage:** lcov + gcovr
-- **Threshold:** 75% minimum
+- **Threshold:** 10 percent line coverage
 - **Output:** Test results, coverage reports
 
 ### Stage 4: Security
@@ -161,27 +175,29 @@ genhtml coverage.info --output-directory coverage_html
 
 ### Stage 5: Reporting
 - **Purpose:** Generate comprehensive reports
-- **Reports:** Summary, detailed coverage, linting results
-- **Integration:** GitHub comments, Codecov upload
+- **Reports:** a summary of the lint, build and security results, uploaded as an artifact
 
 ## Configuration
 
 ### Environment Variables
 
-- `COVERAGE_THRESHOLD`: 75 (minimum coverage percentage)
+- `COVERAGE_THRESHOLD`: 10 (minimum line coverage percentage)
 
 ### Branch Protection
 
-Recommended branch protection rules for `main` and `develop`:
+`branch-protection.yml` configures these rules for the protected branches:
 
-1. **Require status checks to pass before merging**
-   - `lint` job
-   - `build` job (both Debug and Release)
-   - `coverage` job
+1. **Require status checks to pass before merging.** The contexts it names are `lint`,
+   `build (Debug)`, `build (Release)` and `coverage`. None of them is the name of a check the
+   pipeline reports: the checks are "Code Linting", "Build and Test (Debug)" and
+   "Build and Test (Release)", and there is no coverage job (coverage is a step of the Debug
+   `build` job).
 
 2. **Require branches to be up to date before merging**
 
-3. **Dismiss stale PR approvals when new commits are pushed**
+3. **Require one approving review, and dismiss stale PR approvals when new commits are pushed**
+
+4. **Disallow force pushes and branch deletions**
 
 ### Customization
 
@@ -202,7 +218,7 @@ Change the environment variable:
 
 ```yaml
 env:
-  COVERAGE_THRESHOLD: 80  # Increase to 80%
+  COVERAGE_THRESHOLD: 10  # line coverage, percent
 ```
 
 #### Adding New Test Types
@@ -220,8 +236,8 @@ Update the CMake configuration and workflow:
 
 ### Common Issues
 
-1. **Linting Fails**
-   - Run `./linting/auto_fix_lint.sh` locally
+1. **Lint findings** (they do not fail the job)
+   - Run `clang-format -i` on the files named in the report
    - Check the linting report artifact for specific issues
 
 2. **Coverage Below Threshold**
@@ -255,7 +271,7 @@ Update the CMake configuration and workflow:
 
 3. **Local Reproduction**
    - Run the same commands locally
-   - Use the same environment (Ubuntu latest)
+   - Use the same environment: the CI image `ghcr.io/algogators/trade-ngin-ci:latest`
 
 ## Best Practices
 
