@@ -5154,6 +5154,65 @@ int main(int argc, char* argv[]) {
         // The block is E2-F33's: the calculator, the four history loads and the column helper the
         // futures runners use. Failure here is a WARN, not a fatal: every trading decision for
         // Day T-1 is already made and persisted by this point, and these columns are reporting.
+        //
+        // T-8D-2 R44 (b): total_dividend_income is dated by ex-date and counted on the shares of
+        // the position row dated the ex-date (the book after that day's fill at the cum-dividend
+        // close, the row whose P&L carries the credit). The event of an ex-date is applied by the
+        // next run, so the figure through Day T-1 goes into the same Day T-1 UPDATE and the row
+        // this run writes takes the figure through its own date. Informational ONLY -- NOT added
+        // to total_pnl: the dividend is already inside P&L through the adjusted prices and the
+        // basis rescale.
+        std::optional<double> dividend_income_t1;
+        double dividend_income_today = 0.0;
+        {
+            CorporateActionsAuditLog div_log(ca_state_dir, db, portfolio_id, kEquityStrategyId,
+                                             kEquityStrategyName);
+            auto div_loaded = div_log.load();
+            if (div_loaded.is_error()) {
+                // Reporting-only: the trading decisions are already made and
+                // persisted by this point, and this figure is informational
+                // (never added to P&L). Under-reporting it is preferable to
+                // failing a completed run, but it must not pass silently.
+                WARN("Cannot read dividend income from the corp-action dedup "
+                     "record: " + std::string(div_loaded.error()->what()) +
+                     " -- reporting 0 on today's row; the Day T-1 cell is left as it is");
+            } else {
+                std::unordered_map<std::string, std::unordered_map<std::string, Position>>
+                    ex_date_rows;
+                auto shares_on_ex_date_row =
+                    [&](const std::string& symbol,
+                        const std::string& ex_date) -> std::optional<double> {
+                    auto cached = ex_date_rows.find(ex_date);
+                    if (cached == ex_date_rows.end()) {
+                        std::chrono::system_clock::time_point ex_tp;
+                        if (!core::parse_utc_date(ex_date, ex_tp)) return std::nullopt;
+                        auto r = db->load_positions_by_date(kEquityStrategyId, kEquityStrategyName,
+                                                            portfolio_id, ex_tp,
+                                                            "trading.positions");
+                        if (r.is_error()) return std::nullopt;
+                        cached = ex_date_rows.emplace(ex_date, r.value()).first;
+                    }
+                    auto p = cached->second.find(symbol);
+                    if (p == cached->second.end()) return std::nullopt;
+                    return p->second.quantity.as_double();
+                };
+                std::vector<std::string> recorded_quantity_used;
+                dividend_income_t1 = div_log.dividend_income_through(
+                    t1_date_str, shares_on_ex_date_row, &recorded_quantity_used);
+                recorded_quantity_used.clear();
+                dividend_income_today = div_log.dividend_income_through(
+                    today_date_str, shares_on_ex_date_row, &recorded_quantity_used);
+                for (const auto& event : recorded_quantity_used) {
+                    WARN("DIVIDEND_COUNTER: no position row for " + event +
+                         " (symbol, ex-date); its dividend is counted on the quantity the "
+                         "corp-action record holds, the row of the day before the ex-date");
+                }
+                INFO("DIVIDEND_COUNTER through Day T-1 " + t1_date_str + ": " +
+                     std::to_string(*dividend_income_t1) + "; through " + today_date_str + ": " +
+                     std::to_string(dividend_income_today));
+            }
+        }
+
         HistoricalMetrics settled_statistics;
         // Migration 030: the statistics that are not plain numbers (dates, symbols, the
         // calendar years) or may have no value, as typed cells; the same two writes.
@@ -5271,6 +5330,10 @@ int main(int argc, char* argv[]) {
                     auto metric_updates = historical_metrics_update_columns(settled_statistics);
                     metric_updates["total_annualized_return"] =
                         settled_statistics.total_annualized_return;
+                    // R44 (b): the dividend of an ex-date lands on the ex-date row.
+                    if (dividend_income_t1) {
+                        metric_updates["total_dividend_income"] = *dividend_income_t1;
+                    }
 
                     auto t1_statistics_manager = std::make_unique<LiveResultsManager>(
                         db, true, kEquityStrategyId, portfolio_id, kEquityStrategyName);
@@ -5765,29 +5828,12 @@ int main(int argc, char* argv[]) {
             // Use the LiveResultsManager
             INFO("Setting metrics in LiveResultsManager...");
 
-            // Phase 4.5: cumulative dividend income, sourced from the
-            // Phase 4 corp-action state file. Informational ONLY -- NOT
-            // added to total_pnl: bars carry total-return adjusted prices
+            // Phase 4.5 / T-8D-2 R44 (b): cumulative dividend income through this row's date, on
+            // the shares that carried each ex-date (computed once in STEP 4b). Informational
+            // ONLY -- NOT added to total_pnl: bars carry total-return adjusted prices
             // (Phase 4.2 computes that in-engine from per-bar div_cash), so
             // dividend value is already inside mark-to-market P&L.
-            double total_dividend_income = 0.0;
-            {
-                CorporateActionsAuditLog div_log(ca_state_dir, db,
-                                                       portfolio_id,
-                                                       "LIVE_EQUITY_MEAN_REVERSION",
-                                                       "EQUITY_MEAN_REVERSION");
-                auto div_loaded = div_log.load();
-                if (div_loaded.is_error()) {
-                    // Reporting-only: the trading decisions are already made and
-                    // persisted by this point, and this figure is informational
-                    // (never added to P&L). Under-reporting it is preferable to
-                    // failing a completed run, but it must not pass silently.
-                    WARN("Cannot read dividend income from the corp-action dedup "
-                         "record: " + std::string(div_loaded.error()->what()) +
-                         " -- reporting 0; the stored value is unaffected");
-                }
-                total_dividend_income = div_log.total_cumulative_dividend_income();
-            }
+            const double total_dividend_income = dividend_income_today;
 
             // T-8D R39: the statistic columns of today's row are the statistics through the last
             // settled row, computed once after STEP 4 and written to the Day T-1 row too. The
