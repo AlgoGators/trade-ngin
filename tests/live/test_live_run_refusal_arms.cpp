@@ -330,6 +330,24 @@ TEST(RunRefusalArmsSource, TheDayClassificationAbortIsDeletedAndTheFeedHoleRefus
     }
 }
 
+TEST(RunRefusalArmsSource, TheEquityRunnerWritesItsMetadataRowBelowItsGuards) {
+    // T-DATED R5 (reads source; the executed proof is the mode gate's refused equity run, which
+    // must leave no live_run_metadata row): the row used to be written before the bars were
+    // loaded, so every refused run left one.
+    const std::string src = read_source("apps/strategies/live_equity_mean_reversion.cpp");
+    if (src.empty()) GTEST_SKIP() << "runner source not found from the test working directory";
+    const auto upsert = src.find("db->store_live_run_metadata(");
+    ASSERT_NE(upsert, npos);
+    EXPECT_EQ(src.find("db->store_live_run_metadata(", upsert + 1), npos) << "one write only";
+    for (const char* guard :
+         {"rule_feed_freshness(freshness, tolerance_days, as_of_ymd,", "No historical data loaded.",
+          "A run was missed. Replay every date from "}) {
+        const auto at = src.find(guard);
+        ASSERT_NE(at, npos) << guard;
+        EXPECT_LT(at, upsert) << "the metadata row is written above the guard: " << guard;
+    }
+}
+
 TEST(RunRefusalArmsSource, TheTwinsCarryTheSameRefusalAndUpsertBlock) {
     std::vector<std::string> blocks;
     for (const char* runner : kFuturesRunners) {

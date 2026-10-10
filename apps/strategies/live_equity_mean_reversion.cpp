@@ -666,51 +666,6 @@ int main(int argc, char* argv[]) {
         }
         INFO("Strategy added to portfolio successfully");
 
-        // Per-run provenance: what this run was configured with. The futures runners have
-        // always written it (live_portfolio_conservative.cpp:620); the equity runner never
-        // did, so trading.live_run_metadata held 245 futures rows and nothing for
-        // equities. Nothing reads this table -- it exists so a past run's allocations and
-        // config can be reconstructed after the fact, which is exactly what you want when
-        // a number from months ago has to be explained.
-        {
-            nlohmann::json portfolio_config_json;
-            portfolio_config_json["total_capital"] =
-                static_cast<double>(portfolio_config.total_capital);
-            portfolio_config_json["use_optimization"] = portfolio_config.use_optimization;
-            portfolio_config_json["allow_fractional_positions"] =
-                portfolio_config.allow_fractional_positions;
-            // The sessions a year this run's statistics are annualised with (LOOP_SPEC 7.5.1).
-            portfolio_config_json[trade_ngin::kStatisticsKKey] =
-                app_config.statistics.equity_sessions_per_year;
-
-            // Single-strategy runner: the live equity path rejects more than one strategy.
-            nlohmann::json strategy_alloc_json;
-            strategy_alloc_json[kEquityStrategyName] = 1.0;
-
-            nlohmann::json strategy_configs_json;
-            strategy_configs_json[kEquityStrategyName] = {
-                {"lookback_period", mean_rev_config.lookback_period},
-                {"entry_threshold", mean_rev_config.entry_threshold},
-                {"exit_threshold", mean_rev_config.exit_threshold},
-                {"risk_target", mean_rev_config.risk_target},
-                {"position_size", mean_rev_config.position_size},
-                {"vol_lookback", mean_rev_config.vol_lookback},
-                {"use_stop_loss", mean_rev_config.use_stop_loss},
-                {"stop_loss_pct", mean_rev_config.stop_loss_pct},
-                {"allow_fractional_shares", mean_rev_config.allow_fractional_shares}};
-
-            auto metadata_result = db->store_live_run_metadata(
-                now, kEquityStrategyId, portfolio_id, strategy_alloc_json,
-                portfolio_config_json, strategy_configs_json);
-
-            if (metadata_result.is_error()) {
-                WARN("Failed to store live run metadata: " +
-                     std::string(metadata_result.error()->what()));
-            } else {
-                INFO("Successfully stored live run metadata for date");
-            }
-        }
-
         // Create LiveTradingCoordinator to manage all live trading components
         INFO("Creating LiveTradingCoordinator for centralized component management");
         LiveTradingConfig coordinator_config;
@@ -1172,6 +1127,54 @@ int main(int argc, char* argv[]) {
                     return 1;
                 }
                 INFO("No prior run anywhere for this strategy -- genuine first run.");
+            }
+        }
+
+        // T-DATED R5 (HD 2026-10-10): written HERE, below the guards that refuse before anything
+        // of the day is stored (config, calendar, bars, feed freshness, the missed-run guard and
+        // the held-symbol feed check), as the futures runners do: a refused run leaves no row.
+        // Per-run provenance: what this run was configured with. The futures runners have
+        // always written it (live_portfolio_conservative.cpp:620); the equity runner never
+        // did, so trading.live_run_metadata held 245 futures rows and nothing for
+        // equities. Nothing reads this table -- it exists so a past run's allocations and
+        // config can be reconstructed after the fact, which is exactly what you want when
+        // a number from months ago has to be explained.
+        {
+            nlohmann::json portfolio_config_json;
+            portfolio_config_json["total_capital"] =
+                static_cast<double>(portfolio_config.total_capital);
+            portfolio_config_json["use_optimization"] = portfolio_config.use_optimization;
+            portfolio_config_json["allow_fractional_positions"] =
+                portfolio_config.allow_fractional_positions;
+            // The sessions a year this run's statistics are annualised with (LOOP_SPEC 7.5.1).
+            portfolio_config_json[trade_ngin::kStatisticsKKey] =
+                app_config.statistics.equity_sessions_per_year;
+
+            // Single-strategy runner: the live equity path rejects more than one strategy.
+            nlohmann::json strategy_alloc_json;
+            strategy_alloc_json[kEquityStrategyName] = 1.0;
+
+            nlohmann::json strategy_configs_json;
+            strategy_configs_json[kEquityStrategyName] = {
+                {"lookback_period", mean_rev_config.lookback_period},
+                {"entry_threshold", mean_rev_config.entry_threshold},
+                {"exit_threshold", mean_rev_config.exit_threshold},
+                {"risk_target", mean_rev_config.risk_target},
+                {"position_size", mean_rev_config.position_size},
+                {"vol_lookback", mean_rev_config.vol_lookback},
+                {"use_stop_loss", mean_rev_config.use_stop_loss},
+                {"stop_loss_pct", mean_rev_config.stop_loss_pct},
+                {"allow_fractional_shares", mean_rev_config.allow_fractional_shares}};
+
+            auto metadata_result = db->store_live_run_metadata(
+                now, kEquityStrategyId, portfolio_id, strategy_alloc_json,
+                portfolio_config_json, strategy_configs_json);
+
+            if (metadata_result.is_error()) {
+                WARN("Failed to store live run metadata: " +
+                     std::string(metadata_result.error()->what()));
+            } else {
+                INFO("Successfully stored live run metadata for date");
             }
         }
 
