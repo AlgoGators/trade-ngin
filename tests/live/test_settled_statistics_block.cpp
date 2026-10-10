@@ -464,11 +464,17 @@ TEST(SettledStatisticsBlock, TheEquityDividendCounterIsDatedAndRefreshedOnTheDay
     // Both figures are taken once, in the block, from the position rows dated the ex-dates.
     EXPECT_EQ(count_of(src, "div_log.dividend_income_through("), 2u);
     EXPECT_EQ(count_of(block, "div_log.dividend_income_through("), 2u);
-    EXPECT_NE(block.find("t1_date_str, shares_on_ex_date_row, &recorded_quantity_used);"),
+    EXPECT_NE(block.find("t1_date_str, std::ref(shares_on_ex_date_row), &recorded_quantity_used);"),
               std::string::npos);
-    EXPECT_NE(block.find("today_date_str, shares_on_ex_date_row, &recorded_quantity_used);"),
-              std::string::npos);
+    EXPECT_NE(
+        block.find("today_date_str, std::ref(shares_on_ex_date_row), &recorded_quantity_used);"),
+        std::string::npos);
     EXPECT_EQ(count_of(block, "db->load_positions_by_date("), 1u);
+    // A failed read: the two cells come from the one tested rule (live/dividend_counter.hpp,
+    // executed in test_live_metrics_includes_dividend_income.cpp), never a literal zero.
+    EXPECT_EQ(count_of(block, "dividend_counter_cells("), 1u);
+    EXPECT_EQ(count_of(block, "load_stored_dividend_income("), 1u);
+    EXPECT_EQ(count_of(src, "reporting 0 on today's row"), 0u);
 
     // The Day T-1 refresh assigns the figure through Day T-1, before the UPDATE is sent.
     const auto assigned = block.find("metric_updates[\"total_dividend_income\"] = *dividend_income_t1;");
@@ -478,9 +484,8 @@ TEST(SettledStatisticsBlock, TheEquityDividendCounterIsDatedAndRefreshedOnTheDay
     EXPECT_LT(assigned, update);
 
     // The row the run writes takes the figure through its own date, not the undated sum.
-    EXPECT_NE(day_t.find("const double total_dividend_income = dividend_income_today;"),
-              std::string::npos);
-    EXPECT_EQ(count_of(day_t, "{\"total_dividend_income\", total_dividend_income}"), 1u);
+    EXPECT_EQ(count_of(day_t, "double_metrics[\"total_dividend_income\"] = *dividend_income_today;"),
+              1u);
     EXPECT_EQ(count_of(src, "total_dividend_income = div_log.total_cumulative_dividend_income()"),
               0u);
 

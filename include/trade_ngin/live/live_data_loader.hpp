@@ -23,6 +23,7 @@
 #pragma once
 
 #include <memory>
+#include <optional>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -267,6 +268,15 @@ public:
      */
     Result<std::string> load_book_start(const std::string& strategy_id,
                                         const std::string& portfolio_id);
+
+    /**
+     * @brief total_dividend_income as stored on the key's <schema>.live_results row of a date:
+     *        the previous value a run carries when it cannot recount the dividends. No value
+     *        when the date has no row or the cell is NULL.
+     */
+    Result<std::optional<double>> load_stored_dividend_income(const std::string& strategy_id,
+                                                              const std::string& portfolio_id,
+                                                              const Timestamp& date);
 
     /**
      * @brief The book's stored per-symbol P&L cells for the worst day's symbol (migration 030):

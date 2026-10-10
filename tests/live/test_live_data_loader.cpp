@@ -568,6 +568,31 @@ TEST_F(LiveDataLoaderTest, TheBooksExecutionsAreReadByTheirStoredDateFromTheBook
     EXPECT_EQ(db->last_query.find("execution_time"), std::string::npos);
 }
 
+// The previous value a run carries when it cannot recount the dividends: the cell of one row.
+TEST_F(LiveDataLoaderTest, TheStoredDividendIncomeIsTheCellOfTheKeysRowOfTheDate) {
+    auto capturing = std::make_shared<QueryCapturingDb>();
+    LiveDataLoader bare(capturing, "trading");
+    auto none = bare.load_stored_dividend_income("LIVE_EQUITY_MEAN_REVERSION",
+                                                 "EQUITY_MR_PORTFOLIO", april_24());
+    ASSERT_TRUE(none.is_ok());
+    EXPECT_FALSE(none.value().has_value()) << "a date with no row has no stored figure";
+    EXPECT_EQ(capturing->last_query,
+              "SELECT total_dividend_income::double precision AS total_dividend_income "
+              "FROM trading.live_results WHERE strategy_id = 'LIVE_EQUITY_MEAN_REVERSION' "
+              "AND portfolio_id = 'EQUITY_MR_PORTFOLIO' AND DATE(date) = '2026-04-24'");
+
+    auto db = std::make_shared<EquityCurveRowsDb>(std::vector<std::string>{"6.62138"},
+                                                  std::vector<std::string>{"2026-04-24"});
+    LiveDataLoader loader(db, "trading");
+    auto stored = loader.load_stored_dividend_income("S", "P", april_24());
+    ASSERT_TRUE(stored.is_ok()) << stored.error()->what();
+    ASSERT_TRUE(stored.value().has_value());
+    EXPECT_DOUBLE_EQ(*stored.value(), 6.62138);
+
+    LiveDataLoader disconnected(make_disconnected_db(), "trading");
+    ASSERT_DB_ERROR(disconnected.load_stored_dividend_income("S", "P", now()));
+}
+
 TEST_F(LiveDataLoaderTest, TheMigration030HistoriesLoadDisconnectedError) {
     LiveDataLoader l(make_disconnected_db(), "trading");
     ASSERT_DB_ERROR(l.load_symbol_pnl_history("S", "P", now()));

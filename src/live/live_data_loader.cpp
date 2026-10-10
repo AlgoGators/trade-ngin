@@ -572,6 +572,44 @@ Result<std::string> LiveDataLoader::load_book_start(const std::string& strategy_
     return Result<std::string>(cell->IsNull(0) ? std::string() : cell->GetString(0));
 }
 
+Result<std::optional<double>> LiveDataLoader::load_stored_dividend_income(
+    const std::string& strategy_id, const std::string& portfolio_id, const Timestamp& date) {
+    using Cell = std::optional<double>;
+    auto validation = validate_connection();
+    if (validation.is_error()) {
+        return make_error<Cell>(ErrorCode::DATABASE_ERROR, validation.error()->what(),
+                                "LiveDataLoader");
+    }
+    const std::string date_str = core::format_utc_date(date);
+    const std::string actual_portfolio_id = portfolio_id.empty() ? "BASE_PORTFOLIO" : portfolio_id;
+    const std::string query =
+        "SELECT total_dividend_income::double precision AS total_dividend_income "
+        "FROM " + schema_ + ".live_results "
+        "WHERE strategy_id = '" + strategy_id + "' "
+        "AND portfolio_id = '" + actual_portfolio_id + "' "
+        "AND DATE(date) = '" + date_str + "'";
+    DEBUG("Loading the stored dividend income: " + query);
+    auto result = db_->execute_query(query);
+    if (result.is_error()) {
+        return make_error<Cell>(
+            ErrorCode::DATABASE_ERROR,
+            "Failed to load the stored dividend income: " + std::string(result.error()->what()),
+            "LiveDataLoader");
+    }
+    auto table = result.value();
+    if (!table || table->num_rows() == 0) return Result<Cell>(Cell());
+    // convert_generic_to_arrow builds every column as arrow::utf8()
+    auto cell = std::static_pointer_cast<arrow::StringArray>(table->column(0)->chunk(0));
+    if (cell->IsNull(0)) return Result<Cell>(Cell());
+    try {
+        return Result<Cell>(Cell(std::stod(cell->GetString(0))));
+    } catch (const std::exception&) {
+        return make_error<Cell>(ErrorCode::DATABASE_ERROR,
+                                "The stored dividend income is not a number: " + cell->GetString(0),
+                                "LiveDataLoader");
+    }
+}
+
 Result<std::vector<DatedLevel>> LiveDataLoader::load_statistics_levels(
     const std::string& strategy_id, const std::string& portfolio_id,
     const Timestamp& through_date) {

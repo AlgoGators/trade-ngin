@@ -1,10 +1,13 @@
 #include <gtest/gtest.h>
 #include <cstdlib>
 #include <filesystem>
+#include <functional>
+#include <optional>
 #include <string>
 #include <unordered_map>
 #include "trade_ngin/live/corporate_actions_applier.hpp"
 #include "trade_ngin/live/corporate_actions_audit_log.hpp"
+#include "trade_ngin/live/dividend_counter.hpp"
 
 using namespace trade_ngin;
 
@@ -177,4 +180,77 @@ TEST_F(LiveMetricsIncludesDividendIncomeTest, AnEventWithNoExDateRowIsCountedOnT
     // No lookup at all: every event on its recorded quantity, the undated sum when all are in.
     EXPECT_DOUBLE_EQ(log.dividend_income_through("2026-06-30", nullptr),
                      log.total_cumulative_dividend_income());
+}
+
+// A read that fails is not "the symbol has no row": the lookup remembers the ex-date, and the
+// run then writes no figure of its own (live/dividend_counter.hpp).
+namespace {
+
+ExDateRowShares::Rows rows_of(const std::string& symbol, double quantity) {
+    Position row;
+    row.symbol = symbol;
+    row.quantity = Quantity(quantity);
+    return ExDateRowShares::Rows{{symbol, row}};
+}
+
+}  // namespace
+
+TEST_F(LiveMetricsIncludesDividendIncomeTest, TheExDateRowsAreReadOncePerExDate) {
+    int reads = 0;
+    ExDateRowShares shares([&](const std::string& ex_date) -> Result<ExDateRowShares::Rows> {
+        ++reads;
+        if (ex_date == "2026-06-08") return rows_of("GOOGL", 13.041359);
+        return rows_of("META", 7.147202);
+    });
+    ASSERT_TRUE(shares("GOOGL", "2026-06-08").has_value());
+    EXPECT_DOUBLE_EQ(*shares("GOOGL", "2026-06-08"), 13.041359);
+    EXPECT_DOUBLE_EQ(*shares("META", "2026-06-15"), 7.147202);
+    // A symbol with no row on a date that was read is an answer, not a failure.
+    EXPECT_FALSE(shares("AAPL", "2026-06-15").has_value());
+    EXPECT_EQ(reads, 2);
+    EXPECT_TRUE(shares.failed_reads().empty());
+}
+
+TEST_F(LiveMetricsIncludesDividendIncomeTest, AFailedReadOfAnExDateRowIsRememberedNotCountedAsNoRow) {
+    int reads = 0;
+    ExDateRowShares shares([&](const std::string& ex_date) -> Result<ExDateRowShares::Rows> {
+        ++reads;
+        if (ex_date == "2026-06-15") {
+            return make_error<ExDateRowShares::Rows>(ErrorCode::DATABASE_ERROR, "connection lost",
+                                                     "test");
+        }
+        return rows_of("GOOGL", 13.041359);
+    });
+    CorporateActionsAuditLog log(state_dir_);
+    log.load();
+    log.record(dividend_adj("GOOGL", "2026-06-08", 12.833803, 0.22));
+    log.record(dividend_adj("META", "2026-06-15", 7.127855, 0.525));
+
+    std::vector<std::string> named;
+    const double through_t1 = log.dividend_income_through("2026-06-15", std::ref(shares), &named);
+    const double through_today = log.dividend_income_through("2026-06-16", std::ref(shares), &named);
+    // The sum fell back to the recorded quantity for META: a figure the run must not store.
+    EXPECT_DOUBLE_EQ(through_t1, 13.041359 * 0.22 + 7.127855 * 0.525);
+    ASSERT_EQ(shares.failed_reads().size(), 1u) << "one entry per ex-date, however often asked";
+    EXPECT_EQ(shares.failed_reads()[0], "2026-06-15 (connection lost)");
+    EXPECT_EQ(reads, 2) << "a failed ex-date is not read again";
+
+    // The Day T-1 row is left as it is; the run's own row carries the Day T-1 row's stored figure.
+    const auto cells = dividend_counter_cells(!shares.failed_reads().empty(), through_t1,
+                                              through_today, 2.869099);
+    EXPECT_FALSE(cells.day_t1.has_value());
+    ASSERT_TRUE(cells.today.has_value());
+    EXPECT_DOUBLE_EQ(*cells.today, 2.869099);
+    // With no stored figure to carry, the run names none: never a zero of its own.
+    const auto bare = dividend_counter_cells(true, through_t1, through_today, std::nullopt);
+    EXPECT_FALSE(bare.day_t1.has_value());
+    EXPECT_FALSE(bare.today.has_value());
+}
+
+TEST_F(LiveMetricsIncludesDividendIncomeTest, ARunWhoseReadsAllAnsweredWritesBothFigures) {
+    const auto cells = dividend_counter_cells(false, 2.869099, 6.621380, 2.823437);
+    ASSERT_TRUE(cells.day_t1.has_value());
+    ASSERT_TRUE(cells.today.has_value());
+    EXPECT_DOUBLE_EQ(*cells.day_t1, 2.869099);
+    EXPECT_DOUBLE_EQ(*cells.today, 6.621380);
 }

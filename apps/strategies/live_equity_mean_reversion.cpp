@@ -29,6 +29,7 @@
 #include "trade_ngin/live/trading_days_anchor.hpp"
 #include "trade_ngin/live/broker_frame.hpp"
 #include "trade_ngin/live/corporate_actions_audit_log.hpp"
+#include "trade_ngin/live/dividend_counter.hpp"
 #include "trade_ngin/live/live_daily_cycle.hpp"
 #include "trade_ngin/portfolio/portfolio_manager.hpp"
 #include "trade_ngin/risk/risk_scale_report.hpp"
@@ -5163,54 +5164,72 @@ int main(int argc, char* argv[]) {
         // to total_pnl: the dividend is already inside P&L through the adjusted prices and the
         // basis rescale.
         std::optional<double> dividend_income_t1;
-        double dividend_income_today = 0.0;
+        std::optional<double> dividend_income_today;
         {
             CorporateActionsAuditLog div_log(ca_state_dir, db, portfolio_id, kEquityStrategyId,
                                              kEquityStrategyName);
+            // A read that fails is not "no row": the run recounts nothing, says so as an ERROR
+            // and carries the previous figure (live/dividend_counter.hpp). Reporting-only: the
+            // trading decisions are already made and persisted by this point.
+            std::string dividend_read_failure;
+            double through_t1 = 0.0;
+            double through_today = 0.0;
             auto div_loaded = div_log.load();
             if (div_loaded.is_error()) {
-                // Reporting-only: the trading decisions are already made and
-                // persisted by this point, and this figure is informational
-                // (never added to P&L). Under-reporting it is preferable to
-                // failing a completed run, but it must not pass silently.
-                WARN("Cannot read dividend income from the corp-action dedup "
-                     "record: " + std::string(div_loaded.error()->what()) +
-                     " -- reporting 0 on today's row; the Day T-1 cell is left as it is");
+                dividend_read_failure = "the corp-action dedup record (" +
+                                        std::string(div_loaded.error()->what()) + ")";
             } else {
-                std::unordered_map<std::string, std::unordered_map<std::string, Position>>
-                    ex_date_rows;
-                auto shares_on_ex_date_row =
-                    [&](const std::string& symbol,
-                        const std::string& ex_date) -> std::optional<double> {
-                    auto cached = ex_date_rows.find(ex_date);
-                    if (cached == ex_date_rows.end()) {
+                ExDateRowShares shares_on_ex_date_row(
+                    [&](const std::string& ex_date) -> Result<ExDateRowShares::Rows> {
                         std::chrono::system_clock::time_point ex_tp;
-                        if (!core::parse_utc_date(ex_date, ex_tp)) return std::nullopt;
-                        auto r = db->load_positions_by_date(kEquityStrategyId, kEquityStrategyName,
-                                                            portfolio_id, ex_tp,
-                                                            "trading.positions");
-                        if (r.is_error()) return std::nullopt;
-                        cached = ex_date_rows.emplace(ex_date, r.value()).first;
-                    }
-                    auto p = cached->second.find(symbol);
-                    if (p == cached->second.end()) return std::nullopt;
-                    return p->second.quantity.as_double();
-                };
+                        if (!core::parse_utc_date(ex_date, ex_tp)) {
+                            return make_error<ExDateRowShares::Rows>(
+                                ErrorCode::INVALID_ARGUMENT, "the ex-date is not a date",
+                                "DividendCounter");
+                        }
+                        return db->load_positions_by_date(kEquityStrategyId, kEquityStrategyName,
+                                                          portfolio_id, ex_tp, "trading.positions");
+                    });
                 std::vector<std::string> recorded_quantity_used;
-                dividend_income_t1 = div_log.dividend_income_through(
-                    t1_date_str, shares_on_ex_date_row, &recorded_quantity_used);
+                through_t1 = div_log.dividend_income_through(
+                    t1_date_str, std::ref(shares_on_ex_date_row), &recorded_quantity_used);
                 recorded_quantity_used.clear();
-                dividend_income_today = div_log.dividend_income_through(
-                    today_date_str, shares_on_ex_date_row, &recorded_quantity_used);
-                for (const auto& event : recorded_quantity_used) {
-                    WARN("DIVIDEND_COUNTER: no position row for " + event +
-                         " (symbol, ex-date); its dividend is counted on the quantity the "
-                         "corp-action record holds, the row of the day before the ex-date");
+                through_today = div_log.dividend_income_through(
+                    today_date_str, std::ref(shares_on_ex_date_row), &recorded_quantity_used);
+                if (!shares_on_ex_date_row.failed_reads().empty()) {
+                    dividend_read_failure = "the position rows of ex-date";
+                    for (const auto& failed : shares_on_ex_date_row.failed_reads()) {
+                        dividend_read_failure += " " + failed;
+                    }
+                } else {
+                    for (const auto& event : recorded_quantity_used) {
+                        WARN("DIVIDEND_COUNTER: no position row for " + event +
+                             " (symbol, ex-date); its dividend is counted on the quantity the "
+                             "corp-action record holds, the row of the day before the ex-date");
+                    }
+                    INFO("DIVIDEND_COUNTER through Day T-1 " + t1_date_str + ": " +
+                         std::to_string(through_t1) + "; through " + today_date_str + ": " +
+                         std::to_string(through_today));
                 }
-                INFO("DIVIDEND_COUNTER through Day T-1 " + t1_date_str + ": " +
-                     std::to_string(*dividend_income_t1) + "; through " + today_date_str + ": " +
-                     std::to_string(dividend_income_today));
             }
+            std::optional<double> stored_on_day_t1;
+            if (!dividend_read_failure.empty()) {
+                if (data_loader && data_loader->is_connected()) {
+                    auto stored = data_loader->load_stored_dividend_income(
+                        kEquityStrategyId, portfolio_id, previous_date);
+                    if (stored.is_ok()) stored_on_day_t1 = stored.value();
+                }
+                ERROR("DIVIDEND_COUNTER: could not read " + dividend_read_failure +
+                      ". No dividend is recounted by this run: the Day T-1 row " + t1_date_str +
+                      " keeps its figure and the row of " + today_date_str + " carries " +
+                      (stored_on_day_t1 ? "that row's stored " + std::to_string(*stored_on_day_t1)
+                                        : std::string("no figure of its own (the Day T-1 figure "
+                                                      "could not be read either)")));
+            }
+            const DividendCounterCells dividend_cells = dividend_counter_cells(
+                !dividend_read_failure.empty(), through_t1, through_today, stored_on_day_t1);
+            dividend_income_t1 = dividend_cells.day_t1;
+            dividend_income_today = dividend_cells.today;
         }
 
         HistoricalMetrics settled_statistics;
@@ -5843,7 +5862,7 @@ int main(int argc, char* argv[]) {
             // ONLY -- NOT added to total_pnl: bars carry total-return adjusted prices
             // (Phase 4.2 computes that in-engine from per-bar div_cash), so
             // dividend value is already inside mark-to-market P&L.
-            const double total_dividend_income = dividend_income_today;
+            // A run that could not recount carries the Day T-1 row's figure, or names no figure.
 
             // T-8D R39: the statistic columns of today's row are the statistics through the last
             // settled row, computed once after STEP 4 and written to the Day T-1 row too. The
@@ -5881,9 +5900,11 @@ int main(int argc, char* argv[]) {
                 {"daily_unrealized_pnl", daily_unrealized_pnl},
                 {"daily_transaction_costs", total_daily_commissions},
                 {"margin_posted", total_posted_margin},
-                {"cash_available", current_portfolio_value - total_posted_margin},
-                {"total_dividend_income", total_dividend_income}
+                {"cash_available", current_portfolio_value - total_posted_margin}
             };
+            if (dividend_income_today) {
+                double_metrics["total_dividend_income"] = *dividend_income_today;
+            }
 
             // The ratio and the cushion are named only when they have a value; without one the
             // cell stays NULL (live/margin_columns.hpp).
