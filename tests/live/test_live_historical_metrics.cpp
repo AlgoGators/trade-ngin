@@ -15,6 +15,21 @@ using namespace trade_ngin;
 
 class LiveHistoricalMetricsTest : public ::testing::Test {};
 
+namespace {
+// A statistics series of `n` flat sessions on a base of 100: the grid argument of calculate()
+// for a test that pins a statistic the grid does not feed.
+StatisticsSeries flat_grid(int n) {
+    std::vector<DatedLevel> levels;
+    std::vector<std::string> dates;
+    for (int i = 0; i < n; ++i) {
+        const std::string date = "2026-01-" + std::string(i + 2 < 10 ? "0" : "") + std::to_string(i + 2);
+        levels.push_back({date, 100.0});
+        dates.push_back(date);
+    }
+    return build_statistics_series(levels, dates, "2026-01-01", 100.0, "2026-01-31");
+}
+}  // namespace
+
 // ===== calculate_mean =====
 
 TEST_F(LiveHistoricalMetricsTest, MeanOfEmptyIsZero) {
@@ -87,7 +102,7 @@ TEST_F(LiveHistoricalMetricsTest, CalculateSortinoOfOneLosingDayDividesByItsDown
     // Returns in percent {-1, 5, 5}: downside = sqrt(1/3) * sqrt(252) = 9.165151390;
     // Sortino = the annualized return handed in / that = 30 / 9.165151390 = 3.273268354.
     LiveHistoricalMetricsCalculator c;
-    auto m = c.calculate({-1.0, 5.0, 5.0}, {}, {}, 30.0, 0);
+    auto m = c.calculate({-1.0, 5.0, 5.0}, {}, {}, 30.0, 0, flat_grid(3), 252.0);
     EXPECT_NEAR(m.downside_deviation, 9.165151390, 1e-9);
     EXPECT_NEAR(m.sortino_ratio, 3.273268354, 1e-9);
 }
@@ -122,7 +137,7 @@ TEST_F(LiveHistoricalMetricsTest, MaxDrawdownTracksLargerDrawdown) {
 
 TEST_F(LiveHistoricalMetricsTest, CalculateEmptyReturnsZeroedMetricsExceptCounts) {
     LiveHistoricalMetricsCalculator c;
-    auto m = c.calculate({}, {}, {}, 12.0, 5);
+    auto m = c.calculate({}, {}, {}, 12.0, 5, flat_grid(0), 252.0);
     EXPECT_EQ(m.total_days, 0);
     EXPECT_EQ(m.total_trades, 5);
     EXPECT_DOUBLE_EQ(m.sharpe_ratio, 0.0);
@@ -135,7 +150,8 @@ TEST_F(LiveHistoricalMetricsTest, CalculatePopulatesAllAggregateStats) {
     std::vector<double> returns{1.0, -0.5, 2.0, -1.5, 0.5};
     std::vector<double> pnl{1000.0, -500.0, 2000.0, -1500.0, 500.0};
     std::vector<double> equity{100000, 101000, 100500, 102500, 101000, 101500};
-    auto m = c.calculate(returns, pnl, equity, /*ann_return=*/15.0, /*trades=*/10);
+    auto m = c.calculate(returns, pnl, equity, /*ann_return=*/15.0, /*trades=*/10, flat_grid(5),
+                         252.0);
 
     EXPECT_EQ(m.total_days, 5);
     EXPECT_EQ(m.total_trades, 10);
@@ -155,13 +171,13 @@ TEST_F(LiveHistoricalMetricsTest, CalculatePopulatesAllAggregateStats) {
 
 TEST_F(LiveHistoricalMetricsTest, CalculateProfitFactorIsLargeWhenNoLosses) {
     LiveHistoricalMetricsCalculator c;
-    auto m = c.calculate({1.0, 2.0}, {100.0, 200.0}, {1000.0, 1100.0}, 5.0, 2);
+    auto m = c.calculate({1.0, 2.0}, {100.0, 200.0}, {1000.0, 1100.0}, 5.0, 2, flat_grid(2), 252.0);
     EXPECT_GT(m.profit_factor, 100.0);
 }
 
 TEST_F(LiveHistoricalMetricsTest, CalculateZeroVolatilityKeepsRatiosAtZero) {
     LiveHistoricalMetricsCalculator c;
-    auto m = c.calculate({0.5, 0.5, 0.5}, {}, {}, 10.0, 0);
+    auto m = c.calculate({0.5, 0.5, 0.5}, {}, {}, 10.0, 0, flat_grid(3), 252.0);
     EXPECT_DOUBLE_EQ(m.volatility, 0.0);
     EXPECT_DOUBLE_EQ(m.sharpe_ratio, 0.0);
     EXPECT_DOUBLE_EQ(m.sortino_ratio, 0.0);

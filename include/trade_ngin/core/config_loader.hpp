@@ -239,6 +239,35 @@ struct LiveSpecificConfig {
 };
 
 /**
+ * @brief The statistics convention (defaults.json `statistics`): the sessions a year K each
+ * stored statistic is annualised with, per series (T-8D R2 and R3, T-8D-2 R76).
+ *
+ * K is the row frequency of the grid the statistic is taken on, frozen per series, not measured
+ * per run. Futures: 311.0574 = 3,111 grid dates / (3,653 days / 365.25) over 2016-01-01 to
+ * 2025-12-31, a grid date being a Sunday-to-Friday UTC date on which at least 9 distinct symbols
+ * of the 36 printed a bar. Equities: 252 NYSE sessions. Re-measure only when the universe
+ * changes.
+ */
+struct StatisticsConfig {
+    double futures_sessions_per_year{311.0574};
+    double equity_sessions_per_year{252.0};
+
+    nlohmann::json to_json() const {
+        nlohmann::json j;
+        j["sessions_per_year"] = {{"futures", futures_sessions_per_year},
+                                  {"equities", equity_sessions_per_year}};
+        return j;
+    }
+
+    void from_json(const nlohmann::json& j) {
+        if (!j.contains("sessions_per_year")) return;
+        const auto& k = j.at("sessions_per_year");
+        if (k.contains("futures")) futures_sessions_per_year = k.at("futures").get<double>();
+        if (k.contains("equities")) equity_sessions_per_year = k.at("equities").get<double>();
+    }
+};
+
+/**
  * @brief Strategy defaults configuration
  */
 struct StrategyDefaultsConfig {
@@ -397,6 +426,9 @@ struct AppConfig {
     // Live settings
     LiveSpecificConfig live;
 
+    // The statistics convention: the sessions a year per series (defaults when absent)
+    StatisticsConfig statistics;
+
     // Strategy defaults
     StrategyDefaultsConfig strategy_defaults;
 
@@ -428,6 +460,7 @@ struct AppConfig {
         j["max_leverage"] = max_leverage;
         j["backtest"] = backtest.to_json();
         j["live"] = live.to_json();
+        j["statistics"] = statistics.to_json();
         j["strategy_defaults"] = strategy_defaults.to_json();
         j["email"] = email.to_json();
         j["strategies"] = strategies_config;

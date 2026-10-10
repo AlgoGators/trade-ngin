@@ -533,9 +533,157 @@ Result<int> LiveDataLoader::get_live_results_count(const std::string& strategy_i
 std::string LiveDataLoader::on_or_after_book_start(const std::string& date_expr,
                                                    const std::string& strategy_id,
                                                    const std::string& portfolio_id) const {
-    return "AND " + date_expr + " >= COALESCE((SELECT MIN(live_start_date) FROM " + schema_ +
+    return "AND " + date_expr + " >= COALESCE(" + book_start_subquery(strategy_id, portfolio_id) +
+           ", DATE '0001-01-01') ";
+}
+
+std::string LiveDataLoader::book_start_subquery(const std::string& strategy_id,
+                                                const std::string& portfolio_id) const {
+    return "(SELECT MIN(live_start_date) FROM " + schema_ +
            ".strategy_trading_days_metadata WHERE strategy_id = '" + strategy_id +
-           "' AND portfolio_id = '" + portfolio_id + "'), DATE '0001-01-01') ";
+           "' AND portfolio_id = '" + portfolio_id + "')";
+}
+
+Result<std::string> LiveDataLoader::load_book_start(const std::string& strategy_id,
+                                                    const std::string& portfolio_id) {
+    auto validation = validate_connection();
+    if (validation.is_error()) {
+        return make_error<std::string>(ErrorCode::DATABASE_ERROR, validation.error()->what(),
+                                       "LiveDataLoader");
+    }
+    const std::string actual_portfolio_id = portfolio_id.empty() ? "BASE_PORTFOLIO" : portfolio_id;
+    const std::string query = "SELECT COALESCE(to_char(" +
+                              book_start_subquery(strategy_id, actual_portfolio_id) +
+                              ", 'YYYY-MM-DD'), '') AS book_start";
+    DEBUG("Loading the book's start: " + query);
+    auto result = db_->execute_query(query);
+    if (result.is_error()) {
+        return make_error<std::string>(
+            ErrorCode::DATABASE_ERROR,
+            "Failed to load the book's start: " + std::string(result.error()->what()),
+            "LiveDataLoader");
+    }
+    auto table = result.value();
+    if (!table || table->num_rows() == 0) {
+        return Result<std::string>(std::string());
+    }
+    // convert_generic_to_arrow builds every column as arrow::utf8()
+    auto cell = std::static_pointer_cast<arrow::StringArray>(table->column(0)->chunk(0));
+    return Result<std::string>(cell->IsNull(0) ? std::string() : cell->GetString(0));
+}
+
+Result<std::vector<DatedLevel>> LiveDataLoader::load_statistics_levels(
+    const std::string& strategy_id, const std::string& portfolio_id,
+    const Timestamp& through_date) {
+    using Levels = std::vector<DatedLevel>;
+    auto validation = validate_connection();
+    if (validation.is_error()) {
+        return make_error<Levels>(ErrorCode::DATABASE_ERROR, validation.error()->what(),
+                                  "LiveDataLoader");
+    }
+    const std::string date_str = core::format_utc_date(through_date);
+    const std::string actual_portfolio_id = portfolio_id.empty() ? "BASE_PORTFOLIO" : portfolio_id;
+    const std::string query =
+        "SELECT to_char(date, 'YYYY-MM-DD') AS level_date, "
+        "current_portfolio_value::double precision AS level "
+        "FROM " + schema_ + ".live_results "
+        "WHERE strategy_id = '" + strategy_id + "' "
+        "AND portfolio_id = '" + actual_portfolio_id + "' "
+        "AND current_portfolio_value IS NOT NULL "
+        "AND DATE(date) <= '" + date_str + "' " +
+        on_or_after_book_start("DATE(date)", strategy_id, actual_portfolio_id) +
+        "ORDER BY date ASC";
+    DEBUG("Loading the statistics levels: " + query);
+    auto result = db_->execute_query(query);
+    if (result.is_error()) {
+        return make_error<Levels>(
+            ErrorCode::DATABASE_ERROR,
+            "Failed to load the statistics levels: " + std::string(result.error()->what()),
+            "LiveDataLoader");
+    }
+    Levels levels;
+    auto table = result.value();
+    if (!table || table->num_rows() == 0) {
+        return Result<Levels>(levels);
+    }
+    // convert_generic_to_arrow builds every column as arrow::utf8()
+    auto dates = std::static_pointer_cast<arrow::StringArray>(table->column(0)->chunk(0));
+    auto values = std::static_pointer_cast<arrow::StringArray>(table->column(1)->chunk(0));
+    levels.reserve(static_cast<size_t>(table->num_rows()));
+    for (int64_t i = 0; i < table->num_rows(); ++i) {
+        DatedLevel row;
+        try {
+            row.date = dates->GetString(i);
+            row.level = std::stod(values->GetString(i));
+        } catch (const std::exception& e) {
+            return make_error<Levels>(ErrorCode::DATABASE_ERROR,
+                                      "Failed to load the statistics levels: row " +
+                                          std::to_string(i) + " is not readable (" + e.what() + ")",
+                                      "LiveDataLoader");
+        }
+        levels.push_back(std::move(row));
+    }
+    return Result<Levels>(levels);
+}
+
+Result<std::vector<std::string>> LiveDataLoader::load_futures_statistics_grid(
+    const std::vector<std::string>& symbols, const std::string& strategy_id,
+    const std::string& portfolio_id, const Timestamp& through_date) {
+    using Dates = std::vector<std::string>;
+    auto validation = validate_connection();
+    if (validation.is_error()) {
+        return make_error<Dates>(ErrorCode::DATABASE_ERROR, validation.error()->what(),
+                                 "LiveDataLoader");
+    }
+    Dates grid;
+    if (symbols.empty()) {
+        return Result<Dates>(grid);
+    }
+    const std::string date_str = core::format_utc_date(through_date);
+    const std::string actual_portfolio_id = portfolio_id.empty() ? "BASE_PORTFOLIO" : portfolio_id;
+    std::string universe;
+    for (const auto& symbol : symbols) {
+        std::string quoted;
+        for (char c : symbol) {
+            quoted += c;
+            if (c == '\'') quoted += c;
+        }
+        universe += (universe.empty() ? "'" : ", '") + quoted + "'";
+    }
+    // T-8D R3 / T-8D-2 R81: the statistics grid, from the bars alone -- a Sunday-to-Friday date
+    // (EXTRACT(DOW) 6 is Saturday) on which enough distinct symbols of the universe printed.
+    // Statistics only: no session classifier verdict and no closed-market guard is read.
+    const std::string query =
+        "SELECT to_char(grid_date, 'YYYY-MM-DD') AS grid_date FROM ("
+        "SELECT DATE(time) AS grid_date, COUNT(DISTINCT symbol) AS printed "
+        "FROM futures_data.ohlcv_1d "
+        "WHERE symbol IN (" + universe + ") "
+        "AND DATE(time) <= '" + date_str + "' " +
+        on_or_after_book_start("DATE(time)", strategy_id, actual_portfolio_id) +
+        "GROUP BY 1) bars "
+        "WHERE printed >= " + std::to_string(kStatisticsGridMinSymbols) +
+        " AND EXTRACT(DOW FROM grid_date) <> 6 "
+        "ORDER BY grid_date ASC";
+    DEBUG("Loading the futures statistics grid: " + query);
+    auto result = db_->execute_query(query);
+    if (result.is_error()) {
+        return make_error<Dates>(
+            ErrorCode::DATABASE_ERROR,
+            "Failed to load the futures statistics grid: " + std::string(result.error()->what()),
+            "LiveDataLoader");
+    }
+    auto table = result.value();
+    if (!table || table->num_rows() == 0) {
+        return Result<Dates>(grid);
+    }
+    auto dates = std::static_pointer_cast<arrow::StringArray>(table->column(0)->chunk(0));
+    grid.reserve(static_cast<size_t>(table->num_rows()));
+    for (int64_t i = 0; i < table->num_rows(); ++i) {
+        if (!dates->IsNull(i)) {
+            grid.push_back(dates->GetString(i));
+        }
+    }
+    return Result<Dates>(grid);
 }
 
 Result<std::vector<double>> LiveDataLoader::load_daily_returns_history(

@@ -30,6 +30,7 @@
 #include "trade_ngin/live/carried_day.hpp"
 #include "trade_ngin/core/types.hpp"
 #include "trade_ngin/data/postgres_database.hpp"
+#include "trade_ngin/live/live_historical_metrics.hpp"
 
 namespace trade_ngin {
 
@@ -124,6 +125,10 @@ private:
     std::string on_or_after_book_start(const std::string& date_expr,
                                        const std::string& strategy_id,
                                        const std::string& portfolio_id) const;
+
+    // The scalar subquery that predicate compares with: the key's earliest live_start_date.
+    std::string book_start_subquery(const std::string& strategy_id,
+                                    const std::string& portfolio_id) const;
 
 public:
     /**
@@ -251,6 +256,44 @@ public:
     Result<std::vector<double>> load_equity_curve_history(const std::string& strategy_id,
                                                           const std::string& portfolio_id,
                                                           const Timestamp& as_of_date);
+
+    /**
+     * @brief The book's start as "YYYY-MM-DD": the earliest live_start_date of
+     *        <schema>.strategy_trading_days_metadata for the key, the anchor the three history
+     *        loaders above are bounded by. Empty when the key has no row.
+     */
+    Result<std::string> load_book_start(const std::string& strategy_id,
+                                        const std::string& portfolio_id);
+
+    /**
+     * @brief The book's stored levels for its statistics: (date, current_portfolio_value) of
+     *        every live_results row of the key from the book's start through `through_date`,
+     *        ascending. A row with no value is left out.
+     */
+    Result<std::vector<DatedLevel>> load_statistics_levels(const std::string& strategy_id,
+                                                           const std::string& portfolio_id,
+                                                           const Timestamp& through_date);
+
+    /**
+     * @brief The dates of a futures book's statistics grid from its start through
+     *        `through_date`, ascending: the Sunday-to-Friday dates on which at least
+     *        kStatisticsGridMinSymbols DISTINCT symbols of `symbols` printed a bar in
+     *        futures_data.ohlcv_1d (T-8D R3).
+     *
+     * Computed from the bars alone. T-8D-2 R81: this count is the grid the STATISTICS read and
+     * the predicate the sessions a year were measured with; it is not the trading session test.
+     * Trading decides per symbol with the session classifier, with a quarter of the universe only
+     * as its book-level fallback, so the two can disagree on a date by design (a Saturday print
+     * may trade and is never a statistics row: its P&L lands in Sunday's grid return). Neither
+     * the classifier nor the runner's closed-market guard is read here.
+     *
+     * `symbols` is the live book's universe on the dates asked for: a live book's start is in
+     * 2025 or later, after every listing date, so the universe is its 36 listed contracts and no
+     * predecessor contract (ES, NQ, YM, RTY) stands in for a micro on any of these dates.
+     */
+    Result<std::vector<std::string>> load_futures_statistics_grid(
+        const std::vector<std::string>& symbols, const std::string& strategy_id,
+        const std::string& portfolio_id, const Timestamp& through_date);
 
     /**
      * @brief Load total trade count (number of executions) since inception up to a date.

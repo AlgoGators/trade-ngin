@@ -59,6 +59,19 @@ HistoricalMetrics distinct_metrics() {
     return m;
 }
 
+// A statistics series of `n` flat sessions on a base of 100: the grid argument of calculate()
+// for a test that pins a statistic the grid does not feed.
+StatisticsSeries flat_grid(int n) {
+    std::vector<DatedLevel> levels;
+    std::vector<std::string> dates;
+    for (int i = 0; i < n; ++i) {
+        const std::string date = "2026-01-" + std::string(i + 2 < 10 ? "0" : "") + std::to_string(i + 2);
+        levels.push_back({date, 100.0});
+        dates.push_back(date);
+    }
+    return build_statistics_series(levels, dates, "2026-01-01", 100.0, "2026-01-31");
+}
+
 }  // namespace
 
 TEST(HistoricalMetricsColumns, TheBlockIsTheFifteenNullColumnsPlusVolatility) {
@@ -127,7 +140,8 @@ TEST(HistoricalMetricsColumns, TheRealAprilTwentiethRowCarriesZeroPointEightNotT
 
     LiveHistoricalMetricsCalculator calc;
     const auto m = calc.calculate(returns_pct, /*pnl*/ {}, /*equity*/ {},
-                                  stored_annualized_return, /*executions*/ 3);
+                                  stored_annualized_return, /*executions*/ 3,
+                                  flat_grid(20), 252.0);
 
     // Population std of the twenty returns, times sqrt(252). Hand-computed in the decisions
     // doc as 0.797689; the fixture's rounded returns give 0.7976864.
@@ -186,7 +200,8 @@ TEST(HistoricalMetricsColumns, KnownSeriesProducesHandComputedColumns) {
     const double annualized_return_pct = 12.0;
 
     LiveHistoricalMetricsCalculator calc;
-    const auto m = calc.calculate(returns_pct, pnl, equity, annualized_return_pct, 4);
+    const auto m = calc.calculate(returns_pct, pnl, equity, annualized_return_pct, 4,
+                                  flat_grid(5), 252.0);
 
     // mean = (1 - 2 + 3 + 0 - 1)/5 = 0.2
     // population variance = ((0.8)^2+(-2.2)^2+(2.8)^2+(-0.2)^2+(-1.2)^2)/5
@@ -256,13 +271,13 @@ TEST(HistoricalMetricsColumns, TheUpdateBlockIsTheDoublesPlusTheThreeWidenedInte
     EXPECT_EQ(update.count("flat_days"), 0u);
 }
 
-// The override the runners apply after calculate(): total_days is the authoritative count and
-// win_rate is winning_days over it, in percent, to the last bit of the expression the runners
-// carried inline.
-TEST(HistoricalMetricsColumns, TheTradingDaysOverrideSetsTotalDaysAndRecomputesWinRate) {
+// The override the runners apply after calculate(): win_rate is winning_days over the calendar
+// trading-days count, in percent, to the last bit of the expression the runners carried inline.
+// total_days is the grid's count of returns (T-8D R5) and is not the override's to set.
+TEST(HistoricalMetricsColumns, TheTradingDaysOverrideRecomputesWinRateAndLeavesTotalDays) {
     HistoricalMetrics m = distinct_metrics();
     apply_trading_days_override(m, 211);
-    EXPECT_EQ(m.total_days, 211);
+    EXPECT_EQ(m.total_days, 9);
     EXPECT_EQ(m.win_rate, static_cast<double>(6) / static_cast<double>(211) * 100.0);
     EXPECT_EQ(m.winning_days, 6);
     EXPECT_EQ(m.losing_days, 7);
@@ -271,11 +286,11 @@ TEST(HistoricalMetricsColumns, TheTradingDaysOverrideSetsTotalDaysAndRecomputesW
 TEST(HistoricalMetricsColumns, ANonPositiveTradingDaysCountLeavesWinRateAsCalculated) {
     HistoricalMetrics zero = distinct_metrics();
     apply_trading_days_override(zero, 0);
-    EXPECT_EQ(zero.total_days, 0);
+    EXPECT_EQ(zero.total_days, 9);
     EXPECT_EQ(zero.win_rate, 10.10);
 
     HistoricalMetrics negative = distinct_metrics();
     apply_trading_days_override(negative, -1);
-    EXPECT_EQ(negative.total_days, -1);
+    EXPECT_EQ(negative.total_days, 9);
     EXPECT_EQ(negative.win_rate, 10.10);
 }

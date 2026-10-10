@@ -3343,9 +3343,6 @@ int main(int argc, char* argv[]) {
                 "total_cumulative_return = " +
                 std::to_string(yesterday_total_cumulative_return_pct) +
                 ", "
-                "total_annualized_return = " +
-                std::to_string(yesterday_total_return_annualized) +
-                ", "
                 "portfolio_leverage = CASE WHEN portfolio_leverage IS NULL OR portfolio_leverage = "
                 "0 THEN " +
                 std::to_string(yesterday_gross_leverage) +
@@ -3711,6 +3708,32 @@ int main(int argc, char* argv[]) {
                     total_trades_hist = trades_hist_res.value();
                 }
 
+                // The statistics grid (T-8D R3, T-8D-2 R81): the Sunday-to-Friday dates on which
+                // enough of the book's universe printed a bar, from the bars alone, and the stored
+                // levels the returns are taken on. A book that also held equities would pass this
+                // same futures grid, the union of the two, with the futures sessions a year (R4).
+                auto book_start_res =
+                    data_loader->load_book_start(combined_strategy_id, coordinator_config.portfolio_id);
+                auto levels_res = data_loader->load_statistics_levels(
+                    combined_strategy_id, coordinator_config.portfolio_id, previous_date);
+                auto grid_res = data_loader->load_futures_statistics_grid(
+                    symbols, combined_strategy_id, coordinator_config.portfolio_id, previous_date);
+                if (book_start_res.is_error() || levels_res.is_error() || grid_res.is_error()) {
+                    throw std::runtime_error("the statistics grid could not be loaded");
+                }
+                const double sessions_per_year = app_config.statistics.futures_sessions_per_year;
+                const StatisticsSeries statistics_series = build_statistics_series(
+                    levels_res.value(), grid_res.value(), book_start_res.value(), initial_capital,
+                    t1_date_str);
+                INFO("STATISTICS_CONVENTION series=futures K=" + std::to_string(sessions_per_year) +
+                     " grid=Sunday-to-Friday dates with at least " +
+                     std::to_string(kStatisticsGridMinSymbols) + " of " +
+                     std::to_string(symbols.size()) +
+                     " symbols printing a bar anchor=" + book_start_res.value() +
+                     " through=" + t1_date_str + " n=" +
+                     std::to_string(statistics_series.size()) + " calendar_days=" +
+                     std::to_string(t1_trading_days_count));
+
                 // The Day T-1 annualised return the Sharpe and Sortino ratios divide: the one
                 // STEP 4 stored or, on a day STEP 4 did not run, the same formula on the stored
                 // Day T-1 level.
@@ -3729,10 +3752,16 @@ int main(int argc, char* argv[]) {
                 // not 11%) because daily_return is computed in SQL as `... * 100.0`. Do NOT
                 // multiply by 100 here -- that produced a 100x volatility / 100x lower sharpe.
                 settled_statistics = hist_calc.calculate(returns_hist, pnl_hist, equity_hist,
-                                                         t1_annualized_return, total_trades_hist);
+                                                         t1_annualized_return, total_trades_hist,
+                                                         statistics_series, sessions_per_year);
 
-                // Override total_days with authoritative trading days count
+                // win_rate over the calendar trading-days count; total_days is the grid's n
                 apply_trading_days_override(settled_statistics, t1_trading_days_count);
+                if (const std::string days_warning =
+                        statistics_days_warning(settled_statistics, statistics_series);
+                    !days_warning.empty()) {
+                    WARN("STATISTICS_DAYS through " + t1_date_str + ": " + days_warning);
+                }
 
                 INFO("HIST_METRICS [through Day T-1 " + t1_date_str +
                      "]: volatility=" + std::to_string(settled_statistics.volatility) +
@@ -3740,6 +3769,8 @@ int main(int argc, char* argv[]) {
                      " winning_days=" + std::to_string(settled_statistics.winning_days) +
                      " losing_days=" + std::to_string(settled_statistics.losing_days) +
                      " total_days=" + std::to_string(settled_statistics.total_days) +
+                     " annualized_return=" +
+                     std::to_string(settled_statistics.total_annualized_return) +
                      " best_day=" + std::to_string(settled_statistics.best_day) +
                      " worst_day=" + std::to_string(settled_statistics.worst_day) +
                      " avg_win=" + std::to_string(settled_statistics.avg_win) +
@@ -3752,6 +3783,8 @@ int main(int argc, char* argv[]) {
                     // the equity runner. total_trades and flat_days are not columns of
                     // trading.live_results; both stay on settled_statistics for in-memory use.
                     auto metric_updates = historical_metrics_update_columns(settled_statistics);
+                    metric_updates["total_annualized_return"] =
+                        settled_statistics.total_annualized_return;
 
                     auto t1_statistics_manager = std::make_unique<LiveResultsManager>(
                         db, true, combined_strategy_id, coordinator_config.portfolio_id);
@@ -3862,81 +3895,11 @@ int main(int argc, char* argv[]) {
         double total_cumulative_return =
             metrics_calculator->calculate_total_return(current_portfolio_value, initial_capital);
 
-        double total_return_decimal = 0.0;
-        if (initial_capital > 0.0) {
-            total_return_decimal = (current_portfolio_value - initial_capital) / initial_capital;
-        }
         double total_cumulative_return_pct = total_cumulative_return;  // Already in %
 
-        // Get n = number of trading days using PostgreSQL function (robust against row duplication)
-        // Uses trading.strategy_trading_days_metadata table for live_start_date
-        int trading_days_count = 1;  // Default to 1 to avoid division by zero on first day
-        try {
-            // Format today's date for SQL query
-            auto now_time_t_for_query = std::chrono::system_clock::to_time_t(now);
-            std::stringstream now_date_ss;
-            now_date_ss << std::put_time(std::gmtime(&now_time_t_for_query), "%Y-%m-%d");
-
-            // Call PostgreSQL function to calculate trading days
-            // E2-F6: portfolio-scoped (3-arg) form. The 2-arg overload keys on
-            // strategy_id alone with `ORDER BY live_start_date LIMIT 1` and NO portfolio
-            // predicate, so it takes the earliest row across ALL portfolios.
-            // LIVE_TREND_FOLLOWING has a metadata row under both BASE_PORTFOLIO and
-            // CONSERVATIVE_PORTFOLIO; they agree only because both carry
-            // live_start_date = 2025-10-05. Add or edit a BASE row with an earlier date
-            // and the conservative book's annualization changes silently -- no error, no
-            // log line. Definition is versioned in migrations/004.
-            std::string trading_days_query = "SELECT trading.get_trading_days('" +
-                                             combined_strategy_id + "', DATE '" +
-                                             now_date_ss.str() + "', '" + portfolio_id + "')";
-
-            INFO("TRADING_DAYS_CALC [Day T]: Querying trading days...");
-            INFO("TRADING_DAYS_CALC [Day T]: Query: " + trading_days_query);
-            INFO("TRADING_DAYS_CALC [Day T]: Strategy ID: " + combined_strategy_id);
-            INFO("TRADING_DAYS_CALC [Day T]: Target Date: " + now_date_ss.str());
-
-            auto trading_days_result = db->execute_query(trading_days_query);
-
-            if (trading_days_result.is_ok()) {
-                auto table = trading_days_result.value();
-                if (table && table->num_rows() > 0 && table->num_columns() > 0) {
-                    // execute_query returns StringArray for all columns
-                    auto arr =
-                        std::static_pointer_cast<arrow::StringArray>(table->column(0)->chunk(0));
-                    if (arr && arr->length() > 0 && !arr->IsNull(0)) {
-                        trading_days_count = std::max<int>(1, std::stoi(arr->GetString(0)));
-                        INFO("TRADING_DAYS_CALC [Day T]: Result from DB: " +
-                             std::to_string(trading_days_count) + " trading days");
-                        INFO(
-                            "TRADING_DAYS_CALC [Day T]: This value comes from "
-                            "strategy_trading_days_metadata.live_start_date");
-                    }
-                }
-            } else {
-                WARN("TRADING_DAYS_CALC [Day T]: Could not call get_trading_days function: " +
-                     std::string(trading_days_result.error()->what()));
-            }
-        } catch (const std::exception& e) {
-            WARN("TRADING_DAYS_CALC [Day T]: Failed to get trading days: " + std::string(e.what()));
-        }
-
-        // Calculate annualized return using LiveMetricsCalculator
-        // Formula: annualized_return = ((1 + total_return)^(252/trading_days) - 1) * 100
-        INFO("ANNUALIZED_RETURN_CALC [Day T]: Calculating annualized return...");
-        INFO("ANNUALIZED_RETURN_CALC [Day T]: Input: total_return_decimal = " +
-             std::to_string(total_return_decimal) + " (" +
-             std::to_string(total_return_decimal * 100.0) + "%)");
-        INFO("ANNUALIZED_RETURN_CALC [Day T]: Input: trading_days_count = " +
-             std::to_string(trading_days_count));
-        INFO("ANNUALIZED_RETURN_CALC [Day T]: Formula: ((1 + " +
-             std::to_string(total_return_decimal) + ")^(252/" + std::to_string(trading_days_count) +
-             ") - 1) * 100");
-
-        double total_return_annualized = metrics_calculator->calculate_annualized_return(
-            total_return_decimal, trading_days_count);
-
-        INFO("ANNUALIZED_RETURN_CALC [Day T]: Result: " + std::to_string(total_return_annualized) +
-             "%");
+        // The annualised return of today's row is a statistic of the grid through the last
+        // settled row (T-8D R39, T-8D-2 R74), computed in STEP 4b.
+        double total_return_annualized = settled_statistics.total_annualized_return;
 
         INFO("Portfolio value calculation:");
         INFO("  Previous portfolio value: $" + std::to_string(previous_portfolio_value));

@@ -429,3 +429,89 @@ TEST_F(LiveDataLoaderTest, PreviousAggregatesAndTheFinalizeReadCarryNoBookStartB
         EXPECT_EQ(day_before.find("strategy_trading_days_metadata"), npos) << runner;
     }
 }
+
+// ──────────────────────────────────────────────────────────────────────────
+// T-8a (5a): the inputs of the statistics grid. The levels and the grid dates are bounded by
+// the book's start as the three histories are; the futures grid is counted from the bars
+// alone (T-8D R3, T-8D-2 R81).
+// ──────────────────────────────────────────────────────────────────────────
+TEST_F(LiveDataLoaderTest, StatisticsLevelsAreTheStoredAccountValuesFromTheBookStart) {
+    auto db = std::make_shared<QueryCapturingDb>();
+    LiveDataLoader loader(db, "trading");
+    auto r = loader.load_statistics_levels(kBaseKey, "BASE_PORTFOLIO", april_24());
+    ASSERT_TRUE(r.is_ok());
+    EXPECT_TRUE(r.value().empty());
+    EXPECT_EQ(db->last_query,
+              "SELECT to_char(date, 'YYYY-MM-DD') AS level_date, "
+              "current_portfolio_value::double precision AS level "
+              "FROM trading.live_results "
+              "WHERE strategy_id = 'LIVE_TREND_FOLLOWING_TREND_FOLLOWING_FAST' "
+              "AND portfolio_id = 'BASE_PORTFOLIO' "
+              "AND current_portfolio_value IS NOT NULL "
+              "AND DATE(date) <= '2026-04-24' " +
+                  book_start_bound("DATE(date)") + "ORDER BY date ASC");
+}
+
+TEST_F(LiveDataLoaderTest, StatisticsLevelsComeBackDatedAndInOrder) {
+    auto db = std::make_shared<EquityCurveRowsDb>(
+        std::vector<std::string>{"2026-04-24", "2026-04-25"},
+        std::vector<std::string>{"497239.3978", "497239.3978"});
+    LiveDataLoader loader(db, "trading");
+    auto r = loader.load_statistics_levels("S", "P", april_24());
+    ASSERT_TRUE(r.is_ok()) << r.error()->what();
+    ASSERT_EQ(r.value().size(), 2u);
+    EXPECT_EQ(r.value()[0].date, "2026-04-24");
+    EXPECT_DOUBLE_EQ(r.value()[0].level, 497239.3978);
+    EXPECT_EQ(r.value()[1].date, "2026-04-25");
+}
+
+TEST_F(LiveDataLoaderTest, BookStartIsTheMetadataAnchorOfTheKey) {
+    auto db = std::make_shared<QueryCapturingDb>();
+    LiveDataLoader loader(db, "trading");
+    auto r = loader.load_book_start(kBaseKey, "BASE_PORTFOLIO");
+    ASSERT_TRUE(r.is_ok());
+    EXPECT_EQ(r.value(), "") << "a key with no metadata row has no recorded start";
+    EXPECT_EQ(db->last_query,
+              "SELECT COALESCE(to_char((SELECT MIN(live_start_date) FROM "
+              "trading.strategy_trading_days_metadata WHERE strategy_id = "
+              "'LIVE_TREND_FOLLOWING_TREND_FOLLOWING_FAST' AND portfolio_id = 'BASE_PORTFOLIO'), "
+              "'YYYY-MM-DD'), '') AS book_start");
+}
+
+TEST_F(LiveDataLoaderTest, FuturesStatisticsGridIsCountedFromTheBarsAlone) {
+    auto db = std::make_shared<QueryCapturingDb>();
+    LiveDataLoader loader(db, "trading");
+    auto r = loader.load_futures_statistics_grid({"6B.v.0", "MES.v.0"}, kBaseKey, "BASE_PORTFOLIO",
+                                                 april_24());
+    ASSERT_TRUE(r.is_ok());
+    EXPECT_EQ(db->last_query,
+              "SELECT to_char(grid_date, 'YYYY-MM-DD') AS grid_date FROM ("
+              "SELECT DATE(time) AS grid_date, COUNT(DISTINCT symbol) AS printed "
+              "FROM futures_data.ohlcv_1d "
+              "WHERE symbol IN ('6B.v.0', 'MES.v.0') "
+              "AND DATE(time) <= '2026-04-24' " +
+                  book_start_bound("DATE(time)") +
+                  "GROUP BY 1) bars "
+                  "WHERE printed >= 9 AND EXTRACT(DOW FROM grid_date) <> 6 "
+                  "ORDER BY grid_date ASC");
+    // Statistics only: nothing of the trading session test is read (R81).
+    for (const char* not_read : {"session", "classif", "closed", "volume", "live_results"}) {
+        EXPECT_EQ(db->last_query.find(not_read), std::string::npos) << not_read;
+    }
+}
+
+TEST_F(LiveDataLoaderTest, FuturesStatisticsGridOfNoUniverseIsEmptyAndAsksNothing) {
+    auto db = std::make_shared<QueryCapturingDb>();
+    LiveDataLoader loader(db, "trading");
+    auto r = loader.load_futures_statistics_grid({}, kBaseKey, "BASE_PORTFOLIO", april_24());
+    ASSERT_TRUE(r.is_ok());
+    EXPECT_TRUE(r.value().empty());
+    EXPECT_TRUE(db->last_query.empty());
+}
+
+TEST_F(LiveDataLoaderTest, StatisticsGridLoadsDisconnectedError) {
+    LiveDataLoader l(make_disconnected_db(), "trading");
+    ASSERT_DB_ERROR(l.load_statistics_levels("S", "P", now()));
+    ASSERT_DB_ERROR(l.load_book_start("S", "P"));
+    ASSERT_DB_ERROR(l.load_futures_statistics_grid({"X"}, "S", "P", now()));
+}

@@ -166,3 +166,92 @@ TEST(SettledStatisticsBlock, TheTwoFuturesRunnersCarryTheSameBlock) {
     ASSERT_FALSE(a.empty());
     EXPECT_EQ(a, b) << "the statistics block differs between the two futures runners";
 }
+
+// ──────────────────────────────────────────────────────────────────────────
+// T-8a (5a): the block takes its returns and days from the statistics grid. total_days is the
+// grid's n and total_annualized_return is a statistic of the same series, written by the
+// block to both rows and no longer by the level finalize (T-8D R5, R28, R39; T-8D-2 R74, R76).
+// ──────────────────────────────────────────────────────────────────────────
+TEST(SettledStatisticsBlock, TheBlockBuildsTheStatisticsSeriesOnItsOwnGridAndSessionsAYear) {
+    for (const auto& runner : kRunners) {
+        const std::string src = read_source(runner);
+        if (src.empty()) GTEST_SKIP() << "runner source not found from the test working directory";
+        const std::string block = statistics_block(src);
+        ASSERT_FALSE(block.empty()) << runner;
+        const bool equity = runner.find("equity") != std::string::npos;
+
+        EXPECT_EQ(count_of(block, "build_statistics_series("), 1u) << runner;
+        EXPECT_EQ(count_of(block, "data_loader->load_statistics_levels("), 1u) << runner;
+        EXPECT_EQ(count_of(block, "data_loader->load_book_start("), 1u) << runner;
+        EXPECT_NE(block.find("initial_capital,\n                    t1_date_str);"),
+                  std::string::npos)
+            << runner << ": the series is not built on the initial capital through Day T-1";
+        if (equity) {
+            // NYSE sessions by the calendar the runner already holds; never the futures count.
+            EXPECT_EQ(count_of(block, "statistics_session_dates("), 1u) << runner;
+            EXPECT_NE(block.find("!holiday_checker.is_holiday(date)"), std::string::npos) << runner;
+            EXPECT_EQ(count_of(block, "load_futures_statistics_grid("), 0u) << runner;
+            EXPECT_NE(block.find("app_config.statistics.equity_sessions_per_year"),
+                      std::string::npos)
+                << runner;
+        } else {
+            // From the bars, over the runner's universe; no classifier verdict in the block.
+            EXPECT_EQ(count_of(block, "data_loader->load_futures_statistics_grid(\n"
+                                      "                    symbols, "),
+                      1u)
+                << runner;
+            EXPECT_EQ(block.find("t1_classification"), std::string::npos) << runner;
+            EXPECT_EQ(block.find("session_classifier"), std::string::npos) << runner;
+            EXPECT_NE(block.find("app_config.statistics.futures_sessions_per_year"),
+                      std::string::npos)
+                << runner;
+        }
+        EXPECT_NE(block.find("statistics_series, sessions_per_year);"), std::string::npos)
+            << runner << ": the calculator is not handed the series and its sessions a year";
+        EXPECT_EQ(count_of(block, "INFO(\"STATISTICS_CONVENTION series="), 1u) << runner;
+        EXPECT_NE(block.find("statistics_days_warning(settled_statistics, statistics_series)"),
+                  std::string::npos)
+            << runner;
+    }
+}
+
+TEST(SettledStatisticsBlock, TheAnnualizedReturnIsAStatisticOfTheBlockOnBothRows) {
+    for (const auto& runner : kRunners) {
+        const std::string src = read_source(runner);
+        if (src.empty()) GTEST_SKIP() << "runner source not found from the test working directory";
+        const std::string block = statistics_block(src);
+        ASSERT_FALSE(block.empty()) << runner;
+
+        EXPECT_NE(block.find("metric_updates[\"total_annualized_return\"] =\n"
+                             "                        settled_statistics.total_annualized_return;"),
+                  std::string::npos)
+            << runner << ": the Day T-1 refresh does not write the grid's annualised return";
+
+        // The level finalize no longer writes it, and nothing queries a calendar count for T.
+        const auto step4 = src.find(kStep4);
+        const auto skip_else = src.find(kSkipElse);
+        ASSERT_NE(step4, std::string::npos);
+        ASSERT_NE(skip_else, std::string::npos);
+        EXPECT_EQ(src.substr(step4, skip_else - step4).find("\"total_annualized_return = \""),
+                  std::string::npos)
+            << runner;
+        const std::string day_t = src.substr(src.find(kStep5));
+        EXPECT_NE(day_t.find("double total_return_annualized = "
+                             "settled_statistics.total_annualized_return;"),
+                  std::string::npos)
+            << runner << ": today's row does not carry the settled annualised return (R39)";
+        EXPECT_EQ(day_t.find("trading.get_trading_days("), std::string::npos) << runner;
+        EXPECT_EQ(day_t.find("calculate_annualized_return("), std::string::npos) << runner;
+    }
+}
+
+TEST(SettledStatisticsBlock, TheConfigTemplateRecordsTheFrozenSessionsAYear) {
+    const std::string tpl = read_source("config_template/defaults.json");
+    if (tpl.empty()) GTEST_SKIP() << "config template not found from the test working directory";
+    EXPECT_NE(tpl.find("\"sessions_per_year\": {\"futures\": 311.0574, \"equities\": 252}"),
+              std::string::npos);
+    for (const char* recorded : {"3111", "3653", "365.25", "2016-01-01..2025-12-31", "UTC date",
+                                 "at least 9 distinct symbols"}) {
+        EXPECT_NE(tpl.find(recorded), std::string::npos) << recorded;
+    }
+}
