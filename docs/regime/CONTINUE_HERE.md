@@ -63,8 +63,8 @@ directly — a new vendor, which §4 makes an HD decision.
 
 | item | blocker |
 |---|---|
-| Step 0(d) timeline gate | needs a scratch **copy** of the database |
-| §8(ii) baseline reproduction | same |
+| Step 0(d) timeline gate | needs a scratch **copy** of the database — create it with `scripts/make_regime_scratch_db.sh` |
+| §8(ii) baseline reproduction | same copy |
 | §8(iv) macro ingest timing | a conversation with the data owners, not code |
 | Steps 1–6 (#128) | gated on Step 0 being accepted by HD |
 | Steps 7–8 (#129, #130, #131) | 37 parts; #128 blocks all three |
@@ -72,6 +72,28 @@ directly — a new vendor, which §4 makes an HD decision.
 Step 0 is step 1 of 9. The work programme has not started.
 
 ---
+
+## Making the scratch copy
+
+HD's instruction is to create it. `scripts/make_regime_scratch_db.sh` does it:
+
+```bash
+./scripts/make_regime_scratch_db.sh \
+    "postgresql://postgres@<host>:5432/new_algo_data" regime_scratch_YYYYMMDD
+```
+
+It dumps only `futures_data` and `macro_data`, restores into a new database on
+the same server, sets `TimeZone='UTC'` and `DateStyle='ISO, MDY'`, and prints the
+Q1/Q4 row counts and copy date to record with every result. `pg_dump` is
+read-only, so the source is untouched, and the script refuses to overwrite an
+existing database (§12: one clone per piece of work).
+
+**Why a copy is needed even though the regime runners never write.** Searching
+`src/regime_detection`, `apps/regime_detection` and the regime headers for
+insert/update/delete SQL returns nothing; the market runner writes its timeline
+to the file named by `TIMELINE_CSV`. So the copy is for **reproducibility**, not
+write safety: the gate has to reproduce byte for byte, and production data moves
+underneath a run because EODHD rewrites `adjusted_close` on every upsert.
 
 ## Read this before trying to continue from a phone or a cloud session
 
