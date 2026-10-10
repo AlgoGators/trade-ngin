@@ -16,9 +16,14 @@ namespace trade_ngin {
 /// The nested key of live_results.config and of backtest.run_metadata.portfolio_config that holds
 /// one object per sleeve, keyed by the sleeve's id.
 inline constexpr const char* kSleevesKey = "sleeves";
-/// The sessions a year the run's statistics are annualised with (defaults.json
-/// statistics.sessions_per_year, the run's own series).
+/// The sessions a year the run's stored statistics are annualised with: the factor the figures
+/// USE. A live run's is its own grid's (defaults.json statistics.sessions_per_year). A backtest's
+/// is the factor its calculator applies today, 252 on every book.
 inline constexpr const char* kStatisticsKKey = "statistics_K";
+/// A backtest only, and only while the two differ: the ruled sessions a year of the run's grid
+/// (311.0574 on a futures book) that its stored statistics do NOT use yet. T-8b's commit (1)
+/// aligns the calculator; statistics_K then takes this value and this key goes.
+inline constexpr const char* kStatisticsKRuledNotAppliedKey = "statistics_K_ruled_not_applied";
 
 /**
  * @brief One sleeve's values as the runner resolved them from the loaded configuration and handed
@@ -108,14 +113,18 @@ inline nlohmann::json futures_live_results_config_json(const std::string& strate
 
 /// The window rule and warm-up of a backtest run and its statistics convention, added to
 /// backtest.run_metadata.portfolio_config. An unset frozen_end_date is stored as null.
+/// statistics_K is the factor the run's stored statistics were annualised with (`applied_k`, the
+/// calculator's own), never a factor they do not use; the ruled factor of the run's grid
+/// (`ruled_k`) is recorded beside it, under its own key, only while it is not the one applied.
 inline void add_backtest_run_keys(nlohmann::json& portfolio_config, int lookback_years,
                                   const std::string& frozen_end_date, int warmup_days,
-                                  double statistics_k) {
+                                  double applied_k, double ruled_k) {
     portfolio_config["lookback_years"] = lookback_years;
     portfolio_config["frozen_end_date"] =
         frozen_end_date.empty() ? nlohmann::json(nullptr) : nlohmann::json(frozen_end_date);
     portfolio_config["warmup_days"] = warmup_days;
-    portfolio_config[kStatisticsKKey] = statistics_k;
+    portfolio_config[kStatisticsKKey] = applied_k;
+    if (ruled_k != applied_k) portfolio_config[kStatisticsKRuledNotAppliedKey] = ruled_k;
 }
 
 }  // namespace trade_ngin

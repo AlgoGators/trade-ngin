@@ -14,6 +14,14 @@ namespace backtest {
 struct BacktestResults;
 }
 
+/// The sessions a year every annualised figure of this calculator applies TODAY: volatility,
+/// Sharpe, Sortino, downside volatility and the annualised return multiply by 252 or sqrt(252),
+/// on every book, whatever the run's own grid is. A futures run has about 312 rows a year and its
+/// ruled factor is 311.0574 (T-8D R2); aligning the calculator to it is T-8b's commit (1). Until
+/// then this is the factor a backtest records as the one its figures use
+/// (backtest.run_metadata.portfolio_config.statistics_K), with the ruled factor beside it.
+inline constexpr double kBacktestAnnualisationApplied = 252.0;
+
 /**
  * @brief Pure stateless calculation component for backtest metrics
  *

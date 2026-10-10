@@ -126,6 +126,31 @@ TEST_F(BacktestMetricsCalculatorTest, VolatilityComputesAnnualizedStdev) {
     EXPECT_NEAR(calc_.calculate_volatility(r), 0.01 * std::sqrt(252.0), 1e-9);
 }
 
+// The factor a backtest records as statistics_K (backtest.run_metadata.portfolio_config) is the
+// one this calculator applies: the constant and the arithmetic are pinned to each other, so the
+// record cannot name a factor the stored figures do not use.
+TEST_F(BacktestMetricsCalculatorTest, TheRecordedAnnualisationFactorIsTheOneTheFiguresUse) {
+    const std::vector<double> r = {0.010, -0.004, 0.006, -0.012, 0.003, 0.000, 0.008};
+    double mean = 0.0;
+    for (double x : r) mean += x;
+    mean /= static_cast<double>(r.size());
+    double squares = 0.0, downside = 0.0;
+    for (double x : r) {
+        squares += (x - mean) * (x - mean);
+        if (x < 0.0) downside += x * x;
+    }
+    const double k = kBacktestAnnualisationApplied;
+    EXPECT_DOUBLE_EQ(k, 252.0);
+    const double sd = std::sqrt(squares / static_cast<double>(r.size()));
+    EXPECT_NEAR(calc_.calculate_volatility(r), sd * std::sqrt(k), 1e-12);
+    EXPECT_NEAR(calc_.calculate_downside_volatility(r),
+                std::sqrt(downside / static_cast<double>(r.size())) * std::sqrt(k), 1e-12);
+    EXPECT_NEAR(calc_.calculate_sharpe_ratio(r, static_cast<int>(r.size()), 0.0),
+                mean * k / (sd * std::sqrt(k)), 1e-9);
+    // Not the futures grid's ruled factor: that one is recorded as not yet applied.
+    EXPECT_GT(std::abs(calc_.calculate_volatility(r) - sd * std::sqrt(311.0574)), 1e-3);
+}
+
 TEST_F(BacktestMetricsCalculatorTest, DownsideVolatilityZeroWhenAllReturnsAboveTarget) {
     EXPECT_DOUBLE_EQ(calc_.calculate_downside_volatility({0.01, 0.02, 0.03}, 0.0), 0.0);
 }

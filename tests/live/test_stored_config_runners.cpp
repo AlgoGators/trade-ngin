@@ -135,11 +135,14 @@ TEST(StoredConfigRunners, BothRunMetadataTablesRecordTheSessionsAYearOfTheRunsSe
     writers.push_back({kEquityLive, "portfolio_config_json[trade_ngin::kStatisticsKKey] =\n"
                                     "                app_config.statistics.equity_sessions_per_year;"});
     for (const auto& runner : kFuturesBacktests) {
+        // A backtest records the factor its calculator applies, the ruled one beside it.
         writers.push_back({runner, "app_config.backtest.frozen_end_date, backtest_results.warmup_days,\n"
+                                   "                trade_ngin::kBacktestAnnualisationApplied,\n"
                                    "                app_config.statistics.futures_sessions_per_year);"});
     }
     writers.push_back({kEquityBacktest,
                        "app_config.backtest.frozen_end_date, backtest_results.warmup_days,\n"
+                       "                    trade_ngin::kBacktestAnnualisationApplied,\n"
                        "                    app_config.statistics.equity_sessions_per_year);"});
     for (const auto& [runner, needle] : writers) {
         const std::string src = read_source(runner);

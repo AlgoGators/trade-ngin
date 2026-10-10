@@ -3,6 +3,7 @@
 #include <iostream>
 #include <nlohmann/json.hpp>
 #include "trade_ngin/backtest/backtest_coordinator.hpp"
+#include "trade_ngin/backtest/backtest_metrics_calculator.hpp"
 #include "trade_ngin/backtest/transaction_cost_analysis.hpp"
 #include "trade_ngin/core/config_loader.hpp"
 #include "trade_ngin/portfolio/loop_config.hpp"
@@ -564,12 +565,15 @@ int main() {
             portfolio_config_json["strategy_names"] = strategy_names;
             // T-8D-2 R53: each sleeve's resolved idm and risk_target (its allocation is
             // strategy_allocations above), the window rule, the warm-up and the sessions a year
-            // the statistics are annualised with.
+            // the statistics are annualised with: statistics_K is the factor the calculator
+            // applies (252 until T-8b aligns it), and the ruled factor of the futures grid is
+            // recorded beside it as not yet applied.
             portfolio_config_json[trade_ngin::kSleevesKey] =
                 trade_ngin::resolved_sleeves_json(resolved_sleeves, false);
             trade_ngin::add_backtest_run_keys(
                 portfolio_config_json, app_config.backtest.lookback_years,
                 app_config.backtest.frozen_end_date, backtest_results.warmup_days,
+                trade_ngin::kBacktestAnnualisationApplied,
                 app_config.statistics.futures_sessions_per_year);
             if (!app_config.instrument_id_relabels.empty()) {
                 auto relabels = nlohmann::json::array();

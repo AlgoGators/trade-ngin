@@ -188,16 +188,20 @@ TEST(ResolvedSleeves, TheBacktestRunKeysArePinned) {
                                        {"strategy_allocations", {{"TREND_FOLLOWING", 1.0}}}};
     portfolio_config[kSleevesKey] =
         resolved_sleeves_json({{"TREND_FOLLOWING", 2.5, 0.2, 1.0}}, false);
-    add_backtest_run_keys(portfolio_config, 2, "2026-05-03", 256, 311.0574);
+    // A futures backtest: its calculator applies 252, its grid's ruled factor is 311.0574.
+    add_backtest_run_keys(portfolio_config, 2, "2026-05-03", 256, 252.0, 311.0574);
 
     EXPECT_EQ(keys_of(portfolio_config),
               (std::set<std::string>{"frozen_end_date", "lookback_years", "sleeves",
-                                     "statistics_K", "strategy_allocations", "total_capital",
-                                     "warmup_days"}));
+                                     "statistics_K", "statistics_K_ruled_not_applied",
+                                     "strategy_allocations", "total_capital", "warmup_days"}));
     EXPECT_EQ(portfolio_config.at("lookback_years").get<int>(), 2);
     EXPECT_EQ(portfolio_config.at("frozen_end_date").get<std::string>(), "2026-05-03");
     EXPECT_EQ(portfolio_config.at("warmup_days").get<int>(), 256);
-    EXPECT_DOUBLE_EQ(portfolio_config.at("statistics_K").get<double>(), 311.0574);
+    // The recorded factor is the one the stored figures use; the ruled one is named as not applied.
+    EXPECT_DOUBLE_EQ(portfolio_config.at("statistics_K").get<double>(), 252.0);
+    EXPECT_DOUBLE_EQ(portfolio_config.at("statistics_K_ruled_not_applied").get<double>(), 311.0574);
+    EXPECT_STREQ(kStatisticsKRuledNotAppliedKey, "statistics_K_ruled_not_applied");
     EXPECT_DOUBLE_EQ(portfolio_config.at("total_capital").get<double>(), 500000.0);
     EXPECT_FALSE(portfolio_config.contains("sizing_capital"));
     // The allocation is strategy_allocations' and is not written a second time.
@@ -209,9 +213,11 @@ TEST(ResolvedSleeves, TheBacktestRunKeysArePinned) {
 
 TEST(ResolvedSleeves, AnUnsetFrozenEndDateIsStoredAsNull) {
     nlohmann::json portfolio_config = nlohmann::json::object();
-    add_backtest_run_keys(portfolio_config, 5, "", 0, 252.0);
+    // An equity backtest: the ruled factor is the one applied, so nothing is left to name.
+    add_backtest_run_keys(portfolio_config, 5, "", 0, 252.0, 252.0);
     EXPECT_TRUE(portfolio_config.at("frozen_end_date").is_null());
     EXPECT_DOUBLE_EQ(portfolio_config.at("statistics_K").get<double>(), 252.0);
+    EXPECT_FALSE(portfolio_config.contains("statistics_K_ruled_not_applied"));
 }
 
 TEST(ResolvedSleeves, TheLogLineNamesEverySleevesValues) {

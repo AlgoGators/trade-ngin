@@ -4,6 +4,7 @@
 #include <unordered_set>
 #include <nlohmann/json.hpp>
 #include "trade_ngin/backtest/backtest_coordinator.hpp"
+#include "trade_ngin/backtest/backtest_metrics_calculator.hpp"
 #include "trade_ngin/backtest/equity_cost_warmup.hpp"
 #include "trade_ngin/core/config_loader.hpp"
 #include "trade_ngin/core/resolved_sleeves.hpp"
@@ -408,6 +409,7 @@ int main() {
                 trade_ngin::add_backtest_run_keys(
                     config_json, app_config.backtest.lookback_years,
                     app_config.backtest.frozen_end_date, backtest_results.warmup_days,
+                    trade_ngin::kBacktestAnnualisationApplied,
                     app_config.statistics.equity_sessions_per_year);
                 std::vector<trade_ngin::ResolvedSleeve> resolved_sleeves;
                 for (const auto& entry : strat_entries) {
