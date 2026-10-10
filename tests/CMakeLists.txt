@@ -181,6 +181,7 @@ set(TEST_SOURCES
     live/test_base_bus_off_and_carried_day.cpp
     live/test_session_book_gate.cpp
     live/test_live_runner_small_fixes.cpp
+    live/test_email_body_file.cpp
     live/test_cost_model_feed.cpp
     live/test_futures_cost_feed.cpp
     live/test_cost_feed_adjusted_returns.cpp

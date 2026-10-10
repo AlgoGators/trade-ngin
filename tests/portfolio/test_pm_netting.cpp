@@ -397,36 +397,65 @@ TEST(LiveDayCost, TheDaysCostIsTheSumOfTheNetCostsOfTheStoredRows) {
     EXPECT_EQ(net_of["MBT.v.0"], Decimal(10.83)) << "same side: above the 9.00 of the rows' own costs";
 }
 
-// TRADE_NGIN_EMAIL_BODY_DIR: the futures runners write the report body to a file and mail nothing.
-// The one call of send_email sits in the else of the body-file branch, in both twins; every file
-// is read and every failure reported.
-TEST(EmailBodyFileSource, TheBodyFileBranchWritesTheBodyAndNeverSends) {
+// TRADE_NGIN_EMAIL_BODY_DIR and --send-email (fix round 2, HD 2026-10-10: --send-email wins), in
+// both twins. The decision is plan_email_report's (tests/live/test_email_body_file.cpp proves its
+// four cases); here, that the runners USE it: the variable is read once and handed to the plan
+// with the runner's own send flag; the WARN is printed when the plan says the variable was
+// ignored; the body file is written only in the plan's write branch and the one send_email call
+// sits in its else; and the string written is the string handed to the send, after the two blocks
+// that flag it. Every file is read and every failure reported.
+TEST(EmailBodyFileSource, TheRunnersFollowThePlanAndTheBodyWrittenIsTheBodySent) {
     for (const char* f : {"apps/strategies/live_portfolio.cpp",
                           "apps/strategies/live_portfolio_conservative.cpp"}) {
         const std::string src = read_source(f);
         if (src.empty()) {
-            ADD_FAILURE() << f << " not found: run the tests from inside the source tree";
+            ADD_FAILURE() << f << " not found: a source-text test must be run from inside the source tree";
             continue;
         }
-        const auto env = src.find("std::getenv(\"TRADE_NGIN_EMAIL_BODY_DIR\")");
-        const auto gate = src.find("if (send_email || !email_body_dir.empty()) {");
-        const auto file_branch =
-            src.find("if (!email_body_dir.empty()) {\n                        const std::string body_path");
+        auto count = [&](const std::string& text) {
+            size_t n = 0;
+            for (auto at = src.find(text); at != std::string::npos; at = src.find(text, at + 1)) ++n;
+            return n;
+        };
+        const auto plan = src.find(
+            "live::plan_email_report(send_email, std::getenv(live::kEmailBodyDirEnv));");
+        const auto warn = src.find("if (email_plan.variable_ignored) {\n"
+                                   "            WARN(live::email_body_dir_ignored_warning(email_plan));");
+        const auto gate = src.find("if (email_plan.build()) {");
+        const auto flags = src.find("flag_email_body_for_carried_day(email_body, carried_day_note);");
+        const auto file_branch = src.find("if (email_plan.write_body_file) {");
+        const auto write = src.find("live::write_email_body_file(body_path, email_body)");
+        const auto path = src.find(
+            "live::email_body_file_path(\n                            email_plan.body_dir, portfolio_id, date_str);");
         const auto send_branch = src.find("} else {\n                        auto send_result =");
-        const auto send = src.find("email_sender->send_email(");
-        EXPECT_NE(env, std::string::npos) << f;
+        const auto send = src.find("email_sender->send_email(subject, email_body, true, attachments);");
+        EXPECT_NE(plan, std::string::npos) << f << ": the plan is not made from the send flag and the variable";
+        EXPECT_NE(warn, std::string::npos) << f << ": no WARN when the variable is ignored";
         EXPECT_NE(gate, std::string::npos) << f;
+        EXPECT_NE(flags, std::string::npos) << f;
         EXPECT_NE(file_branch, std::string::npos) << f << ": no body-file branch";
+        EXPECT_NE(write, std::string::npos) << f << ": the body written is not the body handed to the send";
+        EXPECT_NE(path, std::string::npos) << f << ": the file is not named by the shared function";
         EXPECT_NE(send_branch, std::string::npos) << f << ": the send is not in the else";
         EXPECT_NE(send, std::string::npos) << f;
-        if (file_branch == std::string::npos || send_branch == std::string::npos ||
+        EXPECT_EQ(count("getenv("), count("std::getenv(live::kEmailBodyDirEnv)") + count("getenv(\"") )
+            << f;
+        EXPECT_EQ(count("TRADE_NGIN_EMAIL_BODY_DIR\")"), 0u)
+            << f << ": the variable is read somewhere beside the plan";
+        EXPECT_EQ(count("email_sender->send_email("), 1u) << f << ": not exactly one send";
+        EXPECT_EQ(count("write_email_body_file("), 1u) << f;
+        if (plan == std::string::npos || warn == std::string::npos || gate == std::string::npos ||
+            flags == std::string::npos || file_branch == std::string::npos ||
+            write == std::string::npos || send_branch == std::string::npos ||
             send == std::string::npos) {
             continue;
         }
-        EXPECT_LT(file_branch, send_branch) << f;
+        EXPECT_LT(plan, warn) << f;
+        EXPECT_LT(warn, gate) << f << ": the warning must not depend on the report being built";
+        EXPECT_LT(flags, file_branch) << f << ": the body is written before it is flagged";
+        EXPECT_LT(file_branch, write) << f;
+        EXPECT_LT(write, send_branch) << f;
         EXPECT_LT(send_branch, send) << f << ": a send outside the else of the body-file branch";
-        EXPECT_EQ(src.find("email_sender->send_email(", send + 1), std::string::npos)
-            << f << ": a second send";
     }
 }
 

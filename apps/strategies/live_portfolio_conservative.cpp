@@ -25,6 +25,7 @@
 #include "trade_ngin/live/carried_day.hpp"
 #include "trade_ngin/live/csv_exporter.hpp"
 #include "trade_ngin/live/data_freshness.hpp"
+#include "trade_ngin/live/email_body_file.hpp"
 #include "trade_ngin/live/execution_manager.hpp"
 #include "trade_ngin/live/finalized_books_read.hpp"
 #include "trade_ngin/live/late_bar_warning.hpp"
@@ -4369,16 +4370,23 @@ int main(int argc, char* argv[]) {
         INFO("Daily trend following position generation completed successfully");
 
         // Send email report with trading results (based on send_email flag).
-        // TRADE_NGIN_EMAIL_BODY_DIR (a directory): the report body is built exactly as for a send
-        // and written there as email_body_<portfolio>_<date>.html, and NOTHING is mailed, whatever
-        // --send-email says. It is how a day's email is read without sending it.
-        const char* email_body_dir_env = std::getenv("TRADE_NGIN_EMAIL_BODY_DIR");
-        const std::string email_body_dir = email_body_dir_env ? email_body_dir_env : "";
-        if (send_email || !email_body_dir.empty()) {
-            if (email_body_dir.empty()) {
+        // --send-email WINS (HD 2026-10-10): a run that sends builds and mails the report exactly
+        // as if TRADE_NGIN_EMAIL_BODY_DIR did not exist; the variable, if set, is ignored with one
+        // WARN line. Only a run that does not send looks at the variable: with it set (a
+        // directory) the body is built exactly as for a send and written there as
+        // email_body_<portfolio>_<date>.html and nothing is mailed; without it nothing is built.
+        // Production always sends and test runs never do, so the file path cannot run in
+        // production. email_body_file.hpp.
+        const live::EmailReportPlan email_plan =
+            live::plan_email_report(send_email, std::getenv(live::kEmailBodyDirEnv));
+        if (email_plan.variable_ignored) {
+            WARN(live::email_body_dir_ignored_warning(email_plan));
+        }
+        if (email_plan.build()) {
+            if (email_plan.send) {
                 INFO("Sending email report...");
             } else {
-                INFO("EMAIL_BODY_FILE building the report body for " + email_body_dir +
+                INFO("EMAIL_BODY_FILE building the report body for " + email_plan.body_dir +
                      "; nothing is mailed");
             }
             try {
@@ -4727,13 +4735,10 @@ int main(int argc, char* argv[]) {
                         email_body = flag_email_body_for_carried_day(email_body, carried_day_note);
                     }
 
-                    if (!email_body_dir.empty()) {
-                        const std::string body_path = email_body_dir + "/email_body_" +
-                                                      portfolio_id + "_" + date_str + ".html";
-                        std::ofstream body_file(body_path, std::ios::binary | std::ios::trunc);
-                        body_file << email_body;
-                        body_file.close();
-                        if (body_file.fail()) {
+                    if (email_plan.write_body_file) {
+                        const std::string body_path = live::email_body_file_path(
+                            email_plan.body_dir, portfolio_id, date_str);
+                        if (!live::write_email_body_file(body_path, email_body)) {
                             ERROR("EMAIL_BODY_FILE could not write " + body_path);
                         } else {
                             INFO("EMAIL_BODY_FILE wrote " + body_path + " (" +
