@@ -378,6 +378,135 @@ TEST_F(EmailStrategyTablesTest, TheCostTotalsAreTheCostAfterNetting) {
     EXPECT_NE(all.find("<strong>Total Transaction Costs:</strong> $10.82"), std::string::npos) << all;
 }
 
+// T-NETTING fix round (HD 2026-10-10): the email reconciles at a glance. On a book of more than
+// one sleeve every fill row shows, beside its own cost, its netting adjustment AS IT ACTS ON THE
+// COST (a saving is a reduction, "-$1.62"; an extra cost an addition, "+$0.91") and its cost after
+// netting; and wherever a row was netted the footer reads own costs, netting adjustment, cost
+// charged. The three worked rows (BASE, lookback 3):
+//
+//   | case           | FAST          | TREND         | own cost      | adjustment    | charged |
+//   | full cross     | SELL 1        | BUY 1         | 1.62 + 1.62   | 1.62 + 1.62   | 0.00    |
+//   | partial offset | BUY 1         | SELL 2        | 1.10 + 2.40   | 0.75 + 1.64   | 1.10    |
+//   | same side      | SELL 1        | SELL 1        | 4.50 + 4.50   | -0.91 - 0.91  | 10.83   |
+namespace {
+ExecutionReport netted_row(Side side, double qty, double cost, double adjustment) {
+    auto e = typed("ZFGOOD.v.0", side, qty, 103.0, cost, ExecutionType::STRATEGY, "EXEC_ZFGOOD.v.0", "");
+    e.netting_adjustment = Decimal(adjustment);
+    return e;
+}
+using Sleeves = std::unordered_map<std::string, std::vector<ExecutionReport>>;
+const char* kNettedHeader =
+    "<th>Transaction Cost</th><th>Netting Adjustment</th><th>Cost After Netting</th></tr>";
+}  // namespace
+
+TEST_F(EmailStrategyTablesTest, AFullCrossShowsTheSavingAndIsChargedNothing) {
+    const Sleeves day{{"TREND_FOLLOWING_FAST", {netted_row(Side::SELL, 1, 1.62, 1.62)}},
+                      {"TREND_FOLLOWING", {netted_row(Side::BUY, 1, 1.62, 1.62)}}};
+    const std::string all = sender_.format_strategy_executions_tables(day);
+    EXPECT_NE(all.find(kNettedHeader), std::string::npos) << all;
+    // each row: own cost, the saving as a reduction, the cost after netting
+    EXPECT_NE(all.find("<td>$1.62</td>\n<td>-$1.62</td>\n<td>$0.00</td>\n</tr>"), std::string::npos) << all;
+    // each sleeve's footer
+    EXPECT_NE(all.find("<strong>Own Costs:</strong> $1.62 | <strong>Netting Adjustment:</strong> -$1.62 | "
+                       "<strong>Transaction Costs:</strong> $0.00"),
+              std::string::npos)
+        << all;
+    // the book's footer: rows total, less the adjustment, equals the cost charged
+    EXPECT_NE(all.find("<strong>Total Own Costs:</strong> $3.24</div>\n"
+                       "<div class=\"metric\"><strong>Netting Adjustment:</strong> -$3.24</div>\n"
+                       "<div class=\"metric\"><strong>Total Transaction Costs:</strong> $0.00</div>"),
+              std::string::npos)
+        << all;
+}
+
+TEST_F(EmailStrategyTablesTest, APartialOffsetShowsTheSavingAndIsChargedTheAccountOrder) {
+    const Sleeves day{{"TREND_FOLLOWING_FAST", {netted_row(Side::BUY, 1, 1.0991, 0.7535)}},
+                      {"TREND_FOLLOWING", {netted_row(Side::SELL, 2, 2.3963, 1.6428)}}};
+    const std::string all = sender_.format_strategy_executions_tables(day);
+    EXPECT_NE(all.find("<td>$1.10</td>\n<td>-$0.75</td>\n<td>$0.35</td>\n</tr>"), std::string::npos) << all;
+    // 2.40 own, 0.75 after netting: the printed adjustment is their difference, so the row adds up
+    // (the stored 1.6428 rounded alone would print 1.64 and leave the row a cent out)
+    EXPECT_NE(all.find("<td>$2.40</td>\n<td>-$1.65</td>\n<td>$0.75</td>\n</tr>"), std::string::npos) << all;
+    EXPECT_NE(all.find("<strong>Total Own Costs:</strong> $3.50</div>\n"
+                       "<div class=\"metric\"><strong>Netting Adjustment:</strong> -$2.40</div>\n"
+                       "<div class=\"metric\"><strong>Total Transaction Costs:</strong> $1.10</div>"),
+              std::string::npos)
+        << all;
+}
+
+// The sign: a negative adjustment is an EXTRA cost and is printed as an addition. RED if the
+// adjustment is printed with its stored sign, dropped, or shown as a saving.
+TEST_F(EmailStrategyTablesTest, ASameSidePairShowsTheExtraCostAsAnAddition) {
+    const Sleeves day{{"TREND_FOLLOWING_FAST", {netted_row(Side::SELL, 1, 4.5039, -0.9092)}},
+                      {"TREND_FOLLOWING", {netted_row(Side::SELL, 1, 4.5039, -0.9092)}}};
+    const std::string all = sender_.format_strategy_executions_tables(day);
+    EXPECT_NE(all.find("<td>$4.50</td>\n<td>+$0.91</td>\n<td>$5.41</td>\n</tr>"), std::string::npos) << all;
+    EXPECT_NE(all.find("<strong>Own Costs:</strong> $4.50 | <strong>Netting Adjustment:</strong> +$0.91 | "
+                       "<strong>Transaction Costs:</strong> $5.41"),
+              std::string::npos)
+        << all;
+    EXPECT_NE(all.find("<strong>Total Own Costs:</strong> $9.01</div>\n"
+                       "<div class=\"metric\"><strong>Netting Adjustment:</strong> +$1.82</div>\n"
+                       "<div class=\"metric\"><strong>Total Transaction Costs:</strong> $10.83</div>"),
+              std::string::npos)
+        << all;
+    EXPECT_EQ(all.find("-$"), std::string::npos) << "nothing on a same-side day is a reduction: " << all;
+}
+
+// A several-sleeve day with no netted row: the two columns are there (the book has two sleeves)
+// and read $0.00; no footer line is added, because there is nothing to reconcile.
+TEST_F(EmailStrategyTablesTest, ASeveralSleeveDayWithoutNettingAddsNoFooterLine) {
+    const Sleeves day{{"TREND_FOLLOWING_FAST", {netted_row(Side::SELL, 1, 4.50, 0.0)}},
+                      {"TREND_FOLLOWING", {}}};
+    const std::string all = sender_.format_strategy_executions_tables(day);
+    EXPECT_NE(all.find(kNettedHeader), std::string::npos) << all;
+    EXPECT_NE(all.find("<td>$4.50</td>\n<td>$0.00</td>\n<td>$4.50</td>\n</tr>"), std::string::npos) << all;
+    EXPECT_EQ(all.find("Own Costs"), std::string::npos) << all;
+    EXPECT_EQ(all.find("Netting Adjustment:"), std::string::npos) << all;
+}
+
+// A ONE-SLEEVE book (the conservative email, the one that is sent) is unchanged: the six-column
+// header, the own cost as the row's last cell, the footer with no netting line, nowhere the word
+// netting. RED if a column or a footer line reaches a book of one sleeve.
+TEST_F(EmailStrategyTablesTest, AOneSleeveBooksTablesCarryNoNettingColumnAndNoNettingLine) {
+    const std::vector<ExecutionReport> execs = {
+        typed("ZFGOOD.v.0", Side::SELL, 2.0, 100.0, 4.0, ExecutionType::ROLL, "EXEC_ZFGOOD.v.0_20251028_RC", "864"),
+        typed("ZFGOOD.v.0", Side::BUY, 2.0, 103.0, 4.0, ExecutionType::ROLL, "EXEC_ZFGOOD.v.0_20251028_RO", "863"),
+        typed("ZFGOOD.v.0", Side::BUY, 1.0, 103.0, 3.0, ExecutionType::STRATEGY, "EXEC_ZFGOOD.v.0_20251028", ""),
+    };
+    const Sleeves one{{"TREND_FOLLOWING", execs}};
+    const std::string all = sender_.format_strategy_executions_tables(one);
+    EXPECT_EQ(all.find("etting"), std::string::npos) << all;
+    EXPECT_EQ(all.find("Own Costs"), std::string::npos) << all;
+    EXPECT_NE(all.find("<th>Notional</th><th>Transaction Cost</th></tr>\n"), std::string::npos) << all;
+    EXPECT_NE(all.find("<td>$3.00</td>\n</tr>"), std::string::npos) << all;
+    EXPECT_NE(all.find("<strong>Trades:</strong> 1 | <strong>Notional:</strong> $5,150.00 | "
+                       "<strong>Transaction Costs:</strong> $11.00\n"),
+              std::string::npos)
+        << all;
+    EXPECT_NE(all.find("<div class=\"metric\"><strong>Total Notional Traded:</strong> $5,150.00</div>\n"
+                       "<div class=\"metric\"><strong>Total Transaction Costs:</strong> $11.00</div>\n"),
+              std::string::npos)
+        << all;
+    const std::string single = sender_.format_executions_table(execs);
+    EXPECT_EQ(single.find("etting"), std::string::npos) << single;
+    EXPECT_NE(single.find("<strong>Notional Traded:</strong> $5,150.00<br>\n"
+                          "<strong>Transaction Costs:</strong> $11.00\n"),
+              std::string::npos)
+        << single;
+}
+
+// The one-table form (no sleeves to tell apart) adds only the footer lines, and only on a netted day.
+TEST_F(EmailStrategyTablesTest, TheSingleTableFooterShowsTheAdjustmentOnANettedDay) {
+    const std::string single = sender_.format_executions_table(
+        {netted_row(Side::SELL, 1, 4.5039, -0.9092), netted_row(Side::BUY, 1, 1.62, 1.62)});
+    EXPECT_NE(single.find("<strong>Own Costs:</strong> $6.12<br>\n"
+                          "<strong>Netting Adjustment:</strong> -$0.71<br>\n"
+                          "<strong>Transaction Costs:</strong> $5.41\n"),
+              std::string::npos)
+        << single;
+}
+
 TEST_F(EmailStrategyTablesTest, WithoutRollLegsTheTablesAreAsBefore) {
     const std::vector<ExecutionReport> execs = {
         typed("ZFGOOD.v.0", Side::BUY, 1.0, 103.0, 3.0, ExecutionType::STRATEGY, "EXEC_ZFGOOD.v.0_20251028", ""),
