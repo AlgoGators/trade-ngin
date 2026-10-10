@@ -906,57 +906,17 @@ int main(int argc, char* argv[]) {
             // unpriced and is carried unpriceable (E2-F34).
             const auto freshness = assess_feed_freshness(last_bar_date, as_of_ymd, symbols);
 
-            if (freshness.absent > 0) {
-                // Absence is not "a few days behind" -- there is no date to measure. It is
-                // reported on its own terms and treated as stale regardless of tolerance.
-                const std::string msg =
-                    "Equity feed is missing " + std::to_string(freshness.absent) + " of " +
-                    std::to_string(freshness.symbols) +
-                    " requested symbol(s) entirely, first: " + freshness.absent_symbol +
-                    " (no bar of any date as of " + as_of_ymd + ").";
-                if (use_override_date) {
-                    WARN(msg + " Proceeding in historical-replay mode.");
-                } else {
-                    ERROR(msg + " Refusing to run live with an incomplete universe. "
-                                "Refresh the OHLCV feed or remove the symbol from config.");
-                    return 1;
-                }
-            }
-
-            if (!freshness.any_data) {
-                // No symbol has a usable bar date. Maximally stale, never neutral.
-                const std::string msg =
-                    "Equity data freshness cannot be established: none of the " +
-                    std::to_string(freshness.symbols) +
-                    " loaded symbols carries a usable bar date as of " + as_of_ymd + ".";
-                if (use_override_date) {
-                    WARN(msg + " Proceeding in historical-replay mode.");
-                } else {
-                    ERROR(msg + " Refusing to run live without a feed. Refresh the OHLCV "
-                                "feed.");
-                    return 1;
-                }
-            } else if (freshness.days_behind > tolerance_days) {
-                const std::string msg =
-                    "Equity data is stale: the stalest of " +
-                    std::to_string(freshness.symbols) + " symbols (" +
-                    freshness.stalest_symbol + ") last printed " + freshness.stalest_date +
-                    ", " + std::to_string(freshness.days_behind) +
-                    " calendar days before " + as_of_ymd + " (tolerance " +
-                    std::to_string(tolerance_days) + " days).";
-                if (use_override_date) {
-                    WARN(msg + " Proceeding in historical-replay mode.");
-                } else {
-                    ERROR(msg + " Refusing to run live on stale data. Refresh the OHLCV "
-                                "feed or raise live.data_staleness_tolerance_days.");
-                    return 1;
-                }
-            } else {
-                INFO("Equity feed freshness: stalest of " +
-                     std::to_string(freshness.symbols) + " symbols (" +
-                     freshness.stalest_symbol + ") at " + freshness.stalest_date + ", " +
-                     std::to_string(freshness.days_behind) + " days behind " + as_of_ymd +
-                     " (tolerance " + std::to_string(tolerance_days) + ").");
+            // The arms are the shared ruling's (live/data_freshness.hpp, rule_feed_freshness; HD
+            // 2026-10-10): an empty feed refuses every run; a requested symbol with no bar and a
+            // feed staler than the tolerance refuse a run with no date and are a WARN on a dated
+            // run, whose book stops only for what it HOLDS (the held-symbol check below).
+            const auto freshness_ruling = rule_feed_freshness(freshness, tolerance_days, as_of_ymd,
+                                                              use_override_date, "Equity");
+            for (const auto& line : freshness_ruling.warnings) WARN(line);
+            for (const auto& line : freshness_ruling.errors) ERROR(line);
+            if (!freshness_ruling.info.empty()) INFO(freshness_ruling.info);
+            if (freshness_ruling.refuse) {
+                return 1;
             }
         }
 

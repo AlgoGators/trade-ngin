@@ -279,7 +279,9 @@ TEST(C7bRunnerSource, BothTwinsTestEveryNoBarAgeAndGiveTheClassifierLogTheTolera
         if (src.empty()) GTEST_SKIP() << "runner source not found";
         EXPECT_EQ(src.find("if (t1_classification.max_hole_age_days > hole_tolerance_days)"), npos)
             << "the refusal only reads the held book when a FEED HOLE is old";
-        EXPECT_NE(src.find("if (max_no_bar_age_days(t1_classification) > hole_tolerance_days)"),
+        // T-DATED R2a: the test is "any no-bar verdict past the tolerance", which also counts a
+        // symbol with no bar anywhere in the loaded history (no age to measure).
+        EXPECT_NE(src.find("if (any_no_bar_past_tolerance(t1_classification, hole_tolerance_days))"),
                   npos);
         EXPECT_NE(src.find("log_t1_classification(t1_classification,\n"
                            "                              app_config.live.data_staleness_tolerance_days);"),

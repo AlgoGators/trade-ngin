@@ -1031,57 +1031,17 @@ int main(int argc, char* argv[]) {
             const std::string as_of_ymd = core::format_utc_date(end_date);
             const auto freshness = assess_feed_freshness(last_bar_date, as_of_ymd, symbols);
 
-            if (freshness.absent > 0) {
-                // Absence is not "a few days behind" -- there is no date to measure. It
-                // is reported on its own terms and treated as stale regardless of the
-                // tolerance.
-                const std::string msg =
-                    "Futures feed is missing " + std::to_string(freshness.absent) + " of " +
-                    std::to_string(freshness.symbols) +
-                    " requested symbol(s) entirely, first: " + freshness.absent_symbol +
-                    " (no bar of any date as of " + as_of_ymd + ").";
-                if (use_override_date) {
-                    WARN(msg + " Proceeding in historical-replay mode.");
-                } else {
-                    ERROR(msg + " Refusing to run live with an incomplete universe. "
-                                "Refresh the OHLCV feed or remove the symbol from config.");
-                    return 1;
-                }
-            }
-
-            if (!freshness.any_data) {
-                const std::string msg =
-                    "Futures data freshness cannot be established: none of the " +
-                    std::to_string(freshness.symbols) +
-                    " loaded symbols carries a usable bar date as of " + as_of_ymd + ".";
-                if (use_override_date) {
-                    WARN(msg + " Proceeding in historical-replay mode.");
-                } else {
-                    ERROR(msg + " Refusing to run live without a feed. Refresh the OHLCV "
-                                "feed.");
-                    return 1;
-                }
-            } else if (freshness.days_behind > tolerance_days) {
-                const std::string msg =
-                    "Futures data is stale: the stalest of " +
-                    std::to_string(freshness.symbols) + " symbols (" +
-                    freshness.stalest_symbol + ") last printed " + freshness.stalest_date +
-                    ", " + std::to_string(freshness.days_behind) +
-                    " calendar days before " + as_of_ymd + " (tolerance " +
-                    std::to_string(tolerance_days) + " days).";
-                if (use_override_date) {
-                    WARN(msg + " Proceeding in historical-replay mode.");
-                } else {
-                    ERROR(msg + " Refusing to run live on stale data. Refresh the OHLCV "
-                                "feed or raise live.data_staleness_tolerance_days.");
-                    return 1;
-                }
-            } else {
-                INFO("Futures feed freshness: stalest of " +
-                     std::to_string(freshness.symbols) + " symbols (" +
-                     freshness.stalest_symbol + ") at " + freshness.stalest_date + ", " +
-                     std::to_string(freshness.days_behind) + " days behind " + as_of_ymd +
-                     " (tolerance " + std::to_string(tolerance_days) + ").");
+            // The arms are the shared ruling's (live/data_freshness.hpp, rule_feed_freshness; HD
+            // 2026-10-10): an empty feed refuses every run; a requested symbol with no bar and a
+            // feed staler than the tolerance refuse a run with no date and are a WARN on a dated
+            // run, whose book stops only for what it HOLDS (the held-symbol check below).
+            const auto freshness_ruling = rule_feed_freshness(freshness, tolerance_days, as_of_ymd,
+                                                              use_override_date, "Futures");
+            for (const auto& line : freshness_ruling.warnings) WARN(line);
+            for (const auto& line : freshness_ruling.errors) ERROR(line);
+            if (!freshness_ruling.info.empty()) INFO(freshness_ruling.info);
+            if (freshness_ruling.refuse) {
+                return 1;
             }
         }
 
@@ -1239,39 +1199,36 @@ int main(int argc, char* argv[]) {
         {
             const int hole_tolerance_days = app_config.live.data_staleness_tolerance_days;
             std::vector<HeldFeedHole> held_holes;
-            if (max_no_bar_age_days(t1_classification) > hole_tolerance_days) {
+            if (any_no_bar_past_tolerance(t1_classification, hole_tolerance_days)) {
                 auto held_book_result = db->load_positions_by_date(
                     combined_strategy_id, "", coordinator_config.portfolio_id,
                     now - std::chrono::hours(24), "trading.positions");
                 if (held_book_result.is_ok()) {
                     held_holes = held_feed_holes_past_tolerance(
                         t1_classification, held_book_result.value(), hole_tolerance_days);
+                    // What the book does not hold stops nothing: one line names it.
+                    const std::string not_held = unheld_no_bar_line(
+                        t1_classification, held_book_result.value(), hole_tolerance_days);
+                    if (!not_held.empty()) WARN(not_held);
                 } else {
                     WARN("FEED_HOLE_REFUSAL could not read the held book to test the feed "
                          "holes: " +
                          std::string(held_book_result.error()->what()));
                 }
             }
-            if (!held_holes.empty()) {
-                const bool true_live =
-                    run_date_is_host_date(now, std::chrono::system_clock::now());
-                for (const auto& hole : held_holes) {
-                    const std::string msg =
-                        "FEED_HOLE_REFUSAL held symbol " + hole.symbol + " (quantity " +
-                        std::to_string(hole.held_quantity) + ") has had no bar for " +
-                        std::to_string(hole.age_days) + " day(s) (last bar " +
-                        hole.last_bar_date + "), past live.data_staleness_tolerance_days=" +
-                        std::to_string(hole_tolerance_days);
-                    if (true_live) {
-                        ERROR(msg + ". Refusing to run live: refresh the OHLCV feed, then run "
-                                    "this date.");
-                    } else {
-                        WARN(msg + ". Replay of a past date: not refused.");
-                    }
+            // The one ruling, shared with the equity runner (rule_held_feed_holes): refused on
+            // the host's own date, a warning when the date is run on another day.
+            const HeldFeedHoleRuling hole_ruling = rule_held_feed_holes(
+                held_holes, hole_tolerance_days, now, std::chrono::system_clock::now());
+            for (const auto& line : hole_ruling.lines) {
+                if (hole_ruling.refuse) {
+                    ERROR(line);
+                } else {
+                    WARN(line);
                 }
-                if (true_live) {
-                    return 1;
-                }
+            }
+            if (hole_ruling.refuse) {
+                return 1;
             }
         }
 
