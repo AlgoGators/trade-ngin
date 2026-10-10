@@ -148,9 +148,13 @@ inline bool sizing_history_day_unsettled(const LiveDataLoader::PnlHistoryRow& ro
 inline bool sizing_history_row_settled(const LiveDataLoader::PnlHistoryRow& row,
                                        const LiveSizingCalendar& calendar) {
     if (row.settled_at_set) return true;
-    // THE CALENDAR LIMB. Both limbs exist because the run after a no-prices day reads its sizing
-    // history before its own stamp: the held Saturday row is still NULL when Monday's run sizes.
-    // PENDING the lead's ruling on whether this limb stays (T-8a commit (12)); it is this one line.
+    // THE CALENDAR CLAUSE: the one place the sizing read asks the calendar (the lead and HD,
+    // 2026-10-10). A held day on which no bar printed (a Saturday) has nothing left to settle
+    // once a later bar has loaded, and the run that stamps it has not yet reached its stamp when
+    // it reads the sizing capital: the stamp is one UPDATE after the finalize, and the no-prices
+    // run before it stamped nothing. So such a row counts from the first run that loads a later
+    // bar, which can be one run before its settled_at is written, and every sizing input is the
+    // same on every run.
     return !sizing_history_day_unsettled(row, calendar);
 }
 

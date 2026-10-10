@@ -303,4 +303,16 @@ TEST(SettledStampSizingRead, ARowCountsWhenItsStampIsSetOrTheNoBarDayRuleSettles
     // The read's loop asks this test and nothing else.
     EXPECT_EQ(count_of(read, "if (!sizing_history_row_settled(row, calendar)) {"), 1u);
     EXPECT_EQ(count_of(read, "sizing_history_day_unsettled(row, calendar)"), 1u);
+    // The calendar clause is one marked predicate in one place, under the comment that says what
+    // it is for (the lead and HD, 2026-10-10), and no ruling on it is open in the source.
+    EXPECT_EQ(count_of(read, "THE CALENDAR CLAUSE"), 1u);
+    const auto mark = body.find("// THE CALENDAR CLAUSE");
+    ASSERT_NE(mark, std::string::npos) << "the calendar clause is not marked where it is asked";
+    EXPECT_LT(column, mark);
+    EXPECT_LT(mark, calendar);
+    const std::string comment = body.substr(mark, calendar - mark);
+    EXPECT_NE(comment.find("has nothing left to settle"), std::string::npos) << comment;
+    EXPECT_NE(comment.find("has not yet reached its stamp"), std::string::npos) << comment;
+    EXPECT_EQ(read.find("PENDING"), std::string::npos)
+        << "the sizing read still says a ruling on the calendar clause is pending";
 }

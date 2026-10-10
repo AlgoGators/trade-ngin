@@ -93,8 +93,8 @@ GOT=$(stamps); echo "   after the statement scoped to portfolio P: $GOT"
 pass "6. the statement between the markers: no row without the setting; with 'portfolio:P' the rows of P only"
 # 7
 CMT=$(q "select col_description('trading.live_results'::regclass,(select ordinal_position from information_schema.columns where table_schema='trading' and table_name='live_results' and column_name='settled_at'))")
-[[ "$CMT" == *"NULL until then"*"stamps now() on every earlier row"*"1970-01-01 00:00:00+00 is not an instant"*"backfilled at migration, settlement not observed"*"the equity book included"*"migration 029." ]] || fail "the settled_at comment"
-pass "7. the comment names the stamp, the marker and 'backfilled at migration, settlement not observed'"
+[[ "$CMT" == *"NULL until then"*"stamps now() on every earlier row"*"a run that finds no Day T-1 row"*"The stamp is written by the run that finalises the row; a held day on which no bar printed (a Saturday) is counted by the sizing capital from the first run that loads a later bar, which can be one run before its stamp."*"1970-01-01 00:00:00+00 is not an instant"*"backfilled at migration, settlement not observed"*"the equity book included"*"migration 029." ]] || fail "the settled_at comment"
+pass "7. the comment names the stamp, the run with no Day T-1 row, the held no-bar day counted one run before its stamp, the marker and 'backfilled at migration, settlement not observed'"
 # 8
 apply 029_live_results_settled_at_rollback.sql
 [[ "$(q "select count(*) from information_schema.columns where table_schema='trading' and column_name='settled_at'")" == "0" ]] || fail "the rollback left the column (markers and NULLs only)"
