@@ -234,7 +234,8 @@ public:
      * @brief Load equity curve history up to and including a given date.
      *
      * Each value corresponds to the `equity` column from trading.equity_curve,
-     * ordered by timestamp ascending.
+     * ordered by timestamp ascending, one value per UTC date: where a date is stored
+     * more than once its last row is the one returned.
      */
     Result<std::vector<double>> load_equity_curve_history(const std::string& strategy_id,
                                                           const std::string& portfolio_id,

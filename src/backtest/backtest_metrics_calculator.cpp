@@ -677,8 +677,20 @@ backtest::BacktestResults BacktestMetricsCalculator::calculate_all_metrics(
         return results;
     }
 
+    // One row per UTC date, the last one, before any metric
+    size_t repeated = 0;
+    const auto dated_curve = core::last_row_per_utc_date(
+        equity_curve,
+        [](const std::pair<Timestamp, double>& row) { return core::format_utc_date(row.first); },
+        &repeated);
+    if (repeated > 0) {
+        WARN("Equity curve: " + std::to_string(repeated) +
+             " row(s) dropped before the metrics, a UTC date carried more than once (the last "
+             "row of a date is kept)");
+    }
+
     // Filter warmup period
-    auto filtered_curve = filter_warmup_period(equity_curve, warmup_days);
+    auto filtered_curve = filter_warmup_period(dated_curve, warmup_days);
     if (filtered_curve.empty()) {
         return results;
     }
@@ -745,7 +757,7 @@ backtest::BacktestResults BacktestMetricsCalculator::calculate_all_metrics(
     }
 
     // Monthly returns
-    results.monthly_returns = calculate_monthly_returns(equity_curve);
+    results.monthly_returns = calculate_monthly_returns(dated_curve);
 
     // Store warmup days
     results.warmup_days = warmup_days;

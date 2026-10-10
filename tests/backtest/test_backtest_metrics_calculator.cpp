@@ -353,6 +353,70 @@ TEST_F(BacktestMetricsCalculatorTest, AllMetricsWarmupGreaterThanSizePassesFullC
     EXPECT_NEAR(r.total_return, (102.0 - 100.0) / 100.0, 1e-9);
 }
 
+// A UTC date the curve carries twice counts once, by its LAST row: the metrics of the repeated
+// curve equal the metrics of the curve with one row per date. Before the de-duplication the
+// repeated date added a return of its own (two more observations here, one of them a 20 percent
+// fall that no date-level series holds).
+TEST_F(BacktestMetricsCalculatorTest, AllMetricsCountAUtcDateOnceByItsLastRow) {
+    const std::vector<double> levels = {100.0, 102.0, 101.0, 104.0, 103.0, 106.0};
+    std::vector<std::pair<Timestamp, double>> one_per_date;
+    for (size_t i = 0; i < levels.size(); ++i) {
+        one_per_date.emplace_back(
+            date_at(2026, 1, 1) + std::chrono::hours(24 * static_cast<int>(i)) +
+                std::chrono::hours(10),
+            levels[i]);
+    }
+    // 2026-01-03 (index 2) and 2026-01-05 (index 4) each get an earlier row of the same UTC
+    // date at 04:00, with a level the date did not close on.
+    std::vector<std::pair<Timestamp, double>> repeated;
+    for (size_t i = 0; i < one_per_date.size(); ++i) {
+        if (i == 2) {
+            repeated.emplace_back(one_per_date[i].first - std::chrono::hours(6), 80.0);
+        }
+        if (i == 4) {
+            repeated.emplace_back(one_per_date[i].first - std::chrono::hours(6), 110.0);
+        }
+        repeated.push_back(one_per_date[i]);
+    }
+    ASSERT_EQ(repeated.size(), one_per_date.size() + 2);
+
+    for (int warmup : {0, 2}) {
+        const auto want = calc_.calculate_all_metrics(one_per_date, {}, warmup);
+        const auto got = calc_.calculate_all_metrics(repeated, {}, warmup);
+        EXPECT_DOUBLE_EQ(got.total_return, want.total_return) << "warmup " << warmup;
+        EXPECT_DOUBLE_EQ(got.volatility, want.volatility) << "warmup " << warmup;
+        EXPECT_DOUBLE_EQ(got.sharpe_ratio, want.sharpe_ratio) << "warmup " << warmup;
+        EXPECT_DOUBLE_EQ(got.sortino_ratio, want.sortino_ratio) << "warmup " << warmup;
+        EXPECT_DOUBLE_EQ(got.downside_volatility, want.downside_volatility) << "warmup " << warmup;
+        EXPECT_DOUBLE_EQ(got.max_drawdown, want.max_drawdown) << "warmup " << warmup;
+        EXPECT_DOUBLE_EQ(got.calmar_ratio, want.calmar_ratio) << "warmup " << warmup;
+        EXPECT_DOUBLE_EQ(got.var_95, want.var_95) << "warmup " << warmup;
+        EXPECT_DOUBLE_EQ(got.cvar_95, want.cvar_95) << "warmup " << warmup;
+        EXPECT_EQ(got.drawdown_curve.size(), want.drawdown_curve.size()) << "warmup " << warmup;
+        EXPECT_EQ(got.monthly_returns, want.monthly_returns) << "warmup " << warmup;
+    }
+    // The hand figure, so the pair above cannot agree on a wrong number: the deepest fall is
+    // 102 -> 101 (104 -> 103 is shallower), and 80 is on no date.
+    EXPECT_NEAR(calc_.calculate_all_metrics(repeated, {}, 0).max_drawdown, 1.0 / 102.0, 1e-12);
+}
+
+// A curve that repeats no date is read exactly as before: two rows a few hours apart across a
+// UTC midnight are two dates, and a row at 23:59:59 belongs to its own date.
+TEST_F(BacktestMetricsCalculatorTest, AllMetricsKeepEveryRowOfDistinctUtcDates) {
+    std::vector<std::pair<Timestamp, double>> curve = {
+        {date_at(2026, 1, 1) + std::chrono::hours(4), 100.0},
+        {date_at(2026, 1, 1) + std::chrono::hours(24) - std::chrono::seconds(1) +
+             std::chrono::hours(24),
+         90.0},
+        {date_at(2026, 1, 3) + std::chrono::hours(1), 99.0},
+        {date_at(2026, 1, 4), 108.9},
+    };
+    const auto r = calc_.calculate_all_metrics(curve, {}, 0);
+    EXPECT_NEAR(r.total_return, 0.089, 1e-12);
+    EXPECT_NEAR(r.max_drawdown, 0.10, 1e-12);
+    EXPECT_EQ(r.drawdown_curve.size(), curve.size());
+}
+
 TEST_F(BacktestMetricsCalculatorTest, AllMetricsPopulatesNonZeroFields) {
     std::vector<std::pair<Timestamp, double>> curve;
     for (int i = 0; i < 30; ++i) {

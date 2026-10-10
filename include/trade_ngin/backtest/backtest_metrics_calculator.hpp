@@ -231,7 +231,8 @@ public:
     /**
      * @brief Calculate all metrics and populate BacktestResults
      *
-     * This is the main entry point that computes all metrics at once.
+     * This is the main entry point that computes all metrics at once. A UTC date the curve
+     * carries more than once counts once, by its last row, before the warmup is cut.
      *
      * @param equity_curve Full equity curve including warmup period
      * @param executions All execution reports

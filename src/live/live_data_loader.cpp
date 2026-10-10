@@ -727,8 +727,9 @@ Result<std::vector<double>> LiveDataLoader::load_equity_curve_history(
 
     std::string actual_portfolio_id = portfolio_id.empty() ? "BASE_PORTFOLIO" : portfolio_id;
 
+    // The row's UTC date rides with it: a date stored more than once counts once (below).
     std::string query =
-        "SELECT equity "
+        "SELECT equity, to_char(timestamp AT TIME ZONE 'UTC', 'YYYY-MM-DD') AS utc_date "
         "FROM " +
         schema_ +
         ".equity_curve "
@@ -761,17 +762,33 @@ Result<std::vector<double>> LiveDataLoader::load_equity_curve_history(
 
     // convert_generic_to_arrow builds ALL columns as arrow::utf8() (strings)
     auto array = std::static_pointer_cast<arrow::StringArray>(table->column(0)->chunk(0));
-    equity.reserve(static_cast<size_t>(table->num_rows()));
+    auto dates = std::static_pointer_cast<arrow::StringArray>(table->column(1)->chunk(0));
+    std::vector<std::pair<std::string, double>> dated;
+    dated.reserve(static_cast<size_t>(table->num_rows()));
     for (int64_t i = 0; i < table->num_rows(); ++i) {
-        if (array->IsNull(i)) {
-            equity.push_back(0.0);
-        } else {
+        double value = 0.0;
+        if (!array->IsNull(i)) {
             try {
-                equity.push_back(std::stod(array->GetString(i)));
+                value = std::stod(array->GetString(i));
             } catch (const std::exception&) {
-                equity.push_back(0.0);
+                value = 0.0;
             }
         }
+        dated.emplace_back(dates->GetString(i), value);
+    }
+
+    // One row per UTC date, the last one, before any statistic reads the curve.
+    size_t repeated = 0;
+    const auto curve = core::last_row_per_utc_date(
+        dated, [](const std::pair<std::string, double>& row) { return row.first; }, &repeated);
+    if (repeated > 0) {
+        WARN("Equity curve history of " + strategy_id + " / " + actual_portfolio_id + ": " +
+             std::to_string(repeated) +
+             " row(s) dropped, a UTC date stored more than once (the last row of a date is kept)");
+    }
+    equity.reserve(curve.size());
+    for (const auto& row : curve) {
+        equity.push_back(row.second);
     }
 
     return Result<std::vector<double>>(equity);
