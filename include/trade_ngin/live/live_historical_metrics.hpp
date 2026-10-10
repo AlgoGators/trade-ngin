@@ -1,6 +1,7 @@
 #pragma once
 
 #include <functional>
+#include <map>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -94,6 +95,18 @@ std::vector<std::string> statistics_session_dates(
     const std::function<bool(const std::string&, int)>& is_session);
 
 /**
+ * @brief A futures book's statistics grid from the bars it printed (T-8D R3): the dates of
+ *        `symbols_printed` (date "YYYY-MM-DD" -> the count of DISTINCT symbols of the universe
+ *        that printed a bar on it) that are a Sunday to a Friday with at least
+ *        kStatisticsGridMinSymbols printing, ascending. A Saturday is never a row, whatever
+ *        printed on it; a date that is no date is left out. The rule
+ *        LiveDataLoader::load_futures_statistics_grid applies in SQL, for a caller that holds the
+ *        bars in memory (the backtest).
+ */
+std::vector<std::string> futures_statistics_grid_dates(
+    const std::map<std::string, int>& symbols_printed);
+
+/**
  * @brief Build the statistics series of a book through `through_date`.
  *
  * @param stored_levels  the book's stored levels, any order; a date before the start is ignored
@@ -155,8 +168,9 @@ public:
     HistoricalMetrics calculate(const StatisticsSeries& grid, double sessions_per_year,
                                 int total_trades_executions) const;
 
-private:
-    static double calculate_mean(const std::vector<double>& values);
+    // The two annualised deviations of a return series, in the unit of the returns handed in
+    // (percent here, fractions in the backtest calculator, which calls the same two): 0 under
+    // two returns or without a positive sessions_per_year.
     // Sample standard deviation (n - 1) of the returns x sqrt(sessions_per_year)
     static double calculate_annualized_volatility(const std::vector<double>& returns_pct,
                                                   double sessions_per_year);
@@ -164,6 +178,9 @@ private:
     static double calculate_annualized_downside_deviation(const std::vector<double>& returns_pct,
                                                           double sessions_per_year,
                                                           double target = 0.0);
+
+private:
+    static double calculate_mean(const std::vector<double>& values);
     // The largest fall from a running peak, in percent; the peak starts at `peak_seed` (the
     // book's equity at its start, the base of the series: T-8D R9).
     static double calculate_max_drawdown_from_equity(const std::vector<double>& equity_values,

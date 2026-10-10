@@ -45,6 +45,11 @@ struct BacktestCoordinatorConfig {
     bool store_trade_details = true;
     std::string portfolio_id = "BASE_PORTFOLIO";
     std::string csv_output_path = "apps/backtest/results";
+    /// K, the sessions a year of the grid the run's statistics are taken on (T-8D R2, T-8D-2
+    /// R76): the app hands the configured statistics.sessions_per_year of the run's series
+    /// (futures or equities). The one source of the factor: there is no default, and a run
+    /// without a positive value is refused before it loads a bar.
+    double statistics_sessions_per_year = 0.0;
 };
 
 /**
@@ -349,6 +354,31 @@ private:
      * @brief The point value the trade statistics read: the P&L manager's (the equity curve's)
      */
     BacktestMetricsCalculator::PointValueSource trade_point_value_source() const;
+
+public:
+    /**
+     * @brief The statistics grid of a run over these bars (T-8D R1, R3)
+     *
+     * A futures run: the Sunday-to-Friday UTC dates on which at least kStatisticsGridMinSymbols
+     * distinct STORED symbols printed a bar (futures_statistics_grid_dates). A predecessor
+     * contract a listing date adds to the run (ES for MES before 2019-05-06) is not counted: its
+     * bars are copies of its listed contract's rows, so the count is over the stored universe,
+     * the one the sessions a year were measured on. Any other run: its own rows.
+     *
+     * @param grouped_bars The run's bars by timestamp
+     * @param asset_class The run's asset class
+     * @param sessions_per_year K of the grid
+     */
+    static BacktestStatisticsGrid statistics_grid(
+        const std::map<Timestamp, std::vector<Bar>>& grouped_bars, AssetClass asset_class,
+        double sessions_per_year);
+
+private:
+    /// The refusal of a run that was handed no sessions a year; ok otherwise.
+    Result<void> require_statistics_sessions_per_year() const;
+    /// The run's one line on its statistics convention (T-8D R31).
+    void log_statistics_convention(const BacktestStatisticsGrid& grid, AssetClass asset_class,
+                                   const BacktestResults& results, size_t curve_rows) const;
 
     /**
      * @brief Calculate warmup days from strategy lookbacks

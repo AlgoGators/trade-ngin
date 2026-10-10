@@ -10,6 +10,8 @@
 #include "../core/test_base.hpp"
 #include "trade_ngin/backtest/backtest_metrics_calculator.hpp"
 #include "trade_ngin/backtest/backtest_types.hpp"
+#include "trade_ngin/core/time_utils.hpp"
+#include "trade_ngin/live/live_historical_metrics.hpp"
 #include "trade_ngin/transaction_cost/netting.hpp"
 
 using namespace trade_ngin;
@@ -49,6 +51,21 @@ BacktestMetricsCalculator::PointValueSource points_of(std::unordered_map<std::st
     return [table = std::move(table)](const std::string& symbol) { return table.at(symbol); };
 }
 
+// The sessions a year of the two statistics grids, as the configuration carries them.
+constexpr double kFuturesK = 311.0574;
+constexpr double kEquityK = 252.0;
+// A run whose every curve row is a session, at the equity grid's K.
+const BacktestStatisticsGrid kOwnRows = BacktestStatisticsGrid::of_own_rows(kEquityK);
+
+double sample_sd(const std::vector<double>& r) {
+    double mean = 0.0;
+    for (double x : r) mean += x;
+    mean /= static_cast<double>(r.size());
+    double squares = 0.0;
+    for (double x : r) squares += (x - mean) * (x - mean);
+    return std::sqrt(squares / static_cast<double>(r.size() - 1));
+}
+
 std::vector<std::pair<Timestamp, double>> linear_equity_curve(int days, double start, double step) {
     std::vector<std::pair<Timestamp, double>> curve;
     for (int i = 0; i < days; ++i) {
@@ -74,14 +91,16 @@ TEST_F(BacktestMetricsCalculatorTest, TotalReturnNonPositiveStartIsZero) {
     EXPECT_DOUBLE_EQ(calc_.calculate_total_return(-1.0, 110.0), 0.0);
 }
 
-TEST_F(BacktestMetricsCalculatorTest, AnnualizedReturnScalesBy252OverDays) {
-    EXPECT_DOUBLE_EQ(calc_.calculate_annualized_return(0.10, 252), 0.10);
-    EXPECT_DOUBLE_EQ(calc_.calculate_annualized_return(0.10, 126), 0.20);
+TEST_F(BacktestMetricsCalculatorTest, AnnualizedReturnScalesBySessionsAYearOverDays) {
+    EXPECT_DOUBLE_EQ(calc_.calculate_annualized_return(0.10, 252, 252.0), 0.10);
+    EXPECT_DOUBLE_EQ(calc_.calculate_annualized_return(0.10, 126, 252.0), 0.20);
+    EXPECT_DOUBLE_EQ(calc_.calculate_annualized_return(0.10, 126, 315.0), 0.25);
 }
 
-TEST_F(BacktestMetricsCalculatorTest, AnnualizedReturnNonPositiveDaysIsZero) {
-    EXPECT_DOUBLE_EQ(calc_.calculate_annualized_return(0.10, 0), 0.0);
-    EXPECT_DOUBLE_EQ(calc_.calculate_annualized_return(0.10, -5), 0.0);
+TEST_F(BacktestMetricsCalculatorTest, AnnualizedReturnNonPositiveDaysOrSessionsIsZero) {
+    EXPECT_DOUBLE_EQ(calc_.calculate_annualized_return(0.10, 0, 252.0), 0.0);
+    EXPECT_DOUBLE_EQ(calc_.calculate_annualized_return(0.10, -5, 252.0), 0.0);
+    EXPECT_DOUBLE_EQ(calc_.calculate_annualized_return(0.10, 126, 0.0), 0.0);
 }
 
 TEST_F(BacktestMetricsCalculatorTest, ReturnsFromEquitySingleEntryEmpty) {
@@ -101,66 +120,91 @@ TEST_F(BacktestMetricsCalculatorTest, ReturnsFromEquitySkipsZeroOrNegativePriorE
 }
 
 TEST_F(BacktestMetricsCalculatorTest, VolatilityEmptyIsZero) {
-    EXPECT_DOUBLE_EQ(calc_.calculate_volatility({}), 0.0);
+    EXPECT_DOUBLE_EQ(calc_.calculate_volatility({}, kEquityK), 0.0);
 }
 
 TEST_F(BacktestMetricsCalculatorTest, VolatilityConstantSeriesIsZeroNotNaN) {
     // Regression: the one-pass E[r^2] - mean^2 formula cancels catastrophically
     // and rounds to a slightly negative variance for this input, so sqrt()
     // returned NaN instead of 0.
-    auto vol = calc_.calculate_volatility({0.007, 0.007, 0.007, 0.007, 0.007});
+    auto vol = calc_.calculate_volatility({0.007, 0.007, 0.007, 0.007, 0.007}, kEquityK);
     EXPECT_DOUBLE_EQ(vol, 0.0);
 }
 
 TEST_F(BacktestMetricsCalculatorTest, SharpeConstantSeriesIsZeroNotNaN) {
     // With NaN volatility the `volatility <= 0` guard was passed (NaN
     // comparisons are false) and Sharpe itself became NaN.
-    auto sharpe = calc_.calculate_sharpe_ratio({0.007, 0.007, 0.007, 0.007, 0.007}, 5, 0.0);
+    auto sharpe = calc_.calculate_sharpe_ratio({0.007, 0.007, 0.007, 0.007, 0.007}, kEquityK, 0.0);
     EXPECT_TRUE(std::isfinite(sharpe));
     EXPECT_DOUBLE_EQ(sharpe, 0.0);
 }
 
-TEST_F(BacktestMetricsCalculatorTest, VolatilityComputesAnnualizedStdev) {
+// T-8D R8: volatility is the SAMPLE standard deviation (n - 1) x sqrt(K).
+//   returns 0.01, -0.01, 0.01, -0.01: mean 0, squares 0.0004
+//   | divisor          | daily sd              | x sqrt(252) |
+//   | n - 1 = 3 (now)  | sqrt(0.0004 / 3)      | 0.183303028 |
+//   | n = 4 (before)   | sqrt(0.0004 / 4)      | 0.158745079 |
+TEST_F(BacktestMetricsCalculatorTest, VolatilityIsTheSampleStandardDeviationAnnualised) {
     std::vector<double> r{0.01, -0.01, 0.01, -0.01};
-    // mean=0, var=0.0001, daily std = 0.01, annualized = 0.01 * sqrt(252)
-    EXPECT_NEAR(calc_.calculate_volatility(r), 0.01 * std::sqrt(252.0), 1e-9);
+    EXPECT_NEAR(calc_.calculate_volatility(r, 252.0), std::sqrt(0.0004 / 3.0) * std::sqrt(252.0), 1e-12);
+    EXPECT_NEAR(calc_.calculate_volatility(r, 252.0), 0.183303028, 1e-9);
+    EXPECT_GT(std::abs(calc_.calculate_volatility(r, 252.0) - 0.158745079), 1e-3)
+        << "the population standard deviation (n) is not the stored convention";
+    // One return has no sample deviation.
+    EXPECT_DOUBLE_EQ(calc_.calculate_volatility({0.01}, 252.0), 0.0);
 }
 
-// The factor a backtest records as statistics_K (backtest.run_metadata.portfolio_config) is the
-// one this calculator applies: the constant and the arithmetic are pinned to each other, so the
-// record cannot name a factor the stored figures do not use.
-TEST_F(BacktestMetricsCalculatorTest, TheRecordedAnnualisationFactorIsTheOneTheFiguresUse) {
+// The calculator holds no factor of its own: every annualised figure uses the sessions a year it
+// is handed (the K of the grid the returns are taken on, T-8D R2), on either grid's K.
+//   returns 0.010, -0.004, 0.006, -0.012, 0.003, 0.000, 0.008: mean 0.0015714286,
+//   sample sd 0.0076563077, downside sqrt((0.004^2 + 0.012^2) / 7) = 0.0047809144
+//   | K        | volatility  | downside    | Sharpe      | Sortino     |
+//   | 252      | 0.121540    | 0.075895    | 3.258183    | 5.217758    |
+//   | 311.0574 | 0.135033    | 0.084320    | 3.619891    | 5.797009    |
+TEST_F(BacktestMetricsCalculatorTest, EveryAnnualisedFigureUsesTheSessionsAYearHandedIn) {
     const std::vector<double> r = {0.010, -0.004, 0.006, -0.012, 0.003, 0.000, 0.008};
-    double mean = 0.0;
-    for (double x : r) mean += x;
-    mean /= static_cast<double>(r.size());
-    double squares = 0.0, downside = 0.0;
+    double mean = 0.0, downside = 0.0;
     for (double x : r) {
-        squares += (x - mean) * (x - mean);
+        mean += x;
         if (x < 0.0) downside += x * x;
     }
-    const double k = kBacktestAnnualisationApplied;
-    EXPECT_DOUBLE_EQ(k, 252.0);
-    const double sd = std::sqrt(squares / static_cast<double>(r.size()));
-    EXPECT_NEAR(calc_.calculate_volatility(r), sd * std::sqrt(k), 1e-12);
-    EXPECT_NEAR(calc_.calculate_downside_volatility(r),
-                std::sqrt(downside / static_cast<double>(r.size())) * std::sqrt(k), 1e-12);
-    EXPECT_NEAR(calc_.calculate_sharpe_ratio(r, static_cast<int>(r.size()), 0.0),
-                mean * k / (sd * std::sqrt(k)), 1e-9);
-    // Not the futures grid's ruled factor: that one is recorded as not yet applied.
-    EXPECT_GT(std::abs(calc_.calculate_volatility(r) - sd * std::sqrt(311.0574)), 1e-3);
+    mean /= static_cast<double>(r.size());
+    const double sd = sample_sd(r);
+    const double dd = std::sqrt(downside / static_cast<double>(r.size()));
+    for (const double k : {kEquityK, kFuturesK}) {
+        EXPECT_NEAR(calc_.calculate_volatility(r, k), sd * std::sqrt(k), 1e-12) << k;
+        EXPECT_NEAR(calc_.calculate_downside_volatility(r, k, 0.0), dd * std::sqrt(k), 1e-12) << k;
+        EXPECT_NEAR(calc_.calculate_sharpe_ratio(r, k, 0.0), mean * k / (sd * std::sqrt(k)), 1e-9) << k;
+        EXPECT_NEAR(calc_.calculate_sortino_ratio(r, k, 0.0), mean * k / (dd * std::sqrt(k)), 1e-9) << k;
+        EXPECT_NEAR(calc_.calculate_risk_metrics(r, k).at("downside_volatility"), dd * std::sqrt(k), 1e-12)
+            << k;
+    }
+    EXPECT_NEAR(calc_.calculate_volatility(r, kEquityK), 0.121540, 1e-6);
+    EXPECT_NEAR(calc_.calculate_volatility(r, kFuturesK), 0.135033, 1e-6);
+    EXPECT_NEAR(calc_.calculate_sharpe_ratio(r, kFuturesK, 0.0), 3.619891, 1e-6);
+    EXPECT_NEAR(calc_.calculate_sortino_ratio(r, kFuturesK, 0.0), 5.797009, 1e-6);
+    // The composite records the factor it applied: what the run metadata stores as statistics_K.
+    const auto curve = linear_equity_curve(10, 100.0, 1.0);
+    for (const double k : {kEquityK, kFuturesK}) {
+        const auto all = calc_.calculate_all_metrics(curve, {}, 0, kUnitPoints,
+                                                     BacktestStatisticsGrid::of_own_rows(k));
+        EXPECT_DOUBLE_EQ(all.statistics_sessions_per_year, k);
+        EXPECT_EQ(all.statistics_days, 9);
+        EXPECT_NEAR(all.volatility,
+                    sample_sd(calc_.calculate_returns_from_equity(curve)) * std::sqrt(k), 1e-12);
+    }
 }
 
 TEST_F(BacktestMetricsCalculatorTest, DownsideVolatilityZeroWhenAllReturnsAboveTarget) {
-    EXPECT_DOUBLE_EQ(calc_.calculate_downside_volatility({0.01, 0.02, 0.03}, 0.0), 0.0);
+    EXPECT_DOUBLE_EQ(calc_.calculate_downside_volatility({0.01, 0.02, 0.03}, kEquityK, 0.0), 0.0);
 }
 
 TEST_F(BacktestMetricsCalculatorTest, DownsideVolatilityCountsOnlyBelowTarget) {
     std::vector<double> r{-0.01, 0.01, -0.01, 0.01};
     // Two -0.01s contribute (0.0001 each), summed 0.0002 and averaged over ALL FOUR returns:
     // 0.00005; sqrt = 0.0070710678; * sqrt(252) = 0.112249722
-    EXPECT_NEAR(calc_.calculate_downside_volatility(r, 0.0), 0.112249722, 1e-9);
-    EXPECT_NEAR(calc_.calculate_downside_volatility(r, 0.0),
+    EXPECT_NEAR(calc_.calculate_downside_volatility(r, 252.0, 0.0), 0.112249722, 1e-9);
+    EXPECT_NEAR(calc_.calculate_downside_volatility(r, 252.0, 0.0),
                 std::sqrt(0.0002 / 4.0) * std::sqrt(252.0), 1e-12);
 }
 
@@ -168,16 +212,16 @@ TEST_F(BacktestMetricsCalculatorTest, DownsideVolatilityAndSortinoAverageOverEve
     std::vector<double> r{0.01, -0.02, 0.03, -0.01};
     // Below target 0: -0.02 and -0.01, squares 0.0004 + 0.0001 = 0.0005, over 4 returns =
     // 0.000125; sqrt = 0.0111803399; * sqrt(252) = 0.177482393.
-    EXPECT_NEAR(calc_.calculate_downside_volatility(r, 0.0), 0.177482393, 1e-9);
+    EXPECT_NEAR(calc_.calculate_downside_volatility(r, 252.0, 0.0), 0.177482393, 1e-9);
     // mean = 0.0025, * 252 = 0.63; 0.63 / 0.177482393 = 3.549647870.
-    EXPECT_NEAR(calc_.calculate_sortino_ratio(r, 4), 3.549647870, 1e-8);
+    EXPECT_NEAR(calc_.calculate_sortino_ratio(r, 252.0), 3.549647870, 1e-8);
 }
 
 TEST_F(BacktestMetricsCalculatorTest, SharpeEmptyReturnsZero) {
     EXPECT_DOUBLE_EQ(calc_.calculate_sharpe_ratio({}, 252), 0.0);
 }
 
-TEST_F(BacktestMetricsCalculatorTest, SharpeNonPositiveDaysReturnsZero) {
+TEST_F(BacktestMetricsCalculatorTest, SharpeWithoutPositiveSessionsAYearReturnsZero) {
     EXPECT_DOUBLE_EQ(calc_.calculate_sharpe_ratio({0.01, 0.02}, 0), 0.0);
     EXPECT_DOUBLE_EQ(calc_.calculate_sharpe_ratio({0.01, 0.02}, -1), 0.0);
 }
@@ -665,14 +709,14 @@ TEST_F(BacktestMetricsCalculatorTest, MonthlyReturnsSkipsNonPositivePriorEquity)
 TEST_F(BacktestMetricsCalculatorTest, FilterWarmupTrimsLeadingDays) {
     auto curve = linear_equity_curve(10, 100.0, 1.0);
     // Calculator's filter is private but exercised via calculate_all_metrics:
-    backtest::BacktestResults r = calc_.calculate_all_metrics(curve, {}, /*warmup_days=*/3, kUnitPoints);
+    backtest::BacktestResults r = calc_.calculate_all_metrics(curve, {}, /*warmup_days=*/3, kUnitPoints, kOwnRows);
     EXPECT_GT(r.total_return, 0.0);
     // total_return ~= (109-103)/103
     EXPECT_NEAR(r.total_return, (109.0 - 103.0) / 103.0, 1e-9);
 }
 
 TEST_F(BacktestMetricsCalculatorTest, AllMetricsEmptyCurveReturnsDefaults) {
-    auto r = calc_.calculate_all_metrics({}, {}, 0, kUnitPoints);
+    auto r = calc_.calculate_all_metrics({}, {}, 0, kUnitPoints, kOwnRows);
     EXPECT_DOUBLE_EQ(r.total_return, 0.0);
     EXPECT_DOUBLE_EQ(r.max_drawdown, 0.0);
 }
@@ -681,7 +725,7 @@ TEST_F(BacktestMetricsCalculatorTest, AllMetricsWarmupGreaterThanSizePassesFullC
     // filter_warmup_period treats warmup>=size the same as warmup<=0: it returns
     // the unfiltered curve so the metrics still compute on the full series.
     auto curve = linear_equity_curve(3, 100.0, 1.0);
-    auto r = calc_.calculate_all_metrics(curve, {}, /*warmup_days=*/100, kUnitPoints);
+    auto r = calc_.calculate_all_metrics(curve, {}, /*warmup_days=*/100, kUnitPoints, kOwnRows);
     EXPECT_NEAR(r.total_return, (102.0 - 100.0) / 100.0, 1e-9);
 }
 
@@ -713,8 +757,8 @@ TEST_F(BacktestMetricsCalculatorTest, AllMetricsCountAUtcDateOnceByItsLastRow) {
     ASSERT_EQ(repeated.size(), one_per_date.size() + 2);
 
     for (int warmup : {0, 2}) {
-        const auto want = calc_.calculate_all_metrics(one_per_date, {}, warmup, kUnitPoints);
-        const auto got = calc_.calculate_all_metrics(repeated, {}, warmup, kUnitPoints);
+        const auto want = calc_.calculate_all_metrics(one_per_date, {}, warmup, kUnitPoints, kOwnRows);
+        const auto got = calc_.calculate_all_metrics(repeated, {}, warmup, kUnitPoints, kOwnRows);
         EXPECT_DOUBLE_EQ(got.total_return, want.total_return) << "warmup " << warmup;
         EXPECT_DOUBLE_EQ(got.volatility, want.volatility) << "warmup " << warmup;
         EXPECT_DOUBLE_EQ(got.sharpe_ratio, want.sharpe_ratio) << "warmup " << warmup;
@@ -729,7 +773,7 @@ TEST_F(BacktestMetricsCalculatorTest, AllMetricsCountAUtcDateOnceByItsLastRow) {
     }
     // The hand figure, so the pair above cannot agree on a wrong number: the deepest fall is
     // 102 -> 101 (104 -> 103 is shallower), and 80 is on no date.
-    EXPECT_NEAR(calc_.calculate_all_metrics(repeated, {}, 0, kUnitPoints).max_drawdown, 1.0 / 102.0, 1e-12);
+    EXPECT_NEAR(calc_.calculate_all_metrics(repeated, {}, 0, kUnitPoints, kOwnRows).max_drawdown, 1.0 / 102.0, 1e-12);
 }
 
 // A curve that repeats no date is read exactly as before: two rows a few hours apart across a
@@ -743,7 +787,7 @@ TEST_F(BacktestMetricsCalculatorTest, AllMetricsKeepEveryRowOfDistinctUtcDates) 
         {date_at(2026, 1, 3) + std::chrono::hours(1), 99.0},
         {date_at(2026, 1, 4), 108.9},
     };
-    const auto r = calc_.calculate_all_metrics(curve, {}, 0, kUnitPoints);
+    const auto r = calc_.calculate_all_metrics(curve, {}, 0, kUnitPoints, kOwnRows);
     EXPECT_NEAR(r.total_return, 0.089, 1e-12);
     EXPECT_NEAR(r.max_drawdown, 0.10, 1e-12);
     EXPECT_EQ(r.drawdown_curve.size(), curve.size());
@@ -755,10 +799,173 @@ TEST_F(BacktestMetricsCalculatorTest, AllMetricsPopulatesNonZeroFields) {
         double v = 100.0 + (i % 2 == 0 ? i : -i) * 0.5;
         curve.emplace_back(date_at(2026, 1, 1) + std::chrono::hours(24 * i), v);
     }
-    auto r = calc_.calculate_all_metrics(curve, {}, /*warmup_days=*/0, kUnitPoints);
+    auto r = calc_.calculate_all_metrics(curve, {}, /*warmup_days=*/0, kUnitPoints, kOwnRows);
     EXPECT_NE(r.volatility, 0.0);
     EXPECT_FALSE(r.drawdown_curve.empty());
     EXPECT_GE(r.max_drawdown, 0.0);
+}
+
+// ===== The statistics grid (T-8D R1, R3; T-8D-2 R79) =====
+
+namespace {
+
+// A futures run's rows around its warm-up, with a THIN Sunday-to-Friday date (Tue 01-06: too few
+// symbols printed, so it is not a grid date) and a SATURDAY point (01-10, the run's trough).
+//   | date       | day | level | on the grid          | grid return        |
+//   | 2026-01-01 | Thu | 100   | warm-up row, dropped |                    |
+//   | 2026-01-02 | Fri | 100   | the base             |                    |
+//   | 2026-01-04 | Sun | 102   | yes                  | 102/100 - 1        |
+//   | 2026-01-05 | Mon | 101   | yes                  | 101/102 - 1        |
+//   | 2026-01-06 | Tue |  99   | THIN: no row         | folded into 01-07  |
+//   | 2026-01-07 | Wed | 103   | yes                  | 103/101 - 1        |
+//   | 2026-01-08 | Thu | 104   | yes                  | 104/103 - 1        |
+//   | 2026-01-09 | Fri | 102   | yes                  | 102/104 - 1        |
+//   | 2026-01-10 | Sat |  96   | SATURDAY: no row     | folded into 01-11  |
+//   | 2026-01-11 | Sun | 105   | yes                  | 105/102 - 1        |
+//   | 2026-01-12 | Mon | 106   | yes                  | 106/105 - 1        |
+std::vector<std::pair<Timestamp, double>> thin_and_saturday_curve() {
+    return {{date_at(2026, 1, 1), 100.0}, {date_at(2026, 1, 2), 100.0}, {date_at(2026, 1, 4), 102.0},
+            {date_at(2026, 1, 5), 101.0}, {date_at(2026, 1, 6), 99.0},  {date_at(2026, 1, 7), 103.0},
+            {date_at(2026, 1, 8), 104.0}, {date_at(2026, 1, 9), 102.0}, {date_at(2026, 1, 10), 96.0},
+            {date_at(2026, 1, 11), 105.0}, {date_at(2026, 1, 12), 106.0}};
+}
+
+// The grid as the coordinator hands it: the dates of the WINDOW that pass the predicate, the
+// warm-up's and one after the curve's end included, in no order.
+BacktestStatisticsGrid thin_and_saturday_grid() {
+    return BacktestStatisticsGrid::of_dates(
+        kFuturesK, {"2026-01-12", "2026-01-13", "2026-01-01", "2026-01-02", "2026-01-04", "2026-01-05",
+                    "2026-01-07", "2026-01-08", "2026-01-09", "2026-01-11", "2025-12-31"});
+}
+
+const std::vector<double> kGridLevels = {100.0, 102.0, 101.0, 103.0, 104.0, 102.0, 105.0, 106.0};
+
+}  // namespace
+
+// The fold itself: the Saturday point and the thin date are no rows, their levels are not read,
+// and their P&L is inside the next grid return.
+TEST_F(BacktestMetricsCalculatorTest, TheGridCurveDropsASaturdayPointAndAThinDateAndKeepsTheirPnl) {
+    auto curve = thin_and_saturday_curve();
+    curve.erase(curve.begin());  // the calculator folds the rows after the warm-up
+    const auto folded = calc_.statistics_grid_curve(curve, thin_and_saturday_grid());
+    ASSERT_EQ(folded.size(), kGridLevels.size());
+    for (size_t i = 0; i < folded.size(); ++i) {
+        EXPECT_DOUBLE_EQ(folded[i].second, kGridLevels[i]) << i;
+    }
+    EXPECT_EQ(folded.front().first, date_at(2026, 1, 2)) << "the base is the first row";
+    EXPECT_EQ(folded[3].first, date_at(2026, 1, 7));
+    EXPECT_EQ(folded[6].first, date_at(2026, 1, 11));
+    // Nothing is dropped: the grid returns chain to the level of the last row.
+    double chained = 1.0;
+    for (double r : calc_.calculate_returns_from_equity(folded)) chained *= 1.0 + r;
+    EXPECT_NEAR(chained, 106.0 / 100.0, 1e-12);
+
+    // A base dated off the grid is still the base; a curve ending off the grid ends at its last
+    // grid date; a grid date with no row repeats the level before it; own rows: the curve itself.
+    const std::vector<std::pair<Timestamp, double>> ragged = {
+        {date_at(2026, 1, 3), 100.0}, {date_at(2026, 1, 4), 101.0}, {date_at(2026, 1, 6), 103.0},
+        {date_at(2026, 1, 10), 90.0}};
+    const auto short_fold = calc_.statistics_grid_curve(
+        ragged, BacktestStatisticsGrid::of_dates(kFuturesK, {"2026-01-04", "2026-01-05", "2026-01-06"}));
+    ASSERT_EQ(short_fold.size(), 4u);
+    EXPECT_DOUBLE_EQ(short_fold[0].second, 100.0);
+    EXPECT_DOUBLE_EQ(short_fold[1].second, 101.0);
+    EXPECT_DOUBLE_EQ(short_fold[2].second, 101.0) << "01-05 has no row: the level before it";
+    EXPECT_EQ(short_fold[2].first, date_at(2026, 1, 5));
+    EXPECT_DOUBLE_EQ(short_fold[3].second, 103.0);
+    EXPECT_EQ(calc_.statistics_grid_curve(ragged, kOwnRows), ragged);
+    EXPECT_EQ(calc_.statistics_grid_curve(ragged, BacktestStatisticsGrid::of_dates(kFuturesK, {})).size(), 1u)
+        << "an empty grid leaves the base and no return";
+}
+
+// T-8D-2 R79: a backtest with a thin Sunday-to-Friday date and a Saturday point, through the
+// composite. The grid statistics read the seven grid returns at K = 311.0574; total_return and
+// the drawdown curve read every row.
+//   | figure        | on the grid (stored)   | on every row, K 311.0574 | every row, n, K 252 (before) |
+//   | n             | 7                      | 9                        | 9                            |
+//   | volatility    | 0.305803               | 0.759735                 | 0.644712                     |
+//   | sharpe_ratio  | 8.633205               | 2.990030                 |                              |
+//   | downside vol  | 0.143892               | 0.386326                 |                              |
+//   | sortino_ratio | 18.347538              | 5.880092                 |                              |
+//   | max_drawdown  | 2/104 = 0.019231       | 8/104 = 0.076923 (the Saturday trough)                  |
+//   | var_95        | 2/104 = 0.019231       | 6/102 = 0.058824 (the Saturday fall)                    |
+//   | total_return  | 0.06                   | 0.06                     | 0.06                         |
+TEST_F(BacktestMetricsCalculatorTest, AThinDateAndASaturdayPointAreNoObservationsOfTheGridStatistics) {
+    const auto r = calc_.calculate_all_metrics(thin_and_saturday_curve(), {}, /*warmup_days=*/1,
+                                               kUnitPoints, thin_and_saturday_grid());
+    std::vector<double> grid_returns;
+    for (size_t i = 1; i < kGridLevels.size(); ++i) {
+        grid_returns.push_back((kGridLevels[i] - kGridLevels[i - 1]) / kGridLevels[i - 1]);
+    }
+    double mean = 0.0, downside = 0.0;
+    for (double x : grid_returns) {
+        mean += x;
+        if (x < 0.0) downside += x * x;
+    }
+    mean /= 7.0;
+    const double sd = sample_sd(grid_returns);
+    const double dd = std::sqrt(downside / 7.0);
+
+    EXPECT_EQ(r.statistics_days, 7);
+    EXPECT_DOUBLE_EQ(r.statistics_sessions_per_year, kFuturesK);
+    EXPECT_NEAR(r.volatility, sd * std::sqrt(kFuturesK), 1e-12);
+    EXPECT_NEAR(r.volatility, 0.305803, 1e-6);
+    EXPECT_NEAR(r.sharpe_ratio, mean * kFuturesK / (sd * std::sqrt(kFuturesK)), 1e-9);
+    EXPECT_NEAR(r.sharpe_ratio, 8.633205, 1e-6);
+    EXPECT_NEAR(r.downside_volatility, dd * std::sqrt(kFuturesK), 1e-12);
+    EXPECT_NEAR(r.downside_volatility, 0.143892, 1e-6);
+    EXPECT_NEAR(r.sortino_ratio, mean * kFuturesK / (dd * std::sqrt(kFuturesK)), 1e-9);
+    EXPECT_NEAR(r.sortino_ratio, 18.347538, 1e-6);
+    EXPECT_NEAR(r.max_drawdown, 2.0 / 104.0, 1e-12) << "the Saturday trough (8/104) is no grid level";
+    EXPECT_NEAR(r.var_95, 2.0 / 104.0, 1e-12) << "the Saturday fall (6/102) is no grid return";
+    // Levels, on every row: the Saturday point and the thin date are still rows of the curve.
+    EXPECT_NEAR(r.total_return, 0.06, 1e-12);
+    ASSERT_EQ(r.drawdown_curve.size(), 10u);
+    EXPECT_NEAR(r.drawdown_curve[7].second, 8.0 / 104.0, 1e-12) << "the drawdown curve keeps the row";
+
+    // The same rows read as their own grid (every row an observation) are a different series.
+    const auto rows = calc_.calculate_all_metrics(thin_and_saturday_curve(), {}, 1, kUnitPoints,
+                                                  BacktestStatisticsGrid::of_own_rows(kFuturesK));
+    EXPECT_EQ(rows.statistics_days, 9);
+    EXPECT_NEAR(rows.volatility, 0.759735, 1e-6);
+    EXPECT_NEAR(rows.max_drawdown, 8.0 / 104.0, 1e-12);
+    EXPECT_DOUBLE_EQ(rows.total_return, r.total_return);
+}
+
+// The oracle of commit (1): ONE P&L series through both calculators gives one number per
+// statistic. The backtest calculator is handed the curve and the grid; the live helper the same
+// rows as stored levels, the same grid dates, the base as the book's start (units: the live
+// helper is in percent).
+//   | statistic          | backtest (fraction) | live helper (percent) |
+//   | n                  | 7                   | 7                     |
+//   | volatility         | 0.305803            | 30.5803               |
+//   | sharpe_ratio       | 8.633205            | 8.633205              |
+//   | downside           | 0.143892            | 14.3892               |
+//   | sortino_ratio      | 18.347538           | 18.347538             |
+//   | max_drawdown       | 0.019231            | 1.9231                |
+TEST_F(BacktestMetricsCalculatorTest, BothCalculatorsGiveOneNumberForOnePnlSeries) {
+    const auto curve = thin_and_saturday_curve();
+    const auto grid = thin_and_saturday_grid();
+    const auto bt = calc_.calculate_all_metrics(curve, {}, /*warmup_days=*/1, kUnitPoints, grid);
+
+    std::vector<DatedLevel> stored;
+    for (size_t i = 1; i < curve.size(); ++i) {  // the rows after the warm-up
+        stored.push_back({core::format_utc_date(curve[i].first), curve[i].second});
+    }
+    const StatisticsSeries series =
+        build_statistics_series(stored, grid.dates, "2026-01-02", 100.0, "2026-01-12");
+    const HistoricalMetrics live =
+        LiveHistoricalMetricsCalculator().calculate(series, grid.sessions_per_year, 0);
+
+    EXPECT_EQ(bt.statistics_days, live.total_days);
+    EXPECT_EQ(live.total_days, 7);
+    EXPECT_NEAR(bt.volatility * 100.0, live.volatility, 1e-10);
+    EXPECT_NEAR(bt.sharpe_ratio, live.sharpe_ratio, 1e-10);
+    EXPECT_NEAR(bt.downside_volatility * 100.0, live.downside_deviation, 1e-10);
+    EXPECT_NEAR(bt.sortino_ratio, live.sortino_ratio, 1e-10);
+    EXPECT_NEAR(bt.max_drawdown * 100.0, live.max_drawdown, 1e-10);
+    EXPECT_NEAR(live.volatility, 30.5803, 1e-4);
+    EXPECT_NEAR(live.sharpe_ratio, 8.633205, 1e-6);
 }
 
 // ===== NaN / degeneracy guards (batch-2 metrics hardening) =====
@@ -804,8 +1011,8 @@ TEST_F(BacktestMetricsCalculatorTest, SortinoNearTargetDustHitsSentinelNotAbsurd
     // post-fix the dust collapses to 0 and the degenerate-case sentinel applies.
     std::vector<double> returns(100, -1e-18);
     const double sortino =
-        calc_.calculate_sortino_ratio(returns, /*trading_days=*/100, /*mar=*/0.0);
+        calc_.calculate_sortino_ratio(returns, /*sessions_per_year=*/kEquityK, /*mar=*/0.0);
     EXPECT_LE(std::abs(sortino), 999.0);
-    const double downside = calc_.calculate_downside_volatility(returns, 0.0);
+    const double downside = calc_.calculate_downside_volatility(returns, kEquityK, 0.0);
     EXPECT_DOUBLE_EQ(downside, 0.0);
 }

@@ -9,6 +9,7 @@
 #include <gtest/gtest.h>
 
 #include <cmath>
+#include <map>
 #include <string>
 #include <vector>
 
@@ -147,6 +148,28 @@ TEST(StatisticsGrid, AnEmptyBookOrGridGivesAnEmptySeries) {
     EXPECT_EQ(build_statistics_series(kStored, {}, "2026-04-19", 500000.0, "2026-04-26").size(), 0);
     // Through the start date itself: the base only.
     EXPECT_EQ(week_through("2026-04-19").size(), 0);
+}
+
+// ===== a futures book's grid from the bars it holds in memory (the backtest's) =====
+
+// T-8D R3: a Sunday-to-Friday date with at least kStatisticsGridMinSymbols distinct symbols
+// printing. A Saturday is never a row, whatever printed (MBT prints Saturday bars from
+// 2026-06-13); a thin date is not a row either.
+//   | date       | day | symbols printing | grid date |
+//   | 2026-06-12 | Fri | 36               | yes       |
+//   | 2026-06-13 | Sat | 1 (MBT)          | no        |
+//   | 2026-06-14 | Sun | 26               | yes       |
+//   | 2026-06-15 | Mon | 9                | yes: the threshold itself |
+//   | 2026-06-16 | Tue | 8                | no: thin  |
+//   | 2026-06-20 | Sat | 36               | no: a Saturday whatever printed |
+TEST(StatisticsGrid, TheFuturesGridFromPrintedCountsDropsSaturdaysAndThinDates) {
+    ASSERT_EQ(kStatisticsGridMinSymbols, 9);
+    const std::map<std::string, int> printed = {
+        {"2026-06-12", 36}, {"2026-06-13", 1}, {"2026-06-14", 26}, {"2026-06-15", 9},
+        {"2026-06-16", 8},  {"2026-06-20", 36}, {"not a date", 36}, {"2026-06-19", 0}};
+    const std::vector<std::string> want = {"2026-06-12", "2026-06-14", "2026-06-15"};
+    EXPECT_EQ(futures_statistics_grid_dates(printed), want);
+    EXPECT_TRUE(futures_statistics_grid_dates({}).empty());
 }
 
 // ===== an equity book's grid: the walk with its calendar =====

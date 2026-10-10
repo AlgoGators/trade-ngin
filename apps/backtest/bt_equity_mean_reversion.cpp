@@ -228,6 +228,9 @@ int main() {
         coord_config.use_optimization = app_config.use_optimization;
         coord_config.store_trade_details = app_config.backtest.store_trade_details;
         coord_config.portfolio_id = app_config.portfolio_id;
+        // T-8D R2, T-8D-2 R76: K of the equity statistics grid (NYSE sessions), the one factor
+        // the run's annualised statistics use.
+        coord_config.statistics_sessions_per_year = app_config.statistics.equity_sessions_per_year;
 
         auto coordinator = std::make_unique<BacktestCoordinator>(db, &registry, coord_config);
 
@@ -405,12 +408,12 @@ int main() {
                     {"vol_lookback", mr.vol_lookback},
                     {"allow_fractional_shares", mr.allow_fractional_shares}};
                 // T-8D-2 R53: the sleeve's resolved risk_target is mean_reversion's above; the
-                // window rule, the warm-up and the sessions a year of the statistics are added.
+                // window rule, the warm-up and the sessions a year the calculator applied to
+                // the statistics are added.
                 trade_ngin::add_backtest_run_keys(
                     config_json, app_config.backtest.lookback_years,
                     app_config.backtest.frozen_end_date, backtest_results.warmup_days,
-                    trade_ngin::kBacktestAnnualisationApplied,
-                    app_config.statistics.equity_sessions_per_year);
+                    backtest_results.statistics_sessions_per_year);
                 std::vector<trade_ngin::ResolvedSleeve> resolved_sleeves;
                 for (const auto& entry : strat_entries) {
                     resolved_sleeves.push_back(

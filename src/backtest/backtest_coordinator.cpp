@@ -16,6 +16,7 @@
 #include "trade_ngin/data/conversion_utils.hpp"
 #include "trade_ngin/data/listing_dates.hpp"
 #include "trade_ngin/data/market_data_bus.hpp"
+#include "trade_ngin/live/live_historical_metrics.hpp"
 #include "trade_ngin/portfolio/sizing_capital.hpp"
 #include "trade_ngin/risk/risk_scale_report.hpp"
 #include "trade_ngin/storage/backtest_results_manager.hpp"
@@ -121,6 +122,11 @@ Result<BacktestResults> BacktestCoordinator::run_single_strategy(
         }
     }
 
+    if (auto k = require_statistics_sessions_per_year(); k.is_error()) {
+        return make_error<BacktestResults>(k.error()->code(), k.error()->what(),
+                                           "BacktestCoordinator");
+    }
+
     // Reset state
     reset();
 
@@ -163,8 +169,11 @@ Result<BacktestResults> BacktestCoordinator::run_single_strategy(
     }
 
     // Calculate final metrics
+    const auto grid =
+        statistics_grid(grouped_bars, asset_class, config_.statistics_sessions_per_year);
     auto results = metrics_calculator_->calculate_all_metrics(
-        equity_curve, all_executions, config_.warmup_days, trade_point_value_source());
+        equity_curve, all_executions, config_.warmup_days, trade_point_value_source(), grid);
+    log_statistics_convention(grid, asset_class, results, equity_curve.size());
 
     // Copy executions to results
     results.executions = all_executions;
@@ -199,6 +208,11 @@ Result<BacktestResults> BacktestCoordinator::run_portfolio(
             return make_error<BacktestResults>(init_result.error()->code(),
                                                init_result.error()->what(), "BacktestCoordinator");
         }
+    }
+
+    if (auto k = require_statistics_sessions_per_year(); k.is_error()) {
+        return make_error<BacktestResults>(k.error()->code(), k.error()->what(),
+                                           "BacktestCoordinator");
     }
 
     // Reset all state
@@ -469,10 +483,13 @@ Result<BacktestResults> BacktestCoordinator::run_portfolio(
             "BacktestCoordinator");
     }
 
-    // Calculate final metrics
+    // Calculate final metrics, on the statistics grid of the run's own bars
     INFO("Calculating portfolio backtest metrics");
+    const auto grid =
+        statistics_grid(grouped_bars, asset_class, config_.statistics_sessions_per_year);
     auto results = metrics_calculator_->calculate_all_metrics(
-        equity_curve, all_executions, calculated_warmup_days, trade_point_value_source());
+        equity_curve, all_executions, calculated_warmup_days, trade_point_value_source(), grid);
+    log_statistics_convention(grid, asset_class, results, equity_curve.size());
     results.warmup_days = calculated_warmup_days;
     results.transaction_costs = cost_totals.transaction_costs;
     results.roll_costs = cost_totals.roll_costs;
@@ -1990,6 +2007,67 @@ Result<void> BacktestCoordinator::save_daily_positions(std::shared_ptr<Portfolio
     }
 
     return Result<void>();
+}
+
+BacktestStatisticsGrid BacktestCoordinator::statistics_grid(
+    const std::map<Timestamp, std::vector<Bar>>& grouped_bars, AssetClass asset_class,
+    double sessions_per_year) {
+    if (asset_class != AssetClass::FUTURES) {
+        return BacktestStatisticsGrid::of_own_rows(sessions_per_year);
+    }
+    // The distinct stored symbols printing on each UTC date. A predecessor's bars are copies of
+    // its listed contract's rows (ListingDates::add_predecessor_bars): counted once, under the
+    // listed contract.
+    const auto& listing = ListingDates::instance();
+    std::unordered_map<std::string, bool> is_predecessor;
+    std::map<std::string, std::set<std::string>> printed;
+    for (const auto& [timestamp, bars] : grouped_bars) {
+        auto& symbols = printed[core::format_utc_date(timestamp)];
+        for (const auto& bar : bars) {
+            auto known = is_predecessor.find(bar.symbol);
+            if (known == is_predecessor.end()) {
+                known = is_predecessor.emplace(bar.symbol, listing.is_predecessor(bar.symbol)).first;
+            }
+            if (!known->second) symbols.insert(bar.symbol);
+        }
+    }
+    std::map<std::string, int> counts;
+    for (const auto& [date, symbols] : printed) counts[date] = static_cast<int>(symbols.size());
+    return BacktestStatisticsGrid::of_dates(sessions_per_year, futures_statistics_grid_dates(counts));
+}
+
+Result<void> BacktestCoordinator::require_statistics_sessions_per_year() const {
+    if (config_.statistics_sessions_per_year > 0.0) return Result<void>();
+    return make_error<void>(
+        ErrorCode::INVALID_ARGUMENT,
+        "STATISTICS STOP: the run was handed no sessions a year for its statistics "
+        "(BacktestCoordinatorConfig::statistics_sessions_per_year, from the configured "
+        "statistics.sessions_per_year of the run's series). Failing the run",
+        "BacktestCoordinator");
+}
+
+void BacktestCoordinator::log_statistics_convention(const BacktestStatisticsGrid& grid,
+                                                    AssetClass asset_class,
+                                                    const BacktestResults& results,
+                                                    size_t curve_rows) const {
+    const bool futures = asset_class == AssetClass::FUTURES;
+    std::string line = std::string("STATISTICS_CONVENTION series=") +
+                       (futures ? "futures" : "equities") +
+                       " K=" + std::to_string(results.statistics_sessions_per_year) + " grid=" +
+                       (grid.own_rows
+                            ? std::string("the run's own rows")
+                            : "Sunday to Friday with at least " +
+                                  std::to_string(kStatisticsGridMinSymbols) +
+                                  " stored symbols printing (" + std::to_string(grid.dates.size()) +
+                                  " dates of the window)") +
+                       " n=" + std::to_string(results.statistics_days) + " curve_rows=" +
+                       std::to_string(curve_rows) + " warmup_days=" +
+                       std::to_string(results.warmup_days);
+    if (results.statistics_days > 0) {
+        INFO(line);
+    } else {
+        WARN(line + ": no return on the statistics grid, the grid statistics are 0");
+    }
 }
 
 BacktestMetricsCalculator::PointValueSource BacktestCoordinator::trade_point_value_source() const {

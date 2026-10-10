@@ -128,6 +128,7 @@ set(TEST_SOURCES
     backtest/test_consumed_series_record.cpp
     backtest/test_backtest_equity_cost_retier.cpp
     backtest/test_backtest_futures_cost_feed.cpp
+    backtest/test_backtest_statistics_grid.cpp
     backtest/test_backtest_netting_one_model.cpp
     backtest/test_backtest_roll_legs_once.cpp
     execution/test_execution_engine.cpp

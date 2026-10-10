@@ -105,6 +105,27 @@ std::vector<std::string> statistics_session_dates(
     return dates;
 }
 
+std::vector<std::string> futures_statistics_grid_dates(
+    const std::map<std::string, int>& symbols_printed) {
+    std::vector<std::string> dates;
+    for (const auto& [date, printed] : symbols_printed) {
+        if (printed < kStatisticsGridMinSymbols) {
+            continue;
+        }
+        std::chrono::system_clock::time_point day;
+        if (!core::parse_utc_date(date, day)) {
+            continue;
+        }
+        const std::time_t t = std::chrono::system_clock::to_time_t(day);
+        std::tm tm{};
+        if (core::safe_gmtime(&t, &tm) == nullptr || tm.tm_wday == 6) {
+            continue;
+        }
+        dates.push_back(date);
+    }
+    return dates;
+}
+
 StatisticsSeries build_statistics_series(const std::vector<DatedLevel>& stored_levels,
                                          const std::vector<std::string>& grid_dates,
                                          const std::string& book_start, double initial_capital,

@@ -578,6 +578,9 @@ int main() {
         coord_config.use_optimization = false;
         coord_config.store_trade_details = true;
         coord_config.portfolio_id = "equity_validation";
+        // K of the equity statistics grid, the factor the calculator applies and the mirror in
+        // section D reads back from the results.
+        coord_config.statistics_sessions_per_year = app_config.statistics.equity_sessions_per_year;
 
         auto coordinator = std::make_unique<BacktestCoordinator>(db, &registry, coord_config);
         auto coord_init = coordinator->initialize();
@@ -993,14 +996,23 @@ int main() {
             // Total return
             double manual_total_return = (filtered.back().second - filtered.front().second) / filtered.front().second;
 
-            // Volatility (matching calculate_volatility: E[r^2] - E[r]^2)
-            double mean_return = std::accumulate(returns.begin(), returns.end(), 0.0) / returns.size();
-            double sq_sum = std::inner_product(returns.begin(), returns.end(), returns.begin(), 0.0);
-            double variance = sq_sum / returns.size() - mean_return * mean_return;
-            double manual_vol = std::sqrt(variance) * std::sqrt(252.0);
+            // The equity run's statistics grid is its own rows (NYSE sessions), so the returns
+            // above are the grid's; K is the sessions a year the calculator applied.
+            const double sessions_per_year = backtest_results.statistics_sessions_per_year;
 
-            // Sharpe ratio (matching calculate_sharpe_ratio: annualize daily mean return by *252)
-            double ann_return = mean_return * 252.0;
+            // Volatility (matching calculate_volatility: the SAMPLE standard deviation, n - 1,
+            // x sqrt(K))
+            double mean_return = std::accumulate(returns.begin(), returns.end(), 0.0) / returns.size();
+            double dev_sq_sum = 0.0;
+            for (double r : returns) {
+                dev_sq_sum += (r - mean_return) * (r - mean_return);
+            }
+            double variance =
+                returns.size() > 1 ? dev_sq_sum / static_cast<double>(returns.size() - 1) : 0.0;
+            double manual_vol = std::sqrt(variance) * std::sqrt(sessions_per_year);
+
+            // Sharpe ratio (matching calculate_sharpe_ratio: the mean grid return x K)
+            double ann_return = mean_return * sessions_per_year;
             double manual_sharpe = (manual_vol > 0.0) ? ann_return / manual_vol : 0.0;
 
             // Sortino ratio (matching calculate_downside_volatility + calculate_sortino_ratio)
@@ -1014,7 +1026,8 @@ int main() {
             }
             // averaged over every return of the series, as the calculator does
             double downside_vol = (downside_count > 0)
-                ? std::sqrt(downside_sum / static_cast<double>(returns.size())) * std::sqrt(252.0)
+                ? std::sqrt(downside_sum / static_cast<double>(returns.size())) *
+                      std::sqrt(sessions_per_year)
                 : 0.0;
             double manual_sortino = 0.0;
             if (downside_vol > 0.0) {

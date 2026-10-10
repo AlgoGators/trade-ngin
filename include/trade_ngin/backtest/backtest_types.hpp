@@ -228,6 +228,11 @@ struct BacktestResults {
     std::vector<std::string> equity_risk_detail;
     std::vector<std::pair<Timestamp, double>> drawdown_curve;
     int warmup_days{0};  // Number of warmup days (calculated dynamically from strategy lookbacks)
+    // The convention the statistics above were taken with (T-8D R1, R2): K, the sessions a year
+    // of the statistics grid, which every annualised figure uses and the run metadata records as
+    // statistics_K; and n, the returns of that grid after the warm-up.
+    double statistics_sessions_per_year{0.0};
+    int statistics_days{0};
 
     // Additional analysis
     std::unordered_map<std::string, double> monthly_returns;
