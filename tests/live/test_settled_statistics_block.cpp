@@ -360,6 +360,94 @@ TEST(SettledStatisticsBlock, TheMigration030StatisticsAreTakenOnTheBlocksSeriesA
     }
 }
 
+// The three histories only the migration 030 statistics read (the per-symbol P&L, the sizing
+// capitals, the book's executions) cannot take the rest of the block with them. A failed read
+// throws nothing: the seventeen statistics are computed on the series as on a good day, the Day
+// T-1 refresh runs (so the stamp is not withheld), and the fourteen cells are NULL under an ERROR
+// line that names the read. This reads the runners' text: a runner is one main() with no seam to
+// run the block against a failing loader; the helpers the branch calls are tested on their
+// behaviour in test_live_statistics_columns.cpp.
+TEST(SettledStatisticsBlock, AFailedReadOfTheMigration030HistoriesLeavesTheRestOfTheBlock) {
+    for (const auto& runner : kRunners) {
+        const std::string src = read_source(runner);
+        if (src.empty()) GTEST_SKIP() << "runner source not found from the test working directory";
+        const std::string block = statistics_block(src);
+        ASSERT_FALSE(block.empty()) << runner;
+        const bool equity = runner.find("equity") != std::string::npos;
+
+        EXPECT_EQ(block.find("the histories of the migration 030 statistics could not be loaded"),
+                  std::string::npos)
+            << runner << ": a failed read of a 030 history throws out of the block, before the "
+            << "seventeen statistics are computed: the day's row is written with them at 0, the "
+            << "Day T-1 row is not refreshed and the settled_at stamp is withheld";
+        // The only throw left is the grid's: without the series no statistic can be taken.
+        EXPECT_EQ(count_of(block, "throw std::runtime_error("), 1u) << runner;
+        EXPECT_NE(block.find("throw std::runtime_error(\"the statistics grid could not be "
+                             "loaded\");"),
+                  std::string::npos)
+            << runner;
+
+        // The reads are gathered into one description of what failed, each by name.
+        const auto failed = block.find("const std::string failed_histories = "
+                                       "failed_statistics_history_reads(");
+        ASSERT_NE(failed, std::string::npos) << runner << ": the 030 reads are not caught apart";
+        EXPECT_EQ(count_of(block, "statistics_history_read(\"the per-symbol P&L history\", "
+                                  "symbol_pnl_res)"),
+                  1u)
+            << runner;
+        EXPECT_EQ(count_of(block, "statistics_history_read(\"the sizing capital history\", "
+                                  "sizing_capitals_res)"),
+                  equity ? 0u : 1u)
+            << runner;
+        EXPECT_EQ(count_of(block, "statistics_history_read(\"the book's executions\", "
+                                  "book_executions_res)"),
+                  1u)
+            << runner;
+
+        // The seventeen are computed whatever the reads did, before the branch on them.
+        const auto seventeen = block.find(
+            "hist_calc.calculate(statistics_series, sessions_per_year, total_trades_hist);");
+        const auto branch = block.find("if (!failed_histories.empty()) {");
+        ASSERT_NE(seventeen, std::string::npos) << runner;
+        ASSERT_NE(branch, std::string::npos) << runner;
+        EXPECT_LT(failed, seventeen) << runner;
+        EXPECT_LT(seventeen, branch) << runner;
+
+        // The failure branch: an ERROR naming the reads, NULL cells, and nothing else. The good
+        // day's computation is its else, and no value of a failed read is asked outside it.
+        const auto good_day = block.find("} else {", branch);
+        ASSERT_NE(good_day, std::string::npos) << runner;
+        const std::string on_failure = block.substr(branch, good_day - branch);
+        EXPECT_NE(on_failure.find("ERROR(\"STATISTICS_COLUMNS through Day T-1 \" + t1_date_str +"),
+                  std::string::npos)
+            << runner;
+        EXPECT_NE(on_failure.find("failed_histories"), std::string::npos) << runner;
+        EXPECT_NE(on_failure.find("settled_statistics_cells = null_live_statistics_cells();"),
+                  std::string::npos)
+            << runner;
+        EXPECT_EQ(on_failure.find("throw"), std::string::npos) << runner;
+        EXPECT_EQ(on_failure.find("return"), std::string::npos) << runner;
+        for (const char* value : {"symbol_pnl_res.value()", "sizing_capitals_res.value()",
+                                  "book_executions_res.value()"}) {
+            const auto asked = block.find(value);
+            if (asked == std::string::npos) continue;  // the equity book reads no sizing capital
+            EXPECT_GT(asked, good_day) << runner << ": " << value << " is read before the branch";
+            EXPECT_EQ(count_of(block, value), 1u) << runner << ": " << value;
+        }
+
+        // The refresh and its flag come after the branch, outside it.
+        const auto refresh = block.find("->update_live_results(", good_day);
+        const auto refreshed = block.find("t1_statistics_refreshed = true;", good_day);
+        ASSERT_NE(refresh, std::string::npos) << runner;
+        ASSERT_NE(refreshed, std::string::npos) << runner;
+        EXPECT_NE(block.find("settled_statistics_cells = "
+                             "live_statistics_cells(statistics_columns);",
+                             good_day),
+                  std::string::npos)
+            << runner;
+    }
+}
+
 // T-8D-2 R44 (b): the equity book's dividend counter is dated by ex-date. The event of an ex-date
 // is applied by the next run, so the figure through Day T-1 rides the Day T-1 refresh and the row
 // the run writes takes the figure through its own date; neither is the undated lifetime sum. The

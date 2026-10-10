@@ -12,6 +12,7 @@
 #include <vector>
 
 #include "trade_ngin/backtest/backtest_metrics_calculator.hpp"
+#include "trade_ngin/core/error.hpp"
 #include "trade_ngin/core/time_utils.hpp"
 #include "trade_ngin/live/live_statistics_columns.hpp"
 
@@ -364,6 +365,55 @@ TEST(LiveStatisticsColumns, ACellWithNoValueIsNullAndTheFourteenAreInTheMigratio
     // A number that is not finite has no value.
     EXPECT_FALSE(live_results_number(std::nan("")).has_value());
     EXPECT_FALSE(live_results_cell_type_known("numeric); DROP TABLE t; --"));
+}
+
+// A failed read of a history that only the migration 030 statistics use is named with its
+// reason, and what the run then writes for the fourteen is NULL in every cell: the same columns,
+// types and order as on a good day, so the Day T-1 refresh assigns NULL to each and the day's
+// INSERT leaves each out. Nothing else of the run depends on these reads.
+TEST(LiveStatisticsColumns, AFailedHistoryReadIsNamedAndLeavesTheFourteenCellsNull) {
+    const Result<std::vector<SymbolDayPnl>> symbol_pnl(std::vector<SymbolDayPnl>{});
+    const Result<std::vector<DatedCapital>> capitals(std::vector<DatedCapital>{});
+    const auto executions = make_error<std::vector<ExecutionReport>>(
+        ErrorCode::DATABASE_ERROR, "execution row with an unknown side 'SHORT'", "LiveDataLoader");
+    const auto timed_out = make_error<std::vector<DatedCapital>>(
+        ErrorCode::DATABASE_ERROR, "canceling statement due to statement timeout",
+        "LiveDataLoader");
+
+    const StatisticsHistoryRead good =
+        statistics_history_read("the per-symbol P&L history", symbol_pnl);
+    EXPECT_FALSE(good.error.has_value());
+    const StatisticsHistoryRead bad = statistics_history_read("the book's executions", executions);
+    ASSERT_TRUE(bad.error.has_value());
+    EXPECT_NE(bad.error->find("unknown side 'SHORT'"), std::string::npos) << *bad.error;
+
+    EXPECT_EQ(failed_statistics_history_reads(
+                  {good, statistics_history_read("the sizing capital history", capitals)}),
+              "");
+    const std::string one = failed_statistics_history_reads(
+        {good, statistics_history_read("the sizing capital history", capitals), bad});
+    EXPECT_EQ(one.find("the book's executions ("), 0u) << one;
+    EXPECT_NE(one.find("unknown side 'SHORT'"), std::string::npos) << one;
+    EXPECT_EQ(one.find("per-symbol"), std::string::npos) << "a read that succeeded is not named";
+    const std::string two = failed_statistics_history_reads(
+        {good, statistics_history_read("the sizing capital history", timed_out), bad});
+    EXPECT_EQ(two.find("the sizing capital history ("), 0u) << two;
+    EXPECT_NE(two.find("statement timeout"), std::string::npos) << two;
+    EXPECT_NE(two.find("); the book's executions ("), std::string::npos) << two;
+
+    // The cells of such a run: the fourteen of a good day, every one with no value.
+    LiveStatisticsColumns filled;
+    filled.worst_day_date = "2025-10-10";
+    filled.total_strategy_fills = 158;
+    const std::vector<LiveResultsCell> good_day = live_statistics_cells(filled);
+    const std::vector<LiveResultsCell> failed = null_live_statistics_cells();
+    ASSERT_EQ(failed.size(), 14u);
+    ASSERT_EQ(failed.size(), good_day.size());
+    for (size_t i = 0; i < failed.size(); ++i) {
+        EXPECT_EQ(failed[i].column, good_day[i].column);
+        EXPECT_EQ(failed[i].type, good_day[i].type);
+        EXPECT_FALSE(failed[i].value.has_value()) << failed[i].column << " carries a value";
+    }
 }
 
 TEST(LiveStatisticsColumns, TheFillCountsAreTheAccountsAndEqualTheTradeStatisticsCounts) {

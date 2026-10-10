@@ -190,4 +190,33 @@ std::optional<std::string> live_results_number(double value);
 /// The fourteen statistics as typed cells, in the migration's order.
 std::vector<LiveResultsCell> live_statistics_cells(const LiveStatisticsColumns& columns);
 
+/// One of the history reads that only the statistics of migration 030 use (the per-symbol P&L,
+/// the sizing capitals, the book's executions): its name and, when it failed, why.
+struct StatisticsHistoryRead {
+    std::string name;
+    std::optional<std::string> error;
+};
+
+/// A loader's result as a StatisticsHistoryRead.
+template <typename ResultType>
+StatisticsHistoryRead statistics_history_read(const std::string& name, const ResultType& result) {
+    return {name, result.is_error() ? std::optional<std::string>(result.error()->what())
+                                    : std::optional<std::string>()};
+}
+
+/// The reads that failed, each with its reason, in the order given ("name (why); name (why)");
+/// empty when every one succeeded.
+std::string failed_statistics_history_reads(const std::vector<StatisticsHistoryRead>& reads);
+
+/**
+ * @brief The fourteen cells of a run whose migration 030 histories could not all be read: every
+ *        one NULL, in the migration's order.
+ *
+ * A failed read of those histories costs the run its 030 statistics and nothing else: the
+ * statistics taken on the series alone, the Day T-1 refresh and the settled_at stamp are as on a
+ * good day. The day's INSERT leaves the fourteen columns out and the Day T-1 refresh writes NULL,
+ * so no row shows a figure through an earlier date as if it were through this one.
+ */
+std::vector<LiveResultsCell> null_live_statistics_cells();
+
 }  // namespace trade_ngin

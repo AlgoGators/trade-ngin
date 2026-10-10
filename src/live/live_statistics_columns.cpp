@@ -312,4 +312,17 @@ std::vector<LiveResultsCell> live_statistics_cells(const LiveStatisticsColumns& 
     };
 }
 
+std::string failed_statistics_history_reads(const std::vector<StatisticsHistoryRead>& reads) {
+    std::string failed;
+    for (const auto& read : reads) {
+        if (!read.error) continue;
+        failed += std::string(failed.empty() ? "" : "; ") + read.name + " (" + *read.error + ")";
+    }
+    return failed;
+}
+
+std::vector<LiveResultsCell> null_live_statistics_cells() {
+    return live_statistics_cells(LiveStatisticsColumns{});
+}
+
 }  // namespace trade_ngin

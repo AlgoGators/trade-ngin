@@ -3753,11 +3753,12 @@ int main(int argc, char* argv[]) {
                     combined_strategy_id, coordinator_config.portfolio_id, previous_date);
                 auto book_executions_res = data_loader->load_book_executions(
                     combined_strategy_id, coordinator_config.portfolio_id, previous_date);
-                if (symbol_pnl_res.is_error() || sizing_capitals_res.is_error() ||
-                    book_executions_res.is_error()) {
-                    throw std::runtime_error(
-                        "the histories of the migration 030 statistics could not be loaded");
-                }
+                // A failed read of these costs this run its 030 statistics and nothing else:
+                // the statistics on the series, the Day T-1 refresh and the stamp go on.
+                const std::string failed_histories = failed_statistics_history_reads(
+                    {statistics_history_read("the per-symbol P&L history", symbol_pnl_res),
+                     statistics_history_read("the sizing capital history", sizing_capitals_res),
+                     statistics_history_read("the book's executions", book_executions_res)});
                 const double sessions_per_year = app_config.statistics.futures_sessions_per_year;
                 const StatisticsSeries statistics_series = build_statistics_series(
                     levels_res.value(), grid_res.value(), book_start_res.value(), initial_capital,
@@ -3786,18 +3787,27 @@ int main(int argc, char* argv[]) {
                 // Migration 030, on the same series and the same K: the worst day's date and
                 // symbol, the three statistics on the sizing capital, the monthly skew and tail
                 // ratio, the calendar years, and the account's fill counts.
-                LiveStatisticsColumns statistics_columns = live_statistics_columns(
-                    statistics_series, sessions_per_year, book_start_res.value(), t1_date_str,
-                    symbol_pnl_res.value(), sizing_capitals_res.value());
-                if (const std::string fills_warning =
-                        set_fill_counts(statistics_columns, book_executions_res.value());
-                    !fills_warning.empty()) {
-                    WARN("STATISTICS_FILLS through " + t1_date_str +
-                         ": the fill counts stay NULL: " + fills_warning);
+                if (!failed_histories.empty()) {
+                    ERROR("STATISTICS_COLUMNS through Day T-1 " + t1_date_str +
+                          ": could not be loaded: " + failed_histories +
+                          ". The statistics of migration 030 are NULL on the Day T-1 row and on "
+                          "the row this run writes; every other statistic, the Day T-1 refresh "
+                          "and the settled_at stamp are as on a good day");
+                    settled_statistics_cells = null_live_statistics_cells();
+                } else {
+                    LiveStatisticsColumns statistics_columns = live_statistics_columns(
+                        statistics_series, sessions_per_year, book_start_res.value(), t1_date_str,
+                        symbol_pnl_res.value(), sizing_capitals_res.value());
+                    if (const std::string fills_warning =
+                            set_fill_counts(statistics_columns, book_executions_res.value());
+                        !fills_warning.empty()) {
+                        WARN("STATISTICS_FILLS through " + t1_date_str +
+                             ": the fill counts stay NULL: " + fills_warning);
+                    }
+                    settled_statistics_cells = live_statistics_cells(statistics_columns);
+                    INFO("STATISTICS_COLUMNS [through Day T-1 " + t1_date_str +
+                         "]: " + live_statistics_log_line(statistics_columns));
                 }
-                settled_statistics_cells = live_statistics_cells(statistics_columns);
-                INFO("STATISTICS_COLUMNS [through Day T-1 " + t1_date_str +
-                     "]: " + live_statistics_log_line(statistics_columns));
 
                 INFO("HIST_METRICS [through Day T-1 " + t1_date_str +
                      "]: volatility=" + std::to_string(settled_statistics.volatility) +
