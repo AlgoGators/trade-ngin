@@ -12,6 +12,7 @@
 #include <sstream>
 #include <vector>
 #include "trade_ngin/core/chart_generator.hpp"
+#include "trade_ngin/core/email_netting_text.hpp"
 #include "trade_ngin/core/holiday_checker.hpp"
 #include "trade_ngin/core/logger.hpp"
 #include "trade_ngin/instruments/instrument_registry.hpp"
@@ -871,37 +872,10 @@ std::string EmailSender::generate_trading_report_body(
 }
 
 
-// T-ROLLX (LOOP_SPEC v6.1 section 6.5): the ROLL legs of a day as their own block (the two contract
-// ids, the price of each leg, the cost: an upper bound, two outright legs), never inside the
-// strategy's trade count or its traded notional; their cost inside every cost total.
-// T-NETTING fix round. A dollar amount with two decimals and thousands separators.
-static std::string netting_money(double value) {
-    std::ostringstream oss;
-    oss << std::fixed << std::setprecision(2) << value;
-    std::string s = oss.str();
-    const size_t dp = s.find('.');
-    int pos = static_cast<int>(dp == std::string::npos ? s.size() : dp) - 3;
-    while (pos > 0) {
-        s.insert(static_cast<size_t>(pos), ",");
-        pos -= 3;
-    }
-    return s;
-}
-
-// The netting adjustment printed as it ACTS ON THE COST: a saving (a positive adjustment, the
-// sleeves offset) is a reduction, "-$2.40"; an extra cost (a negative adjustment, one account
-// order of the summed size costs more) is an addition, "+$1.82"; none is "$0.00". It is printed
-// as the difference of the two figures printed beside it (the cost after netting in cents minus
-// the own cost in cents), so the three printed numbers always add up: own cost, this figure
-// applied to it, the cost after netting. It can therefore differ by a cent from the stored
-// adjustment rounded on its own.
-static std::string netting_effect_text(const Decimal& own_cost, const Decimal& cost_after_netting) {
-    const long long cents = std::llround(cost_after_netting.as_double() * 100.0) -
-                            std::llround(own_cost.as_double() * 100.0);
-    if (cents == 0) return "$0.00";
-    return std::string(cents < 0 ? "-$" : "+$") +
-           netting_money(static_cast<double>(std::llabs(cents)) / 100.0);
-}
+// T-NETTING: how the netting figures are printed (one rounding, the adjustment as it acts on the
+// cost and as the difference of its two printed neighbours) is email_netting_text.hpp.
+using email_netting::netting_effect_text;
+using email_netting::netting_money;
 
 // The day's rows of one table: their own costs, their adjustments, and whether any row was netted.
 struct NettingFooter {
@@ -915,6 +889,9 @@ struct NettingFooter {
     }
 };
 
+// T-ROLLX (LOOP_SPEC v6.1 section 6.5): the ROLL legs of a day as their own block (the two contract
+// ids, the price of each leg, the cost: an upper bound, two outright legs), never inside the
+// strategy's trade count or its traded notional; their cost inside every cost total.
 static std::string format_roll_legs_block(const std::vector<ExecutionReport>& executions) {
     std::ostringstream html;
     double roll_cost = 0.0;
@@ -1064,7 +1041,7 @@ std::string EmailSender::format_executions_table(const std::vector<ExecutionRepo
         html << "<strong>Own Costs:</strong> $" << netting_money(netting.own_costs.as_double())
              << "<br>\n";
         html << "<strong>Netting Adjustment:</strong> "
-             << netting_effect_text(netting.own_costs, netting.own_costs - netting.adjustments)
+             << netting_effect_text(netting.own_costs.as_double(), total_transaction_cost)
              << "<br>\n";
     }
     html << "<strong>Transaction Costs:</strong> $" << format_with_commas(total_transaction_cost)
@@ -3592,8 +3569,8 @@ std::string EmailSender::format_single_strategy_executions_table(
              << exec.total_transaction_costs.as_double() << "</td>\n";
         if (several_sleeves) {
             html << "<td>"
-                 << netting_effect_text(exec.total_transaction_costs,
-                                        transaction_cost::net_cost(exec))
+                 << netting_effect_text(exec.total_transaction_costs.as_double(),
+                                        transaction_cost::net_cost(exec).as_double())
                  << "</td>\n";
             html << "<td>$" << netting_money(transaction_cost::net_cost(exec).as_double())
                  << "</td>\n";
@@ -3614,7 +3591,7 @@ std::string EmailSender::format_single_strategy_executions_table(
     if (netting.any_adjusted) {
         html << " | <strong>Own Costs:</strong> $" << netting_money(netting.own_costs.as_double())
              << " | <strong>Netting Adjustment:</strong> "
-             << netting_effect_text(netting.own_costs, netting.own_costs - netting.adjustments);
+             << netting_effect_text(netting.own_costs.as_double(), total_transaction_costs);
     }
     html << " | <strong>Transaction Costs:</strong> $"
          << format_with_commas(total_transaction_costs) << "\n";
@@ -3734,7 +3711,8 @@ std::string EmailSender::format_strategy_executions_tables(
         html << "<div class=\"metric\"><strong>Total Own Costs:</strong> $"
              << netting_money(netting.own_costs.as_double()) << "</div>\n";
         html << "<div class=\"metric\"><strong>Netting Adjustment:</strong> "
-             << netting_effect_text(netting.own_costs, netting.own_costs - netting.adjustments)
+             << netting_effect_text(netting.own_costs.as_double(),
+                                    portfolio_total_transaction_costs)
              << "</div>\n";
     }
     html << "<div class=\"metric\"><strong>Total Transaction Costs:</strong> $"

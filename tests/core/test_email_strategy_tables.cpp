@@ -57,6 +57,7 @@
 #include <vector>
 
 #define private public
+#include "trade_ngin/core/email_netting_text.hpp"
 #include "trade_ngin/core/email_sender.hpp"
 #undef private
 
@@ -451,6 +452,62 @@ TEST_F(EmailStrategyTablesTest, ASameSidePairShowsTheExtraCostAsAnAddition) {
               std::string::npos)
         << all;
     EXPECT_EQ(all.find("-$"), std::string::npos) << "nothing on a same-side day is a reduction: " << all;
+}
+
+// T-NETTING fix round 2 (audit A of the fix round, N1): ONE rounding for the three figures of a
+// line. On an exact half cent the stream prints 10.82 for 10.825 while llround(10.825 * 100) is
+// 1083, so the adjustment printed from llround could sit a cent off the two figures beside it.
+// Now it is the difference of the printed cents of those two figures, whatever they are.
+//
+//   | own (stored) | adjustment | after netting | printed own | printed adjustment | printed after |
+//   | 10.825       | 0.005      | 10.82         | $10.82      | $0.00              | $10.82        |
+//   | 10.825       | -1.00      | 11.825        | $10.82      | +$1.00             | $11.82        |
+//   | 0.125        | 0.12       | 0.005         | $0.12       | -$0.12             | $0.00 or 0.01 |
+//
+// RED on 4398b2c6 for the first row (it printed -$0.01 between two equal figures).
+TEST_F(EmailStrategyTablesTest, TheThreePrintedFiguresAddUpOnAnExactHalfCent) {
+    using email_netting::netting_effect_text;
+    using email_netting::printed_cents;
+    using email_netting::two_decimals;
+    for (const auto& [own, adjustment] : std::vector<std::pair<double, double>>{
+             {10.825, 0.005}, {10.825, -1.00}, {0.125, 0.12}, {2.675, 1.335}, {1.005, -0.01},
+             {4.5039, -0.9092}, {2.3963, 1.6428}, {1.62, 1.62}}) {
+        const std::vector<ExecutionReport> one = {netted_row(Side::SELL, 1, own, adjustment)};
+        const Sleeves day{{"TREND_FOLLOWING_FAST", one}, {"TREND_FOLLOWING", {}}};
+        const std::string all = sender_.format_strategy_executions_tables(day);
+        const double net = (Decimal(own) - Decimal(adjustment)).as_double();
+        const long long effect = printed_cents(net) - printed_cents(Decimal(own).as_double());
+        std::string printed = "$0.00";
+        if (effect != 0) {
+            printed = std::string(effect < 0 ? "-$" : "+$") + two_decimals(std::llabs(effect) / 100.0);
+        }
+        const std::string row = "<td>$" + two_decimals(Decimal(own).as_double()) + "</td>\n<td>" +
+                                printed + "</td>\n<td>$" + two_decimals(net) + "</td>\n</tr>";
+        EXPECT_NE(all.find(row), std::string::npos) << own << " " << adjustment << ": " << all;
+        EXPECT_EQ(netting_effect_text(Decimal(own).as_double(), net), printed);
+        // own + printed adjustment = after netting, in printed cents, on the row
+        EXPECT_EQ(printed_cents(Decimal(own).as_double()) + effect, printed_cents(net));
+    }
+    // the case that failed: two equal printed figures, nothing between them
+    EXPECT_EQ(netting_effect_text(10.825, 10.82), "$0.00");
+    EXPECT_EQ(two_decimals(10.825), "10.82") << "the stream's rounding of the binary 10.825";
+}
+
+// N3: a negative amount keeps its sign in front of the digits, with or without thousands.
+TEST(EmailNettingText, MoneyGroupsThousandsAndKeepsANegativeSign) {
+    using email_netting::netting_money;
+    EXPECT_EQ(netting_money(0.0), "0.00");
+    EXPECT_EQ(netting_money(123.45), "123.45");
+    EXPECT_EQ(netting_money(1234.5), "1,234.50");
+    EXPECT_EQ(netting_money(1234567.891), "1,234,567.89");
+    EXPECT_EQ(netting_money(-123.45), "-123.45") << "never -,123.45";
+    EXPECT_EQ(netting_money(-999.99), "-999.99");
+    EXPECT_EQ(netting_money(-1234.5), "-1,234.50");
+    EXPECT_EQ(netting_money(-1234567.891), "-1,234,567.89");
+    EXPECT_EQ(email_netting::printed_cents(-1234.5), -123450);
+    EXPECT_EQ(email_netting::printed_cents(0.004), 0);
+    EXPECT_EQ(email_netting::netting_effect_text(1000.00, 2500.00), "+$1,500.00");
+    EXPECT_EQ(email_netting::netting_effect_text(2500.00, 1000.00), "-$1,500.00");
 }
 
 // A several-sleeve day with no netted row: the two columns are there (the book has two sleeves)
