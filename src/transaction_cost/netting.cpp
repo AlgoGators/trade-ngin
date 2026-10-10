@@ -8,6 +8,7 @@
 #include <map>
 #include <numeric>
 #include <sstream>
+#include <stdexcept>
 
 namespace trade_ngin {
 namespace transaction_cost {
@@ -160,6 +161,45 @@ NettingReport apply_netting_adjustments(
         }
     }
     return rep;
+}
+
+std::string unnetted_row_refusal(const ExecutionReport& fill) {
+    if (fill.execution_type == ExecutionType::STRATEGY || fill.netting_adjustment == Decimal()) {
+        return {};
+    }
+    return std::string("NETTING_REFUSED: the ") +
+           (fill.execution_type == ExecutionType::ROLL ? "ROLL" : "BORROW") + " row " + fill.exec_id +
+           " (" + fill.symbol + ") carries a netting adjustment of " +
+           fill.netting_adjustment.to_string() +
+           "; a ROLL leg and a BORROW row are never netted and must carry exactly 0";
+}
+
+Decimal unnetted_cost(const ExecutionReport& fill) {
+    const std::string refusal = unnetted_row_refusal(fill);
+    if (!refusal.empty()) throw NettingRefused(refusal);
+    return fill.total_transaction_costs;
+}
+
+double add_net_costs(double running, const std::vector<ExecutionReport>& fills, size_t from) {
+    for (size_t i = from; i < fills.size(); ++i) {
+        const std::string refusal = unnetted_row_refusal(fills[i]);
+        if (!refusal.empty()) throw NettingRefused(refusal);
+        running += static_cast<double>(net_cost(fills[i]));
+    }
+    return running;
+}
+
+RunCostTotals run_cost_totals(const std::vector<ExecutionReport>& fills) {
+    RunCostTotals totals;
+    for (const auto& e : fills) {
+        if (e.execution_type != ExecutionType::STRATEGY) (void)unnetted_cost(e);
+        totals.transaction_costs += static_cast<double>(net_cost(e));
+        if (e.execution_type == ExecutionType::ROLL) {
+            totals.roll_costs += static_cast<double>(unnetted_cost(e));
+            ++totals.roll_fills;
+        }
+    }
+    return totals;
 }
 
 }  // namespace transaction_cost

@@ -30,6 +30,7 @@ set(TEST_SOURCES
     data/test_delete_stale_executions_scope_db.cpp
     data/test_contract_metadata_fee_column_db.cpp
     data/test_executions_netting_column_db.cpp
+    data/test_execution_report_validation.cpp
     data/test_load_positions_identifier_db.cpp
     data/test_equity_curve_stream_db.cpp
     data/test_store_positions_error_db.cpp
@@ -181,6 +182,7 @@ set(TEST_SOURCES
     live/test_base_bus_off_and_carried_day.cpp
     live/test_session_book_gate.cpp
     live/test_live_runner_small_fixes.cpp
+    live/test_email_body_file.cpp
     live/test_cost_model_feed.cpp
     live/test_futures_cost_feed.cpp
     live/test_cost_feed_adjusted_returns.cpp
@@ -303,3 +305,7 @@ add_test(NAME MigrateRiskJson.ScriptSuite
 add_test(NAME CheckLiveTrading.ScriptSuite
          COMMAND "${MIGRATION_PYTHON}"
                  "${CMAKE_CURRENT_SOURCE_DIR}/scripts/test_check_live_trading.py")
+# The two entries import modules from scripts/: without this the interpreter leaves an untracked
+# scripts/__pycache__/ in the source tree on every ctest run.
+set_tests_properties(MigrateRiskJson.ScriptSuite CheckLiveTrading.ScriptSuite
+                     PROPERTIES ENVIRONMENT "PYTHONDONTWRITEBYTECODE=1")

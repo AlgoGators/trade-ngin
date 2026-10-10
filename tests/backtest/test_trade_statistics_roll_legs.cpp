@@ -347,3 +347,66 @@ TEST(TradeStatisticsRollLegs, LegsThatCannotBePairedFailLoudly) {
     const std::vector<ExecutionReport> flat = {lone_closing[1]};
     EXPECT_NO_THROW(calc.calculate_trade_statistics(flat));
 }
+
+// The cost after netting (HD 2026-10-09): a trade's P&L and a symbol's P&L charge each fill's NET
+// cost, its own cost minus the signed adjustment on the row. Two sleeves' rows of one symbol:
+//
+//   | day | row              | own  | adjustment | net  |
+//   | 0   | BUY 2 at 100     | 2.00 | 0          | 2.00 |
+//   | 5   | SELL 1 at 103    | 1.00 | -0.25      | 1.25 | same side as the row below: charged MORE
+//   | 5   | SELL 1 at 103    | 1.00 | -0.25      | 1.25 |
+//
+// RED when either function reads the own cost, or drops or clamps the negative adjustment.
+TEST(TradeStatisticsNetCost, ATradeAndASymbolAreChargedTheCostAfterNetting) {
+    BacktestMetricsCalculator calc;
+    std::vector<ExecutionReport> execs = {
+        fill("ES.v.0", Side::BUY, 2.0, 100.0, 0, 2.0),
+        fill("ES.v.0", Side::SELL, 1.0, 103.0, 5, 1.0),
+        fill("ES.v.0", Side::SELL, 1.0, 103.0, 5, 1.0),
+    };
+    execs[1].netting_adjustment = Decimal(-0.25);
+    execs[2].netting_adjustment = Decimal(-0.25);
+    const auto s = calc.calculate_trade_statistics(execs);
+    EXPECT_EQ(s.total_trades, 2);
+    EXPECT_NEAR(s.total_profit, 2 * (3.0 - 1.25), 1e-12) << "each close: 3 points less its NET cost 1.25";
+    EXPECT_NEAR(s.max_win, 3.0 - 1.25, 1e-12);
+    const auto pnl = calc.calculate_symbol_pnl(execs);
+    EXPECT_NEAR(pnl.at("ES.v.0"), 6.0 - 2.0 - 1.25 - 1.25, 1e-12);
+
+    // A positive adjustment (the sleeves cross) lowers the charge: a full cross is charged nothing.
+    std::vector<ExecutionReport> cross = {
+        fill("NQ.v.0", Side::BUY, 1.0, 100.0, 0, 1.5),
+        fill("NQ.v.0", Side::SELL, 1.0, 100.0, 0, 1.5),
+    };
+    cross[0].netting_adjustment = Decimal(1.5);
+    cross[1].netting_adjustment = Decimal(1.5);
+    EXPECT_NEAR(calc.calculate_symbol_pnl(cross).at("NQ.v.0"), 0.0, 1e-12);
+    EXPECT_NEAR(calc.calculate_trade_statistics(cross).total_loss, 0.0, 1e-12);
+}
+
+// T-NETTING fix round: the trade statistics' roll total reads the leg's OWN cost through the same
+// call as results.roll_costs, and a ROLL leg given a non-zero adjustment is refused there, not
+// scored on either basis.
+TEST(TradeStatisticsNetCost, ARollLegGivenAnAdjustmentIsRefused) {
+    BacktestMetricsCalculator calc;
+    std::vector<ExecutionReport> execs = {
+        fill("NG.v.0", Side::BUY, 1.0, 3.30, 0, 1.0),
+        fill("NG.v.0", Side::SELL, 1.0, 3.376, 4, 2.0, ExecutionType::ROLL, "864"),
+        fill("NG.v.0", Side::BUY, 1.0, 3.965, 4, 2.0, ExecutionType::ROLL, "863"),
+    };
+    EXPECT_DOUBLE_EQ(calc.calculate_trade_statistics(execs).roll_costs, 4.0);
+    execs[1].netting_adjustment = Decimal(0.75);
+    EXPECT_THROW(calc.calculate_trade_statistics(execs), std::logic_error);
+}
+
+// A ROLL leg is never netted: its adjustment is 0 and the roll total is its own cost.
+TEST(TradeStatisticsNetCost, ARollLegsCostIsItsOwn) {
+    BacktestMetricsCalculator calc;
+    const std::vector<ExecutionReport> execs = {
+        fill("NG.v.0", Side::BUY, 1.0, 3.30, 0, 1.0),
+        fill("NG.v.0", Side::SELL, 1.0, 3.376, 4, 2.0, ExecutionType::ROLL, "864"),
+        fill("NG.v.0", Side::BUY, 1.0, 3.965, 4, 2.0, ExecutionType::ROLL, "863"),
+    };
+    for (const auto& e : execs) EXPECT_EQ(e.netting_adjustment, Decimal());
+    EXPECT_DOUBLE_EQ(calc.calculate_trade_statistics(execs).roll_costs, 4.0);
+}

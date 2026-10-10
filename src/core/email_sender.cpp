@@ -12,9 +12,11 @@
 #include <sstream>
 #include <vector>
 #include "trade_ngin/core/chart_generator.hpp"
+#include "trade_ngin/core/email_netting_text.hpp"
 #include "trade_ngin/core/holiday_checker.hpp"
 #include "trade_ngin/core/logger.hpp"
 #include "trade_ngin/instruments/instrument_registry.hpp"
+#include "trade_ngin/transaction_cost/netting.hpp"
 
 namespace trade_ngin {
 
@@ -870,6 +872,23 @@ std::string EmailSender::generate_trading_report_body(
 }
 
 
+// T-NETTING: how the netting figures are printed (one rounding, the adjustment as it acts on the
+// cost and as the difference of its two printed neighbours) is email_netting_text.hpp.
+using email_netting::netting_effect_text;
+using email_netting::netting_money;
+
+// The day's rows of one table: their own costs, their adjustments, and whether any row was netted.
+struct NettingFooter {
+    Decimal own_costs;
+    Decimal adjustments;
+    bool any_adjusted{false};
+    void add(const ExecutionReport& exec) {
+        own_costs += exec.total_transaction_costs;
+        adjustments += exec.netting_adjustment;
+        if (exec.netting_adjustment != Decimal()) any_adjusted = true;
+    }
+};
+
 // T-ROLLX (LOOP_SPEC v6.1 section 6.5): the ROLL legs of a day as their own block (the two contract
 // ids, the price of each leg, the cost: an upper bound, two outright legs), never inside the
 // strategy's trade count or its traded notional; their cost inside every cost total.
@@ -919,11 +938,14 @@ std::string EmailSender::format_executions_table(const std::vector<ExecutionRepo
     double total_transaction_cost = 0.0;
     double total_notional_traded = 0.0;
     size_t strategy_trades = 0;
+    NettingFooter netting;
 
     for (const auto& exec : executions) {
+        netting.add(exec);
         // T-ROLLX: every row's cost counts; a ROLL leg is listed in its own block below, never
-        // as a trade and never in the traded notional.
-        total_transaction_cost += exec.total_transaction_costs.as_double();
+        // as a trade and never in the traded notional. The total is what the account was charged:
+        // each row's cost after netting (the row's own cost stays in its cell).
+        total_transaction_cost += transaction_cost::net_cost(exec).as_double();
         if (exec.execution_type != ExecutionType::STRATEGY) continue;
         ++strategy_trades;
         // Get contract multiplier for proper notional calculation
@@ -1013,6 +1035,15 @@ std::string EmailSender::format_executions_table(const std::vector<ExecutionRepo
     html << "<strong>Trades:</strong> " << strategy_trades << "<br>\n";
     html << "<strong>Notional Traded:</strong> $" << format_with_commas(total_notional_traded)
          << "<br>\n";
+    // Shown only when a row was netted: the rows' own costs, the adjustment as it acts on them,
+    // and (the line below) what was charged. Without a netted row the footer is as it always was.
+    if (netting.any_adjusted) {
+        html << "<strong>Own Costs:</strong> $" << netting_money(netting.own_costs.as_double())
+             << "<br>\n";
+        html << "<strong>Netting Adjustment:</strong> "
+             << netting_effect_text(netting.own_costs.as_double(), total_transaction_cost)
+             << "<br>\n";
+    }
     html << "<strong>Transaction Costs:</strong> $" << format_with_commas(total_transaction_cost)
          << "\n";
     html << "</div>\n";
@@ -3421,7 +3452,8 @@ std::string EmailSender::format_strategy_positions_tables(
 }
 
 std::string EmailSender::format_single_strategy_executions_table(
-    const std::string& strategy_name, const std::vector<ExecutionReport>& executions) {
+    const std::string& strategy_name, const std::vector<ExecutionReport>& executions,
+    bool several_sleeves) {
     std::ostringstream html;
 
     if (executions.empty()) {
@@ -3460,15 +3492,27 @@ std::string EmailSender::format_single_strategy_executions_table(
 
     // Executions table
     html << "<table>\n";
-    html << "<tr><th>Symbol</th><th>Side</th><th>Quantity</th><th>Price</th><th>Notional</"
-            "th><th>Transaction Cost</th></tr>\n";
+    // A book of more than one sleeve shows, beside each row's own cost, the row's netting
+    // adjustment (as it acts on the cost) and its cost after netting. A one-sleeve book's table is
+    // as it always was.
+    if (several_sleeves) {
+        html << "<tr><th>Symbol</th><th>Side</th><th>Quantity</th><th>Price</th><th>Notional</"
+                "th><th>Transaction Cost</th><th>Netting Adjustment</th><th>Cost After Netting</"
+                "th></tr>\n";
+    } else {
+        html << "<tr><th>Symbol</th><th>Side</th><th>Quantity</th><th>Price</th><th>Notional</"
+                "th><th>Transaction Cost</th></tr>\n";
+    }
 
     double total_transaction_costs = 0.0;
     double total_notional_traded = 0.0;
     size_t strategy_trades = 0;
+    NettingFooter netting;
 
     for (const auto& exec : executions) {
-        total_transaction_costs += exec.total_transaction_costs.as_double();  // every row's cost
+        netting.add(exec);
+        // Every row's cost after netting: the sleeve's share of what the account was charged.
+        total_transaction_costs += transaction_cost::net_cost(exec).as_double();
         if (exec.execution_type != ExecutionType::STRATEGY) continue;        // T-ROLLX
         ++strategy_trades;
         double contract_multiplier = 1.0;
@@ -3523,6 +3567,14 @@ std::string EmailSender::format_single_strategy_executions_table(
         }
         html << "<td>$" << std::fixed << std::setprecision(2)
              << exec.total_transaction_costs.as_double() << "</td>\n";
+        if (several_sleeves) {
+            html << "<td>"
+                 << netting_effect_text(exec.total_transaction_costs.as_double(),
+                                        transaction_cost::net_cost(exec).as_double())
+                 << "</td>\n";
+            html << "<td>$" << netting_money(transaction_cost::net_cost(exec).as_double())
+                 << "</td>\n";
+        }
         html << "</tr>\n";
     }
 
@@ -3533,7 +3585,15 @@ std::string EmailSender::format_single_strategy_executions_table(
     html << "<div style=\"font-size: 13px; color: #666; margin: 8px 0 20px 0; padding-left: "
             "16px;\">\n";
     html << "<strong>Trades:</strong> " << strategy_trades << " | <strong>Notional:</strong> $"
-         << format_with_commas(total_notional_traded) << " | <strong>Transaction Costs:</strong> $"
+         << format_with_commas(total_notional_traded);
+    // Shown only when a row of this sleeve was netted: own costs, the adjustment as it acts on
+    // them, then what the sleeve was charged.
+    if (netting.any_adjusted) {
+        html << " | <strong>Own Costs:</strong> $" << netting_money(netting.own_costs.as_double())
+             << " | <strong>Netting Adjustment:</strong> "
+             << netting_effect_text(netting.own_costs.as_double(), total_transaction_costs);
+    }
+    html << " | <strong>Transaction Costs:</strong> $"
          << format_with_commas(total_transaction_costs) << "\n";
     html << "</div>\n";
 
@@ -3587,6 +3647,9 @@ std::string EmailSender::format_strategy_executions_tables(
     double portfolio_total_transaction_costs = 0.0;
     double portfolio_total_roll_costs = 0.0;  // T-ROLLX
     int portfolio_total_roll_fills = 0;
+    NettingFooter netting;
+    // A book of more than one sleeve: each row also shows its adjustment and its cost after netting.
+    const bool several_sleeves = strategy_executions.size() > 1;
 
     // Generate table for each strategy
     for (const auto& strategy_name : strategy_names) {
@@ -3596,13 +3659,15 @@ std::string EmailSender::format_strategy_executions_tables(
             continue;
         }
 
-        html << format_single_strategy_executions_table(strategy_name, executions);
+        html << format_single_strategy_executions_table(strategy_name, executions,
+                                                        several_sleeves);
 
         // Accumulate portfolio totals (T-ROLLX: trades and notional over STRATEGY rows; costs over
         // every row, the ROLL part shown beside)
         for (const auto& exec : executions) {
-            portfolio_total_transaction_costs += exec.total_transaction_costs.as_double();
-            if (exec.execution_type == ExecutionType::ROLL) {
+            netting.add(exec);
+            portfolio_total_transaction_costs += transaction_cost::net_cost(exec).as_double();
+            if (exec.execution_type == ExecutionType::ROLL) {  // never netted: its own cost
                 portfolio_total_roll_costs += exec.total_transaction_costs.as_double();
                 ++portfolio_total_roll_fills;
             }
@@ -3640,12 +3705,29 @@ std::string EmailSender::format_strategy_executions_tables(
          << "</div>\n";
     html << "<div class=\"metric\"><strong>Total Notional Traded:</strong> $"
          << format_with_commas(portfolio_total_notional) << "</div>\n";
+    // Shown only when a row of the day was netted: the rows' own costs, the adjustment as it acts
+    // on them, then the cost charged (own costs with the adjustment applied).
+    if (netting.any_adjusted) {
+        html << "<div class=\"metric\"><strong>Total Own Costs:</strong> $"
+             << netting_money(netting.own_costs.as_double()) << "</div>\n";
+        html << "<div class=\"metric\"><strong>Netting Adjustment:</strong> "
+             << netting_effect_text(netting.own_costs.as_double(),
+                                    portfolio_total_transaction_costs)
+             << "</div>\n";
+    }
     html << "<div class=\"metric\"><strong>Total Transaction Costs:</strong> $"
          << format_with_commas(portfolio_total_transaction_costs) << "</div>\n";
     if (portfolio_total_roll_fills > 0) {
         html << "<div class=\"metric\"><strong>Roll Fills:</strong> " << portfolio_total_roll_fills
              << " | <strong>Roll Costs (upper bound):</strong> $"
              << format_with_commas(portfolio_total_roll_costs) << "</div>\n";
+    }
+    // Why a cent can differ (several sleeves, a netted day): every figure above is rounded to the
+    // cent from its own exact sum, so a column of rows need not add to its footer, nor the
+    // sleeves' footers to the book's, to the cent. The totals are the exact stored figures.
+    if (several_sleeves && netting.any_adjusted) {
+        html << "<div class=\"metric\" style=\"font-size: 12px; color: #666;\">"
+             << email_netting::kRoundingNote << "</div>\n";
     }
     html << "</div>\n";
 

@@ -9,6 +9,7 @@
 #include "trade_ngin/core/state_manager.hpp"
 #include "trade_ngin/data/database_pooling.hpp"
 #include "trade_ngin/data/market_data_bus.hpp"
+#include "trade_ngin/transaction_cost/netting.hpp"
 
 namespace trade_ngin {
 
@@ -293,9 +294,10 @@ Result<void> BaseStrategy::on_execution(const ExecutionReport& report) {
         // metrics_.total_pnl feeds the drawdown gate in check_risk_limits(); making that
         // gross would quietly loosen a risk limit, which is outside this fix. The asymmetry
         // is intentional: metrics_ is a risk input, pos.realized_pnl is a reported figure.
-        double transaction_cost = static_cast<double>(report.total_transaction_costs);
-        metrics_.realized_pnl -= transaction_cost;
-        metrics_.total_pnl -= transaction_cost;
+        // The cost after netting (HD 2026-10-09), as every other total charges it.
+        const double net_transaction_cost = static_cast<double>(transaction_cost::net_cost(report));
+        metrics_.realized_pnl -= net_transaction_cost;
+        metrics_.total_pnl -= net_transaction_cost;
 
         // Update metrics
         metrics_.total_trades++;

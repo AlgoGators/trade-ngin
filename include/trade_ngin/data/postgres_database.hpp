@@ -1146,12 +1146,17 @@ private:
      */
     Result<void> validate_symbols(const std::vector<std::string>& symbols) const;
 
+public:
     /**
-     * @brief Validate execution report data
+     * @brief Validate execution report data. Every execution writer calls it on every row before
+     *        it stores anything. It reads the row only (no connection is needed), and is public so
+     *        that it can be tested without a database.
      * @param exec Execution report to validate
      * @return Result indicating success or failure
      */
     Result<void> validate_execution_report(const ExecutionReport& exec) const;
+
+private:
 
     /**
      * @brief Validate position data
