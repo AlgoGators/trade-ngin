@@ -1045,9 +1045,15 @@ int main() {
                 manual_max_dd = std::max(manual_max_dd, dd);
             }
 
-            // Calmar ratio (matching calculate_calmar_ratio: annualized return / max drawdown)
-            double manual_calmar = (manual_max_dd > 0) ? ann_return / manual_max_dd
-                                                        : ((ann_return >= 0) ? 999.0 : 0.0);
+            // Calmar ratio (matching calculate_calmar_ratio: the CAGR, (1 + R)^(K / n) - 1 with
+            // n the returns above, over the max drawdown)
+            const double growth = filtered.back().second / filtered.front().second;
+            double manual_cagr =
+                growth > 0.0
+                    ? std::pow(growth, sessions_per_year / static_cast<double>(returns.size())) - 1.0
+                    : -1.0;
+            double manual_calmar = (manual_max_dd > 0) ? manual_cagr / manual_max_dd
+                                                        : ((manual_cagr >= 0) ? 999.0 : 0.0);
 
             // Print comparison
             std::cout << "\n" << std::setw(20) << "Metric" << " | "

@@ -185,6 +185,16 @@ StatisticsSeries build_statistics_series(const std::vector<DatedLevel>& stored_l
     return series;
 }
 
+double grid_annualized_return(double growth, int n, double sessions_per_year) {
+    if (n <= 0 || sessions_per_year <= 0.0) {
+        return 0.0;
+    }
+    if (growth <= 0.0) {
+        return -1.0;
+    }
+    return std::pow(growth, sessions_per_year / static_cast<double>(n)) - 1.0;
+}
+
 double grid_annualized_return_pct(const StatisticsSeries& series, double sessions_per_year) {
     const int n = series.size();
     if (n <= 0 || series.base <= 0.0 || sessions_per_year <= 0.0) {
@@ -194,7 +204,7 @@ double grid_annualized_return_pct(const StatisticsSeries& series, double session
     if (growth <= 0.0) {
         return -100.0;
     }
-    return (std::pow(growth, sessions_per_year / static_cast<double>(n)) - 1.0) * 100.0;
+    return grid_annualized_return(growth, n, sessions_per_year) * 100.0;
 }
 
 std::string statistics_days_warning(const HistoricalMetrics& m, const StatisticsSeries& series) {

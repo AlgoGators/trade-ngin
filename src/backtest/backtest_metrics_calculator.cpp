@@ -27,12 +27,9 @@ double BacktestMetricsCalculator::calculate_total_return(double start_value, dou
 
 double BacktestMetricsCalculator::calculate_annualized_return(double total_return, int trading_days,
                                                               double sessions_per_year) const {
-    if (trading_days <= 0 || !(sessions_per_year > 0.0)) {
-        return 0.0;
-    }
-    // Simple annualization: scale by the grid's sessions a year over its returns
-    double annualization_factor = sessions_per_year / static_cast<double>(trading_days);
-    return total_return * annualization_factor;
+    // The CAGR, (1 + R)^(K / n) - 1 (T-8D R36): the live statistics' own function, so the
+    // backtest's annualised return and the live total_annualized_return are one formula.
+    return grid_annualized_return(1.0 + total_return, trading_days, sessions_per_year);
 }
 
 std::vector<double> BacktestMetricsCalculator::calculate_returns_from_equity(
@@ -913,10 +910,12 @@ backtest::BacktestResults BacktestMetricsCalculator::calculate_all_metrics(
     results.drawdown_curve = calculate_drawdowns(filtered_curve);
     results.max_drawdown = calculate_max_drawdown(grid_curve);
 
-    // Calmar ratio: annualized return / max drawdown (industry standard)
-    double mean_return = calculate_mean(returns);
-    double annualized_return = mean_return * sessions_per_year;
-    results.calmar_ratio = calculate_calmar_ratio(annualized_return, results.max_drawdown);
+    // Calmar ratio: the CAGR on the grid, (1 + R)^(K / n) - 1 with R from the base to the last
+    // grid level and n the grid's returns, over the maximum drawdown (T-8D R36)
+    results.annualized_return = calculate_annualized_return(
+        calculate_total_return(grid_curve.front().second, grid_curve.back().second),
+        results.statistics_days, sessions_per_year);
+    results.calmar_ratio = calculate_calmar_ratio(results.annualized_return, results.max_drawdown);
 
     // Risk metrics
     auto risk_metrics = calculate_risk_metrics(returns, sessions_per_year);

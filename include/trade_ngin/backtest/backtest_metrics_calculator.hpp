@@ -76,11 +76,12 @@ public:
     double calculate_total_return(double start_value, double end_value) const;
 
     /**
-     * @brief Calculate annualized return
-     * @param total_return Total return as decimal
-     * @param trading_days Number of returns of the statistics grid
-     * @param sessions_per_year The grid's sessions a year
-     * @return Annualized return as decimal
+     * @brief Calculate annualized return: the CAGR, (1 + R)^(K / n) - 1 (grid_annualized_return)
+     * @param total_return R, from the base to the last grid level, as decimal
+     * @param trading_days n, the number of returns of the statistics grid
+     * @param sessions_per_year K, the grid's sessions a year
+     * @return Annualized return as decimal; 0 without a return or a positive K, -1 when the
+     *         book lost everything
      */
     double calculate_annualized_return(double total_return, int trading_days,
                                        double sessions_per_year) const;
@@ -121,7 +122,7 @@ public:
 
     /**
      * @brief Calculate Calmar ratio (annualized return / max drawdown)
-     * @param annualized_return Annualized return as decimal
+     * @param annualized_return Annualized return as decimal (calculate_annualized_return)
      * @param max_drawdown Maximum drawdown as decimal
      * @return Calmar ratio
      */
@@ -359,10 +360,11 @@ public:
      * carries more than once counts once, by its last row, before the warmup is cut.
      *
      * total_return is the level of the last row over the first row after the warm-up, every row
-     * counted. Volatility, Sharpe, Sortino, the downside volatility, the Calmar ratio, the
-     * maximum drawdown, VaR, CVaR, beta and correlation are taken on the statistics grid
-     * (statistics_grid_curve) and annualised with its sessions a year, which the result records
-     * (statistics_sessions_per_year, statistics_days). The trade statistics read the executions,
+     * counted. Volatility, Sharpe, Sortino, the downside volatility, the Calmar ratio (the
+     * grid's CAGR over the maximum drawdown), the maximum drawdown, VaR, CVaR, beta and
+     * correlation are taken on the statistics grid (statistics_grid_curve) and annualised with
+     * its sessions a year, which the result records (statistics_sessions_per_year,
+     * statistics_days, annualized_return). The trade statistics read the executions,
      * the drawdown curve and the monthly returns every row.
      *
      * @param equity_curve Full equity curve including warmup period

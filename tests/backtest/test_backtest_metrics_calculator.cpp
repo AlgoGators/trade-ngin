@@ -91,10 +91,19 @@ TEST_F(BacktestMetricsCalculatorTest, TotalReturnNonPositiveStartIsZero) {
     EXPECT_DOUBLE_EQ(calc_.calculate_total_return(-1.0, 110.0), 0.0);
 }
 
-TEST_F(BacktestMetricsCalculatorTest, AnnualizedReturnScalesBySessionsAYearOverDays) {
-    EXPECT_DOUBLE_EQ(calc_.calculate_annualized_return(0.10, 252, 252.0), 0.10);
-    EXPECT_DOUBLE_EQ(calc_.calculate_annualized_return(0.10, 126, 252.0), 0.20);
-    EXPECT_DOUBLE_EQ(calc_.calculate_annualized_return(0.10, 126, 315.0), 0.25);
+// T-8D R36: the annualised return is the CAGR, (1 + R)^(K / n) - 1, never R x K / n.
+//   | R    | n   | K   | geometric (now)        | linear (before) |
+//   | 0.10 | 252 | 252 | 0.10                   | 0.10            |
+//   | 0.10 | 126 | 252 | 1.1^2 - 1 = 0.21       | 0.20            |
+//   | 0.10 | 126 | 315 | 1.1^2.5 - 1 = 0.269059 | 0.25            |
+TEST_F(BacktestMetricsCalculatorTest, AnnualizedReturnIsGeometricOnSessionsAYearOverDays) {
+    EXPECT_NEAR(calc_.calculate_annualized_return(0.10, 252, 252.0), 0.10, 1e-12);
+    EXPECT_NEAR(calc_.calculate_annualized_return(0.10, 126, 252.0), 0.21, 1e-12);
+    EXPECT_NEAR(calc_.calculate_annualized_return(0.10, 126, 315.0), std::pow(1.1, 2.5) - 1.0, 1e-12);
+    EXPECT_NEAR(calc_.calculate_annualized_return(0.10, 126, 315.0), 0.269059, 1e-6);
+    // A book that lost everything: no power of a non-positive growth.
+    EXPECT_DOUBLE_EQ(calc_.calculate_annualized_return(-1.0, 126, 252.0), -1.0);
+    EXPECT_DOUBLE_EQ(calc_.calculate_annualized_return(-1.5, 126, 252.0), -1.0);
 }
 
 TEST_F(BacktestMetricsCalculatorTest, AnnualizedReturnNonPositiveDaysOrSessionsIsZero) {
@@ -258,6 +267,31 @@ TEST_F(BacktestMetricsCalculatorTest, CalmarHandlesZeroDrawdown) {
 
 TEST_F(BacktestMetricsCalculatorTest, CalmarStandardCase) {
     EXPECT_DOUBLE_EQ(calc_.calculate_calmar_ratio(0.20, 0.10), 2.0);
+}
+
+// T-8D R36: calmar = CAGR (geometric, K / n) / max_dd, through the composite. Own rows at K 252:
+//   levels 100, 101, 100.5, 102, 103: n 4, R 0.03, max_dd 0.5 / 101 = 0.004950
+//   | numerator                                 | calmar      |
+//   | CAGR 1.03^(252 / 4) - 1 = 5.437914 (now)  | 1098.458585 |
+//   | mean x 252 = 1.876064 (before)            | 378.965004  |
+TEST_F(BacktestMetricsCalculatorTest, CalmarIsTheGeometricAnnualisedReturnOverTheMaximumDrawdown) {
+    const std::vector<std::pair<Timestamp, double>> curve = {
+        {date_at(2026, 1, 5), 100.0}, {date_at(2026, 1, 6), 101.0}, {date_at(2026, 1, 7), 100.5},
+        {date_at(2026, 1, 8), 102.0}, {date_at(2026, 1, 9), 103.0}};
+    const auto r = calc_.calculate_all_metrics(curve, {}, 0, kUnitPoints, kOwnRows);
+    EXPECT_NEAR(r.max_drawdown, 0.5 / 101.0, 1e-12);
+    EXPECT_NEAR(r.annualized_return, std::pow(1.03, 252.0 / 4.0) - 1.0, 1e-9);
+    EXPECT_NEAR(r.annualized_return, 5.437914, 1e-6);
+    EXPECT_NEAR(r.calmar_ratio, (std::pow(1.03, 252.0 / 4.0) - 1.0) / (0.5 / 101.0), 1e-6);
+    EXPECT_NEAR(r.calmar_ratio, 1098.458585, 1e-5);
+    // A falling book: the CAGR is negative where the mean return can be positive.
+    //   levels 100, 150, 75, 90: returns +0.5, -0.5, +0.2 (mean +0.0667), R -0.10, max_dd 0.5
+    const std::vector<std::pair<Timestamp, double>> falling = {
+        {date_at(2026, 1, 5), 100.0}, {date_at(2026, 1, 6), 150.0}, {date_at(2026, 1, 7), 75.0},
+        {date_at(2026, 1, 8), 90.0}};
+    const auto f = calc_.calculate_all_metrics(falling, {}, 0, kUnitPoints, kOwnRows);
+    EXPECT_NEAR(f.calmar_ratio, (std::pow(0.9, 252.0 / 3.0) - 1.0) / 0.5, 1e-9);
+    EXPECT_LT(f.calmar_ratio, 0.0);
 }
 
 TEST_F(BacktestMetricsCalculatorTest, DrawdownsEmptyCurveReturnsEmpty) {
@@ -917,6 +951,11 @@ TEST_F(BacktestMetricsCalculatorTest, AThinDateAndASaturdayPointAreNoObservation
     EXPECT_NEAR(r.sortino_ratio, mean * kFuturesK / (dd * std::sqrt(kFuturesK)), 1e-9);
     EXPECT_NEAR(r.sortino_ratio, 18.347538, 1e-6);
     EXPECT_NEAR(r.max_drawdown, 2.0 / 104.0, 1e-12) << "the Saturday trough (8/104) is no grid level";
+    // calmar: the CAGR on the grid, 1.06^(311.0574 / 7) - 1 = 12.320206, over 2/104: 640.650727
+    // (on every row, n 9: 6.492377 / (8/104) = 84.400902).
+    EXPECT_NEAR(r.annualized_return, std::pow(1.06, kFuturesK / 7.0) - 1.0, 1e-9);
+    EXPECT_NEAR(r.calmar_ratio, (std::pow(1.06, kFuturesK / 7.0) - 1.0) / (2.0 / 104.0), 1e-6);
+    EXPECT_NEAR(r.calmar_ratio, 640.650727, 1e-4);
     EXPECT_NEAR(r.var_95, 2.0 / 104.0, 1e-12) << "the Saturday fall (6/102) is no grid return";
     // Levels, on every row: the Saturday point and the thin date are still rows of the curve.
     EXPECT_NEAR(r.total_return, 0.06, 1e-12);
@@ -943,6 +982,8 @@ TEST_F(BacktestMetricsCalculatorTest, AThinDateAndASaturdayPointAreNoObservation
 //   | downside           | 0.143892            | 14.3892               |
 //   | sortino_ratio      | 18.347538           | 18.347538             |
 //   | max_drawdown       | 0.019231            | 1.9231                |
+//   | annualised return  | 12.320206           | 1232.0206             |
+//   | calmar_ratio       | 640.650727          | (annualised / max_drawdown, no live column) |
 TEST_F(BacktestMetricsCalculatorTest, BothCalculatorsGiveOneNumberForOnePnlSeries) {
     const auto curve = thin_and_saturday_curve();
     const auto grid = thin_and_saturday_grid();
@@ -966,6 +1007,10 @@ TEST_F(BacktestMetricsCalculatorTest, BothCalculatorsGiveOneNumberForOnePnlSerie
     EXPECT_NEAR(bt.max_drawdown * 100.0, live.max_drawdown, 1e-10);
     EXPECT_NEAR(live.volatility, 30.5803, 1e-4);
     EXPECT_NEAR(live.sharpe_ratio, 8.633205, 1e-6);
+    // The annualised return: one function behind both (grid_annualized_return).
+    EXPECT_NEAR(bt.annualized_return * 100.0, live.total_annualized_return, 1e-8);
+    EXPECT_NEAR(live.total_annualized_return, 1232.0206, 1e-3);
+    EXPECT_NEAR(bt.calmar_ratio, live.total_annualized_return / live.max_drawdown, 1e-8);
 }
 
 // ===== NaN / degeneracy guards (batch-2 metrics hardening) =====

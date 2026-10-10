@@ -233,6 +233,10 @@ struct BacktestResults {
     // statistics_K; and n, the returns of that grid after the warm-up.
     double statistics_sessions_per_year{0.0};
     int statistics_days{0};
+    // The annualised return on that grid, the Calmar ratio's numerator: the CAGR
+    // (1 + R)^(K / n) - 1, R from the base to the last grid level (T-8D R36). Logged with the
+    // run's statistics convention; no column.
+    double annualized_return{0.0};
 
     // Additional analysis
     std::unordered_map<std::string, double> monthly_returns;

@@ -2062,7 +2062,8 @@ void BacktestCoordinator::log_statistics_convention(const BacktestStatisticsGrid
                                   " dates of the window)") +
                        " n=" + std::to_string(results.statistics_days) + " curve_rows=" +
                        std::to_string(curve_rows) + " warmup_days=" +
-                       std::to_string(results.warmup_days);
+                       std::to_string(results.warmup_days) + " annualized_return=" +
+                       std::to_string(results.annualized_return);
     if (results.statistics_days > 0) {
         INFO(line);
     } else {

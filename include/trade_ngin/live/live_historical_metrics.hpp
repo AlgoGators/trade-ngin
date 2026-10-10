@@ -128,6 +128,14 @@ StatisticsSeries build_statistics_series(const std::vector<DatedLevel>& stored_l
                                          const std::string& through_date);
 
 /**
+ * @brief The annualised return of `n` grid returns as a fraction: growth^(K / n) - 1, `growth`
+ *        being 1 + R, the last grid level over the base, and K the grid's sessions a year (the
+ *        CAGR). 0 without a return or a positive K; -1 when the growth is not positive. The one
+ *        formula behind the live total_annualized_return and the backtest's Calmar numerator.
+ */
+double grid_annualized_return(double growth, int n, double sessions_per_year);
+
+/**
  * @brief The annualised return of a series in percent: ((1 + R)^(K / n) - 1) x 100, R from the
  *        base to the last grid level, n its returns, K the grid's sessions a year. 0 for an
  *        empty series; -100 when the level is not positive.
