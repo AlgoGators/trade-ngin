@@ -42,6 +42,7 @@
 #include "trade_ngin/live/live_sizing_read.hpp"
 #include "trade_ngin/live/live_trading_coordinator.hpp"
 #include "trade_ngin/live/book_exposure.hpp"
+#include "trade_ngin/live/margin_columns.hpp"
 #include "trade_ngin/live/margin_manager.hpp"
 #include "trade_ngin/live/risk_module_failure.hpp"
 #include "trade_ngin/live/run_metadata_marks.hpp"
@@ -2858,7 +2859,10 @@ int main(int argc, char* argv[]) {
         //
         // The <= 1.0 alarm moves with it: an alarm on a number that has not been
         // computed yet would fire on the constant, not on the account.
-        double equity_to_margin_ratio = 0.0;
+        //
+        // No value on a day with no posted margin: the cell is stored NULL
+        // (live/margin_columns.hpp).
+        std::optional<double> equity_to_margin_ratio;
 
         // ========================================
         // PHASE 4: PER-STRATEGY POSITIONS STORAGE
@@ -3232,42 +3236,48 @@ int main(int argc, char* argv[]) {
             double yesterday_total_cumulative_return_pct =
                 yesterday_total_cumulative_return;  // Already in %
 
-            // Calculate yesterday's leverage and risk metrics
-            // IMPORTANT: We MUST preserve existing values from the database
-            // These were calculated correctly when Day T-1 was originally processed
-            double yesterday_gross_leverage = 0.0;
-            double yesterday_equity_to_margin_ratio = 0.0;
-
-            // Load existing values from database using LiveDataLoader - DO NOT RECALCULATE
-            try {
-                auto margin_metrics = data_loader->load_margin_metrics(
-                    combined_strategy_id, coordinator_config.portfolio_id, previous_date);
-                if (margin_metrics.is_ok() && margin_metrics.value().valid) {
-                    auto& metrics = margin_metrics.value();
-                    yesterday_gross_leverage = metrics.gross_leverage;
-                    yesterday_equity_to_margin_ratio = metrics.equity_to_margin_ratio;
-
-                    // Also update the gross_notional and margin_posted if available
-                    yesterday_gross_notional = metrics.gross_notional;
-                    yesterday_margin_posted = metrics.margin_posted;
-
-                    INFO("Preserved existing metrics from database via LiveDataLoader: leverage=" +
-                         std::to_string(yesterday_gross_leverage) +
-                         ", equity_to_margin=" + std::to_string(yesterday_equity_to_margin_ratio) +
-                         ", gross_notional=" + std::to_string(yesterday_gross_notional) +
-                         ", margin_posted=" + std::to_string(yesterday_margin_posted));
-                } else {
-                    INFO("No existing margin metrics found for yesterday via LiveDataLoader");
-                }
-            } catch (const std::exception& e) {
-                WARN("Failed to load existing metrics: " + std::string(e.what()));
+            // T-8D R21: the four cells of the Day T-1 row that divide by the portfolio value
+            // (equity_to_margin_ratio, margin_cushion, net_leverage, portfolio_leverage) are
+            // recomputed by the UPDATE below on the finalised value, from the row's own stored
+            // margin_posted, gross_notional and net_notional (live/margin_columns.hpp), so the
+            // row ends on one basis with its cash_available. The maintenance requirement is not
+            // a stored cell: it is taken from the stored Day T-1 book, as that day's own run
+            // took it (margin on futures is a figure per contract, whatever the price).
+            const BookExposure yesterday_exposure = account_book_exposure(
+                previous_strategy_positions,
+                [](const std::string&, const Position& pos) {
+                    return pos.average_price.as_double();
+                },
+                [&](const std::string& symbol, double qty, double price) {
+                    return margin_manager->calculate_position_notional(symbol, qty, price);
+                },
+                [&](const std::string& symbol, double qty, double price) {
+                    return margin_manager->calculate_position_margin(symbol, qty, price);
+                });
+            std::string yesterday_maintenance_sql =
+                std::to_string(yesterday_exposure.maintenance_margin);
+            if (yesterday_exposure.failed) {
+                // The requirement the stored cushion was written on, read back out of the row.
+                WARN("Day T-1 maintenance requirement could not be taken from the stored book (" +
+                     yesterday_exposure.failed_symbol +
+                     "); the cushion is recomputed on the requirement the stored cells imply");
+                yesterday_maintenance_sql = "current_portfolio_value * (1.0 - margin_cushion)";
+            } else {
+                INFO("Day T-1 margin of the stored book: maintenance=$" +
+                     std::to_string(yesterday_exposure.maintenance_margin) + ", initial=$" +
+                     std::to_string(yesterday_exposure.posted_margin) +
+                     " (the row's margin_posted=$" + std::to_string(yesterday_margin_posted) +
+                     ")");
             }
+            // The expression the UPDATE assigns to current_portfolio_value.
+            const std::string yesterday_finalised_value_sql =
+                "COALESCE((SELECT portfolio FROM day_before), " + std::to_string(initial_capital) +
+                ") + (" + std::to_string(aggregate_yesterday_total_pnl) +
+                " - COALESCE(daily_transaction_costs, 0.0))";
 
             // UPDATE yesterday's live_results with ALL recalculated metrics
             // Note: We calculate daily_pnl, total_pnl, and current_portfolio_value in SQL
             // to properly incorporate the EXISTING daily_transaction_costs value
-            // IMPORTANT: Only update portfolio_leverage and equity_to_margin_ratio if they are NULL
-            // or 0
             std::string update_query =
                 "WITH day_before AS ("
                 "  SELECT COALESCE(current_portfolio_value, " +
@@ -3310,16 +3320,9 @@ int main(int argc, char* argv[]) {
                 ")) * 100.0 "
                 "               ELSE 0.0 END, "
                 "total_cumulative_return = " +
-                std::to_string(yesterday_total_cumulative_return_pct) +
-                ", "
-                "portfolio_leverage = CASE WHEN portfolio_leverage IS NULL OR portfolio_leverage = "
-                "0 THEN " +
-                std::to_string(yesterday_gross_leverage) +
-                " ELSE portfolio_leverage END, "
-                "equity_to_margin_ratio = CASE WHEN equity_to_margin_ratio IS NULL OR "
-                "equity_to_margin_ratio = 0 THEN " +
-                std::to_string(yesterday_equity_to_margin_ratio) +
-                " ELSE equity_to_margin_ratio END, "
+                std::to_string(yesterday_total_cumulative_return_pct) + ", " +
+                finalize_margin_columns_sql(yesterday_finalised_value_sql,
+                                            yesterday_maintenance_sql) +
                 "cash_available = COALESCE((SELECT portfolio FROM day_before), " +
                 std::to_string(initial_capital) + ") + (" +
                 std::to_string(aggregate_yesterday_total_pnl) +
@@ -3847,8 +3850,8 @@ int main(int argc, char* argv[]) {
         // of the initial_capital constant, matching LiveMetricsCalculator's
         // calculate_equity_to_margin_ratio(current_portfolio_value, margin_posted).
         equity_to_margin_ratio =
-            (total_posted_margin > 0.0) ? (current_portfolio_value / total_posted_margin) : 0.0;
-        if (equity_to_margin_ratio <= 1.0 && active_positions > 0) {
+            equity_to_margin_ratio_of(current_portfolio_value, total_posted_margin);
+        if (equity_to_margin_ratio && *equity_to_margin_ratio <= 1.0 && active_positions > 0) {
             WARN("Equity-to-Margin Ratio is <= 1.0 (account equity at or below "
                  "posted margin); verify margins and sizing.");
         }
@@ -3870,30 +3873,30 @@ int main(int argc, char* argv[]) {
                   << (gross_notional / current_portfolio_value) << "x" << std::endl;
         std::cout << "Posted Margin (Initial×Contracts): $" << std::fixed << std::setprecision(2)
                   << total_posted_margin << std::endl;
-        std::cout << "Equity-to-Margin Ratio: " << std::fixed << std::setprecision(2)
-                  << equity_to_margin_ratio << "x" << std::endl;
-        double margin_cushion = 0.0;
-        if (maintenance_requirement_today > 0.0) {
-            // Correct formula: margin_cushion = (equity - maintenance) / equity
-            // This shows how much cushion we have above maintenance margin requirements
-            margin_cushion =
-                (current_portfolio_value - maintenance_requirement_today) / current_portfolio_value;
+        if (equity_to_margin_ratio) {
+            std::cout << "Equity-to-Margin Ratio: " << std::fixed << std::setprecision(2)
+                      << *equity_to_margin_ratio << "x" << std::endl;
         } else {
-            margin_cushion = -1.0;  // Invalid if no maintenance requirement
+            std::cout << "Equity-to-Margin Ratio: n/a (no margin posted)" << std::endl;
         }
+        // margin_cushion = (equity - maintenance) / equity: how far the account stands above
+        // its maintenance requirement. No value, and a NULL cell, on a day with no posted
+        // margin: there is no requirement to be above.
+        const std::optional<double> margin_cushion = margin_cushion_of(
+            current_portfolio_value, total_posted_margin, maintenance_requirement_today);
 
         // Warnings per thresholds
         if (total_posted_margin > current_portfolio_value) {
             WARN("Posted margin exceeds current portfolio value; check sizing and risk limits.");
         }
-        if (margin_cushion < 0.20) {
+        if (margin_cushion && *margin_cushion < 0.20) {
             WARN("Margin cushion below 20%.");
         }
         // Old WARN fired on `e2m_ratio > 4.0` — sensible only under the prior
         // (buggy) gross_notional/margin formula where high = more leverage.
         // After the formula fix, high e2m means more equity per dollar of
         // posted margin (safer). Replaced with a low-floor alarm.
-        if (equity_to_margin_ratio > 0.0 && equity_to_margin_ratio < 1.5) {
+        if (equity_to_margin_ratio && *equity_to_margin_ratio < 1.5) {
             WARN("Equity-to-Margin Ratio below 1.5x (low margin cushion).");
         }
 
@@ -4001,8 +4004,6 @@ int main(int argc, char* argv[]) {
                 {"portfolio_var", portfolio_var},
                 {"net_leverage", net_leverage},
                 {"portfolio_leverage", gross_leverage},
-                {"equity_to_margin_ratio", equity_to_margin_ratio},
-                {"margin_cushion", margin_cushion},
                 {"max_correlation", max_correlation},
                 {"jump_risk", jump_risk},
                 {"risk_scale", risk_scale},
@@ -4018,6 +4019,10 @@ int main(int argc, char* argv[]) {
                 {"total_roll_costs", total_roll_costs_cumulative},  // migration 017
                 {"margin_posted", total_posted_margin},
                 {"cash_available", current_portfolio_value - total_posted_margin}};
+
+            // The ratio and the cushion are named only when they have a value; without one the
+            // cell stays NULL (live/margin_columns.hpp).
+            set_margin_cells(double_metrics, equity_to_margin_ratio, margin_cushion);
 
             std::unordered_map<std::string, int> int_metrics = {
                 {"active_positions", active_positions}};
@@ -4505,11 +4510,16 @@ int main(int argc, char* argv[]) {
 
                     strategy_metrics["Gross Leverage"] = gross_leverage_calc;
                     strategy_metrics["Net Leverage"] = net_leverage_calc;
-                    strategy_metrics["Equity-to-Margin Ratio"] = equity_to_margin_ratio;
+                    // The two margin lines are printed only when the figure has a value.
+                    if (equity_to_margin_ratio) {
+                        strategy_metrics["Equity-to-Margin Ratio"] = *equity_to_margin_ratio;
+                    }
 
                     // Risk & Liquidity Metrics
-                    strategy_metrics["Margin Cushion"] =
-                        margin_cushion * 100.0;  // Convert to percentage
+                    if (margin_cushion) {
+                        strategy_metrics["Margin Cushion"] =
+                            *margin_cushion * 100.0;  // Convert to percentage
+                    }
                     strategy_metrics["Margin Posted"] = total_posted_margin;
                     strategy_metrics["Cash Available"] =
                         current_portfolio_value - total_posted_margin;
