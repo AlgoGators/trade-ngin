@@ -174,10 +174,10 @@ TEST(StatisticsGrid, TotalDaysIsTheCountOfSettledGridReturns) {
     LiveHistoricalMetricsCalculator calc;
     // Seven stored rows; five grid returns. The legacy row series is deliberately longer.
     const std::vector<double> rows(7, 0.1);
-    const auto m = calc.calculate(rows, rows, {}, 0, week_through("2026-04-26"), kFuturesK);
+    const auto m = calc.calculate(rows, rows, 0, week_through("2026-04-26"), kFuturesK);
     EXPECT_EQ(m.total_days, 5);
     // The Saturday row and the row as written carry Friday's n (R28, R39).
-    EXPECT_EQ(calc.calculate(rows, rows, {}, 0, week_through("2026-04-25"), kFuturesK)
+    EXPECT_EQ(calc.calculate(rows, rows, 0, week_through("2026-04-25"), kFuturesK)
                   .total_days,
               4);
     EXPECT_EQ(historical_metrics_int_columns(m).at("total_days"), 5);
@@ -186,7 +186,7 @@ TEST(StatisticsGrid, TotalDaysIsTheCountOfSettledGridReturns) {
 TEST(StatisticsGrid, AnnualizedReturnIsGeometricOnTheGridForEveryN) {
     LiveHistoricalMetricsCalculator calc;
     const auto s = week_through("2026-04-26");
-    const auto m = calc.calculate({}, {}, {}, 0, s, kFuturesK);
+    const auto m = calc.calculate({}, {}, 0, s, kFuturesK);
     // R = 501,300 / 500,000 - 1 = 0.0026; n = 5; K = 311.0574.
     const double want = (std::pow(1.0026, 311.0574 / 5.0) - 1.0) * 100.0;
     EXPECT_NEAR(m.total_annualized_return, want, 1e-9);
@@ -241,7 +241,7 @@ TEST(StatisticsGrid, VolatilityAndSharpeAreTakenOnTheGridReturnsWithItsSessionsA
     const auto s = week_through("2026-04-26");
     // The stored-row series handed in is deliberately different: seven rows of +9 percent.
     const std::vector<double> rows(7, 9.0);
-    const auto m = calc.calculate(rows, {}, {}, 0, s, kFuturesK);
+    const auto m = calc.calculate(rows, {}, 0, s, kFuturesK);
 
     // The five grid returns in percent: 0.2, 0, -0.399201..., 0.400801..., 0.059880...
     double sum = 0.0;
@@ -269,22 +269,22 @@ TEST(StatisticsGrid, VolatilityAndSharpeAreTakenOnTheGridReturnsWithItsSessionsA
 TEST(StatisticsGrid, TheSaturdayAndTheThinDateAreNotObservationsOfTheVolatility) {
     LiveHistoricalMetricsCalculator calc;
     // A series through Saturday is Friday's (R28): same volatility, Sharpe and Sortino.
-    const auto friday = calc.calculate({}, {}, {}, 0, week_through("2026-04-24"), kFuturesK);
-    const auto saturday = calc.calculate({}, {}, {}, 0, week_through("2026-04-25"), kFuturesK);
+    const auto friday = calc.calculate({}, {}, 0, week_through("2026-04-24"), kFuturesK);
+    const auto saturday = calc.calculate({}, {}, 0, week_through("2026-04-25"), kFuturesK);
     EXPECT_DOUBLE_EQ(saturday.volatility, friday.volatility);
     EXPECT_DOUBLE_EQ(saturday.sharpe_ratio, friday.sharpe_ratio);
     EXPECT_DOUBLE_EQ(saturday.sortino_ratio, friday.sortino_ratio);
     EXPECT_DOUBLE_EQ(saturday.downside_deviation, friday.downside_deviation);
     // Sunday's observation holds Saturday's P&L: the series through Sunday has five returns.
-    const auto sunday = calc.calculate({}, {}, {}, 0, week_through("2026-04-26"), kFuturesK);
+    const auto sunday = calc.calculate({}, {}, 0, week_through("2026-04-26"), kFuturesK);
     EXPECT_NE(sunday.volatility, friday.volatility);
 }
 
 TEST(StatisticsGrid, AnEquitySeriesIsAnnualisedWithTwoHundredFiftyTwo) {
     LiveHistoricalMetricsCalculator calc;
     const auto s = week_through("2026-04-26");
-    const auto fut = calc.calculate({}, {}, {}, 0, s, kFuturesK);
-    const auto eq = calc.calculate({}, {}, {}, 0, s, 252.0);
+    const auto fut = calc.calculate({}, {}, 0, s, kFuturesK);
+    const auto eq = calc.calculate({}, {}, 0, s, 252.0);
     // One K per series, in every annualised figure of it.
     EXPECT_NEAR(eq.volatility / fut.volatility, std::sqrt(252.0 / 311.0574), 1e-12);
     EXPECT_NEAR(eq.sharpe_ratio / fut.sharpe_ratio, std::sqrt(252.0 / 311.0574), 1e-12);
@@ -295,9 +295,52 @@ TEST(StatisticsGrid, AnEquitySeriesIsAnnualisedWithTwoHundredFiftyTwo) {
 
 TEST(StatisticsGrid, FewerThanTwoGridReturnsGiveNoVolatilityAndNoRatio) {
     LiveHistoricalMetricsCalculator calc;
-    const auto one = calc.calculate({1.0, 2.0, 3.0}, {}, {}, 0, week_through("2026-04-20"), kFuturesK);
+    const auto one = calc.calculate({1.0, 2.0, 3.0}, {}, 0, week_through("2026-04-20"), kFuturesK);
     EXPECT_DOUBLE_EQ(one.volatility, 0.0);
     EXPECT_DOUBLE_EQ(one.sharpe_ratio, 0.0);
     EXPECT_DOUBLE_EQ(one.downside_deviation, 0.0);
     EXPECT_DOUBLE_EQ(one.sortino_ratio, 0.0);
+}
+
+// ===== (5c) the drawdown =====
+
+TEST(StatisticsGrid, MaxDrawdownIsTakenOnEveryGridLevelFromTheBase) {
+    LiveHistoricalMetricsCalculator calc;
+    // Grid levels 501,000 / 501,000 / 499,000 / 501,000 / 501,300 on a base of 500,000: the
+    // peak 501,000 (Monday) to 499,000 (Wednesday) is 2,000 / 501,000 = 0.399201 percent.
+    const auto m = calc.calculate({}, {}, 0, week_through("2026-04-26"), kFuturesK);
+    EXPECT_NEAR(m.max_drawdown, 2000.0 / 501000.0 * 100.0, 1e-9);
+    EXPECT_NEAR(m.max_drawdown, 0.399202, 1e-6);
+    // Through Monday there is one level above the base: no drawdown yet.
+    EXPECT_DOUBLE_EQ(calc.calculate({}, {}, 0, week_through("2026-04-20"), kFuturesK).max_drawdown,
+                     0.0);
+    // The Saturday level 500,900 is off the grid: the series through Saturday is Friday's.
+    EXPECT_DOUBLE_EQ(calc.calculate({}, {}, 0, week_through("2026-04-25"), kFuturesK).max_drawdown,
+                     calc.calculate({}, {}, 0, week_through("2026-04-24"), kFuturesK).max_drawdown);
+}
+
+TEST(StatisticsGrid, TheDrawdownPeakIsSeededAtTheBookEquityAtItsStart) {
+    LiveHistoricalMetricsCalculator calc;
+    // A book of 500,000 whose first grid level is 498,000 and which then recovers: the fall from
+    // the base is its drawdown, 0.4 percent. Seeded at the first level it would read 0.
+    const std::vector<DatedLevel> stored = {{"2026-04-19", 500000.0}, {"2026-04-20", 498000.0},
+                                            {"2026-04-21", 499000.0}};
+    const auto s = build_statistics_series(stored, {"2026-04-19", "2026-04-20", "2026-04-21"},
+                                           "2026-04-19", 500000.0, "2026-04-21");
+    EXPECT_NEAR(calc.calculate({}, {}, 0, s, kFuturesK).max_drawdown, 0.4, 1e-9);
+
+    // A start row that carries a loss (R77 (c)): the base is still the initial capital.
+    const std::vector<DatedLevel> losing_start = {{"2025-11-11", 495000.0},
+                                                  {"2025-11-12", 496000.0}};
+    const auto t = build_statistics_series(losing_start, {"2025-11-11", "2025-11-12"},
+                                           "2025-11-11", 500000.0, "2025-11-12");
+    EXPECT_NEAR(calc.calculate({}, {}, 0, t, kFuturesK).max_drawdown, 1.0, 1e-9);
+}
+
+TEST(StatisticsGrid, TheStoredRowHistoriesDoNotReachTheDrawdown) {
+    LiveHistoricalMetricsCalculator calc;
+    const auto s = week_through("2026-04-26");
+    const auto quiet = calc.calculate({}, {}, 0, s, kFuturesK);
+    const auto noisy = calc.calculate({-50.0, 40.0}, {-250000.0, 100000.0}, 0, s, kFuturesK);
+    EXPECT_DOUBLE_EQ(noisy.max_drawdown, quiet.max_drawdown);
 }

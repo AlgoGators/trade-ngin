@@ -153,7 +153,7 @@ TEST(HistoricalMetricsColumns, TheRealAprilTwentiethRowCarriesZeroPointEightNotT
     const double ex_ante_portfolio_var_x100 = 21.8934;
 
     LiveHistoricalMetricsCalculator calc;
-    const auto m = calc.calculate(returns_pct, /*pnl*/ {}, /*equity*/ {}, /*executions*/ 3,
+    const auto m = calc.calculate(returns_pct, /*pnl*/ {}, /*executions*/ 3,
                                   grid_of_returns(returns_pct), 252.0);
 
     // Sample sd of the twenty returns, times sqrt(252): the population figure the decisions
@@ -214,11 +214,9 @@ TEST(HistoricalMetricsColumns, KnownSeriesProducesHandComputedColumns) {
     // which is why neither runner scales the loaded series by 100.
     const std::vector<double> returns_pct = {1.0, -2.0, 3.0, 0.0, -1.0};
     const std::vector<double> pnl = {100.0, -200.0, 300.0, 0.0, -100.0};
-    const std::vector<double> equity = {10100.0, 9900.0, 10200.0, 10200.0, 10100.0};
 
     LiveHistoricalMetricsCalculator calc;
-    const auto m = calc.calculate(returns_pct, pnl, equity, 4, grid_of_returns(returns_pct),
-                                  252.0);
+    const auto m = calc.calculate(returns_pct, pnl, 4, grid_of_returns(returns_pct), 252.0);
 
     // mean = (1 - 2 + 3 + 0 - 1)/5 = 0.2
     // sample variance = ((0.8)^2+(-2.2)^2+(2.8)^2+(-0.2)^2+(-1.2)^2)/(5 - 1)
@@ -240,13 +238,10 @@ TEST(HistoricalMetricsColumns, KnownSeriesProducesHandComputedColumns) {
     EXPECT_NEAR(m.sortino_ratio, 0.2 * 252.0 / dd, 1e-9);
     EXPECT_NEAR(m.sortino_ratio, 3.174902, 1e-6);
 
-    // Drawdown is tracked from a running peak SEEDED AT THE FIRST EQUITY VALUE, not at
-    // initial capital: peak 10100 -> 9900 is (10100-9900)/10100*100 = 1.9801980%, and the
-    // later 10200 -> 10100 leg is only 0.9803922%. The maximum is the first one. (Written
-    // the other way round first, and the implementation was right: the series' own opening
-    // level is the peak, so a book that starts by losing money records that loss.)
-    EXPECT_NEAR(m.max_drawdown, (10100.0 - 9900.0) / 10100.0 * 100.0, 1e-9);
-    EXPECT_GT(m.max_drawdown, (10200.0 - 10100.0) / 10200.0 * 100.0);
+    // Drawdown over the grid levels 101, 98.98, 101.9494, 101.9494, 100.929906 with the peak
+    // seeded at the base 100: the peak 101 to 98.98 is the -2 percent day, 2.0; the later
+    // 101.9494 to 100.929906 leg is 1.0. The maximum is the first one.
+    EXPECT_NEAR(m.max_drawdown, 2.0, 1e-9);
 
     EXPECT_EQ(m.winning_days, 2);
     EXPECT_EQ(m.losing_days, 2);

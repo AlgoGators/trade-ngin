@@ -3652,8 +3652,6 @@ int main(int argc, char* argv[]) {
                     combined_strategy_id, coordinator_config.portfolio_id, previous_date);
                 auto pnl_hist_res = data_loader->load_daily_pnl_history(
                     combined_strategy_id, coordinator_config.portfolio_id, previous_date);
-                auto equity_hist_res = data_loader->load_equity_curve_history(
-                    combined_strategy_id, coordinator_config.portfolio_id, previous_date);
                 auto trades_hist_res = data_loader->load_total_trades_count(
                     combined_strategy_id, coordinator_config.portfolio_id, previous_date);
                 auto t1_row = data_loader->load_live_results(
@@ -3661,7 +3659,6 @@ int main(int argc, char* argv[]) {
 
                 std::vector<double> returns_hist;
                 std::vector<double> pnl_hist;
-                std::vector<double> equity_hist;
                 int total_trades_hist = 0;
 
                 if (returns_hist_res.is_ok()) {
@@ -3669,9 +3666,6 @@ int main(int argc, char* argv[]) {
                 }
                 if (pnl_hist_res.is_ok()) {
                     pnl_hist = pnl_hist_res.value();
-                }
-                if (equity_hist_res.is_ok()) {
-                    equity_hist = equity_hist_res.value();
                 }
                 if (trades_hist_res.is_ok()) {
                     total_trades_hist = trades_hist_res.value();
@@ -3708,7 +3702,7 @@ int main(int argc, char* argv[]) {
                 // not 11%) because daily_return is computed in SQL as `... * 100.0`. Do NOT
                 // multiply by 100 here -- that produced a 100x volatility / 100x lower sharpe.
                 settled_statistics =
-                    hist_calc.calculate(returns_hist, pnl_hist, equity_hist, total_trades_hist,
+                    hist_calc.calculate(returns_hist, pnl_hist, total_trades_hist,
                                         statistics_series, sessions_per_year);
 
                 // win_rate over the calendar trading-days count; total_days is the grid's n

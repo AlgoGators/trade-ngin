@@ -5157,8 +5157,6 @@ int main(int argc, char* argv[]) {
                     kEquityStrategyId, portfolio_id, previous_date);
                 auto pnl_hist_res = data_loader->load_daily_pnl_history(
                     kEquityStrategyId, portfolio_id, previous_date);
-                auto equity_hist_res = data_loader->load_equity_curve_history(
-                    kEquityStrategyId, portfolio_id, previous_date);
                 auto trades_hist_res = data_loader->load_total_trades_count(
                     kEquityStrategyId, portfolio_id, previous_date);
                 auto t1_row = data_loader->load_live_results(
@@ -5166,12 +5164,10 @@ int main(int argc, char* argv[]) {
 
                 std::vector<double> returns_hist;
                 std::vector<double> pnl_hist;
-                std::vector<double> equity_hist;
                 int total_trades_hist = 0;
 
                 if (returns_hist_res.is_ok()) returns_hist = returns_hist_res.value();
                 if (pnl_hist_res.is_ok()) pnl_hist = pnl_hist_res.value();
-                if (equity_hist_res.is_ok()) equity_hist = equity_hist_res.value();
                 if (trades_hist_res.is_ok()) total_trades_hist = trades_hist_res.value();
 
                 // The statistics grid of an equity book: the NYSE sessions from the book's start,
@@ -5209,7 +5205,7 @@ int main(int argc, char* argv[]) {
                 // 100.0), so the series arrives in percent and must NOT be scaled again --
                 // the futures runner carries the same note after a 100x volatility bug.
                 settled_statistics =
-                    hist_calc.calculate(returns_hist, pnl_hist, equity_hist, total_trades_hist,
+                    hist_calc.calculate(returns_hist, pnl_hist, total_trades_hist,
                                         statistics_series, sessions_per_year);
 
                 // win_rate over the calendar trading-days count; total_days is the grid's n
@@ -5241,7 +5237,6 @@ int main(int argc, char* argv[]) {
                      " gross_loss=" + std::to_string(settled_statistics.gross_loss) +
                      " profit_factor=" + std::to_string(settled_statistics.profit_factor) +
                      " (returns n=" + std::to_string(returns_hist.size()) +
-                     ", equity n=" + std::to_string(equity_hist.size()) +
                      ", executions=" + std::to_string(total_trades_hist) + ")");
 
                 if (t1_row.is_ok()) {

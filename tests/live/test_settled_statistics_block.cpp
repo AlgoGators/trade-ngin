@@ -267,11 +267,21 @@ TEST(SettledStatisticsBlock, NoRunnerAnnualisesOnCalendarDaysForTheRatios) {
         EXPECT_EQ(count_of(src, "finalized_t1_annualized_return"), 0u) << runner;
         const std::string block = statistics_block(src);
         ASSERT_FALSE(block.empty()) << runner;
-        EXPECT_NE(block.find("hist_calc.calculate(returns_hist, pnl_hist, equity_hist, "
-                             "total_trades_hist,\n"
-                             "                                        statistics_series, "
-                             "sessions_per_year);"),
-                  std::string::npos)
+        EXPECT_EQ(block.find("annualized_return, total_trades_hist"), std::string::npos)
             << runner << ": the calculator is still handed an annualised return";
+    }
+}
+
+// T-8a (5c): the drawdown is taken on the grid levels of the statistics series, so no runner
+// reads the equity-curve table for a statistic any more.
+TEST(SettledStatisticsBlock, NoRunnerReadsTheEquityCurveTableForADrawdown) {
+    for (const auto& runner : kRunners) {
+        const std::string src = read_source(runner);
+        if (src.empty()) GTEST_SKIP() << "runner source not found from the test working directory";
+        EXPECT_EQ(count_of(src, "load_equity_curve_history("), 0u) << runner;
+        const std::string block = statistics_block(src);
+        ASSERT_FALSE(block.empty()) << runner;
+        EXPECT_EQ(block.find("equity_hist"), std::string::npos)
+            << runner << ": the calculator is still handed an equity-curve history";
     }
 }

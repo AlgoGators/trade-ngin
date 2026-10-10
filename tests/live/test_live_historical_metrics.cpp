@@ -133,7 +133,7 @@ TEST_F(LiveHistoricalMetricsTest, CalculateSortinoOfOneLosingDayDividesByItsDown
     // Grid returns in percent {-1, 5, 5}, K 252: downside = sqrt(1/3) * sqrt(252) = 9.165151390;
     // Sortino = mean x K / that = 3 x 252 / 9.165151390 = 82.486363.
     LiveHistoricalMetricsCalculator c;
-    auto m = c.calculate({}, {}, {}, 0, grid_of_returns({-1.0, 5.0, 5.0}), 252.0);
+    auto m = c.calculate({}, {}, 0, grid_of_returns({-1.0, 5.0, 5.0}), 252.0);
     EXPECT_NEAR(m.downside_deviation, 9.165151390, 1e-9);
     EXPECT_NEAR(m.sortino_ratio, 3.0 * 252.0 / 9.165151390, 1e-6);
     EXPECT_NEAR(m.sortino_ratio, 82.486363, 1e-5);
@@ -142,34 +142,48 @@ TEST_F(LiveHistoricalMetricsTest, CalculateSortinoOfOneLosingDayDividesByItsDown
 // ===== calculate_max_drawdown_from_equity =====
 
 TEST_F(LiveHistoricalMetricsTest, MaxDrawdownOfEmptyIsZero) {
-    EXPECT_DOUBLE_EQ(LiveHistoricalMetricsCalculator::calculate_max_drawdown_from_equity({}), 0.0);
+    EXPECT_DOUBLE_EQ(LiveHistoricalMetricsCalculator::calculate_max_drawdown_from_equity({}, 100.0), 0.0);
 }
 
 TEST_F(LiveHistoricalMetricsTest, MaxDrawdownOfMonotonicIncreasingIsZero) {
     EXPECT_DOUBLE_EQ(
-        LiveHistoricalMetricsCalculator::calculate_max_drawdown_from_equity({100, 110, 120, 130}),
+        LiveHistoricalMetricsCalculator::calculate_max_drawdown_from_equity({100, 110, 120, 130},
+                                                                            100.0),
         0.0);
 }
 
 TEST_F(LiveHistoricalMetricsTest, MaxDrawdownComputesPercentLossFromPeak) {
     // Peak = 100, trough = 80. DD = 20%.
     auto dd =
-        LiveHistoricalMetricsCalculator::calculate_max_drawdown_from_equity({100, 90, 80, 95});
+        LiveHistoricalMetricsCalculator::calculate_max_drawdown_from_equity({100, 90, 80, 95},
+                                                                            100.0);
     EXPECT_NEAR(dd, 20.0, 1e-9);
 }
 
 TEST_F(LiveHistoricalMetricsTest, MaxDrawdownTracksLargerDrawdown) {
     // Peak A=100, trough 90 → 10%. Then peak B=120, trough 96 → 20%.
     auto dd = LiveHistoricalMetricsCalculator::calculate_max_drawdown_from_equity(
-        {100, 90, 100, 120, 96});
+        {100, 90, 100, 120, 96}, 100.0);
     EXPECT_NEAR(dd, 20.0, 1e-9);
+}
+
+TEST_F(LiveHistoricalMetricsTest, MaxDrawdownPeakStartsAtTheSeedAndNotAtTheFirstValue) {
+    // A book of 100 whose first level is already 95: the fall from the seed is a drawdown.
+    // Seeded at the first value (95) the same levels would read 0.
+    EXPECT_NEAR(LiveHistoricalMetricsCalculator::calculate_max_drawdown_from_equity({95, 97, 99},
+                                                                                    100.0),
+                5.0, 1e-9);
+    // A seed below the first level is overtaken at once and changes nothing.
+    EXPECT_NEAR(LiveHistoricalMetricsCalculator::calculate_max_drawdown_from_equity({100, 90},
+                                                                                    50.0),
+                10.0, 1e-9);
 }
 
 // ===== calculate (full integration) =====
 
 TEST_F(LiveHistoricalMetricsTest, CalculateEmptyReturnsZeroedMetricsExceptCounts) {
     LiveHistoricalMetricsCalculator c;
-    auto m = c.calculate({}, {}, {}, 5, flat_grid(0), 252.0);
+    auto m = c.calculate({}, {}, 5, flat_grid(0), 252.0);
     EXPECT_EQ(m.total_days, 0);
     EXPECT_EQ(m.total_trades, 5);
     EXPECT_DOUBLE_EQ(m.sharpe_ratio, 0.0);
@@ -181,8 +195,7 @@ TEST_F(LiveHistoricalMetricsTest, CalculatePopulatesAllAggregateStats) {
     LiveHistoricalMetricsCalculator c;
     std::vector<double> returns{1.0, -0.5, 2.0, -1.5, 0.5};
     std::vector<double> pnl{1000.0, -500.0, 2000.0, -1500.0, 500.0};
-    std::vector<double> equity{100000, 101000, 100500, 102500, 101000, 101500};
-    auto m = c.calculate(returns, pnl, equity, /*trades=*/10, grid_of_returns(returns), 252.0);
+    auto m = c.calculate(returns, pnl, /*trades=*/10, grid_of_returns(returns), 252.0);
 
     EXPECT_EQ(m.total_days, 5);
     EXPECT_EQ(m.total_trades, 10);
@@ -202,13 +215,13 @@ TEST_F(LiveHistoricalMetricsTest, CalculatePopulatesAllAggregateStats) {
 
 TEST_F(LiveHistoricalMetricsTest, CalculateProfitFactorIsLargeWhenNoLosses) {
     LiveHistoricalMetricsCalculator c;
-    auto m = c.calculate({1.0, 2.0}, {100.0, 200.0}, {1000.0, 1100.0}, 2, flat_grid(2), 252.0);
+    auto m = c.calculate({1.0, 2.0}, {100.0, 200.0}, 2, flat_grid(2), 252.0);
     EXPECT_GT(m.profit_factor, 100.0);
 }
 
 TEST_F(LiveHistoricalMetricsTest, CalculateZeroVolatilityKeepsRatiosAtZero) {
     LiveHistoricalMetricsCalculator c;
-    auto m = c.calculate({0.5, 0.5, 0.5}, {}, {}, 0, flat_grid(3), 252.0);
+    auto m = c.calculate({0.5, 0.5, 0.5}, {}, 0, flat_grid(3), 252.0);
     EXPECT_DOUBLE_EQ(m.volatility, 0.0);
     EXPECT_DOUBLE_EQ(m.sharpe_ratio, 0.0);
     EXPECT_DOUBLE_EQ(m.sortino_ratio, 0.0);

@@ -59,12 +59,12 @@ double LiveHistoricalMetricsCalculator::calculate_annualized_downside_deviation(
 }
 
 double LiveHistoricalMetricsCalculator::calculate_max_drawdown_from_equity(
-    const std::vector<double>& equity_values) {
+    const std::vector<double>& equity_values, double peak_seed) {
     if (equity_values.empty()) {
         return 0.0;
     }
 
-    double peak = equity_values.front();
+    double peak = peak_seed;
     double max_dd_pct = 0.0;
 
     for (double equity : equity_values) {
@@ -200,7 +200,6 @@ std::string statistics_days_warning(const HistoricalMetrics& m, const Statistics
 HistoricalMetrics LiveHistoricalMetricsCalculator::calculate(
     const std::vector<double>& daily_returns_pct,
     const std::vector<double>& daily_pnl_dollars,
-    const std::vector<double>& equity_values,
     int total_trades_executions,
     const StatisticsSeries& grid,
     double sessions_per_year) const {
@@ -225,14 +224,12 @@ HistoricalMetrics LiveHistoricalMetricsCalculator::calculate(
         metrics.sortino_ratio = grid_mean * sessions_per_year / metrics.downside_deviation;
     }
 
+    // Max drawdown over every grid level from the book's start, the peak seeded at the base
+    metrics.max_drawdown = calculate_max_drawdown_from_equity(grid.levels, grid.base);
+
     // Early exit if no returns history – the row-based figures below stay at 0
     if (daily_returns_pct.empty()) {
         return metrics;
-    }
-
-    // Max drawdown from equity curve (if available)
-    if (!equity_values.empty()) {
-        metrics.max_drawdown = calculate_max_drawdown_from_equity(equity_values);
     }
 
     // Day-level win/loss stats based on daily returns

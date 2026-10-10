@@ -20,7 +20,7 @@ struct HistoricalMetrics {
     // Risk-adjusted performance
     double sharpe_ratio = 0.0;   // mean(r) / sample sd(r) x sqrt(K), rf 0, on the grid returns
     double sortino_ratio = 0.0;  // mean(r) x K / downside_deviation
-    double max_drawdown = 0.0;        // % peak-to-trough from equity curve
+    double max_drawdown = 0.0;        // % peak-to-trough over the grid levels, peak seeded at the base
     double volatility = 0.0;          // annualized, % units
     double downside_deviation = 0.0;  // annualized, % units
 
@@ -141,18 +141,16 @@ public:
      *
      * @param daily_returns_pct Daily returns in percentage points (e.g. 0.5 = 0.5%).
      * @param daily_pnl_dollars Daily PnL values in portfolio currency.
-     * @param equity_values Full equity curve values (portfolio value over time).
      * @param total_trades_executions Total number of executions since inception.
-     * @param grid The statistics series: total_days is its count of returns, and
+     * @param grid The statistics series: total_days is its count of returns;
      *        total_annualized_return, volatility, downside_deviation and the Sharpe and Sortino
-     *        ratios are taken on its returns.
+     *        ratios are taken on its returns; max_drawdown on its levels from its base.
      * @param sessions_per_year The sessions a year K of the grid the series is taken on; every
      *        annualised figure of the series uses this one K.
      * @return HistoricalMetrics structure with all fields populated.
      */
     HistoricalMetrics calculate(const std::vector<double>& daily_returns_pct,
                                 const std::vector<double>& daily_pnl_dollars,
-                                const std::vector<double>& equity_values,
                                 int total_trades_executions,
                                 const StatisticsSeries& grid,
                                 double sessions_per_year) const;
@@ -166,7 +164,10 @@ private:
     static double calculate_annualized_downside_deviation(const std::vector<double>& returns_pct,
                                                           double sessions_per_year,
                                                           double target = 0.0);
-    static double calculate_max_drawdown_from_equity(const std::vector<double>& equity_values);
+    // The largest fall from a running peak, in percent; the peak starts at `peak_seed` (the
+    // book's equity at its start, the base of the series: T-8D R9).
+    static double calculate_max_drawdown_from_equity(const std::vector<double>& equity_values,
+                                                     double peak_seed);
 };
 
 /**
