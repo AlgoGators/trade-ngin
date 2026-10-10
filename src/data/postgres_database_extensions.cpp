@@ -6,6 +6,7 @@
 #include <iomanip>
 #include <sstream>
 #include "trade_ngin/core/time_utils.hpp"
+#include "trade_ngin/data/backtest_position_row.hpp"
 #include "trade_ngin/data/postgres_database.hpp"
 
 namespace trade_ngin {
@@ -181,8 +182,15 @@ Result<std::unordered_map<std::string, std::string>> PostgresDatabase::get_store
 Result<void> PostgresDatabase::store_backtest_summary(
     const std::string& run_id, const Timestamp& start_date, const Timestamp& end_date,
     const std::unordered_map<std::string, double>& metrics, const std::string& portfolio_id,
-    const std::string& table_name) {
+    const std::string& table_name, const std::vector<LiveResultsCell>& cells) {
     std::lock_guard<std::mutex> lock(mutex_);
+
+    // A cell's column and type are concatenated into the statement: allow-listed before
+    // anything else happens.
+    auto cells_validation = validate_live_results_cells(cells);
+    if (cells_validation.is_error()) {
+        return cells_validation;
+    }
 
     // Validate connection
     auto validation = validate_connection();
@@ -201,6 +209,17 @@ Result<void> PostgresDatabase::store_backtest_summary(
 
         std::string actual_portfolio_id = portfolio_id.empty() ? "BASE_PORTFOLIO" : portfolio_id;
 
+        // The typed cells (migration 031): named only when they have a value, so a cell without
+        // one stays NULL. The value travels quoted, at the precision its text carries, and is
+        // cast by the statement.
+        std::string cell_columns;
+        std::string cell_values;
+        for (const auto& cell : cells) {
+            if (!cell.value) continue;
+            cell_columns += ", " + cell.column;
+            cell_values += ", " + txn.quote(*cell.value) + "::" + cell.type;
+        }
+
         // Build INSERT query with all metrics
         std::string query =
             "INSERT INTO " + table_name +
@@ -210,7 +229,7 @@ Result<void> PostgresDatabase::store_backtest_summary(
             "max_drawdown, calmar_ratio, volatility, total_trades, win_rate, profit_factor, "
             "avg_win, avg_loss, max_win, max_loss, avg_holding_period, var_95, cvar_95, "
             "beta, correlation, downside_volatility, transaction_costs, roll_costs, "
-            "total_roll_fills) VALUES (";
+            "total_roll_fills" + cell_columns + ") VALUES (";
 
         // Add parameters
         query += txn.quote(run_id) + ", ";
@@ -236,7 +255,7 @@ Result<void> PostgresDatabase::store_backtest_summary(
                 query += "0.0";  // Default value if metric not provided
             }
         }
-        query += ")";
+        query += cell_values + ")";
 
         txn.exec(query);
         txn.commit();
@@ -415,11 +434,10 @@ Result<void> PostgresDatabase::store_backtest_positions(const std::vector<Positi
             // dropping it strands the exit's P&L. The rule is the live one
             // (LiveDailyCycle::is_dead_row): dead means no quantity AND no realized.
             // Futures leave the flag false and keep the original unconditional filter.
-            if (std::abs(static_cast<double>(pos.quantity)) < 1e-10) {
-                if (!keep_closed_rows ||
-                    std::abs(static_cast<double>(pos.realized_pnl)) < 1e-10) {
-                    continue;
-                }
+            if (!backtest_position_row_is_stored(static_cast<double>(pos.quantity),
+                                                 static_cast<double>(pos.realized_pnl),
+                                                 keep_closed_rows)) {
+                continue;
             }
 
             // Extract date from last_update timestamp

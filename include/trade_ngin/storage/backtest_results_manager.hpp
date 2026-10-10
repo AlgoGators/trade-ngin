@@ -21,6 +21,8 @@ class BacktestResultsManager : public ResultsManagerBase {
 private:
     // Cached data for storage
     std::unordered_map<std::string, double> performance_metrics_;
+    // The typed cells of the backtest.results row (migration 031); a cell with no value is NULL.
+    std::vector<LiveResultsCell> summary_cells_;
     std::vector<std::pair<Timestamp, double>> equity_curve_;
     // One entry per equity point (the row's risk_detail object as text, empty for NULL), or
     // empty: the column is not named (migration 020).
@@ -56,6 +58,11 @@ public:
     // Set data to be stored
     void set_performance_metrics(const std::unordered_map<std::string, double>& metrics) {
         performance_metrics_ = metrics;
+    }
+
+    /// The statistics of migration 031 as typed cells (backtest_statistics_cells).
+    void set_summary_cells(const std::vector<LiveResultsCell>& cells) {
+        summary_cells_ = cells;
     }
 
     void set_equity_risk_detail(const std::vector<std::string>& risk_detail) {

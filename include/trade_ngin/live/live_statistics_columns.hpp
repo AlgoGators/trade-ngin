@@ -155,6 +155,11 @@ inline constexpr int kMonthlyStatisticsMinMonths = 12;
  * @param symbol_pnl        the book's stored per-symbol P&L cells from its start through `through`
  * @param capitals          the stored sizing capitals; empty on a book that stores none (the
  *                          equity book), whose three sizing-capital statistics stay NULL
+ * @param first_return_after the stored date the series' FIRST return is taken from, for the
+ *                          symbol of a worst day that is the first return: the rows dated after
+ *                          it are that return's. Empty (a live book): from the first stored row
+ *                          of `symbol_pnl`. A backtest passes its base row's date, whose own
+ *                          stored P&L is before the base level and in no return.
  *
  * The worst day: the first smallest grid return (HistoricalMetrics::worst_day is its value), its
  * date, and most_negative_symbol over the rows folded into it. On the sizing capital: fewer than
@@ -168,7 +173,8 @@ LiveStatisticsColumns live_statistics_columns(const StatisticsSeries& series,
                                               const std::string& book_start,
                                               const std::string& through,
                                               const std::vector<SymbolDayPnl>& symbol_pnl,
-                                              const std::vector<DatedCapital>& capitals);
+                                              const std::vector<DatedCapital>& capitals,
+                                              const std::string& first_return_after = std::string());
 
 /**
  * @brief Set the three fill counts from the book's stored executions (LOOP_SPEC section 10; HD

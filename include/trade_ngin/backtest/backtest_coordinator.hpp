@@ -1,5 +1,6 @@
 #pragma once
 
+#include <functional>
 #include <memory>
 #include <map>
 #include <optional>
@@ -145,6 +146,13 @@ private:
     // its equity curve row, and the account value V_t the cycle's sizing capital was read with.
     std::map<size_t, std::string> equity_risk_detail_;
     double cycle_account_value_ = 0.0;
+    /// Migration 031: the per-symbol P&L cells of the position rows the run stores, one entry
+    /// per symbol and stored date (summed over the sleeves), and the last date collected.
+    std::vector<SymbolDayPnl> symbol_day_pnl_;
+    std::string symbol_day_pnl_date_;
+    /// The risk_detail text of each equity-curve row (empty: a NULL cell), `rows` entries; empty
+    /// altogether on a run that stored none.
+    std::vector<std::string> equity_risk_detail_rows(size_t rows) const;
     /// T-7b-2 9c (HD 2026-09-25, compounding): every cycle sizes the book on the equity curve's
     /// last row (PortfolioManager::set_sizing_capital). Futures only (run_portfolio with
     /// AssetClass::FUTURES), like the session hold; the equity backtest sizes as before.
@@ -373,6 +381,26 @@ public:
         const std::map<Timestamp, std::vector<Bar>>& grouped_bars, AssetClass asset_class,
         double sessions_per_year);
 
+    /**
+     * @brief The per-symbol P&L cells of the position rows a run stores for one date (the
+     *        worst day's symbol, migration 031)
+     *
+     * One entry per symbol: the realised P&L and the unrealised level of its rows, summed over
+     * the sleeves, of the rows backtest.final_positions takes
+     * (backtest_position_row_is_stored: a futures sleeve's zero-quantity row is not stored and
+     * not read). A futures row's realised P&L is the symbol's whole P&L of the day (LOOP_SPEC
+     * section 6.6); an equity row carries the realised flow and the open position's unrealised
+     * level.
+     *
+     * @param strategy_positions The sleeves' position rows after the day's P&L was booked
+     * @param keeps_closed_rows Whether a sleeve stores its rows closed to zero (a cash book)
+     * @param date The stored date, "YYYY-MM-DD"
+     */
+    static std::vector<SymbolDayPnl> stored_symbol_day_pnl(
+        const std::unordered_map<std::string, std::unordered_map<std::string, Position>>&
+            strategy_positions,
+        const std::function<bool(const std::string&)>& keeps_closed_rows, const std::string& date);
+
 private:
     /// The refusal of a run that was handed no sessions a year; ok otherwise.
     Result<void> require_statistics_sessions_per_year() const;
@@ -405,6 +433,11 @@ private:
      */
     void load_equity_cost_retier(const std::vector<std::string>& symbols,
                                  const Timestamp& start_date, const Timestamp& end_date);
+
+    /// Whether a sleeve's rows closed to zero are stored (E2-F54): its accounting is not the
+    /// futures REALIZED_ONLY.
+    static bool keeps_closed_rows(const std::shared_ptr<PortfolioManager>& portfolio,
+                                  const std::string& strategy_id);
 
     /**
      * @brief Save daily positions to database

@@ -508,13 +508,18 @@ public:
      * @param end_date End date of backtest
      * @param metrics Map of metric name to value
      * @param table_name Name of the results table
+     * @param cells The typed cells of the row (migration 031: a date, a text, a jsonb object,
+     *        an integer or a number that may have no value). A cell is named only when it has a
+     *        value, so one without stays NULL; a number is stored at the precision of its text,
+     *        not through std::to_string's six decimals.
      * @return Result indicating success or failure
      */
     virtual Result<void> store_backtest_summary(
         const std::string& run_id, const Timestamp& start_date, const Timestamp& end_date,
         const std::unordered_map<std::string, double>& metrics,
         const std::string& portfolio_id = "BASE_PORTFOLIO",
-        const std::string& table_name = "backtest.results");
+        const std::string& table_name = "backtest.results",
+        const std::vector<LiveResultsCell>& cells = {});
 
     /**
      * @brief Store backtest equity curve batch (replaces raw SQL INSERT)

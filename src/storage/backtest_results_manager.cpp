@@ -120,7 +120,8 @@ Result<void> BacktestResultsManager::save_summary_results(const std::string& run
 
     // Use the new database extension method
     return db_->store_backtest_summary(run_id, start_date_, end_date_,
-                                      performance_metrics_, portfolio_id_, "backtest.results");
+                                      performance_metrics_, portfolio_id_, "backtest.results",
+                                      summary_cells_);
 }
 
 Result<void> BacktestResultsManager::save_equity_curve(const std::string& run_id) {

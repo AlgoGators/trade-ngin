@@ -826,19 +826,12 @@ std::vector<std::pair<Timestamp, double>> BacktestMetricsCalculator::statistics_
         return curve;
     }
 
-    // The live statistics' own fold (T-8D R1, R6): the curve's first row is the book's start and
-    // its level the base, so it is never a return row; every later grid date takes the last
-    // level on or before it.
-    std::vector<DatedLevel> levels;
     std::unordered_map<std::string, Timestamp> row_time;
-    levels.reserve(curve.size());
     for (const auto& [timestamp, level] : curve) {
-        const std::string date = core::format_utc_date(timestamp);
-        levels.push_back({date, level});
-        row_time[date] = timestamp;
+        (void)level;
+        row_time[core::format_utc_date(timestamp)] = timestamp;
     }
-    const StatisticsSeries series = build_statistics_series(
-        levels, grid.dates, levels.front().date, curve.front().second, levels.back().date);
+    const StatisticsSeries series = statistics_series(curve, grid);
 
     std::vector<std::pair<Timestamp, double>> folded;
     folded.reserve(series.levels.size() + 1);
@@ -856,6 +849,27 @@ std::vector<std::pair<Timestamp, double>> BacktestMetricsCalculator::statistics_
     return folded;
 }
 
+StatisticsSeries BacktestMetricsCalculator::statistics_series(
+    const std::vector<std::pair<Timestamp, double>>& curve,
+    const BacktestStatisticsGrid& grid) const {
+    if (curve.empty()) {
+        return StatisticsSeries();
+    }
+
+    // The live statistics' own fold (T-8D R1, R6): the curve's first row is the book's start and
+    // its level the base, so it is never a return row; every later grid date takes the last
+    // level on or before it. A run on its own rows has every row's date as its grid.
+    std::vector<DatedLevel> levels;
+    std::vector<std::string> own_dates;
+    levels.reserve(curve.size());
+    for (const auto& [timestamp, level] : curve) {
+        levels.push_back({core::format_utc_date(timestamp), level});
+        if (grid.own_rows) own_dates.push_back(levels.back().date);
+    }
+    return build_statistics_series(levels, grid.own_rows ? own_dates : grid.dates,
+                                   levels.front().date, curve.front().second, levels.back().date);
+}
+
 // ========== Composite Calculation ==========
 
 backtest::BacktestResults BacktestMetricsCalculator::calculate_all_metrics(
@@ -863,7 +877,8 @@ backtest::BacktestResults BacktestMetricsCalculator::calculate_all_metrics(
     const std::vector<ExecutionReport>& executions,
     int warmup_days,
     const PointValueSource& point_value,
-    const BacktestStatisticsGrid& grid) const {
+    const BacktestStatisticsGrid& grid,
+    const BacktestStatisticsInputs& statistics_inputs) const {
     backtest::BacktestResults results;
 
     if (equity_curve.empty()) {
@@ -941,6 +956,15 @@ backtest::BacktestResults BacktestMetricsCalculator::calculate_all_metrics(
     results.max_loss = trade_stats.max_loss;
     results.avg_holding_period = trade_stats.avg_holding_period;
     results.actual_trades = trade_stats.actual_trades;
+
+    // The statistics of migration 031 (LOOP_SPEC sections 7.4 and 10), on the same rows as the
+    // statistics above: the grid series of the rows after the warm-up, whose first row is the
+    // base. The fill count is the trade statistics' own count of the account's fills.
+    results.statistics_columns = backtest_statistics_columns(
+        statistics_series(filtered_curve, grid), sessions_per_year,
+        core::format_utc_date(filtered_curve.front().first),
+        core::format_utc_date(filtered_curve.back().first), statistics_inputs);
+    results.statistics_columns.total_strategy_fills = trade_stats.strategy_fills;
 
     // Per-symbol P&L
     auto symbol_pnl = calculate_symbol_pnl(executions, point_value);

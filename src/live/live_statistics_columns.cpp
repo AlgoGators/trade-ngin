@@ -37,10 +37,13 @@ size_t first_smallest(const std::vector<double>& values) {
     return at;
 }
 
-/// The symbol of the rows folded into the series' return `index`.
+/// The symbol of the rows folded into the series' return `index`; the first return's rows are
+/// those dated after `first_return_after` (empty: from the first stored row).
 std::optional<std::string> symbol_of_return(const StatisticsSeries& series, size_t index,
-                                            const std::vector<SymbolDayPnl>& symbol_pnl) {
-    return most_negative_symbol(symbol_pnl, index > 0 ? series.dates[index - 1] : std::string(),
+                                            const std::vector<SymbolDayPnl>& symbol_pnl,
+                                            const std::string& first_return_after) {
+    return most_negative_symbol(symbol_pnl,
+                                index > 0 ? series.dates[index - 1] : first_return_after,
                                 series.dates[index]);
 }
 
@@ -183,7 +186,8 @@ LiveStatisticsColumns live_statistics_columns(const StatisticsSeries& series,
                                               const std::string& book_start,
                                               const std::string& through,
                                               const std::vector<SymbolDayPnl>& symbol_pnl,
-                                              const std::vector<DatedCapital>& capitals) {
+                                              const std::vector<DatedCapital>& capitals,
+                                              const std::string& first_return_after) {
     LiveStatisticsColumns out;
 
     // The worst day on the account: the first smallest grid return, and the symbol that lost the
@@ -191,7 +195,8 @@ LiveStatisticsColumns live_statistics_columns(const StatisticsSeries& series,
     if (!series.returns_pct.empty()) {
         const size_t worst = first_smallest(series.returns_pct);
         out.worst_day_date = series.dates[worst];
-        out.worst_day_symbol = symbol_of_return(series, worst, symbol_pnl);
+        out.worst_day_symbol =
+            symbol_of_return(series, worst, symbol_pnl, first_return_after);
     }
 
     // On the sizing capital: r^s = the grid return's P&L / E_t, not compounded.
@@ -219,7 +224,7 @@ LiveStatisticsColumns live_statistics_columns(const StatisticsSeries& series,
         out.worst_day_sizing = sizing.returns_pct[worst];
         out.worst_day_sizing_date = sizing.dates[worst];
         out.worst_day_sizing_symbol =
-            symbol_of_return(series, sizing.grid_index[worst], symbol_pnl);
+            symbol_of_return(series, sizing.grid_index[worst], symbol_pnl, first_return_after);
     }
 
     // The complete calendar months.

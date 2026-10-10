@@ -7,6 +7,7 @@
 #include <sstream>
 #include <unordered_map>
 #include <vector>
+#include "trade_ngin/backtest/backtest_statistics_columns.hpp"
 #include "trade_ngin/core/config_base.hpp"
 #include "trade_ngin/core/time_utils.hpp"
 #include "trade_ngin/core/types.hpp"
@@ -237,6 +238,11 @@ struct BacktestResults {
     // (1 + R)^(K / n) - 1, R from the base to the last grid level (T-8D R36). Logged with the
     // run's statistics convention; no column.
     double annualized_return{0.0};
+    // The statistics of migration 031 (LOOP_SPEC sections 7.4 and 10): the worst day with its
+    // date and symbol, the three statistics on the sizing capital, the monthly skew and tail
+    // ratio, the calendar-year returns with the losing years, the account's STRATEGY fills. In
+    // fractions, on the grid above; a field with no value is a NULL cell of backtest.results.
+    BacktestStatisticsColumns statistics_columns;
 
     // Additional analysis
     std::unordered_map<std::string, double> monthly_returns;

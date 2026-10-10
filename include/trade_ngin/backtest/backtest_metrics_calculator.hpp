@@ -5,7 +5,9 @@
 #include <string>
 #include <unordered_map>
 #include <map>
+#include "trade_ngin/backtest/backtest_statistics_columns.hpp"
 #include "trade_ngin/core/types.hpp"
+#include "trade_ngin/live/live_historical_metrics.hpp"
 
 namespace trade_ngin {
 
@@ -352,6 +354,18 @@ public:
         const std::vector<std::pair<Timestamp, double>>& curve,
         const BacktestStatisticsGrid& grid) const;
 
+    /**
+     * @brief The statistics series of a run: the grid returns statistics_grid_curve's levels
+     *        give, with their dates and P&L (build_statistics_series, the live statistics' own
+     *        fold)
+     *
+     * `curve` as for statistics_grid_curve: its first row is the base. With `grid.own_rows`
+     * every later row of the curve is a return row. The series the statistics of migration 031
+     * are taken on (backtest_statistics_columns). Empty for an empty curve.
+     */
+    StatisticsSeries statistics_series(const std::vector<std::pair<Timestamp, double>>& curve,
+                                       const BacktestStatisticsGrid& grid) const;
+
     // ========== Composite Calculation ==========
 
     /**
@@ -366,13 +380,18 @@ public:
      * correlation are taken on the statistics grid (statistics_grid_curve) and annualised with
      * its sessions a year, which the result records (statistics_sessions_per_year,
      * statistics_days, annualized_return). The trade statistics read the executions,
-     * the drawdown curve and the monthly returns every row.
+     * the drawdown curve and the monthly returns every row. The statistics of migration 031
+     * (statistics_columns) are taken on the same grid series (statistics_series) with the same
+     * sessions a year, and total_strategy_fills is the trade statistics' own count of the
+     * account's fills.
      *
      * @param equity_curve Full equity curve including warmup period
      * @param executions All execution reports
      * @param warmup_days Number of days to exclude from metric calculations
      * @param point_value Dollars per price point of each symbol (the trade statistics)
      * @param grid The statistics grid of the run and its sessions a year
+     * @param statistics_inputs The run's stored per-symbol P&L and sizing capitals (the worst
+     *        day's symbol and the three sizing-capital statistics; NULL without them)
      * @return Populated BacktestResults structure
      */
     backtest::BacktestResults calculate_all_metrics(
@@ -380,7 +399,8 @@ public:
         const std::vector<ExecutionReport>& executions,
         int warmup_days,
         const PointValueSource& point_value,
-        const BacktestStatisticsGrid& grid) const;
+        const BacktestStatisticsGrid& grid,
+        const BacktestStatisticsInputs& statistics_inputs = BacktestStatisticsInputs()) const;
 
 private:
     // ========== Helper Methods ==========

@@ -211,7 +211,8 @@ protected:
         TestBase::TearDown();
     }
 
-    Result<BacktestResults> run(AssetClass asset_class, double sessions_per_year) {
+    Result<BacktestResults> run(AssetClass asset_class, double sessions_per_year,
+                                bool store = false) {
         static int n = 0;
         ++n;
         db_->rows = rows();
@@ -219,7 +220,7 @@ protected:
         BacktestCoordinatorConfig cc;
         cc.initial_capital = 1'000'000.0;
         cc.store_results = false;
-        cc.store_trade_details = false;
+        cc.store_trade_details = store;
         cc.portfolio_id = "STAT_GRID_TEST";
         cc.csv_output_path = temp_csv_dir("stat_grid_" + std::to_string(n));
         cc.statistics_sessions_per_year = sessions_per_year;
@@ -367,4 +368,104 @@ TEST_F(BacktestStatisticsGridRun, ARunWithoutSessionsAYearIsRefused) {
             << result.error()->what();
         EXPECT_TRUE(db_->market_calls.empty()) << "the run loaded bars before it was refused";
     }
+}
+
+// Migration 031 through a whole run and its save: the statistics are taken on the same grid
+// series as the others (the Saturday point and the thin date folded), in fractions, and reach
+// the summary writer as typed cells.
+TEST_F(BacktestStatisticsGridRun, AFuturesRunTakesTheStatisticsOfMigration031OnItsGridAndStoresThem) {
+    auto result = run(AssetClass::FUTURES, kFuturesK, /*store=*/true);
+    ASSERT_TRUE(result.is_ok()) << result.error()->what();
+    const BacktestResults& r = result.value();
+
+    std::map<std::string, double> level_of;
+    for (const auto& [timestamp, level] : r.equity_curve) level_of[core::format_utc_date(timestamp)] = level;
+    // The grid returns by hand: the smallest, its date, and the smallest of every ROW's return.
+    double previous = 0.0, worst = 0.0, worst_row = 0.0, row_before = 0.0;
+    std::string worst_date;
+    bool first = true;
+    for (const auto& [date, level] : level_of) {
+        if (!first) worst_row = std::min(worst_row, level / row_before - 1.0);
+        row_before = level;
+        if (date == kThinDate || date == kSaturdayDate) continue;
+        if (!first && level / previous - 1.0 < worst) {
+            worst = level / previous - 1.0;
+            worst_date = date;
+        }
+        previous = level;
+        first = false;
+    }
+    ASSERT_LT(worst, 0.0);
+    const BacktestStatisticsColumns& c = r.statistics_columns;
+    ASSERT_TRUE(c.worst_day);
+    EXPECT_NEAR(*c.worst_day, worst, 1e-12);
+    EXPECT_EQ(c.worst_day_date.value_or(""), worst_date);
+    EXPECT_NE(worst_date, kThinDate);
+    EXPECT_NE(worst_date, kSaturdayDate);
+    EXPECT_EQ(c.worst_day_symbol.value_or(""), kHeld) << "the one contract the book holds lost";
+    // No overlay sleeve in this book: no risk_detail, no sizing capital, the three NULL.
+    EXPECT_FALSE(c.volatility_sizing);
+    EXPECT_FALSE(c.max_drawdown_sizing);
+    EXPECT_FALSE(c.worst_day_sizing);
+    EXPECT_FALSE(c.monthly_skew) << "four weeks: no twelve complete months";
+    ASSERT_TRUE(c.calendar_year_returns);
+    const auto& year = (*c.calendar_year_returns)["2025"];
+    EXPECT_TRUE(year["partial"].get<bool>());
+    std::vector<double> on_the_grid;
+    for (const auto& [date, level] : level_of) {
+        if (date != kThinDate && date != kSaturdayDate) on_the_grid.push_back(level);
+    }
+    EXPECT_NEAR(year["return"].get<double>(), on_the_grid.back() / on_the_grid.front() - 1.0, 1e-12);
+    EXPECT_EQ(c.losing_years.value_or(-1), 0);
+    EXPECT_EQ(c.total_strategy_fills.value_or(-1), 1) << "the one opening fill";
+    EXPECT_EQ(r.total_trades, 0) << "nothing was reduced: no round trip";
+
+    auto saved = coord_->save_portfolio_results_to_db(r, {"STAT_GRID_S"}, {{"STAT_GRID_S", 1.0}},
+                                                      pm_, nlohmann::json::object());
+    ASSERT_TRUE(saved.is_ok()) << saved.error()->what();
+    ASSERT_EQ(db_->call_count("store_backtest_summary"), 1);
+    std::map<std::string, std::optional<std::string>> cell;
+    for (const auto& stored : db_->last_backtest_summary_cells) cell[stored.column] = stored.value;
+    ASSERT_EQ(cell.size(), 13u);
+    ASSERT_TRUE(cell.at("worst_day"));
+    EXPECT_NEAR(std::stod(*cell.at("worst_day")), worst, 1e-9 * std::abs(worst));
+    EXPECT_EQ(cell.at("worst_day_date").value_or(""), worst_date);
+    EXPECT_EQ(cell.at("worst_day_symbol").value_or(""), kHeld);
+    EXPECT_EQ(cell.at("total_strategy_fills").value_or(""), "1");
+    EXPECT_EQ(cell.at("losing_years").value_or(""), "0");
+    EXPECT_FALSE(cell.at("volatility_sizing")) << "a NULL cell";
+    EXPECT_FALSE(cell.at("monthly_skew"));
+    // The older columns travel as before, and none of the new ones is among them.
+    EXPECT_EQ(db_->last_backtest_summary_metrics.count("total_trades"), 1u);
+    EXPECT_EQ(db_->last_backtest_summary_metrics.count("worst_day"), 0u);
+}
+
+// The same bars as an equity run: every row is a return, so the Saturday row can be the worst
+// day; the three sizing-capital cells are NULL on an equity run.
+TEST_F(BacktestStatisticsGridRun, AnEquityRunTakesThemOnItsOwnRowsWithNoSizingCapital) {
+    auto result = run(AssetClass::EQUITIES, 252.0);
+    ASSERT_TRUE(result.is_ok()) << result.error()->what();
+    const BacktestResults& r = result.value();
+    std::map<std::string, double> level_of;
+    for (const auto& [timestamp, level] : r.equity_curve) level_of[core::format_utc_date(timestamp)] = level;
+    double previous = 0.0, worst = 0.0;
+    std::string worst_date;
+    bool first = true;
+    for (const auto& [date, level] : level_of) {
+        if (!first && level / previous - 1.0 < worst) {
+            worst = level / previous - 1.0;
+            worst_date = date;
+        }
+        previous = level;
+        first = false;
+    }
+    const BacktestStatisticsColumns& c = r.statistics_columns;
+    ASSERT_TRUE(c.worst_day);
+    EXPECT_NEAR(*c.worst_day, worst, 1e-12);
+    EXPECT_EQ(c.worst_day_date.value_or(""), worst_date);
+    EXPECT_FALSE(c.volatility_sizing);
+    EXPECT_FALSE(c.max_drawdown_sizing);
+    EXPECT_FALSE(c.worst_day_sizing);
+    EXPECT_FALSE(c.worst_day_sizing_date);
+    EXPECT_FALSE(c.worst_day_sizing_symbol);
 }

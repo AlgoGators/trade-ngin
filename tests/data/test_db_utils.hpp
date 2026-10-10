@@ -301,9 +301,12 @@ public:
         const std::string& run_id, const Timestamp& start_date, const Timestamp& end_date,
         const std::unordered_map<std::string, double>& metrics,
         const std::string& portfolio_id = "BASE_PORTFOLIO",
-        const std::string& table_name = "backtest.results") override {
-        (void)run_id; (void)start_date; (void)end_date; (void)metrics;
+        const std::string& table_name = "backtest.results",
+        const std::vector<LiveResultsCell>& cells = {}) override {
+        (void)run_id; (void)start_date; (void)end_date;
         (void)portfolio_id; (void)table_name;
+        last_backtest_summary_metrics = metrics;
+        last_backtest_summary_cells = cells;
         return record_call("store_backtest_summary");
     }
 
@@ -389,6 +392,9 @@ public:
     // The risk_detail arguments of the last calls (migration 020).
     nlohmann::json last_live_risk_detail;
     std::vector<std::string> last_equity_risk_detail;
+    /// What the last store_backtest_summary was handed (migration 031's typed cells among it).
+    std::unordered_map<std::string, double> last_backtest_summary_metrics;
+    std::vector<LiveResultsCell> last_backtest_summary_cells;
     // The typed cells of the last INSERT and of the last UPDATE (migration 030).
     std::vector<LiveResultsCell> last_live_cells;
     std::vector<LiveResultsCell> last_update_cells;
