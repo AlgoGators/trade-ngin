@@ -25,11 +25,12 @@ struct HistoricalMetrics {
     double downside_deviation = 0.0;  // annualized, % units
 
     // Day-level win/loss statistics
-    int winning_days = 0;
-    int losing_days = 0;
-    int flat_days = 0;   // days with zero PnL — typically weekends + market holidays
+    int winning_days = 0;  // grid returns above zero
+    int losing_days = 0;   // grid returns below zero
+    int flat_days = 0;     // grid returns of exactly zero (a carried session is one)
     int total_days = 0;  // n: the settled grid returns from the book's start (T-8D R5)
-    double win_rate = 0.0;  // %
+                         // = winning_days + losing_days + flat_days
+    double win_rate = 0.0;  // winning_days / (winning_days + losing_days), %
     double avg_win = 0.0;   // average positive daily return, %
     double avg_loss = 0.0;  // abs(average negative daily return), %
     double best_day = 0.0;  // max daily return, %
@@ -144,7 +145,8 @@ public:
      * @param total_trades_executions Total number of executions since inception.
      * @param grid The statistics series: total_days is its count of returns;
      *        total_annualized_return, volatility, downside_deviation and the Sharpe and Sortino
-     *        ratios are taken on its returns; max_drawdown on its levels from its base.
+     *        ratios are taken on its returns; max_drawdown on its levels from its base;
+     *        winning_days, losing_days, flat_days and win_rate count its returns.
      * @param sessions_per_year The sessions a year K of the grid the series is taken on; every
      *        annualised figure of the series uses this one K.
      * @return HistoricalMetrics structure with all fields populated.
@@ -205,14 +207,6 @@ std::unordered_map<std::string, int> historical_metrics_int_columns(const Histor
  */
 std::unordered_map<std::string, double> historical_metrics_update_columns(
     const HistoricalMetrics& m);
-
-/**
- * @brief The override every live runner applies after `calculate()`: when the calendar
- * trading-days count is positive, `win_rate` is recomputed as winning_days over it, in percent;
- * a count of zero or less leaves `win_rate` as calculated. `total_days` is not touched: it is
- * the grid's count of returns.
- */
-void apply_trading_days_override(HistoricalMetrics& m, int trading_days_count);
 
 }  // namespace trade_ngin
 

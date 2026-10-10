@@ -247,7 +247,8 @@ TEST(HistoricalMetricsColumns, KnownSeriesProducesHandComputedColumns) {
     EXPECT_EQ(m.losing_days, 2);
     EXPECT_EQ(m.flat_days, 1);
     EXPECT_EQ(m.total_days, 5);
-    EXPECT_NEAR(m.win_rate, 2.0 / 5.0 * 100.0, 1e-12);
+    // Two winning and two losing sessions; the flat one is in no denominator: 2 / (2 + 2).
+    EXPECT_NEAR(m.win_rate, 2.0 / 4.0 * 100.0, 1e-12);
     EXPECT_NEAR(m.avg_win, (1.0 + 3.0) / 2.0, 1e-12);
     EXPECT_NEAR(m.avg_loss, (2.0 + 1.0) / 2.0, 1e-12);
     EXPECT_DOUBLE_EQ(m.best_day, 3.0);
@@ -284,28 +285,4 @@ TEST(HistoricalMetricsColumns, TheUpdateBlockIsTheDoublesPlusTheThreeWidenedInte
     }
     EXPECT_EQ(update.count("total_trades"), 0u);
     EXPECT_EQ(update.count("flat_days"), 0u);
-}
-
-// The override the runners apply after calculate(): win_rate is winning_days over the calendar
-// trading-days count, in percent, to the last bit of the expression the runners carried inline.
-// total_days is the grid's count of returns (T-8D R5) and is not the override's to set.
-TEST(HistoricalMetricsColumns, TheTradingDaysOverrideRecomputesWinRateAndLeavesTotalDays) {
-    HistoricalMetrics m = distinct_metrics();
-    apply_trading_days_override(m, 211);
-    EXPECT_EQ(m.total_days, 9);
-    EXPECT_EQ(m.win_rate, static_cast<double>(6) / static_cast<double>(211) * 100.0);
-    EXPECT_EQ(m.winning_days, 6);
-    EXPECT_EQ(m.losing_days, 7);
-}
-
-TEST(HistoricalMetricsColumns, ANonPositiveTradingDaysCountLeavesWinRateAsCalculated) {
-    HistoricalMetrics zero = distinct_metrics();
-    apply_trading_days_override(zero, 0);
-    EXPECT_EQ(zero.total_days, 9);
-    EXPECT_EQ(zero.win_rate, 10.10);
-
-    HistoricalMetrics negative = distinct_metrics();
-    apply_trading_days_override(negative, -1);
-    EXPECT_EQ(negative.total_days, 9);
-    EXPECT_EQ(negative.win_rate, 10.10);
 }

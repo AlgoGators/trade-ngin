@@ -344,3 +344,59 @@ TEST(StatisticsGrid, TheStoredRowHistoriesDoNotReachTheDrawdown) {
     const auto noisy = calc.calculate({-50.0, 40.0}, {-250000.0, 100000.0}, 0, s, kFuturesK);
     EXPECT_DOUBLE_EQ(noisy.max_drawdown, quiet.max_drawdown);
 }
+
+// ===== (5d) winning and losing days, the win rate =====
+
+TEST(StatisticsGrid, WinningAndLosingDaysCountGridReturnsAndTheWinRateLeavesFlatDaysOut) {
+    LiveHistoricalMetricsCalculator calc;
+    const auto s = week_through("2026-04-26");
+    // Grid returns: Mon +, Tue 0 (carried), Wed -, Fri + (Thursday folded in), Sun + (Saturday's
+    // cost folded in). The stored rows handed in are five losing rows and count for nothing here.
+    const std::vector<double> rows(5, -1.0);
+    const auto m = calc.calculate(rows, rows, 0, s, kFuturesK);
+    EXPECT_EQ(m.winning_days, 3);
+    EXPECT_EQ(m.losing_days, 1);
+    EXPECT_EQ(m.flat_days, 1);
+    EXPECT_EQ(m.total_days, 5);
+    EXPECT_NEAR(m.win_rate, 3.0 / (3.0 + 1.0) * 100.0, 1e-12);
+    // B5A D7 holds by construction, so the writer's warning names only the carried session.
+    EXPECT_EQ(m.winning_days + m.losing_days + m.flat_days, m.total_days);
+    EXPECT_EQ(statistics_days_warning(m, s).find("differs from total_days"), std::string::npos);
+    const auto cols = historical_metrics_int_columns(m);
+    EXPECT_EQ(cols.at("winning_days"), 3);
+    EXPECT_EQ(cols.at("losing_days"), 1);
+}
+
+TEST(StatisticsGrid, ACostOnlySaturdayIsNotALosingDay) {
+    LiveHistoricalMetricsCalculator calc;
+    // Through Saturday the series is Friday's: the -100 Saturday row adds no losing day.
+    const auto friday = calc.calculate({}, {}, 0, week_through("2026-04-24"), kFuturesK);
+    const auto saturday = calc.calculate({}, {}, 0, week_through("2026-04-25"), kFuturesK);
+    EXPECT_EQ(saturday.losing_days, friday.losing_days);
+    EXPECT_EQ(saturday.winning_days, friday.winning_days);
+    EXPECT_DOUBLE_EQ(saturday.win_rate, friday.win_rate);
+    EXPECT_EQ(friday.winning_days, 2);
+    EXPECT_EQ(friday.losing_days, 1);
+    EXPECT_NEAR(friday.win_rate, 2.0 / 3.0 * 100.0, 1e-12);
+    // Folded into Sunday it is part of a winning session (+400 - 100).
+    EXPECT_EQ(calc.calculate({}, {}, 0, week_through("2026-04-26"), kFuturesK).winning_days, 3);
+}
+
+TEST(StatisticsGrid, AStartRowWithPnlIsCountedAndNoDecidedDayGivesAZeroWinRate) {
+    LiveHistoricalMetricsCalculator calc;
+    const std::vector<DatedLevel> stored = {{"2025-11-11", 502357.1083}};
+    const auto s = build_statistics_series(stored, {"2025-11-11", "2025-11-12"}, "2025-11-11",
+                                           500000.0, "2025-11-12");
+    const auto m = calc.calculate({}, {}, 0, s, kFuturesK);
+    EXPECT_EQ(m.winning_days, 1);  // the start day itself (R77 (c))
+    EXPECT_EQ(m.flat_days, 1);     // 11-12 carried
+    EXPECT_NEAR(m.win_rate, 100.0, 1e-12);
+    // Only flat sessions: W + L = 0, the rate is 0, not a division by zero.
+    const auto flat = calc.calculate({}, {}, 0, build_statistics_series(
+                                                    {{"2026-04-19", 500000.0}},
+                                                    {"2026-04-19", "2026-04-20", "2026-04-21"},
+                                                    "2026-04-19", 500000.0, "2026-04-21"),
+                                     kFuturesK);
+    EXPECT_EQ(flat.flat_days, 2);
+    EXPECT_DOUBLE_EQ(flat.win_rate, 0.0);
+}

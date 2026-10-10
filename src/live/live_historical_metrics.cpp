@@ -227,26 +227,42 @@ HistoricalMetrics LiveHistoricalMetricsCalculator::calculate(
     // Max drawdown over every grid level from the book's start, the peak seeded at the base
     metrics.max_drawdown = calculate_max_drawdown_from_equity(grid.levels, grid.base);
 
+    // Winning, losing and flat days over the grid returns; win_rate = W / (W + L) in percent,
+    // so a flat session is in neither count and in no denominator (B5A D7, T-8D R10).
+    for (double r : grid.returns_pct) {
+        if (r > 0.0) {
+            metrics.winning_days += 1;
+        } else if (r < 0.0) {
+            metrics.losing_days += 1;
+        } else {
+            metrics.flat_days += 1;
+        }
+    }
+    if (metrics.winning_days + metrics.losing_days > 0) {
+        metrics.win_rate = static_cast<double>(metrics.winning_days) /
+                           static_cast<double>(metrics.winning_days + metrics.losing_days) * 100.0;
+    }
+
     // Early exit if no returns history – the row-based figures below stay at 0
     if (daily_returns_pct.empty()) {
         return metrics;
     }
 
-    // Day-level win/loss stats based on daily returns
+    // Average win and loss, best and worst day over the stored daily returns
     double sum_wins = 0.0;
     double sum_losses_abs = 0.0;
+    int winning_rows = 0;
+    int losing_rows = 0;
     metrics.best_day = daily_returns_pct.front();
     metrics.worst_day = daily_returns_pct.front();
 
     for (double r : daily_returns_pct) {
         if (r > 0.0) {
-            metrics.winning_days += 1;
+            winning_rows += 1;
             sum_wins += r;
         } else if (r < 0.0) {
-            metrics.losing_days += 1;
+            losing_rows += 1;
             sum_losses_abs += std::abs(r);
-        } else {
-            metrics.flat_days += 1;  // zero PnL = weekend / holiday / no-position day
         }
 
         if (r > metrics.best_day) {
@@ -257,15 +273,11 @@ HistoricalMetrics LiveHistoricalMetricsCalculator::calculate(
         }
     }
 
-    if (!daily_returns_pct.empty()) {
-        metrics.win_rate = static_cast<double>(metrics.winning_days) /
-                           static_cast<double>(daily_returns_pct.size()) * 100.0;
+    if (winning_rows > 0) {
+        metrics.avg_win = sum_wins / static_cast<double>(winning_rows);
     }
-    if (metrics.winning_days > 0) {
-        metrics.avg_win = sum_wins / static_cast<double>(metrics.winning_days);
-    }
-    if (metrics.losing_days > 0) {
-        metrics.avg_loss = sum_losses_abs / static_cast<double>(metrics.losing_days);
+    if (losing_rows > 0) {
+        metrics.avg_loss = sum_losses_abs / static_cast<double>(losing_rows);
     }
 
     // Profit factor based on daily PnL
@@ -323,13 +335,6 @@ std::unordered_map<std::string, double> historical_metrics_update_columns(
         columns[column] = static_cast<double>(value);
     }
     return columns;
-}
-
-void apply_trading_days_override(HistoricalMetrics& m, int trading_days_count) {
-    if (trading_days_count > 0) {
-        m.win_rate = static_cast<double>(m.winning_days) /
-                     static_cast<double>(trading_days_count) * 100.0;
-    }
 }
 
 }  // namespace trade_ngin

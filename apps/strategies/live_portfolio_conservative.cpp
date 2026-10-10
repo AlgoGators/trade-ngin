@@ -3705,8 +3705,6 @@ int main(int argc, char* argv[]) {
                     hist_calc.calculate(returns_hist, pnl_hist, total_trades_hist,
                                         statistics_series, sessions_per_year);
 
-                // win_rate over the calendar trading-days count; total_days is the grid's n
-                apply_trading_days_override(settled_statistics, t1_trading_days_count);
                 if (const std::string days_warning =
                         statistics_days_warning(settled_statistics, statistics_series);
                     !days_warning.empty()) {

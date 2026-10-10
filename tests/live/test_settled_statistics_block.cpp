@@ -285,3 +285,23 @@ TEST(SettledStatisticsBlock, NoRunnerReadsTheEquityCurveTableForADrawdown) {
             << runner << ": the calculator is still handed an equity-curve history";
     }
 }
+
+// T-8a (5d): win_rate is W / (W + L) on the grid, so the calendar-count override is gone from
+// every runner; the calendar count is only logged beside n.
+TEST(SettledStatisticsBlock, NoRunnerOverridesTheWinRateWithACalendarCount) {
+    for (const auto& runner : kRunners) {
+        const std::string src = read_source(runner);
+        if (src.empty()) GTEST_SKIP() << "runner source not found from the test working directory";
+        EXPECT_EQ(count_of(src, "apply_trading_days_override("), 0u) << runner;
+        const std::string block = statistics_block(src);
+        ASSERT_FALSE(block.empty()) << runner;
+        EXPECT_NE(block.find("\" calendar_days=\" +\n"
+                             "                     std::to_string(t1_trading_days_count));"),
+                  std::string::npos)
+            << runner << ": the calendar count is no longer logged beside n";
+    }
+    const std::string helper = read_source("include/trade_ngin/live/live_historical_metrics.hpp");
+    if (!helper.empty()) {
+        EXPECT_EQ(count_of(helper, "apply_trading_days_override"), 0u);
+    }
+}
