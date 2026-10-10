@@ -602,8 +602,12 @@ Result<void> PostgresDatabase::store_backtest_positions_with_strategy(
 Result<void> PostgresDatabase::update_live_results(
     const std::string& strategy_id, const Timestamp& date,
     const std::unordered_map<std::string, double>& updates, const std::string& portfolio_id,
-    const std::string& table_name) {
+    const std::string& table_name, size_t* rows_affected) {
     std::lock_guard<std::mutex> lock(mutex_);
+
+    if (rows_affected) {
+        *rows_affected = 0;
+    }
 
     // Column names are concatenated into the statement (Postgres cannot bind
     // identifiers), so allow-list every key before anything else happens.
@@ -659,6 +663,9 @@ Result<void> PostgresDatabase::update_live_results(
 
         auto result = txn.exec(query);
         txn.commit();
+        if (rows_affected) {
+            *rows_affected = static_cast<size_t>(result.affected_rows());
+        }
 
         INFO("Updated live results for " + strategy_id + " on " + format_timestamp(date) + " (" +
              std::to_string(result.affected_rows()) + " rows affected)");

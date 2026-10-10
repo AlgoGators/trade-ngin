@@ -135,6 +135,31 @@ TEST_F(LiveResultsManagerTest, UpdateLiveResultsInvokesUpdate) {
     EXPECT_EQ(db_->call_count("update_live_results"), 1);
 }
 
+// T-8D-2 R42: the Day T-1 statistics refresh must know when its UPDATE changed no row.
+TEST_F(LiveResultsManagerTest, UpdateLiveResultsReportsTheRowsTheUpdateChanged) {
+    size_t rows = 99;
+    db_->update_live_results_rows = 1;
+    ASSERT_TRUE(mgr_->update_live_results(date_at(2026, 3, 15), {{"sharpe_ratio", 1.5}}, &rows)
+                    .is_ok());
+    EXPECT_EQ(rows, 1u);
+
+    db_->update_live_results_rows = 0;
+    ASSERT_TRUE(mgr_->update_live_results(date_at(2026, 3, 15), {{"sharpe_ratio", 1.5}}, &rows)
+                    .is_ok());
+    EXPECT_EQ(rows, 0u) << "a date with no row reports 0 rows, not the previous call's count";
+
+    // Nothing sent: an empty update and a manager with storage off both report 0 rows.
+    rows = 99;
+    db_->update_live_results_rows = 1;
+    ASSERT_TRUE(mgr_->update_live_results(date_at(2026, 3, 15), {}, &rows).is_ok());
+    EXPECT_EQ(rows, 0u);
+    LiveResultsManager off(db_, /*store_enabled=*/false, "STRAT_X", "PORT_Y");
+    rows = 99;
+    ASSERT_TRUE(off.update_live_results(date_at(2026, 3, 15), {{"sharpe_ratio", 1.5}}, &rows)
+                    .is_ok());
+    EXPECT_EQ(rows, 0u);
+}
+
 TEST_F(LiveResultsManagerTest, UpdateEquityCurveInvokesUpdateLiveEquityCurve) {
     db_->reset_call_counts();
     auto r = mgr_->update_equity_curve(date_at(2026, 3, 15), 1'050'000.0);

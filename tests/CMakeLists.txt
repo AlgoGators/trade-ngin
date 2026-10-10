@@ -139,6 +139,7 @@ set(TEST_SOURCES
     live/test_feed_freshness_universe.cpp
     live/test_feed_ingestion_assertion.cpp
     live/test_day_t_write_ordering.cpp
+    live/test_settled_statistics_block.cpp
     live/test_finalized_books_read.cpp
     live/test_late_bar_warning.cpp
     live/test_live_run_refusal_arms.cpp

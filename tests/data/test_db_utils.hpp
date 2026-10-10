@@ -408,11 +408,15 @@ public:
         const std::string& strategy_id, const Timestamp& date,
         const std::unordered_map<std::string, double>& updates,
         const std::string& portfolio_id,
-        const std::string& table_name = "trading.live_results") override {
+        const std::string& table_name = "trading.live_results",
+        size_t* rows_affected = nullptr) override {
         (void)strategy_id; (void)date; (void)updates;
         (void)portfolio_id; (void)table_name;
+        if (rows_affected) *rows_affected = update_live_results_rows;
         return record_call("update_live_results");
     }
+    /// The rows the next update_live_results reports as changed.
+    size_t update_live_results_rows = 1;
 
     Result<void> update_live_equity_curve(
         const std::string& strategy_id, const Timestamp& date, double equity,

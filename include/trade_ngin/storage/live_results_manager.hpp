@@ -85,8 +85,11 @@ public:
     Result<void> save_equity_curve(const Timestamp& date);
 
     // Update operations for existing data
+    // `rows_affected`, when given, receives the number of rows the UPDATE changed (0 when
+    // nothing was stored or the date has no row).
     Result<void> update_live_results(const Timestamp& date,
-                                     const std::unordered_map<std::string, double>& updates);
+                                     const std::unordered_map<std::string, double>& updates,
+                                     size_t* rows_affected = nullptr);
 
     Result<void> update_equity_curve(const Timestamp& date, double equity);
 

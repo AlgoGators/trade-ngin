@@ -312,7 +312,11 @@ Result<void> LiveResultsManager::save_equity_curve(const Timestamp& date) {
 }
 
 Result<void> LiveResultsManager::update_live_results(
-    const Timestamp& date, const std::unordered_map<std::string, double>& updates) {
+    const Timestamp& date, const std::unordered_map<std::string, double>& updates,
+    size_t* rows_affected) {
+    if (rows_affected) {
+        *rows_affected = 0;
+    }
     if (!store_enabled_) {
         return Result<void>();
     }
@@ -324,7 +328,7 @@ Result<void> LiveResultsManager::update_live_results(
     INFO("Updating live results with " + std::to_string(updates.size()) + " fields");
 
     return db_->update_live_results(strategy_id_, date, updates, portfolio_id_,
-                                    "trading.live_results");
+                                    "trading.live_results", rows_affected);
 }
 
 Result<void> LiveResultsManager::update_equity_curve(const Timestamp& date, double equity) {

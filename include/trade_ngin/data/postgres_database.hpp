@@ -561,13 +561,15 @@ public:
      * @param updates Map of column name to new value
      * @param portfolio_id Portfolio identifier
      * @param table_name Name of the live results table
+     * @param rows_affected When given, receives the number of rows the UPDATE changed
      * @return Result indicating success or failure
      */
     virtual Result<void> update_live_results(
         const std::string& strategy_id, const Timestamp& date,
         const std::unordered_map<std::string, double>& updates,
         const std::string& portfolio_id,
-        const std::string& table_name = "trading.live_results");
+        const std::string& table_name = "trading.live_results",
+        size_t* rows_affected = nullptr);
 
     /**
      * @brief Update live equity curve (replaces raw SQL UPDATE)
