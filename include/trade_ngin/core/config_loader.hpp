@@ -11,6 +11,7 @@
 #include "trade_ngin/optimization/dynamic_optimizer.hpp"
 #include "trade_ngin/risk/risk_manager.hpp"
 #include "trade_ngin/risk/risk_module_config.hpp"
+#include "trade_ngin/data/listing_dates.hpp"
 
 namespace trade_ngin {
 
@@ -349,6 +350,16 @@ struct AppConfig {
 
     // portfolio.json's top-level equity_slow_rule; required on a futures book.
     EquitySlowRule equity_slow_rule;
+
+    // portfolio.json's optional top-level listing_dates (data/listing_dates.hpp):
+    //   "listing_dates": {"contracts": [{"symbol": "MES", "listed": "2019-05-06", "before": "ES", "ratio": 10}]}
+    // Absent means empty, and an empty list changes nothing anywhere.
+    std::vector<ListedContract> listing_dates;
+    // portfolio.json's optional top-level instrument_id_relabels (data/listing_dates.hpp): vendor id
+    // changes that are not rolls. Absent means empty, and an empty list changes nothing.
+    std::vector<InstrumentIdRelabel> instrument_id_relabels;
+    // listing_dates' optional "switch_rule": "open_at_target" (the default), "close_reenter", "convert" or "carry_to_target".
+    ListingSwitchRule listing_switch_rule{ListingSwitchRule::kOpenAtTarget};
 
     // portfolio.json's top-level sizing_mode and starting_capital (LOOP_SPEC sections 3.1 and 7.7,
     // D19); both required on a futures book. The one mode is "half_compounding": the book is sized

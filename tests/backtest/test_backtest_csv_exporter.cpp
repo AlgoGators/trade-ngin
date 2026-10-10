@@ -6,6 +6,13 @@
 #include <string>
 #include <unordered_map>
 #include <vector>
+// The registry opened (after everything it includes), so that the fixture can empty and restore the
+// process singleton.
+#include "trade_ngin/data/postgres_database.hpp"
+#include "trade_ngin/instruments/instrument.hpp"
+#define private public
+#include "trade_ngin/instruments/instrument_registry.hpp"
+#undef private
 #include "../core/test_base.hpp"
 #include "trade_ngin/backtest/backtest_csv_exporter.hpp"
 #include "trade_ngin/instruments/futures.hpp"
@@ -45,6 +52,15 @@ class BacktestCSVExporterTest : public TestBase {
 protected:
     void SetUp() override {
         TestBase::SetUp();
+        // These cases assert the exporter's output with NO instrument registered (notional =
+        // quantity x price). The registry is a process singleton: in one process an earlier
+        // suite's instruments would change the rows, so it is emptied here and put back after.
+        {
+            auto& registry = InstrumentRegistry::instance();
+            saved_instruments_ = registry.instruments_;
+            saved_initialized_ = registry.initialized_;
+            registry.instruments_.clear();
+        }
         // Per-test unique temp dir to keep tests isolated.
         const ::testing::TestInfo* info =
             ::testing::UnitTest::GetInstance()->current_test_info();
@@ -55,10 +71,17 @@ protected:
 
     void TearDown() override {
         std::filesystem::remove_all(out_dir_);
+        {
+            auto& registry = InstrumentRegistry::instance();
+            registry.instruments_ = saved_instruments_;
+            registry.initialized_ = saved_initialized_;
+        }
         TestBase::TearDown();
     }
 
     std::filesystem::path out_dir_;
+    std::unordered_map<std::string, std::shared_ptr<Instrument>> saved_instruments_;
+    bool saved_initialized_{false};
 };
 
 TEST_F(BacktestCSVExporterTest, InitializeCreatesDirectoryAndAllThreeFilesWithHeaders) {

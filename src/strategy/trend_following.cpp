@@ -1,6 +1,7 @@
 // src/strategy/trend_following.cpp
 #include "trade_ngin/strategy/trend_following.hpp"
 #include "trade_ngin/core/time_utils.hpp"
+#include "trade_ngin/data/listing_dates.hpp"
 #include "trade_ngin/strategy/trend_estimator.hpp"
 #include "trade_ngin/strategy/trend_estimator_record.hpp"
 #include <algorithm>
@@ -304,6 +305,17 @@ Result<void> TrendFollowingStrategy::on_data(const std::vector<Bar>& data) {
         for (const auto& [symbol, symbol_bars] : bars_by_symbol) {
             auto& instrument_data = instrument_data_[symbol];
 
+            // Listing dates (always true without portfolio.json's listing_dates): a contract outside
+            // its tradeable window keeps its history and its estimators (a predecessor still held
+            // while its switch waits is weighed on a current series) and publishes no target.
+            const bool tradeable =
+                ListingDates::instance().tradeable(symbol, symbol_bars.back().timestamp);
+            if (!tradeable) {
+                instrument_data.raw_position = 0.0;
+                instrument_data.final_position = 0.0;
+                instrument_data.optimal_position = 0.0;
+            }
+
             // Wait for enough data before processing
             if (instrument_data.price_history.size() < static_cast<size_t>(max_window)) {
                 if (instrument_data.price_history.size() % 50 == 0) {
@@ -415,7 +427,8 @@ Result<void> TrendFollowingStrategy::on_data(const std::vector<Bar>& data) {
             // forecast is THE forecast from here on: the sizing, its sign and the stored signal.
             double ruled_forecast = estimate.combined;
             {
-                const std::string base_symbol = symbol.substr(0, symbol.find('.'));
+                const std::string base_symbol =
+                    ListingDates::instance().pair_root(symbol.substr(0, symbol.find('.')));
                 if (std::find(trend_config_.equity_slow_symbols.begin(),
                               trend_config_.equity_slow_symbols.end(),
                               base_symbol) != trend_config_.equity_slow_symbols.end()) {
@@ -444,6 +457,7 @@ Result<void> TrendFollowingStrategy::on_data(const std::vector<Bar>& data) {
                         WARN("Instrument not found in registry for " + symbol);
                     }
 
+                    lookup_symbol = ListingDates::instance().pair_root(lookup_symbol);
                     if (lookup_symbol == "ES") {
                         lookup_symbol = "MES";
                     } else if (lookup_symbol == "NQ") {
@@ -497,8 +511,12 @@ Result<void> TrendFollowingStrategy::on_data(const std::vector<Bar>& data) {
                 raw_position = 0.0;
             }
 
+            if (!tradeable) {
+                raw_position = 0.0;
+                instrument_data.optimal_position = 0.0;
+            }
             instrument_data.raw_position = raw_position;
-            append_trend_estimator_record(id_, core::format_utc_date(symbol_bars.back().timestamp),
+            if (tradeable) append_trend_estimator_record(id_, core::format_utc_date(symbol_bars.back().timestamp),
                                           symbol, instrument_data.estimate,
                                           trend_config_.ema_windows,
                                           instrument_data.current_forecast,
@@ -516,8 +534,9 @@ Result<void> TrendFollowingStrategy::on_data(const std::vector<Bar>& data) {
 
             instrument_data.final_position = final_position;
 
-            // Save forecast with error handling
-            auto signal_result = on_signal(symbol, instrument_data.current_forecast);
+            // Save forecast with error handling (a contract outside its tradeable window has none)
+            auto signal_result =
+                tradeable ? on_signal(symbol, instrument_data.current_forecast) : Result<void>();
             if (signal_result.is_error()) {
                 WARN("Failed to save signal for " + symbol + ": " + signal_result.error()->what());
                 // Continue processing despite signal save failure
@@ -721,8 +740,14 @@ bool TrendFollowingStrategy::is_signalling(const std::string& symbol) const {
         max_window = std::max(max_window, window_pair.second);
     }
     auto it = instrument_data_.find(symbol);
-    return it != instrument_data_.end() &&
-           !(it->second.price_history.size() < static_cast<size_t>(max_window));
+    if (it == instrument_data_.end() ||
+        it->second.price_history.size() < static_cast<size_t>(max_window)) {
+        return false;
+    }
+    // Listing dates (always true without portfolio.json's listing_dates): the symbol
+    // signals only while its last consumed bar is inside its tradeable window.
+    return it->second.bar_timestamps.empty() ||
+           ListingDates::instance().tradeable(symbol, it->second.bar_timestamps.back());
 }
 
 std::unordered_map<std::string, Position> TrendFollowingStrategy::get_target_positions() const {

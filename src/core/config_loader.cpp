@@ -1,6 +1,7 @@
 // src/core/config_loader.cpp
 
 #include "trade_ngin/core/config_loader.hpp"
+#include <cstring>
 
 #include <algorithm>
 #include <cctype>
@@ -331,6 +332,120 @@ Result<AppConfig> ConfigLoader::extract_config(const nlohmann::json& merged) {
                 rule.pairs.emplace_back(pair[0].get<int>(), pair[1].get<int>());
             }
             config.equity_slow_rule = rule;
+        }
+
+        // The two blocks below are optional and strict: a key that is not one of the block's own is
+        // refused (a misspelt key would otherwise be read as absent and a default would apply); a key
+        // starting with an underscore is a note. A top-level key that is a near miss of a block's
+        // name is refused too, since a misspelt block is an absent block.
+        auto unknown_key = [](const nlohmann::json& object,
+                              std::initializer_list<const char*> known) -> std::string {
+            for (auto it = object.begin(); it != object.end(); ++it) {
+                const std::string& key = it.key();
+                if (!key.empty() && key[0] == '_') continue;
+                if (std::find_if(known.begin(), known.end(),
+                                 [&](const char* k) { return key == k; }) == known.end()) {
+                    return key;
+                }
+            }
+            return {};
+        };
+        for (auto it = merged.begin(); it != merged.end(); ++it) {
+            const std::string& key = it.key();
+            for (const char* block : {"listing_dates", "instrument_id_relabels"}) {
+                // "listing_date...", "instrument_id_relabel...": the block's name less its last letter
+                const std::string stem(block, std::strlen(block) - 1);
+                if (key != block && key.rfind(stem, 0) == 0) {
+                    return make_error<AppConfig>(
+                        ErrorCode::INVALID_DATA,
+                        "config for " + config.portfolio_id + ": portfolio.json has a key \"" + key +
+                            "\" that is not \"" + block + "\" (a misspelt block is an absent block)",
+                        "ConfigLoader");
+                }
+            }
+        }
+
+        // Declared vendor id relabellings: optional; parsed strictly when present.
+        if (merged.contains("instrument_id_relabels")) {
+            const auto& v = merged.at("instrument_id_relabels");
+            auto bad = [&](const std::string& what) {
+                return make_error<AppConfig>(
+                    ErrorCode::INVALID_DATA,
+                    "config for " + config.portfolio_id +
+                        ": portfolio.json \"instrument_id_relabels\" " + what +
+                        " (expected [{\"symbol\": \"MES\", \"date\": \"2026-02-22\", \"from\": "
+                        "\"42140878\", \"to\": \"42003800\"}]), got " + v.dump(),
+                    "ConfigLoader");
+            };
+            if (!v.is_array()) return bad("must be a list");
+            for (const auto& entry : v) {
+                if (entry.is_object()) {
+                    const std::string extra = unknown_key(entry, {"symbol", "date", "from", "to"});
+                    if (!extra.empty()) return bad("names an entry with an unknown key \"" + extra + "\"");
+                }
+                for (const char* key : {"symbol", "date", "from", "to"}) {
+                    if (!entry.is_object() || !entry.contains(key) || !entry.at(key).is_string()) {
+                        return bad("names an entry without string \"symbol\", \"date\", \"from\" and \"to\"");
+                    }
+                }
+                config.instrument_id_relabels.push_back(
+                    {entry.at("symbol").get<std::string>(), entry.at("date").get<std::string>(),
+                     entry.at("from").get<std::string>(), entry.at("to").get<std::string>()});
+            }
+            try {
+                ListingDates::validate_relabels(config.instrument_id_relabels);
+            } catch (const std::invalid_argument& e) {
+                return bad(std::string("is not usable: ") + e.what());
+            }
+        }
+
+        // Listing dates: optional; parsed strictly when present.
+        if (merged.contains("listing_dates")) {
+            const auto& v = merged.at("listing_dates");
+            auto bad = [&](const std::string& what) {
+                return make_error<AppConfig>(
+                    ErrorCode::INVALID_DATA,
+                    "config for " + config.portfolio_id + ": portfolio.json \"listing_dates\" " +
+                        what +
+                        " (expected {\"contracts\": [{\"symbol\": \"MES\", \"listed\": "
+                        "\"2019-05-06\", \"before\": \"ES\", \"ratio\": 10}]}), got " + v.dump(),
+                    "ConfigLoader");
+            };
+            if (!v.is_object() || !v.contains("contracts") || !v.at("contracts").is_array()) {
+                return bad("must be an object with a \"contracts\" list");
+            }
+            if (const std::string extra = unknown_key(v, {"contracts", "switch_rule"}); !extra.empty()) {
+                return bad("has an unknown key \"" + extra + "\"");
+            }
+            if (v.contains("switch_rule") &&
+                (!v.at("switch_rule").is_string() ||
+                 !parse_listing_switch_rule(v.at("switch_rule").get<std::string>(),
+                                            &config.listing_switch_rule))) {
+                return bad("\"switch_rule\" must be \"close_reenter\", \"convert\", \"open_at_target\" or "
+                           "\"carry_to_target\"");
+            }
+            for (const auto& entry : v.at("contracts")) {
+                if (entry.is_object()) {
+                    const std::string extra = unknown_key(entry, {"symbol", "listed", "before", "ratio"});
+                    if (!extra.empty()) return bad("names a contract with an unknown key \"" + extra + "\"");
+                }
+                if (!entry.is_object() || !entry.contains("symbol") || !entry.contains("listed") ||
+                    !entry.contains("before") || !entry.at("symbol").is_string() ||
+                    !entry.at("listed").is_string() || !entry.at("before").is_string() ||
+                    !entry.contains("ratio") || !entry.at("ratio").is_number()) {
+                    return bad("names a contract without string \"symbol\", \"listed\" and "
+                               "\"before\" and a number \"ratio\"");
+                }
+                config.listing_dates.push_back({entry.at("symbol").get<std::string>(),
+                                                entry.at("before").get<std::string>(),
+                                                entry.at("listed").get<std::string>(),
+                                                entry.at("ratio").get<double>()});
+            }
+            try {
+                ListingDates::validate(config.listing_dates);  // the runner switches it on
+            } catch (const std::invalid_argument& e) {
+                return bad(std::string("is not usable: ") + e.what());
+            }
         }
 
         // LOOP_SPEC sections 3.1 and 7.7 (D19): the sizing mode and the starting capital. Parsed

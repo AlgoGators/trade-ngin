@@ -14,6 +14,7 @@
 #include "trade_ngin/core/run_id_generator.hpp"
 #include "trade_ngin/core/time_utils.hpp"
 #include "trade_ngin/data/conversion_utils.hpp"
+#include "trade_ngin/data/listing_dates.hpp"
 #include "trade_ngin/data/market_data_bus.hpp"
 #include "trade_ngin/portfolio/sizing_capital.hpp"
 #include "trade_ngin/risk/risk_scale_report.hpp"
@@ -24,6 +25,16 @@
 
 namespace trade_ngin {
 namespace backtest {
+
+namespace {
+// Listing dates and declared id relabels (the identity without portfolio.json's listing_dates and
+// instrument_id_relabels): the id rows as data/listing_dates.hpp reads them.
+Result<std::vector<market_data_utils::FuturesInstrumentId>> with_predecessor_ids(
+    const std::vector<std::string>& symbols,
+    Result<std::vector<market_data_utils::FuturesInstrumentId>> ids) {
+    return ListingDates::instance().read_ids(symbols, std::move(ids));
+}
+}  // namespace
 
 BacktestCoordinator::BacktestCoordinator(std::shared_ptr<PostgresDatabase> db,
                                          InstrumentRegistry* registry,
@@ -261,8 +272,10 @@ Result<BacktestResults> BacktestCoordinator::run_portfolio(
         auto pg = std::dynamic_pointer_cast<PostgresDatabase>(db_);
         const auto feed = feed_instrument_ids(
             session_classifier_,
-            pg ? pg->get_futures_instrument_ids(symbols, k01_classifier_history_start(start_date),
-                                                end_date)
+            pg ? with_predecessor_ids(
+                     symbols,
+                     pg->get_futures_instrument_ids(symbols, k01_classifier_history_start(start_date),
+                                                    end_date))
                : make_error<std::vector<market_data_utils::FuturesInstrumentId>>(
                      ErrorCode::NOT_INITIALIZED, "the backtest's database is not a PostgresDatabase",
                      "BacktestCoordinator"));
@@ -1666,7 +1679,9 @@ Result<void> BacktestCoordinator::seed_estimator_history(
     std::vector<SymbolDayVerdict> withheld;
     const std::vector<Bar> history = estimator_history_consumed(
         loaded.value(), start_date,
-        pg ? pg->get_futures_instrument_ids(symbols, estimator_history_start(start_date), start_date)
+        pg ? with_predecessor_ids(symbols,
+                                  pg->get_futures_instrument_ids(
+                                      symbols, estimator_history_start(start_date), start_date))
            : make_error<std::vector<market_data_utils::FuturesInstrumentId>>(
                  ErrorCode::NOT_INITIALIZED, "the backtest's database is not a PostgresDatabase",
                  "BacktestCoordinator"),
