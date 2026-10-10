@@ -379,3 +379,36 @@ TEST(LiveDayCost, TheDaysCostIsTheSumOfTheNetCostsOfTheStoredRows) {
     EXPECT_EQ(net_of["MYM.v.0"], Decimal(1.10));
     EXPECT_EQ(net_of["MBT.v.0"], Decimal(10.83)) << "same side: above the 9.00 of the rows' own costs";
 }
+
+// TRADE_NGIN_EMAIL_BODY_DIR: the futures runners write the report body to a file and mail nothing.
+// The one call of send_email sits in the else of the body-file branch, in both twins; every file
+// is read and every failure reported.
+TEST(EmailBodyFileSource, TheBodyFileBranchWritesTheBodyAndNeverSends) {
+    for (const char* f : {"apps/strategies/live_portfolio.cpp",
+                          "apps/strategies/live_portfolio_conservative.cpp"}) {
+        const std::string src = read_source(f);
+        if (src.empty()) {
+            ADD_FAILURE() << f << " not found: run the tests from inside the source tree";
+            continue;
+        }
+        const auto env = src.find("std::getenv(\"TRADE_NGIN_EMAIL_BODY_DIR\")");
+        const auto gate = src.find("if (send_email || !email_body_dir.empty()) {");
+        const auto file_branch =
+            src.find("if (!email_body_dir.empty()) {\n                        const std::string body_path");
+        const auto send_branch = src.find("} else {\n                        auto send_result =");
+        const auto send = src.find("email_sender->send_email(");
+        EXPECT_NE(env, std::string::npos) << f;
+        EXPECT_NE(gate, std::string::npos) << f;
+        EXPECT_NE(file_branch, std::string::npos) << f << ": no body-file branch";
+        EXPECT_NE(send_branch, std::string::npos) << f << ": the send is not in the else";
+        EXPECT_NE(send, std::string::npos) << f;
+        if (file_branch == std::string::npos || send_branch == std::string::npos ||
+            send == std::string::npos) {
+            continue;
+        }
+        EXPECT_LT(file_branch, send_branch) << f;
+        EXPECT_LT(send_branch, send) << f << ": a send outside the else of the body-file branch";
+        EXPECT_EQ(src.find("email_sender->send_email(", send + 1), std::string::npos)
+            << f << ": a second send";
+    }
+}

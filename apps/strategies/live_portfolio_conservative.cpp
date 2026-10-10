@@ -4354,9 +4354,19 @@ int main(int argc, char* argv[]) {
 
         INFO("Daily trend following position generation completed successfully");
 
-        // Send email report with trading results (based on send_email flag)
-        if (send_email) {
-            INFO("Sending email report...");
+        // Send email report with trading results (based on send_email flag).
+        // TRADE_NGIN_EMAIL_BODY_DIR (a directory): the report body is built exactly as for a send
+        // and written there as email_body_<portfolio>_<date>.html, and NOTHING is mailed, whatever
+        // --send-email says. It is how a day's email is read without sending it.
+        const char* email_body_dir_env = std::getenv("TRADE_NGIN_EMAIL_BODY_DIR");
+        const std::string email_body_dir = email_body_dir_env ? email_body_dir_env : "";
+        if (send_email || !email_body_dir.empty()) {
+            if (email_body_dir.empty()) {
+                INFO("Sending email report...");
+            } else {
+                INFO("EMAIL_BODY_FILE building the report body for " + email_body_dir +
+                     "; nothing is mailed");
+            }
             try {
                 EmailSenderConfig email_config;
                 email_config.smtp_host = app_config.email.smtp_host;
@@ -4703,17 +4713,32 @@ int main(int argc, char* argv[]) {
                         email_body = flag_email_body_for_carried_day(email_body, carried_day_note);
                     }
 
-                    auto send_result =
-                        email_sender->send_email(subject, email_body, true, attachments);
-                    if (send_result.is_error()) {
-                        ERROR("Failed to send email: " + std::string(send_result.error()->what()));
-                    } else {
-                        std::string attachment_list = today_filename;
-                        if (!yesterday_filename.empty()) {
-                            attachment_list += ", " + yesterday_filename;
+                    if (!email_body_dir.empty()) {
+                        const std::string body_path = email_body_dir + "/email_body_" +
+                                                      portfolio_id + "_" + date_str + ".html";
+                        std::ofstream body_file(body_path, std::ios::binary | std::ios::trunc);
+                        body_file << email_body;
+                        body_file.close();
+                        if (body_file.fail()) {
+                            ERROR("EMAIL_BODY_FILE could not write " + body_path);
+                        } else {
+                            INFO("EMAIL_BODY_FILE wrote " + body_path + " (" +
+                                 std::to_string(email_body.size()) + " bytes); nothing is mailed");
                         }
-                        INFO("Email report sent successfully with CSV attachments: " +
-                             attachment_list);
+                    } else {
+                        auto send_result =
+                            email_sender->send_email(subject, email_body, true, attachments);
+                        if (send_result.is_error()) {
+                            ERROR("Failed to send email: " +
+                                  std::string(send_result.error()->what()));
+                        } else {
+                            std::string attachment_list = today_filename;
+                            if (!yesterday_filename.empty()) {
+                                attachment_list += ", " + yesterday_filename;
+                            }
+                            INFO("Email report sent successfully with CSV attachments: " +
+                                 attachment_list);
+                        }
                     }
                 }
             } catch (const std::exception& e) {
