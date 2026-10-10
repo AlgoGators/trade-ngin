@@ -3,6 +3,7 @@
 
 #include <cstdio>
 #include <cstdlib>
+#include <limits>
 #include <string>
 #include <utility>
 #include <vector>
@@ -26,12 +27,14 @@ namespace trade_ngin {
  * and the forecast's volatility; the attenuation; the combined forecast; the capital, weight,
  * multiplier and raw close the position was sized on; the position before any limit; 1 when the
  * equity slow rule set a negative combined forecast to 0 on this bar; then each pair's scaled
- * forecast, in the configured order. The forecast column is the RULED forecast.
+ * forecast, in the configured order (nan for a pair removed from the contract by
+ * trading_rule_removals). The forecast column is the RULED forecast.
  */
 inline void append_trend_estimator_record(const std::string& strategy_id, const std::string& date,
                                           const std::string& symbol,
                                           const trend_estimator::Estimate& estimate,
                                           const std::vector<std::pair<int, int>>& pairs,
+                                          const std::vector<std::pair<int, int>>& symbol_pairs,
                                           double forecast, double capital, double weight,
                                           double multiplier, double price,
                                           double optimal_position, bool slow_rule_zeroed) {
@@ -52,7 +55,15 @@ inline void append_trend_estimator_record(const std::string& strategy_id, const 
                  estimate.factor, estimate.sigma_short, estimate.sigma_long, estimate.sigma,
                  estimate.forecast_sigma, estimate.attenuation, forecast, capital, weight,
                  multiplier, price, optimal_position, slow_rule_zeroed ? 1 : 0);
-    for (double scaled : estimate.scaled) std::fprintf(out, ",%.17g", scaled);
+    // One column per pair of the sleeve. `estimate.scaled` follows `symbol_pairs`, the pairs this
+    // contract runs; a pair removed from the contract (trading_rule_removals) prints nan.
+    for (const auto& pair : pairs) {
+        double scaled = std::numeric_limits<double>::quiet_NaN();
+        for (std::size_t k = 0; k < symbol_pairs.size() && k < estimate.scaled.size(); ++k) {
+            if (symbol_pairs[k] == pair) scaled = estimate.scaled[k];
+        }
+        std::fprintf(out, ",%.17g", scaled);
+    }
     std::fprintf(out, "\n");
     record_file::close_rows(out, dir, name);
 }

@@ -38,6 +38,15 @@ struct TrendFollowingConfig {
     // named must be one of the sleeve's ema_windows.
     std::vector<std::string> equity_slow_symbols;
     std::vector<std::pair<int, int>> equity_slow_pairs;
+    // Trading rules removed from a contract by cost (Carver, strategy nine, "Removing expensive
+    // trading rules"): symbol (base name, the contract's own: "ZR" for "ZR.v.0") to the pairs it
+    // does not run. Such a contract's combined forecast is the equal-weight mean of the pairs left
+    // times the multiplier for that number of pairs; each pair left is scaled and capped as on any
+    // contract. The pairs removed are the contract's fastest (trend_estimator::pairs_after_removal),
+    // the multiplier table names the number left, and a pair the equity slow rule reads is never
+    // removed from a ruled symbol: anything else is refused when the sleeve is built. Empty: every
+    // contract runs every pair. The runner sets it from portfolio.json's trading_rule_removals.
+    std::map<std::string, std::vector<std::pair<int, int>>> rule_removals;
 };
 
 /**
