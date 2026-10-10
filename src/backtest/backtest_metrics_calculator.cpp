@@ -215,17 +215,19 @@ double BacktestMetricsCalculator::calculate_cvar_95(const std::vector<double>& r
     std::vector<double> sorted_returns = returns;
     std::sort(sorted_returns.begin(), sorted_returns.end());
 
+    // The index calculate_var_95 reads: the tail is the returns up to AND INCLUDING the VaR
+    // observation (T-8D R36), so CVaR is never smaller than VaR.
     size_t var_index = static_cast<size_t>(returns.size() * 0.05);
-    if (var_index == 0) {
-        var_index = 1;  // Need at least one value
+    if (var_index >= sorted_returns.size()) {
+        var_index = sorted_returns.size() - 1;
     }
 
     double cvar_sum = 0.0;
-    for (size_t i = 0; i < var_index; ++i) {
+    for (size_t i = 0; i <= var_index; ++i) {
         cvar_sum += sorted_returns[i];
     }
 
-    return -cvar_sum / var_index;
+    return -cvar_sum / static_cast<double>(var_index + 1);
 }
 
 std::unordered_map<std::string, double> BacktestMetricsCalculator::calculate_risk_metrics(

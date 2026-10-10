@@ -181,7 +181,8 @@ public:
     double calculate_var_95(const std::vector<double>& returns) const;
 
     /**
-     * @brief Calculate Conditional VaR (Expected Shortfall) at 95%
+     * @brief Calculate Conditional VaR (Expected Shortfall) at 95%: the mean of the worst
+     *        floor(0.05 n) + 1 returns, the VaR observation included
      * @param returns Vector of daily returns
      * @return CVaR as positive decimal
      */

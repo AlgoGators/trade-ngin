@@ -326,17 +326,35 @@ TEST_F(BacktestMetricsCalculatorTest, Var95PicksWorst5thPercentileLoss) {
     EXPECT_NEAR(calc_.calculate_var_95(r), 0.04, 1e-9);
 }
 
-TEST_F(BacktestMetricsCalculatorTest, Cvar95AveragesTailLosses) {
+// T-8D R36: CVaR includes the VaR observation: the mean of the worst floor(0.05 n) + 1 returns,
+// the last of them being the one var_95 reads.
+//   20 returns -0.10 .. 0.09: floor(0.05 x 20) = 1, VaR = the second worst = 0.09
+//   | rule                              | CVaR                       |
+//   | with the VaR observation (now)    | (0.10 + 0.09) / 2 = 0.095  |
+//   | the returns below it (before)     | 0.10                       |
+TEST_F(BacktestMetricsCalculatorTest, Cvar95AveragesTheTailWithTheVarObservation) {
     std::vector<double> r;
     for (int i = -10; i <= 9; ++i) r.push_back(i * 0.01);
-    // 20 returns. var_index = 1; cvar averages first 1 = -0.10 → +0.10
-    EXPECT_NEAR(calc_.calculate_cvar_95(r), 0.10, 1e-9);
+    EXPECT_NEAR(calc_.calculate_var_95(r), 0.09, 1e-9);
+    EXPECT_NEAR(calc_.calculate_cvar_95(r), 0.095, 1e-9);
+    EXPECT_GE(calc_.calculate_cvar_95(r), calc_.calculate_var_95(r)) << "the tail mean is at least the VaR";
+
+    // 40 returns: floor(0.05 x 40) = 2; VaR is the third worst (0.03); CVaR the mean of the worst
+    // three, (0.10 + 0.05 + 0.03) / 3 = 0.06 (the two below the VaR observation alone: 0.075).
+    std::vector<double> forty(37, 0.01);
+    forty.push_back(-0.10);
+    forty.push_back(-0.05);
+    forty.push_back(-0.03);
+    EXPECT_NEAR(calc_.calculate_var_95(forty), 0.03, 1e-12);
+    EXPECT_NEAR(calc_.calculate_cvar_95(forty), 0.06, 1e-12);
 }
 
-TEST_F(BacktestMetricsCalculatorTest, Cvar95FloorsVarIndexAtOneOnTinyInput) {
-    // var_index = floor(3*0.05) = 0 → bumped to 1
+TEST_F(BacktestMetricsCalculatorTest, Cvar95OfATinyInputIsItsWorstReturnTheVarObservation) {
+    // floor(3 x 0.05) = 0: the VaR observation is the worst return, and CVaR is that one return
     std::vector<double> r{-0.05, 0.0, 0.05};
+    EXPECT_NEAR(calc_.calculate_var_95(r), 0.05, 1e-9);
     EXPECT_NEAR(calc_.calculate_cvar_95(r), 0.05, 1e-9);
+    EXPECT_NEAR(calc_.calculate_cvar_95({-0.02}), 0.02, 1e-12);
 }
 
 TEST_F(BacktestMetricsCalculatorTest, RiskMetricsEmptyReturnsEmpty) {
@@ -957,6 +975,7 @@ TEST_F(BacktestMetricsCalculatorTest, AThinDateAndASaturdayPointAreNoObservation
     EXPECT_NEAR(r.calmar_ratio, (std::pow(1.06, kFuturesK / 7.0) - 1.0) / (2.0 / 104.0), 1e-6);
     EXPECT_NEAR(r.calmar_ratio, 640.650727, 1e-4);
     EXPECT_NEAR(r.var_95, 2.0 / 104.0, 1e-12) << "the Saturday fall (6/102) is no grid return";
+    EXPECT_NEAR(r.cvar_95, 2.0 / 104.0, 1e-12) << "seven returns: the worst one is the VaR observation";
     // Levels, on every row: the Saturday point and the thin date are still rows of the curve.
     EXPECT_NEAR(r.total_return, 0.06, 1e-12);
     ASSERT_EQ(r.drawdown_curve.size(), 10u);
