@@ -445,6 +445,57 @@ TEST(TradeStatisticsNetCost, ATradeAndASymbolAreChargedTheCostAfterNetting) {
     EXPECT_NEAR(calc.calculate_symbol_pnl(apart, kUnitPoints).at("NQ.v.0"), -3.0, 1e-12);
 }
 
+// Two sleeves filling ONE contract on ONE day at DIFFERENT prices: the account's one fill is priced
+// at the quantity-weighted price of the rows on the side of the net change, and rows at different
+// prices are never netted, so the fill's cost is the sum of the rows' own costs.
+//
+//   | day | sleeve A        | sleeve B        | the account's fill | price                      | cost |
+//   | 0   | BUY 3 at 100    | BUY 1 at 104    | BUY 4              | (3 x 100 + 1 x 104) / 4 = 101 | 2.00 |
+//   | 5   | SELL 3 at 110   | BUY 1 at 108    | SELL 2             | the SELL rows only: 110    | 2.00 |
+//   | 9   | SELL 1 at 112   | SELL 1 at 114   | SELL 2             | (112 + 114) / 2 = 113      | 2.00 |
+//
+// Trades: day 5 closes 2 of the long 4 at 101: 2 x (110 - 101) - 2.00 = 16. Day 9 closes the last 2:
+// 2 x (113 - 101) - 2.00 = 22. The symbol: 18 + 24 less all three fills' costs (6.00) = 36.
+// RED when the fill takes the first row's price (day 0 at 100: the trades score 18 and 24 more by
+// 2 and 2), or when the buy row of day 5 enters the price (109.5).
+TEST(TradeStatisticsNetCost, TwoSleevesAtDifferentPricesAreOneFillAtTheQuantityWeightedPrice) {
+    BacktestMetricsCalculator calc;
+    const std::vector<ExecutionReport> execs = {
+        fill("ES.v.0", Side::BUY, 3.0, 100.0, 0, 1.0),  fill("ES.v.0", Side::BUY, 1.0, 104.0, 0, 1.0),
+        fill("ES.v.0", Side::SELL, 3.0, 110.0, 5, 1.0), fill("ES.v.0", Side::BUY, 1.0, 108.0, 5, 1.0),
+        fill("ES.v.0", Side::SELL, 1.0, 112.0, 9, 1.0), fill("ES.v.0", Side::SELL, 1.0, 114.0, 9, 1.0),
+    };
+    const auto fills = BacktestMetricsCalculator::account_fills(execs);
+    ASSERT_EQ(fills.size(), 3u);
+    EXPECT_EQ(fills[0].side, Side::BUY);
+    EXPECT_DOUBLE_EQ(static_cast<double>(fills[0].filled_quantity), 4.0);
+    EXPECT_DOUBLE_EQ(static_cast<double>(fills[0].fill_price), 101.0);
+    EXPECT_EQ(fills[1].side, Side::SELL);
+    EXPECT_DOUBLE_EQ(static_cast<double>(fills[1].filled_quantity), 2.0);
+    EXPECT_DOUBLE_EQ(static_cast<double>(fills[1].fill_price), 110.0);
+    EXPECT_EQ(fills[2].side, Side::SELL);
+    EXPECT_DOUBLE_EQ(static_cast<double>(fills[2].filled_quantity), 2.0);
+    EXPECT_DOUBLE_EQ(static_cast<double>(fills[2].fill_price), 113.0);
+    for (const auto& f : fills) {
+        EXPECT_DOUBLE_EQ(static_cast<double>(f.total_transaction_costs), 2.0);
+        EXPECT_EQ(f.netting_adjustment, Decimal());
+    }
+
+    const auto s = calc.calculate_trade_statistics(execs, kUnitPoints);
+    EXPECT_EQ(s.strategy_fills, 3);
+    EXPECT_EQ(s.total_trades, 2);
+    EXPECT_NEAR(s.total_profit, 16.0 + 22.0, 1e-9);
+    EXPECT_NEAR(s.max_win, 22.0, 1e-9);
+    EXPECT_NEAR(s.total_loss, 0.0, 1e-12);
+    EXPECT_NEAR(calc.calculate_symbol_pnl(execs, kUnitPoints).at("ES.v.0"), 36.0, 1e-9);
+
+    // The same rows stored in the other order give the same fills.
+    std::vector<ExecutionReport> reversed(execs.rbegin(), execs.rend());
+    const auto again = calc.calculate_trade_statistics(reversed, kUnitPoints);
+    EXPECT_EQ(again.total_trades, 2);
+    EXPECT_NEAR(again.total_profit, 38.0, 1e-9);
+}
+
 // T-NETTING fix round: the trade statistics' roll total reads the leg's OWN cost through the same
 // call as results.roll_costs, and a ROLL leg given a non-zero adjustment is refused there, not
 // scored on either basis.
