@@ -236,6 +236,25 @@ public:
         const std::vector<ExecutionReport>& executions,
         const PointValueSource& point_value) const;
 
+    /**
+     * @brief The three counts of a book's executions, each its own total (LOOP_SPEC section 10)
+     *
+     * The counts calculate_trade_statistics reaches on the same rows, by the same netting
+     * (account_fills) and the same pairing, without the dollars: round trips (an account fill
+     * that reduces, closes or flips a non-zero net position: total_trades), the account's
+     * STRATEGY fills (a full cross is none, a partial offset or two sleeves on one side is one:
+     * strategy_fills) and the ROLL legs (roll_fills). A live reader passes the stored
+     * executions with each row's fill time set to its stored date, the day the sleeves' rows
+     * are netted on. A count reads no entry price, so no leg gap is carried: ROLL legs that
+     * the dollar statistics cannot pair are still counted.
+     */
+    struct FillCounts {
+        int round_trips{0};
+        int strategy_fills{0};
+        int roll_fills{0};
+    };
+    static FillCounts account_fill_counts(const std::vector<ExecutionReport>& executions);
+
     // ========== Per-Symbol Analysis ==========
 
     /**

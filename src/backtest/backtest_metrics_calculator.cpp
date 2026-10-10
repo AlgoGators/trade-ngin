@@ -603,6 +603,36 @@ std::vector<ExecutionReport> BacktestMetricsCalculator::account_fills(
     return out;
 }
 
+// ========== The Counts Of The Account's Fills ==========
+
+BacktestMetricsCalculator::FillCounts BacktestMetricsCalculator::account_fill_counts(
+    const std::vector<ExecutionReport>& executions) {
+    // calculate_trade_statistics' walk and its three tests, on the same rows. A count reads no
+    // dollars: no point value, and no entry price, so the pairing is made without the ROLL legs
+    // and carries no leg gap. The legs are counted as they are stored; legs whose ids cannot be
+    // paired for a gap (a live book's two sleeves store one roll's legs under one exec id) are
+    // therefore counted here, where the dollar statistics refuse them.
+    FillCounts counts;
+    const std::vector<ExecutionReport> rows = account_fills(executions);
+    std::vector<ExecutionReport> no_legs;
+    for (const auto& exec : rows) {
+        if (exec.execution_type != ExecutionType::ROLL) no_legs.push_back(exec);
+    }
+    const PointValueSource unit = [](const std::string&) { return 1.0; };
+    TradePairing pairing(no_legs, unit);
+    for (const auto& exec : rows) {
+        const TradePairing::Fill fill = pairing.apply(exec);
+        if (exec.execution_type == ExecutionType::ROLL) {
+            counts.roll_fills++;
+            continue;
+        }
+        if (exec.execution_type == ExecutionType::BORROW) continue;
+        if (fill.signed_quantity != 0.0) counts.strategy_fills++;
+        if (fill.is_closing) counts.round_trips++;
+    }
+    return counts;
+}
+
 // ========== Trade Statistics ==========
 
 BacktestMetricsCalculator::TradeStatistics BacktestMetricsCalculator::calculate_trade_statistics(

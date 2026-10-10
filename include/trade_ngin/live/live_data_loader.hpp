@@ -31,6 +31,7 @@
 #include "trade_ngin/core/types.hpp"
 #include "trade_ngin/data/postgres_database.hpp"
 #include "trade_ngin/live/live_historical_metrics.hpp"
+#include "trade_ngin/live/live_statistics_columns.hpp"
 
 namespace trade_ngin {
 
@@ -266,6 +267,37 @@ public:
      */
     Result<std::string> load_book_start(const std::string& strategy_id,
                                         const std::string& portfolio_id);
+
+    /**
+     * @brief The book's stored per-symbol P&L cells for the worst day's symbol (migration 030):
+     *        per date and symbol, SUM(daily_realized_pnl) and SUM(daily_unrealized_pnl) of
+     *        <schema>.positions over the book's sleeves, from the book's start through
+     *        `through_date`, ascending. A futures row books its daily move as realised and
+     *        carries 0 unrealised; an equity row's unrealised cell is the open position's level.
+     */
+    Result<std::vector<SymbolDayPnl>> load_symbol_pnl_history(const std::string& strategy_id,
+                                                              const std::string& portfolio_id,
+                                                              const Timestamp& through_date);
+
+    /**
+     * @brief The sizing capital each stored row was sized on (migration 030): (date,
+     *        risk_detail.sizing_capital) of every live_results row of the key that carries one,
+     *        from the book's start through `through_date`, ascending.
+     */
+    Result<std::vector<DatedCapital>> load_sizing_capital_history(const std::string& strategy_id,
+                                                                  const std::string& portfolio_id,
+                                                                  const Timestamp& through_date);
+
+    /**
+     * @brief The book's stored executions for its fill counts (migration 030): every row of
+     *        <schema>.executions of the key whose stored date is from the book's start through
+     *        `through_date`. Each row's fill time is its stored DATE (midnight UTC), the day the
+     *        sleeves' rows are netted on; the price, the quantity, the cost, the netting
+     *        adjustment, the execution type and the instrument id are the stored cells.
+     */
+    Result<std::vector<ExecutionReport>> load_book_executions(const std::string& strategy_id,
+                                                              const std::string& portfolio_id,
+                                                              const Timestamp& through_date);
 
     /**
      * @brief The book's stored levels for its statistics: (date, current_portfolio_value) of

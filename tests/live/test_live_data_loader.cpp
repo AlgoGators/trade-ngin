@@ -512,6 +512,69 @@ TEST_F(LiveDataLoaderTest, FuturesStatisticsGridOfNoUniverseIsEmptyAndAsksNothin
     EXPECT_TRUE(db->last_query.empty());
 }
 
+// Migration 030: what the statistics read beside the series, each from the book's start (the
+// bound the three statistics histories use) through the last settled date.
+TEST_F(LiveDataLoaderTest, TheSymbolPnlHistoryIsThePositionsCellsSummedOverTheSleeves) {
+    auto db = std::make_shared<QueryCapturingDb>();
+    LiveDataLoader loader(db, "trading");
+    auto r = loader.load_symbol_pnl_history(kBaseKey, "BASE_PORTFOLIO", april_24());
+    ASSERT_TRUE(r.is_ok());
+    EXPECT_TRUE(r.value().empty());
+    EXPECT_EQ(db->last_query,
+              "SELECT to_char(date, 'YYYY-MM-DD') AS pnl_date, symbol, "
+              "SUM(COALESCE(daily_realized_pnl, 0))::double precision AS realized, "
+              "SUM(COALESCE(daily_unrealized_pnl, 0))::double precision AS unrealized_level "
+              "FROM trading.positions "
+              "WHERE strategy_id = 'LIVE_TREND_FOLLOWING_TREND_FOLLOWING_FAST' "
+              "AND portfolio_id = 'BASE_PORTFOLIO' "
+              "AND DATE(date) <= '2026-04-24' " +
+                  book_start_bound("DATE(date)") +
+                  "GROUP BY date, symbol ORDER BY date ASC, symbol ASC");
+}
+
+TEST_F(LiveDataLoaderTest, TheSizingCapitalHistoryIsRiskDetailsSizingCapitalOfTheRowsThatCarryOne) {
+    auto db = std::make_shared<QueryCapturingDb>();
+    LiveDataLoader loader(db, "trading");
+    auto r = loader.load_sizing_capital_history(kBaseKey, "BASE_PORTFOLIO", april_24());
+    ASSERT_TRUE(r.is_ok());
+    EXPECT_EQ(db->last_query,
+              "SELECT to_char(date, 'YYYY-MM-DD') AS capital_date, "
+              "(risk_detail->>'sizing_capital')::double precision AS sizing_capital "
+              "FROM trading.live_results "
+              "WHERE strategy_id = 'LIVE_TREND_FOLLOWING_TREND_FOLLOWING_FAST' "
+              "AND portfolio_id = 'BASE_PORTFOLIO' "
+              "AND risk_detail->>'sizing_capital' IS NOT NULL "
+              "AND DATE(date) <= '2026-04-24' " +
+                  book_start_bound("DATE(date)") + "ORDER BY date ASC");
+}
+
+TEST_F(LiveDataLoaderTest, TheBooksExecutionsAreReadByTheirStoredDateFromTheBookStart) {
+    auto db = std::make_shared<QueryCapturingDb>();
+    LiveDataLoader loader(db, "trading");
+    auto r = loader.load_book_executions(kBaseKey, "BASE_PORTFOLIO", april_24());
+    ASSERT_TRUE(r.is_ok());
+    EXPECT_EQ(db->last_query,
+              "SELECT exec_id, order_id, symbol, side, quantity::double precision AS quantity, "
+              "price::double precision AS price, to_char(date, 'YYYY-MM-DD') AS fill_date, "
+              "COALESCE(total_transaction_costs, 0)::double precision AS total_transaction_costs, "
+              "COALESCE(netting_adjustment, 0)::double precision AS netting_adjustment, "
+              "execution_type, COALESCE(instrument_id, '') AS instrument_id "
+              "FROM trading.executions "
+              "WHERE strategy_id = 'LIVE_TREND_FOLLOWING_TREND_FOLLOWING_FAST' "
+              "AND portfolio_id = 'BASE_PORTFOLIO' "
+              "AND DATE(date) <= '2026-04-24' " +
+                  book_start_bound("DATE(date)") + "ORDER BY date ASC, exec_id ASC");
+    // The day the sleeves' rows are netted on is the stored date, never the execution time.
+    EXPECT_EQ(db->last_query.find("execution_time"), std::string::npos);
+}
+
+TEST_F(LiveDataLoaderTest, TheMigration030HistoriesLoadDisconnectedError) {
+    LiveDataLoader l(make_disconnected_db(), "trading");
+    ASSERT_DB_ERROR(l.load_symbol_pnl_history("S", "P", now()));
+    ASSERT_DB_ERROR(l.load_sizing_capital_history("S", "P", now()));
+    ASSERT_DB_ERROR(l.load_book_executions("S", "P", now()));
+}
+
 TEST_F(LiveDataLoaderTest, StatisticsGridLoadsDisconnectedError) {
     LiveDataLoader l(make_disconnected_db(), "trading");
     ASSERT_DB_ERROR(l.load_statistics_levels("S", "P", now()));

@@ -599,10 +599,29 @@ Result<void> PostgresDatabase::store_backtest_positions_with_strategy(
     }
 }
 
+Result<void> PostgresDatabase::validate_live_results_cells(
+    const std::vector<LiveResultsCell>& cells) const {
+    // A cell's column and type are concatenated into the statement: the column is allow-listed
+    // as an identifier and the type against the fixed list; the value is always quoted.
+    for (const auto& cell : cells) {
+        auto column_validation = validate_identifier(cell.column);
+        if (column_validation.is_error()) {
+            return column_validation;
+        }
+        if (!live_results_cell_type_known(cell.type)) {
+            return make_error<void>(ErrorCode::INVALID_ARGUMENT,
+                                    "Invalid live_results cell type: " + cell.type,
+                                    "PostgresDatabase");
+        }
+    }
+    return Result<void>();
+}
+
 Result<void> PostgresDatabase::update_live_results(
     const std::string& strategy_id, const Timestamp& date,
     const std::unordered_map<std::string, double>& updates, const std::string& portfolio_id,
-    const std::string& table_name, size_t* rows_affected) {
+    const std::string& table_name, size_t* rows_affected,
+    const std::vector<LiveResultsCell>& cells) {
     std::lock_guard<std::mutex> lock(mutex_);
 
     if (rows_affected) {
@@ -616,6 +635,10 @@ Result<void> PostgresDatabase::update_live_results(
         if (column_validation.is_error()) {
             return column_validation;
         }
+    }
+    auto cells_validation = validate_live_results_cells(cells);
+    if (cells_validation.is_error()) {
+        return cells_validation;
     }
 
     // Validate connection
@@ -636,7 +659,7 @@ Result<void> PostgresDatabase::update_live_results(
         return strategy_validation;
     }
 
-    if (updates.empty()) {
+    if (updates.empty() && cells.empty()) {
         return Result<void>();
     }
 
@@ -654,6 +677,14 @@ Result<void> PostgresDatabase::update_live_results(
             if (!first)
                 query += ", ";
             query += column + " = " + std::to_string(value);
+            first = false;
+        }
+        // The typed cells (migration 030): every one is assigned, NULL where it has no value.
+        for (const auto& cell : cells) {
+            if (!first)
+                query += ", ";
+            query += cell.column + " = " +
+                     (cell.value ? txn.quote(*cell.value) + "::" + cell.type : std::string("NULL"));
             first = false;
         }
 
@@ -832,7 +863,7 @@ Result<void> PostgresDatabase::store_live_results_complete(
     const std::unordered_map<std::string, double>& metrics,
     const std::unordered_map<std::string, int>& int_metrics, const nlohmann::json& config,
     const std::string& portfolio_id, const std::string& table_name,
-    const nlohmann::json& risk_detail) {
+    const nlohmann::json& risk_detail, const std::vector<LiveResultsCell>& cells) {
     std::lock_guard<std::mutex> lock(mutex_);
 
     // Column names are concatenated into the statement (Postgres cannot bind
@@ -848,6 +879,10 @@ Result<void> PostgresDatabase::store_live_results_complete(
         if (column_validation.is_error()) {
             return column_validation;
         }
+    }
+    auto cells_validation = validate_live_results_cells(cells);
+    if (cells_validation.is_error()) {
+        return cells_validation;
     }
 
     // Validate connection
@@ -902,6 +937,14 @@ Result<void> PostgresDatabase::store_live_results_complete(
         if (!risk_detail.is_null()) {
             columns += ", risk_detail";
             values += ", " + txn.quote(risk_detail.dump()) + "::jsonb";
+        }
+
+        // The typed cells (migration 030): named only when they have a value, so a cell
+        // without one stays NULL.
+        for (const auto& cell : cells) {
+            if (!cell.value) continue;
+            columns += ", " + cell.column;
+            values += ", " + txn.quote(*cell.value) + "::" + cell.type;
         }
 
         std::string query =

@@ -119,6 +119,31 @@ TEST_F(LiveResultsManagerTest, SaveLiveResultsInvokesStoreLiveResultsComplete) {
     EXPECT_EQ(db_->call_count("store_live_results_complete"), 1);
 }
 
+// Migration 030: the typed cells reach both writes; a cell with no value travels as none.
+TEST_F(LiveResultsManagerTest, TheTypedCellsReachTheInsertAndTheUpdate) {
+    const std::vector<LiveResultsCell> cells = {
+        {"worst_day_date", "date", std::string("2025-10-10")},
+        {"monthly_skew", "numeric", std::nullopt},
+        {"calendar_year_returns", "jsonb", std::string("{}")}};
+    mgr_->set_metrics({{"total_return", 0.05}}, {});
+    mgr_->set_cells(cells);
+    ASSERT_TRUE(mgr_->save_live_results(date_at(2026, 3, 15)).is_ok());
+    ASSERT_EQ(db_->last_live_cells.size(), 3u);
+    EXPECT_EQ(db_->last_live_cells[0].column, "worst_day_date");
+    EXPECT_EQ(*db_->last_live_cells[0].value, "2025-10-10");
+    EXPECT_FALSE(db_->last_live_cells[1].value.has_value());
+
+    // The Day T-1 refresh: the cells go with the numbers, and alone they are still an UPDATE.
+    size_t rows = 0;
+    db_->reset_call_counts();
+    ASSERT_TRUE(mgr_->update_live_results(date_at(2026, 3, 14), {{"sharpe_ratio", 1.5}}, &rows, cells)
+                    .is_ok());
+    EXPECT_EQ(db_->call_count("update_live_results"), 1);
+    EXPECT_EQ(db_->last_update_cells.size(), 3u);
+    ASSERT_TRUE(mgr_->update_live_results(date_at(2026, 3, 14), {}, &rows, cells).is_ok());
+    EXPECT_EQ(db_->call_count("update_live_results"), 2);
+}
+
 TEST_F(LiveResultsManagerTest, SaveEquityCurveWhenSetInvokesStoreTradingEquityCurve) {
     mgr_->set_equity(1'050'000.0);
     db_->reset_call_counts();

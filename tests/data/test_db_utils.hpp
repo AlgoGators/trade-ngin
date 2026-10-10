@@ -389,6 +389,9 @@ public:
     // The risk_detail arguments of the last calls (migration 020).
     nlohmann::json last_live_risk_detail;
     std::vector<std::string> last_equity_risk_detail;
+    // The typed cells of the last INSERT and of the last UPDATE (migration 030).
+    std::vector<LiveResultsCell> last_live_cells;
+    std::vector<LiveResultsCell> last_update_cells;
 
     Result<void> store_live_results_complete(
         const std::string& strategy_id, const Timestamp& date,
@@ -397,10 +400,12 @@ public:
         const nlohmann::json& config,
         const std::string& portfolio_id = "BASE_PORTFOLIO",
         const std::string& table_name = "trading.live_results",
-        const nlohmann::json& risk_detail = nlohmann::json()) override {
+        const nlohmann::json& risk_detail = nlohmann::json(),
+        const std::vector<LiveResultsCell>& cells = {}) override {
         (void)strategy_id; (void)date; (void)metrics; (void)int_metrics; (void)config;
         (void)portfolio_id; (void)table_name;
         last_live_risk_detail = risk_detail;
+        last_live_cells = cells;
         return record_call("store_live_results_complete");
     }
 
@@ -409,9 +414,11 @@ public:
         const std::unordered_map<std::string, double>& updates,
         const std::string& portfolio_id,
         const std::string& table_name = "trading.live_results",
-        size_t* rows_affected = nullptr) override {
+        size_t* rows_affected = nullptr,
+        const std::vector<LiveResultsCell>& cells = {}) override {
         (void)strategy_id; (void)date; (void)updates;
         (void)portfolio_id; (void)table_name;
+        last_update_cells = cells;
         if (rows_affected) *rows_affected = update_live_results_rows;
         return record_call("update_live_results");
     }

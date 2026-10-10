@@ -207,6 +207,7 @@ set(TRADE_NGIN_SOURCES
     src/storage/live_results_manager.cpp
     src/live/live_data_loader.cpp
     src/live/live_historical_metrics.cpp
+    src/live/live_statistics_columns.cpp
     src/live/live_metrics_calculator.cpp
     src/live/live_trading_coordinator.cpp
     src/live/live_price_manager.cpp

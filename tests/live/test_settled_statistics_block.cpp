@@ -138,7 +138,7 @@ TEST(SettledStatisticsBlock, TheDayBeforeRefreshRunsWhenTheRowExistsAndReportsZe
             << runner << ": the refresh is not conditioned on the Day T-1 row existing";
         ASSERT_NE(update, std::string::npos) << runner;
         EXPECT_GT(update, exists) << runner;
-        EXPECT_NE(block.find("previous_date, metric_updates, &refreshed_rows);"),
+        EXPECT_NE(block.find("previous_date, metric_updates, &refreshed_rows"),
                   std::string::npos)
             << runner << ": the refresh does not read the rows it changed";
         const auto zero = block.find("} else if (refreshed_rows == 0) {");
@@ -321,5 +321,41 @@ TEST(SettledStatisticsBlock, NoRunnerLoadsAStoredReturnOrPnlHistoryForAStatistic
                              "total_trades_hist);"),
                   std::string::npos)
             << runner;
+    }
+}
+
+// Migration 030 (LOOP_SPEC sections 7.4 and 10): the new statistics are taken in the same block,
+// on the same series and K, once, and the same cells feed the Day T-1 refresh and the row the
+// run writes. The sizing-capital history is read on the futures books only.
+TEST(SettledStatisticsBlock, TheMigration030StatisticsAreTakenOnTheBlocksSeriesAndFeedBothWrites) {
+    for (const auto& runner : kRunners) {
+        const std::string src = read_source(runner);
+        if (src.empty()) GTEST_SKIP() << "runner source not found from the test working directory";
+        const std::string block = statistics_block(src);
+        ASSERT_FALSE(block.empty()) << runner;
+        const bool equity = runner.find("equity") != std::string::npos;
+
+        EXPECT_EQ(count_of(src, "live_statistics_columns("), 1u) << runner;
+        EXPECT_EQ(count_of(block, "live_statistics_columns("), 1u) << runner;
+        EXPECT_NE(block.find("statistics_series, sessions_per_year, book_start_res.value(), t1_date_str,"),
+                  std::string::npos)
+            << runner << ": not the block's series, K, start and last settled date";
+        EXPECT_EQ(count_of(block, "set_fill_counts(statistics_columns, book_executions_res.value())"), 1u)
+            << runner;
+        EXPECT_EQ(count_of(block, "->load_symbol_pnl_history("), 1u) << runner;
+        EXPECT_EQ(count_of(block, "->load_book_executions("), 1u) << runner;
+        EXPECT_EQ(count_of(src, "->load_sizing_capital_history("), equity ? 0u : 1u) << runner;
+
+        // Both writes: the refresh inside the block, the day's row after STEP 5.
+        const auto update = block.find("->update_live_results(");
+        ASSERT_NE(update, std::string::npos) << runner;
+        EXPECT_NE(block.find("settled_statistics_cells);", update), std::string::npos) << runner;
+        const auto step5 = src.find(kStep5);
+        EXPECT_EQ(count_of(src, "results_manager->set_cells("), 1u) << runner;
+        const auto day_row = src.find("results_manager->set_cells(", step5);
+        ASSERT_NE(day_row, std::string::npos) << runner;
+        const auto cells_read = src.find("settled_statistics_cells", step5);
+        EXPECT_TRUE(cells_read != std::string::npos && cells_read < day_row + 200)
+            << runner << ": the row the run writes does not take the block's cells";
     }
 }

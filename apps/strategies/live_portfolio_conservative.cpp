@@ -3689,6 +3689,9 @@ int main(int argc, char* argv[]) {
         // not STEP 4 finalized its levels (a Day T-1 whose book did not move keeps levels that
         // were already settled). Statistic columns only: no level column is written here.
         HistoricalMetrics settled_statistics;
+        // Migration 030: the statistics that are not plain numbers (dates, symbols, the
+        // calendar years) or may have no value, as typed cells; the same two writes.
+        std::vector<LiveResultsCell> settled_statistics_cells;
         bool t1_statistics_refreshed = false;
         try {
             if (data_loader && data_loader->is_connected()) {
@@ -3715,6 +3718,21 @@ int main(int argc, char* argv[]) {
                 if (book_start_res.is_error() || levels_res.is_error() || grid_res.is_error()) {
                     throw std::runtime_error("the statistics grid could not be loaded");
                 }
+                // What the statistics of migration 030 read beside the series (LOOP_SPEC sections
+                // 7.4 and 10): each symbol's stored P&L (the worst day's symbol), the sizing
+                // capital each row was sized on (risk_detail.sizing_capital), and the book's
+                // executions (the fill counts), all from the book's start through Day T-1.
+                auto symbol_pnl_res = data_loader->load_symbol_pnl_history(
+                    combined_strategy_id, coordinator_config.portfolio_id, previous_date);
+                auto sizing_capitals_res = data_loader->load_sizing_capital_history(
+                    combined_strategy_id, coordinator_config.portfolio_id, previous_date);
+                auto book_executions_res = data_loader->load_book_executions(
+                    combined_strategy_id, coordinator_config.portfolio_id, previous_date);
+                if (symbol_pnl_res.is_error() || sizing_capitals_res.is_error() ||
+                    book_executions_res.is_error()) {
+                    throw std::runtime_error(
+                        "the histories of the migration 030 statistics could not be loaded");
+                }
                 const double sessions_per_year = app_config.statistics.futures_sessions_per_year;
                 const StatisticsSeries statistics_series = build_statistics_series(
                     levels_res.value(), grid_res.value(), book_start_res.value(), initial_capital,
@@ -3739,6 +3757,22 @@ int main(int argc, char* argv[]) {
                     !days_warning.empty()) {
                     WARN("STATISTICS_DAYS through " + t1_date_str + ": " + days_warning);
                 }
+
+                // Migration 030, on the same series and the same K: the worst day's date and
+                // symbol, the three statistics on the sizing capital, the monthly skew and tail
+                // ratio, the calendar years, and the account's fill counts.
+                LiveStatisticsColumns statistics_columns = live_statistics_columns(
+                    statistics_series, sessions_per_year, book_start_res.value(), t1_date_str,
+                    symbol_pnl_res.value(), sizing_capitals_res.value());
+                if (const std::string fills_warning =
+                        set_fill_counts(statistics_columns, book_executions_res.value());
+                    !fills_warning.empty()) {
+                    WARN("STATISTICS_FILLS through " + t1_date_str +
+                         ": the fill counts stay NULL: " + fills_warning);
+                }
+                settled_statistics_cells = live_statistics_cells(statistics_columns);
+                INFO("STATISTICS_COLUMNS [through Day T-1 " + t1_date_str +
+                     "]: " + live_statistics_log_line(statistics_columns));
 
                 INFO("HIST_METRICS [through Day T-1 " + t1_date_str +
                      "]: volatility=" + std::to_string(settled_statistics.volatility) +
@@ -3767,7 +3801,8 @@ int main(int argc, char* argv[]) {
                         db, true, combined_strategy_id, coordinator_config.portfolio_id);
                     size_t refreshed_rows = 0;
                     auto update_metrics_result = t1_statistics_manager->update_live_results(
-                        previous_date, metric_updates, &refreshed_rows);
+                        previous_date, metric_updates, &refreshed_rows,
+                        settled_statistics_cells);
                     if (update_metrics_result.is_error()) {
                         WARN("Failed to update historical performance metrics for Day T-1: " +
                              std::string(update_metrics_result.error()->what()));
@@ -4106,6 +4141,10 @@ int main(int argc, char* argv[]) {
 
             // Set all metrics at once
             results_manager->set_metrics(double_metrics, int_metrics);
+
+            // Migration 030: the typed cells of the same statistics; a cell with no value is
+            // left out of the INSERT and stays NULL.
+            results_manager->set_cells(settled_statistics_cells);
 
             // Set config
             results_manager->set_config(report_config_json);
