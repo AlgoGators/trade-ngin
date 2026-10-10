@@ -63,7 +63,8 @@ private:
 };
 
 /// The two cells a run writes: the Day T-1 row's (no value: the UPDATE does not name the column
-/// and the row keeps what it has) and the run's own row's (no value: the INSERT does not name it).
+/// and the row keeps what it has) and the run's own row's (no value: the INSERT does not name it,
+/// so the cell takes the column's default, which is 0).
 struct DividendCounterCells {
     std::optional<double> day_t1;
     std::optional<double> today;
@@ -72,7 +73,9 @@ struct DividendCounterCells {
 /// A run whose reads all answered writes the two figures it computed. A run with a failed read
 /// (the dividend record, or an ex-date's position rows) computed nothing it can trust: the Day T-1
 /// row is left as it is and the run's own row carries the figure stored on the Day T-1 row, the
-/// previous value, when there is one. A failed read is never counted as zero.
+/// previous value, when there is one. When there is none (no Day T-1 row, a NULL cell, or the
+/// carry read failed too) the run's own row is left to the column's default, 0, and the ERROR
+/// line is the record that the figure was not computed.
 inline DividendCounterCells dividend_counter_cells(bool read_failed, double through_day_t1,
                                                    double through_today,
                                                    const std::optional<double>& stored_on_day_t1) {

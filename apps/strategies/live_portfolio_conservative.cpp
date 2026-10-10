@@ -1832,8 +1832,9 @@ int main(int argc, char* argv[]) {
                 }
                 portfolio->set_hold_set(std::move(book_gate_holds));
             }
-            // T-7b-3 R-3: on a sizing hold the PortfolioManager is not run, so every strategy
-            // keeps the seeded T-1 book above (no rebalance, no order, no signal stored today).
+            // T-7b-3 R-3: a sizing hold skips process_market_data only, so every strategy keeps the
+            // seeded T-1 book above (no rebalance, no order). PHASE 4 below still runs and stores
+            // each sleeve's current_forecast, which no on_data set today: the stored signals are 0.
             auto port_process_result =
                 sizing_hold ? Result<void>() : portfolio->process_market_data(strategy_feed_bars);
             INFO("MarketDataBus publishing RE-ENABLED after process_market_data");
@@ -3059,11 +3060,12 @@ int main(int argc, char* argv[]) {
             std::cout << "Jump Risk (99th): N/A" << std::endl;
             std::cout << "Risk Scale: N/A" << std::endl;
         }
-        // RA-01 (T-7b-1 C7): beside the stored value, the scale that actually moved the book.
-        // reporter = the double stored as live_results.risk_scale below (the snapshot's
-        // recommended_scale, 1.0 when its evaluation failed); the other four fields are the
-        // PortfolioManager's own record of this run's rebalance, last_risk_decisions(), each
-        // defined in risk_scale_report.hpp. Log only: no stored value reads it.
+        // RA-01 (T-7b-1 C7): the reporter's scale beside the scale that actually moved the book.
+        // reporter = the snapshot's recommended_scale (1.0 when its evaluation failed). It is NOT
+        // the stored live_results.risk_scale: that column is the DELIVERED scale, set below. The
+        // other four fields are the PortfolioManager's own record of this run's rebalance,
+        // last_risk_decisions(), each defined in risk_scale_report.hpp. Log only: nothing stored
+        // reads it.
         INFO(trade_ngin::format_risk_scale_report(
             risk_eval.is_ok() ? risk_eval.value().recommended_scale : 1.0,
             trade_ngin::summarize_applied_risk(portfolio->last_risk_decisions())));

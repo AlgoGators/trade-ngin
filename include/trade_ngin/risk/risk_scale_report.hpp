@@ -1,11 +1,11 @@
 // include/trade_ngin/risk/risk_scale_report.hpp
 //
-// RA-01 (T-RISK-ARCH §2.1): live_results.risk_scale is written by a throwaway snapshot
-// RiskManager that every live runner builds AFTER the trade; it never moves a contract. The
-// scale that did move the book is the PortfolioManager's, recorded row by row in
-// last_risk_decisions(). HD 2026-09-18: "the applied risk scale is logged per lap beside the
-// reporter's value now; the stored column is T-8's to rule". The per-lap half is the PM's
-// RISK_APPLIED line; this is the per-rebalance half, one line beside the stored value:
+// RA-01 (T-RISK-ARCH §2.1): every live runner builds a throwaway snapshot RiskManager AFTER the
+// trade; its recommended scale (the "reporter") never moves a contract. The scale that did move
+// the book is the PortfolioManager's, recorded row by row in last_risk_decisions(). On a futures
+// row the stored live_results.risk_scale is the DELIVERED scale (migration 020), not the
+// reporter's; the equity runner still stores the reporter's (migration 028's comment). The
+// per-lap half is the PM's RISK_APPLIED line; this is the per-rebalance half, one log line:
 //
 //   RISK_SCALE_REPORT reporter=<r> applied_cumulative=<c> laps=<n> cutting_laps=<k>
 //                     binding_module=<id> [date=<YYYY-MM-DD>]

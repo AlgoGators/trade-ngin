@@ -152,10 +152,13 @@ struct RiskDecisionRecord {
                                                  ///< Decimal(scale); 1 when nothing was multiplied
     bool empty_book{false};                      ///< the book was empty: on_bars ran, evaluate did not
     std::string error;                           ///< non-empty iff the module (or the risk step) failed.
-                                                 ///< At PORTFOLIO scope a failure refuses the scope and
-                                                 ///< the failed row is recorded with applied REFUSE; at
-                                                 ///< SLEEVE scope it does so only for a REFUSE-capable
-                                                 ///< module, else applied NONE (HD 2026-09-21)
+                                                 ///< A failed module of ANY capability refuses its scope:
+                                                 ///< the book at PORTFOLIO scope (HD 2026-09-21), its one
+                                                 ///< sleeve at SLEEVE scope (T-7b-2 C10b, HD 2026-09-24
+                                                 ///< ruling 18). The first failed module's row is recorded
+                                                 ///< with applied REFUSE; a failed row is applied NONE when
+                                                 ///< another module already refused the scope or an earlier
+                                                 ///< module's failure did
 };
 
 /// The module_id of the REFUSE row the PortfolioManager records when the portfolio risk step
