@@ -1,5 +1,6 @@
 #pragma once
 
+#include <functional>
 #include <vector>
 #include <string>
 #include <unordered_map>
@@ -12,6 +13,14 @@ namespace trade_ngin {
 namespace backtest {
 struct BacktestResults;
 }
+
+/// The sessions a year every annualised figure of this calculator applies TODAY: volatility,
+/// Sharpe, Sortino, downside volatility and the annualised return multiply by 252 or sqrt(252),
+/// on every book, whatever the run's own grid is. A futures run has about 312 rows a year and its
+/// ruled factor is 311.0574 (T-8D R2); aligning the calculator to it is T-8b's commit (1). Until
+/// then this is the factor a backtest records as the one its figures use
+/// (backtest.run_metadata.portfolio_config.statistics_K), with the ruled factor beside it.
+inline constexpr double kBacktestAnnualisationApplied = 252.0;
 
 /**
  * @brief Pure stateless calculation component for backtest metrics
@@ -179,27 +188,96 @@ public:
         double max_loss = 0.0;
         double avg_holding_period = 0.0;
         std::vector<ExecutionReport> actual_trades;  // Position-closing trades only
+        /// The account's STRATEGY fills (account_fills): a contract-day the sleeves cross in full
+        /// is none, a partial offset or two sleeves the same side is one.
+        int strategy_fills{0};
         int roll_fills{0};          ///< T-ROLLX-FIX: ROLL legs seen (not trades)
         double roll_costs{0.0};     ///< T-ROLLX-FIX: their cost (never inside a trade's P&L)
     };
 
     /**
+     * @brief The dollars of one price point of one contract (or share) of a symbol
+     *
+     * The run's coordinator passes BacktestPnLManager::get_point_value, the source the equity
+     * curve reads (the metadata), so a trade's dollars and the booked dollars are one figure.
+     */
+    using PointValueSource = std::function<double(const std::string&)>;
+
+    /**
+     * @brief The book's fills: the executions netted between sleeves, in a stated order
+     *
+     * The STRATEGY rows of one contract on one bar (a backtest's bar is a day; the rows of a bar
+     * share its fill time) are the account's one order for that contract: their signed quantities
+     * are summed. A full cross (sum 0) is no fill; a partial offset is one fill of the net size on
+     * the net side; rows on one side are one fill of the summed size. The fill's cost is the sum
+     * of the rows' own costs and of their netting adjustments, so transaction_cost::net_cost of
+     * it is the sum of the rows' costs after netting. Its price is the rows' one price; when the
+     * rows' prices differ, the quantity-weighted price of the rows on the net side (a full cross
+     * at different prices keeps its cost on a row of quantity 0, which is not a fill). A
+     * contract-bar with one STRATEGY row is that row, unchanged. ROLL and BORROW rows are never
+     * netted and are returned as they are.
+     *
+     * Order: by fill time; within a bar the ROLL legs, then the STRATEGY fills, then the BORROW
+     * rows; then by symbol; then by exec id. The result does not depend on the order of the input.
+     *
+     * The one definition of "the account's fills" and of the trades paired from them: the trade
+     * statistics, the per-symbol P&L and any count of STRATEGY fills read this list.
+     */
+    static std::vector<ExecutionReport> account_fills(const std::vector<ExecutionReport>& executions);
+
+    /**
      * @brief Calculate trade statistics from executions
-     * @param executions Vector of execution reports
+     *
+     * The statistics are the BOOK's: the executions are first netted into the account's fills
+     * (account_fills). A trade is an account fill that reduces, closes or flips the account's
+     * net position in a contract, scored in DOLLARS: closed quantity x (fill price - entry) x
+     * the position's side x the symbol's point value, less that fill's cost after netting. One
+     * tracker per contract; a ROLL leg carries the open entry by the leg gap and a BORROW row is
+     * a cost, neither is a trade. A fill through zero opens the remainder at its own price; a
+     * position under 1e-9 after a fill is flat.
+     *
+     * @param executions Vector of execution reports (any order)
+     * @param point_value Dollars per price point of each symbol
      * @return TradeStatistics structure
      */
     TradeStatistics calculate_trade_statistics(
-        const std::vector<ExecutionReport>& executions) const;
+        const std::vector<ExecutionReport>& executions,
+        const PointValueSource& point_value) const;
+
+    /**
+     * @brief The three counts of a book's executions, each its own total (LOOP_SPEC section 10)
+     *
+     * The counts calculate_trade_statistics reaches on the same rows, by the same netting
+     * (account_fills) and the same pairing, without the dollars: round trips (an account fill
+     * that reduces, closes or flips a non-zero net position: total_trades), the account's
+     * STRATEGY fills (a full cross is none, a partial offset or two sleeves on one side is one:
+     * strategy_fills) and the ROLL legs (roll_fills). A live reader passes the stored
+     * executions with each row's fill time set to its stored date, the day the sleeves' rows
+     * are netted on. A count reads no entry price, so no leg gap is carried: ROLL legs that
+     * the dollar statistics cannot pair are still counted.
+     */
+    struct FillCounts {
+        int round_trips{0};
+        int strategy_fills{0};
+        int roll_fills{0};
+    };
+    static FillCounts account_fill_counts(const std::vector<ExecutionReport>& executions);
 
     // ========== Per-Symbol Analysis ==========
 
     /**
      * @brief Calculate P&L breakdown by symbol
+     *
+     * The pairing of calculate_trade_statistics (the same walk over the account's fills), in
+     * dollars, summed per symbol, with every row's cost after netting charged.
+     *
      * @param executions Vector of execution reports
+     * @param point_value Dollars per price point of each symbol
      * @return Map of symbol to realized P&L
      */
     std::map<std::string, double> calculate_symbol_pnl(
-        const std::vector<ExecutionReport>& executions) const;
+        const std::vector<ExecutionReport>& executions,
+        const PointValueSource& point_value) const;
 
     /**
      * @brief Calculate monthly returns
@@ -231,17 +309,20 @@ public:
     /**
      * @brief Calculate all metrics and populate BacktestResults
      *
-     * This is the main entry point that computes all metrics at once.
+     * This is the main entry point that computes all metrics at once. A UTC date the curve
+     * carries more than once counts once, by its last row, before the warmup is cut.
      *
      * @param equity_curve Full equity curve including warmup period
      * @param executions All execution reports
      * @param warmup_days Number of days to exclude from metric calculations
+     * @param point_value Dollars per price point of each symbol (the trade statistics)
      * @return Populated BacktestResults structure
      */
     backtest::BacktestResults calculate_all_metrics(
         const std::vector<std::pair<Timestamp, double>>& equity_curve,
         const std::vector<ExecutionReport>& executions,
-        int warmup_days = 0) const;
+        int warmup_days,
+        const PointValueSource& point_value) const;
 
 private:
     // ========== Helper Methods ==========

@@ -59,6 +59,34 @@ HistoricalMetrics distinct_metrics() {
     return m;
 }
 
+// A statistics series of `n` flat sessions on a base of 100: the grid argument of calculate()
+// for a test that pins a statistic the grid does not feed.
+StatisticsSeries flat_grid(int n) {
+    std::vector<DatedLevel> levels;
+    std::vector<std::string> dates;
+    for (int i = 0; i < n; ++i) {
+        const std::string date = "2026-01-" + std::string(i + 2 < 10 ? "0" : "") + std::to_string(i + 2);
+        levels.push_back({date, 100.0});
+        dates.push_back(date);
+    }
+    return build_statistics_series(levels, dates, "2026-01-01", 100.0, "2026-01-31");
+}
+
+// The statistics series whose grid returns are `returns_pct`, on a base of 100: one stored
+// level per session from 2026-01-02, the start row flat at the base.
+StatisticsSeries grid_of_returns(const std::vector<double>& returns_pct) {
+    std::vector<DatedLevel> levels;
+    std::vector<std::string> dates;
+    double level = 100.0;
+    for (size_t i = 0; i < returns_pct.size(); ++i) {
+        const int day = static_cast<int>(i) + 2;
+        const std::string date = "2026-01-" + std::string(day < 10 ? "0" : "") + std::to_string(day);
+        level *= 1.0 + returns_pct[i] / 100.0;
+        levels.push_back({date, level});
+        dates.push_back(date);
+    }
+    return build_statistics_series(levels, dates, "2026-01-01", 100.0, "2026-01-31");
+}
 }  // namespace
 
 TEST(HistoricalMetricsColumns, TheBlockIsTheFifteenNullColumnsPlusVolatility) {
@@ -121,32 +149,38 @@ TEST(HistoricalMetricsColumns, TheRealAprilTwentiethRowCarriesZeroPointEightNotT
         -0.001935, 0.0,       0.075430,  0.0,       0.0,       -0.044904};
     ASSERT_EQ(returns_pct.size(), 20u);
 
-    // The annualised return stored on that row, and the ex-ante sigma the column used to hold.
-    const double stored_annualized_return = -4.702;
+    // The ex-ante sigma the column used to hold.
     const double ex_ante_portfolio_var_x100 = 21.8934;
 
     LiveHistoricalMetricsCalculator calc;
-    const auto m = calc.calculate(returns_pct, /*pnl*/ {}, /*equity*/ {},
-                                  stored_annualized_return, /*executions*/ 3);
+    const auto m = calc.calculate(grid_of_returns(returns_pct), 252.0, /*executions*/ 3);
 
-    // Population std of the twenty returns, times sqrt(252). Hand-computed in the decisions
-    // doc as 0.797689; the fixture's rounded returns give 0.7976864.
-    EXPECT_NEAR(m.volatility, 0.797689, 1e-5);
+    // Sample sd of the twenty returns, times sqrt(252): the population figure the decisions
+    // doc hand-computed, 0.797689 (0.7976864 on the fixture's rounded returns), times
+    // sqrt(20 / 19) = 0.818409.
+    EXPECT_NEAR(m.volatility, 0.7976864 * std::sqrt(20.0 / 19.0), 1e-5);
+    EXPECT_NEAR(m.volatility, 0.818409, 1e-5);
 
     const auto doubles = historical_metrics_double_columns(m);
-    EXPECT_NEAR(doubles.at("volatility"), 0.797689, 1e-5)
+    EXPECT_NEAR(doubles.at("volatility"), 0.818409, 1e-5)
         << "the column is the calculator's realised return volatility";
     EXPECT_GT(std::abs(doubles.at("volatility") - ex_ante_portfolio_var_x100), 20.0)
         << "if this is ~21.89 the runner is still writing risk_eval.portfolio_var * 100 -- the "
            "ex-ante sigma of a one-stock book, which on 2026-04-15/16 was 0.0000 because the "
            "book was flat, and which ignores the fact that the book was 5 % invested";
 
-    // And the point of the change: sharpe is now reproducible from the row it sits on.
-    EXPECT_NEAR(doubles.at("sharpe_ratio"), stored_annualized_return / m.volatility, 1e-12);
-    EXPECT_NEAR(doubles.at("sharpe_ratio"), -5.894563, 1e-4)
-        << "the stored 2026-04-20 sharpe_ratio";
-    EXPECT_NEAR(doubles.at("downside_deviation"), 1.229913, 1e-5)
-        << "the stored 2026-04-20 downside_deviation, from the same series";
+    // The Sharpe ratio is the mean return over the same sample sd, annualised with the same
+    // sessions a year: mean -0.0190973 x 252 / 0.818409 = -5.880320 (the row as stored on
+    // 2026-04-20 divided a calendar-day annualised return by the population figure: -5.894563).
+    double sum = 0.0;
+    for (double r : returns_pct) sum += r;
+    EXPECT_NEAR(doubles.at("sharpe_ratio"), sum / 20.0 * 252.0 / m.volatility, 1e-9);
+    EXPECT_NEAR(doubles.at("sharpe_ratio"), -5.880320, 1e-5);
+    // Eight of the twenty returns are below zero; their squares sum to 0.048021 and are
+    // averaged over all twenty days: sqrt(0.048021 / 20) * sqrt(252) = 0.777863. (The row as
+    // stored on 2026-04-20 divided by the eight losing days and held 1.229913.)
+    EXPECT_NEAR(doubles.at("downside_deviation"), 0.777863, 1e-5)
+        << "the 2026-04-20 downside_deviation, from the same series, over all twenty days";
 }
 
 TEST(HistoricalMetricsColumns, EveryColumnCarriesItsOwnMemberAndNotItsNeighbours) {
@@ -175,56 +209,80 @@ TEST(HistoricalMetricsColumns, EveryColumnCarriesItsOwnMemberAndNotItsNeighbours
 // known series"). Every number below is derived on paper from the inputs, not read off the
 // implementation, so a change to the definitions has to be argued rather than absorbed.
 TEST(HistoricalMetricsColumns, KnownSeriesProducesHandComputedColumns) {
-    // Five daily returns in PERCENT -- the units trading.live_results.daily_return stores,
-    // which is why neither runner scales the loaded series by 100.
+    // Five grid returns in PERCENT on a base of 100: the levels are 101, 98.98, 101.9494,
+    // 101.9494 and 100.929906, and the P&L of a return is the difference of two levels.
     const std::vector<double> returns_pct = {1.0, -2.0, 3.0, 0.0, -1.0};
-    const std::vector<double> pnl = {100.0, -200.0, 300.0, 0.0, -100.0};
-    const std::vector<double> equity = {10100.0, 9900.0, 10200.0, 10200.0, 10100.0};
-    const double annualized_return_pct = 12.0;
 
     LiveHistoricalMetricsCalculator calc;
-    const auto m = calc.calculate(returns_pct, pnl, equity, annualized_return_pct, 4);
+    const auto m = calc.calculate(grid_of_returns(returns_pct), 252.0, 4);
 
     // mean = (1 - 2 + 3 + 0 - 1)/5 = 0.2
-    // population variance = ((0.8)^2+(-2.2)^2+(2.8)^2+(-0.2)^2+(-1.2)^2)/5
-    //                     = (0.64+4.84+7.84+0.04+1.44)/5 = 14.8/5 = 2.96
-    // vol = sqrt(2.96) * sqrt(252) = 1.7204650... * 15.8745078... = 27.311...
-    const double vol = std::sqrt(2.96) * std::sqrt(252.0);
+    // sample variance = ((0.8)^2+(-2.2)^2+(2.8)^2+(-0.2)^2+(-1.2)^2)/(5 - 1)
+    //                 = (0.64+4.84+7.84+0.04+1.44)/4 = 14.8/4 = 3.7
+    // vol = sqrt(3.7) * sqrt(252) = 1.9235384... * 15.8745078... = 30.535...
+    const double vol = std::sqrt(3.7) * std::sqrt(252.0);
     EXPECT_NEAR(m.volatility, vol, 1e-9);
 
-    // downside: the returns strictly below 0 are -2 and -1; population variance over those
-    // two = (4 + 1)/2 = 2.5; dd = sqrt(2.5)*sqrt(252).
-    const double dd = std::sqrt(2.5) * std::sqrt(252.0);
+    // downside: the returns strictly below 0 are -2 and -1; their squares, 4 + 1 = 5, are
+    // averaged over all five days = 1; dd = sqrt(1)*sqrt(252) = 15.874507866.
+    const double dd = std::sqrt(5.0 / 5.0) * std::sqrt(252.0);
     EXPECT_NEAR(m.downside_deviation, dd, 1e-9);
+    EXPECT_NEAR(m.downside_deviation, 15.874507866, 1e-9);
 
-    EXPECT_NEAR(m.sharpe_ratio, annualized_return_pct / vol, 1e-12);
-    EXPECT_NEAR(m.sortino_ratio, annualized_return_pct / dd, 1e-12);
+    // Sharpe = mean / sample sd x sqrt(K) = 0.2 / sqrt(3.7) x sqrt(252) = 1.650553;
+    // Sortino = mean x K / downside = 0.2 x 252 / 15.874507866 = 3.174902.
+    EXPECT_NEAR(m.sharpe_ratio, 0.2 / std::sqrt(3.7) * std::sqrt(252.0), 1e-9);
+    EXPECT_NEAR(m.sharpe_ratio, 1.650553, 1e-6);
+    EXPECT_NEAR(m.sortino_ratio, 0.2 * 252.0 / dd, 1e-9);
+    EXPECT_NEAR(m.sortino_ratio, 3.174902, 1e-6);
 
-    // Drawdown is tracked from a running peak SEEDED AT THE FIRST EQUITY VALUE, not at
-    // initial capital: peak 10100 -> 9900 is (10100-9900)/10100*100 = 1.9801980%, and the
-    // later 10200 -> 10100 leg is only 0.9803922%. The maximum is the first one. (Written
-    // the other way round first, and the implementation was right: the series' own opening
-    // level is the peak, so a book that starts by losing money records that loss.)
-    EXPECT_NEAR(m.max_drawdown, (10100.0 - 9900.0) / 10100.0 * 100.0, 1e-9);
-    EXPECT_GT(m.max_drawdown, (10200.0 - 10100.0) / 10200.0 * 100.0);
+    // Drawdown over the grid levels 101, 98.98, 101.9494, 101.9494, 100.929906 with the peak
+    // seeded at the base 100: the peak 101 to 98.98 is the -2 percent day, 2.0; the later
+    // 101.9494 to 100.929906 leg is 1.0. The maximum is the first one.
+    EXPECT_NEAR(m.max_drawdown, 2.0, 1e-9);
 
     EXPECT_EQ(m.winning_days, 2);
     EXPECT_EQ(m.losing_days, 2);
     EXPECT_EQ(m.flat_days, 1);
     EXPECT_EQ(m.total_days, 5);
-    EXPECT_NEAR(m.win_rate, 2.0 / 5.0 * 100.0, 1e-12);
-    EXPECT_NEAR(m.avg_win, (1.0 + 3.0) / 2.0, 1e-12);
-    EXPECT_NEAR(m.avg_loss, (2.0 + 1.0) / 2.0, 1e-12);
-    EXPECT_DOUBLE_EQ(m.best_day, 3.0);
-    EXPECT_DOUBLE_EQ(m.worst_day, -2.0);
-    EXPECT_DOUBLE_EQ(m.gross_profit, 400.0);
-    EXPECT_DOUBLE_EQ(m.gross_loss, 300.0);
-    EXPECT_NEAR(m.profit_factor, 400.0 / 300.0, 1e-12);
+    // Two winning and two losing sessions; the flat one is in no denominator: 2 / (2 + 2).
+    EXPECT_NEAR(m.win_rate, 2.0 / 4.0 * 100.0, 1e-12);
+    EXPECT_NEAR(m.avg_win, (1.0 + 3.0) / 2.0, 1e-9);
+    EXPECT_NEAR(m.avg_loss, (2.0 + 1.0) / 2.0, 1e-9);
+    EXPECT_NEAR(m.best_day, 3.0, 1e-9);
+    EXPECT_NEAR(m.worst_day, -2.0, 1e-9);
+    // Level differences: +1 and +2.9694 (101.9494 - 98.98); -2.02 (98.98 - 101) and
+    // -1.019494 (100.929906 - 101.9494).
+    EXPECT_NEAR(m.gross_profit, 1.0 + 2.9694, 1e-9);
+    EXPECT_NEAR(m.gross_loss, 2.02 + 1.019494, 1e-9);
+    EXPECT_NEAR(m.profit_factor, 3.9694 / 3.039494, 1e-9);
     EXPECT_EQ(m.total_trades, 4);
 
     // And the columns carry exactly those numbers.
     const auto d = historical_metrics_double_columns(m);
-    EXPECT_NEAR(d.at("sharpe_ratio"), annualized_return_pct / vol, 1e-12);
-    EXPECT_NEAR(d.at("gross_loss"), 300.0, 1e-12);
+    EXPECT_NEAR(d.at("sharpe_ratio"), 0.2 * 252.0 / vol, 1e-9);
+    EXPECT_NEAR(d.at("gross_loss"), 3.039494, 1e-9);
     EXPECT_EQ(historical_metrics_int_columns(m).at("total_days"), 5);
+}
+
+// The Day T-1 UPDATE takes one map of doubles: the thirteen double columns and the three
+// integer columns widened. All three live runners build it here.
+TEST(HistoricalMetricsColumns, TheUpdateBlockIsTheDoublesPlusTheThreeWidenedIntegers) {
+    const HistoricalMetrics m = distinct_metrics();
+    const auto update = historical_metrics_update_columns(m);
+    const auto doubles = historical_metrics_double_columns(m);
+    const auto ints = historical_metrics_int_columns(m);
+
+    EXPECT_EQ(update.size(), doubles.size() + ints.size());
+    EXPECT_EQ(update.size(), 16u);
+    for (const auto& [column, value] : doubles) {
+        ASSERT_EQ(update.count(column), 1u) << column;
+        EXPECT_DOUBLE_EQ(update.at(column), value) << column;
+    }
+    for (const auto& [column, value] : ints) {
+        ASSERT_EQ(update.count(column), 1u) << column;
+        EXPECT_DOUBLE_EQ(update.at(column), static_cast<double>(value)) << column;
+    }
+    EXPECT_EQ(update.count("total_trades"), 0u);
+    EXPECT_EQ(update.count("flat_days"), 0u);
 }

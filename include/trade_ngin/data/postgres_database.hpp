@@ -31,6 +31,7 @@
 #include "trade_ngin/core/logger.hpp"
 #include "trade_ngin/core/types.hpp"
 #include "trade_ngin/data/database_interface.hpp"
+#include "trade_ngin/data/live_results_cell.hpp"
 #include "trade_ngin/data/market_data_utils.hpp"
 
 namespace trade_ngin {
@@ -561,13 +562,17 @@ public:
      * @param updates Map of column name to new value
      * @param portfolio_id Portfolio identifier
      * @param table_name Name of the live results table
+     * @param rows_affected When given, receives the number of rows the UPDATE changed
+     * @param cells Typed cells assigned by the same UPDATE; a cell with no value is set NULL
      * @return Result indicating success or failure
      */
     virtual Result<void> update_live_results(
         const std::string& strategy_id, const Timestamp& date,
         const std::unordered_map<std::string, double>& updates,
         const std::string& portfolio_id,
-        const std::string& table_name = "trading.live_results");
+        const std::string& table_name = "trading.live_results",
+        size_t* rows_affected = nullptr,
+        const std::vector<LiveResultsCell>& cells = {});
 
     /**
      * @brief Update live equity curve (replaces raw SQL UPDATE)
@@ -615,6 +620,7 @@ public:
      * @param date Trading date
      * @param metrics Complete set of metrics as key-value pairs
      * @param table_name Name of the live results table
+     * @param cells Typed cells of the row; a cell with no value is left out and stays NULL
      * @return Result indicating success or failure
      */
     virtual Result<void> store_live_results_complete(
@@ -623,7 +629,8 @@ public:
         const std::unordered_map<std::string, int>& int_metrics, const nlohmann::json& config,
         const std::string& portfolio_id = "BASE_PORTFOLIO",
         const std::string& table_name = "trading.live_results",
-        const nlohmann::json& risk_detail = nlohmann::json());
+        const nlohmann::json& risk_detail = nlohmann::json(),
+        const std::vector<LiveResultsCell>& cells = {});
 
     /**
      * @brief Store live trading run metadata
@@ -1024,6 +1031,8 @@ public:
      *        identifiers). For values, prefer `pqxx::params` / `exec_params`.
      */
     Result<void> validate_identifier(const std::string& identifier) const;
+    /// Every cell's column is an identifier and its type one of the known cell types.
+    Result<void> validate_live_results_cells(const std::vector<LiveResultsCell>& cells) const;
 
 private:
     std::string connection_string_;

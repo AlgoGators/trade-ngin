@@ -13,6 +13,7 @@
 #include "trade_ngin/core/config_loader.hpp"
 #include "trade_ngin/core/holiday_checker.hpp"
 #include "trade_ngin/core/logger.hpp"
+#include "trade_ngin/core/resolved_sleeves.hpp"
 #include "trade_ngin/core/time_utils.hpp"
 #include "trade_ngin/data/database_pooling.hpp"
 #include "trade_ngin/data/postgres_database.hpp"
@@ -28,6 +29,7 @@
 #include "trade_ngin/live/trading_days_anchor.hpp"
 #include "trade_ngin/live/broker_frame.hpp"
 #include "trade_ngin/live/corporate_actions_audit_log.hpp"
+#include "trade_ngin/live/dividend_counter.hpp"
 #include "trade_ngin/live/live_daily_cycle.hpp"
 #include "trade_ngin/portfolio/portfolio_manager.hpp"
 #include "trade_ngin/risk/risk_scale_report.hpp"
@@ -42,7 +44,9 @@
 #include "trade_ngin/live/live_price_manager.hpp"
 #include "trade_ngin/live/execution_price_resolver.hpp"
 #include "trade_ngin/live/live_pnl_manager.hpp"
+#include "trade_ngin/live/settled_stamp.hpp"
 #include "trade_ngin/live/execution_manager.hpp"
+#include "trade_ngin/live/margin_columns.hpp"
 #include "trade_ngin/live/margin_manager.hpp"
 #include "trade_ngin/live/csv_exporter.hpp"
 #include "trade_ngin/transaction_cost/netting.hpp"
@@ -609,6 +613,12 @@ int main(int argc, char* argv[]) {
         std::cout << "Max leverage: " << mr_config.max_leverage << "x" << std::endl;
         std::cout << "Lookback period: " << mean_rev_config.lookback_period << " days" << std::endl;
         std::cout << "Entry threshold: " << mean_rev_config.entry_threshold << " std devs" << std::endl;
+        // The sleeve's values as resolved here: logged once and stored in every
+        // live_results.config the run writes (core/resolved_sleeves.hpp). Mean reversion has no
+        // idm; the single sleeve is added to the book at allocation 1.0.
+        const std::vector<trade_ngin::ResolvedSleeve> resolved_sleeves = {
+            {kEquityStrategyName, std::nullopt, mean_rev_config.risk_target, 1.0}};
+        INFO(trade_ngin::resolved_sleeves_log_line(portfolio_id, resolved_sleeves));
 
         // Create a shared_ptr that doesn't own the singleton registry
         auto registry_ptr =
@@ -669,6 +679,9 @@ int main(int argc, char* argv[]) {
             portfolio_config_json["use_optimization"] = portfolio_config.use_optimization;
             portfolio_config_json["allow_fractional_positions"] =
                 portfolio_config.allow_fractional_positions;
+            // The sessions a year this run's statistics are annualised with (LOOP_SPEC 7.5.1).
+            portfolio_config_json[trade_ngin::kStatisticsKKey] =
+                app_config.statistics.equity_sessions_per_year;
 
             // Single-strategy runner: the live equity path rejects more than one strategy.
             nlohmann::json strategy_alloc_json;
@@ -4216,13 +4229,8 @@ int main(int argc, char* argv[]) {
         if (active_positions > 0 && total_posted_margin <= 0.0) {
             ERROR("Computed posted margin is non-positive while positions are active. Check instrument metadata.");
         }
-        // Equity-to-Margin Ratio = gross_notional / total_posted_margin
-        // This metric shows how many times the gross notional exposure is covered by posted margin
-        // Higher values indicate more leverage relative to margin requirements
-        double equity_to_margin_ratio = (total_posted_margin > 0.0) ? (gross_notional / total_posted_margin) : 0.0;
-        if (equity_to_margin_ratio <= 1.0 && active_positions > 0) {
-            WARN("Equity-to-Margin Ratio (gross_notional / posted_margin) is <= 1.0; verify margins.");
-        }
+        // The Equity-to-Margin Ratio is the current portfolio value over the posted margin
+        // (T-8D R21), so it is computed further down, where that value is known.
 
         // Save positions to database with daily PnL values
         INFO("Saving positions to database with daily PnL...");
@@ -4643,6 +4651,14 @@ int main(int argc, char* argv[]) {
                                       std::all_of(previous_positions.begin(), previous_positions.end(),
                                                  [](const auto& p) { return p.second.quantity.as_double() == 0.0; }));
 
+        // settled_at (migration 029): the stamp below is written only when the finalize of Day T-1
+        // finished without error. The no-prices skip (no Day T-1 closes with a book held)
+        // withholds it here; a finalize warning withholds it where it is logged.
+        SettledStampGate settled_stamp;
+        if (previous_day_close_prices.empty() && !is_first_trading_day) {
+            settled_stamp.withhold("no T-1 closes");
+        }
+
         // Declare yesterday's daily metrics outside the block so they're available for email
         double yesterday_daily_return_for_email = 0.0;
         double yesterday_daily_pnl_for_email = 0.0;
@@ -4655,6 +4671,32 @@ int main(int argc, char* argv[]) {
         // whole statement on such a day, leaving the row un-finalized -- and combined with the
         // date mismatch (E2-F14) it fired on every weekend, which is how the Sunday/Monday
         // reruns were able to leave live_results stale while still rewriting position rows.
+        // The Day T-1 calendar count of trading.get_trading_days, read whether or not STEP 4
+        // finalizes the row: the statistics block after STEP 4 needs it on every day.
+        const std::string t1_date_str = core::format_utc_date(previous_date);
+        int t1_trading_days_count = 1;
+        try {
+            auto trading_days_result = db->execute_query(
+                "SELECT trading.get_trading_days('LIVE_EQUITY_MEAN_REVERSION', DATE '" + t1_date_str +
+                "', '" + portfolio_id + "')");
+
+            if (trading_days_result.is_ok()) {
+                auto table = trading_days_result.value();
+                if (table && table->num_rows() > 0 && table->num_columns() > 0) {
+                    // execute_query returns StringArray for all columns
+                    auto arr = std::static_pointer_cast<arrow::StringArray>(table->column(0)->chunk(0));
+                    if (arr && arr->length() > 0 && !arr->IsNull(0)) {
+                        t1_trading_days_count = std::max<int>(1, std::stoi(arr->GetString(0)));
+                        INFO("Trading days for yesterday (" + t1_date_str + "): " + std::to_string(t1_trading_days_count));
+                    }
+                }
+            } else {
+                WARN("Could not call get_trading_days function: " + std::string(trading_days_result.error()->what()));
+            }
+        } catch (const std::exception& e) {
+            WARN("Failed to get trading days: " + std::string(e.what()));
+        }
+
         if (!previous_day_close_prices.empty() && !is_first_trading_day) {
             INFO("STEP 4: Finalizing Day T-1 live_results -- mark $" +
                  std::to_string(yesterday_finalized_unrealized) + ", day move $" +
@@ -4692,9 +4734,11 @@ int main(int argc, char* argv[]) {
                 } else {
                     WARN("LiveDataLoader failed to get yesterday's metrics: " + std::string(live_results.error()->what()));
                     INFO("Using default values (0) for yesterday's metrics");
+                    settled_stamp.withhold("Day T-1's live_results row could not be read");
                 }
             } catch (const std::exception& e) {
                 WARN("Failed to get yesterday's metrics: " + std::string(e.what()));
+                settled_stamp.withhold("Day T-1's live_results row could not be read");
             }
 
             // Use the commission value already loaded from LiveDataLoader
@@ -4811,75 +4855,23 @@ int main(int argc, char* argv[]) {
             double yesterday_total_cumulative_return = metrics_calculator->calculate_total_return(
                 yesterday_portfolio_value_finalized, initial_capital);
 
-            double yesterday_total_return_decimal = 0.0;
-            if (initial_capital > 0.0) {
-                yesterday_total_return_decimal = (yesterday_portfolio_value_finalized - initial_capital) / initial_capital;
-            }
             double yesterday_total_cumulative_return_pct = yesterday_total_cumulative_return;  // Already in %
 
-            // Get trading days count for annualization using PostgreSQL function
-            // This avoids issues with row multiplication/duplication in the database
-            int trading_days_count = 1;
-            try {
-                // Call PostgreSQL function to calculate trading days
-                auto trading_days_result = db->execute_query(
-                    "SELECT trading.get_trading_days('LIVE_EQUITY_MEAN_REVERSION', DATE '" + yesterday_date_str +
-                    "', '" + portfolio_id + "')");
-                
-                if (trading_days_result.is_ok()) {
-                    auto table = trading_days_result.value();
-                    if (table && table->num_rows() > 0 && table->num_columns() > 0) {
-                        // execute_query returns StringArray for all columns
-                        auto arr = std::static_pointer_cast<arrow::StringArray>(table->column(0)->chunk(0));
-                        if (arr && arr->length() > 0 && !arr->IsNull(0)) {
-                            trading_days_count = std::max<int>(1, std::stoi(arr->GetString(0)));
-                            INFO("Trading days for yesterday (" + yesterday_date_str + "): " + std::to_string(trading_days_count));
-                        }
-                    }
-                } else {
-                    WARN("Could not call get_trading_days function: " + std::string(trading_days_result.error()->what()));
-                }
-            } catch (const std::exception& e) {
-                WARN("Failed to get trading days: " + std::string(e.what()));
-            }
-
-            // Calculate yesterday's annualized return using LiveMetricsCalculator
-            double yesterday_total_return_annualized = metrics_calculator->calculate_annualized_return(
-                yesterday_total_return_decimal, trading_days_count);
-
-            // Calculate yesterday's leverage and risk metrics
-            // IMPORTANT: We MUST preserve existing values from the database
-            // These were calculated correctly when Day T-1 was originally processed
-            double yesterday_portfolio_leverage = 0.0;
-            double yesterday_equity_to_margin_ratio = 0.0;
-
-            // Load existing values from database using LiveDataLoader - DO NOT RECALCULATE
-            try {
-                auto margin_metrics = data_loader->load_margin_metrics("LIVE_EQUITY_MEAN_REVERSION", portfolio_id, previous_date);
-                if (margin_metrics.is_ok() && margin_metrics.value().valid) {
-                    auto& metrics = margin_metrics.value();
-                    yesterday_portfolio_leverage = metrics.gross_leverage;
-                    yesterday_equity_to_margin_ratio = metrics.equity_to_margin_ratio;
-
-                    // Also update the gross_notional and margin_posted if available
-                    yesterday_gross_notional = metrics.gross_notional;
-                    yesterday_margin_posted = metrics.margin_posted;
-
-                    INFO("Preserved existing metrics from database via LiveDataLoader: leverage=" +
-                         std::to_string(yesterday_portfolio_leverage) + ", equity_to_margin=" +
-                         std::to_string(yesterday_equity_to_margin_ratio) + ", gross_notional=" +
-                         std::to_string(yesterday_gross_notional) + ", margin_posted=" +
-                         std::to_string(yesterday_margin_posted));
-                } else {
-                    INFO("No existing margin metrics found for yesterday via LiveDataLoader");
-                }
-            } catch (const std::exception& e) {
-                WARN("Failed to load existing metrics: " + std::string(e.what()));
-            }
-
-            // DO NOT recalculate these values - they should remain as loaded from database
-            // These values were correctly calculated when the day was originally processed
-            double yesterday_cash_available = yesterday_portfolio_value_finalized - yesterday_margin_posted;
+            // T-8D R21: the four cells of the Day T-1 row that divide by the portfolio value
+            // (equity_to_margin_ratio, margin_cushion, net_leverage, portfolio_leverage) are
+            // recomputed by the UPDATE below on the finalised value, from the row's own stored
+            // margin_posted, gross_notional and net_notional (live/margin_columns.hpp), so the
+            // row ends on one basis with its cash_available. R22: gross_leverage, which this
+            // book stores, with them.
+            // The expression the UPDATE assigns to current_portfolio_value.
+            const std::string yesterday_finalised_value_sql =
+                std::to_string(initial_capital) + " "
+                "+ (COALESCE((SELECT prev_total_realized FROM day_before), 0.0) + COALESCE(daily_realized_pnl, 0.0) "
+                "- COALESCE(total_transaction_costs, 0.0)) + " + std::to_string(yesterday_finalized_unrealized);
+            // The row's maintenance requirement: none. The book is held in a cash account,
+            // where a position is paid for in full (T-8D D4 (a); margin_manager.cpp,
+            // extract_margin_requirements), so the cushion of a positioned row is the whole value.
+            const std::string yesterday_maintenance_sql = "0.0";
 
             // UPDATE yesterday's live_results with ALL recalculated metrics
             // Note: We calculate daily_pnl, total_pnl, and current_portfolio_value in SQL
@@ -4887,7 +4879,6 @@ int main(int argc, char* argv[]) {
             // (trading.live_results has no commissions column -- see E2-F5; the INSERT
             //  above writes the equity commission into daily_transaction_costs, and this
             //  UPDATE must read the same column or the whole statement fails)
-            // IMPORTANT: Only update portfolio_leverage and equity_to_margin_ratio if they are NULL or 0
             // E2-F1 -- the Day T-1 finalization, restated.
             //
             // WHAT CHANGED AND WHY. This statement used to overwrite daily_realized_pnl with
@@ -4958,9 +4949,8 @@ int main(int argc, char* argv[]) {
                 "                     / COALESCE((SELECT portfolio FROM day_before), " + std::to_string(initial_capital) + ")) * 100.0 "
                 "               ELSE 0.0 END, "
                 "total_cumulative_return = " + std::to_string(yesterday_total_cumulative_return_pct) + ", "
-                "total_annualized_return = " + std::to_string(yesterday_total_return_annualized) + ", "
-                "portfolio_leverage = CASE WHEN portfolio_leverage IS NULL OR portfolio_leverage = 0 THEN " + std::to_string(yesterday_portfolio_leverage) + " ELSE portfolio_leverage END, "
-                "equity_to_margin_ratio = CASE WHEN equity_to_margin_ratio IS NULL OR equity_to_margin_ratio = 0 THEN " + std::to_string(yesterday_equity_to_margin_ratio) + " ELSE equity_to_margin_ratio END, "
+                + finalize_margin_columns_sql(yesterday_finalised_value_sql, yesterday_maintenance_sql)
+                + finalize_gross_leverage_sql(yesterday_finalised_value_sql) +
                 "cash_available = " + std::to_string(initial_capital) + " "
                 "             + (COALESCE((SELECT prev_total_realized FROM day_before), 0.0) + COALESCE(daily_realized_pnl, 0.0) "
                 "                - COALESCE(total_transaction_costs, 0.0)) + " + std::to_string(yesterday_finalized_unrealized) + " - COALESCE(margin_posted, 0.0) "
@@ -4992,6 +4982,7 @@ int main(int argc, char* argv[]) {
                 WARN("Day T-1 live_results UPDATE matched 0 rows for " + yesterday_date_str +
                      ": no live_results row exists for that date, so its finalized PnL and "
                      "metrics were NOT stored");
+                settled_stamp.withhold("the Day T-1 level UPDATE matched no row");
             } else {
                 INFO("Successfully updated Day T-1 live_results with finalized PnL and all metrics");
 
@@ -5003,6 +4994,7 @@ int main(int argc, char* argv[]) {
 
             // UPDATE yesterday's equity_curve using LiveResultsManager
             INFO("Updating Day T-1 equity_curve...");
+            bool t1_curve_point_written = false;
 
             // Query the current portfolio value from updated live_results
             std::string get_equity_query =
@@ -5071,6 +5063,7 @@ int main(int argc, char* argv[]) {
                                 ERROR("Failed to update Day T-1 equity_curve: " + std::string(update_equity_result.error()->what()));
                             } else {
                                 INFO("Successfully updated Day T-1 equity_curve with value: " + std::to_string(portfolio_value));
+                                t1_curve_point_written = true;
                             }
                         }
                     }
@@ -5078,129 +5071,8 @@ int main(int argc, char* argv[]) {
                     WARN("No live_results found for date " + yesterday_date_str + ", skipping equity_curve update");
                 }
             }
-
-            // ================= E2-F33: the since-inception metrics block ==============
-            //
-            // Fifteen columns on trading.live_results were NULL on every equity row ever
-            // written (22/22 on this book, 126/126 on the drift audit's), because this
-            // runner never called LiveHistoricalMetricsCalculator at all while both futures
-            // runners have called it for T-1 and for day T since they were written
-            // (live_portfolio_conservative.cpp:2283-2380 is the block this mirrors).
-            //
-            // Same calculator, same four history loads, same override of total_days with the
-            // authoritative get_trading_days() count -- the only differences are the strategy
-            // id and the E2-F32-corrected trading-days figure this runner already computed
-            // above, which is the denominator the annualized return in the same row used.
-            //
-            // Included since D3: `volatility`. Both futures runners write
-            // `{"volatility", yesterday_hist_metrics.volatility}` into this same T-1 update;
-            // the equity runner used to leave the ex-ante `portfolio_var x 100` standing here,
-            // so the column meant one thing on one book and another on the other, and the
-            // sharpe ratio written beside it could not be reproduced from it. `portfolio_var`
-            // is untouched and still carries the ex-ante figure.
-            //
-            // Failure here is a WARN, not a fatal: every trading decision for T-1 is already
-            // made and persisted by this point, and these columns are reporting. That is the
-            // same choice the futures runners make at the identical site.
-            try {
-                HistoricalMetrics yesterday_hist_metrics;
-
-                if (data_loader && data_loader->is_connected()) {
-                    auto returns_hist_res = data_loader->load_daily_returns_history(
-                        kEquityStrategyId, portfolio_id, previous_date);
-                    auto pnl_hist_res = data_loader->load_daily_pnl_history(
-                        kEquityStrategyId, portfolio_id, previous_date);
-                    auto equity_hist_res = data_loader->load_equity_curve_history(
-                        kEquityStrategyId, portfolio_id, previous_date);
-                    auto trades_hist_res = data_loader->load_total_trades_count(
-                        kEquityStrategyId, portfolio_id, previous_date);
-
-                    std::vector<double> returns_hist;
-                    std::vector<double> pnl_hist;
-                    std::vector<double> equity_hist;
-                    int total_trades_hist = 0;
-
-                    if (returns_hist_res.is_ok()) returns_hist = returns_hist_res.value();
-                    if (pnl_hist_res.is_ok()) pnl_hist = pnl_hist_res.value();
-                    if (equity_hist_res.is_ok()) equity_hist = equity_hist_res.value();
-                    if (trades_hist_res.is_ok()) total_trades_hist = trades_hist_res.value();
-
-                    LiveHistoricalMetricsCalculator hist_calc;
-                    // daily_return is stored in PERCENT (the T-1 UPDATE above multiplies by
-                    // 100.0), so the series arrives in percent and must NOT be scaled again --
-                    // the futures runner carries the same note after a 100x volatility bug.
-                    yesterday_hist_metrics =
-                        hist_calc.calculate(returns_hist, pnl_hist, equity_hist,
-                                            yesterday_total_return_annualized,
-                                            total_trades_hist);
-
-                    // total_days is the authoritative trading-day count for T-1 -- the same
-                    // E2-F32-corrected figure that annualized the return written into this
-                    // row -- not the number of live_results rows, which includes weekends.
-                    yesterday_hist_metrics.total_days = trading_days_count;
-                    if (trading_days_count > 0) {
-                        yesterday_hist_metrics.win_rate =
-                            static_cast<double>(yesterday_hist_metrics.winning_days) /
-                            static_cast<double>(trading_days_count) * 100.0;
-                    }
-
-                    INFO("HIST_METRICS [Day T-1] " + yesterday_date_str +
-                         ": return_volatility=" +
-                         std::to_string(yesterday_hist_metrics.volatility) +
-                         " downside_deviation=" +
-                         std::to_string(yesterday_hist_metrics.downside_deviation) +
-                         " sharpe=" + std::to_string(yesterday_hist_metrics.sharpe_ratio) +
-                         " sortino=" + std::to_string(yesterday_hist_metrics.sortino_ratio) +
-                         " max_drawdown=" +
-                         std::to_string(yesterday_hist_metrics.max_drawdown) +
-                         " winning_days=" +
-                         std::to_string(yesterday_hist_metrics.winning_days) +
-                         " losing_days=" + std::to_string(yesterday_hist_metrics.losing_days) +
-                         " total_days=" + std::to_string(yesterday_hist_metrics.total_days) +
-                         " win_rate=" + std::to_string(yesterday_hist_metrics.win_rate) +
-                         " avg_win=" + std::to_string(yesterday_hist_metrics.avg_win) +
-                         " avg_loss=" + std::to_string(yesterday_hist_metrics.avg_loss) +
-                         " best_day=" + std::to_string(yesterday_hist_metrics.best_day) +
-                         " worst_day=" + std::to_string(yesterday_hist_metrics.worst_day) +
-                         " gross_profit=" +
-                         std::to_string(yesterday_hist_metrics.gross_profit) +
-                         " gross_loss=" + std::to_string(yesterday_hist_metrics.gross_loss) +
-                         " profit_factor=" +
-                         std::to_string(yesterday_hist_metrics.profit_factor) +
-                         " (returns n=" + std::to_string(returns_hist.size()) +
-                         ", equity n=" + std::to_string(equity_hist.size()) +
-                         ", executions=" + std::to_string(total_trades_hist) + ")");
-
-                    // One definition of the block, shared with the day-T write below, so a
-                    // column can never be written on one path and forgotten on the other.
-                    // update_live_results takes doubles only, so the three integer columns
-                    // are widened here; they are whole numbers by construction.
-                    auto metric_updates =
-                        historical_metrics_double_columns(yesterday_hist_metrics);
-                    for (const auto& [column, value] :
-                         historical_metrics_int_columns(yesterday_hist_metrics)) {
-                        metric_updates[column] = static_cast<double>(value);
-                    }
-
-                    auto yesterday_metrics_manager = std::make_unique<LiveResultsManager>(
-                        db, true, kEquityStrategyId, portfolio_id, kEquityStrategyName);
-                    auto update_metrics_result =
-                        yesterday_metrics_manager->update_live_results(previous_date,
-                                                                       metric_updates);
-                    if (update_metrics_result.is_error()) {
-                        WARN("Failed to update Day T-1 historical performance metrics: " +
-                             std::string(update_metrics_result.error()->what()));
-                    } else {
-                        INFO("Successfully updated Day T-1 historical performance metrics in "
-                             "trading.live_results");
-                    }
-                } else {
-                    WARN("LiveDataLoader not available or not connected; skipping the Day T-1 "
-                         "historical metrics update (E2-F33).");
-                }
-            } catch (const std::exception& e) {
-                WARN("Exception while updating Day T-1 historical performance metrics: " +
-                     std::string(e.what()));
+            if (!t1_curve_point_written) {
+                settled_stamp.withhold("the Day T-1 equity_curve point was not rewritten");
             }
 
             // Load updated metrics from database for email - MUST do this AFTER the UPDATE
@@ -5267,6 +5139,284 @@ int main(int argc, char* argv[]) {
             } else {
                 INFO("Skipping Day T-1 live_results update (no two_days_ago prices or zero PnL)");
             }
+        }
+
+        // ========================================
+        // STEP 4b: THE STATISTICS THROUGH THE LAST SETTLED ROW (Day T-1)
+        // ========================================
+        // T-8D R39: the row this run writes for its own date carries the statistics through the
+        // last settled row, Day T-1 (on this book the previous NYSE session), so its sixteen
+        // statistic columns are the figures computed here and never include a return the mark
+        // has not settled. T-8D-2 R42: the Day T-1 row's statistics are refreshed from the same
+        // figures whenever that row exists, whether or not STEP 4 finalized its levels (a flat
+        // previous session keeps levels that were already settled). Statistic columns only: no
+        // level column is written here.
+        //
+        // The block is E2-F33's: the calculator, the four history loads and the column helper the
+        // futures runners use. Failure here is a WARN, not a fatal: every trading decision for
+        // Day T-1 is already made and persisted by this point, and these columns are reporting.
+        //
+        // T-8D-2 R44 (b): total_dividend_income is dated by ex-date and counted on the shares of
+        // the position row dated the ex-date (the book after that day's fill at the cum-dividend
+        // close, the row whose P&L carries the credit). The event of an ex-date is applied by the
+        // next run, so the figure through Day T-1 goes into the same Day T-1 UPDATE and the row
+        // this run writes takes the figure through its own date. Informational ONLY -- NOT added
+        // to total_pnl: the dividend is already inside P&L through the adjusted prices and the
+        // basis rescale.
+        std::optional<double> dividend_income_t1;
+        std::optional<double> dividend_income_today;
+        {
+            CorporateActionsAuditLog div_log(ca_state_dir, db, portfolio_id, kEquityStrategyId,
+                                             kEquityStrategyName);
+            // A read that fails is not "no row": the run recounts nothing, says so as an ERROR
+            // and carries the previous figure (live/dividend_counter.hpp). Reporting-only: the
+            // trading decisions are already made and persisted by this point.
+            std::string dividend_read_failure;
+            double through_t1 = 0.0;
+            double through_today = 0.0;
+            auto div_loaded = div_log.load();
+            if (div_loaded.is_error()) {
+                dividend_read_failure = "the corp-action dedup record (" +
+                                        std::string(div_loaded.error()->what()) + ")";
+            } else {
+                ExDateRowShares shares_on_ex_date_row(
+                    [&](const std::string& ex_date) -> Result<ExDateRowShares::Rows> {
+                        std::chrono::system_clock::time_point ex_tp;
+                        if (!core::parse_utc_date(ex_date, ex_tp)) {
+                            return make_error<ExDateRowShares::Rows>(
+                                ErrorCode::INVALID_ARGUMENT, "the ex-date is not a date",
+                                "DividendCounter");
+                        }
+                        return db->load_positions_by_date(kEquityStrategyId, kEquityStrategyName,
+                                                          portfolio_id, ex_tp, "trading.positions");
+                    });
+                std::vector<std::string> recorded_quantity_used;
+                through_t1 = div_log.dividend_income_through(
+                    t1_date_str, std::ref(shares_on_ex_date_row), &recorded_quantity_used);
+                recorded_quantity_used.clear();
+                through_today = div_log.dividend_income_through(
+                    today_date_str, std::ref(shares_on_ex_date_row), &recorded_quantity_used);
+                if (!shares_on_ex_date_row.failed_reads().empty()) {
+                    dividend_read_failure = "the position rows of ex-date";
+                    for (const auto& failed : shares_on_ex_date_row.failed_reads()) {
+                        dividend_read_failure += " " + failed;
+                    }
+                } else {
+                    for (const auto& event : recorded_quantity_used) {
+                        WARN("DIVIDEND_COUNTER: no position row for " + event +
+                             " (symbol, ex-date); its dividend is counted on the quantity the "
+                             "corp-action record holds, the row of the day before the ex-date");
+                    }
+                    INFO("DIVIDEND_COUNTER through Day T-1 " + t1_date_str + ": " +
+                         std::to_string(through_t1) + "; through " + today_date_str + ": " +
+                         std::to_string(through_today));
+                }
+            }
+            std::optional<double> stored_on_day_t1;
+            if (!dividend_read_failure.empty()) {
+                if (data_loader && data_loader->is_connected()) {
+                    auto stored = data_loader->load_stored_dividend_income(
+                        kEquityStrategyId, portfolio_id, previous_date);
+                    if (stored.is_ok()) stored_on_day_t1 = stored.value();
+                }
+                ERROR("DIVIDEND_COUNTER: could not read " + dividend_read_failure +
+                      ". No dividend is recounted by this run: the Day T-1 row " + t1_date_str +
+                      " keeps its figure and the row of " + today_date_str + " carries " +
+                      (stored_on_day_t1 ? "that row's stored " + std::to_string(*stored_on_day_t1)
+                                        : std::string("no figure of its own (the Day T-1 figure "
+                                                      "could not be read either)")));
+            }
+            const DividendCounterCells dividend_cells = dividend_counter_cells(
+                !dividend_read_failure.empty(), through_t1, through_today, stored_on_day_t1);
+            dividend_income_t1 = dividend_cells.day_t1;
+            dividend_income_today = dividend_cells.today;
+        }
+
+        HistoricalMetrics settled_statistics;
+        // Migration 030: the statistics that are not plain numbers (dates, symbols, the
+        // calendar years) or may have no value, as typed cells; the same two writes.
+        std::vector<LiveResultsCell> settled_statistics_cells;
+        bool t1_statistics_refreshed = false;
+        try {
+            if (data_loader && data_loader->is_connected()) {
+                auto trades_hist_res = data_loader->load_total_trades_count(
+                    kEquityStrategyId, portfolio_id, previous_date);
+                auto t1_row = data_loader->load_live_results(
+                    kEquityStrategyId, portfolio_id, previous_date);
+
+                int total_trades_hist = 0;
+
+                if (trades_hist_res.is_ok()) total_trades_hist = trades_hist_res.value();
+
+                // The statistics grid of an equity book: the NYSE sessions from the book's start,
+                // by the calendar this runner already holds (a weekday the HolidayChecker does not
+                // call a holiday, the test find_previous_trading_day applies), and the stored
+                // levels the returns are taken on. A book that also held futures would pass the
+                // futures grid, the union of the two, with the futures sessions a year (T-8D R4).
+                auto book_start_res = data_loader->load_book_start(kEquityStrategyId, portfolio_id);
+                auto levels_res = data_loader->load_statistics_levels(
+                    kEquityStrategyId, portfolio_id, previous_date);
+                if (book_start_res.is_error() || levels_res.is_error()) {
+                    throw std::runtime_error("the statistics grid could not be loaded");
+                }
+                // What the statistics of migration 030 read beside the series (LOOP_SPEC sections
+                // 7.4 and 10): each symbol's stored P&L (the worst day's symbol) and the book's
+                // executions (the fill counts), from the book's start through Day T-1. An equity
+                // row stores no sizing capital: its three sizing-capital statistics stay NULL.
+                auto symbol_pnl_res = data_loader->load_symbol_pnl_history(
+                    kEquityStrategyId, portfolio_id, previous_date);
+                auto book_executions_res = data_loader->load_book_executions(
+                    kEquityStrategyId, portfolio_id, previous_date);
+                // A failed read of these costs this run its 030 statistics and nothing else:
+                // the statistics on the series, the Day T-1 refresh and the stamp go on.
+                const std::string failed_histories = failed_statistics_history_reads(
+                    {statistics_history_read("the per-symbol P&L history", symbol_pnl_res),
+                     statistics_history_read("the book's executions", book_executions_res)});
+                const std::string grid_from =
+                    !book_start_res.value().empty()
+                        ? book_start_res.value()
+                        : (levels_res.value().empty() ? t1_date_str
+                                                      : levels_res.value().front().date);
+                const std::vector<std::string> grid_dates = statistics_session_dates(
+                    grid_from, t1_date_str, [&holiday_checker](const std::string& date, int weekday) {
+                        return weekday != 0 && weekday != 6 && !holiday_checker.is_holiday(date);
+                    });
+                const double sessions_per_year = app_config.statistics.equity_sessions_per_year;
+                const StatisticsSeries statistics_series = build_statistics_series(
+                    levels_res.value(), grid_dates, book_start_res.value(), initial_capital,
+                    t1_date_str);
+                INFO("STATISTICS_CONVENTION series=equities K=" + std::to_string(sessions_per_year) +
+                     " grid=NYSE sessions anchor=" + book_start_res.value() +
+                     " through=" + t1_date_str + " n=" +
+                     std::to_string(statistics_series.size()) + " calendar_days=" +
+                     std::to_string(t1_trading_days_count));
+
+                // Every statistic is taken on the series: its returns are in PERCENT and its
+                // P&L is the difference of two grid levels.
+                LiveHistoricalMetricsCalculator hist_calc;
+                settled_statistics =
+                    hist_calc.calculate(statistics_series, sessions_per_year, total_trades_hist);
+
+                if (const std::string days_warning =
+                        statistics_days_warning(settled_statistics, statistics_series);
+                    !days_warning.empty()) {
+                    WARN("STATISTICS_DAYS through " + t1_date_str + ": " + days_warning);
+                }
+
+                // Migration 030, on the same series and the same K: the worst day's date and
+                // symbol, the monthly skew and tail ratio, the calendar years, and the account's
+                // fill counts (no ROLL leg exists on this book: total_roll_fills is 0).
+                if (!failed_histories.empty()) {
+                    ERROR("STATISTICS_COLUMNS through Day T-1 " + t1_date_str +
+                          ": could not be loaded: " + failed_histories +
+                          ". The statistics of migration 030 are NULL on the Day T-1 row and on "
+                          "the row this run writes; every other statistic, the Day T-1 refresh "
+                          "and the settled_at stamp are as on a good day");
+                    settled_statistics_cells = null_live_statistics_cells();
+                } else {
+                    LiveStatisticsColumns statistics_columns = live_statistics_columns(
+                        statistics_series, sessions_per_year, book_start_res.value(), t1_date_str,
+                        symbol_pnl_res.value(), {});
+                    if (const std::string fills_warning =
+                            set_fill_counts(statistics_columns, book_executions_res.value());
+                        !fills_warning.empty()) {
+                        WARN("STATISTICS_FILLS through " + t1_date_str +
+                             ": the fill counts stay NULL: " + fills_warning);
+                    }
+                    settled_statistics_cells = live_statistics_cells(statistics_columns);
+                    INFO("STATISTICS_COLUMNS [through Day T-1 " + t1_date_str +
+                         "]: " + live_statistics_log_line(statistics_columns));
+                }
+
+                INFO("HIST_METRICS [through Day T-1 " + t1_date_str +
+                     "]: return_volatility=" + std::to_string(settled_statistics.volatility) +
+                     " downside_deviation=" +
+                     std::to_string(settled_statistics.downside_deviation) +
+                     " sharpe=" + std::to_string(settled_statistics.sharpe_ratio) +
+                     " sortino=" + std::to_string(settled_statistics.sortino_ratio) +
+                     " max_drawdown=" + std::to_string(settled_statistics.max_drawdown) +
+                     " winning_days=" + std::to_string(settled_statistics.winning_days) +
+                     " losing_days=" + std::to_string(settled_statistics.losing_days) +
+                     " total_days=" + std::to_string(settled_statistics.total_days) +
+                     " annualized_return=" +
+                     std::to_string(settled_statistics.total_annualized_return) +
+                     " win_rate=" + std::to_string(settled_statistics.win_rate) +
+                     " avg_win=" + std::to_string(settled_statistics.avg_win) +
+                     " avg_loss=" + std::to_string(settled_statistics.avg_loss) +
+                     " best_day=" + std::to_string(settled_statistics.best_day) +
+                     " worst_day=" + std::to_string(settled_statistics.worst_day) +
+                     " gross_profit=" + std::to_string(settled_statistics.gross_profit) +
+                     " gross_loss=" + std::to_string(settled_statistics.gross_loss) +
+                     " profit_factor=" + std::to_string(settled_statistics.profit_factor) +
+                     " (grid returns n=" + std::to_string(statistics_series.size()) +
+                     ", executions=" + std::to_string(total_trades_hist) + ")");
+
+                if (t1_row.is_ok()) {
+                    // One definition of the block, shared with the day-T write below, so a
+                    // column can never be written on one path and forgotten on the other.
+                    // update_live_results takes doubles only, so the three integer columns
+                    // are widened here; they are whole numbers by construction.
+                    auto metric_updates = historical_metrics_update_columns(settled_statistics);
+                    metric_updates["total_annualized_return"] =
+                        settled_statistics.total_annualized_return;
+                    // R44 (b): the dividend of an ex-date lands on the ex-date row.
+                    if (dividend_income_t1) {
+                        metric_updates["total_dividend_income"] = *dividend_income_t1;
+                    }
+
+                    auto t1_statistics_manager = std::make_unique<LiveResultsManager>(
+                        db, true, kEquityStrategyId, portfolio_id, kEquityStrategyName);
+                    size_t refreshed_rows = 0;
+                    auto update_metrics_result = t1_statistics_manager->update_live_results(
+                        previous_date, metric_updates, &refreshed_rows,
+                        settled_statistics_cells);
+                    if (update_metrics_result.is_error()) {
+                        WARN("Failed to update Day T-1 historical performance metrics: " +
+                             std::string(update_metrics_result.error()->what()));
+                    } else if (refreshed_rows == 0) {
+                        ERROR("Day T-1 statistics UPDATE matched 0 rows for " + t1_date_str +
+                              ": the live_results row of that date was read and is gone, so "
+                              "its statistic columns were NOT refreshed");
+                    } else {
+                        INFO("Successfully updated Day T-1 historical performance metrics in "
+                             "trading.live_results");
+                        t1_statistics_refreshed = true;
+                    }
+                } else {
+                    INFO("No Day T-1 live_results row for " + t1_date_str +
+                         ": no statistics to refresh");
+                }
+            } else {
+                WARN("LiveDataLoader not available or not connected; the statistics through Day "
+                     "T-1 stay at their defaults and the Day T-1 row is not refreshed (E2-F33).");
+            }
+        } catch (const std::exception& e) {
+            WARN("Exception while computing the statistics through Day T-1: " +
+                 std::string(e.what()));
+        }
+        if (!t1_statistics_refreshed) {
+            settled_stamp.withhold("the Day T-1 statistics were not refreshed");
+        }
+
+        // ========================================
+        // STEP 4c: SETTLED_AT (migration 029; T-8D-2 R43, LOOP_SPEC sections 3.1 and 7.2)
+        // ========================================
+        // STEP 4 and the statistics refresh finished without error: every earlier row of the book
+        // that carries no stamp is settled, in one UPDATE (the previous session's row this run
+        // finalized, the non-session rows after it, a row an earlier run left). A no-prices day
+        // and a finalize that warned stamp nothing. Today's row is inserted below with settled_at
+        // NULL, so a re-run of a date clears its stamp and the next run writes it again.
+        if (settled_stamp.open()) {
+            auto stamped = db->execute_direct_query(
+                settled_stamp_sql(kEquityStrategyId, portfolio_id, core::format_utc_date(now)));
+            if (stamped.is_error()) {
+                ERROR("SETTLED_AT stamp failed: " + std::string(stamped.error()->what()) +
+                      "; the rows stay unsettled and the next run stamps them");
+            } else {
+                INFO(settled_stamp_log_line(core::format_utc_date(now), stamped.value()));
+            }
+        } else {
+            INFO(settled_stamp_withheld_log_line(core::format_utc_date(now), settled_stamp));
         }
 
         // ========================================
@@ -5532,43 +5682,11 @@ int main(int argc, char* argv[]) {
         // Calculate total cumulative return (non-annualized)
         double total_cumulative_return = metrics_calculator->calculate_total_return(current_portfolio_value, initial_capital);
 
-        double total_return_decimal = 0.0;
-        if (initial_capital > 0.0) {
-            total_return_decimal = (current_portfolio_value - initial_capital) / initial_capital;
-        }
         double total_cumulative_return_pct = total_cumulative_return;  // Already in %
 
-        // Get n = number of trading days using PostgreSQL function (robust against row duplication)
-        int trading_days_count = 1; // Default to 1 to avoid division by zero on first day
-        try {
-            // Phase 6 §6c: UTC date string via format_utc_date.
-            const std::string now_date_str = core::format_utc_date(now);
-
-            // Call PostgreSQL function to calculate trading days
-            auto trading_days_result = db->execute_query(
-                "SELECT trading.get_trading_days('LIVE_EQUITY_MEAN_REVERSION', DATE '" + now_date_str +
-                    "', '" + portfolio_id + "')");
-            
-            if (trading_days_result.is_ok()) {
-                auto table = trading_days_result.value();
-                if (table && table->num_rows() > 0 && table->num_columns() > 0) {
-                    // execute_query returns StringArray for all columns
-                    auto arr = std::static_pointer_cast<arrow::StringArray>(table->column(0)->chunk(0));
-                    if (arr && arr->length() > 0 && !arr->IsNull(0)) {
-                        trading_days_count = std::max<int>(1, std::stoi(arr->GetString(0)));
-                        INFO("Trading days for today (" + now_date_str + "): " + std::to_string(trading_days_count));
-                    }
-                }
-            } else {
-                WARN("Could not call get_trading_days function: " + std::string(trading_days_result.error()->what()));
-            }
-        } catch (const std::exception& e) {
-            WARN(std::string("Failed to get trading days: ") + e.what());
-        }
-
-        // Calculate annualized return using LiveMetricsCalculator
-        double total_return_annualized = metrics_calculator->calculate_annualized_return(
-            total_return_decimal, trading_days_count);
+        // The annualised return of today's row is a statistic of the grid through the last
+        // settled row (T-8D R39, T-8D-2 R74), computed in STEP 4b.
+        double total_return_annualized = settled_statistics.total_annualized_return;
 
         INFO("Portfolio value calculation:");
         INFO("  Previous portfolio value: $" + std::to_string(previous_portfolio_value));
@@ -5587,28 +5705,32 @@ int main(int argc, char* argv[]) {
         std::cout << "Daily Return: " << std::fixed << std::setprecision(2) << daily_return << "%" << std::endl;
         std::cout << "Portfolio Leverage: " << std::fixed << std::setprecision(2) 
                   << (gross_notional / current_portfolio_value) << "x" << std::endl;
+        // Equity-to-Margin Ratio = current_portfolio_value / total_posted_margin, at the level
+        // of the book (T-8D R21; HD 2026-09-10): the definition the futures runners write.
+        // Higher = more of the account's value for each dollar of margin posted. No value on a
+        // day with no posted margin: the cell is stored NULL (live/margin_columns.hpp).
+        const std::optional<double> equity_to_margin_ratio =
+            equity_to_margin_ratio_of(current_portfolio_value, total_posted_margin);
         std::cout << "Posted Margin (Initial×Contracts): $" << std::fixed << std::setprecision(2)
                   << total_posted_margin << std::endl;
-        std::cout << "Equity-to-Margin Ratio: " << std::fixed << std::setprecision(2)
-                  << equity_to_margin_ratio << "x" << std::endl;
-        double margin_cushion = 0.0;
-        if (maintenance_requirement_today > 0.0) {
-            // Correct formula: margin_cushion = (equity - maintenance) / equity
-            // This shows how much cushion we have above maintenance margin requirements
-            margin_cushion = (current_portfolio_value - maintenance_requirement_today) / current_portfolio_value;
+        if (equity_to_margin_ratio) {
+            std::cout << "Equity-to-Margin Ratio: " << std::fixed << std::setprecision(2)
+                      << *equity_to_margin_ratio << "x" << std::endl;
         } else {
-            margin_cushion = -1.0;  // Invalid if no maintenance requirement
+            std::cout << "Equity-to-Margin Ratio: n/a (no margin posted)" << std::endl;
         }
+        // margin_cushion = (equity - maintenance) / equity: how far the account stands above
+        // its maintenance requirement. No value, and a NULL cell, on a day with no posted
+        // margin: there is no requirement to be above.
+        const std::optional<double> margin_cushion = margin_cushion_of(
+            current_portfolio_value, total_posted_margin, maintenance_requirement_today);
 
         // Warnings per thresholds
         if (total_posted_margin > current_portfolio_value) {
             WARN("Posted margin exceeds current portfolio value; check sizing and risk limits.");
         }
-        if (margin_cushion < 0.20) {
+        if (margin_cushion && *margin_cushion < 0.20) {
             WARN("Margin cushion below 20%.");
-        }
-        if (equity_to_margin_ratio > 4.0) {
-            WARN("Equity-to-Margin Ratio above 4x.");
         }
 
         // Get forecasts for all symbols
@@ -5686,8 +5808,11 @@ int main(int argc, char* argv[]) {
             
             // Create configuration JSON
             nlohmann::json config_json;
-            config_json["strategy_type"] = "LIVE_EQUITY_MEAN_REVERSION";
+            config_json["strategy_type"] = kEquityStrategyId;  // the row's strategy_id
+            // The equity book has no sizing capital: capital_allocation stays its configured
+            // capital and portfolio_leverage stays on it.
             config_json["capital_allocation"] = mr_config.capital_allocation;
+            config_json[trade_ngin::kSleevesKey] = trade_ngin::resolved_sleeves_json(resolved_sleeves);
             config_json["max_leverage"] = mr_config.max_leverage;
             config_json["lookback_period"] = mean_rev_config.lookback_period;
             config_json["risk_target"] = mean_rev_config.risk_target;
@@ -5713,8 +5838,6 @@ int main(int argc, char* argv[]) {
             if (risk_eval.is_ok()) {
                 const auto& r = risk_eval.value();
                 portfolio_var = r.portfolio_var;
-                gross_leverage = r.gross_leverage;
-                net_leverage = r.net_leverage;
                 max_correlation = r.correlation_risk;
                 jump_risk = r.jump_risk;
                 risk_scale = r.recommended_scale;
@@ -5722,121 +5845,30 @@ int main(int argc, char* argv[]) {
 
             // Use LiveMetricsCalculator for portfolio metrics
             double portfolio_leverage = metrics_calculator->calculate_gross_leverage(gross_notional, current_portfolio_value);
+            // T-8D R22: gross_leverage and net_leverage are the row's notional over its portfolio
+            // value, the definition of portfolio_leverage and of the futures rows' net_leverage.
+            // (They were the risk report's figures: positions at cost basis over the configured
+            // capital.) The Day T-1 finalize recomputes both on the finalised value.
+            gross_leverage = portfolio_leverage;
+            net_leverage =
+                (current_portfolio_value > 0.0) ? (net_notional / current_portfolio_value) : 0.0;
             // equity_to_margin_ratio and margin_cushion already computed above
             
             // Use the LiveResultsManager
             INFO("Setting metrics in LiveResultsManager...");
 
-            // Phase 4.5: cumulative dividend income, sourced from the
-            // Phase 4 corp-action state file. Informational ONLY -- NOT
-            // added to total_pnl: bars carry total-return adjusted prices
+            // Phase 4.5 / T-8D-2 R44 (b): cumulative dividend income through this row's date, on
+            // the shares that carried each ex-date (computed once in STEP 4b). Informational
+            // ONLY -- NOT added to total_pnl: bars carry total-return adjusted prices
             // (Phase 4.2 computes that in-engine from per-bar div_cash), so
             // dividend value is already inside mark-to-market P&L.
-            double total_dividend_income = 0.0;
-            {
-                CorporateActionsAuditLog div_log(ca_state_dir, db,
-                                                       portfolio_id,
-                                                       "LIVE_EQUITY_MEAN_REVERSION",
-                                                       "EQUITY_MEAN_REVERSION");
-                auto div_loaded = div_log.load();
-                if (div_loaded.is_error()) {
-                    // Reporting-only: the trading decisions are already made and
-                    // persisted by this point, and this figure is informational
-                    // (never added to P&L). Under-reporting it is preferable to
-                    // failing a completed run, but it must not pass silently.
-                    WARN("Cannot read dividend income from the corp-action dedup "
-                         "record: " + std::string(div_loaded.error()->what()) +
-                         " -- reporting 0; the stored value is unaffected");
-                }
-                total_dividend_income = div_log.total_cumulative_dividend_income();
-            }
+            // A run that could not recount carries the Day T-1 row's figure, or names no figure.
 
-            // ================= E2-F33: the same block for day T ========================
-            //
-            // The T-1 pass above repairs yesterday's row once its mark is final. Today's row
-            // is INSERTed below and would stay NULL until tomorrow's run -- and the LAST day
-            // of any replay never gets a tomorrow, so "every row carries the block" needs
-            // this too. Mirrors live_portfolio_conservative.cpp:2743-2830.
-            //
-            // History is loaded as of previous_date (fully finalized days only) and today's
-            // own figures are appended, so the series ends with a day-T value that is
-            // consistent with the columns written in the same statement.
-            HistoricalMetrics historical_metrics;
-            try {
-                if (data_loader && data_loader->is_connected()) {
-                    auto returns_hist_res = data_loader->load_daily_returns_history(
-                        kEquityStrategyId, portfolio_id, previous_date);
-                    auto pnl_hist_res = data_loader->load_daily_pnl_history(
-                        kEquityStrategyId, portfolio_id, previous_date);
-                    auto equity_hist_res = data_loader->load_equity_curve_history(
-                        kEquityStrategyId, portfolio_id, previous_date);
-                    auto trades_hist_res = data_loader->load_total_trades_count(
-                        kEquityStrategyId, portfolio_id, now);
-
-                    std::vector<double> returns_hist;
-                    std::vector<double> pnl_hist;
-                    std::vector<double> equity_hist;
-                    int total_trades_hist = 0;
-
-                    if (returns_hist_res.is_ok()) returns_hist = returns_hist_res.value();
-                    if (pnl_hist_res.is_ok()) pnl_hist = pnl_hist_res.value();
-                    if (equity_hist_res.is_ok()) equity_hist = equity_hist_res.value();
-                    if (trades_hist_res.is_ok()) total_trades_hist = trades_hist_res.value();
-
-                    // Already in percent on both sides (the stored column and daily_return
-                    // here), so appended as-is. Do NOT scale.
-                    returns_hist.push_back(daily_return);
-                    pnl_hist.push_back(daily_pnl);
-                    equity_hist.push_back(current_portfolio_value);
-
-                    LiveHistoricalMetricsCalculator hist_calc;
-                    historical_metrics =
-                        hist_calc.calculate(returns_hist, pnl_hist, equity_hist,
-                                            total_return_annualized, total_trades_hist);
-
-                    // D3: keep the `volatility` local aligned with the return-volatility
-                    // definition, the same line live_portfolio_conservative.cpp carries after
-                    // its own calculate(). The metric map below takes the column from the
-                    // shared helper, so this is belt and braces -- but the local is what the
-                    // email and the console report read.
-                    volatility = historical_metrics.volatility;
-
-                    historical_metrics.total_days = trading_days_count;
-                    if (trading_days_count > 0) {
-                        historical_metrics.win_rate =
-                            static_cast<double>(historical_metrics.winning_days) /
-                            static_cast<double>(trading_days_count) * 100.0;
-                    }
-
-                    INFO("HIST_METRICS [Day T]: return_volatility=" +
-                         std::to_string(historical_metrics.volatility) +
-                         " downside_deviation=" +
-                         std::to_string(historical_metrics.downside_deviation) +
-                         " sharpe=" + std::to_string(historical_metrics.sharpe_ratio) +
-                         " sortino=" + std::to_string(historical_metrics.sortino_ratio) +
-                         " max_drawdown=" + std::to_string(historical_metrics.max_drawdown) +
-                         " winning_days=" + std::to_string(historical_metrics.winning_days) +
-                         " losing_days=" + std::to_string(historical_metrics.losing_days) +
-                         " total_days=" + std::to_string(historical_metrics.total_days) +
-                         " win_rate=" + std::to_string(historical_metrics.win_rate) +
-                         " avg_win=" + std::to_string(historical_metrics.avg_win) +
-                         " avg_loss=" + std::to_string(historical_metrics.avg_loss) +
-                         " best_day=" + std::to_string(historical_metrics.best_day) +
-                         " worst_day=" + std::to_string(historical_metrics.worst_day) +
-                         " gross_profit=" + std::to_string(historical_metrics.gross_profit) +
-                         " gross_loss=" + std::to_string(historical_metrics.gross_loss) +
-                         " profit_factor=" + std::to_string(historical_metrics.profit_factor) +
-                         " (returns n=" + std::to_string(returns_hist.size()) +
-                         ", equity n=" + std::to_string(equity_hist.size()) +
-                         ", executions=" + std::to_string(total_trades_hist) + ")");
-                } else {
-                    WARN("LiveDataLoader not available or not connected; the day-T historical "
-                         "performance metrics stay at their defaults (E2-F33).");
-                }
-            } catch (const std::exception& e) {
-                WARN("Exception while calculating day-T historical performance metrics: " +
-                     std::string(e.what()));
-            }
+            // T-8D R39: the statistic columns of today's row are the statistics through the last
+            // settled row, computed once after STEP 4 and written to the Day T-1 row too. The
+            // `volatility` local is what the email and the console report read (D3).
+            const HistoricalMetrics& historical_metrics = settled_statistics;
+            volatility = historical_metrics.volatility;
 
             // Prepare metrics maps
             std::unordered_map<std::string, double> double_metrics = {
@@ -5851,8 +5883,6 @@ int main(int argc, char* argv[]) {
                 {"gross_leverage", gross_leverage},
                 {"net_leverage", net_leverage},
                 {"portfolio_leverage", portfolio_leverage},
-                {"equity_to_margin_ratio", equity_to_margin_ratio},
-                {"margin_cushion", margin_cushion},
                 {"max_correlation", max_correlation},
                 {"jump_risk", jump_risk},
                 {"risk_scale", risk_scale},
@@ -5870,9 +5900,15 @@ int main(int argc, char* argv[]) {
                 {"daily_unrealized_pnl", daily_unrealized_pnl},
                 {"daily_transaction_costs", total_daily_commissions},
                 {"margin_posted", total_posted_margin},
-                {"cash_available", current_portfolio_value - total_posted_margin},
-                {"total_dividend_income", total_dividend_income}
+                {"cash_available", current_portfolio_value - total_posted_margin}
             };
+            if (dividend_income_today) {
+                double_metrics["total_dividend_income"] = *dividend_income_today;
+            }
+
+            // The ratio and the cushion are named only when they have a value; without one the
+            // cell stays NULL (live/margin_columns.hpp).
+            set_margin_cells(double_metrics, equity_to_margin_ratio, margin_cushion);
 
             std::unordered_map<std::string, int> int_metrics = {
                 {"active_positions", active_positions}
@@ -5893,6 +5929,10 @@ int main(int argc, char* argv[]) {
 
             // Set all metrics at once
             results_manager->set_metrics(double_metrics, int_metrics);
+
+            // Migration 030: the typed cells of the same statistics; a cell with no value is
+            // left out of the INSERT and stays NULL.
+            results_manager->set_cells(settled_statistics_cells);
 
             // Set config
             results_manager->set_config(config_json);
@@ -6205,10 +6245,15 @@ int main(int argc, char* argv[]) {
                 strategy_metrics["Gross Leverage"] = gross_leverage_calc;
                 strategy_metrics["Net Leverage"] = net_leverage_calc;
                 strategy_metrics["Portfolio Leverage"] = portfolio_leverage_calc;
-                strategy_metrics["Equity-to-Margin Ratio"] = equity_to_margin_ratio;
+                // The two margin lines are printed only when the figure has a value.
+                if (equity_to_margin_ratio) {
+                    strategy_metrics["Equity-to-Margin Ratio"] = *equity_to_margin_ratio;
+                }
 
                 // Risk & Liquidity Metrics
-                strategy_metrics["Margin Cushion"] = margin_cushion * 100.0; // Convert to percentage
+                if (margin_cushion) {
+                    strategy_metrics["Margin Cushion"] = *margin_cushion * 100.0; // Convert to percentage
+                }
                 strategy_metrics["Margin Posted"] = total_posted_margin;
                 strategy_metrics["Cash Available"] = current_portfolio_value - total_posted_margin;
 

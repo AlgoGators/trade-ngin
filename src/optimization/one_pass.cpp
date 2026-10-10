@@ -436,6 +436,7 @@ DayResult rebalance(const DayInputs& in) {
         const double v = in.jump_sigma_daily[out.participants[a]] * jump_factor;
         sigma_jump[a] = std::isfinite(v) ? v : 0.0;
     }
+    out.sigma_jump = sigma_jump;  // kept for a caller's reading of another book on this window
     // the weights of a whole book over the participants: a free or fixed row at its quantity, a
     // close-out at zero
     auto weights_of = [&](const Vector& quantities) {

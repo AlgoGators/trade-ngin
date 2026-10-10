@@ -9,7 +9,10 @@
 #include <gtest/gtest.h>
 
 #include <cstdlib>
+#include <chrono>
 #include <string>
+#include <utility>
+#include <vector>
 
 #include "trade_ngin/core/time_utils.hpp"
 
@@ -263,4 +266,39 @@ TEST(TimeUtilsParse, MalformedCalendarDateIsRejected) {
     // A full timestamp is NOT silently truncated to its date -- callers that
     // want that must say so with parse_utc_datetime.
     EXPECT_FALSE(parse_utc_date("2026-04-06 05:00:00+00", tp));
+}
+
+// T-8a (2): one row per UTC date, the last of consecutive rows that share it.
+TEST(TimeUtilsLastRowPerUtcDate, KeepsTheLastRowOfEachRepeatedDateAndCountsTheRest) {
+    using Row = std::pair<std::string, double>;
+    const std::vector<Row> rows = {{"2026-04-24", 1.0}, {"2026-04-25", 2.0}, {"2026-04-25", 3.0},
+                                   {"2026-04-25", 4.0}, {"2026-04-26", 5.0}, {"2026-04-27", 6.0},
+                                   {"2026-04-27", 7.0}};
+    size_t removed = 99;
+    const auto kept = last_row_per_utc_date(
+        rows, [](const Row& row) { return row.first; }, &removed);
+    const std::vector<Row> want = {{"2026-04-24", 1.0}, {"2026-04-25", 4.0}, {"2026-04-26", 5.0},
+                                   {"2026-04-27", 7.0}};
+    EXPECT_EQ(kept, want);
+    EXPECT_EQ(removed, 3u);
+}
+
+TEST(TimeUtilsLastRowPerUtcDate, ASeriesWithNoRepeatedDateComesBackEqualWithZeroRemoved) {
+    using Row = std::pair<std::chrono::system_clock::time_point, double>;
+    std::chrono::system_clock::time_point midnight;
+    ASSERT_TRUE(parse_utc_date("2026-04-24", midnight));
+    // 23:59:59 of one date and 00:00:00 of the next are two dates, one second apart.
+    const std::vector<Row> rows = {{midnight - std::chrono::hours(19), 1.0},
+                                   {midnight + std::chrono::hours(24) - std::chrono::seconds(1), 2.0},
+                                   {midnight + std::chrono::hours(24), 3.0}};
+    size_t removed = 99;
+    const auto kept = last_row_per_utc_date(
+        rows, [](const Row& row) { return format_utc_date(row.first); }, &removed);
+    EXPECT_EQ(kept, rows);
+    EXPECT_EQ(removed, 0u);
+
+    const std::vector<Row> none;
+    EXPECT_TRUE(last_row_per_utc_date(none, [](const Row& row) {
+                    return format_utc_date(row.first);
+                }).empty());
 }

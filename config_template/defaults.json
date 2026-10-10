@@ -36,6 +36,10 @@
     "_note_spinoff_child_policy": "E2-F31. What to do with a company a spinoff hands you. liquidate_at_first_close (default) books the child and sells it at its first close. hold keeps it, and is only safe when the child is itself in the configured universe -- otherwise no bars are loaded for it and every later run reports 'Missing T-1 price for symbol with a non-zero position' and rolls the target back forever (F-4). Unrecognised text takes the default.",
     "_note": "Must match backtest.lookback_years (2 yrs ≈ 730 days). Strategy needs 256+ trading days for longest EMA and 252 for vol_lookback_long."
   },
+  "statistics": {
+    "sessions_per_year": {"futures": 311.0574, "equities": 252},
+    "_sessions_per_year_note": "optional; K, the sessions a year every stored live statistic is annualised with, frozen per series and equal to the row frequency of the grid the statistic is taken on. futures: 311.0574 = 3111 grid dates / (3653 days / 365.25) over 2016-01-01..2025-12-31, a grid date being a Sunday-to-Friday date (the UTC date of the bar) on which at least 9 distinct symbols of the 36 printed a bar in futures_data.ohlcv_1d; statistics only, trading uses the per-symbol session classifier. equities: 252 NYSE sessions. Absent means these two values. Re-measure only when the universe changes. Example: {\"futures\": 311.0574, \"equities\": 252}"
+  },
   "strategy_defaults": {
     "fdm": [[1, 1], [2, 1.03], [3, 1.08], [4, 1.13], [5, 1.19], [6, 1.26]],
     "max_strategy_allocation": 1,

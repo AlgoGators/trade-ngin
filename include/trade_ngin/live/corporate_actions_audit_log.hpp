@@ -1,5 +1,7 @@
 #pragma once
 
+#include <functional>
+#include <optional>
 #include <set>
 #include <string>
 #include <tuple>
@@ -203,6 +205,33 @@ public:
      * add this value to P&L totals -- it would double-count.
      */
     double total_cumulative_dividend_income() const;
+
+    /**
+     * @brief The shares of a symbol on the position row dated an ex-date, or no value when
+     *        that row does not exist.
+     */
+    using SharesOnExDateRow =
+        std::function<std::optional<double>(const std::string& symbol, const std::string& ex_date)>;
+
+    /**
+     * @brief Cumulative dividend cash through a row's date, on the shares that carried each
+     *        ex-date (T-8D-2 R44 (b)).
+     *
+     * The sum, over the recorded dividend events with ex_date <= row_date, of
+     * dividend_per_share x the shares `shares_on_ex_date_row` returns for the event. A fill
+     * of the run of an ex-date is priced at the close before it, the cum-dividend close, so
+     * the row dated the ex-date holds the shares the dividend was paid on and is the row
+     * whose P&L carries the credit. The recorded qty_held is the row of the day BEFORE the
+     * ex-date and misses that fill; it is used only where the lookup has no row, and the
+     * event is then named in `recorded_quantity_used`.
+     *
+     * Dates are YYYY-MM-DD. Events are summed in (ex_date, symbol) order, so the figure does
+     * not depend on the order the rows were loaded in. Informational, as the sum above: never
+     * added to a P&L total.
+     */
+    double dividend_income_through(const std::string& row_date,
+                                   const SharesOnExDateRow& shares_on_ex_date_row,
+                                   std::vector<std::string>* recorded_quantity_used = nullptr) const;
 
     /**
      * @brief F-8 -- every recorded class-1 event for one symbol, as broker_frame input.
