@@ -103,6 +103,29 @@ Result<void> PostgresDatabase::delete_roll_executions(const Timestamp& date,
     }
 }
 
+Result<void> PostgresDatabase::delete_day_executions(const Timestamp& date,
+                                                     const std::string& strategy_name,
+                                                     const std::string& portfolio_id,
+                                                     const std::string& table_name) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    auto validation = validate_connection();
+    if (validation.is_error()) return validation;
+    auto table_validation = validate_table_name(table_name);
+    if (table_validation.is_error()) return table_validation;
+    try {
+        pqxx::work txn(*connection_);
+        const std::string day = trade_ngin::core::format_utc_date(date);
+        txn.exec("DELETE FROM " + table_name +
+                     " WHERE strategy_name = $1 AND portfolio_id = $2 AND date = $3::date",
+                 pqxx::params{strategy_name, portfolio_id, day});
+        txn.commit();
+        return Result<void>();
+    } catch (const std::exception& e) {
+        ERROR("ROLL_LEG STOP: the day's executions could not be deleted: " + std::string(e.what()));
+        return make_error<void>(ErrorCode::DATABASE_ERROR, e.what(), component_id_);
+    }
+}
+
 Result<double> PostgresDatabase::get_previous_total_roll_costs(const std::string& strategy_id,
                                                                const std::string& portfolio_id,
                                                                const Timestamp& date,

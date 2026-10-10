@@ -2628,12 +2628,14 @@ int main(int argc, char* argv[]) {
             }
         }
 
+        // T-DATED R3: every row of the sleeve's day, not only its ROLL rows: a re-run of a date
+        // leaves no order an earlier run of the date made and this run does not.
         for (const auto& strategy_name_rl : strategy_names) {
             if (roll_legs_of(strategy_name_rl) > 0) continue;
-            auto sweep = db->delete_roll_executions(now, strategy_name_rl, portfolio_id,
-                                                    "trading.executions");
+            auto sweep = db->delete_day_executions(now, strategy_name_rl, portfolio_id,
+                                                   "trading.executions");
             if (sweep.is_error()) {
-                ERROR("ROLL_LEG STOP: today's ROLL executions of " + strategy_name_rl +
+                ERROR("ROLL_LEG STOP: today's executions of " + strategy_name_rl +
                       " could not be swept (" + std::string(sweep.error()->what()) +
                       "); refusing to run: a re-run would store them twice");
                 return 1;

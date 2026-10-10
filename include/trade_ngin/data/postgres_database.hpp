@@ -448,6 +448,17 @@ public:
                                                 const std::string& table_name = "trading.executions");
 
     /**
+     * @brief T-DATED R3 (HD 2026-10-10): the re-run sweep of a sleeve's executions of a day, of
+     *        every type. A re-run of a date re-decides the day's orders; a row an earlier run of
+     *        the date stored for an order the re-run no longer makes must not stay. The runners
+     *        call it for a sleeve that books no ROLL leg, before they store what the run makes
+     *        (a sleeve with legs is swept inside replace_roll_day_executions' transaction).
+     */
+    virtual Result<void> delete_day_executions(const Timestamp& date, const std::string& strategy_name,
+                                               const std::string& portfolio_id,
+                                               const std::string& table_name = "trading.executions");
+
+    /**
      * @brief T-ROLLX-FIX commits 5 and 6 (LOOP_SPEC v6.2 section 6.5): the executions of every
      *        sleeve that books ROLL legs on a run, replaced in ONE transaction: per sleeve, the
      *        sweep of its ROLL rows dated `date` (delete_roll_executions' predicate), the delete of

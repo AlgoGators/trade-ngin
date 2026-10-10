@@ -392,14 +392,14 @@ Result<void> PostgresDatabase::replace_roll_day_executions(
         if (auto sn = validate_strategy_id(sleeve.first); sn.is_error()) return sn;
     }
     try {
-        // ONE transaction over every sleeve: the sweep of the sleeve's ROLL rows of the day, the
-        // delete of the rows carrying this run's order ids, and the insert. Nothing is committed
-        // unless all of it is.
+        // ONE transaction over every sleeve: the sweep of the sleeve's rows of the day (T-DATED
+        // R3: EVERY row dated the run date, ROLL or not, so an order an earlier run of the date
+        // made and this run no longer makes does not stay), the delete of the rows carrying this
+        // run's order ids, and the insert. Nothing is committed unless all of it is.
         pqxx::work txn(*connection_);
         for (const auto& [strategy_name, executions] : sleeves) {
             txn.exec("DELETE FROM " + table_name +
-                         " WHERE strategy_name = $1 AND portfolio_id = $2 AND date = $3::date"
-                         " AND execution_type = 'ROLL'",
+                         " WHERE strategy_name = $1 AND portfolio_id = $2 AND date = $3::date",
                      pqxx::params{strategy_name, portfolio_id,
                                   trade_ngin::core::format_utc_date(date)});
             std::vector<std::string> order_ids;

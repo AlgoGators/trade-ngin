@@ -119,7 +119,7 @@ TEST(LiveRollWriteOrder, TheDaysExecutionsAreStoredBeforeTheDayT1RowsAreReWritte
                                           "======= Daily Position Report =======");
         EXPECT_NE(write.find("db->store_positions(finalized_positions,"), npos) << runner;
         // A sleeve that stores legs is swept inside its store, never apart from it.
-        const auto sweep_at = src.find("db->delete_roll_executions(now, strategy_name_rl, portfolio_id,");
+        const auto sweep_at = src.find("db->delete_day_executions(now, strategy_name_rl, portfolio_id,");
         const auto skip_at = src.find("if (roll_legs_of(strategy_name_rl) > 0) continue;");
         ASSERT_NE(sweep_at, npos) << runner;
         ASSERT_NE(skip_at, npos) << runner;
@@ -143,7 +143,7 @@ TEST(LiveRollWriteOrder, AFailedExecutionsStoreWithRollLegsOwedStopsBeforePositi
         EXPECT_EQ(src.find("db->replace_roll_day_executions(", replace_at + 1), npos)
             << runner << ": one call, one transaction, for every sleeve with legs";
         const std::string leg_store = between(src, "db->replace_roll_day_executions(",
-                                              "db->delete_roll_executions(now, strategy_name_rl, portfolio_id,");
+                                              "db->delete_day_executions(now, strategy_name_rl, portfolio_id,");
         ASSERT_FALSE(leg_store.empty()) << runner << ": the legs are stored before the other sleeves are swept";
         EXPECT_EQ(leg_store.find("leg_sleeves, combined_strategy_id, portfolio_id, now, \"trading.executions\");"),
                   leg_store.find("leg_sleeves,"))
@@ -171,7 +171,7 @@ TEST(LiveRollWriteOrder, AFailedExecutionsStoreWithRollLegsOwedStopsBeforePositi
         // Every other execution write of the run comes after the legs' store, and skips those sleeves.
         const auto other_at = src.find("db->store_executions(executions,");
         const auto stale_at = src.find("db->delete_stale_executions(");
-        const auto sweep_at = src.find("db->delete_roll_executions(now, strategy_name_rl, portfolio_id,");
+        const auto sweep_at = src.find("db->delete_day_executions(now, strategy_name_rl, portfolio_id,");
         ASSERT_NE(other_at, npos) << runner;
         ASSERT_NE(stale_at, npos) << runner;
         EXPECT_LT(replace_at, sweep_at) << runner;
