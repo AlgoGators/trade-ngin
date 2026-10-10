@@ -5137,12 +5137,7 @@ int main(int argc, char* argv[]) {
                     // total_days is the authoritative trading-day count for T-1 -- the same
                     // E2-F32-corrected figure that annualized the return written into this
                     // row -- not the number of live_results rows, which includes weekends.
-                    yesterday_hist_metrics.total_days = trading_days_count;
-                    if (trading_days_count > 0) {
-                        yesterday_hist_metrics.win_rate =
-                            static_cast<double>(yesterday_hist_metrics.winning_days) /
-                            static_cast<double>(trading_days_count) * 100.0;
-                    }
+                    apply_trading_days_override(yesterday_hist_metrics, trading_days_count);
 
                     INFO("HIST_METRICS [Day T-1] " + yesterday_date_str +
                          ": return_volatility=" +
@@ -5176,11 +5171,7 @@ int main(int argc, char* argv[]) {
                     // update_live_results takes doubles only, so the three integer columns
                     // are widened here; they are whole numbers by construction.
                     auto metric_updates =
-                        historical_metrics_double_columns(yesterday_hist_metrics);
-                    for (const auto& [column, value] :
-                         historical_metrics_int_columns(yesterday_hist_metrics)) {
-                        metric_updates[column] = static_cast<double>(value);
-                    }
+                        historical_metrics_update_columns(yesterday_hist_metrics);
 
                     auto yesterday_metrics_manager = std::make_unique<LiveResultsManager>(
                         db, true, kEquityStrategyId, portfolio_id, kEquityStrategyName);
@@ -5801,12 +5792,7 @@ int main(int argc, char* argv[]) {
                     // email and the console report read.
                     volatility = historical_metrics.volatility;
 
-                    historical_metrics.total_days = trading_days_count;
-                    if (trading_days_count > 0) {
-                        historical_metrics.win_rate =
-                            static_cast<double>(historical_metrics.winning_days) /
-                            static_cast<double>(trading_days_count) * 100.0;
-                    }
+                    apply_trading_days_override(historical_metrics, trading_days_count);
 
                     INFO("HIST_METRICS [Day T]: return_volatility=" +
                          std::to_string(historical_metrics.volatility) +

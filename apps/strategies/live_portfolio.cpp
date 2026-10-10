@@ -3560,12 +3560,7 @@ int main(int argc, char* argv[]) {
                                             yesterday_total_return_annualized, total_trades_hist);
 
                     // Override total_days with authoritative trading days count
-                    yesterday_hist_metrics.total_days = trading_days_count;
-                    if (trading_days_count > 0) {
-                        yesterday_hist_metrics.win_rate =
-                            static_cast<double>(yesterday_hist_metrics.winning_days) /
-                            static_cast<double>(trading_days_count) * 100.0;
-                    }
+                    apply_trading_days_override(yesterday_hist_metrics, trading_days_count);
 
                     INFO("HIST_METRICS [Day T-1]: volatility=" +
                          std::to_string(yesterday_hist_metrics.volatility) +
@@ -3576,24 +3571,11 @@ int main(int argc, char* argv[]) {
                          " best_day=" + std::to_string(yesterday_hist_metrics.best_day) +
                          " worst_day=" + std::to_string(yesterday_hist_metrics.worst_day));
 
-                    std::unordered_map<std::string, double> metric_updates = {
-                        {"sharpe_ratio", yesterday_hist_metrics.sharpe_ratio},
-                        {"sortino_ratio", yesterday_hist_metrics.sortino_ratio},
-                        {"max_drawdown", yesterday_hist_metrics.max_drawdown},
-                        {"volatility", yesterday_hist_metrics.volatility},
-                        {"downside_deviation", yesterday_hist_metrics.downside_deviation},
-                        {"win_rate", yesterday_hist_metrics.win_rate},
-                        {"avg_win", yesterday_hist_metrics.avg_win},
-                        {"avg_loss", yesterday_hist_metrics.avg_loss},
-                        {"profit_factor", yesterday_hist_metrics.profit_factor},
-                        {"best_day", yesterday_hist_metrics.best_day},
-                        {"worst_day", yesterday_hist_metrics.worst_day},
-                        {"gross_profit", yesterday_hist_metrics.gross_profit},
-                        {"gross_loss", yesterday_hist_metrics.gross_loss},
-                        // Removed total_trades - column dropped from database
-                        {"winning_days", static_cast<double>(yesterday_hist_metrics.winning_days)},
-                        {"losing_days", static_cast<double>(yesterday_hist_metrics.losing_days)},
-                        {"total_days", static_cast<double>(yesterday_hist_metrics.total_days)}};
+                    // One definition of the block, shared with the day-T write below and with
+                    // the equity runner. total_trades and flat_days are not columns of
+                    // trading.live_results; both stay on yesterday_hist_metrics for in-memory use.
+                    auto metric_updates =
+                        historical_metrics_update_columns(yesterday_hist_metrics);
 
                     auto yesterday_metrics_manager = std::make_unique<LiveResultsManager>(
                         db, true, combined_strategy_id, coordinator_config.portfolio_id);
@@ -4112,13 +4094,9 @@ int main(int argc, char* argv[]) {
 
                     // Override total_days with authoritative trading days count from
                     // get_trading_days() DB function, which uses strategy_trading_days_metadata
-                    historical_metrics.total_days = trading_days_count;
-                    // Recalculate win_rate using actual trading days as denominator
-                    if (trading_days_count > 0) {
-                        historical_metrics.win_rate =
-                            static_cast<double>(historical_metrics.winning_days) /
-                            static_cast<double>(trading_days_count) * 100.0;
-                    }
+                    // total_days is the authoritative trading-days count; win_rate is
+                    // recomputed with it as the denominator
+                    apply_trading_days_override(historical_metrics, trading_days_count);
                 } else {
                     WARN(
                         "LiveDataLoader not available or not connected; historical performance "
@@ -4136,19 +4114,6 @@ int main(int argc, char* argv[]) {
             std::unordered_map<std::string, double> double_metrics = {
                 {"total_cumulative_return", total_cumulative_return_pct},
                 {"total_annualized_return", total_return_annualized},
-                {"volatility", historical_metrics.volatility},
-                {"downside_deviation", historical_metrics.downside_deviation},
-                {"sharpe_ratio", historical_metrics.sharpe_ratio},
-                {"sortino_ratio", historical_metrics.sortino_ratio},
-                {"max_drawdown", historical_metrics.max_drawdown},
-                {"win_rate", historical_metrics.win_rate},
-                {"avg_win", historical_metrics.avg_win},
-                {"avg_loss", historical_metrics.avg_loss},
-                {"profit_factor", historical_metrics.profit_factor},
-                {"best_day", historical_metrics.best_day},
-                {"worst_day", historical_metrics.worst_day},
-                {"gross_profit", historical_metrics.gross_profit},
-                {"gross_loss", historical_metrics.gross_loss},
                 {"total_pnl", total_pnl},
                 {"total_unrealized_pnl", total_unrealized_pnl},
                 {"total_realized_pnl", total_realized_pnl},
@@ -4175,11 +4140,18 @@ int main(int argc, char* argv[]) {
                 {"cash_available", current_portfolio_value - total_posted_margin}};
 
             std::unordered_map<std::string, int> int_metrics = {
-                {"active_positions", active_positions},
-                // Removed total_trades - will be implemented properly later with closing trades logic
-                {"winning_days", historical_metrics.winning_days},
-                {"losing_days", historical_metrics.losing_days},
-                {"total_days", historical_metrics.total_days}};
+                {"active_positions", active_positions}};
+
+            // The since-inception block, from the helper the Day T-1 UPDATE and the equity
+            // runner use, so a column cannot be written on one path and dropped on another.
+            for (const auto& [column, value] :
+                 historical_metrics_double_columns(historical_metrics)) {
+                double_metrics[column] = value;
+            }
+            for (const auto& [column, value] :
+                 historical_metrics_int_columns(historical_metrics)) {
+                int_metrics[column] = value;
+            }
 
             // Set all metrics at once
             results_manager->set_metrics(double_metrics, int_metrics);

@@ -106,5 +106,20 @@ std::unordered_map<std::string, double> historical_metrics_double_columns(
 /** @brief The integer half of the same block: winning_days, losing_days, total_days. */
 std::unordered_map<std::string, int> historical_metrics_int_columns(const HistoricalMetrics& m);
 
+/**
+ * @brief The whole block as the Day T-1 UPDATE takes it: the double columns plus the three
+ * integer columns widened to double (`update_live_results` takes doubles only; the three are
+ * whole numbers by construction).
+ */
+std::unordered_map<std::string, double> historical_metrics_update_columns(
+    const HistoricalMetrics& m);
+
+/**
+ * @brief The override every live runner applies after `calculate()`: `total_days` becomes the
+ * authoritative trading-days count and, when that count is positive, `win_rate` is recomputed
+ * as winning_days over it, in percent. A count of zero or less leaves `win_rate` as calculated.
+ */
+void apply_trading_days_override(HistoricalMetrics& m, int trading_days_count);
+
 }  // namespace trade_ngin
 

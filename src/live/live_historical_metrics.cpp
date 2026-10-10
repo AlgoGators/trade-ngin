@@ -205,5 +205,22 @@ std::unordered_map<std::string, int> historical_metrics_int_columns(const Histor
     };
 }
 
+std::unordered_map<std::string, double> historical_metrics_update_columns(
+    const HistoricalMetrics& m) {
+    auto columns = historical_metrics_double_columns(m);
+    for (const auto& [column, value] : historical_metrics_int_columns(m)) {
+        columns[column] = static_cast<double>(value);
+    }
+    return columns;
+}
+
+void apply_trading_days_override(HistoricalMetrics& m, int trading_days_count) {
+    m.total_days = trading_days_count;
+    if (trading_days_count > 0) {
+        m.win_rate = static_cast<double>(m.winning_days) /
+                     static_cast<double>(trading_days_count) * 100.0;
+    }
+}
+
 }  // namespace trade_ngin
 
