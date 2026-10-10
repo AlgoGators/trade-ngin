@@ -672,7 +672,9 @@ BacktestMetricsCalculator::TradeStatistics BacktestMetricsCalculator::calculate_
         if (fill.signed_quantity != 0.0) stats.strategy_fills++;
 
         // A trade is a closing fill: the dollars its closed quantity made less the fill's own cost
-        // after netting (the opening fills' costs are not inside a trade).
+        // after netting. The opening fills' costs are not inside a trade, with one exception: a
+        // fill through zero (a reversal) is ONE account fill with one cost, and its whole cost,
+        // the part that opens the new position included, is charged to the trade it closes.
         double commission = static_cast<double>(transaction_cost::net_cost(exec));
         double trade_pnl = -commission;
         trade_pnl += fill.realized;

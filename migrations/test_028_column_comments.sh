@@ -145,8 +145,8 @@ has trading.equity_curve "a point dated D is settled when" "settled_at" "migrati
 has trading.live_run_metadata.created_at "FIRST insert"
 has backtest.results.beta "lag-1 autocorrelation of daily returns" "NOT a market beta"
 has backtest.results.correlation "lag-1 autocorrelation" "NOT a correlation with a market"
-has backtest.results.total_trades "ACCOUNT fill" "netted across the sleeves" "DOLLARS" "non-zero net position"
-has backtest.results "FRACTIONS" "not on the live statistics grid"
+has backtest.results.total_trades "ACCOUNT fill" "netted across the sleeves" "DOLLARS" "non-zero net position" "a fill through zero (a reversal) is ONE account fill with one cost" "is charged to the trade it closes"
+has backtest.results "FRACTIONS" "not on the live statistics grid" "a fill through zero (a reversal) is ONE account fill with one cost"
 has backtest.final_positions "DAILY snapshot"
 n=0
 for o in $REDEFINED; do has "$o" "Rows written before migration 028 keep the earlier definition."; n=$((n + 1)); done
