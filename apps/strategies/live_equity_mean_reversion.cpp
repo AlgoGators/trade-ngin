@@ -25,6 +25,7 @@
 #include "trade_ngin/live/corporate_actions_lifecycle.hpp"
 #include "trade_ngin/live/corp_action_window.hpp"
 #include "trade_ngin/live/data_freshness.hpp"
+#include "trade_ngin/live/session_book_gate.hpp"
 #include "trade_ngin/live/corp_action_feed_status.hpp"
 #include "trade_ngin/live/trading_days_anchor.hpp"
 #include "trade_ngin/live/broker_frame.hpp"
@@ -1127,6 +1128,36 @@ int main(int argc, char* argv[]) {
                     return 1;
                 }
                 INFO("No prior run anywhere for this strategy -- genuine first run.");
+            }
+        }
+
+        // THE HELD-SYMBOL FEED CHECK (T-DATED R2; HD 2026-10-10), the futures runners' rule through
+        // the same functions (live/session_book_gate.hpp): a HELD symbol whose newest bar is more
+        // than live.data_staleness_tolerance_days before the run's as-of date, or that has no bar at
+        // all, refuses the run when the run date is the host's own date and is a warning when the
+        // date is run on another day. A symbol the book does not hold stops nothing: one line.
+        {
+            const int hole_tolerance_days = app_config.live.data_staleness_tolerance_days;
+            std::unordered_map<std::string, double> held_quantity;
+            for (const auto& [symbol, position] : previous_positions) {
+                held_quantity[symbol] = position.quantity.as_double();
+            }
+            const LastBarHoles feed_holes = holes_from_last_bars(
+                symbols, last_bar_date,
+                format_ymd_utc(std::chrono::system_clock::to_time_t(end_date)), held_quantity,
+                hole_tolerance_days);
+            if (!feed_holes.not_held_line.empty()) WARN(feed_holes.not_held_line);
+            const HeldFeedHoleRuling hole_ruling = rule_held_feed_holes(
+                feed_holes.held, hole_tolerance_days, now, std::chrono::system_clock::now());
+            for (const auto& line : hole_ruling.lines) {
+                if (hole_ruling.refuse) {
+                    ERROR(line);
+                } else {
+                    WARN(line);
+                }
+            }
+            if (hole_ruling.refuse) {
+                return 1;
             }
         }
 

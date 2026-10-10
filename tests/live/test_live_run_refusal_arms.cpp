@@ -341,7 +341,7 @@ TEST(RunRefusalArmsSource, TheEquityRunnerWritesItsMetadataRowBelowItsGuards) {
     EXPECT_EQ(src.find("db->store_live_run_metadata(", upsert + 1), npos) << "one write only";
     for (const char* guard :
          {"rule_feed_freshness(freshness, tolerance_days, as_of_ymd,", "No historical data loaded.",
-          "A run was missed. Replay every date from "}) {
+          "A run was missed. Replay every date from ", "rule_held_feed_holes("}) {
         const auto at = src.find(guard);
         ASSERT_NE(at, npos) << guard;
         EXPECT_LT(at, upsert) << "the metadata row is written above the guard: " << guard;
