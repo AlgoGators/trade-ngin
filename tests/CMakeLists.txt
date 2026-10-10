@@ -305,3 +305,7 @@ add_test(NAME MigrateRiskJson.ScriptSuite
 add_test(NAME CheckLiveTrading.ScriptSuite
          COMMAND "${MIGRATION_PYTHON}"
                  "${CMAKE_CURRENT_SOURCE_DIR}/scripts/test_check_live_trading.py")
+# The two entries import modules from scripts/: without this the interpreter leaves an untracked
+# scripts/__pycache__/ in the source tree on every ctest run.
+set_tests_properties(MigrateRiskJson.ScriptSuite CheckLiveTrading.ScriptSuite
+                     PROPERTIES ENVIRONMENT "PYTHONDONTWRITEBYTECODE=1")
