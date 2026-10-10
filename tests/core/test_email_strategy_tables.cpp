@@ -510,6 +510,50 @@ TEST(EmailNettingText, MoneyGroupsThousandsAndKeepsANegativeSign) {
     EXPECT_EQ(email_netting::netting_effect_text(2500.00, 1000.00), "-$1,500.00");
 }
 
+// T-NETTING fix round 2 (audit B of the fix round, finding 1): the totals are the exact stored
+// figures and every line is rounded to the cent on its own, so rows need not add to their sleeve's
+// footer nor the sleeves' footers to the book's, by a cent. Where the netting lines are shown (a
+// book of several sleeves, a netted day) one note under the book's footer says so. The stored
+// rows of 2026-04-28 (BASE): each sleeve's one netted MBT row, own 2.4464, crossed in full.
+//
+//   | line          | own   | adjustment | charged |
+//   | Trend's row   | $2.45 | -$2.45     | $0.00   |
+//   | Fast's row    | $2.45 | -$2.45     | $0.00   |
+//   | book          | $4.89 | -$4.89     | $0.00   |   two rows of 2.45 print 4.90: a cent
+TEST_F(EmailStrategyTablesTest, ANettedSeveralSleeveDaySaysWhyACentCanDiffer) {
+    const Sleeves day{{"TREND_FOLLOWING_FAST", {netted_row(Side::SELL, 1, 2.4464, 2.4464)}},
+                      {"TREND_FOLLOWING", {netted_row(Side::BUY, 1, 2.4464, 2.4464)}}};
+    const std::string all = sender_.format_strategy_executions_tables(day);
+    EXPECT_NE(all.find("<td>$2.45</td>\n<td>-$2.45</td>\n<td>$0.00</td>\n</tr>"), std::string::npos) << all;
+    EXPECT_NE(all.find("<strong>Total Own Costs:</strong> $4.89</div>\n"
+                       "<div class=\"metric\"><strong>Netting Adjustment:</strong> -$4.89</div>\n"
+                       "<div class=\"metric\"><strong>Total Transaction Costs:</strong> $0.00</div>\n"
+                       "<div class=\"metric\" style=\"font-size: 12px; color: #666;\">Each figure is "
+                       "rounded to the cent on its own, so rows and totals can differ by a cent.</div>\n"
+                       "</div>\n"),
+              std::string::npos)
+        << "the exact totals, then the note, then the end of the book's footer: " << all;
+    size_t notes = 0;
+    for (auto at = all.find("rounded to the cent"); at != std::string::npos;
+         at = all.find("rounded to the cent", at + 1)) {
+        ++notes;
+    }
+    EXPECT_EQ(notes, 1u) << "one note, under the book's footer";
+
+    // not on a several-sleeve day without a netted row, and never on a one-sleeve book
+    const Sleeves quiet{{"TREND_FOLLOWING_FAST", {netted_row(Side::SELL, 1, 4.50, 0.0)}},
+                        {"TREND_FOLLOWING", {}}};
+    EXPECT_EQ(sender_.format_strategy_executions_tables(quiet).find("rounded to the cent"),
+              std::string::npos);
+    const Sleeves one{{"TREND_FOLLOWING", {netted_row(Side::SELL, 1, 4.50, 0.0)}}};
+    EXPECT_EQ(sender_.format_strategy_executions_tables(one).find("rounded to the cent"),
+              std::string::npos);
+    EXPECT_EQ(sender_.format_executions_table({netted_row(Side::SELL, 1, 4.5039, -0.9092)})
+                  .find("rounded to the cent"),
+              std::string::npos)
+        << "the one-table form carries no note";
+}
+
 // A several-sleeve day with no netted row: the two columns are there (the book has two sleeves)
 // and read $0.00; no footer line is added, because there is nothing to reconcile.
 TEST_F(EmailStrategyTablesTest, ASeveralSleeveDayWithoutNettingAddsNoFooterLine) {

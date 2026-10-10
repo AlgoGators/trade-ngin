@@ -3722,6 +3722,13 @@ std::string EmailSender::format_strategy_executions_tables(
              << " | <strong>Roll Costs (upper bound):</strong> $"
              << format_with_commas(portfolio_total_roll_costs) << "</div>\n";
     }
+    // Why a cent can differ (several sleeves, a netted day): every figure above is rounded to the
+    // cent from its own exact sum, so a column of rows need not add to its footer, nor the
+    // sleeves' footers to the book's, to the cent. The totals are the exact stored figures.
+    if (several_sleeves && netting.any_adjusted) {
+        html << "<div class=\"metric\" style=\"font-size: 12px; color: #666;\">"
+             << email_netting::kRoundingNote << "</div>\n";
+    }
     html << "</div>\n";
 
     return html.str();
