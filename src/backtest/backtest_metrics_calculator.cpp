@@ -155,8 +155,10 @@ double BacktestMetricsCalculator::calculate_downside_volatility(
         return 0.0;
     }
 
-    // Annualize using sqrt(252)
-    double downside_vol = std::sqrt(downside_sum / downside_count) * std::sqrt(252.0);
+    // The squared shortfalls are averaged over EVERY return of the series (a return at or
+    // above target counts as a zero), then annualized using sqrt(252)
+    double downside_vol =
+        std::sqrt(downside_sum / static_cast<double>(returns.size())) * std::sqrt(252.0);
 
     // Same rounding-dust collapse calculate_volatility applies: returns sitting a
     // hair below target otherwise leave a ~1e-17 denominator and Sortino explodes

@@ -145,8 +145,11 @@ TEST(HistoricalMetricsColumns, TheRealAprilTwentiethRowCarriesZeroPointEightNotT
     EXPECT_NEAR(doubles.at("sharpe_ratio"), stored_annualized_return / m.volatility, 1e-12);
     EXPECT_NEAR(doubles.at("sharpe_ratio"), -5.894563, 1e-4)
         << "the stored 2026-04-20 sharpe_ratio";
-    EXPECT_NEAR(doubles.at("downside_deviation"), 1.229913, 1e-5)
-        << "the stored 2026-04-20 downside_deviation, from the same series";
+    // Eight of the twenty returns are below zero; their squares sum to 0.048021 and are
+    // averaged over all twenty days: sqrt(0.048021 / 20) * sqrt(252) = 0.777863. (The row as
+    // stored on 2026-04-20 divided by the eight losing days and held 1.229913.)
+    EXPECT_NEAR(doubles.at("downside_deviation"), 0.777863, 1e-5)
+        << "the 2026-04-20 downside_deviation, from the same series, over all twenty days";
 }
 
 TEST(HistoricalMetricsColumns, EveryColumnCarriesItsOwnMemberAndNotItsNeighbours) {
@@ -192,13 +195,15 @@ TEST(HistoricalMetricsColumns, KnownSeriesProducesHandComputedColumns) {
     const double vol = std::sqrt(2.96) * std::sqrt(252.0);
     EXPECT_NEAR(m.volatility, vol, 1e-9);
 
-    // downside: the returns strictly below 0 are -2 and -1; population variance over those
-    // two = (4 + 1)/2 = 2.5; dd = sqrt(2.5)*sqrt(252).
-    const double dd = std::sqrt(2.5) * std::sqrt(252.0);
+    // downside: the returns strictly below 0 are -2 and -1; their squares, 4 + 1 = 5, are
+    // averaged over all five days = 1; dd = sqrt(1)*sqrt(252) = 15.874507866.
+    const double dd = std::sqrt(5.0 / 5.0) * std::sqrt(252.0);
     EXPECT_NEAR(m.downside_deviation, dd, 1e-9);
+    EXPECT_NEAR(m.downside_deviation, 15.874507866, 1e-9);
 
     EXPECT_NEAR(m.sharpe_ratio, annualized_return_pct / vol, 1e-12);
     EXPECT_NEAR(m.sortino_ratio, annualized_return_pct / dd, 1e-12);
+    EXPECT_NEAR(m.sortino_ratio, 0.755928946, 1e-9);  // 12 / 15.874507866
 
     // Drawdown is tracked from a running peak SEEDED AT THE FIRST EQUITY VALUE, not at
     // initial capital: peak 10100 -> 9900 is (10100-9900)/10100*100 = 1.9801980%, and the

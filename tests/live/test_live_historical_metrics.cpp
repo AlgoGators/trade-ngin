@@ -58,17 +58,38 @@ TEST_F(LiveHistoricalMetricsTest, DownsideDeviationOfAllPositiveIsZero) {
 }
 
 TEST_F(LiveHistoricalMetricsTest, DownsideDeviationCountsBelowTargetOnly) {
-    // Two negatives: -1, -2. Squares: 1, 4. Mean=2.5. Daily std = sqrt(2.5).
-    // Annualized = sqrt(2.5) * sqrt(252).
+    // Two negatives: -1, -2. Squares: 1, 4, summed 5 and averaged over ALL FOUR days
+    // (the two days above target count as zeros): 5/4 = 1.25. Daily = sqrt(1.25).
+    // Annualized = sqrt(1.25) * sqrt(252) = 17.748239349.
     auto d = LiveHistoricalMetricsCalculator::calculate_annualized_downside_deviation(
         {1.0, -1.0, -2.0, 5.0}, 0.0);
-    EXPECT_NEAR(d, std::sqrt(2.5) * std::sqrt(252.0), 1e-9);
+    EXPECT_NEAR(d, 17.748239349, 1e-9);
+    EXPECT_NEAR(d, std::sqrt(5.0 / 4.0) * std::sqrt(252.0), 1e-12);
 }
 
-TEST_F(LiveHistoricalMetricsTest, DownsideDeviationFewerThanTwoNegativesIsZero) {
+TEST_F(LiveHistoricalMetricsTest, DownsideDeviationOfOneLosingDayIsItsShareOfTheSeries) {
+    // One negative in three days: 1/3. Annualized = sqrt(1/3) * sqrt(252) = 9.165151390.
+    // A single losing day is a downside, not a zero.
     auto d = LiveHistoricalMetricsCalculator::calculate_annualized_downside_deviation(
         {-1.0, 5.0, 5.0}, 0.0);
-    EXPECT_DOUBLE_EQ(d, 0.0);
+    EXPECT_NEAR(d, 9.165151390, 1e-9);
+}
+
+TEST_F(LiveHistoricalMetricsTest, DownsideDeviationOfFewerThanTwoReturnsIsZero) {
+    EXPECT_DOUBLE_EQ(
+        LiveHistoricalMetricsCalculator::calculate_annualized_downside_deviation({}, 0.0), 0.0);
+    EXPECT_DOUBLE_EQ(
+        LiveHistoricalMetricsCalculator::calculate_annualized_downside_deviation({-1.0}, 0.0),
+        0.0);
+}
+
+TEST_F(LiveHistoricalMetricsTest, CalculateSortinoOfOneLosingDayDividesByItsDownside) {
+    // Returns in percent {-1, 5, 5}: downside = sqrt(1/3) * sqrt(252) = 9.165151390;
+    // Sortino = the annualized return handed in / that = 30 / 9.165151390 = 3.273268354.
+    LiveHistoricalMetricsCalculator c;
+    auto m = c.calculate({-1.0, 5.0, 5.0}, {}, {}, 30.0, 0);
+    EXPECT_NEAR(m.downside_deviation, 9.165151390, 1e-9);
+    EXPECT_NEAR(m.sortino_ratio, 3.273268354, 1e-9);
 }
 
 // ===== calculate_max_drawdown_from_equity =====

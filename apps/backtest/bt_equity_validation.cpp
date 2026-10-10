@@ -1012,8 +1012,10 @@ int main() {
                     downside_count++;
                 }
             }
+            // averaged over every return of the series, as the calculator does
             double downside_vol = (downside_count > 0)
-                ? std::sqrt(downside_sum / downside_count) * std::sqrt(252.0) : 0.0;
+                ? std::sqrt(downside_sum / static_cast<double>(returns.size())) * std::sqrt(252.0)
+                : 0.0;
             double manual_sortino = 0.0;
             if (downside_vol > 0.0) {
                 manual_sortino = ann_return / downside_vol;

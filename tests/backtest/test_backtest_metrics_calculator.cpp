@@ -119,9 +119,20 @@ TEST_F(BacktestMetricsCalculatorTest, DownsideVolatilityZeroWhenAllReturnsAboveT
 
 TEST_F(BacktestMetricsCalculatorTest, DownsideVolatilityCountsOnlyBelowTarget) {
     std::vector<double> r{-0.01, 0.01, -0.01, 0.01};
-    // Two -0.01s contribute (0.0001 each); avg = 0.0001; sqrt = 0.01; * sqrt(252)
+    // Two -0.01s contribute (0.0001 each), summed 0.0002 and averaged over ALL FOUR returns:
+    // 0.00005; sqrt = 0.0070710678; * sqrt(252) = 0.112249722
+    EXPECT_NEAR(calc_.calculate_downside_volatility(r, 0.0), 0.112249722, 1e-9);
     EXPECT_NEAR(calc_.calculate_downside_volatility(r, 0.0),
-                0.01 * std::sqrt(252.0), 1e-9);
+                std::sqrt(0.0002 / 4.0) * std::sqrt(252.0), 1e-12);
+}
+
+TEST_F(BacktestMetricsCalculatorTest, DownsideVolatilityAndSortinoAverageOverEveryReturn) {
+    std::vector<double> r{0.01, -0.02, 0.03, -0.01};
+    // Below target 0: -0.02 and -0.01, squares 0.0004 + 0.0001 = 0.0005, over 4 returns =
+    // 0.000125; sqrt = 0.0111803399; * sqrt(252) = 0.177482393.
+    EXPECT_NEAR(calc_.calculate_downside_volatility(r, 0.0), 0.177482393, 1e-9);
+    // mean = 0.0025, * 252 = 0.63; 0.63 / 0.177482393 = 3.549647870.
+    EXPECT_NEAR(calc_.calculate_sortino_ratio(r, 4), 3.549647870, 1e-8);
 }
 
 TEST_F(BacktestMetricsCalculatorTest, SharpeEmptyReturnsZero) {

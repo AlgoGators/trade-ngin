@@ -38,26 +38,21 @@ double LiveHistoricalMetricsCalculator::calculate_annualized_volatility(
 
 double LiveHistoricalMetricsCalculator::calculate_annualized_downside_deviation(
     const std::vector<double>& returns_pct, double target) {
-    std::vector<double> negatives;
-    negatives.reserve(returns_pct.size());
-
-    for (double r : returns_pct) {
-        if (r < target) {
-            double diff = r - target;
-            negatives.push_back(diff);
-        }
-    }
-
-    if (negatives.size() < 2) {
+    if (returns_pct.size() < 2) {
         return 0.0;
     }
 
+    // The squared shortfalls below target, averaged over EVERY day of the series: a day at
+    // or above target counts as a zero, not as a missing observation.
     double sq_sum = 0.0;
-    for (double d : negatives) {
-        sq_sum += d * d;
+    for (double r : returns_pct) {
+        if (r < target) {
+            double diff = r - target;
+            sq_sum += diff * diff;
+        }
     }
 
-    double variance = sq_sum / static_cast<double>(negatives.size());
+    double variance = sq_sum / static_cast<double>(returns_pct.size());
     double daily_downside_std = std::sqrt(variance);
     return daily_downside_std * std::sqrt(TRADING_DAYS_PER_YEAR);
 }
