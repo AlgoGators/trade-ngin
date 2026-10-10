@@ -176,17 +176,30 @@ std::string unnetted_row_refusal(const ExecutionReport& fill) {
 
 Decimal unnetted_cost(const ExecutionReport& fill) {
     const std::string refusal = unnetted_row_refusal(fill);
-    if (!refusal.empty()) throw std::logic_error(refusal);
+    if (!refusal.empty()) throw NettingRefused(refusal);
     return fill.total_transaction_costs;
 }
 
 double add_net_costs(double running, const std::vector<ExecutionReport>& fills, size_t from) {
     for (size_t i = from; i < fills.size(); ++i) {
         const std::string refusal = unnetted_row_refusal(fills[i]);
-        if (!refusal.empty()) throw std::logic_error(refusal);
+        if (!refusal.empty()) throw NettingRefused(refusal);
         running += static_cast<double>(net_cost(fills[i]));
     }
     return running;
+}
+
+RunCostTotals run_cost_totals(const std::vector<ExecutionReport>& fills) {
+    RunCostTotals totals;
+    for (const auto& e : fills) {
+        if (e.execution_type != ExecutionType::STRATEGY) (void)unnetted_cost(e);
+        totals.transaction_costs += static_cast<double>(net_cost(e));
+        if (e.execution_type == ExecutionType::ROLL) {
+            totals.roll_costs += static_cast<double>(unnetted_cost(e));
+            ++totals.roll_fills;
+        }
+    }
+    return totals;
 }
 
 }  // namespace transaction_cost

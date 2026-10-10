@@ -408,3 +408,52 @@ TEST(UnnettedRows, ARollOrBorrowRowWithAnAdjustmentIsRefusedWhereFillsAreSummed)
     EXPECT_TRUE(unnetted_row_refusal(strategy).empty());
     EXPECT_NEAR(add_net_costs(0.0, {strategy}), 5.415, 1e-12);
 }
+
+// T-NETTING fix round 2: the run's cost totals (backtest.results) through one function. Its ROLL
+// AND its BORROW rows pass the refusal: a BORROW row is appended after its cycle's sum, so the
+// end-of-run totals are where one carrying an adjustment is first met.
+//
+//   | row                 | own  | adjustment | charged | in roll_costs |
+//   | STRATEGY, netted    | 4.50 | -0.915     | 5.415   | no            |
+//   | STRATEGY, crossed   | 1.62 | 1.62       | 0       | no            |
+//   | ROLL leg            | 3.00 | 0          | 3.00    | 3.00          |
+//   | BORROW row          | 0.75 | 0          | 0.75    | no            |
+TEST(RunCostTotals, AddsNetCostsAndTheRollLegsOwnCosts) {
+    ExecutionReport same_side = exec("MBT.v.0", Side::SELL, 1, 115000.0, "4.50");
+    same_side.netting_adjustment = d("-0.915");
+    ExecutionReport crossed = exec("MES.v.0", Side::BUY, 1, 6650.0, "1.62");
+    crossed.netting_adjustment = d("1.62");
+    ExecutionReport roll = exec("ZN.v.0", Side::SELL, 2, 112.0, "3.00");
+    roll.execution_type = ExecutionType::ROLL;
+    ExecutionReport borrow = exec("AAPL", Side::SELL, 0, 190.0, "0.75");
+    borrow.execution_type = ExecutionType::BORROW;
+    const auto totals = run_cost_totals({same_side, crossed, roll, borrow});
+    EXPECT_NEAR(totals.transaction_costs, 5.415 + 0.0 + 3.00 + 0.75, 1e-12);
+    EXPECT_DOUBLE_EQ(totals.roll_costs, 3.00);
+    EXPECT_EQ(totals.roll_fills, 1);
+    const auto none = run_cost_totals({});
+    EXPECT_DOUBLE_EQ(none.transaction_costs, 0.0);
+    EXPECT_EQ(none.roll_fills, 0);
+}
+
+// RED if the totals stop judging BORROW rows (the check deleted, or narrowed to ROLL legs).
+TEST(RunCostTotals, ABorrowRowWithAnAdjustmentIsRefused) {
+    ExecutionReport ordinary = exec("ZN.v.0", Side::BUY, 1, 112.5, "5.00");
+    ExecutionReport borrow = exec("AAPL", Side::SELL, 0, 190.0, "0.75");
+    borrow.exec_id = "BORROW_MR_AAPL";
+    borrow.execution_type = ExecutionType::BORROW;
+    EXPECT_NO_THROW(run_cost_totals({ordinary, borrow}));
+    borrow.netting_adjustment = d("0.25");
+    try {
+        run_cost_totals({ordinary, borrow});
+        FAIL() << "a BORROW row carrying an adjustment passed the run's totals";
+    } catch (const NettingRefused& e) {
+        const std::string what = e.what();
+        EXPECT_NE(what.find("the BORROW row BORROW_MR_AAPL"), std::string::npos) << what;
+    }
+    ExecutionReport roll = exec("ZN.v.0", Side::SELL, 2, 112.0, "3.00");
+    roll.execution_type = ExecutionType::ROLL;
+    roll.netting_adjustment = d("-0.10");
+    EXPECT_THROW(run_cost_totals({ordinary, roll}), NettingRefused);
+    EXPECT_THROW(run_cost_totals({ordinary, roll}), std::logic_error) << "still a std::logic_error";
+}

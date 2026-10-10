@@ -278,7 +278,9 @@ TEST(PmNettingSource, BothFuturesRunnersNetTheDaysSleeveRowsBeforeStoringThem) {
 TEST(PmNettingSource, TheBacktestsCostTotalsReadTheHelper) {
     const std::vector<std::pair<const char*, const char*>> sites = {
         {"src/backtest/backtest_coordinator.cpp", "transaction_cost::add_net_costs(total_transaction_costs, execs, count_before)"},
-        {"src/backtest/backtest_coordinator.cpp", "results.transaction_costs += static_cast<double>(transaction_cost::net_cost(e));"},
+        {"src/backtest/backtest_coordinator.cpp", "cost_totals = transaction_cost::run_cost_totals(all_executions);"},
+        {"src/backtest/backtest_coordinator.cpp", "results.transaction_costs = cost_totals.transaction_costs;"},
+        {"src/backtest/backtest_coordinator.cpp", "results.roll_costs = cost_totals.roll_costs;"},
         {"apps/backtest/bt_equity_validation.cpp", "day_txn_costs += transaction_cost::net_cost(exec).as_double();"},
     };
     for (const auto& [f, text] : sites) {
