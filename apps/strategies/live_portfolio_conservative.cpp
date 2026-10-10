@@ -315,7 +315,12 @@ int main(int argc, char* argv[]) {
         // Get current date for daily processing (or use override date)
         auto now = use_override_date ? target_date : std::chrono::system_clock::now();
         auto now_time_t = std::chrono::system_clock::to_time_t(now);
-        std::tm* now_tm = std::localtime(&now_time_t);
+        // A COPY of the run date's local-time fields, never the pointer std::localtime returns: that
+        // points at the C library's one static struct, which every later std::gmtime or
+        // std::localtime call may overwrite before the console date and the email date read it.
+        std::tm now_tm_fields{};
+        core::safe_localtime(&now_time_t, &now_tm_fields);
+        const std::tm* now_tm = &now_tm_fields;
 
         // Set start date based on configured historical window
         auto start_date = now - std::chrono::hours(24 * app_config.live.historical_days);
