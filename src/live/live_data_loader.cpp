@@ -830,7 +830,8 @@ Result<std::vector<LiveDataLoader::PnlHistoryRow>> LiveDataLoader::load_sizing_p
     const std::string query =
         "SELECT to_char(date, 'YYYY-MM-DD') AS sizing_history_date, "
         "COALESCE(daily_pnl, 0)::double precision AS daily_pnl, "
-        "COALESCE(active_positions, 0) AS active_positions "
+        "COALESCE(active_positions, 0) AS active_positions, "
+        "(settled_at IS NOT NULL)::int AS settled_at_set "
         "FROM " + schema_ + ".live_results "
         "WHERE strategy_id = '" + strategy_id + "' "
         "AND portfolio_id = '" + actual_portfolio_id + "' "
@@ -854,6 +855,7 @@ Result<std::vector<LiveDataLoader::PnlHistoryRow>> LiveDataLoader::load_sizing_p
     auto dates = std::static_pointer_cast<arrow::StringArray>(table->column(0)->chunk(0));
     auto pnls = std::static_pointer_cast<arrow::StringArray>(table->column(1)->chunk(0));
     auto held = std::static_pointer_cast<arrow::StringArray>(table->column(2)->chunk(0));
+    auto stamped = std::static_pointer_cast<arrow::StringArray>(table->column(3)->chunk(0));
     rows.reserve(static_cast<size_t>(table->num_rows()));
     for (int64_t i = 0; i < table->num_rows(); ++i) {
         PnlHistoryRow row;
@@ -861,6 +863,7 @@ Result<std::vector<LiveDataLoader::PnlHistoryRow>> LiveDataLoader::load_sizing_p
             row.date = dates->GetString(i);
             row.daily_pnl = pnls->IsNull(i) ? 0.0 : std::stod(pnls->GetString(i));
             row.active_positions = held->IsNull(i) ? 0 : std::stoi(held->GetString(i));
+            row.settled_at_set = !stamped->IsNull(i) && std::stoi(stamped->GetString(i)) != 0;
         } catch (const std::exception& e) {
             return make_error<Rows>(ErrorCode::DATABASE_ERROR,
                                     "Failed to load the sizing P&L history: row " +

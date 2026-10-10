@@ -339,7 +339,9 @@ TEST_F(LiveDataLoaderTest, StatisticsHistoryBoundNamesTheSamePortfolioAsTheRowFi
         << db->last_query;
 }
 
-// The sizing history is a sizing input: its query is the text T-LOOP landed, to the byte.
+// The sizing history is a sizing input: its query is the text T-LOOP landed, to the byte, plus
+// the one column migration 029 adds to it: whether the row's settled_at is set (the sizing read's
+// settled test, live/live_sizing_read.hpp). The rows read and their order are unchanged.
 TEST_F(LiveDataLoaderTest, SizingPnlHistoryQueryIsUnchangedByTheStatisticsBound) {
     auto db = std::make_shared<QueryCapturingDb>();
     LiveDataLoader loader(db, "trading");
@@ -347,7 +349,8 @@ TEST_F(LiveDataLoaderTest, SizingPnlHistoryQueryIsUnchangedByTheStatisticsBound)
     EXPECT_EQ(db->last_query,
               "SELECT to_char(date, 'YYYY-MM-DD') AS sizing_history_date, "
               "COALESCE(daily_pnl, 0)::double precision AS daily_pnl, "
-              "COALESCE(active_positions, 0) AS active_positions "
+              "COALESCE(active_positions, 0) AS active_positions, "
+              "(settled_at IS NOT NULL)::int AS settled_at_set "
               "FROM trading.live_results "
               "WHERE strategy_id = 'LIVE_TREND_FOLLOWING_TREND_FOLLOWING_FAST' "
               "AND portfolio_id = 'BASE_PORTFOLIO' "

@@ -41,6 +41,7 @@
 #include "trade_ngin/live/live_estimator_history.hpp"
 #include "trade_ngin/live/live_roll_legs.hpp"
 #include "trade_ngin/live/live_sizing_read.hpp"
+#include "trade_ngin/live/settled_stamp.hpp"
 #include "trade_ngin/live/live_trading_coordinator.hpp"
 #include "trade_ngin/live/book_exposure.hpp"
 #include "trade_ngin/live/margin_columns.hpp"
@@ -3083,6 +3084,18 @@ int main(int argc, char* argv[]) {
              std::all_of(previous_positions.begin(), previous_positions.end(),
                          [](const auto& p) { return p.second.quantity.as_double() == 0.0; }));
 
+        // settled_at (migration 029): the stamp below is written only when the finalize of Day T-1
+        // finished without error. The no-prices skip withholds it here, on the sizing read's two
+        // tests (no Day T-1 closes with a book held; no Day T-2 closes); a finalize warning
+        // withholds it where it is logged.
+        SettledStampGate settled_stamp;
+        if (previous_day_close_prices.empty() && !is_first_trading_day) {
+            settled_stamp.withhold("no T-1 closes");
+        }
+        if (two_days_ago_close_prices.empty()) {
+            settled_stamp.withhold("no T-2 closes");
+        }
+
         // Declare yesterday's daily metrics outside the block so they're available for email
         double yesterday_daily_return_for_email = 0.0;
         double yesterday_daily_pnl_for_email = 0.0;
@@ -3176,9 +3189,11 @@ int main(int argc, char* argv[]) {
                     WARN("LiveDataLoader failed to get yesterday's metrics: " +
                          std::string(live_results.error()->what()));
                     INFO("Using default values (0) for yesterday's metrics");
+                    settled_stamp.withhold("Day T-1's live_results row could not be read");
                 }
             } catch (const std::exception& e) {
                 WARN("Failed to get yesterday's metrics: " + std::string(e.what()));
+                settled_stamp.withhold("Day T-1's live_results row could not be read");
             }
 
             // Use the commission value already loaded from LiveDataLoader
@@ -3348,13 +3363,21 @@ int main(int argc, char* argv[]) {
 
             auto update_result = db->execute_direct_query(update_query);
             if (update_result.is_error()) {
+                // T-8D-2 R43: a level UPDATE that did not apply leaves the Day T-1 row as
+                // written (the day's costs only) with a later row beside it, and every level of
+                // today's row is built on it. The equity runner already stops here; so does
+                // this one.
                 ERROR("Failed to update Day T-1 live_results: " +
                       std::string(update_result.error()->what()));
+                ERROR("Day T-1 aggregates could not be finalized. Refusing to exit 0 with an "
+                      "unfinalized row on " + yesterday_date_ss.str() + ".");
+                return 1;
             } else if (update_result.value() == 0) {
                 // S-4: the statement succeeded and matched no row, so nothing was finalized.
                 WARN("Day T-1 live_results UPDATE matched 0 rows for " + yesterday_date_ss.str() +
                      ": no live_results row exists for that date, so its finalized PnL and "
                      "metrics were NOT stored");
+                settled_stamp.withhold("the Day T-1 level UPDATE matched no row");
             } else {
                 INFO(
                     "Successfully updated Day T-1 live_results with finalized PnL and all metrics");
@@ -3371,6 +3394,7 @@ int main(int argc, char* argv[]) {
 
             // UPDATE yesterday's equity_curve using LiveResultsManager
             INFO("Updating Day T-1 equity_curve...");
+            bool t1_curve_point_written = false;
 
             // Query the current portfolio value from updated live_results
             std::string get_equity_query =
@@ -3476,6 +3500,7 @@ int main(int argc, char* argv[]) {
                             } else {
                                 INFO("Successfully updated Day T-1 equity_curve with value: " +
                                      std::to_string(portfolio_value));
+                                t1_curve_point_written = true;
 
                                 // DEBUG: Verify what was actually saved
                                 auto verify_result = db->execute_query(debug_eq_query);
@@ -3504,6 +3529,9 @@ int main(int argc, char* argv[]) {
                     WARN("No live_results found for date " + yesterday_date_ss.str() +
                          ", skipping equity_curve update");
                 }
+            }
+            if (!t1_curve_point_written) {
+                settled_stamp.withhold("the Day T-1 equity_curve point was not rewritten");
             }
 
             // Load updated metrics from database for email - MUST do this AFTER the UPDATE
@@ -3661,6 +3689,7 @@ int main(int argc, char* argv[]) {
         // not STEP 4 finalized its levels (a Day T-1 whose book did not move keeps levels that
         // were already settled). Statistic columns only: no level column is written here.
         HistoricalMetrics settled_statistics;
+        bool t1_statistics_refreshed = false;
         try {
             if (data_loader && data_loader->is_connected()) {
                 auto trades_hist_res = data_loader->load_total_trades_count(
@@ -3750,6 +3779,7 @@ int main(int argc, char* argv[]) {
                         INFO(
                             "Successfully updated historical performance metrics for Day T-1 in "
                             "trading.live_results");
+                        t1_statistics_refreshed = true;
                     }
                 } else {
                     INFO("No Day T-1 live_results row for " + t1_date_str +
@@ -3763,6 +3793,30 @@ int main(int argc, char* argv[]) {
         } catch (const std::exception& e) {
             WARN("Exception while computing the statistics through Day T-1: " +
                  std::string(e.what()));
+        }
+        if (!t1_statistics_refreshed) {
+            settled_stamp.withhold("the Day T-1 statistics were not refreshed");
+        }
+
+        // ========================================
+        // STEP 4c: SETTLED_AT (migration 029; T-8D-2 R43, LOOP_SPEC sections 3.1 and 7.2)
+        // ========================================
+        // STEP 4 and the statistics refresh finished without error: every earlier row of the book
+        // that carries no stamp is settled, in one UPDATE (the Day T-1 row this run finalized, a
+        // row whose levels were already final, a row an earlier run left). A no-prices day and a
+        // finalize that warned stamp nothing. Today's row is inserted below with settled_at NULL,
+        // so a re-run of a date clears its stamp and the next run writes it again.
+        if (settled_stamp.open()) {
+            auto stamped = db->execute_direct_query(settled_stamp_sql(
+                combined_strategy_id, coordinator_config.portfolio_id, core::format_utc_date(now)));
+            if (stamped.is_error()) {
+                ERROR("SETTLED_AT stamp failed: " + std::string(stamped.error()->what()) +
+                      "; the rows stay unsettled and the next run stamps them");
+            } else {
+                INFO(settled_stamp_log_line(core::format_utc_date(now), stamped.value()));
+            }
+        } else {
+            INFO(settled_stamp_withheld_log_line(core::format_utc_date(now), settled_stamp));
         }
 
         // ========================================

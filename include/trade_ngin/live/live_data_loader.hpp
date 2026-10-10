@@ -219,6 +219,7 @@ public:
         std::string date;         ///< YYYY-MM-DD
         double daily_pnl{0.0};    ///< the row's stored net P&L
         int active_positions{0};  ///< the positions the day's stored book held
+        bool settled_at_set{false};  ///< the row carries a settled_at stamp (migration 029)
     };
 
     /**
@@ -227,6 +228,7 @@ public:
      *        live_start_date of trading.strategy_trading_days_metadata for the key; no lower bound
      *        when the key has no such row) and strictly before `before_date`.
      *
+     * Each row says whether its settled_at is set, so the read needs migration 029 applied.
      * No row is an empty list, not an error; a failed query is a DATABASE_ERROR.
      */
     Result<std::vector<PnlHistoryRow>> load_sizing_pnl_history(const std::string& strategy_id,

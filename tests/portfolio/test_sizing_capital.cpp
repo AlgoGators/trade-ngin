@@ -712,6 +712,9 @@ public:
     std::vector<std::tuple<std::string, double, int>> history;
     bool history_error = false;
     int history_reads = 0;
+    // The dates of `history` whose row carries a settled_at stamp (migration 029). Empty: no row
+    // is stamped, so a read settles its history on the no-bar-day rule alone.
+    std::set<std::string> stamped;
 
     // load_live_results' query and the sizing history's query (the two live_results SELECTs the
     // loader sends here).
@@ -725,21 +728,24 @@ public:
                     "PostgresDatabase");
             }
             // Every column a string, as the production converter builds a generic result.
-            arrow::StringBuilder d, p, a;
+            arrow::StringBuilder d, p, a, st;
             for (const auto& [date, pnl, held_positions] : history) {
                 ARROW_CHECK_OK(d.Append(date));
                 ARROW_CHECK_OK(p.Append(std::to_string(pnl)));
                 ARROW_CHECK_OK(a.Append(std::to_string(held_positions)));
+                ARROW_CHECK_OK(st.Append(stamped.count(date) != 0 ? "1" : "0"));
             }
-            std::shared_ptr<arrow::Array> da, pa, aa;
+            std::shared_ptr<arrow::Array> da, pa, aa, sa;
             ARROW_CHECK_OK(d.Finish(&da));
             ARROW_CHECK_OK(p.Finish(&pa));
             ARROW_CHECK_OK(a.Finish(&aa));
+            ARROW_CHECK_OK(st.Finish(&sa));
             return Result<std::shared_ptr<arrow::Table>>(arrow::Table::Make(
                 arrow::schema({arrow::field("sizing_history_date", arrow::utf8()),
                                arrow::field("daily_pnl", arrow::utf8()),
-                               arrow::field("active_positions", arrow::utf8())}),
-                {da, pa, aa}));
+                               arrow::field("active_positions", arrow::utf8()),
+                               arrow::field("settled_at_set", arrow::utf8())}),
+                {da, pa, aa, sa}));
         }
         if (t1 == T1::kError) {
             return make_error<std::shared_ptr<arrow::Table>>(
@@ -1501,6 +1507,102 @@ TEST_F(LiveHalfCompounding, TheFailurePathsWithholdOnlyDayT1) {
         EXPECT_EQ(r.settled_through, "2026-04-24") << path;
         EXPECT_EQ(r.settled_rows, 3) << path;
     }
+}
+
+// ------------------------------------------------------------------------------------------------
+// Migration 029 (T-8a commit (12)): a stored day counts in the sizing capital when its settled_at
+// is set OR the no-bar-day rule calls it settled. The stamp is written after STEP 4, so the run
+// after a no-prices day sizes before its own stamp exists.
+// ------------------------------------------------------------------------------------------------
+
+// The CONSERVATIVE chain's Monday, 2026-04-27. The book has 203 stored rows before Day T-1
+// (2025-10-05 .. 2026-04-25). Saturday's run stamped everything through Friday 04-24; Sunday's run
+// had no closes for the held Saturday (the no-prices skip) and stamped nothing, so the Saturday
+// row is still NULL. Monday loads Sunday's bar: the Saturday row counts, settled_rows is 204 and
+// earlier_unsettled 0, the figures of the run before the column existed.
+TEST_F(LiveHalfCompounding, TheMondayAfterAHeldSaturdayCountsTheSaturdayRowBeforeItsStamp) {
+    LiveSizingCalendar calendar;
+    db_->history.clear();
+    double capital = 500'000.0;
+    const std::chrono::sys_days first = std::chrono::year{2025} / 10 / 5;
+    const std::chrono::sys_days saturday = std::chrono::year{2026} / 4 / 25;
+    for (auto day = first; day <= saturday + std::chrono::days{1}; day += std::chrono::days{1}) {
+        const std::chrono::year_month_day ymd{day};
+        char date[16];
+        std::snprintf(date, sizeof(date), "%04d-%02u-%02u", static_cast<int>(ymd.year()),
+                      static_cast<unsigned>(ymd.month()), static_cast<unsigned>(ymd.day()));
+        const bool is_saturday = std::chrono::weekday{day} == std::chrono::Saturday;
+        if (!is_saturday) calendar.bar_dates.insert(date);  // bars are dated Sunday to Friday
+        if (day > saturday) break;                          // 04-26 is Day T-1, not history
+        const double pnl = is_saturday ? -12.5 : (day == first ? 0.0 : -1.0);
+        db_->history.emplace_back(date, pnl, 15);
+        if (day < saturday) db_->stamped.insert(date);
+        capital = std::min(500'000.0, capital + pnl);
+    }
+    calendar.first_bar_date = *calendar.bar_dates.begin();
+    ASSERT_EQ(db_->history.size(), 203u);
+    ASSERT_EQ(db_->stamped.count("2026-04-25"), 0u);
+    ASSERT_EQ(calendar.bar_dates.count("2026-04-25"), 0u);
+    ASSERT_EQ(calendar.bar_dates.count("2026-04-26"), 1u);
+
+    const Timestamp monday = Timestamp(std::chrono::seconds(1777334400LL - 86400LL));  // 2026-04-27
+    const auto r = read_live_sizing_equity(
+        *loader_, *db_, "LIVE_TREND_FOLLOWING", "CONSERVATIVE_PORTFOLIO", {"A", "B"}, monday,
+        500'000.0, {{"MES.v.0", 7252.50}, {"ZN.v.0", 110.703125}},
+        {{"MES.v.0", 7230.00}, {"ZN.v.0", 110.906250}},
+        [&](const std::string& s) { return pnl_.get_point_value(s); }, {}, calendar);
+    ASSERT_EQ(r.outcome, LiveSizingOutcome::kSized) << outcome_of(r);
+    EXPECT_EQ(r.t1_date, "2026-04-26");
+    EXPECT_FALSE(r.t1_unsettled);
+    EXPECT_TRUE(r.earlier_unsettled.empty())
+        << "the held Saturday 2026-04-25 was dropped: its stamp is written only after this read";
+    EXPECT_EQ(r.settled_rows, 204);
+    EXPECT_EQ(r.settled_through, "2026-04-26");
+    EXPECT_NEAR(r.capital.capital, std::min(500'000.0, capital + t1_net_), 1e-6)
+        << "the Saturday's 12.50 of costs is in the capital, in its own date's place";
+    const std::string line = sizing_capital_log_line("2026-04-27", r);
+    EXPECT_NE(line.find(" settled_rows=204 earlier_unsettled=0 "), std::string::npos) << line;
+}
+
+// LOOP_SPEC section 15 erratum 1: a row that carries a stamp counts whatever the calendar says.
+// 2026-04-25 is a held Saturday with no later bar loaded, the day the no-bar-day rule alone calls
+// unsettled; with the migration's backfill on it (the row had a later row at migration) it counts.
+TEST_F(LiveHalfCompounding, AStampedRowCountsWhereTheCalendarAloneWouldNot) {
+    db_->history = {{"2026-04-23", 4'000.0, 2}, {"2026-04-24", -3.0, 2}, {"2026-04-25", -40.0, 2}};
+    for (const char* later : {"2026-04-27", "2026-04-28", "2026-04-29", "2026-04-30"}) {
+        calendar_.bar_dates.erase(later);
+    }
+    calendar_.no_t1_closes = true;
+    auto r = read();
+    ASSERT_EQ(r.outcome, LiveSizingOutcome::kSized) << outcome_of(r);
+    ASSERT_EQ(r.earlier_unsettled, std::vector<std::string>{"2026-04-25"})
+        << "control: unstamped, the calendar calls the Saturday unsettled";
+    ASSERT_NEAR(r.capital.capital, 499'997.0, 1e-6);
+
+    db_->stamped = {"2026-04-23", "2026-04-24", "2026-04-25"};
+    r = read();
+    ASSERT_EQ(r.outcome, LiveSizingOutcome::kSized) << outcome_of(r);
+    EXPECT_TRUE(r.earlier_unsettled.empty()) << "a stamped row is settled: the stamp overrides";
+    EXPECT_NEAR(r.capital.capital, 499'957.0, 1e-6) << "500,000 - 3.00 - 40.00 (the 4,000 is capped)";
+    EXPECT_EQ(r.settled_through, "2026-04-25");
+    EXPECT_EQ(r.settled_rows, 3);
+}
+
+// Neither limb: no stamp, and the calendar calls the day unsettled. It does not count, whatever
+// the rows around it carry.
+TEST_F(LiveHalfCompounding, ARowWithNoStampAndOffTheCalendarRuleDoesNotCount) {
+    db_->history = {{"2026-04-23", 4'000.0, 2}, {"2026-04-24", -3.0, 2}, {"2026-04-25", -40.0, 2}};
+    db_->stamped = {"2026-04-23", "2026-04-24"};
+    for (const char* later : {"2026-04-27", "2026-04-28", "2026-04-29", "2026-04-30"}) {
+        calendar_.bar_dates.erase(later);
+    }
+    calendar_.no_t1_closes = true;
+    const auto r = read();
+    ASSERT_EQ(r.outcome, LiveSizingOutcome::kSized) << outcome_of(r);
+    EXPECT_EQ(r.earlier_unsettled, std::vector<std::string>{"2026-04-25"});
+    EXPECT_NEAR(r.capital.capital, 499'997.0, 1e-6) << "the Saturday's 40.00 stays out";
+    EXPECT_EQ(r.settled_through, "2026-04-24");
+    EXPECT_EQ(r.settled_rows, 2);
 }
 
 // A history that cannot be read is an equity read that failed: the book is held, never sized on a
