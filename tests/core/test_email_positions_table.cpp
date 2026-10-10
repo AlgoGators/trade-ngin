@@ -164,3 +164,34 @@ TEST_F(EmailPositionsTableTest, AClosedRowIsNotReportedAsAPosition) {
     EXPECT_EQ(html.find("ZBASIS"), std::string::npos)
         << "a zero-quantity row is not an open position";
 }
+
+// T-8D D3 (a): the margin line is priced at the cost basis, the price MarginManager stores
+// margin_posted at, so the email and the database agree. 50 shares bought at 200, closing at
+// 210, Reg T long: 0.5 x 50 x 200 = 5,000 (at the close it read 5,250). The table's notional
+// line is not touched (it is quantity x basis, 10,000: T-8D D9 belongs to the email pass).
+TEST_F(EmailPositionsTableTest, TheMarginLineIsPricedAtTheCostBasis) {
+    const std::unordered_map<std::string, Position> positions{
+        {"ZPRICED", held("ZPRICED", 50.0, 200.0)}};
+    const std::unordered_map<std::string, double> prices{{"ZPRICED", 210.0}};
+
+    std::string html;
+    ASSERT_NO_THROW({ html = sender_.format_positions_table(positions, true, prices, {}); });
+    EXPECT_NE(html.find("<strong>Total Margin Posted:</strong> $5,000"), std::string::npos)
+        << html.substr(html.find("Total Notional") == std::string::npos
+                           ? 0
+                           : html.find("Total Notional"));
+    EXPECT_EQ(html.find("<strong>Total Margin Posted:</strong> $5,250"), std::string::npos);
+    EXPECT_NE(html.find("<strong>Total Notional:</strong> $10,000"), std::string::npos)
+        << "the notional line is not this change's";
+}
+
+// With no basis the close is the fallback: 0.5 x 100 x 150 = 7,500.
+TEST_F(EmailPositionsTableTest, TheMarginLineFallsBackToTheCloseWithoutABasis) {
+    const std::unordered_map<std::string, Position> positions{
+        {"ZBASIS", held("ZBASIS", 100.0, 0.0)}};
+    const std::unordered_map<std::string, double> prices{{"ZBASIS", 150.0}};
+
+    std::string html;
+    ASSERT_NO_THROW({ html = sender_.format_positions_table(positions, true, prices, {}); });
+    EXPECT_NE(html.find("<strong>Total Margin Posted:</strong> $7,500"), std::string::npos);
+}

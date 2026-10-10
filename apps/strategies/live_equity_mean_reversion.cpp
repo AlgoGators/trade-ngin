@@ -4217,15 +4217,8 @@ int main(int argc, char* argv[]) {
         if (active_positions > 0 && total_posted_margin <= 0.0) {
             ERROR("Computed posted margin is non-positive while positions are active. Check instrument metadata.");
         }
-        // Equity-to-Margin Ratio = gross_notional / total_posted_margin
-        // This metric shows how many times the gross notional exposure is covered by posted margin
-        // Higher values indicate more leverage relative to margin requirements
-        // No value on a day with no posted margin: the cell is stored NULL (live/margin_columns.hpp).
-        const std::optional<double> equity_to_margin_ratio =
-            equity_to_margin_ratio_of(gross_notional, total_posted_margin);
-        if (equity_to_margin_ratio && *equity_to_margin_ratio <= 1.0 && active_positions > 0) {
-            WARN("Equity-to-Margin Ratio (gross_notional / posted_margin) is <= 1.0; verify margins.");
-        }
+        // The Equity-to-Margin Ratio is the current portfolio value over the posted margin
+        // (T-8D R21), so it is computed further down, where that value is known.
 
         // Save positions to database with daily PnL values
         INFO("Saving positions to database with daily PnL...");
@@ -4852,10 +4845,10 @@ int main(int argc, char* argv[]) {
                 std::to_string(initial_capital) + " "
                 "+ (COALESCE((SELECT prev_total_realized FROM day_before), 0.0) + COALESCE(daily_realized_pnl, 0.0) "
                 "- COALESCE(total_transaction_costs, 0.0)) + " + std::to_string(yesterday_finalized_unrealized);
-            // The row's maintenance requirement: an equity position's maintenance figure is its
-            // initial margin (margin_manager.cpp, extract_margin_requirements), the stored
-            // margin_posted.
-            const std::string yesterday_maintenance_sql = "COALESCE(margin_posted, 0.0)";
+            // The row's maintenance requirement: none. The book is held in a cash account,
+            // where a position is paid for in full (T-8D D4 (a); margin_manager.cpp,
+            // extract_margin_requirements), so the cushion of a positioned row is the whole value.
+            const std::string yesterday_maintenance_sql = "0.0";
 
             // UPDATE yesterday's live_results with ALL recalculated metrics
             // Note: We calculate daily_pnl, total_pnl, and current_portfolio_value in SQL
@@ -5533,6 +5526,12 @@ int main(int argc, char* argv[]) {
         std::cout << "Daily Return: " << std::fixed << std::setprecision(2) << daily_return << "%" << std::endl;
         std::cout << "Portfolio Leverage: " << std::fixed << std::setprecision(2) 
                   << (gross_notional / current_portfolio_value) << "x" << std::endl;
+        // Equity-to-Margin Ratio = current_portfolio_value / total_posted_margin, at the level
+        // of the book (T-8D R21; HD 2026-09-10): the definition the futures runners write.
+        // Higher = more of the account's value for each dollar of margin posted. No value on a
+        // day with no posted margin: the cell is stored NULL (live/margin_columns.hpp).
+        const std::optional<double> equity_to_margin_ratio =
+            equity_to_margin_ratio_of(current_portfolio_value, total_posted_margin);
         std::cout << "Posted Margin (Initial×Contracts): $" << std::fixed << std::setprecision(2)
                   << total_posted_margin << std::endl;
         if (equity_to_margin_ratio) {
@@ -5553,9 +5552,6 @@ int main(int argc, char* argv[]) {
         }
         if (margin_cushion && *margin_cushion < 0.20) {
             WARN("Margin cushion below 20%.");
-        }
-        if (equity_to_margin_ratio && *equity_to_margin_ratio > 4.0) {
-            WARN("Equity-to-Margin Ratio above 4x.");
         }
 
         // Get forecasts for all symbols

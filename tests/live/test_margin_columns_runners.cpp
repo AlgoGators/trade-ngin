@@ -152,3 +152,47 @@ TEST(MarginColumnsRunners, TheFuturesRunnersFinalizeTheFourCellsIdentically) {
     ASSERT_NE(b1, std::string::npos);
     EXPECT_EQ(a.substr(a0, a1 - a0), b.substr(b0, b1 - b0));
 }
+
+// T-8D R21 (HD 2026-09-10): the equity runner's ratio is the current portfolio value over the
+// posted margin, at the level of the book. It was gross notional over margin, 1.0 by
+// construction in a cash account, with two warnings written for that figure.
+TEST(MarginColumnsRunners, TheEquityRatioIsThePortfolioValueOverThePostedMargin) {
+    const std::string src = read_source(kEquity);
+    if (src.empty()) GTEST_SKIP() << "runner source not found from the test working directory";
+
+    EXPECT_EQ(count_of(src, "equity_to_margin_ratio_of(gross_notional"), 0u);
+    EXPECT_EQ(count_of(src, "gross_notional / total_posted_margin"), 0u);
+    EXPECT_EQ(count_of(src, "equity_to_margin_ratio_of(current_portfolio_value, "
+                            "total_posted_margin)"),
+              1u);
+    // The same call the futures runners make.
+    for (const char* runner : {kConservative, kBase}) {
+        const std::string fut = read_source(runner);
+        EXPECT_EQ(count_of(fut, "equity_to_margin_ratio_of(current_portfolio_value, "
+                                "total_posted_margin)"),
+                  1u)
+            << runner;
+    }
+}
+
+TEST(MarginColumnsRunners, TheEquityRunnersTwoRatioWarningsAreRetired) {
+    const std::string src = read_source(kEquity);
+    if (src.empty()) GTEST_SKIP() << "runner source not found from the test working directory";
+
+    EXPECT_EQ(count_of(src, "is <= 1.0; verify margins"), 0u)
+        << "the warning written for gross notional over margin still fires";
+    EXPECT_EQ(count_of(src, "Equity-to-Margin Ratio above 4x"), 0u)
+        << "on value over margin a ratio above 4 is the normal state of the book";
+    // The check on the account stays.
+    EXPECT_EQ(count_of(src, "Posted margin exceeds current portfolio value"), 1u);
+}
+
+// T-8D D4 (a): a cash account has no maintenance requirement, so the finalize recomputes the
+// cushion of an equity row against none.
+TEST(MarginColumnsRunners, TheEquityFinalizeRecomputesTheCushionAgainstNoMaintenance) {
+    const std::string finalize = finalize_step(read_source(kEquity));
+    if (finalize.empty()) GTEST_SKIP() << "runner source not found from the test working directory";
+
+    EXPECT_EQ(count_of(finalize, "yesterday_maintenance_sql = \"0.0\";"), 1u);
+    EXPECT_EQ(count_of(finalize, "yesterday_maintenance_sql = \"COALESCE(margin_posted"), 0u);
+}
