@@ -91,7 +91,7 @@ cmt() { q "select col_description('trading.live_results'::regclass,(select ordin
 for c in $COLS; do
   [[ "$(cmt $c)" == *"Rows written before migration 030 hold NULL"* ]] || fail "the comment on $c does not say rows written before migration 030 hold NULL"
 done
-[[ "$(cmt total_strategy_fills)" == *"The ACCOUNT's STRATEGY fills AFTER NETTING BETWEEN SLEEVES, not the sleeve rows of trading.executions"*"a full cross is 0 fills"*"a partial offset is 1"*"two sleeves on the same side are 1"*"a single sleeve is 1"* ]] || fail "the total_strategy_fills comment"
+[[ "$(cmt total_strategy_fills)" == *"The ACCOUNT's STRATEGY fills AFTER NETTING BETWEEN SLEEVES, not the sleeve rows of trading.executions"*"a full cross is 0 fills"*"a partial offset is 1"*"two sleeves on the same side are 1"*"a single sleeve is 1"*"a reversal through zero is one fill"*"the close, then the open"*"one order the account sent"*"less one for each such reversal"* ]] || fail "the total_strategy_fills comment"
 [[ "$(cmt total_trades)" == *"ROUND TRIPS"*"ROLL and BORROW rows are never a trade"* ]] || fail "the total_trades comment"
 [[ "$(cmt worst_day_symbol)" == *"trading.positions.daily_realized_pnl"*"summed over the book's sleeves"* ]] || fail "the worst_day_symbol comment"
 [[ "$(cmt max_drawdown_sizing)" == *"Percentage points of the sizing capital, positive"*"running SUM of r^s"*"NULL on equity rows"*"risk_detail.sizing_capital"*"NULL with fewer than 2 such returns"* ]] || fail "the max_drawdown_sizing comment"
