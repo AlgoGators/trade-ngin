@@ -25,6 +25,7 @@
 #include "trade_ngin/live/corporate_actions_lifecycle.hpp"
 #include "trade_ngin/live/corp_action_window.hpp"
 #include "trade_ngin/live/data_freshness.hpp"
+#include "trade_ngin/live/email_body_file.hpp"
 #include "trade_ngin/live/session_book_gate.hpp"
 #include "trade_ngin/live/corp_action_feed_status.hpp"
 #include "trade_ngin/live/trading_days_anchor.hpp"
@@ -6040,8 +6041,22 @@ int main(int argc, char* argv[]) {
         INFO("Daily mean reversion position generation completed successfully");
 
         // Send email report with trading results (based on send_email flag)
-        if (send_email) {
-            INFO("Sending email report...");
+        // The report plan the futures runners use (live/email_body_file.hpp; T-DATED R5): a run
+        // that sends builds and mails the report and ignores TRADE_NGIN_EMAIL_BODY_DIR with one
+        // WARN; a run that does not send builds the same body into that directory when it is set
+        // and mails nothing; otherwise nothing is built.
+        const live::EmailReportPlan email_plan =
+            live::plan_email_report(send_email, std::getenv(live::kEmailBodyDirEnv));
+        if (email_plan.variable_ignored) {
+            WARN(live::email_body_dir_ignored_warning(email_plan));
+        }
+        if (email_plan.build()) {
+            if (email_plan.send) {
+                INFO("Sending email report...");
+            } else {
+                INFO("EMAIL_BODY_FILE building the report body for " + email_plan.body_dir +
+                     "; nothing is mailed");
+            }
             try {
                 EmailSenderConfig email_config;
                 email_config.smtp_host = app_config.email.smtp_host;
@@ -6278,11 +6293,22 @@ int main(int argc, char* argv[]) {
                 // Send email without CSV attachments (CSV export disabled for mean reversion)
                 std::vector<std::string> attachments = {};  // No CSV files for mean reversion
 
+                if (email_plan.write_body_file) {
+                    const std::string body_path = live::email_body_file_path(
+                        email_plan.body_dir, portfolio_id, date_str);
+                    if (!live::write_email_body_file(body_path, email_body)) {
+                        ERROR("EMAIL_BODY_FILE could not write " + body_path);
+                    } else {
+                        INFO("EMAIL_BODY_FILE wrote " + body_path + " (" +
+                             std::to_string(email_body.size()) + " bytes); nothing is mailed");
+                    }
+                } else {
                 auto send_result = email_sender->send_email(subject, email_body, true, attachments);
                 if (send_result.is_error()) {
                     ERROR("Failed to send email: " + std::string(send_result.error()->what()));
                 } else {
                     INFO("Email report sent successfully (without CSV attachments)");
+                }
                 }
                 }
             } catch (const std::exception& e) {
