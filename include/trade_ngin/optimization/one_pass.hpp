@@ -193,6 +193,7 @@ struct DayResult {
     Vector capped_target;   ///< N*c on the free rows, 0 elsewhere
     Mask cap_bound;
     overlay::GateWindow window;        ///< over the participants, in symbol order
+    Vector sigma_jump;                 ///< per participant: its jump sigma on the window's factor
     std::vector<std::size_t> participants;  ///< the participants' indices
     overlay::Readings readings;
     overlay::Multiplier multiplier;

@@ -2723,6 +2723,17 @@ Result<void> PortfolioManager::rebalance_one_pass(
                 one_pass_weights_.emplace_back(symbols[i], result.u[i]);
             }
             one_pass_target_gross_ = result.target_gross;
+            // The overlay's readings of the pass's stored book, copied for the overlay columns,
+            // and what a reading of another book on the same window needs.
+            record.covariance_readings = result.stored_readings.covariance_readings;
+            record.overlay_risk = result.stored_readings.risk;
+            record.overlay_risk_jump = result.stored_readings.jump;
+            record.overlay_risk_shock = result.stored_readings.shock;
+            record.overlay_gross_leverage = result.stored_readings.gross;
+            record.overlay_net_leverage = result.stored_readings.net;
+            record.window_bars_per_year = result.window.bars_per_year;
+            one_pass_window_ = result.window;
+            one_pass_sigma_jump_ = result.sigma_jump;
             decision.blind = record.overlay_blind;
             if (result.multiplier.m < 1.0) {
                 decision.action = RiskAction::SCALE;
@@ -3056,6 +3067,34 @@ double PortfolioManager::delivered_scale_for_book(
         stored_gross += std::abs(quantity * u);
     }
     return stored_gross / one_pass_target_gross_;
+}
+
+StoredBookReadings PortfolioManager::overlay_readings_for_book(
+    const std::map<std::string, double>& stored_book) const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    StoredBookReadings out;
+    for (const auto& [symbol, quantity] : stored_book) {
+        (void)symbol;
+        if (quantity != 0.0) ++out.contracts_held;
+    }
+    const std::size_t k = one_pass_weights_.size();
+    if (k == 0 || one_pass_sigma_jump_.size() != k) {
+        return out;  // no answered pass to read the book on
+    }
+    // The pass's own weights, in its order, so the pass's stored book reads the pass's figures
+    // to the bit: a participant the book does not hold weighs 0.
+    std::vector<double> weights(k, 0.0);
+    for (std::size_t a = 0; a < k; ++a) {
+        const auto row = stored_book.find(one_pass_weights_[a].first);
+        const double quantity = row == stored_book.end() ? 0.0 : row->second;
+        weights[a] = quantity * one_pass_weights_[a].second;
+        // A blind window has no covariance and names no participant in it.
+        if (quantity != 0.0 && a < one_pass_window_.in_r.size() && one_pass_window_.in_r[a]) {
+            ++out.contracts_in_risk;
+        }
+    }
+    out.readings = overlay::readings(weights, one_pass_window_, one_pass_sigma_jump_);
+    return out;
 }
 
 std::map<std::string, double> PortfolioManager::delivered_notional_per_contract(

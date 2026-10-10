@@ -3010,6 +3010,25 @@ int main(int argc, char* argv[]) {
         auto market_data_snapshot = snapshot_rm.create_market_data(strategy_feed_bars);
         auto risk_eval = snapshot_rm.process_positions(positions, market_data_snapshot);
 
+        // The six overlay columns of today's row (migration 030; HD 2026-10-10): the overlay's
+        // own readings of the book this runner STORES (after its STRICT step), on the pass's gate
+        // window and the sizing capital, and the one-day VaR from the same covariance. A row
+        // with no risk_detail has none; on a blind window only the two leverage readings have a
+        // value. OVERLAY_STORED prints them beside the pass's readings of its own stored book.
+        const bool overlay_answered = one_pass_day.stores_detail();
+        const trade_ngin::StoredBookReadings stored_book_readings =
+            overlay_answered ? portfolio->overlay_readings_for_book(
+                                   trade_ngin::account_book_of(strategy_positions_map))
+                             : trade_ngin::StoredBookReadings{};
+        const trade_ngin::OverlayColumns overlay_columns = trade_ngin::overlay_columns_of(
+            overlay_answered, stored_book_readings.readings, one_pass_day.window_bars_per_year,
+            one_pass_day.sizing_capital);
+        if (overlay_answered) {
+            INFO(trade_ngin::overlay_stored_line(core::format_utc_date(now), one_pass_day,
+                                                 stored_book_readings, overlay_columns,
+                                                 strict_rolled_back.size()));
+        }
+
         std::cout << "\n======= Strategy Metrics =======" << std::endl;
         if (risk_eval.is_ok()) {
             const auto& r = risk_eval.value();
@@ -4142,9 +4161,15 @@ int main(int argc, char* argv[]) {
             // Set all metrics at once
             results_manager->set_metrics(double_metrics, int_metrics);
 
-            // Migration 030: the typed cells of the same statistics; a cell with no value is
-            // left out of the INSERT and stays NULL.
-            results_manager->set_cells(settled_statistics_cells);
+            // Migration 030: the typed cells of the same statistics, and the six overlay cells
+            // of the book this row stores; a cell with no value is left out of the INSERT and
+            // stays NULL. The overlay cells are the row's own: the Day T-1 refresh never
+            // writes them.
+            std::vector<LiveResultsCell> row_cells = settled_statistics_cells;
+            for (auto& cell : trade_ngin::overlay_cells(overlay_columns, live_results_number)) {
+                row_cells.push_back(std::move(cell));
+            }
+            results_manager->set_cells(row_cells);
 
             // Set config
             results_manager->set_config(report_config_json);
