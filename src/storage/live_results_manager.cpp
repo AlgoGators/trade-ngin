@@ -11,6 +11,7 @@
 #include "trade_ngin/core/time_utils.hpp"
 #include "trade_ngin/core/types.hpp"
 #include "trade_ngin/data/conversion_utils.hpp"
+#include "trade_ngin/live/live_historical_metrics.hpp"
 
 namespace trade_ngin {
 
@@ -292,8 +293,14 @@ Result<void> LiveResultsManager::update_live_results(
     INFO("Updating live results with " + std::to_string(updates.size() + cells.size()) +
          " fields");
 
-    return db_->update_live_results(strategy_id_, date, updates, portfolio_id_,
-                                    "trading.live_results", rows_affected, cells);
+    // A statistic of the since-inception block that has no value (profit_factor with no losing
+    // session) is assigned NULL, as a cell without a value (T-8D R12).
+    auto number_updates = updates;
+    auto all_cells = cells;
+    null_cells_of_statistics_without_value(number_updates, all_cells);
+
+    return db_->update_live_results(strategy_id_, date, number_updates, portfolio_id_,
+                                    "trading.live_results", rows_affected, all_cells);
 }
 
 Result<void> LiveResultsManager::update_equity_curve(const Timestamp& date, double equity) {

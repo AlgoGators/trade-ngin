@@ -5,6 +5,8 @@
 #include <string>
 #include <unordered_map>
 #include <vector>
+#include "trade_ngin/core/no_value.hpp"
+#include "trade_ngin/data/live_results_cell.hpp"
 
 namespace trade_ngin {
 
@@ -15,6 +17,8 @@ namespace trade_ngin {
  * - Returns-related fields (volatility, downside_deviation, avg_win, avg_loss,
  *   best_day, worst_day) are in percentage points, consistent with daily_return.
  * - Ratios (sharpe_ratio, sortino_ratio, profit_factor) are dimensionless.
+ * - profit_factor has no value (kNoRatio, a NaN) while the series has no losing session; its
+ *   cell of trading.live_results is then NULL (T-8D R12).
  * - PnL aggregates (gross_profit, gross_loss) are in portfolio currency.
  */
 struct HistoricalMetrics {
@@ -41,7 +45,7 @@ struct HistoricalMetrics {
     // holds the P&L of every row folded into the return)
     double gross_profit = 0.0;  // sum of the positive grid P&L
     double gross_loss = 0.0;    // sum of abs(negative grid P&L)
-    double profit_factor = 0.0; // gross_profit / gross_loss
+    double profit_factor = 0.0; // gross_profit / gross_loss; kNoRatio with no losing session
 
     // Trade-level stats
     int total_trades = 0;       // count of executions since inception
@@ -172,6 +176,8 @@ public:
      *        annualised figure of the series uses this one K.
      * @param total_trades_executions Total number of executions since inception.
      * @return HistoricalMetrics structure with all fields populated; zeros for an empty series.
+     *         profit_factor has no value (kNoRatio) for an empty series and for one with no
+     *         losing session.
      */
     HistoricalMetrics calculate(const StatisticsSeries& grid, double sessions_per_year,
                                 int total_trades_executions) const;
@@ -220,13 +226,30 @@ private:
 std::unordered_map<std::string, double> historical_metrics_double_columns(
     const HistoricalMetrics& m);
 
+/**
+ * @brief The columns of the block that have no value on some rows and are then stored NULL
+ *        (T-8D R12): profit_factor, with no losing session. The day-T INSERT leaves such a
+ *        column out (historical_metrics_double_columns does not name it); the Day T-1 UPDATE
+ *        must overwrite what the row holds, so historical_metrics_update_columns carries it as
+ *        kNoRatio and the writer assigns NULL (null_cells_of_statistics_without_value).
+ */
+const std::vector<std::string>& historical_metrics_optional_columns();
+
+/**
+ * @brief The Day T-1 UPDATE of a statistic that has no value: every optional column of the
+ *        block whose value in `updates` is not finite leaves `updates` and joins `cells` as a
+ *        cell without a value, which the UPDATE assigns NULL. Every other entry is untouched.
+ */
+void null_cells_of_statistics_without_value(std::unordered_map<std::string, double>& updates,
+                                            std::vector<LiveResultsCell>& cells);
+
 /** @brief The integer half of the same block: winning_days, losing_days, total_days. */
 std::unordered_map<std::string, int> historical_metrics_int_columns(const HistoricalMetrics& m);
 
 /**
  * @brief The whole block as the Day T-1 UPDATE takes it: the double columns plus the three
  * integer columns widened to double (`update_live_results` takes doubles only; the three are
- * whole numbers by construction).
+ * whole numbers by construction). An optional column without a value is carried as kNoRatio.
  */
 std::unordered_map<std::string, double> historical_metrics_update_columns(
     const HistoricalMetrics& m);

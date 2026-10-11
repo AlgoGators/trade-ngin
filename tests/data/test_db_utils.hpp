@@ -402,6 +402,9 @@ public:
     // The typed cells of the last INSERT and of the last UPDATE (migration 030).
     std::vector<LiveResultsCell> last_live_cells;
     std::vector<LiveResultsCell> last_update_cells;
+    // The double columns of the last INSERT and of the last UPDATE.
+    std::unordered_map<std::string, double> last_live_metrics;
+    std::unordered_map<std::string, double> last_update_values;
 
     Result<void> store_live_results_complete(
         const std::string& strategy_id, const Timestamp& date,
@@ -416,6 +419,7 @@ public:
         (void)portfolio_id; (void)table_name;
         last_live_risk_detail = risk_detail;
         last_live_cells = cells;
+        last_live_metrics = metrics;
         return record_call("store_live_results_complete");
     }
 
@@ -429,6 +433,7 @@ public:
         (void)strategy_id; (void)date; (void)updates;
         (void)portfolio_id; (void)table_name;
         last_update_cells = cells;
+        last_update_values = updates;
         if (rows_affected) *rows_affected = update_live_results_rows;
         return record_call("update_live_results");
     }

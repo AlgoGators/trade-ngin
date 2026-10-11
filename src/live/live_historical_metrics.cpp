@@ -237,6 +237,9 @@ HistoricalMetrics LiveHistoricalMetricsCalculator::calculate(const StatisticsSer
     metrics.total_days = grid.size();
     metrics.total_annualized_return = grid_annualized_return_pct(grid, sessions_per_year);
     metrics.total_trades = total_trades_executions;
+    // The profit factor divides by the losing sessions' loss: with none it has no value (T-8D
+    // R12). It was 999.99 with a profit and no loss, and 0 with neither.
+    metrics.profit_factor = kNoRatio;
 
     // An empty series: everything stays at 0
     if (grid.returns_pct.empty()) {
@@ -307,9 +310,6 @@ HistoricalMetrics LiveHistoricalMetricsCalculator::calculate(const StatisticsSer
     }
     if (metrics.gross_loss > 0.0) {
         metrics.profit_factor = metrics.gross_profit / metrics.gross_loss;
-    } else if (metrics.gross_profit > 0.0) {
-        // Convention: very large profit factor if there are no losses
-        metrics.profit_factor = 999.99;
     }
 
     return metrics;
@@ -317,7 +317,7 @@ HistoricalMetrics LiveHistoricalMetricsCalculator::calculate(const StatisticsSer
 
 std::unordered_map<std::string, double> historical_metrics_double_columns(
     const HistoricalMetrics& m) {
-    return {
+    std::unordered_map<std::string, double> columns = {
         {"volatility", m.volatility},
         {"sharpe_ratio", m.sharpe_ratio},
         {"sortino_ratio", m.sortino_ratio},
@@ -326,12 +326,34 @@ std::unordered_map<std::string, double> historical_metrics_double_columns(
         {"win_rate", m.win_rate},
         {"avg_win", m.avg_win},
         {"avg_loss", m.avg_loss},
-        {"profit_factor", m.profit_factor},
         {"best_day", m.best_day},
         {"worst_day", m.worst_day},
         {"gross_profit", m.gross_profit},
         {"gross_loss", m.gross_loss},
     };
+    // Named only when it has a value: without one the INSERT leaves the cell NULL.
+    if (has_value(m.profit_factor)) {
+        columns["profit_factor"] = m.profit_factor;
+    }
+    return columns;
+}
+
+const std::vector<std::string>& historical_metrics_optional_columns() {
+    static const std::vector<std::string> columns = {"profit_factor"};
+    return columns;
+}
+
+void null_cells_of_statistics_without_value(std::unordered_map<std::string, double>& updates,
+                                            std::vector<LiveResultsCell>& cells) {
+    for (const auto& column : historical_metrics_optional_columns()) {
+        const auto it = updates.find(column);
+        if (it == updates.end() || has_value(it->second)) {
+            continue;
+        }
+        updates.erase(it);
+        // The type is not read for a cell without a value: the UPDATE writes `column = NULL`.
+        cells.push_back({column, "numeric", std::nullopt});
+    }
 }
 
 std::unordered_map<std::string, int> historical_metrics_int_columns(const HistoricalMetrics& m) {
@@ -345,6 +367,8 @@ std::unordered_map<std::string, int> historical_metrics_int_columns(const Histor
 std::unordered_map<std::string, double> historical_metrics_update_columns(
     const HistoricalMetrics& m) {
     auto columns = historical_metrics_double_columns(m);
+    // The UPDATE overwrites the row: an optional column without a value travels as kNoRatio.
+    columns["profit_factor"] = has_value(m.profit_factor) ? m.profit_factor : kNoRatio;
     for (const auto& [column, value] : historical_metrics_int_columns(m)) {
         columns[column] = static_cast<double>(value);
     }

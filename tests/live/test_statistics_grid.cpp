@@ -9,8 +9,10 @@
 #include <gtest/gtest.h>
 
 #include <cmath>
+#include <limits>
 #include <map>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 #include "trade_ngin/live/live_historical_metrics.hpp"
@@ -464,18 +466,77 @@ TEST(StatisticsGrid, AStartRowWithPnlIsTheBestDayAndAGrossProfitOnTheInitialCapi
     EXPECT_NEAR(m.gross_loss, 357.1083, 1e-6);
 }
 
-TEST(StatisticsGrid, AnEmptySeriesGivesZerosAndNoLossesGiveTheLargeProfitFactor) {
+// T-8D R12: the profit factor has a value from the first losing session on.
+//   | through        | gross_profit | gross_loss | profit_factor      |
+//   | 04-19 (empty)  | 0            | 0          | no value (was 0)   |
+//   | 04-20 Mon      | 1,000        | 0          | no value (was 999.99) |
+//   | 04-22 Wed      | 1,000        | 2,000      | 0.5                |
+TEST(StatisticsGrid, AnEmptySeriesGivesZerosAndNoLossesGiveNoProfitFactor) {
     LiveHistoricalMetricsCalculator calc;
     const auto empty = calc.calculate(week_through("2026-04-19"), kFuturesK, 7);
     EXPECT_EQ(empty.total_days, 0);
     EXPECT_EQ(empty.total_trades, 7);
     EXPECT_DOUBLE_EQ(empty.best_day, 0.0);
     EXPECT_DOUBLE_EQ(empty.worst_day, 0.0);
-    EXPECT_DOUBLE_EQ(empty.profit_factor, 0.0);
+    EXPECT_TRUE(std::isnan(empty.profit_factor));
     // Through Monday: one winning session, no loss.
     const auto monday = calc.calculate(week_through("2026-04-20"), kFuturesK, 0);
     EXPECT_DOUBLE_EQ(monday.gross_profit, 1000.0);
     EXPECT_DOUBLE_EQ(monday.gross_loss, 0.0);
-    EXPECT_DOUBLE_EQ(monday.profit_factor, 999.99);
+    EXPECT_TRUE(std::isnan(monday.profit_factor));
     EXPECT_DOUBLE_EQ(monday.avg_loss, 0.0);
+    // Through Wednesday: the first losing session.
+    const auto wednesday = calc.calculate(week_through("2026-04-22"), kFuturesK, 0);
+    EXPECT_DOUBLE_EQ(wednesday.gross_profit, 1000.0);
+    EXPECT_DOUBLE_EQ(wednesday.gross_loss, 2000.0);
+    EXPECT_DOUBLE_EQ(wednesday.profit_factor, 0.5);
+}
+
+// The two writes of the block. The day's INSERT names profit_factor only when it has a value
+// (the cell is then NULL); the Day T-1 UPDATE must overwrite the row, so it carries the column
+// without a value and the writer assigns NULL.
+TEST(StatisticsGrid, AProfitFactorWithNoValueIsLeftOutOfTheInsertAndCarriedToTheUpdate) {
+    LiveHistoricalMetricsCalculator calc;
+    const auto monday = calc.calculate(week_through("2026-04-20"), kFuturesK, 0);
+    const auto insert = historical_metrics_double_columns(monday);
+    EXPECT_EQ(insert.count("profit_factor"), 0u);
+    EXPECT_EQ(insert.size(), 12u);
+    EXPECT_EQ(insert.count("gross_profit"), 1u);
+    const auto update = historical_metrics_update_columns(monday);
+    ASSERT_EQ(update.count("profit_factor"), 1u);
+    EXPECT_TRUE(std::isnan(update.at("profit_factor")));
+    EXPECT_EQ(update.size(), 16u);
+
+    const auto wednesday = calc.calculate(week_through("2026-04-22"), kFuturesK, 0);
+    const auto insert_w = historical_metrics_double_columns(wednesday);
+    ASSERT_EQ(insert_w.count("profit_factor"), 1u);
+    EXPECT_DOUBLE_EQ(insert_w.at("profit_factor"), 0.5);
+    EXPECT_EQ(insert_w.size(), 13u);
+    EXPECT_DOUBLE_EQ(historical_metrics_update_columns(wednesday).at("profit_factor"), 0.5);
+    EXPECT_EQ(historical_metrics_update_columns(wednesday).size(), 16u);
+}
+
+// The split the writer of the Day T-1 UPDATE applies: an optional column without a value
+// becomes a cell without a value (assigned NULL); nothing else is touched.
+TEST(StatisticsGrid, AnOptionalStatisticWithoutAValueBecomesANullCellOfTheUpdate) {
+    const double nan = std::numeric_limits<double>::quiet_NaN();
+    std::unordered_map<std::string, double> updates = {
+        {"profit_factor", nan}, {"volatility", 12.5}, {"sharpe_ratio", nan}};
+    std::vector<LiveResultsCell> cells = {{"worst_day_date", "date", std::string("2026-04-22")}};
+    null_cells_of_statistics_without_value(updates, cells);
+    EXPECT_EQ(updates.count("profit_factor"), 0u);
+    EXPECT_DOUBLE_EQ(updates.at("volatility"), 12.5);
+    EXPECT_EQ(updates.count("sharpe_ratio"), 1u)
+        << "not an optional column: a value that is not finite there is the storage guard's";
+    ASSERT_EQ(cells.size(), 2u);
+    EXPECT_EQ(cells[1].column, "profit_factor");
+    EXPECT_FALSE(cells[1].value.has_value());
+
+    // With a value the update is left as it is.
+    std::unordered_map<std::string, double> valued = {{"profit_factor", 1.75}};
+    std::vector<LiveResultsCell> none;
+    null_cells_of_statistics_without_value(valued, none);
+    EXPECT_DOUBLE_EQ(valued.at("profit_factor"), 1.75);
+    EXPECT_TRUE(none.empty());
+    EXPECT_EQ(historical_metrics_optional_columns(), std::vector<std::string>{"profit_factor"});
 }
