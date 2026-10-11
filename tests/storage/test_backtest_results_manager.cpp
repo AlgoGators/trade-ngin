@@ -57,13 +57,44 @@ TEST_F(BacktestResultsManagerTest, ConstructorSetsAccessors) {
     EXPECT_TRUE(mgr_->is_storage_enabled());
     EXPECT_EQ(mgr_->get_schema(), "backtest");
     EXPECT_EQ(mgr_->get_strategy_id(), "TEST_STRAT");
-    // FIXME: production bug — BacktestResultsManager declares its own
-    // `portfolio_id_` member that shadows the one on ResultsManagerBase. The
-    // constructor stores the supplied portfolio_id into the derived class's
-    // shadow, while get_portfolio_id() (defined on the base) reads the base's
-    // member, which keeps its default "BASE_PORTFOLIO". Capture observed
-    // behavior so this test fires if/when the shadow is removed.
-    EXPECT_EQ(mgr_->get_portfolio_id(), "BASE_PORTFOLIO");
+    // C-17: one portfolio id, the base's. The manager used to keep a second member of the same
+    // name, so this getter answered the base's default whatever the run was handed.
+    EXPECT_EQ(mgr_->get_portfolio_id(), "TEST_PORTFOLIO");
+}
+
+// ===== C-17: every row of the run is keyed on the portfolio id the run was handed =====
+
+TEST_F(BacktestResultsManagerTest, EveryBacktestWriterIsHandedTheRunsOwnPortfolioId) {
+    mgr_->set_metadata(date_at(2026, 1, 1), date_at(2026, 1, 5), nlohmann::json{}, "RUN", "");
+    mgr_->set_performance_metrics({{"total_return", 0.05}});
+    mgr_->set_equity_curve({{date_at(2026, 1, 1), 1'000'000.0}});
+    mgr_->set_strategy_executions("STRAT_A", {make_exec("ES", 5.0, 4000.0)});
+    ASSERT_TRUE(mgr_->save_all_results("RUN_1", date_at(2026, 1, 5)).is_ok());
+    ASSERT_TRUE(mgr_->save_strategy_executions("RUN_1").is_ok());
+    ASSERT_TRUE(mgr_->save_strategy_metadata("RUN_1", {{"STRAT_A", 1.0}}, nlohmann::json{}).is_ok());
+    // The writer the manager inherits: it named the literal BASE_PORTFOLIO for every backtest.
+    Position held;
+    held.symbol = "ES";
+    held.quantity = Quantity(2.0);
+    held.average_price = Price(4000.0);
+    ASSERT_TRUE(mgr_->save_positions({held}, "RUN_1", date_at(2026, 1, 5)).is_ok());
+
+    for (const char* writer :
+         {"store_backtest_summary", "store_backtest_equity_curve_batch",
+          "store_backtest_executions_with_strategy", "store_backtest_metadata_with_portfolio",
+          "store_backtest_positions"}) {
+        EXPECT_EQ(db_->call_count(writer), 1) << writer;
+        EXPECT_EQ(db_->last_key(writer).portfolio_id, "TEST_PORTFOLIO") << writer;
+        EXPECT_EQ(db_->last_key(writer).portfolio_id, mgr_->get_portfolio_id()) << writer;
+    }
+}
+
+TEST_F(BacktestResultsManagerTest, AnEmptyPortfolioIdIsStoredAsTheDefaultOnEveryPath) {
+    BacktestResultsManager unnamed(db_, /*store_enabled=*/true, "TEST_STRAT", "");
+    EXPECT_EQ(unnamed.get_portfolio_id(), "BASE_PORTFOLIO");
+    unnamed.set_performance_metrics({{"total_return", 0.05}});
+    ASSERT_TRUE(unnamed.save_summary_results("RUN_1").is_ok());
+    EXPECT_EQ(db_->last_key("store_backtest_summary").portfolio_id, "BASE_PORTFOLIO");
 }
 
 TEST_F(BacktestResultsManagerTest, SetStorageEnabledFlipsFlag) {

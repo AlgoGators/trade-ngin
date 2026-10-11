@@ -83,9 +83,7 @@ Result<void> ResultsManagerBase::save_positions(const std::vector<Position>& pos
         for (auto& pos : positions_with_date) {
             pos.last_update = date;  // Set timestamp to the date being processed
         }
-        // Note: portfolio_id not available in base class, will be passed as empty string
-        // BacktestResultsManager should override this method to pass portfolio_id
-        return db_->store_backtest_positions(positions_with_date, run_id, "BASE_PORTFOLIO",
+        return db_->store_backtest_positions(positions_with_date, run_id, portfolio_id_,
                                              table_name);
     } else {
         // For live trading, use regular store_positions

@@ -79,7 +79,9 @@ public:
     };
 
     // Key of the most recent call to `op` ("store_positions", "store_executions",
-    // "store_signals"). Empty strings if `op` was never called.
+    // "store_signals"). Empty strings if `op` was never called. The five backtest writers
+    // record the portfolio id they were handed under their own names (the other two fields
+    // empty).
     StorageKey last_key(const std::string& op) const {
         auto it = last_keys_.find(op);
         return it == last_keys_.end() ? StorageKey{} : it->second;
@@ -286,7 +288,8 @@ public:
         const std::string& table_name = "backtest.results",
         const std::vector<LiveResultsCell>& cells = {}) override {
         (void)run_id; (void)start_date; (void)end_date;
-        (void)portfolio_id; (void)table_name;
+        (void)table_name;
+        record_key("store_backtest_summary", "", "", portfolio_id);
         last_backtest_summary_metrics = metrics;
         last_backtest_summary_cells = cells;
         return record_call("store_backtest_summary");
@@ -299,7 +302,8 @@ public:
         const std::string& table_name = "backtest.equity_curve",
         const std::vector<std::string>& risk_detail = {},
         const BacktestCurveCells& cells = {}) override {
-        (void)run_id; (void)equity_points; (void)portfolio_id; (void)table_name;
+        (void)run_id; (void)equity_points; (void)table_name;
+        record_key("store_backtest_equity_curve_batch", "", "", portfolio_id);
         last_equity_risk_detail = risk_detail;
         last_equity_curve_cells = cells;
         return record_call("store_backtest_equity_curve_batch");
@@ -311,8 +315,9 @@ public:
         const std::string& table_name = "backtest.final_positions",
         bool keep_closed_rows = false,
         const std::unordered_set<std::string>& no_bar_symbols = {}) override {
-        (void)run_id; (void)portfolio_id; (void)table_name;
+        (void)run_id; (void)table_name;
         (void)keep_closed_rows;
+        record_key("store_backtest_positions", "", "", portfolio_id);
         last_backtest_positions = positions;
         last_backtest_no_bar_symbols = no_bar_symbols;
         return record_call("store_backtest_positions");
@@ -323,7 +328,8 @@ public:
         const std::string& strategy_id, const std::string& portfolio_id = "BASE_PORTFOLIO",
         const std::string& table_name = "backtest.executions") override {
         (void)executions; (void)run_id; (void)strategy_id;
-        (void)portfolio_id; (void)table_name;
+        (void)table_name;
+        record_key("store_backtest_executions_with_strategy", "", "", portfolio_id);
         return record_call("store_backtest_executions_with_strategy");
     }
 
@@ -339,7 +345,8 @@ public:
         (void)run_id; (void)portfolio_run_id; (void)strategy_id; (void)strategy_allocation;
         (void)portfolio_config; (void)name; (void)description;
         (void)start_date; (void)end_date; (void)hyperparameters;
-        (void)portfolio_id; (void)table_name;
+        (void)table_name;
+        record_key("store_backtest_metadata_with_portfolio", "", "", portfolio_id);
         return record_call("store_backtest_metadata_with_portfolio");
     }
 
