@@ -224,6 +224,15 @@ OverLimitReport over_limit_of(double sizing_capital, double gross, double net) {
     return over_limit_report(day, columns, overlay_modules(), 2.0);
 }
 
+// What a runner tells the report about the day: its settled day, and the n and K of its statistics.
+EmailReportContext context_of(const std::string& settled_date, int sessions, double per_year) {
+    EmailReportContext context;
+    context.settled_date = settled_date;
+    context.statistics_sessions = sessions;
+    context.sessions_per_year = per_year;
+    return context;
+}
+
 class EmailFixture : public ::testing::Test {
 protected:
     void SetUp() override {
@@ -249,10 +258,6 @@ protected:
     // What both futures runners put in the report's metric map (the key names are the runners').
     static std::map<std::string, double> futures_metrics() {
         std::map<std::string, double> m = {
-            {"Daily Return", -0.000407},
-            {"Daily Unrealized PnL", 0.0},
-            {"Daily Realized PnL", 0.0},
-            {"Daily Total PnL", -5.99},
             {"Total Cumulative Return", 0.70},
             {"Total Annualized Return", 1.29},
             {"Total Unrealized PnL", 0.0},
@@ -264,13 +269,13 @@ protected:
             {"Volatility", 7.7612},
             {"Win Rate", 50.8772},
             {"Average Win", 0.3121},
-            {"Average Loss", -0.3011},
-            {"Profit Factor", 1.0733},
+            {"Average Loss", 0.3011},
+            {"Profit Factor", 1.0735},
             {"Best Day", 1.2341},
             {"Worst Day", -1.4127},
             {"Downside Deviation", 5.7748},
-            {"Gross Profit", 27.1527},
-            {"Gross Loss", -25.2924},
+            {"Gross Profit", 27152.70},
+            {"Gross Loss", 25292.40},
             {"Winning Days", 87.0},
             {"Losing Days", 84.0},
             {"Flat Days", 0.0},
@@ -340,8 +345,8 @@ protected:
         return sender_.generate_trading_report_body(
             book, combined, std::nullopt, futures_metrics(), executions, "2026-04-28",
             "CONSERVATIVE_PORTFOLIO", true, marks, nullptr, settled, t1_close, t2_close,
-            settled_metrics, "LIVE_TREND_FOLLOWING",
-            over_limit_of(501250.34, 0.8619713, 0.2427915));
+            settled_metrics, "LIVE_TREND_FOLLOWING", over_limit_of(501250.34, 0.8619713, 0.2427915),
+            context_of("2026-04-27", 171, 311.0574));
     }
 
     // BASE: two sleeves, Monday 2026-04-27, the settled day Sunday 2026-04-26. The sleeves hold
@@ -388,6 +393,11 @@ protected:
         std::map<std::string, double> metrics = futures_metrics();
         metrics["Margin Posted"] = 11500.0;  // the account's: MES 3, ZN 1 net, KE 1
         metrics[kReportGrossNotional] = 251618.125;
+        // a book with more than one year of sessions behind it (K = 311.0574)
+        metrics["Winning Days"] = 160.0;
+        metrics["Losing Days"] = 158.0;
+        metrics["Flat Days"] = 2.0;
+        metrics["Total Days"] = 320.0;
         metrics["Cash Available"] = 492005.07;
         metrics["Equity-to-Margin Ratio"] = 43.7831;
         metrics["Margin Cushion"] = 97.9444;
@@ -395,7 +405,8 @@ protected:
             book, combined, std::nullopt, metrics, executions, "2026-04-27", "BASE_PORTFOLIO", true,
             marks, nullptr, settled, t1_close, t2_close, settled_metrics,
             "LIVE_TREND_FOLLOWING_TREND_FOLLOWING_FAST",
-            over_limit_of(499357.14, 0.5035118, 0.5035118));
+            over_limit_of(499357.14, 0.5035118, 0.5035118),
+            context_of("2026-04-26", 320, 311.0574));
     }
 
     // The equity book: Monday 2026-06-22; its settled day is the previous session, Thursday
@@ -420,10 +431,6 @@ protected:
             {"Daily Realized PnL", 0.0},     {"Daily Total PnL", 217.83},
             {"Daily Commissions", 1.090112}, {"Dividend Income (cumulative)", 6.565561}};
         const std::map<std::string, double> metrics = {
-            {"Daily Return", -0.0024},
-            {"Daily Unrealized PnL", 0.0},
-            {"Daily Realized PnL", 0.0},
-            {"Daily Total PnL", -2.36},
             {"Total Cumulative Return", -0.45},
             {"Total Annualized Return", -1.86},
             {"Total Unrealized PnL", 180.38},
@@ -444,7 +451,7 @@ protected:
         return sender_.generate_trading_report_body(
             positions, std::nullopt, metrics, executions, "2026-06-22", true, closes, nullptr,
             settled, t1_close, t2_close, settled_metrics, "LIVE_EQUITY_MEAN_REVERSION",
-            "EQUITY_MR_PORTFOLIO");
+            "EQUITY_MR_PORTFOLIO", context_of("2026-06-18", 0, 252.0));
     }
 
     EmailSender sender_{EmailSenderConfig{}};
@@ -535,6 +542,129 @@ TEST_F(EmailFixture, ARowsPriceMultipliesOutAndASymbolWithNoBarHasNoMark) {
               std::string::npos);
     EXPECT_NE(body.find("<td class=\"positive\">BUY</td>\n<td>1</td>\n<td>$2806.70</td>"),
               std::string::npos);
+}
+
+// T-8D-2 R61: the snapshot is two blocks, because its figures are of two days. The statistics run
+// through the settled day and say so; the book lines are the day T row as written and say that.
+// The settled block is headed with the settled day; the nine distribution statistics are printed.
+TEST_F(EmailFixture, TheSnapshotIsTheSettledStatisticsAndTheBookAsOfToday) {
+    const std::string body = conservative_body();
+    EXPECT_EQ(body.find("Portfolio Snapshot"), std::string::npos);
+    EXPECT_EQ(body.find(" Metrics</h2>"), std::string::npos);
+    const auto settled_block = body.find("<h2>2026-04-27 (settled)</h2>");
+    const auto statistics = body.find("<h2>Statistics through 2026-04-27 (settled)</h2>");
+    const auto distribution =
+        body.find("<div class=\"metric\"><strong>Distribution (through 2026-04-27)</strong></div>");
+    const auto book = body.find(
+        "<h2>Book as of 2026-04-28 (today's costs booked; P&amp;L settles "
+        "tomorrow)</h2>");
+    ASSERT_NE(settled_block, std::string::npos);
+    ASSERT_NE(statistics, std::string::npos);
+    ASSERT_NE(distribution, std::string::npos);
+    ASSERT_NE(book, std::string::npos);
+    EXPECT_TRUE(settled_block < statistics && statistics < distribution && distribution < book);
+    const auto between = [&](const std::string& line, size_t from, size_t to) {
+        const auto at = body.find(line, from);
+        return at != std::string::npos && at < to;
+    };
+    // a statistic sits in the statistics block, a level in the book block
+    EXPECT_TRUE(
+        between("<strong>Sharpe Ratio:</strong> <span>0.20</span>", statistics, distribution));
+    EXPECT_TRUE(between("<strong>Total Days:</strong> <span>171</span>", statistics, distribution));
+    EXPECT_TRUE(between("<strong>Total Cumulative Return:</strong>", book, body.size()));
+    EXPECT_TRUE(between("<strong>Current Portfolio Value:</strong>", book, body.size()));
+    EXPECT_TRUE(
+        between("<strong>Gross Leverage (on the sizing capital E_t):</strong>", book, body.size()));
+    // the nine, with their units
+    const std::string nine =
+        "<div class=\"metric\"><strong>Win Rate:</strong> <span>50.88%</span></div>\n"
+        "<div class=\"metric\"><strong>Average Win:</strong> <span>0.31%</span></div>\n"
+        "<div class=\"metric\"><strong>Average Loss:</strong> <span>0.30%</span></div>\n"
+        "<div class=\"metric\"><strong>Profit Factor:</strong> <span>1.07</span></div>\n"
+        "<div class=\"metric\"><strong>Best Day:</strong> <span>1.23%</span></div>\n"
+        "<div class=\"metric\"><strong>Worst Day:</strong> <span>-1.41%</span></div>\n"
+        "<div class=\"metric\"><strong>Downside Deviation:</strong> <span>5.77%</span></div>\n"
+        "<div class=\"metric\"><strong>Gross Profit:</strong> <span>$27,152.70</span></div>\n"
+        "<div class=\"metric\"><strong>Gross Loss:</strong> <span>$25,292.40</span></div>\n";
+    EXPECT_TRUE(between(nine, distribution, book)) << body.substr(distribution, 1200);
+    // the equity book's settled day is its previous session, not the calendar day before
+    const std::string equity = equity_body();
+    EXPECT_NE(equity.find("<h2>2026-06-18 (settled)</h2>"), std::string::npos);
+    EXPECT_NE(equity.find("<h2>Statistics through 2026-06-18 (settled)</h2>"), std::string::npos);
+    EXPECT_NE(equity.find("<h2>Book as of 2026-06-22 (today's costs booked"), std::string::npos);
+    EXPECT_EQ(equity.find("2026-06-21 Metrics"), std::string::npos);
+}
+
+// T-8D-2 R74: the annualised return is printed for every n and labelled while n is under one year
+// of the grid's sessions (R40's NULL is on a held branch).
+TEST_F(EmailFixture, TheAnnualisedReturnIsLabelledWhileTheBookHasUnderOneYearOfSessions) {
+    EXPECT_EQ(annualized_return_label(context_of("", 171, 311.0574)),
+              "Total Annualized Return (extrapolated: under one year of sessions)");
+    EXPECT_EQ(annualized_return_label(context_of("", 311, 311.0574)),
+              "Total Annualized Return (extrapolated: under one year of sessions)");
+    EXPECT_EQ(annualized_return_label(context_of("", 312, 311.0574)), "Total Annualized Return");
+    EXPECT_EQ(annualized_return_label(context_of("", 252, 252.0)), "Total Annualized Return");
+    EXPECT_EQ(annualized_return_label(context_of("", 0, 252.0)), "Total Annualized Return")
+        << "a caller that hands no n gets no label";
+    EXPECT_EQ(annualized_return_label(EmailReportContext{}), "Total Annualized Return");
+    // 171 sessions of 311.0574: labelled; 320: not
+    EXPECT_NE(conservative_body().find(
+                  "<div class=\"metric\"><strong>Total Annualized Return (extrapolated: under one "
+                  "year of sessions):</strong> <span class=\"positive\">1.29%</span></div>"),
+              std::string::npos);
+    EXPECT_NE(base_body().find("<div class=\"metric\"><strong>Total Annualized Return:</strong> "
+                               "<span class=\"positive\">1.29%</span></div>"),
+              std::string::npos);
+}
+
+// The profit factor has no value while the series has no losing session: the stored cell is NULL
+// and the row loader reads a NULL as 0. The line says so; it never prints the 0.
+TEST_F(EmailFixture, AProfitFactorWithNoLosingSessionIsNotPrintedAsANumber) {
+    std::map<std::string, double> metrics = futures_metrics();
+    metrics["Profit Factor"] = 0.0;
+    metrics["Gross Loss"] = 0.0;
+    const std::string body = sender_.generate_trading_report_body(
+        StrategyPositionsMap{}, std::unordered_map<std::string, Position>{}, std::nullopt, metrics,
+        StrategyExecutionsMap{}, "2026-04-28", "CONSERVATIVE_PORTFOLIO");
+    EXPECT_NE(body.find("<strong>Profit Factor:</strong> <span>n/a (no losing session)</span>"),
+              std::string::npos);
+    EXPECT_EQ(body.find("<strong>Profit Factor:</strong> <span>0.00</span>"), std::string::npos);
+}
+
+// The runners are `main()`s: this guard READS SOURCE, to keep the two futures twins in step. What
+// it guards (the return lines read the stored row; no day T "Daily ..." key) is shown on the real
+// binary by the gate's email bodies.
+TEST(EmailSettledSplitTwinSourceGuard, BothFuturesRunnersReadTheReturnLinesFromTheStoredRow) {
+    for (const char* runner : {"apps/strategies/live_portfolio_conservative.cpp",
+                               "apps/strategies/live_portfolio.cpp"}) {
+        fs::path dir = fs::current_path();
+        std::string src;
+        for (int i = 0; i < 8 && !dir.empty(); ++i, dir = dir.parent_path()) {
+            if (fs::exists(dir / runner)) {
+                src = read_file(dir / runner);
+                break;
+            }
+        }
+        if (src.empty())
+            GTEST_SKIP() << "runner source not found from the test working directory";
+        EXPECT_NE(src.find("strategy_metrics[\"Total Cumulative Return\"] =\n"
+                           "                            today_row.total_cumulative_return;"),
+                  std::string::npos)
+            << runner;
+        EXPECT_NE(src.find("strategy_metrics[\"Total Annualized Return\"] =\n"
+                           "                            today_row.total_annualized_return;"),
+                  std::string::npos)
+            << runner;
+        EXPECT_NE(src.find("report_context.statistics_sessions = today_row.total_days;"),
+                  std::string::npos)
+            << runner;
+        for (const char* gone :
+             {"strategy_metrics[\"Daily Return\"]", "strategy_metrics[\"Daily Total PnL\"]",
+              "strategy_metrics[\"Total Annualized Return\"] = "
+              "total_return_annualized"}) {
+            EXPECT_EQ(src.find(gone), std::string::npos) << runner << ": " << gone;
+        }
+    }
 }
 
 // The same inputs render the same bytes twice: the body carries no clock.

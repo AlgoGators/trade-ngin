@@ -498,8 +498,8 @@ std::string EmailSender::generate_trading_report_body(
     const std::unordered_map<std::string, double>& yesterday_close_prices,
     const std::unordered_map<std::string, double>& two_days_ago_close_prices,
     const std::map<std::string, double>& yesterday_daily_metrics,
-    const std::string& chart_strategy_id,
-    const std::string& chart_portfolio_id) {
+    const std::string& chart_strategy_id, const std::string& chart_portfolio_id,
+    const EmailReportContext& context) {
     (void)risk_metrics;
     std::ostringstream html;
 
@@ -539,6 +539,11 @@ std::string EmailSender::generate_trading_report_body(
         ERROR("Exception while calculating yesterday's date");
         yesterday_date_str = "Previous Day";
     }
+
+    // T-8D-2 R61: the day the settled table, its block and the statistics are for is the runner's
+    // own T-1 when it names one.
+    const std::string settled_date =
+        context.settled_date.empty() ? yesterday_date_str : context.settled_date;
 
     // Check if today is Monday
     bool is_monday = (day_of_week == 1);
@@ -690,7 +695,7 @@ std::string EmailSender::generate_trading_report_body(
             yesterday_close_prices,     // Exit prices (Day T-1)
             db,
             yesterday_daily_metrics,  // Yesterday's daily metrics
-            yesterday_date_str);
+            yesterday_date_str, settled_date);
     } else if (!show_yesterday_pnl) {
         // Add a red alert explaining no executions due to non-trading day
         html << "<div class=\"alert-note\">\n";
@@ -728,7 +733,7 @@ std::string EmailSender::generate_trading_report_body(
     // Strategy metrics
     if (!strategy_metrics.empty()) {
         html << "<div class=\"metrics-section\">\n";
-        html << format_strategy_metrics(strategy_metrics);
+        html << format_strategy_metrics(strategy_metrics, nullptr, date, settled_date, context);
         html << "</div>\n";
     }
 
@@ -873,7 +878,6 @@ std::string EmailSender::generate_trading_report_body(
 
     return html.str();
 }
-
 
 // T-NETTING: how the netting figures are printed (one rounding, the adjustment as it acts on the
 // cost and as the difference of its two printed neighbours) is email_netting_text.hpp.
@@ -1290,7 +1294,7 @@ std::string EmailSender::format_yesterday_finalized_positions_table(
     const std::unordered_map<std::string, double>& entry_prices,  // Day T-2 close
     const std::unordered_map<std::string, double>& exit_prices,   // Day T-1 close
     std::shared_ptr<DatabaseInterface> db, const std::map<std::string, double>& strategy_metrics,
-    const std::string& yesterday_date) {
+    const std::string& yesterday_date, const std::string& settled_date) {
     (void)db;
     std::ostringstream html;
 
@@ -1433,7 +1437,9 @@ std::string EmailSender::format_yesterday_finalized_positions_table(
 
     // Add daily metrics as a section heading after the table - use passed yesterday_daily_metrics
     if (!strategy_metrics.empty() && !yesterday_date.empty()) {
-        html << "<h2>" << yesterday_date << " Metrics</h2>\n";
+        // T-8D-2 R61: the block is the settled day's.
+        html << "<h2>" << (settled_date.empty() ? yesterday_date : settled_date)
+             << " (settled)</h2>\n";
         html << "<div class=\"metrics-category\">\n";
 
         // Helper to format metrics with proper color
@@ -1519,7 +1525,7 @@ std::string EmailSender::format_yesterday_finalized_positions_table(
     const std::unordered_map<std::string, double>& entry_prices,
     const std::unordered_map<std::string, double>& exit_prices,
     std::shared_ptr<DatabaseInterface> db, const std::map<std::string, double>& strategy_metrics,
-    const std::string& yesterday_date) {
+    const std::string& yesterday_date, const std::string& settled_date) {
     (void)db;
     std::ostringstream html;
 
@@ -1699,7 +1705,9 @@ std::string EmailSender::format_yesterday_finalized_positions_table(
 
     // Add daily metrics section
     if (!strategy_metrics.empty() && !yesterday_date.empty()) {
-        html << "<h2>" << yesterday_date << " Metrics</h2>\n";
+        // T-8D-2 R61: the block is the settled day's.
+        html << "<h2>" << (settled_date.empty() ? yesterday_date : settled_date)
+             << " (settled)</h2>\n";
         html << "<div class=\"metrics-category\">\n";
 
         auto format_metric_display = [&format_with_commas](const std::string& label, double value,
@@ -1782,7 +1790,9 @@ std::string EmailSender::format_risk_metrics(const RiskResult& risk_metrics) {
 */
 
 std::string EmailSender::format_strategy_metrics(
-    const std::map<std::string, double>& strategy_metrics, const OverLimitReport* over_limit) {
+    const std::map<std::string, double>& strategy_metrics, const OverLimitReport* over_limit,
+    const std::string& report_date, const std::string& settled_date,
+    const EmailReportContext& context) {
     std::ostringstream html;
 
     // Helper function to format numbers with commas
@@ -1874,19 +1884,16 @@ std::string EmailSender::format_strategy_metrics(
         return result.str();
     };
 
-    // Single Portfolio Snapshot section
-    html << "<h2>Portfolio Snapshot</h2>\n";
+    // T-8D-2 R61: two blocks, because the figures are of two days. The statistics are taken on
+    // the settled series and run through the settled day T-1; the book lines are the day T row as
+    // written (today's costs are booked, today's P&L is booked by tomorrow's run).
+    html << "<h2>Statistics through " << settled_date << " (settled)</h2>\n";
     html << "<div class=\"metrics-category\">\n";
 
     // Section 1: Returns & Risk-Adjusted Metrics
-    auto total_cumulative_return = strategy_metrics.find("Total Cumulative Return");
-    if (total_cumulative_return != strategy_metrics.end()) {
-        html << format_metric("Total Cumulative Return", total_cumulative_return->second);
-    }
-
     auto total_annualized_return = strategy_metrics.find("Total Annualized Return");
     if (total_annualized_return != strategy_metrics.end()) {
-        html << format_metric("Total Annualized Return", total_annualized_return->second);
+        html << format_metric(annualized_return_label(context), total_annualized_return->second);
     }
 
     auto sharpe_ratio = strategy_metrics.find("Sharpe Ratio");
@@ -1931,6 +1938,50 @@ std::string EmailSender::format_strategy_metrics(
     auto total_days = strategy_metrics.find("Total Days");
     if (total_days != strategy_metrics.end()) {
         html << format_metric("Total Days", total_days->second);
+    }
+
+    // The distribution of the settled grid returns: nine stored statistics no other output of the
+    // engine shows (T-8D-2 R61). Percent of the account for the returns, dollars for the two
+    // P&L sums.
+    static const char* const kDistributionKeys[] = {
+        "Win Rate",  "Average Win",        "Average Loss", "Profit Factor", "Best Day",
+        "Worst Day", "Downside Deviation", "Gross Profit", "Gross Loss"};
+    bool has_distribution = false;
+    for (const char* key : kDistributionKeys) {
+        has_distribution = has_distribution || strategy_metrics.count(key) > 0;
+    }
+    if (has_distribution) {
+        html << "<br>\n";
+        html << "<div class=\"metric\"><strong>Distribution (through " << settled_date
+             << ")</strong></div>\n";
+        // The profit factor has no value while the series has no losing session: its stored cell
+        // is NULL (T-8D R12) and reads back as 0, so the sum of the losses decides.
+        const auto gross_loss = strategy_metrics.find("Gross Loss");
+        const bool no_losing_session =
+            gross_loss != strategy_metrics.end() && std::fabs(gross_loss->second) < 1e-12;
+        for (const char* key : kDistributionKeys) {
+            const auto it = strategy_metrics.find(key);
+            if (it == strategy_metrics.end())
+                continue;
+            if (std::string(key) == "Profit Factor" &&
+                (no_losing_session || !std::isfinite(it->second))) {
+                html << "<div class=\"metric\"><strong>Profit Factor:</strong> <span>n/a (no "
+                        "losing session)</span></div>\n";
+                continue;
+            }
+            html << format_metric(key, it->second);
+        }
+    }
+
+    html << "</div>\n";
+
+    html << "<h2>Book as of " << report_date
+         << " (today's costs booked; P&amp;L settles tomorrow)</h2>\n";
+    html << "<div class=\"metrics-category\">\n";
+
+    auto total_cumulative_return = strategy_metrics.find("Total Cumulative Return");
+    if (total_cumulative_return != strategy_metrics.end()) {
+        html << format_metric("Total Cumulative Return", total_cumulative_return->second);
     }
 
     html << "<br>\n";
@@ -3866,7 +3917,8 @@ std::string EmailSender::generate_trading_report_body(
     const std::unordered_map<std::string, double>& yesterday_close_prices,
     const std::unordered_map<std::string, double>& two_days_ago_close_prices,
     const std::map<std::string, double>& yesterday_daily_metrics,
-    const std::string& chart_strategy_id, const OverLimitReport& over_limit) {
+    const std::string& chart_strategy_id, const OverLimitReport& over_limit,
+    const EmailReportContext& context) {
     (void)risk_metrics;
     std::ostringstream html;
 
@@ -3905,6 +3957,10 @@ std::string EmailSender::generate_trading_report_body(
         ERROR("Exception while calculating yesterday's date");
         yesterday_date_str = "Previous Day";
     }
+
+    // T-8D-2 R61: the settled day is the runner's own T-1 when it names one.
+    const std::string settled_date =
+        context.settled_date.empty() ? yesterday_date_str : context.settled_date;
 
     bool is_monday = (day_of_week == 1);
     bool is_sunday = (day_of_week == 0);
@@ -4061,7 +4117,7 @@ std::string EmailSender::generate_trading_report_body(
         !two_days_ago_close_prices.empty()) {
         html << format_yesterday_finalized_positions_table(
             yesterday_strategy_positions, two_days_ago_close_prices, yesterday_close_prices, db,
-            yesterday_daily_metrics, yesterday_date_str);
+            yesterday_daily_metrics, yesterday_date_str, settled_date);
     } else if (!show_yesterday_pnl) {
         // Add a red alert explaining no executions due to non-trading day
         html << "<div class=\"alert-note\">\n";
@@ -4092,7 +4148,7 @@ std::string EmailSender::generate_trading_report_body(
     // Strategy metrics
     if (!strategy_metrics.empty()) {
         html << "<div class=\"metrics-section\">\n";
-        html << format_strategy_metrics(strategy_metrics, &over_limit);
+        html << format_strategy_metrics(strategy_metrics, &over_limit, date, settled_date, context);
         html << "</div>\n";
     }
 

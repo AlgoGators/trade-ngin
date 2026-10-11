@@ -4538,18 +4538,26 @@ int main(int argc, char* argv[]) {
                              std::string(e.what()));
                     }
 
-                    // Performance Metrics
-                    strategy_metrics["Daily Return"] = daily_return;
-                    strategy_metrics["Daily Unrealized PnL"] = daily_unrealized_pnl;
-                    strategy_metrics["Daily Realized PnL"] = daily_realized_pnl;
-                    strategy_metrics["Daily Total PnL"] = daily_pnl;
-                    strategy_metrics["Total Cumulative Return"] = total_cumulative_return_pct;
-                    strategy_metrics["Total Annualized Return"] = total_return_annualized;
+                    // Performance Metrics. T-8D-2 R61: the day T "Daily ..." values are not
+                    // report lines (the day's P&L is booked by tomorrow's run; the settled
+                    // day's are in yesterday_daily_metrics_final), and the two return lines read
+                    // the day's stored row below: one source.
                     strategy_metrics["Total Unrealized PnL"] = total_unrealized_pnl;
                     strategy_metrics["Total Realized PnL"] = total_realized_pnl;
                     strategy_metrics["Total PnL"] = total_pnl;
 
+                    // What the report is told about the day beyond the metric map.
+                    trade_ngin::EmailReportContext report_context;
+                    report_context.settled_date = yesterday_date_for_email;
+                    report_context.sessions_per_year =
+                        app_config.statistics.futures_sessions_per_year;
+
                     if (has_today_row_metrics) {
+                        strategy_metrics["Total Cumulative Return"] =
+                            today_row.total_cumulative_return;
+                        strategy_metrics["Total Annualized Return"] =
+                            today_row.total_annualized_return;
+                        report_context.statistics_sessions = today_row.total_days;
                         // Risk-adjusted and distribution metrics from live_results
                         strategy_metrics["Sharpe Ratio"] = today_row.sharpe_ratio;
                         strategy_metrics["Sortino Ratio"] = today_row.sortino_ratio;
@@ -4626,10 +4634,10 @@ int main(int argc, char* argv[]) {
                         positions,
                         risk_eval.is_ok() ? std::make_optional(risk_eval.value()) : std::nullopt,
                         strategy_metrics, all_strategy_executions, date_str,
-                        portfolio_id,                 // Portfolio name for email header
-                        true,                         // is_daily_strategy
-                        day_t_mark_prices,            // The Day T mark of today's positions
-                        db,                           // Pass database for symbols reference table
+                        portfolio_id,                  // Portfolio name for email header
+                        true,                          // is_daily_strategy
+                        day_t_mark_prices,             // The Day T mark of today's positions
+                        db,                            // Pass database for symbols reference table
                         finalized_strategy_positions,  // Per-strategy yesterday's positions,
                                                        // read back after the finalize
                         yesterday_exit_prices,   // Day T-1 close prices for yesterday's positions
@@ -4640,7 +4648,8 @@ int main(int argc, char* argv[]) {
                         // limits the overlay ran with, and the day's over-limit marks.
                         trade_ngin::over_limit_report(one_pass_day, overlay_columns,
                                                       portfolio_config.risk_modules,
-                                                      portfolio_config.per_name_cap));
+                                                      portfolio_config.per_name_cap),
+                        report_context);
 
                     // Send email with CSV attachments: today's positions and yesterday's finalized
                     // (if available)

@@ -6239,11 +6239,8 @@ int main(int argc, char* argv[]) {
                 // Create strategy metrics map with all relevant metrics organized by category
                 std::map<std::string, double> strategy_metrics;
 
-                // Performance Metrics
-                strategy_metrics["Daily Return"] = daily_return;
-                strategy_metrics["Daily Unrealized PnL"] = daily_unrealized_pnl;
-                strategy_metrics["Daily Realized PnL"] = daily_realized_pnl;
-                strategy_metrics["Daily Total PnL"] = daily_pnl;
+                // Performance Metrics. T-8D-2 R61: the day T "Daily ..." values are not report
+                // lines (the settled day's are in yesterday_daily_metrics_final).
                 strategy_metrics["Total Cumulative Return"] = total_cumulative_return_pct;
                 strategy_metrics["Total Annualized Return"] = total_return_annualized;
                 strategy_metrics["Total Unrealized PnL"] = total_unrealized_pnl;
@@ -6295,27 +6292,30 @@ int main(int argc, char* argv[]) {
                 // Note: yesterday_daily_metrics_final is now loaded AFTER database updates above
                 // So we don't need to create it here anymore
 
+                // What the report is told about the day beyond the metric map: the settled day
+                // is this runner's previous session (T-8D-2 R59, R61), not the calendar day
+                // before the run date.
+                trade_ngin::EmailReportContext report_context;
+                report_context.settled_date = yesterday_date_for_email;
+
                 // Generate email body with is_daily_strategy flag set to true and current prices
                 std::string email_body = email_sender->generate_trading_report_body(
                     positions,
                     risk_eval.is_ok() ? std::make_optional(risk_eval.value()) : std::nullopt,
-                    strategy_metrics,
-                    daily_executions,
-                    date_str,
-                    true,  // is_daily_strategy
+                    strategy_metrics, daily_executions, date_str,
+                    true,                       // is_daily_strategy
                     previous_day_close_prices,  // Pass Day T-1 close prices for today's positions
-                    db,  // Pass database for symbols reference table
-                    yesterday_positions_finalized,  // Now populated with yesterday's finalized positions
-                    yesterday_exit_prices,  // Day T-1 close prices for yesterday's positions
+                    db,                         // Pass database for symbols reference table
+                    yesterday_positions_finalized,  // Now populated with yesterday's finalized
+                                                    // positions
+                    yesterday_exit_prices,   // Day T-1 close prices for yesterday's positions
                     yesterday_entry_prices,  // Day T-2 close prices for yesterday's positions
                     yesterday_daily_metrics_final,  // Yesterday's metrics
                     // E2-F11: the charts query THIS book. The overload used to hardcode the
                     // trend-following strategy id and an empty portfolio, so every equity
                     // email rendered empty charts.
-                    std::string(kEquityStrategyId),
-                    portfolio_id
-                );
-                
+                    std::string(kEquityStrategyId), portfolio_id, report_context);
+
                 // Send email without CSV attachments (CSV export disabled for mean reversion)
                 std::vector<std::string> attachments = {};  // No CSV files for mean reversion
 

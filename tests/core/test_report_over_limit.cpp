@@ -266,11 +266,12 @@ TEST(ReportOverLimitTwinSourceGuard, BothFuturesRunnersHandTheReportTheSameInput
          {"apps/strategies/live_portfolio_conservative.cpp", "apps/strategies/live_portfolio.cpp"}) {
         const std::string src = read_source(runner);
         if (src.empty()) GTEST_SKIP() << "runner source not found from the test working directory";
-        EXPECT_EQ(count_of(src, "trade_ngin::over_limit_report(one_pass_day, overlay_columns,\n"
-                                "                                                      "
-                                "portfolio_config.risk_modules,\n"
-                                "                                                      "
-                                "portfolio_config.per_name_cap));"),
+        EXPECT_EQ(count_of(src,
+                           "trade_ngin::over_limit_report(one_pass_day, overlay_columns,\n"
+                           "                                                      "
+                           "portfolio_config.risk_modules,\n"
+                           "                                                      "
+                           "portfolio_config.per_name_cap),"),
                   1)
             << runner;
     }
