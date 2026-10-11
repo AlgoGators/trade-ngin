@@ -1,0 +1,144 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8" />
+<style>
+body { font-family: Arial, sans-serif; margin: 20px; background-color: #f9f9f9; }
+.container { max-width: 1200px; margin: 0 auto; background-color: white; padding: 30px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }
+h1, h2, h3 { color: #333; font-family: Arial, sans-serif; }
+h1 { font-size: 24px; margin-bottom: 5px; }
+h2 { font-size: 20px; margin-top: 25px; margin-bottom: 10px; border-bottom: 2px solid #2c5aa0; padding-bottom: 5px; }
+h3 { font-size: 16px; margin-top: 20px; margin-bottom: 10px; }
+table { border-collapse: collapse; width: 100%; margin: 10px 0; font-size: 14px; font-family: Arial, sans-serif; }
+th, td { border: 1px solid #ddd; padding: 10px; text-align: left; }
+th { background-color: #f2f2f2; font-weight: bold; }
+.metric { margin: 8px 0; font-size: 14px; line-height: 1.6; font-family: Arial, sans-serif; }
+.positive { color: #1a7f37; font-weight: 500; }
+.negative { color: #b42318; font-weight: 500; }
+.neutral { color: #0b6efd; font-weight: 500; }
+.header-section { margin-bottom: 30px; display: flex; align-items: center; }
+.header-section img { width: 80px; height: 80px; margin-right: 20px; }
+.header-text { flex: 1; }
+.header-info { color: #666; font-size: 14px; margin-top: 10px; font-family: Arial, sans-serif; }
+.fund-branding { color: #2c5aa0; font-weight: bold; font-size: 16px; font-family: Arial, sans-serif; }
+.metrics-section { margin: 20px 0; }
+.metrics-category { background-color: #fff5e6; padding: 15px; border-radius: 5px; margin-bottom: 20px; }
+.footer-note { background-color: #fff9e6; border-left: 4px solid #ffc107; padding: 15px; margin: 20px 0; font-size: 13px; color: #666; font-family: Arial, sans-serif; }
+.alert-note { background-color: #fee2e2; border-left: 4px solid #dc2626; padding: 15px; margin: 20px 0; font-size: 13px; color: #991b1b; font-family: Arial, sans-serif; }
+.summary-stats { background-color: #fff5e6; padding: 15px; margin: 15px 0; border-radius: 5px; font-family: Arial, sans-serif; font-size: 14px; }
+.chart-container { margin: 20px 0; padding: 20px; background-color: #f8f9fa; border-radius: 8px; text-align: center; }
+.weekend-message { background-color: #e6f3ff; border-left: 4px solid #2c5aa0; padding: 20px; margin: 20px 0; font-size: 16px; }
+</style>
+</head>
+<body>
+<div class="container">
+<div class="header-section">
+<img src="cid:algogators_logo" alt="AlgoGators Logo">
+<div class="header-text">
+<span class="fund-branding">AlgoGators</span><br>
+<h1>Daily Trading Report</h1>
+<div class="header-info">2026-06-22 | Trend Following Strategy</div>
+</div>
+</div>
+<div style="background: linear-gradient(135deg, #fef3c7 0%, #fde68a 100%); border: 2px solid #f59e0b; border-radius: 8px; padding: 20px 30px; margin: 20px 0 30px 0; box-shadow: 0 4px 6px rgba(0,0,0,0.1);">
+<h2 style="margin: 0 0 10px 0; color: #92400e; font-size: 20px; border-bottom: 2px solid #92400e; padding-bottom: 8px; display: inline-block;">Yesterday was Sunday</h2>
+<p style="margin: 15px 0 5px 0; color: #78350f; font-size: 15px; line-height: 1.6;">Agricultural futures settlement prices for Sunday (2026-06-21) are not yet available, as these contracts begin trading Sunday evening. The PnL for these contracts will be updated in the next report once settlement data is released.</p>
+<p style="margin: 5px 0 0 0; color: #92400e; font-weight: 600; font-size: 14px;">Please monitor these positions closely.</p>
+</div>
+<h2>Today's Positions</h2>
+<table>
+<tr><th>Symbol</th><th>Quantity</th><th>Market Price</th><th>Notional</th><th>% of Total</th></tr>
+<tr>
+<td>QGOOGL</td>
+<td>11</td>
+<td>$353.65</td>
+<td>$3742.80</td>
+<td>45.48%</td>
+</tr>
+<tr>
+<td>QTMUS</td>
+<td>26</td>
+<td>$173.97</td>
+<td>$4486.94</td>
+<td>54.52%</td>
+</tr>
+</table>
+<div class="summary-stats">
+<strong>Active Positions:</strong> 2<br>
+<strong>Total Notional:</strong> $8,229.74<br>
+<strong>Total Margin Posted:</strong> $8,229.74
+</div>
+<h2>Daily Executions</h2>
+<table>
+<tr><th>Symbol</th><th>Side</th><th>Quantity</th><th>Price</th><th>Notional</th><th>Transaction Cost</th></tr>
+<tr>
+<td>QGOOGL</td>
+<td class="negative">SELL</td>
+<td>2</td>
+<td>$353.65</td>
+<td>$838.28</td>
+<td>$1.02</td>
+</tr>
+<tr>
+<td>QTMUS</td>
+<td class="positive">BUY</td>
+<td>26</td>
+<td>$173.97</td>
+<td>$4486.94</td>
+<td>$1.34</td>
+</tr>
+</table>
+<div class="summary-stats">
+<strong>Trades:</strong> 2<br>
+<strong>Notional Traded:</strong> $5,325.21<br>
+<strong>Transaction Costs:</strong> $2.36
+</div>
+<h2>Yesterday's Finalized Position Results</h2>
+<table>
+<tr><th>Symbol</th><th>Quantity</th><th>Entry Price</th><th>Exit Price</th><th>Realized PnL</th></tr>
+<tr><td>QGOOGL</td><td>13.46</td><td>337.39</td><td>353.65</td><td class="positive">$0.00</td></tr>
+</table>
+<h2>2026-06-21 Metrics</h2>
+<div class="metrics-category">
+<div class="metric"><strong>Total Positions:</strong> 1</div>
+<div class="metric"><strong>Daily Return:</strong> <span class="positive">0.22%</span></div>
+<div class="metric"><strong>Daily Unrealized PnL (Gross):</strong> <span class="positive">$218.92</span></div>
+<div class="metric"><strong>Daily Realized PnL (Gross):</strong> <span class="neutral">$0.00</span></div>
+<div class="metric"><strong>Daily Total PnL (Net):</strong> <span class="positive">$217.83</span></div>
+</div>
+<div class="metrics-section">
+<h2>Portfolio Snapshot</h2>
+<div class="metrics-category">
+<div class="metric"><strong>Total Cumulative Return:</strong> <span class="negative">-0.45%</span></div>
+<div class="metric"><strong>Total Annualized Return:</strong> <span class="negative">-1.86%</span></div>
+<div class="metric"><strong>Historical Volatility:</strong> <span>19.24%</span></div>
+<br>
+<br>
+<div class="metric"><strong>Total Unrealized PnL (Gross):</strong> <span class="positive">$180.38</span></div>
+<div class="metric"><strong>Total Realized PnL (Gross):</strong> <span class="negative">$-559.17</span></div>
+<div class="metric"><strong>Total PnL (Net):</strong> <span class="negative">$-448.21</span></div>
+<br>
+<div class="metric"><strong>Gross Leverage:</strong> <span>0.08x</span></div>
+<div class="metric"><strong>Net Leverage:</strong> <span>0.08x</span></div>
+<br>
+<div class="metric"><strong>Margin Posted:</strong> <span>$8,229.74</span></div>
+<div class="metric"><strong>Equity-to-Margin Ratio:</strong> <span>12.10x</span></div>
+<div class="metric"><strong>Margin Cushion:</strong> <span>100.00%</span></div>
+<br>
+<div class="metric"><strong>Current Portfolio Value:</strong> <span>$99,551.79</span></div>
+<div class="metric"><strong>Cash Available:</strong> <span>$91,322.05</span></div>
+</div>
+</div>
+<h2>Charts</h2>
+<h2>Symbols Reference</h2>
+<p>Database unavailable; symbols reference not included.</p>
+<div class="footer-note">
+<strong>Note:</strong> This strategy is based on daily OHLCV data. We currently only provide data for the front-month contract.<br><br>
+All values reflect a trading start date of October 5th, 2025.<br><br>
+As of March 1st, 2026, we expanded our tradeable universe by adding 6 new contracts: ZT (2-Year T-Note), ZF (5-Year T-Note), 6A (Australian Dollar), 6L (Brazilian Real), HO (Heating Oil), and NG (Natural Gas).
+</div>
+<hr style="margin-top: 30px; border: none; border-top: 1px solid #ddd;">
+<p style="text-align: center; color: #999; font-size: 12px; margin-top: 20px; font-family: Arial, sans-serif;">Generated by AlgoGator's Trade-ngin</p>
+</div>
+</body>
+</html>
