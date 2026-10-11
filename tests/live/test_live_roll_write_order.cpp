@@ -101,7 +101,7 @@ TEST(LiveRollWriteOrder, TheDaysExecutionsAreStoredBeforeTheDayT1RowsAreReWritte
         EXPECT_NE(phase5.find("t1_position_rewrites.emplace_back(strategy_name,"), npos) << runner;
 
         const auto replace_at = src.find("db->replace_roll_day_executions(");
-        const auto store_at = src.find("db->store_executions(executions,");
+        const auto store_at = src.find("{{strategy_name, executions}}, combined_strategy_id, portfolio_id, now,");
         const auto t1_rows_at = src.find("db->store_positions(finalized_positions,");
         const auto day_t_rows_at = src.find("db->store_positions(strategy_positions_vec,");
         ASSERT_NE(replace_at, npos) << runner;
@@ -118,13 +118,12 @@ TEST(LiveRollWriteOrder, TheDaysExecutionsAreStoredBeforeTheDayT1RowsAreReWritte
                                                "t1_position_rewrites) {",
                                           "======= Daily Position Report =======");
         EXPECT_NE(write.find("db->store_positions(finalized_positions,"), npos) << runner;
-        // A sleeve that stores legs is swept inside its store, never apart from it.
-        const auto sweep_at = src.find("db->delete_roll_executions(now, strategy_name_rl, portfolio_id,");
-        const auto skip_at = src.find("if (roll_legs_of(strategy_name_rl) > 0) continue;");
-        ASSERT_NE(sweep_at, npos) << runner;
-        ASSERT_NE(skip_at, npos) << runner;
-        EXPECT_LT(skip_at, sweep_at) << runner;
-        EXPECT_LT(sweep_at - skip_at, 120u) << runner << ": the skip guards the sweep itself";
+        // T-DATED R3: no sweep is committed apart from its store. Every sleeve's rows of the day
+        // are replaced by the one-transaction call; the runners call no bare delete.
+        EXPECT_EQ(src.find("db->delete_day_executions("), npos) << runner;
+        EXPECT_EQ(src.find("db->delete_roll_executions("), npos) << runner;
+        EXPECT_EQ(src.find("db->delete_stale_executions("), npos) << runner;
+        EXPECT_EQ(src.find("db->store_executions("), npos) << runner;
     }
 }
 
@@ -140,10 +139,10 @@ TEST(LiveRollWriteOrder, AFailedExecutionsStoreWithRollLegsOwedStopsBeforePositi
         ASSERT_FALSE(src.empty()) << runner;
         const auto replace_at = src.find("db->replace_roll_day_executions(");
         ASSERT_NE(replace_at, npos) << runner;
-        EXPECT_EQ(src.find("db->replace_roll_day_executions(", replace_at + 1), npos)
+        EXPECT_EQ(src.find("db->replace_roll_day_executions(\n                    leg_sleeves,", replace_at + 1), npos)
             << runner << ": one call, one transaction, for every sleeve with legs";
         const std::string leg_store = between(src, "db->replace_roll_day_executions(",
-                                              "db->delete_roll_executions(now, strategy_name_rl, portfolio_id,");
+                                              "auto replace_sleeve_day = [&](const std::string& strategy_name,");
         ASSERT_FALSE(leg_store.empty()) << runner << ": the legs are stored before the other sleeves are swept";
         EXPECT_EQ(leg_store.find("leg_sleeves, combined_strategy_id, portfolio_id, now, \"trading.executions\");"),
                   leg_store.find("leg_sleeves,"))
@@ -169,16 +168,11 @@ TEST(LiveRollWriteOrder, AFailedExecutionsStoreWithRollLegsOwedStopsBeforePositi
         EXPECT_NE(batch.find("std::sort(leg_sleeves.begin(), leg_sleeves.end(),"), npos) << runner;
         EXPECT_NE(batch.find("return a.first < b.first;"), npos) << runner;
         // Every other execution write of the run comes after the legs' store, and skips those sleeves.
-        const auto other_at = src.find("db->store_executions(executions,");
-        const auto stale_at = src.find("db->delete_stale_executions(");
-        const auto sweep_at = src.find("db->delete_roll_executions(now, strategy_name_rl, portfolio_id,");
+        const auto other_at = src.find("{{strategy_name, executions}}, combined_strategy_id, portfolio_id, now,");
         ASSERT_NE(other_at, npos) << runner;
-        ASSERT_NE(stale_at, npos) << runner;
-        EXPECT_LT(replace_at, sweep_at) << runner;
-        EXPECT_LT(replace_at, stale_at) << runner;
         EXPECT_LT(replace_at, other_at) << runner;
         const std::string others = between(src, "// Store executions for each strategy without ROLL legs",
-                                           "if (!executions.empty()) {");
+                                           "replace_sleeve_day(strategy_name, executions);");
         EXPECT_NE(others.find("if (roll_legs_of(strategy_name) > 0) continue;"), npos) << runner;
         EXPECT_LT(replace_at, src.find("db->store_positions(finalized_positions,")) << runner;
         EXPECT_LT(replace_at,

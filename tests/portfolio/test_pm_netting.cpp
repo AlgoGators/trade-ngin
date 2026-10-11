@@ -259,7 +259,9 @@ TEST(PmNettingSource, BothFuturesRunnersNetTheDaysSleeveRowsBeforeStoringThem) {
         }
         const auto strict = src.find("STRICT_ASSERTION failed");
         const auto net = src.find("transaction_cost::apply_netting_adjustments(");
-        const auto store = src.find("db->store_executions(executions,");
+        // the first store of the day's executions (T-DATED R3: every sleeve's rows go through the
+        // one-transaction replace; the sleeves with ROLL legs first)
+        const auto store = src.find("db->replace_roll_day_executions(");
         EXPECT_NE(strict, std::string::npos) << f;
         EXPECT_NE(net, std::string::npos) << f << ": the runner never nets its sleeve rows";
         EXPECT_NE(store, std::string::npos) << f;
@@ -306,7 +308,9 @@ TEST(PmNettingSource, BothFuturesRunnersAddUpTheDaysCostAfterNettingThroughTheHe
         }
         const auto last_net = src.rfind("transaction_cost::apply_netting_adjustments(");
         const auto sum = src.find("total_daily_transaction_costs = transaction_cost::add_net_costs(");
-        const auto store = src.find("db->store_executions(executions,");
+        // the first store of the day's executions (T-DATED R3: every sleeve's rows go through the
+        // one-transaction replace; the sleeves with ROLL legs first)
+        const auto store = src.find("db->replace_roll_day_executions(");
         // EXPECT, not ASSERT: a failure in one runner must not end the test before its twin is
         // read. The checks that need all three positions are skipped for that file only.
         EXPECT_NE(last_net, std::string::npos) << f;

@@ -314,16 +314,37 @@ TEST(RunRefusalArmsSource, TheDayClassificationAbortIsDeletedAndTheFeedHoleRefus
         EXPECT_EQ(src.find("return 1;  // Fail fast on data issues"), npos);
         EXPECT_EQ(src.find("is_non_trading_day"), npos);
 
-        const auto refusal = src.find("FEED_HOLE_REFUSAL held symbol ");
+        // T-DATED: the refusal's lines and its ruling are rule_held_feed_holes
+        // (live/session_book_gate.hpp), executed by tests/live/test_held_feed_ruling.cpp; the
+        // runner calls it and returns on its verdict.
+        const auto refusal = src.find("rule_held_feed_holes(");
         const auto upsert = src.find("db->store_live_run_metadata(");
         ASSERT_NE(refusal, npos) << "the held-symbol feed-hole refusal is missing";
         ASSERT_NE(upsert, npos);
         EXPECT_LT(refusal, upsert)
             << "the feed-hole refusal runs AFTER the live_run_metadata upsert: a refused run "
                "would leave a metadata row that reads as a completed run (S-1)";
-        const auto ret = src.find("if (true_live) {\n                    return 1;", refusal);
+        const auto ret = src.find("if (hole_ruling.refuse) {\n                return 1;", refusal);
         ASSERT_NE(ret, npos);
         EXPECT_LT(ret, upsert) << "the refusal must RETURN before the upsert";
+    }
+}
+
+TEST(RunRefusalArmsSource, TheEquityRunnerWritesItsMetadataRowBelowItsGuards) {
+    // T-DATED R5 (reads source; the executed proof is the mode gate's refused equity run, which
+    // must leave no live_run_metadata row): the row used to be written before the bars were
+    // loaded, so every refused run left one.
+    const std::string src = read_source("apps/strategies/live_equity_mean_reversion.cpp");
+    if (src.empty()) GTEST_SKIP() << "runner source not found from the test working directory";
+    const auto upsert = src.find("db->store_live_run_metadata(");
+    ASSERT_NE(upsert, npos);
+    EXPECT_EQ(src.find("db->store_live_run_metadata(", upsert + 1), npos) << "one write only";
+    for (const char* guard :
+         {"rule_feed_freshness(freshness, tolerance_days, as_of_ymd,", "No historical data loaded.",
+          "A run was missed. Replay every date from ", "rule_held_feed_holes("}) {
+        const auto at = src.find(guard);
+        ASSERT_NE(at, npos) << guard;
+        EXPECT_LT(at, upsert) << "the metadata row is written above the guard: " << guard;
     }
 }
 
@@ -342,7 +363,7 @@ TEST(RunRefusalArmsSource, TheTwinsCarryTheSameRefusalAndUpsertBlock) {
     EXPECT_EQ(blocks[0], blocks[1])
         << "live_portfolio_conservative.cpp and live_portfolio.cpp are twins: the refusal and "
            "the upsert must be byte-identical in both";
-    EXPECT_NE(blocks[0].find("FEED_HOLE_REFUSAL held symbol "), npos)
+    EXPECT_NE(blocks[0].find("rule_held_feed_holes("), npos)
         << "the feed-hole refusal must sit inside the classification-to-upsert block";
     EXPECT_EQ(blocks[0].find("DATA ISSUE DETECTED - ABORTING"), npos);
     EXPECT_NE(blocks[0].find("db->store_live_run_metadata("), npos);

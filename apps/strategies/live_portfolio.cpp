@@ -315,7 +315,12 @@ int main(int argc, char* argv[]) {
         // Get current date for daily processing (or use override date)
         auto now = use_override_date ? target_date : std::chrono::system_clock::now();
         auto now_time_t = std::chrono::system_clock::to_time_t(now);
-        std::tm* now_tm = std::localtime(&now_time_t);
+        // A COPY of the run date's local-time fields, never the pointer std::localtime returns: that
+        // points at the C library's one static struct, which every later std::gmtime or
+        // std::localtime call may overwrite before the console date and the email date read it.
+        std::tm now_tm_fields{};
+        core::safe_localtime(&now_time_t, &now_tm_fields);
+        const std::tm* now_tm = &now_tm_fields;
 
         // Set start date based on configured historical window
         auto start_date = now - std::chrono::hours(24 * app_config.live.historical_days);
@@ -1026,57 +1031,17 @@ int main(int argc, char* argv[]) {
             const std::string as_of_ymd = core::format_utc_date(end_date);
             const auto freshness = assess_feed_freshness(last_bar_date, as_of_ymd, symbols);
 
-            if (freshness.absent > 0) {
-                // Absence is not "a few days behind" -- there is no date to measure. It
-                // is reported on its own terms and treated as stale regardless of the
-                // tolerance.
-                const std::string msg =
-                    "Futures feed is missing " + std::to_string(freshness.absent) + " of " +
-                    std::to_string(freshness.symbols) +
-                    " requested symbol(s) entirely, first: " + freshness.absent_symbol +
-                    " (no bar of any date as of " + as_of_ymd + ").";
-                if (use_override_date) {
-                    WARN(msg + " Proceeding in historical-replay mode.");
-                } else {
-                    ERROR(msg + " Refusing to run live with an incomplete universe. "
-                                "Refresh the OHLCV feed or remove the symbol from config.");
-                    return 1;
-                }
-            }
-
-            if (!freshness.any_data) {
-                const std::string msg =
-                    "Futures data freshness cannot be established: none of the " +
-                    std::to_string(freshness.symbols) +
-                    " loaded symbols carries a usable bar date as of " + as_of_ymd + ".";
-                if (use_override_date) {
-                    WARN(msg + " Proceeding in historical-replay mode.");
-                } else {
-                    ERROR(msg + " Refusing to run live without a feed. Refresh the OHLCV "
-                                "feed.");
-                    return 1;
-                }
-            } else if (freshness.days_behind > tolerance_days) {
-                const std::string msg =
-                    "Futures data is stale: the stalest of " +
-                    std::to_string(freshness.symbols) + " symbols (" +
-                    freshness.stalest_symbol + ") last printed " + freshness.stalest_date +
-                    ", " + std::to_string(freshness.days_behind) +
-                    " calendar days before " + as_of_ymd + " (tolerance " +
-                    std::to_string(tolerance_days) + " days).";
-                if (use_override_date) {
-                    WARN(msg + " Proceeding in historical-replay mode.");
-                } else {
-                    ERROR(msg + " Refusing to run live on stale data. Refresh the OHLCV "
-                                "feed or raise live.data_staleness_tolerance_days.");
-                    return 1;
-                }
-            } else {
-                INFO("Futures feed freshness: stalest of " +
-                     std::to_string(freshness.symbols) + " symbols (" +
-                     freshness.stalest_symbol + ") at " + freshness.stalest_date + ", " +
-                     std::to_string(freshness.days_behind) + " days behind " + as_of_ymd +
-                     " (tolerance " + std::to_string(tolerance_days) + ").");
+            // The arms are the shared ruling's (live/data_freshness.hpp, rule_feed_freshness; HD
+            // 2026-10-10): an empty feed refuses every run; a requested symbol with no bar and a
+            // feed staler than the tolerance refuse a run with no date. A dated run goes on: its
+            // book stops only for what it HOLDS, and the held-symbol check below names them.
+            const auto freshness_ruling = rule_feed_freshness(freshness, tolerance_days, as_of_ymd,
+                                                              use_override_date, "Futures");
+            for (const auto& line : freshness_ruling.warnings) WARN(line);
+            for (const auto& line : freshness_ruling.errors) ERROR(line);
+            if (!freshness_ruling.info.empty()) INFO(freshness_ruling.info);
+            if (freshness_ruling.refuse) {
+                return 1;
             }
         }
 
@@ -1234,39 +1199,36 @@ int main(int argc, char* argv[]) {
         {
             const int hole_tolerance_days = app_config.live.data_staleness_tolerance_days;
             std::vector<HeldFeedHole> held_holes;
-            if (max_no_bar_age_days(t1_classification) > hole_tolerance_days) {
+            if (any_no_bar_past_tolerance(t1_classification, hole_tolerance_days)) {
                 auto held_book_result = db->load_positions_by_date(
                     combined_strategy_id, "", coordinator_config.portfolio_id,
                     now - std::chrono::hours(24), "trading.positions");
                 if (held_book_result.is_ok()) {
                     held_holes = held_feed_holes_past_tolerance(
                         t1_classification, held_book_result.value(), hole_tolerance_days);
+                    // What the book does not hold stops nothing: one line names it.
+                    const std::string not_held = unheld_no_bar_line(
+                        t1_classification, held_book_result.value(), hole_tolerance_days);
+                    if (!not_held.empty()) WARN(not_held);
                 } else {
                     WARN("FEED_HOLE_REFUSAL could not read the held book to test the feed "
                          "holes: " +
                          std::string(held_book_result.error()->what()));
                 }
             }
-            if (!held_holes.empty()) {
-                const bool true_live =
-                    run_date_is_host_date(now, std::chrono::system_clock::now());
-                for (const auto& hole : held_holes) {
-                    const std::string msg =
-                        "FEED_HOLE_REFUSAL held symbol " + hole.symbol + " (quantity " +
-                        std::to_string(hole.held_quantity) + ") has had no bar for " +
-                        std::to_string(hole.age_days) + " day(s) (last bar " +
-                        hole.last_bar_date + "), past live.data_staleness_tolerance_days=" +
-                        std::to_string(hole_tolerance_days);
-                    if (true_live) {
-                        ERROR(msg + ". Refusing to run live: refresh the OHLCV feed, then run "
-                                    "this date.");
-                    } else {
-                        WARN(msg + ". Replay of a past date: not refused.");
-                    }
+            // The one ruling, shared with the equity runner (rule_held_feed_holes): refused on
+            // the host's own date, a warning when the date is run on another day.
+            const HeldFeedHoleRuling hole_ruling = rule_held_feed_holes(
+                held_holes, hole_tolerance_days, now, std::chrono::system_clock::now());
+            for (const auto& line : hole_ruling.lines) {
+                if (hole_ruling.refuse) {
+                    ERROR(line);
+                } else {
+                    WARN(line);
                 }
-                if (true_live) {
-                    return 1;
-                }
+            }
+            if (hole_ruling.refuse) {
+                return 1;
             }
         }
 
@@ -2666,73 +2628,35 @@ int main(int argc, char* argv[]) {
             }
         }
 
-        for (const auto& strategy_name_rl : strategy_names) {
-            if (roll_legs_of(strategy_name_rl) > 0) continue;
-            auto sweep = db->delete_roll_executions(now, strategy_name_rl, portfolio_id,
-                                                    "trading.executions");
-            if (sweep.is_error()) {
-                ERROR("ROLL_LEG STOP: today's ROLL executions of " + strategy_name_rl +
-                      " could not be swept (" + std::string(sweep.error()->what()) +
-                      "); refusing to run: a re-run would store them twice");
-                return 1;
-            }
-        }
-
-        // Store executions for each strategy without ROLL legs
-        for (const auto& [strategy_name, executions] : all_strategy_executions) {
-            if (roll_legs_of(strategy_name) > 0) continue;  // stored above
-            if (!executions.empty()) {
-                // Before inserting, delete any stale executions for today with the same order_ids
-                try {
-                    // Build unique order_id list
-                    std::set<std::string> unique_order_ids;
-                    for (const auto& exec : executions) {
-                        unique_order_ids.insert(exec.order_id);
-                    }
-
-                    if (!unique_order_ids.empty()) {
-                        // Convert set to vector for the delete method
-                        std::vector<std::string> order_ids_vector(unique_order_ids.begin(),
-                                                                  unique_order_ids.end());
-
-                        INFO("Deleting stale executions for strategy " + strategy_name + " with " +
-                             std::to_string(order_ids_vector.size()) + " order_ids");
-
-                        // Use the delete_stale_executions method with strategy name
-                        auto del_res = db->delete_stale_executions(
-                            order_ids_vector, now, strategy_name, portfolio_id,
-                            "trading.executions");
-                        if (del_res.is_error()) {
-                            WARN("Failed to delete stale executions for strategy " + strategy_name +
-                                 ": " + std::string(del_res.error()->what()));
-                        } else {
-                            INFO("Stale executions (if any) deleted successfully for strategy: " +
-                                 strategy_name);
-                        }
-                    }
-                } catch (const std::exception& e) {
-                    WARN("Exception while deleting stale executions for strategy " + strategy_name +
-                         ": " + std::string(e.what()));
-                }
-
-                // Store executions with combined strategy_id and individual strategy_name
-                auto save_result =
-                    db->store_executions(executions,
-                                         combined_strategy_id,  // Combined strategy_id for tier 2
-                                         strategy_name,  // Individual strategy_name for tier 3
-                                         portfolio_id,   // Portfolio identifier
-                                         "trading.executions");
-
-                if (save_result.is_error()) {
-                    ERROR("Failed to store executions for strategy " + strategy_name + ": " +
-                          std::string(save_result.error()->what()));
-                } else {
-                    INFO("Successfully stored " + std::to_string(executions.size()) +
-                         " executions for strategy: " + strategy_name);
-                }
+        // T-DATED R3: a sleeve without ROLL legs. Its rows of the day are swept (every row, not
+        // only ROLL rows: a re-run of a date leaves no order an earlier run of the date made and
+        // this run does not) and this run's rows stored in ONE transaction, sleeve by sleeve, so a
+        // store that fails leaves the sleeve's rows of the day as they were. A sleeve the run
+        // makes no order for is swept the same way.
+        auto replace_sleeve_day = [&](const std::string& strategy_name,
+                                      const std::vector<ExecutionReport>& executions) {
+            auto save_result = db->replace_roll_day_executions(
+                {{strategy_name, executions}}, combined_strategy_id, portfolio_id, now,
+                "trading.executions");
+            if (save_result.is_error()) {
+                ERROR("Failed to store executions for strategy " + strategy_name + ": " +
+                      std::string(save_result.error()->what()) +
+                      "; the sleeve's stored executions of the day are left as they were");
+            } else if (!executions.empty()) {
+                INFO("Successfully stored " + std::to_string(executions.size()) +
+                     " executions for strategy: " + strategy_name);
             } else {
                 INFO("No executions to store for strategy: " + strategy_name);
             }
+        };
+        for (const auto& strategy_name_rl : strategy_names) {
+            if (all_strategy_executions.count(strategy_name_rl) > 0) continue;  // stored below
+            replace_sleeve_day(strategy_name_rl, {});
+        }
+        // Store executions for each strategy without ROLL legs
+        for (const auto& [strategy_name, executions] : all_strategy_executions) {
+            if (roll_legs_of(strategy_name) > 0) continue;  // stored above
+            replace_sleeve_day(strategy_name, executions);
         }
 
         // T-ROLLX-FIX commit 5: the Day T-1 rows PHASE 5 finalized, written now that the day's
