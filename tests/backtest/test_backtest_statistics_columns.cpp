@@ -531,8 +531,8 @@ OverlayColumns sized_row() {
 
 }  // namespace
 
-// The batch INSERT names the six once and writes one value a cell a row: a sized row its ten
-// significant digits, a blind row its two leverages and four NULLs, a warm-up or seed row six
+// The batch INSERT names the six once and writes one value a cell a row: a sized row its
+// round-trip text, a blind row its two leverages and four NULLs, a warm-up or seed row six
 // NULLs. A run with no cells (the equity book) names no column.
 TEST(BacktestCurveCells, EveryRowNamesTheSixAndARowWithoutAReadingWritesNull) {
     OverlayColumns blind;
@@ -546,7 +546,7 @@ TEST(BacktestCurveCells, EveryRowNamesTheSixAndARowWithoutAReadingWritesNull) {
     const auto quote = [](const std::string& text) { return "'" + text + "'"; };
     EXPECT_EQ(backtest_curve_cell_values(cells[0], quote), ", NULL, NULL, NULL, NULL, NULL, NULL");
     EXPECT_EQ(backtest_curve_cell_values(cells[1], quote),
-              ", '0.1234567891'::numeric, '0.2469135782'::numeric, '0.3703703673'::numeric, "
+              ", '0.123456789123'::numeric, '0.2469135782'::numeric, '0.3703703673'::numeric, "
               "'2.345678901'::numeric, '-0.4567890123'::numeric, '6338.123456'::numeric");
     EXPECT_EQ(backtest_curve_cell_values(cells[2], quote),
               ", NULL, NULL, NULL, '1.5'::numeric, '-1.5'::numeric, NULL");
