@@ -8,6 +8,7 @@
 #include <sstream>
 #include <vector>
 #include "trade_ngin/core/logger.hpp"
+#include "trade_ngin/core/time_utils.hpp"
 #include "trade_ngin/core/types.hpp"
 #include "trade_ngin/data/conversion_utils.hpp"
 
@@ -248,60 +249,22 @@ Result<void> LiveResultsManager::save_equity_curve(const Timestamp& date) {
         return Result<void>();
     }
 
-    double equity_to_save = current_equity_;
-
-    // Validate equity value - check for invalid values:
-    // 1. Zero or negative
-    // 2. NaN or infinity
-    // 3. Suspiciously small (< $1000 - likely garbage/uninitialized)
-    bool is_invalid = (equity_to_save <= 0.0) || std::isnan(equity_to_save) ||
-                      std::isinf(equity_to_save) ||
-                      (equity_to_save > 0.0 && equity_to_save < 1000.0);
-
-    if (is_invalid) {
-        WARN("Invalid equity value: " + std::to_string(equity_to_save) +
-             " (zero, negative, NaN, inf, or suspiciously small). Attempting to use previous day's "
-             "value");
-
-        // Try to get the most recent valid equity value (>= 1000) for THIS
-        // PORTFOLIO and THIS STREAM.
-        //
-        // DB-equity-curve-fallback-stream: the predicate used to stop at
-        // portfolio_id, while trading.equity_curve is keyed
-        // (portfolio_id, strategy_id, timestamp, portfolio_type). Once a second
-        // stream exists on the same portfolio and strategy, the most recent row
-        // by timestamp can belong to the OTHER stream, and this fallback would
-        // carry that stream's equity into a row it then writes as ours -- an
-        // invented number with no run behind it, laundered through a path whose
-        // whole job is to avoid writing garbage. One stream exists today, so
-        // adding the predicate selects the same row it selected before.
-        std::string get_prev_equity_query =
-            "SELECT equity FROM trading.equity_curve "
-            "WHERE strategy_id = '" +
-            strategy_id_ + "' AND portfolio_id = '" + portfolio_id_ +
-            "' AND portfolio_type = '" + std::string(kDefaultEquityCurveStream) +
-            "' "
-            "AND equity >= 1000.0 "
-            "ORDER BY timestamp DESC LIMIT 1";
-
-        auto prev_result = db_->execute_query(get_prev_equity_query);
-        if (prev_result.is_ok() && prev_result.value()->num_rows() > 0) {
-            auto table = prev_result.value();
-            // Phase 6 §1.17a: type-aware Arrow access.
-            auto r = DataConversionUtils::safe_get_double(table->column(0), 0, "equity");
-            if (r.is_ok()) {
-                equity_to_save = r.value();
-                INFO("Using previous equity value: " + std::to_string(equity_to_save));
-            } else {
-                ERROR("Cannot save equity curve: failed to read previous equity (" +
-                      std::string(r.error()->what()) + ")");
-                return Result<void>();
-            }
-        } else {
-            ERROR("Cannot save equity curve: equity is invalid (" +
-                  std::to_string(current_equity_) + ") and no previous valid value found");
-            return Result<void>();  // Don't save invalid values
-        }
+    // An equity value the curve cannot hold (zero, negative, NaN, infinite, or under 1,000:
+    // garbage or uninitialised) is REFUSED: no curve row is written and the error is returned,
+    // so save_all_results lists equity_curve among the tables that failed (T-8D-2 R47), as the
+    // Day T-1 re-write already refuses such a value. The earlier behaviour wrote the latest
+    // stored equity of at least 1,000 in its place, with no bound on that row's date: a number
+    // with no run behind it, in a table the statistics read, beside a live_results row that
+    // kept the invalid value.
+    const double equity_to_save = current_equity_;
+    if (!storable_equity_curve_value(equity_to_save)) {
+        const std::string what =
+            "EQUITY_CURVE REFUSED: the equity value " + std::to_string(equity_to_save) + " for " +
+            core::format_utc_date(date) + " (" + strategy_id_ + ", " + portfolio_id_ +
+            ") is zero, negative, not finite or under 1,000; no trading.equity_curve row is "
+            "written for that date";
+        ERROR(what);
+        return make_error<void>(ErrorCode::INVALID_DATA, what, component_id_);
     }
 
     INFO("Saving equity curve point: " + std::to_string(equity_to_save));

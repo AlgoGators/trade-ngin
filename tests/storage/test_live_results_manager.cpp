@@ -1,5 +1,7 @@
 #include <gtest/gtest.h>
 #include <chrono>
+#include <cmath>
+#include <limits>
 #include <memory>
 #include "../core/test_base.hpp"
 #include "../data/test_db_utils.hpp"
@@ -150,6 +152,53 @@ TEST_F(LiveResultsManagerTest, SaveEquityCurveWhenSetInvokesStoreTradingEquityCu
     auto r = mgr_->save_equity_curve(date_at(2026, 3, 15));
     EXPECT_TRUE(r.is_ok());
     EXPECT_EQ(db_->call_count("store_trading_equity_curve"), 1);
+}
+
+// T-8D-2 R47: an equity value the curve cannot hold is refused. No curve row is written, no
+// stored value is read to stand in for it, and the error is returned.
+TEST_F(LiveResultsManagerTest, SaveEquityCurveRefusesAnInvalidValueAndWritesNoRow) {
+    const double invalid[] = {0.0, -5.0, 999.99, std::numeric_limits<double>::quiet_NaN(),
+                              std::numeric_limits<double>::infinity(),
+                              -std::numeric_limits<double>::infinity()};
+    for (double equity : invalid) {
+        mgr_->set_equity(equity);
+        db_->reset_call_counts();
+        auto r = mgr_->save_equity_curve(date_at(2026, 3, 15));
+        ASSERT_TRUE(r.is_error()) << equity;
+        EXPECT_EQ(r.error()->code(), ErrorCode::INVALID_DATA) << equity;
+        EXPECT_NE(std::string(r.error()->what()).find("2026-03-15"), std::string::npos)
+            << "the error names the date: " << r.error()->what();
+        EXPECT_EQ(db_->call_count("store_trading_equity_curve"), 0) << equity;
+    }
+    // The boundary: 1,000 is a value the curve holds.
+    mgr_->set_equity(1000.0);
+    db_->reset_call_counts();
+    EXPECT_TRUE(mgr_->save_equity_curve(date_at(2026, 3, 15)).is_ok());
+    EXPECT_EQ(db_->call_count("store_trading_equity_curve"), 1);
+}
+
+TEST_F(LiveResultsManagerTest, TheStorableEquityValuesAreTheFiniteOnesFromOneThousand) {
+    EXPECT_TRUE(storable_equity_curve_value(1000.0));
+    EXPECT_TRUE(storable_equity_curve_value(500000.0));
+    EXPECT_FALSE(storable_equity_curve_value(999.999999));
+    EXPECT_FALSE(storable_equity_curve_value(0.0));
+    EXPECT_FALSE(storable_equity_curve_value(-1000.0));
+    EXPECT_FALSE(storable_equity_curve_value(std::numeric_limits<double>::quiet_NaN()));
+    EXPECT_FALSE(storable_equity_curve_value(std::numeric_limits<double>::infinity()));
+}
+
+// R47: save_all_results reports the refused table; the other tables are still written.
+TEST_F(LiveResultsManagerTest, SaveAllResultsReportsEquityCurveFailedOnAnInvalidValue) {
+    mgr_->set_positions({make_pos("AAPL", 100.0)});
+    mgr_->set_metrics({{"total_return", 0.05}}, {});
+    mgr_->set_equity(0.0);
+    db_->reset_call_counts();
+    auto r = mgr_->save_all_results("RUN", date_at(2026, 3, 15));
+    ASSERT_TRUE(r.is_error());
+    EXPECT_NE(std::string(r.error()->what()).find("equity_curve"), std::string::npos)
+        << r.error()->what();
+    EXPECT_EQ(db_->call_count("store_trading_equity_curve"), 0);
+    EXPECT_EQ(db_->call_count("store_live_results_complete"), 1);
 }
 
 TEST_F(LiveResultsManagerTest, UpdateLiveResultsInvokesUpdate) {

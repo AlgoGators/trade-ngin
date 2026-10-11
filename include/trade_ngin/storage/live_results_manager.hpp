@@ -2,9 +2,17 @@
 // Manages storage of live trading results to database
 #pragma once
 
+#include <cmath>
 #include "trade_ngin/storage/results_manager_base.hpp"
 
 namespace trade_ngin {
+
+/// An equity value trading.equity_curve may hold: finite and at least 1,000. Zero, a negative
+/// value, NaN, an infinity and a positive value under 1,000 (garbage or an uninitialised figure)
+/// are not; LiveResultsManager::save_equity_curve refuses them (T-8D-2 R47).
+inline bool storable_equity_curve_value(double equity) {
+    return std::isfinite(equity) && equity >= 1000.0;
+}
 
 /**
  * @brief Manages storage of live trading results to database
