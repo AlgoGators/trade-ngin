@@ -371,7 +371,9 @@ Result<void> PostgresDatabase::store_backtest_positions(const std::vector<Positi
                                                         const std::string& run_id,
                                                         const std::string& portfolio_id,
                                                         const std::string& table_name,
-                                                        bool keep_closed_rows) {
+                                                        bool keep_closed_rows,
+                                                        const std::unordered_set<std::string>&
+                                                            no_bar_symbols) {
     std::lock_guard<std::mutex> lock(mutex_);
 
     // Validate connection
@@ -445,7 +447,8 @@ Result<void> PostgresDatabase::store_backtest_positions(const std::vector<Positi
         std::string query =
             "INSERT INTO " + table_name +
             " (run_id, portfolio_id, strategy_id, date, symbol, quantity, average_price, "
-            "unrealized_pnl, realized_pnl, last_update, updated_at, instrument_id) VALUES ";
+            "unrealized_pnl, realized_pnl, last_update, updated_at, instrument_id, row_mark) "
+            "VALUES ";
 
         [[maybe_unused]] bool first = true;
         std::vector<std::string> position_values;
@@ -496,7 +499,9 @@ Result<void> PostgresDatabase::store_backtest_positions(const std::vector<Positi
                      << "'" << last_update_str << "', "
                      << "'" << last_update_str << "', "
                      << (pos.instrument_id.empty() ? std::string("NULL") : txn.quote(pos.instrument_id))
-                     << ")";  // instrument_id (016)
+                     << ", "  // instrument_id (016)
+                     << backtest_position_row_mark_value(no_bar_symbols.count(pos.symbol) > 0)
+                     << ")";  // row_mark (032)
 
             position_values.push_back(value_ss.str());
         }

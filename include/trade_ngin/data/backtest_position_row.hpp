@@ -2,7 +2,21 @@
 
 #pragma once
 
+#include <string>
+
 namespace trade_ngin {
+
+/// The one value backtest.final_positions.row_mark takes (migration 032; its CHECK admits no
+/// other): the row of a futures symbol that printed no bar on the row's date. The position is
+/// held and marked at its last close, so the row books nothing: realized_pnl 0, quantity and
+/// average_price kept.
+inline constexpr const char* kRowMarkNoBar = "NO_BAR";
+
+/// The row_mark cell of a stored row as the INSERT writes it: the mark on a no-bar row, NULL on
+/// every other row.
+inline std::string backtest_position_row_mark_value(bool no_bar) {
+    return no_bar ? "'" + std::string(kRowMarkNoBar) + "'" : std::string("NULL");
+}
 
 /**
  * @brief Whether PostgresDatabase::store_backtest_positions writes a position's row: a row with

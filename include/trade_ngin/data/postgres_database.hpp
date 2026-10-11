@@ -26,6 +26,7 @@
 #include <optional>
 #include <pqxx/pqxx>
 #include <string>
+#include <unordered_set>
 #include <vector>
 #include "trade_ngin/core/error.hpp"
 #include "trade_ngin/core/logger.hpp"
@@ -525,12 +526,17 @@ public:
      *        pass true so a position closed to zero keeps the row carrying that bar's
      *        realized flow -- the live is_dead_row rule. Futures backtests leave it false
      *        and store exactly the rows they always did.
+     * @param no_bar_symbols Migration 032. The symbols of `positions` that printed no bar on
+     *        the rows' date (a futures book's; the coordinator names them): their stored rows
+     *        carry row_mark = 'NO_BAR', every other row NULL. The statement names the column
+     *        on every call, so the table needs migration 032.
      */
     virtual Result<void> store_backtest_positions(
         const std::vector<Position>& positions, const std::string& run_id,
         const std::string& portfolio_id = "BASE_PORTFOLIO",
         const std::string& table_name = "backtest.final_positions",
-        bool keep_closed_rows = false);
+        bool keep_closed_rows = false,
+        const std::unordered_set<std::string>& no_bar_symbols = {});
 
     /**
      * @brief Update live results for previous day finalization (replaces raw SQL UPDATE)

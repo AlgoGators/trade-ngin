@@ -123,6 +123,10 @@ private:
     std::unordered_set<std::string> mark_withheld_;
     std::unordered_set<std::string> mark_change_;
     std::unordered_map<std::string, std::string> row_held_id_;
+    /// Migration 032 (T-8D-2 R50): per futures sleeve, the held symbols that printed no bar in
+    /// this cycle's group. Their row books nothing (realized_pnl 0, quantity and average price
+    /// kept) and is stored with row_mark = 'NO_BAR'; filled where the row is zeroed.
+    std::unordered_map<std::string, std::unordered_set<std::string>> row_no_bar_;
     /// T-ROLLX-FIX (LOOP_SPEC v6.1 section 6.5): the ROLL legs booked so far per sleeve (the RL-
     /// ids' sequence numbers); a ROLL_LEG STOP fails the run (code review X-3).
     std::unordered_map<std::string, size_t> roll_leg_seq_;

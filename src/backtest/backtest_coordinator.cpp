@@ -753,6 +753,7 @@ Result<void> BacktestCoordinator::process_portfolio_day(
         // no later bar, so it is the verdict the next cycle's signal feed acts on.
         mark_withheld_.clear();
         mark_change_.clear();
+        row_no_bar_.clear();
         if (session_hold_enabled_) {
             for (const auto& v : classify_bar_group(session_classifier_, bars)) {
                 if (v.k01_withheld()) mark_withheld_.insert(v.symbol);
@@ -1442,7 +1443,7 @@ Result<void> BacktestCoordinator::process_portfolio_day(
                 // bar. The other accounting methods defer their realized flow to the next written
                 // row (E2-F59) and are not written here.
                 auto write_unbooked_row = [&]() {
-                    if (strategy_method != PnLAccountingMethod::REALIZED_ONLY) return;
+                    if (strategy_method != PnLAccountingMethod::REALIZED_ONLY) return false;
                     Position unbooked = pos;
                     unbooked.realized_pnl = Decimal(0.0);
                     auto unbooked_update =
@@ -1451,12 +1452,15 @@ Result<void> BacktestCoordinator::process_portfolio_day(
                         WARN("Failed to write the no-bar row for " + symbol + ": " +
                              std::string(unbooked_update.error()->what()));
                     }
+                    return true;
                 };
 
                 // Get current close price
                 auto curr_it = current_close_prices.find(symbol);
                 if (curr_it == current_close_prices.end()) {
-                    write_unbooked_row();
+                    // The symbol printed no bar in this group: held, marked at its last close.
+                    // Migration 032: the stored row says so (row_mark = 'NO_BAR').
+                    if (write_unbooked_row()) row_no_bar_[strategy_id].insert(symbol);
                     continue;
                 }
                 double current_close = curr_it->second;
@@ -1899,6 +1903,7 @@ void BacktestCoordinator::reset_portfolio_state() {
     mark_withheld_.clear();
     mark_change_.clear();
     row_held_id_.clear();
+    row_no_bar_.clear();
     risk_scale_report_enabled_ = false;
     equity_risk_detail_.clear();
     equity_overlay_.clear();
@@ -2039,9 +2044,11 @@ Result<void> BacktestCoordinator::save_daily_positions(std::shared_ptr<Portfolio
 
         if (!positions_vec.empty()) {
             std::string composite_run_id = run_id + "|" + strategy_id;
+            static const std::unordered_set<std::string> no_symbol;
+            const auto no_bar = row_no_bar_.find(strategy_id);
             auto save_result = db_->store_backtest_positions(
                 positions_vec, composite_run_id, config_.portfolio_id, "backtest.final_positions",
-                keep_closed_rows);
+                keep_closed_rows, no_bar != row_no_bar_.end() ? no_bar->second : no_symbol);
 
             if (save_result.is_error()) {
                 WARN("Failed to save daily positions for strategy " + strategy_id +

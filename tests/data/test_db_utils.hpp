@@ -309,9 +309,12 @@ public:
         const std::vector<Position>& positions, const std::string& run_id,
         const std::string& portfolio_id = "BASE_PORTFOLIO",
         const std::string& table_name = "backtest.final_positions",
-        bool keep_closed_rows = false) override {
-        (void)positions; (void)run_id; (void)portfolio_id; (void)table_name;
+        bool keep_closed_rows = false,
+        const std::unordered_set<std::string>& no_bar_symbols = {}) override {
+        (void)run_id; (void)portfolio_id; (void)table_name;
         (void)keep_closed_rows;
+        last_backtest_positions = positions;
+        last_backtest_no_bar_symbols = no_bar_symbols;
         return record_call("store_backtest_positions");
     }
 
@@ -369,6 +372,10 @@ public:
     std::vector<std::string> last_equity_risk_detail;
     /// The typed cells of the last equity-curve batch (migration 031), one list a point.
     BacktestCurveCells last_equity_curve_cells;
+    /// The last daily position write of a backtest: the rows handed in and the symbols named as
+    /// having printed no bar that date (migration 032).
+    std::vector<Position> last_backtest_positions;
+    std::unordered_set<std::string> last_backtest_no_bar_symbols;
     /// What the last store_backtest_summary was handed (migration 031's typed cells among it).
     std::unordered_map<std::string, double> last_backtest_summary_metrics;
     std::vector<LiveResultsCell> last_backtest_summary_cells;
