@@ -195,7 +195,7 @@ struct BacktestResults {
     double sharpe_ratio{0.0};   ///< kNoRatio (no value, stored NULL) with no volatility
     double sortino_ratio{0.0};  ///< kNoRatio with no return under the target
     double max_drawdown{0.0};
-    double calmar_ratio{0.0};   ///< kNoRatio with no drawdown
+    double calmar_ratio{0.0};   ///< kNoRatio with no drawdown or under one year of sessions
 
     // Trading metrics
     int total_trades{0};
@@ -240,8 +240,9 @@ struct BacktestResults {
     double statistics_sessions_per_year{0.0};
     int statistics_days{0};
     // The annualised return on that grid, the Calmar ratio's numerator: the CAGR
-    // (1 + R)^(K / n) - 1, R from the base to the last grid level (T-8D R36). Logged with the
-    // run's statistics convention; no column.
+    // (1 + R)^(K / n) - 1, R from the base to the last grid level (T-8D R36); kNoRatio while
+    // n < K, where a return is not annualised (T-8D-2 R78). Logged with the run's statistics
+    // convention; no column.
     double annualized_return{0.0};
     // The statistics of migration 031 (LOOP_SPEC sections 7.4 and 10): the worst day with its
     // date and symbol, the three statistics on the sizing capital, the monthly skew and tail

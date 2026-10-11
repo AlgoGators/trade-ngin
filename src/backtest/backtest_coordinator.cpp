@@ -2213,20 +2213,8 @@ void BacktestCoordinator::log_statistics_convention(const BacktestStatisticsGrid
                                                     AssetClass asset_class,
                                                     const BacktestResults& results,
                                                     size_t curve_rows) const {
-    const bool futures = asset_class == AssetClass::FUTURES;
-    std::string line = std::string("STATISTICS_CONVENTION series=") +
-                       (futures ? "futures" : "equities") +
-                       " K=" + std::to_string(results.statistics_sessions_per_year) + " grid=" +
-                       (grid.own_rows
-                            ? std::string("the run's own rows")
-                            : "Sunday to Friday with at least " +
-                                  std::to_string(kStatisticsGridMinSymbols) +
-                                  " stored symbols printing (" + std::to_string(grid.dates.size()) +
-                                  " dates of the window)") +
-                       " n=" + std::to_string(results.statistics_days) + " curve_rows=" +
-                       std::to_string(curve_rows) + " warmup_days=" +
-                       std::to_string(results.warmup_days) + " annualized_return=" +
-                       std::to_string(results.annualized_return);
+    const std::string line = statistics_convention_line(
+        grid, asset_class == AssetClass::FUTURES, results, curve_rows);
     if (results.statistics_days > 0) {
         INFO(line);
     } else {

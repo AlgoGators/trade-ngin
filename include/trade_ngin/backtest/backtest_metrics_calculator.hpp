@@ -382,7 +382,9 @@ public:
      * grid's CAGR over the maximum drawdown), the maximum drawdown, VaR, CVaR, beta and
      * correlation are taken on the statistics grid (statistics_grid_curve) and annualised with
      * its sessions a year, which the result records (statistics_sessions_per_year,
-     * statistics_days, annualized_return). The trade statistics read the executions,
+     * statistics_days, annualized_return). A return is not annualised under one year of
+     * sessions: while statistics_days < K the annualised return and the Calmar ratio have no
+     * value (kNoRatio; T-8D R40 as T-8D-2 R78 extends it). The trade statistics read the executions,
      * the drawdown curve and the monthly returns every row. The statistics of migration 031
      * (statistics_columns) are taken on the same grid series (statistics_series) with the same
      * sessions a year, and total_strategy_fills is the trade statistics' own count of the
@@ -420,5 +422,14 @@ private:
         const std::vector<std::pair<Timestamp, double>>& equity_curve,
         int warmup_days) const;
 };
+
+/**
+ * @brief The text of a run's STATISTICS_CONVENTION line (T-8D R31): the series, K, the grid, n,
+ *        the curve's rows, the warm-up and the annualised return, which reads "n/a" while the
+ *        run is under one year of sessions and the figure has no value (T-8D-2 R78).
+ */
+std::string statistics_convention_line(const BacktestStatisticsGrid& grid, bool futures_series,
+                                       const backtest::BacktestResults& results,
+                                       size_t curve_rows);
 
 } // namespace trade_ngin

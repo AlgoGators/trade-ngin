@@ -78,6 +78,19 @@ std::vector<std::pair<Timestamp, double>> linear_equity_curve(int days, double s
     return curve;
 }
 
+// A curve of `rows` daily rows from 100 that rises 0.1 a row, with one dip of 0.5 at row 10: the
+// series has a drawdown, (100.9 - 100.5) / 100.9, and its n is rows - 1.
+std::vector<std::pair<Timestamp, double>> rising_curve_with_a_dip(int rows) {
+    auto curve = linear_equity_curve(rows, 100.0, 0.1);
+    curve[10].second -= 0.5;
+    return curve;
+}
+
+// Two results cells that are one number, or both without a value.
+bool same_cell(double a, double b) {
+    return (std::isnan(a) && std::isnan(b)) || a == b;
+}
+
 }  // namespace
 
 class BacktestMetricsCalculatorTest : public TestBase {
@@ -284,29 +297,80 @@ TEST_F(BacktestMetricsCalculatorTest, CalmarStandardCase) {
     EXPECT_DOUBLE_EQ(calc_.calculate_calmar_ratio(0.20, 0.10), 2.0);
 }
 
-// T-8D R36: calmar = CAGR (geometric, K / n) / max_dd, through the composite. Own rows at K 252:
+// T-8D R36: calmar = CAGR (geometric, K / n) / max_dd. Own rows at K 252:
 //   levels 100, 101, 100.5, 102, 103: n 4, R 0.03, max_dd 0.5 / 101 = 0.004950
 //   | numerator                                 | calmar      |
 //   | CAGR 1.03^(252 / 4) - 1 = 5.437914 (now)  | 1098.458585 |
 //   | mean x 252 = 1.876064 (before)            | 378.965004  |
+// The composite gives the two no value on this run: n 4 is under a year of sessions (T-8D R40 as
+// extended by T-8D-2 R78; the test after this one). The arithmetic is the two functions'.
 TEST_F(BacktestMetricsCalculatorTest, CalmarIsTheGeometricAnnualisedReturnOverTheMaximumDrawdown) {
     const std::vector<std::pair<Timestamp, double>> curve = {
         {date_at(2026, 1, 5), 100.0}, {date_at(2026, 1, 6), 101.0}, {date_at(2026, 1, 7), 100.5},
         {date_at(2026, 1, 8), 102.0}, {date_at(2026, 1, 9), 103.0}};
     const auto r = calc_.calculate_all_metrics(curve, {}, 0, kUnitPoints, kOwnRows);
     EXPECT_NEAR(r.max_drawdown, 0.5 / 101.0, 1e-12);
-    EXPECT_NEAR(r.annualized_return, std::pow(1.03, 252.0 / 4.0) - 1.0, 1e-9);
-    EXPECT_NEAR(r.annualized_return, 5.437914, 1e-6);
-    EXPECT_NEAR(r.calmar_ratio, (std::pow(1.03, 252.0 / 4.0) - 1.0) / (0.5 / 101.0), 1e-6);
-    EXPECT_NEAR(r.calmar_ratio, 1098.458585, 1e-5);
+    EXPECT_EQ(r.statistics_days, 4);
+    EXPECT_TRUE(std::isnan(r.annualized_return));
+    EXPECT_TRUE(std::isnan(r.calmar_ratio));
+    const double cagr = calc_.calculate_annualized_return(r.total_return, 4, kEquityK);
+    EXPECT_NEAR(cagr, std::pow(1.03, 252.0 / 4.0) - 1.0, 1e-9);
+    EXPECT_NEAR(cagr, 5.437914, 1e-6);
+    EXPECT_NEAR(calc_.calculate_calmar_ratio(cagr, r.max_drawdown), 1098.458585, 1e-5);
     // A falling book: the CAGR is negative where the mean return can be positive.
     //   levels 100, 150, 75, 90: returns +0.5, -0.5, +0.2 (mean +0.0667), R -0.10, max_dd 0.5
     const std::vector<std::pair<Timestamp, double>> falling = {
         {date_at(2026, 1, 5), 100.0}, {date_at(2026, 1, 6), 150.0}, {date_at(2026, 1, 7), 75.0},
         {date_at(2026, 1, 8), 90.0}};
     const auto f = calc_.calculate_all_metrics(falling, {}, 0, kUnitPoints, kOwnRows);
-    EXPECT_NEAR(f.calmar_ratio, (std::pow(0.9, 252.0 / 3.0) - 1.0) / 0.5, 1e-9);
-    EXPECT_LT(f.calmar_ratio, 0.0);
+    EXPECT_TRUE(std::isnan(f.calmar_ratio));
+    const double falling_calmar = calc_.calculate_calmar_ratio(
+        calc_.calculate_annualized_return(f.total_return, 3, kEquityK), f.max_drawdown);
+    EXPECT_NEAR(falling_calmar, (std::pow(0.9, 252.0 / 3.0) - 1.0) / 0.5, 1e-9);
+    EXPECT_LT(falling_calmar, 0.0);
+}
+
+// T-8D R40 as T-8D-2 R78 extends it to the backtest: a return is not annualised under one year
+// of sessions, so the annualised return and the Calmar ratio (whose numerator it is) have no
+// value while n < K, and are the geometric figures from n >= K. The curve rises 0.1 a row from
+// 100 with one dip, max_dd = 0.4 / 100.9 = 0.003964.
+//   | grid            | K        | rows | n   | annualised return          | calmar     |
+//   | own rows        | 252      | 252  | 251 | no value                   | no value   |
+//   | own rows        | 252      | 253  | 252 | R = 25.2 / 100 = 0.252     | 63.567     |
+//   | own rows        | 311.0574 | 312  | 311 | no value (311 < 311.0574)  | no value   |
+//   | own rows        | 311.0574 | 313  | 312 | 1.312^(311.0574/312) - 1   | 78.431     |
+TEST_F(BacktestMetricsCalculatorTest, CalmarAndTheAnnualisedReturnHaveNoValueUnderAYearOfSessions) {
+    const double max_dd = 0.4 / 100.9;
+    const auto under = calc_.calculate_all_metrics(rising_curve_with_a_dip(252), {}, 0, kUnitPoints,
+                                                   kOwnRows);
+    EXPECT_EQ(under.statistics_days, 251);
+    EXPECT_NEAR(under.max_drawdown, max_dd, 1e-12);
+    EXPECT_TRUE(std::isnan(under.annualized_return));
+    EXPECT_TRUE(std::isnan(under.calmar_ratio));
+    EXPECT_TRUE(has_value(under.sharpe_ratio));
+    EXPECT_TRUE(has_value(under.sortino_ratio));
+    EXPECT_NEAR(under.total_return, 0.251, 1e-12);
+
+    const auto year = calc_.calculate_all_metrics(rising_curve_with_a_dip(253), {}, 0, kUnitPoints,
+                                                  kOwnRows);
+    EXPECT_EQ(year.statistics_days, 252);
+    EXPECT_NEAR(year.annualized_return, 0.252, 1e-12);
+    EXPECT_NEAR(year.calmar_ratio, 0.252 / max_dd, 1e-9);
+    EXPECT_NEAR(year.calmar_ratio, 63.567, 1e-3);
+
+    const auto futures_grid = BacktestStatisticsGrid::of_own_rows(kFuturesK);
+    const auto futures_under =
+        calc_.calculate_all_metrics(rising_curve_with_a_dip(312), {}, 0, kUnitPoints, futures_grid);
+    EXPECT_EQ(futures_under.statistics_days, 311);
+    EXPECT_TRUE(std::isnan(futures_under.annualized_return));
+    EXPECT_TRUE(std::isnan(futures_under.calmar_ratio));
+    const auto futures_year =
+        calc_.calculate_all_metrics(rising_curve_with_a_dip(313), {}, 0, kUnitPoints, futures_grid);
+    EXPECT_EQ(futures_year.statistics_days, 312);
+    const double cagr = std::pow(1.312, kFuturesK / 312.0) - 1.0;
+    EXPECT_NEAR(futures_year.annualized_return, cagr, 1e-12);
+    EXPECT_NEAR(futures_year.calmar_ratio, cagr / max_dd, 1e-9);
+    EXPECT_NEAR(futures_year.calmar_ratio, 78.431, 1e-3);
 }
 
 TEST_F(BacktestMetricsCalculatorTest, DrawdownsEmptyCurveReturnsEmpty) {
@@ -832,7 +896,7 @@ TEST_F(BacktestMetricsCalculatorTest, AllMetricsCountAUtcDateOnceByItsLastRow) {
         EXPECT_DOUBLE_EQ(got.sortino_ratio, want.sortino_ratio) << "warmup " << warmup;
         EXPECT_DOUBLE_EQ(got.downside_volatility, want.downside_volatility) << "warmup " << warmup;
         EXPECT_DOUBLE_EQ(got.max_drawdown, want.max_drawdown) << "warmup " << warmup;
-        EXPECT_DOUBLE_EQ(got.calmar_ratio, want.calmar_ratio) << "warmup " << warmup;
+        EXPECT_TRUE(same_cell(got.calmar_ratio, want.calmar_ratio)) << "warmup " << warmup;
         EXPECT_DOUBLE_EQ(got.var_95, want.var_95) << "warmup " << warmup;
         EXPECT_DOUBLE_EQ(got.cvar_95, want.cvar_95) << "warmup " << warmup;
         EXPECT_EQ(got.drawdown_curve.size(), want.drawdown_curve.size()) << "warmup " << warmup;
@@ -985,10 +1049,13 @@ TEST_F(BacktestMetricsCalculatorTest, AThinDateAndASaturdayPointAreNoObservation
     EXPECT_NEAR(r.sortino_ratio, 18.347538, 1e-6);
     EXPECT_NEAR(r.max_drawdown, 2.0 / 104.0, 1e-12) << "the Saturday trough (8/104) is no grid level";
     // calmar: the CAGR on the grid, 1.06^(311.0574 / 7) - 1 = 12.320206, over 2/104: 640.650727
-    // (on every row, n 9: 6.492377 / (8/104) = 84.400902).
-    EXPECT_NEAR(r.annualized_return, std::pow(1.06, kFuturesK / 7.0) - 1.0, 1e-9);
-    EXPECT_NEAR(r.calmar_ratio, (std::pow(1.06, kFuturesK / 7.0) - 1.0) / (2.0 / 104.0), 1e-6);
-    EXPECT_NEAR(r.calmar_ratio, 640.650727, 1e-4);
+    // (on every row, n 9: 6.492377 / (8/104) = 84.400902). The run is under a year of sessions,
+    // so its results carry neither (T-8D-2 R78); the figures are the two functions' on its n.
+    EXPECT_TRUE(std::isnan(r.annualized_return));
+    EXPECT_TRUE(std::isnan(r.calmar_ratio));
+    const double cagr = calc_.calculate_annualized_return(0.06, r.statistics_days, kFuturesK);
+    EXPECT_NEAR(cagr, std::pow(1.06, kFuturesK / 7.0) - 1.0, 1e-9);
+    EXPECT_NEAR(calc_.calculate_calmar_ratio(cagr, r.max_drawdown), 640.650727, 1e-4);
     EXPECT_NEAR(r.var_95, 2.0 / 104.0, 1e-12) << "the Saturday fall (6/102) is no grid return";
     EXPECT_NEAR(r.cvar_95, 2.0 / 104.0, 1e-12) << "seven returns: the worst one is the VaR observation";
     // Levels, on every row: the Saturday point and the thin date are still rows of the curve.
@@ -1041,13 +1108,14 @@ TEST_F(BacktestMetricsCalculatorTest, BothCalculatorsGiveOneNumberForOnePnlSerie
     EXPECT_NEAR(bt.max_drawdown * 100.0, live.max_drawdown, 1e-10);
     EXPECT_NEAR(live.volatility, 30.5803, 1e-4);
     EXPECT_NEAR(live.sharpe_ratio, 8.633205, 1e-6);
-    // The annualised return: one function behind both (grid_annualized_return). The live
-    // statistic has no value under a year of sessions (n 7; T-8D R40).
+    // The annualised return: one function behind both (grid_annualized_return), and one rule:
+    // under a year of sessions (n 7) neither calculator gives it a value (T-8D R40, T-8D-2 R78).
+    EXPECT_TRUE(std::isnan(bt.annualized_return));
     EXPECT_TRUE(std::isnan(live.total_annualized_return));
-    const double live_formula_pct = grid_annualized_return_pct(series, grid.sessions_per_year);
-    EXPECT_NEAR(bt.annualized_return * 100.0, live_formula_pct, 1e-8);
-    EXPECT_NEAR(live_formula_pct, 1232.0206, 1e-3);
-    EXPECT_NEAR(bt.calmar_ratio, live_formula_pct / live.max_drawdown, 1e-8);
+    EXPECT_TRUE(std::isnan(bt.calmar_ratio));
+    EXPECT_NEAR(calc_.calculate_annualized_return(0.06, 7, grid.sessions_per_year) * 100.0,
+                grid_annualized_return_pct(series, grid.sessions_per_year), 1e-8);
+    EXPECT_NEAR(grid_annualized_return_pct(series, grid.sessions_per_year), 1232.0206, 1e-3);
 }
 
 // E2-F63, the backtest half (T-8D R27, R28): a run has ONE as-of date, its last curve row, and
@@ -1090,16 +1158,18 @@ TEST_F(BacktestMetricsCalculatorTest, ARunEndingOnAnOffGridRowEndsEveryGridStati
     EXPECT_DOUBLE_EQ(sat.sortino_ratio, fri.sortino_ratio);
     EXPECT_DOUBLE_EQ(sat.downside_volatility, fri.downside_volatility);
     EXPECT_DOUBLE_EQ(sat.max_drawdown, fri.max_drawdown);
-    EXPECT_DOUBLE_EQ(sat.annualized_return, fri.annualized_return);
-    EXPECT_DOUBLE_EQ(sat.calmar_ratio, fri.calmar_ratio);
+    EXPECT_TRUE(same_cell(sat.annualized_return, fri.annualized_return));
+    EXPECT_TRUE(same_cell(sat.calmar_ratio, fri.calmar_ratio));
     EXPECT_DOUBLE_EQ(sat.var_95, fri.var_95);
     EXPECT_DOUBLE_EQ(sat.cvar_95, fri.cvar_95);
     EXPECT_DOUBLE_EQ(sat.beta, fri.beta);
     EXPECT_DOUBLE_EQ(sat.correlation, fri.correlation);
     EXPECT_GT(sat.volatility, 0.0);
     EXPECT_NEAR(sat.max_drawdown, 2.0 / 104.0, 1e-12) << "the Saturday trough (8/104) is no grid level";
-    EXPECT_NEAR(sat.annualized_return, std::pow(1.02, kFuturesK / 5.0) - 1.0, 1e-9)
+    EXPECT_NEAR(grid_annualized_return(series.levels.back() / 100.0, series.size(), kFuturesK),
+                std::pow(1.02, kFuturesK / 5.0) - 1.0, 1e-9)
         << "the CAGR ends on the Friday level 102, not on the Saturday's 96";
+    EXPECT_TRUE(std::isnan(sat.annualized_return)) << "n 5 is under a year of sessions";
     // The statistics of migration 031 read the same series.
     ASSERT_TRUE(sat.statistics_columns.worst_day.has_value());
     EXPECT_DOUBLE_EQ(*sat.statistics_columns.worst_day, *fri.statistics_columns.worst_day);
@@ -1194,12 +1264,40 @@ TEST_F(BacktestMetricsCalculatorTest, ARatioWithNoDenominatorHasNoValueInTheResu
     EXPECT_DOUBLE_EQ(none.volatility, 0.0);
     EXPECT_DOUBLE_EQ(none.total_return, 0.0);
 
-    // A run with a loss on each denominator carries four numbers.
+    // A run with a loss on each denominator carries its numbers. Its Calmar ratio needs a year
+    // of sessions as well (T-8D-2 R78): 253 own rows at K 252.
     const auto both = calc_.calculate_all_metrics(thin_and_saturday_curve(), {}, 1, kUnitPoints,
                                                   thin_and_saturday_grid());
     EXPECT_TRUE(has_value(both.sharpe_ratio));
     EXPECT_TRUE(has_value(both.sortino_ratio));
-    EXPECT_TRUE(has_value(both.calmar_ratio));
+    EXPECT_TRUE(has_value(calc_.calculate_all_metrics(rising_curve_with_a_dip(253), {}, 0,
+                                                      kUnitPoints, kOwnRows)
+                              .calmar_ratio));
+}
+
+// T-8D-2 R78, the logged figure: the run's STATISTICS_CONVENTION line prints the annualised
+// return from a year of sessions and "n/a" under it.
+//   | rows | n   | K   | the line ends                    |
+//   | 252  | 251 | 252 | annualized_return=n/a            |
+//   | 253  | 252 | 252 | annualized_return=0.252000       |
+TEST_F(BacktestMetricsCalculatorTest, TheConventionLinePrintsNaForTheAnnualisedReturnUnderAYear) {
+    auto under = calc_.calculate_all_metrics(rising_curve_with_a_dip(252), {}, 0, kUnitPoints,
+                                             kOwnRows);
+    EXPECT_EQ(statistics_convention_line(kOwnRows, /*futures_series=*/false, under, 252),
+              "STATISTICS_CONVENTION series=equities K=252.000000 grid=the run's own rows n=251 "
+              "curve_rows=252 warmup_days=0 annualized_return=n/a");
+    auto year = calc_.calculate_all_metrics(rising_curve_with_a_dip(253), {}, 0, kUnitPoints,
+                                            kOwnRows);
+    EXPECT_EQ(statistics_convention_line(kOwnRows, /*futures_series=*/false, year, 253),
+              "STATISTICS_CONVENTION series=equities K=252.000000 grid=the run's own rows n=252 "
+              "curve_rows=253 warmup_days=0 annualized_return=0.252000");
+    // A futures run on its dated grid names the grid's rule and its dates.
+    const auto grid = thin_and_saturday_grid();
+    const auto thin = calc_.calculate_all_metrics(thin_and_saturday_curve(), {}, 1, kUnitPoints, grid);
+    EXPECT_EQ(statistics_convention_line(grid, /*futures_series=*/true, thin, 10),
+              "STATISTICS_CONVENTION series=futures K=311.057400 grid=Sunday to Friday with at "
+              "least 9 stored symbols printing (" + std::to_string(grid.dates.size()) +
+              " dates of the window) n=7 curve_rows=10 warmup_days=1 annualized_return=n/a");
 }
 
 // The console line of a ratio: the number as the stream is set, "n/a" when it has no value.

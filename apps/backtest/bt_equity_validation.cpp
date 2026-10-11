@@ -1048,8 +1048,13 @@ int main() {
                 growth > 0.0
                     ? std::pow(growth, sessions_per_year / static_cast<double>(returns.size())) - 1.0
                     : -1.0;
-            // no drawdown: no value, as the calculator returns (T-8D R12)
-            double manual_calmar = (manual_max_dd > 0) ? manual_cagr / manual_max_dd : kNoRatio;
+            // no drawdown: no value, as the calculator returns (T-8D R12); under one year of
+            // sessions neither, as the calculator returns (T-8D-2 R78)
+            double manual_calmar =
+                (manual_max_dd > 0 &&
+                 !under_one_year_of_sessions(static_cast<int>(returns.size()), sessions_per_year))
+                    ? manual_cagr / manual_max_dd
+                    : kNoRatio;
 
             // Print comparison
             std::cout << "\n" << std::setw(20) << "Metric" << " | "

@@ -931,10 +931,18 @@ backtest::BacktestResults BacktestMetricsCalculator::calculate_all_metrics(
 
     // Calmar ratio: the CAGR on the grid, (1 + R)^(K / n) - 1 with R from the base to the last
     // grid level and n the grid's returns, over the maximum drawdown (T-8D R36)
-    results.annualized_return = calculate_annualized_return(
-        calculate_total_return(grid_curve.front().second, grid_curve.back().second),
-        results.statistics_days, sessions_per_year);
-    results.calmar_ratio = calculate_calmar_ratio(results.annualized_return, results.max_drawdown);
+    // Under one year of sessions (n < K) a return is not annualised: the annualised return and
+    // the Calmar ratio have no value (T-8D R40 as T-8D-2 R78 extends it to the backtest).
+    if (under_one_year_of_sessions(results.statistics_days, sessions_per_year)) {
+        results.annualized_return = kNoRatio;
+        results.calmar_ratio = kNoRatio;
+    } else {
+        results.annualized_return = calculate_annualized_return(
+            calculate_total_return(grid_curve.front().second, grid_curve.back().second),
+            results.statistics_days, sessions_per_year);
+        results.calmar_ratio =
+            calculate_calmar_ratio(results.annualized_return, results.max_drawdown);
+    }
 
     // Risk metrics
     auto risk_metrics = calculate_risk_metrics(returns, sessions_per_year);
@@ -1001,6 +1009,23 @@ std::vector<std::pair<Timestamp, double>> BacktestMetricsCalculator::filter_warm
 
     return std::vector<std::pair<Timestamp, double>>(
         equity_curve.begin() + warmup_days, equity_curve.end());
+}
+
+std::string statistics_convention_line(const BacktestStatisticsGrid& grid, bool futures_series,
+                                       const backtest::BacktestResults& results,
+                                       size_t curve_rows) {
+    return std::string("STATISTICS_CONVENTION series=") + (futures_series ? "futures" : "equities") +
+           " K=" + std::to_string(results.statistics_sessions_per_year) + " grid=" +
+           (grid.own_rows ? std::string("the run's own rows")
+                          : "Sunday to Friday with at least " +
+                                std::to_string(kStatisticsGridMinSymbols) +
+                                " stored symbols printing (" + std::to_string(grid.dates.size()) +
+                                " dates of the window)") +
+           " n=" + std::to_string(results.statistics_days) + " curve_rows=" +
+           std::to_string(curve_rows) + " warmup_days=" + std::to_string(results.warmup_days) +
+           " annualized_return=" +
+           (has_value(results.annualized_return) ? std::to_string(results.annualized_return)
+                                                 : std::string("n/a"));
 }
 
 } // namespace trade_ngin
