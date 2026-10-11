@@ -367,7 +367,7 @@ TEST(StatisticsGrid, AnEquitySeriesIsAnnualisedWithTwoHundredFiftyTwo) {
 //   | series                      | volatility | sharpe   | downside_deviation | sortino  |
 //   | empty (the start row only)  | no value   | no value | no value           | no value |
 //   | one return, +0.2 %          | no value   | no value | no value           | no value |
-//   | two returns, +0.2 %, +0.2 % | a number   | a number | no value           | no value |
+//   | two returns, +0.2 %, +0.3 % | a number   | a number | no value           | no value |
 //   | through Wed: +0.2, 0, -0.4  | a number   | a number | a number           | a number |
 TEST(StatisticsGrid, FewerThanTwoGridReturnsGiveNoVolatilityAndNoRatio) {
     LiveHistoricalMetricsCalculator calc;
@@ -390,13 +390,14 @@ TEST(StatisticsGrid, FewerThanTwoGridReturnsGiveNoVolatilityAndNoRatio) {
 
     // Two returns: the first series with a volatility. No return under 0: no downside.
     const std::vector<DatedLevel> rising = {
-        {"2026-04-19", 500000.0}, {"2026-04-20", 501000.0}, {"2026-04-21", 502002.0}};
+        {"2026-04-19", 500000.0}, {"2026-04-20", 501000.0}, {"2026-04-21", 502503.0}};
     const auto two = calc.calculate(
         build_statistics_series(rising, kGrid, "2026-04-19", 500000.0, "2026-04-21"), kFuturesK, 0);
     EXPECT_EQ(two.total_days, 2);
-    EXPECT_TRUE(has_value(two.volatility));
-    EXPECT_TRUE(has_value(two.sharpe_ratio));
-    EXPECT_GT(two.sharpe_ratio, 0.0);
+    // sample sd of {0.2, 0.3} = 0.070711; x sqrt(311.0574) = 1.247112; Sharpe = 0.25 x K / it.
+    EXPECT_NEAR(two.volatility, std::sqrt(0.005) * std::sqrt(kFuturesK), 1e-9);
+    EXPECT_NEAR(two.volatility, 1.247112, 1e-6);
+    EXPECT_NEAR(two.sharpe_ratio, 0.25 * kFuturesK / two.volatility, 1e-9);
     EXPECT_TRUE(std::isnan(two.downside_deviation));
     EXPECT_TRUE(std::isnan(two.sortino_ratio));
 
