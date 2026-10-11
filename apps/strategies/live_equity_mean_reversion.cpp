@@ -25,6 +25,8 @@
 #include "trade_ngin/live/corporate_actions_lifecycle.hpp"
 #include "trade_ngin/live/corp_action_window.hpp"
 #include "trade_ngin/live/data_freshness.hpp"
+#include "trade_ngin/live/email_body_file.hpp"
+#include "trade_ngin/live/session_book_gate.hpp"
 #include "trade_ngin/live/corp_action_feed_status.hpp"
 #include "trade_ngin/live/trading_days_anchor.hpp"
 #include "trade_ngin/live/broker_frame.hpp"
@@ -666,51 +668,6 @@ int main(int argc, char* argv[]) {
         }
         INFO("Strategy added to portfolio successfully");
 
-        // Per-run provenance: what this run was configured with. The futures runners have
-        // always written it (live_portfolio_conservative.cpp:620); the equity runner never
-        // did, so trading.live_run_metadata held 245 futures rows and nothing for
-        // equities. Nothing reads this table -- it exists so a past run's allocations and
-        // config can be reconstructed after the fact, which is exactly what you want when
-        // a number from months ago has to be explained.
-        {
-            nlohmann::json portfolio_config_json;
-            portfolio_config_json["total_capital"] =
-                static_cast<double>(portfolio_config.total_capital);
-            portfolio_config_json["use_optimization"] = portfolio_config.use_optimization;
-            portfolio_config_json["allow_fractional_positions"] =
-                portfolio_config.allow_fractional_positions;
-            // The sessions a year this run's statistics are annualised with (LOOP_SPEC 7.5.1).
-            portfolio_config_json[trade_ngin::kStatisticsKKey] =
-                app_config.statistics.equity_sessions_per_year;
-
-            // Single-strategy runner: the live equity path rejects more than one strategy.
-            nlohmann::json strategy_alloc_json;
-            strategy_alloc_json[kEquityStrategyName] = 1.0;
-
-            nlohmann::json strategy_configs_json;
-            strategy_configs_json[kEquityStrategyName] = {
-                {"lookback_period", mean_rev_config.lookback_period},
-                {"entry_threshold", mean_rev_config.entry_threshold},
-                {"exit_threshold", mean_rev_config.exit_threshold},
-                {"risk_target", mean_rev_config.risk_target},
-                {"position_size", mean_rev_config.position_size},
-                {"vol_lookback", mean_rev_config.vol_lookback},
-                {"use_stop_loss", mean_rev_config.use_stop_loss},
-                {"stop_loss_pct", mean_rev_config.stop_loss_pct},
-                {"allow_fractional_shares", mean_rev_config.allow_fractional_shares}};
-
-            auto metadata_result = db->store_live_run_metadata(
-                now, kEquityStrategyId, portfolio_id, strategy_alloc_json,
-                portfolio_config_json, strategy_configs_json);
-
-            if (metadata_result.is_error()) {
-                WARN("Failed to store live run metadata: " +
-                     std::string(metadata_result.error()->what()));
-            } else {
-                INFO("Successfully stored live run metadata for date");
-            }
-        }
-
         // Create LiveTradingCoordinator to manage all live trading components
         INFO("Creating LiveTradingCoordinator for centralized component management");
         LiveTradingConfig coordinator_config;
@@ -906,57 +863,17 @@ int main(int argc, char* argv[]) {
             // unpriced and is carried unpriceable (E2-F34).
             const auto freshness = assess_feed_freshness(last_bar_date, as_of_ymd, symbols);
 
-            if (freshness.absent > 0) {
-                // Absence is not "a few days behind" -- there is no date to measure. It is
-                // reported on its own terms and treated as stale regardless of tolerance.
-                const std::string msg =
-                    "Equity feed is missing " + std::to_string(freshness.absent) + " of " +
-                    std::to_string(freshness.symbols) +
-                    " requested symbol(s) entirely, first: " + freshness.absent_symbol +
-                    " (no bar of any date as of " + as_of_ymd + ").";
-                if (use_override_date) {
-                    WARN(msg + " Proceeding in historical-replay mode.");
-                } else {
-                    ERROR(msg + " Refusing to run live with an incomplete universe. "
-                                "Refresh the OHLCV feed or remove the symbol from config.");
-                    return 1;
-                }
-            }
-
-            if (!freshness.any_data) {
-                // No symbol has a usable bar date. Maximally stale, never neutral.
-                const std::string msg =
-                    "Equity data freshness cannot be established: none of the " +
-                    std::to_string(freshness.symbols) +
-                    " loaded symbols carries a usable bar date as of " + as_of_ymd + ".";
-                if (use_override_date) {
-                    WARN(msg + " Proceeding in historical-replay mode.");
-                } else {
-                    ERROR(msg + " Refusing to run live without a feed. Refresh the OHLCV "
-                                "feed.");
-                    return 1;
-                }
-            } else if (freshness.days_behind > tolerance_days) {
-                const std::string msg =
-                    "Equity data is stale: the stalest of " +
-                    std::to_string(freshness.symbols) + " symbols (" +
-                    freshness.stalest_symbol + ") last printed " + freshness.stalest_date +
-                    ", " + std::to_string(freshness.days_behind) +
-                    " calendar days before " + as_of_ymd + " (tolerance " +
-                    std::to_string(tolerance_days) + " days).";
-                if (use_override_date) {
-                    WARN(msg + " Proceeding in historical-replay mode.");
-                } else {
-                    ERROR(msg + " Refusing to run live on stale data. Refresh the OHLCV "
-                                "feed or raise live.data_staleness_tolerance_days.");
-                    return 1;
-                }
-            } else {
-                INFO("Equity feed freshness: stalest of " +
-                     std::to_string(freshness.symbols) + " symbols (" +
-                     freshness.stalest_symbol + ") at " + freshness.stalest_date + ", " +
-                     std::to_string(freshness.days_behind) + " days behind " + as_of_ymd +
-                     " (tolerance " + std::to_string(tolerance_days) + ").");
+            // The arms are the shared ruling's (live/data_freshness.hpp, rule_feed_freshness; HD
+            // 2026-10-10): an empty feed refuses every run; a requested symbol with no bar and a
+            // feed staler than the tolerance refuse a run with no date. A dated run goes on: its
+            // book stops only for what it HOLDS, and the held-symbol check below names them.
+            const auto freshness_ruling = rule_feed_freshness(freshness, tolerance_days, as_of_ymd,
+                                                              use_override_date, "Equity");
+            for (const auto& line : freshness_ruling.warnings) WARN(line);
+            for (const auto& line : freshness_ruling.errors) ERROR(line);
+            if (!freshness_ruling.info.empty()) INFO(freshness_ruling.info);
+            if (freshness_ruling.refuse) {
+                return 1;
             }
         }
 
@@ -1212,6 +1129,84 @@ int main(int argc, char* argv[]) {
                     return 1;
                 }
                 INFO("No prior run anywhere for this strategy -- genuine first run.");
+            }
+        }
+
+        // THE HELD-SYMBOL FEED CHECK (T-DATED R2; HD 2026-10-10), the futures runners' rule through
+        // the same functions (live/session_book_gate.hpp): a HELD symbol whose newest bar is more
+        // than live.data_staleness_tolerance_days before the run's as-of date, or that has no bar at
+        // all, refuses the run when the run date is the host's own date and is a warning when the
+        // date is run on another day. A symbol the book does not hold stops nothing: one line.
+        {
+            const int hole_tolerance_days = app_config.live.data_staleness_tolerance_days;
+            std::unordered_map<std::string, double> held_quantity;
+            for (const auto& [symbol, position] : previous_positions) {
+                held_quantity[symbol] = position.quantity.as_double();
+            }
+            const LastBarHoles feed_holes = holes_from_last_bars(
+                symbols, last_bar_date,
+                format_ymd_utc(std::chrono::system_clock::to_time_t(end_date)), held_quantity,
+                hole_tolerance_days);
+            if (!feed_holes.not_held_line.empty()) WARN(feed_holes.not_held_line);
+            const HeldFeedHoleRuling hole_ruling = rule_held_feed_holes(
+                feed_holes.held, hole_tolerance_days, now, std::chrono::system_clock::now());
+            for (const auto& line : hole_ruling.lines) {
+                if (hole_ruling.refuse) {
+                    ERROR(line);
+                } else {
+                    WARN(line);
+                }
+            }
+            if (hole_ruling.refuse) {
+                return 1;
+            }
+        }
+
+        // T-DATED R5 (HD 2026-10-10): written HERE, below the guards that refuse before anything
+        // of the day is stored (config, calendar, bars, feed freshness, the missed-run guard and
+        // the held-symbol feed check), as the futures runners do: a refused run leaves no row.
+        // Per-run provenance: what this run was configured with. The futures runners have
+        // always written it (live_portfolio_conservative.cpp:620); the equity runner never
+        // did, so trading.live_run_metadata held 245 futures rows and nothing for
+        // equities. Nothing reads this table -- it exists so a past run's allocations and
+        // config can be reconstructed after the fact, which is exactly what you want when
+        // a number from months ago has to be explained.
+        {
+            nlohmann::json portfolio_config_json;
+            portfolio_config_json["total_capital"] =
+                static_cast<double>(portfolio_config.total_capital);
+            portfolio_config_json["use_optimization"] = portfolio_config.use_optimization;
+            portfolio_config_json["allow_fractional_positions"] =
+                portfolio_config.allow_fractional_positions;
+            // The sessions a year this run's statistics are annualised with (LOOP_SPEC 7.5.1).
+            portfolio_config_json[trade_ngin::kStatisticsKKey] =
+                app_config.statistics.equity_sessions_per_year;
+
+            // Single-strategy runner: the live equity path rejects more than one strategy.
+            nlohmann::json strategy_alloc_json;
+            strategy_alloc_json[kEquityStrategyName] = 1.0;
+
+            nlohmann::json strategy_configs_json;
+            strategy_configs_json[kEquityStrategyName] = {
+                {"lookback_period", mean_rev_config.lookback_period},
+                {"entry_threshold", mean_rev_config.entry_threshold},
+                {"exit_threshold", mean_rev_config.exit_threshold},
+                {"risk_target", mean_rev_config.risk_target},
+                {"position_size", mean_rev_config.position_size},
+                {"vol_lookback", mean_rev_config.vol_lookback},
+                {"use_stop_loss", mean_rev_config.use_stop_loss},
+                {"stop_loss_pct", mean_rev_config.stop_loss_pct},
+                {"allow_fractional_shares", mean_rev_config.allow_fractional_shares}};
+
+            auto metadata_result = db->store_live_run_metadata(
+                now, kEquityStrategyId, portfolio_id, strategy_alloc_json,
+                portfolio_config_json, strategy_configs_json);
+
+            if (metadata_result.is_error()) {
+                WARN("Failed to store live run metadata: " +
+                     std::string(metadata_result.error()->what()));
+            } else {
+                INFO("Successfully stored live run metadata for date");
             }
         }
 
@@ -6046,8 +6041,22 @@ int main(int argc, char* argv[]) {
         INFO("Daily mean reversion position generation completed successfully");
 
         // Send email report with trading results (based on send_email flag)
-        if (send_email) {
-            INFO("Sending email report...");
+        // The report plan the futures runners use (live/email_body_file.hpp; T-DATED R5): a run
+        // that sends builds and mails the report and ignores TRADE_NGIN_EMAIL_BODY_DIR with one
+        // WARN; a run that does not send builds the same body into that directory when it is set
+        // and mails nothing; otherwise nothing is built.
+        const live::EmailReportPlan email_plan =
+            live::plan_email_report(send_email, std::getenv(live::kEmailBodyDirEnv));
+        if (email_plan.variable_ignored) {
+            WARN(live::email_body_dir_ignored_warning(email_plan));
+        }
+        if (email_plan.build()) {
+            if (email_plan.send) {
+                INFO("Sending email report...");
+            } else {
+                INFO("EMAIL_BODY_FILE building the report body for " + email_plan.body_dir +
+                     "; nothing is mailed");
+            }
             try {
                 EmailSenderConfig email_config;
                 email_config.smtp_host = app_config.email.smtp_host;
@@ -6284,11 +6293,22 @@ int main(int argc, char* argv[]) {
                 // Send email without CSV attachments (CSV export disabled for mean reversion)
                 std::vector<std::string> attachments = {};  // No CSV files for mean reversion
 
+                if (email_plan.write_body_file) {
+                    const std::string body_path = live::email_body_file_path(
+                        email_plan.body_dir, portfolio_id, date_str);
+                    if (!live::write_email_body_file(body_path, email_body)) {
+                        ERROR("EMAIL_BODY_FILE could not write " + body_path);
+                    } else {
+                        INFO("EMAIL_BODY_FILE wrote " + body_path + " (" +
+                             std::to_string(email_body.size()) + " bytes); nothing is mailed");
+                    }
+                } else {
                 auto send_result = email_sender->send_email(subject, email_body, true, attachments);
                 if (send_result.is_error()) {
                     ERROR("Failed to send email: " + std::string(send_result.error()->what()));
                 } else {
                     INFO("Email report sent successfully (without CSV attachments)");
+                }
                 }
                 }
             } catch (const std::exception& e) {

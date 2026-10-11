@@ -16,6 +16,7 @@
 #include "trade_ngin/core/types.hpp"
 #include "trade_ngin/data/roll_series.hpp"
 #include "trade_ngin/data/session_classifier.hpp"
+#include "trade_ngin/live/data_freshness.hpp"
 #include "trade_ngin/live/execution_manager.hpp"
 #include "trade_ngin/live/live_roll_legs.hpp"
 
@@ -133,6 +134,24 @@ inline int max_no_bar_age_days(const T1Classification& t1) {
 }
 
 /**
+ * @brief A no-bar verdict past the tolerance (HD 2026-10-10, T-DATED R2a). A symbol with no bar
+ *        anywhere in the loaded history has no age to measure (hole_age_days is -1 and
+ *        last_bar_date is empty): it is older than every tolerance, never younger.
+ */
+inline bool no_bar_past_tolerance(const SymbolDayVerdict& v, int tolerance_days) {
+    if (v.has_bar) return false;
+    return v.hole_age_days < 0 || v.hole_age_days > tolerance_days;
+}
+
+/// True when any symbol's T-1 is a no-bar verdict past the tolerance: the held book is then read.
+inline bool any_no_bar_past_tolerance(const T1Classification& t1, int tolerance_days) {
+    for (const auto& v : t1.verdicts) {
+        if (no_bar_past_tolerance(v, tolerance_days)) return true;
+    }
+    return false;
+}
+
+/**
  * @brief The held symbols (a non-zero stored T-1 quantity) with no bar for longer than the
  *        tolerance. T-4c F4 / T-5 F7 as ruled 2026-09-19: the per-symbol form of the feed
  *        freshness guard, keyed on a HELD symbol; a hole on a symbol the book does not hold
@@ -145,8 +164,7 @@ inline std::vector<HeldFeedHole> held_feed_holes_past_tolerance(
     int tolerance_days) {
     std::vector<HeldFeedHole> out;
     for (const auto& v : t1.verdicts) {
-        if (v.has_bar) continue;
-        if (v.hole_age_days <= tolerance_days) continue;
+        if (!no_bar_past_tolerance(v, tolerance_days)) continue;
         auto it = held_book.find(v.symbol);
         if (it == held_book.end()) continue;
         const double q = it->second.quantity.as_double();
@@ -175,6 +193,113 @@ inline std::string local_ymd(const Timestamp& t) {
  */
 inline bool run_date_is_host_date(const Timestamp& run_now, const Timestamp& host_now) {
     return local_ymd(run_now) == local_ymd(host_now);
+}
+
+/// How long a held or requested symbol has been without a bar, in words.
+inline std::string no_bar_age_text(int age_days, const std::string& last_bar_date) {
+    if (age_days < 0 || last_bar_date.empty()) return "no bar anywhere in the loaded history";
+    return "no bar for " + std::to_string(age_days) + " day(s) (last bar " + last_bar_date + ")";
+}
+
+/**
+ * @brief The one ruling on held feed holes, shared by every live runner (HD 2026-09-19, kept
+ *        2026-10-10, T-DATED R1): a HELD symbol with no bar past the tolerance refuses the run
+ *        when the run date is the host's own date, and is a warning when the same date is run on
+ *        another day (the symbols are then held at their last price). `host_now` is read by the
+ *        caller at the moment of the test, so a run that crosses local midnight before it reaches
+ *        the test is ruled as a run made on another day.
+ */
+struct HeldFeedHoleRuling {
+    bool refuse{false};
+    std::vector<std::string> lines;  ///< one per held hole: ERROR lines when refused, WARN otherwise
+};
+
+inline HeldFeedHoleRuling rule_held_feed_holes(const std::vector<HeldFeedHole>& holes,
+                                               int tolerance_days, const Timestamp& run_now,
+                                               const Timestamp& host_now) {
+    HeldFeedHoleRuling ruling;
+    if (holes.empty()) return ruling;
+    ruling.refuse = run_date_is_host_date(run_now, host_now);
+    for (const auto& hole : holes) {
+        const std::string msg =
+            "FEED_HOLE_REFUSAL held symbol " + hole.symbol + " (quantity " +
+            std::to_string(hole.held_quantity) + ") has had " +
+            no_bar_age_text(hole.age_days, hole.last_bar_date) +
+            ", past live.data_staleness_tolerance_days=" + std::to_string(tolerance_days);
+        ruling.lines.push_back(ruling.refuse
+                                   ? msg + ". Refusing to run live: refresh the OHLCV feed, then "
+                                           "run this date."
+                                   : msg + ". Replay of a past date: not refused.");
+    }
+    return ruling;
+}
+
+/**
+ * @brief The requested symbols the book does NOT hold whose T-1 is a no-bar verdict past the
+ *        tolerance, as one line (T-DATED R2b): they stop nothing, they cannot be entered today.
+ *        Empty when there is none.
+ */
+inline std::string unheld_no_bar_line(const T1Classification& t1,
+                                      const std::unordered_map<std::string, Position>& held_book,
+                                      int tolerance_days) {
+    std::vector<std::string> parts;
+    for (const auto& v : t1.verdicts) {
+        if (!no_bar_past_tolerance(v, tolerance_days)) continue;
+        auto it = held_book.find(v.symbol);
+        if (it != held_book.end() && std::abs(it->second.quantity.as_double()) > 1e-9) continue;
+        parts.push_back(v.symbol + " (" + no_bar_age_text(v.hole_age_days, v.last_bar_date) + ")");
+    }
+    if (parts.empty()) return {};
+    std::sort(parts.begin(), parts.end());
+    std::string line = "FEED_HOLE_NOT_HELD " + std::to_string(parts.size()) +
+                       " requested symbol(s) the book does not hold are past "
+                       "live.data_staleness_tolerance_days=" +
+                       std::to_string(tolerance_days) + " and cannot be entered today:";
+    for (const auto& part : parts) line += " " + part + ";";
+    return line;
+}
+
+/**
+ * @brief The same two selections for a runner that has no T-1 classifier (the equity runner):
+ *        each requested symbol's newest loaded bar date against the run's as-of date. A symbol
+ *        with no bar at all is past every tolerance. `held_quantity` holds the stored T-1
+ *        quantities; a symbol absent from it, or at zero, is not held.
+ */
+struct LastBarHoles {
+    std::vector<HeldFeedHole> held;
+    std::string not_held_line;  ///< empty when no un-held symbol is past the tolerance
+};
+
+inline LastBarHoles holes_from_last_bars(
+    const std::vector<std::string>& requested,
+    const std::unordered_map<std::string, std::string>& last_bar_date, const std::string& as_of_ymd,
+    const std::unordered_map<std::string, double>& held_quantity, int tolerance_days) {
+    LastBarHoles out;
+    T1Classification as_verdicts;
+    std::unordered_map<std::string, Position> held_book;
+    for (const auto& symbol : requested) {
+        SymbolDayVerdict v;
+        v.symbol = symbol;
+        v.date = as_of_ymd;
+        auto it = last_bar_date.find(symbol);
+        if (it != last_bar_date.end() && freshness_parse_ymd_utc(it->second) > 0) {
+            const long behind = calendar_days_between_utc(it->second, as_of_ymd);
+            v.has_bar = behind <= 0;
+            v.last_bar_date = it->second;
+            v.hole_age_days = static_cast<int>(behind);
+        }
+        as_verdicts.verdicts.push_back(v);
+        auto held = held_quantity.find(symbol);
+        if (held != held_quantity.end()) {
+            Position p;
+            p.symbol = symbol;
+            p.quantity = Decimal(held->second);
+            held_book[symbol] = p;
+        }
+    }
+    out.held = held_feed_holes_past_tolerance(as_verdicts, held_book, tolerance_days);
+    out.not_held_line = unheld_no_bar_line(as_verdicts, held_book, tolerance_days);
+    return out;
 }
 
 // ------------------------------------------------------------------------------------------------

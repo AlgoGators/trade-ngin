@@ -1,6 +1,7 @@
 // src/data/postgres_database.cpp
 
 #include "trade_ngin/data/postgres_database.hpp"
+#include "trade_ngin/data/day_execution_replace.hpp"
 #include <algorithm>
 #include <optional>
 #include <cctype>
@@ -392,40 +393,44 @@ Result<void> PostgresDatabase::replace_roll_day_executions(
         if (auto sn = validate_strategy_id(sleeve.first); sn.is_error()) return sn;
     }
     try {
-        // ONE transaction over every sleeve: the sweep of the sleeve's ROLL rows of the day, the
-        // delete of the rows carrying this run's order ids, and the insert. Nothing is committed
-        // unless all of it is.
-        pqxx::work txn(*connection_);
-        for (const auto& [strategy_name, executions] : sleeves) {
-            txn.exec("DELETE FROM " + table_name +
-                         " WHERE strategy_name = $1 AND portfolio_id = $2 AND date = $3::date"
-                         " AND execution_type = 'ROLL'",
-                     pqxx::params{strategy_name, portfolio_id,
-                                  trade_ngin::core::format_utc_date(date)});
-            std::vector<std::string> order_ids;
-            order_ids.reserve(executions.size());
-            for (const auto& e : executions) order_ids.push_back(e.order_id);
-            std::sort(order_ids.begin(), order_ids.end());
-            order_ids.erase(std::unique(order_ids.begin(), order_ids.end()), order_ids.end());
-            if (!order_ids.empty()) {
+        // ONE transaction over every sleeve (data/day_execution_replace.hpp): the sweep of the
+        // sleeve's rows of the day, the delete of the rows carrying this run's order ids, and the
+        // insert. Nothing is committed unless all of it is.
+        struct PgTxn {
+            PostgresDatabase& db;
+            pqxx::work& txn;
+            const std::string& strategy_id;
+            const std::string& portfolio_id;
+            const std::string& table_name;
+            void delete_day(const std::string& sleeve, const std::string& portfolio,
+                            const std::string& day) {
+                txn.exec("DELETE FROM " + table_name +
+                             " WHERE strategy_name = $1 AND portfolio_id = $2 AND date = $3::date",
+                         pqxx::params{sleeve, portfolio, day});
+            }
+            void delete_order_ids(const std::string& sleeve, const std::string& portfolio,
+                                  const std::vector<std::string>& order_ids) {
                 std::string in_list;
                 for (size_t i = 0; i < order_ids.size(); ++i) {
                     if (i > 0) in_list += ", ";
                     in_list += txn.quote(order_ids[i]);
                 }
-                // The same predicate as delete_stale_executions (E2-F4, F-C): by portfolio, sleeve
-                // and order id, no calendar date.
                 txn.exec("DELETE FROM " + table_name +
                              " WHERE strategy_name = $1 AND portfolio_id = $2 AND order_id IN (" +
                              in_list + ")",
-                         pqxx::params{strategy_name, portfolio_id});
+                         pqxx::params{sleeve, portfolio});
             }
-            auto inserted = insert_executions_in(txn, executions, strategy_id, strategy_name,
-                                                 portfolio_id, table_name);
-            if (inserted.is_error()) return inserted;
-        }
-        txn.commit();
-        return Result<void>();
+            Result<void> insert(const std::string& sleeve,
+                                const std::vector<ExecutionReport>& executions) {
+                return db.insert_executions_in(txn, executions, strategy_id, sleeve, portfolio_id,
+                                               table_name);
+            }
+            void commit() { txn.commit(); }
+        };
+        pqxx::work txn(*connection_);
+        PgTxn pg{*this, txn, strategy_id, portfolio_id, table_name};
+        return replace_day_executions_in(pg, sleeves, portfolio_id,
+                                         trade_ngin::core::format_utc_date(date));
     } catch (const std::exception& e) {
         return make_error<void>(ErrorCode::DATABASE_ERROR,
                                 "Failed to replace the day's executions: " + std::string(e.what()),

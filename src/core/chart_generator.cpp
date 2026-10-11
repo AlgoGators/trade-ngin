@@ -8,6 +8,7 @@
 #define pclose _pclose
 #endif
 
+#include "trade_ngin/core/timed_process.hpp"
 #include "trade_ngin/core/chart_generator.hpp"
 #include <algorithm>
 #include <chrono>
@@ -1251,6 +1252,9 @@ namespace {
         return result;
     }
 
+    // The time one chart process is given (T-DATED R4). A chart is drawn in well under a second.
+    constexpr std::chrono::seconds kChartProcessTimeout{30};
+
     // Helper: Execute gnuplot script and return base64-encoded PNG
     std::string execute_gnuplot(const std::string& script_content, const std::string& data_content) {
         // Create temporary files
@@ -1281,19 +1285,23 @@ namespace {
         cmd << "gnuplot " << script_filename << " 2>&1";
         INFO("Executing gnuplot");
 
-        FILE* pipe = popen(cmd.str().c_str(), "r");
-        if (!pipe) {
+        // A chart process is given kChartProcessTimeout; one that has not finished by then is
+        // killed and the chart is treated as failed, as a non-zero exit is (core/timed_process.hpp).
+        const auto chart_run = core::run_with_timeout(cmd.str(), kChartProcessTimeout);
+        if (!chart_run.started) {
             ERROR("Failed to execute gnuplot command");
             return "";
         }
-
-        char buffer[256];
-        std::string gnuplot_output;
-        while (fgets(buffer, sizeof(buffer), pipe) != nullptr) {
-            gnuplot_output += buffer;
+        if (chart_run.timed_out) {
+            ERROR("Gnuplot did not finish within " +
+                  std::to_string(std::chrono::duration_cast<std::chrono::seconds>(
+                                     kChartProcessTimeout)
+                                     .count()) +
+                  " s and was killed: the chart is left out and the run goes on");
+            return "";
         }
-
-        int return_code = pclose(pipe);
+        const std::string& gnuplot_output = chart_run.output;
+        int return_code = chart_run.status;
         if (return_code != 0) {
             ERROR("Gnuplot failed with code " + std::to_string(return_code));
             if (!gnuplot_output.empty()) {

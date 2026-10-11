@@ -3,6 +3,7 @@ set(TEST_SOURCES
     core/test_decimal.cpp
     core/test_email_chart_strategy_id.cpp
     core/test_time_utils_parse.cpp
+    core/test_timed_process.cpp
     core/test_result.cpp
     core/test_state_manager.cpp
     core/test_logger.cpp
@@ -55,6 +56,7 @@ set(TEST_SOURCES
     data/test_futures_bar_instrument_id_db.cpp
     data/test_positions_instrument_id_db.cpp
     data/test_roll_state_db.cpp
+    data/test_day_execution_replace.cpp
     data/test_contract_metadata_fixes_db.cpp
     order/test_order_manager.cpp
     order/test_utils.cpp
@@ -199,6 +201,8 @@ set(TEST_SOURCES
     live/test_session_book_gate.cpp
     live/test_live_runner_small_fixes.cpp
     live/test_email_body_file.cpp
+    live/test_held_feed_ruling.cpp
+    live/test_mode_branch_guard.cpp
     live/test_cost_model_feed.cpp
     live/test_futures_cost_feed.cpp
     live/test_cost_feed_adjusted_returns.cpp
