@@ -189,8 +189,8 @@ std::string set_fill_counts(LiveStatisticsColumns& columns,
 /// The columns as one log line (a NULL cell prints "null").
 std::string live_statistics_log_line(const LiveStatisticsColumns& columns);
 
-/// A number as a cell's text: ten significant digits, the format of the OVERLAY log line. No
-/// value for a number that is not finite.
+/// A number as a cell's text: the text that reads back as the same double (finite_sql_number).
+/// No value for a number that is not finite.
 std::optional<std::string> live_results_number(double value);
 
 /// The fourteen statistics as typed cells, in the migration's order.

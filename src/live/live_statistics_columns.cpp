@@ -7,6 +7,7 @@
 #include <stdexcept>
 
 #include "trade_ngin/backtest/backtest_metrics_calculator.hpp"
+#include "trade_ngin/data/finite_statement.hpp"
 #include "trade_ngin/risk/overlay.hpp"
 
 namespace trade_ngin {
@@ -284,10 +285,7 @@ std::string live_statistics_log_line(const LiveStatisticsColumns& c) {
 }
 
 std::optional<std::string> live_results_number(double value) {
-    if (!std::isfinite(value)) return std::nullopt;
-    char buf[40];
-    std::snprintf(buf, sizeof(buf), "%.10g", value);
-    return std::string(buf);
+    return finite_sql_number(value);
 }
 
 std::vector<LiveResultsCell> live_statistics_cells(const LiveStatisticsColumns& c) {

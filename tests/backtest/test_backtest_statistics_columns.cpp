@@ -356,9 +356,10 @@ TEST(BacktestStatisticsColumns, TheSizingCapitalsAreTheStoredRiskDetailCells) {
     EXPECT_TRUE(stored_sizing_capitals(curve, {}).empty()) << "an equity run stores none";
 }
 
-// The cells: the migration's thirteen in its order; a number at ten significant digits (the 030
-// cells' format), never std::to_string's six decimals; a field with no value is a NULL cell.
-TEST(BacktestStatisticsColumns, TheCellsCarryTenSignificantDigitsAndNullWhereThereIsNoValue) {
+// The cells: the migration's thirteen in its order; a number as the text that reads back as the
+// same double (the 030 cells' format), never std::to_string's six decimals; a field with no value
+// is a NULL cell.
+TEST(BacktestStatisticsColumns, TheCellsCarryTheRoundTripTextAndNullWhereThereIsNoValue) {
     BacktestStatisticsColumns c;
     c.worst_day = -0.0381234567891234;
     c.worst_day_date = "2025-04-06";
@@ -381,10 +382,10 @@ TEST(BacktestStatisticsColumns, TheCellsCarryTenSignificantDigitsAndNullWhereThe
     EXPECT_EQ(types, (std::vector<std::string>{"numeric", "date", "text", "numeric", "numeric",
                                                "numeric", "date", "text", "numeric", "numeric",
                                                "jsonb", "integer", "integer"}));
-    EXPECT_EQ(cell_of(cells, "worst_day").value_or(""), "-0.03812345679");
+    EXPECT_EQ(cell_of(cells, "worst_day").value_or(""), "-0.0381234567891234");
     EXPECT_NE(cell_of(cells, "worst_day").value_or(""), std::to_string(*c.worst_day))
         << "six decimals would store -0.038123";
-    EXPECT_EQ(cell_of(cells, "volatility_sizing").value_or(""), "0.2024771085");
+    EXPECT_EQ(cell_of(cells, "volatility_sizing").value_or(""), "0.2024771085123");
     EXPECT_EQ(cell_of(cells, "worst_day_date").value_or(""), "2025-04-06");
     EXPECT_EQ(cell_of(cells, "worst_day_symbol").value_or(""), "MNQ.v.0");
     EXPECT_EQ(cell_of(cells, "losing_years").value_or(""), "1");

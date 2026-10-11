@@ -5,11 +5,17 @@
 // as a column name: the whole statement fails, and with it the row (a backtest whose summary
 // INSERT fails stores nothing of the run). A value that is not finite is no value: the cell is
 // stored without one (NULL, or the column's default where it has one) and the caller logs which
-// cells. Finite values are formatted exactly as before.
+// cells.
+//
+// A finite value is written as the shortest decimal text that reads back as the same double
+// (D-16): std::to_string's six decimals kept about four significant digits of a 6J-sized price
+// and let a cumulative cost column drift from the sum of its executions.
 
 #pragma once
 
 #include <cmath>
+#include <cstdio>
+#include <cstdlib>
 #include <optional>
 #include <string>
 #include <unordered_map>
@@ -17,10 +23,24 @@
 
 namespace trade_ngin {
 
-/// A double as a statement carries it: its std::to_string text, or nothing when it is not finite.
+/// The text of a stored number: the fewest significant digits (15, 16 or 17) whose text reads
+/// back as the same double, so the cell holds the value the engine held. A value that is not
+/// finite keeps its std::to_string text (`nan`, `inf`): the writers that must store a row
+/// without it go through finite_sql_number.
+inline std::string round_trip_number(double value) {
+    if (!std::isfinite(value)) return std::to_string(value);
+    char buf[40];
+    for (int digits = 15; digits <= 17; ++digits) {
+        std::snprintf(buf, sizeof(buf), "%.*g", digits, value);
+        if (std::strtod(buf, nullptr) == value) break;
+    }
+    return std::string(buf);
+}
+
+/// A double as a statement carries it: its round-trip text, or nothing when it is not finite.
 inline std::optional<std::string> finite_sql_number(double value) {
     if (!std::isfinite(value)) return std::nullopt;
-    return std::to_string(value);
+    return round_trip_number(value);
 }
 
 /// The VALUES of the metric columns of a backtest.results INSERT, in the order of
@@ -47,7 +67,7 @@ inline std::string backtest_summary_metric_values(
     return values;
 }
 
-/// The SET list of a trading.live_results UPDATE for its double columns, "a = 1.000000, b =
+/// The SET list of a trading.live_results UPDATE for its double columns, "a = 1.5, b =
 /// NULL", in the map's own order. A value that is not finite is assigned NULL and its column
 /// added to `without_value`.
 inline std::string live_results_update_assignments(

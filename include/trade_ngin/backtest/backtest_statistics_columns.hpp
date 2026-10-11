@@ -78,9 +78,8 @@ BacktestStatisticsColumns backtest_statistics_columns(const StatisticsSeries& se
                                                       const std::string& through,
                                                       const BacktestStatisticsInputs& inputs);
 
-/// The thirteen as typed cells, in the migration's order. A number is written with ten
-/// significant digits (live_results_number, the format of the 030 cells), never through
-/// std::to_string's six decimals.
+/// The thirteen as typed cells, in the migration's order. A number is written as the text that
+/// reads back as the same double (live_results_number, the format of the 030 cells).
 std::vector<LiveResultsCell> backtest_statistics_cells(const BacktestStatisticsColumns& columns);
 
 /// The columns as one log line (a NULL cell prints "null").

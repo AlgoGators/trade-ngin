@@ -342,7 +342,7 @@ Result<void> PostgresDatabase::store_backtest_equity_curve_batch(
                 query += ", ";
             query += "(" + txn.quote(run_id) + ", " + txn.quote(actual_portfolio_id) + ", '" +
                      format_timestamp(equity_points[i].first) + "', " +
-                     std::to_string(equity_points[i].second);
+                     round_trip_number(equity_points[i].second);
             if (with_detail) {
                 query += risk_detail[i].empty() ? std::string(", NULL")
                                                 : ", " + txn.quote(risk_detail[i]) + "::jsonb";
@@ -492,10 +492,10 @@ Result<void> PostgresDatabase::store_backtest_positions(const std::vector<Positi
             value_ss << "(" << txn.quote(actual_run_id) << ", " << txn.quote(actual_portfolio_id)
                      << ", " << txn.quote(strategy_id_for_db) << ", "
                      << "'" << pos_date_str << "', " << txn.quote(pos.symbol) << ", "
-                     << std::to_string(static_cast<double>(pos.quantity)) << ", "
-                     << std::to_string(static_cast<double>(pos.average_price)) << ", "
-                     << std::to_string(static_cast<double>(pos.unrealized_pnl)) << ", "
-                     << std::to_string(static_cast<double>(pos.realized_pnl)) << ", "
+                     << round_trip_number(static_cast<double>(pos.quantity)) << ", "
+                     << round_trip_number(static_cast<double>(pos.average_price)) << ", "
+                     << round_trip_number(static_cast<double>(pos.unrealized_pnl)) << ", "
+                     << round_trip_number(static_cast<double>(pos.realized_pnl)) << ", "
                      << "'" << last_update_str << "', "
                      << "'" << last_update_str << "', "
                      << (pos.instrument_id.empty() ? std::string("NULL") : txn.quote(pos.instrument_id))
@@ -699,7 +699,8 @@ Result<void> PostgresDatabase::update_live_equity_curve(const std::string& strat
         // Use actual portfolio_id or default to BASE_PORTFOLIO for backward compatibility
         std::string actual_portfolio_id = portfolio_id.empty() ? "BASE_PORTFOLIO" : portfolio_id;
 
-        std::string query = "UPDATE " + table_name + " SET equity = " + std::to_string(equity) +
+        std::string query = "UPDATE " + table_name +
+                            " SET equity = " + round_trip_number(equity) +
                             " WHERE strategy_id = " + txn.quote(strategy_id) +
                             " AND portfolio_id = " + txn.quote(actual_portfolio_id) +
                             " AND DATE(timestamp) = '" + format_timestamp(date).substr(0, 10) + "'";

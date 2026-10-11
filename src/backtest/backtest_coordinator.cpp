@@ -2354,7 +2354,7 @@ Result<void> BacktestCoordinator::save_portfolio_results_to_db(
     }
     results_manager->set_equity_curve(equity_points);
     results_manager->set_equity_risk_detail(results.equity_risk_detail);
-    // Migration 031: the six overlay cells of each row, at ten significant digits; a row with
+    // Migration 031: the six overlay cells of each row, as round-trip text; a row with
     // no reading writes NULL in all six. A book that stores none names no such column.
     BacktestCurveCells curve_cells;
     curve_cells.reserve(results.equity_overlay.size());
