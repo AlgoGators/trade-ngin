@@ -41,12 +41,17 @@
 #   tree and deletes the logs its runs leave there.
 #   GATE_EVALUATE_ONLY=1 makes no run: the checks are evaluated on the runs already under $GATE_OUT (how
 #   the gate's own failing examples are made: copy a finished gate, plant a difference, evaluate).
-#   exit 0 only when every check passed; the checks are printed and kept in $GATE_OUT/GATE.txt.
+#   exit 0 only when every check passed and every driver finished; the checks are printed and kept in
+#   $GATE_OUT/GATE.txt. A gate that makes runs refuses an output folder that already holds runs.
 set -u
 HERE="${0:A:h}"
 WT="${GATE_WORKTREE:?set GATE_WORKTREE to the built linked worktree}"; export GATE_WORKTREE="$WT"
 DB="${1:?usage: gate.sh <scratch database>}"; ARM_C="${2:-TPL}"; ARM_B="${3:-ABSENT}"; ARM_E="${4:-ABSENT}"
-OUT="${GATE_OUT:?set GATE_OUT}"; mkdir -p "$OUT/runs" "$OUT/proofs"
+[ "$(cd "$WT" 2>/dev/null && git rev-parse --is-inside-work-tree 2>/dev/null)" = true ] && [ "$(cd "$WT" && git rev-parse --absolute-git-dir 2>/dev/null)" != "$(cd "$WT" && cd "$(git rev-parse --git-common-dir 2>/dev/null)" 2>/dev/null && pwd -P)" ] || { echo "REFUSING worktree $WT: it is the main checkout (or not a git worktree); the gate rewrites config/ and deletes logs/ in its worktree"; exit 2 }
+OUT="${GATE_OUT:?set GATE_OUT}"
+# A gate that makes runs starts from an empty output folder: runs left by an earlier gate would be evaluated as its own.
+if [ -z "${GATE_EVALUATE_ONLY:-}" ]; then leftover=("$OUT"/runs/*(N)); [ ${#leftover} -eq 0 ] || { echo "REFUSING output folder $OUT: runs/ is not empty (use an empty folder, or GATE_EVALUATE_ONLY=1 to evaluate the runs already there)"; exit 2 }; fi
+mkdir -p "$OUT/runs" "$OUT/proofs"
 R="$OUT/runs"; G="$OUT/GATE.txt"; : > "$G"; fails=0
 say() { echo "$1" | tee -a "$G" }
 check() { if eval "$2"; then say "PASS  $1"; else say "FAIL  $1"; fails=$((fails+1)); fi }
@@ -67,7 +72,13 @@ bodies_same() {   # <run A> <run B> <date ...>: the report bodies of the dates, 
 log() { gzip -dc "$1"/logs/"$2".log.gz }
 
 clang -dynamiclib -O1 -o "$OUT/hostclock_shim.dylib" "$HERE/hostclock_shim.c" || { say "FAIL  the clock shim did not build"; exit 1 }
-run() { [ -n "${GATE_EVALUATE_ONLY:-}" ] && return 0; /bin/zsh "$HERE/chain.sh" "$DB" "$@" > "$OUT/proofs/drv_${PF}_${MODE}_$2${3:+_$3}.log" 2>&1 }
+# A driver that stops (a refusal, a failed restore) fails the gate by itself: no check may pass on runs it did not make.
+run() {
+  [ -n "${GATE_EVALUATE_ONLY:-}" ] && return 0
+  local drv="$OUT/proofs/drv_${PF}_${MODE}_$2${3:+_$3}.log" rc
+  /bin/zsh "$HERE/chain.sh" "$DB" "$@" > "$drv" 2>&1; rc=$?
+  [ $rc -eq 0 ] || { say "FAIL  the driver of $PF $MODE $2 stopped with exit $rc: $(tail -1 "$drv")"; fails=$((fails+1)) }
+}
 
 say "live mode gate: database $DB, tree $(git -C "$WT" rev-parse HEAD) ($(git -C "$WT" status --porcelain --untracked-files=no | wc -l | tr -d ' ') modified tracked file(s)), gate script sha256 $(shasum -a 256 "$0" | cut -c1-16), ${GATE_EVALUATE_ONLY:+EVALUATE ONLY, }$(date -u +%FT%TZ)"
 
