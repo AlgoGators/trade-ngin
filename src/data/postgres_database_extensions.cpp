@@ -7,6 +7,7 @@
 #include <sstream>
 #include "trade_ngin/core/time_utils.hpp"
 #include "trade_ngin/data/backtest_position_row.hpp"
+#include "trade_ngin/data/finite_statement.hpp"
 #include "trade_ngin/data/postgres_database.hpp"
 
 namespace trade_ngin {
@@ -245,17 +246,17 @@ Result<void> PostgresDatabase::store_backtest_summary(
             "cvar_95",      "beta",         "correlation",   "downside_volatility",
             "transaction_costs", "roll_costs", "total_roll_fills"};  // 018 (T-ROLLX)
 
-        for (size_t i = 0; i < metric_names.size(); ++i) {
-            if (i > 0)
-                query += ", ";
-            auto it = metrics.find(metric_names[i]);
-            if (it != metrics.end()) {
-                query += std::to_string(it->second);
-            } else {
-                query += "0.0";  // Default value if metric not provided
-            }
-        }
+        // A metric that is not handed in or is not finite has no value: its cell is written
+        // DEFAULT (NULL on a statistic column) and the run is kept (T-8D R12, T-8D-2 R54).
+        std::vector<std::string> without_value;
+        query += backtest_summary_metric_values(metric_names, metrics, &without_value);
         query += cell_values + ")";
+        if (!without_value.empty()) {
+            WARN("Backtest summary for run_id " + run_id + ": " +
+                 std::to_string(without_value.size()) +
+                 " metric(s) without a finite value stored as the column default (NULL on a "
+                 "statistic): " + joined_columns(without_value));
+        }
 
         txn.exec(query);
         txn.commit();
@@ -711,12 +712,15 @@ Result<void> PostgresDatabase::update_live_results(
         // Build UPDATE query
         std::string query = "UPDATE " + table_name + " SET ";
 
-        bool first = true;
-        for (const auto& [column, value] : updates) {
-            if (!first)
-                query += ", ";
-            query += column + " = " + std::to_string(value);
-            first = false;
+        // A value that is not finite is assigned NULL, never formatted into the statement
+        // (T-8D R12).
+        std::vector<std::string> without_value;
+        query += live_results_update_assignments(updates, &without_value);
+        bool first = updates.empty();
+        if (!without_value.empty()) {
+            WARN("Live results update for " + strategy_id + " on " + format_timestamp(date) +
+                 ": " + std::to_string(without_value.size()) +
+                 " value(s) not finite, stored NULL: " + joined_columns(without_value));
         }
         // The typed cells (migration 030): every one is assigned, NULL where it has no value.
         for (const auto& cell : cells) {
@@ -953,10 +957,15 @@ Result<void> PostgresDatabase::store_live_results_complete(
         std::string values = txn.quote(strategy_id) + ", " + txn.quote(actual_portfolio_id) +
                              ", '" + format_timestamp(date) + "'";
 
-        // Add double metrics
-        for (const auto& [column, value] : metrics) {
-            columns += ", " + column;
-            values += ", " + std::to_string(value);
+        // Add double metrics; a value that is not finite is left out, so its cell stays NULL
+        // (T-8D R12)
+        std::vector<std::string> without_value;
+        append_live_results_double_columns(metrics, columns, values, &without_value);
+        if (!without_value.empty()) {
+            WARN("Live results for " + strategy_id + " on " + format_timestamp(date) + ": " +
+                 std::to_string(without_value.size()) +
+                 " value(s) not finite, left out of the row (NULL): " +
+                 joined_columns(without_value));
         }
 
         // Add integer metrics
