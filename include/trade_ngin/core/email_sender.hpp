@@ -11,6 +11,7 @@
 #include "trade_ngin/data/credential_store.hpp"
 #include "trade_ngin/data/database_interface.hpp"
 #include "trade_ngin/core/holiday_checker.hpp"
+#include "trade_ngin/core/report_over_limit.hpp"
 #include "trade_ngin/risk/risk_manager.hpp"
 
 namespace trade_ngin {
@@ -103,6 +104,8 @@ public:
      * @param portfolio_name Display name for the portfolio (shown in header)
      * @param is_daily_strategy Flag indicating if this is a daily strategy
      * @param chart_strategy_id The strategy id the charts query: the run's own stored id
+     * @param over_limit The day's leverage on the sizing capital, its limits and the over-limit
+     *        marks (report_over_limit.hpp); the default is a day with no reading
      * @return HTML email body
      */
     std::string generate_trading_report_body(
@@ -120,7 +123,8 @@ public:
         const std::unordered_map<std::string, double>& yesterday_close_prices = {},
         const std::unordered_map<std::string, double>& two_days_ago_close_prices = {},
         const std::map<std::string, double>& yesterday_daily_metrics = {},
-        const std::string& chart_strategy_id = "LIVE_TREND_FOLLOWING"
+        const std::string& chart_strategy_id = "LIVE_TREND_FOLLOWING",
+        const OverLimitReport& over_limit = {}
     );
 
     /**
@@ -178,9 +182,13 @@ private:
     /**
      * @brief Format strategy metrics for email
      * @param strategy_metrics Strategy metrics
+     * @param over_limit A futures book's over-limit report: with it the two leverage lines name
+     *        their denominator and the over-limit lines follow them. Null (the equity report):
+     *        the section is as it was.
      * @return Formatted strategy metrics HTML
      */
-    std::string format_strategy_metrics(const std::map<std::string, double>& strategy_metrics);
+    std::string format_strategy_metrics(const std::map<std::string, double>& strategy_metrics,
+                                        const OverLimitReport* over_limit = nullptr);
 
     /**
      * @brief Format executions table for email

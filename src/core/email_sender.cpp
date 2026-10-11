@@ -1760,7 +1760,7 @@ std::string EmailSender::format_risk_metrics(const RiskResult& risk_metrics) {
 */
 
 std::string EmailSender::format_strategy_metrics(
-    const std::map<std::string, double>& strategy_metrics) {
+    const std::map<std::string, double>& strategy_metrics, const OverLimitReport* over_limit) {
     std::ostringstream html;
 
     // Helper function to format numbers with commas
@@ -1941,15 +1941,23 @@ std::string EmailSender::format_strategy_metrics(
 
     html << "<br>\n";
 
-    // Section 4: Leverage
+    // Section 4: Leverage. A futures book's report (over_limit given) names the denominator of
+    // the two account-value lines and prints, after them, the leverage on the sizing capital
+    // beside the overlay's limits and the day's over-limit marks (report_over_limit.hpp).
     auto gross_lev = strategy_metrics.find("Gross Leverage");
     if (gross_lev != strategy_metrics.end()) {
-        html << format_metric("Gross Leverage", gross_lev->second);
+        html << format_metric(over_limit != nullptr ? kReportGrossOnAccount : "Gross Leverage",
+                              gross_lev->second);
     }
 
     auto net_lev = strategy_metrics.find("Net Leverage");
     if (net_lev != strategy_metrics.end()) {
-        html << format_metric("Net Leverage", net_lev->second);
+        html << format_metric(over_limit != nullptr ? kReportNetOnAccount : "Net Leverage",
+                              net_lev->second);
+    }
+
+    if (over_limit != nullptr) {
+        html << over_limit_report_html(*over_limit);
     }
 
     html << "<br>\n";
@@ -3761,7 +3769,7 @@ std::string EmailSender::generate_trading_report_body(
     const std::unordered_map<std::string, double>& yesterday_close_prices,
     const std::unordered_map<std::string, double>& two_days_ago_close_prices,
     const std::map<std::string, double>& yesterday_daily_metrics,
-    const std::string& chart_strategy_id) {
+    const std::string& chart_strategy_id, const OverLimitReport& over_limit) {
     (void)risk_metrics;
     std::ostringstream html;
 
@@ -3987,7 +3995,7 @@ std::string EmailSender::generate_trading_report_body(
     // Strategy metrics
     if (!strategy_metrics.empty()) {
         html << "<div class=\"metrics-section\">\n";
-        html << format_strategy_metrics(strategy_metrics);
+        html << format_strategy_metrics(strategy_metrics, &over_limit);
         html << "</div>\n";
     }
 

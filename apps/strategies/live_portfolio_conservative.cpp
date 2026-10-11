@@ -4622,8 +4622,12 @@ int main(int argc, char* argv[]) {
                         yesterday_exit_prices,   // Day T-1 close prices for yesterday's positions
                         yesterday_entry_prices,  // Day T-2 close prices for yesterday's positions
                         yesterday_daily_metrics_final,  // Yesterday's metrics
-                        combined_strategy_id            // The charts query this run's own rows
-                    );
+                        combined_strategy_id,           // The charts query this run's own rows
+                        // T-8D R20: the stored book's leverage on the sizing capital beside the
+                        // limits the overlay ran with, and the day's over-limit marks.
+                        trade_ngin::over_limit_report(one_pass_day, overlay_columns,
+                                                      portfolio_config.risk_modules,
+                                                      portfolio_config.per_name_cap));
 
                     // Send email with CSV attachments: today's positions and yesterday's finalized
                     // (if available)
