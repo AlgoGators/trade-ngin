@@ -16,6 +16,7 @@
 #include "trade_ngin/core/email_netting_text.hpp"
 #include "trade_ngin/core/holiday_checker.hpp"
 #include "trade_ngin/core/logger.hpp"
+#include "trade_ngin/core/report_price_text.hpp"
 #include "trade_ngin/instruments/equity.hpp"
 #include "trade_ngin/instruments/instrument_registry.hpp"
 #include "trade_ngin/transaction_cost/netting.hpp"
@@ -910,10 +911,10 @@ static std::string format_roll_legs_block(const std::vector<ExecutionReport>& ex
         const bool closing = exec.exec_id.size() >= 2 &&
                              exec.exec_id.compare(exec.exec_id.size() - 2, 2, "RC") == 0;
         html << "<tr><td>" << (closing ? "closing" : "opening") << "</td><td>" << exec.symbol
-             << "</td><td>" << (exec.side == Side::BUY ? "BUY" : "SELL") << "</td><td>" << std::fixed
-             << std::setprecision(0) << exec.filled_quantity.as_double() << "</td><td>$" << std::fixed
-             << std::setprecision(4) << exec.fill_price.as_double() << "</td><td>" << exec.instrument_id
-             << "</td><td>$" << std::fixed << std::setprecision(2)
+             << "</td><td>" << (exec.side == Side::BUY ? "BUY" : "SELL") << "</td><td>"
+             << std::fixed << std::setprecision(0) << exec.filled_quantity.as_double()
+             << "</td><td>$" << report_price_text(exec.fill_price.as_double()) << "</td><td>"
+             << exec.instrument_id << "</td><td>$" << std::fixed << std::setprecision(2)
              << exec.total_transaction_costs.as_double() << "</td></tr>\n";
     }
     if (legs > 0) {
@@ -995,8 +996,7 @@ std::string EmailSender::format_executions_table(const std::vector<ExecutionRepo
         html << "<td class=\"" << side_class << "\">" << side_str << "</td>\n";
         html << "<td>" << std::fixed << std::setprecision(0) << exec.filled_quantity.as_double()
              << "</td>\n";
-        html << "<td>$" << std::fixed << std::setprecision(2) << exec.fill_price.as_double()
-             << "</td>\n";
+        html << "<td>$" << report_price_text(exec.fill_price.as_double()) << "</td>\n";
         if (has_multiplier) {
             html << "<td>$" << std::fixed << std::setprecision(2) << notional << "</td>\n";
         } else {
@@ -1211,8 +1211,8 @@ std::string EmailSender::format_positions_table(
         html << "<td>" << symbol << "</td>\n";
         html << "<td>" << std::fixed << std::setprecision(0) << qty << "</td>\n";
 
-        // Show only market price (entry price removed from display)
-        html << "<td>$" << std::fixed << std::setprecision(2) << market_price << "</td>\n";
+        // Show only market price (entry price removed from display), at every decimal it has
+        html << "<td>$" << report_price_text(market_price) << "</td>\n";
 
         html << "<td>$" << std::fixed << std::setprecision(2) << std::abs(notional) << "</td>\n";
         html << "<td>" << std::fixed << std::setprecision(2) << pct_of_total << "%</td>\n";
@@ -1276,6 +1276,10 @@ static const char* const kPriorMarkHeader = "Prior mark (T-2 close)";
 static const char* const kMarkHeader = "Mark (T-1 close)";
 // The two marks are the raw closes the runner marks the book at; the P&L beside them is the
 // settled day's stored figure. Nothing recomputes one from the other, and the note says so.
+// A mark of the settled table: the close at every decimal it has, or "no bar".
+static std::string mark_text(double mark) {
+    return std::isnan(mark) ? std::string(kReportNoBar) : report_price_text(mark, true);
+}
 static const char* const kMarksNote =
     "<div style=\"font-size: 12px; color: #666; margin: 4px 0 12px 0;\">The two marks are raw "
     "closes. Realized PnL is the settled day's stored figure; it is not recomputed from the two "
@@ -1343,9 +1347,10 @@ std::string EmailSender::format_yesterday_finalized_positions_table(
         if (std::abs(qty) < 0.0001)
             continue;
 
-        // Get entry and exit prices
-        double entry_price = 0.0;
-        double exit_price = 0.0;
+        // The two marks. A symbol the runner's close map does not hold printed no bar that
+        // day: its mark is not known (NaN here, kReportNoBar in the cell), never a zero.
+        double entry_price = std::nan("");
+        double exit_price = std::nan("");
 
         if (entry_prices.find(symbol) != entry_prices.end()) {
             entry_price = entry_prices.at(symbol);
@@ -1400,13 +1405,13 @@ std::string EmailSender::format_yesterday_finalized_positions_table(
         html << "<tr>";
         html << "<td>" << symbol << "</td>";
         html << "<td>" << std::fixed << std::setprecision(2) << qty << "</td>";
-        html << "<td>" << format_with_commas(entry_price, 2) << "</td>";
+        html << "<td>" << mark_text(entry_price) << "</td>";
 
         // Show N/A for exit price if ag future on Monday
-        if (is_monday && is_ag_future(symbol) && exit_price == 0.0) {
+        if (is_monday && is_ag_future(symbol) && std::isnan(exit_price)) {
             html << "<td>N/A</td>";
         } else {
-            html << "<td>" << format_with_commas(exit_price, 2) << "</td>";
+            html << "<td>" << mark_text(exit_price) << "</td>";
         }
 
         // Show N/A for realized PnL if ag future on Monday with zero PnL
@@ -1612,8 +1617,9 @@ std::string EmailSender::format_yesterday_finalized_positions_table(
             if (std::abs(qty) < 0.0001)
                 continue;
 
-            double entry_price = 0.0;
-            double exit_price = 0.0;
+            // A symbol with no bar that day has no mark (see the single table above).
+            double entry_price = std::nan("");
+            double exit_price = std::nan("");
 
             if (entry_prices.find(symbol) != entry_prices.end()) {
                 entry_price = entry_prices.at(symbol);
@@ -1658,12 +1664,12 @@ std::string EmailSender::format_yesterday_finalized_positions_table(
             html << "<tr>";
             html << "<td>" << symbol << "</td>";
             html << "<td>" << std::fixed << std::setprecision(2) << qty << "</td>";
-            html << "<td>" << format_with_commas(entry_price, 2) << "</td>";
+            html << "<td>" << mark_text(entry_price) << "</td>";
 
-            if (is_monday && is_ag_future(symbol) && exit_price == 0.0) {
+            if (is_monday && is_ag_future(symbol) && std::isnan(exit_price)) {
                 html << "<td>N/A</td>";
             } else {
-                html << "<td>" << format_with_commas(exit_price, 2) << "</td>";
+                html << "<td>" << mark_text(exit_price) << "</td>";
             }
 
             if (is_monday && is_ag_future(symbol) && std::abs(realized_pnl) < 0.01) {
@@ -3372,7 +3378,7 @@ std::string EmailSender::format_single_strategy_table(
         html << "<tr>\n";
         html << "<td>" << symbol << "</td>\n";
         html << "<td>" << std::fixed << std::setprecision(0) << qty << "</td>\n";
-        html << "<td>$" << std::fixed << std::setprecision(2) << market_price << "</td>\n";
+        html << "<td>$" << report_price_text(market_price) << "</td>\n";
         html << "<td>$" << format_with_commas(std::abs(notional)) << "</td>\n";
         html << "<td>" << std::fixed << std::setprecision(2) << pct_of_total << "%</td>\n";
         html << "</tr>\n";
@@ -3665,8 +3671,7 @@ std::string EmailSender::format_single_strategy_executions_table(
         html << "<td class=\"" << side_class << "\">" << side_str << "</td>\n";
         html << "<td>" << std::fixed << std::setprecision(0) << exec.filled_quantity.as_double()
              << "</td>\n";
-        html << "<td>$" << std::fixed << std::setprecision(2) << exec.fill_price.as_double()
-             << "</td>\n";
+        html << "<td>$" << report_price_text(exec.fill_price.as_double()) << "</td>\n";
         if (has_multiplier) {
             html << "<td>$" << format_with_commas(notional) << "</td>\n";
         } else {

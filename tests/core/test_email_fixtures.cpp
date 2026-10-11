@@ -20,6 +20,7 @@
 #include <gtest/gtest.h>
 
 #include <algorithm>
+#include <cmath>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
@@ -31,6 +32,7 @@
 
 #include "trade_ngin/core/email_sender.hpp"
 #include "trade_ngin/core/report_over_limit.hpp"
+#include "trade_ngin/core/report_price_text.hpp"
 #include "trade_ngin/core/report_risk_lines.hpp"
 #include "trade_ngin/instruments/equity.hpp"
 #include "trade_ngin/instruments/futures.hpp"
@@ -490,6 +492,49 @@ TEST_F(EmailFixture, TheSleeveNamesItsKindAndTheSettledTableNamesItsMarks) {
               std::string::npos);
     EXPECT_EQ(futures.find("Netting Adjustment"), std::string::npos)
         << "a one-sleeve body carries no netting line";
+}
+
+// The lead's 2026-10-07 list: a price was printed to two fixed decimals (a yen future read $0.01)
+// and a symbol with no bar read 0.00. A price prints every decimal it has, to eight at most and
+// two at least.
+TEST(ReportPriceText, APricePrintsEveryDecimalItHasAndNeverFewerThanTwo) {
+    EXPECT_EQ(report_price_text(0.0062995), "0.0062995");
+    EXPECT_EQ(report_price_text(103.73828125), "103.73828125");
+    EXPECT_EQ(report_price_text(0.1998), "0.1998");
+    EXPECT_EQ(report_price_text(677.0), "677.00");
+    EXPECT_EQ(report_price_text(7217.25), "7217.25");
+    EXPECT_EQ(report_price_text(2806.7), "2806.70");
+    EXPECT_EQ(report_price_text(79070.0, true), "79,070.00");
+    EXPECT_EQ(report_price_text(1234567.125, true), "1,234,567.125");
+    EXPECT_EQ(report_price_text(-1234.5, true), "-1,234.50");
+    EXPECT_EQ(report_price_text(0.0), "0.00");
+    EXPECT_EQ(report_price_text(0.000000004), "0.00") << "below the eighth decimal";
+    EXPECT_EQ(report_price_text(std::nan("")), "n/a");
+}
+
+TEST_F(EmailFixture, ARowsPriceMultipliesOutAndASymbolWithNoBarHasNoMark) {
+    const std::string body = conservative_body();
+    // today's positions: -1 x 0.0062995 x 12,500,000 = 78,743.75; 2 x 0.1998 x 100,000 = 39,960
+    EXPECT_NE(body.find("<td>Q6J.v.0</td>\n<td>-1</td>\n<td>$0.0062995</td>\n<td>$78,743.75</td>"),
+              std::string::npos);
+    EXPECT_NE(body.find("<td>Q6L.v.0</td>\n<td>2</td>\n<td>$0.1998</td>\n<td>$39,960.00</td>"),
+              std::string::npos);
+    EXPECT_NE(body.find("<td>QZT.v.0</td>\n<td>-1</td>\n<td>$103.73828125</td>\n"
+                        "<td>$207,476.56</td>"),
+              std::string::npos);
+    EXPECT_EQ(body.find("$0.01<"), std::string::npos) << "a price cut to the cent";
+    // the settled table: both marks at their decimals; HE printed no bar on either day
+    EXPECT_NE(body.find("<tr><td>Q6J.v.0</td><td>-1.00</td><td>0.006313</td><td>0.0062995</td>"),
+              std::string::npos);
+    EXPECT_NE(body.find("<tr><td>HE.v.0</td><td>1.00</td><td>n/a (no bar)</td>"
+                        "<td>n/a (no bar)</td>"),
+              std::string::npos);
+    EXPECT_EQ(body.find("<td>0.00</td>"), std::string::npos) << "a missing mark printed as zero";
+    // a roll leg and a fill
+    EXPECT_NE(body.find("<td>SELL</td><td>1</td><td>$77960.00</td><td>42185193</td>"),
+              std::string::npos);
+    EXPECT_NE(body.find("<td class=\"positive\">BUY</td>\n<td>1</td>\n<td>$2806.70</td>"),
+              std::string::npos);
 }
 
 // The same inputs render the same bytes twice: the body carries no clock.
