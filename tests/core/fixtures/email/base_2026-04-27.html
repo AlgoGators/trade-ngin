@@ -46,7 +46,7 @@ th { background-color: #f2f2f2; font-weight: bold; }
 <p style="margin: 5px 0 0 0; color: #92400e; font-weight: 600; font-size: 14px;">Please monitor these positions closely.</p>
 </div>
 <h2>Today's Positions</h2>
-<h3 style="margin-top: 20px; margin-bottom: 10px; color: #333; border-left: 4px solid #2c5aa0; padding-left: 12px;">Trend Following</h3>
+<h3 style="margin-top: 20px; margin-bottom: 10px; color: #333; border-left: 4px solid #2c5aa0; padding-left: 12px;">Trend Following (futures)</h3>
 <table>
 <tr><th>Symbol</th><th>Quantity</th><th>Market Price</th><th>Notional</th><th>% of Total</th></tr>
 <tr>
@@ -74,7 +74,7 @@ th { background-color: #f2f2f2; font-weight: bold; }
 <div style="font-size: 13px; color: #666; margin: 8px 0 20px 0; padding-left: 16px;">
 <strong>Positions:</strong> 3 | <strong>Notional:</strong> $326,741.25 | <strong>Margin:</strong> $11,400.00
 </div>
-<h3 style="margin-top: 20px; margin-bottom: 10px; color: #333; border-left: 4px solid #2c5aa0; padding-left: 12px;">Trend Following Fast</h3>
+<h3 style="margin-top: 20px; margin-bottom: 10px; color: #333; border-left: 4px solid #2c5aa0; padding-left: 12px;">Trend Following Fast (futures)</h3>
 <table>
 <tr><th>Symbol</th><th>Quantity</th><th>Market Price</th><th>Notional</th><th>% of Total</th></tr>
 <tr>
@@ -142,13 +142,13 @@ th { background-color: #f2f2f2; font-weight: bold; }
 <div class="metric"><strong>Total Notional Traded:</strong> $107,302.50</div>
 <div class="metric"><strong>Total Own Costs:</strong> $3.27</div>
 <div class="metric"><strong>Netting Adjustment:</strong> -$1.09</div>
-<div class="metric"><strong>Total Transaction Costs:</strong> $2.18</div>
+<div class="metric"><strong>Today's Transaction Costs:</strong> $2.18</div>
 <div class="metric" style="font-size: 12px; color: #666;">Each figure is rounded to the cent on its own, so rows and totals can differ by a cent.</div>
 </div>
 <h2>Yesterday's Finalized Position Results</h2>
 <h3 style="margin-top: 20px; margin-bottom: 10px; color: #333; border-left: 4px solid #2c5aa0; padding-left: 12px;">Trend Following</h3>
 <table>
-<tr><th>Symbol</th><th>Quantity</th><th>Entry Price</th><th>Exit Price</th><th>Realized PnL</th></tr>
+<tr><th>Symbol</th><th>Quantity</th><th>Prior mark (T-2 close)</th><th>Mark (T-1 close)</th><th>Realized PnL</th></tr>
 <tr><td>KE.v.0</td><td>1.00</td><td>668.50</td><td>668.50</td><td>N/A</td></tr>
 <tr><td>QZN.v.0</td><td>2.00</td><td>110.86</td><td>110.89</td><td class="positive">$62.50</td></tr>
 </table>
@@ -157,12 +157,13 @@ th { background-color: #f2f2f2; font-weight: bold; }
 </div>
 <h3 style="margin-top: 20px; margin-bottom: 10px; color: #333; border-left: 4px solid #2c5aa0; padding-left: 12px;">Trend Following Fast</h3>
 <table>
-<tr><th>Symbol</th><th>Quantity</th><th>Entry Price</th><th>Exit Price</th><th>Realized PnL</th></tr>
+<tr><th>Symbol</th><th>Quantity</th><th>Prior mark (T-2 close)</th><th>Mark (T-1 close)</th><th>Realized PnL</th></tr>
 <tr><td>QZN.v.0</td><td>-1.00</td><td>110.86</td><td>110.89</td><td class="negative">$-31.25</td></tr>
 </table>
 <div style="font-size: 13px; color: #666; margin: 8px 0 20px 0; padding-left: 16px;">
 <strong>Positions:</strong> 1 | <strong>Total Realized PnL (Gross):</strong> <span class="negative">$-31.25</span>
 </div>
+<div style="font-size: 12px; color: #666; margin: 4px 0 12px 0;">The two marks are raw closes. Realized PnL is the settled day's stored figure; it is not recomputed from the two marks, so a row need not multiply out.</div>
 <h2>2026-04-26 Metrics</h2>
 <div class="metrics-category">
 <div class="metric"><strong>Total Positions:</strong> 3</div>

@@ -41,7 +41,7 @@ th { background-color: #f2f2f2; font-weight: bold; }
 </div>
 </div>
 <h2>Today's Positions</h2>
-<h3 style="margin-top: 20px; margin-bottom: 10px; color: #333; border-left: 4px solid #2c5aa0; padding-left: 12px;">Trend Following</h3>
+<h3 style="margin-top: 20px; margin-bottom: 10px; color: #333; border-left: 4px solid #2c5aa0; padding-left: 12px;">Trend Following (futures)</h3>
 <table>
 <tr><th>Symbol</th><th>Quantity</th><th>Market Price</th><th>Notional</th><th>% of Total</th></tr>
 <tr>
@@ -129,13 +129,13 @@ th { background-color: #f2f2f2; font-weight: bold; }
 <div class="summary-stats" style="margin-top: 20px; border-top: 2px solid #2c5aa0; padding-top: 15px;">
 <div class="metric"><strong>Total Trades:</strong> 1</div>
 <div class="metric"><strong>Total Notional Traded:</strong> $14,033.50</div>
-<div class="metric"><strong>Total Transaction Costs:</strong> $5.99</div>
+<div class="metric"><strong>Today's Transaction Costs:</strong> $5.99</div>
 <div class="metric"><strong>Roll Fills:</strong> 2 | <strong>Roll Costs (upper bound):</strong> $4.90</div>
 </div>
 <h2>Yesterday's Finalized Position Results</h2>
 <h3 style="margin-top: 20px; margin-bottom: 10px; color: #333; border-left: 4px solid #2c5aa0; padding-left: 12px;">Trend Following</h3>
 <table>
-<tr><th>Symbol</th><th>Quantity</th><th>Entry Price</th><th>Exit Price</th><th>Realized PnL</th></tr>
+<tr><th>Symbol</th><th>Quantity</th><th>Prior mark (T-2 close)</th><th>Mark (T-1 close)</th><th>Realized PnL</th></tr>
 <tr><td>HE.v.0</td><td>1.00</td><td>0.00</td><td>0.00</td><td class="positive">$0.00</td></tr>
 <tr><td>Q6J.v.0</td><td>-1.00</td><td>0.01</td><td>0.01</td><td class="negative">$-168.75</td></tr>
 <tr><td>Q6L.v.0</td><td>2.00</td><td>0.20</td><td>0.20</td><td class="positive">$80.00</td></tr>
@@ -147,6 +147,7 @@ th { background-color: #f2f2f2; font-weight: bold; }
 <div style="font-size: 13px; color: #666; margin: 8px 0 20px 0; padding-left: 16px;">
 <strong>Positions:</strong> 7 | <strong>Total Realized PnL (Gross):</strong> <span class="positive">$608.12</span>
 </div>
+<div style="font-size: 12px; color: #666; margin: 4px 0 12px 0;">The two marks are raw closes. Realized PnL is the settled day's stored figure; it is not recomputed from the two marks, so a row need not multiply out.</div>
 <h2>2026-04-27 Metrics</h2>
 <div class="metrics-category">
 <div class="metric"><strong>Total Positions:</strong> 7</div>

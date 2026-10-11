@@ -458,6 +458,36 @@ TEST_F(EmailFixture, TheEquityBodyIsTheStoredBody) {
     expect_body_is_fixture("equity_2026-06-22.html", equity_body());
 }
 
+// T-8D D1, T-8D-2 R62 and the lead's "raw closes beside settled P&L": the labels, on the bodies.
+TEST_F(EmailFixture, TheSleeveNamesItsKindAndTheSettledTableNamesItsMarks) {
+    const std::string futures = conservative_body();
+    EXPECT_NE(futures.find(">Trend Following (futures)</h3>\n<table>\n<tr><th>Symbol</th>"
+                           "<th>Quantity</th><th>Market Price</th>"),
+              std::string::npos);
+    const std::string base = base_body();
+    EXPECT_NE(base.find(">Trend Following Fast (futures)</h3>"), std::string::npos);
+    const std::string marks =
+        "<th>Prior mark (T-2 close)</th><th>Mark (T-1 close)</th>"
+        "<th>Realized PnL</th>";
+    const std::string note =
+        "The two marks are raw closes. Realized PnL is the settled day's "
+        "stored figure; it is not recomputed from the two marks";
+    for (const std::string& body : {futures, base, equity_body()}) {
+        EXPECT_NE(body.find(marks), std::string::npos);
+        EXPECT_EQ(body.find("Entry Price"), std::string::npos);
+        EXPECT_EQ(body.find("Exit Price"), std::string::npos);
+        const auto at = body.find(note);
+        ASSERT_NE(at, std::string::npos);
+        EXPECT_EQ(body.find(note, at + 1), std::string::npos) << "the note is printed once";
+    }
+    // The executions footer of a futures book: today's, and the netting lines above it stay.
+    EXPECT_NE(base.find("<strong>Netting Adjustment:</strong> -$1.09</div>\n"
+                        "<div class=\"metric\"><strong>Today's Transaction Costs:</strong> $2.18"),
+              std::string::npos);
+    EXPECT_EQ(futures.find("Netting Adjustment"), std::string::npos)
+        << "a one-sleeve body carries no netting line";
+}
+
 // The same inputs render the same bytes twice: the body carries no clock.
 TEST_F(EmailFixture, EveryBodyRendersTheSameBytesTwice) {
     EXPECT_EQ(conservative_body(), conservative_body());

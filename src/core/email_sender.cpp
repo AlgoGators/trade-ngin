@@ -16,6 +16,7 @@
 #include "trade_ngin/core/email_netting_text.hpp"
 #include "trade_ngin/core/holiday_checker.hpp"
 #include "trade_ngin/core/logger.hpp"
+#include "trade_ngin/instruments/equity.hpp"
 #include "trade_ngin/instruments/instrument_registry.hpp"
 #include "trade_ngin/transaction_cost/netting.hpp"
 
@@ -1267,6 +1268,17 @@ std::string EmailSender::format_positions_table(
     return html.str();
 }
 
+// T-8D-2 R62: the two price columns of the settled day's table are marks, not a trade's entry and
+// exit: the close of the day before and the close of the settled day.
+static const char* const kPriorMarkHeader = "Prior mark (T-2 close)";
+static const char* const kMarkHeader = "Mark (T-1 close)";
+// The two marks are the raw closes the runner marks the book at; the P&L beside them is the
+// settled day's stored figure. Nothing recomputes one from the other, and the note says so.
+static const char* const kMarksNote =
+    "<div style=\"font-size: 12px; color: #666; margin: 4px 0 12px 0;\">The two marks are raw "
+    "closes. Realized PnL is the settled day's stored figure; it is not recomputed from the two "
+    "marks, so a row need not multiply out.</div>\n";
+
 std::string EmailSender::format_yesterday_finalized_positions_table(
     const std::unordered_map<std::string, Position>& yesterday_positions,
     const std::unordered_map<std::string, double>& entry_prices,  // Day T-2 close
@@ -1285,8 +1297,8 @@ std::string EmailSender::format_yesterday_finalized_positions_table(
     html << "<tr>";
     html << "<th>Symbol</th>";
     html << "<th>Quantity</th>";
-    html << "<th>Entry Price</th>";
-    html << "<th>Exit Price</th>";
+    html << "<th>" << kPriorMarkHeader << "</th>";
+    html << "<th>" << kMarkHeader << "</th>";
     html << "<th>Realized PnL</th>";
     html << "</tr>\n";
 
@@ -1410,6 +1422,7 @@ std::string EmailSender::format_yesterday_finalized_positions_table(
     }
 
     html << "</table>\n";
+    html << kMarksNote;
 
     // Add daily metrics as a section heading after the table - use passed yesterday_daily_metrics
     if (!strategy_metrics.empty() && !yesterday_date.empty()) {
@@ -1634,8 +1647,8 @@ std::string EmailSender::format_yesterday_finalized_positions_table(
         html << "<tr>";
         html << "<th>Symbol</th>";
         html << "<th>Quantity</th>";
-        html << "<th>Entry Price</th>";
-        html << "<th>Exit Price</th>";
+        html << "<th>" << kPriorMarkHeader << "</th>";
+        html << "<th>" << kMarkHeader << "</th>";
         html << "<th>Realized PnL</th>";
         html << "</tr>\n";
 
@@ -1674,6 +1687,7 @@ std::string EmailSender::format_yesterday_finalized_positions_table(
              << "\">$" << format_with_commas(strategy_total_pnl, 2) << "</span>\n";
         html << "</div>\n";
     }
+    html << kMarksNote;
 
     // Add daily metrics section
     if (!strategy_metrics.empty() && !yesterday_date.empty()) {
@@ -3128,6 +3142,51 @@ std::string EmailSender::format_strategy_display_name(const std::string& strateg
     return result;
 }
 
+// T-8D D1: one label for the margin figure on every book ("Margin Posted"); what differs is the
+// rule that produced it, and that is named in the sleeve's sub-header: the kind of instrument the
+// sleeve holds and, for equities, the account mode its margin follows. "futures"; "equities, cash
+// account"; "equities, Reg T account"; a sleeve holding more than one names each, in that order.
+// Empty when no held row of the sleeve is in the registry.
+static std::string sleeve_margin_kind(const std::unordered_map<std::string, Position>& positions) {
+    bool futures = false;
+    bool cash_equities = false;
+    bool reg_t_equities = false;
+    for (const auto& [symbol, position] : positions) {
+        if (position.quantity.as_double() == 0.0)
+            continue;
+        std::string lookup_sym = position.symbol.empty() ? symbol : position.symbol;
+        for (const char* suffix : {".v.", ".c."}) {
+            const auto dotpos = lookup_sym.find(suffix);
+            if (dotpos != std::string::npos)
+                lookup_sym = lookup_sym.substr(0, dotpos);
+        }
+        std::shared_ptr<Instrument> instrument;
+        try {
+            instrument = InstrumentRegistry::instance().get_instrument(lookup_sym);
+        } catch (...) {
+        }
+        if (!instrument)
+            continue;
+        if (const auto* equity = dynamic_cast<const EquityInstrument*>(instrument.get())) {
+            (equity->get_account_mode() == EquityAccountMode::REG_T ? reg_t_equities
+                                                                    : cash_equities) = true;
+        } else if (instrument->get_type() == AssetType::FUTURE) {
+            futures = true;
+        }
+    }
+    std::string kind;
+    const auto add = [&kind](const char* text) {
+        kind += (kind.empty() ? "" : "; ") + std::string(text);
+    };
+    if (futures)
+        add("futures");
+    if (cash_equities)
+        add("equities, cash account");
+    if (reg_t_equities)
+        add("equities, Reg T account");
+    return kind;
+}
+
 std::string EmailSender::format_single_strategy_table(
     const std::string& strategy_name, const std::unordered_map<std::string, Position>& positions,
     const std::unordered_map<std::string, double>& current_prices) {
@@ -3162,8 +3221,12 @@ std::string EmailSender::format_single_strategy_table(
         return str;
     };
 
-    // Strategy sub-header with styled left border accent
+    // Strategy sub-header with styled left border accent; the kind of instrument and the account
+    // mode the sleeve's margin follows beside the name (T-8D D1).
     std::string display_name = format_strategy_display_name(strategy_name);
+    const std::string margin_kind = sleeve_margin_kind(positions);
+    if (!margin_kind.empty())
+        display_name += " (" + margin_kind + ")";
     html << "<h3 style=\"margin-top: 20px; margin-bottom: 10px; color: #333; "
          << "border-left: 4px solid #2c5aa0; padding-left: 12px;\">" << display_name << "</h3>\n";
 
@@ -3696,7 +3759,11 @@ std::string EmailSender::format_strategy_executions_tables(
             }
             if (exec.execution_type != ExecutionType::STRATEGY) continue;
             ++portfolio_total_trades;
+            // The sleeve table's rule (T-8D-2 R62): a symbol that is not in the registry has no
+            // notional (its cell reads n/a) and is left out of the total, never counted at a
+            // multiplier of 1.
             double contract_multiplier = 1.0;
+            bool has_multiplier = false;
             try {
                 auto& registry = InstrumentRegistry::instance();
                 std::string lookup_sym = exec.symbol;
@@ -3711,9 +3778,12 @@ std::string EmailSender::format_strategy_executions_tables(
                 auto instrument = registry.get_instrument(lookup_sym);
                 if (instrument) {
                     contract_multiplier = instrument->get_multiplier();
+                    has_multiplier = true;
                 }
             } catch (...) {
             }
+            if (!has_multiplier)
+                continue;
 
             double notional = exec.filled_quantity.as_double() * exec.fill_price.as_double() *
                               contract_multiplier;
@@ -3738,7 +3808,8 @@ std::string EmailSender::format_strategy_executions_tables(
                                     portfolio_total_transaction_costs)
              << "</div>\n";
     }
-    html << "<div class=\"metric\"><strong>Total Transaction Costs:</strong> $"
+    // "Today's": the same words would otherwise name the cumulative figure of the snapshot.
+    html << "<div class=\"metric\"><strong>Today's Transaction Costs:</strong> $"
          << format_with_commas(portfolio_total_transaction_costs) << "</div>\n";
     if (portfolio_total_roll_fills > 0) {
         html << "<div class=\"metric\"><strong>Roll Fills:</strong> " << portfolio_total_roll_fills
