@@ -221,19 +221,20 @@ TEST_F(RollStateDbTest, AReplaceRemovesTheDaysOrdersTheRerunNoLongerMakes) {
     EXPECT_EQ(got, want) << "the first run's MBT order of 2026-04-29 is still stored";
 }
 
-// The same sweep for a sleeve that books no ROLL leg on the run (the runners call it before they
-// store what the run makes, and also when the re-run makes no order at all): the sleeve's rows of
-// the day, of every type; another sleeve, another day and another portfolio are not touched.
+// The same replace for a sleeve the re-run makes no order for at all (the runners call it for
+// every sleeve): the sleeve's rows of the day, of every type, are removed; another sleeve, another
+// day and another portfolio are not touched.
 TEST_F(RollStateDbTest, TheDaySweepRemovesTheSleevesRowsOfTheDayAndNothingElse) {
     leg("2026-05-01", "EXEC_MBT.v.0_20260501_SC", "MBT.v.0", "STRATEGY", "", 3.0);
     leg("2026-05-01", "EXEC_ZC.v.0_20260430_RC", "ZC.v.0", "ROLL", "K", 5.0);
     leg("2026-05-01", "EXEC_ZF.v.0_20260501", "ZF.v.0", "STRATEGY", "", 2.0, "TREND_FOLLOWING_FAST");
     leg("2026-04-30", "EXEC_MBT.v.0_20260430", "MBT.v.0", "STRATEGY", "", 3.0);
-    ASSERT_TRUE(db_->delete_day_executions(utc(2026, 5, 1), "TREND_FOLLOWING", kPortfolio,
-                                           "trading.executions")
+    ASSERT_TRUE(db_->replace_roll_day_executions({{"TREND_FOLLOWING", {}}}, kId, kPortfolio,
+                                                 utc(2026, 5, 1), "trading.executions")
                     .is_ok());
-    ASSERT_TRUE(db_->delete_day_executions(utc(2026, 5, 1), "TREND_FOLLOWING", "ANOTHER_PORTFOLIO",
-                                           "trading.executions")
+    ASSERT_TRUE(db_->replace_roll_day_executions({{"TREND_FOLLOWING", {}}}, kId,
+                                                 "ANOTHER_PORTFOLIO", utc(2026, 5, 1),
+                                                 "trading.executions")
                     .is_ok());
     pqxx::connection conn(conn_);
     pqxx::work w(conn);

@@ -448,26 +448,16 @@ public:
                                                 const std::string& table_name = "trading.executions");
 
     /**
-     * @brief T-DATED R3 (HD 2026-10-10): the re-run sweep of a sleeve's executions of a day, of
-     *        every type. A re-run of a date re-decides the day's orders; a row an earlier run of
-     *        the date stored for an order the re-run no longer makes must not stay. The runners
-     *        call it for a sleeve that books no ROLL leg, before they store what the run makes
-     *        (a sleeve with legs is swept inside replace_roll_day_executions' transaction).
-     */
-    virtual Result<void> delete_day_executions(const Timestamp& date, const std::string& strategy_name,
-                                               const std::string& portfolio_id,
-                                               const std::string& table_name = "trading.executions");
-
-    /**
-     * @brief T-ROLLX-FIX commits 5 and 6 (LOOP_SPEC v6.2 section 6.5): the executions of every
-     *        sleeve that books ROLL legs on a run, replaced in ONE transaction: per sleeve, the
-     *        sweep of its ROLL rows dated `date` (delete_roll_executions' predicate), the delete of
-     *        the rows carrying this run's order ids (delete_stale_executions' predicate) and the
-     *        insert (store_executions' columns). The live runners store a run's legs BEFORE they
-     *        re-write the Day T-1 positions rows, and a re-run reads the contract its stored legs
-     *        rolled out of; a sweep committed apart from the insert left, on a re-run stopped
-     *        between the two, a re-written T-1 row and no leg. Committed whole or not at all: a
-     *        failure leaves no row of any of these sleeves. `sleeves`: (sleeve name, its rows).
+     * @brief The executions of a day replaced in ONE transaction (T-ROLLX-FIX commits 5 and 6,
+     *        LOOP_SPEC v6.2 section 6.5; T-DATED R3, HD 2026-10-10): per sleeve, the sweep of its
+     *        rows dated `date` of every type, the delete of the rows carrying this run's order ids
+     *        (delete_stale_executions' predicate) and the insert (store_executions' columns); the
+     *        steps and their order are data/day_execution_replace.hpp. The live runners call it
+     *        once for every sleeve that books ROLL legs, BEFORE they re-write the Day T-1
+     *        positions rows (a re-run reads the contract its stored legs rolled out of), and once
+     *        for each other sleeve, also when the run makes no order for it. Committed whole or
+     *        not at all: a failure leaves the rows of these sleeves as they were stored before
+     *        the call. `sleeves`: (sleeve name, its rows).
      */
     virtual Result<void> replace_roll_day_executions(
         const std::vector<std::pair<std::string, std::vector<ExecutionReport>>>& sleeves,

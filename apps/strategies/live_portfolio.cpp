@@ -2628,75 +2628,35 @@ int main(int argc, char* argv[]) {
             }
         }
 
-        // T-DATED R3: every row of the sleeve's day, not only its ROLL rows: a re-run of a date
-        // leaves no order an earlier run of the date made and this run does not.
-        for (const auto& strategy_name_rl : strategy_names) {
-            if (roll_legs_of(strategy_name_rl) > 0) continue;
-            auto sweep = db->delete_day_executions(now, strategy_name_rl, portfolio_id,
-                                                   "trading.executions");
-            if (sweep.is_error()) {
-                ERROR("ROLL_LEG STOP: today's executions of " + strategy_name_rl +
-                      " could not be swept (" + std::string(sweep.error()->what()) +
-                      "); refusing to run: a re-run would store them twice");
-                return 1;
-            }
-        }
-
-        // Store executions for each strategy without ROLL legs
-        for (const auto& [strategy_name, executions] : all_strategy_executions) {
-            if (roll_legs_of(strategy_name) > 0) continue;  // stored above
-            if (!executions.empty()) {
-                // Before inserting, delete any stale executions for today with the same order_ids
-                try {
-                    // Build unique order_id list
-                    std::set<std::string> unique_order_ids;
-                    for (const auto& exec : executions) {
-                        unique_order_ids.insert(exec.order_id);
-                    }
-
-                    if (!unique_order_ids.empty()) {
-                        // Convert set to vector for the delete method
-                        std::vector<std::string> order_ids_vector(unique_order_ids.begin(),
-                                                                  unique_order_ids.end());
-
-                        INFO("Deleting stale executions for strategy " + strategy_name + " with " +
-                             std::to_string(order_ids_vector.size()) + " order_ids");
-
-                        // Use the delete_stale_executions method with strategy name
-                        auto del_res = db->delete_stale_executions(
-                            order_ids_vector, now, strategy_name, portfolio_id,
-                            "trading.executions");
-                        if (del_res.is_error()) {
-                            WARN("Failed to delete stale executions for strategy " + strategy_name +
-                                 ": " + std::string(del_res.error()->what()));
-                        } else {
-                            INFO("Stale executions (if any) deleted successfully for strategy: " +
-                                 strategy_name);
-                        }
-                    }
-                } catch (const std::exception& e) {
-                    WARN("Exception while deleting stale executions for strategy " + strategy_name +
-                         ": " + std::string(e.what()));
-                }
-
-                // Store executions with combined strategy_id and individual strategy_name
-                auto save_result =
-                    db->store_executions(executions,
-                                         combined_strategy_id,  // Combined strategy_id for tier 2
-                                         strategy_name,  // Individual strategy_name for tier 3
-                                         portfolio_id,   // Portfolio identifier
-                                         "trading.executions");
-
-                if (save_result.is_error()) {
-                    ERROR("Failed to store executions for strategy " + strategy_name + ": " +
-                          std::string(save_result.error()->what()));
-                } else {
-                    INFO("Successfully stored " + std::to_string(executions.size()) +
-                         " executions for strategy: " + strategy_name);
-                }
+        // T-DATED R3: a sleeve without ROLL legs. Its rows of the day are swept (every row, not
+        // only ROLL rows: a re-run of a date leaves no order an earlier run of the date made and
+        // this run does not) and this run's rows stored in ONE transaction, sleeve by sleeve, so a
+        // store that fails leaves the sleeve's rows of the day as they were. A sleeve the run
+        // makes no order for is swept the same way.
+        auto replace_sleeve_day = [&](const std::string& strategy_name,
+                                      const std::vector<ExecutionReport>& executions) {
+            auto save_result = db->replace_roll_day_executions(
+                {{strategy_name, executions}}, combined_strategy_id, portfolio_id, now,
+                "trading.executions");
+            if (save_result.is_error()) {
+                ERROR("Failed to store executions for strategy " + strategy_name + ": " +
+                      std::string(save_result.error()->what()) +
+                      "; the sleeve's stored executions of the day are left as they were");
+            } else if (!executions.empty()) {
+                INFO("Successfully stored " + std::to_string(executions.size()) +
+                     " executions for strategy: " + strategy_name);
             } else {
                 INFO("No executions to store for strategy: " + strategy_name);
             }
+        };
+        for (const auto& strategy_name_rl : strategy_names) {
+            if (all_strategy_executions.count(strategy_name_rl) > 0) continue;  // stored below
+            replace_sleeve_day(strategy_name_rl, {});
+        }
+        // Store executions for each strategy without ROLL legs
+        for (const auto& [strategy_name, executions] : all_strategy_executions) {
+            if (roll_legs_of(strategy_name) > 0) continue;  // stored above
+            replace_sleeve_day(strategy_name, executions);
         }
 
         // T-ROLLX-FIX commit 5: the Day T-1 rows PHASE 5 finalized, written now that the day's
