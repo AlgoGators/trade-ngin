@@ -27,11 +27,24 @@
 # NEVER: a run without a date, --send-email, a host other than 127.0.0.1, a database whose name does
 # not hold "scratch". The gate writes to the three live books of the database it is given.
 #
-#   usage: GATE_OUT=<empty dir> GATE_S0_DIR=... GATE_CONFIG_SRC=... GATE_RUN_LOCK=... GATE_PG_ENV=... \
+# THE CHART RULE. A chart process that does not finish in time is killed and that one chart block is left
+# out of the report (the run's log says so). Two runs that did the same thing can therefore differ by a
+# chart block, so the bodies are compared by compare_bodies.py: byte for byte when neither run's log holds
+# a chart timeout line; otherwise with the chart blocks taken out, each side allowed to lack no more charts
+# than its own log has timeout lines. Any other difference fails. The verdict of every pair is kept in
+# $GATE_OUT/proofs/bodies.txt.
+#
+#   usage: GATE_WORKTREE=<built linked worktree> GATE_OUT=<empty dir> GATE_S0_DIR=... GATE_CONFIG_SRC=... \
+#          GATE_RUN_LOCK=... GATE_PG_ENV=... \
 #          scripts/live_mode_gate/gate.sh <scratch database> [conservative-arm base-arm equity-arm]
+#   GATE_WORKTREE is required and may not be the main checkout: the gate writes its run config into that
+#   tree and deletes the logs its runs leave there.
+#   GATE_EVALUATE_ONLY=1 makes no run: the checks are evaluated on the runs already under $GATE_OUT (how
+#   the gate's own failing examples are made: copy a finished gate, plant a difference, evaluate).
 #   exit 0 only when every check passed; the checks are printed and kept in $GATE_OUT/GATE.txt.
 set -u
 HERE="${0:A:h}"
+WT="${GATE_WORKTREE:?set GATE_WORKTREE to the built linked worktree}"; export GATE_WORKTREE="$WT"
 DB="${1:?usage: gate.sh <scratch database>}"; ARM_C="${2:-TPL}"; ARM_B="${3:-ABSENT}"; ARM_E="${4:-ABSENT}"
 OUT="${GATE_OUT:?set GATE_OUT}"; mkdir -p "$OUT/runs" "$OUT/proofs"
 R="$OUT/runs"; G="$OUT/GATE.txt"; : > "$G"; fails=0
@@ -41,19 +54,22 @@ tag="${DB#new_algo_data_scratch_stage3_}"
 dir() { echo "$R/live_${1}gate_${tag}_${2}_${3}_${4}${5:+_$5}" }   # <pf prefix> <arm> <unit> <mode> [label]
 same() { python3 "$HERE/compare_csv_dirs.py" --tol 0 "$1" "$2" > "$OUT/proofs/$3.txt" 2>&1 }
 rcs() { grep -a " rc=" "$1/progress.txt" | sed -E 's/.*run-date ([0-9-]+) host-date ([0-9-]+) rc=([0-9]+).*/\1@\2=\3/' | tr '\n' ' ' }
-bodies_same() {   # <run A> <run B> <date ...>: the report bodies of the dates, byte for byte
-  local a="$1" b="$2" d; shift 2
+bodies_same() {   # <run A> <run B> <date ...>: the report bodies of the dates, under the chart rule
+  local a="$1" b="$2" d v rc fa fb; shift 2
   for d in "$@"; do
-    local fa=("$a"/email/$d/*.html(N)) fb=("$b"/email/$d/*.html(N))
-    [ ${#fa} -eq 1 ] && [ ${#fb} -eq 1 ] && cmp -s "$fa[1]" "$fb[1]" || { echo "   body of $d differs or is missing" >> "$G"; return 1 }
+    fa=("$a"/email/$d/*.html(N)); fb=("$b"/email/$d/*.html(N))
+    [ ${#fa} -eq 1 ] && [ ${#fb} -eq 1 ] || { echo "   body of $d is missing" >> "$G"; return 1 }
+    v=$(python3 "$HERE/compare_bodies.py" "$fa[1]" "$a/logs/$d.log.gz" "$fb[1]" "$b/logs/$d.log.gz"); rc=$?
+    echo "${a:t} against ${b:t} $d: $v" >> "$OUT/proofs/bodies.txt"
+    [ $rc -eq 0 ] || { echo "   body of $d: $v" >> "$G"; return 1 }
   done
 }
 log() { gzip -dc "$1"/logs/"$2".log.gz }
 
 clang -dynamiclib -O1 -o "$OUT/hostclock_shim.dylib" "$HERE/hostclock_shim.c" || { say "FAIL  the clock shim did not build"; exit 1 }
-run() { /bin/zsh "$HERE/chain.sh" "$DB" "$@" > "$OUT/proofs/drv_${PF}_${MODE}_$2${3:+_$3}.log" 2>&1 }
+run() { [ -n "${GATE_EVALUATE_ONLY:-}" ] && return 0; /bin/zsh "$HERE/chain.sh" "$DB" "$@" > "$OUT/proofs/drv_${PF}_${MODE}_$2${3:+_$3}.log" 2>&1 }
 
-say "live mode gate: database $DB, tree $(git -C "${GATE_WORKTREE:-${HERE:h:h}}" rev-parse --short=8 HEAD), $(date -u +%FT%TZ)"
+say "live mode gate: database $DB, tree $(git -C "$WT" rev-parse HEAD) ($(git -C "$WT" status --porcelain --untracked-files=no | wc -l | tr -d ' ') modified tracked file(s)), gate script sha256 $(shasum -a 256 "$0" | cut -c1-16), ${GATE_EVALUATE_ONLY:+EVALUATE ONLY, }$(date -u +%FT%TZ)"
 
 # ---- 1. CONSERVATIVE -------------------------------------------------------------------------------
 export RANGE_START=2026-04-24 RANGE_END=2026-05-03

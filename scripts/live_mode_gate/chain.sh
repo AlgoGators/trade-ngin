@@ -13,14 +13,17 @@
 #                             every later date), snapshot, then THE RESTART: the missed dates run in order, oldest
 #                             first, on the host day after RANGE_END (each is then a past-date run)
 #               latebars      the bars of LATE_DATE are moved aside for the two runs after it, put back, and those
-#                             dates and every later one are re-run in date order (the re-run repair)
+#                             dates and every later one are re-run in date order (the re-run repair). The two runs
+#                             made without the bars keep their own log and body, named <date>_without_late_bars
 #               refused       S0 restored, ONE run dated REFUSED_DATE that must be refused; snapshots before and after
 # Every run carries a date. --send-email is never passed. Only 127.0.0.1, only a database whose name holds "scratch".
 # One runner at a time under GATE_RUN_LOCK; the run config is written under the lock and the runner's own database
 # line is asserted. The report body is built on every run (TRADE_NGIN_EMAIL_BODY_DIR) and nothing is mailed.
 #
 # Settings (environment; the defaults are the stage-3 layout of the machine the gate was written on):
-#   GATE_WORKTREE   the built tree (build/bin/Release holds the runners)          default: this checkout
+#   GATE_WORKTREE   the built tree (build/bin/Release holds the runners)          required; a linked worktree,
+#                   NEVER the main checkout: the driver writes config/ there, deletes logs/ and moves
+#                   apps/strategies/results out of it
 #   GATE_OUT        where runs are kept                                             required
 #   GATE_S0_DIR     the directory holding S0_conservative, S0_base, S0_equity     required
 #   GATE_CONFIG_SRC defaults.json.entry and portfolios/<book>/{portfolio,risk,email}.json   required
@@ -38,7 +41,9 @@ DB="$1"; ARM="$2"; UNIT="$3"; LABEL="${4:-}"; SIDE=gate
 MODE="${MODE:?set MODE=M3 or M2}"; case "$MODE" in M3|M2) ;; *) echo "REFUSING mode $MODE"; exit 2;; esac
 case "$DB" in *scratch*) ;; *) echo "REFUSING database $DB"; exit 2;; esac
 case "$ARM" in ABSENT|RL|LD|BOTH|TPL) ;; *) echo "REFUSING arm $ARM"; exit 2;; esac
-W="${GATE_WORKTREE:-${HERE:h:h}}"; SHIM="$EV/hostclock_shim.dylib"
+W="${GATE_WORKTREE:?set GATE_WORKTREE to the built linked worktree the gate may write its run config into}"; SHIM="$EV/hostclock_shim.dylib"
+[ "$(cd "$W" && git rev-parse --absolute-git-dir 2>/dev/null)" != "$(cd "$W" && cd "$(git rev-parse --git-common-dir 2>/dev/null)" 2>/dev/null && pwd -P)" ] || { echo "REFUSING worktree $W: it is the main checkout (or not a git worktree); the gate rewrites config/ and deletes logs/ in its worktree"; exit 2 }
+[ -x "$W/build/bin/Release/live_portfolio_conservative" ] || { echo "REFUSING worktree $W: no built runner under build/bin/Release"; exit 2 }
 SRC="${GATE_CONFIG_SRC:?set GATE_CONFIG_SRC}"
 PF="${PF:-conservative}"; case "$PF" in conservative) BIN=live_portfolio_conservative; PID=CONSERVATIVE_PORTFOLIO;; base) BIN=live_portfolio; PID=BASE_PORTFOLIO; S0="$S0DIR/S0_base";; equity_mr) BIN=live_equity_mr; PID=EQUITY_MR_PORTFOLIO; S0="$S0DIR/S0_equity";; *) echo "REFUSING portfolio $PF"; exit 2;; esac
 PFT=""; [ "$PF" = base ] && PFT="base_"; [ "$PF" = equity_mr ] && PFT="equity_"
@@ -143,13 +148,13 @@ PY
   python3 "$T/compare_csv_dirs.py" --tol 0 "$S0" "$OUT/.s0proj_$L" >> "$OUT/${L}_restore_proof.txt" || { echo "RESTORE NOT PROVEN ($L)"; tail -5 "$OUT/${L}_restore_proof.txt"; return 5 }
   echo "restore $L proven: $(tail -1 "$OUT/${L}_restore_proof.txt")"; rm -rf "$OUT/.s0check_$L" "$OUT/.s0proj_$L"
 }
-run_day() {   # <date>; prints the exit code, never fails the script
-  local d="$1" hd="${2:-$1}" rc t0=$(date +%s)
+run_day() {   # <date> [host date] [log suffix]; prints the exit code, never fails the script
+  local d="$1" hd="${2:-$1}" sfx="${3:-}" rc t0=$(date +%s)
   [[ "$d" =~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}$' ]] || { echo "REFUSED: a live run needs a date"; return 2 }
   dfline "before live $SIDE $ARM $UNIT $d" || return 6
   mkdir -p "$OUT/series/$d"
   lock_run "$UNIT-$d"; setcfg > "$OUT/config.txt"   # the config is written under the lock, for every run
-  local lg="$d"; [ "$hd" != "$d" ] && lg="${d}_on_host_${hd}"
+  local lg="$d"; [ "$hd" != "$d" ] && lg="${d}_on_host_${hd}"; lg="$lg$sfx"
   ( cd "$W" && mkdir -p "$OUT/email/$lg"; export TRADE_NGIN_EMAIL_BODY_DIR="$OUT/email/$lg"; if [ "$MODE" = M2 ]; then export TDATED_HOST_CLOCK_OFFSET=$(python3 -c "import datetime as t,time,sys;y,m,dd=map(int,sys.argv[1].split('-'));print(int(time.mktime(t.datetime(y,m,dd,12,0).timetuple())-time.time()))" "$hd"); export DYLD_INSERT_LIBRARIES="$SHIM"; echo "MODE M2: host clock offset $TDATED_HOST_CLOCK_OFFSET s (run date $d; the host's date presented as $hd 12:00 local)"; else echo "MODE M3: real host clock $(date +%FT%T%z)"; fi; TRADE_NGIN_SERIES_DUMP_DIR="$OUT/series/$d" "$W/build/bin/Release/$BIN" "$d" ) > "$OUT/logs/$lg.log" 2>&1 && rc=0 || rc=$?; unlock_run
   /bin/rm -rf "$W/logs/$d"; for f in "$W"/logs/*.log(N); do /bin/rm -f "$f"; done
   grep -a "Config summary: db=" "$OUT/logs/$lg.log" | head -1 | grep -q "/$DB," || { echo "STOP: the run dated $d did not run on $DB" | tee -a "$OUT/progress.txt"; rc=9 }
@@ -159,9 +164,9 @@ run_day() {   # <date>; prints the exit code, never fails the script
   return $rc
 }
 days() { python3 -c "import datetime as t,sys;s=t.date.fromisoformat(sys.argv[1]);e=t.date.fromisoformat(sys.argv[2]);print(*[(s+t.timedelta(i)).isoformat() for i in range((e-s).days+1)])" "$1" "$2" }
-chain() {   # <start> <end>: stops at the first non-zero exit
+chain() {   # <start> <end> [log suffix]: goes on after a refusal, stops on a tooling stop
   for d in $(python3 -c "import datetime as t;s=t.date.fromisoformat('$1');e=t.date.fromisoformat('$2');print(*[(s+t.timedelta(i)).isoformat() for i in range((e-s).days+1)])"); do
-    local rc=0; run_day "$d" || rc=$?
+    local rc=0; run_day "$d" "$d" "${3:-}" || rc=$?
     if [ $rc -eq 9 ] || [ $rc -eq 6 ] || [ $rc -eq 2 ]; then return 1; fi
     if [ $rc -ne 0 ]; then echo "CONTINUING after exit $rc on $d (as cron would)" | tee -a "$OUT/progress.txt"; snap_live "$OUT/snap_after_exit${rc}_$d" > /dev/null; fi
   done
@@ -206,7 +211,7 @@ trap 'unlock_run; exit 130' INT TERM
         echo "moved aside: ohlcv_1d $(q "select count(*) from tdated_late.b") rows, ohlcv_1d_raw $(q "select count(*) from tdated_late.r") rows"
         q "DELETE FROM futures_data.ohlcv_1d WHERE time::date='$LATE'"; q "DELETE FROM futures_data.ohlcv_1d_raw WHERE ts_event::date='$LATE'"
         echo "left dated $LATE: $(q "select count(*) from futures_data.ohlcv_1d where time::date='$LATE'") / $(q "select count(*) from futures_data.ohlcv_1d_raw where ts_event::date='$LATE'")"; } > "$OUT/bars_proof.txt" 2>&1
-      chain "$L1" "$L2"
+      chain "$L1" "$L2" _without_late_bars
       snap_live "$OUT/snap_late_before_repair" > /dev/null
       { q "INSERT INTO futures_data.ohlcv_1d SELECT * FROM tdated_late.b"; q "INSERT INTO futures_data.ohlcv_1d_raw SELECT * FROM tdated_late.r"
         echo "put back: now dated $LATE: $(q "select count(*) from futures_data.ohlcv_1d where time::date='$LATE'") / $(q "select count(*) from futures_data.ohlcv_1d_raw where ts_event::date='$LATE'")"
