@@ -1178,17 +1178,19 @@ std::string EmailSender::format_positions_table(
                 throw;  // Re-throw - don't hide the error
             }
 
-            // Calculate notional with proper contract multiplier
-            notional = position.quantity.as_double() * position.average_price.as_double() *
-                       contract_multiplier;
-            total_notional += std::abs(notional);
-
             // Use current market price if available, otherwise fall back to average price
             double market_price = position.average_price.as_double();
             auto price_it = current_prices.find(symbol);
             if (price_it != current_prices.end()) {
                 market_price = price_it->second;
             }
+
+            // T-8D-2 R60 (T-8D D9): one price per row. The notional is the quantity at the price
+            // the row prints (the Day T-1 close; the basis only when the row has no close), so
+            // the row multiplies out and the total is the close-priced figure the stored
+            // gross_notional and the leverage lines are on.
+            notional = position.quantity.as_double() * market_price * contract_multiplier;
+            total_notional += std::abs(notional);
 
             // Entry price (same as market price for forward-looking positions)
             double entry_price = position.average_price.as_double();
@@ -3346,15 +3348,16 @@ std::string EmailSender::format_single_strategy_table(
                 throw;
             }
 
-            notional = position.quantity.as_double() * position.average_price.as_double() *
-                       contract_multiplier;
-            total_notional += std::abs(notional);
-
             double market_price = position.average_price.as_double();
             auto price_it = current_prices.find(symbol);
             if (price_it != current_prices.end()) {
                 market_price = price_it->second;
             }
+
+            // T-8D-2 R60: the notional at the price the row prints (the Day T-1 close; the basis
+            // only when the row has no close), as in the single table.
+            notional = position.quantity.as_double() * market_price * contract_multiplier;
+            total_notional += std::abs(notional);
 
             position_data.push_back(std::make_tuple(symbol, position.quantity.as_double(),
                                                     market_price, notional, margin_for_position));
@@ -3474,8 +3477,14 @@ std::string EmailSender::format_strategy_positions_tables(
                     auto instrument = registry.get_instrument(lookup_sym);
                     if (instrument) {
                         double contract_multiplier = instrument->get_multiplier();
-                        double notional = position.quantity.as_double() *
-                                          position.average_price.as_double() * contract_multiplier;
+                        // T-8D-2 R60: at the price the sleeve's row prints.
+                        double market_price = position.average_price.as_double();
+                        auto price_it = current_prices.find(symbol);
+                        if (price_it != current_prices.end()) {
+                            market_price = price_it->second;
+                        }
+                        double notional =
+                            position.quantity.as_double() * market_price * contract_multiplier;
                         portfolio_total_notional += std::abs(notional);
 
                         // Use the price/qty overload (returns total dollars).
@@ -3513,8 +3522,20 @@ std::string EmailSender::format_strategy_positions_tables(
     // Portfolio-wide summary
     html << "<div class=\"summary-stats\" style=\"margin-top: 20px; border-top: 2px solid #2c5aa0; "
             "padding-top: 15px;\">\n";
-    html << "<div class=\"metric\"><strong>Active Positions:</strong> " << portfolio_total_positions
+    // T-8D-2 R60: the count is of sleeve rows (a symbol two sleeves hold is two), and the two
+    // dollar lines below are the ACCOUNT's figures when the runner hands them (its gross notional
+    // and its posted margin, which net sleeves holding one symbol on opposite sides); the sum
+    // over the sleeves' tables otherwise.
+    html << "<div class=\"metric\"><strong>Sleeve Positions:</strong> " << portfolio_total_positions
          << "</div>\n";
+    const auto account_notional = strategy_metrics.find(kReportGrossNotional);
+    if (account_notional != strategy_metrics.end()) {
+        portfolio_total_notional = account_notional->second;
+    }
+    const auto account_margin = strategy_metrics.find("Margin Posted");
+    if (account_margin != strategy_metrics.end()) {
+        portfolio_total_margin = account_margin->second;
+    }
 
     // The overlay's expected risk of the stored book beside the risk target, and the one-day 95
     // percent VaR in dollars (report_risk_lines.hpp); a figure the metrics do not carry has no line.

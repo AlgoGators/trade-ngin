@@ -4587,6 +4587,9 @@ int main(int argc, char* argv[]) {
                     strategy_metrics["Total Roll Costs"] = total_roll_costs_cumulative;  // 017
                     strategy_metrics["Daily Roll Costs"] = total_daily_roll_costs;
                     strategy_metrics["Current Portfolio Value"] = current_portfolio_value;
+                    // T-8D-2 R60: the book block of the positions section prints the account's
+                    // own notional (the figure the day's row stores), not a sum over the sleeves.
+                    strategy_metrics[trade_ngin::kReportGrossNotional] = gross_notional;
 
                     // Leverage Metrics - Calculate values from position analysis
                     double gross_leverage_calc = (current_portfolio_value != 0.0)

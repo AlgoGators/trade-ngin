@@ -167,8 +167,8 @@ TEST_F(EmailPositionsTableTest, AClosedRowIsNotReportedAsAPosition) {
 
 // T-8D D3 (a): the margin line is priced at the cost basis, the price MarginManager stores
 // margin_posted at, so the email and the database agree. 50 shares bought at 200, closing at
-// 210, Reg T long: 0.5 x 50 x 200 = 5,000 (at the close it read 5,250). The table's notional
-// line is not touched (it is quantity x basis, 10,000: T-8D D9 belongs to the email pass).
+// 210, Reg T long: 0.5 x 50 x 200 = 5,000 (at the close it read 5,250). The notional is the
+// other way round (T-8D-2 R60): at the close.
 TEST_F(EmailPositionsTableTest, TheMarginLineIsPricedAtTheCostBasis) {
     const std::unordered_map<std::string, Position> positions{
         {"ZPRICED", held("ZPRICED", 50.0, 200.0)}};
@@ -181,8 +181,23 @@ TEST_F(EmailPositionsTableTest, TheMarginLineIsPricedAtTheCostBasis) {
                            ? 0
                            : html.find("Total Notional"));
     EXPECT_EQ(html.find("<strong>Total Margin Posted:</strong> $5,250"), std::string::npos);
-    EXPECT_NE(html.find("<strong>Total Notional:</strong> $10,000"), std::string::npos)
-        << "the notional line is not this change's";
+    // T-8D-2 R60 (T-8D D9): the notional is at the Day T-1 close, 50 x 210 = 10,500 (at the basis
+    // it read 10,000), and so is the row: its notional is its quantity at the price it prints.
+    EXPECT_NE(html.find("<strong>Total Notional:</strong> $10,500.00"), std::string::npos) << html;
+    EXPECT_EQ(html.find("$10,000"), std::string::npos) << html;
+    EXPECT_NE(html.find("<td>$210.00</td>\n<td>$10500.00</td>\n<td>100.00%</td>"),
+              std::string::npos)
+        << html;
+}
+
+// A held row with no close in the map is priced at its basis, in the price cell and the notional.
+TEST_F(EmailPositionsTableTest, ARowWithNoCloseIsPricedAtItsBasisInBothCells) {
+    const std::unordered_map<std::string, Position> positions{
+        {"ZPRICED", held("ZPRICED", 50.0, 200.0)}};
+    std::string html;
+    ASSERT_NO_THROW({ html = sender_.format_positions_table(positions, true, {}, {}); });
+    EXPECT_NE(html.find("<td>$200.00</td>\n<td>$10000.00</td>"), std::string::npos) << html;
+    EXPECT_NE(html.find("<strong>Total Notional:</strong> $10,000.00"), std::string::npos) << html;
 }
 
 // With no basis the close is the fallback: 0.5 x 100 x 150 = 7,500.

@@ -53,6 +53,8 @@
 #include <set>
 #include <sstream>
 #include <tuple>
+#include <filesystem>
+#include <fstream>
 #include <utility>
 #include <vector>
 
@@ -282,7 +284,7 @@ TEST_F(EmailStrategyTablesTest, TheSummaryShowsTheExpectedRiskAndTheOneDayVarAnd
               std::string::npos)
         << html;
     // The two lines sit where the old one did: after the count of positions, before the notional.
-    const auto active = html.find("Active Positions:");
+    const auto active = html.find("Sleeve Positions:");
     const auto risk = html.find("Expected Risk:");
     const auto var = html.find("1-Day 95% VaR:");
     const auto notional = html.find("Total Notional:");
@@ -354,6 +356,76 @@ TEST_F(EmailStrategyTablesTest,
     EXPECT_NE(all.find("<strong>Today's Transaction Costs:</strong> $6.00"), std::string::npos)
         << all;
     EXPECT_EQ(all.find("Total Transaction Costs"), std::string::npos) << all;
+}
+
+// T-8D-2 R60: one price per row. A sleeve's row is its quantity at the price it prints (the Day
+// T-1 close), and so are the sleeve's notional and the share of it; the book block counts sleeve
+// rows and prints the ACCOUNT's notional and margin when the runner hands them. Two sleeves hold
+// ZFGOOD on opposite sides (2 and -1, close 110, multiplier 50, margin 12,000 a contract): the
+// sleeves' tables read 11,000 and 5,500, the account holds 1 contract: 5,500 and 12,000.
+TEST_F(EmailStrategyTablesTest, ARowIsPricedAtItsCloseAndTheBookBlockPrintsTheAccountsFigures) {
+    const StrategyPositionsMap book{
+        {"TREND_FOLLOWING", {{"ZFGOOD.v.0", held("ZFGOOD.v.0", 2.0, 100.0)}}},
+        {"TREND_FOLLOWING_FAST", {{"ZFGOOD.v.0", held("ZFGOOD.v.0", -1.0, 100.0)}}}};
+    const std::unordered_map<std::string, double> prices{{"ZFGOOD.v.0", 110.0}};
+    const std::map<std::string, double> account{{kReportGrossNotional, 5500.0},
+                                                {"Margin Posted", 12000.0}};
+    const std::string html = sender_.format_strategy_positions_tables(book, prices, account);
+    // each sleeve's row and footer, at the close (at the basis they read 10,000.00 and 5,000.00)
+    EXPECT_NE(html.find("<td>2</td>\n<td>$110.00</td>\n<td>$11,000.00</td>\n<td>100.00%</td>"),
+              std::string::npos)
+        << html;
+    EXPECT_NE(html.find("<td>-1</td>\n<td>$110.00</td>\n<td>$5,500.00</td>\n<td>100.00%</td>"),
+              std::string::npos)
+        << html;
+    EXPECT_NE(
+        html.find("<strong>Notional:</strong> $11,000.00 | <strong>Margin:</strong> $24,000.00"),
+        std::string::npos)
+        << html;
+    EXPECT_EQ(html.find("10,000.00"), std::string::npos) << "a notional at the basis: " << html;
+    // the book block: sleeve rows, then the account's two figures
+    EXPECT_NE(html.find("<div class=\"metric\"><strong>Sleeve Positions:</strong> 2</div>"),
+              std::string::npos)
+        << html;
+    EXPECT_EQ(html.find("Active Positions"), std::string::npos) << html;
+    EXPECT_NE(html.find("<div class=\"metric\"><strong>Total Notional:</strong> $5,500.00</div>\n"
+                        "<div class=\"metric\"><strong>Total Margin Posted:</strong> "
+                        "$12,000.00</div>"),
+              std::string::npos)
+        << html;
+
+    // A caller that hands no account figure gets the sum over the sleeves' tables.
+    const std::string summed = sender_.format_strategy_positions_tables(book, prices, {});
+    EXPECT_NE(summed.find("<strong>Total Notional:</strong> $16,500.00</div>"), std::string::npos)
+        << summed;
+    EXPECT_NE(summed.find("<strong>Total Margin Posted:</strong> $36,000.00</div>"),
+              std::string::npos)
+        << summed;
+}
+
+// The runners are `main()`s: this guard READS SOURCE, to keep the two futures twins in step. The
+// behaviour is executed by the test above and by the gate's email bodies.
+TEST(EmailBookBlockTwinSourceGuard, BothFuturesRunnersHandTheAccountsGrossNotional) {
+    namespace fs = std::filesystem;
+    for (const char* runner : {"apps/strategies/live_portfolio_conservative.cpp",
+                               "apps/strategies/live_portfolio.cpp"}) {
+        fs::path dir = fs::current_path();
+        std::string src;
+        for (int i = 0; i < 8 && !dir.empty(); ++i, dir = dir.parent_path()) {
+            if (!fs::exists(dir / runner))
+                continue;
+            std::ifstream in(dir / runner);
+            std::ostringstream ss;
+            ss << in.rdbuf();
+            src = ss.str();
+            break;
+        }
+        if (src.empty())
+            GTEST_SKIP() << "runner source not found from the test working directory";
+        EXPECT_NE(src.find("strategy_metrics[trade_ngin::kReportGrossNotional] = gross_notional;"),
+                  std::string::npos)
+            << runner;
+    }
 }
 
 // T-8D D1: the margin figure has one label on every book; the rule behind it is named in the

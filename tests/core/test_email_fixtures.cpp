@@ -277,12 +277,13 @@ protected:
             {"Total Roll Costs", 310.44},
             {"Daily Roll Costs", 4.90},
             {"Current Portfolio Value", 503505.07},
+            {kReportGrossNotional, 431957.5625},
             {"Gross Leverage", 0.8581},
             {"Net Leverage", 0.2417},
-            {"Equity-to-Margin Ratio", 37.5749},
-            {"Margin Cushion", 97.6049},
-            {"Margin Posted", 13400.0},
-            {"Cash Available", 490105.07},
+            {"Equity-to-Margin Ratio", 31.2736},
+            {"Margin Cushion", 97.1222},
+            {"Margin Posted", 16100.0},
+            {"Cash Available", 487405.07},
         };
         for (const auto& [name, value] : report_risk_metrics(0.0838, 0.20, 4555.42, 7, 7)) {
             m[name] = value;
@@ -384,7 +385,10 @@ protected:
             {"Daily Transaction Costs", 0.0}, {"Daily Roll Costs", 0.0}};
         std::map<std::string, double> metrics = futures_metrics();
         metrics["Margin Posted"] = 11500.0;  // the account's: MES 3, ZN 1 net, KE 1
+        metrics[kReportGrossNotional] = 251618.125;
         metrics["Cash Available"] = 492005.07;
+        metrics["Equity-to-Margin Ratio"] = 43.7831;
+        metrics["Margin Cushion"] = 97.9444;
         return sender_.generate_trading_report_body(
             book, combined, std::nullopt, metrics, executions, "2026-04-27", "BASE_PORTFOLIO", true,
             marks, nullptr, settled, t1_close, t2_close, settled_metrics,

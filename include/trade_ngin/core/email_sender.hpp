@@ -22,6 +22,10 @@ using StrategyPositionsMap = std::unordered_map<std::string, std::unordered_map<
 // Type alias for per-strategy executions map
 using StrategyExecutionsMap = std::unordered_map<std::string, std::vector<ExecutionReport>>;
 
+/// A futures runner's metric key for the account's gross notional (the stored gross_notional of
+/// the day's row): the book block under the sleeves' position tables prints it (T-8D-2 R60).
+inline constexpr const char* kReportGrossNotional = "Gross Notional";
+
 /**
  * @brief Email configuration structure
  */
