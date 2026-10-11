@@ -195,6 +195,10 @@ double grid_annualized_return(double growth, int n, double sessions_per_year) {
     return std::pow(growth, sessions_per_year / static_cast<double>(n)) - 1.0;
 }
 
+bool under_one_year_of_sessions(int n, double sessions_per_year) {
+    return sessions_per_year > 0.0 && static_cast<double>(n) < sessions_per_year;
+}
+
 double grid_annualized_return_pct(const StatisticsSeries& series, double sessions_per_year) {
     const int n = series.size();
     if (n <= 0 || series.base <= 0.0 || sessions_per_year <= 0.0) {
@@ -235,7 +239,11 @@ HistoricalMetrics LiveHistoricalMetricsCalculator::calculate(const StatisticsSer
 
     // Returns and days, on the statistics grid
     metrics.total_days = grid.size();
-    metrics.total_annualized_return = grid_annualized_return_pct(grid, sessions_per_year);
+    // A return is not annualised under one year of sessions: no value while n < K (T-8D R40).
+    // It was the geometric figure for every n, which extrapolates a short series.
+    metrics.total_annualized_return = under_one_year_of_sessions(grid.size(), sessions_per_year)
+                                          ? kNoRatio
+                                          : grid_annualized_return_pct(grid, sessions_per_year);
     metrics.total_trades = total_trades_executions;
     // The profit factor divides by the losing sessions' loss: with none it has no value (T-8D
     // R12). It was 999.99 with a profit and no loss, and 0 with neither.
@@ -339,8 +347,17 @@ std::unordered_map<std::string, double> historical_metrics_double_columns(
 }
 
 const std::vector<std::string>& historical_metrics_optional_columns() {
-    static const std::vector<std::string> columns = {"profit_factor"};
+    static const std::vector<std::string> columns = {"profit_factor", "total_annualized_return"};
     return columns;
+}
+
+void drop_statistics_without_value(std::unordered_map<std::string, double>& metrics) {
+    for (const auto& column : historical_metrics_optional_columns()) {
+        const auto it = metrics.find(column);
+        if (it != metrics.end() && !has_value(it->second)) {
+            metrics.erase(it);
+        }
+    }
 }
 
 void null_cells_of_statistics_without_value(std::unordered_map<std::string, double>& updates,

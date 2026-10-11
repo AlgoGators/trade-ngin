@@ -44,6 +44,26 @@ StatisticsSeries week_through(const std::string& through) {
     return build_statistics_series(kStored, kGrid, "2026-04-19", 500000.0, through);
 }
 
+// A series of `n` grid returns on a base of 500,000 that ends at 550,000 (R = 0.10): the levels
+// rise evenly, every second one 100 under the line so the series has losing sessions. Its dates
+// are not read by the calculator.
+StatisticsSeries series_of(int n) {
+    StatisticsSeries s;
+    s.base = 500000.0;
+    double previous = s.base;
+    for (int i = 1; i <= n; ++i) {
+        const double level =
+            i == n ? 550000.0 : s.base + 50000.0 * i / n - (i % 2 == 0 ? 100.0 : 0.0);
+        s.dates.push_back("session " + std::to_string(i));
+        s.levels.push_back(level);
+        s.returns_pct.push_back((level / previous - 1.0) * 100.0);
+        s.pnl.push_back(level - previous);
+        previous = level;
+    }
+    return s;
+}
+
+
 }  // namespace
 
 // ===== the series =====
@@ -207,17 +227,44 @@ TEST(StatisticsGrid, TotalDaysIsTheCountOfSettledGridReturns) {
     EXPECT_EQ(historical_metrics_int_columns(m).at("total_days"), 5);
 }
 
-TEST(StatisticsGrid, AnnualizedReturnIsGeometricOnTheGridForEveryN) {
+// T-8D R40: a return is not annualised under one year of sessions. The statistic has no value
+// while n < K and is the geometric figure from n >= K; the formula itself is defined for every n.
+//   | series  | K        | n   | total_annualized_return                       |
+//   | week    | 311.0574 | 5   | no value (the formula gives 17.532)           |
+//   | futures | 311.0574 | 311 | no value: 311 < 311.0574                      |
+//   | futures | 311.0574 | 312 | (1.10^(311.0574 / 312) - 1) x 100 = 9.968330  |
+//   | equity  | 252      | 251 | no value                                      |
+//   | equity  | 252      | 252 | (1.10^(252 / 252) - 1) x 100 = 10             |
+TEST(StatisticsGrid, AnnualizedReturnHasNoValueUnderAYearOfSessionsAndIsGeometricFromIt) {
     LiveHistoricalMetricsCalculator calc;
     const auto s = week_through("2026-04-26");
     const auto m = calc.calculate(s, kFuturesK, 0);
-    // R = 501,300 / 500,000 - 1 = 0.0026; n = 5; K = 311.0574.
+    EXPECT_EQ(m.total_days, 5);
+    EXPECT_TRUE(std::isnan(m.total_annualized_return)) << "n 5 is under a year of sessions";
+    // R = 501,300 / 500,000 - 1 = 0.0026; n = 5; K = 311.0574: the formula, which stays defined.
     const double want = (std::pow(1.0026, 311.0574 / 5.0) - 1.0) * 100.0;
-    EXPECT_NEAR(m.total_annualized_return, want, 1e-9);
-    EXPECT_NEAR(m.total_annualized_return, 17.532, 5e-3);
-    EXPECT_DOUBLE_EQ(grid_annualized_return_pct(s, kFuturesK), m.total_annualized_return);
+    EXPECT_NEAR(grid_annualized_return_pct(s, kFuturesK), want, 1e-9);
+    EXPECT_NEAR(grid_annualized_return_pct(s, kFuturesK), 17.532, 5e-3);
 
-    // No NULL and no special case at a short n (T-8D-2 R74): n = 1 is the formula too.
+    // The threshold, futures: the first n at or above 311.0574 is 312.
+    const auto under = calc.calculate(series_of(311), kFuturesK, 0);
+    EXPECT_EQ(under.total_days, 311);
+    EXPECT_TRUE(std::isnan(under.total_annualized_return));
+    const auto year = calc.calculate(series_of(312), kFuturesK, 0);
+    EXPECT_EQ(year.total_days, 312);
+    EXPECT_NEAR(year.total_annualized_return, (std::pow(1.10, 311.0574 / 312.0) - 1.0) * 100.0,
+                1e-9);
+    EXPECT_NEAR(year.total_annualized_return, 9.968330, 1e-6);
+    EXPECT_DOUBLE_EQ(year.total_annualized_return,
+                     grid_annualized_return_pct(series_of(312), kFuturesK));
+    // The threshold, equities: n = K = 252 is a year.
+    EXPECT_TRUE(std::isnan(calc.calculate(series_of(251), 252.0, 0).total_annualized_return));
+    EXPECT_NEAR(calc.calculate(series_of(252), 252.0, 0).total_annualized_return, 10.0, 1e-9);
+    // A book's first day: no return yet, no value.
+    EXPECT_TRUE(
+        std::isnan(calc.calculate(week_through("2026-04-19"), kFuturesK, 0).total_annualized_return));
+
+    // The formula at a short n, as before (the email's extrapolated figure reads it).
     const auto one = week_through("2026-04-20");
     ASSERT_EQ(one.size(), 1);
     EXPECT_NEAR(grid_annualized_return_pct(one, kFuturesK),
@@ -520,17 +567,22 @@ TEST(StatisticsGrid, AProfitFactorWithNoValueIsLeftOutOfTheInsertAndCarriedToThe
 // becomes a cell without a value (assigned NULL); nothing else is touched.
 TEST(StatisticsGrid, AnOptionalStatisticWithoutAValueBecomesANullCellOfTheUpdate) {
     const double nan = std::numeric_limits<double>::quiet_NaN();
-    std::unordered_map<std::string, double> updates = {
-        {"profit_factor", nan}, {"volatility", 12.5}, {"sharpe_ratio", nan}};
+    std::unordered_map<std::string, double> updates = {{"profit_factor", nan},
+                                                       {"volatility", 12.5},
+                                                       {"sharpe_ratio", nan},
+                                                       {"total_annualized_return", nan}};
     std::vector<LiveResultsCell> cells = {{"worst_day_date", "date", std::string("2026-04-22")}};
     null_cells_of_statistics_without_value(updates, cells);
     EXPECT_EQ(updates.count("profit_factor"), 0u);
+    EXPECT_EQ(updates.count("total_annualized_return"), 0u);
     EXPECT_DOUBLE_EQ(updates.at("volatility"), 12.5);
     EXPECT_EQ(updates.count("sharpe_ratio"), 1u)
         << "not an optional column: a value that is not finite there is the storage guard's";
-    ASSERT_EQ(cells.size(), 2u);
+    ASSERT_EQ(cells.size(), 3u);
     EXPECT_EQ(cells[1].column, "profit_factor");
     EXPECT_FALSE(cells[1].value.has_value());
+    EXPECT_EQ(cells[2].column, "total_annualized_return");
+    EXPECT_FALSE(cells[2].value.has_value());
 
     // With a value the update is left as it is.
     std::unordered_map<std::string, double> valued = {{"profit_factor", 1.75}};
@@ -538,5 +590,6 @@ TEST(StatisticsGrid, AnOptionalStatisticWithoutAValueBecomesANullCellOfTheUpdate
     null_cells_of_statistics_without_value(valued, none);
     EXPECT_DOUBLE_EQ(valued.at("profit_factor"), 1.75);
     EXPECT_TRUE(none.empty());
-    EXPECT_EQ(historical_metrics_optional_columns(), std::vector<std::string>{"profit_factor"});
+    EXPECT_EQ(historical_metrics_optional_columns(),
+              (std::vector<std::string>{"profit_factor", "total_annualized_return"}));
 }

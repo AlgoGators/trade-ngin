@@ -1041,10 +1041,13 @@ TEST_F(BacktestMetricsCalculatorTest, BothCalculatorsGiveOneNumberForOnePnlSerie
     EXPECT_NEAR(bt.max_drawdown * 100.0, live.max_drawdown, 1e-10);
     EXPECT_NEAR(live.volatility, 30.5803, 1e-4);
     EXPECT_NEAR(live.sharpe_ratio, 8.633205, 1e-6);
-    // The annualised return: one function behind both (grid_annualized_return).
-    EXPECT_NEAR(bt.annualized_return * 100.0, live.total_annualized_return, 1e-8);
-    EXPECT_NEAR(live.total_annualized_return, 1232.0206, 1e-3);
-    EXPECT_NEAR(bt.calmar_ratio, live.total_annualized_return / live.max_drawdown, 1e-8);
+    // The annualised return: one function behind both (grid_annualized_return). The live
+    // statistic has no value under a year of sessions (n 7; T-8D R40).
+    EXPECT_TRUE(std::isnan(live.total_annualized_return));
+    const double live_formula_pct = grid_annualized_return_pct(series, grid.sessions_per_year);
+    EXPECT_NEAR(bt.annualized_return * 100.0, live_formula_pct, 1e-8);
+    EXPECT_NEAR(live_formula_pct, 1232.0206, 1e-3);
+    EXPECT_NEAR(bt.calmar_ratio, live_formula_pct / live.max_drawdown, 1e-8);
 }
 
 // E2-F63, the backtest half (T-8D R27, R28): a run has ONE as-of date, its last curve row, and

@@ -232,9 +232,14 @@ Result<void> LiveResultsManager::save_live_results(const Timestamp& date) {
         DEBUG("  METRIC [int] " + name + " = " + std::to_string(value));
     }
 
+    // A statistic of the since-inception block that has no value is no column of the INSERT:
+    // its cell is NULL (T-8D R12, R40). The runner names total_annualized_return itself.
+    auto double_metrics = double_metrics_;
+    drop_statistics_without_value(double_metrics);
+
     // Use the new database extension method - pass portfolio_id_ for proper storage
     auto result =
-        db_->store_live_results_complete(strategy_id_, date, double_metrics_, int_metrics_, config_,
+        db_->store_live_results_complete(strategy_id_, date, double_metrics, int_metrics_, config_,
                                          portfolio_id_, "trading.live_results", risk_detail_,
                                          cells_);
     if (result.is_error()) {
@@ -294,7 +299,8 @@ Result<void> LiveResultsManager::update_live_results(
          " fields");
 
     // A statistic of the since-inception block that has no value (profit_factor with no losing
-    // session) is assigned NULL, as a cell without a value (T-8D R12).
+    // session, total_annualized_return under a year of sessions) is assigned NULL, as a cell
+    // without a value (T-8D R12, R40).
     auto number_updates = updates;
     auto all_cells = cells;
     null_cells_of_statistics_without_value(number_updates, all_cells);

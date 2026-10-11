@@ -19,6 +19,8 @@ namespace trade_ngin {
  * - Ratios (sharpe_ratio, sortino_ratio, profit_factor) are dimensionless.
  * - profit_factor has no value (kNoRatio, a NaN) while the series has no losing session; its
  *   cell of trading.live_results is then NULL (T-8D R12).
+ * - total_annualized_return has no value while the series is under one year of sessions
+ *   (n < K); its cell is then NULL (T-8D R40).
  * - PnL aggregates (gross_profit, gross_loss) are in portfolio currency.
  */
 struct HistoricalMetrics {
@@ -51,7 +53,7 @@ struct HistoricalMetrics {
     int total_trades = 0;       // count of executions since inception
 
     // ((1 + R)^(K / n) - 1) x 100 on the statistics grid, R from the base to the last grid level
-    // and K the grid's sessions a year; computed for every n (T-8D-2 R74). Not one of the sixteen
+    // and K the grid's sessions a year; kNoRatio while n < K (T-8D R40). Not one of the sixteen
     // columns of historical_metrics_*_columns: the runner writes it beside them.
     double total_annualized_return = 0.0;
 };
@@ -140,6 +142,15 @@ StatisticsSeries build_statistics_series(const std::vector<DatedLevel>& stored_l
 double grid_annualized_return(double growth, int n, double sessions_per_year);
 
 /**
+ * @brief Whether `n` grid returns are under one year of the grid's sessions (n < K). A return
+ *        is not annualised under a year (T-8D R40, extended to the backtest by T-8D-2 R78): the
+ *        live total_annualized_return, the backtest's annualised return and its Calmar ratio
+ *        have no value while this holds. False without a positive K. K is 311.0574 for a
+ *        futures series, so its first year is n = 312; an equity series' is n = 252.
+ */
+bool under_one_year_of_sessions(int n, double sessions_per_year);
+
+/**
  * @brief The annualised return of a series in percent: ((1 + R)^(K / n) - 1) x 100, R from the
  *        base to the last grid level, n its returns, K the grid's sessions a year. 0 for an
  *        empty series; -100 when the level is not positive.
@@ -167,7 +178,8 @@ public:
      * @brief Calculate all historical metrics on the statistics series.
      *
      * @param grid The statistics series (build_statistics_series): total_days is its count of
-     *        returns; total_annualized_return, volatility, downside_deviation and the Sharpe and
+     *        returns; total_annualized_return (from one year of sessions: n >= K; no value
+     *        before), volatility, downside_deviation and the Sharpe and
      *        Sortino ratios are taken on its returns; max_drawdown on its levels from its base;
      *        winning_days, losing_days, flat_days, win_rate, avg_win, avg_loss, best_day and
      *        worst_day on its returns; gross_profit, gross_loss and profit_factor on its P&L,
@@ -227,13 +239,22 @@ std::unordered_map<std::string, double> historical_metrics_double_columns(
     const HistoricalMetrics& m);
 
 /**
- * @brief The columns of the block that have no value on some rows and are then stored NULL
- *        (T-8D R12): profit_factor, with no losing session. The day-T INSERT leaves such a
- *        column out (historical_metrics_double_columns does not name it); the Day T-1 UPDATE
- *        must overwrite what the row holds, so historical_metrics_update_columns carries it as
- *        kNoRatio and the writer assigns NULL (null_cells_of_statistics_without_value).
+ * @brief The columns of the block that have no value on some rows and are then stored NULL:
+ *        profit_factor, with no losing session (T-8D R12), and total_annualized_return, under
+ *        one year of sessions (T-8D R40), which the runner writes beside the block. The day-T
+ *        INSERT leaves such a column out (historical_metrics_double_columns does not name it,
+ *        and drop_statistics_without_value takes it out of the row's metrics); the Day T-1
+ *        UPDATE must overwrite what the row holds, so historical_metrics_update_columns carries
+ *        it as kNoRatio and the writer assigns NULL (null_cells_of_statistics_without_value).
  */
 const std::vector<std::string>& historical_metrics_optional_columns();
+
+/**
+ * @brief The day-T INSERT of a statistic that has no value: every optional column of the block
+ *        whose value in `metrics` is not finite leaves `metrics`, so the INSERT does not name it
+ *        and its cell is NULL. Every other entry is untouched.
+ */
+void drop_statistics_without_value(std::unordered_map<std::string, double>& metrics);
 
 /**
  * @brief The Day T-1 UPDATE of a statistic that has no value: every optional column of the

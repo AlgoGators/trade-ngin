@@ -244,6 +244,41 @@ TEST_F(LiveResultsManagerTest, AProfitFactorWithNoValueIsNullOnBothWritesOfTheBl
     EXPECT_TRUE(db_->last_update_cells.empty());
 }
 
+// T-8D R40 through the manager as the runners drive it. total_annualized_return is not a column
+// of the block's helpers: the runner puts it into the row's metrics and into the Day T-1 update
+// itself. Without a value it is no column of the INSERT (the cell is NULL) and a NULL cell of
+// the UPDATE, and the storage guard has nothing to warn about.
+TEST_F(LiveResultsManagerTest, AnAnnualisedReturnWithNoValueIsNullOnBothWrites) {
+    const double none = std::numeric_limits<double>::quiet_NaN();
+    mgr_->set_metrics({{"daily_pnl", 1000.0}, {"total_annualized_return", none}},
+                      {{"total_days", 173}});
+    ASSERT_TRUE(mgr_->save_live_results(date_at(2026, 4, 24)).is_ok());
+    EXPECT_EQ(db_->last_live_metrics.count("total_annualized_return"), 0u);
+    EXPECT_DOUBLE_EQ(db_->last_live_metrics.at("daily_pnl"), 1000.0);
+
+    size_t rows = 0;
+    ASSERT_TRUE(mgr_->update_live_results(date_at(2026, 4, 23),
+                                          {{"total_annualized_return", none}, {"total_days", 172.0}},
+                                          &rows)
+                    .is_ok());
+    EXPECT_EQ(db_->last_update_values.count("total_annualized_return"), 0u);
+    EXPECT_DOUBLE_EQ(db_->last_update_values.at("total_days"), 172.0);
+    ASSERT_EQ(db_->last_update_cells.size(), 1u);
+    EXPECT_EQ(db_->last_update_cells[0].column, "total_annualized_return");
+    EXPECT_FALSE(db_->last_update_cells[0].value.has_value());
+
+    // From a year of sessions it is a number on both writes.
+    mgr_->set_metrics({{"daily_pnl", 1000.0}, {"total_annualized_return", 9.96833}},
+                      {{"total_days", 312}});
+    ASSERT_TRUE(mgr_->save_live_results(date_at(2026, 4, 24)).is_ok());
+    EXPECT_DOUBLE_EQ(db_->last_live_metrics.at("total_annualized_return"), 9.96833);
+    ASSERT_TRUE(mgr_->update_live_results(date_at(2026, 4, 23),
+                                          {{"total_annualized_return", 9.96833}}, &rows)
+                    .is_ok());
+    EXPECT_DOUBLE_EQ(db_->last_update_values.at("total_annualized_return"), 9.96833);
+    EXPECT_TRUE(db_->last_update_cells.empty());
+}
+
 TEST_F(LiveResultsManagerTest, UpdateLiveResultsInvokesUpdate) {
     db_->reset_call_counts();
     auto r = mgr_->update_live_results(date_at(2026, 3, 15),
