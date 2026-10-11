@@ -215,7 +215,7 @@ protected:
                                 bool store = false) {
         static int n = 0;
         ++n;
-        db_->rows = rows();
+        db_->rows = rows_;
 
         BacktestCoordinatorConfig cc;
         cc.initial_capital = 1'000'000.0;
@@ -243,7 +243,7 @@ protected:
             sc.position_limits[s] = 1.0e6;
         }
         strat_ = std::make_shared<ScheduledStrategy>("STAT_GRID_S", sc, db_);
-        strat_->targets = {{kHeld, {{0, 100.0}}}};  // held from the first cycle to the end
+        strat_->targets = targets_;
         EXPECT_TRUE(strat_->initialize().is_ok());
         EXPECT_TRUE(strat_->start().is_ok());
         EXPECT_TRUE(pm_->add_strategy(strat_, 1.0, false).is_ok());
@@ -251,6 +251,11 @@ protected:
         return coord_->run_portfolio(pm_, universe(), trading_day(0), trading_day(kLastDay),
                                      asset_class, DataFrequency::DAILY);
     }
+
+    // The run's bars and the sleeve's schedule; a test may replace either before run().
+    std::vector<Row> rows_ = rows();
+    std::map<std::string, std::map<int, double>> targets_ = {
+        {kHeld, {{0, 100.0}}}};  // held from the first cycle to the end
 
     std::shared_ptr<ServingDb> db_;
     std::unique_ptr<BacktestCoordinator> coord_;
@@ -368,6 +373,97 @@ TEST_F(BacktestStatisticsGridRun, ARunWithoutSessionsAYearIsRefused) {
             << result.error()->what();
         EXPECT_TRUE(db_->market_calls.empty()) << "the run loaded bars before it was refused";
     }
+}
+
+// ===== STAT_QUALITY (T-8D F10, T-8D-2 R82): the summary's lines of a whole run =====
+
+class BacktestStatQualityRun : public BacktestStatisticsGridRun {
+protected:
+    const std::string kSecond = "G5.v.0";
+    static constexpr int kGapDay = 12;  // Wed 2025-01-22: nine symbols print, G5 does not
+
+    // G0 and G5 are held from the first fed cycle (Tue 2025-01-07) to the end. G5 prints no bar
+    // on three stored dates: the thin date (Thu 2025-01-16) and the Saturday point (2025-01-18),
+    // neither a date of the futures grid, and Wed 2025-01-22, which is one.
+    void SetUp() override {
+        BacktestStatisticsGridRun::SetUp();
+        targets_[kSecond] = {{0, 100.0}};
+        std::vector<Row> kept;
+        for (const auto& row : rows_) {
+            if (row.symbol == kSecond && row.day == kGapDay && row.weekend_before == 0) continue;
+            kept.push_back(row);
+        }
+        rows_ = kept;
+    }
+
+    // The STAT_QUALITY lines of the run's log, without the logger's prefix.
+    std::vector<std::string> stat_quality_lines_of_run(AssetClass asset_class, double k) {
+        Logger::instance().set_level(LogLevel::INFO);
+        ::testing::internal::CaptureStdout();
+        auto result = run(asset_class, k);
+        const std::string log = ::testing::internal::GetCapturedStdout();
+        Logger::instance().set_level(LogLevel::ERR);
+        EXPECT_TRUE(result.is_ok());
+        if (result.is_ok()) {
+            std::set<std::string> dates;
+            for (const auto& [timestamp, level] : result.value().equity_curve) {
+                (void)level;
+                dates.insert(core::format_utc_date(timestamp));
+            }
+            EXPECT_EQ(dates.size(), 22u) << "20 weekdays, the Saturday point and the Sunday";
+        }
+        std::vector<std::string> out;
+        size_t at = 0;
+        while ((at = log.find("STAT_QUALITY", at)) != std::string::npos) {
+            const size_t end = log.find('\n', at);
+            out.push_back(log.substr(at, end == std::string::npos ? end : end - at));
+            at = end == std::string::npos ? log.size() : end;
+        }
+        return out;
+    }
+};
+
+// 22 stored dates; the book holds nothing on the first (Mon 2025-01-06: no signal bar yet) and
+// two symbols on the other 21. Three of the 21 hold G5 with no bar, one of them a grid date.
+TEST_F(BacktestStatQualityRun, AFuturesRunsSummaryNamesEachStoredDateAHeldSymbolPrintedNoBarOn) {
+    const auto lines = stat_quality_lines_of_run(AssetClass::FUTURES, kFuturesK);
+    ASSERT_EQ(lines.size(), 4u) << "the run line and one line a date";
+    EXPECT_EQ(lines[0],
+              "STAT_QUALITY run no_bar_days=3 of 21 held days; grid_days=1 rows=3 symbols=1: the "
+              "stored dates on which a held symbol printed no bar (held, marked at last close), "
+              "and how many of them are dates of the statistics grid");
+    EXPECT_EQ(lines[1], "STAT_QUALITY date=2025-01-16 held=2 no_bar=1 grid=no: G5.v.0");
+    EXPECT_EQ(lines[2], "STAT_QUALITY date=2025-01-18 held=2 no_bar=1 grid=no: G5.v.0");
+    EXPECT_EQ(lines[3], "STAT_QUALITY date=2025-01-22 held=2 no_bar=1 grid=yes: G5.v.0");
+}
+
+// The same bars as an equity run: a cash book's held symbol with no bar is named too (its row
+// carries no mark), and every row is a date of its grid.
+TEST_F(BacktestStatQualityRun, AnEquityRunsSummaryNamesThemTooAndEveryDateIsOnItsGrid) {
+    const auto lines = stat_quality_lines_of_run(AssetClass::EQUITIES, 252.0);
+    ASSERT_EQ(lines.size(), 4u);
+    EXPECT_EQ(lines[0].rfind("STAT_QUALITY run no_bar_days=3 of 21 held days; grid_days=3 rows=3 symbols=1:", 0),
+              0u)
+        << lines[0];
+    EXPECT_EQ(lines[1], "STAT_QUALITY date=2025-01-16 held=2 no_bar=1 grid=yes: G5.v.0");
+    EXPECT_EQ(lines[2], "STAT_QUALITY date=2025-01-18 held=2 no_bar=1 grid=yes: G5.v.0");
+    EXPECT_EQ(lines[3], "STAT_QUALITY date=2025-01-22 held=2 no_bar=1 grid=yes: G5.v.0");
+}
+
+// A run whose held symbol prints on every stored date: the run line alone, with zeros.
+TEST_F(BacktestStatisticsGridRun, ARunWithEveryHeldSymbolPrintingLogsTheStatQualityRunLineAlone) {
+    Logger::instance().set_level(LogLevel::INFO);
+    ::testing::internal::CaptureStdout();
+    auto result = run(AssetClass::FUTURES, kFuturesK);
+    const std::string log = ::testing::internal::GetCapturedStdout();
+    Logger::instance().set_level(LogLevel::ERR);
+    ASSERT_TRUE(result.is_ok()) << result.error()->what();
+    const size_t first = log.find("STAT_QUALITY");
+    ASSERT_NE(first, std::string::npos);
+    EXPECT_EQ(log.find("STAT_QUALITY", first + 1), std::string::npos) << "one line";
+    const std::string expected =
+        "STAT_QUALITY run no_bar_days=0 of 21 held days; grid_days=0 rows=0 symbols=0:";
+    EXPECT_EQ(log.substr(first, expected.size()), expected);
 }
 
 // Migration 031 through a whole run and its save: the statistics are taken on the same grid

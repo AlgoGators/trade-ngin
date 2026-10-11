@@ -9,6 +9,7 @@
 #include <vector>
 #include <nlohmann/json.hpp>
 #include "trade_ngin/core/error.hpp"
+#include "trade_ngin/core/stat_quality.hpp"
 #include "trade_ngin/core/types.hpp"
 #include "trade_ngin/data/postgres_database.hpp"
 #include "trade_ngin/data/session_classifier.hpp"
@@ -127,6 +128,20 @@ private:
     /// this cycle's group. Their row books nothing (realized_pnl 0, quantity and average price
     /// kept) and is stored with row_mark = 'NO_BAR'; filled where the row is zeroed.
     std::unordered_map<std::string, std::unordered_set<std::string>> row_no_bar_;
+    /// STAT_QUALITY (T-8D F10, T-8D-2 R82): per sleeve of any book, the held symbols that printed
+    /// no bar in this cycle's group (a futures sleeve's are row_no_bar_'s), and the run's record
+    /// of the stored dates with one. Read by the summary's log lines only.
+    std::unordered_map<std::string, std::unordered_set<std::string>> held_no_bar_;
+    stat_quality::RunRecord stat_quality_;
+    /// Notes one stored date in stat_quality_: the book's distinct held symbols and, of them,
+    /// held_no_bar_'s.
+    void note_stat_quality_day(
+        const std::unordered_map<std::string, std::unordered_map<std::string, Position>>&
+            strategy_positions,
+        const std::string& date);
+    /// The summary's STAT_QUALITY lines: the run line, then one line a stored date with a held
+    /// symbol that printed no bar, each saying whether the date is on `grid`.
+    std::vector<std::string> stat_quality_lines(const BacktestStatisticsGrid& grid) const;
     /// T-ROLLX-FIX (LOOP_SPEC v6.1 section 6.5): the ROLL legs booked so far per sleeve (the RL-
     /// ids' sequence numbers); a ROLL_LEG STOP fails the run (code review X-3).
     std::unordered_map<std::string, size_t> roll_leg_seq_;

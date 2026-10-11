@@ -467,6 +467,8 @@ Result<BacktestResults> BacktestCoordinator::run_portfolio(
                     stored_date);
                 symbol_day_pnl_.insert(symbol_day_pnl_.end(), cells.begin(), cells.end());
                 symbol_day_pnl_date_ = stored_date;
+                // STAT_QUALITY: the same date's held symbols with no bar, for the summary's lines.
+                note_stat_quality_day(portfolio->get_strategy_positions(), stored_date);
             }
         }
 
@@ -554,6 +556,7 @@ Result<BacktestResults> BacktestCoordinator::run_portfolio(
              ": the overlay's readings of the stored book of each sized rebalance, and on how "
              "many rows the five equal the pass's own readings of its stored book to the bit");
     }
+    for (const auto& line : stat_quality_lines(grid)) INFO(line);
 
     // Get final portfolio positions: sum per-strategy quantities (Σ qᵢ).
     // get_portfolio_positions() applies allocation a second time, producing
@@ -754,6 +757,7 @@ Result<void> BacktestCoordinator::process_portfolio_day(
         mark_withheld_.clear();
         mark_change_.clear();
         row_no_bar_.clear();
+        held_no_bar_.clear();
         if (session_hold_enabled_) {
             for (const auto& v : classify_bar_group(session_classifier_, bars)) {
                 if (v.k01_withheld()) mark_withheld_.insert(v.symbol);
@@ -1461,6 +1465,7 @@ Result<void> BacktestCoordinator::process_portfolio_day(
                     // The symbol printed no bar in this group: held, marked at its last close.
                     // Migration 032: the stored row says so (row_mark = 'NO_BAR').
                     if (write_unbooked_row()) row_no_bar_[strategy_id].insert(symbol);
+                    held_no_bar_[strategy_id].insert(symbol);
                     continue;
                 }
                 double current_close = curr_it->second;
@@ -1904,6 +1909,8 @@ void BacktestCoordinator::reset_portfolio_state() {
     mark_change_.clear();
     row_held_id_.clear();
     row_no_bar_.clear();
+    held_no_bar_.clear();
+    stat_quality_.clear();
     risk_scale_report_enabled_ = false;
     equity_risk_detail_.clear();
     equity_overlay_.clear();
@@ -2162,6 +2169,34 @@ BacktestStatisticsGrid BacktestCoordinator::statistics_grid(
     std::map<std::string, int> counts;
     for (const auto& [date, symbols] : printed) counts[date] = static_cast<int>(symbols.size());
     return BacktestStatisticsGrid::of_dates(sessions_per_year, futures_statistics_grid_dates(counts));
+}
+
+void BacktestCoordinator::note_stat_quality_day(
+    const std::unordered_map<std::string, std::unordered_map<std::string, Position>>&
+        strategy_positions,
+    const std::string& date) {
+    std::set<std::string> held, no_bar;
+    size_t no_bar_rows = 0;
+    for (const auto& [strategy_id, positions_map] : strategy_positions) {
+        const auto sleeve_no_bar = held_no_bar_.find(strategy_id);
+        for (const auto& [symbol, pos] : positions_map) {
+            if (std::abs(static_cast<double>(pos.quantity)) < 1e-8) continue;
+            held.insert(symbol);
+            if (sleeve_no_bar != held_no_bar_.end() && sleeve_no_bar->second.count(symbol)) {
+                no_bar.insert(symbol);
+                ++no_bar_rows;
+            }
+        }
+    }
+    stat_quality_.note_day(date, held.size(), std::move(no_bar), no_bar_rows);
+}
+
+std::vector<std::string> BacktestCoordinator::stat_quality_lines(
+    const BacktestStatisticsGrid& grid) const {
+    const std::set<std::string> grid_dates(grid.dates.begin(), grid.dates.end());
+    return stat_quality_.lines([&](const std::string& date) {
+        return grid.own_rows || grid_dates.count(date) > 0;
+    });
 }
 
 Result<void> BacktestCoordinator::require_statistics_sessions_per_year() const {
