@@ -2,7 +2,8 @@
 // T-8D-2 R54). Before the guard std::to_string put `nan` or `inf` into the statement unquoted,
 // Postgres read it as a column name, and the whole statement failed: a backtest lost its
 // results row (and with it the run), a live day its row or its Day T-1 refresh. Now the cell is
-// stored without a value and the row is kept.
+// stored without a value (NULL; the column default 0 on a backtest cost column) and the row is
+// kept.
 //
 // The same writers, and the backtest curve, the backtest position rows and the live curve's
 // Day T-1 refresh, store a finite value as the double they were handed (D-16): the cell reads
@@ -117,8 +118,14 @@ protected:
     std::shared_ptr<PostgresDatabase> db_;
 };
 
-// T-8D-2 R54: a backtest metric that is not finite does not fail the results INSERT.
-TEST_F(FiniteStatementDbTest, ABacktestMetricThatIsNotFiniteIsStoredNullAndTheRowIsKept) {
+// T-8D-2 R54: a backtest metric that is not finite does not fail the results INSERT. Its cell
+// is written DEFAULT: NULL on a statistic column, and the column's own default, 0, on a cost
+// column of migration 018 (transaction_costs, roll_costs, total_roll_fills are NOT NULL DEFAULT
+// 0). So a cost that is not finite is stored as 0, not NULL; the writer names every such
+// column in one WARN (the names are asserted on the builder in test_finite_statement.cpp; this
+// test does not read the log).
+TEST_F(FiniteStatementDbTest,
+       ABacktestMetricThatIsNotFiniteIsStoredAsItsColumnDefaultNullOnAStatisticZeroOnACost) {
     const std::unordered_map<std::string, double> metrics = {
         {"total_return", 0.25},     {"sharpe_ratio", kNan},     {"sortino_ratio", kInf},
         {"max_drawdown", 0.1},      {"calmar_ratio", -kInf},    {"volatility", 0.2},
@@ -141,7 +148,7 @@ TEST_F(FiniteStatementDbTest, ABacktestMetricThatIsNotFiniteIsStoredNullAndTheRo
     EXPECT_EQ(cell("backtest.results", "total_return", where), "0.25");
     EXPECT_EQ(cell("backtest.results", "total_trades", where), "3");
     EXPECT_EQ(cell("backtest.results", "transaction_costs", where), "12.5");
-    // A column with a default (018) takes it.
+    // A column with a default (018) takes it: the NaN roll cost is stored as 0, not NULL.
     EXPECT_EQ(cell("backtest.results", "roll_costs", where), "0");
     EXPECT_EQ(cell("backtest.results", "total_roll_fills", where), "4");
 }

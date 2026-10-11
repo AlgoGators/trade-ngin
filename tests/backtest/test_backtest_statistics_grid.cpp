@@ -30,6 +30,7 @@
 #include "trade_ngin/data/market_data_bus.hpp"
 #include "trade_ngin/instruments/futures.hpp"
 #include "trade_ngin/live/live_historical_metrics.hpp"
+#include "trade_ngin/risk/overlay_columns.hpp"
 // The run marks its held contract with the registry's multiplier: the test registers its ten
 // (the registry's map has no public writer).
 #define private public
@@ -37,6 +38,7 @@
 #include "trade_ngin/portfolio/portfolio_manager.hpp"
 #include "trade_ngin/backtest/backtest_coordinator.hpp"
 #undef private
+#include "../portfolio/one_pass_test_fixture.hpp"
 
 using namespace trade_ngin;
 using namespace trade_ngin::backtest;
@@ -541,6 +543,244 @@ TEST_F(BacktestStatisticsGridRun, AFuturesRunTakesTheStatisticsOfMigration031OnI
     EXPECT_EQ(db_->last_backtest_summary_metrics.count("total_trades"), 1u);
     EXPECT_EQ(db_->last_backtest_summary_metrics.count("worst_day"), 0u);
 }
+
+// ===== migration 031: the six overlay cells of a whole run's curve rows =====
+
+// A book that names an overlay sleeve, run through the coordinator's own cycle: the cells of a
+// curve row are the ones the CYCLE stores for it (process_portfolio_day), carried into the
+// results and handed to the curve writer. The expected figures are written out here from the
+// inputs below, by section 5's formulas, so the run is not compared with the overlay's own code.
+//
+//   | symbol | N* | close | M    | window return on its date k (150 consecutive dates) | jump sigma, daily |
+//   | G0.v.0 | 4  | 100   | 1000 | +0.020 on even k, -0.020 on odd k                   | 0.020             |
+//   | G1.v.0 | -3 | 100   | 1000 | +0.024 where k % 3 == 0, -0.012 elsewhere           | 0.030             |
+//   | G2.v.0 | 2  | 100   | 1000 | +0.016 where k % 4 < 2, -0.016 elsewhere            | 0.025             |
+//
+// One contract is 100,000 of notional; the bars are flat at 100, so the curve moves by the fills'
+// costs alone and the sizing capital E_t of a row is the level of the row before it (the starting
+// capital less the drawdown of the settled net P&L, whose peak is 0). The window's 150 consecutive
+// dates annualise on 149 / (149 / 365.25) = 365.25 bars a year. With q_i the contracts the book
+// holds on the row (the fills up to its date), x_i = q_i x 100,000 / E_t, C the sample (n - 1)
+// covariance of the three windows, s_i = sqrt(C_ii) and rho_ij = C_ij / (s_i s_j):
+//   L = sum |x_i|                              L_net = sum x_i
+//   R = sqrt(365.25 x sum_ij x_i C_ij x_j)     R_shock = sqrt(365.25) x sum |x_i| s_i
+//   R_jump = sqrt(365.25 x sum_ij x_i rho_ij j_i j_j x_j), j_i the daily jump sigma
+//   var_95_1d = 1.645 x R / sqrt(365.25) x E_t
+class BacktestOverlayCellsRun : public BacktestStatisticsGridRun {
+protected:
+    static constexpr double kCapital = 1'000'000.0;
+    static constexpr double kContract = 100.0 * 1000.0;
+    static constexpr double kBarsPerYear = 365.25;
+    static constexpr int kWindow = 150;
+    const std::vector<std::string> kSleeveSymbols = {"G0.v.0", "G1.v.0", "G2.v.0"};
+    const std::vector<double> kOptimal = {4.0, -3.0, 2.0};
+    const std::vector<double> kJumpDaily = {0.020, 0.030, 0.025};
+
+    static double window_return(int symbol, int k) {
+        switch (symbol) {
+            case 0: return k % 2 == 0 ? 0.020 : -0.020;
+            case 1: return k % 3 == 0 ? 0.024 : -0.012;
+            default: return k % 4 < 2 ? 0.016 : -0.016;
+        }
+    }
+
+    // The ten contracts at 1,000 a point, so one contract is a tenth of the book.
+    void SetUp() override {
+        BacktestStatisticsGridRun::SetUp();
+        auto& registry = InstrumentRegistry::instance();
+        for (int i = 0; i < 10; ++i) {
+            const std::string root = "G" + std::to_string(i);
+            FuturesSpec spec;
+            spec.root_symbol = root;
+            spec.exchange = "CME";
+            spec.currency = "USD";
+            spec.multiplier = 1000.0;
+            spec.tick_size = 0.25;
+            spec.commission_per_contract = 0.0;
+            spec.initial_margin = 1.0;
+            spec.maintenance_margin = 1.0;
+            spec.weight = 1.0;
+            spec.trading_hours = "09:30-16:00";
+            registry.instruments_[root] = std::make_shared<FuturesInstrument>(root, spec);
+        }
+    }
+
+    void TearDown() override {
+        sleeve_.reset();
+        BacktestStatisticsGridRun::TearDown();
+    }
+
+    Result<BacktestResults> run_overlay_book() {
+        static int n = 0;
+        ++n;
+        for (auto& row : rows_) row.close = 100.0;
+        db_->rows = rows_;
+
+        BacktestCoordinatorConfig cc;
+        cc.initial_capital = kCapital;
+        cc.store_results = false;
+        cc.store_trade_details = true;
+        cc.portfolio_id = "OVERLAY_CELLS_TEST";
+        cc.csv_output_path = temp_csv_dir("overlay_cells_" + std::to_string(n));
+        cc.statistics_sessions_per_year = kFuturesK;
+        coord_ = std::make_unique<BacktestCoordinator>(db_, &InstrumentRegistry::instance(), cc);
+        EXPECT_TRUE(coord_->initialize().is_ok());
+
+        pm_ = std::make_shared<PortfolioManager>(one_pass_config("OVL", kCapital),
+                                                 "PM_OVERLAY_CELLS_" + std::to_string(n));
+        sleeve_ = make_overlay_stub("OVL", kCapital, db_);
+        for (int i = 0; i < 3; ++i) {
+            OverlayStubStrategy::Row row;
+            row.close = 100.0;
+            row.multiplier = 1000.0;
+            row.optimal = kOptimal[i];
+            row.forecast = kOptimal[i] > 0.0 ? 10.0 : -10.0;
+            row.jump_sigma_daily = kJumpDaily[i];
+            for (int k = 0; k < kWindow; ++k) {
+                row.day.push_back(20351.0 + k);
+                row.returns.push_back(window_return(i, k));
+            }
+            sleeve_->rows[kSleeveSymbols[i]] = row;
+        }
+        EXPECT_TRUE(sleeve_->initialize().is_ok());
+        EXPECT_TRUE(sleeve_->start().is_ok());
+        EXPECT_TRUE(pm_->add_strategy(sleeve_, 1.0, true).is_ok());
+
+        return coord_->run_portfolio(pm_, universe(), trading_day(0), trading_day(kLastDay),
+                                     AssetClass::FUTURES, DataFrequency::DAILY);
+    }
+
+    // The six by hand, of a book of `q` contracts on the capital `e`.
+    struct Six {
+        double risk{0.0}, jump{0.0}, shock{0.0}, gross{0.0}, net{0.0}, var{0.0};
+    };
+    Six hand_six(const std::vector<double>& q, double e) const {
+        double mean[3] = {0.0, 0.0, 0.0};
+        for (int i = 0; i < 3; ++i) {
+            for (int k = 0; k < kWindow; ++k) mean[i] += window_return(i, k);
+            mean[i] /= kWindow;
+        }
+        double c[3][3];
+        for (int i = 0; i < 3; ++i) {
+            for (int j = 0; j < 3; ++j) {
+                double sum = 0.0;
+                for (int k = 0; k < kWindow; ++k) {
+                    sum += (window_return(i, k) - mean[i]) * (window_return(j, k) - mean[j]);
+                }
+                c[i][j] = sum / (kWindow - 1);
+            }
+        }
+        Six out;
+        double variance = 0.0, jump_variance = 0.0;
+        for (int i = 0; i < 3; ++i) {
+            const double xi = q[i] * kContract / e;
+            out.gross += std::abs(xi);
+            out.net += xi;
+            out.shock += std::abs(xi) * std::sqrt(c[i][i]) * std::sqrt(kBarsPerYear);
+            for (int j = 0; j < 3; ++j) {
+                const double xj = q[j] * kContract / e;
+                const double rho = i == j ? 1.0 : c[i][j] / std::sqrt(c[i][i] * c[j][j]);
+                variance += xi * c[i][j] * xj;
+                jump_variance += xi * rho * kJumpDaily[i] * kJumpDaily[j] * xj;
+            }
+        }
+        out.risk = std::sqrt(kBarsPerYear * variance);
+        out.jump = std::sqrt(kBarsPerYear * jump_variance);
+        out.var = 1.645 * out.risk / std::sqrt(kBarsPerYear) * e;
+        return out;
+    }
+
+    std::shared_ptr<OverlayStubStrategy> sleeve_;
+};
+
+// Executed through run_portfolio: the row of a sized rebalance carries the six of the book the
+// row stores, a row with no rebalance (the seed row, the first cycle) carries none, and the curve
+// writer is handed the same values as round-trip text.
+TEST_F(BacktestOverlayCellsRun, EverySizedRowOfARunCarriesTheSixCellsOfTheBookItStores) {
+    auto result = run_overlay_book();
+    ASSERT_TRUE(result.is_ok()) << result.error()->what();
+    const BacktestResults& r = result.value();
+    const size_t rows = r.equity_curve.size();
+    ASSERT_EQ(r.equity_risk_detail.size(), rows);
+    ASSERT_EQ(r.equity_overlay.size(), rows)
+        << "the cycle stored no overlay cell on any row of a run whose book names an overlay sleeve";
+
+    const double nan = std::numeric_limits<double>::quiet_NaN();
+    const auto cell = [&](const std::optional<double>& v) { return v ? *v : nan; };
+    size_t sized = 0, holding = 0;
+    std::vector<double> q(3, 0.0);
+    for (size_t i = 0; i < rows; ++i) {
+        const std::string date = core::format_utc_date(r.equity_curve[i].first);
+        SCOPED_TRACE("curve row " + std::to_string(i) + " " + date);
+        const OverlayColumns& c = r.equity_overlay[i];
+        if (r.equity_risk_detail[i].empty()) {
+            // No sized rebalance on this row: all six NULL.
+            EXPECT_FALSE(c.overlay_risk || c.overlay_risk_jump || c.overlay_risk_shock ||
+                         c.overlay_gross_leverage || c.overlay_net_leverage || c.var_95_1d);
+            continue;
+        }
+        ++sized;
+        ASSERT_GT(i, 0u);
+        // The book the row stores: the fills up to its date.
+        std::fill(q.begin(), q.end(), 0.0);
+        for (const auto& e : r.executions) {
+            if (e.fill_time > r.equity_curve[i].first) continue;
+            for (int s = 0; s < 3; ++s) {
+                if (e.symbol != kSleeveSymbols[s]) continue;
+                q[s] += static_cast<double>(e.filled_quantity) * (e.side == Side::BUY ? 1.0 : -1.0);
+            }
+        }
+        const double e_t = r.equity_curve[i - 1].second;
+        EXPECT_NEAR(nlohmann::json::parse(r.equity_risk_detail[i])["sizing_capital"].get<double>(),
+                    e_t, 1e-6);
+        const Six want = hand_six(q, e_t);
+        EXPECT_NEAR(cell(c.overlay_gross_leverage), want.gross, 1e-12) << "L";
+        EXPECT_NEAR(cell(c.overlay_net_leverage), want.net, 1e-12) << "L_net";
+        EXPECT_NEAR(cell(c.overlay_risk), want.risk, 1e-12) << "R";
+        EXPECT_NEAR(cell(c.overlay_risk_jump), want.jump, 1e-12) << "R_jump";
+        EXPECT_NEAR(cell(c.overlay_risk_shock), want.shock, 1e-12) << "R_shock";
+        EXPECT_NEAR(cell(c.var_95_1d), want.var, 1e-6) << "var_95_1d";
+        if (want.gross > 0.0 && ++holding == 1) {
+            // The first row of a held book, its leverage by hand: two contracts long and one
+            // short on 1,000,000 are 300,000 gross and 100,000 net.
+            EXPECT_EQ(q, (std::vector<double>{2.0, -1.0, 0.0}));
+            EXPECT_EQ(e_t, kCapital);
+            EXPECT_NEAR(cell(c.overlay_gross_leverage), 0.3, 1e-12);
+            EXPECT_NEAR(cell(c.overlay_net_leverage), 0.1, 1e-12);
+            EXPECT_GT(cell(c.overlay_risk), 0.0);
+            EXPECT_GT(cell(c.overlay_risk_shock), cell(c.overlay_risk));
+        }
+    }
+    EXPECT_EQ(sized, rows - 2) << "every row but the seed row and the first cycle's";
+    EXPECT_GT(holding, 0u) << "the book came to hold contracts";
+    EXPECT_LT(holding, sized) << "and the first sized rows hold none: their leverage cells are 0";
+
+    // The save hands the curve writer the same six a row, as text that reads back the same.
+    auto saved = coord_->save_portfolio_results_to_db(r, {"OVL"}, {{"OVL", 1.0}}, pm_,
+                                                      nlohmann::json::object());
+    ASSERT_TRUE(saved.is_ok()) << saved.error()->what();
+    ASSERT_EQ(db_->call_count("store_backtest_equity_curve_batch"), 1);
+    ASSERT_EQ(db_->last_equity_curve_cells.size(), rows);
+    for (size_t i = 0; i < rows; ++i) {
+        SCOPED_TRACE("stored curve row " + std::to_string(i));
+        const OverlayColumns& c = r.equity_overlay[i];
+        const std::vector<std::pair<const char*, std::optional<double>>> six = {
+            {"overlay_risk", c.overlay_risk},
+            {"overlay_risk_jump", c.overlay_risk_jump},
+            {"overlay_risk_shock", c.overlay_risk_shock},
+            {"overlay_gross_leverage", c.overlay_gross_leverage},
+            {"overlay_net_leverage", c.overlay_net_leverage},
+            {"var_95_1d", c.var_95_1d}};
+        const auto& stored = db_->last_equity_curve_cells[i];
+        ASSERT_EQ(stored.size(), six.size());
+        for (size_t k = 0; k < six.size(); ++k) {
+            EXPECT_EQ(stored[k].column, six[k].first);
+            ASSERT_EQ(stored[k].value.has_value(), six[k].second.has_value()) << six[k].first;
+            if (six[k].second) EXPECT_EQ(std::stod(*stored[k].value), *six[k].second) << six[k].first;
+        }
+    }
+}
+
 
 // The same bars as an equity run: every row is a return, so the Saturday row can be the worst
 // day; the three sizing-capital cells are NULL on an equity run.
