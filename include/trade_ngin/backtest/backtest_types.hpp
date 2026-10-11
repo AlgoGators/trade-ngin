@@ -192,15 +192,15 @@ struct BacktestResults {
     // Performance metrics
     double total_return{0.0};
     double volatility{0.0};
-    double sharpe_ratio{0.0};
-    double sortino_ratio{0.0};
+    double sharpe_ratio{0.0};   ///< kNoRatio (no value, stored NULL) with no volatility
+    double sortino_ratio{0.0};  ///< kNoRatio with no return under the target
     double max_drawdown{0.0};
-    double calmar_ratio{0.0};
+    double calmar_ratio{0.0};   ///< kNoRatio with no drawdown
 
     // Trading metrics
     int total_trades{0};
     double win_rate{0.0};
-    double profit_factor{0.0};
+    double profit_factor{0.0};  ///< kNoRatio with no losing trade
     double avg_win{0.0};
     double avg_loss{0.0};
     double max_win{0.0};

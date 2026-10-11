@@ -548,11 +548,11 @@ int main() {
         std::cout << "======= Backtest Results =======" << std::endl;
         std::cout << "Total Return: " << (backtest_results.total_return * 100.0) << "%"
                   << std::endl;
-        std::cout << "Sharpe Ratio: " << backtest_results.sharpe_ratio << std::endl;
-        std::cout << "Sortino Ratio: " << backtest_results.sortino_ratio << std::endl;
+        std::cout << "Sharpe Ratio: " << ratio_or_na(backtest_results.sharpe_ratio) << std::endl;
+        std::cout << "Sortino Ratio: " << ratio_or_na(backtest_results.sortino_ratio) << std::endl;
         std::cout << "Max Drawdown: " << (backtest_results.max_drawdown * 100.0) << "%"
                   << std::endl;
-        std::cout << "Calmar Ratio: " << backtest_results.calmar_ratio << std::endl;
+        std::cout << "Calmar Ratio: " << ratio_or_na(backtest_results.calmar_ratio) << std::endl;
         std::cout << "Volatility: " << (backtest_results.volatility * 100.0) << "%" << std::endl;
         std::cout << "Win Rate: " << (backtest_results.win_rate * 100.0) << "%" << std::endl;
         std::cout << "Total Trades: " << backtest_results.total_trades << std::endl;

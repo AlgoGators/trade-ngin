@@ -58,15 +58,17 @@ double BacktestMetricsCalculator::calculate_sharpe_ratio(
     const std::vector<double>& returns,
     double sessions_per_year,
     double risk_free_rate) const {
+    // No returns, no sessions a year, or no volatility to divide by: the ratio has no value
+    // (T-8D R12), which is not a measured 0.
     if (returns.empty() || !(sessions_per_year > 0.0)) {
-        return 0.0;
+        return kNoRatio;
     }
 
     double mean_return = calculate_mean(returns);
     double volatility = calculate_volatility(returns, sessions_per_year);
 
-    if (volatility <= 0.0) {
-        return 0.0;
+    if (!(volatility > 0.0)) {
+        return kNoRatio;
     }
 
     // Annualize the mean grid return: multiply by the grid's sessions a year
@@ -81,16 +83,17 @@ double BacktestMetricsCalculator::calculate_sortino_ratio(
     double sessions_per_year,
     double minimum_acceptable_return) const {
     if (returns.empty() || !(sessions_per_year > 0.0)) {
-        return 0.0;
+        return kNoRatio;
     }
 
     double mean_return = calculate_mean(returns);
     double downside_vol =
         calculate_downside_volatility(returns, sessions_per_year, minimum_acceptable_return);
 
-    if (downside_vol <= 0.0) {
-        // No negative returns - cap at reasonable value
-        return (mean_return * sessions_per_year) >= 0 ? 999.0 : 0.0;
+    if (!(downside_vol > 0.0)) {
+        // No return under the target: there is no downside to divide by, so the ratio has no
+        // value (T-8D R12). It was 999 with a mean at or above 0 and 0 with one below.
+        return kNoRatio;
     }
 
     // Annualize the mean grid return: multiply by the grid's sessions a year
@@ -99,8 +102,9 @@ double BacktestMetricsCalculator::calculate_sortino_ratio(
 }
 
 double BacktestMetricsCalculator::calculate_calmar_ratio(double annualized_return, double max_drawdown) const {
-    if (max_drawdown <= 0.0) {
-        return annualized_return >= 0 ? 999.0 : 0.0;
+    // No drawdown to divide by: no value (T-8D R12). It was 999 or 0 by the return's sign.
+    if (!(max_drawdown > 0.0)) {
+        return kNoRatio;
     }
     return annualized_return / max_drawdown;
 }
@@ -123,12 +127,12 @@ double BacktestMetricsCalculator::calculate_volatility(const std::vector<double>
 
     // A constant series still leaves rounding dust (~1e-17) in the deviations;
     // collapse it to a clean 0 so the `volatility <= 0` guard in
-    // calculate_sharpe_ratio treats the degenerate case as such instead of
-    // dividing by dust and reporting an absurd Sharpe.
+    // calculate_sharpe_ratio treats the degenerate case as such (no value) instead
+    // of dividing by dust and reporting an absurd Sharpe.
     if (volatility > 0.0 && volatility < 1e-12) {
         WARN("Volatility collapsed to 0 (rounding dust; constant or near-constant "
              "series of " + std::to_string(returns.size()) +
-             " returns); Sharpe will report 0 -- distinguish flat from broken data upstream");
+             " returns); Sharpe has no value -- distinguish flat from broken data upstream");
         return 0.0;
     }
     return volatility;
@@ -146,10 +150,10 @@ double BacktestMetricsCalculator::calculate_downside_volatility(
 
     // Same rounding-dust collapse calculate_volatility applies: returns sitting a
     // hair below target otherwise leave a ~1e-17 denominator and Sortino explodes
-    // to an absurd finite value instead of hitting its degenerate-case sentinel.
+    // to an absurd finite value instead of having no value.
     if (downside_vol > 0.0 && downside_vol < 1e-12) {
         WARN("Downside volatility collapsed to 0 (rounding dust " +
-             std::to_string(downside_vol) + "); Sortino will report its degenerate-case value");
+             std::to_string(downside_vol) + "); Sortino has no value");
         return 0.0;
     }
     return downside_vol;
@@ -709,11 +713,9 @@ BacktestMetricsCalculator::TradeStatistics BacktestMetricsCalculator::calculate_
             stats.total_loss / losing_trades : 0.0;
     }
 
-    if (stats.total_loss > 0) {
-        stats.profit_factor = stats.total_profit / stats.total_loss;
-    } else if (stats.total_trades > 0 && stats.total_profit > 0) {
-        stats.profit_factor = 999.0;
-    }
+    // The profit factor divides by the losing trades' loss; with none it has no value (T-8D
+    // R12). It was 999 with a profit and no loss, and 0 with neither.
+    stats.profit_factor = stats.total_loss > 0 ? stats.total_profit / stats.total_loss : kNoRatio;
 
     if (!holding_periods.empty()) {
         stats.avg_holding_period = std::accumulate(holding_periods.begin(),

@@ -370,12 +370,12 @@ int main() {
         std::cout << "\n======= Equity Mean Reversion Backtest Results =======" << std::endl;
         std::cout << "Total Return: " << std::fixed << std::setprecision(2)
                   << (backtest_results.total_return * 100.0) << "%" << std::endl;
-        std::cout << "Sharpe Ratio: " << std::setprecision(3) << backtest_results.sharpe_ratio
+        std::cout << "Sharpe Ratio: " << std::setprecision(3) << ratio_or_na(backtest_results.sharpe_ratio)
                   << std::endl;
-        std::cout << "Sortino Ratio: " << backtest_results.sortino_ratio << std::endl;
+        std::cout << "Sortino Ratio: " << ratio_or_na(backtest_results.sortino_ratio) << std::endl;
         std::cout << "Max Drawdown: " << std::setprecision(2)
                   << (backtest_results.max_drawdown * 100.0) << "%" << std::endl;
-        std::cout << "Calmar Ratio: " << std::setprecision(3) << backtest_results.calmar_ratio
+        std::cout << "Calmar Ratio: " << std::setprecision(3) << ratio_or_na(backtest_results.calmar_ratio)
                   << std::endl;
         std::cout << "Volatility: " << std::setprecision(2)
                   << (backtest_results.volatility * 100.0) << "%" << std::endl;

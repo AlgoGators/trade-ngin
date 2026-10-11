@@ -3,6 +3,9 @@
 #include <chrono>
 #include <cmath>
 #include <cstdint>
+#include <sstream>
+#include <limits>
+#include <iomanip>
 #include <stdexcept>
 #include <string>
 #include <unordered_map>
@@ -141,12 +144,16 @@ TEST_F(BacktestMetricsCalculatorTest, VolatilityConstantSeriesIsZeroNotNaN) {
     EXPECT_DOUBLE_EQ(vol, 0.0);
 }
 
-TEST_F(BacktestMetricsCalculatorTest, SharpeConstantSeriesIsZeroNotNaN) {
-    // With NaN volatility the `volatility <= 0` guard was passed (NaN
-    // comparisons are false) and Sharpe itself became NaN.
+// T-8D R12: a constant series has no volatility, so its Sharpe ratio has no value. It is the
+// calculator's own kNoRatio (the volatility itself is a clean 0, not rounding dust), not a 0
+// that reads as a measured Sharpe.
+TEST_F(BacktestMetricsCalculatorTest, SharpeOfAConstantSeriesHasNoValue) {
     auto sharpe = calc_.calculate_sharpe_ratio({0.007, 0.007, 0.007, 0.007, 0.007}, kEquityK, 0.0);
-    EXPECT_TRUE(std::isfinite(sharpe));
-    EXPECT_DOUBLE_EQ(sharpe, 0.0);
+    EXPECT_FALSE(has_value(sharpe));
+    EXPECT_TRUE(std::isnan(sharpe));
+    EXPECT_DOUBLE_EQ(calc_.calculate_volatility({0.007, 0.007, 0.007, 0.007, 0.007}, kEquityK), 0.0);
+    // One return: the sample deviation of one observation is 0.
+    EXPECT_TRUE(std::isnan(calc_.calculate_sharpe_ratio({0.01}, kEquityK, 0.0)));
 }
 
 // T-8D R8: volatility is the SAMPLE standard deviation (n - 1) x sqrt(K).
@@ -227,13 +234,13 @@ TEST_F(BacktestMetricsCalculatorTest, DownsideVolatilityAndSortinoAverageOverEve
     EXPECT_NEAR(calc_.calculate_sortino_ratio(r, 252.0), 3.549647870, 1e-8);
 }
 
-TEST_F(BacktestMetricsCalculatorTest, SharpeEmptyReturnsZero) {
-    EXPECT_DOUBLE_EQ(calc_.calculate_sharpe_ratio({}, 252), 0.0);
+TEST_F(BacktestMetricsCalculatorTest, SharpeOfAnEmptySeriesHasNoValue) {
+    EXPECT_TRUE(std::isnan(calc_.calculate_sharpe_ratio({}, 252)));
 }
 
 TEST_F(BacktestMetricsCalculatorTest, SharpeWithoutPositiveSessionsAYearReturnsZero) {
-    EXPECT_DOUBLE_EQ(calc_.calculate_sharpe_ratio({0.01, 0.02}, 0), 0.0);
-    EXPECT_DOUBLE_EQ(calc_.calculate_sharpe_ratio({0.01, 0.02}, -1), 0.0);
+    EXPECT_TRUE(std::isnan(calc_.calculate_sharpe_ratio({0.01, 0.02}, 0)));
+    EXPECT_TRUE(std::isnan(calc_.calculate_sharpe_ratio({0.01, 0.02}, -1)));
 }
 
 TEST_F(BacktestMetricsCalculatorTest, SharpeNonZeroWhenVolatilityPositive) {
@@ -241,18 +248,22 @@ TEST_F(BacktestMetricsCalculatorTest, SharpeNonZeroWhenVolatilityPositive) {
     EXPECT_NE(calc_.calculate_sharpe_ratio(r, 252), 0.0);
 }
 
-TEST_F(BacktestMetricsCalculatorTest, SortinoEmptyReturnsZero) {
-    EXPECT_DOUBLE_EQ(calc_.calculate_sortino_ratio({}, 252), 0.0);
-    EXPECT_DOUBLE_EQ(calc_.calculate_sortino_ratio({0.01}, 0), 0.0);
+TEST_F(BacktestMetricsCalculatorTest, SortinoOfAnEmptySeriesHasNoValue) {
+    EXPECT_TRUE(std::isnan(calc_.calculate_sortino_ratio({}, 252)));
+    EXPECT_TRUE(std::isnan(calc_.calculate_sortino_ratio({0.01}, 0)));
 }
 
-TEST_F(BacktestMetricsCalculatorTest, SortinoCappedAt999WhenNoDownsideAndPositive) {
-    EXPECT_DOUBLE_EQ(calc_.calculate_sortino_ratio({0.01, 0.02, 0.03}, 252), 999.0);
+// T-8D R12: with no return under the target there is no downside to divide by. The ratio has no
+// value; it was 999 here.
+TEST_F(BacktestMetricsCalculatorTest, SortinoWithNoDownsideHasNoValue) {
+    const double sortino = calc_.calculate_sortino_ratio({0.01, 0.02, 0.03}, 252);
+    EXPECT_TRUE(std::isnan(sortino));
+    EXPECT_FALSE(has_value(sortino));
 }
 
-TEST_F(BacktestMetricsCalculatorTest, SortinoZeroWhenNoDownsideAndNegativeAnnualMean) {
-    // Returns all above target=-0.01 (no downside) but mean*252 is negative.
-    EXPECT_DOUBLE_EQ(calc_.calculate_sortino_ratio({-0.005, 0.001}, 252, -0.01), 0.0);
+TEST_F(BacktestMetricsCalculatorTest, SortinoWithNoDownsideHasNoValueWhateverTheSignOfTheMean) {
+    // Returns all above target=-0.01 (no downside) but mean*252 is negative: it was 0 here.
+    EXPECT_TRUE(std::isnan(calc_.calculate_sortino_ratio({-0.005, 0.001}, 252, -0.01)));
 }
 
 TEST_F(BacktestMetricsCalculatorTest, SortinoComputesWithDownsideVolatility) {
@@ -261,9 +272,12 @@ TEST_F(BacktestMetricsCalculatorTest, SortinoComputesWithDownsideVolatility) {
     EXPECT_GT(calc_.calculate_sortino_ratio(r, 252), 0.0);
 }
 
-TEST_F(BacktestMetricsCalculatorTest, CalmarHandlesZeroDrawdown) {
-    EXPECT_DOUBLE_EQ(calc_.calculate_calmar_ratio(0.10, 0.0), 999.0);
-    EXPECT_DOUBLE_EQ(calc_.calculate_calmar_ratio(-0.10, 0.0), 0.0);
+// T-8D R12: no drawdown, no denominator, no value (it was 999 or 0 by the return's sign).
+TEST_F(BacktestMetricsCalculatorTest, CalmarWithNoDrawdownHasNoValue) {
+    EXPECT_TRUE(std::isnan(calc_.calculate_calmar_ratio(0.10, 0.0)));
+    EXPECT_TRUE(std::isnan(calc_.calculate_calmar_ratio(-0.10, 0.0)));
+    EXPECT_TRUE(std::isnan(calc_.calculate_calmar_ratio(0.10, -0.05)));
+    EXPECT_DOUBLE_EQ(calc_.calculate_calmar_ratio(0.10, 0.05), 2.0);
 }
 
 TEST_F(BacktestMetricsCalculatorTest, CalmarStandardCase) {
@@ -408,7 +422,7 @@ TEST_F(BacktestMetricsCalculatorTest, TradeStatisticsClosingTradeIsRecorded) {
     EXPECT_EQ(s.winning_trades, 1);
     EXPECT_DOUBLE_EQ(s.win_rate, 1.0);
     EXPECT_DOUBLE_EQ(s.max_win, 9.0);  // 1*(110-100) - 1 commission = 9
-    EXPECT_DOUBLE_EQ(s.profit_factor, 999.0);  // no losses, has wins
+    EXPECT_TRUE(std::isnan(s.profit_factor)) << "no losing trade: no value (T-8D R12), it was 999";
     EXPECT_NEAR(s.avg_holding_period, 2.0, 1e-9);
 }
 
@@ -537,7 +551,7 @@ TEST_F(BacktestMetricsCalculatorTest, TradeStatisticsFloatResidueIsFlat) {
     EXPECT_NEAR(s.max_win, 10.0, 1e-9);
     EXPECT_NEAR(s.total_profit, 13.0, 1e-9);
     EXPECT_DOUBLE_EQ(s.total_loss, 0.0);
-    EXPECT_DOUBLE_EQ(s.profit_factor, 999.0);
+    EXPECT_TRUE(std::isnan(s.profit_factor));
     EXPECT_NEAR(calc_.calculate_symbol_pnl(execs, kUnitPoints)["X"], 13.0, 1e-9);
 }
 
@@ -1142,6 +1156,61 @@ TEST_F(BacktestMetricsCalculatorTest, AMonthEndingOnAnOffGridRowIsCompleteOnItsG
         << "the month's return ends on the Friday level: the Saturday row is in no grid return";
 }
 
+// T-8D R12 through the composite: a run that only rises has no downside return, no drawdown and
+// (with one winning trade) no losing trade. Its three ratios have no value; its Sharpe ratio,
+// which has a denominator, is a number. A flat run has no volatility either.
+//   | curve               | sharpe | sortino | calmar | profit factor |
+//   | 100, 101, 103, 104  | number | none    | none   | none (1 winning trade, no loss) |
+//   | 100, 100, 100, 100  | none   | none    | none   | none (no trade)                 |
+TEST_F(BacktestMetricsCalculatorTest, ARatioWithNoDenominatorHasNoValueInTheResults) {
+    const std::vector<std::pair<Timestamp, double>> rising = {
+        {date_at(2026, 1, 5), 100.0}, {date_at(2026, 1, 6), 101.0}, {date_at(2026, 1, 7), 103.0},
+        {date_at(2026, 1, 8), 104.0}};
+    const std::vector<ExecutionReport> one_win = {
+        make_exec("ES", Side::BUY, 1.0, 100.0, date_at(2026, 1, 5)),
+        make_exec("ES", Side::SELL, 1.0, 104.0, date_at(2026, 1, 8))};
+    const auto up = calc_.calculate_all_metrics(rising, one_win, /*warmup_days=*/0, kUnitPoints, kOwnRows);
+    EXPECT_TRUE(has_value(up.sharpe_ratio));
+    EXPECT_GT(up.sharpe_ratio, 0.0);
+    EXPECT_TRUE(std::isnan(up.sortino_ratio));
+    EXPECT_TRUE(std::isnan(up.calmar_ratio));
+    EXPECT_TRUE(std::isnan(up.profit_factor));
+    EXPECT_EQ(up.total_trades, 1);
+    EXPECT_DOUBLE_EQ(up.max_drawdown, 0.0);
+    EXPECT_DOUBLE_EQ(up.downside_volatility, 0.0);
+    EXPECT_NEAR(up.total_return, 0.04, 1e-12);
+
+    const std::vector<std::pair<Timestamp, double>> flat = {
+        {date_at(2026, 1, 5), 100.0}, {date_at(2026, 1, 6), 100.0}, {date_at(2026, 1, 7), 100.0},
+        {date_at(2026, 1, 8), 100.0}};
+    const auto none = calc_.calculate_all_metrics(flat, {}, /*warmup_days=*/0, kUnitPoints, kOwnRows);
+    EXPECT_TRUE(std::isnan(none.sharpe_ratio));
+    EXPECT_TRUE(std::isnan(none.sortino_ratio));
+    EXPECT_TRUE(std::isnan(none.calmar_ratio));
+    EXPECT_TRUE(std::isnan(none.profit_factor));
+    EXPECT_DOUBLE_EQ(none.volatility, 0.0);
+    EXPECT_DOUBLE_EQ(none.total_return, 0.0);
+
+    // A run with a loss on each denominator carries four numbers.
+    const auto both = calc_.calculate_all_metrics(thin_and_saturday_curve(), {}, 1, kUnitPoints,
+                                                  thin_and_saturday_grid());
+    EXPECT_TRUE(has_value(both.sharpe_ratio));
+    EXPECT_TRUE(has_value(both.sortino_ratio));
+    EXPECT_TRUE(has_value(both.calmar_ratio));
+}
+
+// The console line of a ratio: the number as the stream is set, "n/a" when it has no value.
+TEST_F(BacktestMetricsCalculatorTest, AConsoleLinePrintsNaForARatioWithNoValue) {
+    std::ostringstream os;
+    os << "Sortino Ratio: " << ratio_or_na(1.786723) << " | " << std::fixed << std::setprecision(3)
+       << ratio_or_na(2.306329) << " | " << ratio_or_na(kNoRatio) << " | "
+       << ratio_or_na(std::numeric_limits<double>::infinity());
+    EXPECT_EQ(os.str(), "Sortino Ratio: 1.78672 | 2.306 | n/a | n/a");
+    std::ostringstream plain;
+    plain << 1.786723;
+    EXPECT_EQ(plain.str(), "1.78672") << "a number is printed exactly as the stream prints it";
+}
+
 // ===== NaN / degeneracy guards (batch-2 metrics hardening) =====
 
 TEST_F(BacktestMetricsCalculatorTest, NanEquityPointExcludedFromMonthlyReturns) {
@@ -1182,11 +1251,11 @@ TEST_F(BacktestMetricsCalculatorTest, TotalReturnNanInputsReturnZero) {
 TEST_F(BacktestMetricsCalculatorTest, SortinoNearTargetDustHitsSentinelNotAbsurdValue) {
     // Returns an epsilon below target leave ~1e-17 downside "dust". Pre-fix,
     // Sortino divided by the dust and reported an absurd finite magnitude;
-    // post-fix the dust collapses to 0 and the degenerate-case sentinel applies.
+    // post-fix the dust collapses to 0 and the ratio has no value (T-8D R12).
     std::vector<double> returns(100, -1e-18);
     const double sortino =
         calc_.calculate_sortino_ratio(returns, /*sessions_per_year=*/kEquityK, /*mar=*/0.0);
-    EXPECT_LE(std::abs(sortino), 999.0);
+    EXPECT_TRUE(std::isnan(sortino));
     const double downside = calc_.calculate_downside_volatility(returns, kEquityK, 0.0);
     EXPECT_DOUBLE_EQ(downside, 0.0);
 }

@@ -6,6 +6,7 @@
 #include <unordered_map>
 #include <map>
 #include "trade_ngin/backtest/backtest_statistics_columns.hpp"
+#include "trade_ngin/core/no_value.hpp"
 #include "trade_ngin/core/types.hpp"
 #include "trade_ngin/live/live_historical_metrics.hpp"
 
@@ -103,7 +104,8 @@ public:
      * @param returns Vector of grid returns
      * @param sessions_per_year K, the sessions a year of the grid the returns are taken on
      * @param risk_free_rate Annual risk-free rate (default 0)
-     * @return Sharpe ratio; 0 for an empty series or without a positive K
+     * @return Sharpe ratio; kNoRatio (no value) for an empty series, without a positive K or
+     *         with no volatility
      */
     double calculate_sharpe_ratio(
         const std::vector<double>& returns,
@@ -115,7 +117,8 @@ public:
      * @param returns Vector of grid returns
      * @param sessions_per_year K, the sessions a year of the grid the returns are taken on
      * @param minimum_acceptable_return Minimum acceptable return (default 0)
-     * @return Sortino ratio; 0 for an empty series or without a positive K
+     * @return Sortino ratio; kNoRatio (no value) for an empty series, without a positive K or
+     *         with no return under the target
      */
     double calculate_sortino_ratio(
         const std::vector<double>& returns,
@@ -126,7 +129,7 @@ public:
      * @brief Calculate Calmar ratio (annualized return / max drawdown)
      * @param annualized_return Annualized return as decimal (calculate_annualized_return)
      * @param max_drawdown Maximum drawdown as decimal
-     * @return Calmar ratio
+     * @return Calmar ratio; kNoRatio (no value) with no drawdown
      */
     double calculate_calmar_ratio(double annualized_return, double max_drawdown) const;
 
@@ -209,7 +212,7 @@ public:
         int total_trades = 0;
         int winning_trades = 0;
         double win_rate = 0.0;
-        double profit_factor = 0.0;
+        double profit_factor = 0.0;  ///< total_profit / total_loss; kNoRatio with no loss
         double total_profit = 0.0;
         double total_loss = 0.0;
         double avg_win = 0.0;

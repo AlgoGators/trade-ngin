@@ -1013,7 +1013,7 @@ int main() {
 
             // Sharpe ratio (matching calculate_sharpe_ratio: the mean grid return x K)
             double ann_return = mean_return * sessions_per_year;
-            double manual_sharpe = (manual_vol > 0.0) ? ann_return / manual_vol : 0.0;
+            double manual_sharpe = (manual_vol > 0.0) ? ann_return / manual_vol : kNoRatio;
 
             // Sortino ratio (matching calculate_downside_volatility + calculate_sortino_ratio)
             double downside_sum = 0.0;
@@ -1029,12 +1029,8 @@ int main() {
                 ? std::sqrt(downside_sum / static_cast<double>(returns.size())) *
                       std::sqrt(sessions_per_year)
                 : 0.0;
-            double manual_sortino = 0.0;
-            if (downside_vol > 0.0) {
-                manual_sortino = ann_return / downside_vol;
-            } else {
-                manual_sortino = (ann_return >= 0) ? 999.0 : 0.0;
-            }
+            // no downside: no value, as the calculator returns (T-8D R12)
+            double manual_sortino = (downside_vol > 0.0) ? ann_return / downside_vol : kNoRatio;
 
             // Max drawdown (matching calculate_drawdowns)
             double peak = filtered[0].second;
@@ -1052,8 +1048,8 @@ int main() {
                 growth > 0.0
                     ? std::pow(growth, sessions_per_year / static_cast<double>(returns.size())) - 1.0
                     : -1.0;
-            double manual_calmar = (manual_max_dd > 0) ? manual_cagr / manual_max_dd
-                                                        : ((manual_cagr >= 0) ? 999.0 : 0.0);
+            // no drawdown: no value, as the calculator returns (T-8D R12)
+            double manual_calmar = (manual_max_dd > 0) ? manual_cagr / manual_max_dd : kNoRatio;
 
             // Print comparison
             std::cout << "\n" << std::setw(20) << "Metric" << " | "
@@ -1063,7 +1059,8 @@ int main() {
             std::cout << std::string(62, '-') << std::endl;
 
             auto print_metric = [&](const std::string& name, double manual, double bt) {
-                bool match = approx_eq(manual, bt, 1e-3);
+                // a ratio with no value on both sides is a match
+                bool match = (!has_value(manual) && !has_value(bt)) || approx_eq(manual, bt, 1e-3);
                 std::cout << std::setw(20) << name << " | "
                           << std::fixed << std::setprecision(6)
                           << std::setw(14) << manual << " | "
@@ -1083,7 +1080,7 @@ int main() {
             std::cout << "  Total trades: " << backtest_results.total_trades << std::endl;
             std::cout << "  Win rate: " << std::fixed << std::setprecision(2)
                       << (backtest_results.win_rate * 100) << "%" << std::endl;
-            std::cout << "  Profit factor: " << std::setprecision(3) << backtest_results.profit_factor << std::endl;
+            std::cout << "  Profit factor: " << std::setprecision(3) << ratio_or_na(backtest_results.profit_factor) << std::endl;
             std::cout << std::endl;
         }
 
