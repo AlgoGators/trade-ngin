@@ -12,6 +12,7 @@
 #include "trade_ngin/backtest/backtest_types.hpp"
 #include "trade_ngin/core/time_utils.hpp"
 #include "trade_ngin/live/live_historical_metrics.hpp"
+#include "trade_ngin/live/live_statistics_columns.hpp"
 #include "trade_ngin/transaction_cost/netting.hpp"
 
 using namespace trade_ngin;
@@ -1030,6 +1031,115 @@ TEST_F(BacktestMetricsCalculatorTest, BothCalculatorsGiveOneNumberForOnePnlSerie
     EXPECT_NEAR(bt.annualized_return * 100.0, live.total_annualized_return, 1e-8);
     EXPECT_NEAR(live.total_annualized_return, 1232.0206, 1e-3);
     EXPECT_NEAR(bt.calmar_ratio, live.total_annualized_return / live.max_drawdown, 1e-8);
+}
+
+// E2-F63, the backtest half (T-8D R27, R28): a run has ONE as-of date, its last curve row, and
+// every grid statistic reads the grid rows up to it. A run whose last row is off the grid (a
+// Saturday point) therefore ends its series at the last grid date: every statistic of the series
+// equals that of the same run stopped on the Friday; the levels (total_return, the drawdown
+// curve) are facts of every row and keep the Saturday.
+//   | row        | day | level | in the grid series      | in total_return, the drawdown curve |
+//   | 2026-01-01 | Thu | 100   | warm-up                 | warm-up                             |
+//   | 2026-01-02 | Fri | 100   | the base                | the base                            |
+//   | 2026-01-04 | Sun | 102   | 102/100 - 1             | yes                                 |
+//   | 2026-01-05 | Mon | 101   | 101/102 - 1             | yes                                 |
+//   | 2026-01-06 | Tue |  99   | thin: folded into 01-07 | yes                                 |
+//   | 2026-01-07 | Wed | 103   | 103/101 - 1             | yes                                 |
+//   | 2026-01-08 | Thu | 104   | 104/103 - 1             | yes                                 |
+//   | 2026-01-09 | Fri | 102   | 102/104 - 1, the last   | yes                                 |
+//   | 2026-01-10 | Sat |  96   | no row, in no return    | yes: 96/100 - 1 = -0.04, (104-96)/104 |
+TEST_F(BacktestMetricsCalculatorTest, ARunEndingOnAnOffGridRowEndsEveryGridStatisticAtItsLastGridDate) {
+    auto saturday_end = thin_and_saturday_curve();
+    saturday_end.resize(9);  // through Sat 2026-01-10
+    auto friday_end = saturday_end;
+    friday_end.pop_back();  // through Fri 2026-01-09
+    const auto grid = thin_and_saturday_grid();
+    const auto sat = calc_.calculate_all_metrics(saturday_end, {}, /*warmup_days=*/1, kUnitPoints, grid);
+    const auto fri = calc_.calculate_all_metrics(friday_end, {}, /*warmup_days=*/1, kUnitPoints, grid);
+
+    // The series: the same five grid returns, the last one dated the Friday.
+    const auto base_and_after = std::vector<std::pair<Timestamp, double>>(saturday_end.begin() + 1,
+                                                                          saturday_end.end());
+    const StatisticsSeries series = calc_.statistics_series(base_and_after, grid);
+    ASSERT_EQ(series.size(), 5);
+    EXPECT_EQ(series.dates.back(), "2026-01-09");
+    EXPECT_DOUBLE_EQ(series.levels.back(), 102.0);
+    EXPECT_EQ(sat.statistics_days, 5);
+    EXPECT_EQ(fri.statistics_days, 5);
+
+    // Every statistic of the series: one number, with or without the Saturday row.
+    EXPECT_DOUBLE_EQ(sat.volatility, fri.volatility);
+    EXPECT_DOUBLE_EQ(sat.sharpe_ratio, fri.sharpe_ratio);
+    EXPECT_DOUBLE_EQ(sat.sortino_ratio, fri.sortino_ratio);
+    EXPECT_DOUBLE_EQ(sat.downside_volatility, fri.downside_volatility);
+    EXPECT_DOUBLE_EQ(sat.max_drawdown, fri.max_drawdown);
+    EXPECT_DOUBLE_EQ(sat.annualized_return, fri.annualized_return);
+    EXPECT_DOUBLE_EQ(sat.calmar_ratio, fri.calmar_ratio);
+    EXPECT_DOUBLE_EQ(sat.var_95, fri.var_95);
+    EXPECT_DOUBLE_EQ(sat.cvar_95, fri.cvar_95);
+    EXPECT_DOUBLE_EQ(sat.beta, fri.beta);
+    EXPECT_DOUBLE_EQ(sat.correlation, fri.correlation);
+    EXPECT_GT(sat.volatility, 0.0);
+    EXPECT_NEAR(sat.max_drawdown, 2.0 / 104.0, 1e-12) << "the Saturday trough (8/104) is no grid level";
+    EXPECT_NEAR(sat.annualized_return, std::pow(1.02, kFuturesK / 5.0) - 1.0, 1e-9)
+        << "the CAGR ends on the Friday level 102, not on the Saturday's 96";
+    // The statistics of migration 031 read the same series.
+    ASSERT_TRUE(sat.statistics_columns.worst_day.has_value());
+    EXPECT_DOUBLE_EQ(*sat.statistics_columns.worst_day, *fri.statistics_columns.worst_day);
+    EXPECT_NEAR(*sat.statistics_columns.worst_day, 102.0 / 104.0 - 1.0, 1e-12);
+    EXPECT_EQ(sat.statistics_columns.worst_day_date, fri.statistics_columns.worst_day_date);
+    EXPECT_EQ(sat.statistics_columns.calendar_year_returns, fri.statistics_columns.calendar_year_returns);
+    EXPECT_EQ(sat.statistics_columns.losing_years, fri.statistics_columns.losing_years);
+    EXPECT_EQ(sat.statistics_columns.monthly_skew, fri.statistics_columns.monthly_skew);
+
+    // The levels are facts of every row: they keep the Saturday.
+    EXPECT_NEAR(sat.total_return, 96.0 / 100.0 - 1.0, 1e-12);
+    EXPECT_NEAR(fri.total_return, 102.0 / 100.0 - 1.0, 1e-12);
+    ASSERT_EQ(sat.drawdown_curve.size(), 8u);
+    ASSERT_EQ(fri.drawdown_curve.size(), 7u);
+    EXPECT_NEAR(sat.drawdown_curve.back().second, 8.0 / 104.0, 1e-12);
+}
+
+// The same as-of date decides which calendar months and years are complete (migration 031: "a
+// month is complete when its last calendar day is on or before the run's last curve date"). A run
+// ending on Saturday 2026-01-31, an off-grid row, counts January: every grid date of the month is
+// in its series, and the month's return is the product of its grid returns, the last one dated
+// Friday 01-30, so the Saturday row's level is in no monthly figure. The same run stopped on the
+// Friday leaves January partial. The series, and so every other statistic, is the same.
+TEST_F(BacktestMetricsCalculatorTest, AMonthEndingOnAnOffGridRowIsCompleteOnItsGridReturns) {
+    // The base on Wed 2025-12-31; one row per Sunday-to-Friday date of January 2026, each a grid
+    // date; then the Saturday point of 01-31.
+    std::vector<std::pair<Timestamp, double>> curve = {{date_at(2025, 12, 31), 100.0}};
+    std::vector<std::string> grid_dates;
+    double level = 100.0;
+    for (int day = 1; day <= 30; ++day) {
+        const Timestamp t = date_at(2026, 1, day);
+        const std::time_t tt = std::chrono::system_clock::to_time_t(t);
+        std::tm tm{};
+        gmtime_r(&tt, &tm);
+        if (tm.tm_wday == 6) continue;  // a Saturday is never a grid date
+        level *= (day % 3 == 0) ? 0.995 : 1.004;
+        curve.emplace_back(t, level);
+        grid_dates.push_back(core::format_utc_date(t));
+    }
+    const double friday_level = level;
+    auto saturday_end = curve;
+    saturday_end.emplace_back(date_at(2026, 1, 31), friday_level * 0.9);  // a large Saturday move
+    const auto grid = BacktestStatisticsGrid::of_dates(kFuturesK, grid_dates);
+
+    const StatisticsSeries on_friday = calc_.statistics_series(curve, grid);
+    const StatisticsSeries on_saturday = calc_.statistics_series(saturday_end, grid);
+    EXPECT_EQ(on_saturday.dates, on_friday.dates);
+    EXPECT_EQ(on_saturday.levels, on_friday.levels);
+    EXPECT_EQ(on_saturday.dates.back(), "2026-01-30");
+
+    const auto months_friday = complete_month_returns(on_friday, "2025-12-31", "2026-01-30");
+    const auto months_saturday = complete_month_returns(on_saturday, "2025-12-31", "2026-01-31");
+    EXPECT_TRUE(months_friday.empty()) << "January is partial on its 30th";
+    ASSERT_EQ(months_saturday.size(), 1u);
+    EXPECT_EQ(months_saturday[0].month, "2026-01");
+    EXPECT_NEAR(months_saturday[0].return_pct, (friday_level / 100.0 - 1.0) * 100.0, 1e-9)
+        << "the month's return ends on the Friday level: the Saturday row is in no grid return";
 }
 
 // ===== NaN / degeneracy guards (batch-2 metrics hardening) =====
