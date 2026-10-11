@@ -21,15 +21,21 @@ namespace trade_ngin {
  *   cell of trading.live_results is then NULL (T-8D R12).
  * - total_annualized_return has no value while the series is under one year of sessions
  *   (n < K); its cell is then NULL (T-8D R40).
+ * - volatility has no value under two returns; sharpe_ratio under two returns or with a
+ *   volatility of 0; downside_deviation and sortino_ratio while no downside deviation can be
+ *   taken (no return under 0, or under two returns). Their cells are then NULL (T-8D R12, the
+ *   part that waited for the readers' optional reads). A default-constructed HistoricalMetrics
+ *   carries zeros: the no-value marks are set by calculate().
  * - PnL aggregates (gross_profit, gross_loss) are in portfolio currency.
  */
 struct HistoricalMetrics {
     // Risk-adjusted performance
-    double sharpe_ratio = 0.0;   // mean(r) / sample sd(r) x sqrt(K), rf 0, on the grid returns
-    double sortino_ratio = 0.0;  // mean(r) x K / downside_deviation
+    double sharpe_ratio = 0.0;   // mean(r) / sample sd(r) x sqrt(K), rf 0, on the grid returns;
+                                 // kNoRatio with no volatility
+    double sortino_ratio = 0.0;  // mean(r) x K / downside_deviation; kNoRatio with no downside
     double max_drawdown = 0.0;        // % peak-to-trough over the grid levels, peak seeded at the base
-    double volatility = 0.0;          // annualized, % units
-    double downside_deviation = 0.0;  // annualized, % units
+    double volatility = 0.0;          // annualized, % units; kNoRatio under two returns
+    double downside_deviation = 0.0;  // annualized, % units; kNoRatio with no downside
 
     // Day-level win/loss statistics
     int winning_days = 0;  // grid returns above zero
@@ -187,16 +193,19 @@ public:
      * @param sessions_per_year The sessions a year K of the grid the series is taken on; every
      *        annualised figure of the series uses this one K.
      * @param total_trades_executions Total number of executions since inception.
-     * @return HistoricalMetrics structure with all fields populated; zeros for an empty series.
-     *         profit_factor has no value (kNoRatio) for an empty series and for one with no
-     *         losing session.
+     * @return HistoricalMetrics structure with all fields populated; for an empty series the
+     *         counts and the levels are zeros. A statistic that cannot be taken has no value
+     *         (kNoRatio): profit_factor with no losing session, volatility under two returns,
+     *         sharpe_ratio with no volatility, downside_deviation and sortino_ratio with no
+     *         downside, total_annualized_return under a year of sessions.
      */
     HistoricalMetrics calculate(const StatisticsSeries& grid, double sessions_per_year,
                                 int total_trades_executions) const;
 
     // The two annualised deviations of a return series, in the unit of the returns handed in
     // (percent here, fractions in the backtest calculator, which calls the same two): 0 under
-    // two returns or without a positive sessions_per_year.
+    // two returns or without a positive sessions_per_year. calculate() gives the live statistic
+    // no value where these return a 0 that is not a measurement.
     // Sample standard deviation (n - 1) of the returns x sqrt(sessions_per_year)
     static double calculate_annualized_volatility(const std::vector<double>& returns_pct,
                                                   double sessions_per_year);
@@ -240,8 +249,10 @@ std::unordered_map<std::string, double> historical_metrics_double_columns(
 
 /**
  * @brief The columns of the block that have no value on some rows and are then stored NULL:
- *        profit_factor, with no losing session (T-8D R12), and total_annualized_return, under
- *        one year of sessions (T-8D R40), which the runner writes beside the block. The day-T
+ *        profit_factor, with no losing session, volatility, under two returns, sharpe_ratio,
+ *        with no volatility, sortino_ratio and downside_deviation, with no downside (T-8D R12),
+ *        and total_annualized_return, under one year of sessions (T-8D R40), which the runner
+ *        writes beside the block. The day-T
  *        INSERT leaves such a column out (historical_metrics_double_columns does not name it,
  *        and drop_statistics_without_value takes it out of the row's metrics); the Day T-1
  *        UPDATE must overwrite what the row holds, so historical_metrics_update_columns carries

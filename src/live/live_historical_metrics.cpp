@@ -4,7 +4,9 @@
 #include <chrono>
 #include <cmath>
 #include <ctime>
+#include <initializer_list>
 #include <numeric>
+#include <utility>
 
 #include "trade_ngin/core/time_utils.hpp"
 
@@ -248,8 +250,15 @@ HistoricalMetrics LiveHistoricalMetricsCalculator::calculate(const StatisticsSer
     // The profit factor divides by the losing sessions' loss: with none it has no value (T-8D
     // R12). It was 999.99 with a profit and no loss, and 0 with neither.
     metrics.profit_factor = kNoRatio;
+    // The four statistics below need returns to exist: a volatility needs two, a Sharpe ratio a
+    // volatility above 0, a downside deviation and a Sortino ratio a downside. Without them
+    // each has no value (T-8D R12); each read 0.
+    metrics.volatility = kNoRatio;
+    metrics.sharpe_ratio = kNoRatio;
+    metrics.downside_deviation = kNoRatio;
+    metrics.sortino_ratio = kNoRatio;
 
-    // An empty series: everything stays at 0
+    // An empty series: the counts and the levels stay at 0
     if (grid.returns_pct.empty()) {
         return metrics;
     }
@@ -257,15 +266,18 @@ HistoricalMetrics LiveHistoricalMetricsCalculator::calculate(const StatisticsSer
     // Volatility, downside deviation, Sharpe and Sortino on the grid returns (% units), every
     // one annualised with the grid's own sessions a year: sample sd x sqrt(K); mean / sd x
     // sqrt(K), rf 0; sqrt(sum of min(r, 0)^2 over every return / n) x sqrt(K); mean x K over it.
-    metrics.volatility = calculate_annualized_volatility(grid.returns_pct, sessions_per_year);
-    metrics.downside_deviation =
+    if (grid.returns_pct.size() >= 2) {
+        metrics.volatility = calculate_annualized_volatility(grid.returns_pct, sessions_per_year);
+    }
+    const double downside_deviation =
         calculate_annualized_downside_deviation(grid.returns_pct, sessions_per_year, 0.0);
     const double grid_mean = calculate_mean(grid.returns_pct);
     if (metrics.volatility > 0.0) {
         metrics.sharpe_ratio = grid_mean * sessions_per_year / metrics.volatility;
     }
-    if (metrics.downside_deviation > 0.0) {
-        metrics.sortino_ratio = grid_mean * sessions_per_year / metrics.downside_deviation;
+    if (downside_deviation > 0.0) {
+        metrics.downside_deviation = downside_deviation;
+        metrics.sortino_ratio = grid_mean * sessions_per_year / downside_deviation;
     }
 
     // Max drawdown over every grid level from the book's start, the peak seeded at the base
@@ -338,16 +350,18 @@ std::unordered_map<std::string, double> historical_metrics_double_columns(
         {"worst_day", m.worst_day},
         {"gross_profit", m.gross_profit},
         {"gross_loss", m.gross_loss},
+        {"profit_factor", m.profit_factor},
     };
-    // Named only when it has a value: without one the INSERT leaves the cell NULL.
-    if (has_value(m.profit_factor)) {
-        columns["profit_factor"] = m.profit_factor;
-    }
+    // An optional column is named only when it has a value: without one the INSERT leaves the
+    // cell NULL.
+    drop_statistics_without_value(columns);
     return columns;
 }
 
 const std::vector<std::string>& historical_metrics_optional_columns() {
-    static const std::vector<std::string> columns = {"profit_factor", "total_annualized_return"};
+    static const std::vector<std::string> columns = {
+        "profit_factor", "volatility",         "sharpe_ratio",
+        "sortino_ratio", "downside_deviation", "total_annualized_return"};
     return columns;
 }
 
@@ -385,7 +399,15 @@ std::unordered_map<std::string, double> historical_metrics_update_columns(
     const HistoricalMetrics& m) {
     auto columns = historical_metrics_double_columns(m);
     // The UPDATE overwrites the row: an optional column without a value travels as kNoRatio.
-    columns["profit_factor"] = has_value(m.profit_factor) ? m.profit_factor : kNoRatio;
+    const std::initializer_list<std::pair<const char*, double>> optional = {
+        {"profit_factor", m.profit_factor},
+        {"volatility", m.volatility},
+        {"sharpe_ratio", m.sharpe_ratio},
+        {"sortino_ratio", m.sortino_ratio},
+        {"downside_deviation", m.downside_deviation}};
+    for (const auto& [column, value] : optional) {
+        columns[column] = has_value(value) ? value : kNoRatio;
+    }
     for (const auto& [column, value] : historical_metrics_int_columns(m)) {
         columns[column] = static_cast<double>(value);
     }

@@ -299,8 +299,8 @@ Result<void> LiveResultsManager::update_live_results(
          " fields");
 
     // A statistic of the since-inception block that has no value (profit_factor with no losing
-    // session, total_annualized_return under a year of sessions) is assigned NULL, as a cell
-    // without a value (T-8D R12, R40).
+    // session, total_annualized_return under a year of sessions, volatility under two returns,
+    // a ratio with no denominator) is assigned NULL, as a cell without a value (T-8D R12, R40).
     auto number_updates = updates;
     auto all_cells = cells;
     null_cells_of_statistics_without_value(number_updates, all_cells);

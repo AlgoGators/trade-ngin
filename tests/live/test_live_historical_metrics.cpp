@@ -181,14 +181,20 @@ TEST_F(LiveHistoricalMetricsTest, MaxDrawdownPeakStartsAtTheSeedAndNotAtTheFirst
 
 // ===== calculate (full integration) =====
 
-TEST_F(LiveHistoricalMetricsTest, CalculateEmptyReturnsZeroedMetricsExceptCounts) {
+// An empty series: the counts are 0; the statistics that need a return to exist have no value
+// (T-8D R12, R40), where they read 0.
+TEST_F(LiveHistoricalMetricsTest, CalculateEmptyReturnsCountsOfZeroAndNoValueForTheRatios) {
     LiveHistoricalMetricsCalculator c;
     auto m = c.calculate(flat_grid(0), 252.0, 5);
     EXPECT_EQ(m.total_days, 0);
     EXPECT_EQ(m.total_trades, 5);
-    EXPECT_DOUBLE_EQ(m.sharpe_ratio, 0.0);
-    EXPECT_DOUBLE_EQ(m.sortino_ratio, 0.0);
+    EXPECT_TRUE(std::isnan(m.volatility));
+    EXPECT_TRUE(std::isnan(m.sharpe_ratio));
+    EXPECT_TRUE(std::isnan(m.sortino_ratio));
+    EXPECT_TRUE(std::isnan(m.downside_deviation));
+    EXPECT_TRUE(std::isnan(m.total_annualized_return));
     EXPECT_DOUBLE_EQ(m.win_rate, 0.0);
+    EXPECT_DOUBLE_EQ(m.max_drawdown, 0.0);
 }
 
 TEST_F(LiveHistoricalMetricsTest, CalculatePopulatesAllAggregateStats) {
@@ -227,10 +233,34 @@ TEST_F(LiveHistoricalMetricsTest, CalculateProfitFactorHasNoValueWhenNoLosses) {
     EXPECT_TRUE(std::isnan(m.profit_factor));
 }
 
-TEST_F(LiveHistoricalMetricsTest, CalculateZeroVolatilityKeepsRatiosAtZero) {
+// T-8D R12: three flat sessions have a volatility, 0, and no ratio (they read 0).
+TEST_F(LiveHistoricalMetricsTest, CalculateZeroVolatilityGivesNoRatio) {
     LiveHistoricalMetricsCalculator c;
     auto m = c.calculate(flat_grid(3), 252.0, 0);
     EXPECT_DOUBLE_EQ(m.volatility, 0.0);
-    EXPECT_DOUBLE_EQ(m.sharpe_ratio, 0.0);
-    EXPECT_DOUBLE_EQ(m.sortino_ratio, 0.0);
+    EXPECT_TRUE(std::isnan(m.sharpe_ratio));
+    EXPECT_TRUE(std::isnan(m.sortino_ratio));
+    EXPECT_TRUE(std::isnan(m.downside_deviation));
+}
+
+// One losing return: there is a downside return and the calculator computes no deviation under
+// two returns, so the deviation and the Sortino ratio have no value.
+TEST_F(LiveHistoricalMetricsTest, CalculateOneLosingReturnGivesNoDownsideDeviation) {
+    LiveHistoricalMetricsCalculator c;
+    auto m = c.calculate(grid_of_returns({-1.0}), 252.0, 0);
+    EXPECT_EQ(m.losing_days, 1);
+    EXPECT_TRUE(std::isnan(m.volatility));
+    EXPECT_TRUE(std::isnan(m.downside_deviation));
+    EXPECT_TRUE(std::isnan(m.sortino_ratio));
+    EXPECT_TRUE(std::isnan(m.sharpe_ratio));
+}
+
+// No return under 0 ({+1 %, +2 %}): a volatility and a Sharpe ratio, no downside.
+TEST_F(LiveHistoricalMetricsTest, CalculateNoDownsideReturnGivesNoSortinoAndNoDeviation) {
+    LiveHistoricalMetricsCalculator c;
+    auto m = c.calculate(grid_of_returns({1.0, 2.0}), 252.0, 0);
+    EXPECT_NEAR(m.volatility, std::sqrt(0.5) * std::sqrt(252.0), 1e-9);
+    EXPECT_NEAR(m.sharpe_ratio, 1.5 * 252.0 / (std::sqrt(0.5) * std::sqrt(252.0)), 1e-9);
+    EXPECT_TRUE(std::isnan(m.downside_deviation));
+    EXPECT_TRUE(std::isnan(m.sortino_ratio));
 }

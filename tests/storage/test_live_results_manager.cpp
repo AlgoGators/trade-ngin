@@ -1,4 +1,5 @@
 #include <gtest/gtest.h>
+#include <algorithm>
 #include <chrono>
 #include <cmath>
 #include <limits>
@@ -277,6 +278,93 @@ TEST_F(LiveResultsManagerTest, AnAnnualisedReturnWithNoValueIsNullOnBothWrites) 
                     .is_ok());
     EXPECT_DOUBLE_EQ(db_->last_update_values.at("total_annualized_return"), 9.96833);
     EXPECT_TRUE(db_->last_update_cells.empty());
+}
+
+// T-8D R40 and the part of R12 that waited for AlgoLens Row 16, through the manager as the
+// runners drive it: the calculator's statistics of a three-session book (a Monday gain, a flat
+// Tuesday, a Wednesday loss) and of a one-session book, written as the day's row and as the Day
+// T-1 refresh. The runner puts total_annualized_return into both writes itself.
+//   | book             | n | INSERT leaves out                                              |
+//   | one session      | 1 | total_annualized_return, volatility, sharpe_ratio,             |
+//   |                  |   | sortino_ratio, downside_deviation, profit_factor               |
+//   | three sessions   | 3 | total_annualized_return (3 < 311.0574)                         |
+TEST_F(LiveResultsManagerTest, AStatisticWithNoValueIsNullOnBothWritesOfTheBlock) {
+    const std::vector<std::string> grid = {"2026-04-19", "2026-04-20", "2026-04-21",
+                                           "2026-04-22"};
+    const std::vector<DatedLevel> stored = {
+        {"2026-04-19", 500000.0}, {"2026-04-20", 501000.0}, {"2026-04-22", 499000.0}};
+    LiveHistoricalMetricsCalculator calc;
+    const auto write_day = [&](const HistoricalMetrics& statistics) {
+        std::unordered_map<std::string, double> double_metrics = {
+            {"daily_pnl", 1000.0},
+            {"total_annualized_return", statistics.total_annualized_return}};
+        for (const auto& [column, value] : historical_metrics_double_columns(statistics)) {
+            double_metrics[column] = value;
+        }
+        mgr_->set_metrics(double_metrics, historical_metrics_int_columns(statistics));
+        ASSERT_TRUE(mgr_->save_live_results(date_at(2026, 4, 23)).is_ok());
+    };
+    const auto refresh_day_before = [&](const HistoricalMetrics& statistics) {
+        auto metric_updates = historical_metrics_update_columns(statistics);
+        metric_updates["total_annualized_return"] = statistics.total_annualized_return;
+        size_t rows = 0;
+        ASSERT_TRUE(
+            mgr_->update_live_results(date_at(2026, 4, 22), metric_updates, &rows).is_ok());
+    };
+    const std::vector<std::string> six = {"downside_deviation", "profit_factor", "sharpe_ratio",
+                                          "sortino_ratio", "total_annualized_return",
+                                          "volatility"};
+
+    // One session: none of the six has a value.
+    const auto one = calc.calculate(
+        build_statistics_series(stored, grid, "2026-04-19", 500000.0, "2026-04-20"), 311.0574, 0);
+    ASSERT_EQ(one.total_days, 1);
+    write_day(one);
+    for (const auto& column : six) {
+        EXPECT_EQ(db_->last_live_metrics.count(column), 0u) << column;
+    }
+    EXPECT_EQ(db_->last_live_metrics.count("gross_profit"), 1u);
+    EXPECT_DOUBLE_EQ(db_->last_live_metrics.at("daily_pnl"), 1000.0);
+    refresh_day_before(one);
+    std::vector<std::string> nulled;
+    for (const auto& cell : db_->last_update_cells) {
+        EXPECT_FALSE(cell.value.has_value()) << cell.column;
+        nulled.push_back(cell.column);
+    }
+    std::sort(nulled.begin(), nulled.end());
+    EXPECT_EQ(nulled, six);
+    for (const auto& column : six) {
+        EXPECT_EQ(db_->last_update_values.count(column), 0u) << column;
+    }
+    EXPECT_DOUBLE_EQ(db_->last_update_values.at("total_days"), 1.0);
+
+    // Three sessions: five numbers, and no annualised return under a year of sessions.
+    const auto three = calc.calculate(
+        build_statistics_series(stored, grid, "2026-04-19", 500000.0, "2026-04-22"), 311.0574, 0);
+    ASSERT_EQ(three.total_days, 3);
+    write_day(three);
+    EXPECT_EQ(db_->last_live_metrics.count("total_annualized_return"), 0u);
+    EXPECT_DOUBLE_EQ(db_->last_live_metrics.at("volatility"), three.volatility);
+    EXPECT_DOUBLE_EQ(db_->last_live_metrics.at("sharpe_ratio"), three.sharpe_ratio);
+    EXPECT_DOUBLE_EQ(db_->last_live_metrics.at("sortino_ratio"), three.sortino_ratio);
+    EXPECT_DOUBLE_EQ(db_->last_live_metrics.at("downside_deviation"), three.downside_deviation);
+    EXPECT_DOUBLE_EQ(db_->last_live_metrics.at("profit_factor"), 0.5);
+    refresh_day_before(three);
+    ASSERT_EQ(db_->last_update_cells.size(), 1u);
+    EXPECT_EQ(db_->last_update_cells[0].column, "total_annualized_return");
+    EXPECT_FALSE(db_->last_update_cells[0].value.has_value());
+    EXPECT_EQ(db_->last_update_values.count("total_annualized_return"), 0u);
+    EXPECT_DOUBLE_EQ(db_->last_update_values.at("volatility"), three.volatility);
+
+    // A year of sessions: the annualised return is a number on both writes.
+    HistoricalMetrics year = three;
+    year.total_days = 312;
+    year.total_annualized_return = 9.96833;
+    write_day(year);
+    EXPECT_DOUBLE_EQ(db_->last_live_metrics.at("total_annualized_return"), 9.96833);
+    refresh_day_before(year);
+    EXPECT_TRUE(db_->last_update_cells.empty());
+    EXPECT_DOUBLE_EQ(db_->last_update_values.at("total_annualized_return"), 9.96833);
 }
 
 TEST_F(LiveResultsManagerTest, UpdateLiveResultsInvokesUpdate) {

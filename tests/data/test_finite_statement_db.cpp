@@ -22,11 +22,14 @@
 #include <memory>
 #include <string>
 #include <unordered_map>
+#include <vector>
 
 #include <nlohmann/json.hpp>
 
 #include "trade_ngin/core/types.hpp"
 #include "trade_ngin/data/postgres_database.hpp"
+#include "trade_ngin/live/live_historical_metrics.hpp"
+#include "trade_ngin/storage/live_results_manager.hpp"
 
 using namespace trade_ngin;
 
@@ -180,6 +183,67 @@ TEST_F(FiniteStatementDbTest, ALiveValueThatIsNotFiniteIsNullOnTheInsertAndOnThe
     EXPECT_EQ(rows, 1u);
     EXPECT_EQ(cell("trading.live_results", "sortino_ratio", where), "NULL");
     EXPECT_EQ(cell("trading.live_results", "profit_factor", where), "2.5");
+}
+
+// T-8D R40 and the part of R12 that waited for AlgoLens Row 16, against the real table: the
+// calculator's statistics of a one-session book, written through the manager as the runners
+// write them (the block's helpers, plus total_annualized_return added by the runner).
+//   | write                                   | the six cells                              |
+//   | the day's INSERT                        | NULL (the row is stored, total_days 1)     |
+//   | numbers written over them               | 6.4, 1.5, 2.5, 4.25, 0.75, 9.9683          |
+//   | the Day T-1 UPDATE of the same book     | NULL again; gross_profit and total_days kept |
+TEST_F(FiniteStatementDbTest, TheStatisticsOfAOneSessionBookAreNullOnTheInsertAndOnTheUpdate) {
+    const Timestamp day = at_utc(2026, 4, 20, 5);
+    const std::vector<DatedLevel> stored = {{"2026-04-19", 500000.0}, {"2026-04-20", 501000.0}};
+    const HistoricalMetrics one = LiveHistoricalMetricsCalculator().calculate(
+        build_statistics_series(stored, {"2026-04-19", "2026-04-20"}, "2026-04-19", 500000.0,
+                                "2026-04-20"),
+        311.0574, 0);
+    ASSERT_EQ(one.total_days, 1);
+
+    LiveResultsManager manager(db_, true, kStrategy, kPortfolio);
+    std::unordered_map<std::string, double> double_metrics = {
+        {"daily_pnl", 1000.0}, {"total_annualized_return", one.total_annualized_return}};
+    for (const auto& [column, value] : historical_metrics_double_columns(one)) {
+        double_metrics[column] = value;
+    }
+    manager.set_metrics(double_metrics, historical_metrics_int_columns(one));
+    auto stored_row = manager.save_live_results(day);
+    ASSERT_TRUE(stored_row.is_ok()) << (stored_row.is_error() ? stored_row.error()->what() : "");
+
+    const std::string where = "strategy_id = '" + std::string(kStrategy) + "'";
+    const std::vector<std::string> six = {"volatility",         "sharpe_ratio",
+                                          "sortino_ratio",      "downside_deviation",
+                                          "profit_factor",      "total_annualized_return"};
+    for (const auto& column : six) {
+        EXPECT_EQ(cell("trading.live_results", column, where), "NULL") << column;
+    }
+    EXPECT_EQ(cell("trading.live_results", "total_days", where), "1");
+    EXPECT_EQ(cell("trading.live_results", "gross_profit", where), "1000");
+
+    size_t rows = 0;
+    auto numbers = db_->update_live_results(
+        kStrategy, day,
+        {{"volatility", 6.4},          {"sharpe_ratio", 1.5},  {"sortino_ratio", 2.5},
+         {"downside_deviation", 4.25}, {"profit_factor", 0.75},
+         {"total_annualized_return", 9.9683}},
+        kPortfolio, "trading.live_results", &rows);
+    ASSERT_TRUE(numbers.is_ok()) << (numbers.is_error() ? numbers.error()->what() : "");
+    EXPECT_EQ(rows, 1u);
+    EXPECT_EQ(cell("trading.live_results", "volatility", where), "6.4000");
+    EXPECT_EQ(cell("trading.live_results", "total_annualized_return", where), "9.9683");
+    EXPECT_EQ(cell("trading.live_results", "sharpe_ratio", where), "1.5");
+
+    auto metric_updates = historical_metrics_update_columns(one);
+    metric_updates["total_annualized_return"] = one.total_annualized_return;
+    auto refreshed = manager.update_live_results(day, metric_updates, &rows);
+    ASSERT_TRUE(refreshed.is_ok()) << (refreshed.is_error() ? refreshed.error()->what() : "");
+    EXPECT_EQ(rows, 1u);
+    for (const auto& column : six) {
+        EXPECT_EQ(cell("trading.live_results", column, where), "NULL") << column;
+    }
+    EXPECT_EQ(cell("trading.live_results", "total_days", where), "1");
+    EXPECT_EQ(cell("trading.live_results", "gross_profit", where), "1000");
 }
 
 // D-16, backtest.results: every metric cell is the double handed in, not its six decimals.

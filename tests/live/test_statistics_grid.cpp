@@ -8,6 +8,7 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <cmath>
 #include <limits>
 #include <map>
@@ -62,7 +63,6 @@ StatisticsSeries series_of(int n) {
     }
     return s;
 }
-
 
 }  // namespace
 
@@ -362,13 +362,66 @@ TEST(StatisticsGrid, AnEquitySeriesIsAnnualisedWithTwoHundredFiftyTwo) {
     EXPECT_NEAR(eq.sortino_ratio / fut.sortino_ratio, std::sqrt(252.0 / 311.0574), 1e-12);
 }
 
+// T-8D R12, the part that waited for AlgoLens Row 16: a statistic that cannot be computed has no
+// value where it read 0.
+//   | series                      | volatility | sharpe   | downside_deviation | sortino  |
+//   | empty (the start row only)  | no value   | no value | no value           | no value |
+//   | one return, +0.2 %          | no value   | no value | no value           | no value |
+//   | two returns, +0.2 %, +0.2 % | a number   | a number | no value           | no value |
+//   | through Wed: +0.2, 0, -0.4  | a number   | a number | a number           | a number |
 TEST(StatisticsGrid, FewerThanTwoGridReturnsGiveNoVolatilityAndNoRatio) {
     LiveHistoricalMetricsCalculator calc;
+    const auto none = calc.calculate(week_through("2026-04-19"), kFuturesK, 0);
+    EXPECT_EQ(none.total_days, 0);
+    EXPECT_TRUE(std::isnan(none.volatility));
+    EXPECT_TRUE(std::isnan(none.sharpe_ratio));
+    EXPECT_TRUE(std::isnan(none.downside_deviation));
+    EXPECT_TRUE(std::isnan(none.sortino_ratio));
+    EXPECT_DOUBLE_EQ(none.max_drawdown, 0.0);
+    EXPECT_DOUBLE_EQ(none.win_rate, 0.0);
+
     const auto one = calc.calculate(week_through("2026-04-20"), kFuturesK, 0);
-    EXPECT_DOUBLE_EQ(one.volatility, 0.0);
-    EXPECT_DOUBLE_EQ(one.sharpe_ratio, 0.0);
-    EXPECT_DOUBLE_EQ(one.downside_deviation, 0.0);
-    EXPECT_DOUBLE_EQ(one.sortino_ratio, 0.0);
+    EXPECT_EQ(one.total_days, 1);
+    EXPECT_TRUE(std::isnan(one.volatility));
+    EXPECT_TRUE(std::isnan(one.sharpe_ratio));
+    EXPECT_TRUE(std::isnan(one.downside_deviation));
+    EXPECT_TRUE(std::isnan(one.sortino_ratio));
+    EXPECT_NEAR(one.best_day, 0.2, 1e-12);
+
+    // Two returns: the first series with a volatility. No return under 0: no downside.
+    const std::vector<DatedLevel> rising = {
+        {"2026-04-19", 500000.0}, {"2026-04-20", 501000.0}, {"2026-04-21", 502002.0}};
+    const auto two = calc.calculate(
+        build_statistics_series(rising, kGrid, "2026-04-19", 500000.0, "2026-04-21"), kFuturesK, 0);
+    EXPECT_EQ(two.total_days, 2);
+    EXPECT_TRUE(has_value(two.volatility));
+    EXPECT_TRUE(has_value(two.sharpe_ratio));
+    EXPECT_GT(two.sharpe_ratio, 0.0);
+    EXPECT_TRUE(std::isnan(two.downside_deviation));
+    EXPECT_TRUE(std::isnan(two.sortino_ratio));
+
+    // Through Wednesday: a losing session, so all four are numbers.
+    const auto three = calc.calculate(week_through("2026-04-22"), kFuturesK, 0);
+    EXPECT_EQ(three.total_days, 3);
+    EXPECT_TRUE(has_value(three.volatility));
+    EXPECT_TRUE(has_value(three.sharpe_ratio));
+    EXPECT_GT(three.downside_deviation, 0.0);
+    EXPECT_TRUE(has_value(three.sortino_ratio));
+}
+
+// A series with returns and no volatility: the volatility is a measured 0, the Sharpe ratio
+// has no denominator.
+TEST(StatisticsGrid, AFlatSeriesHasAVolatilityOfZeroAndNoRatio) {
+    LiveHistoricalMetricsCalculator calc;
+    const std::vector<DatedLevel> flat = {{"2026-04-19", 500000.0}, {"2026-04-20", 500000.0},
+                                          {"2026-04-21", 500000.0}, {"2026-04-22", 500000.0}};
+    const auto m = calc.calculate(
+        build_statistics_series(flat, kGrid, "2026-04-19", 500000.0, "2026-04-22"), kFuturesK, 0);
+    EXPECT_EQ(m.total_days, 3);
+    EXPECT_DOUBLE_EQ(m.volatility, 0.0);
+    EXPECT_TRUE(std::isnan(m.sharpe_ratio));
+    EXPECT_TRUE(std::isnan(m.downside_deviation));
+    EXPECT_TRUE(std::isnan(m.sortino_ratio));
 }
 
 // ===== (5c) the drawdown =====
@@ -539,57 +592,97 @@ TEST(StatisticsGrid, AnEmptySeriesGivesZerosAndNoLossesGiveNoProfitFactor) {
     EXPECT_DOUBLE_EQ(wednesday.profit_factor, 0.5);
 }
 
-// The two writes of the block. The day's INSERT names profit_factor only when it has a value
-// (the cell is then NULL); the Day T-1 UPDATE must overwrite the row, so it carries the column
-// without a value and the writer assigns NULL.
-TEST(StatisticsGrid, AProfitFactorWithNoValueIsLeftOutOfTheInsertAndCarriedToTheUpdate) {
+// The two writes of the block. The day's INSERT names an optional statistic only when it has a
+// value (the cell is then NULL); the Day T-1 UPDATE must overwrite the row, so it carries the
+// column without a value and the writer assigns NULL.
+//   | through        | volatility | sharpe | sortino | downside | profit_factor | INSERT names |
+//   | 04-20 Mon (1)  | none       | none   | none    | none     | none          | 8 of 13      |
+//   | 04-22 Wed (3)  | number     | number | number  | number   | 0.5           | 13 of 13     |
+TEST(StatisticsGrid, AStatisticWithNoValueIsLeftOutOfTheInsertAndCarriedToTheUpdate) {
     LiveHistoricalMetricsCalculator calc;
     const auto monday = calc.calculate(week_through("2026-04-20"), kFuturesK, 0);
     const auto insert = historical_metrics_double_columns(monday);
-    EXPECT_EQ(insert.count("profit_factor"), 0u);
-    EXPECT_EQ(insert.size(), 12u);
+    for (const char* column :
+         {"volatility", "sharpe_ratio", "sortino_ratio", "downside_deviation", "profit_factor"}) {
+        EXPECT_EQ(insert.count(column), 0u) << column;
+    }
+    EXPECT_EQ(insert.size(), 8u);
     EXPECT_EQ(insert.count("gross_profit"), 1u);
     const auto update = historical_metrics_update_columns(monday);
-    ASSERT_EQ(update.count("profit_factor"), 1u);
-    EXPECT_TRUE(std::isnan(update.at("profit_factor")));
+    for (const char* column :
+         {"volatility", "sharpe_ratio", "sortino_ratio", "downside_deviation", "profit_factor"}) {
+        ASSERT_EQ(update.count(column), 1u) << column;
+        EXPECT_TRUE(std::isnan(update.at(column))) << column;
+    }
     EXPECT_EQ(update.size(), 16u);
 
     const auto wednesday = calc.calculate(week_through("2026-04-22"), kFuturesK, 0);
     const auto insert_w = historical_metrics_double_columns(wednesday);
     ASSERT_EQ(insert_w.count("profit_factor"), 1u);
     EXPECT_DOUBLE_EQ(insert_w.at("profit_factor"), 0.5);
+    EXPECT_DOUBLE_EQ(insert_w.at("volatility"), wednesday.volatility);
+    EXPECT_DOUBLE_EQ(insert_w.at("sharpe_ratio"), wednesday.sharpe_ratio);
+    EXPECT_DOUBLE_EQ(insert_w.at("sortino_ratio"), wednesday.sortino_ratio);
+    EXPECT_DOUBLE_EQ(insert_w.at("downside_deviation"), wednesday.downside_deviation);
     EXPECT_EQ(insert_w.size(), 13u);
     EXPECT_DOUBLE_EQ(historical_metrics_update_columns(wednesday).at("profit_factor"), 0.5);
     EXPECT_EQ(historical_metrics_update_columns(wednesday).size(), 16u);
+
+    // Each statistic missing in turn: that column alone leaves the INSERT.
+    for (const char* missing :
+         {"volatility", "sharpe_ratio", "sortino_ratio", "downside_deviation", "profit_factor"}) {
+        HistoricalMetrics m = wednesday;
+        const std::string name = missing;
+        (name == "volatility"           ? m.volatility
+         : name == "sharpe_ratio"       ? m.sharpe_ratio
+         : name == "sortino_ratio"      ? m.sortino_ratio
+         : name == "downside_deviation" ? m.downside_deviation
+                                        : m.profit_factor) = kNoRatio;
+        const auto columns = historical_metrics_double_columns(m);
+        EXPECT_EQ(columns.count(name), 0u) << name;
+        EXPECT_EQ(columns.size(), 12u) << name;
+        EXPECT_TRUE(std::isnan(historical_metrics_update_columns(m).at(name))) << name;
+    }
 }
 
 // The split the writer of the Day T-1 UPDATE applies: an optional column without a value
-// becomes a cell without a value (assigned NULL); nothing else is touched.
+// becomes a cell without a value (assigned NULL); nothing else is touched. The annualised
+// return is one of them: the runner adds it to the block's update itself.
 TEST(StatisticsGrid, AnOptionalStatisticWithoutAValueBecomesANullCellOfTheUpdate) {
     const double nan = std::numeric_limits<double>::quiet_NaN();
-    std::unordered_map<std::string, double> updates = {{"profit_factor", nan},
-                                                       {"volatility", 12.5},
-                                                       {"sharpe_ratio", nan},
-                                                       {"total_annualized_return", nan}};
+    std::unordered_map<std::string, double> updates = {
+        {"profit_factor", nan},      {"volatility", nan},         {"sharpe_ratio", nan},
+        {"sortino_ratio", nan},      {"downside_deviation", nan}, {"total_annualized_return", nan},
+        {"max_drawdown", 12.5},      {"win_rate", nan}};
     std::vector<LiveResultsCell> cells = {{"worst_day_date", "date", std::string("2026-04-22")}};
     null_cells_of_statistics_without_value(updates, cells);
-    EXPECT_EQ(updates.count("profit_factor"), 0u);
-    EXPECT_EQ(updates.count("total_annualized_return"), 0u);
-    EXPECT_DOUBLE_EQ(updates.at("volatility"), 12.5);
-    EXPECT_EQ(updates.count("sharpe_ratio"), 1u)
+    EXPECT_DOUBLE_EQ(updates.at("max_drawdown"), 12.5);
+    EXPECT_EQ(updates.count("win_rate"), 1u)
         << "not an optional column: a value that is not finite there is the storage guard's";
-    ASSERT_EQ(cells.size(), 3u);
-    EXPECT_EQ(cells[1].column, "profit_factor");
-    EXPECT_FALSE(cells[1].value.has_value());
-    EXPECT_EQ(cells[2].column, "total_annualized_return");
-    EXPECT_FALSE(cells[2].value.has_value());
+    EXPECT_EQ(updates.size(), 2u);
+    ASSERT_EQ(cells.size(), 7u);
+    std::vector<std::string> nulled;
+    for (size_t i = 1; i < cells.size(); ++i) {
+        EXPECT_FALSE(cells[i].value.has_value()) << cells[i].column;
+        nulled.push_back(cells[i].column);
+    }
+    std::sort(nulled.begin(), nulled.end());
+    EXPECT_EQ(nulled, (std::vector<std::string>{"downside_deviation", "profit_factor",
+                                                "sharpe_ratio", "sortino_ratio",
+                                                "total_annualized_return", "volatility"}));
 
     // With a value the update is left as it is.
-    std::unordered_map<std::string, double> valued = {{"profit_factor", 1.75}};
+    std::unordered_map<std::string, double> valued = {
+        {"profit_factor", 1.75}, {"total_annualized_return", 9.97}, {"volatility", 6.4}};
     std::vector<LiveResultsCell> none;
     null_cells_of_statistics_without_value(valued, none);
     EXPECT_DOUBLE_EQ(valued.at("profit_factor"), 1.75);
+    EXPECT_DOUBLE_EQ(valued.at("total_annualized_return"), 9.97);
+    EXPECT_DOUBLE_EQ(valued.at("volatility"), 6.4);
     EXPECT_TRUE(none.empty());
-    EXPECT_EQ(historical_metrics_optional_columns(),
-              (std::vector<std::string>{"profit_factor", "total_annualized_return"}));
+    auto optional = historical_metrics_optional_columns();
+    std::sort(optional.begin(), optional.end());
+    EXPECT_EQ(optional, (std::vector<std::string>{"downside_deviation", "profit_factor",
+                                                  "sharpe_ratio", "sortino_ratio",
+                                                  "total_annualized_return", "volatility"}));
 }
