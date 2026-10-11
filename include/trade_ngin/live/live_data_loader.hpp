@@ -84,18 +84,6 @@ struct LiveResultsRow {
 };
 
 /**
- * @brief Structure for margin-related metrics
- */
-struct MarginMetrics {
-    double gross_leverage = 0.0;
-    double equity_to_margin_ratio = 0.0;
-    double gross_notional = 0.0;
-    double margin_posted = 0.0;
-    double margin_cushion = 0.0;
-    bool valid = false;  // Indicates if data was found
-};
-
-/**
  * @brief Structure for previous day's data
  */
 struct PreviousDayData {
@@ -142,27 +130,6 @@ public:
 
     ~LiveDataLoader() = default;
 
-    // ========== Portfolio Value Methods ==========
-
-    /**
-     * @brief Load the previous trading day's portfolio value
-     * @param strategy_id Strategy identifier
-     * @param date Current date (will find previous trading day)
-     * @return Previous portfolio value or error
-     */
-    Result<double> load_previous_portfolio_value(const std::string& strategy_id,
-                                                 const std::string& portfolio_id,
-                                                 const Timestamp& date);
-
-    /**
-     * @brief Load portfolio value for a specific date
-     * @param strategy_id Strategy identifier
-     * @param date Target date
-     * @return Portfolio value or error
-     */
-    Result<double> load_portfolio_value(const std::string& strategy_id,
-                                        const std::string& portfolio_id, const Timestamp& date);
-
     // ========== Live Results Methods ==========
 
     /**
@@ -186,15 +153,6 @@ public:
                                                    const Timestamp& date);
 
     /**
-     * @brief Check if live results exist for a date
-     * @param strategy_id Strategy identifier
-     * @param date Target date
-     * @return true if results exist, false otherwise
-     */
-    Result<bool> has_live_results(const std::string& strategy_id, const std::string& portfolio_id,
-                                  const Timestamp& date);
-
-    /**
      * @brief Get count of live results rows for strategy
      * @param strategy_id Strategy identifier
      * @return Row count or error
@@ -203,18 +161,6 @@ public:
                                        const std::string& portfolio_id = "BASE_PORTFOLIO");
 
     // ========== Historical Series Methods (since inception, as-of date) ==========
-
-    /**
-     * @brief Load daily return history (percentage) from the book's start up to and
-     *        including a given date.
-     *
-     * Each value corresponds to the `daily_return` column from trading.live_results,
-     * ordered by date ascending. The book's start is the one load_sizing_pnl_history
-     * reads: a row dated before it enters no statistic.
-     */
-    Result<std::vector<double>> load_daily_returns_history(const std::string& strategy_id,
-                                                           const std::string& portfolio_id,
-                                                           const Timestamp& as_of_date);
 
     /// One stored day of a book's P&L history, for the sizing capital (LOOP_SPEC section 3.1).
     struct PnlHistoryRow {
@@ -238,33 +184,9 @@ public:
                                                                const Timestamp& before_date);
 
     /**
-     * @brief Load daily PnL history (dollars) from the book's start up to and including
-     *        a given date.
-     *
-     * Each value corresponds to the `daily_pnl` column from trading.live_results,
-     * ordered by date ascending, bounded below as load_daily_returns_history is.
-     */
-    Result<std::vector<double>> load_daily_pnl_history(const std::string& strategy_id,
-                                                       const std::string& portfolio_id,
-                                                       const Timestamp& as_of_date);
-
-    /**
-     * @brief Load equity curve history from the book's start up to and including a
-     *        given date.
-     *
-     * Each value corresponds to the `equity` column from trading.equity_curve,
-     * ordered by timestamp ascending, one value per UTC date: where a date is stored
-     * more than once its last row is the one returned. Bounded below as
-     * load_daily_returns_history is.
-     */
-    Result<std::vector<double>> load_equity_curve_history(const std::string& strategy_id,
-                                                          const std::string& portfolio_id,
-                                                          const Timestamp& as_of_date);
-
-    /**
      * @brief The book's start as "YYYY-MM-DD": the earliest live_start_date of
-     *        <schema>.strategy_trading_days_metadata for the key, the anchor the three history
-     *        loaders above are bounded by. Empty when the key has no row.
+     *        <schema>.strategy_trading_days_metadata for the key, the anchor the sizing history
+     *        above and the statistics levels below are bounded by. Empty when the key has no row.
      */
     Result<std::string> load_book_start(const std::string& strategy_id,
                                         const std::string& portfolio_id);
@@ -385,39 +307,6 @@ public:
      */
     Result<std::unordered_map<std::string, double>> load_commissions_by_symbol(
         const std::string& portfolio_id, const Timestamp& date);
-
-    /**
-     * @brief Load total daily transaction costs for a strategy
-     * @param strategy_id Strategy identifier
-     * @param date Target date
-     * @return Total transaction costs or error
-     */
-    Result<double> load_daily_transaction_costs(const std::string& strategy_id,
-                                                const std::string& portfolio_id,
-                                                const Timestamp& date);
-
-    // ========== Margin and Risk Methods ==========
-
-    /**
-     * @brief Load margin-related metrics
-     * @param strategy_id Strategy identifier
-     * @param date Target date
-     * @return MarginMetrics or error
-     */
-    Result<MarginMetrics> load_margin_metrics(const std::string& strategy_id,
-                                              const std::string& portfolio_id,
-                                              const Timestamp& date);
-
-    // ========== Email/Reporting Methods ==========
-
-    /**
-     * @brief Load daily metrics formatted for email
-     * @param strategy_id Strategy identifier
-     * @param date Target date
-     * @return Map of metric name to value
-     */
-    Result<std::unordered_map<std::string, double>> load_daily_metrics_for_email(
-        const std::string& strategy_id, const std::string& portfolio_id, const Timestamp& date);
 
     // ========== Carried-day Methods ==========
 

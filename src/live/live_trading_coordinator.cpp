@@ -64,56 +64,6 @@ Result<void> LiveTradingCoordinator::initialize() {
     }
 }
 
-Result<std::pair<double, TradingMetrics>> LiveTradingCoordinator::load_previous_day_data(
-    const Timestamp& date) const {
-    if (!is_initialized_) {
-        return make_error<std::pair<double, TradingMetrics>>(
-            ErrorCode::NOT_INITIALIZED, "Coordinator not initialized", "LiveTradingCoordinator");
-    }
-
-    try {
-        // Calculate previous date
-        auto previous_date = date - std::chrono::hours(24);
-
-        // Load previous day's results
-        auto results = data_loader_->load_live_results(config_.strategy_id, config_.portfolio_id,
-                                                       previous_date);
-        if (results.is_error()) {
-            // No previous data, return initial values
-            TradingMetrics empty_metrics;
-            empty_metrics.current_portfolio_value = config_.initial_capital;
-            return Result<std::pair<double, TradingMetrics>>(
-                std::make_pair(config_.initial_capital, empty_metrics));
-        }
-
-        // Convert to TradingMetrics
-        TradingMetrics metrics;
-        auto& row = results.value();
-
-        metrics.daily_pnl = row.daily_pnl;
-        metrics.total_pnl = row.total_pnl;
-        metrics.realized_pnl = row.daily_realized_pnl;
-        metrics.unrealized_pnl = row.daily_unrealized_pnl;
-        metrics.current_portfolio_value = row.current_portfolio_value;
-        metrics.gross_notional = row.gross_notional;
-        metrics.margin_posted = row.margin_posted;
-        metrics.daily_return = row.daily_return;
-        metrics.total_cumulative_return = row.total_cumulative_return;
-        metrics.total_annualized_return = row.total_annualized_return;
-        metrics.gross_leverage = row.gross_leverage;
-        metrics.equity_to_margin_ratio = row.equity_to_margin_ratio;
-        metrics.active_positions = row.active_positions;
-
-        return Result<std::pair<double, TradingMetrics>>(
-            std::make_pair(row.current_portfolio_value, metrics));
-
-    } catch (const std::exception& e) {
-        return make_error<std::pair<double, TradingMetrics>>(
-            ErrorCode::DATABASE_ERROR, std::string("Failed to load previous day data: ") + e.what(),
-            "LiveTradingCoordinator");
-    }
-}
-
 Result<void> LiveTradingCoordinator::store_results(const TradingMetrics& metrics,
                                                    const std::vector<Position>& positions,
                                                    const Timestamp& date) {

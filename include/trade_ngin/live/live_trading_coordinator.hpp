@@ -175,13 +175,6 @@ public:
     Result<void> initialize();
 
     /**
-     * @brief Load previous day's data for calculations
-     * @param date Current date
-     * @return Result with previous portfolio value and metrics
-     */
-    Result<std::pair<double, TradingMetrics>> load_previous_day_data(const Timestamp& date) const;
-
-    /**
      * @brief Store all results to database
      * @param metrics Metrics to store
      * @param positions Positions to store

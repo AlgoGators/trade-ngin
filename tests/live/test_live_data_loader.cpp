@@ -42,16 +42,6 @@ TEST_F(LiveDataLoaderTest, IsConnectedFalseWhenDbNotConnected) {
         EXPECT_EQ(__r.error()->code(), ErrorCode::DATABASE_ERROR);             \
     } while (0)
 
-TEST_F(LiveDataLoaderTest, LoadPreviousPortfolioValueDisconnectedErrors) {
-    LiveDataLoader l(make_disconnected_db(), "trading");
-    ASSERT_DB_ERROR(l.load_previous_portfolio_value("S", "P", now()));
-}
-
-TEST_F(LiveDataLoaderTest, LoadPortfolioValueDisconnectedErrors) {
-    LiveDataLoader l(make_disconnected_db(), "trading");
-    ASSERT_DB_ERROR(l.load_portfolio_value("S", "P", now()));
-}
-
 TEST_F(LiveDataLoaderTest, LoadLiveResultsDisconnectedErrors) {
     LiveDataLoader l(make_disconnected_db(), "trading");
     ASSERT_DB_ERROR(l.load_live_results("S", "P", now()));
@@ -62,24 +52,9 @@ TEST_F(LiveDataLoaderTest, LoadPreviousDayDataDisconnectedErrors) {
     ASSERT_DB_ERROR(l.load_previous_day_data("S", "P", now()));
 }
 
-TEST_F(LiveDataLoaderTest, HasLiveResultsDisconnectedErrors) {
-    LiveDataLoader l(make_disconnected_db(), "trading");
-    ASSERT_DB_ERROR(l.has_live_results("S", "P", now()));
-}
-
 TEST_F(LiveDataLoaderTest, GetLiveResultsCountDisconnectedErrors) {
     LiveDataLoader l(make_disconnected_db(), "trading");
     ASSERT_DB_ERROR(l.get_live_results_count("S", "P"));
-}
-
-TEST_F(LiveDataLoaderTest, LoadDailyReturnsHistoryDisconnectedErrors) {
-    LiveDataLoader l(make_disconnected_db(), "trading");
-    ASSERT_DB_ERROR(l.load_daily_returns_history("S", "P", now()));
-}
-
-TEST_F(LiveDataLoaderTest, LoadDailyPnLHistoryDisconnectedErrors) {
-    LiveDataLoader l(make_disconnected_db(), "trading");
-    ASSERT_DB_ERROR(l.load_daily_pnl_history("S", "P", now()));
 }
 
 // ──────────────────────────────────────────────────────────────────────────
@@ -176,8 +151,8 @@ TEST_F(LiveDataLoaderTest, CommissionsQueryEscapesAQuoteInThePortfolioId) {
 }
 
 // ──────────────────────────────────────────────────────────────────────────
-// T-8a (2): the equity curve history is one value per UTC date, the LAST row of
-// a date, before any statistic reads it (T-8D section 13, row 2).
+// A two-column text result for a reader's parsing test (the equity-curve history reader it
+// was written for is deleted: T-8D-2 R51; the statistics levels still use it).
 // ──────────────────────────────────────────────────────────────────────────
 namespace {
 
@@ -220,55 +195,10 @@ private:
 
 }  // namespace
 
-TEST_F(LiveDataLoaderTest, EquityCurveHistoryKeepsTheLastRowOfAUtcDate) {
-    // 2026-04-25 is stored three times and 2026-04-27 twice, in timestamp order.
-    auto db = std::make_shared<EquityCurveRowsDb>(
-        std::vector<std::string>{"500000", "400000", "450000", "510000", "505000", "300000",
-                                 "520000"},
-        std::vector<std::string>{"2026-04-24", "2026-04-25", "2026-04-25", "2026-04-25",
-                                 "2026-04-26", "2026-04-27", "2026-04-27"});
-    LiveDataLoader loader(db, "trading");
-
-    auto r = loader.load_equity_curve_history("LIVE_TREND_FOLLOWING", "CONSERVATIVE_PORTFOLIO",
-                                              now());
-    ASSERT_TRUE(r.is_ok()) << r.error()->what();
-    const std::vector<double> want = {500000.0, 510000.0, 505000.0, 520000.0};
-    EXPECT_EQ(r.value(), want)
-        << "one value per UTC date, the last row of the date; the 400000 and 300000 rows are "
-           "on no date's close and would read as a 20 and a 40 percent drawdown";
-}
-
-TEST_F(LiveDataLoaderTest, EquityCurveHistoryWithNoRepeatedDateIsEveryRowInOrder) {
-    auto db = std::make_shared<EquityCurveRowsDb>(
-        std::vector<std::string>{"500000", "500564.6314", "499000.5"},
-        std::vector<std::string>{"2025-10-05", "2025-10-06", "2025-10-07"});
-    LiveDataLoader loader(db, "trading");
-
-    auto r = loader.load_equity_curve_history("LIVE_TREND_FOLLOWING", "CONSERVATIVE_PORTFOLIO",
-                                              now());
-    ASSERT_TRUE(r.is_ok()) << r.error()->what();
-    const std::vector<double> want = {500000.0, 500564.6314, 499000.5};
-    EXPECT_EQ(r.value(), want);
-}
-
-// The date is the row's UTC date whatever the session's time zone, and the rows still come in
-// timestamp order, which is what makes "the last row" the latest one.
-TEST_F(LiveDataLoaderTest, EquityCurveHistoryQueryTakesTheUtcDateInTimestampOrder) {
-    auto db = std::make_shared<EquityCurveRowsDb>(std::vector<std::string>{"1"},
-                                                  std::vector<std::string>{"2026-04-24"});
-    LiveDataLoader loader(db, "trading");
-    ASSERT_TRUE(loader.load_equity_curve_history("S", "P", now()).is_ok());
-    EXPECT_NE(db->last_query.find("to_char(timestamp AT TIME ZONE 'UTC', 'YYYY-MM-DD')"),
-              std::string::npos)
-        << db->last_query;
-    EXPECT_NE(db->last_query.find("ORDER BY timestamp ASC"), std::string::npos) << db->last_query;
-    EXPECT_NE(db->last_query.find("trading.equity_curve"), std::string::npos) << db->last_query;
-}
-
 // ──────────────────────────────────────────────────────────────────────────
-// T-8a (4): the three statistics histories start at the book's start, the
-// metadata row's live_start_date (T-8D ruling R9), read the one way the sizing
-// history reads it. The reads that carry the account value do not take it.
+// T-8a (4): a statistics history starts at the book's start, the metadata row's
+// live_start_date (T-8D ruling R9), read the one way the sizing history reads it.
+// The reads that carry the account value do not take it.
 // ──────────────────────────────────────────────────────────────────────────
 namespace {
 
@@ -294,47 +224,13 @@ const char* const kBaseKey = "LIVE_TREND_FOLLOWING_TREND_FOLLOWING_FAST";
 
 }  // namespace
 
-TEST_F(LiveDataLoaderTest, DailyReturnsHistoryStartsAtTheBookStart) {
-    auto db = std::make_shared<QueryCapturingDb>();
-    LiveDataLoader loader(db, "trading");
-    ASSERT_TRUE(loader.load_daily_returns_history(kBaseKey, "BASE_PORTFOLIO", april_24()).is_ok());
-    EXPECT_NE(db->last_query.find("AND DATE(date) <= '2026-04-24' " +
-                                  book_start_bound("DATE(date)") + "ORDER BY date ASC"),
-              std::string::npos)
-        << "a live_results row dated before the book's live_start_date enters no statistic. "
-           "Query was:\n"
-        << db->last_query;
-}
-
-TEST_F(LiveDataLoaderTest, DailyPnlHistoryStartsAtTheBookStart) {
-    auto db = std::make_shared<QueryCapturingDb>();
-    LiveDataLoader loader(db, "trading");
-    ASSERT_TRUE(loader.load_daily_pnl_history(kBaseKey, "BASE_PORTFOLIO", april_24()).is_ok());
-    EXPECT_NE(db->last_query.find("AND DATE(date) <= '2026-04-24' " +
-                                  book_start_bound("DATE(date)") + "ORDER BY date ASC"),
-              std::string::npos)
-        << db->last_query;
-}
-
-TEST_F(LiveDataLoaderTest, EquityCurveHistoryStartsAtTheBookStart) {
-    auto db = std::make_shared<EquityCurveRowsDb>(std::vector<std::string>{"1"},
-                                                  std::vector<std::string>{"2026-04-24"});
-    LiveDataLoader loader(db, "trading");
-    ASSERT_TRUE(loader.load_equity_curve_history(kBaseKey, "BASE_PORTFOLIO", april_24()).is_ok());
-    EXPECT_NE(db->last_query.find("AND DATE(timestamp) <= '2026-04-24' " +
-                                  book_start_bound("DATE(timestamp AT TIME ZONE 'UTC')") +
-                                  "ORDER BY timestamp ASC"),
-              std::string::npos)
-        << "the bound reads the row's UTC date: a row stamped 00:00 UTC on the book's first day "
-           "is inside it under any session time zone. Query was:\n"
-        << db->last_query;
-}
-
 // An empty portfolio id reads BASE_PORTFOLIO in the row filter and in the bound alike.
 TEST_F(LiveDataLoaderTest, StatisticsHistoryBoundNamesTheSamePortfolioAsTheRowFilter) {
     auto db = std::make_shared<QueryCapturingDb>();
     LiveDataLoader loader(db, "trading");
-    ASSERT_TRUE(loader.load_daily_returns_history(kBaseKey, "", april_24()).is_ok());
+    ASSERT_TRUE(loader.load_statistics_levels(kBaseKey, "", april_24()).is_ok());
+    EXPECT_NE(db->last_query.find("AND portfolio_id = 'BASE_PORTFOLIO' "), std::string::npos)
+        << db->last_query;
     EXPECT_NE(db->last_query.find(book_start_bound("DATE(date)")), std::string::npos)
         << db->last_query;
 }
@@ -368,11 +264,6 @@ TEST_F(LiveDataLoaderTest, AccountValueReadsCarryNoBookStartBound) {
         "AND portfolio_id = 'BASE_PORTFOLIO' "
         "AND DATE(date) < '2026-04-24' "
         "ORDER BY date DESC LIMIT 1";
-
-    (void)loader.load_previous_portfolio_value(kBaseKey, "BASE_PORTFOLIO", april_24());
-    EXPECT_EQ(db->last_query, "SELECT COALESCE(current_portfolio_value, 0.0) "
-                              "FROM trading.live_results " +
-                                  unbounded_tail);
 
     (void)loader.load_previous_day_data(kBaseKey, "BASE_PORTFOLIO", april_24());
     EXPECT_EQ(db->last_query,
