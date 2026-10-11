@@ -262,6 +262,9 @@ int main() {
         coord_config.store_trade_details = config.store_trade_details;
         coord_config.portfolio_id = config.portfolio_id;
         coord_config.csv_output_path = config.csv_output_path;
+        // T-8D R2, T-8D-2 R76: K of the futures statistics grid, the one factor the run's
+        // annualised statistics use.
+        coord_config.statistics_sessions_per_year = app_config.statistics.futures_sessions_per_year;
 
         auto coordinator = std::make_unique<trade_ngin::backtest::BacktestCoordinator>(
             db, &registry, coord_config);
@@ -547,11 +550,11 @@ int main() {
         std::cout << "======= Conservative Portfolio Backtest Results =======" << std::endl;
         std::cout << "Total Return: " << (backtest_results.total_return * 100.0) << "%"
                   << std::endl;
-        std::cout << "Sharpe Ratio: " << backtest_results.sharpe_ratio << std::endl;
-        std::cout << "Sortino Ratio: " << backtest_results.sortino_ratio << std::endl;
+        std::cout << "Sharpe Ratio: " << ratio_or_na(backtest_results.sharpe_ratio) << std::endl;
+        std::cout << "Sortino Ratio: " << ratio_or_na(backtest_results.sortino_ratio) << std::endl;
         std::cout << "Max Drawdown: " << (backtest_results.max_drawdown * 100.0) << "%"
                   << std::endl;
-        std::cout << "Calmar Ratio: " << backtest_results.calmar_ratio << std::endl;
+        std::cout << "Calmar Ratio: " << ratio_or_na(backtest_results.calmar_ratio) << std::endl;
         std::cout << "Volatility: " << (backtest_results.volatility * 100.0) << "%" << std::endl;
         std::cout << "Win Rate: " << (backtest_results.win_rate * 100.0) << "%" << std::endl;
         std::cout << "Total Trades: " << backtest_results.total_trades << std::endl;
@@ -568,15 +571,13 @@ int main() {
             // T-8D-2 R53: each sleeve's resolved idm and risk_target (its allocation is
             // strategy_allocations above), the window rule, the warm-up and the sessions a year
             // the statistics are annualised with: statistics_K is the factor the calculator
-            // applies (252 until T-8b aligns it), and the ruled factor of the futures grid is
-            // recorded beside it as not yet applied.
+            // applied, as the results carry it.
             portfolio_config_json[trade_ngin::kSleevesKey] =
                 trade_ngin::resolved_sleeves_json(resolved_sleeves, false);
             trade_ngin::add_backtest_run_keys(
                 portfolio_config_json, app_config.backtest.lookback_years,
                 app_config.backtest.frozen_end_date, backtest_results.warmup_days,
-                trade_ngin::kBacktestAnnualisationApplied,
-                app_config.statistics.futures_sessions_per_year);
+                backtest_results.statistics_sessions_per_year);
             if (!app_config.instrument_id_relabels.empty()) {
                 auto relabels = nlohmann::json::array();
                 for (const auto& r : app_config.instrument_id_relabels) {

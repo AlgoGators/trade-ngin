@@ -16,6 +16,7 @@ set(TEST_SOURCES
     core/test_email_positions_table.cpp
     core/test_email_strategy_tables.cpp
     core/test_report_risk_lines.cpp
+    core/test_stat_quality.cpp
     core/test_run_id_generator.cpp
     core/test_config_loader.cpp
     core/test_reserve_capital_deleted.cpp
@@ -25,6 +26,8 @@ set(TEST_SOURCES
     data/test_db_utils.cpp
     data/test_utc_date_contract.cpp
     data/test_postgres_param_safety.cpp
+    data/test_finite_statement.cpp
+    data/test_finite_statement_db.cpp
     instruments/test_equity_market_hours_exchange.cpp
     data/test_postgres_database.cpp
     data/test_database_pooling.cpp
@@ -130,7 +133,10 @@ set(TEST_SOURCES
     backtest/test_consumed_series_record.cpp
     backtest/test_backtest_equity_cost_retier.cpp
     backtest/test_backtest_futures_cost_feed.cpp
+    backtest/test_backtest_statistics_columns.cpp
+    backtest/test_backtest_statistics_grid.cpp
     backtest/test_backtest_netting_one_model.cpp
+    backtest/test_backtest_stored_run_refusal.cpp
     backtest/test_backtest_roll_legs_once.cpp
     execution/test_execution_engine.cpp
     portfolio/test_portfolio_manager.cpp

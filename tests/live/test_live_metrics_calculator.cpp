@@ -97,29 +97,6 @@ TEST_F(LiveMetricsCalculatorTest, NetPnLIsGrossMinusCommissions) {
 
 // ===== Risk metrics =====
 
-TEST_F(LiveMetricsCalculatorTest, SharpeOfEmptyOrSingleIsZero) {
-    EXPECT_DOUBLE_EQ(c.calculate_sharpe_ratio({}, 0.02), 0.0);
-    EXPECT_DOUBLE_EQ(c.calculate_sharpe_ratio({0.01}, 0.02), 0.0);
-}
-
-TEST_F(LiveMetricsCalculatorTest, SharpeOfFlatReturnsIsZero) {
-    EXPECT_DOUBLE_EQ(c.calculate_sharpe_ratio({0.01, 0.01, 0.01, 0.01}, 0.0), 0.0);
-}
-
-TEST_F(LiveMetricsCalculatorTest, SharpeIsNonZeroForVariableReturns) {
-    auto s = c.calculate_sharpe_ratio({0.01, -0.005, 0.02, 0.015}, 0.0);
-    EXPECT_GT(std::abs(s), 0.0);
-}
-
-TEST_F(LiveMetricsCalculatorTest, SortinoOfEmptyIsZero) {
-    EXPECT_DOUBLE_EQ(c.calculate_sortino_ratio({}, 0.0), 0.0);
-}
-
-TEST_F(LiveMetricsCalculatorTest, SortinoZeroWhenNoDownside) {
-    auto s = c.calculate_sortino_ratio({0.01, 0.02, 0.03}, 0.0);
-    EXPECT_DOUBLE_EQ(s, 0.0);
-}
-
 TEST_F(LiveMetricsCalculatorTest, MaxDrawdownEmptyIsZero) {
     EXPECT_DOUBLE_EQ(c.calculate_max_drawdown({}), 0.0);
 }

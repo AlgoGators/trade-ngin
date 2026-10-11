@@ -1,8 +1,11 @@
 #include <gtest/gtest.h>
 #include <chrono>
+#include <cmath>
+#include <limits>
 #include <memory>
 #include "../core/test_base.hpp"
 #include "../data/test_db_utils.hpp"
+#include "trade_ngin/live/live_historical_metrics.hpp"
 #include "trade_ngin/storage/live_results_manager.hpp"
 
 using namespace trade_ngin;
@@ -150,6 +153,95 @@ TEST_F(LiveResultsManagerTest, SaveEquityCurveWhenSetInvokesStoreTradingEquityCu
     auto r = mgr_->save_equity_curve(date_at(2026, 3, 15));
     EXPECT_TRUE(r.is_ok());
     EXPECT_EQ(db_->call_count("store_trading_equity_curve"), 1);
+}
+
+// T-8D-2 R47: an equity value the curve cannot hold is refused. No curve row is written, no
+// stored value is read to stand in for it, and the error is returned.
+TEST_F(LiveResultsManagerTest, SaveEquityCurveRefusesAnInvalidValueAndWritesNoRow) {
+    const double invalid[] = {0.0, -5.0, 999.99, std::numeric_limits<double>::quiet_NaN(),
+                              std::numeric_limits<double>::infinity(),
+                              -std::numeric_limits<double>::infinity()};
+    for (double equity : invalid) {
+        mgr_->set_equity(equity);
+        db_->reset_call_counts();
+        auto r = mgr_->save_equity_curve(date_at(2026, 3, 15));
+        ASSERT_TRUE(r.is_error()) << equity;
+        EXPECT_EQ(r.error()->code(), ErrorCode::INVALID_DATA) << equity;
+        EXPECT_NE(std::string(r.error()->what()).find("2026-03-15"), std::string::npos)
+            << "the error names the date: " << r.error()->what();
+        EXPECT_EQ(db_->call_count("store_trading_equity_curve"), 0) << equity;
+    }
+    // The boundary: 1,000 is a value the curve holds.
+    mgr_->set_equity(1000.0);
+    db_->reset_call_counts();
+    EXPECT_TRUE(mgr_->save_equity_curve(date_at(2026, 3, 15)).is_ok());
+    EXPECT_EQ(db_->call_count("store_trading_equity_curve"), 1);
+}
+
+TEST_F(LiveResultsManagerTest, TheStorableEquityValuesAreTheFiniteOnesFromOneThousand) {
+    EXPECT_TRUE(storable_equity_curve_value(1000.0));
+    EXPECT_TRUE(storable_equity_curve_value(500000.0));
+    EXPECT_FALSE(storable_equity_curve_value(999.999999));
+    EXPECT_FALSE(storable_equity_curve_value(0.0));
+    EXPECT_FALSE(storable_equity_curve_value(-1000.0));
+    EXPECT_FALSE(storable_equity_curve_value(std::numeric_limits<double>::quiet_NaN()));
+    EXPECT_FALSE(storable_equity_curve_value(std::numeric_limits<double>::infinity()));
+}
+
+// R47: save_all_results reports the refused table; the other tables are still written.
+TEST_F(LiveResultsManagerTest, SaveAllResultsReportsEquityCurveFailedOnAnInvalidValue) {
+    mgr_->set_positions({make_pos("AAPL", 100.0)});
+    mgr_->set_metrics({{"total_return", 0.05}}, {});
+    mgr_->set_equity(0.0);
+    db_->reset_call_counts();
+    auto r = mgr_->save_all_results("RUN", date_at(2026, 3, 15));
+    ASSERT_TRUE(r.is_error());
+    EXPECT_NE(std::string(r.error()->what()).find("equity_curve"), std::string::npos)
+        << r.error()->what();
+    EXPECT_EQ(db_->call_count("store_trading_equity_curve"), 0);
+    EXPECT_EQ(db_->call_count("store_live_results_complete"), 1);
+}
+
+// T-8D R12, through the manager as the runners drive it. The day's row: the block's INSERT
+// columns are copied into the row's metrics, so a profit factor without a value is no column of
+// the INSERT. The Day T-1 refresh: the block's UPDATE columns go to update_live_results, which
+// hands the writer a NULL cell for it and no number.
+TEST_F(LiveResultsManagerTest, AProfitFactorWithNoValueIsNullOnBothWritesOfTheBlock) {
+    HistoricalMetrics no_loss;  // one winning session, no losing one
+    no_loss.total_days = 1;
+    no_loss.winning_days = 1;
+    no_loss.gross_profit = 1000.0;
+    no_loss.profit_factor = std::numeric_limits<double>::quiet_NaN();
+
+    std::unordered_map<std::string, double> double_metrics = {{"daily_pnl", 1000.0}};
+    for (const auto& [column, value] : historical_metrics_double_columns(no_loss)) {
+        double_metrics[column] = value;
+    }
+    mgr_->set_metrics(double_metrics, historical_metrics_int_columns(no_loss));
+    ASSERT_TRUE(mgr_->save_live_results(date_at(2026, 3, 15)).is_ok());
+    EXPECT_EQ(db_->last_live_metrics.count("profit_factor"), 0u);
+    EXPECT_EQ(db_->last_live_metrics.count("gross_profit"), 1u);
+
+    size_t rows = 0;
+    ASSERT_TRUE(mgr_->update_live_results(date_at(2026, 3, 14),
+                                          historical_metrics_update_columns(no_loss), &rows)
+                    .is_ok());
+    EXPECT_EQ(db_->last_update_values.count("profit_factor"), 0u);
+    EXPECT_EQ(db_->last_update_values.count("gross_profit"), 1u);
+    ASSERT_EQ(db_->last_update_cells.size(), 1u);
+    EXPECT_EQ(db_->last_update_cells[0].column, "profit_factor");
+    EXPECT_FALSE(db_->last_update_cells[0].value.has_value());
+
+    // With a losing session the column is a number on both writes and no cell is added.
+    HistoricalMetrics with_loss = no_loss;
+    with_loss.gross_loss = 2000.0;
+    with_loss.profit_factor = 0.5;
+    EXPECT_DOUBLE_EQ(historical_metrics_double_columns(with_loss).at("profit_factor"), 0.5);
+    ASSERT_TRUE(mgr_->update_live_results(date_at(2026, 3, 14),
+                                          historical_metrics_update_columns(with_loss), &rows)
+                    .is_ok());
+    EXPECT_DOUBLE_EQ(db_->last_update_values.at("profit_factor"), 0.5);
+    EXPECT_TRUE(db_->last_update_cells.empty());
 }
 
 TEST_F(LiveResultsManagerTest, UpdateLiveResultsInvokesUpdate) {

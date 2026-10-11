@@ -135,15 +135,21 @@ TEST(StoredConfigRunners, BothRunMetadataTablesRecordTheSessionsAYearOfTheRunsSe
     writers.push_back({kEquityLive, "portfolio_config_json[trade_ngin::kStatisticsKKey] =\n"
                                     "                app_config.statistics.equity_sessions_per_year;"});
     for (const auto& runner : kFuturesBacktests) {
-        // A backtest records the factor its calculator applies, the ruled one beside it.
+        // A backtest hands its coordinator the configured K of its series and records the
+        // factor the calculator applied, as the results carry it (the arithmetic is executed
+        // in BacktestMetricsCalculatorTest.EveryAnnualisedFigureUsesTheSessionsAYearHandedIn
+        // and BacktestStatisticsGridRun; this is the source guard that the three apps stay in
+        // step).
+        writers.push_back({runner, "coord_config.statistics_sessions_per_year = "
+                                   "app_config.statistics.futures_sessions_per_year;"});
         writers.push_back({runner, "app_config.backtest.frozen_end_date, backtest_results.warmup_days,\n"
-                                   "                trade_ngin::kBacktestAnnualisationApplied,\n"
-                                   "                app_config.statistics.futures_sessions_per_year);"});
+                                   "                backtest_results.statistics_sessions_per_year);"});
     }
+    writers.push_back({kEquityBacktest, "coord_config.statistics_sessions_per_year = "
+                                        "app_config.statistics.equity_sessions_per_year;"});
     writers.push_back({kEquityBacktest,
                        "app_config.backtest.frozen_end_date, backtest_results.warmup_days,\n"
-                       "                    trade_ngin::kBacktestAnnualisationApplied,\n"
-                       "                    app_config.statistics.equity_sessions_per_year);"});
+                       "                    backtest_results.statistics_sessions_per_year);"});
     for (const auto& [runner, needle] : writers) {
         const std::string src = read_source(runner);
         if (src.empty()) GTEST_SKIP() << "runner source not found from the test working directory";

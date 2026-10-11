@@ -130,8 +130,8 @@ TEST(OverlayColumns, TheCellsAreTheSixNumericColumnsInTheMigrationsOrder) {
         EXPECT_EQ(cells[i].type, "numeric");
         ASSERT_TRUE(cells[i].value.has_value());
     }
-    EXPECT_EQ(*cells[0].value, "0.07908305722");  // ten significant digits
-    EXPECT_EQ(*cells[4].value, "-0.4118451282");
+    EXPECT_EQ(*cells[0].value, "0.07908305722481246");  // reads back as the same double
+    EXPECT_EQ(*cells[4].value, "-0.4118451281904877");
     // None of the six is a statistic of the Day T-1 refresh.
     for (const auto& cell : live_statistics_cells(LiveStatisticsColumns{})) {
         EXPECT_EQ(cell.column.find("overlay_"), std::string::npos) << cell.column;

@@ -2,6 +2,7 @@
 #include <map>
 #include "trade_ngin/backtest/backtest_types.hpp"
 #include "trade_ngin/core/time_utils.hpp"
+#include "trade_ngin/live/live_historical_metrics.hpp"
 #include "trade_ngin/transaction_cost/netting.hpp"
 #include <algorithm>
 #include <cctype>
@@ -24,13 +25,11 @@ double BacktestMetricsCalculator::calculate_total_return(double start_value, dou
     return (end_value - start_value) / start_value;
 }
 
-double BacktestMetricsCalculator::calculate_annualized_return(double total_return, int trading_days) const {
-    if (trading_days <= 0) {
-        return 0.0;
-    }
-    // Simple annualization: scale by 252/trading_days
-    double annualization_factor = 252.0 / static_cast<double>(trading_days);
-    return total_return * annualization_factor;
+double BacktestMetricsCalculator::calculate_annualized_return(double total_return, int trading_days,
+                                                              double sessions_per_year) const {
+    // The CAGR, (1 + R)^(K / n) - 1 (T-8D R36): the live statistics' own function, so the
+    // backtest's annualised return and the live total_annualized_return are one formula.
+    return grid_annualized_return(1.0 + total_return, trading_days, sessions_per_year);
 }
 
 std::vector<double> BacktestMetricsCalculator::calculate_returns_from_equity(
@@ -57,22 +56,23 @@ std::vector<double> BacktestMetricsCalculator::calculate_returns_from_equity(
 
 double BacktestMetricsCalculator::calculate_sharpe_ratio(
     const std::vector<double>& returns,
-    int trading_days,
+    double sessions_per_year,
     double risk_free_rate) const {
-    if (returns.empty() || trading_days <= 0) {
-        return 0.0;
+    // No returns, no sessions a year, or no volatility to divide by: the ratio has no value
+    // (T-8D R12), which is not a measured 0.
+    if (returns.empty() || !(sessions_per_year > 0.0)) {
+        return kNoRatio;
     }
 
     double mean_return = calculate_mean(returns);
-    double volatility = calculate_volatility(returns);
+    double volatility = calculate_volatility(returns, sessions_per_year);
 
-    if (volatility <= 0.0) {
-        return 0.0;
+    if (!(volatility > 0.0)) {
+        return kNoRatio;
     }
 
-    // Annualize mean daily return: multiply by 252 (trading days per year)
-    // mean_return is already a daily rate; 252 scales it to annual
-    double annualized_return = mean_return * 252.0;
+    // Annualize the mean grid return: multiply by the grid's sessions a year
+    double annualized_return = mean_return * sessions_per_year;
 
     // Sharpe = (annualized return - risk free rate) / annualized volatility
     return (annualized_return - risk_free_rate) / volatility;
@@ -80,58 +80,59 @@ double BacktestMetricsCalculator::calculate_sharpe_ratio(
 
 double BacktestMetricsCalculator::calculate_sortino_ratio(
     const std::vector<double>& returns,
-    int trading_days,
+    double sessions_per_year,
     double minimum_acceptable_return) const {
-    if (returns.empty() || trading_days <= 0) {
-        return 0.0;
+    if (returns.empty() || !(sessions_per_year > 0.0)) {
+        return kNoRatio;
     }
 
     double mean_return = calculate_mean(returns);
-    double downside_vol = calculate_downside_volatility(returns, minimum_acceptable_return);
+    double downside_vol =
+        calculate_downside_volatility(returns, sessions_per_year, minimum_acceptable_return);
 
-    if (downside_vol <= 0.0) {
-        // No negative returns - cap at reasonable value
-        return (mean_return * 252.0) >= 0 ? 999.0 : 0.0;
+    if (!(downside_vol > 0.0)) {
+        // No return under the target: there is no downside to divide by, so the ratio has no
+        // value (T-8D R12). It was 999 with a mean at or above 0 and 0 with one below.
+        return kNoRatio;
     }
 
-    // Annualize mean daily return: multiply by 252 (trading days per year)
-    double annualized_return = mean_return * 252.0;
+    // Annualize the mean grid return: multiply by the grid's sessions a year
+    double annualized_return = mean_return * sessions_per_year;
     return (annualized_return - minimum_acceptable_return) / downside_vol;
 }
 
 double BacktestMetricsCalculator::calculate_calmar_ratio(double annualized_return, double max_drawdown) const {
-    if (max_drawdown <= 0.0) {
-        return annualized_return >= 0 ? 999.0 : 0.0;
+    // No drawdown to divide by: no value (T-8D R12). It was 999 or 0 by the return's sign.
+    if (!(max_drawdown > 0.0)) {
+        return kNoRatio;
     }
     return annualized_return / max_drawdown;
 }
 
 // ========== Volatility Metrics ==========
 
-double BacktestMetricsCalculator::calculate_volatility(const std::vector<double>& returns) const {
+double BacktestMetricsCalculator::calculate_volatility(const std::vector<double>& returns,
+                                                       double sessions_per_year) const {
     if (returns.empty()) {
         return 0.0;
     }
 
-    // Two-pass standard deviation. The previous one-pass formula
-    // (E[r^2] - mean^2) suffers catastrophic cancellation for small daily
-    // returns and can round to a slightly negative variance, turning
-    // sqrt() into NaN. That NaN passed the `volatility <= 0` guard in
-    // calculate_sharpe_ratio (NaN comparisons are false) and silently
-    // propagated into Sharpe/reporting.
-    double mean_return = calculate_mean(returns);
-
-    // Annualize using sqrt(252) for daily volatility
-    double volatility = calculate_std_dev(returns, mean_return) * std::sqrt(252.0);
+    // The live statistics' own function, so the two calculators give one number for one series:
+    // the SAMPLE standard deviation (n - 1), two-pass, x sqrt(sessions a year). (A one-pass
+    // E[r^2] - mean^2 suffers catastrophic cancellation for small daily returns and can round to
+    // a slightly negative variance, turning sqrt() into NaN, which passes the `volatility <= 0`
+    // guard in calculate_sharpe_ratio.)
+    double volatility =
+        LiveHistoricalMetricsCalculator::calculate_annualized_volatility(returns, sessions_per_year);
 
     // A constant series still leaves rounding dust (~1e-17) in the deviations;
     // collapse it to a clean 0 so the `volatility <= 0` guard in
-    // calculate_sharpe_ratio treats the degenerate case as such instead of
-    // dividing by dust and reporting an absurd Sharpe.
+    // calculate_sharpe_ratio treats the degenerate case as such (no value) instead
+    // of dividing by dust and reporting an absurd Sharpe.
     if (volatility > 0.0 && volatility < 1e-12) {
         WARN("Volatility collapsed to 0 (rounding dust; constant or near-constant "
              "series of " + std::to_string(returns.size()) +
-             " returns); Sharpe will report 0 -- distinguish flat from broken data upstream");
+             " returns); Sharpe has no value -- distinguish flat from broken data upstream");
         return 0.0;
     }
     return volatility;
@@ -139,33 +140,20 @@ double BacktestMetricsCalculator::calculate_volatility(const std::vector<double>
 
 double BacktestMetricsCalculator::calculate_downside_volatility(
     const std::vector<double>& returns,
+    double sessions_per_year,
     double target) const {
-    double downside_sum = 0.0;
-    int downside_count = 0;
-
-    for (double ret : returns) {
-        if (ret < target) {
-            double deviation = ret - target;
-            downside_sum += deviation * deviation;
-            downside_count++;
-        }
-    }
-
-    if (downside_count <= 0) {
-        return 0.0;
-    }
-
-    // The squared shortfalls are averaged over EVERY return of the series (a return at or
-    // above target counts as a zero), then annualized using sqrt(252)
-    double downside_vol =
-        std::sqrt(downside_sum / static_cast<double>(returns.size())) * std::sqrt(252.0);
+    // The live statistics' own function: the squared shortfalls are averaged over EVERY return
+    // of the series (a return at or above target counts as a zero), then annualized with
+    // sqrt(sessions a year).
+    double downside_vol = LiveHistoricalMetricsCalculator::calculate_annualized_downside_deviation(
+        returns, sessions_per_year, target);
 
     // Same rounding-dust collapse calculate_volatility applies: returns sitting a
     // hair below target otherwise leave a ~1e-17 denominator and Sortino explodes
-    // to an absurd finite value instead of hitting its degenerate-case sentinel.
+    // to an absurd finite value instead of having no value.
     if (downside_vol > 0.0 && downside_vol < 1e-12) {
         WARN("Downside volatility collapsed to 0 (rounding dust " +
-             std::to_string(downside_vol) + "); Sortino will report its degenerate-case value");
+             std::to_string(downside_vol) + "); Sortino has no value");
         return 0.0;
     }
     return downside_vol;
@@ -231,22 +219,24 @@ double BacktestMetricsCalculator::calculate_cvar_95(const std::vector<double>& r
     std::vector<double> sorted_returns = returns;
     std::sort(sorted_returns.begin(), sorted_returns.end());
 
+    // The index calculate_var_95 reads: the tail is the returns up to AND INCLUDING the VaR
+    // observation (T-8D R36), so CVaR is never smaller than VaR.
     size_t var_index = static_cast<size_t>(returns.size() * 0.05);
-    if (var_index == 0) {
-        var_index = 1;  // Need at least one value
+    if (var_index >= sorted_returns.size()) {
+        var_index = sorted_returns.size() - 1;
     }
 
     double cvar_sum = 0.0;
-    for (size_t i = 0; i < var_index; ++i) {
+    for (size_t i = 0; i <= var_index; ++i) {
         cvar_sum += sorted_returns[i];
     }
 
-    return -cvar_sum / var_index;
+    return -cvar_sum / static_cast<double>(var_index + 1);
 }
 
 std::unordered_map<std::string, double> BacktestMetricsCalculator::calculate_risk_metrics(
     const std::vector<double>& returns,
-    int /* trading_days */) const {
+    double sessions_per_year) const {
     std::unordered_map<std::string, double> metrics;
 
     if (returns.empty()) {
@@ -255,7 +245,7 @@ std::unordered_map<std::string, double> BacktestMetricsCalculator::calculate_ris
 
     metrics["var_95"] = calculate_var_95(returns);
     metrics["cvar_95"] = calculate_cvar_95(returns);
-    metrics["downside_volatility"] = calculate_downside_volatility(returns, 0.0);
+    metrics["downside_volatility"] = calculate_downside_volatility(returns, sessions_per_year, 0.0);
 
     return metrics;
 }
@@ -723,11 +713,9 @@ BacktestMetricsCalculator::TradeStatistics BacktestMetricsCalculator::calculate_
             stats.total_loss / losing_trades : 0.0;
     }
 
-    if (stats.total_loss > 0) {
-        stats.profit_factor = stats.total_profit / stats.total_loss;
-    } else if (stats.total_trades > 0 && stats.total_profit > 0) {
-        stats.profit_factor = 999.0;
-    }
+    // The profit factor divides by the losing trades' loss; with none it has no value (T-8D
+    // R12). It was 999 with a profit and no loss, and 0 with neither.
+    stats.profit_factor = stats.total_loss > 0 ? stats.total_profit / stats.total_loss : kNoRatio;
 
     if (!holding_periods.empty()) {
         stats.avg_holding_period = std::accumulate(holding_periods.begin(),
@@ -831,13 +819,68 @@ std::pair<double, double> BacktestMetricsCalculator::calculate_beta_correlation(
     return {beta, correlation};
 }
 
+// ========== The Statistics Grid ==========
+
+std::vector<std::pair<Timestamp, double>> BacktestMetricsCalculator::statistics_grid_curve(
+    const std::vector<std::pair<Timestamp, double>>& curve,
+    const BacktestStatisticsGrid& grid) const {
+    if (grid.own_rows || curve.empty()) {
+        return curve;
+    }
+
+    std::unordered_map<std::string, Timestamp> row_time;
+    for (const auto& [timestamp, level] : curve) {
+        (void)level;
+        row_time[core::format_utc_date(timestamp)] = timestamp;
+    }
+    const StatisticsSeries series = statistics_series(curve, grid);
+
+    std::vector<std::pair<Timestamp, double>> folded;
+    folded.reserve(series.levels.size() + 1);
+    folded.push_back(curve.front());
+    for (size_t i = 0; i < series.dates.size(); ++i) {
+        Timestamp timestamp;
+        const auto row = row_time.find(series.dates[i]);
+        if (row != row_time.end()) {
+            timestamp = row->second;
+        } else if (!core::parse_utc_date(series.dates[i], timestamp)) {
+            continue;
+        }
+        folded.emplace_back(timestamp, series.levels[i]);
+    }
+    return folded;
+}
+
+StatisticsSeries BacktestMetricsCalculator::statistics_series(
+    const std::vector<std::pair<Timestamp, double>>& curve,
+    const BacktestStatisticsGrid& grid) const {
+    if (curve.empty()) {
+        return StatisticsSeries();
+    }
+
+    // The live statistics' own fold (T-8D R1, R6): the curve's first row is the book's start and
+    // its level the base, so it is never a return row; every later grid date takes the last
+    // level on or before it. A run on its own rows has every row's date as its grid.
+    std::vector<DatedLevel> levels;
+    std::vector<std::string> own_dates;
+    levels.reserve(curve.size());
+    for (const auto& [timestamp, level] : curve) {
+        levels.push_back({core::format_utc_date(timestamp), level});
+        if (grid.own_rows) own_dates.push_back(levels.back().date);
+    }
+    return build_statistics_series(levels, grid.own_rows ? own_dates : grid.dates,
+                                   levels.front().date, curve.front().second, levels.back().date);
+}
+
 // ========== Composite Calculation ==========
 
 backtest::BacktestResults BacktestMetricsCalculator::calculate_all_metrics(
     const std::vector<std::pair<Timestamp, double>>& equity_curve,
     const std::vector<ExecutionReport>& executions,
     int warmup_days,
-    const PointValueSource& point_value) const {
+    const PointValueSource& point_value,
+    const BacktestStatisticsGrid& grid,
+    const BacktestStatisticsInputs& statistics_inputs) const {
     backtest::BacktestResults results;
 
     if (equity_curve.empty()) {
@@ -862,40 +905,39 @@ backtest::BacktestResults BacktestMetricsCalculator::calculate_all_metrics(
         return results;
     }
 
-    // Calculate returns from filtered data
-    auto returns = calculate_returns_from_equity(filtered_curve);
-
-    // Basic performance metrics
+    // Basic performance metrics: a level, on every row
     results.total_return = calculate_total_return(
         filtered_curve.front().second, filtered_curve.back().second);
 
-    int actual_trading_days = static_cast<int>(filtered_curve.size()) - 1;
-    if (actual_trading_days <= 0) {
-        actual_trading_days = 1;
-    }
+    // The statistics grid (T-8D R1, R3): the rows after the warm-up folded onto the grid's
+    // dates, and the returns taken on its levels. Every annualised figure below uses the grid's
+    // own sessions a year, which the result records.
+    const double sessions_per_year = grid.sessions_per_year;
+    const auto grid_curve = statistics_grid_curve(filtered_curve, grid);
+    auto returns = calculate_returns_from_equity(grid_curve);
+    results.statistics_sessions_per_year = sessions_per_year;
+    results.statistics_days = static_cast<int>(grid_curve.size()) - 1;
 
     // Volatility metrics
-    results.volatility = calculate_volatility(returns);
+    results.volatility = calculate_volatility(returns, sessions_per_year);
 
     // Risk-adjusted metrics
-    results.sharpe_ratio = calculate_sharpe_ratio(returns, actual_trading_days);
-    results.sortino_ratio = calculate_sortino_ratio(returns, actual_trading_days);
+    results.sharpe_ratio = calculate_sharpe_ratio(returns, sessions_per_year);
+    results.sortino_ratio = calculate_sortino_ratio(returns, sessions_per_year);
 
-    // Drawdown metrics
-    auto drawdowns = calculate_drawdowns(filtered_curve);
-    if (!drawdowns.empty()) {
-        results.max_drawdown = std::max_element(drawdowns.begin(), drawdowns.end(),
-            [](const auto& a, const auto& b) { return a.second < b.second; })->second;
-        results.drawdown_curve = drawdowns;
-    }
+    // Drawdown metrics: the curve of every row, and the maximum over the grid's levels
+    results.drawdown_curve = calculate_drawdowns(filtered_curve);
+    results.max_drawdown = calculate_max_drawdown(grid_curve);
 
-    // Calmar ratio: annualized return / max drawdown (industry standard)
-    double mean_return = calculate_mean(returns);
-    double annualized_return = mean_return * 252.0;
-    results.calmar_ratio = calculate_calmar_ratio(annualized_return, results.max_drawdown);
+    // Calmar ratio: the CAGR on the grid, (1 + R)^(K / n) - 1 with R from the base to the last
+    // grid level and n the grid's returns, over the maximum drawdown (T-8D R36)
+    results.annualized_return = calculate_annualized_return(
+        calculate_total_return(grid_curve.front().second, grid_curve.back().second),
+        results.statistics_days, sessions_per_year);
+    results.calmar_ratio = calculate_calmar_ratio(results.annualized_return, results.max_drawdown);
 
     // Risk metrics
-    auto risk_metrics = calculate_risk_metrics(returns, actual_trading_days);
+    auto risk_metrics = calculate_risk_metrics(returns, sessions_per_year);
     results.var_95 = risk_metrics["var_95"];
     results.cvar_95 = risk_metrics["cvar_95"];
     results.downside_volatility = risk_metrics["downside_volatility"];
@@ -916,6 +958,15 @@ backtest::BacktestResults BacktestMetricsCalculator::calculate_all_metrics(
     results.max_loss = trade_stats.max_loss;
     results.avg_holding_period = trade_stats.avg_holding_period;
     results.actual_trades = trade_stats.actual_trades;
+
+    // The statistics of migration 031 (LOOP_SPEC sections 7.4 and 10), on the same rows as the
+    // statistics above: the grid series of the rows after the warm-up, whose first row is the
+    // base. The fill count is the trade statistics' own count of the account's fills.
+    results.statistics_columns = backtest_statistics_columns(
+        statistics_series(filtered_curve, grid), sessions_per_year,
+        core::format_utc_date(filtered_curve.front().first),
+        core::format_utc_date(filtered_curve.back().first), statistics_inputs);
+    results.statistics_columns.total_strategy_fills = trade_stats.strategy_fills;
 
     // Per-symbol P&L
     auto symbol_pnl = calculate_symbol_pnl(executions, point_value);
@@ -939,18 +990,6 @@ double BacktestMetricsCalculator::calculate_mean(const std::vector<double>& valu
         return 0.0;
     }
     return std::accumulate(values.begin(), values.end(), 0.0) / values.size();
-}
-
-double BacktestMetricsCalculator::calculate_std_dev(const std::vector<double>& values, double mean) const {
-    if (values.empty()) {
-        return 0.0;
-    }
-
-    double sq_sum = 0.0;
-    for (double val : values) {
-        sq_sum += (val - mean) * (val - mean);
-    }
-    return std::sqrt(sq_sum / values.size());
 }
 
 std::vector<std::pair<Timestamp, double>> BacktestMetricsCalculator::filter_warmup_period(

@@ -1,9 +1,12 @@
 #pragma once
 
 #include <functional>
+#include <map>
 #include <string>
 #include <unordered_map>
 #include <vector>
+#include "trade_ngin/core/no_value.hpp"
+#include "trade_ngin/data/live_results_cell.hpp"
 
 namespace trade_ngin {
 
@@ -14,6 +17,8 @@ namespace trade_ngin {
  * - Returns-related fields (volatility, downside_deviation, avg_win, avg_loss,
  *   best_day, worst_day) are in percentage points, consistent with daily_return.
  * - Ratios (sharpe_ratio, sortino_ratio, profit_factor) are dimensionless.
+ * - profit_factor has no value (kNoRatio, a NaN) while the series has no losing session; its
+ *   cell of trading.live_results is then NULL (T-8D R12).
  * - PnL aggregates (gross_profit, gross_loss) are in portfolio currency.
  */
 struct HistoricalMetrics {
@@ -40,7 +45,7 @@ struct HistoricalMetrics {
     // holds the P&L of every row folded into the return)
     double gross_profit = 0.0;  // sum of the positive grid P&L
     double gross_loss = 0.0;    // sum of abs(negative grid P&L)
-    double profit_factor = 0.0; // gross_profit / gross_loss
+    double profit_factor = 0.0; // gross_profit / gross_loss; kNoRatio with no losing session
 
     // Trade-level stats
     int total_trades = 0;       // count of executions since inception
@@ -94,6 +99,18 @@ std::vector<std::string> statistics_session_dates(
     const std::function<bool(const std::string&, int)>& is_session);
 
 /**
+ * @brief A futures book's statistics grid from the bars it printed (T-8D R3): the dates of
+ *        `symbols_printed` (date "YYYY-MM-DD" -> the count of DISTINCT symbols of the universe
+ *        that printed a bar on it) that are a Sunday to a Friday with at least
+ *        kStatisticsGridMinSymbols printing, ascending. A Saturday is never a row, whatever
+ *        printed on it; a date that is no date is left out. The rule
+ *        LiveDataLoader::load_futures_statistics_grid applies in SQL, for a caller that holds the
+ *        bars in memory (the backtest).
+ */
+std::vector<std::string> futures_statistics_grid_dates(
+    const std::map<std::string, int>& symbols_printed);
+
+/**
  * @brief Build the statistics series of a book through `through_date`.
  *
  * @param stored_levels  the book's stored levels, any order; a date before the start is ignored
@@ -113,6 +130,14 @@ StatisticsSeries build_statistics_series(const std::vector<DatedLevel>& stored_l
                                          const std::vector<std::string>& grid_dates,
                                          const std::string& book_start, double initial_capital,
                                          const std::string& through_date);
+
+/**
+ * @brief The annualised return of `n` grid returns as a fraction: growth^(K / n) - 1, `growth`
+ *        being 1 + R, the last grid level over the base, and K the grid's sessions a year (the
+ *        CAGR). 0 without a return or a positive K; -1 when the growth is not positive. The one
+ *        formula behind the live total_annualized_return and the backtest's Calmar numerator.
+ */
+double grid_annualized_return(double growth, int n, double sessions_per_year);
 
 /**
  * @brief The annualised return of a series in percent: ((1 + R)^(K / n) - 1) x 100, R from the
@@ -151,12 +176,15 @@ public:
      *        annualised figure of the series uses this one K.
      * @param total_trades_executions Total number of executions since inception.
      * @return HistoricalMetrics structure with all fields populated; zeros for an empty series.
+     *         profit_factor has no value (kNoRatio) for an empty series and for one with no
+     *         losing session.
      */
     HistoricalMetrics calculate(const StatisticsSeries& grid, double sessions_per_year,
                                 int total_trades_executions) const;
 
-private:
-    static double calculate_mean(const std::vector<double>& values);
+    // The two annualised deviations of a return series, in the unit of the returns handed in
+    // (percent here, fractions in the backtest calculator, which calls the same two): 0 under
+    // two returns or without a positive sessions_per_year.
     // Sample standard deviation (n - 1) of the returns x sqrt(sessions_per_year)
     static double calculate_annualized_volatility(const std::vector<double>& returns_pct,
                                                   double sessions_per_year);
@@ -164,6 +192,9 @@ private:
     static double calculate_annualized_downside_deviation(const std::vector<double>& returns_pct,
                                                           double sessions_per_year,
                                                           double target = 0.0);
+
+private:
+    static double calculate_mean(const std::vector<double>& values);
     // The largest fall from a running peak, in percent; the peak starts at `peak_seed` (the
     // book's equity at its start, the base of the series: T-8D R9).
     static double calculate_max_drawdown_from_equity(const std::vector<double>& equity_values,
@@ -195,13 +226,30 @@ private:
 std::unordered_map<std::string, double> historical_metrics_double_columns(
     const HistoricalMetrics& m);
 
+/**
+ * @brief The columns of the block that have no value on some rows and are then stored NULL
+ *        (T-8D R12): profit_factor, with no losing session. The day-T INSERT leaves such a
+ *        column out (historical_metrics_double_columns does not name it); the Day T-1 UPDATE
+ *        must overwrite what the row holds, so historical_metrics_update_columns carries it as
+ *        kNoRatio and the writer assigns NULL (null_cells_of_statistics_without_value).
+ */
+const std::vector<std::string>& historical_metrics_optional_columns();
+
+/**
+ * @brief The Day T-1 UPDATE of a statistic that has no value: every optional column of the
+ *        block whose value in `updates` is not finite leaves `updates` and joins `cells` as a
+ *        cell without a value, which the UPDATE assigns NULL. Every other entry is untouched.
+ */
+void null_cells_of_statistics_without_value(std::unordered_map<std::string, double>& updates,
+                                            std::vector<LiveResultsCell>& cells);
+
 /** @brief The integer half of the same block: winning_days, losing_days, total_days. */
 std::unordered_map<std::string, int> historical_metrics_int_columns(const HistoricalMetrics& m);
 
 /**
  * @brief The whole block as the Day T-1 UPDATE takes it: the double columns plus the three
  * integer columns widened to double (`update_live_results` takes doubles only; the three are
- * whole numbers by construction).
+ * whole numbers by construction). An optional column without a value is carried as kNoRatio.
  */
 std::unordered_map<std::string, double> historical_metrics_update_columns(
     const HistoricalMetrics& m);
