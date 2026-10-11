@@ -14,6 +14,7 @@
 #include "trade_ngin/core/email_sender.hpp"
 #include "trade_ngin/core/holiday_checker.hpp"
 #include "trade_ngin/core/logger.hpp"
+#include "trade_ngin/core/report_leverage_console.hpp"
 #include "trade_ngin/core/report_risk_lines.hpp"
 #include "trade_ngin/core/resolved_sleeves.hpp"
 #include "trade_ngin/core/time_utils.hpp"
@@ -2770,8 +2771,15 @@ int main(int argc, char* argv[]) {
                   << std::endl;
         std::cout << "Net Notional: $" << std::fixed << std::setprecision(2) << net_notional
                   << std::endl;
-        std::cout << "Gross Leverage: " << std::fixed << std::setprecision(2)
-                  << (gross_notional / initial_capital) << "x" << std::endl;
+        // T-8D R24, T-8D-2 R68: on the day's sizing capital E_t, the capital and the rule of the
+        // row's config gross_leverage below (risk_detail's on a row that stores it, else the
+        // capital this run read; no figure on a sizing hold).
+        std::cout << trade_ngin::gross_leverage_console_on_sizing_capital(
+                         gross_notional,
+                         trade_ngin::stored_config_sizing_capital(
+                             one_pass_day.stores_detail(), one_pass_day.sizing_capital,
+                             !sizing_hold, sizing_capital_read.capital.capital))
+                  << std::flush;
         // Posted margin should never be zero if there are active positions; enforce and warn
         if (active_positions > 0 && total_posted_margin <= 0.0) {
             ERROR(
@@ -3936,8 +3944,10 @@ int main(int argc, char* argv[]) {
                   << total_return_annualized << "%" << std::endl;
         std::cout << "Daily Return: " << std::fixed << std::setprecision(2) << daily_return << "%"
                   << std::endl;
-        std::cout << "Gross Leverage: " << std::fixed << std::setprecision(2)
-                  << (gross_notional / current_portfolio_value) << "x" << std::endl;
+        // T-8D-2 R68: the same notional over the day's account value V_t, named as that.
+        std::cout << trade_ngin::gross_leverage_console_on_account_value(gross_notional,
+                                                                         current_portfolio_value)
+                  << std::flush;
         std::cout << "Posted Margin (Initial×Contracts): $" << std::fixed << std::setprecision(2)
                   << total_posted_margin << std::endl;
         if (equity_to_margin_ratio) {

@@ -13,6 +13,7 @@
 #include "trade_ngin/core/config_loader.hpp"
 #include "trade_ngin/core/holiday_checker.hpp"
 #include "trade_ngin/core/logger.hpp"
+#include "trade_ngin/core/report_leverage_console.hpp"
 #include "trade_ngin/core/resolved_sleeves.hpp"
 #include "trade_ngin/core/time_utils.hpp"
 #include "trade_ngin/data/database_pooling.hpp"
@@ -50,6 +51,7 @@
 #include "trade_ngin/live/execution_manager.hpp"
 #include "trade_ngin/live/margin_columns.hpp"
 #include "trade_ngin/live/margin_manager.hpp"
+#include "trade_ngin/live/run_metadata_marks.hpp"
 #include "trade_ngin/live/csv_exporter.hpp"
 #include "trade_ngin/transaction_cost/netting.hpp"
 
@@ -1171,6 +1173,14 @@ int main(int argc, char* argv[]) {
         // equities. Nothing reads this table -- it exists so a past run's allocations and
         // config can be reconstructed after the fact, which is exactly what you want when
         // a number from months ago has to be explained.
+        //
+        // T-8D-2 R48: the row is BUILT here, from the run's configuration as it stands here, and
+        // WRITTEN at the first point below where the run stores anything else (directly above the
+        // corp-action unit of work, or below the class-1 block on a run that persists no
+        // adjustment). The corp-action refusals between here and there (the dedup record, the
+        // spinoff deal terms, the E2-F15 and E2-F17 frame guards) then leave no row either. It
+        // is still the run's first write.
+        trade_ngin::DeferredRunRecord run_metadata_row;
         {
             nlohmann::json portfolio_config_json;
             portfolio_config_json["total_capital"] =
@@ -1198,16 +1208,19 @@ int main(int argc, char* argv[]) {
                 {"stop_loss_pct", mean_rev_config.stop_loss_pct},
                 {"allow_fractional_shares", mean_rev_config.allow_fractional_shares}};
 
-            auto metadata_result = db->store_live_run_metadata(
-                now, kEquityStrategyId, portfolio_id, strategy_alloc_json,
-                portfolio_config_json, strategy_configs_json);
+            run_metadata_row.hold([db, now, portfolio_id, strategy_alloc_json,
+                                   portfolio_config_json, strategy_configs_json]() {
+                auto metadata_result = db->store_live_run_metadata(
+                    now, kEquityStrategyId, portfolio_id, strategy_alloc_json,
+                    portfolio_config_json, strategy_configs_json);
 
-            if (metadata_result.is_error()) {
-                WARN("Failed to store live run metadata: " +
-                     std::string(metadata_result.error()->what()));
-            } else {
-                INFO("Successfully stored live run metadata for date");
-            }
+                if (metadata_result.is_error()) {
+                    WARN("Failed to store live run metadata: " +
+                         std::string(metadata_result.error()->what()));
+                } else {
+                    INFO("Successfully stored live run metadata for date");
+                }
+            });
         }
 
         // The book AS IT STOOD on T-1, captured before any corporate action touches it.
@@ -3058,6 +3071,7 @@ int main(int argc, char* argv[]) {
                     // write lost -- left the next run free to re-apply every
                     // event, re-multiplying quantities and re-rescaling basis.
                     // Either both land or neither does.
+                    run_metadata_row.write_once();  // the run's first write (T-8D-2 R48)
                     auto unit = db->begin_unit_of_work();
                     if (unit.is_error()) {
                         ERROR("Cannot open a unit of work for corp-action persistence: " +
@@ -3096,6 +3110,10 @@ int main(int argc, char* argv[]) {
                 }
             }
         }
+
+        // T-8D-2 R48: a run that persisted no class-1 adjustment writes its metadata row here,
+        // past the corp-action refusals above and before anything else of the day is stored.
+        run_metadata_row.write_once();
 
         // The book after the class-1 rescale and BEFORE the lifecycle handlers. The
         // E2-F16 restated-frame rule for the T-1 finalization needs exactly this
@@ -4218,8 +4236,9 @@ int main(int argc, char* argv[]) {
         std::cout << "Active Positions: " << active_positions << std::endl;
         std::cout << "Gross Notional: $" << std::fixed << std::setprecision(2) << gross_notional << std::endl;
         std::cout << "Net Notional: $" << std::fixed << std::setprecision(2) << net_notional << std::endl;
-        std::cout << "Portfolio Leverage (gross/current): " << std::fixed << std::setprecision(2) 
-                  << (gross_notional / initial_capital) << "x" << std::endl;
+        // T-8D-2 R68: the leverage line is printed once, further down, where the day's account
+        // value is known ("(gross/current)" was printed here over the configured capital; that
+        // figure is the row's config portfolio_leverage).
         // Posted margin should never be zero if there are active positions; enforce and warn
         if (active_positions > 0 && total_posted_margin <= 0.0) {
             ERROR("Computed posted margin is non-positive while positions are active. Check instrument metadata.");
@@ -5701,8 +5720,10 @@ int main(int argc, char* argv[]) {
         std::cout << "Total Return (Cumulative): " << std::fixed << std::setprecision(2) << total_cumulative_return_pct << "%" << std::endl;
         std::cout << "Total Return (Annualized): " << std::fixed << std::setprecision(2) << total_return_annualized << "%" << std::endl;
         std::cout << "Daily Return: " << std::fixed << std::setprecision(2) << daily_return << "%" << std::endl;
-        std::cout << "Portfolio Leverage: " << std::fixed << std::setprecision(2) 
-                  << (gross_notional / current_portfolio_value) << "x" << std::endl;
+        // T-8D-2 R68: gross notional over the day's account value, the row's portfolio_leverage.
+        std::cout << trade_ngin::portfolio_leverage_console_on_account_value(
+                         gross_notional, current_portfolio_value)
+                  << std::flush;
         // Equity-to-Margin Ratio = current_portfolio_value / total_posted_margin, at the level
         // of the book (T-8D R21; HD 2026-09-10): the definition the futures runners write.
         // Higher = more of the account's value for each dollar of margin posted. No value on a

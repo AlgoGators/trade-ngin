@@ -71,6 +71,19 @@ protected:
     }
 };
 
+// ===== the closing log line (T-8D R24) =====
+
+// Executes, no database: the line's last figure is the value the call was handed plus the net
+// P&L, and it says so (it read "Portfolio Value=", which names the account).
+TEST_F(LivePnLManagerTest, TheFinalizationLineSaysWhatItsLastValueIs) {
+    const std::string line = LivePnLManager::finalization_complete_line(1245.0, 1232.5, 501232.5);
+    EXPECT_EQ(line,
+              "Day T-1 finalization complete: Total PnL (Gross)=1245.000000, Net PnL=1232.500000, "
+              "Portfolio Value (the value this call was handed plus Net PnL: the configured "
+              "capital on the live runners, not the account value)=501232.500000");
+    EXPECT_EQ(line.find("Portfolio Value="), std::string::npos);
+}
+
 // ===== finalize_previous_day =====
 
 TEST_F(LivePnLManagerTest, FinalizeEmptyPositionsSucceedsWithEmptyResult) {
