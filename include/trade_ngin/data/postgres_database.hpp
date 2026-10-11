@@ -31,6 +31,7 @@
 #include "trade_ngin/core/logger.hpp"
 #include "trade_ngin/core/types.hpp"
 #include "trade_ngin/data/database_interface.hpp"
+#include "trade_ngin/data/backtest_curve_cells.hpp"
 #include "trade_ngin/data/live_results_cell.hpp"
 #include "trade_ngin/data/market_data_utils.hpp"
 
@@ -526,13 +527,17 @@ public:
      * @param run_id Backtest run identifier
      * @param equity_points Vector of timestamp-equity pairs
      * @param table_name Name of the equity curve table
+     * @param risk_detail Per point, the row's risk_detail object as text (empty: NULL), or none
+     * @param cells Per point, the row's typed cells (migration 031: the six overlay columns),
+     *        or none at all; a cell with no value is written NULL (backtest_curve_cells.hpp)
      * @return Result indicating success or failure
      */
     virtual Result<void> store_backtest_equity_curve_batch(
         const std::string& run_id, const std::vector<std::pair<Timestamp, double>>& equity_points,
         const std::string& portfolio_id = "BASE_PORTFOLIO",
         const std::string& table_name = "backtest.equity_curve",
-        const std::vector<std::string>& risk_detail = {});
+        const std::vector<std::string>& risk_detail = {},
+        const BacktestCurveCells& cells = {});
 
     /**
      * @brief Store backtest final positions (replaces raw SQL INSERT)

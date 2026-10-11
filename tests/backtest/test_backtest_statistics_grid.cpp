@@ -435,6 +435,12 @@ TEST_F(BacktestStatisticsGridRun, AFuturesRunTakesTheStatisticsOfMigration031OnI
     EXPECT_EQ(cell.at("losing_years").value_or(""), "0");
     EXPECT_FALSE(cell.at("volatility_sizing")) << "a NULL cell";
     EXPECT_FALSE(cell.at("monthly_skew"));
+    // This book names no overlay sleeve: no row has a risk_detail, so the curve write names
+    // neither that column nor the six overlay columns (the statement an equity run writes).
+    ASSERT_EQ(db_->call_count("store_backtest_equity_curve_batch"), 1);
+    EXPECT_TRUE(r.equity_overlay.empty());
+    EXPECT_TRUE(db_->last_equity_risk_detail.empty());
+    EXPECT_TRUE(db_->last_equity_curve_cells.empty());
     // The older columns travel as before, and none of the new ones is among them.
     EXPECT_EQ(db_->last_backtest_summary_metrics.count("total_trades"), 1u);
     EXPECT_EQ(db_->last_backtest_summary_metrics.count("worst_day"), 0u);

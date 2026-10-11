@@ -23,7 +23,10 @@
 #include "trade_ngin/backtest/backtest_statistics_columns.hpp"
 #include "trade_ngin/backtest/backtest_types.hpp"
 #include "trade_ngin/core/time_utils.hpp"
+#include "trade_ngin/data/backtest_curve_cells.hpp"
 #include "trade_ngin/data/backtest_position_row.hpp"
+#include "trade_ngin/data/postgres_database.hpp"
+#include "trade_ngin/risk/overlay_columns.hpp"
 #include "trade_ngin/live/live_statistics_columns.hpp"
 
 using namespace trade_ngin;
@@ -504,4 +507,86 @@ TEST(BacktestStatisticsColumns, CalculateAllMetricsTakesThemAfterTheWarmUpWithTh
         std::vector<std::pair<Timestamp, double>>(curve.begin() + 2, curve.end()), grid);
     EXPECT_EQ(series.size(), 4);
     EXPECT_EQ(series.dates.back(), "2025-03-07");
+}
+
+// ===== migration 031: the six overlay cells of a backtest.equity_curve row =====
+
+namespace {
+
+std::vector<LiveResultsCell> six(const OverlayColumns& c) {
+    return overlay_cells(c, live_results_number);
+}
+
+OverlayColumns sized_row() {
+    OverlayColumns c;
+    c.overlay_risk = 0.123456789123;
+    c.overlay_risk_jump = 0.2469135782;
+    c.overlay_risk_shock = 0.3703703673;
+    c.overlay_gross_leverage = 2.345678901;
+    c.overlay_net_leverage = -0.4567890123;
+    c.var_95_1d = 6338.123456;
+    return c;
+}
+
+}  // namespace
+
+// The batch INSERT names the six once and writes one value a cell a row: a sized row its ten
+// significant digits, a blind row its two leverages and four NULLs, a warm-up or seed row six
+// NULLs. A run with no cells (the equity book) names no column.
+TEST(BacktestCurveCells, EveryRowNamesTheSixAndARowWithoutAReadingWritesNull) {
+    OverlayColumns blind;
+    blind.overlay_gross_leverage = 1.5;
+    blind.overlay_net_leverage = -1.5;
+    const BacktestCurveCells cells = {six(OverlayColumns()), six(sized_row()), six(blind)};
+    EXPECT_EQ(backtest_curve_cells_refusal(cells, 3), "");
+    EXPECT_EQ(backtest_curve_cell_columns(cells),
+              ", overlay_risk, overlay_risk_jump, overlay_risk_shock, overlay_gross_leverage, "
+              "overlay_net_leverage, var_95_1d");
+    const auto quote = [](const std::string& text) { return "'" + text + "'"; };
+    EXPECT_EQ(backtest_curve_cell_values(cells[0], quote), ", NULL, NULL, NULL, NULL, NULL, NULL");
+    EXPECT_EQ(backtest_curve_cell_values(cells[1], quote),
+              ", '0.1234567891'::numeric, '0.2469135782'::numeric, '0.3703703673'::numeric, "
+              "'2.345678901'::numeric, '-0.4567890123'::numeric, '6338.123456'::numeric");
+    EXPECT_EQ(backtest_curve_cell_values(cells[2], quote),
+              ", NULL, NULL, NULL, '1.5'::numeric, '-1.5'::numeric, NULL");
+    // No cells: the statement the equity book always wrote.
+    EXPECT_EQ(backtest_curve_cell_columns({}), "");
+    EXPECT_EQ(backtest_curve_cells_refusal({}, 3), "");
+}
+
+// One list a point or none: any other shape would lose cells without a word, so it is refused,
+// by the writer too, before a connection is looked at.
+TEST(BacktestCurveCells, AListThatIsNotOneAPointOrNamesOtherColumnsIsRefused) {
+    const BacktestCurveCells two = {six(sized_row()), six(sized_row())};
+    EXPECT_NE(backtest_curve_cells_refusal(two, 3).find("2 cell lists for 3 equity points"),
+              std::string::npos);
+    BacktestCurveCells ragged = two;
+    ragged[1].pop_back();
+    EXPECT_NE(backtest_curve_cells_refusal(ragged, 2).find("point 1 carries 5 cells"),
+              std::string::npos);
+    BacktestCurveCells renamed = two;
+    renamed[1][0].column = "overlay_riskx";
+    EXPECT_NE(backtest_curve_cells_refusal(renamed, 2).find("point 1 names overlay_riskx"),
+              std::string::npos);
+    BacktestCurveCells typed = two;
+    typed[0][0].type = "numeric; DROP TABLE x";
+    typed[1][0].type = typed[0][0].type;
+    EXPECT_NE(backtest_curve_cells_refusal(typed, 2).find("unknown cell type"), std::string::npos);
+
+    PostgresDatabase db("host=127.0.0.1 port=1 dbname=none_never_connected");
+    const std::vector<std::pair<Timestamp, double>> points = {
+        {day("2025-03-03"), 500000.0}, {day("2025-03-04"), 500100.0}, {day("2025-03-05"), 500200.0}};
+    const auto r = db.store_backtest_equity_curve_batch("RUN", points, "CONSERVATIVE_PORTFOLIO",
+                                                        "backtest.equity_curve", {}, two);
+    ASSERT_TRUE(r.is_error());
+    EXPECT_EQ(r.error()->code(), ErrorCode::INVALID_ARGUMENT) << r.error()->what();
+    EXPECT_NE(std::string(r.error()->what()).find("2 cell lists for 3 equity points"),
+              std::string::npos)
+        << r.error()->what();
+    BacktestCurveCells bad_column = {six(sized_row()), six(sized_row()), six(sized_row())};
+    for (auto& row : bad_column) row[0].column = "overlay_risk; DROP TABLE x";
+    EXPECT_TRUE(db.store_backtest_equity_curve_batch("RUN", points, "CONSERVATIVE_PORTFOLIO",
+                                                     "backtest.equity_curve", {}, bad_column)
+                    .is_error())
+        << "a column that is no identifier never reaches the statement";
 }

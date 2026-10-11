@@ -273,8 +273,24 @@ Result<void> PostgresDatabase::store_backtest_summary(
 Result<void> PostgresDatabase::store_backtest_equity_curve_batch(
     const std::string& run_id, const std::vector<std::pair<Timestamp, double>>& equity_points,
     const std::string& portfolio_id, const std::string& table_name,
-    const std::vector<std::string>& risk_detail) {
+    const std::vector<std::string>& risk_detail, const BacktestCurveCells& cells) {
     std::lock_guard<std::mutex> lock(mutex_);
+
+    // The typed cells (migration 031) carry one list per point or none at all, every list the
+    // same columns: refused otherwise, as a risk_detail of another length is. A cell's column
+    // is concatenated into the statement, so it is allow-listed before anything else happens.
+    if (const std::string refusal = backtest_curve_cells_refusal(cells, equity_points.size());
+        !refusal.empty()) {
+        return make_error<void>(ErrorCode::INVALID_ARGUMENT,
+                                "store_backtest_equity_curve_batch: " + refusal,
+                                "PostgresDatabase");
+    }
+    if (!cells.empty()) {
+        auto cells_validation = validate_live_results_cells(cells.front());
+        if (cells_validation.is_error()) {
+            return cells_validation;
+        }
+    }
 
     // risk_detail (migration 020) carries one entry per point (a futures book) or none at all (the
     // equity book). Any other length would write the curve without the column and lose the day
@@ -315,8 +331,10 @@ Result<void> PostgresDatabase::store_backtest_equity_curve_batch(
         // writes the statement it always wrote.
         const bool with_detail = !risk_detail.empty();
         std::string query = "INSERT INTO " + table_name +
-                            (with_detail ? " (run_id, portfolio_id, timestamp, equity, risk_detail) VALUES "
-                                         : " (run_id, portfolio_id, timestamp, equity) VALUES ");
+                            (with_detail ? " (run_id, portfolio_id, timestamp, equity, risk_detail"
+                                         : " (run_id, portfolio_id, timestamp, equity") +
+                            backtest_curve_cell_columns(cells) + ") VALUES ";
+        const auto quote = [&txn](const std::string& text) { return txn.quote(text); };
 
         for (size_t i = 0; i < equity_points.size(); ++i) {
             if (i > 0)
@@ -327,6 +345,9 @@ Result<void> PostgresDatabase::store_backtest_equity_curve_batch(
             if (with_detail) {
                 query += risk_detail[i].empty() ? std::string(", NULL")
                                                 : ", " + txn.quote(risk_detail[i]) + "::jsonb";
+            }
+            if (!cells.empty()) {
+                query += backtest_curve_cell_values(cells[i], quote);
             }
             query += ")";
         }

@@ -315,9 +315,11 @@ public:
         const std::vector<std::pair<Timestamp, double>>& equity_points,
         const std::string& portfolio_id = "BASE_PORTFOLIO",
         const std::string& table_name = "backtest.equity_curve",
-        const std::vector<std::string>& risk_detail = {}) override {
+        const std::vector<std::string>& risk_detail = {},
+        const BacktestCurveCells& cells = {}) override {
         (void)run_id; (void)equity_points; (void)portfolio_id; (void)table_name;
         last_equity_risk_detail = risk_detail;
+        last_equity_curve_cells = cells;
         return record_call("store_backtest_equity_curve_batch");
     }
 
@@ -392,6 +394,8 @@ public:
     // The risk_detail arguments of the last calls (migration 020).
     nlohmann::json last_live_risk_detail;
     std::vector<std::string> last_equity_risk_detail;
+    /// The typed cells of the last equity-curve batch (migration 031), one list a point.
+    BacktestCurveCells last_equity_curve_cells;
     /// What the last store_backtest_summary was handed (migration 031's typed cells among it).
     std::unordered_map<std::string, double> last_backtest_summary_metrics;
     std::vector<LiveResultsCell> last_backtest_summary_cells;

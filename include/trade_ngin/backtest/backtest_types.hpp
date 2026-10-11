@@ -12,6 +12,7 @@
 #include "trade_ngin/core/time_utils.hpp"
 #include "trade_ngin/core/types.hpp"
 #include "trade_ngin/optimization/dynamic_optimizer.hpp"
+#include "trade_ngin/risk/overlay_columns.hpp"
 #include "trade_ngin/risk/risk_manager.hpp"
 
 namespace trade_ngin {
@@ -227,6 +228,10 @@ struct BacktestResults {
     // Per equity point, the row's risk_detail object as text (LOOP_SPEC section 7.3; empty for
     // a NULL cell); empty altogether on a book that stores none.
     std::vector<std::string> equity_risk_detail;
+    // Per equity point, the six overlay cells of the row (migration 031): the overlay's readings
+    // of the book the run stores for the row's date and the one-day VaR; every field without a
+    // value on a row that carries no risk_detail. Empty altogether on a book that stores none.
+    std::vector<OverlayColumns> equity_overlay;
     std::vector<std::pair<Timestamp, double>> drawdown_curve;
     int warmup_days{0};  // Number of warmup days (calculated dynamically from strategy lookbacks)
     // The convention the statistics above were taken with (T-8D R1, R2): K, the sessions a year

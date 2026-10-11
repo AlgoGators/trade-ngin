@@ -139,7 +139,8 @@ Result<void> BacktestResultsManager::save_equity_curve(const std::string& run_id
 
     // Use the new database extension method
     return db_->store_backtest_equity_curve_batch(run_id, equity_curve_, portfolio_id_,
-                                                  "backtest.equity_curve", equity_risk_detail_);
+                                                  "backtest.equity_curve", equity_risk_detail_,
+                                                  equity_curve_cells_);
 }
 
 Result<void> BacktestResultsManager::save_final_positions(const std::string& run_id) {

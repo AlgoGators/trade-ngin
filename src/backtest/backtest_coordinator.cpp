@@ -522,6 +522,17 @@ Result<BacktestResults> BacktestCoordinator::run_portfolio(
     results.executions = std::move(all_executions);
     results.equity_curve = std::move(equity_curve);
     results.equity_risk_detail = equity_risk_detail_rows(results.equity_curve.size());
+    if (!equity_overlay_.empty()) {
+        results.equity_overlay.assign(results.equity_curve.size(), OverlayColumns());
+        for (const auto& [index, columns] : equity_overlay_) {
+            if (index < results.equity_overlay.size()) results.equity_overlay[index] = columns;
+        }
+        INFO("OVERLAY_COLUMNS rows=" + std::to_string(equity_overlay_.size()) + " of " +
+             std::to_string(results.equity_curve.size()) + " curve rows; equal_to_pass=" +
+             std::to_string(overlay_rows_equal_to_pass_) +
+             ": the overlay's readings of the stored book of each sized rebalance, and on how "
+             "many rows the five equal the pass's own readings of its stored book to the bit");
+    }
 
     // Get final portfolio positions: sum per-strategy quantities (Σ qᵢ).
     // get_portfolio_positions() applies allocation a second time, producing
@@ -1610,6 +1621,13 @@ Result<void> BacktestCoordinator::process_portfolio_day(
             if (one_pass.stores_detail()) {
                 equity_risk_detail_[equity_curve.size() - 1] =
                     risk_detail_json(one_pass, cycle_account_value_).dump();
+                // Migration 031: beside it, the overlay's readings of the book this row's date
+                // stores (the sleeves' positions as they stand now: nothing after this point
+                // changes a quantity before the daily save).
+                bool equal_to_pass = false;
+                equity_overlay_[equity_curve.size() - 1] =
+                    stored_book_overlay_columns(*portfolio, one_pass, &equal_to_pass);
+                if (equal_to_pass) ++overlay_rows_equal_to_pass_;
             }
         }
 
@@ -1862,6 +1880,8 @@ void BacktestCoordinator::reset_portfolio_state() {
     row_held_id_.clear();
     risk_scale_report_enabled_ = false;
     equity_risk_detail_.clear();
+    equity_overlay_.clear();
+    overlay_rows_equal_to_pass_ = 0;
     symbol_day_pnl_.clear();
     symbol_day_pnl_date_.clear();
     cycle_account_value_ = 0.0;
@@ -2030,6 +2050,24 @@ bool BacktestCoordinator::keeps_closed_rows(const std::shared_ptr<PortfolioManag
         }
     }
     return false;
+}
+
+OverlayColumns BacktestCoordinator::stored_book_overlay_columns(const PortfolioManager& portfolio,
+                                                                const OnePassDay& day,
+                                                                bool* equal_to_pass) {
+    if (equal_to_pass) *equal_to_pass = false;
+    if (!day.stores_detail()) return OverlayColumns();
+    const overlay::Readings stored =
+        portfolio.overlay_readings_for_book(account_book_of(portfolio.get_strategy_positions()))
+            .readings;
+    if (equal_to_pass) {
+        *equal_to_pass = stored.covariance_readings == day.covariance_readings &&
+                         stored.risk == day.overlay_risk && stored.jump == day.overlay_risk_jump &&
+                         stored.shock == day.overlay_risk_shock &&
+                         stored.gross == day.overlay_gross_leverage &&
+                         stored.net == day.overlay_net_leverage;
+    }
+    return overlay_columns_of(true, stored, day.window_bars_per_year, day.sizing_capital);
 }
 
 std::vector<SymbolDayPnl> BacktestCoordinator::stored_symbol_day_pnl(
@@ -2253,6 +2291,14 @@ Result<void> BacktestCoordinator::save_portfolio_results_to_db(
     }
     results_manager->set_equity_curve(equity_points);
     results_manager->set_equity_risk_detail(results.equity_risk_detail);
+    // Migration 031: the six overlay cells of each row, at ten significant digits; a row with
+    // no reading writes NULL in all six. A book that stores none names no such column.
+    BacktestCurveCells curve_cells;
+    curve_cells.reserve(results.equity_overlay.size());
+    for (const auto& columns : results.equity_overlay) {
+        curve_cells.push_back(overlay_cells(columns, live_results_number));
+    }
+    results_manager->set_equity_curve_cells(curve_cells);
 
     // Collect per-strategy executions from PortfolioManager
     if (portfolio) {

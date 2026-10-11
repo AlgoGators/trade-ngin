@@ -146,6 +146,11 @@ private:
     // its equity curve row, and the account value V_t the cycle's sizing capital was read with.
     std::map<size_t, std::string> equity_risk_detail_;
     double cycle_account_value_ = 0.0;
+    /// Migration 031: the six overlay cells of each sized rebalance, by the index of its equity
+    /// curve row (the rows equity_risk_detail_ names), and on how many of them the readings of
+    /// the stored book equal the pass's own to the bit.
+    std::map<size_t, OverlayColumns> equity_overlay_;
+    size_t overlay_rows_equal_to_pass_ = 0;
     /// Migration 031: the per-symbol P&L cells of the position rows the run stores, one entry
     /// per symbol and stored date (summed over the sleeves), and the last date collected.
     std::vector<SymbolDayPnl> symbol_day_pnl_;
@@ -396,6 +401,26 @@ public:
      * @param keeps_closed_rows Whether a sleeve stores its rows closed to zero (a cash book)
      * @param date The stored date, "YYYY-MM-DD"
      */
+    /**
+     * @brief The six overlay cells of a backtest row (migration 031; HD 2026-10-10): the
+     *        overlay's own readings of the book the run STORES for the row's date
+     *
+     * PortfolioManager::overlay_readings_for_book (the accessor the live runners call) on the
+     * sum of the sleeves' positions as they stand when the row is written, then
+     * overlay_columns_of: no second implementation of a reading. A day whose rebalance stores no
+     * risk_detail (`day.stores_detail()` false: a warm-up cycle, a refusal) has no cell; on a
+     * blind window only the two leverage readings have a value.
+     *
+     * @param portfolio The run's portfolio, after the cycle's rebalance
+     * @param day That rebalance's record (PortfolioManager::last_one_pass)
+     * @param equal_to_pass Set to whether the five readings of the stored book equal the pass's
+     *        own readings of its stored book to the bit (they do unless a step after the pass
+     *        changed a quantity; the backtest cycle has none)
+     */
+    static OverlayColumns stored_book_overlay_columns(const PortfolioManager& portfolio,
+                                                      const OnePassDay& day,
+                                                      bool* equal_to_pass = nullptr);
+
     static std::vector<SymbolDayPnl> stored_symbol_day_pnl(
         const std::unordered_map<std::string, std::unordered_map<std::string, Position>>&
             strategy_positions,

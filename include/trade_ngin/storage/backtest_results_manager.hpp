@@ -27,6 +27,9 @@ private:
     // One entry per equity point (the row's risk_detail object as text, empty for NULL), or
     // empty: the column is not named (migration 020).
     std::vector<std::string> equity_risk_detail_;
+    // One list of typed cells per equity point (migration 031: the six overlay columns), or
+    // empty: no cell column is named.
+    BacktestCurveCells equity_curve_cells_;
     std::vector<Position> final_positions_;
     std::vector<ExecutionReport> executions_;
     std::map<Timestamp, std::unordered_map<std::string, double>> signals_history_;
@@ -67,6 +70,11 @@ public:
 
     void set_equity_risk_detail(const std::vector<std::string>& risk_detail) {
         equity_risk_detail_ = risk_detail;
+    }
+
+    /// The typed cells of the equity-curve rows, one list a point or none.
+    void set_equity_curve_cells(const BacktestCurveCells& cells) {
+        equity_curve_cells_ = cells;
     }
 
     void set_equity_curve(const std::vector<std::pair<Timestamp, double>>& curve) {
