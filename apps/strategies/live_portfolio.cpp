@@ -2978,15 +2978,20 @@ int main(int argc, char* argv[]) {
                       << r.correlation_risk << std::endl;
             std::cout << "Jump Risk (99th): " << std::fixed << std::setprecision(2) << r.jump_risk
                       << std::endl;
-            std::cout << "Risk Scale: " << std::fixed << std::setprecision(2) << r.recommended_scale
-                      << std::endl;
         } else {
             std::cout << "Gross Leverage (Risk): N/A" << std::endl;
             std::cout << "Net Leverage: N/A" << std::endl;
             std::cout << "Max Correlation: N/A" << std::endl;
             std::cout << "Jump Risk (99th): N/A" << std::endl;
-            std::cout << "Risk Scale: N/A" << std::endl;
         }
+        // T-8D-2 R68: the row's risk_scale (the delivered scale, the same reading of the same
+        // stored book as the column below) and the request m_t (risk_detail.risk_requested), each
+        // labelled. The reporter's recommended scale stays on RISK_SCALE_REPORT.
+        std::cout << trade_ngin::risk_scale_console(
+            overlay_answered ? portfolio->delivered_scale_for_book(
+                                   trade_ngin::account_book_of(strategy_positions_map))
+                             : 1.0,
+            overlay_answered, one_pass_day.risk_requested);
         // RA-01 (T-7b-1 C7): the reporter's scale beside the scale that actually moved the book.
         // reporter = the snapshot's recommended_scale (1.0 when its evaluation failed). It is NOT
         // the stored live_results.risk_scale: that column is the DELIVERED scale, set below. The

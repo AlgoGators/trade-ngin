@@ -4458,30 +4458,33 @@ int main(int argc, char* argv[]) {
                       << r.correlation_risk << std::endl;
             std::cout << "Jump Risk (99th): " << std::fixed << std::setprecision(2)
                       << r.jump_risk << std::endl;
-            std::cout << "Risk Scale: " << std::fixed << std::setprecision(2)
-                      << r.recommended_scale << std::endl;
         } else {
             std::cout << "Volatility: N/A" << std::endl;
             std::cout << "Gross Leverage: N/A" << std::endl;
             std::cout << "Net Leverage: N/A" << std::endl;
             std::cout << "Max Correlation: N/A" << std::endl;
             std::cout << "Jump Risk (99th): N/A" << std::endl;
-            std::cout << "Risk Scale: N/A" << std::endl;
         }
-        // RA-01 (T-7b-1 C7): beside the stored value, the scale that actually moved the book.
-        // reporter = the double stored as live_results.risk_scale below (the snapshot's
-        // recommended_scale, 1.0 when its evaluation failed); the other four fields are the
-        // PortfolioManager's own record of this run's rebalance, last_risk_decisions(), each
-        // defined in risk_scale_report.hpp. Log only: no stored value reads it.
+        // T-8D-2 R68: the stored risk_scale, labelled. This book runs no overlay, so there is no
+        // request to print beside it.
+        std::cout << trade_ngin::risk_scale_console_no_overlay();
+        // RA-01 (T-7b-1 C7): the reporter's scale beside the scale that actually moved the book.
+        // reporter = the snapshot's recommended_scale (1.0 when its evaluation failed). It is NOT
+        // the stored live_results.risk_scale: that column is kRiskScaleNoOverlay on this book, set
+        // below. The other four fields are the PortfolioManager's own record of this run's
+        // rebalance, last_risk_decisions(), each defined in risk_scale_report.hpp. Log only: no
+        // stored value reads it.
         INFO(trade_ngin::format_risk_scale_report(
             risk_eval.is_ok() ? risk_eval.value().recommended_scale : 1.0,
             trade_ngin::summarize_applied_risk(portfolio->last_risk_decisions())));
-        // T-7b-2 C9a (T-VOL C4): the delivered cut beside the request: the stored book's gross
-        // notional over the lap-1 optimizer book's, the PortfolioManager's measurement of the same
-        // rebalance (risk_scale_report.hpp defines each field). Log only.
+        // T-7b-2 C9a (T-VOL C4), T-8D-2 R69: the delivered cut beside the request: the gross
+        // notional of the book this runner stores (positions_to_save, one sleeve) over the
+        // strategy's target book, the PortfolioManager's measurement of the same rebalance
+        // (risk_scale_report.hpp defines each field). Log only.
         INFO(trade_ngin::format_risk_delivered(
             trade_ngin::summarize_applied_risk(portfolio->last_risk_decisions()),
-            portfolio->last_delivered_cut()));
+            portfolio->delivered_cut_for_book(
+                trade_ngin::account_book_of_rows(positions_to_save))));
         // ========================================
         // STEP 3: CALCULATE COMMISSIONS AND Day T PnL (ZERO)
         // ========================================
@@ -5828,14 +5831,16 @@ int main(int argc, char* argv[]) {
             double net_leverage = 0.0;
             double max_correlation = 0.0;
             double jump_risk = 0.0;
-            double risk_scale = 1.0;
+            // T-8D R14: this book runs no portfolio-risk overlay, so risk_scale is 1.0 on every
+            // row (1.0 = no portfolio-risk overlay ran this run, not an uncut book). The
+            // reporter's recommended scale is not stored.
+            const double risk_scale = trade_ngin::kRiskScaleNoOverlay;
 
             if (risk_eval.is_ok()) {
                 const auto& r = risk_eval.value();
                 portfolio_var = r.portfolio_var;
                 max_correlation = r.correlation_risk;
                 jump_risk = r.jump_risk;
-                risk_scale = r.recommended_scale;
             }
 
             // Use LiveMetricsCalculator for portfolio metrics
