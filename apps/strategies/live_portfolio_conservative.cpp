@@ -1033,8 +1033,8 @@ int main(int argc, char* argv[]) {
 
             // The arms are the shared ruling's (live/data_freshness.hpp, rule_feed_freshness; HD
             // 2026-10-10): an empty feed refuses every run; a requested symbol with no bar and a
-            // feed staler than the tolerance refuse a run with no date and are a WARN on a dated
-            // run, whose book stops only for what it HOLDS (the held-symbol check below).
+            // feed staler than the tolerance refuse a run with no date. A dated run goes on: its
+            // book stops only for what it HOLDS, and the held-symbol check below names them.
             const auto freshness_ruling = rule_feed_freshness(freshness, tolerance_days, as_of_ymd,
                                                               use_override_date, "Futures");
             for (const auto& line : freshness_ruling.warnings) WARN(line);

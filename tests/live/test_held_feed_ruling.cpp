@@ -9,7 +9,7 @@
 //   R2a a HELD symbol with no bar anywhere in the loaded history is a hole past every tolerance.
 //   R2b a requested symbol the book does not hold stops nothing: one line names it.
 //   R2c an empty feed refuses every run; a requested symbol with no bar, and a feed staler than
-//       the tolerance, refuse a run with no date and are a warning on a dated run.
+//       the tolerance, refuse a run with no date; on a dated run the one WARN is the held check's.
 
 #include <gtest/gtest.h>
 
@@ -227,17 +227,17 @@ TEST(FeedFreshnessRuling, AnEmptyFeedRefusesADatedRunAndARunWithNoDate) {
     }
 }
 
-TEST(FeedFreshnessRuling, ARequestedSymbolWithNoBarWarnsADatedRunAndRefusesARunWithNoDate) {
+TEST(FeedFreshnessRuling, ARequestedSymbolWithNoBarIsLeftToTheHeldCheckOnADatedRun) {
     const std::unordered_map<std::string, std::string> bars = {{"MES.v.0", "2026-04-25"}};
     const auto f = assess_feed_freshness(bars, "2026-04-25", {"MES.v.0", "GONE.v.0"});
     ASSERT_EQ(f.absent, 1u);
 
+    // One WARN names such a symbol on a dated run, and it is the held check's
+    // (FEED_HOLE_NOT_HELD): this ruling adds none.
     const auto dated = rule_feed_freshness(f, 4, "2026-04-25", true, "Futures");
     EXPECT_FALSE(dated.refuse);
-    ASSERT_EQ(dated.warnings.size(), 1u);
-    EXPECT_EQ(dated.warnings[0],
-              "Futures feed is missing 1 of 2 requested symbol(s) entirely, first: GONE.v.0 (no "
-              "bar of any date as of 2026-04-25). Proceeding in historical-replay mode.");
+    EXPECT_TRUE(dated.warnings.empty());
+    EXPECT_TRUE(dated.errors.empty());
     EXPECT_FALSE(dated.info.empty()) << "the rest of the feed is still measured";
 
     const auto no_date = rule_feed_freshness(f, 4, "2026-04-25", false, "Futures");
@@ -247,7 +247,7 @@ TEST(FeedFreshnessRuling, ARequestedSymbolWithNoBarWarnsADatedRunAndRefusesARunW
               std::string::npos);
 }
 
-TEST(FeedFreshnessRuling, AStaleFeedWarnsADatedRunAndRefusesARunWithNoDate) {
+TEST(FeedFreshnessRuling, AStaleFeedIsOneInfoLineOnADatedRunAndRefusesARunWithNoDate) {
     const std::unordered_map<std::string, std::string> bars = {{"MES.v.0", "2026-04-25"},
                                                                {"6M.v.0", "2026-04-20"}};
     const auto f = assess_feed_freshness(bars, "2026-04-25", {"MES.v.0", "6M.v.0"});
@@ -255,16 +255,37 @@ TEST(FeedFreshnessRuling, AStaleFeedWarnsADatedRunAndRefusesARunWithNoDate) {
 
     const auto dated = rule_feed_freshness(f, 4, "2026-04-25", true, "Futures");
     EXPECT_FALSE(dated.refuse);
-    ASSERT_EQ(dated.warnings.size(), 1u);
-    EXPECT_EQ(dated.warnings[0],
+    EXPECT_TRUE(dated.warnings.empty());
+    EXPECT_EQ(dated.info,
               "Futures data is stale: the stalest of 2 symbols (6M.v.0) last printed 2026-04-20, "
-              "5 calendar days before 2026-04-25 (tolerance 4 days). Proceeding in "
-              "historical-replay mode.");
+              "5 calendar days before 2026-04-25 (tolerance 4 days). A dated run stops only for a "
+              "symbol the book holds: the held-symbol check names each one.");
+    EXPECT_EQ(dated.info.find("replay"), std::string::npos)
+        << "the line must be true on a run made on its own date";
 
     const auto no_date = rule_feed_freshness(f, 4, "2026-04-25", false, "Equity");
     EXPECT_TRUE(no_date.refuse);
     EXPECT_NE(no_date.errors[0].find("Equity data is stale"), std::string::npos);
     EXPECT_NE(no_date.errors[0].find("Refusing to run live on stale data."), std::string::npos);
+}
+
+TEST(FeedFreshnessRuling, ADatedRunsOneWarningForWhatTheBookDoesNotHoldIsTheHeldChecks) {
+    // The two forms of R2b through the functions the runners call in order: a symbol stale past
+    // the tolerance and a requested symbol with no bar in the window. Counted together: one WARN.
+    T1Classification t1;
+    t1.verdicts = {no_bar("6M.v.0", 5, "2026-04-20"), no_bar("GC.v.0", 753, "2024-03-31"),
+                   printed("MES.v.0")};
+    const std::unordered_map<std::string, Position> book = {{"MES.v.0", held("MES.v.0", 1.0)}};
+    const std::unordered_map<std::string, std::string> bars = {{"MES.v.0", "2026-04-25"},
+                                                               {"6M.v.0", "2026-04-20"}};
+    const auto f = assess_feed_freshness(bars, "2026-04-25", {"MES.v.0", "6M.v.0", "GC.v.0"});
+    const auto ruling = rule_feed_freshness(f, 4, "2026-04-25", true, "Futures");
+    const std::string not_held = unheld_no_bar_line(t1, book, 4);
+    EXPECT_EQ(ruling.warnings.size() + (not_held.empty() ? 0u : 1u), 1u);
+    EXPECT_NE(not_held.find("6M.v.0 (no bar for 5 day(s) (last bar 2026-04-20))"),
+              std::string::npos);
+    EXPECT_NE(not_held.find("GC.v.0 (no bar for 753 day(s) (last bar 2024-03-31))"),
+              std::string::npos);
 }
 
 TEST(FeedFreshnessRuling, AFeedInsideTheToleranceIsOneInfoLineOnEveryRun) {
