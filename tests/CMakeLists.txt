@@ -133,6 +133,7 @@ set(TEST_SOURCES
     backtest/test_backtest_statistics_columns.cpp
     backtest/test_backtest_statistics_grid.cpp
     backtest/test_backtest_netting_one_model.cpp
+    backtest/test_backtest_stored_run_refusal.cpp
     backtest/test_backtest_roll_legs_once.cpp
     execution/test_execution_engine.cpp
     portfolio/test_portfolio_manager.cpp

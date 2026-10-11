@@ -4,6 +4,7 @@
 #include "trade_ngin/strategy/trend_estimator.hpp"
 #include "trade_ngin/backtest/equity_cost_warmup.hpp"
 #include "trade_ngin/backtest/junk_signal_feed.hpp"
+#include "trade_ngin/backtest/stored_run_refusal.hpp"
 #include "trade_ngin/data/backtest_position_row.hpp"
 #include <unordered_set>
 #include <algorithm>
@@ -343,6 +344,26 @@ Result<BacktestResults> BacktestCoordinator::run_portfolio(
 
     current_run_id_ = generate_portfolio_run_id(strategy_names_for_id, end_date);
     INFO("Generated portfolio backtest run_id: " + current_run_id_);
+
+    // T-8D-2 R49: the id is the strategy ids and the window's end, so it is the id of any earlier
+    // run of these strategies to this end date. A storing run whose id already has rows is
+    // refused here, before its first cycle: nothing of it has been stored
+    // (stored_run_refusal.hpp).
+    if (config_.store_trade_details && db_) {
+        std::string unchecked;
+        if (auto stored = refuse_stored_run(*db_, current_run_id_, &unchecked); stored.is_error()) {
+            const std::string refusal = stored.error()->what();
+            ERROR(refusal);
+            current_run_id_.clear();
+            return make_error<BacktestResults>(stored.error()->code(), refusal,
+                                               "BacktestCoordinator");
+        }
+        if (!unchecked.empty()) {
+            WARN("The stored rows of run_id " + current_run_id_ +
+                 " could not be counted, so the run is not checked against an earlier run of "
+                 "the same id: " + unchecked);
+        }
+    }
 
     // Enable backtest mode on all strategies
     for (auto& strategy : portfolio->get_strategies()) {

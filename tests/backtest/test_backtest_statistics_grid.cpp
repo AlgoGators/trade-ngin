@@ -475,3 +475,86 @@ TEST_F(BacktestStatisticsGridRun, AnEquityRunTakesThemOnItsOwnRowsWithNoSizingCa
     EXPECT_FALSE(c.worst_day_sizing_date);
     EXPECT_FALSE(c.worst_day_sizing_symbol);
 }
+
+// ===== a run whose id is already stored (T-8D-2 R49) =====
+//
+// The run id is the strategy ids and the window's end instant, so a second run of the same
+// strategies to the same end date carries the first run's id. A storing run asks, before its
+// first cycle, whether backtest.results or backtest.final_positions holds a row of its id, and is
+// refused if either does. These drive a whole run (run_portfolio) on a database that answers the
+// two counts.
+//
+//   | case | results rows | final_positions rows | the run stores | outcome            | positions writes |
+//   | 1    | 1            | 0                    | yes            | refused, an error  | 0                |
+//   | 2    | 0            | 3                    | yes            | refused, an error  | 0                |
+//   | 3    | 0            | 0                    | yes            | runs               | one a stored day |
+//   | 4    | 1            | 3                    | no             | runs, asks nothing | 0                |
+//   | 5    | unreadable   | unreadable           | yes            | runs (not refused) | one a stored day |
+class BacktestStoredRunRefusal : public BacktestStatisticsGridRun {
+protected:
+    std::shared_ptr<StoredRunDb> use_stored_run_db() {
+        auto db = std::make_shared<StoredRunDb>("mock://testdb");
+        EXPECT_TRUE(db->connect().is_ok());
+        db_ = db;
+        return db;
+    }
+};
+
+TEST_F(BacktestStoredRunRefusal, ARunWhoseIdHasAResultsRowIsRefusedBeforeItsFirstCycleAndStoresNothing) {
+    auto db = use_stored_run_db();
+    db->results_rows = 1;
+    auto result = run(AssetClass::FUTURES, kFuturesK, /*store=*/true);
+    ASSERT_TRUE(result.is_error()) << "the run went on over a stored run of the same id";
+    const std::string what = result.error()->what();
+    EXPECT_NE(what.find("BACKTEST REFUSED: run_id STAT_GRID_S_"), std::string::npos) << what;
+    EXPECT_NE(what.find("backtest.results rows: 1, backtest.final_positions rows: 0"),
+              std::string::npos)
+        << what;
+    EXPECT_EQ(db->call_count("store_backtest_positions"), 0) << "a refused run stores no position";
+    EXPECT_EQ(db->count_queries.size(), 2u);
+}
+
+TEST_F(BacktestStoredRunRefusal, ARunWhoseIdHasFinalPositionsRowsIsRefusedAndStoresNothing) {
+    auto db = use_stored_run_db();
+    db->final_positions_rows = 3;
+    auto result = run(AssetClass::FUTURES, kFuturesK, /*store=*/true);
+    ASSERT_TRUE(result.is_error()) << "the run went on over a stored run's positions";
+    const std::string what = result.error()->what();
+    EXPECT_NE(what.find("backtest.results rows: 0, backtest.final_positions rows: 3"),
+              std::string::npos)
+        << what;
+    EXPECT_EQ(db->call_count("store_backtest_positions"), 0);
+}
+
+TEST_F(BacktestStoredRunRefusal, ARunWhoseIdIsNotStoredAsksBothTablesAndRuns) {
+    auto db = use_stored_run_db();
+    auto result = run(AssetClass::FUTURES, kFuturesK, /*store=*/true);
+    ASSERT_TRUE(result.is_ok()) << result.error()->what();
+    ASSERT_EQ(db->count_queries.size(), 2u) << "one count a table, asked once";
+    EXPECT_NE(db->count_queries[0].find("FROM backtest.results WHERE run_id = 'STAT_GRID_S_"),
+              std::string::npos)
+        << db->count_queries[0];
+    EXPECT_NE(db->count_queries[1].find("FROM backtest.final_positions WHERE run_id = 'STAT_GRID_S_"),
+              std::string::npos)
+        << db->count_queries[1];
+    EXPECT_GT(db->call_count("store_backtest_positions"), 0) << "the run stored its daily positions";
+}
+
+TEST_F(BacktestStoredRunRefusal, ARunThatStoresNothingAsksNothingAndIsNotRefused) {
+    auto db = use_stored_run_db();
+    db->results_rows = 1;
+    db->final_positions_rows = 3;
+    auto result = run(AssetClass::FUTURES, kFuturesK, /*store=*/false);
+    ASSERT_TRUE(result.is_ok()) << result.error()->what();
+    EXPECT_TRUE(db->count_queries.empty());
+    EXPECT_EQ(db->call_count("store_backtest_positions"), 0);
+}
+
+TEST_F(BacktestStoredRunRefusal, ACountThatCannotBeReadDoesNotRefuseTheRun) {
+    auto db = use_stored_run_db();
+    db->counts_fail = true;
+    auto result = run(AssetClass::FUTURES, kFuturesK, /*store=*/true);
+    ASSERT_TRUE(result.is_ok()) << result.error()->what();
+    EXPECT_EQ(db->count_queries.size(), 1u) << "the first count failed; the second is not asked";
+    EXPECT_GT(db->call_count("store_backtest_positions"), 0);
+}
