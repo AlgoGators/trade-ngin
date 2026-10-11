@@ -1,9 +1,10 @@
 // The results writers against the real tables with a value that is not finite (T-8D R12,
 // T-8D-2 R54). Before the guard std::to_string put `nan` or `inf` into the statement unquoted,
 // Postgres read it as a column name, and the whole statement failed: a backtest lost its
-// results row (and with it the run), a live day its row or its Day T-1 refresh. Now the cell is
-// stored without a value (NULL; the column default 0 on a backtest cost column) and the row is
-// kept.
+// results row (and with it the run), a live day its row or its Day T-1 refresh. Now a nullable
+// cell is stored NULL and the row is kept; a NOT NULL column that is not finite refuses the row:
+// no statement is sent, nothing is stored or changed, and the error names the column and the
+// value.
 //
 // The same writers, and the backtest curve, the backtest position rows and the live curve's
 // Day T-1 refresh, store a finite value as the double they were handed (D-16): the cell reads
@@ -23,10 +24,13 @@
 #include <memory>
 #include <string>
 #include <unordered_map>
+#include <utility>
+#include <vector>
 
 #include <nlohmann/json.hpp>
 
 #include "trade_ngin/core/types.hpp"
+#include "trade_ngin/data/finite_statement.hpp"
 #include "trade_ngin/data/postgres_database.hpp"
 
 using namespace trade_ngin;
@@ -114,18 +118,177 @@ protected:
         return bits;
     }
 
+    // The rows of the probe in a table.
+    size_t rows(const std::string& table, const std::string& where) {
+        pqxx::connection c(conn_);
+        pqxx::work w(c);
+        return w.exec("SELECT count(*) FROM " + table + " WHERE " + where)[0][0].as<size_t>();
+    }
+
+    // The NOT NULL number columns of a table as the schema has them, in column order (the
+    // serial id apart).
+    std::vector<std::string> not_null_number_columns(const std::string& schema,
+                                                     const std::string& table) {
+        pqxx::connection c(conn_);
+        pqxx::work w(c);
+        auto r = w.exec(
+            "SELECT column_name FROM information_schema.columns WHERE table_schema = " +
+            w.quote(schema) + " AND table_name = " + w.quote(table) +
+            " AND is_nullable = 'NO' AND column_name <> 'id' AND data_type IN ('numeric', "
+            "'double precision', 'real', 'integer', 'bigint', 'smallint') ORDER BY "
+            "ordinal_position");
+        std::vector<std::string> names;
+        for (const auto& row : r) names.push_back(row[0].as<std::string>());
+        return names;
+    }
+
+    // An error that is the writer's refusal naming `column`, not a failure of the database.
+    static void expect_refusal(const Result<void>& result, const std::string& column,
+                               const std::string& value_text) {
+        ASSERT_TRUE(result.is_error()) << column << " " << value_text;
+        EXPECT_EQ(result.error()->code(), ErrorCode::DATABASE_ERROR);
+        const std::string what = result.error()->what();
+        EXPECT_NE(what.find("REFUSED"), std::string::npos) << what;
+        EXPECT_NE(what.find(column + "=" + value_text), std::string::npos) << what;
+        EXPECT_EQ(what.find("violates"), std::string::npos) << what;
+        EXPECT_EQ(what.find("does not exist"), std::string::npos) << what;
+    }
+
     std::string conn_;
     std::shared_ptr<PostgresDatabase> db_;
 };
 
-// T-8D-2 R54: a backtest metric that is not finite does not fail the results INSERT. Its cell
-// is written DEFAULT: NULL on a statistic column, and the column's own default, 0, on a cost
-// column of migration 018 (transaction_costs, roll_costs, total_roll_fills are NOT NULL DEFAULT
-// 0). So a cost that is not finite is stored as 0, not NULL; the writer names every such
-// column in one WARN (the names are asserted on the builder in test_finite_statement.cpp; this
-// test does not read the log).
+namespace {
+// The three values that are not finite, with the text a refusal names each by.
+const std::vector<std::pair<double, std::string>> kNotFinite = {
+    {kNan, "nan"}, {kInf, "inf"}, {-kInf, "-inf"}};
+// The NOT NULL number columns the two statements can be handed (migrations 017 and 018), written
+// out here so that the tests do not read the list they check.
+const std::vector<std::string> kLiveNotNull = {"daily_roll_costs", "total_roll_costs"};
+const std::vector<std::string> kBacktestNotNull = {"transaction_costs", "roll_costs",
+                                                   "total_roll_fills"};
+}  // namespace
+
+// The lists the refusal reads are the schema's: the NOT NULL number columns of the two tables
+// (migrations 017 and 018). A column made NOT NULL later fails this until the list names it.
+TEST_F(FiniteStatementDbTest, TheNotNullListsOfTheRefusalAreTheNotNullNumberColumnsOfTheSchema) {
+    EXPECT_EQ(not_null_number_columns("trading", "live_results"), kLiveNotNull);
+    EXPECT_EQ(not_null_number_columns("backtest", "results"), kBacktestNotNull);
+    EXPECT_EQ(live_results_not_null_columns(), kLiveNotNull);
+    EXPECT_EQ(backtest_results_not_null_metrics(), kBacktestNotNull);
+}
+
+// The live day's INSERT: a NOT NULL column (daily_roll_costs, total_roll_costs) handed NaN,
+// +inf or -inf refuses the row. No row is stored (after 251c7112 one was, with 0 in the cell),
+// and the error is the refusal naming the column and the value.
+TEST_F(FiniteStatementDbTest, ALiveRowWithANotNullColumnThatIsNotFiniteIsRefusedAndNoRowIsStored) {
+    const Timestamp day = at_utc(2026, 5, 4, 5);
+    const std::string where = "strategy_id = '" + std::string(kStrategy) + "'";
+    for (const auto& column : kLiveNotNull) {
+        for (const auto& [value, text] : kNotFinite) {
+            auto stored = db_->store_live_results_complete(
+                kStrategy, day, {{"daily_pnl", 10.0}, {column, value}, {"sortino_ratio", 1.25}},
+                {{"total_days", 3}}, nlohmann::json(), kPortfolio, "trading.live_results");
+            expect_refusal(stored, column, text);
+            EXPECT_EQ(rows("trading.live_results", where), 0u) << column << " " << text;
+            purge();
+        }
+    }
+}
+
+// The Day T-1 UPDATE: a NOT NULL column handed a value that is not finite refuses the update.
+// The row keeps every cell (sortino_ratio 2.5 of the same update does not land), rows_affected
+// is 0, and the error is the refusal, not the not-null violation of the database.
 TEST_F(FiniteStatementDbTest,
-       ABacktestMetricThatIsNotFiniteIsStoredAsItsColumnDefaultNullOnAStatisticZeroOnACost) {
+       ALiveUpdateWithANotNullColumnThatIsNotFiniteIsRefusedAndTheRowIsUnchanged) {
+    const Timestamp day = at_utc(2026, 5, 4, 5);
+    auto stored = db_->store_live_results_complete(
+        kStrategy, day,
+        {{"daily_pnl", 10.0}, {"sortino_ratio", 1.25}, {"daily_roll_costs", 0.75},
+         {"total_roll_costs", 3.5}},
+        {{"total_days", 3}}, nlohmann::json(), kPortfolio, "trading.live_results");
+    ASSERT_TRUE(stored.is_ok()) << (stored.is_error() ? stored.error()->what() : "");
+    const std::string where = "strategy_id = '" + std::string(kStrategy) + "'";
+    for (const auto& column : kLiveNotNull) {
+        for (const auto& [value, text] : kNotFinite) {
+            size_t changed = 7;
+            auto updated = db_->update_live_results(kStrategy, day,
+                                                    {{column, value}, {"sortino_ratio", 2.5}},
+                                                    kPortfolio, "trading.live_results", &changed);
+            expect_refusal(updated, column, text);
+            EXPECT_EQ(changed, 0u);
+            EXPECT_EQ(cell("trading.live_results", "sortino_ratio", where), "1.25");
+            EXPECT_EQ(cell("trading.live_results", "daily_roll_costs", where), "0.75");
+            EXPECT_EQ(cell("trading.live_results", "total_roll_costs", where), "3.50000000");
+            EXPECT_EQ(cell("trading.live_results", "daily_pnl", where), "10.00000000");
+        }
+    }
+    // The same update with the column finite lands.
+    size_t changed = 0;
+    auto updated = db_->update_live_results(kStrategy, day,
+                                            {{"total_roll_costs", 4.5}, {"sortino_ratio", 2.5}},
+                                            kPortfolio, "trading.live_results", &changed);
+    ASSERT_TRUE(updated.is_ok()) << (updated.is_error() ? updated.error()->what() : "");
+    EXPECT_EQ(changed, 1u);
+    EXPECT_EQ(cell("trading.live_results", "sortino_ratio", where), "2.5");
+    EXPECT_EQ(cell("trading.live_results", "total_roll_costs", where), "4.50000000");
+}
+
+// The backtest summary: a NOT NULL metric (transaction_costs, roll_costs, total_roll_fills)
+// handed NaN, +inf or -inf refuses the row. No results row is stored (after 251c7112 one was,
+// with 0 in the cell), and the error is the refusal naming the metric and the value.
+TEST_F(FiniteStatementDbTest,
+       ABacktestSummaryWithANotNullMetricThatIsNotFiniteIsRefusedAndNoRowIsStored) {
+    const std::string where = "run_id = '" + std::string(kRun) + "'";
+    for (const auto& column : kBacktestNotNull) {
+        for (const auto& [value, text] : kNotFinite) {
+            std::unordered_map<std::string, double> metrics = {
+                {"total_return", 0.25}, {"sharpe_ratio", 1.5}, {"transaction_costs", 12.5},
+                {"roll_costs", 1.5}, {"total_roll_fills", 4.0}};
+            metrics[column] = value;
+            auto stored = db_->store_backtest_summary(kRun, at_utc(2024, 1, 1, 0),
+                                                      at_utc(2026, 1, 1, 0), metrics, kPortfolio,
+                                                      "backtest.results");
+            expect_refusal(stored, column, text);
+            EXPECT_EQ(rows("backtest.results", where), 0u) << column << " " << text;
+            purge();
+        }
+    }
+}
+
+// The live day's INSERT, the ten nullable columns that default to 0: a value that is not finite
+// is stored NULL, not the default (left out of the statement the cell took the 0).
+TEST_F(FiniteStatementDbTest, ALiveValueThatIsNotFiniteIsNullEvenWhereTheColumnDefaultsToZero) {
+    const Timestamp day = at_utc(2026, 5, 4, 5);
+    const std::vector<std::string> defaulted = {
+        "daily_pnl",           "total_transaction_costs", "daily_realized_pnl",
+        "daily_unrealized_pnl", "gross_notional",          "net_notional",
+        "daily_transaction_costs", "daily_return",         "total_cumulative_return",
+        "total_dividend_income"};
+    std::unordered_map<std::string, double> metrics = {{"sortino_ratio", 1.25}};
+    for (size_t i = 0; i < defaulted.size(); ++i) {
+        metrics[defaulted[i]] = kNotFinite[i % kNotFinite.size()].first;
+    }
+    auto stored = db_->store_live_results_complete(kStrategy, day, metrics, {{"total_days", 3}},
+                                                   nlohmann::json(), kPortfolio,
+                                                   "trading.live_results");
+    ASSERT_TRUE(stored.is_ok()) << (stored.is_error() ? stored.error()->what() : "");
+    const std::string where = "strategy_id = '" + std::string(kStrategy) + "'";
+    for (const auto& column : defaulted) {
+        EXPECT_EQ(cell("trading.live_results", column, where), "NULL") << column;
+    }
+    EXPECT_EQ(cell("trading.live_results", "sortino_ratio", where), "1.25");
+    // The two NOT NULL columns were not handed in: they take their default.
+    EXPECT_EQ(cell("trading.live_results", "daily_roll_costs", where), "0");
+    EXPECT_EQ(cell("trading.live_results", "total_roll_costs", where), "0.00000000");
+}
+
+// T-8D-2 R54: a backtest statistic that is not finite does not fail the results INSERT. Its
+// cell is stored NULL (the nineteen nullable metric columns have no default) and the row is
+// kept, with the finite cells, the three NOT NULL ones of migration 018 among them, as handed
+// in. The writer names every such column in one WARN (the names are asserted on the builder in
+// test_finite_statement.cpp; this test does not read the log).
+TEST_F(FiniteStatementDbTest, ABacktestStatisticThatIsNotFiniteIsStoredNullAndTheRowIsKept) {
     const std::unordered_map<std::string, double> metrics = {
         {"total_return", 0.25},     {"sharpe_ratio", kNan},     {"sortino_ratio", kInf},
         {"max_drawdown", 0.1},      {"calmar_ratio", -kInf},    {"volatility", 0.2},
@@ -133,7 +296,7 @@ TEST_F(FiniteStatementDbTest,
         {"avg_win", 1.0},           {"avg_loss", 1.0},          {"max_win", 1.0},
         {"max_loss", 1.0},          {"avg_holding_period", 2.0}, {"var_95", 0.01},
         {"cvar_95", 0.02},          {"beta", 0.0},              {"correlation", 0.0},
-        {"downside_volatility", 0.1}, {"transaction_costs", 12.5}, {"roll_costs", kNan},
+        {"downside_volatility", 0.1}, {"transaction_costs", 12.5}, {"roll_costs", 7.25},
         {"total_roll_fills", 4.0}};
     auto stored = db_->store_backtest_summary(kRun, at_utc(2024, 1, 1, 0), at_utc(2026, 1, 1, 0),
                                               metrics, kPortfolio, "backtest.results");
@@ -148,13 +311,15 @@ TEST_F(FiniteStatementDbTest,
     EXPECT_EQ(cell("backtest.results", "total_return", where), "0.25");
     EXPECT_EQ(cell("backtest.results", "total_trades", where), "3");
     EXPECT_EQ(cell("backtest.results", "transaction_costs", where), "12.5");
-    // A column with a default (018) takes it: the NaN roll cost is stored as 0, not NULL.
-    EXPECT_EQ(cell("backtest.results", "roll_costs", where), "0");
+    EXPECT_EQ(cell("backtest.results", "roll_costs", where), "7.25");
     EXPECT_EQ(cell("backtest.results", "total_roll_fills", where), "4");
 }
 
-// T-8D R12 (b): a metric that is not handed in is no measured 0; its cell is NULL.
-TEST_F(FiniteStatementDbTest, ABacktestMetricThatIsNotHandedInIsStoredNullNotZero) {
+// A metric that is NOT HANDED IN (absent, not a NaN) is written DEFAULT: NULL on a statistic
+// column (T-8D R12 (b): no measured 0), and the column's own default 0 on the three NOT NULL
+// columns of migration 018, as before the guard. Nothing is refused.
+TEST_F(FiniteStatementDbTest,
+       ABacktestMetricThatIsNotHandedInIsStoredAsItsColumnDefaultNullOnAStatisticZeroOnACost) {
     auto stored = db_->store_backtest_summary(kRun, at_utc(2024, 1, 1, 0), at_utc(2026, 1, 1, 0),
                                               {{"total_return", 0.25}}, kPortfolio,
                                               "backtest.results");
@@ -164,10 +329,12 @@ TEST_F(FiniteStatementDbTest, ABacktestMetricThatIsNotHandedInIsStoredNullNotZer
     EXPECT_EQ(cell("backtest.results", "sharpe_ratio", where), "NULL");
     EXPECT_EQ(cell("backtest.results", "profit_factor", where), "NULL");
     EXPECT_EQ(cell("backtest.results", "transaction_costs", where), "0");
+    EXPECT_EQ(cell("backtest.results", "roll_costs", where), "0");
+    EXPECT_EQ(cell("backtest.results", "total_roll_fills", where), "0");
 }
 
-// T-8D R12: the live row's INSERT leaves the cell out; the Day T-1 UPDATE writes NULL over a
-// stored value.
+// T-8D R12: the live row's INSERT writes NULL in the cell; the Day T-1 UPDATE writes NULL over
+// a stored value.
 TEST_F(FiniteStatementDbTest, ALiveValueThatIsNotFiniteIsNullOnTheInsertAndOnTheUpdate) {
     const Timestamp day = at_utc(2026, 5, 4, 5);
     auto stored = db_->store_live_results_complete(

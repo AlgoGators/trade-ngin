@@ -2,6 +2,7 @@
 // Phase 0: Database Extensions to Replace Raw SQL
 // This file contains new methods to eliminate raw SQL from backtest and live trading
 
+#include <algorithm>
 #include <ctime>
 #include <iomanip>
 #include <sstream>
@@ -193,6 +194,17 @@ Result<void> PostgresDatabase::store_backtest_summary(
         return cells_validation;
     }
 
+    // A NOT NULL metric (migration 018) that is not finite refuses the row: no statement is
+    // sent and the error is returned, as when the statement failed on it, so no 0 is stored in
+    // its place (T-8D R12).
+    if (const std::string refusal = non_finite_not_null_refusal(
+            table_name + " INSERT for run_id " + run_id, metrics,
+            backtest_results_not_null_metrics());
+        !refusal.empty()) {
+        ERROR(refusal);
+        return make_error<void>(ErrorCode::DATABASE_ERROR, refusal, component_id_);
+    }
+
     // Validate connection
     auto validation = validate_connection();
     if (validation.is_error()) {
@@ -247,15 +259,31 @@ Result<void> PostgresDatabase::store_backtest_summary(
             "transaction_costs", "roll_costs", "total_roll_fills"};  // 018 (T-ROLLX)
 
         // A metric that is not handed in or is not finite has no value: its cell is written
-        // DEFAULT (NULL on a statistic column) and the run is kept (T-8D R12, T-8D-2 R54).
+        // DEFAULT and the run is kept (T-8D R12, T-8D-2 R54). DEFAULT is NULL on the nullable
+        // columns; a NOT NULL column that is not handed in takes its 0, as it did before the
+        // guard (one that is not finite was refused above).
         std::vector<std::string> without_value;
         query += backtest_summary_metric_values(metric_names, metrics, &without_value);
         query += cell_values + ")";
-        if (!without_value.empty()) {
+        std::vector<std::string> stored_null;
+        std::vector<std::string> stored_zero;
+        for (const auto& name : without_value) {
+            const auto& not_null = backtest_results_not_null_metrics();
+            const bool is_not_null =
+                std::find(not_null.begin(), not_null.end(), name) != not_null.end();
+            (is_not_null ? stored_zero : stored_null).push_back(name);
+        }
+        if (!stored_null.empty()) {
             WARN("Backtest summary for run_id " + run_id + ": " +
-                 std::to_string(without_value.size()) +
-                 " metric(s) without a finite value stored as the column default (NULL on a "
-                 "statistic): " + joined_columns(without_value));
+                 std::to_string(stored_null.size()) +
+                 " metric(s) without a finite value stored NULL: " +
+                 joined_columns(stored_null));
+        }
+        if (!stored_zero.empty()) {
+            WARN("Backtest summary for run_id " + run_id + ": " +
+                 std::to_string(stored_zero.size()) +
+                 " metric(s) not handed in, stored as the column default 0: " +
+                 joined_columns(stored_zero));
         }
 
         txn.exec(query);
@@ -598,6 +626,17 @@ Result<void> PostgresDatabase::update_live_results(
         return cells_validation;
     }
 
+    // A NOT NULL column (migration 017) that is not finite refuses the update: no statement is
+    // sent, the row keeps every cell it had, and the error is returned, as when the statement
+    // failed on it (T-8D R12).
+    if (const std::string refusal = non_finite_not_null_refusal(
+            table_name + " UPDATE for " + strategy_id + " on " + format_timestamp(date), updates,
+            live_results_not_null_columns());
+        !refusal.empty()) {
+        ERROR(refusal);
+        return make_error<void>(ErrorCode::DATABASE_ERROR, refusal, component_id_);
+    }
+
     // Validate connection
     auto validation = validate_connection();
     if (validation.is_error()) {
@@ -630,7 +669,8 @@ Result<void> PostgresDatabase::update_live_results(
         std::string query = "UPDATE " + table_name + " SET ";
 
         // A value that is not finite is assigned NULL, never formatted into the statement
-        // (T-8D R12).
+        // (T-8D R12); every column that reaches this is nullable (a NOT NULL one was refused
+        // above).
         std::vector<std::string> without_value;
         query += live_results_update_assignments(updates, &without_value);
         bool first = updates.empty();
@@ -846,6 +886,17 @@ Result<void> PostgresDatabase::store_live_results_complete(
         return cells_validation;
     }
 
+    // A NOT NULL column (migration 017) that is not finite refuses the row: no statement is
+    // sent and the error is returned, as when the statement failed on it, so no 0 is stored in
+    // its place (T-8D R12).
+    if (const std::string refusal = non_finite_not_null_refusal(
+            table_name + " INSERT for " + strategy_id + " on " + format_timestamp(date), metrics,
+            live_results_not_null_columns());
+        !refusal.empty()) {
+        ERROR(refusal);
+        return make_error<void>(ErrorCode::DATABASE_ERROR, refusal, component_id_);
+    }
+
     // Validate connection
     auto validation = validate_connection();
     if (validation.is_error()) {
@@ -875,14 +926,15 @@ Result<void> PostgresDatabase::store_live_results_complete(
         std::string values = txn.quote(strategy_id) + ", " + txn.quote(actual_portfolio_id) +
                              ", '" + format_timestamp(date) + "'";
 
-        // Add double metrics; a value that is not finite is left out, so its cell stays NULL
-        // (T-8D R12)
+        // Add double metrics; a value that is not finite is written NULL, by name, so that
+        // its cell does not take a column default of 0 (T-8D R12); every column that reaches
+        // this is nullable (a NOT NULL one was refused above).
         std::vector<std::string> without_value;
         append_live_results_double_columns(metrics, columns, values, &without_value);
         if (!without_value.empty()) {
             WARN("Live results for " + strategy_id + " on " + format_timestamp(date) + ": " +
                  std::to_string(without_value.size()) +
-                 " value(s) not finite, left out of the row (NULL): " +
+                 " value(s) not finite, stored NULL: " +
                  joined_columns(without_value));
         }
 
