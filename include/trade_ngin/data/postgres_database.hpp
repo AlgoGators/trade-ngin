@@ -286,38 +286,11 @@ public:
     // BACKTEST DATA STORAGE METHODS
     // ============================================================================
 
-    /**
-     * @brief Store backtest execution data
-     * @param executions Vector of execution reports
-     * @param run_id Backtest run identifier
-     * @param table_name Name of the table to insert into
-     * @return Result indicating success or failure
-     */
-    Result<void> store_backtest_executions(
-        const std::vector<ExecutionReport>& executions, const std::string& run_id,
-        const std::string& portfolio_id = "BASE_PORTFOLIO",
-        const std::string& table_name = "backtest.executions") override;
-
-    // Multi-strategy version: store executions with strategy_id
+    // Store a strategy's backtest executions (backtest.executions carries strategy_id)
     virtual Result<void> store_backtest_executions_with_strategy(
         const std::vector<ExecutionReport>& executions, const std::string& run_id,
         const std::string& strategy_id, const std::string& portfolio_id = "BASE_PORTFOLIO",
         const std::string& table_name = "backtest.executions");
-
-    /**
-     * @brief Store backtest signals
-     * @param signals Map of symbol to signal value
-     * @param strategy_id ID of the strategy generating signals
-     * @param run_id Backtest run identifier
-     * @param timestamp Timestamp of signals
-     * @param table_name Name of the table to insert into
-     * @return Result indicating success or failure
-     */
-    Result<void> store_backtest_signals(
-        const std::unordered_map<std::string, double>& signals, const std::string& strategy_id,
-        const std::string& run_id, const Timestamp& timestamp,
-        const std::string& portfolio_id = "BASE_PORTFOLIO",
-        const std::string& table_name = "backtest.signals") override;
 
     // Multi-strategy version: store metadata with portfolio_run_id, strategy_allocation,
     // portfolio_config
@@ -558,12 +531,6 @@ public:
         const std::string& portfolio_id = "BASE_PORTFOLIO",
         const std::string& table_name = "backtest.final_positions",
         bool keep_closed_rows = false);
-
-    // Multi-strategy version: store positions with strategy_id
-    virtual Result<void> store_backtest_positions_with_strategy(
-        const std::vector<Position>& positions, const std::string& run_id,
-        const std::string& strategy_id, const std::string& portfolio_id = "BASE_PORTFOLIO",
-        const std::string& table_name = "backtest.final_positions");
 
     /**
      * @brief Update live results for previous day finalization (replaces raw SQL UPDATE)

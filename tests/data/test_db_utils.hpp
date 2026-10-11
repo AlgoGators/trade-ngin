@@ -212,24 +212,6 @@ public:
         return Result<void>();
     }
 
-    // Backtest data storage methods
-    Result<void> store_backtest_executions(const std::vector<ExecutionReport>& executions,
-                                           const std::string& run_id,
-                                           const std::string& portfolio_id,
-                                           const std::string& table_name) override {
-        (void)executions; (void)run_id; (void)portfolio_id; (void)table_name;
-        return record_call("store_backtest_executions");
-    }
-
-    Result<void> store_backtest_signals(const std::unordered_map<std::string, double>& signals,
-                                        const std::string& strategy_id, const std::string& run_id,
-                                        const Timestamp& timestamp, const std::string& portfolio_id,
-                                        const std::string& table_name) override {
-        (void)signals; (void)strategy_id; (void)run_id;
-        (void)timestamp; (void)portfolio_id; (void)table_name;
-        return record_call("store_backtest_signals");
-    }
-
     // Live trading data storage methods
     Result<void> store_trading_results(
         const std::string& strategy_id, const Timestamp& date, double total_return,
@@ -331,15 +313,6 @@ public:
         (void)positions; (void)run_id; (void)portfolio_id; (void)table_name;
         (void)keep_closed_rows;
         return record_call("store_backtest_positions");
-    }
-
-    Result<void> store_backtest_positions_with_strategy(
-        const std::vector<Position>& positions, const std::string& run_id,
-        const std::string& strategy_id, const std::string& portfolio_id = "BASE_PORTFOLIO",
-        const std::string& table_name = "backtest.final_positions") override {
-        (void)positions; (void)run_id; (void)strategy_id;
-        (void)portfolio_id; (void)table_name;
-        return record_call("store_backtest_positions_with_strategy");
     }
 
     Result<void> store_backtest_executions_with_strategy(

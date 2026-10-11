@@ -118,15 +118,10 @@ Result<void> ResultsManagerBase::save_executions(const std::vector<ExecutionRepo
 
     INFO("Storing " + std::to_string(executions.size()) + " executions to " + table_name);
 
-    // Use appropriate storage method based on schema
-    if (schema_ == "backtest") {
-        // Note: portfolio_id not available in base class, will default to BASE_PORTFOLIO
-        // BacktestResultsManager should override this method to pass portfolio_id
-        return db_->store_backtest_executions(executions, run_id, "BASE_PORTFOLIO", table_name);
-    } else {
-        return db_->store_executions(executions, strategy_id_, strategy_name_, portfolio_id_,
-                                     table_name);
-    }
+    // The live writer: a backtest stores its executions per strategy
+    // (BacktestResultsManager::save_strategy_executions) and never comes here.
+    return db_->store_executions(executions, strategy_id_, strategy_name_, portfolio_id_,
+                                 table_name);
 }
 
 Result<void> ResultsManagerBase::save_signals(
@@ -153,16 +148,9 @@ Result<void> ResultsManagerBase::save_signals(
 
     INFO("Storing " + std::to_string(signals.size()) + " signals to " + table_name);
 
-    // Use appropriate storage method based on schema
-    if (schema_ == "backtest") {
-        // Note: portfolio_id not available in base class, will default to BASE_PORTFOLIO
-        // BacktestResultsManager should override this method to pass portfolio_id
-        return db_->store_backtest_signals(signals, strategy_id_, run_id, date, "BASE_PORTFOLIO",
-                                           table_name);
-    } else {
-        return db_->store_signals(signals, strategy_id_, strategy_name_, portfolio_id_, date,
-                                  table_name);
-    }
+    // The live writer: a backtest stores no signals (backtest.signals has no writer).
+    return db_->store_signals(signals, strategy_id_, strategy_name_, portfolio_id_, date,
+                              table_name);
 }
 
 }  // namespace trade_ngin

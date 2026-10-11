@@ -36,11 +36,6 @@ ExecutionReport make_exec(const std::string& symbol, double qty, double price) {
     return e;
 }
 
-Position make_pos(const std::string& sym, double qty, double avg_price = 100.0) {
-    return Position(sym, Quantity(qty), Price(avg_price), Decimal(0.0), Decimal(0.0),
-                    Timestamp{});
-}
-
 }  // namespace
 
 class BacktestResultsManagerTest : public TestBase {
@@ -55,21 +50,6 @@ protected:
     std::shared_ptr<MockPostgresDatabase> db_;
     std::unique_ptr<BacktestResultsManager> mgr_;
 };
-
-// ===== generate_run_id =====
-
-TEST_F(BacktestResultsManagerTest, GenerateRunIdContainsStrategyId) {
-    auto id = BacktestResultsManager::generate_run_id("TF_FAST");
-    EXPECT_NE(id.find("TF_FAST"), std::string::npos);
-    EXPECT_FALSE(id.empty());
-}
-
-TEST_F(BacktestResultsManagerTest, GenerateRunIdProducesDistinctIdsAcrossCalls) {
-    auto id1 = BacktestResultsManager::generate_run_id("X");
-    std::this_thread::sleep_for(std::chrono::milliseconds(2));
-    auto id2 = BacktestResultsManager::generate_run_id("X");
-    EXPECT_NE(id1, id2);
-}
 
 // ===== getters / setters =====
 
@@ -145,60 +125,7 @@ TEST_F(BacktestResultsManagerTest, SaveEquityCurveEmptySkipsDbCall) {
     EXPECT_EQ(db_->call_count("store_backtest_equity_curve_batch"), 0);
 }
 
-// ===== save_final_positions =====
-
-TEST_F(BacktestResultsManagerTest, SaveFinalPositionsRoutesThroughStoreBacktestPositions) {
-    mgr_->set_final_positions({make_pos("ES", 5.0), make_pos("NQ", -2.0)});
-    db_->reset_call_counts();
-    auto r = mgr_->save_final_positions("RUN_1");
-    EXPECT_TRUE(r.is_ok());
-    // Either route may be used depending on internal logic; assert at least one.
-    int total = db_->call_count("store_backtest_positions") +
-                db_->call_count("store_positions");
-    EXPECT_GT(total, 0);
-}
-
-// ===== save_executions_batch =====
-
-TEST_F(BacktestResultsManagerTest, SaveExecutionsBatchInvokesStoreExecutions) {
-    mgr_->set_executions({make_exec("ES", 5.0, 4000.0), make_exec("ES", -2.0, 4010.0)});
-    db_->reset_call_counts();
-    auto r = mgr_->save_executions_batch("RUN_1");
-    EXPECT_TRUE(r.is_ok());
-    int total = db_->call_count("store_backtest_executions") +
-                db_->call_count("store_backtest_executions_with_strategy");
-    EXPECT_GT(total, 0);
-}
-
-TEST_F(BacktestResultsManagerTest, SaveExecutionsBatchEmptyIsNoOp) {
-    db_->reset_call_counts();
-    auto r = mgr_->save_executions_batch("RUN_1");
-    EXPECT_TRUE(r.is_ok());
-    EXPECT_EQ(db_->call_count("store_backtest_executions"), 0);
-    EXPECT_EQ(db_->call_count("store_backtest_executions_with_strategy"), 0);
-}
-
-// ===== save_signals_batch =====
-
-TEST_F(BacktestResultsManagerTest, SaveSignalsBatchInvokesStoreBacktestSignalsPerTimestamp) {
-    mgr_->add_signals(date_at(2026, 1, 1), {{"ES", 0.5}, {"NQ", -0.3}});
-    mgr_->add_signals(date_at(2026, 1, 2), {{"ES", 0.6}});
-    db_->reset_call_counts();
-    auto r = mgr_->save_signals_batch("RUN_1");
-    EXPECT_TRUE(r.is_ok());
-    EXPECT_GT(db_->call_count("store_backtest_signals"), 0);
-}
-
-// ===== save_strategy_positions / save_strategy_executions =====
-
-TEST_F(BacktestResultsManagerTest, SaveStrategyPositionsInvokesPerStrategyDbCall) {
-    mgr_->set_strategy_positions("STRAT_A", {make_pos("ES", 5.0)});
-    mgr_->set_strategy_positions("STRAT_B", {make_pos("NQ", -2.0)});
-    db_->reset_call_counts();
-    auto r = mgr_->save_strategy_positions("PORTFOLIO_RUN_1");
-    EXPECT_TRUE(r.is_ok());
-    EXPECT_GE(db_->call_count("store_backtest_positions_with_strategy"), 2);
-}
+// ===== save_strategy_executions =====
 
 TEST_F(BacktestResultsManagerTest, SaveStrategyExecutionsInvokesPerStrategyDbCall) {
     mgr_->set_strategy_executions("STRAT_A", {make_exec("ES", 5.0, 4000.0)});
@@ -210,7 +137,6 @@ TEST_F(BacktestResultsManagerTest, SaveStrategyExecutionsInvokesPerStrategyDbCal
 }
 
 TEST_F(BacktestResultsManagerTest, SaveStrategyMetadataInvokesPerStrategyMetadataCall) {
-    mgr_->set_strategy_positions("STRAT_A", {make_pos("ES", 5.0)});
     mgr_->set_metadata(date_at(2026, 1, 1), date_at(2026, 1, 5),
                         nlohmann::json{{"k", "v"}}, "Run", "");
     std::unordered_map<std::string, double> allocations{{"STRAT_A", 1.0}};
@@ -223,26 +149,25 @@ TEST_F(BacktestResultsManagerTest, SaveStrategyMetadataInvokesPerStrategyMetadat
 
 // ===== save_all_results: integration =====
 
-TEST_F(BacktestResultsManagerTest, SaveAllResultsRoutesAllStorageMethodsInOrder) {
+TEST_F(BacktestResultsManagerTest, SaveAllResultsStoresTheSummaryAndTheCurveAndNothingElse) {
     mgr_->set_metadata(date_at(2026, 1, 1), date_at(2026, 1, 5),
                         nlohmann::json{}, "Run", "Desc");
     mgr_->set_performance_metrics({{"total_return", 0.05}});
     mgr_->set_equity_curve({{date_at(2026, 1, 1), 1'000'000.0}});
-    mgr_->set_final_positions({make_pos("ES", 5.0)});
-    mgr_->set_executions({make_exec("ES", 5.0, 4000.0)});
-    mgr_->add_signals(date_at(2026, 1, 1), {{"ES", 0.5}});
+    mgr_->set_strategy_executions("STRAT_A", {make_exec("ES", 5.0, 4000.0)});
 
     db_->reset_call_counts();
     auto r = mgr_->save_all_results("RUN_1", date_at(2026, 1, 5));
     EXPECT_TRUE(r.is_ok());
     EXPECT_EQ(db_->call_count("store_backtest_summary"), 1);
     EXPECT_EQ(db_->call_count("store_backtest_equity_curve_batch"), 1);
-    int positions_total = db_->call_count("store_backtest_positions") +
-                          db_->call_count("store_positions");
-    EXPECT_GT(positions_total, 0);
-    int execs_total = db_->call_count("store_backtest_executions") +
-                      db_->call_count("store_backtest_executions_with_strategy");
-    EXPECT_GT(execs_total, 0);
+    // The positions are stored daily by the coordinator and the executions per strategy by
+    // save_strategy_executions(); save_all_results writes neither, and no signals.
+    EXPECT_EQ(db_->call_count("store_backtest_positions"), 0);
+    EXPECT_EQ(db_->call_count("store_positions"), 0);
+    EXPECT_EQ(db_->call_count("store_backtest_executions_with_strategy"), 0);
+    EXPECT_EQ(db_->call_count("store_executions"), 0);
+    EXPECT_EQ(db_->call_count("store_signals"), 0);
 }
 
 // ===== validation paths =====

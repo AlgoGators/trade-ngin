@@ -30,12 +30,8 @@ private:
     // One list of typed cells per equity point (migration 031: the six overlay columns), or
     // empty: no cell column is named.
     BacktestCurveCells equity_curve_cells_;
-    std::vector<Position> final_positions_;
-    std::vector<ExecutionReport> executions_;
-    std::map<Timestamp, std::unordered_map<std::string, double>> signals_history_;
 
     // Multi-strategy support: per-strategy data
-    std::unordered_map<std::string, std::vector<Position>> strategy_positions_;
     std::unordered_map<std::string, std::vector<ExecutionReport>> strategy_executions_;
 
     // Metadata
@@ -81,26 +77,9 @@ public:
         equity_curve_ = curve;
     }
 
-    void set_final_positions(const std::vector<Position>& positions) {
-        final_positions_ = positions;
-    }
-
-    void set_executions(const std::vector<ExecutionReport>& executions) {
-        executions_ = executions;
-    }
-
-    // Multi-strategy support: per-strategy positions and executions
-    void set_strategy_positions(const std::string& strategy_id, const std::vector<Position>& positions) {
-        strategy_positions_[strategy_id] = positions;
-    }
-
+    // Multi-strategy support: per-strategy executions
     void set_strategy_executions(const std::string& strategy_id, const std::vector<ExecutionReport>& executions) {
         strategy_executions_[strategy_id] = executions;
-    }
-
-    void add_signals(const Timestamp& timestamp,
-                    const std::unordered_map<std::string, double>& signals) {
-        signals_history_[timestamp] = signals;
     }
 
     void set_metadata(const Timestamp& start_date,
@@ -118,19 +97,12 @@ public:
     // Individual storage methods (called by save_all_results)
     Result<void> save_summary_results(const std::string& run_id);
     Result<void> save_equity_curve(const std::string& run_id);
-    Result<void> save_final_positions(const std::string& run_id);
-    Result<void> save_executions_batch(const std::string& run_id);
-    Result<void> save_signals_batch(const std::string& run_id);
 
     // Multi-strategy storage methods
-    Result<void> save_strategy_positions(const std::string& portfolio_run_id);
     Result<void> save_strategy_executions(const std::string& portfolio_run_id);
     Result<void> save_strategy_metadata(const std::string& portfolio_run_id,
                                        const std::unordered_map<std::string, double>& strategy_allocations,
                                        const nlohmann::json& portfolio_config);
-
-    // Utility method to generate run_id if not provided
-    static std::string generate_run_id(const std::string& strategy_id);
 };
 
 } // namespace trade_ngin
