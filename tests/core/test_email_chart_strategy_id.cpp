@@ -71,6 +71,32 @@ TEST(EmailChartStrategyId, EveryChartOfThePerStrategyBodyQueriesTheIdItIsGiven) 
     EXPECT_GE(with_id, 6) << "the six charts that read stored rows each sent their query";
 }
 
+// T-8D-2 R55: the single-table report body (the overload the equity runner calls) passed the
+// literal LIVE_TREND_FOLLOWING to three of its six database charts (cost per $1M traded, margin
+// posted, cumulative PnL by symbol). With the equity book's portfolio id that key matches no row,
+// so the equity report carried none of the three.
+TEST(EmailChartStrategyId, EveryChartOfTheSingleTableBodyQueriesTheIdItIsGiven) {
+    const std::string equity_id = "LIVE_EQUITY_MEAN_REVERSION";
+    auto db = std::make_shared<RecordingDatabase>();
+    EmailSender sender{EmailSenderConfig{}};
+    (void)sender.generate_trading_report_body(
+        std::unordered_map<std::string, Position>{}, std::nullopt, {},
+        std::vector<ExecutionReport>{}, "2026-06-16", true, {}, db,
+        std::unordered_map<std::string, Position>{}, {}, {}, {}, equity_id, "EQUITY_MR_PORTFOLIO");
+
+    int with_id = 0;
+    for (const auto& q : db->queries) {
+        if (q.find("strategy_id = '") == std::string::npos)
+            continue;
+        EXPECT_NE(q.find("strategy_id = '" + equity_id + "'"), std::string::npos)
+            << "a chart query names another book's strategy id: " << q;
+        EXPECT_EQ(q.find("strategy_id = 'LIVE_TREND_FOLLOWING'"), std::string::npos) << q;
+        EXPECT_NE(q.find("portfolio_id = 'EQUITY_MR_PORTFOLIO'"), std::string::npos) << q;
+        ++with_id;
+    }
+    EXPECT_GE(with_id, 6) << "the six charts that read stored rows each sent their query";
+}
+
 TEST(EmailChartStrategyId, BothFuturesRunnersPassTheirOwnStrategyIdToTheCharts) {
     for (const char* runner :
          {"apps/strategies/live_portfolio_conservative.cpp", "apps/strategies/live_portfolio.cpp"}) {

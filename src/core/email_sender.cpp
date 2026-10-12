@@ -748,7 +748,7 @@ std::string EmailSender::generate_trading_report_body(
         }
 
         total_transaction_costs_base64_ = ChartGenerator::generate_total_transaction_costs_chart(
-            db, "LIVE_TREND_FOLLOWING", chart_portfolio_id_legacy, date);
+            db, chart_strategy_id, chart_portfolio_id_legacy, date);
         if (!total_transaction_costs_base64_.empty()) {
             html << "<h3 style=\"margin-top: 20px; color: #333;\">Cost per $1M Traded (Efficiency "
                     "Metric)</h3>\n";
@@ -761,7 +761,7 @@ std::string EmailSender::generate_trading_report_body(
         }
 
         margin_posted_base64_ = ChartGenerator::generate_margin_posted_chart(
-            db, "LIVE_TREND_FOLLOWING", chart_portfolio_id_legacy, date);
+            db, chart_strategy_id, chart_portfolio_id_legacy, date);
 
         if (!margin_posted_base64_.empty()) {
             html << "<h3 style=\"margin-top: 20px; color: #333;\">Margin Posted</h3>\n";
@@ -786,7 +786,7 @@ std::string EmailSender::generate_trading_report_body(
         }
 
         cumulative_pnl_by_symbol_base64_ = ChartGenerator::generate_cumulative_pnl_by_symbol_chart(
-            db, "LIVE_TREND_FOLLOWING", chart_portfolio_id_legacy, date);
+            db, chart_strategy_id, chart_portfolio_id_legacy, date);
         if (!cumulative_pnl_by_symbol_base64_.empty()) {
             html << "<h3 style=\"margin-top: 20px; color: #333;\">Cumulative PnL by Symbol "
                     "(All-Time)</h3>\n";

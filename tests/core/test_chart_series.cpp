@@ -5,11 +5,15 @@
 // function it names, with no database and no gnuplot; the fetchers are run against a database
 // double that answers a query with a table of text cells, as the live database layer does.
 // Drawing a chart (gnuplot) is not unit-tested.
+//
+// ChartQueriesDb is the extra: the same queries sent to a real database, read-only, through
+// TRADE_NGIN_TEST_DSN (it skips, visibly, without one).
 
 #include <gtest/gtest.h>
 
 #include <arrow/api.h>
 
+#include <cstdlib>
 #include <memory>
 #include <string>
 #include <utility>
@@ -17,6 +21,7 @@
 
 #include "../data/test_db_utils.hpp"
 #include "trade_ngin/core/chart_generator.hpp"
+#include "trade_ngin/data/postgres_database.hpp"
 
 using namespace trade_ngin;
 using namespace trade_ngin::testing;
@@ -110,6 +115,32 @@ TEST(ChartQueries, TheDatedQueriesAreBoundedByTheRunDate) {
                     "DATE(last_update) < DATE('2026-04-25')"));
     EXPECT_TRUE(has(ChartQueries::cumulative_pnl_by_symbol(kStrategy, kPortfolio, "2026-04-25"),
                     "DATE(last_update) <= DATE('2026-04-25')"));
+}
+
+// T-8D-2 R55: a chart reads the system book's rows only. trading.positions and
+// trading.equity_curve carry a portfolio_type (migration 001); the sub-query that finds the
+// previous stored day reads the same book as the rows it dates.
+TEST(ChartQueries, AQueryOfATableThatCarriesAPortfolioTypeReadsTheSystemBookOnly) {
+    const std::string filter = "portfolio_type = 'system'";
+    EXPECT_TRUE(has(ChartQueries::equity_curve(kStrategy, kPortfolio, 30), filter));
+    EXPECT_TRUE(
+        has(ChartQueries::cumulative_pnl_by_symbol(kStrategy, kPortfolio, "2026-04-25"), filter));
+    const std::string pnl = ChartQueries::pnl_by_symbol(kStrategy, kPortfolio, "2026-04-25");
+    const auto first = pnl.find(filter);
+    ASSERT_NE(first, std::string::npos) << pnl;
+    EXPECT_NE(pnl.find(filter, first + 1), std::string::npos)
+        << "the sub-query that finds the previous stored day is not filtered: " << pnl;
+}
+
+// trading.live_results has no portfolio_type column: a query that named it would fail and the
+// chart would be left out.
+TEST(ChartQueries, AQueryOfLiveResultsNamesNoPortfolioType) {
+    for (const auto& query :
+         {ChartQueries::daily_pnl(kStrategy, kPortfolio, "2026-04-25", 30),
+          ChartQueries::margin_posted(kStrategy, kPortfolio, "2026-04-25"),
+          ChartQueries::cost_per_million(kStrategy, kPortfolio, "2026-04-25")}) {
+        EXPECT_FALSE(has(query, "portfolio_type")) << query;
+    }
 }
 
 // --- the equity curve ----------------------------------------------------------------------------
@@ -237,4 +268,45 @@ TEST(ChartFetchers, AQueryThatFailsIsNoChart) {
     EXPECT_TRUE(
         ChartGenerator::fetch_cumulative_pnl_by_symbol_data(db, kStrategy, kPortfolio, "2026-04-24")
             .labels.empty());
+}
+
+// --- the extra: the queries on a real database (read-only; skips without TRADE_NGIN_TEST_DSN) ----
+
+class ChartQueriesDb : public ::testing::Test {
+protected:
+    void SetUp() override {
+        const char* dsn = std::getenv("TRADE_NGIN_TEST_DSN");
+        if (dsn == nullptr || !*dsn) {
+            GTEST_SKIP() << "TRADE_NGIN_TEST_DSN not set; no database to send the chart queries to";
+        }
+        db_ = std::make_shared<PostgresDatabase>(dsn);
+        if (db_->connect().is_error() || !db_->is_connected()) {
+            GTEST_SKIP() << "database unreachable";
+        }
+    }
+    void TearDown() override {
+        if (db_ && db_->is_connected())
+            db_->disconnect();
+    }
+    std::shared_ptr<PostgresDatabase> db_;
+};
+
+// A query that names a column its table does not have fails, and its chart is silently left out
+// of the report: every chart query must run on the schema as it is.
+TEST_F(ChartQueriesDb, EveryChartQueryRunsOnTheDatabase) {
+    const std::string strategy = "LIVE_TREND_FOLLOWING";
+    const std::string portfolio = "CONSERVATIVE_PORTFOLIO";
+    const std::vector<std::string> queries = {
+        ChartQueries::equity_curve(strategy, portfolio, 30),
+        ChartQueries::pnl_by_symbol(strategy, portfolio, "2026-04-25"),
+        ChartQueries::daily_pnl(strategy, portfolio, "2026-04-25", 30),
+        ChartQueries::cost_per_million(strategy, portfolio, "2026-04-25"),
+        ChartQueries::margin_posted(strategy, portfolio, "2026-04-25"),
+        ChartQueries::cumulative_pnl_by_symbol(strategy, portfolio, "2026-04-25"),
+    };
+    for (const auto& query : queries) {
+        auto result = db_->execute_query(query);
+        EXPECT_FALSE(result.is_error()) << query << "\n"
+                                        << (result.is_error() ? result.error()->what() : "");
+    }
 }

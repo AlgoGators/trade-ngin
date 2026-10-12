@@ -89,6 +89,11 @@ std::string ChartHelpers::format_currency(double value, int precision) {
 // ============================================================================
 // ChartQueries: the text of each chart's query
 // ============================================================================
+//
+// Every query reads one book: its strategy_id and its portfolio_id (T-8D-2 R55). The two tables
+// that carry a portfolio_type (trading.positions and trading.equity_curve, migration 001) are
+// read for the system book only. trading.live_results and trading.executions have no such column:
+// their rows are the book's by the two ids.
 
 std::string ChartQueries::equity_curve(const std::string& strategy_id,
                                        const std::string& portfolio_id, int lookback_days) {
@@ -100,6 +105,7 @@ std::string ChartQueries::equity_curve(const std::string& strategy_id,
            "AND portfolio_id = '" +
            portfolio_id +
            "' "
+           "AND portfolio_type = 'system' "
            "ORDER BY timestamp DESC "
            "LIMIT " +
            std::to_string(lookback_days);
@@ -115,6 +121,7 @@ std::string ChartQueries::pnl_by_symbol(const std::string& strategy_id,
            "AND portfolio_id = '" +
            portfolio_id +
            "' "
+           "AND portfolio_type = 'system' "
            // E2-F19 R-6: the previous SESSION, not the previous calendar day -- a Monday
            // report used to read Sunday's carried rows.
            "AND DATE(last_update) = (SELECT MAX(DATE(last_update)) FROM trading.positions "
@@ -124,6 +131,7 @@ std::string ChartQueries::pnl_by_symbol(const std::string& strategy_id,
            "                           AND portfolio_id = '" +
            portfolio_id +
            "' "
+           "                           AND portfolio_type = 'system' "
            "                           AND DATE(last_update) < DATE('" +
            date +
            "')) "
@@ -202,6 +210,7 @@ std::string ChartQueries::cumulative_pnl_by_symbol(const std::string& strategy_i
            "AND portfolio_id = '" +
            portfolio_id +
            "' "
+           "AND portfolio_type = 'system' "
            "AND DATE(last_update) <= DATE('" +
            date +
            "') "
