@@ -53,7 +53,8 @@ public:
      * sizing_vol, EMAs. The first line is the portfolio value as this run wrote it (today's
      * costs booked), with the gross and net notional; two comment lines above the column names
      * say what sizing_vol is and what pct_of_portfolio_value divides by. Every row prints six
-     * decimals.
+     * decimals, but market_price, which prints the shortest text that reads back as the same
+     * number (a price below 0.1 keeps every digit).
      *
      * @param date Current trading date
      * @param strategy_positions Per-strategy positions map
@@ -110,7 +111,8 @@ public:
      * close two days before the run date (the T-2 close) and mark the close of the day before
      * it (the T-1 close, the day the file settles); neither is an entry or an exit price. A
      * symbol with no close on that day has an empty cell. The file starts with its column
-     * names (no comment line) and every row prints six decimals.
+     * names (no comment line); quantity and realized_pnl print six decimals on every row, the
+     * two marks the shortest text that reads back as the same number.
      *
      * @param date Current trading date (for filename)
      * @param yesterday_date Yesterday's date

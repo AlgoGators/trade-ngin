@@ -9,6 +9,7 @@
 #include "trade_ngin/core/logger.hpp"
 #include "trade_ngin/data/conversion_utils.hpp"
 #include "trade_ngin/data/database_interface.hpp"
+#include "trade_ngin/data/finite_statement.hpp"
 #include "trade_ngin/instruments/instrument_registry.hpp"
 #include "trade_ngin/strategy/base_strategy.hpp"
 #include "trade_ngin/strategy/trend_following.hpp"
@@ -135,7 +136,9 @@ Result<std::string> CSVExporter::export_finalized_positions(
         // mark (T-2 close)" and "Mark (T-1 close)". No comment line: this file starts with
         // its column names.
         file << "strategy,symbol,quantity,prior_mark,mark,realized_pnl\n";
-        // One number format for every row of the file, set once, after the header.
+        // One number format for every row of the file, set once, after the header. The two
+        // marks are prices: each prints the shortest text that reads back as the same number
+        // (six decimals cut the last digit of a 6J close, 0.0062995).
         file << std::fixed << std::setprecision(6);
 
         // Sort strategies alphabetically for consistent ordering
@@ -166,11 +169,11 @@ Result<std::string> CSVExporter::export_finalized_positions(
                 file << display_name << "," << symbol << "," << quantity << ",";
                 auto prior_it = prior_marks.find(symbol);
                 if (prior_it != prior_marks.end())
-                    file << prior_it->second;
+                    file << round_trip_number(prior_it->second);
                 file << ",";
                 auto mark_it = marks.find(symbol);
                 if (mark_it != marks.end())
-                    file << mark_it->second;
+                    file << round_trip_number(mark_it->second);
                 file << "," << realized_pnl << "\n";
             }
         }
@@ -241,7 +244,8 @@ Result<std::string> CSVExporter::export_current_positions(
                 "portfolio_value,"
              << "forecast,sizing_vol,ema_8,ema_32,ema_64,ema_256\n";
         // One number format for every row of the file, set once, after the header (set inside
-        // the row it left the first row at the portfolio line's two decimals).
+        // the row it left the first row at the portfolio line's two decimals). market_price
+        // is a price: it prints the shortest text that reads back as the same number.
         file << std::fixed << std::setprecision(6);
 
         // Sort strategies alphabetically for consistent ordering
@@ -312,11 +316,11 @@ Result<std::string> CSVExporter::export_current_positions(
                 const TrendReadings readings = trend_readings_of(strategy, symbol);
 
                 // Write position row with strategy column
-                file << display_name << "," << symbol << "," << quantity << "," << market_price
-                     << "," << notional << "," << pct_of_gross << "," << pct_of_portfolio << ","
-                     << readings.forecast << "," << readings.sizing_vol << "," << readings.ema_8
-                     << "," << readings.ema_32 << "," << readings.ema_64 << "," << readings.ema_256
-                     << "\n";
+                file << display_name << "," << symbol << "," << quantity << ","
+                     << round_trip_number(market_price) << "," << notional << "," << pct_of_gross
+                     << "," << pct_of_portfolio << "," << readings.forecast << ","
+                     << readings.sizing_vol << "," << readings.ema_8 << "," << readings.ema_32
+                     << "," << readings.ema_64 << "," << readings.ema_256 << "\n";
             }
         }
 
@@ -426,8 +430,9 @@ Result<std::string> CSVExporter::export_carried_positions(
                         ? (std::abs(notional) / std::abs(portfolio_value)) * 100.0
                         : 0.0;
 
-                file << display_name << "," << symbol << "," << quantity << "," << market_price
-                     << "," << notional << "," << pct_of_gross << "," << pct_of_portfolio << ",";
+                file << display_name << "," << symbol << "," << quantity << ","
+                     << round_trip_number(market_price) << "," << notional << "," << pct_of_gross
+                     << "," << pct_of_portfolio << ",";
                 auto f_it = carried.forecasts.find(symbol);
                 if (f_it != carried.forecasts.end()) file << f_it->second;
                 // sizing_vol, ema_8, ema_32, ema_64, ema_256: not stored, left empty

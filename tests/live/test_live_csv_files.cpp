@@ -2,12 +2,14 @@
 // meets them:
 //   - <date>_positions.csv: comment lines, then the column names, then one row per sleeve and
 //     symbol. The sleeve's sizing volatility is the column sizing_vol, explained on a comment line;
-//     every row prints six decimals, the first row included; a fast sleeve's row carries its own
+//     every row prints six decimals, the first row included, and its market price in full (the
+//     shortest text that reads back as the same number); a fast sleeve's row carries its own
 //     forecast, sizing volatility and moving averages.
 //     The first line and a comment line say the portfolio value is the value as this run wrote it.
 //   - <day before>_positions_asof_<date>.csv: the column names, then one row per settled position,
-//     six decimals on every row; its two prices are the prior mark and the mark, and a symbol with
-//     no close has an empty cell.
+//     six decimals on every row; its two prices are the prior mark and the mark, each printed in
+//     full (a 6J mark of 0.0062995 keeps its seventh decimal), and a symbol with no close has an
+//     empty cell.
 //   - the carried file's description of a stored forecast (carried_forecast_label).
 // Every test here calls the exporter. No database.
 
@@ -166,12 +168,64 @@ TEST_F(LiveCsvFiles, EveryRowOfThePositionsFilePrintsSixDecimalsTheFirstRowInclu
         const auto cells = cells_of(lines[i]);
         ASSERT_EQ(cells.size(), 13u) << lines[i];
         for (size_t c = 2; c < cells.size(); ++c) {
+            if (c == 3)
+                continue;  // market_price: printed in full, below
             EXPECT_TRUE(std::regex_match(cells[c], kSixDecimals))
                 << "row " << (i - h) << " column " << c << " prints '" << cells[c]
                 << "': " << lines[i];
         }
-        EXPECT_EQ(cells[3], "110.906250") << "the mark, every decimal of the format";
+        EXPECT_EQ(cells[3], "110.90625") << "the mark, every digit it has and no more";
     }
+}
+
+// A price below 0.1 with seven decimals (a 6J close): six decimals cut its last digit. Every
+// price column of the three live files prints the shortest text that reads back as the number.
+TEST_F(LiveCsvFiles, TheSettledFileKeepsEveryDigitOfASmallMark) {
+    const std::string yen = "6J.v.0";
+    StrategyPositionsMap settled{{"TREND_FOLLOWING", {{yen, held(yen, -1.0, 0.0063125, 162.5)}}}};
+    CSVExporter exporter(dir_.string());
+    auto r = exporter.export_finalized_positions(utc_day(2026, 4, 28), utc_day(2026, 4, 27),
+                                                 settled, {{yen, 0.0063125}}, {{yen, 0.0062995}});
+    ASSERT_TRUE(r.is_ok());
+    const auto lines = lines_of(r.value());
+    ASSERT_EQ(lines.size(), 2u);
+    const auto cells = cells_of(lines[1]);
+    ASSERT_EQ(cells.size(), 6u) << lines[1];
+    EXPECT_EQ(cells[3], "0.0063125") << "the prior mark lost a digit: " << lines[1];
+    EXPECT_EQ(cells[4], "0.0062995") << "the mark lost a digit: " << lines[1];
+    EXPECT_EQ(std::stod(cells[3]), 0.0063125);
+    EXPECT_EQ(std::stod(cells[4]), 0.0062995);
+    // The row's realized P&L can be rebuilt from its two printed marks (12,500,000 a point).
+    EXPECT_NEAR(-1.0 * (std::stod(cells[4]) - std::stod(cells[3])) * 12500000.0, 162.5, 1e-6);
+    EXPECT_EQ(cells[2], "-1.000000");
+    EXPECT_EQ(cells[5], "162.500000");
+}
+
+TEST_F(LiveCsvFiles, ThePositionsFileAndTheCarriedFileKeepEveryDigitOfASmallMarketPrice) {
+    StrategyPositionsMap book{{"TREND_FOLLOWING", {{kSym, held(kSym, -1.0, 0.0062995)}}}};
+    StrategyInstancesMap sleeves{{"TREND_FOLLOWING", trend_->strategy.get()}};
+    CSVExporter exporter(dir_.string());
+    auto day = exporter.export_current_positions(utc_day(2026, 4, 28), book, {{kSym, 0.0062995}},
+                                                 500000.0, 100.0, -100.0, sleeves);
+    ASSERT_TRUE(day.is_ok());
+    const auto lines = lines_of(day.value());
+    const size_t h = header_at(lines);
+    ASSERT_EQ(lines.size(), h + 2);
+    const auto cells = cells_of(lines[h + 1]);
+    ASSERT_EQ(cells.size(), 13u) << lines[h + 1];
+    EXPECT_EQ(cells[3], "0.0062995") << "the first row's market price lost a digit";
+
+    auto carried = exporter.export_carried_positions(
+        utc_day(2026, 4, 26), book, {{kSym, CarriedMark{0.0062995, "2026-04-24"}}}, {}, 500000.0,
+        100.0, -100.0, "no session on 2026-04-25 (a Saturday)");
+    ASSERT_TRUE(carried.is_ok());
+    const auto carried_lines = lines_of(carried.value());
+    const size_t ch = header_at(carried_lines);
+    ASSERT_EQ(carried_lines.size(), ch + 2);
+    const auto carried_cells = cells_of(carried_lines[ch + 1]);
+    ASSERT_GE(carried_cells.size(), 14u) << carried_lines[ch + 1];
+    EXPECT_EQ(carried_cells[3], "0.0062995") << "the carried mark lost a digit";
+    EXPECT_EQ(carried_cells[2], "-1.000000");
 }
 
 // Landed before this series (one trend class since the fast and slow classes were removed): the
@@ -210,7 +264,7 @@ TEST_F(LiveCsvFiles, TheFastSleevesRowCarriesItsOwnForecastSizingVolatilityAndAv
     EXPECT_FALSE(trend_readings_of(nullptr, kSym).known);
 }
 
-TEST_F(LiveCsvFiles, EveryRowOfTheSettledFilePrintsSixDecimals) {
+TEST_F(LiveCsvFiles, EveryRowOfTheSettledFilePrintsSixDecimalsAndItsMarksInFull) {
     StrategyPositionsMap settled{{"TREND_FOLLOWING", {{kSym, held(kSym, 1.0, 110.5, -185.0)}}}};
     CSVExporter exporter(dir_.string());
     auto r = exporter.export_finalized_positions(utc_day(2026, 4, 25), utc_day(2026, 4, 24),
@@ -222,10 +276,11 @@ TEST_F(LiveCsvFiles, EveryRowOfTheSettledFilePrintsSixDecimals) {
     ASSERT_EQ(lines.size(), 2u);
     const auto cells = cells_of(lines[1]);
     ASSERT_EQ(cells.size(), 6u) << lines[1];
-    for (size_t c = 2; c < cells.size(); ++c) {
+    for (size_t c : {size_t{2}, size_t{5}}) {
         EXPECT_TRUE(std::regex_match(cells[c], kSixDecimals)) << "column " << c << ": " << lines[1];
     }
-    EXPECT_EQ(cells[4], "110.906250") << "a price with five decimals lost two at six digits";
+    EXPECT_EQ(cells[3], "110.5");
+    EXPECT_EQ(cells[4], "110.90625") << "a price with five decimals lost two at six digits";
     EXPECT_EQ(cells[5], "-185.000000");
 }
 
@@ -268,11 +323,11 @@ TEST_F(LiveCsvFiles, TheSettledFileNamesThePriorMarkAndTheMarkAndLeavesAMissingM
     for (size_t i = 1; i < lines.size(); ++i)
         row[cells_of(lines[i])[1]] = cells_of(lines[i]);
     ASSERT_EQ(row.at(kSym).size(), 6u);
-    EXPECT_EQ(row.at(kSym)[3], "110.500000");
-    EXPECT_EQ(row.at(kSym)[4], "110.906250");
+    EXPECT_EQ(row.at(kSym)[3], "110.5");
+    EXPECT_EQ(row.at(kSym)[4], "110.90625");
     EXPECT_EQ(row.at(kSym)[5], "-185.000000");
     ASSERT_EQ(row.at(other).size(), 6u);
-    EXPECT_EQ(row.at(other)[3], "57.250000");
+    EXPECT_EQ(row.at(other)[3], "57.25");
     EXPECT_EQ(row.at(other)[4], "") << "a symbol with no close that day printed a mark of 0";
     EXPECT_EQ(row.at(other)[5], "0.000000");
 }
