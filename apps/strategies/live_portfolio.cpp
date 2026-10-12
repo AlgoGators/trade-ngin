@@ -3929,8 +3929,8 @@ int main(int argc, char* argv[]) {
         }
 
         std::cout << "Total P&L: $" << std::fixed << std::setprecision(2) << total_pnl << std::endl;
-        std::cout << "Realized P&L: $" << std::fixed << std::setprecision(2) << total_realized_pnl
-                  << std::endl;
+        // T-8D-2 R68: total_realized_pnl is the cumulative P&L before costs.
+        std::cout << trade_ngin::realized_pnl_console(total_realized_pnl) << std::flush;
         std::cout << "Unrealized P&L: $" << std::fixed << std::setprecision(2)
                   << total_unrealized_pnl << std::endl;
         std::cout << "Current Portfolio Value: $" << std::fixed << std::setprecision(2)
@@ -3939,8 +3939,8 @@ int main(int argc, char* argv[]) {
                   << total_cumulative_return_pct << "%" << std::endl;
         std::cout << "Total Return (Annualized): " << std::fixed << std::setprecision(2)
                   << total_return_annualized << "%" << std::endl;
-        std::cout << "Daily Return: " << std::fixed << std::setprecision(2) << daily_return << "%"
-                  << std::endl;
+        // T-8D-2 R68: the day-T return is today's costs only (daily_pnl above).
+        std::cout << trade_ngin::daily_return_console_costs_only(daily_return) << std::flush;
         // T-8D-2 R68: the same notional over the day's account value V_t, named as that.
         std::cout << trade_ngin::gross_leverage_console_on_account_value(gross_notional,
                                                                          current_portfolio_value)

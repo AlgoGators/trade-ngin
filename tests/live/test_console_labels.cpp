@@ -165,3 +165,66 @@ TEST(ConsoleReporterLinesTwinSourceGuard, TheRunnersPrintTheReporterThroughItsFu
     EXPECT_EQ(equity.find("\"Gross Leverage: "), npos);
     EXPECT_EQ(equity.find("\"Net Leverage: "), npos);
 }
+
+// ---------------------------------------------------------------------------------------------
+// The day-T lines.
+// ---------------------------------------------------------------------------------------------
+
+TEST(ConsoleDayTLines, RealizedIsNamedGrossOfCosts) {
+    EXPECT_EQ(realized_pnl_console(5570.56), "Realized P&L (gross of costs): $5570.56\n");
+    EXPECT_EQ(realized_pnl_console(-12.345), "Realized P&L (gross of costs): $-12.35\n");
+    EXPECT_EQ(realized_pnl_console(0.0), "Realized P&L (gross of costs): $0.00\n");
+}
+
+// The futures day-T return: a day's costs of 2.05 over 504,530 is -0.000406 percent, which
+// prints -0.00%; the label says why it is that small.
+TEST(ConsoleDayTLines, TheFuturesDailyReturnSaysItIsTheDaysCostsOnly) {
+    EXPECT_EQ(daily_return_console_costs_only(-2.05 / 504530.0 * 100.0),
+              "Daily Return (day T: costs only): -0.00%\n");
+    EXPECT_EQ(daily_return_console_costs_only(-0.0149),
+              "Daily Return (day T: costs only): -0.01%\n");
+}
+
+// The equity day-T return carries the day's realized P&L and the change in the mark, so it is
+// never named costs only.
+TEST(ConsoleDayTLines, TheEquityDailyReturnSaysWhatItHoldsAndNeverCostsOnly) {
+    const std::string line = daily_return_console_as_written(0.2213);
+    EXPECT_EQ(line,
+              "Daily Return (day T as written: realized less costs, plus the change in the "
+              "mark): 0.22%\n");
+    EXPECT_EQ(line.find("costs only"), npos);
+}
+
+// READS SOURCE (a labelled wiring and twin guard; the lines themselves are executed above). It
+// also pins what makes each label true: the futures day-T P&L is the day's costs and nothing
+// else, the equity day-T P&L is the realized net of costs plus the change in the mark.
+TEST(ConsoleDayTLinesTwinSourceGuard, EachRunnerPrintsTheLineThatIsTrueOfItsOwnDayTReturn) {
+    for (const char* runner : kFuturesRunners) {
+        SCOPED_TRACE(runner);
+        const std::string src = read_source(runner);
+        if (src.empty())
+            GTEST_SKIP() << "runner source not found from the test working directory";
+        EXPECT_EQ(count_of(src, "trade_ngin::realized_pnl_console(total_realized_pnl)"), 1u);
+        EXPECT_EQ(count_of(src, "trade_ngin::daily_return_console_costs_only(daily_return)"), 1u);
+        EXPECT_EQ(count_of(src, "double daily_pnl = daily_pnl_for_today;"), 1u);
+        EXPECT_NE(src.find("double daily_pnl_for_today =\n"
+                           "            -total_daily_transaction_costs;"),
+                  npos);
+        EXPECT_EQ(src.find("std::cout << \"Realized P&L: $\""), npos);
+        EXPECT_EQ(src.find("std::cout << \"Daily Return: \""), npos);
+    }
+    const std::string equity = read_source(kEquityRunner);
+    if (equity.empty())
+        GTEST_SKIP() << "runner source not found from the test working directory";
+    EXPECT_EQ(count_of(equity, "trade_ngin::realized_pnl_console(total_realized_pnl)"), 1u);
+    EXPECT_EQ(count_of(equity, "trade_ngin::daily_return_console_as_written(daily_return)"), 1u);
+    EXPECT_EQ(equity.find("daily_return_console_costs_only"), npos);
+    EXPECT_EQ(count_of(equity, "double daily_pnl = daily_pnl_for_today + daily_unrealized_pnl;"),
+              1u);
+    EXPECT_EQ(
+        count_of(equity,
+                 "double daily_pnl_for_today = daily_realized_pnl - total_daily_commissions;"),
+        1u);
+    EXPECT_EQ(equity.find("std::cout << \"Realized P&L: $\""), npos);
+    EXPECT_EQ(equity.find("std::cout << \"Daily Return: \""), npos);
+}

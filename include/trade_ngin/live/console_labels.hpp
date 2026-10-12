@@ -71,4 +71,33 @@ inline std::string reporter_console(const std::optional<ReporterConsoleFigures>&
     return out;
 }
 
+/// The day-T "Realized P&L" line: the cumulative realized P&L BEFORE costs (the row's
+/// total_realized_pnl; the costs are their own column and come off once, in the total).
+inline std::string realized_pnl_console(double total_realized_pnl) {
+    char buf[96];
+    std::snprintf(buf, sizeof(buf), "Realized P&L (gross of costs): $%.2f\n", total_realized_pnl);
+    return buf;
+}
+
+/// The futures runners' day-T "Daily Return" line, a percent: the day-T row is written before
+/// the day's close exists, so its return is today's transaction costs over yesterday's value
+/// and nothing else; the day's market move is booked when the next run settles the row.
+inline std::string daily_return_console_costs_only(double daily_return_pct) {
+    char buf[96];
+    std::snprintf(buf, sizeof(buf), "Daily Return (day T: costs only): %.2f%%\n", daily_return_pct);
+    return buf;
+}
+
+/// The equity runner's day-T "Daily Return" line, a percent. It is NOT costs only: the equity
+/// row's day-T P&L is the day's realized P&L less its costs plus the day-over-day change in the
+/// mark of the held shares.
+inline std::string daily_return_console_as_written(double daily_return_pct) {
+    char buf[160];
+    std::snprintf(buf, sizeof(buf),
+                  "Daily Return (day T as written: realized less costs, plus the change in the "
+                  "mark): %.2f%%\n",
+                  daily_return_pct);
+    return buf;
+}
+
 }  // namespace trade_ngin

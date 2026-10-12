@@ -5705,12 +5705,15 @@ int main(int argc, char* argv[]) {
         INFO("  Annualized return: " + std::to_string(total_return_annualized) + "%");
         
         std::cout << "Total P&L: $" << std::fixed << std::setprecision(2) << total_pnl << std::endl;
-        std::cout << "Realized P&L: $" << std::fixed << std::setprecision(2) << total_realized_pnl << std::endl;
+        // T-8D-2 R68: total_realized_pnl is the cumulative P&L before costs.
+        std::cout << trade_ngin::realized_pnl_console(total_realized_pnl) << std::flush;
         std::cout << "Unrealized P&L: $" << std::fixed << std::setprecision(2) << total_unrealized_pnl << std::endl;
         std::cout << "Current Portfolio Value: $" << std::fixed << std::setprecision(2) << current_portfolio_value << std::endl;
         std::cout << "Total Return (Cumulative): " << std::fixed << std::setprecision(2) << total_cumulative_return_pct << "%" << std::endl;
         std::cout << "Total Return (Annualized): " << std::fixed << std::setprecision(2) << total_return_annualized << "%" << std::endl;
-        std::cout << "Daily Return: " << std::fixed << std::setprecision(2) << daily_return << "%" << std::endl;
+        // T-8D-2 R68: on this book the day-T return is not costs only (daily_pnl above is the
+        // day's realized less its costs plus the change in the mark), so the line says that.
+        std::cout << trade_ngin::daily_return_console_as_written(daily_return) << std::flush;
         // T-8D-2 R68: gross notional over the day's account value, the row's portfolio_leverage.
         std::cout << trade_ngin::portfolio_leverage_console_on_account_value(
                          gross_notional, current_portfolio_value)
