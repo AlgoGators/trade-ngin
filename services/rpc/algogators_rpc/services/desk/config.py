@@ -30,6 +30,12 @@ DEFAULT_LOCK_DIR = "/tmp/qt-locks"
 DEFAULT_APPROVE_URL_BASE = "https://algolens.algogators.com/qt/approve"
 DEFAULT_LOG_DIR = "/var/log/qt-engine"
 DEFAULT_CATCHUP_PORTFOLIOS = ("qt_conservative", "qt_conservative_model")
+# The evening run (catchup.py; issues #191 and #192): the dataset of ops.data_ready it waits for,
+# who gets the desk's review e-mail and where the desk is.
+DEFAULT_DATA_READY_DATASET = "futures_ohlcv_1d"
+DEFAULT_REVIEW_RECIPIENTS = ("dominickdupuy@ufl.edu",)
+# AlgoLens has no desk route of its own: the desk is the QT portfolio's panel on the dashboard.
+DEFAULT_DESK_URL = "https://algolens.algogators.com/"
 # Every connection of the desk (both stores) gives up after these (R#9): a database that does
 # not answer never pins a gRPC worker for long.
 CONNECT_TIMEOUT_S = 5
@@ -121,6 +127,18 @@ class CatchupSettings:
     # that portfolio until the next pass.
     lock_wait_s: float = 600.0
     timezone: str = "America/New_York"
+    # The evening run (catchup.py; https://github.com/AlgoGators/trade-ngin/issues/191 and /192).
+    # On: once ops.data_ready says a bar date's data is in, the books of the next trading day are
+    # built that evening, the 06:45 run is only the backup, and the desk gets a review e-mail.
+    # Off: the scheduler runs exactly as before (the model run of each day from 06:45).
+    evening_run: bool = True
+    data_ready_dataset: str = DEFAULT_DATA_READY_DATASET
+    # No ready row for today's bar date by then (on a trading day): an alert to the President.
+    data_alert_at: dt.time = dt.time(21, 30)
+    review_recipients: Tuple[str, ...] = DEFAULT_REVIEW_RECIPIENTS
+    desk_url: str = DEFAULT_DESK_URL
+    # The engine's holidays.json; empty: found as the engine finds it (trading_days.py).
+    holidays_path: str = ""
 
 
 @dataclass(frozen=True)
@@ -239,6 +257,10 @@ def catchup_settings(env: Optional[Mapping[str, str]] = None) -> CatchupSettings
     QT_CATCHUP_WINDOW ("06:30-22:00"), QT_CATCHUP_EVERY_MIN (30), QT_CATCHUP_BUSY_WINDOW
     ("06:30-10:30"), QT_CATCHUP_BUSY_EVERY_MIN (5), QT_CATCHUP_TODAY_NOT_BEFORE ("06:45"),
     QT_MODEL_RETRY_MIN (15), QT_MODEL_ALERT_AT ("08:30"), QT_CATCHUP_LOCK_WAIT_S (600).
+    The evening run (issues #191, #192): QT_EVENING_RUN (default 1; 0 restores the 06:45-only
+    schedule), QT_DATA_READY_DATASET ("futures_ohlcv_1d"), QT_DATA_READY_ALERT_AT ("21:30"),
+    QT_REVIEW_RECIPIENTS (comma-separated; default dominickdupuy@ufl.edu), QT_DESK_URL,
+    TRADE_NGIN_HOLIDAYS_JSON (the engine's own variable).
     QT_UNPUBLISHED_REMINDER_H is no longer read (the 10:00 fallback replaced the reminder)."""
     env = os.environ if env is None else env
     enabled = (env.get("QT_CATCHUP_ENABLED") or "1").strip() != "0"
@@ -259,4 +281,22 @@ def catchup_settings(env: Optional[Mapping[str, str]] = None) -> CatchupSettings
         model_retry_minutes=_positive(env, "QT_MODEL_RETRY_MIN", 15.0),
         model_alert_at=_clock(env, "QT_MODEL_ALERT_AT", dt.time(8, 30)),
         lock_wait_s=_positive(env, "QT_CATCHUP_LOCK_WAIT_S", 600.0),
+        evening_run=(env.get("QT_EVENING_RUN") or "1").strip() != "0",
+        data_ready_dataset=(env.get("QT_DATA_READY_DATASET") or "").strip()
+        or DEFAULT_DATA_READY_DATASET,
+        data_alert_at=_clock(env, "QT_DATA_READY_ALERT_AT", dt.time(21, 30)),
+        review_recipients=_emails(env, "QT_REVIEW_RECIPIENTS", DEFAULT_REVIEW_RECIPIENTS),
+        desk_url=(env.get("QT_DESK_URL") or "").strip() or DEFAULT_DESK_URL,
+        holidays_path=(env.get("TRADE_NGIN_HOLIDAYS_JSON") or "").strip(),
     )
+
+
+def _emails(env: Mapping[str, str], name: str, default: Tuple[str, ...]) -> Tuple[str, ...]:
+    raw = env.get(name)
+    if raw is None or not raw.strip():
+        return default
+    out = tuple(p.strip() for p in raw.split(",") if p.strip())
+    bad = [p for p in out if "@" not in p]
+    if bad:
+        raise ConfigError(f"{name} must be a comma-separated list of e-mail addresses")
+    return out

@@ -208,6 +208,7 @@ def env(tmp_path):
     holds = Holds()
 
     def make(portfolios=(DESK, TWIN), lock=free_lock, settings_=None, **catchup):
+        catchup.setdefault("evening_run", False)   # the 06:45-only schedule; test_evening.py
         return CatchupScheduler(days, settings_ or settings,
                                 CatchupSettings(portfolios=portfolios, **catchup),
                                 runner=engine, sender=lambda cfg, to, s, b: sent.append((to, s, b)),

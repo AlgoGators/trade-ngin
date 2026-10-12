@@ -37,6 +37,36 @@ Each model run is exactly what scripts/qt_model_run.sh runs: `<QT_ENGINE_BINARY>
 for desk jobs) around each step and re-reads the database under it, so nothing runs twice.
 QT_JOB_TIMEOUT_S bounds every run.
 
+THE EVENING RUN (QT_EVENING_RUN=1, the default; interim design of
+https://github.com/AlgoGators/trade-ngin/issues/191, to be event-driven over NATS by
+https://github.com/AlgoGators/trade-ngin/issues/192). data-ngin pulls the day's bars after the
+close (20:00 ET) and writes ops.data_ready (migration 028): one row per (dataset, bar_date) with
+its status. Each pass reads the newest row of QT_DATA_READY_DATASET (futures_ohlcv_1d) for bar
+date D and builds the books of T = the next trading day after D (trading_days.py, the engine's
+holiday calendar: Friday's and Sunday's bars both build Monday, a holiday is skipped):
+
+    the data is usable when its status is complete, or partial with every missing symbol's last
+    bar within the engine's live.data_staleness_tolerance_days of T - 1 (the engine's own
+    FEED_HOLE guard decides again inside the run; a refusal is an alert, nothing is built);
+    failed, or a stale partial, is an alert and nothing is built
+    the engine's day chain is every calendar day, so the days between today and T are built in
+    order; on the desk portfolio each of those non-trading days is published at once with the
+    model's book (system:fallback-nontrading; no alert, e-mailed at its 09:30 like any day) so T
+    can run (ruling 29); the twin's are published model-only when they become today
+    T is (re)built once per data_ready.finished_at: a later re-pull (Sunday after Friday) rebuilds
+    it, unless T is published (frozen: never rebuilt). A desk portfolio whose day has the desk's
+    saved edits keeps them: the engine's model run then rewrites only the system book and keeps
+    qt_proposal and qt (QT_SEED kept, qt::desk_edit_done); otherwise all three are rewritten
+    after a build of the desk portfolio's T, QT_REVIEW_RECIPIENTS get the review e-mail
+    (review_mail.py), once per build
+    the 06:45 run is the backup: today's model run happens only when no evening book exists for
+    today, and only once data for the previous trading day is ready (else an alert)
+    21:30 (QT_DATA_READY_ALERT_AT) on a trading day with no ready row for today's bar date: an
+    alert to the President
+    09:30 send, 10:00 fallback and the approval rules are unchanged.
+
+QT_EVENING_RUN=0 restores the 06:45-only schedule above, unchanged.
+
 Alerts: one line in <QT_LOG_DIR>/qt-catchup.log and an e-mail to the president address of
 QT_APPROVERS through the portfolio's email.json (not when QT_EMAIL_DISABLED=1), at most once per
 (portfolio, date, reason) per New York day (state in <QT_LOG_DIR>/qt-alerts.json).
@@ -64,6 +94,9 @@ from .config import (CONNECT_TIMEOUT_S, CatchupSettings, CommandSettings, Config
 from .jobs import Runner, RunResult, SubprocessRunner, tail
 from .override_mail import ApproverError, Sender, load_smtp, parse_approvers, send_smtp
 from .portfolios import portfolios_root
+from . import review_mail
+from .trading_days import (TradingCalendar, load_calendar, resolve_holidays_path,
+                           staleness_tolerance_days)
 
 log = logging.getLogger("desk.catchup")
 
@@ -75,6 +108,8 @@ HEARTBEAT = "qt-catchup.heartbeat"
 SCHEDULER_LOCK = "qt-catchup.lock"
 # A pass never takes more than this many steps per portfolio (a sanity bound, not a policy).
 MAX_DAYS_PER_PASS = 62
+# How far back the last bar of a symbol data-ngin reported missing is looked for.
+MISSING_LOOKBACK_DAYS = 60
 
 
 def _zone(name: str):
@@ -84,6 +119,19 @@ def _zone(name: str):
 
 
 # -- the database -------------------------------------------------------------------------------
+
+@dataclass(frozen=True)
+class DataReady:
+    """A row of ops.data_ready (migration 028), written by data-ngin."""
+    dataset: str
+    bar_date: dt.date
+    expected: int
+    loaded: int
+    missing: Tuple[str, ...]
+    status: str                 # complete | partial | failed
+    run_id: Optional[str]
+    finished_at: dt.datetime
+
 
 class DayStore(Protocol):
     def last_book_date(self, portfolio_id: str, book: str) -> Optional[dt.date]: ...
@@ -107,6 +155,23 @@ class DayStore(Protocol):
         """(status, result, message) of a command row."""
 
     def fail_running(self, audit_id: int, message: str) -> bool: ...
+
+    # -- the evening run (issues #191, #192) --
+
+    def latest_data_ready(self, dataset: str) -> Optional[DataReady]:
+        """The ops.data_ready row of the dataset with the newest bar_date."""
+
+    def last_bar_dates(self, symbols: Sequence[str], since: dt.date) -> Dict[str, dt.date]:
+        """The newest futures_data.ohlcv_1d bar date of each symbol, from `since` on."""
+
+    def desk_edited(self, portfolio_id: str, date: dt.date) -> bool:
+        """The desk saved the day (a done save, or an approved override): what the engine's
+        qt::desk_edit_done reads to keep qt_proposal and qt on a model re-run."""
+
+    def day_books(self, portfolio_id: str, date: dt.date) -> review_mail.DayBooks:
+        """{book: {symbol: Line}} of the system and qt books of the day."""
+
+    def last_published_before(self, portfolio_id: str, date: dt.date) -> Optional[dt.date]: ...
 
 
 class PostgresDayStore:
@@ -195,6 +260,53 @@ class PostgresDayStore:
                         (message, audit_id))
             return cur.fetchone() is not None
         return self._run(q)
+
+    def latest_data_ready(self, dataset):
+        def q(cur):
+            cur.execute("SELECT dataset, bar_date, expected, loaded, missing, status, run_id, "
+                        "finished_at FROM ops.data_ready WHERE dataset = %s "
+                        "ORDER BY bar_date DESC LIMIT 1", (dataset,))
+            r = cur.fetchone()
+            if r is None:
+                return None
+            return DataReady(r[0], r[1], int(r[2]), int(r[3]), tuple(r[4] or ()), r[5], r[6],
+                             r[7])
+        return self._run(q)
+
+    def last_bar_dates(self, symbols, since):
+        if not symbols:
+            return {}
+
+        def q(cur):
+            # Bars are keyed at 00:00 UTC of their date; the session is UTC.
+            cur.execute("SELECT symbol, max(time)::date FROM futures_data.ohlcv_1d "
+                        "WHERE symbol = ANY(%s) AND time >= %s GROUP BY symbol",
+                        (list(symbols), since))
+            return {sym: d for sym, d in cur.fetchall() if d is not None}
+        return self._run(q)
+
+    def desk_edited(self, portfolio_id, date):
+        return bool(self._one(
+            "SELECT count(*) FROM trading.position_overrides WHERE portfolio_id = %s "
+            "AND date = %s AND status = 'done' AND (kind = 'save' OR (kind = "
+            "'override_decision' AND COALESCE((payload->>'approved')::boolean, false)))",
+            (portfolio_id, date)))
+
+    def day_books(self, portfolio_id, date):
+        def q(cur):
+            cur.execute("SELECT portfolio_type, symbol, sum(quantity), max(moved_by) "
+                        "FROM trading.positions WHERE portfolio_id = %s AND date = %s "
+                        "AND portfolio_type IN ('system', 'qt') "
+                        "GROUP BY portfolio_type, symbol", (portfolio_id, date))
+            out: review_mail.DayBooks = {"system": {}, "qt": {}}
+            for book, symbol, qty, moved_by in cur.fetchall():
+                out.setdefault(book, {})[symbol] = review_mail.Line(float(qty or 0), moved_by)
+            return out
+        return self._run(q)
+
+    def last_published_before(self, portfolio_id, date):
+        return self._one("SELECT max(date) FROM trading.live_run_metadata WHERE portfolio_id = %s "
+                         "AND date < %s AND published_at IS NOT NULL", (portfolio_id, date))
 
 
 # -- logs, locks, alerts ----------------------------------------------------------------------
@@ -353,7 +465,11 @@ class Alerter:
 (RUN, FALLBACK, SEND, PUBLISH_MODEL, WAIT_PUBLISH, WAIT_TIME, UP_TO_DATE, ALERT) = (
     "run", "fallback", "send", "publish_model", "wait_publish", "wait_time", "up_to_date",
     "alert")
-ACTIONS = (RUN, FALLBACK, SEND, PUBLISH_MODEL)
+REVIEW = "review_mail"
+ACTIONS = (RUN, FALLBACK, SEND, PUBLISH_MODEL, REVIEW)
+# A FALLBACK step's reason: the 10:00 fallback of today (e-mailed), the catch-up of a missed past
+# day (not e-mailed, alerted) and the evening run's non-trading day ahead of the target (neither).
+FALLBACK_TODAY, FALLBACK_PAST, FALLBACK_NONTRADING = "fallback", "caught_up", "nontrading"
 
 
 @dataclass(frozen=True)
@@ -362,6 +478,8 @@ class Step:
     date: Optional[dt.date] = None
     reason: str = ""
     message: str = ""
+    # An evening build: the ops.data_ready row it builds from (its book must be newer).
+    ready: Optional[DataReady] = None
 
 
 @dataclass(frozen=True)
@@ -404,7 +522,8 @@ class CatchupScheduler:
     def __init__(self, store: DayStore, settings: CommandSettings, catchup: CatchupSettings,
                  runner: Optional[Runner] = None, sender: Sender = send_smtp,
                  clock: Optional[Callable[[], dt.datetime]] = None,
-                 lock: Optional[LockFactory] = None, dispatcher=None):
+                 lock: Optional[LockFactory] = None, dispatcher=None,
+                 calendar: Optional[TradingCalendar] = None):
         self._store = store
         self._settings = settings
         self._catchup = catchup
@@ -420,6 +539,18 @@ class CatchupScheduler:
         self._last_slot: Optional[Tuple[dt.date, int, int]] = None
         # (portfolio_id, date, action) -> not before (UTC): a failed run waits before its retry.
         self._retry_after: Dict[Tuple[str, dt.date, str], dt.datetime] = {}
+        # The evening run (issues #191, #192): the engine's trading calendar (loaded on first
+        # use), the review e-mail's sender and its record.
+        self._calendar = calendar
+        self._sender = sender
+        self.reviews = review_mail.ReviewState(settings.log_dir)
+
+    @property
+    def calendar(self) -> TradingCalendar:
+        if self._calendar is None:
+            self._calendar = load_calendar(self._catchup.holidays_path or resolve_holidays_path(
+                self._settings.engine_cwd))
+        return self._calendar
 
     # -- when -----------------------------------------------------------------------------------
 
@@ -491,6 +622,15 @@ class CatchupScheduler:
                     self.alerter.alert(pdir, pdir, None, "scheduler_error",
                                        f"the catch-up pass failed: {type(exc).__name__}: {exc}")
                     outcomes.append((pdir, Step(ALERT, reason="scheduler_error")))
+            if self._catchup.evening_run and self._catchup.portfolios:
+                try:
+                    self._data_ready_check()
+                except Exception as exc:
+                    log.error("the data-ready check failed", exc_info=True,
+                              extra={"error": type(exc).__name__})
+                    self.alerter.alert(self._catchup.portfolios[0],
+                                       self._catchup.data_ready_dataset, None, "scheduler_error",
+                                       f"the data-ready check failed: {type(exc).__name__}: {exc}")
             self.files.line("pass done: " + ", ".join(
                 f"{p}={s.action}{'@' + str(s.date) if s.date else ''}" for p, s in outcomes))
             try:
@@ -547,16 +687,34 @@ class CatchupScheduler:
         if last is None and info.desk_editable:
             last = self._store.last_book_date(pid, "system")  # the first desk day (ruling 27)
             from_system = last is not None
-        if last is not None and last > today:
-            return Step(UP_TO_DATE, last)
+        if not self._catchup.evening_run:
+            if last is not None and last > today:
+                return Step(UP_TO_DATE, last)
+            return self._day_step(info, now_local, last, from_system)
+        # The evening run (https://github.com/AlgoGators/trade-ngin/issues/191 and /192). Books
+        # ahead of today were built by it; the chain is contiguous, so today has its book and
+        # today's own duties (the 10:00 fallback, the model twin's publish, the 09:30 send) come
+        # first. Then the build of the next trading day's books, and the desk's review e-mail.
+        head = today if last is not None and last > today and not from_system else last
+        step = self._day_step(info, now_local, head, from_system)
+        if step.action not in (WAIT_PUBLISH, UP_TO_DATE) or last is None or last < today:
+            return step
+        return self._evening_step(info, now_local, last) or step
+
+    def _day_step(self, info: PortfolioInfo, now_local: dt.datetime, last: Optional[dt.date],
+                  from_system: bool) -> Step:
+        """The day's flow (contract C7) up to today, `last` being the newest book (at most
+        today)."""
+        today = now_local.date()
+        pid = info.portfolio_id
         if info.desk_editable and last is not None and not from_system \
                 and self._store.published_at(pid, last) is None:
             if last < today:
                 return self._blocked(pid, last, FALLBACK) or Step(
-                    FALLBACK, last, "caught_up", f"{last} was never approved")
+                    FALLBACK, last, FALLBACK_PAST, f"{last} was never approved")
             if now_local >= cutoff.cutoff_time(today):
                 return self._blocked(pid, last, FALLBACK) or Step(
-                    FALLBACK, last, "fallback", f"{last} was not approved by 10:00")
+                    FALLBACK, last, FALLBACK_TODAY, f"{last} was not approved by 10:00")
             return Step(WAIT_PUBLISH, last, "unpublished",
                         f"{last} waits for the desk's approval (by 09:30; the 10:00 fallback "
                         "sends the model's book)")
@@ -566,6 +724,13 @@ class CatchupScheduler:
             if day == today and now_local.time() < self._catchup.today_not_before:
                 return Step(WAIT_TIME, day, "before_data",
                             f"today's run waits until {self._catchup.today_not_before:%H:%M}")
+            if day == today and self._catchup.evening_run:
+                # The 06:45 run is the evening run's backup: there is no evening book for today
+                # (else `last` would be today), and it runs only on the previous trading day's
+                # data.
+                gate = self._morning_gate(info, today)
+                if gate is not None:
+                    return gate
             return self._blocked(pid, day, RUN) or Step(RUN, day)
         # today has its book
         if not info.desk_editable and self._store.published_at(pid, today) is None:
@@ -589,17 +754,194 @@ class CatchupScheduler:
             return f"the daily e-mail cannot be sent: {why}"
         return ""
 
+    # -- the evening run (https://github.com/AlgoGators/trade-ngin/issues/191 and /192) --------
+    # Interim: Postgres polling of ops.data_ready once a pass. #191 makes strategy runs
+    # event-driven on declared inputs; #192 replaces this polling with NATS JetStream.
+
+    def _ready(self) -> Optional[DataReady]:
+        return self._store.latest_data_ready(self._catchup.data_ready_dataset)
+
+    def _data_verdict(self, info: PortfolioInfo, ready: DataReady,
+                      target: dt.date) -> Tuple[Optional[Step], Dict[str, dt.date]]:
+        """(None, the missing symbols' last bar dates) when the row can build `target`'s books,
+        else (the alert, {}). Partial data is usable when every missing symbol's last bar is
+        within the engine's live.data_staleness_tolerance_days of the run's last bar date
+        (target - 1, the engine's end_date): the check the engine's freshness and FEED_HOLE
+        guards make, done here first so a stale feed builds nothing. The engine still decides
+        inside the run; its refusal is an alert like any refused run."""
+        if ready.status == "failed":
+            return Step(ALERT, target, "data_failed",
+                        f"data-ngin's {ready.dataset} pull for {ready.bar_date} failed (run "
+                        f"{ready.run_id or '-'}, {ready.loaded} of {ready.expected} loaded): the "
+                        f"books of {target} are not built"), {}
+        if ready.status not in ("complete", "partial"):
+            return Step(ALERT, target, "data_failed",
+                        f"ops.data_ready {ready.dataset} {ready.bar_date} has status "
+                        f"{ready.status!r}: the books of {target} are not built"), {}
+        if not ready.missing:
+            return None, {}
+        tolerance = staleness_tolerance_days(self._settings.config_dir, info.dir)
+        as_of = target - dt.timedelta(days=1)
+        last = self._store.last_bar_dates(
+            ready.missing, ready.bar_date - dt.timedelta(days=MISSING_LOOKBACK_DAYS))
+        stale = [f"{sym} (last bar {last.get(sym) or 'none'})" for sym in ready.missing
+                 if last.get(sym) is None or (as_of - last[sym]).days > tolerance]
+        if stale:
+            return Step(ALERT, target, "data_stale",
+                        f"{ready.dataset} {ready.bar_date} is {ready.status} ({ready.loaded} of "
+                        f"{ready.expected}); {len(stale)} missing symbol(s) are past "
+                        f"live.data_staleness_tolerance_days={tolerance} as of {as_of}: "
+                        f"{', '.join(stale)}. The books of {target} are not built"), {}
+        return None, last
+
+    def _morning_gate(self, info: PortfolioInfo, today: dt.date) -> Optional[Step]:
+        """None when today's backup model run may go: data for the previous trading day is
+        ready and usable. Else the alert (the next pass looks again)."""
+        prev = self.calendar.previous_trading_day(today)
+        ready = self._ready()
+        if ready is None or ready.bar_date < prev:
+            newest = f"newest {ready.bar_date} ({ready.status})" if ready else "no row at all"
+            return Step(ALERT, today, "data_not_ready",
+                        f"no evening book for {today}, and ops.data_ready has no "
+                        f"{self._catchup.data_ready_dataset} row for {prev} ({newest}): the "
+                        f"backup model run of {today} waits for the data")
+        bad, _ = self._data_verdict(info, ready, today)
+        return bad
+
+    def _evening_step(self, info: PortfolioInfo, now_local: dt.datetime,
+                      last: dt.date) -> Optional[Step]:
+        """The next step of the evening build, or None. Today has its book (last >= today)."""
+        today = now_local.date()
+        pid = info.portfolio_id
+        ready = self._ready()
+        if ready is None:
+            return None
+        target = self.calendar.next_trading_day(ready.bar_date)
+        if target < today:
+            return None   # old data: today's own flow and the 21:30 check cover it
+        if info.desk_editable and target > today and self._store.published_at(pid, today) is None:
+            return None   # ruling 29: today is approved (or falls back at 10:00) first
+        if info.desk_editable:
+            # The engine's chain is every calendar day and starts each from the PUBLISHED day
+            # before. The days between today and the target are not trading days: they go out
+            # with the model's book at once, no alert (the twin publishes its own when they
+            # become today).
+            d = today + dt.timedelta(days=1)
+            while d <= min(last, target - dt.timedelta(days=1)):
+                if self._store.published_at(pid, d) is None:
+                    return self._blocked(pid, d, FALLBACK) or Step(
+                        FALLBACK, d, FALLBACK_NONTRADING,
+                        f"{d} is not a trading day: published with the model's book so the books "
+                        f"of {target} can be built")
+                d += dt.timedelta(days=1)
+        if last < target:
+            bad, _ = self._data_verdict(info, ready, target)
+            if bad is not None:
+                return bad
+            day = last + dt.timedelta(days=1)
+            return self._blocked(pid, day, RUN) or Step(
+                RUN, day, "evening",
+                f"evening build of {day} towards {target} from the bars of {ready.bar_date}",
+                ready=ready if day == target else None)
+        if last > target:
+            return None   # a later day exists (run by hand): the target is not rebuilt under it
+        if self._store.published_at(pid, target) is not None:
+            return None   # published: frozen, never rebuilt (contract C3)
+        built = self._store.book_written_at(pid, target, "system")
+        if built is None or built < ready.finished_at:
+            # Once per data_ready.finished_at: a re-pull (Sunday after Friday) rebuilds the day.
+            bad, _ = self._data_verdict(info, ready, target)
+            if bad is not None:
+                return bad
+            return self._blocked(pid, target, RUN) or Step(
+                RUN, target, "rebuild",
+                f"rebuild of {target}: ops.data_ready {ready.bar_date} finished at "
+                f"{ready.finished_at.isoformat()}, after its book ({built})", ready=ready)
+        if info.desk_editable and now_local < cutoff.cutoff_time(target) \
+                and not self.reviews.sent(pid, target, built):
+            return self._blocked(pid, target, REVIEW) or Step(REVIEW, target, "review",
+                                                              ready=ready)
+        return None
+
+    def _review(self, info: PortfolioInfo, step: Step) -> Optional[Step]:
+        """The desk's review e-mail of the target day's build, once per build."""
+        pid, target, ready = info.portfolio_id, step.date, step.ready
+        built = self._store.book_written_at(pid, target, "system")
+        if built is None or ready is None:
+            return None
+        held_date = self._store.last_published_before(pid, target)
+        held = self._store.day_books(pid, held_date).get(info.book, {}) if held_date else {}
+        _, last_bars = self._data_verdict(info, ready, target)
+        review = review_mail.Review(
+            portfolio_id=pid, target=target, bar_date=ready.bar_date, built_at=built,
+            books=self._store.day_books(pid, target), held_date=held_date, held=held,
+            desk_edits_kept=self._store.desk_edited(pid, target), data_status=ready.status,
+            missing=ready.missing, missing_last_bar=last_bars,
+            supersedes=self.reviews.earlier(pid, target), desk_url=self._catchup.desk_url)
+        subject, body = review_mail.build(review)
+        to = list(self._catchup.review_recipients)
+        now = self._clock()
+        disabled = self._settings.email_disabled
+        if disabled:
+            self.reviews.log_body(now, to, subject, body)
+        else:
+            smtp, why = load_smtp(self._settings, info.dir)
+            if smtp is None:
+                self._failed(pid, target, REVIEW)
+                return Step(ALERT, target, "review_mail_failed",
+                            f"the review e-mail of {target} cannot be sent: {why}")
+            try:
+                self._sender(smtp, to, subject, body)
+            except Exception as exc:  # smtplib errors can echo the server reply, never a password
+                self._failed(pid, target, REVIEW)
+                return Step(ALERT, target, "review_mail_failed",
+                            f"the review e-mail of {target} failed: {type(exc).__name__}")
+        if not self.reviews.record(pid, target, built, now, to, disabled):
+            self._failed(pid, target, REVIEW)   # never a loop of e-mails over a broken disk
+            return Step(ALERT, target, "review_mail_state",
+                        f"the review e-mail of {target} went out but could not be recorded in "
+                        f"{review_mail.STATE}; it may be sent again")
+        self.files.line(f"{pid}: review e-mail of {target} (bars of {ready.bar_date}"
+                        f"{', desk edits kept' if review.desk_edits_kept else ''}"
+                        f"{', supersedes ' + review.supersedes if review.supersedes else ''}) "
+                        + (f"not sent (QT_EMAIL_DISABLED=1; body in {review_mail.BODY_LOG})"
+                           if disabled else f"sent to {', '.join(to)}"))
+        return None
+
+    def _data_ready_check(self) -> None:
+        """21:30 on a trading day: no usable ops.data_ready row for today's bar date -> one alert
+        to the President (the evening run cannot build tomorrow's books)."""
+        now_local = self.local_now()
+        if now_local.time() < self._catchup.data_alert_at:
+            return
+        today = now_local.date()
+        if not self.calendar.is_trading_day(today):
+            return
+        ready = self._ready()
+        if ready is not None and ready.bar_date >= today and ready.status != "failed":
+            return
+        what = (f"its row is {ready.status}" if ready is not None and ready.bar_date >= today
+                else f"the newest row is for {ready.bar_date}" if ready is not None
+                else "the table has no row")
+        dataset = self._catchup.data_ready_dataset
+        self.alerter.alert(self._catchup.portfolios[0], dataset, today, "data_not_ready",
+                           f"no ready {dataset} data for {today} at {now_local:%H:%M} New York "
+                           f"({what}): the evening run has not built the next trading day's "
+                           "books; the 06:45 backup runs once the data is in")
+
     # -- the steps ------------------------------------------------------------------------------
 
     def _act(self, info: PortfolioInfo, step: Step) -> Optional[Step]:
         """Run one step (the portfolio lock is held). None when it did its work, else the step
         to stop on (an alert or a wait)."""
         if step.action == RUN:
-            return self._run_model(info, step.date)
+            return self._run_model(info, step.date, step.ready)
         if step.action == FALLBACK:
-            return self._fallback(info, step.date, send=step.reason == "fallback")
+            return self._fallback(info, step.date, step.reason)
         if step.action == SEND:
             return self._send(info, step.date)
+        if step.action == REVIEW:
+            return self._review(info, step)
         if self._store.publish_model_only(info.portfolio_id, step.date):
             self.files.line(f"{info.portfolio_id}: {step.date} published "
                             f"({cutoff.MODEL_ONLY})")
@@ -627,7 +969,10 @@ class CatchupScheduler:
         self.files.line(f"{info.portfolio_id}: {what} {day} exit {res.rc} in {elapsed}s")
         return res, "\n".join(err), elapsed
 
-    def _run_model(self, info: PortfolioInfo, day: dt.date) -> Optional[Step]:
+    def _run_model(self, info: PortfolioInfo, day: dt.date,
+                   ready: Optional[DataReady] = None) -> Optional[Step]:
+        """The model run of `day`. `ready`: an evening build of the target day from that
+        ops.data_ready row (its system book must come out newer than the row)."""
         s = self._settings
         argv = [s.engine_binary, "--portfolio-config", info.dir, "--date", day.isoformat()]
         res, detail, _ = self._engine(info, argv, "model run", day)
@@ -640,8 +985,8 @@ class CatchupScheduler:
                         f"the model run was killed after {s.job_timeout_s:g}s\n{detail}")
         if res.rc != 0:
             self._failed(info.portfolio_id, day, RUN)
-            reason = "refused" if res.rc == 2 or "QT_REFUSED" in detail or \
-                "QT_ALERT" in detail else "failed"
+            reason = "refused" if res.rc == 2 or any(
+                m in detail for m in ("QT_REFUSED", "QT_ALERT", "FEED_HOLE_REFUSAL")) else "failed"
             return Step(ALERT, day, reason, f"the model run exited {res.rc}\n{detail}")
         latest = self._store.last_book_date(info.portfolio_id, info.book)
         if latest is None or latest < day:
@@ -649,15 +994,35 @@ class CatchupScheduler:
             return Step(ALERT, day, "no_book",
                         f"the model run exited 0 but wrote no {info.book} book for {day}\n"
                         f"{detail}")
-        if not info.desk_editable and self._store.publish_model_only(info.portfolio_id, day):
+        if ready is not None:
+            written = self._store.book_written_at(info.portfolio_id, day, "system")
+            if written is None or written < ready.finished_at:
+                self._failed(info.portfolio_id, day, RUN)
+                return Step(ALERT, day, "no_book",
+                            f"the evening build exited 0 but did not rewrite the system book of "
+                            f"{day} (written {written}, data finished {ready.finished_at})\n"
+                            f"{detail}")
+            if info.desk_editable and self._store.desk_edited(info.portfolio_id, day):
+                self.files.line(f"{info.portfolio_id}: {day} rebuilt from the bars of "
+                                f"{ready.bar_date}; the desk's saved edits were kept (system "
+                                "rebuilt, qt_proposal and qt kept)")
+        # The twin's day is published when it is today or past: an evening build ahead of
+        # today stays open, so a later re-pull can rebuild it.
+        if not info.desk_editable and day <= self.local_now().date() \
+                and self._store.publish_model_only(info.portfolio_id, day):
             self.files.line(f"{info.portfolio_id}: {day} published ({cutoff.MODEL_ONLY})")
         return None
 
-    def _fallback(self, info: PortfolioInfo, day: dt.date, send: bool) -> Optional[Step]:
+    def _fallback(self, info: PortfolioInfo, day: dt.date, kind: str) -> Optional[Step]:
         """Contract C7: qt reset to the model's book and published by the engine (--fallback),
-        e-mailed at once for today (10:00) and never for a past day (the catch-up)."""
+        e-mailed at once for today (10:00) and never for a past day (the catch-up). The evening
+        run's non-trading day ahead of the target (kind FALLBACK_NONTRADING) is published the
+        same way, not e-mailed here (its own 09:30 send does) and not alerted."""
         pid = info.portfolio_id
-        requested_by = cutoff.FALLBACK_10AM if send else cutoff.FALLBACK_CATCHUP
+        send = kind == FALLBACK_TODAY
+        requested_by = {FALLBACK_TODAY: cutoff.FALLBACK_10AM,
+                        FALLBACK_NONTRADING: cutoff.FALLBACK_NONTRADING}.get(
+                            kind, cutoff.FALLBACK_CATCHUP)
         audit_id = self._store.insert_fallback(pid, day, requested_by)
         if audit_id is None:
             return Step(WAIT_TIME, day, "publish_open",
@@ -689,6 +1054,10 @@ class CatchupScheduler:
             self._failed(pid, day, FALLBACK)
             return Step(ALERT, day, f"fallback_{status}",
                         f"the fallback (publish row {audit_id}) is {status}: {message}\n{detail}")
+        if kind == FALLBACK_NONTRADING:
+            self.files.line(f"{pid}: {day} (not a trading day) published with the model's book "
+                            f"({cutoff.FALLBACK_NONTRADING}, publish row {audit_id})")
+            return None
         if not send:
             self.alerter.alert(info.dir, pid, day, "caught_up",
                                f"{pid} {day} was not approved, and its day had passed: it was "

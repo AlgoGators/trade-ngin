@@ -28,7 +28,8 @@ namespace trade_ngin {
  *
  *   1. classify every symbol's T-1 (classify_t1) and log it (log_t1_classification);
  *   2. above the live_run_metadata upsert: a held symbol whose feed hole is older than
- *      live.data_staleness_tolerance_days REFUSES the run when the run date is the host's date,
+ *      live.data_staleness_tolerance_days REFUSES the run when the run date is the host's date
+ *      or later (an evening build of the next day; run_date_is_live),
  *      and is a WARN on a replay of a past date (held_feed_holes_past_tolerance,
  *      run_date_is_host_date);
  *   3. the book-level rule stays the T-1 price map's `.empty()`: carry the whole book when no
@@ -175,6 +176,17 @@ inline std::string local_ymd(const Timestamp& t) {
  */
 inline bool run_date_is_host_date(const Timestamp& run_now, const Timestamp& host_now) {
     return local_ymd(run_now) == local_ymd(host_now);
+}
+
+/**
+ * @brief True when the run is live: for the host's own date or a later one. The QT evening run
+ *        (services/rpc catchup.py; issues #191, #192) builds the next trading day's book the
+ *        evening before, from the same bars a morning run of that day would read, so the
+ *        feed-hole refusal applies to it as it does to the morning run. Only a replay of a past
+ *        date is not live.
+ */
+inline bool run_date_is_live(const Timestamp& run_now, const Timestamp& host_now) {
+    return local_ymd(run_now) >= local_ymd(host_now);
 }
 
 // ------------------------------------------------------------------------------------------------
