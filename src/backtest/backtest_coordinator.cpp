@@ -1719,12 +1719,29 @@ Result<void> BacktestCoordinator::process_portfolio_day(
                                                   market_prices, portfolio_value, gross_notional,
                                                   net_notional, portfolio->get_strategies());
 
-            csv_exporter_->append_finalized_positions(
-                timestamp, portfolio_positions, portfolio_previous_positions_,
-                market_prices);
+            // The rows whose sleeve quantity changed today, with the price the day's fills
+            // traded at (the reports this cycle added, as the cost total above reads them)
+            // and the realized P&L of the row the daily save stores.
+            std::unordered_map<std::string, std::vector<ExecutionReport>> day_fills;
+            for (const auto& [strategy_id, execs] : portfolio->get_strategy_executions()) {
+                const size_t before = strategy_exec_counts_before.count(strategy_id) > 0
+                                          ? strategy_exec_counts_before.at(strategy_id)
+                                          : 0;
+                if (had_previous_bars && before < execs.size()) {
+                    day_fills[strategy_id].assign(execs.begin() + before, execs.end());
+                }
+            }
+            const SleevePositions sleeve_positions = portfolio->get_strategy_positions();
+            csv_exporter_->append_position_changes(
+                timestamp, BacktestCSVExporter::position_changes(
+                               sleeve_positions, sleeve_previous_positions_,
+                               BacktestCSVExporter::fill_prices(day_fills),
+                               [&](const std::string& strategy_id) {
+                                   return keeps_closed_rows(portfolio, strategy_id);
+                               }));
 
-            // Update previous positions for next day's finalized tracking
-            portfolio_previous_positions_ = portfolio_positions;
+            // Update previous positions for next day's change tracking
+            sleeve_previous_positions_ = sleeve_positions;
         }
 
         // Update previous_bars for next day
@@ -1929,7 +1946,7 @@ void BacktestCoordinator::reset_portfolio_state() {
     portfolio_cost_carry_ = FuturesCostFeedCarry{};
     cost_feed_previous_group_.clear();
     current_run_id_.clear();
-    portfolio_previous_positions_.clear();
+    sleeve_previous_positions_.clear();
     // E2-F54 (c): without this, a second portfolio backtest in the same process opens with
     // the previous book's cumulative realized and reports its first bar as a difference.
     last_cumulative_realized_.clear();

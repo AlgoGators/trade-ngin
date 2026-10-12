@@ -105,6 +105,41 @@ protected:
         TestBase::TearDown();
     }
 
+    // A sleeve's row as the run holds it after the day's P&L: quantity, the price it is marked
+    // at, and the realized P&L the daily save stores.
+    static Position stored_row(const std::string& sym, double qty, double mark,
+                               double realized = 0.0) {
+        Position p = make_pos(sym, qty, mark);
+        p.realized_pnl = Decimal(realized);
+        return p;
+    }
+
+    static ExecutionReport fill_of(const std::string& sym, Side side, double qty, double price) {
+        ExecutionReport fill;
+        fill.symbol = sym;
+        fill.side = side;
+        fill.filled_quantity = Quantity(qty);
+        fill.fill_price = Price(price);
+        return fill;
+    }
+
+    // position_changes.csv after one day of a one-sleeve book ("SLEEVE"): the day's rows, the
+    // rows of the day before, the sleeve's fills of the day, and whether the sleeve stores a
+    // row closed to zero (a cash book does).
+    std::string changes_body(std::unordered_map<std::string, Position> current,
+                             std::unordered_map<std::string, Position> previous,
+                             std::vector<ExecutionReport> fills, bool keeps_closed_rows = false) {
+        BacktestCSVExporter exporter(out_dir_.string());
+        EXPECT_TRUE(exporter.initialize_files().is_ok());
+        const auto changes = BacktestCSVExporter::position_changes(
+            one_sleeve(std::move(current)), one_sleeve(std::move(previous)),
+            BacktestCSVExporter::fill_prices({{"SLEEVE", std::move(fills)}}),
+            [keeps_closed_rows](const std::string&) { return keeps_closed_rows; });
+        EXPECT_TRUE(exporter.append_position_changes(date_at(2026, 1, 5), changes).is_ok());
+        exporter.finalize();
+        return slurp(out_dir_ / "position_changes.csv");
+    }
+
     std::filesystem::path out_dir_;
     std::unordered_map<std::string, std::shared_ptr<Instrument>> saved_instruments_;
     bool saved_initialized_{false};
@@ -115,7 +150,9 @@ TEST_F(BacktestCSVExporterTest, InitializeCreatesDirectoryAndAllThreeFilesWithHe
     auto r = exporter.initialize_files();
     ASSERT_TRUE(r.is_ok()) << r.error()->what();
     EXPECT_TRUE(std::filesystem::exists(out_dir_ / "positions.csv"));
-    EXPECT_TRUE(std::filesystem::exists(out_dir_ / "finalized_positions.csv"));
+    EXPECT_TRUE(std::filesystem::exists(out_dir_ / "position_changes.csv"));
+    EXPECT_FALSE(std::filesystem::exists(out_dir_ / "finalized_positions.csv"))
+        << "the file is named for what it holds: the day's position changes";
     EXPECT_TRUE(std::filesystem::exists(out_dir_ / "equity_curve.csv"));
 
     // finalize() flushes & closes the streams so the headers land on disk.
@@ -123,8 +160,8 @@ TEST_F(BacktestCSVExporterTest, InitializeCreatesDirectoryAndAllThreeFilesWithHe
     EXPECT_EQ(slurp(out_dir_ / "positions.csv"),
               "date,strategy,symbol,quantity,market_price,notional,pct_of_gross_notional,"
               "pct_of_portfolio_value,forecast,sizing_vol,ema_8,ema_32,ema_64,ema_256\n");
-    EXPECT_NE(slurp(out_dir_ / "finalized_positions.csv").find("realized_pnl"),
-              std::string::npos);
+    EXPECT_EQ(slurp(out_dir_ / "position_changes.csv"),
+              "date,strategy,symbol,quantity,previous_mark,fill_price,realized_pnl\n");
     EXPECT_EQ(slurp(out_dir_ / "equity_curve.csv"), "date,portfolio_value\n");
 }
 
@@ -243,108 +280,130 @@ TEST_F(BacktestCSVExporterTest, AppendEquityCurveWritesDateAndValue) {
     EXPECT_NE(body.find("2026-01-06,1.25e+06"), std::string::npos);
 }
 
-TEST_F(BacktestCSVExporterTest, AppendFinalizedPositionsWithoutInitializeReturnsError) {
+// ===== position_changes.csv (was finalized_positions.csv) ========================================
+// One row per sleeve and symbol whose quantity changed that day. Nothing in the row is computed
+// by the exporter: previous_mark is the previous day's row's price (empty on a new position),
+// fill_price the price the day's fills traded at (empty with no fill), realized_pnl the realized
+// P&L of the row the run stores for the day (empty when it stores none). The file used to print
+// "entry_price" (that same previous mark, or the day's close on a new position), "exit_price"
+// (the day's close) and a realized P&L of its own arithmetic, closed quantity x (close - previous
+// mark) x multiplier, which no stored row held.
+
+TEST_F(BacktestCSVExporterTest, PositionChangesWithoutInitializeReturnsError) {
     BacktestCSVExporter exporter(out_dir_.string());
-    auto r = exporter.append_finalized_positions(date_at(2026, 1, 5), {}, {}, {});
+    auto r = exporter.append_position_changes(date_at(2026, 1, 5), {});
     EXPECT_TRUE(r.is_error());
 }
 
-TEST_F(BacktestCSVExporterTest, AppendFinalizedPositionsSkipsUnchangedPositions) {
-    BacktestCSVExporter exporter(out_dir_.string());
-    ASSERT_TRUE(exporter.initialize_files().is_ok());
-    std::unordered_map<std::string, Position> curr = {{"ES", make_pos("ES", 5.0, 4000.0)}};
-    std::unordered_map<std::string, Position> prev = {{"ES", make_pos("ES", 5.0, 4000.0)}};
-    std::unordered_map<std::string, double> prices = {{"ES", 4010.0}};
-    ASSERT_TRUE(exporter
-                    .append_finalized_positions(date_at(2026, 1, 5), curr, prev, prices)
-                    .is_ok());
-    std::string body = slurp(out_dir_ / "finalized_positions.csv");
-    int line_count = 0;
-    for (char c : body) if (c == '\n') ++line_count;
-    EXPECT_EQ(line_count, 1);  // header only
+TEST_F(BacktestCSVExporterTest, PositionChangesSkipsUnchangedPositions) {
+    const std::string body = changes_body({{"ES", stored_row("ES", 5.0, 4010.0, 250.0)}},
+                                          {{"ES", stored_row("ES", 5.0, 4000.0)}}, {});
+    EXPECT_EQ(body, "date,strategy,symbol,quantity,previous_mark,fill_price,realized_pnl\n");
 }
 
-TEST_F(BacktestCSVExporterTest, AppendFinalizedPositionsRecordsNewEntry) {
-    BacktestCSVExporter exporter(out_dir_.string());
-    ASSERT_TRUE(exporter.initialize_files().is_ok());
-    std::unordered_map<std::string, Position> curr = {{"ES", make_pos("ES", 5.0)}};
-    std::unordered_map<std::string, Position> prev;
-    std::unordered_map<std::string, double> prices = {{"ES", 4000.0}};
-    ASSERT_TRUE(exporter
-                    .append_finalized_positions(date_at(2026, 1, 5), curr, prev, prices)
-                    .is_ok());
-    std::string body = slurp(out_dir_ / "finalized_positions.csv");
-    // New entry: entry_price = current market price (4000), exit_price = 0, pnl = 0
-    EXPECT_NE(body.find("ES,5,4000,0,0"), std::string::npos);
+TEST_F(BacktestCSVExporterTest, PositionChangesNewPositionHasItsFillPriceAndNoPreviousMark) {
+    // Opened today: 5 bought at 4000 (the fill), marked at today's close 4010. There is no
+    // previous mark; the file used to print the day's close as the "entry price".
+    const std::string body = changes_body({{"ES", stored_row("ES", 5.0, 4010.0, 0.0)}}, {},
+                                          {fill_of("ES", Side::BUY, 5.0, 4000.0)});
+    EXPECT_NE(body.find("2026-01-05,SLEEVE,ES,5,,4000,0\n"), std::string::npos) << body;
 }
 
-TEST_F(BacktestCSVExporterTest, AppendFinalizedPositionsRecordsClosedTradeWithRealizedPnL) {
-    BacktestCSVExporter exporter(out_dir_.string());
-    ASSERT_TRUE(exporter.initialize_files().is_ok());
-    std::unordered_map<std::string, Position> curr = {{"ES", make_pos("ES", 0.0, 0.0)}};
-    std::unordered_map<std::string, Position> prev = {{"ES", make_pos("ES", 5.0, 4000.0)}};
-    std::unordered_map<std::string, double> prices = {{"ES", 4010.0}};
-    ASSERT_TRUE(exporter
-                    .append_finalized_positions(date_at(2026, 1, 5), curr, prev, prices)
-                    .is_ok());
-    std::string body = slurp(out_dir_ / "finalized_positions.csv");
-    // No instrument registry → multiplier = 1; closed_qty = 5; realized = 5*(4010-4000)*1 = 50
-    EXPECT_NE(body.find("ES,0,4000,4010,50"), std::string::npos);
+TEST_F(BacktestCSVExporterTest, PositionChangesClosedPositionPrintsTheStoredRealizedOrNone) {
+    // A futures sleeve stores no row for a position closed to zero: no realized P&L to print.
+    const std::string futures = changes_body({{"ES", stored_row("ES", 0.0, 0.0, 0.0)}},
+                                             {{"ES", stored_row("ES", 5.0, 4000.0)}},
+                                             {fill_of("ES", Side::SELL, 5.0, 4000.0)});
+    EXPECT_NE(futures.find("2026-01-05,SLEEVE,ES,0,4000,4000,\n"), std::string::npos) << futures;
+    // A cash book keeps the close-day row with its realized flow: that flow is printed.
+    const std::string cash = changes_body({{"ES", stored_row("ES", 0.0, 0.0, 50.0)}},
+                                          {{"ES", stored_row("ES", 5.0, 4000.0)}},
+                                          {fill_of("ES", Side::SELL, 5.0, 4010.0)}, true);
+    EXPECT_NE(cash.find("2026-01-05,SLEEVE,ES,0,4000,4010,50\n"), std::string::npos) << cash;
 }
 
-TEST_F(BacktestCSVExporterTest, AppendFinalizedPositionsRecordsReducedTradeRealizedPnL) {
-    BacktestCSVExporter exporter(out_dir_.string());
-    ASSERT_TRUE(exporter.initialize_files().is_ok());
-    std::unordered_map<std::string, Position> curr = {{"ES", make_pos("ES", 2.0, 4000.0)}};
-    std::unordered_map<std::string, Position> prev = {{"ES", make_pos("ES", 5.0, 4000.0)}};
-    std::unordered_map<std::string, double> prices = {{"ES", 4010.0}};
-    ASSERT_TRUE(exporter
-                    .append_finalized_positions(date_at(2026, 1, 5), curr, prev, prices)
-                    .is_ok());
-    std::string body = slurp(out_dir_ / "finalized_positions.csv");
-    // closed_qty = 5 - 2 = 3; realized = 3*(4010-4000)*1 = 30
-    EXPECT_NE(body.find("ES,2,4000,4010,30"), std::string::npos);
+TEST_F(BacktestCSVExporterTest, PositionChangesReducedPositionPrintsTheStoredRealized) {
+    // 5 reduced to 2 at 4000, the day's close 4010. The stored row's realized P&L is printed as
+    // it is (-17.25 here: a figure no arithmetic of these prices gives); the file's own
+    // arithmetic printed 3 x (4010 - 4000) = 30.
+    const std::string body = changes_body({{"ES", stored_row("ES", 2.0, 4010.0, -17.25)}},
+                                          {{"ES", stored_row("ES", 5.0, 4000.0)}},
+                                          {fill_of("ES", Side::SELL, 3.0, 4000.0)});
+    EXPECT_NE(body.find("2026-01-05,SLEEVE,ES,2,4000,4000,-17.25\n"), std::string::npos) << body;
 }
 
-TEST_F(BacktestCSVExporterTest, AppendFinalizedPositionsHandlesIncreasedPositionWithoutPnL) {
-    BacktestCSVExporter exporter(out_dir_.string());
-    ASSERT_TRUE(exporter.initialize_files().is_ok());
-    std::unordered_map<std::string, Position> curr = {{"ES", make_pos("ES", 8.0, 4000.0)}};
-    std::unordered_map<std::string, Position> prev = {{"ES", make_pos("ES", 5.0, 4000.0)}};
-    std::unordered_map<std::string, double> prices = {{"ES", 4010.0}};
-    ASSERT_TRUE(exporter
-                    .append_finalized_positions(date_at(2026, 1, 5), curr, prev, prices)
-                    .is_ok());
-    std::string body = slurp(out_dir_ / "finalized_positions.csv");
-    // |curr| > |prev| → no realized PnL branch; entry comes from prev.average_price
-    EXPECT_NE(body.find("ES,8,4000,4010,0"), std::string::npos);
+TEST_F(BacktestCSVExporterTest, PositionChangesIncreasedPositionPrintsTheStoredRealized) {
+    // 5 increased to 8: the stored row carries the day's P&L (80); the file printed 0 on every
+    // increase.
+    const std::string body = changes_body({{"ES", stored_row("ES", 8.0, 4010.0, 80.0)}},
+                                          {{"ES", stored_row("ES", 5.0, 4000.0)}},
+                                          {fill_of("ES", Side::BUY, 3.0, 4000.0)});
+    EXPECT_NE(body.find("2026-01-05,SLEEVE,ES,8,4000,4000,80\n"), std::string::npos) << body;
 }
 
-TEST_F(BacktestCSVExporterTest, AppendFinalizedPositionsCoversSymbolsOnlyInPrevious) {
-    BacktestCSVExporter exporter(out_dir_.string());
-    ASSERT_TRUE(exporter.initialize_files().is_ok());
-    std::unordered_map<std::string, Position> curr;  // empty
-    std::unordered_map<std::string, Position> prev = {{"NQ", make_pos("NQ", 3.0, 15000.0)}};
-    std::unordered_map<std::string, double> prices = {{"NQ", 15100.0}};
-    ASSERT_TRUE(exporter
-                    .append_finalized_positions(date_at(2026, 1, 5), curr, prev, prices)
-                    .is_ok());
-    std::string body = slurp(out_dir_ / "finalized_positions.csv");
-    // closed_qty = 3 - 0 = 3; realized = 3*(15100-15000)*1 = 300
-    EXPECT_NE(body.find("NQ,0,15000,15100,300"), std::string::npos);
+TEST_F(BacktestCSVExporterTest, PositionChangesCoversSymbolsOnlyInPrevious) {
+    // The symbol left the book entirely: no current row, so no stored realized; no fill given.
+    const std::string body = changes_body({}, {{"NQ", stored_row("NQ", 3.0, 15000.0)}}, {});
+    EXPECT_NE(body.find("2026-01-05,SLEEVE,NQ,0,15000,,\n"), std::string::npos) << body;
 }
 
-TEST_F(BacktestCSVExporterTest, AppendFinalizedPositionsHandlesMissingMarketPrice) {
-    BacktestCSVExporter exporter(out_dir_.string());
-    ASSERT_TRUE(exporter.initialize_files().is_ok());
-    std::unordered_map<std::string, Position> curr = {{"ES", make_pos("ES", 0.0)}};
-    std::unordered_map<std::string, Position> prev = {{"ES", make_pos("ES", 5.0, 4000.0)}};
-    std::unordered_map<std::string, double> prices;  // no entry
-    ASSERT_TRUE(exporter
-                    .append_finalized_positions(date_at(2026, 1, 5), curr, prev, prices)
-                    .is_ok());
-    std::string body = slurp(out_dir_ / "finalized_positions.csv");
-    EXPECT_NE(body.find("ES,0,4000,0"), std::string::npos);
+TEST_F(BacktestCSVExporterTest, PositionChangesWithNoFillThatDayLeavesTheFillPriceEmpty) {
+    const std::string body = changes_body({{"ES", stored_row("ES", 3.0, 4010.0, 30.0)}},
+                                          {{"ES", stored_row("ES", 5.0, 4000.0)}}, {});
+    EXPECT_NE(body.find("2026-01-05,SLEEVE,ES,3,4000,,30\n"), std::string::npos)
+        << "the day's close is not a fill price: " << body;
+}
+
+// The price the day's fills traded at: the quantity-weighted mean of the sleeve's own fills of the
+// symbol; a roll leg and a borrow row change no position and are left out; one fill's price is
+// printed as it is.
+TEST_F(BacktestCSVExporterTest, FillPricesAreTheWeightedMeanOfTheSleevesOwnFills) {
+    ExecutionReport roll_close = fill_of("ES", Side::SELL, 2.0, 90.0);
+    roll_close.execution_type = ExecutionType::ROLL;
+    ExecutionReport roll_open = fill_of("ES", Side::BUY, 2.0, 95.0);
+    roll_open.execution_type = ExecutionType::ROLL;
+    ExecutionReport borrow = fill_of("NQ", Side::SELL, 9.0, 1.0);
+    borrow.execution_type = ExecutionType::BORROW;
+    const SleeveFillPrices prices = BacktestCSVExporter::fill_prices(
+        {{"TREND",
+          {fill_of("ES", Side::BUY, 1.0, 100.0), fill_of("ES", Side::BUY, 3.0, 104.0), roll_close,
+           roll_open, fill_of("NQ", Side::SELL, 3.0, 0.1), borrow}},
+         {"FAST", {fill_of("ES", Side::SELL, 2.0, 100.0)}},
+         {"ROLLS_ONLY", {roll_close, roll_open}}});
+    ASSERT_EQ(prices.count("TREND"), 1u);
+    EXPECT_DOUBLE_EQ(prices.at("TREND").at("ES"), (1.0 * 100.0 + 3.0 * 104.0) / 4.0);
+    EXPECT_EQ(prices.at("TREND").at("NQ"), 0.1) << "one fill: its own price, to the bit";
+    EXPECT_EQ(prices.at("FAST").at("ES"), 100.0) << "each sleeve's own fills";
+    EXPECT_EQ(prices.count("ROLLS_ONLY"), 0u) << "a roll changes no position";
+}
+
+// Two sleeves: a row per sleeve whose own quantity changed, by sleeve then symbol.
+TEST_F(BacktestCSVExporterTest, PositionChangesAreTheSleevesOwn) {
+    SleevePositions current{{"TREND", {{"ES", stored_row("ES", 1.0, 4010.0, 10.0)}}},
+                            {"FAST",
+                             {{"ES", stored_row("ES", -2.0, 4010.0, -20.0)},
+                              {"CL", stored_row("CL", 1.0, 70.0, 0.0)}}}};
+    SleevePositions previous{{"TREND", {{"ES", stored_row("ES", 1.0, 4000.0)}}},
+                             {"FAST", {{"ES", stored_row("ES", -1.0, 4000.0)}}}};
+    const auto changes = BacktestCSVExporter::position_changes(
+        current, previous,
+        BacktestCSVExporter::fill_prices(
+            {{"FAST",
+              {fill_of("ES", Side::SELL, 1.0, 4000.0), fill_of("CL", Side::BUY, 1.0, 69.5)}}}),
+        nullptr);
+    // The account's quantity of ES changed (0 to -1), but only FAST's row did: TREND has no row.
+    ASSERT_EQ(changes.size(), 2u);
+    EXPECT_EQ(changes[0].strategy, "FAST");
+    EXPECT_EQ(changes[0].symbol, "CL");
+    EXPECT_FALSE(changes[0].previous_mark.has_value());
+    EXPECT_EQ(changes[0].fill_price, 69.5);
+    EXPECT_EQ(changes[0].realized_pnl, 0.0);
+    EXPECT_EQ(changes[1].strategy, "FAST");
+    EXPECT_EQ(changes[1].symbol, "ES");
+    EXPECT_EQ(changes[1].quantity, -2.0);
+    EXPECT_EQ(changes[1].previous_mark, 4000.0);
+    EXPECT_EQ(changes[1].fill_price, 4000.0);
+    EXPECT_EQ(changes[1].realized_pnl, -20.0);
 }
 
 TEST_F(BacktestCSVExporterTest, FinalizeIsIdempotentAndSafeAfterDestructor) {
@@ -367,7 +426,7 @@ TEST_F(BacktestCSVExporterTest, AppendsAfterFinalizeReturnError) {
             .append_daily_positions(date_at(2026, 1, 5), SleevePositions{}, {}, 1.0, 1.0, 1.0, {})
             .is_error());
     EXPECT_TRUE(exporter.append_equity_curve(date_at(2026, 1, 5), 1.0).is_error());
-    EXPECT_TRUE(exporter.append_finalized_positions(date_at(2026, 1, 5), {}, {}, {}).is_error());
+    EXPECT_TRUE(exporter.append_position_changes(date_at(2026, 1, 5), {}).is_error());
 }
 
 // ===== A short row through the backtest CSV writers ==============================================
@@ -441,48 +500,21 @@ TEST_F(BacktestCSVExporterTest, ShortSignCoordinatorNetNotionalCarriesTheSign) {
         << "the net notional sums get_notional_value, a magnitude, without the position's sign";
 }
 
-// A flip through zero in the finalized file (backtest_csv_exporter.cpp,
-// append_finalized_positions).
-// The closed quantity was prev - curr, and only when |curr| < |prev|:
-//   +2 -> -3: |curr| > |prev|, so nothing was realized; the closed +2 leg was lost.
-//   -3 -> +2: closed = -5, so 5 contracts were realized where 3 closed.
-// Fixed: a close or a flip realizes all of prev (the new leg is opened, not realized). No registry
-// entry for "FLIP_REALIZES_CLOSED_LEG" here, so the multiplier is 1.
-TEST_F(BacktestCSVExporterTest, ShortSignFinalizedFlipRealizesTheClosedLegOnly) {
-    BacktestCSVExporter exporter(out_dir_.string());
-    ASSERT_TRUE(exporter.initialize_files().is_ok());
-    // long +2 bought at 4000 flips to -3 at 4010: realized 2 x (4010 - 4000) = 20
-    ASSERT_TRUE(
-        exporter
-            .append_finalized_positions(
-                date_at(2026, 1, 5),
-                {{"FLIP_REALIZES_CLOSED_LEG", make_pos("FLIP_REALIZES_CLOSED_LEG", -3.0, 4010.0)}},
-                {{"FLIP_REALIZES_CLOSED_LEG", make_pos("FLIP_REALIZES_CLOSED_LEG", 2.0, 4000.0)}},
-                {{"FLIP_REALIZES_CLOSED_LEG", 4010.0}})
-            .is_ok());
-    // short -3 sold at 4000 flips to +2 at 3990: realized -3 x (3990 - 4000) = 30
-    ASSERT_TRUE(
-        exporter
-            .append_finalized_positions(
-                date_at(2026, 1, 6),
-                {{"FLIP_REALIZES_CLOSED_LEG", make_pos("FLIP_REALIZES_CLOSED_LEG", 2.0, 3990.0)}},
-                {{"FLIP_REALIZES_CLOSED_LEG", make_pos("FLIP_REALIZES_CLOSED_LEG", -3.0, 4000.0)}},
-                {{"FLIP_REALIZES_CLOSED_LEG", 3990.0}})
-            .is_ok());
-    // short -3 at 4000 reduced to -1 at 3990 (same side, the control): -2 x (3990 - 4000) = 20
-    ASSERT_TRUE(
-        exporter
-            .append_finalized_positions(
-                date_at(2026, 1, 7),
-                {{"FLIP_REALIZES_CLOSED_LEG", make_pos("FLIP_REALIZES_CLOSED_LEG", -1.0, 4000.0)}},
-                {{"FLIP_REALIZES_CLOSED_LEG", make_pos("FLIP_REALIZES_CLOSED_LEG", -3.0, 4000.0)}},
-                {{"FLIP_REALIZES_CLOSED_LEG", 3990.0}})
-            .is_ok());
-    exporter.finalize();
-    const std::string body = slurp(out_dir_ / "finalized_positions.csv");
-    EXPECT_NE(body.find("FLIP_REALIZES_CLOSED_LEG,-3,4000,4010,20\n"), std::string::npos) << body;
-    EXPECT_NE(body.find("FLIP_REALIZES_CLOSED_LEG,2,4000,3990,30\n"), std::string::npos) << body;
-    EXPECT_NE(body.find("FLIP_REALIZES_CLOSED_LEG,-1,4000,3990,20\n"), std::string::npos) << body;
+// A flip through zero. The file's own arithmetic realized the closed leg (prev x (close - previous
+// mark): +2 -> -3 at a close of 4010 printed 20). The row now prints what the run stores for the
+// sleeve's row of that day, whatever the two quantities are, and the fill price of the one trade.
+TEST_F(BacktestCSVExporterTest, PositionChangesFlipPrintsTheStoredRowsRealized) {
+    const std::string sym = "FLIP_PRINTS_STORED_ROW";
+    // long +2 marked 4000 flips to -3: 5 sold at 4000, the row stored for the day realized 12.5
+    const std::string to_short = changes_body({{sym, stored_row(sym, -3.0, 4010.0, 12.5)}},
+                                              {{sym, stored_row(sym, 2.0, 4000.0)}},
+                                              {fill_of(sym, Side::SELL, 5.0, 4000.0)});
+    EXPECT_NE(to_short.find(sym + ",-3,4000,4000,12.5\n"), std::string::npos) << to_short;
+    // short -3 marked 4000 flips to +2: 5 bought at 4000, the stored row realized -7.5
+    const std::string to_long = changes_body({{sym, stored_row(sym, 2.0, 3990.0, -7.5)}},
+                                             {{sym, stored_row(sym, -3.0, 4000.0)}},
+                                             {fill_of(sym, Side::BUY, 5.0, 4000.0)});
+    EXPECT_NE(to_long.find(sym + ",2,4000,4000,-7.5\n"), std::string::npos) << to_long;
 }
 
 // ===== positions.csv: one row per sleeve, each with its own readings ============================

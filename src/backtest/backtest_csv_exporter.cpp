@@ -2,12 +2,14 @@
 #include "trade_ngin/backtest/backtest_csv_exporter.hpp"
 #include "trade_ngin/core/logger.hpp"
 #include "trade_ngin/core/time_utils.hpp"
+#include "trade_ngin/data/backtest_position_row.hpp"
 #include "trade_ngin/strategy/trend_readings.hpp"
 #include <filesystem>
 #include <sstream>
 #include <iomanip>
 #include <cmath>
 #include <map>
+#include <set>
 
 namespace trade_ngin {
 namespace backtest {
@@ -36,15 +38,16 @@ Result<void> BacktestCSVExporter::initialize_files() {
                         << "pct_of_gross_notional,pct_of_portfolio_value,forecast,sizing_vol,"
                         << "ema_8,ema_32,ema_64,ema_256\n";
 
-        finalized_file_.open(std::filesystem::path(output_directory_) / "finalized_positions.csv");
-        if (!finalized_file_.is_open()) {
-            return make_error<void>(
-                ErrorCode::CONVERSION_ERROR,
-                "Failed to open finalized_positions.csv for writing",
-                "BacktestCSVExporter"
-            );
+        changes_file_.open(std::filesystem::path(output_directory_) / "position_changes.csv");
+        if (!changes_file_.is_open()) {
+            return make_error<void>(ErrorCode::CONVERSION_ERROR,
+                                    "Failed to open position_changes.csv for writing",
+                                    "BacktestCSVExporter");
         }
-        finalized_file_ << "date,symbol,quantity,entry_price,exit_price,realized_pnl\n";
+        // One row per sleeve and symbol whose quantity changed that day: the quantity after
+        // the change, the price the position was marked at the day before, the price the
+        // day's fills traded at, and the realized P&L of the row the run stores for the day.
+        changes_file_ << "date,strategy,symbol,quantity,previous_mark,fill_price,realized_pnl\n";
 
         equity_curve_file_.open(std::filesystem::path(output_directory_) / "equity_curve.csv");
         if (!equity_curve_file_.is_open()) {
@@ -191,88 +194,123 @@ Result<void> BacktestCSVExporter::append_equity_curve(
     }
 }
 
-Result<void> BacktestCSVExporter::append_finalized_positions(
-    const Timestamp& date,
-    const std::unordered_map<std::string, Position>& current_positions,
-    const std::unordered_map<std::string, Position>& previous_positions,
-    const std::unordered_map<std::string, double>& market_prices) {
+SleeveFillPrices BacktestCSVExporter::fill_prices(
+    const std::unordered_map<std::string, std::vector<ExecutionReport>>& day_fills) {
+    struct Sum {
+        double quantity{0.0};
+        double value{0.0};
+        double first_price{0.0};
+        bool one_price{true};
+    };
+    SleeveFillPrices prices;
+    for (const auto& [strategy_id, fills] : day_fills) {
+        std::unordered_map<std::string, Sum> sums;
+        for (const auto& fill : fills) {
+            if (fill.execution_type != ExecutionType::STRATEGY)
+                continue;
+            const double quantity = std::abs(static_cast<double>(fill.filled_quantity));
+            if (quantity < 1e-10)
+                continue;
+            const double price = static_cast<double>(fill.fill_price);
+            Sum& sum = sums[fill.symbol];
+            if (sum.quantity == 0.0) {
+                sum.first_price = price;
+            } else if (price != sum.first_price) {
+                sum.one_price = false;
+            }
+            sum.quantity += quantity;
+            sum.value += quantity * price;
+        }
+        for (const auto& [symbol, sum] : sums) {
+            prices[strategy_id][symbol] =
+                sum.one_price ? sum.first_price : sum.value / sum.quantity;
+        }
+    }
+    return prices;
+}
 
-    if (!finalized_file_.is_open()) {
-        return make_error<void>(
-            ErrorCode::CONVERSION_ERROR,
-            "finalized_positions.csv file is not open",
-            "BacktestCSVExporter"
-        );
+std::vector<PositionChange> BacktestCSVExporter::position_changes(
+    const SleevePositions& current, const SleevePositions& previous, const SleeveFillPrices& fills,
+    const std::function<bool(const std::string&)>& keeps_closed_rows) {
+    // By sleeve, then symbol, over both days.
+    std::map<std::string, std::set<std::string>> keys;
+    for (const auto* book : {&current, &previous}) {
+        for (const auto& [strategy_id, positions] : *book) {
+            for (const auto& [symbol, _] : positions)
+                keys[strategy_id].insert(symbol);
+        }
+    }
+    const auto row_of = [](const SleevePositions& book, const std::string& strategy_id,
+                           const std::string& symbol) -> const Position* {
+        const auto sleeve = book.find(strategy_id);
+        if (sleeve == book.end())
+            return nullptr;
+        const auto row = sleeve->second.find(symbol);
+        return row == sleeve->second.end() ? nullptr : &row->second;
+    };
+
+    std::vector<PositionChange> changes;
+    for (const auto& [strategy_id, symbols] : keys) {
+        const bool keep_closed = keeps_closed_rows ? keeps_closed_rows(strategy_id) : false;
+        for (const auto& symbol : symbols) {
+            const Position* curr = row_of(current, strategy_id, symbol);
+            const Position* prev = row_of(previous, strategy_id, symbol);
+            const double curr_qty = curr ? static_cast<double>(curr->quantity) : 0.0;
+            const double prev_qty = prev ? static_cast<double>(prev->quantity) : 0.0;
+            if (std::abs(curr_qty - prev_qty) < 1e-10) continue;
+
+            PositionChange change;
+            change.strategy = strategy_id;
+            change.symbol = symbol;
+            change.quantity = curr_qty;
+            if (prev && std::abs(prev_qty) >= 1e-10) {
+                change.previous_mark = static_cast<double>(prev->average_price);
+            }
+            if (const auto sleeve = fills.find(strategy_id); sleeve != fills.end()) {
+                if (const auto fill = sleeve->second.find(symbol); fill != sleeve->second.end()) {
+                    change.fill_price = fill->second;
+                }
+            }
+            if (curr) {
+                const double realized = static_cast<double>(curr->realized_pnl);
+                if (backtest_position_row_is_stored(curr_qty, realized, keep_closed)) {
+                    change.realized_pnl = realized;
+                }
+            }
+            changes.push_back(std::move(change));
+        }
+    }
+    return changes;
+}
+
+Result<void> BacktestCSVExporter::append_position_changes(
+    const Timestamp& date, const std::vector<PositionChange>& changes) {
+    if (!changes_file_.is_open()) {
+        return make_error<void>(ErrorCode::CONVERSION_ERROR,
+                                "position_changes.csv file is not open", "BacktestCSVExporter");
     }
 
     try {
-        std::string date_str = format_date(date);
-
-        // Collect all symbols from both current and previous positions
-        std::unordered_map<std::string, bool> all_symbols;
-        for (const auto& [sym, _] : current_positions) all_symbols[sym] = true;
-        for (const auto& [sym, _] : previous_positions) all_symbols[sym] = true;
-
-        for (const auto& [symbol, _] : all_symbols) {
-            auto curr_it = current_positions.find(symbol);
-            auto prev_it = previous_positions.find(symbol);
-
-            double curr_qty = (curr_it != current_positions.end()) ? static_cast<double>(curr_it->second.quantity) : 0.0;
-            double prev_qty = (prev_it != previous_positions.end()) ? static_cast<double>(prev_it->second.quantity) : 0.0;
-
-            // Skip if no change
-            if (std::abs(curr_qty - prev_qty) < 1e-10) continue;
-
-            double entry_price = (prev_it != previous_positions.end()) ? static_cast<double>(prev_it->second.average_price) : 0.0;
-            double exit_price = 0.0;
-            auto price_it = market_prices.find(symbol);
-            if (price_it != market_prices.end()) {
-                exit_price = price_it->second;
-            }
-
-            // If entering a new position, entry_price is the current market price
-            if (std::abs(prev_qty) < 1e-10 && std::abs(curr_qty) > 1e-10) {
-                entry_price = exit_price;
-                exit_price = 0.0; // Not exited yet
-            }
-
-            // Calculate realized PnL for closed/reduced positions
-            // The closed quantity is the part of prev_qty this change takes off, with prev_qty's
-            // sign: all of it when the position is closed or flips through zero (+2 -> -3 closes
-            // 2, -3 -> +2 closes 3; the new leg is opened, not realized), prev - curr when it is
-            // reduced on the same side, none when it grows.
-            double realized_pnl = 0.0;
-            double closed_qty = 0.0;
-            if (std::abs(prev_qty) > 1e-10) {
-                if (curr_qty * prev_qty <= 0.0) {
-                    closed_qty = prev_qty;
-                } else if (std::abs(curr_qty) < std::abs(prev_qty)) {
-                    closed_qty = prev_qty - curr_qty;
-                }
-            }
-            if (closed_qty != 0.0) {
-                auto instrument = InstrumentRegistry::instance().get_instrument(symbol);
-                double multiplier = instrument ? instrument->get_multiplier() : 1.0;
-                realized_pnl = closed_qty * (exit_price - entry_price) * multiplier;
-            }
-
-            finalized_file_ << date_str << ","
-                            << symbol << ","
-                            << curr_qty << ","
-                            << entry_price << ","
-                            << exit_price << ","
-                            << realized_pnl << "\n";
+        const std::string date_str = format_date(date);
+        const auto cell = [&](const std::optional<double>& value) {
+            changes_file_ << ",";
+            if (value)
+                changes_file_ << *value;
+        };
+        for (const auto& change : changes) {
+            changes_file_ << date_str << "," << change.strategy << "," << change.symbol << ","
+                          << change.quantity;
+            cell(change.previous_mark);
+            cell(change.fill_price);
+            cell(change.realized_pnl);
+            changes_file_ << "\n";
         }
-
-        finalized_file_.flush();
+        changes_file_.flush();
         return Result<void>();
-
     } catch (const std::exception& e) {
-        return make_error<void>(
-            ErrorCode::CONVERSION_ERROR,
-            std::string("Error appending finalized positions: ") + e.what(),
-            "BacktestCSVExporter"
-        );
+        return make_error<void>(ErrorCode::CONVERSION_ERROR,
+                                std::string("Error appending position changes: ") + e.what(),
+                                "BacktestCSVExporter");
     }
 }
 
@@ -280,8 +318,8 @@ void BacktestCSVExporter::finalize() {
     if (positions_file_.is_open()) {
         positions_file_.close();
     }
-    if (finalized_file_.is_open()) {
-        finalized_file_.close();
+    if (changes_file_.is_open()) {
+        changes_file_.close();
     }
     if (equity_curve_file_.is_open()) {
         equity_curve_file_.close();

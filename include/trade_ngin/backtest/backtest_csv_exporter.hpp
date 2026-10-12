@@ -8,6 +8,8 @@
 #include "trade_ngin/instruments/instrument_registry.hpp"
 #include <string>
 #include <fstream>
+#include <functional>
+#include <optional>
 #include <unordered_map>
 #include <vector>
 #include <memory>
@@ -17,6 +19,27 @@ namespace backtest {
 
 /// The book as the sleeves hold it: sleeve id -> symbol -> the sleeve's position.
 using SleevePositions = std::unordered_map<std::string, std::unordered_map<std::string, Position>>;
+
+/// Sleeve id -> symbol -> the price the sleeve's fills of that symbol traded at on the day.
+using SleeveFillPrices = std::unordered_map<std::string, std::unordered_map<std::string, double>>;
+
+/// One row of position_changes.csv: a sleeve's quantity of a symbol changed on the day. A figure
+/// that does not exist is absent (an empty cell), never 0.
+struct PositionChange {
+    std::string strategy;
+    std::string symbol;
+    /// The sleeve's quantity after the change.
+    double quantity{0.0};
+    /// The price the position was marked at the day before (the previous day's row); absent on
+    /// a new position.
+    std::optional<double> previous_mark;
+    /// The price the sleeve's fills of the symbol traded at that day; absent when it has none.
+    std::optional<double> fill_price;
+    /// The realized P&L of the sleeve's row as the run stores it for the day
+    /// (backtest.final_positions); absent when the run stores no row (a futures sleeve's
+    /// position closed to zero).
+    std::optional<double> realized_pnl;
+};
 
 class BacktestCSVExporter {
 public:
@@ -48,19 +71,45 @@ public:
         double portfolio_value
     );
 
-    Result<void> append_finalized_positions(
-        const Timestamp& date,
-        const std::unordered_map<std::string, Position>& current_positions,
-        const std::unordered_map<std::string, Position>& previous_positions,
-        const std::unordered_map<std::string, double>& market_prices
-    );
+    /**
+     * @brief The price each sleeve's fills of each symbol traded at on one day
+     *
+     * The quantity-weighted mean price of the sleeve's fills of the symbol that are the
+     * strategy's own (a roll leg and a borrow row change no position and are left out); the
+     * price itself when every such fill traded at one price.
+     *
+     * @param day_fills Sleeve id -> the sleeve's execution reports of the day
+     */
+    static SleeveFillPrices fill_prices(
+        const std::unordered_map<std::string, std::vector<ExecutionReport>>& day_fills);
+
+    /**
+     * @brief The day's rows of position_changes.csv: one per sleeve and symbol whose sleeve
+     *        quantity differs from the day before, by sleeve then symbol
+     *
+     * Nothing is computed here: the previous mark is the previous day's row's price, the fill
+     * price comes from `fills`, and the realized P&L is the current row's own, on the rows the
+     * run stores (backtest_position_row_is_stored, the writer's predicate).
+     *
+     * @param current The sleeves' rows after the day's P&L was booked
+     * @param previous The same the day before
+     * @param fills fill_prices of the day
+     * @param keeps_closed_rows Whether a sleeve stores its rows closed to zero (a cash book)
+     */
+    static std::vector<PositionChange> position_changes(
+        const SleevePositions& current, const SleevePositions& previous,
+        const SleeveFillPrices& fills,
+        const std::function<bool(const std::string&)>& keeps_closed_rows);
+
+    Result<void> append_position_changes(const Timestamp& date,
+                                         const std::vector<PositionChange>& changes);
 
     void finalize();
 
 private:
     std::string output_directory_;
     std::ofstream positions_file_;
-    std::ofstream finalized_file_;
+    std::ofstream changes_file_;
     std::ofstream equity_curve_file_;
 
     std::string format_date(const Timestamp& ts) const;
