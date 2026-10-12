@@ -2015,6 +2015,12 @@ std::string EmailSender::format_strategy_metrics(
     if (total_pnl != strategy_metrics.end()) {
         html << format_metric("Total PnL (Net)", total_pnl->second);
     }
+    // The equity book's cumulative dividend income (T-8D-2 R44 (c)): informational, outside the
+    // three P&L lines above (the dividend is inside them through the adjusted prices).
+    auto dividend_income = strategy_metrics.find(kReportDividendIncome);
+    if (dividend_income != strategy_metrics.end()) {
+        html << dividend_line_html(dividend_income->second);
+    }
 
     html << "<br>\n";
 

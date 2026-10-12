@@ -37,6 +37,7 @@
 #include "trade_ngin/instruments/equity.hpp"
 #include "trade_ngin/instruments/futures.hpp"
 #include "trade_ngin/instruments/instrument_registry.hpp"
+#include "trade_ngin/live/live_data_loader.hpp"
 
 using namespace trade_ngin;
 
@@ -436,31 +437,51 @@ protected:
         const std::unordered_map<std::string, double> t1_close = {{"QGOOGL", 353.65}};
         const std::unordered_map<std::string, double> t2_close = {{"QGOOGL", 337.39}};
         const std::map<std::string, double> settled_metrics = {
-            {"Daily Return", 0.22},          {"Daily Unrealized PnL", 218.92},
-            {"Daily Realized PnL", 0.0},     {"Daily Total PnL", 217.83},
-            {"Daily Commissions", 1.090112}, {"Dividend Income (cumulative)", 6.565561}};
-        const std::map<std::string, double> metrics = {
-            {"Total Cumulative Return", -0.45},
-            {"Total Annualized Return", -1.86},
+            {"Daily Return", 0.22},
+            {"Daily Unrealized PnL", 218.92},
+            {"Daily Realized PnL", 0.0},
+            {"Daily Total PnL", 217.83},
+            {"Daily Transaction Costs", 1.090112}};
+        // The statistics and the two return lines, from the day's stored row.
+        LiveResultsRow stored;
+        stored.total_cumulative_return = -0.45;
+        stored.total_annualized_return = -1.86;
+        stored.sharpe_ratio = -0.4213;
+        stored.sortino_ratio = -0.5512;
+        stored.max_drawdown = 1.1207;
+        stored.volatility = 1.4335;
+        stored.win_rate = 40.0;
+        stored.avg_win = 0.0713;
+        stored.avg_loss = 0.0621;
+        stored.profit_factor = 0.7654;
+        stored.best_day = 0.2199;
+        stored.worst_day = -0.3105;
+        stored.downside_deviation = 1.0961;
+        stored.gross_profit = 1424.61;
+        stored.gross_loss = 1861.27;
+        stored.winning_days = 20;
+        stored.losing_days = 30;
+        stored.total_days = 55;
+        std::map<std::string, double> metrics = statistics_report_metrics(stored);
+        const std::map<std::string, double> book = {
             {"Total Unrealized PnL", 180.38},
             {"Total Realized PnL", -559.17},
             {"Total PnL", -448.21},
-            {"Volatility", 19.24},
-            {"Total Commissions", 69.42},
+            {"Total Transaction Costs", 69.42},
             {"Current Portfolio Value", 99551.79},
-            {"Dividend Income (cumulative, informational)", 6.565561},
+            {kReportDividendIncome, 6.565561},
             {"Gross Leverage", 0.0845},
             {"Net Leverage", 0.0845},
-            {"Portfolio Leverage", 0.0845},
             {"Equity-to-Margin Ratio", 12.0966},
             {"Margin Cushion", 100.0},
             {"Margin Posted", 8229.74},
             {"Cash Available", 91322.05},
         };
+        metrics.insert(book.begin(), book.end());
         return sender_.generate_trading_report_body(
             positions, std::nullopt, metrics, executions, "2026-06-22", true, closes, nullptr,
             settled, t1_close, t2_close, settled_metrics, "LIVE_EQUITY_MEAN_REVERSION",
-            "EQUITY_MR_PORTFOLIO", context_of("2026-06-18", 0, 252.0));
+            "EQUITY_MR_PORTFOLIO", context_of("2026-06-18", 55, 252.0));
     }
 
     EmailSender sender_{EmailSenderConfig{}};
@@ -787,6 +808,122 @@ TEST_F(EmailFixture, TheSettledDaysRollCostsPrintOnAFuturesReport) {
                                "costs):</strong> <span>$0.00</span>"),
               std::string::npos);
     EXPECT_EQ(equity_body().find("Roll Costs"), std::string::npos);
+}
+
+// T-8D-2 R57, R58, R44 (c), T-8D R15: the equity report prints its settled day's and cumulative
+// transaction costs (the keys were "Commissions" and never read), a statistics block from the
+// day's stored row with the stored realised volatility, and one dividend line.
+TEST_F(EmailFixture, TheEquityReportPrintsItsCostsItsStatisticsAndItsDividendLine) {
+    const std::string body = equity_body();
+    EXPECT_NE(body.find("<div class=\"metric\"><strong>Daily Transaction Costs:</strong> "
+                        "<span>$1.09</span></div>"),
+              std::string::npos);
+    EXPECT_NE(body.find("<div class=\"metric\"><strong>Total Transaction Costs:</strong> "
+                        "<span>$69.42</span></div>"),
+              std::string::npos);
+    EXPECT_NE(body.find("<div class=\"metric\"><strong>Total PnL (Net):</strong> "
+                        "<span class=\"negative\">$-448.21</span></div>\n"
+                        "<div class=\"metric\"><strong>Dividend Income (cumulative, not in "
+                        "P&amp;L):</strong> <span>$6.57</span></div>\n"),
+              std::string::npos);
+    EXPECT_EQ(body.find("Dividend Income", body.find("Dividend Income") + 1), std::string::npos)
+        << "one dividend line";
+    EXPECT_EQ(body.find("Commissions"), std::string::npos);
+    EXPECT_EQ(body.find("Portfolio Leverage"), std::string::npos);
+    // the statistics block, in the settled statistics, under one year of the 252 sessions
+    const std::string statistics =
+        "<h2>Statistics through 2026-06-18 (settled)</h2>\n<div class=\"metrics-category\">\n"
+        "<div class=\"metric\"><strong>Total Annualized Return (extrapolated: under one year of "
+        "sessions):</strong> <span class=\"negative\">-1.86%</span></div>\n"
+        "<div class=\"metric\"><strong>Sharpe Ratio:</strong> <span>-0.42</span></div>\n"
+        "<div class=\"metric\"><strong>Sortino Ratio:</strong> <span>-0.55</span></div>\n"
+        "<div class=\"metric\"><strong>Max Drawdown:</strong> <span>1.12%</span></div>\n"
+        "<div class=\"metric\"><strong>Historical Volatility:</strong> <span>1.43%</span></div>\n"
+        "<br>\n"
+        "<div class=\"metric\"><strong>Winning Days:</strong> <span>20</span></div>\n"
+        "<div class=\"metric\"><strong>Losing Days:</strong> <span>30</span></div>\n"
+        "<div class=\"metric\"><strong>Flat Days:</strong> <span>5</span></div>\n"
+        "<div class=\"metric\"><strong>Total Days:</strong> <span>55</span></div>\n";
+    EXPECT_NE(body.find(statistics), std::string::npos);
+    EXPECT_NE(body.find("<strong>Distribution (through 2026-06-18)</strong>"), std::string::npos);
+    EXPECT_EQ(body.find("19.24%"), std::string::npos) << "the reporter's ex-ante figure";
+}
+
+// The names and the columns of the statistics lines, executed: each report key reads its own
+// stored column, and flat days are total less winning less losing.
+TEST(EmailEquityStatistics, EachReportKeyReadsItsStoredColumn) {
+    LiveResultsRow row;
+    row.total_cumulative_return = 1.0;
+    row.total_annualized_return = 2.0;
+    row.sharpe_ratio = 3.0;
+    row.sortino_ratio = 4.0;
+    row.max_drawdown = 5.0;
+    row.volatility = 6.0;
+    row.win_rate = 7.0;
+    row.avg_win = 8.0;
+    row.avg_loss = 9.0;
+    row.profit_factor = 10.0;
+    row.best_day = 11.0;
+    row.worst_day = 12.0;
+    row.downside_deviation = 13.0;
+    row.gross_profit = 14.0;
+    row.gross_loss = 15.0;
+    row.winning_days = 16;
+    row.losing_days = 17;
+    row.total_days = 40;
+    const std::map<std::string, double> expected = {{"Total Cumulative Return", 1.0},
+                                                    {"Total Annualized Return", 2.0},
+                                                    {"Sharpe Ratio", 3.0},
+                                                    {"Sortino Ratio", 4.0},
+                                                    {"Max Drawdown", 5.0},
+                                                    {"Volatility", 6.0},
+                                                    {"Win Rate", 7.0},
+                                                    {"Average Win", 8.0},
+                                                    {"Average Loss", 9.0},
+                                                    {"Profit Factor", 10.0},
+                                                    {"Best Day", 11.0},
+                                                    {"Worst Day", 12.0},
+                                                    {"Downside Deviation", 13.0},
+                                                    {"Gross Profit", 14.0},
+                                                    {"Gross Loss", 15.0},
+                                                    {"Winning Days", 16.0},
+                                                    {"Losing Days", 17.0},
+                                                    {"Flat Days", 7.0},
+                                                    {"Total Days", 40.0}};
+    EXPECT_EQ(statistics_report_metrics(row), expected);
+    EXPECT_EQ(
+        dividend_line_html(6.565561),
+        "<div class=\"metric\"><strong>Dividend Income (cumulative, not in P&amp;L):</strong> "
+        "<span>$6.57</span></div>\n");
+}
+
+// READS SOURCE: the equity runner is a `main()`. What it guards (the keys the report reads, the
+// stored row as the statistics' source, the stored dividend cell) is shown on the real binary by
+// the equity chain's email bodies.
+TEST(EmailEquitySourceGuard, TheEquityRunnerSetsTheKeysTheReportReads) {
+    fs::path dir = fs::current_path();
+    std::string src;
+    for (int i = 0; i < 8 && !dir.empty(); ++i, dir = dir.parent_path()) {
+        if (fs::exists(dir / "apps/strategies/live_equity_mean_reversion.cpp")) {
+            src = read_file(dir / "apps/strategies/live_equity_mean_reversion.cpp");
+            break;
+        }
+    }
+    if (src.empty())
+        GTEST_SKIP() << "runner source not found from the test working directory";
+    for (const char* present :
+         {"yesterday_daily_metrics_final[\"Daily Transaction Costs\"]",
+          "strategy_metrics[\"Total Transaction Costs\"] = total_commissions_cumulative;",
+          "trade_ngin::statistics_report_metrics(today_row_result.value())",
+          "strategy_metrics[trade_ngin::kReportDividendIncome] = *dividend_income_today;",
+          "double_metrics[\"total_dividend_income\"] = *dividend_income_today;"}) {
+        EXPECT_NE(src.find(present), std::string::npos) << present;
+    }
+    for (const char* gone :
+         {"[\"Daily Commissions\"]", "[\"Total Commissions\"]", "[\"Portfolio Leverage\"]",
+          "risk_eval.value().portfolio_var * 100.0", "strategy_metrics[\"Daily Return\"]"}) {
+        EXPECT_EQ(src.find(gone), std::string::npos) << gone;
+    }
 }
 
 // The same inputs render the same bytes twice: the body carries no clock.

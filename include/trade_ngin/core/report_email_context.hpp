@@ -42,6 +42,10 @@ inline std::string annualized_return_label(const EmailReportContext& context) {
                           : "Total Annualized Return";
 }
 
+/// The equity runner's metric key for the cumulative dividend income its day's row stores
+/// (total_dividend_income): the report prints it as one informational line (T-8D-2 R44 (c)).
+inline constexpr const char* kReportDividendIncome = "Dividend Income";
+
 namespace report_capital_detail {
 /// Dollars to the cent with thousands separators, the sign in front: 2254.731679 -> "$2,254.73".
 inline std::string dollars(double value) {
@@ -81,6 +85,13 @@ inline std::string capital_lines_html(const EmailReportContext& context) {
            dollars(context.account_value_at_sizing) +
            ", less the sizing capital):</strong> <span>" +
            dollars(context.account_value_at_sizing - context.sizing_capital) + "</span></div>\n";
+}
+
+/// The equity report's dividend line: the cumulative figure, labelled as outside the P&L totals.
+inline std::string dividend_line_html(double cumulative_dividend_income) {
+    return "<div class=\"metric\"><strong>Dividend Income (cumulative, not in P&amp;L):</strong> "
+           "<span>" +
+           report_capital_detail::dollars(cumulative_dividend_income) + "</span></div>\n";
 }
 
 }  // namespace trade_ngin

@@ -6205,13 +6205,16 @@ int main(int argc, char* argv[]) {
                         }
 
                         if (!daily_commissions_arr->IsNull(0)) {
-                            yesterday_daily_metrics_final["Daily Commissions"] = std::stod(daily_commissions_arr->GetString(0));
-                            INFO("Daily Commissions: " + daily_commissions_arr->GetString(0));
+                            // T-8D-2 R57: the report reads this key; under "Daily Commissions"
+                            // the settled day's costs were never printed.
+                            yesterday_daily_metrics_final["Daily Transaction Costs"] =
+                                std::stod(daily_commissions_arr->GetString(0));
+                            INFO("Daily Transaction Costs: " + daily_commissions_arr->GetString(0));
                         }
                         if (!dividend_income_arr->IsNull(0)) {
-                            // Phase 4.5: informational only -- NOT in any PnL total.
-                            yesterday_daily_metrics_final["Dividend Income (cumulative)"] =
-                                std::stod(dividend_income_arr->GetString(0));
+                            // Phase 4.5: informational only -- NOT in any PnL total. The report
+                            // prints ONE dividend line, the figure of the day's own row (T-8D-2
+                            // R44 (c)); the settled day's is logged here.
                             INFO("Total Dividend Income (cumulative): " +
                                  dividend_income_arr->GetString(0));
                         }
@@ -6239,44 +6242,57 @@ int main(int argc, char* argv[]) {
                 // Create strategy metrics map with all relevant metrics organized by category
                 std::map<std::string, double> strategy_metrics;
 
+                // What the report is told about the day beyond the metric map: the settled day
+                // is this runner's previous session (T-8D-2 R59, R61), not the calendar day
+                // before the run date.
+                trade_ngin::EmailReportContext report_context;
+                report_context.settled_date = yesterday_date_for_email;
+                report_context.sessions_per_year = app_config.statistics.equity_sessions_per_year;
+
                 // Performance Metrics. T-8D-2 R61: the day T "Daily ..." values are not report
                 // lines (the settled day's are in yesterday_daily_metrics_final).
-                strategy_metrics["Total Cumulative Return"] = total_cumulative_return_pct;
-                strategy_metrics["Total Annualized Return"] = total_return_annualized;
                 strategy_metrics["Total Unrealized PnL"] = total_unrealized_pnl;
                 strategy_metrics["Total Realized PnL"] = total_realized_pnl;
                 strategy_metrics["Total PnL"] = total_pnl;
-                if (risk_eval.is_ok()) {
-                    strategy_metrics["Volatility"] = risk_eval.value().portfolio_var * 100.0;
+
+                // T-8D-2 R58, R61 and T-8D R15: the statistics block and the two return lines
+                // read the day's stored row, as the futures runners' reports do. "Volatility" is
+                // the stored realised volatility of the settled series; it used to be the
+                // reporter's ex-ante figure (portfolio_var x 100) under a realised label.
+                try {
+                    auto today_row_result =
+                        data_loader->load_live_results(kEquityStrategyId, portfolio_id, now);
+                    if (today_row_result.is_ok()) {
+                        for (const auto& [name, value] :
+                             trade_ngin::statistics_report_metrics(today_row_result.value())) {
+                            strategy_metrics[name] = value;
+                        }
+                        report_context.statistics_sessions = today_row_result.value().total_days;
+                    } else {
+                        WARN("Failed to load today's live_results row for email metrics: " +
+                             std::string(today_row_result.error()->what()));
+                    }
+                } catch (const std::exception& e) {
+                    WARN("Exception while loading today's live_results for email metrics: " +
+                         std::string(e.what()));
                 }
-                strategy_metrics["Total Commissions"] = total_commissions_cumulative;
+                // T-8D-2 R57: the key the report reads ("Total Commissions" was never printed).
+                strategy_metrics["Total Transaction Costs"] = total_commissions_cumulative;
                 strategy_metrics["Current Portfolio Value"] = current_portfolio_value;
 
-                // Phase 4.5: cumulative dividend income from the corp-action
-                // state file (informational ONLY; not in any PnL total).
-                {
-                    CorporateActionsAuditLog div_log_email(ca_state_dir, db,
-                                                       portfolio_id,
-                                                       "LIVE_EQUITY_MEAN_REVERSION",
-                                                       "EQUITY_MEAN_REVERSION");
-                    auto div_email_loaded = div_log_email.load();
-                    if (div_email_loaded.is_error()) {
-                        WARN("Cannot read dividend income for the email report: " +
-                             std::string(div_email_loaded.error()->what()) +
-                             " -- reporting 0");
-                    }
-                    strategy_metrics["Dividend Income (cumulative, informational)"] =
-                        div_log_email.total_cumulative_dividend_income();
+                // T-8D-2 R44 (c): the cumulative dividend income, the figure the day's row
+                // stores (total_dividend_income); informational, not in any P&L total. No line
+                // when the day's figure could not be counted (the cell is then not written).
+                if (dividend_income_today) {
+                    strategy_metrics[trade_ngin::kReportDividendIncome] = *dividend_income_today;
                 }
 
                 // Leverage Metrics - Calculate values from position analysis
                 double gross_leverage_calc = (current_portfolio_value != 0.0) ? (gross_notional / current_portfolio_value) : 0.0;
                 double net_leverage_calc = (current_portfolio_value != 0.0) ? (net_notional / current_portfolio_value) : 0.0;
-                double portfolio_leverage_calc = (current_portfolio_value != 0.0) ? (gross_notional / current_portfolio_value) : 0.0;
-                
+
                 strategy_metrics["Gross Leverage"] = gross_leverage_calc;
                 strategy_metrics["Net Leverage"] = net_leverage_calc;
-                strategy_metrics["Portfolio Leverage"] = portfolio_leverage_calc;
                 // The two margin lines are printed only when the figure has a value.
                 if (equity_to_margin_ratio) {
                     strategy_metrics["Equity-to-Margin Ratio"] = *equity_to_margin_ratio;
@@ -6291,12 +6307,6 @@ int main(int argc, char* argv[]) {
 
                 // Note: yesterday_daily_metrics_final is now loaded AFTER database updates above
                 // So we don't need to create it here anymore
-
-                // What the report is told about the day beyond the metric map: the settled day
-                // is this runner's previous session (T-8D-2 R59, R61), not the calendar day
-                // before the run date.
-                trade_ngin::EmailReportContext report_context;
-                report_context.settled_date = yesterday_date_for_email;
 
                 // Generate email body with is_daily_strategy flag set to true and current prices
                 std::string email_body = email_sender->generate_trading_report_body(
