@@ -1502,13 +1502,6 @@ std::string EmailSender::format_yesterday_finalized_positions_table(
             html << "<div class=\"metric\"><strong>Daily Transaction Costs:</strong> <span>"
                  << formatted_transaction_cost << "</span></div>\n";
         }
-        auto daily_roll_costs_it = strategy_metrics.find("Daily Roll Costs");  // T-ROLLX (017)
-        if (daily_roll_costs_it != strategy_metrics.end()) {
-            html << "<div class=\"metric\"><strong>Daily Roll Costs (upper bound, inside the "
-                    "transaction costs):</strong> <span>$"
-                 << format_with_commas(std::abs(daily_roll_costs_it->second), 2) << "</span></div>\n";
-        }
-
         auto daily_total_it = strategy_metrics.find("Daily Total PnL");
         if (daily_total_it != strategy_metrics.end()) {
             html << format_metric_display("Daily Total PnL (Net)", daily_total_it->second, false);
@@ -1759,6 +1752,17 @@ std::string EmailSender::format_yesterday_finalized_positions_table(
             std::string formatted_costs = "$" + format_with_commas(cost_value, 2);
             html << "<div class=\"metric\"><strong>Daily Transaction Costs:</strong> <span>"
                  << formatted_costs << "</span></div>\n";
+        }
+        // The settled day's roll costs (migration 017), the ROLL part of the line above. The
+        // read stood only in the single-table overload, which the equity runner alone reaches
+        // and which never sets the key, so the line printed for no book; a futures book's report
+        // is this overload.
+        auto daily_roll_costs_it = strategy_metrics.find("Daily Roll Costs");
+        if (daily_roll_costs_it != strategy_metrics.end()) {
+            html << "<div class=\"metric\"><strong>Daily Roll Costs (upper bound, inside the "
+                    "transaction costs):</strong> <span>$"
+                 << format_with_commas(std::abs(daily_roll_costs_it->second), 2)
+                 << "</span></div>\n";
         }
 
         auto daily_total_it = strategy_metrics.find("Daily Total PnL");

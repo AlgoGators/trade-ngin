@@ -772,6 +772,23 @@ TEST_F(EmailFixture, NoBodyCarriesASymbolOfTheSpecificationOrTwoAccountValues) {
               std::string::npos);
 }
 
+// The settled day's roll costs print on a futures report, under its transaction costs (they are
+// the ROLL part of them); the read stood in the overload no futures runner reaches. The equity
+// report has no such line.
+TEST_F(EmailFixture, TheSettledDaysRollCostsPrintOnAFuturesReport) {
+    EXPECT_NE(conservative_body().find(
+                  "<div class=\"metric\"><strong>Daily Transaction Costs:</strong> "
+                  "<span>$3.93</span></div>\n"
+                  "<div class=\"metric\"><strong>Daily Roll Costs (upper bound, inside the "
+                  "transaction costs):</strong> <span>$2.84</span></div>\n"
+                  "<div class=\"metric\"><strong>Daily Total PnL (Net):</strong>"),
+              std::string::npos);
+    EXPECT_NE(base_body().find("<strong>Daily Roll Costs (upper bound, inside the transaction "
+                               "costs):</strong> <span>$0.00</span>"),
+              std::string::npos);
+    EXPECT_EQ(equity_body().find("Roll Costs"), std::string::npos);
+}
+
 // The same inputs render the same bytes twice: the body carries no clock.
 TEST_F(EmailFixture, EveryBodyRendersTheSameBytesTwice) {
     EXPECT_EQ(conservative_body(), conservative_body());
