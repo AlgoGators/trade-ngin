@@ -1713,10 +1713,11 @@ Result<void> BacktestCoordinator::process_portfolio_day(
 
             csv_exporter_->append_equity_curve(timestamp, portfolio_value);
 
-            csv_exporter_->append_daily_positions(
-                timestamp, portfolio_positions, market_prices,
-                portfolio_value, gross_notional, net_notional,
-                portfolio->get_strategies());
+            // One row per sleeve and symbol: the sleeves' own positions, as the daily save
+            // stores them.
+            csv_exporter_->append_daily_positions(timestamp, portfolio->get_strategy_positions(),
+                                                  market_prices, portfolio_value, gross_notional,
+                                                  net_notional, portfolio->get_strategies());
 
             csv_exporter_->append_finalized_positions(
                 timestamp, portfolio_positions, portfolio_previous_positions_,

@@ -14,6 +14,7 @@
 #include "trade_ngin/instruments/instrument_registry.hpp"
 #undef private
 #include "../core/test_base.hpp"
+#include "../strategy/csv_test_sleeve.hpp"
 #include "trade_ngin/backtest/backtest_csv_exporter.hpp"
 #include "trade_ngin/instruments/futures.hpp"
 #include "trade_ngin/instruments/instrument_registry.hpp"
@@ -37,6 +38,31 @@ Timestamp date_at(int year, int month, int day) {
     tm.tm_mday = day;
     tm.tm_hour = 12;  // mid-day to avoid timezone day shifts in format_date
     return std::chrono::system_clock::from_time_t(timegm(&tm));
+}
+
+// A book of one sleeve.
+SleevePositions one_sleeve(std::unordered_map<std::string, Position> positions) {
+    return SleevePositions{{"SLEEVE", std::move(positions)}};
+}
+
+std::vector<std::string> lines_of(const std::string& text) {
+    std::vector<std::string> out;
+    std::istringstream in(text);
+    std::string line;
+    while (std::getline(in, line))
+        out.push_back(line);
+    return out;
+}
+
+std::vector<std::string> cells_of(const std::string& line) {
+    std::vector<std::string> out;
+    std::string cell;
+    std::istringstream in(line);
+    while (std::getline(in, cell, ','))
+        out.push_back(cell);
+    if (!line.empty() && line.back() == ',')
+        out.push_back("");
+    return out;
 }
 
 std::string slurp(const std::filesystem::path& p) {
@@ -94,7 +120,9 @@ TEST_F(BacktestCSVExporterTest, InitializeCreatesDirectoryAndAllThreeFilesWithHe
 
     // finalize() flushes & closes the streams so the headers land on disk.
     exporter.finalize();
-    EXPECT_NE(slurp(out_dir_ / "positions.csv").find("date,symbol,quantity"), std::string::npos);
+    EXPECT_EQ(slurp(out_dir_ / "positions.csv"),
+              "date,strategy,symbol,quantity,market_price,notional,pct_of_gross_notional,"
+              "pct_of_portfolio_value,forecast,sizing_vol,ema_8,ema_32,ema_64,ema_256\n");
     EXPECT_NE(slurp(out_dir_ / "finalized_positions.csv").find("realized_pnl"),
               std::string::npos);
     EXPECT_EQ(slurp(out_dir_ / "equity_curve.csv"), "date,portfolio_value\n");
@@ -110,7 +138,8 @@ TEST_F(BacktestCSVExporterTest, InitializeFailsOnUnwritablePath) {
 
 TEST_F(BacktestCSVExporterTest, AppendDailyPositionsWithoutInitializeReturnsError) {
     BacktestCSVExporter exporter(out_dir_.string());
-    auto r = exporter.append_daily_positions(date_at(2026, 1, 5), {}, {}, 1.0e6, 1.0, 1.0, {});
+    auto r = exporter.append_daily_positions(date_at(2026, 1, 5), SleevePositions{}, {}, 1.0e6, 1.0,
+                                             1.0, {});
     EXPECT_TRUE(r.is_error());
 }
 
@@ -118,7 +147,8 @@ TEST_F(BacktestCSVExporterTest, AppendDailyPositionsWritesPortfolioHeaderEvenWit
     BacktestCSVExporter exporter(out_dir_.string());
     ASSERT_TRUE(exporter.initialize_files().is_ok());
     ASSERT_TRUE(exporter
-                    .append_daily_positions(date_at(2026, 1, 5), {}, {}, 1'000'000.0, 0.0, 0.0, {})
+                    .append_daily_positions(date_at(2026, 1, 5), SleevePositions{}, {}, 1'000'000.0,
+                                            0.0, 0.0, {})
                     .is_ok());
     std::string body = slurp(out_dir_ / "positions.csv");
     EXPECT_NE(body.find("# Portfolio Value: 1e+06"), std::string::npos);
@@ -131,8 +161,8 @@ TEST_F(BacktestCSVExporterTest, AppendDailyPositionsSkipsZeroQuantityPositions) 
     std::unordered_map<std::string, Position> pos = {{"ES", make_pos("ES", 0.0)}};
     std::unordered_map<std::string, double> prices = {{"ES", 4000.0}};
     ASSERT_TRUE(exporter
-                    .append_daily_positions(date_at(2026, 1, 5), pos, prices, 1'000'000.0,
-                                             100.0, 100.0, {})
+                    .append_daily_positions(date_at(2026, 1, 5), one_sleeve(pos), prices,
+                                            1'000'000.0, 100.0, 100.0, {})
                     .is_ok());
     std::string body = slurp(out_dir_ / "positions.csv");
     // Header + portfolio comment, but no data row for ES.
@@ -150,11 +180,13 @@ TEST_F(BacktestCSVExporterTest, AppendDailyPositionsRowsContainSymbolAndComputed
     // gross_notional=20000 → pct_gross = 1.0
     // portfolio_value=1e6 → pct_portfolio = 0.02
     ASSERT_TRUE(exporter
-                    .append_daily_positions(date_at(2026, 1, 5), pos, prices, 1'000'000.0,
-                                             20000.0, 20000.0, {})
+                    .append_daily_positions(date_at(2026, 1, 5), one_sleeve(pos), prices,
+                                            1'000'000.0, 20000.0, 20000.0, {})
                     .is_ok());
     std::string body = slurp(out_dir_ / "positions.csv");
-    EXPECT_NE(body.find("ES,5,4000,20000"), std::string::npos);
+    EXPECT_NE(body.find("2026-01-05,SLEEVE,ES,5,4000,20000,1,0.02,0,0,0,0,0,0\n"),
+              std::string::npos)
+        << body;
 }
 
 TEST_F(BacktestCSVExporterTest, AppendDailyPositionsHandlesZeroPortfolioValueAndGrossNotional) {
@@ -163,11 +195,12 @@ TEST_F(BacktestCSVExporterTest, AppendDailyPositionsHandlesZeroPortfolioValueAnd
     std::unordered_map<std::string, Position> pos = {{"ES", make_pos("ES", 1.0)}};
     std::unordered_map<std::string, double> prices = {{"ES", 100.0}};
     // gross_notional=0 → pct_gross=0; portfolio_value=0 → pct_portfolio=0
-    ASSERT_TRUE(exporter
-                    .append_daily_positions(date_at(2026, 1, 5), pos, prices, 0.0, 0.0, 0.0, {})
-                    .is_ok());
+    ASSERT_TRUE(
+        exporter
+            .append_daily_positions(date_at(2026, 1, 5), one_sleeve(pos), prices, 0.0, 0.0, 0.0, {})
+            .is_ok());
     std::string body = slurp(out_dir_ / "positions.csv");
-    EXPECT_NE(body.find("ES,1,100"), std::string::npos);
+    EXPECT_NE(body.find("SLEEVE,ES,1,100"), std::string::npos);
 }
 
 TEST_F(BacktestCSVExporterTest, AppendDailyPositionsHandlesMissingMarketPrice) {
@@ -176,11 +209,11 @@ TEST_F(BacktestCSVExporterTest, AppendDailyPositionsHandlesMissingMarketPrice) {
     std::unordered_map<std::string, Position> pos = {{"ES", make_pos("ES", 5.0)}};
     std::unordered_map<std::string, double> prices;  // empty
     ASSERT_TRUE(exporter
-                    .append_daily_positions(date_at(2026, 1, 5), pos, prices, 1.0e6,
-                                             1.0, 1.0, {})
+                    .append_daily_positions(date_at(2026, 1, 5), one_sleeve(pos), prices, 1.0e6,
+                                            1.0, 1.0, {})
                     .is_ok());
     std::string body = slurp(out_dir_ / "positions.csv");
-    EXPECT_NE(body.find("ES,5,0"), std::string::npos);  // price defaulted to 0
+    EXPECT_NE(body.find("SLEEVE,ES,5,0"), std::string::npos);  // price defaulted to 0
 }
 
 TEST_F(BacktestCSVExporterTest, AppendDailyPositionsAcceptsEmptyStrategyVector) {
@@ -189,8 +222,8 @@ TEST_F(BacktestCSVExporterTest, AppendDailyPositionsAcceptsEmptyStrategyVector) 
     std::unordered_map<std::string, Position> pos = {{"ES", make_pos("ES", 3.0)}};
     std::unordered_map<std::string, double> prices = {{"ES", 4000.0}};
     std::vector<std::shared_ptr<StrategyInterface>> strategies;
-    auto r = exporter.append_daily_positions(date_at(2026, 1, 5), pos, prices, 1.0e6,
-                                              1.0, 1.0, strategies);
+    auto r = exporter.append_daily_positions(date_at(2026, 1, 5), one_sleeve(pos), prices, 1.0e6,
+                                             1.0, 1.0, strategies);
     EXPECT_TRUE(r.is_ok());
 }
 
@@ -329,8 +362,10 @@ TEST_F(BacktestCSVExporterTest, AppendsAfterFinalizeReturnError) {
     BacktestCSVExporter exporter(out_dir_.string());
     ASSERT_TRUE(exporter.initialize_files().is_ok());
     exporter.finalize();
-    EXPECT_TRUE(exporter.append_daily_positions(date_at(2026, 1, 5), {}, {}, 1.0, 1.0, 1.0, {})
-                    .is_error());
+    EXPECT_TRUE(
+        exporter
+            .append_daily_positions(date_at(2026, 1, 5), SleevePositions{}, {}, 1.0, 1.0, 1.0, {})
+            .is_error());
     EXPECT_TRUE(exporter.append_equity_curve(date_at(2026, 1, 5), 1.0).is_error());
     EXPECT_TRUE(exporter.append_finalized_positions(date_at(2026, 1, 5), {}, {}, {}).is_error());
 }
@@ -380,8 +415,8 @@ TEST_F(BacktestCSVExporterTest, ShortSignDailyRowNotionalKeepsTheShortsSign) {
         {"SHORT_FUT_NOTIONAL_SIGN", make_pos("SHORT_FUT_NOTIONAL_SIGN", -2.0)}};
     std::unordered_map<std::string, double> prices = {{"SHORT_FUT_NOTIONAL_SIGN", 100.0}};
     ASSERT_TRUE(exporter
-                    .append_daily_positions(date_at(2026, 1, 5), pos, prices, 1'000'000.0, 1000.0,
-                                            -1000.0, {})
+                    .append_daily_positions(date_at(2026, 1, 5), one_sleeve(pos), prices,
+                                            1'000'000.0, 1000.0, -1000.0, {})
                     .is_ok());
     exporter.finalize();
     const std::string body = slurp(out_dir_ / "positions.csv");
@@ -448,4 +483,113 @@ TEST_F(BacktestCSVExporterTest, ShortSignFinalizedFlipRealizesTheClosedLegOnly) 
     EXPECT_NE(body.find("FLIP_REALIZES_CLOSED_LEG,-3,4000,4010,20\n"), std::string::npos) << body;
     EXPECT_NE(body.find("FLIP_REALIZES_CLOSED_LEG,2,4000,3990,30\n"), std::string::npos) << body;
     EXPECT_NE(body.find("FLIP_REALIZES_CLOSED_LEG,-1,4000,3990,20\n"), std::string::npos) << body;
+}
+
+// ===== positions.csv: one row per sleeve, each with its own readings ============================
+// The file printed 0 under `volatility` on every row, and the forecast and averages of the first
+// trend sleeve on every row of the account. Each row is now a sleeve's, and carries that sleeve's
+// forecast, the volatility it sized on (sizing_vol) and its averages, read through the function
+// the live positions file reads a sleeve through. The sleeves below are real trend sleeves fed a
+// price walk; no database.
+
+class BacktestCsvSleeveRows : public BacktestCSVExporterTest {
+protected:
+    void SetUp() override {
+        BacktestCSVExporterTest::SetUp();
+        trend_ = std::make_unique<CsvTestSleeve>("TREND_FOLLOWING", kSym, TrendFollowingConfig{});
+        fast_ = std::make_unique<CsvTestSleeve>("TREND_FOLLOWING_FAST", kSym,
+                                                fast_trend_following_config());
+    }
+    void TearDown() override {
+        trend_.reset();
+        fast_.reset();
+        BacktestCSVExporterTest::TearDown();
+    }
+
+    // The day's rows of a book whose two sleeves both hold kSym (multiplier 5): +1 and -2 at 100.
+    std::vector<std::vector<std::string>> rows() {
+        BacktestCSVExporter exporter(out_dir_.string());
+        EXPECT_TRUE(exporter.initialize_files().is_ok());
+        SleevePositions book{{"TREND_FOLLOWING_FAST", {{kSym, make_pos(kSym, -2.0)}}},
+                             {"TREND_FOLLOWING", {{kSym, make_pos(kSym, 1.0)}}}};
+        std::vector<std::shared_ptr<StrategyInterface>> strategies{trend_->strategy,
+                                                                   fast_->strategy};
+        EXPECT_TRUE(exporter
+                        .append_daily_positions(date_at(2026, 1, 5), book, {{kSym, 100.0}},
+                                                1'000'000.0, 1500.0, -500.0, strategies)
+                        .is_ok());
+        exporter.finalize();
+        std::vector<std::vector<std::string>> out;
+        for (const auto& line : lines_of(slurp(out_dir_ / "positions.csv"))) {
+            if (line.rfind("2026-01-05,", 0) == 0)
+                out.push_back(cells_of(line));
+        }
+        return out;
+    }
+
+    const std::string kSym = "CSVBT";
+    std::unique_ptr<CsvTestSleeve> trend_;
+    std::unique_ptr<CsvTestSleeve> fast_;
+};
+
+TEST_F(BacktestCsvSleeveRows, EachSleeveHasItsOwnRowBySleeveThenSymbol) {
+    const auto r = rows();
+    ASSERT_EQ(r.size(), 2u) << "one account row where two sleeves hold the symbol";
+    ASSERT_EQ(r[0].size(), 14u);
+    EXPECT_EQ(r[0][1], "TREND_FOLLOWING");
+    EXPECT_EQ(r[1][1], "TREND_FOLLOWING_FAST");
+    EXPECT_EQ(r[0][2], kSym);
+    // The sleeve's own quantity and notional (quantity x price x 5); the shares are of the
+    // account's gross notional (1500) and portfolio value.
+    EXPECT_EQ(r[0][3], "1");
+    EXPECT_EQ(r[0][5], "500");
+    EXPECT_NEAR(std::stod(r[0][6]), 500.0 / 1500.0, 1e-6);
+    EXPECT_EQ(r[1][3], "-2");
+    EXPECT_EQ(r[1][5], "-1000");
+    EXPECT_DOUBLE_EQ(std::stod(r[1][7]), -0.001);
+}
+
+TEST_F(BacktestCsvSleeveRows, ARowCarriesItsSleevesSizingVolatilityForecastAndAverages) {
+    const auto r = rows();
+    ASSERT_EQ(r.size(), 2u);
+    const CsvTestSleeve* sleeves[] = {trend_.get(), fast_.get()};
+    for (size_t i = 0; i < 2; ++i) {
+        ASSERT_EQ(r[i].size(), 14u);
+        const InstrumentData* data = sleeves[i]->strategy->get_instrument_data(kSym);
+        ASSERT_NE(data, nullptr);
+        ASSERT_NE(data->current_volatility, 0.01) << "the test sleeve computed no volatility";
+        const auto emas = sleeves[i]->strategy->get_ema_values(kSym, {8, 32, 64, 256});
+        // Printed figures against the sleeve's own, to the printed digits.
+        const auto near = [&](const std::string& cell, double want, const char* what) {
+            EXPECT_NEAR(std::stod(cell), want, std::abs(want) * 1e-5 + 1e-12)
+                << r[i][1] << " " << what << " printed " << cell;
+        };
+        EXPECT_NE(std::stod(r[i][9]), 0.0) << r[i][1] << ": the sizing volatility column is 0";
+        near(r[i][8], data->current_forecast, "forecast");
+        near(r[i][9], data->current_volatility, "sizing_vol");
+        near(r[i][10], emas.at(8), "ema_8");
+        near(r[i][11], emas.at(32), "ema_32");
+        near(r[i][12], emas.at(64), "ema_64");
+        near(r[i][13], emas.at(256), "ema_256");
+    }
+    EXPECT_NE(r[0][8], r[1][8]) << "both rows carry one sleeve's forecast";
+    EXPECT_NE(r[0][9], r[1][9]) << "both rows carry one sleeve's sizing volatility";
+}
+
+TEST_F(BacktestCsvSleeveRows, ASleeveWithoutATrendStrategyPrintsNoReadings) {
+    BacktestCSVExporter exporter(out_dir_.string());
+    ASSERT_TRUE(exporter.initialize_files().is_ok());
+    // The book names a sleeve the strategy list does not hold: its row has no readings, and it
+    // does not borrow the trend sleeve's.
+    SleevePositions book{{"OTHER_SLEEVE", {{kSym, make_pos(kSym, 3.0)}}}};
+    std::vector<std::shared_ptr<StrategyInterface>> strategies{trend_->strategy};
+    ASSERT_TRUE(exporter
+                    .append_daily_positions(date_at(2026, 1, 5), book, {{kSym, 100.0}}, 1'000'000.0,
+                                            1500.0, 1500.0, strategies)
+                    .is_ok());
+    exporter.finalize();
+    EXPECT_NE(slurp(out_dir_ / "positions.csv")
+                  .find("2026-01-05,OTHER_SLEEVE,CSVBT,3,100,1500,1,0.0015,0,0,0,0,0,0\n"),
+              std::string::npos)
+        << slurp(out_dir_ / "positions.csv");
 }

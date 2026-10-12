@@ -2,10 +2,12 @@
 #include "trade_ngin/backtest/backtest_csv_exporter.hpp"
 #include "trade_ngin/core/logger.hpp"
 #include "trade_ngin/core/time_utils.hpp"
+#include "trade_ngin/strategy/trend_readings.hpp"
 #include <filesystem>
 #include <sstream>
 #include <iomanip>
 #include <cmath>
+#include <map>
 
 namespace trade_ngin {
 namespace backtest {
@@ -30,8 +32,9 @@ Result<void> BacktestCSVExporter::initialize_files() {
                 "BacktestCSVExporter"
             );
         }
-        positions_file_ << "date,symbol,quantity,market_price,notional,pct_of_gross_notional,"
-                        << "pct_of_portfolio_value,forecast,volatility,ema_8,ema_32,ema_64,ema_256\n";
+        positions_file_ << "date,strategy,symbol,quantity,market_price,notional,"
+                        << "pct_of_gross_notional,pct_of_portfolio_value,forecast,sizing_vol,"
+                        << "ema_8,ema_32,ema_64,ema_256\n";
 
         finalized_file_.open(std::filesystem::path(output_directory_) / "finalized_positions.csv");
         if (!finalized_file_.is_open()) {
@@ -73,14 +76,10 @@ std::string BacktestCSVExporter::format_date(const Timestamp& ts) const {
 }
 
 Result<void> BacktestCSVExporter::append_daily_positions(
-    const Timestamp& date,
-    const std::unordered_map<std::string, Position>& positions,
-    const std::unordered_map<std::string, double>& market_prices,
-    double portfolio_value,
-    double gross_notional,
-    double net_notional,
+    const Timestamp& date, const SleevePositions& strategy_positions,
+    const std::unordered_map<std::string, double>& market_prices, double portfolio_value,
+    double gross_notional, double net_notional,
     const std::vector<std::shared_ptr<StrategyInterface>>& strategies) {
-
     if (!positions_file_.is_open()) {
         return make_error<void>(
             ErrorCode::CONVERSION_ERROR,
@@ -99,63 +98,60 @@ Result<void> BacktestCSVExporter::append_daily_positions(
                         << ", Net Notional: " << net_notional
                         << ", Date: " << date_str << "\n";
 
-        // Try to cast the first strategy to TrendFollowingStrategy for EMA/forecast/volatility
-        TrendFollowingStrategy* trend_strategy = nullptr;
+        // Each sleeve's own strategy, by id: a row's forecast, sizing volatility and averages
+        // are the sleeve's that holds it (one figure per account row was the first trend
+        // sleeve's on every row).
+        std::unordered_map<std::string, const StrategyInterface*> strategy_of;
         for (const auto& strategy : strategies) {
-            trend_strategy = dynamic_cast<TrendFollowingStrategy*>(strategy.get());
-            if (trend_strategy) break;
+            if (strategy)
+                strategy_of[strategy->get_metadata().id] = strategy.get();
         }
 
-        for (const auto& [symbol, position] : positions) {
-            double qty = static_cast<double>(position.quantity);
-            if (std::abs(qty) < 1e-10) continue;
+        // By sleeve, then symbol.
+        std::map<std::string, std::map<std::string, const Position*>> rows;
+        for (const auto& [strategy_id, positions] : strategy_positions) {
+            for (const auto& [symbol, position] : positions)
+                rows[strategy_id][symbol] = &position;
+        }
 
-            double price = 0.0;
-            auto price_it = market_prices.find(symbol);
-            if (price_it != market_prices.end()) {
-                price = price_it->second;
+        for (const auto& [strategy_id, positions] : rows) {
+            const auto strategy_it = strategy_of.find(strategy_id);
+            const StrategyInterface* strategy =
+                strategy_it == strategy_of.end() ? nullptr : strategy_it->second;
+            for (const auto& [symbol, position] : positions) {
+                double qty = static_cast<double>(position->quantity);
+                if (std::abs(qty) < 1e-10)
+                    continue;
+
+                double price = 0.0;
+                auto price_it = market_prices.find(symbol);
+                if (price_it != market_prices.end()) {
+                    price = price_it->second;
+                }
+
+                // Calculate notional using instrument registry
+                double notional = 0.0;
+                auto instrument = registry.get_instrument(symbol);
+                if (instrument) {
+                    // get_notional_value is a magnitude (futures.cpp): a short row keeps its sign.
+                    notional = std::copysign(instrument->get_notional_value(qty, price), qty);
+                } else {
+                    notional = qty * price;
+                }
+
+                double pct_gross =
+                    (gross_notional > 0) ? (std::abs(notional) / gross_notional) : 0.0;
+                double pct_portfolio = (portfolio_value > 0) ? (notional / portfolio_value) : 0.0;
+
+                const TrendReadings readings = trend_readings_of(strategy, symbol);
+
+                positions_file_ << date_str << "," << strategy_id << "," << symbol << "," << qty
+                                << "," << price << "," << notional << "," << pct_gross << ","
+                                << pct_portfolio << "," << readings.forecast << ","
+                                << readings.sizing_vol << "," << readings.ema_8 << ","
+                                << readings.ema_32 << "," << readings.ema_64 << ","
+                                << readings.ema_256 << "\n";
             }
-
-            // Calculate notional using instrument registry
-            double notional = 0.0;
-            auto instrument = registry.get_instrument(symbol);
-            if (instrument) {
-                // get_notional_value is a magnitude (futures.cpp): a short row keeps its sign.
-                notional = std::copysign(instrument->get_notional_value(qty, price), qty);
-            } else {
-                notional = qty * price;
-            }
-
-            double pct_gross = (gross_notional > 0) ? (std::abs(notional) / gross_notional) : 0.0;
-            double pct_portfolio = (portfolio_value > 0) ? (notional / portfolio_value) : 0.0;
-
-            // Get forecast, volatility, and EMAs from trend strategy
-            double forecast = 0.0;
-            double volatility = 0.0;
-            double ema_8 = 0.0, ema_32 = 0.0, ema_64 = 0.0, ema_256 = 0.0;
-
-            if (trend_strategy) {
-                forecast = trend_strategy->get_forecast(symbol);
-                auto ema_values = trend_strategy->get_ema_values(symbol, {8, 32, 64, 256});
-                if (ema_values.count(8)) ema_8 = ema_values.at(8);
-                if (ema_values.count(32)) ema_32 = ema_values.at(32);
-                if (ema_values.count(64)) ema_64 = ema_values.at(64);
-                if (ema_values.count(256)) ema_256 = ema_values.at(256);
-            }
-
-            positions_file_ << date_str << ","
-                            << symbol << ","
-                            << qty << ","
-                            << price << ","
-                            << notional << ","
-                            << pct_gross << ","
-                            << pct_portfolio << ","
-                            << forecast << ","
-                            << volatility << ","
-                            << ema_8 << ","
-                            << ema_32 << ","
-                            << ema_64 << ","
-                            << ema_256 << "\n";
         }
 
         positions_file_.flush();
