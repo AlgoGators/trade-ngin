@@ -45,6 +45,7 @@ struct ChartData {
     std::string y_label;                  ///< Y-axis label
     double reference_line;                ///< Reference line value (e.g., 0 or starting value)
     bool has_reference_line = false;      ///< Whether to draw reference line
+    bool reference_line_on_axis = false;  ///< Line charts: widen the value axis to hold the line
 
     ChartData() : reference_line(0.0) {}
 };
@@ -131,6 +132,11 @@ ChartData equity_curve(std::vector<ChartPoint> rows, std::optional<double> book_
 /// the day after, because an axis from a day to itself is empty and cannot be drawn. An empty
 /// pair: no label, or a single label that is not a "YYYY-MM-DD" date.
 std::pair<std::string, std::string> line_chart_x_range(const std::vector<std::string>& labels);
+/// The value axis of a line chart whose reference line must be ON the chart (the equity curve's
+/// capital line: a book that sits wholly below or above its capital would otherwise leave it off
+/// the picture): from the lowest of the points and the line to the highest, with a margin. None
+/// for every other chart, which the renderer scales to its points.
+std::optional<std::pair<double, double>> line_chart_y_range(const ChartData& data);
 /// rows: (symbol, realized PnL); date: the run date; equities: the book is an equity book. One
 /// bar per symbol: rows of the same symbol are summed.
 ChartData pnl_by_symbol(std::vector<ChartPoint> rows, const std::string& date,

@@ -338,6 +338,9 @@ ChartData ChartSeries::equity_curve(std::vector<ChartPoint> rows,
     if (book_capital && std::isfinite(*book_capital) && *book_capital > 0.0) {
         chart_data.reference_line = *book_capital;
         chart_data.has_reference_line = true;
+        // The curve of a book that sits wholly above or below its capital would leave the line
+        // off the chart: the value axis is widened to hold it.
+        chart_data.reference_line_on_axis = true;
     }
 
     return chart_data;
@@ -365,6 +368,25 @@ std::string shifted_day(const std::string& ymd, int days) {
     return text;
 }
 }  // namespace
+
+std::optional<std::pair<double, double>> ChartSeries::line_chart_y_range(const ChartData& data) {
+    if (!data.has_reference_line || !data.reference_line_on_axis || data.values.empty()) {
+        return std::nullopt;  // the renderer's own scaling
+    }
+    double low = data.reference_line;
+    double high = data.reference_line;
+    for (double value : data.values) {
+        low = std::min(low, value);
+        high = std::max(high, value);
+    }
+    // a margin of a twentieth of the span either side, so neither the line nor a point sits on
+    // the frame; a curve that is flat at its reference gets one percent of the level
+    double margin = (high - low) * 0.05;
+    if (margin <= 0.0) {
+        margin = std::max(1.0, std::abs(high) * 0.01);
+    }
+    return std::make_pair(low - margin, high + margin);
+}
 
 std::pair<std::string, std::string> ChartSeries::line_chart_x_range(
     const std::vector<std::string>& labels) {
@@ -1684,7 +1706,12 @@ std::string ChartGenerator::render_line_chart(const ChartData& data, const Chart
         script << "\n\n";
 
         // Y-axis
-        script << "set format y '$%.0f'\n\n";
+        script << "set format y '$%.0f'\n";
+        if (const auto y_range = ChartSeries::line_chart_y_range(data)) {
+            script << "set yrange [" << std::fixed << std::setprecision(2) << y_range->first << ":"
+                   << y_range->second << "]\n";
+        }
+        script << "\n";
 
         // Reference line
         if (data.has_reference_line) {

@@ -219,6 +219,44 @@ TEST(ChartSeries, TheEquityCurvesReferenceLineIsTheBooksCapitalOrThereIsNone) {
     EXPECT_FALSE(ChartSeries::equity_curve(rows, std::nan("")).has_reference_line);
 }
 
+// A book whose last thirty days all lie below (or above) its capital: drawn on an axis scaled to
+// its points alone, the capital line is off the chart and the reader sees none. The curve's value
+// axis therefore runs from the lowest of the points and the line to the highest.
+TEST(ChartSeries, TheEquityCurvesValueAxisHoldsItsCapitalLine) {
+    const ChartData below = ChartSeries::equity_curve(
+        {{"2026-04-22", 487650.0}, {"2026-04-23", 495994.4}, {"2026-04-24", 497239.4}}, 500000.0);
+    const auto axis = ChartSeries::line_chart_y_range(below);
+    ASSERT_TRUE(axis.has_value());
+    EXPECT_LT(axis->first, 487650.0);
+    EXPECT_GT(axis->second, 500000.0);
+    EXPECT_DOUBLE_EQ(axis->first, 487650.0 - (500000.0 - 487650.0) * 0.05);
+    EXPECT_DOUBLE_EQ(axis->second, 500000.0 + (500000.0 - 487650.0) * 0.05);
+
+    const ChartData above =
+        ChartSeries::equity_curve({{"2026-06-15", 101200.0}, {"2026-06-16", 103400.0}}, 100000.0);
+    const auto above_axis = ChartSeries::line_chart_y_range(above);
+    ASSERT_TRUE(above_axis.has_value());
+    EXPECT_LT(above_axis->first, 100000.0);
+    EXPECT_GT(above_axis->second, 103400.0);
+
+    // a curve flat at its capital still has an axis with room either side
+    const auto flat = ChartSeries::line_chart_y_range(
+        ChartSeries::equity_curve({{"2026-04-01", 100000.0}}, 100000.0));
+    ASSERT_TRUE(flat.has_value());
+    EXPECT_LT(flat->first, 100000.0);
+    EXPECT_GT(flat->second, 100000.0);
+
+    // no capital on record: no line, and the renderer scales the axis to the points
+    EXPECT_FALSE(ChartSeries::line_chart_y_range(
+                     ChartSeries::equity_curve({{"2026-04-24", 497239.4}}, std::nullopt))
+                     .has_value());
+    // the margin chart's zero line does not pull its axis down to zero
+    EXPECT_FALSE(
+        ChartSeries::line_chart_y_range(
+            ChartSeries::margin_posted({{"2026-04-23", 44100.0}, {"2026-04-24", 45997.05}}))
+            .has_value());
+}
+
 TEST(ChartSeries, TheEquityCurveKeepsOnlyTheRowsAfterItsLastGapOfMoreThanFiveDays) {
     const ChartData data = ChartSeries::equity_curve({{"2026-03-01", 1.0},
                                                       {"2026-03-02", 2.0},
