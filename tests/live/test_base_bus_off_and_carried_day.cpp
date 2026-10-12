@@ -484,6 +484,42 @@ TEST(CarriedDaySource, BothTwinsWriteTheCarriedFileOnADayWithNoSession) {
     EXPECT_EQ(blocks[0], blocks[1]) << "the twins' positions-file blocks must be byte-identical";
 }
 
+// The runner's log line for a sleeve's carried forecasts says, as the carried file does, which
+// run computed them and the last bar date that run read. The stored date is a run date: the
+// line used to end "from 2026-05-02", which read as the date of the bars.
+TEST(CarriedForecastsLogLine, NamesTheRunAndTheLastBarDateItReadAsTheCarriedFileDoes) {
+    EXPECT_EQ(carried_forecasts_log_line("TREND_FOLLOWING", 36, "2026-05-02"),
+              "Carried forecasts for TREND_FOLLOWING: 36 computed by the run of 2026-05-02 from "
+              "bars through 2026-05-01");
+    EXPECT_EQ(carried_forecasts_log_line("TREND_FOLLOWING_FAST", 36, "2026-01-01"),
+              "Carried forecasts for TREND_FOLLOWING_FAST: 36 computed by the run of 2026-01-01 "
+              "from bars through 2025-12-31");
+    // The words are the carried file's own.
+    EXPECT_NE(
+        carried_forecasts_log_line("S", 1, "2026-05-02").find(carried_forecast_label("2026-05-02")),
+        npos);
+}
+
+TEST(CarriedForecastsLogLine, ASleeveWithNoStoredSessionSaysSo) {
+    EXPECT_EQ(carried_forecasts_log_line("TREND_FOLLOWING", 0, ""),
+              "Carried forecasts for TREND_FOLLOWING: 0 (no stored session)");
+}
+
+// READS SOURCE (a labelled wiring and twin guard; the line itself is executed above).
+TEST(CarriedForecastsLogLineTwinSourceGuard, BothFuturesRunnersLogTheLineThroughItsFunction) {
+    for (const char* runner : kFuturesRunners) {
+        SCOPED_TRACE(runner);
+        const std::string src = read_source(runner);
+        if (src.empty())
+            GTEST_SKIP() << "runner source not found";
+        EXPECT_NE(src.find("INFO(trade_ngin::carried_forecasts_log_line(\n"
+                           "                    strategy_name, carried.value().forecasts.size(), "
+                           "carried.value().session_date));"),
+                  npos);
+        EXPECT_EQ(src.find("INFO(\"Carried forecasts for \""), npos);
+    }
+}
+
 // =============================================================================================
 // The last computed forecasts: the sleeve's signals of the latest stored run date before today.
 // =============================================================================================

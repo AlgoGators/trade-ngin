@@ -4185,10 +4185,8 @@ int main(int argc, char* argv[]) {
                          std::string(carried.error()->what()));
                     continue;
                 }
-                INFO("Carried forecasts for " + strategy_name + ": " +
-                     std::to_string(carried.value().forecasts.size()) + " from " +
-                     (carried.value().session_date.empty() ? std::string("no stored session")
-                                                           : carried.value().session_date));
+                INFO(trade_ngin::carried_forecasts_log_line(
+                    strategy_name, carried.value().forecasts.size(), carried.value().session_date));
                 last_forecasts[strategy_name] = carried.value();
             }
             return csv_exporter->export_carried_positions(

@@ -1,6 +1,7 @@
 // include/trade_ngin/live/carried_day.hpp
 #pragma once
 
+#include <cstddef>
 #include <string>
 #include <unordered_map>
 
@@ -47,6 +48,17 @@ inline std::string carried_forecast_label(const std::string& run_date) {
         return "computed by the run of " + run_date;
     return "computed by the run of " + run_date + " from bars through " +
            core::format_utc_date(run_day - std::chrono::hours(24));
+}
+
+/// The futures runners' log line for one sleeve's carried forecasts on a day with no session:
+/// how many were read and, in the carried file's own words (carried_forecast_label), which run
+/// computed them and the last bar date that run read. The stored date is a RUN date: the line
+/// used to end "from <date>", which read as the date of the bars.
+inline std::string carried_forecasts_log_line(const std::string& sleeve, std::size_t count,
+                                              const std::string& run_date) {
+    const std::string label = carried_forecast_label(run_date);
+    return "Carried forecasts for " + sleeve + ": " + std::to_string(count) +
+           (label.empty() ? std::string(" (no stored session)") : " " + label);
 }
 
 /**
