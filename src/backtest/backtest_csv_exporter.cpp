@@ -64,7 +64,7 @@ Result<void> BacktestCSVExporter::initialize_files() {
                                     "BacktestCSVExporter");
         }
         // One row per sleeve and symbol whose quantity changed that day: the quantity after
-        // the change, the price the position was marked at the day before, the price the
+        // the change, the price of the sleeve's row of the day before (as stored), the price the
         // day's fills traded at, and the realized P&L of the row the run stores for the day.
         changes_file_ << "date,strategy,symbol,quantity,previous_mark,fill_price,realized_pnl\n";
         changes_file_ << std::setprecision(kDigits);

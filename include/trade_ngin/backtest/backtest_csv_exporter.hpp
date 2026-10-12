@@ -30,8 +30,9 @@ struct PositionChange {
     std::string symbol;
     /// The sleeve's quantity after the change.
     double quantity{0.0};
-    /// The price the position was marked at the day before (the previous day's row); absent on
-    /// a new position.
+    /// The price of the sleeve's row of the day before, as that row is stored (its
+    /// average_price: on a futures row the close the row was entered and valued from, one bar
+    /// before the row's own date); absent on a new position.
     std::optional<double> previous_mark;
     /// The price the sleeve's fills of the symbol traded at that day; absent when it has none.
     std::optional<double> fill_price;
