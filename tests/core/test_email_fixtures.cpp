@@ -30,6 +30,7 @@
 #include <unordered_map>
 #include <vector>
 
+#include "trade_ngin/core/config_loader.hpp"
 #include "trade_ngin/core/email_sender.hpp"
 #include "trade_ngin/core/report_over_limit.hpp"
 #include "trade_ngin/core/report_price_text.hpp"
@@ -1062,6 +1063,54 @@ TEST(EmailBookTextSourceGuard, TheRunnersHandTheReportTheirOwnBooksFacts) {
                                 "book_live_start_date = first_cell(anchor_q);",
                                 "report_context.settled_date = yesterday_date_for_email;"}) {
         EXPECT_NE(equity.find(present), std::string::npos) << present;
+    }
+}
+
+// `to_emails_production` was loaded and written back and read by nothing: every report goes to
+// `to_emails`, and the template told the operator to fill the other list. The key is deleted. A
+// config that still carries it loads as before (an unknown key is not read); the loaded object
+// has one recipient list.
+TEST(EmailConfigKey, TheConfigHasOneRecipientListAndAnOldFileStillLoads) {
+    const nlohmann::json old_file = {{"smtp_host", "smtp.example.org"},
+                                     {"smtp_port", 587},
+                                     {"username", "u"},
+                                     {"password", "p"},
+                                     {"from_email", "reports@example.org"},
+                                     {"to_emails", {"one@example.org", "two@example.org"}},
+                                     {"to_emails_production", {"never-read@example.org"}},
+                                     {"use_tls", true}};
+    EmailConfig config;
+    ASSERT_NO_THROW(config.from_json(old_file));
+    EXPECT_EQ(config.to_emails, (std::vector<std::string>{"one@example.org", "two@example.org"}));
+    EXPECT_EQ(config.from_email, "reports@example.org");
+    const nlohmann::json written = config.to_json();
+    EXPECT_FALSE(written.contains("to_emails_production")) << written.dump();
+    EXPECT_EQ(written.dump().find("never-read@example.org"), std::string::npos);
+    EXPECT_TRUE(written.contains("to_emails"));
+}
+
+// READS FILES: the three templates and their README no longer name the key.
+TEST(EmailConfigKey, TheTemplatesDoNotNameTheDeletedKey) {
+    fs::path root = fs::current_path();
+    for (int i = 0; i < 8 && !root.empty(); ++i, root = root.parent_path()) {
+        if (fs::exists(root / "config_template" / "README.md"))
+            break;
+    }
+    if (!fs::exists(root / "config_template" / "README.md")) {
+        GTEST_SKIP() << "config_template not found from the test working directory";
+    }
+    for (const char* file :
+         {"README.md", "portfolios/base/email.json", "portfolios/conservative/email.json",
+          "portfolios/equity_mr/email.json"}) {
+        const std::string text = read_file(root / "config_template" / file);
+        ASSERT_FALSE(text.empty()) << file;
+        EXPECT_EQ(text.find("to_emails_production"), std::string::npos) << file;
+        EXPECT_NE(text.find("to_emails"), std::string::npos) << file;
+    }
+    for (const char* file : {"portfolios/base/email.json", "portfolios/conservative/email.json",
+                             "portfolios/equity_mr/email.json"}) {
+        EXPECT_NO_THROW((void)nlohmann::json::parse(read_file(root / "config_template" / file)))
+            << file;
     }
 }
 
