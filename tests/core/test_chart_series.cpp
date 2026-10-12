@@ -265,6 +265,14 @@ TEST(ChartSeries, ALineChartsAxisRunsFromItsFirstDayToItsLast) {
 
 // --- yesterday's PnL by symbol -------------------------------------------------------------------
 
+// T-8D-2 R64: a symbol held by both sleeves of a book has two stored rows on a day; the query
+// returns the book's one figure for it.
+TEST(ChartQueries, YesterdaysPnlIsSummedBySymbol) {
+    const std::string query = ChartQueries::pnl_by_symbol(kStrategy, kPortfolio, "2026-04-25");
+    EXPECT_TRUE(has(query, "SELECT symbol, SUM(daily_realized_pnl)")) << query;
+    EXPECT_TRUE(has(query, "GROUP BY symbol")) << query;
+}
+
 TEST(ChartSeries, PnlBySymbolIsSortedLargestFirstAndTitledWithTheDayBeforeTheRunDate) {
     const ChartData data = ChartSeries::pnl_by_symbol(
         {{"ZF.v.0", -31.25}, {"KE.v.0", 1475.0}, {"6L.v.0", -185.0}}, "2026-04-24");
@@ -273,9 +281,38 @@ TEST(ChartSeries, PnlBySymbolIsSortedLargestFirstAndTitledWithTheDayBeforeTheRun
     EXPECT_EQ(data.labels[1], "ZF.v.0");
     EXPECT_EQ(data.labels[2], "6L.v.0");
     EXPECT_DOUBLE_EQ(data.values[0], 1475.0);
-    EXPECT_TRUE(has(data.title, "2026-04-23")) << data.title;
+    EXPECT_EQ(data.title, "Yesterday's PnL by Symbol (2026-04-23)");
     EXPECT_TRUE(data.has_reference_line);
     EXPECT_DOUBLE_EQ(data.reference_line, 0.0);
+}
+
+// T-8D-2 R64: a symbol two sleeves hold was two bars, each a sleeve's figure. It is one bar of
+// their sum, whatever rows the series is given.
+TEST(ChartSeries, ASymbolHeldByTwoSleevesIsOneBarOfTheirSum) {
+    const ChartData data = ChartSeries::pnl_by_symbol({{"MES.v.0", 40.0},
+                                                       {"ZF.v.0", -31.25},
+                                                       {"MES.v.0", -45.0},
+                                                       {"KE.v.0", 1475.0},
+                                                       {"ZF.v.0", -31.25}},
+                                                      "2026-04-25");
+    ASSERT_EQ(data.labels.size(), 3u);
+    EXPECT_EQ(data.labels[0], "KE.v.0");
+    EXPECT_EQ(data.labels[1], "MES.v.0");
+    EXPECT_EQ(data.labels[2], "ZF.v.0");
+    EXPECT_DOUBLE_EQ(data.values[0], 1475.0);
+    EXPECT_DOUBLE_EQ(data.values[1], -5.0);
+    EXPECT_DOUBLE_EQ(data.values[2], -62.5);
+}
+
+// T-8D-2 R64: on an equity book the bars are the day's realized P&L only, and the title says so.
+TEST(ChartSeries, OnAnEquityBookYesterdaysPnlIsTitledRealized) {
+    const std::vector<ChartPoint> rows = {{"AAPL", 0.02}, {"GOOGL", -1.87}};
+    EXPECT_EQ(ChartSeries::pnl_by_symbol(rows, "2026-06-16", true).title,
+              "Yesterday's Realized PnL by Symbol (2026-06-15)");
+    EXPECT_EQ(ChartSeries::pnl_by_symbol(rows, "2026-06-16", false).title,
+              "Yesterday's PnL by Symbol (2026-06-15)");
+    EXPECT_EQ(ChartTitles::pnl_by_symbol_heading(true), "Yesterday's Realized PnL by Symbol");
+    EXPECT_EQ(ChartTitles::pnl_by_symbol_heading(false), "Yesterday's PnL by Symbol");
 }
 
 TEST(ChartSeries, PnlBySymbolWithNoRowIsNoChart) {
@@ -343,6 +380,23 @@ TEST(ChartFetchers, MarginPostedSkipsADayWithNoStoredMargin) {
     ASSERT_EQ(data.labels.size(), 2u);
     EXPECT_EQ(data.labels[0], "2026-04-22");
     EXPECT_EQ(data.labels[1], "2026-04-24");
+}
+
+TEST(ChartFetchers, YesterdaysPnlHasOneBarForASymbolAnsweredTwice) {
+    auto db = std::make_shared<AnsweringDatabase>();
+    db->answer(
+        "trading.positions", {"symbol", "daily_realized_pnl"},
+        {{"MES.v.0", "40.00"}, {"MES.v.0", "-45.00"}, {"ZF.v.0", "NULL"}, {"KE.v.0", "1475"}});
+    const ChartData data =
+        ChartGenerator::fetch_pnl_by_symbol_data(db, kStrategy, kPortfolio, "2026-04-25");
+    ASSERT_EQ(db->queries.size(), 1u);
+    EXPECT_EQ(db->queries[0], ChartQueries::pnl_by_symbol(kStrategy, kPortfolio, "2026-04-25"));
+    ASSERT_EQ(data.labels.size(), 3u);
+    EXPECT_EQ(data.labels[0], "KE.v.0");
+    EXPECT_EQ(data.labels[1], "ZF.v.0");
+    EXPECT_EQ(data.labels[2], "MES.v.0");
+    EXPECT_DOUBLE_EQ(data.values[1], 0.0);
+    EXPECT_DOUBLE_EQ(data.values[2], -5.0);
 }
 
 // The equity curve end to end: the rows the query answers are the points, the capital of the run
@@ -443,4 +497,37 @@ TEST_F(ChartQueriesDb, EveryChartQueryRunsOnTheDatabase) {
         EXPECT_FALSE(result.is_error()) << query << "\n"
                                         << (result.is_error() ? result.error()->what() : "");
     }
+}
+
+// A book of two sleeves: the chart of the day before the run date has one bar per symbol, as many
+// as the day's stored rows have distinct symbols (counted by a query of its own).
+TEST_F(ChartQueriesDb, OnABookOfTwoSleevesYesterdaysPnlHasOneBarPerSymbol) {
+    const std::string strategy = "LIVE_TREND_FOLLOWING_TREND_FOLLOWING_FAST";
+    const std::string portfolio = "BASE_PORTFOLIO";
+    const std::string run_date = "2026-04-25";
+    auto counted = db_->execute_query(
+        "SELECT COUNT(DISTINCT symbol)::text, COUNT(*)::text FROM trading.positions "
+        "WHERE strategy_id = '" +
+        strategy + "' AND portfolio_id = '" + portfolio +
+        "' "
+        "AND portfolio_type = 'system' AND date = (SELECT MAX(date) FROM trading.positions "
+        "WHERE strategy_id = '" +
+        strategy + "' AND portfolio_id = '" + portfolio +
+        "' "
+        "AND date < DATE '" +
+        run_date + "')");
+    ASSERT_FALSE(counted.is_error()) << counted.error()->what();
+    const auto cell = [&](int column) {
+        return std::stoi(
+            std::static_pointer_cast<arrow::StringArray>(counted.value()->column(column)->chunk(0))
+                ->GetString(0));
+    };
+    const int symbols = cell(0);
+    const int rows = cell(1);
+    if (symbols == 0)
+        GTEST_SKIP() << "the database holds no BASE position row before " << run_date;
+    const ChartData data =
+        ChartGenerator::fetch_pnl_by_symbol_data(db_, strategy, portfolio, run_date);
+    EXPECT_EQ(static_cast<int>(data.labels.size()), symbols)
+        << rows << " stored rows of " << symbols << " symbols";
 }

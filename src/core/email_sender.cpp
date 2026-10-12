@@ -719,12 +719,11 @@ std::string EmailSender::generate_trading_report_body(
 
         // Generate PnL by symbol chart - ONLY if show_yesterday_pnl is true
         if (show_yesterday_pnl) {
-            pnl_by_symbol_base64_ =
-                ChartGenerator::generate_pnl_by_symbol_chart(
-                    db, chart_strategy_id, chart_portfolio_id_legacy, date);
+            pnl_by_symbol_base64_ = ChartGenerator::generate_pnl_by_symbol_chart(
+                db, chart_strategy_id, chart_portfolio_id_legacy, date, context.equities);
             if (!pnl_by_symbol_base64_.empty()) {
-                html << "<h3 style=\"margin-top: 20px; color: #333;\">Yesterday's PnL by "
-                        "Symbol</h3>\n";
+                html << "<h3 style=\"margin-top: 20px; color: #333;\">"
+                     << ChartTitles::pnl_by_symbol_heading(context.equities) << "</h3>\n";
                 html << "<div style=\"width: 100%; max-width: 800px; margin: 20px auto; "
                         "text-align: center;\">\n";
                 html << "<img src=\"cid:pnl_by_symbol\" alt=\"PnL by Symbol\" style=\"max-width: "
@@ -4120,10 +4119,10 @@ std::string EmailSender::generate_trading_report_body(
         // Generate PnL by symbol chart - ONLY if show_yesterday_pnl is true
         if (show_yesterday_pnl) {
             pnl_by_symbol_base64_ = ChartGenerator::generate_pnl_by_symbol_chart(
-                db, chart_strategy_id, chart_portfolio_id, date);
+                db, chart_strategy_id, chart_portfolio_id, date, context.equities);
             if (!pnl_by_symbol_base64_.empty()) {
-                html << "<h3 style=\"margin-top: 20px; color: #333;\">Yesterday's PnL by "
-                        "Symbol</h3>\n";
+                html << "<h3 style=\"margin-top: 20px; color: #333;\">"
+                     << ChartTitles::pnl_by_symbol_heading(context.equities) << "</h3>\n";
                 html << "<div style=\"width: 100%; max-width: 800px; margin: 20px auto; "
                         "text-align: center;\">\n";
                 html << "<img src=\"cid:pnl_by_symbol\" alt=\"PnL by Symbol\" style=\"max-width: "

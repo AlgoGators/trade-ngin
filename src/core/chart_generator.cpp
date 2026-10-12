@@ -19,6 +19,7 @@
 #include <iomanip>
 #include <optional>
 #include <sstream>
+#include <unordered_map>
 #include "trade_ngin/core/logger.hpp"
 #include "trade_ngin/instruments/instrument_registry.hpp"
 
@@ -138,7 +139,9 @@ std::string ChartQueries::book_capital(const std::string& strategy_id,
 
 std::string ChartQueries::pnl_by_symbol(const std::string& strategy_id,
                                         const std::string& portfolio_id, const std::string& date) {
-    return "SELECT symbol, daily_realized_pnl "
+    // T-8D-2 R64: one row per symbol. A book of several sleeves stores a row per sleeve for a
+    // symbol more than one of them holds; the chart shows the book's figure for the symbol.
+    return "SELECT symbol, SUM(daily_realized_pnl) AS daily_realized_pnl "
            "FROM trading.positions "
            "WHERE strategy_id = '" +
            strategy_id +
@@ -160,7 +163,8 @@ std::string ChartQueries::pnl_by_symbol(const std::string& strategy_id,
            "                           AND DATE(last_update) < DATE('" +
            date +
            "')) "
-           "ORDER BY last_update DESC";
+           "GROUP BY symbol "
+           "ORDER BY symbol";
 }
 
 std::string ChartQueries::daily_pnl(const std::string& strategy_id, const std::string& portfolio_id,
@@ -378,9 +382,22 @@ std::pair<std::string, std::string> ChartSeries::line_chart_x_range(
     return {before, after};
 }
 
-ChartData ChartSeries::pnl_by_symbol(std::vector<ChartPoint> symbol_pnl_data,
-                                     const std::string& date) {
+ChartData ChartSeries::pnl_by_symbol(std::vector<ChartPoint> rows, const std::string& date,
+                                     bool equities) {
     ChartData chart_data;
+
+    // One bar per symbol (T-8D-2 R64): rows of the same symbol (one per sleeve that holds it) are
+    // summed, in the order the symbols first appear.
+    std::vector<ChartPoint> symbol_pnl_data;
+    std::unordered_map<std::string, size_t> bar_of;
+    for (const auto& [symbol, pnl] : rows) {
+        const auto [at, is_new] = bar_of.try_emplace(symbol, symbol_pnl_data.size());
+        if (is_new) {
+            symbol_pnl_data.emplace_back(symbol, pnl);
+        } else {
+            symbol_pnl_data[at->second].second += pnl;
+        }
+    }
 
     // Calculate yesterday's date for the title
     std::string yesterday_date;
@@ -402,9 +419,9 @@ ChartData ChartSeries::pnl_by_symbol(std::vector<ChartPoint> symbol_pnl_data,
         return chart_data;
     }
 
-    // Sort by realized PnL (descending)
-    std::sort(symbol_pnl_data.begin(), symbol_pnl_data.end(),
-              [](const auto& a, const auto& b) { return a.second > b.second; });
+    // Sort by realized PnL (descending); symbols of equal PnL keep the order they came in
+    std::stable_sort(symbol_pnl_data.begin(), symbol_pnl_data.end(),
+                     [](const auto& a, const auto& b) { return a.second > b.second; });
 
     // Populate ChartData
     INFO("Populating chart data with " + std::to_string(symbol_pnl_data.size()) + " symbols");
@@ -421,7 +438,8 @@ ChartData ChartSeries::pnl_by_symbol(std::vector<ChartPoint> symbol_pnl_data,
 
     // Add yesterday's date to title if calculated successfully
     if (!yesterday_date.empty()) {
-        chart_data.title = "Yesterday's PnL by Symbol (" + yesterday_date + ")";
+        chart_data.title =
+            ChartTitles::pnl_by_symbol_heading(equities) + " (" + yesterday_date + ")";
     }
     chart_data.x_label = "Symbol";
     chart_data.y_label = "Realized PnL ($)";
@@ -751,12 +769,10 @@ ChartData ChartGenerator::fetch_equity_curve_data(std::shared_ptr<DatabaseInterf
     }
 }
 
-ChartData ChartGenerator::fetch_pnl_by_symbol_data(
-    std::shared_ptr<DatabaseInterface> db,
-    const std::string& strategy_id,
-                                                  const std::string& portfolio_id,
-    const std::string& date)
-{
+ChartData ChartGenerator::fetch_pnl_by_symbol_data(std::shared_ptr<DatabaseInterface> db,
+                                                   const std::string& strategy_id,
+                                                   const std::string& portfolio_id,
+                                                   const std::string& date, bool equities) {
     ChartData chart_data;
 
     if (!db) {
@@ -850,14 +866,13 @@ ChartData ChartGenerator::fetch_pnl_by_symbol_data(
             return chart_data;
         }
 
-        return ChartSeries::pnl_by_symbol(std::move(symbol_pnl_data), date);
+        return ChartSeries::pnl_by_symbol(std::move(symbol_pnl_data), date, equities);
 
     } catch (const std::exception& e) {
         ERROR("Exception fetching realized PnL by symbol: " + std::string(e.what()));
         return chart_data;
     }
 }
-
 
 ChartData ChartGenerator::fetch_daily_pnl_data(
     std::shared_ptr<DatabaseInterface> db,
@@ -2022,16 +2037,14 @@ std::string ChartGenerator::generate_equity_curve_chart(std::shared_ptr<Database
     return render_line_chart(data, config);
 }
 
-std::string ChartGenerator::generate_pnl_by_symbol_chart(
-    std::shared_ptr<DatabaseInterface> db,
-    const std::string& strategy_id,
-                                                  const std::string& portfolio_id,
-    const std::string& date)
-{
+std::string ChartGenerator::generate_pnl_by_symbol_chart(std::shared_ptr<DatabaseInterface> db,
+                                                         const std::string& strategy_id,
+                                                         const std::string& portfolio_id,
+                                                         const std::string& date, bool equities) {
     INFO("Starting PnL by symbol chart generation for strategy: " + strategy_id);
 
     // Fetch data using modular fetcher
-    ChartData data = fetch_pnl_by_symbol_data(db, strategy_id, portfolio_id, date);
+    ChartData data = fetch_pnl_by_symbol_data(db, strategy_id, portfolio_id, date, equities);
 
     if (data.labels.empty() || data.values.empty()) {
         WARN("No data available for PnL by symbol chart - returning empty string");

@@ -52,6 +52,17 @@ struct ChartData {
 using ChartPoint = std::pair<std::string, double>;
 
 /**
+ * @brief The words of a chart's heading in the report and of its title in the image.
+ */
+namespace ChartTitles {
+/// "Yesterday's PnL by Symbol". On an equity book the bars are the day's REALIZED P&L only (a
+/// futures row's daily figure is its whole settled P&L), and the heading says so (T-8D-2 R64).
+inline std::string pnl_by_symbol_heading(bool equities) {
+    return equities ? "Yesterday's Realized PnL by Symbol" : "Yesterday's PnL by Symbol";
+}
+}  // namespace ChartTitles
+
+/**
  * @brief The text of each database chart's query, from the book's ids and the run date.
  *
  * A fetcher sends exactly this text; a test calls these to read what a chart asks for.
@@ -98,8 +109,10 @@ ChartData equity_curve(std::vector<ChartPoint> rows, std::optional<double> book_
 /// the day after, because an axis from a day to itself is empty and cannot be drawn. An empty
 /// pair: no label, or a single label that is not a "YYYY-MM-DD" date.
 std::pair<std::string, std::string> line_chart_x_range(const std::vector<std::string>& labels);
-/// rows: (symbol, realized PnL); date: the run date.
-ChartData pnl_by_symbol(std::vector<ChartPoint> rows, const std::string& date);
+/// rows: (symbol, realized PnL); date: the run date; equities: the book is an equity book. One
+/// bar per symbol: rows of the same symbol are summed.
+ChartData pnl_by_symbol(std::vector<ChartPoint> rows, const std::string& date,
+                        bool equities = false);
 /// rows: (date, daily PnL), newest first as the query returns them.
 ChartData daily_pnl(std::vector<ChartPoint> rows);
 ChartData cost_per_million(const std::vector<CostRow>& rows);
@@ -167,12 +180,10 @@ public:
      * @param date Date to query
      * @return ChartData with symbols and PnL values
      */
-    static ChartData fetch_pnl_by_symbol_data(
-        std::shared_ptr<DatabaseInterface> db,
-        const std::string& strategy_id,
-        const std::string& portfolio_id,
-        const std::string& date
-    );
+    static ChartData fetch_pnl_by_symbol_data(std::shared_ptr<DatabaseInterface> db,
+                                              const std::string& strategy_id,
+                                              const std::string& portfolio_id,
+                                              const std::string& date, bool equities = false);
 
     /**
      * @brief Fetch daily PnL data from database
@@ -313,12 +324,10 @@ public:
      * @param date Date to query (will show previous day's PnL)
      * @return Base64-encoded PNG chart data, or empty string on error
      */
-    static std::string generate_pnl_by_symbol_chart(
-        std::shared_ptr<DatabaseInterface> db,
-        const std::string& strategy_id,
-        const std::string& portfolio_id,
-        const std::string& date
-    );
+    static std::string generate_pnl_by_symbol_chart(std::shared_ptr<DatabaseInterface> db,
+                                                    const std::string& strategy_id,
+                                                    const std::string& portfolio_id,
+                                                    const std::string& date, bool equities = false);
 
     /**
      * @brief Generate daily PnL chart
