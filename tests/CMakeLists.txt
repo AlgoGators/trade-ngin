@@ -228,6 +228,7 @@ set(TEST_SOURCES
     live/test_live_results_roll_cost_columns.cpp
     live/test_csv_exporter.cpp
     live/test_live_csv_files.cpp
+    live/test_console_labels.cpp
     strategy/test_base_strategy.cpp
     strategy/test_trend_following.cpp
     strategy/test_regime_detector.cpp

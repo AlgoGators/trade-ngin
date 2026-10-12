@@ -31,6 +31,7 @@
 #include "trade_ngin/live/corp_action_feed_status.hpp"
 #include "trade_ngin/live/trading_days_anchor.hpp"
 #include "trade_ngin/live/broker_frame.hpp"
+#include "trade_ngin/live/console_labels.hpp"
 #include "trade_ngin/live/corporate_actions_audit_log.hpp"
 #include "trade_ngin/live/dividend_counter.hpp"
 #include "trade_ngin/live/live_daily_cycle.hpp"
@@ -4192,19 +4193,12 @@ int main(int argc, char* argv[]) {
         }
         
         std::cout << "\n======= Daily Position Report =======" << std::endl;
-        std::cout << "Date: " << (now_tm->tm_year + 1900) << "-"
-                  << std::setfill('0') << std::setw(2) << (now_tm->tm_mon + 1) << "-"
-                  << std::setfill('0') << std::setw(2) << now_tm->tm_mday << std::endl;
-        std::cout << "Total Positions: " << positions.size() << std::endl;
-        std::cout << std::endl;
-
-        // Add header for position table
-        std::cout << std::setw(10) << "Symbol" << " | "
-                  << std::setw(10) << "Quantity" << " | "
-                  << std::setw(10) << "Mkt Price" << " | "
-                  << std::setw(12) << "Notional" << " | "
-                  << std::setw(10) << "Unreal PnL" << std::endl;
-        std::cout << std::string(60, '-') << std::endl;
+        // T-8D-2 R68: the date and the count of symbols in the book map, as text (the stream's
+        // fill is left alone). No table follows: the header that stood here printed no row.
+        std::cout << trade_ngin::position_report_head_console(now_tm->tm_year + 1900,
+                                                              now_tm->tm_mon + 1, now_tm->tm_mday,
+                                                              positions.size())
+                  << std::endl;
 
         // Use MarginManager for margin calculations
         INFO("Using MarginManager to calculate margin requirements...");
