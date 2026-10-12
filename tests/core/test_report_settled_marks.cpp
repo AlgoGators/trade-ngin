@@ -139,6 +139,73 @@ TEST(ReportSettledMarks, TheFootnotePrintsOnlyWhenARowHasNoBar) {
         "");
 }
 
+// The sentence under the table (the lead's audit of 2026-10-12, B-3): it said "The two marks are
+// raw closes ... so a row need not multiply out" on every book. Since the two columns are the
+// pair the settle booked the row on, a futures row DOES multiply out to the cell beside it; the
+// sentence says so and names the two kinds of row the settle books at 0 whatever their prices.
+TEST(ReportSettledMarks, TheFuturesSentenceSaysARowMultipliesOutAndNamesTheRowsThatDoNot) {
+    EXPECT_STREQ(
+        kSettledNoteFutures,
+        "Previous price and Latest price are the two closes the settled day was booked between: "
+        "quantity times the price change times the contract size is the row's Realized PnL, the "
+        "settled day's stored figure. Two kinds of row are booked at $0.00 whatever their two "
+        "prices show: a row on a day its price series changes to another contract (its two prices "
+        "are then of two different contracts), and a row whose price for that day was not accepted "
+        "(for example a bad print, or a contract change not yet confirmed).");
+    EXPECT_EQ(settled_table_note_html(false),
+              std::string("<div style=\"font-size: 12px; color: #666; margin: 4px 0 12px 0;\">") +
+                  kSettledNoteFutures + "</div>\n");
+    // the worked row the sentence speaks of, from the printed cells: KE Friday, 1 contract, 50 a
+    // point, booked -550.00
+    const SettledPriceCells ke = cells_for("KE.v.0", {{"KE.v.0", 679.5}}, {{"KE.v.0", 668.5}}, {});
+    EXPECT_DOUBLE_EQ(1.0 * (number_of(ke.latest) - number_of(ke.previous)) * 50.0, -550.0);
+}
+
+// The equity sentence. The equity table has no column for the day's price move (its Realized PnL
+// cell is the row's realized P&L of the day), and on an ex-dividend settle the previous price is
+// the close before restated for the dividend. The worked row is the chain's own: META, settled
+// 2026-06-15 (ex-dividend, 0.525 a share), 7.147202 shares, the close before 566.98 as printed
+// and 566.4788855313 as the settle used it, the close of the day 593.48.
+TEST(ReportSettledMarks, TheEquitySentenceSaysWhatTheTwoPricesAreAndThatTheCellBesideIsNotTheMove) {
+    EXPECT_STREQ(
+        kSettledNoteEquity,
+        "Previous price and Latest price are the two closes the settled day's price move was "
+        "measured between: quantity times the price change is that holding's gain or loss from "
+        "the day's price move, which this table does not print. On a day a holding goes "
+        "ex-dividend or splits, its previous price is the close before restated for that event, "
+        "not the close as it printed. Realized PnL is the gain or loss the holding realized that "
+        "day, the settled day's stored figure; it is not the day's price move, so a row is not "
+        "expected to multiply out to it.");
+    EXPECT_EQ(settled_table_note_html(true),
+              std::string("<div style=\"font-size: 12px; color: #666; margin: 4px 0 12px 0;\">") +
+                  kSettledNoteEquity + "</div>\n");
+
+    const SettledPriceCells meta =
+        cells_for("META", {{"META", 566.4788855313}}, {{"META", 593.48}}, {});
+    EXPECT_EQ(meta.previous, "566.47888553");  // the restated close is what prints, not 566.98
+    EXPECT_EQ(meta.latest, "593.48");
+    // quantity x the price change, from the printed cells, is the move the settle computed
+    // (192.982419 in its own log line); with the close as it printed it would be short by the
+    // dividend
+    const double shares = 7.147202;
+    EXPECT_NEAR(shares * (number_of(meta.latest) - number_of(meta.previous)), 192.982419, 1e-4);
+    EXPECT_NEAR(shares * (593.48 - 566.98), 189.400853, 1e-4);
+}
+
+// Neither sentence carries the old claims or a notation a reader has to decode.
+TEST(ReportSettledMarks, NeitherSentenceSaysRawClosesOrThatARowNeedNotMultiplyOut) {
+    for (const bool equities : {false, true}) {
+        const std::string line = settled_table_note_html(equities);
+        for (const char* gone :
+             {"raw close", "two marks", "need not multiply", "recomputed", "T-1", "T-2", "mark",
+              "Mark", "adjusted", "settle_", "junk", "withheld", "change bar"}) {
+            EXPECT_EQ(line.find(gone), std::string::npos) << gone << " in: " << line;
+        }
+        EXPECT_NE(line.find("Previous price and Latest price"), std::string::npos);
+    }
+    EXPECT_NE(settled_table_note_html(false), settled_table_note_html(true));
+}
+
 // The file's two cells for the same three inputs: the same prices as numbers, an empty mark on a
 // no-bar row, and prior_mark the last known close there.
 TEST(ReportSettledMarks, TheFilesTwoCellsCarryTheSamePrices) {

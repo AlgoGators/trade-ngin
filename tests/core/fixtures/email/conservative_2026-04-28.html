@@ -148,7 +148,7 @@ th { background-color: #f2f2f2; font-weight: bold; }
 <strong>Positions:</strong> 7 | <strong>Total Realized PnL (Gross):</strong> <span class="positive">$608.12</span>
 </div>
 <div style="font-size: 12px; color: #666; margin: 4px 0 4px 0;">no bar: the market did not print a price that day; the position's P&amp;L for the day is 0</div>
-<div style="font-size: 12px; color: #666; margin: 4px 0 12px 0;">The two marks are raw closes. Realized PnL is the settled day's stored figure; it is not recomputed from the two marks, so a row need not multiply out.</div>
+<div style="font-size: 12px; color: #666; margin: 4px 0 12px 0;">Previous price and Latest price are the two closes the settled day was booked between: quantity times the price change times the contract size is the row's Realized PnL, the settled day's stored figure. Two kinds of row are booked at $0.00 whatever their two prices show: a row on a day its price series changes to another contract (its two prices are then of two different contracts), and a row whose price for that day was not accepted (for example a bad print, or a contract change not yet confirmed).</div>
 <h2>2026-04-27 (settled)</h2>
 <div class="metrics-category">
 <div class="metric"><strong>Total Positions:</strong> 7</div>

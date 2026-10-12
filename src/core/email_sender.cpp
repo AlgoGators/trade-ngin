@@ -663,7 +663,7 @@ std::string EmailSender::generate_trading_report_body(
             yesterday_close_prices,     // the price it was settled at
             db,
             yesterday_daily_metrics,  // Yesterday's daily metrics
-            yesterday_date_str, settled_date);
+            yesterday_date_str, settled_date, context.equities);
     } else if (!show_yesterday_pnl) {
         // The runner found no session on the day before (T-8D-2 R59): no settled table. The two
         // notes say why in the runner's terms, never from the weekday.
@@ -1293,22 +1293,20 @@ std::string EmailSender::format_positions_table(
 // arithmetic used for the row, as the runner hands them. A symbol the "settled at" map does not
 // hold printed no bar that day: its cell reads "no bar" and one footnote under the table says so.
 // A price the maps do not hold (NaN in the row data): nothing is known.
+// The sentence under the table says what the two prices are and what a row multiplies out to; a
+// futures book and the equity book each have their own (settled_table_note_html).
 static std::optional<double> known_price(double price) {
     if (std::isnan(price))
         return std::nullopt;
     return price;
 }
-static const char* const kMarksNote =
-    "<div style=\"font-size: 12px; color: #666; margin: 4px 0 12px 0;\">The two marks are raw "
-    "closes. Realized PnL is the settled day's stored figure; it is not recomputed from the two "
-    "marks, so a row need not multiply out.</div>\n";
 
 std::string EmailSender::format_yesterday_finalized_positions_table(
     const std::unordered_map<std::string, Position>& yesterday_positions,
     const std::unordered_map<std::string, double>& entry_prices,  // settled from
     const std::unordered_map<std::string, double>& exit_prices,   // settled at
     std::shared_ptr<DatabaseInterface> db, const std::map<std::string, double>& strategy_metrics,
-    const std::string& yesterday_date, const std::string& settled_date) {
+    const std::string& yesterday_date, const std::string& settled_date, bool equities) {
     (void)db;
     std::ostringstream html;
 
@@ -1415,7 +1413,7 @@ std::string EmailSender::format_yesterday_finalized_positions_table(
 
     html << "</table>\n";
     html << settled_no_bar_footnote_html(any_no_bar_row);
-    html << kMarksNote;
+    html << settled_table_note_html(equities);
 
     // Add daily metrics as a section heading after the table - use passed yesterday_daily_metrics
     if (!strategy_metrics.empty() && !yesterday_date.empty()) {
@@ -1500,7 +1498,7 @@ std::string EmailSender::format_yesterday_finalized_positions_table(
     const std::unordered_map<std::string, double>& entry_prices,
     const std::unordered_map<std::string, double>& exit_prices,
     std::shared_ptr<DatabaseInterface> db, const std::map<std::string, double>& strategy_metrics,
-    const std::string& yesterday_date, const std::string& settled_date) {
+    const std::string& yesterday_date, const std::string& settled_date, bool equities) {
     (void)db;
     std::ostringstream html;
 
@@ -1647,7 +1645,7 @@ std::string EmailSender::format_yesterday_finalized_positions_table(
         html << "</div>\n";
     }
     html << settled_no_bar_footnote_html(any_no_bar_row);
-    html << kMarksNote;
+    html << settled_table_note_html(equities);
 
     // Add daily metrics section
     if (!strategy_metrics.empty() && !yesterday_date.empty()) {
@@ -4079,7 +4077,7 @@ std::string EmailSender::generate_trading_report_body(
         !two_days_ago_close_prices.empty()) {
         html << format_yesterday_finalized_positions_table(
             yesterday_strategy_positions, two_days_ago_close_prices, yesterday_close_prices, db,
-            yesterday_daily_metrics, yesterday_date_str, settled_date);
+            yesterday_daily_metrics, yesterday_date_str, settled_date, context.equities);
     } else if (!show_yesterday_pnl) {
         // The runner found no session on the day before (T-8D-2 R59): no settled table. The two
         // notes say why in the runner's terms, never from the weekday.

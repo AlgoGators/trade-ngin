@@ -123,6 +123,46 @@ inline std::string settled_no_bar_footnote_html(bool any_no_bar_row) {
            "</div>\n";
 }
 
+/// The sentence under the settled table of a FUTURES book: what the two prices are and what a
+/// reader can work out from a row. A futures row's Realized PnL is the settle's own figure,
+/// quantity x (latest - previous) x contract size, so the row multiplies out. The settle books 0
+/// by rule on two kinds of bar whatever the two closes are, and the sentence names them: a change
+/// bar (the continuous series changes contract: the previous price is the outgoing contract's
+/// close and the latest the incoming one's) and a withheld bar (a print the run did not accept).
+/// A no-bar row is the footnote's.
+inline constexpr const char* kSettledNoteFutures =
+    "Previous price and Latest price are the two closes the settled day was booked between: "
+    "quantity times the price change times the contract size is the row's Realized PnL, the "
+    "settled day's stored figure. Two kinds of row are booked at $0.00 whatever their two prices "
+    "show: a row on a day its price series changes to another contract (its two prices are then "
+    "of two different contracts), and a row whose price for that day was not accepted (for "
+    "example a bad print, or a contract change not yet confirmed).";
+
+/// The sentence under the settled table of the EQUITY book. Its two prices are the pair the
+/// settle measured the day's move between, closes of the series as the run loaded it: that
+/// series is adjusted back for a dividend or a split whose ex-date bar it holds, and it ends at
+/// the settled day, so the previous price is restated exactly when the settled day is the
+/// ex-date (META 2026-06-15: 566.47888553 printed, 566.98 the close as it printed) and the
+/// latest price never is. The table's Realized PnL cell is the row's realized P&L of that day,
+/// not the day's move: the equity row stores the move in the value of its holding, which the
+/// table has no column for. So the sentence says what quantity times the price change is, and
+/// that it is not the cell beside it.
+inline constexpr const char* kSettledNoteEquity =
+    "Previous price and Latest price are the two closes the settled day's price move was "
+    "measured between: quantity times the price change is that holding's gain or loss from the "
+    "day's price move, which this table does not print. On a day a holding goes ex-dividend or "
+    "splits, its previous price is the close before restated for that event, not the close as "
+    "it printed. Realized PnL is the gain or loss the holding realized that day, the settled "
+    "day's stored figure; it is not the day's price move, so a row is not expected to multiply "
+    "out to it.";
+
+/// The line under the settled table (and under its footnote, when there is one): the sentence of
+/// the book's kind.
+inline std::string settled_table_note_html(bool equities) {
+    return std::string("<div style=\"font-size: 12px; color: #666; margin: 4px 0 12px 0;\">") +
+           (equities ? kSettledNoteEquity : kSettledNoteFutures) + "</div>\n";
+}
+
 /// The two cells of one row of the file: prior_mark and mark.
 struct SettledCsvCells {
     std::string prior_mark;

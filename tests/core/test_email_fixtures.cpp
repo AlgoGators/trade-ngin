@@ -28,6 +28,7 @@
 #include <sstream>
 #include <string>
 #include <unordered_map>
+#include <utility>
 #include <vector>
 
 #include "trade_ngin/core/config_loader.hpp"
@@ -564,10 +565,18 @@ TEST_F(EmailFixture, TheSleeveNamesItsKindAndTheSettledTableNamesItsTwoPrices) {
     const std::string base = base_body();
     EXPECT_NE(base.find(">Trend Following Fast (futures)</h3>"), std::string::npos);
     const std::string marks = "<th>Previous price</th><th>Latest price</th><th>Realized PnL</th>";
-    const std::string note =
-        "The two marks are raw closes. Realized PnL is the settled day's "
-        "stored figure; it is not recomputed from the two marks";
-    for (const std::string& body : {futures, base, equity_body()}) {
+    // The sentence under the table is the book kind's (report_settled_marks.hpp): a futures row
+    // multiplies out to its Realized PnL, the equity table has no column for the day's move.
+    const std::string equity = equity_body();
+    for (const auto& [body, equities] :
+         {std::pair{futures, false}, std::pair{base, false}, std::pair{equity, true}}) {
+        const std::string note = settled_table_note_html(equities);
+        EXPECT_EQ(body.find(settled_table_note_html(!equities)), std::string::npos)
+            << "the other kind's sentence is not printed";
+        for (const char* gone : {"The two marks are raw closes", "raw closes",
+                                 "need not multiply out", "not recomputed from the two marks"}) {
+            EXPECT_EQ(body.find(gone), std::string::npos) << gone;
+        }
         EXPECT_NE(body.find(marks), std::string::npos);
         for (const char* gone : {"Entry Price", "Exit Price", "Prior mark", "Mark (", "T-1 close",
                                  "T-2 close", "T-1", "T-2"}) {
@@ -660,7 +669,7 @@ TEST_F(EmailFixture, ASettledRowMultipliesOutAndANoBarRowSaysSoWithOneFootnote) 
     const std::string footnote =
         ">no bar: the market did not print a price that day; the "
         "position's P&amp;L for the day is 0</div>\n";
-    const std::string note = "The two marks are raw closes.";
+    const std::string note = settled_table_note_html(false);
     for (const std::string& body : {futures, base}) {
         const auto at = body.find(footnote);
         ASSERT_NE(at, std::string::npos);
@@ -673,6 +682,8 @@ TEST_F(EmailFixture, ASettledRowMultipliesOutAndANoBarRowSaysSoWithOneFootnote) 
     // the equity body's one settled row printed a bar: no "no bar" cell and no footnote
     EXPECT_EQ(equity.find("no bar"), std::string::npos);
     EXPECT_NE(equity.find("<td>337.39</td><td>353.65</td>"), std::string::npos);
+    // and its sentence is the equity one, directly under its table
+    EXPECT_NE(equity.find("</table>\n" + settled_table_note_html(true)), std::string::npos);
 }
 
 // T-8D-2 R61: the snapshot is two blocks, because its figures are of two days. The statistics run

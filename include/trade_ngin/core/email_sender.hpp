@@ -225,6 +225,8 @@ private:
      * @param yesterday_date Yesterday's date string
      * @param settled_date The settled day the block under the table is headed with (the
      *        runner's T-1); empty: yesterday_date
+     * @param equities The book is the equity book: the sentence under the table is the equity
+     *        one (report_settled_marks.hpp)
      * @return Formatted yesterday's finalized positions table HTML
      */
     std::string format_yesterday_finalized_positions_table(
@@ -233,7 +235,8 @@ private:
         const std::unordered_map<std::string, double>& exit_prices,
         std::shared_ptr<DatabaseInterface> db,
         const std::map<std::string, double>& strategy_metrics = {},
-        const std::string& yesterday_date = "", const std::string& settled_date = "");
+        const std::string& yesterday_date = "", const std::string& settled_date = "",
+        bool equities = false);
 
     /**
      * @brief Format yesterday's finalized positions table with per-strategy breakdown
@@ -247,6 +250,8 @@ private:
      * @param yesterday_date Yesterday's date string
      * @param settled_date The settled day the block under the table is headed with (the
      *        runner's T-1); empty: yesterday_date
+     * @param equities The book is the equity book: the sentence under the table is the equity
+     *        one (report_settled_marks.hpp)
      * @return Formatted yesterday's finalized positions table HTML with per-strategy sections
      */
     std::string format_yesterday_finalized_positions_table(
@@ -255,7 +260,8 @@ private:
         const std::unordered_map<std::string, double>& exit_prices,
         std::shared_ptr<DatabaseInterface> db,
         const std::map<std::string, double>& strategy_metrics = {},
-        const std::string& yesterday_date = "", const std::string& settled_date = "");
+        const std::string& yesterday_date = "", const std::string& settled_date = "",
+        bool equities = false);
 
     /**
      * @brief Format rollover warning for contracts approaching expiry
