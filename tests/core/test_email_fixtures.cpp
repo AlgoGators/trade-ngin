@@ -740,8 +740,8 @@ TEST_F(EmailFixture, AFuturesReportPrintsTheSizingCapitalAndTheCapitalAboveTheSt
     const std::string none = capital_lines_html(EmailReportContext{});
     EXPECT_EQ(none,
               "<div class=\"metric\"><strong>Sizing capital and capital above the starting "
-              "capital:</strong> no reading (no sized rebalance this run: the day's row "
-              "carries no risk_detail)</div>\n");
+              "capital:</strong> no reading (no sized rebalance this run: no risk reading "
+              "was stored for this day)</div>\n");
     EXPECT_EQ(none.find("$"), std::string::npos);
 
     // on the body: in the book block, after the cash line; 503,505.07 - 501,250.34 = 2,254.73

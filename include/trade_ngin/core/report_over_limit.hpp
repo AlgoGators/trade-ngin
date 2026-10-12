@@ -148,8 +148,8 @@ inline std::string over_limit_report_html(const OverLimitReport& report) {
     };
     if (!report.has_reading) {
         return line("Leverage on the sizing capital and over-limit marks",
-                    "no reading (no sized rebalance this run: the day's row carries no "
-                    "risk_detail)");
+                    "no reading (no sized rebalance this run: no risk reading was stored for "
+                    "this day)");
     }
     std::string html;
     html += line(kReportGrossOnSizing,

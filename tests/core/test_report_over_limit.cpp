@@ -197,8 +197,8 @@ TEST(ReportOverLimit, ADayOverLimitByHoldWithCapPrintsTheTermsTheSymbolsAndTheCa
 TEST(ReportOverLimit, ARowWithNoRiskDetailSaysItHasNoReadingAndPrintsNoFigure) {
     const std::string expected =
         "<div class=\"metric\"><strong>Leverage on the sizing capital and over-limit "
-        "marks:</strong> no reading (no sized rebalance this run: the day's row carries no "
-        "risk_detail)</div>\n";
+        "marks:</strong> no reading (no sized rebalance this run: no risk reading was stored for "
+        "this day)</div>\n";
     // A refused overlay: the pass ran on a cycle that trades and could not answer. Whatever the
     // record holds, nothing of it is printed.
     OnePassDay refused = sized_day();
@@ -217,6 +217,7 @@ TEST(ReportOverLimit, ARowWithNoRiskDetailSaysItHasNoReadingAndPrintsNoFigure) {
     EXPECT_EQ(over_limit_report_html(OverLimitReport{}), expected);
     EXPECT_EQ(expected.find("0.00"), npos);
     EXPECT_EQ(expected.find("no mark"), npos) << "\"no reading\" is not \"no mark\"";
+    EXPECT_EQ(expected.find("risk_detail"), npos) << "a column name in a line a reader sees";
 }
 
 // The lead, 2026-10-12: the text a reader of the report sees is plain words. No line of the
@@ -291,6 +292,11 @@ TEST(ReportOverLimit, TheFuturesReportNamesBothDenominatorsAndCarriesTheLines) {
               npos)
         << held;
     EXPECT_EQ(held.find("(on the sizing capital):"), npos) << "a figure with no reading";
+    EXPECT_EQ(held.find("risk_detail"), npos) << "a column name in a body a reader sees";
+    EXPECT_NE(held.find("no reading (no sized rebalance this run: no risk reading was stored for "
+                        "this day)"),
+              npos)
+        << held;
     EXPECT_EQ(held.find("no mark"), npos);
 }
 

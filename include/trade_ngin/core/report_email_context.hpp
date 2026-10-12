@@ -114,8 +114,8 @@ inline std::string dollars(double value) {
 inline std::string capital_lines_html(const EmailReportContext& context) {
     if (!context.has_sizing_capital) {
         return "<div class=\"metric\"><strong>Sizing capital and capital above the starting "
-               "capital:</strong> no reading (no sized rebalance this run: the day's row carries "
-               "no risk_detail)</div>\n";
+               "capital:</strong> no reading (no sized rebalance this run: no risk reading was "
+               "stored for this day)</div>\n";
     }
     using report_capital_detail::dollars;
     return "<div class=\"metric\"><strong>Sizing capital:</strong> <span>" +
