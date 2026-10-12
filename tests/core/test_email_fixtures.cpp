@@ -44,6 +44,7 @@
 #include "../data/test_db_utils.hpp"
 #include "trade_ngin/instruments/instrument_registry.hpp"
 #include "trade_ngin/live/live_data_loader.hpp"
+#include "trade_ngin/portfolio/sizing_capital.hpp"
 
 using namespace trade_ngin;
 
@@ -257,6 +258,23 @@ EmailReportContext with_capital(EmailReportContext context, double sizing_capita
     return context;
 }
 
+// The capital state a futures fixture is fed: the book's settled daily net P&L in date order and
+// the three figures the sizing rule (portfolio/sizing_capital.hpp, half_compounded_capital) gives
+// for it. A test below CALLS the rule on each: a fixture is never fed a state the rule cannot
+// produce (a sizing capital above the starting capital, as the first CONSERVATIVE body was).
+struct FixtureCapital {
+    double starting_capital;
+    std::vector<double> settled_nets;
+    double account_value;   // the starting capital plus the cumulative settled net P&L
+    double sizing_capital;  // the starting capital less the fall from the high-water mark
+    double peak;            // the high-water mark of the cumulative settled net P&L, floored at 0
+};
+// CONSERVATIVE: 5,759.80 up at its high, 2,254.73 given back since.
+const FixtureCapital kConservativeCapital{
+    500000.0, {5759.80, -2254.73}, 503505.07, 497745.27, 5759.80};
+// BASE: never above its starting capital, 642.86 under it.
+const FixtureCapital kBaseCapital{500000.0, {-642.86}, 499357.14, 499357.14, 0.0};
+
 class EmailFixture : public ::testing::Test {
 protected:
     void SetUp() override {
@@ -369,8 +387,12 @@ protected:
         return sender_.generate_trading_report_body(
             book, combined, std::nullopt, futures_metrics(), executions, "2026-04-28",
             "CONSERVATIVE_PORTFOLIO", true, marks, nullptr, settled, t1_close, t2_close,
-            settled_metrics, "LIVE_TREND_FOLLOWING", over_limit_of(501250.34, 0.8619713, 0.2427915),
-            with_book(with_capital(context_of("2026-04-27", 171, 311.0574), 501250.34, 503505.07),
+            settled_metrics, "LIVE_TREND_FOLLOWING",
+            // gross 431,957.5625 and net 121,699.32 on the sizing capital 497,745.27
+            over_limit_of(kConservativeCapital.sizing_capital, 0.8678286, 0.2445012),
+            with_book(with_capital(context_of("2026-04-27", 171, 311.0574),
+                                   kConservativeCapital.sizing_capital,
+                                   kConservativeCapital.account_value),
                       "2025-10-05"));
     }
 
@@ -430,8 +452,9 @@ protected:
             book, combined, std::nullopt, metrics, executions, "2026-04-27", "BASE_PORTFOLIO", true,
             marks, nullptr, settled, t1_close, t2_close, settled_metrics,
             "LIVE_TREND_FOLLOWING_TREND_FOLLOWING_FAST",
-            over_limit_of(499357.14, 0.5035118, 0.5035118),
-            with_book(with_capital(context_of("2026-04-26", 320, 311.0574), 499357.14, 499357.14),
+            over_limit_of(kBaseCapital.sizing_capital, 0.5035118, 0.5035118),
+            with_book(with_capital(context_of("2026-04-26", 320, 311.0574),
+                                   kBaseCapital.sizing_capital, kBaseCapital.account_value),
                       "2025-11-11"));
     }
 
@@ -714,49 +737,84 @@ TEST(EmailSettledSplitTwinSourceGuard, BothFuturesRunnersReadTheReturnLinesFromT
     }
 }
 
-// The futures report prints the sizing capital and, beside it, the capital above the starting
-// capital: risk_detail.account_value less risk_detail.sizing_capital (derived, never stored), in
-// plain words. The first of the two is the portfolio value when the day was SIZED, a different
-// figure from the day's current portfolio value the leverage lines call the account value, so
-// the line does not use those words for it.
-TEST_F(EmailFixture, AFuturesReportPrintsTheSizingCapitalAndTheCapitalAboveTheStartingCapital) {
+// The futures report prints the sizing capital and the portfolio value the sizing read, each from
+// its own key of the day's risk_detail and each under its own plain words. No line prints their
+// difference (HD 2026-10-12: "Capital above the starting capital" is dropped: the difference is
+// the high-water mark less the starting capital, positive with the account under 500,000). The
+// portfolio value when the day was SIZED is a different figure from the day's current portfolio
+// value the leverage lines call the account value, so the line does not use those words for it.
+TEST_F(EmailFixture, AFuturesReportPrintsTheSizingCapitalAndTheSizedValueAndNoDifferenceOfThem) {
     // CONSERVATIVE 2026-04-24 as stored: account_value 497,440.873363, sizing_capital
-    // 495,186.141684; 497,440.873363 - 495,186.141684 = 2,254.731679.
+    // 495,186.141684. Their difference, 2,254.731679, is on no line.
     EmailReportContext stored = with_capital({}, 495186.141684, 497440.873363);
     const std::string lines = capital_lines_html(stored);
     EXPECT_EQ(lines,
               "<div class=\"metric\"><strong>Sizing capital:</strong> "
               "<span>$495,186.14</span></div>\n"
-              "<div class=\"metric\"><strong>Capital above the starting capital (portfolio value "
-              "when the day was sized, $497,440.87, less the sizing capital):</strong> "
-              "<span>$2,254.73</span></div>\n");
-    for (const char* symbol : {"V_t", "E_t", "account value"}) {
-        EXPECT_EQ(lines.find(symbol), std::string::npos) << symbol;
+              "<div class=\"metric\"><strong>Portfolio value when the day was sized:</strong> "
+              "<span>$497,440.87</span></div>\n");
+    for (const char* gone : {"V_t", "E_t", "account value", "starting capital", "Capital above",
+                             "2,254.73", "less the sizing capital"}) {
+        EXPECT_EQ(lines.find(gone), std::string::npos) << gone;
     }
-    // an account at its high-water mark below the start: nothing is set aside
-    EXPECT_NE(capital_lines_html(with_capital({}, 499357.14, 499357.14)).find("<span>$0.00</span>"),
-              std::string::npos);
     // a row with no risk_detail: one line, no figure
     const std::string none = capital_lines_html(EmailReportContext{});
     EXPECT_EQ(none,
-              "<div class=\"metric\"><strong>Sizing capital and capital above the starting "
-              "capital:</strong> no reading (no sized rebalance this run: no risk reading "
+              "<div class=\"metric\"><strong>Sizing capital and portfolio value when the day "
+              "was sized:</strong> no reading (no sized rebalance this run: no risk reading "
               "was stored for this day)</div>\n");
     EXPECT_EQ(none.find("$"), std::string::npos);
+    EXPECT_EQ(none.find("starting capital"), std::string::npos);
 
-    // on the body: in the book block, after the cash line; 503,505.07 - 501,250.34 = 2,254.73
+    // on the bodies: in the book block, after the cash line, the two figures of the fixture
     const std::string body = conservative_body();
     EXPECT_NE(body.find("<strong>Cash Available:</strong> <span>$487,405.07</span></div>\n"
                         "<div class=\"metric\"><strong>Sizing capital:</strong> "
-                        "<span>$501,250.34</span></div>\n"
-                        "<div class=\"metric\"><strong>Capital above the starting capital "
-                        "(portfolio value when the day was sized, $503,505.07, less the sizing "
-                        "capital):</strong> <span>$2,254.73</span></div>\n</div>\n"),
+                        "<span>$497,745.27</span></div>\n"
+                        "<div class=\"metric\"><strong>Portfolio value when the day was "
+                        "sized:</strong> <span>$503,505.07</span></div>\n</div>\n"),
               std::string::npos);
+    const std::string base = base_body();
+    EXPECT_NE(base.find("<strong>Sizing capital:</strong> <span>$499,357.14</span></div>\n"
+                        "<div class=\"metric\"><strong>Portfolio value when the day was "
+                        "sized:</strong> <span>$499,357.14</span></div>\n</div>\n"),
+              std::string::npos);
+    // no body of either futures book carries the dropped line, nor its figure
+    for (const std::string& futures : {body, base}) {
+        EXPECT_EQ(futures.find("Capital above"), std::string::npos);
+        EXPECT_EQ(futures.find("starting capital"), std::string::npos);
+        EXPECT_EQ(futures.find("less the sizing capital"), std::string::npos);
+    }
+    EXPECT_EQ(body.find("2,254.73"), std::string::npos);
     // the equity book has no sizing capital: no line of either form
     const std::string equity = equity_body();
     EXPECT_EQ(equity.find("Sizing capital"), std::string::npos);
+    EXPECT_EQ(equity.find("when the day was sized"), std::string::npos);
     EXPECT_EQ(equity.find("starting capital"), std::string::npos);
+}
+
+// EXECUTES the sizing rule. The account value, the sizing capital and the high-water mark each
+// futures fixture is fed are what half_compounded_capital gives for the fixture's settled history:
+// the report is never rendered from a capital state the book cannot be in.
+TEST_F(EmailFixture, TheCapitalInputsOfTheFuturesFixturesSatisfyTheSizingRule) {
+    for (const FixtureCapital* fixture : {&kConservativeCapital, &kBaseCapital}) {
+        const HalfCompounding rule =
+            half_compounded_capital(fixture->starting_capital, fixture->settled_nets);
+        EXPECT_NEAR(rule.account, fixture->account_value, 1e-6);
+        EXPECT_NEAR(rule.capital, fixture->sizing_capital, 1e-6);
+        EXPECT_NEAR(rule.peak, fixture->peak, 1e-6);
+        // the rule's own closed form, on the three fixture figures
+        EXPECT_NEAR(fixture->sizing_capital,
+                    fixture->starting_capital -
+                        (fixture->peak - (fixture->account_value - fixture->starting_capital)),
+                    1e-6);
+        EXPECT_LE(fixture->sizing_capital, fixture->starting_capital);
+    }
+    // The state the CONSERVATIVE body was first fed, sizing capital 501,250.34 with the account at
+    // 503,505.07, is one no settled history gives: with the account 3,505.07 up and at its high
+    // the rule sizes on the starting capital, and on less after any fall from a high.
+    EXPECT_DOUBLE_EQ(half_compounded_capital(500000.0, {3505.07}).capital, 500000.0);
+    EXPECT_LT(half_compounded_capital(500000.0, {5759.80, -2254.73}).capital, 501250.34);
 }
 
 // READS SOURCE: a twin guard. Both futures runners hand the two keys under the condition and

@@ -102,30 +102,30 @@ inline std::string dollars(double value) {
 
 /**
  * @brief A futures book's two capital lines (LOOP_SPEC section 3.1, section 10): the sizing
- *        capital the day was sized on, and the capital above the starting capital (the profits
- *        set aside: the account's high-water mark less the starting capital). The second is
- *        derived here from the two stored keys of the day's risk_detail, account_value less
- *        sizing_capital, and is never stored. risk_detail.account_value is the portfolio value
- *        at the instant the day was SIZED; it is not the day's current portfolio value, which
- *        the leverage lines call the account value, so the line prints it under its own words.
- *        A day whose row carries no risk_detail has one line that says there is no reading, and
- *        no figure. The text a reader sees is plain words: no symbol of the specification.
+ *        capital the day was sized on, and the portfolio value the sizing read, each from its
+ *        own stored key of the day's risk_detail (sizing_capital, account_value) and each under
+ *        its own words. Nothing is derived from the two: their difference is the account's
+ *        high-water mark less the starting capital, a figure that never falls and is positive
+ *        with the account under its starting capital, so no line prints it (HD 2026-10-12).
+ *        risk_detail.account_value is the portfolio value at the instant the day was SIZED; it
+ *        is not the day's current portfolio value, which the leverage lines call the account
+ *        value, so the line does not use those words for it. A day whose row carries no
+ *        risk_detail has one line that says there is no reading, and no figure. The text a
+ *        reader sees is plain words: no symbol of the specification.
  */
 inline std::string capital_lines_html(const EmailReportContext& context) {
     if (!context.has_sizing_capital) {
-        return "<div class=\"metric\"><strong>Sizing capital and capital above the starting "
-               "capital:</strong> no reading (no sized rebalance this run: no risk reading was "
+        return "<div class=\"metric\"><strong>Sizing capital and portfolio value when the day "
+               "was sized:</strong> no reading (no sized rebalance this run: no risk reading was "
                "stored for this day)</div>\n";
     }
     using report_capital_detail::dollars;
     return "<div class=\"metric\"><strong>Sizing capital:</strong> <span>" +
            dollars(context.sizing_capital) +
            "</span></div>\n"
-           "<div class=\"metric\"><strong>Capital above the starting capital (portfolio value "
-           "when the day was sized, " +
-           dollars(context.account_value_at_sizing) +
-           ", less the sizing capital):</strong> <span>" +
-           dollars(context.account_value_at_sizing - context.sizing_capital) + "</span></div>\n";
+           "<div class=\"metric\"><strong>Portfolio value when the day was sized:</strong> "
+           "<span>" +
+           dollars(context.account_value_at_sizing) + "</span></div>\n";
 }
 
 /// The equity report's dividend line: the cumulative figure, labelled as outside the P&L totals.

@@ -2014,8 +2014,8 @@ std::string EmailSender::format_strategy_metrics(
         html << format_metric("Cash Available", cash_available->second);
     }
 
-    // A futures book (over_limit given): the sizing capital the day was sized on and the capital
-    // above the starting capital, from the day's risk_detail (report_email_context.hpp).
+    // A futures book (over_limit given): the sizing capital the day was sized on and the
+    // portfolio value the sizing read, from the day's risk_detail (report_email_context.hpp).
     if (over_limit != nullptr) {
         html << capital_lines_html(context);
     }
