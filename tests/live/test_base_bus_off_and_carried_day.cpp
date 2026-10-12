@@ -387,10 +387,22 @@ TEST_F(CarriedFileTest, ASundayFileCarriesHeldQuantitiesLastMarksAndLastForecast
     ASSERT_GE(lines.size(), 3u);
 
     // The note: no session, carried, not computed.
-    EXPECT_EQ(lines[0].rfind("# Portfolio Value: 502843.64", 0), 0u);
+    EXPECT_EQ(lines[0].rfind("# Portfolio Value (as written: today's costs booked): 502843.64", 0),
+              0u)
+        << lines[0];
     EXPECT_EQ(lines[1].rfind("# NO SESSION: no session on 2026-04-25 (a Saturday).", 0), 0u)
         << "the file does not say that no session occurred: " << lines[1];
     EXPECT_NE(lines[1].find("CARRIED, not computed"), npos);
+    // A stored forecast carries the date of the run that wrote it; that run read the bars through
+    // the day before. The note says so, and the column is named for what it holds.
+    EXPECT_NE(lines[1].find("computed by the run of 2026-04-25 from bars through 2026-04-24"), npos)
+        << lines[1];
+    EXPECT_NE(lines[1].find("sizing_vol and the EMAs are not stored"), npos) << lines[1];
+    EXPECT_EQ(lines[1].find("forecast_from"), npos) << lines[1];
+    const auto names = split_csv(lines[2]);
+    ASSERT_EQ(names.size(), 15u) << lines[2];
+    EXPECT_EQ(names[8], "sizing_vol");
+    EXPECT_EQ(names[14], "forecast_run_date");
 
     // The rows: one per (sleeve, symbol the sleeve holds or last forecast), each with its real
     // quantity, its last mark and its own sleeve's last forecast.
@@ -408,7 +420,8 @@ TEST_F(CarriedFileTest, ASundayFileCarriesHeldQuantitiesLastMarksAndLastForecast
     EXPECT_DOUBLE_EQ(std::stod(fast_c[7]), 4.25) << "FAST's own last forecast, not 0 and not TF's";
     EXPECT_EQ(fast_c[13], "2026-04-24");
     EXPECT_EQ(fast_c[14], "2026-04-25");
-    for (int col = 8; col <= 12; ++col) EXPECT_EQ(fast_c[col], "") << "volatility/EMAs not stored";
+    for (int col = 8; col <= 12; ++col)
+        EXPECT_EQ(fast_c[col], "") << "sizing_vol/EMAs not stored";
     const auto& tf_b = rows.at({"Trend Following", "ZC3B.v.0"});
     EXPECT_DOUBLE_EQ(std::stod(tf_b[2]), 0.0) << "not held: quantity 0";
     EXPECT_DOUBLE_EQ(std::stod(tf_b[3]), 77960.0) << "an unheld symbol still carries its last mark";

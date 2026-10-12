@@ -50,8 +50,10 @@ public:
      *
      * Creates a file named: YYYY-MM-DD_positions.csv
      * Contains: strategy, symbol, quantity, market_price, notional, percentages, forecast,
-     * sizing_vol, EMAs. A comment line above the column names says what sizing_vol is. Every
-     * row prints six decimals.
+     * sizing_vol, EMAs. The first line is the portfolio value as this run wrote it (today's
+     * costs booked), with the gross and net notional; two comment lines above the column names
+     * say what sizing_vol is and what pct_of_portfolio_value divides by. Every row prints six
+     * decimals.
      *
      * @param date Current trading date
      * @param strategy_positions Per-strategy positions map
@@ -75,8 +77,10 @@ public:
      * @brief Export the day's positions file on a day with NO session: every value carried.
      *
      * T-7a C3 (HD 2026-09-18). Same file name as export_current_positions
-     * (YYYY-MM-DD_positions.csv) and the same columns, plus mark_date and forecast_from. A second
-     * header line states that no session occurred and that every value is carried, not computed.
+     * (YYYY-MM-DD_positions.csv) and the same columns, plus mark_date and forecast_run_date. A
+     * second header line states that no session occurred and that every value is carried, not
+     * computed; it describes the carried forecast as carried_forecast_label does ("computed by
+     * the run of <D> from bars through <D-1>": a stored forecast carries its run's date).
      * One row per sleeve and symbol the sleeve holds or last forecast: quantity from the held
      * book, market_price the symbol's last mark (a held symbol with no loaded bar keeps its stored
      * row's price, mark_date "stored row"), forecast the sleeve's last computed forecast (empty if
@@ -102,22 +106,25 @@ public:
      * @brief Export yesterday's finalized positions to CSV with per-strategy breakdown
      *
      * Creates a file named: YYYY-MM-DD_positions_asof_YYYY-MM-DD.csv
-     * Contains: strategy, symbol, quantity, entry_price, exit_price, realized_pnl
+     * Contains: strategy, symbol, quantity, prior_mark, mark, realized_pnl. prior_mark is the
+     * close two days before the run date (the T-2 close) and mark the close of the day before
+     * it (the T-1 close, the day the file settles); neither is an entry or an exit price. A
+     * symbol with no close on that day has an empty cell. The file starts with its column
+     * names (no comment line) and every row prints six decimals.
      *
      * @param date Current trading date (for filename)
      * @param yesterday_date Yesterday's date
      * @param strategy_positions Per-strategy positions map
-     * @param entry_prices Day T-2 close prices (entry)
-     * @param exit_prices Day T-1 close prices (exit)
+     * @param prior_marks Day T-2 close prices
+     * @param marks Day T-1 close prices
      * @return Result containing filename on success, or error
      */
     Result<std::string> export_finalized_positions(
         const std::chrono::system_clock::time_point& date,
         const std::chrono::system_clock::time_point& yesterday_date,
         const StrategyPositionsMap& strategy_positions,
-        const std::unordered_map<std::string, double>& entry_prices,
-        const std::unordered_map<std::string, double>& exit_prices
-    );
+        const std::unordered_map<std::string, double>& prior_marks,
+        const std::unordered_map<std::string, double>& marks);
 
     /**
      * @brief Set the output directory for CSV files
@@ -127,6 +134,9 @@ public:
 
     /// The positions file's one-line explanation of its sizing_vol column.
     static std::string sizing_vol_note();
+
+    /// The positions file's one-line statement of what pct_of_portfolio_value divides by.
+    static std::string pct_of_portfolio_value_note();
 
 private:
     std::string output_directory_;

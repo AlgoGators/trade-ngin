@@ -4,8 +4,11 @@
 //     symbol. The sleeve's sizing volatility is the column sizing_vol, explained on a comment line;
 //     every row prints six decimals, the first row included; a fast sleeve's row carries its own
 //     forecast, sizing volatility and moving averages.
+//     The first line and a comment line say the portfolio value is the value as this run wrote it.
 //   - <day before>_positions_asof_<date>.csv: the column names, then one row per settled position,
-//     six decimals on every row.
+//     six decimals on every row; its two prices are the prior mark and the mark, and a symbol with
+//     no close has an empty cell.
+//   - the carried file's description of a stored forecast (carried_forecast_label).
 // Every test here calls the exporter. No database.
 
 #include <gtest/gtest.h>
@@ -23,6 +26,7 @@
 
 #include "../strategy/csv_test_sleeve.hpp"
 #include "trade_ngin/core/logger.hpp"
+#include "trade_ngin/live/carried_day.hpp"
 #include "trade_ngin/live/csv_exporter.hpp"
 #include "trade_ngin/strategy/base_strategy.hpp"
 #include "trade_ngin/strategy/trend_readings.hpp"
@@ -223,4 +227,63 @@ TEST_F(LiveCsvFiles, EveryRowOfTheSettledFilePrintsSixDecimals) {
     }
     EXPECT_EQ(cells[4], "110.906250") << "a price with five decimals lost two at six digits";
     EXPECT_EQ(cells[5], "-185.000000");
+}
+
+TEST_F(LiveCsvFiles, ThePortfolioLineAndTheShareColumnSayTheValueIsAsWritten) {
+    const auto lines = positions_file();
+    ASSERT_FALSE(lines.empty());
+    EXPECT_EQ(lines[0],
+              "# Portfolio Value (as written: today's costs booked): 497400.90, Gross Notional: "
+              "1663.59, Net Notional: -554.53, Date: 2026-04-24");
+    const size_t h = header_at(lines);
+    ASSERT_EQ(h, 3u) << "the portfolio line and one comment line per explained column";
+    EXPECT_EQ(lines[2], "# " + CSVExporter::pct_of_portfolio_value_note());
+    EXPECT_EQ(lines[2].rfind("# pct_of_portfolio_value: ", 0), 0u) << lines[2];
+    EXPECT_NE(lines[2].find("(as written: today's costs booked)"), std::string::npos) << lines[2];
+    // The share itself is unchanged: the row's notional over that value, in percent.
+    for (size_t i = h + 1; i < lines.size(); ++i) {
+        const auto cells = cells_of(lines[i]);
+        ASSERT_EQ(cells.size(), 13u);
+        EXPECT_EQ(cells[6], six(std::abs(std::stod(cells[4])) / 497400.90 * 100.0)) << lines[i];
+    }
+}
+
+TEST_F(LiveCsvFiles, TheSettledFileNamesThePriorMarkAndTheMarkAndLeavesAMissingMarkEmpty) {
+    const std::string other = "CSVLIVE2";
+    StrategyPositionsMap settled{
+        {"TREND_FOLLOWING",
+         {{kSym, held(kSym, 1.0, 110.5, -185.0)}, {other, held(other, 2.0, 57.25, 0.0)}}}};
+    CSVExporter exporter(dir_.string());
+    // `other` printed no bar on the settled day: it has a prior mark and no mark.
+    auto r =
+        exporter.export_finalized_positions(utc_day(2026, 4, 25), utc_day(2026, 4, 24), settled,
+                                            {{kSym, 110.5}, {other, 57.25}}, {{kSym, 110.90625}});
+    ASSERT_TRUE(r.is_ok());
+    const auto lines = lines_of(r.value());
+    ASSERT_EQ(lines.size(), 3u);
+    EXPECT_EQ(lines[0], "strategy,symbol,quantity,prior_mark,mark,realized_pnl")
+        << "the file starts with its column names; the two prices are marks, not an entry and "
+           "an exit";
+    std::map<std::string, std::vector<std::string>> row;
+    for (size_t i = 1; i < lines.size(); ++i)
+        row[cells_of(lines[i])[1]] = cells_of(lines[i]);
+    ASSERT_EQ(row.at(kSym).size(), 6u);
+    EXPECT_EQ(row.at(kSym)[3], "110.500000");
+    EXPECT_EQ(row.at(kSym)[4], "110.906250");
+    EXPECT_EQ(row.at(kSym)[5], "-185.000000");
+    ASSERT_EQ(row.at(other).size(), 6u);
+    EXPECT_EQ(row.at(other)[3], "57.250000");
+    EXPECT_EQ(row.at(other)[4], "") << "a symbol with no close that day printed a mark of 0";
+    EXPECT_EQ(row.at(other)[5], "0.000000");
+}
+
+TEST(CarriedForecastLabel, NamesTheRunAndTheLastBarDateItRead) {
+    EXPECT_EQ(carried_forecast_label("2026-05-02"),
+              "computed by the run of 2026-05-02 from bars through 2026-05-01");
+    EXPECT_EQ(carried_forecast_label("2026-05-01"),
+              "computed by the run of 2026-05-01 from bars through 2026-04-30");
+    EXPECT_EQ(carried_forecast_label("2026-01-01"),
+              "computed by the run of 2026-01-01 from bars through 2025-12-31");
+    EXPECT_EQ(carried_forecast_label(""), "");
+    EXPECT_EQ(carried_forecast_label("no date"), "computed by the run of no date");
 }

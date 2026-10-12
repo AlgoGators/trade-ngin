@@ -4,6 +4,7 @@
 #include <string>
 #include <unordered_map>
 
+#include "trade_ngin/core/time_utils.hpp"
 #include "trade_ngin/data/session_classifier.hpp"
 
 namespace trade_ngin {
@@ -28,10 +29,25 @@ struct CarriedMark {
 
 /// One sleeve's last computed forecasts: its trading.signals rows of the latest stored run date
 /// before today, and that date (YYYY-MM-DD, UTC). Empty when the sleeve has no stored signals.
+/// The date is the date of the RUN that stored the rows, not of the bars they were computed
+/// from: a run computes its forecasts from the bars through the day before it.
 struct CarriedForecasts {
     std::string session_date;
     std::unordered_map<std::string, double> forecasts;
 };
+
+/// How the carried positions file describes a stored forecast of run date `run_date`
+/// (YYYY-MM-DD): "computed by the run of 2026-05-02 from bars through 2026-05-01". Empty for
+/// an empty date; a text that is not a date is named as given, with no bar date.
+inline std::string carried_forecast_label(const std::string& run_date) {
+    if (run_date.empty())
+        return std::string();
+    std::chrono::system_clock::time_point run_day;
+    if (!core::parse_utc_date(run_date, run_day))
+        return "computed by the run of " + run_date;
+    return "computed by the run of " + run_date + " from bars through " +
+           core::format_utc_date(run_day - std::chrono::hours(24));
+}
 
 /**
  * @brief Why a whole-book carry had no session, from the day's T-1 classification (T-7b-1 C7b R2,
