@@ -210,8 +210,9 @@ class PostgresDayStore:
                          "WHERE portfolio_id = %s AND date = %s", (portfolio_id, date))
 
     def book_written_at(self, portfolio_id, date, book):
-        # created_at is timestamp without time zone in the writer's session zone (R12).
-        return self._one("SELECT max(created_at)::timestamptz FROM trading.live_results "
+        # created_at is timestamp without time zone; the engine writes it in UTC (R12), so
+        # read it as UTC whatever this session's zone is.
+        return self._one("SELECT max(created_at) AT TIME ZONE 'UTC' FROM trading.live_results "
                          "WHERE portfolio_id = %s AND date = %s AND portfolio_type = %s",
                          (portfolio_id, date, book))
 
