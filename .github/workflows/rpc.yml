@@ -3,7 +3,7 @@ name: rpc
 # Generates the gRPC stubs (and algogators/versions.py, from the .proto version headers) from
 # proto/algogators/*.proto and runs the shared rpc layer's tests, the desk service's included.
 # Also runs the tests of migrations 025 (the command log the desk service writes) and 027 (the
-# daily cutoff's publish_source and sent_at) and 028 (ops.data_ready, the evening run's input) on
+# daily cutoff's publish_source and sent_at) and 028 (ops.data_ready, the data-driven run's input) on
 # postgres:16.
 # The C++ pipeline (ci-cd-pipeline.yml) is untouched; the Docker image build there also
 # exercises gen.sh through the rpc-build stage.

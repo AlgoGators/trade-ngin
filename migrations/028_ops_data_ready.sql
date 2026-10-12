@@ -1,13 +1,14 @@
 -- 028_ops_data_ready.sql
 --
--- Data readiness for the QT evening run (interim design of
+-- Data readiness for the QT data-driven run (interim design of
 -- https://github.com/AlgoGators/trade-ngin/issues/191; #192 later carries the same rows over
 -- NATS). Additive, transactional and idempotent: re-applying it is a no-op.
 --
 --   1. Schema ops and table ops.data_ready: one row per (dataset, bar_date), written by data-ngin
---      when its pull of that dataset for that bar date finishes (an upsert: a re-pull rewrites
---      the row and moves finished_at, which makes the engine-rpc scheduler rebuild the next
---      trading day's books once more). status: complete (every expected symbol loaded), partial
+--      when its pull of that dataset for that bar date finishes (04:30 ET: the vendor's
+--      historical data is ~8 h delayed, so bar D is pulled early on D+1). An upsert: a re-pull
+--      rewrites the row and moves finished_at, which makes the engine-rpc scheduler rebuild the
+--      next trading day's books once more. status: complete (every expected symbol loaded), partial
 --      (missing names the symbols, as futures_data.ohlcv_1d.symbol spells them), failed.
 --      The scheduler reads dataset 'futures_ohlcv_1d'.
 --   2. Grants:

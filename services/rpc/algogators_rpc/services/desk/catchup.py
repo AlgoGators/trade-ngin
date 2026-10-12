@@ -37,35 +37,42 @@ Each model run is exactly what scripts/qt_model_run.sh runs: `<QT_ENGINE_BINARY>
 for desk jobs) around each step and re-reads the database under it, so nothing runs twice.
 QT_JOB_TIMEOUT_S bounds every run.
 
-THE EVENING RUN (QT_EVENING_RUN=1, the default; interim design of
-https://github.com/AlgoGators/trade-ngin/issues/191, to be event-driven over NATS by
-https://github.com/AlgoGators/trade-ngin/issues/192). data-ngin pulls the day's bars after the
-close (20:00 ET) and writes ops.data_ready (migration 028): one row per (dataset, bar_date) with
-its status. Each pass reads the newest row of QT_DATA_READY_DATASET (futures_ohlcv_1d) for bar
-date D and builds the books of T = the next trading day after D (trading_days.py, the engine's
-holiday calendar: Friday's and Sunday's bars both build Monday, a holiday is skipped):
+THE DATA-DRIVEN RUN (QT_EVENING_RUN=1, the default; the variable keeps its first name). Interim
+design of https://github.com/AlgoGators/trade-ngin/issues/191, to be event-driven over NATS by
+https://github.com/AlgoGators/trade-ngin/issues/192. data-ngin pulls at 04:30 ET once the
+vendor's ~8 h delayed historical data has bar D (the UTC day that ended before the pull: on day T,
+bar T-1) and writes ops.data_ready (migration 028) around 04:35-05:00: one row per
+(dataset, bar_date) with its status. Each pass reads the newest row of QT_DATA_READY_DATASET
+(futures_ohlcv_1d) for bar date D and builds the books of T = the next trading day after D
+(trading_days.py, the engine's holiday calendar: Friday's, Saturday's and Sunday's bars all build
+Monday, a holiday is skipped). Normally T is today, and today's model run is the primary run:
 
+    today's model run (not before QT_CATCHUP_TODAY_NOT_BEFORE) waits for a usable row for the
+    previous trading day: before QT_DATA_READY_ALERT_AT (06:00) it waits quietly (the pull may
+    still be running), from then on it alerts; a failed or stale row alerts at once
     the data is usable when its status is complete, or partial with every missing symbol's last
     bar within the engine's live.data_staleness_tolerance_days of T - 1 (the engine's own
     FEED_HOLE guard decides again inside the run; a refusal is an alert, nothing is built);
     failed, or a stale partial, is an alert and nothing is built
-    the engine's day chain is every calendar day, so the days between today and T are built in
-    order; on the desk portfolio each of those non-trading days is published at once with the
-    model's book (system:fallback-nontrading; no alert, e-mailed at its 09:30 like any day) so T
-    can run (ruling 29); the twin's are published model-only when they become today
-    T is (re)built once per data_ready.finished_at: a later re-pull (Sunday after Friday) rebuilds
-    it, unless T is published (frozen: never rebuilt). A desk portfolio whose day has the desk's
-    saved edits keeps them: the engine's model run then rewrites only the system book and keeps
-    qt_proposal and qt (QT_SEED kept, qt::desk_edit_done); otherwise all three are rewritten
+    when T is after today (data that reaches past today, e.g. Saturday's run after its 10:00
+    fallback with Friday's or Sunday's bars in), the engine's day chain is every calendar day, so
+    the days between today and T are built in order; on the desk portfolio each of those
+    non-trading days is published at once with the model's book (system:fallback-nontrading; no
+    alert, e-mailed at its 09:30 like any day) so T can run (ruling 29); the twin's are published
+    model-only when they become today
+    T is (re)built once per data_ready.finished_at: a re-pull rebuilds it, unless T is published
+    (frozen: never rebuilt). A desk portfolio whose day has the desk's saved edits keeps them: the
+    engine's model run then rewrites only the system book and keeps qt_proposal and qt (QT_SEED
+    kept, qt::desk_edit_done); otherwise all three are rewritten
     after a build of the desk portfolio's T, QT_REVIEW_RECIPIENTS get the review e-mail
     (review_mail.py), once per build
-    the 06:45 run is the backup: today's model run happens only when no evening book exists for
-    today, and only once data for the previous trading day is ready (else an alert)
-    21:30 (QT_DATA_READY_ALERT_AT) on a trading day with no ready row for today's bar date: an
-    alert to the President
+    from QT_DATA_READY_ALERT_AT (06:00), every day: no non-failed row for the previous trading
+    day is one alert to the President
     09:30 send, 10:00 fallback and the approval rules are unchanged.
 
-QT_EVENING_RUN=0 restores the 06:45-only schedule above, unchanged.
+Recommended host settings with it: QT_CATCHUP_TODAY_NOT_BEFORE=04:30, QT_CATCHUP_WINDOW=04:00-22:00,
+QT_CATCHUP_BUSY_WINDOW=04:30-10:30 (the code defaults stay 06:45 / 06:30-22:00 / 06:30-10:30, the
+QT_EVENING_RUN=0 schedule). QT_EVENING_RUN=0 restores the 06:45-only schedule above, unchanged.
 
 Alerts: one line in <QT_LOG_DIR>/qt-catchup.log and an e-mail to the president address of
 QT_APPROVERS through the portfolio's email.json (not when QT_EMAIL_DISABLED=1), at most once per
@@ -156,7 +163,7 @@ class DayStore(Protocol):
 
     def fail_running(self, audit_id: int, message: str) -> bool: ...
 
-    # -- the evening run (issues #191, #192) --
+    # -- the data-driven run (issues #191, #192) --
 
     def latest_data_ready(self, dataset: str) -> Optional[DataReady]:
         """The ops.data_ready row of the dataset with the newest bar_date."""
@@ -469,7 +476,8 @@ class Alerter:
 REVIEW = "review_mail"
 ACTIONS = (RUN, FALLBACK, SEND, PUBLISH_MODEL, REVIEW)
 # A FALLBACK step's reason: the 10:00 fallback of today (e-mailed), the catch-up of a missed past
-# day (not e-mailed, alerted) and the evening run's non-trading day ahead of the target (neither).
+# day (not e-mailed, alerted) and the data-driven run's non-trading day ahead of the target
+# (neither).
 FALLBACK_TODAY, FALLBACK_PAST, FALLBACK_NONTRADING = "fallback", "caught_up", "nontrading"
 
 
@@ -479,7 +487,7 @@ class Step:
     date: Optional[dt.date] = None
     reason: str = ""
     message: str = ""
-    # An evening build: the ops.data_ready row it builds from (its book must be newer).
+    # A data-driven build: the ops.data_ready row it builds from (its book must be newer).
     ready: Optional[DataReady] = None
 
 
@@ -540,7 +548,7 @@ class CatchupScheduler:
         self._last_slot: Optional[Tuple[dt.date, int, int]] = None
         # (portfolio_id, date, action) -> not before (UTC): a failed run waits before its retry.
         self._retry_after: Dict[Tuple[str, dt.date, str], dt.datetime] = {}
-        # The evening run (issues #191, #192): the engine's trading calendar (loaded on first
+        # The data-driven run (issues #191, #192): the engine's trading calendar (loaded on first
         # use), the review e-mail's sender and its record.
         self._calendar = calendar
         self._sender = sender
@@ -692,8 +700,8 @@ class CatchupScheduler:
             if last is not None and last > today:
                 return Step(UP_TO_DATE, last)
             return self._day_step(info, now_local, last, from_system)
-        # The evening run (https://github.com/AlgoGators/trade-ngin/issues/191 and /192). Books
-        # ahead of today were built by it; the chain is contiguous, so today has its book and
+        # The data-driven run (https://github.com/AlgoGators/trade-ngin/issues/191 and /192).
+        # Books ahead of today were built by it; the chain is contiguous, so today has its book and
         # today's own duties (the 10:00 fallback, the model twin's publish, the 09:30 send) come
         # first. Then the build of the next trading day's books, and the desk's review e-mail.
         head = today if last is not None and last > today and not from_system else last
@@ -726,9 +734,8 @@ class CatchupScheduler:
                 return Step(WAIT_TIME, day, "before_data",
                             f"today's run waits until {self._catchup.today_not_before:%H:%M}")
             if day == today and self._catchup.evening_run:
-                # The 06:45 run is the evening run's backup: there is no evening book for today
-                # (else `last` would be today), and it runs only on the previous trading day's
-                # data.
+                # Today has no book yet (else `last` would be today): its model run waits for
+                # the previous trading day's data (ops.data_ready).
                 gate = self._morning_gate(info, today)
                 if gate is not None:
                     return gate
@@ -755,7 +762,7 @@ class CatchupScheduler:
             return f"the daily e-mail cannot be sent: {why}"
         return ""
 
-    # -- the evening run (https://github.com/AlgoGators/trade-ngin/issues/191 and /192) --------
+    # -- the data-driven run (https://github.com/AlgoGators/trade-ngin/issues/191 and /192) ----
     # Interim: Postgres polling of ops.data_ready once a pass. #191 makes strategy runs
     # event-driven on declared inputs; #192 replaces this polling with NATS JetStream.
 
@@ -796,22 +803,30 @@ class CatchupScheduler:
         return None, last
 
     def _morning_gate(self, info: PortfolioInfo, today: dt.date) -> Optional[Step]:
-        """None when today's backup model run may go: data for the previous trading day is
-        ready and usable. Else the alert (the next pass looks again)."""
+        """None when today's model run may go: data for the previous trading day is ready and
+        usable. Not there yet: a wait until QT_DATA_READY_ALERT_AT (06:00; data-ngin's 04:30
+        pull may still be running), an alert from then on. A failed or stale row is final: an
+        alert at once. The next pass looks again either way."""
         prev = self.calendar.previous_trading_day(today)
         ready = self._ready()
+        dataset = self._catchup.data_ready_dataset
         if ready is None or ready.bar_date < prev:
+            now_local = self.local_now()
+            if now_local.time() < self._catchup.data_alert_at:
+                return Step(WAIT_TIME, today, "before_data",
+                            f"today's run waits for data-ngin's {dataset} row for {prev}")
             newest = f"newest {ready.bar_date} ({ready.status})" if ready else "no row at all"
             return Step(ALERT, today, "data_not_ready",
-                        f"no evening book for {today}, and ops.data_ready has no "
-                        f"{self._catchup.data_ready_dataset} row for {prev} ({newest}): the "
-                        f"backup model run of {today} waits for the data")
+                        f"no book for {today}, and ops.data_ready has no {dataset} row for "
+                        f"{prev} at {now_local:%H:%M} New York ({newest}): today's model run "
+                        "waits for the data")
         bad, _ = self._data_verdict(info, ready, today)
         return bad
 
     def _evening_step(self, info: PortfolioInfo, now_local: dt.datetime,
                       last: dt.date) -> Optional[Step]:
-        """The next step of the evening build, or None. Today has its book (last >= today)."""
+        """The next step of the data-driven build of T (a rebuild of today, the review e-mail,
+        or the chain up to a later T), or None. Today has its book (last >= today)."""
         today = now_local.date()
         pid = info.portfolio_id
         ready = self._ready()
@@ -819,7 +834,7 @@ class CatchupScheduler:
             return None
         target = self.calendar.next_trading_day(ready.bar_date)
         if target < today:
-            return None   # old data: today's own flow and the 21:30 check cover it
+            return None   # old data: today's own flow and the data-ready check cover it
         if info.desk_editable and target > today and self._store.published_at(pid, today) is None:
             return None   # ruling 29: today is approved (or falls back at 10:00) first
         if info.desk_editable:
@@ -841,8 +856,8 @@ class CatchupScheduler:
                 return bad
             day = last + dt.timedelta(days=1)
             return self._blocked(pid, day, RUN) or Step(
-                RUN, day, "evening",
-                f"evening build of {day} towards {target} from the bars of {ready.bar_date}",
+                RUN, day, "build",
+                f"build of {day} towards {target} from the bars of {ready.bar_date}",
                 ready=ready if day == target else None)
         if last > target:
             return None   # a later day exists (run by hand): the target is not rebuilt under it
@@ -910,25 +925,24 @@ class CatchupScheduler:
         return None
 
     def _data_ready_check(self) -> None:
-        """21:30 on a trading day: no usable ops.data_ready row for today's bar date -> one alert
-        to the President (the evening run cannot build tomorrow's books)."""
+        """From QT_DATA_READY_ALERT_AT (06:00), every day (Saturday's run needs Friday's data
+        too): no non-failed ops.data_ready row for the previous trading day -> one alert to the
+        President a day."""
         now_local = self.local_now()
         if now_local.time() < self._catchup.data_alert_at:
             return
         today = now_local.date()
-        if not self.calendar.is_trading_day(today):
-            return
+        expected = self.calendar.previous_trading_day(today)
         ready = self._ready()
-        if ready is not None and ready.bar_date >= today and ready.status != "failed":
+        if ready is not None and ready.bar_date >= expected and ready.status != "failed":
             return
-        what = (f"its row is {ready.status}" if ready is not None and ready.bar_date >= today
+        what = (f"its row is {ready.status}" if ready is not None and ready.bar_date >= expected
                 else f"the newest row is for {ready.bar_date}" if ready is not None
                 else "the table has no row")
         dataset = self._catchup.data_ready_dataset
-        self.alerter.alert(self._catchup.portfolios[0], dataset, today, "data_not_ready",
-                           f"no ready {dataset} data for {today} at {now_local:%H:%M} New York "
-                           f"({what}): the evening run has not built the next trading day's "
-                           "books; the 06:45 backup runs once the data is in")
+        self.alerter.alert(self._catchup.portfolios[0], dataset, expected, "data_not_ready",
+                           f"no ready {dataset} data for {expected} at {now_local:%H:%M} New "
+                           f"York ({what}): today's model run waits for the data")
 
     # -- the steps ------------------------------------------------------------------------------
 
@@ -972,7 +986,7 @@ class CatchupScheduler:
 
     def _run_model(self, info: PortfolioInfo, day: dt.date,
                    ready: Optional[DataReady] = None) -> Optional[Step]:
-        """The model run of `day`. `ready`: an evening build of the target day from that
+        """The model run of `day`. `ready`: a data-driven build of the target day from that
         ops.data_ready row (its system book must come out newer than the row)."""
         s = self._settings
         argv = [s.engine_binary, "--portfolio-config", info.dir, "--date", day.isoformat()]
@@ -1000,14 +1014,14 @@ class CatchupScheduler:
             if written is None or written < ready.finished_at:
                 self._failed(info.portfolio_id, day, RUN)
                 return Step(ALERT, day, "no_book",
-                            f"the evening build exited 0 but did not rewrite the system book of "
+                            f"the build exited 0 but did not rewrite the system book of "
                             f"{day} (written {written}, data finished {ready.finished_at})\n"
                             f"{detail}")
             if info.desk_editable and self._store.desk_edited(info.portfolio_id, day):
                 self.files.line(f"{info.portfolio_id}: {day} rebuilt from the bars of "
                                 f"{ready.bar_date}; the desk's saved edits were kept (system "
                                 "rebuilt, qt_proposal and qt kept)")
-        # The twin's day is published when it is today or past: an evening build ahead of
+        # The twin's day is published when it is today or past: a build ahead of
         # today stays open, so a later re-pull can rebuild it.
         if not info.desk_editable and day <= self.local_now().date() \
                 and self._store.publish_model_only(info.portfolio_id, day):
@@ -1016,9 +1030,9 @@ class CatchupScheduler:
 
     def _fallback(self, info: PortfolioInfo, day: dt.date, kind: str) -> Optional[Step]:
         """Contract C7: qt reset to the model's book and published by the engine (--fallback),
-        e-mailed at once for today (10:00) and never for a past day (the catch-up). The evening
-        run's non-trading day ahead of the target (kind FALLBACK_NONTRADING) is published the
-        same way, not e-mailed here (its own 09:30 send does) and not alerted."""
+        e-mailed at once for today (10:00) and never for a past day (the catch-up). The
+        data-driven run's non-trading day ahead of the target (kind FALLBACK_NONTRADING) is
+        published the same way, not e-mailed here (its own 09:30 send does) and not alerted."""
         pid = info.portfolio_id
         send = kind == FALLBACK_TODAY
         requested_by = {FALLBACK_TODAY: cutoff.FALLBACK_10AM,

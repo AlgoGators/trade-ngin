@@ -1694,7 +1694,7 @@ int main(int argc, char* argv[]) {
 
         // FEED-HOLE REFUSAL (HD 2026-09-19; T-4c F4, T-5 F7): a HELD symbol with no bar for
         // longer than live.data_staleness_tolerance_days refuses the run when the run date is
-        // the host's date or later (true live, the evening build of the next day included;
+        // the host's date or later (true live, a build of a later day included;
         // run_date_is_live, issue #191). A replay of a past date WARNs and runs. It sits above the
         // live_run_metadata upsert like the other refusals, so a refused run leaves no row.
         // T-7b-1 C7b R3: any no-bar verdict counts, a closure too (a feed dead for more than

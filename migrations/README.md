@@ -37,7 +37,7 @@ by #151, so the daily cutoff took 027, the next number free across main and the 
 | 024 | `024_drop_retired_qt_tables.sql` | Drops `risk_limits`, `portfolios`, `strategy_book_memberships` and `portfolio_assignments` (ruling 28). Irreversible; no rollback file | `test_023_qt_command_log.sh` | | |
 | 025 | `025_qt_command_log_hardening.sql` | QT contract C2 and C4 on `trading.position_overrides`: one live decision per request, one open publish and one open override request per day (unique partial indexes); inserts must be `pending` with the engine columns NULL; status moves pending -> running -> done/refused/failed, running -> pending only under `algogators.recovery = 'on'`; terminal rows final; TRUNCATE refused. Grants: PUBLIC loses everything on `trading.live_run_metadata` and its sequence (explicit grants kept or added first); `svc_algolens` loses UPDATE, DELETE, TRUNCATE on `position_overrides` | `test_025_qt_command_log_hardening.sh` (postgres:16, throwaway server only; CI `rpc.yml`) | 2026-10-09 | |
 | 027 | `027_qt_daily_cutoff.sql` | QT contract C7 (the daily cutoff, rulings 18 and 29 amended): `publish_source` (CHECK desk/fallback/model-only) and `sent_at` on `trading.live_run_metadata`, NULL for days published before it. Grants: svc_trade_ngin reads and writes them; svc_algolens' table-wide INSERT and UPDATE become column grants on every other column, so it reads the two columns only | `test_027_qt_daily_cutoff.sh` (postgres:16, throwaway server only; CI `rpc.yml`) | 2026-10-09 | |
-| 028 | `028_ops_data_ready.sql` | Schema `ops` and `ops.data_ready` (dataset, bar_date, expected, loaded, missing, status complete/partial/failed, run_id, finished_at; key dataset+bar_date): data-ngin's "the pull for this bar date is done", the input of the QT evening run (issue #191). Grants: `qt_engine_app` and `svc_trade_ngin` USAGE on `ops` and SELECT; `postgres` (data-ngin's login today) SELECT, INSERT, UPDATE | `test_028_ops_data_ready.sh` (postgres:16, throwaway server only; CI `rpc.yml`) | | |
+| 028 | `028_ops_data_ready.sql` | Schema `ops` and `ops.data_ready` (dataset, bar_date, expected, loaded, missing, status complete/partial/failed, run_id, finished_at; key dataset+bar_date): data-ngin's "the pull for this bar date is done", the input of the QT data-driven run (issue #191; data-ngin pulls at 04:30 ET). Grants: `qt_engine_app` and `svc_trade_ngin` USAGE on `ops` and SELECT; `postgres` (data-ngin's login today) SELECT, INSERT, UPDATE | `test_028_ops_data_ready.sh` (postgres:16, throwaway server only; CI `rpc.yml`) | | |
 
 ## Deploy notes
 
@@ -67,8 +67,9 @@ by #151, so the daily cutoff took 027, the next number free across main and the 
   the image back first (an older engine does not know a day was sent). AlgoLens (#118) reads the
   columns when they are there and falls back to `published_by` `system:fallback-*` otherwise.
 - **028** goes before the engine-rpc image that reads it, or ship that image with
-  `QT_EVENING_RUN=0` until the table exists and data-ngin writes it: with the evening run on, the
-  scheduler reads `ops.data_ready` every pass, and the 06:45 backup run waits (and alerts) until a
+  `QT_EVENING_RUN=0` until the table exists and data-ngin writes it: with the data-driven run on,
+  the scheduler reads `ops.data_ready` every pass, and today's model run waits (and alerts from
+  `QT_DATA_READY_ALERT_AT`, 06:00) until a
   ready row for the previous trading day is there. When data-ngin gets its own role, grant it
   SELECT, INSERT, UPDATE on `ops.data_ready` and USAGE on `ops`.
 - **Not done, on purpose:** SET NOT NULL on columns that hold NULLs today. The spec left it;

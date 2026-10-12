@@ -33,10 +33,14 @@ services:
     # (06:30-10:30), QT_CATCHUP_BUSY_EVERY_MIN (5), QT_CATCHUP_TODAY_NOT_BEFORE (06:45),
     # QT_MODEL_RETRY_MIN (15), QT_MODEL_ALERT_AT (08:30), QT_CATCHUP_LOCK_WAIT_S (600); New York
     # time. The 09:30 send and 10:00 cutoff are fixed. QT_UNPUBLISHED_REMINDER_H is no longer read.
-    # Evening run (issues #191, #192; needs migration 028): QT_EVENING_RUN (1; 0 = the 06:45-only
-    # schedule), QT_DATA_READY_DATASET (futures_ohlcv_1d), QT_DATA_READY_ALERT_AT (21:30),
-    # QT_REVIEW_RECIPIENTS (dominickdupuy@ufl.edu; comma-separated), QT_DESK_URL,
-    # TRADE_NGIN_HOLIDAYS_JSON (the engine's calendar; default under QT_ENGINE_CWD).
+    # Data-driven run (issues #191, #192; needs migration 028): data-ngin pulls at 04:30 ET once
+    # the vendor's ~8 h delayed historical data has bar D and writes ops.data_ready; today's model
+    # run waits for it. QT_EVENING_RUN (1; 0 = the 06:45-only schedule), QT_DATA_READY_DATASET
+    # (futures_ohlcv_1d), QT_DATA_READY_ALERT_AT (06:00), QT_REVIEW_RECIPIENTS
+    # (dominickdupuy@ufl.edu; comma-separated), QT_DESK_URL, TRADE_NGIN_HOLIDAYS_JSON (the
+    # engine's calendar; default under QT_ENGINE_CWD). Recommended in the host .env with it:
+    # QT_CATCHUP_TODAY_NOT_BEFORE=04:30, QT_CATCHUP_WINDOW=04:00-22:00,
+    # QT_CATCHUP_BUSY_WINDOW=04:30-10:30.
     env_file: .env
     environment:
       # "vp=<email>,president=<email>": the override approvers (contract section 6); the

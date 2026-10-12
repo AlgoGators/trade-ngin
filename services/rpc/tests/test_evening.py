@@ -1,7 +1,9 @@
-"""The evening run (issues #191, #192): ops.data_ready gating, the next trading day's books,
-rebuilds on a re-pull, the 06:45 backup, the 21:30 alert and the desk's review e-mail. The same
-fake clock, engine and day store as test_catchup.py, with the evening run on.
-2026-10-09 is a Friday."""
+"""The data-driven run (QT_EVENING_RUN=1; issues #191, #192): data-ngin pulls at 04:30 ET, so on
+day T the ready row is for T-1 and today's own model run is the primary run, gated on it. Also:
+builds ahead of today (the weekend chain), rebuilds on a re-pull, the wait-then-alert before
+06:00, the daily data-ready check and the desk's review e-mail. The same fake clock, engine and
+day store as test_catchup.py, with the run on and the recommended host settings (today's run
+from 04:30). 2026-10-09 is a Friday."""
 
 import dataclasses
 import datetime as dt
@@ -12,7 +14,7 @@ import pytest
 
 from algogators_rpc.services.desk import catchup as cu
 from algogators_rpc.services.desk import review_mail
-from algogators_rpc.services.desk.catchup import (ALERT, UP_TO_DATE, WAIT_PUBLISH,
+from algogators_rpc.services.desk.catchup import (ALERT, UP_TO_DATE, WAIT_PUBLISH, WAIT_TIME,
                                                   CatchupScheduler, DataReady)
 from algogators_rpc.services.desk.config import (CatchupSettings, CommandSettings, ConfigError,
                                                  catchup_settings)
@@ -27,6 +29,7 @@ from test_catchup import (BINARY, DESK, DESK_PID, FRI, MODEL_PID, MON, SAT, SMTP
 HOLIDAYS = Path(__file__).resolve().parents[3] / "include" / "trade_ngin" / "core" / \
     "holidays.json"
 DATASET = "futures_ohlcv_1d"
+WED = dt.date(2026, 10, 7)
 REVIEWER = "dominickdupuy@ufl.edu"
 
 
@@ -42,7 +45,8 @@ class EveningDays(Days):
 
     def latest_data_ready(self, dataset):
         rows = [r for r in self.ready if r.dataset == dataset]
-        return max(rows, key=lambda r: r.bar_date) if rows else None
+        # The table holds one row per bar date (an upsert): the newest write of it wins.
+        return max(rows, key=lambda r: (r.bar_date, r.finished_at)) if rows else None
 
     def last_bar_dates(self, symbols, since):
         return {s: d for s, d in self.bars.items() if s in symbols and d >= since}
@@ -124,6 +128,7 @@ def env(tmp_path):
     calendar = load_calendar(str(HOLIDAYS))
 
     def make(portfolios=(DESK, TWIN), settings_=None, **catchup):
+        catchup.setdefault("today_not_before", dt.time(4, 30))   # the host .env's value
         return CatchupScheduler(days, settings_ or settings,
                                 CatchupSettings(portfolios=portfolios, **catchup),
                                 runner=engine, sender=lambda cfg, to, s, b: sent.append((to, s, b)),
@@ -212,7 +217,7 @@ def test_staleness_tolerance_is_the_engines(tmp_path):
     assert staleness_tolerance_days(str(tmp_path), "p") == 2
 
 
-# -- the evening build ----------------------------------------------------------------------------
+# -- builds ahead of today (data reaching past today: the weekend chain) ----------------------------------------------------------------------------
 
 def test_friday_evening_builds_saturday_sunday_and_monday(env):
     published_day(env, FRI)
@@ -246,7 +251,8 @@ def test_a_weekday_evening_builds_tomorrow(env):
 def test_no_ready_row_builds_nothing(env):
     published_day(env, FRI)
     env.make().run_pass()
-    assert env.engine.calls == [] and env.sent == []
+    assert env.engine.calls == [] and reviews(env) == []
+    assert alerts(env) == [f"QT alert: {DATASET} 2026-10-08 data_not_ready"]   # the daily check
 
 
 def test_old_ready_row_builds_nothing_ahead(env):
@@ -405,9 +411,59 @@ def test_a_rebuild_that_writes_no_new_book_alerts(env):
     assert out[DESK].reason == "no_book" and "did not rewrite" in out[DESK].message
 
 
-# -- the 06:45 backup -----------------------------------------------------------------------------
+# -- today's run, gated on the data (data-ngin's 04:30 pull) --------------------------------------
 
-def test_no_morning_run_when_the_evening_built_today(env):
+def weekend_done(env):
+    """Friday, Saturday and Sunday are built, published and sent; Monday has no book."""
+    for d in (FRI, SAT, SUN):
+        published_day(env, d)
+
+
+def test_monday_0435_flow(env):
+    """Monday 04:30: the run waits quietly for the pull; Sunday's row arrives at 04:35, today's
+    run goes, the desk gets one review e-mail; a re-pull rebuilds once; after the approval no
+    rebuild."""
+    weekend_done(env)
+    env.engine.targets[MON] = {"ES": 2}
+    sched = env.make()
+    env.clock.t = at(MON, 4, 30)
+    out = dict(sched.run_pass())
+    assert env.engine.calls == [] and env.sent == []
+    assert out[DESK].action == WAIT_TIME and "waits for data-ngin's" in out[DESK].message
+    env.days.ready.append(ready(SUN, at(MON, 4, 35), loaded=26))
+    env.clock.t = at(MON, 4, 40)
+    sched.run_pass()
+    assert calls(env) == [("model", DESK, "2026-10-12"), ("model", TWIN, "2026-10-12")]
+    assert env.days.published[(MODEL_PID, MON)][2] == "model-only"
+    assert [s for s, _ in reviews(env)] == [
+        f"QT review: {DESK_PID} book for 2026-10-12 (bars of 2026-10-11)"]
+    env.clock.t = at(MON, 4, 45)
+    sched.run_pass()
+    assert len(calls(env)) == 2 and len(reviews(env)) == 1          # once per build
+    env.days.ready.append(ready(SUN, at(MON, 5, 10), loaded=26))    # a re-pull
+    env.engine.targets[MON] = {"ES": 3}
+    env.clock.t = at(MON, 5, 15)
+    sched.run_pass()
+    assert calls(env)[2:] == [("model", DESK, "2026-10-12")]        # the twin is published
+    assert reviews(env)[-1][0].endswith("- updated")
+    env.days.published[(DESK_PID, MON)] = (at(MON, 8), "desk@x", "desk")
+    env.days.ready.append(ready(SUN, at(MON, 8, 10), loaded=26))
+    env.clock.t = at(MON, 8, 15)
+    sched.run_pass()
+    assert len(calls(env)) == 3 and len(reviews(env)) == 2          # frozen
+    assert alerts(env) == []
+
+
+def test_a_weekday_run_from_the_previous_days_row(env):
+    published_day(env, MON)
+    env.days.ready.append(ready(MON, at(TUE, 4, 40)))
+    env.clock.t = at(TUE, 4, 45)
+    env.make().run_pass()
+    assert calls(env) == [("model", DESK, "2026-10-13"), ("model", TWIN, "2026-10-13")]
+    assert len(reviews(env)) == 1
+
+
+def test_no_wait_when_the_book_of_today_exists(env):
     sched = friday_evening(env)
     env.engine.calls.clear()
     env.clock.t = at(MON, 6, 45)
@@ -420,76 +476,76 @@ def test_no_morning_run_when_the_evening_built_today(env):
     assert (DESK_PID, MON) in env.engine.mails
 
 
-def test_the_backup_runs_today_when_the_previous_trading_days_data_is_ready(env):
-    published_day(env, FRI)
-    for d in (SAT, SUN):
-        published_day(env, d)
-    env.days.ready.append(ready(FRI, at(MON, 5, 50)))       # the pull came in late
-    env.clock.t = at(MON, 6, 40)
+def test_no_data_waits_quietly_before_0600_then_alerts(env):
+    weekend_done(env)
+    env.days.ready.append(ready(THU, at(FRI, 4, 40)))
     sched = env.make()
-    sched.run_pass()
-    assert env.engine.calls == []                            # not before 06:45
-    env.clock.t = at(MON, 6, 45)
-    sched.run_pass()
-    assert ("model", DESK, "2026-10-12") in calls(env)
-    assert ("model", TWIN, "2026-10-12") in calls(env)
-    assert len(reviews(env)) == 1                            # the desk reviews it too
-
-
-def test_the_backup_waits_and_alerts_without_data(env):
-    published_day(env, FRI)
-    for d in (SAT, SUN):
-        published_day(env, d)
-    env.days.ready.append(ready(THU, at(THU, 20, 10)))
-    env.clock.t = at(MON, 6, 45)
-    sched = env.make()
+    env.clock.t = at(MON, 5, 55)
     out = dict(sched.run_pass())
-    assert env.engine.calls == []
+    assert env.engine.calls == [] and env.sent == []
+    assert out[DESK].action == WAIT_TIME
+    env.clock.t = at(MON, 6, 0)
+    out = dict(sched.run_pass())
     assert out[DESK].action == ALERT and out[DESK].reason == "data_not_ready"
-    assert "row for 2026-10-09 (newest 2026-10-08 (complete))" in out[DESK].message
-    env.clock.t = at(MON, 6, 50)
+    assert "row for 2026-10-09 at 06:00 New York (newest 2026-10-08 (complete))" in \
+        out[DESK].message
+    env.clock.t = at(MON, 6, 5)
     sched.run_pass()
     assert alerts(env).count(f"QT alert: {DESK_PID} 2026-10-12 data_not_ready") == 1
-    env.days.ready.append(ready(FRI, at(MON, 6, 52)))
-    env.clock.t = at(MON, 6, 55)
+    assert alerts(env).count(f"QT alert: {DATASET} 2026-10-09 data_not_ready") == 1
+    env.days.ready.append(ready(SUN, at(MON, 6, 7)))
+    env.clock.t = at(MON, 6, 10)
     sched.run_pass()
     assert ("model", DESK, "2026-10-12") in calls(env)
 
 
-# -- the 21:30 alert ------------------------------------------------------------------------------
+@pytest.mark.parametrize("status,missing,reason", [("failed", (), "data_failed"),
+                                                   ("partial", ("GC",), "data_stale")])
+def test_a_final_bad_row_alerts_at_once_even_before_0600(env, status, missing, reason):
+    weekend_done(env)
+    env.days.ready.append(ready(SUN, at(MON, 4, 35), status, missing, loaded=20))
+    env.clock.t = at(MON, 4, 40)
+    out = dict(env.make(portfolios=(DESK,)).run_pass())
+    assert env.engine.calls == []
+    assert out[DESK].action == ALERT and out[DESK].reason == reason
 
-def test_no_ready_row_by_2130_on_a_trading_day_alerts_once(env):
+
+# -- the daily data-ready check -------------------------------------------------------------------
+
+def test_the_data_ready_check_alerts_once_from_0600(env):
     published_day(env, THU)
+    env.days.ready.append(ready(WED, at(THU, 4, 40)))
+    sched = env.make(portfolios=(TWIN,))
+    env.clock.t = at(FRI, 5, 55)
+    sched.run_pass()
+    assert f"QT alert: {DATASET} 2026-10-08 data_not_ready" not in alerts(env)
+    for hh, mm in ((6, 0), (6, 30), (21, 30)):
+        env.clock.t = at(FRI, hh, mm)
+        sched.run_pass()
+    assert alerts(env).count(f"QT alert: {DATASET} 2026-10-08 data_not_ready") == 1
+
+
+def test_the_data_ready_check_runs_on_saturday_for_fridays_data(env):
     published_day(env, FRI)
-    env.days.ready.append(ready(THU, at(THU, 20, 10)))
-    sched = env.make()
-    env.clock.t = at(FRI, 21, 0)
-    sched.run_pass()
-    assert alerts(env) == []
-    env.clock.t = at(FRI, 21, 30)
-    sched.run_pass()
-    env.clock.t = at(FRI, 22, 0)
-    sched.run_pass()
-    assert alerts(env) == [f"QT alert: {DATASET} 2026-10-09 data_not_ready"]
+    env.days.ready.append(ready(THU, at(FRI, 4, 40)))
+    env.clock.t = at(SAT, 6, 0)
+    env.make(portfolios=(TWIN,)).run_pass()
+    assert f"QT alert: {DATASET} 2026-10-09 data_not_ready" in alerts(env)
 
 
-def test_no_2130_alert_on_a_weekend_or_when_the_data_is_in(env):
+def test_no_data_ready_alert_when_the_data_is_in(env):
     published_day(env, FRI)
     published_day(env, SAT)
-    sched = env.make()
+    env.days.ready.append(ready(FRI, at(SAT, 4, 40)))
     env.clock.t = at(SAT, 21, 30)
-    sched.run_pass()
-    env.days.ready.append(ready(MON, at(MON, 20, 0)))
-    published_day(env, MON)
-    env.clock.t = at(MON, 21, 30)
-    sched.run_pass()
-    assert all("data_not_ready" not in s for s in alerts(env))
+    env.make().run_pass()
+    assert all("data_not_ready" not in a for a in alerts(env))
 
 
-def test_a_failed_row_for_today_still_alerts_at_2130(env):
+def test_a_failed_row_still_alerts_in_the_data_ready_check(env):
     published_day(env, MON)
-    env.days.ready.append(ready(MON, at(MON, 20, 0), "failed", loaded=0))
-    env.clock.t = at(MON, 21, 30)
+    env.days.ready.append(ready(MON, at(TUE, 4, 35), "failed", loaded=0))
+    env.clock.t = at(TUE, 6, 0)
     env.make(portfolios=(TWIN,)).run_pass()
     assert f"QT alert: {DATASET} 2026-10-12 data_not_ready" in alerts(env)
 
@@ -600,7 +656,8 @@ def test_no_review_email_for_the_model_twin_or_after_the_cutoff(env):
 def test_evening_settings_from_the_environment():
     s = catchup_settings({})
     assert s.evening_run is True and s.review_recipients == (REVIEWER,)
-    assert s.data_alert_at == dt.time(21, 30) and s.data_ready_dataset == DATASET
+    assert s.data_alert_at == dt.time(6, 0) and s.data_ready_dataset == DATASET
+    assert s.today_not_before == dt.time(6, 45)       # the host .env sets 04:30
     assert s.desk_url == "https://algolens.algogators.com/"
     s = catchup_settings({"QT_EVENING_RUN": "0", "QT_REVIEW_RECIPIENTS": "a@x, b@y",
                           "QT_DATA_READY_ALERT_AT": "22:15"})

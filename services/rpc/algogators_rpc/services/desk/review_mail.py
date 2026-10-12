@@ -1,6 +1,7 @@
-"""The desk's review e-mail of an evening build (issues #191, #192; catchup.py).
+"""The desk's review e-mail of a data-driven build (issues #191, #192; catchup.py).
 
-After the evening run builds the desk portfolio's book for the next trading day, the scheduler
+After the scheduler builds the desk portfolio's book for the next trading day after the newest
+ready bar date (normally today, from data-ngin's 04:30 ET pull), it
 mails QT_REVIEW_RECIPIENTS once per build: the target day, the bar date it was built from, each
 symbol's new target against the position held now (the last published day's book) with the
 change, the risk pass's moved_by, the symbols data-ngin reported missing, whether the desk's

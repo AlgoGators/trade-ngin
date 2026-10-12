@@ -30,7 +30,7 @@ DEFAULT_LOCK_DIR = "/tmp/qt-locks"
 DEFAULT_APPROVE_URL_BASE = "https://algolens.algogators.com/qt/approve"
 DEFAULT_LOG_DIR = "/var/log/qt-engine"
 DEFAULT_CATCHUP_PORTFOLIOS = ("qt_conservative", "qt_conservative_model")
-# The evening run (catchup.py; issues #191 and #192): the dataset of ops.data_ready it waits for,
+# The data-driven run (catchup.py; issues #191 and #192): the dataset of ops.data_ready it waits for,
 # who gets the desk's review e-mail and where the desk is.
 DEFAULT_DATA_READY_DATASET = "futures_ohlcv_1d"
 DEFAULT_REVIEW_RECIPIENTS = ("dominickdupuy@ufl.edu",)
@@ -127,14 +127,19 @@ class CatchupSettings:
     # that portfolio until the next pass.
     lock_wait_s: float = 600.0
     timezone: str = "America/New_York"
-    # The evening run (catchup.py; https://github.com/AlgoGators/trade-ngin/issues/191 and /192).
-    # On: once ops.data_ready says a bar date's data is in, the books of the next trading day are
-    # built that evening, the 06:45 run is only the backup, and the desk gets a review e-mail.
+    # The data-driven run (catchup.py; https://github.com/AlgoGators/trade-ngin/issues/191 and
+    # /192; the variable keeps its first name, QT_EVENING_RUN). On: data-ngin pulls at 04:30 ET
+    # once the vendor's ~8 h delayed historical data has bar D, and the books of the next trading
+    # day after D (normally today) are built once ops.data_ready says the data is in; today's
+    # model run waits for it, and the desk gets a review e-mail. Recommended with it:
+    # QT_CATCHUP_TODAY_NOT_BEFORE=04:30, QT_CATCHUP_WINDOW=04:00-22:00,
+    # QT_CATCHUP_BUSY_WINDOW=04:30-10:30.
     # Off: the scheduler runs exactly as before (the model run of each day from 06:45).
     evening_run: bool = True
     data_ready_dataset: str = DEFAULT_DATA_READY_DATASET
-    # No ready row for today's bar date by then (on a trading day): an alert to the President.
-    data_alert_at: dt.time = dt.time(21, 30)
+    # No usable row for the previous trading day by then: today's run alerts instead of waiting,
+    # and the daily data-ready check alerts the President (once a day).
+    data_alert_at: dt.time = dt.time(6, 0)
     review_recipients: Tuple[str, ...] = DEFAULT_REVIEW_RECIPIENTS
     desk_url: str = DEFAULT_DESK_URL
     # The engine's holidays.json; empty: found as the engine finds it (trading_days.py).
@@ -257,8 +262,8 @@ def catchup_settings(env: Optional[Mapping[str, str]] = None) -> CatchupSettings
     QT_CATCHUP_WINDOW ("06:30-22:00"), QT_CATCHUP_EVERY_MIN (30), QT_CATCHUP_BUSY_WINDOW
     ("06:30-10:30"), QT_CATCHUP_BUSY_EVERY_MIN (5), QT_CATCHUP_TODAY_NOT_BEFORE ("06:45"),
     QT_MODEL_RETRY_MIN (15), QT_MODEL_ALERT_AT ("08:30"), QT_CATCHUP_LOCK_WAIT_S (600).
-    The evening run (issues #191, #192): QT_EVENING_RUN (default 1; 0 restores the 06:45-only
-    schedule), QT_DATA_READY_DATASET ("futures_ohlcv_1d"), QT_DATA_READY_ALERT_AT ("21:30"),
+    The data-driven run (issues #191, #192): QT_EVENING_RUN (default 1; 0 restores the 06:45-only
+    schedule), QT_DATA_READY_DATASET ("futures_ohlcv_1d"), QT_DATA_READY_ALERT_AT ("06:00"),
     QT_REVIEW_RECIPIENTS (comma-separated; default dominickdupuy@ufl.edu), QT_DESK_URL,
     TRADE_NGIN_HOLIDAYS_JSON (the engine's own variable).
     QT_UNPUBLISHED_REMINDER_H is no longer read (the 10:00 fallback replaced the reminder)."""
@@ -284,7 +289,7 @@ def catchup_settings(env: Optional[Mapping[str, str]] = None) -> CatchupSettings
         evening_run=(env.get("QT_EVENING_RUN") or "1").strip() != "0",
         data_ready_dataset=(env.get("QT_DATA_READY_DATASET") or "").strip()
         or DEFAULT_DATA_READY_DATASET,
-        data_alert_at=_clock(env, "QT_DATA_READY_ALERT_AT", dt.time(21, 30)),
+        data_alert_at=_clock(env, "QT_DATA_READY_ALERT_AT", dt.time(6, 0)),
         review_recipients=_emails(env, "QT_REVIEW_RECIPIENTS", DEFAULT_REVIEW_RECIPIENTS),
         desk_url=(env.get("QT_DESK_URL") or "").strip() or DEFAULT_DESK_URL,
         holidays_path=(env.get("TRADE_NGIN_HOLIDAYS_JSON") or "").strip(),

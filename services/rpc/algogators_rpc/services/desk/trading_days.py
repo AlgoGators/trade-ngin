@@ -6,8 +6,8 @@ way: TRADE_NGIN_HOLIDAYS_JSON, else include/trade_ngin/core/holidays.json, holid
 /etc/trade_ngin/holidays.json under the engine's working directory (QT_ENGINE_CWD). As in the
 engine, a date outside the years the file covers is an error, never a guess (BA-1, C-5 B4).
 
-The evening run (catchup.py; issues #191, #192) builds the books of the next trading day after a
-bar date: Friday's and Sunday's bars both build Monday, a holiday is skipped.
+The data-driven run (catchup.py; issues #191, #192) builds the books of the next trading day after
+a bar date: Friday's, Saturday's and Sunday's bars all build Monday, a holiday is skipped.
 """
 
 from __future__ import annotations

@@ -3,7 +3,7 @@
 -- Reverses 028: drops ops.data_ready, and the schema ops when nothing else is in it. Refuses
 -- while the table holds rows unless the session sets migration.force_rollback = 'yes' (the
 -- readiness history is then lost). Set QT_EVENING_RUN=0 on engine-rpc first: with the table
--- gone the evening scheduler alerts on every pass and the 06:45 backup waits for data.
+-- gone the scheduler alerts on every pass and today's model run waits for data.
 
 BEGIN;
 
