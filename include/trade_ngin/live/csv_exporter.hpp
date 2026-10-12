@@ -49,7 +49,9 @@ public:
      * @brief Export current day positions to CSV with per-strategy breakdown
      *
      * Creates a file named: YYYY-MM-DD_positions.csv
-     * Contains: strategy, symbol, quantity, market_price, notional, percentages, forecast, volatility, EMAs
+     * Contains: strategy, symbol, quantity, market_price, notional, percentages, forecast,
+     * sizing_vol, EMAs. A comment line above the column names says what sizing_vol is. Every
+     * row prints six decimals.
      *
      * @param date Current trading date
      * @param strategy_positions Per-strategy positions map
@@ -78,7 +80,7 @@ public:
      * One row per sleeve and symbol the sleeve holds or last forecast: quantity from the held
      * book, market_price the symbol's last mark (a held symbol with no loaded bar keeps its stored
      * row's price, mark_date "stored row"), forecast the sleeve's last computed forecast (empty if
-     * the sleeve has none stored for that symbol). Volatility and the EMAs are not stored anywhere
+     * the sleeve has none stored for that symbol). sizing_vol and the EMAs are not stored anywhere
      * and are left empty rather than written as zeros.
      *
      * @param date Run date (for the file name)
@@ -122,6 +124,9 @@ public:
      * @param directory Path to output directory
      */
     void set_output_directory(const std::string& directory);
+
+    /// The positions file's one-line explanation of its sizing_vol column.
+    static std::string sizing_vol_note();
 
 private:
     std::string output_directory_;

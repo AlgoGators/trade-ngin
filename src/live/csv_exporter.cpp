@@ -12,6 +12,7 @@
 #include "trade_ngin/instruments/instrument_registry.hpp"
 #include "trade_ngin/strategy/base_strategy.hpp"
 #include "trade_ngin/strategy/trend_following.hpp"
+#include "trade_ngin/strategy/trend_readings.hpp"
 
 namespace trade_ngin {
 
@@ -85,6 +86,13 @@ double CSVExporter::calculate_notional(const std::string& symbol, double quantit
     return quantity * price * contract_multiplier;
 }
 
+std::string CSVExporter::sizing_vol_note() {
+    return "sizing_vol: the volatility estimate the sleeve sized the position on (70 percent a "
+           "short-run estimate, 30 percent its long-run average), annualised, a fraction, as of "
+           "the bar the forecast was computed on; not the account's realised volatility "
+           "statistic.";
+}
+
 void CSVExporter::write_portfolio_header(std::ofstream& file, double portfolio_value,
                                          double gross_notional, double net_notional,
                                          const std::string& date) const {
@@ -116,6 +124,8 @@ Result<std::string> CSVExporter::export_finalized_positions(
 
         // Write CSV header with strategy column
         file << "strategy,symbol,quantity,entry_price,exit_price,realized_pnl\n";
+        // One number format for every row of the file, set once, after the header.
+        file << std::fixed << std::setprecision(6);
 
         // Sort strategies alphabetically for consistent ordering
         std::vector<std::string> strategy_names;
@@ -218,8 +228,15 @@ Result<std::string> CSVExporter::export_current_positions(
                                format_date_for_display(date));
 
         // Write CSV header with strategy column
-        file << "strategy,symbol,quantity,market_price,notional,pct_of_gross_notional,pct_of_portfolio_value,"
-             << "forecast,volatility,ema_8,ema_32,ema_64,ema_256\n";
+        // What sizing_vol is, on a comment line of its own between the portfolio line and the
+        // column names (the file already opens with a comment line).
+        file << "# " << sizing_vol_note() << "\n";
+        file << "strategy,symbol,quantity,market_price,notional,pct_of_gross_notional,pct_of_"
+                "portfolio_value,"
+             << "forecast,sizing_vol,ema_8,ema_32,ema_64,ema_256\n";
+        // One number format for every row of the file, set once, after the header (set inside
+        // the row it left the first row at the portfolio line's two decimals).
+        file << std::fixed << std::setprecision(6);
 
         // Sort strategies alphabetically for consistent ordering
         std::vector<std::string> strategy_names;
@@ -284,45 +301,16 @@ Result<std::string> CSVExporter::export_current_positions(
                                               ? (std::abs(notional) / std::abs(portfolio_value)) * 100.0
                                               : 0.0;
 
-                // Get forecast from strategy
-                double forecast = 0.0;
-                if (strategy != nullptr) {
-                    auto* tf_strategy = dynamic_cast<TrendFollowingStrategy*>(strategy);
-                    if (tf_strategy != nullptr) {
-                        forecast = tf_strategy->get_forecast(symbol);
-                    }
-                }
-
-                // Get volatility from strategy
-                double volatility = 0.0;
-                if (strategy != nullptr) {
-                    auto* tf_strategy = dynamic_cast<TrendFollowingStrategy*>(strategy);
-                    if (tf_strategy != nullptr) {
-                        auto instrument_data = tf_strategy->get_instrument_data(symbol);
-                        if (instrument_data != nullptr) {
-                            volatility = instrument_data->current_volatility;
-                        }
-                    }
-                }
-
-                // Get EMA values
-                double ema_8 = 0.0, ema_32 = 0.0, ema_64 = 0.0, ema_256 = 0.0;
-                if (strategy != nullptr) {
-                    auto* tf_strategy = dynamic_cast<TrendFollowingStrategy*>(strategy);
-                    if (tf_strategy != nullptr) {
-                        auto ema_values = tf_strategy->get_ema_values(symbol, {8, 32, 64, 256});
-                        ema_8 = ema_values.count(8) ? ema_values[8] : 0.0;
-                        ema_32 = ema_values.count(32) ? ema_values[32] : 0.0;
-                        ema_64 = ema_values.count(64) ? ema_values[64] : 0.0;
-                        ema_256 = ema_values.count(256) ? ema_values[256] : 0.0;
-                    }
-                }
+                // The sleeve's forecast, sizing volatility and moving averages (0 when the
+                // sleeve is not a trend sleeve or holds no data on the symbol).
+                const TrendReadings readings = trend_readings_of(strategy, symbol);
 
                 // Write position row with strategy column
-                file << display_name << "," << symbol << "," << quantity << "," << market_price << ","
-                     << notional << "," << pct_of_gross << "," << pct_of_portfolio << "," << forecast << ","
-                     << std::fixed << std::setprecision(6) << volatility << "," << ema_8 << "," << ema_32 << ","
-                     << ema_64 << "," << ema_256 << "\n";
+                file << display_name << "," << symbol << "," << quantity << "," << market_price
+                     << "," << notional << "," << pct_of_gross << "," << pct_of_portfolio << ","
+                     << readings.forecast << "," << readings.sizing_vol << "," << readings.ema_8
+                     << "," << readings.ema_32 << "," << readings.ema_64 << "," << readings.ema_256
+                     << "\n";
             }
         }
 
@@ -364,10 +352,10 @@ Result<std::string> CSVExporter::export_carried_positions(
              << ". Nothing below was computed today; every value is CARRIED, not computed: "
                 "quantity is the held book (the previous day's stored positions), market_price "
                 "is the symbol's last close (mark_date), forecast is the sleeve's last computed "
-                "forecast (its stored signals of forecast_from). Volatility and the EMAs are not "
+                "forecast (its stored signals of forecast_from). sizing_vol and the EMAs are not "
                 "stored and are left empty.\n";
         file << "strategy,symbol,quantity,market_price,notional,pct_of_gross_notional,"
-                "pct_of_portfolio_value,forecast,volatility,ema_8,ema_32,ema_64,ema_256,"
+                "pct_of_portfolio_value,forecast,sizing_vol,ema_8,ema_32,ema_64,ema_256,"
                 "mark_date,forecast_from\n";
         file << std::fixed << std::setprecision(6);
 
@@ -420,7 +408,7 @@ Result<std::string> CSVExporter::export_carried_positions(
                      << "," << notional << "," << pct_of_gross << "," << pct_of_portfolio << ",";
                 auto f_it = carried.forecasts.find(symbol);
                 if (f_it != carried.forecasts.end()) file << f_it->second;
-                // volatility, ema_8, ema_32, ema_64, ema_256: not stored, left empty
+                // sizing_vol, ema_8, ema_32, ema_64, ema_256: not stored, left empty
                 file << ",,,,,," << mark_date << ","
                      << (f_it != carried.forecasts.end() ? carried.session_date : std::string())
                      << "\n";
