@@ -7,6 +7,7 @@
 #include <filesystem>
 #include <sstream>
 #include <iomanip>
+#include <cctype>
 #include <cmath>
 #include <map>
 #include <set>
@@ -22,9 +23,26 @@ BacktestCSVExporter::~BacktestCSVExporter() {
     finalize();
 }
 
+std::string BacktestCSVExporter::portfolio_directory(const std::string& base_directory,
+                                                     const std::string& portfolio_id) {
+    if (portfolio_id.empty() || portfolio_id == "." || portfolio_id == "..") {
+        return base_directory;
+    }
+    std::string name = portfolio_id;
+    for (char& c : name) {
+        const bool kept =
+            std::isalnum(static_cast<unsigned char>(c)) || c == '_' || c == '-' || c == '.';
+        if (!kept)
+            c = '_';
+    }
+    return (std::filesystem::path(base_directory) / name).string();
+}
+
 Result<void> BacktestCSVExporter::initialize_files() {
     try {
         std::filesystem::create_directories(output_directory_);
+        // Every number of every file: ten significant digits, set once after the column names.
+        constexpr int kDigits = 10;
 
         positions_file_.open(std::filesystem::path(output_directory_) / "positions.csv");
         if (!positions_file_.is_open()) {
@@ -37,6 +55,7 @@ Result<void> BacktestCSVExporter::initialize_files() {
         positions_file_ << "date,strategy,symbol,quantity,market_price,notional,"
                         << "pct_of_gross_notional,pct_of_portfolio_value,forecast,sizing_vol,"
                         << "ema_8,ema_32,ema_64,ema_256\n";
+        positions_file_ << std::setprecision(kDigits);
 
         changes_file_.open(std::filesystem::path(output_directory_) / "position_changes.csv");
         if (!changes_file_.is_open()) {
@@ -48,6 +67,7 @@ Result<void> BacktestCSVExporter::initialize_files() {
         // the change, the price the position was marked at the day before, the price the
         // day's fills traded at, and the realized P&L of the row the run stores for the day.
         changes_file_ << "date,strategy,symbol,quantity,previous_mark,fill_price,realized_pnl\n";
+        changes_file_ << std::setprecision(kDigits);
 
         equity_curve_file_.open(std::filesystem::path(output_directory_) / "equity_curve.csv");
         if (!equity_curve_file_.is_open()) {
@@ -58,6 +78,18 @@ Result<void> BacktestCSVExporter::initialize_files() {
             );
         }
         equity_curve_file_ << "date,portfolio_value\n";
+        equity_curve_file_ << std::setprecision(kDigits);
+
+        // The day's portfolio value and notionals, one row a day (they were comment lines
+        // inside positions.csv).
+        summary_file_.open(std::filesystem::path(output_directory_) / "portfolio_summary.csv");
+        if (!summary_file_.is_open()) {
+            return make_error<void>(ErrorCode::CONVERSION_ERROR,
+                                    "Failed to open portfolio_summary.csv for writing",
+                                    "BacktestCSVExporter");
+        }
+        summary_file_ << "date,portfolio_value,gross_notional,net_notional\n";
+        summary_file_ << std::setprecision(kDigits);
 
         return Result<void>();
     } catch (const std::exception& e) {
@@ -67,15 +99,6 @@ Result<void> BacktestCSVExporter::initialize_files() {
             "BacktestCSVExporter"
         );
     }
-}
-
-std::string BacktestCSVExporter::format_date(const Timestamp& ts) const {
-    auto time_t = std::chrono::system_clock::to_time_t(ts);
-    std::tm tm;
-    core::safe_localtime(&time_t, &tm);
-    std::stringstream ss;
-    ss << std::put_time(&tm, "%Y-%m-%d");
-    return ss.str();
 }
 
 Result<void> BacktestCSVExporter::append_daily_positions(
@@ -92,14 +115,15 @@ Result<void> BacktestCSVExporter::append_daily_positions(
     }
 
     try {
-        std::string date_str = format_date(date);
+        // The UTC date of the bar: the date the run's stored rows carry.
+        std::string date_str = core::format_utc_date(date);
         auto& registry = InstrumentRegistry::instance();
 
-        // Write portfolio header comment
-        positions_file_ << "# Portfolio Value: " << portfolio_value
-                        << ", Gross Notional: " << gross_notional
-                        << ", Net Notional: " << net_notional
-                        << ", Date: " << date_str << "\n";
+        if (summary_file_.is_open()) {
+            summary_file_ << date_str << "," << portfolio_value << "," << gross_notional << ","
+                          << net_notional << "\n";
+            summary_file_.flush();
+        }
 
         // Each sleeve's own strategy, by id: a row's forecast, sizing volatility and averages
         // are the sleeve's that holds it (one figure per account row was the first trend
@@ -182,7 +206,7 @@ Result<void> BacktestCSVExporter::append_equity_curve(
     }
 
     try {
-        equity_curve_file_ << format_date(date) << "," << portfolio_value << "\n";
+        equity_curve_file_ << core::format_utc_date(date) << "," << portfolio_value << "\n";
         equity_curve_file_.flush();
         return Result<void>();
     } catch (const std::exception& e) {
@@ -291,7 +315,7 @@ Result<void> BacktestCSVExporter::append_position_changes(
     }
 
     try {
-        const std::string date_str = format_date(date);
+        const std::string date_str = core::format_utc_date(date);
         const auto cell = [&](const std::optional<double>& value) {
             changes_file_ << ",";
             if (value)
@@ -323,6 +347,9 @@ void BacktestCSVExporter::finalize() {
     }
     if (equity_curve_file_.is_open()) {
         equity_curve_file_.close();
+    }
+    if (summary_file_.is_open()) {
+        summary_file_.close();
     }
 }
 

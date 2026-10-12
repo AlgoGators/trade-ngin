@@ -41,16 +41,37 @@ struct PositionChange {
     std::optional<double> realized_pnl;
 };
 
+/**
+ * @brief The four CSV files a backtest writes beside its stored rows
+ *
+ * positions.csv (a row per day, sleeve and held symbol), position_changes.csv (a row per day,
+ * sleeve and symbol whose quantity changed), equity_curve.csv and portfolio_summary.csv (a row
+ * per day: the portfolio value, the gross and the net notional). Each file starts with its
+ * column names and holds nothing but rows. Dates are the UTC date of the bar's timestamp;
+ * numbers print ten significant digits. A run writes into its own portfolio's directory
+ * (portfolio_directory), so the files of one portfolio's run do not replace another's.
+ */
 class BacktestCSVExporter {
 public:
     BacktestCSVExporter(const std::string& output_directory);
     ~BacktestCSVExporter();
 
+    /**
+     * @brief The directory a portfolio's backtest writes its files into: `base_directory` /
+     *        `portfolio_id`
+     *
+     * A character of the id that is not a letter, a digit, '_', '-' or '.' is written '_'. An
+     * id that is empty, "." or ".." names no directory of its own: the base directory.
+     */
+    static std::string portfolio_directory(const std::string& base_directory,
+                                           const std::string& portfolio_id);
+
     Result<void> initialize_files();
 
     /**
      * @brief The day's rows of positions.csv: one per sleeve and symbol the sleeve holds, by
-     *        sleeve then symbol.
+     *        sleeve then symbol; and the day's row of portfolio_summary.csv (the portfolio
+     *        value, the gross and the net notional handed in).
      *
      * quantity and notional are the sleeve's; the two shares divide the row's notional by the
      * account's gross notional and portfolio value. forecast, sizing_vol and the four averages
@@ -111,8 +132,7 @@ private:
     std::ofstream positions_file_;
     std::ofstream changes_file_;
     std::ofstream equity_curve_file_;
-
-    std::string format_date(const Timestamp& ts) const;
+    std::ofstream summary_file_;
 };
 
 } // namespace backtest

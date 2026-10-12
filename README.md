@@ -722,7 +722,7 @@ TRADE_NGIN_EMAIL_BODY_DIR=/path/to/dir ./build/bin/Release/live_portfolio_conser
 |-------------|----------|-------------|
 | Logs | `logs/<prefix>_YYYYMMDD_HHMMSS_partN.log` | One set of files per run |
 | CSV Exports | `apps/strategies/results/<portfolio_id>/` | Live position files of the futures books (the day's positions and the finalized positions of the day before) |
-| Backtest CSV | `apps/backtest/results/` | Backtest output |
+| Backtest CSV | `apps/backtest/results/<portfolio_id>/` | Backtest output: `positions.csv`, `position_changes.csv`, `equity_curve.csv`, `portfolio_summary.csv` |
 | Database | `trading` and `backtest` schemas | See [docs/LIVE_RUN_CYCLE.md](docs/LIVE_RUN_CYCLE.md) |
 
 ---

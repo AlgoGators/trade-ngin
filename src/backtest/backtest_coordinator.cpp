@@ -378,13 +378,16 @@ Result<BacktestResults> BacktestCoordinator::run_portfolio(
          ", total available days: " + std::to_string(grouped_bars.size()));
 
     // Initialize CSV exporter
-    csv_exporter_ = std::make_unique<BacktestCSVExporter>(config_.csv_output_path);
+    // Each portfolio's run writes into its own directory under the configured path.
+    const std::string csv_directory =
+        BacktestCSVExporter::portfolio_directory(config_.csv_output_path, config_.portfolio_id);
+    csv_exporter_ = std::make_unique<BacktestCSVExporter>(csv_directory);
     auto csv_init_result = csv_exporter_->initialize_files();
     if (csv_init_result.is_error()) {
         WARN("Failed to initialize CSV exporter: " + std::string(csv_init_result.error()->what()));
         csv_exporter_.reset();
     } else {
-        INFO("CSV exporter initialized, output: " + config_.csv_output_path);
+        INFO("CSV exporter initialized, output: " + csv_directory);
     }
 
     // Track last saved date
@@ -586,7 +589,8 @@ Result<BacktestResults> BacktestCoordinator::run_portfolio(
     // Finalize CSV exporter
     if (csv_exporter_) {
         csv_exporter_->finalize();
-        INFO("CSV export finalized to: " + config_.csv_output_path);
+        INFO("CSV export finalized to: " + BacktestCSVExporter::portfolio_directory(
+                                               config_.csv_output_path, config_.portfolio_id));
     }
 
     INFO("Portfolio backtest completed: " + std::to_string(day_index) + " days processed, " +

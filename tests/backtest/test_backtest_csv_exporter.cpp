@@ -145,7 +145,7 @@ protected:
     bool saved_initialized_{false};
 };
 
-TEST_F(BacktestCSVExporterTest, InitializeCreatesDirectoryAndAllThreeFilesWithHeaders) {
+TEST_F(BacktestCSVExporterTest, InitializeCreatesDirectoryAndAllFourFilesWithHeaders) {
     BacktestCSVExporter exporter(out_dir_.string());
     auto r = exporter.initialize_files();
     ASSERT_TRUE(r.is_ok()) << r.error()->what();
@@ -163,6 +163,8 @@ TEST_F(BacktestCSVExporterTest, InitializeCreatesDirectoryAndAllThreeFilesWithHe
     EXPECT_EQ(slurp(out_dir_ / "position_changes.csv"),
               "date,strategy,symbol,quantity,previous_mark,fill_price,realized_pnl\n");
     EXPECT_EQ(slurp(out_dir_ / "equity_curve.csv"), "date,portfolio_value\n");
+    EXPECT_EQ(slurp(out_dir_ / "portfolio_summary.csv"),
+              "date,portfolio_value,gross_notional,net_notional\n");
 }
 
 TEST_F(BacktestCSVExporterTest, InitializeFailsOnUnwritablePath) {
@@ -180,16 +182,33 @@ TEST_F(BacktestCSVExporterTest, AppendDailyPositionsWithoutInitializeReturnsErro
     EXPECT_TRUE(r.is_error());
 }
 
-TEST_F(BacktestCSVExporterTest, AppendDailyPositionsWritesPortfolioHeaderEvenWithNoPositions) {
+// The day's portfolio value and notionals are a row of portfolio_summary.csv; they were a comment
+// line inside positions.csv, which now holds nothing but its column names and rows.
+TEST_F(BacktestCSVExporterTest, AppendDailyPositionsWritesTheSummaryRowEvenWithNoPositions) {
     BacktestCSVExporter exporter(out_dir_.string());
     ASSERT_TRUE(exporter.initialize_files().is_ok());
     ASSERT_TRUE(exporter
                     .append_daily_positions(date_at(2026, 1, 5), SleevePositions{}, {}, 1'000'000.0,
                                             0.0, 0.0, {})
                     .is_ok());
-    std::string body = slurp(out_dir_ / "positions.csv");
-    EXPECT_NE(body.find("# Portfolio Value: 1e+06"), std::string::npos);
-    EXPECT_NE(body.find("Date: 2026-01-05"), std::string::npos);
+    ASSERT_TRUE(exporter
+                    .append_daily_positions(date_at(2026, 1, 6),
+                                            one_sleeve({{"ES", make_pos("ES", 5.0)}}),
+                                            {{"ES", 4000.0}}, 1'000'250.5, 20000.0, -20000.0, {})
+                    .is_ok());
+    exporter.finalize();
+    EXPECT_EQ(slurp(out_dir_ / "portfolio_summary.csv"),
+              "date,portfolio_value,gross_notional,net_notional\n"
+              "2026-01-05,1000000,0,0\n"
+              "2026-01-06,1000250.5,20000,-20000\n");
+    for (const auto* file :
+         {"positions.csv", "position_changes.csv", "equity_curve.csv", "portfolio_summary.csv"}) {
+        for (const auto& line : lines_of(slurp(out_dir_ / file))) {
+            EXPECT_NE(line.rfind("#", 0), 0u) << file << " holds a comment line: " << line;
+        }
+    }
+    EXPECT_EQ(lines_of(slurp(out_dir_ / "positions.csv")).size(), 2u)
+        << "the column names and the one held row";
 }
 
 TEST_F(BacktestCSVExporterTest, AppendDailyPositionsSkipsZeroQuantityPositions) {
@@ -202,10 +221,10 @@ TEST_F(BacktestCSVExporterTest, AppendDailyPositionsSkipsZeroQuantityPositions) 
                                             1'000'000.0, 100.0, 100.0, {})
                     .is_ok());
     std::string body = slurp(out_dir_ / "positions.csv");
-    // Header + portfolio comment, but no data row for ES.
+    // The column names, and no data row for ES.
     int line_count = 0;
     for (char c : body) if (c == '\n') ++line_count;
-    EXPECT_EQ(line_count, 2);  // header + portfolio comment
+    EXPECT_EQ(line_count, 1);
 }
 
 TEST_F(BacktestCSVExporterTest, AppendDailyPositionsRowsContainSymbolAndComputedFields) {
@@ -276,8 +295,102 @@ TEST_F(BacktestCSVExporterTest, AppendEquityCurveWritesDateAndValue) {
     ASSERT_TRUE(exporter.append_equity_curve(date_at(2026, 1, 5), 1'234'567.0).is_ok());
     ASSERT_TRUE(exporter.append_equity_curve(date_at(2026, 1, 6), 1'250'000.0).is_ok());
     std::string body = slurp(out_dir_ / "equity_curve.csv");
-    EXPECT_NE(body.find("2026-01-05,1.23457e+06"), std::string::npos);
-    EXPECT_NE(body.find("2026-01-06,1.25e+06"), std::string::npos);
+    EXPECT_NE(body.find("2026-01-05,1234567\n"), std::string::npos) << body;
+    EXPECT_NE(body.find("2026-01-06,1250000\n"), std::string::npos) << body;
+}
+
+// ===== dates, digits and the directory ===========================================================
+
+// A row's date is the UTC date of the timestamp it is given, whatever the host's time zone: half
+// past midnight UTC and half past eleven at night UTC are the same date. The files used to print
+// the HOST's local date, so on a host west of Greenwich a bar stamped at midnight UTC was dated
+// the day before.
+TEST_F(BacktestCSVExporterTest, EveryFileDatesARowByTheUtcDateOfItsTimestamp) {
+    const auto utc_at = [](int hour, int minute) {
+        std::tm tm{};
+        tm.tm_year = 2026 - 1900;
+        tm.tm_mon = 0;
+        tm.tm_mday = 5;
+        tm.tm_hour = hour;
+        tm.tm_min = minute;
+        return std::chrono::system_clock::from_time_t(timegm(&tm));
+    };
+    BacktestCSVExporter exporter(out_dir_.string());
+    ASSERT_TRUE(exporter.initialize_files().is_ok());
+    for (const auto& ts : {utc_at(0, 30), utc_at(23, 30)}) {
+        ASSERT_TRUE(exporter
+                        .append_daily_positions(ts, one_sleeve({{"ES", make_pos("ES", 5.0)}}),
+                                                {{"ES", 4000.0}}, 1.0e6, 20000.0, 20000.0, {})
+                        .is_ok());
+        ASSERT_TRUE(exporter.append_equity_curve(ts, 1.0e6).is_ok());
+        PositionChange change;
+        change.strategy = "SLEEVE";
+        change.symbol = "ES";
+        change.quantity = 5.0;
+        ASSERT_TRUE(exporter.append_position_changes(ts, {change}).is_ok());
+    }
+    exporter.finalize();
+    for (const auto* file :
+         {"positions.csv", "position_changes.csv", "equity_curve.csv", "portfolio_summary.csv"}) {
+        const auto lines = lines_of(slurp(out_dir_ / file));
+        ASSERT_EQ(lines.size(), 3u) << file;
+        EXPECT_EQ(lines[1].rfind("2026-01-05,", 0), 0u) << file << ": " << lines[1];
+        EXPECT_EQ(lines[2].rfind("2026-01-05,", 0), 0u) << file << ": " << lines[2];
+    }
+}
+
+// Ten significant digits in every file. Six lost up to half a dollar of a portfolio value
+// (564540.8712 printed 564541) and wrote a million as 1e+06.
+TEST_F(BacktestCSVExporterTest, EveryFilePrintsTenSignificantDigits) {
+    BacktestCSVExporter exporter(out_dir_.string());
+    ASSERT_TRUE(exporter.initialize_files().is_ok());
+    ASSERT_TRUE(exporter
+                    .append_daily_positions(
+                        date_at(2026, 1, 5), one_sleeve({{"6J", make_pos("6J", 1.0)}}),
+                        {{"6J", 0.0064325}}, 564540.8712345, 1387862.123456, -511115.25, {})
+                    .is_ok());
+    ASSERT_TRUE(exporter.append_equity_curve(date_at(2026, 1, 5), 564540.8712345).is_ok());
+    PositionChange change;
+    change.strategy = "SLEEVE";
+    change.symbol = "ZN";
+    change.quantity = -2.0;
+    change.previous_mark = 110.90625;
+    change.fill_price = 110.921875;
+    change.realized_pnl = -1234.5678912;
+    ASSERT_TRUE(exporter.append_position_changes(date_at(2026, 1, 5), {change}).is_ok());
+    exporter.finalize();
+    EXPECT_NE(slurp(out_dir_ / "equity_curve.csv").find("2026-01-05,564540.8712\n"),
+              std::string::npos)
+        << slurp(out_dir_ / "equity_curve.csv");
+    EXPECT_NE(slurp(out_dir_ / "portfolio_summary.csv")
+                  .find("2026-01-05,564540.8712,1387862.123,-511115.25\n"),
+              std::string::npos)
+        << slurp(out_dir_ / "portfolio_summary.csv");
+    // quantity, price, notional (no instrument registered: quantity x price)
+    EXPECT_NE(slurp(out_dir_ / "positions.csv").find("2026-01-05,SLEEVE,6J,1,0.0064325,0.0064325,"),
+              std::string::npos)
+        << slurp(out_dir_ / "positions.csv");
+    EXPECT_NE(slurp(out_dir_ / "position_changes.csv")
+                  .find("2026-01-05,SLEEVE,ZN,-2,110.90625,110.921875,-1234.567891\n"),
+              std::string::npos)
+        << slurp(out_dir_ / "position_changes.csv");
+}
+
+// Each portfolio's run writes into its own directory under the configured path.
+TEST(BacktestCsvDirectory, IsThePortfoliosOwnUnderTheConfiguredPath) {
+    namespace fs = std::filesystem;
+    EXPECT_EQ(fs::path(BacktestCSVExporter::portfolio_directory("apps/backtest/results",
+                                                                "CONSERVATIVE_PORTFOLIO")),
+              fs::path("apps/backtest/results") / "CONSERVATIVE_PORTFOLIO");
+    EXPECT_NE(BacktestCSVExporter::portfolio_directory("out", "BASE_PORTFOLIO"),
+              BacktestCSVExporter::portfolio_directory("out", "CONSERVATIVE_PORTFOLIO"));
+    // An id is one directory name: a separator in it does not leave the configured path.
+    EXPECT_EQ(fs::path(BacktestCSVExporter::portfolio_directory("out", "a/b c")),
+              fs::path("out") / "a_b_c");
+    // An id that names no directory of its own: the configured path itself.
+    EXPECT_EQ(BacktestCSVExporter::portfolio_directory("out", ""), "out");
+    EXPECT_EQ(BacktestCSVExporter::portfolio_directory("out", ".."), "out");
+    EXPECT_EQ(BacktestCSVExporter::portfolio_directory("out", "."), "out");
 }
 
 // ===== position_changes.csv (was finalized_positions.csv) ========================================

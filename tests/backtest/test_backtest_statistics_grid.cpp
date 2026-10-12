@@ -264,9 +264,10 @@ protected:
     std::map<std::string, std::map<int, double>> targets_ = {
         {kHeld, {{0, 100.0}}}};  // held from the first cycle to the end
 
-    // The data lines of one of the run's own CSV files, each split into its cells.
+    // The data lines of one of the run's own CSV files, each split into its cells. The run
+    // writes into its portfolio's directory under the configured path.
     std::vector<std::vector<std::string>> csv_rows(const std::string& file) const {
-        std::ifstream in(std::filesystem::path(csv_dir_) / file);
+        std::ifstream in(std::filesystem::path(csv_dir_) / "STAT_GRID_TEST" / file);
         std::vector<std::vector<std::string>> out;
         std::string line;
         bool header = true;
@@ -986,6 +987,7 @@ TEST_F(BacktestStatisticsGridRun,
     for (const auto& [date, fill_price] : fill_price_on) {
         const auto& row = changes[i];
         ASSERT_EQ(row.size(), 7u);
+        EXPECT_EQ(row[0], date) << "the change is dated the UTC date its fill is";
         EXPECT_EQ(row[1], "STAT_GRID_S");
         EXPECT_EQ(row[2], kHeld);
         EXPECT_DOUBLE_EQ(std::stod(row[3]), quantities[i]);
@@ -1012,4 +1014,20 @@ TEST_F(BacktestStatisticsGridRun,
         ++i;
     }
     EXPECT_GE(with_realized, 1u) << "no change row of the run carries a realized P&L";
+
+    // The run's other files, in the same directory: a row a bar date, dated by the bar's UTC date
+    // (the test's bars are stamped at midnight UTC).
+    std::set<std::string> bar_dates;
+    for (const auto& r : rows_)
+        bar_dates.insert(core::format_utc_date(row_time(r)));
+    const auto curve = csv_rows("equity_curve.csv");
+    const auto summary = csv_rows("portfolio_summary.csv");
+    ASSERT_FALSE(curve.empty());
+    ASSERT_EQ(summary.size(), curve.size());
+    for (size_t k = 0; k < curve.size(); ++k) {
+        EXPECT_EQ(bar_dates.count(curve[k][0]), 1u) << curve[k][0] << " is no bar's UTC date";
+        ASSERT_EQ(summary[k].size(), 4u);
+        EXPECT_EQ(summary[k][0], curve[k][0]);
+        EXPECT_EQ(summary[k][1], curve[k][1]) << "the summary's portfolio value is the curve's";
+    }
 }
