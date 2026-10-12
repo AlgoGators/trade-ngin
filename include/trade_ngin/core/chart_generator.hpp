@@ -1,6 +1,8 @@
 #pragma once
 
+#include <cstdint>
 #include <string>
+#include <utility>
 #include <vector>
 #include <memory>
 #include "trade_ngin/data/database_interface.hpp"
@@ -44,6 +46,56 @@ struct ChartData {
 
     ChartData() : reference_line(0.0) {}
 };
+
+/// One row of a chart query: a date or a symbol, and its number.
+using ChartPoint = std::pair<std::string, double>;
+
+/**
+ * @brief The text of each database chart's query, from the book's ids and the run date.
+ *
+ * A fetcher sends exactly this text; a test calls these to read what a chart asks for.
+ */
+namespace ChartQueries {
+std::string equity_curve(const std::string& strategy_id, const std::string& portfolio_id,
+                         int lookback_days);
+std::string pnl_by_symbol(const std::string& strategy_id, const std::string& portfolio_id,
+                          const std::string& date);
+std::string daily_pnl(const std::string& strategy_id, const std::string& portfolio_id,
+                      const std::string& date, int lookback_days);
+std::string cost_per_million(const std::string& strategy_id, const std::string& portfolio_id,
+                             const std::string& date);
+std::string margin_posted(const std::string& strategy_id, const std::string& portfolio_id,
+                          const std::string& date);
+std::string cumulative_pnl_by_symbol(const std::string& strategy_id,
+                                     const std::string& portfolio_id, const std::string& date);
+}  // namespace ChartQueries
+
+/**
+ * @brief From a chart query's rows to the points the chart plots (no database, no gnuplot).
+ *
+ * A series with no label is a chart that is not drawn.
+ */
+namespace ChartSeries {
+/// One day of the cost chart's query.
+struct CostRow {
+    std::string date;
+    double daily_cost = 0.0;
+    double total_notional = 0.0;
+    int64_t num_trades = 0;
+};
+
+/// rows: (date, equity), in any order.
+ChartData equity_curve(std::vector<ChartPoint> rows);
+/// rows: (symbol, realized PnL); date: the run date.
+ChartData pnl_by_symbol(std::vector<ChartPoint> rows, const std::string& date);
+/// rows: (date, daily PnL), newest first as the query returns them.
+ChartData daily_pnl(std::vector<ChartPoint> rows);
+ChartData cost_per_million(const std::vector<CostRow>& rows);
+/// rows: (date, margin posted), oldest first.
+ChartData margin_posted(std::vector<ChartPoint> rows);
+/// rows: (symbol, cumulative realized PnL); date: the run date.
+ChartData cumulative_pnl_by_symbol(std::vector<ChartPoint> rows, const std::string& date);
+}  // namespace ChartSeries
 
 /**
  * @brief Configuration for chart appearance

@@ -1,5 +1,6 @@
 # Set test source files
 set(TEST_SOURCES
+    core/test_chart_series.cpp
     core/test_decimal.cpp
     core/test_email_chart_strategy_id.cpp
     core/test_email_fixtures.cpp
