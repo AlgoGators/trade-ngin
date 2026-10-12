@@ -230,6 +230,9 @@ std::string ChartQueries::margin_posted(const std::string& strategy_id,
 std::string ChartQueries::cumulative_pnl_by_symbol(const std::string& strategy_id,
                                                    const std::string& portfolio_id,
                                                    const std::string& date) {
+    // The sum of the stored daily realized P&L of each symbol, gross of costs. On BASE it is not
+    // the book's stored total_realized_pnl: BASE's early history rows do not reconcile (T-8D-2
+    // D2-OUT-25: left as it is, documented).
     return "SELECT symbol, SUM(daily_realized_pnl) as cumulative_pnl "
            "FROM trading.positions "
            "WHERE strategy_id = '" +
@@ -586,7 +589,7 @@ ChartData ChartSeries::cumulative_pnl_by_symbol(std::vector<ChartPoint> symbol_p
         chart_data.values.push_back(pnl);
     }
 
-    chart_data.title = "Cumulative Realized PnL by Symbol (All-Time as of " + date + ")";
+    chart_data.title = ChartTitles::cumulative_pnl_title(date);
     chart_data.x_label = "Cumulative Realized PnL ($)";
     chart_data.y_label = "Symbol";
     chart_data.reference_line = 0.0;
@@ -2071,13 +2074,12 @@ std::string ChartGenerator::generate_daily_pnl_chart(
 }
 
 std::string ChartGenerator::generate_total_transaction_costs_chart(
-    std::shared_ptr<DatabaseInterface> db,
-    const std::string& strategy_id,
-                                                  const std::string& portfolio_id,
-    const std::string& end_date)   // "YYYY-MM-DD" (today)
-{
-    ChartData data =
-        fetch_cumulative_transaction_costs_data(db, strategy_id, portfolio_id, end_date);
+    std::shared_ptr<DatabaseInterface> db, const std::string& strategy_id,
+    const std::string& portfolio_id,
+    const std::string& end_date,  // "YYYY-MM-DD" (today)
+    const ChartSeries::MultiplierLookup& multiplier_of) {
+    ChartData data = fetch_cumulative_transaction_costs_data(db, strategy_id, portfolio_id,
+                                                             end_date, multiplier_of);
     if (data.labels.empty() || data.values.empty()) return "";
 
     ChartConfig config;

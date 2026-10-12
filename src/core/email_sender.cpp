@@ -738,7 +738,8 @@ std::string EmailSender::generate_trading_report_body(
             ChartGenerator::generate_daily_pnl_chart(
                 db, chart_strategy_id, chart_portfolio_id_legacy, date, 30);
         if (!daily_pnl_base64_.empty()) {
-            html << "<h3 style=\"margin-top: 20px; color: #333;\">Daily PnL (Last 30 Days)</h3>\n";
+            html << "<h3 style=\"margin-top: 20px; color: #333;\">"
+                 << ChartTitles::daily_pnl_heading(30) << "</h3>\n";
             html << "<div style=\"width: 100%; max-width: 1000px; margin: 20px auto; text-align: "
                     "center;\">\n";
             html << "<img src=\"cid:daily_pnl\" alt=\"Daily PnL\" style=\"max-width: 100%; height: "
@@ -787,8 +788,8 @@ std::string EmailSender::generate_trading_report_body(
         cumulative_pnl_by_symbol_base64_ = ChartGenerator::generate_cumulative_pnl_by_symbol_chart(
             db, chart_strategy_id, chart_portfolio_id_legacy, date);
         if (!cumulative_pnl_by_symbol_base64_.empty()) {
-            html << "<h3 style=\"margin-top: 20px; color: #333;\">Cumulative PnL by Symbol "
-                    "(All-Time)</h3>\n";
+            html << "<h3 style=\"margin-top: 20px; color: #333;\">"
+                 << ChartTitles::cumulative_pnl_heading() << "</h3>\n";
             html << "<div style=\"width: 100%; max-width: 800px; margin: 20px auto; text-align: "
                     "center;\">\n";
             html << "<img src=\"cid:cumulative_pnl_by_symbol\" alt=\"Cumulative PnL by Symbol\" "
@@ -4136,7 +4137,8 @@ std::string EmailSender::generate_trading_report_body(
         daily_pnl_base64_ = ChartGenerator::generate_daily_pnl_chart(
             db, chart_strategy_id, chart_portfolio_id, date, 30);
         if (!daily_pnl_base64_.empty()) {
-            html << "<h3 style=\"margin-top: 20px; color: #333;\">Daily PnL (Last 30 Days)</h3>\n";
+            html << "<h3 style=\"margin-top: 20px; color: #333;\">"
+                 << ChartTitles::daily_pnl_heading(30) << "</h3>\n";
             html << "<div style=\"width: 100%; max-width: 1000px; margin: 20px auto; text-align: "
                     "center;\">\n";
             html << "<img src=\"cid:daily_pnl\" alt=\"Daily PnL\" style=\"max-width: 100%; height: "
@@ -4184,8 +4186,8 @@ std::string EmailSender::generate_trading_report_body(
         cumulative_pnl_by_symbol_base64_ = ChartGenerator::generate_cumulative_pnl_by_symbol_chart(
             db, chart_strategy_id, chart_portfolio_id, date);
         if (!cumulative_pnl_by_symbol_base64_.empty()) {
-            html << "<h3 style=\"margin-top: 20px; color: #333;\">Cumulative PnL by Symbol "
-                    "(All-Time)</h3>\n";
+            html << "<h3 style=\"margin-top: 20px; color: #333;\">"
+                 << ChartTitles::cumulative_pnl_heading() << "</h3>\n";
             html << "<div style=\"width: 100%; max-width: 800px; margin: 20px auto; text-align: "
                     "center;\">\n";
             html << "<img src=\"cid:cumulative_pnl_by_symbol\" alt=\"Cumulative PnL by Symbol\" "

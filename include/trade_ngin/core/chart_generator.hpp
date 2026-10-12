@@ -61,6 +61,20 @@ namespace ChartTitles {
 inline std::string pnl_by_symbol_heading(bool equities) {
     return equities ? "Yesterday's Realized PnL by Symbol" : "Yesterday's PnL by Symbol";
 }
+/// The daily PnL chart holds the last `stored_days` STORED days before the run date, which on a
+/// book with missing days is a longer span than that many calendar days (T-8D-2 R62).
+inline std::string daily_pnl_heading(int stored_days) {
+    return "Daily PnL (last " + std::to_string(stored_days) + " stored days)";
+}
+/// The cumulative chart sums each symbol's stored daily realized P&L; no cost is taken off
+/// (T-8D-2 R62).
+inline std::string cumulative_pnl_heading() {
+    return "Cumulative PnL by Symbol (realized, gross of costs)";
+}
+/// The cumulative chart's title in the image: the heading and the day the sums run through.
+inline std::string cumulative_pnl_title(const std::string& date) {
+    return "Cumulative PnL by Symbol (realized, gross of costs; all-time as of " + date + ")";
+}
 }  // namespace ChartTitles
 
 /**
@@ -364,12 +378,10 @@ public:
     );
 
     static std::string generate_total_transaction_costs_chart(
-        std::shared_ptr<DatabaseInterface> db,
-        const std::string& strategy_id,
-        const std::string& portfolio_id,
-        const std::string& end_date /* today, YYYY-MM-DD */);
-    
-    
+        std::shared_ptr<DatabaseInterface> db, const std::string& strategy_id,
+        const std::string& portfolio_id, const std::string& end_date /* today, YYYY-MM-DD */,
+        const ChartSeries::MultiplierLookup& multiplier_of = {});
+
     static std::string generate_margin_posted_chart(
         std::shared_ptr<DatabaseInterface> db,
         const std::string& strategy_id,

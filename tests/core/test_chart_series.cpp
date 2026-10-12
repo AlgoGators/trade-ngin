@@ -15,9 +15,11 @@
 
 #include <cmath>
 #include <cstdlib>
+#include <fstream>
 #include <memory>
 #include <optional>
 #include <string>
+#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -331,6 +333,12 @@ TEST(ChartSeries, DailyPnlIsPlottedOldestFirst) {
     EXPECT_TRUE(ChartSeries::daily_pnl({}).labels.empty());
 }
 
+// T-8D-2 R62: the chart holds the last 30 STORED days, which on a book with missing days is not
+// the last 30 days; the heading said "Last 30 Days".
+TEST(ChartTitles, TheDailyPnlHeadingCountsStoredDays) {
+    EXPECT_EQ(ChartTitles::daily_pnl_heading(30), "Daily PnL (last 30 stored days)");
+}
+
 // --- cost per $1M traded -------------------------------------------------------------------------
 
 namespace {
@@ -439,6 +447,17 @@ TEST(ChartSeries, CumulativePnlBySymbolIsSortedLargestFirst) {
     EXPECT_EQ(data.labels[2], "ZF.v.0");
     EXPECT_TRUE(has(data.title, "2026-04-24")) << data.title;
     EXPECT_TRUE(ChartSeries::cumulative_pnl_by_symbol({}, "2026-04-24").labels.empty());
+}
+
+// T-8D-2 R62: the bars are sums of realized P&L with no cost taken off; the heading and the
+// image's title say so (they said "(All-Time)" and "Cumulative Realized PnL by Symbol").
+TEST(ChartTitles, TheCumulativeChartSaysItIsRealizedAndGrossOfCosts) {
+    EXPECT_EQ(ChartTitles::cumulative_pnl_heading(),
+              "Cumulative PnL by Symbol (realized, gross of costs)");
+    const ChartData data =
+        ChartSeries::cumulative_pnl_by_symbol({{"KE.v.0", 5200.0}}, "2026-04-24");
+    EXPECT_EQ(data.title,
+              "Cumulative PnL by Symbol (realized, gross of costs; all-time as of 2026-04-24)");
 }
 
 // --- the fetchers, against a database that answers -----------------------------------------------
@@ -669,4 +688,98 @@ TEST_F(ChartQueriesDb, TheCostChartHasAPointOnEachDayTheBookTradedAndOnNoOther) 
         db_, strategy, portfolio, run_date,
         [](const std::string&) { return std::optional<double>(1.0); });
     EXPECT_EQ(static_cast<int>(data.labels.size()), traded_days);
+}
+
+// --- a tool, not a check: the charts as the report draws them, written as PNG files --------------
+//
+// Runs only when BOTH TRADE_NGIN_TEST_DSN and TRADE_NGIN_CHART_PNG_DIR are set (it starts gnuplot,
+// which no other test does). TRADE_NGIN_CHART_PNG_BOOK names the book and the run date:
+// "<strategy_id>|<portfolio_id>|<YYYY-MM-DD>|<1 for an equity book, else 0>". A report body file
+// holds a chart as a heading and a reference; the image is only in a sent mail, and nothing is
+// mailed from a test run. This writes the six database charts of one report, by the generator's
+// own functions, so they can be looked at. The contract multipliers are read from
+// metadata.contract_metadata ("Contract Size"), 1 for a symbol that is not a futures root.
+TEST_F(ChartQueriesDb, WritesTheChartsOfOneReportAsPngFilesWhenAskedTo) {
+    const char* dir = std::getenv("TRADE_NGIN_CHART_PNG_DIR");
+    const char* book = std::getenv("TRADE_NGIN_CHART_PNG_BOOK");
+    if (dir == nullptr || !*dir || book == nullptr || !*book) {
+        GTEST_SKIP() << "TRADE_NGIN_CHART_PNG_DIR and TRADE_NGIN_CHART_PNG_BOOK not set";
+    }
+    std::vector<std::string> parts;
+    std::string part;
+    for (const char* c = book;; ++c) {
+        if (*c == '|' || *c == 0) {
+            parts.push_back(part);
+            part.clear();
+            if (*c == 0)
+                break;
+        } else {
+            part += *c;
+        }
+    }
+    ASSERT_EQ(parts.size(), 4u) << "strategy_id|portfolio_id|date|equities";
+    const std::string& strategy = parts[0];
+    const std::string& portfolio = parts[1];
+    const std::string& date = parts[2];
+    const bool equities = parts[3] == "1";
+
+    std::unordered_map<std::string, double> sizes;
+    auto metadata = db_->execute_query(
+        "SELECT \"Databento Symbol\"::text, \"Contract Size\"::text "
+        "FROM metadata.contract_metadata");
+    ASSERT_FALSE(metadata.is_error()) << metadata.error()->what();
+    const auto roots =
+        std::static_pointer_cast<arrow::StringArray>(metadata.value()->column(0)->chunk(0));
+    const auto contract_sizes =
+        std::static_pointer_cast<arrow::StringArray>(metadata.value()->column(1)->chunk(0));
+    for (int64_t i = 0; i < roots->length(); ++i) {
+        if (!roots->IsNull(i) && !contract_sizes->IsNull(i))
+            sizes[roots->GetString(i)] = std::stod(contract_sizes->GetString(i));
+    }
+    const ChartSeries::MultiplierLookup multiplier_of =
+        [&](const std::string& symbol) -> std::optional<double> {
+        const auto found = sizes.find(symbol.substr(0, symbol.find(".v.")));
+        return found == sizes.end() ? 1.0 : found->second;
+    };
+
+    const auto write_png = [&](const std::string& name, const std::string& base64) {
+        if (base64.empty()) {
+            ADD_FAILURE() << name << ": no image (no data, or gnuplot failed)";
+            return;
+        }
+        static const std::string alphabet =
+            "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+        std::string bytes;
+        unsigned buffer = 0;
+        int bits = 0;
+        for (char c : base64) {
+            const auto at = alphabet.find(c);
+            if (at == std::string::npos)
+                continue;  // padding
+            buffer = (buffer << 6) | static_cast<unsigned>(at);
+            bits += 6;
+            if (bits >= 8) {
+                bits -= 8;
+                bytes += static_cast<char>((buffer >> bits) & 0xFF);
+            }
+        }
+        const std::string path =
+            std::string(dir) + "/" + portfolio + "_" + date + "_" + name + ".png";
+        std::ofstream out(path, std::ios::binary | std::ios::trunc);
+        out << bytes;
+        EXPECT_TRUE(out.good()) << path;
+    };
+
+    write_png("equity_curve",
+              ChartGenerator::generate_equity_curve_chart(db_, strategy, portfolio, date, 30));
+    write_png("pnl_by_symbol", ChartGenerator::generate_pnl_by_symbol_chart(
+                                   db_, strategy, portfolio, date, equities));
+    write_png("daily_pnl",
+              ChartGenerator::generate_daily_pnl_chart(db_, strategy, portfolio, date, 30));
+    write_png("cost_per_million", ChartGenerator::generate_total_transaction_costs_chart(
+                                      db_, strategy, portfolio, date, multiplier_of));
+    write_png("margin_posted",
+              ChartGenerator::generate_margin_posted_chart(db_, strategy, portfolio, date));
+    write_png("cumulative_pnl", ChartGenerator::generate_cumulative_pnl_by_symbol_chart(
+                                    db_, strategy, portfolio, date));
 }
