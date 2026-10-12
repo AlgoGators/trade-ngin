@@ -583,7 +583,7 @@ TEST_F(EmailFixture, TheSnapshotIsTheSettledStatisticsAndTheBookAsOfToday) {
     EXPECT_TRUE(between("<strong>Total Cumulative Return:</strong>", book, body.size()));
     EXPECT_TRUE(between("<strong>Current Portfolio Value:</strong>", book, body.size()));
     EXPECT_TRUE(
-        between("<strong>Gross Leverage (on the sizing capital E_t):</strong>", book, body.size()));
+        between("<strong>Gross Leverage (on the sizing capital):</strong>", book, body.size()));
     // the nine, with their units
     const std::string nine =
         "<div class=\"metric\"><strong>Win Rate:</strong> <span>50.88%</span></div>\n"
@@ -748,6 +748,28 @@ TEST(EmailCapitalLineTwinSourceGuard, BothFuturesRunnersHandTheTwoCapitalKeysOfR
                   std::string::npos)
             << runner;
     }
+}
+
+// The lead, 2026-10-12: a report body carries no symbol of the specification, and the words
+// "account value" name one figure only, the day's current portfolio value the leverage pair divides
+// by.
+TEST_F(EmailFixture, NoBodyCarriesASymbolOfTheSpecificationOrTwoAccountValues) {
+    for (const std::string& body : {conservative_body(), base_body(), equity_body()}) {
+        for (const char* symbol : {"V_t", "E_t", "L_max", "L_net_max", "cap L"}) {
+            EXPECT_EQ(body.find(symbol), std::string::npos) << symbol;
+        }
+        size_t count = 0;
+        for (size_t at = body.find("account value"); at != std::string::npos;
+             at = body.find("account value", at + 1)) {
+            ++count;
+        }
+        EXPECT_TRUE(count == 0 || count == 2) << count << " uses of the words";
+    }
+    const std::string body = conservative_body();
+    EXPECT_NE(body.find("<strong>Gross Leverage (on the account value):</strong>"),
+              std::string::npos);
+    EXPECT_NE(body.find("<strong>Net Leverage (on the account value):</strong>"),
+              std::string::npos);
 }
 
 // The same inputs render the same bytes twice: the body carries no clock.

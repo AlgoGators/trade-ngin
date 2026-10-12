@@ -22,11 +22,13 @@
 
 namespace trade_ngin {
 
-/// The labels of the report's leverage lines, each naming its denominator.
-inline constexpr const char* kReportGrossOnAccount = "Gross Leverage (on the account value V_t)";
-inline constexpr const char* kReportNetOnAccount = "Net Leverage (on the account value V_t)";
-inline constexpr const char* kReportGrossOnSizing = "Gross Leverage (on the sizing capital E_t)";
-inline constexpr const char* kReportNetOnSizing = "Net Leverage (on the sizing capital E_t)";
+/// The labels of the report's leverage lines, each naming its denominator in plain words: the text
+/// a reader of the report sees carries no symbol of the specification (the lead, 2026-10-12). "The
+/// account value" is the day's current portfolio value and nothing else in the report.
+inline constexpr const char* kReportGrossOnAccount = "Gross Leverage (on the account value)";
+inline constexpr const char* kReportNetOnAccount = "Net Leverage (on the account value)";
+inline constexpr const char* kReportGrossOnSizing = "Gross Leverage (on the sizing capital)";
+inline constexpr const char* kReportNetOnSizing = "Net Leverage (on the sizing capital)";
 
 /// What the over-limit lines print for one day.
 struct OverLimitReport {
@@ -59,7 +61,8 @@ inline OverLimitReport over_limit_report(const OnePassDay& day, const OverlayCol
     OverLimitReport report;
     for (const auto& module : modules) {
         const auto* carver = std::get_if<CarverModuleConfig>(&module.params);
-        if (carver == nullptr || !carver->overlay_limits()) continue;
+        if (carver == nullptr || !carver->overlay_limits())
+            continue;
         report.gross_limit = carver->max_gross_leverage;
         report.net_limit = carver->max_net_leverage;
     }
@@ -86,7 +89,8 @@ inline bool over_limit_terms_name_cap(const std::string& terms) {
             "CAP") {
             return true;
         }
-        if (end == std::string::npos) break;
+        if (end == std::string::npos)
+            break;
         begin = end + 1;
     }
     return false;
@@ -107,16 +111,16 @@ inline std::string over_limit_report_html(const OverLimitReport& report) {
         return "<div class=\"metric\"><strong>" + label + ":</strong> " + value + "</div>\n";
     };
     if (!report.has_reading) {
-        return line("Leverage on the sizing capital E_t and over-limit marks",
+        return line("Leverage on the sizing capital and over-limit marks",
                     "no reading (no sized rebalance this run: the day's row carries no "
                     "risk_detail)");
     }
     std::string html;
     html += line(kReportGrossOnSizing,
-                 times(report.gross_leverage) + " (limit L_max " + times(report.gross_limit) + ")");
-    html += line(kReportNetOnSizing, times(report.net_leverage) + " (limit L_net_max " +
+                 times(report.gross_leverage) + " (limit " + times(report.gross_limit) + ")");
+    html += line(kReportNetOnSizing, times(report.net_leverage) + " (limit " +
                                          times(report.net_limit) + " in either direction)");
-    html += line("Per-name cap L", times(report.per_name_cap) + " of the sizing capital E_t");
+    html += line("Per-name cap", times(report.per_name_cap) + " of the sizing capital");
     if (report.over_limit_after_rounding_terms.empty()) {
         html += line("Over limit after rounding", "no mark");
     } else {
@@ -129,16 +133,16 @@ inline std::string over_limit_report_html(const OverLimitReport& report) {
     if (report.over_limit_by_hold_terms.empty()) {
         html += line("Over limit by hold", "no mark");
     } else {
-        html += line("Over limit by hold",
-                     "terms " + report.over_limit_by_hold_terms + "; symbols " +
-                         (report.over_limit_by_hold_symbols.empty()
-                              ? std::string("none named")
-                              : report.over_limit_by_hold_symbols));
+        html +=
+            line("Over limit by hold", "terms " + report.over_limit_by_hold_terms + "; symbols " +
+                                           (report.over_limit_by_hold_symbols.empty()
+                                                ? std::string("none named")
+                                                : report.over_limit_by_hold_symbols));
     }
-    html += line("CAP", over_limit_terms_name_cap(report.over_limit_by_hold_terms)
-                            ? "marked: a held row is beyond the per-name cap L " +
-                                  times(report.per_name_cap)
-                            : std::string("no mark"));
+    html += line("CAP",
+                 over_limit_terms_name_cap(report.over_limit_by_hold_terms)
+                     ? "marked: a held row is beyond the per-name cap " + times(report.per_name_cap)
+                     : std::string("no mark"));
     return html;
 }
 

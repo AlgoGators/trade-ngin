@@ -1,8 +1,8 @@
 // tests/core/test_report_over_limit.cpp
 //
 // T-8D R20 as LOOP_SPEC v6.2 restates it: a futures book's daily report prints the stored book's
-// gross and net leverage on the sizing capital E_t beside the limits the overlay ran with (L_max,
-// L_net_max) and the per-name cap L, and the day's marks from risk_detail
+// gross and net leverage on the sizing capital beside the limits the overlay ran with (the gross
+// and net leverage limits) and the per-name cap, and the day's marks from risk_detail
 // (over_limit_after_rounding, over_limit_by_hold, CAP). A day with no mark says so; a day whose
 // row carries no risk_detail says it has no reading and prints no figure. The two leverage lines
 // the report already had are on the account value and now say so. The equity report is as it was.
@@ -56,7 +56,7 @@ std::vector<RiskModuleConfig> modules_with(double l_max, double l_net_max) {
     return {module};
 }
 
-// A sized rebalance the overlay answered, sized on E_t = 495,186.141684.
+// A sized rebalance the overlay answered, sized on a sizing capital of 495,186.141684.
 OnePassDay sized_day() {
     OnePassDay day;
     day.ran = true;
@@ -88,12 +88,12 @@ TEST(ReportOverLimit, ADayWithNoMarkPrintsTheLeverageOnTheSizingCapitalAndSaysNo
     EXPECT_DOUBLE_EQ(report.gross_leverage, 1.602357039519787);
     EXPECT_DOUBLE_EQ(report.net_leverage, 0.4118451281904877);
     EXPECT_EQ(over_limit_report_html(report),
-              "<div class=\"metric\"><strong>Gross Leverage (on the sizing capital E_t):</strong> "
-              "1.60x (limit L_max 8.00x)</div>\n"
-              "<div class=\"metric\"><strong>Net Leverage (on the sizing capital E_t):</strong> "
-              "0.41x (limit L_net_max 6.00x in either direction)</div>\n"
-              "<div class=\"metric\"><strong>Per-name cap L:</strong> 2.00x of the sizing capital "
-              "E_t</div>\n"
+              "<div class=\"metric\"><strong>Gross Leverage (on the sizing capital):</strong> "
+              "1.60x (limit 8.00x)</div>\n"
+              "<div class=\"metric\"><strong>Net Leverage (on the sizing capital):</strong> "
+              "0.41x (limit 6.00x in either direction)</div>\n"
+              "<div class=\"metric\"><strong>Per-name cap:</strong> 2.00x of the sizing "
+              "capital</div>\n"
               "<div class=\"metric\"><strong>Over limit after rounding:</strong> no mark</div>\n"
               "<div class=\"metric\"><strong>Over limit by hold:</strong> no mark</div>\n"
               "<div class=\"metric\"><strong>CAP:</strong> no mark</div>\n");
@@ -107,9 +107,9 @@ TEST(ReportOverLimit, TheLimitsAreTheConfiguredValuesNeverALiteral) {
     EXPECT_DOUBLE_EQ(report.net_limit, 5.5);
     EXPECT_DOUBLE_EQ(report.per_name_cap, 1.5);
     const std::string html = over_limit_report_html(report);
-    EXPECT_NE(html.find("3.01x (limit L_max 7.50x)"), npos) << html;
-    EXPECT_NE(html.find("-1.16x (limit L_net_max 5.50x in either direction)"), npos) << html;
-    EXPECT_NE(html.find("<strong>Per-name cap L:</strong> 1.50x of the sizing capital E_t"), npos)
+    EXPECT_NE(html.find("3.01x (limit 7.50x)"), npos) << html;
+    EXPECT_NE(html.find("-1.16x (limit 5.50x in either direction)"), npos) << html;
+    EXPECT_NE(html.find("<strong>Per-name cap:</strong> 1.50x of the sizing capital"), npos)
         << html;
     EXPECT_EQ(html.find("8.00x"), npos) << html;
     EXPECT_EQ(html.find("6.00x"), npos) << html;
@@ -127,8 +127,8 @@ TEST(ReportOverLimit, ADayOverLimitAfterRoundingPrintsItsTermsAndExcess) {
     day.over_limit_after_rounding_excess = 0.37125;
     const std::string html = over_limit_report_html(
         over_limit_report(day, columns_of(8.4312, 5.2), modules_with(8.0, 6.0), 2.0));
-    EXPECT_NE(html.find("<strong>Gross Leverage (on the sizing capital E_t):</strong> 8.43x (limit "
-                        "L_max 8.00x)"),
+    EXPECT_NE(html.find("<strong>Gross Leverage (on the sizing capital):</strong> 8.43x (limit "
+                        "8.00x)"),
               npos)
         << html;
     EXPECT_NE(html.find("<div class=\"metric\"><strong>Over limit after rounding:</strong> terms "
@@ -152,7 +152,7 @@ TEST(ReportOverLimit, ADayOverLimitByHoldWithCapPrintsTheTermsTheSymbolsAndTheCa
               npos)
         << html;
     EXPECT_NE(html.find("<div class=\"metric\"><strong>CAP:</strong> marked: a held row is beyond "
-                        "the per-name cap L 2.00x</div>\n"),
+                        "the per-name cap 2.00x</div>\n"),
               npos)
         << html;
     // A hold mark that does not name CAP leaves the CAP line unmarked; CAP alone marks it.
@@ -169,7 +169,7 @@ TEST(ReportOverLimit, ADayOverLimitByHoldWithCapPrintsTheTermsTheSymbolsAndTheCa
 
 TEST(ReportOverLimit, ARowWithNoRiskDetailSaysItHasNoReadingAndPrintsNoFigure) {
     const std::string expected =
-        "<div class=\"metric\"><strong>Leverage on the sizing capital E_t and over-limit "
+        "<div class=\"metric\"><strong>Leverage on the sizing capital and over-limit "
         "marks:</strong> no reading (no sized rebalance this run: the day's row carries no "
         "risk_detail)</div>\n";
     // A refused overlay: the pass ran on a cycle that trades and could not answer. Whatever the
@@ -192,6 +192,32 @@ TEST(ReportOverLimit, ARowWithNoRiskDetailSaysItHasNoReadingAndPrintsNoFigure) {
     EXPECT_EQ(expected.find("no mark"), npos) << "\"no reading\" is not \"no mark\"";
 }
 
+// The lead, 2026-10-12: the text a reader of the report sees is plain words. No line of the
+// over-limit block, in any of its forms, carries a symbol of the specification.
+TEST(ReportOverLimit, NoLineCarriesASymbolOfTheSpecification) {
+    OnePassDay marked = sized_day();
+    marked.over_limit_by_hold_terms = "CAP";
+    marked.over_limit_by_hold_symbols = "ZN";
+    const std::vector<std::string> forms = {
+        over_limit_report_html(
+            over_limit_report(sized_day(), columns_of(1.6, 0.4), modules_with(8.0, 6.0), 2.0)),
+        over_limit_report_html(
+            over_limit_report(marked, columns_of(1.6, 0.4), modules_with(8.0, 6.0), 2.0)),
+        over_limit_report_html(OverLimitReport{}), std::string(kReportGrossOnAccount),
+        std::string(kReportNetOnAccount)};
+    for (const std::string& text : forms) {
+        for (const char* symbol : {"V_t", "E_t", "L_max", "L_net_max", "cap L"}) {
+            EXPECT_EQ(text.find(symbol), npos) << symbol << " in: " << text;
+        }
+    }
+    EXPECT_EQ(std::string(kReportGrossOnAccount), "Gross Leverage (on the account value)");
+    EXPECT_EQ(std::string(kReportNetOnSizing), "Net Leverage (on the sizing capital)");
+    EXPECT_NE(forms[1].find("<strong>CAP:</strong> marked: a held row is beyond the per-name cap "
+                            "2.00x</div>"),
+              npos)
+        << forms[1];
+}
+
 // The body both futures runners build (the per-strategy overload), with no database.
 TEST(ReportOverLimit, TheFuturesReportNamesBothDenominatorsAndCarriesTheLines) {
     const std::map<std::string, double> metrics = {{"Gross Leverage", 1.5957404},
@@ -209,9 +235,9 @@ TEST(ReportOverLimit, TheFuturesReportNamesBothDenominatorsAndCarriesTheLines) {
         StrategyPositionsMap{}, {}, {}, {}, "LIVE_TREND_FOLLOWING", report);
     // The two lines the report had, each with its denominator, then the new lines, in order.
     const std::string leverage =
-        "<div class=\"metric\"><strong>Gross Leverage (on the account value V_t):</strong> "
+        "<div class=\"metric\"><strong>Gross Leverage (on the account value):</strong> "
         "<span>1.60x</span></div>\n"
-        "<div class=\"metric\"><strong>Net Leverage (on the account value V_t):</strong> "
+        "<div class=\"metric\"><strong>Net Leverage (on the account value):</strong> "
         "<span>0.41x</span></div>\n" +
         over_limit_report_html(report);
     EXPECT_NE(body.find(leverage), npos) << body;
@@ -228,14 +254,14 @@ TEST(ReportOverLimit, TheFuturesReportNamesBothDenominatorsAndCarriesTheLines) {
         StrategyExecutionsMap{}, "2026-04-26", "CONSERVATIVE_PORTFOLIO", true, {}, nullptr,
         StrategyPositionsMap{}, {}, {}, {}, "LIVE_TREND_FOLLOWING",
         over_limit_report(OnePassDay{}, OverlayColumns{}, modules_with(8.0, 6.0), 2.0));
-    EXPECT_NE(held.find("<strong>Gross Leverage (on the account value V_t):</strong> "
+    EXPECT_NE(held.find("<strong>Gross Leverage (on the account value):</strong> "
                         "<span>1.60x</span>"),
               npos);
-    EXPECT_NE(held.find("<strong>Leverage on the sizing capital E_t and over-limit marks:</strong> "
+    EXPECT_NE(held.find("<strong>Leverage on the sizing capital and over-limit marks:</strong> "
                         "no reading"),
               npos)
         << held;
-    EXPECT_EQ(held.find("(on the sizing capital E_t):"), npos) << "a figure with no reading";
+    EXPECT_EQ(held.find("(on the sizing capital):"), npos) << "a figure with no reading";
     EXPECT_EQ(held.find("no mark"), npos);
 }
 
@@ -253,7 +279,7 @@ TEST(ReportOverLimit, TheEquityReportIsUnchanged) {
                         "<span>0.10x</span></div>\n<br>\n"),
               npos)
         << body;
-    for (const char* absent : {"sizing capital E_t", "account value V_t", "Over limit", "L_max",
+    for (const char* absent : {"sizing capital", "account value", "Over limit", "Per-name cap",
                                "<strong>CAP:"}) {
         EXPECT_EQ(body.find(absent), npos) << absent;
     }
