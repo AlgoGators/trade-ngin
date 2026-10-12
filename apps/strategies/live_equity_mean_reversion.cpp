@@ -4464,26 +4464,17 @@ int main(int argc, char* argv[]) {
         auto risk_eval = snapshot_rm.process_positions(positions, market_data_snapshot);
 
         std::cout << "\n======= Strategy Metrics =======" << std::endl;
+        // T-8D-2 R68: the reporter's lines, named as the reporter's. Its volatility is the
+        // stored portfolio_var; its leverage is over the configured capital (risk_config.capital,
+        // set from initial_capital above), not the day's account value.
+        std::optional<trade_ngin::ReporterConsoleFigures> reporter_figures;
         if (risk_eval.is_ok()) {
             const auto& r = risk_eval.value();
-            // Use portfolio_var as annualized volatility proxy
-            std::cout << "Volatility: " << std::fixed << std::setprecision(2)
-                      << (r.portfolio_var * 100.0) << "%" << std::endl;
-            std::cout << "Gross Leverage: " << std::fixed << std::setprecision(2)
-                      << r.gross_leverage << std::endl;
-            std::cout << "Net Leverage: " << std::fixed << std::setprecision(2)
-                      << r.net_leverage << std::endl;
-            std::cout << "Max Correlation: " << std::fixed << std::setprecision(2)
-                      << r.correlation_risk << std::endl;
-            std::cout << "Jump Risk (99th): " << std::fixed << std::setprecision(2)
-                      << r.jump_risk << std::endl;
-        } else {
-            std::cout << "Volatility: N/A" << std::endl;
-            std::cout << "Gross Leverage: N/A" << std::endl;
-            std::cout << "Net Leverage: N/A" << std::endl;
-            std::cout << "Max Correlation: N/A" << std::endl;
-            std::cout << "Jump Risk (99th): N/A" << std::endl;
+            reporter_figures = trade_ngin::ReporterConsoleFigures{
+                r.portfolio_var, r.gross_leverage, r.net_leverage, r.correlation_risk, r.jump_risk};
         }
+        std::cout << trade_ngin::reporter_console(reporter_figures, "the configured capital", true)
+                  << std::flush;
         // T-8D-2 R68: the stored risk_scale, labelled. This book runs no overlay, so there is no
         // request to print beside it.
         std::cout << trade_ngin::risk_scale_console_no_overlay();

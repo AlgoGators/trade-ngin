@@ -2976,22 +2976,16 @@ int main(int argc, char* argv[]) {
 
         std::cout << "\n======= Strategy Metrics =======" << std::endl;
         std::cout << trade_ngin::report_risk_console(report_risk);
+        // T-8D-2 R68: the reporter's lines, named as the reporter's; its leverage is over the
+        // sizing capital the snapshot was given above.
+        std::optional<trade_ngin::ReporterConsoleFigures> reporter_figures;
         if (risk_eval.is_ok()) {
             const auto& r = risk_eval.value();
-            std::cout << "Gross Leverage (Risk): " << std::fixed << std::setprecision(2)
-                      << r.gross_leverage << std::endl;
-            std::cout << "Net Leverage: " << std::fixed << std::setprecision(2) << r.net_leverage
-                      << std::endl;
-            std::cout << "Max Correlation: " << std::fixed << std::setprecision(2)
-                      << r.correlation_risk << std::endl;
-            std::cout << "Jump Risk (99th): " << std::fixed << std::setprecision(2) << r.jump_risk
-                      << std::endl;
-        } else {
-            std::cout << "Gross Leverage (Risk): N/A" << std::endl;
-            std::cout << "Net Leverage: N/A" << std::endl;
-            std::cout << "Max Correlation: N/A" << std::endl;
-            std::cout << "Jump Risk (99th): N/A" << std::endl;
+            reporter_figures = trade_ngin::ReporterConsoleFigures{
+                r.portfolio_var, r.gross_leverage, r.net_leverage, r.correlation_risk, r.jump_risk};
         }
+        std::cout << trade_ngin::reporter_console(reporter_figures, "the sizing capital", false)
+                  << std::flush;
         // T-8D-2 R68: the row's risk_scale (the delivered scale, the same reading of the same
         // stored book as the column below) and the request m_t (risk_detail.risk_requested), each
         // labelled. The reporter's recommended scale stays on RISK_SCALE_REPORT.

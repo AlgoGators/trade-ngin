@@ -10,6 +10,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iomanip>
+#include <optional>
 #include <sstream>
 #include <string>
 
@@ -89,4 +90,78 @@ TEST(ConsolePositionReportTwinSourceGuard,
         EXPECT_EQ(src.find("\"Mkt Price\""), npos) << "the header of a table with no rows";
         EXPECT_EQ(src.find("\"Unreal PnL\""), npos);
     }
+}
+
+// ---------------------------------------------------------------------------------------------
+// Strategy Metrics: the snapshot reporter's lines.
+// ---------------------------------------------------------------------------------------------
+
+// The futures runners: the reporter's leverage is over the sizing capital the snapshot was given;
+// they print no reporter volatility (the overlay's expected risk stands in its place).
+TEST(ConsoleReporterLines, TheFuturesLinesNameTheReporterAndTheSizingCapital) {
+    const ReporterConsoleFigures figures{0.1551, 1.1112, -0.4321, 0.9645, 0.0312};
+    EXPECT_EQ(reporter_console(figures, "the sizing capital", false),
+              "Gross Leverage (reporter, on the sizing capital): 1.11\n"
+              "Net Leverage (reporter, on the sizing capital): -0.43\n"
+              "Max Correlation (reporter): 0.96\n"
+              "Jump Risk (99th, reporter): 0.03\n");
+}
+
+// The equity runner: its volatility line is the stored portfolio_var as a percent, named as the
+// reporter's ex-ante figure; its leverage is over the configured capital.
+TEST(ConsoleReporterLines, TheEquityLinesNameTheExAnteVolAndTheConfiguredCapital) {
+    const ReporterConsoleFigures figures{0.1924, 0.0841, 0.0841, 0.5, 0.0123};
+    const std::string text = reporter_console(figures, "the configured capital", true);
+    EXPECT_EQ(text,
+              "Ex-ante vol (reporter): 19.24%\n"
+              "Gross Leverage (reporter, on the configured capital): 0.08\n"
+              "Net Leverage (reporter, on the configured capital): 0.08\n"
+              "Max Correlation (reporter): 0.50\n"
+              "Jump Risk (99th, reporter): 0.01\n");
+    EXPECT_EQ(text.find("Volatility"), npos) << "portfolio_var is not the account's volatility";
+}
+
+TEST(ConsoleReporterLines, AFailedEvaluationPrintsNotAvailableUnderTheSameNames) {
+    EXPECT_EQ(reporter_console(std::nullopt, "the sizing capital", false),
+              "Gross Leverage (reporter, on the sizing capital): N/A\n"
+              "Net Leverage (reporter, on the sizing capital): N/A\n"
+              "Max Correlation (reporter): N/A\n"
+              "Jump Risk (99th, reporter): N/A\n");
+    EXPECT_EQ(reporter_console(std::nullopt, "the configured capital", true)
+                  .rfind("Ex-ante vol (reporter): N/A\n", 0),
+              0u);
+}
+
+// READS SOURCE (a labelled wiring and twin guard; the lines themselves are executed above).
+TEST(ConsoleReporterLinesTwinSourceGuard, TheRunnersPrintTheReporterThroughItsFunction) {
+    for (const char* runner : kFuturesRunners) {
+        SCOPED_TRACE(runner);
+        const std::string src = read_source(runner);
+        if (src.empty())
+            GTEST_SKIP() << "runner source not found from the test working directory";
+        EXPECT_EQ(count_of(src,
+                           "trade_ngin::reporter_console(reporter_figures, "
+                           "\"the sizing capital\", false)"),
+                  1u);
+        // The capital the label names is the capital the snapshot was built on.
+        EXPECT_EQ(
+            count_of(src, "snapshot_risk_config.capital = Decimal(portfolio->sizing_capital());"),
+            1u);
+        EXPECT_EQ(src.find("\"Gross Leverage (Risk): "), npos);
+        EXPECT_EQ(src.find("\"Net Leverage: "), npos);
+        EXPECT_EQ(src.find("\"Max Correlation: "), npos);
+        EXPECT_EQ(src.find("\"Jump Risk (99th): "), npos);
+    }
+    const std::string equity = read_source(kEquityRunner);
+    if (equity.empty())
+        GTEST_SKIP() << "runner source not found from the test working directory";
+    EXPECT_EQ(count_of(equity,
+                       "trade_ngin::reporter_console(reporter_figures, "
+                       "\"the configured capital\", true)"),
+              1u);
+    EXPECT_EQ(count_of(equity, "risk_config.capital = Decimal(initial_capital);"), 1u);
+    EXPECT_EQ(count_of(equity, "trade_ngin::RiskManager snapshot_rm(risk_config);"), 1u);
+    EXPECT_EQ(equity.find("\"Volatility: "), npos);
+    EXPECT_EQ(equity.find("\"Gross Leverage: "), npos);
+    EXPECT_EQ(equity.find("\"Net Leverage: "), npos);
 }
