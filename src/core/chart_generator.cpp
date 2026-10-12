@@ -17,6 +17,7 @@
 #include <ctime>
 #include <fstream>
 #include <iomanip>
+#include <optional>
 #include <sstream>
 #include "trade_ngin/core/logger.hpp"
 #include "trade_ngin/instruments/instrument_registry.hpp"
@@ -96,7 +97,10 @@ std::string ChartHelpers::format_currency(double value, int precision) {
 // their rows are the book's by the two ids.
 
 std::string ChartQueries::equity_curve(const std::string& strategy_id,
-                                       const std::string& portfolio_id, int lookback_days) {
+                                       const std::string& portfolio_id, const std::string& date,
+                                       int lookback_days) {
+    // T-8D-2 R63: the rows BEFORE the run date. The run date's own row is not settled (its P&L
+    // settles tomorrow), and a re-run of a past date must not chart the days after it.
     return "SELECT timestamp, equity "
            "FROM trading.equity_curve "
            "WHERE strategy_id = '" +
@@ -106,9 +110,30 @@ std::string ChartQueries::equity_curve(const std::string& strategy_id,
            portfolio_id +
            "' "
            "AND portfolio_type = 'system' "
+           "AND DATE(timestamp) < DATE('" +
+           date +
+           "') "
            "ORDER BY timestamp DESC "
            "LIMIT " +
            std::to_string(lookback_days);
+}
+
+std::string ChartQueries::book_capital(const std::string& strategy_id,
+                                       const std::string& portfolio_id, const std::string& date) {
+    // The book's starting capital as its latest run on or before the run date recorded it.
+    return "SELECT portfolio_config->>'total_capital' AS total_capital "
+           "FROM trading.live_run_metadata "
+           "WHERE strategy_id = '" +
+           strategy_id +
+           "' "
+           "AND portfolio_id = '" +
+           portfolio_id +
+           "' "
+           "AND DATE(date) <= DATE('" +
+           date +
+           "') "
+           "ORDER BY date DESC "
+           "LIMIT 1";
 }
 
 std::string ChartQueries::pnl_by_symbol(const std::string& strategy_id,
@@ -224,7 +249,8 @@ std::string ChartQueries::cumulative_pnl_by_symbol(const std::string& strategy_i
 // ChartSeries: from a query's rows to the points a chart plots
 // ============================================================================
 
-ChartData ChartSeries::equity_curve(std::vector<ChartPoint> rows) {
+ChartData ChartSeries::equity_curve(std::vector<ChartPoint> rows,
+                                    std::optional<double> book_capital) {
     ChartData chart_data;
 
     std::vector<std::string> dates;
@@ -293,47 +319,63 @@ ChartData ChartSeries::equity_curve(std::vector<ChartPoint> rows) {
         return chart_data;
     }
 
-    // Remove the last day's data (show up to yesterday only)
-    if (dates.size() > 1) {
-        std::string removed_date = dates.back();
-        dates.pop_back();
-        equity_values.pop_back();
-        INFO("Removed last day (" + removed_date + ") - showing up to previous day only");
-    }
-
-    // Prepend a starting point at $500k one day before the first data point
-    std::string first_date = dates.front();
-    std::tm tm = {};
-    std::istringstream ss(first_date);
-    ss >> std::get_time(&tm, "%Y-%m-%d");
-
-    if (!ss.fail()) {
-        // Subtract one day
-        auto first_timepoint = std::chrono::system_clock::from_time_t(std::mktime(&tm));
-        auto day_before = first_timepoint - std::chrono::hours(24);
-        auto day_before_time_t = std::chrono::system_clock::to_time_t(day_before);
-        std::tm* day_before_tm = std::gmtime(&day_before_time_t);
-
-        std::ostringstream date_oss;
-        date_oss << std::put_time(day_before_tm, "%Y-%m-%d");
-        std::string starting_date = date_oss.str();
-
-        // Insert starting point at beginning
-        dates.insert(dates.begin(), starting_date);
-        equity_values.insert(equity_values.begin(), 500000.0);
-
-        INFO("Added starting point at $500k on " + starting_date);
-    }
-
+    // T-8D-2 R63: the points are the stored rows and nothing else. The query stops before the run
+    // date, so the last point is the last settled day; no starting point is made up in front of
+    // the first.
     // Populate ChartData
     chart_data.labels = dates;
     chart_data.values = equity_values;
+    chart_data.title = "Equity Curve through " + dates.back() + " (settled)";
     chart_data.x_label = "Date";
     chart_data.y_label = "Portfolio Value ($)";
-    chart_data.reference_line = 500000.0;
-    chart_data.has_reference_line = true;
+    // The reference line is the book's own starting capital, or none when it is not on record.
+    if (book_capital && std::isfinite(*book_capital) && *book_capital > 0.0) {
+        chart_data.reference_line = *book_capital;
+        chart_data.has_reference_line = true;
+    }
 
     return chart_data;
+}
+
+namespace {
+// "YYYY-MM-DD" moved by a count of calendar days; empty when the text is not a date.
+std::string shifted_day(const std::string& ymd, int days) {
+    int year = 0, month = 0, day = 0;
+    char tail = 0;
+    if (ymd.size() != 10 ||
+        std::sscanf(ymd.c_str(), "%4d-%2d-%2d%c", &year, &month, &day, &tail) != 3) {
+        return {};
+    }
+    const std::chrono::year_month_day given{std::chrono::year{year},
+                                            std::chrono::month{static_cast<unsigned>(month)},
+                                            std::chrono::day{static_cast<unsigned>(day)}};
+    if (!given.ok()) {
+        return {};
+    }
+    const std::chrono::year_month_day moved{std::chrono::sys_days{given} + std::chrono::days{days}};
+    char text[16];
+    std::snprintf(text, sizeof(text), "%04d-%02u-%02u", static_cast<int>(moved.year()),
+                  static_cast<unsigned>(moved.month()), static_cast<unsigned>(moved.day()));
+    return text;
+}
+}  // namespace
+
+std::pair<std::string, std::string> ChartSeries::line_chart_x_range(
+    const std::vector<std::string>& labels) {
+    if (labels.empty()) {
+        return {};
+    }
+    if (labels.front() != labels.back()) {
+        return {labels.front(), labels.back()};
+    }
+    // One day (a book with one stored row): an axis from that day to itself is empty and cannot
+    // be drawn, so the axis runs from the day before to the day after and the point sits on it.
+    const std::string before = shifted_day(labels.front(), -1);
+    const std::string after = shifted_day(labels.front(), 1);
+    if (before.empty() || after.empty()) {
+        return {};
+    }
+    return {before, after};
 }
 
 ChartData ChartSeries::pnl_by_symbol(std::vector<ChartPoint> symbol_pnl_data,
@@ -519,12 +561,71 @@ ChartData ChartSeries::cumulative_pnl_by_symbol(std::vector<ChartPoint> symbol_p
 // ChartGenerator Implementation - Data Fetchers
 // ============================================================================
 
-ChartData ChartGenerator::fetch_equity_curve_data(
-    std::shared_ptr<DatabaseInterface> db,
-    const std::string& strategy_id,
+namespace {
+// One cell of a query's answer as a number: the database layer hands most columns over as text.
+std::optional<double> number_cell(const std::shared_ptr<arrow::ChunkedArray>& column, int64_t i) {
+    if (!column || column->num_chunks() == 0) {
+        return std::nullopt;
+    }
+    const auto chunk = column->chunk(0);
+    if (i >= chunk->length() || chunk->IsNull(i)) {
+        return std::nullopt;
+    }
+    try {
+        switch (chunk->type_id()) {
+            case arrow::Type::STRING:
+                return std::stod(std::static_pointer_cast<arrow::StringArray>(chunk)->GetString(i));
+            case arrow::Type::LARGE_STRING:
+                return std::stod(
+                    std::static_pointer_cast<arrow::LargeStringArray>(chunk)->GetString(i));
+            case arrow::Type::DOUBLE:
+                return std::static_pointer_cast<arrow::DoubleArray>(chunk)->Value(i);
+            case arrow::Type::FLOAT:
+                return static_cast<double>(
+                    std::static_pointer_cast<arrow::FloatArray>(chunk)->Value(i));
+            case arrow::Type::INT64:
+                return static_cast<double>(
+                    std::static_pointer_cast<arrow::Int64Array>(chunk)->Value(i));
+            case arrow::Type::INT32:
+                return static_cast<double>(
+                    std::static_pointer_cast<arrow::Int32Array>(chunk)->Value(i));
+            default:
+                return std::nullopt;
+        }
+    } catch (const std::exception&) {
+        return std::nullopt;  // text that is not a number
+    }
+}
+
+// The book's starting capital from its run metadata (T-8D-2 R63: the equity curve's reference
+// line). No row, no key or a failed read: no value, and the chart is drawn without the line.
+std::optional<double> read_book_capital(const std::shared_ptr<DatabaseInterface>& db,
+                                        const std::string& strategy_id,
+                                        const std::string& portfolio_id, const std::string& date) {
+    auto result = db->execute_query(ChartQueries::book_capital(strategy_id, portfolio_id, date));
+    if (result.is_error() || !result.value() || result.value()->num_rows() == 0 ||
+        result.value()->num_columns() == 0) {
+        INFO("Equity curve: no starting capital on record for " + portfolio_id +
+             ", the chart has no reference line");
+        return std::nullopt;
+    }
+    auto combined = result.value()->CombineChunks();
+    if (!combined.ok()) {
+        return std::nullopt;
+    }
+    const auto capital = number_cell(combined.ValueOrDie()->column(0), 0);
+    if (!capital) {
+        INFO("Equity curve: no starting capital on record for " + portfolio_id +
+             ", the chart has no reference line");
+    }
+    return capital;
+}
+}  // namespace
+
+ChartData ChartGenerator::fetch_equity_curve_data(std::shared_ptr<DatabaseInterface> db,
+                                                  const std::string& strategy_id,
                                                   const std::string& portfolio_id,
-    int lookback_days)
-{
+                                                  const std::string& date, int lookback_days) {
     ChartData chart_data;
 
     if (!db) {
@@ -534,7 +635,8 @@ ChartData ChartGenerator::fetch_equity_curve_data(
 
     try {
         // Query equity curve data
-        std::string query = ChartQueries::equity_curve(strategy_id, portfolio_id, lookback_days);
+        std::string query =
+            ChartQueries::equity_curve(strategy_id, portfolio_id, date, lookback_days);
 
         INFO("Querying equity curve with: " + query);
         auto result = db->execute_query(query);
@@ -640,7 +742,8 @@ ChartData ChartGenerator::fetch_equity_curve_data(
         for (size_t i = 0; i < dates.size(); i++) {
             rows.emplace_back(dates[i], equity_values[i]);
         }
-        return ChartSeries::equity_curve(std::move(rows));
+        return ChartSeries::equity_curve(std::move(rows),
+                                         read_book_capital(db, strategy_id, portfolio_id, date));
 
     } catch (const std::exception& e) {
         ERROR("Exception fetching equity curve data: " + std::string(e.what()));
@@ -1517,6 +1620,14 @@ std::string ChartGenerator::render_line_chart(const ChartData& data, const Chart
         return "";
     }
 
+    // The axis runs from the first day to the last; a chart of one day gets a day either side.
+    const auto x_range = ChartSeries::line_chart_x_range(data.labels);
+    if (x_range.first.empty()) {
+        ERROR("Line chart '" + data.title + "' has one point and its label '" +
+              data.labels.front() + "' is not a date: no x range, the chart is left out");
+        return "";
+    }
+
     try {
         // Build data file content
         std::ostringstream data_content;
@@ -1559,7 +1670,7 @@ std::string ChartGenerator::render_line_chart(const ChartData& data, const Chart
         script << "set xdata time\n";
         script << "set timefmt '%Y-%m-%d'\n";
         script << "set format x '%m/%d'\n";
-        script << "set xrange ['" << data.labels.front() << "':'" << data.labels.back() << "']\n";
+        script << "set xrange ['" << x_range.first << "':'" << x_range.second << "']\n";
 
         // X-axis ticks
         int num_ticks = std::min(5, static_cast<int>(data.labels.size()));
@@ -1888,14 +1999,13 @@ std::string ChartGenerator::render_pie_chart(const ChartData& data, const ChartC
 // ChartGenerator Implementation - High-Level Functions (Original)
 // ============================================================================
 
-std::string ChartGenerator::generate_equity_curve_chart(
-    std::shared_ptr<DatabaseInterface> db,
-    const std::string& strategy_id,
-                                                  const std::string& portfolio_id,
-    int lookback_days)
-{
+std::string ChartGenerator::generate_equity_curve_chart(std::shared_ptr<DatabaseInterface> db,
+                                                        const std::string& strategy_id,
+                                                        const std::string& portfolio_id,
+                                                        const std::string& date,
+                                                        int lookback_days) {
     // Fetch data using modular fetcher
-    ChartData data = fetch_equity_curve_data(db, strategy_id, portfolio_id, lookback_days);
+    ChartData data = fetch_equity_curve_data(db, strategy_id, portfolio_id, date, lookback_days);
 
     if (data.labels.empty() || data.values.empty()) {
         return "";

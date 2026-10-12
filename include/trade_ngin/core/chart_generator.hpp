@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <optional>
 #include <string>
 #include <utility>
 #include <vector>
@@ -56,8 +57,13 @@ using ChartPoint = std::pair<std::string, double>;
  * A fetcher sends exactly this text; a test calls these to read what a chart asks for.
  */
 namespace ChartQueries {
+/// The newest `lookback_days` stored rows BEFORE the run date `date` (T-8D-2 R63).
 std::string equity_curve(const std::string& strategy_id, const std::string& portfolio_id,
-                         int lookback_days);
+                         const std::string& date, int lookback_days);
+/// The book's starting capital (total_capital of its latest live_run_metadata row on or before
+/// the run date): the equity curve's reference line.
+std::string book_capital(const std::string& strategy_id, const std::string& portfolio_id,
+                         const std::string& date);
 std::string pnl_by_symbol(const std::string& strategy_id, const std::string& portfolio_id,
                           const std::string& date);
 std::string daily_pnl(const std::string& strategy_id, const std::string& portfolio_id,
@@ -84,8 +90,14 @@ struct CostRow {
     int64_t num_trades = 0;
 };
 
-/// rows: (date, equity), in any order.
-ChartData equity_curve(std::vector<ChartPoint> rows);
+/// rows: (date, equity) of the days before the run date, in any order. The points are those rows
+/// and no other; the title names the last day as settled; the reference line is the book's
+/// starting capital, or there is none when `book_capital` holds no positive number.
+ChartData equity_curve(std::vector<ChartPoint> rows, std::optional<double> book_capital);
+/// The first and last day of a line chart's time axis. A chart of ONE day gets the day before and
+/// the day after, because an axis from a day to itself is empty and cannot be drawn. An empty
+/// pair: no label, or a single label that is not a "YYYY-MM-DD" date.
+std::pair<std::string, std::string> line_chart_x_range(const std::vector<std::string>& labels);
 /// rows: (symbol, realized PnL); date: the run date.
 ChartData pnl_by_symbol(std::vector<ChartPoint> rows, const std::string& date);
 /// rows: (date, daily PnL), newest first as the query returns them.
@@ -139,15 +151,14 @@ public:
      * @brief Fetch equity curve data from database
      * @param db Database interface
      * @param strategy_id Strategy identifier
+     * @param date The run date (YYYY-MM-DD): the chart holds the stored days before it
      * @param lookback_days Number of days to fetch
      * @return ChartData with dates and equity values
      */
-    static ChartData fetch_equity_curve_data(
-        std::shared_ptr<DatabaseInterface> db,
-        const std::string& strategy_id,
-        const std::string& portfolio_id,
-        int lookback_days = 30
-    );
+    static ChartData fetch_equity_curve_data(std::shared_ptr<DatabaseInterface> db,
+                                             const std::string& strategy_id,
+                                             const std::string& portfolio_id,
+                                             const std::string& date, int lookback_days = 30);
 
     /**
      * @brief Fetch PnL by symbol data from database
@@ -275,22 +286,21 @@ public:
      *
      * Creates a time-series chart showing portfolio value over time using gnuplot.
      * The chart includes:
-     * - Line plot with data points
-     * - Reference line at starting value ($500k)
+     * - Line plot with data points: the stored days before the run date, through the last
+     *   settled day
+     * - Reference line at the book's starting capital (from its run metadata), or none
      * - Formatted axes with dates and currency
-     * - Performance metrics in the subtitle
      *
      * @param db Database interface to query equity curve data
      * @param strategy_id Strategy identifier to filter data
+     * @param date The run date (YYYY-MM-DD)
      * @param lookback_days Number of days to include in the chart
      * @return Base64-encoded PNG chart data, or empty string on error
      */
-    static std::string generate_equity_curve_chart(
-        std::shared_ptr<DatabaseInterface> db,
-        const std::string& strategy_id,
-        const std::string& portfolio_id,
-        int lookback_days = 30
-    );
+    static std::string generate_equity_curve_chart(std::shared_ptr<DatabaseInterface> db,
+                                                   const std::string& strategy_id,
+                                                   const std::string& portfolio_id,
+                                                   const std::string& date, int lookback_days = 30);
 
     /**
      * @brief Generate PnL by symbol chart for previous day

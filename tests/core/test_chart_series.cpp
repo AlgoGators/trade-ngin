@@ -13,8 +13,10 @@
 
 #include <arrow/api.h>
 
+#include <cmath>
 #include <cstdlib>
 #include <memory>
+#include <optional>
 #include <string>
 #include <utility>
 #include <vector>
@@ -90,7 +92,7 @@ private:
 
 TEST(ChartQueries, EveryQueryNamesTheBooksTwoIds) {
     const std::vector<std::string> queries = {
-        ChartQueries::equity_curve(kStrategy, kPortfolio, 30),
+        ChartQueries::equity_curve(kStrategy, kPortfolio, "2026-04-25", 30),
         ChartQueries::pnl_by_symbol(kStrategy, kPortfolio, "2026-04-25"),
         ChartQueries::daily_pnl(kStrategy, kPortfolio, "2026-04-25", 30),
         ChartQueries::cost_per_million(kStrategy, kPortfolio, "2026-04-25"),
@@ -122,7 +124,7 @@ TEST(ChartQueries, TheDatedQueriesAreBoundedByTheRunDate) {
 // previous stored day reads the same book as the rows it dates.
 TEST(ChartQueries, AQueryOfATableThatCarriesAPortfolioTypeReadsTheSystemBookOnly) {
     const std::string filter = "portfolio_type = 'system'";
-    EXPECT_TRUE(has(ChartQueries::equity_curve(kStrategy, kPortfolio, 30), filter));
+    EXPECT_TRUE(has(ChartQueries::equity_curve(kStrategy, kPortfolio, "2026-04-25", 30), filter));
     EXPECT_TRUE(
         has(ChartQueries::cumulative_pnl_by_symbol(kStrategy, kPortfolio, "2026-04-25"), filter));
     const std::string pnl = ChartQueries::pnl_by_symbol(kStrategy, kPortfolio, "2026-04-25");
@@ -145,9 +147,28 @@ TEST(ChartQueries, AQueryOfLiveResultsNamesNoPortfolioType) {
 
 // --- the equity curve ----------------------------------------------------------------------------
 
+// T-8D-2 R63: the chart holds the stored days BEFORE the run date (the run date's own row is not
+// settled, and a re-run of a past date must not chart the days after it).
+TEST(ChartQueries, TheEquityCurveReadsTheStoredDaysBeforeTheRunDate) {
+    const std::string query = ChartQueries::equity_curve(kStrategy, kPortfolio, "2026-04-25", 30);
+    EXPECT_TRUE(has(query, "DATE(timestamp) < DATE('2026-04-25')")) << query;
+    EXPECT_TRUE(has(query, "ORDER BY timestamp DESC LIMIT 30")) << query;
+}
+
+TEST(ChartQueries, TheBooksCapitalIsReadFromItsLatestRunMetadataOnOrBeforeTheRunDate) {
+    const std::string query = ChartQueries::book_capital(kStrategy, kPortfolio, "2026-04-25");
+    EXPECT_TRUE(has(query, "portfolio_config->>'total_capital'")) << query;
+    EXPECT_TRUE(has(query, "FROM trading.live_run_metadata")) << query;
+    EXPECT_TRUE(has(query, "strategy_id = '" + kStrategy + "'")) << query;
+    EXPECT_TRUE(has(query, "portfolio_id = '" + kPortfolio + "'")) << query;
+    EXPECT_TRUE(has(query, "DATE(date) <= DATE('2026-04-25')")) << query;
+    EXPECT_TRUE(has(query, "ORDER BY date DESC LIMIT 1")) << query;
+}
+
 TEST(ChartSeries, TheEquityCurveIsInDateOrderWhateverOrderItsRowsCome) {
     const ChartData data = ChartSeries::equity_curve(
-        {{"2026-04-24", 497239.40}, {"2026-04-22", 496100.00}, {"2026-04-23", 495994.40}});
+        {{"2026-04-24", 497239.40}, {"2026-04-22", 496100.00}, {"2026-04-23", 495994.40}},
+        std::nullopt);
     ASSERT_GE(data.labels.size(), 2u);
     for (size_t i = 1; i < data.labels.size(); ++i) {
         EXPECT_LT(data.labels[i - 1], data.labels[i]);
@@ -156,22 +177,90 @@ TEST(ChartSeries, TheEquityCurveIsInDateOrderWhateverOrderItsRowsCome) {
     EXPECT_EQ(data.y_label, "Portfolio Value ($)");
 }
 
+// T-8D-2 R63: the curve used to start with a made-up point of 500,000 one day before its first
+// row (on every book, the 100,000 equity book included) and to drop its last row. The points are
+// now the rows it was given, each with its own value, and no other.
+TEST(ChartSeries, TheEquityCurvePlotsItsStoredRowsAndNoOtherPoint) {
+    const ChartData data = ChartSeries::equity_curve(
+        {{"2026-04-22", 496100.00}, {"2026-04-23", 495994.40}, {"2026-04-24", 497239.40}},
+        500000.0);
+    ASSERT_EQ(data.labels.size(), 3u);
+    ASSERT_EQ(data.values.size(), 3u);
+    EXPECT_EQ(data.labels[0], "2026-04-22");
+    EXPECT_EQ(data.labels[2], "2026-04-24");
+    EXPECT_DOUBLE_EQ(data.values[0], 496100.00);
+    EXPECT_DOUBLE_EQ(data.values[1], 495994.40);
+    EXPECT_DOUBLE_EQ(data.values[2], 497239.40);
+    for (double value : data.values) {
+        EXPECT_NE(value, 500000.0) << "a point the book did not store";
+    }
+}
+
+TEST(ChartSeries, TheEquityCurveIsCaptionedThroughItsLastDaySettled) {
+    const ChartData data = ChartSeries::equity_curve(
+        {{"2026-04-23", 495994.40}, {"2026-04-24", 497239.40}}, std::nullopt);
+    EXPECT_EQ(data.title, "Equity Curve through 2026-04-24 (settled)");
+}
+
+// The reference line is the book's own starting capital (500,000 on a futures book, 100,000 on
+// the equity book), and there is none when the capital is not on record.
+TEST(ChartSeries, TheEquityCurvesReferenceLineIsTheBooksCapitalOrThereIsNone) {
+    const std::vector<ChartPoint> rows = {{"2026-06-15", 99780.0}, {"2026-06-16", 99782.7}};
+    const ChartData futures = ChartSeries::equity_curve(rows, 500000.0);
+    EXPECT_TRUE(futures.has_reference_line);
+    EXPECT_DOUBLE_EQ(futures.reference_line, 500000.0);
+    const ChartData equity = ChartSeries::equity_curve(rows, 100000.0);
+    EXPECT_TRUE(equity.has_reference_line);
+    EXPECT_DOUBLE_EQ(equity.reference_line, 100000.0);
+    EXPECT_FALSE(ChartSeries::equity_curve(rows, std::nullopt).has_reference_line);
+    EXPECT_FALSE(ChartSeries::equity_curve(rows, 0.0).has_reference_line);
+    EXPECT_FALSE(ChartSeries::equity_curve(rows, std::nan("")).has_reference_line);
+}
+
 TEST(ChartSeries, TheEquityCurveKeepsOnlyTheRowsAfterItsLastGapOfMoreThanFiveDays) {
     const ChartData data = ChartSeries::equity_curve({{"2026-03-01", 1.0},
                                                       {"2026-03-02", 2.0},
                                                       {"2026-04-21", 3.0},
                                                       {"2026-04-22", 4.0},
-                                                      {"2026-04-23", 5.0}});
-    for (const auto& label : data.labels) {
-        EXPECT_GE(label, std::string("2026-04-20")) << "a row before the gap is plotted";
-    }
-    EXPECT_FALSE(data.labels.empty());
+                                                      {"2026-04-23", 5.0}},
+                                                     std::nullopt);
+    ASSERT_EQ(data.labels.size(), 3u);
+    EXPECT_EQ(data.labels.front(), "2026-04-21");
+    EXPECT_EQ(data.labels.back(), "2026-04-23");
 }
 
 TEST(ChartSeries, AnEquityCurveWithNoRowIsNoChart) {
-    const ChartData data = ChartSeries::equity_curve({});
+    const ChartData data = ChartSeries::equity_curve({}, 500000.0);
     EXPECT_TRUE(data.labels.empty());
     EXPECT_TRUE(data.values.empty());
+}
+
+// A book with ONE stored day before the run date: one point. Its time axis cannot run from that
+// day to itself (gnuplot: "Can't plot with an empty x range!"), so it runs a day either side.
+TEST(ChartSeries, ABookWithOneStoredDayIsOnePointOnAnAxisOfThreeDays) {
+    const ChartData data = ChartSeries::equity_curve({{"2026-03-01", 100000.0}}, 100000.0);
+    ASSERT_EQ(data.labels.size(), 1u);
+    EXPECT_EQ(data.labels[0], "2026-03-01");
+    EXPECT_DOUBLE_EQ(data.values[0], 100000.0);
+    EXPECT_EQ(data.title, "Equity Curve through 2026-03-01 (settled)");
+
+    const auto range = ChartSeries::line_chart_x_range(data.labels);
+    EXPECT_EQ(range.first, "2026-02-28");
+    EXPECT_EQ(range.second, "2026-03-02");
+    EXPECT_NE(range.first, range.second);
+}
+
+TEST(ChartSeries, ALineChartsAxisRunsFromItsFirstDayToItsLast) {
+    const auto range = ChartSeries::line_chart_x_range({"2026-04-22", "2026-04-23", "2026-04-24"});
+    EXPECT_EQ(range.first, "2026-04-22");
+    EXPECT_EQ(range.second, "2026-04-24");
+    // the turn of a year and a leap day
+    EXPECT_EQ(ChartSeries::line_chart_x_range({"2026-01-01"}).first, "2025-12-31");
+    EXPECT_EQ(ChartSeries::line_chart_x_range({"2028-02-28"}).second, "2028-02-29");
+    // no label, and one label that is not a date: no axis (the renderer leaves the chart out)
+    EXPECT_TRUE(ChartSeries::line_chart_x_range({}).first.empty());
+    EXPECT_TRUE(ChartSeries::line_chart_x_range({"not-a-date"}).first.empty());
+    EXPECT_TRUE(ChartSeries::line_chart_x_range({"2026-02-30"}).first.empty());
 }
 
 // --- yesterday's PnL by symbol -------------------------------------------------------------------
@@ -256,10 +345,54 @@ TEST(ChartFetchers, MarginPostedSkipsADayWithNoStoredMargin) {
     EXPECT_EQ(data.labels[1], "2026-04-24");
 }
 
+// The equity curve end to end: the rows the query answers are the points, the capital of the run
+// metadata is the reference line, and both queries are the ones ChartQueries builds.
+TEST(ChartFetchers, TheEquityCurvePlotsTheAnsweredRowsAgainstTheBooksCapital) {
+    auto db = std::make_shared<AnsweringDatabase>();
+    db->answer(
+        "trading.equity_curve", {"timestamp", "equity"},
+        {{"2026-06-15 00:00:00+00", "99780.0000"}, {"2026-06-12 00:00:00+00", "99540.2500"}});
+    db->answer("trading.live_run_metadata", {"total_capital"}, {{"100000.0"}});
+    const ChartData data = ChartGenerator::fetch_equity_curve_data(
+        db, "LIVE_EQUITY_MEAN_REVERSION", "EQUITY_MR_PORTFOLIO", "2026-06-16", 30);
+    ASSERT_EQ(db->queries.size(), 2u);
+    EXPECT_EQ(db->queries[0], ChartQueries::equity_curve("LIVE_EQUITY_MEAN_REVERSION",
+                                                         "EQUITY_MR_PORTFOLIO", "2026-06-16", 30));
+    EXPECT_EQ(db->queries[1], ChartQueries::book_capital("LIVE_EQUITY_MEAN_REVERSION",
+                                                         "EQUITY_MR_PORTFOLIO", "2026-06-16"));
+    ASSERT_EQ(data.labels.size(), 2u);
+    EXPECT_EQ(data.labels[0], "2026-06-12");
+    EXPECT_EQ(data.labels[1], "2026-06-15");
+    EXPECT_DOUBLE_EQ(data.values[0], 99540.25);
+    EXPECT_DOUBLE_EQ(data.values[1], 99780.0);
+    EXPECT_EQ(data.title, "Equity Curve through 2026-06-15 (settled)");
+    EXPECT_TRUE(data.has_reference_line);
+    EXPECT_DOUBLE_EQ(data.reference_line, 100000.0);
+}
+
+TEST(ChartFetchers, AnEquityCurveWhoseCapitalIsNotOnRecordIsDrawnWithNoReferenceLine) {
+    auto db = std::make_shared<AnsweringDatabase>();  // the run metadata query is not answered
+    db->answer("trading.equity_curve", {"timestamp", "equity"},
+               {{"2026-04-23 05:00:00+00", "495994.4000"}});
+    const ChartData data =
+        ChartGenerator::fetch_equity_curve_data(db, kStrategy, kPortfolio, "2026-04-24", 30);
+    ASSERT_EQ(data.labels.size(), 1u);
+    EXPECT_EQ(data.labels[0], "2026-04-23");
+    EXPECT_FALSE(data.has_reference_line);
+
+    auto no_key = std::make_shared<AnsweringDatabase>();  // a metadata row without the key
+    no_key->answer("trading.equity_curve", {"timestamp", "equity"},
+                   {{"2026-04-23 05:00:00+00", "495994.4000"}});
+    no_key->answer("trading.live_run_metadata", {"total_capital"}, {{"NULL"}});
+    EXPECT_FALSE(
+        ChartGenerator::fetch_equity_curve_data(no_key, kStrategy, kPortfolio, "2026-04-24", 30)
+            .has_reference_line);
+}
+
 TEST(ChartFetchers, AQueryThatFailsIsNoChart) {
     auto db = std::make_shared<AnsweringDatabase>();  // answers nothing: every query is an error
-    EXPECT_TRUE(
-        ChartGenerator::fetch_equity_curve_data(db, kStrategy, kPortfolio, 30).labels.empty());
+    EXPECT_TRUE(ChartGenerator::fetch_equity_curve_data(db, kStrategy, kPortfolio, "2026-04-24", 30)
+                    .labels.empty());
     EXPECT_TRUE(ChartGenerator::fetch_pnl_by_symbol_data(db, kStrategy, kPortfolio, "2026-04-24")
                     .labels.empty());
     EXPECT_TRUE(ChartGenerator::fetch_cumulative_transaction_costs_data(db, kStrategy, kPortfolio,
@@ -297,7 +430,8 @@ TEST_F(ChartQueriesDb, EveryChartQueryRunsOnTheDatabase) {
     const std::string strategy = "LIVE_TREND_FOLLOWING";
     const std::string portfolio = "CONSERVATIVE_PORTFOLIO";
     const std::vector<std::string> queries = {
-        ChartQueries::equity_curve(strategy, portfolio, 30),
+        ChartQueries::equity_curve(strategy, portfolio, "2026-04-25", 30),
+        ChartQueries::book_capital(strategy, portfolio, "2026-04-25"),
         ChartQueries::pnl_by_symbol(strategy, portfolio, "2026-04-25"),
         ChartQueries::daily_pnl(strategy, portfolio, "2026-04-25", 30),
         ChartQueries::cost_per_million(strategy, portfolio, "2026-04-25"),

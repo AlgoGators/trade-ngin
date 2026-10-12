@@ -706,7 +706,7 @@ std::string EmailSender::generate_trading_report_body(
         const std::string chart_portfolio_id_legacy = chart_portfolio_id;
         // Generate equity curve chart
         chart_base64_ = ChartGenerator::generate_equity_curve_chart(
-            db, chart_strategy_id, chart_portfolio_id_legacy, 30);
+            db, chart_strategy_id, chart_portfolio_id_legacy, date, 30);
         if (!chart_base64_.empty()) {
             html << "<h3 style=\"margin-top: 20px; color: #333;\">Equity Curve</h3>\n";
             html << "<div style=\"width: 100%; max-width: 1000px; margin: 20px auto; text-align: "
@@ -4105,8 +4105,8 @@ std::string EmailSender::generate_trading_report_body(
         const std::string& chart_portfolio_id = portfolio_name;
 
         // Generate equity curve chart
-        chart_base64_ = ChartGenerator::generate_equity_curve_chart(
-            db, chart_strategy_id, chart_portfolio_id, 30);
+        chart_base64_ = ChartGenerator::generate_equity_curve_chart(db, chart_strategy_id,
+                                                                    chart_portfolio_id, date, 30);
         if (!chart_base64_.empty()) {
             html << "<h3 style=\"margin-top: 20px; color: #333;\">Equity Curve</h3>\n";
             html << "<div style=\"width: 100%; max-width: 1000px; margin: 20px auto; text-align: "
