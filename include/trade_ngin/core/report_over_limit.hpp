@@ -96,6 +96,42 @@ inline bool over_limit_terms_name_cap(const std::string& terms) {
     return false;
 }
 
+/// One stored term of a mark in the words of LOOP_SPEC section 4's table of checks (and section
+/// 6.4's cap): the report prints no symbol of the specification. A term this does not know is
+/// returned as stored, so nothing is ever hidden.
+inline std::string over_limit_term_words(const std::string& term) {
+    if (term == "R")
+        return "portfolio risk";
+    if (term == "R_jump")
+        return "jump risk";
+    if (term == "R_shock")
+        return "correlation-shock risk";
+    if (term == "L_g")
+        return "gross leverage";
+    if (term == "L_n")
+        return "net leverage";
+    if (term == "CAP")
+        return "per-name cap";
+    return term;
+}
+
+/// A stored ';'-separated list of terms as plain words, comma-separated, in the stored order.
+inline std::string over_limit_terms_words(const std::string& terms) {
+    std::string words;
+    size_t begin = 0;
+    while (begin <= terms.size()) {
+        const size_t end = terms.find(';', begin);
+        const std::string term =
+            terms.substr(begin, end == std::string::npos ? std::string::npos : end - begin);
+        if (!term.empty())
+            words += (words.empty() ? "" : ", ") + over_limit_term_words(term);
+        if (end == std::string::npos)
+            break;
+        begin = end + 1;
+    }
+    return words;
+}
+
 /**
  * @brief The lines as the report's html, one `metric` div each, in this order: gross leverage on
  *        the sizing capital, net leverage on the sizing capital, the per-name cap, over limit
@@ -126,20 +162,21 @@ inline std::string over_limit_report_html(const OverLimitReport& report) {
     } else {
         char buf[64];
         std::snprintf(buf, sizeof(buf), "%.4f", report.over_limit_after_rounding_excess);
-        html += line("Over limit after rounding",
-                     "terms " + report.over_limit_after_rounding_terms + "; excess " + buf +
-                         " (in units of the largest stored per-contract weight)");
+        html +=
+            line("Over limit after rounding",
+                 "terms " + over_limit_terms_words(report.over_limit_after_rounding_terms) +
+                     "; excess " + buf + " (in units of the largest stored per-contract weight)");
     }
     if (report.over_limit_by_hold_terms.empty()) {
         html += line("Over limit by hold", "no mark");
     } else {
-        html +=
-            line("Over limit by hold", "terms " + report.over_limit_by_hold_terms + "; symbols " +
-                                           (report.over_limit_by_hold_symbols.empty()
-                                                ? std::string("none named")
-                                                : report.over_limit_by_hold_symbols));
+        html += line(
+            "Over limit by hold",
+            "terms " + over_limit_terms_words(report.over_limit_by_hold_terms) + "; symbols " +
+                (report.over_limit_by_hold_symbols.empty() ? std::string("none named")
+                                                           : report.over_limit_by_hold_symbols));
     }
-    html += line("CAP",
+    html += line("Held beyond the per-name cap",
                  over_limit_terms_name_cap(report.over_limit_by_hold_terms)
                      ? "marked: a held row is beyond the per-name cap " + times(report.per_name_cap)
                      : std::string("no mark"));
