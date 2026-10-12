@@ -2868,18 +2868,39 @@ std::string EmailSender::format_rollover_warning(
                             expiry_date = get_nth_weekday_local(disp_year, disp_month, 3, 3);
                             expiry_date = get_previous_business_day_local(expiry_date);
                         } else if (symbol == "CL" || symbol == "HO" || symbol == "RB" || symbol == "NG") {
-                            // Energy futures: 3rd business day prior to 25th of month before contract month
-                            expiry_date.tm_year = disp_year - 1900;
-                            expiry_date.tm_mon = disp_month - 2;  // Month before contract month
-                            if (expiry_date.tm_mon < 0) {
-                                expiry_date.tm_mon += 12;
-                                expiry_date.tm_year -= 1;
+                            // Energy futures: 3rd business day prior to the 25th of the month
+                            // BEFORE the contract month.
+                            auto energy_expiry = [&get_previous_business_day_local](int year,
+                                                                                    int month) {
+                                std::tm e{};
+                                e.tm_year = year - 1900;
+                                e.tm_mon = month - 2;  // Month before contract month
+                                if (e.tm_mon < 0) {
+                                    e.tm_mon += 12;
+                                    e.tm_year -= 1;
+                                }
+                                e.tm_mday = 25;
+                                std::mktime(&e);
+                                for (int j = 0; j < 3; ++j)
+                                    e = get_previous_business_day_local(e);
+                                return e;
+                            };
+                            // The contract of the run date's own month expired LAST month, so
+                            // taking it as the front (as this branch did) put the expiry behind
+                            // the run date on every day and the notice never printed (HO and NG
+                            // are in this branch since migration 019 set their months to "All
+                            // Months"). The front contract is the first whose expiry is not
+                            // behind the run date: next month's until about the 20th, the one
+                            // after from then on.
+                            expiry_date = energy_expiry(disp_year, disp_month);
+                            for (int step = 0;
+                                 step < 2 && days_between(current_tm, expiry_date) <= 0; ++step) {
+                                if (++disp_month > 12) {
+                                    disp_month = 1;
+                                    ++disp_year;
+                                }
+                                expiry_date = energy_expiry(disp_year, disp_month);
                             }
-                            expiry_date.tm_mday = 25;
-                            std::mktime(&expiry_date);
-                            // Go back 3 business days
-                            for (int j = 0; j < 3; ++j)
-                                expiry_date = get_previous_business_day_local(expiry_date);
                         } else {
                             // Default monthly (e.g., equity indices): 3rd Friday
                             expiry_date = get_nth_weekday_local(disp_year, disp_month, 5, 3);

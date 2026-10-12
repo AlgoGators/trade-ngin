@@ -31,12 +31,17 @@
 #include <vector>
 
 #include "trade_ngin/core/config_loader.hpp"
+#define private public  // format_rollover_warning is called directly below
 #include "trade_ngin/core/email_sender.hpp"
+#undef private
+#include <arrow/api.h>
 #include "trade_ngin/core/report_over_limit.hpp"
 #include "trade_ngin/core/report_price_text.hpp"
 #include "trade_ngin/core/report_risk_lines.hpp"
 #include "trade_ngin/instruments/equity.hpp"
 #include "trade_ngin/instruments/futures.hpp"
+
+#include "../data/test_db_utils.hpp"
 #include "trade_ngin/instruments/instrument_registry.hpp"
 #include "trade_ngin/live/live_data_loader.hpp"
 
@@ -1112,6 +1117,77 @@ TEST(EmailConfigKey, TheTemplatesDoNotNameTheDeletedKey) {
         EXPECT_NO_THROW((void)nlohmann::json::parse(read_file(root / "config_template" / file)))
             << file;
     }
+}
+
+// A database that answers the rollover notice's one query (the held symbols' contract metadata)
+// with the rows it is given, and nothing else.
+class ContractMonthsDatabase : public trade_ngin::testing::MockPostgresDatabase {
+public:
+    struct Row {
+        std::string databento, ib, months;
+    };
+    explicit ContractMonthsDatabase(std::vector<Row> rows)
+        : MockPostgresDatabase("mock://contract-months"), rows_(std::move(rows)) {}
+    Result<std::shared_ptr<arrow::Table>> execute_query(const std::string& query) override {
+        if (query.find("metadata.contract_metadata") == std::string::npos) {
+            return make_error<std::shared_ptr<arrow::Table>>(ErrorCode::DATABASE_ERROR,
+                                                             "not asked");
+        }
+        arrow::StringBuilder databento, ib, months;
+        for (const auto& row : rows_) {
+            (void)databento.Append(row.databento);
+            (void)ib.Append(row.ib);
+            (void)months.Append(row.months);
+        }
+        std::shared_ptr<arrow::Array> a, b, c;
+        (void)databento.Finish(&a);
+        (void)ib.Finish(&b);
+        (void)months.Finish(&c);
+        return Result<std::shared_ptr<arrow::Table>>(
+            arrow::Table::Make(arrow::schema({arrow::field("Databento Symbol", arrow::utf8()),
+                                              arrow::field("IB Symbol", arrow::utf8()),
+                                              arrow::field("Contract Months", arrow::utf8())}),
+                               {a, b, c}));
+    }
+
+private:
+    std::vector<Row> rows_;
+};
+
+// Since migration 019, HO and NG list "All Months" and fall in the monthly branch of the rollover
+// notice, which took the contract of the run date's own month as the front. An energy contract
+// expires about the 20th of the month BEFORE its contract month, so that expiry was always behind
+// the run date and the notice never printed. 2026-04-10: the front is the May contract (K6),
+// which expires on 2026-04-22 (three business days before Saturday 04-25), twelve days ahead.
+TEST_F(EmailFixture, AnEnergyContractWithinFifteenDaysOfItsExpiryIsInTheRolloverNotice) {
+    auto db = std::make_shared<ContractMonthsDatabase>(std::vector<ContractMonthsDatabase::Row>{
+        {"HO", "HO", "All Months"}, {"NG", "NG", "All Months"}, {"MBT", "MBT", "All Months"}});
+    const std::unordered_map<std::string, Position> held = {
+        {"HO.v.0", row("HO.v.0", 1.0, 2.5)},
+        {"NG.v.0", row("NG.v.0", -1.0, 3.1)},
+        {"MBT.v.0", row("MBT.v.0", 1.0, 77740.0)}};
+    const std::string notice = sender_.format_rollover_warning(held, "2026-04-10", db, "");
+    EXPECT_NE(notice.find("<li><strong>HO:</strong> Currently holding <strong>HOK6</strong>"),
+              std::string::npos)
+        << notice;
+    EXPECT_NE(notice.find("Switch to <strong>HOM6</strong>"), std::string::npos) << notice;
+    EXPECT_NE(notice.find("<li><strong>NG:</strong> Currently holding <strong>NGK6</strong>"),
+              std::string::npos)
+        << notice;
+    // a monthly contract outside the energy rule is as it was: the April contract, third Friday
+    EXPECT_NE(notice.find("<li><strong>MBT:</strong> Currently holding <strong>MBTJ6</strong>"),
+              std::string::npos)
+        << notice;
+    // after that expiry the front is the June contract, about the 20th of May: no notice yet
+    const std::string later = sender_.format_rollover_warning(held, "2026-04-24", db, "");
+    EXPECT_EQ(later.find("<strong>HO:</strong>"), std::string::npos) << later;
+    EXPECT_EQ(later.find("<strong>NG:</strong>"), std::string::npos) << later;
+    // December: the front is the January contract of the next year
+    const std::string december = sender_.format_rollover_warning(held, "2026-12-10", db, "");
+    EXPECT_NE(december.find("<strong>HO:</strong> Currently holding <strong>HOF7</strong>"),
+              std::string::npos)
+        << december;
+    EXPECT_NE(december.find("Switch to <strong>HOG7</strong>"), std::string::npos) << december;
 }
 
 // The same inputs render the same bytes twice: the body carries no clock.
