@@ -49,6 +49,7 @@
 #include "trade_ngin/live/book_exposure.hpp"
 #include "trade_ngin/live/margin_columns.hpp"
 #include "trade_ngin/live/margin_manager.hpp"
+#include "trade_ngin/live/report_queries.hpp"
 #include "trade_ngin/live/risk_module_failure.hpp"
 #include "trade_ngin/live/run_metadata_marks.hpp"
 #include "trade_ngin/live/session_book_gate.hpp"
@@ -4342,16 +4343,11 @@ int main(int argc, char* argv[]) {
                     INFO("Loading yesterday's finalized positions for email: " +
                          yesterday_date_for_email);
 
+                    // T-8D-2 R55: this book's rows by both ids, the system book only.
                     std::string positions_query_email =
-                        "SELECT symbol, quantity, average_price, daily_realized_pnl, "
-                        "daily_unrealized_pnl, last_update, strategy_name "
-                        "FROM trading.positions "
-                        "WHERE strategy_id = '" +
-                        combined_strategy_id + "' AND portfolio_id = '" +
-                        coordinator_config.portfolio_id +
-                        "' AND DATE(last_update) = "
-                        "'" +
-                        yesterday_date_for_email + "'";
+                        trade_ngin::yesterday_positions_report_query(
+                            combined_strategy_id, coordinator_config.portfolio_id,
+                            yesterday_date_for_email, true);
 
                     auto positions_result_email = db->execute_query(positions_query_email);
 

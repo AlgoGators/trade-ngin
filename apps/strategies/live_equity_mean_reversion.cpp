@@ -32,6 +32,7 @@
 #include "trade_ngin/live/trading_days_anchor.hpp"
 #include "trade_ngin/live/broker_frame.hpp"
 #include "trade_ngin/live/console_labels.hpp"
+#include "trade_ngin/live/report_queries.hpp"
 #include "trade_ngin/live/corporate_actions_audit_log.hpp"
 #include "trade_ngin/live/dividend_counter.hpp"
 #include "trade_ngin/live/live_daily_cycle.hpp"
@@ -6123,9 +6124,9 @@ int main(int argc, char* argv[]) {
 
                 INFO("Loading yesterday's finalized positions for email: " + yesterday_date_for_email);
 
-                std::string positions_query_email = "SELECT symbol, quantity, average_price, daily_realized_pnl, daily_unrealized_pnl, last_update "
-                                                   "FROM trading.positions "
-                                                   "WHERE strategy_id = 'LIVE_EQUITY_MEAN_REVERSION' AND portfolio_id = '" + portfolio_id + "' AND DATE(last_update) = '" + yesterday_date_for_email + "'";
+                // T-8D-2 R55: this book's rows by both ids, the system book only.
+                std::string positions_query_email = trade_ngin::yesterday_positions_report_query(
+                    kEquityStrategyId, portfolio_id, yesterday_date_for_email, false);
 
                 auto positions_result_email = db->execute_query(positions_query_email);
 
