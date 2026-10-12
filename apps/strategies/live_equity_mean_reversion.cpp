@@ -5748,25 +5748,33 @@ int main(int argc, char* argv[]) {
 
         // Get forecasts for all symbols
         INFO("Retrieving current forecasts...");
-        std::cout << "\n======= Current Forecasts =======" << std::endl;
-        std::cout << std::setw(10) << "Symbol" << " | "
-                  << std::setw(12) << "Forecast" << " | "
-                  << std::setw(12) << "Position" << std::endl;
-        std::cout << std::string(40, '-') << std::endl;
-
         // Collect signals for database storage
         std::unordered_map<std::string, double> signals_to_store;
 
+        // T-8D-2 R68: the figure this sleeve publishes is a z-score, named as that; its own
+        // target (before the portfolio acts on it) prints beside the quantity of the day's
+        // stored row (positions_to_save, the book handed to the results manager above).
+        const std::map<std::string, double> stored_quantities =
+            trade_ngin::account_book_of_rows(positions_to_save);
+        std::vector<trade_ngin::ForecastConsoleRow> forecast_rows;
         for (const auto& symbol : symbols) {
             double z_score = mr_strategy->get_z_score(symbol);
             double position = mr_strategy->get_position(symbol);
 
             signals_to_store[symbol] = z_score;
 
-            std::cout << std::setw(10) << symbol << " | "
-                      << std::setw(12) << std::fixed << std::setprecision(4) << z_score << " | "
-                      << std::setw(12) << std::fixed << std::setprecision(2) << position << std::endl;
+            trade_ngin::ForecastConsoleRow row;
+            row.sleeve = kEquityStrategyName;
+            row.symbol = symbol;
+            row.signal = z_score;
+            row.sleeve_target = position;
+            const auto stored = stored_quantities.find(symbol);
+            if (stored != stored_quantities.end())
+                row.stored_quantity = stored->second;
+            forecast_rows.push_back(row);
         }
+        std::cout << trade_ngin::current_forecasts_console("z-score", forecast_rows, 6)
+                  << std::flush;
 
         // Store signals using LiveResultsManager
         if (!signals_to_store.empty()) {

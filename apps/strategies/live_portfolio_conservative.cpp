@@ -875,15 +875,6 @@ int main(int argc, char* argv[]) {
         INFO("Created strategy instances map with " +
              std::to_string(strategy_instances_map.size()) + " entries");
 
-        // Get reference to first strategy for single-strategy compatibility (Phase 3 will fix this)
-        auto tf_strategy = strategies[0];
-
-        // Cast to TrendFollowingStrategy for methods like get_forecast/get_position (Phase 3 will
-        // iterate all) Note: This works for both TrendFollowingStrategy and its subclasses
-        // (Slow/Fast)
-        auto tf_strategy_typed =
-            std::dynamic_pointer_cast<trade_ngin::TrendFollowingStrategy>(tf_strategy);
-
         // ========================================
         // PHASE 3: PORTFOLIO MANAGER LOOP
         // Add all strategies to portfolio with normalized allocations
@@ -3973,31 +3964,37 @@ int main(int argc, char* argv[]) {
 
         // Get forecasts for all symbols
         INFO("Retrieving current forecasts...");
-        std::cout << "\n======= Current Forecasts =======" << std::endl;
-        std::cout << std::setw(10) << "Symbol"
-                  << " | " << std::setw(12) << "Forecast"
-                  << " | " << std::setw(12) << "Position" << std::endl;
-        std::cout << std::string(40, '-') << std::endl;
-
-        // Collect signals for database storage
-        std::unordered_map<std::string, double> signals_to_store;
-
-        for (const auto& symbol : symbols) {
-            double forecast = tf_strategy_typed ? tf_strategy_typed->get_forecast(symbol) : 0.0;
-            double position = tf_strategy_typed ? tf_strategy_typed->get_position(symbol) : 0.0;
-
-            signals_to_store[symbol] = forecast;
-
-            std::cout << std::setw(10) << symbol << " | " << std::setw(12) << std::fixed
-                      << std::setprecision(4) << forecast << " | " << std::setw(12) << std::fixed
-                      << std::setprecision(2) << position << std::endl;
+        // T-8D-2 R68: every sleeve, not the first one only. A row is the sleeve's own forecast
+        // and its own target (before the portfolio acts on it) beside the quantity of the
+        // sleeve's stored row of the day (strategy_positions_map, the book PHASE 4 stored).
+        std::vector<trade_ngin::ForecastConsoleRow> forecast_rows;
+        for (size_t i = 0; i < strategies.size(); ++i) {
+            const auto trend_sleeve =
+                std::dynamic_pointer_cast<trade_ngin::TrendFollowingStrategy>(strategies[i]);
+            const auto stored_sleeve = strategy_positions_map.find(strategy_names[i]);
+            for (const auto& symbol : symbols) {
+                trade_ngin::ForecastConsoleRow row;
+                row.sleeve = strategy_names[i];
+                row.symbol = symbol;
+                if (trend_sleeve) {
+                    row.signal = trend_sleeve->get_forecast(symbol);
+                    row.sleeve_target = trend_sleeve->get_position(symbol);
+                }
+                if (stored_sleeve != strategy_positions_map.end()) {
+                    const auto stored = stored_sleeve->second.find(symbol);
+                    if (stored != stored_sleeve->second.end())
+                        row.stored_quantity = stored->second.quantity.as_double();
+                }
+                forecast_rows.push_back(row);
+            }
         }
+        std::cout << trade_ngin::current_forecasts_console("Forecast", forecast_rows, 2)
+                  << std::flush;
 
         // NOTE: Signals are already stored per-strategy in PHASE 4 above.
         // Do NOT call results_manager->set_signals() here as it would cause duplicate
         // storage with the combined_strategy_id as both strategy_id AND strategy_name,
         // which creates incorrect duplicate entries in the signals table.
-        // The signals_to_store map is only used for display purposes above.
 
         // Save trading results to results table
         INFO("Saving trading results to database...");

@@ -5,6 +5,7 @@
 #include <cstdio>
 #include <optional>
 #include <string>
+#include <vector>
 
 namespace trade_ngin {
 
@@ -98,6 +99,66 @@ inline std::string daily_return_console_as_written(double daily_return_pct) {
                   "mark): %.2f%%\n",
                   daily_return_pct);
     return buf;
+}
+
+/// One row of the "Current Forecasts" table: a sleeve's own reading of one symbol beside what
+/// the book stores for that sleeve and symbol.
+///   signal           the sleeve's forecast (a trend sleeve) or z-score (the mean-reversion
+///                    sleeve); no value for a sleeve that has neither.
+///   sleeve_target    the position the sleeve itself asked for, BEFORE the portfolio acts on it
+///                    (the overlay, the one pass from the held book, whole contracts, the
+///                    holds): it is not the position held.
+///   stored_quantity  the quantity of the sleeve's stored row of the day; 0 where it stores none.
+struct ForecastConsoleRow {
+    std::string sleeve;
+    std::string symbol;
+    std::optional<double> signal;
+    std::optional<double> sleeve_target;
+    double stored_quantity{0.0};
+};
+
+/// The "Current Forecasts" table: its banner, a header that names every column (`signal_name`
+/// is "Forecast" on the futures runners and "z-score" on the equity runner), a rule, and one
+/// line per row in the order given. The signal prints four decimals, the two quantities
+/// `quantity_decimals` (2 for contracts, 6 for shares, the scale of the stored column); a
+/// quantity that rounds to zero prints without a sign.
+inline std::string current_forecasts_console(const std::string& signal_name,
+                                             const std::vector<ForecastConsoleRow>& rows,
+                                             int quantity_decimals) {
+    static const std::string kTarget = "Sleeve target (before portfolio)";
+    static const std::string kStored = "Stored quantity";
+    const auto pad = [](const std::string& text, std::size_t width) {
+        return text.size() >= width ? text : std::string(width - text.size(), ' ') + text;
+    };
+    const auto number = [](double value, int decimals) {
+        char buf[64];
+        std::snprintf(buf, sizeof(buf), "%.*f", decimals, value);
+        std::string text = buf;
+        if (text[0] == '-' && text.find_first_of("123456789") == std::string::npos)
+            text.erase(0, 1);
+        return text;
+    };
+    std::size_t sleeve_width = std::string("Sleeve").size();
+    for (const auto& row : rows)
+        sleeve_width = row.sleeve.size() > sleeve_width ? row.sleeve.size() : sleeve_width;
+    const std::size_t signal_width = signal_name.size() > 12 ? signal_name.size() : 12;
+
+    const std::string header = pad("Sleeve", sleeve_width) + " | " + pad("Symbol", 10) + " | " +
+                               pad(signal_name, signal_width) + " | " + kTarget + " | " + kStored;
+    std::string out = "\n======= Current Forecasts =======\n" + header + "\n" +
+                      std::string(header.size(), '-') + "\n";
+    for (const auto& row : rows) {
+        char signal[64] = "n/a";
+        if (row.signal)
+            std::snprintf(signal, sizeof(signal), "%.4f", *row.signal);
+        out += pad(row.sleeve, sleeve_width) + " | " + pad(row.symbol, 10) + " | " +
+               pad(signal, signal_width) + " | " +
+               pad(row.sleeve_target ? number(*row.sleeve_target, quantity_decimals)
+                                     : std::string("n/a"),
+                   kTarget.size()) +
+               " | " + pad(number(row.stored_quantity, quantity_decimals), kStored.size()) + "\n";
+    }
+    return out;
 }
 
 }  // namespace trade_ngin

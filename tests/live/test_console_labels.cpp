@@ -13,6 +13,7 @@
 #include <optional>
 #include <sstream>
 #include <string>
+#include <vector>
 
 #include "trade_ngin/live/console_labels.hpp"
 
@@ -227,4 +228,107 @@ TEST(ConsoleDayTLinesTwinSourceGuard, EachRunnerPrintsTheLineThatIsTrueOfItsOwnD
         1u);
     EXPECT_EQ(equity.find("std::cout << \"Realized P&L: $\""), npos);
     EXPECT_EQ(equity.find("std::cout << \"Daily Return: \""), npos);
+}
+
+// ---------------------------------------------------------------------------------------------
+// Current Forecasts.
+// ---------------------------------------------------------------------------------------------
+
+// A two-sleeve book: each sleeve has its own line for a symbol, with its own forecast and its
+// own target, beside the quantity that sleeve's row stores. The sleeve target is what the
+// sleeve asked for before the portfolio acted; the stored quantity is what is held: on M2K the
+// trend sleeve asked for 4 and the book stores 2.
+TEST(ConsoleCurrentForecasts, EverySleeveHasItsOwnLineWithTheStoredQuantityBesideItsTarget) {
+    const std::vector<ForecastConsoleRow> rows = {
+        {"TREND_FOLLOWING", "M2K", 12.1077, 4.0, 2.0},
+        {"TREND_FOLLOWING", "ZF", -3.5, -2.0, 0.0},
+        {"TREND_FOLLOWING_FAST", "M2K", -20.0, -1.0, -1.0},
+    };
+    EXPECT_EQ(
+        current_forecasts_console("Forecast", rows, 2),
+        "\n======= Current Forecasts =======\n"
+        "              Sleeve |     Symbol |     Forecast | Sleeve target (before portfolio) | "
+        "Stored quantity\n"
+        "--------------------------------------------------------------------------------"
+        "---------------------\n"
+        "     TREND_FOLLOWING |        M2K |      12.1077 |                             4.00 | "
+        "           2.00\n"
+        "     TREND_FOLLOWING |         ZF |      -3.5000 |                            -2.00 | "
+        "           0.00\n"
+        "TREND_FOLLOWING_FAST |        M2K |     -20.0000 |                            -1.00 | "
+        "          -1.00\n");
+}
+
+// No column is named "Position": the sleeve's own target is not the position held.
+TEST(ConsoleCurrentForecasts, TheHeaderNamesTheSleeveTargetAndNoPosition) {
+    const std::string table = current_forecasts_console("Forecast", {}, 2);
+    EXPECT_NE(table.find("Sleeve target (before portfolio)"), npos);
+    EXPECT_NE(table.find("Stored quantity"), npos);
+    EXPECT_EQ(table.find("Position"), npos);
+    // The rule is as wide as the header.
+    const auto header_at = table.find("Sleeve |");
+    const auto header_end = table.find('\n', header_at);
+    const auto rule_end = table.find('\n', header_end + 1);
+    EXPECT_EQ(rule_end - header_end - 1, header_end - header_at);
+}
+
+// The equity book: the sleeve's figure is a z-score and the column says so; fractional shares
+// print at the scale the stored column holds.
+TEST(ConsoleCurrentForecasts, TheEquityTableNamesTheZScoreAndPrintsSharesAtSixDecimals) {
+    const std::string table = current_forecasts_console(
+        "z-score", {{"EQUITY_MEAN_REVERSION", "TMUS", -2.3456, 17.612345, 17.612345}}, 6);
+    EXPECT_NE(table.find("|      z-score |"), npos);
+    EXPECT_EQ(table.find("Forecast |"), npos);
+    EXPECT_NE(table.find("|      -2.3456 |"), npos);
+    EXPECT_EQ(count_of(table, "17.612345"), 2u);
+}
+
+// A quantity that rounds to zero prints as zero (the parent printed "-0.00"); a sleeve with no
+// reading of its own prints n/a and keeps its stored quantity.
+TEST(ConsoleCurrentForecasts, AZeroQuantityHasNoSignAndASleeveWithNoReadingSaysSo) {
+    const std::string table = current_forecasts_console(
+        "Forecast", {{"A", "ES", 0.0, -0.0001, -0.0}, {"B", "ES", std::nullopt, std::nullopt, 3.0}},
+        2);
+    EXPECT_EQ(table.find("-0.00"), npos) << table;
+    EXPECT_NE(table.find("     A |         ES |       0.0000 |                             0.00 | "
+                         "           0.00\n"),
+              npos)
+        << table;
+    EXPECT_NE(table.find("     B |         ES |          n/a |                              n/a | "
+                         "           3.00\n"),
+              npos)
+        << table;
+}
+
+// READS SOURCE (a labelled wiring and twin guard; the table itself is executed above).
+TEST(ConsoleCurrentForecastsTwinSourceGuard, TheRunnersPrintEverySleeveAndTheStoredBook) {
+    for (const char* runner : kFuturesRunners) {
+        SCOPED_TRACE(runner);
+        const std::string src = read_source(runner);
+        if (src.empty())
+            GTEST_SKIP() << "runner source not found from the test working directory";
+        EXPECT_EQ(count_of(src,
+                           "trade_ngin::current_forecasts_console(\"Forecast\", "
+                           "forecast_rows, 2)"),
+                  1u);
+        // Every sleeve, and the book the runner stores.
+        EXPECT_NE(src.find("for (size_t i = 0; i < strategies.size(); ++i) {\n"
+                           "            const auto trend_sleeve ="),
+                  npos);
+        EXPECT_NE(src.find("const auto stored_sleeve = strategy_positions_map.find("
+                           "strategy_names[i]);"),
+                  npos);
+        EXPECT_EQ(src.find("tf_strategy_typed"), npos) << "the first sleeve only";
+        EXPECT_EQ(src.find("<< \"Position\""), npos);
+    }
+    const std::string equity = read_source(kEquityRunner);
+    if (equity.empty())
+        GTEST_SKIP() << "runner source not found from the test working directory";
+    EXPECT_EQ(count_of(equity,
+                       "trade_ngin::current_forecasts_console(\"z-score\", "
+                       "forecast_rows, 6)"),
+              1u);
+    EXPECT_NE(equity.find("trade_ngin::account_book_of_rows(positions_to_save);"), npos);
+    EXPECT_EQ(equity.find("<< \"Forecast\""), npos);
+    EXPECT_EQ(equity.find("<< \"Position\""), npos);
 }
