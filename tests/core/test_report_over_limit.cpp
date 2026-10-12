@@ -279,8 +279,8 @@ TEST(ReportOverLimit, TheEquityReportIsUnchanged) {
                         "<span>0.10x</span></div>\n<br>\n"),
               npos)
         << body;
-    for (const char* absent : {"sizing capital", "account value", "Over limit", "Per-name cap",
-                               "<strong>CAP:"}) {
+    for (const char* absent :
+         {"sizing capital", "account value", "Over limit", "Per-name cap", "<strong>CAP:"}) {
         EXPECT_EQ(body.find(absent), npos) << absent;
     }
 }
