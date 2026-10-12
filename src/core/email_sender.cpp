@@ -1932,8 +1932,9 @@ std::string EmailSender::format_strategy_metrics(
 
     html << "</div>\n";
 
-    html << "<h2>Book as of " << report_date
-         << " (today's costs booked; P&amp;L settles tomorrow)</h2>\n";
+    // A futures book and the equity book write the day T row differently: each has its own
+    // heading (report_email_context.hpp).
+    html << book_heading_html(report_date, context.equities);
     html << "<div class=\"metrics-category\">\n";
 
     auto total_cumulative_return = strategy_metrics.find("Total Cumulative Return");

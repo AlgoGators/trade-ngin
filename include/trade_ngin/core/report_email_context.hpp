@@ -83,6 +83,30 @@ inline std::string annualized_return_label(const EmailReportContext& context) {
                           : "Total Annualized Return";
 }
 
+/**
+ * @brief The heading of the report's book block: the day T row as the run wrote it, and what of
+ *        the day is still to be settled. The two kinds of book write that row differently, so
+ *        each has its own words.
+ *
+ * A futures row is written before the day's close exists: it carries the day's transaction costs
+ * and nothing of the day's market move, which the next run settles as the row's P&L.
+ *
+ * An equity row is written with more than its costs (the equity runner's Day T aggregate): the
+ * P&L realized by the day's own fills, which are priced at the close before, is booked on the day
+ * and never restated; the day's costs are booked; and the shares held are valued at that same
+ * close, the latest one the run has. What the next run settles is the value of the holdings at
+ * the day's own close, that is the day's price move, and no realized P&L.
+ */
+inline std::string book_heading_html(const std::string& report_date, bool equities) {
+    if (equities) {
+        return "<h2>Book as of " + report_date +
+               " (today's trades and costs booked, holdings valued at the latest close; today's "
+               "price move settles on the next run)</h2>\n";
+    }
+    return "<h2>Book as of " + report_date +
+           " (today's costs booked; P&amp;L settles tomorrow)</h2>\n";
+}
+
 /// The equity runner's metric key for the cumulative dividend income its day's row stores
 /// (total_dividend_income): the report prints it as one informational line (T-8D-2 R44 (c)).
 inline constexpr const char* kReportDividendIncome = "Dividend Income";

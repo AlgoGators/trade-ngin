@@ -722,8 +722,75 @@ TEST_F(EmailFixture, TheSnapshotIsTheSettledStatisticsAndTheBookAsOfToday) {
     const std::string equity = equity_body();
     EXPECT_NE(equity.find("<h2>2026-06-18 (settled)</h2>"), std::string::npos);
     EXPECT_NE(equity.find("<h2>Statistics through 2026-06-18 (settled)</h2>"), std::string::npos);
-    EXPECT_NE(equity.find("<h2>Book as of 2026-06-22 (today's costs booked"), std::string::npos);
+    EXPECT_NE(equity.find("<h2>Book as of 2026-06-22 (today's trades and costs booked"),
+              std::string::npos);
     EXPECT_EQ(equity.find("2026-06-21 Metrics"), std::string::npos);
+}
+
+// The lead's audit of 2026-10-12 (A3): the heading of the book block said "today's costs booked;
+// P&L settles tomorrow" on every book. That is the futures day row. The equity day row is written
+// with the P&L its own fills realized, its costs and its holdings valued at the latest close; the
+// next run settles the day's price move only. Each book has its own heading, from one function.
+TEST_F(EmailFixture, TheEquityBookBlockSaysWhatItsDayRowBooksAndTheFuturesHeadingIsUnchanged) {
+    const std::string futures_heading =
+        "<h2>Book as of 2026-04-28 (today's costs booked; P&amp;L settles tomorrow)</h2>\n";
+    const std::string equity_heading =
+        "<h2>Book as of 2026-06-22 (today's trades and costs booked, holdings valued at the "
+        "latest close; today's price move settles on the next run)</h2>\n";
+    EXPECT_EQ(book_heading_html("2026-04-28", false), futures_heading);
+    EXPECT_EQ(book_heading_html("2026-06-22", true), equity_heading);
+
+    const std::string equity = equity_body();
+    const auto at = equity.find(equity_heading);
+    ASSERT_NE(at, std::string::npos);
+    EXPECT_EQ(equity.find("<h2>Book as of", at + 1), std::string::npos) << "one book block";
+    // the futures sentence is on no equity body: its day row is not costs only
+    EXPECT_EQ(equity.find("today's costs booked"), std::string::npos);
+    EXPECT_EQ(equity.find("settles tomorrow"), std::string::npos);
+    // plain words: no day notation
+    for (const char* gone : {"T-1", "T-2", "day T", "Day T"}) {
+        EXPECT_EQ(equity_heading.find(gone), std::string::npos) << gone;
+    }
+
+    // both futures books keep their heading, byte for byte
+    EXPECT_NE(conservative_body().find(futures_heading), std::string::npos);
+    const std::string base = base_body();
+    EXPECT_NE(base.find(book_heading_html("2026-04-27", false)), std::string::npos);
+    for (const std::string& body : {conservative_body(), base}) {
+        EXPECT_EQ(body.find("holdings valued at the latest close"), std::string::npos);
+    }
+}
+
+// READS SOURCE (a labelled guard): the equity runner is a `main()`, so what its day row holds
+// cannot be executed here. The equity heading rests on four lines of it: the day's P&L as written
+// is the realized of the day's fills less the costs plus the change in the value of the holdings,
+// and the next run's update of that row restates the value of the holdings and never the
+// realized. A change to any of them makes the heading's words false: this fails, it does not skip.
+TEST(EmailBookHeadingSourceGuard, TheEquityDayRowBooksItsRealizedAndTheNextRunRestatesItsMark) {
+    fs::path dir = fs::current_path();
+    std::string src;
+    for (int i = 0; i < 8 && !dir.empty(); ++i, dir = dir.parent_path()) {
+        if (fs::exists(dir / "apps/strategies/live_equity_mean_reversion.cpp")) {
+            src = read_file(dir / "apps/strategies/live_equity_mean_reversion.cpp");
+            break;
+        }
+    }
+    ASSERT_FALSE(src.empty()) << "runner source not found from " << fs::current_path().string();
+    for (const char* present :
+         {"double daily_pnl_for_today = daily_realized_pnl - total_daily_commissions;",
+          "double daily_unrealized_pnl = total_unrealized_pnl - previous_total_unrealized_pnl;",
+          "double daily_pnl = daily_pnl_for_today + daily_unrealized_pnl;",
+          "\"total_unrealized_pnl = \" + std::to_string(yesterday_finalized_unrealized) + \", \"",
+          "{\"daily_realized_pnl\", daily_realized_pnl},"}) {
+        EXPECT_NE(src.find(present), std::string::npos) << present;
+    }
+    // the next run's update of the row reads its realized and does not write it
+    const auto update = src.find("UPDATE trading.live_results SET \"");
+    ASSERT_NE(update, std::string::npos);
+    const auto where = src.find("\"WHERE strategy_id = 'LIVE_EQUITY_MEAN_REVERSION'", update);
+    ASSERT_NE(where, std::string::npos);
+    EXPECT_EQ(src.substr(update, where - update).find("\"daily_realized_pnl = "),
+              std::string::npos);
 }
 
 // T-8D-2 R74: the annualised return is printed for every n and labelled while n is under one year
