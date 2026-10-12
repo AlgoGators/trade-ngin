@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <functional>
 #include <optional>
 #include <string>
 #include <utility>
@@ -93,13 +94,20 @@ std::string cumulative_pnl_by_symbol(const std::string& strategy_id,
  * A series with no label is a chart that is not drawn.
  */
 namespace ChartSeries {
-/// One day of the cost chart's query.
-struct CostRow {
+/// One row of the cost chart's query: a stored day of the book, its cost, and ONE fill the book
+/// made that day (a day of several fills is several rows; a day without a fill is one row whose
+/// symbol is empty).
+struct CostFillRow {
     std::string date;
-    double daily_cost = 0.0;
-    double total_notional = 0.0;
-    int64_t num_trades = 0;
+    double daily_cost = 0.0;  ///< the day's stored cost total (charged after netting)
+    std::string symbol;       ///< empty: the day's row with no fill
+    double quantity = 0.0;
+    double price = 0.0;
 };
+
+/// A symbol's contract multiplier (a futures root's contract size, 1 for a share), or none when
+/// it is not on record.
+using MultiplierLookup = std::function<std::optional<double>(const std::string& symbol)>;
 
 /// rows: (date, equity) of the days before the run date, in any order. The points are those rows
 /// and no other; the title names the last day as settled; the reference line is the book's
@@ -115,7 +123,12 @@ ChartData pnl_by_symbol(std::vector<ChartPoint> rows, const std::string& date,
                         bool equities = false);
 /// rows: (date, daily PnL), newest first as the query returns them.
 ChartData daily_pnl(std::vector<ChartPoint> rows);
-ChartData cost_per_million(const std::vector<CostRow>& rows);
+/// rows: grouped by day, oldest first. A day's point is its cost / the notional TRADED that day
+/// (the sum of quantity x price x multiplier over the day's fills) x 1,000,000 (T-8D-2 R64). A
+/// day without a fill has no point; neither has a day with a fill whose multiplier is not on
+/// record.
+ChartData cost_per_million(const std::vector<CostFillRow>& rows,
+                           const MultiplierLookup& multiplier_of);
 /// rows: (date, margin posted), oldest first.
 ChartData margin_posted(std::vector<ChartPoint> rows);
 /// rows: (symbol, cumulative realized PnL); date: the run date.
@@ -201,12 +214,12 @@ public:
         int lookback_days = 30
     );
 
+    /// Cost per $1M traded. `multiplier_of` empty: the instrument registry's contract multiplier.
     static ChartData fetch_cumulative_transaction_costs_data(
-        std::shared_ptr<DatabaseInterface> db,
-        const std::string& strategy_id,
-        const std::string& portfolio_id,
-        const std::string& date /* today, YYYY-MM-DD */);
-    
+        std::shared_ptr<DatabaseInterface> db, const std::string& strategy_id,
+        const std::string& portfolio_id, const std::string& date /* today, YYYY-MM-DD */,
+        const ChartSeries::MultiplierLookup& multiplier_of = {});
+
     static ChartData fetch_margin_posted_data(
         std::shared_ptr<DatabaseInterface> db,
         const std::string& strategy_id,

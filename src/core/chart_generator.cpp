@@ -188,18 +188,17 @@ std::string ChartQueries::daily_pnl(const std::string& strategy_id, const std::s
 std::string ChartQueries::cost_per_million(const std::string& strategy_id,
                                            const std::string& portfolio_id,
                                            const std::string& date) {
-    return "SELECT "
-           "    lr.date, "
-           "    COALESCE(lr.daily_transaction_costs, 0) as daily_cost, "
-           "    COALESCE(lr.gross_notional, 0) as total_notional, "
-           "    COALESCE(trade_counts.num_trades, 0) as num_trades "
+    // T-8D-2 R64: each stored day of the book with the fills the BOOK made that day (its own
+    // trading.executions rows, by strategy_id and portfolio_id); a day without a fill is one row
+    // whose fill columns are NULL. The day's cost is the stored day total, which the runner
+    // charged after netting.
+    return "SELECT lr.date, COALESCE(lr.daily_transaction_costs, 0) AS daily_cost, "
+           "e.symbol, e.quantity, e.price "
            "FROM trading.live_results lr "
-           "LEFT JOIN ( "
-           "    SELECT DATE(execution_time) as trade_date, COUNT(*) as num_trades "
-           "    FROM trading.executions "
-           "    WHERE execution_type = 'STRATEGY' "  // T-ROLLX: ROLL legs are not trades
-           "    GROUP BY DATE(execution_time) "
-           ") trade_counts ON DATE(lr.date) = trade_counts.trade_date "
+           "LEFT JOIN trading.executions e "
+           "ON DATE(e.execution_time) = DATE(lr.date) "
+           "AND e.strategy_id = lr.strategy_id "
+           "AND e.portfolio_id = lr.portfolio_id "
            "WHERE lr.strategy_id = '" +
            strategy_id +
            "' "
@@ -209,7 +208,7 @@ std::string ChartQueries::cost_per_million(const std::string& strategy_id,
            "AND DATE(lr.date) <= DATE('" +
            date +
            "') "
-           "ORDER BY lr.date ASC";
+           "ORDER BY lr.date ASC, e.symbol ASC, e.strategy_name ASC, e.exec_id ASC";
 }
 
 std::string ChartQueries::margin_posted(const std::string& strategy_id,
@@ -473,21 +472,45 @@ ChartData ChartSeries::daily_pnl(std::vector<ChartPoint> rows) {
     return chart_data;
 }
 
-ChartData ChartSeries::cost_per_million(const std::vector<CostRow>& rows) {
+ChartData ChartSeries::cost_per_million(const std::vector<CostFillRow>& rows,
+                                        const MultiplierLookup& multiplier_of) {
     ChartData chart_data;
 
-    for (const auto& row : rows) {
-        // Calculate cost per $1M traded
-        // Formula: (daily_cost / total_notional) * 1,000,000
-        // Skip if notional is zero to avoid division by zero
-        if (row.total_notional > 0.0) {
-            double cost_per_million = (row.daily_cost / row.total_notional) * 1000000.0;
-            chart_data.labels.push_back(row.date);
+    // Rows come grouped by day. T-8D-2 R64: a day's value is its cost over the notional the book
+    // TRADED that day (each fill's quantity x price x contract multiplier), not over the notional
+    // it held.
+    size_t at = 0;
+    while (at < rows.size()) {
+        const std::string& day = rows[at].date;
+        const double daily_cost = rows[at].daily_cost;
+        double traded_notional = 0.0;
+        bool every_fill_sized = true;
+        for (; at < rows.size() && rows[at].date == day; ++at) {
+            const CostFillRow& fill = rows[at];
+            if (fill.symbol.empty()) {
+                continue;  // the day's row with no fill
+            }
+            const std::optional<double> multiplier =
+                multiplier_of ? multiplier_of(fill.symbol) : std::nullopt;
+            if (!multiplier) {
+                // Never counted at a multiplier of 1: the day's ratio would be wrong.
+                WARN("Cost per $1M traded: " + fill.symbol + " on " + day +
+                     " has no contract multiplier on record, the day has no point");
+                every_fill_sized = false;
+                continue;
+            }
+            traded_notional += std::abs(fill.quantity * fill.price * *multiplier);
+        }
+
+        // Formula: (daily_cost / traded_notional) * 1,000,000
+        // A day the book did not trade has no point
+        if (every_fill_sized && traded_notional > 0.0) {
+            double cost_per_million = (daily_cost / traded_notional) * 1000000.0;
+            chart_data.labels.push_back(day);
             chart_data.values.push_back(cost_per_million);
 
-            INFO("Date: " + row.date + ", Cost: $" + std::to_string(row.daily_cost) +
-                 ", Notional: $" + std::to_string(row.total_notional) +
-                 ", Trades: " + std::to_string(row.num_trades) + ", Cost per $1M: $" +
+            INFO("Date: " + day + ", Cost: $" + std::to_string(daily_cost) +
+                 ", Traded notional: $" + std::to_string(traded_notional) + ", Cost per $1M: $" +
                  std::to_string(cost_per_million));
         }
     }
@@ -612,6 +635,79 @@ std::optional<double> number_cell(const std::shared_ptr<arrow::ChunkedArray>& co
         }
     } catch (const std::exception&) {
         return std::nullopt;  // text that is not a number
+    }
+}
+
+// One cell as text; empty when it is NULL or not text.
+std::string text_cell(const std::shared_ptr<arrow::ChunkedArray>& column, int64_t i) {
+    if (!column || column->num_chunks() == 0) {
+        return {};
+    }
+    const auto chunk = column->chunk(0);
+    if (i >= chunk->length() || chunk->IsNull(i)) {
+        return {};
+    }
+    if (chunk->type_id() == arrow::Type::STRING) {
+        return std::static_pointer_cast<arrow::StringArray>(chunk)->GetString(i);
+    }
+    if (chunk->type_id() == arrow::Type::LARGE_STRING) {
+        return std::static_pointer_cast<arrow::LargeStringArray>(chunk)->GetString(i);
+    }
+    return {};
+}
+
+// One cell of a date or timestamp column as "YYYY-MM-DD"; empty when it is NULL.
+std::string day_cell(const std::shared_ptr<arrow::ChunkedArray>& column, int64_t i) {
+    if (!column || column->num_chunks() == 0) {
+        return {};
+    }
+    const auto chunk = column->chunk(0);
+    if (i >= chunk->length() || chunk->IsNull(i)) {
+        return {};
+    }
+    std::time_t seconds = 0;
+    switch (chunk->type_id()) {
+        case arrow::Type::STRING:
+        case arrow::Type::LARGE_STRING:
+            return text_cell(column, i).substr(0, 10);
+        case arrow::Type::DATE32:
+            seconds = static_cast<std::time_t>(
+                          std::static_pointer_cast<arrow::Date32Array>(chunk)->Value(i)) *
+                      86400;
+            break;
+        case arrow::Type::TIMESTAMP:
+            seconds = std::static_pointer_cast<arrow::TimestampArray>(chunk)->Value(i) /
+                      1000000;  // micro -> sec
+            break;
+        default:
+            return {};
+    }
+    std::ostringstream oss;
+    oss << std::put_time(std::gmtime(&seconds), "%Y-%m-%d");
+    return oss.str();
+}
+
+// A symbol's contract multiplier from the instrument registry (a futures root's contract size, 1
+// for a share); none when the registry does not hold the symbol.
+std::optional<double> registry_multiplier(const std::string& symbol) {
+    try {
+        // Normalize variant-suffixed symbols for lookup
+        std::string lookup_sym = symbol;
+        auto dotpos = lookup_sym.find(".v.");
+        if (dotpos != std::string::npos) {
+            lookup_sym = lookup_sym.substr(0, dotpos);
+        }
+        dotpos = lookup_sym.find(".c.");
+        if (dotpos != std::string::npos) {
+            lookup_sym = lookup_sym.substr(0, dotpos);
+        }
+        auto instrument = InstrumentRegistry::instance().get_instrument(lookup_sym);
+        if (!instrument) {
+            return std::nullopt;
+        }
+        return instrument->get_multiplier();
+    } catch (const std::exception&) {
+        return std::nullopt;
     }
 }
 
@@ -1007,16 +1103,14 @@ ChartData ChartGenerator::fetch_daily_pnl_data(
 }
 
 ChartData ChartGenerator::fetch_cumulative_transaction_costs_data(
-    std::shared_ptr<DatabaseInterface> db,
-    const std::string& strategy_id,
-                                                  const std::string& portfolio_id,
-    const std::string& date /* today, YYYY-MM-DD */)
-{
+    std::shared_ptr<DatabaseInterface> db, const std::string& strategy_id,
+    const std::string& portfolio_id, const std::string& date /* today, YYYY-MM-DD */,
+    const ChartSeries::MultiplierLookup& multiplier_of) {
     ChartData chart_data;
     if (!db) { WARN("DB null"); return chart_data; }
 
     try {
-        // Query to get daily transaction costs, gross notional, and count of trades per day
+        // Each stored day's cost and the fills the book made that day
         std::string query = ChartQueries::cost_per_million(strategy_id, portfolio_id, date);
 
         INFO("Querying cost per $1M traded with: " + query);
@@ -1038,151 +1132,36 @@ ChartData ChartGenerator::fetch_cumulative_transaction_costs_data(
             return chart_data;
         }
         auto combined = combined_result.ValueOrDie();
-
-        // Expect: col0 = date, col1 = daily_cost, col2 = total_notional, col3 = num_trades
-        auto day_col = combined->column(0);
-        auto cost_col = combined->column(1);
-        auto notional_col = combined->column(2);
-        auto trades_col = combined->column(3);
-        std::vector<ChartSeries::CostRow> rows;
-
-        for (int64_t i = 0; i < combined->num_rows(); ++i) {
-            // ---- parse date -> "YYYY-MM-DD"
-            std::string day_str;
-            auto day_chunk = day_col->chunk(0);
-            switch (day_chunk->type_id()) {
-                case arrow::Type::STRING: {
-                    auto s = std::static_pointer_cast<arrow::StringArray>(day_chunk);
-                    if (!s->IsNull(i)) {
-                        day_str = s->GetString(i);
-                        if (day_str.size() > 10) day_str = day_str.substr(0, 10);
-                    }
-                } break;
-                case arrow::Type::LARGE_STRING: {
-                    auto s = std::static_pointer_cast<arrow::LargeStringArray>(day_chunk);
-                    if (!s->IsNull(i)) {
-                        day_str = s->GetString(i);
-                        if (day_str.size() > 10) day_str = day_str.substr(0, 10);
-                    }
-                } break;
-                case arrow::Type::DATE32: {
-                    auto d = std::static_pointer_cast<arrow::Date32Array>(day_chunk);
-                    if (!d->IsNull(i)) {
-                        int32_t days = d->Value(i);
-                        std::time_t tsec = static_cast<std::time_t>(days) * 86400;
-                        std::tm* tm = std::gmtime(&tsec);
-                        std::ostringstream oss; oss << std::put_time(tm, "%Y-%m-%d");
-                        day_str = oss.str();
-                    }
-                } break;
-                case arrow::Type::TIMESTAMP: {
-                    auto ts = std::static_pointer_cast<arrow::TimestampArray>(day_chunk);
-                    if (!ts->IsNull(i)) {
-                        std::time_t tsec = ts->Value(i) / 1000000; // micro → sec
-                        std::tm* tm = std::gmtime(&tsec);
-                        std::ostringstream oss; oss << std::put_time(tm, "%Y-%m-%d");
-                        day_str = oss.str();
-                    }
-                } break;
-                default: break;
-            }
-            if (day_str.empty()) continue;
-
-            // ---- parse daily_cost -> double
-            double daily_cost = 0.0;
-            auto cost_chunk = cost_col->chunk(0);
-            if (!cost_chunk->IsNull(i)) {
-                switch (cost_chunk->type_id()) {
-                    case arrow::Type::DOUBLE: {
-                        auto a = std::static_pointer_cast<arrow::DoubleArray>(cost_chunk);
-                        daily_cost = a->Value(i);
-                    } break;
-                    case arrow::Type::FLOAT: {
-                        auto a = std::static_pointer_cast<arrow::FloatArray>(cost_chunk);
-                        daily_cost = static_cast<double>(a->Value(i));
-                    } break;
-                    case arrow::Type::INT64: {
-                        auto a = std::static_pointer_cast<arrow::Int64Array>(cost_chunk);
-                        daily_cost = static_cast<double>(a->Value(i));
-                    } break;
-                    case arrow::Type::INT32: {
-                        auto a = std::static_pointer_cast<arrow::Int32Array>(cost_chunk);
-                        daily_cost = static_cast<double>(a->Value(i));
-                    } break;
-                    case arrow::Type::STRING: {
-                        auto a = std::static_pointer_cast<arrow::StringArray>(cost_chunk);
-                        if (!a->IsNull(i)) {
-                            try { daily_cost = std::stod(a->GetString(i)); } catch (...) {}
-                        }
-                    } break;
-                    case arrow::Type::LARGE_STRING: {
-                        auto a = std::static_pointer_cast<arrow::LargeStringArray>(cost_chunk);
-                        if (!a->IsNull(i)) {
-                            try { daily_cost = std::stod(a->GetString(i)); } catch (...) {}
-                        }
-                    } break;
-                    default: break;
-                }
-            }
-
-            // ---- parse total_notional -> double
-            double total_notional = 0.0;
-            auto notional_chunk = notional_col->chunk(0);
-            if (!notional_chunk->IsNull(i)) {
-                switch (notional_chunk->type_id()) {
-                    case arrow::Type::DOUBLE: {
-                        auto a = std::static_pointer_cast<arrow::DoubleArray>(notional_chunk);
-                        total_notional = a->Value(i);
-                    } break;
-                    case arrow::Type::FLOAT: {
-                        auto a = std::static_pointer_cast<arrow::FloatArray>(notional_chunk);
-                        total_notional = static_cast<double>(a->Value(i));
-                    } break;
-                    case arrow::Type::INT64: {
-                        auto a = std::static_pointer_cast<arrow::Int64Array>(notional_chunk);
-                        total_notional = static_cast<double>(a->Value(i));
-                    } break;
-                    case arrow::Type::INT32: {
-                        auto a = std::static_pointer_cast<arrow::Int32Array>(notional_chunk);
-                        total_notional = static_cast<double>(a->Value(i));
-                    } break;
-                    case arrow::Type::STRING: {
-                        auto a = std::static_pointer_cast<arrow::StringArray>(notional_chunk);
-                        if (!a->IsNull(i)) {
-                            try { total_notional = std::stod(a->GetString(i)); } catch (...) {}
-                        }
-                    } break;
-                    case arrow::Type::LARGE_STRING: {
-                        auto a = std::static_pointer_cast<arrow::LargeStringArray>(notional_chunk);
-                        if (!a->IsNull(i)) {
-                            try { total_notional = std::stod(a->GetString(i)); } catch (...) {}
-                        }
-                    } break;
-                    default: break;
-                }
-            }
-
-            // ---- parse num_trades -> int
-            int64_t num_trades = 0;
-            auto trades_chunk = trades_col->chunk(0);
-            if (!trades_chunk->IsNull(i)) {
-                switch (trades_chunk->type_id()) {
-                    case arrow::Type::INT64: {
-                        auto a = std::static_pointer_cast<arrow::Int64Array>(trades_chunk);
-                        num_trades = a->Value(i);
-                    } break;
-                    case arrow::Type::INT32: {
-                        auto a = std::static_pointer_cast<arrow::Int32Array>(trades_chunk);
-                        num_trades = static_cast<int64_t>(a->Value(i));
-                    } break;
-                    default: break;
-                }
-            }
-
-            rows.push_back({day_str, daily_cost, total_notional, num_trades});
+        if (combined->num_columns() < 5) {
+            ERROR("Cost per $1M traded: the query answered " +
+                  std::to_string(combined->num_columns()) + " columns, 5 expected");
+            return chart_data;
         }
 
-        return ChartSeries::cost_per_million(rows);
+        // Expect: col0 = date, col1 = daily_cost, col2 = symbol, col3 = quantity, col4 = price
+        // (the three fill columns NULL on a day without a fill)
+        std::vector<ChartSeries::CostFillRow> rows;
+        for (int64_t i = 0; i < combined->num_rows(); ++i) {
+            ChartSeries::CostFillRow row;
+            row.date = day_cell(combined->column(0), i);
+            if (row.date.empty())
+                continue;
+            row.daily_cost = number_cell(combined->column(1), i).value_or(0.0);
+            row.symbol = text_cell(combined->column(2), i);
+            const auto quantity = number_cell(combined->column(3), i);
+            const auto price = number_cell(combined->column(4), i);
+            if (!row.symbol.empty() && quantity && price) {
+                row.quantity = *quantity;
+                row.price = *price;
+            } else {
+                row.symbol.clear();  // no fill on this row
+            }
+            rows.push_back(std::move(row));
+        }
+
+        return ChartSeries::cost_per_million(
+            rows,
+            multiplier_of ? multiplier_of : ChartSeries::MultiplierLookup(registry_multiplier));
 
     } catch (const std::exception& e) {
         ERROR(std::string("Exception fetching cost per $1M traded: ") + e.what());
@@ -2097,7 +2076,8 @@ std::string ChartGenerator::generate_total_transaction_costs_chart(
                                                   const std::string& portfolio_id,
     const std::string& end_date)   // "YYYY-MM-DD" (today)
 {
-    ChartData data = fetch_cumulative_transaction_costs_data(db, strategy_id, portfolio_id, end_date);
+    ChartData data =
+        fetch_cumulative_transaction_costs_data(db, strategy_id, portfolio_id, end_date);
     if (data.labels.empty() || data.values.empty()) return "";
 
     ChartConfig config;

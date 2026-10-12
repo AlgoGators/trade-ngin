@@ -331,6 +331,92 @@ TEST(ChartSeries, DailyPnlIsPlottedOldestFirst) {
     EXPECT_TRUE(ChartSeries::daily_pnl({}).labels.empty());
 }
 
+// --- cost per $1M traded -------------------------------------------------------------------------
+
+namespace {
+// Contract multipliers of the test's symbols; a symbol that is not listed is not on record.
+std::optional<double> test_multiplier(const std::string& symbol) {
+    if (symbol == "6J.v.0")
+        return 12500000.0;
+    if (symbol == "ZN.v.0")
+        return 1000.0;
+    if (symbol == "MES.v.0")
+        return 5.0;
+    if (symbol == "AAPL")
+        return 1.0;
+    return std::nullopt;
+}
+}  // namespace
+
+// T-8D-2 R64: the query read the book's HELD gross notional as the denominator and joined a count
+// of the executions of EVERY book (used for a log line only). It reads the book's own fills.
+TEST(ChartQueries, TheCostChartReadsTheBooksOwnFillsOfEachDay) {
+    const std::string query = ChartQueries::cost_per_million(kStrategy, kPortfolio, "2026-04-25");
+    EXPECT_TRUE(has(query, "lr.daily_transaction_costs")) << query;
+    EXPECT_TRUE(has(query, "LEFT JOIN trading.executions e")) << query;
+    EXPECT_TRUE(has(query, "e.strategy_id = lr.strategy_id")) << query;
+    EXPECT_TRUE(has(query, "e.portfolio_id = lr.portfolio_id")) << query;
+    EXPECT_TRUE(has(query, "e.symbol, e.quantity, e.price")) << query;
+    EXPECT_FALSE(has(query, "gross_notional")) << "the held notional is not the denominator";
+    EXPECT_FALSE(has(query, "COUNT(")) << "the count over every book's executions is gone";
+    EXPECT_FALSE(has(query, "execution_type")) << query;
+}
+
+// A day's value: its cost over the notional TRADED that day, per million. 2026-04-24: one 6J
+// contract at 0.006286 (x 12,500,000 = 78,575.00) and two ZN at 108.09375 (x 1,000 = 216,187.50),
+// 294,762.50 traded, cost 39.98: 39.98 / 294,762.50 x 1,000,000 = 135.63.
+TEST(ChartSeries, CostPerMillionIsTheDaysCostOverTheNotionalTradedThatDay) {
+    const ChartData data =
+        ChartSeries::cost_per_million({{"2026-04-23", 12.50, "MES.v.0", 2.0, 7153.5},
+                                       {"2026-04-24", 39.98, "6J.v.0", 1.0, 0.006286},
+                                       {"2026-04-24", 39.98, "ZN.v.0", 2.0, 108.09375}},
+                                      test_multiplier);
+    ASSERT_EQ(data.labels.size(), 2u);
+    EXPECT_EQ(data.labels[0], "2026-04-23");
+    EXPECT_EQ(data.labels[1], "2026-04-24");
+    EXPECT_DOUBLE_EQ(data.values[0], 12.50 / (2.0 * 7153.5 * 5.0) * 1000000.0);
+    EXPECT_DOUBLE_EQ(data.values[1], 39.98 / (78575.0 + 216187.5) * 1000000.0);
+    EXPECT_NEAR(data.values[1], 135.63, 0.005);
+    EXPECT_EQ(data.title, "Cost per $1M Traded (Efficiency Metric)");
+    EXPECT_FALSE(data.has_reference_line);
+}
+
+// A day on which the book held positions and made no fill has no point (it used to have one: a
+// carried cost of 0 over the held notional, or a day's roll cost over it).
+TEST(ChartSeries, ADayTheBookDidNotTradeHasNoPointOnTheCostChart) {
+    const ChartData data =
+        ChartSeries::cost_per_million({{"2026-04-22", 3.80, "MES.v.0", 1.0, 7100.0},
+                                       {"2026-04-23", 0.0, "", 0.0, 0.0},
+                                       {"2026-04-24", 39.98, "ZN.v.0", 2.0, 108.09375},
+                                       {"2026-04-25", 0.0, "", 0.0, 0.0}},
+                                      test_multiplier);
+    ASSERT_EQ(data.labels.size(), 2u);
+    EXPECT_EQ(data.labels[0], "2026-04-22");
+    EXPECT_EQ(data.labels[1], "2026-04-24");
+    EXPECT_TRUE(ChartSeries::cost_per_million({{"2026-04-23", 0.0, "", 0.0, 0.0}}, test_multiplier)
+                    .labels.empty());
+    EXPECT_TRUE(ChartSeries::cost_per_million({}, test_multiplier).labels.empty());
+}
+
+// A fill whose symbol has no contract multiplier on record is never counted at a multiplier of 1:
+// the day's ratio would be wrong, so the day has no point.
+TEST(ChartSeries, ADayWithAFillOfNoKnownMultiplierHasNoPointOnTheCostChart) {
+    const ChartData data =
+        ChartSeries::cost_per_million({{"2026-04-22", 3.80, "MES.v.0", 1.0, 7100.0},
+                                       {"2026-04-22", 3.80, "ZN.v.0", 1.0, 108.0},
+                                       {"2026-04-23", 9.10, "MES.v.0", 1.0, 7153.5},
+                                       {"2026-04-23", 9.10, "NOT_ON_RECORD", 3.0, 55.0},
+                                       {"2026-04-24", 2.25, "AAPL", 20.0, 296.42}},
+                                      test_multiplier);
+    ASSERT_EQ(data.labels.size(), 2u);
+    EXPECT_EQ(data.labels[0], "2026-04-22");
+    EXPECT_EQ(data.labels[1], "2026-04-24");
+    EXPECT_DOUBLE_EQ(data.values[1], 2.25 / (20.0 * 296.42) * 1000000.0);
+    // no lookup at all: no fill can be sized
+    EXPECT_TRUE(ChartSeries::cost_per_million({{"2026-04-22", 3.80, "MES.v.0", 1.0, 7100.0}}, {})
+                    .labels.empty());
+}
+
 // --- margin posted -------------------------------------------------------------------------------
 
 TEST(ChartSeries, MarginPostedPlotsEachRowAsItComes) {
@@ -397,6 +483,27 @@ TEST(ChartFetchers, YesterdaysPnlHasOneBarForASymbolAnsweredTwice) {
     EXPECT_EQ(data.labels[2], "MES.v.0");
     EXPECT_DOUBLE_EQ(data.values[1], 0.0);
     EXPECT_DOUBLE_EQ(data.values[2], -5.0);
+}
+
+// The cost chart end to end: the LEFT JOIN answers a day without a fill as one row of NULL fill
+// columns, a day of two fills as two rows carrying the same day cost.
+TEST(ChartFetchers, TheCostChartDividesEachDaysCostByTheFillsAnsweredForThatDay) {
+    auto db = std::make_shared<AnsweringDatabase>();
+    db->answer("trading.executions", {"date", "daily_cost", "symbol", "quantity", "price"},
+               {{"2026-04-22", "3.795648", "MES.v.0", "1", "7100"},
+                {"2026-04-23", "0.000000", "NULL", "NULL", "NULL"},
+                {"2026-04-24", "39.98", "6J.v.0", "1", "0.006286"},
+                {"2026-04-24", "39.98", "ZN.v.0", "2", "108.09375"},
+                {"2026-04-25", "0", "NULL", "NULL", "NULL"}});
+    const ChartData data = ChartGenerator::fetch_cumulative_transaction_costs_data(
+        db, kStrategy, kPortfolio, "2026-04-25", test_multiplier);
+    ASSERT_EQ(db->queries.size(), 1u);
+    EXPECT_EQ(db->queries[0], ChartQueries::cost_per_million(kStrategy, kPortfolio, "2026-04-25"));
+    ASSERT_EQ(data.labels.size(), 2u);
+    EXPECT_EQ(data.labels[0], "2026-04-22");
+    EXPECT_EQ(data.labels[1], "2026-04-24");
+    EXPECT_DOUBLE_EQ(data.values[0], 3.795648 / (7100.0 * 5.0) * 1000000.0);
+    EXPECT_DOUBLE_EQ(data.values[1], 39.98 / (78575.0 + 216187.5) * 1000000.0);
 }
 
 // The equity curve end to end: the rows the query answers are the points, the capital of the run
@@ -530,4 +637,36 @@ TEST_F(ChartQueriesDb, OnABookOfTwoSleevesYesterdaysPnlHasOneBarPerSymbol) {
         ChartGenerator::fetch_pnl_by_symbol_data(db_, strategy, portfolio, run_date);
     EXPECT_EQ(static_cast<int>(data.labels.size()), symbols)
         << rows << " stored rows of " << symbols << " symbols";
+}
+
+// The cost chart has a point on each day the book made a fill and on no other day: as many points
+// as the book's stored days on or before the run date that have a fill of its own (counted by a
+// query of its own; every symbol is given a multiplier, the count does not depend on its value).
+TEST_F(ChartQueriesDb, TheCostChartHasAPointOnEachDayTheBookTradedAndOnNoOther) {
+    const std::string strategy = "LIVE_TREND_FOLLOWING_TREND_FOLLOWING_FAST";
+    const std::string portfolio = "BASE_PORTFOLIO";
+    const std::string run_date = "2026-04-25";
+    auto counted = db_->execute_query(
+        "SELECT COUNT(*)::text FROM trading.live_results lr "
+        "WHERE lr.strategy_id = '" +
+        strategy + "' AND lr.portfolio_id = '" + portfolio +
+        "' "
+        "AND lr.date <= DATE '" +
+        run_date +
+        "' AND EXISTS (SELECT 1 FROM trading.executions e "
+        "WHERE e.date = lr.date AND e.strategy_id = '" +
+        strategy +
+        "' "
+        "AND e.portfolio_id = '" +
+        portfolio + "')");
+    ASSERT_FALSE(counted.is_error()) << counted.error()->what();
+    const int traded_days =
+        std::stoi(std::static_pointer_cast<arrow::StringArray>(counted.value()->column(0)->chunk(0))
+                      ->GetString(0));
+    if (traded_days < 2)
+        GTEST_SKIP() << "the database holds under two traded BASE days up to " << run_date;
+    const ChartData data = ChartGenerator::fetch_cumulative_transaction_costs_data(
+        db_, strategy, portfolio, run_date,
+        [](const std::string&) { return std::optional<double>(1.0); });
+    EXPECT_EQ(static_cast<int>(data.labels.size()), traded_days);
 }
