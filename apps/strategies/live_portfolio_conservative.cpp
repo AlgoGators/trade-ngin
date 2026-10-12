@@ -4551,6 +4551,14 @@ int main(int argc, char* argv[]) {
                     report_context.settled_date = yesterday_date_for_email;
                     report_context.sessions_per_year =
                         app_config.statistics.futures_sessions_per_year;
+                    // The two capital keys of the day's risk_detail, when the row carries one
+                    // (the condition and the values of the set_risk_detail call above).
+                    if (one_pass_day.stores_detail()) {
+                        report_context.has_sizing_capital = true;
+                        report_context.sizing_capital = one_pass_day.sizing_capital;
+                        report_context.account_value_at_sizing =
+                            sizing_capital_read.capital.account;
+                    }
 
                     if (has_today_row_metrics) {
                         strategy_metrics["Total Cumulative Return"] =

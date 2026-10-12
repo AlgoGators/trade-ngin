@@ -233,6 +233,15 @@ EmailReportContext context_of(const std::string& settled_date, int sessions, dou
     return context;
 }
 
+// The two capital keys of the day's risk_detail: sizing_capital and account_value.
+EmailReportContext with_capital(EmailReportContext context, double sizing_capital,
+                                double account_value) {
+    context.has_sizing_capital = true;
+    context.sizing_capital = sizing_capital;
+    context.account_value_at_sizing = account_value;
+    return context;
+}
+
 class EmailFixture : public ::testing::Test {
 protected:
     void SetUp() override {
@@ -346,7 +355,7 @@ protected:
             book, combined, std::nullopt, futures_metrics(), executions, "2026-04-28",
             "CONSERVATIVE_PORTFOLIO", true, marks, nullptr, settled, t1_close, t2_close,
             settled_metrics, "LIVE_TREND_FOLLOWING", over_limit_of(501250.34, 0.8619713, 0.2427915),
-            context_of("2026-04-27", 171, 311.0574));
+            with_capital(context_of("2026-04-27", 171, 311.0574), 501250.34, 503505.07));
     }
 
     // BASE: two sleeves, Monday 2026-04-27, the settled day Sunday 2026-04-26. The sleeves hold
@@ -406,7 +415,7 @@ protected:
             marks, nullptr, settled, t1_close, t2_close, settled_metrics,
             "LIVE_TREND_FOLLOWING_TREND_FOLLOWING_FAST",
             over_limit_of(499357.14, 0.5035118, 0.5035118),
-            context_of("2026-04-26", 320, 311.0574));
+            with_capital(context_of("2026-04-26", 320, 311.0574), 499357.14, 499357.14));
     }
 
     // The equity book: Monday 2026-06-22; its settled day is the previous session, Thursday
@@ -664,6 +673,80 @@ TEST(EmailSettledSplitTwinSourceGuard, BothFuturesRunnersReadTheReturnLinesFromT
               "total_return_annualized"}) {
             EXPECT_EQ(src.find(gone), std::string::npos) << runner << ": " << gone;
         }
+    }
+}
+
+// The futures report prints the sizing capital and, beside it, the capital above the starting
+// capital: risk_detail.account_value less risk_detail.sizing_capital (derived, never stored), in
+// plain words. The first of the two is the portfolio value when the day was SIZED, a different
+// figure from the day's current portfolio value the leverage lines call the account value, so
+// the line does not use those words for it.
+TEST_F(EmailFixture, AFuturesReportPrintsTheSizingCapitalAndTheCapitalAboveTheStartingCapital) {
+    // CONSERVATIVE 2026-04-24 as stored: account_value 497,440.873363, sizing_capital
+    // 495,186.141684; 497,440.873363 - 495,186.141684 = 2,254.731679.
+    EmailReportContext stored = with_capital({}, 495186.141684, 497440.873363);
+    const std::string lines = capital_lines_html(stored);
+    EXPECT_EQ(lines,
+              "<div class=\"metric\"><strong>Sizing capital:</strong> "
+              "<span>$495,186.14</span></div>\n"
+              "<div class=\"metric\"><strong>Capital above the starting capital (portfolio value "
+              "when the day was sized, $497,440.87, less the sizing capital):</strong> "
+              "<span>$2,254.73</span></div>\n");
+    for (const char* symbol : {"V_t", "E_t", "account value"}) {
+        EXPECT_EQ(lines.find(symbol), std::string::npos) << symbol;
+    }
+    // an account at its high-water mark below the start: nothing is set aside
+    EXPECT_NE(capital_lines_html(with_capital({}, 499357.14, 499357.14)).find("<span>$0.00</span>"),
+              std::string::npos);
+    // a row with no risk_detail: one line, no figure
+    const std::string none = capital_lines_html(EmailReportContext{});
+    EXPECT_EQ(none,
+              "<div class=\"metric\"><strong>Sizing capital and capital above the starting "
+              "capital:</strong> no reading (no sized rebalance this run: the day's row "
+              "carries no risk_detail)</div>\n");
+    EXPECT_EQ(none.find("$"), std::string::npos);
+
+    // on the body: in the book block, after the cash line; 503,505.07 - 501,250.34 = 2,254.73
+    const std::string body = conservative_body();
+    EXPECT_NE(body.find("<strong>Cash Available:</strong> <span>$487,405.07</span></div>\n"
+                        "<div class=\"metric\"><strong>Sizing capital:</strong> "
+                        "<span>$501,250.34</span></div>\n"
+                        "<div class=\"metric\"><strong>Capital above the starting capital "
+                        "(portfolio value when the day was sized, $503,505.07, less the sizing "
+                        "capital):</strong> <span>$2,254.73</span></div>\n</div>\n"),
+              std::string::npos);
+    // the equity book has no sizing capital: no line of either form
+    const std::string equity = equity_body();
+    EXPECT_EQ(equity.find("Sizing capital"), std::string::npos);
+    EXPECT_EQ(equity.find("starting capital"), std::string::npos);
+}
+
+// READS SOURCE: a twin guard. Both futures runners hand the two keys under the condition and
+// from the values of their set_risk_detail call.
+TEST(EmailCapitalLineTwinSourceGuard, BothFuturesRunnersHandTheTwoCapitalKeysOfRiskDetail) {
+    for (const char* runner : {"apps/strategies/live_portfolio_conservative.cpp",
+                               "apps/strategies/live_portfolio.cpp"}) {
+        fs::path dir = fs::current_path();
+        std::string src;
+        for (int i = 0; i < 8 && !dir.empty(); ++i, dir = dir.parent_path()) {
+            if (fs::exists(dir / runner)) {
+                src = read_file(dir / runner);
+                break;
+            }
+        }
+        if (src.empty())
+            GTEST_SKIP() << "runner source not found from the test working directory";
+        EXPECT_NE(src.find("risk_detail_json(one_pass_day, sizing_capital_read.capital.account)"),
+                  std::string::npos)
+            << runner;
+        EXPECT_NE(src.find("if (one_pass_day.stores_detail()) {\n"
+                           "                        report_context.has_sizing_capital = true;\n"
+                           "                        report_context.sizing_capital = "
+                           "one_pass_day.sizing_capital;\n"
+                           "                        report_context.account_value_at_sizing =\n"
+                           "                            sizing_capital_read.capital.account;"),
+                  std::string::npos)
+            << runner;
     }
 }
 
