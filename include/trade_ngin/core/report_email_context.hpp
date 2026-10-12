@@ -30,7 +30,48 @@ struct EmailReportContext {
     bool has_sizing_capital{false};
     double sizing_capital{0.0};
     double account_value_at_sizing{0.0};
+
+    /// The book's asset class is equities (the equity runner): no futures text in the footer, no
+    /// Symbols Reference and no rollover notice (tables of futures contract metadata), no
+    /// holiday banner (its day before is its previous session by construction).
+    bool equities{false};
+
+    /// A futures runner's own classification of the day before: it found NO session and carried
+    /// its book (its skip of the strategy processing). The report then shows no settled table
+    /// and says there was no session; nothing in the report is derived from the weekday.
+    bool prior_day_no_session{false};
+
+    /// The book's start date, "YYYY-MM-DD": the live_start_date of its
+    /// trading.strategy_trading_days_metadata row, as the runner read it. Empty: the footer
+    /// prints no start date.
+    std::string live_start_date;
 };
+
+/// "2025-10-05" as the footer prints a date: "October 5th, 2025". A text that is not a date of
+/// that form is returned as it is.
+inline std::string report_long_date(const std::string& iso_date) {
+    static const char* const kMonths[] = {"January",   "February", "March",    "April",
+                                          "May",       "June",     "July",     "August",
+                                          "September", "October",  "November", "December"};
+    int year = 0, month = 0, day = 0;
+    char tail = 0;
+    if (iso_date.size() != 10 ||
+        std::sscanf(iso_date.c_str(), "%4d-%2d-%2d%c", &year, &month, &day, &tail) != 3 ||
+        month < 1 || month > 12 || day < 1 || day > 31) {
+        return iso_date;
+    }
+    const char* suffix = "th";
+    if (day % 100 < 11 || day % 100 > 13) {
+        if (day % 10 == 1)
+            suffix = "st";
+        if (day % 10 == 2)
+            suffix = "nd";
+        if (day % 10 == 3)
+            suffix = "rd";
+    }
+    return std::string(kMonths[month - 1]) + " " + std::to_string(day) + suffix + ", " +
+           std::to_string(year);
+}
 
 /// The label of the annualised return line (T-8D-2 R61, R74): the stored value is printed for
 /// every n, and labelled while the book has under one year of sessions.

@@ -477,6 +477,9 @@ int main(int argc, char* argv[]) {
         //
         // The metadata row itself is a one-row data correction on production and is NOT
         // made here.
+        // The book's start date as its metadata row gives it (empty when it could not be read):
+        // the daily report's footer prints it (T-8D-2 R59).
+        std::string book_live_start_date;
         {
             auto anchor_cell = [](const Result<std::shared_ptr<arrow::Table>>& r) -> std::string {
                 if (r.is_error() || !r.value() || r.value()->num_rows() == 0) return {};
@@ -496,6 +499,9 @@ int main(int argc, char* argv[]) {
                 "WHERE strategy_id = '" + combined_strategy_id + "'"
                 " AND portfolio_id = '" + portfolio_id + "'");
 
+            if (!anchor_q.is_error()) {
+                book_live_start_date = anchor_cell(anchor_q);
+            }
             if (anchor_q.is_error() || first_q.is_error()) {
                 WARN("Could not check the annualization anchor for " + portfolio_id +
                      "; total_annualized_return is reported as the DB function computes it.");
@@ -4551,6 +4557,11 @@ int main(int argc, char* argv[]) {
                     report_context.settled_date = yesterday_date_for_email;
                     report_context.sessions_per_year =
                         app_config.statistics.futures_sessions_per_year;
+                    // T-8D-2 R59: the footer's start date is the book's own, and what the
+                    // report says about the day before is this run's classification of it (a
+                    // carried book: no session), never the weekday's.
+                    report_context.live_start_date = book_live_start_date;
+                    report_context.prior_day_no_session = skip_strategy_processing;
                     // The two capital keys of the day's risk_detail, when the row carries one
                     // (the condition and the values of the set_risk_detail call above).
                     if (one_pass_day.stores_detail()) {

@@ -234,6 +234,14 @@ EmailReportContext context_of(const std::string& settled_date, int sessions, dou
     return context;
 }
 
+// The book's start date (its metadata row) and, for the equity book, its asset class.
+EmailReportContext with_book(EmailReportContext context, const std::string& live_start_date,
+                             bool equities = false) {
+    context.live_start_date = live_start_date;
+    context.equities = equities;
+    return context;
+}
+
 // The two capital keys of the day's risk_detail: sizing_capital and account_value.
 EmailReportContext with_capital(EmailReportContext context, double sizing_capital,
                                 double account_value) {
@@ -356,7 +364,8 @@ protected:
             book, combined, std::nullopt, futures_metrics(), executions, "2026-04-28",
             "CONSERVATIVE_PORTFOLIO", true, marks, nullptr, settled, t1_close, t2_close,
             settled_metrics, "LIVE_TREND_FOLLOWING", over_limit_of(501250.34, 0.8619713, 0.2427915),
-            with_capital(context_of("2026-04-27", 171, 311.0574), 501250.34, 503505.07));
+            with_book(with_capital(context_of("2026-04-27", 171, 311.0574), 501250.34, 503505.07),
+                      "2025-10-05"));
     }
 
     // BASE: two sleeves, Monday 2026-04-27, the settled day Sunday 2026-04-26. The sleeves hold
@@ -416,7 +425,8 @@ protected:
             marks, nullptr, settled, t1_close, t2_close, settled_metrics,
             "LIVE_TREND_FOLLOWING_TREND_FOLLOWING_FAST",
             over_limit_of(499357.14, 0.5035118, 0.5035118),
-            with_capital(context_of("2026-04-26", 320, 311.0574), 499357.14, 499357.14));
+            with_book(with_capital(context_of("2026-04-26", 320, 311.0574), 499357.14, 499357.14),
+                      "2025-11-11"));
     }
 
     // The equity book: Monday 2026-06-22; its settled day is the previous session, Thursday
@@ -481,7 +491,8 @@ protected:
         return sender_.generate_trading_report_body(
             positions, std::nullopt, metrics, executions, "2026-06-22", true, closes, nullptr,
             settled, t1_close, t2_close, settled_metrics, "LIVE_EQUITY_MEAN_REVERSION",
-            "EQUITY_MR_PORTFOLIO", context_of("2026-06-18", 55, 252.0));
+            "EQUITY_MR_PORTFOLIO",
+            with_book(context_of("2026-06-18", 55, 252.0), "2026-04-01", true));
     }
 
     EmailSender sender_{EmailSenderConfig{}};
@@ -923,6 +934,134 @@ TEST(EmailEquitySourceGuard, TheEquityRunnerSetsTheKeysTheReportReads) {
          {"[\"Daily Commissions\"]", "[\"Total Commissions\"]", "[\"Portfolio Leverage\"]",
           "risk_eval.value().portfolio_var * 100.0", "strategy_metrics[\"Daily Return\"]"}) {
         EXPECT_EQ(src.find(gone), std::string::npos) << gone;
+    }
+}
+
+// T-8D-2 R59: the text of a report is its own book's. The header names the book; no banner and
+// no cell is derived from the weekday or from a list of agricultural roots; the footer carries
+// the book's start date and, on the equity book, no futures sentence; the equity book has no
+// Symbols Reference; a share quantity prints to six decimals.
+TEST_F(EmailFixture, TheTextOfAReportIsItsOwnBooks) {
+    const std::string base = base_body();      // a Monday
+    const std::string equity = equity_body();  // a Monday, the previous session a Thursday
+    const std::string futures = conservative_body();
+    for (const std::string& body : {base, equity, futures}) {
+        EXPECT_EQ(body.find("Yesterday was"), std::string::npos);
+        EXPECT_EQ(body.find("Agricultural"), std::string::npos);
+        EXPECT_EQ(body.find("agricultural"), std::string::npos);
+        EXPECT_EQ(body.find("<td>N/A</td>"), std::string::npos);
+    }
+    // the header
+    EXPECT_NE(equity.find("<div class=\"header-info\">2026-06-22 | Equity Mr Portfolio</div>"),
+              std::string::npos);
+    EXPECT_EQ(equity.find("Trend Following"), std::string::npos);
+    // an agricultural root with a true zero on a Monday prints its zero
+    EXPECT_NE(base.find("<tr><td>KE.v.0</td><td>1.00</td><td>668.50</td><td>668.50</td>"
+                        "<td class=\"positive\">$0.00</td></tr>"),
+              std::string::npos);
+    // the footers
+    EXPECT_NE(futures.find("<strong>Note:</strong> This strategy is based on daily OHLCV data. We "
+                           "currently only provide data for the front-month contract.<br><br>\n"
+                           "All values reflect a trading start date of October 5th, 2025.<br><br>\n"
+                           "As of March 1st, 2026"),
+              std::string::npos);
+    EXPECT_NE(base.find("All values reflect a trading start date of November 11th, 2025."),
+              std::string::npos);
+    EXPECT_EQ(base.find("October 5th, 2025"), std::string::npos) << "another book's start date";
+    EXPECT_EQ(equity.find("October 5th, 2025"), std::string::npos);
+    EXPECT_NE(equity.find("<strong>Note:</strong> This strategy is based on daily OHLCV data."
+                          "<br><br>\nAll values reflect a trading start date of April 1st, 2026.\n"
+                          "</div>"),
+              std::string::npos);
+    EXPECT_EQ(equity.find("front-month"), std::string::npos);
+    EXPECT_EQ(equity.find("Heating Oil"), std::string::npos);
+    EXPECT_EQ(equity.find("Symbols Reference"), std::string::npos);
+    EXPECT_NE(futures.find("<h2>Symbols Reference</h2>"), std::string::npos);
+    // shares to six decimals, contracts whole
+    EXPECT_NE(equity.find("<td>QTMUS</td>\n<td>25.791441</td>"), std::string::npos);
+    EXPECT_NE(equity.find("<td class=\"negative\">SELL</td>\n<td>2.370356</td>"),
+              std::string::npos);
+    EXPECT_NE(futures.find("<td>Q6L.v.0</td>\n<td>2</td>"), std::string::npos);
+    EXPECT_EQ(report_long_date("2025-10-05"), "October 5th, 2025");
+    EXPECT_EQ(report_long_date("2026-04-01"), "April 1st, 2026");
+    EXPECT_EQ(report_long_date("2025-11-11"), "November 11th, 2025");
+    EXPECT_EQ(report_long_date("2026-03-22"), "March 22nd, 2026");
+    EXPECT_EQ(report_long_date("2026-03-23"), "March 23rd, 2026");
+    EXPECT_EQ(report_long_date("not a date"), "not a date");
+}
+
+// What the report says about the day before is the runner's classification of it. A futures
+// runner that carried its book (no session): no settled table, the two notes, in words that name
+// no weekday; when the calendar names that day a holiday, the holiday banner too. A run on a
+// Sunday whose runner found a session shows the settled table like any other day.
+TEST_F(EmailFixture, TheDayBeforeIsWhatTheRunnerFoundNeverTheWeekday) {
+    const StrategyPositionsMap settled = {
+        {"TREND_FOLLOWING", {{"QMES.v.0", row("QMES.v.0", 1.0, 7153.5, 12.5)}}}};
+    const std::unordered_map<std::string, double> close = {{"QMES.v.0", 7153.5}};
+    const std::map<std::string, double> settled_metrics = {{"Daily Return", 0.01}};
+    const auto body_on = [&](const std::string& date, bool no_session) {
+        EmailReportContext context;
+        context.prior_day_no_session = no_session;
+        return sender_.generate_trading_report_body(
+            StrategyPositionsMap{}, std::unordered_map<std::string, Position>{}, std::nullopt,
+            futures_metrics(), StrategyExecutionsMap{}, date, "CONSERVATIVE_PORTFOLIO", true, {},
+            nullptr, settled, close, close, settled_metrics, "LIVE_TREND_FOLLOWING", {}, context);
+    };
+    // Sunday 2026-04-26, the runner found a session on the Saturday (a contract that prints one)
+    const std::string session = body_on("2026-04-26", false);
+    EXPECT_NE(session.find("<h2>Yesterday's Finalized Position Results</h2>"), std::string::npos);
+    EXPECT_EQ(session.find("No Executions"), std::string::npos);
+    EXPECT_EQ(session.find("Saturday"), std::string::npos);
+    // the same Sunday, the runner carried its book
+    const std::string carried = body_on("2026-04-26", true);
+    EXPECT_EQ(carried.find("Yesterday's Finalized Position Results"), std::string::npos);
+    EXPECT_NE(carried.find("<strong>No Executions:</strong> No session was found for yesterday "
+                           "(2026-04-25), so no new market data is available."),
+              std::string::npos);
+    EXPECT_NE(carried.find("<strong>Note:</strong> Yesterday's PnL data is not available."),
+              std::string::npos);
+    EXPECT_EQ(carried.find("Saturday"), std::string::npos);
+    EXPECT_EQ(carried.find("Yesterday was"), std::string::npos);
+    // a weekday run: carried or not is the runner's word, the weekday changes nothing
+    EXPECT_NE(body_on("2026-04-28", false).find("Yesterday's Finalized Position Results"),
+              std::string::npos);
+    EXPECT_EQ(body_on("2026-04-28", true).find("Yesterday's Finalized Position Results"),
+              std::string::npos);
+}
+
+// READS SOURCE: the runners are `main()`s. The twins hand the report the same two facts; the
+// equity runner sets its sender and its asset class.
+TEST(EmailBookTextSourceGuard, TheRunnersHandTheReportTheirOwnBooksFacts) {
+    const auto source_of = [](const char* relative) {
+        fs::path dir = fs::current_path();
+        for (int i = 0; i < 8 && !dir.empty(); ++i, dir = dir.parent_path()) {
+            if (fs::exists(dir / relative))
+                return read_file(dir / relative);
+        }
+        return std::string();
+    };
+    for (const char* runner : {"apps/strategies/live_portfolio_conservative.cpp",
+                               "apps/strategies/live_portfolio.cpp"}) {
+        const std::string src = source_of(runner);
+        if (src.empty())
+            GTEST_SKIP() << "runner source not found from the test working directory";
+        EXPECT_NE(src.find("report_context.live_start_date = book_live_start_date;\n"
+                           "                    report_context.prior_day_no_session = "
+                           "skip_strategy_processing;"),
+                  std::string::npos)
+            << runner;
+        EXPECT_NE(src.find("book_live_start_date = anchor_cell(anchor_q);"), std::string::npos)
+            << runner;
+    }
+    const std::string equity = source_of("apps/strategies/live_equity_mean_reversion.cpp");
+    if (equity.empty())
+        GTEST_SKIP() << "equity runner source not found";
+    for (const char* present : {"email_config.from_email = app_config.email.from_email;",
+                                "report_context.equities = true;",
+                                "report_context.live_start_date = book_live_start_date;",
+                                "book_live_start_date = first_cell(anchor_q);",
+                                "report_context.settled_date = yesterday_date_for_email;"}) {
+        EXPECT_NE(equity.find(present), std::string::npos) << present;
     }
 }
 

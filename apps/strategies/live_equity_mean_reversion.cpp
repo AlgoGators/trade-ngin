@@ -780,6 +780,9 @@ int main(int argc, char* argv[]) {
         // The check is one comparison the function cannot make. On a mismatch the
         // runner WARNs and leaves the count as the function computed it: the metadata
         // row is authoritative and bad data is corrected in the data.
+        // The book's start date as its metadata row gives it (empty when it could not be read):
+        // the daily report's footer prints it (T-8D-2 R59).
+        std::string book_live_start_date;
         {
             auto anchor_q = db->execute_query(
                 "SELECT COALESCE(MIN(live_start_date)::text, '') "
@@ -799,6 +802,9 @@ int main(int argc, char* argv[]) {
                 return std::string(col->GetView(0));
             };
 
+            if (!anchor_q.is_error()) {
+                book_live_start_date = first_cell(anchor_q);
+            }
             if (anchor_q.is_error() || first_q.is_error()) {
                 WARN("Could not check the annualization anchor for " + portfolio_id +
                      "; total_annualized_return is reported as the DB function computes it.");
@@ -6089,6 +6095,9 @@ int main(int argc, char* argv[]) {
                 email_config.smtp_port = app_config.email.smtp_port;
                 email_config.username = app_config.email.username;
                 email_config.password = app_config.email.password;
+                // T-8D-2 R59: the sender, as the futures runners set it (it was left empty:
+                // an empty envelope sender and an empty From header on every equity report).
+                email_config.from_email = app_config.email.from_email;
                 email_config.use_tls = app_config.email.use_tls;
                 email_config.to_emails = app_config.email.to_emails;
 
@@ -6248,6 +6257,9 @@ int main(int argc, char* argv[]) {
                 trade_ngin::EmailReportContext report_context;
                 report_context.settled_date = yesterday_date_for_email;
                 report_context.sessions_per_year = app_config.statistics.equity_sessions_per_year;
+                // T-8D-2 R59: an equity book (no futures text or tables), with its own start date.
+                report_context.equities = true;
+                report_context.live_start_date = book_live_start_date;
 
                 // Performance Metrics. T-8D-2 R61: the day T "Daily ..." values are not report
                 // lines (the settled day's are in yesterday_daily_metrics_final).
