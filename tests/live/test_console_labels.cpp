@@ -332,3 +332,31 @@ TEST(ConsoleCurrentForecastsTwinSourceGuard, TheRunnersPrintEverySleeveAndTheSto
     EXPECT_EQ(equity.find("<< \"Forecast\""), npos);
     EXPECT_EQ(equity.find("<< \"Position\""), npos);
 }
+
+// ---------------------------------------------------------------------------------------------
+// The backtest apps' summary.
+// ---------------------------------------------------------------------------------------------
+
+// READS SOURCE (a labelled twin guard: the three labels are bare literals inside each app's
+// main, shown by the summary block of a backtest run's log). The win rate and the trade count
+// are figures of CLOSING fills (T-8D R11) and the volatility is annualised (R8); each app says so.
+TEST(BacktestConsoleLabelsTwinSourceGuard, TheThreeAppsNameTheClosingFillFiguresAndTheVolatility) {
+    for (const char* app :
+         {"apps/backtest/bt_portfolio_conservative.cpp", "apps/backtest/bt_portfolio.cpp",
+          "apps/backtest/bt_equity_mean_reversion.cpp"}) {
+        SCOPED_TRACE(app);
+        const std::string src = read_source(app);
+        if (src.empty())
+            GTEST_SKIP() << "app source not found from the test working directory";
+        EXPECT_EQ(count_of(src, "std::cout << \"Volatility (annualised): \""), 1u);
+        EXPECT_EQ(count_of(src,
+                           "std::cout << \"Trade win rate (closing fills): \" << "
+                           "(backtest_results.win_rate * 100.0)"),
+                  1u);
+        EXPECT_EQ(
+            count_of(src, "std::cout << \"Closing fills: \" << backtest_results.total_trades"), 1u);
+        EXPECT_EQ(src.find("\"Volatility: \""), npos);
+        EXPECT_EQ(src.find("\"Win Rate: \""), npos);
+        EXPECT_EQ(src.find("\"Total Trades: \""), npos);
+    }
+}
