@@ -24,6 +24,10 @@ CUTOFF_AT = dt.time(10, 0)
 
 FALLBACK_10AM = "system:fallback-10am"
 FALLBACK_CATCHUP = "system:fallback-catchup"
+# The data-driven run (catchup.py; issues #191, #192): a non-trading day between today and the next
+# trading day is published with the model's book when that day's books are built, never e-mailed
+# by its fallback row (its 09:30 send e-mails it like any published day).
+FALLBACK_NONTRADING = "system:fallback-nontrading"
 FALLBACK_PREFIX = "system:fallback"
 MODEL_ONLY = "system:model-only"
 

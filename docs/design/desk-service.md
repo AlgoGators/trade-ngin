@@ -187,6 +187,29 @@ The 24 h unpublished reminder and the trading calendar (`holidays.json`) are gon
 scheduler: every day is published by 10:00, and every day runs from 06:45 (the engine still
 refuses a feed hole, C5).
 
+### The data-driven run (QT_EVENING_RUN=1, the default; issues #191 and #192)
+
+The variable keeps its first name. data-ngin pulls at 04:30 ET once the vendor's ~8 h delayed
+historical data has bar D (on day T, bar T-1) and upserts `ops.data_ready` (migration 028) per
+(dataset, bar date), around 04:35-05:00. So normally T is today and today's model run is the
+primary run, gated on the data. Recommended host settings: `QT_CATCHUP_TODAY_NOT_BEFORE=04:30`,
+`QT_CATCHUP_WINDOW=04:00-22:00`, `QT_CATCHUP_BUSY_WINDOW=04:30-10:30` (the code defaults are the
+`QT_EVENING_RUN=0` schedule's). Each pass reads the newest `futures_ohlcv_1d` row, bar
+date D, and builds the books of T, the next trading day after D on the engine's calendar
+(`holidays.json`; Friday, Saturday and Sunday bars all build Monday, holidays skipped):
+
+| Step | When | What |
+|---|---|---|
+| gate | every build | `complete`, or `partial` with every missing symbol's last bar within `live.data_staleness_tolerance_days` of T-1; else alert `data_failed` / `data_stale` and build nothing. The engine's FEED_HOLE guard now refuses a future run date as well (`run_date_is_live`); a refusal alerts `refused` |
+| build ahead | T is after today (e.g. Saturday's run, after its 10:00 fallback, with weekend bars in), today is done (desk: published) and T has no book | model runs of each calendar day up to T; on the desk portfolio each day between today and T (not a trading day) is published at once with the model's book (`system:fallback-nontrading`, no alert; e-mailed at its own 09:30 like any day). The twin's days ahead of today stay unpublished until they are today |
+| rebuild | T unpublished, its system book older than the row's `finished_at` | model run of T again (a re-pull). The desk's saved edits are kept by the engine (`QT_SEED kept`: system rebuilt, qt_proposal and qt not). A published T is never rebuilt |
+| review e-mail | desk portfolio, T built from the row, before T's 10:00, not yet mailed for this build | `QT_REVIEW_RECIPIENTS` via the portfolio's `email.json` SMTP: T, D, each symbol's new target against the last published day's book with the change, moved_by, missing symbols, desk edits kept, supersedes, the AlgoLens link and "Approve before 09:30 ET or the model book is sent at 10:00." Recorded in `$QT_LOG_DIR/qt-review-mail.json`; with `QT_EMAIL_DISABLED=1` the body goes to `qt-review-mail.log` |
+| today's run | today has no book, from `QT_CATCHUP_TODAY_NOT_BEFORE` | runs once a usable row exists for the previous trading day; before `QT_DATA_READY_ALERT_AT` (06:00) it waits quietly, from then on it alerts `data_not_ready` and waits; a failed or stale row alerts at once |
+| data-ready check | every day, from `QT_DATA_READY_ALERT_AT` (06:00) | no non-failed row for the previous trading day: alert `data_not_ready` once a day |
+
+The 09:30 send, the 10:00 fallback and the approval rules are unchanged. `QT_EVENING_RUN=0`
+restores the schedule above exactly.
+
 ### Passes, logs and the watchdog
 
 - **When.** The task ticks every minute; a pass is due once per slot inside

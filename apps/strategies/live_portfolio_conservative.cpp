@@ -1694,7 +1694,8 @@ int main(int argc, char* argv[]) {
 
         // FEED-HOLE REFUSAL (HD 2026-09-19; T-4c F4, T-5 F7): a HELD symbol with no bar for
         // longer than live.data_staleness_tolerance_days refuses the run when the run date is
-        // the host's date (true live). A replay of a past date WARNs and runs. It sits above the
+        // the host's date or later (true live, a build of a later day included;
+        // run_date_is_live, issue #191). A replay of a past date WARNs and runs. It sits above the
         // live_run_metadata upsert like the other refusals, so a refused run leaves no row.
         // T-7b-1 C7b R3: any no-bar verdict counts, a closure too (a feed dead for more than
         // eight weeks is reclassified as a closure and used to stop refusing).
@@ -1716,7 +1717,7 @@ int main(int argc, char* argv[]) {
             }
             if (!held_holes.empty()) {
                 const bool true_live =
-                    run_date_is_host_date(now, std::chrono::system_clock::now());
+                    run_date_is_live(now, std::chrono::system_clock::now());
                 for (const auto& hole : held_holes) {
                     const std::string msg =
                         "FEED_HOLE_REFUSAL held symbol " + hole.symbol + " (quantity " +

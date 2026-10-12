@@ -499,6 +499,15 @@ TEST(SessionBookGate, TheRefusalIsForTheHostsOwnDateOnly) {
         << "a replay of a past date is never refused";
 }
 
+TEST(SessionBookGate, ABuildOfALaterDayIsLive) {
+    const auto host = std::chrono::system_clock::now();
+    EXPECT_TRUE(run_date_is_live(host, host));
+    EXPECT_TRUE(run_date_is_live(host + std::chrono::hours(72), host))
+        << "Saturday's build of Monday is refused on a feed hole like Monday's own run";
+    EXPECT_FALSE(run_date_is_live(host - std::chrono::hours(48), host))
+        << "a replay of a past date is never refused";
+}
+
 // =============================================================================================
 // The runners
 // =============================================================================================

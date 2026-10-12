@@ -9,6 +9,11 @@ The desk owns two background tasks:
   from 06:30 to 10:30 New York time, then every 30 until 22:00) and runs the QT model runs that
   are missing, the 09:30 send and the 10:00 fallback (contracts C6, C7). QT_CATCHUP_ENABLED=0
   leaves it out (then nothing runs the model, sends at 09:30 or falls back at 10:00).
+  With QT_EVENING_RUN=1 (the default; the data-driven run) it also polls ops.data_ready, which
+  data-ngin writes after its 04:30 ET pull (the vendor's historical data is ~8 h delayed), and
+  today's model run waits for the previous trading day's data. That polling is the interim
+  of https://github.com/AlgoGators/trade-ngin/issues/191 (event-driven strategy runs) and
+  https://github.com/AlgoGators/trade-ngin/issues/192 (NATS JetStream in place of the polling).
 """
 
 from __future__ import annotations
@@ -32,6 +37,8 @@ from .store import PostgresRunStatusStore, RunStatusStore
 
 log = logging.getLogger("desk.service")
 
+# Polling, the interim of issues #191 and #192 (a NATS readiness event replaces it):
+# https://github.com/AlgoGators/trade-ngin/issues/191 and /192
 CATCHUP_TICK_S = 60.0
 
 
