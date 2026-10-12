@@ -7,6 +7,7 @@
 #include <sstream>
 #include <unordered_set>
 #include "trade_ngin/core/logger.hpp"
+#include "trade_ngin/core/report_settled_marks.hpp"
 #include "trade_ngin/data/conversion_utils.hpp"
 #include "trade_ngin/data/database_interface.hpp"
 #include "trade_ngin/data/finite_statement.hpp"
@@ -131,10 +132,11 @@ Result<std::string> CSVExporter::export_finalized_positions(
         }
 
         // Write CSV header with strategy column
-        // prior_mark is the close two days before the run date, mark the close of the day
-        // before it (the day this file settles); the report's settled table names them "Prior
-        // mark (T-2 close)" and "Mark (T-1 close)". No comment line: this file starts with
-        // its column names.
+        // prior_mark is the price the settled day's P&L was booked from and mark the price it
+        // was booked at, the pair the settle's own arithmetic used (the report's settled table
+        // names them "Previous price" and "Latest price"; report_settled_marks.hpp). A symbol
+        // that printed no bar that day has an empty mark and its last known close as
+        // prior_mark. No comment line: this file starts with its column names.
         file << "strategy,symbol,quantity,prior_mark,mark,realized_pnl\n";
         // One number format for every row of the file, set once, after the header. The two
         // marks are prices: each prints the shortest text that reads back as the same number
@@ -164,17 +166,12 @@ Result<std::string> CSVExporter::export_finalized_positions(
                 // Realized PnL from position
                 double realized_pnl = position.realized_pnl.as_double();
 
-                // The two marks: a symbol with no close on that day has no mark, and its cell
-                // is left empty (a 0 would read as a price).
-                file << display_name << "," << symbol << "," << quantity << ",";
-                auto prior_it = prior_marks.find(symbol);
-                if (prior_it != prior_marks.end())
-                    file << round_trip_number(prior_it->second);
-                file << ",";
-                auto mark_it = marks.find(symbol);
-                if (mark_it != marks.end())
-                    file << round_trip_number(mark_it->second);
-                file << "," << realized_pnl << "\n";
+                // The two prices, by the report's own rule: a price that is not known is an
+                // empty cell (a 0 would read as a price).
+                const SettledCsvCells cells = settled_csv_cells(
+                    settled_price_of(prior_marks, symbol), settled_price_of(marks, symbol));
+                file << display_name << "," << symbol << "," << quantity << "," << cells.prior_mark
+                     << "," << cells.mark << "," << realized_pnl << "\n";
             }
         }
 

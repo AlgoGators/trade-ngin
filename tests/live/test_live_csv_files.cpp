@@ -28,6 +28,7 @@
 
 #include "../strategy/csv_test_sleeve.hpp"
 #include "trade_ngin/core/logger.hpp"
+#include "trade_ngin/core/report_settled_marks.hpp"
 #include "trade_ngin/live/carried_day.hpp"
 #include "trade_ngin/live/csv_exporter.hpp"
 #include "trade_ngin/strategy/base_strategy.hpp"
@@ -282,6 +283,38 @@ TEST_F(LiveCsvFiles, EveryRowOfTheSettledFilePrintsSixDecimalsAndItsMarksInFull)
     EXPECT_EQ(cells[3], "110.5");
     EXPECT_EQ(cells[4], "110.90625") << "a price with five decimals lost two at six digits";
     EXPECT_EQ(cells[5], "-185.000000");
+}
+
+// HD 2026-10-12: the settled file's prior_mark and mark are the two prices of the report's settled
+// table, the pair the settle booked the row on (core/report_settled_marks.hpp). A Monday file
+// settles Sunday: KE (1 contract; Thu 679.50, Fri 668.50, no Sunday session) printed no bar, so
+// its mark is empty and its prior_mark is its last known close, Friday's 668.5, not Thursday's
+// 679.5, which is what the bar before its newest bar gives. The column names do not change.
+TEST_F(LiveCsvFiles, TheSettledFileOfANoBarRowCarriesTheLastKnownCloseAndAnEmptyMark) {
+    const std::string wheat = "KE.v.0";
+    StrategyPositionsMap settled{
+        {"TREND_FOLLOWING",
+         {{kSym, held(kSym, 2.0, 110.859375, 62.5)}, {wheat, held(wheat, 1.0, 668.5, 0.0)}}}};
+    // the settle's own inputs: its "from" map (Thursday's close for KE, never used: no bar to
+    // settle at), its "to" map (no KE), and the last known close of the symbol with no bar
+    const SettledTablePrices table = settled_table_prices({{kSym, 110.859375}, {wheat, 679.5}},
+                                                          {{kSym, 110.890625}}, {{wheat, 668.5}});
+    CSVExporter exporter(dir_.string());
+    auto r = exporter.export_finalized_positions(utc_day(2026, 4, 27), utc_day(2026, 4, 26),
+                                                 settled, table.previous, table.latest);
+    ASSERT_TRUE(r.is_ok());
+    const auto lines = lines_of(r.value());
+    ASSERT_EQ(lines.size(), 3u);
+    EXPECT_EQ(lines[0], "strategy,symbol,quantity,prior_mark,mark,realized_pnl");
+    std::map<std::string, std::string> line_of;
+    for (size_t i = 1; i < lines.size(); ++i)
+        line_of[cells_of(lines[i])[1]] = lines[i];
+    EXPECT_EQ(line_of.at(wheat), "Trend Following,KE.v.0,1.000000,668.5,,0.000000");
+    // the row beside it printed a bar: 2 x (110.890625 - 110.859375) x 1,000 = 62.50
+    EXPECT_EQ(line_of.at(kSym),
+              "Trend Following," + kSym + ",2.000000,110.859375,110.890625,62.500000");
+    const auto cells = cells_of(line_of.at(kSym));
+    EXPECT_NEAR(2.0 * (std::stod(cells[4]) - std::stod(cells[3])) * 1000.0, 62.5, 1e-9);
 }
 
 TEST_F(LiveCsvFiles, ThePortfolioLineAndTheShareColumnSayTheValueIsAsWritten) {

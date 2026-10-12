@@ -7,11 +7,6 @@
 
 namespace trade_ngin {
 
-/// What a price cell of the daily report prints for a symbol that has no bar on the day the
-/// column is for (the runner's close map has no entry for it): the price is not known, and a
-/// zero would read as a price.
-inline constexpr const char* kReportNoBar = "n/a (no bar)";
-
 /**
  * @brief A price as the daily report prints it: every decimal the price has, to at most eight,
  *        and never fewer than two.

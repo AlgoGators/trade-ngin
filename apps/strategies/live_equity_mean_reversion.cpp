@@ -14,6 +14,7 @@
 #include "trade_ngin/core/holiday_checker.hpp"
 #include "trade_ngin/core/logger.hpp"
 #include "trade_ngin/core/report_leverage_console.hpp"
+#include "trade_ngin/core/report_settled_marks.hpp"
 #include "trade_ngin/core/resolved_sleeves.hpp"
 #include "trade_ngin/core/time_utils.hpp"
 #include "trade_ngin/data/database_pooling.hpp"
@@ -6115,8 +6116,14 @@ int main(int argc, char* argv[]) {
                 // Load yesterday's finalized positions for email display
                 std::unordered_map<std::string, Position> yesterday_positions_finalized;
                 std::map<std::string, double> yesterday_daily_metrics_final;
-                std::unordered_map<std::string, double> yesterday_entry_prices;  // Day T-2 close
-                std::unordered_map<std::string, double> yesterday_exit_prices;   // Day T-1 close
+                // The settled table's two prices (HD 2026-10-12, one source): the pair STEP 1's
+                // finalize was handed for each row (two_days_ago_close_prices and
+                // previous_day_close_prices, the maps of its call), by the report's own rule.
+                std::unordered_map<std::string, double> yesterday_entry_prices;  // settled from
+                std::unordered_map<std::string, double> yesterday_exit_prices;   // settled at
+                // A symbol with no T-1 close settled no move: its last known close, the price
+                // manager's latest loaded close of it.
+                std::unordered_map<std::string, double> settled_last_known_close;
 
                 // Phase 6 §6c: UTC date string via format_utc_date.
                 const std::string yesterday_date_for_email =
@@ -6157,13 +6164,29 @@ int main(int argc, char* argv[]) {
 
                             yesterday_positions_finalized[symbol] = pos;
 
-                            // Populate entry and exit prices
-                            if (two_days_ago_close_prices.find(symbol) != two_days_ago_close_prices.end()) {
-                                yesterday_entry_prices[symbol] = two_days_ago_close_prices[symbol];
+                            if (previous_day_close_prices.find(symbol) ==
+                                previous_day_close_prices.end()) {
+                                const auto last_known = price_manager->get_latest_price(symbol);
+                                if (last_known.is_ok()) {
+                                    settled_last_known_close[symbol] = last_known.value();
+                                }
                             }
-                            if (previous_day_close_prices.find(symbol) != previous_day_close_prices.end()) {
-                                yesterday_exit_prices[symbol] = previous_day_close_prices[symbol];
-                            }
+                        }
+                    }
+                    // The rows' two prices: the pair their day was settled on.
+                    const trade_ngin::SettledTablePrices settled_table =
+                        trade_ngin::settled_table_prices(two_days_ago_close_prices,
+                                                         previous_day_close_prices,
+                                                         settled_last_known_close);
+                    for (const auto& [symbol, settled_position] : yesterday_positions_finalized) {
+                        (void)settled_position;
+                        if (const auto previous =
+                                trade_ngin::settled_price_of(settled_table.previous, symbol)) {
+                            yesterday_entry_prices[symbol] = *previous;
+                        }
+                        if (const auto latest =
+                                trade_ngin::settled_price_of(settled_table.latest, symbol)) {
+                            yesterday_exit_prices[symbol] = *latest;
                         }
                     }
                     INFO("Loaded " + std::to_string(yesterday_positions_finalized.size()) + " finalized positions for email");
@@ -6327,8 +6350,8 @@ int main(int argc, char* argv[]) {
                     db,                         // Pass database for symbols reference table
                     yesterday_positions_finalized,  // Now populated with yesterday's finalized
                                                     // positions
-                    yesterday_exit_prices,   // Day T-1 close prices for yesterday's positions
-                    yesterday_entry_prices,  // Day T-2 close prices for yesterday's positions
+                    yesterday_exit_prices,          // the price each settled row was settled at
+                    yesterday_entry_prices,         // the price it was settled from
                     yesterday_daily_metrics_final,  // Yesterday's metrics
                     // E2-F11: the charts query THIS book. The overload used to hardcode the
                     // trend-following strategy id and an empty portfolio, so every equity

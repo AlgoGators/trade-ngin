@@ -318,6 +318,12 @@ struct ConsumedT1Settlement {
     /// this run legs LATE (section 6.5), which books every unbooked consumed bar's move on the T-1
     /// row (its last consumed close against LateRollSettlement::settle_from).
     std::unordered_map<std::string, double> t1_close_prices;
+    /// For a symbol whose last consumed bar is NOT dated T-1 (it printed no bar on T-1, or its
+    /// T-1 print was withheld): the close of that last consumed bar, its last known close and the
+    /// close its next booked move will be booked against. No settlement reads it: it is what the
+    /// report's settled table prints as the previous price of a no-bar row
+    /// (core/report_settled_marks.hpp).
+    std::unordered_map<std::string, double> last_close_without_t1;
 };
 
 /**
@@ -343,7 +349,10 @@ inline ConsumedT1Settlement consumed_t1_settlement(
     for (auto& [symbol, seq] : by_symbol) {
         std::stable_sort(seq.begin(), seq.end(),
                          [](const Bar* a, const Bar* b) { return a->timestamp < b->timestamp; });
-        if (SessionClassifier::ymd(SessionClassifier::day_of(seq.back()->timestamp)) != t1_date) continue;
+        if (SessionClassifier::ymd(SessionClassifier::day_of(seq.back()->timestamp)) != t1_date) {
+            out.last_close_without_t1[symbol] = static_cast<double>(seq.back()->close);
+            continue;
+        }
         if (seq.size() >= 2) out.t2_close_prices[symbol] = static_cast<double>(seq[seq.size() - 2]->close);
         const auto rs = roll_status.find(symbol);
         if (rs != roll_status.end() && rs->second.change) out.zero_pnl_symbols.insert(symbol);

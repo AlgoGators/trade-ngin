@@ -216,8 +216,10 @@ private:
     /**
      * @brief Format yesterday's finalized positions table with actual PnL
      * @param yesterday_positions Yesterday's positions
-     * @param entry_prices Entry prices (Day T-2 close)
-     * @param exit_prices Exit prices (Day T-1 close)
+     * @param entry_prices The price each row was settled from ("Previous price";
+     *        report_settled_marks.hpp)
+     * @param exit_prices The price each row was settled at ("Latest price"); a symbol it does
+     *        not hold printed no bar that day
      * @param db Database interface to query contract multipliers
      * @param strategy_metrics Strategy metrics (to extract daily metrics)
      * @param yesterday_date Yesterday's date string
@@ -236,8 +238,10 @@ private:
     /**
      * @brief Format yesterday's finalized positions table with per-strategy breakdown
      * @param strategy_positions Per-strategy positions map
-     * @param entry_prices Entry prices (Day T-2 close)
-     * @param exit_prices Exit prices (Day T-1 close)
+     * @param entry_prices The price each row was settled from ("Previous price";
+     *        report_settled_marks.hpp)
+     * @param exit_prices The price each row was settled at ("Latest price"); a symbol it does
+     *        not hold printed no bar that day
      * @param db Database interface to query contract multipliers
      * @param strategy_metrics Strategy metrics (to extract daily metrics)
      * @param yesterday_date Yesterday's date string

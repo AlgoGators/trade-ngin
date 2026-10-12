@@ -16,6 +16,7 @@
 #include "trade_ngin/core/logger.hpp"
 #include "trade_ngin/core/report_leverage_console.hpp"
 #include "trade_ngin/core/report_risk_lines.hpp"
+#include "trade_ngin/core/report_settled_marks.hpp"
 #include "trade_ngin/core/resolved_sleeves.hpp"
 #include "trade_ngin/core/time_utils.hpp"
 #include "trade_ngin/data/conversion_utils.hpp"
@@ -4211,6 +4212,15 @@ int main(int argc, char* argv[]) {
                                                   "trading.positions");
             });
 
+        // The two prices of the settled table, in the settled file and in the report (HD
+        // 2026-10-12, one source): the pair PHASE 5's own P&L arithmetic was handed for each row
+        // (t1_settlement's "from" and "to" maps), never a second lookup of the bars. A symbol the
+        // "to" map does not hold printed no bar and settled 0: its previous price is its last
+        // consumed close.
+        const trade_ngin::SettledTablePrices settled_table = trade_ngin::settled_table_prices(
+            t1_settlement.t2_close_prices, t1_settlement.t1_close_prices,
+            t1_settlement.last_close_without_t1);
+
         // Export yesterday's finalized positions with per-strategy breakdown (if not first trading
         // day)
         std::string yesterday_filename;
@@ -4221,8 +4231,8 @@ int main(int argc, char* argv[]) {
 
             auto finalized_export_result = csv_exporter->export_finalized_positions(
                 now, yesterday_time, finalized_strategy_positions,
-                two_days_ago_close_prices,  // Entry prices (T-2)
-                previous_day_close_prices   // Exit prices (T-1)
+                settled_table.previous,  // the price each row was settled from
+                settled_table.latest     // the price it was settled at
             );
 
             if (finalized_export_result.is_ok()) {
@@ -4326,8 +4336,9 @@ int main(int argc, char* argv[]) {
                         yesterday_positions_finalized;
                     std::map<std::string, double> yesterday_daily_metrics_final;
                     std::unordered_map<std::string, double>
-                        yesterday_entry_prices;                                     // Day T-2 close
-                    std::unordered_map<std::string, double> yesterday_exit_prices;  // Day T-1 close
+                        yesterday_entry_prices;  // the price each settled row was settled from
+                    std::unordered_map<std::string, double>
+                        yesterday_exit_prices;  // the price it was settled at
 
                     // Calculate yesterday's date for email
                     auto yesterday_time_email = now - std::chrono::hours(24);
@@ -4389,16 +4400,14 @@ int main(int argc, char* argv[]) {
                                                                  : strategy_name_arr->GetString(i);
                                 yesterday_positions_finalized[{strategy_name, symbol}] = pos;
 
-                                // Populate entry and exit prices
-                                if (two_days_ago_close_prices.find(symbol) !=
-                                    two_days_ago_close_prices.end()) {
-                                    yesterday_entry_prices[symbol] =
-                                        two_days_ago_close_prices[symbol];
+                                // The row's two prices: the pair its P&L was settled on.
+                                if (const auto previous = trade_ngin::settled_price_of(
+                                        settled_table.previous, symbol)) {
+                                    yesterday_entry_prices[symbol] = *previous;
                                 }
-                                if (previous_day_close_prices.find(symbol) !=
-                                    previous_day_close_prices.end()) {
-                                    yesterday_exit_prices[symbol] =
-                                        previous_day_close_prices[symbol];
+                                if (const auto latest = trade_ngin::settled_price_of(
+                                        settled_table.latest, symbol)) {
+                                    yesterday_exit_prices[symbol] = *latest;
                                 }
                             }
                         }
@@ -4632,14 +4641,14 @@ int main(int argc, char* argv[]) {
                         positions,
                         risk_eval.is_ok() ? std::make_optional(risk_eval.value()) : std::nullopt,
                         strategy_metrics, all_strategy_executions, date_str,
-                        portfolio_id,                  // Portfolio name for email header
-                        true,                          // is_daily_strategy
-                        day_t_mark_prices,             // The Day T mark of today's positions
-                        db,                            // Pass database for symbols reference table
-                        finalized_strategy_positions,  // Per-strategy yesterday's positions,
-                                                       // read back after the finalize
-                        yesterday_exit_prices,   // Day T-1 close prices for yesterday's positions
-                        yesterday_entry_prices,  // Day T-2 close prices for yesterday's positions
+                        portfolio_id,                   // Portfolio name for email header
+                        true,                           // is_daily_strategy
+                        day_t_mark_prices,              // The Day T mark of today's positions
+                        db,                             // Pass database for symbols reference table
+                        finalized_strategy_positions,   // Per-strategy yesterday's positions,
+                                                        // read back after the finalize
+                        yesterday_exit_prices,          // the price each settled row was settled at
+                        yesterday_entry_prices,         // the price it was settled from
                         yesterday_daily_metrics_final,  // Yesterday's metrics
                         combined_strategy_id,           // The charts query this run's own rows
                         // T-8D R20: the stored book's leverage on the sizing capital beside the

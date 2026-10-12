@@ -38,6 +38,7 @@
 #include "trade_ngin/core/report_over_limit.hpp"
 #include "trade_ngin/core/report_price_text.hpp"
 #include "trade_ngin/core/report_risk_lines.hpp"
+#include "trade_ngin/core/report_settled_marks.hpp"
 #include "trade_ngin/instruments/equity.hpp"
 #include "trade_ngin/instruments/futures.hpp"
 
@@ -362,8 +363,13 @@ protected:
              {fill("QM2K.v.0", Side::BUY, 1.0, 2806.7, 1.09),
               roll_leg("QMBT.v.0", true, Side::SELL, 77960.0, 2.45, "42185193"),
               roll_leg("QMBT.v.0", false, Side::BUY, 79070.0, 2.45, "42013708")}}};
-        // The settled day's rows as stored after the finalize. HE printed no bar on either day;
-        // MBT's row is the confirming bar of its roll (no P&L booked on it).
+        // The settled day's rows as stored after the finalize, with the two prices the settle
+        // booked each on: quantity x (to - from) x contract size is the row's P&L (QZT -1 x
+        // 0.0234375 x 2,000 = -46.88; Q6J -1 x 0.0000135 x 12,500,000 = -168.75; QKE 1 x 8.50 x
+        // 50 = 425.00; Q6L 2 x 0.0004 x 100,000 = 80.00; QMES 1 x 63.75 x 5 = 318.75). MBT's row
+        // is the confirming bar of its roll: the settle books 0 on it by rule. HE printed no bar
+        // on the settled day: the settle booked 0, its "from" entry (92.10, the bar before its
+        // newest bar) was never used, and its last known close is 91.30.
         const StrategyPositionsMap settled = {
             {"TREND_FOLLOWING",
              {{"QZT.v.0", row("QZT.v.0", -1.0, 103.73828125, -46.88)},
@@ -377,8 +383,11 @@ protected:
             {"QZT.v.0", 103.73828125}, {"Q6J.v.0", 0.0062995}, {"QKE.v.0", 677.0},
             {"Q6L.v.0", 0.1998},       {"QMBT.v.0", 77740.0},  {"QMES.v.0", 7217.25}};
         const std::unordered_map<std::string, double> t2_close = {
-            {"QZT.v.0", 103.71484375}, {"Q6J.v.0", 0.006313}, {"QKE.v.0", 668.5},
-            {"Q6L.v.0", 0.2},          {"QMBT.v.0", 79070.0}, {"QMES.v.0", 7153.5}};
+            {"QZT.v.0", 103.71484375}, {"Q6J.v.0", 0.006286}, {"QKE.v.0", 668.5},
+            {"Q6L.v.0", 0.1994},       {"QMBT.v.0", 79070.0}, {"QMES.v.0", 7153.5},
+            {"HE.v.0", 92.1}};
+        const SettledTablePrices settled_prices =
+            settled_table_prices(t2_close, t1_close, {{"HE.v.0", 91.3}});
         const std::map<std::string, double> settled_metrics = {
             {"Daily Return", 0.1201},          {"Daily Unrealized PnL", 0.0},
             {"Daily Realized PnL", 608.12},    {"Daily Total PnL", 604.19},
@@ -386,8 +395,8 @@ protected:
         std::unordered_map<std::string, Position> combined = sleeve;
         return sender_.generate_trading_report_body(
             book, combined, std::nullopt, futures_metrics(), executions, "2026-04-28",
-            "CONSERVATIVE_PORTFOLIO", true, marks, nullptr, settled, t1_close, t2_close,
-            settled_metrics, "LIVE_TREND_FOLLOWING",
+            "CONSERVATIVE_PORTFOLIO", true, marks, nullptr, settled, settled_prices.latest,
+            settled_prices.previous, settled_metrics, "LIVE_TREND_FOLLOWING",
             // gross 431,957.5625 and net 121,699.32 on the sizing capital 497,745.27
             over_limit_of(kConservativeCapital.sizing_capital, 0.8678286, 0.2445012),
             with_book(with_capital(context_of("2026-04-27", 171, 311.0574),
@@ -429,10 +438,14 @@ protected:
               // an agricultural root, no longer held, with no P&L on a Sunday
               {"KE.v.0", row("KE.v.0", 1.0, 668.5, 0.0)}}},
             {"TREND_FOLLOWING_FAST", {{"QZN.v.0", row("QZN.v.0", -1.0, 110.890625, -31.25)}}}};
-        const std::unordered_map<std::string, double> t1_close = {{"QZN.v.0", 110.890625},
-                                                                  {"KE.v.0", 668.5}};
+        // The settle's own inputs. KE has no Sunday session: no price to settle at, 0 booked;
+        // its "from" entry is Thursday's 679.50 (never used) and its last known close Friday's
+        // 668.50. QZN: 2 x 0.03125 x 1,000 = 62.50 and -1 x 0.03125 x 1,000 = -31.25.
+        const std::unordered_map<std::string, double> t1_close = {{"QZN.v.0", 110.890625}};
         const std::unordered_map<std::string, double> t2_close = {{"QZN.v.0", 110.859375},
-                                                                  {"KE.v.0", 668.5}};
+                                                                  {"KE.v.0", 679.5}};
+        const SettledTablePrices settled_prices =
+            settled_table_prices(t2_close, t1_close, {{"KE.v.0", 668.5}});
         const std::map<std::string, double> settled_metrics = {
             {"Daily Return", 0.0062},         {"Daily Unrealized PnL", 0.0},
             {"Daily Realized PnL", 31.25},    {"Daily Total PnL", 31.25},
@@ -450,8 +463,8 @@ protected:
         metrics["Margin Cushion"] = 97.9444;
         return sender_.generate_trading_report_body(
             book, combined, std::nullopt, metrics, executions, "2026-04-27", "BASE_PORTFOLIO", true,
-            marks, nullptr, settled, t1_close, t2_close, settled_metrics,
-            "LIVE_TREND_FOLLOWING_TREND_FOLLOWING_FAST",
+            marks, nullptr, settled, settled_prices.latest, settled_prices.previous,
+            settled_metrics, "LIVE_TREND_FOLLOWING_TREND_FOLLOWING_FAST",
             over_limit_of(kBaseCapital.sizing_capital, 0.5035118, 0.5035118),
             with_book(with_capital(context_of("2026-04-26", 320, 311.0574),
                                    kBaseCapital.sizing_capital, kBaseCapital.account_value),
@@ -541,24 +554,25 @@ TEST_F(EmailFixture, TheEquityBodyIsTheStoredBody) {
     expect_body_is_fixture("equity_2026-06-22.html", equity_body());
 }
 
-// T-8D D1, T-8D-2 R62 and the lead's "raw closes beside settled P&L": the labels, on the bodies.
-TEST_F(EmailFixture, TheSleeveNamesItsKindAndTheSettledTableNamesItsMarks) {
+// T-8D D1 and HD 2026-10-12: the labels, on the bodies. The settled table's two price columns are
+// named in plain words, with no "T-1" or "T-2".
+TEST_F(EmailFixture, TheSleeveNamesItsKindAndTheSettledTableNamesItsTwoPrices) {
     const std::string futures = conservative_body();
     EXPECT_NE(futures.find(">Trend Following (futures)</h3>\n<table>\n<tr><th>Symbol</th>"
                            "<th>Quantity</th><th>Market Price</th>"),
               std::string::npos);
     const std::string base = base_body();
     EXPECT_NE(base.find(">Trend Following Fast (futures)</h3>"), std::string::npos);
-    const std::string marks =
-        "<th>Prior mark (T-2 close)</th><th>Mark (T-1 close)</th>"
-        "<th>Realized PnL</th>";
+    const std::string marks = "<th>Previous price</th><th>Latest price</th><th>Realized PnL</th>";
     const std::string note =
         "The two marks are raw closes. Realized PnL is the settled day's "
         "stored figure; it is not recomputed from the two marks";
     for (const std::string& body : {futures, base, equity_body()}) {
         EXPECT_NE(body.find(marks), std::string::npos);
-        EXPECT_EQ(body.find("Entry Price"), std::string::npos);
-        EXPECT_EQ(body.find("Exit Price"), std::string::npos);
+        for (const char* gone : {"Entry Price", "Exit Price", "Prior mark", "Mark (", "T-1 close",
+                                 "T-2 close", "T-1", "T-2"}) {
+            EXPECT_EQ(body.find(gone), std::string::npos) << gone;
+        }
         const auto at = body.find(note);
         ASSERT_NE(at, std::string::npos);
         EXPECT_EQ(body.find(note, at + 1), std::string::npos) << "the note is printed once";
@@ -600,11 +614,10 @@ TEST_F(EmailFixture, ARowsPriceMultipliesOutAndASymbolWithNoBarHasNoMark) {
                         "<td>$207,476.56</td>"),
               std::string::npos);
     EXPECT_EQ(body.find("$0.01<"), std::string::npos) << "a price cut to the cent";
-    // the settled table: both marks at their decimals; HE printed no bar on either day
-    EXPECT_NE(body.find("<tr><td>Q6J.v.0</td><td>-1.00</td><td>0.006313</td><td>0.0062995</td>"),
+    // the settled table: both prices at their decimals; HE printed no bar on the settled day
+    EXPECT_NE(body.find("<tr><td>Q6J.v.0</td><td>-1.00</td><td>0.006286</td><td>0.0062995</td>"),
               std::string::npos);
-    EXPECT_NE(body.find("<tr><td>HE.v.0</td><td>1.00</td><td>n/a (no bar)</td>"
-                        "<td>n/a (no bar)</td>"),
+    EXPECT_NE(body.find("<tr><td>HE.v.0</td><td>1.00</td><td>91.30</td><td>no bar</td>"),
               std::string::npos);
     EXPECT_EQ(body.find("<td>0.00</td>"), std::string::npos) << "a missing mark printed as zero";
     // a roll leg and a fill
@@ -612,6 +625,54 @@ TEST_F(EmailFixture, ARowsPriceMultipliesOutAndASymbolWithNoBarHasNoMark) {
               std::string::npos);
     EXPECT_NE(body.find("<td class=\"positive\">BUY</td>\n<td>1</td>\n<td>$2806.70</td>"),
               std::string::npos);
+}
+
+// HD 2026-10-12: the settled table's two prices are the pair the settle booked the row on, so a
+// row with a bar multiplies out to its P&L; a row whose symbol printed no bar shows its last known
+// close and the words "no bar", and ONE footnote under the table says what the words mean, only on
+// a body that has such a row.
+TEST_F(EmailFixture, ASettledRowMultipliesOutAndANoBarRowSaysSoWithOneFootnote) {
+    const std::string futures = conservative_body();
+    const std::string base = base_body();
+    const std::string equity = equity_body();
+    // 1 x (677.00 - 668.50) x 50 = 425.00; -1 x (103.73828125 - 103.71484375) x 2,000 = -46.88
+    EXPECT_NE(futures.find("<tr><td>QKE.v.0</td><td>1.00</td><td>668.50</td><td>677.00</td>"
+                           "<td class=\"positive\">$425.00</td></tr>"),
+              std::string::npos);
+    EXPECT_NE(futures.find("<tr><td>QZT.v.0</td><td>-1.00</td><td>103.71484375</td>"
+                           "<td>103.73828125</td><td class=\"negative\">$-46.88</td></tr>"),
+              std::string::npos);
+    // 2 x (0.1998 - 0.1994) x 100,000 = 80.00
+    EXPECT_NE(futures.find("<tr><td>Q6L.v.0</td><td>2.00</td><td>0.1994</td><td>0.1998</td>"
+                           "<td class=\"positive\">$80.00</td></tr>"),
+              std::string::npos);
+    // HE: the last known close 91.30, never the unused older 92.10, and a stored P&L of 0.00
+    EXPECT_NE(futures.find("<tr><td>HE.v.0</td><td>1.00</td><td>91.30</td><td>no bar</td>"
+                           "<td class=\"positive\">$0.00</td></tr>"),
+              std::string::npos);
+    EXPECT_EQ(futures.find("92.10"), std::string::npos);
+    // BASE, a Monday: KE has no Sunday session. Friday's 668.50, not Thursday's 679.50.
+    EXPECT_NE(base.find("<tr><td>KE.v.0</td><td>1.00</td><td>668.50</td><td>no bar</td>"
+                        "<td class=\"positive\">$0.00</td></tr>"),
+              std::string::npos);
+    EXPECT_EQ(base.find("679.50"), std::string::npos);
+
+    const std::string footnote =
+        ">no bar: the market did not print a price that day; the "
+        "position's P&amp;L for the day is 0</div>\n";
+    const std::string note = "The two marks are raw closes.";
+    for (const std::string& body : {futures, base}) {
+        const auto at = body.find(footnote);
+        ASSERT_NE(at, std::string::npos);
+        EXPECT_EQ(body.find(footnote, at + 1), std::string::npos) << "the footnote is printed once";
+        // under the table (after the last sleeve's table of a book of several) and above the note
+        EXPECT_GT(at, body.rfind("</table>", body.find(note)));
+        EXPECT_LT(at, body.find(note));
+        EXPECT_EQ(body.find("n/a (no bar)"), std::string::npos);
+    }
+    // the equity body's one settled row printed a bar: no "no bar" cell and no footnote
+    EXPECT_EQ(equity.find("no bar"), std::string::npos);
+    EXPECT_NE(equity.find("<td>337.39</td><td>353.65</td>"), std::string::npos);
 }
 
 // T-8D-2 R61: the snapshot is two blocks, because its figures are of two days. The statistics run
@@ -1019,8 +1080,9 @@ TEST_F(EmailFixture, TheTextOfAReportIsItsOwnBooks) {
     EXPECT_NE(equity.find("<div class=\"header-info\">2026-06-22 | Equity Mr Portfolio</div>"),
               std::string::npos);
     EXPECT_EQ(equity.find("Trend Following"), std::string::npos);
-    // an agricultural root with a true zero on a Monday prints its zero
-    EXPECT_NE(base.find("<tr><td>KE.v.0</td><td>1.00</td><td>668.50</td><td>668.50</td>"
+    // an agricultural root with a true zero on a Monday prints its zero, its last known close
+    // and the words for a day with no bar
+    EXPECT_NE(base.find("<tr><td>KE.v.0</td><td>1.00</td><td>668.50</td><td>no bar</td>"
                         "<td class=\"positive\">$0.00</td></tr>"),
               std::string::npos);
     // the footers

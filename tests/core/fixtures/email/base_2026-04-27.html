@@ -143,8 +143,8 @@ th { background-color: #f2f2f2; font-weight: bold; }
 <h2>Yesterday's Finalized Position Results</h2>
 <h3 style="margin-top: 20px; margin-bottom: 10px; color: #333; border-left: 4px solid #2c5aa0; padding-left: 12px;">Trend Following</h3>
 <table>
-<tr><th>Symbol</th><th>Quantity</th><th>Prior mark (T-2 close)</th><th>Mark (T-1 close)</th><th>Realized PnL</th></tr>
-<tr><td>KE.v.0</td><td>1.00</td><td>668.50</td><td>668.50</td><td class="positive">$0.00</td></tr>
+<tr><th>Symbol</th><th>Quantity</th><th>Previous price</th><th>Latest price</th><th>Realized PnL</th></tr>
+<tr><td>KE.v.0</td><td>1.00</td><td>668.50</td><td>no bar</td><td class="positive">$0.00</td></tr>
 <tr><td>QZN.v.0</td><td>2.00</td><td>110.859375</td><td>110.890625</td><td class="positive">$62.50</td></tr>
 </table>
 <div style="font-size: 13px; color: #666; margin: 8px 0 20px 0; padding-left: 16px;">
@@ -152,12 +152,13 @@ th { background-color: #f2f2f2; font-weight: bold; }
 </div>
 <h3 style="margin-top: 20px; margin-bottom: 10px; color: #333; border-left: 4px solid #2c5aa0; padding-left: 12px;">Trend Following Fast</h3>
 <table>
-<tr><th>Symbol</th><th>Quantity</th><th>Prior mark (T-2 close)</th><th>Mark (T-1 close)</th><th>Realized PnL</th></tr>
+<tr><th>Symbol</th><th>Quantity</th><th>Previous price</th><th>Latest price</th><th>Realized PnL</th></tr>
 <tr><td>QZN.v.0</td><td>-1.00</td><td>110.859375</td><td>110.890625</td><td class="negative">$-31.25</td></tr>
 </table>
 <div style="font-size: 13px; color: #666; margin: 8px 0 20px 0; padding-left: 16px;">
 <strong>Positions:</strong> 1 | <strong>Total Realized PnL (Gross):</strong> <span class="negative">$-31.25</span>
 </div>
+<div style="font-size: 12px; color: #666; margin: 4px 0 4px 0;">no bar: the market did not print a price that day; the position's P&amp;L for the day is 0</div>
 <div style="font-size: 12px; color: #666; margin: 4px 0 12px 0;">The two marks are raw closes. Realized PnL is the settled day's stored figure; it is not recomputed from the two marks, so a row need not multiply out.</div>
 <h2>2026-04-26 (settled)</h2>
 <div class="metrics-category">

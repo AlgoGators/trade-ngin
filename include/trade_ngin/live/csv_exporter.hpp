@@ -108,17 +108,20 @@ public:
      *
      * Creates a file named: YYYY-MM-DD_positions_asof_YYYY-MM-DD.csv
      * Contains: strategy, symbol, quantity, prior_mark, mark, realized_pnl. prior_mark is the
-     * close two days before the run date (the T-2 close) and mark the close of the day before
-     * it (the T-1 close, the day the file settles); neither is an entry or an exit price. A
-     * symbol with no close on that day has an empty cell. The file starts with its column
-     * names (no comment line); quantity and realized_pnl print six decimals on every row, the
-     * two marks the shortest text that reads back as the same number.
+     * price the settled day's P&L was booked from and mark the price it was booked at, the
+     * pair the settle's own arithmetic used, so quantity x (mark - prior_mark) x contract size
+     * is the row's realized_pnl (the report's "Previous price" and "Latest price";
+     * core/report_settled_marks.hpp); neither is an entry or an exit price. A symbol that
+     * printed no bar on the settled day has an empty mark and its last known close as
+     * prior_mark. The file starts with its column names (no comment line); quantity and
+     * realized_pnl print six decimals on every row, the two prices the shortest text that
+     * reads back as the same number.
      *
      * @param date Current trading date (for filename)
      * @param yesterday_date Yesterday's date
      * @param strategy_positions Per-strategy positions map
-     * @param prior_marks Day T-2 close prices
-     * @param marks Day T-1 close prices
+     * @param prior_marks The price each row was settled from (SettledTablePrices::previous)
+     * @param marks The price each row was settled at (SettledTablePrices::latest)
      * @return Result containing filename on success, or error
      */
     Result<std::string> export_finalized_positions(

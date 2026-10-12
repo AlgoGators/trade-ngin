@@ -9,6 +9,7 @@
 #include <fstream>
 #include <iomanip>
 #include <nlohmann/json.hpp>
+#include <optional>
 #include <set>
 #include <sstream>
 #include <vector>
@@ -17,6 +18,7 @@
 #include "trade_ngin/core/holiday_checker.hpp"
 #include "trade_ngin/core/logger.hpp"
 #include "trade_ngin/core/report_price_text.hpp"
+#include "trade_ngin/core/report_settled_marks.hpp"
 #include "trade_ngin/instruments/equity.hpp"
 #include "trade_ngin/instruments/instrument_registry.hpp"
 #include "trade_ngin/transaction_cost/netting.hpp"
@@ -657,8 +659,8 @@ std::string EmailSender::generate_trading_report_body(
         !two_days_ago_close_prices.empty()) {
         html << format_yesterday_finalized_positions_table(
             yesterday_positions,
-            two_days_ago_close_prices,  // Entry prices (Day T-2)
-            yesterday_close_prices,     // Exit prices (Day T-1)
+            two_days_ago_close_prices,  // the price each row was settled from
+            yesterday_close_prices,     // the price it was settled at
             db,
             yesterday_daily_metrics,  // Yesterday's daily metrics
             yesterday_date_str, settled_date);
@@ -1286,15 +1288,15 @@ std::string EmailSender::format_positions_table(
     return html.str();
 }
 
-// T-8D-2 R62: the two price columns of the settled day's table are marks, not a trade's entry and
-// exit: the close of the day before and the close of the settled day.
-static const char* const kPriorMarkHeader = "Prior mark (T-2 close)";
-static const char* const kMarkHeader = "Mark (T-1 close)";
-// The two marks are the raw closes the runner marks the book at; the P&L beside them is the
-// settled day's stored figure. Nothing recomputes one from the other, and the note says so.
-// A mark of the settled table: the close at every decimal it has, or "no bar".
-static std::string mark_text(double mark) {
-    return std::isnan(mark) ? std::string(kReportNoBar) : report_price_text(mark, true);
+// The two price columns of the settled day's table (report_settled_marks.hpp, HD 2026-10-12): the
+// price the day was settled from and the price it was settled at, the pair the settle's own P&L
+// arithmetic used for the row, as the runner hands them. A symbol the "settled at" map does not
+// hold printed no bar that day: its cell reads "no bar" and one footnote under the table says so.
+// A price the maps do not hold (NaN in the row data): nothing is known.
+static std::optional<double> known_price(double price) {
+    if (std::isnan(price))
+        return std::nullopt;
+    return price;
 }
 static const char* const kMarksNote =
     "<div style=\"font-size: 12px; color: #666; margin: 4px 0 12px 0;\">The two marks are raw "
@@ -1303,8 +1305,8 @@ static const char* const kMarksNote =
 
 std::string EmailSender::format_yesterday_finalized_positions_table(
     const std::unordered_map<std::string, Position>& yesterday_positions,
-    const std::unordered_map<std::string, double>& entry_prices,  // Day T-2 close
-    const std::unordered_map<std::string, double>& exit_prices,   // Day T-1 close
+    const std::unordered_map<std::string, double>& entry_prices,  // settled from
+    const std::unordered_map<std::string, double>& exit_prices,   // settled at
     std::shared_ptr<DatabaseInterface> db, const std::map<std::string, double>& strategy_metrics,
     const std::string& yesterday_date, const std::string& settled_date) {
     (void)db;
@@ -1319,8 +1321,8 @@ std::string EmailSender::format_yesterday_finalized_positions_table(
     html << "<tr>";
     html << "<th>Symbol</th>";
     html << "<th>Quantity</th>";
-    html << "<th>" << kPriorMarkHeader << "</th>";
-    html << "<th>" << kMarkHeader << "</th>";
+    html << "<th>" << kSettledPreviousPriceLabel << "</th>";
+    html << "<th>" << kSettledLatestPriceLabel << "</th>";
     html << "<th>Realized PnL</th>";
     html << "</tr>\n";
 
@@ -1363,8 +1365,8 @@ std::string EmailSender::format_yesterday_finalized_positions_table(
         if (std::abs(qty) < 0.0001)
             continue;
 
-        // The two marks. A symbol the runner's close map does not hold printed no bar that
-        // day: its mark is not known (NaN here, kReportNoBar in the cell), never a zero.
+        // The two prices. A symbol the runner's "settled at" map does not hold printed no bar
+        // that day: its price is not known (NaN here, "no bar" in the cell), never a zero.
         double entry_price = std::nan("");
         double exit_price = std::nan("");
 
@@ -1390,13 +1392,17 @@ std::string EmailSender::format_yesterday_finalized_positions_table(
               [](const auto& a, const auto& b) { return std::get<0>(a) < std::get<0>(b); });
 
     // Render table rows
+    bool any_no_bar_row = false;
     for (const auto& [symbol, qty, entry_price, exit_price, realized_pnl] : position_data) {
+        const SettledPriceCells cells =
+            settled_price_cells(known_price(entry_price), known_price(exit_price));
+        any_no_bar_row = any_no_bar_row || cells.no_bar;
         html << "<tr>";
         html << "<td>" << symbol << "</td>";
         html << "<td>" << std::fixed << std::setprecision(2) << qty << "</td>";
-        html << "<td>" << mark_text(entry_price) << "</td>";
+        html << "<td>" << cells.previous << "</td>";
 
-        html << "<td>" << mark_text(exit_price) << "</td>";
+        html << "<td>" << cells.latest << "</td>";
 
         // Realized PnL with color (GROSS PnL from positions table)
         std::string realized_pnl_class = (realized_pnl >= 0) ? "positive" : "negative";
@@ -1408,6 +1414,7 @@ std::string EmailSender::format_yesterday_finalized_positions_table(
     }
 
     html << "</table>\n";
+    html << settled_no_bar_footnote_html(any_no_bar_row);
     html << kMarksNote;
 
     // Add daily metrics as a section heading after the table - use passed yesterday_daily_metrics
@@ -1550,6 +1557,8 @@ std::string EmailSender::format_yesterday_finalized_positions_table(
 
     // Track total positions across all strategies
     int total_positions_count = 0;
+    // One footnote under the sleeves' tables when any row of any of them printed no bar.
+    bool any_no_bar_row = false;
 
     // Generate table for each strategy
     for (const auto& strategy_name : strategy_names) {
@@ -1564,7 +1573,7 @@ std::string EmailSender::format_yesterday_finalized_positions_table(
             if (std::abs(qty) < 0.0001)
                 continue;
 
-            // A symbol with no bar that day has no mark (see the single table above).
+            // A symbol with no bar that day has no price (see the single table above).
             double entry_price = std::nan("");
             double exit_price = std::nan("");
 
@@ -1602,18 +1611,21 @@ std::string EmailSender::format_yesterday_finalized_positions_table(
         html << "<tr>";
         html << "<th>Symbol</th>";
         html << "<th>Quantity</th>";
-        html << "<th>" << kPriorMarkHeader << "</th>";
-        html << "<th>" << kMarkHeader << "</th>";
+        html << "<th>" << kSettledPreviousPriceLabel << "</th>";
+        html << "<th>" << kSettledLatestPriceLabel << "</th>";
         html << "<th>Realized PnL</th>";
         html << "</tr>\n";
 
         for (const auto& [symbol, qty, entry_price, exit_price, realized_pnl] : position_data) {
+            const SettledPriceCells cells =
+                settled_price_cells(known_price(entry_price), known_price(exit_price));
+            any_no_bar_row = any_no_bar_row || cells.no_bar;
             html << "<tr>";
             html << "<td>" << symbol << "</td>";
             html << "<td>" << std::fixed << std::setprecision(2) << qty << "</td>";
-            html << "<td>" << mark_text(entry_price) << "</td>";
+            html << "<td>" << cells.previous << "</td>";
 
-            html << "<td>" << mark_text(exit_price) << "</td>";
+            html << "<td>" << cells.latest << "</td>";
 
             std::string realized_pnl_class = (realized_pnl >= 0) ? "positive" : "negative";
             html << "<td class=\"" << realized_pnl_class << "\">";
@@ -1634,6 +1646,7 @@ std::string EmailSender::format_yesterday_finalized_positions_table(
              << "\">$" << format_with_commas(strategy_total_pnl, 2) << "</span>\n";
         html << "</div>\n";
     }
+    html << settled_no_bar_footnote_html(any_no_bar_row);
     html << kMarksNote;
 
     // Add daily metrics section
