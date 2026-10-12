@@ -89,17 +89,21 @@ PortfolioManager::PortfolioManager(PortfolioConfig config, std::string id,
     } else {
         INFO("Risk management is disabled in the configuration");
         // Who ruled that this book runs no risk layer, and when, once per PortfolioManager (one
-        // per run on every runner). The generic line above names neither, while the stored
-        // risk_scale keeps printing the reporter's value beside a book nothing cut (T-6b INTERIM
-        // ADVERSARIAL D-1), so an operator reading the log could not tell a ruling from an
-        // accident. The loader has already required all three fields of a `none` module.
+        // per run on every runner). The generic line above names neither, so an operator
+        // reading the log could not tell a ruling from an accident (T-6b INTERIM ADVERSARIAL
+        // D-1). The line also says what the day's row stores: a live equity run, the one book
+        // configured `none`, stores risk_scale 1.0 (kRiskScaleNoOverlay), and the snapshot
+        // reporter's reading is logged on RISK_SCALE_REPORT only. The loader has already
+        // required all three fields of a `none` module.
         const RiskModuleConfig& none = config_.risk_modules.front();
         const auto* ruling = std::get_if<NoneModuleConfig>(&none.params);
         INFO("RISK_NONE pm=" + id_ + " module=" + none.id +
              " ruled_by=" + (ruling ? ruling->ruled_by : std::string("-")) +
              " ruled_on=" + (ruling ? ruling->ruled_on : std::string("-")) +
-             ": this book runs no risk module; risk_scale in live_results is the reporter's "
-             "reading, not a cut");
+             ": this book runs no risk module, so nothing cuts it for portfolio risk; a live "
+             "equity run stores risk_scale 1.0 on the day's live_results row (no portfolio-risk "
+             "overlay ran this run), and the reporter's reading is on the RISK_SCALE_REPORT "
+             "line, not in that column");
     }
 
     // Sleeve-scope modules. The loader checks every key against portfolio.json's `strategies`,
