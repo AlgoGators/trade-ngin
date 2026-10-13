@@ -1,5 +1,6 @@
 #include "trade_ngin/core/email_sender.hpp"
 #include "trade_ngin/core/report_risk_lines.hpp"
+#include "trade_ngin/core/report_risk_lines.hpp"
 #include <curl/curl.h>
 #include <algorithm>
 #include <cctype>
@@ -17,6 +18,7 @@
 #include "trade_ngin/core/email_netting_text.hpp"
 #include "trade_ngin/core/holiday_checker.hpp"
 #include "trade_ngin/core/logger.hpp"
+#include "trade_ngin/core/report_charts.hpp"
 #include "trade_ngin/core/report_price_text.hpp"
 #include "trade_ngin/core/report_settled_marks.hpp"
 #include "trade_ngin/instruments/equity.hpp"
@@ -701,6 +703,7 @@ std::string EmailSender::generate_trading_report_body(
     }
 
     html << "<h2>Charts</h2>\n";
+    core::ChartLedger chart_ledger;
     if (db) {
         // E2-F11: the caller names the book the charts query. This overload IS used in
         // production (the live equity runner); with the old hardcoded trend-following
@@ -709,6 +712,9 @@ std::string EmailSender::generate_trading_report_body(
         // Generate equity curve chart
         chart_base64_ = ChartGenerator::generate_equity_curve_chart(
             db, chart_strategy_id, chart_portfolio_id_legacy, date, 30);
+        html << chart_ledger.record(std::string("Equity Curve"), !chart_base64_.empty(),
+                                          ChartGenerator::last_chart_status(),
+                                          ChartGenerator::last_chart_reason(), "no data to plot");
         if (!chart_base64_.empty()) {
             html << "<h3 style=\"margin-top: 20px; color: #333;\">Equity Curve</h3>\n";
             html << "<div style=\"width: 100%; max-width: 1000px; margin: 20px auto; text-align: "
@@ -723,6 +729,9 @@ std::string EmailSender::generate_trading_report_body(
         if (show_yesterday_pnl) {
             pnl_by_symbol_base64_ = ChartGenerator::generate_pnl_by_symbol_chart(
                 db, chart_strategy_id, chart_portfolio_id_legacy, date, context.equities);
+            html << chart_ledger.record(std::string(ChartTitles::pnl_by_symbol_heading(context.equities)), !pnl_by_symbol_base64_.empty(),
+                                              ChartGenerator::last_chart_status(),
+                                              ChartGenerator::last_chart_reason(), "no data to plot");
             if (!pnl_by_symbol_base64_.empty()) {
                 html << "<h3 style=\"margin-top: 20px; color: #333;\">"
                      << ChartTitles::pnl_by_symbol_heading(context.equities) << "</h3>\n";
@@ -739,6 +748,9 @@ std::string EmailSender::generate_trading_report_body(
         daily_pnl_base64_ =
             ChartGenerator::generate_daily_pnl_chart(
                 db, chart_strategy_id, chart_portfolio_id_legacy, date, 30);
+        html << chart_ledger.record(std::string(ChartTitles::daily_pnl_heading(30)), !daily_pnl_base64_.empty(),
+                                          ChartGenerator::last_chart_status(),
+                                          ChartGenerator::last_chart_reason(), "no data to plot");
         if (!daily_pnl_base64_.empty()) {
             html << "<h3 style=\"margin-top: 20px; color: #333;\">"
                  << ChartTitles::daily_pnl_heading(30) << "</h3>\n";
@@ -751,6 +763,9 @@ std::string EmailSender::generate_trading_report_body(
 
         total_transaction_costs_base64_ = ChartGenerator::generate_total_transaction_costs_chart(
             db, chart_strategy_id, chart_portfolio_id_legacy, date);
+        html << chart_ledger.record(std::string("Cost per $1M Traded (Efficiency Metric)"), !total_transaction_costs_base64_.empty(),
+                                          ChartGenerator::last_chart_status(),
+                                          ChartGenerator::last_chart_reason(), "no data to plot");
         if (!total_transaction_costs_base64_.empty()) {
             html << "<h3 style=\"margin-top: 20px; color: #333;\">Cost per $1M Traded (Efficiency "
                     "Metric)</h3>\n";
@@ -765,6 +780,12 @@ std::string EmailSender::generate_trading_report_body(
         margin_posted_base64_ = ChartGenerator::generate_margin_posted_chart(
             db, chart_strategy_id, chart_portfolio_id_legacy, date);
 
+        html << chart_ledger.record(std::string("Margin Posted"), !margin_posted_base64_.empty(),
+
+                                          ChartGenerator::last_chart_status(),
+
+                                          ChartGenerator::last_chart_reason(), "no data to plot");
+
         if (!margin_posted_base64_.empty()) {
             html << "<h3 style=\"margin-top: 20px; color: #333;\">Margin Posted</h3>\n";
             html << "<div style=\"width: 100%; max-width: 1000px; margin: 20px auto; text-align: "
@@ -777,6 +798,9 @@ std::string EmailSender::generate_trading_report_body(
 
         portfolio_composition_base64_ =
             ChartGenerator::generate_portfolio_composition_chart(positions, current_prices, date);
+        html << chart_ledger.record(std::string("Portfolio Composition"), !portfolio_composition_base64_.empty(),
+                                          ChartGenerator::last_chart_status(),
+                                          ChartGenerator::last_chart_reason(), "no positions");
         if (!portfolio_composition_base64_.empty()) {
             html << "<h3 style=\"margin-top: 20px; color: #333;\">Portfolio Composition</h3>\n";
             html << "<div style=\"width: 100%; max-width: 800px; margin: 20px auto; text-align: "
@@ -789,6 +813,9 @@ std::string EmailSender::generate_trading_report_body(
 
         cumulative_pnl_by_symbol_base64_ = ChartGenerator::generate_cumulative_pnl_by_symbol_chart(
             db, chart_strategy_id, chart_portfolio_id_legacy, date);
+        html << chart_ledger.record(std::string(ChartTitles::cumulative_pnl_heading()), !cumulative_pnl_by_symbol_base64_.empty(),
+                                          ChartGenerator::last_chart_status(),
+                                          ChartGenerator::last_chart_reason(), "no data to plot");
         if (!cumulative_pnl_by_symbol_base64_.empty()) {
             html << "<h3 style=\"margin-top: 20px; color: #333;\">"
                  << ChartTitles::cumulative_pnl_heading() << "</h3>\n";
@@ -799,6 +826,7 @@ std::string EmailSender::generate_trading_report_body(
                     "box-shadow: 0 2px 8px rgba(0,0,0,0.1);\" />\n";
             html << "</div>\n";
         }
+        INFO(chart_ledger.summary());
     }
 
     // Symbols Reference (moved after Portfolio Snapshot). T-8D-2 R59: it is a table of futures
@@ -4108,6 +4136,7 @@ std::string EmailSender::generate_trading_report_body(
     }
 
     html << "<h2>Charts</h2>\n";
+    core::ChartLedger chart_ledger;
     if (db) {
         // portfolio_name carries the portfolio_id from the live runner (e.g.
         // "CONSERVATIVE_PORTFOLIO"). Pass it to chart queries so they correctly filter on
@@ -4119,6 +4148,9 @@ std::string EmailSender::generate_trading_report_body(
         // Generate equity curve chart
         chart_base64_ = ChartGenerator::generate_equity_curve_chart(db, chart_strategy_id,
                                                                     chart_portfolio_id, date, 30);
+        html << chart_ledger.record(std::string("Equity Curve"), !chart_base64_.empty(),
+                                          ChartGenerator::last_chart_status(),
+                                          ChartGenerator::last_chart_reason(), "no data to plot");
         if (!chart_base64_.empty()) {
             html << "<h3 style=\"margin-top: 20px; color: #333;\">Equity Curve</h3>\n";
             html << "<div style=\"width: 100%; max-width: 1000px; margin: 20px auto; text-align: "
@@ -4133,6 +4165,9 @@ std::string EmailSender::generate_trading_report_body(
         if (show_yesterday_pnl) {
             pnl_by_symbol_base64_ = ChartGenerator::generate_pnl_by_symbol_chart(
                 db, chart_strategy_id, chart_portfolio_id, date, context.equities);
+            html << chart_ledger.record(std::string(ChartTitles::pnl_by_symbol_heading(context.equities)), !pnl_by_symbol_base64_.empty(),
+                                              ChartGenerator::last_chart_status(),
+                                              ChartGenerator::last_chart_reason(), "no data to plot");
             if (!pnl_by_symbol_base64_.empty()) {
                 html << "<h3 style=\"margin-top: 20px; color: #333;\">"
                      << ChartTitles::pnl_by_symbol_heading(context.equities) << "</h3>\n";
@@ -4148,6 +4183,9 @@ std::string EmailSender::generate_trading_report_body(
         // Generate daily PnL chart
         daily_pnl_base64_ = ChartGenerator::generate_daily_pnl_chart(
             db, chart_strategy_id, chart_portfolio_id, date, 30);
+        html << chart_ledger.record(std::string(ChartTitles::daily_pnl_heading(30)), !daily_pnl_base64_.empty(),
+                                          ChartGenerator::last_chart_status(),
+                                          ChartGenerator::last_chart_reason(), "no data to plot");
         if (!daily_pnl_base64_.empty()) {
             html << "<h3 style=\"margin-top: 20px; color: #333;\">"
                  << ChartTitles::daily_pnl_heading(30) << "</h3>\n";
@@ -4160,6 +4198,9 @@ std::string EmailSender::generate_trading_report_body(
 
         total_transaction_costs_base64_ = ChartGenerator::generate_total_transaction_costs_chart(
             db, chart_strategy_id, chart_portfolio_id, date);
+        html << chart_ledger.record(std::string("Cost per $1M Traded (Efficiency Metric)"), !total_transaction_costs_base64_.empty(),
+                                          ChartGenerator::last_chart_status(),
+                                          ChartGenerator::last_chart_reason(), "no data to plot");
         if (!total_transaction_costs_base64_.empty()) {
             html << "<h3 style=\"margin-top: 20px; color: #333;\">Cost per $1M Traded (Efficiency "
                     "Metric)</h3>\n";
@@ -4173,6 +4214,9 @@ std::string EmailSender::generate_trading_report_body(
 
         margin_posted_base64_ = ChartGenerator::generate_margin_posted_chart(
             db, chart_strategy_id, chart_portfolio_id, date);
+        html << chart_ledger.record(std::string("Margin Posted"), !margin_posted_base64_.empty(),
+                                          ChartGenerator::last_chart_status(),
+                                          ChartGenerator::last_chart_reason(), "no data to plot");
         if (!margin_posted_base64_.empty()) {
             html << "<h3 style=\"margin-top: 20px; color: #333;\">Margin Posted</h3>\n";
             html << "<div style=\"width: 100%; max-width: 1000px; margin: 20px auto; text-align: "
@@ -4185,6 +4229,9 @@ std::string EmailSender::generate_trading_report_body(
 
         portfolio_composition_base64_ =
             ChartGenerator::generate_portfolio_composition_chart(positions, current_prices, date);
+        html << chart_ledger.record(std::string("Portfolio Composition"), !portfolio_composition_base64_.empty(),
+                                          ChartGenerator::last_chart_status(),
+                                          ChartGenerator::last_chart_reason(), "no positions");
         if (!portfolio_composition_base64_.empty()) {
             html << "<h3 style=\"margin-top: 20px; color: #333;\">Portfolio Composition</h3>\n";
             html << "<div style=\"width: 100%; max-width: 800px; margin: 20px auto; text-align: "
@@ -4197,6 +4244,9 @@ std::string EmailSender::generate_trading_report_body(
 
         cumulative_pnl_by_symbol_base64_ = ChartGenerator::generate_cumulative_pnl_by_symbol_chart(
             db, chart_strategy_id, chart_portfolio_id, date);
+        html << chart_ledger.record(std::string(ChartTitles::cumulative_pnl_heading()), !cumulative_pnl_by_symbol_base64_.empty(),
+                                          ChartGenerator::last_chart_status(),
+                                          ChartGenerator::last_chart_reason(), "no data to plot");
         if (!cumulative_pnl_by_symbol_base64_.empty()) {
             html << "<h3 style=\"margin-top: 20px; color: #333;\">"
                  << ChartTitles::cumulative_pnl_heading() << "</h3>\n";
@@ -4207,6 +4257,7 @@ std::string EmailSender::generate_trading_report_body(
                     "8px rgba(0,0,0,0.1);\" />\n";
             html << "</div>\n";
         }
+        INFO(chart_ledger.summary());
     }
 
     // Symbols Reference
