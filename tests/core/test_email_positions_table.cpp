@@ -185,7 +185,7 @@ TEST_F(EmailPositionsTableTest, TheMarginLineIsPricedAtTheCostBasis) {
     // it read 10,000), and so is the row: its notional is its quantity at the price it prints.
     EXPECT_NE(html.find("<strong>Total Notional:</strong> $10,500.00"), std::string::npos) << html;
     EXPECT_EQ(html.find("$10,000"), std::string::npos) << html;
-    EXPECT_NE(html.find("<td>$210.00</td>\n<td>$10500.00</td>\n<td>100.00%</td>"),
+    EXPECT_NE(html.find("<td>$210.00</td>\n<td>$10,500.00</td>\n<td>100.00%</td>"),
               std::string::npos)
         << html;
 }
@@ -196,7 +196,7 @@ TEST_F(EmailPositionsTableTest, ARowWithNoCloseIsPricedAtItsBasisInBothCells) {
         {"ZPRICED", held("ZPRICED", 50.0, 200.0)}};
     std::string html;
     ASSERT_NO_THROW({ html = sender_.format_positions_table(positions, true, {}, {}); });
-    EXPECT_NE(html.find("<td>$200.00</td>\n<td>$10000.00</td>"), std::string::npos) << html;
+    EXPECT_NE(html.find("<td>$200.00 (average price, no close)</td>\n<td>$10,000.00</td>"), std::string::npos) << html;
     EXPECT_NE(html.find("<strong>Total Notional:</strong> $10,000.00"), std::string::npos) << html;
 }
 

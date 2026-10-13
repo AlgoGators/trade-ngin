@@ -40,6 +40,15 @@ std::vector<std::pair<std::string, const Position*>> positions_by_symbol(
               [](const auto& a, const auto& b) { return a.first < b.first; });
     return ordered;
 }
+// N5 (T-EMAIL): a row with no close prints its average price; the row says so. A margin that could
+// not be priced is left out of the total; one line under the table names the rows.
+const char* kNoCloseTag = " (average price, no close)";
+std::string margin_left_out_note(const std::vector<std::string>& symbols) {
+    if (symbols.empty()) return "";
+    std::string line = "<div style=\"font-size: 12px; color: #666;\">Margin is not in the total for ";
+    for (std::size_t i = 0; i < symbols.size(); ++i) line += (i ? ", " : "") + symbols[i];
+    return line + ": no price to work it out from.</div>\n";
+}
 }  // namespace
 
 // Global variables for curl email payload
@@ -672,8 +681,7 @@ std::string EmailSender::generate_trading_report_body(
 
     // The settled day's positions, with their stored P&L: shown unless the runner found no
     // session on that day
-    if (show_yesterday_pnl && !yesterday_positions.empty() && !yesterday_close_prices.empty() &&
-        !two_days_ago_close_prices.empty()) {
+    if (show_yesterday_pnl && !yesterday_positions.empty()) {
         html << format_yesterday_finalized_positions_table(
             yesterday_positions,
             two_days_ago_close_prices,  // the price each row was settled from
@@ -701,6 +709,12 @@ std::string EmailSender::generate_trading_report_body(
         html << "<div class=\"footer-note\">\n";
         html << "<strong>Note:</strong> Yesterday's PnL data is not available.\n";
         html << "</div>\n";
+    } else {
+        // A session, and no row to print: nothing was held on the settled day and nothing closed
+        // on it. The table is not left out silently (HD ruling Q11).
+        html << "<h2>Yesterday's Finalized Position Results</h2>\n";
+        html << "<p>No position was held on " << settled_date
+             << ", and none closed on it.</p>\n";
     }
 
     /*    // Risk snapshot (if provided)
@@ -965,15 +979,15 @@ static std::string format_roll_legs_block(const std::vector<ExecutionReport>& ex
              << "</td><td>" << (exec.side == Side::BUY ? "BUY" : "SELL") << "</td><td>"
              << report_quantity_text(report_instrument_of(exec.symbol),
                                      exec.filled_quantity.as_double())
-             << "</td><td>$" << report_price_text(exec.fill_price.as_double()) << "</td><td>"
-             << exec.instrument_id << "</td><td>$" << std::fixed << std::setprecision(2)
-             << exec.total_transaction_costs.as_double() << "</td></tr>\n";
+             << "</td><td>" << report_price_dollars(exec.fill_price.as_double()) << "</td><td>"
+             << exec.instrument_id << "</td><td>"
+             << report_dollars(exec.total_transaction_costs.as_double()) << "</td></tr>\n";
     }
     if (legs > 0) {
         html << "</table>\n";
         html << "<div class=\"summary-stats\"><strong>Roll Fills:</strong> " << legs
-             << " | <strong>Roll Costs (upper bound):</strong> $" << std::fixed << std::setprecision(2)
-             << roll_cost << "</div>\n";
+             << " | <strong>Roll Costs (upper bound):</strong> " << report_dollars(roll_cost)
+             << "</div>\n";
     }
     return html.str();
 }
@@ -994,9 +1008,12 @@ std::string EmailSender::format_executions_table(const std::vector<ExecutionRepo
     double total_notional_traded = 0.0;
     size_t strategy_trades = 0;
     NettingFooter netting;
+    email_netting::RoundingCheck cost_rows, notional_rows, own_rows;  // HD ruling Q3
 
     for (const auto& exec : executions) {
         netting.add(exec);
+        cost_rows.add(transaction_cost::net_cost(exec).as_double());
+        own_rows.add(exec.total_transaction_costs.as_double());
         // T-ROLLX: every row's cost counts; a ROLL leg is listed in its own block below, never
         // as a trade and never in the traded notional. The total is what the account was charged:
         // each row's cost after netting (the row's own cost stays in its cell).
@@ -1039,6 +1056,7 @@ std::string EmailSender::format_executions_table(const std::vector<ExecutionRepo
                                                exec.fill_price.as_double() * contract_multiplier
                                          : 0.0;
         total_notional_traded += notional;
+        if (has_multiplier) notional_rows.add(notional);
 
         std::string side_str = exec.side == Side::BUY ? "BUY" : "SELL";
         std::string side_class = exec.side == Side::BUY ? "positive" : "negative";
@@ -1050,14 +1068,14 @@ std::string EmailSender::format_executions_table(const std::vector<ExecutionRepo
              << report_quantity_text(report_instrument_of(exec.symbol),
                                      exec.filled_quantity.as_double())
              << "</td>\n";
-        html << "<td>$" << report_price_text(exec.fill_price.as_double()) << "</td>\n";
+        html << "<td>" << report_price_dollars(exec.fill_price.as_double()) << "</td>\n";
         if (has_multiplier) {
-            html << "<td>$" << std::fixed << std::setprecision(2) << notional << "</td>\n";
+            html << "<td>" << report_dollars(notional) << "</td>\n";
         } else {
             html << "<td>n/a</td>\n";
         }
-        html << "<td>$" << std::fixed << std::setprecision(2)
-             << exec.total_transaction_costs.as_double() << "</td>\n";
+        html << "<td>" << report_dollars(exec.total_transaction_costs.as_double())
+             << "</td>\n";
         html << "</tr>\n";
     }
 
@@ -1089,19 +1107,23 @@ std::string EmailSender::format_executions_table(const std::vector<ExecutionRepo
 
     html << "<div class=\"summary-stats\">\n";
     html << "<strong>Trades:</strong> " << strategy_trades << "<br>\n";
-    html << "<strong>Notional Traded:</strong> $" << format_with_commas(total_notional_traded)
+    html << "<strong>Notional Traded:</strong> " << report_dollars(total_notional_traded)
          << "<br>\n";
     // Shown only when a row was netted: the rows' own costs, the adjustment as it acts on them,
     // and (the line below) what was charged. Without a netted row the footer is as it always was.
     if (netting.any_adjusted) {
-        html << "<strong>Own Costs:</strong> $" << netting_money(netting.own_costs.as_double())
+        html << "<strong>Own Costs:</strong> " << report_dollars(netting.own_costs.as_double())
              << "<br>\n";
         html << "<strong>Netting Adjustment:</strong> "
              << netting_effect_text(netting.own_costs.as_double(), total_transaction_cost)
              << "<br>\n";
     }
-    html << "<strong>Transaction Costs:</strong> $" << format_with_commas(total_transaction_cost)
+    html << "<strong>Transaction Costs:</strong> " << report_dollars(total_transaction_cost)
          << "\n";
+    if (cost_rows.differs() || notional_rows.differs() || own_rows.differs()) {
+        html << "<div style=\"font-size: 12px; color: #666;\">" << email_netting::kRoundingNote
+             << "</div>\n";
+    }
     html << "</div>\n";
 
     return html.str();
@@ -1129,6 +1151,8 @@ std::string EmailSender::format_positions_table(
     // First pass: calculate total notional
     std::vector<std::tuple<std::string, double, double, double, double, double>>
         position_data;  // symbol, qty, entry, market, notional, margin
+    std::set<std::string> rows_without_close;
+    std::vector<std::string> margin_left_out;
 
     for (const auto& [symbol, position_ptr] : positions_by_symbol(positions)) {
         const Position& position = *position_ptr;
@@ -1205,6 +1229,7 @@ std::string EmailSender::format_positions_table(
                     // Neither a close nor a basis. Report it and leave this row out of
                     // the margin total; the email still goes out, and the row still
                     // appears with the figures that ARE known.
+                    margin_left_out.push_back(symbol);
                     WARN("Daily email: no usable price for " + lookup_sym +
                          " (quantity " + std::to_string(signed_qty) +
                          ", no current close and average_price is 0) -- excluded from the "
@@ -1217,6 +1242,7 @@ std::string EmailSender::format_positions_table(
                         // A positive price that still yields no margin is an instrument
                         // configuration problem, not a missing-data problem. Report it
                         // and carry on rather than suppressing the whole report.
+                        margin_left_out.push_back(symbol);
                         WARN("Daily email: instrument " + lookup_sym +
                              " returned margin " + std::to_string(total_initial_margin) +
                              " for price=" + std::to_string(price_for_margin) +
@@ -1238,6 +1264,8 @@ std::string EmailSender::format_positions_table(
             auto price_it = current_prices.find(symbol);
             if (price_it != current_prices.end()) {
                 market_price = price_it->second;
+            } else {
+                rows_without_close.insert(symbol);
             }
 
             // T-8D-2 R60 (T-8D D9): one price per row. The notional is the quantity at the price
@@ -1267,14 +1295,16 @@ std::string EmailSender::format_positions_table(
         html << "<td>" << report_quantity_text(report_instrument_of(symbol), qty) << "</td>\n";
 
         // Show only market price (entry price removed from display), at every decimal it has
-        html << "<td>$" << report_price_text(market_price) << "</td>\n";
+        html << "<td>" << report_price_dollars(market_price)
+             << (rows_without_close.count(symbol) ? kNoCloseTag : "") << "</td>\n";
 
-        html << "<td>$" << std::fixed << std::setprecision(2) << std::abs(notional) << "</td>\n";
+        html << "<td>" << report_dollars(std::abs(notional)) << "</td>\n";
         html << "<td>" << std::fixed << std::setprecision(2) << pct_of_total << "%</td>\n";
         html << "</tr>\n";
     }
 
     html << "</table>\n";
+    html << margin_left_out_note(margin_left_out);
     html << "<div class=\"summary-stats\">\n";
 
     // Helper function to format numbers with commas
@@ -1317,8 +1347,8 @@ std::string EmailSender::format_positions_table(
         html << "<strong>1-Day 95% VaR:</strong> " << risk_lines.var_95_1d << "<br>\n";
     }
 
-    html << "<strong>Total Notional:</strong> $" << format_with_commas(total_notional) << "<br>\n";
-    html << "<strong>Total Margin Posted:</strong> $" << format_with_commas(total_margin_posted)
+    html << "<strong>Total Notional:</strong> " << report_dollars(total_notional) << "<br>\n";
+    html << "<strong>Total Margin Posted:</strong> " << report_dollars(total_margin_posted)
          << "\n";
     html << "</div>\n";
 
@@ -1442,7 +1472,9 @@ std::string EmailSender::format_yesterday_finalized_positions_table(
         // Realized PnL with color (GROSS PnL from positions table)
         std::string realized_pnl_class = (realized_pnl >= 0) ? "positive" : "negative";
         html << "<td class=\"" << realized_pnl_class << "\">";
-        html << "$" << format_with_commas(realized_pnl, 2);
+        html << report_dollars(realized_pnl, 2)
+             << settled_booked_at_zero_marker(equities, qty, known_price(entry_price),
+                                              known_price(exit_price), realized_pnl);
         html << "</td>";
 
         html << "</tr>\n";
@@ -1475,7 +1507,7 @@ std::string EmailSender::format_yesterday_finalized_positions_table(
             if (is_percentage) {
                 formatted_value = format_with_commas(value, 2) + "%";
             } else {
-                formatted_value = "$" + format_with_commas(value, 2);
+                formatted_value = report_dollars(value, 2);
             }
 
             return "<div class=\"metric\"><strong>" + label + ":</strong> <span" + value_class +
@@ -1515,7 +1547,7 @@ std::string EmailSender::format_yesterday_finalized_positions_table(
             // Display transaction costs as positive value in black font (no color coding)
             double transaction_cost_value = std::abs(daily_transaction_costs_it->second);
             std::string formatted_transaction_cost =
-                "$" + format_with_commas(transaction_cost_value, 2);
+                report_dollars(transaction_cost_value, 2);
             html << "<div class=\"metric\"><strong>Daily Transaction Costs:</strong> <span>"
                  << formatted_transaction_cost << "</span></div>\n";
         }
@@ -1664,7 +1696,9 @@ std::string EmailSender::format_yesterday_finalized_positions_table(
 
             std::string realized_pnl_class = (realized_pnl >= 0) ? "positive" : "negative";
             html << "<td class=\"" << realized_pnl_class << "\">";
-            html << "$" << format_with_commas(realized_pnl, 2);
+            html << report_dollars(realized_pnl, 2)
+             << settled_booked_at_zero_marker(equities, qty, known_price(entry_price),
+                                              known_price(exit_price), realized_pnl);
             html << "</td>";
 
             html << "</tr>\n";
@@ -1678,7 +1712,7 @@ std::string EmailSender::format_yesterday_finalized_positions_table(
                 "16px;\">\n";
         html << "<strong>Positions:</strong> " << position_data.size()
              << " | <strong>Total Realized PnL (Gross):</strong> <span class=\"" << pnl_class
-             << "\">$" << format_with_commas(strategy_total_pnl, 2) << "</span>\n";
+             << "\">" << report_dollars(strategy_total_pnl, 2) << "</span>\n";
         html << "</div>\n";
     }
     html << settled_no_bar_footnote_html(any_no_bar_row);
@@ -1706,7 +1740,7 @@ std::string EmailSender::format_yesterday_finalized_positions_table(
             if (is_percentage) {
                 formatted_value = format_with_commas(value, 2) + "%";
             } else {
-                formatted_value = "$" + format_with_commas(value, 2);
+                formatted_value = report_dollars(value, 2);
             }
 
             return "<div class=\"metric\"><strong>" + label + ":</strong> <span" + value_class +
@@ -1737,7 +1771,7 @@ std::string EmailSender::format_yesterday_finalized_positions_table(
         auto daily_costs_it = strategy_metrics.find("Daily Transaction Costs");
         if (daily_costs_it != strategy_metrics.end()) {
             double cost_value = std::abs(daily_costs_it->second);
-            std::string formatted_costs = "$" + format_with_commas(cost_value, 2);
+            std::string formatted_costs = report_dollars(cost_value, 2);
             html << "<div class=\"metric\"><strong>Daily Transaction Costs:</strong> <span>"
                  << formatted_costs << "</span></div>\n";
         }
@@ -1748,8 +1782,8 @@ std::string EmailSender::format_yesterday_finalized_positions_table(
         auto daily_roll_costs_it = strategy_metrics.find("Daily Roll Costs");
         if (daily_roll_costs_it != strategy_metrics.end()) {
             html << "<div class=\"metric\"><strong>Daily Roll Costs (upper bound, inside the "
-                    "transaction costs):</strong> <span>$"
-                 << format_with_commas(std::abs(daily_roll_costs_it->second), 2)
+                    "transaction costs):</strong> <span>"
+                 << report_dollars(std::abs(daily_roll_costs_it->second), 2)
                  << "</span></div>\n";
         }
 
@@ -1832,7 +1866,7 @@ std::string EmailSender::format_strategy_metrics(
             key.find("Roll Costs") != std::string::npos ||
             key.find("Gross Profit") != std::string::npos ||
             key.find("Gross Loss") != std::string::npos) {
-            formatted_value = "$" + format_with_commas(value);
+            formatted_value = report_dollars(value);
         } else if (key.find("Return") != std::string::npos ||
                    key.find("Volatility") != std::string::npos ||
                    key.find("Cushion") != std::string::npos ||
@@ -1871,8 +1905,11 @@ std::string EmailSender::format_strategy_metrics(
             }
         }
 
-        result << "<div class=\"metric\"><strong>" << key << ":</strong> <span" << value_class
-               << ">" << formatted_value << "</span></div>\n";
+        // HD ruling Q9: the cushion says what it is a cushion of.
+        const std::string shown_label =
+            key == "Margin Cushion" ? "Margin Cushion (on maintenance margin)" : key;
+        result << "<div class=\"metric\"><strong>" << shown_label << ":</strong> <span"
+               << value_class << ">" << formatted_value << "</span></div>\n";
         return result.str();
     };
 
@@ -2405,6 +2442,8 @@ std::string EmailSender::format_single_strategy_table(
 
     // First pass: calculate total notional for this strategy
     std::vector<std::tuple<std::string, double, double, double, double>> position_data;
+    std::set<std::string> rows_without_close;
+    std::vector<std::string> margin_left_out;
 
     for (const auto& [symbol, position_ptr] : positions_by_symbol(positions)) {
         const Position& position = *position_ptr;
@@ -2495,6 +2534,7 @@ std::string EmailSender::format_single_strategy_table(
                     // the contract's own metadata carries no initial margin. Either way it
                     // is one row that cannot be added up, not a reason to withhold the
                     // report from everybody.
+                    margin_left_out.push_back(symbol);
                     WARN("Daily email: no usable margin for " + lookup_sym + " (quantity " +
                          std::to_string(signed_qty) + ", price " +
                          std::to_string(price_for_margin) +
@@ -2515,6 +2555,8 @@ std::string EmailSender::format_single_strategy_table(
             auto price_it = current_prices.find(symbol);
             if (price_it != current_prices.end()) {
                 market_price = price_it->second;
+            } else {
+                rows_without_close.insert(symbol);
             }
 
             // T-8D-2 R60: the notional at the price the row prints (the Day T-1 close; the basis
@@ -2535,20 +2577,22 @@ std::string EmailSender::format_single_strategy_table(
         html << "<tr>\n";
         html << "<td>" << symbol << "</td>\n";
         html << "<td>" << report_quantity_text(report_instrument_of(symbol), qty) << "</td>\n";
-        html << "<td>$" << report_price_text(market_price) << "</td>\n";
-        html << "<td>$" << format_with_commas(std::abs(notional)) << "</td>\n";
+        html << "<td>" << report_price_dollars(market_price)
+             << (rows_without_close.count(symbol) ? kNoCloseTag : "") << "</td>\n";
+        html << "<td>" << report_dollars(std::abs(notional)) << "</td>\n";
         html << "<td>" << std::fixed << std::setprecision(2) << pct_of_total << "%</td>\n";
         html << "</tr>\n";
     }
 
     html << "</table>\n";
+    html << margin_left_out_note(margin_left_out);
 
     // Compact strategy-level summary
     html << "<div style=\"font-size: 13px; color: #666; margin: 8px 0 20px 0; padding-left: "
             "16px;\">\n";
-    html << "<strong>Positions:</strong> " << active_positions << " | <strong>Notional:</strong> $"
-         << format_with_commas(total_notional) << " | <strong>Margin:</strong> $"
-         << format_with_commas(total_margin_posted) << "\n";
+    html << "<strong>Positions:</strong> " << active_positions << " | <strong>Notional:</strong> "
+         << report_dollars(total_notional) << " | <strong>Margin:</strong> "
+         << report_dollars(total_margin_posted) << "\n";
     html << "</div>\n";
 
     return html.str();
@@ -2713,10 +2757,10 @@ std::string EmailSender::format_strategy_positions_tables(
              << "</div>\n";
     }
 
-    html << "<div class=\"metric\"><strong>Total Notional:</strong> $"
-         << format_with_commas(portfolio_total_notional) << "</div>\n";
-    html << "<div class=\"metric\"><strong>Total Margin Posted:</strong> $"
-         << format_with_commas(portfolio_total_margin) << "</div>\n";
+    html << "<div class=\"metric\"><strong>Total Notional:</strong> "
+         << report_dollars(portfolio_total_notional) << "</div>\n";
+    html << "<div class=\"metric\"><strong>Total Margin Posted:</strong> "
+         << report_dollars(portfolio_total_margin) << "</div>\n";
     html << "</div>\n";
 
     return html.str();
@@ -2831,20 +2875,20 @@ std::string EmailSender::format_single_strategy_executions_table(
              << report_quantity_text(report_instrument_of(exec.symbol),
                                      exec.filled_quantity.as_double())
              << "</td>\n";
-        html << "<td>$" << report_price_text(exec.fill_price.as_double()) << "</td>\n";
+        html << "<td>" << report_price_dollars(exec.fill_price.as_double()) << "</td>\n";
         if (has_multiplier) {
-            html << "<td>$" << format_with_commas(notional) << "</td>\n";
+            html << "<td>" << report_dollars(notional) << "</td>\n";
         } else {
             html << "<td>n/a</td>\n";
         }
-        html << "<td>$" << std::fixed << std::setprecision(2)
-             << exec.total_transaction_costs.as_double() << "</td>\n";
+        html << "<td>" << report_dollars(exec.total_transaction_costs.as_double())
+             << "</td>\n";
         if (several_sleeves) {
             html << "<td>"
                  << netting_effect_text(exec.total_transaction_costs.as_double(),
                                         transaction_cost::net_cost(exec).as_double())
                  << "</td>\n";
-            html << "<td>$" << netting_money(transaction_cost::net_cost(exec).as_double())
+            html << "<td>" << report_dollars(transaction_cost::net_cost(exec).as_double())
                  << "</td>\n";
         }
         html << "</tr>\n";
@@ -2856,17 +2900,17 @@ std::string EmailSender::format_single_strategy_executions_table(
     // Compact strategy-level summary
     html << "<div style=\"font-size: 13px; color: #666; margin: 8px 0 20px 0; padding-left: "
             "16px;\">\n";
-    html << "<strong>Trades:</strong> " << strategy_trades << " | <strong>Notional:</strong> $"
-         << format_with_commas(total_notional_traded);
+    html << "<strong>Trades:</strong> " << strategy_trades << " | <strong>Notional:</strong> "
+         << report_dollars(total_notional_traded);
     // Shown only when a row of this sleeve was netted: own costs, the adjustment as it acts on
     // them, then what the sleeve was charged.
     if (netting.any_adjusted) {
-        html << " | <strong>Own Costs:</strong> $" << netting_money(netting.own_costs.as_double())
+        html << " | <strong>Own Costs:</strong> " << report_dollars(netting.own_costs.as_double())
              << " | <strong>Netting Adjustment:</strong> "
              << netting_effect_text(netting.own_costs.as_double(), total_transaction_costs);
     }
-    html << " | <strong>Transaction Costs:</strong> $"
-         << format_with_commas(total_transaction_costs) << "\n";
+    html << " | <strong>Transaction Costs:</strong> "
+         << report_dollars(total_transaction_costs) << "\n";
     html << "</div>\n";
 
     return html.str();
@@ -2920,6 +2964,11 @@ std::string EmailSender::format_strategy_executions_tables(
     double portfolio_total_roll_costs = 0.0;  // T-ROLLX
     int portfolio_total_roll_fills = 0;
     NettingFooter netting;
+    // A printed cent that differs from the footer under it (HD ruling Q3): a column of rows
+    // against its sleeve's footer, and the sleeves' footers against the book's.
+    bool printed_cent_differs = false;
+    email_netting::RoundingCheck book_cost_of_sleeves, book_notional_of_sleeves,
+        book_own_of_sleeves;
     // A book of more than one sleeve: each row also shows its adjustment and its cost after netting.
     const bool several_sleeves = strategy_executions.size() > 1;
 
@@ -2936,8 +2985,11 @@ std::string EmailSender::format_strategy_executions_tables(
 
         // Accumulate portfolio totals (T-ROLLX: trades and notional over STRATEGY rows; costs over
         // every row, the ROLL part shown beside)
+        email_netting::RoundingCheck sleeve_cost, sleeve_notional, sleeve_own;
         for (const auto& exec : executions) {
             netting.add(exec);
+            sleeve_cost.add(transaction_cost::net_cost(exec).as_double());
+            sleeve_own.add(exec.total_transaction_costs.as_double());
             portfolio_total_transaction_costs += transaction_cost::net_cost(exec).as_double();
             if (exec.execution_type == ExecutionType::ROLL) {  // never netted: its own cost
                 portfolio_total_roll_costs += exec.total_transaction_costs.as_double();
@@ -2974,38 +3026,46 @@ std::string EmailSender::format_strategy_executions_tables(
             double notional = exec.filled_quantity.as_double() * exec.fill_price.as_double() *
                               contract_multiplier;
             portfolio_total_notional += notional;
+            sleeve_notional.add(notional);
         }
+        printed_cent_differs = printed_cent_differs || sleeve_cost.differs() ||
+                               sleeve_notional.differs() || sleeve_own.differs();
+        book_cost_of_sleeves.add(sleeve_cost.exact);
+        book_notional_of_sleeves.add(sleeve_notional.exact);
+        book_own_of_sleeves.add(sleeve_own.exact);
     }
+    printed_cent_differs = printed_cent_differs || book_cost_of_sleeves.differs() ||
+                           book_notional_of_sleeves.differs() || book_own_of_sleeves.differs();
 
     // Portfolio-wide summary
     html << "<div class=\"summary-stats\" style=\"margin-top: 20px; border-top: 2px solid #2c5aa0; "
             "padding-top: 15px;\">\n";
     html << "<div class=\"metric\"><strong>Total Trades:</strong> " << portfolio_total_trades
          << "</div>\n";
-    html << "<div class=\"metric\"><strong>Total Notional Traded:</strong> $"
-         << format_with_commas(portfolio_total_notional) << "</div>\n";
+    html << "<div class=\"metric\"><strong>Total Notional Traded:</strong> "
+         << report_dollars(portfolio_total_notional) << "</div>\n";
     // Shown only when a row of the day was netted: the rows' own costs, the adjustment as it acts
     // on them, then the cost charged (own costs with the adjustment applied).
     if (netting.any_adjusted) {
-        html << "<div class=\"metric\"><strong>Total Own Costs:</strong> $"
-             << netting_money(netting.own_costs.as_double()) << "</div>\n";
+        html << "<div class=\"metric\"><strong>Total Own Costs:</strong> "
+             << report_dollars(netting.own_costs.as_double()) << "</div>\n";
         html << "<div class=\"metric\"><strong>Netting Adjustment:</strong> "
              << netting_effect_text(netting.own_costs.as_double(),
                                     portfolio_total_transaction_costs)
              << "</div>\n";
     }
     // "Today's": the same words would otherwise name the cumulative figure of the snapshot.
-    html << "<div class=\"metric\"><strong>Today's Transaction Costs:</strong> $"
-         << format_with_commas(portfolio_total_transaction_costs) << "</div>\n";
+    html << "<div class=\"metric\"><strong>Today's Transaction Costs:</strong> "
+         << report_dollars(portfolio_total_transaction_costs) << "</div>\n";
     if (portfolio_total_roll_fills > 0) {
         html << "<div class=\"metric\"><strong>Roll Fills:</strong> " << portfolio_total_roll_fills
-             << " | <strong>Roll Costs (upper bound):</strong> $"
-             << format_with_commas(portfolio_total_roll_costs) << "</div>\n";
+             << " | <strong>Roll Costs (upper bound):</strong> "
+             << report_dollars(portfolio_total_roll_costs) << "</div>\n";
     }
-    // Why a cent can differ (several sleeves, a netted day): every figure above is rounded to the
-    // cent from its own exact sum, so a column of rows need not add to its footer, nor the
-    // sleeves' footers to the book's, to the cent. The totals are the exact stored figures.
-    if (several_sleeves && netting.any_adjusted) {
+    // Why a cent can differ: every figure above is rounded to the cent from its own exact sum, so
+    // a column of rows need not add to its footer, nor the sleeves' footers to the book's, to the
+    // cent. The totals are the exact stored figures. The note prints only on a day it is so.
+    if (printed_cent_differs) {
         html << "<div class=\"metric\" style=\"font-size: 12px; color: #666;\">"
              << email_netting::kRoundingNote << "</div>\n";
     }

@@ -672,7 +672,7 @@ TEST(EmailNettingText, MoneyGroupsThousandsAndKeepsANegativeSign) {
 }
 
 // T-NETTING fix round 2 (audit B of the fix round, finding 1): the totals are the exact stored
-// figures and every line is rounded to the cent on its own, so rows need not add to their sleeve's
+// figures and every line is rounded from exact amounts on its own, so rows need not add to their sleeve's
 // footer nor the sleeves' footers to the book's, by a cent. Where the netting lines are shown (a
 // book of several sleeves, a netted day) one note under the book's footer says so. The stored
 // rows of 2026-04-28 (BASE): each sleeve's one netted MBT row, own 2.4464, crossed in full.
@@ -690,28 +690,29 @@ TEST_F(EmailStrategyTablesTest, ANettedSeveralSleeveDaySaysWhyACentCanDiffer) {
         all.find("<strong>Total Own Costs:</strong> $4.89</div>\n"
                  "<div class=\"metric\"><strong>Netting Adjustment:</strong> -$4.89</div>\n"
                  "<div class=\"metric\"><strong>Today's Transaction Costs:</strong> $0.00</div>\n"
-                 "<div class=\"metric\" style=\"font-size: 12px; color: #666;\">Each figure is "
-                 "rounded to the cent on its own, so rows and totals can differ by a cent.</div>\n"
+                 "<div class=\"metric\" style=\"font-size: 12px; color: #666;\">Totals are "
+                 "rounded from exact amounts; rows can differ by a cent.</div>\n"
                  "</div>\n"),
         std::string::npos)
         << "the exact totals, then the note, then the end of the book's footer: " << all;
     size_t notes = 0;
-    for (auto at = all.find("rounded to the cent"); at != std::string::npos;
-         at = all.find("rounded to the cent", at + 1)) {
+    for (auto at = all.find("rounded from exact amounts"); at != std::string::npos;
+         at = all.find("rounded from exact amounts", at + 1)) {
         ++notes;
     }
     EXPECT_EQ(notes, 1u) << "one note, under the book's footer";
 
-    // not on a several-sleeve day without a netted row, and never on a one-sleeve book
+    // HD ruling Q3: the note prints only on a day a printed cent differs. Not on a day whose
+    // rows add up as printed, on a several-sleeve book or a one-sleeve book
     const Sleeves quiet{{"TREND_FOLLOWING_FAST", {netted_row(Side::SELL, 1, 4.50, 0.0)}},
                         {"TREND_FOLLOWING", {}}};
-    EXPECT_EQ(sender_.format_strategy_executions_tables(quiet).find("rounded to the cent"),
+    EXPECT_EQ(sender_.format_strategy_executions_tables(quiet).find("rounded from exact amounts"),
               std::string::npos);
     const Sleeves one{{"TREND_FOLLOWING", {netted_row(Side::SELL, 1, 4.50, 0.0)}}};
-    EXPECT_EQ(sender_.format_strategy_executions_tables(one).find("rounded to the cent"),
+    EXPECT_EQ(sender_.format_strategy_executions_tables(one).find("rounded from exact amounts"),
               std::string::npos);
     EXPECT_EQ(sender_.format_executions_table({netted_row(Side::SELL, 1, 4.5039, -0.9092)})
-                  .find("rounded to the cent"),
+                  .find("rounded from exact amounts"),
               std::string::npos)
         << "the one-table form carries no note";
 }
@@ -779,4 +780,22 @@ TEST_F(EmailStrategyTablesTest, WithoutRollLegsTheTablesAreAsBefore) {
     const std::string single = sender_.format_executions_table(execs);
     EXPECT_NE(single.find("<strong>Trades:</strong> 1<br>"), std::string::npos);
     EXPECT_EQ(single.find("Roll Fills"), std::string::npos) << "no roll block without legs";
+}
+
+// HD ruling Q3: on a one-sleeve book too, the note prints on a day two rows of 2.4464 print 2.45 each
+// against a total of 4.89, and on no other day.
+TEST_F(EmailStrategyTablesTest, ARoundingNoteIsPrintedOnAOneSleeveBookOnlyOnADayACentDiffers) {
+    const Sleeves differs{{"TREND_FOLLOWING", {netted_row(Side::SELL, 1, 2.4464, 0.0),
+                                                netted_row(Side::BUY, 1, 2.4464, 0.0)}}};
+    EXPECT_NE(sender_.format_strategy_executions_tables(differs)
+                  .find("Totals are rounded from exact amounts; rows can differ by a cent."),
+              std::string::npos);
+    EXPECT_NE(sender_.format_executions_table({netted_row(Side::SELL, 1, 2.4464, 0.0),
+                                               netted_row(Side::BUY, 1, 2.4464, 0.0)})
+                  .find("rows can differ by a cent."),
+              std::string::npos);
+    const Sleeves adds{{"TREND_FOLLOWING", {netted_row(Side::SELL, 1, 2.50, 0.0),
+                                             netted_row(Side::BUY, 1, 2.50, 0.0)}}};
+    EXPECT_EQ(sender_.format_strategy_executions_tables(adds).find("rows can differ"),
+              std::string::npos);
 }

@@ -27,7 +27,7 @@ using PriceMap = std::unordered_map<std::string, double>;
 double number_of(std::string text) {
     std::string digits;
     for (char c : text)
-        if (c != ',')
+        if (c != ',' && c != '$')
             digits += c;
     return std::stod(digits);
 }
@@ -65,12 +65,12 @@ TEST(ReportSettledMarks, AnOrdinaryRowPrintsThePairItsPnlWasBookedOn) {
     const PriceMap from{{"KE.v.0", 679.5}};
     const PriceMap to{{"KE.v.0", 668.5}};
     const SettledPriceCells cells = cells_for("KE.v.0", from, to, {});
-    EXPECT_EQ(cells.previous, "679.50");
-    EXPECT_EQ(cells.latest, "668.50");
+    EXPECT_EQ(cells.previous, "$679.50");
+    EXPECT_EQ(cells.latest, "$668.50");
     EXPECT_FALSE(cells.no_bar);
     EXPECT_DOUBLE_EQ(1.0 * (number_of(cells.latest) - number_of(cells.previous)) * 50.0, -550.0);
     // a last known close is not what a row with a bar prints
-    EXPECT_EQ(cells_for("KE.v.0", from, to, {{"KE.v.0", 1.0}}).previous, "679.50");
+    EXPECT_EQ(cells_for("KE.v.0", from, to, {{"KE.v.0", 1.0}}).previous, "$679.50");
 }
 
 // A no-bar row: the email of Mon 04-27 settles Sun 04-26, and KE has no Sunday session. The settle
@@ -82,16 +82,16 @@ TEST(ReportSettledMarks, ANoBarRowPrintsItsLastKnownCloseAndTheWordsNoBar) {
     const PriceMap to{{"ZN.v.0", 110.890625}};
     const PriceMap last_known{{"KE.v.0", 668.5}};
     const SettledPriceCells cells = cells_for("KE.v.0", from, to, last_known);
-    EXPECT_EQ(cells.previous, "668.50") << "Friday's close, the last known price";
-    EXPECT_NE(cells.previous, "679.50") << "Thursday's close was settled on Friday";
+    EXPECT_EQ(cells.previous, "$668.50") << "Friday's close, the last known price";
+    EXPECT_NE(cells.previous, "$679.50") << "Thursday's close was settled on Friday";
     EXPECT_EQ(cells.latest, "no bar");
     EXPECT_TRUE(cells.no_bar);
     EXPECT_EQ(cells.latest.find("n/a"), std::string::npos);
     EXPECT_EQ(cells.previous.find("n/a"), std::string::npos);
     // the row beside it, which printed a bar, is unchanged by the other row's missing bar
     const SettledPriceCells zn = cells_for("ZN.v.0", from, to, last_known);
-    EXPECT_EQ(zn.previous, "110.859375");
-    EXPECT_EQ(zn.latest, "110.890625");
+    EXPECT_EQ(zn.previous, "$110.859375");
+    EXPECT_EQ(zn.latest, "$110.890625");
     EXPECT_FALSE(zn.no_bar);
 }
 
@@ -101,7 +101,7 @@ TEST(ReportSettledMarks, AFeedHoleRowPrintsItsLastKnownCloseNotTheBarBeforeIt) {
     const PriceMap from{{"6J.v.0", 0.006297}};
     const PriceMap last_known{{"6J.v.0", 0.006286}};
     const SettledPriceCells cells = cells_for("6J.v.0", from, {}, last_known);
-    EXPECT_EQ(cells.previous, "0.006286");
+    EXPECT_EQ(cells.previous, "$0.006286");
     EXPECT_EQ(cells.latest, "no bar");
     EXPECT_TRUE(cells.no_bar);
 }
@@ -115,19 +115,18 @@ TEST(ReportSettledMarks, ARowWithNoKnownPriceSaysSo) {
     // a bar with no earlier price: the settle booked 0 for want of a price to settle from
     const SettledPriceCells first = cells_for("NEW.v.0", {}, {{"NEW.v.0", 12.5}}, {});
     EXPECT_EQ(first.previous, "n/a");
-    EXPECT_EQ(first.latest, "12.50");
+    EXPECT_EQ(first.latest, "$12.50");
     EXPECT_FALSE(first.no_bar);
 }
 
 // The footnote: the exact sentence, once, and only under a table with a no-bar row.
 TEST(ReportSettledMarks, TheFootnotePrintsOnlyWhenARowHasNoBar) {
     EXPECT_STREQ(kSettledNoBarFootnote,
-                 "no bar: the market did not print a price that day; the position's P&L for the "
-                 "day is 0");
+                 "no bar: no price was received for that day; the row's P&L is $0.00");
     EXPECT_EQ(settled_no_bar_footnote_html(false), "");
     const std::string line = settled_no_bar_footnote_html(true);
-    EXPECT_NE(line.find(">no bar: the market did not print a price that day; the position's "
-                        "P&amp;L for the day is 0</div>\n"),
+    EXPECT_NE(line.find(">no bar: no price was received for that day; the row's P&amp;L is "
+                        "$0.00</div>\n"),
               std::string::npos)
         << line;
     // the flag of a table is the "or" of its rows' flags
@@ -182,8 +181,8 @@ TEST(ReportSettledMarks, TheEquitySentenceSaysWhatTheTwoPricesAreAndThatTheCellB
 
     const SettledPriceCells meta =
         cells_for("META", {{"META", 566.4788855313}}, {{"META", 593.48}}, {});
-    EXPECT_EQ(meta.previous, "566.47888553");  // the restated close is what prints, not 566.98
-    EXPECT_EQ(meta.latest, "593.48");
+    EXPECT_EQ(meta.previous, "$566.47888553");  // the restated close is what prints, not 566.98
+    EXPECT_EQ(meta.latest, "$593.48");
     // quantity x the price change, from the printed cells, is the move the settle computed
     // (192.982419 in its own log line); with the close as it printed it would be short by the
     // dividend
@@ -230,5 +229,5 @@ TEST(ReportSettledMarks, TheFilesTwoCellsCarryTheSamePrices) {
     EXPECT_EQ(unknown.mark, "");
     // a 6J price keeps every digit in both forms
     EXPECT_EQ(settled_csv_cells(0.0062995, 0.0062925).prior_mark, "0.0062995");
-    EXPECT_EQ(settled_price_cells(0.0062995, 0.0062925).previous, "0.0062995");
+    EXPECT_EQ(settled_price_cells(0.0062995, 0.0062925).previous, "$0.0062995");
 }

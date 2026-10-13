@@ -624,15 +624,15 @@ TEST_F(EmailFixture, ARowsPriceMultipliesOutAndASymbolWithNoBarHasNoMark) {
               std::string::npos);
     EXPECT_EQ(body.find("$0.01<"), std::string::npos) << "a price cut to the cent";
     // the settled table: both prices at their decimals; HE printed no bar on the settled day
-    EXPECT_NE(body.find("<tr><td>Q6J.v.0</td><td>-1.00</td><td>0.006286</td><td>0.0062995</td>"),
+    EXPECT_NE(body.find("<tr><td>Q6J.v.0</td><td>-1.00</td><td>$0.006286</td><td>$0.0062995</td>"),
               std::string::npos);
-    EXPECT_NE(body.find("<tr><td>HE.v.0</td><td>1.00</td><td>91.30</td><td>no bar</td>"),
+    EXPECT_NE(body.find("<tr><td>HE.v.0</td><td>1.00</td><td>$91.30</td><td>no bar</td>"),
               std::string::npos);
     EXPECT_EQ(body.find("<td>0.00</td>"), std::string::npos) << "a missing mark printed as zero";
     // a roll leg and a fill
-    EXPECT_NE(body.find("<td>SELL</td><td>1</td><td>$77960.00</td><td>42185193</td>"),
+    EXPECT_NE(body.find("<td>SELL</td><td>1</td><td>$77,960.00</td><td>42185193</td>"),
               std::string::npos);
-    EXPECT_NE(body.find("<td class=\"positive\">BUY</td>\n<td>1</td>\n<td>$2806.70</td>"),
+    EXPECT_NE(body.find("<td class=\"positive\">BUY</td>\n<td>1</td>\n<td>$2,806.70</td>"),
               std::string::npos);
 }
 
@@ -645,30 +645,29 @@ TEST_F(EmailFixture, ASettledRowMultipliesOutAndANoBarRowSaysSoWithOneFootnote) 
     const std::string base = base_body();
     const std::string equity = equity_body();
     // 1 x (677.00 - 668.50) x 50 = 425.00; -1 x (103.73828125 - 103.71484375) x 2,000 = -46.88
-    EXPECT_NE(futures.find("<tr><td>QKE.v.0</td><td>1.00</td><td>668.50</td><td>677.00</td>"
+    EXPECT_NE(futures.find("<tr><td>QKE.v.0</td><td>1.00</td><td>$668.50</td><td>$677.00</td>"
                            "<td class=\"positive\">$425.00</td></tr>"),
               std::string::npos);
-    EXPECT_NE(futures.find("<tr><td>QZT.v.0</td><td>-1.00</td><td>103.71484375</td>"
-                           "<td>103.73828125</td><td class=\"negative\">$-46.88</td></tr>"),
+    EXPECT_NE(futures.find("<tr><td>QZT.v.0</td><td>-1.00</td><td>$103.71484375</td>"
+                           "<td>$103.73828125</td><td class=\"negative\">-$46.88</td></tr>"),
               std::string::npos);
     // 2 x (0.1998 - 0.1994) x 100,000 = 80.00
-    EXPECT_NE(futures.find("<tr><td>Q6L.v.0</td><td>2.00</td><td>0.1994</td><td>0.1998</td>"
+    EXPECT_NE(futures.find("<tr><td>Q6L.v.0</td><td>2.00</td><td>$0.1994</td><td>$0.1998</td>"
                            "<td class=\"positive\">$80.00</td></tr>"),
               std::string::npos);
     // HE: the last known close 91.30, never the unused older 92.10, and a stored P&L of 0.00
-    EXPECT_NE(futures.find("<tr><td>HE.v.0</td><td>1.00</td><td>91.30</td><td>no bar</td>"
+    EXPECT_NE(futures.find("<tr><td>HE.v.0</td><td>1.00</td><td>$91.30</td><td>no bar</td>"
                            "<td class=\"positive\">$0.00</td></tr>"),
               std::string::npos);
     EXPECT_EQ(futures.find("92.10"), std::string::npos);
     // BASE, a Monday: KE has no Sunday session. Friday's 668.50, not Thursday's 679.50.
-    EXPECT_NE(base.find("<tr><td>KE.v.0</td><td>1.00</td><td>668.50</td><td>no bar</td>"
+    EXPECT_NE(base.find("<tr><td>KE.v.0</td><td>1.00</td><td>$668.50</td><td>no bar</td>"
                         "<td class=\"positive\">$0.00</td></tr>"),
               std::string::npos);
     EXPECT_EQ(base.find("679.50"), std::string::npos);
 
     const std::string footnote =
-        ">no bar: the market did not print a price that day; the "
-        "position's P&amp;L for the day is 0</div>\n";
+        ">no bar: no price was received for that day; the row's P&amp;L is $0.00</div>\n";
     const std::string note = settled_table_note_html(false);
     for (const std::string& body : {futures, base}) {
         const auto at = body.find(footnote);
@@ -681,7 +680,7 @@ TEST_F(EmailFixture, ASettledRowMultipliesOutAndANoBarRowSaysSoWithOneFootnote) 
     }
     // the equity body's one settled row printed a bar: no "no bar" cell and no footnote
     EXPECT_EQ(equity.find("no bar"), std::string::npos);
-    EXPECT_NE(equity.find("<td>337.39</td><td>353.65</td>"), std::string::npos);
+    EXPECT_NE(equity.find("<td>$337.39</td><td>$353.65</td>"), std::string::npos);
     // and its sentence is the equity one, directly under its table
     EXPECT_NE(equity.find("</table>\n" + settled_table_note_html(true)), std::string::npos);
 }
@@ -889,9 +888,9 @@ TEST_F(EmailFixture, AFuturesReportPrintsTheSizingCapitalAndTheSizedValueAndNoDi
     const std::string lines = capital_lines_html(stored);
     EXPECT_EQ(lines,
               "<div class=\"metric\"><strong>Sizing capital:</strong> "
-              "<span>$495,186.14</span></div>\n"
-              "<div class=\"metric\"><strong>Portfolio value when the day was sized:</strong> "
-              "<span>$497,440.87</span></div>\n");
+              "<span>$495,186.14</span></div>\n");
+    EXPECT_EQ(lines.find("when the day was sized"), std::string::npos);
+    EXPECT_EQ(lines.find("497,440.87"), std::string::npos);
     for (const char* gone : {"V_t", "E_t", "account value", "starting capital", "Capital above",
                              "2,254.73", "less the sizing capital"}) {
         EXPECT_EQ(lines.find(gone), std::string::npos) << gone;
@@ -899,9 +898,8 @@ TEST_F(EmailFixture, AFuturesReportPrintsTheSizingCapitalAndTheSizedValueAndNoDi
     // a row with no risk_detail: one line, no figure
     const std::string none = capital_lines_html(EmailReportContext{});
     EXPECT_EQ(none,
-              "<div class=\"metric\"><strong>Sizing capital and portfolio value when the day "
-              "was sized:</strong> no reading (no sized rebalance this run: no risk reading "
-              "was stored for this day)</div>\n");
+              "<div class=\"metric\"><strong>Sizing capital:</strong> no reading (no sized "
+              "rebalance this run: no risk reading was stored for this day)</div>\n");
     EXPECT_EQ(none.find("$"), std::string::npos);
     EXPECT_EQ(none.find("starting capital"), std::string::npos);
 
@@ -909,17 +907,14 @@ TEST_F(EmailFixture, AFuturesReportPrintsTheSizingCapitalAndTheSizedValueAndNoDi
     const std::string body = conservative_body();
     EXPECT_NE(body.find("<strong>Cash Available:</strong> <span>$487,405.07</span></div>\n"
                         "<div class=\"metric\"><strong>Sizing capital:</strong> "
-                        "<span>$497,745.27</span></div>\n"
-                        "<div class=\"metric\"><strong>Portfolio value when the day was "
-                        "sized:</strong> <span>$503,505.07</span></div>\n</div>\n"),
+                        "<span>$497,745.27</span></div>\n</div>\n"),
               std::string::npos);
     const std::string base = base_body();
-    EXPECT_NE(base.find("<strong>Sizing capital:</strong> <span>$499,357.14</span></div>\n"
-                        "<div class=\"metric\"><strong>Portfolio value when the day was "
-                        "sized:</strong> <span>$499,357.14</span></div>\n</div>\n"),
+    EXPECT_NE(base.find("<strong>Sizing capital:</strong> <span>$499,357.14</span></div>\n</div>\n"),
               std::string::npos);
     // no body of either futures book carries the dropped line, nor its figure
     for (const std::string& futures : {body, base}) {
+        EXPECT_EQ(futures.find("when the day was sized"), std::string::npos);
         EXPECT_EQ(futures.find("Capital above"), std::string::npos);
         EXPECT_EQ(futures.find("starting capital"), std::string::npos);
         EXPECT_EQ(futures.find("less the sizing capital"), std::string::npos);
@@ -1036,7 +1031,7 @@ TEST_F(EmailFixture, TheEquityReportPrintsItsCostsItsStatisticsAndItsDividendLin
                         "<span>$69.42</span></div>"),
               std::string::npos);
     EXPECT_NE(body.find("<div class=\"metric\"><strong>Total PnL (Net):</strong> "
-                        "<span class=\"negative\">$-448.21</span></div>\n"
+                        "<span class=\"negative\">-$448.21</span></div>\n"
                         "<div class=\"metric\"><strong>Dividend Income (cumulative, not in "
                         "P&amp;L):</strong> <span>$6.57</span></div>\n"),
               std::string::npos);
@@ -1160,7 +1155,7 @@ TEST_F(EmailFixture, TheTextOfAReportIsItsOwnBooks) {
     EXPECT_EQ(equity.find("Trend Following"), std::string::npos);
     // an agricultural root with a true zero on a Monday prints its zero, its last known close
     // and the words for a day with no bar
-    EXPECT_NE(base.find("<tr><td>KE.v.0</td><td>1.00</td><td>668.50</td><td>no bar</td>"
+    EXPECT_NE(base.find("<tr><td>KE.v.0</td><td>1.00</td><td>$668.50</td><td>no bar</td>"
                         "<td class=\"positive\">$0.00</td></tr>"),
               std::string::npos);
     // the footers

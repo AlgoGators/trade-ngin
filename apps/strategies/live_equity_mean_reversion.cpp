@@ -6151,6 +6151,7 @@ int main(int argc, char* argv[]) {
                     auto avg_price_arr = std::static_pointer_cast<arrow::StringArray>(table_email->column(2)->chunk(0));
                     auto realized_pnl_arr = std::static_pointer_cast<arrow::StringArray>(table_email->column(3)->chunk(0));
 
+                    std::vector<std::pair<std::string, double>> closed_on_settled_day;
                     for (int64_t i = 0; i < table_email->num_rows(); ++i) {
                         if (!symbol_arr->IsNull(i) && !quantity_arr->IsNull(i)) {
                             std::string symbol = symbol_arr->GetString(i);
@@ -6158,8 +6159,15 @@ int main(int argc, char* argv[]) {
                             double avg_price = std::stod(avg_price_arr->GetString(i));
                             double realized_pnl = std::stod(realized_pnl_arr->GetString(i));
 
-                            // Skip positions with zero quantity
-                            if (std::abs(quantity) < 0.0001) continue;
+                            // A position closed on the settled day is stored at quantity 0 with
+                            // its realized figure: it keeps a row, at the quantity it had when it
+                            // closed (HD ruling Q11); a zero row with no figure is no position.
+                            if (std::abs(quantity) < 0.0001) {
+                                if (std::abs(realized_pnl) >= 1e-9) {
+                                    closed_on_settled_day.push_back({symbol, realized_pnl});
+                                }
+                                continue;
+                            }
 
                             // Create Position object for yesterday's finalized position
                             Position pos;
@@ -6170,6 +6178,54 @@ int main(int argc, char* argv[]) {
 
                             yesterday_positions_finalized[symbol] = pos;
 
+                            if (previous_day_close_prices.find(symbol) ==
+                                previous_day_close_prices.end()) {
+                                const auto last_known = price_manager->get_latest_price(symbol);
+                                if (last_known.is_ok()) {
+                                    settled_last_known_close[symbol] = last_known.value();
+                                }
+                            }
+                        }
+                    }
+                    if (!closed_on_settled_day.empty()) {
+                        std::vector<std::string> closed_symbols;
+                        for (const auto& closed : closed_on_settled_day) {
+                            closed_symbols.push_back(closed.first);
+                        }
+                        const auto before_result = db->execute_query(
+                            trade_ngin::quantity_before_report_query(
+                                kEquityStrategyId, portfolio_id, yesterday_date_for_email,
+                                closed_symbols));
+                        std::unordered_map<std::string, double> quantity_before;
+                        if (before_result.is_ok() && before_result.value()->num_rows() > 0) {
+                            const auto before_table = before_result.value();
+                            auto before_symbol = std::static_pointer_cast<arrow::StringArray>(
+                                before_table->column(0)->chunk(0));
+                            auto before_quantity = std::static_pointer_cast<arrow::StringArray>(
+                                before_table->column(1)->chunk(0));
+                            for (int64_t i = 0; i < before_table->num_rows(); ++i) {
+                                if (before_symbol->IsNull(i) || before_quantity->IsNull(i)) continue;
+                                quantity_before[before_symbol->GetString(i)] =
+                                    std::stod(before_quantity->GetString(i));
+                            }
+                        } else if (before_result.is_error()) {
+                            ERROR("Failed to read the quantity a closed position had: " +
+                                  std::string(before_result.error()->what()) +
+                                  "; its settled row is left out");
+                        }
+                        for (const auto& [symbol, realized_pnl] : closed_on_settled_day) {
+                            const auto held = quantity_before.find(symbol);
+                            if (held == quantity_before.end() || std::abs(held->second) < 0.0001) {
+                                WARN("Settled row of " + symbol + " closed on " +
+                                     yesterday_date_for_email +
+                                     ": no earlier quantity is stored, so its row is left out");
+                                continue;
+                            }
+                            Position pos;
+                            pos.symbol = symbol;
+                            pos.quantity = Decimal(held->second);
+                            pos.realized_pnl = Decimal(realized_pnl);
+                            yesterday_positions_finalized[symbol] = pos;
                             if (previous_day_close_prices.find(symbol) ==
                                 previous_day_close_prices.end()) {
                                 const auto last_known = price_manager->get_latest_price(symbol);

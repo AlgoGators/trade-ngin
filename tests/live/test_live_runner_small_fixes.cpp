@@ -208,10 +208,12 @@ TEST(C7bRunnerSource, BothTwinsDeriveTheCarriedReasonFromTheClassificationAndFla
         EXPECT_EQ(src.find("\" (a Saturday)\""), npos)
             << "the note still keys on the weekday, blank on a feed-hole carry";
         EXPECT_NE(src.find("carried_day_reason(t1_classification)"), npos);
+        // The carried-day banner is put on by deliver_email_report (EmailDelivery.*), which is
+        // handed the day's note and whether the day was carried.
         const std::string email = between(src, "// Send email with CSV attachments",
-                                          "email_sender->send_email(subject, email_body");
+                                          "email_sender->send_email(mail_subject, mail_body,");
         ASSERT_FALSE(email.empty());
-        EXPECT_NE(email.find("flag_email_body_for_carried_day(email_body, carried_day_note)"), npos)
+        EXPECT_NE(email.find("risk_module_failure, skip_strategy_processing, carried_day_note,"), npos)
             << "the email of a carried day carries no reason";
         blocks.push_back(between(src, "const std::string carried_day_note =", ";\n"));
     }

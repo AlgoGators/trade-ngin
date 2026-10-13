@@ -38,7 +38,25 @@ inline constexpr const char* kSettledLatestPriceLabel = "Latest price";
 inline constexpr const char* kSettledNoBar = "no bar";
 /// The one footnote under the table, printed only when a row carries the words.
 inline constexpr const char* kSettledNoBarFootnote =
-    "no bar: the market did not print a price that day; the position's P&L for the day is 0";
+    "no bar: no price was received for that day; the row's P&L is $0.00";
+/// The two words after a $0.00 realized figure on a futures row whose two prices differ: the
+/// settle books such a row at zero by rule (kSettledNoteFutures says when), so the zero is not a
+/// price that did not move. The report cannot tell the two kinds apart (a contract change, a
+/// price that was not accepted): the settle does not hand the kind to the report.
+inline constexpr const char* kSettledBookedAtZero = "booked at zero";
+
+/// The marker to print after a row's realized figure, with its leading space; empty when none.
+/// A row carries it when the book is futures, the quantity is not zero, both prices are known and
+/// differ, and the figure prints as $0.00.
+inline std::string settled_booked_at_zero_marker(bool equities, double quantity,
+                                                 std::optional<double> previous,
+                                                 std::optional<double> latest, double realized) {
+    if (equities || quantity == 0.0 || !previous || !latest || *previous == *latest)
+        return {};
+    if (report_dollars(realized) != "$0.00")
+        return {};
+    return std::string(" (") + kSettledBookedAtZero + ")";
+}
 
 /// The two prices of every symbol of the settled table. A symbol absent from `latest` printed no
 /// bar on the settled day; a symbol absent from `previous` has no known earlier price.
@@ -96,14 +114,15 @@ struct SettledPriceCells {
 /**
  * @brief The report's two cells of a row. `latest` empty is the no-bar row: the cell reads
  *        "no bar" (no "n/a", no carried price) and the footnote prints. A previous price that is
- *        not known reads "n/a". A price prints every decimal it has (report_price_text).
+ *        not known reads "n/a". A price prints every decimal it has, with its dollar sign and thousands separators
+ *        (report_price_dollars).
  */
 inline SettledPriceCells settled_price_cells(std::optional<double> previous,
                                              std::optional<double> latest) {
     SettledPriceCells cells;
-    cells.previous = previous ? report_price_text(*previous, true) : std::string("n/a");
+    cells.previous = previous ? report_price_dollars(*previous) : std::string("n/a");
     cells.no_bar = !latest.has_value();
-    cells.latest = latest ? report_price_text(*latest, true) : std::string(kSettledNoBar);
+    cells.latest = latest ? report_price_dollars(*latest) : std::string(kSettledNoBar);
     return cells;
 }
 

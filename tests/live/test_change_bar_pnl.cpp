@@ -227,8 +227,8 @@ TEST_F(ChangeBarPnlTest, TheSettledTablePricesAreThePairTheFinalizeBookedEachRow
     // ES, an ordinary row the day after a withheld bar: the table prints the pair the P&L was
     // booked on (5020 -> 5040), not the withheld print 4999 the raw lookup holds, and the row
     // multiplies out: 1 x (5040 - 5020) x 50 = 1000.
-    EXPECT_EQ(cells("ES.v.0").previous, "5,020.00");
-    EXPECT_EQ(cells("ES.v.0").latest, "5,040.00");
+    EXPECT_EQ(cells("ES.v.0").previous, "$5,020.00");
+    EXPECT_EQ(cells("ES.v.0").latest, "$5,040.00");
     EXPECT_FALSE(cells("ES.v.0").no_bar);
     EXPECT_DOUBLE_EQ(1.0 * (table.latest.at("ES.v.0") - table.previous.at("ES.v.0")) * 50.0,
                      booked.at("ES.v.0"));
@@ -238,7 +238,7 @@ TEST_F(ChangeBarPnlTest, TheSettledTablePricesAreThePairTheFinalizeBookedEachRow
     // 2's 112, not day 1's 111) and the words; the file leaves the mark empty.
     EXPECT_DOUBLE_EQ(booked.at("ZN.v.0"), 0.0);
     EXPECT_EQ(table.latest.count("ZN.v.0"), 0u);
-    EXPECT_EQ(cells("ZN.v.0").previous, "112.00");
+    EXPECT_EQ(cells("ZN.v.0").previous, "$112.00");
     EXPECT_EQ(cells("ZN.v.0").latest, "no bar");
     EXPECT_TRUE(cells("ZN.v.0").no_bar);
     const SettledCsvCells zn_file = settled_csv_cells(settled_price_of(table.previous, "ZN.v.0"),
@@ -248,11 +248,11 @@ TEST_F(ChangeBarPnlTest, TheSettledTablePricesAreThePairTheFinalizeBookedEachRow
 
     // NG, a roll's change bar, and 6B, a withheld T-1 print: the table shows the two closes the
     // settle was handed, and the settle booked 0 by rule, so these rows do not multiply out.
-    EXPECT_EQ(cells("NG.v.0").previous, "3.33");
-    EXPECT_EQ(cells("NG.v.0").latest, "3.34");
+    EXPECT_EQ(cells("NG.v.0").previous, "$3.33");
+    EXPECT_EQ(cells("NG.v.0").latest, "$3.34");
     EXPECT_DOUBLE_EQ(booked.at("NG.v.0"), 0.0);
-    EXPECT_EQ(cells("6B.v.0").previous, "1.303");
-    EXPECT_EQ(cells("6B.v.0").latest, "1.25");
+    EXPECT_EQ(cells("6B.v.0").previous, "$1.303");
+    EXPECT_EQ(cells("6B.v.0").latest, "$1.25");
     EXPECT_FALSE(cells("6B.v.0").no_bar);
     EXPECT_DOUBLE_EQ(booked.at("6B.v.0"), 0.0);
 }
