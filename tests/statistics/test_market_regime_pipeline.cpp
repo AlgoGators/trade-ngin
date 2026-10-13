@@ -4,7 +4,9 @@
 #include <Eigen/Dense>
 #include <cmath>
 #include <limits>
+#include <atomic>
 #include <random>
+#include <thread>
 #include <vector>
 
 using namespace trade_ngin::statistics;
@@ -806,8 +808,10 @@ TEST(RegimePhase4, LiveStateRejectsUntrainedSnapshot_K17) {
     using namespace trade_ngin;
     MarketRegimePipeline pipeline;
     auto r = pipeline.get_live_state(SleeveId::EQUITIES);
-    EXPECT_TRUE(r.is_error())
+    ASSERT_TRUE(r.is_error())
         << "snapshot before training should fail with NOT_INITIALIZED.";
+    EXPECT_EQ(r.error()->code(), ErrorCode::NOT_INITIALIZED)
+        << "the header documents this code; it must be the one returned.";
 }
 
 TEST(RegimePhase4, LiveStateRejectsUntrainedRestore_K17) {
@@ -816,8 +820,10 @@ TEST(RegimePhase4, LiveStateRejectsUntrainedRestore_K17) {
     SleeveLiveState snap;
     snap.prev_smoothed.setConstant(1.0 / kNumMarketRegimes);
     auto r = pipeline.restore_live_state(SleeveId::EQUITIES, snap);
-    EXPECT_TRUE(r.is_error())
+    ASSERT_TRUE(r.is_error())
         << "restore before training should fail — caller must train first.";
+    EXPECT_EQ(r.error()->code(), ErrorCode::NOT_INITIALIZED)
+        << "the header documents this code; it must be the one returned.";
 }
 
 // ============================================================================
@@ -930,4 +936,34 @@ TEST(RegimePhase4, RunningPeakDrawdownMatchesNaiveRecompute_K14) {
         EXPECT_DOUBLE_EQ(dds_fast[t], dds_naive[t])
             << "drawdown_speed bit-identity broken at t=" << t;
     }
+}
+
+// ============================================================================
+// M-13: both live-state functions now take the pipeline mutex, like update(),
+// so a live process may checkpoint from a different thread than the bar feed.
+// ============================================================================
+
+TEST(RegimePhase4, LiveStateIsThreadSafeAgainstConcurrentReaders_M13) {
+    using namespace trade_ngin;
+    // Both functions take the pipeline mutex now. Hammering them from several
+    // threads must not tear or return a half-written snapshot.
+    MarketRegimePipeline pipeline;
+
+    std::atomic<int> errors{0};
+    std::vector<std::thread> threads;
+    for (int t = 0; t < 4; ++t) {
+        threads.emplace_back([&pipeline, &errors] {
+            for (int i = 0; i < 200; ++i) {
+                auto r = pipeline.get_live_state(SleeveId::EQUITIES);
+                // Untrained, so every call must report the same typed error
+                // rather than tearing or returning a half-written snapshot.
+                if (!r.is_error() || r.error()->code() != ErrorCode::NOT_INITIALIZED) {
+                    ++errors;
+                }
+            }
+        });
+    }
+    for (auto& th : threads) th.join();
+
+    EXPECT_EQ(errors.load(), 0);
 }
