@@ -100,6 +100,45 @@ public:
         out.insert(out.end(), executions.begin(), executions.end());
         return Result<void>();
     }
+
+    // The (start_date, end_date) of the backtest.results row and of each backtest.run_metadata
+    // row, and the equity-curve points, as the writer was handed them.
+    std::vector<std::pair<Timestamp, Timestamp>> summary_windows;
+    std::vector<std::pair<Timestamp, Timestamp>> metadata_windows;
+    std::vector<std::pair<Timestamp, double>> stored_curve;
+
+    Result<void> store_backtest_summary(const std::string& run_id, const Timestamp& start_date,
+                                        const Timestamp& end_date,
+                                        const std::unordered_map<std::string, double>& metrics,
+                                        const std::string& portfolio_id,
+                                        const std::string& table_name,
+                                        const std::vector<LiveResultsCell>& cells) override {
+        summary_windows.emplace_back(start_date, end_date);
+        return ServingDb::store_backtest_summary(run_id, start_date, end_date, metrics,
+                                                 portfolio_id, table_name, cells);
+    }
+
+    Result<void> store_backtest_equity_curve_batch(
+        const std::string& run_id, const std::vector<std::pair<Timestamp, double>>& equity_points,
+        const std::string& portfolio_id, const std::string& table_name,
+        const std::vector<std::string>& risk_detail, const BacktestCurveCells& cells) override {
+        stored_curve = equity_points;
+        return ServingDb::store_backtest_equity_curve_batch(run_id, equity_points, portfolio_id,
+                                                            table_name, risk_detail, cells);
+    }
+
+    Result<void> store_backtest_metadata_with_portfolio(
+        const std::string& run_id, const std::string& portfolio_run_id,
+        const std::string& strategy_id, double strategy_allocation,
+        const nlohmann::json& portfolio_config, const std::string& name,
+        const std::string& description, const Timestamp& start_date, const Timestamp& end_date,
+        const nlohmann::json& hyperparameters, const std::string& portfolio_id,
+        const std::string& table_name) override {
+        metadata_windows.emplace_back(start_date, end_date);
+        return ServingDb::store_backtest_metadata_with_portfolio(
+            run_id, portfolio_run_id, strategy_id, strategy_allocation, portfolio_config, name,
+            description, start_date, end_date, hyperparameters, portfolio_id, table_name);
+    }
 };
 
 using SymbolDay = std::tuple<std::string, Timestamp>;
@@ -304,7 +343,8 @@ protected:
             spec_with_fee(3.00));
 
         ::testing::internal::CaptureStdout();
-        auto result = coord_->run_portfolio(pm_, {kX, kY}, trading_day(0), trading_day(kLastDay),
+        auto result = coord_->run_portfolio(pm_, {kX, kY}, trading_day(0),
+                                            requested_end_.value_or(trading_day(kLastDay)),
                                             AssetClass::FUTURES, DataFrequency::DAILY);
         log_ = ::testing::internal::GetCapturedStdout();
         return result;
@@ -342,6 +382,7 @@ protected:
     std::shared_ptr<LateRowStrategy> late_;
     bool late_row_{false};
     bool opposite_opens_{false};
+    std::optional<Timestamp> requested_end_;  // the end the run is asked for; unset: the last bar
     int inject_day_{-1};
     ExecutionType inject_type_{ExecutionType::ROLL};
     BacktestResults results_;
@@ -623,4 +664,62 @@ TEST_F(BacktestNettingOneModelTest, AFullCrossIsNoTradeInTheRunsTradeStatistics)
     EXPECT_DOUBLE_EQ(results_.max_win, 0.0);
     EXPECT_DOUBLE_EQ(results_.max_loss, 0.0);
     EXPECT_TRUE(results_.actual_trades.empty());
+}
+
+// OPT-N5/N6: backtest.results.end_date and backtest.run_metadata.end_date are the run's DATA
+// BOUNDARY, the timestamp of the last bar it consumed, which is the last point of the equity curve
+// it stores. The run is asked for an end three days and four hours after its last bar (a frozen
+// end on a date with no bar, or the wall clock):
+//
+//   | cell                             | parent: the requested end | now: the last bar   |
+//   | backtest.results.end_date        | 2025-03-06 04:00:00Z      | 2025-03-03 00:00:00Z |
+//   | backtest.run_metadata.end_date   | 2025-03-06 04:00:00Z      | 2025-03-03 00:00:00Z |
+//   | start_date (both)                | 2025-01-06 00:00:00Z      | unchanged            |
+//
+// RED on the parent: both end dates are the requested end.
+TEST_F(BacktestNettingOneModelTest, TheStoredEndDateIsTheLastBarTheRunConsumedNotTheRequestedEnd) {
+    const Timestamp last_bar = trading_day(kLastDay);
+    requested_end_ = last_bar + std::chrono::hours(3 * 24 + 4);
+    run();
+
+    ASSERT_FALSE(db_->stored_curve.empty());
+    Timestamp curve_end = db_->stored_curve.front().first;
+    for (const auto& point : db_->stored_curve) {
+        curve_end = std::max(curve_end, point.first);
+    }
+    ASSERT_EQ(curve_end, last_bar) << "the fixture's last stored equity point is its last bar";
+
+    ASSERT_EQ(db_->summary_windows.size(), 1u);
+    EXPECT_EQ(db_->summary_windows[0].second, last_bar)
+        << "backtest.results.end_date is " << core::format_utc_date(db_->summary_windows[0].second)
+        << ", the requested end is " << core::format_utc_date(*requested_end_);
+    EXPECT_EQ(db_->summary_windows[0].first, trading_day(0)) << "start_date does not change";
+
+    ASSERT_EQ(db_->metadata_windows.size(), 2u) << "one run_metadata row a sleeve";
+    for (const auto& window : db_->metadata_windows) {
+        EXPECT_EQ(window.second, last_bar) << "backtest.run_metadata.end_date";
+        EXPECT_EQ(window.first, trading_day(0));
+    }
+}
+
+// OPT-N5/N6, the choice itself, called with no run and no database.
+//
+//   | the equity curve                                   | data_boundary          |
+//   | seed 01-06, bars 01-07 and 01-08                   | 2025-01-08 (last bar)  |
+//   | the same points out of order                       | 2025-01-08 (the max)   |
+//   | the seed point only: the run consumed no bar       | 2025-01-06 (the start) |
+//   | no point at all                                    | the start handed in    |
+TEST(BacktestDataBoundary, IsTheLatestCurvePointAndTheStartWhenNoBarWasConsumed) {
+    const Timestamp start = trading_day(0);
+    const std::vector<std::pair<Timestamp, double>> curve = {
+        {start, 100.0}, {trading_day(1), 101.0}, {trading_day(2), 99.0}};
+    EXPECT_EQ(BacktestCoordinator::data_boundary(curve, start), trading_day(2));
+
+    const std::vector<std::pair<Timestamp, double>> unordered = {
+        {trading_day(2), 99.0}, {start, 100.0}, {trading_day(1), 101.0}};
+    EXPECT_EQ(BacktestCoordinator::data_boundary(unordered, start), trading_day(2));
+
+    EXPECT_EQ(BacktestCoordinator::data_boundary({{start, 100.0}}, start), start)
+        << "a run that consumed no bar stores its start_date as end_date";
+    EXPECT_EQ(BacktestCoordinator::data_boundary({}, start), start);
 }
