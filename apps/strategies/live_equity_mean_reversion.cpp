@@ -28,6 +28,7 @@
 #include "trade_ngin/live/corp_action_window.hpp"
 #include "trade_ngin/live/data_freshness.hpp"
 #include "trade_ngin/live/email_body_file.hpp"
+#include "trade_ngin/live/email_delivery.hpp"
 #include "trade_ngin/live/session_book_gate.hpp"
 #include "trade_ngin/live/corp_action_feed_status.hpp"
 #include "trade_ngin/live/trading_days_anchor.hpp"
@@ -6075,6 +6076,7 @@ int main(int argc, char* argv[]) {
         // that sends builds and mails the report and ignores TRADE_NGIN_EMAIL_BODY_DIR with one
         // WARN; a run that does not send builds the same body into that directory when it is set
         // and mails nothing; otherwise nothing is built.
+        bool email_failed = false;  // the report was not built, written or sent: exit code 4
         const live::EmailReportPlan email_plan =
             live::plan_email_report(send_email, std::getenv(live::kEmailBodyDirEnv));
         if (email_plan.variable_ignored) {
@@ -6103,6 +6105,7 @@ int main(int argc, char* argv[]) {
                 auto email_init_result = email_sender->initialize();
                 if (email_init_result.is_error()) {
                     ERROR("Failed to initialize email sender: " + std::string(email_init_result.error()->what()));
+                    email_failed = true;
                 } else {
                 // Prepare email data
                 std::string date_str = std::to_string(now_tm->tm_year + 1900) + "-"
@@ -6361,26 +6364,28 @@ int main(int argc, char* argv[]) {
                 // Send email without CSV attachments (CSV export disabled for mean reversion)
                 std::vector<std::string> attachments = {};  // No CSV files for mean reversion
 
-                if (email_plan.write_body_file) {
-                    const std::string body_path = live::email_body_file_path(
-                        email_plan.body_dir, portfolio_id, date_str);
-                    if (!live::write_email_body_file(body_path, email_body)) {
-                        ERROR("EMAIL_BODY_FILE could not write " + body_path);
-                    } else {
-                        INFO("EMAIL_BODY_FILE wrote " + body_path + " (" +
-                             std::to_string(email_body.size()) + " bytes); nothing is mailed");
-                    }
+                const live::EmailDelivery delivery = live::deliver_email_report(
+                    email_plan, portfolio_id, date_str, subject, email_body, std::nullopt, false,
+                    "",
+                    [&](const std::string& mail_subject, const std::string& mail_body)
+                        -> std::optional<std::string> {
+                        auto send_result =
+                            email_sender->send_email(mail_subject, mail_body, true, attachments);
+                        if (send_result.is_error()) {
+                            return std::string(send_result.error()->what());
+                        }
+                        return std::nullopt;
+                    });
+                if (!delivery.ok) {
+                    ERROR(delivery.message);
+                    email_failed = true;
                 } else {
-                auto send_result = email_sender->send_email(subject, email_body, true, attachments);
-                if (send_result.is_error()) {
-                    ERROR("Failed to send email: " + std::string(send_result.error()->what()));
-                } else {
-                    INFO("Email report sent successfully (without CSV attachments)");
-                }
+                    INFO(delivery.message);
                 }
                 }
             } catch (const std::exception& e) {
                 ERROR("Exception during email sending: " + std::string(e.what()));
+                email_failed = true;
             }
         } else {
             INFO("Email reporting disabled");
@@ -6393,6 +6398,11 @@ int main(int argc, char* argv[]) {
             ERROR("Run completed but one or more result tables were not persisted -- "
                   "exiting non-zero so this is not mistaken for a successful run.");
             return 1;
+        }
+        if (email_failed) {
+            ERROR("EMAIL_FAILED the day is stored; the report was not delivered; exiting " +
+                  std::to_string(live::kEmailFailureExitCode));
+            return live::kEmailFailureExitCode;
         }
         return 0;
 

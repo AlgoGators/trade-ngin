@@ -3,7 +3,7 @@
 // T-NETTING fix round 2 (HD 2026-10-10: --send-email wins). The futures runners decide what to do
 // about the daily report through plan_email_report, name the body file through
 // email_body_file_path and write it through write_email_body_file (email_body_file.hpp); the
-// runners' use of the three is pinned by EmailBodyFileSource in tests/portfolio/test_pm_netting.cpp.
+// runners' use of them is tested in tests/live/test_email_delivery.cpp.
 //
 //   | --send-email | TRADE_NGIN_EMAIL_BODY_DIR | built | mailed | file written | warning |
 //   | yes          | not set                   | yes   | yes    | no           | no      |

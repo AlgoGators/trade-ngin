@@ -164,11 +164,9 @@ const std::vector<Site> kFuturesSites = {
     {"if (email_plan.send) {",
      "DECISION: mail, on --send-email only. The plan: EmailReportPlan.*; the send "
      "arm itself is never run by a test, by rule (it mails)"},
-    {"if (email_plan.write_body_file) {",
-     "DECISION: write the body to a file, never on a sending run. EmailReportPlan.*; "
-     "executed on the real binary by every run of scripts/live_mode_gate/gate.sh"},
-    {"email_sender->send_email(subject, email_body, true, attachments);",
-     "the send itself, inside the send arm"},
+    {"auto send_result = email_sender->send_email(mail_subject, mail_body,",
+     "the send itself, handed to deliver_email_report as its sender; the file-or-send "
+     "choice is made there: EmailDelivery.* (tests/live/test_email_delivery.cpp)"},
 };
 
 // --- the equity runner ------------------------------------------------------------------------
@@ -226,11 +224,9 @@ const std::vector<Site> kEquitySites = {
     {"if (email_plan.send) {",
      "DECISION: mail, on --send-email only. The plan: EmailReportPlan.*; the send "
      "arm itself is never run by a test, by rule (it mails)"},
-    {"if (email_plan.write_body_file) {",
-     "DECISION: write the body to a file, never on a sending run. EmailReportPlan.*; "
-     "executed on the real binary by every run of scripts/live_mode_gate/gate.sh"},
-    {"auto send_result = email_sender->send_email(subject, email_body, true, attachments);",
-     "the send itself, inside the send arm"},
+    {"email_sender->send_email(mail_subject, mail_body, true, attachments);",
+     "the send itself, handed to deliver_email_report as its sender; the file-or-send "
+     "choice is made there: EmailDelivery.* (tests/live/test_email_delivery.cpp)"},
 };
 
 // --- every other file under apps/ (none is a live runner) --------------------------------------

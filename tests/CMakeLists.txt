@@ -210,6 +210,7 @@ set(TEST_SOURCES
     live/test_session_book_gate.cpp
     live/test_live_runner_small_fixes.cpp
     live/test_email_body_file.cpp
+    live/test_email_delivery.cpp
     live/test_held_feed_ruling.cpp
     live/test_mode_branch_guard.cpp
     live/test_cost_model_feed.cpp
