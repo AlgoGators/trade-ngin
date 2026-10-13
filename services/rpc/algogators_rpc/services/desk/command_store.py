@@ -23,7 +23,7 @@ from typing import Any, Dict, List, Optional, Protocol, Tuple
 from .config import CONNECT_TIMEOUT_S, DbConfig
 from .store import StoreError
 
-KINDS = ("save", "override_request", "override_decision", "publish")
+KINDS = ("save", "override_request", "override_decision", "publish", "rescind")
 FINAL = ("done", "refused", "failed")
 
 COLUMNS = ("id", "portfolio_id", "date", "kind", "status", "requested_by", "reason", "payload",
@@ -70,6 +70,23 @@ class BookLine:
 # {portfolio_type: {symbol: BookLine}}
 Books = Dict[str, Dict[str, BookLine]]
 
+# What `rescind` found (contract C8).
+RESCINDED, UNPUBLISHED, NOT_DESK, SENT, NOT_RUNNING = (
+    "rescinded", "unpublished", "not_desk", "sent", "not_running")
+
+
+@dataclass(frozen=True)
+class RescindResult:
+    outcome: str  # one of RESCINDED, UNPUBLISHED, NOT_DESK, SENT, NOT_RUNNING
+    published_by: Optional[str] = None
+    published_at: Optional[dt.datetime] = None
+    publish_source: Optional[str] = None
+    sent_at: Optional[dt.datetime] = None
+
+
+class _NotRunning(StoreError):
+    """Rolls the rescind back: its row was no longer running."""
+
 
 class CommandStore(Protocol):
     def get_row(self, audit_id: int) -> Optional[CommandRow]: ...
@@ -105,6 +122,15 @@ class CommandStore(Protocol):
     def newest_pending_publish(self, portfolio_id: str, date: dt.date) -> Optional[CommandRow]: ...
 
     def books(self, portfolio_id: str, date: dt.date) -> Books: ...
+
+    def rescind(self, audit_id: int, portfolio_id: str, date: dt.date,
+                message: str) -> RescindResult:
+        """Contract C8, in one transaction with the day's live_run_metadata rows locked: when the
+        day is published by the desk (publish_source 'desk' on every published row) and no row
+        has sent_at, clear published_by, published_at and publish_source on them and finish the
+        running rescind row `audit_id` done with result {"rescinded": {published_by,
+        published_at}} and `message`. Otherwise change nothing and say why (the caller refuses
+        the row); NOT_RUNNING (nothing changed) when the row was no longer running."""
 
 
 class PostgresCommandStore:
@@ -227,6 +253,41 @@ class PostgresCommandStore:
                         (portfolio_id, date))
             return self._one(cur)
         return self._run(q)
+
+    def rescind(self, audit_id: int, portfolio_id: str, date: dt.date,
+                message: str) -> RescindResult:
+        def q(cur):
+            from psycopg.types.json import Jsonb
+
+            cur.execute("SELECT published_by, published_at, publish_source, sent_at "
+                        "FROM trading.live_run_metadata WHERE portfolio_id = %s AND date = %s "
+                        "ORDER BY id FOR UPDATE", (portfolio_id, date))
+            rows = cur.fetchall()
+            sent = [r[3] for r in rows if r[3] is not None]
+            if sent:
+                return RescindResult(SENT, sent_at=max(sent))
+            published = [r for r in rows if r[1] is not None]
+            if not published:
+                return RescindResult(UNPUBLISHED)
+            by, at, source, _ = max(published, key=lambda r: r[1])
+            if any(r[2] != "desk" for r in published):
+                return RescindResult(NOT_DESK, by, at, source)
+            cur.execute("UPDATE trading.live_run_metadata "
+                        "SET published_by = NULL, published_at = NULL, publish_source = NULL "
+                        "WHERE portfolio_id = %s AND date = %s AND published_at IS NOT NULL",
+                        (portfolio_id, date))
+            result = {"rescinded": {"published_by": by, "published_at": at.isoformat()}}
+            cur.execute("UPDATE trading.position_overrides "
+                        "SET status = 'done', result = %s, message = %s, finished_at = now() "
+                        "WHERE id = %s AND status = 'running' AND kind = 'rescind' RETURNING id",
+                        (Jsonb(result), message, audit_id))
+            if cur.fetchone() is None:
+                raise _NotRunning("the rescind row is no longer running")
+            return RescindResult(RESCINDED, by, at, source)
+        try:
+            return self._run(q, autocommit=False)
+        except _NotRunning:
+            return RescindResult(NOT_RUNNING)
 
     def books(self, portfolio_id: str, date: dt.date) -> Books:
         def q(cur):

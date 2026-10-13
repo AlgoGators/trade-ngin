@@ -145,6 +145,18 @@ class DeskServicer(desk_pb2_grpc.DeskServiceServicer):
                             portfolio_id=pid, date=str(day), audit_id=request.audit_id)
         return desk_pb2.CommandReply(status=_COMMAND_STATUS[out.status], message=out.message)
 
+    def Rescind(self, request, context):
+        try:
+            pid = v.portfolio_id(request.portfolio_id)
+            day = v.date(request.date)
+            v.audit_id(request.audit_id)
+        except v.InvalidArgument as exc:
+            self._invalid(context, "Rescind", exc, audit_id=request.audit_id)
+        out = self._command("Rescind", context,
+                            lambda d: d.rescind(request.audit_id, pid, day),
+                            portfolio_id=pid, date=str(day), audit_id=request.audit_id)
+        return desk_pb2.CommandReply(status=_COMMAND_STATUS[out.status], message=out.message)
+
     # -- read ----------------------------------------------------------------------------------
 
     def GetRunStatus(self, request, context):

@@ -1,6 +1,6 @@
 // AlgoGators gRPC API
 // API: desk
-// Version: 1.1.0
+// Version: 1.2.0
 // Compatibility: a client must send x-algogators-api-version: desk=<major>.<minor>.<patch>; the
 // server refuses a different major and accepts any minor/patch (docs/design/rpc.md).
 //
@@ -43,6 +43,8 @@ import "google/protobuf/timestamp.proto";
 //                      and sent_at (9). Publish is the desk's approval ("Approve"): before 09:30
 //                      New York it freezes the day and sends nothing, 09:30-10:00 it also sends,
 //                      after 10:00 (or on a published day) it is refused. No field changed.
+//   1.2.0  2026-10-13  Rescind (contract C8): the desk takes back its own approval before the
+//                      09:30 send. New RPC and message only; no field changed.
 
 service DeskService {
   // A desk save: run the desk loop on the whole qt_proposal and book the result as qt with
@@ -65,6 +67,15 @@ service DeskService {
   // Refused after 10:00 on the book date (the row's created_at decides) and on a published day.
   // An earlier unpublished day refuses it (ruling 29).
   rpc Publish(PublishRequest) returns (CommandReply);
+
+  // Since 1.2.0 (contract C8). Takes back the desk's approval ("Rescind approval" in AlgoLens):
+  // clears published_by, published_at and publish_source on the day's trading.live_run_metadata
+  // rows, so the day takes edits and a new approval again. Only a desk approval
+  // (publish_source 'desk'), only before 09:30 America/New_York on the book date (the time the
+  // engine runs it decides, not the row's created_at) and only while the day is unsent; refused
+  // otherwise. The approval's publish row stays done as history (C4); the rescind row's result
+  // records the approval it took back.
+  rpc Rescind(RescindRequest) returns (CommandReply);
 
   // The model run's state for one book and day, read from trading.live_run_metadata, for the
   // desk pages (AlgoLens #97). Read-only; D18: no desk window opens unless the run succeeded.
@@ -172,6 +183,15 @@ message PublishRequest {
   // position_overrides.id of the 'publish' row AlgoLens wrote before calling (contract section
   // 6). 0 = the newest pending publish row for portfolio_id + date.
   int64 audit_id = 4;
+}
+
+message RescindRequest {
+  string portfolio_id = 1;
+  // "YYYY-MM-DD" (D7).
+  string date = 2;
+  // position_overrides.id of the 'rescind' row AlgoLens wrote before calling (contract section
+  // 6). Required: there is no newest-pending lookup.
+  int64 audit_id = 3;
 }
 
 message CommandReply {
