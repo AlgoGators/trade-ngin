@@ -68,10 +68,7 @@ RUN sed -i '1i\#include <algorithm>' src/core/logger.cpp && \
     sed -i '1i\#include <thread>' tests/order/test_order_manager.cpp && \
     sed -i '1i\#include <thread>' tests/execution/test_execution_engine.cpp && \
     sed -i '1i\#include <cmath>' tests/portfolio/mock_strategy.hpp && \
-    sed -i '1i\#include <thread>' tests/portfolio/test_portfolio_manager.cpp && \
-    sed -i '1i\#include <chrono>' tests/backtesting/test_engine.cpp && \
-    sed -i '1i\#include <thread>' tests/backtesting/test_engine.cpp && \
-    sed -i 's/void BacktestEngineTest::patch_mock_db_to_return_test_data/void patch_mock_db_to_return_test_data/' tests/backtesting/test_engine.cpp
+    sed -i '1i\#include <thread>' tests/portfolio/test_portfolio_manager.cpp
 
 RUN cmake -S /app -B /app/build \
         -DCMAKE_BUILD_TYPE=Release \
