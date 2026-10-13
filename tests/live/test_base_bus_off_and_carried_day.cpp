@@ -387,10 +387,22 @@ TEST_F(CarriedFileTest, ASundayFileCarriesHeldQuantitiesLastMarksAndLastForecast
     ASSERT_GE(lines.size(), 3u);
 
     // The note: no session, carried, not computed.
-    EXPECT_EQ(lines[0].rfind("# Portfolio Value: 502843.64", 0), 0u);
+    EXPECT_EQ(lines[0].rfind("# Portfolio Value (as written: today's costs booked): 502843.64", 0),
+              0u)
+        << lines[0];
     EXPECT_EQ(lines[1].rfind("# NO SESSION: no session on 2026-04-25 (a Saturday).", 0), 0u)
         << "the file does not say that no session occurred: " << lines[1];
     EXPECT_NE(lines[1].find("CARRIED, not computed"), npos);
+    // A stored forecast carries the date of the run that wrote it; that run read the bars through
+    // the day before. The note says so, and the column is named for what it holds.
+    EXPECT_NE(lines[1].find("computed by the run of 2026-04-25 from bars through 2026-04-24"), npos)
+        << lines[1];
+    EXPECT_NE(lines[1].find("sizing_vol and the EMAs are not stored"), npos) << lines[1];
+    EXPECT_EQ(lines[1].find("forecast_from"), npos) << lines[1];
+    const auto names = split_csv(lines[2]);
+    ASSERT_EQ(names.size(), 15u) << lines[2];
+    EXPECT_EQ(names[8], "sizing_vol");
+    EXPECT_EQ(names[14], "forecast_run_date");
 
     // The rows: one per (sleeve, symbol the sleeve holds or last forecast), each with its real
     // quantity, its last mark and its own sleeve's last forecast.
@@ -408,7 +420,8 @@ TEST_F(CarriedFileTest, ASundayFileCarriesHeldQuantitiesLastMarksAndLastForecast
     EXPECT_DOUBLE_EQ(std::stod(fast_c[7]), 4.25) << "FAST's own last forecast, not 0 and not TF's";
     EXPECT_EQ(fast_c[13], "2026-04-24");
     EXPECT_EQ(fast_c[14], "2026-04-25");
-    for (int col = 8; col <= 12; ++col) EXPECT_EQ(fast_c[col], "") << "volatility/EMAs not stored";
+    for (int col = 8; col <= 12; ++col)
+        EXPECT_EQ(fast_c[col], "") << "sizing_vol/EMAs not stored";
     const auto& tf_b = rows.at({"Trend Following", "ZC3B.v.0"});
     EXPECT_DOUBLE_EQ(std::stod(tf_b[2]), 0.0) << "not held: quantity 0";
     EXPECT_DOUBLE_EQ(std::stod(tf_b[3]), 77960.0) << "an unheld symbol still carries its last mark";
@@ -469,6 +482,42 @@ TEST(CarriedDaySource, BothTwinsWriteTheCarriedFileOnADayWithNoSession) {
     }
     ASSERT_EQ(blocks.size(), 2u);
     EXPECT_EQ(blocks[0], blocks[1]) << "the twins' positions-file blocks must be byte-identical";
+}
+
+// The runner's log line for a sleeve's carried forecasts says, as the carried file does, which
+// run computed them and the last bar date that run read. The stored date is a run date: the
+// line used to end "from 2026-05-02", which read as the date of the bars.
+TEST(CarriedForecastsLogLine, NamesTheRunAndTheLastBarDateItReadAsTheCarriedFileDoes) {
+    EXPECT_EQ(carried_forecasts_log_line("TREND_FOLLOWING", 36, "2026-05-02"),
+              "Carried forecasts for TREND_FOLLOWING: 36 computed by the run of 2026-05-02 from "
+              "bars through 2026-05-01");
+    EXPECT_EQ(carried_forecasts_log_line("TREND_FOLLOWING_FAST", 36, "2026-01-01"),
+              "Carried forecasts for TREND_FOLLOWING_FAST: 36 computed by the run of 2026-01-01 "
+              "from bars through 2025-12-31");
+    // The words are the carried file's own.
+    EXPECT_NE(
+        carried_forecasts_log_line("S", 1, "2026-05-02").find(carried_forecast_label("2026-05-02")),
+        npos);
+}
+
+TEST(CarriedForecastsLogLine, ASleeveWithNoStoredSessionSaysSo) {
+    EXPECT_EQ(carried_forecasts_log_line("TREND_FOLLOWING", 0, ""),
+              "Carried forecasts for TREND_FOLLOWING: 0 (no stored session)");
+}
+
+// READS SOURCE (a labelled wiring and twin guard; the line itself is executed above).
+TEST(CarriedForecastsLogLineTwinSourceGuard, BothFuturesRunnersLogTheLineThroughItsFunction) {
+    for (const char* runner : kFuturesRunners) {
+        SCOPED_TRACE(runner);
+        const std::string src = read_source(runner);
+        if (src.empty())
+            GTEST_SKIP() << "runner source not found";
+        EXPECT_NE(src.find("INFO(trade_ngin::carried_forecasts_log_line(\n"
+                           "                    strategy_name, carried.value().forecasts.size(), "
+                           "carried.value().session_date));"),
+                  npos);
+        EXPECT_EQ(src.find("INFO(\"Carried forecasts for \""), npos);
+    }
 }
 
 // =============================================================================================

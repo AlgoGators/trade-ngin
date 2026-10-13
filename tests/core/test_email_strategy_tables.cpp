@@ -53,6 +53,8 @@
 #include <set>
 #include <sstream>
 #include <tuple>
+#include <filesystem>
+#include <fstream>
 #include <utility>
 #include <vector>
 
@@ -282,7 +284,7 @@ TEST_F(EmailStrategyTablesTest, TheSummaryShowsTheExpectedRiskAndTheOneDayVarAnd
               std::string::npos)
         << html;
     // The two lines sit where the old one did: after the count of positions, before the notional.
-    const auto active = html.find("Active Positions:");
+    const auto active = html.find("Sleeve Positions:");
     const auto risk = html.find("Expected Risk:");
     const auto var = html.find("1-Day 95% VaR:");
     const auto notional = html.find("Total Notional:");
@@ -334,6 +336,121 @@ TEST_F(EmailStrategyTablesTest, AnExecutionWhoseContractIsNotInTheRegistryShowsN
     EXPECT_NE(per_strategy.find("<td>n/a</td>"), std::string::npos) << per_strategy;
     EXPECT_NE(per_strategy.find("<strong>Notional:</strong> $0.00"), std::string::npos)
         << per_strategy;
+}
+
+// T-8D-2 R62: the book's executions footer follows the sleeve table's rule. A fill whose contract
+// is not in the registry is a trade with no notional: it used to be added to "Total Notional
+// Traded" at a multiplier of 1 (110.50 here) under a sleeve table that printed n/a. And the
+// footer's cost line says "Today's": "Total Transaction Costs" names the cumulative figure of the
+// snapshot.
+TEST_F(EmailStrategyTablesTest,
+       TheBookExecutionsFooterLeavesAnUnregisteredContractOutAndSaysTodays) {
+    ASSERT_FALSE(InstrumentRegistry::instance().has_instrument("ZN"));
+    const StrategyExecutionsMap book{
+        {"TREND_FOLLOWING", {fill("ZN.v.0", 1.0, 110.5), fill("ZFGOOD.v.0", 2.0, 100.0)}}};
+    const std::string all = sender_.format_strategy_executions_tables(book);
+    EXPECT_NE(all.find("<strong>Total Trades:</strong> 2"), std::string::npos) << all;
+    EXPECT_NE(all.find("<strong>Total Notional Traded:</strong> $10,000.00"), std::string::npos)
+        << all;  // 2 x 100 x 50; the unregistered fill adds nothing
+    EXPECT_EQ(all.find("10,110.50"), std::string::npos) << all;
+    EXPECT_NE(all.find("<strong>Today's Transaction Costs:</strong> $6.00"), std::string::npos)
+        << all;
+    EXPECT_EQ(all.find("Total Transaction Costs"), std::string::npos) << all;
+}
+
+// T-8D-2 R60: one price per row. A sleeve's row is its quantity at the price it prints (the Day
+// T-1 close), and so are the sleeve's notional and the share of it; the book block counts sleeve
+// rows and prints the ACCOUNT's notional and margin when the runner hands them. Two sleeves hold
+// ZFGOOD on opposite sides (2 and -1, close 110, multiplier 50, margin 12,000 a contract): the
+// sleeves' tables read 11,000 and 5,500, the account holds 1 contract: 5,500 and 12,000.
+TEST_F(EmailStrategyTablesTest, ARowIsPricedAtItsCloseAndTheBookBlockPrintsTheAccountsFigures) {
+    const StrategyPositionsMap book{
+        {"TREND_FOLLOWING", {{"ZFGOOD.v.0", held("ZFGOOD.v.0", 2.0, 100.0)}}},
+        {"TREND_FOLLOWING_FAST", {{"ZFGOOD.v.0", held("ZFGOOD.v.0", -1.0, 100.0)}}}};
+    const std::unordered_map<std::string, double> prices{{"ZFGOOD.v.0", 110.0}};
+    const std::map<std::string, double> account{{kReportGrossNotional, 5500.0},
+                                                {"Margin Posted", 12000.0}};
+    const std::string html = sender_.format_strategy_positions_tables(book, prices, account);
+    // each sleeve's row and footer, at the close (at the basis they read 10,000.00 and 5,000.00)
+    EXPECT_NE(html.find("<td>2</td>\n<td>$110.00</td>\n<td>$11,000.00</td>\n<td>100.00%</td>"),
+              std::string::npos)
+        << html;
+    EXPECT_NE(html.find("<td>-1</td>\n<td>$110.00</td>\n<td>$5,500.00</td>\n<td>100.00%</td>"),
+              std::string::npos)
+        << html;
+    EXPECT_NE(
+        html.find("<strong>Notional:</strong> $11,000.00 | <strong>Margin:</strong> $24,000.00"),
+        std::string::npos)
+        << html;
+    EXPECT_EQ(html.find("10,000.00"), std::string::npos) << "a notional at the basis: " << html;
+    // the book block: sleeve rows, then the account's two figures
+    EXPECT_NE(html.find("<div class=\"metric\"><strong>Sleeve Positions:</strong> 2</div>"),
+              std::string::npos)
+        << html;
+    EXPECT_EQ(html.find("Active Positions"), std::string::npos) << html;
+    EXPECT_NE(html.find("<div class=\"metric\"><strong>Total Notional:</strong> $5,500.00</div>\n"
+                        "<div class=\"metric\"><strong>Total Margin Posted:</strong> "
+                        "$12,000.00</div>"),
+              std::string::npos)
+        << html;
+
+    // A caller that hands no account figure gets the sum over the sleeves' tables.
+    const std::string summed = sender_.format_strategy_positions_tables(book, prices, {});
+    EXPECT_NE(summed.find("<strong>Total Notional:</strong> $16,500.00</div>"), std::string::npos)
+        << summed;
+    EXPECT_NE(summed.find("<strong>Total Margin Posted:</strong> $36,000.00</div>"),
+              std::string::npos)
+        << summed;
+}
+
+// The runners are `main()`s: this guard READS SOURCE, to keep the two futures twins in step. The
+// behaviour is executed by the test above and by the gate's email bodies.
+TEST(EmailBookBlockTwinSourceGuard, BothFuturesRunnersHandTheAccountsGrossNotional) {
+    namespace fs = std::filesystem;
+    for (const char* runner : {"apps/strategies/live_portfolio_conservative.cpp",
+                               "apps/strategies/live_portfolio.cpp"}) {
+        fs::path dir = fs::current_path();
+        std::string src;
+        for (int i = 0; i < 8 && !dir.empty(); ++i, dir = dir.parent_path()) {
+            if (!fs::exists(dir / runner))
+                continue;
+            std::ifstream in(dir / runner);
+            std::ostringstream ss;
+            ss << in.rdbuf();
+            src = ss.str();
+            break;
+        }
+        if (src.empty())
+            GTEST_SKIP() << "runner source not found from the test working directory";
+        EXPECT_NE(src.find("strategy_metrics[trade_ngin::kReportGrossNotional] = gross_notional;"),
+                  std::string::npos)
+            << runner;
+    }
+}
+
+// T-8D D1: the margin figure has one label on every book; the rule behind it is named in the
+// sleeve's sub-header, as the kind of instrument the sleeve holds and the equity account mode.
+TEST_F(EmailStrategyTablesTest, ASleeveSubHeaderNamesItsInstrumentKindAndAccountMode) {
+    const std::string futures = sender_.format_single_strategy_table(
+        "TREND_FOLLOWING", {{"ZFGOOD.v.0", held("ZFGOOD.v.0", 2.0, 100.0)}}, {});
+    EXPECT_NE(futures.find(">Trend Following (futures)</h3>"), std::string::npos) << futures;
+
+    const std::string equities = sender_.format_single_strategy_table(
+        "MEAN_REVERSION", {{"ZEPRICED", held("ZEPRICED", 50.0, 50.0)}}, {});
+    EXPECT_NE(equities.find(">Mean Reversion (equities, Reg T account)</h3>"), std::string::npos)
+        << equities;
+
+    const std::string both =
+        sender_.format_single_strategy_table("MIXED",
+                                             {{"ZFGOOD.v.0", held("ZFGOOD.v.0", 2.0, 100.0)},
+                                              {"ZEPRICED", held("ZEPRICED", 50.0, 50.0)}},
+                                             {});
+    EXPECT_NE(both.find(">Mixed (futures; equities, Reg T account)</h3>"), std::string::npos)
+        << both;
+    // The label of the figure itself is the same on each.
+    for (const std::string& table : {futures, equities, both}) {
+        EXPECT_NE(table.find("<strong>Margin:</strong> $"), std::string::npos) << table;
+    }
 }
 
 // A registered contract keeps its notional from the registry's multiplier.
@@ -388,7 +505,8 @@ TEST_F(EmailStrategyTablesTest, RollLegsAreTheirOwnBlockNotTradesAndTheirCostIsI
     const std::string all = sender_.format_strategy_executions_tables(by_sleeve);
     EXPECT_NE(all.find("<strong>Total Trades:</strong> 1<"), std::string::npos) << all;
     EXPECT_NE(all.find("<strong>Total Notional Traded:</strong> $5,150.00"), std::string::npos) << all;
-    EXPECT_NE(all.find("<strong>Total Transaction Costs:</strong> $11.00"), std::string::npos) << all;
+    EXPECT_NE(all.find("<strong>Today's Transaction Costs:</strong> $11.00"), std::string::npos)
+        << all;
     EXPECT_NE(all.find("<strong>Roll Fills:</strong> 2 | <strong>Roll Costs (upper bound):</strong> $8.00"), std::string::npos) << all;
 }
 
@@ -415,7 +533,8 @@ TEST_F(EmailStrategyTablesTest, TheCostTotalsAreTheCostAfterNetting) {
     std::unordered_map<std::string, std::vector<ExecutionReport>> by_sleeve{
         {"TREND_FOLLOWING_FAST", fast}, {"TREND_FOLLOWING", trend}};
     const std::string all = sender_.format_strategy_executions_tables(by_sleeve);
-    EXPECT_NE(all.find("<strong>Total Transaction Costs:</strong> $10.82"), std::string::npos) << all;
+    EXPECT_NE(all.find("<strong>Today's Transaction Costs:</strong> $10.82"), std::string::npos)
+        << all;
 }
 
 // T-NETTING fix round (HD 2026-10-10): the email reconciles at a glance. On a book of more than
@@ -452,10 +571,11 @@ TEST_F(EmailStrategyTablesTest, AFullCrossShowsTheSavingAndIsChargedNothing) {
               std::string::npos)
         << all;
     // the book's footer: rows total, less the adjustment, equals the cost charged
-    EXPECT_NE(all.find("<strong>Total Own Costs:</strong> $3.24</div>\n"
-                       "<div class=\"metric\"><strong>Netting Adjustment:</strong> -$3.24</div>\n"
-                       "<div class=\"metric\"><strong>Total Transaction Costs:</strong> $0.00</div>"),
-              std::string::npos)
+    EXPECT_NE(
+        all.find("<strong>Total Own Costs:</strong> $3.24</div>\n"
+                 "<div class=\"metric\"><strong>Netting Adjustment:</strong> -$3.24</div>\n"
+                 "<div class=\"metric\"><strong>Today's Transaction Costs:</strong> $0.00</div>"),
+        std::string::npos)
         << all;
 }
 
@@ -467,10 +587,11 @@ TEST_F(EmailStrategyTablesTest, APartialOffsetShowsTheSavingAndIsChargedTheAccou
     // 2.40 own, 0.75 after netting: the printed adjustment is their difference, so the row adds up
     // (the stored 1.6428 rounded alone would print 1.64 and leave the row a cent out)
     EXPECT_NE(all.find("<td>$2.40</td>\n<td>-$1.65</td>\n<td>$0.75</td>\n</tr>"), std::string::npos) << all;
-    EXPECT_NE(all.find("<strong>Total Own Costs:</strong> $3.50</div>\n"
-                       "<div class=\"metric\"><strong>Netting Adjustment:</strong> -$2.40</div>\n"
-                       "<div class=\"metric\"><strong>Total Transaction Costs:</strong> $1.10</div>"),
-              std::string::npos)
+    EXPECT_NE(
+        all.find("<strong>Total Own Costs:</strong> $3.50</div>\n"
+                 "<div class=\"metric\"><strong>Netting Adjustment:</strong> -$2.40</div>\n"
+                 "<div class=\"metric\"><strong>Today's Transaction Costs:</strong> $1.10</div>"),
+        std::string::npos)
         << all;
 }
 
@@ -485,10 +606,11 @@ TEST_F(EmailStrategyTablesTest, ASameSidePairShowsTheExtraCostAsAnAddition) {
                        "<strong>Transaction Costs:</strong> $5.41"),
               std::string::npos)
         << all;
-    EXPECT_NE(all.find("<strong>Total Own Costs:</strong> $9.01</div>\n"
-                       "<div class=\"metric\"><strong>Netting Adjustment:</strong> +$1.82</div>\n"
-                       "<div class=\"metric\"><strong>Total Transaction Costs:</strong> $10.83</div>"),
-              std::string::npos)
+    EXPECT_NE(
+        all.find("<strong>Total Own Costs:</strong> $9.01</div>\n"
+                 "<div class=\"metric\"><strong>Netting Adjustment:</strong> +$1.82</div>\n"
+                 "<div class=\"metric\"><strong>Today's Transaction Costs:</strong> $10.83</div>"),
+        std::string::npos)
         << all;
     EXPECT_EQ(all.find("-$"), std::string::npos) << "nothing on a same-side day is a reduction: " << all;
 }
@@ -564,13 +686,14 @@ TEST_F(EmailStrategyTablesTest, ANettedSeveralSleeveDaySaysWhyACentCanDiffer) {
                       {"TREND_FOLLOWING", {netted_row(Side::BUY, 1, 2.4464, 2.4464)}}};
     const std::string all = sender_.format_strategy_executions_tables(day);
     EXPECT_NE(all.find("<td>$2.45</td>\n<td>-$2.45</td>\n<td>$0.00</td>\n</tr>"), std::string::npos) << all;
-    EXPECT_NE(all.find("<strong>Total Own Costs:</strong> $4.89</div>\n"
-                       "<div class=\"metric\"><strong>Netting Adjustment:</strong> -$4.89</div>\n"
-                       "<div class=\"metric\"><strong>Total Transaction Costs:</strong> $0.00</div>\n"
-                       "<div class=\"metric\" style=\"font-size: 12px; color: #666;\">Each figure is "
-                       "rounded to the cent on its own, so rows and totals can differ by a cent.</div>\n"
-                       "</div>\n"),
-              std::string::npos)
+    EXPECT_NE(
+        all.find("<strong>Total Own Costs:</strong> $4.89</div>\n"
+                 "<div class=\"metric\"><strong>Netting Adjustment:</strong> -$4.89</div>\n"
+                 "<div class=\"metric\"><strong>Today's Transaction Costs:</strong> $0.00</div>\n"
+                 "<div class=\"metric\" style=\"font-size: 12px; color: #666;\">Each figure is "
+                 "rounded to the cent on its own, so rows and totals can differ by a cent.</div>\n"
+                 "</div>\n"),
+        std::string::npos)
         << "the exact totals, then the note, then the end of the book's footer: " << all;
     size_t notes = 0;
     for (auto at = all.find("rounded to the cent"); at != std::string::npos;
@@ -624,9 +747,11 @@ TEST_F(EmailStrategyTablesTest, AOneSleeveBooksTablesCarryNoNettingColumnAndNoNe
                        "<strong>Transaction Costs:</strong> $11.00\n"),
               std::string::npos)
         << all;
-    EXPECT_NE(all.find("<div class=\"metric\"><strong>Total Notional Traded:</strong> $5,150.00</div>\n"
-                       "<div class=\"metric\"><strong>Total Transaction Costs:</strong> $11.00</div>\n"),
-              std::string::npos)
+    EXPECT_NE(
+        all.find(
+            "<div class=\"metric\"><strong>Total Notional Traded:</strong> $5,150.00</div>\n"
+            "<div class=\"metric\"><strong>Today's Transaction Costs:</strong> $11.00</div>\n"),
+        std::string::npos)
         << all;
     const std::string single = sender_.format_executions_table(execs);
     EXPECT_EQ(single.find("etting"), std::string::npos) << single;

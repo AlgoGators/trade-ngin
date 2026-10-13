@@ -422,7 +422,10 @@ TEST(C7bRunnerSource, BothTwinsSumTheSleevesOfACarriedBookAndKeyYesterdaysEmailR
         EXPECT_EQ(src.find("yesterday_positions_finalized[symbol] = pos;"), npos)
             << "the email's yesterday map is keyed by symbol: the last sleeve wins";
         EXPECT_NE(src.find("yesterday_positions_finalized[{strategy_name, symbol}] = pos;"), npos);
-        EXPECT_NE(src.find("\"daily_unrealized_pnl, last_update, strategy_name \""), npos)
+        // The query is yesterday_positions_report_query (live/report_queries.hpp); its last
+        // argument asks for the sleeve name as the seventh column (executed in
+        // tests/live/test_report_queries.cpp).
+        EXPECT_NE(src.find("yesterday_date_for_email, true);"), npos)
             << "the query must read the sleeve";
     }
     ASSERT_EQ(carry_blocks.size(), 2u);

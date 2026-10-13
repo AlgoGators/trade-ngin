@@ -14,7 +14,10 @@
 
 #include <chrono>
 #include <cmath>
+#include <filesystem>
+#include <fstream>
 #include <map>
+#include <sstream>
 #include <memory>
 #include <set>
 #include <string>
@@ -26,6 +29,7 @@
 #include "cost_basis_test_helpers.hpp"
 #include "trade_ngin/core/logger.hpp"
 #include "trade_ngin/core/time_utils.hpp"
+#include "trade_ngin/data/backtest_position_row.hpp"
 #include "trade_ngin/data/listing_dates.hpp"
 #include "trade_ngin/data/market_data_bus.hpp"
 #include "trade_ngin/instruments/futures.hpp"
@@ -225,6 +229,7 @@ protected:
         cc.store_trade_details = store;
         cc.portfolio_id = "STAT_GRID_TEST";
         cc.csv_output_path = temp_csv_dir("stat_grid_" + std::to_string(n));
+        csv_dir_ = cc.csv_output_path;
         cc.statistics_sessions_per_year = sessions_per_year;
         coord_ = std::make_unique<BacktestCoordinator>(db_, &InstrumentRegistry::instance(), cc);
         EXPECT_TRUE(coord_->initialize().is_ok());
@@ -259,6 +264,31 @@ protected:
     std::map<std::string, std::map<int, double>> targets_ = {
         {kHeld, {{0, 100.0}}}};  // held from the first cycle to the end
 
+    // The data lines of one of the run's own CSV files, each split into its cells. The run
+    // writes into its portfolio's directory under the configured path.
+    std::vector<std::vector<std::string>> csv_rows(const std::string& file) const {
+        std::ifstream in(std::filesystem::path(csv_dir_) / "STAT_GRID_TEST" / file);
+        std::vector<std::vector<std::string>> out;
+        std::string line;
+        bool header = true;
+        while (std::getline(in, line)) {
+            if (header) {
+                header = false;
+                continue;
+            }
+            std::vector<std::string> cells;
+            std::string cell;
+            std::istringstream ss(line);
+            while (std::getline(ss, cell, ','))
+                cells.push_back(cell);
+            if (!line.empty() && line.back() == ',')
+                cells.push_back("");
+            out.push_back(cells);
+        }
+        return out;
+    }
+
+    std::string csv_dir_;
     std::shared_ptr<ServingDb> db_;
     std::unique_ptr<BacktestCoordinator> coord_;
     std::shared_ptr<PortfolioManager> pm_;
@@ -893,4 +923,111 @@ TEST_F(BacktestStoredRunRefusal, ACountThatCannotBeReadDoesNotRefuseTheRun) {
     ASSERT_TRUE(result.is_ok()) << result.error()->what();
     EXPECT_EQ(db->count_queries.size(), 1u) << "the first count failed; the second is not asked";
     EXPECT_GT(db->call_count("store_backtest_positions"), 0);
+}
+
+// T-8D-2 R67, executed through run_portfolio: position_changes.csv of a whole run, against the
+// position rows the run hands the database. The sleeve opens 100 contracts, cuts to 60 and closes.
+// Each change is one row of the sleeve: the quantity after the change, the price the day's fill
+// traded at (the run's own execution report) and the realized P&L of the row the run stores for
+// that sleeve, symbol and date (kept by the writer's own rule, backtest_position_row_is_stored).
+
+namespace {
+
+// A storing database that keeps the rows it is handed, as the writer would store them.
+class KeepsPositionRowsDb : public StoredRunDb {
+public:
+    using StoredRunDb::StoredRunDb;
+
+    struct Stored {
+        double quantity{0.0};
+        double realized{0.0};
+    };
+    std::map<std::pair<std::string, std::string>, Stored> stored;  // (date, symbol)
+
+    Result<void> store_backtest_positions(
+        const std::vector<Position>& positions, const std::string& run_id,
+        const std::string& portfolio_id, const std::string& table_name, bool keep_closed_rows,
+        const std::unordered_set<std::string>& no_bar_symbols) override {
+        for (const auto& pos : positions) {
+            const double quantity = static_cast<double>(pos.quantity);
+            const double realized = static_cast<double>(pos.realized_pnl);
+            if (!backtest_position_row_is_stored(quantity, realized, keep_closed_rows))
+                continue;
+            stored[{core::format_utc_date(pos.last_update), pos.symbol}] = {quantity, realized};
+        }
+        return StoredRunDb::store_backtest_positions(positions, run_id, portfolio_id, table_name,
+                                                     keep_closed_rows, no_bar_symbols);
+    }
+};
+
+}  // namespace
+
+TEST_F(BacktestStatisticsGridRun,
+       ThePositionChangesFileCarriesTheFillPriceAndTheStoredRowsRealized) {
+    auto db = std::make_shared<KeepsPositionRowsDb>("mock://testdb");
+    ASSERT_TRUE(db->connect().is_ok());
+    db_ = db;
+    targets_ = {{kHeld, {{0, 100.0}, {2, 60.0}, {4, 0.0}}}};
+    const auto result = run(AssetClass::FUTURES, kFuturesK, /*store=*/true);
+    ASSERT_TRUE(result.is_ok()) << result.error()->what();
+
+    std::map<std::string, double> fill_price_on;  // the run's fills of the held symbol, by date
+    for (const auto& e : result.value().executions) {
+        if (e.symbol == kHeld) {
+            fill_price_on[core::format_utc_date(e.fill_time)] = static_cast<double>(e.fill_price);
+        }
+    }
+    ASSERT_EQ(fill_price_on.size(), 3u) << "the open, the cut and the close";
+
+    const auto changes = csv_rows("position_changes.csv");
+    ASSERT_EQ(changes.size(), 3u);
+    const double quantities[] = {100.0, 60.0, 0.0};
+    size_t i = 0;
+    size_t with_realized = 0;
+    for (const auto& [date, fill_price] : fill_price_on) {
+        const auto& row = changes[i];
+        ASSERT_EQ(row.size(), 7u);
+        EXPECT_EQ(row[0], date) << "the change is dated the UTC date its fill is";
+        EXPECT_EQ(row[1], "STAT_GRID_S");
+        EXPECT_EQ(row[2], kHeld);
+        EXPECT_DOUBLE_EQ(std::stod(row[3]), quantities[i]);
+        ASSERT_FALSE(row[5].empty()) << "no fill price on " << date;
+        EXPECT_NEAR(std::stod(row[5]), fill_price, 1e-3) << date;
+        if (i == 0) {
+            EXPECT_EQ(row[4], "") << "a new position has no previous mark";
+        } else {
+            EXPECT_FALSE(row[4].empty());
+        }
+        // The realized P&L is the stored row's of that date, and absent when no row is stored.
+        const auto stored_row = db->stored.find({date, kHeld});
+        if (stored_row == db->stored.end()) {
+            EXPECT_EQ(row[6], "") << "no row is stored for " << date;
+        } else {
+            ASSERT_FALSE(row[6].empty()) << "a row is stored for " << date;
+            EXPECT_DOUBLE_EQ(stored_row->second.quantity, quantities[i]);
+            EXPECT_NEAR(std::stod(row[6]), stored_row->second.realized,
+                        std::abs(stored_row->second.realized) * 1e-5 + 1e-9)
+                << date;
+            if (stored_row->second.realized != 0.0)
+                ++with_realized;
+        }
+        ++i;
+    }
+    EXPECT_GE(with_realized, 1u) << "no change row of the run carries a realized P&L";
+
+    // The run's other files, in the same directory: a row a bar date, dated by the bar's UTC date
+    // (the test's bars are stamped at midnight UTC).
+    std::set<std::string> bar_dates;
+    for (const auto& r : rows_)
+        bar_dates.insert(core::format_utc_date(row_time(r)));
+    const auto curve = csv_rows("equity_curve.csv");
+    const auto summary = csv_rows("portfolio_summary.csv");
+    ASSERT_FALSE(curve.empty());
+    ASSERT_EQ(summary.size(), curve.size());
+    for (size_t k = 0; k < curve.size(); ++k) {
+        EXPECT_EQ(bar_dates.count(curve[k][0]), 1u) << curve[k][0] << " is no bar's UTC date";
+        ASSERT_EQ(summary[k].size(), 4u);
+        EXPECT_EQ(summary[k][0], curve[k][0]);
+        EXPECT_EQ(summary[k][1], curve[k][1]) << "the summary's portfolio value is the curve's";
+    }
 }

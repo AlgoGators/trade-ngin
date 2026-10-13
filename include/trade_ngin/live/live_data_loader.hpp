@@ -22,6 +22,8 @@
 
 #pragma once
 
+#include <algorithm>
+#include <map>
 #include <memory>
 #include <optional>
 #include <string>
@@ -82,6 +84,37 @@ struct LiveResultsRow {
     int losing_days = 0;
     int total_days = 0;
 };
+
+/**
+ * @brief The report's statistics and return lines from a day's stored row (T-8D-2 R58, R61): the
+ *        metric names the daily report reads, each from its stored column. The statistics are the
+ *        settled series' (they run through the day before the row's date); the cumulative return
+ *        is the row's own level. Flat days are total less winning less losing.
+ */
+inline std::map<std::string, double> statistics_report_metrics(const LiveResultsRow& row) {
+    return {
+        {"Total Cumulative Return", row.total_cumulative_return},
+        {"Total Annualized Return", row.total_annualized_return},
+        {"Sharpe Ratio", row.sharpe_ratio},
+        {"Sortino Ratio", row.sortino_ratio},
+        {"Max Drawdown", row.max_drawdown},
+        {"Volatility", row.volatility},
+        {"Win Rate", row.win_rate},
+        {"Average Win", row.avg_win},
+        {"Average Loss", row.avg_loss},
+        {"Profit Factor", row.profit_factor},
+        {"Best Day", row.best_day},
+        {"Worst Day", row.worst_day},
+        {"Downside Deviation", row.downside_deviation},
+        {"Gross Profit", row.gross_profit},
+        {"Gross Loss", row.gross_loss},
+        {"Winning Days", static_cast<double>(row.winning_days)},
+        {"Losing Days", static_cast<double>(row.losing_days)},
+        {"Flat Days",
+         static_cast<double>(std::max(0, row.total_days - row.winning_days - row.losing_days))},
+        {"Total Days", static_cast<double>(row.total_days)},
+    };
+}
 
 /**
  * @brief Structure for previous day's data

@@ -1,7 +1,10 @@
 # Set test source files
 set(TEST_SOURCES
+    core/test_chart_series.cpp
     core/test_decimal.cpp
     core/test_email_chart_strategy_id.cpp
+    core/test_email_fixtures.cpp
+    core/test_report_settled_marks.cpp
     core/test_time_utils_parse.cpp
     core/test_timed_process.cpp
     core/test_result.cpp
@@ -16,6 +19,8 @@ set(TEST_SOURCES
     core/test_email_positions_table.cpp
     core/test_email_strategy_tables.cpp
     core/test_report_risk_lines.cpp
+    core/test_report_leverage_console.cpp
+    core/test_report_over_limit.cpp
     core/test_stat_quality.cpp
     core/test_run_id_generator.cpp
     core/test_config_loader.cpp
@@ -223,6 +228,9 @@ set(TEST_SOURCES
     live/test_live_data_loader.cpp
     live/test_live_results_roll_cost_columns.cpp
     live/test_csv_exporter.cpp
+    live/test_live_csv_files.cpp
+    live/test_console_labels.cpp
+    live/test_report_queries.cpp
     strategy/test_base_strategy.cpp
     strategy/test_trend_following.cpp
     strategy/test_regime_detector.cpp

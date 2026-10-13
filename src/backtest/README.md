@@ -27,7 +27,7 @@ src/backtest/
 ├── backtest_pnl_manager.cpp          # daily P&L
 ├── backtest_price_manager.cpp        # price history per symbol
 ├── backtest_metrics_calculator.cpp   # the metrics below
-├── backtest_csv_exporter.cpp         # CSV output under apps/backtest/results
+├── backtest_csv_exporter.cpp         # CSV output under apps/backtest/results/<portfolio_id>
 ├── equity_cost_warmup.cpp            # equity cost model warm-up
 ├── slippage_model.cpp                # the slippage model classes
 └── transaction_cost_analysis.cpp     # cost analysis helpers
