@@ -666,36 +666,6 @@ MarketRegimePipeline::map_gmm(SleeveId sleeve, const Eigen::VectorXd& p_cluster)
 }
 
 // ============================================================================
-// Aggregation
-// ============================================================================
-
-Eigen::Matrix<double, kNumMarketRegimes, 1>
-MarketRegimePipeline::aggregate(
-    SleeveId sleeve,
-    const Eigen::Matrix<double, kNumMarketRegimes, 1>& p_hmm,
-    const Eigen::Matrix<double, kNumMarketRegimes, 1>& p_msar,
-    const Eigen::Matrix<double, kNumMarketRegimes, 1>& p_garch,
-    const Eigen::Matrix<double, kNumMarketRegimes, 1>& p_gmm) const
-{
-    int s = static_cast<int>(sleeve);
-    const auto& sc = config_.sleeve_configs[s];
-
-    Eigen::Matrix<double, kNumMarketRegimes, 1> raw =
-        sc.w_hmm   * p_hmm +
-        sc.w_msar  * p_msar +
-        sc.w_garch * p_garch +
-        sc.w_gmm   * p_gmm;
-
-    for (int r = 0; r < kNumMarketRegimes; ++r)
-        raw(r) = std::max(0.0, raw(r));
-    double sum = raw.sum();
-    if (sum > kEps) raw /= sum;
-    else raw.setConstant(1.0 / kNumMarketRegimes);
-
-    return raw;
-}
-
-// ============================================================================
 // A7 EWMA smoothing — single constant λ per PDF:
 //   p_final = λ · p_raw + (1 - λ) · p_final_{t-1}
 // ============================================================================

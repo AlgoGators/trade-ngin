@@ -410,13 +410,6 @@ private:
     Eigen::Matrix<double, kNumMarketRegimes, 1>
     map_gmm(SleeveId sleeve, const Eigen::VectorXd& p_cluster) const;
 
-    // ── Aggregation ─────────────────────────────────────────────────────────
-    Eigen::Matrix<double, kNumMarketRegimes, 1>
-    aggregate(SleeveId sleeve,
-              const Eigen::Matrix<double, kNumMarketRegimes, 1>& p_hmm,
-              const Eigen::Matrix<double, kNumMarketRegimes, 1>& p_msar,
-              const Eigen::Matrix<double, kNumMarketRegimes, 1>& p_garch,
-              const Eigen::Matrix<double, kNumMarketRegimes, 1>& p_gmm) const;
 
     // ── A7 EWMA smoothing (PDF constant λ) ──────────────────────────────────
     Eigen::Matrix<double, kNumMarketRegimes, 1>
