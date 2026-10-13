@@ -1317,75 +1317,78 @@ TEST(EmailConfigKey, TheTemplatesDoNotNameTheDeletedKey) {
     }
 }
 
-// A database that answers the rollover notice's one query (the held symbols' contract metadata)
-// with the rows it is given, and nothing else.
-class ContractMonthsDatabase : public trade_ngin::testing::MockPostgresDatabase {
+// A database that answers the Symbols Reference query with the metadata rows it is given (one
+// JSON text per row, as the query builds it), and nothing else.
+class SymbolsDatabase : public trade_ngin::testing::MockPostgresDatabase {
 public:
-    struct Row {
-        std::string databento, ib, months;
-    };
-    explicit ContractMonthsDatabase(std::vector<Row> rows)
-        : MockPostgresDatabase("mock://contract-months"), rows_(std::move(rows)) {}
+    explicit SymbolsDatabase(std::vector<std::string> json_rows)
+        : MockPostgresDatabase("mock://symbols"), rows_(std::move(json_rows)) {}
     Result<std::shared_ptr<arrow::Table>> execute_query(const std::string& query) override {
         if (query.find("metadata.contract_metadata") == std::string::npos) {
             return make_error<std::shared_ptr<arrow::Table>>(ErrorCode::DATABASE_ERROR,
                                                              "not asked");
         }
-        arrow::StringBuilder databento, ib, months;
-        for (const auto& row : rows_) {
-            (void)databento.Append(row.databento);
-            (void)ib.Append(row.ib);
-            (void)months.Append(row.months);
-        }
-        std::shared_ptr<arrow::Array> a, b, c;
-        (void)databento.Finish(&a);
-        (void)ib.Finish(&b);
-        (void)months.Finish(&c);
+        arrow::StringBuilder symbol;
+        for (const auto& row : rows_) (void)symbol.Append(row);
+        std::shared_ptr<arrow::Array> a;
+        (void)symbol.Finish(&a);
         return Result<std::shared_ptr<arrow::Table>>(
-            arrow::Table::Make(arrow::schema({arrow::field("Databento Symbol", arrow::utf8()),
-                                              arrow::field("IB Symbol", arrow::utf8()),
-                                              arrow::field("Contract Months", arrow::utf8())}),
-                               {a, b, c}));
+            arrow::Table::Make(arrow::schema({arrow::field("symbol", arrow::utf8())}), {a}));
     }
 
 private:
-    std::vector<Row> rows_;
+    std::vector<std::string> rows_;
 };
 
-// Since migration 019, HO and NG list "All Months" and fall in the monthly branch of the rollover
-// notice, which took the contract of the run date's own month as the front. An energy contract
-// expires about the 20th of the month BEFORE its contract month, so that expiry was always behind
-// the run date and the notice never printed. 2026-04-10: the front is the May contract (K6),
-// which expires on 2026-04-22 (three business days before Saturday 04-25), twelve days ahead.
-TEST_F(EmailFixture, AnEnergyContractWithinFifteenDaysOfItsExpiryIsInTheRolloverNotice) {
-    auto db = std::make_shared<ContractMonthsDatabase>(std::vector<ContractMonthsDatabase::Row>{
-        {"HO", "HO", "All Months"}, {"NG", "NG", "All Months"}, {"MBT", "MBT", "All Months"}});
-    const std::unordered_map<std::string, Position> held = {
-        {"HO.v.0", row("HO.v.0", 1.0, 2.5)},
-        {"NG.v.0", row("NG.v.0", -1.0, 3.1)},
-        {"MBT.v.0", row("MBT.v.0", 1.0, 77740.0)}};
-    const std::string notice = sender_.format_rollover_warning(held, "2026-04-10", db, "");
-    EXPECT_NE(notice.find("<li><strong>HO:</strong> Currently holding <strong>HOK6</strong>"),
-              std::string::npos)
-        << notice;
-    EXPECT_NE(notice.find("Switch to <strong>HOM6</strong>"), std::string::npos) << notice;
-    EXPECT_NE(notice.find("<li><strong>NG:</strong> Currently holding <strong>NGK6</strong>"),
-              std::string::npos)
-        << notice;
-    // a monthly contract outside the energy rule is as it was: the April contract, third Friday
-    EXPECT_NE(notice.find("<li><strong>MBT:</strong> Currently holding <strong>MBTJ6</strong>"),
-              std::string::npos)
-        << notice;
-    // after that expiry the front is the June contract, about the 20th of May: no notice yet
-    const std::string later = sender_.format_rollover_warning(held, "2026-04-24", db, "");
-    EXPECT_EQ(later.find("<strong>HO:</strong>"), std::string::npos) << later;
-    EXPECT_EQ(later.find("<strong>NG:</strong>"), std::string::npos) << later;
-    // December: the front is the January contract of the next year
-    const std::string december = sender_.format_rollover_warning(held, "2026-12-10", db, "");
-    EXPECT_NE(december.find("<strong>HO:</strong> Currently holding <strong>HOF7</strong>"),
-              std::string::npos)
-        << december;
-    EXPECT_NE(december.find("Switch to <strong>HOG7</strong>"), std::string::npos) << december;
+std::string metadata_json(const std::string& ib, const std::string& name,
+                          const std::string& months) {
+    return "{\"db\":\"" + ib + "\",\"ib\":\"" + ib + "\",\"name\":\"" + name +
+           "\",\"months\":\"" + months + "\"}";
+}
+
+// T-EMAIL Q10 (HD): the Symbols Reference lists each contract's months and nothing about a front
+// month, and the report carries no rollover notice. The month came from the calendar, not from the
+// position, and was wrong for HO, NG and RB.
+TEST_F(EmailFixture, TheSymbolsReferenceHasNoFrontMonthColumnAndTheReportNoRolloverNotice) {
+    auto db = std::make_shared<SymbolsDatabase>(std::vector<std::string>{
+        metadata_json("HO", "Heating Oil", "All Months"), metadata_json("ZS", "Soybeans", "FHKNQUX")});
+    const std::unordered_map<std::string, Position> held = {{"HO.v.0", row("HO.v.0", 1.0, 2.5)},
+                                                             {"ZS.v.0", row("ZS.v.0", 1.0, 1000.0)}};
+    const std::string table = sender_.format_symbols_table_for_positions(held, db, "2026-04-10");
+    EXPECT_EQ(table.find("Front Month"), std::string::npos) << table;
+    EXPECT_EQ(table.find("HOK6"), std::string::npos) << table;
+    EXPECT_NE(table.find("<th>Contract Months</th></tr>"), std::string::npos) << table;
+    EXPECT_NE(table.find("<td>Heating Oil</td>"), std::string::npos) << table;
+    EXPECT_EQ(conservative_body().find("Rollover"), std::string::npos);
+    EXPECT_EQ(base_body().find("Rollover"), std::string::npos);
+}
+
+// N6: the note about a contract with no metadata sits after the table, not inside it.
+TEST_F(EmailFixture, TheNoteAboutMissingMetadataIsOutsideTheTable) {
+    auto db = std::make_shared<SymbolsDatabase>(
+        std::vector<std::string>{metadata_json("HO", "Heating Oil", "All Months")});
+    const std::unordered_map<std::string, Position> held = {{"HO.v.0", row("HO.v.0", 1.0, 2.5)},
+                                                             {"QQ.v.0", row("QQ.v.0", 1.0, 5.0)}};
+    const std::string table = sender_.format_symbols_table_for_positions(held, db, "2026-04-10");
+    const auto note = table.find("metadata not found for: QQ");
+    const auto close = table.find("</table>");
+    ASSERT_NE(note, std::string::npos) << table;
+    ASSERT_NE(close, std::string::npos) << table;
+    EXPECT_GT(note, close) << "the note is inside the table";
+}
+
+// N7: a metadata row that cannot be read is not dropped silently: its cells print empty and the
+// row stays, so the table is as long as the metadata.
+TEST_F(EmailFixture, AMetadataRowThatCannotBeReadStillGetsItsRow) {
+    auto db = std::make_shared<SymbolsDatabase>(std::vector<std::string>{
+        metadata_json("HO", "Heating Oil", "All Months"), "{not json"});
+    const std::unordered_map<std::string, Position> held = {{"HO.v.0", row("HO.v.0", 1.0, 2.5)}};
+    const std::string table = sender_.format_symbols_table_for_positions(held, db, "2026-04-10");
+    std::size_t rows = 0;
+    for (auto at = table.find("<tr>\n<td>"); at != std::string::npos;
+         at = table.find("<tr>\n<td>", at + 1))
+        ++rows;
+    EXPECT_EQ(rows, 2u) << table;
 }
 
 // The same inputs render the same bytes twice: the body carries no clock.
