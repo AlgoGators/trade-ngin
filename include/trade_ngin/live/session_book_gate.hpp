@@ -2,13 +2,17 @@
 #pragma once
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <ctime>
+#include <iomanip>
 #include <map>
-#include <unordered_set>
+#include <optional>
 #include <set>
+#include <sstream>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 #include "trade_ngin/core/error.hpp"
@@ -182,6 +186,23 @@ inline std::string local_ymd(const Timestamp& t) {
     char buf[11];
     std::strftime(buf, sizeof(buf), "%Y-%m-%d", &tm);
     return buf;
+}
+
+/**
+ * @brief The run date a live futures runner was given on its command line, as the instant the
+ *        runner stamps it: `YYYY-MM-DD` read by std::mktime as the host's LOCAL midnight, with
+ *        tm_isdst left 0, so in the host's standard time all year (05:00Z on a New York host in
+ *        April as in January, 00:00Z on a UTC host). Empty when the argument is not a date. This
+ *        is the twins' own parse, moved here unchanged so that a test executes it (DATE-frame
+ *        option (a), E2-F42 / M-08). The date frame itself is not touched here.
+ */
+inline std::optional<Timestamp> run_date_at_local_midnight(const std::string& arg) {
+    std::tm tm = {};
+    std::istringstream ss(arg);
+    ss >> std::get_time(&tm, "%Y-%m-%d");
+    if (ss.fail())
+        return std::nullopt;
+    return std::chrono::system_clock::from_time_t(std::mktime(&tm));
 }
 
 /**

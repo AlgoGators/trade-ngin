@@ -119,11 +119,13 @@ int main(int argc, char* argv[]) {
             // on the bar-window boundary, a decision on the stored time-of-day contract
             // (E2-F22's lineage), and a plan for the equity_curve key, and its own A/B.
             // Reverted in this batch and reported; see the T-2 report, item A4.
-            std::tm tm = {};
-            std::istringstream ss(arg);
-            ss >> std::get_time(&tm, "%Y-%m-%d");
-            if (!ss.fail()) {
-                target_date = std::chrono::system_clock::from_time_t(std::mktime(&tm));
+            //
+            // DATE-frame option (a): the stamp is kept and this is its frame. An explicit run date
+            // is local midnight of the host in its standard time (tm_isdst stays 0): 05:00Z all
+            // year on the production frame (America/New_York), 00:00Z on a UTC host. Pinned by
+            // RunDateFrame.* in tests/live/test_session_book_gate.cpp.
+            if (const auto run_date = run_date_at_local_midnight(arg)) {
+                target_date = *run_date;
                 use_override_date = true;
                 std::cout << "Running for historical date: " << arg << std::endl;
             } else if (arg != "--send-email") {

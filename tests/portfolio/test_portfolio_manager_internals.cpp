@@ -12,6 +12,7 @@
 #include <map>
 #include <memory>
 #include <set>
+#include <sstream>
 #include <thread>
 #include "../core/test_base.hpp"
 #include "../data/test_db_utils.hpp"
@@ -648,4 +649,39 @@ TEST_F(PortfolioManagerInternalsTest, AStoppedSleeveContributesAnEmptyTargetMap)
     }
     // The running sleeve is untouched by the clear.
     EXPECT_TRUE(manager_->strategies_.at(a.id).target_positions.count("AAPL"));
+}
+
+// The WARN line of the same skip. It used to say the stopped sleeve's target positions "are not
+// read", which is half of what happens: the targets the manager holds for the sleeve are emptied
+// (the test above). The line an operator reads must say that. Executes the skip and reads the
+// line it logs.
+TEST_F(PortfolioManagerInternalsTest, TheStoppedSleeveWarningSaysItsTargetsAreCleared) {
+    auto a = make_strategy("STOPPED_WARN", {"AAPL"});
+    ASSERT_TRUE(manager_->add_strategy(a.strat, 0.3).is_ok());
+    const auto t0 = std::chrono::system_clock::now() - std::chrono::hours(24 * 300);
+    ASSERT_TRUE(manager_->process_market_data(bars("AAPL", 300, t0)).is_ok());
+    ASSERT_TRUE(a.strat->stop().is_ok());
+
+    LoggerConfig lc;
+    lc.destination = LogDestination::CONSOLE;
+    lc.min_level = LogLevel::WARNING;
+    lc.include_timestamp = false;
+    Logger::instance().initialize(lc);
+    ::testing::internal::CaptureStdout();
+    const bool ok =
+        manager_->process_market_data(bars("AAPL", 5, t0 + std::chrono::hours(24 * 300))).is_ok();
+    const std::string out = ::testing::internal::GetCapturedStdout();
+    ASSERT_TRUE(ok) << out;
+
+    std::string line;
+    std::istringstream lines(out);
+    for (std::string l; std::getline(lines, l);) {
+        if (l.find("Strategy " + a.id + " is not RUNNING") != std::string::npos) line = l;
+    }
+    ASSERT_FALSE(line.empty()) << "the skip logged no line naming the stopped sleeve:\n" << out;
+    EXPECT_NE(line.find("[WARN"), std::string::npos) << line;
+    EXPECT_EQ(line.find("not read"), std::string::npos)
+        << "the line still claims the targets are only not read: " << line;
+    EXPECT_NE(line.find("cleared"), std::string::npos)
+        << "the line does not say the sleeve's targets are cleared: " << line;
 }

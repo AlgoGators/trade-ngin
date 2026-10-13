@@ -37,7 +37,6 @@ The build produces the library `trade_ngin`, one test executable, one benchmark 
 | `bt_portfolio` | `apps/backtest/bt_portfolio.cpp` | BASE backtest |
 | `bt_equity_mr` | `apps/backtest/bt_equity_mean_reversion.cpp` | equity backtest |
 | `bt_equity_validation` | `apps/backtest/bt_equity_validation.cpp` | equity validation run |
-| `bt_transaction_cost_report` | `apps/backtest/bt_transaction_cost_report.cpp` | cost report |
 
 A Release build puts them in `build/bin/Release/`.
 

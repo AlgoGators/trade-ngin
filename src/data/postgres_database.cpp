@@ -9,6 +9,7 @@
 #include <sstream>
 #include "trade_ngin/core/state_manager.hpp"
 #include "trade_ngin/core/time_utils.hpp"
+#include "trade_ngin/data/day_signal_replace.hpp"
 #include "trade_ngin/data/market_data_utils.hpp"
 #include "trade_ngin/transaction_cost/netting.hpp"
 
@@ -89,6 +90,18 @@ Result<void> PostgresDatabase::connect() {
         if (!connection_->is_open()) {
             return make_error<void>(ErrorCode::CONNECTION_ERROR,
                                     "Failed to open database connection", "PostgresDatabase");
+        }
+
+        // Pin the session to UTC. Without it the session takes the database's or
+        // the role's default, or the client's PGTZ, and every timestamptz this
+        // class reads as text comes back in that zone. A session that cannot be
+        // pinned is not handed out.
+        try {
+            pqxx::nontransaction pin(*connection_);
+            pin.exec(session_time_zone_statement());
+        } catch (...) {
+            connection_.reset();
+            throw;
         }
 
         // Generate a unique ID for this connection instance
@@ -770,26 +783,69 @@ Result<void> PostgresDatabase::store_signals(const std::unordered_map<std::strin
             return strategy_validation;
         }
 
-        for (const auto& [symbol, signal] : signals) {
-            // Validate signal data
-            auto signal_validation = validate_signal_data(symbol, signal);
-            if (signal_validation.is_error()) {
-                return signal_validation;
+        // OPT-N5/N6: the sleeve's rows of the day are replaced as a set, on this one transaction
+        // (data/day_signal_replace.hpp): the sweep of its rows of the day this run does not
+        // write, then this run's rows. A re-run of a date leaves no row of a symbol it no longer
+        // produces, a row it writes again keeps its id and created_at, and nothing is committed
+        // unless every row was stored. A first run of a day sweeps nothing.
+        struct PgTxn {
+            const PostgresDatabase& db;
+            pqxx::work& txn;
+            const std::string& strategy_id;
+            const std::string& strategy_name;
+            const std::string& portfolio_id;
+            const std::string& table_name;
+            const std::string stamp;
+            size_t swept{0};
+            void sweep(const std::string& id, const std::string& sleeve,
+                       const std::string& portfolio, const std::string& day,
+                       const std::vector<std::string>& symbols) {
+                swept = static_cast<size_t>(
+                    txn.exec(day_signal_sweep_statement(table_name),
+                             pqxx::params{portfolio, id, sleeve, day, symbols, stamp})
+                        .affected_rows());
             }
+            Result<void> store(const std::string& symbol, double signal) {
+                // Validate signal data
+                auto signal_validation = db.validate_signal_data(symbol, signal);
+                if (signal_validation.is_error()) {
+                    return signal_validation;
+                }
 
-            std::string query =
-                "INSERT INTO " + table_name +
-                " (strategy_id, symbol, signal_value, timestamp, portfolio_id, strategy_name) "
-                "VALUES "
-                "($1, $2, $3, $4, $5, $6) "
-                "ON CONFLICT (portfolio_id, strategy_id, strategy_name, symbol, timestamp) "
-                "DO UPDATE SET signal_value = EXCLUDED.signal_value";
+                std::string query =
+                    "INSERT INTO " + table_name +
+                    " (strategy_id, symbol, signal_value, timestamp, portfolio_id, strategy_name) "
+                    "VALUES "
+                    "($1, $2, $3, $4, $5, $6) "
+                    "ON CONFLICT (portfolio_id, strategy_id, strategy_name, symbol, timestamp) "
+                    "DO UPDATE SET signal_value = EXCLUDED.signal_value";
 
-            txn.exec(query, pqxx::params{strategy_id, symbol, signal, format_timestamp(timestamp),
-                            portfolio_id, strategy_name});
+                txn.exec(query, pqxx::params{strategy_id, symbol, signal, stamp, portfolio_id,
+                                             strategy_name});
+                return Result<void>();
+            }
+            void commit() {
+                txn.commit();
+            }
+        };
+        PgTxn pg{*this,
+                 txn,
+                 strategy_id,
+                 strategy_name,
+                 portfolio_id,
+                 table_name,
+                 format_timestamp(timestamp),
+                 0};
+        const std::string day = trade_ngin::core::format_utc_date(timestamp);
+        auto replaced =
+            replace_day_signals_in(pg, signals, strategy_id, strategy_name, portfolio_id, day);
+        if (replaced.is_error()) {
+            return replaced;
         }
-
-        txn.commit();
+        if (pg.swept > 0) {
+            INFO("Removed " + std::to_string(pg.swept) + " stale signal row(s) of " + day +
+                 " for strategy: " + strategy_name + " (portfolio: " + portfolio_id + ")");
+        }
         INFO("Successfully stored signals for strategy: " + strategy_id);
         return Result<void>();
 
@@ -3037,14 +3093,21 @@ PostgresDatabase::get_position_inception_dates(const std::string& strategy_id,
                                                const std::string& table_name) {
     using Map = std::unordered_map<std::string, std::string>;
 
+    // table_name is interpolated into the FROM clause below and cannot be a
+    // bound parameter, so it goes through the same allowlist
+    // load_positions_by_date uses. Every caller passes the default today; that
+    // is a property of today's callers, not of this function. The check comes
+    // before the connection is looked at, so a refused name issues no SQL.
+    auto table_validation = validate_table_name(table_name);
+    if (table_validation.is_error()) {
+        return make_error<Map>(table_validation.error()->code(), table_validation.error()->what());
+    }
+
     auto validation = validate_connection();
     if (validation.is_error()) {
         return make_error<Map>(validation.error()->code(), validation.error()->what());
     }
     if (symbols.empty()) return Result<Map>(Map{});
-
-    // table_name is an internal default (trading.positions), never user input --
-    // same contract as load_positions_by_date, which interpolates it likewise.
 
     try {
         pqxx::work txn(*connection_);
@@ -3088,14 +3151,21 @@ PostgresDatabase::get_current_holding_start_dates(const std::string& strategy_id
                                                   const std::string& table_name) {
     using Map = std::unordered_map<std::string, std::string>;
 
+    // table_name is interpolated into the FROM clause below and cannot be a
+    // bound parameter, so it goes through the same allowlist
+    // load_positions_by_date uses. Every caller passes the default today; that
+    // is a property of today's callers, not of this function. The check comes
+    // before the connection is looked at, so a refused name issues no SQL.
+    auto table_validation = validate_table_name(table_name);
+    if (table_validation.is_error()) {
+        return make_error<Map>(table_validation.error()->code(), table_validation.error()->what());
+    }
+
     auto validation = validate_connection();
     if (validation.is_error()) {
         return make_error<Map>(validation.error()->code(), validation.error()->what());
     }
     if (symbols.empty()) return Result<Map>(Map{});
-
-    // table_name is an internal default (trading.positions), never user input --
-    // same contract as load_positions_by_date, which interpolates it likewise.
 
     try {
         pqxx::work txn(*connection_);
@@ -3163,14 +3233,21 @@ PostgresDatabase::get_last_buy_dates(const std::string& strategy_id,
                                      const std::string& table_name) {
     using Map = std::unordered_map<std::string, std::string>;
 
+    // table_name is interpolated into the FROM clause below and cannot be a
+    // bound parameter, so it goes through the same allowlist
+    // load_positions_by_date uses. Every caller passes the default today; that
+    // is a property of today's callers, not of this function. The check comes
+    // before the connection is looked at, so a refused name issues no SQL.
+    auto table_validation = validate_table_name(table_name);
+    if (table_validation.is_error()) {
+        return make_error<Map>(table_validation.error()->code(), table_validation.error()->what());
+    }
+
     auto validation = validate_connection();
     if (validation.is_error()) {
         return make_error<Map>(validation.error()->code(), validation.error()->what());
     }
     if (symbols.empty()) return Result<Map>(Map{});
-
-    // table_name is an internal default (trading.executions), never user input --
-    // same contract as get_position_inception_dates above.
 
     try {
         pqxx::work txn(*connection_);

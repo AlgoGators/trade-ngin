@@ -2295,6 +2295,18 @@ std::optional<Bar> BacktestCoordinator::find_bar_for_symbol(const std::vector<Ba
     return std::nullopt;
 }
 
+Timestamp BacktestCoordinator::data_boundary(
+    const std::vector<std::pair<Timestamp, double>>& equity_curve, const Timestamp& start_date) {
+    if (equity_curve.empty()) {
+        return start_date;
+    }
+    Timestamp boundary = equity_curve.front().first;
+    for (const auto& point : equity_curve) {
+        boundary = std::max(boundary, point.first);
+    }
+    return boundary;
+}
+
 Result<void> BacktestCoordinator::save_portfolio_results_to_db(
     const BacktestResults& results, const std::vector<std::string>& strategy_names,
     const std::unordered_map<std::string, double>& strategy_allocations,
@@ -2334,9 +2346,11 @@ Result<void> BacktestCoordinator::save_portfolio_results_to_db(
     hyperparameters["use_optimization"] = config_.use_optimization;
     hyperparameters["portfolio_config"] = portfolio_config;
 
-    // Use the actual backtest start/end dates that were stored in run_portfolio()
-    results_manager->set_metadata(backtest_start_date_, backtest_end_date_, hyperparameters,
-                                  "Portfolio Backtest Run: " + portfolio_run_id,
+    // The start is the one run_portfolio() was given; the end is the run's data boundary, the
+    // last bar it consumed (OPT-N5/N6), not the end it was asked for.
+    results_manager->set_metadata(backtest_start_date_,
+                                  data_boundary(results.equity_curve, backtest_start_date_),
+                                  hyperparameters, "Portfolio Backtest Run: " + portfolio_run_id,
                                   "Multi-strategy portfolio backtest");
 
     // Set performance metrics (portfolio-level)
