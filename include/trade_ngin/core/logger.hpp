@@ -292,13 +292,13 @@ private:
  * @brief Convenience macro for logging
  * Usage: LOG(LogLevel::INFO, "Message: " << variable)
  */
-#define LOG(level, message)                                \
-    do {                                                   \
-        if (level >= Logger::instance().get_min_level()) { \
-            std::ostringstream os;                         \
-            os << message;                                 \
-            Logger::instance().log(level, os.str());       \
-        }                                                  \
+#define LOG(level, message)                                            \
+    do {                                                               \
+        if (level >= Logger::instance().get_min_level()) {             \
+            std::ostringstream trade_ngin_log_line_;                   \
+            trade_ngin_log_line_ << message;                           \
+            Logger::instance().log(level, trade_ngin_log_line_.str()); \
+        }                                                              \
     } while (0)
 
 // Convenience functions for different log levels
