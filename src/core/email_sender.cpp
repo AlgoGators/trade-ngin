@@ -1374,7 +1374,8 @@ std::string EmailSender::format_yesterday_finalized_positions_table(
     const std::unordered_map<std::string, double>& entry_prices,  // settled from
     const std::unordered_map<std::string, double>& exit_prices,   // settled at
     std::shared_ptr<DatabaseInterface> db, const std::map<std::string, double>& strategy_metrics,
-    const std::string& yesterday_date, const std::string& settled_date, bool equities) {
+    const std::string& yesterday_date, const std::string& settled_date, bool equities,
+    const SettledZeroKinds& zero_kinds) {
     (void)db;
     std::ostringstream html;
 
@@ -1474,8 +1475,8 @@ std::string EmailSender::format_yesterday_finalized_positions_table(
         std::string realized_pnl_class = (realized_pnl >= 0) ? "positive" : "negative";
         html << "<td class=\"" << realized_pnl_class << "\">";
         html << report_dollars(realized_pnl, 2)
-             << settled_booked_at_zero_marker(equities, qty, known_price(entry_price),
-                                              known_price(exit_price), realized_pnl);
+             << settled_zero_marker(equities, symbol, qty, known_price(entry_price),
+                                    known_price(exit_price), realized_pnl, zero_kinds);
         html << "</td>";
 
         html << "</tr>\n";
@@ -1568,7 +1569,8 @@ std::string EmailSender::format_yesterday_finalized_positions_table(
     const std::unordered_map<std::string, double>& entry_prices,
     const std::unordered_map<std::string, double>& exit_prices,
     std::shared_ptr<DatabaseInterface> db, const std::map<std::string, double>& strategy_metrics,
-    const std::string& yesterday_date, const std::string& settled_date, bool equities) {
+    const std::string& yesterday_date, const std::string& settled_date, bool equities,
+    const SettledZeroKinds& zero_kinds) {
     (void)db;
     std::ostringstream html;
 
@@ -1698,8 +1700,8 @@ std::string EmailSender::format_yesterday_finalized_positions_table(
             std::string realized_pnl_class = (realized_pnl >= 0) ? "positive" : "negative";
             html << "<td class=\"" << realized_pnl_class << "\">";
             html << report_dollars(realized_pnl, 2)
-             << settled_booked_at_zero_marker(equities, qty, known_price(entry_price),
-                                              known_price(exit_price), realized_pnl);
+             << settled_zero_marker(equities, symbol, qty, known_price(entry_price),
+                                    known_price(exit_price), realized_pnl, zero_kinds);
             html << "</td>";
 
             html << "</tr>\n";
@@ -3256,7 +3258,8 @@ std::string EmailSender::generate_trading_report_body(
         !two_days_ago_close_prices.empty()) {
         html << format_yesterday_finalized_positions_table(
             yesterday_strategy_positions, two_days_ago_close_prices, yesterday_close_prices, db,
-            yesterday_daily_metrics, yesterday_date_str, settled_date, context.equities);
+            yesterday_daily_metrics, yesterday_date_str, settled_date, context.equities,
+            context.settled_zero_kinds);
     } else if (!show_yesterday_pnl) {
         // The runner found no session on the day before (T-8D-2 R59): no settled table. The two
         // notes say why in the runner's terms, never from the weekday.

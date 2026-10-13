@@ -4,6 +4,8 @@
 #include <cstdio>
 #include <string>
 
+#include "trade_ngin/core/report_settled_marks.hpp"
+
 namespace trade_ngin {
 
 /**
@@ -35,6 +37,10 @@ struct EmailReportContext {
     /// Symbols Reference and no rollover notice (tables of futures contract metadata), no
     /// holiday banner (its day before is its previous session by construction).
     bool equities{false};
+
+    /// A futures runner's symbols whose settled bar booked no move, by kind (T-EMAIL): the settled
+    /// table marks their $0.00 rows.
+    SettledZeroKinds settled_zero_kinds;
 
     /// A futures runner's own classification of the day before: it found NO session and carried
     /// its book (its skip of the strategy processing). The report then shows no settled table

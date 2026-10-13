@@ -157,6 +157,10 @@ TEST_F(ChangeBarPnlTest, TheT1SettlementSkipsAWithheldBarAndZeroesChangeAndWithh
     EXPECT_DOUBLE_EQ(s.t2_close_prices.at("ES.v.0"), 5020.0) << "day 2's close, the last consumed before T-1";
     EXPECT_DOUBLE_EQ(s.t2_close_prices.at("NG.v.0"), 3.33);
     EXPECT_EQ(s.zero_pnl_symbols, (std::unordered_set<std::string>{"NG.v.0", "6B.v.0"}));
+    // T-EMAIL: the two kinds kept apart (NG is a change bar, 6B a withheld print); their union is
+    // what the settle reads, so nothing it books moves
+    EXPECT_EQ(s.roll_zero_symbols, (std::unordered_set<std::string>{"NG.v.0"}));
+    EXPECT_EQ(s.withheld_zero_symbols, (std::unordered_set<std::string>{"6B.v.0"}));
 
     LivePnLManager pm(500000.0, InstrumentRegistry::instance());
     const std::vector<Position> book{held("ES.v.0", 1, 0), held("NG.v.0", 2, 0), held("6B.v.0", 1, 0)};
@@ -207,6 +211,10 @@ TEST_F(ChangeBarPnlTest, TheSettledTablePricesAreThePairTheFinalizeBookedEachRow
         << "the raw entry, never used: no T-1 bar";
     EXPECT_EQ(s.t1_close_prices, raw_t1);
     EXPECT_EQ(s.zero_pnl_symbols, (std::unordered_set<std::string>{"NG.v.0", "6B.v.0"}));
+    // T-EMAIL: the two kinds kept apart (NG is a change bar, 6B a withheld print); their union is
+    // what the settle reads, so nothing it books moves
+    EXPECT_EQ(s.roll_zero_symbols, (std::unordered_set<std::string>{"NG.v.0"}));
+    EXPECT_EQ(s.withheld_zero_symbols, (std::unordered_set<std::string>{"6B.v.0"}));
 
     LivePnLManager pm(500000.0, InstrumentRegistry::instance());
     const std::vector<Position> book{held("ES.v.0", 1, 0), held("NG.v.0", 2, 0),

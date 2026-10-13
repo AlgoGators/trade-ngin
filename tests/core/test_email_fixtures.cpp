@@ -252,6 +252,14 @@ EmailReportContext with_book(EmailReportContext context, const std::string& live
 }
 
 // The two capital keys of the day's risk_detail: sizing_capital and account_value.
+// The symbols whose settled bar booked no move, by kind (T-EMAIL).
+EmailReportContext with_zero_kinds(EmailReportContext context, const std::string& roll,
+                                   const std::string& withheld = "") {
+    if (!roll.empty()) context.settled_zero_kinds.roll.insert(roll);
+    if (!withheld.empty()) context.settled_zero_kinds.withheld.insert(withheld);
+    return context;
+}
+
 EmailReportContext with_capital(EmailReportContext context, double sizing_capital,
                                 double account_value) {
     context.has_sizing_capital = true;
@@ -400,10 +408,11 @@ protected:
             settled_prices.previous, settled_metrics, "LIVE_TREND_FOLLOWING",
             // gross 431,957.5625 and net 121,699.32 on the sizing capital 497,745.27
             over_limit_of(kConservativeCapital.sizing_capital, 0.8678286, 0.2445012),
-            with_book(with_capital(context_of("2026-04-27", 171, 311.0574),
-                                   kConservativeCapital.sizing_capital,
-                                   kConservativeCapital.account_value),
-                      "2025-10-05"));
+            with_zero_kinds(with_book(with_capital(context_of("2026-04-27", 171, 311.0574),
+                                                   kConservativeCapital.sizing_capital,
+                                                   kConservativeCapital.account_value),
+                                      "2025-10-05"),
+                            "QMBT.v.0"));
     }
 
     // BASE: two sleeves, Monday 2026-04-27, the settled day Sunday 2026-04-26. The sleeves hold

@@ -148,9 +148,10 @@ TEST(ReportSettledMarks, TheFuturesSentenceSaysARowMultipliesOutAndNamesTheRowsT
         "Previous price and Latest price are the two closes the settled day was booked between: "
         "quantity times the price change times the contract size is the row's Realized PnL, the "
         "settled day's stored figure. Two kinds of row are booked at $0.00 whatever their two "
-        "prices show: a row on a day its price series changes to another contract (its two prices "
-        "are then of two different contracts), and a row whose price for that day was not accepted "
-        "(for example a bad print, or a contract change not yet confirmed).");
+        "prices show: a row on a day its price series rolls to another contract (its two prices "
+        "are then of two different contracts; the row is labelled \"contract roll, not booked\"), "
+        "and a row whose price for that day was not accepted (a bad print, or an id change not yet "
+        "confirmed; the row is labelled \"price not accepted, booked with the next price\").");
     EXPECT_EQ(settled_table_note_html(false),
               std::string("<div style=\"font-size: 12px; color: #666; margin: 4px 0 12px 0;\">") +
                   kSettledNoteFutures + "</div>\n");
@@ -230,4 +231,25 @@ TEST(ReportSettledMarks, TheFilesTwoCellsCarryTheSamePrices) {
     // a 6J price keeps every digit in both forms
     EXPECT_EQ(settled_csv_cells(0.0062995, 0.0062925).prior_mark, "0.0062995");
     EXPECT_EQ(settled_price_cells(0.0062995, 0.0062925).previous, "$0.0062995");
+}
+
+// T-EMAIL (HD 10-13): a futures row the settle booked at zero says which kind it was.
+TEST(ReportSettledMarks, AZeroRowNamesItsKindAndNoOtherRowIsMarked) {
+    SettledZeroKinds kinds;
+    kinds.roll.insert("MBT.v.0");
+    kinds.withheld.insert("6L.v.0");
+    EXPECT_EQ(settled_zero_marker(false, "MBT.v.0", 1.0, 79070.0, 77740.0, 0.0, kinds),
+              " (contract roll, not booked)");
+    EXPECT_EQ(settled_zero_marker(false, "6L.v.0", 1.0, 0.2, 0.19, 0.0, kinds),
+              " (price not accepted, booked with the next price)");
+    // a symbol in neither set, a figure that is not $0.00, equities, a missing price, no position
+    EXPECT_EQ(settled_zero_marker(false, "ES.v.0", 1.0, 1.0, 2.0, 0.0, kinds), "");
+    EXPECT_EQ(settled_zero_marker(false, "MBT.v.0", 1.0, 1.0, 2.0, 12.5, kinds), "");
+    EXPECT_EQ(settled_zero_marker(true, "MBT.v.0", 1.0, 1.0, 2.0, 0.0, kinds), "");
+    EXPECT_EQ(settled_zero_marker(false, "MBT.v.0", 1.0, 1.0, std::nullopt, 0.0, kinds), "");
+    EXPECT_EQ(settled_zero_marker(false, "MBT.v.0", 0.0, 1.0, 2.0, 0.0, kinds), "");
+    // a symbol in both sets is a not-accepted price (the withheld bar is the settle's first rule)
+    kinds.roll.insert("6L.v.0");
+    EXPECT_EQ(settled_zero_marker(false, "6L.v.0", 1.0, 0.2, 0.19, 0.0, kinds),
+              " (price not accepted, booked with the next price)");
 }

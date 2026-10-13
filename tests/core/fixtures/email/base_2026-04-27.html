@@ -158,7 +158,7 @@ th { background-color: #f2f2f2; font-weight: bold; }
 <strong>Positions:</strong> 1 | <strong>Total Realized PnL (Gross):</strong> <span class="negative">-$31.25</span>
 </div>
 <div style="font-size: 12px; color: #666; margin: 4px 0 4px 0;">no bar: no price was received for that day; the row's P&amp;L is $0.00</div>
-<div style="font-size: 12px; color: #666; margin: 4px 0 12px 0;">Previous price and Latest price are the two closes the settled day was booked between: quantity times the price change times the contract size is the row's Realized PnL, the settled day's stored figure. Two kinds of row are booked at $0.00 whatever their two prices show: a row on a day its price series changes to another contract (its two prices are then of two different contracts), and a row whose price for that day was not accepted (for example a bad print, or a contract change not yet confirmed).</div>
+<div style="font-size: 12px; color: #666; margin: 4px 0 12px 0;">Previous price and Latest price are the two closes the settled day was booked between: quantity times the price change times the contract size is the row's Realized PnL, the settled day's stored figure. Two kinds of row are booked at $0.00 whatever their two prices show: a row on a day its price series rolls to another contract (its two prices are then of two different contracts; the row is labelled "contract roll, not booked"), and a row whose price for that day was not accepted (a bad print, or an id change not yet confirmed; the row is labelled "price not accepted, booked with the next price").</div>
 <h2>2026-04-26 (settled)</h2>
 <div class="metrics-category">
 <div class="metric"><strong>Total Positions:</strong> 3</div>

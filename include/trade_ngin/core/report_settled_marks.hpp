@@ -24,6 +24,7 @@
 #include <optional>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 
 #include "trade_ngin/core/report_price_text.hpp"
 #include "trade_ngin/data/finite_statement.hpp"
@@ -39,23 +40,31 @@ inline constexpr const char* kSettledNoBar = "no bar";
 /// The one footnote under the table, printed only when a row carries the words.
 inline constexpr const char* kSettledNoBarFootnote =
     "no bar: no price was received for that day; the row's P&L is $0.00";
-/// The two words after a $0.00 realized figure on a futures row whose two prices differ: the
-/// settle books such a row at zero by rule (kSettledNoteFutures says when), so the zero is not a
-/// price that did not move. The report cannot tell the two kinds apart (a contract change, a
-/// price that was not accepted): the settle does not hand the kind to the report.
-inline constexpr const char* kSettledBookedAtZero = "booked at zero";
+/// The symbols whose settled bar booked no move, by the kind the settle knew (T-EMAIL, HD 10-13):
+/// a ROLL (the series switched contract on that bar: its two prices are of two contracts) and a
+/// price NOT ACCEPTED (a withheld bar: the move is booked with the next price).
+struct SettledZeroKinds {
+    std::unordered_set<std::string> roll;
+    std::unordered_set<std::string> withheld;
+};
+inline constexpr const char* kSettledRollMarker = "contract roll, not booked";
+inline constexpr const char* kSettledNotAcceptedMarker = "price not accepted, booked with the next price";
 
-/// The marker to print after a row's realized figure, with its leading space; empty when none.
-/// A row carries it when the book is futures, the quantity is not zero, both prices are known and
-/// differ, and the figure prints as $0.00.
-inline std::string settled_booked_at_zero_marker(bool equities, double quantity,
-                                                 std::optional<double> previous,
-                                                 std::optional<double> latest, double realized) {
-    if (equities || quantity == 0.0 || !previous || !latest || *previous == *latest)
+/// The marker to print after a futures row's realized figure, with its leading space; empty when
+/// none. A row carries it when its symbol is in one of the two sets, the quantity is not zero, the
+/// two prices are known and the figure prints as $0.00.
+inline std::string settled_zero_marker(bool equities, const std::string& symbol, double quantity,
+                                       std::optional<double> previous, std::optional<double> latest,
+                                       double realized, const SettledZeroKinds& kinds) {
+    if (equities || quantity == 0.0 || !previous || !latest)
         return {};
     if (report_dollars(realized) != "$0.00")
         return {};
-    return std::string(" (") + kSettledBookedAtZero + ")";
+    if (kinds.withheld.count(symbol))
+        return std::string(" (") + kSettledNotAcceptedMarker + ")";
+    if (kinds.roll.count(symbol))
+        return std::string(" (") + kSettledRollMarker + ")";
+    return {};
 }
 
 /// The two prices of every symbol of the settled table. A symbol absent from `latest` printed no
@@ -145,7 +154,7 @@ inline std::string settled_no_bar_footnote_html(bool any_no_bar_row) {
 /// The sentence under the settled table of a FUTURES book: what the two prices are and what a
 /// reader can work out from a row. A futures row's Realized PnL is the settle's own figure,
 /// quantity x (latest - previous) x contract size, so the row multiplies out. The settle books 0
-/// by rule on two kinds of bar whatever the two closes are, and the sentence names them: a change
+/// by rule on two kinds of bar whatever the two closes are, and the sentence names them: a roll
 /// bar (the continuous series changes contract: the previous price is the outgoing contract's
 /// close and the latest the incoming one's) and a withheld bar (a print the run did not accept).
 /// A no-bar row is the footnote's.
@@ -153,9 +162,10 @@ inline constexpr const char* kSettledNoteFutures =
     "Previous price and Latest price are the two closes the settled day was booked between: "
     "quantity times the price change times the contract size is the row's Realized PnL, the "
     "settled day's stored figure. Two kinds of row are booked at $0.00 whatever their two prices "
-    "show: a row on a day its price series changes to another contract (its two prices are then "
-    "of two different contracts), and a row whose price for that day was not accepted (for "
-    "example a bad print, or a contract change not yet confirmed).";
+    "show: a row on a day its price series rolls to another contract (its two prices are then of "
+    "two different contracts; the row is labelled \"contract roll, not booked\"), and a row whose price "
+    "for that day was not accepted (a bad print, or an id change not yet confirmed; the row is labelled "
+    "\"price not accepted, booked with the next price\").";
 
 /// The sentence under the settled table of the EQUITY book. Its two prices are the pair the
 /// settle measured the day's move between, closes of the series as the run loaded it: that

@@ -236,7 +236,7 @@ private:
         std::shared_ptr<DatabaseInterface> db,
         const std::map<std::string, double>& strategy_metrics = {},
         const std::string& yesterday_date = "", const std::string& settled_date = "",
-        bool equities = false);
+        bool equities = false, const SettledZeroKinds& zero_kinds = {});
 
     /**
      * @brief Format yesterday's finalized positions table with per-strategy breakdown
@@ -261,7 +261,7 @@ private:
         std::shared_ptr<DatabaseInterface> db,
         const std::map<std::string, double>& strategy_metrics = {},
         const std::string& yesterday_date = "", const std::string& settled_date = "",
-        bool equities = false);
+        bool equities = false, const SettledZeroKinds& zero_kinds = {});
 
     /**
      * @brief Format all per-strategy position tables for email

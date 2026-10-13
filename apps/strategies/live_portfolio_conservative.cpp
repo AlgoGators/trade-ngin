@@ -4558,6 +4558,8 @@ int main(int argc, char* argv[]) {
                     // carried book: no session), never the weekday's.
                     report_context.live_start_date = book_live_start_date;
                     report_context.prior_day_no_session = skip_strategy_processing;
+                    report_context.settled_zero_kinds.roll = t1_settlement.roll_zero_symbols;
+                    report_context.settled_zero_kinds.withheld = t1_settlement.withheld_zero_symbols;
                     // The two capital keys of the day's risk_detail, when the row carries one
                     // (the condition and the values of the set_risk_detail call above).
                     if (one_pass_day.stores_detail()) {
