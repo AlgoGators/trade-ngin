@@ -7,6 +7,7 @@ set(TEST_SOURCES
     core/test_report_settled_marks.cpp
     core/test_time_utils_parse.cpp
     core/test_timed_process.cpp
+    core/test_gnuplot_run.cpp
     core/test_result.cpp
     core/test_state_manager.cpp
     core/test_logger.cpp

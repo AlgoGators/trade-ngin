@@ -25,6 +25,25 @@
 
 namespace trade_ngin {
 
+namespace {
+// How the chart asked for last on this thread ended (read through last_chart_status).
+thread_local core::ChartStatus g_last_status = core::ChartStatus::NothingToPlot;
+thread_local std::string g_last_reason;
+
+void begin_chart() {
+    g_last_status = core::ChartStatus::NothingToPlot;
+    g_last_reason.clear();
+}
+
+
+// A failure keeps its first reason: the later lines of the same chart are its consequence.
+void mark_chart_failed(const char* reason) {
+    if (g_last_status == core::ChartStatus::Failed) return;
+    g_last_status = core::ChartStatus::Failed;
+    g_last_reason = reason;
+}
+}  // namespace
+
 // ============================================================================
 // ChartHelpers Implementation
 // ============================================================================
@@ -782,6 +801,7 @@ ChartData ChartGenerator::fetch_equity_curve_data(std::shared_ptr<DatabaseInterf
 
         if (result.is_error()) {
             ERROR("Failed to query equity curve: " + std::string(result.error()->what()));
+            mark_chart_failed("the data could not be read");
             return chart_data;
         }
 
@@ -800,6 +820,7 @@ ChartData ChartGenerator::fetch_equity_curve_data(std::shared_ptr<DatabaseInterf
         auto combined_result = table->CombineChunks();
         if (!combined_result.ok()) {
             ERROR("Failed to combine chunks");
+            mark_chart_failed("the data could not be read");
             return chart_data;
         }
         auto combined = combined_result.ValueOrDie();
@@ -886,6 +907,7 @@ ChartData ChartGenerator::fetch_equity_curve_data(std::shared_ptr<DatabaseInterf
 
     } catch (const std::exception& e) {
         ERROR("Exception fetching equity curve data: " + std::string(e.what()));
+        mark_chart_failed("the data could not be read");
         return chart_data;
     }
 }
@@ -910,6 +932,7 @@ ChartData ChartGenerator::fetch_pnl_by_symbol_data(std::shared_ptr<DatabaseInter
 
         if (result.is_error()) {
             ERROR("Failed to query realized PnL by symbol: " + std::string(result.error()->what()));
+            mark_chart_failed("the data could not be read");
             return chart_data;
         }
 
@@ -922,6 +945,7 @@ ChartData ChartGenerator::fetch_pnl_by_symbol_data(std::shared_ptr<DatabaseInter
         auto combined_result = table->CombineChunks();
         if (!combined_result.ok()) {
             ERROR("Failed to combine chunks");
+            mark_chart_failed("the data could not be read");
             return chart_data;
         }
         auto combined = combined_result.ValueOrDie();
@@ -991,6 +1015,7 @@ ChartData ChartGenerator::fetch_pnl_by_symbol_data(std::shared_ptr<DatabaseInter
 
     } catch (const std::exception& e) {
         ERROR("Exception fetching realized PnL by symbol: " + std::string(e.what()));
+        mark_chart_failed("the data could not be read");
         return chart_data;
     }
 }
@@ -1018,6 +1043,7 @@ ChartData ChartGenerator::fetch_daily_pnl_data(
 
         if (result.is_error()) {
             ERROR("Failed to query daily PnL: " + std::string(result.error()->what()));
+            mark_chart_failed("the data could not be read");
             return chart_data;
         }
 
@@ -1033,6 +1059,7 @@ ChartData ChartGenerator::fetch_daily_pnl_data(
         auto combined_result = table->CombineChunks();
         if (!combined_result.ok()) {
             ERROR("Failed to combine chunks");
+            mark_chart_failed("the data could not be read");
             return chart_data;
         }
         auto combined = combined_result.ValueOrDie();
@@ -1123,6 +1150,7 @@ ChartData ChartGenerator::fetch_daily_pnl_data(
 
     } catch (const std::exception& e) {
         ERROR("Exception fetching daily PnL data: " + std::string(e.what()));
+        mark_chart_failed("the data could not be read");
         return chart_data;
     }
 }
@@ -1190,6 +1218,7 @@ ChartData ChartGenerator::fetch_cumulative_transaction_costs_data(
 
     } catch (const std::exception& e) {
         ERROR(std::string("Exception fetching cost per $1M traded: ") + e.what());
+        mark_chart_failed("the data could not be read");
         return chart_data;
     }
 }
@@ -1211,6 +1240,7 @@ ChartData ChartGenerator::fetch_margin_posted_data(
         auto result = db->execute_query(query);
         if (result.is_error()) {
             ERROR("Failed to query margin posted: " + std::string(result.error()->what()));
+            mark_chart_failed("the data could not be read");
             return chart_data;
         }
 
@@ -1223,6 +1253,7 @@ ChartData ChartGenerator::fetch_margin_posted_data(
         auto combined_result = table->CombineChunks();
         if (!combined_result.ok()) {
             ERROR("Failed to combine chunks");
+            mark_chart_failed("the data could not be read");
             return chart_data;
         }
         auto combined = combined_result.ValueOrDie();
@@ -1314,6 +1345,7 @@ ChartData ChartGenerator::fetch_margin_posted_data(
 
     } catch (const std::exception& e) {
         ERROR(std::string("Exception fetching margin posted: ") + e.what());
+        mark_chart_failed("the data could not be read");
         return chart_data;
     }
 }
@@ -1413,6 +1445,7 @@ ChartData ChartGenerator::fetch_portfolio_composition_data(
 
     } catch (const std::exception& e) {
         ERROR("Exception fetching portfolio composition data: " + std::string(e.what()));
+        mark_chart_failed("the data could not be read");
         return chart_data;
     }
 }
@@ -1439,6 +1472,7 @@ ChartData ChartGenerator::fetch_cumulative_pnl_by_symbol_data(
 
         if (result.is_error()) {
             ERROR("Failed to query cumulative PnL by symbol: " + std::string(result.error()->what()));
+            mark_chart_failed("the data could not be read");
             return chart_data;
         }
 
@@ -1451,6 +1485,7 @@ ChartData ChartGenerator::fetch_cumulative_pnl_by_symbol_data(
         auto combined_result = table->CombineChunks();
         if (!combined_result.ok()) {
             ERROR("Failed to combine chunks");
+            mark_chart_failed("the data could not be read");
             return chart_data;
         }
         auto combined = combined_result.ValueOrDie();
@@ -1520,6 +1555,7 @@ ChartData ChartGenerator::fetch_cumulative_pnl_by_symbol_data(
 
     } catch (const std::exception& e) {
         ERROR("Exception fetching cumulative PnL by symbol: " + std::string(e.what()));
+        mark_chart_failed("the data could not be read");
         return chart_data;
     }
 }
@@ -1545,87 +1581,32 @@ namespace {
     // The time one chart process is given (T-DATED R4). A chart is drawn in well under a second.
     constexpr std::chrono::seconds kChartProcessTimeout{30};
 
-    // Helper: Execute gnuplot script and return base64-encoded PNG
+    // Helper: Execute gnuplot script and return base64-encoded PNG. The files are private to the
+    // call, a hang is started once more, and the end is recorded for the report (core/gnuplot_run.hpp).
     std::string execute_gnuplot(const std::string& script_content, const std::string& data_content) {
-        // Create temporary files
-        std::string data_filename = "temp_chart_data.txt";
-        std::string script_filename = "temp_chart_script.gnu";
-        std::string chart_filename = "temp_chart_output.png";
-
-        // Write data file
-        std::ofstream data_file(data_filename);
-        if (!data_file.is_open()) {
-            ERROR("Failed to create temporary data file");
-            return "";
-        }
-        data_file << data_content;
-        data_file.close();
-
-        // Write script file
-        std::ofstream script_file(script_filename);
-        if (!script_file.is_open()) {
-            ERROR("Failed to create gnuplot script file");
-            return "";
-        }
-        script_file << script_content;
-        script_file.close();
-
-        // Execute gnuplot
-        std::ostringstream cmd;
-        cmd << "gnuplot " << script_filename << " 2>&1";
         INFO("Executing gnuplot");
-
-        // A chart process is given kChartProcessTimeout; one that has not finished by then is
-        // killed and the chart is treated as failed, as a non-zero exit is (core/timed_process.hpp).
-        const auto chart_run = core::run_with_timeout(cmd.str(), kChartProcessTimeout);
-        if (!chart_run.started) {
-            ERROR("Failed to execute gnuplot command");
+        const core::GnuplotRun run = core::run_gnuplot(
+            script_content, data_content, kChartProcessTimeout,
+            [](const std::string& command, std::chrono::milliseconds limit) {
+                return core::run_with_timeout(command, limit);
+            });
+        g_last_status = run.status;
+        g_last_reason = run.reason;
+        if (run.status != core::ChartStatus::Drawn) {
+            ERROR("Chart not drawn after " + std::to_string(run.attempts) + " start(s): " +
+                  run.reason);
             return "";
         }
-        if (chart_run.timed_out) {
-            ERROR("Gnuplot did not finish within " +
-                  std::to_string(std::chrono::duration_cast<std::chrono::seconds>(
-                                     kChartProcessTimeout)
-                                     .count()) +
-                  " s and was killed: the chart is left out and the run goes on");
-            return "";
-        }
-        const std::string& gnuplot_output = chart_run.output;
-        int return_code = chart_run.status;
-        if (return_code != 0) {
-            ERROR("Gnuplot failed with code " + std::to_string(return_code));
-            if (!gnuplot_output.empty()) {
-                ERROR("Gnuplot output: " + gnuplot_output);
-            }
-            return "";
-        }
-
-        // Read generated PNG
-        std::ifstream chart_file(chart_filename, std::ios::binary);
-        if (!chart_file.is_open()) {
-            ERROR("Failed to open generated chart file");
-            return "";
-        }
-
-        std::vector<unsigned char> chart_data_bin((std::istreambuf_iterator<char>(chart_file)),
-                                                   std::istreambuf_iterator<char>());
-        chart_file.close();
-
-        // Cleanup (keep files for debugging if generation fails)
-        if (!chart_data_bin.empty()) {
-            std::remove(data_filename.c_str());
-            std::remove(script_filename.c_str());
-            std::remove(chart_filename.c_str());
-        } else {
-            ERROR("Chart generation failed - keeping temp files for debugging:");
-            ERROR("  Data file: " + data_filename);
-            ERROR("  Script file: " + script_filename);
-            ERROR("  Output file: " + chart_filename);
-        }
-
-        // Base64 encode
-        return ChartHelpers::encode_to_base64(chart_data_bin);
+        return ChartHelpers::encode_to_base64(run.png);
     }
+}
+
+core::ChartStatus ChartGenerator::last_chart_status() {
+    return g_last_status;
+}
+
+std::string ChartGenerator::last_chart_reason() {
+    return g_last_reason;
 }
 
 std::string ChartGenerator::render_line_chart(const ChartData& data, const ChartConfig& config) {
@@ -1727,6 +1708,7 @@ std::string ChartGenerator::render_line_chart(const ChartData& data, const Chart
 
     } catch (const std::exception& e) {
         ERROR("Exception rendering line chart: " + std::string(e.what()));
+        mark_chart_failed("the chart could not be drawn");
         return "";
     }
 }
@@ -1800,6 +1782,7 @@ std::string ChartGenerator::render_bar_chart(const ChartData& data, const ChartC
         return execute_gnuplot(script.str(), data_content.str());
     } catch (const std::exception& e) {
         ERROR("Exception rendering bar chart: " + std::string(e.what()));
+        mark_chart_failed("the chart could not be drawn");
         return "";
     }
 }
@@ -1886,6 +1869,7 @@ std::string ChartGenerator::render_horizontal_bar_chart(const ChartData& data, c
 
     } catch (const std::exception& e) {
         ERROR("Exception rendering horizontal bar chart: " + std::string(e.what()));
+        mark_chart_failed("the chart could not be drawn");
         return "";
     }
 }
@@ -2016,6 +2000,7 @@ std::string ChartGenerator::render_pie_chart(const ChartData& data, const ChartC
 
     } catch (const std::exception& e) {
         ERROR("Exception rendering pie chart: " + std::string(e.what()));
+        mark_chart_failed("the chart could not be drawn");
         return "";
     }
 }
@@ -2028,6 +2013,7 @@ std::string ChartGenerator::generate_equity_curve_chart(std::shared_ptr<Database
                                                         const std::string& portfolio_id,
                                                         const std::string& date,
                                                         int lookback_days) {
+    begin_chart();
     // Fetch data using modular fetcher
     ChartData data = fetch_equity_curve_data(db, strategy_id, portfolio_id, date, lookback_days);
 
@@ -2050,6 +2036,7 @@ std::string ChartGenerator::generate_pnl_by_symbol_chart(std::shared_ptr<Databas
                                                          const std::string& strategy_id,
                                                          const std::string& portfolio_id,
                                                          const std::string& date, bool equities) {
+    begin_chart();
     INFO("Starting PnL by symbol chart generation for strategy: " + strategy_id);
 
     // Fetch data using modular fetcher
@@ -2082,6 +2069,7 @@ std::string ChartGenerator::generate_daily_pnl_chart(
     const std::string& date,
     int lookback_days)
 {
+    begin_chart();
     // Fetch data using modular fetcher
     ChartData data = fetch_daily_pnl_data(db, strategy_id, portfolio_id, date, lookback_days);
 
@@ -2105,6 +2093,7 @@ std::string ChartGenerator::generate_total_transaction_costs_chart(
     const std::string& portfolio_id,
     const std::string& end_date,  // "YYYY-MM-DD" (today)
     const ChartSeries::MultiplierLookup& multiplier_of) {
+    begin_chart();
     ChartData data = fetch_cumulative_transaction_costs_data(db, strategy_id, portfolio_id,
                                                              end_date, multiplier_of);
     if (data.labels.empty() || data.values.empty()) return "";
@@ -2124,6 +2113,7 @@ std::string ChartGenerator::generate_margin_posted_chart(
                                                   const std::string& portfolio_id,
     const std::string& date /* today */)
 {
+    begin_chart();
     ChartData data = fetch_margin_posted_data(db, strategy_id, portfolio_id, date);
     if (data.labels.empty() || data.values.empty()) return "";
 
@@ -2144,6 +2134,7 @@ std::string ChartGenerator::generate_portfolio_composition_chart(
     const std::unordered_map<std::string, double>& current_prices,
     const std::string& date)
 {
+    begin_chart();
     INFO("Starting portfolio composition pie chart generation");
 
     // Fetch data
@@ -2177,6 +2168,7 @@ std::string ChartGenerator::generate_cumulative_pnl_by_symbol_chart(
                                                   const std::string& portfolio_id,
     const std::string& date)
 {
+    begin_chart();
     INFO("Starting cumulative PnL by symbol chart generation for strategy: " + strategy_id);
 
     // Fetch data

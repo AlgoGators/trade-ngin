@@ -7,6 +7,7 @@
 #include <utility>
 #include <vector>
 #include <memory>
+#include "trade_ngin/core/gnuplot_run.hpp"
 #include "trade_ngin/data/database_interface.hpp"
 
 namespace trade_ngin {
@@ -431,6 +432,12 @@ public:
         const std::string& date
     );
 
+
+    /// How the chart most recently asked for on this thread ended: Drawn, NothingToPlot (no data,
+    /// no process started) or Failed (the data could not be read, or the chart program hung twice,
+    /// errored or left no image). `last_chart_reason` says why in plain words when it Failed.
+    static core::ChartStatus last_chart_status();
+    static std::string last_chart_reason();
 
     // Future chart types can be added here as new static methods:
     // static std::string generate_drawdown_chart(...);
