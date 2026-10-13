@@ -91,6 +91,18 @@ Result<void> PostgresDatabase::connect() {
                                     "Failed to open database connection", "PostgresDatabase");
         }
 
+        // Pin the session to UTC. Without it the session takes the database's or
+        // the role's default, or the client's PGTZ, and every timestamptz this
+        // class reads as text comes back in that zone. A session that cannot be
+        // pinned is not handed out.
+        try {
+            pqxx::nontransaction pin(*connection_);
+            pin.exec(session_time_zone_statement());
+        } catch (...) {
+            connection_.reset();
+            throw;
+        }
+
         // Generate a unique ID for this connection instance
         static std::atomic<int> counter{0};
         std::string unique_id = "POSTGRES_DB_" + std::to_string(++counter);

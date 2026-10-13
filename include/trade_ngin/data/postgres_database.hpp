@@ -123,9 +123,18 @@ public:
 
     /**
      * @brief Connect to the database
+     *
+     * The session's time zone is pinned to UTC before the connection is handed
+     * out (session_time_zone_statement), so the text of a timestamptz read on
+     * it does not follow the server's default, the role's or the client's PGTZ.
      * @return Result indicating success or failure
      */
     Result<void> connect() override;
+
+    /**
+     * @brief The statement connect() issues on every new session.
+     */
+    static const char* session_time_zone_statement() { return "SET TimeZone = 'UTC'"; }
 
     /**
      * @brief Disconnect from the database
