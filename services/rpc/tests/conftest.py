@@ -1,3 +1,4 @@
+import contextlib
 import dataclasses
 import datetime as dt
 import json
@@ -10,7 +11,9 @@ from algogators_rpc.client import versioned_channel
 from algogators_rpc.registry import Registry
 from algogators_rpc.server import build_server
 
-from algogators_rpc.services.desk.command_store import BookLine, CommandRow
+from algogators_rpc.services.desk.command_store import (NOT_DESK, NOT_RUNNING, RESCINDED, SENT,
+                                                        UNPUBLISHED, BookLine, CommandRow,
+                                                        RescindResult)
 from algogators_rpc.services.desk.commands import Dispatcher
 from algogators_rpc.services.desk.config import CommandSettings
 from algogators_rpc.services.desk.jobs import JobManager, RunResult
@@ -68,6 +71,9 @@ class FakeCommandStore:
         self.rows = {r.id: r for r in rows}
         self.book_data = {"system": {}, "qt_proposal": {}, "qt": {}}
         self.published = {}          # (portfolio_id, date) -> published_at
+        # (portfolio_id, date) -> {published_by, published_at, publish_source, sent_at}: the
+        # day's live_run_metadata as `rescind` reads it (contract C8).
+        self.metadata = {}
         self.lock = threading.Lock()
         self.claims = []
         self.requeues = []
@@ -173,6 +179,27 @@ class FakeCommandStore:
         self._check("books")
         return {k: dict(v) for k, v in self.book_data.items()}
 
+    def rescind(self, audit_id, portfolio_id, date, message):
+        self._check("rescind")
+        with self.lock:
+            meta = self.metadata.get((portfolio_id, date)) or {}
+            if meta.get("sent_at"):
+                return RescindResult(SENT, sent_at=meta["sent_at"])
+            if not meta.get("published_at"):
+                return RescindResult(UNPUBLISHED)
+            by, at, source = meta["published_by"], meta["published_at"], meta.get("publish_source")
+            if source != "desk":
+                return RescindResult(NOT_DESK, by, at, source)
+            row = self.rows.get(audit_id)
+            if row is None or row.status != "running":
+                return RescindResult(NOT_RUNNING)
+            self.metadata[(portfolio_id, date)] = dict(meta, published_by=None, published_at=None,
+                                                       publish_source=None)
+            self.published.pop((portfolio_id, date), None)
+            self._set(audit_id, status="done", message=message, finished_at=now(),
+                      result={"rescinded": {"published_by": by, "published_at": at.isoformat()}})
+            return RescindResult(RESCINDED, by, at, source)
+
 
 class FakeRunner:
     """Stands in for the subprocess. `behave(argv)` returns a RunResult and may play the engine
@@ -245,10 +272,19 @@ class Agent:
         self.sent = []
         self.now = DISPATCH_AT
         self.jobs = JobManager(cstore, settings, runner)
+        # The portfolio flock a rescind takes: held unless a test says another holder keeps it.
+        self.lock_free = True
+        self.locks = []
         self.dispatcher = Dispatcher(cstore, self.jobs, settings,
                                      sender=lambda cfg, to, subject, body:
                                      self.sent.append((cfg, list(to), subject, body)),
-                                     clock=lambda: self.now)
+                                     clock=lambda: self.now,
+                                     lock_factory=self._lock)
+
+    @contextlib.contextmanager
+    def _lock(self, path, wait_s):
+        self.locks.append((path, wait_s))
+        yield self.lock_free
 
     def wait(self):
         self.jobs.wait_idle()

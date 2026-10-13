@@ -3,8 +3,8 @@ name: rpc
 # Generates the gRPC stubs (and algogators/versions.py, from the .proto version headers) from
 # proto/algogators/*.proto and runs the shared rpc layer's tests, the desk service's included.
 # Also runs the tests of migrations 025 (the command log the desk service writes) and 027 (the
-# daily cutoff's publish_source and sent_at) and 028 (ops.data_ready, the data-driven run's input) on
-# postgres:16.
+# daily cutoff's publish_source and sent_at), 028 (ops.data_ready, the data-driven run's input) and
+# 029 (Rescind's command kind) on postgres:16.
 # The C++ pipeline (ci-cd-pipeline.yml) is untouched; the Docker image build there also
 # exercises gen.sh through the rpc-build stage.
 
@@ -18,6 +18,7 @@ on:
       - "migrations/*025_*"
       - "migrations/*027_*"
       - "migrations/*028_*"
+      - "migrations/*029_*"
       - ".github/workflows/rpc.yml"
   pull_request:
     branches:
@@ -33,6 +34,7 @@ on:
       - "migrations/*025_*"
       - "migrations/*027_*"
       - "migrations/*028_*"
+      - "migrations/*029_*"
       - ".github/workflows/rpc.yml"
 
 permissions:
@@ -94,3 +96,15 @@ jobs:
           for i in $(seq 1 60); do docker exec pg028 pg_isready -h 127.0.0.1 -U postgres && break; sleep 1; done
           docker cp migrations pg028:/m
           docker exec -e QT_MIGRATION_TEST_THROWAWAY=1 -u postgres pg028 bash /m/test_028_ops_data_ready.sh
+
+  migration-029:
+    name: migration 029 on postgres 16
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Test 029 and its rollback on a throwaway postgres:16
+        run: |
+          docker run -d --name pg029 -e POSTGRES_PASSWORD=x postgres:16
+          for i in $(seq 1 60); do docker exec pg029 pg_isready -h 127.0.0.1 -U postgres && break; sleep 1; done
+          docker cp migrations pg029:/m
+          docker exec -e QT_MIGRATION_TEST_THROWAWAY=1 -u postgres pg029 bash /m/test_029_qt_rescind.sh

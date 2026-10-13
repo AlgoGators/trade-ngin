@@ -194,3 +194,42 @@ def test_driver_error_becomes_store_error_without_detail():
     with pytest.raises(StoreError) as err:
         store.get_row(1)
     assert "pw" not in str(err.value) and "ConnectionError" in str(err.value)
+
+
+# -- rescind (contract C8) -------------------------------------------------------------------------
+
+def meta(by="d@x", at=T0, source="desk", sent=None):
+    return (by, at, source, sent)
+
+
+def test_rescind_clears_the_desk_approval_and_finishes_the_row_in_one_transaction():
+    store, cur = make([[meta(), meta(None, None, None)], [], [(9,)]])
+    res = store.rescind(9, "P", DAY, "rescinded")
+    assert res.outcome == "rescinded" and res.published_by == "d@x" and res.published_at == T0
+    assert store.autocommit == [False]
+    assert "FOR UPDATE" in cur.sql[0] and cur.params[0] == ("P", DAY)
+    assert cur.sql[1].startswith("UPDATE trading.live_run_metadata")
+    assert set_columns(cur.sql[1]) == {"published_by", "published_at", "publish_source"}
+    assert set_columns(cur.sql[2]) <= ENGINE_COLUMNS
+    assert "status = 'running' AND kind = 'rescind'" in cur.sql[2]
+    assert cur.params[2][0].obj == {"rescinded": {"published_by": "d@x",
+                                                  "published_at": T0.isoformat()}}
+
+
+@pytest.mark.parametrize("rows, outcome", [
+    ([], "unpublished"),
+    ([meta(None, None, None)], "unpublished"),
+    ([meta(source="fallback")], "not_desk"),
+    ([meta(), meta(source="model-only")], "not_desk"),
+    ([meta(), meta(None, None, None, sent=T0)], "sent"),
+])
+def test_rescind_refusals_write_nothing(rows, outcome):
+    store, cur = make([rows])
+    assert store.rescind(9, "P", DAY, "m").outcome == outcome
+    assert len(cur.sql) == 1
+
+
+def test_rescind_of_a_row_no_longer_running_rolls_back():
+    store, cur = make([[meta()], [], []])
+    assert store.rescind(9, "P", DAY, "m").outcome == "not_running"
+    assert len(cur.sql) == 3

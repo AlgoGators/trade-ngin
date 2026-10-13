@@ -16,6 +16,11 @@ time.
 |                   | A scheduler fallback row (requested_by system:fallback-...)       |
 |                   | re-driven here runs engine `--fallback` (`--send-now` for         |
 |                   | today's 10:00 fallback; a past day is never e-mailed).            |
+| rescind           | the desk takes back its approval (contract C8), in Python under   |
+|                   | the portfolio's flock: refused from 09:30 New York on its date    |
+|                   | (the clock when it runs), on a day not published by the desk and  |
+|                   | on a sent day; else published_by/at/source are cleared and the    |
+|                   | row is finished done, in one transaction (command_store.rescind). |
 
 Ownership. This process owns a row from the moment a dispatcher takes it until its outcome is
 recorded (or its job ends). A 'running' row nobody here owns is an orphan when the startup
@@ -31,12 +36,14 @@ from __future__ import annotations
 
 import datetime as dt
 import logging
+import os
 import threading
 from dataclasses import dataclass
 from typing import Callable, Iterable, List, Optional, Set, Tuple
 
 from . import cutoff
-from .command_store import CommandRow, CommandStore
+from .command_store import (NOT_DESK, NOT_RUNNING, RESCINDED, SENT, UNPUBLISHED, CommandRow,
+                            CommandStore)
 from .config import CommandSettings
 from .jobs import Job, JobManager
 from .override_mail import ROLES, Sender, run_override_request, send_smtp
@@ -53,6 +60,10 @@ ENGINE_MODE = {"save": "desk", "override_decision": "override", "publish": "publ
 FROZEN_WHEN_PUBLISHED = ("save", "override_request", "override_decision")
 
 
+# How long a rescind waits for the portfolio's flock (a model run or the 09:30 send may hold it).
+RESCIND_LOCK_WAIT_S = 120.0
+
+
 @dataclass(frozen=True)
 class Outcome:
     status: str  # accepted | done | refused | failed
@@ -62,12 +73,16 @@ class Outcome:
 class Dispatcher:
     def __init__(self, store: CommandStore, jobs: JobManager, settings: CommandSettings,
                  sender: Sender = send_smtp,
-                 clock: Optional[Callable[[], dt.datetime]] = None):
+                 clock: Optional[Callable[[], dt.datetime]] = None,
+                 lock_factory=None):
         self._store = store
         self._jobs = jobs
         self._settings = settings
         self._sender = sender
         self._clock = clock or (lambda: dt.datetime.now(dt.timezone.utc))
+        # flock(2) on <lock_dir>/<portfolio_id>.lock, the lock the engine jobs and the catch-up
+        # scheduler take (catchup.file_lock); tests inject one.
+        self._lock_factory = lock_factory
         self._lock = threading.Lock()
         self._owned: Set[int] = set()
         self._abandoned: Set[int] = set()
@@ -152,6 +167,9 @@ class Dispatcher:
             audit_id = row.id
         return self._from_rpc(audit_id, "publish", portfolio_id, date)
 
+    def rescind(self, audit_id: int, portfolio_id: str, date: dt.date):
+        return self._from_rpc(audit_id, "rescind", portfolio_id, date)
+
     def _from_rpc(self, audit_id, kind, portfolio_id, date) -> Outcome:
         row = self._store.get_row(audit_id)
         if row is None:
@@ -224,9 +242,13 @@ class Dispatcher:
         return self._store.get_row(row.id) or row
 
     def _run_claimed(self, claimed: CommandRow) -> Tuple[Outcome, bool]:
-        if claimed.kind not in ("save", "override_request", "publish"):
+        if claimed.kind not in ("save", "override_request", "publish", "rescind"):
             return self._finish(claimed, REFUSED, None,
                                 f"unknown command kind {claimed.kind}"), False
+        if claimed.kind == "rescind":
+            self._jobs.submit(Job(claimed.portfolio_id, claimed.id, claimed.kind,
+                                  lambda: self._rescind(claimed), self._on_done(claimed.id)))
+            return Outcome(ACCEPTED, f"rescind {claimed.id} queued"), True
         if claimed.kind == "override_request" and claimed.token_hash:
             # Re-driven after the mail went out (token and result were stored first): never a
             # second token or a second mail (R#4).
@@ -315,6 +337,54 @@ class Dispatcher:
             if cutoff.window(row.date, created) == cutoff.CLOSED:
                 return "", False, cutoff.deadline_message(row.date)
         return "publish", cutoff.window(row.date, now) != cutoff.BEFORE_SEND, ""
+
+    # -- rescind (contract C8) --------------------------------------------------------------------
+
+    def _portfolio_lock(self, portfolio_id: str):
+        factory = self._lock_factory
+        if factory is None:
+            from .catchup import file_lock as factory
+        return factory(os.path.join(self._settings.lock_dir, f"{portfolio_id}.lock"),
+                       RESCIND_LOCK_WAIT_S)
+
+    def _rescind(self, row: CommandRow) -> None:
+        """Under the portfolio's flock, so neither a model run nor the 09:30 send is half-way
+        through the day: the time check, then the store's one transaction."""
+        with self._portfolio_lock(row.portfolio_id) as held:
+            if not held:
+                self._finish(row, FAILED, None,
+                             f"{row.portfolio_id} is busy (a model run or the send holds its "
+                             "lock); nothing changed, try again")
+                return
+            if cutoff.window(row.date, self._clock()) != cutoff.BEFORE_SEND:
+                self._finish(row, REFUSED, None,
+                             f"the {row.date} book's {cutoff.SEND_AT:%H:%M} New York send time "
+                             "has passed; its approval can no longer be rescinded")
+                return
+            done = (f"approval of {row.date} rescinded; the day takes edits and a new approval "
+                    f"again (by {cutoff.SEND_AT:%H:%M} New York, or the model's book is sent at "
+                    f"{cutoff.CUTOFF_AT:%H:%M})")
+            res = self._store.rescind(row.id, row.portfolio_id, row.date, done)
+        if res.outcome == RESCINDED:
+            log.info("approval rescinded", extra={
+                "audit_id": row.id, "portfolio_id": row.portfolio_id, "date": str(row.date),
+                "kind": row.kind, "status": DONE})
+            return
+        if res.outcome == NOT_RUNNING:
+            log.warning("rescind row no longer running; nothing changed",
+                        extra={"audit_id": row.id})
+            return
+        why = {
+            UNPUBLISHED: f"{row.portfolio_id} {row.date} is not approved; nothing to rescind",
+            NOT_DESK: (f"{row.portfolio_id} {row.date} was published by "
+                       f"{res.published_by or 'the engine'} (publish_source "
+                       f"{res.publish_source or 'unknown'}), not approved by the desk; only the "
+                       "desk's own approval can be rescinded"),
+            SENT: (f"{row.portfolio_id} {row.date} was already e-mailed at "
+                   f"{res.sent_at.isoformat() if res.sent_at else 'an unknown time'}; a sent "
+                   "approval cannot be rescinded"),
+        }[res.outcome]
+        self._finish(row, REFUSED, None, why)
 
     def _override_mail(self, row: CommandRow, portfolio_dir: str) -> None:
         out = run_override_request(row, portfolio_dir, self._settings, self._store,

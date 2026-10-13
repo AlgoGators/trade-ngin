@@ -10,8 +10,9 @@ version header check, health, call logs and shutdown. Before 2026-10-09 it ran a
 ## Contract
 
 `proto/algogators/desk.proto`, package `algogators.desk`, API `desk`, version in the file's
-header block (`Version: 1.1.0`; 1.1.0 added RunStatus `publish_source` and `sent_at` for the
-daily cutoff, contract C7). Every call sends `x-algogators-api-version: desk=1.1.0` (any `1.x.y`
+header block (`Version: 1.2.0`; 1.1.0 added RunStatus `publish_source` and `sent_at` for the
+daily cutoff, contract C7; 1.2.0 added Rescind, contract C8). Every call sends
+`x-algogators-api-version: desk=1.2.0` (any `1.x.y`
 is accepted, so a 1.0.0 client still works; see `rpc.md`). The engine owns the file. AlgoLens vendors it byte for byte
 at a pinned trade-ngin commit and commits the stubs it generates.
 
@@ -87,6 +88,12 @@ How replies work:
   still approve. Any other problem (no `email.json`, `"enabled": false`, empty or `YOUR_...`
   credentials, no `smtp_host`) fails the row with `override e-mail not sent: <why>. ...` and
   stores no token.
+- **Rescind** (contract C8, desk.proto 1.2.0). A `rescind` row runs in Python on the portfolio's
+  job queue, under `$QT_LOCK_DIR/<portfolio_id>.lock` (waits up to 120 s, else the row fails with
+  nothing changed). From 09:30 New York on its date (the clock when it runs), on a day not
+  approved by the desk, or on a sent day it is refused. Otherwise one transaction clears
+  `published_by`, `published_at` and `publish_source` on the day's `live_run_metadata` rows and
+  finishes the row done (`command_store.rescind`). No engine process runs.
 - **Published days** (contract C3). A `save`, `override_request` or `override_decision` row for
   a day whose `live_run_metadata.published_at` is set is refused before anything runs
   (`... was published at ...; a published day is frozen`). A `publish` row on a published day
