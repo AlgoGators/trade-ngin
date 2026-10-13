@@ -3037,14 +3037,21 @@ PostgresDatabase::get_position_inception_dates(const std::string& strategy_id,
                                                const std::string& table_name) {
     using Map = std::unordered_map<std::string, std::string>;
 
+    // table_name is interpolated into the FROM clause below and cannot be a
+    // bound parameter, so it goes through the same allowlist
+    // load_positions_by_date uses. Every caller passes the default today; that
+    // is a property of today's callers, not of this function. The check comes
+    // before the connection is looked at, so a refused name issues no SQL.
+    auto table_validation = validate_table_name(table_name);
+    if (table_validation.is_error()) {
+        return make_error<Map>(table_validation.error()->code(), table_validation.error()->what());
+    }
+
     auto validation = validate_connection();
     if (validation.is_error()) {
         return make_error<Map>(validation.error()->code(), validation.error()->what());
     }
     if (symbols.empty()) return Result<Map>(Map{});
-
-    // table_name is an internal default (trading.positions), never user input --
-    // same contract as load_positions_by_date, which interpolates it likewise.
 
     try {
         pqxx::work txn(*connection_);
@@ -3088,14 +3095,21 @@ PostgresDatabase::get_current_holding_start_dates(const std::string& strategy_id
                                                   const std::string& table_name) {
     using Map = std::unordered_map<std::string, std::string>;
 
+    // table_name is interpolated into the FROM clause below and cannot be a
+    // bound parameter, so it goes through the same allowlist
+    // load_positions_by_date uses. Every caller passes the default today; that
+    // is a property of today's callers, not of this function. The check comes
+    // before the connection is looked at, so a refused name issues no SQL.
+    auto table_validation = validate_table_name(table_name);
+    if (table_validation.is_error()) {
+        return make_error<Map>(table_validation.error()->code(), table_validation.error()->what());
+    }
+
     auto validation = validate_connection();
     if (validation.is_error()) {
         return make_error<Map>(validation.error()->code(), validation.error()->what());
     }
     if (symbols.empty()) return Result<Map>(Map{});
-
-    // table_name is an internal default (trading.positions), never user input --
-    // same contract as load_positions_by_date, which interpolates it likewise.
 
     try {
         pqxx::work txn(*connection_);
@@ -3163,14 +3177,21 @@ PostgresDatabase::get_last_buy_dates(const std::string& strategy_id,
                                      const std::string& table_name) {
     using Map = std::unordered_map<std::string, std::string>;
 
+    // table_name is interpolated into the FROM clause below and cannot be a
+    // bound parameter, so it goes through the same allowlist
+    // load_positions_by_date uses. Every caller passes the default today; that
+    // is a property of today's callers, not of this function. The check comes
+    // before the connection is looked at, so a refused name issues no SQL.
+    auto table_validation = validate_table_name(table_name);
+    if (table_validation.is_error()) {
+        return make_error<Map>(table_validation.error()->code(), table_validation.error()->what());
+    }
+
     auto validation = validate_connection();
     if (validation.is_error()) {
         return make_error<Map>(validation.error()->code(), validation.error()->what());
     }
     if (symbols.empty()) return Result<Map>(Map{});
-
-    // table_name is an internal default (trading.executions), never user input --
-    // same contract as get_position_inception_dates above.
 
     try {
         pqxx::work txn(*connection_);
