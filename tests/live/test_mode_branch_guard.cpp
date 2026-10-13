@@ -122,11 +122,8 @@ const std::vector<Site> kFuturesSites = {
     {"use_override_date = true;",
      "set by the argument parse"},
     {"if (!use_override_date) {",
-     "DECISION: a run with no date mails by default. Not run in tests by rule (it "
-     "mails); the report plan itself: EmailReportPlan.* "
-     "(tests/live/test_email_body_file.cpp)"},
-    {"send_email = true;",
-     "set by --send-email, or by a run with no date"},
+     "DECISION: a run with no date is refused: usage, exit 2, nothing run and nothing sent "
+     "(live/run_args.hpp, RunArgs.* in tests/live/test_run_args.cpp)"},
     {"if (send_email && use_override_date) {",
      "a console line"},
     {"auto now = use_override_date ? target_date : std::chrono::system_clock::now();",
@@ -182,11 +179,8 @@ const std::vector<Site> kEquitySites = {
     {"use_override_date = true;",
      "set by the argument parse"},
     {"if (!use_override_date) {",
-     "DECISION: a run with no date mails by default. Not run in tests by rule (it "
-     "mails); the report plan itself: EmailReportPlan.* "
-     "(tests/live/test_email_body_file.cpp)"},
-    {"send_email = true;",
-     "set by --send-email, or by a run with no date"},
+     "DECISION: a run with no date is refused: usage, exit 2, nothing run and nothing sent "
+     "(live/run_args.hpp, RunArgs.* in tests/live/test_run_args.cpp)"},
     {"if (send_email && use_override_date) {",
      "a console line"},
     {"if (use_override_date) {",

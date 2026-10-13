@@ -33,6 +33,7 @@
 #include "trade_ngin/live/data_freshness.hpp"
 #include "trade_ngin/live/email_body_file.hpp"
 #include "trade_ngin/live/email_delivery.hpp"
+#include "trade_ngin/live/run_args.hpp"
 #include "trade_ngin/live/execution_manager.hpp"
 #include "trade_ngin/live/finalized_books_read.hpp"
 #include "trade_ngin/live/late_bar_warning.hpp"
@@ -137,9 +138,11 @@ int main(int argc, char* argv[]) {
             }
         }
 
-        // If no date override, enable email by default for real-time runs
+        // A run names its date (live/run_args.hpp, T-EMAIL P2-5): without one nothing is run and
+        // nothing is sent.
         if (!use_override_date) {
-            send_email = true;
+            std::cerr << live::dateless_run_message(argv[0]);
+            return live::kDatelessRunExitCode;
         }
 
         if (send_email && use_override_date) {
