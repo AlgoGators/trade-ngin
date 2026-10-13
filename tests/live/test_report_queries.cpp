@@ -123,3 +123,17 @@ TEST(EmailQueriesTwinSourceGuard, TheRunnersReadYesterdaysRowsThroughTheFunction
                     "+ portfolio_id + \"' AND date = '\" + yesterday_date_for_email + \"' \""),
         npos);
 }
+
+// T-EMAIL Q11: the quantity a closed position had is the latest stored row before the settled day,
+// one row per symbol, of this book's system portfolio; a quote in a symbol cannot end the list.
+TEST(ReportQueries, TheQuantityBeforeQueryReadsOneBookAndOneRowPerSymbolBeforeTheDate) {
+    const std::string q = trade_ngin::quantity_before_report_query(
+        "LIVE_EQUITY_MEAN_REVERSION", "EQUITY_MR", "2026-05-04", {"ABT", "D'D"});
+    EXPECT_NE(q.find("strategy_id = 'LIVE_EQUITY_MEAN_REVERSION'"), std::string::npos) << q;
+    EXPECT_NE(q.find("portfolio_id = 'EQUITY_MR'"), std::string::npos) << q;
+    EXPECT_NE(q.find("portfolio_type = 'system'"), std::string::npos) << q;
+    EXPECT_NE(q.find("DATE(last_update) < '2026-05-04'"), std::string::npos) << q;
+    EXPECT_NE(q.find("DISTINCT ON (symbol)"), std::string::npos) << q;
+    EXPECT_NE(q.find("ORDER BY symbol, last_update DESC"), std::string::npos) << q;
+    EXPECT_NE(q.find("IN ('ABT', 'DD')"), std::string::npos) << q;
+}

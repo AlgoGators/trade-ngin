@@ -19,6 +19,7 @@
 #include "trade_ngin/core/holiday_checker.hpp"
 #include "trade_ngin/core/logger.hpp"
 #include "trade_ngin/core/report_charts.hpp"
+#include "trade_ngin/core/report_held_symbols.hpp"
 #include "trade_ngin/core/report_price_text.hpp"
 #include "trade_ngin/core/report_settled_marks.hpp"
 #include "trade_ngin/instruments/equity.hpp"
@@ -3414,15 +3415,9 @@ std::string EmailSender::generate_trading_report_body(
     html << "<h2>Symbols Reference</h2>\n";
     if (db) {
         try {
-            // Every contract any sleeve holds, not only those the book holds net: a contract the
-            // sleeves hold in opposite directions nets to zero in `positions` and used to drop out.
-            std::unordered_map<std::string, Position> held_by_any_sleeve = positions;
-            for (const auto& sleeve : strategy_positions) {
-                for (const auto& [symbol, position] : sleeve.second) {
-                    if (position.quantity.as_double() != 0.0) held_by_any_sleeve.emplace(symbol, position);
-                }
-            }
-            html << format_symbols_table_for_positions(held_by_any_sleeve, db, yesterday_date_str);
+            // Every contract any sleeve holds, not only those the book holds net (N4).
+            const auto held_by_sleeves = held_by_any_sleeve(positions, strategy_positions);
+            html << format_symbols_table_for_positions(held_by_sleeves, db, yesterday_date_str);
         } catch (const std::exception& e) {
             html << "<p>Error loading symbols data: " << e.what() << "</p>\n";
         }
