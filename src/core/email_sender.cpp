@@ -27,6 +27,21 @@
 
 namespace trade_ngin {
 
+namespace {
+// The positions in symbol order. The map hands them out in hash order, which moves with the
+// build; the rows and every running total are walked in this order instead (T-EMAIL P2-3).
+std::vector<std::pair<std::string, const Position*>> positions_by_symbol(
+    const std::unordered_map<std::string, Position>& positions) {
+    std::vector<std::pair<std::string, const Position*>> ordered;
+    ordered.reserve(positions.size());
+    for (const auto& [symbol, position] : positions)
+        ordered.emplace_back(symbol, &position);
+    std::sort(ordered.begin(), ordered.end(),
+              [](const auto& a, const auto& b) { return a.first < b.first; });
+    return ordered;
+}
+}  // namespace
+
 // Global variables for curl email payload
 std::string g_email_payload;
 size_t g_payload_pos = 0;
@@ -1122,7 +1137,8 @@ std::string EmailSender::format_positions_table(
     std::vector<std::tuple<std::string, double, double, double, double, double>>
         position_data;  // symbol, qty, entry, market, notional, margin
 
-    for (const auto& [symbol, position] : positions) {
+    for (const auto& [symbol, position_ptr] : positions_by_symbol(positions)) {
+        const Position& position = *position_ptr;
         if (position.quantity.as_double() != 0.0) {
             active_positions++;
 
@@ -3318,7 +3334,8 @@ std::string EmailSender::format_single_strategy_table(
     // First pass: calculate total notional for this strategy
     std::vector<std::tuple<std::string, double, double, double, double>> position_data;
 
-    for (const auto& [symbol, position] : positions) {
+    for (const auto& [symbol, position_ptr] : positions_by_symbol(positions)) {
+        const Position& position = *position_ptr;
         if (position.quantity.as_double() != 0.0) {
             active_positions++;
 
@@ -3532,7 +3549,8 @@ std::string EmailSender::format_strategy_positions_tables(
         html << format_single_strategy_table(strategy_name, positions, current_prices);
 
         // Accumulate portfolio totals
-        for (const auto& [symbol, position] : positions) {
+        for (const auto& [symbol, position_ptr] : positions_by_symbol(positions)) {
+            const Position& position = *position_ptr;
             if (position.quantity.as_double() != 0.0) {
                 portfolio_total_positions++;
 

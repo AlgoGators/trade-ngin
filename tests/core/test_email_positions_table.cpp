@@ -237,3 +237,35 @@ TEST_F(EmailPositionsTableTest, TheSummaryShowsTheExpectedRiskAndTheOneDayVarAnd
     EXPECT_EQ(html.find("Expected Risk"), std::string::npos);
     EXPECT_EQ(html.find("95% VaR"), std::string::npos);
 }
+
+// T-EMAIL P2-3: the rows are in symbol order, whatever order the map hands them out in. The same
+// twelve positions are put in a map built two ways (different bucket counts, reversed insertion),
+// which iterate differently, and the table must be the same text with the symbols ascending.
+TEST_F(EmailPositionsTableTest, RowsAreInSymbolOrderWhateverTheMapIterationOrderIs) {
+    std::vector<std::string> symbols;
+    for (int i = 1; i <= 12; ++i) {
+        std::string s = "ZORD" + std::string(i < 10 ? "0" : "") + std::to_string(i);
+        InstrumentRegistry::instance().register_instrument(
+            s, std::make_shared<EquityInstrument>(s, equity_spec()));
+        symbols.push_back(s);
+    }
+    std::unordered_map<std::string, Position> forward;
+    forward.reserve(8);
+    for (const auto& s : symbols)
+        forward.emplace(s, held(s, 10.0, 100.0));
+    std::unordered_map<std::string, Position> backward;
+    backward.reserve(1000);
+    for (auto it = symbols.rbegin(); it != symbols.rend(); ++it) {
+        backward.emplace(*it, held(*it, 10.0, 100.0));
+    }
+
+    const std::string a = sender_.format_positions_table(forward, true, {}, {});
+    const std::string b = sender_.format_positions_table(backward, true, {}, {});
+    EXPECT_EQ(a, b);
+    std::size_t at = 0;
+    for (const auto& s : symbols) {
+        const std::size_t found = a.find(s, at);
+        ASSERT_NE(found, std::string::npos) << s << " is missing or out of order";
+        at = found;
+    }
+}
