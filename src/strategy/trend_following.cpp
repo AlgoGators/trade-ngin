@@ -175,6 +175,12 @@ Result<void> TrendFollowingStrategy::initialize() {
         return base_result;
     }
 
+    // The instrument weights get_weights() keeps are read from two database tables (the contract
+    // metadata's sector of each symbol, and the futures symbols that have bars) and from nothing
+    // else. They are kept for one initialised life of the strategy: dropped here, read again on
+    // the next get_weights().
+    weight_cache_.clear();
+
     // Set PnL accounting method for futures (marked-to-market daily)
     set_pnl_accounting_method(PnLAccountingMethod::REALIZED_ONLY);
     INFO("Trend following strategy initialized with REALIZED_ONLY PnL accounting for futures");

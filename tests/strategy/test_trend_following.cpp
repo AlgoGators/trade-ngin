@@ -292,16 +292,18 @@ TEST(TrendFollowingConfigDefaults, TheTemplateCarriesNoRetiredBufferKey) {
 namespace {
 
 // Mock DB whose contract metadata contains a single-symbol sector, so the
-// 50%-of-sector cap in get_weights() actually fires.
+// 50%-of-sector cap in get_weights() actually fires. `rows` is the two tables get_weights() reads
+// (the metadata's sector and symbol, and the symbols that have bars); a test may change it.
 class SectorMetadataMockDb : public MockPostgresDatabase {
 public:
     using MockPostgresDatabase::MockPostgresDatabase;
 
+    std::vector<std::pair<std::string, std::string>> rows = {
+        {"Metals", "GC"}, {"Metals", "SI"}, {"Metals", "HG"}, {"Crypto", "MBT"}};
+
     Result<std::shared_ptr<arrow::Table>> get_contract_metadata() const override {
         arrow::StringBuilder sector_b;
         arrow::StringBuilder symbol_b;
-        const std::vector<std::pair<std::string, std::string>> rows = {
-            {"Metals", "GC"}, {"Metals", "SI"}, {"Metals", "HG"}, {"Crypto", "MBT"}};
         for (const auto& [sec, sym] : rows) {
             (void)sector_b.Append(sec);
             (void)symbol_b.Append(sym);
@@ -321,7 +323,10 @@ public:
         (void)asset_class;
         (void)freq;
         (void)data_type;
-        return Result<std::vector<std::string>>({"GC.v.0", "SI.v.0", "HG.v.0", "MBT.v.0"});
+        std::vector<std::string> with_bars;
+        for (const auto& row : rows)
+            with_bars.push_back(row.second + ".v.0");
+        return Result<std::vector<std::string>>(with_bars);
     }
 };
 
@@ -358,6 +363,46 @@ TEST(TrendFollowingWeights, SectorCapSurvivesNormalization) {
     for (const auto* metal : {"GC", "SI", "HG"}) {
         EXPECT_NEAR(weights.at(metal), 0.25, 1e-9);
     }
+}
+
+// T2.20: the weight table is read from the database once and kept for one initialised life of the
+// strategy; initialize() drops it. The table depends on nothing else: not on the strategy's
+// symbols, its configuration or the listing dates. Within a life a changed table is NOT seen (that
+// is the cache); after initialize() it is, where the parent went on returning the first table for
+// ever.
+TEST(TrendFollowingWeights, InitializeDropsTheKeptWeightsSoAChangedTableIsReadAgain) {
+    StateManager::reset_instance();
+    auto db = std::make_shared<SectorMetadataMockDb>("mock://weights_hook");
+    ASSERT_TRUE(db->connect().is_ok());
+
+    StrategyConfig cfg;
+    cfg.capital_allocation = 1000000.0;
+    cfg.max_leverage = 4.0;
+    cfg.asset_classes = {AssetClass::FUTURES};
+    cfg.frequencies = {DataFrequency::DAILY};
+    TrendFollowingConfig tf;
+    TrendFollowingStrategy strat("TEST_WEIGHTS_HOOK", cfg, tf, db);
+    ASSERT_TRUE(strat.initialize().is_ok());
+
+    const auto first = strat.get_weights();
+    ASSERT_EQ(first.size(), 4u);
+    EXPECT_NEAR(first.at("GC"), 0.25, 1e-12);
+
+    // The input changes: a third sector with two contracts that have bars.
+    db->rows.emplace_back("Rates", "ZN");
+    db->rows.emplace_back("Rates", "ZF");
+    EXPECT_EQ(strat.get_weights(), first) << "within one initialised life the kept table is served";
+
+    ASSERT_TRUE(strat.initialize().is_ok());
+    const auto second = strat.get_weights();
+    ASSERT_EQ(second.size(), 6u) << "the weight table of before the change was returned";
+    // Three sectors at a third each. MBT, alone in its sector, is capped at half of it (1/6); the
+    // five others share the rest in proportion: 1/9 and 1/6 scaled by (1 - 1/6) / (2/3) = 1.25.
+    EXPECT_NEAR(second.at("MBT"), 1.0 / 6.0, 1e-12);
+    for (const auto* metal : {"GC", "SI", "HG"})
+        EXPECT_NEAR(second.at(metal), 5.0 / 36.0, 1e-12);
+    for (const auto* rate : {"ZN", "ZF"})
+        EXPECT_NEAR(second.at(rate), 5.0 / 24.0, 1e-12);
 }
 
 // Test initialization and valid configuration
