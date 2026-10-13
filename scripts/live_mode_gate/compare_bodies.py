@@ -4,7 +4,7 @@
     compare_bodies.py <body A> <log A (.gz)> <body B> <log B (.gz)>
 
 A chart process that does not finish in time is killed, the run goes on and its report leaves that
-one chart block out (one ERROR line in the run's log: "Gnuplot did not finish within ..."). On a
+one chart block out (one ERROR line in the run's log: "Chart not drawn after 2 start(s): ...", and one line in its place in the report: "<chart>: not shown (<reason>)"). On a
 loaded machine that happens to about one chart process in a hundred, on either side, so two runs
 that did the same thing can differ by a chart block. The rule:
 
@@ -24,7 +24,9 @@ import gzip
 import re
 import sys
 
-TIMEOUT = "Gnuplot did not finish within"
+TIMEOUT = "Chart not drawn after"   # the one ERROR line of a chart left out after its second start (core/gnuplot_run.hpp)
+# The line the report prints in the place of a chart that is not shown (core/report_charts.hpp).
+NOT_SHOWN = re.compile(r'<p style="margin: 12px 0; color: #666; font-size: 13px;">[^<\n]*: not shown \([^)\n]*\)</p>\n')
 # One chart block as the report writes it: heading, wrapper, image, wrapper end.
 BLOCK = re.compile(
     r'<h3 style="margin-top: 20px; color: #333;">[^<\n]*</h3>\n'
@@ -57,7 +59,7 @@ def main(argv):
     charts_a, charts_b = BLOCK.findall(a), BLOCK.findall(b)
     lacks_a = [c for c in charts_b if c not in charts_a]
     lacks_b = [c for c in charts_a if c not in charts_b]
-    if BLOCK.sub("", a) != BLOCK.sub("", b):
+    if NOT_SHOWN.sub("", BLOCK.sub("", a)) != NOT_SHOWN.sub("", BLOCK.sub("", b)):
         print("DIFFERENT outside the chart blocks (chart timeouts: A %d, B %d)" % (killed_a, killed_b))
         return 1
     if len(lacks_a) > killed_a or len(lacks_b) > killed_b:
