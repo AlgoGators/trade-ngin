@@ -277,7 +277,14 @@ void MarkovSwitchingDFM::m_step(const Eigen::MatrixXd& factors,
                 double xi_sum = 0.0;
                 for (int t = 0; t < T - 1; ++t) {
                     double pred_j = std::max(pred_probs_(t + 1, j), 1e-300);
-                    xi_sum += smoothed_probs(t, i) * P_(i, j) *
+                    // Kim's smoothed joint takes the FILTERED probability at t:
+                    //   xi(t,i,j) = filtered(t,i) * P(i,j)
+                    //               * smoothed(t+1,j) / pred(t+1,j)
+                    // kim_smoother_step uses filtered(t,i) for this same term.
+                    // Using smoothed(t,i) here made the update something other
+                    // than the maximiser, so EM's log-likelihood could fall
+                    // between iterations.
+                    xi_sum += filtered_probs(t, i) * P_(i, j) *
                               smoothed_probs(t + 1, j) / pred_j;
                 }
                 P_(i, j) = std::max(xi_sum / from_i_sum, 1e-6);
