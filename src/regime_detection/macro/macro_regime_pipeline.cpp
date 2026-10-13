@@ -805,31 +805,6 @@ MacroRegimePipeline::map_bsts(const Eigen::Vector4d& cluster_probs,
 }
 
 // ============================================================================
-// Aggregation
-// ============================================================================
-
-Eigen::Matrix<double, kNumMacroRegimes, 1>
-MacroRegimePipeline::aggregate(
-    const Eigen::Matrix<double, kNumMacroRegimes, 1>& p_dfm,
-    const Eigen::Matrix<double, kNumMacroRegimes, 1>& p_msdfm,
-    const Eigen::Matrix<double, kNumMacroRegimes, 1>& p_quad,
-    const Eigen::Matrix<double, kNumMacroRegimes, 1>& p_bsts) const
-{
-    Eigen::Matrix<double, kNumMacroRegimes, 1> raw =
-        config_.w_dfm      * p_dfm +
-        config_.w_msdfm    * p_msdfm +
-        config_.w_quadrant * p_quad +
-        config_.w_bsts     * p_bsts;
-
-    raw = raw.array().max(0.0);
-    double s = raw.sum();
-    if (s > kEps) raw /= s;
-    else raw.setConstant(1.0 / kNumMacroRegimes);
-
-    return raw;
-}
-
-// ============================================================================
 // Persistence Smoothing
 // ============================================================================
 

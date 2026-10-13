@@ -4,7 +4,9 @@
 #include <Eigen/Dense>
 #include <cmath>
 #include <limits>
+#include <atomic>
 #include <random>
+#include <thread>
 #include <vector>
 
 using namespace trade_ngin::statistics;
@@ -806,8 +808,10 @@ TEST(RegimePhase4, LiveStateRejectsUntrainedSnapshot_K17) {
     using namespace trade_ngin;
     MarketRegimePipeline pipeline;
     auto r = pipeline.get_live_state(SleeveId::EQUITIES);
-    EXPECT_TRUE(r.is_error())
+    ASSERT_TRUE(r.is_error())
         << "snapshot before training should fail with NOT_INITIALIZED.";
+    EXPECT_EQ(r.error()->code(), ErrorCode::NOT_INITIALIZED)
+        << "the header documents this code; it must be the one returned.";
 }
 
 TEST(RegimePhase4, LiveStateRejectsUntrainedRestore_K17) {
@@ -816,8 +820,10 @@ TEST(RegimePhase4, LiveStateRejectsUntrainedRestore_K17) {
     SleeveLiveState snap;
     snap.prev_smoothed.setConstant(1.0 / kNumMarketRegimes);
     auto r = pipeline.restore_live_state(SleeveId::EQUITIES, snap);
-    EXPECT_TRUE(r.is_error())
+    ASSERT_TRUE(r.is_error())
         << "restore before training should fail — caller must train first.";
+    EXPECT_EQ(r.error()->code(), ErrorCode::NOT_INITIALIZED)
+        << "the header documents this code; it must be the one returned.";
 }
 
 // ============================================================================
@@ -930,4 +936,241 @@ TEST(RegimePhase4, RunningPeakDrawdownMatchesNaiveRecompute_K14) {
         EXPECT_DOUBLE_EQ(dds_fast[t], dds_naive[t])
             << "drawdown_speed bit-identity broken at t=" << t;
     }
+}
+
+// ============================================================================
+// M-13: both live-state functions now take the pipeline mutex, like update(),
+// so a live process may checkpoint from a different thread than the bar feed.
+// ============================================================================
+
+TEST(RegimePhase4, LiveStateIsThreadSafeAgainstConcurrentReaders_M13) {
+    using namespace trade_ngin;
+    // Both functions take the pipeline mutex now. Hammering them from several
+    // threads must not tear or return a half-written snapshot.
+    MarketRegimePipeline pipeline;
+
+    std::atomic<int> errors{0};
+    std::vector<std::thread> threads;
+    for (int t = 0; t < 4; ++t) {
+        threads.emplace_back([&pipeline, &errors] {
+            for (int i = 0; i < 200; ++i) {
+                auto r = pipeline.get_live_state(SleeveId::EQUITIES);
+                // Untrained, so every call must report the same typed error
+                // rather than tearing or returning a half-written snapshot.
+                if (!r.is_error() || r.error()->code() != ErrorCode::NOT_INITIALIZED) {
+                    ++errors;
+                }
+            }
+        });
+    }
+    for (auto& th : threads) th.join();
+
+    EXPECT_EQ(errors.load(), 0);
+}
+
+// ============================================================================
+// L-27 adversarial suite (#103 step 1).
+//
+// These do not check that a number is a particular value — they check that a
+// contract holds under hostile input. Each one is written so that removing the
+// guard it covers turns it red.
+// ============================================================================
+
+namespace l27 {
+
+// Shared training setup, factored out so each adversarial case differs only in
+// the hostile thing it does.
+struct TrainingInputs {
+    Eigen::MatrixXd gmm_features;
+    GMMResult gmm_result;
+    int T = 0;
+};
+
+// Fills a caller-owned pipeline: MarketRegimePipeline holds a std::mutex, so
+// it is neither copyable nor movable and cannot be returned by value.
+inline TrainingInputs train_pipeline(MarketRegimePipeline& pipeline,
+                                     int T = 200, int seed = 42) {
+    TrainingInputs tp;
+    tp.T = T;
+    std::mt19937 rng(seed);
+    std::normal_distribution<double> normal(0.0, 1.0);
+
+    std::vector<double> returns(T);
+    for (int t = 0; t < T; ++t) returns[t] = 0.0004 + 0.01 * normal(rng);
+
+    std::vector<Eigen::VectorXd> hmm_means(3);
+    std::vector<Eigen::MatrixXd> hmm_covs(3);
+    hmm_means[0] = Eigen::VectorXd::Constant(1, 0.001);
+    hmm_means[1] = Eigen::VectorXd::Constant(1, 0.0);
+    hmm_means[2] = Eigen::VectorXd::Constant(1, -0.002);
+    hmm_covs[0] = Eigen::MatrixXd::Identity(1, 1) * 0.0001;
+    hmm_covs[1] = Eigen::MatrixXd::Identity(1, 1) * 0.0004;
+    hmm_covs[2] = Eigen::MatrixXd::Identity(1, 1) * 0.0016;
+
+    Eigen::VectorXd msar_means(2); msar_means << 0.001, -0.001;
+    Eigen::VectorXd msar_vars(2);  msar_vars  << 0.0001, 0.0009;
+    Eigen::MatrixXd msar_ar(2, 1); msar_ar    << 0.3, -0.2;
+
+    std::vector<double> garch_vol(T);
+    for (int t = 0; t < T; ++t) garch_vol[t] = 0.10 + 0.02 * std::abs(normal(rng));
+
+    tp.gmm_features = Eigen::MatrixXd::Zero(T, 5);
+    for (int t = 0; t < T; ++t) {
+        tp.gmm_features(t, 0) = returns[t];
+        tp.gmm_features(t, 1) = garch_vol[t];
+        tp.gmm_features(t, 2) = 0.0;
+        tp.gmm_features(t, 3) = 0.0;
+        tp.gmm_features(t, 4) = 0.1 * normal(rng);
+    }
+
+    GMM::Config gc; gc.max_iterations = 50; gc.tolerance = 1e-4; gc.restarts = 2;
+    GMM gmm(gc);
+    tp.gmm_result = gmm.fit(tp.gmm_features, 5);
+
+    pipeline.train(SleeveId::EQUITIES, returns, hmm_means, hmm_covs,
+                   msar_means, msar_vars, msar_ar,
+                   garch_vol, tp.gmm_result, tp.gmm_features);
+    return tp;
+}
+
+inline bool all_finite(const MarketBelief& b) {
+    for (const auto& [regime, p] : b.market_probs) {
+        (void)regime;
+        if (!std::isfinite(p)) return false;
+    }
+    return std::isfinite(b.confidence) && std::isfinite(b.stability);
+}
+
+}  // namespace l27
+
+// L-27 case 2: NaN injection.
+// A NaN reaching any single input must not propagate into the belief, because
+// a downstream allocator would size a position from a NaN probability.
+//
+// Note on what this does and does not prove. The invariant is currently
+// defended at three independent layers: the map_* functions clamp with
+// std::max(0.0, x), which turns NaN into 0.0; is_valid() then zeroes that
+// model's weight; and the final sum-normalisation falls back to a uniform
+// distribution. Disabling any one of them individually leaves the test green,
+// so this is an invariant guard against a redesign that removes the defence
+// wholesale, not a sharp single-point regression test.
+TEST(RegimeAdversarial_L27, NaNInOneInputNeverReachesTheBelief) {
+    MarketRegimePipeline pipeline;
+    auto tp = l27::train_pipeline(pipeline);
+    ASSERT_TRUE(pipeline.is_trained(SleeveId::EQUITIES));
+
+    const double nan = std::numeric_limits<double>::quiet_NaN();
+
+    struct Case { const char* name; int which; };
+    const Case cases[] = {
+        {"hmm_state_probs", 0}, {"msar_state_probs", 1},
+        {"garch.conditional_vol", 2}, {"features.realized_vol", 3},
+        {"gmm_cluster_probs", 4},
+    };
+
+    for (const auto& c : cases) {
+        Eigen::VectorXd hmm(3);  hmm  << 0.6, 0.3, 0.1;
+        Eigen::VectorXd msar(2); msar << 0.7, 0.3;
+        GARCHFeatures gf; gf.conditional_vol = 0.12; gf.vol_percentile = 0.25;
+        MarketFeatures mf; mf.realized_vol = 0.12; mf.liquidity_proxy = 1.1;
+        Eigen::VectorXd gmm = GMM::predict_proba(
+            tp.gmm_features.row(tp.T / 2).transpose(), tp.gmm_result);
+
+        switch (c.which) {
+            case 0: hmm(1) = nan; break;
+            case 1: msar(0) = nan; break;
+            case 2: gf.conditional_vol = nan; break;
+            case 3: mf.realized_vol = nan; break;
+            case 4: gmm(0) = nan; break;
+        }
+
+        auto r = pipeline.update(SleeveId::EQUITIES, hmm, msar, gf, mf, gmm);
+        if (r.is_ok()) {
+            EXPECT_TRUE(l27::all_finite(r.value()))
+                << "NaN injected into " << c.name << " reached the belief";
+            double sum = 0.0;
+            for (const auto& [regime, p] : r.value().market_probs) { (void)regime; sum += p; }
+            EXPECT_TRUE(std::isfinite(sum))
+                << "belief probabilities do not sum finitely after NaN in " << c.name;
+        }
+        // Rejecting the bar outright is also acceptable; emitting NaN is not.
+    }
+}
+
+// L-27 case 5: synthetic crash.
+// Inside a deliberately constructed crash window the stress states must carry
+// real probability mass. If they do not, the ontology mapping is not reacting
+// to stress at all and the pipeline cannot do the job it exists for.
+TEST(RegimeAdversarial_L27, StressStatesCarryMassInsideASyntheticCrash) {
+    MarketRegimePipeline pipeline;
+    auto tp = l27::train_pipeline(pipeline);
+    ASSERT_TRUE(pipeline.is_trained(SleeveId::EQUITIES));
+
+    // A crash bar: volatility far above the training range, deep drawdown,
+    // liquidity gone, and the HMM/MSAR sitting in their negative-drift states.
+    Eigen::VectorXd hmm(3);  hmm  << 0.05, 0.15, 0.80;   // high-vol state
+    Eigen::VectorXd msar(2); msar << 0.10, 0.90;         // negative-drift state
+    GARCHFeatures gf;
+    gf.conditional_vol = 0.95;
+    gf.vol_percentile  = 0.99;
+    gf.vol_spike       = true;
+    gf.vol_of_vol_high = true;
+    MarketFeatures mf;
+    mf.realized_vol    = 0.95;
+    mf.drawdown        = -0.35;
+    mf.liquidity_proxy = 0.15;
+
+    Eigen::VectorXd gmm = GMM::predict_proba(
+        tp.gmm_features.row(tp.T / 2).transpose(), tp.gmm_result);
+
+    auto r = pipeline.update(SleeveId::EQUITIES, hmm, msar, gf, mf, gmm);
+    ASSERT_TRUE(r.is_ok()) << r.error()->what();
+    const auto& belief = r.value();
+    ASSERT_TRUE(l27::all_finite(belief));
+
+    double stress = 0.0;
+    for (const auto& [regime, p] : belief.market_probs) {
+        if (regime == MarketRegimeL1::STRESS_PRICE ||
+            regime == MarketRegimeL1::STRESS_LIQUIDITY) {
+            stress += p;
+        }
+    }
+
+    // Measured 0.60 on this fixture against the 0.30 contract, so there is
+    // 2x headroom: this catches a regression that halves the stress response.
+    EXPECT_GT(stress, 0.30)
+        << "stress states hold only " << stress
+        << " of the probability on a bar with 95% vol, a 35% drawdown and "
+           "liquidity at 0.15; the mapping is not responding to stress.";
+}
+
+// L-27: probabilities stay a distribution under hostile input.
+// Cheap to state, and it is the invariant every downstream consumer assumes.
+TEST(RegimeAdversarial_L27, BeliefRemainsADistributionUnderExtremeInput) {
+    MarketRegimePipeline pipeline;
+    auto tp = l27::train_pipeline(pipeline);
+    ASSERT_TRUE(pipeline.is_trained(SleeveId::EQUITIES));
+
+    const double big = 1e12;
+    Eigen::VectorXd hmm(3);  hmm  << 0.34, 0.33, 0.33;
+    Eigen::VectorXd msar(2); msar << 0.5, 0.5;
+    GARCHFeatures gf; gf.conditional_vol = big; gf.vol_percentile = 1.0;
+    MarketFeatures mf; mf.realized_vol = big; mf.drawdown = -big;
+                       mf.liquidity_proxy = 0.0;
+    Eigen::VectorXd gmm = GMM::predict_proba(
+        tp.gmm_features.row(0).transpose(), tp.gmm_result);
+
+    auto r = pipeline.update(SleeveId::EQUITIES, hmm, msar, gf, mf, gmm);
+    ASSERT_TRUE(r.is_ok()) << r.error()->what();
+    const auto& belief = r.value();
+
+    ASSERT_TRUE(l27::all_finite(belief));
+    double sum = 0.0;
+    for (const auto& [regime, p] : belief.market_probs) {
+        (void)regime;
+        EXPECT_GE(p, 0.0) << "negative probability under extreme input";
+        EXPECT_LE(p, 1.0) << "probability above 1 under extreme input";
+        sum += p;
+    }
+    EXPECT_NEAR(sum, 1.0, 1e-6) << "probabilities no longer sum to 1";
 }

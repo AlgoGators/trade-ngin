@@ -354,8 +354,11 @@ public:
     //
     // get_live_state: snapshot the runtime EWMA recurrence state (the bits
     // that change every update()) so a live process can checkpoint between
-    // bars. Returns INVALID_STATE if the sleeve is untrained — there is no
+    // bars. Returns NOT_INITIALIZED if the sleeve is untrained — there is no
     // meaningful prev_smoothed to checkpoint before training.
+    //
+    // Both take the pipeline mutex, like update(), so a live process may
+    // checkpoint from a different thread than the one feeding bars.
     //
     // restore_live_state: replay a prior snapshot after a restart. Caller
     // must have already train()-ed the sleeve so the static mappings exist;
@@ -407,13 +410,6 @@ private:
     Eigen::Matrix<double, kNumMarketRegimes, 1>
     map_gmm(SleeveId sleeve, const Eigen::VectorXd& p_cluster) const;
 
-    // ── Aggregation ─────────────────────────────────────────────────────────
-    Eigen::Matrix<double, kNumMarketRegimes, 1>
-    aggregate(SleeveId sleeve,
-              const Eigen::Matrix<double, kNumMarketRegimes, 1>& p_hmm,
-              const Eigen::Matrix<double, kNumMarketRegimes, 1>& p_msar,
-              const Eigen::Matrix<double, kNumMarketRegimes, 1>& p_garch,
-              const Eigen::Matrix<double, kNumMarketRegimes, 1>& p_gmm) const;
 
     // ── A7 EWMA smoothing (PDF constant λ) ──────────────────────────────────
     Eigen::Matrix<double, kNumMarketRegimes, 1>
