@@ -80,6 +80,13 @@ inline std::string cumulative_pnl_heading() {
 inline std::string cumulative_pnl_title(const std::string& date) {
     return "Cumulative PnL by Symbol, all-time as of " + date;
 }
+/// The contracts chart (HD 2026-10-14): contracts traded each day, strategy fills and roll legs.
+inline std::string contracts_per_day_heading() {
+    return "Contracts Traded per Day";
+}
+inline std::string contracts_per_day_title(int days) {
+    return "Contracts Traded per Day, Last " + std::to_string(days) + " Days";
+}
 }  // namespace ChartTitles
 
 /**
@@ -106,6 +113,10 @@ std::string margin_posted(const std::string& strategy_id, const std::string& por
 std::string cumulative_pnl_by_symbol(const std::string& strategy_id,
                                      const std::string& portfolio_id, const std::string& date,
                                      bool equities = false);
+/// Every calendar day of the `days` ending on the run date, with the contracts the book's fills
+/// traded that day: the STRATEGY fills and the ROLL legs apart (0 on a day without a fill). The
+/// fills of every sleeve of the book (by portfolio_id), the run date's own included.
+std::string contracts_per_day(const std::string& portfolio_id, const std::string& date, int days);
 }  // namespace ChartQueries
 
 /**
@@ -158,6 +169,15 @@ ChartData cost_per_million(const std::vector<CostFillRow>& rows,
 ChartData margin_posted(std::vector<ChartPoint> rows);
 /// rows: (symbol, cumulative realized PnL); date: the run date.
 ChartData cumulative_pnl_by_symbol(std::vector<ChartPoint> rows, const std::string& date);
+/// One day of the contracts chart's query.
+struct ContractsDayRow {
+    std::string date;          ///< YYYY-MM-DD
+    double strategy = 0.0;     ///< contracts of the day's STRATEGY fills (sum of |quantity|)
+    double roll = 0.0;         ///< contracts of the day's ROLL legs
+};
+/// rows: every day of the window, oldest first. One stacked bar per day, labelled MM-DD:
+/// `values` the strategy contracts, `values2` the roll contracts. No row is no chart.
+ChartData contracts_per_day(const std::vector<ContractsDayRow>& rows, int days);
 }  // namespace ChartSeries
 
 /**
@@ -250,6 +270,11 @@ public:
         const std::string& strategy_id,
         const std::string& portfolio_id,
         const std::string& date /* today, YYYY-MM-DD */);
+
+    /// Contracts traded per day over the `days` ending on the run date (ChartQueries::contracts_per_day).
+    static ChartData fetch_contracts_per_day_data(std::shared_ptr<DatabaseInterface> db,
+                                                  const std::string& portfolio_id,
+                                                  const std::string& date, int days = 30);
     
     /**
      * @brief Fetch cumulative realized PnL by symbol (all-time)
@@ -327,6 +352,21 @@ public:
         const ChartConfig& config = ChartConfig()
     );
 
+    /**
+     * @brief Render a stacked vertical bar chart of two series
+     * @param data labels = categories, values = the lower series, values2 = the upper series;
+     *             series_name and series2_name are the legend
+     * @param config Chart configuration (line_color is the lower series)
+     * @return Base64-encoded PNG chart data, or empty string on error
+     */
+    static std::string render_stacked_bar_chart(
+        const ChartData& data,
+        const ChartConfig& config = ChartConfig()
+    );
+
+    /// The gnuplot script of a stacked bar chart (no drawing), for render_stacked_bar_chart and its tests.
+    static std::string stacked_bar_chart_script(const ChartData& data, const ChartConfig& config);
+
     // ========================================================================
     // HIGH-LEVEL CONVENIENCE FUNCTIONS - Backward compatible
     // ========================================================================
@@ -399,6 +439,12 @@ public:
         const std::string& strategy_id,
         const std::string& portfolio_id,
         const std::string& date);
+
+    /// Contracts traded per day, strategy fills and roll legs stacked, over the `days` ending on
+    /// the run date (HD 2026-10-14).
+    static std::string generate_contracts_per_day_chart(std::shared_ptr<DatabaseInterface> db,
+                                                        const std::string& portfolio_id,
+                                                        const std::string& date, int days = 30);
     
     /**
      * @brief Generate portfolio composition pie chart

@@ -493,6 +493,16 @@ Result<void> EmailSender::send_email(const std::string& subject, const std::stri
             g_email_payload += total_transaction_costs_base64_ + "\r\n";
         }
 
+        if (!contracts_per_day_base64_.empty()) {
+            g_email_payload += "\r\n--" + inner_boundary + "\r\n";
+            g_email_payload += "Content-Type: image/png\r\n";
+            g_email_payload += "Content-Transfer-Encoding: base64\r\n";
+            g_email_payload += "Content-ID: <contracts_per_day>\r\n";
+            g_email_payload += "Content-Disposition: inline; filename=\"contracts_per_day.png\"\r\n";
+            g_email_payload += "\r\n";
+            g_email_payload += contracts_per_day_base64_ + "\r\n";
+        }
+
         if (!margin_posted_base64_.empty()) {
             g_email_payload += "\r\n--" + inner_boundary + "\r\n";
             g_email_payload += "Content-Type: image/png\r\n";
@@ -3399,6 +3409,24 @@ std::string EmailSender::generate_trading_report_body(
             html << "<div style=\"width: 100%; max-width: 1000px; margin: 20px auto; text-align: "
                     "center;\">\n";
             html << "<img src=\"cid:total_transaction_costs\" alt=\"Cost per $1M Traded\" "
+                    "style=\"max-width: 100%; height: auto; border-radius: 8px; box-shadow: 0 2px "
+                    "8px rgba(0,0,0,0.1);\" />\n";
+            html << "</div>\n";
+        }
+
+        // Contracts traded each day, strategy fills and roll legs stacked (HD 2026-10-14)
+        contracts_per_day_base64_ =
+            ChartGenerator::generate_contracts_per_day_chart(db, chart_portfolio_id, date, 30);
+        html << chart_ledger.record(ChartTitles::contracts_per_day_heading(),
+                                    !contracts_per_day_base64_.empty(),
+                                    ChartGenerator::last_chart_status(),
+                                    ChartGenerator::last_chart_reason(), "no data to plot");
+        if (!contracts_per_day_base64_.empty()) {
+            html << "<h3 style=\"margin-top: 20px; color: #333;\">"
+                 << ChartTitles::contracts_per_day_heading() << "</h3>\n";
+            html << "<div style=\"width: 100%; max-width: 1000px; margin: 20px auto; text-align: "
+                    "center;\">\n";
+            html << "<img src=\"cid:contracts_per_day\" alt=\"Contracts Traded per Day\" "
                     "style=\"max-width: 100%; height: auto; border-radius: 8px; box-shadow: 0 2px "
                     "8px rgba(0,0,0,0.1);\" />\n";
             html << "</div>\n";
