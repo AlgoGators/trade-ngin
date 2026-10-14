@@ -147,16 +147,18 @@ class PostgresRunStatusStore:
                 if not {"portfolio_type", "book_source", "risk_detail"} <= cols:
                     return None  # before migrations 020/021: no desk books to report on
                 order = " ORDER BY created_at DESC" if "created_at" in cols else ""
-                scale_col = "risk_scale" if "risk_scale" in cols else "NULL"
+                def opt(name):
+                    return name if name in cols else "NULL"
                 cur.execute("SELECT book_source, risk_detail, portfolio_leverage, net_leverage, "
-                            "margin_cushion, equity_to_margin_ratio, " + scale_col +
+                            "margin_cushion, equity_to_margin_ratio, " + opt("risk_scale") + ", "
+                            + opt("margin_posted") + ", " + opt("current_portfolio_value") +
                             " FROM trading.live_results "
                             "WHERE portfolio_id = %s AND date = %s AND portfolio_type = 'qt'"
                             + order + " LIMIT 1", (portfolio_id, date))
                 rec = cur.fetchone()
                 if rec is None:
                     return None
-                source, detail, gross, net, cushion, e2m, scale = rec
+                source, detail, gross, net, cushion, e2m, scale, margin, equity = rec
 
                 def num(x):
                     return None if x is None else float(x)
@@ -164,7 +166,8 @@ class PostgresRunStatusStore:
                                    risk_detail=detail if isinstance(detail, dict) else None,
                                    gross_leverage=num(gross), net_leverage=num(net),
                                    margin_cushion=num(cushion), equity_to_margin=num(e2m),
-                                   risk_scale=num(scale))
+                                   risk_scale=num(scale), initial_margin=num(margin),
+                                   equity=num(equity))
         except StoreError:
             raise
         except Exception as exc:

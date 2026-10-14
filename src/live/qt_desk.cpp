@@ -1014,6 +1014,21 @@ nlohmann::json desk_result_json(const std::vector<DeskSymbolOutcome>& outcomes,
     return {{"symbols", symbols}, {"book_source", book_source}};
 }
 
+std::string fund_cap_refusal(double initial_margin, double equity, double transaction_costs,
+                             const std::string& date) {
+    if (!(initial_margin > equity + 0.005)) return "";
+    auto money = [](double x) {
+        std::ostringstream out;
+        out << "$" << std::fixed << std::setprecision(0) << x;
+        return out.str();
+    };
+    return "the " + date + " book needs " + money(initial_margin) +
+           " of initial margin, more than the fund's equity of " + money(equity) +
+           " after today's transaction costs (" + money(transaction_costs) +
+           "): the fund's hard cap is 100% of equity (contract C11). Nothing was approved; "
+           "save positions within the cap";
+}
+
 Result<void> strip_model_columns(const std::string& csv_path) {
     std::ifstream in(csv_path);
     if (!in) {

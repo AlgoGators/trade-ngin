@@ -200,3 +200,12 @@ The model's book is **A**. The QT edits it into **B** (`qt_proposal`) and presse
 - **Insist on B.** The override flow (C1, C2): the request e-mails the VP and the President, either decides alone. On approval AlgoLens inserts the decision and a publish row `{"flow": "override_b", "after": <decision id>}`; the engine books B exactly (`--override`) and publishes it. A rejected or failed decision publishes nothing (`rejected`, `incomplete`).
 - **Cutoffs** are C7's, by the publish row's `created_at` (the moment Approve was pressed): before 09:30 the day is frozen and sent at 09:30, from 09:30 it is sent at once, from 10:00 it is refused. A failed save or decision approves nothing (`incomplete`); an unreadable risk check fails the row (retry with a new row).
 - **Multipliers (1.5.0).** `GetDeskRisk.multipliers` reports the overlay's m and the risk scale of the last run, and each live strategy's configured IDM and FDM (the IDM is a setting, not estimated per run; the FDM is the lookup by the number of EMA windows).
+
+### C11. The fund's hard cap (decided by Dom 2026-10-14)
+
+A desk or override book may use at most **100% of the fund's equity** as initial margin. Equity is the book's value after today's transaction costs (`live_results.current_portfolio_value`; buys and sells both pay a cost, `trading.executions.total_transaction_costs`), so initial margin plus the day's costs never exceed the equity the day started with.
+
+- **Enforced by the engine** on `--desk` and `--override`, where the day is marked (`qt::fund_cap_refusal`, `src/live/qt_desk.cpp`): a book over the cap is refused (exit 2) with the amounts, and left unmarked (`book_source` NULL), so it cannot be published; the 10:00 fallback sends the model's book. An approved override is refused the same way: an approval cannot take the fund past its money.
+- **Reported** by `GetDeskRisk` as the check `MARGIN` (unit `usd`: `margin_posted` against `current_portfolio_value` of the day's qt row), on every state; over the cap it is a breach. The model run is not refused by it (its book is sized by the overlay on the sizing capital); a model book over the cap shows as `over`.
+- The desk record (`risk_detail.desk.fund_cap`) carries the amounts the engine checked.
+

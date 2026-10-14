@@ -47,7 +47,8 @@ def desk_row(symbols, m=1.0, binding="none", after="", by_hold="", refused=False
     if checks is not None:
         desk["checks"] = checks
     return DeskRiskRow(book_source=source, risk_detail={"desk": desk}, gross_leverage=3.79,
-                       net_leverage=-2.67, margin_cushion=0.877, equity_to_margin=6.92)
+                       net_leverage=-2.67, margin_cushion=0.877, equity_to_margin=6.92,
+                       initial_margin=82945.0, equity=494971.49)
 
 
 # -- the breach rule ---------------------------------------------------------------------------
@@ -130,7 +131,7 @@ def test_every_check_is_reported_with_its_max_when_nothing_breaches():
     report = derive_desk_risk(desk_row([sym("6C.v.0", -2, -2)], checks=MEASURED))
     assert report.within_limits
     assert [c.term for c in report.checks] == ["R", "R_jump", "R_shock", "L_g", "L_n", "CAP",
-                                               "TRIM"]
+                                               "TRIM", "MARGIN"]
     assert all(c.status == rk.WITHIN for c in report.checks)
     r = by_term(report)["R"]
     assert (r.value, r.max, r.unit) == (0.31, 0.45, rk.PERCENT)
@@ -250,7 +251,7 @@ def test_rpc_reports_a_breach_with_the_configured_limits(stub, store, config_dir
 def test_rpc_reports_every_measured_check(stub, store):
     store.risk_rows[(PID, DAY)] = desk_row([sym("ZT.v.0", 8, 2, "cap")], checks=MEASURED)
     checks = {c.term: c for c in get(stub).checks}
-    assert list(checks) == ["R", "R_jump", "R_shock", "L_g", "L_n", "CAP", "TRIM"]
+    assert list(checks) == ["R", "R_jump", "R_shock", "L_g", "L_n", "CAP", "TRIM", "MARGIN"]
     assert checks["R"].value == pytest.approx(0.31) and checks["R"].max == pytest.approx(0.45)
     assert checks["R"].unit == "percent" and checks["R"].label == "Portfolio risk (R)"
     assert checks["CAP"].status == pb.RISK_CHECK_STATUS_BOUND
@@ -283,3 +284,31 @@ def test_rpc_runs_without_a_dispatcher(store):
             raise AssertionError(msg)
     reply = servicer.GetDeskRisk(pb.DeskRiskRequest(portfolio_id=PID, date=DAY.isoformat()), Ctx())
     assert reply.state == pb.DESK_RISK_STATE_NO_BOOK
+
+
+
+# -- the fund's hard cap (C11) -----------------------------------------------------------------
+
+def capped(row, margin, equity):
+    return DeskRiskRow(**{**row.__dict__, "initial_margin": margin, "equity": equity})
+
+
+def test_the_margin_check_is_within_at_or_under_the_equity():
+    report = derive_desk_risk(capped(desk_row([], checks=MEASURED), 82945.0, 494971.49))
+    cap = by_term(report)["MARGIN"]
+    assert (cap.value, cap.max, cap.unit, cap.status) == (82945.0, 494971.49, rk.USD, rk.WITHIN)
+    assert report.within_limits
+    at = by_term(derive_desk_risk(capped(desk_row([], checks=MEASURED), 100.0, 100.0)))["MARGIN"]
+    assert at.status == rk.WITHIN
+
+
+def test_margin_over_the_equity_is_a_breach():
+    report = derive_desk_risk(capped(desk_row([], checks=MEASURED), 7_000_000.0, 494971.49))
+    assert by_term(report)["MARGIN"].status == rk.OVER
+    assert not report.within_limits and "MARGIN" in [b.term for b in report.breaches]
+
+
+def test_the_margin_check_on_a_model_day_and_without_a_book():
+    model = DeskRiskRow(book_source="model", risk_detail={}, initial_margin=50.0, equity=100.0)
+    assert by_term(derive_desk_risk(model))["MARGIN"].status == rk.WITHIN
+    assert by_term(derive_desk_risk(None))["MARGIN"].status == rk.NOT_MEASURED

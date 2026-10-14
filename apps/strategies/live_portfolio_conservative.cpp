@@ -5160,6 +5160,18 @@ int main(int argc, char* argv[]) {
             if (qt_mode == qt::Mode::OVERRIDE) {
                 detail["report_only"] = true;  // the pass is a report; the ask is what trades
             }
+            // Contract C11: the fund's hard cap. A book whose initial margin exceeds the
+            // fund's equity after today's costs is refused and left unmarked (book_source NULL),
+            // so it cannot be published; the 10:00 fallback sends the model's book.
+            detail["fund_cap"] = {{"initial_margin", total_posted_margin},
+                                  {"equity", current_portfolio_value},
+                                  {"transaction_costs", total_daily_transaction_costs}};
+            const std::string over_cap = qt::fund_cap_refusal(
+                total_posted_margin, current_portfolio_value, total_daily_transaction_costs,
+                qt_date);
+            if (!over_cap.empty()) {
+                return qt_refuse(over_cap);
+            }
             if (!qt_store_failures.empty()) {
                 return qt_fail("the qt book of " + qt_date + " was not stored completely (" +
                                qt_store_failure_list() +
