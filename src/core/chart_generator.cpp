@@ -1691,19 +1691,12 @@ std::string ChartGenerator::render_line_chart(const ChartData& data, const Chart
         script << "set format x '%m/%d'\n";
         script << "set xrange ['" << x_range.first << "':'" << x_range.second << "']\n";
 
-        // X-axis ticks
-        int num_ticks = std::min(5, static_cast<int>(data.labels.size()));
-        script << "set xtics (";
-        for (int i = 0; i < num_ticks; i++) {
-            int idx = (i * (static_cast<int>(data.labels.size()) - 1)) / std::max(1, num_ticks - 1);
-            if (i > 0) script << ", ";
-            script << "'" << data.labels[idx] << "' '" << data.labels[idx] << "'";
-        }
-        script << ")";
-        if (config.rotate_x_labels) {
-            script << " rotate by " << config.x_label_angle;
-        }
-        script << "\n\n";
+        // X-axis ticks (HD 10-14): the axis picks its own dates, horizontal and spaced, in a short
+        // format; a long history is shown by month. (Five hand-placed, rotated labels ran into each
+        // other and into the axes.)
+        script << "set format x '" << (data.labels.size() > 90 ? "%b %Y" : "%b %d") << "'\n";
+        script << "set xtics nomirror\n";
+        script << "set lmargin 11\nset rmargin 4\nset bmargin 3.5\n\n";
 
         // Y-axis
         script << "set format y '" << (data.y_format.empty() ? "$%.0f" : data.y_format) << "'\n";
@@ -1721,14 +1714,15 @@ std::string ChartGenerator::render_line_chart(const ChartData& data, const Chart
         }
 
         // Plot
+        const std::string plot_with = data.labels.size() > 40 ? "with lines" : "with linespoints";
         if (data.values2.size() == data.values.size()) {
             script << "set style line 2 lc rgb '#d9822b' lt 1 lw 3 pt 7 ps 0.8\n";
-            script << "plot 'temp_chart_data.txt' using 1:2 with linespoints ls 1 title '"
+            script << "plot 'temp_chart_data.txt' using 1:2 " << plot_with << " ls 1 title '"
                    << escape_gnuplot_string(data.series_name) << "', \\\n"
-                   << "     'temp_chart_data.txt' using 1:3 with linespoints ls 2 title '"
+                   << "     'temp_chart_data.txt' using 1:3 " << plot_with << " ls 2 title '"
                    << escape_gnuplot_string(data.series2_name) << "'\n";
         } else {
-            script << "plot 'temp_chart_data.txt' using 1:2 with linespoints ls 1 notitle\n";
+            script << "plot 'temp_chart_data.txt' using 1:2 " << plot_with << " ls 1 notitle\n";
         }
 
         return execute_gnuplot(script.str(), data_content.str());
