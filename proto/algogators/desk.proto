@@ -1,6 +1,6 @@
 // AlgoGators gRPC API
 // API: desk
-// Version: 1.4.0
+// Version: 1.5.0
 // Compatibility: a client must send x-algogators-api-version: desk=<major>.<minor>.<patch>; the
 // server refuses a different major and accepts any minor/patch (docs/design/rpc.md).
 //
@@ -50,6 +50,10 @@ import "google/protobuf/timestamp.proto";
 //                      only; no field changed.
 //   1.4.0  2026-10-14  DeskRisk.checks (17), RiskCheck, RiskCheckStatus: every risk limit with
 //                      the stored book's reading and its max, breach or not. Additive only.
+//   1.5.0  2026-10-15  DeskRisk.multipliers (18), RiskMultiplier: the overlay's m, the risk
+//                      scale and the configured IDM and FDM per strategy. Additive only.
+//                      Contract C10 (the A -> B -> C approval) uses PublishRequest unchanged:
+//                      the flow is the publish row's payload.
 
 service DeskService {
   // A desk save: run the desk loop on the whole qt_proposal and book the result as qt with
@@ -337,6 +341,18 @@ message DeskRisk {
   // R_shock, L_g, L_n, CAP, TRIM, then "refused" when the overlay refused). Labels, units and
   // maxes are trade-ngin's; a client renders them as given and hardcodes none.
   repeated RiskCheck checks = 17;
+  // Since 1.5.0: the multipliers of the day's book, in report order: the overlay's m and the
+  // risk scale the last run applied, then each live strategy's configured IDM and FDM.
+  repeated RiskMultiplier multipliers = 18;
+}
+
+message RiskMultiplier {
+  // "m", "risk_scale", "idm:<strategy>" or "fdm:<strategy>".
+  string name = 1;
+  string label = 2;
+  // Unset when the day has no reading yet.
+  optional double value = 3;
+  string detail = 4;
 }
 
 enum RiskCheckStatus {

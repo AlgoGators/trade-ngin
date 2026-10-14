@@ -113,6 +113,18 @@ class DeskRiskRow:
     net_leverage: Optional[float] = None
     margin_cushion: Optional[float] = None
     equity_to_margin: Optional[float] = None
+    risk_scale: Optional[float] = None  # live_results.risk_scale of the stored book
+
+
+@dataclass(frozen=True)
+class RiskMultiplier:
+    """One multiplier of the day's book (desk.proto 1.5.0): what the engine applied, or what it is
+    configured to apply."""
+
+    name: str
+    label: str
+    value: Optional[float]
+    detail: str
 
 
 @dataclass(frozen=True)
@@ -338,3 +350,84 @@ def configured_checks(limits: Sequence[Tuple[str, float]], gross: Optional[float
             value, detail = net, "the stored book"
         out.append(RiskCheck(term, label, value, limit, unit, _status_of(value, limit), detail))
     return tuple(out)
+
+
+def run_multipliers(report: DeskRiskReport, row: Optional[DeskRiskRow]) -> List[RiskMultiplier]:
+    """The multipliers the engine's last run of the day's book applied: the overlay's m (the cut to
+    fit the limits; 1 = no cut) and the risk scale (the stored book over the target)."""
+    if row is None:
+        return [RiskMultiplier("m", "Risk overlay multiplier (m)", None, "no book yet"),
+                RiskMultiplier("risk_scale", "Risk scale (stored / target)", None, "no book yet")]
+    binding = report.binding_term if report.binding_term != "none" else ""
+    m_detail = (f"{_describe(binding)} bound" if binding and report.m < 1.0 - 1e-9
+                else "no limit bound: the overlay did not cut the book")
+    detail = row.risk_detail if isinstance(row.risk_detail, Mapping) else {}
+    m = report.m
+    if report.state == MODEL:  # the model's run: m is risk_detail's risk_requested
+        m = _optional(detail.get("risk_requested"))
+        b = str(detail.get("binding_term") or "none")
+        m_detail = (f"{_describe(b)} bound" if m is not None and m < 1.0 - 1e-9 and b != "none"
+                    else "no limit bound: the overlay did not cut the book")
+    scale = row.risk_scale
+    desk = detail.get("desk") if isinstance(detail.get("desk"), Mapping) else {}
+    overlay = desk.get("overlay") if isinstance(desk.get("overlay"), Mapping) else {}
+    if scale is None:
+        scale = _optional(overlay.get("risk_scale"))
+    return [
+        RiskMultiplier("m", "Risk overlay multiplier (m)", m, m_detail),
+        RiskMultiplier("risk_scale", "Risk scale (stored / target)", scale,
+                       "the stored book's gross over the capped target's (after rounding, the "
+                       "buffer and the cap)"),
+    ]
+
+
+def load_multipliers(config_dir: str, portfolio_dir: str) -> List[RiskMultiplier]:
+    """The configured diversification multipliers of each strategy of the portfolio: the IDM
+    (`idm`, a fixed setting) and the FDM (the engine's lookup by the number of EMA windows, in the
+    strategy's `fdm` else defaults.json `strategy_defaults.fdm`). [] when the files are missing."""
+    def read(path: Path):
+        try:
+            return json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return None
+
+    portfolio = read(Path(portfolio_dir) / "portfolio.json")
+    defaults = read(Path(config_dir) / "defaults.json") or {}
+    if not isinstance(portfolio, Mapping):
+        return []
+    default_fdm = ((defaults.get("strategy_defaults") or {}).get("fdm")
+                   if isinstance(defaults, Mapping) else None)
+    out = []
+    strategies = portfolio.get("strategies")
+    for name, strategy in sorted((strategies or {}).items() if isinstance(strategies, Mapping)
+                                 else ()):
+        if not isinstance(strategy, Mapping) or strategy.get("enabled_live") is False:
+            continue
+        cfg = strategy.get("config") if isinstance(strategy.get("config"), Mapping) else {}
+        idm = _optional(cfg.get("idm"))
+        if idm is not None:
+            out.append(RiskMultiplier(f"idm:{name}", f"IDM, {name}", idm,
+                                      "configured (instrument diversification multiplier; a "
+                                      "fixed setting, not estimated per run)"))
+        windows = cfg.get("ema_windows")
+        if isinstance(windows, list) and windows:
+            table = cfg.get("fdm") if isinstance(cfg.get("fdm"), list) else default_fdm
+            fdm = 1.0
+            for pair in table or ():
+                if (isinstance(pair, list) and len(pair) == 2
+                        and _optional(pair[0]) == float(len(windows))):
+                    fdm = _number(pair[1], 1.0)
+                    break
+            out.append(RiskMultiplier(f"fdm:{name}", f"FDM, {name}", fdm,
+                                      f"configured (forecast diversification multiplier for "
+                                      f"{len(windows)} EMA windows)"))
+    return out
+
+
+def over_terms(report: DeskRiskReport) -> List[str]:
+    """The terms the stored book is still over: after rounding, then through a held position."""
+    out: List[str] = []
+    for term in _terms(report.over_limit_after_rounding) + _terms(report.over_limit_by_hold):
+        if term not in out:
+            out.append(term)
+    return out

@@ -16,6 +16,12 @@ time.
 |                   | A scheduler fallback row (requested_by system:fallback-...)       |
 |                   | re-driven here runs engine `--fallback` (`--send-now` for         |
 |                   | today's 10:00 fallback; a past day is never e-mailed).            |
+|                   | A publish whose payload names a `flow` (contract C10) runs after  |
+|                   | the row it names (`after`) on the portfolio's queue: `auto` (the  |
+|                   | QT's Approve on B) publishes only when the engine's book C equals |
+|                   | B and is within the limits, else it is refused with the           |
+|                   | differences; `accept_c` publishes C when C is not over a limit;   |
+|                   | `override_b` publishes B once the approved override booked it.    |
 | rescind           | the desk takes back its approval (contract C8), in Python under   |
 |                   | the portfolio's flock: refused from 09:30 New York on its date    |
 |                   | (the clock when it runs), on a day not published by the desk, by  |
@@ -49,6 +55,7 @@ from .config import CommandSettings
 from .jobs import Job, JobManager
 from .override_mail import ROLES, Sender, run_override_request, send_smtp
 from .portfolios import PortfolioConfigError, resolve_portfolio_dir
+from . import risk as rk
 
 log = logging.getLogger("desk.commands")
 
@@ -61,8 +68,19 @@ ENGINE_MODE = {"save": "desk", "override_decision": "override", "publish": "publ
 FROZEN_WHEN_PUBLISHED = ("save", "override_request", "override_decision")
 
 
+# Contract C10: the approval flows a publish row's payload may name, and the kind of the row
+# each runs after.
+FLOWS = {"auto": "save", "accept_c": "save", "override_b": "override_decision"}
+
 # How long a rescind waits for the portfolio's flock (a model run or the 09:30 send may hold it).
 RESCIND_LOCK_WAIT_S = 120.0
+
+
+def flow_of(row: CommandRow) -> str:
+    """The C10 approval flow a publish row names ('' for a plain publish)."""
+    payload = row.payload if isinstance(row.payload, dict) else {}
+    flow = payload.get("flow")
+    return flow if isinstance(flow, str) else ""
 
 
 @dataclass(frozen=True)
@@ -75,8 +93,12 @@ class Dispatcher:
     def __init__(self, store: CommandStore, jobs: JobManager, settings: CommandSettings,
                  sender: Sender = send_smtp,
                  clock: Optional[Callable[[], dt.datetime]] = None,
-                 lock_factory=None):
+                 lock_factory=None,
+                 risk_reader: Optional[Callable[[str, dt.date], Optional[rk.DeskRiskRow]]] = None):
         self._store = store
+        # The day's qt row of trading.live_results (store.desk_risk_row): what the C10 approval
+        # compares B with and checks the limits on.
+        self._risk_reader = risk_reader
         self._jobs = jobs
         self._settings = settings
         self._sender = sender
@@ -264,6 +286,8 @@ class Dispatcher:
             mode, send_now, why = self._publish_plan(claimed)
             if why:
                 return self._finish(claimed, REFUSED, None, why), False
+            if mode == "publish" and flow_of(claimed):
+                return self._queue_flow(claimed)
         portfolio_dir, refused = self._portfolio_dir(claimed)
         if refused:
             return refused, False
@@ -338,6 +362,115 @@ class Dispatcher:
             if cutoff.window(row.date, created) == cutoff.CLOSED:
                 return "", False, cutoff.deadline_message(row.date)
         return "publish", cutoff.window(row.date, now) != cutoff.BEFORE_SEND, ""
+
+    # -- the approval flows (contract C10) -----------------------------------------------------
+
+    def _queue_flow(self, row: CommandRow) -> Tuple[Outcome, bool]:
+        """Check the row the flow runs after, put it on the portfolio's queue first if it is still
+        pending, then queue the flow's job behind it."""
+        flow = flow_of(row)
+        if flow not in FLOWS:
+            return self._finish(row, REFUSED, None,
+                                f"unknown approval flow {flow!r} (auto, accept_c or "
+                                "override_b)"), False
+        after_id = row.payload.get("after")
+        after = self._store.get_row(after_id) if isinstance(after_id, int) else None
+        if after is None:
+            return self._finish(row, REFUSED, None,
+                                f"the {flow} approval names no row to run after "
+                                f"(payload.after {after_id!r})"), False
+        if after.kind != FLOWS[flow] or (after.portfolio_id, after.date) != (row.portfolio_id,
+                                                                              row.date):
+            return self._finish(row, REFUSED, None,
+                                f"the {flow} approval runs after a {FLOWS[flow]} of "
+                                f"{row.portfolio_id} {row.date}; row {after.id} is a {after.kind} "
+                                f"of {after.portfolio_id} {after.date}"), False
+        portfolio_dir, refused = self._portfolio_dir(row)
+        if refused:
+            return refused, False
+        if after.status == "pending":
+            # AlgoLens calls RunDesk (or RecordDecision) first; on a re-drive, or a lost call,
+            # the row it names goes on the queue ahead of this one.
+            self.dispatch(after)
+        self._jobs.submit(Job(row.portfolio_id, row.id, row.kind,
+                              lambda: self._run_flow(row, flow, after.id, portfolio_dir),
+                              self._on_done(row.id)))
+        return Outcome(ACCEPTED, f"{flow} approval {row.id} queued after row {after.id}"), True
+
+    def _run_flow(self, row: CommandRow, flow: str, after_id: int, portfolio_dir: str) -> None:
+        """On the portfolio's queue, after the row it names: the checks, then the publish."""
+        send_now = cutoff.window(row.date, self._clock()) != cutoff.BEFORE_SEND
+        if isinstance(row.result, dict) and "published_at" in row.result:
+            # A re-run of a row that already approved the day: on to its send.
+            self._jobs.run_engine_now("publish", row.portfolio_id, portfolio_dir,
+                                      row.date.isoformat(), row.id, send_now)
+            return
+        refusal = self._flow_refusal(row, flow, after_id)
+        if refusal is not None:
+            status, result, message = refusal
+            self._finish(row, status, result, message)
+            return
+        self._jobs.run_engine_now("publish", row.portfolio_id, portfolio_dir,
+                                  row.date.isoformat(), row.id, send_now)
+
+    def _flow_refusal(self, row: CommandRow, flow: str, after_id: int):
+        """(status, result, message), or None when the flow may publish."""
+        after = self._store.get_row(after_id)
+        if after is None or after.status != DONE:
+            what = "dynamic optimisation and the risk check" if flow != "override_b" \
+                else "the override"
+            return (REFUSED, {"reason": "incomplete", "after": after_id,
+                              "after_status": after.status if after else None},
+                    f"{what} (row {after_id}) ended "
+                    f"{after.status if after else 'missing'}"
+                    f"{': ' + after.message if after and after.message else ''}; "
+                    "nothing was approved")
+        if flow == "override_b":
+            approved = isinstance(after.result, dict) and after.result.get("approved") is not False
+            if not approved or after.payload.get("approved") is not True:
+                return (REFUSED, {"reason": "rejected", "after": after_id},
+                        "the override for B was not approved; nothing was published")
+            return None
+        if self._risk_reader is None:
+            return (FAILED, None, "the risk check cannot be read here; try again")
+        try:
+            report = rk.derive_desk_risk(self._risk_reader(row.portfolio_id, row.date))
+        except Exception as exc:  # StoreError and the like: retryable
+            return (FAILED, None, f"the risk check could not be read ({type(exc).__name__}); "
+                                  "try again")
+        if report.audit_id != after_id or report.state != rk.DESK:
+            return (REFUSED, {"reason": "stale", "after": after_id,
+                              "book_audit_id": report.audit_id},
+                    f"the day's book is no longer the result of save {after_id} (it is "
+                    f"{report.state} {report.audit_id}); approve the latest save")
+        differs = [{"symbol": s.symbol, "asked": s.asked, "given": s.given,
+                    "moved_by": s.moved_by, "category": s.category}
+                   for s in report.symbols if abs(s.asked - s.given) > 1e-9]
+        breaches = [b.term for b in report.breaches]
+        if flow == "auto":
+            if differs or not report.within_limits:
+                return (REFUSED, {"reason": "changed" if differs else "outside_limits",
+                                  "after": after_id, "differs": differs,
+                                  "within_limits": report.within_limits,
+                                  "breaches": breaches},
+                        (f"dynamic optimisation and the risk system changed "
+                         f"{len(differs)} position(s): approve the engine's book (C) or ask the "
+                         "VP or President to approve yours (B)") if differs else
+                        ("the positions are outside the risk limits "
+                         f"({', '.join(breaches)}): ask the VP or President to approve them"))
+            return None
+        # C itself over a limit: a check read over, or a term the stored book is still over
+        # (after rounding, or through a held position).
+        over = [c.term for c in report.checks if c.status == rk.OVER]
+        for term in rk.over_terms(report):
+            if term not in over:
+                over.append(term)
+        if over or report.refused:
+            return (REFUSED, {"reason": "outside_limits", "after": after_id, "over": over,
+                              "refused": report.refused},
+                    "the engine's book (C) is itself over a limit "
+                    f"({', '.join(over) or 'the overlay refused'}): ask the VP or President")
+        return None
 
     # -- rescind (contract C8) --------------------------------------------------------------------
 

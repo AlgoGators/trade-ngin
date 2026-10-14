@@ -58,6 +58,13 @@ def _risk_check(check):
     return out
 
 
+def _multiplier(x):
+    out = desk_pb2.RiskMultiplier(name=x.name, label=x.label, detail=x.detail)
+    if x.value is not None:
+        out.value = x.value
+    return out
+
+
 _COMMAND_STATUS = {
     ACCEPTED: desk_pb2.COMMAND_STATUS_ACCEPTED,
     DONE: desk_pb2.COMMAND_STATUS_DONE,
@@ -225,6 +232,14 @@ class DeskServicer(desk_pb2_grpc.DeskServiceServicer):
         except PortfolioConfigError:
             return []
 
+    def _multipliers(self, portfolio_id: str):
+        try:
+            name = resolve_portfolio_dir(self._config_dir, portfolio_id)
+            return rk.load_multipliers(self._config_dir,
+                                       str(portfolios_root(self._config_dir) / name))
+        except PortfolioConfigError:
+            return []
+
     def GetDeskRisk(self, request, context):
         started = time.monotonic()
         try:
@@ -251,7 +266,9 @@ class DeskServicer(desk_pb2_grpc.DeskServiceServicer):
                                          moved_by=s.moved_by, category=s.category)
                      for s in report.symbols],
             limits=[desk_pb2.RiskLimit(name=n, value=x) for n, x in report.limits],
-            checks=[_risk_check(c) for c in report.checks])
+            checks=[_risk_check(c) for c in report.checks],
+            multipliers=[_multiplier(x) for x in
+                         rk.run_multipliers(report, row) + self._multipliers(pid)])
         for name in ("gross_leverage", "net_leverage", "margin_cushion", "equity_to_margin"):
             value = getattr(report, name)
             if value is not None:
