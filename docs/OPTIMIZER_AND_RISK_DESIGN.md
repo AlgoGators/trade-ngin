@@ -32,15 +32,15 @@ the same way.
 
 | # | Stage | What it produces | Where |
 |---|---|---|---|
-| 1 | Sizing capital | E, the capital every capital-terms quantity divides by | `half_compounded_capital`, `include/trade_ngin/portfolio/sizing_capital.hpp:58`; set through `PortfolioManager::set_sizing_capital`, `src/portfolio/portfolio_manager.cpp:3812` |
-| 2 | Forecast | F in [-20, 20] per symbol per sleeve | `trend_estimator::estimate`, `src/strategy/trend_estimator.cpp:132`; called from `TrendFollowingStrategy::on_data`, `src/strategy/trend_following.cpp:276` |
-| 3 | Unrounded target | N*, fractional contracts, long or short | `TrendFollowingStrategy::calculate_position`, `src/strategy/trend_following.cpp:1046` |
-| 4 | Classification | each symbol is free, held (fixed) or a close-out | `one_pass::rebalance`, `src/optimization/one_pass.cpp:379` (lines 393 to 414) |
-| 5 | Cap and overlay | the capped target, five readings, one scalar m | `one_pass.cpp:416` to `471`; arithmetic in `src/risk/overlay.cpp` |
-| 6 | Forecast-sign close, search | a whole-contract answer y from the held book | `one_pass.cpp:473` to `535`; `search`, `one_pass.cpp:170` |
-| 7 | Buffer, rounding, clip | the book before the trim | `b_sigma` `one_pass.cpp:231`, `buffer` `:253`, `clip_to_cap` `:48` |
-| 8 | Trim | the stored book | `trim`, `one_pass.cpp:305` |
-| 9 | Split, fills, record | per-sleeve books, fills, `risk_detail`, log lines | `PortfolioManager::rebalance_one_pass`, `src/portfolio/portfolio_manager.cpp:2015` (split at 2748, fills at 2813) |
+| 1 | Sizing capital | E, the capital every capital-terms quantity divides by | `half_compounded_capital`, `include/trade_ngin/portfolio/sizing_capital.hpp`; set through `PortfolioManager::set_sizing_capital`, `src/portfolio/portfolio_manager.cpp` |
+| 2 | Forecast | F in [-20, 20] per symbol per sleeve | `trend_estimator::estimate`, `src/strategy/trend_estimator.cpp`; called from `TrendFollowingStrategy::on_data`, `src/strategy/trend_following.cpp` |
+| 3 | Unrounded target | N*, fractional contracts, long or short | `TrendFollowingStrategy::calculate_position`, `src/strategy/trend_following.cpp` |
+| 4 | Classification | each symbol is free, held (fixed) or a close-out | `one_pass::rebalance`, `src/optimization/one_pass.cpp` |
+| 5 | Cap and overlay | the capped target, five readings, one scalar m | `one_pass.cpp`; arithmetic in `src/risk/overlay.cpp` |
+| 6 | Forecast-sign close, search | a whole-contract answer y from the held book | `one_pass.cpp`; `search`, `one_pass.cpp` |
+| 7 | Buffer, rounding, clip | the book before the trim | `b_sigma` `one_pass.cpp`, `buffer` `clip_to_cap` |
+| 8 | Trim | the stored book | `trim`, `one_pass.cpp` |
+| 9 | Split, fills, record | per-sleeve books, fills, `risk_detail`, log lines | `PortfolioManager::rebalance_one_pass`, `src/portfolio/portfolio_manager.cpp` (split at 2748, fills at 2813) |
 
 Stages 4 to 8 are one pure function of plain vectors, `one_pass::rebalance(const DayInputs&)`. It reads no
 database, no clock and no state from the previous call. `rebalance_one_pass` builds its inputs, calls it
@@ -52,25 +52,25 @@ Read the design comments before the code. They state the rules this document sum
 
 | Comment | File |
 |---|---|
-| The estimators: window rule, volatility, forecast | `include/trade_ngin/strategy/trend_estimator.hpp:12` |
-| The annualisation count | `include/trade_ngin/strategy/vol_annualisation.hpp:16` |
-| Half compounding as a closed form | `include/trade_ngin/portfolio/sizing_capital.hpp:36` |
-| The live sizing reads and their failure outcomes | `include/trade_ngin/live/live_sizing_read.hpp:1` |
-| The pass as pure functions; `DayInputs` and `DayResult` field by field | `include/trade_ngin/optimization/one_pass.hpp:15`, `:137` |
-| The gate window, the readings, the multiplier | `include/trade_ngin/risk/overlay.hpp:12`, `:60`, `:80` |
-| The log lines | `include/trade_ngin/optimization/one_pass_log.hpp:3` |
-| The stored record and its nine keys | `include/trade_ngin/risk/risk_detail.hpp:16` |
-| Listing dates, the switch rules, the relabel list | `include/trade_ngin/data/listing_dates.hpp:15`, `:61`, `:108` |
-| The live session rule and the hold | `include/trade_ngin/live/session_book_gate.hpp:24`, `:251` |
-| The split of a symbol over sleeves | `include/trade_ngin/portfolio/allocation_split.hpp:35` |
+| The estimators: window rule, volatility, forecast | `include/trade_ngin/strategy/trend_estimator.hpp` |
+| The annualisation count | `include/trade_ngin/strategy/vol_annualisation.hpp` |
+| Half compounding as a closed form | `include/trade_ngin/portfolio/sizing_capital.hpp` |
+| The live sizing reads and their failure outcomes | `include/trade_ngin/live/live_sizing_read.hpp` |
+| The pass as pure functions; `DayInputs` and `DayResult` field by field | `include/trade_ngin/optimization/one_pass.hpp` |
+| The gate window, the readings, the multiplier | `include/trade_ngin/risk/overlay.hpp` |
+| The log lines | `include/trade_ngin/optimization/one_pass_log.hpp` |
+| The stored record and its nine keys | `include/trade_ngin/risk/risk_detail.hpp` |
+| Listing dates, the switch rules, the relabel list | `include/trade_ngin/data/listing_dates.hpp` |
+| The live session rule and the hold | `include/trade_ngin/live/session_book_gate.hpp` |
+| The split of a symbol over sleeves | `include/trade_ngin/portfolio/allocation_split.hpp` |
 
 Where a header comment cites a section number, the rule it refers to is stated in this document or in one of
 the documents it links.
 
 A book is rebalanced by this loop when its `PortfolioConfig` names an overlay sleeve
-(`one_pass_book`, `portfolio_manager.cpp:2000`). The runners name the book's first sleeve
-(`apps/backtest/bt_portfolio_conservative.cpp:410`). A book that holds a trend sleeve and names none is
-refused, never sent through the generic optimiser step (`portfolio_manager.cpp:499` to `518`). The class in
+(`one_pass_book`, `portfolio_manager.cpp`). The runners name the book's first sleeve
+(`apps/backtest/bt_portfolio_conservative.cpp`). A book that holds a trend sleeve and names none is
+refused, never sent through the generic optimiser step (`portfolio_manager.cpp`). The class in
 `dynamic_optimizer.hpp` serves books with no overlay sleeve and takes no part in a futures rebalance.
 
 ---
@@ -79,18 +79,18 @@ refused, never sent through the generic optimiser step (`portfolio_manager.cpp:4
 
 | Symbol | Meaning | Value in force | Where it is set |
 |---|---|---|---|
-| S_0 | starting capital | 500,000 | `portfolio.json` `initial_capital`, which the sizing reads (`include/trade_ngin/live/live_sizing_read.hpp:250`). `starting_capital` is required on a futures book and checked equal to it (`src/core/config_loader.cpp:543`); nothing computes from it |
+| S_0 | starting capital | 500,000 | `portfolio.json` `initial_capital`, which the sizing reads (`include/trade_ngin/live/live_sizing_read.hpp`). `starting_capital` is required on a futures book and checked equal to it (`src/core/config_loader.cpp`); nothing computes from it |
 | E | sizing capital of the rebalance (section 4) | recomputed every run | not a config key, not a column |
 | V | account value, S_0 plus cumulative settled net P&L | | `risk_detail.account_value` |
-| tau | annual risk target | 0.20 (BASE's fast sleeve 0.25) | `portfolio.json` `strategies.<sleeve>.config.risk_target`, required (`include/trade_ngin/strategy/sleeve_config.hpp:19`) |
+| tau | annual risk target | 0.20 (BASE's fast sleeve 0.25) | `portfolio.json` `strategies.<sleeve>.config.risk_target`, required (`include/trade_ngin/strategy/sleeve_config.hpp`) |
 | IDM | instrument diversification multiplier | 2.5 | `strategies.<sleeve>.config.idm`, required |
-| w_i | instrument weight (section 5) | from the metadata `Sector` column | `TrendFollowingStrategy::get_weights`, `trend_following.cpp:915` |
+| w_i | instrument weight (section 5) | from the metadata `Sector` column | `TrendFollowingStrategy::get_weights`, `trend_following.cpp` |
 | M_i | contract multiplier | metadata `Contract Size` | instrument registry |
 | P_i | the raw close of the signal bar | | |
-| sigma_i | annualised volatility of the adjusted returns | | `trend_estimator.cpp:167` to `216` |
+| sigma_i | annualised volatility of the adjusted returns | | `trend_estimator.cpp` |
 | F_i | combined forecast after the equity slow rule | [-20, 20] | section 3 |
 | N*_i | unrounded target in contracts | | section 5 |
-| u_i | weight of one contract on the sizing capital, M_i P_i / E | | `one_pass.cpp:383` |
+| u_i | weight of one contract on the sizing capital, M_i P_i / E | | `one_pass.cpp` |
 | L | per-name cap on a position's weight, abs(n_i) u_i <= L | 2 | `risk.json` carver module `per_name_cap` |
 | m | the overlay's scalar, in (0, 1] | | section 6 |
 | h_i, n_i | held and stored position, whole contracts | | |
@@ -106,17 +106,17 @@ The other constants of the pass:
 | R_max, R_jump_max, R_shock_max, as ratios to tau | 2.25, 4.5, 4.0 | `risk.json` carver module `R_max`, `R_jump_max`, `R_shock_max` |
 | Gross and net leverage limits | 8.0, 6.0 | `risk.json` carver module `max_gross_leverage`, `max_net_leverage` |
 | Most contracts the trim removes in a day | 5 | `risk.json` carver module `trim_max` |
-| Sizing mode | `half_compounding` | `portfolio.json` `sizing_mode`. It is required, it is the one value accepted, and it selects nothing: the code has one sizing rule (`src/core/config_loader.cpp:520`) |
+| Sizing mode | `half_compounding` | `portfolio.json` `sizing_mode`. It is required, it is the one value accepted, and it selects nothing: the code has one sizing rule (`src/core/config_loader.cpp`) |
 
-`ConfigLoader::require_loop_keys` (`src/core/config_loader.cpp:728`) refuses a futures book that lacks the
+`ConfigLoader::require_loop_keys` (`src/core/config_loader.cpp`) refuses a futures book that lacks the
 equity slow rule, the three risk ratios, `sizing_mode`, `starting_capital`, `cost_penalty_scalar`,
 `sign_close_band` or `b_sigma_floor`; the risk schema requires `per_name_cap` and `trim_max` with the ratios
-(`src/risk/risk_module_config.cpp:188`). `apply_loop_config`
-(`include/trade_ngin/portfolio/loop_config.hpp:17`) then carries the band, the floor, the sizing mode, the
+(`src/risk/risk_module_config.cpp`). `apply_loop_config`
+(`include/trade_ngin/portfolio/loop_config.hpp`) then carries the band, the floor, the sizing mode, the
 slow rule, the cap and the trim cap into `PortfolioConfig`; the cost multiplier and the pass-cap floor are
 read by the loader into `opt_config`, and the limits stay on the carver module. One constant has an in-code
 default: `optimization.max_iterations` is not required and reads 100 when absent
-(`include/trade_ngin/optimization/dynamic_optimizer.hpp:37`).
+(`include/trade_ngin/optimization/dynamic_optimizer.hpp`).
 
 ---
 
@@ -128,7 +128,7 @@ is the mechanics.
 ### 3.1 The window
 
 Every estimator is a function of the last 3,200 consumed bars of the symbol ending at the signal bar
-(`kWindowBars`, `trend_estimator.hpp:52`) and of nothing else. Every recursion starts at the window's first
+(`kWindowBars`, `trend_estimator.hpp`) and of nothing else. Every recursion starts at the window's first
 bar. Nothing is carried from one call to the next, so a live run and a backtest that hold the same bars
 compute the same numbers. A symbol with fewer bars uses what it has; the run counts such rows and prints one
 `ESTIMATOR_SHORT_WINDOW` line.
@@ -144,8 +144,8 @@ the mean of `sigma_short` over the trailing 2,520 values. The sizing volatility 
 `sigma = 0.7 sigma_short + 0.3 sigma_long`.
 
 The annualisation factor is the square root of the bars a year, counted over the trailing 256 bars:
-`(256 - 1) / (calendar days they span / 365.25)` (`trend_estimator.cpp:156` to `164`;
-the rule is stated at `vol_annualisation.hpp:16`). A series
+`(256 - 1) / (calendar days they span / 365.25)` (`trend_estimator.cpp`;
+the rule is stated at `vol_annualisation.hpp`). A series
 that prints a Sunday session has more bars a year than 256, so its factor is above 16. The forecast's own
 volatility uses the same variance with the fixed factor 16.
 
@@ -160,19 +160,19 @@ scaled  = clamp(raw x attenuation x scalar, -20, +20)
 
 | Pair | 2/8 | 4/16 | 8/32 | 16/64 | 32/128 | 64/256 |
 |---|---|---|---|---|---|---|
-| Scalar (`forecast_scalar`, `trend_estimator.cpp:46`) | 12.1 | 8.53 | 5.95 | 4.10 | 2.79 | 1.91 |
+| Scalar (`forecast_scalar`, `trend_estimator.cpp`) | 12.1 | 8.53 | 5.95 | 4.10 | 2.79 | 1.91 |
 
 The scalars are fixed (the book, strategy nine, table 29). A pair with no scalar is refused when the sleeve
-is initialised (`trend_following.cpp:67`). The trend sleeve runs all six pairs; BASE's fast sleeve runs the first
+is initialised (`trend_following.cpp`). The trend sleeve runs all six pairs; BASE's fast sleeve runs the first
 four.
 
 The attenuation is `2 - 1.5 q`, where q is the share of the trailing 2,520 `sigma_short` values at or below
-today's, smoothed by a 10-bar EWMA. It is 1 until 252 values exist (`trend_estimator.cpp:218` to `255`).
+today's, smoothed by a 10-bar EWMA. It is 1 until 252 values exist (`trend_estimator.cpp`).
 
 ### 3.4 Weights and the forecast diversification multiplier
 
 The combined forecast is the equal-weight mean of the scaled forecasts of the pairs the contract runs,
-times the multiplier for that number of pairs, capped at +/-20 (`trend_estimator.cpp:296`).
+times the multiplier for that number of pairs, capped at +/-20 (`trend_estimator.cpp`).
 
 | Pairs run | 6 | 5 | 4 | 3 | 2 | 1 |
 |---|---|---|---|---|---|---|
@@ -183,10 +183,10 @@ These are the rows of the book's table 36 (strategy nine). The engine reads the 
 run. The book states each row for the slowest pairs of that number, which is what a contract with removed
 rules runs. BASE's fast sleeve runs the four fastest pairs and reads the four-pair row all the same. The
 table in force is
-`TrendFollowingConfig::fdm` (`include/trade_ngin/strategy/trend_following.hpp:32`). `defaults.json`
+`TrendFollowingConfig::fdm` (`include/trade_ngin/strategy/trend_following.hpp`). `defaults.json`
 `strategy_defaults.fdm` carries the same six rows and changes nothing: the runners copy it into a sleeve
 only when the sleeve's own table is empty, and the table in the code is never empty
-(`apps/strategies/live_portfolio_conservative.cpp:749`).
+(`apps/strategies/live_portfolio_conservative.cpp`).
 
 ### 3.5 Rules removed from a contract by cost
 
@@ -201,14 +201,14 @@ rules are removed on twelve contracts:
 
 Every other contract runs all six.
 
-How the forecast is rebuilt for a listed contract (`trend_following.cpp:463` to `491`): the sleeve looks the
-symbol's root up in the list, `trend_estimator::pairs_after_removal` (`trend_estimator.cpp:94`) returns the
+How the forecast is rebuilt for a listed contract (`trend_following.cpp`): the sleeve looks the
+symbol's root up in the list, `trend_estimator::pairs_after_removal` (`trend_estimator.cpp`) returns the
 pairs left, the multiplier is read from the table for their number, and `estimate` is called with those
 pairs and that multiplier. Each pair left is scaled, attenuated and capped exactly as on any contract. The
 mean is over the pairs left, so each carries an equal weight of one over their number. A removed pair is
 never computed: it has no value, not a value of zero.
 
-What is refused when the sleeve is initialised (`validate_config`, `trend_following.cpp:96` to `164`):
+What is refused when the sleeve is initialised (`validate_config`, `trend_following.cpp`):
 
 - a name that is not a base symbol, or that the instrument registry does not hold;
 - a contract listed with no pair;
@@ -219,11 +219,11 @@ What is refused when the sleeve is initialised (`validate_config`, `trend_follow
 - the two contracts of a listing-date pair (section 8.4) losing different rules.
 
 The config loader accepts the block only on a book of exactly one enabled trend sleeve
-(`src/core/config_loader.cpp:512`). BASE, with two sleeves, carries no list. The list crosses from the
+(`src/core/config_loader.cpp`). BASE, with two sleeves, carries no list. The list crosses from the
 loader to the sleeve in one function, `hand_over_trading_rule_removals`
-(`include/trade_ngin/strategy/sleeve_config.hpp:58`), which all four futures runners call. One
+(`include/trade_ngin/strategy/sleeve_config.hpp`), which all four futures runners call. One
 `TRADING_RULE_REMOVALS` line per listed contract is logged when the sleeve initialises
-(`trend_following.cpp:183`).
+(`trend_following.cpp`).
 
 Where the list comes from. It is the book's procedure (strategy nine, "Removing expensive trading rules"): a
 rule is removed from an instrument when the rule's yearly cost on it is over 0.15 Sharpe-ratio units, where
@@ -246,7 +246,7 @@ new run of that kind still give the committed list. The committed list is the au
 On the book's first sleeve only, for the symbols `portfolio.json` `equity_slow_rule.symbols` names (M2K,
 MES, MNQ, MYM): a negative combined forecast stands only when the scaled forecasts of both slow pairs,
 32/128 and 64/256, are negative. Otherwise it is set to 0. A forecast that is not negative is never touched
-(`equity_slow_ruled`, `trend_estimator.cpp:66`; applied at `trend_following.cpp:542`).
+(`equity_slow_ruled`, `trend_estimator.cpp`; applied at `trend_following.cpp`).
 
 The ruled forecast is the forecast from there on: it sizes the target, its sign drives the sign close and
 the deferral band, and it is the value stored in `trading.signals.signal_value`.
@@ -255,9 +255,9 @@ A held equity-index short whose forecast the rule sets to 0 is not closed by rul
 sign, so the symbol is a free row with a target of 0 that may only step toward zero; the short leaves the
 book as the search and the buffer take it.
 
-On BASE the fast sleeve carries neither slow pair and is not ruled (`apps/backtest/bt_portfolio.cpp:401`).
+On BASE the fast sleeve carries neither slow pair and is not ruled (`apps/backtest/bt_portfolio.cpp`).
 A predecessor contract of a listing-date pair (ES for MES) is ruled through its listed contract's root
-(`ListingDates::pair_root`, `include/trade_ngin/data/listing_dates.hpp:151`).
+(`ListingDates::pair_root`, `include/trade_ngin/data/listing_dates.hpp`).
 
 ### 3.7 Worked forecasts
 
@@ -295,7 +295,7 @@ E = S_0 - (P - C)          account V = S_0 + C
 ```
 
 Row by row this is `E' = min(S_0, E + net)`. It is a function of the settled history alone
-(`half_compounded_capital`, `sizing_capital.hpp:58`). A day's net is its P&L less the day's
+(`half_compounded_capital`, `sizing_capital.hpp`). A day's net is its P&L less the day's
 costs after netting: each fill's own cost minus its `netting_adjustment` (see
 [COST_MODEL.md](COST_MODEL.md)). On a one-sleeve book every adjustment is 0.
 
@@ -308,12 +308,12 @@ No column persists E. Every run recomputes it:
 
 | Engine | Settled history | Code |
 |---|---|---|
-| Backtest | the run's own equity curve up to its last row, which is the previous cycle's close. Warm-up rows are flat, so warm-up sizes on S_0 | `backtest_half_compounding`, `sizing_capital.hpp:78`; `src/backtest/backtest_coordinator.cpp:954` |
-| Live | the book's stored `trading.live_results.daily_pnl` rows before Day T-1, then Day T-1's own net rebuilt before the rebalance | `read_live_sizing_equity`, `live_sizing_read.hpp:146`; `apps/strategies/live_portfolio_conservative.cpp:1477` |
+| Backtest | the run's own equity curve up to its last row, which is the previous cycle's close. Warm-up rows are flat, so warm-up sizes on S_0 | `backtest_half_compounding`, `sizing_capital.hpp`; `src/backtest/backtest_coordinator.cpp` |
+| Live | the book's stored `trading.live_results.daily_pnl` rows before Day T-1, then Day T-1's own net rebuilt before the rebalance | `read_live_sizing_equity`, `live_sizing_read.hpp`; `apps/strategies/live_portfolio_conservative.cpp` |
 
 The live run sizes before it finalises Day T-1, so it rebuilds Day T-1's net from the parts the
 finalize will use: the T-1 settlement move of the stored T-1 book on the consumed bars
-(`live_sizing_equity`, `sizing_capital.hpp:119`), less the costs stored on Day T-1's row. After the
+(`live_sizing_equity`, `sizing_capital.hpp`), less the costs stored on Day T-1's row. After the
 finalize, a `SIZING_CAPITAL_CHECK` line compares the finalized `daily_pnl` with the rebuilt net.
 
 ### 4.2 Worked table: a loss, the recovery, a gain above the start, a loss again
@@ -347,8 +347,7 @@ stored.
 
 When the live sizing read finds Day T-1 on one of the finalize's failure paths, the run keeps the sizing
 capital of the last settled day, adds nothing for the unsettled day, and logs `SIZING_CAPITAL_UNSETTLED`
-(WARN) with the unsettled date, the reason and the capital used (`live_sizing_read.hpp:232` to `248`,
-`:293`). The paths, tested with the finalize's own predicates:
+(WARN) with the unsettled date, the reason and the capital used (`live_sizing_read.hpp`). The paths, tested with the finalize's own predicates:
 
 | Reason logged | Condition |
 |---|---|
@@ -362,9 +361,9 @@ row-by-row recursion. Rows sized while a day was unsettled keep the capital they
 (`risk_detail.sizing_capital`).
 
 A stored day on which no symbol printed (a held Saturday) is never finalised; it counts at its stored
-`daily_pnl` as soon as any later bar is loaded (`sizing_history_day_unsettled`, `live_sizing_read.hpp:133`).
+`daily_pnl` as soon as any later bar is loaded (`sizing_history_day_unsettled`, `live_sizing_read.hpp`).
 
-A database error is a different case from "nothing stored" (`live_sizing_read.hpp:9` to `30`):
+A database error is a different case from "nothing stored" (`live_sizing_read.hpp`):
 
 | Outcome | When | What the run does |
 |---|---|---|
@@ -381,23 +380,22 @@ N* = (F / 10) x (C_s x IDM x w x tau) / (M x P x FX x sigma)
 
 `C_s` is the sleeve's capital, E times the sleeve's allocation. FX is 1 (every traded contract is in
 dollars). A negative forecast gives a short target. The strategy publishes N* as it is: unbuffered,
-unrounded and unclamped (`trend_following.cpp:642`). The buffer, the rounding and the per-name cap all
+unrounded and unclamped (`trend_following.cpp`). The buffer, the rounding and the per-name cap all
 belong to the pass.
 
-Guards in `calculate_position` (`trend_following.cpp:1046` to `1115`): a forecast that is not finite or is
+Guards in `calculate_position` (`trend_following.cpp`): a forecast that is not finite or is
 beyond 20 in size sizes at 0; sigma is clamped to [0.01, 1.0]; tau to [0.01, 0.5]; the denominator is at
 least 1. Also floored: the capital at 1,000, the IDM and FX at 0.1. A sigma or a price that is not positive
-is replaced (the caller puts 0.2 for a sigma that is not a positive finite number, `trend_following.cpp:609`
-to `614`, and the function itself 0.01; a bad price takes the last price of the symbol's history, or 1 when
+is replaced (the caller puts 0.2 for a sigma that is not a positive finite number, `trend_following.cpp`, and the function itself 0.01; a bad price takes the last price of the symbol's history, or 1 when
 there is none), and a result that is not finite is set to 0. None binds on this book.
 
 ### 5.1 Instrument weights and the IDM
 
-`get_weights` (`trend_following.cpp:915`) builds the weights from the metadata `Sector` column. The
+`get_weights` (`trend_following.cpp`) builds the weights from the metadata `Sector` column. The
 universe is every metadata symbol that has a row in `futures_data.ohlcv_1d` at any date, less ES
-(`trend_following.cpp:926` to `937`, `:968`; the symbol list is read with no date filter,
-`src/data/postgres_database.cpp:819` to `829`). If that symbol list comes back empty, every metadata symbol
-is kept (`:968`). The weights are computed once per sleeve and cached (`:916`, `:1042`), so they are the
+(`trend_following.cpp`; the symbol list is read with no date filter,
+`src/data/postgres_database.cpp`). If that symbol list comes back empty, every metadata symbol
+is kept. The weights are computed once per sleeve and cached, so they are the
 same on every date of a run. In a backtest that starts before a contract's first bar, the contract carries
 its weight from the first day and the other weights are not rescaled for the dates it has no bar: MBT,
 whose first bar is dated 2021-05-03, holds 0.071429 on every date of a window that starts in 2010.
@@ -424,7 +422,7 @@ Check: MBT is alone in its sector, so it is capped at half of 1/7, 0.071429. The
 (1 - 0.071429) / (6/7) = 1.083333: an agriculture symbol is (1/7) / 10 x 1.083333 = 0.015476. The sum is 1.
 
 The two contracts of a listing-date pair read one weight: a predecessor takes its listed contract's
-(`trend_following.cpp:574`).
+(`trend_following.cpp`).
 
 The IDM is 2.5 on both books (the book, strategy four, table 16: the value for 30 or more instruments). It
 is a required sleeve key with no default.
@@ -452,17 +450,17 @@ The module, its config and its refusal contract are in [RISK_MODULES.md](RISK_MO
 needs:
 
 **What it reads.** The capped target book: every free symbol at `sign(N*) x min(abs(N*), L / u)`
-(`cap_target`, `one_pass.cpp:35`), plus every held row at its held quantity. Capping first means the
+(`cap_target`, `one_pass.cpp`), plus every held row at its held quantity. Capping first means the
 overlay never reads a position the book cannot hold. The scalar is never computed from the optimiser's
 answer.
 
 **In capital terms.** Each position is a signed weight on the sizing capital, `x_i = N_i M_i P_i / E`. The
-five readings (`overlay.hpp:60`):
+five readings (`overlay.hpp`):
 
 | Reading | Formula | Limit |
 |---|---|---|
 | R, portfolio risk | sqrt(x' Sigma x), Sigma the annualised covariance of adjusted returns over the gate window | R_max = 2.25 tau = 0.45 |
-| R_jump | sqrt(x' Sigma_jump x): the window's correlations on each symbol's jump volatility, the 99th percentile of its trailing 2,520 `sigma_short` values each taken back to a daily figure by its own bar's factor (`trend_estimator.cpp:302` to `308`), annualised by the gate window's factor (`one_pass.cpp:434` to `437`) | R_jump_max = 4.5 tau = 0.90 |
+| R_jump | sqrt(x' Sigma_jump x): the window's correlations on each symbol's jump volatility, the 99th percentile of its trailing 2,520 `sigma_short` values each taken back to a daily figure by its own bar's factor (`trend_estimator.cpp`), annualised by the gate window's factor (`one_pass.cpp`) | R_jump_max = 4.5 tau = 0.90 |
 | R_shock | sum of abs(x_i) s_i, with s_i the symbol's own volatility in the gate window, sqrt(Sigma_ii) (every correlation taken as 1). It is not the sizing volatility of section 3.2 | R_shock_max = 4.0 tau = 0.80 |
 | L_g, gross leverage | sum of abs(x_i) | 8.0 |
 | L_n, net leverage | sum of x_i, signed; the limit applies to its size | 6.0 |
@@ -470,22 +468,22 @@ five readings (`overlay.hpp:60`):
 The gate window is the last 252 dates on which any participant has a return, ending at the signal date.
 Below 21 complete dates the three covariance readings are blind (their multipliers are 1, `OVERLAY_BLIND`
 is warned) and the two leverage readings still apply. The full window rules are in the comment at
-`overlay.hpp:12`.
+`overlay.hpp`.
 
 **Where the limits are.** The five limits are fixed values of the carver module in `risk.json`. The pass
 multiplies the three risk limits by the first sleeve's tau and takes the two leverage limits as they are
-(`portfolio_manager.cpp:2223` to `2226`), so a change of tau moves the three risk limits with it and leaves
+(`portfolio_manager.cpp`), so a change of tau moves the three risk limits with it and leaves
 the leverage limits and the per-name cap where the file puts them. The book sets the limits of its own
 overlay as the 99th percentile of each reading's own history, rounded (Tactic four, "An exogenous risk
 overlay"); section 13 gives its values beside ours.
 
 **One scalar, applied once.** `m` is the smallest of `min(1, limit / reading)` over the five terms
-(`overlay::multiplier`, `src/risk/overlay.cpp:180`). The scaled target of every free symbol is
-`m x capped target` (`one_pass.cpp:470`). Held rows are counted in every reading and are not scaled. The
+(`overlay::multiplier`, `src/risk/overlay.cpp`). The scaled target of every free symbol is
+`m x capped target` (`one_pass.cpp`). Held rows are counted in every reading and are not scaled. The
 binding term is the first term at m, or `none`.
 
 **When it cannot answer.** If an input or a reading is not a finite number, the pass is refused
-(`one_pass.cpp:456` to `467`): every sleeve keeps its held book, there is no search, no trim and no fill,
+(`one_pass.cpp`): every sleeve keeps its held book, there is no search, no trim and no fill,
 and a REFUSE decision is recorded. A blind window is not a refusal.
 
 ---
@@ -494,7 +492,7 @@ and a REFUSE decision is recorded. A blind window is not a refusal.
 
 ### 7.1 The three kinds of row
 
-Each symbol in the pass is classified once (`one_pass.cpp:393` to `414`):
+Each symbol in the pass is classified once (`one_pass.cpp`):
 
 | Kind | Condition | Treatment |
 |---|---|---|
@@ -507,12 +505,12 @@ The hold set is section 8. The deferral band (7.2) adds to it.
 ### 7.2 The deferral band and the forecast-sign close
 
 Before the search, a free symbol whose held position is on the other side of its target's sign is closed
-to flat with one fill at the signal close (`one_pass.cpp:475` to `482`). The sign is the sign of the uncapped N*,
+to flat with one fill at the signal close (`one_pass.cpp`). The sign is the sign of the uncapped N*,
 summed over the sleeves that publish. A target of exactly zero has no sign and closes nothing. The search,
 its cost term and the buffer all start from the closed book.
 
 The deferral band postpones that close. A symbol the first sleeve signals, whose held position is opposite
-to that sleeve's forecast while `abs(F) < 2`, is held that day (`one_pass.cpp:399`): it joins the hold set,
+to that sleeve's forecast while `abs(F) < 2`, is held that day (`one_pass.cpp`): it joins the hold set,
 is fixed at its held quantity and gets no fill. The test is strict: at `abs(F) = 2` the symbol is free and
 the close applies. A zero forecast is never in the band. On BASE only the first sleeve's forecast is read;
 the fast sleeve's never enters the band.
@@ -521,7 +519,7 @@ A change bar wins over both: a symbol on a change bar is held (section 8).
 
 ### 7.3 The search from the held book
 
-The optimiser's covariance is its own (`optimiser_covariance`, `one_pass.cpp:61`): the sample covariance of
+The optimiser's covariance is its own (`optimiser_covariance`, `one_pass.cpp`): the sample covariance of
 the free symbols' adjusted returns over their last 756 consumed closes, on the dates they share, annualised
 by the count of those dates. A symbol whose last close trails the newest by more than five dates, or that
 leaves fewer than 20 shared returns, gets a 0.01 variance on its own and is named in a
@@ -534,30 +532,30 @@ TE(n) = sqrt((n u - x)' Sigma (n u - x)) + 100 x sum_i abs(n_i - h_i) x c_i / E
 ```
 
 `x` is the scaled target in weights, `h` the held book after the sign closes, and `c_i` the cost of trading
-one contract at the signal close as the cost model prices it (`portfolio_manager.cpp:2132`). A symbol the
+one contract at the signal close as the cost model prices it (`portfolio_manager.cpp`). A symbol the
 cost model has no usable volume for has no cost; it stays in the pass as a held row and is logged
 `BOOK_UNPRICED`, never traded on a default.
 
-How it runs (`search`, `one_pass.cpp:170`):
+How it runs (`search`, `one_pass.cpp`):
 
 - It starts from the held book, not from zero.
 - Each pass tries one contract up and one contract down in every free symbol, in symbol order.
 - It keeps the single step with the lowest TE (ties go to the earlier candidate) and takes it only if it
   lowers TE by more than 1e-6.
-- **The sign guard** (`admissible`, `one_pass.cpp:156`): a step is allowed when the result is on the
+- **The sign guard** (`admissible`, `one_pass.cpp`): a step is allowed when the result is on the
   target's side or at zero, or when it moves toward zero without crossing it. A symbol whose target is
   exactly zero may only step toward zero.
 - **The cap guard**: a step away from zero that lands above the per-name cap is refused. A step toward zero
   never is.
 - The pass cap is the larger of 100 and twice the contracts between the held book and the target, plus one
-  (`pass_cap`, `one_pass.cpp:162`). Reaching it logs `OPTIMISER_PASS_CAP`.
+  (`pass_cap`, `one_pass.cpp`). Reaching it logs `OPTIMISER_PASS_CAP`.
 
 The cost term is why the starting point matters: a position already held costs nothing to keep, so the
 search moves a row only when the tracking error it removes is worth more than 100 times the trade's cost.
 
 ### 7.4 The granularity buffer, the rounding and the clip
 
-The no-trade band is sized by the book's own contracts (`b_sigma`, `one_pass.cpp:231`):
+The no-trade band is sized by the book's own contracts (`b_sigma`, `one_pass.cpp`):
 
 ```
 B = max(0.05 x tau, largest u_i x sqrt(Sigma_ii) over the free symbols with a non-zero answer or holding)
@@ -566,7 +564,7 @@ B = max(0.05 x tau, largest u_i x sqrt(Sigma_ii) over the free symbols with a no
 The second term is the annual risk of one contract of the lumpiest symbol in the book, as a share of the
 sizing capital. The first is the floor, 0.01 at tau 0.20.
 
-Then (`buffer`, `one_pass.cpp:253`), with y the search's answer:
+Then (`buffer`, `one_pass.cpp`), with y the search's answer:
 
 ```
 TE_h = sqrt(d' Sigma d),  d_i = (h_i - y_i) u_i        no cost term
@@ -575,11 +573,11 @@ else:         a = (TE_h - B) / TE_h,  book = round(h + a x (y - h))
 ```
 
 The book trades toward the answer only as far as the edge of the band. The rounding is to the nearest whole
-contract, a half away from zero (`round_half_away`, `one_pass.cpp:227`). It is the only rounding in the
+contract, a half away from zero (`round_half_away`, `one_pass.cpp`). It is the only rounding in the
 loop. When the rounding gives the held book back, the OPTIMISER line says so.
 
 After the rounding, every free row beyond the per-name cap is clipped toward zero to
-`floor(L / u)` contracts (`clip_to_cap`, `one_pass.cpp:48`). A held row beyond the cap is not touched; it
+`floor(L / u)` contracts (`clip_to_cap`, `one_pass.cpp`). A held row beyond the cap is not touched; it
 is marked instead (7.5).
 
 So the per-name cap acts in three places: on the target the overlay reads, as a guard in the search, and
@@ -587,8 +585,8 @@ as a clip on the rounded book.
 
 ### 7.5 The trim
 
-The rounded, clipped book is read once more by the overlay (`one_pass.cpp:555` to `587`). If a reading is
-over its limit, `trim` removes one contract at a time (`one_pass.cpp:305`):
+The rounded, clipped book is read once more by the overlay (`one_pass.cpp`). If a reading is
+over its limit, `trim` removes one contract at a time (`one_pass.cpp`):
 
 - the first breached term in the order R, R_jump, R_shock, L_g, L_n is served first;
 - the contract removed is the one, among the free non-zero rows, whose removal lowers that reading most,
@@ -611,26 +609,26 @@ never cut. There is never a second scalar.
 A held symbol is fixed at its held quantity for the rebalance: no fill, counted in every reading, never a
 trim candidate. With a held quantity of zero it is not opened. It re-enters the search on its next usable
 bar. The hold applies on sized days only; in warm-up the book follows the search
-(`portfolio_manager.cpp:2260`).
+(`portfolio_manager.cpp`).
 
 | Hold | Rule | Where it is decided |
 |---|---|---|
-| Session classifier | a symbol whose T-1 verdict is not `SESSION` (`JUNK`, a closure, a feed hole) is held. The key is the verdict, never whether a price exists: a junk print has a price | `SessionVerdict`, `include/trade_ngin/data/session_classifier.hpp:39`; live: `live_portfolio_conservative.cpp:1790`; backtest: `backtest_coordinator.cpp:797` to `834` |
-| Change bar | a symbol whose last consumed bar is pending (a change bar, either bar of a flip, a bar with no instrument id inside a pending roll) is held until its next consumed bar, on every rebalance | live: `CHANGE_BAR_HOLD`, `live_portfolio_conservative.cpp:1796` to `1800`; backtest: `backtest_coordinator.cpp:856`; see [FUTURES_ROLLS.md](FUTURES_ROLLS.md) |
-| Deferral band | section 7.2 | `one_pass.cpp:399` |
-| Cannot be weighed or priced | a held symbol with no series today is valued at its last usable close; a symbol with no cost is fixed | `BOOK_UNPRICED`, `portfolio_manager.cpp:2144` to `2210` |
+| Session classifier | a symbol whose T-1 verdict is not `SESSION` (`JUNK`, a closure, a feed hole) is held. The key is the verdict, never whether a price exists: a junk print has a price | `SessionVerdict`, `include/trade_ngin/data/session_classifier.hpp`; live: `live_portfolio_conservative.cpp`; backtest: `backtest_coordinator.cpp` |
+| Change bar | a symbol whose last consumed bar is pending (a change bar, either bar of a flip, a bar with no instrument id inside a pending roll) is held until its next consumed bar, on every rebalance | live: `CHANGE_BAR_HOLD`, `live_portfolio_conservative.cpp`; backtest: `backtest_coordinator.cpp`; see [FUTURES_ROLLS.md](FUTURES_ROLLS.md) |
+| Deferral band | section 7.2 | `one_pass.cpp` |
+| Cannot be weighed or priced | a held symbol with no series today is valued at its last usable close; a symbol with no cost is fixed | `BOOK_UNPRICED`, `portfolio_manager.cpp` |
 
 The live runner hands its set to the pass through `PortfolioManager::set_hold_set`
-(`live_portfolio_conservative.cpp:1817`). The backtest hands the set of session symbols, and every symbol
+(`live_portfolio_conservative.cpp`). The backtest hands the set of session symbols, and every symbol
 outside it is held.
 
 ### 8.2 Never-signalled symbols
 
 A symbol publishes no target until its sleeve holds as many bars as its longest EMA (256 for the trend
-sleeve, 64 for the fast one; `is_signalling`, `trend_following.cpp:849`). Such a symbol is not a free row.
+sleeve, 64 for the fast one; `is_signalling`, `trend_following.cpp`). Such a symbol is not a free row.
 At zero it is not a participant of the pass. With a held position it is a held row. It is not a close-out, because a
-close-out needs an earlier signal (`one_pass.cpp:408`). A live process keeps no memory of earlier signals,
-so there a held position stands for one (`portfolio_manager.cpp:2281`).
+close-out needs an earlier signal (`one_pass.cpp`). A live process keeps no memory of earlier signals,
+so there a held position stands for one (`portfolio_manager.cpp`).
 
 ### 8.3 Close-outs
 
@@ -644,15 +642,15 @@ hold.
 trades before it. In force: MES, MNQ, MYM and M2K from 2019-05-06, with ES, NQ, YM and RTY before, at a
 ratio of 10. The vendor stores the E-mini's history under the micro's symbol, so a backtest whose window
 starts before the date runs the predecessor as a symbol of its own on those same bars
-(`ListingDates`, `listing_dates.hpp:108`). The predecessor may hold a position only on signal bars dated
-before the listing date, the listed contract only on or after it (`tradeable`, `listing_dates.hpp:137`;
-read at `trend_following.cpp:401`). Each is costed on its own contract's size and fee. The pair counts as
+(`ListingDates`, `listing_dates.hpp`). The predecessor may hold a position only on signal bars dated
+before the listing date, the listed contract only on or after it (`tradeable`, `listing_dates.hpp`;
+read at `trend_following.cpp`). Each is costed on its own contract's size and fee. The pair counts as
 one instrument for its weight, its removed rules and the equity slow rule.
 
 The switch is made inside the pass of a backtest, once per pair, on the first sized rebalance whose signal bar is dated on
 or after the listing date with both contracts free to trade and the listed contract signalling
-(`portfolio_manager.cpp:2310` to `2566`). Under the rule in force, `open_at_target`
-(`plan_listing_switch`, `src/data/listing_dates.cpp:251`):
+(`portfolio_manager.cpp`). Under the rule in force, `open_at_target`
+(`plan_listing_switch`, `src/data/listing_dates.cpp`):
 
 1. the held predecessor is exited in full;
 2. the listed contract is entered at that day's target after the overlay's scalar: the capped target times
@@ -661,11 +659,11 @@ or after the listing date with both contracts free to trade and the listed contr
 3. the pass then runs from that held book.
 
 The scalar is read from the pass itself, run once on the book with the due predecessors exited
-(`portfolio_manager.cpp:2408`), so on a day the overlay cuts, the entry lands on the cut target.
+(`portfolio_manager.cpp`), so on a day the overlay cuts, the entry lands on the cut target.
 
 The two moves are fills of type STRATEGY at the signal close, told apart by their ids: `LC-<sleeve>-<n>`
 for the predecessor's exit and `LO-<sleeve>-<n>` for the listed contract's entry
-(`make_listing_switch_fills`, `listing_dates.cpp:279`). On a book of several sleeves the switch is the
+(`make_listing_switch_fills`, `listing_dates.cpp`). On a book of several sleeves the switch is the
 book's: the net holding is exited, the summed target entered, and the whole number is split and netted by
 the pass's own rules (section 9).
 
@@ -680,7 +678,7 @@ Exceptions, all in the code cited above:
 
 A live run never trades a predecessor. With contracts declared it refuses, before anything of the day is
 stored, a predecessor in its universe or its stored book on or after the listing date, and a signal date
-before the listing date of a listed contract in its universe (`live_listing_refusals`, `include/trade_ngin/live/live_listing_guard.hpp:30`).
+before the listing date of a listed contract in its universe (`live_listing_refusals`, `include/trade_ngin/live/live_listing_guard.hpp`).
 
 Worked switch, an example of the arithmetic: a sixteen-year backtest of the conservative book (2010-10-07
 to 2026-10-07) on its template configuration, which carries the listing-date, relabel and rule-removal
@@ -701,7 +699,7 @@ MNQ.
 
 `portfolio.json` `instrument_id_relabels` declares vendor instrument-id changes that are not rolls (four
 entries dated 2026-02-22, one per equity index micro). From the date, a bar carrying the new id is read as
-carrying the old one, at the loader (`InstrumentIdRelabel`, `listing_dates.hpp:48`). No consumer sees a
+carrying the old one, at the loader (`InstrumentIdRelabel`, `listing_dates.hpp`). No consumer sees a
 change: no change bar, no hold, no roll legs.
 
 ---
@@ -712,23 +710,23 @@ BASE is a placeholder test book with two sleeves: the trend sleeve at allocation
 fast sleeve at 0.3 and tau 0.25. How the loop treats several sleeves:
 
 - **Sized on capital times allocation.** Each sleeve's N* is sized on E times its allocation
-  (`portfolio_manager.cpp:3829`), so its contracts are already contracts of the account's book.
+  (`portfolio_manager.cpp`), so its contracts are already contracts of the account's book.
 - **Aggregation.** The book's target for a symbol is the sum of the sleeves' N*, with no allocation applied
-  a second time (`portfolio_manager.cpp:2274` to `2278`). The held book is the sum of the sleeves' held
+  a second time (`portfolio_manager.cpp`). The held book is the sum of the sleeves' held
   quantities.
 - **One pass on the book.** The overlay, the search, the buffer and the trim run once on the summed book.
   The book-level tau, the three risk ratios, the deferral band and the equity slow rule are the first
   sleeve's.
 - **The split.** Each moved row is split back in proportion to the sleeves' unrounded contributions by
   largest remainder, so the sleeves' whole numbers sum to the book's exactly
-  (`distribute_optimizer_contracts`, `allocation_split.hpp:51`). When the sleeves' targets have opposite
+  (`distribute_optimizer_contracts`, `allocation_split.hpp`). When the sleeves' targets have opposite
   signs, only the optimiser's deviation from the net target is split, so each sleeve keeps its own side.
 - **Netting.** Each sleeve's fill is priced as if it traded alone; the account sends one order per symbol,
   and each row's `netting_adjustment` is its share of what the account did not pay. Every cost total (a
   day's costs, a run's costs, the costs the sizing capital reads) is the fills' own costs minus their
   adjustments. In the backtest the
   sign closes are netted among themselves and the other fills among themselves
-  (`portfolio_manager.cpp:2860`). Roll legs are never netted. See [COST_MODEL.md](COST_MODEL.md).
+  (`portfolio_manager.cpp`). Roll legs are never netted. See [COST_MODEL.md](COST_MODEL.md).
 - **A stopped sleeve** signals nothing, so its held rows close on the next session bar. A stopped first
   sleeve leaves nothing to weigh the book on and refuses the pass.
 
@@ -740,13 +738,13 @@ fast sleeve at 0.3 and tau 0.25. How the loop treats several sleeves:
 
 | Where | What |
 |---|---|
-| `trading.live_results.risk_scale` | the delivered scale: the stored book's gross weight over the gross weight of the capped target the overlay read, held rows counted in both, at the raw signal closes. It can exceed 1. A day with no sized rebalance, and a flat target, store 1. It is not the request (`delivered_scale_for_book`, `portfolio_manager.cpp:3047`; written at `live_portfolio_conservative.cpp:4052`) |
-| `trading.live_results.risk_detail` and `backtest.equity_curve.risk_detail` (jsonb, migration 020) | the loop's record of the rebalance, nine flat keys. Written on the row of a sized rebalance the overlay answered; NULL on a refused rebalance, a day with no session, a warm-up row and every equity row (`risk_detail_json`, `risk_detail.hpp:64`) |
+| `trading.live_results.risk_scale` | the delivered scale: the stored book's gross weight over the gross weight of the capped target the overlay read, held rows counted in both, at the raw signal closes. It can exceed 1. A day with no sized rebalance, and a flat target, store 1. It is not the request (`delivered_scale_for_book`, `portfolio_manager.cpp`; written at `live_portfolio_conservative.cpp`) |
+| `trading.live_results.risk_detail` and `backtest.equity_curve.risk_detail` (jsonb, migration 020) | the loop's record of the rebalance, nine flat keys. Written on the row of a sized rebalance the overlay answered; NULL on a refused rebalance, a day with no session, a warm-up row and every equity row (`risk_detail_json`, `risk_detail.hpp`) |
 | `trading.signals.signal_value` | the ruled forecast F of each symbol |
-| `trading.positions`, `trading.executions` | each sleeve's stored book and fills. A live forecast-sign close is its own fill with the id suffix `_SC` (`session_book_gate.hpp:421`), stored ahead of the symbol's other fill of the day |
+| `trading.positions`, `trading.executions` | each sleeve's stored book and fills. A live forecast-sign close is its own fill with the id suffix `_SC` (`session_book_gate.hpp`), stored ahead of the symbol's other fill of the day |
 | `backtest.executions` | the same fills with ids `EX-<sleeve>-<n>`, and the switch fills `LC-` and `LO-` |
 
-The nine keys of `risk_detail` (`kRiskDetailKeys`, `risk_detail.hpp:48`):
+The nine keys of `risk_detail` (`kRiskDetailKeys`, `risk_detail.hpp`):
 
 | Key | Type | Meaning |
 |---|---|---|
@@ -766,7 +764,7 @@ line. The sizing capital has no column of its own.
 ### 10.2 The design keys in `portfolio_config`
 
 Every run records the constants it ran with. `PortfolioConfig::to_json`
-(`include/trade_ngin/portfolio/portfolio_manager.hpp:111`) is written to
+(`include/trade_ngin/portfolio/portfolio_manager.hpp`) is written to
 `backtest.run_metadata.portfolio_config` and to `trading.live_run_metadata.portfolio_config`:
 
 | Key | Value in force |
@@ -782,10 +780,10 @@ Every run records the constants it ran with. `PortfolioConfig::to_json`
 | `risk_config.trim_max` | 5 |
 | `sizing_mode` | `half_compounding` |
 | `equity_slow_rule` | the symbols and the pairs |
-| `oracle_hash_list` | a fixed string that the code writes on the record of every book that names an overlay sleeve (`portfolio_manager.hpp:153`). No code reads it and no config key sets it |
+| `oracle_hash_list` | a fixed string that the code writes on the record of every book that names an overlay sleeve (`portfolio_manager.hpp`). No code reads it and no config key sets it |
 
 The backtest adds `strategy_names`, `strategy_allocations` and, when the block is present,
-`trading_rule_removals` (`bt_portfolio_conservative.cpp:566`). Each sleeve's tau and IDM are recorded with
+`trading_rule_removals` (`bt_portfolio_conservative.cpp`). Each sleeve's tau and IDM are recorded with
 the sleeve's own config, not here.
 
 ### 10.3 Logged
@@ -794,10 +792,10 @@ One of each per rebalance, in this order. A refused rebalance prints the OVERLAY
 
 | Line | Carries | Built by |
 |---|---|---|
-| `SIZING_CAPITAL` | live: capital, account, peak, the last settled date, the count of settled rows, the count of earlier unsettled days, then the parts Day T-1 was rebuilt from (the row before, the settlement, the costs, positions priced and unpriced). Backtest: capital, account, peak, `settled_through` | `sizing_capital_log_line`, `live_sizing_read.hpp:278`; `backtest_coordinator.cpp:962` |
-| `OVERLAY` | m, the binding term, the five readings (the three risk readings print `blind` on a blind window), the five limits, the five multipliers, capital, tau, the window (mode, dates, first, last, complete and dropped dates), the counts of participants, free and held rows, and the symbols left out of a reading | `overlay_line`, `one_pass_log.hpp:48` |
-| `OPTIMISER` | the search's objective, its passes, TE_h, the band B and the symbol that sets it (`floor` when the floor governs), a, whether it traded, whether the rounding returned the held book, and the lists of sign closes, cap clips, close-outs and stale rows | `optimiser_line`, `one_pass_log.hpp:94` |
-| `BOOK` | gross weights of the raw, capped and scaled targets and of the held and stored books, the stored net, the count of held rows, the deferral-band holds, the symbols the equity slow rule zeroed, and every participant as `symbol:N*:scaled:held:stored` | `book_line`, `one_pass_log.hpp:117` |
+| `SIZING_CAPITAL` | live: capital, account, peak, the last settled date, the count of settled rows, the count of earlier unsettled days, then the parts Day T-1 was rebuilt from (the row before, the settlement, the costs, positions priced and unpriced). Backtest: capital, account, peak, `settled_through` | `sizing_capital_log_line`, `live_sizing_read.hpp`; `backtest_coordinator.cpp` |
+| `OVERLAY` | m, the binding term, the five readings (the three risk readings print `blind` on a blind window), the five limits, the five multipliers, capital, tau, the window (mode, dates, first, last, complete and dropped dates), the counts of participants, free and held rows, and the symbols left out of a reading | `overlay_line`, `one_pass_log.hpp` |
+| `OPTIMISER` | the search's objective, its passes, TE_h, the band B and the symbol that sets it (`floor` when the floor governs), a, whether it traded, whether the rounding returned the held book, and the lists of sign closes, cap clips, close-outs and stale rows | `optimiser_line`, `one_pass_log.hpp` |
+| `BOOK` | gross weights of the raw, capped and scaled targets and of the held and stored books, the stored net, the count of held rows, the deferral-band holds, the symbols the equity slow rule zeroed, and every participant as `symbol:N*:scaled:held:stored` | `book_line`, `one_pass_log.hpp` |
 
 Beside them: `T4_RISK_WINDOW`, `COVARIANCE_DATE_ALIGNED`, `COVARIANCE_MAX_RHO` and
 `OPTIMIZER_NOT_SIGNALLING` (info), and the warnings `SIZING_CAPITAL_UNSETTLED`, `SIZING_CAPITAL_HISTORY`,
@@ -806,7 +804,7 @@ Beside them: `T4_RISK_WINDOW`, `COVARIANCE_DATE_ALIGNED`, `COVARIANCE_MAX_RHO` a
 `LISTING_SWITCH`.
 
 With `TRADE_NGIN_SERIES_DUMP_DIR` set, a run also writes one row a day and one row a symbol with every
-value of the pass at seventeen digits (`one_pass_record.hpp:16`). A production run never sets it.
+value of the pass at seventeen digits (`one_pass_record.hpp`). A production run never sets it.
 
 ---
 

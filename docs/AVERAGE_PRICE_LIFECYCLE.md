@@ -11,7 +11,7 @@ value written under another. This document maps the meanings and the rules that 
 |---|---|---|
 | **COST BASIS** | Volume-weighted price actually paid. The anchor for realized P&L, unrealized P&L, and the mean-reversion stop-loss. | `BaseStrategy::on_execution()`, the sole legitimate writer. Corporate actions restate it. |
 | **MARK** | What the position is worth right now (a close). | Risk/margin read it this way. Nothing should *write* a mark here. |
-| **FILL PRICE** | The price a synthetic execution is booked at. | Policy-dependent (`PricingPolicy`, `execution_manager.hpp`). `MARK_FALLBACK` (the parameter's default) reads `average_price`, a real price only where the field holds a mark, as `trend_following.cpp:880` stores one. Every runner passes `STRICT` (equities in `LiveDailyCycle::execute_day_t`, futures in `execute_strategy_day_strict`, `session_book_gate.hpp:394`), which never reads it: absent price ⇒ no fill. |
+| **FILL PRICE** | The price a synthetic execution is booked at. | Policy-dependent (`PricingPolicy`, `execution_manager.hpp`). `MARK_FALLBACK` (the parameter's default) reads `average_price`, a real price only where the field holds a mark, as `trend_following.cpp` stores one. Every runner passes `STRICT` (equities in `LiveDailyCycle::execute_day_t`, futures in `execute_strategy_day_strict`, `session_book_gate.hpp`), which never reads it: absent price ⇒ no fill. |
 
 A basis is *what it cost*. A mark is *what it is worth*. Substituting one for the other
 is the root defect; every rule below exists to enforce the distinction.
@@ -48,11 +48,11 @@ needs step 8 to have run first, and it must run before any persistence or basis-
 
 | Site | Assumes | Safe? |
 |---|---|---|
-| `mean_reversion.cpp:408` (stop-loss) | COST BASIS | Yes: reads the strategy's own `positions_`, never the day-T map |
+| `mean_reversion.cpp` (stop-loss) | COST BASIS | Yes: reads the strategy's own `positions_`, never the day-T map |
 | `LivePnLManager::unrealized_from_cost_basis` | COST BASIS | Yes: guards `average_price <= 0` |
-| `risk_manager.cpp:148,299,306` | MARK | Intended on the target map (see §5). The equity runner's metrics snapshot also reaches it with the day-T rows and no price map (`live_equity_mean_reversion.cpp:4442`), after step 9, so the printed leverage values a position at its cost basis |
-| `margin_manager.cpp:30,165` | MARK | Yes on the equity path: the runner passes the T-1 close map (`live_equity_mean_reversion.cpp:4180`) and `average_price` is read only for a symbol absent from it |
-| `execution_manager.cpp:51,90` under `MARK_FALLBACK` | FILL PRICE | Not reached by any runner: the equity and the futures runners all pass `STRICT` |
+| `risk_manager.cpp` | MARK | Intended on the target map (see §5). The equity runner's metrics snapshot also reaches it with the day-T rows and no price map (`live_equity_mean_reversion.cpp`), after step 9, so the printed leverage values a position at its cost basis |
+| `margin_manager.cpp` | MARK | Yes on the equity path: the runner passes the T-1 close map (`live_equity_mean_reversion.cpp`) and `average_price` is read only for a symbol absent from it |
+| `execution_manager.cpp` under `MARK_FALLBACK` | FILL PRICE | Not reached by any runner: the equity and the futures runners all pass `STRICT` |
 
 ---
 
@@ -98,13 +98,13 @@ needs step 8 to have run first, and it must run before any persistence or basis-
 
 ## 5. Why seeding does not blow up risk
 
-- `RiskManager` reads `average_price` as a mark on the **target map**: `MeanReversionStrategy::get_target_positions()` writes `current_price` there deliberately (`mean_reversion.cpp:230`), and the stored backtest `average_price` is a mark for the same reason. That is a live, intended reader; the seeded `positions_` are what must never reach it.
+- `RiskManager` reads `average_price` as a mark on the **target map**: `MeanReversionStrategy::get_target_positions()` writes `current_price` there deliberately (`mean_reversion.cpp`), and the stored backtest `average_price` is a mark for the same reason. That is a live, intended reader; the seeded `positions_` are what must never reach it.
 
 Seeding makes `positions_` non-empty in live. Risk and margin read `average_price` as a
 **mark**, so a seeded book reaching them would be valued at cost. It is contained only because:
 
-- `portfolio_manager.cpp:4204` `get_positions_internal()` has two callers, **both dead**:
-  `:307` is documented in-tree as having no production consumer, and `:4129` sits inside
+- `portfolio_manager.cpp` `get_positions_internal()` has two callers, **both dead**:
+  is documented in-tree as having no production consumer sits inside
   `get_portfolio_value(const map&)`, which has no callers anywhere.
 - `MeanReversionStrategy` **overrides** `get_target_positions()`, building from
   `inst_data.target_position`. The base returns `positions_`; had it not overridden,
@@ -159,14 +159,14 @@ checked against the aggregate only.
 ## 8. Futures exposure
 
 The futures runners price fills under `PricingPolicy::STRICT` as well
-(`execute_strategy_day_strict`, `include/trade_ngin/live/session_book_gate.hpp:394`, reached through
-its forecast-sign-close overload at `:436`, which
-`apps/strategies/live_portfolio_conservative.cpp:2369` calls; `live_portfolio.cpp` carries the same
+(`execute_strategy_day_strict`, `include/trade_ngin/live/session_book_gate.hpp`, reached through
+its forecast-sign-close overload which
+`apps/strategies/live_portfolio_conservative.cpp` calls; `live_portfolio.cpp` carries the same
 lines). The book gate holds every symbol whose T-1 bar is not a session at its stored quantity
-before the execution step (`hold_non_session_symbols`, `session_book_gate.hpp:269`), so no changed
+before the execution step (`hold_non_session_symbols`, `session_book_gate.hpp`), so no changed
 symbol reaches it unpriced; one that still does gets its stored row back, or is dropped if it was
 not held, and is logged as an ERROR. `MARK_FALLBACK` remains the default argument of
-`ExecutionManager::generate_daily_executions` (`include/trade_ngin/live/execution_manager.hpp:108`)
+`ExecutionManager::generate_daily_executions` (`include/trade_ngin/live/execution_manager.hpp`)
 and no runner passes it. The futures runners do not use `ExecutionPriceResolver`.
 
 ## 8b. Transaction cost: what the model is told, and where its window ends
@@ -179,25 +179,24 @@ the same "which frame, which window" question governs both. The model itself is 
 `TransactionCostManager::calculate_costs` needs two things the caller never passes it:
 the symbol's **ADV**, read from `impact_model_.get_adv()`, and its **volatility
 multiplier**, read from `spread_model_.get_volatility_multiplier()`
-(`src/transaction_cost/transaction_cost_manager.cpp:110-111`). Both come only from
-`update_market_data` (`:265`). Registering the tier config (`register_equity_costs_from_bars`,
-`:325`) does **not** supply them: that writes the spread ticks and the impact caps, and nothing
+(`src/transaction_cost/transaction_cost_manager.cpp`). Both come only from
+`update_market_data`. Registering the tier config (`register_equity_costs_from_bars`) does **not** supply them: that writes the spread ticks and the impact caps, and nothing
 else. A symbol the model has never been fed is priced against the fallbacks, `adv = 100000`
-shares (`:117`) and `vol_mult = 1.0` (`:121`). The live equity runner therefore registers the
+shares and `vol_mult = 1.0`. The live equity runner therefore registers the
 tier and feeds the model in one block, from the same bars
-(`apps/strategies/live_equity_mean_reversion.cpp:995`, `:997`).
+(`apps/strategies/live_equity_mean_reversion.cpp`).
 
 Two rules follow, and both are enforced by `LiveDailyCycle::feed_cost_model`
-(`include/trade_ngin/live/live_daily_cycle.hpp:210`):
+(`include/trade_ngin/live/live_daily_cycle.hpp`):
 
 1. **Feed the model before you price a fill.** Same bars the tier is registered from, in
    date order, so the ADV that picks the tier and the ADV that scales the impact are the
    same twenty observations.
 2. **The first bar of a symbol passes `prev_close = 0.0`, never its own close.**
    `update_market_data` records the volume unconditionally and gates the log return on
-   `prev_close > 0` (`record_log_return`, `transaction_cost_manager.cpp:290`), so zero means
+   `prev_close > 0` (`record_log_return`, `transaction_cost_manager.cpp`), so zero means
    "volume yes, return omitted". Passing the bar's own close, which is what `ExecutionManager`'s
-   3-arg form does for an unseen symbol (`src/live/execution_manager.cpp:185`), injects a
+   3-arg form does for an unseen symbol (`src/live/execution_manager.cpp`), injects a
    fabricated `log(close/close) = 0` return that pulls the sample stdev down and biases
    `vol_mult` low.
 
@@ -206,25 +205,25 @@ priced at the T-1 close, and the cost model reads nothing later than that bar on
 
 | | Tier | ADV and returns |
 |---|---|---|
-| Live | `register_equity_costs_from_bars`, the last 20 loaded bars, which end at T-1 (`live_equity_mean_reversion.cpp:995`) | `feed_cost_model`, the same bars (`:997`) |
-| Backtest | `EquityCostRetier::retier` on both cost managers, called before the cycle's own group is appended, so its 20 bars end at the previous group, T-1 (`src/backtest/backtest_coordinator.cpp:697-711`; `include/trade_ngin/backtest/equity_cost_retier.hpp:148`) | the signal group `portfolio_previous_bars_`, each bar's return taken against the group fed on the previous cycle (`backtest_coordinator.cpp:731-782`) |
+| Live | `register_equity_costs_from_bars`, the last 20 loaded bars, which end at T-1 (`live_equity_mean_reversion.cpp`) | `feed_cost_model`, the same bars |
+| Backtest | `EquityCostRetier::retier` on both cost managers, called before the cycle's own group is appended, so its 20 bars end at the previous group, T-1 (`src/backtest/backtest_coordinator.cpp`; `include/trade_ngin/backtest/equity_cost_retier.hpp`) | the signal group `portfolio_previous_bars_`, each bar's return taken against the group fed on the previous cycle (`backtest_coordinator.cpp`) |
 
 The backtest applies rule 2 as well: a symbol with no bar in the previously fed group passes
-`prev_close = 0.0` (`backtest_coordinator.cpp:744-780`).
+`prev_close = 0.0` (`backtest_coordinator.cpp`).
 
 What still differs between the two is the start of the window and the share unit, not its end:
 
 - **The first cycles of a backtest.** Before the first cycle the tier comes from the 30 calendar
   days before the start date (`register_equity_cost_warmup`,
-  `include/trade_ngin/backtest/equity_cost_warmup.hpp:83`), and the same bars seed the re-tier's
-  trailing windows (`load_equity_cost_retier`, `backtest_coordinator.cpp:1845`, `:1908`). Those
+  `include/trade_ngin/backtest/equity_cost_warmup.hpp`), and the same bars seed the re-tier's
+  trailing windows (`load_equity_cost_retier`, `backtest_coordinator.cpp`). Those
   bars set tiers only. The ADV and the return windows start empty. The first cycle feeds nothing and
   each later cycle adds one volume, so `get_adv` averages fewer than twenty volumes until the
   twenty-first cycle
-  (`ImpactModel::get_adv`, `src/transaction_cost/impact_model.cpp:75`). The live runner feeds
+  (`ImpactModel::get_adv`, `src/transaction_cost/impact_model.cpp`). The live runner feeds
   every loaded bar on every run, so its windows are full.
 - **The share unit.** The backtest's prices and quantities are adjusted to the end of the
   window, so it expresses each volume in that unit (`split_consistent_volume`,
-  `equity_cost_retier.hpp:128`). The live runner feeds the stored volume. The two agree on
+  `equity_cost_retier.hpp`). The live runner feeds the stored volume. The two agree on
   every bar with no later split inside the backtest window; the header comment of
   `equity_cost_retier.hpp` states both frames.
