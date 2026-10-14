@@ -70,7 +70,7 @@
 using namespace trade_ngin;
 
 namespace {
-const std::string kSup5 = "<sup style=\"font-size: 9px;\">1</sup>";  // the first note of an email is numbered 1
+const std::string kSup5 = "<sup style=\"font-size: 9px; color: #000;\">1</sup>";  // the first note of an email is numbered 1
 
 EquitySpec equity_spec() {
     EquitySpec s;

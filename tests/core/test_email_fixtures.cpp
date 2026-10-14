@@ -569,7 +569,7 @@ TEST_F(EmailFixture, TheEquityBodyIsTheStoredBody) {
 // A body with every footnote number replaced by "^": the numbers follow the order the notes first
 // appear in an email, so a row is compared without its number.
 static std::string plain_notes(std::string body) {
-    return std::regex_replace(body, std::regex("<sup style=\"font-size: 9px;\">[0-9]+</sup>"), "^");
+    return std::regex_replace(body, std::regex("<sup style=\"font-size: 9px; color: #000;\">[0-9]+</sup>"), "^");
 }
 // T-8D D1 and HD 2026-10-12: the labels, on the bodies. The settled table's two price columns are
 // named in plain words, with no "T-1" or "T-2".
@@ -597,7 +597,7 @@ TEST_F(EmailFixture, TheSleeveNamesItsKindAndTheSettledTableNamesItsTwoPrices) {
         }
     }
     // The executions footer of a futures book: today's, and the netting lines above it stay.
-    EXPECT_NE(base.find("<strong>Today's Transaction Costs:</strong> $2.18<sup style=\"font-size: 9px;\">"),
+    EXPECT_NE(base.find("<strong>Today's Transaction Costs:</strong> $2.18<sup style=\"font-size: 9px; color: #000;\">"),
               std::string::npos);
     EXPECT_NE(base.find(" Netting between strategies: own costs $3.27, adjustment -$1.09, transaction costs $2.18.</div>"),
               std::string::npos);
@@ -1149,7 +1149,7 @@ TEST_F(EmailFixture, TheOneNoteAtTheBottomNamesTheAssetsAndTheStartDate) {
 TEST_F(EmailFixture, ARowWithNoPriceIsADashWithAFootnoteAndAMoneyAmountHasItsSign) {
     for (const std::string& body : {conservative_body(), base_body()}) {
         // the dash carries a number, and the line with that number sits below the block
-        const std::regex dash("\xE2\x80\x93<sup style=\"font-size: 9px;\">([0-9])</sup>");
+        const std::regex dash("\xE2\x80\x93<sup style=\"font-size: 9px; color: #000;\">([0-9])</sup>");
         std::smatch m;
         ASSERT_TRUE(std::regex_search(body, m, dash));
         EXPECT_NE(body.find(m[1].str() + " No price received that day. P&amp;L is logged as 0 and updates on later days.</div>"),

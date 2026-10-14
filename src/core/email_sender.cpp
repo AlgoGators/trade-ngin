@@ -55,7 +55,7 @@ std::string note_sup(int kind) {
     auto it = g_note_number.find(kind);
     if (it == g_note_number.end())
         it = g_note_number.emplace(kind, static_cast<int>(g_note_number.size()) + 1).first;
-    return "<sup style=\"font-size: 9px;\">" + std::to_string(it->second) + "</sup>";
+    return "<sup style=\"font-size: 9px; color: #000;\">" + std::to_string(it->second) + "</sup>";
 }
 // The lines of the notes used since the last call, in number order: printed under the block just ended.
 std::string notes_html() {
