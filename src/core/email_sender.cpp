@@ -18,6 +18,7 @@
 #include "trade_ngin/core/holiday_checker.hpp"
 #include "trade_ngin/core/logger.hpp"
 #include "trade_ngin/core/report_charts.hpp"
+#include "trade_ngin/core/report_day_before.hpp"
 #include "trade_ngin/core/report_held_symbols.hpp"
 #include "trade_ngin/core/report_price_text.hpp"
 #include "trade_ngin/core/report_settled_marks.hpp"
@@ -3153,24 +3154,30 @@ std::string EmailSender::generate_trading_report_body(
     html << "</div>\n";
     html << "</div>\n";
 
-    // The holiday banner (T-8D-2 R59: no banner is derived from the weekday)
-    if (holiday_banner) {
-        html << "<div style=\"background: linear-gradient(135deg, #fef3c7 0%, #fde68a 100%); "
-                "border: 2px solid #f59e0b; border-radius: 8px; padding: 20px 30px; margin: 20px 0 "
-                "30px 0; box-shadow: 0 4px 6px rgba(0,0,0,0.1);\">\n";
-        html << "<h2 style=\"margin: 0 0 10px 0; color: #92400e; font-size: 20px; border-bottom: "
-                "2px solid #92400e; padding-bottom: 8px; display: inline-block;\">Yesterday was "
-             << yesterday_holiday_name << "</h2>\n";
-        html << "<p style=\"margin: 15px 0 5px 0; color: #78350f; font-size: 15px; line-height: "
-                "1.6;\">The latest futures settlement prices are not available, as futures markets "
-                "were closed yesterday ("
-             << yesterday_date_str
-             << ") due to a federal holiday. The PnL for these contracts will be updated in the "
-                "next report once settlement data is released.</p>\n";
-        html << "<p style=\"margin: 5px 0 0 0; color: #92400e; font-weight: 600; font-size: "
-                "14px;\">Please continue to monitor your positions closely.</p>\n";
-        html << "</div>\n";
+    // The banners about the day before (HD 2026-10-14, section 15): the original texts; the settled
+    // day's weekday and the calendar choose the title, the prices that arrived choose the form.
+    DayBeforeBanner day_banner;
+    if (!context.equities) {
+        bool some_missing = false;
+        for (const auto& [sleeve, sleeve_positions] : yesterday_strategy_positions) {
+            (void)sleeve;
+            for (const auto& [symbol, position] : sleeve_positions) {
+                if (std::abs(position.quantity.as_double()) < 0.0001) continue;
+                if (!yesterday_close_prices.count(symbol) ||
+                    context.settled_zero_kinds.withheld.count(symbol))
+                    some_missing = true;
+            }
+        }
+        std::string settled_holiday;
+        try {
+            if (holiday_checker_.is_holiday(settled_date))
+                settled_holiday = holiday_checker_.get_holiday_name(settled_date);
+        } catch (...) {
+        }
+        day_banner = day_before_banner(settled_date, settled_holiday, context.prior_day_no_session,
+                                       some_missing);
     }
+    html << day_banner.banner_html;
 
     // Today's Positions - use per-strategy tables if strategy_positions is provided, otherwise
     // fallback to single table
@@ -3215,25 +3222,9 @@ std::string EmailSender::generate_trading_report_body(
             context.settled_zero_kinds);
         html << notes_html();
     } else if (!show_yesterday_pnl) {
-        // The runner found no session on the day before (T-8D-2 R59): no settled table. The two
-        // notes say why in the runner's terms, never from the weekday.
-        html << "<div class=\"alert-note\">\n";
-        if (holiday_banner) {
-            html << "<strong>No Executions:</strong> Since yesterday (" << yesterday_date_str
-                 << ") was a market holiday, no new market data is available. Positions remain "
-                    "unchanged from the previous trading day, and no executions were generated.\n";
-        } else {
-            html << "<strong>No Executions:</strong> No session was found for yesterday ("
-                 << yesterday_date_str
-                 << "), so no new market data is available. Positions remain unchanged from the "
-                    "previous trading day, and no executions were generated.\n";
-        }
-        html << "</div>\n";
-
-        // Add a yellow note explaining why yesterday's PnL is not shown
-        html << "<div class=\"footer-note\">\n";
-        html << "<strong>Note:</strong> Yesterday's PnL data is not available.\n";
-        html << "</div>\n";
+        // No prices at all: the red box and the yellow note, the table hidden (section 15).
+        html << "<div class=\"alert-note\">\n" << day_banner.red_box_text << "</div>\n";
+        html << "<div class=\"footer-note\">\n" << day_banner.yellow_note << "</div>\n";
     }
 
     // Strategy metrics

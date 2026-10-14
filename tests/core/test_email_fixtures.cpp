@@ -895,7 +895,7 @@ TEST(EmailEquitySourceGuard, TheEquityRunnerSetsTheKeysTheReportReads) {
 // runner that carried its book (no session): no settled table, the two notes, in words that name
 // no weekday; when the calendar names that day a holiday, the holiday banner too. A run on a
 // Sunday whose runner found a session shows the settled table like any other day.
-TEST_F(EmailFixture, TheDayBeforeIsWhatTheRunnerFoundNeverTheWeekday) {
+TEST_F(EmailFixture, TheDayBeforeBannerFollowsTheWeekdayForItsTitleAndThePricesForItsForm) {
     const StrategyPositionsMap settled = {
         {"TREND_FOLLOWING", {{"QMES.v.0", row("QMES.v.0", 1.0, 7153.5, 12.5)}}}};
     const std::unordered_map<std::string, double> close = {{"QMES.v.0", 7153.5}};
@@ -912,21 +912,24 @@ TEST_F(EmailFixture, TheDayBeforeIsWhatTheRunnerFoundNeverTheWeekday) {
     const std::string session = body_on("2026-04-26", false);
     EXPECT_NE(session.find("<h2>Yesterday's Finalized Position Results</h2>"), std::string::npos);
     EXPECT_EQ(session.find("No Executions"), std::string::npos);
-    EXPECT_EQ(session.find("Saturday"), std::string::npos);
+    EXPECT_EQ(session.find("Yesterday was"), std::string::npos) << "nothing is missing: no banner";
     // the same Sunday, the runner carried its book
     const std::string carried = body_on("2026-04-26", true);
     EXPECT_EQ(carried.find("Yesterday's Finalized Position Results"), std::string::npos);
-    EXPECT_NE(carried.find("<strong>No Executions:</strong> No session was found for yesterday "
-                           "(2026-04-25), so no new market data is available."),
+    EXPECT_NE(carried.find(">Yesterday was Saturday</h2>"), std::string::npos);
+    EXPECT_NE(carried.find("<strong>No Executions:</strong> Futures markets were closed yesterday, so "
+                           "no executions were generated and portfolio holdings are unchanged."),
               std::string::npos);
     EXPECT_NE(carried.find("<strong>Note:</strong> Yesterday's PnL data is not available."),
               std::string::npos);
-    EXPECT_EQ(carried.find("Saturday"), std::string::npos);
-    EXPECT_EQ(carried.find("Yesterday was"), std::string::npos);
-    // a weekday run: carried or not is the runner's word, the weekday changes nothing
+    EXPECT_EQ(carried.find("NO SESSION - BOOK CARRIED"), std::string::npos);
+    // a weekday run: carried or not is the runner's word; a carried weekday has no title
     EXPECT_NE(body_on("2026-04-28", false).find("Yesterday's Finalized Position Results"),
               std::string::npos);
-    EXPECT_EQ(body_on("2026-04-28", true).find("Yesterday's Finalized Position Results"),
+    const std::string gap = body_on("2026-04-28", true);
+    EXPECT_EQ(gap.find("Yesterday's Finalized Position Results"), std::string::npos);
+    EXPECT_EQ(gap.find("Yesterday was"), std::string::npos);
+    EXPECT_NE(gap.find("<strong>No Executions:</strong> No session was found for yesterday (2026-04-27)"),
               std::string::npos);
 }
 
