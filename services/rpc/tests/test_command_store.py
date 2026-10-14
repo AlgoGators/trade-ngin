@@ -204,7 +204,7 @@ def meta(by="d@x", at=T0, source="desk", sent=None):
 
 def test_rescind_clears_the_desk_approval_and_finishes_the_row_in_one_transaction():
     store, cur = make([[meta(), meta(None, None, None)], [], [(9,)]])
-    res = store.rescind(9, "P", DAY, "rescinded")
+    res = store.rescind(9, "P", DAY, "rescinded", "D@X")
     assert res.outcome == "rescinded" and res.published_by == "d@x" and res.published_at == T0
     assert store.autocommit == [False]
     assert "FOR UPDATE" in cur.sql[0] and cur.params[0] == ("P", DAY)
@@ -225,11 +225,17 @@ def test_rescind_clears_the_desk_approval_and_finishes_the_row_in_one_transactio
 ])
 def test_rescind_refusals_write_nothing(rows, outcome):
     store, cur = make([rows])
-    assert store.rescind(9, "P", DAY, "m").outcome == outcome
+    assert store.rescind(9, "P", DAY, "m", "d@x").outcome == outcome
+    assert len(cur.sql) == 1
+
+
+def test_rescind_by_anyone_but_the_approver_writes_nothing():
+    store, cur = make([[meta(by="d@x")]])
+    assert store.rescind(9, "P", DAY, "m", "e@x").outcome == "not_approver"
     assert len(cur.sql) == 1
 
 
 def test_rescind_of_a_row_no_longer_running_rolls_back():
     store, cur = make([[meta()], [], []])
-    assert store.rescind(9, "P", DAY, "m").outcome == "not_running"
+    assert store.rescind(9, "P", DAY, "m", "d@x").outcome == "not_running"
     assert len(cur.sql) == 3

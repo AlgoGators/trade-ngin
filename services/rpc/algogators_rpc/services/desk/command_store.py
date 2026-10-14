@@ -71,13 +71,13 @@ class BookLine:
 Books = Dict[str, Dict[str, BookLine]]
 
 # What `rescind` found (contract C8).
-RESCINDED, UNPUBLISHED, NOT_DESK, SENT, NOT_RUNNING = (
-    "rescinded", "unpublished", "not_desk", "sent", "not_running")
+RESCINDED, UNPUBLISHED, NOT_DESK, SENT, NOT_RUNNING, NOT_APPROVER = (
+    "rescinded", "unpublished", "not_desk", "sent", "not_running", "not_approver")
 
 
 @dataclass(frozen=True)
 class RescindResult:
-    outcome: str  # one of RESCINDED, UNPUBLISHED, NOT_DESK, SENT, NOT_RUNNING
+    outcome: str  # one of RESCINDED, UNPUBLISHED, NOT_DESK, SENT, NOT_RUNNING, NOT_APPROVER
     published_by: Optional[str] = None
     published_at: Optional[dt.datetime] = None
     publish_source: Optional[str] = None
@@ -124,10 +124,11 @@ class CommandStore(Protocol):
     def books(self, portfolio_id: str, date: dt.date) -> Books: ...
 
     def rescind(self, audit_id: int, portfolio_id: str, date: dt.date,
-                message: str) -> RescindResult:
+                message: str, requested_by: str) -> RescindResult:
         """Contract C8, in one transaction with the day's live_run_metadata rows locked: when the
-        day is published by the desk (publish_source 'desk' on every published row) and no row
-        has sent_at, clear published_by, published_at and publish_source on them and finish the
+        day is published by the desk (publish_source 'desk' on every published row) by
+        `requested_by` (only the approver takes an approval back; e-mails compared without case)
+        and no row has sent_at, clear published_by, published_at and publish_source on them and finish the
         running rescind row `audit_id` done with result {"rescinded": {published_by,
         published_at}} and `message`. Otherwise change nothing and say why (the caller refuses
         the row); NOT_RUNNING (nothing changed) when the row was no longer running."""
@@ -255,7 +256,7 @@ class PostgresCommandStore:
         return self._run(q)
 
     def rescind(self, audit_id: int, portfolio_id: str, date: dt.date,
-                message: str) -> RescindResult:
+                message: str, requested_by: str) -> RescindResult:
         def q(cur):
             from psycopg.types.json import Jsonb
 
@@ -272,6 +273,8 @@ class PostgresCommandStore:
             by, at, source, _ = max(published, key=lambda r: r[1])
             if any(r[2] != "desk" for r in published):
                 return RescindResult(NOT_DESK, by, at, source)
+            if (by or "").strip().lower() != (requested_by or "").strip().lower():
+                return RescindResult(NOT_APPROVER, by, at, source)
             cur.execute("UPDATE trading.live_run_metadata "
                         "SET published_by = NULL, published_at = NULL, publish_source = NULL "
                         "WHERE portfolio_id = %s AND date = %s AND published_at IS NOT NULL",
