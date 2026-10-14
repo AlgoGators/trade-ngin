@@ -41,5 +41,8 @@ TEST(EquityCashAvailableSource, BothWritersOfTheRunnerUseTheFormula) {
         EXPECT_NE(src.find("equity_cash_available(current_portfolio_value, total_unrealized_pnl,"), std::string::npos);
         EXPECT_NE(src.find("equity_cash_available_sql(yesterday_finalised_value_sql,"), std::string::npos);
         EXPECT_EQ(src.find("{\"cash_available\", current_portfolio_value - total_posted_margin}"), std::string::npos);
+        // the figure the email prints is the stored one
+        EXPECT_EQ(src.find("strategy_metrics[\"Cash Available\"] = current_portfolio_value"), std::string::npos);
+        EXPECT_NE(src.find("strategy_metrics[\"Cash Available\"] = equity_cash_available("), std::string::npos);
     }
 }

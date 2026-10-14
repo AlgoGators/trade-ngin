@@ -6418,7 +6418,9 @@ int main(int argc, char* argv[]) {
                     strategy_metrics["Margin Cushion"] = *margin_cushion * 100.0; // Convert to percentage
                 }
                 strategy_metrics["Margin Posted"] = total_posted_margin;
-                strategy_metrics["Cash Available"] = current_portfolio_value - total_posted_margin;
+                strategy_metrics["Cash Available"] = equity_cash_available(
+                    current_portfolio_value, total_unrealized_pnl, total_posted_margin,
+                    kBookIsCashAccount);
 
                 // Note: yesterday_daily_metrics_final is now loaded AFTER database updates above
                 // So we don't need to create it here anymore
