@@ -5,7 +5,7 @@ configuration that assigns modules to a book, what happens when a module cannot 
 module the futures books run (the Carver overlay), and what each day leaves in the database and
 the log.
 
-Every `path:line` is in this repository. Symbols used throughout: `E` is the sizing capital of the
+Every cited path is in this repository. Symbols used throughout: `E` is the sizing capital of the
 day, `tau` the risk target of the book's first sleeve, `u_i` the weight of ONE contract of symbol i
 on the sizing capital (multiplier x raw signal close / `E`), `x_i` a position's weight (contracts x
 `u_i`, signed), `N*` the unrounded target and `N*c` the capped target.
@@ -615,7 +615,8 @@ rebalance.
 
 Migration `020_risk_detail.sql` adds `risk_detail` (jsonb, NULL) to `trading.live_results` and to
 `backtest.equity_curve`, and sets the comment of `trading.live_results.risk_scale` to the
-delivered scale (`migrations/020_risk_detail.sql`).
+delivered scale (`migrations/020_risk_detail.sql`). Migrations 030 and 031 add the overlay's
+readings of the stored book to the same two tables (section 7.2).
 
 ### 7.1 `trading.live_results.risk_scale`: the delivered scale
 
@@ -640,8 +641,9 @@ the one the runner stores (`PortfolioManager::delivered_scale_for_book`,
 `backtest.equity_curve` has no `risk_scale` column; the backtest logs the same figure on its
 RISK_DELIVERED line (section 8).
 
-On an equity row `risk_scale` is the reporter's recommended scale of the stored book
-(`apps/strategies/live_equity_mean_reversion.cpp`). Nothing cuts that book (section 10).
+On an equity row `risk_scale` is 1.0: no portfolio-risk overlay runs on that book (section 10).
+The reporter's recommended scale is on the RISK_SCALE_REPORT line and is not stored
+(`kRiskScaleNoOverlay`, `include/trade_ngin/risk/risk_scale_report.hpp`).
 
 ### 7.2 `risk_detail`
 
@@ -665,8 +667,14 @@ It is written on the row of every sized rebalance the overlay answered (`OnePass
 write `backtest_coordinator.cpp`. The cell is NULL on an equity row, on a warm-up row and
 the backtest's seed row, on a refused rebalance, and on a cycle that ran no rebalance.
 
-The five readings, their limits and the five multipliers are not stored. They are on the OVERLAY
-line.
+The overlay's five readings of the stored book and its one-day 95 percent value at risk are
+stored as columns on futures rows: `overlay_risk`, `overlay_risk_jump`, `overlay_risk_shock`,
+`overlay_gross_leverage`, `overlay_net_leverage` and `var_95_1d` (migration 030 on
+`trading.live_results`, 031 on `backtest.equity_curve`; `overlay_columns_of`,
+`include/trade_ngin/risk/overlay_columns.hpp`). They are written on the same rows as
+`risk_detail` and are NULL on every other row; on a blind window the three risk readings and
+`var_95_1d` are NULL and the two leverage readings are stored. The limits and the five
+multipliers are not stored: they are on the OVERLAY line.
 
 ## 8. The log lines
 
@@ -719,7 +727,7 @@ lines), which [OPTIMIZER_AND_RISK_DESIGN.md](OPTIMIZER_AND_RISK_DESIGN.md) cover
 three contracts. Every input is invented and chosen round so that each step can be checked by
 hand: no number here is a stored row or the output of a run. The settings are the shipped ones
 (`tau` 0.20, the five limits of section 5.2, a per-name cap of 2), and every step is the one the
-code takes, at the lines section 5 cites.
+code takes, in the functions section 5 cites.
 
 **The capital.** The book starts with 500,000. Its settled net P&L of the three days before the
 rebalance is +15,000, -5,000 and +30,000.
@@ -853,7 +861,6 @@ What it means at run time:
 - Nothing can scale or refuse the book. The decision record of every rebalance is empty, so the
   RISK_SCALE_REPORT line reads `laps=0 cutting_laps=0 binding_module=none`.
 - The book is still MEASURED. `risk_reporting` is required on every book and is unchanged here, so
-  the reporting `RiskManager` still fills `portfolio_var`, `max_correlation`, `jump_risk` and
-  `risk_scale` on the equity rows of `trading.live_results`. On this book `risk_scale` is that
-  reporter's reading and not a cut.
+  the reporting `RiskManager` still fills `portfolio_var`, `max_correlation` and `jump_risk` on
+  the equity rows of `trading.live_results`. `risk_scale` is 1.0 on every equity row.
 - `risk_detail` is NULL on every equity row.
