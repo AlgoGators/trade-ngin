@@ -108,6 +108,21 @@ def test_rescind_refusals_change_nothing(stub, agent, cstore, setup, needle):
     assert (cstore.metadata.get((PID, DAY)) or {}) == before
 
 
+def test_only_the_approver_can_rescind(stub, agent, cstore):
+    approved(cstore, by="Desk@AlgoGators.com")
+    cstore.add(make_row(81, "rescind", requested_by="other@algogators.com"))
+    rescind(stub, 81)
+    agent.wait()
+    row = cstore.rows[81]
+    assert row.status == "refused" and "only they can rescind" in row.message, row.message
+    assert cstore.metadata[(PID, DAY)]["published_at"] == APPROVED_AT
+    # The approver, whatever the case of the e-mail.
+    cstore.add(make_row(82, "rescind", requested_by="desk@algogators.com"))
+    rescind(stub, 82)
+    agent.wait()
+    assert cstore.rows[82].status == "done"
+
+
 def test_rescind_waits_for_the_portfolio_lock_then_fails_untouched(stub, agent, cstore):
     approved(cstore)
     agent.lock_free = False

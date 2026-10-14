@@ -18,8 +18,9 @@ time.
 |                   | today's 10:00 fallback; a past day is never e-mailed).            |
 | rescind           | the desk takes back its approval (contract C8), in Python under   |
 |                   | the portfolio's flock: refused from 09:30 New York on its date    |
-|                   | (the clock when it runs), on a day not published by the desk and  |
-|                   | on a sent day; else published_by/at/source are cleared and the    |
+|                   | (the clock when it runs), on a day not published by the desk, by  |
+|                   | anyone but the approver and on a sent day; else                   |
+|                   | published_by/at/source are cleared and the                        |
 |                   | row is finished done, in one transaction (command_store.rescind). |
 
 Ownership. This process owns a row from the moment a dispatcher takes it until its outcome is
@@ -42,8 +43,8 @@ from dataclasses import dataclass
 from typing import Callable, Iterable, List, Optional, Set, Tuple
 
 from . import cutoff
-from .command_store import (NOT_DESK, NOT_RUNNING, RESCINDED, SENT, UNPUBLISHED, CommandRow,
-                            CommandStore)
+from .command_store import (NOT_APPROVER, NOT_DESK, NOT_RUNNING, RESCINDED, SENT, UNPUBLISHED,
+                            CommandRow, CommandStore)
 from .config import CommandSettings
 from .jobs import Job, JobManager
 from .override_mail import ROLES, Sender, run_override_request, send_smtp
@@ -364,7 +365,8 @@ class Dispatcher:
             done = (f"approval of {row.date} rescinded; the day takes edits and a new approval "
                     f"again (by {cutoff.SEND_AT:%H:%M} New York, or the model's book is sent at "
                     f"{cutoff.CUTOFF_AT:%H:%M})")
-            res = self._store.rescind(row.id, row.portfolio_id, row.date, done)
+            res = self._store.rescind(row.id, row.portfolio_id, row.date, done,
+                                      row.requested_by)
         if res.outcome == RESCINDED:
             log.info("approval rescinded", extra={
                 "audit_id": row.id, "portfolio_id": row.portfolio_id, "date": str(row.date),
@@ -380,6 +382,8 @@ class Dispatcher:
                        f"{res.published_by or 'the engine'} (publish_source "
                        f"{res.publish_source or 'unknown'}), not approved by the desk; only the "
                        "desk's own approval can be rescinded"),
+            NOT_APPROVER: (f"{row.portfolio_id} {row.date} was approved by "
+                           f"{res.published_by}; only they can rescind their approval"),
             SENT: (f"{row.portfolio_id} {row.date} was already e-mailed at "
                    f"{res.sent_at.isoformat() if res.sent_at else 'an unknown time'}; a sent "
                    "approval cannot be rescinded"),

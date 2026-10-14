@@ -11,7 +11,8 @@ from algogators_rpc.client import versioned_channel
 from algogators_rpc.registry import Registry
 from algogators_rpc.server import build_server
 
-from algogators_rpc.services.desk.command_store import (NOT_DESK, NOT_RUNNING, RESCINDED, SENT,
+from algogators_rpc.services.desk.command_store import (NOT_APPROVER, NOT_DESK, NOT_RUNNING,
+                                                        RESCINDED, SENT,
                                                         UNPUBLISHED, BookLine, CommandRow,
                                                         RescindResult)
 from algogators_rpc.services.desk.commands import Dispatcher
@@ -179,7 +180,7 @@ class FakeCommandStore:
         self._check("books")
         return {k: dict(v) for k, v in self.book_data.items()}
 
-    def rescind(self, audit_id, portfolio_id, date, message):
+    def rescind(self, audit_id, portfolio_id, date, message, requested_by):
         self._check("rescind")
         with self.lock:
             meta = self.metadata.get((portfolio_id, date)) or {}
@@ -190,6 +191,8 @@ class FakeCommandStore:
             by, at, source = meta["published_by"], meta["published_at"], meta.get("publish_source")
             if source != "desk":
                 return RescindResult(NOT_DESK, by, at, source)
+            if by.strip().lower() != requested_by.strip().lower():
+                return RescindResult(NOT_APPROVER, by, at, source)
             row = self.rows.get(audit_id)
             if row is None or row.status != "running":
                 return RescindResult(NOT_RUNNING)
