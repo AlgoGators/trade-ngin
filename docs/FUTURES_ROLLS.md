@@ -177,8 +177,8 @@ that run's Day T-1 row books the consumed moves no earlier run booked (`LateRoll
 legs rolled out of (`PostgresDatabase::get_stored_roll_contracts`,
 `src/data/postgres_database_extensions.cpp`). A recorded contract that is on no consumed bar of
 the window refuses the run (live). The legs are stored before the Day T-1 rows are
-re-written, in one transaction with the sweep of the day's earlier ROLL rows
-(`replace_roll_day_executions`, live).
+re-written, in one transaction shared by every sleeve with legs, with the sweep of those sleeves'
+rows of the date, of every type (`replace_roll_day_executions`, live).
 
 **Costs: two outright legs, by choice.** Each leg is priced by the same cost model as any fill of
 that size at that price: the contract's fee plus the model's spread and impact
@@ -267,19 +267,17 @@ A roll is not a round trip. In the backtest's trade statistics
 (`BacktestMetricsCalculator::calculate_trade_statistics`,
 `src/backtest/backtest_metrics_calculator.cpp`):
 
-- a ROLL leg never moves the tracked position, scores no trade and leaves the trade's open time
- ; it is counted in `roll_fills` and its cost goes to `roll_costs`, never into a trade;
+- a ROLL leg never moves the tracked position, scores no trade and leaves the trade's open time;
+  it is counted in `roll_fills` and its cost goes to `roll_costs`, never into a trade;
 - the open trade's entry price is carried across the roll by the leg gap,
   `entry := entry + (opening leg price - closing leg price)`, once per roll, longs and shorts alike
   (`RollEntryCarry`, design comment applied).
 
 So a trade held through a roll scores the move of the contracts actually held: entry to the closing
-leg in the old contract plus the opening leg to the exit in the new one. In price points that is
-the move the trade's daily P&L rows book. The daily rows carry the contract multiplier and the trade
-statistic does not, so the two agree only after the statistic's price move is multiplied by it
-(section 10 shows it). Legs that cannot be paired stop the calculation
-. `calculate_symbol_pnl` applies the same carry and charges each leg's cost to the symbol
-.
+leg in the old contract plus the opening leg to the exit in the new one. Times the contract
+multiplier, in dollars, that is the move the trade's daily P&L rows book (section 10 shows it).
+Legs that cannot be paired stop the calculation. `calculate_symbol_pnl` applies the same carry and
+charges each leg's cost to the symbol.
 
 ## 9. What is not a roll
 
@@ -400,15 +398,13 @@ impact in dollars is the impact in points x 0.1 x 1 (4.35734140 x 0.1 = 0.435734
 | 2026-04-28 | 88.096891 | 87.003759 | 1,148.945409 | 87.003759 | 8 ROLL legs 87.003759 + 1 STRATEGY fill (M2K) 1.093132 = 88.096891; 1,060.848518 + 88.096891 = 1,148.945409 |
 | 2026-04-29 | 33.843523 | 30.280416 | 1,182.788932 | 117.284175 | ZS legs 15.13138406 + 15.14903229 = 30.28041635, plus 1 STRATEGY fill (ZF) 3.56310679 = 33.84352314; 87.003759 + 30.280416 = 117.284175 |
 
-**The trade-statistics rule on this trade.** The rule is the backtest's; a live run has no trade
-statistics, and this run is used here only for its prices. Entry 78,225; the roll's leg gap is
-79,070 - 77,960 = +1,110, so the carried entry is 79,335; exit 76,035. The statistic scores
-1 x (76,035 - 79,335) = -3,300 before costs. That figure is in price points: the calculation applies
-no contract multiplier (`src/backtest/backtest_metrics_calculator.cpp`). Multiplied by the
-contract's 0.1 it is -330.00, the sum of the daily rows above, so the carry makes the trade's price
-move the move the days booked. Without the carry it would score 76,035 - 78,225 = -2,190 points
-(-219.00 with the multiplier), which includes the +1,110 step (+111.00) that no day booked. The cost
-the statistic takes off a trade is the closing fill's own cost after netting, in currency; here 2.45667148.
+**The trade-statistics rule on this trade.** The rule is the backtest's; a live run stores the
+round-trip count (`total_trades`) and no trade P&L, and this run is used here only for its prices.
+Entry 78,225; the roll's leg gap is 79,070 - 77,960 = +1,110, so the carried entry is 79,335; exit
+76,035. The statistic scores 1 x (76,035 - 79,335) x 0.1 = -330.00 dollars before costs, the sum of
+the daily rows above, so the carry makes the trade's move the move the days booked. Without the carry
+it would score (76,035 - 78,225) x 0.1 = -219.00, which includes the +111.00 of the +1,110 step that
+no day booked. The cost the statistic takes off a trade is the closing fill's own cost after netting, in currency; here 2.45667148.
 
 ## 11. Known limits
 
