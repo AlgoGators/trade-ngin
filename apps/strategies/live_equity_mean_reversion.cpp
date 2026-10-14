@@ -6361,6 +6361,7 @@ int main(int argc, char* argv[]) {
                 report_context.sessions_per_year = app_config.statistics.equity_sessions_per_year;
                 // T-8D-2 R59: an equity book (no futures text or tables), with its own start date.
                 report_context.equities = true;
+                report_context.equity_closed_today = today_is_non_trading;
                 report_context.live_start_date = book_live_start_date;
 
                 // Performance Metrics. T-8D-2 R61: the day T "Daily ..." values are not report

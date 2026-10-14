@@ -19,6 +19,7 @@
 #include "trade_ngin/core/logger.hpp"
 #include "trade_ngin/core/report_charts.hpp"
 #include "trade_ngin/core/report_day_before.hpp"
+#include "trade_ngin/core/report_equity_day.hpp"
 #include "trade_ngin/core/report_held_symbols.hpp"
 #include "trade_ngin/core/report_price_text.hpp"
 #include "trade_ngin/core/report_settled_marks.hpp"
@@ -661,7 +662,21 @@ std::string EmailSender::generate_trading_report_body(
     // calendar adds the holiday's name when that day is one. The equity runner's day before is
     // its previous session by construction. The runner's carried-day banner, put at the top of
     // the body by the runner, states the reason.
-    const bool show_yesterday_pnl = !context.prior_day_no_session;
+    // An equity book's banners come from the calendar of today and of the day before (HD 10-14,
+    // section 17).
+    EquityDayBanner equity_day;
+    if (context.equities) {
+        const std::string today_holiday = holiday_checker_.is_holiday(date)
+                                              ? holiday_checker_.get_holiday_name(date)
+                                              : std::string();
+        const bool yesterday_closed = is_yesterday_holiday ||
+                                      report_weekday_of(yesterday_date_str) == 6 ||
+                                      report_weekday_of(yesterday_date_str) == 0;
+        equity_day = equity_day_banner(date, context.equity_closed_today, today_holiday,
+                                       yesterday_date_str, yesterday_closed,
+                                       yesterday_holiday_name, settled_date, !executions.empty());
+    }
+    const bool show_yesterday_pnl = !context.prior_day_no_session && !equity_day.hide_table;
     const bool holiday_banner =
         context.prior_day_no_session && is_yesterday_holiday && !context.equities;
 
@@ -747,6 +762,10 @@ std::string EmailSender::generate_trading_report_body(
         html << "</div>\n";
     }
 
+    html << equity_day.banner_html;
+    if (equity_day.red_box_with_banner)
+        html << "<div class=\"alert-note\">\n" << equity_day.red_box_text << "</div>\n";
+
     // Today's Positions (Forward-Looking - no PnL shown as it will be zero)
     html << "<h2>Today's Positions</h2>\n";
 
@@ -774,6 +793,12 @@ std::string EmailSender::generate_trading_report_body(
     } else if (!show_yesterday_pnl) {
         // The runner found no session on the day before (T-8D-2 R59): no settled table. The two
         // notes say why in the runner's terms, never from the weekday.
+        if (context.equities) {
+            if (!equity_day.red_box_text.empty())
+                html << "<div class=\"alert-note\">\n" << equity_day.red_box_text << "</div>\n";
+            if (!equity_day.yellow_note.empty())
+                html << "<div class=\"footer-note\">\n" << equity_day.yellow_note << "</div>\n";
+        } else {
         html << "<div class=\"alert-note\">\n";
         if (holiday_banner) {
             html << "<strong>No Executions:</strong> Since yesterday (" << yesterday_date_str
@@ -791,6 +816,7 @@ std::string EmailSender::generate_trading_report_body(
         html << "<div class=\"footer-note\">\n";
         html << "<strong>Note:</strong> Yesterday's PnL data is not available.\n";
         html << "</div>\n";
+        }
     } else {
         // A session, and no row to print: nothing was held on the settled day and nothing closed
         // on it. The table is not left out silently (HD ruling Q11).

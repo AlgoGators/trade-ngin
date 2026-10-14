@@ -10,6 +10,7 @@ set(TEST_SOURCES
     core/test_gnuplot_run.cpp
     core/test_report_charts.cpp
     core/test_report_day_before.cpp
+    core/test_report_equity_day.cpp
     core/test_report_held_symbols.cpp
     core/test_result.cpp
     core/test_state_manager.cpp

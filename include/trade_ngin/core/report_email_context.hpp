@@ -47,6 +47,10 @@ struct EmailReportContext {
     /// and says there was no session; nothing in the report is derived from the weekday.
     bool prior_day_no_session{false};
 
+    /// The equity runner's calendar closes the run date (weekend or market holiday): the equity
+    /// report's day banners (report_equity_day.hpp).
+    bool equity_closed_today{false};
+
     /// The book's start date, "YYYY-MM-DD": the live_start_date of its
     /// trading.strategy_trading_days_metadata row, as the runner read it. Empty: the footer
     /// prints no start date.

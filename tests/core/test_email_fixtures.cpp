@@ -482,8 +482,8 @@ protected:
                       "2025-11-11"));
     }
 
-    // The equity book: Monday 2026-06-22; its settled day is the previous session, Thursday
-    // 2026-06-18 (Friday 06-19 was a market holiday). The metric maps carry the keys the equity
+    // The equity book: Wednesday 2026-06-24; its settled day is the previous session, Tuesday
+    // 2026-06-23 (a weekday after a weekday: no day banner). The metric maps carry the keys the equity
     // runner sets.
     std::string equity_body() {
         const std::unordered_map<std::string, Position> positions = {
@@ -542,10 +542,10 @@ protected:
         };
         metrics.insert(book.begin(), book.end());
         return sender_.generate_trading_report_body(
-            positions, std::nullopt, metrics, executions, "2026-06-22", true, closes, nullptr,
+            positions, std::nullopt, metrics, executions, "2026-06-24", true, closes, nullptr,
             settled, t1_close, t2_close, settled_metrics, "LIVE_EQUITY_MEAN_REVERSION",
             "EQUITY_MR_PORTFOLIO",
-            with_book(context_of("2026-06-18", 55, 252.0), "2026-04-01", true));
+            with_book(context_of("2026-06-23", 55, 252.0), "2026-04-01", true));
     }
 
     EmailSender sender_{EmailSenderConfig{}};
@@ -562,7 +562,7 @@ TEST_F(EmailFixture, TheBaseBodyIsTheStoredBody) {
 }
 
 TEST_F(EmailFixture, TheEquityBodyIsTheStoredBody) {
-    expect_body_is_fixture("equity_2026-06-22.html", equity_body());
+    expect_body_is_fixture("equity_2026-06-24.html", equity_body());
 }
 
 
