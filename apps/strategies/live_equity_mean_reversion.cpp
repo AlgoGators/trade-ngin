@@ -91,6 +91,10 @@ static std::string resolve_corp_actions_state_dir(const std::string& strategy_id
 // trade_ngin::core::format_utc_date as the only approved primitive for
 // UTC date-string keys).
 
+// The book is held in a cash account (a position is paid for in full: T-8D D4 (a)); a margin account is
+// decided when margin trading is turned on, and keeps value - margin for cash_available.
+constexpr bool kBookIsCashAccount = true;
+
 int main(int argc, char* argv[]) {
     try {
         // Parse command-line arguments for date override and email flag
@@ -4966,9 +4970,9 @@ int main(int argc, char* argv[]) {
                 "total_cumulative_return = " + std::to_string(yesterday_total_cumulative_return_pct) + ", "
                 + finalize_margin_columns_sql(yesterday_finalised_value_sql, yesterday_maintenance_sql)
                 + finalize_gross_leverage_sql(yesterday_finalised_value_sql) +
-                "cash_available = " + std::to_string(initial_capital) + " "
-                "             + (COALESCE((SELECT prev_total_realized FROM day_before), 0.0) + COALESCE(daily_realized_pnl, 0.0) "
-                "                - COALESCE(total_transaction_costs, 0.0)) + " + std::to_string(yesterday_finalized_unrealized) + " - COALESCE(margin_posted, 0.0) "
+                equity_cash_available_sql(yesterday_finalised_value_sql,
+                                            std::to_string(yesterday_finalized_unrealized),
+                                            kBookIsCashAccount) +
                 "WHERE strategy_id = 'LIVE_EQUITY_MEAN_REVERSION' AND portfolio_id = '" + portfolio_id + "' AND DATE(date) = '" + yesterday_date_str + "'";
 
             INFO("Executing UPDATE query for Day T-1 live_results...");
@@ -5930,7 +5934,8 @@ int main(int argc, char* argv[]) {
                 {"daily_unrealized_pnl", daily_unrealized_pnl},
                 {"daily_transaction_costs", total_daily_commissions},
                 {"margin_posted", total_posted_margin},
-                {"cash_available", current_portfolio_value - total_posted_margin}
+                {"cash_available", equity_cash_available(current_portfolio_value, total_unrealized_pnl,
+                                                          total_posted_margin, kBookIsCashAccount)}
             };
             if (dividend_income_today) {
                 double_metrics["total_dividend_income"] = *dividend_income_today;
