@@ -96,13 +96,6 @@ public:
      * @return Result containing filename on success, or error
      */
     /**
-     * @brief Write <date>_executions.csv: one row per execution of the day (symbol, side, quantity,
-     *        price, transaction cost, type), the numbers by the one rule of the report.
-     */
-    Result<std::string> export_executions(const std::chrono::system_clock::time_point& date,
-                                          const std::vector<ExecutionReport>& executions);
-
-    /**
      * @brief Write account_detail_<portfolio>_<date>.csv: a header row of column names and the
      *        one row of the day (live/account_detail.hpp). Cells are written as given.
      */

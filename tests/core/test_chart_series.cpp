@@ -374,7 +374,7 @@ TEST(ChartSeries, DailyPnlIsPlottedOldestFirst) {
 // T-8D-2 R62: the chart holds the last 30 STORED days, which on a book with missing days is not
 // the last 30 days; the heading said "Last 30 Days".
 TEST(ChartTitles, TheDailyPnlHeadingCountsStoredDays) {
-    EXPECT_EQ(ChartTitles::daily_pnl_heading(30), "Daily PnL (last 30 stored days)");
+    EXPECT_EQ(ChartTitles::daily_pnl_heading(30), "Daily PnL (last 30 days)");
 }
 
 // --- cost per $1M traded -------------------------------------------------------------------------
@@ -423,7 +423,7 @@ TEST(ChartSeries, CostPerMillionIsTheDaysCostOverTheNotionalTradedThatDay) {
     EXPECT_DOUBLE_EQ(data.values[0], 12.50 / (2.0 * 7153.5 * 5.0) * 1000000.0);
     EXPECT_DOUBLE_EQ(data.values[1], 39.98 / (78575.0 + 216187.5) * 1000000.0);
     EXPECT_NEAR(data.values[1], 135.63, 0.005);
-    EXPECT_EQ(data.title, "Cost per $1M Traded (Efficiency Metric)");
+    EXPECT_EQ(data.title, "Cost per $1M Traded");
     EXPECT_FALSE(data.has_reference_line);
 }
 

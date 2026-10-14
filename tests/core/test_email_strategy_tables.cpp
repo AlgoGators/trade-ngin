@@ -70,7 +70,7 @@
 using namespace trade_ngin;
 
 namespace {
-const std::string kSup5 = "<sup style=\"font-size: 9px;\">5</sup>";
+const std::string kSup5 = "<sup style=\"font-size: 9px;\">1</sup>";  // the first note of an email is numbered 1
 
 EquitySpec equity_spec() {
     EquitySpec s;
@@ -117,6 +117,7 @@ Position held(const std::string& symbol, double qty, double average_price) {
 class EmailStrategyTablesTest : public ::testing::Test {
 protected:
     void SetUp() override {
+        EmailSender::reset_footnotes();
         auto& registry = InstrumentRegistry::instance();
         // The runners strip ".v.N" before the registry lookup, so register the roots.
         registry.register_instrument("ZEBASIS",
@@ -235,7 +236,7 @@ TEST_F(EmailStrategyTablesTest, AnEquityRowWithABasisKeepsItsBasisPricedMargin) 
     ASSERT_NO_THROW({ html = sender_.format_strategy_positions_tables(book, prices, {}); });
     // Pin the margin cell itself, not any occurrence of the number: other
     // columns legitimately show close-priced figures.
-    const auto margin_at = html.find("Margin:</strong> $2,500.00");
+    const auto margin_at = html.find("Total Margin Posted:</strong> $2,500.00");
     EXPECT_NE(margin_at, std::string::npos)
         << "the equity row's margin was re-priced from the close instead of its basis; "
            "the per-strategy overload must price from the basis first, as it always did. "
@@ -469,8 +470,7 @@ TEST_F(EmailStrategyTablesTest, RollLegsAreTheirOwnBlockNotTradesAndTheirCostIsI
     EXPECT_NE(single.find("<strong>Transaction Costs:</strong> $11.00"), std::string::npos) << single;
     EXPECT_NE(single.find("<strong>Notional Traded:</strong> $5,150.00"), std::string::npos)
         << "1 x 103 x 50, the STRATEGY fill alone: " << single;
-    EXPECT_NE(single.find("<td>864</td>"), std::string::npos) << single;
-    EXPECT_NE(single.find("<td>863</td>"), std::string::npos) << single;
+    EXPECT_EQ(single.find("<td>864</td>"), std::string::npos) << "the roll block has no Contract column";
 
     const std::string per = sender_.format_single_strategy_executions_table("TREND_FOLLOWING", execs);
     EXPECT_NE(per.find("<strong>Trades:</strong> 1 |"), std::string::npos) << per;
@@ -674,10 +674,8 @@ TEST_F(EmailStrategyTablesTest, AOneSleeveBooksTablesCarryNoNettingColumnAndNoNe
     EXPECT_EQ(all.find("Own Costs"), std::string::npos) << all;
     EXPECT_NE(all.find("<th>Notional</th><th>Transaction Cost</th></tr>\n"), std::string::npos) << all;
     EXPECT_NE(all.find("<td>$3.00</td>\n</tr>"), std::string::npos) << all;
-    EXPECT_NE(all.find("<strong>Trades:</strong> 1 | <strong>Notional:</strong> $5,150.00 | "
-                       "<strong>Transaction Costs:</strong> $11.00\n"),
-              std::string::npos)
-        << all;
+    EXPECT_EQ(all.find("<strong>Trades:</strong> 1 |"), std::string::npos)
+        << "one strategy: its summary line would repeat the book block (HD 10-14)";
     EXPECT_NE(
         all.find(
             "<div class=\"metric\"><strong>Total Notional Traded:</strong> $5,150.00</div>\n"

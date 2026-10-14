@@ -69,7 +69,7 @@ inline std::string pnl_by_symbol_heading(bool equities) {
 /// The daily PnL chart holds the last `stored_days` STORED days before the run date, which on a
 /// book with missing days is a longer span than that many calendar days (T-8D-2 R62).
 inline std::string daily_pnl_heading(int stored_days) {
-    return "Daily PnL (last " + std::to_string(stored_days) + " stored days)";
+    return "Daily PnL (last " + std::to_string(stored_days) + " days)";
 }
 /// The cumulative chart sums each symbol's stored daily realized P&L; no cost is taken off
 /// (T-8D-2 R62).

@@ -99,8 +99,8 @@ TEST(EmailDelivery, ARiskModuleFailureAndACarriedDayFlagTheBodyAndTheSubject) {
                                         s.fn());
     EXPECT_NE(d.subject, "subject");
     EXPECT_NE(d.subject.find("subject"), std::string::npos);
-    EXPECT_NE(s.body.find("NO SESSION - BOOK CARRIED"), std::string::npos);
-    EXPECT_GT(s.body.size(), kBody.size());
+    // HD 10-14: no carried-day banner is added; the report's own plain note says it
+    EXPECT_EQ(s.body.find("NO SESSION - BOOK CARRIED"), std::string::npos);
 }
 
 TEST(EmailDelivery, AnUnflaggedDayIsSentAsBuilt) {

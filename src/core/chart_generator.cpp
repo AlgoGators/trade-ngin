@@ -581,7 +581,7 @@ ChartData ChartSeries::cost_per_million(const std::vector<CostFillRow>& rows,
         }
     }
 
-    chart_data.title = "Cost per $1M Traded (Efficiency Metric)";
+    chart_data.title = "Cost per $1M Traded";
     chart_data.x_label = "Date";
     chart_data.y_label = "Cost per $1M Traded ($)";
     chart_data.reference_line = 0.0;

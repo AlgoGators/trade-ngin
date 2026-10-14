@@ -40,33 +40,63 @@ std::vector<std::pair<std::string, const Position*>> positions_by_symbol(
               [](const auto& a, const auto& b) { return a.first < b.first; });
     return ordered;
 }
-// The numbered footnotes of the report (HD 10-13): a small number at the top right of a value, and at
-// the bottom of the email one short line per number used that day. Reset when a body starts.
-thread_local std::set<int> g_notes_used;
-thread_local std::string g_netting_note;  // the text of footnote 5, set by the executions tables
-std::string note_sup(int n) {
-    g_notes_used.insert(n);
-    return "<sup style=\"font-size: 9px;\">" + std::to_string(n) + "</sup>";
+// The numbered footnotes of the report (HD 10-13/14): a small number at the top right of a value; the
+// line for it sits right below the block it belongs to. The numbers follow the order the notes first
+// appear in the email (1, 2, 3 ...), whatever their kind; a kind is numbered when first used.
+//   kind 1 no price that day, 2 contract roll, 3 price rejected, 4 no price bar (last price shown),
+//   5 netting arithmetic.
+thread_local std::map<int, int> g_note_number;  // kind -> number in this email
+thread_local std::set<int> g_note_flushed;       // kinds whose line was already printed
+thread_local std::string g_netting_note;         // the text of kind 5, set by the executions tables
+thread_local std::string g_single_title;   // an equity book's one strategy: its name, as a futures sleeve has
+thread_local bool g_single_sleeve = false;       // one strategy: its summary line would repeat the book block
+std::string note_sup(int kind) {
+    auto it = g_note_number.find(kind);
+    if (it == g_note_number.end())
+        it = g_note_number.emplace(kind, static_cast<int>(g_note_number.size()) + 1).first;
+    return "<sup style=\"font-size: 9px;\">" + std::to_string(it->second) + "</sup>";
 }
+// The lines of the notes used since the last call, in number order: printed under the block just ended.
 std::string notes_html() {
-    static const char* const kText[] = {"", "No price received that day; P&amp;L 0.",
-                                        "Contract roll; not booked.",
-                                        "Price not accepted; booked with the next price.",
-                                        "No close; average price shown.", ""};
+    static const char* const kText[] = {
+        "", "No price received that day. P&amp;L is logged as 0 and updates on later days.",
+        "Contract rolled that day. P&amp;L is not booked on the roll.",
+        "Price rejected: too little trading volume that day. P&amp;L is booked with the next accepted price.",
+        "No price bar for this contract that day. Its last known price is shown.", ""};
+    std::map<int, int> by_number;
+    for (const auto& [kind, number] : g_note_number)
+        if (!g_note_flushed.count(kind)) by_number[number] = kind;
     std::string html;
-    for (const int n : g_notes_used) {
-        const std::string text = n == 5 ? g_netting_note : kText[n];
+    for (const auto& [number, kind] : by_number) {
+        const std::string text = kind == 5 ? g_netting_note : kText[kind];
+        g_note_flushed.insert(kind);
         if (text.empty()) continue;
         html += "<div style=\"font-size: 12px; color: #666; margin: 2px 0;\">" +
-                std::to_string(n) + " " + text + "</div>\n";
+                std::to_string(number) + " " + text + "</div>\n";
     }
     return html;
 }
+std::string single_heading_html() {
+    if (g_single_title.empty()) return "";
+    return "<h3 style=\"margin-top: 20px; margin-bottom: 2px; color: #333; border-left: 4px solid "
+           "#2c5aa0; padding-left: 12px;\">" + g_single_title + "</h3>\n"
+           "<div style=\"font-size: 11px; color: #999; margin: 0 0 8px 16px;\">Equities</div>\n";
+}
+struct SingleSleeveScope {
+    ~SingleSleeveScope() { g_single_sleeve = false; }
+};
 void reset_notes() {
-    g_notes_used.clear();
+    g_single_sleeve = false;
+    g_single_title.clear();
+    g_note_number.clear();
+    g_note_flushed.clear();
     g_netting_note.clear();
 }
 }  // namespace
+
+void EmailSender::reset_footnotes() {
+    reset_notes();
+}
 
 std::string EmailSender::netting_footnote_text() {
     return g_netting_note;
@@ -574,6 +604,13 @@ std::string EmailSender::generate_trading_report_body(
     const EmailReportContext& context) {
     (void)risk_metrics;
     reset_notes();
+    {
+        // An equity book is one strategy: its name and kind as a futures sleeve has them (HD 10-14).
+        std::string name = chart_strategy_id;
+        for (const char* prefix : {"LIVE_", "EQUITY_"})
+            if (name.rfind(prefix, 0) == 0) name = name.substr(std::string(prefix).size());
+        g_single_title = format_strategy_display_name(name);
+    }
     std::ostringstream html;
 
     // Parse the date to check day of week
@@ -714,11 +751,13 @@ std::string EmailSender::generate_trading_report_body(
     html << "<h2>Today's Positions</h2>\n";
 
     html << format_positions_table(positions, is_daily_strategy, current_prices, strategy_metrics);
+    html << notes_html();
 
     // Executions (if any)
     if (!executions.empty()) {
         html << "<h2>Daily Executions</h2>\n";
         html << format_executions_table(executions);
+        html << notes_html();
     }
 
     // The settled day's positions, with their stored P&L: shown unless the runner found no
@@ -731,6 +770,7 @@ std::string EmailSender::generate_trading_report_body(
             db,
             yesterday_daily_metrics,  // Yesterday's daily metrics
             yesterday_date_str, settled_date, context.equities);
+        html << notes_html();
     } else if (!show_yesterday_pnl) {
         // The runner found no session on the day before (T-8D-2 R59): no settled table. The two
         // notes say why in the runner's terms, never from the weekday.
@@ -860,12 +900,11 @@ std::string EmailSender::generate_trading_report_body(
 
         total_transaction_costs_base64_ = ChartGenerator::generate_total_transaction_costs_chart(
             db, chart_strategy_id, chart_portfolio_id_legacy, date);
-        html << chart_ledger.record(std::string("Cost per $1M Traded (Efficiency Metric)"), !total_transaction_costs_base64_.empty(),
+        html << chart_ledger.record(std::string("Cost per $1M Traded"), !total_transaction_costs_base64_.empty(),
                                           ChartGenerator::last_chart_status(),
                                           ChartGenerator::last_chart_reason(), "no data to plot");
         if (!total_transaction_costs_base64_.empty()) {
-            html << "<h3 style=\"margin-top: 20px; color: #333;\">Cost per $1M Traded (Efficiency "
-                    "Metric)</h3>\n";
+            html << "<h3 style=\"margin-top: 20px; color: #333;\">Cost per $1M Traded</h3>\n";
             html << "<div style=\"width: 100%; max-width: 1000px; margin: 20px auto; text-align: "
                     "center;\">\n";
             html << "<img src=\"cid:total_transaction_costs\" alt=\"Cost per $1M Traded\" "
@@ -973,7 +1012,7 @@ static std::string report_footer_note_html(const EmailReportContext& context) {
                                                   "for the front-month contract and are working "
                                                   "on integrating roll data.";
     if (!context.live_start_date.empty()) {
-        html += "<br>\nAll values reflect a trading start date of " +
+        html += "<br><br>\nAll values reflect a trading start date of " +
                 report_long_date(context.live_start_date) + ".";
     }
     return html + "\n";
@@ -1006,8 +1045,9 @@ static std::shared_ptr<Instrument> report_instrument_of(const std::string& symbo
 
 // The decimals every price of this symbol prints with (report_price_places).
 static int report_places_of(const std::string& symbol) {
-    const auto instrument = report_instrument_of(symbol);
-    return instrument ? report_price_places(instrument->get_tick_size()) : 4;
+    // HD 10-14: every price of the email has four decimals; the files carry the contract's own.
+    (void)symbol;
+    return 4;
 }
 
 // T-NETTING: how the netting figures are printed (one rounding, the adjustment as it acts on the
@@ -1039,7 +1079,7 @@ static std::string format_roll_legs_block(const std::vector<ExecutionReport>& ex
         if (legs == 0) {
             html << "<table>\n";
             html << "<tr><th>Roll Leg</th><th>Symbol</th><th>Side</th><th>Quantity</th><th>Price</th>"
-                    "<th>Contract</th><th>Cost (upper bound)</th></tr>\n";
+                    "<th>Cost</th></tr>\n";
         }
         ++legs;
         roll_cost += exec.total_transaction_costs.as_double();
@@ -1050,7 +1090,6 @@ static std::string format_roll_legs_block(const std::vector<ExecutionReport>& ex
              << report_quantity_text(report_instrument_of(exec.symbol),
                                      exec.filled_quantity.as_double())
              << "</td><td>" << report_price_dollars_places(exec.fill_price.as_double(), report_places_of(exec.symbol)) << "</td><td>"
-             << exec.instrument_id << "</td><td>"
              << report_dollars(exec.total_transaction_costs.as_double()) << "</td></tr>\n";
     }
     if (legs > 0) {
@@ -1197,11 +1236,12 @@ std::string EmailSender::format_positions_table(
     (void)is_daily_strategy;
     std::ostringstream html;
 
+    html << single_heading_html();
     html << "<table>\n";
     html << "<tr><th>Symbol</th><th>Quantity</th>";
 
     // Show only market price for forward-looking positions (no PnL - will be zero)
-    html << "<th>Market Price</th>";
+    html << "<th>Price</th>";
 
     html << "<th>Notional</th><th>% of Total</th></tr>\n";
 
@@ -1435,6 +1475,7 @@ std::string EmailSender::format_yesterday_finalized_positions_table(
     }
 
     html << "<h2>Yesterday's Finalized Position Results</h2>\n";
+    html << single_heading_html();
     html << "<table>\n";
     html << "<tr>";
     html << "<th>Symbol</th>";
@@ -1626,6 +1667,19 @@ std::string EmailSender::format_yesterday_finalized_positions_table(
     const SettledZeroKinds& zero_kinds) {
     (void)db;
     std::ostringstream html;
+    SingleSleeveScope single_sleeve_scope;
+    {
+        int sleeves = 0;
+        for (const auto& [name, positions] : strategy_positions) {
+            (void)name;
+            for (const auto& [symbol, pos] : positions) {
+                (void)symbol;
+                if (std::abs(pos.quantity.as_double()) >= 0.0001) { ++sleeves; break; }
+            }
+        }
+        g_single_sleeve = sleeves == 1;
+    }
+    
 
     // Check if there are any positions across all strategies
     bool has_positions = false;
@@ -1767,12 +1821,14 @@ std::string EmailSender::format_yesterday_finalized_positions_table(
 
         // Compact strategy-level summary
         std::string pnl_class = (strategy_total_pnl >= 0) ? "positive" : "negative";
+        if (!g_single_sleeve) {
         html << "<div style=\"font-size: 13px; color: #666; margin: 8px 0 20px 0; padding-left: "
                 "16px;\">\n";
         html << "<strong>Positions:</strong> " << position_data.size()
              << " | <strong>Total Realized PnL (Gross):</strong> <span class=\"" << pnl_class
              << "\">" << report_dollars(strategy_total_pnl, 2) << "</span>\n";
         html << "</div>\n";
+        }
     }
     (void)any_no_bar_row;
 
@@ -1958,26 +2014,13 @@ std::string EmailSender::format_strategy_metrics(
         return result.str();
     };
 
-    // HD 10-13: two blocks, plain: the performance metrics (the settled series), then the account.
+    // HD 10-14: ONE block, "Performance Metrics", in four groups separated by a blank line.
     html << "<h2>Performance Metrics</h2>\n";
     html << "<div class=\"metrics-category\">\n";
     auto show = [&](const char* key, const char* label) {
         const auto it = strategy_metrics.find(key);
         if (it != strategy_metrics.end()) html << format_metric(key, it->second, label);
     };
-    show("Total Annualized Return", "Annualized Return");
-    show("Sharpe Ratio", "Sharpe Ratio");
-    show("Sortino Ratio", "Sortino Ratio");
-    show("Max Drawdown", "Max Drawdown");
-    show("Volatility", "Volatility");
-    show("Gross Profit", "Gross Profit");
-    show("Gross Loss", "Gross Loss");
-    html << "</div>\n";
-
-    // The account: the day T row as written, one block (HD 10-13).
-    html << "<h2>Account as of " << report_date << "</h2>\n";
-    html << "<div class=\"metrics-category\">\n";
-    show("Total Cumulative Return", "Total Cumulative Return");
     show("Total Unrealized PnL", "Unrealized PnL");
     show("Total Realized PnL", "Realized PnL");
     show("Total Transaction Costs", "Transaction Costs");
@@ -1990,10 +2033,19 @@ std::string EmailSender::format_strategy_metrics(
         }
     }
     show("Current Portfolio Value", "Current Portfolio Value");
+    html << "<br>\n";
+    show("Total Cumulative Return", "Total Cumulative Return");
+    show("Total Annualized Return", "Annualized Return");
+    show("Sharpe Ratio", "Sharpe Ratio");
+    show("Sortino Ratio", "Sortino Ratio");
+    show("Volatility", "Volatility");
+    show("Max Drawdown", "Max Drawdown");
+    html << "<br>\n";
     show("Cash Available", "Cash Available");
     show("Margin Posted", "Margin Posted");
     show("Equity-to-Margin Ratio", "Equity-to-Margin Ratio");
     show("Margin Cushion", "Margin Cushion");
+    html << "<br>\n";
     show("Gross Leverage", "Gross Leverage");
     show("Net Leverage", "Net Leverage");
     html << "</div>\n";
@@ -2327,7 +2379,7 @@ std::string EmailSender::format_single_strategy_table(
 
     // Position table
     html << "<table>\n";
-    html << "<tr><th>Symbol</th><th>Quantity</th><th>Market Price</th><th>Notional</th><th>% of "
+    html << "<tr><th>Symbol</th><th>Quantity</th><th>Price</th><th>Notional</th><th>% of "
             "Total</th></tr>\n";
 
     double total_notional = 0.0;
@@ -2481,12 +2533,14 @@ std::string EmailSender::format_single_strategy_table(
     html << "</table>\n";
 
     // Compact strategy-level summary
+    if (!g_single_sleeve) {
     html << "<div style=\"font-size: 13px; color: #666; margin: 8px 0 20px 0; padding-left: "
             "16px;\">\n";
     html << "<strong>Positions:</strong> " << active_positions << " | <strong>Notional:</strong> "
          << report_dollars(total_notional) << " | <strong>Margin:</strong> "
          << report_dollars(total_margin_posted) << "\n";
     html << "</div>\n";
+    }
 
     return html.str();
 }
@@ -2496,6 +2550,20 @@ std::string EmailSender::format_strategy_positions_tables(
     const std::unordered_map<std::string, double>& current_prices,
     const std::map<std::string, double>& strategy_metrics) {
     std::ostringstream html;
+    SingleSleeveScope single_sleeve_scope;
+    g_single_sleeve = false;
+    {
+        int sleeves = 0;
+        for (const auto& [name, positions] : strategy_positions) {
+            (void)name;
+            for (const auto& [symbol, pos] : positions) {
+                (void)symbol;
+                if (pos.quantity.as_double() != 0.0) { ++sleeves; break; }
+            }
+        }
+        g_single_sleeve = sleeves == 1;
+    }
+    
 
     if (strategy_positions.empty()) {
         html << "<p>No positions.</p>\n";
@@ -2781,6 +2849,7 @@ std::string EmailSender::format_single_strategy_executions_table(
     html << format_roll_legs_block(executions);
 
     // Compact strategy-level summary
+    if (!g_single_sleeve) {
     html << "<div style=\"font-size: 13px; color: #666; margin: 8px 0 20px 0; padding-left: "
             "16px;\">\n";
     html << "<strong>Trades:</strong> " << strategy_trades << " | <strong>Notional:</strong> "
@@ -2790,6 +2859,7 @@ std::string EmailSender::format_single_strategy_executions_table(
     html << " | <strong>Transaction Costs:</strong> " << report_dollars(total_transaction_costs)
          << (netting.any_adjusted ? note_sup(5) : std::string()) << "\n";
     html << "</div>\n";
+    }
 
     return html.str();
 }
@@ -2797,6 +2867,17 @@ std::string EmailSender::format_single_strategy_executions_table(
 std::string EmailSender::format_strategy_executions_tables(
     const StrategyExecutionsMap& strategy_executions) {
     std::ostringstream html;
+    SingleSleeveScope single_sleeve_scope;
+    g_single_sleeve = false;
+    {
+        int sleeves = 0;
+        for (const auto& [name, execs] : strategy_executions) {
+            (void)name;
+            if (!execs.empty()) ++sleeves;
+        }
+        g_single_sleeve = sleeves == 1;
+    }
+    
 
     if (strategy_executions.empty()) {
         html << "<p>No executions for today.</p>\n";
@@ -3099,6 +3180,7 @@ std::string EmailSender::generate_trading_report_body(
         html << format_positions_table(positions, is_daily_strategy, current_prices,
                                        strategy_metrics);
     }
+    html << notes_html();
 
     // Executions (if any) - use per-strategy tables
     bool has_executions = false;
@@ -3111,6 +3193,7 @@ std::string EmailSender::generate_trading_report_body(
     if (has_executions) {
         html << "<h2>Daily Executions</h2>\n";
         html << format_strategy_executions_tables(strategy_executions);
+        html << notes_html();
     }
 
     // Yesterday's Finalized Positions (with actual PnL) - use per-strategy breakdown
@@ -3127,6 +3210,7 @@ std::string EmailSender::generate_trading_report_body(
             yesterday_strategy_positions, two_days_ago_close_prices, yesterday_close_prices, db,
             yesterday_daily_metrics, yesterday_date_str, settled_date, context.equities,
             context.settled_zero_kinds);
+        html << notes_html();
     } else if (!show_yesterday_pnl) {
         // The runner found no session on the day before (T-8D-2 R59): no settled table. The two
         // notes say why in the runner's terms, never from the weekday.
@@ -3245,12 +3329,11 @@ std::string EmailSender::generate_trading_report_body(
 
         total_transaction_costs_base64_ = ChartGenerator::generate_total_transaction_costs_chart(
             db, chart_strategy_id, chart_portfolio_id, date);
-        html << chart_ledger.record(std::string("Cost per $1M Traded (Efficiency Metric)"), !total_transaction_costs_base64_.empty(),
+        html << chart_ledger.record(std::string("Cost per $1M Traded"), !total_transaction_costs_base64_.empty(),
                                           ChartGenerator::last_chart_status(),
                                           ChartGenerator::last_chart_reason(), "no data to plot");
         if (!total_transaction_costs_base64_.empty()) {
-            html << "<h3 style=\"margin-top: 20px; color: #333;\">Cost per $1M Traded (Efficiency "
-                    "Metric)</h3>\n";
+            html << "<h3 style=\"margin-top: 20px; color: #333;\">Cost per $1M Traded</h3>\n";
             html << "<div style=\"width: 100%; max-width: 1000px; margin: 20px auto; text-align: "
                     "center;\">\n";
             html << "<img src=\"cid:total_transaction_costs\" alt=\"Cost per $1M Traded\" "

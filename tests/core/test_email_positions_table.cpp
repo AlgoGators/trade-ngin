@@ -82,6 +82,7 @@ Position held(const std::string& symbol, double qty, double average_price) {
 class EmailPositionsTableTest : public ::testing::Test {
 protected:
     void SetUp() override {
+        EmailSender::reset_footnotes();
         auto& registry = InstrumentRegistry::instance();
         registry.register_instrument(
             "ZBASIS", std::make_shared<EquityInstrument>("ZBASIS", equity_spec()));
@@ -196,7 +197,7 @@ TEST_F(EmailPositionsTableTest, ARowWithNoCloseIsPricedAtItsBasisInBothCells) {
         {"ZPRICED", held("ZPRICED", 50.0, 200.0)}};
     std::string html;
     ASSERT_NO_THROW({ html = sender_.format_positions_table(positions, true, {}, {}); });
-    EXPECT_NE(html.find("<td>$200.0000<sup style=\"font-size: 9px;\">4</sup></td>\n<td>$10,000.00</td>"), std::string::npos) << html;
+    EXPECT_NE(html.find("<td>$200.0000<sup style=\"font-size: 9px;\">1</sup></td>\n<td>$10,000.00</td>"), std::string::npos) << html;
     EXPECT_NE(html.find("<strong>Total Notional:</strong> $10,000.00"), std::string::npos) << html;
 }
 

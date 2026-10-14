@@ -57,7 +57,7 @@ inline std::map<std::string, std::string> read_account_detail_row(
     return row;
 }
 
-/// The (column name, text) pairs of the file's one row. `stored` maps the stored column names to
+/// The (item, value) pairs of the day, in reading order (grouped by account_detail_rows). `stored` maps the stored column names to
 /// their text; `over_limit` is null on a book that has none (the equity book).
 inline std::vector<std::pair<std::string, std::string>> account_detail_columns(
     const std::string& date, const std::map<std::string, std::string>& stored,
@@ -121,6 +121,37 @@ inline std::vector<std::pair<std::string, std::string>> account_detail_columns(
     cols.emplace_back("volatility on the sizing capital", get("volatility_sizing"));
     cols.emplace_back("worst day on the sizing capital", get("worst_day_sizing"));
     return cols;
+}
+
+
+/// The file as rows: group, item, value (HD 10-14): one line per figure, grouped so it reads top to
+/// bottom: the account, leverage on the account value, leverage on the sizing capital, the limits,
+/// the over-limit marks, risk, and the statistics on the sizing capital.
+inline std::vector<std::vector<std::string>> account_detail_rows(
+    const std::vector<std::pair<std::string, std::string>>& cols) {
+    static const std::vector<std::pair<std::string, std::vector<std::string>>> kGroups = {
+        {"Day", {"date"}},
+        {"Account", {"current portfolio value", "sizing capital"}},
+        {"Leverage on the account value",
+         {"gross leverage on the account value", "net leverage on the account value"}},
+        {"Leverage on the sizing capital",
+         {"gross leverage on the sizing capital", "net leverage on the sizing capital"}},
+        {"Limits", {"gross leverage limit", "net leverage limit", "per-name cap"}},
+        {"Over-limit marks",
+         {"over limit after rounding", "over limit by hold", "held beyond the per-name cap"}},
+        {"Risk", {"expected risk", "1-day 95% VaR"}},
+        {"Statistics on the sizing capital",
+         {"max drawdown on the sizing capital", "volatility on the sizing capital",
+          "worst day on the sizing capital"}}};
+    std::map<std::string, std::string> by_name(cols.begin(), cols.end());
+    std::vector<std::vector<std::string>> rows;
+    rows.push_back({"group", "item", "value"});
+    for (const auto& [group, items] : kGroups)
+        for (const auto& item : items) {
+            const auto it = by_name.find(item);
+            rows.push_back({group, item, it == by_name.end() ? std::string() : it->second});
+        }
+    return rows;
 }
 
 }  // namespace trade_ngin

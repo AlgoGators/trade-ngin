@@ -6457,12 +6457,6 @@ int main(int argc, char* argv[]) {
                         else ERROR("Failed to export the previous trading day's positions: " +
                                    std::string(settled_file.error()->what()));
                     }
-                    if (!daily_executions.empty()) {
-                        const auto exec_file = csv_exporter->export_executions(now, daily_executions);
-                        if (exec_file.is_ok()) attachments.push_back(exec_file.value());
-                        else ERROR("Failed to export the executions: " +
-                                   std::string(exec_file.error()->what()));
-                    }
                     const auto detail = csv_exporter->export_account_detail(
                         portfolio_id, date_str,
                         trade_ngin::account_detail_columns(

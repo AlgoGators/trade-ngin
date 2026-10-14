@@ -18,6 +18,7 @@
 //   TRADE_NGIN_UPDATE_EMAIL_FIXTURES=1 ./trade_ngin_tests --gtest_filter='EmailFixture*'
 
 #include <gtest/gtest.h>
+#include <regex>
 
 #include <algorithm>
 #include <cmath>
@@ -564,6 +565,12 @@ TEST_F(EmailFixture, TheEquityBodyIsTheStoredBody) {
     expect_body_is_fixture("equity_2026-06-22.html", equity_body());
 }
 
+
+// A body with every footnote number replaced by "^": the numbers follow the order the notes first
+// appear in an email, so a row is compared without its number.
+static std::string plain_notes(std::string body) {
+    return std::regex_replace(body, std::regex("<sup style=\"font-size: 9px;\">[0-9]+</sup>"), "^");
+}
 // T-8D D1 and HD 2026-10-12: the labels, on the bodies. The settled table's two price columns are
 // named in plain words, with no "T-1" or "T-2".
 TEST_F(EmailFixture, TheSleeveNamesItsKindAndTheSettledTableNamesItsTwoPrices) {
@@ -590,9 +597,9 @@ TEST_F(EmailFixture, TheSleeveNamesItsKindAndTheSettledTableNamesItsTwoPrices) {
         }
     }
     // The executions footer of a futures book: today's, and the netting lines above it stay.
-    EXPECT_NE(base.find("<strong>Today's Transaction Costs:</strong> $2.18<sup style=\"font-size: 9px;\">5</sup>"),
+    EXPECT_NE(base.find("<strong>Today's Transaction Costs:</strong> $2.18<sup style=\"font-size: 9px;\">"),
               std::string::npos);
-    EXPECT_NE(base.find("5 Netting between strategies: own costs $3.27, adjustment -$1.09, transaction costs $2.18."),
+    EXPECT_NE(base.find(" Netting between strategies: own costs $3.27, adjustment -$1.09, transaction costs $2.18.</div>"),
               std::string::npos);
     EXPECT_EQ(base.find("Netting Adjustment:</strong>"), std::string::npos) << "the arithmetic is one footnote";
 }
@@ -621,8 +628,8 @@ TEST(ReportPriceText, APricePrintsEveryDecimalItHasAndNeverFewerThanTwo) {
 // close and the words "no bar", and ONE footnote under the table says what the words mean, only on
 // a body that has such a row.
 TEST_F(EmailFixture, ASettledRowMultipliesOutAndANoBarRowSaysSoWithOneFootnote) {
-    const std::string futures = conservative_body();
-    const std::string base = base_body();
+    const std::string futures = plain_notes(conservative_body());
+    const std::string base = plain_notes(base_body());
     const std::string equity = equity_body();
     // 1 x (677.00 - 668.50) x 50 = 425.00; -1 x (103.73828125 - 103.71484375) x 2,000 = -46.88
     EXPECT_NE(futures.find("<tr><td>QKE.v.0</td><td>1.00</td><td>$668.5000</td><td>$677.0000</td>"
@@ -636,20 +643,20 @@ TEST_F(EmailFixture, ASettledRowMultipliesOutAndANoBarRowSaysSoWithOneFootnote) 
                            "<td class=\"positive\">$80.00</td></tr>"),
               std::string::npos);
     // HE: the last known close 91.30, never the unused older 92.10, and a stored P&L of 0.00
-    EXPECT_NE(futures.find("<tr><td>HE.v.0</td><td>1.00</td><td>$91.3000</td><td>\xE2\x80\x93<sup style=\"font-size: 9px;\">1</sup></td>"
+    EXPECT_NE(futures.find("<tr><td>HE.v.0</td><td>1.00</td><td>$91.3000</td><td>\xE2\x80\x93^</td>"
                            "<td class=\"positive\">$0.00</td></tr>"),
               std::string::npos);
     EXPECT_EQ(futures.find("92.10"), std::string::npos);
     // BASE, a Monday: KE has no Sunday session. Friday's 668.50, not Thursday's 679.50.
-    EXPECT_NE(base.find("<tr><td>KE.v.0</td><td>1.00</td><td>$668.5000</td><td>\xE2\x80\x93<sup style=\"font-size: 9px;\">1</sup></td>"
+    EXPECT_NE(base.find("<tr><td>KE.v.0</td><td>1.00</td><td>$668.5000</td><td>\xE2\x80\x93^</td>"
                         "<td class=\"positive\">$0.00</td></tr>"),
               std::string::npos);
     EXPECT_EQ(base.find("679.50"), std::string::npos);
 
     // HD 10-13: no sentence under the table; a no-bar row is a dash with footnote 1, once.
     for (const std::string& body : {futures, base}) {
-        EXPECT_NE(body.find("\xE2\x80\x93<sup style=\"font-size: 9px;\">1</sup>"), std::string::npos);
-        EXPECT_NE(body.find("1 No price received that day; P&amp;L 0.</div>"), std::string::npos);
+        EXPECT_NE(body.find("\xE2\x80\x93^"), std::string::npos);
+        EXPECT_NE(body.find(" No price received that day. P&amp;L is logged as 0 and updates on later days.</div>"), std::string::npos);
         EXPECT_EQ(body.find("no bar"), std::string::npos);
         EXPECT_EQ(body.find("Previous price and Latest price are the two closes"), std::string::npos);
     }
@@ -1092,36 +1099,31 @@ TEST_F(EmailFixture, EveryBodyRendersTheSameBytesTwice) {
 // the blocks, the lines that are gone, and the one note at the bottom.
 TEST_F(EmailFixture, TheBodiesFollowHDsLayout) {
     for (const std::string& body : {conservative_body(), base_body(), equity_body()}) {
-        const auto perf = body.find("<h2>Performance Metrics</h2>");
         const auto prev = body.find("<h2>Previous trading day (");
-        const auto acct = body.find("<h2>Account as of ");
-        ASSERT_NE(perf, std::string::npos);
+        const auto perf = body.find("<h2>Performance Metrics</h2>");
         ASSERT_NE(prev, std::string::npos);
-        ASSERT_NE(acct, std::string::npos);
+        ASSERT_NE(perf, std::string::npos);
         EXPECT_LT(prev, perf);
-        EXPECT_LT(perf, acct);
         for (const char* gone :
-             {"(settled)", "Statistics through", "Book as of", "Winning Days", "Losing Days", "Flat Days",
-              "Total Days", "Distribution", "Win Rate", "Profit Factor", "Downside Deviation",
-              "Roll Costs", "95% VaR", "Expected Risk", "Sizing", "Over limit", "Per-name cap",
-              "extrapolated", "Historical Volatility", "(on maintenance margin)", "(on the account value)",
-              "rounded from exact", "(futures)", "As of March 1st", "no bar", "(average price"}) {
+             {"(settled)", "Statistics through", "Book as of", "Account as of", "Winning Days",
+              "Flat Days", "Distribution", "Profit Factor", "Gross Profit", "Gross Loss", "Roll Costs",
+              "95% VaR", "Expected Risk", "Sizing", "Over limit", "Per-name cap", "extrapolated",
+              "Historical Volatility", "(on maintenance margin)", "(on the account value)",
+              "rounded from exact", "(futures)", "As of March 1st", "no bar", "(average price",
+              "Market Price", "NO SESSION", "(Efficiency", "stored days"}) {
             EXPECT_EQ(body.find(gone), std::string::npos) << gone;
         }
-        EXPECT_NE(body.find("<strong>Annualized Return:</strong>"), std::string::npos);
-        EXPECT_NE(body.find("<strong>Volatility:</strong>"), std::string::npos);
-        EXPECT_NE(body.find("<strong>Gross Profit:</strong>"), std::string::npos);
-        EXPECT_NE(body.find("<strong>Margin Cushion:</strong>"), std::string::npos);
-        EXPECT_NE(body.find("<strong>Gross Leverage:</strong>"), std::string::npos);
-        EXPECT_NE(body.find("<strong>Net Leverage:</strong>"), std::string::npos);
-        // the order of the Account block
-        const char* order[] = {"Total Cumulative Return", "Unrealized PnL", "Realized PnL",
-                               "Transaction Costs", "Total PnL (Net)", "Current Portfolio Value",
-                               "Cash Available", "Margin Posted", "Equity-to-Margin Ratio",
-                               "Margin Cushion", "Gross Leverage", "Net Leverage"};
-        std::size_t at = acct;
+        // one block, in groups separated by a blank line
+        const char* order[] = {"Unrealized PnL", "Realized PnL", "Transaction Costs", "Total PnL (Net)",
+                               "Current Portfolio Value", "<br>", "Total Cumulative Return",
+                               "Annualized Return", "Sharpe Ratio", "Sortino Ratio", "Volatility",
+                               "Max Drawdown", "<br>", "Cash Available", "Margin Posted",
+                               "Equity-to-Margin Ratio", "Margin Cushion", "<br>", "Gross Leverage",
+                               "Net Leverage"};
+        std::size_t at = perf;
         for (const char* label : order) {
-            const auto found = body.find(std::string("<strong>") + label, at);
+            const std::string needle = std::string(label) == "<br>" ? "<br>" : std::string("<strong>") + label;
+            const auto found = body.find(needle, at + 1);
             ASSERT_NE(found, std::string::npos) << label;
             at = found;
         }
@@ -1132,22 +1134,25 @@ TEST_F(EmailFixture, TheOneNoteAtTheBottomNamesTheAssetsAndTheStartDate) {
     EXPECT_NE(conservative_body().find(
                   "<strong>Note:</strong> This strategy is based on daily OHLCV data for futures "
                   "assets. We currently only provide data for the front-month contract and are "
-                  "working on integrating roll data.<br>\nAll values reflect a trading start date "
+                  "working on integrating roll data.<br><br>\nAll values reflect a trading start date "
                   "of October 5th, 2025.\n"),
               std::string::npos);
     EXPECT_NE(equity_body().find("<strong>Note:</strong> This strategy is based on daily OHLCV data "
-                                 "for equity assets.<br>\nAll values reflect a trading start date "
+                                 "for equity assets.<br><br>\nAll values reflect a trading start date "
                                  "of April 1st, 2026.\n"),
               std::string::npos);
 }
 
 TEST_F(EmailFixture, ARowWithNoPriceIsADashWithAFootnoteAndAMoneyAmountHasItsSign) {
     for (const std::string& body : {conservative_body(), base_body()}) {
-        EXPECT_NE(body.find("\xE2\x80\x93<sup style=\"font-size: 9px;\">1</sup>"), std::string::npos);
-        EXPECT_NE(body.find("1 No price received that day; P&amp;L 0.</div>"), std::string::npos);
+        // the dash carries a number, and the line with that number sits below the block
+        const std::regex dash("\xE2\x80\x93<sup style=\"font-size: 9px;\">([0-9])</sup>");
+        std::smatch m;
+        ASSERT_TRUE(std::regex_search(body, m, dash));
+        EXPECT_NE(body.find(m[1].str() + " No price received that day. P&amp;L is logged as 0 and updates on later days.</div>"),
+                  std::string::npos);
         EXPECT_EQ(body.find("-$-"), std::string::npos);
         EXPECT_EQ(body.find("$-"), std::string::npos);
     }
-    // quantities have two decimals in every table
     EXPECT_EQ(conservative_body().find("<td>2</td>"), std::string::npos);
 }

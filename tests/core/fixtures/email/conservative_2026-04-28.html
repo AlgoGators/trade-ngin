@@ -44,7 +44,7 @@ th { background-color: #f2f2f2; font-weight: bold; }
 <h3 style="margin-top: 20px; margin-bottom: 2px; color: #333; border-left: 4px solid #2c5aa0; padding-left: 12px;">Trend Following</h3>
 <div style="font-size: 11px; color: #999; margin: 0 0 8px 16px;">Futures</div>
 <table>
-<tr><th>Symbol</th><th>Quantity</th><th>Market Price</th><th>Notional</th><th>% of Total</th></tr>
+<tr><th>Symbol</th><th>Quantity</th><th>Price</th><th>Notional</th><th>% of Total</th></tr>
 <tr>
 <td>Q6J.v.0</td>
 <td>-1.00</td>
@@ -95,9 +95,6 @@ th { background-color: #f2f2f2; font-weight: bold; }
 <td>48.03%</td>
 </tr>
 </table>
-<div style="font-size: 13px; color: #666; margin: 8px 0 20px 0; padding-left: 16px;">
-<strong>Positions:</strong> 7 | <strong>Notional:</strong> $431,957.56 | <strong>Margin:</strong> $16,100.00
-</div>
 <div class="summary-stats" style="margin-top: 20px; border-top: 2px solid #2c5aa0; padding-top: 15px;">
 <div class="metric"><strong>Sleeve Positions:</strong> 7</div>
 <div class="metric"><strong>Total Notional:</strong> $431,957.56</div>
@@ -117,13 +114,10 @@ th { background-color: #f2f2f2; font-weight: bold; }
 </tr>
 </table>
 <table>
-<tr><th>Roll Leg</th><th>Symbol</th><th>Side</th><th>Quantity</th><th>Price</th><th>Contract</th><th>Cost (upper bound)</th></tr>
-<tr><td>closing</td><td>QMBT.v.0</td><td>SELL</td><td>1.00</td><td>$77,960.0000</td><td>42185193</td><td>$2.45</td></tr>
-<tr><td>opening</td><td>QMBT.v.0</td><td>BUY</td><td>1.00</td><td>$79,070.0000</td><td>42013708</td><td>$2.45</td></tr>
+<tr><th>Roll Leg</th><th>Symbol</th><th>Side</th><th>Quantity</th><th>Price</th><th>Cost</th></tr>
+<tr><td>closing</td><td>QMBT.v.0</td><td>SELL</td><td>1.00</td><td>$77,960.0000</td><td>$2.45</td></tr>
+<tr><td>opening</td><td>QMBT.v.0</td><td>BUY</td><td>1.00</td><td>$79,070.0000</td><td>$2.45</td></tr>
 </table>
-<div style="font-size: 13px; color: #666; margin: 8px 0 20px 0; padding-left: 16px;">
-<strong>Trades:</strong> 1 | <strong>Notional:</strong> $14,033.50 | <strong>Transaction Costs:</strong> $5.99
-</div>
 <div class="summary-stats" style="margin-top: 20px; border-top: 2px solid #2c5aa0; padding-top: 15px;">
 <div class="metric"><strong>Total Trades:</strong> 1</div>
 <div class="metric"><strong>Total Notional Traded:</strong> $14,033.50</div>
@@ -142,9 +136,6 @@ th { background-color: #f2f2f2; font-weight: bold; }
 <tr><td>QMES.v.0</td><td>1.00</td><td>$7,153.5000</td><td>$7,217.2500</td><td class="positive">$318.75</td></tr>
 <tr><td>QZT.v.0</td><td>-1.00</td><td>$103.7148</td><td>$103.7383</td><td class="negative">-$46.88</td></tr>
 </table>
-<div style="font-size: 13px; color: #666; margin: 8px 0 20px 0; padding-left: 16px;">
-<strong>Positions:</strong> 7 | <strong>Total Realized PnL (Gross):</strong> <span class="positive">$608.12</span>
-</div>
 <h2>Previous trading day (2026-04-27)</h2>
 <div class="metrics-category">
 <div class="metric"><strong>Total Positions:</strong> 7</div>
@@ -154,29 +145,29 @@ th { background-color: #f2f2f2; font-weight: bold; }
 <div class="metric"><strong>Daily Transaction Costs:</strong> <span>$3.93</span></div>
 <div class="metric"><strong>Daily Total PnL (Net):</strong> <span class="positive">$604.19</span></div>
 </div>
+<div style="font-size: 12px; color: #666; margin: 2px 0;">1 No price received that day. P&amp;L is logged as 0 and updates on later days.</div>
+<div style="font-size: 12px; color: #666; margin: 2px 0;">2 Contract rolled that day. P&amp;L is not booked on the roll.</div>
 <div class="metrics-section">
 <h2>Performance Metrics</h2>
 <div class="metrics-category">
-<div class="metric"><strong>Annualized Return:</strong> <span class="positive">1.29%</span></div>
-<div class="metric"><strong>Sharpe Ratio:</strong> <span>0.20</span></div>
-<div class="metric"><strong>Sortino Ratio:</strong> <span>0.27</span></div>
-<div class="metric"><strong>Max Drawdown:</strong> <span>6.23%</span></div>
-<div class="metric"><strong>Volatility:</strong> <span>7.76%</span></div>
-<div class="metric"><strong>Gross Profit:</strong> <span>$27,152.70</span></div>
-<div class="metric"><strong>Gross Loss:</strong> <span>$25,292.40</span></div>
-</div>
-<h2>Account as of 2026-04-28</h2>
-<div class="metrics-category">
-<div class="metric"><strong>Total Cumulative Return:</strong> <span class="positive">0.70%</span></div>
 <div class="metric"><strong>Unrealized PnL:</strong> <span class="neutral">$0.00</span></div>
 <div class="metric"><strong>Realized PnL:</strong> <span class="positive">$4,553.59</span></div>
 <div class="metric"><strong>Transaction Costs:</strong> <span>$1,048.52</span></div>
 <div class="metric"><strong>Total PnL (Net):</strong> <span class="positive">$3,505.07</span></div>
 <div class="metric"><strong>Current Portfolio Value:</strong> <span>$503,505.07</span></div>
+<br>
+<div class="metric"><strong>Total Cumulative Return:</strong> <span class="positive">0.70%</span></div>
+<div class="metric"><strong>Annualized Return:</strong> <span class="positive">1.29%</span></div>
+<div class="metric"><strong>Sharpe Ratio:</strong> <span>0.20</span></div>
+<div class="metric"><strong>Sortino Ratio:</strong> <span>0.27</span></div>
+<div class="metric"><strong>Volatility:</strong> <span>7.76%</span></div>
+<div class="metric"><strong>Max Drawdown:</strong> <span>6.23%</span></div>
+<br>
 <div class="metric"><strong>Cash Available:</strong> <span>$487,405.07</span></div>
 <div class="metric"><strong>Margin Posted:</strong> <span>$16,100.00</span></div>
 <div class="metric"><strong>Equity-to-Margin Ratio:</strong> <span>31.27x</span></div>
 <div class="metric"><strong>Margin Cushion:</strong> <span>97.12%</span></div>
+<br>
 <div class="metric"><strong>Gross Leverage:</strong> <span>0.86x</span></div>
 <div class="metric"><strong>Net Leverage:</strong> <span>0.24x</span></div>
 </div>
@@ -185,9 +176,7 @@ th { background-color: #f2f2f2; font-weight: bold; }
 <h2>Symbols Reference</h2>
 <p>Database unavailable; symbols reference not included.</p>
 <div class="footer-note">
-<div style="font-size: 12px; color: #666; margin: 2px 0;">1 No price received that day; P&amp;L 0.</div>
-<div style="font-size: 12px; color: #666; margin: 2px 0;">2 Contract roll; not booked.</div>
-<strong>Note:</strong> This strategy is based on daily OHLCV data for futures assets. We currently only provide data for the front-month contract and are working on integrating roll data.<br>
+<strong>Note:</strong> This strategy is based on daily OHLCV data for futures assets. We currently only provide data for the front-month contract and are working on integrating roll data.<br><br>
 All values reflect a trading start date of October 5th, 2025.
 </div>
 <hr style="margin-top: 30px; border: none; border-top: 1px solid #ddd;">

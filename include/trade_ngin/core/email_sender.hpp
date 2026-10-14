@@ -47,6 +47,8 @@ class EmailSender {
 public:
     /// The text of footnote 5 the last executions table of this thread set (empty: none).
     static std::string netting_footnote_text();
+    /// Start the footnote numbering over (a body does it itself; the table functions called alone do not).
+    static void reset_footnotes();
 
     /**
      * @brief Constructor

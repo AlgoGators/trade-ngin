@@ -43,9 +43,10 @@ inline void apply_day_flags(std::string& subject, std::string& body,
         subject = risk_module_failure_email_subject(subject);
         body = flag_email_body_for_risk_module_failure(body, *risk_module_failure);
     }
-    if (carried_day) {
-        body = flag_email_body_for_carried_day(body, carried_day_note);
-    }
+    // HD 10-14: a carried day's email says it in the report's own plain note ("No Executions: No
+    // session was found for yesterday ..."); the long banner is no longer added.
+    (void)carried_day;
+    (void)carried_day_note;
 }
 
 /// `send` mails (subject, body) and returns nothing on success or the error's text.

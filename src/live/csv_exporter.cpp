@@ -9,6 +9,7 @@
 #include <unordered_set>
 #include "trade_ngin/core/logger.hpp"
 #include "trade_ngin/core/report_price_text.hpp"
+#include "trade_ngin/live/account_detail.hpp"
 #include "trade_ngin/core/report_settled_marks.hpp"
 #include "trade_ngin/data/conversion_utils.hpp"
 #include "trade_ngin/data/database_interface.hpp"
@@ -496,28 +497,6 @@ Result<std::string> CSVExporter::export_carried_positions(
     }
 }
 
-Result<std::string> CSVExporter::export_executions(
-    const std::chrono::system_clock::time_point& date,
-    const std::vector<ExecutionReport>& executions) {
-    const std::string filename = output_directory_ + format_date_for_filename(date) + "_executions.csv";
-    std::ofstream file(filename);
-    if (!file.is_open()) {
-        return Result<std::string>(std::make_unique<TradeError>(
-            ErrorCode::FILE_IO_ERROR, "Failed to open file for writing: " + filename));
-    }
-    file << "symbol,side,quantity,price,transaction_cost,type\n";
-    for (const auto& exec : executions) {
-        const std::string type = exec.execution_type == ExecutionType::ROLL ? "roll" : "strategy";
-        file << exec.symbol << "," << (exec.side == Side::BUY ? "BUY" : "SELL") << ","
-             << csv_quantity(exec.symbol, exec.filled_quantity.as_double()) << ","
-             << csv_price(exec.symbol, exec.fill_price.as_double()) << ","
-             << csv_fixed(exec.total_transaction_costs.as_double(), 2) << "," << type << "\n";
-    }
-    file.close();
-    INFO("CSVExporter: executions saved to " + filename);
-    return Result<std::string>(filename);
-}
-
 Result<std::string> CSVExporter::export_account_detail(
     const std::string& portfolio_id, const std::string& date,
     const std::vector<std::pair<std::string, std::string>>& columns) {
@@ -527,10 +506,10 @@ Result<std::string> CSVExporter::export_account_detail(
         return Result<std::string>(std::make_unique<TradeError>(
             ErrorCode::FILE_IO_ERROR, "Failed to open file for writing: " + filename));
     }
-    for (size_t i = 0; i < columns.size(); ++i) file << (i ? "," : "") << columns[i].first;
-    file << "\n";
-    for (size_t i = 0; i < columns.size(); ++i) file << (i ? "," : "") << columns[i].second;
-    file << "\n";
+    for (const auto& row : account_detail_rows(columns)) {
+        for (size_t i = 0; i < row.size(); ++i) file << (i ? "," : "") << row[i];
+        file << "\n";
+    }
     file.close();
     INFO("CSVExporter: account detail saved to " + filename);
     return Result<std::string>(filename);
