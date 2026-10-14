@@ -18,7 +18,7 @@ What is elsewhere:
 
 "The book" in a citation is Robert Carver, Advanced Futures Trading Strategies.
 
-Code citations are `path:line`. A file is given with its full path the first time and by
+Code citations name the file and, where one is meant, the function or key. A file is given with its full path the first time and by
 its file name after that. The two live futures runners (`apps/strategies/live_portfolio_conservative.cpp`
 and `apps/strategies/live_portfolio.cpp`) carry the same loop code; the conservative one is cited.
 
@@ -38,9 +38,9 @@ the same way.
 | 4 | Classification | each symbol is free, held (fixed) or a close-out | `one_pass::rebalance`, `src/optimization/one_pass.cpp` |
 | 5 | Cap and overlay | the capped target, five readings, one scalar m | `one_pass.cpp`; arithmetic in `src/risk/overlay.cpp` |
 | 6 | Forecast-sign close, search | a whole-contract answer y from the held book | `one_pass.cpp`; `search`, `one_pass.cpp` |
-| 7 | Buffer, rounding, clip | the book before the trim | `b_sigma` `one_pass.cpp`, `buffer` `clip_to_cap` |
+| 7 | Buffer, rounding, clip | the book before the trim | `b_sigma`, `buffer` and `clip_to_cap`, `one_pass.cpp` |
 | 8 | Trim | the stored book | `trim`, `one_pass.cpp` |
-| 9 | Split, fills, record | per-sleeve books, fills, `risk_detail`, log lines | `PortfolioManager::rebalance_one_pass`, `src/portfolio/portfolio_manager.cpp` (split at 2748, fills at 2813) |
+| 9 | Split, fills, record | per-sleeve books, fills, `risk_detail`, log lines | `PortfolioManager::rebalance_one_pass`, `src/portfolio/portfolio_manager.cpp` |
 
 Stages 4 to 8 are one pure function of plain vectors, `one_pass::rebalance(const DayInputs&)`. It reads no
 database, no clock and no state from the previous call. `rebalance_one_pass` builds its inputs, calls it
@@ -758,8 +758,13 @@ The nine keys of `risk_detail` (`kRiskDetailKeys`, `risk_detail.hpp`):
 | `sizing_capital` | number | E, the capital the book was sized on |
 | `account_value` | number | V at the same instant: S_0 plus the cumulative settled net P&L that E was built from |
 
-The five readings, their limits and their multipliers are not stored. They are on the OVERLAY
-line. The sizing capital has no column of its own.
+The overlay's five readings of the stored book and its one-day 95 percent value at risk are
+stored as columns on futures rows: `overlay_risk`, `overlay_risk_jump`, `overlay_risk_shock`,
+`overlay_gross_leverage`, `overlay_net_leverage` and `var_95_1d` (migration 030 on
+`trading.live_results`, 031 on `backtest.equity_curve`; `overlay_columns_of`, `overlay_columns.hpp`).
+They are written on the rows that carry `risk_detail`; on a blind window the three risk readings and
+`var_95_1d` are NULL. The limits and the multipliers are not stored: they are on the OVERLAY line.
+The sizing capital has no column of its own.
 
 ### 10.2 The design keys in `portfolio_config`
 
