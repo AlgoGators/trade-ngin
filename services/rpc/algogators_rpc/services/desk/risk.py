@@ -23,6 +23,12 @@ desk's book (Dom, 2026-10-14):
 The trading rules are reported but are not breaches: `sign_close` (a long is not turned short,
 or the reverse, in one day), `rounding`, `buffer`, `search` and `hold`. An approved override is
 reported with its breaches but does not block: the ask was approved past them (D4, D5).
+
+Every check is also reported on its own, breach or not (`checks`, desk.proto 1.4.0): each risk
+limit with the stored book's reading and its max, as the engine measured them on the save
+(`desk.checks`, written since the 2026-10-14 engine). The labels, units and maxes are trade-ngin's;
+AlgoLens renders them as given. A day the engine did not measure (the model's book, a refusal, a
+row written before the checks existed) reports the configured maxes with no reading.
 """
 
 from __future__ import annotations
@@ -68,6 +74,35 @@ class Breach:
     detail: str
 
 
+# Status of one check.
+WITHIN, BOUND, OVER, NOT_MEASURED = "within", "bound", "over", "not_measured"
+# Units of a check's value and max; the client formats them.
+PERCENT, MULTIPLE, CONTRACTS, TAU = "percent", "multiple", "contracts", "tau"
+
+# The checks, in report order: term, label, the risk.json key of its configured max.
+CHECKS = (
+    ("R", "Portfolio risk (R)", "R_max"),
+    ("R_jump", "Jump risk (R_jump)", "R_jump_max"),
+    ("R_shock", "Shock risk (R_shock)", "R_shock_max"),
+    ("L_g", "Gross leverage (L_g)", "max_gross_leverage"),
+    ("L_n", "Net leverage (L_n)", "max_net_leverage"),
+    ("CAP", "Largest single name (per-name cap)", "per_name_cap"),
+    ("TRIM", "Contracts trimmed (trim max)", "trim_max"),
+)
+COVARIANCE_TERMS = ("R", "R_jump", "R_shock")
+
+
+@dataclass(frozen=True)
+class RiskCheck:
+    term: str
+    label: str
+    value: Optional[float]
+    max: Optional[float]
+    unit: str
+    status: str  # within | bound | over | not_measured
+    detail: str
+
+
 @dataclass(frozen=True)
 class DeskRiskRow:
     """The day's qt row of trading.live_results, as the store reads it."""
@@ -98,6 +133,7 @@ class DeskRiskReport:
     margin_cushion: Optional[float] = None
     equity_to_margin: Optional[float] = None
     limits: Sequence[Tuple[str, float]] = field(default_factory=tuple)
+    checks: Sequence[RiskCheck] = field(default_factory=tuple)
 
 
 def category(moved_by: Optional[str]) -> str:
@@ -130,7 +166,8 @@ def derive_desk_risk(row: Optional[DeskRiskRow],
                      limits: Sequence[Tuple[str, float]] = ()) -> DeskRiskReport:
     """The risk report of a day's qt book. `row` is None when the day has no qt row yet."""
     if row is None:
-        return DeskRiskReport(state=NO_BOOK, limits=tuple(limits))
+        return DeskRiskReport(state=NO_BOOK, limits=tuple(limits),
+                              checks=configured_checks(limits, None, None, "no book yet"))
     readings = dict(gross_leverage=row.gross_leverage, net_leverage=row.net_leverage,
                     margin_cushion=row.margin_cushion, equity_to_margin=row.equity_to_margin,
                     limits=tuple(limits))
@@ -139,7 +176,8 @@ def derive_desk_risk(row: Optional[DeskRiskRow],
     source = (row.book_source or "").strip().lower()
     if desk is None or source not in (DESK, OVERRIDE):
         # The model's book: the engine's own run, inside its limits by construction.
-        return DeskRiskReport(state=MODEL, **readings)
+        return DeskRiskReport(state=MODEL, checks=configured_checks(
+            limits, row.gross_leverage, row.net_leverage, "measured on a desk save"), **readings)
 
     overlay = desk.get("overlay") if isinstance(desk.get("overlay"), Mapping) else {}
     m = _number(overlay.get("m"), 1.0)
@@ -177,7 +215,19 @@ def derive_desk_risk(row: Optional[DeskRiskRow],
                                           "was kept"))
 
     approved_override = source == OVERRIDE or bool(desk.get("report_only"))
+    measured = desk.get("checks") if isinstance(desk.get("checks"), Mapping) else None
+    if measured is not None:
+        checks = measured_checks(measured, binding if m < 1.0 - 1e-9 else "none",
+                                 _terms(after_rounding), _terms(by_hold), symbols)
+    else:
+        why = "the overlay refused the book" if refused else "not recorded by this engine run"
+        checks = configured_checks(limits, row.gross_leverage, row.net_leverage, why)
+    if refused:
+        checks = checks + (RiskCheck("refused", "Overlay sized the book", None, None, "", OVER,
+                                     "the overlay could not size the book; the held book was "
+                                     "kept"),)
     return DeskRiskReport(
+        checks=checks,
         state=OVERRIDE if approved_override else DESK,
         audit_id=int(_number(desk.get("audit_id"))),
         within_limits=not breaches,
@@ -207,3 +257,84 @@ def load_limits(portfolio_dir: str) -> List[Tuple[str, float]]:
             if math.isfinite(value):
                 out.append((key, value))
     return out
+
+
+def _status_of(value: Optional[float], limit: Optional[float]) -> str:
+    if value is None:
+        return NOT_MEASURED
+    if limit is not None and abs(value) > limit + 1e-9:
+        return OVER
+    return WITHIN
+
+
+def _optional(value: Any) -> Optional[float]:
+    if value is None or isinstance(value, bool):
+        return None
+    x = _number(value, float("nan"))
+    return x if math.isfinite(x) else None
+
+
+def measured_checks(measured: Mapping[str, Any], binding: str, after_rounding: Sequence[str],
+                    by_hold: Sequence[str], symbols: Sequence[SymbolRisk]) -> Tuple[RiskCheck, ...]:
+    """The engine's readings of the stored book against the limits in force (desk.checks)."""
+    tau = _optional(measured.get("tau"))
+    moved = {step.strip() for s in symbols for step in s.moved_by.split(",")}
+    out = []
+    for term, label, _ in CHECKS:
+        entry = measured.get(term) if isinstance(measured.get(term), Mapping) else {}
+        value, limit = _optional(entry.get("value")), _optional(entry.get("max"))
+        status = _status_of(value, limit)
+        notes = []
+        if term in COVARIANCE_TERMS:
+            unit = PERCENT
+            ratio = _optional(entry.get("max_ratio"))
+            if ratio is not None and tau is not None:
+                notes.append(f"max {ratio:g} x risk target {tau:.0%}")
+            if value is None:
+                notes.append("not measured: the covariance window is blind")
+        elif term == "CAP":
+            unit = MULTIPLE
+            if entry.get("symbol"):
+                notes.append(f"{entry['symbol']}, notional / sizing capital")
+            if moved & {"cap", "clip"}:
+                status = BOUND
+                notes.append("the cap cut a symbol")
+        elif term == "TRIM":
+            unit = CONTRACTS
+            if value and value > 0:
+                status = BOUND
+                notes.append("the trim removed contracts to fit the limits")
+        else:
+            unit = MULTIPLE
+        if term == binding:
+            status = BOUND
+            notes.append("the overlay cut the positions to fit this limit")
+        if term in after_rounding:
+            status = OVER
+            notes.append("still over after rounding")
+        if term in by_hold:
+            status = OVER
+            notes.append("over through a held position")
+        out.append(RiskCheck(term, label, value, limit, unit, status, "; ".join(notes)))
+    return tuple(out)
+
+
+def configured_checks(limits: Sequence[Tuple[str, float]], gross: Optional[float],
+                      net: Optional[float], why: str) -> Tuple[RiskCheck, ...]:
+    """The configured maxes when the engine measured nothing: the leverage of the stored book
+    (trading.live_results) where the row has it, the rest not measured."""
+    configured = dict(limits)
+    out = []
+    for term, label, key in CHECKS:
+        limit = configured.get(key)
+        value, unit, detail = None, MULTIPLE, why
+        if term in COVARIANCE_TERMS:
+            unit = TAU  # a multiple of the risk target until the engine measures the book
+        elif term == "TRIM":
+            unit = CONTRACTS
+        elif term == "L_g" and gross is not None:
+            value, detail = gross, "the stored book"
+        elif term == "L_n" and net is not None:
+            value, detail = net, "the stored book"
+        out.append(RiskCheck(term, label, value, limit, unit, _status_of(value, limit), detail))
+    return tuple(out)

@@ -260,6 +260,24 @@ TEST_F(OnePassBookTest, TheOverlayCutsOnceAndTheRequestIsRecorded) {
     for (const char* s : {"AAA", "BBB", "CCC"}) EXPECT_EQ(quantity("A", s), 8.0) << s;
     for (const char* s : {"DDD", "EEE"}) EXPECT_EQ(quantity("A", s), -8.0) << s;
     EXPECT_NEAR(day.risk_scale, 0.8, 1e-12) << "the stored gross 8.0 over the capped target's 10.0";
+    // Contract C9: the stored book's readings and the limits in force, for the desk's report.
+    EXPECT_TRUE(day.checks);
+    EXPECT_NEAR(day.limit_l, 8.1, 1e-12);
+    EXPECT_NEAR(day.stored_l, 8.0, 1e-9) << "five rows of 8 contracts at 0.2 each";
+    EXPECT_NEAR(day.stored_l_net, 1.6, 1e-9) << "three longs and two shorts";
+    EXPECT_GT(day.limit_l_net, 0.0);
+    EXPECT_NEAR(day.per_name_cap, 2.0, 1e-12);
+    EXPECT_NEAR(day.largest_name, 1.6, 1e-9);
+    EXPECT_EQ(day.largest_name_symbol, "AAA") << "the first of the equal names, in symbol order";
+    EXPECT_GT(day.trim_max, 0);
+    EXPECT_DOUBLE_EQ(day.trimmed_contracts, 0.0);
+    EXPECT_GT(day.tau, 0.0);
+    EXPECT_NEAR(day.limit_r, day.r_max_ratio * day.tau, 1e-12);
+    EXPECT_NEAR(day.limit_r_jump, day.r_jump_max_ratio * day.tau, 1e-12);
+    EXPECT_NEAR(day.limit_r_shock, day.r_shock_max_ratio * day.tau, 1e-12);
+    const nlohmann::json checks = desk_checks_json(day);
+    EXPECT_NEAR(checks.at("L_g").at("value").get<double>(), 8.0, 1e-9);
+    EXPECT_EQ(checks.at("CAP").at("symbol").get<std::string>(), "AAA");
     EXPECT_EQ(day.over_limit_after_rounding_terms, "") << "the stored book is inside the limit";
     EXPECT_EQ(count_of(out, "OVERLAY m=0.81 binding=L_g"), 1u) << out;
     EXPECT_EQ(count_of(out, "RISK_TRIM"), 0u) << out;
@@ -527,6 +545,8 @@ TEST_F(OnePassBookTest, ARefusalOnAnUnseededLiveScopeRefusesTheRun) {
     ASSERT_TRUE(process({one_pass_bar("AAA", 2, 100.0)}).is_ok());
     EXPECT_EQ(quantity("A", "AAA"), 3.0);
     EXPECT_TRUE(pm_->last_one_pass().refused);
+    EXPECT_FALSE(pm_->last_one_pass().checks) << "a refusal measures nothing";
+    EXPECT_TRUE(desk_checks_json(pm_->last_one_pass()).is_null());
 }
 
 // A symbol the first sleeve has no series for is held at each sleeve's held quantity and named:
@@ -961,6 +981,57 @@ TEST_F(OnePassBookTest, AnOverlayBookWithoutItsLimitsIsAnError) {
     ASSERT_TRUE(r.is_error());
     EXPECT_NE(std::string(r.error()->what()).find("overlay"), std::string::npos);
     EXPECT_TRUE(fills("A", "AAA").empty());
+}
+
+// Contract C9: the desk record's checks carry every limit's reading and max, and stay out of
+// risk_detail's nine keys.
+TEST(RiskDetailJson, DeskChecksCarryEveryLimitWithItsMax) {
+    OnePassDay day;
+    EXPECT_TRUE(desk_checks_json(day).is_null());  // no pass that answered
+    day.ran = day.sized = day.checks = true;
+    day.covariance_measured = true;
+    day.tau = 0.2;
+    day.stored_r = 0.31;
+    day.stored_r_jump = 0.52;
+    day.stored_r_shock = 0.61;
+    day.stored_l = 3.79;
+    day.stored_l_net = -2.67;
+    day.limit_r = 0.45;
+    day.limit_r_jump = 0.9;
+    day.limit_r_shock = 0.8;
+    day.limit_l = 8.0;
+    day.limit_l_net = 6.0;
+    day.r_max_ratio = 2.25;
+    day.r_jump_max_ratio = 4.5;
+    day.r_shock_max_ratio = 4.0;
+    day.per_name_cap = 2.0;
+    day.largest_name = 1.94;
+    day.largest_name_symbol = "ZT.v.0";
+    day.trim_max = 5;
+    day.trimmed_contracts = 1.0;
+    const nlohmann::json j = desk_checks_json(day);
+    EXPECT_DOUBLE_EQ(j.at("R").at("value").get<double>(), 0.31);
+    EXPECT_DOUBLE_EQ(j.at("R").at("max").get<double>(), 0.45);
+    EXPECT_DOUBLE_EQ(j.at("R").at("max_ratio").get<double>(), 2.25);
+    EXPECT_DOUBLE_EQ(j.at("R_jump").at("max").get<double>(), 0.9);
+    EXPECT_DOUBLE_EQ(j.at("R_shock").at("value").get<double>(), 0.61);
+    EXPECT_DOUBLE_EQ(j.at("L_g").at("max").get<double>(), 8.0);
+    EXPECT_DOUBLE_EQ(j.at("L_n").at("value").get<double>(), -2.67);
+    EXPECT_EQ(j.at("CAP").at("symbol").get<std::string>(), "ZT.v.0");
+    EXPECT_DOUBLE_EQ(j.at("CAP").at("max").get<double>(), 2.0);
+    EXPECT_EQ(j.at("TRIM").at("max").get<int>(), 5);
+    EXPECT_DOUBLE_EQ(j.at("tau").get<double>(), 0.2);
+
+    // A blind window: the covariance readings are not measured; the leverage readings are.
+    day.covariance_measured = false;
+    const nlohmann::json blind = desk_checks_json(day);
+    EXPECT_TRUE(blind.at("R").at("value").is_null());
+    EXPECT_TRUE(blind.at("R_shock").at("value").is_null());
+    EXPECT_DOUBLE_EQ(blind.at("R").at("max").get<double>(), 0.45);
+    EXPECT_DOUBLE_EQ(blind.at("L_g").at("value").get<double>(), 3.79);
+
+    // The nine keys are untouched by the checks.
+    EXPECT_EQ(risk_detail_json(day, 1.0).size(), 9u);
 }
 
 // Section 7.3: risk_detail's nine keys, flat, in the table's order, with null where nothing is

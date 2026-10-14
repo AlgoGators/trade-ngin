@@ -2596,6 +2596,38 @@ Result<void> PortfolioManager::rebalance_book(
             record.risk_scale = result.risk_scale;
             record.capped_target_gross = result.target_gross * in.capital;
             record.stored_gross = result.stored_gross * in.capital;
+            // Contract C9: the stored book's readings and the limits in force, for the desk's
+            // risk report. Read only; nothing here changes the book.
+            record.checks = true;
+            record.covariance_measured = result.stored_readings.covariance_readings;
+            record.tau = in.tau;
+            record.stored_r = result.stored_readings.risk;
+            record.stored_r_jump = result.stored_readings.jump;
+            record.stored_r_shock = result.stored_readings.shock;
+            record.stored_l = result.stored_readings.gross;
+            record.stored_l_net = result.stored_readings.net;
+            record.limit_r = in.limits.risk;
+            record.limit_r_jump = in.limits.jump;
+            record.limit_r_shock = in.limits.shock;
+            record.limit_l = in.limits.gross;
+            record.limit_l_net = in.limits.net;
+            if (in.tau > 0.0) {
+                record.r_max_ratio = in.limits.risk / in.tau;
+                record.r_jump_max_ratio = in.limits.jump / in.tau;
+                record.r_shock_max_ratio = in.limits.shock / in.tau;
+            }
+            record.per_name_cap = in.cap;
+            record.trim_max = in.trim_max;
+            for (size_t i = 0; i < n; ++i) {
+                const double name = i < result.book.size() && i < result.u.size()
+                                        ? std::abs(result.book[i] * result.u[i])
+                                        : 0.0;
+                if (name > record.largest_name) {
+                    record.largest_name = name;
+                    record.largest_name_symbol = symbols[i];
+                }
+                if (i < result.trimmed.size()) record.trimmed_contracts += std::abs(result.trimmed[i]);
+            }
             one_pass_weights_.clear();
             for (const std::size_t i : result.participants) {
                 one_pass_weights_.emplace_back(symbols[i], result.u[i]);

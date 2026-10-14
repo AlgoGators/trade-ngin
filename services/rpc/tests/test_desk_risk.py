@@ -1,4 +1,4 @@
-"""The desk risk check (contract C9; desk.proto 1.3.0 GetDeskRisk): the breach rule over the
+"""The desk risk check (contract C9; desk.proto 1.3.0 GetDeskRisk, 1.4.0 checks): the breach rule over the
 engine's risk_detail record, the configured limits, and the RPC end to end."""
 
 import json
@@ -23,14 +23,29 @@ def sym(symbol, asked, given, moved_by="none"):
             "moved_by": moved_by}
 
 
+# The engine's desk.checks of a save (desk_checks_json): a book inside every limit.
+MEASURED = {
+    "tau": 0.2, "covariance_measured": True,
+    "R": {"value": 0.31, "max": 0.45, "max_ratio": 2.25},
+    "R_jump": {"value": 0.52, "max": 0.9, "max_ratio": 4.5},
+    "R_shock": {"value": 0.61, "max": 0.8, "max_ratio": 4.0},
+    "L_g": {"value": 3.79, "max": 8.0},
+    "L_n": {"value": -2.67, "max": 6.0},
+    "CAP": {"value": 1.94, "max": 2.0, "symbol": "ZT.v.0"},
+    "TRIM": {"value": 0.0, "max": 5},
+}
+
+
 def desk_row(symbols, m=1.0, binding="none", after="", by_hold="", refused=False,
-             source="desk", report_only=False, audit_id=61):
+             source="desk", report_only=False, audit_id=61, checks=None):
     desk = {"mode": source, "audit_id": audit_id, "symbols": symbols,
             "overlay": {"ran": True, "refused": refused, "m": m, "binding": binding,
                         "risk_scale": 0.9, "over_limit_after_rounding": after,
                         "over_limit_by_hold": by_hold}}
     if report_only:
         desk["report_only"] = True
+    if checks is not None:
+        desk["checks"] = checks
     return DeskRiskRow(book_source=source, risk_detail={"desk": desk}, gross_leverage=3.79,
                        net_leverage=-2.67, margin_cushion=0.877, equity_to_margin=6.92)
 
@@ -105,6 +120,86 @@ def test_a_malformed_record_does_not_crash():
     assert report.state == "desk" and report.within_limits and report.symbols == ()
 
 
+# -- every check, breach or not (1.4.0) --------------------------------------------------------
+
+def by_term(report):
+    return {c.term: c for c in report.checks}
+
+
+def test_every_check_is_reported_with_its_max_when_nothing_breaches():
+    report = derive_desk_risk(desk_row([sym("6C.v.0", -2, -2)], checks=MEASURED))
+    assert report.within_limits
+    assert [c.term for c in report.checks] == ["R", "R_jump", "R_shock", "L_g", "L_n", "CAP",
+                                               "TRIM"]
+    assert all(c.status == rk.WITHIN for c in report.checks)
+    r = by_term(report)["R"]
+    assert (r.value, r.max, r.unit) == (0.31, 0.45, rk.PERCENT)
+    assert "max 2.25 x risk target 20%" in r.detail
+    cap = by_term(report)["CAP"]
+    assert (cap.value, cap.max, cap.unit) == (1.94, 2.0, rk.MULTIPLE) and "ZT.v.0" in cap.detail
+    assert by_term(report)["TRIM"].max == 5 and by_term(report)["TRIM"].unit == rk.CONTRACTS
+    assert by_term(report)["L_n"].value == -2.67  # signed; the limit is on |L_n|
+
+
+def test_a_cap_cut_and_a_binding_term_mark_their_checks_bound():
+    report = derive_desk_risk(desk_row([sym("ZT.v.0", 8, 2, "cap")], m=0.8, binding="L_g",
+                                       checks=MEASURED))
+    assert by_term(report)["CAP"].status == rk.BOUND
+    assert by_term(report)["L_g"].status == rk.BOUND
+    assert by_term(report)["R"].status == rk.WITHIN
+
+
+def test_over_limit_terms_and_the_trim_mark_their_checks():
+    checks = dict(MEASURED, TRIM={"value": 3.0, "max": 5})
+    report = derive_desk_risk(desk_row([], after="R", by_hold="CAP", checks=checks))
+    assert by_term(report)["R"].status == rk.OVER
+    assert by_term(report)["CAP"].status == rk.OVER
+    assert by_term(report)["TRIM"].status == rk.BOUND
+
+
+def test_a_reading_over_its_max_is_over_even_unmarked():
+    checks = dict(MEASURED, L_n={"value": -6.5, "max": 6.0})
+    assert by_term(derive_desk_risk(desk_row([], checks=checks)))["L_n"].status == rk.OVER
+
+
+def test_a_blind_window_is_not_measured_with_its_max():
+    checks = {k: (dict(v, value=None) if k in ("R", "R_jump", "R_shock") else v)
+              for k, v in MEASURED.items()}
+    checks["covariance_measured"] = False
+    r = by_term(derive_desk_risk(desk_row([], checks=checks)))["R"]
+    assert r.status == rk.NOT_MEASURED and r.value is None and r.max == 0.45
+    assert "blind" in r.detail
+
+
+def test_a_refusal_and_an_unmeasured_save_report_the_configured_maxes():
+    limits = load_limits_from(RISK_JSON)
+    report = derive_desk_risk(desk_row([], refused=True), limits)
+    checks = by_term(report)
+    assert checks["R"].max == 2.25 and checks["R"].unit == rk.TAU
+    assert checks["R"].status == rk.NOT_MEASURED
+    assert checks["L_g"].value == 3.79 and checks["L_g"].max == 8.0
+    assert checks["refused"].status == rk.OVER
+    old = derive_desk_risk(desk_row([]), limits)  # a row written before the checks existed
+    assert "not recorded" in by_term(old)["R"].detail and "refused" not in by_term(old)
+
+
+def test_the_model_book_and_no_book_report_the_configured_maxes():
+    limits = load_limits_from(RISK_JSON)
+    model = derive_desk_risk(DeskRiskRow(book_source="model", risk_detail={}, gross_leverage=3.8,
+                                         net_leverage=1.0), limits)
+    checks = by_term(model)
+    assert checks["L_g"].value == 3.8 and checks["L_g"].status == rk.WITHIN
+    assert checks["CAP"].max == 2.0 and checks["CAP"].status == rk.NOT_MEASURED
+    none = derive_desk_risk(None, limits)
+    assert [c.term for c in none.checks][:3] == ["R", "R_jump", "R_shock"]
+    assert all(c.status == rk.NOT_MEASURED for c in none.checks)
+
+
+def load_limits_from(data):
+    carver = data["modules"][0]
+    return [(k, float(carver[k])) for k in rk.LIMIT_KEYS if k in carver]
+
+
 # -- the configured limits ---------------------------------------------------------------------
 
 def test_limits_come_from_the_carver_module_in_order(tmp_path):
@@ -146,6 +241,20 @@ def test_rpc_reports_a_breach_with_the_configured_limits(stub, store, config_dir
                                                                ("MBT.v.0", "rule")]
     assert reply.HasField("gross_leverage") and reply.gross_leverage == pytest.approx(3.79)
     assert ("per_name_cap", 2.0) in [(lim.name, lim.value) for lim in reply.limits]
+    # 1.4.0: no checks recorded by the engine, so the configured maxes, not measured.
+    checks = {c.term: c for c in reply.checks}
+    assert checks["R"].max == 2.25 and not checks["R"].HasField("value")
+    assert checks["R"].status == pb.RISK_CHECK_STATUS_NOT_MEASURED
+
+
+def test_rpc_reports_every_measured_check(stub, store):
+    store.risk_rows[(PID, DAY)] = desk_row([sym("ZT.v.0", 8, 2, "cap")], checks=MEASURED)
+    checks = {c.term: c for c in get(stub).checks}
+    assert list(checks) == ["R", "R_jump", "R_shock", "L_g", "L_n", "CAP", "TRIM"]
+    assert checks["R"].value == pytest.approx(0.31) and checks["R"].max == pytest.approx(0.45)
+    assert checks["R"].unit == "percent" and checks["R"].label == "Portfolio risk (R)"
+    assert checks["CAP"].status == pb.RISK_CHECK_STATUS_BOUND
+    assert checks["L_g"].status == pb.RISK_CHECK_STATUS_WITHIN
 
 
 def test_rpc_on_a_day_without_a_book(stub, store):

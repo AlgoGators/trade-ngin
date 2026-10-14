@@ -40,6 +40,24 @@ _STATE = {
     st.FAILED: desk_pb2.RUN_STATE_FAILED,
 }
 
+_CHECK_STATUS = {
+    rk.WITHIN: desk_pb2.RISK_CHECK_STATUS_WITHIN,
+    rk.BOUND: desk_pb2.RISK_CHECK_STATUS_BOUND,
+    rk.OVER: desk_pb2.RISK_CHECK_STATUS_OVER,
+    rk.NOT_MEASURED: desk_pb2.RISK_CHECK_STATUS_NOT_MEASURED,
+}
+
+
+def _risk_check(check):
+    out = desk_pb2.RiskCheck(term=check.term, label=check.label, unit=check.unit,
+                             status=_CHECK_STATUS[check.status], detail=check.detail)
+    if check.value is not None:
+        out.value = check.value
+    if check.max is not None:
+        out.max = check.max
+    return out
+
+
 _COMMAND_STATUS = {
     ACCEPTED: desk_pb2.COMMAND_STATUS_ACCEPTED,
     DONE: desk_pb2.COMMAND_STATUS_DONE,
@@ -232,7 +250,8 @@ class DeskServicer(desk_pb2_grpc.DeskServiceServicer):
             symbols=[desk_pb2.SymbolRisk(symbol=s.symbol, asked=s.asked, given=s.given,
                                          moved_by=s.moved_by, category=s.category)
                      for s in report.symbols],
-            limits=[desk_pb2.RiskLimit(name=n, value=x) for n, x in report.limits])
+            limits=[desk_pb2.RiskLimit(name=n, value=x) for n, x in report.limits],
+            checks=[_risk_check(c) for c in report.checks])
         for name in ("gross_leverage", "net_leverage", "margin_cushion", "equity_to_margin"):
             value = getattr(report, name)
             if value is not None:
