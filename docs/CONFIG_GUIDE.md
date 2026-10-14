@@ -130,6 +130,7 @@ Contains settings shared across all portfolios. Edit this file to change:
 | `optimization` | The whole-contract search's parameters |
 | `backtest` | Backtest-specific settings (see [Backtest window](#backtest-window)) |
 | `live` | Live trading settings (see [Live Parameters](#live-parameters)) |
+| `statistics` | `sessions_per_year`: K, the sessions a year with which every stored live and backtest statistic is annualised, `futures` 311.0574 and `equities` 252. Optional: absent means these two values; a value that is not positive stops the load (`StatisticsConfig`, `include/trade_ngin/core/config_loader.hpp`; `src/core/config_loader.cpp`). Change it only when the futures universe changes |
 | `strategy_defaults` | The allocation bounds of a sleeve. `fdm` repeats the multiplier table of the code and is not read (same section) |
 
 There is no `risk_defaults` section: the key is a load error. Every risk value lives in the
@@ -170,6 +171,9 @@ values are shown as placeholders):
     "data_staleness_tolerance_days": 4,
     "execution_price_max_staleness_days": 5,
     "spinoff_child_policy": "liquidate_at_first_close"
+  },
+  "statistics": {
+    "sessions_per_year": {"futures": 311.0574, "equities": 252}
   },
   "strategy_defaults": {
     "fdm": [[1, 1], [2, 1.03], [3, 1.08], [4, 1.13], [5, 1.19], [6, 1.26]],
@@ -564,22 +568,19 @@ Configures email notifications.
 | `smtp_port` | number | SMTP port (typically 587 for TLS) |
 | `username` | string | SMTP authentication username |
 | `password` | string | SMTP authentication password |
-| `from_email` | string | The sender address of the futures runners' reports (`apps/strategies/live_portfolio_conservative.cpp`). The equity runner does not pass it to the sender (`apps/strategies/live_equity_mean_reversion.cpp`) |
+| `from_email` | string | The sender address of every report, on all three runners |
 | `use_tls` | boolean | Present and not read: it is copied into the sender's config and nothing consults it. The sender always asks for TLS (`src/core/email_sender.cpp`) |
 | `to_emails` | array | The recipients of every report the runners mail, the scheduled run's included (`apps/strategies/live_portfolio_conservative.cpp`) |
-| `to_emails_production` | array | Present and not read: it is loaded into the config object and nothing reads it (`include/trade_ngin/core/config_loader.hpp`). A recipient written only here is mailed nothing |
 
-A live run given a date mails only with `--send-email`; a run with no date always mails
-(`apps/strategies/live_portfolio_conservative.cpp`).
+A live run mails only with `--send-email`; a run with no date is refused with the usage, exit 2
+(`kDatelessRunExitCode`, `include/trade_ngin/live/run_args.hpp`).
 
-`TRADE_NGIN_EMAIL_BODY_DIR` applies only to a futures run that does not send: with the variable
-set to a directory, the run builds the report body exactly as for a send, writes it there as
-`email_body_<portfolio>_<date>.html` and mails nothing. With `--send-email` the variable is
-ignored with one warning line in the log, and the report is mailed as usual. A run with no date
-sends, so it ignores the variable in the same way. The equity runner does not read the variable
-(`plan_email_report`, `include/trade_ngin/live/email_body_file.hpp`; the warning,
-`apps/strategies/live_portfolio_conservative.cpp`). The running instructions are in
-`src/live/README.md` ("Environment").
+`TRADE_NGIN_EMAIL_BODY_DIR` applies to a live run that does not send, on all three runners: with
+the variable set to a directory, the run builds the report body exactly as for a send, writes it
+there as `email_body_<portfolio>_<date>.html` and mails nothing. With `--send-email` the variable
+is ignored with one warning line in the log, and the report is mailed as usual
+(`plan_email_report`, `include/trade_ngin/live/email_body_file.hpp`). The running instructions
+are in `src/live/README.md` ("Environment").
 
 ---
 
@@ -802,7 +803,6 @@ mean "may be deleted": the third column says where deleting or changing one stop
 | `risk_reporting.lookback_period` (`risk.json`) | Validated and compared with the module's value. The report's risk reading does not use it. | Yes: required (`src/risk/risk_module_config.cpp`). |
 | `risk_reporting.type`, `risk_reporting.window` (`risk.json`) | One value each is accepted, `carver` and `all_bars`. They select nothing. | Yes: required (`src/risk/risk_module_config.cpp`). |
 | `max_drawdown` (`risk.json`) | Copied to every sleeve. Its one use is a warning line when a sleeve's cumulative P&L over its allocated capital is below minus the value; the sleeve keeps running and nothing is cut (`src/strategy/base_strategy.cpp`; `apps/strategies/live_portfolio_conservative.cpp`). | Yes: required, in (0, 1] (`src/risk/risk_module_config.cpp`). |
-| `to_emails_production` (`email.json`) | Loaded into the config object and read by nothing. Every report goes to `to_emails` (`include/trade_ngin/core/config_loader.hpp`; `apps/strategies/live_portfolio_conservative.cpp`). | No. |
 | `use_tls` (`email.json`) | Copied into the sender's config and read by nothing. The sender always asks for TLS (`src/core/email_sender.cpp`; `apps/strategies/live_portfolio_conservative.cpp`). | No. |
 
 Any other key that begins with an underscore is a note and is not read as a value. The
