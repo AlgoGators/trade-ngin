@@ -414,7 +414,7 @@ The later migrations add the columns the runners write (on `trading`, `backtest`
 `metadata.contract_metadata`) and make the schema and data corrections they depend on: 003 adds
 indexes on `equities_data`, 004 replaces the function `trading.get_trading_days`, 012 widens
 `strategy_id`, 019 and 026 change rows of `metadata.contract_metadata` (026 also adds the fee
-CHECK). Each file's header says what it does and why.
+CHECK); 028 and 033 write comments only. Each file's header says what it does and why.
 
 ### NOT owned by this repo: `equities_data` schema (data-ngin owns it)
 
@@ -455,7 +455,7 @@ instead of recomputing them per query. Budget for it in run planning; it is not 
 
 ### Migration order
 
-The migrations in `migrations/` are **001 to 006, 012 to 020 and 026**. Apply them in
+The migrations in `migrations/` are **001 to 006, 012 to 020, 026 and 028 to 033**. Apply them in
 ascending number order, every one of them, before running a binary built from this
 repository, then run `scripts/backfill_ticker_aliases.sql`. The repository holds no migration
 with a number between those, and nothing in it depends on one. Each migration carries a rollback file beside it
