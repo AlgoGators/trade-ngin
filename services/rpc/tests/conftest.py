@@ -38,6 +38,7 @@ class FakeStore:
 
     def __init__(self):
         self.facts = {}
+        self.risk_rows = {}          # (portfolio_id, date) -> DeskRiskRow (GetDeskRisk, C9)
         self.error = None
         self.calls = []
 
@@ -46,6 +47,12 @@ class FakeStore:
         if self.error:
             raise StoreError(self.error)
         return self.facts.get((portfolio_id, date), RunFacts())
+
+    def desk_risk_row(self, portfolio_id, date):
+        self.calls.append((portfolio_id, date))
+        if self.error:
+            raise StoreError(self.error)
+        return self.risk_rows.get((portfolio_id, date))
 
 
 def now():
@@ -299,9 +306,9 @@ def agent(cstore, runner, settings):
 
 
 @pytest.fixture
-def registry(store, agent):
+def registry(store, agent, settings):
     registry = Registry()
-    registry.register(build_service(store, agent.dispatcher))
+    registry.register(build_service(store, agent.dispatcher, config_dir=settings.config_dir))
     return registry
 
 

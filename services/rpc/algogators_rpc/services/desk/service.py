@@ -44,7 +44,8 @@ CATCHUP_TICK_S = 60.0
 
 def build_service(store: RunStatusStore, dispatcher: Optional[Dispatcher] = None,
                   commands=None, redrive_interval_s: float = 60.0,
-                  catchup: Optional[CatchupScheduler] = None) -> Service:
+                  catchup: Optional[CatchupScheduler] = None,
+                  config_dir: Optional[str] = None) -> Service:
     """The desk as a registry entry. Without `commands` (tests) it has no re-drive task;
     without `catchup` no scheduler."""
     tasks = []
@@ -60,7 +61,7 @@ def build_service(store: RunStatusStore, dispatcher: Optional[Dispatcher] = None
         api=API,
         version=API_VERSIONS[API],
         descriptor=desk_pb2.DESCRIPTOR.services_by_name["DeskService"],
-        servicer=DeskServicer(store, dispatcher),
+        servicer=DeskServicer(store, dispatcher, config_dir=config_dir),
         add_to_server=desk_pb2_grpc.add_DeskServiceServicer_to_server,
         background_tasks=tuple(tasks),
         legacy_names=(LEGACY_SERVICE_NAME,),
@@ -78,7 +79,8 @@ def register(registry: Registry, env: Mapping[str, str]) -> Service:
         catchup = CatchupScheduler(PostgresDayStore(settings.db), settings.commands,
                                    settings.catchup, dispatcher=dispatcher)
     service = registry.register(build_service(
-        store, dispatcher, commands, settings.commands.redrive_interval_s, catchup))
+        store, dispatcher, commands, settings.commands.redrive_interval_s, catchup,
+        config_dir=settings.commands.config_dir))
     log.info("desk service registered",
              extra={"db": settings.db.describe(),
                     "services": ("catch-up on: " + ",".join(settings.catchup.portfolios)

@@ -40,7 +40,8 @@ The version of an API lives in the header block at the top of its .proto, and on
 - **Major**: anything else. Examples: removing or renumbering a field, changing a field's type
   or meaning, removing an RPC. Field numbers are never reused.
 - Every change bumps the version and adds a line to the file's "Version history" comment.
-- Current: `common` 1.0.0, `desk` 1.2.0 (2026-10-13, Rescind: a new RPC, a minor bump).
+- Current: `common` 1.0.0, `desk` 1.3.0 (2026-10-14, GetDeskRisk: a new read-only RPC, a minor
+  bump). `desk` 1.2.0 (2026-10-13) added Rescind.
   `desk` 1.1.0 (2026-10-09, the QT daily cutoff) added RunStatus `publish_source` = 8 and
   `sent_at` = 9. 1.0.0 and 1.1.0 clients keep working, and the examples below that show
   `desk=1.0.0` are still accepted.

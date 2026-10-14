@@ -132,3 +132,45 @@ def test_driver_error_becomes_store_error_without_detail():
     with pytest.raises(StoreError) as err:
         store.run_facts("P", DAY)
     assert "pw" not in str(err.value) and "ConnectionError" in str(err.value)
+
+
+# -- GetDeskRisk (contract C9) ------------------------------------------------------------------
+
+class RiskCursor(FakeCursor):
+    def __init__(self, columns, row):
+        super().__init__(columns, [], (0, None))
+        self.row = row
+
+    def execute(self, query, params=()):
+        if "book_source, risk_detail" in query:
+            self.sql.append(query)
+            self.params = params
+            self._next = [self.row] if self.row else [None]
+            return
+        super().execute(query, params)
+
+    def fetchone(self):
+        return self._next[0]
+
+
+RESULT_COLS = ["portfolio_id", "date", "created_at", "portfolio_type", "book_source", "risk_detail"]
+
+
+def test_desk_risk_row_reads_the_newest_qt_row():
+    detail = {"desk": {"audit_id": 61}}
+    cur = RiskCursor({"live_results": RESULT_COLS}, ("desk", detail, 3.79, -2.67, 0.88, 6.9))
+    row = make_store(cur).desk_risk_row("P", DAY)
+    sql = cur.sql[-1]
+    assert "portfolio_type = 'qt'" in sql and "ORDER BY created_at DESC LIMIT 1" in sql
+    assert cur.params == ("P", DAY)
+    assert row.book_source == "desk" and row.risk_detail == detail
+    assert (row.gross_leverage, row.net_leverage, row.margin_cushion, row.equity_to_margin) == (
+        3.79, -2.67, 0.88, 6.9)
+
+
+def test_desk_risk_row_without_a_row_or_the_columns():
+    assert make_store(RiskCursor({"live_results": RESULT_COLS}, None)).desk_risk_row("P", DAY) is None
+    old = RiskCursor({"live_results": ["portfolio_id", "date"]}, ("desk", {}, 1, 1, 1, 1))
+    assert make_store(old).desk_risk_row("P", DAY) is None
+    with pytest.raises(StoreError):
+        make_store(RiskCursor({}, None)).desk_risk_row("P", DAY)

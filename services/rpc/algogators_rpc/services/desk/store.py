@@ -14,6 +14,10 @@ implementation reads:
 
 Optional columns are discovered from information_schema on every call, so a migration that
 adds them takes effect without restarting the agent.
+
+GetDeskRisk (contract C9) reads the day's qt row of trading.live_results: book_source,
+risk_detail (the engine's record of the last run of the book, risk.py) and the leverage and
+margin readings of the stored book.
 """
 
 from __future__ import annotations
@@ -23,6 +27,7 @@ from dataclasses import dataclass, field
 from typing import Optional, Protocol, Sequence
 
 from .config import CONNECT_TIMEOUT_S, DbConfig
+from .risk import DeskRiskRow
 
 METADATA_TABLE = ("trading", "live_run_metadata")
 RESULTS_TABLE = ("trading", "live_results")
@@ -55,6 +60,10 @@ class RunFacts:
 
 class RunStatusStore(Protocol):
     def run_facts(self, portfolio_id: str, date: dt.date) -> RunFacts: ...
+
+    def desk_risk_row(self, portfolio_id: str, date: dt.date) -> Optional[DeskRiskRow]:
+        """The day's qt row of trading.live_results (the newest, should a portfolio hold several
+        strategies), None when there is none."""
 
 
 class PostgresRunStatusStore:
@@ -127,4 +136,33 @@ class PostgresRunStatusStore:
         except StoreError:
             raise
         except Exception as exc:  # psycopg errors carry no credentials, but keep only the class
+            raise StoreError(f"database error ({type(exc).__name__})") from exc
+
+    def desk_risk_row(self, portfolio_id: str, date: dt.date) -> Optional[DeskRiskRow]:
+        try:
+            with self._connect() as conn, conn.cursor() as cur:
+                cols = self._columns(cur, *RESULTS_TABLE)
+                if not cols:
+                    raise StoreError("table trading.live_results not found")
+                if not {"portfolio_type", "book_source", "risk_detail"} <= cols:
+                    return None  # before migrations 020/021: no desk books to report on
+                order = " ORDER BY created_at DESC" if "created_at" in cols else ""
+                cur.execute("SELECT book_source, risk_detail, portfolio_leverage, net_leverage, "
+                            "margin_cushion, equity_to_margin_ratio FROM trading.live_results "
+                            "WHERE portfolio_id = %s AND date = %s AND portfolio_type = 'qt'"
+                            + order + " LIMIT 1", (portfolio_id, date))
+                rec = cur.fetchone()
+                if rec is None:
+                    return None
+                source, detail, gross, net, cushion, e2m = rec
+
+                def num(x):
+                    return None if x is None else float(x)
+                return DeskRiskRow(book_source=source,
+                                   risk_detail=detail if isinstance(detail, dict) else None,
+                                   gross_leverage=num(gross), net_leverage=num(net),
+                                   margin_cushion=num(cushion), equity_to_margin=num(e2m))
+        except StoreError:
+            raise
+        except Exception as exc:
             raise StoreError(f"database error ({type(exc).__name__})") from exc
