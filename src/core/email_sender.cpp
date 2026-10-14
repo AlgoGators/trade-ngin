@@ -1447,7 +1447,9 @@ std::string EmailSender::format_positions_table(
 
         html << "<td>" << report_dollars(std::abs(notional)) << "</td>\n";
         if (equity_table) {
-            html << "<td>" << report_dollars(qty * (market_price - entry_price)) << "</td>\n";
+            const double unrealized = qty * (market_price - entry_price);
+            html << "<td class=\"" << (unrealized >= 0 ? "positive" : "negative") << "\">"
+                 << report_dollars(unrealized) << "</td>\n";
         }
         html << "<td>" << std::fixed << std::setprecision(2) << pct_of_total << "%</td>\n";
         html << "</tr>\n";
@@ -1623,9 +1625,11 @@ std::string EmailSender::format_yesterday_finalized_positions_table(
             const double days_pnl = (known_price(entry_price) && known_price(exit_price))
                                         ? qty * (exit_price - entry_price)
                                         : 0.0;
-            html << "<td>" << report_dollars(days_pnl) << "</td>";
-            html << "<td>" << report_dollars(yesterday_positions.at(symbol).unrealized_pnl.as_double())
-                 << "</td>";
+            const double unrealized = yesterday_positions.at(symbol).unrealized_pnl.as_double();
+            html << "<td class=\"" << (days_pnl >= 0 ? "positive" : "negative") << "\">"
+                 << report_dollars(days_pnl) << "</td>";
+            html << "<td class=\"" << (unrealized >= 0 ? "positive" : "negative") << "\">"
+                 << report_dollars(unrealized) << "</td>";
         }
 
         // Realized PnL with color (GROSS PnL from positions table)
