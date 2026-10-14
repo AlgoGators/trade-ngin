@@ -212,6 +212,13 @@ class JobManager:
         return Job(portfolio_id, audit_id, kind,
                    lambda: self._run_engine(argv, portfolio_id, audit_id, mode), on_done)
 
+    def run_engine_now(self, mode: str, portfolio_id: str, portfolio_dir: str, date: str,
+                       audit_id: int, send_now: bool = False) -> None:
+        """Run the engine for a row from inside a job already on the portfolio's queue (the C10
+        approval: its checks, then its publish, in one job)."""
+        self._run_engine(engine_argv(self._settings, mode, portfolio_id, portfolio_dir, date,
+                                     audit_id, send_now), portfolio_id, audit_id, mode)
+
     def _run_engine(self, argv: List[str], portfolio_id: str, audit_id: int, mode: str) -> None:
         s = self._settings
         try:

@@ -153,19 +153,21 @@ class RiskCursor(FakeCursor):
         return self._next[0]
 
 
-RESULT_COLS = ["portfolio_id", "date", "created_at", "portfolio_type", "book_source", "risk_detail"]
+RESULT_COLS = ["portfolio_id", "date", "created_at", "portfolio_type", "book_source", "risk_detail",
+               "risk_scale"]
 
 
 def test_desk_risk_row_reads_the_newest_qt_row():
     detail = {"desk": {"audit_id": 61}}
-    cur = RiskCursor({"live_results": RESULT_COLS}, ("desk", detail, 3.79, -2.67, 0.88, 6.9))
+    cur = RiskCursor({"live_results": RESULT_COLS},
+                     ("desk", detail, 3.79, -2.67, 0.88, 6.9, 0.8))
     row = make_store(cur).desk_risk_row("P", DAY)
     sql = cur.sql[-1]
     assert "portfolio_type = 'qt'" in sql and "ORDER BY created_at DESC LIMIT 1" in sql
     assert cur.params == ("P", DAY)
     assert row.book_source == "desk" and row.risk_detail == detail
-    assert (row.gross_leverage, row.net_leverage, row.margin_cushion, row.equity_to_margin) == (
-        3.79, -2.67, 0.88, 6.9)
+    assert (row.gross_leverage, row.net_leverage, row.margin_cushion, row.equity_to_margin,
+            row.risk_scale) == (3.79, -2.67, 0.88, 6.9, 0.8)
 
 
 def test_desk_risk_row_without_a_row_or_the_columns():
