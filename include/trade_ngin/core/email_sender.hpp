@@ -45,6 +45,11 @@ struct EmailSenderConfig {
  */
 class EmailSender {
 public:
+    /// The text of footnote 5 the last executions table of this thread set (empty: none).
+    static std::string netting_footnote_text();
+    /// Start the footnote numbering over (a body does it itself; the table functions called alone do not).
+    static void reset_footnotes();
+
     /**
      * @brief Constructor
      * @param credentials Shared pointer to credential store
@@ -148,6 +153,8 @@ private:
     std::string chart_base64_;  // Store equity curve chart data for embedding in email
     std::string pnl_by_symbol_base64_;  // Store PnL by symbol chart data
     std::string daily_pnl_base64_;  // Store daily PnL chart data
+    std::string drawdown_base64_;
+    std::string gross_leverage_base64_;
     std::string total_transaction_costs_base64_; // Store cumulative transaction costs 
     std::string margin_posted_base64_; //Store total margin posted
     std::string portfolio_composition_base64_; //Store portfolio composition
@@ -236,7 +243,7 @@ private:
         std::shared_ptr<DatabaseInterface> db,
         const std::map<std::string, double>& strategy_metrics = {},
         const std::string& yesterday_date = "", const std::string& settled_date = "",
-        bool equities = false);
+        bool equities = false, const SettledZeroKinds& zero_kinds = {});
 
     /**
      * @brief Format yesterday's finalized positions table with per-strategy breakdown
@@ -261,24 +268,7 @@ private:
         std::shared_ptr<DatabaseInterface> db,
         const std::map<std::string, double>& strategy_metrics = {},
         const std::string& yesterday_date = "", const std::string& settled_date = "",
-        bool equities = false);
-
-    /**
-     * @brief Format rollover warning for contracts approaching expiry
-     * @param positions Current portfolio positions
-     * @param date Current trading date (YYYY-MM-DD format)
-     * @param db Database interface to query contract metadata
-     * @param date_override_for_testing Optional date override for testing (YYYY-MM-DD format)
-     *        If empty, uses the 'date' parameter. Use this to simulate different dates
-     *        for testing rollover warnings without affecting actual data.
-     * @return Formatted rollover warning HTML (empty if no contracts in rollover window)
-     */
-    std::string format_rollover_warning(
-        const std::unordered_map<std::string, Position>& positions,
-        const std::string& date,
-        std::shared_ptr<DatabaseInterface> db,
-        const std::string& date_override_for_testing = ""
-    );
+        bool equities = false, const SettledZeroKinds& zero_kinds = {});
 
     /**
      * @brief Format all per-strategy position tables for email

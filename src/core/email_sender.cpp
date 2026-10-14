@@ -17,6 +17,10 @@
 #include "trade_ngin/core/email_netting_text.hpp"
 #include "trade_ngin/core/holiday_checker.hpp"
 #include "trade_ngin/core/logger.hpp"
+#include "trade_ngin/core/report_charts.hpp"
+#include "trade_ngin/core/report_day_before.hpp"
+#include "trade_ngin/core/report_equity_day.hpp"
+#include "trade_ngin/core/report_held_symbols.hpp"
 #include "trade_ngin/core/report_price_text.hpp"
 #include "trade_ngin/core/report_settled_marks.hpp"
 #include "trade_ngin/instruments/equity.hpp"
@@ -24,6 +28,81 @@
 #include "trade_ngin/transaction_cost/netting.hpp"
 
 namespace trade_ngin {
+
+namespace {
+// The positions in symbol order. The map hands them out in hash order, which moves with the
+// build; the rows and every running total are walked in this order instead (T-EMAIL P2-3).
+std::vector<std::pair<std::string, const Position*>> positions_by_symbol(
+    const std::unordered_map<std::string, Position>& positions) {
+    std::vector<std::pair<std::string, const Position*>> ordered;
+    ordered.reserve(positions.size());
+    for (const auto& [symbol, position] : positions)
+        ordered.emplace_back(symbol, &position);
+    std::sort(ordered.begin(), ordered.end(),
+              [](const auto& a, const auto& b) { return a.first < b.first; });
+    return ordered;
+}
+// The numbered footnotes of the report (HD 10-13/14): a small number at the top right of a value; the
+// line for it sits right below the block it belongs to. The numbers follow the order the notes first
+// appear in the email (1, 2, 3 ...), whatever their kind; a kind is numbered when first used.
+//   kind 1 no price that day, 2 contract roll, 3 price rejected, 4 no price bar (last price shown),
+//   5 netting arithmetic.
+thread_local std::map<int, int> g_note_number;  // kind -> number in this email
+thread_local std::set<int> g_note_flushed;       // kinds whose line was already printed
+thread_local std::string g_netting_note;         // the text of kind 5, set by the executions tables
+thread_local std::string g_single_title;   // an equity book's one strategy: its name, as a futures sleeve has
+thread_local bool g_single_sleeve = false;       // one strategy: its summary line would repeat the book block
+std::string note_sup(int kind) {
+    auto it = g_note_number.find(kind);
+    if (it == g_note_number.end())
+        it = g_note_number.emplace(kind, static_cast<int>(g_note_number.size()) + 1).first;
+    return "<sup style=\"font-size: 9px; color: #000;\">" + std::to_string(it->second) + "</sup>";
+}
+// The lines of the notes used since the last call, in number order: printed under the block just ended.
+std::string notes_html() {
+    static const char* const kText[] = {
+        "", "No price received that day. P&amp;L is logged as 0 and updates on later days.",
+        "Contract rolled that day. P&amp;L is not booked on the roll.",
+        "Price rejected: too little trading volume that day. P&amp;L is booked with the next accepted price.",
+        "No price bar for this contract that day. Its last known price is shown.", ""};
+    std::map<int, int> by_number;
+    for (const auto& [kind, number] : g_note_number)
+        if (!g_note_flushed.count(kind)) by_number[number] = kind;
+    std::string html;
+    for (const auto& [number, kind] : by_number) {
+        const std::string text = kind == 5 ? g_netting_note : kText[kind];
+        g_note_flushed.insert(kind);
+        if (text.empty()) continue;
+        html += "<div style=\"font-size: 12px; color: #666; margin: 2px 0;\">" +
+                std::to_string(number) + " " + text + "</div>\n";
+    }
+    return html;
+}
+std::string single_heading_html() {
+    if (g_single_title.empty()) return "";
+    return "<h3 style=\"margin-top: 20px; margin-bottom: 2px; color: #333; border-left: 4px solid "
+           "#2c5aa0; padding-left: 12px;\">" + g_single_title + "</h3>\n"
+           "<div style=\"font-size: 11px; color: #999; margin: 0 0 8px 16px;\">Equities</div>\n";
+}
+struct SingleSleeveScope {
+    ~SingleSleeveScope() { g_single_sleeve = false; }
+};
+void reset_notes() {
+    g_single_sleeve = false;
+    g_single_title.clear();
+    g_note_number.clear();
+    g_note_flushed.clear();
+    g_netting_note.clear();
+}
+}  // namespace
+
+void EmailSender::reset_footnotes() {
+    reset_notes();
+}
+
+std::string EmailSender::netting_footnote_text() {
+    return g_netting_note;
+}
 
 // Global variables for curl email payload
 std::string g_email_payload;
@@ -372,6 +451,26 @@ Result<void> EmailSender::send_email(const std::string& subject, const std::stri
             g_email_payload += pnl_by_symbol_base64_ + "\r\n";
         }
 
+        if (!drawdown_base64_.empty()) {
+            g_email_payload += "\r\n--" + inner_boundary + "\r\n";
+            g_email_payload += "Content-Type: image/png\r\n";
+            g_email_payload += "Content-Transfer-Encoding: base64\r\n";
+            g_email_payload += "Content-ID: <drawdown>\r\n";
+            g_email_payload += "Content-Disposition: inline; filename=\"drawdown.png\"\r\n";
+            g_email_payload += "\r\n";
+            g_email_payload += drawdown_base64_ + "\r\n";
+        }
+
+        if (!gross_leverage_base64_.empty()) {
+            g_email_payload += "\r\n--" + inner_boundary + "\r\n";
+            g_email_payload += "Content-Type: image/png\r\n";
+            g_email_payload += "Content-Transfer-Encoding: base64\r\n";
+            g_email_payload += "Content-ID: <gross_leverage>\r\n";
+            g_email_payload += "Content-Disposition: inline; filename=\"gross_leverage.png\"\r\n";
+            g_email_payload += "\r\n";
+            g_email_payload += gross_leverage_base64_ + "\r\n";
+        }
+
         // Add embedded daily PnL chart (if generated)
         if (!daily_pnl_base64_.empty()) {
             g_email_payload += "\r\n--" + inner_boundary + "\r\n";
@@ -506,6 +605,14 @@ std::string EmailSender::generate_trading_report_body(
     const std::string& chart_strategy_id, const std::string& chart_portfolio_id,
     const EmailReportContext& context) {
     (void)risk_metrics;
+    reset_notes();
+    {
+        // An equity book is one strategy: its name and kind as a futures sleeve has them (HD 10-14).
+        std::string name = chart_strategy_id;
+        for (const char* prefix : {"LIVE_", "EQUITY_"})
+            if (name.rfind(prefix, 0) == 0) name = name.substr(std::string(prefix).size());
+        g_single_title = format_strategy_display_name(name);
+    }
     std::ostringstream html;
 
     // Parse the date to check day of week
@@ -555,7 +662,21 @@ std::string EmailSender::generate_trading_report_body(
     // calendar adds the holiday's name when that day is one. The equity runner's day before is
     // its previous session by construction. The runner's carried-day banner, put at the top of
     // the body by the runner, states the reason.
-    const bool show_yesterday_pnl = !context.prior_day_no_session;
+    // An equity book's banners come from the calendar of today and of the day before (HD 10-14,
+    // section 17).
+    EquityDayBanner equity_day;
+    if (context.equities) {
+        const std::string today_holiday = holiday_checker_.is_holiday(date)
+                                              ? holiday_checker_.get_holiday_name(date)
+                                              : std::string();
+        const bool yesterday_closed = is_yesterday_holiday ||
+                                      report_weekday_of(yesterday_date_str) == 6 ||
+                                      report_weekday_of(yesterday_date_str) == 0;
+        equity_day = equity_day_banner(date, context.equity_closed_today, today_holiday,
+                                       yesterday_date_str, yesterday_closed,
+                                       yesterday_holiday_name, settled_date, !executions.empty());
+    }
+    const bool show_yesterday_pnl = !context.prior_day_no_session && !equity_day.hide_table;
     const bool holiday_banner =
         context.prior_day_no_session && is_yesterday_holiday && !context.equities;
 
@@ -615,11 +736,10 @@ std::string EmailSender::generate_trading_report_body(
     html << "<h1>Daily Trading Report</h1>\n";
     // T-8D-2 R59: the book's own name, as the per-strategy overload prints it (the literal
     // "Trend Following Strategy" stood here, on the equity book's report).
-    html << "<div class=\"header-info\">" << date;
-    if (!chart_portfolio_id.empty()) {
-        html << " | " << format_strategy_display_name(chart_portfolio_id);
-    }
-    html << "</div>\n";
+    // An equity book is named by its strategy, "Mean Reversion", with its kind in the small grey line
+    // under it, as a futures sleeve is (HD 2026-10-14, section 16.3).
+    html << "<div class=\"header-info\">" << date << " | " << g_single_title << "</div>\n";
+    html << "<div style=\"font-size: 11px; color: #999;\">Equities</div>\n";
     html << "</div>\n";
     html << "</div>\n";
 
@@ -642,21 +762,26 @@ std::string EmailSender::generate_trading_report_body(
         html << "</div>\n";
     }
 
+    html << equity_day.banner_html;
+    if (equity_day.red_box_with_banner)
+        html << "<div class=\"alert-note\">\n" << equity_day.red_box_text << "</div>\n";
+
     // Today's Positions (Forward-Looking - no PnL shown as it will be zero)
     html << "<h2>Today's Positions</h2>\n";
 
     html << format_positions_table(positions, is_daily_strategy, current_prices, strategy_metrics);
+    html << notes_html();
 
     // Executions (if any)
     if (!executions.empty()) {
         html << "<h2>Daily Executions</h2>\n";
         html << format_executions_table(executions);
+        html << notes_html();
     }
 
     // The settled day's positions, with their stored P&L: shown unless the runner found no
     // session on that day
-    if (show_yesterday_pnl && !yesterday_positions.empty() && !yesterday_close_prices.empty() &&
-        !two_days_ago_close_prices.empty()) {
+    if (show_yesterday_pnl && !yesterday_positions.empty()) {
         html << format_yesterday_finalized_positions_table(
             yesterday_positions,
             two_days_ago_close_prices,  // the price each row was settled from
@@ -664,9 +789,16 @@ std::string EmailSender::generate_trading_report_body(
             db,
             yesterday_daily_metrics,  // Yesterday's daily metrics
             yesterday_date_str, settled_date, context.equities);
+        html << notes_html();
     } else if (!show_yesterday_pnl) {
         // The runner found no session on the day before (T-8D-2 R59): no settled table. The two
         // notes say why in the runner's terms, never from the weekday.
+        if (context.equities) {
+            if (!equity_day.red_box_text.empty())
+                html << "<div class=\"alert-note\">\n" << equity_day.red_box_text << "</div>\n";
+            if (!equity_day.yellow_note.empty())
+                html << "<div class=\"footer-note\">\n" << equity_day.yellow_note << "</div>\n";
+        } else {
         html << "<div class=\"alert-note\">\n";
         if (holiday_banner) {
             html << "<strong>No Executions:</strong> Since yesterday (" << yesterday_date_str
@@ -684,6 +816,13 @@ std::string EmailSender::generate_trading_report_body(
         html << "<div class=\"footer-note\">\n";
         html << "<strong>Note:</strong> Yesterday's PnL data is not available.\n";
         html << "</div>\n";
+        }
+    } else {
+        // A session, and no row to print: nothing was held on the settled day and nothing closed
+        // on it. The table is not left out silently (HD ruling Q11).
+        html << "<h2>Yesterday's Finalized Position Results</h2>\n";
+        html << "<p>No position was held on " << settled_date
+             << ", and none closed on it.</p>\n";
     }
 
     /*    // Risk snapshot (if provided)
@@ -701,6 +840,7 @@ std::string EmailSender::generate_trading_report_body(
     }
 
     html << "<h2>Charts</h2>\n";
+    core::ChartLedger chart_ledger;
     if (db) {
         // E2-F11: the caller names the book the charts query. This overload IS used in
         // production (the live equity runner); with the old hardcoded trend-following
@@ -709,6 +849,9 @@ std::string EmailSender::generate_trading_report_body(
         // Generate equity curve chart
         chart_base64_ = ChartGenerator::generate_equity_curve_chart(
             db, chart_strategy_id, chart_portfolio_id_legacy, date, 30);
+        html << chart_ledger.record(std::string("Equity Curve"), !chart_base64_.empty(),
+                                          ChartGenerator::last_chart_status(),
+                                          ChartGenerator::last_chart_reason(), "no data to plot");
         if (!chart_base64_.empty()) {
             html << "<h3 style=\"margin-top: 20px; color: #333;\">Equity Curve</h3>\n";
             html << "<div style=\"width: 100%; max-width: 1000px; margin: 20px auto; text-align: "
@@ -719,10 +862,36 @@ std::string EmailSender::generate_trading_report_body(
             html << "</div>\n";
         }
 
+        drawdown_base64_ = ChartGenerator::generate_drawdown_chart(db, chart_strategy_id, chart_portfolio_id_legacy, date, 30);
+        html << chart_ledger.record(std::string("Drawdown"), !drawdown_base64_.empty(),
+                                    ChartGenerator::last_chart_status(),
+                                    ChartGenerator::last_chart_reason(), "no data to plot");
+        if (!drawdown_base64_.empty()) {
+            html << "<h3 style=\"margin-top: 20px; color: #333;\">Drawdown</h3>\n";
+            html << "<div style=\"width: 100%; max-width: 1000px; margin: 20px auto; text-align: "
+                    "center;\">\n";
+            html << "<img src=\"cid:drawdown\" alt=\"Drawdown\" style=\"max-width: 100%; height: auto; "
+                    "border-radius: 8px; box-shadow: 0 2px 8px rgba(0,0,0,0.1);\" />\n";
+            html << "</div>\n";
+        }
+
         // Generate PnL by symbol chart - ONLY if show_yesterday_pnl is true
         if (show_yesterday_pnl) {
-            pnl_by_symbol_base64_ = ChartGenerator::generate_pnl_by_symbol_chart(
-                db, chart_strategy_id, chart_portfolio_id_legacy, date, context.equities);
+            // An equity book: the bars are the settled table's Day's PnL column (HD 2026-10-14).
+            std::vector<ChartPoint> days_pnl;
+            for (const auto& [symbol, position] : yesterday_positions) {
+                const auto from = two_days_ago_close_prices.find(symbol);
+                const auto to = yesterday_close_prices.find(symbol);
+                const bool priced = from != two_days_ago_close_prices.end() &&
+                                    to != yesterday_close_prices.end();
+                days_pnl.emplace_back(symbol, priced ? position.quantity.as_double() *
+                                                           (to->second - from->second)
+                                                     : 0.0);
+            }
+            pnl_by_symbol_base64_ = ChartGenerator::generate_days_pnl_chart(days_pnl, date);
+            html << chart_ledger.record(std::string(ChartTitles::pnl_by_symbol_heading(context.equities)), !pnl_by_symbol_base64_.empty(),
+                                              ChartGenerator::last_chart_status(),
+                                              ChartGenerator::last_chart_reason(), "no data to plot");
             if (!pnl_by_symbol_base64_.empty()) {
                 html << "<h3 style=\"margin-top: 20px; color: #333;\">"
                      << ChartTitles::pnl_by_symbol_heading(context.equities) << "</h3>\n";
@@ -739,6 +908,9 @@ std::string EmailSender::generate_trading_report_body(
         daily_pnl_base64_ =
             ChartGenerator::generate_daily_pnl_chart(
                 db, chart_strategy_id, chart_portfolio_id_legacy, date, 30);
+        html << chart_ledger.record(std::string(ChartTitles::daily_pnl_heading(30)), !daily_pnl_base64_.empty(),
+                                          ChartGenerator::last_chart_status(),
+                                          ChartGenerator::last_chart_reason(), "no data to plot");
         if (!daily_pnl_base64_.empty()) {
             html << "<h3 style=\"margin-top: 20px; color: #333;\">"
                  << ChartTitles::daily_pnl_heading(30) << "</h3>\n";
@@ -749,11 +921,26 @@ std::string EmailSender::generate_trading_report_body(
             html << "</div>\n";
         }
 
+        gross_leverage_base64_ = ChartGenerator::generate_gross_leverage_chart(db, chart_strategy_id, chart_portfolio_id_legacy, date, 30);
+        html << chart_ledger.record(std::string("Leverage"), !gross_leverage_base64_.empty(),
+                                    ChartGenerator::last_chart_status(),
+                                    ChartGenerator::last_chart_reason(), "no data to plot");
+        if (!gross_leverage_base64_.empty()) {
+            html << "<h3 style=\"margin-top: 20px; color: #333;\">Leverage</h3>\n";
+            html << "<div style=\"width: 100%; max-width: 1000px; margin: 20px auto; text-align: "
+                    "center;\">\n";
+            html << "<img src=\"cid:gross_leverage\" alt=\"Leverage\" style=\"max-width: 100%; height: auto; "
+                    "border-radius: 8px; box-shadow: 0 2px 8px rgba(0,0,0,0.1);\" />\n";
+            html << "</div>\n";
+        }
+
         total_transaction_costs_base64_ = ChartGenerator::generate_total_transaction_costs_chart(
             db, chart_strategy_id, chart_portfolio_id_legacy, date);
+        html << chart_ledger.record(std::string("Cost per $1M Traded"), !total_transaction_costs_base64_.empty(),
+                                          ChartGenerator::last_chart_status(),
+                                          ChartGenerator::last_chart_reason(), "no data to plot");
         if (!total_transaction_costs_base64_.empty()) {
-            html << "<h3 style=\"margin-top: 20px; color: #333;\">Cost per $1M Traded (Efficiency "
-                    "Metric)</h3>\n";
+            html << "<h3 style=\"margin-top: 20px; color: #333;\">Cost per $1M Traded</h3>\n";
             html << "<div style=\"width: 100%; max-width: 1000px; margin: 20px auto; text-align: "
                     "center;\">\n";
             html << "<img src=\"cid:total_transaction_costs\" alt=\"Cost per $1M Traded\" "
@@ -764,6 +951,12 @@ std::string EmailSender::generate_trading_report_body(
 
         margin_posted_base64_ = ChartGenerator::generate_margin_posted_chart(
             db, chart_strategy_id, chart_portfolio_id_legacy, date);
+
+        html << chart_ledger.record(std::string("Margin Posted"), !margin_posted_base64_.empty(),
+
+                                          ChartGenerator::last_chart_status(),
+
+                                          ChartGenerator::last_chart_reason(), "no data to plot");
 
         if (!margin_posted_base64_.empty()) {
             html << "<h3 style=\"margin-top: 20px; color: #333;\">Margin Posted</h3>\n";
@@ -777,6 +970,9 @@ std::string EmailSender::generate_trading_report_body(
 
         portfolio_composition_base64_ =
             ChartGenerator::generate_portfolio_composition_chart(positions, current_prices, date);
+        html << chart_ledger.record(std::string("Portfolio Composition"), !portfolio_composition_base64_.empty(),
+                                          ChartGenerator::last_chart_status(),
+                                          ChartGenerator::last_chart_reason(), "no positions");
         if (!portfolio_composition_base64_.empty()) {
             html << "<h3 style=\"margin-top: 20px; color: #333;\">Portfolio Composition</h3>\n";
             html << "<div style=\"width: 100%; max-width: 800px; margin: 20px auto; text-align: "
@@ -788,7 +984,10 @@ std::string EmailSender::generate_trading_report_body(
         }
 
         cumulative_pnl_by_symbol_base64_ = ChartGenerator::generate_cumulative_pnl_by_symbol_chart(
-            db, chart_strategy_id, chart_portfolio_id_legacy, date);
+            db, chart_strategy_id, chart_portfolio_id_legacy, date, true);
+        html << chart_ledger.record(std::string(ChartTitles::cumulative_pnl_heading()), !cumulative_pnl_by_symbol_base64_.empty(),
+                                          ChartGenerator::last_chart_status(),
+                                          ChartGenerator::last_chart_reason(), "no data to plot");
         if (!cumulative_pnl_by_symbol_base64_.empty()) {
             html << "<h3 style=\"margin-top: 20px; color: #333;\">"
                  << ChartTitles::cumulative_pnl_heading() << "</h3>\n";
@@ -799,6 +998,7 @@ std::string EmailSender::generate_trading_report_body(
                     "box-shadow: 0 2px 8px rgba(0,0,0,0.1);\" />\n";
             html << "</div>\n";
         }
+        INFO(chart_ledger.summary());
     }
 
     // Symbols Reference (moved after Portfolio Snapshot). T-8D-2 R59: it is a table of futures
@@ -818,13 +1018,6 @@ std::string EmailSender::generate_trading_report_body(
         html << "<p>Database unavailable; symbols reference not included.</p>\n";
     }
 
-    // Rollover Warning (if applicable)
-    if (db && !context.equities) {
-        // Check for test date override via environment variable
-        const char* test_date_env = std::getenv("ROLLOVER_TEST_DATE");
-        std::string test_date = test_date_env ? std::string(test_date_env) : "";
-        html << format_rollover_warning(positions, date, db, test_date);
-    }
 
     // Footer note
     if (is_daily_strategy) {
@@ -848,19 +1041,15 @@ std::string EmailSender::generate_trading_report_body(
 // without the front-month contract and no futures universe. With no start date handed, no start
 // date sentence is printed.
 static std::string report_footer_note_html(const EmailReportContext& context) {
-    std::string html = "<strong>Note:</strong> This strategy is based on daily OHLCV data.";
-    if (!context.equities) {
-        html += " We currently only provide data for the front-month contract.";
-    }
+    // HD 10-13: the one note of the email, after the numbered footnotes.
+    std::string html = notes_html();
+    html += "<strong>Note:</strong> This strategy is based on daily OHLCV data for ";
+    html += context.equities ? "equity assets." : "futures assets. We currently only provide data "
+                                                  "for the front-month contract and are working "
+                                                  "on integrating roll data.";
     if (!context.live_start_date.empty()) {
         html += "<br><br>\nAll values reflect a trading start date of " +
                 report_long_date(context.live_start_date) + ".";
-    }
-    if (!context.equities) {
-        html +=
-            "<br><br>\nAs of March 1st, 2026, we expanded our tradeable universe by adding 6 "
-            "new contracts: ZT (2-Year T-Note), ZF (5-Year T-Note), 6A (Australian Dollar), 6L "
-            "(Brazilian Real), HO (Heating Oil), and NG (Natural Gas).";
     }
     return html + "\n";
 }
@@ -869,9 +1058,9 @@ static std::string report_footer_note_html(const EmailReportContext& context) {
 // no decimals 0.193729 shares read 0); a contract count stays whole.
 static std::string report_quantity_text(const std::shared_ptr<Instrument>& instrument,
                                         double quantity) {
+    (void)instrument;  // HD 10-13: every quantity of the email prints to two decimals
     char buf[64];
-    const bool shares = instrument && instrument->get_type() == AssetType::EQUITY;
-    std::snprintf(buf, sizeof(buf), shares ? "%.6f" : "%.0f", quantity);
+    std::snprintf(buf, sizeof(buf), "%.2f", quantity);
     return buf;
 }
 
@@ -888,6 +1077,13 @@ static std::shared_ptr<Instrument> report_instrument_of(const std::string& symbo
     } catch (...) {
         return nullptr;
     }
+}
+
+// The decimals every price of this symbol prints with (report_price_places).
+static int report_places_of(const std::string& symbol) {
+    // HD 10-14: every price of the email has four decimals; the files carry the contract's own.
+    (void)symbol;
+    return 4;
 }
 
 // T-NETTING: how the netting figures are printed (one rounding, the adjustment as it acts on the
@@ -919,7 +1115,7 @@ static std::string format_roll_legs_block(const std::vector<ExecutionReport>& ex
         if (legs == 0) {
             html << "<table>\n";
             html << "<tr><th>Roll Leg</th><th>Symbol</th><th>Side</th><th>Quantity</th><th>Price</th>"
-                    "<th>Contract</th><th>Cost (upper bound)</th></tr>\n";
+                    "<th>Cost</th></tr>\n";
         }
         ++legs;
         roll_cost += exec.total_transaction_costs.as_double();
@@ -929,15 +1125,11 @@ static std::string format_roll_legs_block(const std::vector<ExecutionReport>& ex
              << "</td><td>" << (exec.side == Side::BUY ? "BUY" : "SELL") << "</td><td>"
              << report_quantity_text(report_instrument_of(exec.symbol),
                                      exec.filled_quantity.as_double())
-             << "</td><td>$" << report_price_text(exec.fill_price.as_double()) << "</td><td>"
-             << exec.instrument_id << "</td><td>$" << std::fixed << std::setprecision(2)
-             << exec.total_transaction_costs.as_double() << "</td></tr>\n";
+             << "</td><td>" << report_price_dollars_places(exec.fill_price.as_double(), report_places_of(exec.symbol)) << "</td><td>"
+             << report_dollars(exec.total_transaction_costs.as_double()) << "</td></tr>\n";
     }
     if (legs > 0) {
         html << "</table>\n";
-        html << "<div class=\"summary-stats\"><strong>Roll Fills:</strong> " << legs
-             << " | <strong>Roll Costs (upper bound):</strong> $" << std::fixed << std::setprecision(2)
-             << roll_cost << "</div>\n";
     }
     return html.str();
 }
@@ -950,6 +1142,7 @@ std::string EmailSender::format_executions_table(const std::vector<ExecutionRepo
         return html.str();
     }
 
+    html << single_heading_html();
     html << "<table>\n";
     html << "<tr><th>Symbol</th><th>Side</th><th>Quantity</th><th>Price</th><th>Notional</"
             "th><th>Transaction Cost</th></tr>\n";
@@ -958,9 +1151,12 @@ std::string EmailSender::format_executions_table(const std::vector<ExecutionRepo
     double total_notional_traded = 0.0;
     size_t strategy_trades = 0;
     NettingFooter netting;
+    email_netting::RoundingCheck cost_rows, notional_rows, own_rows;  // HD ruling Q3
 
     for (const auto& exec : executions) {
         netting.add(exec);
+        cost_rows.add(transaction_cost::net_cost(exec).as_double());
+        own_rows.add(exec.total_transaction_costs.as_double());
         // T-ROLLX: every row's cost counts; a ROLL leg is listed in its own block below, never
         // as a trade and never in the traded notional. The total is what the account was charged:
         // each row's cost after netting (the row's own cost stays in its cell).
@@ -1003,6 +1199,7 @@ std::string EmailSender::format_executions_table(const std::vector<ExecutionRepo
                                                exec.fill_price.as_double() * contract_multiplier
                                          : 0.0;
         total_notional_traded += notional;
+        if (has_multiplier) notional_rows.add(notional);
 
         std::string side_str = exec.side == Side::BUY ? "BUY" : "SELL";
         std::string side_class = exec.side == Side::BUY ? "positive" : "negative";
@@ -1014,14 +1211,14 @@ std::string EmailSender::format_executions_table(const std::vector<ExecutionRepo
              << report_quantity_text(report_instrument_of(exec.symbol),
                                      exec.filled_quantity.as_double())
              << "</td>\n";
-        html << "<td>$" << report_price_text(exec.fill_price.as_double()) << "</td>\n";
+        html << "<td>" << report_price_dollars_places(exec.fill_price.as_double(), report_places_of(exec.symbol)) << "</td>\n";
         if (has_multiplier) {
-            html << "<td>$" << std::fixed << std::setprecision(2) << notional << "</td>\n";
+            html << "<td>" << report_dollars(notional) << "</td>\n";
         } else {
             html << "<td>n/a</td>\n";
         }
-        html << "<td>$" << std::fixed << std::setprecision(2)
-             << exec.total_transaction_costs.as_double() << "</td>\n";
+        html << "<td>" << report_dollars(exec.total_transaction_costs.as_double())
+             << "</td>\n";
         html << "</tr>\n";
     }
 
@@ -1053,19 +1250,17 @@ std::string EmailSender::format_executions_table(const std::vector<ExecutionRepo
 
     html << "<div class=\"summary-stats\">\n";
     html << "<strong>Trades:</strong> " << strategy_trades << "<br>\n";
-    html << "<strong>Notional Traded:</strong> $" << format_with_commas(total_notional_traded)
+    html << "<strong>Notional Traded:</strong> " << report_dollars(total_notional_traded)
          << "<br>\n";
-    // Shown only when a row was netted: the rows' own costs, the adjustment as it acts on them,
-    // and (the line below) what was charged. Without a netted row the footer is as it always was.
+    html << "<strong>Transaction Costs:</strong> " << report_dollars(total_transaction_cost);
     if (netting.any_adjusted) {
-        html << "<strong>Own Costs:</strong> $" << netting_money(netting.own_costs.as_double())
-             << "<br>\n";
-        html << "<strong>Netting Adjustment:</strong> "
-             << netting_effect_text(netting.own_costs.as_double(), total_transaction_cost)
-             << "<br>\n";
+        g_netting_note = "Netting between strategies: own costs " +
+                         report_dollars(netting.own_costs.as_double()) + ", adjustment " +
+                         netting_effect_text(netting.own_costs.as_double(), total_transaction_cost) +
+                         ", transaction costs " + report_dollars(total_transaction_cost) + ".";
+        html << note_sup(5);
     }
-    html << "<strong>Transaction Costs:</strong> $" << format_with_commas(total_transaction_cost)
-         << "\n";
+    html << "\n";
     html << "</div>\n";
 
     return html.str();
@@ -1078,13 +1273,20 @@ std::string EmailSender::format_positions_table(
     (void)is_daily_strategy;
     std::ostringstream html;
 
+    html << single_heading_html();
     html << "<table>\n";
+    // An equity book (HD 2026-10-14, section 16): the average cost the shares were bought at and what
+    // they have gained since, beside the quantity and the price.
+    const bool equity_table = !g_single_title.empty();
     html << "<tr><th>Symbol</th><th>Quantity</th>";
+    if (equity_table) html << "<th>Average Cost</th>";
 
     // Show only market price for forward-looking positions (no PnL - will be zero)
-    html << "<th>Market Price</th>";
+    html << "<th>Price</th>";
 
-    html << "<th>Notional</th><th>% of Total</th></tr>\n";
+    html << "<th>Notional</th>";
+    if (equity_table) html << "<th>Unrealized PnL</th>";
+    html << "<th>% of Total</th></tr>\n";
 
     double total_notional = 0.0;
     double total_margin_posted = 0.0;
@@ -1093,8 +1295,11 @@ std::string EmailSender::format_positions_table(
     // First pass: calculate total notional
     std::vector<std::tuple<std::string, double, double, double, double, double>>
         position_data;  // symbol, qty, entry, market, notional, margin
+    std::set<std::string> rows_without_close;
+    std::vector<std::string> margin_left_out;
 
-    for (const auto& [symbol, position] : positions) {
+    for (const auto& [symbol, position_ptr] : positions_by_symbol(positions)) {
+        const Position& position = *position_ptr;
         if (position.quantity.as_double() != 0.0) {
             active_positions++;
 
@@ -1168,6 +1373,7 @@ std::string EmailSender::format_positions_table(
                     // Neither a close nor a basis. Report it and leave this row out of
                     // the margin total; the email still goes out, and the row still
                     // appears with the figures that ARE known.
+                    margin_left_out.push_back(symbol);
                     WARN("Daily email: no usable price for " + lookup_sym +
                          " (quantity " + std::to_string(signed_qty) +
                          ", no current close and average_price is 0) -- excluded from the "
@@ -1180,6 +1386,7 @@ std::string EmailSender::format_positions_table(
                         // A positive price that still yields no margin is an instrument
                         // configuration problem, not a missing-data problem. Report it
                         // and carry on rather than suppressing the whole report.
+                        margin_left_out.push_back(symbol);
                         WARN("Daily email: instrument " + lookup_sym +
                              " returned margin " + std::to_string(total_initial_margin) +
                              " for price=" + std::to_string(price_for_margin) +
@@ -1201,6 +1408,8 @@ std::string EmailSender::format_positions_table(
             auto price_it = current_prices.find(symbol);
             if (price_it != current_prices.end()) {
                 market_price = price_it->second;
+            } else {
+                rows_without_close.insert(symbol);
             }
 
             // T-8D-2 R60 (T-8D D9): one price per row. The notional is the quantity at the price
@@ -1229,10 +1438,19 @@ std::string EmailSender::format_positions_table(
         html << "<td>" << symbol << "</td>\n";
         html << "<td>" << report_quantity_text(report_instrument_of(symbol), qty) << "</td>\n";
 
+        if (equity_table) {
+            html << "<td>" << report_price_dollars_places(entry_price, 4) << "</td>\n";
+        }
         // Show only market price (entry price removed from display), at every decimal it has
-        html << "<td>$" << report_price_text(market_price) << "</td>\n";
+        html << "<td>" << report_price_dollars_places(market_price, report_places_of(symbol))
+             << (rows_without_close.count(symbol) ? note_sup(4) : std::string()) << "</td>\n";
 
-        html << "<td>$" << std::fixed << std::setprecision(2) << std::abs(notional) << "</td>\n";
+        html << "<td>" << report_dollars(std::abs(notional)) << "</td>\n";
+        if (equity_table) {
+            const double unrealized = qty * (market_price - entry_price);
+            html << "<td class=\"" << (unrealized >= 0 ? "positive" : "negative") << "\">"
+                 << report_dollars(unrealized) << "</td>\n";
+        }
         html << "<td>" << std::fixed << std::setprecision(2) << pct_of_total << "%</td>\n";
         html << "</tr>\n";
     }
@@ -1270,18 +1488,10 @@ std::string EmailSender::format_positions_table(
 
     html << "<strong>Active Positions:</strong> " << active_positions << "<br>\n";
 
-    // The overlay's expected risk of the stored book beside the risk target, and the one-day 95
-    // percent VaR in dollars (report_risk_lines.hpp); a figure the metrics do not carry has no line.
-    const ReportRiskLines risk_lines = report_risk_lines(strategy_metrics);
-    if (!risk_lines.expected_risk.empty()) {
-        html << "<strong>Expected Risk:</strong> " << risk_lines.expected_risk << "<br>\n";
-    }
-    if (!risk_lines.var_95_1d.empty()) {
-        html << "<strong>1-Day 95% VaR:</strong> " << risk_lines.var_95_1d << "<br>\n";
-    }
+    // The expected risk is in the performance metrics, the VaR in the account detail file (HD 10-13).
 
-    html << "<strong>Total Notional:</strong> $" << format_with_commas(total_notional) << "<br>\n";
-    html << "<strong>Total Margin Posted:</strong> $" << format_with_commas(total_margin_posted)
+    html << "<strong>Total Notional:</strong> " << report_dollars(total_notional) << "<br>\n";
+    html << "<strong>Total Margin Posted:</strong> " << report_dollars(total_margin_posted)
          << "\n";
     html << "</div>\n";
 
@@ -1306,7 +1516,8 @@ std::string EmailSender::format_yesterday_finalized_positions_table(
     const std::unordered_map<std::string, double>& entry_prices,  // settled from
     const std::unordered_map<std::string, double>& exit_prices,   // settled at
     std::shared_ptr<DatabaseInterface> db, const std::map<std::string, double>& strategy_metrics,
-    const std::string& yesterday_date, const std::string& settled_date, bool equities) {
+    const std::string& yesterday_date, const std::string& settled_date, bool equities,
+    const SettledZeroKinds& zero_kinds) {
     (void)db;
     std::ostringstream html;
 
@@ -1315,12 +1526,15 @@ std::string EmailSender::format_yesterday_finalized_positions_table(
     }
 
     html << "<h2>Yesterday's Finalized Position Results</h2>\n";
+    html << single_heading_html();
     html << "<table>\n";
     html << "<tr>";
     html << "<th>Symbol</th>";
     html << "<th>Quantity</th>";
+    if (equities) html << "<th>Average Cost</th>";
     html << "<th>" << kSettledPreviousPriceLabel << "</th>";
     html << "<th>" << kSettledLatestPriceLabel << "</th>";
+    if (equities) html << "<th>Day's PnL</th><th>Unrealized PnL</th>";
     html << "<th>Realized PnL</th>";
     html << "</tr>\n";
 
@@ -1359,8 +1573,9 @@ std::string EmailSender::format_yesterday_finalized_positions_table(
     for (const auto& [symbol, position] : yesterday_positions) {
         double qty = position.quantity.as_double();
 
-        // Skip positions with zero quantity
-        if (std::abs(qty) < 0.0001)
+        // Skip positions with zero quantity (an equity position closed on the settled day keeps its
+        // row: it was sold at the previous close, so it was held over none of the move)
+        if (std::abs(qty) < 0.0001 && !(equities && std::abs(position.realized_pnl.as_double()) >= 1e-9))
             continue;
 
         // The two prices. A symbol the runner's "settled at" map does not hold printed no bar
@@ -1393,33 +1608,52 @@ std::string EmailSender::format_yesterday_finalized_positions_table(
     bool any_no_bar_row = false;
     for (const auto& [symbol, qty, entry_price, exit_price, realized_pnl] : position_data) {
         const SettledPriceCells cells =
-            settled_price_cells(known_price(entry_price), known_price(exit_price));
+            settled_price_cells(known_price(entry_price), known_price(exit_price),
+                                report_places_of(symbol));
         any_no_bar_row = any_no_bar_row || cells.no_bar;
         html << "<tr>";
         html << "<td>" << symbol << "</td>";
         html << "<td>" << std::fixed << std::setprecision(2) << qty << "</td>";
+        if (equities) {
+            html << "<td>" << report_price_dollars_places(yesterday_positions.at(symbol).average_price.as_double(), 4) << "</td>";
+        }
         html << "<td>" << cells.previous << "</td>";
 
-        html << "<td>" << cells.latest << "</td>";
+        html << "<td>" << cells.latest << (cells.no_bar ? note_sup(1) : std::string()) << "</td>";
+        if (equities) {
+            // the column that multiplies out: shares held over the move x (latest - previous)
+            const double days_pnl = (known_price(entry_price) && known_price(exit_price))
+                                        ? qty * (exit_price - entry_price)
+                                        : 0.0;
+            const double unrealized = yesterday_positions.at(symbol).unrealized_pnl.as_double();
+            html << "<td class=\"" << (days_pnl >= 0 ? "positive" : "negative") << "\">"
+                 << report_dollars(days_pnl) << "</td>";
+            html << "<td class=\"" << (unrealized >= 0 ? "positive" : "negative") << "\">"
+                 << report_dollars(unrealized) << "</td>";
+        }
 
         // Realized PnL with color (GROSS PnL from positions table)
         std::string realized_pnl_class = (realized_pnl >= 0) ? "positive" : "negative";
         html << "<td class=\"" << realized_pnl_class << "\">";
-        html << "$" << format_with_commas(realized_pnl, 2);
+        html << report_dollars(realized_pnl, 2)
+             << (settled_zero_note(equities, symbol, qty, known_price(entry_price), known_price(exit_price),
+                                realized_pnl, zero_kinds) == 2 ? note_sup(2) : std::string())
+             << (settled_zero_note(equities, symbol, qty, known_price(entry_price), known_price(exit_price),
+                                realized_pnl, zero_kinds) == 3 ? note_sup(3) : std::string());
         html << "</td>";
 
         html << "</tr>\n";
     }
 
     html << "</table>\n";
-    html << settled_no_bar_footnote_html(any_no_bar_row);
-    html << settled_table_note_html(equities);
+    (void)any_no_bar_row;
+    html << notes_html();  // the lines of the notes used in the table, right below it
 
     // Add daily metrics as a section heading after the table - use passed yesterday_daily_metrics
     if (!strategy_metrics.empty() && !yesterday_date.empty()) {
         // T-8D-2 R61: the block is the settled day's.
-        html << "<h2>" << (settled_date.empty() ? yesterday_date : settled_date)
-             << " (settled)</h2>\n";
+        html << "<h2>Previous trading day (" << (settled_date.empty() ? yesterday_date : settled_date)
+             << ")</h2>\n";
         html << "<div class=\"metrics-category\">\n";
 
         // Helper to format metrics with proper color
@@ -1438,7 +1672,7 @@ std::string EmailSender::format_yesterday_finalized_positions_table(
             if (is_percentage) {
                 formatted_value = format_with_commas(value, 2) + "%";
             } else {
-                formatted_value = "$" + format_with_commas(value, 2);
+                formatted_value = report_dollars(value, 2);
             }
 
             return "<div class=\"metric\"><strong>" + label + ":</strong> <span" + value_class +
@@ -1478,7 +1712,7 @@ std::string EmailSender::format_yesterday_finalized_positions_table(
             // Display transaction costs as positive value in black font (no color coding)
             double transaction_cost_value = std::abs(daily_transaction_costs_it->second);
             std::string formatted_transaction_cost =
-                "$" + format_with_commas(transaction_cost_value, 2);
+                report_dollars(transaction_cost_value, 2);
             html << "<div class=\"metric\"><strong>Daily Transaction Costs:</strong> <span>"
                  << formatted_transaction_cost << "</span></div>\n";
         }
@@ -1498,9 +1732,23 @@ std::string EmailSender::format_yesterday_finalized_positions_table(
     const std::unordered_map<std::string, double>& entry_prices,
     const std::unordered_map<std::string, double>& exit_prices,
     std::shared_ptr<DatabaseInterface> db, const std::map<std::string, double>& strategy_metrics,
-    const std::string& yesterday_date, const std::string& settled_date, bool equities) {
+    const std::string& yesterday_date, const std::string& settled_date, bool equities,
+    const SettledZeroKinds& zero_kinds) {
     (void)db;
     std::ostringstream html;
+    SingleSleeveScope single_sleeve_scope;
+    {
+        int sleeves = 0;
+        for (const auto& [name, positions] : strategy_positions) {
+            (void)name;
+            for (const auto& [symbol, pos] : positions) {
+                (void)symbol;
+                if (std::abs(pos.quantity.as_double()) >= 0.0001) { ++sleeves; break; }
+            }
+        }
+        g_single_sleeve = sleeves == 1;
+    }
+    
 
     // Check if there are any positions across all strategies
     bool has_positions = false;
@@ -1616,18 +1864,23 @@ std::string EmailSender::format_yesterday_finalized_positions_table(
 
         for (const auto& [symbol, qty, entry_price, exit_price, realized_pnl] : position_data) {
             const SettledPriceCells cells =
-                settled_price_cells(known_price(entry_price), known_price(exit_price));
+                settled_price_cells(known_price(entry_price), known_price(exit_price),
+                                report_places_of(symbol));
             any_no_bar_row = any_no_bar_row || cells.no_bar;
             html << "<tr>";
             html << "<td>" << symbol << "</td>";
             html << "<td>" << std::fixed << std::setprecision(2) << qty << "</td>";
             html << "<td>" << cells.previous << "</td>";
 
-            html << "<td>" << cells.latest << "</td>";
+            html << "<td>" << cells.latest << (cells.no_bar ? note_sup(1) : std::string()) << "</td>";
 
             std::string realized_pnl_class = (realized_pnl >= 0) ? "positive" : "negative";
             html << "<td class=\"" << realized_pnl_class << "\">";
-            html << "$" << format_with_commas(realized_pnl, 2);
+            html << report_dollars(realized_pnl, 2)
+             << (settled_zero_note(equities, symbol, qty, known_price(entry_price), known_price(exit_price),
+                                realized_pnl, zero_kinds) == 2 ? note_sup(2) : std::string())
+             << (settled_zero_note(equities, symbol, qty, known_price(entry_price), known_price(exit_price),
+                                realized_pnl, zero_kinds) == 3 ? note_sup(3) : std::string());
             html << "</td>";
 
             html << "</tr>\n";
@@ -1637,21 +1890,23 @@ std::string EmailSender::format_yesterday_finalized_positions_table(
 
         // Compact strategy-level summary
         std::string pnl_class = (strategy_total_pnl >= 0) ? "positive" : "negative";
+        if (!g_single_sleeve) {
         html << "<div style=\"font-size: 13px; color: #666; margin: 8px 0 20px 0; padding-left: "
                 "16px;\">\n";
         html << "<strong>Positions:</strong> " << position_data.size()
              << " | <strong>Total Realized PnL (Gross):</strong> <span class=\"" << pnl_class
-             << "\">$" << format_with_commas(strategy_total_pnl, 2) << "</span>\n";
+             << "\">" << report_dollars(strategy_total_pnl, 2) << "</span>\n";
         html << "</div>\n";
+        }
     }
-    html << settled_no_bar_footnote_html(any_no_bar_row);
-    html << settled_table_note_html(equities);
+    (void)any_no_bar_row;
+    html << notes_html();  // the lines of the notes used in the table, right below it
 
     // Add daily metrics section
     if (!strategy_metrics.empty() && !yesterday_date.empty()) {
         // T-8D-2 R61: the block is the settled day's.
-        html << "<h2>" << (settled_date.empty() ? yesterday_date : settled_date)
-             << " (settled)</h2>\n";
+        html << "<h2>Previous trading day (" << (settled_date.empty() ? yesterday_date : settled_date)
+             << ")</h2>\n";
         html << "<div class=\"metrics-category\">\n";
 
         auto format_metric_display = [&format_with_commas](const std::string& label, double value,
@@ -1669,7 +1924,7 @@ std::string EmailSender::format_yesterday_finalized_positions_table(
             if (is_percentage) {
                 formatted_value = format_with_commas(value, 2) + "%";
             } else {
-                formatted_value = "$" + format_with_commas(value, 2);
+                formatted_value = report_dollars(value, 2);
             }
 
             return "<div class=\"metric\"><strong>" + label + ":</strong> <span" + value_class +
@@ -1700,22 +1955,10 @@ std::string EmailSender::format_yesterday_finalized_positions_table(
         auto daily_costs_it = strategy_metrics.find("Daily Transaction Costs");
         if (daily_costs_it != strategy_metrics.end()) {
             double cost_value = std::abs(daily_costs_it->second);
-            std::string formatted_costs = "$" + format_with_commas(cost_value, 2);
+            std::string formatted_costs = report_dollars(cost_value, 2);
             html << "<div class=\"metric\"><strong>Daily Transaction Costs:</strong> <span>"
                  << formatted_costs << "</span></div>\n";
         }
-        // The settled day's roll costs (migration 017), the ROLL part of the line above. The
-        // read stood only in the single-table overload, which the equity runner alone reaches
-        // and which never sets the key, so the line printed for no book; a futures book's report
-        // is this overload.
-        auto daily_roll_costs_it = strategy_metrics.find("Daily Roll Costs");
-        if (daily_roll_costs_it != strategy_metrics.end()) {
-            html << "<div class=\"metric\"><strong>Daily Roll Costs (upper bound, inside the "
-                    "transaction costs):</strong> <span>$"
-                 << format_with_commas(std::abs(daily_roll_costs_it->second), 2)
-                 << "</span></div>\n";
-        }
-
         auto daily_total_it = strategy_metrics.find("Daily Total PnL");
         if (daily_total_it != strategy_metrics.end()) {
             html << format_metric_display("Daily Total PnL (Net)", daily_total_it->second, false);
@@ -1779,8 +2022,9 @@ std::string EmailSender::format_strategy_metrics(
     };
 
     // Helper function to format value with proper units and color
-    auto format_metric = [&format_with_commas](const std::string& key,
-                                               double value) -> std::string {
+    auto format_metric = [&format_with_commas](const std::string& key, double value,
+                                               const std::string& label_override =
+                                                   std::string()) -> std::string {
         std::ostringstream result;
         std::string formatted_value;
         std::string value_class;
@@ -1795,7 +2039,7 @@ std::string EmailSender::format_strategy_metrics(
             key.find("Roll Costs") != std::string::npos ||
             key.find("Gross Profit") != std::string::npos ||
             key.find("Gross Loss") != std::string::npos) {
-            formatted_value = "$" + format_with_commas(value);
+            formatted_value = report_dollars(value);
         } else if (key.find("Return") != std::string::npos ||
                    key.find("Volatility") != std::string::npos ||
                    key.find("Cushion") != std::string::npos ||
@@ -1834,204 +2078,48 @@ std::string EmailSender::format_strategy_metrics(
             }
         }
 
-        result << "<div class=\"metric\"><strong>" << key << ":</strong> <span" << value_class
-               << ">" << formatted_value << "</span></div>\n";
+        const std::string shown_label = label_override.empty() ? key : label_override;
+        result << "<div class=\"metric\"><strong>" << shown_label << ":</strong> <span"
+               << value_class << ">" << formatted_value << "</span></div>\n";
         return result.str();
     };
 
-    // T-8D-2 R61: two blocks, because the figures are of two days. The statistics are taken on
-    // the settled series and run through the settled day T-1; the book lines are the day T row as
-    // written (today's costs are booked, today's P&L is booked by tomorrow's run).
-    html << "<h2>Statistics through " << settled_date << " (settled)</h2>\n";
+    // HD 10-14: ONE block, "Performance Metrics", in four groups separated by a blank line.
+    html << "<h2>Performance Metrics</h2>\n";
     html << "<div class=\"metrics-category\">\n";
-
-    // Section 1: Returns & Risk-Adjusted Metrics
-    auto total_annualized_return = strategy_metrics.find("Total Annualized Return");
-    if (total_annualized_return != strategy_metrics.end()) {
-        html << format_metric(annualized_return_label(context), total_annualized_return->second);
-    }
-
-    auto sharpe_ratio = strategy_metrics.find("Sharpe Ratio");
-    if (sharpe_ratio != strategy_metrics.end()) {
-        html << format_metric("Sharpe Ratio", sharpe_ratio->second);
-    }
-
-    auto sortino_ratio = strategy_metrics.find("Sortino Ratio");
-    if (sortino_ratio != strategy_metrics.end()) {
-        html << format_metric("Sortino Ratio", sortino_ratio->second);
-    }
-
-    auto max_drawdown = strategy_metrics.find("Max Drawdown");
-    if (max_drawdown != strategy_metrics.end()) {
-        html << format_metric("Max Drawdown", max_drawdown->second);
-    }
-
-    auto hist_vol = strategy_metrics.find("Volatility");
-    if (hist_vol != strategy_metrics.end()) {
-        html << format_metric("Historical Volatility", hist_vol->second);
-    }
-
-    html << "<br>\n";
-
-    // Section 2: Trading Days
-    auto winning_days = strategy_metrics.find("Winning Days");
-    if (winning_days != strategy_metrics.end()) {
-        html << format_metric("Winning Days", winning_days->second);
-    }
-
-    auto losing_days = strategy_metrics.find("Losing Days");
-    if (losing_days != strategy_metrics.end()) {
-        html << format_metric("Losing Days", losing_days->second);
-    }
-
-    // Flat Days = Sat/Sun/holidays (zero PnL). Shown so Winning + Losing + Flat = Total.
-    auto flat_days = strategy_metrics.find("Flat Days");
-    if (flat_days != strategy_metrics.end()) {
-        html << format_metric("Flat Days", flat_days->second);
-    }
-
-    auto total_days = strategy_metrics.find("Total Days");
-    if (total_days != strategy_metrics.end()) {
-        html << format_metric("Total Days", total_days->second);
-    }
-
-    // The distribution of the settled grid returns: nine stored statistics no other output of the
-    // engine shows (T-8D-2 R61). Percent of the account for the returns, dollars for the two
-    // P&L sums.
-    static const char* const kDistributionKeys[] = {
-        "Win Rate",  "Average Win",        "Average Loss", "Profit Factor", "Best Day",
-        "Worst Day", "Downside Deviation", "Gross Profit", "Gross Loss"};
-    bool has_distribution = false;
-    for (const char* key : kDistributionKeys) {
-        has_distribution = has_distribution || strategy_metrics.count(key) > 0;
-    }
-    if (has_distribution) {
-        html << "<br>\n";
-        html << "<div class=\"metric\"><strong>Distribution (through " << settled_date
-             << ")</strong></div>\n";
-        // The profit factor has no value while the series has no losing session: its stored cell
-        // is NULL (T-8D R12) and reads back as 0, so the sum of the losses decides.
-        const auto gross_loss = strategy_metrics.find("Gross Loss");
-        const bool no_losing_session =
-            gross_loss != strategy_metrics.end() && std::fabs(gross_loss->second) < 1e-12;
-        for (const char* key : kDistributionKeys) {
-            const auto it = strategy_metrics.find(key);
-            if (it == strategy_metrics.end())
-                continue;
-            if (std::string(key) == "Profit Factor" &&
-                (no_losing_session || !std::isfinite(it->second))) {
-                html << "<div class=\"metric\"><strong>Profit Factor:</strong> <span>n/a (no "
-                        "losing session)</span></div>\n";
-                continue;
-            }
-            html << format_metric(key, it->second);
+    auto show = [&](const char* key, const char* label) {
+        const auto it = strategy_metrics.find(key);
+        if (it != strategy_metrics.end()) html << format_metric(key, it->second, label);
+    };
+    show("Total Unrealized PnL", "Unrealized PnL");
+    show("Total Realized PnL", "Realized PnL");
+    show("Total Transaction Costs", "Transaction Costs");
+    show("Total PnL", "Total PnL (Net)");
+    // The equity book's cumulative dividend income (T-8D-2 R44 (c)): informational.
+    {
+        const auto dividend_income = strategy_metrics.find(kReportDividendIncome);
+        if (dividend_income != strategy_metrics.end()) {
+            html << dividend_line_html(dividend_income->second);
         }
     }
-
-    html << "</div>\n";
-
-    // A futures book and the equity book write the day T row differently: each has its own
-    // heading (report_email_context.hpp).
-    html << book_heading_html(report_date, context.equities);
-    html << "<div class=\"metrics-category\">\n";
-
-    auto total_cumulative_return = strategy_metrics.find("Total Cumulative Return");
-    if (total_cumulative_return != strategy_metrics.end()) {
-        html << format_metric("Total Cumulative Return", total_cumulative_return->second);
-    }
-
+    show("Current Portfolio Value", "Current Portfolio Value");
     html << "<br>\n";
-
-    // Section 3: PnL
-    auto total_unrealized = strategy_metrics.find("Total Unrealized PnL");
-    if (total_unrealized != strategy_metrics.end()) {
-        html << format_metric("Total Unrealized PnL (Gross)", total_unrealized->second);
-    }
-
-    auto total_realized = strategy_metrics.find("Total Realized PnL");
-    if (total_realized != strategy_metrics.end()) {
-        html << format_metric("Total Realized PnL (Gross)", total_realized->second);
-    }
-
-    auto total_comm = strategy_metrics.find("Total Transaction Costs");
-    if (total_comm != strategy_metrics.end()) {
-        html << format_metric("Total Transaction Costs", total_comm->second);
-    }
-    auto total_roll = strategy_metrics.find("Total Roll Costs");  // T-ROLLX (017)
-    if (total_roll != strategy_metrics.end()) {
-        html << format_metric("Total Roll Costs (upper bound, inside the transaction costs)",
-                              total_roll->second);
-    }
-
-    auto total_pnl = strategy_metrics.find("Total PnL");
-    if (total_pnl != strategy_metrics.end()) {
-        html << format_metric("Total PnL (Net)", total_pnl->second);
-    }
-    // The equity book's cumulative dividend income (T-8D-2 R44 (c)): informational, outside the
-    // three P&L lines above (the dividend is inside them through the adjusted prices).
-    auto dividend_income = strategy_metrics.find(kReportDividendIncome);
-    if (dividend_income != strategy_metrics.end()) {
-        html << dividend_line_html(dividend_income->second);
-    }
-
+    show("Total Cumulative Return", "Total Cumulative Return");
+    show("Total Annualized Return", "Annualized Return");
+    show("Sharpe Ratio", "Sharpe Ratio");
+    show("Sortino Ratio", "Sortino Ratio");
+    show("Volatility", "Volatility");
+    show("Max Drawdown", "Max Drawdown");
     html << "<br>\n";
-
-    // Section 4: Leverage. A futures book's report (over_limit given) names the denominator of
-    // the two account-value lines and prints, after them, the leverage on the sizing capital
-    // beside the overlay's limits and the day's over-limit marks (report_over_limit.hpp).
-    auto gross_lev = strategy_metrics.find("Gross Leverage");
-    if (gross_lev != strategy_metrics.end()) {
-        html << format_metric(over_limit != nullptr ? kReportGrossOnAccount : "Gross Leverage",
-                              gross_lev->second);
+    show("Cash Available", "Cash Available");
+    show("Margin Posted", "Margin Posted");
+    if (!context.equities) {  // meaningless on a cash account (HD 2026-10-14, section 16.7)
+        show("Equity-to-Margin Ratio", "Equity-to-Margin Ratio");
+        show("Margin Cushion", "Margin Cushion");
     }
-
-    auto net_lev = strategy_metrics.find("Net Leverage");
-    if (net_lev != strategy_metrics.end()) {
-        html << format_metric(over_limit != nullptr ? kReportNetOnAccount : "Net Leverage",
-                              net_lev->second);
-    }
-
-    if (over_limit != nullptr) {
-        html << over_limit_report_html(*over_limit);
-    }
-
     html << "<br>\n";
-
-    // Section 5: Margin
-    auto margin_posted = strategy_metrics.find("Margin Posted");
-    if (margin_posted != strategy_metrics.end()) {
-        html << format_metric("Margin Posted", margin_posted->second);
-    }
-
-    auto equity_margin = strategy_metrics.find("Equity-to-Margin Ratio");
-    if (equity_margin != strategy_metrics.end()) {
-        html << format_metric("Equity-to-Margin Ratio", equity_margin->second);
-    }
-
-    auto margin_cushion = strategy_metrics.find("Margin Cushion");
-    if (margin_cushion != strategy_metrics.end()) {
-        html << format_metric("Margin Cushion", margin_cushion->second);
-    }
-
-    html << "<br>\n";
-
-    // Section 6: Portfolio Value
-    auto portfolio_value = strategy_metrics.find("Current Portfolio Value");
-    if (portfolio_value != strategy_metrics.end()) {
-        html << format_metric("Current Portfolio Value", portfolio_value->second);
-    }
-
-    auto cash_available = strategy_metrics.find("Cash Available");
-    if (cash_available != strategy_metrics.end()) {
-        html << format_metric("Cash Available", cash_available->second);
-    }
-
-    // A futures book (over_limit given): the sizing capital the day was sized on and the
-    // portfolio value the sizing read, from the day's risk_detail (report_email_context.hpp).
-    if (over_limit != nullptr) {
-        html << capital_lines_html(context);
-    }
-
+    show("Gross Leverage", "Gross Leverage");
+    show("Net Leverage", "Net Leverage");
     html << "</div>\n";
 
     return html.str();
@@ -2170,306 +2258,6 @@ std::string EmailSender::format_symbols_table_for_positions(
 
         auto col_symbol = combined->column(idx_symbol)->chunk(0);
 
-        // Helper function to get front month contract symbol (advances on/after expiry)
-        auto get_front_month_symbol = [](const std::string& ib_symbol,
-                                         const std::string& contract_months,
-                                         const std::string& date_str) -> std::string {
-            // Parse the date
-            std::tm current_tm = {};
-            std::istringstream ss(date_str);
-            ss >> std::get_time(&current_tm, "%Y-%m-%d");
-            if (ss.fail()) {
-                return "";
-            }
-
-            // Helpers for business day calculations
-            auto is_business_day = [](const std::tm& tm) {
-                return tm.tm_wday != 0 && tm.tm_wday != 6;
-            };
-            auto get_previous_business_day = [&is_business_day](std::tm tm) {
-                do {
-                    tm.tm_mday--;
-                    std::mktime(&tm);
-                } while (!is_business_day(tm));
-                return tm;
-            };
-            auto get_next_business_day = [&is_business_day](std::tm tm) {
-                do {
-                    tm.tm_mday++;
-                    std::mktime(&tm);
-                } while (!is_business_day(tm));
-                return tm;
-            };
-            auto get_last_day_of_month = [](int year, int month) {
-                std::tm r{};
-                r.tm_year = year - 1900;
-                r.tm_mon = month;
-                r.tm_mday = 0;
-                std::mktime(&r);
-                return r;
-            };
-            auto get_nth_weekday = [](int year, int month, int weekday, int n) {
-                std::tm r{};
-                r.tm_year = year - 1900;
-                r.tm_mon = month - 1;
-                r.tm_mday = 1;
-                std::mktime(&r);
-                int first = r.tm_wday;
-                int delta = (weekday - first + 7) % 7;
-                r.tm_mday = 1 + delta + (n - 1) * 7;
-                std::mktime(&r);
-                return r;
-            };
-            auto get_nth_business_day = [&get_next_business_day](int year, int month, int n) {
-                std::tm r{};
-                r.tm_year = year - 1900;
-                r.tm_mon = month - 1;
-                r.tm_mday = 0;
-                int c = 0;
-                while (c < n) {
-                    r = get_next_business_day(r);
-                    c++;
-                }
-                return r;
-            };
-
-            // Compute exchange-specific expiry for a given symbol/month/year
-            auto compute_expiry = [&](const std::string& sym, int y, int m) {
-                std::tm e{};
-                if (sym == "MES" || sym == "MYM" || sym == "MNQ" || sym == "RTY" || sym == "ES" ||
-                    sym == "YM" || sym == "NQ") {
-                    e = get_nth_weekday(y, m, 5, 3);  // 3rd Friday
-                } else if (sym == "ZC" || sym == "ZW" || sym == "ZM" || sym == "ZL" ||
-                           sym == "ZS" || sym == "ZR" || sym == "KE") {
-                    e.tm_year = y - 1900;
-                    e.tm_mon = m - 1;
-                    e.tm_mday = 14;
-                    std::mktime(&e);
-                    if (!is_business_day(e))
-                        e = get_previous_business_day(e);
-                } else if (sym == "GC" || sym == "PL" || sym == "SI") {
-                    e = get_last_day_of_month(y, m);
-                    e = get_previous_business_day(e);
-                    e = get_previous_business_day(e);
-                    e = get_previous_business_day(e);
-                } else if (sym == "6B" || sym == "6E" || sym == "6J" || sym == "6M" ||
-                           sym == "6N" || sym == "6S" || sym == "6A" || sym == "6L") {
-                    // FX futures: 3rd Wednesday, then 2 business days before
-                    e = get_nth_weekday(y, m, 3, 3);
-                    e = get_previous_business_day(e);
-                    e = get_previous_business_day(e);
-                } else if (sym == "6C") {
-                    e = get_nth_weekday(y, m, 3, 3);
-                    e = get_previous_business_day(e);
-                } else if (sym == "ZN" || sym == "UB" || sym == "ZT" || sym == "ZF") {
-                    // Treasury futures: Last business day of month, then 7 business days before
-                    e = get_last_day_of_month(y, m);
-                    if (!is_business_day(e))
-                        e = get_previous_business_day(e);
-                    for (int j = 0; j < 7; ++j)
-                        e = get_previous_business_day(e);
-                } else if (sym == "CL" || sym == "HO" || sym == "RB" || sym == "NG") {
-                    // Energy futures: 3rd business day prior to 25th of month before contract month
-                    e.tm_year = y - 1900;
-                    e.tm_mon = m - 2;  // Month before contract month
-                    if (e.tm_mon < 0) {
-                        e.tm_mon += 12;
-                        e.tm_year -= 1;
-                    }
-                    e.tm_mday = 25;
-                    std::mktime(&e);
-                    // Go back 3 business days
-                    for (int j = 0; j < 3; ++j)
-                        e = get_previous_business_day(e);
-                } else if (sym == "HE") {
-                    e = get_nth_business_day(y, m, 10);
-                } else if (sym == "LE") {
-                    e = get_last_day_of_month(y, m);
-                    if (!is_business_day(e))
-                        e = get_previous_business_day(e);
-                } else if (sym == "GF") {
-                    e = get_last_day_of_month(y, m);
-                    while (e.tm_wday != 4) {
-                        e.tm_mday--;
-                        std::mktime(&e);
-                    }
-                } else {
-                    e = get_nth_weekday(y, m, 5, 3);
-                }
-                return e;
-            };
-
-            // Check for monthly contracts (all months or consecutive)
-            if (contract_months.find("All Months") != std::string::npos ||
-                contract_months.find("consecutive") != std::string::npos) {
-                int month = current_tm.tm_mon + 1;
-                int year = current_tm.tm_year + 1900;
-                // Advance only AFTER actual expiry for this symbol/month
-                std::tm expiry = compute_expiry(ib_symbol, year, month);
-                if (std::difftime(std::mktime(&current_tm), std::mktime(&expiry)) > 0) {
-                    month += 1;
-                    if (month > 12) {
-                        month = 1;
-                        year += 1;
-                    }
-                }
-
-                char month_code = '\0';
-                switch (month) {
-                    case 1:
-                        month_code = 'F';
-                        break;  // January
-                    case 2:
-                        month_code = 'G';
-                        break;  // February
-                    case 3:
-                        month_code = 'H';
-                        break;  // March
-                    case 4:
-                        month_code = 'J';
-                        break;  // April
-                    case 5:
-                        month_code = 'K';
-                        break;  // May
-                    case 6:
-                        month_code = 'M';
-                        break;  // June
-                    case 7:
-                        month_code = 'N';
-                        break;  // July
-                    case 8:
-                        month_code = 'Q';
-                        break;  // August
-                    case 9:
-                        month_code = 'U';
-                        break;  // September
-                    case 10:
-                        month_code = 'V';
-                        break;  // October
-                    case 11:
-                        month_code = 'X';
-                        break;  // November
-                    case 12:
-                        month_code = 'Z';
-                        break;  // December
-                }
-                int year_digit = year % 10;
-                return ib_symbol + month_code + std::to_string(year_digit);
-            }
-
-            // For quarterly contracts, find the next contract month
-            // Convert to uppercase for case-insensitive matching
-            std::string months_upper = contract_months;
-            std::transform(months_upper.begin(), months_upper.end(), months_upper.begin(),
-                           [](unsigned char c) { return static_cast<char>(std::toupper(c)); });
-
-            std::vector<int> month_codes;
-            if (months_upper.find("MAR") != std::string::npos)
-                month_codes.push_back(3);
-            if (months_upper.find("JUN") != std::string::npos)
-                month_codes.push_back(6);
-            if (months_upper.find("SEP") != std::string::npos)
-                month_codes.push_back(9);
-            if (months_upper.find("DEC") != std::string::npos)
-                month_codes.push_back(12);
-            if (months_upper.find("JAN") != std::string::npos && month_codes.empty())
-                month_codes.push_back(1);
-            if (months_upper.find("FEB") != std::string::npos)
-                month_codes.push_back(2);
-            if (months_upper.find("APR") != std::string::npos)
-                month_codes.push_back(4);
-            if (months_upper.find("MAY") != std::string::npos)
-                month_codes.push_back(5);
-            if (months_upper.find("JULY") != std::string::npos)
-                month_codes.push_back(7);
-            if (months_upper.find("AUG") != std::string::npos)
-                month_codes.push_back(8);
-            if (months_upper.find("OCT") != std::string::npos)
-                month_codes.push_back(10);
-            if (months_upper.find("NOV") != std::string::npos)
-                month_codes.push_back(11);
-
-            if (month_codes.empty())
-                return "";
-
-            int current_month = current_tm.tm_mon + 1;
-            int current_year = current_tm.tm_year + 1900;
-
-            std::sort(month_codes.begin(), month_codes.end());
-            int next_month = -1, next_year = current_year;
-            for (int m : month_codes) {
-                if (m >= current_month) {
-                    next_month = m;
-                    break;
-                }
-            }
-            if (next_month == -1) {
-                next_month = month_codes[0];
-                next_year++;
-            }
-
-            // compute_expiry already defined above
-
-            // If current date is after expiry of the candidate month, advance to the next listed
-            // month
-            std::tm expiry_candidate = compute_expiry(ib_symbol, next_year, next_month);
-            if (std::difftime(std::mktime(&current_tm), std::mktime(&expiry_candidate)) > 0) {
-                // advance to next contract in list
-                auto it = std::find(month_codes.begin(), month_codes.end(), next_month);
-                if (it != month_codes.end()) {
-                    ++it;
-                    if (it == month_codes.end()) {
-                        it = month_codes.begin();
-                        next_year++;
-                    }
-                    next_month = *it;
-                }
-            }
-
-            char month_code = '\0';
-            switch (next_month) {
-                case 1:
-                    month_code = 'F';
-                    break;
-                case 2:
-                    month_code = 'G';
-                    break;
-                case 3:
-                    month_code = 'H';
-                    break;
-                case 4:
-                    month_code = 'J';
-                    break;
-                case 5:
-                    month_code = 'K';
-                    break;
-                case 6:
-                    month_code = 'M';
-                    break;
-                case 7:
-                    month_code = 'N';
-                    break;
-                case 8:
-                    month_code = 'Q';
-                    break;
-                case 9:
-                    month_code = 'U';
-                    break;
-                case 10:
-                    month_code = 'V';
-                    break;
-                case 11:
-                    month_code = 'X';
-                    break;
-                case 12:
-                    month_code = 'Z';
-                    break;
-            }
-
-            int year_digit = next_year % 10;
-            return ib_symbol + month_code + std::to_string(year_digit);
-        };
-
         // Render
         html << "<div class=\"summary-stats\" style=\"margin-top:6px;\">"
                 "<strong>Month Codes:</strong> F=Jan, G=Feb, H=Mar, J=Apr, K=May, M=Jun, N=Jul, "
@@ -2477,7 +2265,7 @@ std::string EmailSender::format_symbols_table_for_positions(
                 "</div>\n";
         html << "<table>\n";
         html << "<tr><th>Databento Symbol</th><th>IB Symbol</th>"
-                "<th>Name</th><th>Contract Months</th><th>Front Month</th></tr>\n";
+                "<th>Name</th><th>Contract Months</th></tr>\n";
 
         // Track matched symbols to detect gaps
         std::set<std::string> matched;
@@ -2495,34 +2283,34 @@ std::string EmailSender::format_symbols_table_for_positions(
             std::string json_txt = get_str(col_symbol, i);
             std::string db_sym, ib_sym, name, months;
             try {
-                if (!json_txt.empty()) {
+                if (json_txt.empty()) {
+                    WARN("Symbols reference: metadata row " + std::to_string(i) +
+                         " has no symbol text; its cells print empty");
+                } else {
                     nlohmann::json j = nlohmann::json::parse(json_txt);
                     db_sym = j.value("db", "");
                     ib_sym = j.value("ib", "");
                     name = j.value("name", "");
                     months = j.value("months", "");
                 }
-            } catch (...) {
+            } catch (const std::exception& e) {
+                WARN("Symbols reference: metadata row " + std::to_string(i) +
+                     " could not be read (" + e.what() + "); its cells print empty");
             }
             if (!db_sym.empty())
                 matched.insert(up(db_sym));
             if (!ib_sym.empty())
                 matched.insert(up(ib_sym));
 
-            std::string front_month = get_front_month_symbol(ib_sym, months, date);
-            if (front_month.empty()) {
-                INFO("EmailSender: Front month calculation returned empty for " + ib_sym + " (" + months + ")");
-            } else {
-                INFO("EmailSender: Front month for " + ib_sym + " = " + front_month);
-            }
             html << "<tr>\n";
             html << "<td>" << db_sym << "</td>\n";
             html << "<td>" << ib_sym << "</td>\n";
             html << "<td>" << name << "</td>\n";
             html << "<td>" << months << "</td>\n";
-            html << "<td>" << front_month << "</td>\n";
             html << "</tr>\n";
         }
+
+        html << "</table>\n";
 
         // Show any active symbols we couldn’t match
         std::vector<std::string> missing;
@@ -2541,630 +2329,9 @@ std::string EmailSender::format_symbols_table_for_positions(
                  " symbols");
         }
 
-        html << "</table>\n";
-
     } catch (const std::exception& e) {
         WARN(std::string("Exception while formatting filtered symbols table: ") + e.what());
         html << "<p>Error loading symbols data</p>\n";
-    }
-
-    return html.str();
-}
-
-std::string EmailSender::format_rollover_warning(
-    const std::unordered_map<std::string, Position>& positions, const std::string& date,
-    std::shared_ptr<DatabaseInterface> db, const std::string& date_override_for_testing) {
-    std::ostringstream html;
-
-    // Use override date for testing if provided, otherwise use actual date
-    std::string effective_date =
-        date_override_for_testing.empty() ? date : date_override_for_testing;
-
-    // Log if using test date override
-    if (!date_override_for_testing.empty()) {
-        INFO("TESTING MODE: Using date override for rollover warning: " +
-             date_override_for_testing + " (actual date: " + date + ")");
-    }
-
-    // Parse the date string to get current date
-    std::tm current_tm = {};
-    std::istringstream ss(effective_date);
-    ss >> std::get_time(&current_tm, "%Y-%m-%d");
-    if (ss.fail()) {
-        WARN("Failed to parse date for rollover warning: " + effective_date);
-        return std::string();
-    }
-
-    // Helper: Calculate nth weekday of month (e.g., 3rd Friday)
-    auto get_nth_weekday = [](int year, int month, int weekday, int n) -> std::tm {
-        std::tm result = {};
-        result.tm_year = year - 1900;
-        result.tm_mon = month - 1;
-        result.tm_mday = 1;
-        std::mktime(&result);  // Normalize
-
-        // Find first occurrence of target weekday
-        int first_weekday = result.tm_wday;
-        int days_until_target = (weekday - first_weekday + 7) % 7;
-        result.tm_mday = 1 + days_until_target + (n - 1) * 7;
-        std::mktime(&result);  // Normalize
-        return result;
-    };
-
-    // Helper: Check if date is business day (not Sat/Sun)
-    auto is_business_day = [](const std::tm& tm) -> bool {
-        return tm.tm_wday != 0 && tm.tm_wday != 6;
-    };
-
-    // Helper: Get previous business day
-    auto get_previous_business_day = [&is_business_day](std::tm tm) -> std::tm {
-        do {
-            tm.tm_mday--;
-            std::mktime(&tm);  // Normalize
-        } while (!is_business_day(tm));
-        return tm;
-    };
-
-    // Helper: Get next business day
-    auto get_next_business_day = [&is_business_day](std::tm tm) -> std::tm {
-        do {
-            tm.tm_mday++;
-            std::mktime(&tm);  // Normalize
-        } while (!is_business_day(tm));
-        return tm;
-    };
-
-    // Helper: Get last day of month
-    auto get_last_day_of_month = [](int year, int month) -> std::tm {
-        std::tm result = {};
-        result.tm_year = year - 1900;
-        result.tm_mon = month;  // Next month
-        result.tm_mday = 0;     // Day 0 = last day of previous month
-        std::mktime(&result);
-        return result;
-    };
-
-    // Helper: Get nth business day of month
-    auto get_nth_business_day = [&get_next_business_day](int year, int month, int n) -> std::tm {
-        std::tm result = {};
-        result.tm_year = year - 1900;
-        result.tm_mon = month - 1;
-        result.tm_mday = 0;  // Will increment to first day
-
-        int count = 0;
-        while (count < n) {
-            result = get_next_business_day(result);
-            count++;
-        }
-        return result;
-    };
-
-    // Helper: Calculate days between two dates
-    auto days_between = [](const std::tm& from, const std::tm& to) -> int {
-        std::time_t from_time = std::mktime(const_cast<std::tm*>(&from));
-        std::time_t to_time = std::mktime(const_cast<std::tm*>(&to));
-        return static_cast<int>((to_time - from_time) / (60 * 60 * 24));
-    };
-
-    // Helper: Convert month and year to IB contract format (e.g., 12, 2025 -> "Z5")
-    auto month_year_to_contract = [](int month, int year) -> std::string {
-        char month_code = '\0';
-        switch (month) {
-            case 1:
-                month_code = 'F';
-                break;  // January
-            case 2:
-                month_code = 'G';
-                break;  // February
-            case 3:
-                month_code = 'H';
-                break;  // March
-            case 4:
-                month_code = 'J';
-                break;  // April
-            case 5:
-                month_code = 'K';
-                break;  // May
-            case 6:
-                month_code = 'M';
-                break;  // June
-            case 7:
-                month_code = 'N';
-                break;  // July
-            case 8:
-                month_code = 'Q';
-                break;  // August
-            case 9:
-                month_code = 'U';
-                break;  // September
-            case 10:
-                month_code = 'V';
-                break;  // October
-            case 11:
-                month_code = 'X';
-                break;  // November
-            case 12:
-                month_code = 'Z';
-                break;  // December
-        }
-        int year_digit = year % 10;
-        return std::string(1, month_code) + std::to_string(year_digit);
-    };
-
-    // Get contract month info from database - only for non-zero positions
-    std::set<std::string> active_symbols;
-    for (const auto& [symbol, pos] : positions) {
-        if (pos.quantity.as_double() != 0.0) {
-            std::string base_sym = symbol;
-            auto dotpos = base_sym.find(".v.");
-            if (dotpos != std::string::npos)
-                base_sym = base_sym.substr(0, dotpos);
-            dotpos = base_sym.find(".c.");
-            if (dotpos != std::string::npos)
-                base_sym = base_sym.substr(0, dotpos);
-            active_symbols.insert(base_sym);
-        }
-    }
-
-    if (active_symbols.empty())
-        return std::string();
-
-    // Build SQL query - also fetch IB Symbol for display
-    std::ostringstream sql;
-    sql << "SELECT \"Databento Symbol\", \"IB Symbol\", \"Contract Months\" FROM "
-           "metadata.contract_metadata WHERE \"Databento Symbol\" IN (";
-    bool first = true;
-    for (const auto& sym : active_symbols) {
-        if (!first)
-            sql << ", ";
-        sql << "'" << sym << "'";
-        first = false;
-    }
-    sql << ")";
-
-    try {
-        auto query_result = db->execute_query(sql.str());
-        if (query_result.is_error()) {
-            WARN("Failed to query contract metadata for rollover warning: " +
-                 query_result.error()->to_string());
-            return std::string();
-        }
-
-        auto table = query_result.value();
-        if (!table || table->num_rows() == 0)
-            return std::string();
-
-        auto combined_result = table->CombineChunks();
-        if (!combined_result.ok())
-            return std::string();
-        auto combined = combined_result.ValueOrDie();
-
-        // Find column indices
-        int idx_symbol = -1, idx_ib_symbol = -1, idx_months = -1;
-        for (int i = 0; i < combined->schema()->num_fields(); ++i) {
-            std::string field_name = combined->schema()->field(i)->name();
-            if (field_name == "Databento Symbol")
-                idx_symbol = i;
-            if (field_name == "IB Symbol")
-                idx_ib_symbol = i;
-            if (field_name == "Contract Months")
-                idx_months = i;
-        }
-
-        if (idx_symbol < 0 || idx_ib_symbol < 0 || idx_months < 0)
-            return std::string();
-
-        // Create mapping from Databento symbol to IB symbol for display
-        std::unordered_map<std::string, std::string> databento_to_ib;
-
-        // Unified rollover info: (ib_symbol, current_front_month, next_front_month)
-        std::vector<std::tuple<std::string, std::string, std::string>> rollover_info;
-
-        // Process each contract
-        for (int64_t i = 0; i < combined->num_rows(); ++i) {
-            auto symbol_arr = combined->column(idx_symbol)->chunk(0);
-            auto ib_symbol_arr = combined->column(idx_ib_symbol)->chunk(0);
-            auto months_arr = combined->column(idx_months)->chunk(0);
-
-            if (symbol_arr->IsNull(i) || ib_symbol_arr->IsNull(i) || months_arr->IsNull(i))
-                continue;
-
-            std::string symbol =
-                std::static_pointer_cast<arrow::StringArray>(symbol_arr)->GetString(i);
-            std::string ib_symbol =
-                std::static_pointer_cast<arrow::StringArray>(ib_symbol_arr)->GetString(i);
-            std::string contract_months =
-                std::static_pointer_cast<arrow::StringArray>(months_arr)->GetString(i);
-
-            // Store mapping for display later
-            databento_to_ib[symbol] = ib_symbol;
-
-            // Check for monthly contracts
-            if (contract_months.find("All Months") != std::string::npos ||
-                contract_months.find("consecutive") != std::string::npos) {
-                for (const auto& [pos_symbol, pos] : positions) {
-                    if (pos.quantity.as_double() != 0.0 && pos_symbol.find(symbol) == 0) {
-                        // Compute this month's expiry using symbol-specific rules
-                        int disp_month = current_tm.tm_mon + 1;
-                        int disp_year = current_tm.tm_year + 1900;
-                        std::tm expiry_date = {};
-                        // Reuse the same expiry mapping as below defaults
-                        // Equity index style default: 3rd Friday; Metals/Agriculture/FX handled
-                        // below in quarterly branch, but here monthly energy defaults apply as 3rd
-                        // Friday We'll use a simplified mapping consistent with compute_expiry
-                        // behavior in get_front_month_symbol
-                        auto is_business_day_local = [](const std::tm& tm) {
-                            return tm.tm_wday != 0 && tm.tm_wday != 6;
-                        };
-                        auto get_previous_business_day_local =
-                            [&is_business_day_local](std::tm tm) {
-                                do {
-                                    tm.tm_mday--;
-                                    std::mktime(&tm);
-                                } while (!is_business_day_local(tm));
-                                return tm;
-                            };
-                        auto get_last_day_of_month_local = [](int year, int month) {
-                            std::tm r{};
-                            r.tm_year = year - 1900;
-                            r.tm_mon = month;
-                            r.tm_mday = 0;
-                            std::mktime(&r);
-                            return r;
-                        };
-                        auto get_nth_weekday_local = [](int year, int month, int weekday, int n) {
-                            std::tm r{};
-                            r.tm_year = year - 1900;
-                            r.tm_mon = month - 1;
-                            r.tm_mday = 1;
-                            std::mktime(&r);
-                            int first = r.tm_wday;
-                            int delta = (weekday - first + 7) % 7;
-                            r.tm_mday = 1 + delta + (n - 1) * 7;
-                            std::mktime(&r);
-                            return r;
-                        };
-                        auto get_next_business_day_local = [&is_business_day_local](std::tm tm) {
-                            do {
-                                tm.tm_mday++;
-                                std::mktime(&tm);
-                            } while (!is_business_day_local(tm));
-                            return tm;
-                        };
-                        auto get_nth_business_day_local = [&get_next_business_day_local](
-                                                              int year, int month, int n) {
-                            std::tm r{};
-                            r.tm_year = year - 1900;
-                            r.tm_mon = month - 1;
-                            r.tm_mday = 0;
-                            int c = 0;
-                            while (c < n) {
-                                r = get_next_business_day_local(r);
-                                c++;
-                            }
-                            return r;
-                        };
-
-                        if (symbol == "GC" || symbol == "PL" || symbol == "SI") {
-                            expiry_date = get_last_day_of_month_local(disp_year, disp_month);
-                            expiry_date = get_previous_business_day_local(expiry_date);
-                            expiry_date = get_previous_business_day_local(expiry_date);
-                            expiry_date = get_previous_business_day_local(expiry_date);
-                        } else if (symbol == "HE") {
-                            expiry_date = get_nth_business_day_local(disp_year, disp_month, 10);
-                        } else if (symbol == "LE") {
-                            expiry_date = get_last_day_of_month_local(disp_year, disp_month);
-                            if (!is_business_day_local(expiry_date))
-                                expiry_date = get_previous_business_day_local(expiry_date);
-                        } else if (symbol == "GF") {
-                            expiry_date = get_last_day_of_month_local(disp_year, disp_month);
-                            while (expiry_date.tm_wday != 4) {
-                                expiry_date.tm_mday--;
-                                std::mktime(&expiry_date);
-                            }
-                        } else if (symbol == "ZN" || symbol == "UB" || symbol == "ZT" || symbol == "ZF") {
-                            // Treasury futures: Last business day of month, then 7 business days before
-                            expiry_date = get_last_day_of_month_local(disp_year, disp_month);
-                            if (!is_business_day_local(expiry_date))
-                                expiry_date = get_previous_business_day_local(expiry_date);
-                            for (int j = 0; j < 7; ++j)
-                                expiry_date = get_previous_business_day_local(expiry_date);
-                        } else if (symbol == "6B" || symbol == "6E" || symbol == "6J" ||
-                                   symbol == "6M" || symbol == "6N" || symbol == "6S" ||
-                                   symbol == "6A" || symbol == "6L") {
-                            // FX futures: 3rd Wednesday, then 2 business days before
-                            expiry_date = get_nth_weekday_local(disp_year, disp_month, 3, 3);
-                            expiry_date = get_previous_business_day_local(expiry_date);
-                            expiry_date = get_previous_business_day_local(expiry_date);
-                        } else if (symbol == "6C") {
-                            expiry_date = get_nth_weekday_local(disp_year, disp_month, 3, 3);
-                            expiry_date = get_previous_business_day_local(expiry_date);
-                        } else if (symbol == "CL" || symbol == "HO" || symbol == "RB" || symbol == "NG") {
-                            // Energy futures: 3rd business day prior to the 25th of the month
-                            // BEFORE the contract month.
-                            auto energy_expiry = [&get_previous_business_day_local](int year,
-                                                                                    int month) {
-                                std::tm e{};
-                                e.tm_year = year - 1900;
-                                e.tm_mon = month - 2;  // Month before contract month
-                                if (e.tm_mon < 0) {
-                                    e.tm_mon += 12;
-                                    e.tm_year -= 1;
-                                }
-                                e.tm_mday = 25;
-                                std::mktime(&e);
-                                for (int j = 0; j < 3; ++j)
-                                    e = get_previous_business_day_local(e);
-                                return e;
-                            };
-                            // The contract of the run date's own month expired LAST month, so
-                            // taking it as the front (as this branch did) put the expiry behind
-                            // the run date on every day and the notice never printed (HO and NG
-                            // are in this branch since migration 019 set their months to "All
-                            // Months"). The front contract is the first whose expiry is not
-                            // behind the run date: next month's until about the 20th, the one
-                            // after from then on.
-                            expiry_date = energy_expiry(disp_year, disp_month);
-                            for (int step = 0;
-                                 step < 2 && days_between(current_tm, expiry_date) <= 0; ++step) {
-                                if (++disp_month > 12) {
-                                    disp_month = 1;
-                                    ++disp_year;
-                                }
-                                expiry_date = energy_expiry(disp_year, disp_month);
-                            }
-                        } else {
-                            // Default monthly (e.g., equity indices): 3rd Friday
-                            expiry_date = get_nth_weekday_local(disp_year, disp_month, 5, 3);
-                        }
-
-                        int days_to_expiry = days_between(current_tm, expiry_date);
-                        if (days_to_expiry > 0 && days_to_expiry <= 15) {
-                            auto to_code = [](int month) {
-                                switch (month) {
-                                    case 1:
-                                        return 'F';
-                                    case 2:
-                                        return 'G';
-                                    case 3:
-                                        return 'H';
-                                    case 4:
-                                        return 'J';
-                                    case 5:
-                                        return 'K';
-                                    case 6:
-                                        return 'M';
-                                    case 7:
-                                        return 'N';
-                                    case 8:
-                                        return 'Q';
-                                    case 9:
-                                        return 'U';
-                                    case 10:
-                                        return 'V';
-                                    case 11:
-                                        return 'X';
-                                    default:
-                                        return 'Z';
-                                }
-                            };
-                            std::string current_front = ib_symbol +
-                                                        std::string(1, to_code(disp_month)) +
-                                                        std::to_string(disp_year % 10);
-                            int next_m = disp_month + 1;
-                            int next_y = disp_year;
-                            if (next_m > 12) {
-                                next_m = 1;
-                                next_y++;
-                            }
-                            std::string next_front = ib_symbol + std::string(1, to_code(next_m)) +
-                                                     std::to_string(next_y % 10);
-                            rollover_info.push_back(
-                                std::make_tuple(ib_symbol, current_front, next_front));
-                        }
-                        break;
-                    }
-                }
-                continue;
-            }
-
-            // Determine current contract month and expiry date
-            int current_year = current_tm.tm_year + 1900;
-            int current_month = current_tm.tm_mon + 1;
-
-            // Parse contract months (MAR, JUN, SEP, DEC, etc.)
-            std::vector<int> month_codes;  // 1=JAN, 3=MAR, etc.
-            if (contract_months.find("JAN") != std::string::npos)
-                month_codes.push_back(1);
-            if (contract_months.find("FEB") != std::string::npos)
-                month_codes.push_back(2);
-            if (contract_months.find("MAR") != std::string::npos)
-                month_codes.push_back(3);
-            if (contract_months.find("APR") != std::string::npos)
-                month_codes.push_back(4);
-            if (contract_months.find("MAY") != std::string::npos)
-                month_codes.push_back(5);
-            if (contract_months.find("JUN") != std::string::npos)
-                month_codes.push_back(6);
-            if (contract_months.find("JULY") != std::string::npos)
-                month_codes.push_back(7);
-            if (contract_months.find("AUG") != std::string::npos)
-                month_codes.push_back(8);
-            if (contract_months.find("SEP") != std::string::npos)
-                month_codes.push_back(9);
-            if (contract_months.find("OCT") != std::string::npos)
-                month_codes.push_back(10);
-            if (contract_months.find("NOV") != std::string::npos)
-                month_codes.push_back(11);
-            if (contract_months.find("DEC") != std::string::npos)
-                month_codes.push_back(12);
-
-            if (month_codes.empty())
-                continue;
-
-            // Find next contract month (this is the candidate - may need to check expiry)
-            std::sort(month_codes.begin(), month_codes.end());
-            int next_month = -1, next_year = current_year;
-            for (int m : month_codes) {
-                if (m >= current_month) {
-                    next_month = m;
-                    break;
-                }
-            }
-            if (next_month == -1) {
-                next_month = month_codes[0];
-                next_year++;
-            }
-
-            // Store the initially found month for potential rollover warning display
-            int expiring_month = next_month;
-            int expiring_year = next_year;
-
-            // Calculate expiry date based on contract-specific rules
-            std::tm expiry_date = {};
-
-            // Equity index futures: 3rd Friday (MES, MYM, MNQ, RTY)
-            if (symbol == "MES" || symbol == "MYM" || symbol == "MNQ" || symbol == "RTY") {
-                expiry_date =
-                    get_nth_weekday(next_year, next_month, 5, 3);  // Friday=5, 3rd occurrence
-            }
-            // Ag futures: Business day prior to 15th (ZC, ZW, ZM, ZL, ZS, ZR, KE)
-            else if (symbol == "ZC" || symbol == "ZW" || symbol == "ZM" || symbol == "ZL" ||
-                     symbol == "ZS" || symbol == "ZR" || symbol == "KE") {
-                expiry_date.tm_year = next_year - 1900;
-                expiry_date.tm_mon = next_month - 1;
-                expiry_date.tm_mday = 14;
-                std::mktime(&expiry_date);
-                if (!is_business_day(expiry_date)) {
-                    expiry_date = get_previous_business_day(expiry_date);
-                }
-            }
-            // Metals: 3rd last business day (GC, PL, SI)
-            else if (symbol == "GC" || symbol == "PL" || symbol == "SI") {
-                expiry_date = get_last_day_of_month(next_year, next_month);
-                expiry_date = get_previous_business_day(expiry_date);
-                expiry_date = get_previous_business_day(expiry_date);
-                expiry_date = get_previous_business_day(expiry_date);
-            }
-            // FX: 2 business days prior to 3rd Wednesday (6B, 6E, 6J, 6M, 6N, 6S)
-            else if (symbol == "6B" || symbol == "6E" || symbol == "6J" || symbol == "6M" ||
-                     symbol == "6N" || symbol == "6S") {
-                expiry_date =
-                    get_nth_weekday(next_year, next_month, 3, 3);  // Wednesday=3, 3rd occurrence
-                expiry_date = get_previous_business_day(expiry_date);
-                expiry_date = get_previous_business_day(expiry_date);
-            }
-            // CAD: 1 business day prior to 3rd Wednesday
-            else if (symbol == "6C") {
-                expiry_date = get_nth_weekday(next_year, next_month, 3, 3);
-                expiry_date = get_previous_business_day(expiry_date);
-            }
-            // Treasuries: 7 business days prior to last business day (ZN, UB)
-            else if (symbol == "ZN" || symbol == "UB") {
-                expiry_date = get_last_day_of_month(next_year, next_month);
-                if (!is_business_day(expiry_date)) {
-                    expiry_date = get_previous_business_day(expiry_date);
-                }
-                for (int j = 0; j < 7; ++j) {
-                    expiry_date = get_previous_business_day(expiry_date);
-                }
-            }
-            // Lean Hog: 10th business day (HE)
-            else if (symbol == "HE") {
-                expiry_date = get_nth_business_day(next_year, next_month, 10);
-            }
-            // Live Cattle: Last business day (LE)
-            else if (symbol == "LE") {
-                expiry_date = get_last_day_of_month(next_year, next_month);
-                if (!is_business_day(expiry_date)) {
-                    expiry_date = get_previous_business_day(expiry_date);
-                }
-            }
-            // Feeder Cattle: Last Thursday (GF)
-            else if (symbol == "GF") {
-                expiry_date = get_last_day_of_month(next_year, next_month);
-                while (expiry_date.tm_wday != 4) {  // Thursday=4
-                    expiry_date.tm_mday--;
-                    std::mktime(&expiry_date);
-                }
-            } else {
-                // Default: Use 3rd Friday as conservative estimate
-                expiry_date = get_nth_weekday(next_year, next_month, 5, 3);
-            }
-
-            // Calculate days to expiry
-            int days_to_expiry = days_between(current_tm, expiry_date);
-
-            // Check if within 15-day rollover window
-            if (days_to_expiry > 0 && days_to_expiry <= 15) {
-                // Check if we're holding this contract, if yes calculate and store contract info
-                for (const auto& [pos_symbol, pos] : positions) {
-                    if (pos.quantity.as_double() != 0.0 && pos_symbol.find(symbol) == 0) {
-                        // Current front month: the contract that's expiring (use expiring_month,
-                        // not next_month)
-                        std::string current_contract =
-                            ib_symbol + month_year_to_contract(expiring_month, expiring_year);
-
-                        // Next front month: the contract after expiring_month in the cycle
-                        int next_contract_month = -1, next_contract_year = expiring_year;
-                        auto it = std::find(month_codes.begin(), month_codes.end(), expiring_month);
-                        if (it != month_codes.end()) {
-                            ++it;
-                            if (it == month_codes.end()) {
-                                // Wrap to first month of next year
-                                next_contract_month = month_codes[0];
-                                next_contract_year++;
-                            } else {
-                                next_contract_month = *it;
-                            }
-                        } else {
-                            // Fallback: should not happen, but use next month in list
-                            next_contract_month = month_codes[0];
-                            if (expiring_month >= month_codes.back()) {
-                                next_contract_year++;
-                            }
-                        }
-
-                        std::string next_contract =
-                            ib_symbol +
-                            month_year_to_contract(next_contract_month, next_contract_year);
-
-                        rollover_info.push_back(
-                            std::make_tuple(ib_symbol, current_contract, next_contract));
-                        break;
-                    }
-                }
-            }
-        }
-
-        // Generate unified warnings
-        if (!rollover_info.empty()) {
-            std::sort(rollover_info.begin(), rollover_info.end(),
-                      [](const auto& a, const auto& b) { return std::get<0>(a) < std::get<0>(b); });
-            html << "<div style=\"background-color: #fff5f5; border-left: 4px solid #dc2626; "
-                    "padding: 15px; margin: 20px 0; font-size: 13px; font-family: Arial, "
-                    "sans-serif;\">\n";
-            html << "<p style=\"color: #991b1b; margin: 0 0 10px 0;\"><strong>Rollover "
-                    "Notice:</strong> ";
-            html << "These securities contracts are approaching their rollover period. ";
-            html << "Please consider rolling over to the next contract month unless you intend to "
-                    "take delivery.</p>\n";
-            html << "<ul style=\"color: #991b1b; margin: 5px 0 0 20px; padding: 0;\">\n";
-            for (const auto& info : rollover_info) {
-                const std::string& ib_symbol = std::get<0>(info);
-                const std::string& current_contract = std::get<1>(info);
-                const std::string& next_contract = std::get<2>(info);
-                html << "<li><strong>" << ib_symbol << ":</strong> Currently holding <strong>"
-                     << current_contract << "</strong> → Switch to <strong>" << next_contract
-                     << "</strong></li>\n";
-            }
-            html << "</ul>\n";
-            html << "</div>\n";
-        }
-
-    } catch (const std::exception& e) {
-        WARN("Exception in format_rollover_warning: " + std::string(e.what()));
-        return std::string();
     }
 
     return html.str();
@@ -3273,14 +2440,18 @@ std::string EmailSender::format_single_strategy_table(
     // mode the sleeve's margin follows beside the name (T-8D D1).
     std::string display_name = format_strategy_display_name(strategy_name);
     const std::string margin_kind = sleeve_margin_kind(positions);
-    if (!margin_kind.empty())
-        display_name += " (" + margin_kind + ")";
-    html << "<h3 style=\"margin-top: 20px; margin-bottom: 10px; color: #333; "
+    html << "<h3 style=\"margin-top: 20px; margin-bottom: 2px; color: #333; "
          << "border-left: 4px solid #2c5aa0; padding-left: 12px;\">" << display_name << "</h3>\n";
+    if (!margin_kind.empty()) {
+        std::string kind_text = margin_kind;
+        kind_text[0] = static_cast<char>(std::toupper(static_cast<unsigned char>(kind_text[0])));
+        html << "<div style=\"font-size: 11px; color: #999; margin: 0 0 8px 16px;\">" << kind_text
+             << "</div>\n";
+    }
 
     // Position table
     html << "<table>\n";
-    html << "<tr><th>Symbol</th><th>Quantity</th><th>Market Price</th><th>Notional</th><th>% of "
+    html << "<tr><th>Symbol</th><th>Quantity</th><th>Price</th><th>Notional</th><th>% of "
             "Total</th></tr>\n";
 
     double total_notional = 0.0;
@@ -3289,8 +2460,11 @@ std::string EmailSender::format_single_strategy_table(
 
     // First pass: calculate total notional for this strategy
     std::vector<std::tuple<std::string, double, double, double, double>> position_data;
+    std::set<std::string> rows_without_close;
+    std::vector<std::string> margin_left_out;
 
-    for (const auto& [symbol, position] : positions) {
+    for (const auto& [symbol, position_ptr] : positions_by_symbol(positions)) {
+        const Position& position = *position_ptr;
         if (position.quantity.as_double() != 0.0) {
             active_positions++;
 
@@ -3378,6 +2552,7 @@ std::string EmailSender::format_single_strategy_table(
                     // the contract's own metadata carries no initial margin. Either way it
                     // is one row that cannot be added up, not a reason to withhold the
                     // report from everybody.
+                    margin_left_out.push_back(symbol);
                     WARN("Daily email: no usable margin for " + lookup_sym + " (quantity " +
                          std::to_string(signed_qty) + ", price " +
                          std::to_string(price_for_margin) +
@@ -3398,6 +2573,8 @@ std::string EmailSender::format_single_strategy_table(
             auto price_it = current_prices.find(symbol);
             if (price_it != current_prices.end()) {
                 market_price = price_it->second;
+            } else {
+                rows_without_close.insert(symbol);
             }
 
             // T-8D-2 R60: the notional at the price the row prints (the Day T-1 close; the basis
@@ -3418,8 +2595,9 @@ std::string EmailSender::format_single_strategy_table(
         html << "<tr>\n";
         html << "<td>" << symbol << "</td>\n";
         html << "<td>" << report_quantity_text(report_instrument_of(symbol), qty) << "</td>\n";
-        html << "<td>$" << report_price_text(market_price) << "</td>\n";
-        html << "<td>$" << format_with_commas(std::abs(notional)) << "</td>\n";
+        html << "<td>" << report_price_dollars_places(market_price, report_places_of(symbol))
+             << (rows_without_close.count(symbol) ? note_sup(4) : std::string()) << "</td>\n";
+        html << "<td>" << report_dollars(std::abs(notional)) << "</td>\n";
         html << "<td>" << std::fixed << std::setprecision(2) << pct_of_total << "%</td>\n";
         html << "</tr>\n";
     }
@@ -3427,12 +2605,14 @@ std::string EmailSender::format_single_strategy_table(
     html << "</table>\n";
 
     // Compact strategy-level summary
+    if (!g_single_sleeve) {
     html << "<div style=\"font-size: 13px; color: #666; margin: 8px 0 20px 0; padding-left: "
             "16px;\">\n";
-    html << "<strong>Positions:</strong> " << active_positions << " | <strong>Notional:</strong> $"
-         << format_with_commas(total_notional) << " | <strong>Margin:</strong> $"
-         << format_with_commas(total_margin_posted) << "\n";
+    html << "<strong>Positions:</strong> " << active_positions << " | <strong>Notional:</strong> "
+         << report_dollars(total_notional) << " | <strong>Margin:</strong> "
+         << report_dollars(total_margin_posted) << "\n";
     html << "</div>\n";
+    }
 
     return html.str();
 }
@@ -3442,6 +2622,20 @@ std::string EmailSender::format_strategy_positions_tables(
     const std::unordered_map<std::string, double>& current_prices,
     const std::map<std::string, double>& strategy_metrics) {
     std::ostringstream html;
+    SingleSleeveScope single_sleeve_scope;
+    g_single_sleeve = false;
+    {
+        int sleeves = 0;
+        for (const auto& [name, positions] : strategy_positions) {
+            (void)name;
+            for (const auto& [symbol, pos] : positions) {
+                (void)symbol;
+                if (pos.quantity.as_double() != 0.0) { ++sleeves; break; }
+            }
+        }
+        g_single_sleeve = sleeves == 1;
+    }
+    
 
     if (strategy_positions.empty()) {
         html << "<p>No positions.</p>\n";
@@ -3504,7 +2698,8 @@ std::string EmailSender::format_strategy_positions_tables(
         html << format_single_strategy_table(strategy_name, positions, current_prices);
 
         // Accumulate portfolio totals
-        for (const auto& [symbol, position] : positions) {
+        for (const auto& [symbol, position_ptr] : positions_by_symbol(positions)) {
+            const Position& position = *position_ptr;
             if (position.quantity.as_double() != 0.0) {
                 portfolio_total_positions++;
 
@@ -3583,22 +2778,12 @@ std::string EmailSender::format_strategy_positions_tables(
         portfolio_total_margin = account_margin->second;
     }
 
-    // The overlay's expected risk of the stored book beside the risk target, and the one-day 95
-    // percent VaR in dollars (report_risk_lines.hpp); a figure the metrics do not carry has no line.
-    const ReportRiskLines risk_lines = report_risk_lines(strategy_metrics);
-    if (!risk_lines.expected_risk.empty()) {
-        html << "<div class=\"metric\"><strong>Expected Risk:</strong> "
-             << risk_lines.expected_risk << "</div>\n";
-    }
-    if (!risk_lines.var_95_1d.empty()) {
-        html << "<div class=\"metric\"><strong>1-Day 95% VaR:</strong> " << risk_lines.var_95_1d
-             << "</div>\n";
-    }
+    // The expected risk is in the performance metrics, the VaR in the account detail file (HD 10-13).
 
-    html << "<div class=\"metric\"><strong>Total Notional:</strong> $"
-         << format_with_commas(portfolio_total_notional) << "</div>\n";
-    html << "<div class=\"metric\"><strong>Total Margin Posted:</strong> $"
-         << format_with_commas(portfolio_total_margin) << "</div>\n";
+    html << "<div class=\"metric\"><strong>Total Notional:</strong> "
+         << report_dollars(portfolio_total_notional) << "</div>\n";
+    html << "<div class=\"metric\"><strong>Total Margin Posted:</strong> "
+         << report_dollars(portfolio_total_margin) << "</div>\n";
     html << "</div>\n";
 
     return html.str();
@@ -3713,20 +2898,20 @@ std::string EmailSender::format_single_strategy_executions_table(
              << report_quantity_text(report_instrument_of(exec.symbol),
                                      exec.filled_quantity.as_double())
              << "</td>\n";
-        html << "<td>$" << report_price_text(exec.fill_price.as_double()) << "</td>\n";
+        html << "<td>" << report_price_dollars_places(exec.fill_price.as_double(), report_places_of(exec.symbol)) << "</td>\n";
         if (has_multiplier) {
-            html << "<td>$" << format_with_commas(notional) << "</td>\n";
+            html << "<td>" << report_dollars(notional) << "</td>\n";
         } else {
             html << "<td>n/a</td>\n";
         }
-        html << "<td>$" << std::fixed << std::setprecision(2)
-             << exec.total_transaction_costs.as_double() << "</td>\n";
+        html << "<td>" << report_dollars(exec.total_transaction_costs.as_double())
+             << "</td>\n";
         if (several_sleeves) {
             html << "<td>"
                  << netting_effect_text(exec.total_transaction_costs.as_double(),
                                         transaction_cost::net_cost(exec).as_double())
                  << "</td>\n";
-            html << "<td>$" << netting_money(transaction_cost::net_cost(exec).as_double())
+            html << "<td>" << report_dollars(transaction_cost::net_cost(exec).as_double())
                  << "</td>\n";
         }
         html << "</tr>\n";
@@ -3736,20 +2921,17 @@ std::string EmailSender::format_single_strategy_executions_table(
     html << format_roll_legs_block(executions);
 
     // Compact strategy-level summary
+    if (!g_single_sleeve) {
     html << "<div style=\"font-size: 13px; color: #666; margin: 8px 0 20px 0; padding-left: "
             "16px;\">\n";
-    html << "<strong>Trades:</strong> " << strategy_trades << " | <strong>Notional:</strong> $"
-         << format_with_commas(total_notional_traded);
+    html << "<strong>Trades:</strong> " << strategy_trades << " | <strong>Notional:</strong> "
+         << report_dollars(total_notional_traded);
     // Shown only when a row of this sleeve was netted: own costs, the adjustment as it acts on
     // them, then what the sleeve was charged.
-    if (netting.any_adjusted) {
-        html << " | <strong>Own Costs:</strong> $" << netting_money(netting.own_costs.as_double())
-             << " | <strong>Netting Adjustment:</strong> "
-             << netting_effect_text(netting.own_costs.as_double(), total_transaction_costs);
-    }
-    html << " | <strong>Transaction Costs:</strong> $"
-         << format_with_commas(total_transaction_costs) << "\n";
+    html << " | <strong>Transaction Costs:</strong> " << report_dollars(total_transaction_costs)
+         << (netting.any_adjusted ? note_sup(5) : std::string()) << "\n";
     html << "</div>\n";
+    }
 
     return html.str();
 }
@@ -3757,6 +2939,17 @@ std::string EmailSender::format_single_strategy_executions_table(
 std::string EmailSender::format_strategy_executions_tables(
     const StrategyExecutionsMap& strategy_executions) {
     std::ostringstream html;
+    SingleSleeveScope single_sleeve_scope;
+    g_single_sleeve = false;
+    {
+        int sleeves = 0;
+        for (const auto& [name, execs] : strategy_executions) {
+            (void)name;
+            if (!execs.empty()) ++sleeves;
+        }
+        g_single_sleeve = sleeves == 1;
+    }
+    
 
     if (strategy_executions.empty()) {
         html << "<p>No executions for today.</p>\n";
@@ -3802,6 +2995,11 @@ std::string EmailSender::format_strategy_executions_tables(
     double portfolio_total_roll_costs = 0.0;  // T-ROLLX
     int portfolio_total_roll_fills = 0;
     NettingFooter netting;
+    // A printed cent that differs from the footer under it (HD ruling Q3): a column of rows
+    // against its sleeve's footer, and the sleeves' footers against the book's.
+    bool printed_cent_differs = false;
+    email_netting::RoundingCheck book_cost_of_sleeves, book_notional_of_sleeves,
+        book_own_of_sleeves;
     // A book of more than one sleeve: each row also shows its adjustment and its cost after netting.
     const bool several_sleeves = strategy_executions.size() > 1;
 
@@ -3818,8 +3016,11 @@ std::string EmailSender::format_strategy_executions_tables(
 
         // Accumulate portfolio totals (T-ROLLX: trades and notional over STRATEGY rows; costs over
         // every row, the ROLL part shown beside)
+        email_netting::RoundingCheck sleeve_cost, sleeve_notional, sleeve_own;
         for (const auto& exec : executions) {
             netting.add(exec);
+            sleeve_cost.add(transaction_cost::net_cost(exec).as_double());
+            sleeve_own.add(exec.total_transaction_costs.as_double());
             portfolio_total_transaction_costs += transaction_cost::net_cost(exec).as_double();
             if (exec.execution_type == ExecutionType::ROLL) {  // never netted: its own cost
                 portfolio_total_roll_costs += exec.total_transaction_costs.as_double();
@@ -3856,40 +3057,39 @@ std::string EmailSender::format_strategy_executions_tables(
             double notional = exec.filled_quantity.as_double() * exec.fill_price.as_double() *
                               contract_multiplier;
             portfolio_total_notional += notional;
+            sleeve_notional.add(notional);
         }
+        printed_cent_differs = printed_cent_differs || sleeve_cost.differs() ||
+                               sleeve_notional.differs() || sleeve_own.differs();
+        book_cost_of_sleeves.add(sleeve_cost.exact);
+        book_notional_of_sleeves.add(sleeve_notional.exact);
+        book_own_of_sleeves.add(sleeve_own.exact);
     }
+    printed_cent_differs = printed_cent_differs || book_cost_of_sleeves.differs() ||
+                           book_notional_of_sleeves.differs() || book_own_of_sleeves.differs();
 
     // Portfolio-wide summary
     html << "<div class=\"summary-stats\" style=\"margin-top: 20px; border-top: 2px solid #2c5aa0; "
             "padding-top: 15px;\">\n";
     html << "<div class=\"metric\"><strong>Total Trades:</strong> " << portfolio_total_trades
          << "</div>\n";
-    html << "<div class=\"metric\"><strong>Total Notional Traded:</strong> $"
-         << format_with_commas(portfolio_total_notional) << "</div>\n";
-    // Shown only when a row of the day was netted: the rows' own costs, the adjustment as it acts
-    // on them, then the cost charged (own costs with the adjustment applied).
-    if (netting.any_adjusted) {
-        html << "<div class=\"metric\"><strong>Total Own Costs:</strong> $"
-             << netting_money(netting.own_costs.as_double()) << "</div>\n";
-        html << "<div class=\"metric\"><strong>Netting Adjustment:</strong> "
-             << netting_effect_text(netting.own_costs.as_double(),
-                                    portfolio_total_transaction_costs)
-             << "</div>\n";
-    }
+    html << "<div class=\"metric\"><strong>Total Notional Traded:</strong> "
+         << report_dollars(portfolio_total_notional) << "</div>\n";
     // "Today's": the same words would otherwise name the cumulative figure of the snapshot.
-    html << "<div class=\"metric\"><strong>Today's Transaction Costs:</strong> $"
-         << format_with_commas(portfolio_total_transaction_costs) << "</div>\n";
+    html << "<div class=\"metric\"><strong>Today's Transaction Costs:</strong> "
+         << report_dollars(portfolio_total_transaction_costs)
+         << (netting.any_adjusted ? note_sup(5) : std::string()) << "</div>\n";
+    if (netting.any_adjusted) {
+        g_netting_note = "Netting between strategies: own costs " +
+                         report_dollars(netting.own_costs.as_double()) + ", adjustment " +
+                         netting_effect_text(netting.own_costs.as_double(),
+                                             portfolio_total_transaction_costs) +
+                         ", transaction costs " + report_dollars(portfolio_total_transaction_costs) +
+                         ".";
+    }
     if (portfolio_total_roll_fills > 0) {
         html << "<div class=\"metric\"><strong>Roll Fills:</strong> " << portfolio_total_roll_fills
-             << " | <strong>Roll Costs (upper bound):</strong> $"
-             << format_with_commas(portfolio_total_roll_costs) << "</div>\n";
-    }
-    // Why a cent can differ (several sleeves, a netted day): every figure above is rounded to the
-    // cent from its own exact sum, so a column of rows need not add to its footer, nor the
-    // sleeves' footers to the book's, to the cent. The totals are the exact stored figures.
-    if (several_sleeves && netting.any_adjusted) {
-        html << "<div class=\"metric\" style=\"font-size: 12px; color: #666;\">"
-             << email_netting::kRoundingNote << "</div>\n";
+             << "</div>\n";
     }
     html << "</div>\n";
 
@@ -3911,6 +3111,7 @@ std::string EmailSender::generate_trading_report_body(
     const std::string& chart_strategy_id, const OverLimitReport& over_limit,
     const EmailReportContext& context) {
     (void)risk_metrics;
+    reset_notes();
     std::ostringstream html;
 
     // Parse the date to check day of week
@@ -4021,24 +3222,30 @@ std::string EmailSender::generate_trading_report_body(
     html << "</div>\n";
     html << "</div>\n";
 
-    // The holiday banner (T-8D-2 R59: no banner is derived from the weekday)
-    if (holiday_banner) {
-        html << "<div style=\"background: linear-gradient(135deg, #fef3c7 0%, #fde68a 100%); "
-                "border: 2px solid #f59e0b; border-radius: 8px; padding: 20px 30px; margin: 20px 0 "
-                "30px 0; box-shadow: 0 4px 6px rgba(0,0,0,0.1);\">\n";
-        html << "<h2 style=\"margin: 0 0 10px 0; color: #92400e; font-size: 20px; border-bottom: "
-                "2px solid #92400e; padding-bottom: 8px; display: inline-block;\">Yesterday was "
-             << yesterday_holiday_name << "</h2>\n";
-        html << "<p style=\"margin: 15px 0 5px 0; color: #78350f; font-size: 15px; line-height: "
-                "1.6;\">The latest futures settlement prices are not available, as futures markets "
-                "were closed yesterday ("
-             << yesterday_date_str
-             << ") due to a federal holiday. The PnL for these contracts will be updated in the "
-                "next report once settlement data is released.</p>\n";
-        html << "<p style=\"margin: 5px 0 0 0; color: #92400e; font-weight: 600; font-size: "
-                "14px;\">Please continue to monitor your positions closely.</p>\n";
-        html << "</div>\n";
+    // The banners about the day before (HD 2026-10-14, section 15): the original texts; the settled
+    // day's weekday and the calendar choose the title, the prices that arrived choose the form.
+    DayBeforeBanner day_banner;
+    if (!context.equities) {
+        bool some_missing = false;
+        for (const auto& [sleeve, sleeve_positions] : yesterday_strategy_positions) {
+            (void)sleeve;
+            for (const auto& [symbol, position] : sleeve_positions) {
+                if (std::abs(position.quantity.as_double()) < 0.0001) continue;
+                if (!yesterday_close_prices.count(symbol) ||
+                    context.settled_zero_kinds.withheld.count(symbol))
+                    some_missing = true;
+            }
+        }
+        std::string settled_holiday;
+        try {
+            if (holiday_checker_.is_holiday(settled_date))
+                settled_holiday = holiday_checker_.get_holiday_name(settled_date);
+        } catch (...) {
+        }
+        day_banner = day_before_banner(settled_date, settled_holiday, context.prior_day_no_session,
+                                       some_missing);
     }
+    html << day_banner.banner_html;
 
     // Today's Positions - use per-strategy tables if strategy_positions is provided, otherwise
     // fallback to single table
@@ -4051,6 +3258,7 @@ std::string EmailSender::generate_trading_report_body(
         html << format_positions_table(positions, is_daily_strategy, current_prices,
                                        strategy_metrics);
     }
+    html << notes_html();
 
     // Executions (if any) - use per-strategy tables
     bool has_executions = false;
@@ -4063,6 +3271,7 @@ std::string EmailSender::generate_trading_report_body(
     if (has_executions) {
         html << "<h2>Daily Executions</h2>\n";
         html << format_strategy_executions_tables(strategy_executions);
+        html << notes_html();
     }
 
     // Yesterday's Finalized Positions (with actual PnL) - use per-strategy breakdown
@@ -4077,27 +3286,13 @@ std::string EmailSender::generate_trading_report_body(
         !two_days_ago_close_prices.empty()) {
         html << format_yesterday_finalized_positions_table(
             yesterday_strategy_positions, two_days_ago_close_prices, yesterday_close_prices, db,
-            yesterday_daily_metrics, yesterday_date_str, settled_date, context.equities);
+            yesterday_daily_metrics, yesterday_date_str, settled_date, context.equities,
+            context.settled_zero_kinds);
+        html << notes_html();
     } else if (!show_yesterday_pnl) {
-        // The runner found no session on the day before (T-8D-2 R59): no settled table. The two
-        // notes say why in the runner's terms, never from the weekday.
-        html << "<div class=\"alert-note\">\n";
-        if (holiday_banner) {
-            html << "<strong>No Executions:</strong> Since yesterday (" << yesterday_date_str
-                 << ") was a market holiday, no new market data is available. Positions remain "
-                    "unchanged from the previous trading day, and no executions were generated.\n";
-        } else {
-            html << "<strong>No Executions:</strong> No session was found for yesterday ("
-                 << yesterday_date_str
-                 << "), so no new market data is available. Positions remain unchanged from the "
-                    "previous trading day, and no executions were generated.\n";
-        }
-        html << "</div>\n";
-
-        // Add a yellow note explaining why yesterday's PnL is not shown
-        html << "<div class=\"footer-note\">\n";
-        html << "<strong>Note:</strong> Yesterday's PnL data is not available.\n";
-        html << "</div>\n";
+        // No prices at all: the red box and the yellow note, the table hidden (section 15).
+        html << "<div class=\"alert-note\">\n" << day_banner.red_box_text << "</div>\n";
+        html << "<div class=\"footer-note\">\n" << day_banner.yellow_note << "</div>\n";
     }
 
     // Strategy metrics
@@ -4108,6 +3303,7 @@ std::string EmailSender::generate_trading_report_body(
     }
 
     html << "<h2>Charts</h2>\n";
+    core::ChartLedger chart_ledger;
     if (db) {
         // portfolio_name carries the portfolio_id from the live runner (e.g.
         // "CONSERVATIVE_PORTFOLIO"). Pass it to chart queries so they correctly filter on
@@ -4119,6 +3315,9 @@ std::string EmailSender::generate_trading_report_body(
         // Generate equity curve chart
         chart_base64_ = ChartGenerator::generate_equity_curve_chart(db, chart_strategy_id,
                                                                     chart_portfolio_id, date, 30);
+        html << chart_ledger.record(std::string("Equity Curve"), !chart_base64_.empty(),
+                                          ChartGenerator::last_chart_status(),
+                                          ChartGenerator::last_chart_reason(), "no data to plot");
         if (!chart_base64_.empty()) {
             html << "<h3 style=\"margin-top: 20px; color: #333;\">Equity Curve</h3>\n";
             html << "<div style=\"width: 100%; max-width: 1000px; margin: 20px auto; text-align: "
@@ -4129,10 +3328,26 @@ std::string EmailSender::generate_trading_report_body(
             html << "</div>\n";
         }
 
+        drawdown_base64_ = ChartGenerator::generate_drawdown_chart(db, chart_strategy_id, chart_portfolio_id, date, 30);
+        html << chart_ledger.record(std::string("Drawdown"), !drawdown_base64_.empty(),
+                                    ChartGenerator::last_chart_status(),
+                                    ChartGenerator::last_chart_reason(), "no data to plot");
+        if (!drawdown_base64_.empty()) {
+            html << "<h3 style=\"margin-top: 20px; color: #333;\">Drawdown</h3>\n";
+            html << "<div style=\"width: 100%; max-width: 1000px; margin: 20px auto; text-align: "
+                    "center;\">\n";
+            html << "<img src=\"cid:drawdown\" alt=\"Drawdown\" style=\"max-width: 100%; height: auto; "
+                    "border-radius: 8px; box-shadow: 0 2px 8px rgba(0,0,0,0.1);\" />\n";
+            html << "</div>\n";
+        }
+
         // Generate PnL by symbol chart - ONLY if show_yesterday_pnl is true
         if (show_yesterday_pnl) {
             pnl_by_symbol_base64_ = ChartGenerator::generate_pnl_by_symbol_chart(
                 db, chart_strategy_id, chart_portfolio_id, date, context.equities);
+            html << chart_ledger.record(std::string(ChartTitles::pnl_by_symbol_heading(context.equities)), !pnl_by_symbol_base64_.empty(),
+                                              ChartGenerator::last_chart_status(),
+                                              ChartGenerator::last_chart_reason(), "no data to plot");
             if (!pnl_by_symbol_base64_.empty()) {
                 html << "<h3 style=\"margin-top: 20px; color: #333;\">"
                      << ChartTitles::pnl_by_symbol_heading(context.equities) << "</h3>\n";
@@ -4148,6 +3363,9 @@ std::string EmailSender::generate_trading_report_body(
         // Generate daily PnL chart
         daily_pnl_base64_ = ChartGenerator::generate_daily_pnl_chart(
             db, chart_strategy_id, chart_portfolio_id, date, 30);
+        html << chart_ledger.record(std::string(ChartTitles::daily_pnl_heading(30)), !daily_pnl_base64_.empty(),
+                                          ChartGenerator::last_chart_status(),
+                                          ChartGenerator::last_chart_reason(), "no data to plot");
         if (!daily_pnl_base64_.empty()) {
             html << "<h3 style=\"margin-top: 20px; color: #333;\">"
                  << ChartTitles::daily_pnl_heading(30) << "</h3>\n";
@@ -4158,11 +3376,26 @@ std::string EmailSender::generate_trading_report_body(
             html << "</div>\n";
         }
 
+        gross_leverage_base64_ = ChartGenerator::generate_gross_leverage_chart(db, chart_strategy_id, chart_portfolio_id, date, 30);
+        html << chart_ledger.record(std::string("Leverage"), !gross_leverage_base64_.empty(),
+                                    ChartGenerator::last_chart_status(),
+                                    ChartGenerator::last_chart_reason(), "no data to plot");
+        if (!gross_leverage_base64_.empty()) {
+            html << "<h3 style=\"margin-top: 20px; color: #333;\">Leverage</h3>\n";
+            html << "<div style=\"width: 100%; max-width: 1000px; margin: 20px auto; text-align: "
+                    "center;\">\n";
+            html << "<img src=\"cid:gross_leverage\" alt=\"Leverage\" style=\"max-width: 100%; height: auto; "
+                    "border-radius: 8px; box-shadow: 0 2px 8px rgba(0,0,0,0.1);\" />\n";
+            html << "</div>\n";
+        }
+
         total_transaction_costs_base64_ = ChartGenerator::generate_total_transaction_costs_chart(
             db, chart_strategy_id, chart_portfolio_id, date);
+        html << chart_ledger.record(std::string("Cost per $1M Traded"), !total_transaction_costs_base64_.empty(),
+                                          ChartGenerator::last_chart_status(),
+                                          ChartGenerator::last_chart_reason(), "no data to plot");
         if (!total_transaction_costs_base64_.empty()) {
-            html << "<h3 style=\"margin-top: 20px; color: #333;\">Cost per $1M Traded (Efficiency "
-                    "Metric)</h3>\n";
+            html << "<h3 style=\"margin-top: 20px; color: #333;\">Cost per $1M Traded</h3>\n";
             html << "<div style=\"width: 100%; max-width: 1000px; margin: 20px auto; text-align: "
                     "center;\">\n";
             html << "<img src=\"cid:total_transaction_costs\" alt=\"Cost per $1M Traded\" "
@@ -4173,6 +3406,9 @@ std::string EmailSender::generate_trading_report_body(
 
         margin_posted_base64_ = ChartGenerator::generate_margin_posted_chart(
             db, chart_strategy_id, chart_portfolio_id, date);
+        html << chart_ledger.record(std::string("Margin Posted"), !margin_posted_base64_.empty(),
+                                          ChartGenerator::last_chart_status(),
+                                          ChartGenerator::last_chart_reason(), "no data to plot");
         if (!margin_posted_base64_.empty()) {
             html << "<h3 style=\"margin-top: 20px; color: #333;\">Margin Posted</h3>\n";
             html << "<div style=\"width: 100%; max-width: 1000px; margin: 20px auto; text-align: "
@@ -4185,6 +3421,9 @@ std::string EmailSender::generate_trading_report_body(
 
         portfolio_composition_base64_ =
             ChartGenerator::generate_portfolio_composition_chart(positions, current_prices, date);
+        html << chart_ledger.record(std::string("Portfolio Composition"), !portfolio_composition_base64_.empty(),
+                                          ChartGenerator::last_chart_status(),
+                                          ChartGenerator::last_chart_reason(), "no positions");
         if (!portfolio_composition_base64_.empty()) {
             html << "<h3 style=\"margin-top: 20px; color: #333;\">Portfolio Composition</h3>\n";
             html << "<div style=\"width: 100%; max-width: 800px; margin: 20px auto; text-align: "
@@ -4197,6 +3436,9 @@ std::string EmailSender::generate_trading_report_body(
 
         cumulative_pnl_by_symbol_base64_ = ChartGenerator::generate_cumulative_pnl_by_symbol_chart(
             db, chart_strategy_id, chart_portfolio_id, date);
+        html << chart_ledger.record(std::string(ChartTitles::cumulative_pnl_heading()), !cumulative_pnl_by_symbol_base64_.empty(),
+                                          ChartGenerator::last_chart_status(),
+                                          ChartGenerator::last_chart_reason(), "no data to plot");
         if (!cumulative_pnl_by_symbol_base64_.empty()) {
             html << "<h3 style=\"margin-top: 20px; color: #333;\">"
                  << ChartTitles::cumulative_pnl_heading() << "</h3>\n";
@@ -4207,25 +3449,21 @@ std::string EmailSender::generate_trading_report_body(
                     "8px rgba(0,0,0,0.1);\" />\n";
             html << "</div>\n";
         }
+        INFO(chart_ledger.summary());
     }
 
     // Symbols Reference
     html << "<h2>Symbols Reference</h2>\n";
     if (db) {
         try {
-            html << format_symbols_table_for_positions(positions, db, yesterday_date_str);
+            // Every contract any sleeve holds, not only those the book holds net (N4).
+            const auto held_by_sleeves = held_by_any_sleeve(positions, strategy_positions);
+            html << format_symbols_table_for_positions(held_by_sleeves, db, yesterday_date_str);
         } catch (const std::exception& e) {
             html << "<p>Error loading symbols data: " << e.what() << "</p>\n";
         }
     } else {
         html << "<p>Database unavailable; symbols reference not included.</p>\n";
-    }
-
-    // Rollover Warning (if applicable)
-    if (db) {
-        const char* test_date_env = std::getenv("ROLLOVER_TEST_DATE");
-        std::string test_date = test_date_env ? std::string(test_date_env) : "";
-        html << format_rollover_warning(positions, date, db, test_date);
     }
 
     // Footer note

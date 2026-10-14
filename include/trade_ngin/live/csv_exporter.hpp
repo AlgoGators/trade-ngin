@@ -3,6 +3,7 @@
 #include <chrono>
 #include <fstream>
 #include <memory>
+#include <optional>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -36,6 +37,20 @@ using StrategyInstancesMap = std::unordered_map<std::string, ITrendFollowingStra
  *
  * Phase 4 Refactoring Component
  */
+/// One row of an equity book's positions files (HD 2026-10-14, section 16.4): the columns of the
+/// report's Today's Positions and settled tables.
+struct EquityCsvRow {
+    std::string symbol;
+    double quantity{0.0};
+    double average_cost{0.0};
+    std::optional<double> price;     ///< today's file: the price the row is marked at
+    std::optional<double> previous;  ///< the settled file: the previous price
+    std::optional<double> latest;    ///< the settled file: the latest price
+    double days_pnl{0.0};            ///< quantity x (latest - previous)
+    double unrealized{0.0};
+    double realized{0.0};
+};
+
 class CSVExporter {
 public:
     /**
@@ -95,6 +110,27 @@ public:
      * @param no_session_reason Why there was no session (written into the note)
      * @return Result containing filename on success, or error
      */
+    /// <date>_positions.csv of an equity book: strategy, symbol, quantity, average_cost, price,
+    /// notional, unrealized_pnl, pct_of_gross_notional.
+    Result<std::string> export_equity_positions(const std::chrono::system_clock::time_point& date,
+                                                const std::string& strategy,
+                                                const std::vector<EquityCsvRow>& rows);
+
+    /// <settled>_positions_asof_<date>.csv of an equity book: strategy, symbol, quantity,
+    /// average_cost, previous_price, latest_price, days_pnl, unrealized_pnl, realized_pnl.
+    Result<std::string> export_equity_settled(const std::chrono::system_clock::time_point& date,
+                                              const std::chrono::system_clock::time_point& settled,
+                                              const std::string& strategy,
+                                              const std::vector<EquityCsvRow>& rows);
+
+    /**
+     * @brief Write account_detail_<portfolio>_<date>.csv: a header row of column names and the
+     *        one row of the day (live/account_detail.hpp). Cells are written as given.
+     */
+    Result<std::string> export_account_detail(
+        const std::string& portfolio_id, const std::string& date,
+        const std::vector<std::pair<std::string, std::string>>& columns);
+
     Result<std::string> export_carried_positions(
         const std::chrono::system_clock::time_point& date,
         const StrategyPositionsMap& strategy_positions,

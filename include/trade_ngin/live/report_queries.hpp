@@ -2,6 +2,7 @@
 #pragma once
 
 #include <string>
+#include <vector>
 
 namespace trade_ngin {
 
@@ -31,6 +32,34 @@ inline std::string yesterday_positions_report_query(const std::string& strategy_
            "WHERE strategy_id = '" +
            strategy_id + "' AND portfolio_id = '" + portfolio_id +
            "' AND portfolio_type = 'system' AND DATE(last_update) = '" + date + "'";
+}
+
+
+/**
+ * @brief The quantity each of `symbols` held at its last stored row BEFORE `date` (T-EMAIL,
+ *        HD ruling Q11): a position closed on the settled day is stored with quantity 0, and the
+ *        settled table prints the quantity it had when it closed.
+ *
+ * One row per symbol: (symbol, quantity, average_price), the latest row dated before `date` (UTC date), for the
+ * book and system portfolio the settled rows are read from.
+ */
+inline std::string quantity_before_report_query(const std::string& strategy_id,
+                                                const std::string& portfolio_id,
+                                                const std::string& date,
+                                                const std::vector<std::string>& symbols) {
+    std::string in_list;
+    for (const auto& symbol : symbols) {
+        std::string safe;
+        for (const char c : symbol) {
+            if (c != '\'') safe += c;
+        }
+        in_list += (in_list.empty() ? "'" : ", '") + safe + "'";
+    }
+    return "SELECT DISTINCT ON (symbol) symbol, quantity, average_price FROM trading.positions "
+           "WHERE strategy_id = '" +
+           strategy_id + "' AND portfolio_id = '" + portfolio_id +
+           "' AND portfolio_type = 'system' AND DATE(last_update) < '" + date +
+           "' AND symbol IN (" + in_list + ") ORDER BY symbol, last_update DESC";
 }
 
 }  // namespace trade_ngin

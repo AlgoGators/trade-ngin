@@ -122,11 +122,8 @@ const std::vector<Site> kFuturesSites = {
     {"use_override_date = true;",
      "set by the argument parse"},
     {"if (!use_override_date) {",
-     "DECISION: a run with no date mails by default. Not run in tests by rule (it "
-     "mails); the report plan itself: EmailReportPlan.* "
-     "(tests/live/test_email_body_file.cpp)"},
-    {"send_email = true;",
-     "set by --send-email, or by a run with no date"},
+     "DECISION: a run with no date is refused: usage, exit 2, nothing run and nothing sent "
+     "(live/run_args.hpp, RunArgs.* in tests/live/test_run_args.cpp)"},
     {"if (send_email && use_override_date) {",
      "a console line"},
     {"auto now = use_override_date ? target_date : std::chrono::system_clock::now();",
@@ -164,11 +161,9 @@ const std::vector<Site> kFuturesSites = {
     {"if (email_plan.send) {",
      "DECISION: mail, on --send-email only. The plan: EmailReportPlan.*; the send "
      "arm itself is never run by a test, by rule (it mails)"},
-    {"if (email_plan.write_body_file) {",
-     "DECISION: write the body to a file, never on a sending run. EmailReportPlan.*; "
-     "executed on the real binary by every run of scripts/live_mode_gate/gate.sh"},
-    {"email_sender->send_email(subject, email_body, true, attachments);",
-     "the send itself, inside the send arm"},
+    {"auto send_result = email_sender->send_email(mail_subject, mail_body,",
+     "the send itself, handed to deliver_email_report as its sender; the file-or-send "
+     "choice is made there: EmailDelivery.* (tests/live/test_email_delivery.cpp)"},
 };
 
 // --- the equity runner ------------------------------------------------------------------------
@@ -184,11 +179,8 @@ const std::vector<Site> kEquitySites = {
     {"use_override_date = true;",
      "set by the argument parse"},
     {"if (!use_override_date) {",
-     "DECISION: a run with no date mails by default. Not run in tests by rule (it "
-     "mails); the report plan itself: EmailReportPlan.* "
-     "(tests/live/test_email_body_file.cpp)"},
-    {"send_email = true;",
-     "set by --send-email, or by a run with no date"},
+     "DECISION: a run with no date is refused: usage, exit 2, nothing run and nothing sent "
+     "(live/run_args.hpp, RunArgs.* in tests/live/test_run_args.cpp)"},
     {"if (send_email && use_override_date) {",
      "a console line"},
     {"if (use_override_date) {",
@@ -226,11 +218,9 @@ const std::vector<Site> kEquitySites = {
     {"if (email_plan.send) {",
      "DECISION: mail, on --send-email only. The plan: EmailReportPlan.*; the send "
      "arm itself is never run by a test, by rule (it mails)"},
-    {"if (email_plan.write_body_file) {",
-     "DECISION: write the body to a file, never on a sending run. EmailReportPlan.*; "
-     "executed on the real binary by every run of scripts/live_mode_gate/gate.sh"},
-    {"auto send_result = email_sender->send_email(subject, email_body, true, attachments);",
-     "the send itself, inside the send arm"},
+    {"email_sender->send_email(mail_subject, mail_body, true, attachments);",
+     "the send itself, handed to deliver_email_report as its sender; the file-or-send "
+     "choice is made there: EmailDelivery.* (tests/live/test_email_delivery.cpp)"},
 };
 
 // --- every other file under apps/ (none is a live runner) --------------------------------------
@@ -307,13 +297,10 @@ const std::map<std::string, std::pair<const char*, std::vector<std::string>>> kL
      {"the backtest window; no live runner calls it",
       {"std::tm* local_tm = std::localtime(&now_time_t);"}}},
     {"src/core/email_sender.cpp",
-     {"the MIME boundary of a sent mail; ROLLOVER_TEST_DATE (report content, the "
-      "email pass's); a chart query's column stamp",
+     {"the MIME boundary of a sent mail; a chart query's column stamp",
       {"std::string outer_boundary = \"----=_Outer_\" + std::to_string(std::time(nullptr));",
        "std::string inner_boundary = \"----=_Inner_\" + std::to_string(std::time(nullptr));",
-       "const char* test_date_env = std::getenv(\"ROLLOVER_TEST_DATE\");",
-       "\"  CURRENT_TIMESTAMP AS \\\"time\\\",\"",
-       "const char* test_date_env = std::getenv(\"ROLLOVER_TEST_DATE\");"}}},
+       "\"  CURRENT_TIMESTAMP AS \\\"time\\\",\""}}},
     {"src/core/logger.cpp",
      {"log file names and line stamps",
       {"auto now = std::chrono::system_clock::now();",

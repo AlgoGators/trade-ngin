@@ -201,7 +201,7 @@ TEST(ChartSeries, TheEquityCurvePlotsItsStoredRowsAndNoOtherPoint) {
 TEST(ChartSeries, TheEquityCurveIsCaptionedThroughItsLastDaySettled) {
     const ChartData data = ChartSeries::equity_curve(
         {{"2026-04-23", 495994.40}, {"2026-04-24", 497239.40}}, std::nullopt);
-    EXPECT_EQ(data.title, "Equity Curve through 2026-04-24 (settled)");
+    EXPECT_EQ(data.title, "Equity Curve through 2026-04-24");
 }
 
 // The reference line is the book's own starting capital (500,000 on a futures book, 100,000 on
@@ -282,7 +282,7 @@ TEST(ChartSeries, ABookWithOneStoredDayIsOnePointOnAnAxisOfThreeDays) {
     ASSERT_EQ(data.labels.size(), 1u);
     EXPECT_EQ(data.labels[0], "2026-03-01");
     EXPECT_DOUBLE_EQ(data.values[0], 100000.0);
-    EXPECT_EQ(data.title, "Equity Curve through 2026-03-01 (settled)");
+    EXPECT_EQ(data.title, "Equity Curve through 2026-03-01");
 
     const auto range = ChartSeries::line_chart_x_range(data.labels);
     EXPECT_EQ(range.first, "2026-02-28");
@@ -321,7 +321,7 @@ TEST(ChartSeries, PnlBySymbolIsSortedLargestFirstAndTitledWithTheDayBeforeTheRun
     EXPECT_EQ(data.labels[1], "ZF.v.0");
     EXPECT_EQ(data.labels[2], "6L.v.0");
     EXPECT_DOUBLE_EQ(data.values[0], 1475.0);
-    EXPECT_EQ(data.title, "Yesterday's PnL by Symbol (2026-04-23)");
+    EXPECT_EQ(data.title, "Yesterday's PnL by Symbol, 2026-04-23");
     EXPECT_TRUE(data.has_reference_line);
     EXPECT_DOUBLE_EQ(data.reference_line, 0.0);
 }
@@ -348,10 +348,10 @@ TEST(ChartSeries, ASymbolHeldByTwoSleevesIsOneBarOfTheirSum) {
 TEST(ChartSeries, OnAnEquityBookYesterdaysPnlIsTitledRealized) {
     const std::vector<ChartPoint> rows = {{"AAPL", 0.02}, {"GOOGL", -1.87}};
     EXPECT_EQ(ChartSeries::pnl_by_symbol(rows, "2026-06-16", true).title,
-              "Yesterday's Realized PnL by Symbol (2026-06-15)");
+              "Day's PnL by Symbol, 2026-06-15");
     EXPECT_EQ(ChartSeries::pnl_by_symbol(rows, "2026-06-16", false).title,
-              "Yesterday's PnL by Symbol (2026-06-15)");
-    EXPECT_EQ(ChartTitles::pnl_by_symbol_heading(true), "Yesterday's Realized PnL by Symbol");
+              "Yesterday's PnL by Symbol, 2026-06-15");
+    EXPECT_EQ(ChartTitles::pnl_by_symbol_heading(true), "Day's PnL by Symbol");
     EXPECT_EQ(ChartTitles::pnl_by_symbol_heading(false), "Yesterday's PnL by Symbol");
 }
 
@@ -374,7 +374,7 @@ TEST(ChartSeries, DailyPnlIsPlottedOldestFirst) {
 // T-8D-2 R62: the chart holds the last 30 STORED days, which on a book with missing days is not
 // the last 30 days; the heading said "Last 30 Days".
 TEST(ChartTitles, TheDailyPnlHeadingCountsStoredDays) {
-    EXPECT_EQ(ChartTitles::daily_pnl_heading(30), "Daily PnL (last 30 stored days)");
+    EXPECT_EQ(ChartTitles::daily_pnl_heading(30), "Daily PnL (last 30 days)");
 }
 
 // --- cost per $1M traded -------------------------------------------------------------------------
@@ -423,7 +423,7 @@ TEST(ChartSeries, CostPerMillionIsTheDaysCostOverTheNotionalTradedThatDay) {
     EXPECT_DOUBLE_EQ(data.values[0], 12.50 / (2.0 * 7153.5 * 5.0) * 1000000.0);
     EXPECT_DOUBLE_EQ(data.values[1], 39.98 / (78575.0 + 216187.5) * 1000000.0);
     EXPECT_NEAR(data.values[1], 135.63, 0.005);
-    EXPECT_EQ(data.title, "Cost per $1M Traded (Efficiency Metric)");
+    EXPECT_EQ(data.title, "Cost per $1M Traded");
     EXPECT_FALSE(data.has_reference_line);
 }
 
@@ -491,11 +491,11 @@ TEST(ChartSeries, CumulativePnlBySymbolIsSortedLargestFirst) {
 // image's title say so (they said "(All-Time)" and "Cumulative Realized PnL by Symbol").
 TEST(ChartTitles, TheCumulativeChartSaysItIsRealizedAndGrossOfCosts) {
     EXPECT_EQ(ChartTitles::cumulative_pnl_heading(),
-              "Cumulative PnL by Symbol (realized, gross of costs)");
+              "Cumulative PnL by Symbol");
     const ChartData data =
         ChartSeries::cumulative_pnl_by_symbol({{"KE.v.0", 5200.0}}, "2026-04-24");
     EXPECT_EQ(data.title,
-              "Cumulative PnL by Symbol (realized, gross of costs; all-time as of 2026-04-24)");
+              "Cumulative PnL by Symbol, all-time as of 2026-04-24");
 }
 
 // --- the fetchers, against a database that answers -----------------------------------------------
@@ -583,7 +583,7 @@ TEST(ChartFetchers, TheEquityCurvePlotsTheAnsweredRowsAgainstTheBooksCapital) {
     EXPECT_EQ(data.labels[1], "2026-06-15");
     EXPECT_DOUBLE_EQ(data.values[0], 99540.25);
     EXPECT_DOUBLE_EQ(data.values[1], 99780.0);
-    EXPECT_EQ(data.title, "Equity Curve through 2026-06-15 (settled)");
+    EXPECT_EQ(data.title, "Equity Curve through 2026-06-15");
     EXPECT_TRUE(data.has_reference_line);
     EXPECT_DOUBLE_EQ(data.reference_line, 100000.0);
 }

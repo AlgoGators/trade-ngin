@@ -3,7 +3,7 @@
 // TRADE_NGIN_EMAIL_BODY_DIR names a directory. On a run that does NOT send (no --send-email and a
 // date given: every test run), a futures runner with the variable set builds the report body
 // exactly as for a send and writes it there as email_body_<portfolio>_<date>.html, and mails
-// nothing. On a run that sends (--send-email, or a run without a date: production), the variable
+// nothing. On a run that sends (--send-email: production), the variable
 // is IGNORED: the report is built and mailed as if the variable did not exist, one WARN line says
 // so, and no file is written. So the file path cannot run in production, and a variable left in a
 // production environment cannot silence the daily email. An empty value is the same as unset.
@@ -29,7 +29,7 @@ struct EmailReportPlan {
     bool build() const { return send || write_body_file; }
 };
 
-/// `send_email` is the runner's own flag (--send-email, or a run without a date). `body_dir_env`
+/// `send_email` is the runner's own flag (--send-email; a run without a date is refused). `body_dir_env`
 /// is std::getenv(kEmailBodyDirEnv): null or empty means not set.
 inline EmailReportPlan plan_email_report(bool send_email, const char* body_dir_env) {
     EmailReportPlan plan;

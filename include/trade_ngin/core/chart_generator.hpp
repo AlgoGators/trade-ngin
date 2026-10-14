@@ -7,6 +7,7 @@
 #include <utility>
 #include <vector>
 #include <memory>
+#include "trade_ngin/core/gnuplot_run.hpp"
 #include "trade_ngin/data/database_interface.hpp"
 
 namespace trade_ngin {
@@ -43,6 +44,9 @@ struct ChartData {
     std::string title;                    ///< Chart title
     std::string x_label;                  ///< X-axis label
     std::string y_label;                  ///< Y-axis label
+    std::string series_name;              ///< legend of the first series (two-series line charts)
+    std::string series2_name;             ///< legend of values2
+    std::string y_format;                 ///< gnuplot format of the value axis; empty: dollars
     double reference_line;                ///< Reference line value (e.g., 0 or starting value)
     bool has_reference_line = false;      ///< Whether to draw reference line
     bool reference_line_on_axis = false;  ///< Line charts: widen the value axis to hold the line
@@ -60,21 +64,21 @@ namespace ChartTitles {
 /// "Yesterday's PnL by Symbol". On an equity book the bars are the day's REALIZED P&L only (a
 /// futures row's daily figure is its whole settled P&L), and the heading says so (T-8D-2 R64).
 inline std::string pnl_by_symbol_heading(bool equities) {
-    return equities ? "Yesterday's Realized PnL by Symbol" : "Yesterday's PnL by Symbol";
+    return equities ? "Day's PnL by Symbol" : "Yesterday's PnL by Symbol";
 }
 /// The daily PnL chart holds the last `stored_days` STORED days before the run date, which on a
 /// book with missing days is a longer span than that many calendar days (T-8D-2 R62).
 inline std::string daily_pnl_heading(int stored_days) {
-    return "Daily PnL (last " + std::to_string(stored_days) + " stored days)";
+    return "Daily PnL (last " + std::to_string(stored_days) + " days)";
 }
 /// The cumulative chart sums each symbol's stored daily realized P&L; no cost is taken off
 /// (T-8D-2 R62).
 inline std::string cumulative_pnl_heading() {
-    return "Cumulative PnL by Symbol (realized, gross of costs)";
+    return "Cumulative PnL by Symbol";
 }
 /// The cumulative chart's title in the image: the heading and the day the sums run through.
 inline std::string cumulative_pnl_title(const std::string& date) {
-    return "Cumulative PnL by Symbol (realized, gross of costs; all-time as of " + date + ")";
+    return "Cumulative PnL by Symbol, all-time as of " + date;
 }
 }  // namespace ChartTitles
 
@@ -100,7 +104,8 @@ std::string cost_per_million(const std::string& strategy_id, const std::string& 
 std::string margin_posted(const std::string& strategy_id, const std::string& portfolio_id,
                           const std::string& date);
 std::string cumulative_pnl_by_symbol(const std::string& strategy_id,
-                                     const std::string& portfolio_id, const std::string& date);
+                                     const std::string& portfolio_id, const std::string& date,
+                                     bool equities = false);
 }  // namespace ChartQueries
 
 /**
@@ -257,7 +262,8 @@ public:
         std::shared_ptr<DatabaseInterface> db,
         const std::string& strategy_id,
         const std::string& portfolio_id,
-        const std::string& date
+        const std::string& date,
+        bool equities = false
     );
 
     /**
@@ -428,9 +434,34 @@ public:
         std::shared_ptr<DatabaseInterface> db,
         const std::string& strategy_id,
         const std::string& portfolio_id,
-        const std::string& date
+        const std::string& date,
+        bool equities = false  ///< realized plus unrealized per symbol, from the stored rows
     );
 
+    /// An equity book's Day's PnL by Symbol: one bar per symbol of the settled table's Day's PnL column
+    /// (shares held over the move x (latest - previous)); `date` is the run date.
+    static std::string generate_days_pnl_chart(const std::vector<ChartPoint>& rows,
+                                               const std::string& date);
+
+
+    /// The drawdown from the running peak of the stored equity curve, in percent (HD 10-13).
+    static std::string generate_drawdown_chart(std::shared_ptr<DatabaseInterface> db,
+                                               const std::string& strategy_id,
+                                               const std::string& portfolio_id,
+                                               const std::string& date, int lookback_days = 30);
+
+    /// The stored gross and net leverage on the sizing capital over the last days (HD 10-13).
+    static std::string generate_gross_leverage_chart(std::shared_ptr<DatabaseInterface> db,
+                                                     const std::string& strategy_id,
+                                                     const std::string& portfolio_id,
+                                                     const std::string& date,
+                                                     int lookback_days = 30);
+
+    /// How the chart most recently asked for on this thread ended: Drawn, NothingToPlot (no data,
+    /// no process started) or Failed (the data could not be read, or the chart program hung twice,
+    /// errored or left no image). `last_chart_reason` says why in plain words when it Failed.
+    static core::ChartStatus last_chart_status();
+    static std::string last_chart_reason();
 
     // Future chart types can be added here as new static methods:
     // static std::string generate_drawdown_chart(...);

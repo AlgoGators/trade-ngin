@@ -331,6 +331,11 @@ struct ConsumedT1Settlement {
     /// Symbols whose T-1 bar books no move: a change bar (a roll's switch day or either bar of a
     /// flip) or a WITHHELD bar (K-01).
     std::unordered_set<std::string> zero_pnl_symbols;
+    /// The two kinds of zero_pnl_symbols, kept apart for the report (T-EMAIL): a CHANGE bar (a
+    /// roll's switch day, either bar of a flip, an unconfirmed id change the classifier holds) and
+    /// a WITHHELD bar (K-01). Their union is zero_pnl_symbols; nothing settles from these two.
+    std::unordered_set<std::string> roll_zero_symbols;
+    std::unordered_set<std::string> withheld_zero_symbols;
     /// The close each symbol's T-1 move is booked against: its previous CONSUMED bar's close when its
     /// last consumed bar is dated T-1 (a withheld bar in between is skipped); otherwise the raw T-2
     /// close passed in (unused: no consumed T-1 bar books no move).
@@ -363,6 +368,7 @@ inline ConsumedT1Settlement consumed_t1_settlement(
     const std::unordered_map<std::string, LateRollSettlement>& late_rolls) {
     ConsumedT1Settlement out;
     out.zero_pnl_symbols.insert(withheld_t1_symbols.begin(), withheld_t1_symbols.end());
+    out.withheld_zero_symbols.insert(withheld_t1_symbols.begin(), withheld_t1_symbols.end());
     out.t2_close_prices = raw_t2;
     out.t1_close_prices = raw_t1;
     std::map<std::string, std::vector<const Bar*>> by_symbol;
@@ -376,12 +382,17 @@ inline ConsumedT1Settlement consumed_t1_settlement(
         }
         if (seq.size() >= 2) out.t2_close_prices[symbol] = static_cast<double>(seq[seq.size() - 2]->close);
         const auto rs = roll_status.find(symbol);
-        if (rs != roll_status.end() && rs->second.change) out.zero_pnl_symbols.insert(symbol);
+        if (rs != roll_status.end() && rs->second.change) {
+            out.zero_pnl_symbols.insert(symbol);
+            if (!out.withheld_zero_symbols.count(symbol)) out.roll_zero_symbols.insert(symbol);
+        }
     }
     // A late roll's symbol books its unbooked consumed bars on this run, whether or not it has a
     // T-1 bar (a withheld T-1 print stays out: the sum is over consumed bars).
     for (const auto& [symbol, late] : late_rolls) {
         out.zero_pnl_symbols.erase(symbol);
+        out.roll_zero_symbols.erase(symbol);
+        out.withheld_zero_symbols.erase(symbol);
         out.t1_close_prices[symbol] = late.settle_to;
         out.t2_close_prices[symbol] = late.settle_from;
     }

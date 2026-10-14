@@ -15,9 +15,10 @@
 namespace trade_ngin {
 namespace email_netting {
 
-/// The note under the book's footer of a several-sleeve email on a netted day.
+/// The note under the book's footer of a day on which a printed cent differs (T-EMAIL, HD ruling
+/// Q3): the totals are the exact stored figures, every line prints rounded to the cent.
 inline constexpr const char* kRoundingNote =
-    "Each figure is rounded to the cent on its own, so rows and totals can differ by a cent.";
+    "Totals are rounded from exact amounts; rows can differ by a cent.";
 
 /// `value` with two decimals, as the stream rounds it, without separators: "-1234.50".
 inline std::string two_decimals(double value) {
@@ -50,6 +51,20 @@ inline long long printed_cents(double value) {
     }
     return (!s.empty() && s[0] == '-') ? -cents : cents;
 }
+
+/// One column of printed rows against the footer under it: the rows are added as printed (each to
+/// its own cent) and the footer prints the exact sum rounded once; `differs` is true when the two
+/// are not the same number of cents.
+struct RoundingCheck {
+    double exact{0.0};
+    long long printed{0};
+    void add(double value) {
+        exact += value;
+        printed += printed_cents(value);
+    }
+    long long footer_cents() const { return printed_cents(exact); }
+    bool differs() const { return footer_cents() != printed; }
+};
 
 /// The netting adjustment as it acts on the cost, from the two figures printed beside it: a saving
 /// is a reduction ("-$2.40"), an extra cost an addition ("+$1.82"), none "$0.00". `own_cost` and

@@ -28,6 +28,9 @@
 #include "trade_ngin/live/corp_action_window.hpp"
 #include "trade_ngin/live/data_freshness.hpp"
 #include "trade_ngin/live/email_body_file.hpp"
+#include "trade_ngin/live/account_detail.hpp"
+#include "trade_ngin/live/email_delivery.hpp"
+#include "trade_ngin/live/run_args.hpp"
 #include "trade_ngin/live/session_book_gate.hpp"
 #include "trade_ngin/live/corp_action_feed_status.hpp"
 #include "trade_ngin/live/trading_days_anchor.hpp"
@@ -88,6 +91,10 @@ static std::string resolve_corp_actions_state_dir(const std::string& strategy_id
 // trade_ngin::core::format_utc_date as the only approved primitive for
 // UTC date-string keys).
 
+// The book is held in a cash account (a position is paid for in full: T-8D D4 (a)); a margin account is
+// decided when margin trading is turned on, and keeps value - margin for cash_available.
+constexpr bool kBookIsCashAccount = true;
+
 int main(int argc, char* argv[]) {
     try {
         // Parse command-line arguments for date override and email flag
@@ -122,9 +129,11 @@ int main(int argc, char* argv[]) {
             }
         }
 
-        // If no date override, enable email by default for real-time runs
+        // A run names its date (live/run_args.hpp, T-EMAIL P2-5): without one nothing is run and
+        // nothing is sent.
         if (!use_override_date) {
-            send_email = true;
+            std::cerr << live::dateless_run_message(argv[0]);
+            return live::kDatelessRunExitCode;
         }
 
         if (send_email && use_override_date) {
@@ -4961,9 +4970,9 @@ int main(int argc, char* argv[]) {
                 "total_cumulative_return = " + std::to_string(yesterday_total_cumulative_return_pct) + ", "
                 + finalize_margin_columns_sql(yesterday_finalised_value_sql, yesterday_maintenance_sql)
                 + finalize_gross_leverage_sql(yesterday_finalised_value_sql) +
-                "cash_available = " + std::to_string(initial_capital) + " "
-                "             + (COALESCE((SELECT prev_total_realized FROM day_before), 0.0) + COALESCE(daily_realized_pnl, 0.0) "
-                "                - COALESCE(total_transaction_costs, 0.0)) + " + std::to_string(yesterday_finalized_unrealized) + " - COALESCE(margin_posted, 0.0) "
+                equity_cash_available_sql(yesterday_finalised_value_sql,
+                                            std::to_string(yesterday_finalized_unrealized),
+                                            kBookIsCashAccount) +
                 "WHERE strategy_id = 'LIVE_EQUITY_MEAN_REVERSION' AND portfolio_id = '" + portfolio_id + "' AND DATE(date) = '" + yesterday_date_str + "'";
 
             INFO("Executing UPDATE query for Day T-1 live_results...");
@@ -5925,7 +5934,8 @@ int main(int argc, char* argv[]) {
                 {"daily_unrealized_pnl", daily_unrealized_pnl},
                 {"daily_transaction_costs", total_daily_commissions},
                 {"margin_posted", total_posted_margin},
-                {"cash_available", current_portfolio_value - total_posted_margin}
+                {"cash_available", equity_cash_available(current_portfolio_value, total_unrealized_pnl,
+                                                          total_posted_margin, kBookIsCashAccount)}
             };
             if (dividend_income_today) {
                 double_metrics["total_dividend_income"] = *dividend_income_today;
@@ -6075,6 +6085,7 @@ int main(int argc, char* argv[]) {
         // that sends builds and mails the report and ignores TRADE_NGIN_EMAIL_BODY_DIR with one
         // WARN; a run that does not send builds the same body into that directory when it is set
         // and mails nothing; otherwise nothing is built.
+        bool email_failed = false;  // the report was not built, written or sent: exit code 4
         const live::EmailReportPlan email_plan =
             live::plan_email_report(send_email, std::getenv(live::kEmailBodyDirEnv));
         if (email_plan.variable_ignored) {
@@ -6103,6 +6114,7 @@ int main(int argc, char* argv[]) {
                 auto email_init_result = email_sender->initialize();
                 if (email_init_result.is_error()) {
                     ERROR("Failed to initialize email sender: " + std::string(email_init_result.error()->what()));
+                    email_failed = true;
                 } else {
                 // Prepare email data
                 std::string date_str = std::to_string(now_tm->tm_year + 1900) + "-"
@@ -6144,7 +6156,9 @@ int main(int argc, char* argv[]) {
                     auto quantity_arr = std::static_pointer_cast<arrow::StringArray>(table_email->column(1)->chunk(0));
                     auto avg_price_arr = std::static_pointer_cast<arrow::StringArray>(table_email->column(2)->chunk(0));
                     auto realized_pnl_arr = std::static_pointer_cast<arrow::StringArray>(table_email->column(3)->chunk(0));
+                    auto unrealized_pnl_arr = std::static_pointer_cast<arrow::StringArray>(table_email->column(4)->chunk(0));
 
+                    std::vector<std::pair<std::string, double>> closed_on_settled_day;
                     for (int64_t i = 0; i < table_email->num_rows(); ++i) {
                         if (!symbol_arr->IsNull(i) && !quantity_arr->IsNull(i)) {
                             std::string symbol = symbol_arr->GetString(i);
@@ -6152,8 +6166,15 @@ int main(int argc, char* argv[]) {
                             double avg_price = std::stod(avg_price_arr->GetString(i));
                             double realized_pnl = std::stod(realized_pnl_arr->GetString(i));
 
-                            // Skip positions with zero quantity
-                            if (std::abs(quantity) < 0.0001) continue;
+                            // A position closed on the settled day is stored at quantity 0 with
+                            // its realized figure: it keeps a row, at the quantity it had when it
+                            // closed (HD ruling Q11); a zero row with no figure is no position.
+                            if (std::abs(quantity) < 0.0001) {
+                                if (std::abs(realized_pnl) >= 1e-9) {
+                                    closed_on_settled_day.push_back({symbol, realized_pnl});
+                                }
+                                continue;
+                            }
 
                             // Create Position object for yesterday's finalized position
                             Position pos;
@@ -6161,9 +6182,70 @@ int main(int argc, char* argv[]) {
                             pos.quantity = Decimal(quantity);
                             pos.average_price = Decimal(avg_price);
                             pos.realized_pnl = Decimal(realized_pnl);
+                            if (!unrealized_pnl_arr->IsNull(i)) {
+                                pos.unrealized_pnl = Decimal(std::stod(unrealized_pnl_arr->GetString(i)));
+                            }
 
                             yesterday_positions_finalized[symbol] = pos;
 
+                            if (previous_day_close_prices.find(symbol) ==
+                                previous_day_close_prices.end()) {
+                                const auto last_known = price_manager->get_latest_price(symbol);
+                                if (last_known.is_ok()) {
+                                    settled_last_known_close[symbol] = last_known.value();
+                                }
+                            }
+                        }
+                    }
+                    if (!closed_on_settled_day.empty()) {
+                        std::vector<std::string> closed_symbols;
+                        for (const auto& closed : closed_on_settled_day) {
+                            closed_symbols.push_back(closed.first);
+                        }
+                        const auto before_result = db->execute_query(
+                            trade_ngin::quantity_before_report_query(
+                                kEquityStrategyId, portfolio_id, yesterday_date_for_email,
+                                closed_symbols));
+                        std::unordered_map<std::string, double> quantity_before;
+                        std::unordered_map<std::string, double> average_cost_before;
+                        if (before_result.is_ok() && before_result.value()->num_rows() > 0) {
+                            const auto before_table = before_result.value();
+                            auto before_symbol = std::static_pointer_cast<arrow::StringArray>(
+                                before_table->column(0)->chunk(0));
+                            auto before_quantity = std::static_pointer_cast<arrow::StringArray>(
+                                before_table->column(1)->chunk(0));
+                            for (int64_t i = 0; i < before_table->num_rows(); ++i) {
+                                if (before_symbol->IsNull(i) || before_quantity->IsNull(i)) continue;
+                                quantity_before[before_symbol->GetString(i)] =
+                                    std::stod(before_quantity->GetString(i));
+                                const auto before_cost = std::static_pointer_cast<arrow::StringArray>(
+                                    before_table->column(2)->chunk(0));
+                                if (!before_cost->IsNull(i))
+                                    average_cost_before[before_symbol->GetString(i)] =
+                                        std::stod(before_cost->GetString(i));
+                            }
+                        } else if (before_result.is_error()) {
+                            ERROR("Failed to read the quantity a closed position had: " +
+                                  std::string(before_result.error()->what()) +
+                                  "; its settled row is left out");
+                        }
+                        for (const auto& [symbol, realized_pnl] : closed_on_settled_day) {
+                            const auto held = quantity_before.find(symbol);
+                            if (held == quantity_before.end() || std::abs(held->second) < 0.0001) {
+                                WARN("Settled row of " + symbol + " closed on " +
+                                     yesterday_date_for_email +
+                                     ": no earlier quantity is stored, so its row is left out");
+                                continue;
+                            }
+                            Position pos;
+                            pos.symbol = symbol;
+                            // Sold at the previous close: held over none of the day's move, so its
+                            // quantity in the settled table is 0 and its average cost is the one it
+                            // was bought at.
+                            pos.quantity = Decimal(0.0);
+                            pos.average_price = Decimal(average_cost_before[symbol]);
+                            pos.realized_pnl = Decimal(realized_pnl);
+                            yesterday_positions_finalized[symbol] = pos;
                             if (previous_day_close_prices.find(symbol) ==
                                 previous_day_close_prices.end()) {
                                 const auto last_known = price_manager->get_latest_price(symbol);
@@ -6279,6 +6361,7 @@ int main(int argc, char* argv[]) {
                 report_context.sessions_per_year = app_config.statistics.equity_sessions_per_year;
                 // T-8D-2 R59: an equity book (no futures text or tables), with its own start date.
                 report_context.equities = true;
+                report_context.equity_closed_today = today_is_non_trading;
                 report_context.live_start_date = book_live_start_date;
 
                 // Performance Metrics. T-8D-2 R61: the day T "Daily ..." values are not report
@@ -6335,7 +6418,9 @@ int main(int argc, char* argv[]) {
                     strategy_metrics["Margin Cushion"] = *margin_cushion * 100.0; // Convert to percentage
                 }
                 strategy_metrics["Margin Posted"] = total_posted_margin;
-                strategy_metrics["Cash Available"] = current_portfolio_value - total_posted_margin;
+                strategy_metrics["Cash Available"] = equity_cash_available(
+                    current_portfolio_value, total_unrealized_pnl, total_posted_margin,
+                    kBookIsCashAccount);
 
                 // Note: yesterday_daily_metrics_final is now loaded AFTER database updates above
                 // So we don't need to create it here anymore
@@ -6359,28 +6444,92 @@ int main(int argc, char* argv[]) {
                     std::string(kEquityStrategyId), portfolio_id, report_context);
 
                 // Send email without CSV attachments (CSV export disabled for mean reversion)
-                std::vector<std::string> attachments = {};  // No CSV files for mean reversion
-
-                if (email_plan.write_body_file) {
-                    const std::string body_path = live::email_body_file_path(
-                        email_plan.body_dir, portfolio_id, date_str);
-                    if (!live::write_email_body_file(body_path, email_body)) {
-                        ERROR("EMAIL_BODY_FILE could not write " + body_path);
-                    } else {
-                        INFO("EMAIL_BODY_FILE wrote " + body_path + " (" +
-                             std::to_string(email_body.size()) + " bytes); nothing is mailed");
+                // The same files the futures report attaches (HD 10-13): today's positions, the
+                // previous trading day's positions with their two prices, the executions, and the
+                // account detail.
+                std::vector<std::string> attachments;
+                {
+                    const std::string csv_dir = "apps/strategies/results/" + portfolio_id;
+                    std::filesystem::create_directories(csv_dir);
+                    csv_exporter->set_output_directory(csv_dir);
+                    std::vector<EquityCsvRow> today_rows;
+                    for (const auto& [symbol, position] : positions) {
+                        if (std::abs(position.quantity.as_double()) < 0.0001) continue;
+                        EquityCsvRow row;
+                        row.symbol = symbol;
+                        row.quantity = position.quantity.as_double();
+                        row.average_cost = position.average_price.as_double();
+                        const auto close = previous_day_close_prices.find(symbol);
+                        if (close != previous_day_close_prices.end()) row.price = close->second;
+                        today_rows.push_back(row);
                     }
-                } else {
-                auto send_result = email_sender->send_email(subject, email_body, true, attachments);
-                if (send_result.is_error()) {
-                    ERROR("Failed to send email: " + std::string(send_result.error()->what()));
-                } else {
-                    INFO("Email report sent successfully (without CSV attachments)");
+                    std::sort(today_rows.begin(), today_rows.end(),
+                              [](const auto& a, const auto& b) { return a.symbol < b.symbol; });
+                    const std::string strategy_label = "Mean Reversion";
+                    const auto today_file =
+                        csv_exporter->export_equity_positions(now, strategy_label, today_rows);
+                    if (today_file.is_ok()) attachments.push_back(today_file.value());
+                    else ERROR("Failed to export today's positions: " +
+                               std::string(today_file.error()->what()));
+                    if (!yesterday_positions_finalized.empty()) {
+                        std::vector<EquityCsvRow> settled_rows;
+                        for (const auto& [symbol, position] : yesterday_positions_finalized) {
+                            EquityCsvRow row;
+                            row.symbol = symbol;
+                            row.quantity = position.quantity.as_double();
+                            row.average_cost = position.average_price.as_double();
+                            const auto from = yesterday_entry_prices.find(symbol);
+                            const auto to = yesterday_exit_prices.find(symbol);
+                            if (from != yesterday_entry_prices.end()) row.previous = from->second;
+                            if (to != yesterday_exit_prices.end()) row.latest = to->second;
+                            if (row.previous && row.latest)
+                                row.days_pnl = row.quantity * (*row.latest - *row.previous);
+                            row.unrealized = position.unrealized_pnl.as_double();
+                            row.realized = position.realized_pnl.as_double();
+                            settled_rows.push_back(row);
+                        }
+                        std::sort(settled_rows.begin(), settled_rows.end(),
+                                  [](const auto& a, const auto& b) { return a.symbol < b.symbol; });
+                        const auto settled_file = csv_exporter->export_equity_settled(
+                            now, now - std::chrono::hours(24), strategy_label, settled_rows);
+                        if (settled_file.is_ok()) attachments.push_back(settled_file.value());
+                        else ERROR("Failed to export the previous trading day's positions: " +
+                                   std::string(settled_file.error()->what()));
+                    }
+                    const auto detail = csv_exporter->export_account_detail(
+                        portfolio_id, date_str,
+                        trade_ngin::account_detail_columns(
+                            date_str,
+                            trade_ngin::read_account_detail_row(db, std::string(kEquityStrategyId),
+                                                                portfolio_id, date_str),
+                            nullptr, strategy_metrics));
+                    if (detail.is_ok()) attachments.push_back(detail.value());
+                    else ERROR("Failed to export the account detail file: " +
+                               std::string(detail.error()->what()));
                 }
+
+                const live::EmailDelivery delivery = live::deliver_email_report(
+                    email_plan, portfolio_id, date_str, subject, email_body, std::nullopt, false,
+                    "",
+                    [&](const std::string& mail_subject, const std::string& mail_body)
+                        -> std::optional<std::string> {
+                        auto send_result =
+                            email_sender->send_email(mail_subject, mail_body, true, attachments);
+                        if (send_result.is_error()) {
+                            return std::string(send_result.error()->what());
+                        }
+                        return std::nullopt;
+                    });
+                if (!delivery.ok) {
+                    ERROR(delivery.message);
+                    email_failed = true;
+                } else {
+                    INFO(delivery.message);
                 }
                 }
             } catch (const std::exception& e) {
                 ERROR("Exception during email sending: " + std::string(e.what()));
+                email_failed = true;
             }
         } else {
             INFO("Email reporting disabled");
@@ -6393,6 +6542,11 @@ int main(int argc, char* argv[]) {
             ERROR("Run completed but one or more result tables were not persisted -- "
                   "exiting non-zero so this is not mistaken for a successful run.");
             return 1;
+        }
+        if (email_failed) {
+            ERROR("EMAIL_FAILED the day is stored; the report was not delivered; exiting " +
+                  std::to_string(live::kEmailFailureExitCode));
+            return live::kEmailFailureExitCode;
         }
         return 0;
 
