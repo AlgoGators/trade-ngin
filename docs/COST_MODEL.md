@@ -262,7 +262,7 @@ Backtest and live compute the same two inputs with the same merge rule
 
 | | Function | Fed with | Cost managers fed |
 |---|---|---|---|
-| Live | `feed_futures_cost_model` (`futures_cost_feed.hpp`) | the run's strategy feed, once, into fresh managers | the execution manager's and the `PortfolioManager`'s (`apps/strategies/live_portfolio_conservative.cpp`; `live_portfolio.cpp` carries the same lines) |
+| Live | `feed_futures_cost_model` (`futures_cost_feed.hpp`) | the run's strategy feed, once, into fresh managers | the execution manager's and the `PortfolioManager`'s (`apps/strategies/live_portfolio_conservative.cpp`; `live_portfolio.cpp` carries the same code) |
 | Backtest | `feed_futures_cost_model_step` (`futures_cost_feed.hpp`) | each cycle's signal feed; the window is set to `V` every cycle (`set_own_day_volume`, `transaction_cost_manager.cpp`) | the execution manager's and the `PortfolioManager`'s (`src/backtest/backtest_coordinator.cpp`) |
 
 After every backtest cycle each manager holds what the live function gives on the same bars and
@@ -301,7 +301,7 @@ between the backtest and live.
 
 | Priced item | Backtest | Live |
 |---|---|---|
-| The cost vector of the whole-contract search | `PortfolioManager`'s (`src/portfolio/portfolio_manager.cpp`) | `PortfolioManager`'s (the same lines) |
+| The cost vector of the whole-contract search | `PortfolioManager`'s (`src/portfolio/portfolio_manager.cpp`) | `PortfolioManager`'s (the same code) |
 | The stored STRATEGY fills | `PortfolioManager`'s (`portfolio_manager.cpp`); the coordinator does not re-price them (`backtest_coordinator.cpp`) | the execution manager's (`src/live/execution_manager.cpp`) |
 | The account order `C(Q)` of the netting | `PortfolioManager`'s (`portfolio_manager.cpp`) | the execution manager's (`live_portfolio_conservative.cpp`) |
 | The two ROLL legs | `PortfolioManager`'s (`backtest_coordinator.cpp`) | the execution manager's (`live_portfolio_conservative.cpp`) |
