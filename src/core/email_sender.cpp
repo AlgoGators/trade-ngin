@@ -1106,6 +1106,7 @@ std::string EmailSender::format_executions_table(const std::vector<ExecutionRepo
         return html.str();
     }
 
+    html << single_heading_html();
     html << "<table>\n";
     html << "<tr><th>Symbol</th><th>Side</th><th>Quantity</th><th>Price</th><th>Notional</"
             "th><th>Transaction Cost</th></tr>\n";
@@ -1579,6 +1580,7 @@ std::string EmailSender::format_yesterday_finalized_positions_table(
 
     html << "</table>\n";
     (void)any_no_bar_row;
+    html << notes_html();  // the lines of the notes used in the table, right below it
 
     // Add daily metrics as a section heading after the table - use passed yesterday_daily_metrics
     if (!strategy_metrics.empty() && !yesterday_date.empty()) {
@@ -1831,6 +1833,7 @@ std::string EmailSender::format_yesterday_finalized_positions_table(
         }
     }
     (void)any_no_bar_row;
+    html << notes_html();  // the lines of the notes used in the table, right below it
 
     // Add daily metrics section
     if (!strategy_metrics.empty() && !yesterday_date.empty()) {
