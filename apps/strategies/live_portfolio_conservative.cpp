@@ -4686,7 +4686,7 @@ int main(int argc, char* argv[]) {
                                 trade_ngin::read_account_detail_row(
                                     db, combined_strategy_id, coordinator_config.portfolio_id,
                                     date_str),
-                                &over_limit_for_report));
+                                &over_limit_for_report, strategy_metrics));
                         if (detail.is_ok()) {
                             attachments.push_back(detail.value());
                         } else {

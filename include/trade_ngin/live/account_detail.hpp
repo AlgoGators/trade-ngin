@@ -61,7 +61,20 @@ inline std::map<std::string, std::string> read_account_detail_row(
 /// their text; `over_limit` is null on a book that has none (the equity book).
 inline std::vector<std::pair<std::string, std::string>> account_detail_columns(
     const std::string& date, const std::map<std::string, std::string>& stored,
-    const OverLimitReport* over_limit) {
+    const OverLimitReport* over_limit,
+    const std::map<std::string, double>& email_figures = {}) {
+    // The figures the email's Account block shows are the file's account-value columns, so the two
+    // read the same; where the email has none, the stored row's own text.
+    auto email_text = [&](const char* key, const char* stored_key, const char* format) {
+        const auto it = email_figures.find(key);
+        if (it == email_figures.end()) {
+            const auto st = stored.find(stored_key);
+            return st == stored.end() ? std::string() : st->second;
+        }
+        char buf[48];
+        std::snprintf(buf, sizeof(buf), format, it->second);
+        return std::string(buf);
+    };
     auto get = [&](const char* key) {
         const auto it = stored.find(key);
         return it == stored.end() ? std::string() : it->second;
@@ -73,10 +86,13 @@ inline std::vector<std::pair<std::string, std::string>> account_detail_columns(
     };
     std::vector<std::pair<std::string, std::string>> cols;
     cols.emplace_back("date", date);
-    cols.emplace_back("current portfolio value", get("current_portfolio_value"));
+    cols.emplace_back("current portfolio value",
+                      email_text("Current Portfolio Value", "current_portfolio_value", "%.2f"));
     cols.emplace_back("sizing capital", get("sizing_capital"));
-    cols.emplace_back("gross leverage on the account value", get("gross_leverage"));
-    cols.emplace_back("net leverage on the account value", get("net_leverage"));
+    cols.emplace_back("gross leverage on the account value",
+                      email_text("Gross Leverage", "gross_leverage", "%.4f"));
+    cols.emplace_back("net leverage on the account value",
+                      email_text("Net Leverage", "net_leverage", "%.4f"));
     cols.emplace_back("gross leverage on the sizing capital", get("overlay_gross_leverage"));
     cols.emplace_back("net leverage on the sizing capital", get("overlay_net_leverage"));
     cols.emplace_back("gross leverage limit", over_limit && over_limit->gross_limit > 0

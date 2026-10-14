@@ -6427,6 +6427,9 @@ int main(int argc, char* argv[]) {
                 // account detail.
                 std::vector<std::string> attachments;
                 {
+                    const std::string csv_dir = "apps/strategies/results/" + portfolio_id;
+                    std::filesystem::create_directories(csv_dir);
+                    csv_exporter->set_output_directory(csv_dir);
                     double gross = 0.0, net = 0.0;
                     for (const auto& [symbol, position] : positions) {
                         const auto close = previous_day_close_prices.find(symbol);
@@ -6466,7 +6469,7 @@ int main(int argc, char* argv[]) {
                             date_str,
                             trade_ngin::read_account_detail_row(db, std::string(kEquityStrategyId),
                                                                 portfolio_id, date_str),
-                            nullptr));
+                            nullptr, strategy_metrics));
                     if (detail.is_ok()) attachments.push_back(detail.value());
                     else ERROR("Failed to export the account detail file: " +
                                std::string(detail.error()->what()));
