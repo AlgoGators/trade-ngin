@@ -200,9 +200,9 @@ close.
 The move across the relabel (-99.00 = 1 x (49,581 - 49,680)) is booked like any other day, the stored
 `instrument_id` stays 42005850 and the run stores no ROLL row for MES, MNQ, MYM or M2K in February 2026.
 
-**Where in the code.** `ListingDates::tradeable` (`src/data/listing_dates.cpp`), `ListingDates::pair_root`
-, `ListingDates::conversions_due`, `plan_listing_switch`, `make_listing_switch_fills`
-, `ListingDates::read_id`, `ListingDates::apply_relabels`. The switch inside the
+**Where in the code.** `ListingDates::tradeable` (`src/data/listing_dates.cpp`), `ListingDates::pair_root`,
+`ListingDates::conversions_due`, `plan_listing_switch`, `make_listing_switch_fills`,
+`ListingDates::read_id`, `ListingDates::apply_relabels`. The switch inside the
 rebalance: `PortfolioManager::rebalance_one_pass`, `src/portfolio/portfolio_manager.cpp`. The
 config blocks are read in `src/core/config_loader.cpp` (`instrument_id_relabels`, `listing_dates`). The design comment is the header `include/trade_ngin/data/listing_dates.hpp`.
 
@@ -995,8 +995,8 @@ The cost term of one step is 100 x c / E: for one M2K contract 100 x 1.0931 / 50
 answer is 2 against a target of 0.69 while MYM's stays at its held 1 against a target of 2.06: the search reads the
 book as a whole through the covariance, not contract by contract.
 
-**Where in the code.** `one_pass::tracking_error` (`src/optimization/one_pass.cpp`), `one_pass::admissible`
-, `one_pass::pass_cap`, `one_pass::search`, `one_pass::optimiser_covariance`.
+**Where in the code.** `one_pass::tracking_error` (`src/optimization/one_pass.cpp`), `one_pass::admissible`,
+`one_pass::pass_cap`, `one_pass::search`, `one_pass::optimiser_covariance`.
 The design comment is `include/trade_ngin/optimization/one_pass.hpp`. See
 `OPTIMIZER_AND_RISK_DESIGN.md`.
 
@@ -1244,32 +1244,34 @@ pays.
 
 **What it does.** A backtest stores one row of summary statistics per run in `backtest.results`, computed from its
 equity curve and its fills. A live run stores running statistics on each day's `trading.live_results` row,
-computed from the stored daily rows up to that day. Both are statistics of the ACCOUNT (the equity curve V), not
-of the sizing capital. The sizing capital of each day is stored beside them in `risk_detail`, so a measure on the
-sizing capital can be computed from the stored rows (section 4), but none is stored as a column.
+taken on the statistics grid through the last settled row. Both are statistics of the ACCOUNT (the equity curve
+V). On a futures book three are also stored on the sizing capital: `max_drawdown_sizing`, `volatility_sizing` and
+`worst_day_sizing`.
 
 **The backtest row.** The equity curve has one row per bar date (Sundays included: about 312 rows a year). The
-first 256 rows are warm-up and are dropped before anything is computed. With r_t = V_t / V_t-1 - 1 over the rows
-left:
+first 256 rows are warm-up and are dropped before anything is computed. The rows left are folded onto the
+statistics grid (futures: the Sunday-to-Friday dates on which at least 9 symbols of the universe printed a bar;
+equities: every row), and r is the return between two grid levels, so a row off the grid adds its P&L to the next
+return. K is `statistics.sessions_per_year` (311.0574 futures, 252 equities):
 
 | Column of `backtest.results` | Definition | Base | Annualisation |
 |---|---|---|---|
 | `total_return` | last equity / first equity after warm-up - 1 | account | none |
-| `volatility` | standard deviation of r (dividing by n) x sqrt(252) | account | 252 |
-| `sharpe_ratio` | mean(r) x 252 / `volatility`; no cash rate is subtracted | account | 252 |
-| `sortino_ratio` | mean(r) x 252 / `downside_volatility` | account | 252 |
-| `downside_volatility` | sqrt(the mean of r squared over the negative r only) x sqrt(252) | account | 252 |
-| `max_drawdown` | the largest fall of the equity from its running peak, as a fraction of the peak | account | none |
-| `calmar_ratio` | mean(r) x 252 / `max_drawdown` | account | 252 |
-| `var_95`, `cvar_95` | the 5th percentile daily loss, and the mean of the losses beyond it | account | daily |
+| `volatility` | sample standard deviation of r (dividing by n - 1) x sqrt(K) | account | K |
+| `sharpe_ratio` | mean(r) x K / `volatility`; no cash rate is subtracted; NULL when `volatility` is 0 | account | K |
+| `sortino_ratio` | mean(r) x K / `downside_volatility`; NULL with no negative r | account | K |
+| `downside_volatility` | sqrt(the sum of r squared over the negative r, divided by the number of all r) x sqrt(K) | account | K |
+| `max_drawdown` | the largest fall of the grid level from its running peak, as a fraction of the peak | account | none |
+| `calmar_ratio` | the compounded annual return (1 + R)^(K / n) - 1 on the grid, over `max_drawdown`; NULL with no drawdown | account | K |
+| `var_95`, `cvar_95` | the 5th percentile loss of r, and the mean loss of the returns at or below it | account | none |
 | `total_trades` | STRATEGY fills that reduce or close a position (round trips); ROLL legs are not counted | fills | count |
-| `win_rate`, `avg_win`, `avg_loss`, `max_win`, `max_loss`, `profit_factor`, `avg_holding_period` | per round trip: contracts closed x (exit price - entry price), in price points with NO contract multiplier, less the fill's cost after netting in currency; an open trade's entry price is carried across a roll by the gap between the two legs | fills | none |
+| `win_rate`, `avg_win`, `avg_loss`, `max_win`, `max_loss`, `profit_factor`, `avg_holding_period` | per round trip of the account's netted fills: contracts closed x (exit price - entry price) x the symbol's point value, in dollars, less the fill's cost after netting; an open trade's entry price is carried across a roll by the gap between the two legs | fills | none |
 | `transaction_costs` | the sum of every fill's cost after netting (STRATEGY and ROLL) | fills | none |
 | `roll_costs`, `total_roll_fills` | the ROLL legs' own costs, and their count | fills | none |
-| `beta`, `correlation` | the slope and the correlation of each day's return on the return of the day before (a lag-one autocorrelation of the account's own returns, not a market beta) | account | none |
+| `beta`, `correlation` | the slope and the correlation of each grid return on the one before (a lag-one autocorrelation of the account's own returns, not a market beta) | account | none |
+| `worst_day` (`_date`, `_symbol`), `max_drawdown_sizing`, `volatility_sizing`, `worst_day_sizing` (`_date`, `_symbol`), `monthly_skew`, `monthly_tail_ratio`, `calendar_year_returns`, `losing_years`, `total_strategy_fills` | the twins of the live columns below, in fractions | account; the three `_sizing` on the sizing capital (futures runs only) | as the live column |
 
-The annualisation constant is 252 while the equity curve has about 312 rows a year, so a stored annualised figure
-is stated on a 252-row year.
+K is the row frequency of the grid the returns are taken on, so an annualised figure is on the curve's own year.
 
 **The live row.** There is one row per calendar date the run is made for (about 365 a year; a date with no new
 bar stores a zero return).
@@ -1279,52 +1281,56 @@ bar stores a zero return).
 | `daily_pnl` | the day's settlement P&L less the day's transaction costs | account | none |
 | `daily_return` | `daily_pnl` / the previous row's `current_portfolio_value` x 100 (percent) | account | none |
 | `total_cumulative_return` | (`current_portfolio_value` - 500,000) / 500,000 x 100 | account | none |
-| `total_annualized_return` | ((1 + cumulative return)^(252 / days) - 1) x 100, days counted from the book's first trading day | account | 252 |
-| `volatility` | standard deviation of the stored `daily_return` values (dividing by n) x sqrt(252), in percent | account | 252 |
-| `sharpe_ratio` | `total_annualized_return` / `volatility` | account | 252 |
-| `downside_deviation`, `sortino_ratio` | sqrt(the mean of the squared negative returns) x sqrt(252), and `total_annualized_return` over it | account | 252 |
-| `max_drawdown` | the largest fall of the stored portfolio value from its running peak, percent of the peak | account | none |
-| `best_day`, `worst_day`, `winning_days`, `losing_days`, `win_rate`, `profit_factor` | over the stored daily rows | account | none |
+| `total_annualized_return` | ((1 + R)^(K / n) - 1) x 100, R from the starting capital to the last grid level and n the number of grid returns from the book's start | account | K |
+| `volatility` | sample standard deviation of the grid returns (dividing by n - 1) x sqrt(K), in percent | account | K |
+| `sharpe_ratio` | mean grid return x K / `volatility` | account | K |
+| `downside_deviation`, `sortino_ratio` | sqrt(the sum of the squared negative grid returns / the number of all grid returns) x sqrt(K), and mean grid return x K over it | account | K |
+| `max_drawdown` | the largest fall of the grid level from its running peak, the peak starting at the starting capital, percent of the peak | account | none |
+| `best_day`, `worst_day`, `winning_days`, `losing_days`, `win_rate`, `profit_factor` | over the grid returns; `win_rate` is winning over winning plus losing days; `profit_factor` is NULL with no losing day | account | none |
+| `worst_day_date`, `worst_day_symbol` | the date of `worst_day` and the symbol that lost most on it | account | none |
+| `max_drawdown_sizing`, `volatility_sizing`, `worst_day_sizing` (`_date`, `_symbol`) | the drawdown, volatility and worst day in percent of the sizing capital; futures rows only | sizing capital | K (`volatility_sizing`) |
+| `monthly_skew`, `monthly_tail_ratio`, `calendar_year_returns`, `losing_years` | the skew and tail ratio of the complete calendar months' returns; each calendar year's return; the count of full years with a loss | account | none |
+| `total_trades`, `total_strategy_fills`, `total_roll_fills` | the account's round trips, its strategy fills after netting between sleeves, and the roll legs | fills | count |
+| `overlay_risk`, `overlay_risk_jump`, `overlay_risk_shock`, `overlay_gross_leverage`, `overlay_net_leverage`, `var_95_1d` | the overlay's readings of the stored book, on futures rows of a sized rebalance; the three risk readings and `var_95_1d` are NULL on a blind window | sizing capital | the three risk readings annual; `var_95_1d` one day, in dollars |
 | `gross_notional`, `net_notional`, `gross_leverage`, `net_leverage`, `margin_posted`, `equity_to_margin_ratio` | the stored book's notional, leverage and margin measures (defined in `LIVE_RUN_CYCLE.md`) | see that document | none |
 | `risk_scale` | the delivered scale of section 1.14 | sizing capital | none |
 | `risk_detail` | `sizing_capital`, `account_value`, `risk_requested` (m), `binding_term`, the over-limit marks, `overlay_blind` | both | none |
 | `daily_transaction_costs`, `total_transaction_costs`, `daily_roll_costs`, `total_roll_costs` | costs after netting, and the ROLL part | fills | none |
 
-A row dated D is final only after the run of D+1, which books bar D's move onto it. See `LIVE_RUN_CYCLE.md` for
-the column dictionary.
+A row dated D is final only after the run of D+1, which books bar D's move onto it. Its `settled_at` is set then.
+See `LIVE_RUN_CYCLE.md` for the column dictionary.
 
 **Settings in force.**
 
 | Setting | Value | Where |
 |---|---|---|
-| Backtest annualisation constant | 252 | `src/backtest/backtest_metrics_calculator.cpp` |
+| Sessions a year, K | 311.0574 on a futures book, 252 on an equity book, the same for live and backtest | `statistics.sessions_per_year` in `defaults.json` |
 | Backtest warm-up rows dropped | 256 (the longest moving average) | `BacktestCoordinator::calculate_warmup_days`, `src/backtest/backtest_coordinator.cpp` |
-| Live annualisation constant | 252 | `src/live/live_historical_metrics.cpp`, `src/live/live_metrics_calculator.cpp` |
-| Cash rate in the Sharpe ratio | 0 | the same functions |
+| Cash rate in the Sharpe ratio | 0 | `BacktestMetricsCalculator::calculate_sharpe_ratio`, `LiveHistoricalMetricsCalculator::calculate` |
 
 **Worked example: the rows a backtest statistic is computed on.** The backtest's equity curve has 4,992 rows. The
-first 256 are warm-up and are dropped, which leaves 4,736 rows, from 2011-08-04 to 2026-10-07, and 4,735 daily
-returns over 15.18 years: about 312 a year, against the constant 252 of the table above.
+first 256 are warm-up and are dropped, which leaves 4,736 rows, from 2011-08-04 to 2026-10-07. The statistics fold
+those rows onto the grid and annualise by K.
 
 **Worked example: the live row.** An example of the arithmetic of one column: the chain, the stored row dated
 2026-04-30. `daily_return` = `daily_pnl` / the previous row's `current_portfolio_value` x 100 =
 -5,134.3919 / 511,005.961 x 100 = -1.004762, the stored value.
 
 **Where in the code.** The backtest: `BacktestMetricsCalculator::calculate_all_metrics`
-(`src/backtest/backtest_metrics_calculator.cpp`), `calculate_volatility`, `calculate_sharpe_ratio`
-, `calculate_sortino_ratio`, `calculate_drawdowns`, `calculate_trade_statistics`,
+(`src/backtest/backtest_metrics_calculator.cpp`), `calculate_volatility`, `calculate_sharpe_ratio`,
+`calculate_sortino_ratio`, `calculate_drawdowns`, `calculate_trade_statistics`,
 `filter_warmup_period`; the cost totals at `src/backtest/backtest_coordinator.cpp`; the
 row is written by `BacktestResultsManager::save_summary_results` (`src/storage/backtest_results_manager.cpp`)
-and the curve by `save_equity_curve`. Live: `LiveHistoricalMetricsCalculator::calculate`
-(`src/live/live_historical_metrics.cpp`), `LiveMetricsCalculator::calculate_annualized_return`
-(`src/live/live_metrics_calculator.cpp`); the row is first written by
-`LiveResultsManager::save_live_results` (`src/storage/live_results_manager.cpp`) and finalised by the next
+and the curve by `save_equity_curve`. Live: `LiveHistoricalMetricsCalculator::calculate` and
+`grid_annualized_return_pct` (`src/live/live_historical_metrics.cpp`), on the series of
+`build_statistics_series`; the row is first written by `LiveResultsManager::save_live_results` (`src/storage/live_results_manager.cpp`) and finalised by the next
 day's run (`LIVE_RUN_CYCLE.md`). The `risk_detail` column is `migrations/020_risk_detail.sql`.
 
 **Source.** OURS. These are the engine's own reporting conventions. The book reports its strategies on fixed
 capital with non-compounded
 percentage returns, annualises by 256 business days and reads the Sharpe ratio on that base; the stored columns
-are compounded returns of the account annualised by 252. Section 4 says which base to read each measure on.
+are compounded returns of the account on the statistics grid, annualised by K (311.0574 futures, 252 equities).
+Section 4 says which base to read each measure on.
 
 ---
 
@@ -1356,7 +1362,7 @@ of the section named in each row gives the book's citation.
 | 18 | Rolls (1.15) | Chooses its roll dates; recommends spread trades; counts two trades a roll in its cost arithmetic | Follows the vendor's switch; holds the change bar; books two outright legs at full cost on the confirming bar | No per-contract bars; an upper bound on the cost | Yes |
 | 19 | Costs (1.16) | Commission plus half the spread, risk adjusted | Per-contract broker fee, a spread widened by volatility, an impact term on the day's volume | A thin bar costs more to trade; the fee must be the one paid | Yes |
 | 20 | Netting (1.16) | One strategy per account | Cost totals after netting between the sleeves of one book | It is what the account pays | BASE only |
-| 21 | Statistics (1.17) | Non-compounded returns on fixed capital, 256 business days | Stored columns are compounded account returns, annualised by 252 | The engine's reporting convention | No (reporting only) |
+| 21 | Statistics (1.17) | Non-compounded returns on fixed capital, 256 business days | Stored columns are compounded account returns on the statistics grid, annualised by K (311.0574 futures, 252 equities) | The engine's reporting convention | No (reporting only) |
 
 ---
 
@@ -1427,13 +1433,12 @@ first sized signal bar 2011-08-04, stored on the row dated 2011-08-05; end 2026-
 | Return | the account for what was made; points of the sizing capital for the strategy's return per unit of risk | |
 | Costs and round trips | per year traded | Warm-up rows carry none |
 
-The stored statistics of section 1.17 are all on the account; `risk_scale` and `risk_detail` are the two columns
-that carry the sizing capital. A measure on the sizing capital is computed from the stored daily P&L and the stored
-`risk_detail.sizing_capital` of the same row.
+The stored statistics of section 1.17 are on the account, except `max_drawdown_sizing`, `volatility_sizing` and
+`worst_day_sizing`, which are on the sizing capital of a futures book. Any other measure on the sizing capital is
+computed from the stored daily P&L and the stored `risk_detail.sizing_capital` of the same row.
 
-**What a stored statistic is annualised by.** The stored backtest columns use 252 on a curve of about 312 rows a
-year, and the stored live columns use 252 on about 365 rows a year. Two figures are comparable only when they are
-computed on the same row grid with the same constant.
+**What a stored statistic is annualised by.** Live and backtest statistics are taken on the same grid with the
+same K and the same definitions, so a live figure and a backtest figure are comparable.
 
 ---
 
