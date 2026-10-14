@@ -45,6 +45,9 @@ struct EmailSenderConfig {
  */
 class EmailSender {
 public:
+    /// The text of footnote 5 the last executions table of this thread set (empty: none).
+    static std::string netting_footnote_text();
+
     /**
      * @brief Constructor
      * @param credentials Shared pointer to credential store
@@ -148,6 +151,8 @@ private:
     std::string chart_base64_;  // Store equity curve chart data for embedding in email
     std::string pnl_by_symbol_base64_;  // Store PnL by symbol chart data
     std::string daily_pnl_base64_;  // Store daily PnL chart data
+    std::string drawdown_base64_;
+    std::string gross_leverage_base64_;
     std::string total_transaction_costs_base64_; // Store cumulative transaction costs 
     std::string margin_posted_base64_; //Store total margin posted
     std::string portfolio_composition_base64_; //Store portfolio composition

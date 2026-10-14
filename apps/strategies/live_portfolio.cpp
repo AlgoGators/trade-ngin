@@ -32,6 +32,7 @@
 #include "trade_ngin/live/csv_exporter.hpp"
 #include "trade_ngin/live/data_freshness.hpp"
 #include "trade_ngin/live/email_body_file.hpp"
+#include "trade_ngin/live/account_detail.hpp"
 #include "trade_ngin/live/email_delivery.hpp"
 #include "trade_ngin/live/run_args.hpp"
 #include "trade_ngin/live/execution_manager.hpp"
@@ -4650,6 +4651,10 @@ int main(int argc, char* argv[]) {
                     // Generate email body with is_daily_strategy flag set to true and current
                     // prices. Pass strategy_positions_map and all_strategy_executions for
                     // per-strategy tables.
+                    const trade_ngin::OverLimitReport over_limit_for_report =
+                        trade_ngin::over_limit_report(one_pass_day, overlay_columns,
+                                                      portfolio_config.risk_modules,
+                                                      portfolio_config.per_name_cap);
                     std::string email_body = email_sender->generate_trading_report_body(
                         strategy_positions_map,  // Per-strategy positions for grouped tables
                         positions,
@@ -4667,16 +4672,31 @@ int main(int argc, char* argv[]) {
                         combined_strategy_id,           // The charts query this run's own rows
                         // T-8D R20: the stored book's leverage on the sizing capital beside the
                         // limits the overlay ran with, and the day's over-limit marks.
-                        trade_ngin::over_limit_report(one_pass_day, overlay_columns,
-                                                      portfolio_config.risk_modules,
-                                                      portfolio_config.per_name_cap),
-                        report_context);
+                        over_limit_for_report, report_context);
 
                     // Send email with CSV attachments: today's positions and yesterday's finalized
                     // (if available)
                     std::vector<std::string> attachments = {today_filename};
                     if (!yesterday_filename.empty()) {
                         attachments.push_back(yesterday_filename);
+                    }
+                    // The account detail file (HD 10-13): the stored row's figures and the day's
+                    // over-limit report, one row.
+                    {
+                        const auto detail = csv_exporter->export_account_detail(
+                            portfolio_id, date_str,
+                            trade_ngin::account_detail_columns(
+                                date_str,
+                                trade_ngin::read_account_detail_row(
+                                    db, combined_strategy_id, coordinator_config.portfolio_id,
+                                    date_str),
+                                &over_limit_for_report));
+                        if (detail.is_ok()) {
+                            attachments.push_back(detail.value());
+                        } else {
+                            ERROR("Failed to export the account detail file: " +
+                                  std::string(detail.error()->what()));
+                        }
                     }
 
                     // The day's flags, then the body file or the one send (live/email_delivery.hpp,

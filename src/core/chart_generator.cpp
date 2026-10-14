@@ -1585,8 +1585,20 @@ namespace {
     // call, a hang is started once more, and the end is recorded for the report (core/gnuplot_run.hpp).
     std::string execute_gnuplot(const std::string& script_content, const std::string& data_content) {
         INFO("Executing gnuplot");
+        // One light style for every chart (HD 10-13): a quiet border, ticks on the outside, a light
+        // grid, readable titles. The scripts' own lines that follow still decide their colours.
+        std::string styled = script_content;
+        const std::string output_line = "set output 'temp_chart_output.png'\n";
+        const auto at = styled.find(output_line);
+        if (at != std::string::npos) {
+            styled.insert(at + output_line.size(),
+                          "set border 3 lw 1 lc rgb '#999999'\nset tics nomirror\n"
+                          "set xtics textcolor rgb '#444444'\nset ytics textcolor rgb '#444444'\n"
+                          "set title font 'Arial,14' textcolor rgb '#222222'\n"
+                          "set grid ytics lc rgb '#e6e6e6' lt 1 lw 0.5\n");
+        }
         const core::GnuplotRun run = core::run_gnuplot(
-            script_content, data_content, kChartProcessTimeout,
+            styled, data_content, kChartProcessTimeout,
             [](const std::string& command, std::chrono::milliseconds limit) {
                 return core::run_with_timeout(command, limit);
             });
@@ -1632,8 +1644,11 @@ std::string ChartGenerator::render_line_chart(const ChartData& data, const Chart
         // Build data file content
         std::ostringstream data_content;
         for (size_t i = 0; i < data.labels.size(); ++i) {
+            const bool two = data.values2.size() == data.values.size();
             data_content << data.labels[i] << " " << std::fixed << std::setprecision(2)
-                        << data.values[i] << "\n";
+                        << data.values[i];
+            if (two) data_content << " " << data.values2[i];
+            data_content << "\n";
         }
 
         // Build gnuplot script
@@ -1653,7 +1668,11 @@ std::string ChartGenerator::render_line_chart(const ChartData& data, const Chart
         if (config.show_grid) {
             script << "set grid ytics lc rgb '#e0e0e0' lt 1 lw 0.5\n";
         }
-        script << "unset key\n\n";
+        if (data.values2.size() == data.values.size()) {
+            script << "set key top left\n\n";
+        } else {
+            script << "unset key\n\n";
+        }
 
         // Labels
         if (!data.x_label.empty()) {
@@ -1687,7 +1706,7 @@ std::string ChartGenerator::render_line_chart(const ChartData& data, const Chart
         script << "\n\n";
 
         // Y-axis
-        script << "set format y '$%.0f'\n";
+        script << "set format y '" << (data.y_format.empty() ? "$%.0f" : data.y_format) << "'\n";
         if (const auto y_range = ChartSeries::line_chart_y_range(data)) {
             script << "set yrange [" << std::fixed << std::setprecision(2) << y_range->first << ":"
                    << y_range->second << "]\n";
@@ -1702,7 +1721,15 @@ std::string ChartGenerator::render_line_chart(const ChartData& data, const Chart
         }
 
         // Plot
-        script << "plot 'temp_chart_data.txt' using 1:2 with linespoints ls 1 notitle\n";
+        if (data.values2.size() == data.values.size()) {
+            script << "set style line 2 lc rgb '#d9822b' lt 1 lw 3 pt 7 ps 0.8\n";
+            script << "plot 'temp_chart_data.txt' using 1:2 with linespoints ls 1 title '"
+                   << escape_gnuplot_string(data.series_name) << "', \\\n"
+                   << "     'temp_chart_data.txt' using 1:3 with linespoints ls 2 title '"
+                   << escape_gnuplot_string(data.series2_name) << "'\n";
+        } else {
+            script << "plot 'temp_chart_data.txt' using 1:2 with linespoints ls 1 notitle\n";
+        }
 
         return execute_gnuplot(script.str(), data_content.str());
 
@@ -1805,8 +1832,11 @@ std::string ChartGenerator::render_horizontal_bar_chart(const ChartData& data, c
         // Build data file content (symbol pnl)
         std::ostringstream data_content;
         for (size_t i = 0; i < data.labels.size(); ++i) {
+            const bool two = data.values2.size() == data.values.size();
             data_content << data.labels[i] << " " << std::fixed << std::setprecision(2)
-                        << data.values[i] << "\n";
+                        << data.values[i];
+            if (two) data_content << " " << data.values2[i];
+            data_content << "\n";
         }
 
         // Calculate dynamic height based on number of items
@@ -2060,6 +2090,102 @@ std::string ChartGenerator::generate_pnl_by_symbol_chart(std::shared_ptr<Databas
     }
 
     return result;
+}
+
+std::string ChartGenerator::generate_drawdown_chart(std::shared_ptr<DatabaseInterface> db,
+                                                    const std::string& strategy_id,
+                                                    const std::string& portfolio_id,
+                                                    const std::string& date, int lookback_days) {
+    begin_chart();
+    // The whole stored curve gives the running peak; the last days are drawn.
+    ChartData curve = fetch_equity_curve_data(db, strategy_id, portfolio_id, date, 3650);
+    if (curve.labels.size() < 2 || curve.values.size() != curve.labels.size()) return "";
+    ChartData data;
+    double peak = curve.values.front();
+    for (std::size_t i = 0; i < curve.values.size(); ++i) {
+        peak = std::max(peak, curve.values[i]);
+        data.labels.push_back(curve.labels[i]);
+        data.values.push_back(peak > 0.0 ? (curve.values[i] / peak - 1.0) * 100.0 : 0.0);
+    }
+    const std::size_t keep = static_cast<std::size_t>(std::max(2, lookback_days));
+    if (data.labels.size() > keep) {
+        data.labels.erase(data.labels.begin(), data.labels.end() - static_cast<long>(keep));
+        data.values.erase(data.values.begin(), data.values.end() - static_cast<long>(keep));
+    }
+    data.title = "Drawdown from the peak";
+    data.y_label = "percent";
+    data.y_format = "%.1f%%";
+    data.has_reference_line = true;
+    data.reference_line = 0.0;
+    ChartConfig config;
+    config.width = 1000;
+    config.height = 400;
+    config.rotate_x_labels = true;
+    config.x_label_angle = -45;
+    config.line_color = "#b42318";
+    return render_line_chart(data, config);
+}
+
+std::string ChartGenerator::generate_gross_leverage_chart(std::shared_ptr<DatabaseInterface> db,
+                                                          const std::string& strategy_id,
+                                                          const std::string& portfolio_id,
+                                                          const std::string& date,
+                                                          int lookback_days) {
+    begin_chart();
+    if (!db) return "";
+    const std::string query =
+        "SELECT to_char(date, 'YYYY-MM-DD'), gross_leverage::text, net_leverage::text FROM (SELECT date, gross_leverage, net_leverage "
+        "FROM trading.live_results WHERE strategy_id = '" + strategy_id + "' AND portfolio_id = '" +
+        portfolio_id + "' AND date <= '" + date + "' AND gross_leverage IS NOT NULL AND net_leverage IS NOT NULL ORDER BY date DESC "
+        "LIMIT " + std::to_string(lookback_days) + ") t ORDER BY date ASC";
+    auto result = db->execute_query(query);
+    if (result.is_error()) {
+        ERROR("Failed to query gross leverage: " + std::string(result.error()->what()));
+        mark_chart_failed("the data could not be read");
+        return "";
+    }
+    auto table = result.value();
+    if (!table || table->num_rows() < 2) return "";
+    auto combined = table->CombineChunks();
+    if (!combined.ok()) {
+        mark_chart_failed("the data could not be read");
+        return "";
+    }
+    auto text_of = [](const std::shared_ptr<arrow::Array>& a, int64_t i) -> std::string {
+        if (!a || a->IsNull(i)) return "";
+        if (a->type_id() == arrow::Type::STRING)
+            return std::static_pointer_cast<arrow::StringArray>(a)->GetString(i);
+        if (a->type_id() == arrow::Type::LARGE_STRING)
+            return std::static_pointer_cast<arrow::LargeStringArray>(a)->GetString(i);
+        return "";
+    };
+    const auto t = combined.ValueOrDie();
+    ChartData data;
+    for (int64_t i = 0; i < t->num_rows(); ++i) {
+        const std::string day = text_of(t->column(0)->chunk(0), i);
+        const std::string value = text_of(t->column(1)->chunk(0), i);
+        const std::string net = text_of(t->column(2)->chunk(0), i);
+        if (day.empty() || value.empty() || net.empty()) continue;
+        try {
+            const double g = std::stod(value), n = std::stod(net);
+            data.values.push_back(g);
+            data.values2.push_back(n);
+            data.labels.push_back(day);
+        } catch (...) {
+        }
+    }
+    if (data.labels.size() < 2) return "";
+    data.title = "Leverage on the account value";
+    data.y_label = "times the account value";
+    data.series_name = "Gross";
+    data.series2_name = "Net";
+    data.y_format = "%.1fx";
+    ChartConfig config;
+    config.width = 1000;
+    config.height = 400;
+    config.rotate_x_labels = true;
+    config.x_label_angle = -45;
+    return render_line_chart(data, config);
 }
 
 std::string ChartGenerator::generate_daily_pnl_chart(

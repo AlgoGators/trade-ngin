@@ -44,6 +44,9 @@ struct ChartData {
     std::string title;                    ///< Chart title
     std::string x_label;                  ///< X-axis label
     std::string y_label;                  ///< Y-axis label
+    std::string series_name;              ///< legend of the first series (two-series line charts)
+    std::string series2_name;             ///< legend of values2
+    std::string y_format;                 ///< gnuplot format of the value axis; empty: dollars
     double reference_line;                ///< Reference line value (e.g., 0 or starting value)
     bool has_reference_line = false;      ///< Whether to draw reference line
     bool reference_line_on_axis = false;  ///< Line charts: widen the value axis to hold the line
@@ -432,6 +435,19 @@ public:
         const std::string& date
     );
 
+
+    /// The drawdown from the running peak of the stored equity curve, in percent (HD 10-13).
+    static std::string generate_drawdown_chart(std::shared_ptr<DatabaseInterface> db,
+                                               const std::string& strategy_id,
+                                               const std::string& portfolio_id,
+                                               const std::string& date, int lookback_days = 30);
+
+    /// The stored gross and net leverage on the sizing capital over the last days (HD 10-13).
+    static std::string generate_gross_leverage_chart(std::shared_ptr<DatabaseInterface> db,
+                                                     const std::string& strategy_id,
+                                                     const std::string& portfolio_id,
+                                                     const std::string& date,
+                                                     int lookback_days = 30);
 
     /// How the chart most recently asked for on this thread ended: Drawn, NothingToPlot (no data,
     /// no process started) or Failed (the data could not be read, or the chart program hung twice,

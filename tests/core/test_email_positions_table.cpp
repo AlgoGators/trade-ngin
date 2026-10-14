@@ -185,7 +185,7 @@ TEST_F(EmailPositionsTableTest, TheMarginLineIsPricedAtTheCostBasis) {
     // it read 10,000), and so is the row: its notional is its quantity at the price it prints.
     EXPECT_NE(html.find("<strong>Total Notional:</strong> $10,500.00"), std::string::npos) << html;
     EXPECT_EQ(html.find("$10,000"), std::string::npos) << html;
-    EXPECT_NE(html.find("<td>$210.00</td>\n<td>$10,500.00</td>\n<td>100.00%</td>"),
+    EXPECT_NE(html.find("<td>$210.0000</td>\n<td>$10,500.00</td>\n<td>100.00%</td>"),
               std::string::npos)
         << html;
 }
@@ -196,7 +196,7 @@ TEST_F(EmailPositionsTableTest, ARowWithNoCloseIsPricedAtItsBasisInBothCells) {
         {"ZPRICED", held("ZPRICED", 50.0, 200.0)}};
     std::string html;
     ASSERT_NO_THROW({ html = sender_.format_positions_table(positions, true, {}, {}); });
-    EXPECT_NE(html.find("<td>$200.00 (average price, no close)</td>\n<td>$10,000.00</td>"), std::string::npos) << html;
+    EXPECT_NE(html.find("<td>$200.0000<sup style=\"font-size: 9px;\">4</sup></td>\n<td>$10,000.00</td>"), std::string::npos) << html;
     EXPECT_NE(html.find("<strong>Total Notional:</strong> $10,000.00"), std::string::npos) << html;
 }
 
@@ -213,29 +213,17 @@ TEST_F(EmailPositionsTableTest, TheMarginLineFallsBackToTheCloseWithoutABasis) {
 
 // HD 2026-10-10: the summary under the single positions table prints the overlay's expected risk
 // beside the risk target and the one-day 95 percent VaR in dollars, in place of "Portfolio VaR".
-TEST_F(EmailPositionsTableTest, TheSummaryShowsTheExpectedRiskAndTheOneDayVarAndNoPortfolioVar) {
+// HD 10-13: neither the expected risk, nor the VaR, nor a portfolio VaR is in the summary any more
+// (the first two are in the account detail file).
+TEST_F(EmailPositionsTableTest, TheSummaryCarriesNoExpectedRiskAndNoVar) {
     const std::unordered_map<std::string, Position> positions{
         {"ZPRICED", held("ZPRICED", 50.0, 200.0)}};
     const std::unordered_map<std::string, double> prices{{"ZPRICED", 210.0}};
-    const std::map<std::string, double> metrics{{"Portfolio VaR", 7.12},
-                                                {"Expected Risk", 12.3449},
-                                                {"Risk Target", 20.0},
-                                                {"VaR 95 1-Day", 1234567.891},
-                                                {"Risk Contracts Covered", 9.0},
-                                                {"Risk Contracts Held", 9.0}};
-    std::string html;
-    ASSERT_NO_THROW({ html = sender_.format_positions_table(positions, true, prices, metrics); });
-    EXPECT_EQ(html.find("Portfolio VaR"), std::string::npos) << html;
-    EXPECT_NE(html.find("<strong>Expected Risk:</strong> 12.34% of the sizing capital (target "
-                        "20.00%; 9 of 9 contracts)<br>"),
-              std::string::npos)
-        << html;
-    EXPECT_NE(html.find("<strong>1-Day 95% VaR:</strong> $1,234,567.89<br>"), std::string::npos)
-        << html;
-
-    ASSERT_NO_THROW({ html = sender_.format_positions_table(positions, true, prices, {}); });
-    EXPECT_EQ(html.find("Expected Risk"), std::string::npos);
-    EXPECT_EQ(html.find("95% VaR"), std::string::npos);
+    const std::map<std::string, double> metrics{{"Portfolio VaR", 7.12}, {"Expected Risk", 12.3449},
+                                                {"Risk Target", 20.0}, {"VaR 95 1-Day", 1234567.891}};
+    const std::string html = sender_.format_positions_table(positions, true, prices, metrics);
+    for (const char* absent : {"Portfolio VaR", "Expected Risk", "95% VaR"})
+        EXPECT_EQ(html.find(absent), std::string::npos) << absent;
 }
 
 // T-EMAIL P2-3: the rows are in symbol order, whatever order the map hands them out in. The same

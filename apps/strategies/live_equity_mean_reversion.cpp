@@ -28,6 +28,7 @@
 #include "trade_ngin/live/corp_action_window.hpp"
 #include "trade_ngin/live/data_freshness.hpp"
 #include "trade_ngin/live/email_body_file.hpp"
+#include "trade_ngin/live/account_detail.hpp"
 #include "trade_ngin/live/email_delivery.hpp"
 #include "trade_ngin/live/run_args.hpp"
 #include "trade_ngin/live/session_book_gate.hpp"
@@ -6421,7 +6422,55 @@ int main(int argc, char* argv[]) {
                     std::string(kEquityStrategyId), portfolio_id, report_context);
 
                 // Send email without CSV attachments (CSV export disabled for mean reversion)
-                std::vector<std::string> attachments = {};  // No CSV files for mean reversion
+                // The same files the futures report attaches (HD 10-13): today's positions, the
+                // previous trading day's positions with their two prices, the executions, and the
+                // account detail.
+                std::vector<std::string> attachments;
+                {
+                    double gross = 0.0, net = 0.0;
+                    for (const auto& [symbol, position] : positions) {
+                        const auto close = previous_day_close_prices.find(symbol);
+                        const double mark = close != previous_day_close_prices.end()
+                                                ? close->second
+                                                : position.average_price.as_double();
+                        const double notional = position.quantity.as_double() * mark;
+                        gross += std::abs(notional);
+                        net += notional;
+                    }
+                    const StrategyPositionsMap today_book{{"EQUITY_MEAN_REVERSION", positions}};
+                    const auto today_file = csv_exporter->export_current_positions(
+                        now, today_book, previous_day_close_prices, current_portfolio_value, gross,
+                        net, {});
+                    if (today_file.is_ok()) attachments.push_back(today_file.value());
+                    else ERROR("Failed to export today's positions: " +
+                               std::string(today_file.error()->what()));
+                    if (!yesterday_positions_finalized.empty()) {
+                        const StrategyPositionsMap settled_book{
+                            {"EQUITY_MEAN_REVERSION", yesterday_positions_finalized}};
+                        const auto settled_file = csv_exporter->export_finalized_positions(
+                            now, now - std::chrono::hours(24), settled_book, yesterday_entry_prices,
+                            yesterday_exit_prices);
+                        if (settled_file.is_ok()) attachments.push_back(settled_file.value());
+                        else ERROR("Failed to export the previous trading day's positions: " +
+                                   std::string(settled_file.error()->what()));
+                    }
+                    if (!daily_executions.empty()) {
+                        const auto exec_file = csv_exporter->export_executions(now, daily_executions);
+                        if (exec_file.is_ok()) attachments.push_back(exec_file.value());
+                        else ERROR("Failed to export the executions: " +
+                                   std::string(exec_file.error()->what()));
+                    }
+                    const auto detail = csv_exporter->export_account_detail(
+                        portfolio_id, date_str,
+                        trade_ngin::account_detail_columns(
+                            date_str,
+                            trade_ngin::read_account_detail_row(db, std::string(kEquityStrategyId),
+                                                                portfolio_id, date_str),
+                            nullptr));
+                    if (detail.is_ok()) attachments.push_back(detail.value());
+                    else ERROR("Failed to export the account detail file: " +
+                               std::string(detail.error()->what()));
+                }
 
                 const live::EmailDelivery delivery = live::deliver_email_report(
                     email_plan, portfolio_id, date_str, subject, email_body, std::nullopt, false,

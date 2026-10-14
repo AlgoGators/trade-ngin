@@ -9,6 +9,8 @@
 
 #include <gtest/gtest.h>
 
+#include "trade_ngin/live/account_detail.hpp"
+
 #include <filesystem>
 #include <fstream>
 #include <map>
@@ -262,42 +264,25 @@ TEST(ReportOverLimit, TheFuturesReportNamesBothDenominatorsAndCarriesTheLines) {
         StrategyPositionsMap{}, std::unordered_map<std::string, Position>{}, std::nullopt, metrics,
         StrategyExecutionsMap{}, "2026-04-24", "CONSERVATIVE_PORTFOLIO", true, {}, nullptr,
         StrategyPositionsMap{}, {}, {}, {}, "LIVE_TREND_FOLLOWING", report);
-    // The two lines the report had, each with its denominator, then the new lines, in order.
-    const std::string leverage =
-        "<div class=\"metric\"><strong>Gross Leverage (on the account value):</strong> "
-        "<span>1.60x</span></div>\n"
-        "<div class=\"metric\"><strong>Net Leverage (on the account value):</strong> "
-        "<span>0.41x</span></div>\n" +
-        over_limit_report_html(report);
-    EXPECT_NE(body.find(leverage), npos) << body;
-    EXPECT_EQ(count_of(body, "<strong>Gross Leverage"), 2);
-    EXPECT_EQ(count_of(body, "<strong>Net Leverage"), 2);
-    EXPECT_EQ(body.find("<strong>Gross Leverage:</strong>"), npos) << "a leverage with no denominator";
-    EXPECT_EQ(body.find("<strong>Net Leverage:</strong>"), npos);
-    EXPECT_NE(body.find("<strong>Over limit by hold:</strong> terms per-name cap; symbols ZN"),
-              npos);
-    EXPECT_NE(body.find("<strong>Held beyond the per-name cap:</strong> marked"), npos);
-
-    // A day whose row has no risk_detail: the account-value lines stay, the others say why not.
-    const std::string held = sender.generate_trading_report_body(
-        StrategyPositionsMap{}, std::unordered_map<std::string, Position>{}, std::nullopt, metrics,
-        StrategyExecutionsMap{}, "2026-04-26", "CONSERVATIVE_PORTFOLIO", true, {}, nullptr,
-        StrategyPositionsMap{}, {}, {}, {}, "LIVE_TREND_FOLLOWING",
-        over_limit_report(OnePassDay{}, OverlayColumns{}, modules_with(8.0, 6.0), 2.0));
-    EXPECT_NE(held.find("<strong>Gross Leverage (on the account value):</strong> "
-                        "<span>1.60x</span>"),
-              npos);
-    EXPECT_NE(held.find("<strong>Leverage on the sizing capital and over-limit marks:</strong> "
-                        "no reading"),
+    // HD 10-13: the email shows leverage on the account value only, with no denominator text, no
+    // limits and no over-limit line; those are in the account detail file.
+    EXPECT_NE(body.find("<div class=\"metric\"><strong>Gross Leverage:</strong> <span>1.60x</span></div>\n"
+                        "<div class=\"metric\"><strong>Net Leverage:</strong> <span>0.41x</span></div>\n"),
               npos)
-        << held;
-    EXPECT_EQ(held.find("(on the sizing capital):"), npos) << "a figure with no reading";
-    EXPECT_EQ(held.find("risk_detail"), npos) << "a column name in a body a reader sees";
-    EXPECT_NE(held.find("no reading (no sized rebalance this run: no risk reading was stored for "
-                        "this day)"),
-              npos)
-        << held;
-    EXPECT_EQ(held.find("no mark"), npos);
+        << body;
+    for (const char* absent : {"sizing capital", "Sizing", "Over limit", "Per-name cap",
+                               "Held beyond the per-name cap", "(on the account value)", "limit 8.00x"}) {
+        EXPECT_EQ(body.find(absent), npos) << absent;
+    }
+    // The same figures, with the day's marks, are the account detail file's columns.
+    const auto columns = account_detail_columns("2026-04-24", {{"current_portfolio_value", "497239.3978"}}, &report);
+    std::map<std::string, std::string> by_name(columns.begin(), columns.end());
+    EXPECT_EQ(by_name.at("gross leverage limit"), "8.00");
+    EXPECT_EQ(by_name.at("net leverage limit"), "6.00");
+    EXPECT_EQ(by_name.at("per-name cap"), "2.00");
+    EXPECT_EQ(by_name.at("over limit by hold"), "per-name cap");
+    EXPECT_EQ(by_name.at("held beyond the per-name cap"), "ZN");
+    EXPECT_EQ(by_name.at("current portfolio value"), "497239.3978");
 }
 
 // The equity report (the other overload) runs no overlay: its leverage section is as it was.
@@ -311,7 +296,7 @@ TEST(ReportOverLimit, TheEquityReportIsUnchanged) {
     EXPECT_NE(body.find("<div class=\"metric\"><strong>Gross Leverage:</strong> "
                         "<span>0.81x</span></div>\n"
                         "<div class=\"metric\"><strong>Net Leverage:</strong> "
-                        "<span>0.10x</span></div>\n<br>\n"),
+                        "<span>0.10x</span></div>\n"),
               npos)
         << body;
     for (const char* absent : {"sizing capital", "account value", "Over limit", "Per-name cap",
@@ -332,7 +317,7 @@ TEST(ReportOverLimitTwinSourceGuard, BothFuturesRunnersHandTheReportTheSameInput
                            "                                                      "
                            "portfolio_config.risk_modules,\n"
                            "                                                      "
-                           "portfolio_config.per_name_cap),"),
+                           "portfolio_config.per_name_cap);"),
                   1)
             << runner;
     }
