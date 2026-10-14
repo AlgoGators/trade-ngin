@@ -107,9 +107,9 @@ def test_the_windows():
 # -- GetRunStatus 1.1.0 ------------------------------------------------------------------------
 
 def test_desk_proto_keeps_the_1_1_0_fields():
-    # 1.2.0 (Rescind, C8) and 1.3.0 (GetDeskRisk, C9) are additive: the 1.1.0 fields keep
+    # 1.2.0 (Rescind, C8) 1.3.0 (GetDeskRisk, C9) and 1.4.0 (its checks) are additive: the 1.1.0 fields keep
     # their numbers.
-    assert API_VERSIONS["desk"] == "1.3.0"
+    assert API_VERSIONS["desk"] == "1.4.0"
     methods = pb.DESCRIPTOR.services_by_name["DeskService"].methods_by_name
     assert "Rescind" in methods and "GetDeskRisk" in methods
     fields = pb.RunStatus.DESCRIPTOR.fields_by_name

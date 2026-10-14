@@ -5125,7 +5125,8 @@ int main(int argc, char* argv[]) {
                   {"binding", pass.binding_term},
                   {"risk_scale", pass.risk_scale},
                   {"over_limit_after_rounding", pass.over_limit_after_rounding_terms},
-                  {"over_limit_by_hold", pass.over_limit_by_hold_terms}}}};
+                  {"over_limit_by_hold", pass.over_limit_by_hold_terms}}},
+                {"checks", desk_checks_json(pass)}};
             if (qt_mode == qt::Mode::OVERRIDE) {
                 detail["report_only"] = true;  // the pass is a report; the ask is what trades
             }

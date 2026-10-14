@@ -39,6 +39,32 @@ struct OnePassDay {
     /// quantity to flat before the search.
     std::map<std::string, std::map<std::string, double>> sign_closes;
 
+    /// Contract C9, the desk's risk report: the overlay's readings of the book the pass stored and
+    /// the limits in force, in reading units (the three risk limits are their ratio x tau). Set on
+    /// a pass that answered (`checks` true); written only into the desk record of a qt row
+    /// (desk_checks_json), never into risk_detail's nine keys.
+    bool checks{false};
+    bool covariance_measured{false};  ///< R, R_jump and R_shock were read (false: a blind window)
+    double tau{0.0};
+    double stored_r{0.0};
+    double stored_r_jump{0.0};
+    double stored_r_shock{0.0};
+    double stored_l{0.0};
+    double stored_l_net{0.0};  ///< signed; the limit is on its absolute value
+    double limit_r{0.0};
+    double limit_r_jump{0.0};
+    double limit_r_shock{0.0};
+    double limit_l{0.0};
+    double limit_l_net{0.0};
+    double r_max_ratio{0.0};        ///< the configured R_max, R_jump_max and R_shock_max
+    double r_jump_max_ratio{0.0};
+    double r_shock_max_ratio{0.0};
+    double per_name_cap{0.0};       ///< L: the most |contracts x weight per contract| per symbol
+    double largest_name{0.0};       ///< the stored book's largest |N_i u_i|
+    std::string largest_name_symbol;
+    int trim_max{0};
+    double trimmed_contracts{0.0};  ///< contracts the trim removed, summed over the symbols
+
     /// A rebalance whose row carries risk_detail: the pass ran on a cycle that trades and the
     /// overlay answered.
     bool stores_detail() const { return ran && sized && !refused; }
@@ -78,6 +104,33 @@ inline nlohmann::json risk_detail_json(const OnePassDay& day, double account_val
     j["overlay_blind"] = day.overlay_blind;
     j["sizing_capital"] = day.sizing_capital;
     j["account_value"] = account_value;
+    return j;
+}
+
+/**
+ * @brief Contract C9: every risk limit of the stored book with its reading and its max, for the
+ *        desk record (`risk_detail.desk.checks`). Null when the pass did not answer (no pass, a
+ *        refusal). A covariance reading on a blind window is null (not measured).
+ */
+inline nlohmann::json desk_checks_json(const OnePassDay& day) {
+    if (!day.checks) return nlohmann::json(nullptr);
+    auto reading = [&](double value) {
+        return day.covariance_measured ? nlohmann::json(value) : nlohmann::json(nullptr);
+    };
+    nlohmann::json j = nlohmann::json::object();
+    j["tau"] = day.tau;
+    j["covariance_measured"] = day.covariance_measured;
+    j["R"] = {{"value", reading(day.stored_r)}, {"max", day.limit_r},
+              {"max_ratio", day.r_max_ratio}};
+    j["R_jump"] = {{"value", reading(day.stored_r_jump)}, {"max", day.limit_r_jump},
+                   {"max_ratio", day.r_jump_max_ratio}};
+    j["R_shock"] = {{"value", reading(day.stored_r_shock)}, {"max", day.limit_r_shock},
+                    {"max_ratio", day.r_shock_max_ratio}};
+    j["L_g"] = {{"value", day.stored_l}, {"max", day.limit_l}};
+    j["L_n"] = {{"value", day.stored_l_net}, {"max", day.limit_l_net}};
+    j["CAP"] = {{"value", day.largest_name}, {"max", day.per_name_cap},
+                {"symbol", day.largest_name_symbol}};
+    j["TRIM"] = {{"value", day.trimmed_contracts}, {"max", day.trim_max}};
     return j;
 }
 

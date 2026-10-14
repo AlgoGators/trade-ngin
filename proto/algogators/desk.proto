@@ -1,6 +1,6 @@
 // AlgoGators gRPC API
 // API: desk
-// Version: 1.3.0
+// Version: 1.4.0
 // Compatibility: a client must send x-algogators-api-version: desk=<major>.<minor>.<patch>; the
 // server refuses a different major and accepts any minor/patch (docs/design/rpc.md).
 //
@@ -48,6 +48,8 @@ import "google/protobuf/timestamp.proto";
 //   1.3.0  2026-10-14  GetDeskRisk (contract C9): the risk report of the day's qt book and
 //                      whether the desk's positions breach a risk limit. New RPC and messages
 //                      only; no field changed.
+//   1.4.0  2026-10-14  DeskRisk.checks (17), RiskCheck, RiskCheckStatus: every risk limit with
+//                      the stored book's reading and its max, breach or not. Additive only.
 
 service DeskService {
   // A desk save: run the desk loop on the whole qt_proposal and book the result as qt with
@@ -331,4 +333,36 @@ message DeskRisk {
   optional double equity_to_margin = 15;
   // The configured limits (risk.json), empty when the file is not found.
   repeated RiskLimit limits = 16;
+  // Since 1.4.0: every risk check of the day's book, breach or not, in report order (R, R_jump,
+  // R_shock, L_g, L_n, CAP, TRIM, then "refused" when the overlay refused). Labels, units and
+  // maxes are trade-ngin's; a client renders them as given and hardcodes none.
+  repeated RiskCheck checks = 17;
+}
+
+enum RiskCheckStatus {
+  RISK_CHECK_STATUS_UNSPECIFIED = 0;
+  // The reading is at or under its max and nothing cut the book on it.
+  RISK_CHECK_STATUS_WITHIN = 1;
+  // The limit bound: the engine cut the desk's positions to fit it (a breach).
+  RISK_CHECK_STATUS_BOUND = 2;
+  // The stored book is over the limit (a breach).
+  RISK_CHECK_STATUS_OVER = 3;
+  // No reading: a model day, a blind covariance window, a refusal, or an older engine row.
+  RISK_CHECK_STATUS_NOT_MEASURED = 4;
+}
+
+message RiskCheck {
+  // R, R_jump, R_shock, L_g, L_n, CAP, TRIM or refused.
+  string term = 1;
+  string label = 2;
+  // The stored book's reading; unset when not measured.
+  optional double value = 3;
+  // The limit in force, in the value's unit; unset when none applies.
+  optional double max = 4;
+  // "percent" (a fraction: 0.31 is 31%), "multiple" (of the sizing capital), "contracts", or
+  // "tau" (a multiple of the book's risk target: a max before the engine measured the book).
+  string unit = 5;
+  RiskCheckStatus status = 6;
+  // A sentence for the desk (the symbol of CAP, what bound, why not measured); may be empty.
+  string detail = 7;
 }
