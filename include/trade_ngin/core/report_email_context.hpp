@@ -151,7 +151,7 @@ inline std::string capital_lines_html(const EmailReportContext& context) {
 
 /// The equity report's dividend line: the cumulative figure, labelled as outside the P&L totals.
 inline std::string dividend_line_html(double cumulative_dividend_income) {
-    return "<div class=\"metric\"><strong>Dividend Income (cumulative, not in P&amp;L):</strong> "
+    return "<div class=\"metric\"><strong>Dividends Received:</strong> "
            "<span>" +
            report_capital_detail::dollars(cumulative_dividend_income) + "</span></div>\n";
 }

@@ -6156,6 +6156,7 @@ int main(int argc, char* argv[]) {
                     auto quantity_arr = std::static_pointer_cast<arrow::StringArray>(table_email->column(1)->chunk(0));
                     auto avg_price_arr = std::static_pointer_cast<arrow::StringArray>(table_email->column(2)->chunk(0));
                     auto realized_pnl_arr = std::static_pointer_cast<arrow::StringArray>(table_email->column(3)->chunk(0));
+                    auto unrealized_pnl_arr = std::static_pointer_cast<arrow::StringArray>(table_email->column(4)->chunk(0));
 
                     std::vector<std::pair<std::string, double>> closed_on_settled_day;
                     for (int64_t i = 0; i < table_email->num_rows(); ++i) {
@@ -6181,6 +6182,9 @@ int main(int argc, char* argv[]) {
                             pos.quantity = Decimal(quantity);
                             pos.average_price = Decimal(avg_price);
                             pos.realized_pnl = Decimal(realized_pnl);
+                            if (!unrealized_pnl_arr->IsNull(i)) {
+                                pos.unrealized_pnl = Decimal(std::stod(unrealized_pnl_arr->GetString(i)));
+                            }
 
                             yesterday_positions_finalized[symbol] = pos;
 
@@ -6203,6 +6207,7 @@ int main(int argc, char* argv[]) {
                                 kEquityStrategyId, portfolio_id, yesterday_date_for_email,
                                 closed_symbols));
                         std::unordered_map<std::string, double> quantity_before;
+                        std::unordered_map<std::string, double> average_cost_before;
                         if (before_result.is_ok() && before_result.value()->num_rows() > 0) {
                             const auto before_table = before_result.value();
                             auto before_symbol = std::static_pointer_cast<arrow::StringArray>(
@@ -6213,6 +6218,11 @@ int main(int argc, char* argv[]) {
                                 if (before_symbol->IsNull(i) || before_quantity->IsNull(i)) continue;
                                 quantity_before[before_symbol->GetString(i)] =
                                     std::stod(before_quantity->GetString(i));
+                                const auto before_cost = std::static_pointer_cast<arrow::StringArray>(
+                                    before_table->column(2)->chunk(0));
+                                if (!before_cost->IsNull(i))
+                                    average_cost_before[before_symbol->GetString(i)] =
+                                        std::stod(before_cost->GetString(i));
                             }
                         } else if (before_result.is_error()) {
                             ERROR("Failed to read the quantity a closed position had: " +
@@ -6229,7 +6239,11 @@ int main(int argc, char* argv[]) {
                             }
                             Position pos;
                             pos.symbol = symbol;
-                            pos.quantity = Decimal(held->second);
+                            // Sold at the previous close: held over none of the day's move, so its
+                            // quantity in the settled table is 0 and its average cost is the one it
+                            // was bought at.
+                            pos.quantity = Decimal(0.0);
+                            pos.average_price = Decimal(average_cost_before[symbol]);
                             pos.realized_pnl = Decimal(realized_pnl);
                             yesterday_positions_finalized[symbol] = pos;
                             if (previous_day_close_prices.find(symbol) ==
@@ -6435,29 +6449,46 @@ int main(int argc, char* argv[]) {
                     const std::string csv_dir = "apps/strategies/results/" + portfolio_id;
                     std::filesystem::create_directories(csv_dir);
                     csv_exporter->set_output_directory(csv_dir);
-                    double gross = 0.0, net = 0.0;
+                    std::vector<EquityCsvRow> today_rows;
                     for (const auto& [symbol, position] : positions) {
+                        if (std::abs(position.quantity.as_double()) < 0.0001) continue;
+                        EquityCsvRow row;
+                        row.symbol = symbol;
+                        row.quantity = position.quantity.as_double();
+                        row.average_cost = position.average_price.as_double();
                         const auto close = previous_day_close_prices.find(symbol);
-                        const double mark = close != previous_day_close_prices.end()
-                                                ? close->second
-                                                : position.average_price.as_double();
-                        const double notional = position.quantity.as_double() * mark;
-                        gross += std::abs(notional);
-                        net += notional;
+                        if (close != previous_day_close_prices.end()) row.price = close->second;
+                        today_rows.push_back(row);
                     }
-                    const StrategyPositionsMap today_book{{"EQUITY_MEAN_REVERSION", positions}};
-                    const auto today_file = csv_exporter->export_current_positions(
-                        now, today_book, previous_day_close_prices, current_portfolio_value, gross,
-                        net, {});
+                    std::sort(today_rows.begin(), today_rows.end(),
+                              [](const auto& a, const auto& b) { return a.symbol < b.symbol; });
+                    const std::string strategy_label = "Mean Reversion";
+                    const auto today_file =
+                        csv_exporter->export_equity_positions(now, strategy_label, today_rows);
                     if (today_file.is_ok()) attachments.push_back(today_file.value());
                     else ERROR("Failed to export today's positions: " +
                                std::string(today_file.error()->what()));
                     if (!yesterday_positions_finalized.empty()) {
-                        const StrategyPositionsMap settled_book{
-                            {"EQUITY_MEAN_REVERSION", yesterday_positions_finalized}};
-                        const auto settled_file = csv_exporter->export_finalized_positions(
-                            now, now - std::chrono::hours(24), settled_book, yesterday_entry_prices,
-                            yesterday_exit_prices);
+                        std::vector<EquityCsvRow> settled_rows;
+                        for (const auto& [symbol, position] : yesterday_positions_finalized) {
+                            EquityCsvRow row;
+                            row.symbol = symbol;
+                            row.quantity = position.quantity.as_double();
+                            row.average_cost = position.average_price.as_double();
+                            const auto from = yesterday_entry_prices.find(symbol);
+                            const auto to = yesterday_exit_prices.find(symbol);
+                            if (from != yesterday_entry_prices.end()) row.previous = from->second;
+                            if (to != yesterday_exit_prices.end()) row.latest = to->second;
+                            if (row.previous && row.latest)
+                                row.days_pnl = row.quantity * (*row.latest - *row.previous);
+                            row.unrealized = position.unrealized_pnl.as_double();
+                            row.realized = position.realized_pnl.as_double();
+                            settled_rows.push_back(row);
+                        }
+                        std::sort(settled_rows.begin(), settled_rows.end(),
+                                  [](const auto& a, const auto& b) { return a.symbol < b.symbol; });
+                        const auto settled_file = csv_exporter->export_equity_settled(
+                            now, now - std::chrono::hours(24), strategy_label, settled_rows);
                         if (settled_file.is_ok()) attachments.push_back(settled_file.value());
                         else ERROR("Failed to export the previous trading day's positions: " +
                                    std::string(settled_file.error()->what()));

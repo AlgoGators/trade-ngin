@@ -721,11 +721,10 @@ std::string EmailSender::generate_trading_report_body(
     html << "<h1>Daily Trading Report</h1>\n";
     // T-8D-2 R59: the book's own name, as the per-strategy overload prints it (the literal
     // "Trend Following Strategy" stood here, on the equity book's report).
-    html << "<div class=\"header-info\">" << date;
-    if (!chart_portfolio_id.empty()) {
-        html << " | " << format_strategy_display_name(chart_portfolio_id);
-    }
-    html << "</div>\n";
+    // An equity book is named by its strategy, "Mean Reversion", with its kind in the small grey line
+    // under it, as a futures sleeve is (HD 2026-10-14, section 16.3).
+    html << "<div class=\"header-info\">" << date << " | " << g_single_title << "</div>\n";
+    html << "<div style=\"font-size: 11px; color: #999;\">Equities</div>\n";
     html << "</div>\n";
     html << "</div>\n";
 
@@ -852,8 +851,18 @@ std::string EmailSender::generate_trading_report_body(
 
         // Generate PnL by symbol chart - ONLY if show_yesterday_pnl is true
         if (show_yesterday_pnl) {
-            pnl_by_symbol_base64_ = ChartGenerator::generate_pnl_by_symbol_chart(
-                db, chart_strategy_id, chart_portfolio_id_legacy, date, context.equities);
+            // An equity book: the bars are the settled table's Day's PnL column (HD 2026-10-14).
+            std::vector<ChartPoint> days_pnl;
+            for (const auto& [symbol, position] : yesterday_positions) {
+                const auto from = two_days_ago_close_prices.find(symbol);
+                const auto to = yesterday_close_prices.find(symbol);
+                const bool priced = from != two_days_ago_close_prices.end() &&
+                                    to != yesterday_close_prices.end();
+                days_pnl.emplace_back(symbol, priced ? position.quantity.as_double() *
+                                                           (to->second - from->second)
+                                                     : 0.0);
+            }
+            pnl_by_symbol_base64_ = ChartGenerator::generate_days_pnl_chart(days_pnl, date);
             html << chart_ledger.record(std::string(ChartTitles::pnl_by_symbol_heading(context.equities)), !pnl_by_symbol_base64_.empty(),
                                               ChartGenerator::last_chart_status(),
                                               ChartGenerator::last_chart_reason(), "no data to plot");
@@ -949,7 +958,7 @@ std::string EmailSender::generate_trading_report_body(
         }
 
         cumulative_pnl_by_symbol_base64_ = ChartGenerator::generate_cumulative_pnl_by_symbol_chart(
-            db, chart_strategy_id, chart_portfolio_id_legacy, date);
+            db, chart_strategy_id, chart_portfolio_id_legacy, date, true);
         html << chart_ledger.record(std::string(ChartTitles::cumulative_pnl_heading()), !cumulative_pnl_by_symbol_base64_.empty(),
                                           ChartGenerator::last_chart_status(),
                                           ChartGenerator::last_chart_reason(), "no data to plot");
@@ -1240,12 +1249,18 @@ std::string EmailSender::format_positions_table(
 
     html << single_heading_html();
     html << "<table>\n";
+    // An equity book (HD 2026-10-14, section 16): the average cost the shares were bought at and what
+    // they have gained since, beside the quantity and the price.
+    const bool equity_table = !g_single_title.empty();
     html << "<tr><th>Symbol</th><th>Quantity</th>";
+    if (equity_table) html << "<th>Average Cost</th>";
 
     // Show only market price for forward-looking positions (no PnL - will be zero)
     html << "<th>Price</th>";
 
-    html << "<th>Notional</th><th>% of Total</th></tr>\n";
+    html << "<th>Notional</th>";
+    if (equity_table) html << "<th>Unrealized PnL</th>";
+    html << "<th>% of Total</th></tr>\n";
 
     double total_notional = 0.0;
     double total_margin_posted = 0.0;
@@ -1397,11 +1412,17 @@ std::string EmailSender::format_positions_table(
         html << "<td>" << symbol << "</td>\n";
         html << "<td>" << report_quantity_text(report_instrument_of(symbol), qty) << "</td>\n";
 
+        if (equity_table) {
+            html << "<td>" << report_price_dollars_places(entry_price, 4) << "</td>\n";
+        }
         // Show only market price (entry price removed from display), at every decimal it has
         html << "<td>" << report_price_dollars_places(market_price, report_places_of(symbol))
              << (rows_without_close.count(symbol) ? note_sup(4) : std::string()) << "</td>\n";
 
         html << "<td>" << report_dollars(std::abs(notional)) << "</td>\n";
+        if (equity_table) {
+            html << "<td>" << report_dollars(qty * (market_price - entry_price)) << "</td>\n";
+        }
         html << "<td>" << std::fixed << std::setprecision(2) << pct_of_total << "%</td>\n";
         html << "</tr>\n";
     }
@@ -1482,8 +1503,10 @@ std::string EmailSender::format_yesterday_finalized_positions_table(
     html << "<tr>";
     html << "<th>Symbol</th>";
     html << "<th>Quantity</th>";
+    if (equities) html << "<th>Average Cost</th>";
     html << "<th>" << kSettledPreviousPriceLabel << "</th>";
     html << "<th>" << kSettledLatestPriceLabel << "</th>";
+    if (equities) html << "<th>Day's PnL</th><th>Unrealized PnL</th>";
     html << "<th>Realized PnL</th>";
     html << "</tr>\n";
 
@@ -1522,8 +1545,9 @@ std::string EmailSender::format_yesterday_finalized_positions_table(
     for (const auto& [symbol, position] : yesterday_positions) {
         double qty = position.quantity.as_double();
 
-        // Skip positions with zero quantity
-        if (std::abs(qty) < 0.0001)
+        // Skip positions with zero quantity (an equity position closed on the settled day keeps its
+        // row: it was sold at the previous close, so it was held over none of the move)
+        if (std::abs(qty) < 0.0001 && !(equities && std::abs(position.realized_pnl.as_double()) >= 1e-9))
             continue;
 
         // The two prices. A symbol the runner's "settled at" map does not hold printed no bar
@@ -1562,9 +1586,21 @@ std::string EmailSender::format_yesterday_finalized_positions_table(
         html << "<tr>";
         html << "<td>" << symbol << "</td>";
         html << "<td>" << std::fixed << std::setprecision(2) << qty << "</td>";
+        if (equities) {
+            html << "<td>" << report_price_dollars_places(yesterday_positions.at(symbol).average_price.as_double(), 4) << "</td>";
+        }
         html << "<td>" << cells.previous << "</td>";
 
         html << "<td>" << cells.latest << (cells.no_bar ? note_sup(1) : std::string()) << "</td>";
+        if (equities) {
+            // the column that multiplies out: shares held over the move x (latest - previous)
+            const double days_pnl = (known_price(entry_price) && known_price(exit_price))
+                                        ? qty * (exit_price - entry_price)
+                                        : 0.0;
+            html << "<td>" << report_dollars(days_pnl) << "</td>";
+            html << "<td>" << report_dollars(yesterday_positions.at(symbol).unrealized_pnl.as_double())
+                 << "</td>";
+        }
 
         // Realized PnL with color (GROSS PnL from positions table)
         std::string realized_pnl_class = (realized_pnl >= 0) ? "positive" : "negative";
@@ -2047,8 +2083,10 @@ std::string EmailSender::format_strategy_metrics(
     html << "<br>\n";
     show("Cash Available", "Cash Available");
     show("Margin Posted", "Margin Posted");
-    show("Equity-to-Margin Ratio", "Equity-to-Margin Ratio");
-    show("Margin Cushion", "Margin Cushion");
+    if (!context.equities) {  // meaningless on a cash account (HD 2026-10-14, section 16.7)
+        show("Equity-to-Margin Ratio", "Equity-to-Margin Ratio");
+        show("Margin Cushion", "Margin Cushion");
+    }
     html << "<br>\n";
     show("Gross Leverage", "Gross Leverage");
     show("Net Leverage", "Net Leverage");

@@ -585,12 +585,18 @@ TEST_F(EmailFixture, TheSleeveNamesItsKindAndTheSettledTableNamesItsTwoPrices) {
     const std::string equity = equity_body();
     for (const auto& [body, equities] :
          {std::pair{futures, false}, std::pair{base, false}, std::pair{equity, true}}) {
-        (void)equities;
         for (const char* gone : {"The two marks are raw closes", "raw closes",
                                  "need not multiply out", "not recomputed from the two marks"}) {
             EXPECT_EQ(body.find(gone), std::string::npos) << gone;
         }
-        EXPECT_NE(body.find(marks), std::string::npos);
+        if (equities) {
+            // HD 2026-10-14 (section 16): average cost first, then the day's move, then the split
+            EXPECT_NE(body.find("<th>Symbol</th><th>Quantity</th><th>Average Cost</th><th>Previous price</th>"
+                                "<th>Latest price</th><th>Day's PnL</th><th>Unrealized PnL</th><th>Realized PnL</th>"),
+                      std::string::npos);
+        } else {
+            EXPECT_NE(body.find(marks), std::string::npos);
+        }
         for (const char* gone : {"Entry Price", "Exit Price", "Prior mark", "Mark (", "T-1 close",
                                  "T-2 close", "T-1", "T-2"}) {
             EXPECT_EQ(body.find(gone), std::string::npos) << gone;
@@ -857,8 +863,7 @@ TEST(EmailEquityStatistics, EachReportKeyReadsItsStoredColumn) {
     EXPECT_EQ(statistics_report_metrics(row), expected);
     EXPECT_EQ(
         dividend_line_html(6.565561),
-        "<div class=\"metric\"><strong>Dividend Income (cumulative, not in P&amp;L):</strong> "
-        "<span>$6.57</span></div>\n");
+        "<div class=\"metric\"><strong>Dividends Received:</strong> <span>$6.57</span></div>\n");
 }
 
 // READS SOURCE: the equity runner is a `main()`. What it guards (the keys the report reads, the
@@ -1101,7 +1106,9 @@ TEST_F(EmailFixture, EveryBodyRendersTheSameBytesTwice) {
 // HD 10-13 (EMAIL_FEEDBACK_HD_2026-10-13.md): the layout of the bodies. Plain and short: the headings,
 // the blocks, the lines that are gone, and the one note at the bottom.
 TEST_F(EmailFixture, TheBodiesFollowHDsLayout) {
-    for (const std::string& body : {conservative_body(), base_body(), equity_body()}) {
+    const std::string equity_text = equity_body();
+    for (const std::string& body : {conservative_body(), base_body(), equity_text}) {
+        const bool is_equity = &body == &equity_text || body == equity_text;
         const auto prev = body.find("<h2>Previous trading day (");
         const auto perf = body.find("<h2>Performance Metrics</h2>");
         ASSERT_NE(prev, std::string::npos);
@@ -1125,6 +1132,7 @@ TEST_F(EmailFixture, TheBodiesFollowHDsLayout) {
                                "Net Leverage"};
         std::size_t at = perf;
         for (const char* label : order) {
+            if (is_equity && (std::string(label) == "Equity-to-Margin Ratio" || std::string(label) == "Margin Cushion")) continue;
             const std::string needle = std::string(label) == "<br>" ? "<br>" : std::string("<strong>") + label;
             const auto found = body.find(needle, at + 1);
             ASSERT_NE(found, std::string::npos) << label;

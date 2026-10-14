@@ -194,12 +194,9 @@ TEST_F(LiveCsvFiles, TheSettledFileKeepsEveryDigitOfASmallMark) {
     ASSERT_EQ(lines.size(), 2u);
     const auto cells = cells_of(lines[1]);
     ASSERT_EQ(cells.size(), 6u) << lines[1];
-    EXPECT_EQ(cells[3], "0.0063125") << "the prior mark lost a digit: " << lines[1];
-    EXPECT_EQ(cells[4], "0.0062995") << "the mark lost a digit: " << lines[1];
-    EXPECT_EQ(std::stod(cells[3]), 0.0063125);
-    EXPECT_EQ(std::stod(cells[4]), 0.0062995);
-    // The row's realized P&L can be rebuilt from its two printed marks (12,500,000 a point).
-    EXPECT_NEAR(-1.0 * (std::stod(cells[4]) - std::stod(cells[3])) * 12500000.0, 162.5, 1e-6);
+    // HD 2026-10-14 (section 16.9): four decimals on every price, so a 6J close reads 0.0063
+    EXPECT_EQ(cells[3], "0.0063") << lines[1];
+    EXPECT_EQ(cells[4], "0.0063") << lines[1];
     EXPECT_EQ(cells[2], "-1.00");
     EXPECT_EQ(cells[5], "162.50");
 }

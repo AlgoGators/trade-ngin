@@ -25,7 +25,8 @@ inline const std::vector<std::string>& account_detail_stored_columns() {
         "current_portfolio_value", "sizing_capital",         "gross_leverage",
         "net_leverage",            "overlay_gross_leverage", "overlay_net_leverage",
         "overlay_risk",            "var_95_1d",              "max_drawdown_sizing",
-        "volatility_sizing",       "worst_day_sizing"};
+        "volatility_sizing",       "worst_day_sizing",       "margin_posted",
+        "cash_available"};
     return kColumns;
 }
 
@@ -34,7 +35,7 @@ inline std::string account_detail_query(const std::string& strategy_id,
                                         const std::string& portfolio_id, const std::string& date) {
     return "SELECT current_portfolio_value, risk_detail->>'sizing_capital', gross_leverage, "
            "net_leverage, overlay_gross_leverage, overlay_net_leverage, overlay_risk, var_95_1d, "
-           "max_drawdown_sizing, volatility_sizing, worst_day_sizing "
+           "max_drawdown_sizing, volatility_sizing, worst_day_sizing, margin_posted, cash_available "
            "FROM trading.live_results WHERE strategy_id = '" +
            strategy_id + "' AND portfolio_id = '" + portfolio_id + "' AND date = '" + date +
            "' ORDER BY date DESC LIMIT 1";
@@ -89,6 +90,8 @@ inline std::vector<std::pair<std::string, std::string>> account_detail_columns(
     cols.emplace_back("current portfolio value",
                       email_text("Current Portfolio Value", "current_portfolio_value", "%.2f"));
     cols.emplace_back("sizing capital", get("sizing_capital"));
+    cols.emplace_back("margin posted", email_text("Margin Posted", "margin_posted", "%.2f"));
+    cols.emplace_back("cash available", email_text("Cash Available", "cash_available", "%.2f"));
     cols.emplace_back("gross leverage on the account value",
                       email_text("Gross Leverage", "gross_leverage", "%.4f"));
     cols.emplace_back("net leverage on the account value",
@@ -131,7 +134,7 @@ inline std::vector<std::vector<std::string>> account_detail_rows(
     const std::vector<std::pair<std::string, std::string>>& cols) {
     static const std::vector<std::pair<std::string, std::vector<std::string>>> kGroups = {
         {"Day", {"date"}},
-        {"Account", {"current portfolio value", "sizing capital"}},
+        {"Account", {"current portfolio value", "cash available", "margin posted", "sizing capital"}},
         {"Leverage on the account value",
          {"gross leverage on the account value", "net leverage on the account value"}},
         {"Leverage on the sizing capital",
@@ -146,11 +149,19 @@ inline std::vector<std::vector<std::string>> account_detail_rows(
     std::map<std::string, std::string> by_name(cols.begin(), cols.end());
     std::vector<std::vector<std::string>> rows;
     rows.push_back({"group", "item", "value"});
-    for (const auto& [group, items] : kGroups)
+    for (const auto& [group, items] : kGroups) {
+        // a group with no figure at all is left out (the equity book has no sizing capital)
+        bool any = false;
+        for (const auto& item : items) {
+            const auto it = by_name.find(item);
+            any = any || (it != by_name.end() && !it->second.empty());
+        }
+        if (!any) continue;
         for (const auto& item : items) {
             const auto it = by_name.find(item);
             rows.push_back({group, item, it == by_name.end() ? std::string() : it->second});
         }
+    }
     return rows;
 }
 

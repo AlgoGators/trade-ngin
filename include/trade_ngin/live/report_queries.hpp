@@ -40,7 +40,7 @@ inline std::string yesterday_positions_report_query(const std::string& strategy_
  *        HD ruling Q11): a position closed on the settled day is stored with quantity 0, and the
  *        settled table prints the quantity it had when it closed.
  *
- * One row per symbol: (symbol, quantity), the latest row dated before `date` (UTC date), for the
+ * One row per symbol: (symbol, quantity, average_price), the latest row dated before `date` (UTC date), for the
  * book and system portfolio the settled rows are read from.
  */
 inline std::string quantity_before_report_query(const std::string& strategy_id,
@@ -55,7 +55,7 @@ inline std::string quantity_before_report_query(const std::string& strategy_id,
         }
         in_list += (in_list.empty() ? "'" : ", '") + safe + "'";
     }
-    return "SELECT DISTINCT ON (symbol) symbol, quantity FROM trading.positions "
+    return "SELECT DISTINCT ON (symbol) symbol, quantity, average_price FROM trading.positions "
            "WHERE strategy_id = '" +
            strategy_id + "' AND portfolio_id = '" + portfolio_id +
            "' AND portfolio_type = 'system' AND DATE(last_update) < '" + date +

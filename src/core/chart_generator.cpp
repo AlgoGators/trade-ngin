@@ -248,7 +248,22 @@ std::string ChartQueries::margin_posted(const std::string& strategy_id,
 
 std::string ChartQueries::cumulative_pnl_by_symbol(const std::string& strategy_id,
                                                    const std::string& portfolio_id,
-                                                   const std::string& date) {
+                                                   const std::string& date, bool equities) {
+    if (equities) {
+        // An equity book: realized to the settled day plus what the shares still held have gained, the
+        // stored unrealized P&L of each symbol's newest row through the settled day (HD 2026-10-14).
+        const std::string rows = "FROM trading.positions WHERE strategy_id = '" + strategy_id +
+                                 "' AND portfolio_id = '" + portfolio_id +
+                                 "' AND portfolio_type = 'system' AND DATE(last_update) < DATE('" +
+                                 date + "') ";
+        return "SELECT r.symbol, COALESCE(r.realized, 0) + COALESCE(u.unrealized, 0) AS cumulative_pnl "
+               "FROM (SELECT symbol, SUM(daily_realized_pnl) AS realized " + rows +
+               "GROUP BY symbol) r LEFT JOIN (SELECT DISTINCT ON (symbol) symbol, daily_unrealized_pnl "
+               "AS unrealized " + rows +
+               "ORDER BY symbol, last_update DESC) u ON u.symbol = r.symbol "
+               "WHERE COALESCE(r.realized, 0) + COALESCE(u.unrealized, 0) != 0 "
+               "ORDER BY cumulative_pnl DESC";
+    }
     // The sum of the stored daily realized P&L of each symbol, gross of costs. On BASE it is not
     // the book's stored total_realized_pnl: BASE's early history rows do not reconcile (T-8D-2
     // D2-OUT-25: left as it is, documented).
@@ -350,7 +365,7 @@ ChartData ChartSeries::equity_curve(std::vector<ChartPoint> rows,
     // Populate ChartData
     chart_data.labels = dates;
     chart_data.values = equity_values;
-    chart_data.title = "Equity Curve through " + dates.back() + " (settled)";
+    chart_data.title = "Equity Curve through " + dates.back();
     chart_data.x_label = "Date";
     chart_data.y_label = "Portfolio Value ($)";
     // The reference line is the book's own starting capital, or none when it is not on record.
@@ -482,10 +497,10 @@ ChartData ChartSeries::pnl_by_symbol(std::vector<ChartPoint> rows, const std::st
     // Add yesterday's date to title if calculated successfully
     if (!yesterday_date.empty()) {
         chart_data.title =
-            ChartTitles::pnl_by_symbol_heading(equities) + " (" + yesterday_date + ")";
+            ChartTitles::pnl_by_symbol_heading(equities) + ", " + yesterday_date;
     }
     chart_data.x_label = "Symbol";
-    chart_data.y_label = "Realized PnL ($)";
+    chart_data.y_label = equities ? "Day's PnL ($)" : "Realized PnL ($)";
     chart_data.reference_line = 0.0;
     chart_data.has_reference_line = true;
 
@@ -631,7 +646,7 @@ ChartData ChartSeries::cumulative_pnl_by_symbol(std::vector<ChartPoint> symbol_p
     }
 
     chart_data.title = ChartTitles::cumulative_pnl_title(date);
-    chart_data.x_label = "Cumulative Realized PnL ($)";
+    chart_data.x_label = "Cumulative PnL ($)";
     chart_data.y_label = "Symbol";
     chart_data.reference_line = 0.0;
     chart_data.has_reference_line = true;
@@ -1454,7 +1469,7 @@ ChartData ChartGenerator::fetch_cumulative_pnl_by_symbol_data(
     std::shared_ptr<DatabaseInterface> db,
     const std::string& strategy_id,
                                                   const std::string& portfolio_id,
-    const std::string& date)
+    const std::string& date, bool equities)
 {
     ChartData chart_data;
 
@@ -1465,7 +1480,7 @@ ChartData ChartGenerator::fetch_cumulative_pnl_by_symbol_data(
 
     try {
         // Query to sum up all realized PnL by symbol across all time
-        std::string query = ChartQueries::cumulative_pnl_by_symbol(strategy_id, portfolio_id, date);
+        std::string query = ChartQueries::cumulative_pnl_by_symbol(strategy_id, portfolio_id, date, equities);
 
         INFO("Querying cumulative PnL by symbol with: " + query);
         auto result = db->execute_query(query);
@@ -2056,6 +2071,17 @@ std::string ChartGenerator::generate_equity_curve_chart(std::shared_ptr<Database
     return render_line_chart(data, config);
 }
 
+std::string ChartGenerator::generate_days_pnl_chart(const std::vector<ChartPoint>& rows,
+                                                    const std::string& date) {
+    begin_chart();
+    ChartData data = ChartSeries::pnl_by_symbol(rows, date, true);
+    if (data.labels.empty() || data.values.empty()) return "";
+    ChartConfig config;
+    config.rotate_x_labels = true;
+    config.x_label_angle = -45;
+    return render_bar_chart(data, config);
+}
+
 std::string ChartGenerator::generate_pnl_by_symbol_chart(std::shared_ptr<DatabaseInterface> db,
                                                          const std::string& strategy_id,
                                                          const std::string& portfolio_id,
@@ -2286,13 +2312,13 @@ std::string ChartGenerator::generate_cumulative_pnl_by_symbol_chart(
     std::shared_ptr<DatabaseInterface> db,
     const std::string& strategy_id,
                                                   const std::string& portfolio_id,
-    const std::string& date)
+    const std::string& date, bool equities)
 {
     begin_chart();
     INFO("Starting cumulative PnL by symbol chart generation for strategy: " + strategy_id);
 
     // Fetch data
-    ChartData data = fetch_cumulative_pnl_by_symbol_data(db, strategy_id, portfolio_id, date);
+    ChartData data = fetch_cumulative_pnl_by_symbol_data(db, strategy_id, portfolio_id, date, equities);
 
     if (data.labels.empty() || data.values.empty()) {
         WARN("No data available for cumulative PnL by symbol chart");
