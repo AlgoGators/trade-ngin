@@ -1159,3 +1159,34 @@ TEST_F(EmailFixture, ARowWithNoPriceIsADashWithAFootnoteAndAMoneyAmountHasItsSig
     }
     EXPECT_EQ(conservative_body().find("<td>2</td>"), std::string::npos);
 }
+
+// Writes the banner cases of EMAIL_FEEDBACK_HD_2026-10-13.md section 15 as stand-alone bodies, for the review
+// folder, when TRADE_NGIN_BANNER_CASES_DIR names a directory. Synthetic: the clone holds no such day.
+TEST_F(EmailFixture, WriteTheBannerCasesWhenAskedTo) {
+    const char* dir = std::getenv("TRADE_NGIN_BANNER_CASES_DIR");
+    if (dir == nullptr || std::string(dir).empty()) GTEST_SKIP() << "not asked to write";
+    const StrategyPositionsMap settled = {
+        {"TREND_FOLLOWING", {{"QMES.v.0", row("QMES.v.0", 1.0, 7153.5, 12.5)},
+                              {"QKE.v.0", row("QKE.v.0", 1.0, 668.5, 0.0)}}}};
+    const std::unordered_map<std::string, double> all = {{"QMES.v.0", 7160.0}, {"QKE.v.0", 670.0}};
+    const std::unordered_map<std::string, double> from = {{"QMES.v.0", 7153.5}, {"QKE.v.0", 668.5}};
+    const std::unordered_map<std::string, double> some = {{"QMES.v.0", 7160.0}};  // KE has no price
+    const std::map<std::string, double> settled_metrics = {{"Daily Return", 0.01}};
+    const auto write = [&](const std::string& name, const std::string& run_date, bool no_session,
+                           const std::unordered_map<std::string, double>& latest) {
+        EmailReportContext context;
+        context.prior_day_no_session = no_session;
+        context.live_start_date = "2025-10-05";
+        const std::string body = sender_.generate_trading_report_body(
+            StrategyPositionsMap{}, std::unordered_map<std::string, Position>{}, std::nullopt,
+            futures_metrics(), StrategyExecutionsMap{}, run_date, "CONSERVATIVE_PORTFOLIO", true, {},
+            nullptr, settled, latest, from, settled_metrics, "LIVE_TREND_FOLLOWING", {}, context);
+        std::ofstream(std::string(dir) + "/" + name + ".html", std::ios::binary) << body;
+    };
+    write("case_holiday_some_missing_MLK_2026-01-20", "2026-01-20", false, some);
+    write("case_good_friday_some_missing_2026-04-04", "2026-04-04", false, some);
+    write("case_holiday_no_prices_2025-12-26", "2025-12-26", true, all);
+    write("case_saturday_with_a_print_2026-06-21", "2026-06-21", false, some);
+    write("case_weekday_feed_gap_2026-04-23", "2026-04-23", true, all);
+    SUCCEED();
+}
