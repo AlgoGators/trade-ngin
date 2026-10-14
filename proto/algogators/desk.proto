@@ -1,6 +1,6 @@
 // AlgoGators gRPC API
 // API: desk
-// Version: 1.2.0
+// Version: 1.3.0
 // Compatibility: a client must send x-algogators-api-version: desk=<major>.<minor>.<patch>; the
 // server refuses a different major and accepts any minor/patch (docs/design/rpc.md).
 //
@@ -45,6 +45,9 @@ import "google/protobuf/timestamp.proto";
 //                      after 10:00 (or on a published day) it is refused. No field changed.
 //   1.2.0  2026-10-13  Rescind (contract C8): the desk takes back its own approval before the
 //                      09:30 send. New RPC and message only; no field changed.
+//   1.3.0  2026-10-14  GetDeskRisk (contract C9): the risk report of the day's qt book and
+//                      whether the desk's positions breach a risk limit. New RPC and messages
+//                      only; no field changed.
 
 service DeskService {
   // A desk save: run the desk loop on the whole qt_proposal and book the result as qt with
@@ -80,6 +83,15 @@ service DeskService {
   // The model run's state for one book and day, read from trading.live_run_metadata, for the
   // desk pages (AlgoLens #97). Read-only; D18: no desk window opens unless the run succeeded.
   rpc GetRunStatus(RunStatusRequest) returns (RunStatus);
+
+  // Since 1.3.0 (contract C9). The risk report of the day's qt book: what the engine's last run of
+  // it (the model run, a desk save, an approved override) recorded in trading.live_results
+  // risk_detail, the configured limits, and whether the desk's positions breach a risk limit (a
+  // symbol moved by cap, overlay, clip or trim; the overlay cutting the book; the book still over
+  // a limit). Trading rules (sign_close, rounding, buffer, search, hold) are reported, not
+  // breaches. Read-only. AlgoLens refuses the desk's approval while within_limits is false and no
+  // override was approved.
+  rpc GetDeskRisk(DeskRiskRequest) returns (DeskRisk);
 }
 
 // Outcome of a command. Shared by RunDeskReply and CommandReply.
@@ -246,4 +258,77 @@ message RunStatus {
   // Since 1.1.0. When the day's e-mail went out. Unset: not sent (an approval before 09:30, a
   // past day caught up, or e-mail disabled).
   google.protobuf.Timestamp sent_at = 9;
+}
+
+message DeskRiskRequest {
+  string portfolio_id = 1;
+  // "YYYY-MM-DD".
+  string date = 2;
+}
+
+// Which run wrote the day's qt book.
+enum DeskRiskState {
+  DESK_RISK_STATE_UNSPECIFIED = 0;
+  // No qt row for the day yet: nothing to report.
+  DESK_RISK_STATE_NO_BOOK = 1;
+  // The model run's book (no desk save that day): inside the limits by construction.
+  DESK_RISK_STATE_MODEL = 2;
+  // A desk save: the pass ran on the desk's positions.
+  DESK_RISK_STATE_DESK = 3;
+  // An approved override: the ask trades as asked; the pass is a report.
+  DESK_RISK_STATE_OVERRIDE = 4;
+}
+
+message RiskBreach {
+  // The overlay term (R, R_jump, R_shock, L_g, L_n, CAP), or the step that moved a symbol (cap,
+  // overlay, clip, trim), or "refused".
+  string term = 1;
+  // A sentence for the desk.
+  string detail = 2;
+}
+
+message SymbolRisk {
+  string symbol = 1;
+  double asked = 2;
+  double given = 3;
+  // The step that moved the symbol (one_pass::attribute), "none" when given == asked.
+  string moved_by = 4;
+  // "risk" (cap, overlay, clip, trim: a breach), "rule" (sign_close, rounding, buffer, search,
+  // hold: reported only) or "none".
+  string category = 5;
+}
+
+message RiskLimit {
+  // A key of the portfolio's risk.json carver module: max_gross_leverage, max_net_leverage, R_max,
+  // R_jump_max, R_shock_max, per_name_cap, trim_max.
+  string name = 1;
+  double value = 2;
+}
+
+message DeskRisk {
+  DeskRiskState state = 1;
+  // position_overrides.id of the desk save or override decision the report belongs to (0 on a
+  // model or missing book).
+  int64 audit_id = 2;
+  // False when a risk limit bound on the desk's positions.
+  bool within_limits = 3;
+  // True on an approved override: breaches are reported but do not block.
+  bool approved_override = 4;
+  repeated RiskBreach breaches = 5;
+  // The overlay's multiplier m (1.0: no cut) and the term that bound (or "none").
+  double m = 6;
+  string binding_term = 7;
+  // ';'-separated overlay terms still over a limit, empty when none.
+  string over_limit_after_rounding = 8;
+  string over_limit_by_hold = 9;
+  // The overlay could not size the book; the held book was kept.
+  bool refused = 10;
+  repeated SymbolRisk symbols = 11;
+  // Readings of the stored qt book (trading.live_results); unset when not recorded.
+  optional double gross_leverage = 12;
+  optional double net_leverage = 13;
+  optional double margin_cushion = 14;
+  optional double equity_to_margin = 15;
+  // The configured limits (risk.json), empty when the file is not found.
+  repeated RiskLimit limits = 16;
 }

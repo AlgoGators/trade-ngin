@@ -1,6 +1,6 @@
 """DeskService implementation.
 
-GetRunStatus reads Postgres. The four commands check their trading.position_overrides row,
+GetRunStatus and GetDeskRisk (contract C9) read Postgres. The four commands check their trading.position_overrides row,
 claim it and queue the work (commands.py), then answer ACCEPTED at once; the outcome lands on
 the row, which AlgoLens polls (contract section 6). A row that is not pending is never run
 again: the reply says its current status. A request that does not match its row (unknown id,
@@ -22,9 +22,12 @@ from google.protobuf.timestamp_pb2 import Timestamp
 
 from algogators import desk_pb2, desk_pb2_grpc
 
+from . import risk as rk
 from . import status as st
 from . import validation as v
 from .commands import ACCEPTED, DONE, FAILED, REFUSED, Dispatcher, Outcome
+from .config import DEFAULT_CONFIG_DIR
+from .portfolios import PortfolioConfigError, portfolios_root, resolve_portfolio_dir
 from .store import RunStatusStore, StoreError
 
 log = logging.getLogger("desk.rpc")
@@ -44,6 +47,13 @@ _COMMAND_STATUS = {
     FAILED: desk_pb2.COMMAND_STATUS_FAILED,
 }
 
+_RISK_STATE = {
+    rk.NO_BOOK: desk_pb2.DESK_RISK_STATE_NO_BOOK,
+    rk.MODEL: desk_pb2.DESK_RISK_STATE_MODEL,
+    rk.DESK: desk_pb2.DESK_RISK_STATE_DESK,
+    rk.OVERRIDE: desk_pb2.DESK_RISK_STATE_OVERRIDE,
+}
+
 NO_DISPATCHER = "commands are not configured on this agent"
 
 
@@ -56,8 +66,10 @@ def _ts(value):
 
 
 class DeskServicer(desk_pb2_grpc.DeskServiceServicer):
-    def __init__(self, store: RunStatusStore, dispatcher: Optional[Dispatcher] = None):
+    def __init__(self, store: RunStatusStore, dispatcher: Optional[Dispatcher] = None,
+                 config_dir: Optional[str] = None):
         self._store = store
+        self._config_dir = config_dir or DEFAULT_CONFIG_DIR
         self._dispatcher = dispatcher
 
     # -- helpers ---------------------------------------------------------------------------
@@ -187,3 +199,47 @@ class DeskServicer(desk_pb2_grpc.DeskServiceServicer):
             "state": derived.state,
             "elapsed_ms": round((time.monotonic() - started) * 1000, 1)})
         return reply
+
+    def _limits(self, portfolio_id: str):
+        try:
+            name = resolve_portfolio_dir(self._config_dir, portfolio_id)
+            return rk.load_limits(str(portfolios_root(self._config_dir) / name))
+        except PortfolioConfigError:
+            return []
+
+    def GetDeskRisk(self, request, context):
+        started = time.monotonic()
+        try:
+            pid = v.portfolio_id(request.portfolio_id)
+            day = v.date(request.date)
+        except v.InvalidArgument as exc:
+            self._invalid(context, "GetDeskRisk", exc)
+        try:
+            row = self._store.desk_risk_row(pid, day)
+        except StoreError as exc:
+            log.error("desk risk unavailable", exc_info=exc.__cause__ is not None,
+                      extra={"rpc": "GetDeskRisk", "portfolio_id": pid, "date": str(day),
+                             "error": str(exc)})
+            context.abort(grpc.StatusCode.UNAVAILABLE, f"desk risk unavailable: {exc}")
+        report = rk.derive_desk_risk(row, self._limits(pid))
+        reply = desk_pb2.DeskRisk(
+            state=_RISK_STATE[report.state], audit_id=report.audit_id,
+            within_limits=report.within_limits, approved_override=report.approved_override,
+            breaches=[desk_pb2.RiskBreach(term=b.term, detail=b.detail) for b in report.breaches],
+            m=report.m, binding_term=report.binding_term,
+            over_limit_after_rounding=report.over_limit_after_rounding,
+            over_limit_by_hold=report.over_limit_by_hold, refused=report.refused,
+            symbols=[desk_pb2.SymbolRisk(symbol=s.symbol, asked=s.asked, given=s.given,
+                                         moved_by=s.moved_by, category=s.category)
+                     for s in report.symbols],
+            limits=[desk_pb2.RiskLimit(name=n, value=x) for n, x in report.limits])
+        for name in ("gross_leverage", "net_leverage", "margin_cushion", "equity_to_margin"):
+            value = getattr(report, name)
+            if value is not None:
+                setattr(reply, name, value)
+        log.info("desk risk", extra={
+            "rpc": "GetDeskRisk", "portfolio_id": pid, "date": str(day), "state": report.state,
+            "status": "WITHIN" if report.within_limits else "BREACH",
+            "elapsed_ms": round((time.monotonic() - started) * 1000, 1)})
+        return reply
+
