@@ -157,6 +157,7 @@ private:
     std::string gross_leverage_base64_;
     std::string total_transaction_costs_base64_; // Store cumulative transaction costs 
     std::string margin_posted_base64_; //Store total margin posted
+    std::string contracts_per_day_base64_;  // contracts traded per day, futures books
     std::string portfolio_composition_base64_; //Store portfolio composition
     std::string cumulative_pnl_by_symbol_base64_; //Store cumalative pnl
     HolidayChecker holiday_checker_; //Holiday Checking
