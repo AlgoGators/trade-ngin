@@ -7,10 +7,10 @@
 #include <string>
 #include <vector>
 #include "trade_ngin/core/error.hpp"
+#include "trade_ngin/core/testing_access.hpp"
 #include "trade_ngin/core/types.hpp"
 #include "trade_ngin/optimization/dynamic_optimizer.hpp"
 #include "trade_ngin/risk/risk_manager.hpp"
-#include "trade_ngin/core/testing_access.hpp"
 
 namespace trade_ngin {
 
@@ -209,7 +209,7 @@ struct LiveSpecificConfig {
  */
 struct StrategyDefaultsConfig {
     std::vector<std::pair<int, double>> fdm{{1, 1.0},  {2, 1.03}, {3, 1.08},
-                                             {4, 1.13}, {5, 1.19}, {6, 1.26}};
+                                            {4, 1.13}, {5, 1.19}, {6, 1.26}};
     double max_strategy_allocation{1.0};
     double min_strategy_allocation{0.1};
     bool use_optimization{true};
@@ -251,8 +251,7 @@ struct StrategyDefaultsConfig {
         if (j.contains("carver_buffer_floor"))
             carver_buffer_floor = j.at("carver_buffer_floor").get<double>();
         if (j.contains("carver_buffer_position_factor"))
-            carver_buffer_position_factor =
-                j.at("carver_buffer_position_factor").get<double>();
+            carver_buffer_position_factor = j.at("carver_buffer_position_factor").get<double>();
     }
 };
 
@@ -304,6 +303,9 @@ struct AppConfig {
     // Raw strategies JSON for strategy factory
     nlohmann::json strategies_config;
 
+    // Asset class
+    AssetClass asset_class;
+
     /**
      * @brief Convert config to JSON for serialization
      */
@@ -323,6 +325,7 @@ struct AppConfig {
         j["strategy_defaults"] = strategy_defaults.to_json();
         j["email"] = email.to_json();
         j["strategies"] = strategies_config;
+        // j["asset_class"] = TODO implement this
         return j;
     }
 };
@@ -359,13 +362,14 @@ public:
      */
     static Result<AppConfig> load_legacy(const std::filesystem::path& config_file_path);
 
-TESTING_PRIVATE:
-    /**
-     * @brief Load and parse a JSON file
-     * @param file_path Path to JSON file
-     * @return Result containing parsed JSON or error
-     */
-    static Result<nlohmann::json> load_json_file(const std::filesystem::path& file_path);
+    TESTING_PRIVATE :
+        /**
+         * @brief Load and parse a JSON file
+         * @param file_path Path to JSON file
+         * @return Result containing parsed JSON or error
+         */
+        static Result<nlohmann::json>
+        load_json_file(const std::filesystem::path& file_path);
 
     /**
      * @brief Recursively merge JSON objects

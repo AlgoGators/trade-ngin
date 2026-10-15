@@ -175,13 +175,12 @@ Result<backtest::BacktestResults> BacktestRunner::run_backtest() {
         // Set end date to today
         config.strategy_config.end_date = now;
 
-        // TODO make asset class configurable
-        config.strategy_config.asset_class = trade_ngin::AssetClass::FUTURES;
+        config.strategy_config.asset_class = app_config.asset_class;
         config.strategy_config.data_freq = trade_ngin::DataFrequency::DAILY;
         config.store_trade_details = app_config.backtest.store_trade_details;
 
         // Load symbols from database
-        auto symbols_result = db->get_symbols(trade_ngin::AssetClass::FUTURES);
+        auto symbols_result = db->get_symbols(config.strategy_config.asset_class);
         auto symbols = symbols_result.value();
 
         if (symbols_result.is_ok()) {
@@ -322,7 +321,7 @@ Result<backtest::BacktestResults> BacktestRunner::run_backtest() {
 
         // Create base strategy configuration using loaded config values
         trade_ngin::StrategyConfig base_strategy_config;
-        base_strategy_config.asset_classes = {trade_ngin::AssetClass::FUTURES};
+        base_strategy_config.asset_classes = {config.strategy_config.asset_class};
         base_strategy_config.frequencies = {config.strategy_config.data_freq};
         base_strategy_config.max_drawdown = app_config.max_drawdown;
         base_strategy_config.max_leverage = app_config.max_leverage;
@@ -652,8 +651,9 @@ Result<backtest::BacktestResults> BacktestRunner::run_backtest_from_config() {
 
 Result<backtest::BacktestResults> BacktestRunner::execute(
     const std::vector<std::string>& symbols, const Timestamp& start_date, const Timestamp& end_date,
-    AssetClass asset_class, DataFrequency data_freq, const std::vector<StrategySpec>& strategy_specs,
-    const StrategyConfig& base_strategy_config, const PortfolioConfig& portfolio_config,
+    AssetClass asset_class, DataFrequency data_freq,
+    const std::vector<StrategySpec>& strategy_specs, const StrategyConfig& base_strategy_config,
+    const PortfolioConfig& portfolio_config,
     const backtest::BacktestCoordinatorConfig& coord_config, std::shared_ptr<PostgresDatabase> db,
     std::shared_ptr<MarketDataSource> data_source, std::shared_ptr<InstrumentRegistry> registry) {
     // ========================================
@@ -674,8 +674,8 @@ Result<backtest::BacktestResults> BacktestRunner::execute(
     // ========================================
     std::unique_ptr<backtest::BacktestCoordinator> coordinator;
     if (db) {
-        coordinator = std::make_unique<backtest::BacktestCoordinator>(db, registry.get(),
-                                                                      coord_config);
+        coordinator =
+            std::make_unique<backtest::BacktestCoordinator>(db, registry.get(), coord_config);
     } else {
         coordinator = std::make_unique<backtest::BacktestCoordinator>(data_source, registry.get(),
                                                                       coord_config);
@@ -696,8 +696,8 @@ Result<backtest::BacktestResults> BacktestRunner::execute(
         StrategyConfig strategy_config = base_strategy_config;
         strategy_config.capital_allocation = coord_config.initial_capital * allocation;
 
-        INFO("Creating strategy: " + spec.strategy_id + " (allocation: " +
-             std::to_string(allocation * 100.0) + "%)");
+        INFO("Creating strategy: " + spec.strategy_id +
+             " (allocation: " + std::to_string(allocation * 100.0) + "%)");
 
         auto factory = registered_strategies_[spec.strategy_id];
         StrategyContext strategy_ctx{strategy_config, db, registry};
@@ -705,8 +705,8 @@ Result<backtest::BacktestResults> BacktestRunner::execute(
 
         if (!strategy) {
             return make_error<backtest::BacktestResults>(
-                ErrorCode::STRATEGY_ERROR,
-                "Strategy factory returned null for " + spec.strategy_id, "BacktestAPI");
+                ErrorCode::STRATEGY_ERROR, "Strategy factory returned null for " + spec.strategy_id,
+                "BacktestAPI");
         }
 
         auto init_result = strategy->initialize();
@@ -738,10 +738,9 @@ Result<backtest::BacktestResults> BacktestRunner::execute(
 
     for (size_t i = 0; i < strategies.size(); ++i) {
         const std::string& strategy_id = strategy_names[i];
-        auto add_result =
-            portfolio->add_strategy(strategies[i], strategy_allocations[strategy_id],
-                                    portfolio_config.use_optimization,
-                                    portfolio_config.use_risk_management);
+        auto add_result = portfolio->add_strategy(strategies[i], strategy_allocations[strategy_id],
+                                                  portfolio_config.use_optimization,
+                                                  portfolio_config.use_risk_management);
 
         if (add_result.is_error()) {
             return make_error<backtest::BacktestResults>(

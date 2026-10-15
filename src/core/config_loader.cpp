@@ -26,10 +26,9 @@ Result<nlohmann::json> ConfigLoader::load_json_file(const std::filesystem::path&
             ErrorCode::JSON_PARSE_ERROR,
             "Failed to parse JSON file " + file_path.string() + ": " + e.what(), "ConfigLoader");
     } catch (const std::exception& e) {
-        return make_error<nlohmann::json>(ErrorCode::FILE_IO_ERROR,
-                                          "Error reading config file " + file_path.string() + ": " +
-                                              e.what(),
-                                          "ConfigLoader");
+        return make_error<nlohmann::json>(
+            ErrorCode::FILE_IO_ERROR,
+            "Error reading config file " + file_path.string() + ": " + e.what(), "ConfigLoader");
     }
 }
 
@@ -90,8 +89,7 @@ Result<AppConfig> ConfigLoader::extract_config(const nlohmann::json& merged) {
                     risk_defaults.at("confidence_level").get<double>();
             }
             if (risk_defaults.contains("lookback_period")) {
-                config.risk_config.lookback_period =
-                    risk_defaults.at("lookback_period").get<int>();
+                config.risk_config.lookback_period = risk_defaults.at("lookback_period").get<int>();
             }
             if (risk_defaults.contains("max_correlation")) {
                 config.risk_config.max_correlation =
@@ -139,6 +137,32 @@ Result<AppConfig> ConfigLoader::extract_config(const nlohmann::json& merged) {
             config.strategies_config = merged.at("strategies");
         }
 
+        if (merged.contains("asset_class")) {
+            std::string asset_class_str = merged.at("asset_class").get<std::string>();
+            if (asset_class_str == "FUTURES") {
+                config.asset_class = AssetClass::FUTURES;
+            } else if (asset_class_str == "EQUITIES") {
+                config.asset_class = AssetClass::EQUITIES;
+            } else if (asset_class_str == "OPTIONS") {
+                config.asset_class = AssetClass::OPTIONS;
+            } else if (asset_class_str == "FIXED_INCOME") {
+                config.asset_class = AssetClass::FIXED_INCOME;
+            } else if (asset_class_str == "CURRENCIES") {
+                config.asset_class = AssetClass::CURRENCIES;
+            } else if (asset_class_str == "COMMODITIES") {
+                config.asset_class = AssetClass::COMMODITIES;
+            } else if (asset_class_str == "CRYPTO") {
+                config.asset_class = AssetClass::CRYPTO;
+            } else {
+                return make_error<AppConfig>(ErrorCode::INVALID_DATA,
+                                             "Invalid asset_class: " + asset_class_str,
+                                             "ConfigLoader");
+            }
+        } else {
+            // Default to FUTURES if not specified
+            config.asset_class = AssetClass::FUTURES;
+        }
+
         return config;
 
     } catch (const std::exception& e) {
@@ -155,24 +179,20 @@ Result<void> ConfigLoader::validate_config(const AppConfig& config) {
     if (config.database.host.empty() || config.database.username.empty() ||
         config.database.password.empty() || config.database.name.empty()) {
         return make_error<void>(ErrorCode::INVALID_DATA,
-                                "Missing required database configuration fields",
-                                "ConfigLoader");
+                                "Missing required database configuration fields", "ConfigLoader");
     }
     if (config.initial_capital <= 0.0) {
-        return make_error<void>(ErrorCode::INVALID_DATA,
-                                "initial_capital must be positive",
+        return make_error<void>(ErrorCode::INVALID_DATA, "initial_capital must be positive",
                                 "ConfigLoader");
     }
     if (config.reserve_capital_pct < 0.0 || config.reserve_capital_pct >= 1.0) {
         return make_error<void>(ErrorCode::INVALID_DATA,
-                                "reserve_capital_pct must be in [0.0, 1.0)",
-                                "ConfigLoader");
+                                "reserve_capital_pct must be in [0.0, 1.0)", "ConfigLoader");
     }
     if (config.strategies_config.is_null() || !config.strategies_config.is_object() ||
         config.strategies_config.empty()) {
         return make_error<void>(ErrorCode::INVALID_DATA,
-                                "strategies configuration is missing or empty",
-                                "ConfigLoader");
+                                "strategies configuration is missing or empty", "ConfigLoader");
     }
     return Result<void>();
 }
@@ -185,9 +205,8 @@ void ConfigLoader::log_config_summary(const AppConfig& config) {
     INFO("Config summary: portfolio_id=" + config.portfolio_id +
          ", initial_capital=" + std::to_string(config.initial_capital) +
          ", reserve_pct=" + std::to_string(config.reserve_capital_pct));
-    INFO("Config summary: db=" + config.database.host + ":" + config.database.port +
-         "/" + config.database.name +
-         ", connections=" + std::to_string(config.database.num_connections));
+    INFO("Config summary: db=" + config.database.host + ":" + config.database.port + "/" +
+         config.database.name + ", connections=" + std::to_string(config.database.num_connections));
     INFO("Config summary: strategies=" + std::to_string(config.strategies_config.size()) +
          ", backtest_lookback_years=" + std::to_string(config.backtest.lookback_years) +
          ", live_historical_days=" + std::to_string(config.live.historical_days));
@@ -199,10 +218,10 @@ Result<AppConfig> ConfigLoader::load(const std::filesystem::path& config_base_pa
     auto defaults_path = config_base_path / "defaults.json";
     auto defaults_result = load_json_file(defaults_path);
     if (defaults_result.is_error()) {
-        return make_error<AppConfig>(defaults_result.error()->code(),
-                                     "Failed to load defaults.json: " +
-                                         std::string(defaults_result.error()->what()),
-                                     "ConfigLoader");
+        return make_error<AppConfig>(
+            defaults_result.error()->code(),
+            "Failed to load defaults.json: " + std::string(defaults_result.error()->what()),
+            "ConfigLoader");
     }
     nlohmann::json merged = defaults_result.value();
 
@@ -213,10 +232,10 @@ Result<AppConfig> ConfigLoader::load(const std::filesystem::path& config_base_pa
     auto portfolio_json_path = portfolio_path / "portfolio.json";
     auto portfolio_result = load_json_file(portfolio_json_path);
     if (portfolio_result.is_error()) {
-        return make_error<AppConfig>(portfolio_result.error()->code(),
-                                     "Failed to load portfolio.json: " +
-                                         std::string(portfolio_result.error()->what()),
-                                     "ConfigLoader");
+        return make_error<AppConfig>(
+            portfolio_result.error()->code(),
+            "Failed to load portfolio.json: " + std::string(portfolio_result.error()->what()),
+            "ConfigLoader");
     }
     merge_json(merged, portfolio_result.value());
 
@@ -224,10 +243,10 @@ Result<AppConfig> ConfigLoader::load(const std::filesystem::path& config_base_pa
     auto risk_json_path = portfolio_path / "risk.json";
     auto risk_result = load_json_file(risk_json_path);
     if (risk_result.is_error()) {
-        return make_error<AppConfig>(risk_result.error()->code(),
-                                     "Failed to load risk.json: " +
-                                         std::string(risk_result.error()->what()),
-                                     "ConfigLoader");
+        return make_error<AppConfig>(
+            risk_result.error()->code(),
+            "Failed to load risk.json: " + std::string(risk_result.error()->what()),
+            "ConfigLoader");
     }
     merged["risk"] = risk_result.value();
 
@@ -235,10 +254,10 @@ Result<AppConfig> ConfigLoader::load(const std::filesystem::path& config_base_pa
     auto email_json_path = portfolio_path / "email.json";
     auto email_result = load_json_file(email_json_path);
     if (email_result.is_error()) {
-        return make_error<AppConfig>(email_result.error()->code(),
-                                     "Failed to load email.json: " +
-                                         std::string(email_result.error()->what()),
-                                     "ConfigLoader");
+        return make_error<AppConfig>(
+            email_result.error()->code(),
+            "Failed to load email.json: " + std::string(email_result.error()->what()),
+            "ConfigLoader");
     }
     merged["email"] = email_result.value();
 
@@ -251,8 +270,7 @@ Result<AppConfig> ConfigLoader::load(const std::filesystem::path& config_base_pa
     auto validation_result = validate_config(config_result.value());
     if (validation_result.is_error()) {
         return make_error<AppConfig>(validation_result.error()->code(),
-                                     validation_result.error()->what(),
-                                     "ConfigLoader");
+                                     validation_result.error()->what(), "ConfigLoader");
     }
 
     log_config_summary(config_result.value());
@@ -263,10 +281,10 @@ Result<AppConfig> ConfigLoader::load_legacy(const std::filesystem::path& config_
     // Load the single config file
     auto json_result = load_json_file(config_file_path);
     if (json_result.is_error()) {
-        return make_error<AppConfig>(json_result.error()->code(),
-                                     "Failed to load legacy config: " +
-                                         std::string(json_result.error()->what()),
-                                     "ConfigLoader");
+        return make_error<AppConfig>(
+            json_result.error()->code(),
+            "Failed to load legacy config: " + std::string(json_result.error()->what()),
+            "ConfigLoader");
     }
 
     const auto& config_json = json_result.value();
@@ -302,8 +320,7 @@ Result<AppConfig> ConfigLoader::load_legacy(const std::filesystem::path& config_
         auto validation_result = validate_config(config);
         if (validation_result.is_error()) {
             return make_error<AppConfig>(validation_result.error()->code(),
-                                         validation_result.error()->what(),
-                                         "ConfigLoader");
+                                         validation_result.error()->what(), "ConfigLoader");
         }
         log_config_summary(config);
         return config;
