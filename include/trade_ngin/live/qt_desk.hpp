@@ -245,6 +245,15 @@ Result<std::string> published_at(PostgresDatabase& db, const std::string& portfo
 nlohmann::json desk_result_json(const std::vector<DeskSymbolOutcome>& outcomes,
                                 const std::string& book_source);
 
+/**
+ * Contract C11, the fund's hard cap (Dom, 2026-10-14): a desk or override book may use at most
+ * 100% of the fund's equity as initial margin. `equity` is the book's value after today's
+ * transaction costs (buys and sells alike), so margin + costs <= the equity before them. Empty
+ * when the book is within the cap; otherwise the refusal, with the amounts.
+ */
+std::string fund_cap_refusal(double initial_margin, double equity, double transaction_costs,
+                             const std::string& date);
+
 /// The desk book's positions CSV without the model's columns (forecast and after; ruling 15).
 Result<void> strip_model_columns(const std::string& csv_path);
 

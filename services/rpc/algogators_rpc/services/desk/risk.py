@@ -77,7 +77,7 @@ class Breach:
 # Status of one check.
 WITHIN, BOUND, OVER, NOT_MEASURED = "within", "bound", "over", "not_measured"
 # Units of a check's value and max; the client formats them.
-PERCENT, MULTIPLE, CONTRACTS, TAU = "percent", "multiple", "contracts", "tau"
+PERCENT, MULTIPLE, CONTRACTS, TAU, USD = "percent", "multiple", "contracts", "tau", "usd"
 
 # The checks, in report order: term, label, the risk.json key of its configured max.
 CHECKS = (
@@ -114,6 +114,10 @@ class DeskRiskRow:
     margin_cushion: Optional[float] = None
     equity_to_margin: Optional[float] = None
     risk_scale: Optional[float] = None  # live_results.risk_scale of the stored book
+    # Contract C11: the stored book's initial margin (margin_posted) and the fund's equity after
+    # today's transaction costs (current_portfolio_value).
+    initial_margin: Optional[float] = None
+    equity: Optional[float] = None
 
 
 @dataclass(frozen=True)
@@ -179,7 +183,8 @@ def derive_desk_risk(row: Optional[DeskRiskRow],
     """The risk report of a day's qt book. `row` is None when the day has no qt row yet."""
     if row is None:
         return DeskRiskReport(state=NO_BOOK, limits=tuple(limits),
-                              checks=configured_checks(limits, None, None, "no book yet"))
+                              checks=configured_checks(limits, None, None, "no book yet")
+                              + (fund_cap_check(None),))
     readings = dict(gross_leverage=row.gross_leverage, net_leverage=row.net_leverage,
                     margin_cushion=row.margin_cushion, equity_to_margin=row.equity_to_margin,
                     limits=tuple(limits))
@@ -189,7 +194,8 @@ def derive_desk_risk(row: Optional[DeskRiskRow],
     if desk is None or source not in (DESK, OVERRIDE):
         # The model's book: the engine's own run, inside its limits by construction.
         return DeskRiskReport(state=MODEL, checks=configured_checks(
-            limits, row.gross_leverage, row.net_leverage, "measured on a desk save"), **readings)
+            limits, row.gross_leverage, row.net_leverage, "measured on a desk save")
+            + (fund_cap_check(row),), **readings)
 
     overlay = desk.get("overlay") if isinstance(desk.get("overlay"), Mapping) else {}
     m = _number(overlay.get("m"), 1.0)
@@ -234,6 +240,10 @@ def derive_desk_risk(row: Optional[DeskRiskRow],
     else:
         why = "the overlay refused the book" if refused else "not recorded by this engine run"
         checks = configured_checks(limits, row.gross_leverage, row.net_leverage, why)
+    cap = fund_cap_check(row)
+    checks = checks + (cap,)
+    if cap.status == OVER:
+        breaches.append(Breach("MARGIN", cap.detail))
     if refused:
         checks = checks + (RiskCheck("refused", "Overlay sized the book", None, None, "", OVER,
                                      "the overlay could not size the book; the held book was "
@@ -431,3 +441,17 @@ def over_terms(report: DeskRiskReport) -> List[str]:
         if term not in out:
             out.append(term)
     return out
+
+
+def fund_cap_check(row: Optional[DeskRiskRow]) -> RiskCheck:
+    """Contract C11, the fund's hard cap: the stored book's initial margin against the fund's
+    equity after today's transaction costs (100% of equity). The engine refuses a desk or override
+    book over it; a model book over it is reported here."""
+    label = "Initial margin (fund cap: 100% of equity)"
+    if row is None or row.initial_margin is None or row.equity is None:
+        return RiskCheck("MARGIN", label, None, None, USD, NOT_MEASURED, "no stored book yet")
+    over = row.initial_margin > row.equity + 0.005
+    return RiskCheck("MARGIN", label, row.initial_margin, row.equity, USD,
+                     OVER if over else WITHIN,
+                     ("initial margin exceeds the fund's equity" if over else
+                      "the fund's equity after today's transaction costs"))

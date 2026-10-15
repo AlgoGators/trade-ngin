@@ -372,3 +372,18 @@ TEST(QtHardening, ThePublishEmailIsSentOnce) {
             << runner;
     }
 }
+
+// Contract C11: the fund's hard cap is 100% of equity after today's transaction costs.
+TEST(QtFundCap, InitialMarginMayUseAllOfTheEquityAndNoMore) {
+    EXPECT_EQ(trade_ngin::qt::fund_cap_refusal(82945.0, 494971.49, 49.34, "2026-10-14"), "");
+    EXPECT_EQ(trade_ngin::qt::fund_cap_refusal(494971.49, 494971.49, 49.34, "2026-10-14"), "")
+        << "exactly the equity is within the cap";
+    const std::string refused = trade_ngin::qt::fund_cap_refusal(7000000.0, 494971.49, 1580.0, "2026-10-14");
+    ASSERT_FALSE(refused.empty());
+    EXPECT_NE(refused.find("$7000000 of initial margin"), std::string::npos) << refused;
+    EXPECT_NE(refused.find("equity of $494971"), std::string::npos) << refused;
+    EXPECT_NE(refused.find("costs ($1580)"), std::string::npos) << refused;
+    EXPECT_NE(refused.find("100% of equity"), std::string::npos) << refused;
+    // A fund with no equity left can carry no margin.
+    EXPECT_FALSE(trade_ngin::qt::fund_cap_refusal(1.0, 0.0, 0.0, "2026-10-14").empty());
+}
