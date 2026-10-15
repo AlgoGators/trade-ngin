@@ -139,19 +139,19 @@ Result<AppConfig> ConfigLoader::extract_config(const nlohmann::json& merged) {
 
         if (merged.contains("asset_class")) {
             std::string asset_class_str = merged.at("asset_class").get<std::string>();
-            if (asset_class_str == "FUTURES") {
+            if (asset_class_str == "futures") {
                 config.asset_class = AssetClass::FUTURES;
-            } else if (asset_class_str == "EQUITIES") {
+            } else if (asset_class_str == "equities") {
                 config.asset_class = AssetClass::EQUITIES;
-            } else if (asset_class_str == "OPTIONS") {
+            } else if (asset_class_str == "options") {
                 config.asset_class = AssetClass::OPTIONS;
-            } else if (asset_class_str == "FIXED_INCOME") {
+            } else if (asset_class_str == "fixed_income") {
                 config.asset_class = AssetClass::FIXED_INCOME;
-            } else if (asset_class_str == "CURRENCIES") {
+            } else if (asset_class_str == "currencies") {
                 config.asset_class = AssetClass::CURRENCIES;
-            } else if (asset_class_str == "COMMODITIES") {
+            } else if (asset_class_str == "commodities") {
                 config.asset_class = AssetClass::COMMODITIES;
-            } else if (asset_class_str == "CRYPTO") {
+            } else if (asset_class_str == "crypto") {
                 config.asset_class = AssetClass::CRYPTO;
             } else {
                 return make_error<AppConfig>(ErrorCode::INVALID_DATA,
