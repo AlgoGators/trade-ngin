@@ -1,8 +1,8 @@
 #include "trade_ngin/backtest/backtest_data_loader.hpp"
-#include "trade_ngin/data/conversion_utils.hpp"
-#include "trade_ngin/core/logger.hpp"
 #include <algorithm>
 #include <set>
+#include "trade_ngin/core/logger.hpp"
+#include "trade_ngin/data/conversion_utils.hpp"
 
 namespace trade_ngin {
 namespace backtest {
@@ -14,55 +14,46 @@ BacktestDataLoader::BacktestDataLoader(std::shared_ptr<MarketDataSource> source)
     : source_(std::move(source)) {}
 
 Result<std::vector<Bar>> BacktestDataLoader::load_market_data(const DataLoadConfig& config) {
-    if (!source_) {
     // Reject options upfront: data-ngin has zero options ingestion (no fetcher, no schema).
     // The options_data schema does not exist and will not for the foreseeable future.
     // This is the honest failure: loud and actionable, not a silent SQL error.
     if (config.asset_class == AssetClass::OPTIONS) {
-        return make_error<std::vector<Bar>>(
-            ErrorCode::MARKET_DATA_ERROR,
-            "Options market data is not yet ingested by data-ngin. "
-            "No fetcher, schema, or DAG exists for options. "
-            "See data-ngin#39 for ingest roadmap.",
-            "BacktestDataLoader");
+        return make_error<std::vector<Bar>>(ErrorCode::MARKET_DATA_ERROR,
+                                            "Options market data is not yet ingested by data-ngin. "
+                                            "No fetcher, schema, or DAG exists for options. "
+                                            "See data-ngin#39 for ingest roadmap.",
+                                            "BacktestDataLoader");
     }
 
     if (!source_) {
         return make_error<std::vector<Bar>>(
-            ErrorCode::NOT_INITIALIZED,
-            "No market data source configured",
-            "BacktestDataLoader");
+            ErrorCode::NOT_INITIALIZED, "No market data source configured", "BacktestDataLoader");
     }
 
     // Validate symbols list
     if (config.symbols.empty()) {
-        return make_error<std::vector<Bar>>(
-            ErrorCode::INVALID_ARGUMENT,
-            "Empty symbols list provided for backtest",
-            "BacktestDataLoader");
+        return make_error<std::vector<Bar>>(ErrorCode::INVALID_ARGUMENT,
+                                            "Empty symbols list provided for backtest",
+                                            "BacktestDataLoader");
     }
 
     // Delegate loading to the configured source. Batching and any provider
     // specific conversion is the source's responsibility.
-    auto load_result = source_->load_bars(
-        config.symbols, config.start_date, config.end_date,
-        config.asset_class, config.data_freq);
+    auto load_result = source_->load_bars(config.symbols, config.start_date, config.end_date,
+                                          config.asset_class, config.data_freq);
 
     if (load_result.is_error()) {
-        return make_error<std::vector<Bar>>(
-            load_result.error()->code(),
-            load_result.error()->what(),
-            "BacktestDataLoader");
+        return make_error<std::vector<Bar>>(load_result.error()->code(),
+                                            load_result.error()->what(), "BacktestDataLoader");
     }
 
     auto& all_bars = load_result.value();
 
     // Check for empty data
     if (all_bars.empty()) {
-        return make_error<std::vector<Bar>>(
-            ErrorCode::MARKET_DATA_ERROR,
-            "No market data loaded for backtest",
-            "BacktestDataLoader");
+        return make_error<std::vector<Bar>>(ErrorCode::MARKET_DATA_ERROR,
+                                            "No market data loaded for backtest",
+                                            "BacktestDataLoader");
     }
 
     // Validate data quality
@@ -91,10 +82,8 @@ std::map<Timestamp, std::vector<Bar>> BacktestDataLoader::group_bars_by_timestam
 
 Result<void> BacktestDataLoader::validate_data_quality(const std::vector<Bar>& bars) const {
     if (bars.empty()) {
-        return make_error<void>(
-            ErrorCode::INVALID_DATA,
-            "Empty bars vector provided for validation",
-            "BacktestDataLoader");
+        return make_error<void>(ErrorCode::INVALID_DATA,
+                                "Empty bars vector provided for validation", "BacktestDataLoader");
     }
 
     // Check price movement for each symbol
@@ -114,8 +103,7 @@ Result<void> BacktestDataLoader::validate_data_quality(const std::vector<Bar>& b
     bool has_price_movement = false;
     for (const auto& [symbol, min_price] : min_prices) {
         double max_price = max_prices[symbol];
-        double price_range_pct = min_price > 0 ?
-            (max_price - min_price) / min_price * 100.0 : 0.0;
+        double price_range_pct = min_price > 0 ? (max_price - min_price) / min_price * 100.0 : 0.0;
 
         if (price_range_pct > 1.0) {  // At least 1% price movement
             has_price_movement = true;
@@ -124,17 +112,17 @@ Result<void> BacktestDataLoader::validate_data_quality(const std::vector<Bar>& b
     }
 
     if (!has_price_movement) {
-        return make_error<void>(
-            ErrorCode::INVALID_DATA,
-            "No significant price movement detected in market data. "
-            "Strategy may not generate signals.",
-            "BacktestDataLoader");
+        return make_error<void>(ErrorCode::INVALID_DATA,
+                                "No significant price movement detected in market data. "
+                                "Strategy may not generate signals.",
+                                "BacktestDataLoader");
     }
 
     return Result<void>();
 }
 
-std::vector<std::string> BacktestDataLoader::get_unique_symbols(const std::vector<Bar>& bars) const {
+std::vector<std::string> BacktestDataLoader::get_unique_symbols(
+    const std::vector<Bar>& bars) const {
     std::set<std::string> symbol_set;
     for (const auto& bar : bars) {
         symbol_set.insert(bar.symbol);
@@ -148,15 +136,15 @@ std::pair<Timestamp, Timestamp> BacktestDataLoader::get_date_range(
         return {Timestamp{}, Timestamp{}};
     }
 
-    auto [min_it, max_it] = std::minmax_element(bars.begin(), bars.end(),
-        [](const Bar& a, const Bar& b) { return a.timestamp < b.timestamp; });
+    auto [min_it, max_it] =
+        std::minmax_element(bars.begin(), bars.end(),
+                            [](const Bar& a, const Bar& b) { return a.timestamp < b.timestamp; });
 
     return {min_it->timestamp, max_it->timestamp};
 }
 
 std::unordered_map<std::string, double> BacktestDataLoader::get_price_statistics(
-    const std::vector<Bar>& bars,
-    const std::string& symbol) const {
+    const std::vector<Bar>& bars, const std::string& symbol) const {
     std::unordered_map<std::string, double> stats;
     stats["min_price"] = 0.0;
     stats["max_price"] = 0.0;
@@ -164,7 +152,8 @@ std::unordered_map<std::string, double> BacktestDataLoader::get_price_statistics
 
     bool first = true;
     for (const auto& bar : bars) {
-        if (bar.symbol != symbol) continue;
+        if (bar.symbol != symbol)
+            continue;
 
         double close = static_cast<double>(bar.close);
         if (first) {
@@ -185,5 +174,5 @@ std::unordered_map<std::string, double> BacktestDataLoader::get_price_statistics
     return stats;
 }
 
-} // namespace backtest
-} // namespace trade_ngin
+}  // namespace backtest
+}  // namespace trade_ngin

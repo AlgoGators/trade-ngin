@@ -7,8 +7,8 @@
 #include <string>
 #include <vector>
 #include "trade_ngin/core/error.hpp"
-#include "trade_ngin/core/types.hpp"
 #include "trade_ngin/core/testing_access.hpp"
+#include "trade_ngin/core/types.hpp"
 
 namespace trade_ngin {
 
@@ -21,7 +21,6 @@ public:
      */
     static Result<std::vector<Bar>> arrow_table_to_bars(const std::shared_ptr<arrow::Table>& table);
 
-TESTING_PRIVATE:
     // ------------------------------------------------------------
     // Type-safe accessors (Phase 5 §1.17a + §5d)
     //
@@ -58,9 +57,8 @@ TESTING_PRIVATE:
      * @param row          Logical row index (across all chunks).
      * @param column_name  Human-readable column name for log lines.
      */
-    static Result<double> safe_get_double(
-        const std::shared_ptr<arrow::ChunkedArray>& col, int64_t row,
-        const std::string& column_name);
+    static Result<double> safe_get_double(const std::shared_ptr<arrow::ChunkedArray>& col,
+                                          int64_t row, const std::string& column_name);
 
     /**
      * @brief Get an int64 from a ChunkedArray, with type-aware dispatch.
@@ -89,9 +87,8 @@ TESTING_PRIVATE:
      *     as MICROSECONDS since the epoch, matching the canonical timestamp unit.
      *     Anything else is a CONVERSION_ERROR -- never a partial parse.
      */
-    static Result<int64_t> safe_get_int64(
-        const std::shared_ptr<arrow::ChunkedArray>& col, int64_t row,
-        const std::string& column_name);
+    static Result<int64_t> safe_get_int64(const std::shared_ptr<arrow::ChunkedArray>& col,
+                                          int64_t row, const std::string& column_name);
 
     /**
      * @brief Get a string from a ChunkedArray.
@@ -100,9 +97,8 @@ TESTING_PRIVATE:
      * types are stringified via their natural representation (e.g. doubles
      * via std::to_string). Null cells are an error.
      */
-    static Result<std::string> safe_get_string(
-        const std::shared_ptr<arrow::ChunkedArray>& col, int64_t row,
-        const std::string& column_name);
+    static Result<std::string> safe_get_string(const std::shared_ptr<arrow::ChunkedArray>& col,
+                                               int64_t row, const std::string& column_name);
 
     // ------------------------------------------------------------
     // Single-array helpers (kept public so existing arrow_table_to_bars

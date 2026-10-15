@@ -178,8 +178,7 @@ public:
      * Strategies must clamp short signals to zero when this returns false.
      */
     bool is_short_allowed() const {
-        return spec_.account_mode == EquityAccountMode::REG_T &&
-               spec_.short_selling_allowed;
+        return spec_.account_mode == EquityAccountMode::REG_T && spec_.short_selling_allowed;
     }
 
     /**

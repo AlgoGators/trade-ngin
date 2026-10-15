@@ -6,13 +6,13 @@
 #include <string>
 #include <unordered_map>
 #include "trade_ngin/core/error.hpp"
+#include "trade_ngin/core/testing_access.hpp"
 #include "trade_ngin/core/types.hpp"
 #include "trade_ngin/data/postgres_database.hpp"
 #include "trade_ngin/instruments/equity.hpp"
 #include "trade_ngin/instruments/futures.hpp"
 #include "trade_ngin/instruments/instrument.hpp"
 #include "trade_ngin/instruments/option.hpp"
-#include "trade_ngin/core/testing_access.hpp"
 
 namespace trade_ngin {
 
@@ -43,14 +43,6 @@ public:
      * Calling load_instruments() afterwards is an error.
      */
     Result<void> initialize_without_database();
-
-    /**
-     * @brief Register an instrument directly, bypassing the database
-     * @param instrument Instrument to register; must be non-null
-     *
-     * Replaces any previously registered instrument with the same symbol.
-     */
-    Result<void> register_instrument(std::shared_ptr<Instrument> instrument);
 
     /**
      * @brief Drop all registered instruments and reset initialization state
@@ -132,8 +124,7 @@ public:
      */
     void register_instrument(const std::string& symbol, std::shared_ptr<Instrument> instrument);
 
-TESTING_PRIVATE:
-    InstrumentRegistry() = default;  // Private constructor for singleton pattern
+    TESTING_PRIVATE : InstrumentRegistry() = default;  // Private constructor for singleton pattern
     InstrumentRegistry(const InstrumentRegistry&) = delete;
     InstrumentRegistry& operator=(const InstrumentRegistry&) = delete;
     InstrumentRegistry(InstrumentRegistry&&) = delete;

@@ -43,7 +43,6 @@ void bind_instrument_registry(py::module_& m) {
         .def_readwrite("commission_per_share", &EquitySpec::commission_per_share)
         .def_readwrite("is_etf", &EquitySpec::is_etf)
         .def_readwrite("is_marginable", &EquitySpec::is_marginable)
-        .def_readwrite("margin_requirement", &EquitySpec::margin_requirement)
         .def_readwrite("sector", &EquitySpec::sector)
         .def_readwrite("industry", &EquitySpec::industry)
         .def_readwrite("trading_hours", &EquitySpec::trading_hours);
@@ -61,8 +60,8 @@ void bind_instrument_registry(py::module_& m) {
         .def_static("instance", &InstrumentRegistry::instance, py::return_value_policy::reference)
         .def("get_instrument", &InstrumentRegistry::get_instrument, py::arg("symbol"))
         .def("has_instrument", &InstrumentRegistry::has_instrument, py::arg("symbol"))
-        .def("register_instrument", &InstrumentRegistry::register_instrument, py::arg("instrument"),
-             "Register an instrument directly, bypassing the database.")
+        .def("register_instrument", &InstrumentRegistry::register_instrument, py::arg("symbol"),
+             py::arg("instrument"), "Register an instrument directly, bypassing the database.")
         .def("initialize_without_database", &InstrumentRegistry::initialize_without_database,
              "Initialize the registry for a database-free run.")
         .def("clear", &InstrumentRegistry::clear,

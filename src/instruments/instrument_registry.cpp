@@ -44,26 +44,6 @@ Result<void> InstrumentRegistry::initialize_without_database() {
     return Result<void>();
 }
 
-Result<void> InstrumentRegistry::register_instrument(std::shared_ptr<Instrument> instrument) {
-    if (!instrument) {
-        return make_error<void>(ErrorCode::INVALID_ARGUMENT, "Instrument cannot be null",
-                                "InstrumentRegistry");
-    }
-
-    const std::string symbol = instrument->get_symbol();
-    if (symbol.empty()) {
-        return make_error<void>(ErrorCode::INVALID_ARGUMENT, "Instrument symbol cannot be empty",
-                                "InstrumentRegistry");
-    }
-
-    std::lock_guard<std::mutex> lock(mutex_);
-    instruments_[symbol] = std::move(instrument);
-    initialized_ = true;
-
-    DEBUG("Registered instrument: " + symbol);
-    return Result<void>();
-}
-
 void InstrumentRegistry::clear() {
     std::lock_guard<std::mutex> lock(mutex_);
 
@@ -93,14 +73,14 @@ std::shared_ptr<Instrument> InstrumentRegistry::get_instrument(const std::string
     if (!had_variant_suffix && instruments_.count(cleaned_symbol) > 0) {
         // fall through to the map lookup below with no remap
     } else
-    // Handle special cases for micro futures
-    if (cleaned_symbol == "ES") {
-        cleaned_symbol = "MES";
-    } else if (cleaned_symbol == "YM") {
-        cleaned_symbol = "MYM";
-    } else if (cleaned_symbol == "NQ") {
-        cleaned_symbol = "MNQ";
-    }
+        // Handle special cases for micro futures
+        if (cleaned_symbol == "ES") {
+            cleaned_symbol = "MES";
+        } else if (cleaned_symbol == "YM") {
+            cleaned_symbol = "MYM";
+        } else if (cleaned_symbol == "NQ") {
+            cleaned_symbol = "MNQ";
+        }
 
     auto it = instruments_.find(cleaned_symbol);
     if (it != instruments_.end()) {
@@ -185,14 +165,15 @@ Result<void> InstrumentRegistry::load_instruments() {
         if (table->num_rows() > 0) {
             // Phase 6 §1.17a: debug logger via type-aware safe_get_string
             // (handles double/int/string columns uniformly; logs WARN on
-             // null instead of silently showing "NULL").
+            // null instead of silently showing "NULL").
             INFO("First row values:");
             for (int i = 0; i < table->num_columns(); i++) {
                 auto field = table->schema()->field(i);
                 auto column = table->column(i);
                 if (column->num_chunks() > 0) {
                     auto r = DataConversionUtils::safe_get_string(column, 0, field->name());
-                    INFO("    " + field->name() + ": " + (r.is_ok() ? r.value() : std::string("NULL")));
+                    INFO("    " + field->name() + ": " +
+                         (r.is_ok() ? r.value() : std::string("NULL")));
                 }
             }
         }
@@ -227,9 +208,8 @@ Result<void> InstrumentRegistry::load_instruments() {
     }
 }
 
-Result<void> InstrumentRegistry::load_equity_instruments(
-    const std::vector<std::string>& symbols,
-    const std::string& exchange_lookup_path) {
+Result<void> InstrumentRegistry::load_equity_instruments(const std::vector<std::string>& symbols,
+                                                         const std::string& exchange_lookup_path) {
     if (!initialized_) {
         return make_error<void>(ErrorCode::NOT_INITIALIZED, "InstrumentRegistry not initialized",
                                 "InstrumentRegistry");
@@ -244,7 +224,8 @@ Result<void> InstrumentRegistry::load_equity_instruments(
                 nlohmann::json j;
                 file >> j;
                 for (auto& [exchange, symbols_array] : j.items()) {
-                    if (exchange.front() == '_') continue;  // Skip comment fields
+                    if (exchange.front() == '_')
+                        continue;  // Skip comment fields
                     for (const auto& sym : symbols_array) {
                         exchange_map[sym.get<std::string>()] = exchange;
                     }
@@ -333,7 +314,7 @@ std::vector<std::shared_ptr<Instrument>> InstrumentRegistry::get_instruments_by_
 }
 
 void InstrumentRegistry::register_instrument(const std::string& symbol,
-                                              std::shared_ptr<Instrument> instrument) {
+                                             std::shared_ptr<Instrument> instrument) {
     std::lock_guard<std::mutex> lock(mutex_);
     instruments_[symbol] = std::move(instrument);
     DEBUG("Registered instrument: " + symbol);
@@ -358,14 +339,14 @@ bool InstrumentRegistry::has_instrument(const std::string& symbol) const {
     if (!had_variant_suffix && instruments_.count(cleaned_symbol) > 0) {
         // fall through to the map lookup below with no remap
     } else
-    // Handle special cases for micro futures
-    if (cleaned_symbol == "ES") {
-        cleaned_symbol = "MES";
-    } else if (cleaned_symbol == "YM") {
-        cleaned_symbol = "MYM";
-    } else if (cleaned_symbol == "NQ") {
-        cleaned_symbol = "MNQ";
-    }
+        // Handle special cases for micro futures
+        if (cleaned_symbol == "ES") {
+            cleaned_symbol = "MES";
+        } else if (cleaned_symbol == "YM") {
+            cleaned_symbol = "MYM";
+        } else if (cleaned_symbol == "NQ") {
+            cleaned_symbol = "MNQ";
+        }
 
     return instruments_.find(cleaned_symbol) != instruments_.end();
 }
@@ -380,14 +361,16 @@ std::shared_ptr<Instrument> InstrumentRegistry::create_instrument_from_db(
         // instead of returning a silent 0.0 / empty string).
         auto get_string = [&table, row](const std::string& col_name) -> std::string {
             auto col = table->GetColumnByName(col_name);
-            if (!col) return "";
+            if (!col)
+                return "";
             auto r = DataConversionUtils::safe_get_string(col, row, col_name);
             return r.is_ok() ? r.value() : "";
         };
 
         auto get_double = [&table, row](const std::string& col_name) -> double {
             auto col = table->GetColumnByName(col_name);
-            if (!col) return 0.0;
+            if (!col)
+                return 0.0;
             auto r = DataConversionUtils::safe_get_double(col, row, col_name);
             return r.is_ok() ? r.value() : 0.0;
         };
