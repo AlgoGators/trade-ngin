@@ -7,11 +7,11 @@ import json
 
 import pytest
 
-from conftest import DAY, DISPATCH_AT, NY, PID, make_row
+from conftest import DAY, DISPATCH_AT, EQUITY, MARGINS, NY, PID, make_row
 from algogators_rpc.services.desk import risk as rk
 from algogators_rpc.services.desk.commands import Dispatcher
 from algogators_rpc.services.desk.jobs import JobManager
-from algogators_rpc.services.desk.risk import DeskRiskRow
+from algogators_rpc.services.desk.risk import DeskRiskRow, MarginInputs
 from algogators_rpc.services.desk.store import StoreError
 
 
@@ -50,8 +50,10 @@ class Flow:
         self.read_error = None
         self.now = DISPATCH_AT
         self.jobs = JobManager(cstore, settings, runner)
+        self.margin = MarginInputs(MARGINS, EQUITY)
         self.dispatcher = Dispatcher(cstore, self.jobs, settings, clock=lambda: self.now,
-                                     risk_reader=self._read)
+                                     risk_reader=self._read,
+                                     margin_reader=lambda portfolio_id, date: self.margin)
 
     def _read(self, portfolio_id, date):
         if self.read_error:

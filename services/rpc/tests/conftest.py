@@ -19,6 +19,7 @@ from algogators_rpc.services.desk.commands import Dispatcher
 from algogators_rpc.services.desk.config import CommandSettings
 from algogators_rpc.services.desk.jobs import JobManager, RunResult
 from algogators_rpc.services.desk.service import build_service
+from algogators_rpc.services.desk.risk import MarginInputs
 from algogators_rpc.services.desk.store import RunFacts, StoreError
 
 UTC = dt.timezone.utc
@@ -59,9 +60,16 @@ def now():
     return dt.datetime.now(UTC)
 
 
+# An override request's proposal snapshot (contract C1): what the margin cap is checked on.
+PROPOSAL = [{"symbol": "ZN.v.0", "quantity": 10, "strategy_name": "TREND_FOLLOWING"}]
+MARGINS = {"ZN": 2500.0, "ES": 28000.0, "MES": 2900.0}
+EQUITY = 500_000.0
+
+
 def make_row(id, kind, **kw):
     base = dict(id=id, portfolio_id=PID, date=DAY, kind=kind, status="pending",
-                requested_by="desk@algogators.com", reason="test reason", payload={},
+                requested_by="desk@algogators.com", reason="test reason",
+                payload={"proposal": PROPOSAL} if kind == "override_request" else {},
                 created_at=PUBLISH_CREATED if kind == "publish" else now())
     base.update(kw)
     return CommandRow(**base)
@@ -287,7 +295,10 @@ class Agent:
         self.locks = []
         # The day's qt row the publish gate reads (decision 5); None = no book yet (never blocks).
         self.book = None
+        # The margin data the override's cap reads (store.margin_inputs).
+        self.margin = MarginInputs(MARGINS, EQUITY)
         self.dispatcher = Dispatcher(cstore, self.jobs, settings,
+                                     margin_reader=lambda portfolio_id, date: self.margin,
                                      sender=lambda cfg, to, subject, body:
                                      self.sent.append((cfg, list(to), subject, body)),
                                      clock=lambda: self.now,

@@ -523,3 +523,102 @@ def publish_blockers(report: DeskRiskReport) -> List[Breach]:
     if report.refused and report.state == DESK:
         add("refused", "the overlay could not size the book; its caps were not checked")
     return out
+
+
+# -- the margin cap on a requested book (decision 10, Dom 2026-10-16) ------------------------------
+#
+# An override asks for B exactly as the desk saved it, and no one may approve a book past the
+# fund's margin cap (C11). The engine refuses such a book when the approver decides, but by then
+# the day's qt book has been cleared; the request is checked first, from the margin data the
+# database holds (metadata.contract_metadata, "Overnight Initial Margin": the figure the engine's
+# InstrumentRegistry posts), so a request over the cap is refused before it is e-mailed and a
+# decision on one is refused before the engine runs.
+
+# The engine's registry remaps these roots on a continuous (".v.") symbol to the micro contract.
+_MICRO = {"ES": "MES", "YM": "MYM", "NQ": "MNQ"}
+
+
+def contract_root(symbol: str) -> str:
+    """The contract_metadata key of a book symbol, as InstrumentRegistry::get_instrument reads it:
+    the ".v.N" suffix stripped, and ES/YM/NQ continuous series remapped to the micro contract."""
+    root, dot, _ = symbol.partition(".v.")
+    return _MICRO.get(root, root) if dot else root
+
+
+@dataclass(frozen=True)
+class MarginInputs:
+    """What the cap is measured from: each contract's initial margin per contract (by
+    contract_root) and the fund's equity after today's costs (the day's qt row, else the model's)."""
+    margins: Mapping[str, float]
+    equity: Optional[float]
+
+
+@dataclass(frozen=True)
+class MarginReading:
+    initial_margin: Optional[float]
+    equity: Optional[float]
+    missing: Tuple[str, ...] = ()  # symbols with no margin on record
+
+    @property
+    def measured(self) -> bool:
+        return self.initial_margin is not None and self.equity is not None and not self.missing
+
+    @property
+    def over(self) -> bool:
+        return self.measured and self.initial_margin > self.equity + 0.005
+
+
+def book_margin(positions: Sequence[Tuple[str, float]], inputs: MarginInputs) -> MarginReading:
+    """Initial margin of a book given as (symbol, quantity) rows, one per sleeve: the account
+    posts margin on each symbol's net quantity (live/book_exposure.hpp), |Σ q| × initial margin."""
+    net: dict = {}
+    for symbol, qty in positions:
+        net[symbol] = net.get(symbol, 0.0) + float(qty)
+    total, missing = 0.0, []
+    for symbol, qty in sorted(net.items()):
+        if abs(qty) < 1e-12:
+            continue
+        per = inputs.margins.get(contract_root(symbol))
+        if per is None or not math.isfinite(per):
+            missing.append(symbol)
+            continue
+        total += abs(qty) * per
+    return MarginReading(total, inputs.equity, tuple(missing))
+
+
+def proposal_positions(payload: Any) -> Optional[List[Tuple[str, float]]]:
+    """The (symbol, quantity) rows of an override request's proposal snapshot (contract C1), None
+    when the payload carries none."""
+    rows = payload.get("proposal") if isinstance(payload, Mapping) else None
+    if not isinstance(rows, list):
+        return None
+    out: List[Tuple[str, float]] = []
+    for r in rows:
+        if not isinstance(r, Mapping) or not isinstance(r.get("symbol"), str):
+            return None
+        try:
+            out.append((r["symbol"], float(r.get("quantity") or 0.0)))
+        except (TypeError, ValueError):
+            return None
+    return out
+
+
+def _usd(x: float) -> str:
+    return f"${x:,.0f}"
+
+
+def margin_refusal(reading: MarginReading, date: str) -> Optional[str]:
+    """The refusal of a requested book over (or not measurable against) the margin cap, else
+    None."""
+    if reading.missing:
+        return (f"the margin cap (C11) cannot be checked: no initial margin on record for "
+                f"{', '.join(reading.missing)} (metadata.contract_metadata); nothing was sent")
+    if reading.equity is None:
+        return ("the margin cap (C11) cannot be checked: the fund's equity for "
+                f"{date} is not stored yet; try again once the day's book is built")
+    if reading.over:
+        return (f"the {date} book you asked for needs {_usd(reading.initial_margin)} of initial "
+                f"margin, more than the fund's equity of {_usd(reading.equity)}: the fund's hard "
+                "cap is 100% of equity (contract C11) and no one can approve past it. Save "
+                "positions within the cap")
+    return None

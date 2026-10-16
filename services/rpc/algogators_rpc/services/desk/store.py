@@ -27,7 +27,7 @@ from dataclasses import dataclass, field
 from typing import Optional, Protocol, Sequence
 
 from .config import CONNECT_TIMEOUT_S, DbConfig
-from .risk import DeskRiskRow
+from .risk import DeskRiskRow, MarginInputs
 
 METADATA_TABLE = ("trading", "live_run_metadata")
 RESULTS_TABLE = ("trading", "live_results")
@@ -64,6 +64,10 @@ class RunStatusStore(Protocol):
     def desk_risk_row(self, portfolio_id: str, date: dt.date) -> Optional[DeskRiskRow]:
         """The day's qt row of trading.live_results (the newest, should a portfolio hold several
         strategies), None when there is none."""
+
+    def margin_inputs(self, portfolio_id: str, date: dt.date) -> MarginInputs:
+        """Each contract's initial margin and the day's equity, for the margin cap on a requested
+        book (risk.book_margin)."""
 
 
 class PostgresRunStatusStore:
@@ -170,5 +174,25 @@ class PostgresRunStatusStore:
                                    equity=num(equity))
         except StoreError:
             raise
+        except Exception as exc:
+            raise StoreError(f"database error ({type(exc).__name__})") from exc
+
+    def margin_inputs(self, portfolio_id: str, date: dt.date) -> MarginInputs:
+        try:
+            with self._connect() as conn, conn.cursor() as cur:
+                cur.execute('SELECT "Databento Symbol", "Overnight Initial Margin" '
+                            "FROM metadata.contract_metadata")
+                margins = {str(sym): float(m) for sym, m in cur.fetchall()
+                           if sym is not None and m is not None}
+                # The fund's equity after today's costs: the day's qt row, else the model's book
+                # (the qt row is written by the morning run and every save).
+                cur.execute("SELECT current_portfolio_value FROM trading.live_results "
+                            "WHERE portfolio_id = %s AND date = %s "
+                            "AND portfolio_type IN ('qt', 'system') "
+                            "AND current_portfolio_value IS NOT NULL "
+                            "ORDER BY portfolio_type = 'qt' DESC LIMIT 1", (portfolio_id, date))
+                rec = cur.fetchone()
+                return MarginInputs(margins=margins,
+                                    equity=None if rec is None else float(rec[0]))
         except Exception as exc:
             raise StoreError(f"database error ({type(exc).__name__})") from exc

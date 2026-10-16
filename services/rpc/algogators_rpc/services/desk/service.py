@@ -73,7 +73,8 @@ def register(registry: Registry, env: Mapping[str, str]) -> Service:
     store = PostgresRunStatusStore(settings.db)
     commands = PostgresCommandStore(settings.db)
     jobs = JobManager(commands, settings.commands)
-    dispatcher = Dispatcher(commands, jobs, settings.commands, risk_reader=store.desk_risk_row)
+    dispatcher = Dispatcher(commands, jobs, settings.commands, risk_reader=store.desk_risk_row,
+                            margin_reader=store.margin_inputs)
     catchup = None
     if settings.catchup.enabled:
         catchup = CatchupScheduler(PostgresDayStore(settings.db), settings.commands,

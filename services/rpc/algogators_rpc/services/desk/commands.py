@@ -94,8 +94,12 @@ class Dispatcher:
                  sender: Sender = send_smtp,
                  clock: Optional[Callable[[], dt.datetime]] = None,
                  lock_factory=None,
-                 risk_reader: Optional[Callable[[str, dt.date], Optional[rk.DeskRiskRow]]] = None):
+                 risk_reader: Optional[Callable[[str, dt.date], Optional[rk.DeskRiskRow]]] = None,
+                 margin_reader: Optional[Callable[[str, dt.date], rk.MarginInputs]] = None):
         self._store = store
+        # Each contract's margin and the day's equity (store.margin_inputs): the margin cap on a
+        # requested override, checked before it is e-mailed and before a decision books it.
+        self._margin_reader = margin_reader
         # The day's qt row of trading.live_results (store.desk_risk_row): what the C10 approval
         # compares B with and checks the limits on.
         self._risk_reader = risk_reader
@@ -565,7 +569,38 @@ class Dispatcher:
         }[res.outcome]
         self._finish(row, REFUSED, None, why)
 
+    def _margin_check(self, row: CommandRow, request: CommandRow):
+        """(status, result, message) when the book an override request asks for is over the
+        fund's margin cap, or the cap cannot be measured (decision 10: no one approves past it);
+        None when it is within."""
+        positions = rk.proposal_positions(request.payload)
+        if positions is None:
+            return (REFUSED, {"reason": "no_proposal"},
+                    f"override request {request.id} carries no proposal snapshot; the margin cap "
+                    "(C11) cannot be checked")
+        if self._margin_reader is None:
+            return FAILED, None, "the margin cap cannot be checked here; try again"
+        try:
+            inputs = self._margin_reader(row.portfolio_id, row.date)
+        except Exception as exc:  # StoreError and the like: retryable
+            return (FAILED, None, f"the margin data could not be read ({type(exc).__name__}); "
+                                  "try again")
+        reading = rk.book_margin(positions, inputs)
+        why = rk.margin_refusal(reading, str(row.date))
+        if why is None:
+            return None
+        if reading.missing or reading.equity is None:
+            return REFUSED, {"reason": "margin_not_measured",
+                             "missing": list(reading.missing)}, why
+        return (REFUSED, {"reason": "outside_limits", "over": ["MARGIN"],
+                          "initial_margin": round(reading.initial_margin, 2),
+                          "equity": round(reading.equity, 2)}, why)
+
     def _override_mail(self, row: CommandRow, portfolio_dir: str) -> None:
+        refusal = self._margin_check(row, row)
+        if refusal is not None:
+            self._finish(row, *refusal)
+            return
         out = run_override_request(row, portfolio_dir, self._settings, self._store,
                                    self._sender)
         self._finish(row, out.status, out.result, out.message)
@@ -578,6 +613,10 @@ class Dispatcher:
             return self._finish(row, REFUSED, None, why), False
         if row.payload.get("approved") is False:
             return self._finish(row, DONE, {"approved": False}, "override rejected"), False
+        parent = self._store.get_row(row.parent_id)
+        refusal = self._margin_check(row, parent) if parent is not None else None
+        if refusal is not None:
+            return self._finish(row, *refusal), False
         portfolio_dir, refused = self._portfolio_dir(row)
         if refused:
             return refused, False
