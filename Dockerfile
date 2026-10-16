@@ -1,4 +1,4 @@
-FROM ubuntu:24.04 AS builder
+FROM ubuntu:26.04 AS builder
 
 ENV DEBIAN_FRONTEND=noninteractive
 
@@ -80,7 +80,7 @@ RUN cmake -S /app -B /app/build \
 # shipped in this image as its second entrypoint. Built in its own stage so the C++ build above
 # is untouched and no build tool (pip, grpcio-tools, a compiler) reaches the runtime image.
 # Wheels only.
-FROM ubuntu:24.04 AS rpc-build
+FROM ubuntu:26.04 AS rpc-build
 
 ENV DEBIAN_FRONTEND=noninteractive
 
@@ -104,7 +104,7 @@ RUN PYTHON=/tmp/gen/bin/python OUT_DIR=/opt/rpc/app sh /src/services/rpc/gen.sh 
     cd /opt/rpc/app && /opt/rpc/venv/bin/python -c \
         "import algogators_rpc.server, algogators_rpc.services.desk.service, algogators_rpc.services.desk.catchup, psycopg, zoneinfo; zoneinfo.ZoneInfo('America/New_York')"
 
-FROM ubuntu:24.04
+FROM ubuntu:26.04
 
 ENV DEBIAN_FRONTEND=noninteractive \
     TZ=America/New_York \
