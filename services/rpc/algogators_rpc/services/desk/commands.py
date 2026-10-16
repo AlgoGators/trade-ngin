@@ -513,6 +513,15 @@ class Dispatcher:
         if failed is not None:
             return failed
         if flow == "override_b":
+            used = [p for p in self._store.publishes_after(after_id)
+                    if p.id != row.id and p.status == DONE and flow_of(p) == "override_b"]
+            if used:
+                # One approval, one booking (decisions 10 and 21; D-84): after a rescind the
+                # approval is spent.
+                return (REFUSED, {"reason": "approval_used", "after": after_id,
+                                  "publish": used[0].id},
+                        f"the override approval (decision {after_id}) was already used by "
+                        f"publish {used[0].id}; any book but the model's needs a new override")
             if report.audit_id != after_id or report.state != rk.OVERRIDE:
                 return (REFUSED, {"reason": "stale", "after": after_id,
                                   "book_audit_id": report.audit_id},
@@ -677,9 +686,12 @@ class Dispatcher:
         for other in self._store.decisions_for(parent.id):
             if other.id == row.id:
                 continue
-            if other.status == "done":
-                return (f"override request {parent.id} was already decided "
-                        f"(decision {other.id})")
+            # The link works once (D-75): a refused decision uses it up too. A failed one
+            # (nothing was booked: try again) does not.
+            if other.status in (DONE, REFUSED):
+                return (f"override request {parent.id} was already decided (decision "
+                        f"{other.id}, {other.status}); its link works once: request the "
+                        "override again")
             if other.status == "running":
                 return (f"override request {parent.id} is being decided by decision {other.id}")
         published = self._store.published_at(row.portfolio_id, row.date)

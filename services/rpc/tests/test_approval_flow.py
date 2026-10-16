@@ -379,3 +379,18 @@ def test_a_plain_publish_of_an_override_booking_is_refused(flow):
     assert row.status == "refused" and row.result["reason"] == "override_booking"
     assert "new override" in row.message
     assert flow.modes() == []
+
+
+def test_an_override_approval_publishes_once(flow, cstore):
+    # D-84: after its day is rescinded, the approval is spent; the booking is still B.
+    flow.book = desk_book(91, [sym("ZN.v.0", 60, 60)], source="override")
+    assert override_publish(flow, cstore).status == "done"
+    cstore.add(make_row(93, "publish", requested_by="qt@x.com",
+                        payload={"flow": "override_b", "after": 91}))
+    flow.dispatcher.publish(93, PID, DAY)
+    flow.jobs.wait_idle()
+    row = cstore.rows[93]
+    assert row.status == "refused" and row.result == {"reason": "approval_used", "after": 91,
+                                                      "publish": 92}
+    assert "needs a new override" in row.message
+    assert flow.modes() == [("91", "--override"), ("92", "--publish")]

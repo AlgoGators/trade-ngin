@@ -128,6 +128,10 @@ class CommandStore(Protocol):
     def decisions_for(self, parent_id: int) -> List[CommandRow]:
         """Every override_decision row whose parent is `parent_id`, oldest first."""
 
+    def publishes_after(self, after_id: int) -> List[CommandRow]:
+        """Every publish row whose C10 flow runs after row `after_id` (payload.after), oldest
+        first."""
+
     def published_at(self, portfolio_id: str, date: dt.date) -> Optional[dt.datetime]:
         """live_run_metadata.published_at for the day (contract C3), None if unpublished."""
 
@@ -251,6 +255,14 @@ class PostgresCommandStore:
             cur.execute(f"SELECT {_SELECT} FROM trading.position_overrides "
                         "WHERE kind = 'override_decision' AND parent_id = %s ORDER BY id",
                         (parent_id,))
+            return [CommandRow.from_record(r) for r in cur.fetchall()]
+        return self._run(q)
+
+    def publishes_after(self, after_id: int) -> List[CommandRow]:
+        def q(cur):
+            cur.execute(f"SELECT {_SELECT} FROM trading.position_overrides "
+                        "WHERE kind = 'publish' AND payload->>'after' = %s ORDER BY id",
+                        (str(after_id),))
             return [CommandRow.from_record(r) for r in cur.fetchall()]
         return self._run(q)
 

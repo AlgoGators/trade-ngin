@@ -180,6 +180,13 @@ class FakeCommandStore:
             return [r for _, r in sorted(self.rows.items())
                     if r.kind == "override_decision" and r.parent_id == parent_id]
 
+    def publishes_after(self, after_id):
+        self._check("publishes_after")
+        with self.lock:
+            return [r for _, r in sorted(self.rows.items())
+                    if r.kind == "publish" and isinstance(r.payload, dict)
+                    and r.payload.get("after") == after_id]
+
     def published_at(self, portfolio_id, date):
         self._check("published_at")
         return self.published.get((portfolio_id, date))

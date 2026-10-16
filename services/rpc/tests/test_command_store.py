@@ -156,6 +156,13 @@ def test_pending_rows_and_decisions_and_published():
     assert "FROM trading.live_run_metadata" in cur.sql[2] and cur.params[2] == ("P", DAY)
 
 
+def test_publishes_after_reads_the_flow_rows_of_one_approval():
+    store, cur = make([[record(7, kind="publish", payload={"flow": "override_b", "after": 5})]])
+    assert [r.id for r in store.publishes_after(5)] == [7]
+    assert "kind = 'publish' AND payload->>'after' = %s" in cur.sql[0]
+    assert cur.params[0] == ("5",)
+
+
 def test_every_update_touches_only_engine_columns():
     store, cur = make([[record()], [(1,)], [(T0,)], [], [(1,)]])
     store.claim(1)
