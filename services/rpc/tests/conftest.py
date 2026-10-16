@@ -11,7 +11,7 @@ from algogators_rpc.client import versioned_channel
 from algogators_rpc.registry import Registry
 from algogators_rpc.server import build_server
 
-from algogators_rpc.services.desk.command_store import (NOT_APPROVER, NOT_DESK, NOT_RUNNING,
+from algogators_rpc.services.desk.command_store import (NOT_APPROVER, is_approver, NOT_DESK, NOT_RUNNING,
                                                         RESCINDED, SENT,
                                                         UNPUBLISHED, BookLine, CommandRow,
                                                         RescindResult)
@@ -195,7 +195,7 @@ class FakeCommandStore:
         self._check("books")
         return {k: dict(v) for k, v in self.book_data.items()}
 
-    def rescind(self, audit_id, portfolio_id, date, message, requested_by):
+    def rescind(self, audit_id, portfolio_id, date, message, requested_by, approvers=()):
         self._check("rescind")
         with self.lock:
             meta = self.metadata.get((portfolio_id, date)) or {}
@@ -206,8 +206,13 @@ class FakeCommandStore:
             by, at, source = meta["published_by"], meta["published_at"], meta.get("publish_source")
             if source != "desk":
                 return RescindResult(NOT_DESK, by, at, source)
-            if by.strip().lower() != requested_by.strip().lower():
-                return RescindResult(NOT_APPROVER, by, at, source)
+            approving = [r for r in self.rows.values()
+                         if (r.portfolio_id, r.date, r.kind, r.status) ==
+                         (portfolio_id, date, "publish", "done")
+                         and isinstance(r.result, dict) and "published_at" in r.result]
+            flow = (max(approving, key=lambda r: r.id).payload or {}).get("flow")                 if approving else None
+            if flow == "override_b" and not is_approver(requested_by, approvers):
+                return RescindResult(NOT_APPROVER, by, at, source, flow=flow)
             row = self.rows.get(audit_id)
             if row is None or row.status != "running":
                 return RescindResult(NOT_RUNNING)
@@ -215,8 +220,9 @@ class FakeCommandStore:
                                                        publish_source=None)
             self.published.pop((portfolio_id, date), None)
             self._set(audit_id, status="done", message=message, finished_at=now(),
-                      result={"rescinded": {"published_by": by, "published_at": at.isoformat()}})
-            return RescindResult(RESCINDED, by, at, source)
+                      result={"rescinded": {"published_by": by, "published_at": at.isoformat(),
+                                            "flow": flow}})
+            return RescindResult(RESCINDED, by, at, source, flow=flow)
 
 
 class FakeRunner:

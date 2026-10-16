@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import datetime as dt
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional, Protocol, Tuple
+from typing import Any, Dict, List, Optional, Protocol, Sequence, Tuple
 
 from .config import CONNECT_TIMEOUT_S, DbConfig
 from .store import StoreError
@@ -70,9 +70,12 @@ class BookLine:
 # {portfolio_type: {symbol: BookLine}}
 Books = Dict[str, Dict[str, BookLine]]
 
-# What `rescind` found (contract C8).
+# What `rescind` found (contract C8). NOT_APPROVER: an override-published day, and the requester
+# is neither the VP nor the President (Dom 2026-10-16).
 RESCINDED, UNPUBLISHED, NOT_DESK, SENT, NOT_RUNNING, NOT_APPROVER = (
     "rescinded", "unpublished", "not_desk", "sent", "not_running", "not_approver")
+# The C10 flow of an override's approval (commands.FLOWS).
+OVERRIDE_FLOW = "override_b"
 
 
 @dataclass(frozen=True)
@@ -82,6 +85,15 @@ class RescindResult:
     published_at: Optional[dt.datetime] = None
     publish_source: Optional[str] = None
     sent_at: Optional[dt.datetime] = None
+    # The approving publish row's C10 flow (payload.flow): "override_b" for an override, else
+    # None for a plain publish, "auto" or "accept_c".
+    flow: Optional[str] = None
+
+
+def is_approver(email: Optional[str], approvers: Sequence[str]) -> bool:
+    """Whether `email` is one of the override approvers (QT_APPROVERS), compared without case."""
+    who = (email or "").strip().lower()
+    return bool(who) and who in {a.strip().lower() for a in approvers if a}
 
 
 class _NotRunning(StoreError):
@@ -124,14 +136,18 @@ class CommandStore(Protocol):
     def books(self, portfolio_id: str, date: dt.date) -> Books: ...
 
     def rescind(self, audit_id: int, portfolio_id: str, date: dt.date,
-                message: str, requested_by: str) -> RescindResult:
+                message: str, requested_by: str,
+                approvers: Sequence[str] = ()) -> RescindResult:
         """Contract C8, in one transaction with the day's live_run_metadata rows locked: when the
-        day is published by the desk (publish_source 'desk' on every published row) by
-        `requested_by` (only the approver takes an approval back; e-mails compared without case)
-        and no row has sent_at, clear published_by, published_at and publish_source on them and finish the
+        day is published by the desk (publish_source 'desk' on every published row) and no row
+        has sent_at, clear published_by, published_at and publish_source on them and finish the
         running rescind row `audit_id` done with result {"rescinded": {published_by,
-        published_at}} and `message`. Otherwise change nothing and say why (the caller refuses
-        the row); NOT_RUNNING (nothing changed) when the row was no longer running."""
+        published_at, flow}} and `message`. Who may (Dom 2026-10-16): anyone on QT takes back a
+        desk approval (AlgoLens checks the QT screen); a day published through an approved
+        override (the approving publish row's flow is override_b) only the VP or the President,
+        `requested_by` among `approvers` (e-mails compared without case). Otherwise change nothing
+        and say why (the caller refuses the row); NOT_RUNNING (nothing changed) when the row was
+        no longer running."""
 
 
 class PostgresCommandStore:
@@ -256,7 +272,8 @@ class PostgresCommandStore:
         return self._run(q)
 
     def rescind(self, audit_id: int, portfolio_id: str, date: dt.date,
-                message: str, requested_by: str) -> RescindResult:
+                message: str, requested_by: str,
+                approvers: Sequence[str] = ()) -> RescindResult:
         def q(cur):
             from psycopg.types.json import Jsonb
 
@@ -273,20 +290,28 @@ class PostgresCommandStore:
             by, at, source, _ = max(published, key=lambda r: r[1])
             if any(r[2] != "desk" for r in published):
                 return RescindResult(NOT_DESK, by, at, source)
-            if (by or "").strip().lower() != (requested_by or "").strip().lower():
-                return RescindResult(NOT_APPROVER, by, at, source)
+            # The row that approved the day: the newest done publish (a rescinded one is older).
+            cur.execute("SELECT payload->>'flow' FROM trading.position_overrides "
+                        "WHERE portfolio_id = %s AND date = %s AND kind = 'publish' "
+                        "AND status = 'done' AND result ? 'published_at' "
+                        "ORDER BY id DESC LIMIT 1", (portfolio_id, date))
+            rec = cur.fetchone()
+            flow = rec[0] if rec else None
+            if flow == OVERRIDE_FLOW and not is_approver(requested_by, approvers):
+                return RescindResult(NOT_APPROVER, by, at, source, flow=flow)
             cur.execute("UPDATE trading.live_run_metadata "
                         "SET published_by = NULL, published_at = NULL, publish_source = NULL "
                         "WHERE portfolio_id = %s AND date = %s AND published_at IS NOT NULL",
                         (portfolio_id, date))
-            result = {"rescinded": {"published_by": by, "published_at": at.isoformat()}}
+            result = {"rescinded": {"published_by": by, "published_at": at.isoformat(),
+                                    "flow": flow}}
             cur.execute("UPDATE trading.position_overrides "
                         "SET status = 'done', result = %s, message = %s, finished_at = now() "
                         "WHERE id = %s AND status = 'running' AND kind = 'rescind' RETURNING id",
                         (Jsonb(result), message, audit_id))
             if cur.fetchone() is None:
                 raise _NotRunning("the rescind row is no longer running")
-            return RescindResult(RESCINDED, by, at, source)
+            return RescindResult(RESCINDED, by, at, source, flow=flow)
         try:
             return self._run(q, autocommit=False)
         except _NotRunning:

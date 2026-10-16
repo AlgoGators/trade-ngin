@@ -215,6 +215,7 @@ def override_rows(cstore, approved=True):
 
 def test_an_approved_override_books_and_publishes_b(flow, cstore):
     override_rows(cstore)
+    flow.book = desk_book(91, [sym("ZN.v.0", 60, 60)], source="override")
     flow.dispatcher.record_decision(91)
     flow.dispatcher.publish(92, PID, DAY)
     flow.jobs.wait_idle()
@@ -307,18 +308,35 @@ def test_the_models_book_is_never_blocked(flow):
     assert plain_publish(flow).status == "done"
 
 
-def test_an_approved_override_may_pass_gross_net_and_per_name(flow):
-    flow.book = desk_book(80, [sym("ZN.v.0", 60, 60)], gross=16.7, net=9.0, cap=13.0,
+def override_publish(flow, cstore):
+    """An approved override's decision (91, booked by the engine) and its publish (92)."""
+    override_rows(cstore)
+    flow.dispatcher.record_decision(91)
+    flow.dispatcher.publish(92, PID, DAY)
+    flow.jobs.wait_idle()
+    return cstore.rows[92]
+
+
+def test_an_approved_override_may_pass_gross_net_and_per_name(flow, cstore):
+    flow.book = desk_book(91, [sym("ZN.v.0", 60, 60)], gross=16.7, net=9.0, cap=13.0,
                           source="override")
-    assert plain_publish(flow).status == "done"
+    assert override_publish(flow, cstore).status == "done"
 
 
-def test_an_approved_override_never_passes_the_margin_cap(flow):
-    flow.book = desk_book(80, [sym("ZN.v.0", 60, 60)], gross=16.7, margin=616_369.0,
+def test_an_approved_override_never_passes_the_margin_cap(flow, cstore):
+    flow.book = desk_book(91, [sym("ZN.v.0", 60, 60)], gross=16.7, margin=616_369.0,
                           equity=486_164.0, source="override")
-    row = plain_publish(flow)
+    row = override_publish(flow, cstore)
     assert row.status == "refused" and row.result["over"] == ["MARGIN"]
     assert "cannot be overridden" in row.message
+    assert flow.modes() == [("91", "--override")]
+
+
+def test_an_override_publish_needs_its_own_booking(flow, cstore):
+    # The day's book is a later save, not decision 91's booking: nothing is published.
+    flow.book = desk_book(95, [sym("ZN.v.0", 3, 3)])
+    row = override_publish(flow, cstore)
+    assert row.status == "refused" and row.result["reason"] == "stale"
 
 
 def test_a_desk_book_whose_caps_were_not_measured_is_refused(flow):
@@ -350,4 +368,14 @@ def test_a_plain_publish_of_an_incomplete_book_is_refused(flow):
     row = plain_publish(flow)
     assert row.status == "refused" and row.result["reason"] == "incomplete_book"
     assert "save again" in row.message
+    assert flow.modes() == []
+
+
+def test_a_plain_publish_of_an_override_booking_is_refused(flow):
+    # After an override day is rescinded the qt book is still B as the override booked it: a
+    # plain Approve would publish it past the caps with no approval (decisions 10 and 21).
+    flow.book = desk_book(91, [sym("ZN.v.0", 60, 60)], cap=2.5, source="override")
+    row = plain_publish(flow)
+    assert row.status == "refused" and row.result["reason"] == "override_booking"
+    assert "new override" in row.message
     assert flow.modes() == []

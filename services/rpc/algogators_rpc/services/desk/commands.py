@@ -53,7 +53,8 @@ from .command_store import (NOT_APPROVER, NOT_DESK, NOT_RUNNING, RESCINDED, SENT
                             CommandRow, CommandStore)
 from .config import CommandSettings
 from .jobs import Job, JobManager
-from .override_mail import ROLES, Sender, run_override_request, send_smtp
+from .override_mail import (ROLES, ApproverError, Sender, parse_approvers, run_override_request,
+                            send_smtp)
 from .portfolios import PortfolioConfigError, resolve_portfolio_dir
 from . import risk as rk
 
@@ -415,13 +416,25 @@ class Dispatcher:
                    "; the margin cap cannot be overridden" if any(
                        b.term == "MARGIN" for b in blockers) else ""))
 
+    @staticmethod
+    def _override_booking(report):
+        """A plain publish of a book an override booked is refused: it is published only through
+        its own approval (override_b), once (decisions 10 and 21). After a rescind the desk saves
+        the book it wants, or asks for a new override; at 10:00 the model's book is sent."""
+        if report.state != rk.OVERRIDE:
+            return None
+        return (REFUSED, {"reason": "override_booking", "book_audit_id": report.audit_id},
+                "the day's book is the booking of an approved override; it can be published only "
+                "through that approval, once. Save the book you want to approve, or ask the VP "
+                "or President for a new override")
+
     def _run_plain_publish(self, row: CommandRow, portfolio_dir: str) -> None:
         """A plain publish (no flow) approves the day's book as it stands, on the portfolio's
         queue so no save can change it between the check and the publish: decision 5's gate,
         then the engine."""
         send_now = cutoff.window(row.date, self._clock()) != cutoff.BEFORE_SEND
         report, failed = self._risk_report(row)
-        refusal = failed or self._blocked(report)
+        refusal = failed or self._override_booking(report) or self._blocked(report)
         if refusal is not None:
             status, result, message = refusal
             self._finish(row, status, result, message)
@@ -496,10 +509,17 @@ class Dispatcher:
             if not approved or after.payload.get("approved") is not True:
                 return (REFUSED, {"reason": "rejected", "after": after_id},
                         "the override for B was not approved; nothing was published")
-            return None
         report, failed = self._risk_report(row)
         if failed is not None:
             return failed
+        if flow == "override_b":
+            if report.audit_id != after_id or report.state != rk.OVERRIDE:
+                return (REFUSED, {"reason": "stale", "after": after_id,
+                                  "book_audit_id": report.audit_id},
+                        f"the day's book is no longer the booking of decision {after_id} (it is "
+                        f"{report.state} {report.audit_id}); nothing was published")
+            # The approval waives gross, net and per-name, never the margin cap (decision 10).
+            return self._blocked(report, after_id)
         if report.audit_id != after_id or report.state != rk.DESK:
             return (REFUSED, {"reason": "stale", "after": after_id,
                               "book_audit_id": report.audit_id},
@@ -545,7 +565,7 @@ class Dispatcher:
                     f"again (by {cutoff.SEND_AT:%H:%M} New York, or the model's book is sent at "
                     f"{cutoff.CUTOFF_AT:%H:%M})")
             res = self._store.rescind(row.id, row.portfolio_id, row.date, done,
-                                      row.requested_by)
+                                      row.requested_by, self._approver_emails())
         if res.outcome == RESCINDED:
             log.info("approval rescinded", extra={
                 "audit_id": row.id, "portfolio_id": row.portfolio_id, "date": str(row.date),
@@ -561,8 +581,9 @@ class Dispatcher:
                        f"{res.published_by or 'the engine'} (publish_source "
                        f"{res.publish_source or 'unknown'}), not approved by the desk; only the "
                        "desk's own approval can be rescinded"),
-            NOT_APPROVER: (f"{row.portfolio_id} {row.date} was approved by "
-                           f"{res.published_by}; only they can rescind their approval"),
+            NOT_APPROVER: (f"{row.portfolio_id} {row.date} was published through an override "
+                           "the VP or the President approved; only the VP or the President can "
+                           "rescind it"),
             SENT: (f"{row.portfolio_id} {row.date} was already e-mailed at "
                    f"{res.sent_at.isoformat() if res.sent_at else 'an unknown time'}; a sent "
                    "approval cannot be rescinded"),
@@ -595,6 +616,14 @@ class Dispatcher:
         return (REFUSED, {"reason": "outside_limits", "over": ["MARGIN"],
                           "initial_margin": round(reading.initial_margin, 2),
                           "equity": round(reading.equity, 2)}, why)
+
+    def _approver_emails(self) -> Tuple[str, ...]:
+        """The VP's and the President's addresses (QT_APPROVERS); () when it is not set, so an
+        override-published day cannot be rescinded by anyone."""
+        try:
+            return tuple(parse_approvers(self._settings.approvers).values())
+        except ApproverError:
+            return ()
 
     def _override_mail(self, row: CommandRow, portfolio_dir: str) -> None:
         refusal = self._margin_check(row, row)

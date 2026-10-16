@@ -203,17 +203,19 @@ def meta(by="d@x", at=T0, source="desk", sent=None):
 
 
 def test_rescind_clears_the_desk_approval_and_finishes_the_row_in_one_transaction():
-    store, cur = make([[meta(), meta(None, None, None)], [], [(9,)]])
+    # live_run_metadata; the approving publish row (a plain publish: no flow); the two UPDATEs.
+    store, cur = make([[meta(), meta(None, None, None)], [(None,)], [], [(9,)]])
     res = store.rescind(9, "P", DAY, "rescinded", "D@X")
     assert res.outcome == "rescinded" and res.published_by == "d@x" and res.published_at == T0
     assert store.autocommit == [False]
     assert "FOR UPDATE" in cur.sql[0] and cur.params[0] == ("P", DAY)
-    assert cur.sql[1].startswith("UPDATE trading.live_run_metadata")
-    assert set_columns(cur.sql[1]) == {"published_by", "published_at", "publish_source"}
-    assert set_columns(cur.sql[2]) <= ENGINE_COLUMNS
-    assert "status = 'running' AND kind = 'rescind'" in cur.sql[2]
-    assert cur.params[2][0].obj == {"rescinded": {"published_by": "d@x",
-                                                  "published_at": T0.isoformat()}}
+    assert "kind = 'publish'" in cur.sql[1] and "ORDER BY id DESC" in cur.sql[1]
+    assert cur.sql[2].startswith("UPDATE trading.live_run_metadata")
+    assert set_columns(cur.sql[2]) == {"published_by", "published_at", "publish_source"}
+    assert set_columns(cur.sql[3]) <= ENGINE_COLUMNS
+    assert "status = 'running' AND kind = 'rescind'" in cur.sql[3]
+    assert cur.params[3][0].obj == {"rescinded": {"published_by": "d@x",
+                                                  "published_at": T0.isoformat(), "flow": None}}
 
 
 @pytest.mark.parametrize("rows, outcome", [
@@ -229,13 +231,22 @@ def test_rescind_refusals_write_nothing(rows, outcome):
     assert len(cur.sql) == 1
 
 
-def test_rescind_by_anyone_but_the_approver_writes_nothing():
-    store, cur = make([[meta(by="d@x")]])
-    assert store.rescind(9, "P", DAY, "m", "e@x").outcome == "not_approver"
-    assert len(cur.sql) == 1
+def test_anyone_may_rescind_a_desk_approval():
+    store, cur = make([[meta(by="d@x")], [("accept_c",)], [], [(9,)]])
+    res = store.rescind(9, "P", DAY, "m", "e@x", ("vp@x", "pres@x"))
+    assert res.outcome == "rescinded" and res.flow == "accept_c"
+
+
+def test_only_an_approver_may_rescind_an_override_day_and_others_write_nothing():
+    store, cur = make([[meta(by="d@x")], [("override_b",)]])
+    res = store.rescind(9, "P", DAY, "m", "d@x", ("vp@x", "pres@x"))
+    assert res.outcome == "not_approver" and res.flow == "override_b"
+    assert len(cur.sql) == 2 and not any(q.startswith("UPDATE") for q in cur.sql)
+    store, cur = make([[meta(by="d@x")], [("override_b",)], [], [(9,)]])
+    assert store.rescind(9, "P", DAY, "m", " VP@X ", ("vp@x", "pres@x")).outcome == "rescinded"
 
 
 def test_rescind_of_a_row_no_longer_running_rolls_back():
-    store, cur = make([[meta()], [], []])
+    store, cur = make([[meta()], [(None,)], [], []])
     assert store.rescind(9, "P", DAY, "m", "d@x").outcome == "not_running"
-    assert len(cur.sql) == 3
+    assert len(cur.sql) == 4
