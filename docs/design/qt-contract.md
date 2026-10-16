@@ -209,3 +209,11 @@ A desk or override book may use at most **100% of the fund's equity** as initial
 - **Reported** by `GetDeskRisk` as the check `MARGIN` (unit `usd`: `margin_posted` against `current_portfolio_value` of the day's qt row), on every state; over the cap it is a breach. The model run is not refused by it (its book is sized by the overlay on the sizing capital); a model book over the cap shows as `over`.
 - The desk record (`risk_detail.desk.fund_cap`) carries the amounts the engine checked.
 
+## Credits
+
+John Riley's QT work is the basis of these parts of the engine side:
+
+- **The three books (#165).** Keeping a model book and a desk book side by side, seeding the desk book from the model, and reading yesterday's book from the desk side is his F1 design (issue #47, PRs #54 and #55); so is the untouched model portfolio's purpose, measuring whether desk edits add or lose value. The rulings changed how the seeding works.
+- **Book-aware storage (#163, migration 021).** The book-scoped storage approach of #55, built on his merged #54.
+- **The command log (#161, migration 023).** The `position_overrides` audit table and its no-edit, no-delete rule, from #55.
+- **Desk settings from the database (#162, migration 022).** The settings table (from #60's migration 008), the overlay tests (#60), and the secret-key and parse-and-rebuild checks (#151).
