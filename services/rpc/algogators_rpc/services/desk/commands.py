@@ -288,6 +288,15 @@ class Dispatcher:
                 return self._finish(claimed, REFUSED, None, why), False
             if mode == "publish" and flow_of(claimed):
                 return self._queue_flow(claimed)
+            if mode == "publish" and not self._approved_here(claimed):
+                portfolio_dir, refused = self._portfolio_dir(claimed)
+                if refused:
+                    return refused, False
+                self._jobs.submit(Job(claimed.portfolio_id, claimed.id, claimed.kind,
+                                      lambda: self._run_plain_publish(claimed, portfolio_dir),
+                                      self._on_done(claimed.id)))
+                return Outcome(ACCEPTED, f"publish {claimed.id} queued for the engine (--publish"
+                                         f"{' --send-now' if send_now else ''})"), True
         portfolio_dir, refused = self._portfolio_dir(claimed)
         if refused:
             return refused, False
@@ -352,7 +361,7 @@ class Dispatcher:
             today = now.astimezone(cutoff.zone()).date()
             send = row.requested_by == cutoff.FALLBACK_10AM and row.date >= today
             return "fallback", send, ""
-        approved_here = isinstance(row.result, dict) and "published_at" in row.result
+        approved_here = self._approved_here(row)
         if not approved_here:
             published = self._store.published_at(row.portfolio_id, row.date)
             if published is not None:
@@ -362,6 +371,55 @@ class Dispatcher:
             if cutoff.window(row.date, created) == cutoff.CLOSED:
                 return "", False, cutoff.deadline_message(row.date)
         return "publish", cutoff.window(row.date, now) != cutoff.BEFORE_SEND, ""
+
+    @staticmethod
+    def _approved_here(row: CommandRow) -> bool:
+        """A publish row that already approved the day (a re-run: its result carries
+        published_at); it goes on to its send with no new check."""
+        return isinstance(row.result, dict) and "published_at" in row.result
+
+    def _risk_report(self, row: CommandRow):
+        """(report, None), or (None, (status, result, message)) when the risk check cannot be
+        read: the approval fails closed (D-42) and may be retried."""
+        if self._risk_reader is None:
+            return None, (FAILED, None, "the risk check cannot be read here; try again")
+        try:
+            return rk.derive_desk_risk(self._risk_reader(row.portfolio_id, row.date)), None
+        except Exception as exc:  # StoreError and the like: retryable
+            return None, (FAILED, None, f"the risk check could not be read "
+                                        f"({type(exc).__name__}); try again")
+
+    @staticmethod
+    def _blocked(report, after_id=None):
+        """(status, result, message) when decision 5's gate blocks the day's book, else None."""
+        blockers = rk.publish_blockers(report)
+        if not blockers:
+            return None
+        result = {"reason": "outside_limits", "over": [b.term for b in blockers],
+                  "refused": report.refused}
+        if after_id is not None:
+            result["after"] = after_id
+        who = ("" if report.state == rk.OVERRIDE else
+               ": ask the VP or President to approve it past the cap")
+        return (REFUSED, result,
+                f"the book is over a cap ({'; '.join(b.detail for b in blockers)})"
+                + (who if all(b.term in rk.OVERRIDABLE_CAPS for b in blockers) else
+                   "; the margin cap cannot be overridden" if any(
+                       b.term == "MARGIN" for b in blockers) else ""))
+
+    def _run_plain_publish(self, row: CommandRow, portfolio_dir: str) -> None:
+        """A plain publish (no flow) approves the day's book as it stands, on the portfolio's
+        queue so no save can change it between the check and the publish: decision 5's gate,
+        then the engine."""
+        send_now = cutoff.window(row.date, self._clock()) != cutoff.BEFORE_SEND
+        report, failed = self._risk_report(row)
+        refusal = failed or self._blocked(report)
+        if refusal is not None:
+            status, result, message = refusal
+            self._finish(row, status, result, message)
+            return
+        self._jobs.run_engine_now("publish", row.portfolio_id, portfolio_dir,
+                                  row.date.isoformat(), row.id, send_now)
 
     # -- the approval flows (contract C10) -----------------------------------------------------
 
@@ -431,13 +489,9 @@ class Dispatcher:
                 return (REFUSED, {"reason": "rejected", "after": after_id},
                         "the override for B was not approved; nothing was published")
             return None
-        if self._risk_reader is None:
-            return (FAILED, None, "the risk check cannot be read here; try again")
-        try:
-            report = rk.derive_desk_risk(self._risk_reader(row.portfolio_id, row.date))
-        except Exception as exc:  # StoreError and the like: retryable
-            return (FAILED, None, f"the risk check could not be read ({type(exc).__name__}); "
-                                  "try again")
+        report, failed = self._risk_report(row)
+        if failed is not None:
+            return failed
         if report.audit_id != after_id or report.state != rk.DESK:
             return (REFUSED, {"reason": "stale", "after": after_id,
                               "book_audit_id": report.audit_id},
@@ -446,31 +500,15 @@ class Dispatcher:
         differs = [{"symbol": s.symbol, "asked": s.asked, "given": s.given,
                     "moved_by": s.moved_by, "category": s.category}
                    for s in report.symbols if abs(s.asked - s.given) > 1e-9]
-        breaches = [b.term for b in report.breaches]
-        if flow == "auto":
-            if differs or not report.within_limits:
-                return (REFUSED, {"reason": "changed" if differs else "outside_limits",
-                                  "after": after_id, "differs": differs,
-                                  "within_limits": report.within_limits,
-                                  "breaches": breaches},
-                        (f"dynamic optimisation and the risk system changed "
-                         f"{len(differs)} position(s): approve the engine's book (C) or ask the "
-                         "VP or President to approve yours (B)") if differs else
-                        ("the positions are outside the risk limits "
-                         f"({', '.join(breaches)}): ask the VP or President to approve them"))
-            return None
-        # C itself over a limit: a check read over, or a term the stored book is still over
-        # (after rounding, or through a held position).
-        over = [c.term for c in report.checks if c.status == rk.OVER]
-        for term in rk.over_terms(report):
-            if term not in over:
-                over.append(term)
-        if over or report.refused:
-            return (REFUSED, {"reason": "outside_limits", "after": after_id, "over": over,
-                              "refused": report.refused},
-                    "the engine's book (C) is itself over a limit "
-                    f"({', '.join(over) or 'the overlay refused'}): ask the VP or President")
-        return None
+        if flow == "auto" and differs:
+            return (REFUSED, {"reason": "changed", "after": after_id, "differs": differs,
+                              "within_limits": report.within_limits,
+                              "breaches": [b.term for b in report.breaches]},
+                    f"dynamic optimisation and the risk system changed {len(differs)} "
+                    "position(s): approve the engine's book (C) or ask the VP or President to "
+                    "approve yours (B)")
+        # Decision 5: only C over a cap blocks; a bound limit and every other check is reported.
+        return self._blocked(report, after_id)
 
     # -- rescind (contract C8) --------------------------------------------------------------------
 

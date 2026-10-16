@@ -285,11 +285,14 @@ class Agent:
         # The portfolio flock a rescind takes: held unless a test says another holder keeps it.
         self.lock_free = True
         self.locks = []
+        # The day's qt row the publish gate reads (decision 5); None = no book yet (never blocks).
+        self.book = None
         self.dispatcher = Dispatcher(cstore, self.jobs, settings,
                                      sender=lambda cfg, to, subject, body:
                                      self.sent.append((cfg, list(to), subject, body)),
                                      clock=lambda: self.now,
-                                     lock_factory=self._lock)
+                                     lock_factory=self._lock,
+                                     risk_reader=lambda portfolio_id, date: self.book)
 
     @contextlib.contextmanager
     def _lock(self, path, wait_s):

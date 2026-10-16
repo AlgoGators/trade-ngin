@@ -20,11 +20,27 @@ def sym(symbol, asked, given, moved_by="none"):
             "moved_by": moved_by}
 
 
-def desk_book(audit_id, symbols, binding="none", m=1.0, after=""):
-    return DeskRiskRow(book_source="desk", risk_detail={"desk": {
-        "mode": "desk", "audit_id": audit_id, "symbols": symbols,
-        "overlay": {"ran": True, "refused": False, "m": m, "binding": binding,
-                    "over_limit_after_rounding": after, "over_limit_by_hold": ""}}})
+def desk_book(audit_id, symbols, binding="none", m=1.0, after="", gross=3.0, net=2.0,
+              cap=1.0, margin=400_000.0, equity=500_000.0, source="desk", checks=True):
+    """A day's qt row as the engine writes it after a desk save (or an override): the pass's
+    record and its measured checks (limits: gross 8, net 6, per-name 2)."""
+    measured = {"tau": 0.2, "covariance_measured": True,
+                "R": {"value": 0.1, "max": 0.45, "max_ratio": 2.25},
+                "R_jump": {"value": 0.1, "max": 0.45, "max_ratio": 2.25},
+                "R_shock": {"value": 0.1, "max": 0.45, "max_ratio": 2.25},
+                "L_g": {"value": gross, "max": 8.0}, "L_n": {"value": net, "max": 6.0},
+                "CAP": {"value": cap, "max": 2.0, "symbol": "ZN.v.0"},
+                "TRIM": {"value": 0, "max": 5}}
+    desk = {"mode": "override" if source == "override" else "desk", "audit_id": audit_id,
+            "symbols": symbols,
+            "overlay": {"ran": True, "refused": False, "m": m, "binding": binding,
+                        "over_limit_after_rounding": after, "over_limit_by_hold": ""}}
+    if source == "override":
+        desk["report_only"] = True
+    if checks:
+        desk["checks"] = measured
+    return DeskRiskRow(book_source=source, risk_detail={"desk": desk},
+                       initial_margin=margin, equity=equity)
 
 
 class Flow:
@@ -88,12 +104,28 @@ def test_a_rule_step_change_also_needs_the_qt_to_choose(flow, cstore):
     assert row.result["within_limits"] is True
 
 
-def test_b_unchanged_but_over_a_limit_is_refused(flow, cstore):
-    flow.book = desk_book(80, [sym("ZN.v.0", 3, 3)], after="R")
+def test_b_unchanged_but_over_a_cap_is_refused(flow, cstore):
+    flow.book = desk_book(80, [sym("ZN.v.0", 3, 3)], gross=9.0)
     flow.approve(80, 81)
     row = cstore.rows[81]
     assert row.status == "refused" and row.result["reason"] == "outside_limits"
+    assert row.result["over"] == ["L_g"]
     assert "VP or President" in row.message
+
+
+def test_a_covariance_term_over_its_limit_is_reported_not_blocking(flow, cstore):
+    # Decision 5: only the caps (gross, net, per-name, margin) block; R is reported.
+    flow.book = desk_book(80, [sym("ZN.v.0", 3, 3)], after="R")
+    flow.approve(80, 81)
+    assert cstore.rows[81].status == "done"
+    assert flow.modes() == [("80", "--desk"), ("81", "--publish")]
+
+
+def test_a_bound_cap_does_not_block(flow, cstore):
+    # The overlay cut the book to the gross cap: C is at, not over, the cap.
+    flow.book = desk_book(80, [sym("ZN.v.0", 3, 3)], binding="L_g", m=0.8, gross=8.0)
+    flow.approve(80, 81)
+    assert cstore.rows[81].status == "done"
 
 
 def test_accept_c_publishes_the_engines_book(flow, cstore):
@@ -230,3 +262,73 @@ def test_the_configured_idm_and_fdm(tmp_path):
     out = {x.name: x.value for x in rk.load_multipliers(str(tmp_path), str(pdir))}
     assert out == {"idm:TREND": 2.5, "fdm:TREND": 1.26, "fdm:OWN_FDM": 1.5}
     assert rk.load_multipliers(str(tmp_path), str(tmp_path / "missing")) == []
+
+
+# -- decision 5: one gate for every publish path (HD 2026-10-16; Dom 2026-10-16) ---------------
+
+def plain_publish(flow, publish_id=90):
+    flow.store.add(make_row(publish_id, "publish"))
+    out = flow.dispatcher.publish(publish_id, PID, DAY)
+    flow.jobs.wait_idle()
+    return flow.store.rows[publish_id]
+
+
+def test_a_plain_publish_of_a_book_within_the_caps_publishes(flow):
+    flow.book = desk_book(80, [sym("ZN.v.0", 3, 3)])
+    assert plain_publish(flow).status == "done"
+    assert flow.modes() == [("90", "--publish")]
+
+
+def test_a_plain_publish_of_a_book_over_a_cap_is_refused(flow):
+    # The same gate as Approve: the per-name cap is over, so nothing is published.
+    flow.book = desk_book(80, [sym("ZN.v.0", 3, 3)], cap=2.5)
+    row = plain_publish(flow)
+    assert row.status == "refused" and row.result["over"] == ["CAP"]
+    assert flow.modes() == []
+
+
+def test_a_plain_publish_with_a_bound_limit_publishes(flow):
+    flow.book = desk_book(80, [sym("ZT.v.0", 8, 2, "cap")], gross=8.0)
+    assert plain_publish(flow).status == "done"
+
+
+def test_a_plain_publish_fails_closed_when_the_risk_check_cannot_be_read(flow):
+    # D-42: Approve never goes through with the risk check unread.
+    flow.read_error = "database error (OperationalError)"
+    row = plain_publish(flow)
+    assert row.status == "failed" and "risk check" in row.message
+    assert flow.modes() == []
+
+
+def test_the_models_book_is_never_blocked(flow):
+    flow.book = DeskRiskRow(book_source="model", initial_margin=600_000.0, equity=500_000.0)
+    assert plain_publish(flow).status == "done"
+
+
+def test_an_approved_override_may_pass_gross_net_and_per_name(flow):
+    flow.book = desk_book(80, [sym("ZN.v.0", 60, 60)], gross=16.7, net=9.0, cap=13.0,
+                          source="override")
+    assert plain_publish(flow).status == "done"
+
+
+def test_an_approved_override_never_passes_the_margin_cap(flow):
+    flow.book = desk_book(80, [sym("ZN.v.0", 60, 60)], gross=16.7, margin=616_369.0,
+                          equity=486_164.0, source="override")
+    row = plain_publish(flow)
+    assert row.status == "refused" and row.result["over"] == ["MARGIN"]
+    assert "cannot be overridden" in row.message
+
+
+def test_a_desk_book_whose_caps_were_not_measured_is_refused(flow):
+    # No checks recorded (no pass answered): the caps cannot be shown to hold.
+    flow.book = desk_book(80, [sym("ZN.v.0", 3, 3)], checks=False)
+    row = plain_publish(flow)
+    assert row.status == "refused"
+    assert set(row.result["over"]) == {"L_g", "L_n", "CAP"}
+
+
+def test_a_cap_labelled_bound_but_over_its_max_still_blocks():
+    # The cap cut one symbol (the check reads "bound") yet the largest name is still over.
+    report = rk.derive_desk_risk(desk_book(80, [sym("ZT.v.0", 8, 2, "cap")], cap=2.4))
+    assert [c.status for c in report.checks if c.term == "CAP"] == [rk.BOUND]
+    assert [b.term for b in rk.publish_blockers(report)] == ["CAP"]

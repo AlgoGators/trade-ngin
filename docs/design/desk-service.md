@@ -12,7 +12,7 @@ version header check, health, call logs and shutdown. Before 2026-10-09 it ran a
 `proto/algogators/desk.proto`, package `algogators.desk`, API `desk`, version in the file's
 header block (`Version: 1.2.0`; 1.1.0 added RunStatus `publish_source` and `sent_at` for the
 daily cutoff, contract C7; 1.2.0 added Rescind, contract C8; 1.3.0 added GetDeskRisk, contract
-C9; 1.4.0 added its per-limit checks; 1.5.0 its multipliers and the C10 approval flows). Every call sends `x-algogators-api-version: desk=1.5.0` (any `1.x.y`
+C9; 1.4.0 added its per-limit checks; 1.5.0 its multipliers and the C10 approval flows; 1.6.0 the publish gate of decision 5). Every call sends `x-algogators-api-version: desk=1.6.0` (any `1.x.y`
 is accepted, so a 1.0.0 client still works; see `rpc.md`). The engine owns the file. AlgoLens vendors it byte for byte
 at a pinned trade-ngin commit and commits the stubs it generates.
 

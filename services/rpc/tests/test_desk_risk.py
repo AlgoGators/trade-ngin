@@ -37,7 +37,8 @@ MEASURED = {
 
 
 def desk_row(symbols, m=1.0, binding="none", after="", by_hold="", refused=False,
-             source="desk", report_only=False, audit_id=61, checks=None):
+             source="desk", report_only=False, audit_id=61, checks=None,
+             initial_margin=82945.0, equity=494971.49):
     desk = {"mode": source, "audit_id": audit_id, "symbols": symbols,
             "overlay": {"ran": True, "refused": refused, "m": m, "binding": binding,
                         "risk_scale": 0.9, "over_limit_after_rounding": after,
@@ -48,7 +49,7 @@ def desk_row(symbols, m=1.0, binding="none", after="", by_hold="", refused=False
         desk["checks"] = checks
     return DeskRiskRow(book_source=source, risk_detail={"desk": desk}, gross_leverage=3.79,
                        net_leverage=-2.67, margin_cushion=0.877, equity_to_margin=6.92,
-                       initial_margin=82945.0, equity=494971.49)
+                       initial_margin=initial_margin, equity=equity)
 
 
 # -- the breach rule ---------------------------------------------------------------------------
@@ -256,6 +257,17 @@ def test_rpc_reports_every_measured_check(stub, store):
     assert checks["R"].unit == "percent" and checks["R"].label == "Portfolio risk (R)"
     assert checks["CAP"].status == pb.RISK_CHECK_STATUS_BOUND
     assert checks["L_g"].status == pb.RISK_CHECK_STATUS_WITHIN
+
+
+def test_rpc_carries_the_publish_gate(stub, store):
+    # 1.6.0, decision 5: a bound cap does not block; the margin cap over does.
+    store.risk_rows[(PID, DAY)] = desk_row([sym("ZT.v.0", 8, 2, "cap")], checks=MEASURED)
+    reply = get(stub)
+    assert not reply.blocks_publish and list(reply.blockers) == []
+    store.risk_rows[(PID, DAY)] = desk_row([sym("ZT.v.0", 8, 2, "cap")], checks=MEASURED,
+                                           initial_margin=600_000.0, equity=500_000.0)
+    reply = get(stub)
+    assert reply.blocks_publish and [b.term for b in reply.blockers] == ["MARGIN"]
 
 
 def test_rpc_on_a_day_without_a_book(stub, store):

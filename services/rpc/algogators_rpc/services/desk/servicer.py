@@ -255,7 +255,10 @@ class DeskServicer(desk_pb2_grpc.DeskServiceServicer):
                              "error": str(exc)})
             context.abort(grpc.StatusCode.UNAVAILABLE, f"desk risk unavailable: {exc}")
         report = rk.derive_desk_risk(row, self._limits(pid))
+        blockers = rk.publish_blockers(report)
         reply = desk_pb2.DeskRisk(
+            blocks_publish=bool(blockers),
+            blockers=[desk_pb2.RiskBreach(term=b.term, detail=b.detail) for b in blockers],
             state=_RISK_STATE[report.state], audit_id=report.audit_id,
             within_limits=report.within_limits, approved_override=report.approved_override,
             breaches=[desk_pb2.RiskBreach(term=b.term, detail=b.detail) for b in report.breaches],
