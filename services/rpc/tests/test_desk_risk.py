@@ -270,6 +270,13 @@ def test_rpc_carries_the_publish_gate(stub, store):
     assert reply.blocks_publish and [b.term for b in reply.blockers] == ["MARGIN"]
 
 
+def test_rpc_reports_an_incomplete_book(stub, store):
+    store.risk_rows[(PID, DAY)] = rk.DeskRiskRow(book_source=None, gross_leverage=46.0)
+    reply = get(stub)
+    assert reply.state == pb.DESK_RISK_STATE_INCOMPLETE and not reply.within_limits
+    assert reply.blocks_publish and [b.term for b in reply.blockers] == ["incomplete"]
+
+
 def test_rpc_on_a_day_without_a_book(stub, store):
     reply = get(stub)
     assert reply.state == pb.DESK_RISK_STATE_NO_BOOK and reply.within_limits

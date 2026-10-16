@@ -51,6 +51,9 @@ RULE_STEPS = frozenset({"sign_close", "rounding", "buffer", "search", "hold"})
 RISK, RULE, NONE = "risk", "rule", "none"
 
 NO_BOOK, MODEL, DESK, OVERRIDE = "no_book", "model", "desk", "override"
+# A qt row with no book_source: a desk or override run cleared it and did not finish (the engine
+# refuses to publish it; the desk saves again, or the 10:00 fallback restores the model's book).
+INCOMPLETE = "incomplete"
 
 # What each overlay term limits, for the report.
 TERMS = {
@@ -204,6 +207,11 @@ def derive_desk_risk(row: Optional[DeskRiskRow],
     detail = row.risk_detail if isinstance(row.risk_detail, Mapping) else {}
     desk = detail.get("desk") if isinstance(detail.get("desk"), Mapping) else None
     source = (row.book_source or "").strip().lower()
+    if not source:
+        return DeskRiskReport(state=INCOMPLETE, checks=configured_checks(
+            limits, row.gross_leverage, row.net_leverage,
+            "the book is incomplete: a desk or override run did not finish writing it")
+            + (fund_cap_check(row),), within_limits=False, **readings)
     if desk is None or source not in (DESK, OVERRIDE):
         # The model's book: the engine's own run, inside its limits by construction.
         return DeskRiskReport(state=MODEL, checks=configured_checks(
@@ -474,6 +482,7 @@ def publish_blockers(report: DeskRiskReport) -> List[Breach]:
     """What stops the day's book from being published (decision 5): the final book C over a cap
     in BLOCKING_CAPS. [] when it may be published.
 
+    * An incomplete book (no book_source: a desk or override run did not finish) is blocked.
     * The model's book (and no book) is never blocked here: the 10:00 fallback publishes it
       regardless; a margin breach on it is reported by the checks.
     * A desk book is blocked by any blocking cap over its max (read from the value, whatever label
@@ -482,6 +491,9 @@ def publish_blockers(report: DeskRiskReport) -> List[Breach]:
       not checked).
     * An approved override is blocked only by the margin cap.
     """
+    if report.state == INCOMPLETE:
+        return [Breach(INCOMPLETE, "the day's book is incomplete (a desk or override run did not "
+                                   "finish writing it); save again")]
     if report.state not in (DESK, OVERRIDE):
         return []
     waived = OVERRIDABLE_CAPS if report.state == OVERRIDE else ()

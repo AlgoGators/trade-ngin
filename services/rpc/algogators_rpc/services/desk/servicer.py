@@ -77,6 +77,7 @@ _RISK_STATE = {
     rk.MODEL: desk_pb2.DESK_RISK_STATE_MODEL,
     rk.DESK: desk_pb2.DESK_RISK_STATE_DESK,
     rk.OVERRIDE: desk_pb2.DESK_RISK_STATE_OVERRIDE,
+    rk.INCOMPLETE: desk_pb2.DESK_RISK_STATE_INCOMPLETE,
 }
 
 NO_DISPATCHER = "commands are not configured on this agent"

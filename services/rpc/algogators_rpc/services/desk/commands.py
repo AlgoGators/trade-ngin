@@ -395,6 +395,10 @@ class Dispatcher:
         blockers = rk.publish_blockers(report)
         if not blockers:
             return None
+        if report.state == rk.INCOMPLETE:
+            return (REFUSED, {"reason": "incomplete_book", "over": [rk.INCOMPLETE],
+                              **({"after": after_id} if after_id is not None else {})},
+                    blockers[0].detail)
         result = {"reason": "outside_limits", "over": [b.term for b in blockers],
                   "refused": report.refused}
         if after_id is not None:

@@ -332,3 +332,20 @@ def test_a_cap_labelled_bound_but_over_its_max_still_blocks():
     report = rk.derive_desk_risk(desk_book(80, [sym("ZT.v.0", 8, 2, "cap")], cap=2.4))
     assert [c.status for c in report.checks if c.term == "CAP"] == [rk.BOUND]
     assert [b.term for b in rk.publish_blockers(report)] == ["CAP"]
+
+
+def test_an_incomplete_book_is_never_reported_as_the_models():
+    # An override refused by the margin cap leaves qt = B with book_source cleared.
+    row = DeskRiskRow(book_source=None, gross_leverage=46.0, initial_margin=572_086.0,
+                      equity=493_699.0)
+    report = rk.derive_desk_risk(row)
+    assert report.state == rk.INCOMPLETE and not report.within_limits
+    assert [b.term for b in rk.publish_blockers(report)] == ["incomplete"]
+
+
+def test_a_plain_publish_of_an_incomplete_book_is_refused(flow):
+    flow.book = DeskRiskRow(book_source=None, initial_margin=572_086.0, equity=493_699.0)
+    row = plain_publish(flow)
+    assert row.status == "refused" and row.result["reason"] == "incomplete_book"
+    assert "save again" in row.message
+    assert flow.modes() == []

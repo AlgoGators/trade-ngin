@@ -56,7 +56,9 @@ import "google/protobuf/timestamp.proto";
 //                      the flow is the publish row's payload.
 //   1.6.0  2026-10-16  DeskRisk.blocks_publish (19) and blockers (20): decision 5's publish
 //                      gate (only the final book over a cap blocks; an approved override only
-//                      over the margin cap). Additive only. Every publish path refuses on it.
+//                      over the margin cap), and DESK_RISK_STATE_INCOMPLETE (5): a qt book a
+//                      desk or override run did not finish (it blocks). Additive only. Every
+//                      publish path refuses on it.
 
 service DeskService {
   // A desk save: run the desk loop on the whole qt_proposal and book the result as qt with
@@ -286,6 +288,9 @@ enum DeskRiskState {
   DESK_RISK_STATE_DESK = 3;
   // An approved override: the ask trades as asked; the pass is a report.
   DESK_RISK_STATE_OVERRIDE = 4;
+  // The qt row has no book_source: a desk or override run cleared it and did not finish (a
+  // refused override, for one). The engine will not publish it; save again. Blocks publish.
+  DESK_RISK_STATE_INCOMPLETE = 5;
 }
 
 message RiskBreach {
