@@ -399,14 +399,14 @@ jobs:
       # to explain. The Generate Summary step already guards on the files being
       # present, so a missing artifact is not an error here.
       - name: Download Coverage Reports
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         continue-on-error: true
         with:
           name: coverage-reports-${{ github.run_number }}
           path: coverage-reports/
 
       - name: Download Linting Reports
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         continue-on-error: true
         with:
           name: linting-report-${{ github.run_number }}
