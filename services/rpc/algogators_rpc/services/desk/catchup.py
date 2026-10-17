@@ -1128,9 +1128,19 @@ class CatchupScheduler:
             text = (f"QT did not approve {pid} {day}; the model's book was published at "
                     f"{when:%H:%M}, but the e-mail could not be sent ({message}); the scheduler "
                     "retries the send")
+            refusal = self._settings_refusal(detail)
+            if refusal:  # D-77: name the saved setting that stops the send
+                text += f". A saved settings change cannot be applied: {refusal}"
         self.alerter.alert(info.dir, pid, day, "fallback", text + f" (publish row {audit_id})",
                            subject=text)
         return None
+
+    @staticmethod
+    def _settings_refusal(detail: str) -> str:
+        """D-77: the engine's STRATEGY_CONFIG refusal line (it names the portfolio and why the
+        saved settings change cannot be applied), or "" when the output holds none."""
+        return next((line.strip() for line in (detail or "").splitlines()
+                     if "STRATEGY_CONFIG refused" in line), "")
 
     def _send(self, info: PortfolioInfo, day: dt.date) -> Optional[Step]:
         argv = [self._settings.engine_binary, "--send", "--portfolio-config", info.dir,
@@ -1140,6 +1150,13 @@ class CatchupScheduler:
             self.files.line(f"{info.portfolio_id}: {day} e-mailed")
             return None
         self._failed(info.portfolio_id, day, SEND)
+        refusal = self._settings_refusal(detail)
+        if refusal:
+            # D-77: a bad saved setting stops every send until it is fixed; say which.
+            return Step(ALERT, day, "send_refused_settings",
+                        f"{day} is not e-mailed: a saved settings change cannot be applied. "
+                        f"Fix or revert it in the desk's settings; the scheduler retries the "
+                        f"send.\n{refusal}")
         why = (res.error and f"cannot start the engine: {res.error}") or (
             res.timed_out and "the send timed out") or (
             f"the send exited {res.rc}" + (" without recording sent_at" if res.rc == 0 else ""))

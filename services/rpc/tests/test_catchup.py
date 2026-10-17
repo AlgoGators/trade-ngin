@@ -116,6 +116,7 @@ class Engine:
         self.mails = []          # (pid, date)
         self.resets = []         # (pid, date)
         self.send_fails = False
+        self.send_stderr = None  # what a failing send prints (default: an SMTP error)
         self.lock = threading.Lock()
 
     def run(self, argv, cwd, timeout, copy_to=None):
@@ -150,7 +151,8 @@ class Engine:
                 if self.send_fails:
                     row.update(status="done", message="send failed")
                     row["result"].update(emailed=False, send_error="x")
-                    return RunResult(rc=1, stderr="QT_SEND the daily e-mail could not be sent\n")
+                    return RunResult(rc=1, stderr=self.send_stderr
+                                     or "QT_SEND the daily e-mail could not be sent\n")
                 self.mails.append((pid, day))
                 self.days.sent[(pid, day)] = when
                 row["result"]["emailed"] = True
@@ -164,7 +166,7 @@ class Engine:
             if (pid, day) in self.days.sent:
                 return RunResult(rc=0)
             if self.send_fails:
-                return RunResult(rc=1, stderr="smtp down\n")
+                return RunResult(rc=1, stderr=self.send_stderr or "smtp down\n")
             self.mails.append((pid, day))
             self.days.sent[(pid, day)] = when
             return RunResult(rc=0)
@@ -422,6 +424,33 @@ def test_an_open_desk_approval_makes_the_fallback_wait(env):
     step = env.make(portfolios=(DESK,)).catch_up(DESK)
     assert step.action == WAIT_TIME and step.reason == "publish_open"
     assert env.engine.calls == [] and env.sent == []
+
+
+REFUSAL = ("STRATEGY_CONFIG refused for QT_CONSERVATIVE_PORTFOLIO: risk.modules[0].R_max 1000 "
+           "is over its bound 22.5. Refusing to run: a saved settings change that cannot be "
+           "applied is never replaced by the file values (ruling 24).\n")
+
+
+def test_a_send_stopped_by_a_bad_setting_alerts_naming_it(env):
+    # D-77: the President is told the e-mail is stopped by a saved settings change, and which.
+    model_done(env, FRI)
+    approve(env, DESK_PID, FRI, at(FRI, 8))
+    env.engine.send_fails, env.engine.send_stderr = True, REFUSAL
+    sched = env.make(portfolios=(DESK,))
+    env.clock.t = at(FRI, 9, 30)
+    out = dict(sched.run_pass())
+    assert out[DESK].action == ALERT and out[DESK].reason == "send_refused_settings"
+    body = env.sent[0][2]
+    assert "R_max 1000" in body and "saved settings change cannot be applied" in body
+
+
+def test_a_fallback_whose_send_a_bad_setting_stops_names_it(env):
+    model_done(env, FRI)
+    env.engine.send_fails, env.engine.send_stderr = True, REFUSAL
+    sched = env.make(portfolios=(DESK,))
+    env.clock.t = at(FRI, 10, 0)
+    sched.run_pass()
+    assert "the e-mail could not be sent" in alerts(env)[0] and "R_max 1000" in alerts(env)[0]
 
 
 def test_a_fallback_whose_send_fails_alerts_and_the_send_is_retried(env):
