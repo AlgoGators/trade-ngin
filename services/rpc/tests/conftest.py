@@ -180,6 +180,10 @@ class FakeCommandStore:
             return [r for _, r in sorted(self.rows.items())
                     if r.kind == "override_decision" and r.parent_id == parent_id]
 
+    def sent_at(self, portfolio_id, date):
+        self._check("sent_at")
+        return (self.metadata.get((portfolio_id, date)) or {}).get("sent_at")
+
     def publishes_after(self, after_id):
         self._check("publishes_after")
         with self.lock:

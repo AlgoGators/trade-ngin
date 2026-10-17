@@ -189,6 +189,10 @@ class DayStore(Protocol):
 
     def last_published_before(self, portfolio_id: str, date: dt.date) -> Optional[dt.date]: ...
 
+    def email_held(self, portfolio_id: str, date: dt.date) -> bool:
+        """D-66: the day's approval asked for no e-mail (the newest done publish row that
+        approved it has payload.email false); the desk sends it with Send when it wants."""
+
     def unsent_days(self, portfolio_id: str, since: dt.date,
                     before: dt.date) -> List[Tuple[dt.date, str]]:
         """(date, published_by) of each day in [since, before) that is published and was never
@@ -329,6 +333,16 @@ class PostgresDayStore:
     def last_published_before(self, portfolio_id, date):
         return self._one("SELECT max(date) FROM trading.live_run_metadata WHERE portfolio_id = %s "
                          "AND date < %s AND published_at IS NOT NULL", (portfolio_id, date))
+
+    def email_held(self, portfolio_id, date):
+        def q(cur):
+            cur.execute("SELECT payload->>'email' FROM trading.position_overrides "
+                        "WHERE portfolio_id = %s AND date = %s AND kind = 'publish' "
+                        "AND status = 'done' AND result ? 'published_at' "
+                        "ORDER BY id DESC LIMIT 1", (portfolio_id, date))
+            rec = cur.fetchone()
+            return rec is not None and rec[0] == "false"
+        return self._run(q)
 
     def unsent_days(self, portfolio_id, since, before):
         def q(cur):
@@ -771,6 +785,9 @@ class CatchupScheduler:
         published = self._store.published_at(pid, today)
         if published is not None and now_local >= cutoff.send_time(today) \
                 and self._store.sent_at(pid, today) is None:
+            if self._store.email_held(pid, today):
+                return Step(UP_TO_DATE, today, "not_sent",
+                            "approved without the e-mail (D-66): the desk sends it with Send")
             why = self._not_sendable(info)
             if why:
                 return Step(UP_TO_DATE, today, "not_sent", why)
@@ -1139,7 +1156,7 @@ class CatchupScheduler:
         today = self.local_now().date()
         since = today - dt.timedelta(days=MISSED_SEND_ALERT_DAYS)
         for day, by in self._store.unsent_days(info.portfolio_id, since, today):
-            if by == cutoff.FALLBACK_CATCHUP:
+            if by == cutoff.FALLBACK_CATCHUP or self._store.email_held(info.portfolio_id, day):
                 continue
             self.alerter.alert(info.dir, info.portfolio_id, day, "missed_send",
                                f"{info.portfolio_id} {day} was published ({by or 'unknown'}) "

@@ -135,6 +135,9 @@ class CommandStore(Protocol):
     def published_at(self, portfolio_id: str, date: dt.date) -> Optional[dt.datetime]:
         """live_run_metadata.published_at for the day (contract C3), None if unpublished."""
 
+    def sent_at(self, portfolio_id: str, date: dt.date) -> Optional[dt.datetime]:
+        """live_run_metadata.sent_at for the day (C7), None until it is e-mailed."""
+
     def newest_pending_publish(self, portfolio_id: str, date: dt.date) -> Optional[CommandRow]: ...
 
     def books(self, portfolio_id: str, date: dt.date) -> Books: ...
@@ -269,6 +272,14 @@ class PostgresCommandStore:
     def published_at(self, portfolio_id: str, date: dt.date) -> Optional[dt.datetime]:
         def q(cur):
             cur.execute("SELECT max(published_at) FROM trading.live_run_metadata "
+                        "WHERE portfolio_id = %s AND date = %s", (portfolio_id, date))
+            rec = cur.fetchone()
+            return rec[0] if rec else None
+        return self._run(q)
+
+    def sent_at(self, portfolio_id: str, date: dt.date) -> Optional[dt.datetime]:
+        def q(cur):
+            cur.execute("SELECT max(sent_at) FROM trading.live_run_metadata "
                         "WHERE portfolio_id = %s AND date = %s", (portfolio_id, date))
             rec = cur.fetchone()
             return rec[0] if rec else None

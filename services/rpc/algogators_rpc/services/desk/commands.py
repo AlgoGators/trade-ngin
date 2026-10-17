@@ -84,6 +84,16 @@ def flow_of(row: CommandRow) -> str:
     return flow if isinstance(flow, str) else ""
 
 
+# D-66: a publish row with this flow e-mails a day the desk approved without its e-mail.
+SEND_FLOW = "send"
+
+
+def email_wanted(row: CommandRow) -> bool:
+    """D-66: an approval e-mails the day unless its payload says {"email": false}."""
+    payload = row.payload if isinstance(row.payload, dict) else {}
+    return payload.get("email") is not False
+
+
 @dataclass(frozen=True)
 class Outcome:
     status: str  # accepted | done | refused | failed
@@ -283,6 +293,14 @@ class Dispatcher:
             result = claimed.result if isinstance(claimed.result, dict) else {}
             return self._finish(claimed, DONE, result,
                                 "already e-mailed; not sent again"), False
+        if claimed.kind == "publish" and flow_of(claimed) == SEND_FLOW:
+            portfolio_dir, refused = self._portfolio_dir(claimed)
+            if refused:
+                return refused, False
+            self._jobs.submit(Job(claimed.portfolio_id, claimed.id, claimed.kind,
+                                  lambda: self._run_send(claimed, portfolio_dir),
+                                  self._on_done(claimed.id)))
+            return Outcome(ACCEPTED, f"send {claimed.id} queued"), True
         refused = self._published_refusal(claimed) or self._future_refusal(claimed)
         if refused:
             return refused, False
@@ -389,7 +407,8 @@ class Dispatcher:
             created = row.created_at or now
             if cutoff.window(row.date, created) == cutoff.CLOSED:
                 return "", False, cutoff.deadline_message(row.date)
-        return "publish", cutoff.window(row.date, now) != cutoff.BEFORE_SEND, ""
+        return "publish", (cutoff.window(row.date, now) != cutoff.BEFORE_SEND
+                           and email_wanted(row)), ""
 
     @staticmethod
     def _approved_here(row: CommandRow) -> bool:
@@ -446,7 +465,8 @@ class Dispatcher:
         """A plain publish (no flow) approves the day's book as it stands, on the portfolio's
         queue so no save can change it between the check and the publish: decision 5's gate,
         then the engine."""
-        send_now = cutoff.window(row.date, self._clock()) != cutoff.BEFORE_SEND
+        send_now = (cutoff.window(row.date, self._clock()) != cutoff.BEFORE_SEND
+                    and email_wanted(row))
         report, failed = self._risk_report(row)
         refusal = failed or self._override_booking(report) or self._blocked(report)
         if refusal is not None:
@@ -492,7 +512,8 @@ class Dispatcher:
 
     def _run_flow(self, row: CommandRow, flow: str, after_id: int, portfolio_dir: str) -> None:
         """On the portfolio's queue, after the row it names: the checks, then the publish."""
-        send_now = cutoff.window(row.date, self._clock()) != cutoff.BEFORE_SEND
+        send_now = (cutoff.window(row.date, self._clock()) != cutoff.BEFORE_SEND
+                    and email_wanted(row))
         if isinstance(row.result, dict) and "published_at" in row.result:
             # A re-run of a row that already approved the day: on to its send.
             self._jobs.run_engine_now("publish", row.portfolio_id, portfolio_dir,
@@ -560,6 +581,38 @@ class Dispatcher:
                     "approve yours (B)")
         # Decision 5: only C over a cap blocks; a bound limit and every other check is reported.
         return self._blocked(report, after_id)
+
+    # -- the desk's Send (D-66) ----------------------------------------------------------------------
+
+    def _run_send(self, row: CommandRow, portfolio_dir: str) -> None:
+        """On the portfolio's queue: e-mail a day that is published and not yet sent, today
+        only (a past day's book must not reach anyone as today's, D-40), with the engine's
+        --send (the 09:30 send's command line, which sends once and records sent_at)."""
+        today = self._clock().astimezone(cutoff.zone()).date()
+        if row.date != today:
+            self._finish(row, REFUSED, {"reason": "not_today"},
+                         f"{row.date} is not today ({today} in New York): only today's book is "
+                         "e-mailed")
+            return
+        if self._store.published_at(row.portfolio_id, row.date) is None:
+            self._finish(row, REFUSED, {"reason": "unpublished"},
+                         f"{row.portfolio_id} {row.date} is not approved: approve it first")
+            return
+        sent = self._store.sent_at(row.portfolio_id, row.date)
+        if sent is not None:
+            self._finish(row, REFUSED, {"reason": "sent", "sent_at": sent.isoformat()},
+                         f"{row.portfolio_id} {row.date} was already e-mailed at "
+                         f"{sent.isoformat()}")
+            return
+        res = self._jobs.run_send_now(row.portfolio_id, portfolio_dir, row.date.isoformat())
+        sent = self._store.sent_at(row.portfolio_id, row.date)
+        if sent is not None:
+            self._finish(row, DONE, {"sent": True, "sent_at": sent.isoformat()},
+                         f"{row.date} e-mailed")
+            return
+        why = (res.error and f"cannot start the engine: {res.error}") or (
+            res.timed_out and "the send timed out") or f"the send exited {res.rc}"
+        self._finish(row, FAILED, None, f"{why}; nothing was e-mailed, try again")
 
     # -- rescind (contract C8) --------------------------------------------------------------------
 

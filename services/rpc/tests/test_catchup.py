@@ -68,6 +68,9 @@ class Days:
     def sent_at(self, pid, day):
         return self.sent.get((pid, day))
 
+    def email_held(self, pid, day):
+        return (pid, day) in getattr(self, "held", set())
+
     def unsent_days(self, pid, since, before):
         return sorted((d, by) for (p, d), (_, by, _) in self.published.items()
                       if p == pid and since <= d < before and (p, d) not in self.sent)
@@ -521,6 +524,19 @@ def test_a_missed_send_is_alerted_for_three_days_only(env):
     approve(env, DESK_PID, THU, at(THU, 9))
     env.days.write(DESK_PID, "qt", MON, at(MON, 7))
     env.clock.t = at(MON, 9, 0)
+    env.make(portfolios=(DESK,)).run_pass()
+    assert not any("missed_send" in a for a in alerts(env))
+
+
+def test_a_day_approved_without_the_email_is_not_sent_at_0930_nor_alerted(env):
+    # D-66: the desk chose no e-mail; it sends with Send when it wants.
+    env.days.write(DESK_PID, "qt", FRI, at(FRI, 7))
+    approve(env, DESK_PID, FRI, at(FRI, 9))
+    env.days.held = {(DESK_PID, FRI)}
+    env.clock.t = at(FRI, 9, 30)
+    out = dict(env.make(portfolios=(DESK,)).run_pass())
+    assert env.engine.mails == [] and out[DESK].reason == "not_sent"
+    env.clock.t = at(SAT, 9, 0)
     env.make(portfolios=(DESK,)).run_pass()
     assert not any("missed_send" in a for a in alerts(env))
 
