@@ -283,7 +283,7 @@ class Dispatcher:
             result = claimed.result if isinstance(claimed.result, dict) else {}
             return self._finish(claimed, DONE, result,
                                 "already e-mailed; not sent again"), False
-        refused = self._published_refusal(claimed)
+        refused = self._published_refusal(claimed) or self._future_refusal(claimed)
         if refused:
             return refused, False
         mode, send_now = ENGINE_MODE.get(claimed.kind, ""), False
@@ -337,6 +337,20 @@ class Dispatcher:
         return self._finish(row, REFUSED, None,
                             f"{row.portfolio_id} {row.date} was published at "
                             f"{published.isoformat()}; a published day is frozen")
+
+    def _future_refusal(self, row: CommandRow) -> Optional[Outcome]:
+        """A future day's book is not approved, by the desk or through an override (D-43): it
+        would freeze on prices its own morning run has not seen. The desk may still save edits
+        to it. The scheduler's fallback rows are its own."""
+        if row.kind not in ("publish", "override_request") or cutoff.is_fallback(row.requested_by):
+            return None
+        today = self._clock().astimezone(cutoff.zone()).date()
+        if row.date <= today:
+            return None
+        return self._finish(row, REFUSED, {"reason": "future_day"},
+                            f"{row.portfolio_id} {row.date} is a future day (today is {today} in "
+                            f"New York); its book can be approved, or an override requested, from "
+                            f"{row.date}")
 
     def _portfolio_dir(self, row: CommandRow) -> Tuple[str, Optional[Outcome]]:
         """(dir, None), or ("", the refusal already recorded on the row)."""
