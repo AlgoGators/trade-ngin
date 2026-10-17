@@ -177,6 +177,21 @@ class PostgresRunStatusStore:
         except Exception as exc:
             raise StoreError(f"database error ({type(exc).__name__})") from exc
 
+    def registry_desk_editable(self, portfolio_id: str) -> Optional[bool]:
+        """D-52: trading.strategy_registry.desk_editable of the portfolio's active row (what
+        AlgoLens reads), or None when the column or the row is absent."""
+        try:
+            with self._connect() as conn, conn.cursor() as cur:
+                if "desk_editable" not in self._columns(cur, "trading", "strategy_registry"):
+                    return None
+                cur.execute("SELECT desk_editable FROM trading.strategy_registry "
+                            "WHERE portfolio_id = %s AND is_active "
+                            "ORDER BY sort_order, id LIMIT 1", (portfolio_id,))
+                row = cur.fetchone()
+                return None if row is None or row[0] is None else bool(row[0])
+        except Exception as exc:
+            raise StoreError(f"database error ({type(exc).__name__})") from exc
+
     def margin_inputs(self, portfolio_id: str, date: dt.date) -> MarginInputs:
         try:
             with self._connect() as conn, conn.cursor() as cur:

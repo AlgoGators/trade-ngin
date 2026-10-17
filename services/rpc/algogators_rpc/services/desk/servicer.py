@@ -13,6 +13,7 @@ the same audit_id.
 
 from __future__ import annotations
 
+import json
 import logging
 import time
 from typing import Optional
@@ -28,6 +29,7 @@ from . import validation as v
 from .commands import ACCEPTED, DONE, FAILED, REFUSED, Dispatcher, Outcome
 from .config import DEFAULT_CONFIG_DIR
 from .portfolios import PortfolioConfigError, portfolios_root, resolve_portfolio_dir
+from .settings_check import SettingsCheckUnavailable
 from .store import RunStatusStore, StoreError
 
 log = logging.getLogger("desk.rpc")
@@ -93,10 +95,11 @@ def _ts(value):
 
 class DeskServicer(desk_pb2_grpc.DeskServiceServicer):
     def __init__(self, store: RunStatusStore, dispatcher: Optional[Dispatcher] = None,
-                 config_dir: Optional[str] = None):
+                 config_dir: Optional[str] = None, settings_checker=None):
         self._store = store
         self._config_dir = config_dir or DEFAULT_CONFIG_DIR
         self._dispatcher = dispatcher
+        self._settings_checker = settings_checker
 
     # -- helpers ---------------------------------------------------------------------------
 
@@ -233,6 +236,13 @@ class DeskServicer(desk_pb2_grpc.DeskServiceServicer):
         except PortfolioConfigError:
             return []
 
+    def _tau(self, portfolio_id: str):
+        try:
+            name = resolve_portfolio_dir(self._config_dir, portfolio_id)
+            return rk.load_tau(str(portfolios_root(self._config_dir) / name))
+        except PortfolioConfigError:
+            return None
+
     def _multipliers(self, portfolio_id: str):
         try:
             name = resolve_portfolio_dir(self._config_dir, portfolio_id)
@@ -240,6 +250,38 @@ class DeskServicer(desk_pb2_grpc.DeskServiceServicer):
                                        str(portfolios_root(self._config_dir) / name))
         except PortfolioConfigError:
             return []
+
+    def CheckSettings(self, request, context):
+        """HD D-17: would a live run accept these desk settings? Books nothing."""
+        started = time.monotonic()
+        try:
+            pid = v.portfolio_id(request.portfolio_id)
+        except v.InvalidArgument as exc:
+            self._invalid(context, "CheckSettings", exc)
+        try:
+            overrides = json.loads(request.overrides_json or "")
+        except ValueError:
+            overrides = None
+        if not isinstance(overrides, dict):
+            self._invalid(context, "CheckSettings",
+                          v.InvalidArgument("overrides_json must be a JSON object"),
+                          portfolio_id=pid)
+        try:
+            portfolio_dir = resolve_portfolio_dir(self._config_dir, pid)
+        except PortfolioConfigError as exc:
+            context.abort(grpc.StatusCode.FAILED_PRECONDITION, str(exc))
+        if self._settings_checker is None:
+            context.abort(grpc.StatusCode.UNAVAILABLE, "the settings check is not configured here")
+        try:
+            ok, error = self._settings_checker.check(portfolio_dir, overrides)
+        except SettingsCheckUnavailable as exc:
+            log.error("settings check unavailable", extra={"rpc": "CheckSettings",
+                                                           "portfolio_id": pid, "error": str(exc)})
+            context.abort(grpc.StatusCode.UNAVAILABLE, str(exc))
+        log.info("settings checked", extra={
+            "rpc": "CheckSettings", "portfolio_id": pid, "status": "OK" if ok else "REFUSED",
+            "error": error, "elapsed_ms": round((time.monotonic() - started) * 1000, 1)})
+        return desk_pb2.SettingsCheck(ok=ok, error=error)
 
     def GetDeskRisk(self, request, context):
         started = time.monotonic()
@@ -255,7 +297,7 @@ class DeskServicer(desk_pb2_grpc.DeskServiceServicer):
                       extra={"rpc": "GetDeskRisk", "portfolio_id": pid, "date": str(day),
                              "error": str(exc)})
             context.abort(grpc.StatusCode.UNAVAILABLE, f"desk risk unavailable: {exc}")
-        report = rk.derive_desk_risk(row, self._limits(pid))
+        report = rk.derive_desk_risk(row, self._limits(pid), self._tau(pid))
         blockers = rk.publish_blockers(report)
         reply = desk_pb2.DeskRisk(
             blocks_publish=bool(blockers),

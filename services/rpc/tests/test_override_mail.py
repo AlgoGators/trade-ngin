@@ -57,7 +57,7 @@ def test_build_email_escapes_and_shows_three_books():
     subject, body = build_email(row, books, approve_link("https://x/approve", "T0K"))
     assert subject == "QT override request: QT_CONSERVATIVE_PORTFOLIO 2026-10-07"
     assert "&lt;b&gt;why&lt;/b&gt;" in body and "<b>why</b>" not in body
-    assert "https://x/approve?token=T0K" in body
+    assert "https://x/approve#token=T0K" in body
     assert "<td>ZN</td><td align=\"right\">&ndash;</td><td align=\"right\">2.5</td>" in body
     assert "sign_close" in body
 

@@ -42,7 +42,10 @@ Result<void> TrendFollowingStrategy::validate_config() const {
     auto result = BaseStrategy::validate_config();
     if (result.is_error())
         return result;
+    return validate_trend_config(trend_config_);
+}
 
+Result<void> TrendFollowingStrategy::validate_trend_config(const TrendFollowingConfig& trend_config_) {
     // Validate trend-specific config
     if (trend_config_.risk_target <= 0.0 || trend_config_.risk_target > 1.0) {
         return make_error<void>(ErrorCode::INVALID_ARGUMENT, "Risk target must be between 0 and 1",

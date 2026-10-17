@@ -441,7 +441,8 @@ class Dispatcher:
             # AlgoLens shows (N5). Without them a desk row with no recorded checks would not
             # compare L_g and L_n with a max here.
             return rk.derive_desk_risk(self._risk_reader(row.portfolio_id, row.date),
-                                       self._limits(row.portfolio_id)), None
+                                       self._limits(row.portfolio_id),
+                                       self._tau(row.portfolio_id)), None
         except Exception as exc:  # StoreError and the like: retryable
             return None, (FAILED, None, f"the risk check could not be read "
                                         f"({type(exc).__name__}); try again")
@@ -452,6 +453,13 @@ class Dispatcher:
             return rk.load_limits(str(portfolios_root(self._settings.config_dir) / name))
         except PortfolioConfigError:
             return []
+
+    def _tau(self, portfolio_id: str):
+        try:
+            name = resolve_portfolio_dir(self._settings.config_dir, portfolio_id)
+            return rk.load_tau(str(portfolios_root(self._settings.config_dir) / name))
+        except PortfolioConfigError:
+            return None
 
     @staticmethod
     def _blocked(report, after_id=None):
