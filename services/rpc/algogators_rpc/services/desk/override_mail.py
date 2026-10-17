@@ -64,7 +64,9 @@ def hash_token(token: str) -> str:
 
 
 def approve_link(base: str, token: str) -> str:
-    return f"{base}?{urlencode({'token': token})}"
+    # D-44: the token rides the fragment, which the browser never sends to the server, so it
+    # does not land in the proxy's access log. AlgoLens reads it there (and ?token= on older links).
+    return f"{base}#{urlencode({'token': token})}"
 
 
 @dataclass(frozen=True)

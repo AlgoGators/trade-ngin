@@ -245,7 +245,7 @@ def test_override_with_email_disabled_writes_the_mail_into_result(stub, agent, c
     mail = row.result["email"]
     assert mail["to"] == ["vp@algogators.com", "pres@algogators.com"]
     assert mail["subject"] == f"QT override request: {PID} 2026-10-07"
-    token = re.search(r"https://algolens\.algogators\.com/qt/approve\?token=([A-Za-z0-9_-]+)",
+    token = re.search(r"https://algolens\.algogators\.com/qt/approve#token=([A-Za-z0-9_-]+)",
                       mail["body"]).group(1)
     assert len(token) >= 40
     assert row.token_hash == hashlib.sha256(token.encode()).hexdigest()
@@ -281,7 +281,7 @@ def test_override_email_sent(stub, agent, cstore, settings, config_dir, caplog):
     cfg, to, subject, body = agent.sent[0]
     assert to == ["vp@algogators.com", "pres@algogators.com"]
     assert cfg.host == "smtp.example.com" and cfg.from_email == "qt@example.com"
-    token = re.search(r"https://lens\.test/approve\?token=([A-Za-z0-9_-]+)", body).group(1)
+    token = re.search(r"https://lens\.test/approve#token=([A-Za-z0-9_-]+)", body).group(1)
     assert row.token_hash == hashlib.sha256(token.encode()).hexdigest()
     log = rendered(caplog)
     assert token not in log and "app-password-123" not in log
