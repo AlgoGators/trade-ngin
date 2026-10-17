@@ -111,15 +111,15 @@ def test_finish_only_moves_a_running_row_and_wraps_result():
 
 def test_record_mail_stores_token_expiry_and_result_together():
     store, cur = make([[(T0,)]])
-    assert store.record_mail(7, "ab" * 32, 48, {"emailed": ["vp"], "emailed_at": "t"}) == T0
+    assert store.record_mail(7, "ab" * 32, T0, {"emailed": ["vp"], "emailed_at": "t"}) == T0
     sql = cur.sql[0]
-    assert "token_expires_at = now() + make_interval(hours => %s)" in sql
+    assert "token_expires_at = %s" in sql
     assert "result = %s" in sql and "WHERE id = %s AND status = 'running'" in sql
-    token_hash, hours, result, audit_id = cur.params[0]
-    assert (token_hash, hours, audit_id) == ("ab" * 32, 48, 7)
+    token_hash, expires_at, result, audit_id = cur.params[0]
+    assert (token_hash, expires_at, audit_id) == ("ab" * 32, T0, 7)
     assert result.obj == {"emailed": ["vp"], "emailed_at": "t"}
     store, _ = make([[]])
-    assert store.record_mail(7, "h", 48, {}) is None
+    assert store.record_mail(7, "h", T0, {}) is None
 
 
 def test_running_rows_carry_their_age_by_the_database_clock():
@@ -167,7 +167,7 @@ def test_every_update_touches_only_engine_columns():
     store, cur = make([[record()], [(1,)], [(T0,)], [], [(1,)]])
     store.claim(1)
     store.finish(1, "done", None, "m")
-    store.record_mail(1, "h", 48, {})
+    store.record_mail(1, "h", T0, {})
     store.requeue(1, "m")
     updates = [s for s in cur.sql if s.startswith("UPDATE")]
     assert len(updates) == 4

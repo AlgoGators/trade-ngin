@@ -110,11 +110,11 @@ class CommandStore(Protocol):
                message: str) -> bool:
         """running -> done/refused/failed. False if the row was no longer running."""
 
-    def record_mail(self, audit_id: int, token_hash: str, hours: int,
+    def record_mail(self, audit_id: int, token_hash: str, expires_at: dt.datetime,
                     result: Dict[str, Any]) -> Optional[dt.datetime]:
-        """On a running override request: the token hash, an expiry `hours` from now() and the
-        result, in one UPDATE (the mail has gone out). Returns the expiry, None if the row was
-        no longer running."""
+        """On a running override request: the token hash, its expiry (the book date's 10:00 New
+        York cutoff, D-13) and the result, in one UPDATE (the mail has gone out). Returns the
+        expiry, None if the row was no longer running."""
 
     def running_rows(self) -> List[Tuple[CommandRow, Optional[float]]]:
         """Every 'running' row with its age in seconds (now() - started_at, by the database's
@@ -211,16 +211,16 @@ class PostgresCommandStore:
             return cur.fetchone() is not None
         return self._run(q)
 
-    def record_mail(self, audit_id: int, token_hash: str, hours: int,
+    def record_mail(self, audit_id: int, token_hash: str, expires_at: dt.datetime,
                     result: Dict[str, Any]) -> Optional[dt.datetime]:
         def q(cur):
             from psycopg.types.json import Jsonb
 
             cur.execute("UPDATE trading.position_overrides "
-                        "SET token_hash = %s, token_expires_at = now() + make_interval(hours => %s), "
+                        "SET token_hash = %s, token_expires_at = %s, "
                         "result = %s "
                         "WHERE id = %s AND status = 'running' RETURNING token_expires_at",
-                        (token_hash, hours, Jsonb(result), audit_id))
+                        (token_hash, expires_at, Jsonb(result), audit_id))
             rec = cur.fetchone()
             return rec[0] if rec else None
         return self._run(q)

@@ -8,7 +8,8 @@ Done in Python, not by the engine. The worker:
    system, desk request = qt_proposal, the engine's desk result = qt with moved_by);
 4. sends it through the portfolio's email.json SMTP settings, or, only when QT_EMAIL_DISABLED=1,
    writes it into the row's result so an operator can still approve;
-5. stores sha256(token), an expiry 48 h from now() and the result in one UPDATE.
+5. stores sha256(token), its expiry (10:00 New York on the book date, the approval cutoff:
+   D-13) and the result in one UPDATE.
 
 The token and the SMTP password are never logged. The token appears only in the e-mail (and in
 the result under QT_EMAIL_DISABLED=1, by design), and only its hash is stored.
@@ -30,11 +31,11 @@ from urllib.parse import urlencode
 
 from .command_store import Books, CommandRow
 from .config import CommandSettings
+from .cutoff import CUTOFF_AT, cutoff_time
 from .portfolios import portfolios_root
 
 log = logging.getLogger("desk.override")
 
-TOKEN_HOURS = 48
 ROLES = ("vp", "president")
 
 
@@ -158,7 +159,8 @@ def build_email(row: CommandRow, books: Books, link: str) -> Tuple[str, str]:
         f"<p>Requested by: {e(row.requested_by)}<br>Reason: {e(row.reason or '')}</p>"
         f"<p><a href=\"{e(link)}\">Review and approve or reject</a><br>"
         f"{e(link)}</p>"
-        f"<p>The link works once and expires in {TOKEN_HOURS} hours. The requester may not "
+        f"<p>The link works once and must be used by <b>{CUTOFF_AT:%H:%M} New York on "
+        f"{e(str(row.date))}</b>: from then the model's book is sent. The requester may not "
         "approve their own request.</p>"
         f"{table}"
         "<p>Model book: the untouched model run (system). Desk request: the desk's proposal "
@@ -229,7 +231,7 @@ def run_override_request(row: CommandRow, portfolio_dir: str, settings: CommandS
         message = "override e-mail sent to vp and president"
         log.info("override e-mail sent", extra={"audit_id": row.id,
                                                 "portfolio_id": row.portfolio_id})
-    expires = store.record_mail(row.id, hash_token(token), TOKEN_HOURS, result)
+    expires = store.record_mail(row.id, hash_token(token), cutoff_time(row.date), result)
     if expires is None:
         return MailOutcome("failed", None, "the approval token could not be stored (the row is "
                                            "no longer running); the link cannot work: request "

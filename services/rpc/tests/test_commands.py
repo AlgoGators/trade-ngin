@@ -249,9 +249,13 @@ def test_override_with_email_disabled_writes_the_mail_into_result(stub, agent, c
                       mail["body"]).group(1)
     assert len(token) >= 40
     assert row.token_hash == hashlib.sha256(token.encode()).hexdigest()
-    left = row.token_expires_at - now()
-    assert dt.timedelta(hours=47, minutes=59) < left <= dt.timedelta(hours=48)
+    # D-13: the link expires at the approval cutoff, 10:00 New York on the book date.
+    assert row.token_expires_at == dt.datetime(2026, 10, 7, 10, 0,
+                                               tzinfo=__import__("zoneinfo").ZoneInfo(
+                                                   "America/New_York"))
     body = mail["body"]
+    assert "must be used by <b>10:00 New York on 2026-10-07</b>" in body
+    assert "48 hours" not in body
     assert "desk@algogators.com" in body and "breach is temporary" in body
     assert "<td>ES</td><td align=\"right\">3</td><td align=\"right\">5</td>" \
            "<td align=\"right\">4</td><td>cap</td>" in body

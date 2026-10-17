@@ -142,14 +142,14 @@ class FakeCommandStore:
                       finished_at=now())
             return True
 
-    def record_mail(self, audit_id, token_hash, hours, result):
+    def record_mail(self, audit_id, token_hash, expires_at, result):
         self._check("record_mail")
         with self.lock:
             row = self.rows.get(audit_id)
             if row is None or row.status != "running":
                 return None
             return self._set(audit_id, token_hash=token_hash, result=result,
-                             token_expires_at=now() + dt.timedelta(hours=hours)).token_expires_at
+                             token_expires_at=expires_at).token_expires_at
 
     def running_rows(self):
         self._check("running_rows")
