@@ -23,6 +23,10 @@ A desk-editable portfolio (its day D: model run ~07:00, approve by 09:30, fallba
     today approved, not sent, >= 09:30  -> SEND today (engine --send: from the stored rows, once)
     otherwise                           -> wait for the desk's approval, or up to date
 
+After each pass (D-40): a day of the last MISSED_SEND_ALERT_DAYS that was published but never
+e-mailed before it passed (an approval whose 09:30 send did not happen) is not sent late; the
+President is alerted, once a day. A caught-up day is never e-mailed and was alerted already.
+
 The model twin (desk editing off) runs the same model runs; each day it writes is published at
 once as system:model-only (publish_source 'model-only') and, today, sent at 09:30 when its
 email.json names recipients. At QT_MODEL_ALERT_AT (08:30) a portfolio with no model book for
@@ -56,10 +60,13 @@ Monday, a holiday is skipped). Normally T is today, and today's model run is the
     failed, or a stale partial, is an alert and nothing is built
     when T is after today (data that reaches past today, e.g. Saturday's run after its 10:00
     fallback with Friday's or Sunday's bars in), the engine's day chain is every calendar day, so
-    the days between today and T are built in order; on the desk portfolio each of those
-    non-trading days is published at once with the model's book (system:fallback-nontrading; no
-    alert, e-mailed at its 09:30 like any day) so T can run (ruling 29); the twin's are published
-    model-only when they become today
+    the days between today and T are built in order. On the desk portfolio (D-63, decision 6)
+    every one of them waits like a weekday: the next day is built once today is published, and
+    the chain stops at the first day after today that is not published; that day, once it is
+    today, waits for the desk's approval or its own 10:00 fallback, with the alert, and the
+    chain goes on (ruling 29). So Monday's books are built on Sunday once Sunday is out. No day
+    is published ahead of its own day (system:fallback-nontrading is no longer written). The
+    twin's days are built ahead and published model-only when they become today
     T is (re)built once per data_ready.finished_at: a re-pull rebuilds it, unless T is published
     (frozen: never rebuilt). A desk portfolio whose day has the desk's saved edits keeps them: the
     engine's model run then rewrites only the system book and keeps qt_proposal and qt (QT_SEED
@@ -115,6 +122,8 @@ HEARTBEAT = "qt-catchup.heartbeat"
 SCHEDULER_LOCK = "qt-catchup.lock"
 # A pass never takes more than this many steps per portfolio (a sanity bound, not a policy).
 MAX_DAYS_PER_PASS = 62
+# D-40: how many past days a published day that was never e-mailed is alerted on.
+MISSED_SEND_ALERT_DAYS = 3
 # How far back the last bar of a symbol data-ngin reported missing is looked for.
 MISSING_LOOKBACK_DAYS = 60
 
@@ -179,6 +188,15 @@ class DayStore(Protocol):
         """{book: {symbol: Line}} of the system and qt books of the day."""
 
     def last_published_before(self, portfolio_id: str, date: dt.date) -> Optional[dt.date]: ...
+
+    def email_held(self, portfolio_id: str, date: dt.date) -> bool:
+        """D-66: the day's approval asked for no e-mail (the newest done publish row that
+        approved it has payload.email false); the desk sends it with Send when it wants."""
+
+    def unsent_days(self, portfolio_id: str, since: dt.date,
+                    before: dt.date) -> List[Tuple[dt.date, str]]:
+        """(date, published_by) of each day in [since, before) that is published and was never
+        e-mailed (sent_at NULL on all its rows), oldest first."""
 
 
 class PostgresDayStore:
@@ -315,6 +333,26 @@ class PostgresDayStore:
     def last_published_before(self, portfolio_id, date):
         return self._one("SELECT max(date) FROM trading.live_run_metadata WHERE portfolio_id = %s "
                          "AND date < %s AND published_at IS NOT NULL", (portfolio_id, date))
+
+    def email_held(self, portfolio_id, date):
+        def q(cur):
+            cur.execute("SELECT payload->>'email' FROM trading.position_overrides "
+                        "WHERE portfolio_id = %s AND date = %s AND kind = 'publish' "
+                        "AND status = 'done' AND result ? 'published_at' "
+                        "ORDER BY id DESC LIMIT 1", (portfolio_id, date))
+            rec = cur.fetchone()
+            return rec is not None and rec[0] == "false"
+        return self._run(q)
+
+    def unsent_days(self, portfolio_id, since, before):
+        def q(cur):
+            cur.execute("SELECT date, COALESCE(max(published_by), '') "
+                        "FROM trading.live_run_metadata WHERE portfolio_id = %s "
+                        "AND date >= %s AND date < %s GROUP BY date "
+                        "HAVING max(published_at) IS NOT NULL AND max(sent_at) IS NULL "
+                        "ORDER BY date", (portfolio_id, since, before))
+            return [(r[0], r[1]) for r in cur.fetchall()]
+        return self._run(q)
 
 
 # -- logs, locks, alerts ----------------------------------------------------------------------
@@ -672,6 +710,7 @@ class CatchupScheduler:
                 step = result_step
                 break
         self._model_book_check(info)
+        self._missed_send_check(info)
         self._report(info, step)
         return step
 
@@ -746,6 +785,9 @@ class CatchupScheduler:
         published = self._store.published_at(pid, today)
         if published is not None and now_local >= cutoff.send_time(today) \
                 and self._store.sent_at(pid, today) is None:
+            if self._store.email_held(pid, today):
+                return Step(UP_TO_DATE, today, "not_sent",
+                            "approved without the e-mail (D-66): the desk sends it with Send")
             why = self._not_sendable(info)
             if why:
                 return Step(UP_TO_DATE, today, "not_sent", why)
@@ -837,19 +879,15 @@ class CatchupScheduler:
             return None   # old data: today's own flow and the data-ready check cover it
         if info.desk_editable and target > today and self._store.published_at(pid, today) is None:
             return None   # ruling 29: today is approved (or falls back at 10:00) first
-        if info.desk_editable:
-            # The engine's chain is every calendar day and starts each from the PUBLISHED day
-            # before. The days between today and the target are not trading days: they go out
-            # with the model's book at once, no alert (the twin publishes its own when they
-            # become today).
-            d = today + dt.timedelta(days=1)
-            while d <= min(last, target - dt.timedelta(days=1)):
-                if self._store.published_at(pid, d) is None:
-                    return self._blocked(pid, d, FALLBACK) or Step(
-                        FALLBACK, d, FALLBACK_NONTRADING,
-                        f"{d} is not a trading day: published with the model's book so the books "
-                        f"of {target} can be built")
-                d += dt.timedelta(days=1)
+        if info.desk_editable and today < last < target \
+                and self._store.published_at(pid, last) is None:
+            # D-63 (decision 6): every day waits for the desk's approval or its own 10:00
+            # fallback, with the alert, weekends included. The engine's chain is every calendar
+            # day and starts each from the PUBLISHED day before, so the build stops at the first
+            # day after today that is not published yet; it goes on once that day, as today, is
+            # approved or falls back. (Before, such a day was published at once with the model's
+            # book, system:fallback-nontrading, with no desk window and no alert.)
+            return None
         if last < target:
             bad, _ = self._data_verdict(info, ready, target)
             if bad is not None:
@@ -1106,6 +1144,24 @@ class CatchupScheduler:
             res.timed_out and "the send timed out") or (
             f"the send exited {res.rc}" + (" without recording sent_at" if res.rc == 0 else ""))
         return Step(ALERT, day, "send_failed", f"{why}\n{detail}")
+
+    def _missed_send_check(self, info: PortfolioInfo) -> None:
+        """D-40: a day that was published (approved, or sent out by its fallback) but never
+        e-mailed by the time it became a past day is not sent late (a past day's book must not
+        reach the broker as today's); the President is alerted, on each of the
+        MISSED_SEND_ALERT_DAYS days after it. A caught-up day is never e-mailed by design and
+        was alerted when it was caught up; nothing is alerted while e-mail is off."""
+        if self._not_sendable(info):
+            return
+        today = self.local_now().date()
+        since = today - dt.timedelta(days=MISSED_SEND_ALERT_DAYS)
+        for day, by in self._store.unsent_days(info.portfolio_id, since, today):
+            if by == cutoff.FALLBACK_CATCHUP or self._store.email_held(info.portfolio_id, day):
+                continue
+            self.alerter.alert(info.dir, info.portfolio_id, day, "missed_send",
+                               f"{info.portfolio_id} {day} was published ({by or 'unknown'}) "
+                               f"but its daily e-mail was never sent before the day passed: "
+                               "it is not sent late; send it by hand if it is still wanted")
 
     def _model_book_check(self, info: PortfolioInfo) -> None:
         """08:30: today has no model book yet -> alert the President."""

@@ -10,3 +10,10 @@
 # York time by the script.
 SHELL=/bin/bash
 */5 * * * * ubuntu docker exec engine-rpc /app/scripts/qt_catchup.sh watchdog >> /home/ubuntu/qt-engine/logs/qt-watchdog.log 2>&1
+
+# D-39: the host watchdog, outside the container, so a stopped, crash-looping or wedged
+# engine-rpc still reaches the President. Standard-library python3 and the docker CLI only.
+# Install: copy deploy/qt_host_watchdog.py to /home/ubuntu/qt-engine/, and write
+# /home/ubuntu/qt-engine/qt-host-watchdog.env (mode 600; ALERT_TO, SMTP_HOST, SMTP_PORT,
+# SMTP_USER, SMTP_PASSWORD, MAIL_FROM; the rest has defaults, see the script's docstring).
+*/5 * * * * ubuntu set -a; . /home/ubuntu/qt-engine/qt-host-watchdog.env; set +a; python3 /home/ubuntu/qt-engine/qt_host_watchdog.py >> /home/ubuntu/qt-engine/logs/qt-host-watchdog.log 2>&1

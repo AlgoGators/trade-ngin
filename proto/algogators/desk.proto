@@ -1,6 +1,6 @@
 // AlgoGators gRPC API
 // API: desk
-// Version: 1.5.0
+// Version: 1.6.0
 // Compatibility: a client must send x-algogators-api-version: desk=<major>.<minor>.<patch>; the
 // server refuses a different major and accepts any minor/patch (docs/design/rpc.md).
 //
@@ -54,6 +54,11 @@ import "google/protobuf/timestamp.proto";
 //                      scale and the configured IDM and FDM per strategy. Additive only.
 //                      Contract C10 (the A -> B -> C approval) uses PublishRequest unchanged:
 //                      the flow is the publish row's payload.
+//   1.6.0  2026-10-16  DeskRisk.blocks_publish (19) and blockers (20): decision 5's publish
+//                      gate (only the final book over a cap blocks; an approved override only
+//                      over the margin cap), and DESK_RISK_STATE_INCOMPLETE (5): a qt book a
+//                      desk or override run did not finish (it blocks). Additive only. Every
+//                      publish path refuses on it.
 
 service DeskService {
   // A desk save: run the desk loop on the whole qt_proposal and book the result as qt with
@@ -283,6 +288,9 @@ enum DeskRiskState {
   DESK_RISK_STATE_DESK = 3;
   // An approved override: the ask trades as asked; the pass is a report.
   DESK_RISK_STATE_OVERRIDE = 4;
+  // The qt row has no book_source: a desk or override run cleared it and did not finish (a
+  // refused override, for one). The engine will not publish it; save again. Blocks publish.
+  DESK_RISK_STATE_INCOMPLETE = 5;
 }
 
 message RiskBreach {
@@ -344,6 +352,14 @@ message DeskRisk {
   // Since 1.5.0: the multipliers of the day's book, in report order: the overlay's m and the
   // risk scale the last run applied, then each live strategy's configured IDM and FDM.
   repeated RiskMultiplier multipliers = 18;
+  // Since 1.6.0, decision 5 (2026-10-16): whether the day's book may be published, and why not.
+  // Only the final book over a cap blocks: gross leverage (L_g), net leverage (L_n), the per-name
+  // cap (CAP) or the fund's margin cap (MARGIN); also a desk book whose caps were not measured,
+  // or whose overlay refused ("refused"). An approved override is blocked by MARGIN only. Every
+  // other check is reported and does not block. A client gates Approve on this, not on
+  // within_limits, and does not recompute it.
+  bool blocks_publish = 19;
+  repeated RiskBreach blockers = 20;
 }
 
 message RiskMultiplier {

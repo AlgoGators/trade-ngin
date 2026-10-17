@@ -38,6 +38,9 @@ const char* const kFlatSchema1Keys[] = {"var_limit",         "jump_risk_limit",
                                         "max_net_leverage",  "confidence_level",
                                         "lookback_period"};
 
+// D-78: the bounds on the overlay's limits a desk save may set.
+constexpr double kMaxRiskRatio = 10.0;
+constexpr int kMaxTrimContracts = 100;
 const char* const kCarverKeys[] = {"id",
                                    "type",
                                    "var_limit",
@@ -234,6 +237,32 @@ public:
                                               &c.max_gross_leverage, &c.max_net_leverage,
                                               &c.confidence_level, &c.lookback_period, overlay);
             if (ranges.is_error()) return forward(ranges);
+            // D-78 (HD 2026-10-16): every limit the desk can save is bounded, so no save can
+            // switch a limit off by making it huge (a per-name cap of 1000 once put 4.77x equity in
+            // one name). The risk limits at most kMaxRiskRatio times tau, one name at most the
+            // book's gross leverage limit, the trim at most kMaxTrimContracts a day.
+            if (overlay) {
+                const double rs[] = {c.r_max, c.r_jump_max, c.r_shock_max};
+                const char* keys[] = {"R_max", "R_jump_max", "R_shock_max"};
+                for (int k = 0; k < 3; ++k) {
+                    if (rs[k] > kMaxRiskRatio) {
+                        return err(path_ + "." + keys[k] + " must be at most " +
+                                   std::to_string(static_cast<int>(kMaxRiskRatio)) +
+                                   " (a ratio to tau), got " + val(m.at(keys[k])));
+                    }
+                }
+                if (c.per_name_cap > c.max_gross_leverage) {
+                    return err(path_ + ".per_name_cap must be at most max_gross_leverage (one name "
+                                       "cannot carry more than the whole book's gross limit), got " +
+                               val(m.at("per_name_cap")) + " against " +
+                               val(m.at("max_gross_leverage")));
+                }
+                if (c.trim_max > kMaxTrimContracts) {
+                    return err(path_ + ".trim_max must be at most " +
+                               std::to_string(kMaxTrimContracts) + " contracts, got " +
+                               val(m.at("trim_max")));
+                }
+            }
 
             // R7. The window is keyed on the bar timestamp and capped at `lookback_period`
             // distinct DATES (CarverRiskModule::on_bars, since T-6b commit 9); nothing reads this

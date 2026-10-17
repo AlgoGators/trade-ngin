@@ -29,7 +29,9 @@ DEFAULT_ENGINE_CWD = "/app"
 DEFAULT_LOCK_DIR = "/tmp/qt-locks"
 DEFAULT_APPROVE_URL_BASE = "https://algolens.algogators.com/qt/approve"
 DEFAULT_LOG_DIR = "/var/log/qt-engine"
-DEFAULT_CATCHUP_PORTFOLIOS = ("qt_conservative", "qt_conservative_model")
+# D-1: the model twin (qt_conservative_model) is no longer run; the desk portfolio's own system
+# book is the model's book it is compared with (D-3).
+DEFAULT_CATCHUP_PORTFOLIOS = ("qt_conservative",)
 # The data-driven run (catchup.py; issues #191 and #192): the dataset of ops.data_ready it waits for,
 # who gets the desk's review e-mail and where the desk is.
 DEFAULT_DATA_READY_DATASET = "futures_ohlcv_1d"

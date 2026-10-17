@@ -219,24 +219,44 @@ def test_staleness_tolerance_is_the_engines(tmp_path):
 
 # -- builds ahead of today (data reaching past today: the weekend chain) ----------------------------------------------------------------------------
 
-def test_friday_evening_builds_saturday_sunday_and_monday(env):
+def test_friday_evening_builds_only_saturday_and_each_weekend_day_waits(env):
+    """D-63 (decision 6): Friday's bars build Saturday; Saturday waits for the desk or its 10:00
+    fallback, with the alert, like a weekday; only then is Sunday built, and Sunday waits the
+    same way before Monday is built. No day is published ahead of its own day."""
     published_day(env, FRI)
     env.days.ready.append(ready(FRI, at(FRI, 20, 10)))
-    out = dict(env.make().run_pass())
-    assert calls(env) == [("model", DESK, "2026-10-10"), ("--fallback", DESK, "2026-10-10"),
-                          ("model", DESK, "2026-10-11"), ("--fallback", DESK, "2026-10-11"),
-                          ("model", DESK, "2026-10-12"),
-                          ("model", TWIN, "2026-10-10"), ("model", TWIN, "2026-10-11"),
-                          ("model", TWIN, "2026-10-12")]
-    rows = list(env.days.rows.values())
-    assert [r["requested_by"] for r in rows] == ["system:fallback-nontrading"] * 2
-    assert all("--send-now" not in argv for argv, _, _ in env.engine.calls)
+    sched = env.make(portfolios=(DESK,))
+    out = dict(sched.run_pass())
+    assert calls(env) == [("model", DESK, "2026-10-10")]
+    assert env.days.rows == {} and env.days.published_at(DESK_PID, SAT) is None
+    assert out[DESK].action == UP_TO_DATE and reviews(env) == []
+    env.clock.t = at(SAT, 9, 45)
+    out = dict(sched.run_pass())
+    assert out[DESK].action == WAIT_PUBLISH and out[DESK].date == SAT
+    env.clock.t = at(SAT, 10, 1)
+    sched.run_pass()
+    assert calls(env)[1:] == [("--fallback", DESK, "2026-10-10"), ("model", DESK, "2026-10-11")]
+    assert [r["requested_by"] for r in env.days.rows.values()] == ["system:fallback-10am"]
+    assert any(a.startswith(f"QT did not approve {DESK_PID} 2026-10-10") for a in alerts(env))
+    assert env.days.published_at(DESK_PID, SUN) is None      # Sunday waits for its own day
+    env.clock.t = at(SUN, 10, 1)
+    sched.run_pass()
+    assert calls(env)[3:] == [("--fallback", DESK, "2026-10-11"), ("model", DESK, "2026-10-12")]
+    assert any(a.startswith(f"QT did not approve {DESK_PID} 2026-10-11") for a in alerts(env))
+    assert all(r["requested_by"] != "system:fallback-nontrading"
+               for r in env.days.rows.values())
     assert env.days.published_at(DESK_PID, MON) is None        # waits for the desk
-    assert all(env.days.published_at(MODEL_PID, d) is None for d in (SAT, SUN, MON))
-    assert alerts(env) == [] and env.engine.mails == []
     assert [s for s, _ in reviews(env)] == [
         f"QT review: {DESK_PID} book for 2026-10-12 (bars of 2026-10-09)"]
-    assert out[DESK].action == UP_TO_DATE and out[TWIN].action == UP_TO_DATE
+
+
+def test_the_twin_still_builds_ahead(env):
+    published_day(env, FRI)
+    env.days.ready.append(ready(FRI, at(FRI, 20, 10)))
+    env.make(portfolios=(TWIN,)).run_pass()
+    assert calls(env) == [("model", TWIN, "2026-10-10"), ("model", TWIN, "2026-10-11"),
+                          ("model", TWIN, "2026-10-12")]
+    assert all(env.days.published_at(MODEL_PID, d) is None for d in (SAT, SUN, MON))
 
 
 def test_a_weekday_evening_builds_tomorrow(env):
@@ -266,7 +286,10 @@ def test_a_partial_pull_within_tolerance_builds(env):
     published_day(env, FRI)
     env.days.bars = {"ZN": THU}                              # Monday's run reads to Sunday: 3 days
     env.days.ready.append(ready(FRI, at(FRI, 20, 10), "partial", ("ZN",), loaded=35))
-    env.make(portfolios=(DESK,)).run_pass()
+    sched = env.make(portfolios=(DESK,))
+    for when in (at(FRI, 20, 30), at(SAT, 10, 1), at(SUN, 10, 1)):
+        env.clock.t = when
+        sched.run_pass()
     assert ("model", DESK, "2026-10-12") in calls(env)
     (_, body), = reviews(env)
     assert "ZN: last bar 2026-10-08" in body and "partial" in body
@@ -321,19 +344,20 @@ def test_an_engine_feed_hole_refusal_is_an_alert_and_retried(env):
 # -- rebuilds -------------------------------------------------------------------------------------
 
 def friday_evening(env):
+    """Friday's bars at 20:10, then the weekend as D-63 runs it: Saturday and Sunday each fall
+    back at 10:00, and Monday's books are built on Sunday at 10:01 (with the review e-mail)."""
     published_day(env, FRI)
     env.days.ready.append(ready(FRI, at(FRI, 20, 10)))
     env.engine.targets[MON] = {"ES": 2, "ZN": -1}
     sched = env.make()
-    sched.run_pass()
+    for when in (at(FRI, 20, 30), at(SAT, 10, 1), at(SUN, 10, 1)):
+        env.clock.t = when
+        sched.run_pass()
     return sched
 
 
 def sunday_repull(env, sched):
-    """Saturday and Sunday pass (their 09:30 sends), then Sunday's bars at 20:10."""
-    for day in (SAT, SUN):
-        env.clock.t = at(day, 9, 30)
-        sched.run_pass()
+    """Sunday's bars at 20:10, after the weekend's passes."""
     env.engine.calls.clear()
     env.days.ready.append(ready(SUN, at(SUN, 20, 10)))
     env.engine.targets[MON] = {"ES": 3, "ZN": -1}
@@ -355,26 +379,32 @@ def test_a_sunday_repull_rebuilds_monday_once(env):
     assert env.engine.calls == [] and len(reviews(env)) == 2
 
 
-def test_a_saturday_ready_row_rebuilds_monday(env):
+def test_a_saturday_ready_row_builds_monday_once_sunday_is_out(env):
     """CME crypto trades on Saturdays: a Saturday bar date still builds Monday (the books keep
-    the engine's calendar) and is one more rebuild trigger, like Sunday's."""
-    sched = friday_evening(env)
-    env.clock.t = at(SAT, 9, 30)
-    sched.run_pass()
-    env.engine.calls.clear()
+    the engine's calendar); Monday is built once Sunday is out, from the newest row."""
+    published_day(env, FRI)
+    env.days.ready.append(ready(FRI, at(FRI, 20, 10)))
+    sched = env.make(portfolios=(DESK,))
+    for when in (at(FRI, 20, 30), at(SAT, 10, 1)):
+        env.clock.t = when
+        sched.run_pass()
     env.days.ready.append(ready(SAT, at(SAT, 20, 5), loaded=2))
     env.clock.t = at(SAT, 20, 30)
+    env.engine.calls.clear()
     sched.run_pass()
-    assert calls(env) == [("model", DESK, "2026-10-12"), ("model", TWIN, "2026-10-12")]
-    assert reviews(env)[-1][0].endswith("(bars of 2026-10-10) - updated")
+    assert env.engine.calls == []                            # Sunday is not out yet
+    env.clock.t = at(SUN, 10, 1)
+    sched.run_pass()
+    assert ("model", DESK, "2026-10-12") in calls(env)
+    assert reviews(env)[-1][0].endswith("(bars of 2026-10-10)")
 
 
-def test_the_weekend_days_go_out_at_their_0930(env):
-    sched = friday_evening(env)
-    sunday_repull(env, sched)
+def test_the_weekend_days_fall_back_at_1000_and_are_sent_then(env):
+    friday_evening(env)
     assert {(p, d) for p, d in env.engine.mails} == {
         (DESK_PID, SAT), (DESK_PID, SUN), (MODEL_PID, SAT), (MODEL_PID, SUN)}
     assert env.days.published[(MODEL_PID, SAT)][2] == "model-only"
+    assert env.days.published[(DESK_PID, SAT)][2] == "fallback"
 
 
 def test_a_published_day_is_never_rebuilt(env):
@@ -552,33 +582,40 @@ def test_a_failed_row_still_alerts_in_the_data_ready_check(env):
 
 # -- the review e-mail ----------------------------------------------------------------------------
 
+def monday_evening(env, bars=None, status="complete", missing=(), loaded=36):
+    """Monday is done; Monday's bars at 20:10 build Tuesday (the clock at 20:30)."""
+    published_day(env, MON)
+    env.days.ready.append(ready(MON, at(MON, 20, 10), status, missing, loaded))
+    env.clock.t = at(MON, 20, 30)
+
+
 def test_the_review_email_is_built_once_and_says_everything(env):
-    published_day(env, FRI)
-    env.engine.targets[SAT] = env.engine.targets[SUN] = {"ES": 1, "CL": 2}
-    env.days.bars = {"ZN": THU}
-    env.days.ready.append(ready(FRI, at(FRI, 20, 10), "partial", ("ZN",), loaded=35))
-    env.engine.targets[MON] = {"ES": 3, "ZN": -1}
+    monday_evening(env, status="partial", missing=("ZN",), loaded=35)
+    env.days.positions[(DESK_PID, "qt", MON)] = {"ES": review_mail.Line(1),
+                                                 "CL": review_mail.Line(2)}
+    env.days.bars = {"ZN": FRI}
+    env.engine.targets[TUE] = {"ES": 3, "ZN": -1}
     sched = env.make(portfolios=(DESK,))
     sched.run_pass()
-    env.clock.t = at(FRI, 21, 0)
+    env.clock.t = at(MON, 21, 0)
     sched.run_pass()                                         # a restart or a later pass
     (subject, body), = reviews(env)
-    assert subject == f"QT review: {DESK_PID} book for 2026-10-12 (bars of 2026-10-09)"
-    assert "trading day <b>2026-10-12</b>" in body and "bars of <b>2026-10-09</b>" in body
-    assert "Held now (2026-10-11)" in body                   # Sunday: published Friday evening
+    assert subject == f"QT review: {DESK_PID} book for 2026-10-13 (bars of 2026-10-12)"
+    assert "trading day <b>2026-10-13</b>" in body and "bars of <b>2026-10-12</b>" in body
+    assert "Held now (2026-10-12)" in body
     assert ('<td>ES</td><td align="right">1</td><td align="right">3</td>'
             '<td align="right">+2</td>') in body
     assert ('<td>CL</td><td align="right">2</td><td align="right">&ndash;</td>'
             '<td align="right">-2</td>') in body
     assert '<td>ZN</td><td align="right">&ndash;</td><td align="right">-1</td>' in body
-    assert "ZN: last bar 2026-10-08" in body
+    assert "ZN: last bar 2026-10-09" in body
     assert "https://algolens.algogators.com/" in body
     assert review_mail.DEADLINE in body
     assert "Approve before 09:30 ET or the model book is sent at 10:00." in body
     assert "supersedes" not in body and "kept" not in body
     state = json.loads((env.logs / review_mail.STATE).read_text())
-    assert list(state) == [f"{DESK_PID}|2026-10-12|" + env.days.book_written_at(
-        DESK_PID, MON, "system").astimezone(UTC).isoformat()]
+    assert list(state) == [f"{DESK_PID}|2026-10-13|" + env.days.book_written_at(
+        DESK_PID, TUE, "system").astimezone(UTC).isoformat()]
 
 
 def test_review_email_rows_compare_the_held_book():
@@ -602,12 +639,11 @@ def test_review_email_rows_compare_the_held_book():
 
 
 def test_review_email_respects_qt_email_disabled(env):
-    published_day(env, FRI)
-    env.days.ready.append(ready(FRI, at(FRI, 20, 10)))
+    monday_evening(env)
     off = dataclasses.replace(env.settings, email_disabled=True)
     sched = env.make(portfolios=(DESK,), settings_=off)
     sched.run_pass()
-    env.clock.t = at(FRI, 21, 0)
+    env.clock.t = at(MON, 21, 0)
     sched.run_pass()
     assert env.sent == []
     logged = (env.logs / review_mail.BODY_LOG).read_text()
@@ -619,15 +655,13 @@ def test_review_email_respects_qt_email_disabled(env):
 
 
 def test_review_email_goes_to_qt_review_recipients(env):
-    published_day(env, FRI)
-    env.days.ready.append(ready(FRI, at(FRI, 20, 10)))
+    monday_evening(env)
     env.make(portfolios=(DESK,), review_recipients=("a@x", "b@x")).run_pass()
     assert [t for t, s, _ in env.sent if s.startswith("QT review")] == [["a@x", "b@x"]]
 
 
 def test_review_email_failure_alerts_and_retries(env):
-    published_day(env, FRI)
-    env.days.ready.append(ready(FRI, at(FRI, 20, 10)))
+    monday_evening(env)
     sched = env.make(portfolios=(DESK,))
     good = sched._sender
 
@@ -639,7 +673,7 @@ def test_review_email_failure_alerts_and_retries(env):
     out = dict(sched.run_pass())
     assert out[DESK].reason == "review_mail_failed"
     sched._sender = good
-    env.clock.t = at(FRI, 21, 0)
+    env.clock.t = at(MON, 21, 0)
     sched.run_pass()
     assert len(reviews(env)) == 1
 

@@ -437,7 +437,8 @@ jobs:
           path: summary.md
   image-generation:
     name: Image Generation
-    if: github.event_name == 'pull_request' || github.ref_name == 'prod' || github.ref_name == 'staging'
+    # D-61: a push to main builds and pushes a pinned image (main-<sha>) for deploys.
+    if: github.event_name == 'pull_request' || github.ref_name == 'main' || github.ref_name == 'prod' || github.ref_name == 'staging'
     permissions:
       contents: read
       packages: write
@@ -473,6 +474,13 @@ jobs:
 
             docker build -t "${REPO}:${TAG}" .
             docker push "${REPO}:${TAG}"
+
+          # D-61: main also gets main-<short sha>, the tag deploy/engine-rpc.compose.yml pins.
+            if [ "${{ github.event_name }}" == "push" ] && [ "${{ github.ref_name }}" == "main" ]; then
+              PIN="main-${GITHUB_SHA::8}"
+              docker tag "${REPO}:${TAG}" "${REPO}:${PIN}"
+              docker push "${REPO}:${PIN}"
+            fi
 
           # Tag as latest if prod push
             if [ "${{ github.event_name }}" == "push" ] && [ "${{ github.ref_name }}" == "prod" ]; then

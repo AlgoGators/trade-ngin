@@ -16,7 +16,10 @@
 # enough memory for one engine run.
 services:
   engine-rpc:
-    image: ghcr.io/algogators/trade-ngin:${TAG:-latest}
+    # D-61: a pinned image, never :latest (once the December 2025 trend image). TAG is the
+    # main-<sha> tag the CI pipeline pushes on every push to main; compose refuses to start
+    # without it.
+    image: ghcr.io/algogators/trade-ngin:${TAG:?set TAG to a pinned image tag (main-<sha>), never latest}
     container_name: engine-rpc
     command: rpc
     # tini as PID 1: reaps the engine and flock processes the server spawns (no zombies).
@@ -28,7 +31,7 @@ services:
     # QT_JOB_TIMEOUT_S, QT_STALE_GRACE_S, QT_REDRIVE_INTERVAL_S, QT_APPROVE_URL_BASE,
     # QT_EMAIL_DISABLED=1 (the only way the override link may land in a row's result).
     # Scheduler (model runs, the 09:30 send, the 10:00 fallback; contract C7):
-    # QT_CATCHUP_ENABLED (1), QT_CATCHUP_PORTFOLIOS (qt_conservative,qt_conservative_model),
+    # QT_CATCHUP_ENABLED (1), QT_CATCHUP_PORTFOLIOS (qt_conservative; the twin is retired, D-1),
     # QT_CATCHUP_WINDOW (06:30-22:00), QT_CATCHUP_EVERY_MIN (30), QT_CATCHUP_BUSY_WINDOW
     # (06:30-10:30), QT_CATCHUP_BUSY_EVERY_MIN (5), QT_CATCHUP_TODAY_NOT_BEFORE (06:45),
     # QT_MODEL_RETRY_MIN (15), QT_MODEL_ALERT_AT (08:30), QT_CATCHUP_LOCK_WAIT_S (600); New York
@@ -45,7 +48,8 @@ services:
     environment:
       # "vp=<email>,president=<email>": the override approvers (contract section 6); the
       # president also gets the catch-up alerts. Passed through from the shell or .env; without
-      # it override requests fail with a message and alerts are only logged.
+      # both the server does not start (D-39). deploy/qt_host_watchdog.py alerts from the host
+      # when this container is down.
       QT_APPROVERS: ${QT_APPROVERS:-}
       QT_LOG_DIR: /var/log/qt-engine
     volumes:

@@ -40,7 +40,7 @@ def test_rescind_clears_the_desk_approval_and_records_it(stub, agent, cstore, ru
     row = cstore.rows[70]
     assert row.status == "done", row.message
     assert row.result == {"rescinded": {"published_by": "desk@algogators.com",
-                                        "published_at": APPROVED_AT.isoformat()}}
+                                        "published_at": APPROVED_AT.isoformat(), "flow": None}}
     assert "rescinded" in row.message and "09:30" in row.message
     assert cstore.metadata[(PID, DAY)]["published_at"] is None
     assert cstore.metadata[(PID, DAY)]["publish_source"] is None
@@ -108,19 +108,66 @@ def test_rescind_refusals_change_nothing(stub, agent, cstore, setup, needle):
     assert (cstore.metadata.get((PID, DAY)) or {}) == before
 
 
-def test_only_the_approver_can_rescind(stub, agent, cstore):
+def approving_publish(cstore, flow=None, id=60):
+    """The done publish row that approved the day, with its C10 flow."""
+    cstore.add(make_row(id, "publish", status="done", payload={"flow": flow} if flow else {},
+                        result={"published": True, "published_at": APPROVED_AT.isoformat(),
+                                "publish_source": "desk"}))
+
+
+@pytest.mark.parametrize("flow", [None, "auto", "accept_c"])
+def test_anyone_on_qt_can_rescind_a_desk_approval(stub, agent, cstore, flow):
+    # Dom 2026-10-16: not only the approver; AlgoLens lets only the QT screen ask.
     approved(cstore, by="Desk@AlgoGators.com")
-    cstore.add(make_row(81, "rescind", requested_by="other@algogators.com"))
+    approving_publish(cstore, flow)
+    cstore.add(make_row(81, "rescind", requested_by="other.qt@algogators.com"))
     rescind(stub, 81)
     agent.wait()
     row = cstore.rows[81]
-    assert row.status == "refused" and "only they can rescind" in row.message, row.message
-    assert cstore.metadata[(PID, DAY)]["published_at"] == APPROVED_AT
-    # The approver, whatever the case of the e-mail.
-    cstore.add(make_row(82, "rescind", requested_by="desk@algogators.com"))
-    rescind(stub, 82)
+    assert row.status == "done", row.message
+    assert row.result["rescinded"]["flow"] == flow
+    assert cstore.metadata[(PID, DAY)]["published_at"] is None
+
+
+def test_only_the_vp_or_president_can_rescind_an_override_day(stub, agent, cstore):
+    approved(cstore, by="desk@algogators.com")
+    approving_publish(cstore, "override_b")
+    for id, who in ((81, "desk@algogators.com"), (82, "other.qt@algogators.com")):
+        cstore.add(make_row(id, "rescind", requested_by=who))
+        rescind(stub, id)
+        agent.wait()
+        row = cstore.rows[id]
+        assert row.status == "refused", row.message
+        assert "only the VP or the President can rescind it" in row.message
+        assert cstore.metadata[(PID, DAY)]["published_at"] == APPROVED_AT
+    approvers = dict(p.split("=") for p in agent.settings.approvers.split(","))
+    cstore.add(make_row(83, "rescind", requested_by=approvers["president"].upper()))
+    rescind(stub, 83)
     agent.wait()
-    assert cstore.rows[82].status == "done"
+    assert cstore.rows[83].status == "done", cstore.rows[83].message
+    assert cstore.rows[83].result["rescinded"]["flow"] == "override_b"
+
+
+def test_an_override_day_cannot_be_rescinded_with_no_approvers_set(stub, agent, cstore):
+    approved(cstore)
+    approving_publish(cstore, "override_b")
+    agent.dispatcher._settings = agent.settings.__class__(
+        **{**agent.settings.__dict__, "approvers": ""})
+    cstore.add(make_row(84, "rescind", requested_by="vp@algogators.com"))
+    rescind(stub, 84)
+    agent.wait()
+    assert cstore.rows[84].status == "refused"
+
+
+def test_the_newest_approval_decides_who_may_rescind(stub, agent, cstore):
+    # An override day rescinded by the VP, then approved again by the desk (C on a new save).
+    approved(cstore)
+    approving_publish(cstore, "override_b", id=60)
+    approving_publish(cstore, "accept_c", id=62)
+    cstore.add(make_row(85, "rescind", requested_by="other.qt@algogators.com"))
+    rescind(stub, 85)
+    agent.wait()
+    assert cstore.rows[85].status == "done", cstore.rows[85].message
 
 
 def test_rescind_waits_for_the_portfolio_lock_then_fails_untouched(stub, agent, cstore):

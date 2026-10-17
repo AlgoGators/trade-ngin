@@ -24,7 +24,9 @@ REQUEST = {
     "RequestOverride": desk_pb2.OverrideRequest,
     "RecordDecision": desk_pb2.DecisionRequest,
     "Publish": desk_pb2.PublishRequest,
+    "Rescind": desk_pb2.RescindRequest,
     "GetRunStatus": desk_pb2.RunStatusRequest,
+    "GetDeskRisk": desk_pb2.DeskRiskRequest,
 }
 
 

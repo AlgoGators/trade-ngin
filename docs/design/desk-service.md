@@ -12,7 +12,7 @@ version header check, health, call logs and shutdown. Before 2026-10-09 it ran a
 `proto/algogators/desk.proto`, package `algogators.desk`, API `desk`, version in the file's
 header block (`Version: 1.2.0`; 1.1.0 added RunStatus `publish_source` and `sent_at` for the
 daily cutoff, contract C7; 1.2.0 added Rescind, contract C8; 1.3.0 added GetDeskRisk, contract
-C9; 1.4.0 added its per-limit checks; 1.5.0 its multipliers and the C10 approval flows). Every call sends `x-algogators-api-version: desk=1.5.0` (any `1.x.y`
+C9; 1.4.0 added its per-limit checks; 1.5.0 its multipliers and the C10 approval flows; 1.6.0 the publish gate of decision 5). Every call sends `x-algogators-api-version: desk=1.6.0` (any `1.x.y`
 is accepted, so a 1.0.0 client still works; see `rpc.md`). The engine owns the file. AlgoLens vendors it byte for byte
 at a pinned trade-ngin commit and commits the stubs it generates.
 
@@ -24,7 +24,7 @@ release.
 |---|---|---|
 | `GetRunStatus` | n/a | Reads model-run state for one book and day |
 | `RunDesk` | `save` | Engine `--desk` |
-| `RequestOverride` | `override_request` | In Python: token, 48 h expiry, e-mail to `QT_APPROVERS` |
+| `RequestOverride` | `override_request` | In Python: token, expiring at 10:00 New York on the book date (D-13), e-mail to `QT_APPROVERS` |
 | `RecordDecision` | `override_decision` (its `parent_id` is the request) | Checks; rejection -> `done {"approved":false}`; approval -> engine `--override` |
 | `Publish` | `publish` (`audit_id = 0`: newest pending publish row for the day) | The desk's approval (C7): engine `--publish` before 09:30 New York, `--publish --send-now` from 09:30; refused from 10:00 or on a published day |
 | `grpc.health.v1.Health/Check` | n/a | Liveness, for `""` and `algogators.desk.DeskService` (no version header) |
@@ -216,7 +216,7 @@ date D, and builds the books of T, the next trading day after D on the engine's 
 | Step | When | What |
 |---|---|---|
 | gate | every build | `complete`, or `partial` with every missing symbol's last bar within `live.data_staleness_tolerance_days` of T-1; else alert `data_failed` / `data_stale` and build nothing. The engine's FEED_HOLE guard now refuses a future run date as well (`run_date_is_live`); a refusal alerts `refused` |
-| build ahead | T is after today (e.g. Saturday's run, after its 10:00 fallback, with weekend bars in), today is done (desk: published) and T has no book | model runs of each calendar day up to T; on the desk portfolio each day between today and T (not a trading day) is published at once with the model's book (`system:fallback-nontrading`, no alert; e-mailed at its own 09:30 like any day). The twin's days ahead of today stay unpublished until they are today |
+| build ahead | T is after today (e.g. Saturday's run, after its 10:00 fallback, with weekend bars in), today is done (desk: published) and T has no book | model runs of each calendar day up to T. On the desk portfolio (D-63) the chain stops at the first day after today that is not published: that day waits, once it is today, for the desk or its 10:00 fallback with the alert, like a weekday, and the build goes on after it (Monday's books are built on Sunday once Sunday is out). No day is published ahead (`system:fallback-nontrading` is no longer written). The twin's days ahead of today stay unpublished until they are today |
 | rebuild | T unpublished, its system book older than the row's `finished_at` | model run of T again (a re-pull). The desk's saved edits are kept by the engine (`QT_SEED kept`: system rebuilt, qt_proposal and qt not). A published T is never rebuilt |
 | review e-mail | desk portfolio, T built from the row, before T's 10:00, not yet mailed for this build | `QT_REVIEW_RECIPIENTS` via the portfolio's `email.json` SMTP: T, D, each symbol's new target against the last published day's book with the change, moved_by, missing symbols, desk edits kept, supersedes, the AlgoLens link and "Approve before 09:30 ET or the model book is sent at 10:00." Recorded in `$QT_LOG_DIR/qt-review-mail.json`; with `QT_EMAIL_DISABLED=1` the body goes to `qt-review-mail.log` |
 | today's run | today has no book, from `QT_CATCHUP_TODAY_NOT_BEFORE` | runs once a usable row exists for the previous trading day; before `QT_DATA_READY_ALERT_AT` (06:00) it waits quietly, from then on it alerts `data_not_ready` and waits; a failed or stale row alerts at once |
@@ -233,7 +233,7 @@ restores the schedule above exactly.
   `QT_CATCHUP_EVERY_MIN` (30) after. A pass holds `$QT_LOCK_DIR/qt-catchup.lock`; a second pass
   (the watchdog) skips while one runs.
 - **What.** For each config directory in `QT_CATCHUP_PORTFOLIOS`
-  (`qt_conservative,qt_conservative_model`) the steps of "The daily cutoff" above. `last` is the
+  (`qt_conservative`; the model twin is retired, D-1) the steps of "The daily cutoff" above. `last` is the
   newest date with a book in `trading.live_results` (`qt` on a desk-editable portfolio, `system`
   otherwise; a desk-editable portfolio with no qt book yet starts after its newest system day,
   ruling 27).
@@ -252,6 +252,13 @@ restores the schedule above exactly.
   `QT_EMAIL_DISABLED=1` or the SMTP settings are unusable; the log line says why). At most one
   alert per (portfolio, date, reason) per New York day (`$QT_LOG_DIR/qt-alerts.json`); a failed
   step is retried after 15 minutes. The `unpublished_reminder` is gone (C7).
+- **Missed sends (D-40).** A day published but never e-mailed before it passed is not sent
+  late; the president is alerted (`missed_send`), once a day for three days.
+- **From outside the container (D-39).** engine-rpc does not start unless `QT_APPROVERS` names
+  both the vp and the president. `deploy/qt_host_watchdog.py`, run by the host's cron every 5
+  minutes (`deploy/qt-engine.cron`), e-mails the president when the container is not running
+  or unhealthy, or when the scheduler's heartbeat is older than 15 minutes (06:30-10:30) or 75
+  minutes (to 22:00), at most once an hour per problem, and once when it recovers.
 - **Logs.** `$QT_LOG_DIR` (default `/var/log/qt-engine`, the host's
   `/home/ubuntu/qt-engine/logs`): `qt-catchup.log` (passes, decisions, alerts),
   `qt-engine-runs.log` (the full output of every model run), `qt-catchup.heartbeat` (the last

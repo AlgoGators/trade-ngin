@@ -217,7 +217,8 @@ def test_second_decision_after_a_done_one_is_refused(stub, agent, cstore, runner
     decision(cstore, 52, approved=False)
     reply = decide(stub, 52)
     assert reply.status == pb.COMMAND_STATUS_REFUSED
-    assert reply.message == "override request 50 was already decided (decision 51)"
+    assert reply.message == ("override request 50 was already decided (decision 51, done); its "
+                             "link works once: request the override again")
     agent.wait()
     assert len(runner.calls) == 1
 
@@ -232,13 +233,27 @@ def test_a_rejection_also_closes_the_request(stub, agent, cstore, runner):
     assert runner.calls == []
 
 
-def test_a_refused_decision_does_not_block_the_next(stub, agent, cstore, runner):
+def test_a_refused_decision_uses_the_link_up(stub, agent, cstore, runner):
+    # D-75: the e-mail says the link works once; a decision the engine (or the margin cap)
+    # refused closes the request, and a second decision would book the refused book again.
     requested(cstore)
     decision(cstore, 51, status="refused", message="earlier")
     decision(cstore, 52)
+    reply = decide(stub, 52)
+    assert reply.status == pb.COMMAND_STATUS_REFUSED
+    assert "(decision 51, refused); its link works once" in reply.message
+    agent.wait()
+    assert runner.calls == []
+
+
+def test_a_failed_decision_can_be_tried_again(stub, agent, cstore, runner):
+    # Failed = nothing was booked (the database could not be read, say): not a use of the link.
+    requested(cstore)
+    decision(cstore, 51, status="failed", message="the margin data could not be read")
+    decision(cstore, 52)
     assert decide(stub, 52).status == pb.COMMAND_STATUS_ACCEPTED
     agent.wait()
-    assert cstore.rows[52].status == "done"
+    assert len(runner.calls) == 1
 
 
 def test_concurrent_decisions_run_the_engine_once(agent, cstore, runner):
@@ -482,7 +497,7 @@ def test_connections_have_timeouts():
 
 def test_catchup_settings():
     s = catchup_settings({})
-    assert s.enabled and s.portfolios == ("qt_conservative", "qt_conservative_model")
+    assert s.enabled and s.portfolios == ("qt_conservative",)   # D-1: no twin
     assert (s.window_start, s.window_end, s.every_minutes) == (dt.time(6, 30), dt.time(22), 30)
     assert (s.busy_start, s.busy_end, s.busy_every_minutes) == (dt.time(6, 30), dt.time(10, 30), 5)
     assert s.today_not_before == dt.time(6, 45) and s.model_retry_minutes == 15

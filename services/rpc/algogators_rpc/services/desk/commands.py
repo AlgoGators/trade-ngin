@@ -53,7 +53,8 @@ from .command_store import (NOT_APPROVER, NOT_DESK, NOT_RUNNING, RESCINDED, SENT
                             CommandRow, CommandStore)
 from .config import CommandSettings
 from .jobs import Job, JobManager
-from .override_mail import ROLES, Sender, run_override_request, send_smtp
+from .override_mail import (ROLES, ApproverError, Sender, parse_approvers, run_override_request,
+                            send_smtp)
 from .portfolios import PortfolioConfigError, resolve_portfolio_dir
 from . import risk as rk
 
@@ -83,6 +84,16 @@ def flow_of(row: CommandRow) -> str:
     return flow if isinstance(flow, str) else ""
 
 
+# D-66: a publish row with this flow e-mails a day the desk approved without its e-mail.
+SEND_FLOW = "send"
+
+
+def email_wanted(row: CommandRow) -> bool:
+    """D-66: an approval e-mails the day unless its payload says {"email": false}."""
+    payload = row.payload if isinstance(row.payload, dict) else {}
+    return payload.get("email") is not False
+
+
 @dataclass(frozen=True)
 class Outcome:
     status: str  # accepted | done | refused | failed
@@ -94,8 +105,12 @@ class Dispatcher:
                  sender: Sender = send_smtp,
                  clock: Optional[Callable[[], dt.datetime]] = None,
                  lock_factory=None,
-                 risk_reader: Optional[Callable[[str, dt.date], Optional[rk.DeskRiskRow]]] = None):
+                 risk_reader: Optional[Callable[[str, dt.date], Optional[rk.DeskRiskRow]]] = None,
+                 margin_reader: Optional[Callable[[str, dt.date], rk.MarginInputs]] = None):
         self._store = store
+        # Each contract's margin and the day's equity (store.margin_inputs): the margin cap on a
+        # requested override, checked before it is e-mailed and before a decision books it.
+        self._margin_reader = margin_reader
         # The day's qt row of trading.live_results (store.desk_risk_row): what the C10 approval
         # compares B with and checks the limits on.
         self._risk_reader = risk_reader
@@ -278,7 +293,15 @@ class Dispatcher:
             result = claimed.result if isinstance(claimed.result, dict) else {}
             return self._finish(claimed, DONE, result,
                                 "already e-mailed; not sent again"), False
-        refused = self._published_refusal(claimed)
+        if claimed.kind == "publish" and flow_of(claimed) == SEND_FLOW:
+            portfolio_dir, refused = self._portfolio_dir(claimed)
+            if refused:
+                return refused, False
+            self._jobs.submit(Job(claimed.portfolio_id, claimed.id, claimed.kind,
+                                  lambda: self._run_send(claimed, portfolio_dir),
+                                  self._on_done(claimed.id)))
+            return Outcome(ACCEPTED, f"send {claimed.id} queued"), True
+        refused = self._published_refusal(claimed) or self._future_refusal(claimed)
         if refused:
             return refused, False
         mode, send_now = ENGINE_MODE.get(claimed.kind, ""), False
@@ -288,6 +311,15 @@ class Dispatcher:
                 return self._finish(claimed, REFUSED, None, why), False
             if mode == "publish" and flow_of(claimed):
                 return self._queue_flow(claimed)
+            if mode == "publish" and not self._approved_here(claimed):
+                portfolio_dir, refused = self._portfolio_dir(claimed)
+                if refused:
+                    return refused, False
+                self._jobs.submit(Job(claimed.portfolio_id, claimed.id, claimed.kind,
+                                      lambda: self._run_plain_publish(claimed, portfolio_dir),
+                                      self._on_done(claimed.id)))
+                return Outcome(ACCEPTED, f"publish {claimed.id} queued for the engine (--publish"
+                                         f"{' --send-now' if send_now else ''})"), True
         portfolio_dir, refused = self._portfolio_dir(claimed)
         if refused:
             return refused, False
@@ -324,6 +356,20 @@ class Dispatcher:
                             f"{row.portfolio_id} {row.date} was published at "
                             f"{published.isoformat()}; a published day is frozen")
 
+    def _future_refusal(self, row: CommandRow) -> Optional[Outcome]:
+        """A future day's book is not approved, by the desk or through an override (D-43): it
+        would freeze on prices its own morning run has not seen. The desk may still save edits
+        to it. The scheduler's fallback rows are its own."""
+        if row.kind not in ("publish", "override_request") or cutoff.is_fallback(row.requested_by):
+            return None
+        today = self._clock().astimezone(cutoff.zone()).date()
+        if row.date <= today:
+            return None
+        return self._finish(row, REFUSED, {"reason": "future_day"},
+                            f"{row.portfolio_id} {row.date} is a future day (today is {today} in "
+                            f"New York); its book can be approved, or an override requested, from "
+                            f"{row.date}")
+
     def _portfolio_dir(self, row: CommandRow) -> Tuple[str, Optional[Outcome]]:
         """(dir, None), or ("", the refusal already recorded on the row)."""
         try:
@@ -352,7 +398,7 @@ class Dispatcher:
             today = now.astimezone(cutoff.zone()).date()
             send = row.requested_by == cutoff.FALLBACK_10AM and row.date >= today
             return "fallback", send, ""
-        approved_here = isinstance(row.result, dict) and "published_at" in row.result
+        approved_here = self._approved_here(row)
         if not approved_here:
             published = self._store.published_at(row.portfolio_id, row.date)
             if published is not None:
@@ -361,7 +407,74 @@ class Dispatcher:
             created = row.created_at or now
             if cutoff.window(row.date, created) == cutoff.CLOSED:
                 return "", False, cutoff.deadline_message(row.date)
-        return "publish", cutoff.window(row.date, now) != cutoff.BEFORE_SEND, ""
+        return "publish", (cutoff.window(row.date, now) != cutoff.BEFORE_SEND
+                           and email_wanted(row)), ""
+
+    @staticmethod
+    def _approved_here(row: CommandRow) -> bool:
+        """A publish row that already approved the day (a re-run: its result carries
+        published_at); it goes on to its send with no new check."""
+        return isinstance(row.result, dict) and "published_at" in row.result
+
+    def _risk_report(self, row: CommandRow):
+        """(report, None), or (None, (status, result, message)) when the risk check cannot be
+        read: the approval fails closed (D-42) and may be retried."""
+        if self._risk_reader is None:
+            return None, (FAILED, None, "the risk check cannot be read here; try again")
+        try:
+            return rk.derive_desk_risk(self._risk_reader(row.portfolio_id, row.date)), None
+        except Exception as exc:  # StoreError and the like: retryable
+            return None, (FAILED, None, f"the risk check could not be read "
+                                        f"({type(exc).__name__}); try again")
+
+    @staticmethod
+    def _blocked(report, after_id=None):
+        """(status, result, message) when decision 5's gate blocks the day's book, else None."""
+        blockers = rk.publish_blockers(report)
+        if not blockers:
+            return None
+        if report.state == rk.INCOMPLETE:
+            return (REFUSED, {"reason": "incomplete_book", "over": [rk.INCOMPLETE],
+                              **({"after": after_id} if after_id is not None else {})},
+                    blockers[0].detail)
+        result = {"reason": "outside_limits", "over": [b.term for b in blockers],
+                  "refused": report.refused}
+        if after_id is not None:
+            result["after"] = after_id
+        who = ("" if report.state == rk.OVERRIDE else
+               ": ask the VP or President to approve it past the cap")
+        return (REFUSED, result,
+                f"the book is over a cap ({'; '.join(b.detail for b in blockers)})"
+                + (who if all(b.term in rk.OVERRIDABLE_CAPS for b in blockers) else
+                   "; the margin cap cannot be overridden" if any(
+                       b.term == "MARGIN" for b in blockers) else ""))
+
+    @staticmethod
+    def _override_booking(report):
+        """A plain publish of a book an override booked is refused: it is published only through
+        its own approval (override_b), once (decisions 10 and 21). After a rescind the desk saves
+        the book it wants, or asks for a new override; at 10:00 the model's book is sent."""
+        if report.state != rk.OVERRIDE:
+            return None
+        return (REFUSED, {"reason": "override_booking", "book_audit_id": report.audit_id},
+                "the day's book is the booking of an approved override; it can be published only "
+                "through that approval, once. Save the book you want to approve, or ask the VP "
+                "or President for a new override")
+
+    def _run_plain_publish(self, row: CommandRow, portfolio_dir: str) -> None:
+        """A plain publish (no flow) approves the day's book as it stands, on the portfolio's
+        queue so no save can change it between the check and the publish: decision 5's gate,
+        then the engine."""
+        send_now = (cutoff.window(row.date, self._clock()) != cutoff.BEFORE_SEND
+                    and email_wanted(row))
+        report, failed = self._risk_report(row)
+        refusal = failed or self._override_booking(report) or self._blocked(report)
+        if refusal is not None:
+            status, result, message = refusal
+            self._finish(row, status, result, message)
+            return
+        self._jobs.run_engine_now("publish", row.portfolio_id, portfolio_dir,
+                                  row.date.isoformat(), row.id, send_now)
 
     # -- the approval flows (contract C10) -----------------------------------------------------
 
@@ -399,7 +512,8 @@ class Dispatcher:
 
     def _run_flow(self, row: CommandRow, flow: str, after_id: int, portfolio_dir: str) -> None:
         """On the portfolio's queue, after the row it names: the checks, then the publish."""
-        send_now = cutoff.window(row.date, self._clock()) != cutoff.BEFORE_SEND
+        send_now = (cutoff.window(row.date, self._clock()) != cutoff.BEFORE_SEND
+                    and email_wanted(row))
         if isinstance(row.result, dict) and "published_at" in row.result:
             # A re-run of a row that already approved the day: on to its send.
             self._jobs.run_engine_now("publish", row.portfolio_id, portfolio_dir,
@@ -430,14 +544,26 @@ class Dispatcher:
             if not approved or after.payload.get("approved") is not True:
                 return (REFUSED, {"reason": "rejected", "after": after_id},
                         "the override for B was not approved; nothing was published")
-            return None
-        if self._risk_reader is None:
-            return (FAILED, None, "the risk check cannot be read here; try again")
-        try:
-            report = rk.derive_desk_risk(self._risk_reader(row.portfolio_id, row.date))
-        except Exception as exc:  # StoreError and the like: retryable
-            return (FAILED, None, f"the risk check could not be read ({type(exc).__name__}); "
-                                  "try again")
+        report, failed = self._risk_report(row)
+        if failed is not None:
+            return failed
+        if flow == "override_b":
+            used = [p for p in self._store.publishes_after(after_id)
+                    if p.id != row.id and p.status == DONE and flow_of(p) == "override_b"]
+            if used:
+                # One approval, one booking (decisions 10 and 21; D-84): after a rescind the
+                # approval is spent.
+                return (REFUSED, {"reason": "approval_used", "after": after_id,
+                                  "publish": used[0].id},
+                        f"the override approval (decision {after_id}) was already used by "
+                        f"publish {used[0].id}; any book but the model's needs a new override")
+            if report.audit_id != after_id or report.state != rk.OVERRIDE:
+                return (REFUSED, {"reason": "stale", "after": after_id,
+                                  "book_audit_id": report.audit_id},
+                        f"the day's book is no longer the booking of decision {after_id} (it is "
+                        f"{report.state} {report.audit_id}); nothing was published")
+            # The approval waives gross, net and per-name, never the margin cap (decision 10).
+            return self._blocked(report, after_id)
         if report.audit_id != after_id or report.state != rk.DESK:
             return (REFUSED, {"reason": "stale", "after": after_id,
                               "book_audit_id": report.audit_id},
@@ -446,31 +572,47 @@ class Dispatcher:
         differs = [{"symbol": s.symbol, "asked": s.asked, "given": s.given,
                     "moved_by": s.moved_by, "category": s.category}
                    for s in report.symbols if abs(s.asked - s.given) > 1e-9]
-        breaches = [b.term for b in report.breaches]
-        if flow == "auto":
-            if differs or not report.within_limits:
-                return (REFUSED, {"reason": "changed" if differs else "outside_limits",
-                                  "after": after_id, "differs": differs,
-                                  "within_limits": report.within_limits,
-                                  "breaches": breaches},
-                        (f"dynamic optimisation and the risk system changed "
-                         f"{len(differs)} position(s): approve the engine's book (C) or ask the "
-                         "VP or President to approve yours (B)") if differs else
-                        ("the positions are outside the risk limits "
-                         f"({', '.join(breaches)}): ask the VP or President to approve them"))
-            return None
-        # C itself over a limit: a check read over, or a term the stored book is still over
-        # (after rounding, or through a held position).
-        over = [c.term for c in report.checks if c.status == rk.OVER]
-        for term in rk.over_terms(report):
-            if term not in over:
-                over.append(term)
-        if over or report.refused:
-            return (REFUSED, {"reason": "outside_limits", "after": after_id, "over": over,
-                              "refused": report.refused},
-                    "the engine's book (C) is itself over a limit "
-                    f"({', '.join(over) or 'the overlay refused'}): ask the VP or President")
-        return None
+        if flow == "auto" and differs:
+            return (REFUSED, {"reason": "changed", "after": after_id, "differs": differs,
+                              "within_limits": report.within_limits,
+                              "breaches": [b.term for b in report.breaches]},
+                    f"dynamic optimisation and the risk system changed {len(differs)} "
+                    "position(s): approve the engine's book (C) or ask the VP or President to "
+                    "approve yours (B)")
+        # Decision 5: only C over a cap blocks; a bound limit and every other check is reported.
+        return self._blocked(report, after_id)
+
+    # -- the desk's Send (D-66) ----------------------------------------------------------------------
+
+    def _run_send(self, row: CommandRow, portfolio_dir: str) -> None:
+        """On the portfolio's queue: e-mail a day that is published and not yet sent, today
+        only (a past day's book must not reach anyone as today's, D-40), with the engine's
+        --send (the 09:30 send's command line, which sends once and records sent_at)."""
+        today = self._clock().astimezone(cutoff.zone()).date()
+        if row.date != today:
+            self._finish(row, REFUSED, {"reason": "not_today"},
+                         f"{row.date} is not today ({today} in New York): only today's book is "
+                         "e-mailed")
+            return
+        if self._store.published_at(row.portfolio_id, row.date) is None:
+            self._finish(row, REFUSED, {"reason": "unpublished"},
+                         f"{row.portfolio_id} {row.date} is not approved: approve it first")
+            return
+        sent = self._store.sent_at(row.portfolio_id, row.date)
+        if sent is not None:
+            self._finish(row, REFUSED, {"reason": "sent", "sent_at": sent.isoformat()},
+                         f"{row.portfolio_id} {row.date} was already e-mailed at "
+                         f"{sent.isoformat()}")
+            return
+        res = self._jobs.run_send_now(row.portfolio_id, portfolio_dir, row.date.isoformat())
+        sent = self._store.sent_at(row.portfolio_id, row.date)
+        if sent is not None:
+            self._finish(row, DONE, {"sent": True, "sent_at": sent.isoformat()},
+                         f"{row.date} e-mailed")
+            return
+        why = (res.error and f"cannot start the engine: {res.error}") or (
+            res.timed_out and "the send timed out") or f"the send exited {res.rc}"
+        self._finish(row, FAILED, None, f"{why}; nothing was e-mailed, try again")
 
     # -- rescind (contract C8) --------------------------------------------------------------------
 
@@ -499,7 +641,7 @@ class Dispatcher:
                     f"again (by {cutoff.SEND_AT:%H:%M} New York, or the model's book is sent at "
                     f"{cutoff.CUTOFF_AT:%H:%M})")
             res = self._store.rescind(row.id, row.portfolio_id, row.date, done,
-                                      row.requested_by)
+                                      row.requested_by, self._approver_emails())
         if res.outcome == RESCINDED:
             log.info("approval rescinded", extra={
                 "audit_id": row.id, "portfolio_id": row.portfolio_id, "date": str(row.date),
@@ -515,15 +657,55 @@ class Dispatcher:
                        f"{res.published_by or 'the engine'} (publish_source "
                        f"{res.publish_source or 'unknown'}), not approved by the desk; only the "
                        "desk's own approval can be rescinded"),
-            NOT_APPROVER: (f"{row.portfolio_id} {row.date} was approved by "
-                           f"{res.published_by}; only they can rescind their approval"),
+            NOT_APPROVER: (f"{row.portfolio_id} {row.date} was published through an override "
+                           "the VP or the President approved; only the VP or the President can "
+                           "rescind it"),
             SENT: (f"{row.portfolio_id} {row.date} was already e-mailed at "
                    f"{res.sent_at.isoformat() if res.sent_at else 'an unknown time'}; a sent "
                    "approval cannot be rescinded"),
         }[res.outcome]
         self._finish(row, REFUSED, None, why)
 
+    def _margin_check(self, row: CommandRow, request: CommandRow):
+        """(status, result, message) when the book an override request asks for is over the
+        fund's margin cap, or the cap cannot be measured (decision 10: no one approves past it);
+        None when it is within."""
+        positions = rk.proposal_positions(request.payload)
+        if positions is None:
+            return (REFUSED, {"reason": "no_proposal"},
+                    f"override request {request.id} carries no proposal snapshot; the margin cap "
+                    "(C11) cannot be checked")
+        if self._margin_reader is None:
+            return FAILED, None, "the margin cap cannot be checked here; try again"
+        try:
+            inputs = self._margin_reader(row.portfolio_id, row.date)
+        except Exception as exc:  # StoreError and the like: retryable
+            return (FAILED, None, f"the margin data could not be read ({type(exc).__name__}); "
+                                  "try again")
+        reading = rk.book_margin(positions, inputs)
+        why = rk.margin_refusal(reading, str(row.date))
+        if why is None:
+            return None
+        if reading.missing or reading.equity is None:
+            return REFUSED, {"reason": "margin_not_measured",
+                             "missing": list(reading.missing)}, why
+        return (REFUSED, {"reason": "outside_limits", "over": ["MARGIN"],
+                          "initial_margin": round(reading.initial_margin, 2),
+                          "equity": round(reading.equity, 2)}, why)
+
+    def _approver_emails(self) -> Tuple[str, ...]:
+        """The VP's and the President's addresses (QT_APPROVERS); () when it is not set, so an
+        override-published day cannot be rescinded by anyone."""
+        try:
+            return tuple(parse_approvers(self._settings.approvers).values())
+        except ApproverError:
+            return ()
+
     def _override_mail(self, row: CommandRow, portfolio_dir: str) -> None:
+        refusal = self._margin_check(row, row)
+        if refusal is not None:
+            self._finish(row, *refusal)
+            return
         out = run_override_request(row, portfolio_dir, self._settings, self._store,
                                    self._sender)
         self._finish(row, out.status, out.result, out.message)
@@ -536,6 +718,10 @@ class Dispatcher:
             return self._finish(row, REFUSED, None, why), False
         if row.payload.get("approved") is False:
             return self._finish(row, DONE, {"approved": False}, "override rejected"), False
+        parent = self._store.get_row(row.parent_id)
+        refusal = self._margin_check(row, parent) if parent is not None else None
+        if refusal is not None:
+            return self._finish(row, *refusal), False
         portfolio_dir, refused = self._portfolio_dir(row)
         if refused:
             return refused, False
@@ -567,9 +753,12 @@ class Dispatcher:
         for other in self._store.decisions_for(parent.id):
             if other.id == row.id:
                 continue
-            if other.status == "done":
-                return (f"override request {parent.id} was already decided "
-                        f"(decision {other.id})")
+            # The link works once (D-75): a refused decision uses it up too. A failed one
+            # (nothing was booked: try again) does not.
+            if other.status in (DONE, REFUSED):
+                return (f"override request {parent.id} was already decided (decision "
+                        f"{other.id}, {other.status}); its link works once: request the "
+                        "override again")
             if other.status == "running":
                 return (f"override request {parent.id} is being decided by decision {other.id}")
         published = self._store.published_at(row.portfolio_id, row.date)

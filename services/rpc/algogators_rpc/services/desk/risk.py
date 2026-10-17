@@ -24,6 +24,13 @@ The trading rules are reported but are not breaches: `sign_close` (a long is not
 or the reverse, in one day), `rounding`, `buffer`, `search` and `hold`. An approved override is
 reported with its breaches but does not block: the ask was approved past them (D4, D5).
 
+What blocks publishing is narrower (decision 5, HD 2026-10-16; Dom 2026-10-16): only the final
+book C over one of the caps in BLOCKING_CAPS (gross leverage, net leverage, the per-name cap and
+the fund's margin cap). Everything else, a bound limit, the covariance terms R/R_jump/R_shock, the
+trim and every trading rule, is reported and does not block. On an approved override the VP or
+President has approved the book past gross, net and per-name, never past the margin cap
+(decision 10). `publish_blockers` is that gate; every publish path uses it.
+
 Every check is also reported on its own, breach or not (`checks`, desk.proto 1.4.0): each risk
 limit with the stored book's reading and its max, as the engine measured them on the save
 (`desk.checks`, written since the 2026-10-14 engine). The labels, units and maxes are trade-ngin's;
@@ -44,6 +51,9 @@ RULE_STEPS = frozenset({"sign_close", "rounding", "buffer", "search", "hold"})
 RISK, RULE, NONE = "risk", "rule", "none"
 
 NO_BOOK, MODEL, DESK, OVERRIDE = "no_book", "model", "desk", "override"
+# A qt row with no book_source: a desk or override run cleared it and did not finish (the engine
+# refuses to publish it; the desk saves again, or the 10:00 fallback restores the model's book).
+INCOMPLETE = "incomplete"
 
 # What each overlay term limits, for the report.
 TERMS = {
@@ -57,6 +67,12 @@ TERMS = {
 # The carver module's limits the report lists, in order.
 LIMIT_KEYS = ("max_gross_leverage", "max_net_leverage", "R_max", "R_jump_max", "R_shock_max",
               "per_name_cap", "trim_max")
+
+
+# The caps whose breach by the final book blocks publishing (decision 5). An approved override
+# waives every one of them except MARGIN (decision 10).
+BLOCKING_CAPS = ("L_g", "L_n", "CAP", "MARGIN")
+OVERRIDABLE_CAPS = ("L_g", "L_n", "CAP")
 
 
 @dataclass(frozen=True)
@@ -191,6 +207,11 @@ def derive_desk_risk(row: Optional[DeskRiskRow],
     detail = row.risk_detail if isinstance(row.risk_detail, Mapping) else {}
     desk = detail.get("desk") if isinstance(detail.get("desk"), Mapping) else None
     source = (row.book_source or "").strip().lower()
+    if not source:
+        return DeskRiskReport(state=INCOMPLETE, checks=configured_checks(
+            limits, row.gross_leverage, row.net_leverage,
+            "the book is incomplete: a desk or override run did not finish writing it")
+            + (fund_cap_check(row),), within_limits=False, **readings)
     if desk is None or source not in (DESK, OVERRIDE):
         # The model's book: the engine's own run, inside its limits by construction.
         return DeskRiskReport(state=MODEL, checks=configured_checks(
@@ -455,3 +476,149 @@ def fund_cap_check(row: Optional[DeskRiskRow]) -> RiskCheck:
                      OVER if over else WITHIN,
                      ("initial margin exceeds the fund's equity" if over else
                       "the fund's equity after today's transaction costs"))
+
+
+def publish_blockers(report: DeskRiskReport) -> List[Breach]:
+    """What stops the day's book from being published (decision 5): the final book C over a cap
+    in BLOCKING_CAPS. [] when it may be published.
+
+    * An incomplete book (no book_source: a desk or override run did not finish) is blocked.
+    * The model's book (and no book) is never blocked here: the 10:00 fallback publishes it
+      regardless; a margin breach on it is reported by the checks.
+    * A desk book is blocked by any blocking cap over its max (read from the value, whatever label
+      the check carries), still over after rounding or through a held position, by a blocking cap
+      the engine did not measure, and by an overlay that refused (the caps of the held book were
+      not checked).
+    * An approved override is blocked only by the margin cap.
+    """
+    if report.state == INCOMPLETE:
+        return [Breach(INCOMPLETE, "the day's book is incomplete (a desk or override run did not "
+                                   "finish writing it); save again")]
+    if report.state not in (DESK, OVERRIDE):
+        return []
+    waived = OVERRIDABLE_CAPS if report.state == OVERRIDE else ()
+    out: List[Breach] = []
+    seen = set()
+
+    def add(term: str, detail: str) -> None:
+        if term in waived or term in seen:
+            return
+        seen.add(term)
+        out.append(Breach(term, detail))
+
+    by_term = {c.term: c for c in report.checks}
+    for term in BLOCKING_CAPS:
+        check = by_term.get(term)
+        if check is None or check.status == NOT_MEASURED or check.value is None:
+            add(term, f"{check.label if check else _describe(term)}: not measured on this book, "
+                      "so it cannot be shown to be within its cap")
+            continue
+        if check.status == OVER or (check.max is not None
+                                    and abs(check.value) > check.max + 1e-9):
+            add(term, f"{check.label}: {check.value:g} is over its cap of "
+                      f"{check.max:g}" if check.max is not None else check.detail)
+    for term in over_terms(report):
+        if term in BLOCKING_CAPS:
+            add(term, f"{_describe(term)}: the stored book is still over its cap")
+    if report.refused and report.state == DESK:
+        add("refused", "the overlay could not size the book; its caps were not checked")
+    return out
+
+
+# -- the margin cap on a requested book (decision 10, Dom 2026-10-16) ------------------------------
+#
+# An override asks for B exactly as the desk saved it, and no one may approve a book past the
+# fund's margin cap (C11). The engine refuses such a book when the approver decides, but by then
+# the day's qt book has been cleared; the request is checked first, from the margin data the
+# database holds (metadata.contract_metadata, "Overnight Initial Margin": the figure the engine's
+# InstrumentRegistry posts), so a request over the cap is refused before it is e-mailed and a
+# decision on one is refused before the engine runs.
+
+# The engine's registry remaps these roots on a continuous (".v.") symbol to the micro contract.
+_MICRO = {"ES": "MES", "YM": "MYM", "NQ": "MNQ"}
+
+
+def contract_root(symbol: str) -> str:
+    """The contract_metadata key of a book symbol, as InstrumentRegistry::get_instrument reads it:
+    the ".v.N" suffix stripped, and ES/YM/NQ continuous series remapped to the micro contract."""
+    root, dot, _ = symbol.partition(".v.")
+    return _MICRO.get(root, root) if dot else root
+
+
+@dataclass(frozen=True)
+class MarginInputs:
+    """What the cap is measured from: each contract's initial margin per contract (by
+    contract_root) and the fund's equity after today's costs (the day's qt row, else the model's)."""
+    margins: Mapping[str, float]
+    equity: Optional[float]
+
+
+@dataclass(frozen=True)
+class MarginReading:
+    initial_margin: Optional[float]
+    equity: Optional[float]
+    missing: Tuple[str, ...] = ()  # symbols with no margin on record
+
+    @property
+    def measured(self) -> bool:
+        return self.initial_margin is not None and self.equity is not None and not self.missing
+
+    @property
+    def over(self) -> bool:
+        return self.measured and self.initial_margin > self.equity + 0.005
+
+
+def book_margin(positions: Sequence[Tuple[str, float]], inputs: MarginInputs) -> MarginReading:
+    """Initial margin of a book given as (symbol, quantity) rows, one per sleeve: the account
+    posts margin on each symbol's net quantity (live/book_exposure.hpp), |Σ q| × initial margin."""
+    net: dict = {}
+    for symbol, qty in positions:
+        net[symbol] = net.get(symbol, 0.0) + float(qty)
+    total, missing = 0.0, []
+    for symbol, qty in sorted(net.items()):
+        if abs(qty) < 1e-12:
+            continue
+        per = inputs.margins.get(contract_root(symbol))
+        if per is None or not math.isfinite(per):
+            missing.append(symbol)
+            continue
+        total += abs(qty) * per
+    return MarginReading(total, inputs.equity, tuple(missing))
+
+
+def proposal_positions(payload: Any) -> Optional[List[Tuple[str, float]]]:
+    """The (symbol, quantity) rows of an override request's proposal snapshot (contract C1), None
+    when the payload carries none."""
+    rows = payload.get("proposal") if isinstance(payload, Mapping) else None
+    if not isinstance(rows, list):
+        return None
+    out: List[Tuple[str, float]] = []
+    for r in rows:
+        if not isinstance(r, Mapping) or not isinstance(r.get("symbol"), str):
+            return None
+        try:
+            out.append((r["symbol"], float(r.get("quantity") or 0.0)))
+        except (TypeError, ValueError):
+            return None
+    return out
+
+
+def _usd(x: float) -> str:
+    return f"${x:,.0f}"
+
+
+def margin_refusal(reading: MarginReading, date: str) -> Optional[str]:
+    """The refusal of a requested book over (or not measurable against) the margin cap, else
+    None."""
+    if reading.missing:
+        return (f"the margin cap (C11) cannot be checked: no initial margin on record for "
+                f"{', '.join(reading.missing)} (metadata.contract_metadata); nothing was sent")
+    if reading.equity is None:
+        return ("the margin cap (C11) cannot be checked: the fund's equity for "
+                f"{date} is not stored yet; try again once the day's book is built")
+    if reading.over:
+        return (f"the {date} book you asked for needs {_usd(reading.initial_margin)} of initial "
+                f"margin, more than the fund's equity of {_usd(reading.equity)}: the fund's hard "
+                "cap is 100% of equity (contract C11) and no one can approve past it. Save "
+                "positions within the cap")
+    return None

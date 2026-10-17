@@ -11,7 +11,7 @@ from algogators_rpc.client import versioned_channel
 from algogators_rpc.registry import Registry
 from algogators_rpc.server import build_server
 
-from algogators_rpc.services.desk.command_store import (NOT_APPROVER, NOT_DESK, NOT_RUNNING,
+from algogators_rpc.services.desk.command_store import (NOT_APPROVER, is_approver, NOT_DESK, NOT_RUNNING,
                                                         RESCINDED, SENT,
                                                         UNPUBLISHED, BookLine, CommandRow,
                                                         RescindResult)
@@ -19,6 +19,7 @@ from algogators_rpc.services.desk.commands import Dispatcher
 from algogators_rpc.services.desk.config import CommandSettings
 from algogators_rpc.services.desk.jobs import JobManager, RunResult
 from algogators_rpc.services.desk.service import build_service
+from algogators_rpc.services.desk.risk import MarginInputs
 from algogators_rpc.services.desk.store import RunFacts, StoreError
 
 UTC = dt.timezone.utc
@@ -59,9 +60,16 @@ def now():
     return dt.datetime.now(UTC)
 
 
+# An override request's proposal snapshot (contract C1): what the margin cap is checked on.
+PROPOSAL = [{"symbol": "ZN.v.0", "quantity": 10, "strategy_name": "TREND_FOLLOWING"}]
+MARGINS = {"ZN": 2500.0, "ES": 28000.0, "MES": 2900.0}
+EQUITY = 500_000.0
+
+
 def make_row(id, kind, **kw):
     base = dict(id=id, portfolio_id=PID, date=DAY, kind=kind, status="pending",
-                requested_by="desk@algogators.com", reason="test reason", payload={},
+                requested_by="desk@algogators.com", reason="test reason",
+                payload={"proposal": PROPOSAL} if kind == "override_request" else {},
                 created_at=PUBLISH_CREATED if kind == "publish" else now())
     base.update(kw)
     return CommandRow(**base)
@@ -134,14 +142,14 @@ class FakeCommandStore:
                       finished_at=now())
             return True
 
-    def record_mail(self, audit_id, token_hash, hours, result):
+    def record_mail(self, audit_id, token_hash, expires_at, result):
         self._check("record_mail")
         with self.lock:
             row = self.rows.get(audit_id)
             if row is None or row.status != "running":
                 return None
             return self._set(audit_id, token_hash=token_hash, result=result,
-                             token_expires_at=now() + dt.timedelta(hours=hours)).token_expires_at
+                             token_expires_at=expires_at).token_expires_at
 
     def running_rows(self):
         self._check("running_rows")
@@ -172,6 +180,17 @@ class FakeCommandStore:
             return [r for _, r in sorted(self.rows.items())
                     if r.kind == "override_decision" and r.parent_id == parent_id]
 
+    def sent_at(self, portfolio_id, date):
+        self._check("sent_at")
+        return (self.metadata.get((portfolio_id, date)) or {}).get("sent_at")
+
+    def publishes_after(self, after_id):
+        self._check("publishes_after")
+        with self.lock:
+            return [r for _, r in sorted(self.rows.items())
+                    if r.kind == "publish" and isinstance(r.payload, dict)
+                    and r.payload.get("after") == after_id]
+
     def published_at(self, portfolio_id, date):
         self._check("published_at")
         return self.published.get((portfolio_id, date))
@@ -187,7 +206,7 @@ class FakeCommandStore:
         self._check("books")
         return {k: dict(v) for k, v in self.book_data.items()}
 
-    def rescind(self, audit_id, portfolio_id, date, message, requested_by):
+    def rescind(self, audit_id, portfolio_id, date, message, requested_by, approvers=()):
         self._check("rescind")
         with self.lock:
             meta = self.metadata.get((portfolio_id, date)) or {}
@@ -198,8 +217,13 @@ class FakeCommandStore:
             by, at, source = meta["published_by"], meta["published_at"], meta.get("publish_source")
             if source != "desk":
                 return RescindResult(NOT_DESK, by, at, source)
-            if by.strip().lower() != requested_by.strip().lower():
-                return RescindResult(NOT_APPROVER, by, at, source)
+            approving = [r for r in self.rows.values()
+                         if (r.portfolio_id, r.date, r.kind, r.status) ==
+                         (portfolio_id, date, "publish", "done")
+                         and isinstance(r.result, dict) and "published_at" in r.result]
+            flow = (max(approving, key=lambda r: r.id).payload or {}).get("flow")                 if approving else None
+            if flow == "override_b" and not is_approver(requested_by, approvers):
+                return RescindResult(NOT_APPROVER, by, at, source, flow=flow)
             row = self.rows.get(audit_id)
             if row is None or row.status != "running":
                 return RescindResult(NOT_RUNNING)
@@ -207,8 +231,9 @@ class FakeCommandStore:
                                                        publish_source=None)
             self.published.pop((portfolio_id, date), None)
             self._set(audit_id, status="done", message=message, finished_at=now(),
-                      result={"rescinded": {"published_by": by, "published_at": at.isoformat()}})
-            return RescindResult(RESCINDED, by, at, source)
+                      result={"rescinded": {"published_by": by, "published_at": at.isoformat(),
+                                            "flow": flow}})
+            return RescindResult(RESCINDED, by, at, source, flow=flow)
 
 
 class FakeRunner:
@@ -285,11 +310,17 @@ class Agent:
         # The portfolio flock a rescind takes: held unless a test says another holder keeps it.
         self.lock_free = True
         self.locks = []
+        # The day's qt row the publish gate reads (decision 5); None = no book yet (never blocks).
+        self.book = None
+        # The margin data the override's cap reads (store.margin_inputs).
+        self.margin = MarginInputs(MARGINS, EQUITY)
         self.dispatcher = Dispatcher(cstore, self.jobs, settings,
+                                     margin_reader=lambda portfolio_id, date: self.margin,
                                      sender=lambda cfg, to, subject, body:
                                      self.sent.append((cfg, list(to), subject, body)),
                                      clock=lambda: self.now,
-                                     lock_factory=self._lock)
+                                     lock_factory=self._lock,
+                                     risk_reader=lambda portfolio_id, date: self.book)
 
     @contextlib.contextmanager
     def _lock(self, path, wait_s):

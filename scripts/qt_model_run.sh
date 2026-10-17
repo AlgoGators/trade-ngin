@@ -8,7 +8,7 @@
 # takes for its commands (QT_LOCK_DIR/<portfolio_id>.lock), so a model run never overlaps a desk
 # run of the same portfolio.
 #
-#   docker exec engine-rpc /app/scripts/qt_model_run.sh qt_conservative qt_conservative_model
+#   docker exec engine-rpc /app/scripts/qt_model_run.sh qt_conservative
 #
 # The model run never e-mails and publishes no day (ruling 15; contract C7: the desk approves by
 # 09:30, or the scheduler's 10:00 fallback publishes the model's book). Exit status: the worst of

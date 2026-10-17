@@ -212,6 +212,21 @@ class JobManager:
         return Job(portfolio_id, audit_id, kind,
                    lambda: self._run_engine(argv, portfolio_id, audit_id, mode), on_done)
 
+    def run_send_now(self, portfolio_id: str, portfolio_dir: str, date: str) -> RunResult:
+        """The engine's --send of a published day (the 09:30 send's command line), under the
+        portfolio's flock, from inside a job on the portfolio's queue (D-66's Send)."""
+        s = self._settings
+        lock = os.path.join(s.lock_dir, f"{portfolio_id}.lock")
+        argv = [s.flock, lock, s.engine_binary, "--send", "--portfolio-config", portfolio_dir,
+                "--date", date]
+        log.info("engine started", extra={"portfolio_id": portfolio_id, "mode": "send",
+                                          "argv": argv})
+        res = self._runner.run(argv, s.engine_cwd, s.job_timeout_s)
+        log.info("engine exited", extra={"portfolio_id": portfolio_id, "mode": "send",
+                                         "rc": res.rc, "timed_out": res.timed_out,
+                                         "stderr_tail": tail(res.stderr)})
+        return res
+
     def run_engine_now(self, mode: str, portfolio_id: str, portfolio_dir: str, date: str,
                        audit_id: int, send_now: bool = False) -> None:
         """Run the engine for a row from inside a job already on the portfolio's queue (the C10
