@@ -394,3 +394,26 @@ def test_an_override_approval_publishes_once(flow, cstore):
                                                       "publish": 92}
     assert "needs a new override" in row.message
     assert flow.modes() == [("91", "--override"), ("92", "--publish")]
+
+
+def test_the_gate_reads_the_portfolios_risk_json_like_get_desk_risk(flow, cstore, settings):
+    # N5: one gate. A desk row with no recorded checks is compared with risk.json's maxima,
+    # as GetDeskRisk does, so the blockers the desk service acts on are the ones AlgoLens shows.
+    import dataclasses
+    import pathlib
+
+    from conftest import PDIR
+
+    risk = pathlib.Path(settings.config_dir) / "portfolios" / PDIR / "risk.json"
+    risk.write_text(json.dumps({"modules": [{"type": "carver", "max_gross_leverage": 8.0,
+                                             "max_net_leverage": 6.0, "per_name_cap": 2.0}]}))
+    book = desk_book(80, [sym("ZN.v.0", 3, 3)], checks=False)
+    flow.book = dataclasses.replace(book, gross_leverage=9.5, net_leverage=1.0)
+
+    flow.approve(80, 81)
+
+    row = cstore.rows[81]
+    assert row.status == "refused"
+    assert "L_g" in row.result["over"]
+    gate = rk.publish_blockers(rk.derive_desk_risk(flow.book, rk.load_limits(str(risk.parent))))
+    assert [b.term for b in gate] == row.result["over"]

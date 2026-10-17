@@ -70,7 +70,7 @@ def make_row(id, kind, **kw):
     base = dict(id=id, portfolio_id=PID, date=DAY, kind=kind, status="pending",
                 requested_by="desk@algogators.com", reason="test reason",
                 payload={"proposal": PROPOSAL} if kind == "override_request" else {},
-                created_at=PUBLISH_CREATED if kind == "publish" else now())
+                created_at=PUBLISH_CREATED)
     base.update(kw)
     return CommandRow(**base)
 
