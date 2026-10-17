@@ -33,7 +33,10 @@ enum class Mode { MODEL, DESK, OVERRIDE, PUBLISH, FINALIZE_SYSTEM, FALLBACK, SEN
 
 std::string mode_name(Mode mode);
 
-/// Ruling 17: runs this binary (/proc/self/exe) with --finalize-system --portfolio-config <dir>
+/// D-49: this binary's absolute path, on Linux (/proc/self/exe) and macOS alike; "" if unknown.
+std::string self_exe_path();
+
+/// Ruling 17: runs this binary (self_exe_path()) with --finalize-system --portfolio-config <dir>
 /// --date <date> and returns its exit status (-1: it could not be started).
 int run_finalize_system(const std::string& portfolio_dir, const std::string& date);
 

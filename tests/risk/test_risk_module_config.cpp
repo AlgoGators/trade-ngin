@@ -935,3 +935,57 @@ TEST(TrackedPortfolioRiskAssignment, ANoneAssignmentConstructsAndAnEmptyListThro
     omitted.risk_modules.clear();
     EXPECT_THROW(PortfolioManager(omitted, "PM_OMITTED"), std::invalid_argument);
 }
+
+
+// ===== D-78: every overlay limit a desk save may set is bounded =====
+
+namespace {
+
+// The shipped futures template's carver module (config_template/portfolios/conservative), the
+// overlay's limits included; its reporting block mirrors it.
+nlohmann::json shipped_risk() {
+    std::filesystem::path root = std::filesystem::current_path();
+    while (!std::filesystem::exists(root / "config_template")) {
+        if (root == root.parent_path()) return nlohmann::json();
+        root = root.parent_path();
+    }
+    std::ifstream in(root / "config_template" / "portfolios" / "conservative" / "risk.json");
+    return nlohmann::json::parse(in);
+}
+
+std::string with_limit(const char* key, const nlohmann::json& value) {
+    nlohmann::json risk = shipped_risk();
+    for (auto& module : risk.at("modules")) {
+        if (module.value("type", "") == "carver") module[key] = value;
+    }
+    return parse_error(risk);
+}
+
+}  // namespace
+
+TEST(RiskSchemaParse, TheShippedOverlayLimitsAreWithinTheirBounds) {
+    ASSERT_FALSE(shipped_risk().is_null()) << "config_template not found";
+    EXPECT_EQ(parse_error(shipped_risk()), "");
+}
+
+TEST(RiskSchemaParse, D78ARiskLimitOf1000IsRefused) {
+    for (const char* key : {"R_max", "R_jump_max", "R_shock_max"}) {
+        const std::string e = with_limit(key, 1000);
+        EXPECT_NE(e.find(std::string(key) + " must be at most 10 (a ratio to tau), got 1000"),
+                  std::string::npos)
+            << key << ": " << e;
+        EXPECT_EQ(with_limit(key, 10), "") << key;
+    }
+}
+
+TEST(RiskSchemaParse, D78APerNameCapOf1000IsRefused) {
+    const std::string e = with_limit("per_name_cap", 1000);
+    EXPECT_NE(e.find("per_name_cap must be at most max_gross_leverage"), std::string::npos) << e;
+    EXPECT_EQ(with_limit("per_name_cap", 8.0), "");   // the template's gross limit
+}
+
+TEST(RiskSchemaParse, D78ATrimOf1000IsRefused) {
+    const std::string e = with_limit("trim_max", 1000);
+    EXPECT_NE(e.find("trim_max must be at most 100 contracts, got 1000"), std::string::npos) << e;
+    EXPECT_EQ(with_limit("trim_max", 100), "");
+}
