@@ -60,10 +60,13 @@ Monday, a holiday is skipped). Normally T is today, and today's model run is the
     failed, or a stale partial, is an alert and nothing is built
     when T is after today (data that reaches past today, e.g. Saturday's run after its 10:00
     fallback with Friday's or Sunday's bars in), the engine's day chain is every calendar day, so
-    the days between today and T are built in order; on the desk portfolio each of those
-    non-trading days is published at once with the model's book (system:fallback-nontrading; no
-    alert, e-mailed at its 09:30 like any day) so T can run (ruling 29); the twin's are published
-    model-only when they become today
+    the days between today and T are built in order. On the desk portfolio (D-63, decision 6)
+    every one of them waits like a weekday: the next day is built once today is published, and
+    the chain stops at the first day after today that is not published; that day, once it is
+    today, waits for the desk's approval or its own 10:00 fallback, with the alert, and the
+    chain goes on (ruling 29). So Monday's books are built on Sunday once Sunday is out. No day
+    is published ahead of its own day (system:fallback-nontrading is no longer written). The
+    twin's days are built ahead and published model-only when they become today
     T is (re)built once per data_ready.finished_at: a re-pull rebuilds it, unless T is published
     (frozen: never rebuilt). A desk portfolio whose day has the desk's saved edits keeps them: the
     engine's model run then rewrites only the system book and keeps qt_proposal and qt (QT_SEED
@@ -859,19 +862,15 @@ class CatchupScheduler:
             return None   # old data: today's own flow and the data-ready check cover it
         if info.desk_editable and target > today and self._store.published_at(pid, today) is None:
             return None   # ruling 29: today is approved (or falls back at 10:00) first
-        if info.desk_editable:
-            # The engine's chain is every calendar day and starts each from the PUBLISHED day
-            # before. The days between today and the target are not trading days: they go out
-            # with the model's book at once, no alert (the twin publishes its own when they
-            # become today).
-            d = today + dt.timedelta(days=1)
-            while d <= min(last, target - dt.timedelta(days=1)):
-                if self._store.published_at(pid, d) is None:
-                    return self._blocked(pid, d, FALLBACK) or Step(
-                        FALLBACK, d, FALLBACK_NONTRADING,
-                        f"{d} is not a trading day: published with the model's book so the books "
-                        f"of {target} can be built")
-                d += dt.timedelta(days=1)
+        if info.desk_editable and today < last < target \
+                and self._store.published_at(pid, last) is None:
+            # D-63 (decision 6): every day waits for the desk's approval or its own 10:00
+            # fallback, with the alert, weekends included. The engine's chain is every calendar
+            # day and starts each from the PUBLISHED day before, so the build stops at the first
+            # day after today that is not published yet; it goes on once that day, as today, is
+            # approved or falls back. (Before, such a day was published at once with the model's
+            # book, system:fallback-nontrading, with no desk window and no alert.)
+            return None
         if last < target:
             bad, _ = self._data_verdict(info, ready, target)
             if bad is not None:
