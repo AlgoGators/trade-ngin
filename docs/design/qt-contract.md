@@ -6,7 +6,7 @@ Status: binding for the 2026-10-09 build. The master document ("QT platform", 20
 
 | Piece | Where | Database | Notes |
 |---|---|---|---|
-| Live trading cron (`trade-ngin-trade-ngin-1`) | trade-ngin host | `algo_data` | **Never touched by QT work.** It runs the pre-stage-3 image at 09:30. |
+| Old live trading cron (`trade-ngin-trade-ngin-1`) | trade-ngin host | `algo_data` | **Never touched by QT work, and being retired (D-4, 2026-10-16).** It runs a pre-stage-3 image and still e-mails daily; `algo_data` is no longer used. Once the model book (`CONSERVATIVE_PORTFOLIO`) runs daily on `new_algo_data` with the current engine, this cron is stopped. |
 | `qt-engine` container (trade-ngin image built from main) | trade-ngin host, Docker network `qt` | `new_algo_data` | Container `engine-rpc` (network alias `desk-agent` for one release): the engine's gRPC server (`docs/design/rpc.md`, :50051, not published) with the desk service on it. The desk service also runs the QT model runs, the 09:30 send and the 10:00 fallback (the scheduler, C6 and C7); the host cron is only a watchdog. |
 | AlgoLens (edge, frontend, backend) | trade-ngin host, backend also on network `qt` | `new_algo_data` | The backend calls `engine-rpc:50051` (env `ENGINE_RPC_ADDR`). |
 
@@ -14,10 +14,10 @@ Status: binding for the 2026-10-09 build. The master document ("QT platform", 20
 
 | portfolio_id | Desk editing | Purpose |
 |---|---|---|
-| `QT_CONSERVATIVE_PORTFOLIO` | on | The desk's book. Runs the conservative strategy and capital. Its first day has no prior book (ruling 27). |
+| `QT_CONSERVATIVE_PORTFOLIO` | on | The desk's book (the QT book). Runs the conservative strategy and capital. It starts from the model book (`CONSERVATIVE_PORTFOLIO`): the model book's history up to S-1 is copied into it, and day S takes the model book's S-1 positions and equity (D-2, 2026-10-16; replaces ruling 27). |
 | `QT_CONSERVATIVE_MODEL_PORTFOLIO` | off | **Retired (D-1, 2026-10-16).** The model twin (ruling 19) is no longer run: not scheduled, not e-mailed, `strategy_registry.is_active = false`. Its rows stay. The desk's book is compared with the desk portfolio's own model book (`system`) instead (D-3). |
 
-AlgoLens groups the two with the `strategy_registry.portfolio_group` column, value `qt_conservative`. Desk editing is gated by `strategy_registry.desk_editable` (boolean).
+AlgoLens groups the QT portfolios with the `strategy_registry.portfolio_group` column, value `qt_conservative`; the desk's value is drawn as the QT book against its own model book (`system`, D-3). Desk editing is gated by `strategy_registry.desk_editable` (boolean).
 
 ## 3. Books (`portfolio_type`)
 
@@ -27,13 +27,13 @@ AlgoLens groups the two with the `strategy_registry.portfolio_group` column, val
 - **On a non-editable portfolio,** only `system` is written, and the run starts from `system`.
 - **Each book is finalised into its own rows** (ruling 17).
 
-## 4. Command log: `trading.position_overrides` (migration 023 rebuilds it; it has 0 rows today)
+## 4. Command log: `trading.position_overrides` (migration 023 rebuilt it; kind `rescind` since 029)
 
 ```sql
 id            bigserial primary key
 portfolio_id  text not null
 date          date not null                       -- the book date being edited/published
-kind          text not null check (kind in ('save','override_request','override_decision','publish'))
+kind          text not null check (kind in ('save','override_request','override_decision','publish','rescind'))
 status        text not null default 'pending' check (status in ('pending','running','done','refused','failed'))
 requested_by  text not null                       -- AlgoLens user email
 reason        text                                -- required (non-blank) for save and override_request
@@ -53,7 +53,7 @@ finished_at   timestamptz
 Constraints and indexes:
 - index (portfolio_id, date, kind)
 - a CHECK that `reason` is non-blank for `save` and `override_request`
-- a unique partial index allowing one `done` publish per (portfolio_id, date)
+- ~~a unique partial index allowing one `done` publish per (portfolio_id, date)~~: dropped by 029 (a rescinded approval leaves its row done, C8; a second approval of a published day is refused by `published_at`, C3)
 - 025 (C2): unique partial indexes for one `override_decision` per `parent_id` while pending, running or done; one open (pending or running) `publish` per (portfolio_id, date); one open `override_request` per (portfolio_id, date)
 
 **Who writes what:**

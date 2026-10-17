@@ -16,7 +16,10 @@
 # enough memory for one engine run.
 services:
   engine-rpc:
-    image: ghcr.io/algogators/trade-ngin:${TAG:-latest}
+    # D-61: a pinned image, never :latest (once the December 2025 trend image). TAG is the
+    # main-<sha> tag the CI pipeline pushes on every push to main; compose refuses to start
+    # without it.
+    image: ghcr.io/algogators/trade-ngin:${TAG:?set TAG to a pinned image tag (main-<sha>), never latest}
     container_name: engine-rpc
     command: rpc
     # tini as PID 1: reaps the engine and flock processes the server spawns (no zombies).
