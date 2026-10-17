@@ -34,6 +34,7 @@ from .jobs import JobManager
 from .override_mail import ApproverError, parse_approvers
 from .recovery import redrive
 from .servicer import DeskServicer
+from .settings_check import SettingsChecker
 from .store import PostgresRunStatusStore, RunStatusStore, StoreError
 
 log = logging.getLogger("desk.service")
@@ -46,7 +47,7 @@ CATCHUP_TICK_S = 60.0
 def build_service(store: RunStatusStore, dispatcher: Optional[Dispatcher] = None,
                   commands=None, redrive_interval_s: float = 60.0,
                   catchup: Optional[CatchupScheduler] = None,
-                  config_dir: Optional[str] = None) -> Service:
+                  config_dir: Optional[str] = None, settings_checker=None) -> Service:
     """The desk as a registry entry. Without `commands` (tests) it has no re-drive task;
     without `catchup` no scheduler."""
     tasks = []
@@ -62,7 +63,8 @@ def build_service(store: RunStatusStore, dispatcher: Optional[Dispatcher] = None
         api=API,
         version=API_VERSIONS[API],
         descriptor=desk_pb2.DESCRIPTOR.services_by_name["DeskService"],
-        servicer=DeskServicer(store, dispatcher, config_dir=config_dir),
+        servicer=DeskServicer(store, dispatcher, config_dir=config_dir,
+                              settings_checker=settings_checker),
         add_to_server=desk_pb2_grpc.add_DeskServiceServicer_to_server,
         background_tasks=tuple(tasks),
         legacy_names=(LEGACY_SERVICE_NAME,),
@@ -109,7 +111,8 @@ def register(registry: Registry, env: Mapping[str, str]) -> Service:
                                    settings.catchup, dispatcher=dispatcher)
     service = registry.register(build_service(
         store, dispatcher, commands, settings.commands.redrive_interval_s, catchup,
-        config_dir=settings.commands.config_dir))
+        config_dir=settings.commands.config_dir,
+        settings_checker=SettingsChecker(settings.commands)))
     log.info("desk service registered",
              extra={"db": settings.db.describe(),
                     "services": ("catch-up on: " + ",".join(settings.catchup.portfolios)

@@ -69,4 +69,38 @@ Result<LiveSettings> resolve_live_settings(
     return out;
 }
 
+Result<void> check_live_settings_overlay(const std::filesystem::path& config_base_path,
+                                         const std::string& portfolio_name,
+                                         const nlohmann::json& overrides) {
+    auto files = ConfigLoader::load(config_base_path, portfolio_name);
+    if (files.is_error()) {
+        return make_error<void>(files.error()->code(),
+                                std::string("the config files do not load: ") +
+                                    files.error()->what(),
+                                "LiveSettings");
+    }
+    const std::string portfolio_id = files.value().portfolio_id;
+    StrategyConfigRow row;
+    row.portfolio_id = portfolio_id;
+    row.version = 0;
+    row.overrides = overrides;
+    row.reason = "checked before saving (D-17)";
+    row.created_by = "qt_settings_check";
+    const Result<std::optional<StrategyConfigRow>> active(
+        std::optional<StrategyConfigRow>(std::move(row)));
+    auto resolved = resolve_live_settings(config_base_path, portfolio_name, portfolio_id, active);
+    if (resolved.is_error()) {
+        std::string why = resolved.error()->what();
+        const std::string prefix = "strategy_config version 0: ";
+        if (why.rfind(prefix, 0) == 0) why = why.substr(prefix.size());
+        return make_error<void>(resolved.error()->code(), why, "LiveSettings");
+    }
+    if (auto loop_keys = ConfigLoader::require_loop_keys(resolved.value().config);
+        loop_keys.is_error()) {
+        return make_error<void>(loop_keys.error()->code(), loop_keys.error()->what(),
+                                "LiveSettings");
+    }
+    return Result<void>();
+}
+
 }  // namespace trade_ngin
