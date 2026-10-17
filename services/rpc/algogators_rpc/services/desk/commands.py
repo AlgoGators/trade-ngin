@@ -727,6 +727,13 @@ class Dispatcher:
         except ApproverError:
             return ()
 
+    def _approver_for(self, role: str) -> str:
+        """The QT_APPROVERS address of `role` (vp or president), lower-cased; "" when unset."""
+        try:
+            return (parse_approvers(self._settings.approvers).get(role) or "").strip().lower()
+        except ApproverError:
+            return ""
+
     def _override_mail(self, row: CommandRow, portfolio_dir: str) -> None:
         refusal = self._margin_check(row, row)
         if refusal is not None:
@@ -769,6 +776,13 @@ class Dispatcher:
             return "approver_role must be vp or president"
         if row.requested_by.strip().lower() == parent.requested_by.strip().lower():
             return "the requester may not approve their own request"
+        # Only the VP or the President decides (D17): the decider must be the address
+        # QT_APPROVERS names for the role the row claims. AlgoLens checks this when it verifies
+        # the link; this holds for a row re-driven without it too.
+        approver = self._approver_for(row.approver_role)
+        if not approver or row.requested_by.strip().lower() != approver:
+            return (f"{row.requested_by.strip() or 'nobody'} is not the "
+                    f"{row.approver_role} named in QT_APPROVERS")
         if parent.token_expires_at is None:
             return f"override request {parent.id} has no approval token (its e-mail was never sent)"
         if parent.status != "done":

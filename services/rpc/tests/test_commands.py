@@ -482,3 +482,26 @@ def test_redrive_never_double_dispatches(agent, cstore, runner):
 def test_redrive_survives_a_store_error(agent, cstore):
     cstore.error = "database error (OperationalError)"
     assert redrive_pending(cstore, agent.dispatcher) == 0
+
+
+@pytest.mark.parametrize("by", [
+    "someone@algogators.com",   # not an approver at all
+    "pres@algogators.com",      # an approver, but not for the role the row claims (vp)
+])
+def test_only_the_approver_named_for_the_role_decides(stub, agent, cstore, runner, by):
+    # D17: the desk service checks the decider against QT_APPROVERS itself, so a decision row
+    # re-driven without AlgoLens's link check is still the VP's or the President's.
+    requested(cstore)
+    decision(cstore, by=by)
+    reply = decide(stub, 51)
+    assert reply.status == pb.COMMAND_STATUS_REFUSED
+    assert "is not the vp named in QT_APPROVERS" in cstore.rows[51].message
+    agent.wait()
+    assert runner.calls == []
+
+
+def test_the_named_approver_decides_whatever_the_case_of_the_address(stub, agent, cstore):
+    requested(cstore)
+    decision(cstore, by="  VP@AlgoGators.com ")
+    reply = decide(stub, 51)
+    assert reply.status == pb.COMMAND_STATUS_ACCEPTED, reply.message
