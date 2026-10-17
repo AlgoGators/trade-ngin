@@ -787,7 +787,8 @@ class Dispatcher:
             return f"override request {parent.id} has no approval token (its e-mail was never sent)"
         if parent.status != "done":
             return f"override request {parent.id} is {parent.status}, not done"
-        if row.created_at is None or parent.token_expires_at < row.created_at:
+        # The link is dead AT its expiry (10:00 on the book date, D-13), as AlgoLens holds it.
+        if row.created_at is None or parent.token_expires_at <= row.created_at:
             return f"the approval link of override request {parent.id} expired at " \
                    f"{parent.token_expires_at.isoformat()}"
         for other in self._store.decisions_for(parent.id):

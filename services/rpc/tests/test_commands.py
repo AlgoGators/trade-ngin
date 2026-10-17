@@ -366,6 +366,15 @@ def test_approval_runs_the_engine_with_the_decision_row(stub, agent, cstore, run
     assert cstore.rows[51].status == "done"
 
 
+def test_a_decision_at_the_expiry_itself_is_refused(stub, agent, cstore, runner):
+    # The link expires at 10:00:00 on the book date; a decision made at that instant is late,
+    # as AlgoLens holds it (<=).
+    requested(cstore, expires_in=dt.timedelta(0))
+    decision(cstore)
+    reply = decide(stub, 51)
+    assert reply.status == pb.COMMAND_STATUS_REFUSED and "expired" in reply.message
+
+
 def test_expired_link_refuses(stub, agent, cstore, runner):
     requested(cstore, expires_in=-dt.timedelta(minutes=1))
     decision(cstore)
