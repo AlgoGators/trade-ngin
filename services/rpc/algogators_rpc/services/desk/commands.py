@@ -55,7 +55,7 @@ from .config import CommandSettings
 from .jobs import Job, JobManager
 from .override_mail import (ROLES, ApproverError, Sender, parse_approvers, run_override_request,
                             send_smtp)
-from .portfolios import PortfolioConfigError, resolve_portfolio_dir
+from .portfolios import PortfolioConfigError, portfolios_root, resolve_portfolio_dir
 from . import risk as rk
 
 log = logging.getLogger("desk.commands")
@@ -301,7 +301,8 @@ class Dispatcher:
                                   lambda: self._run_send(claimed, portfolio_dir),
                                   self._on_done(claimed.id)))
             return Outcome(ACCEPTED, f"send {claimed.id} queued"), True
-        refused = self._published_refusal(claimed) or self._future_refusal(claimed)
+        refused = (self._published_refusal(claimed) or self._closed_refusal(claimed)
+                   or self._future_refusal(claimed))
         if refused:
             return refused, False
         mode, send_now = ENGINE_MODE.get(claimed.kind, ""), False
@@ -355,6 +356,20 @@ class Dispatcher:
         return self._finish(row, REFUSED, None,
                             f"{row.portfolio_id} {row.date} was published at "
                             f"{published.isoformat()}; a published day is frozen")
+
+    def _closed_refusal(self, row: CommandRow) -> Optional[Outcome]:
+        """From 10:00 New York on its date a day takes no save or override request, even while
+        its fallback has not published it yet (a late or failed fallback): the day can no longer
+        be approved, so nothing done to it would go out. AlgoLens refuses them too; this is the
+        engine side of the same rule (C7). A decision from 10:00 is refused by its link's
+        expiry, which is 10:00 on the book date (D-13)."""
+        if row.kind not in FROZEN_WHEN_PUBLISHED:
+            return None
+        # Judged, like an approval, by when the desk acted (the row's created_at).
+        if cutoff.window(row.date, row.created_at or self._clock()) != cutoff.CLOSED:
+            return None
+        return self._finish(row, REFUSED, {"reason": "past_cutoff"},
+                            f"{row.portfolio_id} {row.date}: {cutoff.deadline_message(row.date)}")
 
     def _future_refusal(self, row: CommandRow) -> Optional[Outcome]:
         """A future day's book is not approved, by the desk or through an override (D-43): it
@@ -422,10 +437,21 @@ class Dispatcher:
         if self._risk_reader is None:
             return None, (FAILED, None, "the risk check cannot be read here; try again")
         try:
-            return rk.derive_desk_risk(self._risk_reader(row.portfolio_id, row.date)), None
+            # The portfolio's risk.json limits, as GetDeskRisk reads them: one gate, the one
+            # AlgoLens shows (N5). Without them a desk row with no recorded checks would not
+            # compare L_g and L_n with a max here.
+            return rk.derive_desk_risk(self._risk_reader(row.portfolio_id, row.date),
+                                       self._limits(row.portfolio_id)), None
         except Exception as exc:  # StoreError and the like: retryable
             return None, (FAILED, None, f"the risk check could not be read "
                                         f"({type(exc).__name__}); try again")
+
+    def _limits(self, portfolio_id: str):
+        try:
+            name = resolve_portfolio_dir(self._settings.config_dir, portfolio_id)
+            return rk.load_limits(str(portfolios_root(self._settings.config_dir) / name))
+        except PortfolioConfigError:
+            return []
 
     @staticmethod
     def _blocked(report, after_id=None):

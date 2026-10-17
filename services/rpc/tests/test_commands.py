@@ -10,7 +10,7 @@ import time
 
 import pytest
 
-from conftest import PDIR, PID, BookLine, make_row, now, write_portfolio
+from conftest import PDIR, PID, BookLine, make_row, now, write_portfolio, PUBLISH_CREATED
 from algogators_rpc.services.desk.jobs import RunResult
 from algogators_rpc.log import JsonFormatter
 from algogators_rpc.services.desk.recovery import redrive_pending, sweep_pending
@@ -324,7 +324,7 @@ def test_override_kind_mismatch(stub, cstore):
 
 def requested(cstore, id=50, expires_in=dt.timedelta(hours=40), **kw):
     return cstore.add(make_row(id, "override_request", status="done", token_hash="ab" * 32,
-                               token_expires_at=now() + expires_in, **kw))
+                               token_expires_at=PUBLISH_CREATED + expires_in, **kw))
 
 
 def decision(cstore, id=51, parent=50, approved=True, by="vp@algogators.com", **kw):
