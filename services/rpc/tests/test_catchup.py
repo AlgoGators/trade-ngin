@@ -68,6 +68,10 @@ class Days:
     def sent_at(self, pid, day):
         return self.sent.get((pid, day))
 
+    def unsent_days(self, pid, since, before):
+        return sorted((d, by) for (p, d), (_, by, _) in self.published.items()
+                      if p == pid and since <= d < before and (p, d) not in self.sent)
+
     def book_written_at(self, pid, day, book):
         return self.books.get((pid, book), {}).get(day)
 
@@ -506,6 +510,28 @@ def test_a_past_approved_but_unsent_day_is_not_emailed(env):
     env.clock.t = at(FRI, 9, 30)
     env.make(portfolios=(DESK,)).run_pass()
     assert calls(env) == [("model", DESK, "2026-10-09", False)] and env.engine.mails == []
+    # D-40: it is not sent late, but it is no longer silent: the President is alerted, once a day.
+    assert f"QT alert: {DESK_PID} 2026-10-08 missed_send" in alerts(env)
+    env.make(portfolios=(DESK,)).run_pass()
+    assert alerts(env).count(f"QT alert: {DESK_PID} 2026-10-08 missed_send") == 1
+
+
+def test_a_missed_send_is_alerted_for_three_days_only(env):
+    # Thursday's send was missed; on Monday it is four days old, past MISSED_SEND_ALERT_DAYS.
+    approve(env, DESK_PID, THU, at(THU, 9))
+    env.days.write(DESK_PID, "qt", MON, at(MON, 7))
+    env.clock.t = at(MON, 9, 0)
+    env.make(portfolios=(DESK,)).run_pass()
+    assert not any("missed_send" in a for a in alerts(env))
+
+
+def test_no_missed_send_alert_with_email_disabled(env):
+    env.days.write(DESK_PID, "qt", THU, at(THU, 7))
+    approve(env, DESK_PID, THU, at(THU, 9))
+    env.clock.t = at(FRI, 9, 30)
+    settings = env.settings.__class__(**{**env.settings.__dict__, "email_disabled": True})
+    env.make(portfolios=(DESK,), settings_=settings).run_pass()
+    assert not any("missed_send" in a for a in alerts(env))
 
 
 def test_first_desk_day_starts_after_the_system_book(env):

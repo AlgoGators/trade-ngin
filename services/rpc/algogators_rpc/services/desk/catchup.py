@@ -23,6 +23,10 @@ A desk-editable portfolio (its day D: model run ~07:00, approve by 09:30, fallba
     today approved, not sent, >= 09:30  -> SEND today (engine --send: from the stored rows, once)
     otherwise                           -> wait for the desk's approval, or up to date
 
+After each pass (D-40): a day of the last MISSED_SEND_ALERT_DAYS that was published but never
+e-mailed before it passed (an approval whose 09:30 send did not happen) is not sent late; the
+President is alerted, once a day. A caught-up day is never e-mailed and was alerted already.
+
 The model twin (desk editing off) runs the same model runs; each day it writes is published at
 once as system:model-only (publish_source 'model-only') and, today, sent at 09:30 when its
 email.json names recipients. At QT_MODEL_ALERT_AT (08:30) a portfolio with no model book for
@@ -115,6 +119,8 @@ HEARTBEAT = "qt-catchup.heartbeat"
 SCHEDULER_LOCK = "qt-catchup.lock"
 # A pass never takes more than this many steps per portfolio (a sanity bound, not a policy).
 MAX_DAYS_PER_PASS = 62
+# D-40: how many past days a published day that was never e-mailed is alerted on.
+MISSED_SEND_ALERT_DAYS = 3
 # How far back the last bar of a symbol data-ngin reported missing is looked for.
 MISSING_LOOKBACK_DAYS = 60
 
@@ -179,6 +185,11 @@ class DayStore(Protocol):
         """{book: {symbol: Line}} of the system and qt books of the day."""
 
     def last_published_before(self, portfolio_id: str, date: dt.date) -> Optional[dt.date]: ...
+
+    def unsent_days(self, portfolio_id: str, since: dt.date,
+                    before: dt.date) -> List[Tuple[dt.date, str]]:
+        """(date, published_by) of each day in [since, before) that is published and was never
+        e-mailed (sent_at NULL on all its rows), oldest first."""
 
 
 class PostgresDayStore:
@@ -315,6 +326,16 @@ class PostgresDayStore:
     def last_published_before(self, portfolio_id, date):
         return self._one("SELECT max(date) FROM trading.live_run_metadata WHERE portfolio_id = %s "
                          "AND date < %s AND published_at IS NOT NULL", (portfolio_id, date))
+
+    def unsent_days(self, portfolio_id, since, before):
+        def q(cur):
+            cur.execute("SELECT date, COALESCE(max(published_by), '') "
+                        "FROM trading.live_run_metadata WHERE portfolio_id = %s "
+                        "AND date >= %s AND date < %s GROUP BY date "
+                        "HAVING max(published_at) IS NOT NULL AND max(sent_at) IS NULL "
+                        "ORDER BY date", (portfolio_id, since, before))
+            return [(r[0], r[1]) for r in cur.fetchall()]
+        return self._run(q)
 
 
 # -- logs, locks, alerts ----------------------------------------------------------------------
@@ -672,6 +693,7 @@ class CatchupScheduler:
                 step = result_step
                 break
         self._model_book_check(info)
+        self._missed_send_check(info)
         self._report(info, step)
         return step
 
@@ -1106,6 +1128,24 @@ class CatchupScheduler:
             res.timed_out and "the send timed out") or (
             f"the send exited {res.rc}" + (" without recording sent_at" if res.rc == 0 else ""))
         return Step(ALERT, day, "send_failed", f"{why}\n{detail}")
+
+    def _missed_send_check(self, info: PortfolioInfo) -> None:
+        """D-40: a day that was published (approved, or sent out by its fallback) but never
+        e-mailed by the time it became a past day is not sent late (a past day's book must not
+        reach the broker as today's); the President is alerted, on each of the
+        MISSED_SEND_ALERT_DAYS days after it. A caught-up day is never e-mailed by design and
+        was alerted when it was caught up; nothing is alerted while e-mail is off."""
+        if self._not_sendable(info):
+            return
+        today = self.local_now().date()
+        since = today - dt.timedelta(days=MISSED_SEND_ALERT_DAYS)
+        for day, by in self._store.unsent_days(info.portfolio_id, since, today):
+            if by == cutoff.FALLBACK_CATCHUP:
+                continue
+            self.alerter.alert(info.dir, info.portfolio_id, day, "missed_send",
+                               f"{info.portfolio_id} {day} was published ({by or 'unknown'}) "
+                               f"but its daily e-mail was never sent before the day passed: "
+                               "it is not sent late; send it by hand if it is still wanted")
 
     def _model_book_check(self, info: PortfolioInfo) -> None:
         """08:30: today has no model book yet -> alert the President."""
