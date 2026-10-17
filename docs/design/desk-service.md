@@ -24,7 +24,7 @@ release.
 |---|---|---|
 | `GetRunStatus` | n/a | Reads model-run state for one book and day |
 | `RunDesk` | `save` | Engine `--desk` |
-| `RequestOverride` | `override_request` | In Python: token, 48 h expiry, e-mail to `QT_APPROVERS` |
+| `RequestOverride` | `override_request` | In Python: token, expiring at 10:00 New York on the book date (D-13), e-mail to `QT_APPROVERS` |
 | `RecordDecision` | `override_decision` (its `parent_id` is the request) | Checks; rejection -> `done {"approved":false}`; approval -> engine `--override` |
 | `Publish` | `publish` (`audit_id = 0`: newest pending publish row for the day) | The desk's approval (C7): engine `--publish` before 09:30 New York, `--publish --send-now` from 09:30; refused from 10:00 or on a published day |
 | `grpc.health.v1.Health/Check` | n/a | Liveness, for `""` and `algogators.desk.DeskService` (no version header) |
@@ -252,6 +252,13 @@ restores the schedule above exactly.
   `QT_EMAIL_DISABLED=1` or the SMTP settings are unusable; the log line says why). At most one
   alert per (portfolio, date, reason) per New York day (`$QT_LOG_DIR/qt-alerts.json`); a failed
   step is retried after 15 minutes. The `unpublished_reminder` is gone (C7).
+- **Missed sends (D-40).** A day published but never e-mailed before it passed is not sent
+  late; the president is alerted (`missed_send`), once a day for three days.
+- **From outside the container (D-39).** engine-rpc does not start unless `QT_APPROVERS` names
+  both the vp and the president. `deploy/qt_host_watchdog.py`, run by the host's cron every 5
+  minutes (`deploy/qt-engine.cron`), e-mails the president when the container is not running
+  or unhealthy, or when the scheduler's heartbeat is older than 15 minutes (06:30-10:30) or 75
+  minutes (to 22:00), at most once an hour per problem, and once when it recovers.
 - **Logs.** `$QT_LOG_DIR` (default `/var/log/qt-engine`, the host's
   `/home/ubuntu/qt-engine/logs`): `qt-catchup.log` (passes, decisions, alerts),
   `qt-engine-runs.log` (the full output of every model run), `qt-catchup.heartbeat` (the last

@@ -45,7 +45,8 @@ services:
     environment:
       # "vp=<email>,president=<email>": the override approvers (contract section 6); the
       # president also gets the catch-up alerts. Passed through from the shell or .env; without
-      # it override requests fail with a message and alerts are only logged.
+      # both the server does not start (D-39). deploy/qt_host_watchdog.py alerts from the host
+      # when this container is down.
       QT_APPROVERS: ${QT_APPROVERS:-}
       QT_LOG_DIR: /var/log/qt-engine
     volumes:

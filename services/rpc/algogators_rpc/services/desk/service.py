@@ -29,8 +29,9 @@ from . import API, LEGACY_SERVICE_NAME
 from .catchup import CatchupScheduler, PostgresDayStore
 from .command_store import PostgresCommandStore
 from .commands import Dispatcher
-from .config import load_settings
+from .config import ConfigError, load_settings
 from .jobs import JobManager
+from .override_mail import ApproverError, parse_approvers
 from .recovery import redrive
 from .servicer import DeskServicer
 from .store import PostgresRunStatusStore, RunStatusStore
@@ -70,6 +71,12 @@ def build_service(store: RunStatusStore, dispatcher: Optional[Dispatcher] = None
 
 def register(registry: Registry, env: Mapping[str, str]) -> Service:
     settings = load_settings(env)  # ConfigError stops the server (ruling 24)
+    # D-39: with no approvers no override can be decided and every alert goes nowhere; the
+    # server does not start without both.
+    try:
+        parse_approvers(settings.commands.approvers)
+    except ApproverError as exc:
+        raise ConfigError(f"engine-rpc does not start without the approvers: {exc}") from None
     store = PostgresRunStatusStore(settings.db)
     commands = PostgresCommandStore(settings.db)
     jobs = JobManager(commands, settings.commands)
