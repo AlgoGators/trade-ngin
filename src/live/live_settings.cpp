@@ -6,6 +6,8 @@
 #include "trade_ngin/live/live_settings.hpp"
 
 #include "trade_ngin/core/logger.hpp"
+#include "trade_ngin/strategy/sleeve_config.hpp"
+#include "trade_ngin/strategy/trend_following.hpp"
 
 namespace trade_ngin {
 
@@ -95,10 +97,56 @@ Result<void> check_live_settings_overlay(const std::filesystem::path& config_bas
         if (why.rfind(prefix, 0) == 0) why = why.substr(prefix.size());
         return make_error<void>(resolved.error()->code(), why, "LiveSettings");
     }
-    if (auto loop_keys = ConfigLoader::require_loop_keys(resolved.value().config);
-        loop_keys.is_error()) {
+    const AppConfig& config = resolved.value().config;
+    if (auto loop_keys = ConfigLoader::require_loop_keys(config); loop_keys.is_error()) {
         return make_error<void>(loop_keys.error()->code(), loop_keys.error()->what(),
                                 "LiveSettings");
+    }
+    // The trend sleeves' own checks, run when a live run builds them (trend_following.cpp): each
+    // sleeve enabled for live, its config read as the runner reads it (the required keys, the
+    // EMA pairs; the equity slow rule on the first sleeve). Without them a change such as a
+    // risk_target of 1.5 passes the config checks and stops the run at strategy start-up.
+    if (config.strategies_config.is_object()) {
+        bool first = true;
+        for (const auto& [name, def] : config.strategies_config.items()) {
+            if (!def.is_object() || !def.value("enabled_live", false)) continue;
+            const std::string type = def.value("type", "TrendFollowingStrategy");
+            if (type != "TrendFollowingStrategy" && type != "TrendFollowingFastStrategy") {
+                first = false;
+                continue;
+            }
+            TrendFollowingConfig trend = type == "TrendFollowingFastStrategy"
+                                             ? fast_trend_following_config()
+                                             : TrendFollowingConfig{};
+            if (auto keys = read_required_sleeve_keys(name, def, trend); keys.is_error()) {
+                return make_error<void>(keys.error()->code(), keys.error()->what(), "LiveSettings");
+            }
+            if (def.contains("config") && def["config"].is_object() &&
+                def["config"].contains("ema_windows")) {
+                trend.ema_windows.clear();
+                for (const auto& window : def["config"]["ema_windows"]) {
+                    if (!window.is_array() || window.size() != 2 || !window[0].is_number_integer() ||
+                        !window[1].is_number_integer()) {
+                        return make_error<void>(ErrorCode::INVALID_ARGUMENT,
+                                                "strategies." + name +
+                                                    ".config.ema_windows must hold [fast, slow] "
+                                                    "pairs of whole numbers",
+                                                "LiveSettings");
+                    }
+                    trend.ema_windows.push_back({window[0].get<int>(), window[1].get<int>()});
+                }
+            }
+            if (first) {
+                trend.equity_slow_symbols = config.equity_slow_rule.symbols;
+                trend.equity_slow_pairs = config.equity_slow_rule.pairs;
+            }
+            first = false;
+            if (auto valid = TrendFollowingStrategy::validate_trend_config(trend); valid.is_error()) {
+                return make_error<void>(valid.error()->code(),
+                                        "strategies." + name + ": " + valid.error()->what(),
+                                        "LiveSettings");
+            }
+        }
     }
     return Result<void>();
 }

@@ -92,6 +92,21 @@ TEST(LiveSettingsCheck, ALimitOutOfItsBoundsIsRefusedWithTheRunsReason) {
     EXPECT_EQ(why.find("strategy_config version 0"), std::string::npos) << why;
 }
 
+TEST(LiveSettingsCheck, ASleeveSettingAStrategyRefusesIsRefusedBeforeItIsSaved) {
+    // Seen in the simulator: risk_target 1.5 passed the config checks and stopped the model
+    // run at strategy start-up ("Risk target must be between 0 and 1").
+    if (tmpl().empty()) GTEST_SKIP() << "config_template not found";
+    auto sleeve = [](const char* key, const Json& value) {
+        Json overrides;
+        overrides["strategies"]["TREND_FOLLOWING"]["config"][key] = value;
+        return overrides;
+    };
+    const std::string why = refusal(sleeve("risk_target", 1.5));
+    EXPECT_NE(why.find("Risk target must be between 0 and 1"), std::string::npos) << why;
+    EXPECT_EQ(refusal(sleeve("risk_target", 0.18)), "");
+    EXPECT_NE(refusal(sleeve("ema_windows", Json::array({Json::array({3, 9})}))), "");
+}
+
 TEST(LiveSettingsCheck, AnUnknownKeyAndAProtectedSectionAreRefused) {
     if (tmpl().empty()) GTEST_SKIP() << "config_template not found";
     EXPECT_NE(refusal(Json{{"risk", {{"no_such_limit", 1}}}}), "");
