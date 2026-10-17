@@ -233,7 +233,7 @@ restores the schedule above exactly.
   `QT_CATCHUP_EVERY_MIN` (30) after. A pass holds `$QT_LOCK_DIR/qt-catchup.lock`; a second pass
   (the watchdog) skips while one runs.
 - **What.** For each config directory in `QT_CATCHUP_PORTFOLIOS`
-  (`qt_conservative,qt_conservative_model`) the steps of "The daily cutoff" above. `last` is the
+  (`qt_conservative`; the model twin is retired, D-1) the steps of "The daily cutoff" above. `last` is the
   newest date with a book in `trading.live_results` (`qt` on a desk-editable portfolio, `system`
   otherwise; a desk-editable portfolio with no qt book yet starts after its newest system day,
   ruling 27).

@@ -15,7 +15,7 @@ Status: binding for the 2026-10-09 build. The master document ("QT platform", 20
 | portfolio_id | Desk editing | Purpose |
 |---|---|---|
 | `QT_CONSERVATIVE_PORTFOLIO` | on | The desk's book. Runs the conservative strategy and capital. Its first day has no prior book (ruling 27). |
-| `QT_CONSERVATIVE_MODEL_PORTFOLIO` | off | The untouched model twin (ruling 19). Same strategy and capital, run by the same cron. It never gets qt_proposal rows. |
+| `QT_CONSERVATIVE_MODEL_PORTFOLIO` | off | **Retired (D-1, 2026-10-16).** The model twin (ruling 19) is no longer run: not scheduled, not e-mailed, `strategy_registry.is_active = false`. Its rows stay. The desk's book is compared with the desk portfolio's own model book (`system`) instead (D-3). |
 
 AlgoLens groups the two with the `strategy_registry.portfolio_group` column, value `qt_conservative`. Desk editing is gated by `strategy_registry.desk_editable` (boolean).
 

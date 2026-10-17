@@ -497,7 +497,7 @@ def test_connections_have_timeouts():
 
 def test_catchup_settings():
     s = catchup_settings({})
-    assert s.enabled and s.portfolios == ("qt_conservative", "qt_conservative_model")
+    assert s.enabled and s.portfolios == ("qt_conservative",)   # D-1: no twin
     assert (s.window_start, s.window_end, s.every_minutes) == (dt.time(6, 30), dt.time(22), 30)
     assert (s.busy_start, s.busy_end, s.busy_every_minutes) == (dt.time(6, 30), dt.time(10, 30), 5)
     assert s.today_not_before == dt.time(6, 45) and s.model_retry_minutes == 15

@@ -28,7 +28,7 @@ services:
     # QT_JOB_TIMEOUT_S, QT_STALE_GRACE_S, QT_REDRIVE_INTERVAL_S, QT_APPROVE_URL_BASE,
     # QT_EMAIL_DISABLED=1 (the only way the override link may land in a row's result).
     # Scheduler (model runs, the 09:30 send, the 10:00 fallback; contract C7):
-    # QT_CATCHUP_ENABLED (1), QT_CATCHUP_PORTFOLIOS (qt_conservative,qt_conservative_model),
+    # QT_CATCHUP_ENABLED (1), QT_CATCHUP_PORTFOLIOS (qt_conservative; the twin is retired, D-1),
     # QT_CATCHUP_WINDOW (06:30-22:00), QT_CATCHUP_EVERY_MIN (30), QT_CATCHUP_BUSY_WINDOW
     # (06:30-10:30), QT_CATCHUP_BUSY_EVERY_MIN (5), QT_CATCHUP_TODAY_NOT_BEFORE (06:45),
     # QT_MODEL_RETRY_MIN (15), QT_MODEL_ALERT_AT (08:30), QT_CATCHUP_LOCK_WAIT_S (600); New York
