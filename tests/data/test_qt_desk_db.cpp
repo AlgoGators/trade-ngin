@@ -141,6 +141,15 @@ protected:
             ") RETURNING id");
         return std::stol(id);
     }
+    // A command row pressed at `created` (D-70: a desk approval counts by its created_at).
+    long command_at(const std::string& kind, const std::string& created) {
+        const std::string id = scalar(
+            "INSERT INTO trading.position_overrides (portfolio_id, date, kind, requested_by, "
+            "reason, payload, created_at) VALUES (" + lit(pid_) + ", " + lit(kDate) + ", " +
+            lit(kind) + ", 'desk@x.org', 'probe', '{}'::jsonb, " + lit(created) +
+            "::timestamptz) RETURNING id");
+        return std::stol(id);
+    }
     void move(long id, const std::string& status) {
         scalar("UPDATE trading.position_overrides SET status = " + lit(status) +
                " WHERE id = " + std::to_string(id) + " RETURNING id");
@@ -331,7 +340,19 @@ TEST_F(QtDeskDb, AnApprovalFreezesTheDayOnceAndMarksItsRow) {
     ASSERT_TRUE(none.is_ok()) << none.error()->what();
     EXPECT_TRUE(none.value().published_at.empty());
 
-    const long pub = command("publish");
+    // D-70: an approval pressed at 10:00 New York or later approves nothing, whoever runs it.
+    const long too_late = command_at("publish", std::string(kDate) + " 10:00 America/New_York");
+    move(too_late, "running");
+    auto refused = qt::approve_day(*db_, too_late, pid_, kSid, kDate, "desk@x.org",
+                                   qt::kSourceDesk);
+    ASSERT_TRUE(refused.is_error());
+    EXPECT_NE(std::string(refused.error()->what()).find("at or after 10:00 New York"),
+              std::string::npos);
+    EXPECT_TRUE(qt::publish_state(*db_, pid_, kSid, kDate).value().published_at.empty());
+    ASSERT_TRUE(
+        qt::finish_audit_row(*db_, too_late, "refused", nlohmann::json::object(), "x").is_ok());
+
+    const long pub = command_at("publish", std::string(kDate) + " 09:59:59 America/New_York");
     move(pub, "running");
     auto at = qt::approve_day(*db_, pub, pid_, kSid, kDate, "desk@x.org", qt::kSourceDesk);
     ASSERT_TRUE(at.is_ok()) << at.error()->what();

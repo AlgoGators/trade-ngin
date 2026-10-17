@@ -935,8 +935,14 @@ Result<std::string> approve_day(PostgresDatabase& db, long row_id, const std::st
                                        "QtDesk");
     }
     const std::string id = std::to_string(row_id);
+    // D-70: a desk approval counts by when Approve was pressed (the row's created_at), and none
+    // pressed at or after 10:00 New York on the book date approves the day, whoever runs it.
+    const bool desk = source == kSourceDesk;
+    const std::string in_time = desk ? " AND created_at < ((DATE " + sql_literal(date) +
+                                           " + TIME '10:00') AT TIME ZONE 'America/New_York')"
+                                     : std::string();
     const std::string open_row = "(SELECT 1 FROM trading.position_overrides WHERE id = " + id +
-                                 " AND status IN ('pending', 'running'))";
+                                 " AND status IN ('pending', 'running')" + in_time + ")";
     auto rows = query_rows(
         db, "WITH m AS (UPDATE trading.live_run_metadata SET published_by = " +
                 sql_literal(published_by) + ", published_at = now(), publish_source = " +
@@ -959,7 +965,11 @@ Result<std::string> approve_day(PostgresDatabase& db, long row_id, const std::st
             ErrorCode::DATABASE_ERROR,
             portfolio_id + " " + date +
                 " was not approved: its live_run_metadata row is missing or already published" +
-                (row_id > 0 ? ", or command row " + id + " is not open" : std::string()),
+                (row_id > 0 ? ", or command row " + id + " is not open" +
+                                  (desk ? " or was created at or after 10:00 New York on " +
+                                              date + " (the approval cutoff, contract C7)"
+                                        : std::string())
+                            : std::string()),
             "QtDesk");
     }
     return Result<std::string>(cell(rows.value()[0][1]));
