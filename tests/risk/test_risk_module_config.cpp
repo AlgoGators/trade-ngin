@@ -968,24 +968,30 @@ TEST(RiskSchemaParse, TheShippedOverlayLimitsAreWithinTheirBounds) {
     EXPECT_EQ(parse_error(shipped_risk()), "");
 }
 
-TEST(RiskSchemaParse, D78ARiskLimitOf1000IsRefused) {
-    for (const char* key : {"R_max", "R_jump_max", "R_shock_max"}) {
-        const std::string e = with_limit(key, 1000);
-        EXPECT_NE(e.find(std::string(key) + " must be at most 10 (a ratio to tau), got 1000"),
+// D-78, Dominick's hard caps (2026-10-18): R_max 3 tau, R_jump_max and R_shock_max 6 tau,
+// per-name 4, trim 20 contracts; gross and net leverage 10 (R4).
+TEST(RiskSchemaParse, D78ARiskLimitPastItsHardCapIsRefused) {
+    const std::pair<const char*, int> caps[] = {{"R_max", 3}, {"R_jump_max", 6}, {"R_shock_max", 6}};
+    for (const auto& [key, cap] : caps) {
+        const std::string e = with_limit(key, cap + 0.5);
+        EXPECT_NE(e.find(std::string(key) + " must be at most " + std::to_string(cap) +
+                         " (a ratio to tau)"),
                   std::string::npos)
             << key << ": " << e;
-        EXPECT_EQ(with_limit(key, 10), "") << key;
+        EXPECT_NE(with_limit(key, 1000), "") << key;
+        EXPECT_EQ(with_limit(key, cap), "") << key;
     }
 }
 
-TEST(RiskSchemaParse, D78APerNameCapOf1000IsRefused) {
-    const std::string e = with_limit("per_name_cap", 1000);
-    EXPECT_NE(e.find("per_name_cap must be at most max_gross_leverage"), std::string::npos) << e;
-    EXPECT_EQ(with_limit("per_name_cap", 8.0), "");   // the template's gross limit
+TEST(RiskSchemaParse, D78APerNameCapPastFourIsRefused) {
+    const std::string e = with_limit("per_name_cap", 4.5);
+    EXPECT_NE(e.find("per_name_cap must be at most 4, got 4.5"), std::string::npos) << e;
+    EXPECT_NE(with_limit("per_name_cap", 1000), "");
+    EXPECT_EQ(with_limit("per_name_cap", 4.0), "");
 }
 
-TEST(RiskSchemaParse, D78ATrimOf1000IsRefused) {
-    const std::string e = with_limit("trim_max", 1000);
-    EXPECT_NE(e.find("trim_max must be at most 100 contracts, got 1000"), std::string::npos) << e;
-    EXPECT_EQ(with_limit("trim_max", 100), "");
+TEST(RiskSchemaParse, D78ATrimPastTwentyIsRefused) {
+    const std::string e = with_limit("trim_max", 21);
+    EXPECT_NE(e.find("trim_max must be at most 20 contracts, got 21"), std::string::npos) << e;
+    EXPECT_EQ(with_limit("trim_max", 20), "");
 }

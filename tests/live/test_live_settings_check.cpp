@@ -88,7 +88,7 @@ TEST(LiveSettingsCheck, AGateChangeWithItsMirrorIsAcceptedWithoutItRefused) {
 TEST(LiveSettingsCheck, ALimitOutOfItsBoundsIsRefusedWithTheRunsReason) {
     if (tmpl().empty()) GTEST_SKIP() << "config_template not found";
     const std::string why = refusal(Json{{"risk", {{"modules", gate_with("R_max", 1000)}}}});
-    EXPECT_NE(why.find("R_max must be at most 10"), std::string::npos) << why;
+    EXPECT_NE(why.find("R_max must be at most 3"), std::string::npos) << why;
     EXPECT_EQ(why.find("strategy_config version 0"), std::string::npos) << why;
 }
 
