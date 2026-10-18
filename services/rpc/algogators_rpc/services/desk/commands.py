@@ -24,8 +24,9 @@ time.
 |                   | `override_b` publishes B once the approved override booked it.    |
 | rescind           | the desk takes back its approval (contract C8), in Python under   |
 |                   | the portfolio's flock: refused from 09:30 New York on its date    |
-|                   | (the clock when it runs), on a day not published by the desk, by  |
-|                   | anyone but the approver and on a sent day; else                   |
+|                   | (the clock when it runs), on a day not published by the desk, on  |
+|                   | an override's day unless the VP or the President asks, on a sent  |
+|                   | day and once a later day's book was built on it; else             |
 |                   | published_by/at/source are cleared and the                        |
 |                   | row is finished done, in one transaction (command_store.rescind). |
 
@@ -429,7 +430,8 @@ class Dispatcher:
             # compare L_g and L_n with a max here.
             return rk.derive_desk_risk(self._risk_reader(row.portfolio_id, row.date),
                                        self._limits(row.portfolio_id),
-                                       self._tau(row.portfolio_id)), None
+                                       rk.portfolio_tau(self._settings.config_dir,
+                                                        row.portfolio_id)), None
         except Exception as exc:  # StoreError and the like: retryable
             return None, (FAILED, None, f"the risk check could not be read "
                                         f"({type(exc).__name__}); try again")
@@ -440,13 +442,6 @@ class Dispatcher:
             return rk.load_limits(str(portfolios_root(self._settings.config_dir) / name))
         except PortfolioConfigError:
             return []
-
-    def _tau(self, portfolio_id: str):
-        try:
-            name = resolve_portfolio_dir(self._settings.config_dir, portfolio_id)
-            return rk.load_tau(str(portfolios_root(self._settings.config_dir) / name))
-        except PortfolioConfigError:
-            return None
 
     @staticmethod
     def _blocked(report, after_id=None):

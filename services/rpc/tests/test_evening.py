@@ -810,3 +810,11 @@ def test_every_desk_action_and_settings_change_e_mails_the_vp_and_president_once
     env.clock.t = at(SAT, 11, 30)
     sched.run_pass()
     assert len(log()) == 4                                  # nothing twice
+    # A row finished under two minutes ago waits a pass (its transaction may still commit
+    # behind a later one).
+    env.days.commands.append(_command(6, "save", "desk@x", minute=29))
+    sched.run_pass()
+    assert len(log()) == 4
+    env.clock.t = at(SAT, 11, 35)
+    sched.run_pass()
+    assert log()[-1][1] == f"QT log: desk@x saved edits to {DESK_PID} 2026-10-12 (done)"

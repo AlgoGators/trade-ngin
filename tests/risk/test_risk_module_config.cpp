@@ -971,7 +971,8 @@ TEST(RiskSchemaParse, TheShippedOverlayLimitsAreWithinTheirBounds) {
 // D-78, Dominick's hard caps (2026-10-18): R_max 3 tau, R_jump_max and R_shock_max 6 tau,
 // per-name 4, trim 20 contracts; gross and net leverage 10 (R4).
 TEST(RiskSchemaParse, D78ARiskLimitPastItsHardCapIsRefused) {
-    const std::pair<const char*, int> caps[] = {{"R_max", 3}, {"R_jump_max", 6}, {"R_shock_max", 6}};
+    const std::pair<const char*, int> caps[] = {
+        {"R_max", 3}, {"R_jump_max", 6}, {"R_shock_max", 6}};
     for (const auto& [key, cap] : caps) {
         const std::string e = with_limit(key, cap + 0.5);
         EXPECT_NE(e.find(std::string(key) + " must be at most " + std::to_string(cap) +

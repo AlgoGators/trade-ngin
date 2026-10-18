@@ -87,14 +87,15 @@ class Days:
         return Mark(rows[-1].finished_at if rows else None, rows[-1].id if rows else 0,
                     max(settings, default=0))
 
-    def desk_commands_after(self, mark, limit):
+    def desk_commands_after(self, mark, before, limit):
         after = (mark.command_at, mark.command_id)
         rows = sorted(getattr(self, "commands", []), key=lambda r: (r.finished_at, r.id))
-        return [r for r in rows
-                if mark.command_at is None or (r.finished_at, r.id) > after][:limit]
+        return [r for r in rows if r.finished_at < before
+                and (mark.command_at is None or (r.finished_at, r.id) > after)][:limit]
 
-    def settings_versions_after(self, after_id, limit):
-        return [v for v in getattr(self, "settings", []) if v.id > after_id][:limit]
+    def settings_versions_after(self, after_id, before, limit):
+        return [v for v in getattr(self, "settings", [])
+                if v.id > after_id and v.created_at < before][:limit]
 
     def publish_model_only(self, pid, day):
         if (pid, day) in self.published:

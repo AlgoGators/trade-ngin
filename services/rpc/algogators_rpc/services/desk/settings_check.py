@@ -57,10 +57,12 @@ class SettingsChecker:
             answer = json.loads(lines[-1]) if lines else None
         except ValueError:
             answer = None
-        if proc.returncode in (0, 3) and isinstance(answer, dict) and isinstance(answer.get("ok"), bool):
+        if proc.returncode in (0, 3) and isinstance(answer, dict) \
+                and isinstance(answer.get("ok"), bool):
             return answer["ok"], str(answer.get("error") or "")
         if isinstance(answer, dict) and answer.get("error"):
             # Exit 4: the config files themselves do not load; the change cannot be judged.
             raise SettingsCheckUnavailable(str(answer["error"]))
         tail = " ".join((proc.stderr or "").splitlines()[-3:])
-        raise SettingsCheckUnavailable(f"the check exited {proc.returncode}: {tail or '(no output)'}")
+        raise SettingsCheckUnavailable(
+            f"the check exited {proc.returncode}: {tail or '(no output)'}")

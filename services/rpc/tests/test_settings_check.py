@@ -45,13 +45,15 @@ def test_the_check_runs_next_to_the_engine_with_the_overrides(settings):
 
 
 def test_a_refusal_carries_the_reason_a_run_would_give(settings):
-    check, _ = checker(settings, Proc(3, 'log line\n{"ok": false, "error": "R_max must be at most 10"}\n'))
-    assert check.check(PDIR, {}) == (False, "R_max must be at most 10")
+    check, _ = checker(settings,
+                       Proc(3, 'log line\n{"ok": false, "error": "R_max must be at most 3"}\n'))
+    assert check.check(PDIR, {}) == (False, "R_max must be at most 3")
 
 
 def test_config_files_that_do_not_load_make_the_check_unavailable_with_the_reason(settings):
     # Exit 4: the engine is misconfigured; the change cannot be judged, so it is not "refused".
-    check, _ = checker(settings, Proc(4, '{"ok": false, "error": "the config files do not load: x"}\n'))
+    check, _ = checker(settings,
+                       Proc(4, '{"ok": false, "error": "the config files do not load: x"}\n'))
     with pytest.raises(SettingsCheckUnavailable, match="the config files do not load"):
         check.check(PDIR, {})
 
@@ -91,7 +93,8 @@ class FakeChecker:
 def call(servicer, overrides_json, pid=PID):
     ctx = Ctx()
     try:
-        reply = servicer.CheckSettings(pb.SettingsCheckRequest(portfolio_id=pid, overrides_json=overrides_json), ctx)
+        request = pb.SettingsCheckRequest(portfolio_id=pid, overrides_json=overrides_json)
+        reply = servicer.CheckSettings(request, ctx)
     except RuntimeError:
         return None, ctx
     return reply, ctx
@@ -99,19 +102,22 @@ def call(servicer, overrides_json, pid=PID):
 
 def test_rpc_answers_the_check(store, config_dir):
     fake = FakeChecker((False, "max_gross_leverage must be at most 10"))
-    reply, _ = call(DeskServicer(store, config_dir=str(config_dir), settings_checker=fake), '{"risk": {}}')
+    servicer = DeskServicer(store, config_dir=str(config_dir), settings_checker=fake)
+    reply, _ = call(servicer, '{"risk": {}}')
     assert (reply.ok, reply.error) == (False, "max_gross_leverage must be at most 10")
     assert fake.calls == [(PDIR, {"risk": {}})]
 
 
 @pytest.mark.parametrize("payload", ["[1]", "not json", ""])
 def test_rpc_refuses_overrides_that_are_not_an_object(store, config_dir, payload):
-    _, ctx = call(DeskServicer(store, config_dir=str(config_dir), settings_checker=FakeChecker()), payload)
+    servicer = DeskServicer(store, config_dir=str(config_dir), settings_checker=FakeChecker())
+    _, ctx = call(servicer, payload)
     assert ctx.aborted[0] == grpc.StatusCode.INVALID_ARGUMENT
 
 
 def test_rpc_is_unavailable_when_the_check_cannot_run(store, config_dir):
-    servicer = DeskServicer(store, config_dir=str(config_dir), settings_checker=FakeChecker(error="exited 1"))
+    servicer = DeskServicer(store, config_dir=str(config_dir),
+                            settings_checker=FakeChecker(error="exited 1"))
     _, ctx = call(servicer, "{}")
     assert ctx.aborted == (grpc.StatusCode.UNAVAILABLE, "exited 1")
     _, ctx = call(DeskServicer(store, config_dir=str(config_dir)), "{}")
@@ -119,6 +125,7 @@ def test_rpc_is_unavailable_when_the_check_cannot_run(store, config_dir):
 
 
 def test_rpc_refuses_a_portfolio_with_no_config(store, config_dir):
-    _, ctx = call(DeskServicer(store, config_dir=str(config_dir), settings_checker=FakeChecker()), "{}",
+    servicer = DeskServicer(store, config_dir=str(config_dir), settings_checker=FakeChecker())
+    _, ctx = call(servicer, "{}",
                   pid="NO_SUCH_PORTFOLIO")
     assert ctx.aborted[0] == grpc.StatusCode.FAILED_PRECONDITION

@@ -47,7 +47,8 @@ int main(int argc, char** argv) {
     if (portfolio_dir.empty() || overrides_file.empty()) {
         return usage("--portfolio-config and --overrides-file are required");
     }
-    if (portfolio_dir.find('/') != std::string::npos || portfolio_dir.find("..") != std::string::npos) {
+    if (portfolio_dir.find('/') != std::string::npos ||
+        portfolio_dir.find("..") != std::string::npos) {
         return usage("--portfolio-config names a directory under config/portfolios");
     }
     std::ifstream in(overrides_file);

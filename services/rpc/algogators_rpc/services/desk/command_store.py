@@ -82,8 +82,8 @@ OVERRIDE_FLOW = "override_b"
 
 @dataclass(frozen=True)
 class RescindResult:
-    outcome: str  # one of RESCINDED, UNPUBLISHED, NOT_DESK, SENT, NOT_RUNNING, NOT_APPROVER,
-    # BUILT_ON
+    # One of RESCINDED, UNPUBLISHED, NOT_DESK, SENT, NOT_RUNNING, NOT_APPROVER, BUILT_ON.
+    outcome: str
     published_by: Optional[str] = None
     published_at: Optional[dt.datetime] = None
     publish_source: Optional[str] = None
@@ -91,7 +91,7 @@ class RescindResult:
     # The approving publish row's C10 flow (payload.flow): "override_b" for an override, else
     # None for a plain publish, "auto" or "accept_c".
     flow: Optional[str] = None
-    # BUILT_ON: the newest later day with a book.
+    # BUILT_ON: the first later day with a book (the one built on this day's book).
     later: Optional[dt.date] = None
 
 
@@ -319,7 +319,7 @@ class PostgresCommandStore:
             by, at, source, _ = max(published, key=lambda r: r[1])
             if any(r[2] != "desk" for r in published):
                 return RescindResult(NOT_DESK, by, at, source)
-            cur.execute("SELECT max(date) FROM trading.live_results "
+            cur.execute("SELECT min(date) FROM trading.live_results "
                         "WHERE portfolio_id = %s AND date > %s", (portfolio_id, date))
             later = cur.fetchone()[0]
             if later is not None:

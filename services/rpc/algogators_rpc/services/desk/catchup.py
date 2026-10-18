@@ -139,6 +139,9 @@ MISSING_LOOKBACK_DAYS = 60
 SUNDAY_REMINDER_AT = dt.time(18, 0)
 # The most desk actions (and settings versions) the log e-mails in one pass; the rest go next.
 ACTIVITY_BATCH = 50
+# The log reads only rows finished (or settings saved) at least this long ago: a transaction that
+# set finished_at = now() but commits later would otherwise land behind the log's mark.
+ACTIVITY_SETTLE = dt.timedelta(minutes=2)
 
 
 def _zone(name: str):
@@ -217,14 +220,15 @@ class DayStore(Protocol):
         """Where the log starts on a first start: the newest final command (finished_at, id)
         and the newest settings version id now."""
 
-    def desk_commands_after(self, mark: activity_mail.Mark, limit: int) -> List[Any]:
-        """Command rows (command_store.CommandRow) that reached a final status after the mark,
-        in (finished_at, id) order."""
+    def desk_commands_after(self, mark: activity_mail.Mark, before: dt.datetime,
+                            limit: int) -> List[Any]:
+        """Command rows (command_store.CommandRow) that reached a final status after the mark
+        and before `before`, in (finished_at, id) order."""
 
-    def settings_versions_after(self, after_id: int,
+    def settings_versions_after(self, after_id: int, before: dt.datetime,
                                 limit: int) -> List[activity_mail.SettingsVersion]:
-        """trading.strategy_config versions with an id above `after_id`, in id order, each with
-        the overrides of the version before it."""
+        """trading.strategy_config versions with an id above `after_id`, saved before `before`,
+        in id order, each with the overrides of the version before it."""
 
 
 class PostgresDayStore:
@@ -395,28 +399,30 @@ class PostgresDayStore:
                                       int(settings_id))
         return self._run(q)
 
-    def desk_commands_after(self, mark, limit):
+    def desk_commands_after(self, mark, before, limit):
         from .command_store import _SELECT, CommandRow
 
         def q(cur):
             if mark.command_at is None:
                 cur.execute(f"SELECT {_SELECT} FROM trading.position_overrides WHERE "
-                            f"{self._FINAL_SQL} ORDER BY finished_at, id LIMIT %s", (limit,))
+                            f"{self._FINAL_SQL} AND finished_at < %s "
+                            "ORDER BY finished_at, id LIMIT %s", (before, limit))
             else:
                 cur.execute(f"SELECT {_SELECT} FROM trading.position_overrides WHERE "
-                            f"{self._FINAL_SQL} AND (finished_at, id) > (%s, %s) "
-                            "ORDER BY finished_at, id LIMIT %s",
-                            (mark.command_at, mark.command_id, limit))
+                            f"{self._FINAL_SQL} AND finished_at < %s "
+                            "AND (finished_at, id) > (%s, %s) ORDER BY finished_at, id LIMIT %s",
+                            (before, mark.command_at, mark.command_id, limit))
             return [CommandRow.from_record(r) for r in cur.fetchall()]
         return self._run(q)
 
-    def settings_versions_after(self, after_id, limit):
+    def settings_versions_after(self, after_id, before, limit):
         def q(cur):
             cur.execute("SELECT c.id, c.portfolio_id, c.version, c.reason, c.created_by, "
                         "c.created_at, c.overrides, p.overrides "
                         "FROM trading.strategy_config c LEFT JOIN trading.strategy_config p "
                         "ON p.portfolio_id = c.portfolio_id AND p.version = c.version - 1 "
-                        "WHERE c.id > %s ORDER BY c.id LIMIT %s", (after_id, limit))
+                        "WHERE c.id > %s AND c.created_at < %s ORDER BY c.id LIMIT %s",
+                        (after_id, before, limit))
             return [activity_mail.SettingsVersion(r[0], r[1], r[2], r[3], r[4], r[5],
                                                   r[6] or {}, r[7] or {})
                     for r in cur.fetchall()]
@@ -570,7 +576,11 @@ class Alerter:
                 "/home/ubuntu/qt-engine/logs/qt-catchup.log and qt-engine-runs.log. This alert "
                 "is sent at most once a day per portfolio, date and reason.</p>"
                 "</body></html>")
-        to = [president] + [a for a in also_to if a.lower() != president.lower()]
+        to: List[str] = []
+        for address in [president, *also_to]:
+            address = address.strip()
+            if address and address.lower() not in {a.lower() for a in to}:
+                to.append(address)
         try:
             self._sender(smtp, to, subject, body)
         except Exception as exc:
@@ -961,7 +971,7 @@ class CatchupScheduler:
         target = self.calendar.next_trading_day(ready.bar_date)
         if target < today:
             return None   # old data: today's own flow and the data-ready check cover it
-        if info.desk_editable and last != target:
+        if info.desk_editable and last < target:
             # Dominick 2026-10-18: a day built on the way to the target (Saturday and Sunday on
             # the way to Monday) is reviewed as soon as it is built, and the desk may approve it
             # at once; the next day is built once it is published.
@@ -1020,7 +1030,8 @@ class CatchupScheduler:
         return self._blocked(pid, day, REVIEW) or Step(REVIEW, day, "review", ready=ready)
 
     def _review(self, info: PortfolioInfo, step: Step) -> Optional[Step]:
-        """The desk's review e-mail of the target day's build, once per build."""
+        """The desk's review e-mail of a day's build (the target or a day on the way to it),
+        once per build."""
         pid, target, ready = info.portfolio_id, step.date, step.ready
         built = self._store.book_written_at(pid, target, "system")
         if built is None or ready is None:
@@ -1304,8 +1315,9 @@ class CatchupScheduler:
         state = ("is built and waits for the desk's approval" if built else
                  "is not built yet: the days before it are approved first")
         self.alerter.alert(info.dir, pid, day, "sunday_reminder",
-                           f"{pid} {day} {state}. Approve it before 09:30 New York on {day}, or "
-                           "the model's book is sent at 10:00.",
+                           f"{pid} {day} {state}. Approve it before "
+                           f"{cutoff.SEND_AT:%H:%M} New York on {day}, or the model's book is "
+                           f"sent at {cutoff.CUTOFF_AT:%H:%M}.",
                            subject=f"QT reminder: the {pid} book for {day} is not approved yet",
                            also_to=list(self._catchup.review_recipients) + vp)
 
@@ -1324,8 +1336,9 @@ class CatchupScheduler:
             self.files.line(f"desk-action log: not e-mailed ({exc})")
             return
         to = [approvers["vp"], approvers["president"]]
+        before = self._clock() - ACTIVITY_SETTLE
         mark = state
-        for row in self._store.desk_commands_after(mark, ACTIVITY_BATCH):
+        for row in self._store.desk_commands_after(mark, before, ACTIVITY_BATCH):
             if activity_mail.is_desk_action(row.requested_by):
                 subject, body = activity_mail.build_command(row, self._tz)
                 if not self._activity_send(to, subject, body):
@@ -1333,7 +1346,8 @@ class CatchupScheduler:
             mark = activity_mail.Mark(row.finished_at, row.id, mark.settings_id)
             if not self.activities.save(mark):
                 raise OSError(f"cannot write {activity_mail.STATE}")
-        for version in self._store.settings_versions_after(mark.settings_id, ACTIVITY_BATCH):
+        for version in self._store.settings_versions_after(mark.settings_id, before,
+                                                           ACTIVITY_BATCH):
             if activity_mail.is_desk_action(version.created_by):
                 subject, body = activity_mail.build_settings(version, self._tz)
                 if not self._activity_send(to, subject, body):
@@ -1350,6 +1364,9 @@ class CatchupScheduler:
             self.files.line(f"desk-action log: {subject} (QT_EMAIL_DISABLED=1; body in "
                             f"{activity_mail.BODY_LOG})")
             return True
+        if not self._catchup.portfolios:
+            self.files.line("desk-action log: not sent (no portfolio's email.json); next pass")
+            return False
         smtp, why = load_smtp(self._settings, self._catchup.portfolios[0])
         if smtp is None:
             self.files.line(f"desk-action log: not sent ({why}); next pass")

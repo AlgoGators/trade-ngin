@@ -46,7 +46,9 @@ std::filesystem::path tmpl() {
         fs::remove_all(to);
         fs::copy(from, to, fs::copy_options::recursive);
         const fs::path email = to / "portfolios" / "qt_conservative" / "email.json";
-        if (!fs::exists(email)) fs::copy_file(to / "portfolios" / "conservative" / "email.json", email);
+        if (!fs::exists(email)) {
+            fs::copy_file(to / "portfolios" / "conservative" / "email.json", email);
+        }
         return to;
     }();
     return copy;
@@ -135,7 +137,8 @@ bool desk_never_sees(const std::vector<std::string>& path) {
     }
     // Read-only in AlgoLens (one legal value, or a mirror of the gate; D-16), and
     // starting_capital, which follows initial_capital (the engine requires the two equal).
-    if (path.size() >= 2 && path[0] == "risk" && (path[1] == "schema" || path[1] == "risk_reporting"))
+    if (path.size() >= 2 && path[0] == "risk" &&
+        (path[1] == "schema" || path[1] == "risk_reporting"))
         return true;
     if (path.size() == 1 && path[0] == "starting_capital") return true;
     return false;
@@ -193,7 +196,8 @@ Json desk_overrides(const Json& files, const Leaf& leaf, const Json& value) {
     for (size_t i = 0; i + 1 < leaf.path.size(); ++i) node = &(*node)[leaf.path[i]];
     (*node)[leaf.path.back()] = value;
     // initial_capital moves starting_capital with it (AlgoLens saves them together).
-    if (leaf.path.size() == 1 && leaf.path[0] == "initial_capital" && files.contains("starting_capital"))
+    if (leaf.path.size() == 1 && leaf.path[0] == "initial_capital" &&
+        files.contains("starting_capital"))
         out["starting_capital"] = value;
     return out;
 }
@@ -219,7 +223,8 @@ TEST(LiveSettingsCheck, EverySettingTheDeskCanSaveIsReadByALiveRun) {
         const Json overrides = desk_overrides(files, leaf, value);
         auto checked = check_live_settings_overlay(tmpl(), "qt_conservative", overrides);
         if (checked.is_error()) {
-            problems.push_back(name + " = " + value.dump() + ": refused: " + checked.error()->what());
+            problems.push_back(name + " = " + value.dump() + ": refused: " +
+                               checked.error()->what());
             continue;
         }
         auto live = ConfigLoader::load(tmpl(), "qt_conservative", &overrides);
@@ -231,7 +236,8 @@ TEST(LiveSettingsCheck, EverySettingTheDeskCanSaveIsReadByALiveRun) {
             (name == "optimization.b_sigma_floor" &&
              live.value().b_sigma_floor != base.value().b_sigma_floor);
         if (live.value().to_json() == base_config && !member_moved) {
-            problems.push_back(name + " = " + value.dump() + ": saved but not read (no change in the parsed config)");
+            problems.push_back(name + " = " + value.dump() +
+                               ": saved but not read (no change in the parsed config)");
         }
     }
     std::string report;

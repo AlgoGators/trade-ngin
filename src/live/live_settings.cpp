@@ -125,7 +125,8 @@ Result<void> check_live_settings_overlay(const std::filesystem::path& config_bas
                 def["config"].contains("ema_windows")) {
                 trend.ema_windows.clear();
                 for (const auto& window : def["config"]["ema_windows"]) {
-                    if (!window.is_array() || window.size() != 2 || !window[0].is_number_integer() ||
+                    if (!window.is_array() || window.size() != 2 ||
+                        !window[0].is_number_integer() ||
                         !window[1].is_number_integer()) {
                         return make_error<void>(ErrorCode::INVALID_ARGUMENT,
                                                 "strategies." + name +
@@ -141,7 +142,8 @@ Result<void> check_live_settings_overlay(const std::filesystem::path& config_bas
                 trend.equity_slow_pairs = config.equity_slow_rule.pairs;
             }
             first = false;
-            if (auto valid = TrendFollowingStrategy::validate_trend_config(trend); valid.is_error()) {
+            if (auto valid = TrendFollowingStrategy::validate_trend_config(trend);
+                valid.is_error()) {
                 return make_error<void>(valid.error()->code(),
                                         "strategies." + name + ": " + valid.error()->what(),
                                         "LiveSettings");

@@ -236,13 +236,6 @@ class DeskServicer(desk_pb2_grpc.DeskServiceServicer):
         except PortfolioConfigError:
             return []
 
-    def _tau(self, portfolio_id: str):
-        try:
-            name = resolve_portfolio_dir(self._config_dir, portfolio_id)
-            return rk.load_tau(str(portfolios_root(self._config_dir) / name))
-        except PortfolioConfigError:
-            return None
-
     def _multipliers(self, portfolio_id: str):
         try:
             name = resolve_portfolio_dir(self._config_dir, portfolio_id)
@@ -297,7 +290,8 @@ class DeskServicer(desk_pb2_grpc.DeskServiceServicer):
                       extra={"rpc": "GetDeskRisk", "portfolio_id": pid, "date": str(day),
                              "error": str(exc)})
             context.abort(grpc.StatusCode.UNAVAILABLE, f"desk risk unavailable: {exc}")
-        report = rk.derive_desk_risk(row, self._limits(pid), self._tau(pid))
+        report = rk.derive_desk_risk(row, self._limits(pid),
+                                     rk.portfolio_tau(self._config_dir, pid))
         blockers = rk.publish_blockers(report)
         reply = desk_pb2.DeskRisk(
             blocks_publish=bool(blockers),

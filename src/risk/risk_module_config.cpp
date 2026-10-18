@@ -15,6 +15,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <sstream>
 
 #include "trade_ngin/risk/carver_risk_module.hpp"
 
@@ -44,6 +45,14 @@ constexpr double kMaxRRatio = 3.0;          // R_max, a ratio to tau
 constexpr double kMaxTailRatio = 6.0;       // R_jump_max and R_shock_max, ratios to tau
 constexpr double kMaxPerNameCap = 4.0;      // one symbol's weight on the sizing capital
 constexpr int kMaxTrimContracts = 20;       // contracts the trim removes in a day
+
+// A bound as a refusal prints it: 3, 2.5 (not std::to_string's 3.000000).
+std::string bound_text(double bound) {
+    std::ostringstream out;
+    out << bound;
+    return out.str();
+}
+
 const char* const kCarverKeys[] = {"id",
                                    "type",
                                    "var_limit",
@@ -252,13 +261,13 @@ public:
                 for (int k = 0; k < 3; ++k) {
                     if (rs[k] > bounds[k]) {
                         return err(path_ + "." + keys[k] + " must be at most " +
-                                   std::to_string(static_cast<int>(bounds[k])) +
+                                   bound_text(bounds[k]) +
                                    " (a ratio to tau), got " + val(m.at(keys[k])));
                     }
                 }
                 if (c.per_name_cap > kMaxPerNameCap) {
                     return err(path_ + ".per_name_cap must be at most " +
-                               std::to_string(static_cast<int>(kMaxPerNameCap)) + ", got " +
+                               bound_text(kMaxPerNameCap) + ", got " +
                                val(m.at("per_name_cap")));
                 }
                 if (c.trim_max > kMaxTrimContracts) {

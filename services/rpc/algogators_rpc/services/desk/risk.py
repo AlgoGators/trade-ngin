@@ -46,6 +46,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, List, Mapping, Optional, Sequence, Tuple
 
+from .portfolios import PortfolioConfigError, portfolios_root, resolve_portfolio_dir
+
 RISK_STEPS = frozenset({"cap", "overlay", "clip", "trim"})
 RULE_STEPS = frozenset({"sign_close", "rounding", "buffer", "search", "hold"})
 RISK, RULE, NONE = "risk", "rule", "none"
@@ -281,6 +283,15 @@ def derive_desk_risk(row: Optional[DeskRiskRow],
         breaches=tuple(breaches),
         m=m, binding_term=binding, over_limit_after_rounding=after_rounding,
         over_limit_by_hold=by_hold, refused=refused, symbols=tuple(symbols), **readings)
+
+
+def portfolio_tau(config_dir: str, portfolio_id: str) -> Optional[float]:
+    """load_tau of the portfolio's config directory; None when it does not resolve."""
+    try:
+        name = resolve_portfolio_dir(config_dir, portfolio_id)
+    except PortfolioConfigError:
+        return None
+    return load_tau(str(portfolios_root(config_dir) / name))
 
 
 def load_tau(portfolio_dir: str) -> Optional[float]:

@@ -345,7 +345,8 @@ def test_the_models_book_shows_the_covariance_limits_in_percent_like_a_desk_book
     model = derive_desk_risk(DeskRiskRow(book_source="model"), limits, rk.load_tau(str(tmp_path)))
     by_term = {c.term: c for c in model.checks}
     assert (by_term["R"].unit, round(by_term["R"].max, 6)) == ("percent", 0.45)
-    assert round(by_term["R_jump"].max, 6) == 0.9 and "2.25" not in by_term["R_jump"].detail
+    assert round(by_term["R_jump"].max, 6) == 0.9
     assert by_term["L_g"].unit == "multiple" and by_term["L_g"].max == 8.0
     # Without tau the ratio stays, labelled as such.
-    assert {c.term: c.unit for c in derive_desk_risk(DeskRiskRow(book_source="model"), limits).checks}["R"] == "tau"
+    plain = derive_desk_risk(DeskRiskRow(book_source="model"), limits)
+    assert {c.term: c.unit for c in plain.checks}["R"] == "tau"

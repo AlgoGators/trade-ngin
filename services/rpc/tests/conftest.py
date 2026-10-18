@@ -11,10 +11,10 @@ from algogators_rpc.client import versioned_channel
 from algogators_rpc.registry import Registry
 from algogators_rpc.server import build_server
 
-from algogators_rpc.services.desk.command_store import (BUILT_ON, NOT_APPROVER, is_approver, NOT_DESK, NOT_RUNNING,
-                                                        RESCINDED, SENT,
+from algogators_rpc.services.desk.command_store import (BUILT_ON, NOT_APPROVER, NOT_DESK,
+                                                        NOT_RUNNING, RESCINDED, SENT,
                                                         UNPUBLISHED, BookLine, CommandRow,
-                                                        RescindResult)
+                                                        RescindResult, is_approver)
 from algogators_rpc.services.desk.commands import Dispatcher
 from algogators_rpc.services.desk.config import CommandSettings
 from algogators_rpc.services.desk.jobs import JobManager, RunResult
