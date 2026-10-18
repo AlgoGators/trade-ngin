@@ -11,7 +11,7 @@ from algogators_rpc.client import versioned_channel
 from algogators_rpc.registry import Registry
 from algogators_rpc.server import build_server
 
-from algogators_rpc.services.desk.command_store import (NOT_APPROVER, is_approver, NOT_DESK, NOT_RUNNING,
+from algogators_rpc.services.desk.command_store import (BUILT_ON, NOT_APPROVER, is_approver, NOT_DESK, NOT_RUNNING,
                                                         RESCINDED, SENT,
                                                         UNPUBLISHED, BookLine, CommandRow,
                                                         RescindResult)
@@ -90,6 +90,7 @@ class FakeCommandStore:
         # (portfolio_id, date) -> {published_by, published_at, publish_source, sent_at}: the
         # day's live_run_metadata as `rescind` reads it (contract C8).
         self.metadata = {}
+        self.later_books = {}        # (portfolio_id, date) -> a later day with a book
         self.lock = threading.Lock()
         self.claims = []
         self.requeues = []
@@ -217,6 +218,9 @@ class FakeCommandStore:
             by, at, source = meta["published_by"], meta["published_at"], meta.get("publish_source")
             if source != "desk":
                 return RescindResult(NOT_DESK, by, at, source)
+            if (portfolio_id, date) in self.later_books:
+                return RescindResult(BUILT_ON, by, at, source,
+                                     later=self.later_books[(portfolio_id, date)])
             approving = [r for r in self.rows.values()
                          if (r.portfolio_id, r.date, r.kind, r.status) ==
                          (portfolio_id, date, "publish", "done")

@@ -49,6 +49,21 @@ def test_rescind_clears_the_desk_approval_and_records_it(stub, agent, cstore, ru
     assert agent.locks == [(os.path.join(agent.settings.lock_dir, f"{PID}.lock"), 120.0)]
 
 
+def test_an_approval_a_later_day_was_built_on_is_not_rescinded(stub, agent, cstore, runner):
+    # Saturday approved, Sunday built on it at once (the data allows it): Sunday's book starts
+    # from Saturday's, so Saturday's approval stands.
+    approved(cstore)
+    later = DAY + dt.timedelta(days=1)
+    cstore.later_books[(PID, DAY)] = later
+    cstore.add(make_row(79, "rescind"))
+    rescind(stub, 79)
+    agent.wait()
+    row = cstore.rows[79]
+    assert row.status == "refused"
+    assert f"{later} was already built on the {DAY} book" in row.message
+    assert cstore.published_at(PID, DAY) == APPROVED_AT
+
+
 def test_a_rescinded_day_takes_a_new_approval(stub, agent, cstore, runner):
     approved(cstore)
     cstore.add(make_row(71, "rescind"))
