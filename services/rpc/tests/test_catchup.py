@@ -15,6 +15,7 @@ import pytest
 
 from conftest import write_portfolio
 from algogators_rpc.services.desk import catchup as cu
+from algogators_rpc.services.desk.activity_mail import Mark
 from algogators_rpc.services.desk.catchup import (ALERT, FALLBACK, RUN, SEND, UP_TO_DATE,
                                                   WAIT_PUBLISH, WAIT_TIME, CatchupScheduler)
 from algogators_rpc.services.desk.config import CatchupSettings, CommandSettings
@@ -77,6 +78,23 @@ class Days:
 
     def book_written_at(self, pid, day, book):
         return self.books.get((pid, book), {}).get(day)
+
+    # The VP and President's log (activity_mail.py): `commands` and `settings` hold what the
+    # desk did, as rows a test appends.
+    def activity_mark(self):
+        rows = sorted(getattr(self, "commands", []), key=lambda r: (r.finished_at, r.id))
+        settings = [v.id for v in getattr(self, "settings", [])]
+        return Mark(rows[-1].finished_at if rows else None, rows[-1].id if rows else 0,
+                    max(settings, default=0))
+
+    def desk_commands_after(self, mark, limit):
+        after = (mark.command_at, mark.command_id)
+        rows = sorted(getattr(self, "commands", []), key=lambda r: (r.finished_at, r.id))
+        return [r for r in rows
+                if mark.command_at is None or (r.finished_at, r.id) > after][:limit]
+
+    def settings_versions_after(self, after_id, limit):
+        return [v for v in getattr(self, "settings", []) if v.id > after_id][:limit]
 
     def publish_model_only(self, pid, day):
         if (pid, day) in self.published:

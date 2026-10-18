@@ -157,8 +157,10 @@ def subjects(env, to=None):
     return [s for t, s, _ in env.sent if to is None or t == to]
 
 
-def reviews(env):
-    return [(s, b) for t, s, b in env.sent if t == [REVIEWER]]
+def reviews(env, day=None):
+    """The review e-mails (of `day`'s book only, when given)."""
+    return [(s, b) for t, s, b in env.sent if t == [REVIEWER]
+            and (day is None or f" book for {day} " in s)]
 
 
 def alerts(env):
@@ -222,14 +224,17 @@ def test_staleness_tolerance_is_the_engines(tmp_path):
 def test_friday_evening_builds_only_saturday_and_each_weekend_day_waits(env):
     """D-63 (decision 6): Friday's bars build Saturday; Saturday waits for the desk or its 10:00
     fallback, with the alert, like a weekday; only then is Sunday built, and Sunday waits the
-    same way before Monday is built. No day is published ahead of its own day."""
+    same way before Monday is built. Each day is reviewed as soon as it is built (Dominick
+    2026-10-18). Unapproved, no day is published ahead of its own day."""
     published_day(env, FRI)
     env.days.ready.append(ready(FRI, at(FRI, 20, 10)))
     sched = env.make(portfolios=(DESK,))
     out = dict(sched.run_pass())
     assert calls(env) == [("model", DESK, "2026-10-10")]
     assert env.days.rows == {} and env.days.published_at(DESK_PID, SAT) is None
-    assert out[DESK].action == UP_TO_DATE and reviews(env) == []
+    assert out[DESK].action == UP_TO_DATE
+    assert [s for s, _ in reviews(env)] == [
+        f"QT review: {DESK_PID} book for 2026-10-10 (bars of 2026-10-09)"]
     env.clock.t = at(SAT, 9, 45)
     out = dict(sched.run_pass())
     assert out[DESK].action == WAIT_PUBLISH and out[DESK].date == SAT
@@ -247,7 +252,31 @@ def test_friday_evening_builds_only_saturday_and_each_weekend_day_waits(env):
                for r in env.days.rows.values())
     assert env.days.published_at(DESK_PID, MON) is None        # waits for the desk
     assert [s for s, _ in reviews(env)] == [
-        f"QT review: {DESK_PID} book for 2026-10-12 (bars of 2026-10-09)"]
+        f"QT review: {DESK_PID} book for {d} (bars of 2026-10-09)"
+        for d in ("2026-10-10", "2026-10-11", "2026-10-12")]
+
+
+def test_the_desk_approves_the_weekend_ahead_and_monday_is_built_on_friday_evening(env):
+    """Dominick 2026-10-18: no reason to wait once the data is in. Friday's bars build Saturday;
+    the desk approves it at once, which builds Sunday; approving Sunday builds Monday. Each day
+    is still sent at 09:30 on its own day."""
+    published_day(env, FRI)
+    env.days.ready.append(ready(FRI, at(FRI, 20, 10)))
+    sched = env.make(portfolios=(DESK,))
+    sched.run_pass()
+    assert calls(env) == [("model", DESK, "2026-10-10")]
+    for day, nxt in ((SAT, "2026-10-11"), (SUN, "2026-10-12")):
+        env.clock.t += dt.timedelta(minutes=10)
+        env.days.published[(DESK_PID, day)] = (env.clock(), "desk@x", "desk")   # approved now
+        sched.run_pass()
+        assert calls(env)[-1] == ("model", DESK, nxt)
+    assert [s.split(" book for ")[1][:10] for s, _ in reviews(env)] == [
+        "2026-10-10", "2026-10-11", "2026-10-12"]
+    assert env.engine.mails == [] and env.days.rows == {}     # nothing sent ahead of its day
+    env.clock.t = at(SAT, 9, 30)
+    sched.run_pass()
+    assert ("--send", DESK, "2026-10-10") in calls(env)
+    assert ("--send", DESK, "2026-10-11") not in calls(env)
 
 
 def test_the_twin_still_builds_ahead(env):
@@ -291,7 +320,7 @@ def test_a_partial_pull_within_tolerance_builds(env):
         env.clock.t = when
         sched.run_pass()
     assert ("model", DESK, "2026-10-12") in calls(env)
-    (_, body), = reviews(env)
+    (_, body), = reviews(env, MON)
     assert "ZN: last bar 2026-10-08" in body and "partial" in body
 
 
@@ -370,13 +399,13 @@ def test_a_sunday_repull_rebuilds_monday_once(env):
     sunday_repull(env, sched)
     assert calls(env) == [("model", DESK, "2026-10-12"), ("model", TWIN, "2026-10-12")]
     assert env.days.positions[(DESK_PID, "qt", MON)]["ES"].quantity == 3
-    (s1, _), (s2, b2) = reviews(env)
+    (s1, _), (s2, b2) = reviews(env, MON)
     assert s2 == f"QT review: {DESK_PID} book for 2026-10-12 (bars of 2026-10-11) - updated"
     assert "supersedes the one sent at" in b2
     env.engine.calls.clear()
     env.clock.t = at(SUN, 21, 0)
     sched.run_pass()                                         # the same finished_at: nothing
-    assert env.engine.calls == [] and len(reviews(env)) == 2
+    assert env.engine.calls == [] and len(reviews(env, MON)) == 2
 
 
 def test_a_saturday_ready_row_builds_monday_once_sunday_is_out(env):
@@ -412,7 +441,7 @@ def test_a_published_day_is_never_rebuilt(env):
     env.days.published[(DESK_PID, MON)] = (at(SUN, 12), "desk@x", "desk")   # approved Sunday
     sunday_repull(env, sched)
     assert ("model", DESK, "2026-10-12") not in calls(env)
-    assert len(reviews(env)) == 1
+    assert len(reviews(env, MON)) == 1
 
 
 def test_desk_edits_are_kept_on_a_rebuild(env):
@@ -706,3 +735,78 @@ def test_evening_off_is_the_old_schedule(env):
     env.days.ready.append(ready(FRI, at(FRI, 20, 10)))
     env.make(evening_run=False).run_pass()
     assert env.engine.calls == [] and env.sent == []
+
+
+# -- the Sunday reminder and the VP and President's log (Dominick 2026-10-18) ----------------------
+
+def test_sunday_evening_reminds_the_desk_vp_and_president_once_while_monday_is_not_approved(env):
+    for day in (FRI, SAT, SUN):
+        published_day(env, day)
+    env.days.ready.append(ready(FRI, at(FRI, 20, 10)))
+    sched = env.make(portfolios=(DESK,))
+    env.clock.t = at(SUN, 17, 55)
+    sched.run_pass()
+    assert not [s for _, s, _ in env.sent if s.startswith("QT reminder")]
+    for when in (at(SUN, 18, 5), at(SUN, 19, 5)):
+        env.clock.t = when
+        sched.run_pass()
+    reminders = [(t, s, b) for t, s, b in env.sent if s.startswith("QT reminder")]
+    assert len(reminders) == 1
+    to, subject, body = reminders[0]
+    assert to == ["pres@algogators.com", REVIEWER, "vp@algogators.com"]
+    assert subject == f"QT reminder: the {DESK_PID} book for 2026-10-12 is not approved yet"
+    assert "is built and waits for the desk&#x27;s approval" in body
+
+
+def test_no_sunday_reminder_once_monday_is_approved(env):
+    for day in (FRI, SAT, SUN):
+        published_day(env, day)
+    env.days.ready.append(ready(FRI, at(FRI, 20, 10)))
+    env.days.write(DESK_PID, "system", MON, at(SAT, 12))
+    env.days.published[(DESK_PID, MON)] = (at(SAT, 12), "desk@x", "desk")
+    env.clock.t = at(SUN, 18, 5)
+    env.make(portfolios=(DESK,)).run_pass()
+    assert not [s for _, s, _ in env.sent if s.startswith("QT reminder")]
+
+
+def _command(id_, kind, by, status="done", payload=None, minute=0, message="ok"):
+    from algogators_rpc.services.desk.command_store import CommandRow
+    return CommandRow(id=id_, portfolio_id=DESK_PID, date=MON, kind=kind, status=status,
+                      requested_by=by, reason="r", payload=payload or {}, message=message,
+                      finished_at=at(SAT, 11, minute).astimezone(UTC))
+
+
+def test_every_desk_action_and_settings_change_e_mails_the_vp_and_president_once(env):
+    from algogators_rpc.services.desk.activity_mail import SettingsVersion
+    published_day(env, FRI)
+    env.clock.t = at(SAT, 11, 0)
+    sched = env.make(portfolios=(DESK,))
+    env.days.commands = [_command(1, "save", "desk@x")]   # before the first start: not e-mailed
+    sched.run_pass()
+    log = lambda: [(t, s) for t, s, _ in env.sent if s.startswith("QT log")]  # noqa: E731
+    assert log() == []
+    env.days.commands += [
+        _command(2, "publish", "desk@x", minute=5),
+        _command(3, "publish", "system:fallback-10am", minute=6),   # the scheduler's own
+        _command(4, "override_decision", "vp@algogators.com", payload={"approved": False},
+                 minute=7),
+        _command(5, "rescind", "trader@x", status="refused", minute=8, message="sent already"),
+    ]
+    env.days.settings = [SettingsVersion(9, DESK_PID, 4, "lower R", "desk@x",
+                                         at(SAT, 11, 9).astimezone(UTC),
+                                         {"risk": {"max_drawdown": 0.25}},
+                                         {"risk": {"max_drawdown": 0.3}})]
+    env.clock.t = at(SAT, 11, 15)
+    sched.run_pass()
+    to = ["vp@algogators.com", "pres@algogators.com"]
+    assert log() == [
+        (to, f"QT log: desk@x approved {DESK_PID} 2026-10-12 (done)"),
+        (to, f"QT log: vp@algogators.com rejected the override of {DESK_PID} 2026-10-12 (done)"),
+        (to, f"QT log: trader@x rescinded the approval of {DESK_PID} 2026-10-12 (refused)"),
+        (to, f"QT log: desk@x changed the {DESK_PID} settings (version 4)"),
+    ]
+    body = [b for _, s, b in env.sent if "settings (version 4)" in s][0]
+    assert "risk.max_drawdown: 0.3 -&gt; 0.25" in body and "lower R" in body
+    env.clock.t = at(SAT, 11, 30)
+    sched.run_pass()
+    assert len(log()) == 4                                  # nothing twice

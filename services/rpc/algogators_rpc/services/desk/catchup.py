@@ -64,18 +64,26 @@ Monday, a holiday is skipped). Normally T is today, and today's model run is the
     every one of them waits like a weekday: the next day is built once today is published, and
     the chain stops at the first day after today that is not published; that day, once it is
     today, waits for the desk's approval or its own 10:00 fallback, with the alert, and the
-    chain goes on (ruling 29). So Monday's books are built on Sunday once Sunday is out. No day
-    is published ahead of its own day (system:fallback-nontrading is no longer written). The
-    twin's days are built ahead and published model-only when they become today
+    chain goes on (ruling 29). Each day built is reviewed at once (the review e-mail below),
+    and the desk may approve it at once (Dominick 2026-10-18: no reason to wait once the data
+    is in), which builds the next: Friday's bars give Saturday, Sunday and Monday as fast as the
+    desk approves them. Only the desk publishes a day ahead of its own day; the 10:00 fallback
+    acts on today (system:fallback-nontrading is no longer written). On Sunday from 18:00 the
+    next trading day's book not approved yet reminds the desk, the VP and the President, once.
+    The twin's days are built ahead and published model-only when they become today
     T is (re)built once per data_ready.finished_at: a re-pull rebuilds it, unless T is published
     (frozen: never rebuilt). A desk portfolio whose day has the desk's saved edits keeps them: the
     engine's model run then rewrites only the system book and keeps qt_proposal and qt (QT_SEED
     kept, qt::desk_edit_done); otherwise all three are rewritten
-    after a build of the desk portfolio's T, QT_REVIEW_RECIPIENTS get the review e-mail
+    after a build of a desk portfolio's day (T, or a day on the way to it), while it is
+    unpublished and before its 10:00, QT_REVIEW_RECIPIENTS get the review e-mail
     (review_mail.py), once per build
     from QT_DATA_READY_ALERT_AT (06:00), every day: no non-failed row for the previous trading
     day is one alert to the President
     09:30 send, 10:00 fallback and the approval rules are unchanged.
+
+After every pass, each desk action that finished since the last one (a command row) and each new
+settings version is e-mailed to the VP and the President (activity_mail.py), one e-mail each.
 
 Recommended host settings with it: QT_CATCHUP_TODAY_NOT_BEFORE=04:30, QT_CATCHUP_WINDOW=04:00-22:00,
 QT_CATCHUP_BUSY_WINDOW=04:30-10:30 (the code defaults stay 06:45 / 06:30-22:00 / 06:30-10:30, the
@@ -108,7 +116,7 @@ from .config import (CONNECT_TIMEOUT_S, CatchupSettings, CommandSettings, Config
 from .jobs import Runner, RunResult, SubprocessRunner, tail
 from .override_mail import ApproverError, Sender, load_smtp, parse_approvers, send_smtp
 from .portfolios import portfolios_root
-from . import review_mail
+from . import activity_mail, review_mail
 from .trading_days import (TradingCalendar, load_calendar, resolve_holidays_path,
                            staleness_tolerance_days)
 
@@ -126,6 +134,11 @@ MAX_DAYS_PER_PASS = 62
 MISSED_SEND_ALERT_DAYS = 3
 # How far back the last bar of a symbol data-ngin reported missing is looked for.
 MISSING_LOOKBACK_DAYS = 60
+# Dominick 2026-10-18: on Sunday from 18:00 New York, the next trading day's book not approved
+# yet reminds the QT desk, the VP and the President, once.
+SUNDAY_REMINDER_AT = dt.time(18, 0)
+# The most desk actions (and settings versions) the log e-mails in one pass; the rest go next.
+ACTIVITY_BATCH = 50
 
 
 def _zone(name: str):
@@ -197,6 +210,21 @@ class DayStore(Protocol):
                     before: dt.date) -> List[Tuple[dt.date, str]]:
         """(date, published_by) of each day in [since, before) that is published and was never
         e-mailed (sent_at NULL on all its rows), oldest first."""
+
+    # -- the VP and President's log of desk actions (activity_mail.py) --
+
+    def activity_mark(self) -> activity_mail.Mark:
+        """Where the log starts on a first start: the newest final command (finished_at, id)
+        and the newest settings version id now."""
+
+    def desk_commands_after(self, mark: activity_mail.Mark, limit: int) -> List[Any]:
+        """Command rows (command_store.CommandRow) that reached a final status after the mark,
+        in (finished_at, id) order."""
+
+    def settings_versions_after(self, after_id: int,
+                                limit: int) -> List[activity_mail.SettingsVersion]:
+        """trading.strategy_config versions with an id above `after_id`, in id order, each with
+        the overrides of the version before it."""
 
 
 class PostgresDayStore:
@@ -354,6 +382,46 @@ class PostgresDayStore:
             return [(r[0], r[1]) for r in cur.fetchall()]
         return self._run(q)
 
+    _FINAL_SQL = "status IN ('done', 'refused', 'failed') AND finished_at IS NOT NULL"
+
+    def activity_mark(self):
+        def q(cur):
+            cur.execute("SELECT finished_at, id FROM trading.position_overrides WHERE "
+                        f"{self._FINAL_SQL} ORDER BY finished_at DESC, id DESC LIMIT 1")
+            rec = cur.fetchone()
+            cur.execute("SELECT COALESCE(max(id), 0) FROM trading.strategy_config")
+            settings_id = cur.fetchone()[0]
+            return activity_mail.Mark(rec[0] if rec else None, rec[1] if rec else 0,
+                                      int(settings_id))
+        return self._run(q)
+
+    def desk_commands_after(self, mark, limit):
+        from .command_store import _SELECT, CommandRow
+
+        def q(cur):
+            if mark.command_at is None:
+                cur.execute(f"SELECT {_SELECT} FROM trading.position_overrides WHERE "
+                            f"{self._FINAL_SQL} ORDER BY finished_at, id LIMIT %s", (limit,))
+            else:
+                cur.execute(f"SELECT {_SELECT} FROM trading.position_overrides WHERE "
+                            f"{self._FINAL_SQL} AND (finished_at, id) > (%s, %s) "
+                            "ORDER BY finished_at, id LIMIT %s",
+                            (mark.command_at, mark.command_id, limit))
+            return [CommandRow.from_record(r) for r in cur.fetchall()]
+        return self._run(q)
+
+    def settings_versions_after(self, after_id, limit):
+        def q(cur):
+            cur.execute("SELECT c.id, c.portfolio_id, c.version, c.reason, c.created_by, "
+                        "c.created_at, c.overrides, p.overrides "
+                        "FROM trading.strategy_config c LEFT JOIN trading.strategy_config p "
+                        "ON p.portfolio_id = c.portfolio_id AND p.version = c.version - 1 "
+                        "WHERE c.id > %s ORDER BY c.id LIMIT %s", (after_id, limit))
+            return [activity_mail.SettingsVersion(r[0], r[1], r[2], r[3], r[4], r[5],
+                                                  r[6] or {}, r[7] or {})
+                    for r in cur.fetchall()]
+        return self._run(q)
+
 
 # -- logs, locks, alerts ----------------------------------------------------------------------
 
@@ -453,8 +521,10 @@ class Alerter:
             log.error("cannot write the alert state", extra={"error": type(exc).__name__})
 
     def alert(self, portfolio_dir: str, portfolio_id: str, date: Optional[dt.date], reason: str,
-              message: str, subject: Optional[str] = None) -> bool:
-        """Returns True when this call raised the alert (False: already raised today)."""
+              message: str, subject: Optional[str] = None,
+              also_to: Sequence[str] = ()) -> bool:
+        """Returns True when this call raised the alert (False: already raised today).
+        `also_to`: addresses e-mailed with the president (a reminder to the desk)."""
         today = self._clock().astimezone(self._tz).date()
         key = f"{portfolio_id}|{date or '-'}|{reason}"
         state = self._load()
@@ -465,10 +535,11 @@ class Alerter:
         self._files.line(f"ALERT {portfolio_id} {date or '-'} {reason}: {message}")
         log.warning("catch-up alert", extra={"portfolio_id": portfolio_id, "date": str(date),
                                              "reason": reason, "error": message})
-        mailed, why = self._mail(portfolio_dir, portfolio_id, date, reason, message, subject)
+        mailed, why = self._mail(portfolio_dir, portfolio_id, date, reason, message, subject,
+                                 also_to)
         if mailed:
             self._files.line(f"ALERT {portfolio_id} {date or '-'} {reason}: e-mailed to the "
-                             "president")
+                             "president" + (f" and {', '.join(also_to)}" if also_to else ""))
         else:
             self._files.line(f"ALERT {portfolio_id} {date or '-'} {reason}: not e-mailed ({why})")
             if why.startswith("send failed"):
@@ -478,7 +549,7 @@ class Alerter:
         return True
 
     def _mail(self, portfolio_dir, portfolio_id, date, reason, message,
-              subject) -> Tuple[bool, str]:
+              subject, also_to=()) -> Tuple[bool, str]:
         if self._settings.email_disabled:
             return False, "QT_EMAIL_DISABLED=1"
         try:
@@ -499,8 +570,9 @@ class Alerter:
                 "/home/ubuntu/qt-engine/logs/qt-catchup.log and qt-engine-runs.log. This alert "
                 "is sent at most once a day per portfolio, date and reason.</p>"
                 "</body></html>")
+        to = [president] + [a for a in also_to if a.lower() != president.lower()]
         try:
-            self._sender(smtp, [president], subject, body)
+            self._sender(smtp, to, subject, body)
         except Exception as exc:
             return False, f"send failed: {type(exc).__name__}"
         return True, ""
@@ -591,6 +663,7 @@ class CatchupScheduler:
         self._calendar = calendar
         self._sender = sender
         self.reviews = review_mail.ReviewState(settings.log_dir)
+        self.activities = activity_mail.ActivityState(settings.log_dir)
 
     @property
     def calendar(self) -> TradingCalendar:
@@ -678,6 +751,16 @@ class CatchupScheduler:
                     self.alerter.alert(self._catchup.portfolios[0],
                                        self._catchup.data_ready_dataset, None, "scheduler_error",
                                        f"the data-ready check failed: {type(exc).__name__}: {exc}")
+            try:
+                self._activity_mail()
+            except Exception as exc:
+                log.error("the desk-action log failed", exc_info=True,
+                          extra={"error": type(exc).__name__})
+                if self._catchup.portfolios:
+                    self.alerter.alert(self._catchup.portfolios[0], "qt", None,
+                                       "activity_mail_failed",
+                                       f"the VP and President's log of desk actions failed: "
+                                       f"{type(exc).__name__}: {exc}")
             self.files.line("pass done: " + ", ".join(
                 f"{p}={s.action}{'@' + str(s.date) if s.date else ''}" for p, s in outcomes))
             try:
@@ -711,6 +794,7 @@ class CatchupScheduler:
                 break
         self._model_book_check(info)
         self._missed_send_check(info)
+        self._sunday_reminder(info)
         self._report(info, step)
         return step
 
@@ -877,6 +961,13 @@ class CatchupScheduler:
         target = self.calendar.next_trading_day(ready.bar_date)
         if target < today:
             return None   # old data: today's own flow and the data-ready check cover it
+        if info.desk_editable and last != target:
+            # Dominick 2026-10-18: a day built on the way to the target (Saturday and Sunday on
+            # the way to Monday) is reviewed as soon as it is built, and the desk may approve it
+            # at once; the next day is built once it is published.
+            due = self._review_due(info, now_local, last, ready)
+            if due is not None:
+                return due
         if info.desk_editable and target > today and self._store.published_at(pid, today) is None:
             return None   # ruling 29: today is approved (or falls back at 10:00) first
         if info.desk_editable and today < last < target \
@@ -911,11 +1002,22 @@ class CatchupScheduler:
                 RUN, target, "rebuild",
                 f"rebuild of {target}: ops.data_ready {ready.bar_date} finished at "
                 f"{ready.finished_at.isoformat()}, after its book ({built})", ready=ready)
-        if info.desk_editable and now_local < cutoff.cutoff_time(target) \
-                and not self.reviews.sent(pid, target, built):
-            return self._blocked(pid, target, REVIEW) or Step(REVIEW, target, "review",
-                                                              ready=ready)
+        if info.desk_editable:
+            return self._review_due(info, now_local, target, ready)
         return None
+
+    def _review_due(self, info: PortfolioInfo, now_local: dt.datetime, day: dt.date,
+                    ready: DataReady) -> Optional[Step]:
+        """The desk's review e-mail of `day`, when its book is built, unpublished, before its
+        10:00 cutoff and not yet reviewed in this build; else None."""
+        pid = info.portfolio_id
+        if self._store.published_at(pid, day) is not None:
+            return None
+        built = self._store.book_written_at(pid, day, "system")
+        if built is None or now_local >= cutoff.cutoff_time(day) \
+                or self.reviews.sent(pid, day, built):
+            return None
+        return self._blocked(pid, day, REVIEW) or Step(REVIEW, day, "review", ready=ready)
 
     def _review(self, info: PortfolioInfo, step: Step) -> Optional[Step]:
         """The desk's review e-mail of the target day's build, once per build."""
@@ -1179,6 +1281,86 @@ class CatchupScheduler:
                                f"{info.portfolio_id} {day} was published ({by or 'unknown'}) "
                                f"but its daily e-mail was never sent before the day passed: "
                                "it is not sent late; send it by hand if it is still wanted")
+
+    def _sunday_reminder(self, info: PortfolioInfo) -> None:
+        """Dominick 2026-10-18: Monday's book is built and approved as early as the data allows
+        (Saturday, from Friday's bars). On Sunday from 18:00 New York, the next trading day's
+        book not approved yet reminds the QT desk (QT_REVIEW_RECIPIENTS), the VP and the
+        President, once."""
+        if not info.desk_editable:
+            return
+        now_local = self.local_now()
+        if now_local.weekday() != 6 or now_local.time() < SUNDAY_REMINDER_AT:
+            return
+        pid = info.portfolio_id
+        day = self.calendar.next_trading_day(now_local.date())
+        if self._store.published_at(pid, day) is not None:
+            return
+        try:
+            vp = [parse_approvers(self._settings.approvers)["vp"]]
+        except ApproverError:
+            vp = []
+        built = self._store.book_written_at(pid, day, "system") is not None
+        state = ("is built and waits for the desk's approval" if built else
+                 "is not built yet: the days before it are approved first")
+        self.alerter.alert(info.dir, pid, day, "sunday_reminder",
+                           f"{pid} {day} {state}. Approve it before 09:30 New York on {day}, or "
+                           "the model's book is sent at 10:00.",
+                           subject=f"QT reminder: the {pid} book for {day} is not approved yet",
+                           also_to=list(self._catchup.review_recipients) + vp)
+
+    def _activity_mail(self) -> None:
+        """The VP and President's log (activity_mail.py): one e-mail per desk action and per
+        settings version since the last pass, oldest first."""
+        state = self.activities.load()
+        if state is None:
+            # First start: from now; history is not e-mailed.
+            if not self.activities.save(self._store.activity_mark()):
+                raise OSError(f"cannot write {activity_mail.STATE}")
+            return
+        try:
+            approvers = parse_approvers(self._settings.approvers)
+        except ApproverError as exc:
+            self.files.line(f"desk-action log: not e-mailed ({exc})")
+            return
+        to = [approvers["vp"], approvers["president"]]
+        mark = state
+        for row in self._store.desk_commands_after(mark, ACTIVITY_BATCH):
+            if activity_mail.is_desk_action(row.requested_by):
+                subject, body = activity_mail.build_command(row, self._tz)
+                if not self._activity_send(to, subject, body):
+                    return
+            mark = activity_mail.Mark(row.finished_at, row.id, mark.settings_id)
+            if not self.activities.save(mark):
+                raise OSError(f"cannot write {activity_mail.STATE}")
+        for version in self._store.settings_versions_after(mark.settings_id, ACTIVITY_BATCH):
+            if activity_mail.is_desk_action(version.created_by):
+                subject, body = activity_mail.build_settings(version, self._tz)
+                if not self._activity_send(to, subject, body):
+                    return
+            mark = activity_mail.Mark(mark.command_at, mark.command_id, version.id)
+            if not self.activities.save(mark):
+                raise OSError(f"cannot write {activity_mail.STATE}")
+
+    def _activity_send(self, to: List[str], subject: str, body: str) -> bool:
+        """True when the e-mail went (or e-mail is off and the body was logged); False: try
+        again on the next pass."""
+        if self._settings.email_disabled:
+            self.activities.log_body(self._clock(), to, subject, body)
+            self.files.line(f"desk-action log: {subject} (QT_EMAIL_DISABLED=1; body in "
+                            f"{activity_mail.BODY_LOG})")
+            return True
+        smtp, why = load_smtp(self._settings, self._catchup.portfolios[0])
+        if smtp is None:
+            self.files.line(f"desk-action log: not sent ({why}); next pass")
+            return False
+        try:
+            self._sender(smtp, to, subject, body)
+        except Exception as exc:  # smtplib errors can echo the server reply, never a password
+            self.files.line(f"desk-action log: send failed ({type(exc).__name__}); next pass")
+            return False
+        self.files.line(f"desk-action log: {subject} sent to {', '.join(to)}")
+        return True
 
     def _model_book_check(self, info: PortfolioInfo) -> None:
         """08:30: today has no model book yet -> alert the President."""
