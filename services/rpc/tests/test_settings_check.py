@@ -51,8 +51,7 @@ def test_a_refusal_carries_the_reason_a_run_would_give(settings):
 
 def test_config_files_that_do_not_load_make_the_check_unavailable_with_the_reason(settings):
     # Exit 4: the engine is misconfigured; the change cannot be judged, so it is not "refused".
-    check, _ = checker(settings, Proc(4, '{"ok": false, "error": "the config files do not load: x"}
-'))
+    check, _ = checker(settings, Proc(4, '{"ok": false, "error": "the config files do not load: x"}\n'))
     with pytest.raises(SettingsCheckUnavailable, match="the config files do not load"):
         check.check(PDIR, {})
 
