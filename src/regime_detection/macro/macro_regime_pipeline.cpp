@@ -1,4 +1,5 @@
 #include "trade_ngin/regime_detection/macro/macro_regime_pipeline.hpp"
+#include "trade_ngin/regime_detection/cerr_format_guard.hpp"
 
 #include <algorithm>
 #include <cassert>
@@ -176,6 +177,8 @@ Result<void> MacroRegimePipeline::train(
     const Eigen::VectorXd& growth_scores,
     const Eigen::VectorXd& inflation_scores)
 {
+    // N-10: the fingerprint diagnostics below set std::fixed on std::cerr.
+    regime::CerrFormatGuard cerr_fmt;
     const int T = dfm_output.T;
 
     if (T < 20) {

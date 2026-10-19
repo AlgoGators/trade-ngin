@@ -1,4 +1,5 @@
 #include "trade_ngin/regime_detection/market/market_regime_pipeline.hpp"
+#include "trade_ngin/regime_detection/cerr_format_guard.hpp"
 
 #include <algorithm>
 #include <cassert>
@@ -6,25 +7,9 @@
 #include <iomanip>
 #include <iostream>
 
-namespace {
-// N-10: the diagnostic prints below set std::fixed and a precision on std::cerr
-// and never restore it, so every sleeve after the first printed at the previous
-// sleeve's precision. Restore the stream state on scope exit.
-class CerrFormatGuard {
-public:
-    CerrFormatGuard() : flags_(std::cerr.flags()), precision_(std::cerr.precision()) {}
-    ~CerrFormatGuard() {
-        std::cerr.flags(flags_);
-        std::cerr.precision(precision_);
-    }
-    CerrFormatGuard(const CerrFormatGuard&) = delete;
-    CerrFormatGuard& operator=(const CerrFormatGuard&) = delete;
-private:
-    std::ios_base::fmtflags flags_;
-    std::streamsize precision_;
-};
-}  // namespace
 #include <numeric>
+
+using trade_ngin::regime::CerrFormatGuard;
 
 namespace trade_ngin {
 namespace statistics {

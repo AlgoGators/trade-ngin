@@ -172,3 +172,48 @@ TEST(RegimePhase3, BSTSUnclassifiedSentinelLabel_M06) {
     EXPECT_STREQ(BSTSRegimeDetector::regime_name(99), "UNKNOWN")
         << "Out-of-range labels still return UNKNOWN, not Unclassified";
 }
+
+// N-10: BSTSRegimeDetector::fit prints GMM and labelling diagnostics with
+// std::fixed and must leave std::cerr's formatting as the caller set it.
+TEST(RegimeSubstrate, BSTSFitRestoresCerrFormatting_N10) {
+    std::mt19937 gen(42);
+    std::normal_distribution<double> nd(0.0, 1.0);
+    const int T = 120, NE = 8, NM = 12;
+    Eigen::MatrixXd etf(T, NE), mac(T, NM);
+    std::vector<std::string> dates(T);
+    for (int e = 0; e < NE; ++e) {
+        double p = 100.0;
+        for (int t = 0; t < T; ++t) {
+            p *= std::exp(0.0003 + 0.01 * nd(gen));
+            etf(t, e) = p;
+        }
+    }
+    for (int m = 0; m < NM; ++m) {
+        double v = 2.0;
+        for (int t = 0; t < T; ++t) {
+            v += 0.02 * nd(gen);
+            mac(t, m) = v;
+        }
+    }
+    for (int t = 0; t < T; ++t) {
+        char buf[16];
+        std::snprintf(buf, sizeof(buf), "2020-%02d-%02d", 1 + (t / 28) % 12, 1 + t % 28);
+        dates[t] = buf;
+    }
+
+    const auto saved_flags = std::cerr.flags();
+    const auto saved_precision = std::cerr.precision();
+    std::cerr.flags(std::ios_base::scientific | std::ios_base::showpos);
+    std::cerr.precision(9);
+
+    BSTSRegimeDetector det;
+    auto r = det.fit(etf, mac, dates);
+    const auto flags_after = std::cerr.flags();
+    const auto precision_after = std::cerr.precision();
+    std::cerr.flags(saved_flags);
+    std::cerr.precision(saved_precision);
+
+    ASSERT_TRUE(r.is_ok()) << r.error()->what();
+    EXPECT_EQ(flags_after, std::ios_base::scientific | std::ios_base::showpos);
+    EXPECT_EQ(precision_after, 9);
+}

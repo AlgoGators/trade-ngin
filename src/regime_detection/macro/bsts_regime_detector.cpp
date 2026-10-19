@@ -8,6 +8,7 @@
 */
 
 #include "trade_ngin/regime_detection/macro/bsts_regime_detector.hpp"
+#include "trade_ngin/regime_detection/cerr_format_guard.hpp"
 #include "trade_ngin/data/postgres_database.hpp"
 
 #include <arrow/api.h>
@@ -915,6 +916,8 @@ Result<BSTSOutput> BSTSRegimeDetector::fit(
     const std::vector<std::string>& etf_names,
     const std::vector<std::string>& macro_names)
 {
+    // N-10: the GMM and labelling diagnostics set std::fixed on std::cerr.
+    regime::CerrFormatGuard cerr_fmt;
     std::lock_guard<std::mutex> lock(mutex_);
 
     const int T = (int)dates.size();

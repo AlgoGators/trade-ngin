@@ -1052,3 +1052,23 @@ TEST_F(MacroRegimePipelineTest, RestoreRejectsAnInvalidSnapshotAndKeepsTheState_
     EXPECT_EQ(now.dwell_counter, good.dwell_counter);
     EXPECT_EQ(now.update_count, good.update_count);
 }
+
+// N-10 on the macro side: train() prints its fingerprint diagnostics with
+// std::fixed and must leave std::cerr's formatting as the caller set it.
+TEST_F(MacroRegimePipelineTest, TrainRestoresCerrFormatting_N10) {
+    const auto saved_flags = std::cerr.flags();
+    const auto saved_precision = std::cerr.precision();
+    std::cerr.flags(std::ios_base::scientific | std::ios_base::showpos);
+    std::cerr.precision(9);
+
+    MacroRegimePipeline p;
+    auto r = p.train(dfm_out_, ms_out_, panel_, bsts_probs_, growth_scores_, inflation_scores_);
+    const auto flags_after = std::cerr.flags();
+    const auto precision_after = std::cerr.precision();
+    std::cerr.flags(saved_flags);
+    std::cerr.precision(saved_precision);
+
+    ASSERT_TRUE(r.is_ok());
+    EXPECT_EQ(flags_after, std::ios_base::scientific | std::ios_base::showpos);
+    EXPECT_EQ(precision_after, 9);
+}
