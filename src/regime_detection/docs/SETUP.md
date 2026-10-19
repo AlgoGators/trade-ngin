@@ -6,9 +6,11 @@ gate on this branch (`regime_detection_updated`). Architecture and concepts live
 
 ## 1. Database
 
-Runners auto-load the Postgres connection from `config/defaults.json` at the repo root
-(`database.{host,port,username,password,name}` — the repo gitignores `config/`; copy
-`config_template/defaults.json` and fill in credentials). Target DB: `new_algo_data`.
+Every runner reads the Postgres connection from `config/defaults.json` through the
+`ConfigLoader` (`./config` from the repo root, else `../config`;
+`database.{host,port,username,password,name}`; the repo gitignores `config/`, so copy
+`config_template/` and fill in the database block). There is no command-line or
+environment path for the connection. Point it at a scratch copy, never production.
 
 Schemas consumed:
 - **`macro_data`** — the macro pipeline's input. Six tables full-outer-joined on date by
@@ -43,13 +45,15 @@ pkg-config-derived link files cached a dead SDK path — re-run configure with t
 `CMAKE_OSX_SYSROOT` above and sed the generated `link.txt`/`build.make` files
 (`fix_build/fix_sdk_and_build.sh` on the main branch shows the exact patch).
 
-Five binaries in `apps/regime_detection/` (names unchanged since the reorg):
+Four binaries in `apps/regime_detection/`:
 `macro_dfm_runner`, `macro_msdfm_runner`, `macro_regime_pipeline_runner`,
-`bsts_regime_detector`, `market_regime_pipeline_runner`.
+`market_regime_pipeline_runner`. (The standalone `bsts_regime_detector` was removed:
+it kept the L-19/L-20 look-ahead that the library `BSTSRegimeDetector` fixed, and the
+macro pipeline runs the library model.)
 
 ```bash
 # market pipeline, explicit window (defaults: 2020-01-01 .. runner default end)
-./build/bin/Release/market_regime_pipeline_runner "" 2020-01-01 2025-12-31
+./build/bin/Release/market_regime_pipeline_runner 2020-01-01 2025-12-31
 ```
 
 ## 4. Tests and the bit-identity regression gate
@@ -63,7 +67,7 @@ cmake --build build -j 8 --target trade_ngin_tests
 timeline byte-for-byte.
 
 ```bash
-TIMELINE_CSV=/tmp/timeline.csv ./build/bin/Release/market_regime_pipeline_runner "" 2020-01-01 2025-12-31
+TIMELINE_CSV=/tmp/timeline.csv ./build/bin/Release/market_regime_pipeline_runner 2020-01-01 2025-12-31
 diff /tmp/timeline.csv src/regime_detection/baselines/market_timeline_K05plus.csv   # must be 0 lines
 ```
 
