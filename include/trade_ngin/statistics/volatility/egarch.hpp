@@ -2,6 +2,7 @@
 
 #include "trade_ngin/statistics/base/volatility_model.hpp"
 #include "trade_ngin/statistics/statistics_common.hpp"
+#include <array>
 #include <mutex>
 
 namespace trade_ngin {
@@ -24,6 +25,13 @@ public:
     double get_alpha() const { return alpha_; }
     double get_gamma() const { return gamma_; }
     double get_beta() const { return beta_; }
+
+    // Asymptotic standard errors of (omega, alpha, gamma, beta) from the
+    // observed information: the central-difference Hessian of the
+    // log-likelihood at the fitted parameters, on the demeaned training
+    // returns, inverted. Errors if the model is not fitted or the information
+    // matrix is not positive definite (typically a parameter on a bound).
+    Result<std::array<double, 4>> standard_errors() const;
 
 private:
     EGARCHConfig config_;

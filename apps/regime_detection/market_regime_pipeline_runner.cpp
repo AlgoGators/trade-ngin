@@ -460,13 +460,33 @@ static void process_sleeve(
     // Fit EGARCH for asymmetry/leverage detection (asymmetry flags)
     auto egarch = std::make_shared<EGARCH>(EGARCHConfig{});
     bool egarch_ok = false;
-    double egarch_gamma = 0.0;
+    bool egarch_asymmetry = false;
     auto egfit = egarch->fit(rvec);
     if (egfit.is_ok()) {
         egarch_ok = true;
-        egarch_gamma = egarch->get_gamma();
-        std::cerr << "  EGARCH γ=" << egarch_gamma
-                  << (egarch_gamma < -0.01 ? " (leverage effect detected)" : " (no leverage)") << "\n";
+        const double egarch_gamma = egarch->get_gamma();
+        const auto& pcfg = pipeline.config();
+        if (pcfg.egarch_asymmetry_mode ==
+            MarketRegimePipelineConfig::EGARCHAsymmetryMode::FIXED) {
+            egarch_asymmetry = egarch_asymmetry_flag(pcfg, egarch_gamma, 0.0);
+            std::cerr << "  EGARCH γ=" << egarch_gamma
+                      << (egarch_asymmetry ? " (leverage effect detected)" : " (no leverage)")
+                      << "\n";
+        } else {
+            // K-12 tstat mode: the flag needs gamma to be significantly negative.
+            auto se = egarch->standard_errors();
+            const double gamma_se = se.is_ok() ? se.value()[2] : 0.0;
+            egarch_asymmetry = egarch_asymmetry_flag(pcfg, egarch_gamma, gamma_se);
+            std::cerr << "  EGARCH γ=" << egarch_gamma;
+            if (se.is_ok()) {
+                std::cerr << " se=" << gamma_se << " t=" << egarch_gamma / gamma_se;
+            } else {
+                std::cerr << " se unavailable (" << se.error()->what() << ")";
+            }
+            std::cerr << (egarch_asymmetry ? " (significant leverage effect)"
+                                           : " (no significant leverage)")
+                      << "\n";
+        }
     } else {
         std::cerr << "  EGARCH fit failed — asymmetry flags disabled\n";
     }
@@ -569,8 +589,9 @@ static void process_sleeve(
             double vm = vs/60.0;
             gf.vol_of_vol_high = (std::sqrt(std::max(0.0, vsq/60.0-vm*vm)) > 0.5*gf.conditional_vol);
         }
-        // EGARCH asymmetry flag: leverage effect when γ < -0.01
-        gf.asymmetry_flag = egarch_ok && (egarch_gamma < -0.01);
+        // EGARCH asymmetry flag, decided once per fit under the K-12 mode
+        // (default: γ < -0.01).
+        gf.asymmetry_flag = egarch_ok && egarch_asymmetry;
 
         // A0: All MarketFeatures populated
         MarketFeatures mf = compute_market_features(garch_vol, features, dd_arr, dd_speed_arr, t, T);

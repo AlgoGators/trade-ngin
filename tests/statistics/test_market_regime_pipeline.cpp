@@ -1204,3 +1204,54 @@ TEST(RegimeSubstrate, TrainRestoresCerrFormatting_N10) {
     EXPECT_EQ(flags_after, std::ios_base::scientific | std::ios_base::showpos);
     EXPECT_EQ(precision_after, 9);
 }
+
+// ----------------------------------------------------------------------------
+// K-12: the EGARCH asymmetry flag mode.
+// ----------------------------------------------------------------------------
+
+TEST(RegimePhase4, EGARCHAsymmetryFixedModeIsTheOldRule_K12) {
+    // FIXED is the default and reproduces the runner's previous rule,
+    // gamma < -0.01, exactly (including at the boundary); the se is ignored.
+    MarketRegimePipelineConfig cfg;
+    ASSERT_EQ(cfg.egarch_asymmetry_mode, MarketRegimePipelineConfig::EGARCHAsymmetryMode::FIXED);
+    for (double g : {-0.5, -0.0100001, -0.01, -0.0099999, 0.0, 0.2}) {
+        for (double se : {0.0, 0.001, 10.0, std::numeric_limits<double>::quiet_NaN()}) {
+            EXPECT_EQ(egarch_asymmetry_flag(cfg, g, se), g < -0.01) << "gamma=" << g << " se=" << se;
+        }
+    }
+}
+
+TEST(RegimePhase4, EGARCHAsymmetryTstatModeNeedsSignificance_K12) {
+    MarketRegimePipelineConfig cfg;
+    cfg.egarch_asymmetry_mode = MarketRegimePipelineConfig::EGARCHAsymmetryMode::TSTAT;
+    EXPECT_TRUE(egarch_asymmetry_flag(cfg, -0.05, 0.01));    // t = -5
+    EXPECT_FALSE(egarch_asymmetry_flag(cfg, -0.05, 0.05));   // t = -1: negative, not significant
+    EXPECT_FALSE(egarch_asymmetry_flag(cfg, 0.05, 0.01));    // t = +5: wrong sign
+    EXPECT_FALSE(egarch_asymmetry_flag(cfg, -0.05, 0.0));    // se unknown: off
+    EXPECT_FALSE(egarch_asymmetry_flag(cfg, -0.05, -0.01));
+    EXPECT_FALSE(egarch_asymmetry_flag(cfg, -0.05, std::numeric_limits<double>::quiet_NaN()));
+    cfg.egarch_tstat_threshold = -0.5;
+    EXPECT_TRUE(egarch_asymmetry_flag(cfg, -0.05, 0.05));    // t = -1 < -0.5
+}
+
+TEST(RegimePhase4, EGARCHAsymmetryModeRoundTripsAndRejectsUnknown_K12) {
+    MarketRegimePipelineConfig cfg;
+    cfg.egarch_asymmetry_mode = MarketRegimePipelineConfig::EGARCHAsymmetryMode::TSTAT;
+    cfg.egarch_tstat_threshold = -2.5;
+    cfg.egarch_gamma_threshold = -0.02;
+    const auto j = cfg.to_json();
+    EXPECT_EQ(j.at("egarch_asymmetry_mode"), "tstat");
+    MarketRegimePipelineConfig back;
+    back.from_json(j);
+    EXPECT_EQ(back.egarch_asymmetry_mode, MarketRegimePipelineConfig::EGARCHAsymmetryMode::TSTAT);
+    EXPECT_EQ(back.egarch_tstat_threshold, -2.5);
+    EXPECT_EQ(back.egarch_gamma_threshold, -0.02);
+
+    MarketRegimePipelineConfig def;
+    def.from_json(nlohmann::json::object());  // absent keys keep the defaults
+    EXPECT_EQ(def.egarch_asymmetry_mode, MarketRegimePipelineConfig::EGARCHAsymmetryMode::FIXED);
+
+    MarketRegimePipelineConfig bad;
+    EXPECT_THROW(bad.from_json(nlohmann::json{{"egarch_asymmetry_mode", "t-stat"}}),
+                 std::invalid_argument);
+}
