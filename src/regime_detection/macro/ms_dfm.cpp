@@ -250,6 +250,9 @@ void MarkovSwitchingDFM::m_step(const Eigen::MatrixXd& factors,
         }
 
         // A_j = S_yf * S_ff^{-1}  (with ridge)
+        // Deliberate regularisation: the 1e-6 ridge keeps S_ff invertible when a
+        // regime collects almost no posterior mass. It moves A_j off the exact
+        // maximiser by O(1e-6), so EM is monotone only up to that tolerance.
         S_ff += Eigen::MatrixXd::Identity(K_, K_) * 1e-6;
         A_[j] = S_yf * S_ff.ldlt().solve(Eigen::MatrixXd::Identity(K_, K_));
 
@@ -262,7 +265,9 @@ void MarkovSwitchingDFM::m_step(const Eigen::MatrixXd& factors,
             S_qq += w * resid * resid.transpose();
         }
         Q_[j] = symmetrise(S_qq / gamma_sum);
-        Q_[j] += Eigen::MatrixXd::Identity(K_, K_) * 1e-6;  // PD guarantee
+        // Deliberate regularisation: keeps Q_j positive definite for a regime with
+        // near-zero residual variance, at the cost of an O(1e-6) step off the maximiser.
+        Q_[j] += Eigen::MatrixXd::Identity(K_, K_) * 1e-6;
     }
 
     // Update transition matrix P
@@ -287,6 +292,11 @@ void MarkovSwitchingDFM::m_step(const Eigen::MatrixXd& factors,
                     xi_sum += filtered_probs(t, i) * P_(i, j) *
                               smoothed_probs(t + 1, j) / pred_j;
                 }
+                // Deliberate regularisation: the 1e-6 floor stops a transition from
+                // reaching exactly 0, which would make a regime absorbing or
+                // unreachable for every later iteration. Clamping, then
+                // renormalising the row below, moves P off the exact maximiser
+                // when the floor binds.
                 P_(i, j) = std::max(xi_sum / from_i_sum, 1e-6);
             }
             // Normalize row
