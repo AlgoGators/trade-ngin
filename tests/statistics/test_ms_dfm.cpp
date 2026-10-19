@@ -527,3 +527,34 @@ TEST(RegimePhase4, MSDFMRegimeLabelsPermuteWithSort_L13) {
     EXPECT_EQ(seen.size(), 2u)
         << "regime_labels must remain a unique permutation, not duplicate.";
 }
+
+// EM's log-likelihood is non-decreasing by construction, so any drop means the
+// M-step is not maximising what the E-step scored.
+//
+// The shipped LogLikelihoodMonotonicity test above checks one fixture (seed
+// 42), which happened to be clean on AppleClang even while the M-step was
+// wrong -- that is why the defect only ever showed on CI's GCC. This sweeps
+// seeds so a single lucky fixture cannot hide a biased update again.
+//
+// Measured on the m_step joint fix: 39/40 seeds violated before (worst drop
+// 1.335 nats against a 1e-6 tolerance), 0/40 after.
+TEST(MSDFMEMSweep, MonotonicityHoldsAcrossSeeds) {
+    int violations = 0; double worst_overall = 0.0; int worst_seed = -1;
+    for (int seed = 1; seed <= 40; ++seed) {
+        auto data = make_regime_data(300, 2, 2, seed);
+        MSDFMConfig cfg; cfg.n_regimes = 2; cfg.max_em_iterations = 100;
+        MarkovSwitchingDFM m(cfg);
+        auto r = m.fit(data);
+        if (r.is_error()) continue;
+        const auto& h = r.value().convergence_info.objective_history;
+        double worst = 0.0;
+        for (size_t k = 1; k < h.size(); ++k) worst = std::max(worst, h[k-1] - h[k]);
+        if (worst > 1e-6) { ++violations;
+            if (worst > worst_overall) { worst_overall = worst; worst_seed = seed; } }
+    }
+    EXPECT_EQ(violations, 0)
+        << violations << " of 40 seeds show a decreasing EM log-likelihood; "
+        << "worst drop " << worst_overall << " nats at seed " << worst_seed
+        << ". The M-step is not maximising the expected complete-data "
+           "log-likelihood.";
+}
