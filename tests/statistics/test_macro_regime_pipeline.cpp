@@ -8,6 +8,7 @@
 
 #include <Eigen/Dense>
 #include <cmath>
+#include <cstring>
 #include <random>
 #include <string>
 #include <vector>
@@ -896,4 +897,73 @@ TEST(RegimePhase4, MacroBeliefHasEntropyAndTopProbFields_M09) {
     b.top_prob = 0.85;
     EXPECT_DOUBLE_EQ(b.entropy, 0.42);
     EXPECT_DOUBLE_EQ(b.top_prob, 0.85);
+}
+
+// ----------------------------------------------------------------------------
+// Golden digest of the macro pipeline: the trained DFM Gaussians, the MS-DFM
+// and BSTS mappings, and the beliefs of a fixed 40-bar update sequence. There
+// is no macro timeline gate yet (step 4 creates it); this pins the trained
+// state and the update path in the unit suite. A refactor that should move no
+// number (M-11 exposing the covariance floor at its default) leaves it
+// unchanged, bit for bit.
+// ----------------------------------------------------------------------------
+
+namespace {
+
+struct MacroDigest {
+    uint64_t h = 1469598103934665603ULL;  // FNV-1a
+    void add(double v) {
+        uint64_t bits;
+        std::memcpy(&bits, &v, sizeof bits);
+        for (int i = 0; i < 8; ++i) {
+            h ^= (bits >> (8 * i)) & 0xff;
+            h *= 1099511628211ULL;
+        }
+    }
+    void add(const Eigen::MatrixXd& m) {
+        add(static_cast<double>(m.rows()));
+        add(static_cast<double>(m.cols()));
+        for (int i = 0; i < m.rows(); ++i)
+            for (int j = 0; j < m.cols(); ++j) add(m(i, j));
+    }
+};
+
+}  // namespace
+
+TEST_F(MacroRegimePipelineTest, GoldenTrainedStateAndBeliefsAreUnchanged) {
+    MacroRegimePipeline p;
+    ASSERT_TRUE(p.train(dfm_out_, ms_out_, panel_, bsts_probs_, growth_scores_,
+                        inflation_scores_).is_ok());
+    MacroDigest d;
+    for (const auto& g : p.dfm_gaussians()) {
+        d.add(Eigen::MatrixXd(g.mean));
+        d.add(Eigen::MatrixXd(g.cov));
+        d.add(g.log_det);
+    }
+    d.add(p.msdfm_mapping().mapping_matrix);
+
+    std::mt19937 gen(9);
+    std::normal_distribution<double> nd(0.0, 1.0);
+    std::uniform_real_distribution<double> u(0.05, 1.0);
+    for (int t = 0; t < 40; ++t) {
+        const double drift = t < 20 ? 1.0 : -1.0;
+        Eigen::Vector3d f(drift + 0.3 * nd(gen), -drift + 0.3 * nd(gen), 0.3 * nd(gen));
+        Eigen::Vector3d ms(u(gen), u(gen), u(gen));
+        ms /= ms.sum();
+        Eigen::Vector4d b(u(gen), u(gen), u(gen), u(gen));
+        b /= b.sum();
+        auto r = p.update(f, ms, 5.0 * drift + nd(gen), 2.0 + nd(gen), b, t == 25);
+        ASSERT_TRUE(r.is_ok());
+        const auto& bel = r.value();
+        for (const auto& [regime, prob] : bel.macro_probs) d.add(prob);
+        d.add(static_cast<double>(bel.most_likely));
+        d.add(bel.confidence);
+        d.add(static_cast<double>(bel.regime_age_bars));
+        d.add(bel.entropy);
+        d.add(bel.top_prob);
+        for (const auto& [model, probs] : bel.model_contributions)
+            for (const auto& [regime, prob] : probs) d.add(prob);
+    }
+    // Recorded on 949be76b.
+    EXPECT_EQ(d.h, 0x15e331668853d332ULL) << "a trained Gaussian, mapping or belief changed";
 }
