@@ -1096,5 +1096,59 @@ Result<MacroBelief> MacroRegimePipeline::update(
     return belief;
 }
 
+Result<MacroLiveState> MacroRegimePipeline::get_live_state() const {
+    // Same lock as update(): a live process may checkpoint from another thread.
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (!trained_) {
+        return make_error<MacroLiveState>(ErrorCode::NOT_INITIALIZED,
+            "Cannot snapshot live state: pipeline has not been trained",
+            "MacroRegimePipeline::get_live_state");
+    }
+    MacroLiveState snap;
+    snap.prev_smoothed  = prev_smoothed_;
+    snap.last_belief    = last_belief_;
+    snap.current_regime = current_regime_;
+    snap.dwell_counter  = dwell_counter_;
+    snap.update_count   = update_count_;
+    return Result<MacroLiveState>(snap);
+}
+
+Result<void> MacroRegimePipeline::restore_live_state(const MacroLiveState& snap) {
+    // Same lock as update(): restore must not race a bar being processed.
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (!trained_) {
+        return make_error<void>(ErrorCode::NOT_INITIALIZED,
+            "Cannot restore live state: pipeline must be trained first",
+            "MacroRegimePipeline::restore_live_state");
+    }
+    if (!snap.prev_smoothed.allFinite()) {
+        return make_error<void>(ErrorCode::INVALID_DATA,
+            "NaN/Inf in restored prev_smoothed",
+            "MacroRegimePipeline::restore_live_state");
+    }
+    if ((snap.prev_smoothed.array() < 0.0).any()) {
+        return make_error<void>(ErrorCode::INVALID_DATA,
+            "Negative probability in restored prev_smoothed",
+            "MacroRegimePipeline::restore_live_state");
+    }
+    const int regime = static_cast<int>(snap.current_regime);
+    if (regime < 0 || regime >= kNumMacroRegimes) {
+        return make_error<void>(ErrorCode::INVALID_DATA,
+            "Restored current_regime is not a macro regime",
+            "MacroRegimePipeline::restore_live_state");
+    }
+    if (snap.dwell_counter < 0 || snap.update_count < 0) {
+        return make_error<void>(ErrorCode::INVALID_DATA,
+            "Negative dwell_counter or update_count in restored live state",
+            "MacroRegimePipeline::restore_live_state");
+    }
+    prev_smoothed_  = snap.prev_smoothed;
+    last_belief_    = snap.last_belief;
+    current_regime_ = snap.current_regime;
+    dwell_counter_  = snap.dwell_counter;
+    update_count_   = snap.update_count;
+    return Result<void>();
+}
+
 } // namespace statistics
 } // namespace trade_ngin
