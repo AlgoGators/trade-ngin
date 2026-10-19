@@ -1174,3 +1174,33 @@ TEST(RegimeAdversarial_L27, BeliefRemainsADistributionUnderExtremeInput) {
     }
     EXPECT_NEAR(sum, 1.0, 1e-6) << "probabilities no longer sum to 1";
 }
+
+// ----------------------------------------------------------------------------
+// N-10: train() prints its HMM, mapping and MSAR diagnostics to std::cerr with
+// std::fixed and a precision. The stream's formatting must be exactly as the
+// caller left it afterwards, or every later print (the next sleeve's, the
+// runner's) inherits it.
+// ----------------------------------------------------------------------------
+
+TEST(RegimeSubstrate, TrainRestoresCerrFormatting_N10) {
+    using namespace trade_ngin;
+    auto sc = make_market_scaffold();
+
+    const std::ios_base::fmtflags saved_flags = std::cerr.flags();
+    const std::streamsize saved_precision = std::cerr.precision();
+    std::cerr.flags(std::ios_base::scientific | std::ios_base::showpos);
+    std::cerr.precision(9);
+
+    MarketRegimePipeline pipeline;
+    auto t = pipeline.train(SleeveId::EQUITIES, sc.returns,
+        sc.hmm_means, sc.hmm_covs, sc.msar_means, sc.msar_vars, sc.msar_ar,
+        sc.garch_vol, sc.gmm_result, sc.gmm_features);
+    const std::ios_base::fmtflags flags_after = std::cerr.flags();
+    const std::streamsize precision_after = std::cerr.precision();
+    std::cerr.flags(saved_flags);
+    std::cerr.precision(saved_precision);
+
+    ASSERT_TRUE(t.is_ok()) << t.error()->what();
+    EXPECT_EQ(flags_after, std::ios_base::scientific | std::ios_base::showpos);
+    EXPECT_EQ(precision_after, 9);
+}
