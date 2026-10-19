@@ -2,11 +2,39 @@
 #include "trade_ngin/core/logger.hpp"
 
 #include <cmath>
+#include <cstdint>
+#include <cstdio>
 #include <limits>
 #include <sstream>
 
 namespace trade_ngin {
 namespace statistics {
+
+namespace {
+
+// Days since 1970-01-01 for a proleptic Gregorian date.
+int64_t days_from_civil(int y, int m, int d) {
+    y -= m <= 2;
+    const int64_t era = (y >= 0 ? y : y - 399) / 400;
+    const int64_t yoe = y - era * 400;
+    const int64_t doy = (153 * (m + (m > 2 ? -3 : 9)) + 2) / 5 + d - 1;
+    const int64_t doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    return era * 146097 + doe - 719468;
+}
+
+void civil_from_days(int64_t z, int& y, int& m, int& d) {
+    z += 719468;
+    const int64_t era = (z >= 0 ? z : z - 146096) / 146097;
+    const int64_t doe = z - era * 146097;
+    const int64_t yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
+    const int64_t doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    const int64_t mp = (5 * doy + 2) / 153;
+    d = static_cast<int>(doy - (153 * mp + 2) / 5 + 1);
+    m = static_cast<int>(mp < 10 ? mp + 3 : mp - 9);
+    y = static_cast<int>(yoe + era * 400 + (m <= 2));
+}
+
+}  // namespace
 
 MacroDataLoader::MacroDataLoader(PostgresDatabase& db)
     : db_(db) {}
@@ -315,23 +343,16 @@ MacroDataLoader::load_single(const std::string& date) const
     // carries the last released value for each series — the standard
     // macro-pipeline practice and what live deployment needs.
     auto compute_start = [](const std::string& end) -> std::string {
-        // YYYY-MM-DD format. Subtract 90 days. Naive day arithmetic via
-        // std::tm + mktime — same conventions as the rest of the loader.
-        std::tm tm{};
-        sscanf(end.c_str(), "%d-%d-%d", &tm.tm_year, &tm.tm_mon, &tm.tm_mday);
-        tm.tm_year -= 1900;
-        tm.tm_mon  -= 1;
-        std::time_t t = std::mktime(&tm);
-        if (t == -1) return end;  // parse failed; fall back to single-day
-        t -= 90 * 86400;  // 90 days back
-        std::tm tm_back{};
-#ifdef _WIN32
-        gmtime_s(&tm_back, &t);
-#else
-        gmtime_r(&t, &tm_back);
-#endif
+        // YYYY-MM-DD format. Subtract 90 calendar days with civil-date
+        // arithmetic (days since 1970-01-01, Hinnant's algorithm), so the
+        // result does not depend on the host time zone. mktime + gmtime
+        // mixed local and UTC and gave a 91-day window east of UTC.
+        int y = 0, m = 0, d = 0;
+        if (std::sscanf(end.c_str(), "%d-%d-%d", &y, &m, &d) != 3) return end;
+        const int64_t days = days_from_civil(y, m, d) - 90;
+        civil_from_days(days, y, m, d);
         char buf[11];
-        std::strftime(buf, sizeof(buf), "%Y-%m-%d", &tm_back);
+        std::snprintf(buf, sizeof(buf), "%04d-%02d-%02d", y, m, d);
         return std::string(buf);
     };
 
