@@ -450,40 +450,46 @@ TEST(RegimeSubstrate, DFMFactorSignsLockedByAnchorConfig_L06) {
 // ----------------------------------------------------------------------------
 
 TEST(RegimeSubstrate, DFMHandlesHighNaNColumn_L05) {
+    // Column 2 is 40% NaN and carries the same true common weight (0.3) as
+    // columns 1, 4 and 5, so its loading should be on their scale. The
+    // fixture's loadings are noisy per seed (a 5x spread among the clean
+    // same-weight columns), so the claim is checked on the median over 20 seeds
+    // of max|lambda(2,.)| / median(max|lambda(1|4|5,.)|). Bound written before
+    // the run: >= 0.6. A loading shrunk by the missing fraction sits near 0.23.
     constexpr int T = 300, N = 6;
     constexpr int nan_col = 2;
     constexpr double nan_frac = 0.4;
-    Eigen::MatrixXd Y = dfm_make_synthetic_panel(T, N, /*seed*/ 999, nan_col, nan_frac);
-
     std::vector<std::string> names(N);
     for (int n = 0; n < N; ++n) names[n] = "s" + std::to_string(n);
 
-    DFMConfig cfg;
-    cfg.num_factors = 2;
-    cfg.max_em_iterations = 30;
-    cfg.standardise_data = true;
-    cfg.factor_anchor_names = {};  // disable anchoring for this test
-    cfg.factor_anchor_signs = {};
+    std::vector<double> ratios;
+    for (int seed = 1; seed <= 20; ++seed) {
+        Eigen::MatrixXd Y = dfm_make_synthetic_panel(T, N, seed, nan_col, nan_frac);
+        DFMConfig cfg;
+        cfg.num_factors = 2;
+        cfg.max_em_iterations = 30;
+        cfg.standardise_data = true;
+        cfg.factor_anchor_names = {};  // disable anchoring for this test
+        cfg.factor_anchor_signs = {};
+        DynamicFactorModel dfm(cfg);
+        auto out = dfm.fit(Y, names);
+        ASSERT_TRUE(out.is_ok()) << out.error()->what();
 
-    DynamicFactorModel dfm(cfg);
-    auto out = dfm.fit(Y, names);
-    ASSERT_TRUE(out.is_ok()) << out.error()->what();
-
-    // After standardize, the per-series std should be ~1. With NaN→0 fill
-    // the std of nan_col would be biased toward 0 (cnt < T) but the
-    // standardise() helper computes std on observed values only, then
-    // pairwise complete-case PCA covariance is also used.
-    // The downstream effect: the lambda loading on nan_col shouldn't be
-    // pathologically tiny (which would be the symptom of bias-to-0).
-    const auto& lambda = out.value().lambda;
-    double max_loading_on_nan_col = 0.0;
-    for (int k = 0; k < lambda.cols(); ++k) {
-        max_loading_on_nan_col = std::max(max_loading_on_nan_col,
-                                          std::abs(lambda(nan_col, k)));
+        const auto& lambda = out.value().lambda;
+        auto max_abs = [&](int n) {
+            double m = 0.0;
+            for (int k = 0; k < lambda.cols(); ++k) m = std::max(m, std::abs(lambda(n, k)));
+            return m;
+        };
+        std::vector<double> peers = {max_abs(1), max_abs(4), max_abs(5)};
+        std::sort(peers.begin(), peers.end());
+        ratios.push_back(max_abs(nan_col) / peers[1]);
     }
-    EXPECT_GT(max_loading_on_nan_col, 0.05)
-        << "column with 40% NaN should still load meaningfully on "
-           "at least one factor; biased-to-0 covariance would shrink loadings.";
+    std::sort(ratios.begin(), ratios.end());
+    const double median = 0.5 * (ratios[9] + ratios[10]);
+    EXPECT_GE(median, 0.6)
+        << "the 40%-NaN column's loading is shrunk relative to same-weight clean "
+           "columns: median ratio " << median;
 }
 
 // ============================================================================
