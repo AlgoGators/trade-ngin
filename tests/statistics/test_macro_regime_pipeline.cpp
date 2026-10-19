@@ -8,6 +8,7 @@
 
 #include <Eigen/Dense>
 #include <cmath>
+#include <limits>
 #include <cstring>
 #include <random>
 #include <string>
@@ -966,4 +967,53 @@ TEST_F(MacroRegimePipelineTest, GoldenTrainedStateAndBeliefsAreUnchanged) {
     }
     // Recorded on 949be76b.
     EXPECT_EQ(d.h, 0x15e331668853d332ULL) << "a trained Gaussian, mapping or belief changed";
+}
+
+// M-11: the DFM covariance floor is a config knob. The default (0.5) leaves the
+// golden digest above unchanged; a different floor moves the Gaussians by
+// exactly the difference on the diagonal; a floor that is not positive is
+// refused before anything is trained.
+TEST_F(MacroRegimePipelineTest, DFMCovarianceFloorIsConfigurable_M11) {
+    MacroRegimePipelineConfig def_cfg;
+    EXPECT_EQ(def_cfg.dfm_cov_floor, 0.5);
+
+    MacroRegimePipeline a(def_cfg);
+    ASSERT_TRUE(a.train(dfm_out_, ms_out_, panel_, bsts_probs_, growth_scores_,
+                        inflation_scores_).is_ok());
+    MacroRegimePipelineConfig cfg;
+    cfg.dfm_cov_floor = 0.2;
+    MacroRegimePipeline b(cfg);
+    ASSERT_TRUE(b.train(dfm_out_, ms_out_, panel_, bsts_probs_, growth_scores_,
+                        inflation_scores_).is_ok());
+    int fitted = 0;
+    for (int r = 0; r < kNumMacroRegimes; ++r) {
+        const auto& ga = a.dfm_gaussians()[r];
+        const auto& gb = b.dfm_gaussians()[r];
+        EXPECT_EQ(ga.mean, gb.mean) << "r=" << r;
+        EXPECT_EQ(ga.cov(0, 1), gb.cov(0, 1)) << "r=" << r;
+        if (ga.n_samples < 5) {
+            // Too few samples: the identity fallback, which the floor does not touch.
+            EXPECT_EQ(ga.cov, gb.cov) << "r=" << r;
+            continue;
+        }
+        ++fitted;
+        EXPECT_NEAR(ga.cov(0, 0) - gb.cov(0, 0), 0.3, 1e-12) << "r=" << r;
+        EXPECT_NEAR(ga.cov(1, 1) - gb.cov(1, 1), 0.3, 1e-12) << "r=" << r;
+    }
+    EXPECT_GT(fitted, 0) << "the fixture must fit at least one regime Gaussian";
+
+    for (double bad : {0.0, -0.1, std::numeric_limits<double>::quiet_NaN()}) {
+        MacroRegimePipelineConfig bad_cfg;
+        bad_cfg.dfm_cov_floor = bad;
+        MacroRegimePipeline c(bad_cfg);
+        auto r = c.train(dfm_out_, ms_out_, panel_, bsts_probs_, growth_scores_, inflation_scores_);
+        ASSERT_TRUE(r.is_error()) << bad;
+        EXPECT_EQ(r.error()->code(), trade_ngin::ErrorCode::INVALID_ARGUMENT);
+        EXPECT_FALSE(c.is_trained());
+    }
+
+    // Round-trips through the config JSON.
+    MacroRegimePipelineConfig back;
+    back.from_json(cfg.to_json());
+    EXPECT_EQ(back.dfm_cov_floor, 0.2);
 }

@@ -130,6 +130,11 @@ struct MacroRegimePipelineConfig : public ConfigBase {
     // B1: DFM EM iterations (spec default 200 is insufficient for 24-series panel)
     int    dfm_max_em_iterations = 500;
 
+    // B1: variance added to each DFM regime Gaussian's covariance (times I), so
+    // adjacent regimes overlap and map_dfm returns a distribution rather than a
+    // near point mass. M-11 sweeps it (0.2 to 0.7); must be finite and > 0.
+    double dfm_cov_floor = 0.5;
+
     // B2: MS-DFM fingerprint softmax temperature
     double fingerprint_tau = 1.0;
 

@@ -44,6 +44,7 @@ nlohmann::json MacroRegimePipelineConfig::to_json() const {
         {"w_quadrant",               w_quadrant},
         {"w_bsts",                   w_bsts},
         {"dfm_max_em_iterations",    dfm_max_em_iterations},
+        {"dfm_cov_floor",            dfm_cov_floor},
         {"growth_factor_idx",        growth_factor_idx},
         {"inflation_factor_idx",     inflation_factor_idx},
         {"growth_factor_sign",       growth_factor_sign},
@@ -83,6 +84,7 @@ void MacroRegimePipelineConfig::from_json(const nlohmann::json& j) {
     get("w_quadrant",               w_quadrant);
     get("w_bsts",                   w_bsts);
     get("dfm_max_em_iterations",    dfm_max_em_iterations);
+    get("dfm_cov_floor",            dfm_cov_floor);
     get("growth_factor_idx",        growth_factor_idx);
     get("inflation_factor_idx",     inflation_factor_idx);
     get("growth_factor_sign",       growth_factor_sign);
@@ -178,6 +180,12 @@ Result<void> MacroRegimePipeline::train(
 {
     const int T = dfm_output.T;
 
+    if (!std::isfinite(config_.dfm_cov_floor) || config_.dfm_cov_floor <= 0.0) {
+        return make_error<void>(ErrorCode::INVALID_ARGUMENT,
+            "dfm_cov_floor must be finite and > 0 (got " +
+                std::to_string(config_.dfm_cov_floor) + ")",
+            "MacroRegimePipeline");
+    }
     if (T < 20) {
         return make_error<void>(ErrorCode::INVALID_ARGUMENT,
             "Need at least 20 timesteps for training", "MacroRegimePipeline");
@@ -360,11 +368,11 @@ void MacroRegimePipeline::train_dfm_gaussians(const DFMOutput& dfm_output) {
         // CALIBRATION NOTE: The spec uses a minimal ridge (1e-6) for numerical
         // stability. In practice this produces Gaussians so tight that the soft
         // assignment degenerates to a near-point-mass (0.96 on one regime).
-        // A floor of 0.5*I ensures genuine overlap between adjacent regimes
+        // A floor of 0.5*I (config dfm_cov_floor) ensures genuine overlap between adjacent regimes
         // so the output is a meaningful probability distribution, not a hard
         // classifier. This is the variance of the Gaussian in each dimension —
         // 0.5 corresponds to ~0.7 std dev of spread around each regime centroid.
-        cov += Eigen::Matrix2d::Identity() * 0.5;
+        cov += Eigen::Matrix2d::Identity() * config_.dfm_cov_floor;
 
         dfm_gaussians_[r].mean    = mu;
         dfm_gaussians_[r].cov     = cov;
