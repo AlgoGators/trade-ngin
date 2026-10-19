@@ -77,6 +77,7 @@ set(TEST_SOURCES
     risk/test_risk_scale_report.cpp
     optimization/test_dynamic_optimizer.cpp
     backtest/test_transaction_cost_analysis.cpp
+    backtest/test_transaction_cost_attribution.cpp
     transaction_cost/test_transaction_cost_manager.cpp
     transaction_cost/test_cost_metadata_specs.cpp
     transaction_cost/test_spread_model.cpp
