@@ -445,6 +445,8 @@ jobs:
     permissions:
       contents: read
       packages: write
+      # The Trivy step uploads its SARIF to the Security tab.
+      security-events: write
     runs-on: ubuntu-latest
     container:
       image: ghcr.io/algogators/trade-ngin-ci:latest
