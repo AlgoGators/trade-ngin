@@ -154,6 +154,7 @@ set(TRADE_NGIN_SOURCES
     src/regime_detection/market/market_regime_pipeline.cpp
     src/regime_detection/macro/ms_dfm.cpp
     src/regime_detection/market/autoregressive.cpp
+    src/regime_detection/runner_config.cpp
 )
 
 # Add library target

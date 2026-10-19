@@ -4,9 +4,12 @@
 // combines into a single MacroBelief.
 //
 // Usage:
-//   ./macro_regime_pipeline_runner [connection_string] [start_date] [end_date]
+//   ./macro_regime_pipeline_runner [start_date] [end_date]
+//
+// The database connection comes from config/defaults.json (./config or ../config).
 
 #include "trade_ngin/regime_detection/macro/macro_regime_pipeline.hpp"
+#include "trade_ngin/regime_detection/runner_config.hpp"
 #include "trade_ngin/regime_detection/macro/bsts_regime_detector.hpp"
 #include "trade_ngin/regime_detection/macro/dynamic_factor_model.hpp"
 #include "trade_ngin/regime_detection/macro/ms_dfm.hpp"
@@ -73,14 +76,16 @@ static void print_belief(const MacroBelief& b) {
 
 int main(int argc, char* argv[]) {
     try {
-        std::string conn_string;
-        const char* env_conn = std::getenv("MACRO_DB_CONN");
-        if (argc >= 2)      conn_string = argv[1];
-        else if (env_conn)  conn_string = env_conn;
-        else                conn_string = "dbname=new_algo_data";
+        std::string start_date = (argc >= 2) ? argv[1] : "";
+        std::string end_date   = (argc >= 3) ? argv[2] : "";
 
-        std::string start_date = (argc >= 3) ? argv[2] : "";
-        std::string end_date   = (argc >= 4) ? argv[3] : "";
+        auto conn = trade_ngin::regime::load_runner_db_connection();
+        if (conn.is_error()) {
+            std::cerr << "[config] " << conn.error()->what() << "\n"
+                      << "Usage: macro_regime_pipeline_runner [start] [end]\n";
+            return 1;
+        }
+        const std::string conn_string = conn.value();
 
         std::cout << "========================================================\n"
                   << " Synthesized Macro Regime Pipeline\n"

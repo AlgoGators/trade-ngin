@@ -3,9 +3,12 @@
 // → prints regime probabilities, transition matrix, signatures
 //
 // Usage:
-//   ./macro_msdfm_runner [connection_string] [output.csv] [start_date] [end_date]
+//   ./macro_msdfm_runner [output.csv] [start_date] [end_date]
+//
+// The database connection comes from config/defaults.json (./config or ../config).
 
 #include "trade_ngin/regime_detection/macro/ms_dfm.hpp"
+#include "trade_ngin/regime_detection/runner_config.hpp"
 #include "trade_ngin/regime_detection/macro/macro_data_loader.hpp"
 #include "trade_ngin/data/postgres_database.hpp"
 #include "trade_ngin/core/logger.hpp"
@@ -136,24 +139,21 @@ static void export_regimes_csv(const MSDFMOutput& out,
 int main(int argc, char* argv[]) {
 
     // Parse args
-    std::string conn_string;
-    const char* env_conn = std::getenv("MACRO_DB_CONN");
-    if (argc >= 2) {
-        conn_string = argv[1];
-    } else if (env_conn) {
-        conn_string = env_conn;
-    } else {
-        conn_string = "dbname=new_algo_data";
-    }
+    std::string output_csv = (argc >= 2) ? argv[1] : "";
+    std::string start_date = (argc >= 3) ? argv[2] : "";
+    std::string end_date   = (argc >= 4) ? argv[3] : "";
 
-    std::string output_csv = (argc >= 3) ? argv[2] : "";
-    std::string start_date = (argc >= 4) ? argv[3] : "";
-    std::string end_date   = (argc >= 5) ? argv[4] : "";
+    auto conn = trade_ngin::regime::load_runner_db_connection();
+    if (conn.is_error()) {
+        std::cerr << "[config] " << conn.error()->what() << "\n"
+                  << "Usage: macro_msdfm_runner [output.csv] [start] [end]\n";
+        return 1;
+    }
+    const std::string conn_string = conn.value();
 
     std::cout << "========================================\n"
               << " Macro MS-DFM Runner (PostgreSQL)\n"
-              << "========================================\n\n"
-              << "Connection: " << conn_string << "\n";
+              << "========================================\n\n";
     if (!start_date.empty()) std::cout << "Start date: " << start_date << "\n";
     if (!end_date.empty())   std::cout << "End date:   " << end_date << "\n";
     std::cout << "\n";

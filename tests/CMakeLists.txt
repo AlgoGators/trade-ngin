@@ -54,6 +54,7 @@ set(TEST_SOURCES
     statistics/test_gmm.cpp
     statistics/test_macro_data_loader.cpp
     statistics/test_market_data_loader.cpp
+    statistics/test_regime_runner_config.cpp
     statistics/test_msar.cpp
 )
 
@@ -66,7 +67,8 @@ target_include_directories(trade_ngin_tests
         ${CMAKE_SOURCE_DIR}/include
 )
 
-target_compile_definitions(trade_ngin_tests PRIVATE TESTING)
+target_compile_definitions(trade_ngin_tests PRIVATE TESTING
+    TRADE_NGIN_CONFIG_TEMPLATE_DIR="${CMAKE_SOURCE_DIR}/config_template")
 
 # Link against Google Test and our library
 target_link_libraries(trade_ngin_tests
