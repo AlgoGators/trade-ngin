@@ -94,6 +94,7 @@ set(TEST_SOURCES
     live/corp_actions/test_denominator_range_db.cpp
     live/corp_actions/test_corp_action_query_bounds_db.cpp
     live/corp_actions/test_audit_log.cpp
+    live/corp_actions/test_audit_log_paths.cpp
     live/corp_actions/test_income.cpp
     live/corp_actions/test_broker_frame.cpp
     live/corp_actions/test_broker_frame_db.cpp
