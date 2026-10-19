@@ -42,19 +42,23 @@ Result<void> TrendFollowingStrategy::validate_config() const {
     auto result = BaseStrategy::validate_config();
     if (result.is_error())
         return result;
+    return validate_trend_config(trend_config_);
+}
 
+Result<void> TrendFollowingStrategy::validate_trend_config(
+    const TrendFollowingConfig& trend_config) {
     // Validate trend-specific config
-    if (trend_config_.risk_target <= 0.0 || trend_config_.risk_target > 1.0) {
+    if (trend_config.risk_target <= 0.0 || trend_config.risk_target > 1.0) {
         return make_error<void>(ErrorCode::INVALID_ARGUMENT, "Risk target must be between 0 and 1",
                                 "TrendFollowingStrategy");
     }
 
-    if (trend_config_.idm <= 0.0) {
+    if (trend_config.idm <= 0.0) {
         return make_error<void>(ErrorCode::INVALID_ARGUMENT, "IDM must be positive",
                                 "TrendFollowingStrategy");
     }
 
-    if (trend_config_.ema_windows.empty()) {
+    if (trend_config.ema_windows.empty()) {
         return make_error<void>(ErrorCode::INVALID_ARGUMENT,
                                 "Must specify at least one EMA window pair",
                                 "TrendFollowingStrategy");
@@ -63,7 +67,7 @@ Result<void> TrendFollowingStrategy::validate_config() const {
     // Every EWMAC pair is scaled by its fixed scalar; a pair without one is refused, never run
     // on a guessed scale.
     std::string unsupported;
-    if (!trend_estimator::pairs_supported(trend_config_.ema_windows, &unsupported)) {
+    if (!trend_estimator::pairs_supported(trend_config.ema_windows, &unsupported)) {
         return make_error<void>(ErrorCode::INVALID_ARGUMENT,
                                 "EMA window pair " + unsupported +
                                     " has no fixed forecast scalar: the pairs are (2,8), (4,16), "
@@ -73,15 +77,15 @@ Result<void> TrendFollowingStrategy::validate_config() const {
 
     // The equity slow rule reads the scaled forecasts of the pairs it names: a ruled sleeve carries
     // every one of them, and a rule with symbols names at least one pair.
-    if (!trend_config_.equity_slow_symbols.empty()) {
-        if (trend_config_.equity_slow_pairs.empty()) {
+    if (!trend_config.equity_slow_symbols.empty()) {
+        if (trend_config.equity_slow_pairs.empty()) {
             return make_error<void>(ErrorCode::INVALID_ARGUMENT,
                                     "The equity slow rule names symbols and no pair",
                                     "TrendFollowingStrategy");
         }
-        for (const auto& rule_pair : trend_config_.equity_slow_pairs) {
-            if (std::find(trend_config_.ema_windows.begin(), trend_config_.ema_windows.end(),
-                          rule_pair) == trend_config_.ema_windows.end()) {
+        for (const auto& rule_pair : trend_config.equity_slow_pairs) {
+            if (std::find(trend_config.ema_windows.begin(), trend_config.ema_windows.end(),
+                          rule_pair) == trend_config.ema_windows.end()) {
                 return make_error<void>(
                     ErrorCode::INVALID_ARGUMENT,
                     "The equity slow rule names the pair (" + std::to_string(rule_pair.first) +

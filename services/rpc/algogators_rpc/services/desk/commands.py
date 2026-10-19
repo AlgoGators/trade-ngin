@@ -24,8 +24,9 @@ time.
 |                   | `override_b` publishes B once the approved override booked it.    |
 | rescind           | the desk takes back its approval (contract C8), in Python under   |
 |                   | the portfolio's flock: refused from 09:30 New York on its date    |
-|                   | (the clock when it runs), on a day not published by the desk, by  |
-|                   | anyone but the approver and on a sent day; else                   |
+|                   | (the clock when it runs), on a day not published by the desk, on  |
+|                   | an override's day unless the VP or the President asks, on a sent  |
+|                   | day and once a later day's book was built on it; else             |
 |                   | published_by/at/source are cleared and the                        |
 |                   | row is finished done, in one transaction (command_store.rescind). |
 
@@ -49,13 +50,13 @@ from dataclasses import dataclass
 from typing import Callable, Iterable, List, Optional, Set, Tuple
 
 from . import cutoff
-from .command_store import (NOT_APPROVER, NOT_DESK, NOT_RUNNING, RESCINDED, SENT, UNPUBLISHED,
-                            CommandRow, CommandStore)
+from .command_store import (BUILT_ON, NOT_APPROVER, NOT_DESK, NOT_RUNNING, RESCINDED, SENT,
+                            UNPUBLISHED, CommandRow, CommandStore)
 from .config import CommandSettings
 from .jobs import Job, JobManager
 from .override_mail import (ROLES, ApproverError, Sender, parse_approvers, run_override_request,
                             send_smtp)
-from .portfolios import PortfolioConfigError, resolve_portfolio_dir
+from .portfolios import PortfolioConfigError, portfolios_root, resolve_portfolio_dir
 from . import risk as rk
 
 log = logging.getLogger("desk.commands")
@@ -301,7 +302,9 @@ class Dispatcher:
                                   lambda: self._run_send(claimed, portfolio_dir),
                                   self._on_done(claimed.id)))
             return Outcome(ACCEPTED, f"send {claimed.id} queued"), True
-        refused = self._published_refusal(claimed) or self._future_refusal(claimed)
+        # A future day's book is approved, or an override requested, as soon as its model run
+        # has written it (Dominick 2026-10-18, replacing D-43's wait for the day itself).
+        refused = self._published_refusal(claimed) or self._closed_refusal(claimed)
         if refused:
             return refused, False
         mode, send_now = ENGINE_MODE.get(claimed.kind, ""), False
@@ -356,19 +359,19 @@ class Dispatcher:
                             f"{row.portfolio_id} {row.date} was published at "
                             f"{published.isoformat()}; a published day is frozen")
 
-    def _future_refusal(self, row: CommandRow) -> Optional[Outcome]:
-        """A future day's book is not approved, by the desk or through an override (D-43): it
-        would freeze on prices its own morning run has not seen. The desk may still save edits
-        to it. The scheduler's fallback rows are its own."""
-        if row.kind not in ("publish", "override_request") or cutoff.is_fallback(row.requested_by):
+    def _closed_refusal(self, row: CommandRow) -> Optional[Outcome]:
+        """From 10:00 New York on its date a day takes no save or override request, even while
+        its fallback has not published it yet (a late or failed fallback): the day can no longer
+        be approved, so nothing done to it would go out. AlgoLens refuses them too; this is the
+        engine side of the same rule (C7). A decision from 10:00 is refused by its link's
+        expiry, which is 10:00 on the book date (D-13)."""
+        if row.kind not in FROZEN_WHEN_PUBLISHED:
             return None
-        today = self._clock().astimezone(cutoff.zone()).date()
-        if row.date <= today:
+        # Judged, like an approval, by when the desk acted (the row's created_at).
+        if cutoff.window(row.date, row.created_at or self._clock()) != cutoff.CLOSED:
             return None
-        return self._finish(row, REFUSED, {"reason": "future_day"},
-                            f"{row.portfolio_id} {row.date} is a future day (today is {today} in "
-                            f"New York); its book can be approved, or an override requested, from "
-                            f"{row.date}")
+        return self._finish(row, REFUSED, {"reason": "past_cutoff"},
+                            f"{row.portfolio_id} {row.date}: {cutoff.deadline_message(row.date)}")
 
     def _portfolio_dir(self, row: CommandRow) -> Tuple[str, Optional[Outcome]]:
         """(dir, None), or ("", the refusal already recorded on the row)."""
@@ -422,10 +425,23 @@ class Dispatcher:
         if self._risk_reader is None:
             return None, (FAILED, None, "the risk check cannot be read here; try again")
         try:
-            return rk.derive_desk_risk(self._risk_reader(row.portfolio_id, row.date)), None
+            # The portfolio's risk.json limits, as GetDeskRisk reads them: one gate, the one
+            # AlgoLens shows (N5). Without them a desk row with no recorded checks would not
+            # compare L_g and L_n with a max here.
+            return rk.derive_desk_risk(self._risk_reader(row.portfolio_id, row.date),
+                                       self._limits(row.portfolio_id),
+                                       rk.portfolio_tau(self._settings.config_dir,
+                                                        row.portfolio_id)), None
         except Exception as exc:  # StoreError and the like: retryable
             return None, (FAILED, None, f"the risk check could not be read "
                                         f"({type(exc).__name__}); try again")
+
+    def _limits(self, portfolio_id: str):
+        try:
+            name = resolve_portfolio_dir(self._settings.config_dir, portfolio_id)
+            return rk.load_limits(str(portfolios_root(self._settings.config_dir) / name))
+        except PortfolioConfigError:
+            return []
 
     @staticmethod
     def _blocked(report, after_id=None):
@@ -660,6 +676,8 @@ class Dispatcher:
             NOT_APPROVER: (f"{row.portfolio_id} {row.date} was published through an override "
                            "the VP or the President approved; only the VP or the President can "
                            "rescind it"),
+            BUILT_ON: (f"{row.portfolio_id} {res.later} was already built on the {row.date} "
+                       "book; its approval can no longer be rescinded"),
             SENT: (f"{row.portfolio_id} {row.date} was already e-mailed at "
                    f"{res.sent_at.isoformat() if res.sent_at else 'an unknown time'}; a sent "
                    "approval cannot be rescinded"),
@@ -700,6 +718,13 @@ class Dispatcher:
             return tuple(parse_approvers(self._settings.approvers).values())
         except ApproverError:
             return ()
+
+    def _approver_for(self, role: str) -> str:
+        """The QT_APPROVERS address of `role` (vp or president), lower-cased; "" when unset."""
+        try:
+            return (parse_approvers(self._settings.approvers).get(role) or "").strip().lower()
+        except ApproverError:
+            return ""
 
     def _override_mail(self, row: CommandRow, portfolio_dir: str) -> None:
         refusal = self._margin_check(row, row)
@@ -743,11 +768,19 @@ class Dispatcher:
             return "approver_role must be vp or president"
         if row.requested_by.strip().lower() == parent.requested_by.strip().lower():
             return "the requester may not approve their own request"
+        # Only the VP or the President decides (D17): the decider must be the address
+        # QT_APPROVERS names for the role the row claims. AlgoLens checks this when it verifies
+        # the link; this holds for a row re-driven without it too.
+        approver = self._approver_for(row.approver_role)
+        if not approver or row.requested_by.strip().lower() != approver:
+            return (f"{row.requested_by.strip() or 'nobody'} is not the "
+                    f"{row.approver_role} named in QT_APPROVERS")
         if parent.token_expires_at is None:
             return f"override request {parent.id} has no approval token (its e-mail was never sent)"
         if parent.status != "done":
             return f"override request {parent.id} is {parent.status}, not done"
-        if row.created_at is None or parent.token_expires_at < row.created_at:
+        # The link is dead AT its expiry (10:00 on the book date, D-13), as AlgoLens holds it.
+        if row.created_at is None or parent.token_expires_at <= row.created_at:
             return f"the approval link of override request {parent.id} expired at " \
                    f"{parent.token_expires_at.isoformat()}"
         for other in self._store.decisions_for(parent.id):

@@ -83,6 +83,7 @@ set(TEST_SOURCES
     transaction_cost/test_impact_model.cpp
     transaction_cost/test_netting.cpp
     live/test_strategy_config_live_only.cpp
+    live/test_live_settings_check.cpp
     live/corp_actions/test_applier.cpp
     live/corp_actions/test_effect_classes.cpp
     live/corp_actions/test_frame_horizon.cpp

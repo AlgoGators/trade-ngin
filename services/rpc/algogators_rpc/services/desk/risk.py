@@ -46,6 +46,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, List, Mapping, Optional, Sequence, Tuple
 
+from .portfolios import PortfolioConfigError, portfolios_root, resolve_portfolio_dir
+
 RISK_STEPS = frozenset({"cap", "overlay", "clip", "trim"})
 RULE_STEPS = frozenset({"sign_close", "rounding", "buffer", "search", "hold"})
 RISK, RULE, NONE = "risk", "rule", "none"
@@ -195,11 +197,14 @@ def _describe(term: str) -> str:
 
 
 def derive_desk_risk(row: Optional[DeskRiskRow],
-                     limits: Sequence[Tuple[str, float]] = ()) -> DeskRiskReport:
-    """The risk report of a day's qt book. `row` is None when the day has no qt row yet."""
+                     limits: Sequence[Tuple[str, float]] = (),
+                     tau: Optional[float] = None) -> DeskRiskReport:
+    """The risk report of a day's qt book. `row` is None when the day has no qt row yet. `tau`
+    (the first live sleeve's risk target, load_tau) puts the covariance limits in percent when
+    the engine measured nothing, as on a desk book (D-80)."""
     if row is None:
         return DeskRiskReport(state=NO_BOOK, limits=tuple(limits),
-                              checks=configured_checks(limits, None, None, "no book yet")
+                              checks=configured_checks(limits, None, None, "no book yet", tau)
                               + (fund_cap_check(None),))
     readings = dict(gross_leverage=row.gross_leverage, net_leverage=row.net_leverage,
                     margin_cushion=row.margin_cushion, equity_to_margin=row.equity_to_margin,
@@ -210,12 +215,12 @@ def derive_desk_risk(row: Optional[DeskRiskRow],
     if not source:
         return DeskRiskReport(state=INCOMPLETE, checks=configured_checks(
             limits, row.gross_leverage, row.net_leverage,
-            "the book is incomplete: a desk or override run did not finish writing it")
+            "the book is incomplete: a desk or override run did not finish writing it", tau)
             + (fund_cap_check(row),), within_limits=False, **readings)
     if desk is None or source not in (DESK, OVERRIDE):
         # The model's book: the engine's own run, inside its limits by construction.
         return DeskRiskReport(state=MODEL, checks=configured_checks(
-            limits, row.gross_leverage, row.net_leverage, "measured on a desk save")
+            limits, row.gross_leverage, row.net_leverage, "measured on a desk save", tau)
             + (fund_cap_check(row),), **readings)
 
     overlay = desk.get("overlay") if isinstance(desk.get("overlay"), Mapping) else {}
@@ -260,7 +265,7 @@ def derive_desk_risk(row: Optional[DeskRiskRow],
                                  _terms(after_rounding), _terms(by_hold), symbols)
     else:
         why = "the overlay refused the book" if refused else "not recorded by this engine run"
-        checks = configured_checks(limits, row.gross_leverage, row.net_leverage, why)
+        checks = configured_checks(limits, row.gross_leverage, row.net_leverage, why, tau)
     cap = fund_cap_check(row)
     checks = checks + (cap,)
     if cap.status == OVER:
@@ -278,6 +283,33 @@ def derive_desk_risk(row: Optional[DeskRiskRow],
         breaches=tuple(breaches),
         m=m, binding_term=binding, over_limit_after_rounding=after_rounding,
         over_limit_by_hold=by_hold, refused=refused, symbols=tuple(symbols), **readings)
+
+
+def portfolio_tau(config_dir: str, portfolio_id: str) -> Optional[float]:
+    """load_tau of the portfolio's config directory; None when it does not resolve."""
+    try:
+        name = resolve_portfolio_dir(config_dir, portfolio_id)
+    except PortfolioConfigError:
+        return None
+    return load_tau(str(portfolios_root(config_dir) / name))
+
+
+def load_tau(portfolio_dir: str) -> Optional[float]:
+    """The first live sleeve's risk target (portfolio.json strategies, the first with
+    enabled_live; config.risk_target): the tau the overlay's R limits are ratios to. None when
+    the file or the value is missing."""
+    path = Path(portfolio_dir) / "portfolio.json"
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    strategies = data.get("strategies") if isinstance(data, Mapping) else None
+    for sleeve in (strategies or {}).values() if isinstance(strategies, Mapping) else ():
+        if isinstance(sleeve, Mapping) and sleeve.get("enabled_live"):
+            config = sleeve.get("config") if isinstance(sleeve.get("config"), Mapping) else {}
+            value = _optional(config.get("risk_target"))
+            return value if value is not None and value > 0 else None
+    return None
 
 
 def load_limits(portfolio_dir: str) -> List[Tuple[str, float]]:
@@ -363,7 +395,8 @@ def measured_checks(measured: Mapping[str, Any], binding: str, after_rounding: S
 
 
 def configured_checks(limits: Sequence[Tuple[str, float]], gross: Optional[float],
-                      net: Optional[float], why: str) -> Tuple[RiskCheck, ...]:
+                      net: Optional[float], why: str,
+                      tau: Optional[float] = None) -> Tuple[RiskCheck, ...]:
     """The configured maxes when the engine measured nothing: the leverage of the stored book
     (trading.live_results) where the row has it, the rest not measured."""
     configured = dict(limits)
@@ -372,7 +405,12 @@ def configured_checks(limits: Sequence[Tuple[str, float]], gross: Optional[float
         limit = configured.get(key)
         value, unit, detail = None, MULTIPLE, why
         if term in COVARIANCE_TERMS:
-            unit = TAU  # a multiple of the risk target until the engine measures the book
+            if tau is not None and limit is not None:
+                # D-80: in percent, as the engine's measured checks give them on a desk book.
+                unit, detail = PERCENT, f"{detail}; max {limit:g} x risk target {tau:.0%}"
+                limit = limit * tau
+            else:
+                unit = TAU  # a multiple of the risk target until the engine measures the book
         elif term == "TRIM":
             unit = CONTRACTS
         elif term == "L_g" and gross is not None:

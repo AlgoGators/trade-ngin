@@ -10,7 +10,7 @@ import time
 
 import pytest
 
-from conftest import PDIR, PID, BookLine, make_row, now, write_portfolio
+from conftest import PDIR, PID, BookLine, make_row, now, write_portfolio, PUBLISH_CREATED
 from algogators_rpc.services.desk.jobs import RunResult
 from algogators_rpc.log import JsonFormatter
 from algogators_rpc.services.desk.recovery import redrive_pending, sweep_pending
@@ -245,7 +245,7 @@ def test_override_with_email_disabled_writes_the_mail_into_result(stub, agent, c
     mail = row.result["email"]
     assert mail["to"] == ["vp@algogators.com", "pres@algogators.com"]
     assert mail["subject"] == f"QT override request: {PID} 2026-10-07"
-    token = re.search(r"https://algolens\.algogators\.com/qt/approve\?token=([A-Za-z0-9_-]+)",
+    token = re.search(r"https://algolens\.algogators\.com/qt/approve#token=([A-Za-z0-9_-]+)",
                       mail["body"]).group(1)
     assert len(token) >= 40
     assert row.token_hash == hashlib.sha256(token.encode()).hexdigest()
@@ -281,7 +281,7 @@ def test_override_email_sent(stub, agent, cstore, settings, config_dir, caplog):
     cfg, to, subject, body = agent.sent[0]
     assert to == ["vp@algogators.com", "pres@algogators.com"]
     assert cfg.host == "smtp.example.com" and cfg.from_email == "qt@example.com"
-    token = re.search(r"https://lens\.test/approve\?token=([A-Za-z0-9_-]+)", body).group(1)
+    token = re.search(r"https://lens\.test/approve#token=([A-Za-z0-9_-]+)", body).group(1)
     assert row.token_hash == hashlib.sha256(token.encode()).hexdigest()
     log = rendered(caplog)
     assert token not in log and "app-password-123" not in log
@@ -324,7 +324,7 @@ def test_override_kind_mismatch(stub, cstore):
 
 def requested(cstore, id=50, expires_in=dt.timedelta(hours=40), **kw):
     return cstore.add(make_row(id, "override_request", status="done", token_hash="ab" * 32,
-                               token_expires_at=now() + expires_in, **kw))
+                               token_expires_at=PUBLISH_CREATED + expires_in, **kw))
 
 
 def decision(cstore, id=51, parent=50, approved=True, by="vp@algogators.com", **kw):
@@ -364,6 +364,15 @@ def test_approval_runs_the_engine_with_the_decision_row(stub, agent, cstore, run
     agent.wait()
     assert [argv_of(c) for c in runner.calls] == [expected_argv(agent, "override", 51)]
     assert cstore.rows[51].status == "done"
+
+
+def test_a_decision_at_the_expiry_itself_is_refused(stub, agent, cstore, runner):
+    # The link expires at 10:00:00 on the book date; a decision made at that instant is late,
+    # as AlgoLens holds it (<=).
+    requested(cstore, expires_in=dt.timedelta(0))
+    decision(cstore)
+    reply = decide(stub, 51)
+    assert reply.status == pb.COMMAND_STATUS_REFUSED and "expired" in reply.message
 
 
 def test_expired_link_refuses(stub, agent, cstore, runner):
@@ -482,3 +491,26 @@ def test_redrive_never_double_dispatches(agent, cstore, runner):
 def test_redrive_survives_a_store_error(agent, cstore):
     cstore.error = "database error (OperationalError)"
     assert redrive_pending(cstore, agent.dispatcher) == 0
+
+
+@pytest.mark.parametrize("by", [
+    "someone@algogators.com",   # not an approver at all
+    "pres@algogators.com",      # an approver, but not for the role the row claims (vp)
+])
+def test_only_the_approver_named_for_the_role_decides(stub, agent, cstore, runner, by):
+    # D17: the desk service checks the decider against QT_APPROVERS itself, so a decision row
+    # re-driven without AlgoLens's link check is still the VP's or the President's.
+    requested(cstore)
+    decision(cstore, by=by)
+    reply = decide(stub, 51)
+    assert reply.status == pb.COMMAND_STATUS_REFUSED
+    assert "is not the vp named in QT_APPROVERS" in cstore.rows[51].message
+    agent.wait()
+    assert runner.calls == []
+
+
+def test_the_named_approver_decides_whatever_the_case_of_the_address(stub, agent, cstore):
+    requested(cstore)
+    decision(cstore, by="  VP@AlgoGators.com ")
+    reply = decide(stub, 51)
+    assert reply.status == pb.COMMAND_STATUS_ACCEPTED, reply.message
