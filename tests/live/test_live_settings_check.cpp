@@ -115,6 +115,88 @@ TEST(LiveSettingsCheck, AnUnknownKeyAndAProtectedSectionAreRefused) {
     EXPECT_NE(refusal(Json{{"database", {{"host", "x"}}}}), "");
 }
 
+namespace {
+
+/// A copy of tmpl() whose QT book's portfolio.json has been changed by `edit`.
+std::filesystem::path tmpl_with(const std::string& tag, void (*edit)(Json&)) {
+    namespace fs = std::filesystem;
+    const fs::path to = fs::temp_directory_path() / ("qt_settings_check_" + tag);
+    fs::remove_all(to);
+    fs::copy(tmpl(), to, fs::copy_options::recursive);
+    const fs::path file = to / "portfolios" / "qt_conservative" / "portfolio.json";
+    Json portfolio;
+    {
+        std::ifstream in(file);
+        portfolio = Json::parse(in);
+    }
+    edit(portfolio);
+    std::ofstream(file) << portfolio.dump(2);
+    return to;
+}
+
+std::string sleeve_refusal(const char* key, const Json& value) {
+    Json overrides;
+    overrides["strategies"]["TREND_FOLLOWING"]["config"][key] = value;
+    return refusal(overrides);
+}
+
+}  // namespace
+
+TEST(LiveSettingsCheck, ABookWhoseFilesDoNotLoadIsRefused) {
+    if (tmpl().empty()) GTEST_SKIP() << "config_template not found";
+    auto r = check_live_settings_overlay(tmpl(), "no_such_portfolio", Json::object());
+    ASSERT_TRUE(r.is_error());
+    EXPECT_NE(std::string(r.error()->what()).find("the config files do not load"),
+              std::string::npos)
+        << r.error()->what();
+}
+
+TEST(LiveSettingsCheck, ABookWithoutTheLoopKeysIsRefusedAsARunWouldBe) {
+    if (tmpl().empty()) GTEST_SKIP() << "config_template not found";
+    const auto dir = tmpl_with("no_slow_rule", [](Json& p) { p.erase("equity_slow_rule"); });
+    auto r = check_live_settings_overlay(dir, "qt_conservative", Json::object());
+    ASSERT_TRUE(r.is_error());
+    EXPECT_NE(std::string(r.error()->what()).find("equity_slow_rule"), std::string::npos)
+        << r.error()->what();
+}
+
+TEST(LiveSettingsCheck, ASleeveThatIsNotATrendStrategyIsNotCheckedAsOne) {
+    if (tmpl().empty()) GTEST_SKIP() << "config_template not found";
+    const auto dir = tmpl_with("other_sleeve", [](Json& p) {
+        Json other = p["strategies"]["TREND_FOLLOWING"];
+        other["type"] = "SomeOtherStrategy";
+        other["config"] = Json::object();  // no sleeve keys: a trend check would refuse it
+        other["default_allocation"] = 0.0;
+        p["strategies"]["OTHER"] = other;
+    });
+    auto r = check_live_settings_overlay(dir, "qt_conservative", Json::object());
+    EXPECT_TRUE(r.is_ok()) << r.error()->what();
+}
+
+TEST(LiveSettingsCheck, ASleeveKeyOrWindowTheRunRefusesIsRefused) {
+    if (tmpl().empty()) GTEST_SKIP() << "config_template not found";
+    std::string why = sleeve_refusal("idm", 0);
+    EXPECT_NE(why.find("idm must be a positive number"), std::string::npos) << why;
+    for (const Json& windows : {Json::array({Json::array({8})}),
+                                Json::array({Json::array({2.5, 8})}),
+                                Json::array({Json::array({2, "8"})}), Json::array({8})}) {
+        why = sleeve_refusal("ema_windows", windows);
+        EXPECT_NE(why.find("ema_windows must hold [fast, slow] pairs of whole numbers"),
+                  std::string::npos)
+            << windows.dump() << ": " << why;
+    }
+}
+
+TEST(LiveSettings, FilesThatNameAnotherPortfolioAreRefused) {
+    if (tmpl().empty()) GTEST_SKIP() << "config_template not found";
+    auto r = resolve_live_settings(tmpl(), "qt_conservative", "SOME_OTHER_PORTFOLIO",
+                                   Result<std::optional<StrategyConfigRow>>(std::optional<StrategyConfigRow>{}));
+    ASSERT_TRUE(r.is_error());
+    EXPECT_NE(std::string(r.error()->what()).find("the config files now name portfolio"),
+              std::string::npos)
+        << r.error()->what();
+}
+
 // ===== D-60 (the property test asked for in #88): every setting the desk can save is read =====
 //
 // For every number and true/false the QT book's settings_used carries outside the blocks the desk
