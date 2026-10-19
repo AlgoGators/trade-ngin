@@ -62,9 +62,12 @@ TREND_LOWVOL never fires).
 net, framework TBD) on the consensus features from the four
 existing models (A1 HMM, A2 MSAR, A3 GARCH, A4 GMM) producing a
 confidence-weighted "is the rule-based regime call right?" signal. Adds
-as a fifth contributor to the market aggregation with weight `w_ml`.
+as a fifth contributor to the market aggregation with a weight `w_ml` that the
+ML lane would add.
 
-**Why.** `w_ml` is currently 0 — the ML slot is unimplemented. The
+**Why.** There is no `w_ml` field in the code today — the ML slot is
+unimplemented, and the field arrives with the ML lane rather than existing at
+zero. The
 rule-based aggregation has well-known residual ambiguity in the
 MEANREV_CHOPPY ↔ TREND_LOWVOL boundary (the two attractors are close
 in z-space, especially during low-vol regimes with mild persistence). A

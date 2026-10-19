@@ -5,6 +5,25 @@
 #include <cmath>
 #include <iomanip>
 #include <iostream>
+
+namespace {
+// N-10: the diagnostic prints below set std::fixed and a precision on std::cerr
+// and never restore it, so every sleeve after the first printed at the previous
+// sleeve's precision. Restore the stream state on scope exit.
+class CerrFormatGuard {
+public:
+    CerrFormatGuard() : flags_(std::cerr.flags()), precision_(std::cerr.precision()) {}
+    ~CerrFormatGuard() {
+        std::cerr.flags(flags_);
+        std::cerr.precision(precision_);
+    }
+    CerrFormatGuard(const CerrFormatGuard&) = delete;
+    CerrFormatGuard& operator=(const CerrFormatGuard&) = delete;
+private:
+    std::ios_base::fmtflags flags_;
+    std::streamsize precision_;
+};
+}  // namespace
 #include <numeric>
 
 namespace trade_ngin {
@@ -310,6 +329,7 @@ void MarketRegimePipeline::train_hmm_fingerprints(
         int idx = 2;
         if (use_liq)   mapping.native_fingerprints[j](idx++) = liq_means[j];
         if (use_ret60) mapping.native_fingerprints[j](idx++) = ret60_means[j];
+        CerrFormatGuard cerr_fmt;
         std::cerr << "[A1-" << sleeve_name(sleeve) << "] HMM state " << j
                   << " |μ|=" << std::fixed << std::setprecision(5) << std::abs(mu)
                   << " (signed μ=" << mu << ") σ=" << sigma;
@@ -374,6 +394,7 @@ void MarketRegimePipeline::train_hmm_fingerprints(
     // Standardise + build mapping
     standardise_and_build_mapping(mapping, config_.fingerprint_tau);
 
+    CerrFormatGuard cerr_fmt;
     std::cerr << "[A1-" << sleeve_name(sleeve) << "] HMM mapping matrix ("
               << J << "x" << kNumMarketRegimes << "):\n";
     for (int j = 0; j < J; ++j) {
@@ -428,6 +449,7 @@ void MarketRegimePipeline::train_msar_fingerprints(
         double phi = (ar_coeffs.cols() > 0) ? ar_coeffs(j, 0) : 0.0;  // AR(1) coefficient
         mapping.native_fingerprints[j] = Eigen::VectorXd(3);
         mapping.native_fingerprints[j] << mu, sigma, phi;
+        CerrFormatGuard cerr_fmt;
         std::cerr << "[A2-" << sleeve_name(sleeve) << "] MSAR state " << j
                   << " μ=" << std::fixed << std::setprecision(5) << mu
                   << " σ=" << sigma << " φ=" << phi << "\n";
@@ -641,36 +663,6 @@ MarketRegimePipeline::map_gmm(SleeveId sleeve, const Eigen::VectorXd& p_cluster)
     if (sum > kEps) result /= sum;
     else result.setConstant(1.0 / kNumMarketRegimes);
     return result;
-}
-
-// ============================================================================
-// Aggregation
-// ============================================================================
-
-Eigen::Matrix<double, kNumMarketRegimes, 1>
-MarketRegimePipeline::aggregate(
-    SleeveId sleeve,
-    const Eigen::Matrix<double, kNumMarketRegimes, 1>& p_hmm,
-    const Eigen::Matrix<double, kNumMarketRegimes, 1>& p_msar,
-    const Eigen::Matrix<double, kNumMarketRegimes, 1>& p_garch,
-    const Eigen::Matrix<double, kNumMarketRegimes, 1>& p_gmm) const
-{
-    int s = static_cast<int>(sleeve);
-    const auto& sc = config_.sleeve_configs[s];
-
-    Eigen::Matrix<double, kNumMarketRegimes, 1> raw =
-        sc.w_hmm   * p_hmm +
-        sc.w_msar  * p_msar +
-        sc.w_garch * p_garch +
-        sc.w_gmm   * p_gmm;
-
-    for (int r = 0; r < kNumMarketRegimes; ++r)
-        raw(r) = std::max(0.0, raw(r));
-    double sum = raw.sum();
-    if (sum > kEps) raw /= sum;
-    else raw.setConstant(1.0 / kNumMarketRegimes);
-
-    return raw;
 }
 
 // ============================================================================
@@ -959,6 +951,8 @@ const MarketBelief& MarketRegimePipeline::last_belief(SleeveId sleeve) const {
 // ============================================================================
 
 Result<SleeveLiveState> MarketRegimePipeline::get_live_state(SleeveId sleeve) const {
+    // Same lock as update(): a live process may checkpoint from another thread.
+    std::lock_guard<std::mutex> lock(mutex_);
     const auto& state = sleeve_states_[static_cast<int>(sleeve)];
     if (!state.trained) {
         return make_error<SleeveLiveState>(
@@ -976,6 +970,8 @@ Result<SleeveLiveState> MarketRegimePipeline::get_live_state(SleeveId sleeve) co
 Result<void> MarketRegimePipeline::restore_live_state(
     SleeveId sleeve, const SleeveLiveState& snap)
 {
+    // Same lock as update(): restore must not race a bar being processed.
+    std::lock_guard<std::mutex> lock(mutex_);
     auto& state = sleeve_states_[static_cast<int>(sleeve)];
     if (!state.trained) {
         return make_error<void>(

@@ -480,8 +480,16 @@ static void process_sleeve(
     GMM::Config gc; gc.max_iterations = pipeline.config().gmm_max_iterations;
     gc.restarts = pipeline.config().gmm_restarts;
     GMM gmm_model(gc);
+    // N-10: GMM::fit prints its restarts with std::fixed and precision 1 and
+    // leaves std::cerr that way; without this, every later sleeve's HMM/MSAR
+    // lines print as "σ=0.0". Restore the stream state after the fit.
+    // (gmm.cpp itself is left as is: #107 Part A copies it to main byte for byte.)
+    const std::ios_base::fmtflags cerr_flags = std::cerr.flags();
+    const std::streamsize cerr_precision = std::cerr.precision();
     auto gmm_result = std::make_shared<GMMResult>(
         gmm_model.fit(gmm_features, pipeline.config().gmm_n_clusters));
+    std::cerr.flags(cerr_flags);
+    std::cerr.precision(cerr_precision);
 
     // ── Train pipeline ─────────────────────────────────────────────────
     // Liquidity_proxy column (features col 2 — volume ratio, NaN where

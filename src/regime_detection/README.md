@@ -442,9 +442,12 @@ layer).
 
 ## Running the binaries
 
-All four runners auto-load DB connection from `config/defaults.json` if
-no argv / `DATABASE_URL` is supplied (mirroring the `bt_portfolio` /
-`live_portfolio` pattern). Explicit args still override.
+Only `market_regime_pipeline_runner` auto-loads the DB connection from
+`config/defaults.json` when no argv / `DATABASE_URL` is supplied (mirroring the
+`bt_portfolio` / `live_portfolio` pattern); explicit args still override. The
+three macro runners — `macro_regime_pipeline_runner`, `macro_dfm_runner` and
+`macro_msdfm_runner` — do **not**: they must be given a connection string.
+Wiring them through the same loader is tracked in #103 step 1.
 
 ```bash
 # From repo root, after a build

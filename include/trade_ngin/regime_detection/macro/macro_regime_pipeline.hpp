@@ -329,15 +329,6 @@ private:
     Eigen::Matrix<double, kNumMacroRegimes, 1>
     map_bsts(const Eigen::Vector4d& cluster_probs, bool structural_break) const;
 
-    // ── Aggregation ──────────────────────────────────────────────────────────
-
-    Eigen::Matrix<double, kNumMacroRegimes, 1> aggregate(
-        const Eigen::Matrix<double, kNumMacroRegimes, 1>& p_dfm,
-        const Eigen::Matrix<double, kNumMacroRegimes, 1>& p_msdfm,
-        const Eigen::Matrix<double, kNumMacroRegimes, 1>& p_quad,
-        const Eigen::Matrix<double, kNumMacroRegimes, 1>& p_bsts
-    ) const;
-
     // ── Persistence smoothing with adaptive lambda ───────────────────────────
 
     Eigen::Matrix<double, kNumMacroRegimes, 1>

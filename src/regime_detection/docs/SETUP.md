@@ -80,8 +80,10 @@ diff /tmp/timeline.csv src/regime_detection/baselines/market_timeline_K05plus.cs
 
 ## 5. Known operational caveats
 
-- GMM restarts are not deterministic across runs until the L-11 config-gated seed
-  default flips (STATUS_ROLLUP).
+- The GMM is deterministic for a fixed dataset, K and seed; repeated runs on the
+  same data reproduce. L-11 is about seeding when the *data* changes — adding
+  bars can move the restart that wins — not about run-to-run variation on
+  identical input (STATUS_ROLLUP).
 - The macro pipeline needs `macro_data` refreshed (§1) before live/current-period use;
   the market pipeline needs `futures_data` current (feed status: see
   `docs/DATA_OWNER_ASKS_2026-08.md` in the main working tree).
