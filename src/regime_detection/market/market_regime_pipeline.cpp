@@ -5,6 +5,7 @@
 #include <cmath>
 #include <iomanip>
 #include <iostream>
+#include <stdexcept>
 
 namespace {
 // N-10: the diagnostic prints below set std::fixed and a precision on std::cerr
@@ -116,6 +117,10 @@ nlohmann::json MarketRegimePipelineConfig::to_json() const {
     j["gmm_n_clusters"]     = gmm_n_clusters;
     j["fingerprint_tau"]    = fingerprint_tau;
     j["lambda"]             = lambda;
+    j["egarch_asymmetry_mode"] =
+        egarch_asymmetry_mode == EGARCHAsymmetryMode::TSTAT ? "tstat" : "fixed";
+    j["egarch_gamma_threshold"] = egarch_gamma_threshold;
+    j["egarch_tstat_threshold"] = egarch_tstat_threshold;
     return j;
 }
 
@@ -130,6 +135,28 @@ void MarketRegimePipelineConfig::from_json(const nlohmann::json& j) {
     get("gmm_n_clusters",     gmm_n_clusters);
     get("fingerprint_tau",    fingerprint_tau);
     get("lambda",             lambda);
+    if (j.contains("egarch_asymmetry_mode")) {
+        const auto mode = j.at("egarch_asymmetry_mode").get<std::string>();
+        if (mode == "fixed") {
+            egarch_asymmetry_mode = EGARCHAsymmetryMode::FIXED;
+        } else if (mode == "tstat") {
+            egarch_asymmetry_mode = EGARCHAsymmetryMode::TSTAT;
+        } else {
+            throw std::invalid_argument("egarch_asymmetry_mode must be \"fixed\" or \"tstat\", got \"" +
+                                        mode + "\"");
+        }
+    }
+    get("egarch_gamma_threshold", egarch_gamma_threshold);
+    get("egarch_tstat_threshold", egarch_tstat_threshold);
+}
+
+bool egarch_asymmetry_flag(const MarketRegimePipelineConfig& config, double gamma,
+                           double gamma_se) {
+    if (config.egarch_asymmetry_mode == MarketRegimePipelineConfig::EGARCHAsymmetryMode::FIXED) {
+        return gamma < config.egarch_gamma_threshold;
+    }
+    if (!std::isfinite(gamma_se) || gamma_se <= 0.0) return false;
+    return gamma / gamma_se < config.egarch_tstat_threshold;
 }
 
 // ============================================================================

@@ -1,4 +1,5 @@
 #include "trade_ngin/statistics/volatility/egarch.hpp"
+#include <Eigen/Dense>
 #include "trade_ngin/statistics/statistics_utils.hpp"
 #include "trade_ngin/statistics/validation.hpp"
 #include "trade_ngin/core/logger.hpp"
@@ -251,6 +252,62 @@ double EGARCH::log_likelihood(const std::vector<double>& returns,
     }
 
     return std::isfinite(ll) ? ll : -std::numeric_limits<double>::infinity();
+}
+
+Result<std::array<double, 4>> EGARCH::standard_errors() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (!fitted_) {
+        return make_error<std::array<double, 4>>(ErrorCode::NOT_INITIALIZED,
+            "EGARCH not fitted", "EGARCH::standard_errors");
+    }
+
+    const std::array<double, 4> theta = {omega_, alpha_, gamma_, beta_};
+    auto ll_at = [&](const std::array<double, 4>& p) {
+        return log_likelihood(residuals_, p[0], p[1], p[2], p[3]);
+    };
+    std::array<double, 4> step;
+    for (int i = 0; i < 4; ++i) step[i] = 1e-4 * std::max(std::abs(theta[i]), 1e-2);
+
+    // Central-difference Hessian of the log-likelihood.
+    const double ll0 = ll_at(theta);
+    Eigen::Matrix4d H;
+    for (int i = 0; i < 4; ++i) {
+        for (int j = i; j < 4; ++j) {
+            double v;
+            if (i == j) {
+                auto up = theta, dn = theta;
+                up[i] += step[i];
+                dn[i] -= step[i];
+                v = (ll_at(up) - 2.0 * ll0 + ll_at(dn)) / (step[i] * step[i]);
+            } else {
+                auto pp = theta, pm = theta, mp = theta, mm = theta;
+                pp[i] += step[i]; pp[j] += step[j];
+                pm[i] += step[i]; pm[j] -= step[j];
+                mp[i] -= step[i]; mp[j] += step[j];
+                mm[i] -= step[i]; mm[j] -= step[j];
+                v = (ll_at(pp) - ll_at(pm) - ll_at(mp) + ll_at(mm)) / (4.0 * step[i] * step[j]);
+            }
+            H(i, j) = v;
+            H(j, i) = v;
+        }
+    }
+    if (!H.allFinite()) {
+        return make_error<std::array<double, 4>>(ErrorCode::INVALID_DATA,
+            "log-likelihood Hessian is not finite at the fitted parameters",
+            "EGARCH::standard_errors");
+    }
+
+    const Eigen::Matrix4d info = -H;  // observed information
+    Eigen::LLT<Eigen::Matrix4d> llt(info);
+    if (llt.info() != Eigen::Success) {
+        return make_error<std::array<double, 4>>(ErrorCode::INVALID_DATA,
+            "observed information is not positive definite (a parameter on a bound?)",
+            "EGARCH::standard_errors");
+    }
+    const Eigen::Matrix4d cov = llt.solve(Eigen::Matrix4d::Identity());
+    std::array<double, 4> se;
+    for (int i = 0; i < 4; ++i) se[i] = std::sqrt(cov(i, i));
+    return Result<std::array<double, 4>>(se);
 }
 
 Result<std::vector<double>> EGARCH::forecast(int n_periods) const {

@@ -163,3 +163,68 @@ TEST_F(EGARCHTest, MultiplePeriodForecast) {
         EXPECT_TRUE(std::isfinite(v));
     }
 }
+
+// ============================================================================
+// K-12: standard errors from the observed information.
+// ============================================================================
+
+namespace {
+
+std::vector<double> simulate_egarch(unsigned seed, int T, double omega, double alpha,
+                                    double gamma, double beta) {
+    std::mt19937 gen(seed);
+    std::normal_distribution<double> nd(0.0, 1.0);
+    const double e_abs_z = std::sqrt(2.0 / M_PI);
+    double log_h = omega / (1.0 - beta);
+    std::vector<double> r(T);
+    for (int t = 0; t < T; ++t) {
+        const double z = nd(gen);
+        r[t] = std::sqrt(std::exp(log_h)) * z;
+        log_h = omega + alpha * (std::abs(z) - e_abs_z) + gamma * z + beta * log_h;
+    }
+    return r;
+}
+
+}  // namespace
+
+TEST(EGARCHStandardErrors, UnfittedModelIsNotInitialized_K12) {
+    EGARCH m(EGARCHConfig{});
+    auto se = m.standard_errors();
+    ASSERT_TRUE(se.is_error());
+    EXPECT_EQ(se.error()->code(), trade_ngin::ErrorCode::NOT_INITIALIZED);
+}
+
+TEST(EGARCHStandardErrors, SEMatchesTheSpreadOfEstimatesAcrossSeeds_K12) {
+    // Bounds written before the run: over 20 simulated series of 2,000 bars
+    // with gamma = -0.10, the sample sd of gamma-hat and the mean reported
+    // se(gamma) agree within a factor of 2, every se is finite and > 0, and the
+    // mean t-statistic is below -1.96 (the effect is detectable at this size).
+    const double true_gamma = -0.10;
+    std::vector<double> gammas, ses, ts;
+    for (unsigned seed = 1; seed <= 20; ++seed) {
+        auto r = simulate_egarch(seed, 2000, -0.2, 0.15, true_gamma, 0.97);
+        EGARCH m(EGARCHConfig{});
+        ASSERT_TRUE(m.fit(r).is_ok()) << "seed " << seed;
+        auto se = m.standard_errors();
+        ASSERT_TRUE(se.is_ok()) << "seed " << seed << ": " << se.error()->what();
+        const double g_se = se.value()[2];
+        ASSERT_TRUE(std::isfinite(g_se) && g_se > 0.0) << "seed " << seed;
+        for (double v : se.value()) EXPECT_TRUE(std::isfinite(v) && v > 0.0);
+        gammas.push_back(m.get_gamma());
+        ses.push_back(g_se);
+        ts.push_back(m.get_gamma() / g_se);
+    }
+    auto mean = [](const std::vector<double>& v) {
+        double s = 0.0;
+        for (double x : v) s += x;
+        return s / v.size();
+    };
+    const double mg = mean(gammas);
+    double var = 0.0;
+    for (double g : gammas) var += (g - mg) * (g - mg);
+    const double sd = std::sqrt(var / (gammas.size() - 1));
+    const double ratio = sd / mean(ses);
+    EXPECT_GT(ratio, 0.5) << "sd(gamma-hat)=" << sd << " mean se=" << mean(ses);
+    EXPECT_LT(ratio, 2.0) << "sd(gamma-hat)=" << sd << " mean se=" << mean(ses);
+    EXPECT_LT(mean(ts), -1.96);
+}

@@ -181,6 +181,16 @@ struct MarketRegimePipelineConfig : public ConfigBase {
     // Fingerprint softmax temperature
     double fingerprint_tau = 1.0;
 
+    // K-12: how the EGARCH leverage (asymmetry) flag is decided.
+    //   FIXED: gamma < egarch_gamma_threshold (the rule used before K-12).
+    //   TSTAT: gamma / se(gamma) < egarch_tstat_threshold, i.e. the leverage
+    //          effect is statistically significant, not just negative.
+    // FIXED is the default until the A/B in #103 step 2 says otherwise.
+    enum class EGARCHAsymmetryMode { FIXED, TSTAT };
+    EGARCHAsymmetryMode egarch_asymmetry_mode = EGARCHAsymmetryMode::FIXED;
+    double egarch_gamma_threshold = -0.01;
+    double egarch_tstat_threshold = -1.96;
+
     // Persistence smoothing: p_final = λ·p_raw + (1-λ)·p_final_{t-1}
     // Single constant λ — no warmup, no adaptive scaling.
     double lambda = 0.30;
@@ -196,6 +206,12 @@ struct MarketRegimePipelineConfig : public ConfigBase {
     nlohmann::json to_json() const override;
     void from_json(const nlohmann::json& j) override;
 };
+
+// K-12: the EGARCH asymmetry flag under the configured mode. gamma_se is
+// read only in TSTAT mode; a missing or non-positive standard error there
+// means the significance is unknown and the flag is off.
+bool egarch_asymmetry_flag(const MarketRegimePipelineConfig& config, double gamma,
+                           double gamma_se);
 
 // ============================================================================
 // Internal trained-parameter structs
