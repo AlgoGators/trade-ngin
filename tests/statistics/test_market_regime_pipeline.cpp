@@ -1,4 +1,5 @@
 #include <gtest/gtest.h>
+#include <cstring>
 #include "trade_ngin/statistics/clustering/gmm.hpp"
 #include "trade_ngin/regime_detection/market/market_regime_pipeline.hpp"
 #include <Eigen/Dense>
@@ -1203,4 +1204,121 @@ TEST(RegimeSubstrate, TrainRestoresCerrFormatting_N10) {
     ASSERT_TRUE(t.is_ok()) << t.error()->what();
     EXPECT_EQ(flags_after, std::ios_base::scientific | std::ios_base::showpos);
     EXPECT_EQ(precision_after, 9);
+}
+
+// ----------------------------------------------------------------------------
+// Golden digest of the trained mappings and of the beliefs a fixed update
+// sequence produces, per sleeve, in the 2D HMM geometry (no liquidity, no
+// ret60) and in the 4D one. A refactor that should move no call (K-10 moving
+// the target fingerprints into SleeveConfig) must leave every digest
+// unchanged, bit for bit. A change that moves a call updates these digests in
+// a declared baseline migration, never silently.
+// ----------------------------------------------------------------------------
+
+namespace {
+
+struct Digest {
+    uint64_t h = 1469598103934665603ULL;  // FNV-1a
+    void add(double v) {
+        uint64_t bits;
+        std::memcpy(&bits, &v, sizeof bits);
+        for (int i = 0; i < 8; ++i) {
+            h ^= (bits >> (8 * i)) & 0xff;
+            h *= 1099511628211ULL;
+        }
+    }
+    void add(const Eigen::MatrixXd& m) {
+        add(static_cast<double>(m.rows()));
+        add(static_cast<double>(m.cols()));
+        for (int i = 0; i < m.rows(); ++i)
+            for (int j = 0; j < m.cols(); ++j) add(m(i, j));
+    }
+};
+
+uint64_t market_digest(SleeveId sleeve, bool full_geometry) {
+    using namespace trade_ngin;
+    auto sc = make_market_scaffold();
+    const int T = static_cast<int>(sc.returns.size());
+    std::vector<double> liq, ret60;
+    Eigen::MatrixXd smoothed;
+    if (full_geometry) {
+        // One HMM state per block of 40 bars, with clearly separated
+        // liquidity and 60d return, so both optional dimensions fire.
+        smoothed = Eigen::MatrixXd::Zero(T, 3);
+        liq.resize(T);
+        ret60.resize(T);
+        for (int t = 0; t < T; ++t) {
+            const int j = std::min(t / 40, 2);
+            smoothed(t, j) = 1.0;
+            liq[t] = (j == 0 ? 1.0 : j == 1 ? 0.9 : 0.5);
+            ret60[t] = (j == 0 ? 0.05 : j == 1 ? 0.0 : -0.06);
+        }
+    }
+    MarketRegimePipeline pipeline;
+    auto tr = pipeline.train(sleeve, sc.returns, sc.hmm_means, sc.hmm_covs, sc.msar_means,
+                             sc.msar_vars, sc.msar_ar, sc.garch_vol, sc.gmm_result,
+                             sc.gmm_features, liq, smoothed, ret60);
+    EXPECT_TRUE(tr.is_ok());
+
+    Digest d;
+    const auto& st = pipeline.sleeve_state(sleeve);
+    d.add(st.hmm_mapping.mapping_matrix);
+    d.add(st.msar_mapping.mapping_matrix);
+    d.add(st.gmm_mapping.mapping_matrix);
+
+    std::mt19937 gen(5);
+    std::uniform_real_distribution<double> u(0.05, 1.0);
+    for (int i = 0; i < 15; ++i) {
+        Eigen::VectorXd hmm_p(3), msar_p(2);
+        hmm_p << u(gen), u(gen), u(gen);
+        hmm_p /= hmm_p.sum();
+        msar_p << u(gen), u(gen);
+        msar_p /= msar_p.sum();
+        GARCHFeatures gf;
+        gf.conditional_vol = 0.01 * u(gen);
+        gf.vol_percentile = u(gen);
+        gf.vol_spike = (i % 5 == 4);
+        gf.vol_of_vol_high = (i % 7 == 6);
+        MarketFeatures mf;
+        mf.realized_vol = 0.01 * u(gen);
+        mf.liquidity_proxy = u(gen);
+        Eigen::VectorXd gmm_p =
+            GMM::predict_proba(sc.gmm_features.row(7 * i).transpose(), sc.gmm_result);
+        auto br = pipeline.update(sleeve, hmm_p, msar_p, gf, mf, gmm_p);
+        EXPECT_TRUE(br.is_ok());
+        const auto& b = br.value();
+        for (const auto& [regime, p] : b.market_probs) d.add(p);
+        d.add(static_cast<double>(b.most_likely));
+        d.add(b.confidence);
+        d.add(static_cast<double>(b.regime_age_bars));
+        d.add(b.stability);
+        for (const auto& [model, probs] : b.model_contributions)
+            for (const auto& [regime, p] : probs) d.add(p);
+    }
+    return d.h;
+}
+
+}  // namespace
+
+TEST(RegimeGolden, MarketMappingsAndBeliefsAreUnchanged) {
+    using namespace trade_ngin;
+    // Recorded on 949be76b. Equities, FX and commodities share one digest because
+    // their configs and targets are identical today (K-10); rates differs through
+    // its model weights.
+    struct Expected { bool full; SleeveId sleeve; uint64_t digest; };
+    const Expected expected[] = {
+        {false, SleeveId::EQUITIES,    0x207408de349352a3ULL},
+        {false, SleeveId::RATES,       0x189883c86a8a5827ULL},
+        {false, SleeveId::FX,          0x207408de349352a3ULL},
+        {false, SleeveId::COMMODITIES, 0x207408de349352a3ULL},
+        {true,  SleeveId::EQUITIES,    0x3afb80ffc46a3d3eULL},
+        {true,  SleeveId::RATES,       0x93e1c1f762ae0934ULL},
+        {true,  SleeveId::FX,          0x3afb80ffc46a3d3eULL},
+        {true,  SleeveId::COMMODITIES, 0x3afb80ffc46a3d3eULL},
+    };
+    for (const auto& e : expected) {
+        EXPECT_EQ(market_digest(e.sleeve, e.full), e.digest)
+            << "sleeve " << static_cast<int>(e.sleeve) << (e.full ? " (4D HMM)" : " (2D HMM)")
+            << ": a trained mapping or a belief changed";
+    }
 }
