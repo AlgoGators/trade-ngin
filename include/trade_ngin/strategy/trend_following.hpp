@@ -257,6 +257,13 @@ public:
      */
     std::unordered_map<std::string, double> get_weights() const;
 
+    /**
+     * @brief The trend sleeve's own checks of its config (risk target, IDM, EMA pairs, the
+     *        equity slow rule), the part of validate_config a sleeve's settings decide. Static so
+     *        a settings change can be checked before it is saved (HD D-17), with no strategy built.
+     */
+    static Result<void> validate_trend_config(const TrendFollowingConfig& trend_config);
+
 protected:
     /**
      * @brief Validate strategy configuration

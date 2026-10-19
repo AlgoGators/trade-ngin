@@ -15,6 +15,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <sstream>
 
 #include "trade_ngin/risk/carver_risk_module.hpp"
 
@@ -38,9 +39,20 @@ const char* const kFlatSchema1Keys[] = {"var_limit",         "jump_risk_limit",
                                         "max_net_leverage",  "confidence_level",
                                         "lookback_period"};
 
-// D-78: the bounds on the overlay's limits a desk save may set.
-constexpr double kMaxRiskRatio = 10.0;
-constexpr int kMaxTrimContracts = 100;
+// D-78: the hard bounds on the overlay's limits a desk save may set (Dominick, 2026-10-18).
+// Gross and net leverage are bounded at 10 by R4 below.
+constexpr double kMaxRRatio = 3.0;          // R_max, a ratio to tau
+constexpr double kMaxTailRatio = 6.0;       // R_jump_max and R_shock_max, ratios to tau
+constexpr double kMaxPerNameCap = 4.0;      // one symbol's weight on the sizing capital
+constexpr int kMaxTrimContracts = 20;       // contracts the trim removes in a day
+
+// A bound as a refusal prints it: 3, 2.5 (not std::to_string's 3.000000).
+std::string bound_text(double bound) {
+    std::ostringstream out;
+    out << bound;
+    return out.str();
+}
+
 const char* const kCarverKeys[] = {"id",
                                    "type",
                                    "var_limit",
@@ -239,23 +251,24 @@ public:
             if (ranges.is_error()) return forward(ranges);
             // D-78 (HD 2026-10-16): every limit the desk can save is bounded, so no save can
             // switch a limit off by making it huge (a per-name cap of 1000 once put 4.77x equity in
-            // one name). The risk limits at most kMaxRiskRatio times tau, one name at most the
-            // book's gross leverage limit, the trim at most kMaxTrimContracts a day.
+            // one name). Dominick's hard caps (2026-10-18): R_max at most 3 times tau, R_jump_max
+            // and R_shock_max at most 6 times tau, one name at most 4, the trim at most 20
+            // contracts a day.
             if (overlay) {
                 const double rs[] = {c.r_max, c.r_jump_max, c.r_shock_max};
+                const double bounds[] = {kMaxRRatio, kMaxTailRatio, kMaxTailRatio};
                 const char* keys[] = {"R_max", "R_jump_max", "R_shock_max"};
                 for (int k = 0; k < 3; ++k) {
-                    if (rs[k] > kMaxRiskRatio) {
+                    if (rs[k] > bounds[k]) {
                         return err(path_ + "." + keys[k] + " must be at most " +
-                                   std::to_string(static_cast<int>(kMaxRiskRatio)) +
+                                   bound_text(bounds[k]) +
                                    " (a ratio to tau), got " + val(m.at(keys[k])));
                     }
                 }
-                if (c.per_name_cap > c.max_gross_leverage) {
-                    return err(path_ + ".per_name_cap must be at most max_gross_leverage (one name "
-                                       "cannot carry more than the whole book's gross limit), got " +
-                               val(m.at("per_name_cap")) + " against " +
-                               val(m.at("max_gross_leverage")));
+                if (c.per_name_cap > kMaxPerNameCap) {
+                    return err(path_ + ".per_name_cap must be at most " +
+                               bound_text(kMaxPerNameCap) + ", got " +
+                               val(m.at("per_name_cap")));
                 }
                 if (c.trim_max > kMaxTrimContracts) {
                     return err(path_ + ".trim_max must be at most " +

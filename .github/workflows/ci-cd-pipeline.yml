@@ -290,14 +290,17 @@ jobs:
           # Generate HTML report
           genhtml coverage.info --output-directory coverage_html
 
-          # Generate SonarQube-format XML coverage report (consumed by SonarCloud)
-          gcovr --root .. --filter '../src/.*' --filter '../include/.*' --sonarqube --output coverage-sonarqube.xml
+          # Generate SonarQube-format XML coverage report (consumed by SonarCloud). gcov counts
+          # every call that may throw as a branch (each string concatenation, each log line);
+          # those edges are excluded so the branch figure counts the code's own decisions.
+          GCOVR_BRANCHES="--exclude-throw-branches --exclude-unreachable-branches"
+          gcovr --root .. --filter '../src/.*' --filter '../include/.*' $GCOVR_BRANCHES --sonarqube --output coverage-sonarqube.xml
 
           # Generate XML report for GitHub
-          gcovr --root .. --filter '../src/.*' --filter '../include/.*' --xml --output coverage.xml
+          gcovr --root .. --filter '../src/.*' --filter '../include/.*' $GCOVR_BRANCHES --xml --output coverage.xml
 
           # Generate a text summary for easier CI diagnostics
-          gcovr --root .. --filter '../src/.*' --filter '../include/.*' --txt --output coverage.txt
+          gcovr --root .. --filter '../src/.*' --filter '../include/.*' $GCOVR_BRANCHES --txt --output coverage.txt
 
       - name: Validate Coverage Artifacts
         if: matrix.build-type == 'Debug'

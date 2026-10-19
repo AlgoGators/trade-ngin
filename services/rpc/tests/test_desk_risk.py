@@ -331,3 +331,22 @@ def test_the_margin_check_on_a_model_day_and_without_a_book():
     model = DeskRiskRow(book_source="model", risk_detail={}, initial_margin=50.0, equity=100.0)
     assert by_term(derive_desk_risk(model))["MARGIN"].status == rk.WITHIN
     assert by_term(derive_desk_risk(None))["MARGIN"].status == rk.NOT_MEASURED
+
+
+def test_the_models_book_shows_the_covariance_limits_in_percent_like_a_desk_book(tmp_path):
+    # D-80: one unit in both states. With no measured checks the R limits were ratios to tau
+    # ("2.25 tau"); a desk save showed the same limit as 0.45 (percent). With tau known both read
+    # percent.
+    (tmp_path / "portfolio.json").write_text(json.dumps({"strategies": {
+        "OFF": {"enabled_live": False, "config": {"risk_target": 0.5}},
+        "TREND": {"enabled_live": True, "config": {"risk_target": 0.2}}}}))
+    assert rk.load_tau(str(tmp_path)) == 0.2
+    limits = [("R_max", 2.25), ("R_jump_max", 4.5), ("max_gross_leverage", 8.0)]
+    model = derive_desk_risk(DeskRiskRow(book_source="model"), limits, rk.load_tau(str(tmp_path)))
+    by_term = {c.term: c for c in model.checks}
+    assert (by_term["R"].unit, round(by_term["R"].max, 6)) == ("percent", 0.45)
+    assert round(by_term["R_jump"].max, 6) == 0.9
+    assert by_term["L_g"].unit == "multiple" and by_term["L_g"].max == 8.0
+    # Without tau the ratio stays, labelled as such.
+    plain = derive_desk_risk(DeskRiskRow(book_source="model"), limits)
+    assert {c.term: c.unit for c in plain.checks}["R"] == "tau"

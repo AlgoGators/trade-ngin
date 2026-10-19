@@ -1,6 +1,6 @@
 // AlgoGators gRPC API
 // API: desk
-// Version: 1.6.0
+// Version: 1.7.0
 // Compatibility: a client must send x-algogators-api-version: desk=<major>.<minor>.<patch>; the
 // server refuses a different major and accepts any minor/patch (docs/design/rpc.md).
 //
@@ -59,6 +59,9 @@ import "google/protobuf/timestamp.proto";
 //                      over the margin cap), and DESK_RISK_STATE_INCOMPLETE (5): a qt book a
 //                      desk or override run did not finish (it blocks). Additive only. Every
 //                      publish path refuses on it.
+//   1.7.0  2026-10-17  CheckSettings, SettingsCheckRequest, SettingsCheck (HD D-17): whether a
+//                      live run would accept a desk settings change, asked before AlgoLens
+//                      saves it. Additive only.
 
 service DeskService {
   // A desk save: run the desk loop on the whole qt_proposal and book the result as qt with
@@ -103,6 +106,25 @@ service DeskService {
   // breaches. Read-only. AlgoLens refuses the desk's approval while within_limits is false and no
   // override was approved.
   rpc GetDeskRisk(DeskRiskRequest) returns (DeskRisk);
+
+  // Since 1.7.0 (HD D-17). Whether a live run would accept `overrides_json` as the portfolio's
+  // desk settings (the active trading.strategy_config row): the runners' own start-up checks on
+  // the config files with the overrides merged in (qt_settings_check). Books nothing and touches
+  // no table. AlgoLens asks before saving a settings version and never saves a refused one.
+  // UNAVAILABLE when the check cannot be run; AlgoLens then refuses the save too.
+  rpc CheckSettings(SettingsCheckRequest) returns (SettingsCheck);
+}
+
+message SettingsCheckRequest {
+  string portfolio_id = 1;
+  // The whole desk layer the save would make active, as a JSON object.
+  string overrides_json = 2;
+}
+
+message SettingsCheck {
+  bool ok = 1;
+  // Why a live run would refuse it (empty when ok).
+  string error = 2;
 }
 
 // Outcome of a command. Shared by RunDeskReply and CommandReply.

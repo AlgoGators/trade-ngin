@@ -72,15 +72,18 @@ Books = Dict[str, Dict[str, BookLine]]
 
 # What `rescind` found (contract C8). NOT_APPROVER: an override-published day, and the requester
 # is neither the VP nor the President (Dom 2026-10-16).
-RESCINDED, UNPUBLISHED, NOT_DESK, SENT, NOT_RUNNING, NOT_APPROVER = (
-    "rescinded", "unpublished", "not_desk", "sent", "not_running", "not_approver")
+# BUILT_ON: a later day's book was already built on this day's approved book (Dominick
+# 2026-10-18: a day is approved, and the next one built, as soon as the data allows).
+RESCINDED, UNPUBLISHED, NOT_DESK, SENT, NOT_RUNNING, NOT_APPROVER, BUILT_ON = (
+    "rescinded", "unpublished", "not_desk", "sent", "not_running", "not_approver", "built_on")
 # The C10 flow of an override's approval (commands.FLOWS).
 OVERRIDE_FLOW = "override_b"
 
 
 @dataclass(frozen=True)
 class RescindResult:
-    outcome: str  # one of RESCINDED, UNPUBLISHED, NOT_DESK, SENT, NOT_RUNNING, NOT_APPROVER
+    # One of RESCINDED, UNPUBLISHED, NOT_DESK, SENT, NOT_RUNNING, NOT_APPROVER, BUILT_ON.
+    outcome: str
     published_by: Optional[str] = None
     published_at: Optional[dt.datetime] = None
     publish_source: Optional[str] = None
@@ -88,6 +91,8 @@ class RescindResult:
     # The approving publish row's C10 flow (payload.flow): "override_b" for an override, else
     # None for a plain publish, "auto" or "accept_c".
     flow: Optional[str] = None
+    # BUILT_ON: the first later day with a book (the one built on this day's book).
+    later: Optional[dt.date] = None
 
 
 def is_approver(email: Optional[str], approvers: Sequence[str]) -> bool:
@@ -152,7 +157,8 @@ class CommandStore(Protocol):
         published_at, flow}} and `message`. Who may (Dom 2026-10-16): anyone on QT takes back a
         desk approval (AlgoLens checks the QT screen); a day published through an approved
         override (the approving publish row's flow is override_b) only the VP or the President,
-        `requested_by` among `approvers` (e-mails compared without case). Otherwise change nothing
+        `requested_by` among `approvers` (e-mails compared without case). Not once a later day's
+        book was built on it (BUILT_ON): that book starts from this one. Otherwise change nothing
         and say why (the caller refuses the row); NOT_RUNNING (nothing changed) when the row was
         no longer running."""
 
@@ -313,6 +319,11 @@ class PostgresCommandStore:
             by, at, source, _ = max(published, key=lambda r: r[1])
             if any(r[2] != "desk" for r in published):
                 return RescindResult(NOT_DESK, by, at, source)
+            cur.execute("SELECT min(date) FROM trading.live_results "
+                        "WHERE portfolio_id = %s AND date > %s", (portfolio_id, date))
+            later = cur.fetchone()[0]
+            if later is not None:
+                return RescindResult(BUILT_ON, by, at, source, later=later)
             # The row that approved the day: the newest done publish (a rescinded one is older).
             cur.execute("SELECT payload->>'flow' FROM trading.position_overrides "
                         "WHERE portfolio_id = %s AND date = %s AND kind = 'publish' "

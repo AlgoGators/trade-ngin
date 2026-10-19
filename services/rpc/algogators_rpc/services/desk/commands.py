@@ -24,8 +24,9 @@ time.
 |                   | `override_b` publishes B once the approved override booked it.    |
 | rescind           | the desk takes back its approval (contract C8), in Python under   |
 |                   | the portfolio's flock: refused from 09:30 New York on its date    |
-|                   | (the clock when it runs), on a day not published by the desk, by  |
-|                   | anyone but the approver and on a sent day; else                   |
+|                   | (the clock when it runs), on a day not published by the desk, on  |
+|                   | an override's day unless the VP or the President asks, on a sent  |
+|                   | day and once a later day's book was built on it; else             |
 |                   | published_by/at/source are cleared and the                        |
 |                   | row is finished done, in one transaction (command_store.rescind). |
 
@@ -49,8 +50,8 @@ from dataclasses import dataclass
 from typing import Callable, Iterable, List, Optional, Set, Tuple
 
 from . import cutoff
-from .command_store import (NOT_APPROVER, NOT_DESK, NOT_RUNNING, RESCINDED, SENT, UNPUBLISHED,
-                            CommandRow, CommandStore)
+from .command_store import (BUILT_ON, NOT_APPROVER, NOT_DESK, NOT_RUNNING, RESCINDED, SENT,
+                            UNPUBLISHED, CommandRow, CommandStore)
 from .config import CommandSettings
 from .jobs import Job, JobManager
 from .override_mail import (ROLES, ApproverError, Sender, parse_approvers, run_override_request,
@@ -301,8 +302,9 @@ class Dispatcher:
                                   lambda: self._run_send(claimed, portfolio_dir),
                                   self._on_done(claimed.id)))
             return Outcome(ACCEPTED, f"send {claimed.id} queued"), True
-        refused = (self._published_refusal(claimed) or self._closed_refusal(claimed)
-                   or self._future_refusal(claimed))
+        # A future day's book is approved, or an override requested, as soon as its model run
+        # has written it (Dominick 2026-10-18, replacing D-43's wait for the day itself).
+        refused = self._published_refusal(claimed) or self._closed_refusal(claimed)
         if refused:
             return refused, False
         mode, send_now = ENGINE_MODE.get(claimed.kind, ""), False
@@ -371,20 +373,6 @@ class Dispatcher:
         return self._finish(row, REFUSED, {"reason": "past_cutoff"},
                             f"{row.portfolio_id} {row.date}: {cutoff.deadline_message(row.date)}")
 
-    def _future_refusal(self, row: CommandRow) -> Optional[Outcome]:
-        """A future day's book is not approved, by the desk or through an override (D-43): it
-        would freeze on prices its own morning run has not seen. The desk may still save edits
-        to it. The scheduler's fallback rows are its own."""
-        if row.kind not in ("publish", "override_request") or cutoff.is_fallback(row.requested_by):
-            return None
-        today = self._clock().astimezone(cutoff.zone()).date()
-        if row.date <= today:
-            return None
-        return self._finish(row, REFUSED, {"reason": "future_day"},
-                            f"{row.portfolio_id} {row.date} is a future day (today is {today} in "
-                            f"New York); its book can be approved, or an override requested, from "
-                            f"{row.date}")
-
     def _portfolio_dir(self, row: CommandRow) -> Tuple[str, Optional[Outcome]]:
         """(dir, None), or ("", the refusal already recorded on the row)."""
         try:
@@ -441,7 +429,9 @@ class Dispatcher:
             # AlgoLens shows (N5). Without them a desk row with no recorded checks would not
             # compare L_g and L_n with a max here.
             return rk.derive_desk_risk(self._risk_reader(row.portfolio_id, row.date),
-                                       self._limits(row.portfolio_id)), None
+                                       self._limits(row.portfolio_id),
+                                       rk.portfolio_tau(self._settings.config_dir,
+                                                        row.portfolio_id)), None
         except Exception as exc:  # StoreError and the like: retryable
             return None, (FAILED, None, f"the risk check could not be read "
                                         f"({type(exc).__name__}); try again")
@@ -686,6 +676,8 @@ class Dispatcher:
             NOT_APPROVER: (f"{row.portfolio_id} {row.date} was published through an override "
                            "the VP or the President approved; only the VP or the President can "
                            "rescind it"),
+            BUILT_ON: (f"{row.portfolio_id} {res.later} was already built on the {row.date} "
+                       "book; its approval can no longer be rescinded"),
             SENT: (f"{row.portfolio_id} {row.date} was already e-mailed at "
                    f"{res.sent_at.isoformat() if res.sent_at else 'an unknown time'}; a sent "
                    "approval cannot be rescinded"),

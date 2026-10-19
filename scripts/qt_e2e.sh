@@ -3,7 +3,12 @@
 # trade-ngin host next to the engine-rpc container. It does what AlgoLens does: writes the
 # position_overrides rows and calls the gRPC commands, then reads the books back.
 #
-#   DB_HOST=... DB_PORT=5432 DB_USER=... DB_PASSWORD=... DB_NAME=new_algo_data scripts/qt_e2e.sh
+#   DB_HOST=... DB_PORT=5432 DB_USER=... DB_PASSWORD=... DB_NAME=scratch_qt scripts/qt_e2e.sh
+#
+# D-38: it runs against a scratch database only. It refuses new_algo_data and algo_data,
+# and any DB_NAME that does not start with scratch_, test_ or qt_e2e_; and QT_AGENT_CONTAINER
+# must be an engine-rpc container whose own DB_NAME is that same scratch database (the gRPC
+# commands run inside it), so production's engine-rpc is refused too.
 #
 # Steps: model run -> desk save (qt_proposal upsert + 'save' row) -> RunDesk -> qt differs from
 # system for the edited symbol, moved_by set, book_source desk -> override request (token row,
@@ -24,7 +29,14 @@ REQUESTER="${QT_E2E_REQUESTER:-qt-e2e-desk@algogators.com}"
 APPROVER="${QT_E2E_APPROVER:-qt-e2e-vp@algogators.com}"
 FAILS=0
 
-[ "${DB_NAME:-}" = "new_algo_data" ] || { echo "refusing: DB_NAME must be new_algo_data"; exit 2; }
+case "${DB_NAME:-}" in
+    new_algo_data|algo_data|"") echo "refusing: DB_NAME=${DB_NAME:-} is production or unset; use a scratch database"; exit 2;;
+    scratch_*|test_*|qt_e2e_*) ;;
+    *) echo "refusing: DB_NAME=$DB_NAME is not a scratch database (scratch_*, test_*, qt_e2e_*)"; exit 2;;
+esac
+AGENT_DB="$(docker exec "$AGENT" printenv DB_NAME 2>/dev/null)"
+[ "$AGENT_DB" = "$DB_NAME" ] || {
+    echo "refusing: container $AGENT uses DB_NAME=${AGENT_DB:-?}, not $DB_NAME"; exit 2; }
 export PGHOST="${QT_E2E_PGHOST:-$DB_HOST}" PGPORT="${DB_PORT:-5432}" PGUSER="$DB_USER" \
        PGPASSWORD="$DB_PASSWORD" PGDATABASE="$DB_NAME"
 

@@ -48,4 +48,18 @@ Result<LiveSettings> resolve_live_settings(
 /// reader of the log see the same words on every runner.
 std::string live_settings_refusal_line(const std::string& portfolio_id, const std::string& why);
 
+/**
+ * @brief HD D-17: whether a live run would accept `overrides` as the portfolio's desk settings,
+ *        checked before AlgoLens saves them, so a change the engine refuses is never saved.
+ *
+ * It runs the two checks a live runner runs on its settings at start-up, in the same order:
+ * resolve_live_settings with `overrides` as the active strategy_config row (the overlay rules
+ * and the full config parse, the risk modules' bounds included), then
+ * ConfigLoader::require_loop_keys on the merged config. The portfolio id comes from the files.
+ * The error text is the reason a run would give, without the version prefix.
+ */
+Result<void> check_live_settings_overlay(const std::filesystem::path& config_base_path,
+                                         const std::string& portfolio_name,
+                                         const nlohmann::json& overrides);
+
 }  // namespace trade_ngin
