@@ -12,6 +12,8 @@ on:
 
 permissions:
   contents: read
+  # comment-summary-in-pr posts the summary as a PR comment.
+  pull-requests: write
 
 jobs:
   dependency-review:

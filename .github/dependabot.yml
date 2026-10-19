@@ -7,6 +7,10 @@ updates:
     schedule:
       interval: weekly
     labels: [dependencies, docker]
+    # Stay on Ubuntu LTS: skip the interim releases between 24.04, 26.04 and 28.04.
+    ignore:
+      - dependency-name: ubuntu
+        versions: [">= 24.05, < 26.04", ">= 26.05, < 28.04"]
 
   # Keep the Actions in the CI/CD pipeline current
   - package-ecosystem: github-actions
