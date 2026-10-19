@@ -176,6 +176,7 @@ set(TEST_SOURCES
     portfolio/test_pm_netting.cpp
     storage/test_backtest_results_manager.cpp
     storage/test_live_results_manager.cpp
+    storage/test_results_manager_fanout.cpp
     storage/test_equity_fallback_stream_db.cpp
     storage/test_live_results_key_roundtrip_db.cpp
     live/test_live_historical_metrics.cpp
