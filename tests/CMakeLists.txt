@@ -55,6 +55,7 @@ set(TEST_SOURCES
     statistics/test_macro_data_loader.cpp
     statistics/test_market_data_loader.cpp
     statistics/test_msar.cpp
+    statistics/test_egarch_fit_quality.cpp
 )
 
 # Create test executable

@@ -3,6 +3,7 @@
 #include "trade_ngin/statistics/validation.hpp"
 #include "trade_ngin/core/logger.hpp"
 #include <nlopt.hpp>
+#include <algorithm>
 #include <cmath>
 #include <limits>
 
@@ -25,6 +26,11 @@ struct EGARCHOptData {
     double initial_log_var;
 };
 
+// A large finite value for infeasible points. BOBYQA fits a quadratic model
+// through its trial points, and an infinite value there breaks the model and
+// ends the search early.
+static constexpr double kEGARCHInfeasible = 1e12;
+
 static double egarch_nlopt_objective(const std::vector<double>& x, std::vector<double>&, void* data) {
     auto* opt_data = static_cast<EGARCHOptData*>(data);
     double omega = x[0];
@@ -33,7 +39,7 @@ static double egarch_nlopt_objective(const std::vector<double>& x, std::vector<d
     double beta = x[3];
 
     // Stability: |beta| < 1
-    if (std::abs(beta) >= 0.999) return std::numeric_limits<double>::infinity();
+    if (std::abs(beta) >= 0.999) return kEGARCHInfeasible;
 
     const auto& returns = *opt_data->returns;
     double log_h = opt_data->initial_log_var;
@@ -42,7 +48,7 @@ static double egarch_nlopt_objective(const std::vector<double>& x, std::vector<d
     double ll = 0.0;
     for (size_t t = 0; t < returns.size(); ++t) {
         double h = std::exp(log_h);
-        if (h <= 0 || !std::isfinite(h)) return std::numeric_limits<double>::infinity();
+        if (h <= 0 || !std::isfinite(h)) return kEGARCHInfeasible;
 
         ll += -0.5 * (std::log(2.0 * M_PI) + log_h + returns[t] * returns[t] / h);
 
@@ -52,7 +58,7 @@ static double egarch_nlopt_objective(const std::vector<double>& x, std::vector<d
         }
     }
 
-    if (!std::isfinite(ll)) return std::numeric_limits<double>::infinity();
+    if (!std::isfinite(ll)) return kEGARCHInfeasible;
     return -ll;
 }
 
@@ -105,6 +111,8 @@ Result<void> EGARCH::estimate_parameters(const std::vector<double>& returns) {
 
     // Phase 1: Grid search
     double best_ll = -std::numeric_limits<double>::infinity();
+    constexpr size_t kStarts = 3;
+    std::vector<std::pair<double, std::vector<double>>> starts;
     omega_ = config_.omega;
     alpha_ = config_.alpha;
     gamma_ = config_.gamma;
@@ -121,6 +129,13 @@ Result<void> EGARCH::estimate_parameters(const std::vector<double>& returns) {
                         alpha_ = a;
                         gamma_ = g;
                         beta_ = b;
+                    }
+                    // Keep the kStarts best grid points as refinement starts.
+                    if (std::isfinite(ll)) {
+                        starts.push_back({ll, {w, a, g, b}});
+                        std::sort(starts.begin(), starts.end(),
+                                  [](const auto& l, const auto& r) { return l.first > r.first; });
+                        if (starts.size() > kStarts) starts.pop_back();
                     }
                 }
             }
@@ -145,13 +160,40 @@ Result<void> EGARCH::estimate_parameters(const std::vector<double>& returns) {
         opt.set_ftol_rel(1e-8);
         opt.set_maxeval(500);
 
+        // From each of the best grid points: an explicit first step (the default
+        // is sized from the bounds, which put the first trial points past beta's
+        // stability limit from a grid start and ended the search at the grid
+        // point), then restarts with a smaller step until a pass stops improving
+        // (one pass can stall short of the maximum). The best result wins; several
+        // starts guard against a local maximum (#103 K-12 measurement).
         std::vector<double> x = {omega_, alpha_, gamma_, beta_};
-        double min_obj;
-        auto nlopt_result = opt.optimize(x, min_obj);
+        double min_obj = -best_ll;
+        nlopt::result nlopt_result = nlopt::FAILURE;
+        int evals = 0;
+        for (const auto& start : starts) {
+            std::vector<double> xs = start.second;
+            double obj = -start.first;
+            nlopt::result res = nlopt::FAILURE;
+            double scale = 1.0;
+            for (int pass = 0; pass < 4; ++pass, scale *= 0.25) {
+                opt.set_initial_step({0.1 * scale, 0.02 * scale, 0.02 * scale, 0.01 * scale});
+                const double before = obj;
+                double pass_obj;
+                res = opt.optimize(xs, pass_obj);
+                evals += static_cast<int>(opt.get_numevals());
+                obj = std::min(obj, pass_obj);
+                if (pass > 0 && before - pass_obj < 1e-6) break;
+            }
+            if (obj < min_obj) {
+                min_obj = obj;
+                x = xs;
+                nlopt_result = res;
+            }
+        }
 
         double refined_ll = -min_obj;
         last_convergence_info_.objective_history.push_back(refined_ll);
-        last_convergence_info_.iterations = static_cast<int>(opt.get_numevals());
+        last_convergence_info_.iterations = evals;
         last_convergence_info_.final_tolerance = std::abs(refined_ll - best_ll);
 
         if (nlopt_result > 0) {
