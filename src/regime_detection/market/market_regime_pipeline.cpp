@@ -371,24 +371,24 @@ void MarketRegimePipeline::train_hmm_fingerprints(
     //     volume) from dysfunction (low volume), so liq is a weak signal.
     //   - STRESS_PRICE captures both acute crashes (high σ, neg ret60)
     //     AND slow bears (mid σ, very neg ret60). Single attractor.
+    // K-10: the targets come from this sleeve's SleeveConfig.
+    const auto& sc = config_.sleeve_configs[s];
     mapping.target_fingerprints.resize(kNumMarketRegimes);
-    auto make_target = [&](double abs_mu, double sigma, double liq, double ret60) {
+    auto make_target = [&](const SleeveConfig::HMMTarget& tgt) {
         Eigen::VectorXd t(D);
-        t(0) = abs_mu;
-        t(1) = sigma;
+        t(0) = tgt.abs_mu;
+        t(1) = tgt.sigma;
         int idx = 2;
-        if (use_liq)   t(idx++) = liq;
-        if (use_ret60) t(idx++) = ret60;
+        if (use_liq)   t(idx++) = tgt.liq;
+        if (use_ret60) t(idx++) = tgt.ret60;
         return t;
     };
-    mapping.target_fingerprints[0] = make_target( 0.0, -1.5,  0.0,  0.5);  // TREND_LOWVOL: low σ + positive 60d return
-    mapping.target_fingerprints[1] = make_target( 0.5,  0.0,  0.0,  0.5);  // TREND_HIGHVOL: moderate |μ|+σ + positive 60d
-    mapping.target_fingerprints[2] = make_target(-0.5,  0.0,  0.0,  0.0);  // MEANREV_CHOPPY: low |μ|, flat 60d
-    mapping.target_fingerprints[3] = make_target( 0.3,  1.0,  0.0, -1.2);  // STRESS_PRICE: elevated σ + NEGATIVE 60d (crash OR slow bear)
-    if (use_liq) {
-        mapping.target_fingerprints[4] = make_target(0.0,  1.0, -2.0, -0.5);  // STRESS_LIQUIDITY: moderate σ + COLLAPSED liq
-    } else {
-        mapping.target_fingerprints[4] = make_target(0.0,  2.5,  0.0, -0.5);  // STRESS_LIQUIDITY: extreme σ (proxy when no liq dim)
+    for (int k = 0; k < kNumMarketRegimes; ++k)
+        mapping.target_fingerprints[k] = make_target(sc.hmm_targets[k]);
+    if (!use_liq) {
+        // Without the liquidity dimension, STRESS_LIQUIDITY falls back to an
+        // extreme-sigma proxy.
+        mapping.target_fingerprints[4] = make_target(sc.hmm_stress_liquidity_without_liq);
     }
 
     // Standardise + build mapping
@@ -457,13 +457,13 @@ void MarketRegimePipeline::train_msar_fingerprints(
 
     // Target fingerprints: 3D [μ, σ, φ] for each ontology state (z-scored)
     // φ > 0 = trending (persistence), φ < 0 = mean-reverting
+    // K-10: the targets come from this sleeve's SleeveConfig.
+    const auto& msar_targets = config_.sleeve_configs[s].msar_targets;
     mapping.target_fingerprints.resize(kNumMarketRegimes);
-    Eigen::VectorXd t(3);
-    t <<  1.5, -1.5,  1.5; mapping.target_fingerprints[0] = t;  // TREND_LOWVOL:  pos drift, low vol, trending
-    t <<  0.5,  1.0,  1.0; mapping.target_fingerprints[1] = t;  // TREND_HIGHVOL: some drift, high vol, trending
-    t <<  0.0,  0.0, -1.5; mapping.target_fingerprints[2] = t;  // MEANREV_CHOPPY: no drift, mid vol, mean-reverting
-    t << -1.0,  1.5, -0.5; mapping.target_fingerprints[3] = t;  // STRESS_PRICE:  neg drift, high vol, some mean-rev
-    t << -0.5,  2.0, -1.0; mapping.target_fingerprints[4] = t;  // STRESS_LIQUIDITY: neg, extreme vol, mean-rev
+    for (int k = 0; k < kNumMarketRegimes; ++k) {
+        mapping.target_fingerprints[k] =
+            Eigen::Map<const Eigen::Vector3d>(msar_targets[k].data());
+    }
 
     // Standardise + build mapping
     standardise_and_build_mapping(mapping, config_.fingerprint_tau);
@@ -631,14 +631,15 @@ void MarketRegimePipeline::train_gmm_fingerprints(
     //   MEANREV_CHOPPY: 0.0 (normal volume)
     //   STRESS_PRICE: 0.0 (volume can stay normal in selloffs)
     //   STRESS_LIQUIDITY: -1.5 (volume COLLAPSES)
+    // K-10: the targets come from this sleeve's SleeveConfig (5D, the
+    // runner's [r, σ̂, dd_speed, volume_ratio, corr_spike] feature space).
+    const auto& gmm_targets = config_.sleeve_configs[s].gmm_targets;
     mapping.target_fingerprints.resize(kNumMarketRegimes);
-    Eigen::VectorXd t(D);
-    //                     r     σ̂     dd_spd  vol_ratio  corr_spk
-    t <<  0.5, -1.5,  0.0,  0.0, -0.5; mapping.target_fingerprints[0] = t;  // TREND_LOWVOL
-    t <<  0.3,  1.0,  0.0,  0.3,  0.5; mapping.target_fingerprints[1] = t;  // TREND_HIGHVOL
-    t <<  0.0,  0.0,  0.0,  0.0,  0.0; mapping.target_fingerprints[2] = t;  // MEANREV_CHOPPY
-    t << -1.0,  1.5,  1.5,  0.0,  1.5; mapping.target_fingerprints[3] = t;  // STRESS_PRICE
-    t << -0.5,  2.0,  1.0, -1.5,  1.5; mapping.target_fingerprints[4] = t;  // STRESS_LIQUIDITY
+    for (int k = 0; k < kNumMarketRegimes; ++k) {
+        Eigen::VectorXd t(D);
+        t << Eigen::Map<const Eigen::Matrix<double, 5, 1>>(gmm_targets[k].data());
+        mapping.target_fingerprints[k] = t;
+    }
 
     // Standardise + build mapping
     standardise_and_build_mapping(mapping, config_.fingerprint_tau);

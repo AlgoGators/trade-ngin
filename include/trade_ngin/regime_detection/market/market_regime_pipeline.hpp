@@ -148,6 +148,48 @@ struct SleeveConfig {
     double garch_vol_low_pctile     = 0.30;   // below this = low vol
     double garch_vol_high_pctile    = 0.70;   // above this = high vol
     double garch_vol_extreme_pctile = 0.90;   // above this = stress
+
+    // K-10: target fingerprints, one per ontology state in MarketRegimeL1
+    // order, in the z-scored units the mappings compare against. The defaults
+    // are the values every sleeve used before K-10; a sleeve overrides them to
+    // move its own targets (Gaps 8 and 10) without touching the others.
+    //
+    // HMM: [|mu|, sigma, liq, ret60]. liq is used only when the per-state
+    // liquidity dimension fires and ret60 only when the 60d-return dimension
+    // fires; without the liquidity dimension STRESS_LIQUIDITY uses
+    // hmm_stress_liquidity_without_liq (an extreme-sigma proxy) instead.
+    struct HMMTarget {
+        double abs_mu;
+        double sigma;
+        double liq;
+        double ret60;
+    };
+    std::array<HMMTarget, kNumMarketRegimes> hmm_targets = {{
+        { 0.0, -1.5,  0.0,  0.5},   // TREND_LOWVOL: low sigma, positive 60d return
+        { 0.5,  0.0,  0.0,  0.5},   // TREND_HIGHVOL: moderate |mu| and sigma, positive 60d
+        {-0.5,  0.0,  0.0,  0.0},   // MEANREV_CHOPPY: low |mu|, flat 60d
+        { 0.3,  1.0,  0.0, -1.2},   // STRESS_PRICE: elevated sigma, negative 60d
+        { 0.0,  1.0, -2.0, -0.5},   // STRESS_LIQUIDITY: moderate sigma, collapsed liquidity
+    }};
+    HMMTarget hmm_stress_liquidity_without_liq = {0.0, 2.5, 0.0, -0.5};
+
+    // MSAR: [mu, sigma, phi]; phi > 0 trending, phi < 0 mean-reverting.
+    std::array<std::array<double, 3>, kNumMarketRegimes> msar_targets = {{
+        {{ 1.5, -1.5,  1.5}},   // TREND_LOWVOL
+        {{ 0.5,  1.0,  1.0}},   // TREND_HIGHVOL
+        {{ 0.0,  0.0, -1.5}},   // MEANREV_CHOPPY
+        {{-1.0,  1.5, -0.5}},   // STRESS_PRICE
+        {{-0.5,  2.0, -1.0}},   // STRESS_LIQUIDITY
+    }};
+
+    // GMM: [r, sigma_hat, dd_speed, volume_ratio, corr_spike].
+    std::array<std::array<double, 5>, kNumMarketRegimes> gmm_targets = {{
+        {{ 0.5, -1.5,  0.0,  0.0, -0.5}},   // TREND_LOWVOL
+        {{ 0.3,  1.0,  0.0,  0.3,  0.5}},   // TREND_HIGHVOL
+        {{ 0.0,  0.0,  0.0,  0.0,  0.0}},   // MEANREV_CHOPPY
+        {{-1.0,  1.5,  1.5,  0.0,  1.5}},   // STRESS_PRICE
+        {{-0.5,  2.0,  1.0, -1.5,  1.5}},   // STRESS_LIQUIDITY
+    }};
 };
 
 // Default sleeve configurations (from synthesized spec thresholds)
