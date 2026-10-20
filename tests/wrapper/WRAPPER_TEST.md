@@ -1,3 +1,10 @@
+To build locally, build the wrapper and create a virtual environment. Run the commands
+
+```bash
+uv venv
+uv pip install <path_to_wrapper_wheel>
+```
+
 To test, create a config according to the instructions provided in the main folder, and add a "multi_test" portfolio with the `portfolio.json` file (see other portfolios for reference). Then, run the following command:
 
 ```bash
