@@ -117,23 +117,28 @@ Result<DFMOutput> DynamicFactorModel::fit(const Eigen::MatrixXd& data,
         Q_ = symmetrise((S11 - A_ * S10.transpose()) / static_cast<double>(T - 1));
         Q_ += Eigen::MatrixXd::Identity(K, K) * 1e-6;
 
-        // Update Lambda and R (one series at a time)
-        Eigen::MatrixXd S11_inv = S11.ldlt().solve(Eigen::MatrixXd::Identity(K, K));
+        // Update Lambda and R (one series at a time). Each series' loading uses
+        // E[f f'] summed over the rows where that series is observed, the same rows
+        // its cross moment sums over. The full-sample S11 shrank the loading of a
+        // series with missing rows toward zero, by about its missing fraction.
         Eigen::MatrixXd new_lambda = Eigen::MatrixXd::Zero(N, K);
         Eigen::VectorXd new_R_diag = Eigen::VectorXd::Zero(N);
 
         for (int n = 0; n < N; ++n) {
             Eigen::VectorXd cross = Eigen::VectorXd::Zero(K);
+            Eigen::MatrixXd S11_n = Eigen::MatrixXd::Zero(K, K);
             int T_valid = 0;
             for (int t = 0; t < T; ++t) {
                 if (std::isfinite(Y(t, n))) {
                     cross += Y(t, n) * kr.smoothed_means[t];
+                    S11_n += kr.smoothed_covs[t] +
+                             kr.smoothed_means[t] * kr.smoothed_means[t].transpose();
                     ++T_valid;
                 }
             }
             if (T_valid == 0) continue;
 
-            new_lambda.row(n) = (S11_inv * cross).transpose();
+            new_lambda.row(n) = S11_n.ldlt().solve(cross).transpose();
 
             double r_sum = 0.0;
             for (int t = 0; t < T; ++t) {
