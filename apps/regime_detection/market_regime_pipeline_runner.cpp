@@ -4,7 +4,9 @@
 // Following Regime Engine Algo (1).pdf
 //
 // Usage:
-//   ./market_regime_pipeline_runner [connection_string] [start_date] [end_date]
+//   ./market_regime_pipeline_runner [start_date] [end_date]
+//
+// The database connection comes from config/defaults.json (./config or ../config).
 
 #include "trade_ngin/regime_detection/market/market_regime_pipeline.hpp"
 #include "trade_ngin/regime_detection/market/market_data_loader.hpp"
@@ -15,7 +17,7 @@
 #include "trade_ngin/statistics/volatility/egarch.hpp"
 #include "trade_ngin/data/postgres_database.hpp"
 #include "trade_ngin/core/types.hpp"
-#include "trade_ngin/core/config_loader.hpp"
+#include "trade_ngin/regime_detection/runner_config.hpp"
 
 // MarketMSAR for proper AR(1) estimation
 #include "trade_ngin/regime_detection/market/msar.hpp"
@@ -621,32 +623,17 @@ static void process_sleeve(
 // ============================================================================
 
 int main(int argc, char* argv[]) {
-    std::string conn_str = (argc > 1) ? argv[1] : "";
-    std::string start_date = (argc > 2) ? argv[2] : "2020-01-01";
-    std::string end_date   = (argc > 3) ? argv[3] : "2025-12-31";
+    std::string start_date = (argc > 1) ? argv[1] : "2020-01-01";
+    std::string end_date   = (argc > 2) ? argv[2] : "2025-12-31";
 
-    if (conn_str.empty()) {
-        const char* env = std::getenv("DATABASE_URL");
-        if (env) {
-            conn_str = env;
-        } else {
-            // P4-NEW: fall back to config/defaults.json (mirrors what the
-            // strategy and backtest runners do). Explicit argv / env still
-            // wins — this only kicks in when no connection was supplied.
-            // We try ./config first (run from repo root) and ../config
-            // (run from build/) to match bt_transaction_cost_report.
-            auto cfg = ConfigLoader::load("./config", "base");
-            if (cfg.is_error()) cfg = ConfigLoader::load("../config", "base");
-            if (cfg.is_ok()) {
-                conn_str = cfg.value().database.get_connection_string();
-                std::cerr << "[config] loaded DB connection from config/defaults.json\n";
-            } else {
-                std::cerr << "Usage: market_regime_pipeline_runner <conn> [start] [end]\n"
-                          << "  or set DATABASE_URL, or run from a directory with ./config/defaults.json\n";
-                return 1;
-            }
-        }
+    auto conn = trade_ngin::regime::load_runner_db_connection();
+    if (conn.is_error()) {
+        std::cerr << "[config] " << conn.error()->what() << "\n"
+                  << "Usage: market_regime_pipeline_runner [start] [end]\n";
+        return 1;
     }
+    const std::string conn_str = conn.value();
+    std::cerr << "[config] loaded DB connection from config/defaults.json\n";
 
     PostgresDatabase db(conn_str);
     if (db.connect().is_error()) { std::cerr << "DB connect failed\n"; return 1; }

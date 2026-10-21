@@ -53,26 +53,6 @@ set_target_properties(macro_regime_pipeline_runner
 )
 
 # ==========================================
-# TRADE_NGIN - BSTS REGIME DETECTOR
-# ==========================================
-
-add_executable(bsts_regime_detector
-    ${CMAKE_SOURCE_DIR}/src/regime_detection/bsts_regime_detection_multiasset.cpp
-)
-
-target_link_libraries(bsts_regime_detector
-    PRIVATE
-        trade_ngin
-)
-
-set_target_properties(bsts_regime_detector
-    PROPERTIES
-    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin"
-    RUNTIME_OUTPUT_DIRECTORY_DEBUG "${CMAKE_BINARY_DIR}/bin/Debug"
-    RUNTIME_OUTPUT_DIRECTORY_RELEASE "${CMAKE_BINARY_DIR}/bin/Release"
-)
-
-# ==========================================
 # TRADE_NGIN - MARKET REGIME PIPELINE RUNNER
 # ==========================================
 

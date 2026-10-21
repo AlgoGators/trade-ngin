@@ -66,7 +66,6 @@ src/regime_detection/
     market_data_loader.cpp        Postgres market_data ingest, multi-symbol panel alignment
     autoregressive.cpp            Hamilton-filter AR(1) used by MarketMSAR
     autoregressive_debug.cpp      Diagnostic AR variant (not shipped in production path)
-  bsts_regime_detection_multiasset.cpp   Standalone BSTS runner (one-off analysis tool)
 
 include/trade_ngin/regime_detection/
   macro/   matching public headers for the macro pipeline
@@ -442,32 +441,23 @@ layer).
 
 ## Running the binaries
 
-Only `market_regime_pipeline_runner` auto-loads the DB connection from
-`config/defaults.json` when no argv / `DATABASE_URL` is supplied (mirroring the
-`bt_portfolio` / `live_portfolio` pattern); explicit args still override. The
-three macro runners — `macro_regime_pipeline_runner`, `macro_dfm_runner` and
-`macro_msdfm_runner` — do **not**: they must be given a connection string.
-Wiring them through the same loader is tracked in #103 step 1.
+Every runner reads the DB connection from `config/defaults.json` through the
+`ConfigLoader` (`./config` from the repo root, else `../config` from `build/`),
+the same way `bt_portfolio` / `live_portfolio` do. There is no argv or
+environment path for the connection: it never appears on a command line. A
+copy of `config_template/` with the placeholders left in is refused.
 
 ```bash
 # From repo root, after a build
-./build/bin/Release/macro_regime_pipeline_runner       # uses config/defaults.json
-./build/bin/Release/market_regime_pipeline_runner       # same
-
-# With explicit args
-./build/bin/Release/market_regime_pipeline_runner \
-    "host=... port=5432 user=... password=... dbname=..." \
-    2020-01-01 2025-12-31
+./build/bin/Release/macro_regime_pipeline_runner [start] [end]
+./build/bin/Release/market_regime_pipeline_runner [start] [end]   # default 2020-01-01 2025-12-31
 
 # Per-bar regime CSV for cross-version validation
-TIMELINE_CSV=/tmp/timeline.csv ./build/bin/Release/market_regime_pipeline_runner
+TIMELINE_CSV=/tmp/timeline.csv ./build/bin/Release/market_regime_pipeline_runner 2020-01-01 2025-12-31
 
 # Standalone DFM and MS-DFM analysis runners
-./build/bin/Release/macro_dfm_runner
-./build/bin/Release/macro_msdfm_runner
-
-# Standalone BSTS multi-asset runner
-./build/bin/Release/bsts_regime_detector
+./build/bin/Release/macro_dfm_runner [output.csv] [start] [end]
+./build/bin/Release/macro_msdfm_runner [output.csv] [start] [end]
 ```
 
 ## Testing

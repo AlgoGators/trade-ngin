@@ -3,14 +3,16 @@
 // → prints factor time series + loadings
 //
 // Usage:
-//   ./macro_dfm_runner [connection_string] [output.csv] [start_date] [end_date]
+//   ./macro_dfm_runner [output.csv] [start_date] [end_date]
+//
+// The database connection comes from config/defaults.json (./config or ../config).
 //
 // Defaults:
-//   connection_string: $MACRO_DB_CONN or "dbname=new_algo_data"
 //   output.csv:        (none — prints to stdout only)
 //   start/end_date:    (all available data)
 
 #include "trade_ngin/regime_detection/macro/dynamic_factor_model.hpp"
+#include "trade_ngin/regime_detection/runner_config.hpp"
 #include "trade_ngin/regime_detection/macro/macro_data_loader.hpp"
 #include "trade_ngin/data/postgres_database.hpp"
 #include "trade_ngin/core/logger.hpp"
@@ -139,25 +141,21 @@ static void export_factors_csv(const DFMOutput& out,
 int main(int argc, char* argv[]) {
 
     // ---- Parse args ----------------------------------------------------------
-    // Default connection string: env var or local new_algo_data
-    std::string conn_string;
-    const char* env_conn = std::getenv("MACRO_DB_CONN");
-    if (argc >= 2) {
-        conn_string = argv[1];
-    } else if (env_conn) {
-        conn_string = env_conn;
-    } else {
-        conn_string = "dbname=new_algo_data";
-    }
+    std::string output_csv  = (argc >= 2) ? argv[1] : "";
+    std::string start_date  = (argc >= 3) ? argv[2] : "";
+    std::string end_date    = (argc >= 4) ? argv[3] : "";
 
-    std::string output_csv  = (argc >= 3) ? argv[2] : "";
-    std::string start_date  = (argc >= 4) ? argv[3] : "";
-    std::string end_date    = (argc >= 5) ? argv[4] : "";
+    auto conn = trade_ngin::regime::load_runner_db_connection();
+    if (conn.is_error()) {
+        std::cerr << "[config] " << conn.error()->what() << "\n"
+                  << "Usage: macro_dfm_runner [output.csv] [start] [end]\n";
+        return 1;
+    }
+    const std::string conn_string = conn.value();
 
     std::cout << "========================================\n"
               << " Macro DFM Runner (PostgreSQL)\n"
-              << "========================================\n\n"
-              << "Connection: " << conn_string << "\n";
+              << "========================================\n\n";
     if (!start_date.empty()) std::cout << "Start date: " << start_date << "\n";
     if (!end_date.empty())   std::cout << "End date:   " << end_date << "\n";
     std::cout << "\n";

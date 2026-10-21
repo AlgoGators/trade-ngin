@@ -85,6 +85,29 @@ TEST(RegimeSubstrate, ForwardFillDoesNotLeakFuture) {
     EXPECT_DOUBLE_EQ(X(5, 0), 6.0);
 }
 
+// forward_fill never fills before a column's first observation: that would be a
+// back-fill from the future (L-19). Seeding leading NaN is leading_pad's job.
+TEST(RegimeSubstrate, ForwardFillLeavesLeadingNaN_L19) {
+    const double nan = std::numeric_limits<double>::quiet_NaN();
+    Eigen::MatrixXd X(5, 2);
+    X << nan, 1.0,
+         nan, nan,
+         3.0, nan,
+         nan, 4.0,
+         5.0, nan;
+
+    BSTSRegimeDetector::forward_fill(X);
+
+    EXPECT_TRUE(std::isnan(X(0, 0))) << "t=0 has no past: must stay NaN, not take 3.0 or 5.0";
+    EXPECT_TRUE(std::isnan(X(1, 0)));
+    EXPECT_DOUBLE_EQ(X(2, 0), 3.0);
+    EXPECT_DOUBLE_EQ(X(3, 0), 3.0);
+    EXPECT_DOUBLE_EQ(X(4, 0), 5.0);
+    EXPECT_DOUBLE_EQ(X(1, 1), 1.0);
+    EXPECT_DOUBLE_EQ(X(2, 1), 1.0);
+    EXPECT_DOUBLE_EQ(X(4, 1), 4.0);
+}
+
 // leading_pad_with_first_valid is the legitimate state-space init
 // for indices BEFORE the first observation. Test it pads with the first
 // valid value and only those leading positions.

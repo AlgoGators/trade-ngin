@@ -4,6 +4,7 @@
 #include <random>
 #include <cmath>
 #include <limits>
+#include <algorithm>
 
 using namespace trade_ngin::statistics;
 
@@ -546,4 +547,110 @@ TEST(RegimePhase4, DFMSignAnchorStableAcrossRefits_L06) {
         << "gdp loading should be positive after re-fit. load2=" << load2;
     EXPECT_EQ(std::signbit(load1), std::signbit(load2))
         << "anchor sign must match across refits.";
+}
+
+// ============================================================================
+// L-27 adversarial cases
+// ============================================================================
+
+// Look-ahead: with fitted parameters held fixed, the filtered factors at
+// time t depend only on rows 0..t. Dropping the tail of the panel, or
+// replacing the last row with a huge shock, must leave every earlier
+// filtered value bit-identical.
+TEST_F(DynamicFactorModelTest, FilterHasNoLookAhead_L27) {
+    DFMConfig cfg;
+    cfg.max_em_iterations = 30;
+    DynamicFactorModel dfm(cfg);
+    ASSERT_TRUE(dfm.fit(data_, series_names_).is_ok());
+
+    const int T = static_cast<int>(data_.rows());
+    auto full = dfm.filter(data_);
+    ASSERT_TRUE(full.is_ok());
+
+    for (int cut : {1, 20, 75}) {
+        auto part = dfm.filter(data_.topRows(T - cut));
+        ASSERT_TRUE(part.is_ok());
+        for (int t = 0; t < T - cut; ++t)
+            for (int k = 0; k < cfg.num_factors; ++k)
+                ASSERT_EQ(part.value().factors[t][k], full.value().factors[t][k])
+                    << "cut=" << cut << " t=" << t << " k=" << k;
+    }
+
+    Eigen::MatrixXd shocked = data_;
+    shocked.row(T - 1).setConstant(1e6);
+    auto sh = dfm.filter(shocked);
+    ASSERT_TRUE(sh.is_ok());
+    for (int t = 0; t < T - 1; ++t)
+        for (int k = 0; k < cfg.num_factors; ++k)
+            ASSERT_EQ(sh.value().factors[t][k], full.value().factors[t][k]) << "t=" << t;
+    EXPECT_NE(sh.value().factors[T - 1][0], full.value().factors[T - 1][0]);
+}
+
+// Sign-flip: refit on 10 independently seeded panels sharing one factor
+// structure. With the gdp anchor the factor must come out with the same
+// orientation every time, and the regime split it implies (mean factor in
+// the top 30% of true-factor periods minus the bottom 30%, in factor
+// standard deviations) must agree across seeds. Bounds written before the
+// run: correlation with the true factor > 0.8 on every seed; the
+// standardised separation > 1.0 on every seed and within 0.5 across seeds.
+TEST(RegimeAdversarial, DFMOrientationAndRegimeMeansStableAcrossSeeds_L27) {
+    const int T = 240;
+    std::vector<double> separation;
+    for (unsigned seed = 1; seed <= 10; ++seed) {
+        std::mt19937 rng(seed);
+        std::normal_distribution<double> nd(0.0, 1.0);
+
+        Eigen::VectorXd f(T);
+        f(0) = 0.0;
+        for (int t = 1; t < T; ++t) f(t) = 0.9 * f(t - 1) + 0.4 * nd(rng);
+
+        // The anchor column sits at a different position on each seed, so the
+        // eigensolver's arbitrary orientation is not the same every time.
+        const double base_loads[5] = {1.0, -0.8, 0.6, 0.5, -0.4};
+        const std::vector<std::string> base_names = {"gdp", "unemployment", "ip", "retail",
+                                                     "claims"};
+        const int shift = static_cast<int>(seed) % 5;
+        double loads[5];
+        std::vector<std::string> names(5);
+        for (int n = 0; n < 5; ++n) {
+            loads[(n + shift) % 5] = base_loads[n];
+            names[(n + shift) % 5] = base_names[n];
+        }
+        Eigen::MatrixXd panel(T, 5);
+        for (int t = 0; t < T; ++t)
+            for (int n = 0; n < 5; ++n) panel(t, n) = loads[n] * f(t) + 0.3 * nd(rng);
+
+        DFMConfig cfg;
+        cfg.num_factors = 1;
+        cfg.factor_labels = {"growth"};
+        cfg.factor_anchor_names = {"gdp"};
+        cfg.factor_anchor_signs = {+1};
+        cfg.max_em_iterations = 50;
+        DynamicFactorModel dfm(cfg);
+        auto r = dfm.fit(panel, names);
+        ASSERT_TRUE(r.is_ok()) << "seed=" << seed;
+
+        Eigen::VectorXd est(T);
+        for (int t = 0; t < T; ++t) est(t) = r.value().factors[t][0];
+
+        const Eigen::VectorXd fc = f.array() - f.mean();
+        const Eigen::VectorXd ec = est.array() - est.mean();
+        const double corr = fc.dot(ec) / std::sqrt(fc.squaredNorm() * ec.squaredNorm());
+        EXPECT_GT(corr, 0.8) << "seed=" << seed << ": factor orientation flipped or lost";
+
+        std::vector<int> order(T);
+        for (int t = 0; t < T; ++t) order[t] = t;
+        std::sort(order.begin(), order.end(), [&](int a, int b) { return f(a) < f(b); });
+        const int tail = static_cast<int>(0.3 * T);
+        double lo = 0.0, hi = 0.0;
+        for (int i = 0; i < tail; ++i) {
+            lo += est(order[i]);
+            hi += est(order[T - 1 - i]);
+        }
+        const double sd = std::sqrt(ec.squaredNorm() / (T - 1));
+        separation.push_back((hi - lo) / tail / sd);
+        EXPECT_GT(separation.back(), 1.0) << "seed=" << seed;
+    }
+    const auto [mn, mx] = std::minmax_element(separation.begin(), separation.end());
+    EXPECT_LT(*mx - *mn, 0.5) << "regime separation varies too much across seeds";
 }
