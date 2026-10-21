@@ -1,4 +1,5 @@
 #include <gtest/gtest.h>
+#include <cstring>
 #include "trade_ngin/statistics/clustering/gmm.hpp"
 #include "trade_ngin/regime_detection/market/market_regime_pipeline.hpp"
 #include <Eigen/Dense>
@@ -1203,4 +1204,221 @@ TEST(RegimeSubstrate, TrainRestoresCerrFormatting_N10) {
     ASSERT_TRUE(t.is_ok()) << t.error()->what();
     EXPECT_EQ(flags_after, std::ios_base::scientific | std::ios_base::showpos);
     EXPECT_EQ(precision_after, 9);
+}
+
+// ----------------------------------------------------------------------------
+// Golden digest of the trained mappings and of the beliefs a fixed update
+// sequence produces, per sleeve, in the 2D HMM geometry (no liquidity, no
+// ret60) and in the 4D one. A refactor that should move no call (K-10 moving
+// the target fingerprints into SleeveConfig) must leave every digest
+// unchanged, bit for bit. A change that moves a call updates these digests in
+// a declared baseline migration, never silently.
+// ----------------------------------------------------------------------------
+
+namespace {
+
+struct Digest {
+    uint64_t h = 1469598103934665603ULL;  // FNV-1a
+    void add(double v) {
+        uint64_t bits;
+        std::memcpy(&bits, &v, sizeof bits);
+        for (int i = 0; i < 8; ++i) {
+            h ^= (bits >> (8 * i)) & 0xff;
+            h *= 1099511628211ULL;
+        }
+    }
+    void add(const Eigen::MatrixXd& m) {
+        add(static_cast<double>(m.rows()));
+        add(static_cast<double>(m.cols()));
+        for (int i = 0; i < m.rows(); ++i)
+            for (int j = 0; j < m.cols(); ++j) add(m(i, j));
+    }
+};
+
+uint64_t market_digest(SleeveId sleeve, bool full_geometry) {
+    using namespace trade_ngin;
+    auto sc = make_market_scaffold();
+    const int T = static_cast<int>(sc.returns.size());
+    std::vector<double> liq, ret60;
+    Eigen::MatrixXd smoothed;
+    if (full_geometry) {
+        // One HMM state per block of 40 bars, with clearly separated
+        // liquidity and 60d return, so both optional dimensions fire.
+        smoothed = Eigen::MatrixXd::Zero(T, 3);
+        liq.resize(T);
+        ret60.resize(T);
+        for (int t = 0; t < T; ++t) {
+            const int j = std::min(t / 40, 2);
+            smoothed(t, j) = 1.0;
+            liq[t] = (j == 0 ? 1.0 : j == 1 ? 0.9 : 0.5);
+            ret60[t] = (j == 0 ? 0.05 : j == 1 ? 0.0 : -0.06);
+        }
+    }
+    MarketRegimePipeline pipeline;
+    auto tr = pipeline.train(sleeve, sc.returns, sc.hmm_means, sc.hmm_covs, sc.msar_means,
+                             sc.msar_vars, sc.msar_ar, sc.garch_vol, sc.gmm_result,
+                             sc.gmm_features, liq, smoothed, ret60);
+    EXPECT_TRUE(tr.is_ok());
+
+    Digest d;
+    const auto& st = pipeline.sleeve_state(sleeve);
+    d.add(st.hmm_mapping.mapping_matrix);
+    d.add(st.msar_mapping.mapping_matrix);
+    d.add(st.gmm_mapping.mapping_matrix);
+
+    std::mt19937 gen(5);
+    std::uniform_real_distribution<double> u(0.05, 1.0);
+    for (int i = 0; i < 15; ++i) {
+        Eigen::VectorXd hmm_p(3), msar_p(2);
+        hmm_p << u(gen), u(gen), u(gen);
+        hmm_p /= hmm_p.sum();
+        msar_p << u(gen), u(gen);
+        msar_p /= msar_p.sum();
+        GARCHFeatures gf;
+        gf.conditional_vol = 0.01 * u(gen);
+        gf.vol_percentile = u(gen);
+        gf.vol_spike = (i % 5 == 4);
+        gf.vol_of_vol_high = (i % 7 == 6);
+        MarketFeatures mf;
+        mf.realized_vol = 0.01 * u(gen);
+        mf.liquidity_proxy = u(gen);
+        Eigen::VectorXd gmm_p =
+            GMM::predict_proba(sc.gmm_features.row(7 * i).transpose(), sc.gmm_result);
+        auto br = pipeline.update(sleeve, hmm_p, msar_p, gf, mf, gmm_p);
+        EXPECT_TRUE(br.is_ok());
+        const auto& b = br.value();
+        for (const auto& [regime, p] : b.market_probs) d.add(p);
+        d.add(static_cast<double>(b.most_likely));
+        d.add(b.confidence);
+        d.add(static_cast<double>(b.regime_age_bars));
+        d.add(b.stability);
+        for (const auto& [model, probs] : b.model_contributions)
+            for (const auto& [regime, p] : probs) d.add(p);
+    }
+    return d.h;
+}
+
+}  // namespace
+
+TEST(RegimeGolden, MarketMappingsAndBeliefsAreUnchanged) {
+    using namespace trade_ngin;
+    // Recorded on 949be76b. Equities, FX and commodities share one digest because
+    // their configs and targets are identical today (K-10); rates differs through
+    // its model weights.
+    struct Expected { bool full; SleeveId sleeve; uint64_t digest; };
+    const Expected expected[] = {
+        {false, SleeveId::EQUITIES,    0x207408de349352a3ULL},
+        {false, SleeveId::RATES,       0x189883c86a8a5827ULL},
+        {false, SleeveId::FX,          0x207408de349352a3ULL},
+        {false, SleeveId::COMMODITIES, 0x207408de349352a3ULL},
+        {true,  SleeveId::EQUITIES,    0x3afb80ffc46a3d3eULL},
+        {true,  SleeveId::RATES,       0x93e1c1f762ae0934ULL},
+        {true,  SleeveId::FX,          0x3afb80ffc46a3d3eULL},
+        {true,  SleeveId::COMMODITIES, 0x3afb80ffc46a3d3eULL},
+    };
+    for (const auto& e : expected) {
+        EXPECT_EQ(market_digest(e.sleeve, e.full), e.digest)
+            << "sleeve " << static_cast<int>(e.sleeve) << (e.full ? " (4D HMM)" : " (2D HMM)")
+            << ": a trained mapping or a belief changed";
+    }
+}
+
+// ----------------------------------------------------------------------------
+// K-10: target fingerprints live in SleeveConfig.
+// ----------------------------------------------------------------------------
+
+namespace {
+
+bool same_targets(const SleeveConfig& a, const SleeveConfig& b) {
+    for (int k = 0; k < kNumMarketRegimes; ++k) {
+        const auto& x = a.hmm_targets[k];
+        const auto& y = b.hmm_targets[k];
+        if (x.abs_mu != y.abs_mu || x.sigma != y.sigma || x.liq != y.liq || x.ret60 != y.ret60)
+            return false;
+        if (a.msar_targets[k] != b.msar_targets[k] || a.gmm_targets[k] != b.gmm_targets[k])
+            return false;
+    }
+    const auto& p = a.hmm_stress_liquidity_without_liq;
+    const auto& q = b.hmm_stress_liquidity_without_liq;
+    return p.abs_mu == q.abs_mu && p.sigma == q.sigma && p.liq == q.liq && p.ret60 == q.ret60;
+}
+
+}  // namespace
+
+TEST(RegimePhase4, DefaultSleeveTargetsAreTodaysSharedValues_K10) {
+    // Moving the targets into SleeveConfig changed no value: every default sleeve
+    // carries the targets all four used before (the golden digest checks the
+    // trained result). Retuning per sleeve is a later, declared change.
+    const SleeveConfig eq = default_equities_config();
+    EXPECT_TRUE(same_targets(eq, default_rates_config()));
+    EXPECT_TRUE(same_targets(eq, default_fx_config()));
+    EXPECT_TRUE(same_targets(eq, default_commodities_config()));
+    EXPECT_EQ(eq.hmm_targets[0].sigma, -1.5);
+    EXPECT_EQ(eq.msar_targets[3][0], -1.0);
+    EXPECT_EQ(eq.gmm_targets[4][3], -1.5);
+    EXPECT_EQ(eq.hmm_stress_liquidity_without_liq.sigma, 2.5);
+}
+
+TEST(RegimePhase4, OverridingOneSleevesTargetsMovesOnlyThatSleeve_K10) {
+    // Gap 8's structural criterion: a rates TREND_LOWVOL sigma target below the
+    // equities one, set in SleeveConfig, changes the rates mappings and leaves
+    // every other sleeve bit-identical.
+    using namespace trade_ngin;
+    auto sc = make_market_scaffold();
+    auto train_all = [&](const MarketRegimePipelineConfig& cfg) {
+        auto p = std::make_unique<MarketRegimePipeline>(cfg);
+        for (auto s : {SleeveId::EQUITIES, SleeveId::RATES, SleeveId::FX, SleeveId::COMMODITIES}) {
+            auto r = p->train(s, sc.returns, sc.hmm_means, sc.hmm_covs, sc.msar_means,
+                              sc.msar_vars, sc.msar_ar, sc.garch_vol, sc.gmm_result,
+                              sc.gmm_features);
+            EXPECT_TRUE(r.is_ok());
+        }
+        return p;
+    };
+    MarketRegimePipelineConfig base_cfg;
+    MarketRegimePipelineConfig tuned_cfg;
+    auto& rates = tuned_cfg.sleeve_configs[static_cast<int>(SleeveId::RATES)];
+    rates.hmm_targets[0].sigma = -2.5;    // HMM TREND_LOWVOL sigma
+    rates.msar_targets[0][1] = -2.5;      // MSAR TREND_LOWVOL sigma
+    rates.gmm_targets[0][1] = -2.5;       // GMM TREND_LOWVOL sigma_hat
+    ASSERT_LT(rates.hmm_targets[0].sigma,
+              tuned_cfg.sleeve_configs[static_cast<int>(SleeveId::EQUITIES)].hmm_targets[0].sigma);
+
+    auto base = train_all(base_cfg);
+    auto tuned = train_all(tuned_cfg);
+    for (auto s : {SleeveId::EQUITIES, SleeveId::RATES, SleeveId::FX, SleeveId::COMMODITIES}) {
+        const auto& a = base->sleeve_state(s);
+        const auto& b = tuned->sleeve_state(s);
+        const bool moved = s == SleeveId::RATES;
+        EXPECT_EQ(a.hmm_mapping.mapping_matrix != b.hmm_mapping.mapping_matrix, moved)
+            << "HMM, sleeve " << static_cast<int>(s);
+        EXPECT_EQ(a.msar_mapping.mapping_matrix != b.msar_mapping.mapping_matrix, moved)
+            << "MSAR, sleeve " << static_cast<int>(s);
+        EXPECT_EQ(a.gmm_mapping.mapping_matrix != b.gmm_mapping.mapping_matrix, moved)
+            << "GMM, sleeve " << static_cast<int>(s);
+    }
+}
+
+TEST(RegimePhase4, StressLiquidityFallbackTargetIsUsedWithoutTheLiquidityDim_K10) {
+    // In the 2D HMM geometry the STRESS_LIQUIDITY target is the extreme-sigma
+    // proxy, not hmm_targets[4]: changing hmm_targets[4] there moves nothing,
+    // changing the fallback does.
+    using namespace trade_ngin;
+    auto sc = make_market_scaffold();
+    auto hmm_matrix = [&](const MarketRegimePipelineConfig& cfg) {
+        MarketRegimePipeline p(cfg);
+        EXPECT_TRUE(p.train(SleeveId::EQUITIES, sc.returns, sc.hmm_means, sc.hmm_covs,
+                            sc.msar_means, sc.msar_vars, sc.msar_ar, sc.garch_vol,
+                            sc.gmm_result, sc.gmm_features).is_ok());
+        return Eigen::MatrixXd(p.sleeve_state(SleeveId::EQUITIES).hmm_mapping.mapping_matrix);
+    };
+    MarketRegimePipelineConfig base;
+    MarketRegimePipelineConfig liq_target = base;
+    liq_target.sleeve_configs[0].hmm_targets[4].sigma = 0.0;
+    MarketRegimePipelineConfig fallback = base;
+    fallback.sleeve_configs[0].hmm_stress_liquidity_without_liq.sigma = 0.5;
+
+    const auto m0 = hmm_matrix(base);
+    EXPECT_EQ(hmm_matrix(liq_target), m0);
+    EXPECT_NE(hmm_matrix(fallback), m0);
 }
