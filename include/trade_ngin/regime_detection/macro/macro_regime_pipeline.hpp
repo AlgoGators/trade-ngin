@@ -228,6 +228,23 @@ struct FingerprintMapping {
 };
 
 // ============================================================================
+// MacroLiveState — the runtime state a live macro pipeline carries from one
+// update() to the next, so a process can checkpoint between bars and resume
+// after a restart (M-13). Mirrors SleeveLiveState on the market side, plus the
+// hysteresis/dwell state the macro side has and the market side does not.
+// The trained parameters (Gaussians, mappings, Quadrant statistics) come from
+// train() and recalibrate_quadrant_stats(), not from the checkpoint.
+// ============================================================================
+
+struct MacroLiveState {
+    Eigen::Matrix<double, kNumMacroRegimes, 1> prev_smoothed;
+    MacroBelief last_belief;
+    MacroRegimeL1 current_regime = MacroRegimeL1::EXPANSION_DISINFLATION;
+    int dwell_counter = 0;
+    int update_count  = 0;
+};
+
+// ============================================================================
 // MacroRegimePipeline
 //
 // Combines 4 models into a single MacroBelief:
@@ -275,6 +292,19 @@ public:
         const Eigen::Vector4d& bsts_cluster_probs,   // B4: current GMM probs
         bool structural_break = false                 // B4: break detected?
     );
+
+    // ── Live-state checkpoint (M-13; no current-path change) ────────────────
+    //
+    // get_live_state: snapshot the runtime state update() carries forward.
+    // restore_live_state: write a snapshot back after a restart; the pipeline
+    // must already be train()-ed (and its Quadrant statistics recalibrated as
+    // they were) so the trained parameters match the run that wrote it. The
+    // snapshot is validated (finite, non-negative probabilities, a valid
+    // regime, non-negative counters) before anything is written.
+    // Both return NOT_INITIALIZED on an untrained pipeline and take the
+    // pipeline mutex, like update().
+    Result<MacroLiveState> get_live_state() const;
+    Result<void> restore_live_state(const MacroLiveState& state);
 
     // ── Accessors ────────────────────────────────────────────────────────────
 

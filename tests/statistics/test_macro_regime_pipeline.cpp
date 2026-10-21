@@ -8,6 +8,7 @@
 
 #include <Eigen/Dense>
 #include <cmath>
+#include <limits>
 #include <random>
 #include <string>
 #include <vector>
@@ -896,4 +897,178 @@ TEST(RegimePhase4, MacroBeliefHasEntropyAndTopProbFields_M09) {
     b.top_prob = 0.85;
     EXPECT_DOUBLE_EQ(b.entropy, 0.42);
     EXPECT_DOUBLE_EQ(b.top_prob, 0.85);
+}
+
+// ============================================================================
+// M-13: macro live-state checkpoint. A pipeline restored from a checkpoint
+// must continue bit for bit as the uninterrupted run would have.
+// ============================================================================
+
+namespace {
+
+struct MacroBar {
+    Eigen::Vector3d f;
+    Eigen::Vector3d ms;
+    double growth;
+    double inflation;
+    Eigen::Vector4d bsts;
+    bool brk;
+};
+
+// 60 bars: expansion, a turn into industrial weakness (with one structural
+// break), then a noisy mix, so smoothing warm-up, hysteresis and dwell all act.
+std::vector<MacroBar> macro_script() {
+    std::mt19937 gen(42);
+    std::normal_distribution<double> nd(0.0, 0.15);
+    std::vector<MacroBar> bars;
+    for (int t = 0; t < 60; ++t) {
+        MacroBar b;
+        if (t < 25) {
+            b = {Eigen::Vector3d(1.5, -0.8, 0.5), Eigen::Vector3d(0.8, 0.1, 0.1), 10.0, 1.5,
+                 Eigen::Vector4d(0.4, 0.2, 0.2, 0.2), false};
+        } else if (t < 45) {
+            b = {Eigen::Vector3d(-1.5, 1.2, -0.3), Eigen::Vector3d(0.05, 0.1, 0.85), -8.0, 5.0,
+                 Eigen::Vector4d(0.05, 0.75, 0.1, 0.1), t == 30};
+        } else {
+            b = {Eigen::Vector3d(0.2, 0.3, -0.1), Eigen::Vector3d(0.3, 0.4, 0.3), 1.0, 3.0,
+                 Eigen::Vector4d(0.25, 0.25, 0.25, 0.25), false};
+        }
+        for (int k = 0; k < 3; ++k) b.f(k) += nd(gen);
+        b.growth += nd(gen);
+        b.inflation += nd(gen);
+        bars.push_back(b);
+    }
+    return bars;
+}
+
+void expect_same_belief(const MacroBelief& a, const MacroBelief& b, int t) {
+    // Everything but the wall-clock timestamp.
+    EXPECT_EQ(a.macro_probs, b.macro_probs) << "t=" << t;
+    EXPECT_EQ(a.most_likely, b.most_likely) << "t=" << t;
+    EXPECT_EQ(a.confidence, b.confidence) << "t=" << t;
+    EXPECT_EQ(a.regime_age_bars, b.regime_age_bars) << "t=" << t;
+    EXPECT_EQ(a.entropy, b.entropy) << "t=" << t;
+    EXPECT_EQ(a.top_prob, b.top_prob) << "t=" << t;
+    EXPECT_EQ(a.structural_break_risk, b.structural_break_risk) << "t=" << t;
+    EXPECT_EQ(a.model_contributions, b.model_contributions) << "t=" << t;
+}
+
+}  // namespace
+
+TEST_F(MacroRegimePipelineTest, CheckpointRestoreReproducesUninterruptedRun_M13) {
+    const auto bars = macro_script();
+    auto feed = [](MacroRegimePipeline& p, const MacroBar& b) {
+        auto r = p.update(b.f, b.ms, b.growth, b.inflation, b.bsts, b.brk);
+        EXPECT_TRUE(r.is_ok());
+        return r.value();
+    };
+
+    MacroRegimePipeline straight;
+    ASSERT_TRUE(straight.train(dfm_out_, ms_out_, panel_, bsts_probs_, growth_scores_,
+                               inflation_scores_).is_ok());
+    std::vector<MacroBelief> expected;
+    for (const auto& b : bars) expected.push_back(feed(straight, b));
+    // The script must actually exercise a regime change, or dwell is never tested.
+    ASSERT_NE(expected.front().most_likely, expected[44].most_likely);
+
+    // Checkpoint inside the 10-bar smoothing warm-up and in mid-transition.
+    for (int cut : {5, 28, 33}) {
+        MacroRegimePipeline before;
+        ASSERT_TRUE(before.train(dfm_out_, ms_out_, panel_, bsts_probs_, growth_scores_,
+                                 inflation_scores_).is_ok());
+        for (int t = 0; t < cut; ++t) feed(before, bars[t]);
+        auto snap = before.get_live_state();
+        ASSERT_TRUE(snap.is_ok());
+
+        // A fresh process: train again, restore, carry on.
+        MacroRegimePipeline after;
+        ASSERT_TRUE(after.train(dfm_out_, ms_out_, panel_, bsts_probs_, growth_scores_,
+                                inflation_scores_).is_ok());
+        ASSERT_TRUE(after.restore_live_state(snap.value()).is_ok());
+        expect_same_belief(after.last_belief(), expected[cut - 1], cut - 1);
+        for (int t = cut; t < static_cast<int>(bars.size()); ++t) {
+            expect_same_belief(feed(after, bars[t]), expected[t], t);
+        }
+    }
+}
+
+TEST_F(MacroRegimePipelineTest, ResumingWithoutTheCheckpointDiverges_M13) {
+    // Guards the test above: a retrained pipeline that skips the restore does not
+    // reproduce the run, so the checkpoint carries state that matters.
+    const auto bars = macro_script();
+    MacroRegimePipeline straight, fresh;
+    ASSERT_TRUE(straight.train(dfm_out_, ms_out_, panel_, bsts_probs_, growth_scores_,
+                               inflation_scores_).is_ok());
+    ASSERT_TRUE(fresh.train(dfm_out_, ms_out_, panel_, bsts_probs_, growth_scores_,
+                            inflation_scores_).is_ok());
+    MacroBelief last_straight, last_fresh;
+    for (int t = 0; t < 60; ++t) {
+        const auto& b = bars[t];
+        last_straight = straight.update(b.f, b.ms, b.growth, b.inflation, b.bsts, b.brk).value();
+        if (t >= 33) last_fresh = fresh.update(b.f, b.ms, b.growth, b.inflation, b.bsts, b.brk).value();
+        if (t == 33) {
+            EXPECT_NE(last_fresh.macro_probs, last_straight.macro_probs);
+        }
+    }
+}
+
+TEST(RegimePhase4, MacroLiveStateRequiresATrainedPipeline_M13) {
+    MacroRegimePipeline p;
+    auto snap = p.get_live_state();
+    ASSERT_TRUE(snap.is_error());
+    EXPECT_EQ(snap.error()->code(), trade_ngin::ErrorCode::NOT_INITIALIZED);
+    auto r = p.restore_live_state(MacroLiveState{});
+    ASSERT_TRUE(r.is_error());
+    EXPECT_EQ(r.error()->code(), trade_ngin::ErrorCode::NOT_INITIALIZED);
+}
+
+TEST_F(MacroRegimePipelineTest, RestoreRejectsAnInvalidSnapshotAndKeepsTheState_M13) {
+    MacroRegimePipeline p;
+    ASSERT_TRUE(p.train(dfm_out_, ms_out_, panel_, bsts_probs_, growth_scores_,
+                        inflation_scores_).is_ok());
+    for (const auto& b : macro_script()) p.update(b.f, b.ms, b.growth, b.inflation, b.bsts, b.brk);
+    const auto good = p.get_live_state().value();
+
+    auto bad = good;
+    bad.prev_smoothed(0) = std::numeric_limits<double>::quiet_NaN();
+    EXPECT_EQ(p.restore_live_state(bad).error()->code(), trade_ngin::ErrorCode::INVALID_DATA);
+    bad = good;
+    bad.prev_smoothed(1) = -0.1;
+    EXPECT_EQ(p.restore_live_state(bad).error()->code(), trade_ngin::ErrorCode::INVALID_DATA);
+    bad = good;
+    bad.current_regime = static_cast<MacroRegimeL1>(kNumMacroRegimes);
+    EXPECT_EQ(p.restore_live_state(bad).error()->code(), trade_ngin::ErrorCode::INVALID_DATA);
+    bad = good;
+    bad.dwell_counter = -1;
+    EXPECT_EQ(p.restore_live_state(bad).error()->code(), trade_ngin::ErrorCode::INVALID_DATA);
+    bad = good;
+    bad.update_count = -1;
+    EXPECT_EQ(p.restore_live_state(bad).error()->code(), trade_ngin::ErrorCode::INVALID_DATA);
+
+    // Nothing was written by the refused restores.
+    const auto now = p.get_live_state().value();
+    EXPECT_EQ(now.prev_smoothed, good.prev_smoothed);
+    EXPECT_EQ(now.current_regime, good.current_regime);
+    EXPECT_EQ(now.dwell_counter, good.dwell_counter);
+    EXPECT_EQ(now.update_count, good.update_count);
+}
+
+// N-10 on the macro side: train() prints its fingerprint diagnostics with
+// std::fixed and must leave std::cerr's formatting as the caller set it.
+TEST_F(MacroRegimePipelineTest, TrainRestoresCerrFormatting_N10) {
+    const auto saved_flags = std::cerr.flags();
+    const auto saved_precision = std::cerr.precision();
+    std::cerr.flags(std::ios_base::scientific | std::ios_base::showpos);
+    std::cerr.precision(9);
+
+    MacroRegimePipeline p;
+    auto r = p.train(dfm_out_, ms_out_, panel_, bsts_probs_, growth_scores_, inflation_scores_);
+    const auto flags_after = std::cerr.flags();
+    const auto precision_after = std::cerr.precision();
+    std::cerr.flags(saved_flags);
+    std::cerr.precision(saved_precision);
+
+    ASSERT_TRUE(r.is_ok());
+    EXPECT_EQ(flags_after, std::ios_base::scientific | std::ios_base::showpos);
+    EXPECT_EQ(precision_after, 9);
 }
