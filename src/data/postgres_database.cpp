@@ -3179,11 +3179,12 @@ PostgresDatabase::get_position_inception_dates(const std::string& strategy_id,
         // the current unbroken holding period when a position was closed and
         // reopened, which is deliberate: over-fetching is rejected by
         // trading.corp_action_applied, while under-fetching corrupts a basis
-        // permanently.
+        // permanently. Only the system book: the equity book is never desk-edited (021).
         auto result = txn.exec(
             "SELECT symbol, min(date)::text AS inception "
             "FROM " + table_name +
                 " WHERE strategy_id = $1 AND strategy_name = $2 AND portfolio_id = $3 "
+                "  AND portfolio_type = 'system' "
                 "  AND symbol = ANY($4) AND quantity <> 0 "
                 "GROUP BY symbol",
             pqxx::params{strategy_id, strategy_name, portfolio_id, symbols});
@@ -3248,12 +3249,14 @@ PostgresDatabase::get_current_holding_start_dates(const std::string& strategy_id
         // not take a future flat row as the break -- a stray row dated after the replay date
         // would otherwise push the break past every real row and drop the symbol from the
         // map, skipping its rename in silence. An empty bound leaves both halves as they
-        // were: `$5::date IS NULL` short-circuits each predicate.
+        // were: `$5::date IS NULL` short-circuits each predicate. Both halves read the system
+        // book only (021): a desk book's flat row is never this book's break.
         const bool bounded = !on_or_before.empty();
         auto result = txn.exec(
             "SELECT symbol, min(date)::text AS holding_start "
             "FROM " + table_name + " p "
                 " WHERE strategy_id = $1 AND strategy_name = $2 AND portfolio_id = $3 "
+                "  AND portfolio_type = 'system' "
                 "  AND symbol = ANY($4) AND quantity <> 0 "
                 "  AND ($5::date IS NULL OR date <= $5::date) "
                 "  AND date > COALESCE(("
@@ -3261,6 +3264,7 @@ PostgresDatabase::get_current_holding_start_dates(const std::string& strategy_id
                 "         WHERE z.strategy_id = p.strategy_id "
                 "           AND z.strategy_name = p.strategy_name "
                 "           AND z.portfolio_id = p.portfolio_id "
+                "           AND z.portfolio_type = p.portfolio_type "
                 "           AND z.symbol = p.symbol AND z.quantity = 0 "
                 "           AND ($5::date IS NULL OR z.date <= $5::date)), "
                 "      DATE '1900-01-01') "
@@ -3317,11 +3321,12 @@ PostgresDatabase::get_last_buy_dates(const std::string& strategy_id,
 
         // BUY only: it is the sole fill that re-forms a long book's weighted cost basis. A SELL
         // reduces quantity and realizes P&L but leaves average_price untouched, so it carries no
-        // information about the basis frame.
+        // information about the basis frame. Only the system book (021), as the other two reads.
         auto result = txn.exec(
             "SELECT symbol, max(date)::text AS last_buy "
             "FROM " + table_name +
                 " WHERE strategy_id = $1 AND strategy_name = $2 AND portfolio_id = $3 "
+                "  AND portfolio_type = 'system' "
                 "  AND symbol = ANY($4) AND side = 'BUY' AND execution_type = 'STRATEGY' "
                 "  AND date >= $5 AND date <= $6 "
                 "GROUP BY symbol",

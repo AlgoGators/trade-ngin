@@ -828,7 +828,7 @@ int main(int argc, char* argv[]) {
             auto first_q = db->execute_query(
                 "SELECT COALESCE(MIN(date)::text, '') FROM trading.live_results "
                 "WHERE strategy_id = '" + std::string(kEquityStrategyId) + "'"
-                " AND portfolio_id = '" + portfolio_id + "'");
+                " AND portfolio_id = '" + portfolio_id + "' AND portfolio_type = 'system'");
 
             auto first_cell = [](const Result<std::shared_ptr<arrow::Table>>& r) -> std::string {
                 if (r.is_error() || !r.value() || r.value()->num_rows() == 0) return {};
@@ -1135,7 +1135,7 @@ int main(int argc, char* argv[]) {
             auto prev_run = db->execute_query(
                 "SELECT count(*)::text FROM trading.live_results "
                 "WHERE strategy_id = '" + std::string(kEquityStrategyId) + "'"
-                " AND portfolio_id = '" + portfolio_id + "'"
+                " AND portfolio_id = '" + portfolio_id + "' AND portfolio_type = 'system'"
                 " AND date = '" + prev_date_str + "'");
 
             long prev_run_rows = 0;
@@ -1153,7 +1153,7 @@ int main(int argc, char* argv[]) {
                 auto last_run = db->execute_query(
                     "SELECT MAX(date)::text FROM trading.live_results "
                     "WHERE strategy_id = '" + std::string(kEquityStrategyId) + "'"
-                    " AND portfolio_id = '" + portfolio_id + "'"
+                    " AND portfolio_id = '" + portfolio_id + "' AND portfolio_type = 'system'"
                     " AND date < '" + today_date_str + "'");
 
                 std::string last_run_date;
@@ -1795,7 +1795,7 @@ int main(int argc, char* argv[]) {
                         auto r = db->execute_query(
                             "SELECT count(*)::text FROM trading.live_results "
                             "WHERE strategy_id = '" + std::string(kEquityStrategyId) + "'"
-                            " AND portfolio_id = '" + portfolio_id + "'"
+                            " AND portfolio_id = '" + portfolio_id + "' AND portfolio_type = 'system'"
                             " AND date = '" + prev_str + "'");
                         if (r.is_ok() && r.value()->num_rows() > 0) {
                             auto col = std::static_pointer_cast<arrow::StringArray>(
@@ -4870,12 +4870,12 @@ int main(int argc, char* argv[]) {
                     "       COALESCE(y.total_transaction_costs, 0.0), "
                     "       COALESCE((SELECT total_realized_pnl FROM trading.live_results "
                     "                 WHERE strategy_id = 'LIVE_EQUITY_MEAN_REVERSION' "
-                    "                   AND portfolio_id = '" + portfolio_id + "' "
+                    "                   AND portfolio_id = '" + portfolio_id + "' AND portfolio_type = 'system' "
                     "                   AND DATE(date) < '" + yesterday_date_str + "' "
                     "                 ORDER BY date DESC LIMIT 1), 0.0) "
                     "FROM trading.live_results y "
                     "WHERE y.strategy_id = 'LIVE_EQUITY_MEAN_REVERSION' "
-                    "  AND y.portfolio_id = '" + portfolio_id + "' "
+                    "  AND y.portfolio_id = '" + portfolio_id + "' AND y.portfolio_type = 'system' "
                     "  AND DATE(y.date) = '" + yesterday_date_str + "'";
                 auto cq = db->execute_query(comp_query);
                 if (cq.is_ok() && cq.value()->num_rows() > 0) {
@@ -5523,7 +5523,7 @@ int main(int argc, char* argv[]) {
         try {
             std::string prev_unrealized_query =
                 "SELECT COALESCE(total_unrealized_pnl, 0.0) FROM trading.live_results "
-                "WHERE strategy_id = 'LIVE_EQUITY_MEAN_REVERSION' AND portfolio_id = '" + portfolio_id + "' "
+                "WHERE strategy_id = 'LIVE_EQUITY_MEAN_REVERSION' AND portfolio_id = '" + portfolio_id + "' AND portfolio_type = 'system' "
                 "AND DATE(date) < '" + today_date_str + "' "
                 "ORDER BY date DESC LIMIT 1";
             auto pu = db->execute_query(prev_unrealized_query);
@@ -5696,7 +5696,7 @@ int main(int argc, char* argv[]) {
         try {
             std::string prev_realized_query =
                 "SELECT COALESCE(total_realized_pnl, 0.0) FROM trading.live_results "
-                "WHERE strategy_id = 'LIVE_EQUITY_MEAN_REVERSION' AND portfolio_id = '" + portfolio_id + "' "
+                "WHERE strategy_id = 'LIVE_EQUITY_MEAN_REVERSION' AND portfolio_id = '" + portfolio_id + "' AND portfolio_type = 'system' "
                 "AND DATE(date) < '" + today_date_str + "' "
                 "ORDER BY date DESC LIMIT 1";
             auto pr = db->execute_query(prev_realized_query);
@@ -6326,7 +6326,7 @@ int main(int argc, char* argv[]) {
                         "SELECT daily_return, daily_unrealized_pnl, daily_realized_pnl, daily_pnl, "
                         "daily_transaction_costs, total_dividend_income "
                         "FROM trading.live_results "
-                        "WHERE strategy_id = 'LIVE_EQUITY_MEAN_REVERSION' AND portfolio_id = '" + portfolio_id + "' AND date = '" + yesterday_date_for_email + "' "
+                        "WHERE strategy_id = 'LIVE_EQUITY_MEAN_REVERSION' AND portfolio_id = '" + portfolio_id + "' AND portfolio_type = 'system' AND date = '" + yesterday_date_for_email + "' "
                         "ORDER BY date DESC LIMIT 1";
 
                     INFO("Loading yesterday's daily metrics from live_results: " + yesterday_metrics_query);

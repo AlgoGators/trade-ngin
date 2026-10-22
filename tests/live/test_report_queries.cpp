@@ -82,8 +82,8 @@ TEST(EmailQueriesYesterdayPositions, EveryFilterIsPresentOnce) {
 }
 
 // READS SOURCE (a labelled wiring and twin guard; the query text is executed above). It also
-// pins the runners' other report read, yesterday's trading.live_results row: that table has no
-// portfolio_type, and the query names both ids.
+// pins the runners' other report read, yesterday's trading.live_results row: it names both ids (the
+// equity runner's also its system book, the futures runners' theirs through qt_read_sql).
 TEST(EmailQueriesTwinSourceGuard, TheRunnersReadYesterdaysRowsThroughTheFunction) {
     for (const char* runner : {"apps/strategies/live_portfolio_conservative.cpp",
                                "apps/strategies/live_portfolio.cpp"}) {
@@ -120,7 +120,8 @@ TEST(EmailQueriesTwinSourceGuard, TheRunnersReadYesterdaysRowsThroughTheFunction
     EXPECT_EQ(equity.find("daily_unrealized_pnl, last_update \""), npos);
     EXPECT_NE(
         equity.find("\"WHERE strategy_id = 'LIVE_EQUITY_MEAN_REVERSION' AND portfolio_id = '\" "
-                    "+ portfolio_id + \"' AND date = '\" + yesterday_date_for_email + \"' \""),
+                    "+ portfolio_id + \"' AND portfolio_type = 'system' AND date = '\" + "
+                    "yesterday_date_for_email + \"' \""),
         npos);
 }
 
