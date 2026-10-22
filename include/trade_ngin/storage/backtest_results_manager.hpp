@@ -39,7 +39,6 @@ private:
     nlohmann::json hyperparameters_;
     std::string run_name_;
     std::string run_description_;
-    std::string portfolio_id_;
 
 public:
     BacktestResultsManager(std::shared_ptr<PostgresDatabase> db,
