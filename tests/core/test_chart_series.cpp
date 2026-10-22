@@ -444,6 +444,72 @@ TEST(ChartSeries, ADayTheBookDidNotTradeHasNoPointOnTheCostChart) {
     EXPECT_TRUE(ChartSeries::cost_per_million({}, test_multiplier).labels.empty());
 }
 
+// The contracts chart (HD 2026-10-14): every calendar day of the 30 ending on the run date, the
+// run date included, with the contracts of every sleeve's fills, the ROLL legs apart.
+TEST(ChartQueries, TheContractsChartReadsEveryDayOfItsWindowAndEverySleevesFills) {
+    const std::string query = ChartQueries::contracts_per_day(kPortfolio, "2025-11-14", 30);
+    EXPECT_TRUE(has(query, "generate_series(DATE('2025-11-14') - 29, DATE('2025-11-14')")) << query;
+    EXPECT_TRUE(has(query, "LEFT JOIN trading.executions e")) << query;
+    EXPECT_TRUE(has(query, "e.portfolio_id = 'BASE_PORTFOLIO'")) << query;
+    EXPECT_FALSE(has(query, "strategy_id")) << "every sleeve of the book counts";
+    EXPECT_TRUE(has(query, "SUM(ABS(e.quantity)) FILTER (WHERE e.execution_type IS DISTINCT FROM 'ROLL')"))
+        << query;
+    EXPECT_TRUE(has(query, "SUM(ABS(e.quantity)) FILTER (WHERE e.execution_type = 'ROLL')")) << query;
+    EXPECT_TRUE(has(query, "ORDER BY d.day ASC")) << query;
+}
+
+// One stacked bar per day, labelled month-day: the strategy contracts below, the roll legs on top.
+// 2025-11-04: one MBT strategy fill of 1 and a 6N fill of 1, and the MBT roll, two legs of 2.
+TEST(ChartSeries, ContractsPerDayIsOneStackedBarPerDayLabelledMonthAndDay) {
+    const ChartData data = ChartSeries::contracts_per_day(
+        {{"2025-11-03", 0.0, 0.0}, {"2025-11-04", 2.0, 4.0}, {"2025-11-05", 4.0, 0.0}}, 30);
+    ASSERT_EQ(data.labels.size(), 3u);
+    EXPECT_EQ(data.labels[0], "11-03");
+    EXPECT_EQ(data.labels[1], "11-04");
+    EXPECT_EQ(data.values, (std::vector<double>{0.0, 2.0, 4.0}));
+    EXPECT_EQ(data.values2, (std::vector<double>{0.0, 4.0, 0.0}));
+    EXPECT_EQ(data.title, "Contracts Traded per Day, Last 30 Days");
+    EXPECT_EQ(data.y_label, "Contracts");
+    EXPECT_EQ(data.series_name, "Strategy fills");
+    EXPECT_EQ(data.series2_name, "Roll legs");
+    EXPECT_TRUE(ChartSeries::contracts_per_day({}, 30).labels.empty());
+}
+
+// The fetcher reads the three columns of each day, as the database layer hands them over (text).
+TEST(ChartGeneratorFetch, TheContractsChartReadsEachDaysTwoCounts) {
+    auto db = std::make_shared<AnsweringDatabase>();
+    db->answer("strategy_contracts", {"day", "strategy_contracts", "roll_contracts"},
+               {{"2025-11-03", "0", "0"}, {"2025-11-04", "2.000000", "4.000000"}});
+    const ChartData data = ChartGenerator::fetch_contracts_per_day_data(db, kPortfolio, "2025-11-04", 2);
+    ASSERT_EQ(data.labels.size(), 2u);
+    EXPECT_EQ(data.labels[1], "11-04");
+    EXPECT_DOUBLE_EQ(data.values[1], 2.0);
+    EXPECT_DOUBLE_EQ(data.values2[1], 4.0);
+    ASSERT_EQ(db->queries.size(), 1u);
+    EXPECT_EQ(db->queries[0], ChartQueries::contracts_per_day(kPortfolio, "2025-11-04", 2));
+}
+
+// The script stacks the roll legs on the strategy fills, in the two colours, on whole-number ticks
+// that reach above the tallest stacked bar (9 contracts: ticks of 1 up to 11).
+TEST(ChartGeneratorScript, TheStackedBarScriptStacksTwoSeriesOnWholeNumberTicks) {
+    ChartData data = ChartSeries::contracts_per_day(
+        {{"2025-11-04", 2.0, 4.0}, {"2025-11-06", 9.0, 0.0}, {"2025-11-07", 5.0, 4.0}}, 30);
+    ChartConfig config;
+    config.rotate_x_labels = true;
+    const std::string script = ChartGenerator::stacked_bar_chart_script(data, config);
+    EXPECT_TRUE(has(script, "set style histogram rowstacked")) << script;
+    EXPECT_TRUE(has(script, "set yrange [0:11]")) << script;
+    EXPECT_TRUE(has(script, "set ytics 0,1")) << script;
+    EXPECT_TRUE(has(script, "using 2:xtic(1) title 'Strategy fills' lc rgb '#2c5aa0'")) << script;
+    EXPECT_TRUE(has(script, "using 3 title 'Roll legs' lc rgb '#d9822b'")) << script;
+    EXPECT_TRUE(has(script, "set output 'temp_chart_output.png'")) << "the common style is inserted after it";
+    // a busy window: about ten ticks, never fractional
+    data = ChartSeries::contracts_per_day({{"2025-11-04", 37.0, 6.0}}, 30);
+    const std::string busy = ChartGenerator::stacked_bar_chart_script(data, config);
+    EXPECT_TRUE(has(busy, "set ytics 0,5")) << busy;
+    EXPECT_TRUE(has(busy, "set yrange [0:50]")) << busy;
+}
+
 // A fill whose symbol has no contract multiplier on record is never counted at a multiplier of 1:
 // the day's ratio would be wrong, so the day has no point.
 TEST(ChartSeries, ADayWithAFillOfNoKnownMultiplierHasNoPointOnTheCostChart) {
@@ -655,12 +721,41 @@ TEST_F(ChartQueriesDb, EveryChartQueryRunsOnTheDatabase) {
         ChartQueries::cost_per_million(strategy, portfolio, "2026-04-25"),
         ChartQueries::margin_posted(strategy, portfolio, "2026-04-25"),
         ChartQueries::cumulative_pnl_by_symbol(strategy, portfolio, "2026-04-25"),
+        ChartQueries::contracts_per_day(portfolio, "2026-04-25", 30),
     };
     for (const auto& query : queries) {
         auto result = db_->execute_query(query);
         EXPECT_FALSE(result.is_error()) << query << "\n"
                                         << (result.is_error() ? result.error()->what() : "");
     }
+}
+
+// The contracts chart on a real database: one row for each of the 30 days, and its totals are the
+// book's own contracts of those days, counted by a query of its own.
+TEST_F(ChartQueriesDb, TheContractsChartHasEveryDayOfItsWindowAndTheBooksContracts) {
+    const std::string portfolio = "CONSERVATIVE_PORTFOLIO";
+    const std::string run_date = "2025-11-14";
+    const ChartData data = ChartGenerator::fetch_contracts_per_day_data(db_, portfolio, run_date, 30);
+    ASSERT_EQ(data.labels.size(), 30u);
+    EXPECT_EQ(data.labels.front(), "10-16");
+    EXPECT_EQ(data.labels.back(), "11-14");
+    double strategy = 0.0, roll = 0.0;
+    for (size_t i = 0; i < data.values.size(); ++i) {
+        strategy += data.values[i];
+        roll += data.values2[i];
+    }
+    auto counted = db_->execute_query(
+        "SELECT COALESCE(SUM(ABS(quantity)) FILTER (WHERE execution_type IS DISTINCT FROM 'ROLL'), 0)::text, "
+        "COALESCE(SUM(ABS(quantity)) FILTER (WHERE execution_type = 'ROLL'), 0)::text "
+        "FROM trading.executions WHERE portfolio_id = '" + portfolio + "' "
+        "AND DATE(execution_time) BETWEEN DATE('2025-10-16') AND DATE('2025-11-14')");
+    ASSERT_FALSE(counted.is_error());
+    auto table = counted.value()->CombineChunks().ValueOrDie();
+    const auto cell = [&](int c) {
+        return std::stod(std::static_pointer_cast<arrow::StringArray>(table->column(c)->chunk(0))->GetString(0));
+    };
+    EXPECT_DOUBLE_EQ(strategy, cell(0));
+    EXPECT_DOUBLE_EQ(roll, cell(1));
 }
 
 // A book of two sleeves: the chart of the day before the run date has one bar per symbol, as many
@@ -820,4 +915,6 @@ TEST_F(ChartQueriesDb, WritesTheChartsOfOneReportAsPngFilesWhenAskedTo) {
               ChartGenerator::generate_margin_posted_chart(db_, strategy, portfolio, date));
     write_png("cumulative_pnl", ChartGenerator::generate_cumulative_pnl_by_symbol_chart(
                                     db_, strategy, portfolio, date));
+    write_png("contracts_per_day",
+              ChartGenerator::generate_contracts_per_day_chart(db_, portfolio, date, 30));
 }

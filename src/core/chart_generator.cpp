@@ -285,6 +285,21 @@ std::string ChartQueries::cumulative_pnl_by_symbol(const std::string& strategy_i
            "ORDER BY cumulative_pnl DESC";
 }
 
+std::string ChartQueries::contracts_per_day(const std::string& portfolio_id, const std::string& date,
+                                            int days) {
+    // Every calendar day of the window, a day without a fill included (0 contracts). The fills of
+    // every sleeve of the book; a ROLL leg is counted apart from the STRATEGY fills.
+    const std::string first = "DATE('" + date + "') - " + std::to_string(std::max(days, 1) - 1);
+    return "SELECT d.day::date AS day, "
+           "COALESCE(SUM(ABS(e.quantity)) FILTER (WHERE e.execution_type IS DISTINCT FROM 'ROLL'), 0) "
+           "AS strategy_contracts, "
+           "COALESCE(SUM(ABS(e.quantity)) FILTER (WHERE e.execution_type = 'ROLL'), 0) AS roll_contracts "
+           "FROM generate_series(" + first + ", DATE('" + date + "'), INTERVAL '1 day') AS d(day) "
+           "LEFT JOIN trading.executions e ON DATE(e.execution_time) = d.day::date "
+           "AND e.portfolio_id = '" + portfolio_id + "' "
+           "GROUP BY d.day ORDER BY d.day ASC";
+}
+
 // ============================================================================
 // ChartSeries: from a query's rows to the points a chart plots
 // ============================================================================
@@ -654,6 +669,24 @@ ChartData ChartSeries::cumulative_pnl_by_symbol(std::vector<ChartPoint> symbol_p
     INFO("Chart data prepared with " + std::to_string(chart_data.labels.size()) + " labels and " +
          std::to_string(chart_data.values.size()) + " values");
 
+    return chart_data;
+}
+
+ChartData ChartSeries::contracts_per_day(const std::vector<ContractsDayRow>& rows, int days) {
+    ChartData chart_data;
+    if (rows.empty()) {
+        WARN("No day returned for the contracts chart");
+        return chart_data;
+    }
+    for (const auto& row : rows) {
+        chart_data.labels.push_back(row.date.size() >= 10 ? row.date.substr(5, 5) : row.date);
+        chart_data.values.push_back(row.strategy);
+        chart_data.values2.push_back(row.roll);
+    }
+    chart_data.title = ChartTitles::contracts_per_day_title(days);
+    chart_data.y_label = "Contracts";
+    chart_data.series_name = "Strategy fills";
+    chart_data.series2_name = "Roll legs";
     return chart_data;
 }
 
@@ -1365,6 +1398,52 @@ ChartData ChartGenerator::fetch_margin_posted_data(
     }
 }
 
+ChartData ChartGenerator::fetch_contracts_per_day_data(std::shared_ptr<DatabaseInterface> db,
+                                                       const std::string& portfolio_id,
+                                                       const std::string& date, int days) {
+    ChartData chart_data;
+    if (!db) { WARN("DB null"); return chart_data; }
+    try {
+        const std::string query = ChartQueries::contracts_per_day(portfolio_id, date, days);
+        INFO("Querying contracts per day with: " + query);
+        auto result = db->execute_query(query);
+        if (result.is_error()) {
+            ERROR("Query failed: " + std::string(result.error()->what()));
+            return chart_data;
+        }
+        auto table = result.value();
+        if (!table || table->num_rows() == 0) {
+            WARN("No day returned for the contracts chart");
+            return chart_data;
+        }
+        auto combined_result = table->CombineChunks();
+        if (!combined_result.ok()) {
+            ERROR("CombineChunks failed");
+            return chart_data;
+        }
+        auto combined = combined_result.ValueOrDie();
+        if (combined->num_columns() < 3) {
+            ERROR("Contracts per day: the query answered " + std::to_string(combined->num_columns()) +
+                  " columns, 3 expected");
+            return chart_data;
+        }
+        std::vector<ChartSeries::ContractsDayRow> rows;
+        for (int64_t i = 0; i < combined->num_rows(); ++i) {
+            ChartSeries::ContractsDayRow row;
+            row.date = day_cell(combined->column(0), i);
+            if (row.date.empty()) continue;
+            row.strategy = number_cell(combined->column(1), i).value_or(0.0);
+            row.roll = number_cell(combined->column(2), i).value_or(0.0);
+            rows.push_back(std::move(row));
+        }
+        return ChartSeries::contracts_per_day(rows, days);
+    } catch (const std::exception& e) {
+        ERROR(std::string("Exception fetching contracts per day: ") + e.what());
+        mark_chart_failed("the data could not be read");
+        return chart_data;
+    }
+}
+
 ChartData ChartGenerator::fetch_portfolio_composition_data(
     const std::unordered_map<std::string, Position>& positions,
     const std::unordered_map<std::string, double>& current_prices,
@@ -1915,6 +1994,66 @@ std::string ChartGenerator::render_horizontal_bar_chart(const ChartData& data, c
 
 // REPLACE the render_pie_chart function with this version that ensures legend visibility:
 
+std::string ChartGenerator::stacked_bar_chart_script(const ChartData& data,
+                                                     const ChartConfig& config) {
+    double top = 0.0;
+    for (size_t i = 0; i < data.labels.size(); ++i) {
+        top = std::max(top, data.values[i] + (i < data.values2.size() ? data.values2[i] : 0.0));
+    }
+    // Whole-number ticks, about ten of them at most, and room above the tallest bar
+    const double step = std::max(1.0, std::ceil(top / 10.0));
+    const double y_max = std::max(step, std::ceil(top * 1.15 / step) * step);
+
+    std::ostringstream script;
+    script << "reset\n";
+    script << "set terminal pngcairo size " << config.width << "," << config.height
+           << " enhanced font 'Arial," << config.font_size << "'\n";
+    script << "set output 'temp_chart_output.png'\n";
+    if (config.rotate_x_labels) script << "set bmargin 5\n";
+    if (!data.title.empty()) script << "set title '" << escape_gnuplot_string(data.title) << "'\n";
+    if (!data.y_label.empty()) script << "set ylabel '" << escape_gnuplot_string(data.y_label) << "'\n";
+    script << "set key top left\n";
+    script << "set style data histograms\n";
+    script << "set style histogram rowstacked\n";
+    script << "set style fill solid 0.9 border -1\n";
+    script << "set boxwidth " << config.box_width << "\n";
+    script << "set yrange [0:" << y_max << "]\n";
+    script << "set ytics 0," << step << "\n";
+    script << "set format y '%.0f'\n";
+    script << "set xtics";
+    if (config.rotate_x_labels) script << " rotate by " << config.x_label_angle;
+    script << " font 'Arial,9'\n";
+    script << "plot 'temp_chart_data.txt' using 2:xtic(1) title '"
+           << escape_gnuplot_string(data.series_name) << "' lc rgb '" << config.line_color
+           << "', \\\n";
+    script << "     '' using 3 title '" << escape_gnuplot_string(data.series2_name)
+           << "' lc rgb '#d9822b'\n";
+    return script.str();
+}
+
+std::string ChartGenerator::render_stacked_bar_chart(const ChartData& data, const ChartConfig& config) {
+    if (data.labels.empty() || data.values.empty()) {
+        WARN("No data provided for stacked bar chart");
+        return "";
+    }
+    if (data.labels.size() != data.values.size() || data.labels.size() != data.values2.size()) {
+        ERROR("Labels and values size mismatch in stacked bar chart");
+        return "";
+    }
+    try {
+        std::ostringstream data_content;
+        for (size_t i = 0; i < data.labels.size(); ++i) {
+            data_content << data.labels[i] << " " << std::fixed << std::setprecision(0)
+                         << data.values[i] << " " << data.values2[i] << "\n";
+        }
+        return execute_gnuplot(stacked_bar_chart_script(data, config), data_content.str());
+    } catch (const std::exception& e) {
+        ERROR("Exception rendering stacked bar chart: " + std::string(e.what()));
+        mark_chart_failed("the chart could not be drawn");
+        return "";
+    }
+}
+
 std::string ChartGenerator::render_pie_chart(const ChartData& data, const ChartConfig& config) {
     if (data.labels.empty() || data.values.empty()) {
         WARN("No data provided for pie chart");
@@ -2251,6 +2390,20 @@ std::string ChartGenerator::generate_total_transaction_costs_chart(
     config.x_label_angle = -45;
 
     return render_line_chart(data, config);
+}
+
+std::string ChartGenerator::generate_contracts_per_day_chart(std::shared_ptr<DatabaseInterface> db,
+                                                             const std::string& portfolio_id,
+                                                             const std::string& date, int days) {
+    begin_chart();
+    ChartData data = fetch_contracts_per_day_data(db, portfolio_id, date, days);
+    if (data.labels.empty()) return "";
+    ChartConfig config;
+    config.width = 1000;
+    config.height = 500;
+    config.rotate_x_labels = true;
+    config.x_label_angle = -45;
+    return render_stacked_bar_chart(data, config);
 }
 
 std::string ChartGenerator::generate_margin_posted_chart(
