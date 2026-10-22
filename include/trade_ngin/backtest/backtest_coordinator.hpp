@@ -343,6 +343,21 @@ public:
      * @param portfolio_config Portfolio configuration as JSON
      * @return Result indicating success or failure
      */
+    /**
+     * @brief OPT-N5/N6: the data boundary of a run, stored as backtest.results.end_date and
+     *        backtest.run_metadata.end_date: the timestamp of the last bar the run consumed, which
+     *        is the latest point of its equity curve (the curve gains one point a bar date, after
+     *        the seed point at start_date). Never the requested end (a frozen end date or the
+     *        wall clock), which may lie after the last bar.
+     *
+     * @param equity_curve The run's equity curve as it is stored
+     * @param start_date The run's start, returned for a curve with no point
+     * @return The latest timestamp of the curve. A run that consumed no bar holds the seed
+     *         point only, so its boundary is start_date.
+     */
+    static Timestamp data_boundary(const std::vector<std::pair<Timestamp, double>>& equity_curve,
+                                   const Timestamp& start_date);
+
     Result<void> save_portfolio_results_to_db(
         const BacktestResults& results,
         const std::vector<std::string>& strategy_names,

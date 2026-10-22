@@ -92,8 +92,7 @@ cd ..
 # Check executables exist
 ls -la build/bin/Release/
 
-# Expected outputs, among others (bt_equity_validation, bt_transaction_cost_report,
-# trade_ngin_tests):
+# Expected outputs, among others (bt_equity_validation, trade_ngin_tests):
 # bt_portfolio_conservative    - CONSERVATIVE futures backtest
 # bt_portfolio                 - BASE futures backtest
 # bt_equity_mr                 - equity backtest
@@ -309,8 +308,7 @@ the file and key of each, is in [docs/CONFIG_GUIDE.md](docs/CONFIG_GUIDE.md).
 trade-ngin/
 ├── apps/
 │   ├── backtest/                   # bt_portfolio.cpp, bt_portfolio_conservative.cpp,
-│   │                               #   bt_equity_mean_reversion.cpp, bt_equity_validation.cpp,
-│   │                               #   bt_transaction_cost_report.cpp
+│   │                               #   bt_equity_mean_reversion.cpp, bt_equity_validation.cpp
 │   └── strategies/                 # live_portfolio.cpp, live_portfolio_conservative.cpp,
 │                                   #   live_equity_mean_reversion.cpp
 │

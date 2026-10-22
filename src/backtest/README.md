@@ -50,7 +50,6 @@ The runners are in `apps/backtest/`:
 | `bt_portfolio_conservative` | `bt_portfolio_conservative.cpp` | CONSERVATIVE (config `conservative`) |
 | `bt_equity_mr` | `bt_equity_mean_reversion.cpp` | the equity book (config `equity_mr`) |
 | `bt_equity_validation` | `bt_equity_validation.cpp` | equity validation runs |
-| `bt_transaction_cost_report` | `bt_transaction_cost_report.cpp` | a cost report |
 
 Each loads `./config` through `ConfigLoader::load`, so it is run from the repository root. Run one
 runner at a time: the runners share tables and process-wide singletons.

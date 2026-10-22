@@ -337,8 +337,9 @@ Result<void> PortfolioManager::process_market_data(const std::vector<Bar>& data,
                     // too, which is the half that matters, because its target map
                     // is whatever it held when it stopped.
                     if (info.strategy->get_state() != StrategyState::RUNNING) {
-                        WARN("Strategy " + id + " is not RUNNING; it takes no part in this "
-                             "cycle and its target positions are not read");
+                        WARN("Strategy " + id +
+                             " is not RUNNING; it takes no part in this "
+                             "cycle and the target positions held for it are cleared");
                         // Not reading the targets is not enough: the map this manager keeps for
                         // the sleeve still holds the previous rebalance's targets, and everything
                         // after this loop in the same call reads it (the optimizer, the risk

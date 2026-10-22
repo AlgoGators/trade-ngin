@@ -307,8 +307,7 @@ actions applied inside its daily cycle ([AVERAGE_PRICE_LIFECYCLE.md](AVERAGE_PRI
 
 ### 4.5 Runners
 
-All under `apps/`. Every runner resolves `./config` from the directory it is started in
-(`bt_transaction_cost_report` also tries `../config`).
+All under `apps/`. Every runner resolves `./config` from the directory it is started in.
 
 | Executable | Source | What it does |
 |---|---|---|
@@ -318,7 +317,6 @@ All under `apps/`. Every runner resolves `./config` from the directory it is sta
 | `bt_portfolio_conservative`, `bt_portfolio` | `apps/backtest/` | futures backtests through `BacktestCoordinator`, stored to `backtest.*` and CSV |
 | `bt_equity_mr` | `apps/backtest/bt_equity_mean_reversion.cpp` | the equity backtest |
 | `bt_equity_validation` | `apps/backtest/bt_equity_validation.cpp` | runs the equity backtest and recomputes its data, signals, P&L and metrics independently |
-| `bt_transaction_cost_report` | `apps/backtest/bt_transaction_cost_report.cpp` | the cost of one contract of every futures symbol, as the cost manager prices it |
 
 A live futures run takes `[YYYY-MM-DD] [--send-email]`
 (`apps/strategies/live_portfolio_conservative.cpp:122`). A run given the date T loads bars through

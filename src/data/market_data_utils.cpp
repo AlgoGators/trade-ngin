@@ -23,7 +23,6 @@ std::string get_market_data_columns(AssetClass asset_class) {
         case COMMODITIES:
         case CRYPTO:
             // These asset classes use unadjusted prices directly.
-            // Futures are already back-adjusted per contract conventions.
             // Other asset classes do not have adjustment concepts (splits, dividends).
             return "time, symbol, open, high, low, close, volume";
 
