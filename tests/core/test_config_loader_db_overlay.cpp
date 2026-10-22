@@ -372,6 +372,25 @@ TEST(StrategyConfigOverlayFiles, ACredentialLikeKeyInTheFilesRefusesTheSettingsU
 // ===== resolve_live_settings: the runners' one entry point =====
 
 namespace {
+/// config_template copied once into a temporary directory, each QT book given the conservative
+/// book's email.json: the template ships none for them (a deployment adds its own), and a live
+/// run's loader requires one (as test_live_settings_check.cpp's tmpl()).
+std::filesystem::path desk_tmpl() {
+    namespace fs = std::filesystem;
+    static const fs::path copy = [] {
+        const fs::path to = fs::temp_directory_path() / "trade_ngin_desk_settings_config";
+        fs::remove_all(to);
+        fs::copy(tmpl(), to, fs::copy_options::recursive);
+        for (const char* book : {"qt_conservative", "qt_conservative_model", "qt_e2e"}) {
+            const fs::path email = to / "portfolios" / book / "email.json";
+            if (!fs::exists(email)) {
+                fs::copy_file(to / "portfolios" / "conservative" / "email.json", email);
+            }
+        }
+        return to;
+    }();
+    return copy;
+}
 Result<std::optional<StrategyConfigRow>> no_row() {
     return Result<std::optional<StrategyConfigRow>>(std::optional<StrategyConfigRow>{});
 }
@@ -406,8 +425,9 @@ TEST_F(StrategyConfigOverlay, NoActiveRowRunsOnTheFilesAndRecordsANullVersion) {
 }
 
 TEST_F(StrategyConfigOverlay, AnActiveRowIsAppliedAndItsVersionRecorded) {
-    auto r = resolve_live_settings(tmpl(), "conservative", "CONSERVATIVE_PORTFOLIO",
-                                   a_row(7, {{"risk", {{"max_drawdown", 0.25}}}}));
+    auto r = resolve_live_settings(
+        desk_tmpl(), "qt_conservative", "QT_CONSERVATIVE_PORTFOLIO",
+        a_row(7, {{"risk", {{"max_drawdown", 0.25}}}}, "QT_CONSERVATIVE_PORTFOLIO"));
     ASSERT_TRUE(r.is_ok()) << r.error()->what();
     EXPECT_EQ(r.value().strategy_config_version, 7);
     EXPECT_EQ(r.value().settings_used.at("strategy_config_version"), 7);
@@ -416,12 +436,15 @@ TEST_F(StrategyConfigOverlay, AnActiveRowIsAppliedAndItsVersionRecorded) {
 }
 
 TEST_F(StrategyConfigOverlay, ARowThatCannotBeAppliedRefusesAndNamesItsVersion) {
-    auto r = resolve_live_settings(tmpl(), "conservative", "CONSERVATIVE_PORTFOLIO",
-                                   a_row(9, {{"risk", nullptr}}));
+    auto r = resolve_live_settings(desk_tmpl(), "qt_conservative", "QT_CONSERVATIVE_PORTFOLIO",
+                                   a_row(9, {{"risk", nullptr}}, "QT_CONSERVATIVE_PORTFOLIO"));
     ASSERT_TRUE(r.is_error());
     EXPECT_NE(std::string(r.error()->what()).find("version 9"), std::string::npos)
         << r.error()->what();
-    const std::string line = live_settings_refusal_line("CONSERVATIVE_PORTFOLIO", r.error()->what());
+    EXPECT_NE(std::string(r.error()->what()).find("null"), std::string::npos)
+        << "refused for another reason than the null: " << r.error()->what();
+    const std::string line =
+        live_settings_refusal_line("QT_CONSERVATIVE_PORTFOLIO", r.error()->what());
     EXPECT_NE(line.find("STRATEGY_CONFIG refused"), std::string::npos);
 }
 
@@ -429,4 +452,47 @@ TEST_F(StrategyConfigOverlay, ARowOfAnotherPortfolioIsRefused) {
     auto r = resolve_live_settings(tmpl(), "conservative", "CONSERVATIVE_PORTFOLIO",
                                    a_row(1, Json::object(), "BASE_PORTFOLIO"));
     ASSERT_TRUE(r.is_error());
+}
+
+// Rejoin R-6: a settings row applies to a desk-editable portfolio only. Our books (no qt block)
+// and the model twin (qt.desk_editable false) run on their files, as their backtests do; an
+// active row for one, even an empty one, refuses the run and names its version. No row is not a
+// refusal on any of them.
+TEST_F(StrategyConfigOverlay, ARowForABookThatIsNotDeskEditableIsRefused) {
+    const std::vector<std::pair<const char*, const char*>> books = {
+        {"conservative", "CONSERVATIVE_PORTFOLIO"},
+        {"base", "BASE_PORTFOLIO"},
+        {"equity_mr", "EQUITY_MR_PORTFOLIO"},
+        {"qt_conservative_model", "QT_CONSERVATIVE_MODEL_PORTFOLIO"}};
+    for (const auto& [book, id] : books) {
+        for (const Json& overrides : {Json::object(), Json{{"risk", {{"max_drawdown", 0.25}}}}}) {
+            auto r = resolve_live_settings(desk_tmpl(), book, id, a_row(4, overrides, id));
+            ASSERT_TRUE(r.is_error()) << book << ": a row was applied: " << overrides.dump();
+            const std::string why = r.error()->what();
+            EXPECT_NE(why.find("not desk-editable"), std::string::npos) << book << ": " << why;
+            EXPECT_NE(why.find("version 4"), std::string::npos) << book << ": " << why;
+        }
+        auto files = resolve_live_settings(desk_tmpl(), book, id, no_row());
+        ASSERT_TRUE(files.is_ok()) << book << ": " << files.error()->what();
+        EXPECT_EQ(files.value().config.to_json(),
+                  ConfigLoader::load(desk_tmpl(), book).value().to_json())
+            << book;
+    }
+    // The desk-editable books still take their row.
+    for (const auto& [book, id] : std::vector<std::pair<const char*, const char*>>{
+             {"qt_conservative", "QT_CONSERVATIVE_PORTFOLIO"}, {"qt_e2e", "QT_E2E_PORTFOLIO"}}) {
+        auto r = resolve_live_settings(desk_tmpl(), book, id, a_row(4, Json::object(), id));
+        EXPECT_TRUE(r.is_ok()) << book << ": " << r.error()->what();
+    }
+}
+
+// The save check (D-17) answers as the run would: a row for a book that is not desk-editable is
+// refused before it is saved.
+TEST_F(StrategyConfigOverlay, TheSaveCheckRefusesARowForABookThatIsNotDeskEditable) {
+    auto checked = check_live_settings_overlay(desk_tmpl(), "conservative", Json::object());
+    ASSERT_TRUE(checked.is_error());
+    EXPECT_NE(std::string(checked.error()->what()).find("not desk-editable"), std::string::npos)
+        << checked.error()->what();
+    EXPECT_TRUE(
+        check_live_settings_overlay(desk_tmpl(), "qt_conservative", Json::object()).is_ok());
 }

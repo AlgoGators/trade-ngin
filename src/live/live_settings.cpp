@@ -6,6 +6,7 @@
 #include "trade_ngin/live/live_settings.hpp"
 
 #include "trade_ngin/core/logger.hpp"
+#include "trade_ngin/live/qt_desk.hpp"
 #include "trade_ngin/strategy/sleeve_config.hpp"
 #include "trade_ngin/strategy/trend_following.hpp"
 
@@ -34,6 +35,26 @@ Result<LiveSettings> resolve_live_settings(
                                         "the strategy_config row read is for " +
                                             row->portfolio_id + ", not " + portfolio_id,
                                         "LiveSettings");
+    }
+    // Rejoin R-6: a settings row applies to a desk-editable portfolio only (portfolio.json
+    // qt.desk_editable, the flag the runner reads). Any other book trades on its files, as its
+    // backtests do (ruling 4), so a row for it is refused: never applied and never dropped.
+    if (row) {
+        auto editable = qt::read_desk_editable(
+            (config_base_path / "portfolios" / portfolio_name / "portfolio.json").string());
+        if (editable.is_error()) {
+            return make_error<LiveSettings>(editable.error()->code(), editable.error()->what(),
+                                            "LiveSettings");
+        }
+        if (!editable.value()) {
+            return make_error<LiveSettings>(
+                ErrorCode::INVALID_DATA,
+                "strategy_config version " + std::to_string(row->version) + ": " + portfolio_id +
+                    " is not desk-editable (its portfolio.json has no qt.desk_editable true), and "
+                    "settings rows apply to the desk's portfolios only; this book runs on its "
+                    "config files, as its backtests do. Deactivate the row",
+                "LiveSettings");
+        }
     }
 
     nlohmann::json snapshot;
