@@ -30,6 +30,17 @@ python3 -m scripts.backtest_validation compare --short run_a.csv --long run_b.cs
 
 The comparison prints JSON and exits 2 on an invalid export or a failed prefix. Archive that JSON beside the two exports. Do not infer the scored boundary from the equality check.
 
+If pgAdmin Query Tool is the available SQL client, first run `scratch_checks.sql` and confirm the saved connection is the **scratch** database. Run `curve_export_pgadmin.sql` after replacing its run ID literal; export the result grid as CSV with headers. The backtest runner itself uses `./config` (ignored by Git) and writes to `backtest` tables, so point `config/defaults.json` at the scratch database and run `./build/bin/Release/bt_portfolio_conservative` **serially**. Preserve a copy of each curve and its run metadata before the next run. Do not use the SELECT-only export role for the runner; use a separate scratch-only write credential. Never copy credentials into Git or the manifest.
+
+The `compare` command includes SHA-256 hashes in its JSON. Put the two compared runs in `manifest.json`; a longer causality run that is not a comparable variant gets `"role": "causality_only"`. Each scored trial needs `curve_csv`, `curve_sha256`, `run_id`, `portfolio_id`, `trial_id`, `warmup_last_timestamp`, `scored_start` and `scored_end`. A tried variant without an export gets `missing_reason` instead. The analysis command verifies the hashes, reruns the causality comparison, and refuses a mismatched daily date index:
+
+```sh
+python3 -m scripts.backtest_validation compare --short run_a.csv --long run_b.csv --short-run RUN_A --long-run RUN_B --portfolio CONSERVATIVE_PORTFOLIO --end 2025-12-31 > gate.json
+python3 -m scripts.backtest_validation analyze --manifest manifest.json --gate gate.json --fixed-trial FIXED_TRIAL_ID > analysis.json
+```
+
+Review `analysis.json` against `conservative_report.template.md`. It contains the fixed and calendar-year point estimates and intervals, all primary block drawdown resamples, exploratory Sharpe prefixes, PBO splits and offline next-year comparison. The command drops only the final `T mod 10` dates for equal-sized CSCV groups and lists each dropped date. It does not silently intersect variant dates. `trial_ledger_complete=false` or any `missing_reason` suppresses definitive DSR and labels PBO a demonstration. The computed offline next-year comparison is a retrospective historical simulation; call a year out of sample only when the selection rule and variant universe were frozen before that year.
+
 Manifest fields per run: `trial_id`, `run_id`, `portfolio_id`, `engine_sha`, `snapshot_utc`, `database`, `config_sha256`, `config_path`, `runner_sha256`, `window_protocol`, `window_start`, `window_end`, `scored_start`, `scored_end`, `warmup_last_timestamp`, `costs`, `curve_csv`, `curve_sha256`, `curve_rows`, `seed`, and `notes`. Keep local database addresses and credentials outside the tracked file. A trial with no comparable export remains in the ledger with a `missing_reason`; it still counts in the search count.
 
 ## Predeclared analysis settings
@@ -38,6 +49,7 @@ Manifest fields per run: `trial_id`, `run_id`, `portfolio_id`, `engine_sha`, `sn
 - 95% percentile intervals using circular moving blocks of **20 scored days**; show block lengths 10 and 40 and iid resampling. Use 10,000 resamples and seed 42 per distinct analysis. Report the block choice as a fixed sensitivity protocol, not a data-driven optimal length.
 - Sharpe uses sample standard deviation (`ddof=1`), 252 periods per year, zero risk-free rate. A series with fewer than two returns or zero variance has undefined Sharpe and no PSR/DSR claim.
 - PSR tests per-period Sharpe against zero. DSR uses the full raw trial count; any effective independent count is sensitivity only. A 0.95 PSR/DSR is a descriptive threshold, not a trading release rule.
+- PSR/DSR's asymptotic formula does not itself correct serial dependence; the block intervals and block-length sensitivity are the primary precision check.
 - CSCV PBO uses 10 contiguous equal-sized groups and all 252 five-group training combinations when common history permits. Selection metric is training Sharpe; ties break by lexical `trial_id`. Missing dates are a hard error unless a predeclared common-date intersection is documented with dropped dates and row counts. Two-variant PBO is a machinery demonstration only.
 - Offline selection: choose by trailing scored calendar-year Sharpe, apply the chosen configuration's already stored returns to the next year, compare with the fixed configuration. A year is called out of sample only if its selection rule was frozen before it.
 

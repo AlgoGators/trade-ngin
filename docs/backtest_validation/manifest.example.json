@@ -13,6 +13,33 @@
     "selection_metric": "sample_sharpe",
     "tie_break": "lexical_trial_id"
   },
-  "runs": [],
+  "runs": [
+    {
+      "trial_id": "FIXED_TRIAL_ID",
+      "run_id": "REPLACE_SHORT_RUN_ID",
+      "portfolio_id": "CONSERVATIVE_PORTFOLIO",
+      "curve_csv": "run_a.csv",
+      "curve_sha256": "REPLACE_SHA256",
+      "warmup_last_timestamp": "REPLACE_UTC_TIMESTAMP_ENDING_Z",
+      "scored_start": "REPLACE_YYYY-MM-DD",
+      "scored_end": "REPLACE_YYYY-MM-DD",
+      "window_start": "REPLACE_YYYY-MM-DD",
+      "window_end": "REPLACE_SHORT_END_YYYY-MM-DD",
+      "lookback_years": 2,
+      "config_sha256": "REPLACE_SHA256",
+      "notes": "Record frozen_end_date, lookback_years, costs and data caveats"
+    },
+    {
+      "trial_id": "CAUSALITY_LONG",
+      "role": "causality_only",
+      "run_id": "REPLACE_LONG_RUN_ID",
+      "portfolio_id": "CONSERVATIVE_PORTFOLIO",
+      "curve_csv": "run_b.csv",
+      "curve_sha256": "REPLACE_SHA256",
+      "window_start": "REPLACE_SAME_START_YYYY-MM-DD",
+      "window_end": "REPLACE_END_PLUS_ONE_YEAR_YYYY-MM-DD",
+      "lookback_years": 3
+    }
+  ],
   "trial_ledger_complete": false
 }
