@@ -25,6 +25,7 @@
 #pragma once
 
 #include <functional>
+#include <stdexcept>
 #include <string>
 #include <vector>
 
@@ -85,6 +86,52 @@ NettingReport apply_netting_adjustments(
     std::vector<SleeveExecution>& rows,
     const std::function<double(const std::string& symbol, double signed_quantity,
                                double fill_price)>& cost_of);
+
+/// The cost a fill contributes to every total, P&L and statistic (HD 2026-10-09): its own cost
+/// MINUS the signed netting adjustment already on the fill. A positive adjustment (the sleeves
+/// offset) lowers it, a negative one (one account order of the summed size costs more) raises it;
+/// a fill that was never netted (one sleeve row, a ROLL leg, a BORROW row, rows at different
+/// prices) carries 0 and contributes its own cost. Computes nothing new: it never prices and never
+/// nets, so it is only right AFTER apply_netting_adjustments has run over the fill's symbol-day.
+/// The stored row keeps both columns; this is the one place they are combined.
+inline Decimal net_cost(const ExecutionReport& fill) {
+    return fill.total_transaction_costs - fill.netting_adjustment;
+}
+
+/// A ROLL leg and a BORROW row are never netted: each must carry a netting adjustment of exactly 0.
+/// The refusal's text for a row that breaks that; empty for every other row.
+std::string unnetted_row_refusal(const ExecutionReport& fill);
+
+/// What unnetted_cost, add_net_costs and run_cost_totals throw for such a row. A std::logic_error,
+/// and its own type so a caller can stop on it by name (the backtest fails the run on the day it
+/// fires; the live runners' main turns it into exit 1).
+class NettingRefused : public std::logic_error {
+public:
+    using std::logic_error::logic_error;
+};
+
+/// The cost of a ROLL leg or a BORROW row: its own cost, the one figure every roll total reads. A
+/// row of either kind that carries a non-zero adjustment is REFUSED (NettingRefused with
+/// unnetted_row_refusal's text), never corrected: nothing may charge it own cost in one total and
+/// net cost in another.
+Decimal unnetted_cost(const ExecutionReport& fill);
+
+/// One day's (live) or one bar's (backtest) charge: `running` plus the net cost of every fill, added
+/// in the order given. Refuses (NettingRefused) a ROLL or BORROW row with a non-zero adjustment.
+double add_net_costs(double running, const std::vector<ExecutionReport>& fills, size_t from = 0);
+
+/// A run's cost totals from its fills (backtest.results, migration 018): what the equity curve was
+/// charged (every fill at its cost after netting: STRATEGY + ROLL + BORROW), the ROLL subset (a
+/// leg's own cost) and the count of ROLL rows.
+struct RunCostTotals {
+    double transaction_costs{0.0};
+    double roll_costs{0.0};
+    int roll_fills{0};
+};
+
+/// Adds them up in the order given. Every ROLL and every BORROW row passes through unnetted_cost
+/// first, so one carrying an adjustment is refused (NettingRefused) before any total is returned.
+RunCostTotals run_cost_totals(const std::vector<ExecutionReport>& fills);
 
 }  // namespace transaction_cost
 }  // namespace trade_ngin

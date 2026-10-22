@@ -36,6 +36,7 @@
 #include "trade_ngin/strategy/equity_strategy_builder.hpp"
 #include "trade_ngin/portfolio/portfolio_manager.hpp"
 #include "trade_ngin/strategy/mean_reversion.hpp"
+#include "trade_ngin/transaction_cost/netting.hpp"
 
 using namespace trade_ngin;
 using namespace trade_ngin::backtest;
@@ -872,7 +873,7 @@ int main() {
                         double qty = exec.filled_quantity.as_double();
                         if (exec.side == Side::SELL) qty = -qty;
                         positions[exec.symbol] += qty;
-                        day_txn_costs += exec.total_transaction_costs.as_double();
+                        day_txn_costs += transaction_cost::net_cost(exec).as_double();
                     }
                 }
 

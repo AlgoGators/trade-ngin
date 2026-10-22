@@ -280,7 +280,8 @@ for (size_t day = warmup_days; day < bar_history.size(); ++day) {
     );
     
     // Subtract transaction costs
-    double net_pnl = daily_pnl - sum(exec.total_transaction_costs);
+    // each fill at its cost after netting: total_transaction_costs - netting_adjustment
+    double net_pnl = daily_pnl - sum(net_cost(exec));
     equity_curve.push_back({current_date, equity + net_pnl});
     equity = equity + net_pnl;
     

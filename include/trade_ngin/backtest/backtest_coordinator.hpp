@@ -121,6 +121,9 @@ private:
     /// ids' sequence numbers); a ROLL_LEG STOP fails the run (code review X-3).
     std::unordered_map<std::string, size_t> roll_leg_seq_;
     bool roll_leg_stop_ = false;
+    /// T-NETTING fix round 2: a ROLL or BORROW row carrying a netting adjustment reached the day's
+    /// sum; the run loop fails the run on that day (a hard stop, as roll_leg_stop_ is).
+    bool netting_refused_stop_ = false;
     /// T-ROLLX-FIX commit 5 (F-3, section 6.5): the rolls this cycle's signal feed confirmed for a
     /// sleeve that holds the symbol ("<symbol> (<sleeve>) confirmed <date>"), from the moment the
     /// roll tracker has consumed the confirming bars until the legs are booked. A cycle that ends

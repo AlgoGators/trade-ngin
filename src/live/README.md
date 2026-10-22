@@ -88,6 +88,12 @@ flowchart TB
 | Date | YYYY-MM-DD | Trading date to simulate/run |
 | --send-email | Flag | Enable email report sending |
 
+### Environment
+
+| Variable | Value | Description |
+|----------|-------|-------------|
+| TRADE_NGIN_EMAIL_BODY_DIR | An existing directory | Futures runners only (`live_portfolio`, `live_portfolio_conservative`). On a run that does NOT send (a date given, no `--send-email`) the report body is built exactly as for a send and written there as `email_body_<portfolio_id>_<date>.html`; nothing is mailed. `--send-email` wins: on a run that sends (`--send-email`, or a run without a date) the variable is ignored, the report is mailed as usual, one WARN line says so and no file is written. An empty value is the same as unset. The directory is not created; a second run of the same book and date replaces the file. |
+
 ---
 
 ## Components

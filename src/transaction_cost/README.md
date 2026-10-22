@@ -334,7 +334,7 @@ daily_equity = prev_equity + gross_position_pnl - daily_transaction_costs
 
 Where:
 - `gross_position_pnl` is calculated from reference prices (no costs embedded)
-- `daily_transaction_costs = Σ(executions.total_transaction_costs)`
+- `daily_transaction_costs = Σ(executions.total_transaction_costs - executions.netting_adjustment)`: each fill at its cost after netting (`transaction_cost::net_cost`); the adjustment is 0 on a symbol-day with one sleeve row, on a ROLL leg and on a BORROW row
 
 This approach:
 - Keeps execution prices pure (for analysis)

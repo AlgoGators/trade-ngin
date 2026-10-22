@@ -16,6 +16,7 @@
 #include <chrono>
 #include <filesystem>
 #include <fstream>
+#include <map>
 #include <memory>
 #include <sstream>
 #include <string>
@@ -28,6 +29,7 @@
 #include "trade_ngin/core/logger.hpp"
 #include "trade_ngin/portfolio/portfolio_manager.hpp"
 #include "trade_ngin/strategy/base_strategy.hpp"
+#include "trade_ngin/transaction_cost/netting.hpp"
 
 using namespace trade_ngin;
 using namespace trade_ngin::testing;
@@ -239,7 +241,7 @@ TEST_F(PmNettingTest, ALiveRunnersPmPassDoesNotNetItsWholeBookReports) {
 
 TEST(PmNettingSource, TheBacktestCoordinatorMarksItsPortfolioAsBacktest) {
     const std::string src = read_source("src/backtest/backtest_coordinator.cpp");
-    if (src.empty()) GTEST_SKIP() << "backtest_coordinator.cpp not found";
+    ASSERT_FALSE(src.empty()) << "src/backtest/backtest_coordinator.cpp not found: a source-text test must be run from inside the source tree";
     const auto run = src.find("BacktestCoordinator::run_portfolio(");
     const auto mark = src.find("portfolio->set_backtest_mode(true);", run);
     ASSERT_NE(run, std::string::npos);
@@ -251,17 +253,233 @@ TEST(PmNettingSource, BothFuturesRunnersNetTheDaysSleeveRowsBeforeStoringThem) {
     for (const char* f : {"apps/strategies/live_portfolio.cpp",
                           "apps/strategies/live_portfolio_conservative.cpp"}) {
         const std::string src = read_source(f);
-        if (src.empty()) GTEST_SKIP() << f << " not found";
+        if (src.empty()) {
+            ADD_FAILURE() << f << " not found: a source-text test must be run from inside the source tree";
+            continue;
+        }
         const auto strict = src.find("STRICT_ASSERTION failed");
         const auto net = src.find("transaction_cost::apply_netting_adjustments(");
         const auto store = src.find("db->store_executions(executions,");
-        ASSERT_NE(strict, std::string::npos) << f;
-        ASSERT_NE(net, std::string::npos) << f << ": the runner never nets its sleeve rows";
-        ASSERT_NE(store, std::string::npos) << f;
+        EXPECT_NE(strict, std::string::npos) << f;
+        EXPECT_NE(net, std::string::npos) << f << ": the runner never nets its sleeve rows";
+        EXPECT_NE(store, std::string::npos) << f;
+        if (strict == std::string::npos || net == std::string::npos || store == std::string::npos) {
+            continue;  // the next file is still read
+        }
         EXPECT_LT(strict, net) << f << ": netting must see the final (post-rollback) rows";
         EXPECT_LT(net, store) << f << ": netting must happen before the rows are stored";
         EXPECT_NE(src.find("execution_manager->get_transaction_cost_manager().calculate_costs("),
                   std::string::npos)
             << f << ": C(Q) must be priced by the same cost manager the fills used";
+    }
+}
+
+// The cost after netting (HD 2026-10-09): the backtest's cost totals read the one helper.
+TEST(PmNettingSource, TheBacktestsCostTotalsReadTheHelper) {
+    const std::vector<std::pair<const char*, const char*>> sites = {
+        {"src/backtest/backtest_coordinator.cpp", "transaction_cost::add_net_costs(total_transaction_costs, execs, count_before)"},
+        {"src/backtest/backtest_coordinator.cpp", "cost_totals = transaction_cost::run_cost_totals(all_executions);"},
+        {"src/backtest/backtest_coordinator.cpp", "results.transaction_costs = cost_totals.transaction_costs;"},
+        {"src/backtest/backtest_coordinator.cpp", "results.roll_costs = cost_totals.roll_costs;"},
+        {"apps/backtest/bt_equity_validation.cpp", "day_txn_costs += transaction_cost::net_cost(exec).as_double();"},
+    };
+    for (const auto& [f, text] : sites) {
+        const std::string src = read_source(f);
+        if (src.empty()) {
+            ADD_FAILURE() << f << " not found: a source-text test must be run from inside the source tree";
+            continue;
+        }
+        EXPECT_NE(src.find(text), std::string::npos) << f << " no longer reads: " << text;
+    }
+}
+
+// The cost after netting (HD 2026-10-09), live: the day's transaction cost is added up AFTER the
+// runner has written every fill's netting_adjustment, from the rows it stores, through the one
+// helper; nothing adds a fill's own cost to the day's total.
+TEST(PmNettingSource, BothFuturesRunnersAddUpTheDaysCostAfterNettingThroughTheHelper) {
+    for (const char* f : {"apps/strategies/live_portfolio.cpp",
+                          "apps/strategies/live_portfolio_conservative.cpp"}) {
+        const std::string src = read_source(f);
+        if (src.empty()) {
+            ADD_FAILURE() << f << " not found: a source-text test must be run from inside the source tree";
+            continue;
+        }
+        const auto last_net = src.rfind("transaction_cost::apply_netting_adjustments(");
+        const auto sum = src.find("total_daily_transaction_costs = transaction_cost::add_net_costs(");
+        const auto store = src.find("db->store_executions(executions,");
+        // EXPECT, not ASSERT: a failure in one runner must not end the test before its twin is
+        // read. The checks that need all three positions are skipped for that file only.
+        EXPECT_NE(last_net, std::string::npos) << f;
+        EXPECT_NE(sum, std::string::npos) << f << ": the day's cost is not the sum of the net costs";
+        EXPECT_NE(store, std::string::npos) << f;
+        EXPECT_EQ(src.find("total_daily_transaction_costs +="), std::string::npos)
+            << f << ": something adds to the day's cost beside the helper";
+        if (last_net == std::string::npos || sum == std::string::npos || store == std::string::npos) {
+            continue;
+        }
+        EXPECT_LT(last_net, sum) << f << ": the sum is taken before the adjustment is on the fills";
+        EXPECT_LT(sum, store) << f;
+        size_t calls = 0;
+        for (auto at = src.find("add_net_costs("); at != std::string::npos;
+             at = src.find("add_net_costs(", at + 1)) {
+            ++calls;
+        }
+        EXPECT_EQ(calls, 1u)
+            << f << ": the day's cost is added up twice";
+    }
+}
+
+// The equity runner (one strategy, never netted) adds its day's cost through the same helper.
+TEST(PmNettingSource, TheEquityRunnerAddsUpTheDaysCostThroughTheHelper) {
+    const char* f = "apps/strategies/live_equity_mean_reversion.cpp";
+    const std::string src = read_source(f);
+    ASSERT_FALSE(src.empty()) << f << " not found: a source-text test must be run from inside the source tree";
+    EXPECT_NE(src.find("transaction_cost::add_net_costs(total_daily_commissions, daily_executions)"),
+              std::string::npos);
+    EXPECT_EQ(src.find("total_daily_commissions +="), std::string::npos);
+}
+
+// The live day, as the runners add it up: per-sleeve fills (a ROLL leg ahead of the sleeve's
+// trades), netted by symbol, then summed sleeve by sleeve. The three symbol-days are real rows of
+// the BASE lookback-3 backtest; the cost table is the cost model's own prices for them.
+//
+//   | contract | FAST   | TREND  | account | own costs   | adjustments     | charged |
+//   | MES      | SELL 1 | BUY 1  | none    | 1.62 + 1.62 | 1.62 + 1.62     | 0.00    |
+//   | MYM      | BUY 1  | SELL 2 | SELL 1  | 1.10 + 2.40 | 0.754 + 1.646   | 1.10    |
+//   | MBT      | SELL 1 | SELL 1 | SELL 2  | 4.50 + 4.50 | -0.915 - 0.915  | 10.83   |
+//   | ZN (roll)| -      | 2 legs | -       | 3.00 + 3.00 | never netted    | 6.00    |
+TEST(LiveDayCost, TheDaysCostIsTheSumOfTheNetCostsOfTheStoredRows) {
+    auto row = [](const std::string& symbol, Side side, double q, double px, double cost,
+                  ExecutionType type = ExecutionType::STRATEGY) {
+        ExecutionReport e;
+        e.symbol = symbol;
+        e.side = side;
+        e.filled_quantity = Quantity(q);
+        e.fill_price = Price(px);
+        e.total_transaction_costs = Decimal(cost);
+        e.execution_type = type;
+        return e;
+    };
+    std::unordered_map<std::string, std::vector<ExecutionReport>> day;
+    day["TREND_FOLLOWING"] = {row("ZN.v.0", Side::SELL, 2, 112.0, 3.00, ExecutionType::ROLL),
+                              row("ZN.v.0", Side::BUY, 2, 112.5, 3.00, ExecutionType::ROLL),
+                              row("MES.v.0", Side::BUY, 1, 6650, 1.62),
+                              row("MYM.v.0", Side::SELL, 2, 49000, 2.40),
+                              row("MBT.v.0", Side::SELL, 1, 115000, 4.50)};
+    day["TREND_FOLLOWING_FAST"] = {row("MES.v.0", Side::SELL, 1, 6650, 1.62),
+                                   row("MYM.v.0", Side::BUY, 1, 49000, 1.10),
+                                   row("MBT.v.0", Side::SELL, 1, 115000, 4.50)};
+    const std::vector<std::string> sleeves_filled{"TREND_FOLLOWING", "TREND_FOLLOWING_FAST"};
+
+    std::map<std::pair<std::string, double>, double> price{
+        {{"MYM.v.0", -1.0}, 1.10}, {{"MBT.v.0", -2.0}, 10.83}};
+    std::vector<transaction_cost::SleeveExecution> rows;
+    for (auto& [sleeve, execs] : day)
+        for (auto& e : execs)
+            if (e.execution_type == ExecutionType::STRATEGY) rows.push_back({sleeve, &e});
+    transaction_cost::apply_netting_adjustments(
+        rows, [&](const std::string& s, double q, double) { return price.at({s, q}); });
+
+    double own = 0.0, charged = 0.0;
+    for (const auto& sleeve : sleeves_filled) {
+        for (const auto& e : day.at(sleeve)) own += static_cast<double>(e.total_transaction_costs);
+        charged = transaction_cost::add_net_costs(charged, day.at(sleeve));
+    }
+    EXPECT_NEAR(own, 6.00 + 3.24 + 3.50 + 9.00, 1e-9);
+    EXPECT_NEAR(charged, 6.00 + 0.00 + 1.10 + 10.83, 1e-9)
+        << "the roll legs' own cost, nothing for the cross, the account's order for the other two";
+
+    // The identity per symbol: the legs' net costs sum to the account order's cost.
+    std::map<std::string, Decimal> net_of;
+    for (const auto& [sleeve, execs] : day)
+        for (const auto& e : execs)
+            if (e.execution_type == ExecutionType::STRATEGY) net_of[e.symbol] += transaction_cost::net_cost(e);
+    EXPECT_EQ(net_of["MES.v.0"], Decimal());
+    EXPECT_EQ(net_of["MYM.v.0"], Decimal(1.10));
+    EXPECT_EQ(net_of["MBT.v.0"], Decimal(10.83)) << "same side: above the 9.00 of the rows' own costs";
+}
+
+// TRADE_NGIN_EMAIL_BODY_DIR and --send-email (fix round 2, HD 2026-10-10: --send-email wins), in
+// both twins. The decision is plan_email_report's (tests/live/test_email_body_file.cpp proves its
+// four cases); here, that the runners USE it: the variable is read once and handed to the plan
+// with the runner's own send flag; the WARN is printed when the plan says the variable was
+// ignored; the body file is written only in the plan's write branch and the one send_email call
+// sits in its else; and the string written is the string handed to the send, after the two blocks
+// that flag it. Every file is read and every failure reported.
+TEST(EmailBodyFileSource, TheRunnersFollowThePlanAndTheBodyWrittenIsTheBodySent) {
+    for (const char* f : {"apps/strategies/live_portfolio.cpp",
+                          "apps/strategies/live_portfolio_conservative.cpp"}) {
+        const std::string src = read_source(f);
+        if (src.empty()) {
+            ADD_FAILURE() << f << " not found: a source-text test must be run from inside the source tree";
+            continue;
+        }
+        auto count = [&](const std::string& text) {
+            size_t n = 0;
+            for (auto at = src.find(text); at != std::string::npos; at = src.find(text, at + 1)) ++n;
+            return n;
+        };
+        const auto plan = src.find(
+            "live::plan_email_report(send_email, std::getenv(live::kEmailBodyDirEnv));");
+        const auto warn = src.find("if (email_plan.variable_ignored) {\n"
+                                   "            WARN(live::email_body_dir_ignored_warning(email_plan));");
+        const auto gate = src.find("if (email_plan.build()) {");
+        const auto flags = src.find("flag_email_body_for_carried_day(email_body, carried_day_note);");
+        const auto file_branch = src.find("if (email_plan.write_body_file) {");
+        const auto write = src.find("live::write_email_body_file(body_path, email_body)");
+        const auto path = src.find(
+            "live::email_body_file_path(\n                            email_plan.body_dir, portfolio_id, date_str);");
+        const auto send_branch = src.find("} else {\n                        auto send_result =");
+        const auto send = src.find("email_sender->send_email(subject, email_body, true, attachments);");
+        EXPECT_NE(plan, std::string::npos) << f << ": the plan is not made from the send flag and the variable";
+        EXPECT_NE(warn, std::string::npos) << f << ": no WARN when the variable is ignored";
+        EXPECT_NE(gate, std::string::npos) << f;
+        EXPECT_NE(flags, std::string::npos) << f;
+        EXPECT_NE(file_branch, std::string::npos) << f << ": no body-file branch";
+        EXPECT_NE(write, std::string::npos) << f << ": the body written is not the body handed to the send";
+        EXPECT_NE(path, std::string::npos) << f << ": the file is not named by the shared function";
+        EXPECT_NE(send_branch, std::string::npos) << f << ": the send is not in the else";
+        EXPECT_NE(send, std::string::npos) << f;
+        EXPECT_EQ(count("getenv("), count("std::getenv(live::kEmailBodyDirEnv)") + count("getenv(\"") )
+            << f;
+        EXPECT_EQ(count("TRADE_NGIN_EMAIL_BODY_DIR\")"), 0u)
+            << f << ": the variable is read somewhere beside the plan";
+        EXPECT_EQ(count("email_sender->send_email("), 1u) << f << ": not exactly one send";
+        EXPECT_EQ(count("write_email_body_file("), 1u) << f;
+        if (plan == std::string::npos || warn == std::string::npos || gate == std::string::npos ||
+            flags == std::string::npos || file_branch == std::string::npos ||
+            write == std::string::npos || send_branch == std::string::npos ||
+            send == std::string::npos) {
+            continue;
+        }
+        EXPECT_LT(plan, warn) << f;
+        EXPECT_LT(warn, gate) << f << ": the warning must not depend on the report being built";
+        EXPECT_LT(flags, file_branch) << f << ": the body is written before it is flagged";
+        EXPECT_LT(file_branch, write) << f;
+        EXPECT_LT(write, send_branch) << f;
+        EXPECT_LT(send_branch, send) << f << ": a send outside the else of the body-file branch";
+    }
+}
+
+// T-NETTING fix round: the live log states the day's cost in one line that adds up (own costs,
+// adjustments, cost after netting), printed after the day's sum in both twins.
+TEST(PmNettingSource, BothFuturesRunnersLogTheDaysOwnCostsAdjustmentsAndCostAfterNetting) {
+    for (const char* f : {"apps/strategies/live_portfolio.cpp",
+                          "apps/strategies/live_portfolio_conservative.cpp"}) {
+        const std::string src = read_source(f);
+        if (src.empty()) {
+            ADD_FAILURE() << f << " not found: a source-text test must be run from inside the source tree";
+            continue;
+        }
+        const auto sum = src.find("total_daily_transaction_costs = transaction_cost::add_net_costs(");
+        const auto line = src.find("INFO(\"DAY_COST own_costs=\" + day_own_costs.to_string() + \" netting_adjustments=\" +");
+        EXPECT_NE(sum, std::string::npos) << f;
+        EXPECT_NE(line, std::string::npos) << f << ": no DAY_COST line";
+        if (sum == std::string::npos || line == std::string::npos) continue;
+        EXPECT_LT(sum, line) << f << ": the line is printed before the day's sum";
+        EXPECT_NE(src.find("\" cost_after_netting=\" +\n                 (day_own_costs - day_netting_adjustments).to_string());", line),
+                  std::string::npos)
+            << f << ": the line's last figure is not own costs minus adjustments";
+        EXPECT_EQ(src.find("DAY_COST own_costs=", line + 40), std::string::npos) << f << ": printed twice";
     }
 }

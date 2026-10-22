@@ -25,6 +25,7 @@
 #include "trade_ngin/live/carried_day.hpp"
 #include "trade_ngin/live/csv_exporter.hpp"
 #include "trade_ngin/live/data_freshness.hpp"
+#include "trade_ngin/live/email_body_file.hpp"
 #include "trade_ngin/live/execution_manager.hpp"
 #include "trade_ngin/live/finalized_books_read.hpp"
 #include "trade_ngin/live/late_bar_warning.hpp"
@@ -2344,6 +2345,9 @@ int main(int argc, char* argv[]) {
         std::unordered_map<std::string, std::vector<ExecutionReport>> all_strategy_executions;
         int total_executions = 0;
         // total_daily_transaction_costs already declared earlier at line 881
+        // The sleeves whose fills were generated, in the order of this loop: the day's cost is
+        // added up in that order, after the netting below.
+        std::vector<std::string> sleeves_filled;
 
         // PricingPolicy::STRICT (T-7a C4): a fill is priced from a real T-1 close or not at
         // all. With the book gate above every changed symbol has one, so nothing is unpriced
@@ -2452,11 +2456,10 @@ int main(int argc, char* argv[]) {
                          std::to_string(exec.filled_quantity.as_double()) + " @ " +
                          std::to_string(exec.fill_price) + " commission=$" +
                          std::to_string(exec.total_transaction_costs.as_double()));
-
-                    total_daily_transaction_costs += exec.total_transaction_costs.as_double();
                 }
 
                 all_strategy_executions[strategy_name] = strategy_executions;
+                sleeves_filled.push_back(strategy_name);
                 total_executions += strategy_executions.size();
             } else {
                 ERROR("Failed to generate executions for strategy " + strategy_name + ": " +
@@ -2540,8 +2543,8 @@ int main(int argc, char* argv[]) {
         // Every sleeve row keeps its own cost; for a symbol two or more sleeves trade today the
         // account sends ONE order, the signed sum Q, so each row's netting_adjustment is its
         // pro-rata share of sum C(q_i) - C(Q), priced by the same cost manager and state the
-        // fills used (C(0) = 0: no order). Written into the rows before they are stored; the
-        // day's P&L cost above stays the sum of the rows' own costs (the book's P&L is gross).
+        // fills used (C(0) = 0: no order). Written into the rows before they are stored and
+        // before the day's cost is added up below.
         // Section 5.2: the sleeves' forecast-sign closes of one symbol are one account order and
         // their other fills another; a close is never netted against the fill that follows it.
         for (const bool sign_close_group : {true, false}) {
@@ -2562,6 +2565,30 @@ int main(int argc, char* argv[]) {
                 });
             for (const auto& line : netting.info_lines) INFO(line);
             for (const auto& line : netting.warn_lines) WARN(line);
+        }
+
+        // The day's transaction cost (HD 2026-10-09): every fill at its cost AFTER netting, its
+        // own cost minus the signed adjustment just written on it, so the day's P&L, the account
+        // value and the cumulative total charge what the account's orders cost. Taken here, after
+        // the netting, from the rows that are stored below; a ROLL leg and a symbol one sleeve
+        // trades carry an adjustment of 0 and are charged their own cost.
+        for (const auto& sleeve : sleeves_filled) {
+            total_daily_transaction_costs = transaction_cost::add_net_costs(
+                total_daily_transaction_costs, all_strategy_executions.at(sleeve));
+        }
+        // The one line of the day that adds up (the per-fill lines above print each fill's OWN
+        // cost): the same rows' own costs, their adjustments, and what the day is charged.
+        {
+            Decimal day_own_costs, day_netting_adjustments;
+            for (const auto& sleeve : sleeves_filled) {
+                for (const auto& e : all_strategy_executions.at(sleeve)) {
+                    day_own_costs += e.total_transaction_costs;
+                    day_netting_adjustments += e.netting_adjustment;
+                }
+            }
+            INFO("DAY_COST own_costs=" + day_own_costs.to_string() + " netting_adjustments=" +
+                 day_netting_adjustments.to_string() + " cost_after_netting=" +
+                 (day_own_costs - day_netting_adjustments).to_string());
         }
 
         INFO("PHASE 4: Total executions across all strategies: " +
@@ -3013,7 +3040,7 @@ int main(int argc, char* argv[]) {
         // ========================================
         INFO("STEP 3: Calculating transaction costs and Day T PnL...");
 
-        // total_daily_transaction_costs already calculated in per-strategy executions loop above
+        // total_daily_transaction_costs was added up in PHASE 4, after the netting: the fills' net costs
         INFO("Total daily transaction costs (from per-strategy executions): $" +
              std::to_string(total_daily_transaction_costs));
 
@@ -4312,9 +4339,26 @@ int main(int argc, char* argv[]) {
 
         INFO("Daily trend following position generation completed successfully");
 
-        // Send email report with trading results (based on send_email flag)
-        if (send_email) {
-            INFO("Sending email report...");
+        // Send email report with trading results (based on send_email flag).
+        // --send-email WINS (HD 2026-10-10): a run that sends builds and mails the report exactly
+        // as if TRADE_NGIN_EMAIL_BODY_DIR did not exist; the variable, if set, is ignored with one
+        // WARN line. Only a run that does not send looks at the variable: with it set (a
+        // directory) the body is built exactly as for a send and written there as
+        // email_body_<portfolio>_<date>.html and nothing is mailed; without it nothing is built.
+        // Production always sends and test runs never do, so the file path cannot run in
+        // production. email_body_file.hpp.
+        const live::EmailReportPlan email_plan =
+            live::plan_email_report(send_email, std::getenv(live::kEmailBodyDirEnv));
+        if (email_plan.variable_ignored) {
+            WARN(live::email_body_dir_ignored_warning(email_plan));
+        }
+        if (email_plan.build()) {
+            if (email_plan.send) {
+                INFO("Sending email report...");
+            } else {
+                INFO("EMAIL_BODY_FILE building the report body for " + email_plan.body_dir +
+                     "; nothing is mailed");
+            }
             try {
                 EmailSenderConfig email_config;
                 email_config.smtp_host = app_config.email.smtp_host;
@@ -4661,17 +4705,29 @@ int main(int argc, char* argv[]) {
                         email_body = flag_email_body_for_carried_day(email_body, carried_day_note);
                     }
 
-                    auto send_result =
-                        email_sender->send_email(subject, email_body, true, attachments);
-                    if (send_result.is_error()) {
-                        ERROR("Failed to send email: " + std::string(send_result.error()->what()));
-                    } else {
-                        std::string attachment_list = today_filename;
-                        if (!yesterday_filename.empty()) {
-                            attachment_list += ", " + yesterday_filename;
+                    if (email_plan.write_body_file) {
+                        const std::string body_path = live::email_body_file_path(
+                            email_plan.body_dir, portfolio_id, date_str);
+                        if (!live::write_email_body_file(body_path, email_body)) {
+                            ERROR("EMAIL_BODY_FILE could not write " + body_path);
+                        } else {
+                            INFO("EMAIL_BODY_FILE wrote " + body_path + " (" +
+                                 std::to_string(email_body.size()) + " bytes); nothing is mailed");
                         }
-                        INFO("Email report sent successfully with CSV attachments: " +
-                             attachment_list);
+                    } else {
+                        auto send_result =
+                            email_sender->send_email(subject, email_body, true, attachments);
+                        if (send_result.is_error()) {
+                            ERROR("Failed to send email: " +
+                                  std::string(send_result.error()->what()));
+                        } else {
+                            std::string attachment_list = today_filename;
+                            if (!yesterday_filename.empty()) {
+                                attachment_list += ", " + yesterday_filename;
+                            }
+                            INFO("Email report sent successfully with CSV attachments: " +
+                                 attachment_list);
+                        }
                     }
                 }
             } catch (const std::exception& e) {

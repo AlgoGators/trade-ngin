@@ -22,6 +22,7 @@
 #include "trade_ngin/strategy/base_strategy.hpp"
 #include "trade_ngin/strategy/trend_following.hpp"
 #include "trade_ngin/strategy/types.hpp"
+#include "trade_ngin/transaction_cost/netting.hpp"
 
 namespace trade_ngin {
 namespace backtest {
@@ -363,6 +364,14 @@ Result<BacktestResults> BacktestCoordinator::run_portfolio(
                 process_portfolio_day(timestamp, bars, portfolio, all_executions, equity_curve,
                                       risk_metrics, is_warmup, initial_capital);
 
+            if (process_result.is_error() && netting_refused_stop_) {
+                // A ROLL or BORROW row carrying a netting adjustment fails the run on the day the
+                // row is met: never a warning, never the equity carried flat and the run going on.
+                ERROR(std::string(process_result.error()->what()));
+                return make_error<BacktestResults>(process_result.error()->code(),
+                                                   process_result.error()->what(),
+                                                   "BacktestCoordinator");
+            }
             if (process_result.is_error() && roll_leg_stop_) {
                 // LOOP_SPEC v6.1 section 6.5 (X-3): a leg without a usable close fails the run.
                 ERROR(std::string(process_result.error()->what()));
@@ -440,20 +449,31 @@ Result<BacktestResults> BacktestCoordinator::run_portfolio(
                          return type_rank(a) < type_rank(b);
                      });
 
+    // Migration 018: the run's cost totals from the stored rows themselves (STRATEGY + ROLL +
+    // BORROW: the sum the equity curve charged, each fill at its cost after netting), the ROLL
+    // subset (a ROLL leg is never netted: its own cost) and the count of ROLL rows. Taken BEFORE
+    // the metrics: a ROLL or BORROW row carrying a netting adjustment (a BORROW row is appended
+    // after its cycle's sum, so this is where one is first seen) fails the run here, by name, as
+    // an error result, and nothing of the run is stored.
+    transaction_cost::RunCostTotals cost_totals;
+    try {
+        cost_totals = transaction_cost::run_cost_totals(all_executions);
+    } catch (const transaction_cost::NettingRefused& e) {
+        ERROR(std::string("NETTING STOP at the end of the run: ") + e.what());
+        return make_error<BacktestResults>(
+            ErrorCode::INVALID_DATA,
+            std::string("NETTING STOP: ") + e.what() + ". Failing the run",
+            "BacktestCoordinator");
+    }
+
     // Calculate final metrics
     INFO("Calculating portfolio backtest metrics");
     auto results = metrics_calculator_->calculate_all_metrics(equity_curve, all_executions,
                                                               calculated_warmup_days);
     results.warmup_days = calculated_warmup_days;
-    // Migration 018: the run's cost totals from the stored rows themselves (STRATEGY + ROLL +
-    // BORROW: the sum the equity curve charged), the ROLL subset and the count of ROLL rows.
-    for (const auto& e : all_executions) {
-        results.transaction_costs += static_cast<double>(e.total_transaction_costs);
-        if (e.execution_type == ExecutionType::ROLL) {
-            results.roll_costs += static_cast<double>(e.total_transaction_costs);
-            ++results.total_roll_fills;
-        }
-    }
+    results.transaction_costs = cost_totals.transaction_costs;
+    results.roll_costs = cost_totals.roll_costs;
+    results.total_roll_fills = cost_totals.roll_fills;
 
     // Add executions and equity curve to results
     results.executions = std::move(all_executions);
@@ -1626,6 +1646,14 @@ Result<void> BacktestCoordinator::process_portfolio_day(
 
         return Result<void>();
 
+    } catch (const transaction_cost::NettingRefused& e) {
+        // A ROLL or BORROW row carrying a netting adjustment reached the day's sum: a HARD STOP on
+        // this day, as a ROLL_LEG STOP is. The run loop fails the run on netting_refused_stop_.
+        netting_refused_stop_ = true;
+        return make_error<void>(ErrorCode::INVALID_DATA,
+                                std::string("NETTING STOP on ") + core::format_utc_date(timestamp) +
+                                    ": " + e.what() + ". Failing the run",
+                                "BacktestCoordinator");
     } catch (const std::exception& e) {
         // F-3 (section 6.5, commit 5): an exception while a roll is owed is a STOP, as the
         // PortfolioManager's error return is; the run loop fails the run on roll_leg_stop_.
@@ -1789,6 +1817,7 @@ void BacktestCoordinator::reset_portfolio_state() {
     signal_roll_status_.clear();
     roll_leg_seq_.clear();
     roll_leg_stop_ = false;
+    netting_refused_stop_ = false;
     cycle_rolls_owed_.clear();
     mark_withheld_.clear();
     mark_change_.clear();
@@ -1971,10 +2000,11 @@ double BacktestCoordinator::calculate_period_transaction_costs(
         size_t count_before =
             exec_counts_before.count(strategy_id) > 0 ? exec_counts_before.at(strategy_id) : 0;
 
-        // Get only the new executions (those added after count_before)
-        for (size_t i = count_before; i < execs.size(); ++i) {
-            total_transaction_costs += static_cast<double>(execs[i].total_transaction_costs);
-        }
+        // Only the new executions (those added after count_before), each at its cost after
+        // netting: the PortfolioManager set every fill's netting_adjustment inside the
+        // process_market_data call of this cycle, before these rows were read.
+        total_transaction_costs =
+            transaction_cost::add_net_costs(total_transaction_costs, execs, count_before);
     }
 
     return total_transaction_costs;

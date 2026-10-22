@@ -45,6 +45,7 @@
 #include "trade_ngin/live/execution_manager.hpp"
 #include "trade_ngin/live/margin_manager.hpp"
 #include "trade_ngin/live/csv_exporter.hpp"
+#include "trade_ngin/transaction_cost/netting.hpp"
 
 using namespace trade_ngin;
 
@@ -4501,9 +4502,10 @@ int main(int argc, char* argv[]) {
         // total_transaction_costs = commissions_fees + slippage_market_impact;
         // implicit_price_impact is the per-share intermediate, already inside slippage, and
         // must not be added again.
-        for (const auto& exec : daily_executions) {
-            total_daily_commissions += exec.total_transaction_costs.as_double();
-        }
+        // The cost after netting, as every total charges it (HD 2026-10-09). This book has one
+        // strategy and nets nothing: every fill's adjustment is 0 and its net cost is its own.
+        total_daily_commissions =
+            transaction_cost::add_net_costs(total_daily_commissions, daily_executions);
         INFO("Total daily commissions: $" + std::to_string(total_daily_commissions));
 
         // Day T PnL is ZERO (placeholder) - positions were just opened at Day T-1 close

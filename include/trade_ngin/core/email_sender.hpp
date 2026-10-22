@@ -299,11 +299,14 @@ private:
      * @brief Format a single strategy's execution table
      * @param strategy_name Strategy identifier
      * @param executions Executions for this strategy
+     * @param several_sleeves The book has more than one sleeve: each row also shows its netting
+     *        adjustment and its cost after netting. A one-sleeve book's table is unchanged.
      * @return Formatted HTML table for this strategy's executions
      */
     std::string format_single_strategy_executions_table(
         const std::string& strategy_name,
-        const std::vector<ExecutionReport>& executions
+        const std::vector<ExecutionReport>& executions,
+        bool several_sleeves = false
     );
 
 };
