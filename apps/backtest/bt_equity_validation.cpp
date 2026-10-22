@@ -955,7 +955,11 @@ int main() {
         std::cout << "------------------------------------------------------\n" << std::endl;
 
         {
-            const auto& equity_curve = backtest_results.equity_curve;
+            // One row per UTC date, the last one (matching calculate_all_metrics)
+            const auto equity_curve = core::last_row_per_utc_date(
+                backtest_results.equity_curve, [](const std::pair<Timestamp, double>& row) {
+                    return core::format_utc_date(row.first);
+                });
             int warmup_days = backtest_results.warmup_days;
 
             // Filter warmup (matching filter_warmup_period)
@@ -1008,8 +1012,10 @@ int main() {
                     downside_count++;
                 }
             }
+            // averaged over every return of the series, as the calculator does
             double downside_vol = (downside_count > 0)
-                ? std::sqrt(downside_sum / downside_count) * std::sqrt(252.0) : 0.0;
+                ? std::sqrt(downside_sum / static_cast<double>(returns.size())) * std::sqrt(252.0)
+                : 0.0;
             double manual_sortino = 0.0;
             if (downside_vol > 0.0) {
                 manual_sortino = ann_return / downside_vol;

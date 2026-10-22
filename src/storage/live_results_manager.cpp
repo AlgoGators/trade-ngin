@@ -233,7 +233,8 @@ Result<void> LiveResultsManager::save_live_results(const Timestamp& date) {
     // Use the new database extension method - pass portfolio_id_ for proper storage
     auto result =
         db_->store_live_results_complete(strategy_id_, date, double_metrics_, int_metrics_, config_,
-                                         portfolio_id_, "trading.live_results", risk_detail_);
+                                         portfolio_id_, "trading.live_results", risk_detail_,
+                                         cells_);
     if (result.is_error()) {
         ERROR("store_live_results_complete FAILED: " + std::string(result.error()->what()));
     } else {
@@ -312,19 +313,24 @@ Result<void> LiveResultsManager::save_equity_curve(const Timestamp& date) {
 }
 
 Result<void> LiveResultsManager::update_live_results(
-    const Timestamp& date, const std::unordered_map<std::string, double>& updates) {
+    const Timestamp& date, const std::unordered_map<std::string, double>& updates,
+    size_t* rows_affected, const std::vector<LiveResultsCell>& cells) {
+    if (rows_affected) {
+        *rows_affected = 0;
+    }
     if (!store_enabled_) {
         return Result<void>();
     }
 
-    if (updates.empty()) {
+    if (updates.empty() && cells.empty()) {
         return Result<void>();
     }
 
-    INFO("Updating live results with " + std::to_string(updates.size()) + " fields");
+    INFO("Updating live results with " + std::to_string(updates.size() + cells.size()) +
+         " fields");
 
     return db_->update_live_results(strategy_id_, date, updates, portfolio_id_,
-                                    "trading.live_results");
+                                    "trading.live_results", rows_affected, cells);
 }
 
 Result<void> LiveResultsManager::update_equity_curve(const Timestamp& date, double equity) {

@@ -35,6 +35,18 @@ struct OnePassDay {
     double risk_scale{0.0};
     double capped_target_gross{0.0};   ///< notional, at the raw signal closes, held rows included
     double stored_gross{0.0};          ///< notional of the stored book at the same closes
+    /// The overlay's readings of the pass's stored book (one_pass::DayResult::stored_readings)
+    /// and the window's annualisation factor, copied on a rebalance the overlay answered: the
+    /// source of the overlay columns (risk/overlay_columns.hpp). On a blind window
+    /// `covariance_readings` is false and the three risk readings are 0 and not computed. The
+    /// live runners store PortfolioManager::overlay_readings_for_book of the book they store.
+    bool covariance_readings{false};
+    double overlay_risk{0.0};            ///< R of the stored book
+    double overlay_risk_jump{0.0};       ///< R_jump
+    double overlay_risk_shock{0.0};      ///< R_shock
+    double overlay_gross_leverage{0.0};  ///< L
+    double overlay_net_leverage{0.0};    ///< L_net, signed
+    double window_bars_per_year{0.0};    ///< the gate window's bars a year, 0 while blind
     /// The forecast-sign closes, per sleeve and symbol: the signed fill that took the sleeve's held
     /// quantity to flat before the search.
     std::map<std::string, std::map<std::string, double>> sign_closes;

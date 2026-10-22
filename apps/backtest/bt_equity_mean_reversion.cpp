@@ -4,8 +4,10 @@
 #include <unordered_set>
 #include <nlohmann/json.hpp>
 #include "trade_ngin/backtest/backtest_coordinator.hpp"
+#include "trade_ngin/backtest/backtest_metrics_calculator.hpp"
 #include "trade_ngin/backtest/equity_cost_warmup.hpp"
 #include "trade_ngin/core/config_loader.hpp"
+#include "trade_ngin/core/resolved_sleeves.hpp"
 #include "trade_ngin/core/logger.hpp"
 #include "trade_ngin/core/time_utils.hpp"
 #include "trade_ngin/data/database_pooling.hpp"
@@ -402,6 +404,21 @@ int main() {
                     {"position_size", mr.position_size},
                     {"vol_lookback", mr.vol_lookback},
                     {"allow_fractional_shares", mr.allow_fractional_shares}};
+                // T-8D-2 R53: the sleeve's resolved risk_target is mean_reversion's above; the
+                // window rule, the warm-up and the sessions a year of the statistics are added.
+                trade_ngin::add_backtest_run_keys(
+                    config_json, app_config.backtest.lookback_years,
+                    app_config.backtest.frozen_end_date, backtest_results.warmup_days,
+                    trade_ngin::kBacktestAnnualisationApplied,
+                    app_config.statistics.equity_sessions_per_year);
+                std::vector<trade_ngin::ResolvedSleeve> resolved_sleeves;
+                for (const auto& entry : strat_entries) {
+                    resolved_sleeves.push_back(
+                        {entry.id, std::nullopt,
+                         trade_ngin::apps::build_mean_reversion_config(entry.def["config"]).risk_target,
+                         entry.allocation / total_allocation});
+                }
+                INFO(trade_ngin::resolved_sleeves_log_line(app_config.portfolio_id, resolved_sleeves));
             }
 
             auto save_result = coordinator->save_portfolio_results_to_db(

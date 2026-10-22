@@ -182,6 +182,37 @@ TEST_F(ConfigLoaderTest, LoadValidConfigPopulatesAllFields) {
     EXPECT_EQ(c.email.smtp_host, "smtp.test.com");
 }
 
+// T-8D-2 R76: the sessions a year the live statistics annualise with, frozen per series. A
+// config without the block runs on the two ruled values.
+TEST_F(ConfigLoaderTest, StatisticsSessionsPerYearDefaultToTheRuledValues) {
+    write_full_set("base");
+    auto r = ConfigLoader::load(base_, "base");
+    ASSERT_TRUE(r.is_ok()) << (r.error() ? r.error()->what() : "no error");
+    EXPECT_DOUBLE_EQ(r.value().statistics.futures_sessions_per_year, 311.0574);
+    EXPECT_DOUBLE_EQ(r.value().statistics.equity_sessions_per_year, 252.0);
+    // 3,111 grid dates over 2016-01-01..2025-12-31, 3,653 days, per Julian year.
+    EXPECT_NEAR(r.value().statistics.futures_sessions_per_year, 3111.0 / (3653.0 / 365.25), 5e-5);
+    const auto j = r.value().to_json();
+    EXPECT_DOUBLE_EQ(j["statistics"]["sessions_per_year"]["futures"].get<double>(), 311.0574);
+}
+
+TEST_F(ConfigLoaderTest, StatisticsSessionsPerYearAreReadPerSeries) {
+    write_full_set("base", {{"statistics", {{"sessions_per_year", {{"futures", 312.5}}}}}});
+    auto r = ConfigLoader::load(base_, "base");
+    ASSERT_TRUE(r.is_ok()) << (r.error() ? r.error()->what() : "no error");
+    EXPECT_DOUBLE_EQ(r.value().statistics.futures_sessions_per_year, 312.5);
+    EXPECT_DOUBLE_EQ(r.value().statistics.equity_sessions_per_year, 252.0)
+        << "a series the block does not name keeps its default";
+}
+
+TEST_F(ConfigLoaderTest, StatisticsSessionsPerYearMustBePositive) {
+    write_full_set("base", {{"statistics", {{"sessions_per_year", {{"equities", 0.0}}}}}});
+    auto r = ConfigLoader::load(base_, "base");
+    ASSERT_TRUE(r.is_error());
+    EXPECT_NE(std::string(r.error()->what()).find("statistics.sessions_per_year"),
+              std::string::npos);
+}
+
 TEST_F(ConfigLoaderTest, PortfolioFileOverridesDefaults) {
     // Use a portfolio-level override on a top-level field that's not on the
     // required-validation list (initial_capital).

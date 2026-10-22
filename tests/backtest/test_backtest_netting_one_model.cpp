@@ -34,10 +34,14 @@
 #include "../core/test_base.hpp"
 #include "../risk/risk_module_test_helpers.hpp"
 #include "cost_basis_test_helpers.hpp"
+// LateRowStrategy writes one row into the PortfolioManager's stored executions from inside the
+// manager's own cycle (its lock held by the calling thread), which no public call can do.
+#define private public
+#include "trade_ngin/portfolio/portfolio_manager.hpp"
 #include "trade_ngin/backtest/backtest_coordinator.hpp"
+#undef private
 #include "trade_ngin/core/logger.hpp"
 #include "trade_ngin/data/market_data_bus.hpp"
-#include "trade_ngin/portfolio/portfolio_manager.hpp"
 #include "trade_ngin/transaction_cost/transaction_cost_manager.hpp"
 
 using namespace trade_ngin;
@@ -132,6 +136,52 @@ public:
     }
 };
 
+// T-8a (7), the netting audits' follow-up: a sleeve whose bad row is met by the END-OF-RUN totals
+// only. On the last cycle the row (a ROLL leg or a BORROW row CARRYING a netting adjustment) is
+// put into the sleeve's stored executions while the PortfolioManager processes the cycle (on_data
+// runs inside the manager's cycle, on its thread, under its lock: the row is written to the
+// manager's list directly), so the coordinator collects it with the cycle's fills into the run's
+// executions; when the sleeve is told of the cycle's first fill, before the cycle's cost is added
+// up, the stored lists are emptied, so the day's sum never reads the row. No code of the engine
+// can make such a row; the run's own list still holds it when the totals are taken.
+class LateRowStrategy : public ScheduledStrategy {
+public:
+    using ScheduledStrategy::ScheduledStrategy;
+    std::weak_ptr<PortfolioManager> pm;
+    ExecutionType type{ExecutionType::ROLL};
+    bool appended{false};
+    bool withdrawn{false};
+
+    Result<void> on_data(const std::vector<Bar>& data) override {
+        Timestamp latest{};
+        for (const auto& b : data) latest = std::max(latest, b.timestamp);
+        if (!appended && latest == trading_day(kLastDay - 1)) {  // the signal bars of the last cycle
+            appended = true;
+            ExecutionReport bad;
+            bad.exec_id = "RL-LATE-0";
+            bad.order_id = bad.exec_id;
+            bad.symbol = kX;
+            bad.side = Side::SELL;
+            bad.filled_quantity = Quantity(type == ExecutionType::BORROW ? 0.0 : 1.0);
+            bad.fill_price = Price(100.0);
+            bad.fill_time = trading_day(kLastDay);
+            bad.total_transaction_costs = Decimal(2.0);
+            bad.netting_adjustment = Decimal(0.5);
+            bad.execution_type = type;
+            if (auto p = pm.lock()) p->strategy_executions_[get_metadata().id].push_back(bad);
+        }
+        return ScheduledStrategy::on_data(data);
+    }
+
+    Result<void> on_execution(const ExecutionReport& report) override {
+        if (appended && !withdrawn && report.fill_time == trading_day(kLastDay)) {
+            withdrawn = true;
+            if (auto p = pm.lock()) p->clear_all_executions();
+        }
+        return ScheduledStrategy::on_execution(report);
+    }
+};
+
 double signed_qty(const ExecutionReport& r) {
     const double q = static_cast<double>(r.filled_quantity);
     return r.side == Side::SELL ? -q : q;
@@ -161,6 +211,7 @@ protected:
         coord_.reset();
         a_.reset();
         b_.reset();
+        late_.reset();
         pm_.reset();
         db_.reset();
         StateManager::reset_instance();
@@ -186,6 +237,10 @@ protected:
             injecting->inject_type = inject_type_;
             injector_ = injecting;
             s = injecting;
+        } else if (id == "NET_A" && late_row_) {
+            late_ = std::make_shared<LateRowStrategy>(id, sc, db_);
+            late_->type = inject_type_;
+            s = late_;
         } else {
             s = std::make_shared<ScheduledStrategy>(id, sc, db_);
         }
@@ -226,14 +281,21 @@ protected:
         pm_ = std::make_shared<PortfolioManager>(pc, "PM_NET_ONE_MODEL");
 
         // Signal day d's target is traded on the cycle stamped d + 1.
-        a_ = sleeve("NET_A", {{kX, {{kSameDirection - 1, 2.0}, {kFullCross - 1, 0.0},
-                                    {kPartialCross - 1, 3.0}}},
-                              {kY, {{kSameDirection - 1, 1.0}}}});
-        b_ = sleeve("NET_B", {{kX, {{kSameDirection - 1, 1.0}, {kFullCross - 1, 3.0},
-                                    {kPartialCross - 1, 2.0}}}});
+        if (opposite_opens_) {
+            // The sleeves open against each other on one cycle and hold: A +2, B -2.
+            a_ = sleeve("NET_A", {{kX, {{kSameDirection - 1, 2.0}}}});
+            b_ = sleeve("NET_B", {{kX, {{kSameDirection - 1, -2.0}}}});
+        } else {
+            a_ = sleeve("NET_A", {{kX, {{kSameDirection - 1, 2.0}, {kFullCross - 1, 0.0},
+                                        {kPartialCross - 1, 3.0}}},
+                                  {kY, {{kSameDirection - 1, 1.0}}}});
+            b_ = sleeve("NET_B", {{kX, {{kSameDirection - 1, 1.0}, {kFullCross - 1, 3.0},
+                                        {kPartialCross - 1, 2.0}}}});
+        }
         EXPECT_TRUE(pm_->add_strategy(a_, 0.5, false).is_ok());
         EXPECT_TRUE(pm_->add_strategy(b_, 0.5, false).is_ok());
         if (injector_) injector_->pm = pm_;
+        if (late_) late_->pm = pm_;
 
         // The two managers disagree on the fee: the PM's 1.50, the execution manager's 3.00.
         pm_->get_transaction_cost_manager().set_contract_spec_source(spec_with_fee(1.50));
@@ -276,6 +338,9 @@ protected:
     std::shared_ptr<PortfolioManager> pm_;
     std::shared_ptr<ScheduledStrategy> a_, b_;
     std::shared_ptr<InjectingStrategy> injector_;
+    std::shared_ptr<LateRowStrategy> late_;
+    bool late_row_{false};
+    bool opposite_opens_{false};
     int inject_day_{-1};
     ExecutionType inject_type_{ExecutionType::ROLL};
     BacktestResults results_;
@@ -494,4 +559,67 @@ TEST_F(BacktestNettingOneModelTest, ARollRowWithAnAdjustmentStopsTheRunOnTheDayI
             << "the refusal was downgraded to a warning and the day carried flat";
         inject_day_ = -1;
     }
+}
+
+// T-8a (7), ledger G3 (the netting audits' follow-up): the END-OF-RUN refusal, driven through
+// run_portfolio. A ROLL or BORROW row carrying a netting adjustment that no day's sum met (in a
+// real run a BORROW row is appended after its cycle's sum) is met where the run's totals are
+// taken, before the metrics: the run comes back as an error result naming the row, not as an
+// exception out of run_portfolio and not as a results row.
+//
+//   | where the row is met     | the error                                             |
+//   | a day's sum (cycle 21)   | NETTING STOP on <date>: NETTING_REFUSED: ...          |
+//   | the totals (this test)   | NETTING STOP: NETTING_REFUSED: ... Failing the run    |
+//
+// RED when the totals' try and catch are removed (the refusal escapes run_portfolio) or the
+// totals are taken after the metrics.
+TEST_F(BacktestNettingOneModelTest, ARollOrBorrowRowWithAnAdjustmentMetAtTheEndFailsTheRunInItsTotals) {
+    for (const ExecutionType type : {ExecutionType::ROLL, ExecutionType::BORROW}) {
+        TearDown();
+        SetUp();
+        late_row_ = true;
+        inject_type_ = type;
+        Result<BacktestResults> result = make_error<BacktestResults>(ErrorCode::UNKNOWN_ERROR, "not run");
+        ASSERT_NO_THROW(result = run_raw()) << "the refusal escaped run_portfolio";
+        ASSERT_TRUE(late_ && late_->appended && late_->withdrawn)
+            << "the row never reached the last cycle, or stayed in the day's sum";
+        ASSERT_TRUE(result.is_error()) << "a run holding such a row must fail";
+        const std::string what = result.error()->what();
+        EXPECT_NE(what.find("NETTING STOP: NETTING_REFUSED"), std::string::npos) << what;
+        EXPECT_EQ(what.find("NETTING STOP on "), std::string::npos)
+            << "the day's sum met the row first: " << what;
+        EXPECT_NE(what.find("RL-LATE-0"), std::string::npos) << "the refusal names the row: " << what;
+        EXPECT_NE(what.find(type == ExecutionType::ROLL ? "the ROLL row" : "the BORROW row"),
+                  std::string::npos)
+            << what;
+        EXPECT_NE(what.find("Failing the run"), std::string::npos) << what;
+        EXPECT_NE(log_.find("NETTING STOP at the end of the run"), std::string::npos);
+        late_row_ = false;
+    }
+}
+
+// T-8a (7), LEAD_RULINGS_IN_SESSION R-G: the trade statistics of a run are the BOOK's. Two sleeves
+// OPEN against each other on one cycle (A buys 2, B sells 2: a full cross, net cost 0) and hold to
+// the end: the account sent no order, so the run has no trade.
+//
+//   | reading                       | cycle 21                                         | total_trades |
+//   | every sleeve row is a fill    | the second row "closes" the first: a trade of 0  | 1            |
+//   | the account's fills           | a full cross: no fill                            | 0            |
+//
+// RED on the parent: total_trades 1.
+TEST_F(BacktestNettingOneModelTest, AFullCrossIsNoTradeInTheRunsTradeStatistics) {
+    opposite_opens_ = true;
+    run();
+    size_t fills = 0;
+    for (const auto& r : results_.executions) {
+        ASSERT_EQ(r.fill_time, trading_day(kSameDirection)) << r.exec_id;
+        EXPECT_EQ(r.total_transaction_costs, r.netting_adjustment) << "a full cross: net cost 0";
+        ++fills;
+    }
+    ASSERT_EQ(fills, 2u) << "the run's executions keep one row per sleeve";
+    EXPECT_EQ(results_.total_trades, 0) << "a crossed row was scored as a trade";
+    EXPECT_DOUBLE_EQ(results_.win_rate, 0.0);
+    EXPECT_DOUBLE_EQ(results_.max_win, 0.0);
+    EXPECT_DOUBLE_EQ(results_.max_loss, 0.0);
+    EXPECT_TRUE(results_.actual_trades.empty());
 }

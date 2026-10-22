@@ -28,6 +28,7 @@
 #include "trade_ngin/risk/risk_scale_report.hpp"
 #include "trade_ngin/strategy/strategy_interface.hpp"
 #include "trade_ngin/risk/risk_detail.hpp"
+#include "trade_ngin/risk/overlay_columns.hpp"
 #include "trade_ngin/strategy/trend_following.hpp"
 #include "trade_ngin/transaction_cost/transaction_cost_manager.hpp"
 
@@ -490,6 +491,19 @@ public:
     double delivered_scale_for_book(const std::map<std::string, double>& stored_book) const;
 
     /**
+     * @brief The overlay's readings of the book the runner STORES, on the last one pass's own
+     *        window (LOOP_SPEC section 4; HD 2026-10-10): overlay::readings on that book's
+     *        weights at the pass's weight per contract, over the pass's participants in their
+     *        order, with the pass's gate window and jump sigmas. A book the pass's own stored
+     *        book equals reads OnePassDay's five readings to the bit; a runner step after the
+     *        pass that changes a row (the live STRICT roll-back) is in the readings. With it,
+     *        how many of the book's non-zero symbols are inside the covariance. Read it on a
+     *        rebalance the overlay answered (OnePassDay::stores_detail); no pass, no readings.
+     */
+    StoredBookReadings overlay_readings_for_book(
+        const std::map<std::string, double>& stored_book) const;
+
+    /**
      * @brief Mark this manager as driven by a backtest (BacktestCoordinator::run_portfolio). Read into
      *        RiskContext::is_backtest and scope_is_seeded, and it switches on the per-bar netting of the
      *        sleeves' execution reports (K3), which are the stored fills only in a backtest (T-7b-2 C8b4).
@@ -588,6 +602,10 @@ private:
     /// the sizing capital, and the capped target's gross weight (delivered_scale_for_book).
     std::vector<std::pair<std::string, double>> one_pass_weights_;
     double one_pass_target_gross_{0.0};
+    /// The last answered pass's gate window and jump sigmas, over the same participants in the
+    /// same order (overlay_readings_for_book).
+    overlay::GateWindow one_pass_window_;
+    std::vector<double> one_pass_sigma_jump_;
     /// Per symbol, the raw close and the multiplier the last pass that could weigh it valued it
     /// on: what a held row that cannot be weighed today is valued at (section 6.1).
     std::unordered_map<std::string, std::pair<double, double>> one_pass_valued_;

@@ -346,6 +346,11 @@ private:
         double initial_capital);
 
     /**
+     * @brief The point value the trade statistics read: the P&L manager's (the equity curve's)
+     */
+    BacktestMetricsCalculator::PointValueSource trade_point_value_source() const;
+
+    /**
      * @brief Calculate warmup days from strategy lookbacks
      */
     static int calculate_warmup_days(

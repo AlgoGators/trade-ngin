@@ -1,4 +1,5 @@
 #include "trade_ngin/core/email_sender.hpp"
+#include "trade_ngin/core/report_risk_lines.hpp"
 #include <curl/curl.h>
 #include <algorithm>
 #include <cctype>
@@ -1117,7 +1118,7 @@ std::string EmailSender::format_positions_table(
                 // multiplied internally by FuturesInstrument's new override).
                 const double signed_qty = position.quantity.as_double();
 
-                // D9 / BA-16: margin is priced from a MARK, not a cost basis.
+                // BA-16: one row without a price must not abort the report.
                 //
                 // This read average_price only. On the equity path that column is a
                 // cost basis, and 0 is its documented "no basis known" value
@@ -1125,17 +1126,23 @@ std::string EmailSender::format_positions_table(
                 // whose basis could not be resolved, which the runner already reports
                 // as an ERROR. get_margin_requirement(0, qty) then returns 0, this
                 // threw, and the bare `throw;` below aborted the WHOLE daily email:
-                // one unpriceable row and nobody gets a report at all.
+                // one unpriceable row and nobody gets a report at all. A row with no
+                // basis therefore falls back to the current close.
                 //
-                // Margin asks what the position is worth now, so the current close is
-                // the right input and average_price is the fallback -- the same
-                // preference the notional/market-price block below already applies.
+                // T-8D D3 (a): the margin line is priced at the row's cost basis and the
+                // current close is the fallback when no basis is known, the preference
+                // MarginManager applies to the stored margin_posted and the per-strategy
+                // tables below apply, so the email's margin and the database's agree. The
+                // row's market price below stays on the close; the notional is not touched.
                 double price_for_margin = 0.0;
-                auto margin_price_it = current_prices.find(symbol);
-                if (margin_price_it != current_prices.end() && margin_price_it->second > 0.0) {
-                    price_for_margin = margin_price_it->second;
-                } else if (position.average_price.as_double() > 0.0) {
+                if (position.average_price.as_double() > 0.0) {
                     price_for_margin = position.average_price.as_double();
+                } else {
+                    auto margin_price_it = current_prices.find(symbol);
+                    if (margin_price_it != current_prices.end() &&
+                        margin_price_it->second > 0.0) {
+                        price_for_margin = margin_price_it->second;
+                    }
                 }
 
                 if (price_for_margin <= 0.0) {
@@ -1242,11 +1249,14 @@ std::string EmailSender::format_positions_table(
 
     html << "<strong>Active Positions:</strong> " << active_positions << "<br>\n";
 
-    // Add Portfolio VaR if available in strategy metrics
-    auto var_it = strategy_metrics.find("Portfolio VaR");
-    if (var_it != strategy_metrics.end()) {
-        html << "<strong>Portfolio VaR:</strong> " << std::fixed << std::setprecision(2)
-             << var_it->second << "%<br>\n";
+    // The overlay's expected risk of the stored book beside the risk target, and the one-day 95
+    // percent VaR in dollars (report_risk_lines.hpp); a figure the metrics do not carry has no line.
+    const ReportRiskLines risk_lines = report_risk_lines(strategy_metrics);
+    if (!risk_lines.expected_risk.empty()) {
+        html << "<strong>Expected Risk:</strong> " << risk_lines.expected_risk << "<br>\n";
+    }
+    if (!risk_lines.var_95_1d.empty()) {
+        html << "<strong>1-Day 95% VaR:</strong> " << risk_lines.var_95_1d << "<br>\n";
     }
 
     html << "<strong>Total Notional:</strong> $" << format_with_commas(total_notional) << "<br>\n";
@@ -3435,11 +3445,16 @@ std::string EmailSender::format_strategy_positions_tables(
     html << "<div class=\"metric\"><strong>Active Positions:</strong> " << portfolio_total_positions
          << "</div>\n";
 
-    // Add Portfolio VaR if available in strategy metrics
-    auto var_it = strategy_metrics.find("Portfolio VaR");
-    if (var_it != strategy_metrics.end()) {
-        html << "<div class=\"metric\"><strong>Portfolio VaR:</strong> " << std::fixed
-             << std::setprecision(2) << var_it->second << "%</div>\n";
+    // The overlay's expected risk of the stored book beside the risk target, and the one-day 95
+    // percent VaR in dollars (report_risk_lines.hpp); a figure the metrics do not carry has no line.
+    const ReportRiskLines risk_lines = report_risk_lines(strategy_metrics);
+    if (!risk_lines.expected_risk.empty()) {
+        html << "<div class=\"metric\"><strong>Expected Risk:</strong> "
+             << risk_lines.expected_risk << "</div>\n";
+    }
+    if (!risk_lines.var_95_1d.empty()) {
+        html << "<div class=\"metric\"><strong>1-Day 95% VaR:</strong> " << risk_lines.var_95_1d
+             << "</div>\n";
     }
 
     html << "<div class=\"metric\"><strong>Total Notional:</strong> $"

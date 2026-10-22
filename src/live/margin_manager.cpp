@@ -35,8 +35,14 @@ Result<MarginManager::MarginMetrics> MarginManager::calculate_margin_requirement
             WARN("No market price for " + symbol + ", using average price");
         }
 
-        // Calculate margin for this position
-        auto margin_result = calculate_position_margin(symbol, quantity, market_price);
+        // Calculate margin for this position. The margin line is priced at the row's cost
+        // basis, the T-1 close only when no basis is known (T-8D D3 (a): the margin an
+        // equity position posts is the cash committed when it was bought). The notional
+        // below stays on the T-1 close. A futures margin is a figure per contract and does
+        // not read the price.
+        const double basis_price = position.average_price.as_double();
+        const double margin_price = basis_price > 0.0 ? basis_price : market_price;
+        auto margin_result = calculate_position_margin(symbol, quantity, margin_price);
         if (margin_result.is_error()) {
             return make_error<MarginMetrics>(
                 ErrorCode::INVALID_RISK_CALCULATION,
@@ -305,9 +311,16 @@ std::pair<double, double> MarginManager::extract_margin_requirements(
         throw std::runtime_error("Invalid initial margin for: " + instrument->get_symbol());
     }
 
-    // Maintenance margin: futures expose a distinct value; equities and
-    // others fall back to using initial margin as the maintenance figure.
+    // Maintenance margin: futures expose a distinct value; an equity held in a cash
+    // account has no maintenance requirement (T-8D D4 (a): it is paid for in full); a
+    // Reg T equity and the others fall back to using initial margin as the maintenance
+    // figure.
     double total_maintenance_margin = total_initial_margin;
+    if (auto equity_ptr = std::dynamic_pointer_cast<EquityInstrument>(instrument)) {
+        if (equity_ptr->get_account_mode() == EquityAccountMode::CASH) {
+            total_maintenance_margin = 0.0;
+        }
+    }
     if (auto futures_ptr = std::dynamic_pointer_cast<FuturesInstrument>(instrument)) {
         double maintenance_margin_per_contract = futures_ptr->get_maintenance_margin();
         if (maintenance_margin_per_contract <= 0) {

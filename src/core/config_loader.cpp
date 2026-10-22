@@ -592,6 +592,18 @@ Result<AppConfig> ConfigLoader::extract_config(const nlohmann::json& merged) {
             config.live.from_json(merged.at("live"));
         }
 
+        // Statistics convention (the sessions a year per series; a positive number each)
+        if (merged.contains("statistics")) {
+            config.statistics.from_json(merged.at("statistics"));
+            if (!(config.statistics.futures_sessions_per_year > 0.0) ||
+                !(config.statistics.equity_sessions_per_year > 0.0)) {
+                return make_error<AppConfig>(
+                    ErrorCode::INVALID_ARGUMENT,
+                    "statistics.sessions_per_year must be positive for futures and equities",
+                    "ConfigLoader");
+            }
+        }
+
         // Strategy defaults
         if (merged.contains("strategy_defaults")) {
             config.strategy_defaults.from_json(merged.at("strategy_defaults"));

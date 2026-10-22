@@ -259,6 +259,45 @@ TEST_F(EmailStrategyTablesTest, ANormalFuturesBookIsUnaffected) {
     EXPECT_NE(html.find("24,000.00"), std::string::npos);
 }
 
+// HD 2026-10-10: the portfolio summary prints the overlay's expected risk beside the risk target
+// and the one-day 95 percent VaR in dollars, in place of "Portfolio VaR" (a price-weighted figure
+// that is not a VaR). A day with no figure prints neither line.
+TEST_F(EmailStrategyTablesTest, TheSummaryShowsTheExpectedRiskAndTheOneDayVarAndNoPortfolioVar) {
+    const StrategyPositionsMap book{{"TREND_FOLLOWING", {{"ZFGOOD.v.0", held("ZFGOOD.v.0", 2.0, 4200.0)}}}};
+    const std::unordered_map<std::string, double> prices{{"ZFGOOD.v.0", 4250.0}};
+    const std::map<std::string, double> metrics{{"Portfolio VaR", 7.12},
+                                                {"Expected Risk", 7.9083057},
+                                                {"Risk Target", 20.0},
+                                                {"VaR 95 1-Day", 4218.027997},
+                                                {"Risk Contracts Covered", 15.0},
+                                                {"Risk Contracts Held", 16.0}};
+    std::string html;
+    ASSERT_NO_THROW({ html = sender_.format_strategy_positions_tables(book, prices, metrics); });
+    EXPECT_EQ(html.find("Portfolio VaR"), std::string::npos) << html;
+    EXPECT_NE(html.find("<div class=\"metric\"><strong>Expected Risk:</strong> 7.91% of the sizing "
+                        "capital (target 20.00%; 15 of 16 contracts)</div>"),
+              std::string::npos)
+        << html;
+    EXPECT_NE(html.find("<div class=\"metric\"><strong>1-Day 95% VaR:</strong> $4,218.03</div>"),
+              std::string::npos)
+        << html;
+    // The two lines sit where the old one did: after the count of positions, before the notional.
+    const auto active = html.find("Active Positions:");
+    const auto risk = html.find("Expected Risk:");
+    const auto var = html.find("1-Day 95% VaR:");
+    const auto notional = html.find("Total Notional:");
+    ASSERT_NE(active, std::string::npos);
+    ASSERT_NE(notional, std::string::npos);
+    EXPECT_TRUE(active < risk && risk < var && var < notional);
+
+    // No overlay figure (no sized rebalance, a blind window): neither line, and still no old one.
+    ASSERT_NO_THROW(
+        { html = sender_.format_strategy_positions_tables(book, prices, {{"Portfolio VaR", 7.12}}); });
+    EXPECT_EQ(html.find("Portfolio VaR"), std::string::npos);
+    EXPECT_EQ(html.find("Expected Risk"), std::string::npos);
+    EXPECT_EQ(html.find("95% VaR"), std::string::npos);
+}
+
 // An empty book is still the empty answer, not a crash.
 TEST_F(EmailStrategyTablesTest, AnEmptyBookRendersTheEmptyAnswer) {
     std::string html;

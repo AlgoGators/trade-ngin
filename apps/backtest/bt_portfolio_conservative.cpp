@@ -3,10 +3,12 @@
 #include <iostream>
 #include <nlohmann/json.hpp>
 #include "trade_ngin/backtest/backtest_coordinator.hpp"
+#include "trade_ngin/backtest/backtest_metrics_calculator.hpp"
 #include "trade_ngin/backtest/transaction_cost_analysis.hpp"
 #include "trade_ngin/core/config_loader.hpp"
 #include "trade_ngin/portfolio/loop_config.hpp"
 #include "trade_ngin/core/logger.hpp"
+#include "trade_ngin/core/resolved_sleeves.hpp"
 #include "trade_ngin/core/run_id_generator.hpp"
 #include "trade_ngin/core/time_utils.hpp"
 #include "trade_ngin/data/database_pooling.hpp"
@@ -290,6 +292,9 @@ int main() {
         std::vector<std::string> strategy_names;
         std::unordered_map<std::string, double> strategy_allocations;
         std::unordered_map<std::string, nlohmann::json> strategy_configs_map;
+        // Each sleeve's values as resolved here and handed to its strategy: logged once and
+        // recorded with the run (core/resolved_sleeves.hpp).
+        std::vector<trade_ngin::ResolvedSleeve> resolved_sleeves;
 
         // Use strategies from loaded config
         auto& strategies_config = app_config.strategies_config;
@@ -410,6 +415,8 @@ int main() {
                     portfolio_config.overlay_sleeve = strategy_id;
                     portfolio_config.overlay_tau = trend_config.risk_target;
                 }
+                resolved_sleeves.push_back(
+                    {strategy_id, trend_config.idm, trend_config.risk_target, allocation});
                 strategy = std::make_shared<trade_ngin::TrendFollowingStrategy>(
                     strategy_id, base_strategy_config, trend_config, db, registry_ptr);
 
@@ -455,6 +462,8 @@ int main() {
                     portfolio_config.overlay_sleeve = strategy_id;
                     portfolio_config.overlay_tau = trend_config.risk_target;
                 }
+                resolved_sleeves.push_back(
+                    {strategy_id, trend_config.idm, trend_config.risk_target, allocation});
                 strategy = std::make_shared<trade_ngin::TrendFollowingStrategy>(
                     strategy_id, base_strategy_config, trend_config, db, registry_ptr);
 
@@ -486,6 +495,7 @@ int main() {
         // ========================================
         // CREATE PORTFOLIO AND RUN BACKTEST
         // ========================================
+        INFO(trade_ngin::resolved_sleeves_log_line(app_config.portfolio_id, resolved_sleeves));
         INFO("Creating portfolio manager with " + std::to_string(strategies.size()) +
              " strategies...");
         auto portfolio = std::make_shared<trade_ngin::PortfolioManager>(portfolio_config);
@@ -555,6 +565,18 @@ int main() {
             nlohmann::json portfolio_config_json = portfolio_config.to_json();
             portfolio_config_json["strategy_allocations"] = strategy_allocations;
             portfolio_config_json["strategy_names"] = strategy_names;
+            // T-8D-2 R53: each sleeve's resolved idm and risk_target (its allocation is
+            // strategy_allocations above), the window rule, the warm-up and the sessions a year
+            // the statistics are annualised with: statistics_K is the factor the calculator
+            // applies (252 until T-8b aligns it), and the ruled factor of the futures grid is
+            // recorded beside it as not yet applied.
+            portfolio_config_json[trade_ngin::kSleevesKey] =
+                trade_ngin::resolved_sleeves_json(resolved_sleeves, false);
+            trade_ngin::add_backtest_run_keys(
+                portfolio_config_json, app_config.backtest.lookback_years,
+                app_config.backtest.frozen_end_date, backtest_results.warmup_days,
+                trade_ngin::kBacktestAnnualisationApplied,
+                app_config.statistics.futures_sessions_per_year);
             if (!app_config.instrument_id_relabels.empty()) {
                 auto relabels = nlohmann::json::array();
                 for (const auto& r : app_config.instrument_id_relabels) {

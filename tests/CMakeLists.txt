@@ -14,6 +14,7 @@ set(TEST_SOURCES
     core/test_logger_retention.cpp
     core/test_email_positions_table.cpp
     core/test_email_strategy_tables.cpp
+    core/test_report_risk_lines.cpp
     core/test_run_id_generator.cpp
     core/test_config_loader.cpp
     core/test_reserve_capital_deleted.cpp
@@ -68,6 +69,7 @@ set(TEST_SOURCES
     portfolio/test_worked_days.cpp
     portfolio/test_portfolio_config_keys.cpp
     risk/test_overlay_wiring.cpp
+    risk/test_overlay_columns.cpp
     risk/test_risk_adjusted_returns.cpp
     risk/test_risk_modules.cpp
     risk/test_risk_module_config.cpp
@@ -139,6 +141,12 @@ set(TEST_SOURCES
     live/test_feed_freshness_universe.cpp
     live/test_feed_ingestion_assertion.cpp
     live/test_day_t_write_ordering.cpp
+    live/test_settled_statistics_block.cpp
+    live/test_settled_stamp.cpp
+    live/test_stored_config_runners.cpp
+    core/test_resolved_sleeves.cpp
+    live/test_margin_columns.cpp
+    live/test_margin_columns_runners.cpp
     live/test_finalized_books_read.cpp
     live/test_late_bar_warning.cpp
     live/test_live_run_refusal_arms.cpp
@@ -174,6 +182,8 @@ set(TEST_SOURCES
     storage/test_live_results_key_roundtrip_db.cpp
     live/test_live_historical_metrics.cpp
     live/test_live_historical_metrics_columns.cpp
+    live/test_statistics_grid.cpp
+    live/test_live_statistics_columns.cpp
     live/test_live_price_manager.cpp
     live/test_live_trading_coordinator_keying.cpp
     live/test_execution_manager.cpp
