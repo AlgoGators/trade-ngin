@@ -7,7 +7,13 @@ T-8a commit (12), migration 035: trading.live_results.settled_at on a restored b
 backfill gives: the marker 1970-01-01 00:00:00+00 on every row that has a later row of its key (portfolio_id,
 strategy_id), NULL on the last row of each key. Checked per key, then projected away like the others.
 T-8a commit (12b), migration 036: the twenty statistic and overlay columns of trading.live_results hold NULL on every
-restored row (R32: history is never rewritten; the columns have no backfill). Checked and projected away like the others."""
+restored row (R32: history is never rewritten; the columns have no backfill). Checked and projected away like the others.
+The QT desk's migrations (021 to 029) add, on a book the desk never edited: portfolio_type 'system' on executions and
+live_results (021), moved_by NULL on positions (021), book_source NULL on live_results (023), settings_used,
+published_by, published_at (022), publish_source and sent_at (027) NULL on live_run_metadata, portfolio_group NULL and
+desk_editable false on strategy_registry (023); checked and projected away like the others. With the S0 directory as
+a third argument, a column S0's own file already has is kept and compared against S0 (positions.portfolio_type, from
+001, is in S0), and a table S0 has no file for (position_overrides, strategy_config) must hold no row of the book."""
 import csv, os, shutil, sys
 EXPECTED = {"netting_adjustment": "", "instrument_id": "", "execution_type": "STRATEGY", "daily_roll_costs": "0",
             "total_roll_costs": "0", "risk_detail": ""}
@@ -16,6 +22,9 @@ M036 = ("worst_day_date worst_day_symbol max_drawdown_sizing volatility_sizing w
         "total_strategy_fills total_roll_fills overlay_risk overlay_risk_jump overlay_risk_shock overlay_gross_leverage "
         "overlay_net_leverage var_95_1d").split()
 EXPECTED.update({c: "" for c in M036})
+QT = {"portfolio_type": "system", "moved_by": "", "book_source": "", "settings_used": "", "published_by": "",
+      "published_at": "", "publish_source": "", "sent_at": "", "portfolio_group": "", "desk_editable": "f"}
+EXPECTED.update(QT)
 NUMERIC = {"daily_roll_costs", "total_roll_costs"}
 def hist(c, v):
     if c in NUMERIC:
@@ -34,12 +43,23 @@ def settled_off(head, rows):
         if row[k] != want: off.append(((row[p], row[s]), row[d], row[k], want))
     return off, len(last)
 src, dst = sys.argv[1], sys.argv[2]
+s0 = sys.argv[3] if len(sys.argv) > 3 else None
+def s0_head(n):
+    """the header of S0's own file of the table, or None when S0 has no such file (no S0 dir given: every column)"""
+    if s0 is None: return []
+    f = os.path.join(s0, n)
+    if not os.path.exists(f): return None
+    with open(f, newline="") as fh: return next(csv.reader(fh))
 os.makedirs(dst, exist_ok=True); bad = 0
 for n in sorted(os.listdir(src)):
     if not n.endswith(".csv"): continue
     with open(os.path.join(src, n), newline="") as fh:
         r = csv.reader(fh); head = next(r); rows = list(r)
-    drop = [c for c in head if c in EXPECTED]
+    known = s0_head(n)
+    if known is None:
+        print("[%s] a table S0 has no file for: %d row(s) of the book, expected 0" % (n, len(rows))); bad += len(rows)
+        continue
+    drop = [c for c in head if c in EXPECTED and c not in known]
     if n == "trading_live_results.csv" and "settled_at" in head:
         off, nkeys = settled_off(head, rows); k = head.index("settled_at")
         print("[%s] settled_at: %d restored rows of %d key(s), %d with the backfill marker, %d NULL (the last row of each key), %d off the backfill rule" % (
@@ -47,14 +67,14 @@ for n in sorted(os.listdir(src)):
         for o in off[:8]: print("      off: key=%s date=%s settled_at=%r expected %r" % o)
         bad += len(off)
         rows = [row[:k] + row[k + 1:] for row in rows]; head = head[:k] + head[k + 1:]
-        if not [c for c in head if c in EXPECTED]:
+        if not [c for c in head if c in EXPECTED and c not in known]:
             with open(os.path.join(dst, n), "w", newline="") as out:
                 w = csv.writer(out); w.writerow(head); w.writerows(rows)
             continue
-        drop = [c for c in head if c in EXPECTED]
+        drop = [c for c in head if c in EXPECTED and c not in known]
     if not drop:
         shutil.copy(os.path.join(src, n), os.path.join(dst, n)); continue
-    keep = [i for i, c in enumerate(head) if c not in EXPECTED]
+    keep = [i for i, c in enumerate(head) if c not in drop]
     for c in drop:
         k = head.index(c); nn = sum(1 for row in rows if not hist(c, row[k]))
         print("[%s] %s: %d restored rows, %d off the history value %r" % (n, c, len(rows), nn, EXPECTED[c])); bad += nn

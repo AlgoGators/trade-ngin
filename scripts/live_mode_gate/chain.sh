@@ -144,7 +144,7 @@ PY
   fi
   } > "$OUT/${L}_restore.txt" 2>&1 || { echo "RESTORE FAILED ($L)"; tail -5 "$OUT/${L}_restore.txt"; return 5 }
   rm -rf "$OUT/.s0check_$L" "$OUT/.s0proj_$L"; snap_live "$OUT/.s0check_$L" >/dev/null
-  python3 "$T/s0_project.py" "$OUT/.s0check_$L" "$OUT/.s0proj_$L" > "$OUT/${L}_restore_proof.txt" || { echo "RESTORE NOT PROVEN ($L): a migrated column is off its history value"; return 5 }
+  python3 "$T/s0_project.py" "$OUT/.s0check_$L" "$OUT/.s0proj_$L" "$S0" > "$OUT/${L}_restore_proof.txt" || { echo "RESTORE NOT PROVEN ($L): a migrated column is off its history value"; return 5 }
   python3 "$T/compare_csv_dirs.py" --tol 0 "$S0" "$OUT/.s0proj_$L" >> "$OUT/${L}_restore_proof.txt" || { echo "RESTORE NOT PROVEN ($L)"; tail -5 "$OUT/${L}_restore_proof.txt"; return 5 }
   echo "restore $L proven: $(tail -1 "$OUT/${L}_restore_proof.txt")"; rm -rf "$OUT/.s0check_$L" "$OUT/.s0proj_$L"
 }
