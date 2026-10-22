@@ -13,6 +13,9 @@ protected:
     void SetUp() override {
         // Reset logger first to close any existing file handles
         Logger::reset_for_tests();
+        // The component prefix is the calling thread's, and reset_for_tests does not clear it: in
+        // one process an earlier suite's register_component would prefix every line asserted here.
+        Logger::register_component("");
 
         // Redirect cout to capture console output
         original_cout = std::cout.rdbuf();
@@ -307,4 +310,20 @@ TEST_F(LoggerTest, ReinitializationSwitchesFile) {
 
     // Verify dir1 still has its file
     EXPECT_EQ(get_log_files(dir1.string()).size(), 1);
+}
+
+// The LOG macro builds its line in a local stream. That local must not carry a name a caller
+// would use: a caller that built part of its message in its own `os` used to have that name read
+// as the macro's (still empty) stream, and the caller's text was lost.
+TEST_F(LoggerTest, ACallersOwnOsIsStreamedIntoTheLogLine) {
+    LoggerConfig config;
+    config.destination = LogDestination::CONSOLE;
+    Logger::instance().initialize(config);
+
+    std::ostringstream os;
+    os << "the caller's text";
+    INFO("built by the caller: " << os.str());
+
+    const std::string output = cout_buffer.str();
+    EXPECT_NE(output.find("built by the caller: the caller's text"), std::string::npos) << output;
 }

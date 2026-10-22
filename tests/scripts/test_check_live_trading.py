@@ -150,6 +150,37 @@ class C7bHeldDay(unittest.TestCase):
         self.assertTrue(stale)
         self.assertTrue(any("strict_assertion" in r for r in reasons), reasons)
 
+    def test_a_sleeve_mark_is_reported_as_a_held_sleeve_not_as_a_held_book(self):
+        # The runner marks a sleeve whose risk module could not answer with scope "sleeve" and
+        # the sleeve's id (risk_module_failure.hpp); the other sleeves trade that day.
+        today = date(2026, 7, 27)
+        stale, reasons = self.w.evaluate("BASE_PORTFOLIO", self.at(today), today, today, 12,
+                                         today, 1, latest_mark_date=today,
+                                         latest_marks=["risk_refusal"], refusal_scope="sleeve",
+                                         refusal_scope_id="TREND_FOLLOWING_FAST")
+        self.assertTrue(stale)
+        self.assertEqual(len(reasons), 1, reasons)
+        self.assertIn("held sleeve TREND_FOLLOWING_FAST", reasons[0])
+        self.assertIn("any other sleeve traded", reasons[0])
+        self.assertNotIn("held every strategy", reasons[0])
+        self.assertNotIn("portfolio risk step", reasons[0])
+        self.assertIn("risk_refusal in trading.live_run_metadata", reasons[0])
+
+    def test_a_portfolio_mark_keeps_the_portfolio_wording(self):
+        today = date(2026, 7, 27)
+        _, reasons = self.w.evaluate(self.book, self.at(today), today, today, 12, today, 1,
+                                     latest_mark_date=today, latest_marks=["risk_refusal"])
+        self.assertIn("the portfolio risk step held every strategy", reasons[0])
+        self.assertNotIn("held sleeve", reasons[0])
+
+    def test_a_sizing_mark_names_the_equity_read(self):
+        today = date(2026, 7, 27)
+        _, reasons = self.w.evaluate(self.book, self.at(today), today, today, 12, today, 1,
+                                     latest_mark_date=today, latest_marks=["risk_refusal"],
+                                     refusal_scope="sizing", refusal_scope_id="book")
+        self.assertIn("the account's equity could not be read", reasons[0])
+        self.assertNotIn("portfolio risk step", reasons[0])
+
     def test_an_unmarked_latest_run_is_healthy(self):
         today = date(2026, 7, 27)
         stale, _ = self.w.evaluate(self.book, self.at(today), today, today, 12, today, 1,
@@ -180,6 +211,29 @@ class C7bFetchOnTheClone(unittest.TestCase):
             self.assertEqual(marks, ["risk_refusal"])
             mark_date, marks = w._fetch_run_marks(conn, book, date(2030, 1, 9))
             self.assertEqual((mark_date, marks), (date(2030, 1, 9), []))
+        finally:
+            conn.rollback()
+            conn.close()
+
+    def test_the_scope_of_a_risk_refusal_mark_is_read(self):
+        import psycopg2
+
+        w = load_watchdog()
+        conn = psycopg2.connect(os.environ["TRADE_NGIN_TEST_DSN"])
+        book = "HYGIENE_WATCHDOG_SCOPE_PROBE"
+        try:
+            with conn.cursor() as cur:
+                for d, cfg in ((date(2030, 1, 9), '{"total_capital": 1}'),
+                               (date(2030, 1, 10), '{"risk_refusal": {"module": "carver"}}'),
+                               (date(2030, 1, 11), '{"risk_refusal": {"scope": "sleeve", '
+                                                   '"scope_id": "TREND_FOLLOWING_FAST"}}')):
+                    cur.execute("INSERT INTO trading.live_run_metadata (date, strategy_id, portfolio_id, "
+                                "strategy_allocations, portfolio_config) VALUES (%s, 'PROBE', %s, "
+                                "'{}'::jsonb, %s::jsonb)", (d, book, cfg))
+            self.assertEqual(w._fetch_refusal_scope(conn, book, date(2030, 1, 9)), (None, None))
+            self.assertEqual(w._fetch_refusal_scope(conn, book, date(2030, 1, 10)), (None, None))
+            self.assertEqual(w._fetch_refusal_scope(conn, book, date(2030, 1, 11)),
+                             ("sleeve", "TREND_FOLLOWING_FAST"))
         finally:
             conn.rollback()
             conn.close()

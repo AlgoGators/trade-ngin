@@ -24,6 +24,7 @@
 #include <unordered_map>
 #include <vector>
 
+#include "trade_ngin/instruments/equity.hpp"
 #include "trade_ngin/instruments/futures.hpp"
 #define private public
 #include "trade_ngin/instruments/instrument_registry.hpp"
@@ -56,6 +57,15 @@ std::shared_ptr<FuturesInstrument> make_es_futures() {
     return std::make_shared<FuturesInstrument>("ES", spec);
 }
 
+std::shared_ptr<EquityInstrument> make_equity(const std::string& symbol, EquityAccountMode mode) {
+    EquitySpec spec;
+    spec.exchange = "NASDAQ";
+    spec.currency = "USD";
+    spec.tick_size = 0.01;
+    spec.account_mode = mode;
+    return std::make_shared<EquityInstrument>(symbol, spec);
+}
+
 }  // namespace
 
 class MarginManagerTest : public ::testing::Test {
@@ -65,10 +75,14 @@ protected:
         // "MES" internally (the micro contract), so we register under MES.
         auto& reg = InstrumentRegistry::instance();
         reg.instruments_["MES"] = make_es_futures();
+        reg.instruments_["T8A_CASH"] = make_equity("T8A_CASH", EquityAccountMode::CASH);
+        reg.instruments_["T8A_REGT"] = make_equity("T8A_REGT", EquityAccountMode::REG_T);
     }
     void TearDown() override {
         auto& reg = InstrumentRegistry::instance();
         reg.instruments_.erase("MES");
+        reg.instruments_.erase("T8A_CASH");
+        reg.instruments_.erase("T8A_REGT");
     }
 };
 
@@ -221,4 +235,73 @@ TEST_F(MarginManagerTest, CalculatePositionMarginUnknownSymbolErrors) {
     MarginManager mm(InstrumentRegistry::instance());
     auto r = mm.calculate_position_margin("UNKNOWN_SYM", 1.0, 100.0);
     EXPECT_TRUE(r.is_error());
+}
+
+// ===== T-8D D3 (a) and D4 (a): the equity margin line =====
+
+// The margin an equity position posts is priced at its cost basis; its notional stays on the
+// T-1 close (one price fed both, so the stored margin_posted moved with the close).
+TEST_F(MarginManagerTest, EquityMarginIsPricedAtTheCostBasisAndTheNotionalAtTheClose) {
+    MarginManager mm(InstrumentRegistry::instance());
+    std::unordered_map<std::string, Position> positions{
+        {"T8A_CASH", make_position("T8A_CASH", 10.0, 100.0)}};
+    std::unordered_map<std::string, double> prices{{"T8A_CASH", 110.0}};
+    auto r = mm.calculate_margin_requirements(positions, prices, 100'000.0);
+    ASSERT_TRUE(r.is_ok());
+    auto& m = r.value();
+    EXPECT_DOUBLE_EQ(m.total_posted_margin, 10.0 * 100.0) << "margin at the basis, not the close";
+    EXPECT_DOUBLE_EQ(m.symbol_margins.at("T8A_CASH"), 1000.0);
+    EXPECT_DOUBLE_EQ(m.gross_notional, 10.0 * 110.0) << "the notional stays on the close";
+    EXPECT_DOUBLE_EQ(m.net_notional, 1100.0);
+    EXPECT_DOUBLE_EQ(m.symbol_notionals.at("T8A_CASH"), 1100.0);
+    EXPECT_DOUBLE_EQ(m.cash_available, 100'000.0 - 1000.0);
+}
+
+// A row with no known basis (average_price 0) falls back to the close.
+TEST_F(MarginManagerTest, EquityMarginFallsBackToTheCloseWhenNoBasisIsKnown) {
+    MarginManager mm(InstrumentRegistry::instance());
+    std::unordered_map<std::string, Position> positions{
+        {"T8A_CASH", make_position("T8A_CASH", 10.0, 0.0)}};
+    std::unordered_map<std::string, double> prices{{"T8A_CASH", 110.0}};
+    auto r = mm.calculate_margin_requirements(positions, prices, 100'000.0);
+    ASSERT_TRUE(r.is_ok());
+    EXPECT_DOUBLE_EQ(r.value().total_posted_margin, 1100.0);
+    EXPECT_DOUBLE_EQ(r.value().gross_notional, 1100.0);
+}
+
+// A position paid for in full has no maintenance requirement.
+TEST_F(MarginManagerTest, ACashAccountEquityHasNoMaintenanceRequirement) {
+    MarginManager mm(InstrumentRegistry::instance());
+    std::unordered_map<std::string, Position> positions{
+        {"T8A_CASH", make_position("T8A_CASH", 10.0, 100.0)}};
+    std::unordered_map<std::string, double> prices{{"T8A_CASH", 110.0}};
+    auto r = mm.calculate_margin_requirements(positions, prices, 100'000.0);
+    ASSERT_TRUE(r.is_ok());
+    EXPECT_DOUBLE_EQ(r.value().maintenance_requirement, 0.0);
+    auto one = mm.calculate_position_margin("T8A_CASH", 10.0, 100.0);
+    ASSERT_TRUE(one.is_ok());
+    EXPECT_DOUBLE_EQ(one.value().first, 1000.0);
+    EXPECT_DOUBLE_EQ(one.value().second, 0.0);
+}
+
+// Reg T is not built in this stage (D10): its maintenance figure stays the initial margin.
+TEST_F(MarginManagerTest, ARegTEquityKeepsItsInitialMarginAsTheMaintenanceFigure) {
+    MarginManager mm(InstrumentRegistry::instance());
+    auto one = mm.calculate_position_margin("T8A_REGT", 10.0, 100.0);
+    ASSERT_TRUE(one.is_ok());
+    EXPECT_DOUBLE_EQ(one.value().first, 500.0);
+    EXPECT_DOUBLE_EQ(one.value().second, 500.0);
+}
+
+// A futures margin is a figure per contract: the basis the margin line now reads moves nothing.
+TEST_F(MarginManagerTest, FuturesMarginDoesNotReadThePrice) {
+    MarginManager mm(InstrumentRegistry::instance());
+    std::unordered_map<std::string, Position> positions{
+        {"ES", make_position("ES", 2.0, 4400.0)}};
+    std::unordered_map<std::string, double> prices{{"ES", 4500.0}};
+    auto r = mm.calculate_margin_requirements(positions, prices, 1'000'000.0);
+    ASSERT_TRUE(r.is_ok());
+    EXPECT_DOUBLE_EQ(r.value().total_posted_margin, 2.0 * 12000.0);
+    EXPECT_DOUBLE_EQ(r.value().maintenance_requirement, 2.0 * 10000.0);
+    EXPECT_DOUBLE_EQ(r.value().gross_notional, 2.0 * 4500.0 * 50.0);
 }

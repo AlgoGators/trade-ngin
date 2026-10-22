@@ -208,10 +208,12 @@ TEST(C7bRunnerSource, BothTwinsDeriveTheCarriedReasonFromTheClassificationAndFla
         EXPECT_EQ(src.find("\" (a Saturday)\""), npos)
             << "the note still keys on the weekday, blank on a feed-hole carry";
         EXPECT_NE(src.find("carried_day_reason(t1_classification)"), npos);
+        // The carried-day banner is put on by deliver_email_report (EmailDelivery.*), which is
+        // handed the day's note and whether the day was carried.
         const std::string email = between(src, "// Send email with CSV attachments",
-                                          "email_sender->send_email(subject, email_body");
+                                          "email_sender->send_email(mail_subject, mail_body,");
         ASSERT_FALSE(email.empty());
-        EXPECT_NE(email.find("flag_email_body_for_carried_day(email_body, carried_day_note)"), npos)
+        EXPECT_NE(email.find("risk_module_failure, skip_strategy_processing, carried_day_note,"), npos)
             << "the email of a carried day carries no reason";
         blocks.push_back(between(src, "const std::string carried_day_note =", ";\n"));
     }
@@ -279,7 +281,9 @@ TEST(C7bRunnerSource, BothTwinsTestEveryNoBarAgeAndGiveTheClassifierLogTheTolera
         if (src.empty()) GTEST_SKIP() << "runner source not found";
         EXPECT_EQ(src.find("if (t1_classification.max_hole_age_days > hole_tolerance_days)"), npos)
             << "the refusal only reads the held book when a FEED HOLE is old";
-        EXPECT_NE(src.find("if (max_no_bar_age_days(t1_classification) > hole_tolerance_days)"),
+        // T-DATED R2a: the test is "any no-bar verdict past the tolerance", which also counts a
+        // symbol with no bar anywhere in the loaded history (no age to measure).
+        EXPECT_NE(src.find("if (any_no_bar_past_tolerance(t1_classification, hole_tolerance_days))"),
                   npos);
         EXPECT_NE(src.find("log_t1_classification(t1_classification,\n"
                            "                              app_config.live.data_staleness_tolerance_days);"),
@@ -420,7 +424,10 @@ TEST(C7bRunnerSource, BothTwinsSumTheSleevesOfACarriedBookAndKeyYesterdaysEmailR
         EXPECT_EQ(src.find("yesterday_positions_finalized[symbol] = pos;"), npos)
             << "the email's yesterday map is keyed by symbol: the last sleeve wins";
         EXPECT_NE(src.find("yesterday_positions_finalized[{strategy_name, symbol}] = pos;"), npos);
-        EXPECT_NE(src.find("\"daily_unrealized_pnl, last_update, strategy_name \""), npos)
+        // The query is yesterday_positions_report_query (live/report_queries.hpp); its last
+        // argument asks for the sleeve name as the seventh column (executed in
+        // tests/live/test_report_queries.cpp).
+        EXPECT_NE(src.find("yesterday_date_for_email, true, qt_read_book);"), npos)
             << "the query must read the sleeve";
     }
     ASSERT_EQ(carry_blocks.size(), 2u);

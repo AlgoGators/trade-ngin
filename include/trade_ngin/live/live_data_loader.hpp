@@ -22,7 +22,10 @@
 
 #pragma once
 
+#include <algorithm>
+#include <map>
 #include <memory>
+#include <optional>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -30,6 +33,8 @@
 #include "trade_ngin/live/carried_day.hpp"
 #include "trade_ngin/core/types.hpp"
 #include "trade_ngin/data/postgres_database.hpp"
+#include "trade_ngin/live/live_historical_metrics.hpp"
+#include "trade_ngin/live/live_statistics_columns.hpp"
 
 namespace trade_ngin {
 
@@ -81,16 +86,35 @@ struct LiveResultsRow {
 };
 
 /**
- * @brief Structure for margin-related metrics
+ * @brief The report's statistics and return lines from a day's stored row (T-8D-2 R58, R61): the
+ *        metric names the daily report reads, each from its stored column. The statistics are the
+ *        settled series' (they run through the day before the row's date); the cumulative return
+ *        is the row's own level. Flat days are total less winning less losing.
  */
-struct MarginMetrics {
-    double gross_leverage = 0.0;
-    double equity_to_margin_ratio = 0.0;
-    double gross_notional = 0.0;
-    double margin_posted = 0.0;
-    double margin_cushion = 0.0;
-    bool valid = false;  // Indicates if data was found
-};
+inline std::map<std::string, double> statistics_report_metrics(const LiveResultsRow& row) {
+    return {
+        {"Total Cumulative Return", row.total_cumulative_return},
+        {"Total Annualized Return", row.total_annualized_return},
+        {"Sharpe Ratio", row.sharpe_ratio},
+        {"Sortino Ratio", row.sortino_ratio},
+        {"Max Drawdown", row.max_drawdown},
+        {"Volatility", row.volatility},
+        {"Win Rate", row.win_rate},
+        {"Average Win", row.avg_win},
+        {"Average Loss", row.avg_loss},
+        {"Profit Factor", row.profit_factor},
+        {"Best Day", row.best_day},
+        {"Worst Day", row.worst_day},
+        {"Downside Deviation", row.downside_deviation},
+        {"Gross Profit", row.gross_profit},
+        {"Gross Loss", row.gross_loss},
+        {"Winning Days", static_cast<double>(row.winning_days)},
+        {"Losing Days", static_cast<double>(row.losing_days)},
+        {"Flat Days",
+         static_cast<double>(std::max(0, row.total_days - row.winning_days - row.losing_days))},
+        {"Total Days", static_cast<double>(row.total_days)},
+    };
+}
 
 /**
  * @brief Structure for previous day's data
@@ -124,6 +148,16 @@ private:
     // Helper method to check database connection
     Result<void> validate_connection() const;
 
+    // The predicate "<date_expr> is on or after the book's start": the earliest live_start_date of
+    // <schema>.strategy_trading_days_metadata for the key, no lower bound when the key has no row.
+    std::string on_or_after_book_start(const std::string& date_expr,
+                                       const std::string& strategy_id,
+                                       const std::string& portfolio_id) const;
+
+    // The scalar subquery that predicate compares with: the key's earliest live_start_date.
+    std::string book_start_subquery(const std::string& strategy_id,
+                                    const std::string& portfolio_id) const;
+
 public:
     /// The book (system, qt_proposal or qt) the reads below are scoped to (QT plan E3).
     void set_book(const std::string& book) { book_ = book; }
@@ -136,27 +170,6 @@ public:
     LiveDataLoader(std::shared_ptr<PostgresDatabase> db, const std::string& schema = "trading");
 
     ~LiveDataLoader() = default;
-
-    // ========== Portfolio Value Methods ==========
-
-    /**
-     * @brief Load the previous trading day's portfolio value
-     * @param strategy_id Strategy identifier
-     * @param date Current date (will find previous trading day)
-     * @return Previous portfolio value or error
-     */
-    Result<double> load_previous_portfolio_value(const std::string& strategy_id,
-                                                 const std::string& portfolio_id,
-                                                 const Timestamp& date);
-
-    /**
-     * @brief Load portfolio value for a specific date
-     * @param strategy_id Strategy identifier
-     * @param date Target date
-     * @return Portfolio value or error
-     */
-    Result<double> load_portfolio_value(const std::string& strategy_id,
-                                        const std::string& portfolio_id, const Timestamp& date);
 
     // ========== Live Results Methods ==========
 
@@ -181,15 +194,6 @@ public:
                                                    const Timestamp& date);
 
     /**
-     * @brief Check if live results exist for a date
-     * @param strategy_id Strategy identifier
-     * @param date Target date
-     * @return true if results exist, false otherwise
-     */
-    Result<bool> has_live_results(const std::string& strategy_id, const std::string& portfolio_id,
-                                  const Timestamp& date);
-
-    /**
      * @brief Get count of live results rows for strategy
      * @param strategy_id Strategy identifier
      * @return Row count or error
@@ -199,21 +203,12 @@ public:
 
     // ========== Historical Series Methods (since inception, as-of date) ==========
 
-    /**
-     * @brief Load daily return history (percentage) up to and including a given date.
-     *
-     * Each value corresponds to the `daily_return` column from trading.live_results,
-     * ordered by date ascending.
-     */
-    Result<std::vector<double>> load_daily_returns_history(const std::string& strategy_id,
-                                                           const std::string& portfolio_id,
-                                                           const Timestamp& as_of_date);
-
     /// One stored day of a book's P&L history, for the sizing capital (LOOP_SPEC section 3.1).
     struct PnlHistoryRow {
         std::string date;         ///< YYYY-MM-DD
         double daily_pnl{0.0};    ///< the row's stored net P&L
         int active_positions{0};  ///< the positions the day's stored book held
+        bool settled_at_set{false};  ///< the row carries a settled_at stamp (migration 035)
     };
 
     /**
@@ -222,6 +217,7 @@ public:
      *        live_start_date of trading.strategy_trading_days_metadata for the key; no lower bound
      *        when the key has no such row) and strictly before `before_date`.
      *
+     * Each row says whether its settled_at is set, so the read needs migration 035 applied.
      * No row is an empty list, not an error; a failed query is a DATABASE_ERROR.
      */
     Result<std::vector<PnlHistoryRow>> load_sizing_pnl_history(const std::string& strategy_id,
@@ -229,24 +225,82 @@ public:
                                                                const Timestamp& before_date);
 
     /**
-     * @brief Load daily PnL history (dollars) up to and including a given date.
-     *
-     * Each value corresponds to the `daily_pnl` column from trading.live_results,
-     * ordered by date ascending.
+     * @brief The book's start as "YYYY-MM-DD": the earliest live_start_date of
+     *        <schema>.strategy_trading_days_metadata for the key, the anchor the sizing history
+     *        above and the statistics levels below are bounded by. Empty when the key has no row.
      */
-    Result<std::vector<double>> load_daily_pnl_history(const std::string& strategy_id,
-                                                       const std::string& portfolio_id,
-                                                       const Timestamp& as_of_date);
+    Result<std::string> load_book_start(const std::string& strategy_id,
+                                        const std::string& portfolio_id);
 
     /**
-     * @brief Load equity curve history up to and including a given date.
-     *
-     * Each value corresponds to the `equity` column from trading.equity_curve,
-     * ordered by timestamp ascending.
+     * @brief total_dividend_income as stored on the key's <schema>.live_results row of a date:
+     *        the previous value a run carries when it cannot recount the dividends. No value
+     *        when the date has no row or the cell is NULL.
      */
-    Result<std::vector<double>> load_equity_curve_history(const std::string& strategy_id,
-                                                          const std::string& portfolio_id,
-                                                          const Timestamp& as_of_date);
+    Result<std::optional<double>> load_stored_dividend_income(const std::string& strategy_id,
+                                                              const std::string& portfolio_id,
+                                                              const Timestamp& date);
+
+    /**
+     * @brief The book's stored per-symbol P&L cells for the worst day's symbol (migration 036):
+     *        per date and symbol, SUM(daily_realized_pnl) and SUM(daily_unrealized_pnl) of
+     *        <schema>.positions over the book's sleeves, from the book's start through
+     *        `through_date`, ascending. A futures row books its daily move as realised and
+     *        carries 0 unrealised; an equity row's unrealised cell is the open position's level.
+     */
+    Result<std::vector<SymbolDayPnl>> load_symbol_pnl_history(const std::string& strategy_id,
+                                                              const std::string& portfolio_id,
+                                                              const Timestamp& through_date);
+
+    /**
+     * @brief The sizing capital each stored row was sized on (migration 036): (date,
+     *        risk_detail.sizing_capital) of every live_results row of the key that carries one,
+     *        from the book's start through `through_date`, ascending.
+     */
+    Result<std::vector<DatedCapital>> load_sizing_capital_history(const std::string& strategy_id,
+                                                                  const std::string& portfolio_id,
+                                                                  const Timestamp& through_date);
+
+    /**
+     * @brief The book's stored executions for its fill counts (migration 036): every row of
+     *        <schema>.executions of the key whose stored date is from the book's start through
+     *        `through_date`. Each row's fill time is its stored DATE (midnight UTC), the day the
+     *        sleeves' rows are netted on; the price, the quantity, the cost, the netting
+     *        adjustment, the execution type and the instrument id are the stored cells.
+     */
+    Result<std::vector<ExecutionReport>> load_book_executions(const std::string& strategy_id,
+                                                              const std::string& portfolio_id,
+                                                              const Timestamp& through_date);
+
+    /**
+     * @brief The book's stored levels for its statistics: (date, current_portfolio_value) of
+     *        every live_results row of the key from the book's start through `through_date`,
+     *        ascending. A row with no value is left out.
+     */
+    Result<std::vector<DatedLevel>> load_statistics_levels(const std::string& strategy_id,
+                                                           const std::string& portfolio_id,
+                                                           const Timestamp& through_date);
+
+    /**
+     * @brief The dates of a futures book's statistics grid from its start through
+     *        `through_date`, ascending: the Sunday-to-Friday dates on which at least
+     *        kStatisticsGridMinSymbols DISTINCT symbols of `symbols` printed a bar in
+     *        futures_data.ohlcv_1d (T-8D R3).
+     *
+     * Computed from the bars alone. T-8D-2 R81: this count is the grid the STATISTICS read and
+     * the predicate the sessions a year were measured with; it is not the trading session test.
+     * Trading decides per symbol with the session classifier, with a quarter of the universe only
+     * as its book-level fallback, so the two can disagree on a date by design (a Saturday print
+     * may trade and is never a statistics row: its P&L lands in Sunday's grid return). Neither
+     * the classifier nor the runner's closed-market guard is read here.
+     *
+     * `symbols` is the live book's universe on the dates asked for: a live book's start is in
+     * 2025 or later, after every listing date, so the universe is its 36 listed contracts and no
+     * predecessor contract (ES, NQ, YM, RTY) stands in for a micro on any of these dates.
+     */
+    Result<std::vector<std::string>> load_futures_statistics_grid(
+        const std::vector<std::string>& symbols, const std::string& strategy_id,
+        const std::string& portfolio_id, const Timestamp& through_date);
 
     /**
      * @brief Load total trade count (number of executions) since inception up to a date.
@@ -287,46 +341,11 @@ public:
      * @param date Target date
      * @return Map of symbol to total commission or error
      *
-     * Dead on the futures line (deleted there), but the equity live runner calls it
-     * for commission reporting. FIXME(4.2): trading.executions has no "commission"
-     * column today -- the query errors at runtime and callers degrade gracefully;
-     * commission sourcing is reworked with the equity data layer.
+     * Sums the executions table's commissions_fees per symbol for the portfolio
+     * (BASE_PORTFOLIO when empty) on the date's UTC day; no rows is an empty map.
      */
     Result<std::unordered_map<std::string, double>> load_commissions_by_symbol(
         const std::string& portfolio_id, const Timestamp& date);
-
-    /**
-     * @brief Load total daily transaction costs for a strategy
-     * @param strategy_id Strategy identifier
-     * @param date Target date
-     * @return Total transaction costs or error
-     */
-    Result<double> load_daily_transaction_costs(const std::string& strategy_id,
-                                                const std::string& portfolio_id,
-                                                const Timestamp& date);
-
-    // ========== Margin and Risk Methods ==========
-
-    /**
-     * @brief Load margin-related metrics
-     * @param strategy_id Strategy identifier
-     * @param date Target date
-     * @return MarginMetrics or error
-     */
-    Result<MarginMetrics> load_margin_metrics(const std::string& strategy_id,
-                                              const std::string& portfolio_id,
-                                              const Timestamp& date);
-
-    // ========== Email/Reporting Methods ==========
-
-    /**
-     * @brief Load daily metrics formatted for email
-     * @param strategy_id Strategy identifier
-     * @param date Target date
-     * @return Map of metric name to value
-     */
-    Result<std::unordered_map<std::string, double>> load_daily_metrics_for_email(
-        const std::string& strategy_id, const std::string& portfolio_id, const Timestamp& date);
 
     // ========== Carried-day Methods ==========
 

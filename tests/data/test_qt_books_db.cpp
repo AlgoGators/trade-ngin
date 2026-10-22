@@ -343,10 +343,10 @@ TEST_F(QtBooksDb, LiveResultsAndEquityBooksNeverTouchEachOther) {
 
     for (const char* book : {"qt_proposal", "qt"}) {
         auto r = db_->store_live_results_complete(kSid, d, qt_m, {}, nlohmann::json(), kPid, kLive,
-                                                  nlohmann::json{{"binding_term", "R"}}, book);
+                                                  nlohmann::json{{"binding_term", "R"}}, {}, book);
         ASSERT_TRUE(r.is_ok()) << book << ": " << r.error()->what();
         ASSERT_TRUE(db_->store_trading_equity_curve(kSid, d, 499900.0, kPid, kCurve, book).is_ok());
-        ASSERT_TRUE(db_->update_live_results(kSid, d, {{"total_pnl", -50.0}}, kPid, kLive, book).is_ok());
+        ASSERT_TRUE(db_->update_live_results(kSid, d, {{"total_pnl", -50.0}}, kPid, kLive, nullptr, {}, book).is_ok());
         ASSERT_TRUE(db_->update_live_equity_curve(kSid, d, 499950.0, kPid, kCurve, book).is_ok());
         EXPECT_EQ(fp(kLive, "system"), sys_live) << book;
         EXPECT_EQ(fp(kCurve, "system"), sys_curve) << book;
@@ -400,9 +400,9 @@ TEST_F(QtBooksDb, InvalidBookIsRefusedEverywhere) {
         EXPECT_TRUE(db_->get_stored_roll_contracts(kSid, kPid, d, kExecs, bad).is_error());
         EXPECT_TRUE(db_->get_stored_realised_rows(kSid, kPid, "2026-04-23", "2026-04-25", kPos, bad).is_error());
         EXPECT_TRUE(db_->get_previous_total_roll_costs(kSid, kPid, d, kLive, kExecs, bad).is_error());
-        EXPECT_TRUE(db_->store_live_results_complete(kSid, d, {{"total_pnl", 2.0}}, {}, nlohmann::json(), kPid, kLive, nlohmann::json(), bad).is_error());
+        EXPECT_TRUE(db_->store_live_results_complete(kSid, d, {{"total_pnl", 2.0}}, {}, nlohmann::json(), kPid, kLive, nlohmann::json(), {}, bad).is_error());
         EXPECT_TRUE(db_->delete_live_results(kSid, d, kPid, kLive, bad).is_error());
-        EXPECT_TRUE(db_->update_live_results(kSid, d, {{"total_pnl", 3.0}}, kPid, kLive, bad).is_error());
+        EXPECT_TRUE(db_->update_live_results(kSid, d, {{"total_pnl", 3.0}}, kPid, kLive, nullptr, {}, bad).is_error());
         EXPECT_TRUE(db_->get_previous_live_aggregates(kSid, kPid, d, kLive, bad).is_error());
         EXPECT_TRUE(db_->store_trading_equity_curve(kSid, d, 1.0e6, kPid, kCurve, bad).is_error());
         EXPECT_TRUE(db_->delete_live_equity_curve(kSid, d, kPid, kCurve, bad).is_error());

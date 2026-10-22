@@ -14,6 +14,7 @@
 // Pre-load std headers before flipping private→public.
 #include <algorithm>
 #include <chrono>
+#include <functional>
 #include <map>
 #include <memory>
 #include <mutex>
@@ -23,6 +24,7 @@
 #include <unordered_map>
 #include <vector>
 
+#include "trade_ngin/core/logger.hpp"
 #include "trade_ngin/instruments/futures.hpp"
 #define private public
 #include "trade_ngin/instruments/instrument_registry.hpp"
@@ -68,6 +70,19 @@ protected:
         reg.instruments_.erase("MES");
     }
 };
+
+// ===== the closing log line (T-8D R24) =====
+
+// Executes, no database: the line's last figure is the value the call was handed plus the net
+// P&L, and it says so (it read "Portfolio Value=", which names the account).
+TEST_F(LivePnLManagerTest, TheFinalizationLineSaysWhatItsLastValueIs) {
+    const std::string line = LivePnLManager::finalization_complete_line(1245.0, 1232.5, 501232.5);
+    EXPECT_EQ(line,
+              "Day T-1 finalization complete: Total PnL (Gross)=1245.000000, Net PnL=1232.500000, "
+              "Portfolio Value (the value this call was handed plus Net PnL: the configured "
+              "capital on the live runners, not the account value)=501232.500000");
+    EXPECT_EQ(line.find("Portfolio Value="), std::string::npos);
+}
 
 // ===== finalize_previous_day =====
 
@@ -120,6 +135,103 @@ TEST_F(LivePnLManagerTest, FinalizeHappyPathComputesPnLAndPortfolio) {
     // Net = 1000 - 5 = 995, portfolio = 500000 + 995 = 500995
     EXPECT_DOUBLE_EQ(r.value().finalized_portfolio_value, 500995.0);
     EXPECT_DOUBLE_EQ(r.value().position_realized_pnl.at("ES"), 1000.0);
+}
+
+// ===== STAT_QUALITY (T-8D F10, T-8D-2 R82): the finalize's own log line =====
+
+namespace {
+
+// The STAT_QUALITY lines a finalize writes to the log, without the logger's prefix.
+std::vector<std::string> stat_quality_lines_of(const std::function<void()>& finalize) {
+    LoggerConfig lc;
+    lc.destination = LogDestination::CONSOLE;
+    lc.min_level = LogLevel::INFO;
+    lc.include_timestamp = false;
+    Logger::instance().initialize(lc);
+    ::testing::internal::CaptureStdout();
+    finalize();
+    const std::string log = ::testing::internal::GetCapturedStdout();
+    Logger::instance().set_level(LogLevel::ERR);
+    std::vector<std::string> out;
+    size_t at = 0;
+    while ((at = log.find("STAT_QUALITY", at)) != std::string::npos) {
+        const size_t end = log.find('\n', at);
+        out.push_back(log.substr(at, end == std::string::npos ? end : end - at));
+        at = end == std::string::npos ? log.size() : end;
+    }
+    return out;
+}
+
+}  // namespace
+
+// Five rows: MES, ZL and ZS are held, ZW is held short, GC is a flat carried row. MES and ZW have
+// a T-1 close; ZL, ZS and GC have none. Held 4, of them no bar 2 (ZL, ZS); the flat GC is no held
+// symbol and is not named.
+TEST_F(LivePnLManagerTest, FinalizeLogsOneStatQualityLineNamingTheHeldSymbolsWithNoT1Close) {
+    LivePnLManager mgr(500000.0, InstrumentRegistry::instance());
+    const std::vector<Position> positions{make_position("ZS", 1.0), make_position("MES", 2.0),
+                                          make_position("GC", 0.0), make_position("ZW", -3.0),
+                                          make_position("ZL", 1.0)};
+    const std::unordered_map<std::string, double> t1{{"MES", 4510.0}, {"ZW", 600.0}};
+    const std::unordered_map<std::string, double> t2{
+        {"MES", 4500.0}, {"ZW", 601.0}, {"ZL", 40.0}, {"ZS", 990.0}, {"GC", 2000.0}};
+    const auto lines = stat_quality_lines_of([&] {
+        auto r = mgr.finalize_previous_day(positions, t1, t2, 500000.0, 0.0);
+        ASSERT_TRUE(r.is_ok());
+        EXPECT_EQ(r.value().finalized_positions.size(), 5u);
+        EXPECT_DOUBLE_EQ(r.value().position_realized_pnl.at("ZL"), 0.0);
+    });
+    ASSERT_EQ(lines.size(), 1u) << "one line a finalize";
+    EXPECT_EQ(lines[0], "STAT_QUALITY finalize held=4 no_bar=2: ZL, ZS");
+}
+
+// Every held symbol has its T-1 close: the line is still written, with no_bar=0 and no list. A
+// symbol whose bar books nothing but did print (zero_pnl_symbols: a change bar, a withheld bar)
+// is not a no-bar symbol.
+TEST_F(LivePnLManagerTest, FinalizeLogsTheLineWithZeroWhenEveryHeldSymbolHasItsClose) {
+    LivePnLManager mgr(500000.0, InstrumentRegistry::instance());
+    const std::vector<Position> positions{make_position("MES", 2.0), make_position("ZW", -3.0)};
+    const auto lines = stat_quality_lines_of([&] {
+        auto r = mgr.finalize_previous_day(positions, {{"MES", 4510.0}, {"ZW", 600.0}},
+                                           {{"MES", 4500.0}, {"ZW", 601.0}}, 500000.0, 0.0,
+                                           LivePnLManager::UnrealizedPolicy::SETTLED, {"ZW"});
+        ASSERT_TRUE(r.is_ok());
+    });
+    ASSERT_EQ(lines.size(), 1u);
+    EXPECT_EQ(lines[0], "STAT_QUALITY finalize held=2 no_bar=0");
+}
+
+// The cash book's finalize (the equity runner's policy) writes the same line.
+TEST_F(LivePnLManagerTest, FinalizeOfACashBookLogsTheSameLine) {
+    LivePnLManager mgr(100000.0, InstrumentRegistry::instance());
+    const std::vector<Position> positions{make_position("AAPL", 10.0), make_position("TMUS", 5.0),
+                                          make_position("DD", 0.0)};
+    const auto lines = stat_quality_lines_of([&] {
+        auto r = mgr.finalize_previous_day(positions, {{"AAPL", 201.0}},
+                                           {{"AAPL", 200.0}, {"TMUS", 240.0}}, 100000.0, 0.0,
+                                           LivePnLManager::UnrealizedPolicy::MARK_TO_MARKET);
+        ASSERT_TRUE(r.is_ok());
+    });
+    ASSERT_EQ(lines.size(), 1u);
+    EXPECT_EQ(lines[0], "STAT_QUALITY finalize held=2 no_bar=1: TMUS");
+}
+
+// An empty book is finalized too (nothing held): one line, both counts 0. A finalize refused for
+// want of any T-2 close settles nothing and writes no line.
+TEST_F(LivePnLManagerTest, FinalizeOfAnEmptyBookLogsZeroAndARefusedFinalizeLogsNoLine) {
+    LivePnLManager mgr(500000.0, InstrumentRegistry::instance());
+    const auto empty = stat_quality_lines_of([&] {
+        ASSERT_TRUE(mgr.finalize_previous_day({}, {}, {}, 500000.0, 0.0).is_ok());
+    });
+    ASSERT_EQ(empty.size(), 1u);
+    EXPECT_EQ(empty[0], "STAT_QUALITY finalize held=0 no_bar=0");
+
+    const auto refused = stat_quality_lines_of([&] {
+        EXPECT_TRUE(mgr.finalize_previous_day({make_position("MES", 1.0)}, {{"MES", 4500.0}}, {},
+                                              500000.0, 0.0)
+                        .is_error());
+    });
+    EXPECT_TRUE(refused.empty());
 }
 
 // ===== calculate_position_pnls =====

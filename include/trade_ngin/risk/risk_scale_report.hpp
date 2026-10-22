@@ -1,11 +1,13 @@
 // include/trade_ngin/risk/risk_scale_report.hpp
 //
-// RA-01 (T-RISK-ARCH §2.1): live_results.risk_scale is written by a throwaway snapshot
-// RiskManager that every live runner builds AFTER the trade; it never moves a contract. The
-// scale that did move the book is the PortfolioManager's, recorded row by row in
-// last_risk_decisions(). HD 2026-09-18: "the applied risk scale is logged per lap beside the
-// reporter's value now; the stored column is T-8's to rule". The per-lap half is the PM's
-// RISK_APPLIED line; this is the per-rebalance half, one line beside the stored value:
+// RA-01 (T-RISK-ARCH §2.1): every live runner builds a throwaway snapshot RiskManager AFTER the
+// trade; its recommended scale (the "reporter") never moves a contract. The scale that did move
+// the book is the PortfolioManager's, recorded row by row in last_risk_decisions(). On a futures
+// row the stored live_results.risk_scale is the DELIVERED scale (migration 020), not the
+// reporter's; on an equity row, whose book runs no portfolio-risk overlay, it is
+// kRiskScaleNoOverlay (T-8D R14; migration 034's comment still describes the reporter's scale
+// there). The per-lap half is the PM's RISK_APPLIED line; this is the per-rebalance half, one
+// log line:
 //
 //   RISK_SCALE_REPORT reporter=<r> applied_cumulative=<c> laps=<n> cutting_laps=<k>
 //                     binding_module=<id> [date=<YYYY-MM-DD>]
@@ -87,8 +89,8 @@ inline std::string format_risk_scale_report(const std::string& reporter,
     return line;
 }
 
-/// The live runners' form: `reporter` is the double the runner stores as live_results.risk_scale
-/// (the snapshot RiskManager's recommended_scale, 1.0 when its evaluation failed), printed %.17g.
+/// The live runners' form: `reporter` is the snapshot RiskManager's recommended_scale (1.0 when
+/// its evaluation failed), printed %.17g. No runner stores it.
 inline std::string format_risk_scale_report(double reporter, const RiskScaleSummary& s) {
     char buf[64];
     std::snprintf(buf, sizeof(buf), "%.17g", reporter);
@@ -156,6 +158,53 @@ std::map<std::string, double> account_book_of(const Books& books) {
         for (const auto& [symbol, pos] : book) out[symbol] += static_cast<double>(pos.quantity);
     }
     return out;
+}
+
+/// T-8D-2 R69: the ACCOUNT book of a runner that stores ONE sleeve as a flat list of rows (the
+/// equity runner's stored positions): the same book account_book_of gives for those rows filed
+/// under one sleeve, so PortfolioManager::delivered_cut_for_book measures final_gross on the book
+/// that runner stores. A row of quantity 0 (a closed row) stays in the map and adds no notional.
+template <typename Rows>
+std::map<std::string, double> account_book_of_rows(const Rows& rows) {
+    std::map<std::string, double> out;
+    for (const auto& pos : rows) out[pos.symbol] += static_cast<double>(pos.quantity);
+    return out;
+}
+
+/// T-8D R14: what live_results.risk_scale holds on a row whose run applied no portfolio-risk
+/// overlay (every equity row). 1.0 = no portfolio-risk overlay ran this run, not an uncut book.
+/// The snapshot reporter's recommended scale is never stored under that name.
+inline constexpr double kRiskScaleNoOverlay = 1.0;
+
+/// T-8D-2 R68: the console's "Risk Scale" lines of a book the overlay sizes (the live futures
+/// runners), each labelled and ending with a newline, four decimals as the column holds them:
+///   risk_scale      the DELIVERED scale the row stores (LOOP_SPEC sections 7.2 and 10).
+///   risk_requested  m_t, the row's risk_detail.risk_requested; N/A when the row stores no
+///                   risk_detail (`overlay_answered` false: no session, a sizing hold, a refused
+///                   overlay), where risk_scale is the held book against itself, 1.
+inline std::string risk_scale_console(double risk_scale, bool overlay_answered,
+                                      double risk_requested) {
+    char buf[64];
+    std::snprintf(buf, sizeof(buf), "%.4f", risk_scale);
+    std::string out = std::string("Risk Scale (risk_scale: delivered, stored gross / capped "
+                                  "target gross): ") + buf + "\n";
+    if (overlay_answered) {
+        std::snprintf(buf, sizeof(buf), "%.4f", risk_requested);
+        out += std::string("Risk Requested (risk_requested: the overlay's m_t): ") + buf + "\n";
+    } else {
+        out += "Risk Requested (risk_requested: the overlay's m_t): N/A (no sized rebalance this "
+               "run)\n";
+    }
+    return out;
+}
+
+/// The same line on a book that runs no overlay (the equity runner): the stored value with R14's
+/// meaning in the label, and no request, since none exists.
+inline std::string risk_scale_console_no_overlay() {
+    char buf[64];
+    std::snprintf(buf, sizeof(buf), "%.4f", kRiskScaleNoOverlay);
+    return std::string("Risk Scale (risk_scale: 1.0 = no portfolio-risk overlay ran this run): ") +
+           buf + "\n";
 }
 
 /// Both grosses at the same notionals. `lap1_book` is null when no lap-1 book was captured.

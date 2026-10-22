@@ -8,6 +8,7 @@
 #define pclose _pclose
 #endif
 
+#include "trade_ngin/core/timed_process.hpp"
 #include "trade_ngin/core/chart_generator.hpp"
 #include <algorithm>
 #include <chrono>
@@ -16,13 +17,31 @@
 #include <ctime>
 #include <fstream>
 #include <iomanip>
+#include <optional>
 #include <sstream>
+#include <unordered_map>
 #include "trade_ngin/core/logger.hpp"
 #include "trade_ngin/instruments/instrument_registry.hpp"
 
 namespace trade_ngin {
 
 namespace {
+// How the chart asked for last on this thread ended (read through last_chart_status).
+thread_local core::ChartStatus g_last_status = core::ChartStatus::NothingToPlot;
+thread_local std::string g_last_reason;
+
+void begin_chart() {
+    g_last_status = core::ChartStatus::NothingToPlot;
+    g_last_reason.clear();
+}
+
+
+// A failure keeps its first reason: the later lines of the same chart are its consequence.
+void mark_chart_failed(const char* reason) {
+    if (g_last_status == core::ChartStatus::Failed) return;
+    g_last_status = core::ChartStatus::Failed;
+    g_last_reason = reason;
+}
 // QT plan E3: the book every chart query reads (ChartGenerator::set_book); "system" by default.
 std::string g_chart_book = "system";
 const std::string& chart_book() { return g_chart_book; }
@@ -94,15 +113,734 @@ std::string ChartHelpers::format_currency(double value, int precision) {
 }
 
 // ============================================================================
+// ChartQueries: the text of each chart's query
+// ============================================================================
+//
+// Every query reads one book: its strategy_id, its portfolio_id (T-8D-2 R55) and the book the
+// chart was set to (ChartGenerator::set_book, "system" by default; migration 021 put a
+// portfolio_type on trading.live_results and trading.executions beside trading.positions and
+// trading.equity_curve). trading.live_run_metadata carries no book.
+
+std::string ChartQueries::equity_curve(const std::string& strategy_id,
+                                       const std::string& portfolio_id, const std::string& date,
+                                       int lookback_days) {
+    // T-8D-2 R63: the rows BEFORE the run date. The run date's own row is not settled (its P&L
+    // settles tomorrow), and a re-run of a past date must not chart the days after it.
+    return "SELECT timestamp, equity "
+           "FROM trading.equity_curve "
+           "WHERE strategy_id = '" +
+           strategy_id +
+           "' "
+           "AND portfolio_id = '" +
+           portfolio_id +
+           "' "
+           "AND portfolio_type = '" + chart_book() + "' "
+           "AND DATE(timestamp) < DATE('" +
+           date +
+           "') "
+           "ORDER BY timestamp DESC "
+           "LIMIT " +
+           std::to_string(lookback_days);
+}
+
+std::string ChartQueries::book_capital(const std::string& strategy_id,
+                                       const std::string& portfolio_id, const std::string& date) {
+    // The book's starting capital as its latest run on or before the run date recorded it.
+    return "SELECT portfolio_config->>'total_capital' AS total_capital "
+           "FROM trading.live_run_metadata "
+           "WHERE strategy_id = '" +
+           strategy_id +
+           "' "
+           "AND portfolio_id = '" +
+           portfolio_id +
+           "' "
+           "AND DATE(date) <= DATE('" +
+           date +
+           "') "
+           "ORDER BY date DESC "
+           "LIMIT 1";
+}
+
+std::string ChartQueries::pnl_by_symbol(const std::string& strategy_id,
+                                        const std::string& portfolio_id, const std::string& date) {
+    // T-8D-2 R64: one row per symbol. A book of several sleeves stores a row per sleeve for a
+    // symbol more than one of them holds; the chart shows the book's figure for the symbol.
+    return "SELECT symbol, SUM(daily_realized_pnl) AS daily_realized_pnl "
+           "FROM trading.positions "
+           "WHERE strategy_id = '" +
+           strategy_id +
+           "' "
+           "AND portfolio_id = '" +
+           portfolio_id +
+           "' "
+           "AND portfolio_type = '" + chart_book() + "' "
+           // E2-F19 R-6: the previous SESSION, not the previous calendar day -- a Monday
+           // report used to read Sunday's carried rows.
+           "AND DATE(last_update) = (SELECT MAX(DATE(last_update)) FROM trading.positions "
+           "                         WHERE strategy_id = '" +
+           strategy_id +
+           "' "
+           "                           AND portfolio_id = '" +
+           portfolio_id +
+           "' "
+           "                           AND portfolio_type = '" + chart_book() + "' "
+           "                           AND DATE(last_update) < DATE('" +
+           date +
+           "')) "
+           "GROUP BY symbol "
+           "ORDER BY symbol";
+}
+
+std::string ChartQueries::daily_pnl(const std::string& strategy_id, const std::string& portfolio_id,
+                                    const std::string& date, int lookback_days) {
+    return "SELECT date, daily_pnl "
+           "FROM trading.live_results "
+           "WHERE strategy_id = '" +
+           strategy_id +
+           "' "
+           "AND portfolio_id = '" +
+           portfolio_id +
+           "' "
+           "AND portfolio_type = '" + chart_book() + "' "
+           "AND DATE(date) < DATE('" +
+           date +
+           "') "
+           "ORDER BY date DESC "
+           "LIMIT " +
+           std::to_string(lookback_days);
+}
+
+std::string ChartQueries::cost_per_million(const std::string& strategy_id,
+                                           const std::string& portfolio_id,
+                                           const std::string& date) {
+    // T-8D-2 R64: each stored day of the book with the fills the BOOK made that day (its own
+    // trading.executions rows, by strategy_id and portfolio_id); a day without a fill is one row
+    // whose fill columns are NULL. The day's cost is the stored day total, which the runner
+    // charged after netting.
+    return "SELECT lr.date, COALESCE(lr.daily_transaction_costs, 0) AS daily_cost, "
+           "e.symbol, e.quantity, e.price "
+           "FROM trading.live_results lr "
+           "LEFT JOIN trading.executions e "
+           "ON DATE(e.execution_time) = DATE(lr.date) "
+           "AND e.strategy_id = lr.strategy_id "
+           "AND e.portfolio_id = lr.portfolio_id "
+           "AND e.portfolio_type = lr.portfolio_type "
+           "WHERE lr.strategy_id = '" +
+           strategy_id +
+           "' "
+           "AND lr.portfolio_id = '" +
+           portfolio_id +
+           "' "
+           "AND lr.portfolio_type = '" + chart_book() + "' "
+           "AND DATE(lr.date) <= DATE('" +
+           date +
+           "') "
+           "ORDER BY lr.date ASC, e.symbol ASC, e.strategy_name ASC, e.exec_id ASC";
+}
+
+std::string ChartQueries::margin_posted(const std::string& strategy_id,
+                                        const std::string& portfolio_id, const std::string& date) {
+    return "SELECT date, margin_posted "
+           "FROM trading.live_results "
+           "WHERE strategy_id = '" +
+           strategy_id +
+           "' "
+           "AND portfolio_id = '" +
+           portfolio_id +
+           "' "
+           "AND portfolio_type = '" + chart_book() + "' "
+           "AND DATE(date) <= DATE('" +
+           date +
+           "') "
+           "ORDER BY date ASC";
+}
+
+std::string ChartQueries::cumulative_pnl_by_symbol(const std::string& strategy_id,
+                                                   const std::string& portfolio_id,
+                                                   const std::string& date, bool equities) {
+    if (equities) {
+        // An equity book: realized to the settled day plus what the shares still held have gained, the
+        // stored unrealized P&L of each symbol's newest row through the settled day (HD 2026-10-14).
+        const std::string rows = "FROM trading.positions WHERE strategy_id = '" + strategy_id +
+                                 "' AND portfolio_id = '" + portfolio_id +
+                                 "' AND portfolio_type = '" + chart_book() + "' AND DATE(last_update) < DATE('" +
+                                 date + "') ";
+        return "SELECT r.symbol, COALESCE(r.realized, 0) + COALESCE(u.unrealized, 0) AS cumulative_pnl "
+               "FROM (SELECT symbol, SUM(daily_realized_pnl) AS realized " + rows +
+               "GROUP BY symbol) r LEFT JOIN (SELECT DISTINCT ON (symbol) symbol, daily_unrealized_pnl "
+               "AS unrealized " + rows +
+               "ORDER BY symbol, last_update DESC) u ON u.symbol = r.symbol "
+               "WHERE COALESCE(r.realized, 0) + COALESCE(u.unrealized, 0) != 0 "
+               "ORDER BY cumulative_pnl DESC";
+    }
+    // The sum of the stored daily realized P&L of each symbol, gross of costs. On BASE it is not
+    // the book's stored total_realized_pnl: BASE's early history rows do not reconcile (T-8D-2
+    // D2-OUT-25: left as it is, documented).
+    return "SELECT symbol, SUM(daily_realized_pnl) as cumulative_pnl "
+           "FROM trading.positions "
+           "WHERE strategy_id = '" +
+           strategy_id +
+           "' "
+           "AND portfolio_id = '" +
+           portfolio_id +
+           "' "
+           "AND portfolio_type = '" + chart_book() + "' "
+           "AND DATE(last_update) <= DATE('" +
+           date +
+           "') "
+           "GROUP BY symbol "
+           "HAVING SUM(daily_realized_pnl) IS NOT NULL "
+           "AND SUM(daily_realized_pnl) != 0 "
+           "ORDER BY cumulative_pnl DESC";
+}
+
+std::string ChartQueries::contracts_per_day(const std::string& portfolio_id, const std::string& date,
+                                            int days) {
+    // Every calendar day of the window, a day without a fill included (0 contracts). The fills of
+    // every sleeve of the book; a ROLL leg is counted apart from the STRATEGY fills.
+    const std::string first = "DATE('" + date + "') - " + std::to_string(std::max(days, 1) - 1);
+    return "SELECT d.day::date AS day, "
+           "COALESCE(SUM(ABS(e.quantity)) FILTER (WHERE e.execution_type IS DISTINCT FROM 'ROLL'), 0) "
+           "AS strategy_contracts, "
+           "COALESCE(SUM(ABS(e.quantity)) FILTER (WHERE e.execution_type = 'ROLL'), 0) AS roll_contracts "
+           "FROM generate_series(" + first + ", DATE('" + date + "'), INTERVAL '1 day') AS d(day) "
+           "LEFT JOIN trading.executions e ON DATE(e.execution_time) = d.day::date "
+           "AND e.portfolio_id = '" + portfolio_id + "' AND e.portfolio_type = '" + chart_book() + "' "
+           "GROUP BY d.day ORDER BY d.day ASC";
+}
+
+// ============================================================================
+// ChartSeries: from a query's rows to the points a chart plots
+// ============================================================================
+
+ChartData ChartSeries::equity_curve(std::vector<ChartPoint> rows,
+                                    std::optional<double> book_capital) {
+    ChartData chart_data;
+
+    std::vector<std::string> dates;
+    std::vector<double> equity_values;
+    for (const auto& [date, equity] : rows) {
+        dates.push_back(date);
+        equity_values.push_back(equity);
+    }
+
+    if (dates.empty() || equity_values.empty()) {
+        ERROR("No valid data extracted");
+        return chart_data;
+    }
+
+    INFO("Initial data extracted: " + std::to_string(dates.size()) + " points");
+
+    // Sort data by date to find gaps
+    std::vector<std::pair<std::string, double>> date_equity_pairs;
+    for (size_t i = 0; i < dates.size(); i++) {
+        date_equity_pairs.push_back({dates[i], equity_values[i]});
+    }
+    std::sort(date_equity_pairs.begin(), date_equity_pairs.end());
+
+    // Find the most recent consecutive block of data (no gaps > 5 days)
+    std::vector<std::pair<std::string, double>> recent_data;
+    if (!date_equity_pairs.empty()) {
+        recent_data.push_back(date_equity_pairs.back());
+
+        // Work backwards to find consecutive data
+        for (int i = static_cast<int>(date_equity_pairs.size()) - 2; i >= 0; i--) {
+            std::tm tm1 = {}, tm2 = {};
+            std::istringstream ss1(date_equity_pairs[i].first);
+            std::istringstream ss2(recent_data.front().first);
+            ss1 >> std::get_time(&tm1, "%Y-%m-%d");
+            ss2 >> std::get_time(&tm2, "%Y-%m-%d");
+
+            if (!ss1.fail() && !ss2.fail()) {
+                auto t1 = std::chrono::system_clock::from_time_t(std::mktime(&tm1));
+                auto t2 = std::chrono::system_clock::from_time_t(std::mktime(&tm2));
+                auto days_diff =
+                    std::chrono::duration_cast<std::chrono::hours>(t2 - t1).count() / 24;
+
+                // If gap is more than 5 days, stop here
+                if (days_diff > 5) {
+                    INFO("Found data gap of " + std::to_string(days_diff) +
+                         " days, using recent data only");
+                    break;
+                }
+                recent_data.insert(recent_data.begin(), date_equity_pairs[i]);
+            }
+        }
+    }
+
+    // Clear and repopulate with recent data only
+    dates.clear();
+    equity_values.clear();
+    for (const auto& [date, equity] : recent_data) {
+        dates.push_back(date);
+        equity_values.push_back(equity);
+    }
+
+    INFO("Using " + std::to_string(dates.size()) + " recent consecutive data points");
+
+    if (dates.empty()) {
+        ERROR("No valid consecutive data after filtering");
+        return chart_data;
+    }
+
+    // T-8D-2 R63: the points are the stored rows and nothing else. The query stops before the run
+    // date, so the last point is the last settled day; no starting point is made up in front of
+    // the first.
+    // Populate ChartData
+    chart_data.labels = dates;
+    chart_data.values = equity_values;
+    chart_data.title = "Equity Curve through " + dates.back();
+    chart_data.x_label = "Date";
+    chart_data.y_label = "Portfolio Value ($)";
+    // The reference line is the book's own starting capital, or none when it is not on record.
+    if (book_capital && std::isfinite(*book_capital) && *book_capital > 0.0) {
+        chart_data.reference_line = *book_capital;
+        chart_data.has_reference_line = true;
+        // The curve of a book that sits wholly above or below its capital would leave the line
+        // off the chart: the value axis is widened to hold it.
+        chart_data.reference_line_on_axis = true;
+    }
+
+    return chart_data;
+}
+
+namespace {
+// "YYYY-MM-DD" moved by a count of calendar days; empty when the text is not a date.
+std::string shifted_day(const std::string& ymd, int days) {
+    int year = 0, month = 0, day = 0;
+    char tail = 0;
+    if (ymd.size() != 10 ||
+        std::sscanf(ymd.c_str(), "%4d-%2d-%2d%c", &year, &month, &day, &tail) != 3) {
+        return {};
+    }
+    const std::chrono::year_month_day given{std::chrono::year{year},
+                                            std::chrono::month{static_cast<unsigned>(month)},
+                                            std::chrono::day{static_cast<unsigned>(day)}};
+    if (!given.ok()) {
+        return {};
+    }
+    const std::chrono::year_month_day moved{std::chrono::sys_days{given} + std::chrono::days{days}};
+    char text[16];
+    std::snprintf(text, sizeof(text), "%04d-%02u-%02u", static_cast<int>(moved.year()),
+                  static_cast<unsigned>(moved.month()), static_cast<unsigned>(moved.day()));
+    return text;
+}
+}  // namespace
+
+std::optional<std::pair<double, double>> ChartSeries::line_chart_y_range(const ChartData& data) {
+    if (!data.has_reference_line || !data.reference_line_on_axis || data.values.empty()) {
+        return std::nullopt;  // the renderer's own scaling
+    }
+    double low = data.reference_line;
+    double high = data.reference_line;
+    for (double value : data.values) {
+        low = std::min(low, value);
+        high = std::max(high, value);
+    }
+    // a margin of a twentieth of the span either side, so neither the line nor a point sits on
+    // the frame; a curve that is flat at its reference gets one percent of the level
+    double margin = (high - low) * 0.05;
+    if (margin <= 0.0) {
+        margin = std::max(1.0, std::abs(high) * 0.01);
+    }
+    return std::make_pair(low - margin, high + margin);
+}
+
+std::pair<std::string, std::string> ChartSeries::line_chart_x_range(
+    const std::vector<std::string>& labels) {
+    if (labels.empty()) {
+        return {};
+    }
+    if (labels.front() != labels.back()) {
+        return {labels.front(), labels.back()};
+    }
+    // One day (a book with one stored row): an axis from that day to itself is empty and cannot
+    // be drawn, so the axis runs from the day before to the day after and the point sits on it.
+    const std::string before = shifted_day(labels.front(), -1);
+    const std::string after = shifted_day(labels.front(), 1);
+    if (before.empty() || after.empty()) {
+        return {};
+    }
+    return {before, after};
+}
+
+ChartData ChartSeries::pnl_by_symbol(std::vector<ChartPoint> rows, const std::string& date,
+                                     bool equities) {
+    ChartData chart_data;
+
+    // One bar per symbol (T-8D-2 R64): rows of the same symbol (one per sleeve that holds it) are
+    // summed, in the order the symbols first appear.
+    std::vector<ChartPoint> symbol_pnl_data;
+    std::unordered_map<std::string, size_t> bar_of;
+    for (const auto& [symbol, pnl] : rows) {
+        const auto [at, is_new] = bar_of.try_emplace(symbol, symbol_pnl_data.size());
+        if (is_new) {
+            symbol_pnl_data.emplace_back(symbol, pnl);
+        } else {
+            symbol_pnl_data[at->second].second += pnl;
+        }
+    }
+
+    // Calculate yesterday's date for the title
+    std::string yesterday_date;
+    std::tm tm = {};
+    std::istringstream ss(date);
+    ss >> std::get_time(&tm, "%Y-%m-%d");
+    if (!ss.fail()) {
+        auto timepoint = std::chrono::system_clock::from_time_t(std::mktime(&tm));
+        auto yesterday = timepoint - std::chrono::hours(24);
+        auto yesterday_time_t = std::chrono::system_clock::to_time_t(yesterday);
+        std::tm* yesterday_tm = std::gmtime(&yesterday_time_t);
+        std::ostringstream date_oss;
+        date_oss << std::put_time(yesterday_tm, "%Y-%m-%d");
+        yesterday_date = date_oss.str();
+    }
+
+    if (symbol_pnl_data.empty()) {
+        WARN("No valid realized PnL data extracted");
+        return chart_data;
+    }
+
+    // Sort by realized PnL (descending); symbols of equal PnL keep the order they came in
+    std::stable_sort(symbol_pnl_data.begin(), symbol_pnl_data.end(),
+                     [](const auto& a, const auto& b) { return a.second > b.second; });
+
+    // Populate ChartData
+    INFO("Populating chart data with " + std::to_string(symbol_pnl_data.size()) + " symbols");
+    for (const auto& [sym, pnl] : symbol_pnl_data) {
+        chart_data.labels.push_back(sym);
+        chart_data.values.push_back(pnl);
+    }
+
+    // Debug sample
+    if (!symbol_pnl_data.empty()) {
+        INFO("Sample Realized PnL - First: " + symbol_pnl_data[0].first +
+             " PnL: " + std::to_string(symbol_pnl_data[0].second));
+    }
+
+    // Add yesterday's date to title if calculated successfully
+    if (!yesterday_date.empty()) {
+        chart_data.title =
+            ChartTitles::pnl_by_symbol_heading(equities) + ", " + yesterday_date;
+    }
+    chart_data.x_label = "Symbol";
+    chart_data.y_label = equities ? "Day's PnL ($)" : "Realized PnL ($)";
+    chart_data.reference_line = 0.0;
+    chart_data.has_reference_line = true;
+
+    INFO("Chart data prepared with " + std::to_string(chart_data.labels.size()) + " labels and " +
+         std::to_string(chart_data.values.size()) + " values");
+
+    return chart_data;
+}
+
+ChartData ChartSeries::daily_pnl(std::vector<ChartPoint> rows) {
+    ChartData chart_data;
+    if (rows.empty()) {
+        return chart_data;
+    }
+
+    // Reverse to get chronological order (DESC query returns newest first)
+    std::reverse(rows.begin(), rows.end());
+    for (const auto& [day, pnl] : rows) {
+        chart_data.labels.push_back(day);
+        chart_data.values.push_back(pnl);
+    }
+
+    chart_data.x_label = "Date";
+    chart_data.y_label = "Daily PnL ($)";
+    chart_data.reference_line = 0.0;
+    chart_data.has_reference_line = true;
+
+    return chart_data;
+}
+
+ChartData ChartSeries::cost_per_million(const std::vector<CostFillRow>& rows,
+                                        const MultiplierLookup& multiplier_of) {
+    ChartData chart_data;
+
+    // Rows come grouped by day. T-8D-2 R64: a day's value is its cost over the notional the book
+    // TRADED that day (each fill's quantity x price x contract multiplier), not over the notional
+    // it held.
+    size_t at = 0;
+    while (at < rows.size()) {
+        const std::string& day = rows[at].date;
+        const double daily_cost = rows[at].daily_cost;
+        double traded_notional = 0.0;
+        bool every_fill_sized = true;
+        for (; at < rows.size() && rows[at].date == day; ++at) {
+            const CostFillRow& fill = rows[at];
+            if (fill.symbol.empty()) {
+                continue;  // the day's row with no fill
+            }
+            const std::optional<double> multiplier =
+                multiplier_of ? multiplier_of(fill.symbol) : std::nullopt;
+            if (!multiplier) {
+                // Never counted at a multiplier of 1: the day's ratio would be wrong.
+                WARN("Cost per $1M traded: " + fill.symbol + " on " + day +
+                     " has no contract multiplier on record, the day has no point");
+                every_fill_sized = false;
+                continue;
+            }
+            traded_notional += std::abs(fill.quantity * fill.price * *multiplier);
+        }
+
+        // Formula: (daily_cost / traded_notional) * 1,000,000
+        // A day the book did not trade has no point
+        if (every_fill_sized && traded_notional > 0.0) {
+            double cost_per_million = (daily_cost / traded_notional) * 1000000.0;
+            chart_data.labels.push_back(day);
+            chart_data.values.push_back(cost_per_million);
+
+            INFO("Date: " + day + ", Cost: $" + std::to_string(daily_cost) +
+                 ", Traded notional: $" + std::to_string(traded_notional) + ", Cost per $1M: $" +
+                 std::to_string(cost_per_million));
+        }
+    }
+
+    if (chart_data.labels.empty()) {
+        WARN("No valid cost per $1M traded data points");
+        return chart_data;
+    }
+
+    if (chart_data.labels.size() == 1) {
+        // guard against single-point x-range (gnuplot needs width)
+        std::tm tm{};
+        std::istringstream ss(chart_data.labels[0]);
+        ss >> std::get_time(&tm, "%Y-%m-%d");
+        if (!ss.fail()) {
+            auto t = std::chrono::system_clock::from_time_t(std::mktime(&tm));
+            auto t_prev = t - std::chrono::hours(24);
+            std::time_t tt = std::chrono::system_clock::to_time_t(t_prev);
+            std::tm* g = std::gmtime(&tt);
+            std::ostringstream os;
+            os << std::put_time(g, "%Y-%m-%d");
+            chart_data.labels.insert(chart_data.labels.begin(), os.str());
+            chart_data.values.insert(chart_data.values.begin(), 0.0);
+        }
+    }
+
+    chart_data.title = "Cost per $1M Traded";
+    chart_data.x_label = "Date";
+    chart_data.y_label = "Cost per $1M Traded ($)";
+    chart_data.reference_line = 0.0;
+    chart_data.has_reference_line = false;  // No reference line needed for this metric
+    return chart_data;
+}
+
+ChartData ChartSeries::margin_posted(std::vector<ChartPoint> rows) {
+    ChartData chart_data;
+    for (const auto& [day, value] : rows) {
+        chart_data.labels.push_back(day);
+        chart_data.values.push_back(value);
+    }
+
+    if (chart_data.labels.empty()) {
+        WARN("No valid margin posted points parsed");
+        return chart_data;
+    }
+
+    chart_data.title = "Margin Posted";
+    chart_data.x_label = "Date";
+    chart_data.y_label = "Margin Posted ($)";
+    chart_data.reference_line = 0.0;
+    chart_data.has_reference_line = true;
+    return chart_data;
+}
+
+ChartData ChartSeries::cumulative_pnl_by_symbol(std::vector<ChartPoint> symbol_pnl_data,
+                                                const std::string& date) {
+    ChartData chart_data;
+
+    if (symbol_pnl_data.empty()) {
+        WARN("No valid cumulative PnL data extracted");
+        return chart_data;
+    }
+
+    // Already sorted by query (DESC), but let's ensure it
+    std::sort(symbol_pnl_data.begin(), symbol_pnl_data.end(),
+              [](const auto& a, const auto& b) { return a.second > b.second; });
+
+    // Populate ChartData
+    INFO("Populating cumulative PnL chart data with " + std::to_string(symbol_pnl_data.size()) +
+         " symbols");
+    for (const auto& [sym, pnl] : symbol_pnl_data) {
+        chart_data.labels.push_back(sym);
+        chart_data.values.push_back(pnl);
+    }
+
+    chart_data.title = ChartTitles::cumulative_pnl_title(date);
+    chart_data.x_label = "Cumulative PnL ($)";
+    chart_data.y_label = "Symbol";
+    chart_data.reference_line = 0.0;
+    chart_data.has_reference_line = true;
+
+    INFO("Chart data prepared with " + std::to_string(chart_data.labels.size()) + " labels and " +
+         std::to_string(chart_data.values.size()) + " values");
+
+    return chart_data;
+}
+
+ChartData ChartSeries::contracts_per_day(const std::vector<ContractsDayRow>& rows, int days) {
+    ChartData chart_data;
+    if (rows.empty()) {
+        WARN("No day returned for the contracts chart");
+        return chart_data;
+    }
+    for (const auto& row : rows) {
+        chart_data.labels.push_back(row.date.size() >= 10 ? row.date.substr(5, 5) : row.date);
+        chart_data.values.push_back(row.strategy);
+        chart_data.values2.push_back(row.roll);
+    }
+    chart_data.title = ChartTitles::contracts_per_day_title(days);
+    chart_data.y_label = "Contracts";
+    chart_data.series_name = "Strategy fills";
+    chart_data.series2_name = "Roll legs";
+    return chart_data;
+}
+
+// ============================================================================
 // ChartGenerator Implementation - Data Fetchers
 // ============================================================================
 
-ChartData ChartGenerator::fetch_equity_curve_data(
-    std::shared_ptr<DatabaseInterface> db,
-    const std::string& strategy_id,
+namespace {
+// One cell of a query's answer as a number: the database layer hands most columns over as text.
+std::optional<double> number_cell(const std::shared_ptr<arrow::ChunkedArray>& column, int64_t i) {
+    if (!column || column->num_chunks() == 0) {
+        return std::nullopt;
+    }
+    const auto chunk = column->chunk(0);
+    if (i >= chunk->length() || chunk->IsNull(i)) {
+        return std::nullopt;
+    }
+    try {
+        switch (chunk->type_id()) {
+            case arrow::Type::STRING:
+                return std::stod(std::static_pointer_cast<arrow::StringArray>(chunk)->GetString(i));
+            case arrow::Type::LARGE_STRING:
+                return std::stod(
+                    std::static_pointer_cast<arrow::LargeStringArray>(chunk)->GetString(i));
+            case arrow::Type::DOUBLE:
+                return std::static_pointer_cast<arrow::DoubleArray>(chunk)->Value(i);
+            case arrow::Type::FLOAT:
+                return static_cast<double>(
+                    std::static_pointer_cast<arrow::FloatArray>(chunk)->Value(i));
+            case arrow::Type::INT64:
+                return static_cast<double>(
+                    std::static_pointer_cast<arrow::Int64Array>(chunk)->Value(i));
+            case arrow::Type::INT32:
+                return static_cast<double>(
+                    std::static_pointer_cast<arrow::Int32Array>(chunk)->Value(i));
+            default:
+                return std::nullopt;
+        }
+    } catch (const std::exception&) {
+        return std::nullopt;  // text that is not a number
+    }
+}
+
+// One cell as text; empty when it is NULL or not text.
+std::string text_cell(const std::shared_ptr<arrow::ChunkedArray>& column, int64_t i) {
+    if (!column || column->num_chunks() == 0) {
+        return {};
+    }
+    const auto chunk = column->chunk(0);
+    if (i >= chunk->length() || chunk->IsNull(i)) {
+        return {};
+    }
+    if (chunk->type_id() == arrow::Type::STRING) {
+        return std::static_pointer_cast<arrow::StringArray>(chunk)->GetString(i);
+    }
+    if (chunk->type_id() == arrow::Type::LARGE_STRING) {
+        return std::static_pointer_cast<arrow::LargeStringArray>(chunk)->GetString(i);
+    }
+    return {};
+}
+
+// One cell of a date or timestamp column as "YYYY-MM-DD"; empty when it is NULL.
+std::string day_cell(const std::shared_ptr<arrow::ChunkedArray>& column, int64_t i) {
+    if (!column || column->num_chunks() == 0) {
+        return {};
+    }
+    const auto chunk = column->chunk(0);
+    if (i >= chunk->length() || chunk->IsNull(i)) {
+        return {};
+    }
+    std::time_t seconds = 0;
+    switch (chunk->type_id()) {
+        case arrow::Type::STRING:
+        case arrow::Type::LARGE_STRING:
+            return text_cell(column, i).substr(0, 10);
+        case arrow::Type::DATE32:
+            seconds = static_cast<std::time_t>(
+                          std::static_pointer_cast<arrow::Date32Array>(chunk)->Value(i)) *
+                      86400;
+            break;
+        case arrow::Type::TIMESTAMP:
+            seconds = std::static_pointer_cast<arrow::TimestampArray>(chunk)->Value(i) /
+                      1000000;  // micro -> sec
+            break;
+        default:
+            return {};
+    }
+    std::ostringstream oss;
+    oss << std::put_time(std::gmtime(&seconds), "%Y-%m-%d");
+    return oss.str();
+}
+
+// A symbol's contract multiplier from the instrument registry (a futures root's contract size, 1
+// for a share); none when the registry does not hold the symbol.
+std::optional<double> registry_multiplier(const std::string& symbol) {
+    try {
+        // Normalize variant-suffixed symbols for lookup
+        std::string lookup_sym = symbol;
+        auto dotpos = lookup_sym.find(".v.");
+        if (dotpos != std::string::npos) {
+            lookup_sym = lookup_sym.substr(0, dotpos);
+        }
+        dotpos = lookup_sym.find(".c.");
+        if (dotpos != std::string::npos) {
+            lookup_sym = lookup_sym.substr(0, dotpos);
+        }
+        auto instrument = InstrumentRegistry::instance().get_instrument(lookup_sym);
+        if (!instrument) {
+            return std::nullopt;
+        }
+        return instrument->get_multiplier();
+    } catch (const std::exception&) {
+        return std::nullopt;
+    }
+}
+
+// The book's starting capital from its run metadata (T-8D-2 R63: the equity curve's reference
+// line). No row, no key or a failed read: no value, and the chart is drawn without the line.
+std::optional<double> read_book_capital(const std::shared_ptr<DatabaseInterface>& db,
+                                        const std::string& strategy_id,
+                                        const std::string& portfolio_id, const std::string& date) {
+    auto result = db->execute_query(ChartQueries::book_capital(strategy_id, portfolio_id, date));
+    if (result.is_error() || !result.value() || result.value()->num_rows() == 0 ||
+        result.value()->num_columns() == 0) {
+        INFO("Equity curve: no starting capital on record for " + portfolio_id +
+             ", the chart has no reference line");
+        return std::nullopt;
+    }
+    auto combined = result.value()->CombineChunks();
+    if (!combined.ok()) {
+        return std::nullopt;
+    }
+    const auto capital = number_cell(combined.ValueOrDie()->column(0), 0);
+    if (!capital) {
+        INFO("Equity curve: no starting capital on record for " + portfolio_id +
+             ", the chart has no reference line");
+    }
+    return capital;
+}
+}  // namespace
+
+ChartData ChartGenerator::fetch_equity_curve_data(std::shared_ptr<DatabaseInterface> db,
+                                                  const std::string& strategy_id,
                                                   const std::string& portfolio_id,
-    int lookback_days)
-{
+                                                  const std::string& date, int lookback_days) {
     ChartData chart_data;
 
     if (!db) {
@@ -113,18 +851,14 @@ ChartData ChartGenerator::fetch_equity_curve_data(
     try {
         // Query equity curve data
         std::string query =
-            "SELECT timestamp, equity "
-            "FROM trading.equity_curve "
-            "WHERE strategy_id = '" + strategy_id + "' "
-            "AND portfolio_id = '" + portfolio_id + "' AND portfolio_type = '" + chart_book() + "' "
-            "ORDER BY timestamp DESC "
-            "LIMIT " + std::to_string(lookback_days);
+            ChartQueries::equity_curve(strategy_id, portfolio_id, date, lookback_days);
 
         INFO("Querying equity curve with: " + query);
         auto result = db->execute_query(query);
 
         if (result.is_error()) {
             ERROR("Failed to query equity curve: " + std::string(result.error()->what()));
+            mark_chart_failed("the data could not be read");
             return chart_data;
         }
 
@@ -143,6 +877,7 @@ ChartData ChartGenerator::fetch_equity_curve_data(
         auto combined_result = table->CombineChunks();
         if (!combined_result.ok()) {
             ERROR("Failed to combine chunks");
+            mark_chart_failed("the data could not be read");
             return chart_data;
         }
         auto combined = combined_result.ValueOrDie();
@@ -219,112 +954,25 @@ ChartData ChartGenerator::fetch_equity_curve_data(
             return chart_data;
         }
 
-        INFO("Initial data extracted: " + std::to_string(dates.size()) + " points");
-
-        // Sort data by date to find gaps
-        std::vector<std::pair<std::string, double>> date_equity_pairs;
+        std::vector<ChartPoint> rows;
+        rows.reserve(dates.size());
         for (size_t i = 0; i < dates.size(); i++) {
-            date_equity_pairs.push_back({dates[i], equity_values[i]});
+            rows.emplace_back(dates[i], equity_values[i]);
         }
-        std::sort(date_equity_pairs.begin(), date_equity_pairs.end());
-
-        // Find the most recent consecutive block of data (no gaps > 5 days)
-        std::vector<std::pair<std::string, double>> recent_data;
-        if (!date_equity_pairs.empty()) {
-            recent_data.push_back(date_equity_pairs.back());
-
-            // Work backwards to find consecutive data
-            for (int i = static_cast<int>(date_equity_pairs.size()) - 2; i >= 0; i--) {
-                std::tm tm1 = {}, tm2 = {};
-                std::istringstream ss1(date_equity_pairs[i].first);
-                std::istringstream ss2(recent_data.front().first);
-                ss1 >> std::get_time(&tm1, "%Y-%m-%d");
-                ss2 >> std::get_time(&tm2, "%Y-%m-%d");
-
-                if (!ss1.fail() && !ss2.fail()) {
-                    auto t1 = std::chrono::system_clock::from_time_t(std::mktime(&tm1));
-                    auto t2 = std::chrono::system_clock::from_time_t(std::mktime(&tm2));
-                    auto days_diff = std::chrono::duration_cast<std::chrono::hours>(t2 - t1).count() / 24;
-
-                    // If gap is more than 5 days, stop here
-                    if (days_diff > 5) {
-                        INFO("Found data gap of " + std::to_string(days_diff) + " days, using recent data only");
-                        break;
-                    }
-                    recent_data.insert(recent_data.begin(), date_equity_pairs[i]);
-                }
-            }
-        }
-
-        // Clear and repopulate with recent data only
-        dates.clear();
-        equity_values.clear();
-        for (const auto& [date, equity] : recent_data) {
-            dates.push_back(date);
-            equity_values.push_back(equity);
-        }
-
-        INFO("Using " + std::to_string(dates.size()) + " recent consecutive data points");
-
-        if (dates.empty()) {
-            ERROR("No valid consecutive data after filtering");
-            return chart_data;
-        }
-
-        // Remove the last day's data (show up to yesterday only)
-        if (dates.size() > 1) {
-            std::string removed_date = dates.back();
-            dates.pop_back();
-            equity_values.pop_back();
-            INFO("Removed last day (" + removed_date + ") - showing up to previous day only");
-        }
-
-        // Prepend a starting point at $500k one day before the first data point
-        std::string first_date = dates.front();
-        std::tm tm = {};
-        std::istringstream ss(first_date);
-        ss >> std::get_time(&tm, "%Y-%m-%d");
-
-        if (!ss.fail()) {
-            // Subtract one day
-            auto first_timepoint = std::chrono::system_clock::from_time_t(std::mktime(&tm));
-            auto day_before = first_timepoint - std::chrono::hours(24);
-            auto day_before_time_t = std::chrono::system_clock::to_time_t(day_before);
-            std::tm* day_before_tm = std::gmtime(&day_before_time_t);
-
-            std::ostringstream date_oss;
-            date_oss << std::put_time(day_before_tm, "%Y-%m-%d");
-            std::string starting_date = date_oss.str();
-
-            // Insert starting point at beginning
-            dates.insert(dates.begin(), starting_date);
-            equity_values.insert(equity_values.begin(), 500000.0);
-
-            INFO("Added starting point at $500k on " + starting_date);
-        }
-
-        // Populate ChartData
-        chart_data.labels = dates;
-        chart_data.values = equity_values;
-        chart_data.x_label = "Date";
-        chart_data.y_label = "Portfolio Value ($)";
-        chart_data.reference_line = 500000.0;
-        chart_data.has_reference_line = true;
-
-        return chart_data;
+        return ChartSeries::equity_curve(std::move(rows),
+                                         read_book_capital(db, strategy_id, portfolio_id, date));
 
     } catch (const std::exception& e) {
         ERROR("Exception fetching equity curve data: " + std::string(e.what()));
+        mark_chart_failed("the data could not be read");
         return chart_data;
     }
 }
 
-ChartData ChartGenerator::fetch_pnl_by_symbol_data(
-    std::shared_ptr<DatabaseInterface> db,
-    const std::string& strategy_id,
-                                                  const std::string& portfolio_id,
-    const std::string& date)
-{
+ChartData ChartGenerator::fetch_pnl_by_symbol_data(std::shared_ptr<DatabaseInterface> db,
+                                                   const std::string& strategy_id,
+                                                   const std::string& portfolio_id,
+                                                   const std::string& date, bool equities) {
     ChartData chart_data;
 
     if (!db) {
@@ -333,40 +981,15 @@ ChartData ChartGenerator::fetch_pnl_by_symbol_data(
     }
 
     try {
-        // Calculate yesterday's date for the title
-        std::string yesterday_date;
-        std::tm tm = {};
-        std::istringstream ss(date);
-        ss >> std::get_time(&tm, "%Y-%m-%d");
-        if (!ss.fail()) {
-            auto timepoint = std::chrono::system_clock::from_time_t(std::mktime(&tm));
-            auto yesterday = timepoint - std::chrono::hours(24);
-            auto yesterday_time_t = std::chrono::system_clock::to_time_t(yesterday);
-            std::tm* yesterday_tm = std::gmtime(&yesterday_time_t);
-            std::ostringstream date_oss;
-            date_oss << std::put_time(yesterday_tm, "%Y-%m-%d");
-            yesterday_date = date_oss.str();
-        }
-
         // Yesterday's realized PnL by symbol
-        std::string query =
-            "SELECT symbol, daily_realized_pnl "
-            "FROM trading.positions "
-            "WHERE strategy_id = '" + strategy_id + "' "
-            "AND portfolio_id = '" + portfolio_id + "' AND portfolio_type = '" + chart_book() + "' "
-            // E2-F19 R-6: the previous SESSION, not the previous calendar day -- a Monday
-            // report used to read Sunday's carried rows.
-            "AND DATE(last_update) = (SELECT MAX(DATE(last_update)) FROM trading.positions "
-            "                         WHERE strategy_id = '" + strategy_id + "' "
-            "                           AND portfolio_id = '" + portfolio_id + "' AND portfolio_type = '" + chart_book() + "' "
-            "                           AND DATE(last_update) < DATE('" + date + "')) "
-            "ORDER BY last_update DESC";
+        std::string query = ChartQueries::pnl_by_symbol(strategy_id, portfolio_id, date);
 
         INFO("Querying realized PnL by symbol with: " + query);
         auto result = db->execute_query(query);
 
         if (result.is_error()) {
             ERROR("Failed to query realized PnL by symbol: " + std::string(result.error()->what()));
+            mark_chart_failed("the data could not be read");
             return chart_data;
         }
 
@@ -379,6 +1002,7 @@ ChartData ChartGenerator::fetch_pnl_by_symbol_data(
         auto combined_result = table->CombineChunks();
         if (!combined_result.ok()) {
             ERROR("Failed to combine chunks");
+            mark_chart_failed("the data could not be read");
             return chart_data;
         }
         auto combined = combined_result.ValueOrDie();
@@ -444,43 +1068,14 @@ ChartData ChartGenerator::fetch_pnl_by_symbol_data(
             return chart_data;
         }
 
-        // Sort by realized PnL (descending)
-        std::sort(symbol_pnl_data.begin(), symbol_pnl_data.end(),
-                  [](const auto& a, const auto& b) { return a.second > b.second; });
-
-        // Populate ChartData
-        INFO("Populating chart data with " + std::to_string(symbol_pnl_data.size()) + " symbols");
-        for (const auto& [sym, pnl] : symbol_pnl_data) {
-            chart_data.labels.push_back(sym);
-            chart_data.values.push_back(pnl);
-        }
-
-        // Debug sample
-        if (!symbol_pnl_data.empty()) {
-            INFO("Sample Realized PnL - First: " + symbol_pnl_data[0].first +
-                 " PnL: " + std::to_string(symbol_pnl_data[0].second));
-        }
-
-        // Add yesterday's date to title if calculated successfully
-        if (!yesterday_date.empty()) {
-            chart_data.title = "Yesterday's PnL by Symbol (" + yesterday_date + ")";
-        }
-        chart_data.x_label = "Symbol";
-        chart_data.y_label = "Realized PnL ($)";
-        chart_data.reference_line = 0.0;
-        chart_data.has_reference_line = true;
-
-        INFO("Chart data prepared with " + std::to_string(chart_data.labels.size()) +
-             " labels and " + std::to_string(chart_data.values.size()) + " values");
-
-        return chart_data;
+        return ChartSeries::pnl_by_symbol(std::move(symbol_pnl_data), date, equities);
 
     } catch (const std::exception& e) {
         ERROR("Exception fetching realized PnL by symbol: " + std::string(e.what()));
+        mark_chart_failed("the data could not be read");
         return chart_data;
     }
 }
-
 
 ChartData ChartGenerator::fetch_daily_pnl_data(
     std::shared_ptr<DatabaseInterface> db,
@@ -498,20 +1093,14 @@ ChartData ChartGenerator::fetch_daily_pnl_data(
 
     try {
         // Query daily_pnl directly from live_results, excluding today (only up to T-1)
-        std::string query =
-            "SELECT date, daily_pnl "
-            "FROM trading.live_results "
-            "WHERE strategy_id = '" + strategy_id + "' "
-            "AND portfolio_id = '" + portfolio_id + "' AND portfolio_type = '" + chart_book() + "' "
-            "AND DATE(date) < DATE('" + date + "') "
-            "ORDER BY date DESC "
-            "LIMIT " + std::to_string(lookback_days);
+        std::string query = ChartQueries::daily_pnl(strategy_id, portfolio_id, date, lookback_days);
 
         INFO("Querying daily PnL data with: " + query);
         auto result = db->execute_query(query);
 
         if (result.is_error()) {
             ERROR("Failed to query daily PnL: " + std::string(result.error()->what()));
+            mark_chart_failed("the data could not be read");
             return chart_data;
         }
 
@@ -527,12 +1116,14 @@ ChartData ChartGenerator::fetch_daily_pnl_data(
         auto combined_result = table->CombineChunks();
         if (!combined_result.ok()) {
             ERROR("Failed to combine chunks");
+            mark_chart_failed("the data could not be read");
             return chart_data;
         }
         auto combined = combined_result.ValueOrDie();
 
         auto date_col = combined->column(0);
         auto pnl_col = combined->column(1);
+        std::vector<ChartPoint> rows;
 
         for (int64_t i = 0; i < combined->num_rows(); ++i) {
             try {
@@ -599,8 +1190,7 @@ ChartData ChartGenerator::fetch_daily_pnl_data(
                 }
 
                 if (!date_str.empty()) {
-                    chart_data.labels.push_back(date_str);
-                    chart_data.values.push_back(daily_pnl);
+                    rows.emplace_back(date_str, daily_pnl);
                 }
             } catch (const std::exception& e) {
                 WARN("Error processing row " + std::to_string(i) + ": " + std::string(e.what()));
@@ -608,59 +1198,30 @@ ChartData ChartGenerator::fetch_daily_pnl_data(
             }
         }
 
-        if (chart_data.labels.empty()) {
+        if (rows.empty()) {
             ERROR("No valid daily PnL data");
             return chart_data;
         }
 
-        // Reverse to get chronological order (DESC query returns newest first)
-        std::reverse(chart_data.labels.begin(), chart_data.labels.end());
-        std::reverse(chart_data.values.begin(), chart_data.values.end());
-
-        chart_data.x_label = "Date";
-        chart_data.y_label = "Daily PnL ($)";
-        chart_data.reference_line = 0.0;
-        chart_data.has_reference_line = true;
-
-        return chart_data;
+        return ChartSeries::daily_pnl(std::move(rows));
 
     } catch (const std::exception& e) {
         ERROR("Exception fetching daily PnL data: " + std::string(e.what()));
+        mark_chart_failed("the data could not be read");
         return chart_data;
     }
 }
 
 ChartData ChartGenerator::fetch_cumulative_transaction_costs_data(
-    std::shared_ptr<DatabaseInterface> db,
-    const std::string& strategy_id,
-                                                  const std::string& portfolio_id,
-    const std::string& date /* today, YYYY-MM-DD */)
-{
+    std::shared_ptr<DatabaseInterface> db, const std::string& strategy_id,
+    const std::string& portfolio_id, const std::string& date /* today, YYYY-MM-DD */,
+    const ChartSeries::MultiplierLookup& multiplier_of) {
     ChartData chart_data;
     if (!db) { WARN("DB null"); return chart_data; }
 
     try {
-        // Query to get daily transaction costs, gross notional, and count of trades per day
-        std::string query =
-            "SELECT "
-            "    lr.date, "
-            "    COALESCE(lr.daily_transaction_costs, 0) as daily_cost, "
-            "    COALESCE(lr.gross_notional, 0) as total_notional, "
-            "    COALESCE(trade_counts.num_trades, 0) as num_trades "
-            "FROM trading.live_results lr "
-            "LEFT JOIN ( "
-            "    SELECT DATE(execution_time) as trade_date, COUNT(*) as num_trades "
-            "    FROM trading.executions "
-            "    WHERE execution_type = 'STRATEGY' "  // T-ROLLX: ROLL legs are not trades
-            // Review E#10: this portfolio's, this strategy's and this book's fills only.
-            "    AND strategy_id = '" + strategy_id + "' AND portfolio_id = '" + portfolio_id +
-            "' AND portfolio_type = '" + chart_book() + "' "
-            "    GROUP BY DATE(execution_time) "
-            ") trade_counts ON DATE(lr.date) = trade_counts.trade_date "
-            "WHERE lr.strategy_id = '" + strategy_id + "' "
-            "AND lr.portfolio_id = '" + portfolio_id + "' AND lr.portfolio_type = '" + chart_book() + "' "
-            "AND DATE(lr.date) <= DATE('" + date + "') "
-            "ORDER BY lr.date ASC";
+        // Each stored day's cost and the fills the book made that day
+        std::string query = ChartQueries::cost_per_million(strategy_id, portfolio_id, date);
 
         INFO("Querying cost per $1M traded with: " + query);
         auto result = db->execute_query(query);
@@ -681,190 +1242,40 @@ ChartData ChartGenerator::fetch_cumulative_transaction_costs_data(
             return chart_data;
         }
         auto combined = combined_result.ValueOrDie();
-
-        // Expect: col0 = date, col1 = daily_cost, col2 = total_notional, col3 = num_trades
-        auto day_col = combined->column(0);
-        auto cost_col = combined->column(1);
-        auto notional_col = combined->column(2);
-        auto trades_col = combined->column(3);
-
-        for (int64_t i = 0; i < combined->num_rows(); ++i) {
-            // ---- parse date -> "YYYY-MM-DD"
-            std::string day_str;
-            auto day_chunk = day_col->chunk(0);
-            switch (day_chunk->type_id()) {
-                case arrow::Type::STRING: {
-                    auto s = std::static_pointer_cast<arrow::StringArray>(day_chunk);
-                    if (!s->IsNull(i)) {
-                        day_str = s->GetString(i);
-                        if (day_str.size() > 10) day_str = day_str.substr(0, 10);
-                    }
-                } break;
-                case arrow::Type::LARGE_STRING: {
-                    auto s = std::static_pointer_cast<arrow::LargeStringArray>(day_chunk);
-                    if (!s->IsNull(i)) {
-                        day_str = s->GetString(i);
-                        if (day_str.size() > 10) day_str = day_str.substr(0, 10);
-                    }
-                } break;
-                case arrow::Type::DATE32: {
-                    auto d = std::static_pointer_cast<arrow::Date32Array>(day_chunk);
-                    if (!d->IsNull(i)) {
-                        int32_t days = d->Value(i);
-                        std::time_t tsec = static_cast<std::time_t>(days) * 86400;
-                        std::tm* tm = std::gmtime(&tsec);
-                        std::ostringstream oss; oss << std::put_time(tm, "%Y-%m-%d");
-                        day_str = oss.str();
-                    }
-                } break;
-                case arrow::Type::TIMESTAMP: {
-                    auto ts = std::static_pointer_cast<arrow::TimestampArray>(day_chunk);
-                    if (!ts->IsNull(i)) {
-                        std::time_t tsec = ts->Value(i) / 1000000; // micro → sec
-                        std::tm* tm = std::gmtime(&tsec);
-                        std::ostringstream oss; oss << std::put_time(tm, "%Y-%m-%d");
-                        day_str = oss.str();
-                    }
-                } break;
-                default: break;
-            }
-            if (day_str.empty()) continue;
-
-            // ---- parse daily_cost -> double
-            double daily_cost = 0.0;
-            auto cost_chunk = cost_col->chunk(0);
-            if (!cost_chunk->IsNull(i)) {
-                switch (cost_chunk->type_id()) {
-                    case arrow::Type::DOUBLE: {
-                        auto a = std::static_pointer_cast<arrow::DoubleArray>(cost_chunk);
-                        daily_cost = a->Value(i);
-                    } break;
-                    case arrow::Type::FLOAT: {
-                        auto a = std::static_pointer_cast<arrow::FloatArray>(cost_chunk);
-                        daily_cost = static_cast<double>(a->Value(i));
-                    } break;
-                    case arrow::Type::INT64: {
-                        auto a = std::static_pointer_cast<arrow::Int64Array>(cost_chunk);
-                        daily_cost = static_cast<double>(a->Value(i));
-                    } break;
-                    case arrow::Type::INT32: {
-                        auto a = std::static_pointer_cast<arrow::Int32Array>(cost_chunk);
-                        daily_cost = static_cast<double>(a->Value(i));
-                    } break;
-                    case arrow::Type::STRING: {
-                        auto a = std::static_pointer_cast<arrow::StringArray>(cost_chunk);
-                        if (!a->IsNull(i)) {
-                            try { daily_cost = std::stod(a->GetString(i)); } catch (...) {}
-                        }
-                    } break;
-                    case arrow::Type::LARGE_STRING: {
-                        auto a = std::static_pointer_cast<arrow::LargeStringArray>(cost_chunk);
-                        if (!a->IsNull(i)) {
-                            try { daily_cost = std::stod(a->GetString(i)); } catch (...) {}
-                        }
-                    } break;
-                    default: break;
-                }
-            }
-
-            // ---- parse total_notional -> double
-            double total_notional = 0.0;
-            auto notional_chunk = notional_col->chunk(0);
-            if (!notional_chunk->IsNull(i)) {
-                switch (notional_chunk->type_id()) {
-                    case arrow::Type::DOUBLE: {
-                        auto a = std::static_pointer_cast<arrow::DoubleArray>(notional_chunk);
-                        total_notional = a->Value(i);
-                    } break;
-                    case arrow::Type::FLOAT: {
-                        auto a = std::static_pointer_cast<arrow::FloatArray>(notional_chunk);
-                        total_notional = static_cast<double>(a->Value(i));
-                    } break;
-                    case arrow::Type::INT64: {
-                        auto a = std::static_pointer_cast<arrow::Int64Array>(notional_chunk);
-                        total_notional = static_cast<double>(a->Value(i));
-                    } break;
-                    case arrow::Type::INT32: {
-                        auto a = std::static_pointer_cast<arrow::Int32Array>(notional_chunk);
-                        total_notional = static_cast<double>(a->Value(i));
-                    } break;
-                    case arrow::Type::STRING: {
-                        auto a = std::static_pointer_cast<arrow::StringArray>(notional_chunk);
-                        if (!a->IsNull(i)) {
-                            try { total_notional = std::stod(a->GetString(i)); } catch (...) {}
-                        }
-                    } break;
-                    case arrow::Type::LARGE_STRING: {
-                        auto a = std::static_pointer_cast<arrow::LargeStringArray>(notional_chunk);
-                        if (!a->IsNull(i)) {
-                            try { total_notional = std::stod(a->GetString(i)); } catch (...) {}
-                        }
-                    } break;
-                    default: break;
-                }
-            }
-
-            // ---- parse num_trades -> int
-            int64_t num_trades = 0;
-            auto trades_chunk = trades_col->chunk(0);
-            if (!trades_chunk->IsNull(i)) {
-                switch (trades_chunk->type_id()) {
-                    case arrow::Type::INT64: {
-                        auto a = std::static_pointer_cast<arrow::Int64Array>(trades_chunk);
-                        num_trades = a->Value(i);
-                    } break;
-                    case arrow::Type::INT32: {
-                        auto a = std::static_pointer_cast<arrow::Int32Array>(trades_chunk);
-                        num_trades = static_cast<int64_t>(a->Value(i));
-                    } break;
-                    default: break;
-                }
-            }
-
-            // Calculate cost per $1M traded
-            // Formula: (daily_cost / total_notional) * 1,000,000
-            // Skip if notional is zero to avoid division by zero
-            if (total_notional > 0.0) {
-                double cost_per_million = (daily_cost / total_notional) * 1000000.0;
-                chart_data.labels.push_back(day_str);
-                chart_data.values.push_back(cost_per_million);
-
-                INFO("Date: " + day_str + ", Cost: $" + std::to_string(daily_cost) +
-                     ", Notional: $" + std::to_string(total_notional) +
-                     ", Trades: " + std::to_string(num_trades) +
-                     ", Cost per $1M: $" + std::to_string(cost_per_million));
-            }
-        }
-
-        if (chart_data.labels.empty()) {
-            WARN("No valid cost per $1M traded data points");
+        if (combined->num_columns() < 5) {
+            ERROR("Cost per $1M traded: the query answered " +
+                  std::to_string(combined->num_columns()) + " columns, 5 expected");
             return chart_data;
         }
 
-        if (chart_data.labels.size() == 1) {
-            // guard against single-point x-range (gnuplot needs width)
-            std::tm tm{}; std::istringstream ss(chart_data.labels[0]);
-            ss >> std::get_time(&tm, "%Y-%m-%d");
-            if (!ss.fail()) {
-                auto t = std::chrono::system_clock::from_time_t(std::mktime(&tm));
-                auto t_prev = t - std::chrono::hours(24);
-                std::time_t tt = std::chrono::system_clock::to_time_t(t_prev);
-                std::tm* g = std::gmtime(&tt);
-                std::ostringstream os; os << std::put_time(g, "%Y-%m-%d");
-                chart_data.labels.insert(chart_data.labels.begin(), os.str());
-                chart_data.values.insert(chart_data.values.begin(), 0.0);
+        // Expect: col0 = date, col1 = daily_cost, col2 = symbol, col3 = quantity, col4 = price
+        // (the three fill columns NULL on a day without a fill)
+        std::vector<ChartSeries::CostFillRow> rows;
+        for (int64_t i = 0; i < combined->num_rows(); ++i) {
+            ChartSeries::CostFillRow row;
+            row.date = day_cell(combined->column(0), i);
+            if (row.date.empty())
+                continue;
+            row.daily_cost = number_cell(combined->column(1), i).value_or(0.0);
+            row.symbol = text_cell(combined->column(2), i);
+            const auto quantity = number_cell(combined->column(3), i);
+            const auto price = number_cell(combined->column(4), i);
+            if (!row.symbol.empty() && quantity && price) {
+                row.quantity = *quantity;
+                row.price = *price;
+            } else {
+                row.symbol.clear();  // no fill on this row
             }
+            rows.push_back(std::move(row));
         }
 
-        chart_data.title = "Cost per $1M Traded (Efficiency Metric)";
-        chart_data.x_label = "Date";
-        chart_data.y_label = "Cost per $1M Traded ($)";
-        chart_data.reference_line = 0.0;
-        chart_data.has_reference_line = false;  // No reference line needed for this metric
-        return chart_data;
+        return ChartSeries::cost_per_million(
+            rows,
+            multiplier_of ? multiplier_of : ChartSeries::MultiplierLookup(registry_multiplier));
 
     } catch (const std::exception& e) {
         ERROR(std::string("Exception fetching cost per $1M traded: ") + e.what());
+        mark_chart_failed("the data could not be read");
         return chart_data;
     }
 }
@@ -880,18 +1291,13 @@ ChartData ChartGenerator::fetch_margin_posted_data(
 
     try {
         // All days up to and including today (T)
-        std::string query =
-            "SELECT date, margin_posted "
-            "FROM trading.live_results "
-            "WHERE strategy_id = '" + strategy_id + "' "
-            "AND portfolio_id = '" + portfolio_id + "' AND portfolio_type = '" + chart_book() + "' "
-            "AND DATE(date) <= DATE('" + date + "') "
-            "ORDER BY date ASC";
+        std::string query = ChartQueries::margin_posted(strategy_id, portfolio_id, date);
 
         INFO("Querying margin posted with: " + query);
         auto result = db->execute_query(query);
         if (result.is_error()) {
             ERROR("Failed to query margin posted: " + std::string(result.error()->what()));
+            mark_chart_failed("the data could not be read");
             return chart_data;
         }
 
@@ -904,6 +1310,7 @@ ChartData ChartGenerator::fetch_margin_posted_data(
         auto combined_result = table->CombineChunks();
         if (!combined_result.ok()) {
             ERROR("Failed to combine chunks");
+            mark_chart_failed("the data could not be read");
             return chart_data;
         }
         auto combined = combined_result.ValueOrDie();
@@ -913,6 +1320,7 @@ ChartData ChartGenerator::fetch_margin_posted_data(
         auto val_col = combined->column(1);
         auto day_chunk = day_col->chunk(0);
         auto val_chunk = val_col->chunk(0);
+        std::vector<ChartPoint> rows;
 
         for (int64_t i = 0; i < combined->num_rows(); ++i) {
             // ---- parse date -> "YYYY-MM-DD"
@@ -987,24 +1395,60 @@ ChartData ChartGenerator::fetch_margin_posted_data(
             }
             if (!have) continue;  // skip NULL margins
 
-            chart_data.labels.push_back(day_str);
-            chart_data.values.push_back(val);
+            rows.emplace_back(day_str, val);
         }
 
-        if (chart_data.labels.empty()) {
-            WARN("No valid margin posted points parsed");
-            return chart_data;
-        }
-
-        chart_data.title = "Margin Posted";
-        chart_data.x_label = "Date";
-        chart_data.y_label = "Margin Posted ($)";
-        chart_data.reference_line = 0.0;
-        chart_data.has_reference_line = true;
-        return chart_data;
+        return ChartSeries::margin_posted(std::move(rows));
 
     } catch (const std::exception& e) {
         ERROR(std::string("Exception fetching margin posted: ") + e.what());
+        mark_chart_failed("the data could not be read");
+        return chart_data;
+    }
+}
+
+ChartData ChartGenerator::fetch_contracts_per_day_data(std::shared_ptr<DatabaseInterface> db,
+                                                       const std::string& portfolio_id,
+                                                       const std::string& date, int days) {
+    ChartData chart_data;
+    if (!db) { WARN("DB null"); return chart_data; }
+    try {
+        const std::string query = ChartQueries::contracts_per_day(portfolio_id, date, days);
+        INFO("Querying contracts per day with: " + query);
+        auto result = db->execute_query(query);
+        if (result.is_error()) {
+            ERROR("Query failed: " + std::string(result.error()->what()));
+            return chart_data;
+        }
+        auto table = result.value();
+        if (!table || table->num_rows() == 0) {
+            WARN("No day returned for the contracts chart");
+            return chart_data;
+        }
+        auto combined_result = table->CombineChunks();
+        if (!combined_result.ok()) {
+            ERROR("CombineChunks failed");
+            return chart_data;
+        }
+        auto combined = combined_result.ValueOrDie();
+        if (combined->num_columns() < 3) {
+            ERROR("Contracts per day: the query answered " + std::to_string(combined->num_columns()) +
+                  " columns, 3 expected");
+            return chart_data;
+        }
+        std::vector<ChartSeries::ContractsDayRow> rows;
+        for (int64_t i = 0; i < combined->num_rows(); ++i) {
+            ChartSeries::ContractsDayRow row;
+            row.date = day_cell(combined->column(0), i);
+            if (row.date.empty()) continue;
+            row.strategy = number_cell(combined->column(1), i).value_or(0.0);
+            row.roll = number_cell(combined->column(2), i).value_or(0.0);
+            rows.push_back(std::move(row));
+        }
+        return ChartSeries::contracts_per_day(rows, days);
+    } catch (const std::exception& e) {
+        ERROR(std::string("Exception fetching contracts per day: ") + e.what());
+        mark_chart_failed("the data could not be read");
         return chart_data;
     }
 }
@@ -1104,6 +1548,7 @@ ChartData ChartGenerator::fetch_portfolio_composition_data(
 
     } catch (const std::exception& e) {
         ERROR("Exception fetching portfolio composition data: " + std::string(e.what()));
+        mark_chart_failed("the data could not be read");
         return chart_data;
     }
 }
@@ -1112,7 +1557,7 @@ ChartData ChartGenerator::fetch_cumulative_pnl_by_symbol_data(
     std::shared_ptr<DatabaseInterface> db,
     const std::string& strategy_id,
                                                   const std::string& portfolio_id,
-    const std::string& date)
+    const std::string& date, bool equities)
 {
     ChartData chart_data;
 
@@ -1123,22 +1568,14 @@ ChartData ChartGenerator::fetch_cumulative_pnl_by_symbol_data(
 
     try {
         // Query to sum up all realized PnL by symbol across all time
-        std::string query =
-            "SELECT symbol, SUM(daily_realized_pnl) as cumulative_pnl "
-            "FROM trading.positions "
-            "WHERE strategy_id = '" + strategy_id + "' "
-            "AND portfolio_id = '" + portfolio_id + "' AND portfolio_type = '" + chart_book() + "' "
-            "AND DATE(last_update) <= DATE('" + date + "') "
-            "GROUP BY symbol "
-            "HAVING SUM(daily_realized_pnl) IS NOT NULL "
-            "AND SUM(daily_realized_pnl) != 0 "
-            "ORDER BY cumulative_pnl DESC";
+        std::string query = ChartQueries::cumulative_pnl_by_symbol(strategy_id, portfolio_id, date, equities);
 
         INFO("Querying cumulative PnL by symbol with: " + query);
         auto result = db->execute_query(query);
 
         if (result.is_error()) {
             ERROR("Failed to query cumulative PnL by symbol: " + std::string(result.error()->what()));
+            mark_chart_failed("the data could not be read");
             return chart_data;
         }
 
@@ -1151,6 +1588,7 @@ ChartData ChartGenerator::fetch_cumulative_pnl_by_symbol_data(
         auto combined_result = table->CombineChunks();
         if (!combined_result.ok()) {
             ERROR("Failed to combine chunks");
+            mark_chart_failed("the data could not be read");
             return chart_data;
         }
         auto combined = combined_result.ValueOrDie();
@@ -1216,30 +1654,11 @@ ChartData ChartGenerator::fetch_cumulative_pnl_by_symbol_data(
             return chart_data;
         }
 
-        // Already sorted by query (DESC), but let's ensure it
-        std::sort(symbol_pnl_data.begin(), symbol_pnl_data.end(),
-                  [](const auto& a, const auto& b) { return a.second > b.second; });
-
-        // Populate ChartData
-        INFO("Populating cumulative PnL chart data with " + std::to_string(symbol_pnl_data.size()) + " symbols");
-        for (const auto& [sym, pnl] : symbol_pnl_data) {
-            chart_data.labels.push_back(sym);
-            chart_data.values.push_back(pnl);
-        }
-
-        chart_data.title = "Cumulative Realized PnL by Symbol (All-Time as of " + date + ")";
-        chart_data.x_label = "Cumulative Realized PnL ($)";
-        chart_data.y_label = "Symbol";
-        chart_data.reference_line = 0.0;
-        chart_data.has_reference_line = true;
-
-        INFO("Chart data prepared with " + std::to_string(chart_data.labels.size()) +
-             " labels and " + std::to_string(chart_data.values.size()) + " values");
-
-        return chart_data;
+        return ChartSeries::cumulative_pnl_by_symbol(std::move(symbol_pnl_data), date);
 
     } catch (const std::exception& e) {
         ERROR("Exception fetching cumulative PnL by symbol: " + std::string(e.what()));
+        mark_chart_failed("the data could not be read");
         return chart_data;
     }
 }
@@ -1262,83 +1681,47 @@ namespace {
         return result;
     }
 
-    // Helper: Execute gnuplot script and return base64-encoded PNG
+    // The time one chart process is given (T-DATED R4). A chart is drawn in well under a second.
+    constexpr std::chrono::seconds kChartProcessTimeout{30};
+
+    // Helper: Execute gnuplot script and return base64-encoded PNG. The files are private to the
+    // call, a hang is started once more, and the end is recorded for the report (core/gnuplot_run.hpp).
     std::string execute_gnuplot(const std::string& script_content, const std::string& data_content) {
-        // Create temporary files
-        std::string data_filename = "temp_chart_data.txt";
-        std::string script_filename = "temp_chart_script.gnu";
-        std::string chart_filename = "temp_chart_output.png";
-
-        // Write data file
-        std::ofstream data_file(data_filename);
-        if (!data_file.is_open()) {
-            ERROR("Failed to create temporary data file");
-            return "";
-        }
-        data_file << data_content;
-        data_file.close();
-
-        // Write script file
-        std::ofstream script_file(script_filename);
-        if (!script_file.is_open()) {
-            ERROR("Failed to create gnuplot script file");
-            return "";
-        }
-        script_file << script_content;
-        script_file.close();
-
-        // Execute gnuplot
-        std::ostringstream cmd;
-        cmd << "gnuplot " << script_filename << " 2>&1";
         INFO("Executing gnuplot");
-
-        FILE* pipe = popen(cmd.str().c_str(), "r");
-        if (!pipe) {
-            ERROR("Failed to execute gnuplot command");
+        // One light style for every chart (HD 10-13): a quiet border, ticks on the outside, a light
+        // grid, readable titles. The scripts' own lines that follow still decide their colours.
+        std::string styled = script_content;
+        const std::string output_line = "set output 'temp_chart_output.png'\n";
+        const auto at = styled.find(output_line);
+        if (at != std::string::npos) {
+            styled.insert(at + output_line.size(),
+                          "set border 3 lw 1 lc rgb '#999999'\nset tics nomirror\n"
+                          "set xtics textcolor rgb '#444444'\nset ytics textcolor rgb '#444444'\n"
+                          "set title font 'Arial,14' textcolor rgb '#222222'\n"
+                          "set grid ytics lc rgb '#e6e6e6' lt 1 lw 0.5\n");
+        }
+        const core::GnuplotRun run = core::run_gnuplot(
+            styled, data_content, kChartProcessTimeout,
+            [](const std::string& command, std::chrono::milliseconds limit) {
+                return core::run_with_timeout(command, limit);
+            });
+        g_last_status = run.status;
+        g_last_reason = run.reason;
+        if (run.status != core::ChartStatus::Drawn) {
+            ERROR("Chart not drawn after " + std::to_string(run.attempts) + " start(s): " +
+                  run.reason);
             return "";
         }
-
-        char buffer[256];
-        std::string gnuplot_output;
-        while (fgets(buffer, sizeof(buffer), pipe) != nullptr) {
-            gnuplot_output += buffer;
-        }
-
-        int return_code = pclose(pipe);
-        if (return_code != 0) {
-            ERROR("Gnuplot failed with code " + std::to_string(return_code));
-            if (!gnuplot_output.empty()) {
-                ERROR("Gnuplot output: " + gnuplot_output);
-            }
-            return "";
-        }
-
-        // Read generated PNG
-        std::ifstream chart_file(chart_filename, std::ios::binary);
-        if (!chart_file.is_open()) {
-            ERROR("Failed to open generated chart file");
-            return "";
-        }
-
-        std::vector<unsigned char> chart_data_bin((std::istreambuf_iterator<char>(chart_file)),
-                                                   std::istreambuf_iterator<char>());
-        chart_file.close();
-
-        // Cleanup (keep files for debugging if generation fails)
-        if (!chart_data_bin.empty()) {
-            std::remove(data_filename.c_str());
-            std::remove(script_filename.c_str());
-            std::remove(chart_filename.c_str());
-        } else {
-            ERROR("Chart generation failed - keeping temp files for debugging:");
-            ERROR("  Data file: " + data_filename);
-            ERROR("  Script file: " + script_filename);
-            ERROR("  Output file: " + chart_filename);
-        }
-
-        // Base64 encode
-        return ChartHelpers::encode_to_base64(chart_data_bin);
+        return ChartHelpers::encode_to_base64(run.png);
     }
+}
+
+core::ChartStatus ChartGenerator::last_chart_status() {
+    return g_last_status;
+}
+
+std::string ChartGenerator::last_chart_reason() {
+    return g_last_reason;
 }
 
 std::string ChartGenerator::render_line_chart(const ChartData& data, const ChartConfig& config) {
@@ -1352,12 +1735,23 @@ std::string ChartGenerator::render_line_chart(const ChartData& data, const Chart
         return "";
     }
 
+    // The axis runs from the first day to the last; a chart of one day gets a day either side.
+    const auto x_range = ChartSeries::line_chart_x_range(data.labels);
+    if (x_range.first.empty()) {
+        ERROR("Line chart '" + data.title + "' has one point and its label '" +
+              data.labels.front() + "' is not a date: no x range, the chart is left out");
+        return "";
+    }
+
     try {
         // Build data file content
         std::ostringstream data_content;
         for (size_t i = 0; i < data.labels.size(); ++i) {
+            const bool two = data.values2.size() == data.values.size();
             data_content << data.labels[i] << " " << std::fixed << std::setprecision(2)
-                        << data.values[i] << "\n";
+                        << data.values[i];
+            if (two) data_content << " " << data.values2[i];
+            data_content << "\n";
         }
 
         // Build gnuplot script
@@ -1377,7 +1771,11 @@ std::string ChartGenerator::render_line_chart(const ChartData& data, const Chart
         if (config.show_grid) {
             script << "set grid ytics lc rgb '#e0e0e0' lt 1 lw 0.5\n";
         }
-        script << "unset key\n\n";
+        if (data.values2.size() == data.values.size()) {
+            script << "set key top left\n\n";
+        } else {
+            script << "unset key\n\n";
+        }
 
         // Labels
         if (!data.x_label.empty()) {
@@ -1394,24 +1792,22 @@ std::string ChartGenerator::render_line_chart(const ChartData& data, const Chart
         script << "set xdata time\n";
         script << "set timefmt '%Y-%m-%d'\n";
         script << "set format x '%m/%d'\n";
-        script << "set xrange ['" << data.labels.front() << "':'" << data.labels.back() << "']\n";
+        script << "set xrange ['" << x_range.first << "':'" << x_range.second << "']\n";
 
-        // X-axis ticks
-        int num_ticks = std::min(5, static_cast<int>(data.labels.size()));
-        script << "set xtics (";
-        for (int i = 0; i < num_ticks; i++) {
-            int idx = (i * (static_cast<int>(data.labels.size()) - 1)) / std::max(1, num_ticks - 1);
-            if (i > 0) script << ", ";
-            script << "'" << data.labels[idx] << "' '" << data.labels[idx] << "'";
-        }
-        script << ")";
-        if (config.rotate_x_labels) {
-            script << " rotate by " << config.x_label_angle;
-        }
-        script << "\n\n";
+        // X-axis ticks (HD 10-14): the axis picks its own dates, horizontal and spaced, in a short
+        // format; a long history is shown by month. (Five hand-placed, rotated labels ran into each
+        // other and into the axes.)
+        script << "set format x '" << (data.labels.size() > 90 ? "%b %Y" : "%b %d") << "'\n";
+        script << "set xtics nomirror\n";
+        script << "set lmargin 11\nset rmargin 4\nset bmargin 3.5\n\n";
 
         // Y-axis
-        script << "set format y '$%.0f'\n\n";
+        script << "set format y '" << (data.y_format.empty() ? "$%.0f" : data.y_format) << "'\n";
+        if (const auto y_range = ChartSeries::line_chart_y_range(data)) {
+            script << "set yrange [" << std::fixed << std::setprecision(2) << y_range->first << ":"
+                   << y_range->second << "]\n";
+        }
+        script << "\n";
 
         // Reference line
         if (data.has_reference_line) {
@@ -1421,12 +1817,22 @@ std::string ChartGenerator::render_line_chart(const ChartData& data, const Chart
         }
 
         // Plot
-        script << "plot 'temp_chart_data.txt' using 1:2 with linespoints ls 1 notitle\n";
+        const std::string plot_with = data.labels.size() > 40 ? "with lines" : "with linespoints";
+        if (data.values2.size() == data.values.size()) {
+            script << "set style line 2 lc rgb '#d9822b' lt 1 lw 3 pt 7 ps 0.8\n";
+            script << "plot 'temp_chart_data.txt' using 1:2 " << plot_with << " ls 1 title '"
+                   << escape_gnuplot_string(data.series_name) << "', \\\n"
+                   << "     'temp_chart_data.txt' using 1:3 " << plot_with << " ls 2 title '"
+                   << escape_gnuplot_string(data.series2_name) << "'\n";
+        } else {
+            script << "plot 'temp_chart_data.txt' using 1:2 " << plot_with << " ls 1 notitle\n";
+        }
 
         return execute_gnuplot(script.str(), data_content.str());
 
     } catch (const std::exception& e) {
         ERROR("Exception rendering line chart: " + std::string(e.what()));
+        mark_chart_failed("the chart could not be drawn");
         return "";
     }
 }
@@ -1500,6 +1906,7 @@ std::string ChartGenerator::render_bar_chart(const ChartData& data, const ChartC
         return execute_gnuplot(script.str(), data_content.str());
     } catch (const std::exception& e) {
         ERROR("Exception rendering bar chart: " + std::string(e.what()));
+        mark_chart_failed("the chart could not be drawn");
         return "";
     }
 }
@@ -1522,8 +1929,11 @@ std::string ChartGenerator::render_horizontal_bar_chart(const ChartData& data, c
         // Build data file content (symbol pnl)
         std::ostringstream data_content;
         for (size_t i = 0; i < data.labels.size(); ++i) {
+            const bool two = data.values2.size() == data.values.size();
             data_content << data.labels[i] << " " << std::fixed << std::setprecision(2)
-                        << data.values[i] << "\n";
+                        << data.values[i];
+            if (two) data_content << " " << data.values2[i];
+            data_content << "\n";
         }
 
         // Calculate dynamic height based on number of items
@@ -1586,11 +1996,72 @@ std::string ChartGenerator::render_horizontal_bar_chart(const ChartData& data, c
 
     } catch (const std::exception& e) {
         ERROR("Exception rendering horizontal bar chart: " + std::string(e.what()));
+        mark_chart_failed("the chart could not be drawn");
         return "";
     }
 }
 
 // REPLACE the render_pie_chart function with this version that ensures legend visibility:
+
+std::string ChartGenerator::stacked_bar_chart_script(const ChartData& data,
+                                                     const ChartConfig& config) {
+    double top = 0.0;
+    for (size_t i = 0; i < data.labels.size(); ++i) {
+        top = std::max(top, data.values[i] + (i < data.values2.size() ? data.values2[i] : 0.0));
+    }
+    // Whole-number ticks, about ten of them at most, and room above the tallest bar
+    const double step = std::max(1.0, std::ceil(top / 10.0));
+    const double y_max = std::max(step, std::ceil(top * 1.15 / step) * step);
+
+    std::ostringstream script;
+    script << "reset\n";
+    script << "set terminal pngcairo size " << config.width << "," << config.height
+           << " enhanced font 'Arial," << config.font_size << "'\n";
+    script << "set output 'temp_chart_output.png'\n";
+    if (config.rotate_x_labels) script << "set bmargin 5\n";
+    if (!data.title.empty()) script << "set title '" << escape_gnuplot_string(data.title) << "'\n";
+    if (!data.y_label.empty()) script << "set ylabel '" << escape_gnuplot_string(data.y_label) << "'\n";
+    script << "set key top left\n";
+    script << "set style data histograms\n";
+    script << "set style histogram rowstacked\n";
+    script << "set style fill solid 0.9 border -1\n";
+    script << "set boxwidth " << config.box_width << "\n";
+    script << "set yrange [0:" << y_max << "]\n";
+    script << "set ytics 0," << step << "\n";
+    script << "set format y '%.0f'\n";
+    script << "set xtics";
+    if (config.rotate_x_labels) script << " rotate by " << config.x_label_angle;
+    script << " font 'Arial,9'\n";
+    script << "plot 'temp_chart_data.txt' using 2:xtic(1) title '"
+           << escape_gnuplot_string(data.series_name) << "' lc rgb '" << config.line_color
+           << "', \\\n";
+    script << "     '' using 3 title '" << escape_gnuplot_string(data.series2_name)
+           << "' lc rgb '#d9822b'\n";
+    return script.str();
+}
+
+std::string ChartGenerator::render_stacked_bar_chart(const ChartData& data, const ChartConfig& config) {
+    if (data.labels.empty() || data.values.empty()) {
+        WARN("No data provided for stacked bar chart");
+        return "";
+    }
+    if (data.labels.size() != data.values.size() || data.labels.size() != data.values2.size()) {
+        ERROR("Labels and values size mismatch in stacked bar chart");
+        return "";
+    }
+    try {
+        std::ostringstream data_content;
+        for (size_t i = 0; i < data.labels.size(); ++i) {
+            data_content << data.labels[i] << " " << std::fixed << std::setprecision(0)
+                         << data.values[i] << " " << data.values2[i] << "\n";
+        }
+        return execute_gnuplot(stacked_bar_chart_script(data, config), data_content.str());
+    } catch (const std::exception& e) {
+        ERROR("Exception rendering stacked bar chart: " + std::string(e.what()));
+        mark_chart_failed("the chart could not be drawn");
+        return "";
+    }
+}
 
 std::string ChartGenerator::render_pie_chart(const ChartData& data, const ChartConfig& config) {
     if (data.labels.empty() || data.values.empty()) {
@@ -1716,6 +2187,7 @@ std::string ChartGenerator::render_pie_chart(const ChartData& data, const ChartC
 
     } catch (const std::exception& e) {
         ERROR("Exception rendering pie chart: " + std::string(e.what()));
+        mark_chart_failed("the chart could not be drawn");
         return "";
     }
 }
@@ -1723,14 +2195,14 @@ std::string ChartGenerator::render_pie_chart(const ChartData& data, const ChartC
 // ChartGenerator Implementation - High-Level Functions (Original)
 // ============================================================================
 
-std::string ChartGenerator::generate_equity_curve_chart(
-    std::shared_ptr<DatabaseInterface> db,
-    const std::string& strategy_id,
-                                                  const std::string& portfolio_id,
-    int lookback_days)
-{
+std::string ChartGenerator::generate_equity_curve_chart(std::shared_ptr<DatabaseInterface> db,
+                                                        const std::string& strategy_id,
+                                                        const std::string& portfolio_id,
+                                                        const std::string& date,
+                                                        int lookback_days) {
+    begin_chart();
     // Fetch data using modular fetcher
-    ChartData data = fetch_equity_curve_data(db, strategy_id, portfolio_id, lookback_days);
+    ChartData data = fetch_equity_curve_data(db, strategy_id, portfolio_id, date, lookback_days);
 
     if (data.labels.empty() || data.values.empty()) {
         return "";
@@ -1747,16 +2219,26 @@ std::string ChartGenerator::generate_equity_curve_chart(
     return render_line_chart(data, config);
 }
 
-std::string ChartGenerator::generate_pnl_by_symbol_chart(
-    std::shared_ptr<DatabaseInterface> db,
-    const std::string& strategy_id,
-                                                  const std::string& portfolio_id,
-    const std::string& date)
-{
+std::string ChartGenerator::generate_days_pnl_chart(const std::vector<ChartPoint>& rows,
+                                                    const std::string& date) {
+    begin_chart();
+    ChartData data = ChartSeries::pnl_by_symbol(rows, date, true);
+    if (data.labels.empty() || data.values.empty()) return "";
+    ChartConfig config;
+    config.rotate_x_labels = true;
+    config.x_label_angle = -45;
+    return render_bar_chart(data, config);
+}
+
+std::string ChartGenerator::generate_pnl_by_symbol_chart(std::shared_ptr<DatabaseInterface> db,
+                                                         const std::string& strategy_id,
+                                                         const std::string& portfolio_id,
+                                                         const std::string& date, bool equities) {
+    begin_chart();
     INFO("Starting PnL by symbol chart generation for strategy: " + strategy_id);
 
     // Fetch data using modular fetcher
-    ChartData data = fetch_pnl_by_symbol_data(db, strategy_id, portfolio_id, date);
+    ChartData data = fetch_pnl_by_symbol_data(db, strategy_id, portfolio_id, date, equities);
 
     if (data.labels.empty() || data.values.empty()) {
         WARN("No data available for PnL by symbol chart - returning empty string");
@@ -1778,6 +2260,102 @@ std::string ChartGenerator::generate_pnl_by_symbol_chart(
     return result;
 }
 
+std::string ChartGenerator::generate_drawdown_chart(std::shared_ptr<DatabaseInterface> db,
+                                                    const std::string& strategy_id,
+                                                    const std::string& portfolio_id,
+                                                    const std::string& date, int lookback_days) {
+    begin_chart();
+    // The whole stored curve gives the running peak; the last days are drawn.
+    ChartData curve = fetch_equity_curve_data(db, strategy_id, portfolio_id, date, 3650);
+    if (curve.labels.size() < 2 || curve.values.size() != curve.labels.size()) return "";
+    ChartData data;
+    double peak = curve.values.front();
+    for (std::size_t i = 0; i < curve.values.size(); ++i) {
+        peak = std::max(peak, curve.values[i]);
+        data.labels.push_back(curve.labels[i]);
+        data.values.push_back(peak > 0.0 ? (curve.values[i] / peak - 1.0) * 100.0 : 0.0);
+    }
+    const std::size_t keep = static_cast<std::size_t>(std::max(2, lookback_days));
+    if (data.labels.size() > keep) {
+        data.labels.erase(data.labels.begin(), data.labels.end() - static_cast<long>(keep));
+        data.values.erase(data.values.begin(), data.values.end() - static_cast<long>(keep));
+    }
+    data.title = "Drawdown from the peak";
+    data.y_label = "percent";
+    data.y_format = "%.1f%%";
+    data.has_reference_line = true;
+    data.reference_line = 0.0;
+    ChartConfig config;
+    config.width = 1000;
+    config.height = 400;
+    config.rotate_x_labels = true;
+    config.x_label_angle = -45;
+    config.line_color = "#b42318";
+    return render_line_chart(data, config);
+}
+
+std::string ChartGenerator::generate_gross_leverage_chart(std::shared_ptr<DatabaseInterface> db,
+                                                          const std::string& strategy_id,
+                                                          const std::string& portfolio_id,
+                                                          const std::string& date,
+                                                          int lookback_days) {
+    begin_chart();
+    if (!db) return "";
+    const std::string query =
+        "SELECT to_char(date, 'YYYY-MM-DD'), (gross_notional / NULLIF(current_portfolio_value, 0))::text, (net_notional / NULLIF(current_portfolio_value, 0))::text FROM (SELECT date, gross_notional, net_notional, current_portfolio_value "
+        "FROM trading.live_results WHERE strategy_id = '" + strategy_id + "' AND portfolio_id = '" +
+        portfolio_id + "' AND date <= '" + date + "' AND gross_notional IS NOT NULL AND net_notional IS NOT NULL AND current_portfolio_value > 0 ORDER BY date DESC "
+        "LIMIT " + std::to_string(lookback_days) + ") t ORDER BY date ASC";
+    auto result = db->execute_query(query);
+    if (result.is_error()) {
+        ERROR("Failed to query gross leverage: " + std::string(result.error()->what()));
+        mark_chart_failed("the data could not be read");
+        return "";
+    }
+    auto table = result.value();
+    if (!table || table->num_rows() < 2) return "";
+    auto combined = table->CombineChunks();
+    if (!combined.ok()) {
+        mark_chart_failed("the data could not be read");
+        return "";
+    }
+    auto text_of = [](const std::shared_ptr<arrow::Array>& a, int64_t i) -> std::string {
+        if (!a || a->IsNull(i)) return "";
+        if (a->type_id() == arrow::Type::STRING)
+            return std::static_pointer_cast<arrow::StringArray>(a)->GetString(i);
+        if (a->type_id() == arrow::Type::LARGE_STRING)
+            return std::static_pointer_cast<arrow::LargeStringArray>(a)->GetString(i);
+        return "";
+    };
+    const auto t = combined.ValueOrDie();
+    ChartData data;
+    for (int64_t i = 0; i < t->num_rows(); ++i) {
+        const std::string day = text_of(t->column(0)->chunk(0), i);
+        const std::string value = text_of(t->column(1)->chunk(0), i);
+        const std::string net = text_of(t->column(2)->chunk(0), i);
+        if (day.empty() || value.empty() || net.empty()) continue;
+        try {
+            const double g = std::stod(value), n = std::stod(net);
+            data.values.push_back(g);
+            data.values2.push_back(n);
+            data.labels.push_back(day);
+        } catch (...) {
+        }
+    }
+    if (data.labels.size() < 2) return "";
+    data.title = "Leverage on the account value";
+    data.y_label = "times the account value";
+    data.series_name = "Gross";
+    data.series2_name = "Net";
+    data.y_format = "%.1fx";
+    ChartConfig config;
+    config.width = 1000;
+    config.height = 400;
+    config.rotate_x_labels = true;
+    config.x_label_angle = -45;
+    return render_line_chart(data, config);
+}
+
 std::string ChartGenerator::generate_daily_pnl_chart(
     std::shared_ptr<DatabaseInterface> db,
     const std::string& strategy_id,
@@ -1785,6 +2363,7 @@ std::string ChartGenerator::generate_daily_pnl_chart(
     const std::string& date,
     int lookback_days)
 {
+    begin_chart();
     // Fetch data using modular fetcher
     ChartData data = fetch_daily_pnl_data(db, strategy_id, portfolio_id, date, lookback_days);
 
@@ -1804,12 +2383,13 @@ std::string ChartGenerator::generate_daily_pnl_chart(
 }
 
 std::string ChartGenerator::generate_total_transaction_costs_chart(
-    std::shared_ptr<DatabaseInterface> db,
-    const std::string& strategy_id,
-                                                  const std::string& portfolio_id,
-    const std::string& end_date)   // "YYYY-MM-DD" (today)
-{
-    ChartData data = fetch_cumulative_transaction_costs_data(db, strategy_id, portfolio_id, end_date);
+    std::shared_ptr<DatabaseInterface> db, const std::string& strategy_id,
+    const std::string& portfolio_id,
+    const std::string& end_date,  // "YYYY-MM-DD" (today)
+    const ChartSeries::MultiplierLookup& multiplier_of) {
+    begin_chart();
+    ChartData data = fetch_cumulative_transaction_costs_data(db, strategy_id, portfolio_id,
+                                                             end_date, multiplier_of);
     if (data.labels.empty() || data.values.empty()) return "";
 
     ChartConfig config;
@@ -1821,12 +2401,27 @@ std::string ChartGenerator::generate_total_transaction_costs_chart(
     return render_line_chart(data, config);
 }
 
+std::string ChartGenerator::generate_contracts_per_day_chart(std::shared_ptr<DatabaseInterface> db,
+                                                             const std::string& portfolio_id,
+                                                             const std::string& date, int days) {
+    begin_chart();
+    ChartData data = fetch_contracts_per_day_data(db, portfolio_id, date, days);
+    if (data.labels.empty()) return "";
+    ChartConfig config;
+    config.width = 1000;
+    config.height = 500;
+    config.rotate_x_labels = true;
+    config.x_label_angle = -45;
+    return render_stacked_bar_chart(data, config);
+}
+
 std::string ChartGenerator::generate_margin_posted_chart(
     std::shared_ptr<DatabaseInterface> db,
     const std::string& strategy_id,
                                                   const std::string& portfolio_id,
     const std::string& date /* today */)
 {
+    begin_chart();
     ChartData data = fetch_margin_posted_data(db, strategy_id, portfolio_id, date);
     if (data.labels.empty() || data.values.empty()) return "";
 
@@ -1847,6 +2442,7 @@ std::string ChartGenerator::generate_portfolio_composition_chart(
     const std::unordered_map<std::string, double>& current_prices,
     const std::string& date)
 {
+    begin_chart();
     INFO("Starting portfolio composition pie chart generation");
 
     // Fetch data
@@ -1878,12 +2474,13 @@ std::string ChartGenerator::generate_cumulative_pnl_by_symbol_chart(
     std::shared_ptr<DatabaseInterface> db,
     const std::string& strategy_id,
                                                   const std::string& portfolio_id,
-    const std::string& date)
+    const std::string& date, bool equities)
 {
+    begin_chart();
     INFO("Starting cumulative PnL by symbol chart generation for strategy: " + strategy_id);
 
     // Fetch data
-    ChartData data = fetch_cumulative_pnl_by_symbol_data(db, strategy_id, portfolio_id, date);
+    ChartData data = fetch_cumulative_pnl_by_symbol_data(db, strategy_id, portfolio_id, date, equities);
 
     if (data.labels.empty() || data.values.empty()) {
         WARN("No data available for cumulative PnL by symbol chart");

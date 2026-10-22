@@ -204,8 +204,9 @@ TEST(QtHardening, AFailedStoreFailsTheRunAndTheCommandRow) {
     for (const char* runner : kRunners) {
         const std::string src = read_source(runner);
         if (src.empty()) GTEST_SKIP() << "runner source not found";
+        // (No "executions (stale rows)" site: a sleeve's day is swept and stored in one
+        // transaction, replace_roll_day_executions, so there is no separate stale delete.)
         for (const char* site : {"qt_store_failed(\"live_run_metadata\");",
-                                 "qt_store_failed(\"executions (stale rows) of \" + strategy_name);",
                                  "qt_store_failed(\"executions of \" + strategy_name);",
                                  "qt_store_failed(\"Day T-1 positions of \" + strategy_name);",
                                  "qt_store_failed(\"positions of \" + strategy_name);",
@@ -356,7 +357,8 @@ TEST(QtHardening, ThePublishEmailIsSentOnce) {
     for (const char* runner : kRunners) {
         const std::string src = read_source(runner);
         if (src.empty()) GTEST_SKIP() << "runner source not found";
-        const auto sent = at(src, "qt_emailed = true;\n                        if (qt_sends) {");
+        // Inside the send callback handed to deliver_email_report (live/email_delivery.hpp).
+        const auto sent = at(src, "qt_emailed = true;\n                            if (qt_sends) {");
         ASSERT_NE(sent, npos) << runner;
         EXPECT_LT(at(src, "auto marked = qt::record_sent(*db, qt_audit ? qt_audit_id : 0,", sent) - sent,
                   300u)

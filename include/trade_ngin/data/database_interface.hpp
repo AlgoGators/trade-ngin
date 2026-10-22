@@ -179,37 +179,6 @@ public:
     virtual Result<std::shared_ptr<arrow::Table>> execute_query(const std::string& query) = 0;
 
     // ============================================================================
-    // NEW METHODS FOR BACKTEST DATA STORAGE
-    // ============================================================================
-
-    /**
-     * @brief Store backtest execution data
-     * @param executions Vector of execution reports
-     * @param run_id Backtest run identifier
-     * @param table_name Name of the table to insert into
-     * @return Result indicating success or failure
-     */
-    virtual Result<void> store_backtest_executions(
-        const std::vector<ExecutionReport>& executions, const std::string& run_id,
-        const std::string& portfolio_id = "BASE_PORTFOLIO",
-        const std::string& table_name = "backtest.executions") = 0;
-
-    /**
-     * @brief Store backtest signals
-     * @param signals Map of symbol to signal value
-     * @param strategy_id ID of the strategy generating signals
-     * @param run_id Backtest run identifier
-     * @param timestamp Timestamp of signals
-     * @param table_name Name of the table to insert into
-     * @return Result indicating success or failure
-     */
-    virtual Result<void> store_backtest_signals(
-        const std::unordered_map<std::string, double>& signals, const std::string& strategy_id,
-        const std::string& run_id, const Timestamp& timestamp,
-        const std::string& portfolio_id = "BASE_PORTFOLIO",
-        const std::string& table_name = "backtest.signals") = 0;
-
-    // ============================================================================
     // NEW METHODS FOR LIVE TRADING DATA STORAGE
     // ============================================================================
 

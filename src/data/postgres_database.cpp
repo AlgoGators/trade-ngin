@@ -1,6 +1,7 @@
 // src/data/postgres_database.cpp
 
 #include "trade_ngin/data/postgres_database.hpp"
+#include "trade_ngin/data/day_execution_replace.hpp"
 #include <algorithm>
 #include <optional>
 #include <cctype>
@@ -8,7 +9,9 @@
 #include <sstream>
 #include "trade_ngin/core/state_manager.hpp"
 #include "trade_ngin/core/time_utils.hpp"
+#include "trade_ngin/data/day_signal_replace.hpp"
 #include "trade_ngin/data/market_data_utils.hpp"
+#include "trade_ngin/transaction_cost/netting.hpp"
 
 namespace {
 std::string join(const std::vector<std::string>& elements, const std::string& delimiter) {
@@ -87,6 +90,18 @@ Result<void> PostgresDatabase::connect() {
         if (!connection_->is_open()) {
             return make_error<void>(ErrorCode::CONNECTION_ERROR,
                                     "Failed to open database connection", "PostgresDatabase");
+        }
+
+        // Pin the session to UTC. Without it the session takes the database's or
+        // the role's default, or the client's PGTZ, and every timestamptz this
+        // class reads as text comes back in that zone. A session that cannot be
+        // pinned is not handed out.
+        try {
+            pqxx::nontransaction pin(*connection_);
+            pin.exec(session_time_zone_statement());
+        } catch (...) {
+            connection_.reset();
+            throw;
         }
 
         // Generate a unique ID for this connection instance
@@ -399,41 +414,48 @@ Result<void> PostgresDatabase::replace_roll_day_executions(
         if (auto sn = validate_strategy_id(sleeve.first); sn.is_error()) return sn;
     }
     try {
-        // ONE transaction over every sleeve: the sweep of the sleeve's ROLL rows of the day, the
-        // delete of the rows carrying this run's order ids, and the insert. Nothing is committed
-        // unless all of it is.
-        pqxx::work txn(*connection_);
-        for (const auto& [strategy_name, executions] : sleeves) {
-            txn.exec("DELETE FROM " + table_name +
-                         " WHERE strategy_name = $1 AND portfolio_id = $2 AND date = $3::date"
-                         " AND execution_type = 'ROLL' AND portfolio_type = $4",
-                     pqxx::params{strategy_name, portfolio_id,
-                                  trade_ngin::core::format_utc_date(date), book});
-            std::vector<std::string> order_ids;
-            order_ids.reserve(executions.size());
-            for (const auto& e : executions) order_ids.push_back(e.order_id);
-            std::sort(order_ids.begin(), order_ids.end());
-            order_ids.erase(std::unique(order_ids.begin(), order_ids.end()), order_ids.end());
-            if (!order_ids.empty()) {
+        // ONE transaction over every sleeve (data/day_execution_replace.hpp): the sweep of the
+        // sleeve's rows of the day, the delete of the rows carrying this run's order ids, and the
+        // insert. Nothing is committed unless all of it is. Every statement is scoped to the book
+        // (migration 021).
+        struct PgTxn {
+            PostgresDatabase& db;
+            pqxx::work& txn;
+            const std::string& strategy_id;
+            const std::string& portfolio_id;
+            const std::string& table_name;
+            const std::string& book;
+            void delete_day(const std::string& sleeve, const std::string& portfolio,
+                            const std::string& day) {
+                txn.exec("DELETE FROM " + table_name +
+                             " WHERE strategy_name = $1 AND portfolio_id = $2 AND date = $3::date"
+                             " AND portfolio_type = $4",
+                         pqxx::params{sleeve, portfolio, day, book});
+            }
+            void delete_order_ids(const std::string& sleeve, const std::string& portfolio,
+                                  const std::vector<std::string>& order_ids) {
                 std::string in_list;
                 for (size_t i = 0; i < order_ids.size(); ++i) {
                     if (i > 0) in_list += ", ";
                     in_list += txn.quote(order_ids[i]);
                 }
-                // The same predicate as delete_stale_executions (E2-F4, F-C): by portfolio, sleeve
-                // and order id, no calendar date.
                 txn.exec("DELETE FROM " + table_name +
                              " WHERE strategy_name = $1 AND portfolio_id = $2"
                              " AND portfolio_type = $3 AND order_id IN (" +
                              in_list + ")",
-                         pqxx::params{strategy_name, portfolio_id, book});
+                         pqxx::params{sleeve, portfolio, book});
             }
-            auto inserted = insert_executions_in(txn, executions, strategy_id, strategy_name,
-                                                 portfolio_id, table_name, book);
-            if (inserted.is_error()) return inserted;
-        }
-        txn.commit();
-        return Result<void>();
+            Result<void> insert(const std::string& sleeve,
+                                const std::vector<ExecutionReport>& executions) {
+                return db.insert_executions_in(txn, executions, strategy_id, sleeve, portfolio_id,
+                                               table_name, book);
+            }
+            void commit() { txn.commit(); }
+        };
+        pqxx::work txn(*connection_);
+        PgTxn pg{*this, txn, strategy_id, portfolio_id, table_name, book};
+        return replace_day_executions_in(pg, sleeves, portfolio_id,
+                                         trade_ngin::core::format_utc_date(date));
     } catch (const std::exception& e) {
         return make_error<void>(ErrorCode::DATABASE_ERROR,
                                 "Failed to replace the day's executions: " + std::string(e.what()),
@@ -796,26 +818,69 @@ Result<void> PostgresDatabase::store_signals(const std::unordered_map<std::strin
             return strategy_validation;
         }
 
-        for (const auto& [symbol, signal] : signals) {
-            // Validate signal data
-            auto signal_validation = validate_signal_data(symbol, signal);
-            if (signal_validation.is_error()) {
-                return signal_validation;
+        // OPT-N5/N6: the sleeve's rows of the day are replaced as a set, on this one transaction
+        // (data/day_signal_replace.hpp): the sweep of its rows of the day this run does not
+        // write, then this run's rows. A re-run of a date leaves no row of a symbol it no longer
+        // produces, a row it writes again keeps its id and created_at, and nothing is committed
+        // unless every row was stored. A first run of a day sweeps nothing.
+        struct PgTxn {
+            const PostgresDatabase& db;
+            pqxx::work& txn;
+            const std::string& strategy_id;
+            const std::string& strategy_name;
+            const std::string& portfolio_id;
+            const std::string& table_name;
+            const std::string stamp;
+            size_t swept{0};
+            void sweep(const std::string& id, const std::string& sleeve,
+                       const std::string& portfolio, const std::string& day,
+                       const std::vector<std::string>& symbols) {
+                swept = static_cast<size_t>(
+                    txn.exec(day_signal_sweep_statement(table_name),
+                             pqxx::params{portfolio, id, sleeve, day, symbols, stamp})
+                        .affected_rows());
             }
+            Result<void> store(const std::string& symbol, double signal) {
+                // Validate signal data
+                auto signal_validation = db.validate_signal_data(symbol, signal);
+                if (signal_validation.is_error()) {
+                    return signal_validation;
+                }
 
-            std::string query =
-                "INSERT INTO " + table_name +
-                " (strategy_id, symbol, signal_value, timestamp, portfolio_id, strategy_name) "
-                "VALUES "
-                "($1, $2, $3, $4, $5, $6) "
-                "ON CONFLICT (portfolio_id, strategy_id, strategy_name, symbol, timestamp) "
-                "DO UPDATE SET signal_value = EXCLUDED.signal_value";
+                std::string query =
+                    "INSERT INTO " + table_name +
+                    " (strategy_id, symbol, signal_value, timestamp, portfolio_id, strategy_name) "
+                    "VALUES "
+                    "($1, $2, $3, $4, $5, $6) "
+                    "ON CONFLICT (portfolio_id, strategy_id, strategy_name, symbol, timestamp) "
+                    "DO UPDATE SET signal_value = EXCLUDED.signal_value";
 
-            txn.exec(query, pqxx::params{strategy_id, symbol, signal, format_timestamp(timestamp),
-                            portfolio_id, strategy_name});
+                txn.exec(query, pqxx::params{strategy_id, symbol, signal, stamp, portfolio_id,
+                                             strategy_name});
+                return Result<void>();
+            }
+            void commit() {
+                txn.commit();
+            }
+        };
+        PgTxn pg{*this,
+                 txn,
+                 strategy_id,
+                 strategy_name,
+                 portfolio_id,
+                 table_name,
+                 format_timestamp(timestamp),
+                 0};
+        const std::string day = trade_ngin::core::format_utc_date(timestamp);
+        auto replaced =
+            replace_day_signals_in(pg, signals, strategy_id, strategy_name, portfolio_id, day);
+        if (replaced.is_error()) {
+            return replaced;
         }
-
-        txn.commit();
+        if (pg.swept > 0) {
+            INFO("Removed " + std::to_string(pg.swept) + " stale signal row(s) of " + day +
+                 " for strategy: " + strategy_name + " (portfolio: " + portfolio_id + ")");
+        }
         INFO("Successfully stored signals for strategy: " + strategy_id);
         return Result<void>();
 
@@ -2255,6 +2320,13 @@ Result<void> PostgresDatabase::validate_execution_report(const ExecutionReport& 
                                 "PostgresDatabase");
     }
 
+    // A ROLL leg and a BORROW row are never netted: a row of either kind carrying a netting
+    // adjustment is refused, never stored and never corrected.
+    const std::string unnetted_refusal = transaction_cost::unnetted_row_refusal(exec);
+    if (!unnetted_refusal.empty()) {
+        return make_error<void>(ErrorCode::INVALID_ARGUMENT, unnetted_refusal, "PostgresDatabase");
+    }
+
     return Result<void>();
 }
 
@@ -2314,122 +2386,6 @@ Result<void> PostgresDatabase::validate_signal_data(const std::string& symbol,
 // ============================================================================
 // BACKTEST DATA STORAGE IMPLEMENTATIONS
 // ============================================================================
-
-Result<void> PostgresDatabase::store_backtest_executions(
-    const std::vector<ExecutionReport>& executions, const std::string& run_id,
-    const std::string& portfolio_id, const std::string& table_name) {
-    auto validation = validate_connection();
-    if (validation.is_error())
-        return validation;
-
-    try {
-        pqxx::work txn(*connection_);
-
-        // Validate table name
-        auto table_validation = validate_table_name(table_name);
-        if (table_validation.is_error()) {
-            return table_validation;
-        }
-
-        std::string actual_portfolio_id = portfolio_id.empty() ? "BASE_PORTFOLIO" : portfolio_id;
-
-        for (const auto& exec : executions) {
-            auto exec_validation = validate_execution_report(exec);
-            if (exec_validation.is_error()) {
-                return exec_validation;
-            }
-        }
-
-        // Use batch insert for better performance with large execution sets
-        if (executions.size() > 100) {
-            // Bind every value: Postgres caps a statement at 65535 parameters,
-            // so insert in chunks of whole rows.
-            constexpr std::size_t kColumns = 17;  // T-ROLLX: + execution_type, instrument_id
-            constexpr std::size_t kMaxRowsPerStatement = 65535 / kColumns;
-            const std::string prefix =
-                "INSERT INTO " + table_name +
-                " (run_id, portfolio_id, execution_id, order_id, timestamp, "
-                "symbol, side, quantity, price, commissions_fees, "
-                "implicit_price_impact, slippage_market_impact, "
-                "total_transaction_costs, is_partial, netting_adjustment, execution_type, "
-                "instrument_id) VALUES ";
-
-            for (std::size_t start = 0; start < executions.size(); start += kMaxRowsPerStatement) {
-                const std::size_t end =
-                    std::min(executions.size(), start + kMaxRowsPerStatement);
-                std::string query = prefix;
-                pqxx::params batch;
-                std::size_t next_placeholder = 1;
-                for (std::size_t i = start; i < end; ++i) {
-                    const auto& exec = executions[i];
-                    if (i != start)
-                        query += ",";
-                    query += "(";
-                    for (std::size_t c = 0; c < kColumns; ++c) {
-                        if (c != 0)
-                            query += ",";
-                        query += "$" + std::to_string(next_placeholder++);
-                    }
-                    query += ")";
-                    batch.append(run_id);
-                    batch.append(actual_portfolio_id);
-                    batch.append(exec.exec_id);
-                    batch.append(exec.order_id);
-                    batch.append(format_timestamp(exec.fill_time));
-                    batch.append(exec.symbol);
-                    batch.append(side_to_string(exec.side));
-                    batch.append(static_cast<double>(exec.filled_quantity));
-                    batch.append(static_cast<double>(exec.fill_price));
-                    batch.append(static_cast<double>(exec.commissions_fees));
-                    batch.append(static_cast<double>(exec.implicit_price_impact));
-                    batch.append(static_cast<double>(exec.slippage_market_impact));
-                    batch.append(static_cast<double>(exec.total_transaction_costs));
-                    batch.append(exec.is_partial);
-                    batch.append(static_cast<double>(exec.netting_adjustment));
-                    batch.append(std::string(to_string(exec.execution_type)));  // 015 (T-ROLLX)
-                    batch.append(exec.instrument_id.empty() ? std::optional<std::string>{}
-                                                            : std::optional<std::string>{exec.instrument_id});
-                }
-                txn.exec(query, batch);
-            }
-        } else {
-            // Use parameterized queries for smaller batches
-            for (const auto& exec : executions) {
-                std::string query = "INSERT INTO " + table_name +
-                                    " (run_id, portfolio_id, execution_id, order_id, timestamp, "
-                                    "symbol, side, quantity, price, commissions_fees, "
-                                    "implicit_price_impact, slippage_market_impact, "
-                                    "total_transaction_costs, is_partial, netting_adjustment, "
-                                    "execution_type, instrument_id) "
-                                    "VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, "
-                                    "$13, $14, $15, $16, $17)";
-
-                txn.exec(
-                    query, pqxx::params{
-                    run_id, actual_portfolio_id, exec.exec_id, exec.order_id,
-                    format_timestamp(exec.fill_time), exec.symbol, side_to_string(exec.side),
-                    static_cast<double>(exec.filled_quantity), static_cast<double>(exec.fill_price),
-                    static_cast<double>(exec.commissions_fees),
-                    static_cast<double>(exec.implicit_price_impact),
-                    static_cast<double>(exec.slippage_market_impact),
-                    static_cast<double>(exec.total_transaction_costs), exec.is_partial,
-                    static_cast<double>(exec.netting_adjustment),
-                    std::string(to_string(exec.execution_type)),  // 015 (T-ROLLX)
-                    exec.instrument_id.empty() ? std::optional<std::string>{}
-                                               : std::optional<std::string>{exec.instrument_id}});
-            }
-        }
-
-        txn.commit();
-        INFO("Successfully stored " + std::to_string(executions.size()) +
-             " backtest executions for run: " + run_id);
-        return Result<void>();
-    } catch (const std::exception& e) {
-        return make_error<void>(ErrorCode::DATABASE_ERROR,
-                                "Failed to store backtest executions: " + std::string(e.what()),
-                                "PostgresDatabase");
-    }
-}
 
 Result<void> PostgresDatabase::store_backtest_executions_with_strategy(
     const std::vector<ExecutionReport>& executions, const std::string& run_id,
@@ -2546,60 +2502,6 @@ Result<void> PostgresDatabase::store_backtest_executions_with_strategy(
             ErrorCode::DATABASE_ERROR,
             "Failed to store backtest executions with strategy: " + std::string(e.what()),
             "PostgresDatabase");
-    }
-}
-
-Result<void> PostgresDatabase::store_backtest_signals(
-    const std::unordered_map<std::string, double>& signals, const std::string& strategy_id,
-    const std::string& run_id, const Timestamp& timestamp, const std::string& portfolio_id,
-    const std::string& table_name) {
-    auto validation = validate_connection();
-    if (validation.is_error())
-        return validation;
-
-    try {
-        pqxx::work txn(*connection_);
-
-        std::string actual_portfolio_id = portfolio_id.empty() ? "BASE_PORTFOLIO" : portfolio_id;
-
-        for (const auto& [symbol, signal_value] : signals) {
-            // For backtest.signals, include portfolio_run_id if run_id looks like a portfolio
-            // run_id (contains '&') Schema has portfolio_run_id column (nullable) and portfolio_id
-            // column
-            std::string query;
-            if (table_name == "backtest.signals" && run_id.find('&') != std::string::npos) {
-                // Portfolio run: run_id is portfolio_run_id format, use it for portfolio_run_id
-                // column
-                query = "INSERT INTO " + table_name +
-                        " (run_id, portfolio_id, strategy_id, symbol, signal_value, timestamp, "
-                        "portfolio_run_id) "
-                        "VALUES ($1, $2, $3, $4, $5, $6, $7) "
-                        "ON CONFLICT (run_id, strategy_id, symbol, timestamp) "
-                        "DO UPDATE SET signal_value = EXCLUDED.signal_value, portfolio_id = "
-                        "EXCLUDED.portfolio_id, portfolio_run_id = EXCLUDED.portfolio_run_id";
-                txn.exec(query, pqxx::params{run_id, actual_portfolio_id, strategy_id, symbol,
-                                signal_value, format_timestamp(timestamp), run_id});
-            } else {
-                // Single strategy run or other table: include portfolio_id
-                query = "INSERT INTO " + table_name +
-                        " (run_id, portfolio_id, strategy_id, symbol, signal_value, timestamp) "
-                        "VALUES ($1, $2, $3, $4, $5, $6) "
-                        "ON CONFLICT (run_id, strategy_id, symbol, timestamp) "
-                        "DO UPDATE SET signal_value = EXCLUDED.signal_value, portfolio_id = "
-                        "EXCLUDED.portfolio_id";
-                txn.exec(query, pqxx::params{run_id, actual_portfolio_id, strategy_id, symbol,
-                                signal_value, format_timestamp(timestamp)});
-            }
-        }
-
-        txn.commit();
-        INFO("Successfully stored " + std::to_string(signals.size()) +
-             " backtest signals for strategy: " + strategy_id);
-        return Result<void>();
-    } catch (const std::exception& e) {
-        return make_error<void>(ErrorCode::DATABASE_ERROR,
-                                "Failed to store backtest signals: " + std::string(e.what()),
-                                "PostgresDatabase");
     }
 }
 
@@ -3254,14 +3156,21 @@ PostgresDatabase::get_position_inception_dates(const std::string& strategy_id,
                                                const std::string& table_name) {
     using Map = std::unordered_map<std::string, std::string>;
 
+    // table_name is interpolated into the FROM clause below and cannot be a
+    // bound parameter, so it goes through the same allowlist
+    // load_positions_by_date uses. Every caller passes the default today; that
+    // is a property of today's callers, not of this function. The check comes
+    // before the connection is looked at, so a refused name issues no SQL.
+    auto table_validation = validate_table_name(table_name);
+    if (table_validation.is_error()) {
+        return make_error<Map>(table_validation.error()->code(), table_validation.error()->what());
+    }
+
     auto validation = validate_connection();
     if (validation.is_error()) {
         return make_error<Map>(validation.error()->code(), validation.error()->what());
     }
     if (symbols.empty()) return Result<Map>(Map{});
-
-    // table_name is an internal default (trading.positions), never user input --
-    // same contract as load_positions_by_date, which interpolates it likewise.
 
     try {
         pqxx::work txn(*connection_);
@@ -3305,14 +3214,21 @@ PostgresDatabase::get_current_holding_start_dates(const std::string& strategy_id
                                                   const std::string& table_name) {
     using Map = std::unordered_map<std::string, std::string>;
 
+    // table_name is interpolated into the FROM clause below and cannot be a
+    // bound parameter, so it goes through the same allowlist
+    // load_positions_by_date uses. Every caller passes the default today; that
+    // is a property of today's callers, not of this function. The check comes
+    // before the connection is looked at, so a refused name issues no SQL.
+    auto table_validation = validate_table_name(table_name);
+    if (table_validation.is_error()) {
+        return make_error<Map>(table_validation.error()->code(), table_validation.error()->what());
+    }
+
     auto validation = validate_connection();
     if (validation.is_error()) {
         return make_error<Map>(validation.error()->code(), validation.error()->what());
     }
     if (symbols.empty()) return Result<Map>(Map{});
-
-    // table_name is an internal default (trading.positions), never user input --
-    // same contract as load_positions_by_date, which interpolates it likewise.
 
     try {
         pqxx::work txn(*connection_);
@@ -3380,14 +3296,21 @@ PostgresDatabase::get_last_buy_dates(const std::string& strategy_id,
                                      const std::string& table_name) {
     using Map = std::unordered_map<std::string, std::string>;
 
+    // table_name is interpolated into the FROM clause below and cannot be a
+    // bound parameter, so it goes through the same allowlist
+    // load_positions_by_date uses. Every caller passes the default today; that
+    // is a property of today's callers, not of this function. The check comes
+    // before the connection is looked at, so a refused name issues no SQL.
+    auto table_validation = validate_table_name(table_name);
+    if (table_validation.is_error()) {
+        return make_error<Map>(table_validation.error()->code(), table_validation.error()->what());
+    }
+
     auto validation = validate_connection();
     if (validation.is_error()) {
         return make_error<Map>(validation.error()->code(), validation.error()->what());
     }
     if (symbols.empty()) return Result<Map>(Map{});
-
-    // table_name is an internal default (trading.executions), never user input --
-    // same contract as get_position_inception_dates above.
 
     try {
         pqxx::work txn(*connection_);

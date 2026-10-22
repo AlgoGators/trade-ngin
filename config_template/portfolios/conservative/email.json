@@ -6,6 +6,5 @@
   "password": "YOUR_SMTP_APP_PASSWORD",
   "from_email": "YOUR_FROM_EMAIL",
   "to_emails": ["YOUR_EMAIL_FOR_NOTIFICATIONS"],
-  "to_emails_production": ["ADD", "PRODUCTION", "RECIPIENTS"],
   "use_tls": true
 }

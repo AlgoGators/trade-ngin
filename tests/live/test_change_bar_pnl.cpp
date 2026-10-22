@@ -22,6 +22,7 @@
 #include <sstream>
 #include <thread>
 #include "../core/test_base.hpp"
+#include "trade_ngin/core/report_settled_marks.hpp"
 #include "trade_ngin/core/types.hpp"
 #include "trade_ngin/data/roll_series.hpp"
 #include "trade_ngin/instruments/futures.hpp"
@@ -156,6 +157,10 @@ TEST_F(ChangeBarPnlTest, TheT1SettlementSkipsAWithheldBarAndZeroesChangeAndWithh
     EXPECT_DOUBLE_EQ(s.t2_close_prices.at("ES.v.0"), 5020.0) << "day 2's close, the last consumed before T-1";
     EXPECT_DOUBLE_EQ(s.t2_close_prices.at("NG.v.0"), 3.33);
     EXPECT_EQ(s.zero_pnl_symbols, (std::unordered_set<std::string>{"NG.v.0", "6B.v.0"}));
+    // T-EMAIL: the two kinds kept apart (NG is a change bar, 6B a withheld print); their union is
+    // what the settle reads, so nothing it books moves
+    EXPECT_EQ(s.roll_zero_symbols, (std::unordered_set<std::string>{"NG.v.0"}));
+    EXPECT_EQ(s.withheld_zero_symbols, (std::unordered_set<std::string>{"6B.v.0"}));
 
     LivePnLManager pm(500000.0, InstrumentRegistry::instance());
     const std::vector<Position> book{held("ES.v.0", 1, 0), held("NG.v.0", 2, 0), held("6B.v.0", 1, 0)};
@@ -165,4 +170,97 @@ TEST_F(ChangeBarPnlTest, TheT1SettlementSkipsAWithheldBarAndZeroesChangeAndWithh
     EXPECT_DOUBLE_EQ(r.value().position_realized_pnl.at("ES.v.0"), 1 * (5040.0 - 5020.0) * 50.0);
     EXPECT_DOUBLE_EQ(r.value().position_realized_pnl.at("NG.v.0"), 0.0);
     EXPECT_DOUBLE_EQ(r.value().position_realized_pnl.at("6B.v.0"), 0.0) << "a withheld T-1 bar books nothing";
+}
+
+// HD 2026-10-12, one source: the two price columns of the report's settled table and of the
+// settled file are the pair THIS settle booked each row on, the maps consumed_t1_settlement hands
+// finalize_previous_day, never a second lookup of the bars. The same book as above plus ZN, which
+// printed no bar on T-1 (day 4) nor on day 3. EXECUTES the settlement, the finalize and the
+// table's rule.
+TEST_F(ChangeBarPnlTest, TheSettledTablePricesAreThePairTheFinalizeBookedEachRowOn) {
+    const std::string t1 =
+        SessionClassifier::ymd(SessionClassifier::day_of(bar("ES.v.0", 4, 0, "").timestamp));
+    std::vector<Bar> consumed;
+    for (int d = 1; d <= 4; ++d) {
+        if (d != 3)
+            consumed.push_back(bar("ES.v.0", d, 5000.0 + 10 * d, "1"));
+        consumed.push_back(bar("NG.v.0", d, 3.3 + 0.01 * d, d == 4 ? "863" : "864"));
+        if (d <= 3)
+            consumed.push_back(bar("6B.v.0", d, 1.30 + 0.001 * d, "1318"));
+        if (d <= 2)
+            consumed.push_back(bar("ZN.v.0", d, 110.0 + d, "42002219"));
+    }
+    const auto status = roll_series::roll_status_of(consumed);
+    // The price manager's raw maps: the "two days ago" price is the bar before the symbol's NEWEST
+    // bar whatever its date. For ES that is the withheld day 3 print; for ZN (newest bar day 2) it
+    // is day 1's close, one bar older than its last known close.
+    const std::unordered_map<std::string, double> raw_t2{
+        {"ES.v.0", 4999.0}, {"NG.v.0", 3.33}, {"6B.v.0", 1.303}, {"ZN.v.0", 111.0}};
+    const std::unordered_map<std::string, double> raw_t1{
+        {"ES.v.0", 5040.0}, {"NG.v.0", 3.34}, {"6B.v.0", 1.25}};
+    const auto s = consumed_t1_settlement(consumed, t1, status, {"6B.v.0"}, raw_t2, raw_t1, {});
+
+    // The last consumed close of each symbol with no consumed T-1 bar: ZN (no bar since day 2) and
+    // 6B (its T-1 print was withheld). ES and NG have a consumed T-1 bar.
+    EXPECT_EQ(s.last_close_without_t1.size(), 2u);
+    EXPECT_DOUBLE_EQ(s.last_close_without_t1.at("ZN.v.0"), 112.0);
+    EXPECT_DOUBLE_EQ(s.last_close_without_t1.at("6B.v.0"), 1.303);
+    // The new field changes nothing the settle reads.
+    EXPECT_DOUBLE_EQ(s.t2_close_prices.at("ES.v.0"), 5020.0);
+    EXPECT_DOUBLE_EQ(s.t2_close_prices.at("ZN.v.0"), 111.0)
+        << "the raw entry, never used: no T-1 bar";
+    EXPECT_EQ(s.t1_close_prices, raw_t1);
+    EXPECT_EQ(s.zero_pnl_symbols, (std::unordered_set<std::string>{"NG.v.0", "6B.v.0"}));
+    // T-EMAIL: the two kinds kept apart (NG is a change bar, 6B a withheld print); their union is
+    // what the settle reads, so nothing it books moves
+    EXPECT_EQ(s.roll_zero_symbols, (std::unordered_set<std::string>{"NG.v.0"}));
+    EXPECT_EQ(s.withheld_zero_symbols, (std::unordered_set<std::string>{"6B.v.0"}));
+
+    LivePnLManager pm(500000.0, InstrumentRegistry::instance());
+    const std::vector<Position> book{held("ES.v.0", 1, 0), held("NG.v.0", 2, 0),
+                                     held("6B.v.0", 1, 0), held("ZN.v.0", 3, 0)};
+    auto r =
+        pm.finalize_previous_day(book, s.t1_close_prices, s.t2_close_prices, 500000.0, 0.0,
+                                 LivePnLManager::UnrealizedPolicy::SETTLED, s.zero_pnl_symbols);
+    ASSERT_TRUE(r.is_ok());
+    const auto& booked = r.value().position_realized_pnl;
+
+    const SettledTablePrices table =
+        settled_table_prices(s.t2_close_prices, s.t1_close_prices, s.last_close_without_t1);
+    const auto cells = [&](const std::string& symbol) {
+        return settled_price_cells(settled_price_of(table.previous, symbol),
+                                   settled_price_of(table.latest, symbol));
+    };
+
+    // ES, an ordinary row the day after a withheld bar: the table prints the pair the P&L was
+    // booked on (5020 -> 5040), not the withheld print 4999 the raw lookup holds, and the row
+    // multiplies out: 1 x (5040 - 5020) x 50 = 1000.
+    EXPECT_EQ(cells("ES.v.0").previous, "$5,020.0000");
+    EXPECT_EQ(cells("ES.v.0").latest, "$5,040.0000");
+    EXPECT_FALSE(cells("ES.v.0").no_bar);
+    EXPECT_DOUBLE_EQ(1.0 * (table.latest.at("ES.v.0") - table.previous.at("ES.v.0")) * 50.0,
+                     booked.at("ES.v.0"));
+    EXPECT_DOUBLE_EQ(booked.at("ES.v.0"), 1000.0);
+
+    // ZN printed no bar on T-1: the settle booked 0; the table prints its last known close (day
+    // 2's 112, not day 1's 111) and the words; the file leaves the mark empty.
+    EXPECT_DOUBLE_EQ(booked.at("ZN.v.0"), 0.0);
+    EXPECT_EQ(table.latest.count("ZN.v.0"), 0u);
+    EXPECT_EQ(cells("ZN.v.0").previous, "$112.0000");
+    EXPECT_EQ(cells("ZN.v.0").latest, "\xE2\x80\x93");
+    EXPECT_TRUE(cells("ZN.v.0").no_bar);
+    const SettledCsvCells zn_file = settled_csv_cells(settled_price_of(table.previous, "ZN.v.0"),
+                                                      settled_price_of(table.latest, "ZN.v.0"));
+    EXPECT_EQ(zn_file.prior_mark, "112");
+    EXPECT_EQ(zn_file.mark, "");
+
+    // NG, a roll's change bar, and 6B, a withheld T-1 print: the table shows the two closes the
+    // settle was handed, and the settle booked 0 by rule, so these rows do not multiply out.
+    EXPECT_EQ(cells("NG.v.0").previous, "$3.3300");
+    EXPECT_EQ(cells("NG.v.0").latest, "$3.3400");
+    EXPECT_DOUBLE_EQ(booked.at("NG.v.0"), 0.0);
+    EXPECT_EQ(cells("6B.v.0").previous, "$1.3030");
+    EXPECT_EQ(cells("6B.v.0").latest, "$1.2500");
+    EXPECT_FALSE(cells("6B.v.0").no_bar);
+    EXPECT_DOUBLE_EQ(booked.at("6B.v.0"), 0.0);
 }

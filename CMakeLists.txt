@@ -166,6 +166,7 @@ set(TRADE_NGIN_SOURCES
     src/data/database_pooling.cpp
     src/data/market_data_utils.cpp
     src/data/session_classifier.cpp
+    src/data/listing_dates.cpp
     src/data/roll_series.cpp
     src/instruments/futures.cpp
     src/instruments/equity.cpp
@@ -187,6 +188,7 @@ set(TRADE_NGIN_SOURCES
     src/backtest/backtest_pnl_manager.cpp
     src/backtest/backtest_price_manager.cpp
     src/backtest/backtest_metrics_calculator.cpp
+    src/backtest/backtest_statistics_columns.cpp
     src/backtest/backtest_execution_manager.cpp
     src/backtest/backtest_data_loader.cpp
     src/backtest/backtest_coordinator.cpp
@@ -210,6 +212,7 @@ set(TRADE_NGIN_SOURCES
     src/live/live_settings.cpp
     src/live/qt_desk.cpp
     src/live/live_historical_metrics.cpp
+    src/live/live_statistics_columns.cpp
     src/live/live_metrics_calculator.cpp
     src/live/live_trading_coordinator.cpp
     src/live/live_price_manager.cpp

@@ -129,6 +129,7 @@ protected:
         cc.store_results = false;
         cc.store_trade_details = true;
         cc.portfolio_id = "ROLL_LEGS_ONCE_TEST";
+        cc.statistics_sessions_per_year = 252.0;  // a run is refused without one
         cc.csv_output_path = temp_csv_dir("roll_legs_once");
         coord_ = std::make_unique<BacktestCoordinator>(db_, &InstrumentRegistry::instance(), cc);
         EXPECT_TRUE(coord_->initialize().is_ok());
@@ -271,6 +272,7 @@ TEST_F(BacktestBorrowRowsTest, BorrowRowsReachTheRunsExecutionsAndTheCostTotal) 
     cc.store_results = false;
     cc.store_trade_details = true;
     cc.portfolio_id = "BORROW_ROWS_TEST";
+    cc.statistics_sessions_per_year = 252.0;  // a run is refused without one
     cc.csv_output_path = temp_csv_dir("borrow_rows");
     coord_ = std::make_unique<BacktestCoordinator>(db_, &InstrumentRegistry::instance(), cc);
     ASSERT_TRUE(coord_->initialize().is_ok());

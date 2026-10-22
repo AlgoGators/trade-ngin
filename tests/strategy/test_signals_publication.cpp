@@ -61,6 +61,26 @@ std::string concat_sources(const std::string& relative_dir) {
     return all;
 }
 
+// The same, from the first parent directory under which `relative_dir` HOLDS sources: the build
+// tree has an apps/backtest of its own, with no source in it, and find_repo_dir stops there.
+std::string concat_repo_sources(const std::string& relative_dir, bool with_headers) {
+    namespace fs = std::filesystem;
+    fs::path dir = fs::current_path();
+    for (int i = 0; i < 8 && !dir.empty(); ++i) {
+        if (fs::is_directory(dir / relative_dir)) {
+            std::string all;
+            for (const auto& e : fs::recursive_directory_iterator(dir / relative_dir)) {
+                if (!e.is_regular_file()) continue;
+                const auto ext = e.path().extension();
+                if (ext == ".cpp" || (with_headers && ext == ".hpp")) all += read_all(e.path());
+            }
+            if (!all.empty()) return all;
+        }
+        dir = dir.parent_path();
+    }
+    return {};
+}
+
 // Lines that CALL something, ignoring the ones that only talk about it. A source-scan
 // assertion that cannot tell a call from a comment fails on its own explanation -- this one
 // did, on the very comment it exists to protect.
@@ -96,6 +116,34 @@ TEST(SignalsPublication, NoBacktestPathPublishesSignalsSoTheTableIsNotAReconcili
         EXPECT_EQ(count_non_comment_lines_containing(*src, "set_signals("), 0u)
             << where << " has acquired a signals writer -- see above.";
     }
+}
+
+// THE TRIPWIRE, EXTENDED (T-8D-2 R51). It READS SOURCE TEXT: it pins an absence, the one use a
+// source scan is allowed. The scan above looks for `store_signals(` and `set_signals(` under
+// src/backtest and apps/backtest only; the writer that existed lived elsewhere
+// (BacktestResultsManager::add_signals / save_signals_batch -> PostgresDatabase::
+// store_backtest_signals, fed by nothing but tests) and was deleted. backtest.signals stays, with no
+// writer ("no writer; reserved"). A revival through either name, in the storage or the data layer
+// or in a backtest path, fails here.
+TEST(SignalsPublication, TripwireNoBacktestSignalsWriterExistsInTheStorageOrDataLayer) {
+    const std::vector<std::pair<std::string, bool>> where = {
+        {"src/storage", false},  {"include/trade_ngin/storage", true}, {"src/data", false},
+        {"include/trade_ngin/data", true}, {"src/backtest", false},    {"apps/backtest", false}};
+    size_t scanned = 0;
+    for (const auto& [dir, with_headers] : where) {
+        const std::string src = concat_repo_sources(dir, with_headers);
+        if (src.empty()) continue;
+        ++scanned;
+        for (const char* needle : {"add_signals(", "store_backtest_signals("}) {
+            EXPECT_EQ(count_non_comment_lines_containing(src, needle), 0u)
+                << dir << " names " << needle << " backtest.signals has no writer and is not a "
+                << "reconciliation source. If one is being added, say so in the table's comment, "
+                << "put the table back on the reconciliation checklist and delete this expectation.";
+        }
+    }
+    if (scanned == 0) GTEST_SKIP() << "sources not found from the test working directory";
+    EXPECT_EQ(scanned, where.size()) << "a scanned directory is missing: the tripwire is narrower "
+                                        "than it says";
 }
 
 TEST(SignalsPublication, TheEquityRunnerIsThePublisherOfRecordAndUsesZScores) {

@@ -114,6 +114,22 @@ double equity_slow_ruled(double combined, const std::vector<double>& scaled,
 bool pairs_supported(const std::vector<std::pair<int, int>>& pairs, std::string* unsupported = nullptr);
 
 /**
+ * @brief The pairs a contract keeps when the trading rules in `removed` are taken from it for cost
+ *        (portfolio.json's trading_rule_removals; Carver, Advanced Futures Trading Strategies,
+ *        strategy nine, "Removing expensive trading rules").
+ *
+ * A rule's cost rises with its turnover and the turnover with its speed, so the rules the cost
+ * limit takes from a contract are always its FASTEST ones, and the multiplier table (strategy
+ * nine, table 36) is stated for exactly those sets: all six, the five slowest, the four slowest
+ * and so on. A removal is therefore usable only when `removed` is the first k of `pairs` in the
+ * sleeve's own order, fastest first, with at least one pair left and none named twice. Anything
+ * else is refused: `refusal` (when given) says why and the result is empty.
+ */
+std::vector<std::pair<int, int>> pairs_after_removal(const std::vector<std::pair<int, int>>& pairs,
+                                                     const std::vector<std::pair<int, int>>& removed,
+                                                     std::string* refusal = nullptr);
+
+/**
  * @brief The estimators at the window's last bar.
  * @param window the trailing consumed bars (at most kWindowBars are read: the last ones)
  * @param vol_span the EWMA span of the volatility (32 for the trend sleeve, 16 for the fast one)
