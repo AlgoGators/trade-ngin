@@ -16,7 +16,7 @@ cp -r config_template config
 - `YOUR_DB_PASSWORD` - Database password
 - `YOUR_DB_NAME` - Database name
 
-### portfolios/base/email.json & portfolios/conservative/email.json
+### portfolios/base/email.json, portfolios/conservative/email.json & portfolios/equity_mr/email.json
 - `YOUR_SMTP_USERNAME` - SMTP auth username (e.g. Gmail address)
 - `YOUR_SMTP_APP_PASSWORD` - SMTP app password (use app-specific password for Gmail)
 - `YOUR_FROM_EMAIL` - Sender email address

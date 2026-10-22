@@ -12,11 +12,11 @@ Companion documents: [DATA_SOURCES_OF_TRUTH.md](DATA_SOURCES_OF_TRUTH.md) (the f
 [TREND_FOLLOWING_SYSTEM.md](TREND_FOLLOWING_SYSTEM.md) (the strategy end to end).
 
 The design comments that carry the detail are in the headers:
-`include/trade_ngin/data/roll_series.hpp:13-46` (change bars and the adjusted series),
-`include/trade_ngin/data/roll_series.hpp:132-143` (the legs),
-`include/trade_ngin/live/live_roll_legs.hpp:19-46` (which rolls a live run books),
-`include/trade_ngin/data/session_classifier.hpp:120-130` (which bars are consumed),
-`include/trade_ngin/data/listing_dates.hpp:48-53` and `:108-117` (relabels and listing dates).
+`include/trade_ngin/data/roll_series.hpp` (change bars and the adjusted series),
+`include/trade_ngin/data/roll_series.hpp` (the legs),
+`include/trade_ngin/live/live_roll_legs.hpp` (which rolls a live run books),
+`include/trade_ngin/data/session_classifier.hpp` (which bars are consumed),
+`include/trade_ngin/data/listing_dates.hpp` (relabels and listing dates).
 
 ---
 
@@ -52,21 +52,21 @@ difference between the two contracts.
 ## 2. Two series: adjusted for returns, raw for levels
 
 The loader attaches the vendor contract id to every kept bar (`Bar::instrument_id`,
-`include/trade_ngin/core/types.hpp:326`), joined from the raw table on the bar's own print: symbol,
+`include/trade_ngin/core/types.hpp`), joined from the raw table on the bar's own print: symbol,
 instant and all five of open, high, low, close and volume (`build_futures_bar_query`,
-`src/data/market_data_utils.cpp:111`). A kept bar whose print the raw table lacks has no id.
+`src/data/market_data_utils.cpp`). A kept bar whose print the raw table lacks has no id.
 
 From each symbol's consumed bars the engine builds, on every run and never stored
-(`build_series`, `src/data/roll_series.cpp:109`):
+(`build_series`, `src/data/roll_series.cpp`):
 
 - the **raw close**, as loaded;
 - the **adjusted level**: the raw close plus the sum of the steps (new minus old) on every later
   change bar, so it equals the raw close on the latest bar and differs from it by a constant inside
-  each contract stretch (`adjusted_levels`, `src/data/roll_series.cpp:75`). It can be zero or
+  each contract stretch (`adjusted_levels`, `src/data/roll_series.cpp`). It can be zero or
   negative and is only ever differenced;
 - the **adjusted return**: the adjusted change over the raw previous close,
   `r_t = (A_t - A_t-1) / P_t-1`. It is exactly 0 on a change bar and equals the raw simple return on
-  every other bar (`adjusted_returns`, `src/data/roll_series.cpp:89`). The date stays in every
+  every other bar (`adjusted_returns`, `src/data/roll_series.cpp`). The date stays in every
   window as a zero; nothing is dropped.
 
 Rule: anything that is a price change reads the adjusted series; anything that is a price level reads
@@ -74,15 +74,15 @@ the raw close of the contract held.
 
 | consumer | reads | where |
 |---|---|---|
-| the EMAs of the trend rules | adjusted level (differences only) | `TrendFollowingStrategy::on_data`, `src/strategy/trend_following.cpp:428`, `:446`; `get_ema_values`, `:1187-1191` |
-| the volatility estimate, the forecast's own volatility, the attenuation | adjusted returns | `src/strategy/trend_following.cpp:447-450` |
-| the optimiser's covariance | adjusted returns (the adjusted level differenced over the raw previous close) | the sleeve's last 756 levels and closes, `src/strategy/trend_following.cpp:505-512`; `optimiser_covariance`, `src/optimization/one_pass.cpp:61`, `:113` |
-| the risk overlay's gate window and covariance | adjusted returns | the sleeve's `overlay_returns`, `src/strategy/trend_following.cpp:503-504`; `overlay::gate_window`, `src/optimization/one_pass.cpp:428-432` |
-| the risk reporter's readings in the live snapshot | adjusted returns | `RiskManager::adjusted_levels_of`, `src/risk/risk_manager.cpp:568`; `calculate_returns`, `:694` |
-| the cost model's volatility multiplier | its own log return, 0 on a change bar | `include/trade_ngin/live/futures_cost_feed.hpp:213-218`; `TransactionCostManager::record_log_return`, `src/transaction_cost/transaction_cost_manager.cpp:288-292` |
-| the price a forecast and a position size divide by, notional, the risk readings' exposures | raw close | `src/strategy/trend_following.cpp:445` (`window.close = series.raw`) |
+| the EMAs of the trend rules | adjusted level (differences only) | `TrendFollowingStrategy::on_data`, `src/strategy/trend_following.cpp`; `get_ema_values` |
+| the volatility estimate, the forecast's own volatility, the attenuation | adjusted returns | `src/strategy/trend_following.cpp` |
+| the optimiser's covariance | adjusted returns (the adjusted level differenced over the raw previous close) | the sleeve's last 756 levels and closes, `src/strategy/trend_following.cpp`; `optimiser_covariance`, `src/optimization/one_pass.cpp` |
+| the risk overlay's gate window and covariance | adjusted returns | the sleeve's `overlay_returns`, `src/strategy/trend_following.cpp`; `overlay::gate_window`, `src/optimization/one_pass.cpp` |
+| the risk reporter's readings in the live snapshot | adjusted returns | `RiskManager::adjusted_levels_of`, `src/risk/risk_manager.cpp`; `calculate_returns` |
+| the cost model's volatility multiplier | its own log return, 0 on a change bar | `include/trade_ngin/live/futures_cost_feed.hpp`; `TransactionCostManager::record_log_return`, `src/transaction_cost/transaction_cost_manager.cpp` |
+| the price a forecast and a position size divide by, notional, the risk readings' exposures | raw close | `src/strategy/trend_following.cpp` (`window.close = series.raw`) |
 | fill prices, cost reference prices, margin | raw close | [COST_MODEL.md](COST_MODEL.md) |
-| marks and daily P&L | raw close, with the change bar's move left out (section 6) | `src/backtest/backtest_coordinator.cpp:1405-1410`; `src/live/live_pnl_manager.cpp:118-121` |
+| marks and daily P&L | raw close, with the change bar's move left out (section 6) | `src/backtest/backtest_coordinator.cpp`; `src/live/live_pnl_manager.cpp` |
 
 A percentage, a log or a ratio is never taken of the adjusted level.
 
@@ -90,13 +90,13 @@ A percentage, a log or a ratio is never taken of the adjusted level.
 
 A switch is read from the ids on the **consumed** bars of a symbol, in date order. Consumed means
 every bar except the ones the session classifier withholds (a corrupt or locked print, a thin first
-print: `SymbolDayVerdict::k01_withheld`, `include/trade_ngin/data/session_classifier.hpp:128`;
-`k01_consumed_bars`, `src/data/session_classifier.cpp:472`). A withheld bar is never a change bar or
+print: `SymbolDayVerdict::k01_withheld`, `include/trade_ngin/data/session_classifier.hpp`;
+`k01_consumed_bars`, `src/data/session_classifier.cpp`). A withheld bar is never a change bar or
 a confirming bar, books no P&L, and is never fed later; the next consumed bar is compared with the
 last consumed one.
 
-The rule (`classify_instrument_changes`, `src/data/roll_series.cpp:10`; the same rule one bar at a
-time in `RollTracker::add`, `:121`):
+The rule (`classify_instrument_changes`, `src/data/roll_series.cpp`; the same rule one bar at a
+time in `RollTracker::add`):
 
 - A **change bar** is a bar whose id differs from the last known id before it. On its own day a
   change cannot be told from a one-day visit, so it is **pending**.
@@ -118,26 +118,26 @@ time in `RollTracker::add`, `:121`):
 
 The session classifier also reads the ids: an unconfirmed change on a print thinner than 0.10 of the
 symbol's volume norm gets a JUNK verdict (`kIdChangeHoldFraction`,
-`include/trade_ngin/data/session_classifier.hpp:54`; `holds_id_change`,
-`src/data/session_classifier.cpp:186`). That bar is still consumed (`id_change_hold`,
-`session_classifier.hpp:117`): it is the change bar of this section, not a withheld bar.
+`include/trade_ngin/data/session_classifier.hpp`; `holds_id_change`,
+`src/data/session_classifier.cpp`). That bar is still consumed (`id_change_hold`,
+`session_classifier.hpp`): it is the change bar of this section, not a withheld bar.
 
 ## 4. The hold through a change bar
 
 A symbol whose last consumed bar is a change bar, either bar of a flip, or a bar with no id inside a
 pending sequence is **held** at that rebalance: it stays at its current quantity on every sleeve and
-no fill is made in it (`RollTracker::Status::holds`, `include/trade_ngin/data/roll_series.hpp:112`).
+no fill is made in it (`RollTracker::Status::holds`, `include/trade_ngin/data/roll_series.hpp`).
 
 | engine | where | log line |
 |---|---|---|
-| backtest | the symbol is taken out of the cycle's session set, `src/backtest/backtest_coordinator.cpp:873-875` | `CHANGE_BAR_HOLD`, `FLIP_PAIR` (`:877-886`) |
-| live | the symbol joins the book's hold set, `apps/strategies/live_portfolio_conservative.cpp:1796-1799` | `CHANGE_BAR_HOLD`, `FLIP_PAIR` (`:1800-1814`) |
+| backtest | the symbol is taken out of the cycle's session set, `src/backtest/backtest_coordinator.cpp` | `CHANGE_BAR_HOLD`, `FLIP_PAIR` |
+| live | the symbol joins the book's hold set, `apps/strategies/live_portfolio_conservative.cpp` | `CHANGE_BAR_HOLD`, `FLIP_PAIR` |
 
 The hold lasts exactly the rebalances on which the symbol's last consumed bar is pending: it covers
 a cycle that consumes no bar of the symbol, and it ends on the confirming bar, on which the symbol
 trades again. When one cycle consumes several bars of a symbol (a catch-up) the sequence is walked
 bar by bar and the rebalance acts on the last bar's status (`roll_status_of`,
-`src/data/roll_series.cpp:211`).
+`src/data/roll_series.cpp`).
 
 Reason for the hold: on the change bar the engine cannot yet tell a roll from a one-day visit, and
 the bar's own move is unknown (section 6). The position waits one consumed bar for the answer.
@@ -145,7 +145,7 @@ the bar's own move is unknown (section 6). The position waits one consumed bar f
 ## 5. The two ROLL legs
 
 On the rebalance that consumes the confirming bar, each sleeve holding the symbol books two fills of
-type `ROLL` at its held quantity (`make_roll_legs`, `src/data/roll_series.cpp:171`):
+type `ROLL` at its held quantity (`make_roll_legs`, `src/data/roll_series.cpp`):
 
 | leg | side | price | contract written on the row |
 |---|---|---|---|
@@ -153,40 +153,40 @@ type `ROLL` at its held quantity (`make_roll_legs`, `src/data/roll_series.cpp:17
 | opening | with the position | the close of the change bar into the kept id (the new contract's first known close) | the incoming id |
 
 - The quantity is the book held at the start of the bar: the filled positions in the backtest
-  (`src/backtest/backtest_coordinator.cpp:975-977`, `:1057-1061`), the stored Day T-1 book in live
-  (`apps/strategies/live_portfolio_conservative.cpp:2401-2405`). A symbol not held has no legs.
+  (`src/backtest/backtest_coordinator.cpp`), the stored Day T-1 book in live
+  (`apps/strategies/live_portfolio_conservative.cpp`). A symbol not held has no legs.
 - Neither leg carries realised P&L. The old contract's life is already in the daily P&L rows.
 - Both prices must be positive closes; a leg without one stops the run (`ROLL_LEG STOP`:
-  `backtest_coordinator.cpp:1077-1083`, live `:2420-2424`). No default price is used.
+  `backtest_coordinator.cpp`, live). No default price is used.
 - Order within the day: closing leg, opening leg, then the day's `STRATEGY` fills
-  (`backtest_coordinator.cpp:441-446`, `:1089`; live `:2443-2445`).
+  (`backtest_coordinator.cpp`; live).
 - Ids: live `EXEC_<symbol>_<YYYYMMDD>_RC` and `_RO`, with order ids `ROLL_..._RC` and `_RO`, the date
-  being the **confirming bar's** (live `:2406-2412`); backtest `RL-<sleeve>-<n>`, n even for the
-  closing leg (`backtest_coordinator.cpp:1062-1064`). The row's own `date` is the rebalance's: in
+  being the **confirming bar's** (live); backtest `RL-<sleeve>-<n>`, n even for the
+  closing leg (`backtest_coordinator.cpp`). The row's own `date` is the rebalance's: in
   live the run date, which is the day after the confirming bar in the ordinary case and later when
   the confirming bar arrives late (below).
 - A strategy never sees a leg as a trade: `on_execution` returns on any row that is not `STRATEGY`
-  (`src/strategy/base_strategy.cpp:200`, `src/strategy/trend_following.cpp:228`).
+  (`src/strategy/base_strategy.cpp`, `src/strategy/trend_following.cpp`).
 
 **Which rolls a live run books.** A live run books every roll confirmed since the contract recorded
 on the symbol's stored Day T-1 positions row, not the rolls of a calendar span
-(`live_rolls_by_state`, `include/trade_ngin/live/live_roll_legs.hpp:155`). So a confirming bar that
+(`live_rolls_by_state`, `include/trade_ngin/live/live_roll_legs.hpp`). So a confirming bar that
 arrives late is legged by the first run that consumes it, with ids dated the confirming bar, and
 that run's Day T-1 row books the consumed moves no earlier run booked (`LateRollSettlement`,
-`live_roll_legs.hpp:73`; `late_booked_points`, `:100`). A re-run reads the contract its own stored
+`live_roll_legs.hpp`; `late_booked_points`). A re-run reads the contract its own stored
 legs rolled out of (`PostgresDatabase::get_stored_roll_contracts`,
-`src/data/postgres_database_extensions.cpp:147`). A recorded contract that is on no consumed bar of
-the window refuses the run (live `:1345-1359`). The legs are stored before the Day T-1 rows are
-re-written, in one transaction with the sweep of the day's earlier ROLL rows
-(`replace_roll_day_executions`, live `:2632`).
+`src/data/postgres_database_extensions.cpp`). A recorded contract that is on no consumed bar of
+the window refuses the run (live). The legs are stored before the Day T-1 rows are
+re-written, in one transaction shared by every sleeve with legs, with the sweep of those sleeves'
+rows of the date, of every type (`replace_roll_day_executions`, live).
 
 **Costs: two outright legs, by choice.** Each leg is priced by the same cost model as any fill of
 that size at that price: the contract's fee plus the model's spread and impact
-(backtest `backtest_coordinator.cpp:1070-1075`; live `:2413-2418`; see [COST_MODEL.md](COST_MODEL.md)).
+(backtest `backtest_coordinator.cpp`; live see [COST_MODEL.md](COST_MODEL.md)).
 A roll traded as one calendar-spread order pays less than two separate outright trades. The engine
 has no spread prices, so it books the two-outright figure, which is an upper bound on the cost of a
 roll done as a spread. That is a deliberate choice of the conservative side, and every place the
-figure appears says so (the `ROLL_LEG` log line, `backtest_coordinator.cpp:1102`; the column comments
+figure appears says so (the `ROLL_LEG` log line, `backtest_coordinator.cpp`; the column comments
 of migrations 017 and 018). The book's own cost arithmetic makes the same assumption, two sets of
 trading costs for each roll (Carver, strategy three, the holding cost calculation, restated under
 strategy nine), and its Tactic one, "Contract selection and rolling", notes that a spread order
@@ -199,8 +199,8 @@ bars. On a change bar it is 0, because the step is the splice's gap (section 1):
 
 | engine | where |
 |---|---|
-| backtest | the bar is marked a change bar without moving the tracker (`src/backtest/backtest_coordinator.cpp:1223-1228`) and its P&L is set to 0 (`:1408-1410`) |
-| live | `consumed_t1_settlement` puts the symbol in `zero_pnl_symbols` (`include/trade_ngin/live/session_book_gate.hpp:205`, `:224`); `LivePnLManager` books 0 for it (`src/live/live_pnl_manager.cpp:118-121`) |
+| backtest | the bar is marked a change bar without moving the tracker (`src/backtest/backtest_coordinator.cpp`) and its P&L is set to 0 |
+| live | `consumed_t1_settlement` puts the symbol in `zero_pnl_symbols` (`include/trade_ngin/live/session_book_gate.hpp`); `LivePnLManager` books 0 for it (`src/live/live_pnl_manager.cpp`) |
 
 The confirming bar is not a change bar (its id equals the previous bar's), so it books its move
 against the change bar's close: both are closes of the new contract.
@@ -229,59 +229,55 @@ toward expiry (the carry) stays in the P&L and in the trend signal.
 | 018 | `backtest.results.transaction_costs`, `roll_costs`, `total_roll_fills` | the run's cost total, its ROLL part, and the count of ROLL rows (two rows per roll per sleeve holding the symbol) |
 
 The contract on a positions row is written from the roll status: backtest
-`backtest_coordinator.cpp:1222-1228`; live, the Day T-1 row is re-written with the contract held
-after the T-1 bar (`apps/strategies/live_portfolio_conservative.cpp:2274-2277`).
+`backtest_coordinator.cpp`; live, the Day T-1 row is re-written with the contract held
+after the T-1 bar (`apps/strategies/live_portfolio_conservative.cpp`).
 
 **Cost totals.** The cost columns are a superset pair: the transaction cost total holds every fill
 (STRATEGY, ROLL and BORROW) and the roll column is the part of it paid on ROLL legs; the difference is
 what the STRATEGY fills cost (plus the BORROW rows on an equity book, which has no ROLL rows).
 
 - Every total charges a fill its cost after netting, `total_transaction_costs - netting_adjustment`
-  (`transaction_cost::net_cost`, `include/trade_ngin/transaction_cost/netting.hpp:97`;
-  `add_net_costs`, `src/transaction_cost/netting.cpp:183`). The day's total is taken this way in live
-  (`live_portfolio_conservative.cpp:2575-2577`) and per cycle in the backtest
-  (`backtest_coordinator.cpp:2006-2007`).
+  (`transaction_cost::net_cost`, `include/trade_ngin/transaction_cost/netting.hpp`;
+  `add_net_costs`, `src/transaction_cost/netting.cpp`). The day's total is taken this way in live
+  (`live_portfolio_conservative.cpp`) and per cycle in the backtest
+  (`backtest_coordinator.cpp`).
 - A ROLL leg is never netted. The legs stay out of the sleeve netting
-  (`live_portfolio_conservative.cpp:2554-2556`) and are created with an adjustment of exactly 0
-  (`src/data/roll_series.cpp:202`), so a leg's net cost is its own cost.
+  (`live_portfolio_conservative.cpp`) and are created with an adjustment of exactly 0
+  (`src/data/roll_series.cpp`), so a leg's net cost is its own cost.
 - The roll totals read the leg's own cost through `transaction_cost::unnetted_cost`
-  (`src/transaction_cost/netting.cpp:177`): `backtest.results.roll_costs` in `run_cost_totals`
-  (`netting.cpp:197-198`, called at `backtest_coordinator.cpp:460`) and the trade statistics' roll
-  cost (`src/backtest/backtest_metrics_calculator.cpp:452`). The live `daily_roll_costs` adds each
-  leg's `total_transaction_costs` as the leg is made (`live_portfolio_conservative.cpp:2439`);
-  `total_roll_costs` is the previous row's total plus the day's (`:3825-3833`).
+  (`src/transaction_cost/netting.cpp`): `backtest.results.roll_costs` in `run_cost_totals`
+  (`netting.cpp`, called at `backtest_coordinator.cpp`) and the trade statistics' roll
+  cost (`src/backtest/backtest_metrics_calculator.cpp`). The live `daily_roll_costs` adds each
+  leg's `total_transaction_costs` as the leg is made (`live_portfolio_conservative.cpp`);
+  `total_roll_costs` is the previous row's total plus the day's.
 - A ROLL (or BORROW) row that carries a non-zero netting adjustment is **refused**, never corrected:
-  `unnetted_row_refusal` (`netting.cpp:166`) produces the text and `unnetted_cost`, `add_net_costs`
-  and `run_cost_totals` throw `NettingRefused` (`netting.hpp:108`; `netting.cpp:179`, `:186`,
-  `:195`). The backtest fails the run on the day it fires (`backtest_coordinator.cpp:1649-1656`,
-  `:367-373`) or at the end-of-run total (`:459-467`) and returns no result: no
+  `unnetted_row_refusal` (`netting.cpp`) produces the text and `unnetted_cost`, `add_net_costs`
+  and `run_cost_totals` throw `NettingRefused` (`netting.hpp`; `netting.cpp`). The backtest fails the run on the day it fires (`backtest_coordinator.cpp`) or at the end-of-run total and returns no result: no
   `backtest.results`, `backtest.equity_curve` or `backtest.executions` row is written. The
   `backtest.final_positions` rows of the cycles already run stay, because they are written cycle by
-  cycle after the warm-up (`:407-416`). In live the exception reaches `main`, which exits 1
-  (`live_portfolio_conservative.cpp:4779`); the day's `live_run_metadata` row and its signals are
-  already stored by then (`:1554`, `:1940`) and none of the day's executions is (`:2632`).
+  cycle after the warm-up. In live the exception reaches `main`, which exits 1
+  (`live_portfolio_conservative.cpp`); the day's `live_run_metadata` row and its signals are
+  already stored by then and none of the day's executions is.
 
-The email shows the roll figures as its own lines (`src/core/email_sender.cpp:1469`, `:3720`).
+The email shows the roll figures as its own lines (`src/core/email_sender.cpp`).
 
 ## 8. Trade statistics across a roll
 
 A roll is not a round trip. In the backtest's trade statistics
 (`BacktestMetricsCalculator::calculate_trade_statistics`,
-`src/backtest/backtest_metrics_calculator.cpp:414`):
+`src/backtest/backtest_metrics_calculator.cpp`):
 
-- a ROLL leg never moves the tracked position, scores no trade and leaves the trade's open time
-  (`:448-454`); it is counted in `roll_fills` and its cost goes to `roll_costs`, never into a trade;
+- a ROLL leg never moves the tracked position, scores no trade and leaves the trade's open time;
+  it is counted in `roll_fills` and its cost goes to `roll_costs`, never into a trade;
 - the open trade's entry price is carried across the roll by the leg gap,
   `entry := entry + (opening leg price - closing leg price)`, once per roll, longs and shorts alike
-  (`RollEntryCarry`, `:283`, design comment at `:263-282`; applied at `:436-438`).
+  (`RollEntryCarry`, design comment applied).
 
 So a trade held through a roll scores the move of the contracts actually held: entry to the closing
-leg in the old contract plus the opening leg to the exit in the new one. In price points that is
-the move the trade's daily P&L rows book. The daily rows carry the contract multiplier and the trade
-statistic does not, so the two agree only after the statistic's price move is multiplied by it
-(section 10 shows it). Legs that cannot be paired stop the calculation
-(`:318-323`). `calculate_symbol_pnl` applies the same carry and charges each leg's cost to the symbol
-(`:562-566`).
+leg in the old contract plus the opening leg to the exit in the new one. Times the contract
+multiplier, in dollars, that is the move the trade's daily P&L rows book (section 10 shows it).
+Legs that cannot be paired stop the calculation. `calculate_symbol_pnl` applies the same carry and
+charges each leg's cost to the symbol.
 
 ## 9. What is not a roll
 
@@ -290,40 +286,40 @@ equity index micros with a new id (on the raw table: MES 42140878 to 42003800, M
 42004946, MYM 42005850 to 42001953, M2K 42005017 to 42002147, the old id through 2026-02-20 and the
 new one from 2026-02-22). The contract did not change, so the day is not a roll. Each such change is
 declared in the portfolio's `instrument_id_relabels` list
-(`config_template/portfolios/conservative/portfolio.json:36-41`):
+(`config_template/portfolios/conservative/portfolio.json`):
 
     {"symbol": "MES", "date": "2026-02-22", "from": "42140878", "to": "42003800"}
 
 From `date` on, a bar of the symbol carrying `to` is read as carrying `from`
-(`ListingDates::read_id`, `src/data/listing_dates.cpp:354`), at the loader, before any consumer:
-the backtest loader (`src/backtest/backtest_data_loader.cpp:74-75`), the live window and the
-classifier's history (`apps/strategies/live_portfolio_conservative.cpp:958-959`, `:1184-1185`), the
-id rows the classifier is fed (`ListingDates::read_ids`, `listing_dates.cpp:420`), and the contract
-recorded on stored rows (live `:1324-1325`, `:1340`). No change bar, no hold, no legs, no roll cost;
+(`ListingDates::read_id`, `src/data/listing_dates.cpp`), at the loader, before any consumer:
+the backtest loader (`src/backtest/backtest_data_loader.cpp`), the live window and the
+classifier's history (`apps/strategies/live_portfolio_conservative.cpp`), the
+id rows the classifier is fed (`ListingDates::read_ids`, `listing_dates.cpp`), and the contract
+recorded on stored rows (live). No change bar, no hold, no legs, no roll cost;
 the day's move is booked and its return kept; stored `instrument_id` values stay the old id until the
 next real roll. An entry that rewrites nothing, or whose new id already appears before its date, is
-warned of (`relabel_findings`, `listing_dates.cpp:368`; `RELABEL_UNMATCHED`, `RELABEL_LATE`).
+warned of (`relabel_findings`, `listing_dates.cpp`; `RELABEL_UNMATCHED`, `RELABEL_LATE`).
 Without the entries the rule of section 3 reads the day as a roll: a sixteen-year backtest of the
 conservative book (2010-10-07 to 2026-10-07) without the listing-date, relabel and rule-removal
 blocks books RL legs for the micros it holds (MNQ, MYM and M2K) on the cycle of 2026-02-24. The template of the BASE book carries neither the relabel list nor the `listing_dates`
 block below.
 
 **The listing-date switch.** The micros MES, MNQ, MYM and M2K list on 2019-05-06. With the
-`listing_dates` block (`portfolio.json:26-34`) a backtest whose window trades before that date holds
+`listing_dates` block (`portfolio.json`) a backtest whose window trades before that date holds
 the E-mini (ES, NQ, YM, RTY; ten times the contract size, with its own fee and margin) on the price
 history stored under the micro's symbol, and the micro from its listing date
-(`ListingDates::tradeable`, `src/data/listing_dates.cpp:104`). On the switch rebalance the held
+(`ListingDates::tradeable`, `src/data/listing_dates.cpp`). On the switch rebalance the held
 E-mini is exited and the micro entered by the configured rule, `open_at_target` by default
-(`plan_listing_switch`, `listing_dates.cpp:251`; `src/portfolio/portfolio_manager.cpp:2310-2321`).
+(`plan_listing_switch`, `listing_dates.cpp`; `src/portfolio/portfolio_manager.cpp`).
 A live run trades no predecessor and refuses one in its universe or its stored book
-(`live_listing_refusals`, `include/trade_ngin/live/live_listing_guard.hpp:30`).
+(`live_listing_refusals`, `include/trade_ngin/live/live_listing_guard.hpp`).
 
 | | a roll | the listing-date switch |
 |---|---|---|
 | what changes | the contract month of the same instrument | the instrument: another contract size, fee and margin |
 | trigger | the vendor id on the consumed bars | a configured date |
 | quantity | unchanged | re-sized: the E-mini is closed and the micro opened at its own target |
-| fills | two `ROLL` rows, ids `RL-` (backtest) or `_RC` / `_RO` (live) | `STRATEGY` rows, ids `LC-` (the E-mini's close) and `LO-` (the micro's entry) (`make_listing_switch_fills`, `listing_dates.cpp:279`; `portfolio_manager.cpp:2516`) |
+| fills | two `ROLL` rows, ids `RL-` (backtest) or `_RC` / `_RO` (live) | `STRATEGY` rows, ids `LC-` (the E-mini's close) and `LO-` (the micro's entry) (`make_listing_switch_fills`, `listing_dates.cpp`; `portfolio_manager.cpp`) |
 | prices | two different closes of two contracts | each fill at its own symbol's signal close, which is one shared price history |
 | P&L | 0 on the change bar | booked as on any day: there is no price gap |
 | trade statistics | not a trade; the entry is carried | a trade closes and another opens |
@@ -402,16 +398,13 @@ impact in dollars is the impact in points x 0.1 x 1 (4.35734140 x 0.1 = 0.435734
 | 2026-04-28 | 88.096891 | 87.003759 | 1,148.945409 | 87.003759 | 8 ROLL legs 87.003759 + 1 STRATEGY fill (M2K) 1.093132 = 88.096891; 1,060.848518 + 88.096891 = 1,148.945409 |
 | 2026-04-29 | 33.843523 | 30.280416 | 1,182.788932 | 117.284175 | ZS legs 15.13138406 + 15.14903229 = 30.28041635, plus 1 STRATEGY fill (ZF) 3.56310679 = 33.84352314; 87.003759 + 30.280416 = 117.284175 |
 
-**The trade-statistics rule on this trade.** The rule is the backtest's; a live run has no trade
-statistics, and this run is used here only for its prices. Entry 78,225; the roll's leg gap is
-79,070 - 77,960 = +1,110, so the carried entry is 79,335; exit 76,035. The statistic scores
-1 x (76,035 - 79,335) = -3,300 before costs. That figure is in price points: the calculation applies
-no contract multiplier (`src/backtest/backtest_metrics_calculator.cpp:476-477`). Multiplied by the
-contract's 0.1 it is -330.00, the sum of the daily rows above, so the carry makes the trade's price
-move the move the days booked. Without the carry it would score 76,035 - 78,225 = -2,190 points
-(-219.00 with the multiplier), which includes the +1,110 step (+111.00) that no day booked. The cost
-the statistic takes off a trade is the closing fill's own cost after netting, in currency (`:428`,
-`:459`); here 2.45667148.
+**The trade-statistics rule on this trade.** The rule is the backtest's; a live run stores the
+round-trip count (`total_trades`) and no trade P&L, and this run is used here only for its prices.
+Entry 78,225; the roll's leg gap is 79,070 - 77,960 = +1,110, so the carried entry is 79,335; exit
+76,035. The statistic scores 1 x (76,035 - 79,335) x 0.1 = -330.00 dollars before costs, the sum of
+the daily rows above, so the carry makes the trade's move the move the days booked. Without the carry
+it would score (76,035 - 78,225) x 0.1 = -219.00, which includes the +111.00 of the +1,110 step that
+no day booked. The cost the statistic takes off a trade is the closing fill's own cost after netting, in currency; here 2.45667148.
 
 ## 11. Known limits
 

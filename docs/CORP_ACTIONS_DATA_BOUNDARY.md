@@ -81,9 +81,9 @@ metrics path keeps the income figure out of `total_pnl`.
 Equity-only. The futures runners carry no corporate actions and do not use this table. For how
 a run is dated and which rows it reads, see `LIVE_RUN_CYCLE.md`.
 
-`trading.corp_action_applied` (`migrations/002_corp_action_applied.sql:51`, extended by
-`migrations/005_corp_action_applied_run_date.sql:86` and
-`migrations/006_corp_action_applied_basis_ratio.sql:85`) is the durable record of which events
+`trading.corp_action_applied` (`migrations/002_corp_action_applied.sql`, extended by
+`migrations/005_corp_action_applied_run_date.sql` and
+`migrations/006_corp_action_applied_basis_ratio.sql`) is the durable record of which events
 have already changed the book. `CorporateActionsAuditLog` (`src/live/corporate_actions_audit_log.cpp`) is its only reader and writer.
 
 | Column | Meaning |
@@ -91,39 +91,39 @@ have already changed the book. `CorporateActionsAuditLog` (`src/live/corporate_a
 | `portfolio_id`, `strategy_id`, `strategy_name` | which book; supplied by the `WHERE` on load |
 | `symbol`, `action_type`, `ex_date` | the in-memory key; together with the three above they form the primary key |
 | `run_date` | the run date of the pass that wrote the row; NULL on rows older than the column |
-| `basis_ratio` | the factor the event divided the cost basis by (`PositionAdjustment.ratio_change`); NULL for a TERMINATION, which restates no basis (`src/live/corporate_actions_audit_log.cpp:350-352`) |
+| `basis_ratio` | the factor the event divided the cost basis by (`PositionAdjustment.ratio_change`); NULL for a TERMINATION, which restates no basis (`src/live/corporate_actions_audit_log.cpp`) |
 | `applied_at`, `qty_held`, `dividend_per_share`, `total_cash` | audit detail; dividend cash is informational and never added to P&L |
 
 **A row means "this event's effect is in the stored position."** Rows are recorded by
-`record()` (`src/live/corporate_actions_audit_log.cpp:333`) only when the applier actually adjusts a position, and are inserted
+`record()` (`src/live/corporate_actions_audit_log.cpp`) only when the applier actually adjusts a position, and are inserted
 with `ON CONFLICT DO NOTHING` (`store_applied_corp_actions_in`,
-`src/data/postgres_database.cpp:3547-3548`), so the first
+`src/data/postgres_database.cpp`), so the first
 application is the one kept. A deferred event (its ex-date bar is not yet in the loaded
-window, `apps/strategies/live_equity_mean_reversion.cpp:2503-2518`) or a refused event writes nothing, so it resurfaces in the next run's
-window and is retried. `load()` (`src/live/corporate_actions_audit_log.cpp:90`) also mirrors every row under the symbol's current
-ticker through `equities_data.ticker_aliases` (`:197`), so an event applied under an old name
+window, `apps/strategies/live_equity_mean_reversion.cpp`) or a refused event writes nothing, so it resurfaces in the next run's
+window and is retried. `load()` (`src/live/corporate_actions_audit_log.cpp`) also mirrors every row under the symbol's current
+ticker through `equities_data.ticker_aliases`, so an event applied under an old name
 is still seen as applied after a rename. A de-duplication record that cannot be read (the
 table or the alias map) is an error and the run exits 1 rather than adjusting against an empty
-applied-set (`apps/strategies/live_equity_mean_reversion.cpp:1476-1491`).
+applied-set (`apps/strategies/live_equity_mean_reversion.cpp`).
 
 **The event window.** The runner asks for events over `[window_start, today]`, with
 `window_start` derived from position inception rather than a fixed number of days
-(`derive_corp_action_window`, `include/trade_ngin/live/corp_action_window.hpp:70`, called at
-`apps/strategies/live_equity_mean_reversion.cpp:1407`), so a missed run does not lose events; the de-duplication rows are what stop the
+(`derive_corp_action_window`, `include/trade_ngin/live/corp_action_window.hpp`, called at
+`apps/strategies/live_equity_mean_reversion.cpp`), so a missed run does not lose events; the de-duplication rows are what stop the
 reach-back from re-applying them.
 
 **Two replay guards.** Both exist because a row from a *later* pass would make the current
 pass skip an event whose effect is not in the previous-day row it just loaded.
 
 1. Inline, after load: if `latest_applied_ex_date() >= today`, the runner exits 1
-   (`apps/strategies/live_equity_mean_reversion.cpp:1503-1512`). A row with today's or a future ex-date can only have been written by a
+   (`apps/strategies/live_equity_mean_reversion.cpp`). A row with today's or a future ex-date can only have been written by a
    later pass.
 2. On load, with `RunDateCheck::Enforce` (the default after `set_run_date(today)`,
-   `apps/strategies/live_equity_mean_reversion.cpp:1474-1475`): any row whose `run_date >= today` is reported and `load()` returns an
-   error (`src/live/corporate_actions_audit_log.cpp:141-145`), so the runner exits 1. This catches the case the first guard cannot
+   `apps/strategies/live_equity_mean_reversion.cpp`): any row whose `run_date >= today` is reported and `load()` returns an
+   error (`src/live/corporate_actions_audit_log.cpp`), so the runner exits 1. This catches the case the first guard cannot
    see, where the later pass applied an event whose ex-date is already in the past. NULL
    `run_date` rows are accepted. The lifecycle (termination) instance later in the same run
-   uses `RunDateCheck::StampOnly` (`apps/strategies/live_equity_mean_reversion.cpp:3442-3443`), because the rows it would otherwise refuse
+   uses `RunDateCheck::StampOnly` (`apps/strategies/live_equity_mean_reversion.cpp`), because the rows it would otherwise refuse
    are this run's own.
 
 **Reset rule.** Neither guard deletes anything. A re-run of a day is valid only when the book
@@ -135,7 +135,7 @@ Never re-run a day after a later day has run.
 
 **One transaction.** The adjusted positions and the rows that stop those events being applied
 again commit as one unit of work: `store_positions` and `save_in` share a transaction, for the
-price-restating events (`apps/strategies/live_equity_mean_reversion.cpp:3053-3077`) and again for the lifecycle events (`apps/strategies/live_equity_mean_reversion.cpp:3477-3504`).
+price-restating events (`apps/strategies/live_equity_mean_reversion.cpp`) and again for the lifecycle events (`apps/strategies/live_equity_mean_reversion.cpp`).
 Either both land or neither does; a failure in either rolls both back and the run exits 1.
 
 ## Verification queries

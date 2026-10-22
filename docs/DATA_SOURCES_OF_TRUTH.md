@@ -34,8 +34,8 @@ The single source for equity prices, adjustment events, and delisting timing.
 | `delisting_date` | termination timing | maintained |
 
 Adjustment is computed by `build_equity_adjusted_query()` (SQL,
-`src/data/market_data_utils.cpp:36`) and mirrored by `compute_backward_adjustment_factors()`
-(C++, `src/data/market_data_utils.cpp:69`):
+`src/data/market_data_utils.cpp`) and mirrored by `compute_backward_adjustment_factors()`
+(C++, `src/data/market_data_utils.cpp`):
 
 ```
 f_i = f_{i+1} × ( close_{i+1} / (close_{i+1} + div_cash_{i+1}) ) / split_factor_{i+1}
@@ -95,14 +95,14 @@ not come from Tiingo: it lives on the alias table, which has no source after the
 (below). Tiingo does **not** publish merger or spin-off deal terms.
 
 The `date` column is TEXT (`YYYY-MM-DD`), not a date: the engine compares it as text, between
-two dates it passes as text (`src/data/postgres_database.cpp:2909`). Two rows carry
+two dates it passes as text (`src/data/postgres_database.cpp`). Two rows carry
 the far-future date 2027-07-18 (an SBDS ticker-change pair); any reader that takes
 `max(date)` unbounded gets that value, not the freeze date.
 
 **Keep this table and its code path.** It is the only home for deal terms. The query is
 parameterised and returns zero rows today; it activates unchanged the moment rows appear
 (pinned by `RevivedFeedActivatesTheRolloverPathWithNoCodeChange`,
-`tests/live/corp_actions/test_effect_classes.cpp:325`).
+`tests/live/corp_actions/test_effect_classes.cpp`).
 
 **Distinguish carefully:**
 - `corporate_action`: *we still need this data; the feed stopped.* Do **not** phase out.
@@ -133,7 +133,7 @@ A live deal-terms source is tracked in data-ngin #108; consuming it is trade-ngi
 ### The alias backfill
 The frozen table holds 12,867 historical ticker-change pairs. `scripts/backfill_ticker_aliases.sql`
 loads `ticker_aliases` from them for the symbols we carry: every ticker-change pair the table
-holds of which either side has bars (`scripts/backfill_ticker_aliases.sql:46-68`). The script has
+holds of which either side has bars (`scripts/backfill_ticker_aliases.sql`). The script has
 no date bound, so that is all history to 2025-08-29, and the mis-dated SBDS pair above if either
 of its symbols is carried. It is idempotent and is part of a fresh environment's set-up
 (section 7). A rename after the freeze date has no source and is added by hand.
@@ -156,7 +156,7 @@ of its symbols is carried. It is idempotent and is part of a fresh environment's
 but three: 6A 2025-11-05 (raw holds the 196-lot wrong-instrument copy the loader drops), and
 ZM and ZR 2025-10-10 (raw holds a traded bar where `ohlcv_1d` holds a zero-volume flat one).
 For that reason the engine takes an instrument id from the raw table only for the exact
-print it kept (`kFuturesRawBarTable`, `include/trade_ngin/data/market_data_utils.hpp:134`).
+print it kept (`kFuturesRawBarTable`, `include/trade_ngin/data/market_data_utils.hpp`).
 
 ### 4.2 `.v.0` is a raw splice. Nothing is adjusted upstream.
 
@@ -168,9 +168,8 @@ That jump is not a return, and the resolver can also flip to another contract fo
 flip back.
 
 The **engine** does the adjusting, from the instrument id on each consumed bar
-(`include/trade_ngin/data/roll_series.hpp:13`, the design comment; the functions are
-`classify_instrument_changes` at `:65`, `adjusted_levels` at `:68`, `adjusted_returns` at
-`:73`):
+(`include/trade_ngin/data/roll_series.hpp`, the design comment; the functions are
+`classify_instrument_changes`, `adjusted_levels` and `adjusted_returns`):
 
 | Consumer | Reads |
 |---|---|
@@ -204,13 +203,13 @@ FROM (SELECT symbol, time, count(*) AS n FROM futures_data.ohlcv_1d GROUP BY 1, 
 
 **The loader rule.** The engine's bar query keeps exactly one row per `(symbol, time)`:
 `DISTINCT ON (symbol, time)` ordered by `kFuturesBarKeepOrder`, which is
-`"volume DESC, close, open, high, low"` (`include/trade_ngin/data/market_data_utils.hpp:101`;
-the query is `build_futures_bar_query`, `:114`). So the copy kept is the one with the highest
+`"volume DESC, close, open, high, low"` (`include/trade_ngin/data/market_data_utils.hpp`;
+the query is `build_futures_bar_query`). So the copy kept is the one with the highest
 volume, then the lowest close, open, high and low; the tie-break only makes the pick
 independent of physical row order. Once per load the loader logs how many rows the rule dropped
 and names every pair whose copies disagree (`log_futures_bar_duplicates`,
-`src/data/postgres_database.cpp:1185`; the companion query is
-`build_futures_duplicate_copies_query`, `market_data_utils.hpp:122`).
+`src/data/postgres_database.cpp`; the companion query is
+`build_futures_duplicate_copies_query`, `market_data_utils.hpp`).
 
 **Any other reader must de-duplicate the same way.** A plain `SELECT` from `ohlcv_1d`, a
 `JOIN` on `(symbol, time)`, an average or a count over it returns the copies. Adding the
@@ -230,10 +229,10 @@ rule below, not from a list.
 | 2025-10-10 | ZM, ZR | zero volume, open = high = low = close |
 
 The engine does not trade on them. The session classifier gives every bar of every symbol a
-verdict (`SessionVerdict`, `include/trade_ngin/data/session_classifier.hpp:39`; the rule, in
-order, is the comment at `:140`): a locked bar (`high == low`), a volume far below the
+verdict (`SessionVerdict`, `include/trade_ngin/data/session_classifier.hpp`; the rule, in
+order, is the comment): a locked bar (`high == low`), a volume far below the
 symbol's own trailing norm, and a thin print on a changed instrument id (below 0.10 of the
-norm, `kIdChangeHoldFraction`, `:54`) are all `JUNK`. On a `JUNK` verdict the position is
+norm, `kIdChangeHoldFraction`) are all `JUNK`. On a `JUNK` verdict the position is
 held and no order is placed for that symbol; a `SESSION` bar is the only kind that trades.
 Another reader has no such guard and must filter these bars itself. Re-fetching them is
 part of data-ngin #105.
@@ -246,11 +245,11 @@ part of data-ngin #105.
   the previous day; a zone ahead of UTC keeps the date. Read the date in UTC. The engine's own
   loader does not take the stored instant as it is: it reads the text of the stored time as a
   local time of the host, renders that instant in UTC and reads the result as a local time again
-  (`src/data/postgres_database.cpp:1376-1383`), so a bar's instant in memory is the stored one
+  (`src/data/postgres_database.cpp`), so a bar's instant in memory is the stored one
   moved by twice the host's offset from UTC. With the stored time rendered in UTC by the database
   session, the instant is unchanged on a host at UTC and falls later on the same UTC date on a
   host behind UTC, which is what the image in this repository is (`TZ=America/New_York`,
-  `Dockerfile:85`): the bar keeps its date on both. `docs/LIVE_RUN_CYCLE.md` says what else
+  `Dockerfile`): the bar keeps its date on both. `docs/LIVE_RUN_CYCLE.md` says what else
   depends on the host's time zone.
 - **The Sunday bar** is the vendor's UTC-day cut of the first hour or two of the CME week:
   the Sunday evening open falls before midnight UTC, so those prints land on Sunday's date
@@ -292,8 +291,8 @@ prices under the micro's symbol: the price is right, the contract did not exist.
 no rows stored under `ES.v.0`, `NQ.v.0`, `YM.v.0` or `RTY.v.0`.
 
 With the `listing_dates` block of `portfolio.json` (see `docs/CONFIG_GUIDE.md`) the engine
-trades each contract only when it existed (`include/trade_ngin/data/listing_dates.hpp:108`,
-`ListingDates`; `tradeable` at `:137`):
+trades each contract only when it existed (`include/trade_ngin/data/listing_dates.hpp`,
+`ListingDates`; `tradeable`):
 
 | Signal bar dated | The book holds | Size against the micro | Metadata row |
 |---|---|---|---|
@@ -302,10 +301,10 @@ trades each contract only when it existed (`include/trade_ngin/data/listing_date
 
 The E-mini has no stored rows, so a backtest whose window starts before the listing date
 adds it as a symbol of the run and hands it the rows stored under the micro's symbol
-(`predecessor_symbols`, `:156`; `add_predecessor_bars`, `:164`). The pair is one instrument
+(`predecessor_symbols`; `add_predecessor_bars`). The pair is one instrument
 with one price history. On the switch day the book exits the E-mini and enters the micro
 (fill ids `LC-` and `LO-`). A live run trades no predecessor and refuses one in its universe
-or its stored book (`include/trade_ngin/live/live_listing_guard.hpp:14`). Without the block
+or its stored book (`include/trade_ngin/live/live_listing_guard.hpp`). Without the block
 the micro's symbol is traded at the micro's size over the whole stored history.
 
 Two things follow for anyone counting "the book's 36 symbols": a backtest that trades
@@ -318,30 +317,29 @@ contract's life. It is not a roll: no expiry changes hands. Read naively it is a
 and the engine would hold through it and book two ROLL fills with their costs. The
 `instrument_id_relabels` list of `portfolio.json` declares the four changes, and the loader
 then reads a bar carrying the new id as carrying the old one from that date
-(`InstrumentIdRelabel`, `include/trade_ngin/data/listing_dates.hpp:54`; `apply_relabels`,
-`:177`). A reader of `ohlcv_1d_raw.instrument_id` that detects rolls by an id change must
+(`InstrumentIdRelabel`, `include/trade_ngin/data/listing_dates.hpp`; `apply_relabels`). A reader of `ohlcv_1d_raw.instrument_id` that detects rolls by an id change must
 apply the same list.
 
 ### 4.7 `metadata.contract_metadata`: the basis of every size, cost and margin
 
 40 rows: the 36 traded contracts plus ES, NQ, YM and RTY (the contracts held before the
 micros' listing date). Every column is text. The database layer reads the first 21 columns by
-their position in the table (`src/data/postgres_database.cpp:1529-1551`) and
-`"Fee Per Contract"` by name (`:1815`); the instrument registry then reads the converted table
+their position in the table (`src/data/postgres_database.cpp`) and
+`"Fee Per Contract"` by name; the instrument registry then reads the converted table
 by column name (`InstrumentRegistry::load_instruments`,
-`src/instruments/instrument_registry.cpp:117`). The column order of the table must therefore
+`src/instruments/instrument_registry.cpp`). The column order of the table must therefore
 not change.
 
 | Column | Meaning | Read at |
 |---|---|---|
-| `"Contract Size"` | **dollars per 1.0 of quoted price** (the multiplier): 50 for ES, 5 for MES, 1000 for CL, 100000 for 6A. Notional = contracts × price × this. | `instrument_registry.cpp:375` |
-| `"Tick Size"` | one tick in price units (the unit the close is stored in) | `:402` |
-| `"Minimum Price Fluctuation"` | the same tick in dollars per contract. It must equal `"Tick Size"` × `"Contract Size"`; all 40 rows do, and the loader warns on a row that does not (`:408`). | `:386` |
-| `"Fee Per Contract"` | dollars per contract per side that the cost model charges, **per row**, from IBKR's published futures schedule (migration 026): commission plus the exchange and regulatory fee recovery charges. 0.610 to 0.614 on the four micros, 1.510 to 3.010 on the rest (ES 2.247 against MES 0.614). A CHECK (`contract_metadata_fee_per_contract_positive`) refuses a cell that is not a plain decimal number above zero. | `:422` |
-| `"Overnight Initial Margin"`, `"Overnight Maintenance Margin"` | the margin per contract the engine uses | `:435`, `:436` |
+| `"Contract Size"` | **dollars per 1.0 of quoted price** (the multiplier): 50 for ES, 5 for MES, 1000 for CL, 100000 for 6A. Notional = contracts × price × this. | `instrument_registry.cpp` |
+| `"Tick Size"` | one tick in price units (the unit the close is stored in) | |
+| `"Minimum Price Fluctuation"` | the same tick in dollars per contract. It must equal `"Tick Size"` × `"Contract Size"`; all 40 rows do, and the loader warns on a row that does not. | |
+| `"Fee Per Contract"` | dollars per contract per side that the cost model charges, **per row**, from IBKR's published futures schedule (migration 026): commission plus the exchange and regulatory fee recovery charges. 0.610 to 0.614 on the four micros, 1.510 to 3.010 on the rest (ES 2.247 against MES 0.614). A CHECK (`contract_metadata_fee_per_contract_positive`) refuses a cell that is not a plain decimal number above zero. | |
+| `"Overnight Initial Margin"`, `"Overnight Maintenance Margin"` | the margin per contract the engine uses | |
 | `"Intraday Initial Margin"`, `"Intraday Maintenance Margin"` | not read by the instrument registry | |
-| `"IB Symbol"`, `"Contract Months"` | read by the daily email (the broker symbol and the rollover-warning cells); the registry falls back to `"IB Symbol"` only for a row with an empty `"Databento Symbol"` (`:363`), and no row has one | |
-| `"Trading Hours (EST)"` | carried on the instrument; the session classifier does not read it | `:437` |
+| `"IB Symbol"`, `"Contract Months"` | read by the daily email (the broker symbol and the rollover-warning cells); the registry falls back to `"IB Symbol"` only for a row with an empty `"Databento Symbol"`, and no row has one | |
+| `"Trading Hours (EST)"` | carried on the instrument; the session classifier does not read it | |
 
 Migration 019 holds the corrections these rows carry: the tick of 6A and 6L is half a point
 (`"Tick Size"` 0.00005, `"Minimum Price Fluctuation"` 5); `"IB Symbol"` of 6B, 6E, 6S, ZS and
@@ -351,7 +349,7 @@ the four equity index micros and MBT, every row is the full-size contract.
 
 Three cells carry a stray character: a trailing non-breaking space on `"Tick Size"` of 6N and
 HG, and a leading tab on `"Overnight Maintenance Margin"` of YM. The loader reads the number
-beside it (`src/data/postgres_database.cpp:1577-1581`). A SQL cast of the column fails on those
+beside it (`src/data/postgres_database.cpp`). A SQL cast of the column fails on those
 rows, and `trim()` does not remove the non-breaking space, so a SQL reader strips non-numeric
 characters first. Only the fee column has a CHECK.
 
@@ -416,7 +414,7 @@ The later migrations add the columns the runners write (on `trading`, `backtest`
 `metadata.contract_metadata`) and make the schema and data corrections they depend on: 003 adds
 indexes on `equities_data`, 004 replaces the function `trading.get_trading_days`, 012 widens
 `strategy_id`, 019 and 026 change rows of `metadata.contract_metadata` (026 also adds the fee
-CHECK). Each file's header says what it does and why.
+CHECK); 028 and 033 write comments only. Each file's header says what it does and why.
 
 ### NOT owned by this repo: `equities_data` schema (data-ngin owns it)
 
@@ -439,9 +437,9 @@ What each index is for (`migrations/003_equity_query_indexes.sql`):
 
 | Index | On | The query it serves |
 |---|---|---|
-| `idx_ohlcv_1d_corp_events` | `equities_data.ohlcv_1d ("time", symbol)`, only the bars that carry a dividend or a split factor other than 0 or 1 | the per-bar corporate actions of a date window, read on every live equity run (`get_per_bar_corporate_actions`, `src/data/postgres_database.cpp:2998`). It leads with `time` because the query filters a date range across every held symbol |
-| `idx_ohlcv_1d_delisting` | `equities_data.ohlcv_1d (symbol, delisting_date)`, only the bars that carry a delisting date | the termination timing of the held symbols (`get_delisting_dates`, `:3132`) |
-| `idx_corporate_action_ticker_date` | `equities_data.corporate_action (ticker, date)` | the deal terms of a set of held symbols over a window (`get_corporate_actions`, `:2888`). The table has no other index |
+| `idx_ohlcv_1d_corp_events` | `equities_data.ohlcv_1d ("time", symbol)`, only the bars that carry a dividend or a split factor other than 0 or 1 | the per-bar corporate actions of a date window, read on every live equity run (`get_per_bar_corporate_actions`, `src/data/postgres_database.cpp`). It leads with `time` because the query filters a date range across every held symbol |
+| `idx_ohlcv_1d_delisting` | `equities_data.ohlcv_1d (symbol, delisting_date)`, only the bars that carry a delisting date | the termination timing of the held symbols (`get_delisting_dates`) |
+| `idx_corporate_action_ticker_date` | `equities_data.corporate_action (ticker, date)` | the deal terms of a set of held symbols over a window (`get_corporate_actions`). The table has no other index |
 
 The two indexes on `ohlcv_1d` are partial, so they stay small while covering the whole
 condition of their query; the table's only other index is its `(symbol, time)` primary key.
@@ -450,14 +448,14 @@ condition of their query; the table's only other index is its `(symbol, time)` p
 
 The equity adjustment query computes the backward cumulative product in the query itself, as a
 window aggregate over every bar of every symbol in the window it is asked for, each time it runs
-(`build_equity_adjusted_query`, `src/data/market_data_utils.cpp:36`). Its cost is that aggregate,
+(`build_equity_adjusted_query`, `src/data/market_data_utils.cpp`). Its cost is that aggregate,
 and it grows with the number of symbols times the number of bars. The query reads every row of
 its window, so no index shortens it. Making it fast means materialising the adjustment factors
 instead of recomputing them per query. Budget for it in run planning; it is not a defect.
 
 ### Migration order
 
-The migrations in `migrations/` are **001 to 006, 012 to 020 and 026**. Apply them in
+The migrations in `migrations/` are **001 to 006, 012 to 020, 026 and 028 to 033**. Apply them in
 ascending number order, every one of them, before running a binary built from this
 repository, then run `scripts/backfill_ticker_aliases.sql`. The repository holds no migration
 with a number between those, and nothing in it depends on one. Each migration carries a rollback file beside it

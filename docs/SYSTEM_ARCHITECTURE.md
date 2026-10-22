@@ -129,7 +129,7 @@ the target `schema.table` and a date range. One Airflow DAG per feed wraps the p
   Nothing is back-adjusted upstream, by the vendor or by the pipeline. On the day the resolver
   switches contract the stored close steps by the price gap between two contracts, which is not a
   return. The engine, not the pipeline, builds the back-adjusted series every return consumer reads
-  (the design comment at `include/trade_ngin/data/roll_series.hpp:15`, and
+  (the design comment at `include/trade_ngin/data/roll_series.hpp`, and
   [FUTURES_ROLLS.md](FUTURES_ROLLS.md)). The contract behind each bar is the `instrument_id` column
   of `ohlcv_1d_raw`.
 - Futures symbols. The four equity index roots are stored under the micro symbols (`MES.v.0`,
@@ -137,7 +137,7 @@ the target `schema.table` and a date range. One Airflow DAG per feed wraps the p
   decides which contract size the book trades on each date (section 4.3).
 - Equities. The vendor's raw and adjusted columns are stored as delivered. The engine does not read
   the vendor's adjusted columns: it rebuilds the adjustment from `div_cash` and `split_factor`
-  (the comment at `include/trade_ngin/data/market_data_utils.hpp:13`).
+  (the comment at `include/trade_ngin/data/market_data_utils.hpp`).
 - No trading calendar is generated. The engine carries its own holiday file
   (`include/trade_ngin/core/holidays.json`).
 
@@ -162,23 +162,23 @@ environment or, for the engine, from the untracked `config/` directory (section 
 | `futures_data` | `ohlcv_1d` (the bars the engine loads), `ohlcv_1d_raw` (one row per symbol and day, with `instrument_id`) | data-ngin | none |
 | `equities_data` | `ohlcv_1d`, `ohlcv_1d_raw`, `corporate_action`, `ticker_aliases`, and coverage tables | data-ngin | `003` adds query indexes |
 | `metadata` | `contract_metadata` (one row per futures contract: multiplier, tick, margins, hours, months, `"Fee Per Contract"`) | maintained by hand and by migrations | `014` adds `"Fee Per Contract"`, `019` corrects rows, `026` sets the per-contract IBKR fees with a CHECK |
-| `trading` | `positions`, `executions`, `signals`, `equity_curve`, `live_results`, `live_run_metadata`, `strategy_trading_days_metadata`, `corp_action_applied`; function `get_trading_days` | trade-ngin live runners | `001` `portfolio_type`; `002`, `005`, `006` `corp_action_applied`; `004` `get_trading_days`; `012` `strategy_id` width; `013` `executions.netting_adjustment`; `015` `executions.execution_type` and `instrument_id`; `016` `positions.instrument_id`; `017` `live_results` roll costs; `020` `live_results.risk_detail` |
+| `trading` | `positions`, `executions`, `signals`, `equity_curve`, `live_results`, `live_run_metadata`, `strategy_trading_days_metadata`, `corp_action_applied`; function `get_trading_days` | trade-ngin live runners | `001` `portfolio_type`; `002`, `005`, `006` `corp_action_applied`; `004` `get_trading_days`; `012` `strategy_id` width; `013` `executions.netting_adjustment`; `015` `executions.execution_type` and `instrument_id`; `016` `positions.instrument_id`; `017` `live_results` roll costs; `020` `live_results.risk_detail`; `028` column comments; `029` `live_results.settled_at`; `030` `live_results` statistics and overlay columns |
 | `trading` | `strategy_registry`, `strategy_lifecycle_log` | AlgoLens | none |
-| `backtest` | `run_metadata`, `results`, `equity_curve`, `final_positions`, `executions`; `signals` (present, never written) | trade-ngin backtest runners | `013`, `015` on `executions`; `016` `final_positions.instrument_id`; `018` `results` cost columns; `020` `equity_curve.risk_detail` |
+| `backtest` | `run_metadata`, `results`, `equity_curve`, `final_positions`, `executions`; `signals` (present, never written) | trade-ngin backtest runners | `013`, `015` on `executions`; `016` `final_positions.instrument_id`; `018` `results` cost columns; `020` `equity_curve.risk_detail`; `028` column comments; `031` `results` statistics columns and `equity_curve` overlay columns; `032` `final_positions.row_mark`; `033` `end_date` comments |
 | `auth` | `users` | AlgoLens | none |
 | `synthetic` | `ohlcv_1d` (not present in every copy of the database; nothing in trade-ngin reads it) | data-ngin | none |
 | `macro_data` | macro series | not by the engine; no runner reads it | none |
 
-The migrations in `migrations/` are numbered 001 to 006, 012 to 020 and 026; each file's header is
+The migrations in `migrations/` are numbered 001 to 006, 012 to 020, 026 and 028 to 033; each file's header is
 its specification and each has a rollback file beside it. The core tables of `trading`, `backtest`,
 `metadata` and `futures_data` predate the migrations: no migration creates them (the migration
 test scripts build throwaway copies only), so the migrations only alter them. What one row of each
 table is, its key and when it is final are in [LIVE_RUN_CYCLE.md](LIVE_RUN_CYCLE.md).
 
 The bar table name is `{asset}_data.{data_type}_{frequency}` (`build_table_name`,
-`include/trade_ngin/core/types.hpp:586`); the futures `_raw` twin is named by
-`kFuturesRawBarTable` (`include/trade_ngin/data/market_data_utils.hpp:134`). The CI job "Schema
-Ownership Guard" (`.github/workflows/ci-cd-pipeline.yml:506`) fails a change that adds, in
+`include/trade_ngin/core/types.hpp`); the futures `_raw` twin is named by
+`kFuturesRawBarTable` (`include/trade_ngin/data/market_data_utils.hpp`). The CI job "Schema
+Ownership Guard" (`.github/workflows/ci-cd-pipeline.yml`) fails a change that adds, in
 `src/data` or `src/storage`, a string literal beginning with `futures_data.`, `equities_data.`,
 `options_data.`, `synthetic.`, `auth.` or `research.`. It is a pattern check on those two
 directories: a schema named in the middle of a query, as the engine's read queries name
@@ -188,10 +188,11 @@ Columns the engine stores that later sections refer to:
 
 | Column | Where | Meaning |
 |---|---|---|
-| `execution_type` | `trading.executions`, `backtest.executions` | `STRATEGY` (a fill against the day's target), `ROLL` (one leg of a contract roll) or `BORROW` (the backtest's overnight borrow-fee row); `ExecutionType`, `include/trade_ngin/core/types.hpp:269` |
+| `execution_type` | `trading.executions`, `backtest.executions` | `STRATEGY` (a fill against the day's target), `ROLL` (one leg of a contract roll) or `BORROW` (the backtest's overnight borrow-fee row); `ExecutionType`, `include/trade_ngin/core/types.hpp` |
 | `instrument_id` | the executions tables, `trading.positions`, `backtest.final_positions` | the vendor contract id: on a ROLL leg the contract that leg traded, on a position the contract held |
 | `netting_adjustment` | the executions tables | the part of a sleeve fill's own cost the account did not pay because sleeves traded the same symbol on the same day (section 4.6) |
-| `risk_scale`, `risk_detail` | `trading.live_results`, `backtest.equity_curve` (`risk_detail`) | the rebalance's record: nine keys built by `risk_detail_json`, `include/trade_ngin/risk/risk_detail.hpp:64` (`risk_requested`, `binding_term`, `overlay_blind`, `sizing_capital`, `account_value`, and the four `over_limit_*` keys) |
+| `risk_scale`, `risk_detail` | `trading.live_results`, `backtest.equity_curve` (`risk_detail`) | the rebalance's record: nine keys built by `risk_detail_json`, `include/trade_ngin/risk/risk_detail.hpp` (`risk_requested`, `binding_term`, `overlay_blind`, `sizing_capital`, `account_value`, and the four `over_limit_*` keys) |
+| `overlay_risk`, `overlay_risk_jump`, `overlay_risk_shock`, `overlay_gross_leverage`, `overlay_net_leverage`, `var_95_1d` | `trading.live_results`, `backtest.equity_curve` | the overlay's readings of the stored book, on futures rows of a sized rebalance; the three risk readings and `var_95_1d` are NULL on a blind window |
 | `daily_roll_costs`, `total_roll_costs` | `trading.live_results` | the cost of ROLL legs, counted apart from strategy turnover |
 | `transaction_costs`, `roll_costs`, `total_roll_fills` | `backtest.results` | the run's cost totals and its count of ROLL fills |
 | `portfolio_config` | `trading.live_run_metadata` | the run's configuration as JSON, and the marks of a refused day (section 4.5) |
@@ -202,7 +203,7 @@ Columns the engine stores that later sections refer to:
 
 ### 4.1 What it is
 
-One shared library, `trade_ngin` (`CMakeLists.txt:249`), plus eight runner executables and a
+One shared library, `trade_ngin` (`CMakeLists.txt`), plus eight runner executables and a
 benchmark executable. It loads bars from Postgres, runs the strategies, sizes and rebalances a
 portfolio in whole contracts under a risk overlay, synthesises the fills, and writes the book, the
 fills, the P&L and the statistics back to Postgres. C++20, CMake.
@@ -215,22 +216,22 @@ says where to look.
 
 | Module | Role | Start reading at |
 |---|---|---|
-| `core/` | layered JSON configuration (`config_loader`, `config_manager`), logger, `email_sender` (SMTP through libcurl), `chart_generator` (gnuplot, inline PNG), `holiday_checker` with `holidays.json`, `time_utils`, `types.hpp` (bars, positions, execution reports, asset class to schema) | `include/trade_ngin/core/config_loader.hpp:475` (`require_loop_keys`) |
-| `data/` | `postgres_database` (every SQL read and write, libpqxx to Arrow tables), `credential_store`, `market_data_bus`, `market_data_utils` (the futures bar query that keeps one row per symbol and day; the equity adjustment), `session_classifier`, `roll_series`, `listing_dates` | `include/trade_ngin/data/market_data_utils.hpp:101` (`kFuturesBarKeepOrder`) |
-| `data/session_classifier` | what one symbol's bar, or its absence, is on one date: `SESSION`, `JUNK`, `NO_BAR_CLOSURE`, `NO_BAR_FEED_HOLE`. Only a `SESSION` symbol updates its signal and may trade; the others are held | `include/trade_ngin/data/session_classifier.hpp:39` (`SessionVerdict`), `:198` (`SessionClassifier`) |
-| `data/roll_series` | the contract switches of a symbol's consumed bars (change, confirm, flip), the back-adjusted level and return series, and the two ROLL legs of a confirmed roll | `include/trade_ngin/data/roll_series.hpp:85` (`build_series`), `:150` (`make_roll_legs`) |
-| `data/listing_dates` | a contract that lists on a date, the contract the book trades before it, and vendor id relabels that are not rolls | `include/trade_ngin/data/listing_dates.hpp:22` (`ListedContract`), `:118` (`ListingDates`) |
-| `instruments/` | `instrument_registry` loads `metadata.contract_metadata` and resolves a symbol to its row (the `.v.` suffix is stripped); futures, equity and option specifications | `src/instruments/instrument_registry.cpp:39` (`get_instrument`) |
-| `strategy/` | `base_strategy`, `trend_following` with `trend_estimator` (volatility and the EWMAC forecasts from a fixed trailing window), `mean_reversion`, `equity_strategy_builder`, `sleeve_config` (a futures sleeve's required keys). `regime_detector` is compiled and used by no runner | `include/trade_ngin/strategy/trend_following.hpp:119`, `include/trade_ngin/strategy/mean_reversion.hpp:73` |
-| `portfolio/` | `portfolio_manager` (holds the sleeves, runs the rebalance), `sizing_capital` (the capital the futures book is sized on), `allocation_split` (one symbol's contracts split back to the sleeves), `loop_config` | `src/portfolio/portfolio_manager.cpp:2015` (`rebalance_one_pass`) |
-| `optimization/` | `one_pass` (the futures rebalance as pure functions: cap, covariance, forecast-sign close, search from the held book, buffer, rounding, trim) and `dynamic_optimizer` (the greedy whole-contract optimiser of the generic step, which runs only for a book that holds no trend sleeve and sets `use_optimization`; a book that holds a trend sleeve and names no overlay sleeve is refused, `src/portfolio/portfolio_manager.cpp:500`) | `include/trade_ngin/optimization/one_pass.hpp:248` (`rebalance`) |
-| `risk/` | `overlay` (the overlay's arithmetic: the gate window, five readings, one multiplier), `risk_module` (the module interface and its actions), `carver_risk_module`, `basic_risk_modules` (constant scale, warn, refuse), `risk_module_config` (`risk.json` schema 2), `risk_detail`, `risk_manager` (the measurement behind the reported risk columns) | `include/trade_ngin/risk/overlay.hpp:68` (`Readings`), `include/trade_ngin/risk/risk_module.hpp:103` (`RiskModule`) |
-| `transaction_cost/` | spread and impact models, per-asset cost configuration, `transaction_cost_manager`, `netting` (the adjustment between sleeves and the cost after netting) | `include/trade_ngin/transaction_cost/netting.hpp:97` (`net_cost`) |
-| `backtest/` | `backtest_coordinator` (the daily loop), data loader, execution, P&L and price managers, metrics, CSV export, the equity cost helpers | `src/backtest/backtest_coordinator.cpp:184` (`run_portfolio`), `:656` (`process_portfolio_day`) |
-| `live/` | `live_trading_coordinator`, `live_daily_cycle` and `live_data_loader`, `execution_manager` (paper fills), `execution_price_resolver`, `live_pnl_manager`, `margin_manager`, `session_book_gate`, `live_roll_legs`, `futures_cost_feed`, `live_sizing_read`, `stored_book_ownership`, `risk_module_failure` and `run_metadata_marks`, `email_body_file`, the corporate-actions applier, lifecycle, classification and audit log, `broker_frame`, `csv_exporter`, the live metrics | `include/trade_ngin/live/session_book_gate.hpp`, `include/trade_ngin/live/live_trading_coordinator.hpp:81` |
-| `storage/` | `backtest_results_manager` and `live_results_manager`: map a run's output onto `backtest.*` and `trading.*` | `include/trade_ngin/storage/live_results_manager.hpp:43` |
+| `core/` | layered JSON configuration (`config_loader`, `config_manager`), logger, `email_sender` (SMTP through libcurl), `chart_generator` (gnuplot, inline PNG), `holiday_checker` with `holidays.json`, `time_utils`, `types.hpp` (bars, positions, execution reports, asset class to schema) | `include/trade_ngin/core/config_loader.hpp` (`require_loop_keys`) |
+| `data/` | `postgres_database` (every SQL read and write, libpqxx to Arrow tables), `credential_store`, `market_data_bus`, `market_data_utils` (the futures bar query that keeps one row per symbol and day; the equity adjustment), `session_classifier`, `roll_series`, `listing_dates` | `include/trade_ngin/data/market_data_utils.hpp` (`kFuturesBarKeepOrder`) |
+| `data/session_classifier` | what one symbol's bar, or its absence, is on one date: `SESSION`, `JUNK`, `NO_BAR_CLOSURE`, `NO_BAR_FEED_HOLE`. Only a `SESSION` symbol updates its signal and may trade; the others are held | `include/trade_ngin/data/session_classifier.hpp` (`SessionVerdict`) (`SessionClassifier`) |
+| `data/roll_series` | the contract switches of a symbol's consumed bars (change, confirm, flip), the back-adjusted level and return series, and the two ROLL legs of a confirmed roll | `include/trade_ngin/data/roll_series.hpp` (`build_series`) (`make_roll_legs`) |
+| `data/listing_dates` | a contract that lists on a date, the contract the book trades before it, and vendor id relabels that are not rolls | `include/trade_ngin/data/listing_dates.hpp` (`ListedContract`) (`ListingDates`) |
+| `instruments/` | `instrument_registry` loads `metadata.contract_metadata` and resolves a symbol to its row (the `.v.` suffix is stripped); futures, equity and option specifications | `src/instruments/instrument_registry.cpp` (`get_instrument`) |
+| `strategy/` | `base_strategy`, `trend_following` with `trend_estimator` (volatility and the EWMAC forecasts from a fixed trailing window), `mean_reversion`, `equity_strategy_builder`, `sleeve_config` (a futures sleeve's required keys). `regime_detector` is compiled and used by no runner | `include/trade_ngin/strategy/trend_following.hpp`, `include/trade_ngin/strategy/mean_reversion.hpp` |
+| `portfolio/` | `portfolio_manager` (holds the sleeves, runs the rebalance), `sizing_capital` (the capital the futures book is sized on), `allocation_split` (one symbol's contracts split back to the sleeves), `loop_config` | `src/portfolio/portfolio_manager.cpp` (`rebalance_one_pass`) |
+| `optimization/` | `one_pass` (the futures rebalance as pure functions: cap, covariance, forecast-sign close, search from the held book, buffer, rounding, trim) and `dynamic_optimizer` (the greedy whole-contract optimiser of the generic step, which runs only for a book that holds no trend sleeve and sets `use_optimization`; a book that holds a trend sleeve and names no overlay sleeve is refused, `src/portfolio/portfolio_manager.cpp`) | `include/trade_ngin/optimization/one_pass.hpp` (`rebalance`) |
+| `risk/` | `overlay` (the overlay's arithmetic: the gate window, five readings, one multiplier), `risk_module` (the module interface and its actions), `carver_risk_module`, `basic_risk_modules` (constant scale, warn, refuse), `risk_module_config` (`risk.json` schema 2), `risk_detail`, `risk_manager` (the measurement behind the reported risk columns) | `include/trade_ngin/risk/overlay.hpp` (`Readings`), `include/trade_ngin/risk/risk_module.hpp` (`RiskModule`) |
+| `transaction_cost/` | spread and impact models, per-asset cost configuration, `transaction_cost_manager`, `netting` (the adjustment between sleeves and the cost after netting) | `include/trade_ngin/transaction_cost/netting.hpp` (`net_cost`) |
+| `backtest/` | `backtest_coordinator` (the daily loop), data loader, execution, P&L and price managers, metrics, CSV export, the equity cost helpers | `src/backtest/backtest_coordinator.cpp` (`run_portfolio`) (`process_portfolio_day`) |
+| `live/` | `live_trading_coordinator`, `live_daily_cycle` and `live_data_loader`, `execution_manager` (paper fills), `execution_price_resolver`, `live_pnl_manager`, `margin_manager`, `session_book_gate`, `live_roll_legs`, `futures_cost_feed`, `live_sizing_read`, `stored_book_ownership`, `risk_module_failure` and `run_metadata_marks`, `email_body_file`, the corporate-actions applier, lifecycle, classification and audit log, `broker_frame`, `csv_exporter`, the live metrics | `include/trade_ngin/live/session_book_gate.hpp`, `include/trade_ngin/live/live_trading_coordinator.hpp` |
+| `storage/` | `backtest_results_manager` and `live_results_manager`: map a run's output onto `backtest.*` and `trading.*` | `include/trade_ngin/storage/live_results_manager.hpp` |
 | `statistics/` | statistical tests, regressions, state estimation, volatility models, transformers. A library; the runners' stored statistics come from the backtest and live metrics calculators | `src/statistics/README.md` |
-| `order/`, `execution/` | an order state machine and an execution-algorithm engine. Neither is used by a runner (`include/trade_ngin/execution/execution_engine.hpp:4`) | |
+| `order/`, `execution/` | an order state machine and an execution-algorithm engine. Neither is used by a runner (`include/trade_ngin/execution/execution_engine.hpp`) | |
 
 ### 4.3 Strategies and portfolios
 
@@ -250,9 +251,9 @@ Portfolios are directories under `config_template/portfolios/` (`portfolio.json`
 
 The futures universe is every symbol in `futures_data.ohlcv_1d`, less any `.c.0` symbol and
 `ES.v.0`, which the runners drop from the list
-(`apps/strategies/live_portfolio_conservative.cpp:577`): 36 continuous `.v.0` symbols. Three
+(`apps/strategies/live_portfolio_conservative.cpp`): 36 continuous `.v.0` symbols. Three
 optional blocks of a futures `portfolio.json`, all present in the conservative template, change
-what a symbol is or runs (`src/core/config_loader.cpp:356`):
+what a symbol is or runs (`src/core/config_loader.cpp`):
 
 - `listing_dates`. The four equity index micros (MES, MNQ, MYM, M2K) trade only from their listing
   date, 2019-05-06. Before it the book trades the E-mini (ES, NQ, YM, RTY: ten times the size, its
@@ -280,12 +281,12 @@ Each stage has its own document; this is the order the engine runs them in.
    only when the slow pairs named in `equity_slow_rule` are negative too.
 4. **Sizing capital.** The book is sized on the half-compounded capital: the starting capital less
    the drawdown of the cumulative settled net P&L from its running peak, never above the starting
-   capital (`half_compounded_capital`, `include/trade_ngin/portfolio/sizing_capital.hpp:58`).
+   capital (`half_compounded_capital`, `include/trade_ngin/portfolio/sizing_capital.hpp`).
    `sizing_mode` and `starting_capital` are required keys of a futures book and are checked when
    the configuration loads; neither is read by the sizing, which takes `initial_capital`
    (`starting_capital` must equal it, and `sizing_mode` accepts the one value `half_compounding`).
 5. **The one pass.** A book that names an overlay sleeve is rebalanced by one pass and by no other
-   optimiser or risk step (`one_pass_book`, `src/portfolio/portfolio_manager.cpp:2000`): the cap on
+   optimiser or risk step (`one_pass_book`, `src/portfolio/portfolio_manager.cpp`): the cap on
    each name's target, the overlay once, the forecast-sign close, the whole-contract search from
    the held book with its cost weight, the buffer and the rounding, the clip to the cap, the trim,
    then the split back to the sleeves. See
@@ -294,11 +295,11 @@ Each stage has its own document; this is the order the engine runs them in.
    risk), `R_jump`, `R_shock`, `L_g` (gross leverage) and `L_n` (net leverage). Each is compared
    with its limit; the smallest ratio of limit to reading, never above 1, is applied once as one
    multiplier
-   (`multiplier`, `include/trade_ngin/risk/overlay.hpp:104`). The limits are the keys of the
+   (`multiplier`, `include/trade_ngin/risk/overlay.hpp`). The limits are the keys of the
    `carver` module in `risk.json`. See [RISK_MODULES.md](RISK_MODULES.md).
 7. **Risk modules.** `risk.json` (schema 2) declares the modules of a book: `carver`,
    `constant_scale`, `warn`, `refuse` or `none`. A module answers with one action
-   (`RiskAction`, `include/trade_ngin/risk/risk_module.hpp:19`). A module that cannot answer
+   (`RiskAction`, `include/trade_ngin/risk/risk_module.hpp`). A module that cannot answer
    refuses its scope: the book is held, nothing trades and the day is still stored.
 8. **Fills and costs.** Section 4.6.
 
@@ -318,46 +319,47 @@ All under `apps/`. Every runner resolves `./config` from the directory it is sta
 | `bt_equity_mr` | `apps/backtest/bt_equity_mean_reversion.cpp` | the equity backtest |
 | `bt_equity_validation` | `apps/backtest/bt_equity_validation.cpp` | runs the equity backtest and recomputes its data, signals, P&L and metrics independently |
 
-A live futures run takes `[YYYY-MM-DD] [--send-email]`
-(`apps/strategies/live_portfolio_conservative.cpp:122`). A run given the date T loads bars through
+A live futures run takes `YYYY-MM-DD [--send-email]`
+(`apps/strategies/live_portfolio_conservative.cpp`). A run given the date T loads bars through
 T-1, prices its fills at the T-1 close, stores rows dated T and finalises the T-1 row. The
-scheduled run always passes a date. What a run with no date does differently, and what a run takes
-from the host's clock, are in [LIVE_RUN_CYCLE.md](LIVE_RUN_CYCLE.md).
+scheduled run always passes a date. What a run takes from the host's clock is in
+[LIVE_RUN_CYCLE.md](LIVE_RUN_CYCLE.md).
 
 The exit codes of the runners and of the wrapper, and what each can leave stored:
 
 | Exit code | When it happens | What it can leave stored |
 |---|---|---|
-| 0 | A futures live runner (`live_portfolio`, `live_portfolio_conservative`) reaches the end of the run with the book not refused by the risk step and no sizing hold. Three cases share this code: a completed day; a carried day (no symbol has a consumed bar for the previous day, so the whole book is carried and no order is made); a run in which a store failed, was logged and was passed over. A refusal by the risk step never ends at 0: see the rows for 3 and for 1 after the `live_run_metadata` row. | A completed day: the `live_run_metadata` row, the signals, the executions, the settled rows of the previous day, the day's positions, the day's `live_results` row and its equity point. A carried day: the same without signals; the book is unchanged, so no order is made. A passed-over failure: the day without the table whose store failed, which can be the `live_run_metadata` row, the signals, the executions of a sleeve that has no roll leg, the previous day's positions, the day's positions, the previous day's `live_results` update or equity point, or the day's `live_results` row and equity point. Exit 0 is not proof that the day is stored in full: the evidence of a completed day is the date's `trading.live_results` row. |
+| 0 | A futures live runner (`live_portfolio`, `live_portfolio_conservative`) reaches the end of the run with the book not refused by the risk step, no sizing hold, and its report, when the run makes one, built and mailed or written. Three cases share this code: a completed day; a carried day (no symbol has a consumed bar for the previous day, so the whole book is carried and no order is made); a run in which a store failed, was logged and was passed over. A refusal by the risk step never ends at 0: see the rows for 3 and for 1 after the `live_run_metadata` row. | A completed day: the `live_run_metadata` row, the signals, the executions, the settled rows of the previous day, the day's positions, the day's `live_results` row and its equity point. A carried day: the same without signals; the book is unchanged, so no order is made. A passed-over failure: the day without the table whose store failed, which can be the `live_run_metadata` row, the signals, the executions of a sleeve that has no roll leg, the previous day's positions, the day's positions, the previous day's equity point, or the day's `live_results` row and equity point. Exit 0 is not proof that the day is stored in full: the evidence of a completed day is the date's `trading.live_results` row. |
 | 0 | The wrapper `scripts/run_live_portfolio.sh` finds its lock directory present and skips. The binary is not started. | Nothing. |
-| 1 | A futures live runner refuses before it writes the day's `live_run_metadata` row: a bad argument; a logger that cannot be initialised; a config, database or instrument registry failure; a missed previous run; a listing-date refusal; missing margin metadata; a sleeve that cannot be built or started; bars that cannot be loaded; a stale or incomplete feed on a run given no date; a holiday calendar that is not loaded or does not cover the run date or the day before it; a held symbol with no bar for longer than the tolerance on a run for the host's date; roll state that cannot be read or placed; a stored book the run does not load; a sleeve book the sizing read cannot load; a sizing capital the portfolio manager rejects. | Nothing. |
-| 1 | A futures live runner stops after it wrote the day's `live_run_metadata` row. | It depends on where the run stops. The estimator history cannot be seeded, or the portfolio step fails: the `live_run_metadata` row (marked `risk_refusal` when a sizing hold was recorded first, when the portfolio step failed because the risk step refused a book that has no stored previous positions to be held at, or, with scope `sleeve`, when a sleeve risk module or the sleeve's risk step could not answer on a sleeve that has no stored previous positions). A roll leg has no usable close, executions cannot be generated with a roll owed, the strict assertion fails (the row is marked `strict_assertion`), the netting refuses a row, or the day's roll executions cannot be stored: the row and the day's signals. The sweep of a sleeve that has no roll leg fails: the row, the signals and, on a book of two sleeves, the executions of a sleeve already stored with its roll legs. The margin calculation fails: the row, the signals, the executions and the rewritten positions of the previous day. The previous cumulative roll cost cannot be read: a half-written day, with the executions, both days' positions and the previous day's settled `live_results` row and equity point stored, and no `live_results` row for the day. Any other error: whatever was written before it. |
-| 3 | Futures live runners only. The risk step refused the book, or the sizing read failed with every sleeve book loaded. The risk step refuses the book when the one pass cannot produce its answer (the overlay sleeve is not running, a held symbol that cannot be weighed has no usable close or multiplier, an input or an overlay reading is not a finite number, the pass fails), and when a sleeve risk module refuses or replaces its sleeve or cannot evaluate it: one search on the summed book cannot hold one sleeve apart, so the whole book is held. Every such refusal is recorded with its reason as an error, whether a module decided it or a module failed. The book is held and the run goes on to the end. | A held day: the held book as the day's positions, no order, the day's `live_results` row and its equity point, and the day's signals. On a sizing hold the portfolio step is not run, so the sleeves compute no forecast and the signal stored for each symbol with seeded history is 0. The `live_run_metadata` row is marked `risk_refusal`, and the subject and the body of the report are flagged. |
-| 0 or 1 | The equity live runner (`live_equity_mr`) returns only these two codes, never 3. It returns 1 on each of its refusals, and also when the previous day's positions or `live_results` row cannot be settled, when an execution cannot be stored or applied, and at the end of a run whose results could not all be saved. | On exit 1: nothing if the stop is before its `live_run_metadata` row; otherwise that row and whatever was written before the stop. Its feed checks come after that row, so a feed refusal leaves the row. On exit 0: the day; a failed store of the `live_run_metadata` row or of the previous day's equity point is logged and passed over. |
-| 0 or 1 | The backtest runners (`bt_portfolio`, `bt_portfolio_conservative`, `bt_equity_mr`) take no argument. They return 1 when the config, the database, a strategy or the backtest itself fails, and 0 when the backtest ran. `bt_equity_validation` returns 0 only when every check passes. | On exit 1: no `backtest.results` row and nothing saved at the end of the run; the `backtest.final_positions` rows of the bar dates processed before the failure remain, because they are written during the run. On exit 0: the results, unless the save to the database failed; that failure is logged and passed over, so exit 0 does not prove the results are stored. |
+| 1 | A futures live runner refuses before it writes the day's `live_run_metadata` row: a bad argument; a logger that cannot be initialised; a config, database or instrument registry failure; a missed previous run; a listing-date refusal; missing margin metadata; a sleeve that cannot be built or started; bars that cannot be loaded; a feed in which no symbol has a usable bar date; a holiday calendar that is not loaded or does not cover the run date or the day before it; a held symbol with no bar for longer than the tolerance on a run for the host's date; roll state that cannot be read or placed; a stored book the run does not load; a sleeve book the sizing read cannot load; a sizing capital the portfolio manager rejects. | Nothing. |
+| 1 | A futures live runner stops after it wrote the day's `live_run_metadata` row. | It depends on where the run stops. The estimator history cannot be seeded, or the portfolio step fails: the `live_run_metadata` row (marked `risk_refusal` when a sizing hold was recorded first, when the portfolio step failed because the risk step refused a book that has no stored previous positions to be held at, or, with scope `sleeve`, when a sleeve risk module or the sleeve's risk step could not answer on a sleeve that has no stored previous positions). A roll leg has no usable close, executions cannot be generated with a roll owed, the strict assertion fails (the row is marked `strict_assertion`), the netting refuses a row, or the day's roll executions cannot be stored: the row and the day's signals. The margin calculation fails: the row, the signals, the executions and the rewritten positions of the previous day. The previous day's `live_results` row cannot be updated: the row, the signals, the executions and both days' positions; the previous day's `live_results` row and equity point are left as they were. The previous cumulative roll cost cannot be read: a half-written day, with the executions, both days' positions and the previous day's settled `live_results` row and equity point stored, and no `live_results` row for the day. Any other error: whatever was written before it. |
+| 2 | A live runner (`live_portfolio`, `live_portfolio_conservative`, `live_equity_mr`) is started with no date. It prints the usage and runs nothing. The wrapper always passes a date. | Nothing. No email is sent. |
+| 3 | Futures live runners only. The risk step refused the book, or the sizing read failed with every sleeve book loaded. The risk step refuses the book when the one pass cannot produce its answer (the overlay sleeve is not running, a held symbol that cannot be weighed has no usable close or multiplier, an input or an overlay reading is not a finite number, the pass fails), and when a sleeve risk module refuses or replaces its sleeve or cannot evaluate it: one search on the summed book cannot hold one sleeve apart, so the whole book is held. Every such refusal is recorded with its reason as an error, whether a module decided it or a module failed. The book is held and the run goes on to the end. A report that fails on such a day is logged and the code stays 3. | A held day: the held book as the day's positions, no order, the day's `live_results` row and its equity point, and the day's signals. On a sizing hold the portfolio step is not run, so the sleeves compute no forecast and the signal stored for each symbol with seeded history is 0. The `live_run_metadata` row is marked `risk_refusal`, and the subject and the body of the report are flagged. |
+| 4 | A live runner (all three) stored the day, but the report the run makes was not built, written or sent: the mail sender could not be initialised, the body was empty, the body file could not be written, or the send failed. One `EMAIL_FAILED` line at error level says so. A run that makes no report (no `--send-email` and no `TRADE_NGIN_EMAIL_BODY_DIR`) never exits 4. A futures day that exits 3 keeps 3, and an equity run whose results were not all saved exits 1. | The day, as on exit 0, without the report. |
+| 0 or 1 | The equity live runner (`live_equity_mr`) returns these two codes, 2 and 4 as above, and never 3. It returns 1 on each of its refusals, and also when the previous day's positions or `live_results` row cannot be settled, when an execution cannot be stored or applied, and at the end of a run whose results could not all be saved. | On exit 1: nothing if the stop comes before the run's first store, as every refusal does (the feed checks, the missed-run guard, the held-symbol check and the corporate-action de-duplication included); otherwise the `live_run_metadata` row and whatever was written before the stop. On exit 0: the day; a failed store of the `live_run_metadata` row or of the previous day's equity point is logged and passed over. |
+| 0 or 1 | The backtest runners (`bt_portfolio`, `bt_portfolio_conservative`, `bt_equity_mr`) take no argument. They return 1 when the config, the database, a strategy or the backtest itself fails, or when a storing run's run id already has rows in `backtest.results` or `backtest.final_positions` (the run is refused before its first cycle), and 0 when the backtest ran. `bt_equity_validation` returns 0 only when every check passes. | On exit 1: nothing when the run id was refused; otherwise no `backtest.results` row and nothing saved at the end of the run; the `backtest.final_positions` rows of the bar dates processed before the failure remain, because they are written during the run. On exit 0: the results, unless the save to the database failed; that failure is logged and passed over, so exit 0 does not prove the results are stored. |
 | 127 | The wrapper cannot find the binary, or it is not executable. | Nothing. |
 | 1 | The wrapper cannot change to the application directory. | Nothing. |
 | any other code | No runner and no script returns any other code of its own. The wrapper passes on whatever code the binary ended with and logs it on one line. | Not defined by the code. Read the log and the tables. |
 
-Exit 3 is `kRiskModuleFailureExitCode` (`include/trade_ngin/live/risk_module_failure.hpp:35`). The
+Exit 3 is `kRiskModuleFailureExitCode` (`include/trade_ngin/live/risk_module_failure.hpp`). The
 marks are keys of `portfolio_config` on the day's `live_run_metadata` row: `risk_refusal`
-(`mark_risk_refusal`, `include/trade_ngin/live/run_metadata_marks.hpp:65`; a sizing hold through
-`sizing_hold_refusal`, `include/trade_ngin/live/live_sizing_read.hpp:307`) and `strict_assertion`
-(`mark_strict_assertion`, `include/trade_ngin/live/run_metadata_marks.hpp:81`).
+(`mark_risk_refusal`, `include/trade_ngin/live/run_metadata_marks.hpp`; a sizing hold through
+`sizing_hold_refusal`, `include/trade_ngin/live/live_sizing_read.hpp`) and `strict_assertion`
+(`mark_strict_assertion`, `include/trade_ngin/live/run_metadata_marks.hpp`).
 
-The report email is built and mailed with `--send-email`. `TRADE_NGIN_EMAIL_BODY_DIR` applies only
-to a futures run that does not send: with the variable set to a directory, the run builds the
-report body exactly as for a send, writes it there as `email_body_<portfolio>_<date>.html` and
-mails nothing. With `--send-email` the variable is ignored with one warning line in the log, and
-the report is mailed as usual. A run with no date sends, so it ignores the variable in the same
-way. The equity runner does not read the variable (`plan_email_report`,
-`include/trade_ngin/live/email_body_file.hpp:34`). Running instructions and the catch-up rules are in
+The report email is built and mailed with `--send-email`. `TRADE_NGIN_EMAIL_BODY_DIR` applies to a
+live run that does not send, on all three runners: with the variable set to a directory, the run
+builds the report body exactly as for a send, writes it there as
+`email_body_<portfolio>_<date>.html` and mails nothing. With `--send-email` the variable is
+ignored with one warning line in the log, and the report is mailed as usual
+(`plan_email_report`, `include/trade_ngin/live/email_body_file.hpp`). Running instructions and the catch-up rules are in
 [LIVE_RUN_CYCLE.md](LIVE_RUN_CYCLE.md) and [performance_upkeep.md](performance_upkeep.md).
 
 ### 4.6 Execution and costs
 
 `ExecutionManager` is an offline execution synthesiser, not a broker adapter
-(`include/trade_ngin/live/execution_manager.hpp:17`): it turns the change in each sleeve's book
+(`include/trade_ngin/live/execution_manager.hpp`): it turns the change in each sleeve's book
 into execution reports priced at the T-1 close and costs them through the transaction cost
 manager. There is no order routing.
 
@@ -366,8 +368,8 @@ figure in `metadata.contract_metadata."Fee Per Contract"`, one value per contrac
 row keeps its own cost. On a book with several sleeves, a fill row also carries the signed
 `netting_adjustment`, and every cost total is after netting: the fill's own cost minus its
 adjustment, through `net_cost` and `add_net_costs`
-(`include/trade_ngin/transaction_cost/netting.hpp:97`, `:121`). A `ROLL` or `BORROW` row carrying
-an adjustment is refused (`NettingRefused`, `include/trade_ngin/transaction_cost/netting.hpp:108`).
+(`include/trade_ngin/transaction_cost/netting.hpp`). A `ROLL` or `BORROW` row carrying
+an adjustment is refused (`NettingRefused`, `include/trade_ngin/transaction_cost/netting.hpp`).
 On a one-sleeve book every adjustment is 0. See [COST_MODEL.md](COST_MODEL.md).
 
 ### 4.7 What the engine reads and writes
@@ -385,8 +387,7 @@ equity book). Outside the database: logs, CSV exports of the positions, and the 
 the email.
 
 **Writes, backtest.** `backtest.run_metadata`, `results`, `equity_curve`, `final_positions`,
-`executions`, and CSV exports. `backtest.signals` has a writer that no runner feeds
-(`save_signals_batch`, `src/storage/backtest_results_manager.cpp:183`); the table stays empty.
+`executions`, and CSV exports. `backtest.signals` has no writer and stays empty.
 
 **Configuration.** `config_template/` is tracked and carries placeholders. A run reads the
 untracked `config/` directory (`defaults.json` plus one directory per portfolio); the database
@@ -396,13 +397,13 @@ See [CONFIG_GUIDE.md](CONFIG_GUIDE.md).
 ### 4.8 Scheduling and deployment
 
 The image (`Dockerfile`) is a two-stage Ubuntu 24.04 build. The runtime stage pins
-`TZ=America/New_York` (`Dockerfile:85`), installs cron and gnuplot, installs the cron table
-(`Dockerfile:114`) and starts `scripts/docker-entrypoint.sh` (`Dockerfile:128`), which writes the
+`TZ=America/New_York` (`Dockerfile`), installs cron and gnuplot, installs the cron table
+(`Dockerfile`) and starts `scripts/docker-entrypoint.sh` (`Dockerfile`), which writes the
 variables the job needs (`TRADING_*`, `DB_*`, `PG*`, `TZ`, `LD_LIBRARY_PATH`) to `/app/.cron_env`
 for cron and then runs cron in the foreground. A health check marks the container unhealthy when
-no cron process is found (`Dockerfile:123`).
+no cron process is found (`Dockerfile`).
 
-The cron table has one line: 09:30 every calendar day (`live_portfolio.cron:15`). The futures book
+The cron table has one line: 09:30 every calendar day (`live_portfolio.cron`). The futures book
 runs seven days a week: the Saturday run books and trades the Friday session, the Sunday run
 carries the book over the closed Saturday, and the Monday run books the Sunday session. The
 schedule does not decide whether a day was a session; the engine does, per symbol.
@@ -410,9 +411,9 @@ schedule does not decide whether a day was a session; the engine does, per symbo
 The job is `scripts/run_live_portfolio.sh`. It sources the environment snapshot, takes a directory
 lock so two runs cannot overlap, checks that the binary exists, changes to the application
 directory, and runs the binary named by `LIVE_BINARY` (default `live_portfolio_conservative`,
-`scripts/run_live_portfolio.sh:21`) with today's date and `--send-email`
-(`scripts/run_live_portfolio.sh:74`). The entrypoint does not copy `LIVE_BINARY` into the cron
-environment (`scripts/docker-entrypoint.sh:30`), so the scheduled job always runs the default; the
+`scripts/run_live_portfolio.sh`) with today's date and `--send-email`
+(`scripts/run_live_portfolio.sh`). The entrypoint does not copy `LIVE_BINARY` into the cron
+environment (`scripts/docker-entrypoint.sh`), so the scheduled job always runs the default; the
 override works only for a run of the wrapper started by hand with the variable set. The wrapper
 has no weekday guard, writes to the container's standard output, and exits with the binary's exit
 code (its own codes: 0 when the lock is held and the run is skipped, 127 when the binary is
@@ -543,7 +544,7 @@ in no shared code. The bar contract both sides implement:
 | data-ngin writes | trade-ngin reads |
 |---|---|
 | futures `ohlcv_1d`: `time, symbol, open, high, low, close, volume` | the same seven columns, one row kept per symbol and day |
-| futures `ohlcv_1d_raw`: the vendor's frame, including `ts_event` and `instrument_id` | `instrument_id`, joined to the kept bar on the same print (`kFuturesRawBarTable`, `include/trade_ngin/data/market_data_utils.hpp:134`) |
+| futures `ohlcv_1d_raw`: the vendor's frame, including `ts_event` and `instrument_id` | `instrument_id`, joined to the kept bar on the same print (`kFuturesRawBarTable`, `include/trade_ngin/data/market_data_utils.hpp`) |
 | equities `ohlcv_1d`: the seven columns, the vendor's adjusted columns, `div_cash`, `split_factor`, `delisting_date` | the seven columns, `div_cash`, `split_factor` and `delisting_date` (the equity runner's delisting exit); the vendor's adjusted columns are not read |
 
 ### 6.3 Deployment topology

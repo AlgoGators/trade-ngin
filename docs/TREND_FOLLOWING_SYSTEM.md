@@ -162,7 +162,7 @@ day's move is booked as on any day. The stored `instrument_id` stays the old id 
 
 | Setting | Value | Where |
 |---|---|---|
-| Universe | every symbol of `futures_data.ohlcv_1d` (36) | `apps/backtest/bt_portfolio_conservative.cpp:151`, `apps/strategies/live_portfolio_conservative.cpp:517` |
+| Universe | every symbol of `futures_data.ohlcv_1d` (36) | `apps/backtest/bt_portfolio_conservative.cpp`, `apps/strategies/live_portfolio_conservative.cpp` |
 | Contract size, tick, fee, sector, margins | one row per contract | `metadata.contract_metadata` (`Contract Size`, `Tick Size`, `Fee Per Contract`, `Sector`, `Overnight Initial Margin`, `Overnight Maintenance Margin`) |
 | `listing_dates.contracts` | MES, MNQ, MYM, M2K listed 2019-05-06; before: ES, NQ, YM, RTY; ratio 10 | `config_template/portfolios/conservative/portfolio.json` |
 | `listing_dates.switch_rule` | `open_at_target` | same file |
@@ -200,12 +200,11 @@ close.
 The move across the relabel (-99.00 = 1 x (49,581 - 49,680)) is booked like any other day, the stored
 `instrument_id` stays 42005850 and the run stores no ROLL row for MES, MNQ, MYM or M2K in February 2026.
 
-**Where in the code.** `ListingDates::tradeable` (`src/data/listing_dates.cpp:104`), `ListingDates::pair_root`
-(`:138`), `ListingDates::conversions_due` (`:192`), `plan_listing_switch` (`:251`), `make_listing_switch_fills`
-(`:279`), `ListingDates::read_id` (`:354`), `ListingDates::apply_relabels` (`:406`). The switch inside the
-rebalance: `PortfolioManager::rebalance_one_pass`, `src/portfolio/portfolio_manager.cpp:2342` to `:2566`. The
-config blocks are read in `src/core/config_loader.cpp` (`instrument_id_relabels` at `:370`, `listing_dates` at
-`:404`). The design comment is the header `include/trade_ngin/data/listing_dates.hpp`.
+**Where in the code.** `ListingDates::tradeable` (`src/data/listing_dates.cpp`), `ListingDates::pair_root`,
+`ListingDates::conversions_due`, `plan_listing_switch`, `make_listing_switch_fills`,
+`ListingDates::read_id`, `ListingDates::apply_relabels`. The switch inside the
+rebalance: `PortfolioManager::rebalance_one_pass`, `src/portfolio/portfolio_manager.cpp`. The
+config blocks are read in `src/core/config_loader.cpp` (`instrument_id_relabels`, `listing_dates`). The design comment is the header `include/trade_ngin/data/listing_dates.hpp`.
 
 **Source.** OURS. The book does not trade one contract before another's listing date: its appendix C notes that some
 micro and mini futures in its data set have their history backfilled with the prices of the larger contract, and it
@@ -235,12 +234,12 @@ that were themselves sessions:
 
 | Setting | Value | Where |
 |---|---|---|
-| `junk_fraction` | 0.01 | `include/trade_ngin/data/session_classifier.hpp:61` |
-| `junk_ceiling_lots` | 1,000 | `:64` |
-| `floor_lots`, `floor_fraction` | 50, 0.25 | `:67`, `:68` |
-| `norm_window_bars` | 20 | `:74` |
-| `expected_lookback_weeks` | 8 | `:77` |
-| `id_change_hold_fraction` | 0.10 | `:54`, `:83` |
+| `junk_fraction` | 0.01 | `include/trade_ngin/data/session_classifier.hpp` |
+| `junk_ceiling_lots` | 1,000 | |
+| `floor_lots`, `floor_fraction` | 50, 0.25 | |
+| `norm_window_bars` | 20 | |
+| `expected_lookback_weeks` | 8 | |
+| `id_change_hold_fraction` | 0.10 | |
 
 **Worked example.** The stored bars, 6C (Canadian dollar). The norm is the median volume of the 20 weekday session bars before the date: 56,566 lots before 2025-11-02 and
 2025-11-03 (the bars of 2025-10-06 to 2025-10-31), and 58,477 lots before 2025-11-04, 11-05 and 11-06.
@@ -253,9 +252,9 @@ that were themselves sessions:
 | 2025-11-05 | Wednesday | 275 | 584.77 | JUNK | 275 is below 584.77 and below 1,000 lots: withheld |
 | 2025-11-06 | Thursday | 53,980 | 584.77 | SESSION | its return is taken against the close of 2025-11-04 |
 
-**Where in the code.** `SessionClassifier::judge_bar` (`src/data/session_classifier.cpp:265`),
-`SessionClassifier::classify_symbol_day` (`:298`), `k01_consumed_bars` (`:472`). The verdicts and the rule's
-numbers are documented in `include/trade_ngin/data/session_classifier.hpp:22` to `:84`.
+**Where in the code.** `SessionClassifier::judge_bar` (`src/data/session_classifier.cpp`),
+`SessionClassifier::classify_symbol_day`, `k01_consumed_bars`. The verdicts and the rule's
+numbers are documented in `include/trade_ngin/data/session_classifier.hpp`.
 
 **Source.** OURS. The book has no session logic: it assumes one usable daily price per business day. Our feed
 carries Sunday session rows, holiday stubs and occasional corrupt prints, and a position sized or traded on such a
@@ -304,10 +303,10 @@ Checks. The step on the change bar is 79,070 - 77,960 = 1,110, so every earlier 
 r = (77,740 - 79,070) / 79,070 = -0.01682054. The raw series would have shown +1.42 percent on the change bar,
 a gain nobody holding the contract made.
 
-**Where in the code.** `classify_instrument_changes` (`src/data/roll_series.cpp:10`), `adjusted_levels` (`:75`),
-`adjusted_returns` (`:89`), `build_series` (`:109`), `RollTracker::add` (`:121`). The strategy builds the series
-for each symbol in `TrendFollowingStrategy::on_data` (`src/strategy/trend_following.cpp:428`). The design comment
-is `include/trade_ngin/data/roll_series.hpp:13` to `:46`.
+**Where in the code.** `classify_instrument_changes` (`src/data/roll_series.cpp`), `adjusted_levels`,
+`adjusted_returns`, `build_series`, `RollTracker::add`. The strategy builds the series
+for each symbol in `TrendFollowingStrategy::on_data` (`src/strategy/trend_following.cpp`). The design comment
+is `include/trade_ngin/data/roll_series.hpp`.
 
 **Source.** CARVER, ADAPTED. The split is the book's: strategy one, "Back-adjusting futures price", and appendix B,
 "Back-adjusting a futures price series", build the back-adjusted series; strategy two states that position sizing
@@ -347,14 +346,14 @@ year, not 256, and a daily standard deviation times 16 would understate its annu
 | Setting | Value | Where |
 |---|---|---|
 | EWMA span | 32 | `config_template/portfolios/conservative/portfolio.json`, `strategies.TREND_FOLLOWING.config.vol_lookback_short` |
-| Estimator window | 3,200 bars | `kWindowBars`, `include/trade_ngin/strategy/trend_estimator.hpp:52` |
-| Long-run length | 2,520 values | `kLongRunValues`, `:53` |
-| Annualisation count | trailing 256 bars | `kAnnualisationBars`, `:54` |
-| Fixed factor for the forecast's volatility | 16 | `kFixedAnnualisation`, `:60` |
-| Variance seed share, variance floor | 0.1, 1e-6 | `src/strategy/trend_estimator.cpp:13`, `:14` |
-| Volatility floor and cap | 0.005, 5.0 | `:15`, `:16` |
-| Weight on the short estimate | 0.7 | `:17` |
-| `vol_lookback_long` | 252 in the config file; not read by the estimator, whose long-run length is the constant above | `include/trade_ngin/strategy/trend_following.hpp:30` |
+| Estimator window | 3,200 bars | `kWindowBars`, `include/trade_ngin/strategy/trend_estimator.hpp` |
+| Long-run length | 2,520 values | `kLongRunValues` |
+| Annualisation count | trailing 256 bars | `kAnnualisationBars` |
+| Fixed factor for the forecast's volatility | 16 | `kFixedAnnualisation` |
+| Variance seed share, variance floor | 0.1, 1e-6 | `src/strategy/trend_estimator.cpp` |
+| Volatility floor and cap | 0.005, 5.0 | |
+| Weight on the short estimate | 0.7 | |
+| `vol_lookback_long` | 252 in the config file; not read by the estimator, whose long-run length is the constant above | `include/trade_ngin/strategy/trend_following.hpp` |
 
 **Worked example.** The stored bars, ZN (10-year note), four consecutive signal bars of the chain. Closes are the
 stored bars; every other column is recomputed from them with the formula. In this data set the bar before 2026-04-27 is
@@ -373,10 +372,9 @@ Variance: 0.060606 x 1.415151e-06 + 0.939394 x 9.450347e-06 = 8.963364e-06, whos
 per year: the trailing 256 bars span 310 calendar days, 255 / (310 / 365.25) = 300.4476, square root 17.3334.
 sigma_short = 0.00299389 x 17.3334 = 0.051894. sigma = 0.7 x 0.051894 + 0.3 x 0.050137 = 0.051367.
 
-**Where in the code.** `trend_estimator::estimate` (`src/strategy/trend_estimator.cpp:132`): the annualisation
-factor at `:157` to `:164`, the variance recursion at `:169` to `:187`, the long-run mean and the blend at `:189`
-to `:216`. The design comment is `include/trade_ngin/strategy/trend_estimator.hpp:12` to `:51`. It is called from
-`TrendFollowingStrategy::on_data` at `src/strategy/trend_following.cpp:489`.
+**Where in the code.** `trend_estimator::estimate` (`src/strategy/trend_estimator.cpp`): the annualisation
+factor the variance recursion the long-run mean and the blend. The design comment is `include/trade_ngin/strategy/trend_estimator.hpp`. It is called from
+`TrendFollowingStrategy::on_data` at `src/strategy/trend_following.cpp`.
 
 **Source.** CARVER, ADAPTED. The estimator is strategy three, "Forecasting future volatility": an exponentially
 weighted standard deviation with a span of 32 days, blended with a long-run estimate at weights 0.7 on the current
@@ -408,13 +406,13 @@ volatility regime, and capped at plus or minus 20.
 | Setting | Value | Where |
 |---|---|---|
 | `ema_windows` | (2,8), (4,16), (8,32), (16,64), (32,128), (64,256) | `config_template/portfolios/conservative/portfolio.json`, `strategies.TREND_FOLLOWING.config.ema_windows` |
-| Forecast scalars | 12.1, 8.53, 5.95, 4.10, 2.79, 1.91 for fast spans 2, 4, 8, 16, 32, 64 | `forecast_scalar`, `src/strategy/trend_estimator.cpp:46` |
-| Forecast cap | 20 | `kForecastCap`, `include/trade_ngin/strategy/trend_estimator.hpp:61` |
-| Attenuation: values needed, history, smoothing span | 252, 2,520, 10 | `kAttenuationMinValues` and `kLongRunValues` (`include/trade_ngin/strategy/trend_estimator.hpp:55`, `:53`), `kAttenuationSmoothSpan` (`src/strategy/trend_estimator.cpp:19`) |
-| Warm-up | a contract publishes no target until it has 256 bars (the longest window) | `src/strategy/trend_following.cpp:410` |
+| Forecast scalars | 12.1, 8.53, 5.95, 4.10, 2.79, 1.91 for fast spans 2, 4, 8, 16, 32, 64 | `forecast_scalar`, `src/strategy/trend_estimator.cpp` |
+| Forecast cap | 20 | `kForecastCap`, `include/trade_ngin/strategy/trend_estimator.hpp` |
+| Attenuation: values needed, history, smoothing span | 252, 2,520, 10 | `kAttenuationMinValues` and `kLongRunValues` (`include/trade_ngin/strategy/trend_estimator.hpp`), `kAttenuationSmoothSpan` (`src/strategy/trend_estimator.cpp`) |
+| Warm-up | a contract publishes no target until it has 256 bars (the longest window) | `src/strategy/trend_following.cpp` |
 
 A pair without a fixed scalar is refused at start-up (`TrendFollowingStrategy::validate_config`,
-`src/strategy/trend_following.cpp:67`).
+`src/strategy/trend_following.cpp`).
 
 **Worked example.** The chain, ZN on signal bar 2026-04-27 (the run dated 2026-04-28), recomputed from the stored
 bars. P = 111.0625, forecast_sigma = 0.04807733, so the denominator is 111.0625 x 0.04807733 / 16 = 0.333724. The
@@ -438,9 +436,7 @@ The same six forecasts on the four signal bars of section 1.4, with the attenuat
 | 2026-04-29 | 1.100018 | -15.1692 | -5.7459 | -5.9295 | -9.1870 | -8.0419 | -4.3830 |
 | 2026-04-30 | 1.086812 | -10.5164 | -6.3815 | -6.4849 | -9.2274 | -8.0658 | -4.4428 |
 
-**Where in the code.** `trend_estimator::estimate`: the attenuation at `src/strategy/trend_estimator.cpp:218` to
-`:255`, the moving averages and the scaled forecast at `:259` to `:281`. The scalars are `forecast_scalar` at
-`:46`.
+**Where in the code.** `trend_estimator::estimate`: the attenuation at `src/strategy/trend_estimator.cpp`, the moving averages and the scaled forecast. The scalars are `forecast_scalar`.
 
 **Source.** CARVER AS WRITTEN for the rule, the six speeds, the scalars and the cap; CARVER, ADAPTED for the
 attenuation. The rule, the six speeds, the fixed scalars and the cap: strategy
@@ -478,8 +474,8 @@ The removal rule, applied contract by contract and speed by speed:
 
 | Setting | Value | Where |
 |---|---|---|
-| Forecast weights | equal across the pairs a contract runs | `src/strategy/trend_estimator.cpp:286` |
-| Multiplier table | 1.26 for six pairs, 1.19 for five, 1.13 for four, 1.08 for three, 1.03 for two, 1.00 for one | `TrendFollowingConfig::fdm`, `include/trade_ngin/strategy/trend_following.hpp:32` (the table in force; `config_template/defaults.json` `strategy_defaults.fdm` carries the same six rows) |
+| Forecast weights | equal across the pairs a contract runs | `src/strategy/trend_estimator.cpp` |
+| Multiplier table | 1.26 for six pairs, 1.19 for five, 1.13 for four, 1.08 for three, 1.03 for two, 1.00 for one | `TrendFollowingConfig::fdm`, `include/trade_ngin/strategy/trend_following.hpp` (the table in force; `config_template/defaults.json` `strategy_defaults.fdm` carries the same six rows) |
 | `trading_rule_removals` | no 2/8 on 6M, GF, HE, LE, NG, ZL, ZS; no 2/8 or 4/16 on 6L, KE, ZC, ZW; no 2/8, 4/16 or 8/32 on ZR (twelve contracts, eighteen rules) | `config_template/portfolios/conservative/portfolio.json` |
 | Cost limit for one rule on one contract | 0.15 Sharpe-ratio units a year | `LIMIT`, `scripts/trading_rule_costs.py` |
 | Turnover of each speed | 98.5, 50.2, 25.4, 13.2, 7.6, 5.2 times a year for fast spans 2 to 64 (the book's table 35) | `TABLE_35`, `scripts/trading_rule_costs.py` |
@@ -493,8 +489,8 @@ least one pair is left, the multiplier table must carry a row for the number lef
 listing-date pair must carry the same entry. A pair the equity slow rule reads cannot be removed from a symbol
 that rule names. A contract is named by its base symbol as the metadata holds it, with at least one pair, each of
 them one of the sleeve's and named once. Any other list is refused at start-up
-(`TrendFollowingStrategy::validate_config`, `src/strategy/trend_following.cpp:96` to `:164`;
-`trend_estimator::pairs_after_removal`, `src/strategy/trend_estimator.cpp:94`).
+(`TrendFollowingStrategy::validate_config`, `src/strategy/trend_following.cpp`;
+`trend_estimator::pairs_after_removal`, `src/strategy/trend_estimator.cpp`).
 
 **Worked example: the combination.** The chain, signal bar 2026-04-27. ZN runs six pairs; ZW (Chicago wheat) runs
 four. The combined forecast is the value stored in `trading.signals.signal_value` by the run dated 2026-04-28.
@@ -525,11 +521,11 @@ removed. HE 4/16 at 0.1477 is below the limit and is kept. A cell within 2 perce
 flagged by the tool, because it can change sides when costs are recomputed.
 
 **Where in the code.** The contract's own pairs: `trend_estimator::pairs_after_removal`
-(`src/strategy/trend_estimator.cpp:94`), applied in `TrendFollowingStrategy::on_data`
-(`src/strategy/trend_following.cpp:463` to `:481`); the multiplier lookup at `:482` to `:488`; the mean and the
-combined forecast in `trend_estimator::estimate` (`src/strategy/trend_estimator.cpp:286`, `:296`). The config
-block is read at `src/core/config_loader.cpp:455` and handed to the sleeve by `hand_over_trading_rule_removals`
-(`include/trade_ngin/strategy/sleeve_config.hpp:58`).
+(`src/strategy/trend_estimator.cpp`), applied in `TrendFollowingStrategy::on_data`
+(`src/strategy/trend_following.cpp`); the multiplier lookup the mean and the
+combined forecast in `trend_estimator::estimate` (`src/strategy/trend_estimator.cpp`). The config
+block is read at `src/core/config_loader.cpp` and handed to the sleeve by `hand_over_trading_rule_removals`
+(`include/trade_ngin/strategy/sleeve_config.hpp`).
 
 **Source.** CARVER AS WRITTEN for the equal weights and the multiplier table; CARVER, ADAPTED for the removal of
 rules by cost. The procedure is the book's. Strategy nine, "Putting it together: a method for
@@ -582,16 +578,16 @@ search and the buffer take it.
 On the first three bars the fast speeds pull the average below zero while the two slow speeds are still positive,
 so the short is not taken. On the fourth the average is positive and the rule does not act.
 
-**Where in the code.** `trend_estimator::equity_slow_ruled` (`src/strategy/trend_estimator.cpp:66`), applied in
-`TrendFollowingStrategy::on_data` (`src/strategy/trend_following.cpp:542` to `:556`). The block is read at
-`src/core/config_loader.cpp:296`.
+**Where in the code.** `trend_estimator::equity_slow_ruled` (`src/strategy/trend_estimator.cpp`), applied in
+`TrendFollowingStrategy::on_data` (`src/strategy/trend_following.cpp`). The block is read at
+`src/core/config_loader.cpp`.
 
 **Source.** OURS. It is not in the book, and it goes against the book's advice: strategy twelve, in its discussion
 of forecast adjustments by asset class, recommends avoiding any adjustment that treats long and short
 differently. The reason for it: an equity index short taken on the fast speeds alone, against a slow uptrend,
 is a bet against the drift the slow speeds measure. The runner sets the rule on the book's first sleeve only
 (CONSERVATIVE's one sleeve; BASE's faster sleeve runs neither slow pair;
-`include/trade_ngin/strategy/trend_following.hpp:36`).
+`include/trade_ngin/strategy/trend_following.hpp`).
 
 ### 1.8 Instrument weights and the IDM
 
@@ -617,7 +613,7 @@ half of its sector's share. The instrument diversification multiplier (IDM) then
 | Setting | Value | Where |
 |---|---|---|
 | Sector of each contract | `metadata.contract_metadata.Sector` (seven sectors) | the metadata table |
-| Cap on one contract's share of its sector | 0.50 | `MAX_SYMBOL_TO_SECTOR_RATIO`, `src/strategy/trend_following.cpp:985` |
+| Cap on one contract's share of its sector | 0.50 | `MAX_SYMBOL_TO_SECTOR_RATIO`, `src/strategy/trend_following.cpp` |
 | `idm` | 2.5 | `config_template/portfolios/conservative/portfolio.json`, `strategies.TREND_FOLLOWING.config.idm` |
 
 **Worked example.** The weights of the run config, computed from the metadata with the formula; they are the
@@ -637,9 +633,9 @@ Check. MBT is alone in its sector, so the cap halves it to 0.071429. The uncappe
 1 - 0.071429 = 0.928571 where they summed to 6/7 = 0.857143, a scale of 1.083333. The total is
 6 x 0.1547619 + 0.0714286 = 1.000000.
 
-**Where in the code.** `TrendFollowingStrategy::get_weights` (`src/strategy/trend_following.cpp:915`): the universe
-at `:926` to `:937` and `:968`, read with no date filter (`src/data/postgres_database.cpp:819` to `:829`) and
-cached (`:916`); the weight of an E-mini at `:574` to `:581`.
+**Where in the code.** `TrendFollowingStrategy::get_weights` (`src/strategy/trend_following.cpp`): the universe
+read with no date filter (`src/data/postgres_database.cpp`) and
+cached; the weight of an E-mini.
 
 **Source.** CARVER, ADAPTED for the weights; CARVER AS WRITTEN for the IDM. Strategy four, "An algorithm for
 allocating instrument weights", is the book's top-down method: equal shares to each asset class, then to groups
@@ -702,11 +698,11 @@ the day before came off the sizing capital even though the account was still ahe
 is 505,871.57 - 494,865.61 = 11,005.96 (the peak of the cumulative net P&L, 511,005.96 - 500,000), although the
 account is only 5,871.57 above the starting capital.
 
-**Where in the code.** `half_compounded_capital` (`include/trade_ngin/portfolio/sizing_capital.hpp:58`) and
-`backtest_half_compounding` (`:78`), called by the backtest at `src/backtest/backtest_coordinator.cpp:955`; the
-live read is `read_live_sizing_equity` (`include/trade_ngin/live/live_sizing_read.hpp:146`); both hand the result
-to `PortfolioManager::set_sizing_capital` (`src/portfolio/portfolio_manager.cpp:3812`). The keys are read at
-`src/core/config_loader.cpp:520` and `:532`.
+**Where in the code.** `half_compounded_capital` (`include/trade_ngin/portfolio/sizing_capital.hpp`) and
+`backtest_half_compounding`, called by the backtest at `src/backtest/backtest_coordinator.cpp`; the
+live read is `read_live_sizing_equity` (`include/trade_ngin/live/live_sizing_read.hpp`); both hand the result
+to `PortfolioManager::set_sizing_capital` (`src/portfolio/portfolio_manager.cpp`). The keys are read at
+`src/core/config_loader.cpp`.
 
 **Source.** CARVER AS WRITTEN for the risk target; CARVER, ADAPTED for the sizing capital. The 20 percent target
 is the book's standard risk target (derived in strategy two and used throughout). Half compounding is Tactic
@@ -734,7 +730,7 @@ not a number sizes at 0; a contract outside its tradeable window (section 1.1) p
 ten times the formula's denominator at 1.0, the capital at 1,000, the IDM and the exchange rate at 0.1, with tau kept inside
 [0.01, 0.5]. A sigma that is not a positive number is replaced (by 0.2 where the strategy reads it, by 0.01 inside
 the formula), a price that is not positive by the last price of the contract's history, and a result that is not
-finite by 0 (`src/strategy/trend_following.cpp:1051` to `:1107`, `:614`). None binds on this book.
+finite by 0 (`src/strategy/trend_following.cpp`). None binds on this book.
 
 **Settings in force.** The inputs of the earlier sections (E, IDM 2.5, w_i, tau 0.20, the metadata multiplier) and
 no others.
@@ -755,8 +751,8 @@ x 9,672.62 / 5,806.26 = -0.642769. At 500,000 the wheat target is seven hundredt
 target two thirds of one: most targets on this book are fractions of a contract, which is why the next stages
 work on the whole book and not contract by contract.
 
-**Where in the code.** `TrendFollowingStrategy::calculate_position` (`src/strategy/trend_following.cpp:1046`; the
-formula at `:1097` to `:1100`), called from `on_data` at `:620`.
+**Where in the code.** `TrendFollowingStrategy::calculate_position` (`src/strategy/trend_following.cpp`; the
+formula), called from `on_data`.
 
 **Source.** CARVER AS WRITTEN for the formula; OURS for the guards. The engine keeps the sizing volatility inside
 [0.01, 1.0] and sizes a forecast that is not a number at 0, which the book's formula does not do, because a
@@ -806,11 +802,11 @@ fill, the held book kept.
 | Setting | Value | Where |
 |---|---|---|
 | `per_name_cap` (L) | 2 | `config_template/portfolios/conservative/risk.json`, `modules[0]` (the `carver` module) |
-| `R_max`, `R_jump_max`, `R_shock_max` | 2.25, 4.5, 4.0, as ratios to tau (the pass multiplies them by tau, `src/portfolio/portfolio_manager.cpp:2224` to `:2226`) | same |
+| `R_max`, `R_jump_max`, `R_shock_max` | 2.25, 4.5, 4.0, as ratios to tau (the pass multiplies them by tau, `src/portfolio/portfolio_manager.cpp`) | same |
 | `max_gross_leverage`, `max_net_leverage` | 8.0, 6.0 | same |
-| Gate window, blind floor | 252 dates, 21 complete dates | `kWindowDates`, `kBlindBelow`, `include/trade_ngin/risk/overlay.hpp:32`, `:34` (code constants; `risk.json` carries `lookback_period` 252 and `min_gate_dates` 21 with the same values, which are validated only: changing them does not change the window) |
-| Complete-date floor, participant floor | 120, 120 | `kCompleteDatesFloor`, `kParticipantReturnsFloor`, `include/trade_ngin/risk/overlay.hpp:33`, `:35` |
-| Jump percentile | 99, over the trailing 2,520 values of sigma_short, each taken back to a daily figure by its own bar's factor | `kJumpPercentile`, `src/strategy/trend_estimator.cpp:20`; taken at `:302` to `:308`, annualised at `src/optimization/one_pass.cpp:434` to `:437` |
+| Gate window, blind floor | 252 dates, 21 complete dates | `kWindowDates`, `kBlindBelow`, `include/trade_ngin/risk/overlay.hpp` (code constants; `risk.json` carries `lookback_period` 252 and `min_gate_dates` 21 with the same values, which are validated only: changing them does not change the window) |
+| Complete-date floor, participant floor | 120, 120 | `kCompleteDatesFloor`, `kParticipantReturnsFloor`, `include/trade_ngin/risk/overlay.hpp` |
+| Jump percentile | 99, over the trailing 2,520 values of sigma_short, each taken back to a daily figure by its own bar's factor | `kJumpPercentile`, `src/strategy/trend_estimator.cpp`; taken annualised at `src/optimization/one_pass.cpp` |
 
 **Worked example: the readings.** The chain, every sized rebalance. The readings are the values on each run's
 `OVERLAY` log line; the multipliers are computed here. L_g and L_n were also recomputed from the capped targets and
@@ -868,13 +864,12 @@ and L are the settings in force.
 | L / u | 5.000000 | 2 / 0.400000 |
 | N*c | -5.000000 | the target the overlay reads; the search reads m x N*c |
 
-**Where in the code.** The cap: `one_pass::cap_target` (`src/optimization/one_pass.cpp:35`). The window, the
-readings and the multiplier: `overlay::gate_window` (`src/risk/overlay.cpp:23`), `overlay::readings` (`:143`),
-`overlay::multiplier` (`:180`); the limits from the ratios at `:315` to `:319`. The order inside one rebalance is
-`one_pass::rebalance` (`src/optimization/one_pass.cpp:379`), called from
-`PortfolioManager::rebalance_one_pass` (`src/portfolio/portfolio_manager.cpp:2015`; the inputs at `:2215` to
-`:2226`). The module that carries the limits is `CarverRiskModule` (`src/risk/carver_risk_module.cpp`). The design
-comment is `include/trade_ngin/risk/overlay.hpp:12` to `:31`. See `RISK_MODULES.md`.
+**Where in the code.** The cap: `one_pass::cap_target` (`src/optimization/one_pass.cpp`). The window, the
+readings and the multiplier: `overlay::gate_window` (`src/risk/overlay.cpp`), `overlay::readings`,
+`overlay::multiplier`; the limits from the ratios. The order inside one rebalance is
+`one_pass::rebalance` (`src/optimization/one_pass.cpp`), called from
+`PortfolioManager::rebalance_one_pass` (`src/portfolio/portfolio_manager.cpp`; the inputs). The module that carries the limits is `CarverRiskModule` (`src/risk/carver_risk_module.cpp`). The design
+comment is `include/trade_ngin/risk/overlay.hpp`. See `RISK_MODULES.md`.
 
 **Source.** CARVER AS WRITTEN for the one multiplier and its place (the lowest of its readings, never above 1,
 applied once to the unrounded targets before the search); CARVER, ADAPTED for the limits, what is scaled, the jump
@@ -938,8 +933,8 @@ The long was not closed on the first weak negative forecast (-1.32); it was clos
 reached -3.41, and the same rebalance opened the short.
 
 **Where in the code.** The band, the free and held rows and the close-outs: `one_pass::rebalance`
-(`src/optimization/one_pass.cpp:393` to `:414`); the sign close at `:475` to `:482`. The hold set handed in by the
-runners is described in `include/trade_ngin/optimization/one_pass.hpp:168`.
+(`src/optimization/one_pass.cpp`); the sign close. The hold set handed in by the
+runners is described in `include/trade_ngin/optimization/one_pass.hpp`.
 
 **Source.** OURS. The book has neither a hold set nor a band. Its dynamic optimisation starts from a book of zero
 every day and only ever takes positions in the direction of the forecast, so, as strategy twenty-five, "Dealing
@@ -947,7 +942,7 @@ with costs: buffering", observes, a forecast that crosses zero takes the whole p
 starts from the held book (section 1.13), so the close has to be a rule of its own, and we defer it while the
 opposite forecast is weaker than 2 so that a forecast hovering around zero does not close and reopen a position.
 The holds exist because our bars need them (sections 1.2 and 1.3). The band reads the first sleeve's forecast
-(`src/optimization/one_pass.cpp:400`).
+(`src/optimization/one_pass.cpp`).
 
 ### 1.13 The whole-contract search
 
@@ -976,11 +971,11 @@ dates show. A contract whose last close is more than five dates behind the newes
 | Setting | Value | Where |
 |---|---|---|
 | `cost_penalty_scalar` (the cost weight) | 100 | `config_template/defaults.json`, `optimization.cost_penalty_scalar` (required on a futures book) |
-| Smallest improvement a step must make | 1e-6 | a constant of the code, `src/optimization/one_pass.cpp:532` (the config key `optimization.convergence_threshold` is not read by this search) |
+| Smallest improvement a step must make | 1e-6 | a constant of the code, `src/optimization/one_pass.cpp` (the config key `optimization.convergence_threshold` is not read by this search) |
 | `max_iterations` (floor on the pass cap) | 100 | `optimization.max_iterations` |
-| Closes behind the covariance | 756 | `kOptimiserBars`, `src/strategy/trend_following.cpp:505` |
-| Stale rule, minimum common returns, filled variance | 5 dates, 20, 0.01 | `src/optimization/one_pass.cpp:519`, `:14`, `:15` |
-| Cost of one contract c_i | the cost model's price of a one-contract fill at the signal close (section 1.16) | `src/portfolio/portfolio_manager.cpp:2134` |
+| Closes behind the covariance | 756 | `kOptimiserBars`, `src/strategy/trend_following.cpp` |
+| Stale rule, minimum common returns, filled variance | 5 dates, 20, 0.01 | `src/optimization/one_pass.cpp` |
+| Cost of one contract c_i | the cost model's price of a one-contract fill at the signal close (section 1.16) | `src/portfolio/portfolio_manager.cpp` |
 
 **Worked example.** The chain, the run dated 2026-04-28 (signal bar 2026-04-27, E = 500,000). Thirty-four
 contracts were free and two (ZC, ZS) were held on pending change bars. The search took 6 passes from the held book
@@ -1000,9 +995,9 @@ The cost term of one step is 100 x c / E: for one M2K contract 100 x 1.0931 / 50
 answer is 2 against a target of 0.69 while MYM's stays at its held 1 against a target of 2.06: the search reads the
 book as a whole through the covariance, not contract by contract.
 
-**Where in the code.** `one_pass::tracking_error` (`src/optimization/one_pass.cpp:145`), `one_pass::admissible`
-(`:156`), `one_pass::pass_cap` (`:162`), `one_pass::search` (`:170`), `one_pass::optimiser_covariance` (`:61`).
-The design comment is `include/trade_ngin/optimization/one_pass.hpp:15` to `:25`. See
+**Where in the code.** `one_pass::tracking_error` (`src/optimization/one_pass.cpp`), `one_pass::admissible`,
+`one_pass::pass_cap`, `one_pass::search`, `one_pass::optimiser_covariance`.
+The design comment is `include/trade_ngin/optimization/one_pass.hpp`. See
 `OPTIMIZER_AND_RISK_DESIGN.md`.
 
 **Source.** CARVER, ADAPTED. This is strategy twenty-five, dynamic optimisation: "Optimising for the best
@@ -1052,7 +1047,7 @@ a band narrower than one contract's risk would trade on every rounding flip.
 | `b_sigma_floor` | 0.05, a ratio to tau | `config_template/defaults.json`, `optimization.b_sigma_floor` (required on a futures book) |
 | `trim_max` | 5 | `config_template/portfolios/conservative/risk.json`, `modules[0]` |
 | `per_name_cap` | 2 | same |
-| Rounding | nearest, a half away from zero | `one_pass::round_half_away`, `src/optimization/one_pass.cpp:227` |
+| Rounding | nearest, a half away from zero | `one_pass::round_half_away`, `src/optimization/one_pass.cpp` |
 
 **Worked example.** The chain, the same rebalance as section 1.13. From the run's `OPTIMISER` line: TE_h =
 0.049760, B_sigma = 0.029154 (set by LE, live cattle, whose one contract weighs 0.199180 of the capital), so
@@ -1087,11 +1082,10 @@ stored column):
 On 2026-04-26 most contracts were held (they printed no bar), the free rows held nothing large, and the band fell
 to its floor of 0.05 x 0.20 = 0.010. On 2026-05-01 the band asked for a move of 0.230284 of the way and every row
 rounded back to the held book, so the run dated 2026-05-02 stored no fill (`one_pass::buffer`,
-`src/optimization/one_pass.cpp:268` to `:274`).
+`src/optimization/one_pass.cpp`).
 
-**Where in the code.** `one_pass::b_sigma` (`src/optimization/one_pass.cpp:231`), `one_pass::buffer` (`:253`),
-`one_pass::clip_to_cap` (`:48`), `one_pass::trim` (`:305`), `one_pass::over_limit` (`:290`); the delivered scale at
-`:631` to `:636`.
+**Where in the code.** `one_pass::b_sigma` (`src/optimization/one_pass.cpp`), `one_pass::buffer`,
+`one_pass::clip_to_cap`, `one_pass::trim`, `one_pass::over_limit`; the delivered scale.
 
 **Source.** CARVER, ADAPTED for the buffer and for the clip, which is the per-name cap of section 1.11 applied to
 the rounded book; OURS for the trim. The buffer's shape is strategy
@@ -1149,11 +1143,11 @@ The same run booked the legs of three more rolls confirmed on that bar (ZL, ZM, 
 in all, which is that day's stored `daily_roll_costs`. With the one STRATEGY fill of the day (1.093132) the day's
 `daily_transaction_costs` is 88.096891.
 
-**Where in the code.** `roll_series::RollTracker::add` (`src/data/roll_series.cpp:121`) and
-`roll_series::make_roll_legs` (`:171`); the backtest books the legs at
-`src/backtest/backtest_coordinator.cpp:1063` to `:1067`, the live runner at
-`apps/strategies/live_portfolio_conservative.cpp:2409`; the zero P&L on a change bar is
-`src/live/live_pnl_manager.cpp:118` to `:121`. See `FUTURES_ROLLS.md`.
+**Where in the code.** `roll_series::RollTracker::add` (`src/data/roll_series.cpp`) and
+`roll_series::make_roll_legs`; the backtest books the legs at
+`src/backtest/backtest_coordinator.cpp`, the live runner at
+`apps/strategies/live_portfolio_conservative.cpp`; the zero P&L on a change bar is
+`src/live/live_pnl_manager.cpp`. See `FUTURES_ROLLS.md`.
 
 **Source.** CARVER, ADAPTED for the cost; OURS for the mechanics. Counting a roll as two separate trades, each
 paying its own costs, is the book's own conservative assumption in its cost arithmetic (strategy nine, "Removing
@@ -1192,25 +1186,25 @@ own cost minus its signed `netting_adjustment`. The adjustment is non-zero only 
 the same contract in opposite directions on the same day and the account sends a smaller order than the two
 sleeves' fills add up to. CONSERVATIVE has one sleeve, so every adjustment is 0 and the cost after netting is the
 fill's own cost. A ROLL row is never netted, and a ROLL or BORROW row that carries an adjustment is refused, not
-summed (`transaction_cost::unnetted_row_refusal`, `src/transaction_cost/netting.cpp:166`). The roll total is built
+summed (`transaction_cost::unnetted_row_refusal`, `src/transaction_cost/netting.cpp`). The roll total is built
 two ways that give the same number on any run that is not refused: a backtest passes each leg through that
-refusal (`run_cost_totals`, `:192`); a live run adds each leg's own cost as it builds the leg
-(`apps/strategies/live_portfolio_conservative.cpp:2439`), leaves ROLL rows out of the netting (`:2556`) and
-refuses an adjusted row in the day's sum (`:2576`). See `COST_MODEL.md`.
+refusal (`run_cost_totals`); a live run adds each leg's own cost as it builds the leg
+(`apps/strategies/live_portfolio_conservative.cpp`), leaves ROLL rows out of the netting and
+refuses an adjusted row in the day's sum. See `COST_MODEL.md`.
 
 **Settings in force.**
 
 | Setting | Value | Where |
 |---|---|---|
 | Fee per contract | IBKR's all-in fee per contract per side, one value per metadata row (the table of section 1.1) | `metadata.contract_metadata."Fee Per Contract"`, set by `migrations/026_contract_metadata_ibkr_fees.sql` |
-| Fallback fee | 1.50, used only where a metadata row carries no fee | `include/trade_ngin/transaction_cost/transaction_cost_manager.hpp:100` |
-| Tick size, multiplier | the metadata row's `Tick Size` and `Contract Size` | read by `registry_contract_cost_spec`, `src/transaction_cost/transaction_cost_manager.cpp:14` |
-| Spread: share of the quoted spread paid | 0.25 on ZN, ZF, ZT, UB, 6A, 6B, 6C, 6E, 6J, 6L, 6M, 6N, 6S; 0.5 on the other 23 contracts | `spread_cost_multiplier`: the per-contract entries of `src/transaction_cost/asset_cost_config.cpp`, default 0.5 in `include/trade_ngin/transaction_cost/asset_cost_config.hpp:32` |
+| Fallback fee | 1.50, used only where a metadata row carries no fee | `include/trade_ngin/transaction_cost/transaction_cost_manager.hpp` |
+| Tick size, multiplier | the metadata row's `Tick Size` and `Contract Size` | read by `registry_contract_cost_spec`, `src/transaction_cost/transaction_cost_manager.cpp` |
+| Spread: share of the quoted spread paid | 0.25 on ZN, ZF, ZT, UB, 6A, 6B, 6C, 6E, 6J, 6L, 6M, 6N, 6S; 0.5 on the other 23 contracts | `spread_cost_multiplier`: the per-contract entries of `src/transaction_cost/asset_cost_config.cpp`, default 0.5 in `include/trade_ngin/transaction_cost/asset_cost_config.hpp` |
 | Spread: baseline ticks | 2 for 6L, 6M, GF, HE, KE, LE, NG, ZC, ZL, ZR, ZS, ZW; 1 for every other contract | `src/transaction_cost/asset_cost_config.cpp` |
-| Volatility multiplier: sensitivity, bounds, window | 0.15, [0.8, 1.5], 20 returns | `include/trade_ngin/transaction_cost/spread_model.hpp:39` |
-| Volatility multiplier: baseline daily volatility and its spread | 0.01, 0.005 | `src/transaction_cost/spread_model.cpp:58`, `:59` |
-| Impact: volume floor, participation cap | 100 lots, 0.10 | `include/trade_ngin/transaction_cost/impact_model.hpp:37` |
-| Impact: coefficient by volume | 10, 20, 40, 60, 80 basis points | `ImpactModel::get_impact_k_bps`, `src/transaction_cost/impact_model.cpp:46` |
+| Volatility multiplier: sensitivity, bounds, window | 0.15, [0.8, 1.5], 20 returns | `include/trade_ngin/transaction_cost/spread_model.hpp` |
+| Volatility multiplier: baseline daily volatility and its spread | 0.01, 0.005 | `src/transaction_cost/spread_model.cpp` |
+| Impact: volume floor, participation cap | 100 lots, 0.10 | `include/trade_ngin/transaction_cost/impact_model.hpp` |
+| Impact: coefficient by volume | 10, 20, 40, 60, 80 basis points | `ImpactModel::get_impact_k_bps`, `src/transaction_cost/impact_model.cpp` |
 | Impact cap per contract | 30 to 100 basis points by contract | `src/transaction_cost/asset_cost_config.cpp` |
 
 **Worked example.** The chain, two stored fills of the run dated 2026-04-28. The volume and the volatility
@@ -1231,13 +1225,12 @@ multiplier are from the run's `COST_FEED` and `ROLL_LEG` log lines; the stored c
 | Total (stored) | 0.614 + 0.479132 = 1.093132 | 2.011 + 0.435734 = 2.446734 |
 
 **Where in the code.** `TransactionCostManager::calculate_costs`
-(`src/transaction_cost/transaction_cost_manager.cpp:127`; the fee at `:185`, the spread at `:219`, the impact at
-`:223`, the conversion to currency at `:254`); `SpreadModel::calculate_spread_price_impact`
-(`src/transaction_cost/spread_model.cpp:13`) and `SpreadModel::calculate_volatility_multiplier` (`:41`);
-`ImpactModel::calculate_market_impact` (`src/transaction_cost/impact_model.cpp:12`); the volume a fill is priced
-on is described in `include/trade_ngin/live/futures_cost_feed.hpp:47`. The cost after netting is
-`transaction_cost::net_cost` (`include/trade_ngin/transaction_cost/netting.hpp:97`) and
-`transaction_cost::add_net_costs` (`src/transaction_cost/netting.cpp:183`).
+(`src/transaction_cost/transaction_cost_manager.cpp`; the fee the spread the impact the conversion to currency); `SpreadModel::calculate_spread_price_impact`
+(`src/transaction_cost/spread_model.cpp`) and `SpreadModel::calculate_volatility_multiplier`;
+`ImpactModel::calculate_market_impact` (`src/transaction_cost/impact_model.cpp`); the volume a fill is priced
+on is described in `include/trade_ngin/live/futures_cost_feed.hpp`. The cost after netting is
+`transaction_cost::net_cost` (`include/trade_ngin/transaction_cost/netting.hpp`) and
+`transaction_cost::add_net_costs` (`src/transaction_cost/netting.cpp`).
 
 **Source.** OURS. The book costs a trade as the commission plus half the bid-ask spread, turned into Sharpe-ratio
 units for its speed limits (strategy three, "Risk adjusted costs"), and notes that a large trader must also
@@ -1251,32 +1244,34 @@ pays.
 
 **What it does.** A backtest stores one row of summary statistics per run in `backtest.results`, computed from its
 equity curve and its fills. A live run stores running statistics on each day's `trading.live_results` row,
-computed from the stored daily rows up to that day. Both are statistics of the ACCOUNT (the equity curve V), not
-of the sizing capital. The sizing capital of each day is stored beside them in `risk_detail`, so a measure on the
-sizing capital can be computed from the stored rows (section 4), but none is stored as a column.
+taken on the statistics grid through the last settled row. Both are statistics of the ACCOUNT (the equity curve
+V). On a futures book three are also stored on the sizing capital: `max_drawdown_sizing`, `volatility_sizing` and
+`worst_day_sizing`.
 
 **The backtest row.** The equity curve has one row per bar date (Sundays included: about 312 rows a year). The
-first 256 rows are warm-up and are dropped before anything is computed. With r_t = V_t / V_t-1 - 1 over the rows
-left:
+first 256 rows are warm-up and are dropped before anything is computed. The rows left are folded onto the
+statistics grid (futures: the Sunday-to-Friday dates on which at least 9 symbols of the universe printed a bar;
+equities: every row), and r is the return between two grid levels, so a row off the grid adds its P&L to the next
+return. K is `statistics.sessions_per_year` (311.0574 futures, 252 equities):
 
 | Column of `backtest.results` | Definition | Base | Annualisation |
 |---|---|---|---|
 | `total_return` | last equity / first equity after warm-up - 1 | account | none |
-| `volatility` | standard deviation of r (dividing by n) x sqrt(252) | account | 252 |
-| `sharpe_ratio` | mean(r) x 252 / `volatility`; no cash rate is subtracted | account | 252 |
-| `sortino_ratio` | mean(r) x 252 / `downside_volatility` | account | 252 |
-| `downside_volatility` | sqrt(the mean of r squared over the negative r only) x sqrt(252) | account | 252 |
-| `max_drawdown` | the largest fall of the equity from its running peak, as a fraction of the peak | account | none |
-| `calmar_ratio` | mean(r) x 252 / `max_drawdown` | account | 252 |
-| `var_95`, `cvar_95` | the 5th percentile daily loss, and the mean of the losses beyond it | account | daily |
+| `volatility` | sample standard deviation of r (dividing by n - 1) x sqrt(K) | account | K |
+| `sharpe_ratio` | mean(r) x K / `volatility`; no cash rate is subtracted; NULL when `volatility` is 0 | account | K |
+| `sortino_ratio` | mean(r) x K / `downside_volatility`; NULL with no negative r | account | K |
+| `downside_volatility` | sqrt(the sum of r squared over the negative r, divided by the number of all r) x sqrt(K) | account | K |
+| `max_drawdown` | the largest fall of the grid level from its running peak, as a fraction of the peak | account | none |
+| `calmar_ratio` | the compounded annual return (1 + R)^(K / n) - 1 on the grid, over `max_drawdown`; NULL with no drawdown | account | K |
+| `var_95`, `cvar_95` | the 5th percentile loss of r, and the mean loss of the returns at or below it | account | none |
 | `total_trades` | STRATEGY fills that reduce or close a position (round trips); ROLL legs are not counted | fills | count |
-| `win_rate`, `avg_win`, `avg_loss`, `max_win`, `max_loss`, `profit_factor`, `avg_holding_period` | per round trip: contracts closed x (exit price - entry price), in price points with NO contract multiplier, less the fill's cost after netting in currency; an open trade's entry price is carried across a roll by the gap between the two legs | fills | none |
+| `win_rate`, `avg_win`, `avg_loss`, `max_win`, `max_loss`, `profit_factor`, `avg_holding_period` | per round trip of the account's netted fills: contracts closed x (exit price - entry price) x the symbol's point value, in dollars, less the fill's cost after netting; an open trade's entry price is carried across a roll by the gap between the two legs | fills | none |
 | `transaction_costs` | the sum of every fill's cost after netting (STRATEGY and ROLL) | fills | none |
 | `roll_costs`, `total_roll_fills` | the ROLL legs' own costs, and their count | fills | none |
-| `beta`, `correlation` | the slope and the correlation of each day's return on the return of the day before (a lag-one autocorrelation of the account's own returns, not a market beta) | account | none |
+| `beta`, `correlation` | the slope and the correlation of each grid return on the one before (a lag-one autocorrelation of the account's own returns, not a market beta) | account | none |
+| `worst_day` (`_date`, `_symbol`), `max_drawdown_sizing`, `volatility_sizing`, `worst_day_sizing` (`_date`, `_symbol`), `monthly_skew`, `monthly_tail_ratio`, `calendar_year_returns`, `losing_years`, `total_strategy_fills` | the twins of the live columns below, in fractions | account; the three `_sizing` on the sizing capital (futures runs only) | as the live column |
 
-The annualisation constant is 252 while the equity curve has about 312 rows a year, so a stored annualised figure
-is stated on a 252-row year.
+K is the row frequency of the grid the returns are taken on, so an annualised figure is on the curve's own year.
 
 **The live row.** There is one row per calendar date the run is made for (about 365 a year; a date with no new
 bar stores a zero return).
@@ -1286,52 +1281,56 @@ bar stores a zero return).
 | `daily_pnl` | the day's settlement P&L less the day's transaction costs | account | none |
 | `daily_return` | `daily_pnl` / the previous row's `current_portfolio_value` x 100 (percent) | account | none |
 | `total_cumulative_return` | (`current_portfolio_value` - 500,000) / 500,000 x 100 | account | none |
-| `total_annualized_return` | ((1 + cumulative return)^(252 / days) - 1) x 100, days counted from the book's first trading day | account | 252 |
-| `volatility` | standard deviation of the stored `daily_return` values (dividing by n) x sqrt(252), in percent | account | 252 |
-| `sharpe_ratio` | `total_annualized_return` / `volatility` | account | 252 |
-| `downside_deviation`, `sortino_ratio` | sqrt(the mean of the squared negative returns) x sqrt(252), and `total_annualized_return` over it | account | 252 |
-| `max_drawdown` | the largest fall of the stored portfolio value from its running peak, percent of the peak | account | none |
-| `best_day`, `worst_day`, `winning_days`, `losing_days`, `win_rate`, `profit_factor` | over the stored daily rows | account | none |
+| `total_annualized_return` | ((1 + R)^(K / n) - 1) x 100, R from the starting capital to the last grid level and n the number of grid returns from the book's start | account | K |
+| `volatility` | sample standard deviation of the grid returns (dividing by n - 1) x sqrt(K), in percent | account | K |
+| `sharpe_ratio` | mean grid return x K / `volatility` | account | K |
+| `downside_deviation`, `sortino_ratio` | sqrt(the sum of the squared negative grid returns / the number of all grid returns) x sqrt(K), and mean grid return x K over it | account | K |
+| `max_drawdown` | the largest fall of the grid level from its running peak, the peak starting at the starting capital, percent of the peak | account | none |
+| `best_day`, `worst_day`, `winning_days`, `losing_days`, `win_rate`, `profit_factor` | over the grid returns; `win_rate` is winning over winning plus losing days; `profit_factor` is NULL with no losing day | account | none |
+| `worst_day_date`, `worst_day_symbol` | the date of `worst_day` and the symbol that lost most on it | account | none |
+| `max_drawdown_sizing`, `volatility_sizing`, `worst_day_sizing` (`_date`, `_symbol`) | the drawdown, volatility and worst day in percent of the sizing capital; futures rows only | sizing capital | K (`volatility_sizing`) |
+| `monthly_skew`, `monthly_tail_ratio`, `calendar_year_returns`, `losing_years` | the skew and tail ratio of the complete calendar months' returns; each calendar year's return; the count of full years with a loss | account | none |
+| `total_trades`, `total_strategy_fills`, `total_roll_fills` | the account's round trips, its strategy fills after netting between sleeves, and the roll legs | fills | count |
+| `overlay_risk`, `overlay_risk_jump`, `overlay_risk_shock`, `overlay_gross_leverage`, `overlay_net_leverage`, `var_95_1d` | the overlay's readings of the stored book, on futures rows of a sized rebalance; the three risk readings and `var_95_1d` are NULL on a blind window | sizing capital | the three risk readings annual; `var_95_1d` one day, in dollars |
 | `gross_notional`, `net_notional`, `gross_leverage`, `net_leverage`, `margin_posted`, `equity_to_margin_ratio` | the stored book's notional, leverage and margin measures (defined in `LIVE_RUN_CYCLE.md`) | see that document | none |
 | `risk_scale` | the delivered scale of section 1.14 | sizing capital | none |
 | `risk_detail` | `sizing_capital`, `account_value`, `risk_requested` (m), `binding_term`, the over-limit marks, `overlay_blind` | both | none |
 | `daily_transaction_costs`, `total_transaction_costs`, `daily_roll_costs`, `total_roll_costs` | costs after netting, and the ROLL part | fills | none |
 
-A row dated D is final only after the run of D+1, which books bar D's move onto it. See `LIVE_RUN_CYCLE.md` for
-the column dictionary.
+A row dated D is final only after the run of D+1, which books bar D's move onto it. Its `settled_at` is set then.
+See `LIVE_RUN_CYCLE.md` for the column dictionary.
 
 **Settings in force.**
 
 | Setting | Value | Where |
 |---|---|---|
-| Backtest annualisation constant | 252 | `src/backtest/backtest_metrics_calculator.cpp:75`, `:125`, `:159`, `:715` |
-| Backtest warm-up rows dropped | 256 (the longest moving average) | `BacktestCoordinator::calculate_warmup_days`, `src/backtest/backtest_coordinator.cpp:1788` |
-| Live annualisation constant | 252 | `src/live/live_historical_metrics.cpp:10`, `src/live/live_metrics_calculator.cpp:54` |
-| Cash rate in the Sharpe ratio | 0 | the same functions |
+| Sessions a year, K | 311.0574 on a futures book, 252 on an equity book, the same for live and backtest | `statistics.sessions_per_year` in `defaults.json` |
+| Backtest warm-up rows dropped | 256 (the longest moving average) | `BacktestCoordinator::calculate_warmup_days`, `src/backtest/backtest_coordinator.cpp` |
+| Cash rate in the Sharpe ratio | 0 | `BacktestMetricsCalculator::calculate_sharpe_ratio`, `LiveHistoricalMetricsCalculator::calculate` |
 
 **Worked example: the rows a backtest statistic is computed on.** The backtest's equity curve has 4,992 rows. The
-first 256 are warm-up and are dropped, which leaves 4,736 rows, from 2011-08-04 to 2026-10-07, and 4,735 daily
-returns over 15.18 years: about 312 a year, against the constant 252 of the table above.
+first 256 are warm-up and are dropped, which leaves 4,736 rows, from 2011-08-04 to 2026-10-07. The statistics fold
+those rows onto the grid and annualise by K.
 
 **Worked example: the live row.** An example of the arithmetic of one column: the chain, the stored row dated
 2026-04-30. `daily_return` = `daily_pnl` / the previous row's `current_portfolio_value` x 100 =
 -5,134.3919 / 511,005.961 x 100 = -1.004762, the stored value.
 
 **Where in the code.** The backtest: `BacktestMetricsCalculator::calculate_all_metrics`
-(`src/backtest/backtest_metrics_calculator.cpp:670`), `calculate_volatility` (`:111`), `calculate_sharpe_ratio`
-(`:58`), `calculate_sortino_ratio` (`:81`), `calculate_drawdowns` (`:174`), `calculate_trade_statistics` (`:414`),
-`filter_warmup_period` (`:777`); the cost totals at `src/backtest/backtest_coordinator.cpp:474` to `:476`; the
-row is written by `BacktestResultsManager::save_summary_results` (`src/storage/backtest_results_manager.cpp:109`)
-and the curve by `save_equity_curve` (`:126`). Live: `LiveHistoricalMetricsCalculator::calculate`
-(`src/live/live_historical_metrics.cpp:89`), `LiveMetricsCalculator::calculate_annualized_return`
-(`src/live/live_metrics_calculator.cpp:37`); the row is first written by
-`LiveResultsManager::save_live_results` (`src/storage/live_results_manager.cpp:211`) and finalised by the next
+(`src/backtest/backtest_metrics_calculator.cpp`), `calculate_volatility`, `calculate_sharpe_ratio`,
+`calculate_sortino_ratio`, `calculate_drawdowns`, `calculate_trade_statistics`,
+`filter_warmup_period`; the cost totals at `src/backtest/backtest_coordinator.cpp`; the
+row is written by `BacktestResultsManager::save_summary_results` (`src/storage/backtest_results_manager.cpp`)
+and the curve by `save_equity_curve`. Live: `LiveHistoricalMetricsCalculator::calculate` and
+`grid_annualized_return_pct` (`src/live/live_historical_metrics.cpp`), on the series of
+`build_statistics_series`; the row is first written by `LiveResultsManager::save_live_results` (`src/storage/live_results_manager.cpp`) and finalised by the next
 day's run (`LIVE_RUN_CYCLE.md`). The `risk_detail` column is `migrations/020_risk_detail.sql`.
 
 **Source.** OURS. These are the engine's own reporting conventions. The book reports its strategies on fixed
 capital with non-compounded
 percentage returns, annualises by 256 business days and reads the Sharpe ratio on that base; the stored columns
-are compounded returns of the account annualised by 252. Section 4 says which base to read each measure on.
+are compounded returns of the account on the statistics grid, annualised by K (311.0574 futures, 252 equities).
+Section 4 says which base to read each measure on.
 
 ---
 
@@ -1363,7 +1362,7 @@ of the section named in each row gives the book's citation.
 | 18 | Rolls (1.15) | Chooses its roll dates; recommends spread trades; counts two trades a roll in its cost arithmetic | Follows the vendor's switch; holds the change bar; books two outright legs at full cost on the confirming bar | No per-contract bars; an upper bound on the cost | Yes |
 | 19 | Costs (1.16) | Commission plus half the spread, risk adjusted | Per-contract broker fee, a spread widened by volatility, an impact term on the day's volume | A thin bar costs more to trade; the fee must be the one paid | Yes |
 | 20 | Netting (1.16) | One strategy per account | Cost totals after netting between the sleeves of one book | It is what the account pays | BASE only |
-| 21 | Statistics (1.17) | Non-compounded returns on fixed capital, 256 business days | Stored columns are compounded account returns, annualised by 252 | The engine's reporting convention | No (reporting only) |
+| 21 | Statistics (1.17) | Non-compounded returns on fixed capital, 256 business days | Stored columns are compounded account returns on the statistics grid, annualised by K (311.0574 futures, 252 equities) | The engine's reporting convention | No (reporting only) |
 
 ---
 
@@ -1410,7 +1409,7 @@ smaller than the difference between two start dates of the same setting is not a
 
 **The standard windows.** A futures backtest is named by the years it TRADES, not by its lookback. The runner
 takes a whole-year lookback (`backtest.lookback_years`) and an end date (`backtest.frozen_end_date`, or the wall
-clock when the key is absent; `src/core/config_loader.cpp:807` to `:866`), and the first 256 rows of every window
+clock when the key is absent; `src/core/config_loader.cpp`), and the first 256 rows of every window
 (about ten months) are warm-up with no trading. Windows that are compared end on the same date.
 
 | Name | Lookback (`backtest.lookback_years`) | Years traded |
@@ -1434,13 +1433,12 @@ first sized signal bar 2011-08-04, stored on the row dated 2011-08-05; end 2026-
 | Return | the account for what was made; points of the sizing capital for the strategy's return per unit of risk | |
 | Costs and round trips | per year traded | Warm-up rows carry none |
 
-The stored statistics of section 1.17 are all on the account; `risk_scale` and `risk_detail` are the two columns
-that carry the sizing capital. A measure on the sizing capital is computed from the stored daily P&L and the stored
-`risk_detail.sizing_capital` of the same row.
+The stored statistics of section 1.17 are on the account, except `max_drawdown_sizing`, `volatility_sizing` and
+`worst_day_sizing`, which are on the sizing capital of a futures book. Any other measure on the sizing capital is
+computed from the stored daily P&L and the stored `risk_detail.sizing_capital` of the same row.
 
-**What a stored statistic is annualised by.** The stored backtest columns use 252 on a curve of about 312 rows a
-year, and the stored live columns use 252 on about 365 rows a year. Two figures are comparable only when they are
-computed on the same row grid with the same constant.
+**What a stored statistic is annualised by.** Live and backtest statistics are taken on the same grid with the
+same K and the same definitions, so a live figure and a backtest figure are comparable.
 
 ---
 
