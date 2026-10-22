@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# This tests 036_live_results_statistics.sql, numbered 030 until 2026-10-21. The text below keeps the numbers of that time
+# (030 and its neighbours 028 to 033): the SQL is unchanged and the comments it stores name them.
 # Verifies migration 030 (the twenty statistic and overlay columns of trading.live_results and
 # their comments) and its rollback on a real PostgreSQL.
 #   1. absent before (an INSERT naming one of the columns fails: the migration is necessary);

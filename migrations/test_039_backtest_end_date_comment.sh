@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# This tests 039_backtest_end_date_comment.sql, numbered 033 until 2026-10-21. The text below keeps the numbers of that time
+# (033 and its neighbours 028 to 033): the SQL is unchanged and the comments it stores name them.
 # Verifies migration 033 (COMMENT ON only: backtest.results.end_date and
 # backtest.run_metadata.end_date) and its rollback on a real PostgreSQL.
 #   1. the fixture carries the comments the two columns and their start_date neighbours had before

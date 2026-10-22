@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# This tests 035_live_results_settled_at.sql, numbered 029 until 2026-10-21. The text below keeps the numbers of that time
+# (029 and its neighbours 028 to 033): the SQL is unchanged and the comments it stores name them.
 # Verifies migration 029 (settled_at timestamptz on trading.live_results, its backfill and its
 # comment) and its rollback on a real PostgreSQL.
 #   1. absent before (an INSERT naming the column fails: the migration is necessary);

@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# This tests 038_final_positions_row_mark.sql, numbered 032 until 2026-10-21. The text below keeps the numbers of that time
+# (032 and its neighbours 028 to 033): the SQL is unchanged and the comments it stores name them.
 # Verifies migration 032 (backtest.final_positions.row_mark with its CHECK and comment, the five
 # ratio comments it restates and the table comment of backtest.signals) and its rollback on a
 # real PostgreSQL.

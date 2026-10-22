@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# This tests 034_column_comments.sql, numbered 028 until 2026-10-21. The text below keeps the numbers of that time
+# (028 and its neighbours 028 to 033): the SQL is unchanged and the comments it stores name them.
 # Verifies migration 028 (COMMENT ON only: 83 column comments and 4 table comments on trading.* and
 # backtest.*) and its rollback on a real PostgreSQL.
 #   1. the fixture carries the comments the objects had before 028 (the earlier migrations' texts and

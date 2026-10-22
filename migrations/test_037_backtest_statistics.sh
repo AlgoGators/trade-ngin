@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# This tests 037_backtest_statistics.sql, numbered 031 until 2026-10-21. The text below keeps the numbers of that time
+# (031 and its neighbours 028 to 033): the SQL is unchanged and the comments it stores name them.
 # Verifies migration 031 (the thirteen statistic columns of backtest.results, the six overlay
 # columns of backtest.equity_curve, their comments and the fourteen comments it restates) and its
 # rollback on a real PostgreSQL.
