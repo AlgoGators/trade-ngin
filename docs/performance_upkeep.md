@@ -235,7 +235,8 @@ the fee of 014: without it the registry warns and prices every fill at the code 
 stores nothing or only part of the run. Nothing in the release path applies them and no table records which are
 applied.
 
-034 to 039 were numbered 028 to 033 until 2026-10-21 and were applied to `new_algo_data` under those numbers (028
+021 to 025 and 027 to 029 are the QT desk's migrations (see `migrations/README.md`, which also records by hand the
+date each migration was applied to `new_algo_data`). 034 to 039 were numbered 028 to 033 until 2026-10-21 and were applied to `new_algo_data` under those numbers (028
 to 030 on 2026-10-10, 031 and 032 on 2026-10-12, 033 on 2026-10-13). Each file's header says so; none is applied
 there again. Their SQL is unchanged, so the comments they stored still name the old numbers. 028 and 029 are `main`'s
 QT migrations; 030 to 033 are unused.
@@ -257,7 +258,15 @@ QT migrations; 030 to 033 are unused.
 | 018 | `018_backtest_results_costs.sql` | `transaction_costs`, `roll_costs` and `total_roll_fills` on `backtest.results` |
 | 019 | `019_contract_metadata_fixes.sql` | corrections to nine contract metadata rows (data only) |
 | 020 | `020_risk_detail.sql` | `risk_detail` on `trading.live_results` and `backtest.equity_curve` (see [RISK_MODULES.md](RISK_MODULES.md)) |
+| 021 | `021_qt_books.sql` | the three books: `qt_proposal` allowed in positions and equity_curve, `portfolio_type` on executions and live_results and in their keys, `positions.moved_by` |
+| 022 | `022_strategy_config.sql` | `trading.strategy_config` (the desk's settings, versioned, one active row per portfolio); `settings_used`, `published_by`, `published_at` on `trading.live_run_metadata` |
+| 023 | `023_qt_command_log.sql` | `trading.position_overrides` rebuilt as the desk's command log; `live_results.book_source`; `strategy_registry.portfolio_group` and `desk_editable` |
+| 024 | `024_drop_retired_qt_tables.sql` | drops four retired QT tables; irreversible, no rollback file |
+| 025 | `025_qt_command_log_hardening.sql` | the command log's one-decision and status-order rules, and its grants |
 | 026 | `026_contract_metadata_ibkr_fees.sql` | the per-contract IBKR fee in each `"Fee Per Contract"` cell, with a CHECK that the fee is a positive number; needs 014 |
+| 027 | `027_qt_daily_cutoff.sql` | `publish_source` and `sent_at` on `trading.live_run_metadata` (the desk's daily cutoff) |
+| 028 | `028_ops_data_ready.sql` | schema `ops` and `ops.data_ready`, the data pull's "ready" record that the QT data-driven run reads |
+| 029 | `029_qt_rescind.sql` | the desk's Rescind command on `trading.position_overrides` |
 | 034 | `034_column_comments.sql` | comments on columns and tables of `trading` and `backtest`; no data change |
 | 035 | `035_live_results_settled_at.sql` | `settled_at` on `trading.live_results`; each existing row that has a later row of its book is stamped `1970-01-01 00:00:00+00` |
 | 036 | `036_live_results_statistics.sql` | twenty statistics and overlay columns on `trading.live_results` |
@@ -283,7 +292,14 @@ Shell tests in the same folder apply a migration and its rollback to a real Post
 | `test_016_positions_instrument_id.sh` | 016 |
 | `test_019_contract_metadata_fixes.sh` | 019 |
 | `test_020_risk_detail.sh` | 020 |
+| `test_021_qt_books.sh` | 021 |
+| `test_022_strategy_config.sh` | 022 |
+| `test_023_qt_command_log.sh` | 023 and 024 |
+| `test_025_qt_command_log_hardening.sh` | 025 (a throwaway server only: it creates cluster roles) |
 | `test_026_contract_metadata_ibkr_fees.sh` | 026 |
+| `test_027_qt_daily_cutoff.sh` | 027 (a throwaway server only) |
+| `test_028_ops_data_ready.sh` | 028 (a throwaway server only) |
+| `test_029_qt_rescind.sh` | 029 (a throwaway server only) |
 | `test_034_column_comments.sh` | 034 |
 | `test_035_live_results_settled_at.sh` | 035 |
 | `test_036_live_results_statistics.sh` | 036 |
