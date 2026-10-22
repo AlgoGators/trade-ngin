@@ -22,5 +22,13 @@ inline std::string dateless_run_message(const std::string& program) {
            program + " 2025-01-01 --send-email\n";
 }
 
+// A run names one date (the rejoin, 2026-10-22). main's --date and the positional date name the same
+// run; two different dates are refused with exit 1 before anything is read or written, never the
+// later one taken silently.
+inline std::string two_run_dates_message(const std::string& first, const std::string& second) {
+    return "Two run dates were given (" + first + " and " + second +
+           "): give one, positionally or as --date";
+}
+
 }  // namespace live
 }  // namespace trade_ngin

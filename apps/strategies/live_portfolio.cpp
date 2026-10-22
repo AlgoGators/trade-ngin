@@ -202,8 +202,8 @@ int main(int argc, char* argv[]) {
             // RunDateFrame.* in tests/live/test_session_book_gate.cpp.
             if (const auto run_date = run_date_at_local_midnight(arg)) {
                 if (!run_date_arg.empty() && run_date_arg != arg) {
-                    std::cerr << "Two run dates were given (" << run_date_arg << " and " << arg
-                              << "): give one, positionally or as --date" << std::endl;
+                    std::cerr << trade_ngin::live::two_run_dates_message(run_date_arg, arg)
+                              << std::endl;
                     return 1;
                 }
                 run_date_arg = arg;
