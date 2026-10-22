@@ -168,6 +168,9 @@ TEST(LiveSettingsCheck, ASleeveThatIsNotATrendStrategyIsNotCheckedAsOne) {
         other["config"] = Json::object();  // no sleeve keys: a trend check would refuse it
         other["default_allocation"] = 0.0;
         p["strategies"]["OTHER"] = other;
+        // A book of two sleeves carries no trading_rule_removals (the loader refuses the list
+        // outside a book of one trend sleeve, as BASE's two sleeves have none).
+        p.erase("trading_rule_removals");
     });
     auto r = check_live_settings_overlay(dir, "qt_conservative", Json::object());
     EXPECT_TRUE(r.is_ok()) << r.error()->what();
