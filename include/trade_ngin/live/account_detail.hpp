@@ -32,22 +32,24 @@ inline const std::vector<std::string>& account_detail_stored_columns() {
 
 /// The SELECT of those columns for one stored row (the same key form the report's other reads use).
 inline std::string account_detail_query(const std::string& strategy_id,
-                                        const std::string& portfolio_id, const std::string& date) {
+                                        const std::string& portfolio_id, const std::string& date,
+                                        const std::string& book = "system") {
     return "SELECT current_portfolio_value, risk_detail->>'sizing_capital', gross_leverage, "
            "net_leverage, overlay_gross_leverage, overlay_net_leverage, overlay_risk, var_95_1d, "
            "max_drawdown_sizing, volatility_sizing, worst_day_sizing, margin_posted, cash_available "
            "FROM trading.live_results WHERE strategy_id = '" +
-           strategy_id + "' AND portfolio_id = '" + portfolio_id + "' AND date = '" + date +
+           strategy_id + "' AND portfolio_id = '" + portfolio_id + "' AND portfolio_type = '" +
+           book + "' AND date = '" + date +
            "' ORDER BY date DESC LIMIT 1";
 }
 
 /// The stored row's text by column name; empty when the row cannot be read.
 inline std::map<std::string, std::string> read_account_detail_row(
     const std::shared_ptr<DatabaseInterface>& db, const std::string& strategy_id,
-    const std::string& portfolio_id, const std::string& date) {
+    const std::string& portfolio_id, const std::string& date, const std::string& book = "system") {
     std::map<std::string, std::string> row;
     if (!db) return row;
-    auto result = db->execute_query(account_detail_query(strategy_id, portfolio_id, date));
+    auto result = db->execute_query(account_detail_query(strategy_id, portfolio_id, date, book));
     if (result.is_error() || result.value()->num_rows() == 0) return row;
     const auto table = result.value();
     const auto& names = account_detail_stored_columns();

@@ -2304,7 +2304,7 @@ std::string ChartGenerator::generate_gross_leverage_chart(std::shared_ptr<Databa
     const std::string query =
         "SELECT to_char(date, 'YYYY-MM-DD'), (gross_notional / NULLIF(current_portfolio_value, 0))::text, (net_notional / NULLIF(current_portfolio_value, 0))::text FROM (SELECT date, gross_notional, net_notional, current_portfolio_value "
         "FROM trading.live_results WHERE strategy_id = '" + strategy_id + "' AND portfolio_id = '" +
-        portfolio_id + "' AND date <= '" + date + "' AND gross_notional IS NOT NULL AND net_notional IS NOT NULL AND current_portfolio_value > 0 ORDER BY date DESC "
+        portfolio_id + "' AND portfolio_type = '" + chart_book() + "' AND date <= '" + date + "' AND gross_notional IS NOT NULL AND net_notional IS NOT NULL AND current_portfolio_value > 0 ORDER BY date DESC "
         "LIMIT " + std::to_string(lookback_days) + ") t ORDER BY date ASC";
     auto result = db->execute_query(query);
     if (result.is_error()) {

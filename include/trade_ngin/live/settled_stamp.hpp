@@ -26,11 +26,14 @@ namespace trade_ngin {
 
 /// The one statement that settles a book's earlier rows: every row of the key dated before the
 /// run date that carries no stamp. The run's own row is not matched (it is inserted after, NULL).
+/// `book` (migration 021) is the book whose Day T-1 the run finalised.
 inline std::string settled_stamp_sql(const std::string& strategy_id, const std::string& portfolio_id,
-                                     const std::string& run_date) {
+                                     const std::string& run_date,
+                                     const std::string& book = "system") {
     return "UPDATE trading.live_results SET settled_at = now() "
            "WHERE strategy_id = '" + strategy_id + "' AND portfolio_id = '" + portfolio_id +
-           "' AND DATE(date) < '" + run_date + "' AND settled_at IS NULL";
+           "' AND portfolio_type = '" + book + "' AND DATE(date) < '" + run_date +
+           "' AND settled_at IS NULL";
 }
 
 /// Whether the run's finalize of Day T-1 finished without error. Open until a path withholds

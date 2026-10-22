@@ -147,7 +147,7 @@ TEST(LiveListingGuard, BothLiveRunnersInstallTheBlocksAndRefuseBeforeTheFirstWri
 
         // the stored book is read sleeve by sleeve: one sleeve's zero row cannot hide another's holding
         EXPECT_NE(src.find("combined_strategy_id, sleeve, portfolio_id, now - std::chrono::hours(24),\n"
-                           "                        \"trading.positions\");\n"
+                           "                        \"trading.positions\", qt_read_book);\n"
                            "                    if (sleeve_book.is_error()) {"),
                   std::string::npos)
             << runner;

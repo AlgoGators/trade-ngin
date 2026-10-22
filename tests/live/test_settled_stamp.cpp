@@ -88,7 +88,7 @@ TEST(SettledStamp, TheStatementStampsEveryEarlierUnstampedRowOfTheKey) {
                                             "2026-04-25"),
               "UPDATE trading.live_results SET settled_at = now() "
               "WHERE strategy_id = 'LIVE_TREND_FOLLOWING' "
-              "AND portfolio_id = 'CONSERVATIVE_PORTFOLIO' "
+              "AND portfolio_id = 'CONSERVATIVE_PORTFOLIO' AND portfolio_type = 'system' "
               "AND DATE(date) < '2026-04-25' AND settled_at IS NULL");
 #else
     FAIL() << "include/trade_ngin/live/settled_stamp.hpp does not exist: no run stamps settled_at";
@@ -158,7 +158,8 @@ TEST(SettledStampRunners, OneStampAfterStepFourAndTheStatisticsRefreshOnEveryRun
                 << runner;
         } else {
             EXPECT_NE(block.find("settled_stamp_sql(\n                combined_strategy_id, "
-                                 "coordinator_config.portfolio_id, core::format_utc_date(now))"),
+                                 "coordinator_config.portfolio_id, core::format_utc_date(now),\n"
+                                 "                qt_read_book))"),
                       std::string::npos)
                 << runner;
         }

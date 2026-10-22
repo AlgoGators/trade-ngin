@@ -1052,7 +1052,7 @@ int main(int argc, char* argv[]) {
             auto first_q = db->execute_query(
                 "SELECT COALESCE(MIN(date)::text, '') FROM trading.live_results "
                 "WHERE strategy_id = '" + combined_strategy_id + "'"
-                " AND portfolio_id = '" + portfolio_id + "'");
+                " AND portfolio_id = '" + portfolio_id + "'" + qt_read_sql);
 
             if (!anchor_q.is_error()) {
                 book_live_start_date = anchor_cell(anchor_q);
@@ -1113,7 +1113,7 @@ int main(int argc, char* argv[]) {
                 for (const auto& sleeve : strategy_names) {
                     auto sleeve_book = db->load_positions_by_date(
                         combined_strategy_id, sleeve, portfolio_id, now - std::chrono::hours(24),
-                        "trading.positions");
+                        "trading.positions", qt_read_book);
                     if (sleeve_book.is_error()) {
                         const std::string line =
                             "LISTING_DATE_REFUSAL sleeve " + sleeve +
@@ -4147,8 +4147,8 @@ int main(int argc, char* argv[]) {
                                 "' "
                                 "AND DATE(timestamp) = '" +
                                 yesterday_date_ss.str() +
-                                "' "
-                                "ORDER BY timestamp";
+                                "'" + qt_read_sql +
+                                " ORDER BY timestamp";
                             auto debug_result = db->execute_query(debug_eq_query);
                             if (debug_result.is_ok() && debug_result.value()->num_rows() > 0) {
                                 INFO("DEBUG: Existing equity_curve entries for " +
@@ -4546,7 +4546,8 @@ int main(int argc, char* argv[]) {
         // so a re-run of a date clears its stamp and the next run writes it again.
         if (settled_stamp.open()) {
             auto stamped = db->execute_direct_query(settled_stamp_sql(
-                combined_strategy_id, coordinator_config.portfolio_id, core::format_utc_date(now)));
+                combined_strategy_id, coordinator_config.portfolio_id, core::format_utc_date(now),
+                qt_read_book));
             if (stamped.is_error()) {
                 ERROR("SETTLED_AT stamp failed: " + std::string(stamped.error()->what()) +
                       "; the rows stay unsettled and the next run stamps them");
@@ -5686,7 +5687,7 @@ int main(int argc, char* argv[]) {
                                 date_str,
                                 trade_ngin::read_account_detail_row(
                                     db, combined_strategy_id, coordinator_config.portfolio_id,
-                                    date_str),
+                                    date_str, qt_write_book),
                                 &over_limit_for_report, strategy_metrics));
                         if (detail.is_ok()) {
                             attachments.push_back(detail.value());
