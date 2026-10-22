@@ -377,10 +377,11 @@ int main() {
                   << (backtest_results.max_drawdown * 100.0) << "%" << std::endl;
         std::cout << "Calmar Ratio: " << std::setprecision(3) << ratio_or_na(backtest_results.calmar_ratio)
                   << std::endl;
-        std::cout << "Volatility: " << std::setprecision(2)
+        std::cout << "Volatility (annualised): " << std::setprecision(2)
                   << (backtest_results.volatility * 100.0) << "%" << std::endl;
-        std::cout << "Win Rate: " << (backtest_results.win_rate * 100.0) << "%" << std::endl;
-        std::cout << "Total Trades: " << backtest_results.total_trades << std::endl;
+        std::cout << "Trade win rate (closing fills): " << (backtest_results.win_rate * 100.0)
+                  << "%" << std::endl;
+        std::cout << "Closing fills: " << backtest_results.total_trades << std::endl;
         std::cout << "====================================================" << std::endl;
 
         // Save results

@@ -49,7 +49,12 @@ public:
      * @brief Export current day positions to CSV with per-strategy breakdown
      *
      * Creates a file named: YYYY-MM-DD_positions.csv
-     * Contains: strategy, symbol, quantity, market_price, notional, percentages, forecast, volatility, EMAs
+     * Contains: strategy, symbol, quantity, market_price, notional, percentages, forecast,
+     * sizing_vol, EMAs. The first line is the portfolio value as this run wrote it (today's
+     * costs booked), with the gross and net notional; two comment lines above the column names
+     * say what sizing_vol is and what pct_of_portfolio_value divides by. Every row prints six
+     * decimals, but market_price, which prints the shortest text that reads back as the same
+     * number (a price below 0.1 keeps every digit).
      *
      * @param date Current trading date
      * @param strategy_positions Per-strategy positions map
@@ -73,12 +78,14 @@ public:
      * @brief Export the day's positions file on a day with NO session: every value carried.
      *
      * T-7a C3 (HD 2026-09-18). Same file name as export_current_positions
-     * (YYYY-MM-DD_positions.csv) and the same columns, plus mark_date and forecast_from. A second
-     * header line states that no session occurred and that every value is carried, not computed.
+     * (YYYY-MM-DD_positions.csv) and the same columns, plus mark_date and forecast_run_date. A
+     * second header line states that no session occurred and that every value is carried, not
+     * computed; it describes the carried forecast as carried_forecast_label does ("computed by
+     * the run of <D> from bars through <D-1>": a stored forecast carries its run's date).
      * One row per sleeve and symbol the sleeve holds or last forecast: quantity from the held
      * book, market_price the symbol's last mark (a held symbol with no loaded bar keeps its stored
      * row's price, mark_date "stored row"), forecast the sleeve's last computed forecast (empty if
-     * the sleeve has none stored for that symbol). Volatility and the EMAs are not stored anywhere
+     * the sleeve has none stored for that symbol). sizing_vol and the EMAs are not stored anywhere
      * and are left empty rather than written as zeros.
      *
      * @param date Run date (for the file name)
@@ -100,28 +107,41 @@ public:
      * @brief Export yesterday's finalized positions to CSV with per-strategy breakdown
      *
      * Creates a file named: YYYY-MM-DD_positions_asof_YYYY-MM-DD.csv
-     * Contains: strategy, symbol, quantity, entry_price, exit_price, realized_pnl
+     * Contains: strategy, symbol, quantity, prior_mark, mark, realized_pnl. prior_mark is the
+     * price the settled day's P&L was booked from and mark the price it was booked at, the
+     * pair the settle's own arithmetic used, so quantity x (mark - prior_mark) x contract size
+     * is the row's realized_pnl (the report's "Previous price" and "Latest price";
+     * core/report_settled_marks.hpp); neither is an entry or an exit price. A symbol that
+     * printed no bar on the settled day has an empty mark and its last known close as
+     * prior_mark. The file starts with its column names (no comment line); quantity and
+     * realized_pnl print six decimals on every row, the two prices the shortest text that
+     * reads back as the same number.
      *
      * @param date Current trading date (for filename)
      * @param yesterday_date Yesterday's date
      * @param strategy_positions Per-strategy positions map
-     * @param entry_prices Day T-2 close prices (entry)
-     * @param exit_prices Day T-1 close prices (exit)
+     * @param prior_marks The price each row was settled from (SettledTablePrices::previous)
+     * @param marks The price each row was settled at (SettledTablePrices::latest)
      * @return Result containing filename on success, or error
      */
     Result<std::string> export_finalized_positions(
         const std::chrono::system_clock::time_point& date,
         const std::chrono::system_clock::time_point& yesterday_date,
         const StrategyPositionsMap& strategy_positions,
-        const std::unordered_map<std::string, double>& entry_prices,
-        const std::unordered_map<std::string, double>& exit_prices
-    );
+        const std::unordered_map<std::string, double>& prior_marks,
+        const std::unordered_map<std::string, double>& marks);
 
     /**
      * @brief Set the output directory for CSV files
      * @param directory Path to output directory
      */
     void set_output_directory(const std::string& directory);
+
+    /// The positions file's one-line explanation of its sizing_vol column.
+    static std::string sizing_vol_note();
+
+    /// The positions file's one-line statement of what pct_of_portfolio_value divides by.
+    static std::string pct_of_portfolio_value_note();
 
 private:
     std::string output_directory_;

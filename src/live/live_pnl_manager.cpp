@@ -196,9 +196,8 @@ Result<LivePnLManager::FinalizationResult> LivePnLManager::finalize_previous_day
     INFO("DEBUG FINALIZATION: Result.finalized_daily_pnl (GROSS)=" + std::to_string(result.finalized_daily_pnl));
     result.finalized_portfolio_value = calculate_portfolio_value(previous_portfolio_value, net_pnl);
 
-    INFO("Day T-1 finalization complete: Total PnL (Gross)=" + std::to_string(total_finalized_pnl) +
-         ", Net PnL=" + std::to_string(net_pnl) +
-         ", Portfolio Value=" + std::to_string(result.finalized_portfolio_value));
+    INFO(
+        finalization_complete_line(total_finalized_pnl, net_pnl, result.finalized_portfolio_value));
     INFO(stat_quality::finalize_line(held_symbols.size(), held_no_bar));
 
     result.success = true;

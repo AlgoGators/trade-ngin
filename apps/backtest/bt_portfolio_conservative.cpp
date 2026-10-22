@@ -555,9 +555,11 @@ int main() {
         std::cout << "Max Drawdown: " << (backtest_results.max_drawdown * 100.0) << "%"
                   << std::endl;
         std::cout << "Calmar Ratio: " << ratio_or_na(backtest_results.calmar_ratio) << std::endl;
-        std::cout << "Volatility: " << (backtest_results.volatility * 100.0) << "%" << std::endl;
-        std::cout << "Win Rate: " << (backtest_results.win_rate * 100.0) << "%" << std::endl;
-        std::cout << "Total Trades: " << backtest_results.total_trades << std::endl;
+        std::cout << "Volatility (annualised): " << (backtest_results.volatility * 100.0) << "%"
+                  << std::endl;
+        std::cout << "Trade win rate (closing fills): " << (backtest_results.win_rate * 100.0)
+                  << "%" << std::endl;
+        std::cout << "Closing fills: " << backtest_results.total_trades << std::endl;
         std::cout << "Transaction Costs: " << backtest_results.transaction_costs << std::endl;
         std::cout << "Roll Costs (upper bound): " << backtest_results.roll_costs << std::endl;
         std::cout << "Roll Fills: " << backtest_results.total_roll_fills << std::endl;

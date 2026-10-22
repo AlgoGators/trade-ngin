@@ -348,6 +348,79 @@ TEST(RunRefusalArmsSource, TheEquityRunnerWritesItsMetadataRowBelowItsGuards) {
     }
 }
 
+// T-8D-2 R48 (executes, no database): the equity runner's row is built where its configuration is
+// known and written at the run's first store. A run that refuses before it writes nothing; a run
+// that reaches two store points writes once, the row as it was built.
+TEST(DeferredRunRecordTest, ARunRefusedBeforeItsFirstStoreWritesNoRow) {
+    int writes = 0;
+    {
+        DeferredRunRecord row;
+        row.hold([&writes]() { ++writes; });
+        EXPECT_FALSE(row.written());
+        // the run returns here, on a refusal: write_once() is never reached
+    }
+    EXPECT_EQ(writes, 0);
+}
+
+TEST(DeferredRunRecordTest, TheRowIsWrittenOnceAtTheFirstStorePointAsItWasBuilt) {
+    std::vector<std::string> stored;
+    DeferredRunRecord row;
+    row.write_once();  // nothing held yet: nothing written, and not marked as written
+    EXPECT_FALSE(row.written());
+    nlohmann::json portfolio_config = {{"total_capital", 100000.0}};
+    row.hold([&stored, portfolio_config]() { stored.push_back(portfolio_config.dump()); });
+    portfolio_config["total_capital"] = 1.0;  // a later change does not reach the held row
+    row.write_once();                         // above the corp-action unit of work
+    EXPECT_TRUE(row.written());
+    row.write_once();  // below the class-1 block
+    ASSERT_EQ(stored.size(), 1u);
+    EXPECT_EQ(stored[0], "{\"total_capital\":100000.0}");
+}
+
+// READS SOURCE (a labelled wiring guard; the executed proof of the order is the refused equity
+// run of the commit's section, and the two tests above).
+TEST(RunRefusalArmsSource, TheEquityRunnerWritesItsMetadataRowBelowItsCorpActionRefusals) {
+    const std::string src = read_source("apps/strategies/live_equity_mean_reversion.cpp");
+    if (src.empty())
+        GTEST_SKIP() << "runner source not found from the test working directory";
+    const auto held =
+        src.find("run_metadata_row.hold([db, now, portfolio_id, strategy_alloc_json,");
+    const auto first = src.find("run_metadata_row.write_once();");
+    ASSERT_NE(held, npos);
+    ASSERT_NE(first, npos);
+    const auto second = src.find("run_metadata_row.write_once();", first + 1);
+    ASSERT_NE(second, npos);
+    EXPECT_EQ(count_of(src, "run_metadata_row.write_once();"), 2u);
+    // The row's own call is inside the held write and nowhere else.
+    const auto upsert = src.find("db->store_live_run_metadata(");
+    ASSERT_NE(upsert, npos);
+    EXPECT_LT(held, upsert);
+    EXPECT_LT(upsert, first);
+    // The refusals that store nothing sit between the build and the first write point.
+    for (const char* refusal :
+         {"Corp-action dedup log is not database-backed",
+          "Cannot read the corp-action dedup record",
+          "Corp-action dedup record holds an entry with ex_date ",
+          "Could not read spinoff deal terms", "and the price series disagree. Refusing to trade.",
+          "E2-F15 invariant violated for ", "E2-F15 guard: after applying ", "E2-F17 guard: "}) {
+        const auto at = src.find(refusal);
+        ASSERT_NE(at, npos) << refusal;
+        EXPECT_LT(held, at) << refusal;
+        EXPECT_LT(at, first) << "the metadata row is written above the refusal: " << refusal;
+    }
+    // The first write point is the line above the run's first other store, the corp-action unit
+    // of work; the second is below the class-1 block and above the lifecycle handlers.
+    EXPECT_NE(src.find("run_metadata_row.write_once();  // the run's first write (T-8D-2 R48)\n"
+                       "                    auto unit = db->begin_unit_of_work();"),
+              npos);
+    const auto unit = src.find("auto unit = db->begin_unit_of_work();");
+    const auto lifecycle = src.find("previous_positions_post_class1 =");
+    ASSERT_NE(lifecycle, npos);
+    EXPECT_LT(unit, second);
+    EXPECT_LT(second, lifecycle);
+    EXPECT_LT(first, src.find("begin_unit_of_work()")) << "a unit of work above the first write";
+}
+
 TEST(RunRefusalArmsSource, TheTwinsCarryTheSameRefusalAndUpsertBlock) {
     std::vector<std::string> blocks;
     for (const char* runner : kFuturesRunners) {

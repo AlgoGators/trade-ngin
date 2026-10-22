@@ -27,7 +27,6 @@ struct EmailConfig {
     std::string from_email;
     bool use_tls{true};
     std::vector<std::string> to_emails;
-    std::vector<std::string> to_emails_production;
 
     nlohmann::json to_json() const {
         nlohmann::json j;
@@ -38,7 +37,6 @@ struct EmailConfig {
         j["from_email"] = from_email;
         j["use_tls"] = use_tls;
         j["to_emails"] = to_emails;
-        j["to_emails_production"] = to_emails_production;
         return j;
     }
 
@@ -57,8 +55,6 @@ struct EmailConfig {
             use_tls = j.at("use_tls").get<bool>();
         if (j.contains("to_emails"))
             to_emails = j.at("to_emails").get<std::vector<std::string>>();
-        if (j.contains("to_emails_production"))
-            to_emails_production = j.at("to_emails_production").get<std::vector<std::string>>();
     }
 };
 

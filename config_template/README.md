@@ -20,8 +20,7 @@ cp -r config_template config
 - `YOUR_SMTP_USERNAME` - SMTP auth username (e.g. Gmail address)
 - `YOUR_SMTP_APP_PASSWORD` - SMTP app password (use app-specific password for Gmail)
 - `YOUR_FROM_EMAIL` - Sender email address
-- `YOUR_EMAIL_FOR_NOTIFICATIONS` - Recipient(s) for testing (in `to_emails` array)
-- `to_emails_production` - Replace placeholder array with actual production recipient emails
+- `YOUR_EMAIL_FOR_NOTIFICATIONS` - Recipient(s) of every report (the `to_emails` array, the only recipient list the runners read)
 
 ## Structure
 

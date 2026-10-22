@@ -11,6 +11,8 @@
 #include "trade_ngin/data/credential_store.hpp"
 #include "trade_ngin/data/database_interface.hpp"
 #include "trade_ngin/core/holiday_checker.hpp"
+#include "trade_ngin/core/report_email_context.hpp"
+#include "trade_ngin/core/report_over_limit.hpp"
 #include "trade_ngin/risk/risk_manager.hpp"
 
 namespace trade_ngin {
@@ -20,6 +22,10 @@ using StrategyPositionsMap = std::unordered_map<std::string, std::unordered_map<
 
 // Type alias for per-strategy executions map
 using StrategyExecutionsMap = std::unordered_map<std::string, std::vector<ExecutionReport>>;
+
+/// A futures runner's metric key for the account's gross notional (the stored gross_notional of
+/// the day's row): the book block under the sleeves' position tables prints it (T-8D-2 R60).
+inline constexpr const char* kReportGrossNotional = "Gross Notional";
 
 /**
  * @brief Email configuration structure
@@ -79,8 +85,7 @@ public:
         const std::unordered_map<std::string, Position>& positions,
         const std::optional<RiskResult>& risk_metrics,
         const std::map<std::string, double>& strategy_metrics,
-        const std::vector<ExecutionReport>& executions,
-        const std::string& date,
+        const std::vector<ExecutionReport>& executions, const std::string& date,
         bool is_daily_strategy = true,
         const std::unordered_map<std::string, double>& current_prices = {},
         std::shared_ptr<DatabaseInterface> db = nullptr,
@@ -89,8 +94,7 @@ public:
         const std::unordered_map<std::string, double>& two_days_ago_close_prices = {},
         const std::map<std::string, double>& yesterday_daily_metrics = {},
         const std::string& chart_strategy_id = "LIVE_TREND_FOLLOWING",
-        const std::string& chart_portfolio_id = ""
-    );
+        const std::string& chart_portfolio_id = "", const EmailReportContext& context = {});
 
     /**
      * @brief Generate trading results email body with per-strategy positions and executions tables
@@ -103,6 +107,9 @@ public:
      * @param portfolio_name Display name for the portfolio (shown in header)
      * @param is_daily_strategy Flag indicating if this is a daily strategy
      * @param chart_strategy_id The strategy id the charts query: the run's own stored id
+     * @param over_limit The day's leverage on the sizing capital, its limits and the over-limit
+     *        marks (report_over_limit.hpp); the default is a day with no reading
+     * @param context What the runner tells the report about the day (report_email_context.hpp)
      * @return HTML email body
      */
     std::string generate_trading_report_body(
@@ -110,18 +117,16 @@ public:
         const std::unordered_map<std::string, Position>& positions,
         const std::optional<RiskResult>& risk_metrics,
         const std::map<std::string, double>& strategy_metrics,
-        const StrategyExecutionsMap& strategy_executions,
-        const std::string& date,
-        const std::string& portfolio_name,
-        bool is_daily_strategy = true,
+        const StrategyExecutionsMap& strategy_executions, const std::string& date,
+        const std::string& portfolio_name, bool is_daily_strategy = true,
         const std::unordered_map<std::string, double>& current_prices = {},
         std::shared_ptr<DatabaseInterface> db = nullptr,
         const StrategyPositionsMap& yesterday_strategy_positions = {},
         const std::unordered_map<std::string, double>& yesterday_close_prices = {},
         const std::unordered_map<std::string, double>& two_days_ago_close_prices = {},
         const std::map<std::string, double>& yesterday_daily_metrics = {},
-        const std::string& chart_strategy_id = "LIVE_TREND_FOLLOWING"
-    );
+        const std::string& chart_strategy_id = "LIVE_TREND_FOLLOWING",
+        const OverLimitReport& over_limit = {}, const EmailReportContext& context = {});
 
     /**
      * @brief Generate trading results email body from database results
@@ -178,9 +183,19 @@ private:
     /**
      * @brief Format strategy metrics for email
      * @param strategy_metrics Strategy metrics
+     * @param over_limit A futures book's over-limit report: with it the two leverage lines name
+     *        their denominator and the over-limit lines follow them. Null (the equity report):
+     *        the section is as it was.
+     * @param report_date The report's date T: the book block is "as of" it
+     * @param settled_date The settled day T-1: the statistics run through it
+     * @param context What the runner tells the report about the day
      * @return Formatted strategy metrics HTML
      */
-    std::string format_strategy_metrics(const std::map<std::string, double>& strategy_metrics);
+    std::string format_strategy_metrics(const std::map<std::string, double>& strategy_metrics,
+                                        const OverLimitReport* over_limit = nullptr,
+                                        const std::string& report_date = "",
+                                        const std::string& settled_date = "",
+                                        const EmailReportContext& context = {});
 
     /**
      * @brief Format executions table for email
@@ -201,11 +216,17 @@ private:
     /**
      * @brief Format yesterday's finalized positions table with actual PnL
      * @param yesterday_positions Yesterday's positions
-     * @param entry_prices Entry prices (Day T-2 close)
-     * @param exit_prices Exit prices (Day T-1 close)
+     * @param entry_prices The price each row was settled from ("Previous price";
+     *        report_settled_marks.hpp)
+     * @param exit_prices The price each row was settled at ("Latest price"); a symbol it does
+     *        not hold printed no bar that day
      * @param db Database interface to query contract multipliers
      * @param strategy_metrics Strategy metrics (to extract daily metrics)
      * @param yesterday_date Yesterday's date string
+     * @param settled_date The settled day the block under the table is headed with (the
+     *        runner's T-1); empty: yesterday_date
+     * @param equities The book is the equity book: the sentence under the table is the equity
+     *        one (report_settled_marks.hpp)
      * @return Formatted yesterday's finalized positions table HTML
      */
     std::string format_yesterday_finalized_positions_table(
@@ -214,17 +235,23 @@ private:
         const std::unordered_map<std::string, double>& exit_prices,
         std::shared_ptr<DatabaseInterface> db,
         const std::map<std::string, double>& strategy_metrics = {},
-        const std::string& yesterday_date = ""
-    );
+        const std::string& yesterday_date = "", const std::string& settled_date = "",
+        bool equities = false);
 
     /**
      * @brief Format yesterday's finalized positions table with per-strategy breakdown
      * @param strategy_positions Per-strategy positions map
-     * @param entry_prices Entry prices (Day T-2 close)
-     * @param exit_prices Exit prices (Day T-1 close)
+     * @param entry_prices The price each row was settled from ("Previous price";
+     *        report_settled_marks.hpp)
+     * @param exit_prices The price each row was settled at ("Latest price"); a symbol it does
+     *        not hold printed no bar that day
      * @param db Database interface to query contract multipliers
      * @param strategy_metrics Strategy metrics (to extract daily metrics)
      * @param yesterday_date Yesterday's date string
+     * @param settled_date The settled day the block under the table is headed with (the
+     *        runner's T-1); empty: yesterday_date
+     * @param equities The book is the equity book: the sentence under the table is the equity
+     *        one (report_settled_marks.hpp)
      * @return Formatted yesterday's finalized positions table HTML with per-strategy sections
      */
     std::string format_yesterday_finalized_positions_table(
@@ -233,8 +260,8 @@ private:
         const std::unordered_map<std::string, double>& exit_prices,
         std::shared_ptr<DatabaseInterface> db,
         const std::map<std::string, double>& strategy_metrics = {},
-        const std::string& yesterday_date = ""
-    );
+        const std::string& yesterday_date = "", const std::string& settled_date = "",
+        bool equities = false);
 
     /**
      * @brief Format rollover warning for contracts approaching expiry

@@ -9,6 +9,7 @@
 #include <fstream>
 #include <iomanip>
 #include <nlohmann/json.hpp>
+#include <optional>
 #include <set>
 #include <sstream>
 #include <vector>
@@ -16,6 +17,9 @@
 #include "trade_ngin/core/email_netting_text.hpp"
 #include "trade_ngin/core/holiday_checker.hpp"
 #include "trade_ngin/core/logger.hpp"
+#include "trade_ngin/core/report_price_text.hpp"
+#include "trade_ngin/core/report_settled_marks.hpp"
+#include "trade_ngin/instruments/equity.hpp"
 #include "trade_ngin/instruments/instrument_registry.hpp"
 #include "trade_ngin/transaction_cost/netting.hpp"
 
@@ -485,6 +489,9 @@ Result<void> EmailSender::send_email(const std::string& subject, const std::stri
 // worst kind to leave lying about, because it reads like the email report
 // filters agricultural positions, and it does not.
 
+// The footer note by asset class (defined with the other report helpers below).
+static std::string report_footer_note_html(const EmailReportContext& context);
+
 std::string EmailSender::generate_trading_report_body(
     const std::unordered_map<std::string, Position>& positions,
     const std::optional<RiskResult>& risk_metrics,
@@ -496,8 +503,8 @@ std::string EmailSender::generate_trading_report_body(
     const std::unordered_map<std::string, double>& yesterday_close_prices,
     const std::unordered_map<std::string, double>& two_days_ago_close_prices,
     const std::map<std::string, double>& yesterday_daily_metrics,
-    const std::string& chart_strategy_id,
-    const std::string& chart_portfolio_id) {
+    const std::string& chart_strategy_id, const std::string& chart_portfolio_id,
+    const EmailReportContext& context) {
     (void)risk_metrics;
     std::ostringstream html;
 
@@ -506,7 +513,6 @@ std::string EmailSender::generate_trading_report_body(
     std::istringstream ss(date);
     ss >> std::get_time(&tm, "%Y-%m-%d");
     std::mktime(&tm);
-    int day_of_week = tm.tm_wday;  // 0=Sunday, 1=Monday, ..., 6=Saturday
 
     // Calculate yesterday's date
     std::string yesterday_date_str;
@@ -538,22 +544,20 @@ std::string EmailSender::generate_trading_report_body(
         yesterday_date_str = "Previous Day";
     }
 
-    // Check if today is Monday
-    bool is_monday = (day_of_week == 1);
-    bool is_sunday = (day_of_week == 0);
+    // T-8D-2 R61: the day the settled table, its block and the statistics are for is the runner's
+    // own T-1 when it names one.
+    const std::string settled_date =
+        context.settled_date.empty() ? yesterday_date_str : context.settled_date;
 
-    // Note: If yesterday was a holiday, we'll show a banner but continue with full report
-    // The show_yesterday_pnl flag below will hide the Yesterday's PnL table
-
-    // Determine if we should show yesterday's PnL table AND chart
-    bool show_yesterday_pnl = true;
-
-    // Hide yesterday's PnL if:
-    // 1. Today is Sunday (Saturday has no data)
-    // 2. Yesterday was a holiday
-    if (is_sunday || is_yesterday_holiday) {
-        show_yesterday_pnl = false;
-    }
+    // T-8D-2 R59: what the report says about the day before comes from the runner's own
+    // classification of it, never from the weekday. A futures runner that carried its book found
+    // no session (context.prior_day_no_session): the settled table is then not shown, and the
+    // calendar adds the holiday's name when that day is one. The equity runner's day before is
+    // its previous session by construction. The runner's carried-day banner, put at the top of
+    // the body by the runner, states the reason.
+    const bool show_yesterday_pnl = !context.prior_day_no_session;
+    const bool holiday_banner =
+        context.prior_day_no_session && is_yesterday_holiday && !context.equities;
 
     // Generate HTML header and styles
     html << "<!DOCTYPE html>\n";
@@ -609,47 +613,18 @@ std::string EmailSender::generate_trading_report_body(
     html << "<div class=\"header-text\">\n";
     html << "<span class=\"fund-branding\">AlgoGators</span><br>\n";
     html << "<h1>Daily Trading Report</h1>\n";
-    html << "<div class=\"header-info\">" << date << " | Trend Following Strategy</div>\n";
+    // T-8D-2 R59: the book's own name, as the per-strategy overload prints it (the literal
+    // "Trend Following Strategy" stood here, on the equity book's report).
+    html << "<div class=\"header-info\">" << date;
+    if (!chart_portfolio_id.empty()) {
+        html << " | " << format_strategy_display_name(chart_portfolio_id);
+    }
+    html << "</div>\n";
     html << "</div>\n";
     html << "</div>\n";
 
-    // Weekend/Holiday banners
-    if (is_sunday) {
-        // Sunday banner (yesterday was Saturday)
-        html << "<div style=\"background: linear-gradient(135deg, #fef3c7 0%, #fde68a 100%); "
-                "border: 2px solid #f59e0b; border-radius: 8px; padding: 20px 30px; margin: 20px 0 "
-                "30px 0; box-shadow: 0 4px 6px rgba(0,0,0,0.1);\">\n";
-        html << "<h2 style=\"margin: 0 0 10px 0; color: #92400e; font-size: 20px; border-bottom: "
-                "2px solid #92400e; padding-bottom: 8px; display: inline-block;\">Yesterday was "
-                "Saturday</h2>\n";
-        html << "<p style=\"margin: 15px 0 5px 0; color: #78350f; font-size: 15px; line-height: "
-                "1.6;\">The latest futures settlement prices are not available, as futures markets "
-                "were closed yesterday ("
-             << yesterday_date_str
-             << ") due to it being a Saturday. The PnL for these contracts will be updated in the "
-                "next report once settlement data is released.</p>\n";
-        html << "<p style=\"margin: 5px 0 0 0; color: #92400e; font-weight: 600; font-size: "
-                "14px;\">Please continue to monitor your positions closely.</p>\n";
-        html << "</div>\n";
-    } else if (is_monday) {
-        // Monday banner (agricultural futures issue)
-        html << "<div style=\"background: linear-gradient(135deg, #fef3c7 0%, #fde68a 100%); "
-                "border: 2px solid #f59e0b; border-radius: 8px; padding: 20px 30px; margin: 20px 0 "
-                "30px 0; box-shadow: 0 4px 6px rgba(0,0,0,0.1);\">\n";
-        html << "<h2 style=\"margin: 0 0 10px 0; color: #92400e; font-size: 20px; border-bottom: "
-                "2px solid #92400e; padding-bottom: 8px; display: inline-block;\">Yesterday was "
-                "Sunday</h2>\n";
-        html << "<p style=\"margin: 15px 0 5px 0; color: #78350f; font-size: 15px; line-height: "
-                "1.6;\">Agricultural futures settlement prices for Sunday ("
-             << yesterday_date_str
-             << ") are not yet available, as these contracts begin trading Sunday evening. The PnL "
-                "for these contracts will be updated in the next report once settlement data is "
-                "released.</p>\n";
-        html << "<p style=\"margin: 5px 0 0 0; color: #92400e; font-weight: 600; font-size: "
-                "14px;\">Please monitor these positions closely.</p>\n";
-        html << "</div>\n";
-    } else if (is_yesterday_holiday) {
-        // Holiday banner
+    // The holiday banner (T-8D-2 R59: no banner is derived from the weekday)
+    if (holiday_banner) {
         html << "<div style=\"background: linear-gradient(135deg, #fef3c7 0%, #fde68a 100%); "
                 "border: 2px solid #f59e0b; border-radius: 8px; padding: 20px 30px; margin: 20px 0 "
                 "30px 0; box-shadow: 0 4px 6px rgba(0,0,0,0.1);\">\n";
@@ -678,41 +653,36 @@ std::string EmailSender::generate_trading_report_body(
         html << format_executions_table(executions);
     }
 
-    // Yesterday's Finalized Positions (with actual PnL) - show on all days except Sunday and after
-    // holidays
+    // The settled day's positions, with their stored P&L: shown unless the runner found no
+    // session on that day
     if (show_yesterday_pnl && !yesterday_positions.empty() && !yesterday_close_prices.empty() &&
         !two_days_ago_close_prices.empty()) {
         html << format_yesterday_finalized_positions_table(
             yesterday_positions,
-            two_days_ago_close_prices,  // Entry prices (Day T-2)
-            yesterday_close_prices,     // Exit prices (Day T-1)
+            two_days_ago_close_prices,  // the price each row was settled from
+            yesterday_close_prices,     // the price it was settled at
             db,
             yesterday_daily_metrics,  // Yesterday's daily metrics
-            yesterday_date_str);
+            yesterday_date_str, settled_date, context.equities);
     } else if (!show_yesterday_pnl) {
-        // Add a red alert explaining no executions due to non-trading day
+        // The runner found no session on the day before (T-8D-2 R59): no settled table. The two
+        // notes say why in the runner's terms, never from the weekday.
         html << "<div class=\"alert-note\">\n";
-        if (is_sunday) {
-            html << "<strong>No Executions:</strong> Futures markets were closed yesterday, so no "
-                    "executions were generated and portfolio holdings are unchanged. Updates will "
-                    "resume with the next trading session’s data.\n";
-        } else if (is_yesterday_holiday) {
+        if (holiday_banner) {
             html << "<strong>No Executions:</strong> Since yesterday (" << yesterday_date_str
                  << ") was a market holiday, no new market data is available. Positions remain "
                     "unchanged from the previous trading day, and no executions were generated.\n";
+        } else {
+            html << "<strong>No Executions:</strong> No session was found for yesterday ("
+                 << yesterday_date_str
+                 << "), so no new market data is available. Positions remain unchanged from the "
+                    "previous trading day, and no executions were generated.\n";
         }
         html << "</div>\n";
 
         // Add a yellow note explaining why yesterday's PnL is not shown
         html << "<div class=\"footer-note\">\n";
-        if (is_sunday) {
-            html << "<strong>Note:</strong> Yesterday's PnL data is not available.\n";
-        } else if (is_monday) {
-            html << "<strong>Note:</strong> Yesterday's PnL data is not available for agricultural "
-                    "contracts.\n";
-        } else if (is_yesterday_holiday) {
-            html << "<strong>Note:</strong> Yesterday's PnL data is not available.\n";
-        }
+        html << "<strong>Note:</strong> Yesterday's PnL data is not available.\n";
         html << "</div>\n";
     }
 
@@ -726,7 +696,7 @@ std::string EmailSender::generate_trading_report_body(
     // Strategy metrics
     if (!strategy_metrics.empty()) {
         html << "<div class=\"metrics-section\">\n";
-        html << format_strategy_metrics(strategy_metrics);
+        html << format_strategy_metrics(strategy_metrics, nullptr, date, settled_date, context);
         html << "</div>\n";
     }
 
@@ -738,7 +708,7 @@ std::string EmailSender::generate_trading_report_body(
         const std::string chart_portfolio_id_legacy = chart_portfolio_id;
         // Generate equity curve chart
         chart_base64_ = ChartGenerator::generate_equity_curve_chart(
-            db, chart_strategy_id, chart_portfolio_id_legacy, 30);
+            db, chart_strategy_id, chart_portfolio_id_legacy, date, 30);
         if (!chart_base64_.empty()) {
             html << "<h3 style=\"margin-top: 20px; color: #333;\">Equity Curve</h3>\n";
             html << "<div style=\"width: 100%; max-width: 1000px; margin: 20px auto; text-align: "
@@ -751,12 +721,11 @@ std::string EmailSender::generate_trading_report_body(
 
         // Generate PnL by symbol chart - ONLY if show_yesterday_pnl is true
         if (show_yesterday_pnl) {
-            pnl_by_symbol_base64_ =
-                ChartGenerator::generate_pnl_by_symbol_chart(
-                    db, chart_strategy_id, chart_portfolio_id_legacy, date);
+            pnl_by_symbol_base64_ = ChartGenerator::generate_pnl_by_symbol_chart(
+                db, chart_strategy_id, chart_portfolio_id_legacy, date, context.equities);
             if (!pnl_by_symbol_base64_.empty()) {
-                html << "<h3 style=\"margin-top: 20px; color: #333;\">Yesterday's PnL by "
-                        "Symbol</h3>\n";
+                html << "<h3 style=\"margin-top: 20px; color: #333;\">"
+                     << ChartTitles::pnl_by_symbol_heading(context.equities) << "</h3>\n";
                 html << "<div style=\"width: 100%; max-width: 800px; margin: 20px auto; "
                         "text-align: center;\">\n";
                 html << "<img src=\"cid:pnl_by_symbol\" alt=\"PnL by Symbol\" style=\"max-width: "
@@ -771,7 +740,8 @@ std::string EmailSender::generate_trading_report_body(
             ChartGenerator::generate_daily_pnl_chart(
                 db, chart_strategy_id, chart_portfolio_id_legacy, date, 30);
         if (!daily_pnl_base64_.empty()) {
-            html << "<h3 style=\"margin-top: 20px; color: #333;\">Daily PnL (Last 30 Days)</h3>\n";
+            html << "<h3 style=\"margin-top: 20px; color: #333;\">"
+                 << ChartTitles::daily_pnl_heading(30) << "</h3>\n";
             html << "<div style=\"width: 100%; max-width: 1000px; margin: 20px auto; text-align: "
                     "center;\">\n";
             html << "<img src=\"cid:daily_pnl\" alt=\"Daily PnL\" style=\"max-width: 100%; height: "
@@ -780,7 +750,7 @@ std::string EmailSender::generate_trading_report_body(
         }
 
         total_transaction_costs_base64_ = ChartGenerator::generate_total_transaction_costs_chart(
-            db, "LIVE_TREND_FOLLOWING", chart_portfolio_id_legacy, date);
+            db, chart_strategy_id, chart_portfolio_id_legacy, date);
         if (!total_transaction_costs_base64_.empty()) {
             html << "<h3 style=\"margin-top: 20px; color: #333;\">Cost per $1M Traded (Efficiency "
                     "Metric)</h3>\n";
@@ -793,7 +763,7 @@ std::string EmailSender::generate_trading_report_body(
         }
 
         margin_posted_base64_ = ChartGenerator::generate_margin_posted_chart(
-            db, "LIVE_TREND_FOLLOWING", chart_portfolio_id_legacy, date);
+            db, chart_strategy_id, chart_portfolio_id_legacy, date);
 
         if (!margin_posted_base64_.empty()) {
             html << "<h3 style=\"margin-top: 20px; color: #333;\">Margin Posted</h3>\n";
@@ -818,10 +788,10 @@ std::string EmailSender::generate_trading_report_body(
         }
 
         cumulative_pnl_by_symbol_base64_ = ChartGenerator::generate_cumulative_pnl_by_symbol_chart(
-            db, "LIVE_TREND_FOLLOWING", chart_portfolio_id_legacy, date);
+            db, chart_strategy_id, chart_portfolio_id_legacy, date);
         if (!cumulative_pnl_by_symbol_base64_.empty()) {
-            html << "<h3 style=\"margin-top: 20px; color: #333;\">Cumulative PnL by Symbol "
-                    "(All-Time)</h3>\n";
+            html << "<h3 style=\"margin-top: 20px; color: #333;\">"
+                 << ChartTitles::cumulative_pnl_heading() << "</h3>\n";
             html << "<div style=\"width: 100%; max-width: 800px; margin: 20px auto; text-align: "
                     "center;\">\n";
             html << "<img src=\"cid:cumulative_pnl_by_symbol\" alt=\"Cumulative PnL by Symbol\" "
@@ -831,20 +801,25 @@ std::string EmailSender::generate_trading_report_body(
         }
     }
 
-    // Symbols Reference (moved after Portfolio Snapshot)
-    html << "<h2>Symbols Reference</h2>\n";
-    if (db) {
+    // Symbols Reference (moved after Portfolio Snapshot). T-8D-2 R59: it is a table of futures
+    // contract metadata (and the rollover notice below reads the same table), so an equity
+    // book's report carries neither.
+    if (context.equities) {
+        // nothing: the section is not printed
+    } else if (db) {
+        html << "<h2>Symbols Reference</h2>\n";
         try {
             html << format_symbols_table_for_positions(positions, db, yesterday_date_str);
         } catch (const std::exception& e) {
             html << "<p>Error loading symbols data: " << e.what() << "</p>\n";
         }
     } else {
+        html << "<h2>Symbols Reference</h2>\n";
         html << "<p>Database unavailable; symbols reference not included.</p>\n";
     }
 
     // Rollover Warning (if applicable)
-    if (db) {
+    if (db && !context.equities) {
         // Check for test date override via environment variable
         const char* test_date_env = std::getenv("ROLLOVER_TEST_DATE");
         std::string test_date = test_date_env ? std::string(test_date_env) : "";
@@ -854,12 +829,7 @@ std::string EmailSender::generate_trading_report_body(
     // Footer note
     if (is_daily_strategy) {
         html << "<div class=\"footer-note\">\n";
-        html << "<strong>Note:</strong> This strategy is based on daily OHLCV data. We currently "
-                "only provide data for the front-month contract.<br><br>\n";
-        html << "All values reflect a trading start date of October 5th, 2025.<br><br>\n";
-        html << "As of March 1st, 2026, we expanded our tradeable universe by adding 6 new contracts: "
-                "ZT (2-Year T-Note), ZF (5-Year T-Note), 6A (Australian Dollar), 6L (Brazilian Real), "
-                "HO (Heating Oil), and NG (Natural Gas).\n";
+        html << report_footer_note_html(context);
         html << "</div>\n";
     }
 
@@ -872,6 +842,53 @@ std::string EmailSender::generate_trading_report_body(
     return html.str();
 }
 
+// T-8D-2 R59: the footer note by asset class, with the book's start date from the runner (the
+// live_start_date of its strategy_trading_days_metadata row) in place of a literal. A futures
+// book keeps its data sentence and its universe note; an equity book has the data sentence
+// without the front-month contract and no futures universe. With no start date handed, no start
+// date sentence is printed.
+static std::string report_footer_note_html(const EmailReportContext& context) {
+    std::string html = "<strong>Note:</strong> This strategy is based on daily OHLCV data.";
+    if (!context.equities) {
+        html += " We currently only provide data for the front-month contract.";
+    }
+    if (!context.live_start_date.empty()) {
+        html += "<br><br>\nAll values reflect a trading start date of " +
+                report_long_date(context.live_start_date) + ".";
+    }
+    if (!context.equities) {
+        html +=
+            "<br><br>\nAs of March 1st, 2026, we expanded our tradeable universe by adding 6 "
+            "new contracts: ZT (2-Year T-Note), ZF (5-Year T-Note), 6A (Australian Dollar), 6L "
+            "(Brazilian Real), HO (Heating Oil), and NG (Natural Gas).";
+    }
+    return html + "\n";
+}
+
+// T-8D-2 R59: a share quantity prints to six decimals (an equity book holds fractional shares; at
+// no decimals 0.193729 shares read 0); a contract count stays whole.
+static std::string report_quantity_text(const std::shared_ptr<Instrument>& instrument,
+                                        double quantity) {
+    char buf[64];
+    const bool shares = instrument && instrument->get_type() == AssetType::EQUITY;
+    std::snprintf(buf, sizeof(buf), shares ? "%.6f" : "%.0f", quantity);
+    return buf;
+}
+
+// The registry's instrument of a report symbol (the ".v.N" / ".c.N" suffix cut), or null.
+static std::shared_ptr<Instrument> report_instrument_of(const std::string& symbol) {
+    std::string lookup_sym = symbol;
+    for (const char* suffix : {".v.", ".c."}) {
+        const auto dotpos = lookup_sym.find(suffix);
+        if (dotpos != std::string::npos)
+            lookup_sym = lookup_sym.substr(0, dotpos);
+    }
+    try {
+        return InstrumentRegistry::instance().get_instrument(lookup_sym);
+    } catch (...) {
+        return nullptr;
+    }
+}
 
 // T-NETTING: how the netting figures are printed (one rounding, the adjustment as it acts on the
 // cost and as the difference of its two printed neighbours) is email_netting_text.hpp.
@@ -909,10 +926,11 @@ static std::string format_roll_legs_block(const std::vector<ExecutionReport>& ex
         const bool closing = exec.exec_id.size() >= 2 &&
                              exec.exec_id.compare(exec.exec_id.size() - 2, 2, "RC") == 0;
         html << "<tr><td>" << (closing ? "closing" : "opening") << "</td><td>" << exec.symbol
-             << "</td><td>" << (exec.side == Side::BUY ? "BUY" : "SELL") << "</td><td>" << std::fixed
-             << std::setprecision(0) << exec.filled_quantity.as_double() << "</td><td>$" << std::fixed
-             << std::setprecision(4) << exec.fill_price.as_double() << "</td><td>" << exec.instrument_id
-             << "</td><td>$" << std::fixed << std::setprecision(2)
+             << "</td><td>" << (exec.side == Side::BUY ? "BUY" : "SELL") << "</td><td>"
+             << report_quantity_text(report_instrument_of(exec.symbol),
+                                     exec.filled_quantity.as_double())
+             << "</td><td>$" << report_price_text(exec.fill_price.as_double()) << "</td><td>"
+             << exec.instrument_id << "</td><td>$" << std::fixed << std::setprecision(2)
              << exec.total_transaction_costs.as_double() << "</td></tr>\n";
     }
     if (legs > 0) {
@@ -992,10 +1010,11 @@ std::string EmailSender::format_executions_table(const std::vector<ExecutionRepo
         html << "<tr>\n";
         html << "<td>" << exec.symbol << "</td>\n";
         html << "<td class=\"" << side_class << "\">" << side_str << "</td>\n";
-        html << "<td>" << std::fixed << std::setprecision(0) << exec.filled_quantity.as_double()
+        html << "<td>"
+             << report_quantity_text(report_instrument_of(exec.symbol),
+                                     exec.filled_quantity.as_double())
              << "</td>\n";
-        html << "<td>$" << std::fixed << std::setprecision(2) << exec.fill_price.as_double()
-             << "</td>\n";
+        html << "<td>$" << report_price_text(exec.fill_price.as_double()) << "</td>\n";
         if (has_multiplier) {
             html << "<td>$" << std::fixed << std::setprecision(2) << notional << "</td>\n";
         } else {
@@ -1177,17 +1196,19 @@ std::string EmailSender::format_positions_table(
                 throw;  // Re-throw - don't hide the error
             }
 
-            // Calculate notional with proper contract multiplier
-            notional = position.quantity.as_double() * position.average_price.as_double() *
-                       contract_multiplier;
-            total_notional += std::abs(notional);
-
             // Use current market price if available, otherwise fall back to average price
             double market_price = position.average_price.as_double();
             auto price_it = current_prices.find(symbol);
             if (price_it != current_prices.end()) {
                 market_price = price_it->second;
             }
+
+            // T-8D-2 R60 (T-8D D9): one price per row. The notional is the quantity at the price
+            // the row prints (the Day T-1 close; the basis only when the row has no close), so
+            // the row multiplies out and the total is the close-priced figure the stored
+            // gross_notional and the leverage lines are on.
+            notional = position.quantity.as_double() * market_price * contract_multiplier;
+            total_notional += std::abs(notional);
 
             // Entry price (same as market price for forward-looking positions)
             double entry_price = position.average_price.as_double();
@@ -1206,10 +1227,10 @@ std::string EmailSender::format_positions_table(
 
         html << "<tr>\n";
         html << "<td>" << symbol << "</td>\n";
-        html << "<td>" << std::fixed << std::setprecision(0) << qty << "</td>\n";
+        html << "<td>" << report_quantity_text(report_instrument_of(symbol), qty) << "</td>\n";
 
-        // Show only market price (entry price removed from display)
-        html << "<td>$" << std::fixed << std::setprecision(2) << market_price << "</td>\n";
+        // Show only market price (entry price removed from display), at every decimal it has
+        html << "<td>$" << report_price_text(market_price) << "</td>\n";
 
         html << "<td>$" << std::fixed << std::setprecision(2) << std::abs(notional) << "</td>\n";
         html << "<td>" << std::fixed << std::setprecision(2) << pct_of_total << "%</td>\n";
@@ -1267,12 +1288,25 @@ std::string EmailSender::format_positions_table(
     return html.str();
 }
 
+// The two price columns of the settled day's table (report_settled_marks.hpp, HD 2026-10-12): the
+// price the day was settled from and the price it was settled at, the pair the settle's own P&L
+// arithmetic used for the row, as the runner hands them. A symbol the "settled at" map does not
+// hold printed no bar that day: its cell reads "no bar" and one footnote under the table says so.
+// A price the maps do not hold (NaN in the row data): nothing is known.
+// The sentence under the table says what the two prices are and what a row multiplies out to; a
+// futures book and the equity book each have their own (settled_table_note_html).
+static std::optional<double> known_price(double price) {
+    if (std::isnan(price))
+        return std::nullopt;
+    return price;
+}
+
 std::string EmailSender::format_yesterday_finalized_positions_table(
     const std::unordered_map<std::string, Position>& yesterday_positions,
-    const std::unordered_map<std::string, double>& entry_prices,  // Day T-2 close
-    const std::unordered_map<std::string, double>& exit_prices,   // Day T-1 close
+    const std::unordered_map<std::string, double>& entry_prices,  // settled from
+    const std::unordered_map<std::string, double>& exit_prices,   // settled at
     std::shared_ptr<DatabaseInterface> db, const std::map<std::string, double>& strategy_metrics,
-    const std::string& yesterday_date) {
+    const std::string& yesterday_date, const std::string& settled_date, bool equities) {
     (void)db;
     std::ostringstream html;
 
@@ -1285,8 +1319,8 @@ std::string EmailSender::format_yesterday_finalized_positions_table(
     html << "<tr>";
     html << "<th>Symbol</th>";
     html << "<th>Quantity</th>";
-    html << "<th>Entry Price</th>";
-    html << "<th>Exit Price</th>";
+    html << "<th>" << kSettledPreviousPriceLabel << "</th>";
+    html << "<th>" << kSettledLatestPriceLabel << "</th>";
     html << "<th>Realized PnL</th>";
     html << "</tr>\n";
 
@@ -1329,9 +1363,10 @@ std::string EmailSender::format_yesterday_finalized_positions_table(
         if (std::abs(qty) < 0.0001)
             continue;
 
-        // Get entry and exit prices
-        double entry_price = 0.0;
-        double exit_price = 0.0;
+        // The two prices. A symbol the runner's "settled at" map does not hold printed no bar
+        // that day: its price is not known (NaN here, "no bar" in the cell), never a zero.
+        double entry_price = std::nan("");
+        double exit_price = std::nan("");
 
         if (entry_prices.find(symbol) != entry_prices.end()) {
             entry_price = entry_prices.at(symbol);
@@ -1354,66 +1389,37 @@ std::string EmailSender::format_yesterday_finalized_positions_table(
     std::sort(position_data.begin(), position_data.end(),
               [](const auto& a, const auto& b) { return std::get<0>(a) < std::get<0>(b); });
 
-    // Helper to check if a symbol is an agricultural future
-    auto is_ag_future = [](const std::string& sym) -> bool {
-        std::string base = sym;
-        auto dotpos = base.find(".v.");
-        if (dotpos != std::string::npos)
-            base = base.substr(0, dotpos);
-        dotpos = base.find(".c.");
-        if (dotpos != std::string::npos)
-            base = base.substr(0, dotpos);
-
-        static const std::set<std::string> ag_futures = {"ZC", "ZS", "ZW", "ZL", "ZM",
-                                                         "ZR", "KE", "HE", "LE", "GF"};
-        return ag_futures.find(base) != ag_futures.end();
-    };
-
-    // Check if yesterday was Sunday (meaning today is Monday)
-    bool is_monday = false;
-    if (!yesterday_date.empty()) {
-        std::tm tm = {};
-        std::istringstream ss(yesterday_date);
-        ss >> std::get_time(&tm, "%Y-%m-%d");
-        if (!ss.fail()) {
-            std::mktime(&tm);
-            is_monday = (tm.tm_wday == 0);  // 0 = Sunday
-        }
-    }
-
     // Render table rows
+    bool any_no_bar_row = false;
     for (const auto& [symbol, qty, entry_price, exit_price, realized_pnl] : position_data) {
+        const SettledPriceCells cells =
+            settled_price_cells(known_price(entry_price), known_price(exit_price));
+        any_no_bar_row = any_no_bar_row || cells.no_bar;
         html << "<tr>";
         html << "<td>" << symbol << "</td>";
         html << "<td>" << std::fixed << std::setprecision(2) << qty << "</td>";
-        html << "<td>" << format_with_commas(entry_price, 2) << "</td>";
+        html << "<td>" << cells.previous << "</td>";
 
-        // Show N/A for exit price if ag future on Monday
-        if (is_monday && is_ag_future(symbol) && exit_price == 0.0) {
-            html << "<td>N/A</td>";
-        } else {
-            html << "<td>" << format_with_commas(exit_price, 2) << "</td>";
-        }
+        html << "<td>" << cells.latest << "</td>";
 
-        // Show N/A for realized PnL if ag future on Monday with zero PnL
-        if (is_monday && is_ag_future(symbol) && std::abs(realized_pnl) < 0.01) {
-            html << "<td>N/A</td>";
-        } else {
-            // Realized PnL with color (GROSS PnL from positions table)
-            std::string realized_pnl_class = (realized_pnl >= 0) ? "positive" : "negative";
-            html << "<td class=\"" << realized_pnl_class << "\">";
-            html << "$" << format_with_commas(realized_pnl, 2);
-            html << "</td>";
-        }
+        // Realized PnL with color (GROSS PnL from positions table)
+        std::string realized_pnl_class = (realized_pnl >= 0) ? "positive" : "negative";
+        html << "<td class=\"" << realized_pnl_class << "\">";
+        html << "$" << format_with_commas(realized_pnl, 2);
+        html << "</td>";
 
         html << "</tr>\n";
     }
 
     html << "</table>\n";
+    html << settled_no_bar_footnote_html(any_no_bar_row);
+    html << settled_table_note_html(equities);
 
     // Add daily metrics as a section heading after the table - use passed yesterday_daily_metrics
     if (!strategy_metrics.empty() && !yesterday_date.empty()) {
-        html << "<h2>" << yesterday_date << " Metrics</h2>\n";
+        // T-8D-2 R61: the block is the settled day's.
+        html << "<h2>" << (settled_date.empty() ? yesterday_date : settled_date)
+             << " (settled)</h2>\n";
         html << "<div class=\"metrics-category\">\n";
 
         // Helper to format metrics with proper color
@@ -1476,13 +1482,6 @@ std::string EmailSender::format_yesterday_finalized_positions_table(
             html << "<div class=\"metric\"><strong>Daily Transaction Costs:</strong> <span>"
                  << formatted_transaction_cost << "</span></div>\n";
         }
-        auto daily_roll_costs_it = strategy_metrics.find("Daily Roll Costs");  // T-ROLLX (017)
-        if (daily_roll_costs_it != strategy_metrics.end()) {
-            html << "<div class=\"metric\"><strong>Daily Roll Costs (upper bound, inside the "
-                    "transaction costs):</strong> <span>$"
-                 << format_with_commas(std::abs(daily_roll_costs_it->second), 2) << "</span></div>\n";
-        }
-
         auto daily_total_it = strategy_metrics.find("Daily Total PnL");
         if (daily_total_it != strategy_metrics.end()) {
             html << format_metric_display("Daily Total PnL (Net)", daily_total_it->second, false);
@@ -1499,7 +1498,7 @@ std::string EmailSender::format_yesterday_finalized_positions_table(
     const std::unordered_map<std::string, double>& entry_prices,
     const std::unordered_map<std::string, double>& exit_prices,
     std::shared_ptr<DatabaseInterface> db, const std::map<std::string, double>& strategy_metrics,
-    const std::string& yesterday_date) {
+    const std::string& yesterday_date, const std::string& settled_date, bool equities) {
     (void)db;
     std::ostringstream html;
 
@@ -1547,33 +1546,6 @@ std::string EmailSender::format_yesterday_finalized_positions_table(
         return str;
     };
 
-    // Helper to check if a symbol is an agricultural future
-    auto is_ag_future = [](const std::string& sym) -> bool {
-        std::string base = sym;
-        auto dotpos = base.find(".v.");
-        if (dotpos != std::string::npos)
-            base = base.substr(0, dotpos);
-        dotpos = base.find(".c.");
-        if (dotpos != std::string::npos)
-            base = base.substr(0, dotpos);
-
-        static const std::set<std::string> ag_futures = {"ZC", "ZS", "ZW", "ZL", "ZM",
-                                                         "ZR", "KE", "HE", "LE", "GF"};
-        return ag_futures.find(base) != ag_futures.end();
-    };
-
-    // Check if yesterday was Sunday (meaning today is Monday)
-    bool is_monday = false;
-    if (!yesterday_date.empty()) {
-        std::tm tm = {};
-        std::istringstream ss(yesterday_date);
-        ss >> std::get_time(&tm, "%Y-%m-%d");
-        if (!ss.fail()) {
-            std::mktime(&tm);
-            is_monday = (tm.tm_wday == 0);  // 0 = Sunday
-        }
-    }
-
     // Sort strategies alphabetically for consistent ordering
     std::vector<std::string> strategy_names;
     for (const auto& [name, _] : strategy_positions) {
@@ -1583,6 +1555,8 @@ std::string EmailSender::format_yesterday_finalized_positions_table(
 
     // Track total positions across all strategies
     int total_positions_count = 0;
+    // One footnote under the sleeves' tables when any row of any of them printed no bar.
+    bool any_no_bar_row = false;
 
     // Generate table for each strategy
     for (const auto& strategy_name : strategy_names) {
@@ -1597,8 +1571,9 @@ std::string EmailSender::format_yesterday_finalized_positions_table(
             if (std::abs(qty) < 0.0001)
                 continue;
 
-            double entry_price = 0.0;
-            double exit_price = 0.0;
+            // A symbol with no bar that day has no price (see the single table above).
+            double entry_price = std::nan("");
+            double exit_price = std::nan("");
 
             if (entry_prices.find(symbol) != entry_prices.end()) {
                 entry_price = entry_prices.at(symbol);
@@ -1634,31 +1609,26 @@ std::string EmailSender::format_yesterday_finalized_positions_table(
         html << "<tr>";
         html << "<th>Symbol</th>";
         html << "<th>Quantity</th>";
-        html << "<th>Entry Price</th>";
-        html << "<th>Exit Price</th>";
+        html << "<th>" << kSettledPreviousPriceLabel << "</th>";
+        html << "<th>" << kSettledLatestPriceLabel << "</th>";
         html << "<th>Realized PnL</th>";
         html << "</tr>\n";
 
         for (const auto& [symbol, qty, entry_price, exit_price, realized_pnl] : position_data) {
+            const SettledPriceCells cells =
+                settled_price_cells(known_price(entry_price), known_price(exit_price));
+            any_no_bar_row = any_no_bar_row || cells.no_bar;
             html << "<tr>";
             html << "<td>" << symbol << "</td>";
             html << "<td>" << std::fixed << std::setprecision(2) << qty << "</td>";
-            html << "<td>" << format_with_commas(entry_price, 2) << "</td>";
+            html << "<td>" << cells.previous << "</td>";
 
-            if (is_monday && is_ag_future(symbol) && exit_price == 0.0) {
-                html << "<td>N/A</td>";
-            } else {
-                html << "<td>" << format_with_commas(exit_price, 2) << "</td>";
-            }
+            html << "<td>" << cells.latest << "</td>";
 
-            if (is_monday && is_ag_future(symbol) && std::abs(realized_pnl) < 0.01) {
-                html << "<td>N/A</td>";
-            } else {
-                std::string realized_pnl_class = (realized_pnl >= 0) ? "positive" : "negative";
-                html << "<td class=\"" << realized_pnl_class << "\">";
-                html << "$" << format_with_commas(realized_pnl, 2);
-                html << "</td>";
-            }
+            std::string realized_pnl_class = (realized_pnl >= 0) ? "positive" : "negative";
+            html << "<td class=\"" << realized_pnl_class << "\">";
+            html << "$" << format_with_commas(realized_pnl, 2);
+            html << "</td>";
 
             html << "</tr>\n";
         }
@@ -1674,10 +1644,14 @@ std::string EmailSender::format_yesterday_finalized_positions_table(
              << "\">$" << format_with_commas(strategy_total_pnl, 2) << "</span>\n";
         html << "</div>\n";
     }
+    html << settled_no_bar_footnote_html(any_no_bar_row);
+    html << settled_table_note_html(equities);
 
     // Add daily metrics section
     if (!strategy_metrics.empty() && !yesterday_date.empty()) {
-        html << "<h2>" << yesterday_date << " Metrics</h2>\n";
+        // T-8D-2 R61: the block is the settled day's.
+        html << "<h2>" << (settled_date.empty() ? yesterday_date : settled_date)
+             << " (settled)</h2>\n";
         html << "<div class=\"metrics-category\">\n";
 
         auto format_metric_display = [&format_with_commas](const std::string& label, double value,
@@ -1730,6 +1704,17 @@ std::string EmailSender::format_yesterday_finalized_positions_table(
             html << "<div class=\"metric\"><strong>Daily Transaction Costs:</strong> <span>"
                  << formatted_costs << "</span></div>\n";
         }
+        // The settled day's roll costs (migration 017), the ROLL part of the line above. The
+        // read stood only in the single-table overload, which the equity runner alone reaches
+        // and which never sets the key, so the line printed for no book; a futures book's report
+        // is this overload.
+        auto daily_roll_costs_it = strategy_metrics.find("Daily Roll Costs");
+        if (daily_roll_costs_it != strategy_metrics.end()) {
+            html << "<div class=\"metric\"><strong>Daily Roll Costs (upper bound, inside the "
+                    "transaction costs):</strong> <span>$"
+                 << format_with_commas(std::abs(daily_roll_costs_it->second), 2)
+                 << "</span></div>\n";
+        }
 
         auto daily_total_it = strategy_metrics.find("Daily Total PnL");
         if (daily_total_it != strategy_metrics.end()) {
@@ -1760,7 +1745,9 @@ std::string EmailSender::format_risk_metrics(const RiskResult& risk_metrics) {
 */
 
 std::string EmailSender::format_strategy_metrics(
-    const std::map<std::string, double>& strategy_metrics) {
+    const std::map<std::string, double>& strategy_metrics, const OverLimitReport* over_limit,
+    const std::string& report_date, const std::string& settled_date,
+    const EmailReportContext& context) {
     std::ostringstream html;
 
     // Helper function to format numbers with commas
@@ -1852,19 +1839,16 @@ std::string EmailSender::format_strategy_metrics(
         return result.str();
     };
 
-    // Single Portfolio Snapshot section
-    html << "<h2>Portfolio Snapshot</h2>\n";
+    // T-8D-2 R61: two blocks, because the figures are of two days. The statistics are taken on
+    // the settled series and run through the settled day T-1; the book lines are the day T row as
+    // written (today's costs are booked, today's P&L is booked by tomorrow's run).
+    html << "<h2>Statistics through " << settled_date << " (settled)</h2>\n";
     html << "<div class=\"metrics-category\">\n";
 
     // Section 1: Returns & Risk-Adjusted Metrics
-    auto total_cumulative_return = strategy_metrics.find("Total Cumulative Return");
-    if (total_cumulative_return != strategy_metrics.end()) {
-        html << format_metric("Total Cumulative Return", total_cumulative_return->second);
-    }
-
     auto total_annualized_return = strategy_metrics.find("Total Annualized Return");
     if (total_annualized_return != strategy_metrics.end()) {
-        html << format_metric("Total Annualized Return", total_annualized_return->second);
+        html << format_metric(annualized_return_label(context), total_annualized_return->second);
     }
 
     auto sharpe_ratio = strategy_metrics.find("Sharpe Ratio");
@@ -1911,6 +1895,51 @@ std::string EmailSender::format_strategy_metrics(
         html << format_metric("Total Days", total_days->second);
     }
 
+    // The distribution of the settled grid returns: nine stored statistics no other output of the
+    // engine shows (T-8D-2 R61). Percent of the account for the returns, dollars for the two
+    // P&L sums.
+    static const char* const kDistributionKeys[] = {
+        "Win Rate",  "Average Win",        "Average Loss", "Profit Factor", "Best Day",
+        "Worst Day", "Downside Deviation", "Gross Profit", "Gross Loss"};
+    bool has_distribution = false;
+    for (const char* key : kDistributionKeys) {
+        has_distribution = has_distribution || strategy_metrics.count(key) > 0;
+    }
+    if (has_distribution) {
+        html << "<br>\n";
+        html << "<div class=\"metric\"><strong>Distribution (through " << settled_date
+             << ")</strong></div>\n";
+        // The profit factor has no value while the series has no losing session: its stored cell
+        // is NULL (T-8D R12) and reads back as 0, so the sum of the losses decides.
+        const auto gross_loss = strategy_metrics.find("Gross Loss");
+        const bool no_losing_session =
+            gross_loss != strategy_metrics.end() && std::fabs(gross_loss->second) < 1e-12;
+        for (const char* key : kDistributionKeys) {
+            const auto it = strategy_metrics.find(key);
+            if (it == strategy_metrics.end())
+                continue;
+            if (std::string(key) == "Profit Factor" &&
+                (no_losing_session || !std::isfinite(it->second))) {
+                html << "<div class=\"metric\"><strong>Profit Factor:</strong> <span>n/a (no "
+                        "losing session)</span></div>\n";
+                continue;
+            }
+            html << format_metric(key, it->second);
+        }
+    }
+
+    html << "</div>\n";
+
+    // A futures book and the equity book write the day T row differently: each has its own
+    // heading (report_email_context.hpp).
+    html << book_heading_html(report_date, context.equities);
+    html << "<div class=\"metrics-category\">\n";
+
+    auto total_cumulative_return = strategy_metrics.find("Total Cumulative Return");
+    if (total_cumulative_return != strategy_metrics.end()) {
+        html << format_metric("Total Cumulative Return", total_cumulative_return->second);
+    }
+
     html << "<br>\n";
 
     // Section 3: PnL
@@ -1938,18 +1967,32 @@ std::string EmailSender::format_strategy_metrics(
     if (total_pnl != strategy_metrics.end()) {
         html << format_metric("Total PnL (Net)", total_pnl->second);
     }
+    // The equity book's cumulative dividend income (T-8D-2 R44 (c)): informational, outside the
+    // three P&L lines above (the dividend is inside them through the adjusted prices).
+    auto dividend_income = strategy_metrics.find(kReportDividendIncome);
+    if (dividend_income != strategy_metrics.end()) {
+        html << dividend_line_html(dividend_income->second);
+    }
 
     html << "<br>\n";
 
-    // Section 4: Leverage
+    // Section 4: Leverage. A futures book's report (over_limit given) names the denominator of
+    // the two account-value lines and prints, after them, the leverage on the sizing capital
+    // beside the overlay's limits and the day's over-limit marks (report_over_limit.hpp).
     auto gross_lev = strategy_metrics.find("Gross Leverage");
     if (gross_lev != strategy_metrics.end()) {
-        html << format_metric("Gross Leverage", gross_lev->second);
+        html << format_metric(over_limit != nullptr ? kReportGrossOnAccount : "Gross Leverage",
+                              gross_lev->second);
     }
 
     auto net_lev = strategy_metrics.find("Net Leverage");
     if (net_lev != strategy_metrics.end()) {
-        html << format_metric("Net Leverage", net_lev->second);
+        html << format_metric(over_limit != nullptr ? kReportNetOnAccount : "Net Leverage",
+                              net_lev->second);
+    }
+
+    if (over_limit != nullptr) {
+        html << over_limit_report_html(*over_limit);
     }
 
     html << "<br>\n";
@@ -1981,6 +2024,12 @@ std::string EmailSender::format_strategy_metrics(
     auto cash_available = strategy_metrics.find("Cash Available");
     if (cash_available != strategy_metrics.end()) {
         html << format_metric("Cash Available", cash_available->second);
+    }
+
+    // A futures book (over_limit given): the sizing capital the day was sized on and the
+    // portfolio value the sizing read, from the day's risk_detail (report_email_context.hpp).
+    if (over_limit != nullptr) {
+        html << capital_lines_html(context);
     }
 
     html << "</div>\n";
@@ -2831,18 +2880,39 @@ std::string EmailSender::format_rollover_warning(
                             expiry_date = get_nth_weekday_local(disp_year, disp_month, 3, 3);
                             expiry_date = get_previous_business_day_local(expiry_date);
                         } else if (symbol == "CL" || symbol == "HO" || symbol == "RB" || symbol == "NG") {
-                            // Energy futures: 3rd business day prior to 25th of month before contract month
-                            expiry_date.tm_year = disp_year - 1900;
-                            expiry_date.tm_mon = disp_month - 2;  // Month before contract month
-                            if (expiry_date.tm_mon < 0) {
-                                expiry_date.tm_mon += 12;
-                                expiry_date.tm_year -= 1;
+                            // Energy futures: 3rd business day prior to the 25th of the month
+                            // BEFORE the contract month.
+                            auto energy_expiry = [&get_previous_business_day_local](int year,
+                                                                                    int month) {
+                                std::tm e{};
+                                e.tm_year = year - 1900;
+                                e.tm_mon = month - 2;  // Month before contract month
+                                if (e.tm_mon < 0) {
+                                    e.tm_mon += 12;
+                                    e.tm_year -= 1;
+                                }
+                                e.tm_mday = 25;
+                                std::mktime(&e);
+                                for (int j = 0; j < 3; ++j)
+                                    e = get_previous_business_day_local(e);
+                                return e;
+                            };
+                            // The contract of the run date's own month expired LAST month, so
+                            // taking it as the front (as this branch did) put the expiry behind
+                            // the run date on every day and the notice never printed (HO and NG
+                            // are in this branch since migration 019 set their months to "All
+                            // Months"). The front contract is the first whose expiry is not
+                            // behind the run date: next month's until about the 20th, the one
+                            // after from then on.
+                            expiry_date = energy_expiry(disp_year, disp_month);
+                            for (int step = 0;
+                                 step < 2 && days_between(current_tm, expiry_date) <= 0; ++step) {
+                                if (++disp_month > 12) {
+                                    disp_month = 1;
+                                    ++disp_year;
+                                }
+                                expiry_date = energy_expiry(disp_year, disp_month);
                             }
-                            expiry_date.tm_mday = 25;
-                            std::mktime(&expiry_date);
-                            // Go back 3 business days
-                            for (int j = 0; j < 3; ++j)
-                                expiry_date = get_previous_business_day_local(expiry_date);
                         } else {
                             // Default monthly (e.g., equity indices): 3rd Friday
                             expiry_date = get_nth_weekday_local(disp_year, disp_month, 5, 3);
@@ -3120,6 +3190,51 @@ std::string EmailSender::format_strategy_display_name(const std::string& strateg
     return result;
 }
 
+// T-8D D1: one label for the margin figure on every book ("Margin Posted"); what differs is the
+// rule that produced it, and that is named in the sleeve's sub-header: the kind of instrument the
+// sleeve holds and, for equities, the account mode its margin follows. "futures"; "equities, cash
+// account"; "equities, Reg T account"; a sleeve holding more than one names each, in that order.
+// Empty when no held row of the sleeve is in the registry.
+static std::string sleeve_margin_kind(const std::unordered_map<std::string, Position>& positions) {
+    bool futures = false;
+    bool cash_equities = false;
+    bool reg_t_equities = false;
+    for (const auto& [symbol, position] : positions) {
+        if (position.quantity.as_double() == 0.0)
+            continue;
+        std::string lookup_sym = position.symbol.empty() ? symbol : position.symbol;
+        for (const char* suffix : {".v.", ".c."}) {
+            const auto dotpos = lookup_sym.find(suffix);
+            if (dotpos != std::string::npos)
+                lookup_sym = lookup_sym.substr(0, dotpos);
+        }
+        std::shared_ptr<Instrument> instrument;
+        try {
+            instrument = InstrumentRegistry::instance().get_instrument(lookup_sym);
+        } catch (...) {
+        }
+        if (!instrument)
+            continue;
+        if (const auto* equity = dynamic_cast<const EquityInstrument*>(instrument.get())) {
+            (equity->get_account_mode() == EquityAccountMode::REG_T ? reg_t_equities
+                                                                    : cash_equities) = true;
+        } else if (instrument->get_type() == AssetType::FUTURE) {
+            futures = true;
+        }
+    }
+    std::string kind;
+    const auto add = [&kind](const char* text) {
+        kind += (kind.empty() ? "" : "; ") + std::string(text);
+    };
+    if (futures)
+        add("futures");
+    if (cash_equities)
+        add("equities, cash account");
+    if (reg_t_equities)
+        add("equities, Reg T account");
+    return kind;
+}
+
 std::string EmailSender::format_single_strategy_table(
     const std::string& strategy_name, const std::unordered_map<std::string, Position>& positions,
     const std::unordered_map<std::string, double>& current_prices) {
@@ -3154,8 +3269,12 @@ std::string EmailSender::format_single_strategy_table(
         return str;
     };
 
-    // Strategy sub-header with styled left border accent
+    // Strategy sub-header with styled left border accent; the kind of instrument and the account
+    // mode the sleeve's margin follows beside the name (T-8D D1).
     std::string display_name = format_strategy_display_name(strategy_name);
+    const std::string margin_kind = sleeve_margin_kind(positions);
+    if (!margin_kind.empty())
+        display_name += " (" + margin_kind + ")";
     html << "<h3 style=\"margin-top: 20px; margin-bottom: 10px; color: #333; "
          << "border-left: 4px solid #2c5aa0; padding-left: 12px;\">" << display_name << "</h3>\n";
 
@@ -3275,15 +3394,16 @@ std::string EmailSender::format_single_strategy_table(
                 throw;
             }
 
-            notional = position.quantity.as_double() * position.average_price.as_double() *
-                       contract_multiplier;
-            total_notional += std::abs(notional);
-
             double market_price = position.average_price.as_double();
             auto price_it = current_prices.find(symbol);
             if (price_it != current_prices.end()) {
                 market_price = price_it->second;
             }
+
+            // T-8D-2 R60: the notional at the price the row prints (the Day T-1 close; the basis
+            // only when the row has no close), as in the single table.
+            notional = position.quantity.as_double() * market_price * contract_multiplier;
+            total_notional += std::abs(notional);
 
             position_data.push_back(std::make_tuple(symbol, position.quantity.as_double(),
                                                     market_price, notional, margin_for_position));
@@ -3297,8 +3417,8 @@ std::string EmailSender::format_single_strategy_table(
 
         html << "<tr>\n";
         html << "<td>" << symbol << "</td>\n";
-        html << "<td>" << std::fixed << std::setprecision(0) << qty << "</td>\n";
-        html << "<td>$" << std::fixed << std::setprecision(2) << market_price << "</td>\n";
+        html << "<td>" << report_quantity_text(report_instrument_of(symbol), qty) << "</td>\n";
+        html << "<td>$" << report_price_text(market_price) << "</td>\n";
         html << "<td>$" << format_with_commas(std::abs(notional)) << "</td>\n";
         html << "<td>" << std::fixed << std::setprecision(2) << pct_of_total << "%</td>\n";
         html << "</tr>\n";
@@ -3403,8 +3523,14 @@ std::string EmailSender::format_strategy_positions_tables(
                     auto instrument = registry.get_instrument(lookup_sym);
                     if (instrument) {
                         double contract_multiplier = instrument->get_multiplier();
-                        double notional = position.quantity.as_double() *
-                                          position.average_price.as_double() * contract_multiplier;
+                        // T-8D-2 R60: at the price the sleeve's row prints.
+                        double market_price = position.average_price.as_double();
+                        auto price_it = current_prices.find(symbol);
+                        if (price_it != current_prices.end()) {
+                            market_price = price_it->second;
+                        }
+                        double notional =
+                            position.quantity.as_double() * market_price * contract_multiplier;
                         portfolio_total_notional += std::abs(notional);
 
                         // Use the price/qty overload (returns total dollars).
@@ -3442,8 +3568,20 @@ std::string EmailSender::format_strategy_positions_tables(
     // Portfolio-wide summary
     html << "<div class=\"summary-stats\" style=\"margin-top: 20px; border-top: 2px solid #2c5aa0; "
             "padding-top: 15px;\">\n";
-    html << "<div class=\"metric\"><strong>Active Positions:</strong> " << portfolio_total_positions
+    // T-8D-2 R60: the count is of sleeve rows (a symbol two sleeves hold is two), and the two
+    // dollar lines below are the ACCOUNT's figures when the runner hands them (its gross notional
+    // and its posted margin, which net sleeves holding one symbol on opposite sides); the sum
+    // over the sleeves' tables otherwise.
+    html << "<div class=\"metric\"><strong>Sleeve Positions:</strong> " << portfolio_total_positions
          << "</div>\n";
+    const auto account_notional = strategy_metrics.find(kReportGrossNotional);
+    if (account_notional != strategy_metrics.end()) {
+        portfolio_total_notional = account_notional->second;
+    }
+    const auto account_margin = strategy_metrics.find("Margin Posted");
+    if (account_margin != strategy_metrics.end()) {
+        portfolio_total_margin = account_margin->second;
+    }
 
     // The overlay's expected risk of the stored book beside the risk target, and the one-day 95
     // percent VaR in dollars (report_risk_lines.hpp); a figure the metrics do not carry has no line.
@@ -3571,10 +3709,11 @@ std::string EmailSender::format_single_strategy_executions_table(
         html << "<tr>\n";
         html << "<td>" << exec.symbol << "</td>\n";
         html << "<td class=\"" << side_class << "\">" << side_str << "</td>\n";
-        html << "<td>" << std::fixed << std::setprecision(0) << exec.filled_quantity.as_double()
+        html << "<td>"
+             << report_quantity_text(report_instrument_of(exec.symbol),
+                                     exec.filled_quantity.as_double())
              << "</td>\n";
-        html << "<td>$" << std::fixed << std::setprecision(2) << exec.fill_price.as_double()
-             << "</td>\n";
+        html << "<td>$" << report_price_text(exec.fill_price.as_double()) << "</td>\n";
         if (has_multiplier) {
             html << "<td>$" << format_with_commas(notional) << "</td>\n";
         } else {
@@ -3688,7 +3827,11 @@ std::string EmailSender::format_strategy_executions_tables(
             }
             if (exec.execution_type != ExecutionType::STRATEGY) continue;
             ++portfolio_total_trades;
+            // The sleeve table's rule (T-8D-2 R62): a symbol that is not in the registry has no
+            // notional (its cell reads n/a) and is left out of the total, never counted at a
+            // multiplier of 1.
             double contract_multiplier = 1.0;
+            bool has_multiplier = false;
             try {
                 auto& registry = InstrumentRegistry::instance();
                 std::string lookup_sym = exec.symbol;
@@ -3703,9 +3846,12 @@ std::string EmailSender::format_strategy_executions_tables(
                 auto instrument = registry.get_instrument(lookup_sym);
                 if (instrument) {
                     contract_multiplier = instrument->get_multiplier();
+                    has_multiplier = true;
                 }
             } catch (...) {
             }
+            if (!has_multiplier)
+                continue;
 
             double notional = exec.filled_quantity.as_double() * exec.fill_price.as_double() *
                               contract_multiplier;
@@ -3730,7 +3876,8 @@ std::string EmailSender::format_strategy_executions_tables(
                                     portfolio_total_transaction_costs)
              << "</div>\n";
     }
-    html << "<div class=\"metric\"><strong>Total Transaction Costs:</strong> $"
+    // "Today's": the same words would otherwise name the cumulative figure of the snapshot.
+    html << "<div class=\"metric\"><strong>Today's Transaction Costs:</strong> $"
          << format_with_commas(portfolio_total_transaction_costs) << "</div>\n";
     if (portfolio_total_roll_fills > 0) {
         html << "<div class=\"metric\"><strong>Roll Fills:</strong> " << portfolio_total_roll_fills
@@ -3761,7 +3908,8 @@ std::string EmailSender::generate_trading_report_body(
     const std::unordered_map<std::string, double>& yesterday_close_prices,
     const std::unordered_map<std::string, double>& two_days_ago_close_prices,
     const std::map<std::string, double>& yesterday_daily_metrics,
-    const std::string& chart_strategy_id) {
+    const std::string& chart_strategy_id, const OverLimitReport& over_limit,
+    const EmailReportContext& context) {
     (void)risk_metrics;
     std::ostringstream html;
 
@@ -3770,7 +3918,6 @@ std::string EmailSender::generate_trading_report_body(
     std::istringstream ss(date);
     ss >> std::get_time(&tm, "%Y-%m-%d");
     std::mktime(&tm);
-    int day_of_week = tm.tm_wday;  // 0=Sunday, 1=Monday, ..., 6=Saturday
 
     // Calculate yesterday's date
     std::string yesterday_date_str;
@@ -3801,13 +3948,19 @@ std::string EmailSender::generate_trading_report_body(
         yesterday_date_str = "Previous Day";
     }
 
-    bool is_monday = (day_of_week == 1);
-    bool is_sunday = (day_of_week == 0);
+    // T-8D-2 R61: the settled day is the runner's own T-1 when it names one.
+    const std::string settled_date =
+        context.settled_date.empty() ? yesterday_date_str : context.settled_date;
 
-    bool show_yesterday_pnl = true;
-    if (is_sunday || is_yesterday_holiday) {
-        show_yesterday_pnl = false;
-    }
+    // T-8D-2 R59: what the report says about the day before comes from the runner's own
+    // classification of it, never from the weekday. A futures runner that carried its book found
+    // no session (context.prior_day_no_session): the settled table is then not shown, and the
+    // calendar adds the holiday's name when that day is one. The equity runner's day before is
+    // its previous session by construction. The runner's carried-day banner, put at the top of
+    // the body by the runner, states the reason.
+    const bool show_yesterday_pnl = !context.prior_day_no_session;
+    const bool holiday_banner =
+        context.prior_day_no_session && is_yesterday_holiday && !context.equities;
 
     // Generate HTML header and styles
     html << "<!DOCTYPE html>\n";
@@ -3868,40 +4021,8 @@ std::string EmailSender::generate_trading_report_body(
     html << "</div>\n";
     html << "</div>\n";
 
-    // Weekend/Holiday banners
-    if (is_sunday) {
-        html << "<div style=\"background: linear-gradient(135deg, #fef3c7 0%, #fde68a 100%); "
-                "border: 2px solid #f59e0b; border-radius: 8px; padding: 20px 30px; margin: 20px 0 "
-                "30px 0; box-shadow: 0 4px 6px rgba(0,0,0,0.1);\">\n";
-        html << "<h2 style=\"margin: 0 0 10px 0; color: #92400e; font-size: 20px; border-bottom: "
-                "2px solid #92400e; padding-bottom: 8px; display: inline-block;\">Yesterday was "
-                "Saturday</h2>\n";
-        html << "<p style=\"margin: 15px 0 5px 0; color: #78350f; font-size: 15px; line-height: "
-                "1.6;\">The latest futures settlement prices are not available, as futures markets "
-                "were closed yesterday ("
-             << yesterday_date_str
-             << ") due to it being a Saturday. The PnL for these contracts will be updated in the "
-                "next report once settlement data is released.</p>\n";
-        html << "<p style=\"margin: 5px 0 0 0; color: #92400e; font-weight: 600; font-size: "
-                "14px;\">Please continue to monitor your positions closely.</p>\n";
-        html << "</div>\n";
-    } else if (is_monday) {
-        html << "<div style=\"background: linear-gradient(135deg, #fef3c7 0%, #fde68a 100%); "
-                "border: 2px solid #f59e0b; border-radius: 8px; padding: 20px 30px; margin: 20px 0 "
-                "30px 0; box-shadow: 0 4px 6px rgba(0,0,0,0.1);\">\n";
-        html << "<h2 style=\"margin: 0 0 10px 0; color: #92400e; font-size: 20px; border-bottom: "
-                "2px solid #92400e; padding-bottom: 8px; display: inline-block;\">Yesterday was "
-                "Sunday</h2>\n";
-        html << "<p style=\"margin: 15px 0 5px 0; color: #78350f; font-size: 15px; line-height: "
-                "1.6;\">Agricultural futures settlement prices for Sunday ("
-             << yesterday_date_str
-             << ") are not yet available, as these contracts begin trading Sunday evening. The PnL "
-                "for these contracts will be updated in the next report once settlement data is "
-                "released.</p>\n";
-        html << "<p style=\"margin: 5px 0 0 0; color: #92400e; font-weight: 600; font-size: "
-                "14px;\">Please monitor these positions closely.</p>\n";
-        html << "</div>\n";
-    } else if (is_yesterday_holiday) {
+    // The holiday banner (T-8D-2 R59: no banner is derived from the weekday)
+    if (holiday_banner) {
         html << "<div style=\"background: linear-gradient(135deg, #fef3c7 0%, #fde68a 100%); "
                 "border: 2px solid #f59e0b; border-radius: 8px; padding: 20px 30px; margin: 20px 0 "
                 "30px 0; box-shadow: 0 4px 6px rgba(0,0,0,0.1);\">\n";
@@ -3956,38 +4077,33 @@ std::string EmailSender::generate_trading_report_body(
         !two_days_ago_close_prices.empty()) {
         html << format_yesterday_finalized_positions_table(
             yesterday_strategy_positions, two_days_ago_close_prices, yesterday_close_prices, db,
-            yesterday_daily_metrics, yesterday_date_str);
+            yesterday_daily_metrics, yesterday_date_str, settled_date, context.equities);
     } else if (!show_yesterday_pnl) {
-        // Add a red alert explaining no executions due to non-trading day
+        // The runner found no session on the day before (T-8D-2 R59): no settled table. The two
+        // notes say why in the runner's terms, never from the weekday.
         html << "<div class=\"alert-note\">\n";
-        if (is_sunday) {
-            html << "<strong>No Executions:</strong> Since yesterday (Saturday) was not a trading "
-                    "day, no new market data is available. Positions remain unchanged from the "
-                    "previous trading day, and no executions were generated.\n";
-        } else if (is_yesterday_holiday) {
+        if (holiday_banner) {
             html << "<strong>No Executions:</strong> Since yesterday (" << yesterday_date_str
                  << ") was a market holiday, no new market data is available. Positions remain "
                     "unchanged from the previous trading day, and no executions were generated.\n";
+        } else {
+            html << "<strong>No Executions:</strong> No session was found for yesterday ("
+                 << yesterday_date_str
+                 << "), so no new market data is available. Positions remain unchanged from the "
+                    "previous trading day, and no executions were generated.\n";
         }
         html << "</div>\n";
 
         // Add a yellow note explaining why yesterday's PnL is not shown
         html << "<div class=\"footer-note\">\n";
-        if (is_sunday) {
-            html << "<strong>Note:</strong> Yesterday's PnL data is not available.\n";
-        } else if (is_monday) {
-            html << "<strong>Note:</strong> Yesterday's PnL data is not available for agricultural "
-                    "contracts.\n";
-        } else if (is_yesterday_holiday) {
-            html << "<strong>Note:</strong> Yesterday's PnL data is not available.\n";
-        }
+        html << "<strong>Note:</strong> Yesterday's PnL data is not available.\n";
         html << "</div>\n";
     }
 
     // Strategy metrics
     if (!strategy_metrics.empty()) {
         html << "<div class=\"metrics-section\">\n";
-        html << format_strategy_metrics(strategy_metrics);
+        html << format_strategy_metrics(strategy_metrics, &over_limit, date, settled_date, context);
         html << "</div>\n";
     }
 
@@ -4001,8 +4117,8 @@ std::string EmailSender::generate_trading_report_body(
         const std::string& chart_portfolio_id = portfolio_name;
 
         // Generate equity curve chart
-        chart_base64_ = ChartGenerator::generate_equity_curve_chart(
-            db, chart_strategy_id, chart_portfolio_id, 30);
+        chart_base64_ = ChartGenerator::generate_equity_curve_chart(db, chart_strategy_id,
+                                                                    chart_portfolio_id, date, 30);
         if (!chart_base64_.empty()) {
             html << "<h3 style=\"margin-top: 20px; color: #333;\">Equity Curve</h3>\n";
             html << "<div style=\"width: 100%; max-width: 1000px; margin: 20px auto; text-align: "
@@ -4016,10 +4132,10 @@ std::string EmailSender::generate_trading_report_body(
         // Generate PnL by symbol chart - ONLY if show_yesterday_pnl is true
         if (show_yesterday_pnl) {
             pnl_by_symbol_base64_ = ChartGenerator::generate_pnl_by_symbol_chart(
-                db, chart_strategy_id, chart_portfolio_id, date);
+                db, chart_strategy_id, chart_portfolio_id, date, context.equities);
             if (!pnl_by_symbol_base64_.empty()) {
-                html << "<h3 style=\"margin-top: 20px; color: #333;\">Yesterday's PnL by "
-                        "Symbol</h3>\n";
+                html << "<h3 style=\"margin-top: 20px; color: #333;\">"
+                     << ChartTitles::pnl_by_symbol_heading(context.equities) << "</h3>\n";
                 html << "<div style=\"width: 100%; max-width: 800px; margin: 20px auto; "
                         "text-align: center;\">\n";
                 html << "<img src=\"cid:pnl_by_symbol\" alt=\"PnL by Symbol\" style=\"max-width: "
@@ -4033,7 +4149,8 @@ std::string EmailSender::generate_trading_report_body(
         daily_pnl_base64_ = ChartGenerator::generate_daily_pnl_chart(
             db, chart_strategy_id, chart_portfolio_id, date, 30);
         if (!daily_pnl_base64_.empty()) {
-            html << "<h3 style=\"margin-top: 20px; color: #333;\">Daily PnL (Last 30 Days)</h3>\n";
+            html << "<h3 style=\"margin-top: 20px; color: #333;\">"
+                 << ChartTitles::daily_pnl_heading(30) << "</h3>\n";
             html << "<div style=\"width: 100%; max-width: 1000px; margin: 20px auto; text-align: "
                     "center;\">\n";
             html << "<img src=\"cid:daily_pnl\" alt=\"Daily PnL\" style=\"max-width: 100%; height: "
@@ -4081,8 +4198,8 @@ std::string EmailSender::generate_trading_report_body(
         cumulative_pnl_by_symbol_base64_ = ChartGenerator::generate_cumulative_pnl_by_symbol_chart(
             db, chart_strategy_id, chart_portfolio_id, date);
         if (!cumulative_pnl_by_symbol_base64_.empty()) {
-            html << "<h3 style=\"margin-top: 20px; color: #333;\">Cumulative PnL by Symbol "
-                    "(All-Time)</h3>\n";
+            html << "<h3 style=\"margin-top: 20px; color: #333;\">"
+                 << ChartTitles::cumulative_pnl_heading() << "</h3>\n";
             html << "<div style=\"width: 100%; max-width: 800px; margin: 20px auto; text-align: "
                     "center;\">\n";
             html << "<img src=\"cid:cumulative_pnl_by_symbol\" alt=\"Cumulative PnL by Symbol\" "
@@ -4114,12 +4231,7 @@ std::string EmailSender::generate_trading_report_body(
     // Footer note
     if (is_daily_strategy) {
         html << "<div class=\"footer-note\">\n";
-        html << "<strong>Note:</strong> This strategy is based on daily OHLCV data. We currently "
-                "only provide data for the front-month contract.<br><br>\n";
-        html << "All values reflect a trading start date of October 5th, 2025.<br><br>\n";
-        html << "As of March 1st, 2026, we expanded our tradeable universe by adding 6 new contracts: "
-                "ZT (2-Year T-Note), ZF (5-Year T-Note), 6A (Australian Dollar), 6L (Brazilian Real), "
-                "HO (Heating Oil), and NG (Natural Gas).\n";
+        html << report_footer_note_html(context);
         html << "</div>\n";
     }
 

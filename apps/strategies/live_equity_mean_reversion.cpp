@@ -13,6 +13,8 @@
 #include "trade_ngin/core/config_loader.hpp"
 #include "trade_ngin/core/holiday_checker.hpp"
 #include "trade_ngin/core/logger.hpp"
+#include "trade_ngin/core/report_leverage_console.hpp"
+#include "trade_ngin/core/report_settled_marks.hpp"
 #include "trade_ngin/core/resolved_sleeves.hpp"
 #include "trade_ngin/core/time_utils.hpp"
 #include "trade_ngin/data/database_pooling.hpp"
@@ -30,6 +32,8 @@
 #include "trade_ngin/live/corp_action_feed_status.hpp"
 #include "trade_ngin/live/trading_days_anchor.hpp"
 #include "trade_ngin/live/broker_frame.hpp"
+#include "trade_ngin/live/console_labels.hpp"
+#include "trade_ngin/live/report_queries.hpp"
 #include "trade_ngin/live/corporate_actions_audit_log.hpp"
 #include "trade_ngin/live/dividend_counter.hpp"
 #include "trade_ngin/live/live_daily_cycle.hpp"
@@ -50,6 +54,7 @@
 #include "trade_ngin/live/execution_manager.hpp"
 #include "trade_ngin/live/margin_columns.hpp"
 #include "trade_ngin/live/margin_manager.hpp"
+#include "trade_ngin/live/run_metadata_marks.hpp"
 #include "trade_ngin/live/csv_exporter.hpp"
 #include "trade_ngin/transaction_cost/netting.hpp"
 
@@ -778,6 +783,9 @@ int main(int argc, char* argv[]) {
         // The check is one comparison the function cannot make. On a mismatch the
         // runner WARNs and leaves the count as the function computed it: the metadata
         // row is authoritative and bad data is corrected in the data.
+        // The book's start date as its metadata row gives it (empty when it could not be read):
+        // the daily report's footer prints it (T-8D-2 R59).
+        std::string book_live_start_date;
         {
             auto anchor_q = db->execute_query(
                 "SELECT COALESCE(MIN(live_start_date)::text, '') "
@@ -797,6 +805,9 @@ int main(int argc, char* argv[]) {
                 return std::string(col->GetView(0));
             };
 
+            if (!anchor_q.is_error()) {
+                book_live_start_date = first_cell(anchor_q);
+            }
             if (anchor_q.is_error() || first_q.is_error()) {
                 WARN("Could not check the annualization anchor for " + portfolio_id +
                      "; total_annualized_return is reported as the DB function computes it.");
@@ -1171,6 +1182,14 @@ int main(int argc, char* argv[]) {
         // equities. Nothing reads this table -- it exists so a past run's allocations and
         // config can be reconstructed after the fact, which is exactly what you want when
         // a number from months ago has to be explained.
+        //
+        // T-8D-2 R48: the row is BUILT here, from the run's configuration as it stands here, and
+        // WRITTEN at the first point below where the run stores anything else (directly above the
+        // corp-action unit of work, or below the class-1 block on a run that persists no
+        // adjustment). The corp-action refusals between here and there (the dedup record, the
+        // spinoff deal terms, the E2-F15 and E2-F17 frame guards) then leave no row either. It
+        // is still the run's first write.
+        trade_ngin::DeferredRunRecord run_metadata_row;
         {
             nlohmann::json portfolio_config_json;
             portfolio_config_json["total_capital"] =
@@ -1198,16 +1217,19 @@ int main(int argc, char* argv[]) {
                 {"stop_loss_pct", mean_rev_config.stop_loss_pct},
                 {"allow_fractional_shares", mean_rev_config.allow_fractional_shares}};
 
-            auto metadata_result = db->store_live_run_metadata(
-                now, kEquityStrategyId, portfolio_id, strategy_alloc_json,
-                portfolio_config_json, strategy_configs_json);
+            run_metadata_row.hold([db, now, portfolio_id, strategy_alloc_json,
+                                   portfolio_config_json, strategy_configs_json]() {
+                auto metadata_result = db->store_live_run_metadata(
+                    now, kEquityStrategyId, portfolio_id, strategy_alloc_json,
+                    portfolio_config_json, strategy_configs_json);
 
-            if (metadata_result.is_error()) {
-                WARN("Failed to store live run metadata: " +
-                     std::string(metadata_result.error()->what()));
-            } else {
-                INFO("Successfully stored live run metadata for date");
-            }
+                if (metadata_result.is_error()) {
+                    WARN("Failed to store live run metadata: " +
+                         std::string(metadata_result.error()->what()));
+                } else {
+                    INFO("Successfully stored live run metadata for date");
+                }
+            });
         }
 
         // The book AS IT STOOD on T-1, captured before any corporate action touches it.
@@ -3058,6 +3080,7 @@ int main(int argc, char* argv[]) {
                     // write lost -- left the next run free to re-apply every
                     // event, re-multiplying quantities and re-rescaling basis.
                     // Either both land or neither does.
+                    run_metadata_row.write_once();  // the run's first write (T-8D-2 R48)
                     auto unit = db->begin_unit_of_work();
                     if (unit.is_error()) {
                         ERROR("Cannot open a unit of work for corp-action persistence: " +
@@ -3096,6 +3119,10 @@ int main(int argc, char* argv[]) {
                 }
             }
         }
+
+        // T-8D-2 R48: a run that persisted no class-1 adjustment writes its metadata row here,
+        // past the corp-action refusals above and before anything else of the day is stored.
+        run_metadata_row.write_once();
 
         // The book after the class-1 rescale and BEFORE the lifecycle handlers. The
         // E2-F16 restated-frame rule for the T-1 finalization needs exactly this
@@ -4168,19 +4195,12 @@ int main(int argc, char* argv[]) {
         }
         
         std::cout << "\n======= Daily Position Report =======" << std::endl;
-        std::cout << "Date: " << (now_tm->tm_year + 1900) << "-"
-                  << std::setfill('0') << std::setw(2) << (now_tm->tm_mon + 1) << "-"
-                  << std::setfill('0') << std::setw(2) << now_tm->tm_mday << std::endl;
-        std::cout << "Total Positions: " << positions.size() << std::endl;
-        std::cout << std::endl;
-
-        // Add header for position table
-        std::cout << std::setw(10) << "Symbol" << " | "
-                  << std::setw(10) << "Quantity" << " | "
-                  << std::setw(10) << "Mkt Price" << " | "
-                  << std::setw(12) << "Notional" << " | "
-                  << std::setw(10) << "Unreal PnL" << std::endl;
-        std::cout << std::string(60, '-') << std::endl;
+        // T-8D-2 R68: the date and the count of symbols in the book map, as text (the stream's
+        // fill is left alone). No table follows: the header that stood here printed no row.
+        std::cout << trade_ngin::position_report_head_console(now_tm->tm_year + 1900,
+                                                              now_tm->tm_mon + 1, now_tm->tm_mday,
+                                                              positions.size())
+                  << std::endl;
 
         // Use MarginManager for margin calculations
         INFO("Using MarginManager to calculate margin requirements...");
@@ -4218,8 +4238,9 @@ int main(int argc, char* argv[]) {
         std::cout << "Active Positions: " << active_positions << std::endl;
         std::cout << "Gross Notional: $" << std::fixed << std::setprecision(2) << gross_notional << std::endl;
         std::cout << "Net Notional: $" << std::fixed << std::setprecision(2) << net_notional << std::endl;
-        std::cout << "Portfolio Leverage (gross/current): " << std::fixed << std::setprecision(2) 
-                  << (gross_notional / initial_capital) << "x" << std::endl;
+        // T-8D-2 R68: the leverage line is printed once, further down, where the day's account
+        // value is known ("(gross/current)" was printed here over the configured capital; that
+        // figure is the row's config portfolio_leverage).
         // Posted margin should never be zero if there are active positions; enforce and warn
         if (active_positions > 0 && total_posted_margin <= 0.0) {
             ERROR("Computed posted margin is non-positive while positions are active. Check instrument metadata.");
@@ -4445,43 +4466,37 @@ int main(int argc, char* argv[]) {
         auto risk_eval = snapshot_rm.process_positions(positions, market_data_snapshot);
 
         std::cout << "\n======= Strategy Metrics =======" << std::endl;
+        // T-8D-2 R68: the reporter's lines, named as the reporter's. Its volatility is the
+        // stored portfolio_var; its leverage is over the configured capital (risk_config.capital,
+        // set from initial_capital above), not the day's account value.
+        std::optional<trade_ngin::ReporterConsoleFigures> reporter_figures;
         if (risk_eval.is_ok()) {
             const auto& r = risk_eval.value();
-            // Use portfolio_var as annualized volatility proxy
-            std::cout << "Volatility: " << std::fixed << std::setprecision(2)
-                      << (r.portfolio_var * 100.0) << "%" << std::endl;
-            std::cout << "Gross Leverage: " << std::fixed << std::setprecision(2)
-                      << r.gross_leverage << std::endl;
-            std::cout << "Net Leverage: " << std::fixed << std::setprecision(2)
-                      << r.net_leverage << std::endl;
-            std::cout << "Max Correlation: " << std::fixed << std::setprecision(2)
-                      << r.correlation_risk << std::endl;
-            std::cout << "Jump Risk (99th): " << std::fixed << std::setprecision(2)
-                      << r.jump_risk << std::endl;
-            std::cout << "Risk Scale: " << std::fixed << std::setprecision(2)
-                      << r.recommended_scale << std::endl;
-        } else {
-            std::cout << "Volatility: N/A" << std::endl;
-            std::cout << "Gross Leverage: N/A" << std::endl;
-            std::cout << "Net Leverage: N/A" << std::endl;
-            std::cout << "Max Correlation: N/A" << std::endl;
-            std::cout << "Jump Risk (99th): N/A" << std::endl;
-            std::cout << "Risk Scale: N/A" << std::endl;
+            reporter_figures = trade_ngin::ReporterConsoleFigures{
+                r.portfolio_var, r.gross_leverage, r.net_leverage, r.correlation_risk, r.jump_risk};
         }
-        // RA-01 (T-7b-1 C7): beside the stored value, the scale that actually moved the book.
-        // reporter = the double stored as live_results.risk_scale below (the snapshot's
-        // recommended_scale, 1.0 when its evaluation failed); the other four fields are the
-        // PortfolioManager's own record of this run's rebalance, last_risk_decisions(), each
-        // defined in risk_scale_report.hpp. Log only: no stored value reads it.
+        std::cout << trade_ngin::reporter_console(reporter_figures, "the configured capital", true)
+                  << std::flush;
+        // T-8D-2 R68: the stored risk_scale, labelled. This book runs no overlay, so there is no
+        // request to print beside it.
+        std::cout << trade_ngin::risk_scale_console_no_overlay();
+        // RA-01 (T-7b-1 C7): the reporter's scale beside the scale that actually moved the book.
+        // reporter = the snapshot's recommended_scale (1.0 when its evaluation failed). It is NOT
+        // the stored live_results.risk_scale: that column is kRiskScaleNoOverlay on this book, set
+        // below. The other four fields are the PortfolioManager's own record of this run's
+        // rebalance, last_risk_decisions(), each defined in risk_scale_report.hpp. Log only: no
+        // stored value reads it.
         INFO(trade_ngin::format_risk_scale_report(
             risk_eval.is_ok() ? risk_eval.value().recommended_scale : 1.0,
             trade_ngin::summarize_applied_risk(portfolio->last_risk_decisions())));
-        // T-7b-2 C9a (T-VOL C4): the delivered cut beside the request: the stored book's gross
-        // notional over the lap-1 optimizer book's, the PortfolioManager's measurement of the same
-        // rebalance (risk_scale_report.hpp defines each field). Log only.
+        // T-7b-2 C9a (T-VOL C4), T-8D-2 R69: the delivered cut beside the request: the gross
+        // notional of the book this runner stores (positions_to_save, one sleeve) over the
+        // strategy's target book, the PortfolioManager's measurement of the same rebalance
+        // (risk_scale_report.hpp defines each field). Log only.
         INFO(trade_ngin::format_risk_delivered(
             trade_ngin::summarize_applied_risk(portfolio->last_risk_decisions()),
-            portfolio->last_delivered_cut()));
+            portfolio->delivered_cut_for_book(
+                trade_ngin::account_book_of_rows(positions_to_save))));
         // ========================================
         // STEP 3: CALCULATE COMMISSIONS AND Day T PnL (ZERO)
         // ========================================
@@ -5692,14 +5707,19 @@ int main(int argc, char* argv[]) {
         INFO("  Annualized return: " + std::to_string(total_return_annualized) + "%");
         
         std::cout << "Total P&L: $" << std::fixed << std::setprecision(2) << total_pnl << std::endl;
-        std::cout << "Realized P&L: $" << std::fixed << std::setprecision(2) << total_realized_pnl << std::endl;
+        // T-8D-2 R68: total_realized_pnl is the cumulative P&L before costs.
+        std::cout << trade_ngin::realized_pnl_console(total_realized_pnl) << std::flush;
         std::cout << "Unrealized P&L: $" << std::fixed << std::setprecision(2) << total_unrealized_pnl << std::endl;
         std::cout << "Current Portfolio Value: $" << std::fixed << std::setprecision(2) << current_portfolio_value << std::endl;
         std::cout << "Total Return (Cumulative): " << std::fixed << std::setprecision(2) << total_cumulative_return_pct << "%" << std::endl;
         std::cout << "Total Return (Annualized): " << std::fixed << std::setprecision(2) << total_return_annualized << "%" << std::endl;
-        std::cout << "Daily Return: " << std::fixed << std::setprecision(2) << daily_return << "%" << std::endl;
-        std::cout << "Portfolio Leverage: " << std::fixed << std::setprecision(2) 
-                  << (gross_notional / current_portfolio_value) << "x" << std::endl;
+        // T-8D-2 R68: on this book the day-T return is not costs only (daily_pnl above is the
+        // day's realized less its costs plus the change in the mark), so the line says that.
+        std::cout << trade_ngin::daily_return_console_as_written(daily_return) << std::flush;
+        // T-8D-2 R68: gross notional over the day's account value, the row's portfolio_leverage.
+        std::cout << trade_ngin::portfolio_leverage_console_on_account_value(
+                         gross_notional, current_portfolio_value)
+                  << std::flush;
         // Equity-to-Margin Ratio = current_portfolio_value / total_posted_margin, at the level
         // of the book (T-8D R21; HD 2026-09-10): the definition the futures runners write.
         // Higher = more of the account's value for each dollar of margin posted. No value on a
@@ -5730,25 +5750,33 @@ int main(int argc, char* argv[]) {
 
         // Get forecasts for all symbols
         INFO("Retrieving current forecasts...");
-        std::cout << "\n======= Current Forecasts =======" << std::endl;
-        std::cout << std::setw(10) << "Symbol" << " | "
-                  << std::setw(12) << "Forecast" << " | "
-                  << std::setw(12) << "Position" << std::endl;
-        std::cout << std::string(40, '-') << std::endl;
-
         // Collect signals for database storage
         std::unordered_map<std::string, double> signals_to_store;
 
+        // T-8D-2 R68: the figure this sleeve publishes is a z-score, named as that; its own
+        // target (before the portfolio acts on it) prints beside the quantity of the day's
+        // stored row (positions_to_save, the book handed to the results manager above).
+        const std::map<std::string, double> stored_quantities =
+            trade_ngin::account_book_of_rows(positions_to_save);
+        std::vector<trade_ngin::ForecastConsoleRow> forecast_rows;
         for (const auto& symbol : symbols) {
             double z_score = mr_strategy->get_z_score(symbol);
             double position = mr_strategy->get_position(symbol);
 
             signals_to_store[symbol] = z_score;
 
-            std::cout << std::setw(10) << symbol << " | "
-                      << std::setw(12) << std::fixed << std::setprecision(4) << z_score << " | "
-                      << std::setw(12) << std::fixed << std::setprecision(2) << position << std::endl;
+            trade_ngin::ForecastConsoleRow row;
+            row.sleeve = kEquityStrategyName;
+            row.symbol = symbol;
+            row.signal = z_score;
+            row.sleeve_target = position;
+            const auto stored = stored_quantities.find(symbol);
+            if (stored != stored_quantities.end())
+                row.stored_quantity = stored->second;
+            forecast_rows.push_back(row);
         }
+        std::cout << trade_ngin::current_forecasts_console("z-score", forecast_rows, 6)
+                  << std::flush;
 
         // Store signals using LiveResultsManager
         if (!signals_to_store.empty()) {
@@ -5828,14 +5856,16 @@ int main(int argc, char* argv[]) {
             double net_leverage = 0.0;
             double max_correlation = 0.0;
             double jump_risk = 0.0;
-            double risk_scale = 1.0;
+            // T-8D R14: this book runs no portfolio-risk overlay, so risk_scale is 1.0 on every
+            // row (1.0 = no portfolio-risk overlay ran this run, not an uncut book). The
+            // reporter's recommended scale is not stored.
+            const double risk_scale = trade_ngin::kRiskScaleNoOverlay;
 
             if (risk_eval.is_ok()) {
                 const auto& r = risk_eval.value();
                 portfolio_var = r.portfolio_var;
                 max_correlation = r.correlation_risk;
                 jump_risk = r.jump_risk;
-                risk_scale = r.recommended_scale;
             }
 
             // Use LiveMetricsCalculator for portfolio metrics
@@ -6063,6 +6093,9 @@ int main(int argc, char* argv[]) {
                 email_config.smtp_port = app_config.email.smtp_port;
                 email_config.username = app_config.email.username;
                 email_config.password = app_config.email.password;
+                // T-8D-2 R59: the sender, as the futures runners set it (it was left empty:
+                // an empty envelope sender and an empty From header on every equity report).
+                email_config.from_email = app_config.email.from_email;
                 email_config.use_tls = app_config.email.use_tls;
                 email_config.to_emails = app_config.email.to_emails;
 
@@ -6083,8 +6116,14 @@ int main(int argc, char* argv[]) {
                 // Load yesterday's finalized positions for email display
                 std::unordered_map<std::string, Position> yesterday_positions_finalized;
                 std::map<std::string, double> yesterday_daily_metrics_final;
-                std::unordered_map<std::string, double> yesterday_entry_prices;  // Day T-2 close
-                std::unordered_map<std::string, double> yesterday_exit_prices;   // Day T-1 close
+                // The settled table's two prices (HD 2026-10-12, one source): the pair STEP 1's
+                // finalize was handed for each row (two_days_ago_close_prices and
+                // previous_day_close_prices, the maps of its call), by the report's own rule.
+                std::unordered_map<std::string, double> yesterday_entry_prices;  // settled from
+                std::unordered_map<std::string, double> yesterday_exit_prices;   // settled at
+                // A symbol with no T-1 close settled no move: its last known close, the price
+                // manager's latest loaded close of it.
+                std::unordered_map<std::string, double> settled_last_known_close;
 
                 // Phase 6 §6c: UTC date string via format_utc_date.
                 const std::string yesterday_date_for_email =
@@ -6092,9 +6131,9 @@ int main(int argc, char* argv[]) {
 
                 INFO("Loading yesterday's finalized positions for email: " + yesterday_date_for_email);
 
-                std::string positions_query_email = "SELECT symbol, quantity, average_price, daily_realized_pnl, daily_unrealized_pnl, last_update "
-                                                   "FROM trading.positions "
-                                                   "WHERE strategy_id = 'LIVE_EQUITY_MEAN_REVERSION' AND portfolio_id = '" + portfolio_id + "' AND DATE(last_update) = '" + yesterday_date_for_email + "'";
+                // T-8D-2 R55: this book's rows by both ids, the system book only.
+                std::string positions_query_email = trade_ngin::yesterday_positions_report_query(
+                    kEquityStrategyId, portfolio_id, yesterday_date_for_email, false);
 
                 auto positions_result_email = db->execute_query(positions_query_email);
 
@@ -6125,13 +6164,29 @@ int main(int argc, char* argv[]) {
 
                             yesterday_positions_finalized[symbol] = pos;
 
-                            // Populate entry and exit prices
-                            if (two_days_ago_close_prices.find(symbol) != two_days_ago_close_prices.end()) {
-                                yesterday_entry_prices[symbol] = two_days_ago_close_prices[symbol];
+                            if (previous_day_close_prices.find(symbol) ==
+                                previous_day_close_prices.end()) {
+                                const auto last_known = price_manager->get_latest_price(symbol);
+                                if (last_known.is_ok()) {
+                                    settled_last_known_close[symbol] = last_known.value();
+                                }
                             }
-                            if (previous_day_close_prices.find(symbol) != previous_day_close_prices.end()) {
-                                yesterday_exit_prices[symbol] = previous_day_close_prices[symbol];
-                            }
+                        }
+                    }
+                    // The rows' two prices: the pair their day was settled on.
+                    const trade_ngin::SettledTablePrices settled_table =
+                        trade_ngin::settled_table_prices(two_days_ago_close_prices,
+                                                         previous_day_close_prices,
+                                                         settled_last_known_close);
+                    for (const auto& [symbol, settled_position] : yesterday_positions_finalized) {
+                        (void)settled_position;
+                        if (const auto previous =
+                                trade_ngin::settled_price_of(settled_table.previous, symbol)) {
+                            yesterday_entry_prices[symbol] = *previous;
+                        }
+                        if (const auto latest =
+                                trade_ngin::settled_price_of(settled_table.latest, symbol)) {
+                            yesterday_exit_prices[symbol] = *latest;
                         }
                     }
                     INFO("Loaded " + std::to_string(yesterday_positions_finalized.size()) + " finalized positions for email");
@@ -6179,13 +6234,16 @@ int main(int argc, char* argv[]) {
                         }
 
                         if (!daily_commissions_arr->IsNull(0)) {
-                            yesterday_daily_metrics_final["Daily Commissions"] = std::stod(daily_commissions_arr->GetString(0));
-                            INFO("Daily Commissions: " + daily_commissions_arr->GetString(0));
+                            // T-8D-2 R57: the report reads this key; under "Daily Commissions"
+                            // the settled day's costs were never printed.
+                            yesterday_daily_metrics_final["Daily Transaction Costs"] =
+                                std::stod(daily_commissions_arr->GetString(0));
+                            INFO("Daily Transaction Costs: " + daily_commissions_arr->GetString(0));
                         }
                         if (!dividend_income_arr->IsNull(0)) {
-                            // Phase 4.5: informational only -- NOT in any PnL total.
-                            yesterday_daily_metrics_final["Dividend Income (cumulative)"] =
-                                std::stod(dividend_income_arr->GetString(0));
+                            // Phase 4.5: informational only -- NOT in any PnL total. The report
+                            // prints ONE dividend line, the figure of the day's own row (T-8D-2
+                            // R44 (c)); the settled day's is logged here.
                             INFO("Total Dividend Income (cumulative): " +
                                  dividend_income_arr->GetString(0));
                         }
@@ -6213,47 +6271,60 @@ int main(int argc, char* argv[]) {
                 // Create strategy metrics map with all relevant metrics organized by category
                 std::map<std::string, double> strategy_metrics;
 
-                // Performance Metrics
-                strategy_metrics["Daily Return"] = daily_return;
-                strategy_metrics["Daily Unrealized PnL"] = daily_unrealized_pnl;
-                strategy_metrics["Daily Realized PnL"] = daily_realized_pnl;
-                strategy_metrics["Daily Total PnL"] = daily_pnl;
-                strategy_metrics["Total Cumulative Return"] = total_cumulative_return_pct;
-                strategy_metrics["Total Annualized Return"] = total_return_annualized;
+                // What the report is told about the day beyond the metric map: the settled day
+                // is this runner's previous session (T-8D-2 R59, R61), not the calendar day
+                // before the run date.
+                trade_ngin::EmailReportContext report_context;
+                report_context.settled_date = yesterday_date_for_email;
+                report_context.sessions_per_year = app_config.statistics.equity_sessions_per_year;
+                // T-8D-2 R59: an equity book (no futures text or tables), with its own start date.
+                report_context.equities = true;
+                report_context.live_start_date = book_live_start_date;
+
+                // Performance Metrics. T-8D-2 R61: the day T "Daily ..." values are not report
+                // lines (the settled day's are in yesterday_daily_metrics_final).
                 strategy_metrics["Total Unrealized PnL"] = total_unrealized_pnl;
                 strategy_metrics["Total Realized PnL"] = total_realized_pnl;
                 strategy_metrics["Total PnL"] = total_pnl;
-                if (risk_eval.is_ok()) {
-                    strategy_metrics["Volatility"] = risk_eval.value().portfolio_var * 100.0;
+
+                // T-8D-2 R58, R61 and T-8D R15: the statistics block and the two return lines
+                // read the day's stored row, as the futures runners' reports do. "Volatility" is
+                // the stored realised volatility of the settled series; it used to be the
+                // reporter's ex-ante figure (portfolio_var x 100) under a realised label.
+                try {
+                    auto today_row_result =
+                        data_loader->load_live_results(kEquityStrategyId, portfolio_id, now);
+                    if (today_row_result.is_ok()) {
+                        for (const auto& [name, value] :
+                             trade_ngin::statistics_report_metrics(today_row_result.value())) {
+                            strategy_metrics[name] = value;
+                        }
+                        report_context.statistics_sessions = today_row_result.value().total_days;
+                    } else {
+                        WARN("Failed to load today's live_results row for email metrics: " +
+                             std::string(today_row_result.error()->what()));
+                    }
+                } catch (const std::exception& e) {
+                    WARN("Exception while loading today's live_results for email metrics: " +
+                         std::string(e.what()));
                 }
-                strategy_metrics["Total Commissions"] = total_commissions_cumulative;
+                // T-8D-2 R57: the key the report reads ("Total Commissions" was never printed).
+                strategy_metrics["Total Transaction Costs"] = total_commissions_cumulative;
                 strategy_metrics["Current Portfolio Value"] = current_portfolio_value;
 
-                // Phase 4.5: cumulative dividend income from the corp-action
-                // state file (informational ONLY; not in any PnL total).
-                {
-                    CorporateActionsAuditLog div_log_email(ca_state_dir, db,
-                                                       portfolio_id,
-                                                       "LIVE_EQUITY_MEAN_REVERSION",
-                                                       "EQUITY_MEAN_REVERSION");
-                    auto div_email_loaded = div_log_email.load();
-                    if (div_email_loaded.is_error()) {
-                        WARN("Cannot read dividend income for the email report: " +
-                             std::string(div_email_loaded.error()->what()) +
-                             " -- reporting 0");
-                    }
-                    strategy_metrics["Dividend Income (cumulative, informational)"] =
-                        div_log_email.total_cumulative_dividend_income();
+                // T-8D-2 R44 (c): the cumulative dividend income, the figure the day's row
+                // stores (total_dividend_income); informational, not in any P&L total. No line
+                // when the day's figure could not be counted (the cell is then not written).
+                if (dividend_income_today) {
+                    strategy_metrics[trade_ngin::kReportDividendIncome] = *dividend_income_today;
                 }
 
                 // Leverage Metrics - Calculate values from position analysis
                 double gross_leverage_calc = (current_portfolio_value != 0.0) ? (gross_notional / current_portfolio_value) : 0.0;
                 double net_leverage_calc = (current_portfolio_value != 0.0) ? (net_notional / current_portfolio_value) : 0.0;
-                double portfolio_leverage_calc = (current_portfolio_value != 0.0) ? (gross_notional / current_portfolio_value) : 0.0;
-                
+
                 strategy_metrics["Gross Leverage"] = gross_leverage_calc;
                 strategy_metrics["Net Leverage"] = net_leverage_calc;
-                strategy_metrics["Portfolio Leverage"] = portfolio_leverage_calc;
                 // The two margin lines are printed only when the figure has a value.
                 if (equity_to_margin_ratio) {
                     strategy_metrics["Equity-to-Margin Ratio"] = *equity_to_margin_ratio;
@@ -6273,23 +6344,20 @@ int main(int argc, char* argv[]) {
                 std::string email_body = email_sender->generate_trading_report_body(
                     positions,
                     risk_eval.is_ok() ? std::make_optional(risk_eval.value()) : std::nullopt,
-                    strategy_metrics,
-                    daily_executions,
-                    date_str,
-                    true,  // is_daily_strategy
+                    strategy_metrics, daily_executions, date_str,
+                    true,                       // is_daily_strategy
                     previous_day_close_prices,  // Pass Day T-1 close prices for today's positions
-                    db,  // Pass database for symbols reference table
-                    yesterday_positions_finalized,  // Now populated with yesterday's finalized positions
-                    yesterday_exit_prices,  // Day T-1 close prices for yesterday's positions
-                    yesterday_entry_prices,  // Day T-2 close prices for yesterday's positions
+                    db,                         // Pass database for symbols reference table
+                    yesterday_positions_finalized,  // Now populated with yesterday's finalized
+                                                    // positions
+                    yesterday_exit_prices,          // the price each settled row was settled at
+                    yesterday_entry_prices,         // the price it was settled from
                     yesterday_daily_metrics_final,  // Yesterday's metrics
                     // E2-F11: the charts query THIS book. The overload used to hardcode the
                     // trend-following strategy id and an empty portfolio, so every equity
                     // email rendered empty charts.
-                    std::string(kEquityStrategyId),
-                    portfolio_id
-                );
-                
+                    std::string(kEquityStrategyId), portfolio_id, report_context);
+
                 // Send email without CSV attachments (CSV export disabled for mean reversion)
                 std::vector<std::string> attachments = {};  // No CSV files for mean reversion
 

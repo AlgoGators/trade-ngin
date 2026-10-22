@@ -1,8 +1,10 @@
 // include/trade_ngin/live/run_metadata_marks.hpp
 #pragma once
 
+#include <functional>
 #include <optional>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include <nlohmann/json.hpp>
@@ -87,5 +89,36 @@ inline nlohmann::json mark_strict_assertion(nlohmann::json portfolio_config,
         {"unpriced_book_changes", unpriced_book_changes}};
     return portfolio_config;
 }
+
+/**
+ * @brief A run's trading.live_run_metadata write, built where the run's configuration is known
+ *        and written at the first point where the run stores anything else (T-8D-2 R48). A run
+ *        that refuses before that point never calls write_once(), so it leaves no row claiming a
+ *        run. write_once() writes on its first call only: the runner calls it on every path that
+ *        reaches a store, and the row is written once, before the first of them.
+ */
+class DeferredRunRecord {
+public:
+    /// Hold the write. The callable owns copies of what it writes (capture by value), so the
+    /// row is the one built at this point whatever the run changes afterwards.
+    void hold(std::function<void()> write) {
+        write_ = std::move(write);
+        written_ = false;
+    }
+    /// Run the held write, the first time only. Nothing held: nothing written.
+    void write_once() {
+        if (written_ || !write_)
+            return;
+        written_ = true;
+        write_();
+    }
+    bool written() const {
+        return written_;
+    }
+
+private:
+    std::function<void()> write_;
+    bool written_ = false;
+};
 
 }  // namespace trade_ngin
