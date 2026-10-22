@@ -1,11 +1,12 @@
 """D-66: the desk approves with or without the e-mail, and sends a published, unsent day later
 (Send: a publish row with flow "send")."""
 
+import dataclasses
 import datetime as dt
 
 import pytest
 
-from conftest import NY, PID, make_row
+from conftest import NY, PID, Agent, make_row
 from algogators_rpc.services.desk.jobs import RunResult
 from test_cutoff import FRI, approve, ny
 
@@ -73,3 +74,25 @@ def test_a_send_the_engine_does_not_record_fails(agent, cstore, runner):
     runner.behave = lambda argv: RunResult(rc=1, stdout="", stderr="smtp down\n")
     _, row = send_row(cstore, agent)
     assert row.status == "failed" and "try again" in row.message
+
+
+# -- QT_BOOK_EMAIL_HANDOFF: AlgoLens sends the book e-mail ----------------------------------------
+
+@pytest.fixture
+def handoff_agent(cstore, runner, settings):
+    return Agent(cstore, runner, dataclasses.replace(settings, book_email_handoff=True))
+
+
+def test_handoff_approval_from_0930_publishes_without_send_now(handoff_agent, cstore, runner):
+    out, argvs = approve(handoff_agent, cstore, runner, FRI, ny(FRI, 9, 45), ny(FRI, 9, 45),
+                         payload={"email": True})
+    assert out.status == "accepted"
+    assert argvs[0][3] == "--publish" and "--send-now" not in argvs[0]
+
+
+def test_handoff_send_releases_the_day_to_algolens_and_runs_no_engine(handoff_agent, cstore,
+                                                                      runner):
+    published(cstore)
+    out, row = send_row(cstore, handoff_agent)
+    assert row.status == "done" and row.result == {"handoff": True}
+    assert runner.calls == []
