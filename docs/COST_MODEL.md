@@ -28,7 +28,7 @@ slippage  = implicit x |q| x point_value                                     dol
 total     = fee + slippage                                                   dollars
 ```
 
-`TransactionCostManager::calculate_costs` (`src/transaction_cost/transaction_cost_manager.cpp:127`)
+`TransactionCostManager::calculate_costs` (`src/transaction_cost/transaction_cost_manager.cpp`)
 is the only place this is computed. `P` is the close of the signal bar (the last bar before the
 fill day): the fill price itself carries no cost, and the cost is charged separately against the
 day's P&L. `V` is the volume the impact term reads (section 5). The stored row keeps the four
@@ -44,7 +44,7 @@ switched off on every config (section 3). Every other term takes `|q|`.
 A futures fill is priced with the same contract the strategy sizes with: the symbol's row of
 `metadata.contract_metadata`, read through the instrument registry and looked up by the symbol
 without its continuous-contract suffix (`registry_contract_cost_spec`,
-`transaction_cost_manager.cpp:14`; `resolve_asset_config`, `:54`).
+`transaction_cost_manager.cpp`; `resolve_asset_config`).
 
 | Metadata column | Becomes | Used for |
 |---|---|---|
@@ -56,10 +56,10 @@ A future that the calibration table names, or whose metadata row has a positive 
 and that lacks a usable `"Contract Size"` or a usable `"Tick Size"` (either one is enough), is not
 priced on a guessed constant: its spread and impact are 0, its fee is still charged (the row's fee
 when the row has a positive `"Contract Size"` and a usable fee, else the fallback 1.50), and an ERROR names it once per cost manager
-(`transaction_cost_manager.cpp:68` to `:93`, `:212` to `:216`). A symbol that has no calibration
+(`transaction_cost_manager.cpp`). A symbol that has no calibration
 entry and no metadata row with a positive `"Contract Size"` (`registry_contract_cost_spec` gives
-none for such a row, `:33` to `:35`) keeps the generic default of section 4
-(`transaction_cost_manager.cpp:71` to `:73`); no contract of the book is in that case.
+none for such a row) keeps the generic default of section 4
+(`transaction_cost_manager.cpp`); no contract of the book is in that case.
 
 ### The fee
 
@@ -67,8 +67,7 @@ none for such a row, `:33` to `:35`) keeps the generic default of section 4
 026 from Interactive Brokers' published futures schedule: the commission at the lowest volume
 tier, plus the exchange fee recovery charge (the non-member column), plus the regulatory fee
 recovery charge, in dollars per contract per side. The migration file lists the pages, the date
-they were read and the three parts of every row (`migrations/026_contract_metadata_ibkr_fees.sql:63`
-to `:103`).
+they were read and the three parts of every row (`migrations/026_contract_metadata_ibkr_fees.sql`).
 
 | Fee | Contracts |
 |---:|---|
@@ -91,20 +90,20 @@ That is 40 rows: the 36 contracts of the book and the four E-minis (ES, NQ, YM, 
 holds before the micros' listing date. An E-mini fill is charged the E-mini's own fee.
 
 Migration 026 also adds the CHECK `contract_metadata_fee_per_contract_positive`: the cell must be a
-plain decimal number above zero (`026_contract_metadata_ibkr_fees.sql:169` to `:173`). Without it
+plain decimal number above zero (`026_contract_metadata_ibkr_fees.sql`). Without it
 an empty cell is legal text and loads as a fee of 0.
 
 **The fallback.** The cost manager carries one default fee, `explicit_fee_per_contract = 1.50`
-(`TransactionCostManager::Config`, `include/trade_ngin/transaction_cost/transaction_cost_manager.hpp:100`).
+(`TransactionCostManager::Config`, `include/trade_ngin/transaction_cost/transaction_cost_manager.hpp`).
 It is a compiled default, not a JSON key: the portfolio backtest, both live futures runners and the
 `PortfolioManager` build their cost managers with it. It is charged only when the metadata gives
-no fee for the contract (`transaction_cost_manager.cpp:185`):
+no fee for the contract (`transaction_cost_manager.cpp`):
 
 | Case | What the registry does | Fee charged |
 |---|---|---|
-| The row has a usable fee | reads it (`src/instruments/instrument_registry.cpp:422` to `:427`) | the row's |
-| The table has no `"Fee Per Contract"` column | one WARN at load (`instrument_registry.cpp:157`) | 1.50 on every future |
-| The cell is not a number, or is negative | a WARN naming the row (`instrument_registry.cpp:429`) | 1.50 for that row |
+| The row has a usable fee | reads it (`src/instruments/instrument_registry.cpp`) | the row's |
+| The table has no `"Fee Per Contract"` column | one WARN at load (`instrument_registry.cpp`) | 1.50 on every future |
+| The cell is not a number, or is negative | a WARN naming the row (`instrument_registry.cpp`) | 1.50 for that row |
 | The symbol has a calibration entry and no metadata row (ZB) | nothing to read | 1.50, and no spread or impact (above) |
 
 Every one of the 40 rows has a figure on the schedule, so 1.50 is charged on no row.
@@ -115,8 +114,8 @@ Every one of the 40 rows has a figure on the schedule, so 1.50 is charged on no 
 
 An equity is priced per share (`point_value` 1). Every equity config carries the same schedule,
 Interactive Brokers Pro Fixed (`get_equity_default_config`,
-`src/transaction_cost/asset_cost_config.cpp:613`; the field comments in
-`include/trade_ngin/transaction_cost/asset_cost_config.hpp:44` to `:81`):
+`src/transaction_cost/asset_cost_config.cpp`; the field comments in
+`include/trade_ngin/transaction_cost/asset_cost_config.hpp`):
 
 | Item | Value | Field |
 |---|---|---|
@@ -125,7 +124,7 @@ Interactive Brokers Pro Fixed (`get_equity_default_config`,
 | Maximum per order | 1 percent of trade value | `max_commission_pct = 0.01` |
 | SEC fee and FINRA TAF on sells | not charged: the Fixed schedule includes them | `apply_regulatory_fees = false` |
 
-The maximum is applied after the minimum (`transaction_cost_manager.cpp:180`), so on a very small
+The maximum is applied after the minimum (`transaction_cost_manager.cpp`), so on a very small
 order the 1 percent cap wins over the 1.00 floor. The regulatory-fee code (20.60 per million of
 sale proceeds, 0.000195 per share capped at 9.79) stays in place for a config that turns the flag
 on; none does.
@@ -139,7 +138,7 @@ BORROW row (section 7).
 
 ### Spread
 
-`SpreadModel::calculate_spread_price_impact` (`src/transaction_cost/spread_model.cpp:13`). The
+`SpreadModel::calculate_spread_price_impact` (`src/transaction_cost/spread_model.cpp`). The
 spread is anchored to the tick, never to the day's range. `vol_mult` widens or narrows the
 baseline number of ticks; the result is clamped; the multiplier turns a quoted spread into the
 one-way cost (0.5 is half the spread, 0.25 models a resting order).
@@ -151,14 +150,14 @@ vol_mult = clip(1 + 0.15 x z, 0.8, 1.5)          (1.0 with fewer than 2 returns)
 ```
 
 The baseline (1 percent a day) and the scale (0.5 percent) are fixed numbers, the same for every
-instrument (`calculate_volatility_multiplier`, `spread_model.cpp:41`). On a bar where the contract
-changes, the return fed to the window is 0 (`record_log_return`, `transaction_cost_manager.cpp:288`).
+instrument (`calculate_volatility_multiplier`, `spread_model.cpp`). On a bar where the contract
+changes, the return fed to the window is 0 (`record_log_return`, `transaction_cost_manager.cpp`).
 An equity's spread is never below one tick (half a tick for a tick-constrained name),
-`spread_model.cpp:27`.
+`spread_model.cpp`.
 
 ### Impact
 
-`ImpactModel::calculate_market_impact` (`src/transaction_cost/impact_model.cpp:12`): the square
+`ImpactModel::calculate_market_impact` (`src/transaction_cost/impact_model.cpp`): the square
 root of the share of the day's volume the order takes, times a coefficient chosen by that volume.
 
 | Volume `V` | `k_bps` |
@@ -174,32 +173,32 @@ root of the share of the day's volume the order takes, times a coefficient chose
 None of these is a JSON key. All are compiled. `defaults.json` carries
 `execution.commission_rate` and `execution.slippage_bps`; neither is read by the cost model or by
 any futures path, and no fill is priced with them (their one reader, the equity live runner, prints
-them in its start banner, `apps/strategies/live_equity_mean_reversion.cpp:266-267`, `:535-536`).
+them in its start banner, `apps/strategies/live_equity_mean_reversion.cpp`).
 
 | Constant | Value | Where |
 |---|---|---|
-| Fallback futures fee | 1.50 | `transaction_cost_manager.hpp:100` (`Config::explicit_fee_per_contract`) |
-| Volatility sensitivity `lambda` | 0.15 | `spread_model.hpp:39` (`VolatilityConfig`) |
-| `vol_mult` bounds | 0.8 to 1.5 | `spread_model.hpp:39` |
-| Return window | 20 returns | `spread_model.hpp:39` (`lookback_days`) |
-| Baseline sigma, sigma scale | 0.01, 0.005 | `spread_model.cpp:58`, `:59` |
-| z clip | -2 to 2 | `spread_model.cpp:65` |
-| `k_bps` tiers | table above | `impact_model.cpp:46` (`get_impact_k_bps`) |
-| Volume floor `min_adv` | 100 | `impact_model.hpp:37` (`ImpactModel::Config`) |
-| Participation clamp | 0 to 0.1 | `impact_model.hpp:37` |
-| Volume window length | 20 observations (equities; a future's window holds one, section 5) | `impact_model.hpp:37` (`adv_lookback_days`) |
-| Volume when none was ever fed | 100,000 | `transaction_cost_manager.cpp:117` |
-| `spread_cost_multiplier` default | 0.5 | `asset_cost_config.hpp:32` |
-| `max_total_implicit_bps` default | 200 (a WARN when it binds) | `asset_cost_config.hpp:84`, `transaction_cost_manager.cpp:241` |
-| Per-contract futures calibration | table below | `asset_cost_config.cpp:18` to `:489` (`initialize_default_configs`) |
-| A future with no entry of its own | baseline 2, min 1, max 10 ticks, multiplier 0.5, impact cap 100 bps | `asset_cost_config.cpp:598` (`get_default_config`) |
-| Equity tiers | table below | `asset_cost_config.cpp:634` (`get_tiered_equity_config`) |
+| Fallback futures fee | 1.50 | `transaction_cost_manager.hpp` (`Config::explicit_fee_per_contract`) |
+| Volatility sensitivity `lambda` | 0.15 | `spread_model.hpp` (`VolatilityConfig`) |
+| `vol_mult` bounds | 0.8 to 1.5 | `spread_model.hpp` |
+| Return window | 20 returns | `spread_model.hpp` (`lookback_days`) |
+| Baseline sigma, sigma scale | 0.01, 0.005 | `spread_model.cpp` |
+| z clip | -2 to 2 | `spread_model.cpp` |
+| `k_bps` tiers | table above | `impact_model.cpp` (`get_impact_k_bps`) |
+| Volume floor `min_adv` | 100 | `impact_model.hpp` (`ImpactModel::Config`) |
+| Participation clamp | 0 to 0.1 | `impact_model.hpp` |
+| Volume window length | 20 observations (equities; a future's window holds one, section 5) | `impact_model.hpp` (`adv_lookback_days`) |
+| Volume when none was ever fed | 100,000 | `transaction_cost_manager.cpp` |
+| `spread_cost_multiplier` default | 0.5 | `asset_cost_config.hpp` |
+| `max_total_implicit_bps` default | 200 (a WARN when it binds) | `asset_cost_config.hpp`, `transaction_cost_manager.cpp` |
+| Per-contract futures calibration | table below | `asset_cost_config.cpp` (`initialize_default_configs`) |
+| A future with no entry of its own | baseline 2, min 1, max 10 ticks, multiplier 0.5, impact cap 100 bps | `asset_cost_config.cpp` (`get_default_config`) |
+| Equity tiers | table below | `asset_cost_config.cpp` (`get_tiered_equity_config`) |
 
 The per-contract futures entries hold calibration only. Their `tick_size` and `point_value`
 fields are overwritten from the metadata row (section 2).
 The table lists every futures entry in the code; ZB has an entry and no metadata row, and is not in
 the book. The same function also holds fixed entries for ten equity symbols
-(`asset_cost_config.cpp:496` to `:553`); `register_equity_costs_from_bars` replaces the entry of
+(`asset_cost_config.cpp`); `register_equity_costs_from_bars` replaces the entry of
 every symbol a runner registers, on every live run and every backtest cycle (section 5).
 
 | Contracts | baseline ticks | min | max | multiplier | impact cap (bps) |
@@ -237,10 +236,10 @@ term and its tier) and a walk of log returns (the spread's `vol_mult`).
 
 ### Futures: the signal bar's own volume, with the weekend merge
 
-The design comment is `include/trade_ngin/live/futures_cost_feed.hpp:16` to `:82`. A futures fill
+The design comment is `include/trade_ngin/live/futures_cost_feed.hpp`. A futures fill
 is not priced on a rolling average. The impact model's window holds exactly one number, `V`, built
 from the symbol's latest bar `B` (the signal bar, whose close prices the fill) by
-`FuturesSessionVolume::participation` (`futures_cost_feed.hpp:155`). A weekend bar is one dated
+`FuturesSessionVolume::participation` (`futures_cost_feed.hpp`). A weekend bar is one dated
 Saturday or Sunday (UTC); a session is a weekday-dated bar; the weekend block is the run of the
 symbol's weekend bars with no session between them.
 
@@ -259,12 +258,12 @@ The returns are every consecutive log return of the symbol's bars up to `B`, of 
 model keeps the last 20.
 
 Backtest and live compute the same two inputs with the same merge rule
-(`FuturesSessionVolume::add` and `participation`, `futures_cost_feed.hpp:133`, `:155`):
+(`FuturesSessionVolume::add` and `participation`, `futures_cost_feed.hpp`):
 
 | | Function | Fed with | Cost managers fed |
 |---|---|---|---|
-| Live | `feed_futures_cost_model` (`futures_cost_feed.hpp:186`) | the run's strategy feed, once, into fresh managers | the execution manager's and the `PortfolioManager`'s (`apps/strategies/live_portfolio_conservative.cpp:1665` to `:1709`; `live_portfolio.cpp` carries the same lines) |
-| Backtest | `feed_futures_cost_model_step` (`futures_cost_feed.hpp:258`) | each cycle's signal feed; the window is set to `V` every cycle (`set_own_day_volume`, `transaction_cost_manager.cpp:283`) | the execution manager's and the `PortfolioManager`'s (`src/backtest/backtest_coordinator.cpp:899` to `:908`) |
+| Live | `feed_futures_cost_model` (`futures_cost_feed.hpp`) | the run's strategy feed, once, into fresh managers | the execution manager's and the `PortfolioManager`'s (`apps/strategies/live_portfolio_conservative.cpp`; `live_portfolio.cpp` carries the same code) |
+| Backtest | `feed_futures_cost_model_step` (`futures_cost_feed.hpp`) | each cycle's signal feed; the window is set to `V` every cycle (`set_own_day_volume`, `transaction_cost_manager.cpp`) | the execution manager's and the `PortfolioManager`'s (`src/backtest/backtest_coordinator.cpp`) |
 
 After every backtest cycle each manager holds what the live function gives on the same bars and
 the same fill day. Nothing of the fill day's own bar is read.
@@ -273,15 +272,15 @@ the same fill day. Nothing of the fill day's own bar is read.
 
 An equity is priced on the average of its last 20 daily volumes, and the same 20 bars pick its
 tier (section 4). The rules of the live feed (`LiveDailyCycle::feed_cost_model`,
-`include/trade_ngin/live/live_daily_cycle.hpp:210`) are in `docs/AVERAGE_PRICE_LIFECYCLE.md`
+`include/trade_ngin/live/live_daily_cycle.hpp`) are in `docs/AVERAGE_PRICE_LIFECYCLE.md`
 section 8b and are not repeated here. In both the live runner and the backtest the window ends at
 the signal bar.
 
 | | Tier | Volume and returns |
 |---|---|---|
-| Live | `register_equity_costs_from_bars` on every run, from the 20 bars ending at the signal bar (`apps/strategies/live_equity_mean_reversion.cpp:995`) | `feed_cost_model`, the same bars (`:997`) |
-| Backtest, before the first cycle | the 30 calendar days before the start date (`register_equity_cost_warmup`, `include/trade_ngin/backtest/equity_cost_warmup.hpp:83`) | none yet |
-| Backtest, every cycle | `EquityCostRetier::retier` on both cost managers, from the 20 bars ending at the signal bar (`include/trade_ngin/backtest/equity_cost_retier.hpp:148`; `backtest_coordinator.cpp:697`) | the signal group, each volume through `split_consistent_volume` (`equity_cost_retier.hpp:128`; `backtest_coordinator.cpp:731` to `:782`) |
+| Live | `register_equity_costs_from_bars` on every run, from the 20 bars ending at the signal bar (`apps/strategies/live_equity_mean_reversion.cpp`) | `feed_cost_model`, the same bars |
+| Backtest, before the first cycle | the 30 calendar days before the start date (`register_equity_cost_warmup`, `include/trade_ngin/backtest/equity_cost_warmup.hpp`) | none yet |
+| Backtest, every cycle | `EquityCostRetier::retier` on both cost managers, from the 20 bars ending at the signal bar (`include/trade_ngin/backtest/equity_cost_retier.hpp`; `backtest_coordinator.cpp`) | the signal group, each volume through `split_consistent_volume` (`equity_cost_retier.hpp`; `backtest_coordinator.cpp`) |
 
 The re-tier exists because the backtest's prices and quantities are adjusted to the end of the
 window while the loader leaves volume raw. `split_consistent_volume` multiplies a bar's volume by
@@ -290,7 +289,7 @@ one share unit. The header comment of `equity_cost_retier.hpp` states the unit a
 
 A symbol with no bars, or a zero average, is registered with the untiered equity default so it can
 never resolve to a futures config (`register_equity_costs_from_bars`,
-`transaction_cost_manager.cpp:325`).
+`transaction_cost_manager.cpp`).
 
 ---
 
@@ -302,12 +301,12 @@ between the backtest and live.
 
 | Priced item | Backtest | Live |
 |---|---|---|
-| The cost vector of the whole-contract search | `PortfolioManager`'s (`src/portfolio/portfolio_manager.cpp:2132` to `:2136`) | `PortfolioManager`'s (the same lines) |
-| The stored STRATEGY fills | `PortfolioManager`'s (`portfolio_manager.cpp:2834`); the coordinator does not re-price them (`backtest_coordinator.cpp:1179` to `:1187`) | the execution manager's (`src/live/execution_manager.cpp:163`) |
-| The account order `C(Q)` of the netting | `PortfolioManager`'s (`portfolio_manager.cpp:2866`) | the execution manager's (`live_portfolio_conservative.cpp:2561`) |
-| The two ROLL legs | `PortfolioManager`'s (`backtest_coordinator.cpp:1044` to `:1076`) | the execution manager's (`live_portfolio_conservative.cpp:2395` to `:2419`) |
-| The listing-date switch legs | `PortfolioManager`'s (`portfolio_manager.cpp:2514` to `:2522`) | not booked by a live run |
-| Equity overnight borrow fee | the execution manager's (`backtest_coordinator.cpp:1523` to `:1527`) | not accrued |
+| The cost vector of the whole-contract search | `PortfolioManager`'s (`src/portfolio/portfolio_manager.cpp`) | `PortfolioManager`'s (the same code) |
+| The stored STRATEGY fills | `PortfolioManager`'s (`portfolio_manager.cpp`); the coordinator does not re-price them (`backtest_coordinator.cpp`) | the execution manager's (`src/live/execution_manager.cpp`) |
+| The account order `C(Q)` of the netting | `PortfolioManager`'s (`portfolio_manager.cpp`) | the execution manager's (`live_portfolio_conservative.cpp`) |
+| The two ROLL legs | `PortfolioManager`'s (`backtest_coordinator.cpp`) | the execution manager's (`live_portfolio_conservative.cpp`) |
+| The listing-date switch legs | `PortfolioManager`'s (`portfolio_manager.cpp`) | not booked by a live run |
+| Equity overnight borrow fee | the execution manager's (`backtest_coordinator.cpp`) | not accrued |
 
 In every row the fills of a day and the account order they are netted against are priced by the
 same manager on the same state, which is what makes the netting identity of section 9 hold to the
@@ -320,14 +319,14 @@ last stored digit.
 | Row | `execution_type` | Cost | Netted |
 |---|---|---|---|
 | A strategy fill, a forecast-sign close | `STRATEGY` | section 1 | yes, when two sleeves trade the symbol |
-| A listing-date switch leg (backtest only) | `STRATEGY` | section 1 at the leg's quantity and price | yes, among the sleeves' switch legs of the same symbol, as their own group and before they join the bar's rows (`portfolio_manager.cpp:2542` to `:2557`); never against the bar's other fills |
-| A roll's closing leg and opening leg | `ROLL` | section 1 at the leg's quantity and price: two outright fills (`roll_series::make_roll_legs`, `include/trade_ngin/data/roll_series.hpp:150`) | never |
-| An equity short's overnight borrow, backtest only | `BORROW` | annual rate x short value / 365, quantity 0 (`calculate_overnight_borrow_fees`, `transaction_cost_manager.cpp:422`; the row, `backtest_coordinator.cpp:1536` to `:1556`) | never |
+| A listing-date switch leg (backtest only) | `STRATEGY` | section 1 at the leg's quantity and price | yes, among the sleeves' switch legs of the same symbol, as their own group and before they join the bar's rows (`portfolio_manager.cpp`); never against the bar's other fills |
+| A roll's closing leg and opening leg | `ROLL` | section 1 at the leg's quantity and price: two outright fills (`roll_series::make_roll_legs`, `include/trade_ngin/data/roll_series.hpp`) | never |
+| An equity short's overnight borrow, backtest only | `BORROW` | annual rate x short value / 365, quantity 0 (`calculate_overnight_borrow_fees`, `transaction_cost_manager.cpp`; the row, `backtest_coordinator.cpp`) | never |
 
 The borrow rate is 25, 50, 150 or 500 basis points a year by a count of three flags (dollar volume
 under 5 million a day, price under 5.00, not easy to borrow), times `clamp(annual vol / 0.25, 1, 3)`,
 unless the instrument carries its own rate. The live equity runner accrues no borrow fee and
-refuses to store a short position (`live_equity_mean_reversion.cpp:4390` to `:4404`).
+refuses to store a short position (`live_equity_mean_reversion.cpp`).
 
 ---
 
@@ -335,9 +334,9 @@ refuses to store a short position (`live_equity_mean_reversion.cpp:4390` to `:44
 
 ### Execution rows
 
-`trading.executions` (live, `PostgresDatabase::store_executions`, `src/data/postgres_database.cpp:236`)
-and `backtest.executions` (`store_backtest_executions`, `:2274`, and `store_backtest_executions_with_strategy`, `:2390`) carry the same cost
-columns, from `ExecutionReport` (`include/trade_ngin/core/types.hpp:447`):
+`trading.executions` (live, `PostgresDatabase::store_executions`, `src/data/postgres_database.cpp`)
+and `backtest.executions` (`store_backtest_executions`, and `store_backtest_executions_with_strategy`) carry the same cost
+columns, from `ExecutionReport` (`include/trade_ngin/core/types.hpp`):
 
 | Column | Unit | Holds |
 |---|---|---|
@@ -355,17 +354,17 @@ Every total below is after netting: each fill's own cost minus its adjustment.
 
 | Table | Column | Holds | Written at |
 |---|---|---|---|
-| `trading.live_results` | `daily_transaction_costs` | the day's charge: STRATEGY and ROLL fills at their cost after netting | `live_portfolio_conservative.cpp:2575` (the sum), `:4201` |
-| `trading.live_results` | `total_transaction_costs` | the previous row's total plus the day's | `:3823`, `:4198` |
-| `trading.live_results` | `daily_roll_costs` | the ROLL legs' part of the day's charge (migration 017) | `:2439`, `:4202` |
-| `trading.live_results` | `total_roll_costs` | the previous row's total plus the day's | `:3832`, `:4203` |
-| `backtest.results` | `transaction_costs` | the run: STRATEGY, ROLL and BORROW rows, each after netting (migration 018) | `backtest_coordinator.cpp:474` |
-| `backtest.results` | `roll_costs`, `total_roll_fills` | the ROLL rows' own cost, and their count | `backtest_coordinator.cpp:475`, `:476` |
-| `backtest.equity_curve` | `equity` | each day's value has that day's charge taken off: `value += P&L - costs` | `backtest_coordinator.cpp:1249`, `:1564` |
+| `trading.live_results` | `daily_transaction_costs` | the day's charge: STRATEGY and ROLL fills at their cost after netting | `live_portfolio_conservative.cpp` (the sum) |
+| `trading.live_results` | `total_transaction_costs` | the previous row's total plus the day's | |
+| `trading.live_results` | `daily_roll_costs` | the ROLL legs' part of the day's charge (migration 017) | |
+| `trading.live_results` | `total_roll_costs` | the previous row's total plus the day's | |
+| `backtest.results` | `transaction_costs` | the run: STRATEGY, ROLL and BORROW rows, each after netting (migration 018) | `backtest_coordinator.cpp` |
+| `backtest.results` | `roll_costs`, `total_roll_fills` | the ROLL rows' own cost, and their count | `backtest_coordinator.cpp` |
+| `backtest.equity_curve` | `equity` | each day's value has that day's charge taken off: `value += P&L - costs` | `backtest_coordinator.cpp` |
 
 The trade statistics, each strategy's running P&L and the email's cost lines read the same figure
-(`src/backtest/backtest_metrics_calculator.cpp:428`, `src/strategy/base_strategy.cpp:298`,
-`src/core/email_sender.cpp:3515`).
+(`src/backtest/backtest_metrics_calculator.cpp`, `src/strategy/base_strategy.cpp`,
+`src/core/email_sender.cpp`).
 
 ---
 
@@ -379,7 +378,7 @@ comment is the head of `include/trade_ngin/transaction_cost/netting.hpp`.
 for that sleeve's quantity alone. Netting never changes this column.
 
 **The adjustment.** For one portfolio, one day (one bar in the backtest) and one symbol with two or
-more STRATEGY rows at the same price (`net_symbol_day`, `src/transaction_cost/netting.cpp:46`):
+more STRATEGY rows at the same price (`net_symbol_day`, `src/transaction_cost/netting.cpp`):
 
 ```
 Q             = the signed sum of the sleeve quantities          (the account's order)
@@ -390,7 +389,7 @@ adjustment_i  = credit_total x C(q_i) / sum of C(q_i)
 
 The split is done in whole units of 0.00000001: each row gets the floor of its exact share, then
 one unit goes to the largest remainders, a tie to the smaller sleeve name, so the adjustments sum
-to `credit_total` exactly (`netting.cpp:85` to `:111`). The weight is the row's cost, not its
+to `credit_total` exactly (`netting.cpp`). The weight is the row's cost, not its
 quantity, so no row can end with a negative cost.
 
 `netting_adjustment` is signed:
@@ -402,18 +401,18 @@ quantity, so no row can end with a negative cost.
 | The sleeves trade the same way | negative | one order of the summed size costs more than the two priced alone, because impact grows faster than the quantity |
 | One sleeve row on the symbol-day | 0 | nothing to net |
 | Rows at different fill prices | 0, with a `NETTING_MIXED_PRICES` warning | a symbol-day is netted at one price only |
-| `Q` is not 0 and the rows' own costs sum to 0 | 0 | nothing to split (`netting.cpp:76` to `:80`); no row costs 0 while a fee is charged |
+| `Q` is not 0 and the rows' own costs sum to 0 | 0 | nothing to split (`netting.cpp`); no row costs 0 while a fee is charged |
 
 A sleeve's forecast-sign closes of a symbol are one account order and its other fills another: a
-close is never netted against the fill that follows it (`live_portfolio_conservative.cpp:2550`;
-`portfolio_manager.cpp:2861`).
+close is never netted against the fill that follows it (`live_portfolio_conservative.cpp`;
+`portfolio_manager.cpp`).
 
 **Every total uses own cost minus the adjustment.** The one place the two columns are combined is
 
 ```cpp
-transaction_cost::net_cost(fill)        // total_transaction_costs - netting_adjustment   netting.hpp:97
-transaction_cost::add_net_costs(...)    // a day's or a bar's charge                       netting.cpp:183
-transaction_cost::run_cost_totals(...)  // a backtest run's totals                         netting.cpp:192
+transaction_cost::net_cost(fill)        // total_transaction_costs - netting_adjustment   netting.hpp
+transaction_cost::add_net_costs(...)    // a day's or a bar's charge                       netting.cpp
+transaction_cost::run_cost_totals(...)  // a backtest run's totals                         netting.cpp
 ```
 
 and every total of section 8 is built from them. A sum of `total_transaction_costs` taken straight
@@ -421,25 +420,25 @@ from the table is the sleeves' attribution, not what the account was charged. Th
 symbol-day sum to `C(Q)`.
 
 **Where it runs.** In the backtest the `PortfolioManager` nets each bar's rows as it books them
-(`portfolio_manager.cpp:2860` to `:2872`). A live runner nets the rows it is about to store, then
-adds up the day (`live_portfolio_conservative.cpp:2550` to `:2578`).
+(`portfolio_manager.cpp`). A live runner nets the rows it is about to store, then
+adds up the day (`live_portfolio_conservative.cpp`).
 
 **ROLL and BORROW rows are never netted.** A ROLL leg or a BORROW row must carry an adjustment of
 exactly 0. One that does not is refused, never corrected: `unnetted_row_refusal`
-(`netting.cpp:166`) gives the text and `unnetted_cost`, `add_net_costs` and `run_cost_totals` throw
-`NettingRefused` (`netting.hpp:108`).
+(`netting.cpp`) gives the text and `unnetted_cost`, `add_net_costs` and `run_cost_totals` throw
+`NettingRefused` (`netting.hpp`).
 
 | Runner | What the refusal does |
 |---|---|
-| Backtest, on the day | a `NETTING STOP` error; the run fails on that day (`backtest_coordinator.cpp:1649`, `:367`) |
-| Backtest, at the end of the run | a `NETTING STOP` error before the metrics; no result is returned (`backtest_coordinator.cpp:458` to `:467`) |
-| Live | the exception leaves the run and the runner exits 1 (`live_portfolio_conservative.cpp:4779`); the day's `live_run_metadata` row and its signals are already stored (`:1554`, `:1940`) and none of the day's executions is (`:2632`) |
+| Backtest, on the day | a `NETTING STOP` error; the run fails on that day (`backtest_coordinator.cpp`) |
+| Backtest, at the end of the run | a `NETTING STOP` error before the metrics; no result is returned (`backtest_coordinator.cpp`) |
+| Live | the exception leaves the run and the runner exits 1 (`live_portfolio_conservative.cpp`); the day's `live_run_metadata` row and its signals are already stored and none of the day's executions is |
 
 Roll totals read the leg's own cost. In the backtest `results.roll_costs` and the trade statistics'
-roll cost go through `unnetted_cost` (`netting.cpp:198`; `backtest_metrics_calculator.cpp:452`). A
-live run adds each leg's own cost as it builds the leg (`live_portfolio_conservative.cpp:2439`),
-leaves ROLL rows out of the netting (`:2556`), and the day's sum refuses a ROLL row that carries an
-adjustment (`:2576`).
+roll cost go through `unnetted_cost` (`netting.cpp`; `backtest_metrics_calculator.cpp`). A
+live run adds each leg's own cost as it builds the leg (`live_portfolio_conservative.cpp`),
+leaves ROLL rows out of the netting, and the day's sum refuses a ROLL row that carries an
+adjustment.
 
 **One-sleeve books.** CONSERVATIVE and the equity book have one sleeve, so every symbol-day has
 one row and every adjustment is 0: for them cost after netting equals own cost, row by row.
@@ -450,12 +449,12 @@ one row and every adjustment is 0: for them cost after netting equals own cost, 
 
 The cost model is called for a decision in one place: the whole-contract search of the futures
 book. For every symbol the search weighs, the `PortfolioManager` prices one contract bought at the
-signal close (`portfolio_manager.cpp:2132` to `:2136`), divides it by the sizing capital
-(`src/optimization/one_pass.cpp:529`) and the search adds `cost multiplier x contracts traded x
-that cost` to the tracking error it minimises (`one_pass.cpp:205`). The multiplier is
-`optimization.cost_penalty_scalar`, 100 (`config_template/defaults.json:19`). A symbol the cost
+signal close (`portfolio_manager.cpp`), divides it by the sizing capital
+(`src/optimization/one_pass.cpp`) and the search adds `cost multiplier x contracts traded x
+that cost` to the tracking error it minimises (`one_pass.cpp`). The multiplier is
+`optimization.cost_penalty_scalar`, 100 (`config_template/defaults.json`). A symbol the cost
 model has no usable volume for is not priced on the 100,000 default: it is held at its held
-quantity with no fill (`portfolio_manager.cpp:2144` to `:2160`). The search itself is in
+quantity with no fill (`portfolio_manager.cpp`). The search itself is in
 `docs/OPTIMIZER_AND_RISK_DESIGN.md`.
 
 The cost model is not called by the forecasts, the sizing or the risk overlay. The per-contract
@@ -463,7 +462,7 @@ list of trading rules a contract does not run (`trading_rule_removals`) is a fix
 not something a run computes; it is described in `docs/TREND_FOLLOWING_SYSTEM.md`. A book with
 no overlay sleeve (the equity book) does not run that search, and the generic optimiser step's cost
 vector is zero for every symbol (`PortfolioManager::calculate_trading_costs`,
-`portfolio_manager.cpp:991`).
+`portfolio_manager.cpp`).
 
 ---
 
