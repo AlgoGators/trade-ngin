@@ -448,14 +448,21 @@ TEST_F(QtBooksDb, LiveResultsManagerWritesItsBookOnly) {
     EXPECT_EQ(fp(kPos, "qt") + fp(kExecs, "qt") + fp(kLive, "qt") + fp(kCurve, "qt"), qt)
         << "a system save moved qt rows";
 
-    // The invalid-equity fallback reads the last good equity of its own book: qt's 04-23 row,
-    // not system's later 04-24 row a book-blind read would take.
+    // An invalid equity is refused (T-8D-2 R47; no fallback to an older stored equity): the save
+    // fails, the qt book's curve has no row of the date (its stale row was deleted first), and
+    // neither qt's other rows nor the system book move.
     ASSERT_TRUE(db_->store_trading_equity_curve(kSid, at(2026, 4, 23), 499700.0, kPid, kCurve, "qt").is_ok());
-    ASSERT_TRUE(save("qt", 6, 0.0).is_ok());
-    EXPECT_EQ(scalar("SELECT equity::text FROM trading.equity_curve WHERE strategy_id = "
+    const auto system_curve = fp(kCurve, "system");
+    EXPECT_TRUE(save("qt", 6, 0.0).is_error());
+    EXPECT_EQ(scalar("SELECT count(*)::text FROM trading.equity_curve WHERE strategy_id = "
                      "'QTBOOKS_PROBE_ID' AND portfolio_type = 'qt' AND timestamp = "
                      "'2026-04-24 21:00:00+00'"),
+              "0");
+    EXPECT_EQ(scalar("SELECT equity::text FROM trading.equity_curve WHERE strategy_id = "
+                     "'QTBOOKS_PROBE_ID' AND portfolio_type = 'qt' AND DATE(timestamp) = "
+                     "'2026-04-23'"),
               "499700");
+    EXPECT_EQ(fp(kCurve, "system"), system_curve) << "a refused qt save moved system rows";
 
     LiveResultsManager bad(db_, true, kSid, kPid, kSleeve);
     EXPECT_TRUE(bad.set_book("desk").is_error());
