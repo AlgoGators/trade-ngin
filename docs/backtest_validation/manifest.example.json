@@ -1,0 +1,18 @@
+{
+  "issue": 113,
+  "snapshot_utc": "PENDING_HD_SCRATCH_SNAPSHOT",
+  "engine_sha": "PENDING_LATEST_MERGED_MAIN_AT_HANDOFF",
+  "window_protocol": "frozen_end_date_plus_lookback_years",
+  "analysis": {
+    "periods_per_year": 252,
+    "confidence": 0.95,
+    "resamples": 10000,
+    "seed": 42,
+    "block_lengths": [10, 20, 40],
+    "cscv_groups": 10,
+    "selection_metric": "sample_sharpe",
+    "tie_break": "lexical_trial_id"
+  },
+  "runs": [],
+  "trial_ledger_complete": false
+}
