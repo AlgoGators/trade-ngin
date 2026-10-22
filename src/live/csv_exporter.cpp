@@ -2,11 +2,14 @@
 #include <arrow/api.h>
 #include <arrow/type.h>
 #include <cmath>
+#include <cstdio>
 #include <iomanip>
 #include <set>
 #include <sstream>
 #include <unordered_set>
 #include "trade_ngin/core/logger.hpp"
+#include "trade_ngin/core/report_price_text.hpp"
+#include "trade_ngin/live/account_detail.hpp"
 #include "trade_ngin/core/report_settled_marks.hpp"
 #include "trade_ngin/data/conversion_utils.hpp"
 #include "trade_ngin/data/database_interface.hpp"
@@ -17,6 +20,38 @@
 #include "trade_ngin/strategy/trend_readings.hpp"
 
 namespace trade_ngin {
+
+namespace {
+// HD 10-13, one number rule for the email and the files: a price has four decimals, or the decimals of
+// the contract's tick when four cannot show it (report_price_places); a futures quantity has two
+// decimals, a share quantity keeps six (rounding fractional shares loses the holding); money has two.
+std::shared_ptr<Instrument> csv_instrument_of(const std::string& symbol) {
+    std::string lookup_sym = symbol;
+    for (const char* suffix : {".v.", ".c."}) {
+        const auto dotpos = lookup_sym.find(suffix);
+        if (dotpos != std::string::npos) lookup_sym = lookup_sym.substr(0, dotpos);
+    }
+    try {
+        return InstrumentRegistry::instance().get_instrument(lookup_sym);
+    } catch (...) {
+        return nullptr;
+    }
+}
+std::string csv_fixed(double value, int places) {
+    char buf[64];
+    std::snprintf(buf, sizeof(buf), "%.*f", places, value);
+    return buf;
+}
+std::string csv_price(const std::string& symbol, double price) {
+    (void)symbol;  // HD 2026-10-14 (section 16.9): four decimals on every price, in the email and the files
+    return csv_fixed(price, 4);
+}
+std::string csv_quantity(const std::string& symbol, double quantity) {
+    const auto instrument = csv_instrument_of(symbol);
+    const bool shares = instrument && instrument->get_type() == AssetType::EQUITY;
+    return csv_fixed(quantity, shares ? 6 : 2);
+}
+}  // namespace
 
 CSVExporter::CSVExporter(const std::string& output_directory)
     : output_directory_(output_directory) {
@@ -168,10 +203,12 @@ Result<std::string> CSVExporter::export_finalized_positions(
 
                 // The two prices, by the report's own rule: a price that is not known is an
                 // empty cell (a 0 would read as a price).
-                const SettledCsvCells cells = settled_csv_cells(
-                    settled_price_of(prior_marks, symbol), settled_price_of(marks, symbol));
-                file << display_name << "," << symbol << "," << quantity << "," << cells.prior_mark
-                     << "," << cells.mark << "," << realized_pnl << "\n";
+                const auto prior = settled_price_of(prior_marks, symbol);
+                const auto mark = settled_price_of(marks, symbol);
+                file << display_name << "," << symbol << "," << csv_quantity(symbol, quantity) << ","
+                     << (prior ? csv_price(symbol, *prior) : std::string()) << ","
+                     << (mark ? csv_price(symbol, *mark) : std::string()) << ","
+                     << csv_fixed(realized_pnl, 2) << "\n";
             }
         }
 
@@ -313,8 +350,8 @@ Result<std::string> CSVExporter::export_current_positions(
                 const TrendReadings readings = trend_readings_of(strategy, symbol);
 
                 // Write position row with strategy column
-                file << display_name << "," << symbol << "," << quantity << ","
-                     << round_trip_number(market_price) << "," << notional << "," << pct_of_gross
+                file << display_name << "," << symbol << "," << csv_quantity(symbol, quantity) << ","
+                     << csv_price(symbol, market_price) << "," << csv_fixed(notional, 2) << "," << pct_of_gross
                      << "," << pct_of_portfolio << "," << readings.forecast << ","
                      << readings.sizing_vol << "," << readings.ema_8 << "," << readings.ema_32
                      << "," << readings.ema_64 << "," << readings.ema_256 << "\n";
@@ -427,8 +464,8 @@ Result<std::string> CSVExporter::export_carried_positions(
                         ? (std::abs(notional) / std::abs(portfolio_value)) * 100.0
                         : 0.0;
 
-                file << display_name << "," << symbol << "," << quantity << ","
-                     << round_trip_number(market_price) << "," << notional << "," << pct_of_gross
+                file << display_name << "," << symbol << "," << csv_quantity(symbol, quantity) << ","
+                     << csv_price(symbol, market_price) << "," << csv_fixed(notional, 2) << "," << pct_of_gross
                      << "," << pct_of_portfolio << ",";
                 auto f_it = carried.forecasts.find(symbol);
                 if (f_it != carried.forecasts.end()) file << f_it->second;
@@ -451,6 +488,74 @@ Result<std::string> CSVExporter::export_carried_positions(
             ErrorCode::FILE_IO_ERROR,
             "Failed to export carried positions: " + std::string(e.what())));
     }
+}
+
+Result<std::string> CSVExporter::export_equity_positions(
+    const std::chrono::system_clock::time_point& date, const std::string& strategy,
+    const std::vector<EquityCsvRow>& rows) {
+    const std::string filename = output_directory_ + format_date_for_filename(date) + "_positions.csv";
+    std::ofstream file(filename);
+    if (!file.is_open()) {
+        return Result<std::string>(std::make_unique<TradeError>(
+            ErrorCode::FILE_IO_ERROR, "Failed to open file for writing: " + filename));
+    }
+    double gross = 0.0;
+    for (const auto& r : rows) gross += std::abs(r.quantity * r.price.value_or(r.average_cost));
+    file << "strategy,symbol,quantity,average_cost,price,notional,unrealized_pnl,pct_of_gross_notional\n";
+    for (const auto& r : rows) {
+        const double price = r.price.value_or(r.average_cost);
+        const double notional = r.quantity * price;
+        file << strategy << "," << r.symbol << "," << csv_fixed(r.quantity, 6) << ","
+             << csv_fixed(r.average_cost, 4) << "," << csv_fixed(price, 4) << ","
+             << csv_fixed(notional, 2) << "," << csv_fixed(r.quantity * (price - r.average_cost), 2)
+             << "," << csv_fixed(gross != 0.0 ? std::abs(notional) / gross * 100.0 : 0.0, 2) << "\n";
+    }
+    file.close();
+    INFO("CSVExporter: equity positions saved to " + filename);
+    return Result<std::string>(filename);
+}
+
+Result<std::string> CSVExporter::export_equity_settled(
+    const std::chrono::system_clock::time_point& date,
+    const std::chrono::system_clock::time_point& settled, const std::string& strategy,
+    const std::vector<EquityCsvRow>& rows) {
+    const std::string filename = output_directory_ + format_date_for_filename(settled) +
+                                 "_positions_asof_" + format_date_for_filename(date) + ".csv";
+    std::ofstream file(filename);
+    if (!file.is_open()) {
+        return Result<std::string>(std::make_unique<TradeError>(
+            ErrorCode::FILE_IO_ERROR, "Failed to open file for writing: " + filename));
+    }
+    file << "strategy,symbol,quantity,average_cost,previous_price,latest_price,days_pnl,unrealized_pnl,realized_pnl\n";
+    for (const auto& r : rows) {
+        file << strategy << "," << r.symbol << "," << csv_fixed(r.quantity, 6) << ","
+             << csv_fixed(r.average_cost, 4) << ","
+             << (r.previous ? csv_fixed(*r.previous, 4) : std::string()) << ","
+             << (r.latest ? csv_fixed(*r.latest, 4) : std::string()) << ","
+             << csv_fixed(r.days_pnl, 2) << "," << csv_fixed(r.unrealized, 2) << ","
+             << csv_fixed(r.realized, 2) << "\n";
+    }
+    file.close();
+    INFO("CSVExporter: equity settled positions saved to " + filename);
+    return Result<std::string>(filename);
+}
+
+Result<std::string> CSVExporter::export_account_detail(
+    const std::string& portfolio_id, const std::string& date,
+    const std::vector<std::pair<std::string, std::string>>& columns) {
+    const std::string filename = output_directory_ + "account_detail_" + portfolio_id + "_" + date + ".csv";
+    std::ofstream file(filename);
+    if (!file.is_open()) {
+        return Result<std::string>(std::make_unique<TradeError>(
+            ErrorCode::FILE_IO_ERROR, "Failed to open file for writing: " + filename));
+    }
+    for (const auto& row : account_detail_rows(columns)) {
+        for (size_t i = 0; i < row.size(); ++i) file << (i ? "," : "") << row[i];
+        file << "\n";
+    }
+    file.close();
+    INFO("CSVExporter: account detail saved to " + filename);
+    return Result<std::string>(filename);
 }
 
 }  // namespace trade_ngin

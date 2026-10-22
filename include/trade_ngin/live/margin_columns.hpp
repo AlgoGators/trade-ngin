@@ -78,4 +78,25 @@ inline std::string finalize_gross_leverage_sql(const std::string& finalised_valu
            " ELSE 0.0 END, ";
 }
 
+
+/// cash_available of an equity row (HD 2026-10-14, EMAIL_FEEDBACK section 16.6). A cash account's
+/// cash is the portfolio value less the unrealized P&L (the shares at the day's close) less the
+/// margin posted (what the shares cost): value - unrealized - margin. The unrealized gain is not
+/// cash. A margin account keeps value - margin; it is decided when margin trading is turned on.
+inline double equity_cash_available(double portfolio_value, double unrealized_pnl,
+                                    double margin_posted, bool cash_account) {
+    return portfolio_value - (cash_account ? unrealized_pnl : 0.0) - margin_posted;
+}
+
+/// The same figure as the assignment of the Day T-1 finalise UPDATE: the finalised value (the
+/// expression the UPDATE assigns to current_portfolio_value), less the finalised unrealized P&L
+/// on a cash account, less the row's own stored margin_posted.
+inline std::string equity_cash_available_sql(const std::string& finalised_value_sql,
+                                             const std::string& finalised_unrealized_sql,
+                                             bool cash_account) {
+    return "cash_available = (" + finalised_value_sql + ")" +
+           (cash_account ? " - (" + finalised_unrealized_sql + ")" : std::string()) +
+           " - COALESCE(margin_posted, 0.0) ";
+}
+
 }  // namespace trade_ngin

@@ -415,7 +415,7 @@ TEST_F(CarriedFileTest, ASundayFileCarriesHeldQuantitiesLastMarksAndLastForecast
     EXPECT_EQ(rows.size(), 6u) << "two sleeves x three symbols";
     const auto& fast_c = rows.at({"Trend Following Fast", "ZC3C.v.0"});
     EXPECT_DOUBLE_EQ(std::stod(fast_c[2]), 1.0) << "held quantity";
-    EXPECT_DOUBLE_EQ(std::stod(fast_c[3]), 0.73325) << "last mark, not 0";
+    EXPECT_DOUBLE_EQ(std::stod(fast_c[3]), 0.7332) << "last mark, not 0, at the contract's four decimals";
     EXPECT_DOUBLE_EQ(std::stod(fast_c[4]), 73325.0) << "notional at the last mark";
     EXPECT_DOUBLE_EQ(std::stod(fast_c[7]), 4.25) << "FAST's own last forecast, not 0 and not TF's";
     EXPECT_EQ(fast_c[13], "2026-04-24");

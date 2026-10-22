@@ -24,6 +24,7 @@
 #include <optional>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 
 #include "trade_ngin/core/report_price_text.hpp"
 #include "trade_ngin/data/finite_statement.hpp"
@@ -35,10 +36,34 @@ namespace trade_ngin {
 inline constexpr const char* kSettledPreviousPriceLabel = "Previous price";
 inline constexpr const char* kSettledLatestPriceLabel = "Latest price";
 /// What the latest-price cell of the report prints for a symbol that printed no bar that day.
-inline constexpr const char* kSettledNoBar = "no bar";
-/// The one footnote under the table, printed only when a row carries the words.
-inline constexpr const char* kSettledNoBarFootnote =
-    "no bar: the market did not print a price that day; the position's P&L for the day is 0";
+inline constexpr const char* kSettledNoBar = "\xE2\x80\x93";  // an en dash; the row carries footnote 1
+/// The symbols whose settled bar booked no move, by the kind the settle knew (T-EMAIL, HD 10-13):
+/// a ROLL (the series switched contract on that bar: its two prices are of two contracts) and a
+/// price NOT ACCEPTED (a withheld bar: the move is booked with the next price).
+struct SettledZeroKinds {
+    std::unordered_set<std::string> roll;
+    std::unordered_set<std::string> withheld;
+};
+/// Footnote numbers of a settled row booked at zero (the report's footnote lines, HD 10-13).
+inline constexpr int kSettledNoteRoll = 2;
+inline constexpr int kSettledNoteNotAccepted = 3;
+
+/// The footnote number of a futures row's $0.00: 2 (contract roll), 3 (price not accepted) or 0
+/// (none). A row carries it when its symbol is in one of the two sets, the quantity is not zero,
+/// the two prices are known and the figure prints as $0.00.
+inline int settled_zero_note(bool equities, const std::string& symbol, double quantity,
+                             std::optional<double> previous, std::optional<double> latest,
+                             double realized, const SettledZeroKinds& kinds) {
+    if (equities || quantity == 0.0 || !previous || !latest)
+        return 0;
+    if (report_dollars(realized) != "$0.00")
+        return 0;
+    if (kinds.withheld.count(symbol))
+        return kSettledNoteNotAccepted;
+    if (kinds.roll.count(symbol))
+        return kSettledNoteRoll;
+    return 0;
+}
 
 /// The two prices of every symbol of the settled table. A symbol absent from `latest` printed no
 /// bar on the settled day; a symbol absent from `previous` has no known earlier price.
@@ -96,71 +121,16 @@ struct SettledPriceCells {
 /**
  * @brief The report's two cells of a row. `latest` empty is the no-bar row: the cell reads
  *        "no bar" (no "n/a", no carried price) and the footnote prints. A previous price that is
- *        not known reads "n/a". A price prints every decimal it has (report_price_text).
+ *        not known reads "n/a". A price prints every decimal it has, with its dollar sign and thousands separators
+ *        (report_price_dollars).
  */
 inline SettledPriceCells settled_price_cells(std::optional<double> previous,
-                                             std::optional<double> latest) {
+                                             std::optional<double> latest, int places = 4) {
     SettledPriceCells cells;
-    cells.previous = previous ? report_price_text(*previous, true) : std::string("n/a");
+    cells.previous = previous ? report_price_dollars_places(*previous, places) : std::string("n/a");
     cells.no_bar = !latest.has_value();
-    cells.latest = latest ? report_price_text(*latest, true) : std::string(kSettledNoBar);
+    cells.latest = latest ? report_price_dollars_places(*latest, places) : std::string(kSettledNoBar);
     return cells;
-}
-
-/// The footnote's line of the report, for a table with at least one no-bar row; empty otherwise.
-/// The sentence is written into the page with its ampersand escaped ("P&amp;L").
-inline std::string settled_no_bar_footnote_html(bool any_no_bar_row) {
-    if (!any_no_bar_row)
-        return {};
-    std::string sentence;
-    for (const char* c = kSettledNoBarFootnote; *c != '\0'; ++c) {
-        if (*c == '&')
-            sentence += "&amp;";
-        else
-            sentence += *c;
-    }
-    return "<div style=\"font-size: 12px; color: #666; margin: 4px 0 4px 0;\">" + sentence +
-           "</div>\n";
-}
-
-/// The sentence under the settled table of a FUTURES book: what the two prices are and what a
-/// reader can work out from a row. A futures row's Realized PnL is the settle's own figure,
-/// quantity x (latest - previous) x contract size, so the row multiplies out. The settle books 0
-/// by rule on two kinds of bar whatever the two closes are, and the sentence names them: a change
-/// bar (the continuous series changes contract: the previous price is the outgoing contract's
-/// close and the latest the incoming one's) and a withheld bar (a print the run did not accept).
-/// A no-bar row is the footnote's.
-inline constexpr const char* kSettledNoteFutures =
-    "Previous price and Latest price are the two closes the settled day was booked between: "
-    "quantity times the price change times the contract size is the row's Realized PnL, the "
-    "settled day's stored figure. Two kinds of row are booked at $0.00 whatever their two prices "
-    "show: a row on a day its price series changes to another contract (its two prices are then "
-    "of two different contracts), and a row whose price for that day was not accepted (for "
-    "example a bad print, or a contract change not yet confirmed).";
-
-/// The sentence under the settled table of the EQUITY book. Its two prices are the pair the
-/// settle measured the day's move between, closes of the series as the run loaded it: that
-/// series is adjusted back for a dividend or a split whose ex-date bar it holds, and it ends at
-/// the settled day, so the previous price is restated exactly when the settled day is the
-/// ex-date (META 2026-06-15: 566.47888553 printed, 566.98 the close as it printed) and the
-/// latest price never is. The table's Realized PnL cell is the row's realized P&L of that day,
-/// not the day's move: the equity row stores the move in the value of its holding, which the
-/// table has no column for. So the sentence says what quantity times the price change is, and
-/// that it is not the cell beside it.
-inline constexpr const char* kSettledNoteEquity =
-    "Previous price and Latest price are the two closes the settled day's price move was "
-    "measured between: quantity times the price change is that holding's gain or loss from the "
-    "day's price move, which this table does not print. On a day a holding goes ex-dividend or "
-    "splits, its previous price is the close before restated for that event, not the close as "
-    "it printed. Realized PnL is the gain or loss the holding realized that day, the settled "
-    "day's stored figure; it is not the day's price move, so a row is not expected to multiply "
-    "out to it.";
-
-/// The line under the settled table (and under its footnote, when there is one): the sentence of
-/// the book's kind.
-inline std::string settled_table_note_html(bool equities) {
-    return std::string("<div style=\"font-size: 12px; color: #666; margin: 4px 0 12px 0;\">") +
-           (equities ? kSettledNoteEquity : kSettledNoteFutures) + "</div>\n";
 }
 
 /// The two cells of one row of the file: prior_mark and mark.

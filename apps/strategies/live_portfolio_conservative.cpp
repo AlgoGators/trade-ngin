@@ -32,6 +32,9 @@
 #include "trade_ngin/live/csv_exporter.hpp"
 #include "trade_ngin/live/data_freshness.hpp"
 #include "trade_ngin/live/email_body_file.hpp"
+#include "trade_ngin/live/account_detail.hpp"
+#include "trade_ngin/live/email_delivery.hpp"
+#include "trade_ngin/live/run_args.hpp"
 #include "trade_ngin/live/execution_manager.hpp"
 #include "trade_ngin/live/finalized_books_read.hpp"
 #include "trade_ngin/live/late_bar_warning.hpp"
@@ -136,9 +139,11 @@ int main(int argc, char* argv[]) {
             }
         }
 
-        // If no date override, enable email by default for real-time runs
+        // A run names its date (live/run_args.hpp, T-EMAIL P2-5): without one nothing is run and
+        // nothing is sent.
         if (!use_override_date) {
-            send_email = true;
+            std::cerr << live::dateless_run_message(argv[0]);
+            return live::kDatelessRunExitCode;
         }
 
         if (send_email && use_override_date) {
@@ -4293,6 +4298,7 @@ int main(int argc, char* argv[]) {
         // email_body_<portfolio>_<date>.html and nothing is mailed; without it nothing is built.
         // Production always sends and test runs never do, so the file path cannot run in
         // production. email_body_file.hpp.
+        bool email_failed = false;  // the report was not built, written or sent: exit code 4
         const live::EmailReportPlan email_plan =
             live::plan_email_report(send_email, std::getenv(live::kEmailBodyDirEnv));
         if (email_plan.variable_ignored) {
@@ -4320,6 +4326,7 @@ int main(int argc, char* argv[]) {
                 if (email_init_result.is_error()) {
                     ERROR("Failed to initialize email sender: " +
                           std::string(email_init_result.error()->what()));
+                    email_failed = true;
                 } else {
                     // Prepare email data
                     std::string date_str =
@@ -4552,6 +4559,8 @@ int main(int argc, char* argv[]) {
                     // carried book: no session), never the weekday's.
                     report_context.live_start_date = book_live_start_date;
                     report_context.prior_day_no_session = skip_strategy_processing;
+                    report_context.settled_zero_kinds.roll = t1_settlement.roll_zero_symbols;
+                    report_context.settled_zero_kinds.withheld = t1_settlement.withheld_zero_symbols;
                     // The two capital keys of the day's risk_detail, when the row carries one
                     // (the condition and the values of the set_risk_detail call above).
                     if (one_pass_day.stores_detail()) {
@@ -4638,6 +4647,10 @@ int main(int argc, char* argv[]) {
                     // Generate email body with is_daily_strategy flag set to true and current
                     // prices. Pass strategy_positions_map and all_strategy_executions for
                     // per-strategy tables.
+                    const trade_ngin::OverLimitReport over_limit_for_report =
+                        trade_ngin::over_limit_report(one_pass_day, overlay_columns,
+                                                      portfolio_config.risk_modules,
+                                                      portfolio_config.per_name_cap);
                     std::string email_body = email_sender->generate_trading_report_body(
                         strategy_positions_map,  // Per-strategy positions for grouped tables
                         positions,
@@ -4655,10 +4668,7 @@ int main(int argc, char* argv[]) {
                         combined_strategy_id,           // The charts query this run's own rows
                         // T-8D R20: the stored book's leverage on the sizing capital beside the
                         // limits the overlay ran with, and the day's over-limit marks.
-                        trade_ngin::over_limit_report(one_pass_day, overlay_columns,
-                                                      portfolio_config.risk_modules,
-                                                      portfolio_config.per_name_cap),
-                        report_context);
+                        over_limit_for_report, report_context);
 
                     // Send email with CSV attachments: today's positions and yesterday's finalized
                     // (if available)
@@ -4666,47 +4676,51 @@ int main(int argc, char* argv[]) {
                     if (!yesterday_filename.empty()) {
                         attachments.push_back(yesterday_filename);
                     }
-
-                    // T-7a C5: a day the portfolio risk module could not answer is flagged in
-                    // the subject and at the top of the body.
-                    if (risk_module_failure) {
-                        subject = risk_module_failure_email_subject(subject);
-                        email_body = flag_email_body_for_risk_module_failure(
-                            email_body, *risk_module_failure);
-                    }
-                    // T-7b-1 C7b R2: a carried day's email opens with the reason its positions
-                    // file carries (a feed-hole carry read as a normal day with 0 executions).
-                    if (skip_strategy_processing) {
-                        email_body = flag_email_body_for_carried_day(email_body, carried_day_note);
-                    }
-
-                    if (email_plan.write_body_file) {
-                        const std::string body_path = live::email_body_file_path(
-                            email_plan.body_dir, portfolio_id, date_str);
-                        if (!live::write_email_body_file(body_path, email_body)) {
-                            ERROR("EMAIL_BODY_FILE could not write " + body_path);
+                    // The account detail file (HD 10-13): the stored row's figures and the day's
+                    // over-limit report, one row.
+                    {
+                        const auto detail = csv_exporter->export_account_detail(
+                            portfolio_id, date_str,
+                            trade_ngin::account_detail_columns(
+                                date_str,
+                                trade_ngin::read_account_detail_row(
+                                    db, combined_strategy_id, coordinator_config.portfolio_id,
+                                    date_str),
+                                &over_limit_for_report, strategy_metrics));
+                        if (detail.is_ok()) {
+                            attachments.push_back(detail.value());
                         } else {
-                            INFO("EMAIL_BODY_FILE wrote " + body_path + " (" +
-                                 std::to_string(email_body.size()) + " bytes); nothing is mailed");
+                            ERROR("Failed to export the account detail file: " +
+                                  std::string(detail.error()->what()));
                         }
-                    } else {
-                        auto send_result =
-                            email_sender->send_email(subject, email_body, true, attachments);
-                        if (send_result.is_error()) {
-                            ERROR("Failed to send email: " +
-                                  std::string(send_result.error()->what()));
-                        } else {
-                            std::string attachment_list = today_filename;
-                            if (!yesterday_filename.empty()) {
-                                attachment_list += ", " + yesterday_filename;
+                    }
+
+                    // The day's flags, then the body file or the one send (live/email_delivery.hpp,
+                    // T-EMAIL P2-4). T-7a C5: a day the portfolio risk module could not answer is
+                    // flagged in the subject and at the top of the body. T-7b-1 C7b R2: a carried
+                    // day's email opens with the reason its positions file carries.
+                    const live::EmailDelivery delivery = live::deliver_email_report(
+                        email_plan, portfolio_id, date_str, subject, email_body,
+                        risk_module_failure, skip_strategy_processing, carried_day_note,
+                        [&](const std::string& mail_subject, const std::string& mail_body)
+                            -> std::optional<std::string> {
+                            auto send_result = email_sender->send_email(mail_subject, mail_body,
+                                                                        true, attachments);
+                            if (send_result.is_error()) {
+                                return std::string(send_result.error()->what());
                             }
-                            INFO("Email report sent successfully with CSV attachments: " +
-                                 attachment_list);
-                        }
+                            return std::nullopt;
+                        });
+                    if (!delivery.ok) {
+                        ERROR(delivery.message);
+                        email_failed = true;
+                    } else {
+                        INFO(delivery.message);
                     }
                 }
             } catch (const std::exception& e) {
                 ERROR("Exception during email sending: " + std::string(e.what()));
+                email_failed = true;
             }
         } else {
             INFO("Email reporting disabled");
@@ -4719,7 +4733,11 @@ int main(int argc, char* argv[]) {
             ERROR("RISK_MODULE_FAILURE the day is stored with the book held; exiting " +
                   std::to_string(kRiskModuleFailureExitCode));
         }
-        return live_run_exit_code(risk_module_failure);
+        if (email_failed && !risk_module_failure) {
+            ERROR("EMAIL_FAILED the day is stored; the report was not delivered; exiting " +
+                  std::to_string(live::kEmailFailureExitCode));
+        }
+        return live::futures_run_exit_code(risk_module_failure, email_failed);
 
     } catch (const std::exception& e) {
         std::cerr << "Unexpected error: " << e.what() << std::endl;

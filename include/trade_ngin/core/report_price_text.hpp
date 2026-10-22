@@ -1,6 +1,7 @@
 // include/trade_ngin/core/report_price_text.hpp
 #pragma once
 
+#include <algorithm>
 #include <cmath>
 #include <cstdio>
 #include <string>
@@ -39,6 +40,79 @@ inline std::string report_price_text(double price, bool thousands = false) {
         }
     }
     return text;
+}
+
+
+/**
+ * @brief A price with its dollar sign and thousands separators, as every price of the daily report
+ *        prints (T-EMAIL, HD ruling Q9): "$79,070.00", "$0.0062995", "-$1.25"; "n/a" for a value
+ *        that is not finite.
+ */
+inline std::string report_price_dollars(double price) {
+    if (!std::isfinite(price))
+        return "n/a";
+    const bool negative = price < 0 && report_price_text(-price) != "0.00";
+    return std::string(negative ? "-$" : "$") + report_price_text(std::fabs(price), true);
+}
+
+/**
+ * @brief An amount with its dollar sign, thousands separators and `decimals` decimals, as every
+ *        amount of the daily report prints: "$1,234.50", and a negative as "-$1,234.50", never
+ *        "$-1,234.50". An amount that rounds to zero prints "$0.00" with no sign.
+ */
+inline std::string report_dollars(double value, int decimals = 2) {
+    if (!std::isfinite(value))
+        return "n/a";
+    char buf[64];
+    std::snprintf(buf, sizeof(buf), "%.*f", decimals, std::fabs(value));
+    std::string text = buf;
+    const bool zero = text.find_first_not_of("0.") == std::string::npos;
+    const size_t point = text.find('.');
+    const int integer_end = static_cast<int>(point == std::string::npos ? text.size() : point);
+    for (int at = integer_end - 3; at > 0; at -= 3)
+        text.insert(static_cast<size_t>(at), ",");
+    return std::string(value < 0 && !zero ? "-$" : "$") + text;
+}
+
+/**
+ * @brief The decimals every price of one contract prints with, in every table and file (HD
+ *        10-13): four, or the decimals of the contract's tick when four cannot show a tick
+ *        exactly (6J 0.0000005 -> 7, ZF 1/64 -> 6), so a row still multiplies out.
+ */
+inline int report_price_places(double tick_size) {
+    if (!(tick_size > 0.0) || !std::isfinite(tick_size))
+        return 4;
+    for (int places = 4; places < 10; ++places) {
+        const double scaled = tick_size * std::pow(10.0, places);
+        if (std::fabs(scaled - std::round(scaled)) < 1e-6 * std::max(1.0, scaled))
+            return places;
+    }
+    return 8;
+}
+
+/// A price at a fixed number of decimals, optionally with thousands separators; "n/a" if not finite.
+inline std::string report_price_fixed(double price, int places, bool thousands = false) {
+    if (!std::isfinite(price))
+        return "n/a";
+    char buf[64];
+    std::snprintf(buf, sizeof(buf), "%.*f", places, std::fabs(price));
+    std::string text = buf;
+    if (thousands) {
+        const size_t point = text.find('.');
+        for (int at = static_cast<int>(point == std::string::npos ? text.size() : point) - 3; at > 0;
+             at -= 3)
+            text.insert(static_cast<size_t>(at), ",");
+    }
+    const bool zero = text.find_first_not_of("0.,") == std::string::npos;
+    return std::string(price < 0 && !zero ? "-" : "") + text;
+}
+
+/// "$1,234.5000" / "-$1,234.5000" at `places` decimals.
+inline std::string report_price_dollars_places(double price, int places) {
+    if (!std::isfinite(price))
+        return "n/a";
+    const std::string text = report_price_fixed(price, places, true);
+    return text[0] == '-' ? "-$" + text.substr(1) : "$" + text;
 }
 
 }  // namespace trade_ngin

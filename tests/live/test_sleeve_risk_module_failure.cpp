@@ -357,8 +357,10 @@ TEST(SleeveRiskModuleFailureSource, BothTwinsFlagMarkAndExitOnASleeveFailure) {
         EXPECT_NE(block.find("mark_risk_refusal(portfolio_config_json, *risk_module_failure,"),
                   npos);
         // The exit code and the email flag are the portfolio rule's, driven by the same variable.
-        EXPECT_NE(src.find("return live_run_exit_code(risk_module_failure);"), npos);
-        EXPECT_NE(src.find("subject = risk_module_failure_email_subject(subject);"), npos);
+        EXPECT_NE(src.find("return live::futures_run_exit_code(risk_module_failure, email_failed);"),
+                  npos);
+        EXPECT_NE(src.find("risk_module_failure, skip_strategy_processing, carried_day_note,"), npos)
+            << "the email flag is put on by deliver_email_report (EmailDelivery.*)";
         blocks[i++] = block;
     }
     EXPECT_EQ(blocks[0], blocks[1]) << "the twins' C10b blocks differ";

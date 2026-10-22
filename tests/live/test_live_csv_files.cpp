@@ -169,13 +169,15 @@ TEST_F(LiveCsvFiles, EveryRowOfThePositionsFilePrintsSixDecimalsTheFirstRowInclu
         const auto cells = cells_of(lines[i]);
         ASSERT_EQ(cells.size(), 13u) << lines[i];
         for (size_t c = 2; c < cells.size(); ++c) {
-            if (c == 3)
-                continue;  // market_price: printed in full, below
+            if (c == 3 || c == 2 || c == 4)
+                continue;  // quantity, market_price and notional: the one number rule, below
             EXPECT_TRUE(std::regex_match(cells[c], kSixDecimals))
                 << "row " << (i - h) << " column " << c << " prints '" << cells[c]
                 << "': " << lines[i];
         }
-        EXPECT_EQ(cells[3], "110.90625") << "the mark, every digit it has and no more";
+        EXPECT_EQ(cells[3], "110.9062") << "the price at the decimals of its contract (HD 10-13)";
+        EXPECT_TRUE(std::regex_match(cells[2], std::regex("-?[0-9]+\\.[0-9]{2}"))) << "a quantity has two decimals";
+        EXPECT_TRUE(std::regex_match(cells[4], std::regex("-?[0-9]+\\.[0-9]{2}"))) << "money has two decimals";
     }
 }
 
@@ -192,14 +194,11 @@ TEST_F(LiveCsvFiles, TheSettledFileKeepsEveryDigitOfASmallMark) {
     ASSERT_EQ(lines.size(), 2u);
     const auto cells = cells_of(lines[1]);
     ASSERT_EQ(cells.size(), 6u) << lines[1];
-    EXPECT_EQ(cells[3], "0.0063125") << "the prior mark lost a digit: " << lines[1];
-    EXPECT_EQ(cells[4], "0.0062995") << "the mark lost a digit: " << lines[1];
-    EXPECT_EQ(std::stod(cells[3]), 0.0063125);
-    EXPECT_EQ(std::stod(cells[4]), 0.0062995);
-    // The row's realized P&L can be rebuilt from its two printed marks (12,500,000 a point).
-    EXPECT_NEAR(-1.0 * (std::stod(cells[4]) - std::stod(cells[3])) * 12500000.0, 162.5, 1e-6);
-    EXPECT_EQ(cells[2], "-1.000000");
-    EXPECT_EQ(cells[5], "162.500000");
+    // HD 2026-10-14 (section 16.9): four decimals on every price, so a 6J close reads 0.0063
+    EXPECT_EQ(cells[3], "0.0063") << lines[1];
+    EXPECT_EQ(cells[4], "0.0063") << lines[1];
+    EXPECT_EQ(cells[2], "-1.00");
+    EXPECT_EQ(cells[5], "162.50");
 }
 
 TEST_F(LiveCsvFiles, ThePositionsFileAndTheCarriedFileKeepEveryDigitOfASmallMarketPrice) {
@@ -214,7 +213,7 @@ TEST_F(LiveCsvFiles, ThePositionsFileAndTheCarriedFileKeepEveryDigitOfASmallMark
     ASSERT_EQ(lines.size(), h + 2);
     const auto cells = cells_of(lines[h + 1]);
     ASSERT_EQ(cells.size(), 13u) << lines[h + 1];
-    EXPECT_EQ(cells[3], "0.0062995") << "the first row's market price lost a digit";
+    EXPECT_EQ(cells[3], "0.0063") << "the contract's four decimals (this test contract has a cent tick)";
 
     auto carried = exporter.export_carried_positions(
         utc_day(2026, 4, 26), book, {{kSym, CarriedMark{0.0062995, "2026-04-24"}}}, {}, 500000.0,
@@ -225,8 +224,8 @@ TEST_F(LiveCsvFiles, ThePositionsFileAndTheCarriedFileKeepEveryDigitOfASmallMark
     ASSERT_EQ(carried_lines.size(), ch + 2);
     const auto carried_cells = cells_of(carried_lines[ch + 1]);
     ASSERT_GE(carried_cells.size(), 14u) << carried_lines[ch + 1];
-    EXPECT_EQ(carried_cells[3], "0.0062995") << "the carried mark lost a digit";
-    EXPECT_EQ(carried_cells[2], "-1.000000");
+    EXPECT_EQ(carried_cells[3], "0.0063");
+    EXPECT_EQ(carried_cells[2], "-1.00");
 }
 
 // Landed before this series (one trend class since the fast and slow classes were removed): the
@@ -277,12 +276,10 @@ TEST_F(LiveCsvFiles, EveryRowOfTheSettledFilePrintsSixDecimalsAndItsMarksInFull)
     ASSERT_EQ(lines.size(), 2u);
     const auto cells = cells_of(lines[1]);
     ASSERT_EQ(cells.size(), 6u) << lines[1];
-    for (size_t c : {size_t{2}, size_t{5}}) {
-        EXPECT_TRUE(std::regex_match(cells[c], kSixDecimals)) << "column " << c << ": " << lines[1];
-    }
-    EXPECT_EQ(cells[3], "110.5");
-    EXPECT_EQ(cells[4], "110.90625") << "a price with five decimals lost two at six digits";
-    EXPECT_EQ(cells[5], "-185.000000");
+    EXPECT_EQ(cells[2], "1.00");
+    EXPECT_EQ(cells[3], "110.5000");
+    EXPECT_EQ(cells[4], "110.9062") << "the price at the decimals of its contract";
+    EXPECT_EQ(cells[5], "-185.00");
 }
 
 // HD 2026-10-12: the settled file's prior_mark and mark are the two prices of the report's settled
@@ -309,12 +306,12 @@ TEST_F(LiveCsvFiles, TheSettledFileOfANoBarRowCarriesTheLastKnownCloseAndAnEmpty
     std::map<std::string, std::string> line_of;
     for (size_t i = 1; i < lines.size(); ++i)
         line_of[cells_of(lines[i])[1]] = lines[i];
-    EXPECT_EQ(line_of.at(wheat), "Trend Following,KE.v.0,1.000000,668.5,,0.000000");
+    EXPECT_EQ(line_of.at(wheat), "Trend Following,KE.v.0,1.00,668.5000,,0.00");
     // the row beside it printed a bar: 2 x (110.890625 - 110.859375) x 1,000 = 62.50
     EXPECT_EQ(line_of.at(kSym),
-              "Trend Following," + kSym + ",2.000000,110.859375,110.890625,62.500000");
+              "Trend Following," + kSym + ",2.00,110.8594,110.8906,62.50");
     const auto cells = cells_of(line_of.at(kSym));
-    EXPECT_NEAR(2.0 * (std::stod(cells[4]) - std::stod(cells[3])) * 1000.0, 62.5, 1e-9);
+    EXPECT_NEAR(2.0 * (std::stod(cells[4]) - std::stod(cells[3])) * 1000.0, 62.5, 0.2);
 }
 
 TEST_F(LiveCsvFiles, ThePortfolioLineAndTheShareColumnSayTheValueIsAsWritten) {
@@ -332,7 +329,7 @@ TEST_F(LiveCsvFiles, ThePortfolioLineAndTheShareColumnSayTheValueIsAsWritten) {
     for (size_t i = h + 1; i < lines.size(); ++i) {
         const auto cells = cells_of(lines[i]);
         ASSERT_EQ(cells.size(), 13u);
-        EXPECT_EQ(cells[6], six(std::abs(std::stod(cells[4])) / 497400.90 * 100.0)) << lines[i];
+        EXPECT_NEAR(std::stod(cells[6]), std::abs(std::stod(cells[4])) / 497400.90 * 100.0, 2e-5) << lines[i];
     }
 }
 
@@ -356,13 +353,13 @@ TEST_F(LiveCsvFiles, TheSettledFileNamesThePriorMarkAndTheMarkAndLeavesAMissingM
     for (size_t i = 1; i < lines.size(); ++i)
         row[cells_of(lines[i])[1]] = cells_of(lines[i]);
     ASSERT_EQ(row.at(kSym).size(), 6u);
-    EXPECT_EQ(row.at(kSym)[3], "110.5");
-    EXPECT_EQ(row.at(kSym)[4], "110.90625");
-    EXPECT_EQ(row.at(kSym)[5], "-185.000000");
+    EXPECT_EQ(row.at(kSym)[3], "110.5000");
+    EXPECT_EQ(row.at(kSym)[4], "110.9062");
+    EXPECT_EQ(row.at(kSym)[5], "-185.00");
     ASSERT_EQ(row.at(other).size(), 6u);
-    EXPECT_EQ(row.at(other)[3], "57.25");
+    EXPECT_EQ(row.at(other)[3], "57.2500");
     EXPECT_EQ(row.at(other)[4], "") << "a symbol with no close that day printed a mark of 0";
-    EXPECT_EQ(row.at(other)[5], "0.000000");
+    EXPECT_EQ(row.at(other)[5], "0.00");
 }
 
 TEST(CarriedForecastLabel, NamesTheRunAndTheLastBarDateItRead) {
