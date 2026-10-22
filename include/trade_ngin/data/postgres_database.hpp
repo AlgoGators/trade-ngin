@@ -26,11 +26,14 @@
 #include <optional>
 #include <pqxx/pqxx>
 #include <string>
+#include <unordered_set>
 #include <vector>
 #include "trade_ngin/core/error.hpp"
 #include "trade_ngin/core/logger.hpp"
 #include "trade_ngin/core/types.hpp"
 #include "trade_ngin/data/database_interface.hpp"
+#include "trade_ngin/data/backtest_curve_cells.hpp"
+#include "trade_ngin/data/live_results_cell.hpp"
 #include "trade_ngin/data/market_data_utils.hpp"
 #include "trade_ngin/data/strategy_config_row.hpp"
 
@@ -121,9 +124,18 @@ public:
 
     /**
      * @brief Connect to the database
+     *
+     * The session's time zone is pinned to UTC before the connection is handed
+     * out (session_time_zone_statement), so the text of a timestamptz read on
+     * it does not follow the server's default, the role's or the client's PGTZ.
      * @return Result indicating success or failure
      */
     Result<void> connect() override;
+
+    /**
+     * @brief The statement connect() issues on every new session.
+     */
+    static const char* session_time_zone_statement() { return "SET TimeZone = 'UTC'"; }
 
     /**
      * @brief Disconnect from the database
@@ -289,38 +301,11 @@ public:
     // BACKTEST DATA STORAGE METHODS
     // ============================================================================
 
-    /**
-     * @brief Store backtest execution data
-     * @param executions Vector of execution reports
-     * @param run_id Backtest run identifier
-     * @param table_name Name of the table to insert into
-     * @return Result indicating success or failure
-     */
-    Result<void> store_backtest_executions(
-        const std::vector<ExecutionReport>& executions, const std::string& run_id,
-        const std::string& portfolio_id = "BASE_PORTFOLIO",
-        const std::string& table_name = "backtest.executions") override;
-
-    // Multi-strategy version: store executions with strategy_id
+    // Store a strategy's backtest executions (backtest.executions carries strategy_id)
     virtual Result<void> store_backtest_executions_with_strategy(
         const std::vector<ExecutionReport>& executions, const std::string& run_id,
         const std::string& strategy_id, const std::string& portfolio_id = "BASE_PORTFOLIO",
         const std::string& table_name = "backtest.executions");
-
-    /**
-     * @brief Store backtest signals
-     * @param signals Map of symbol to signal value
-     * @param strategy_id ID of the strategy generating signals
-     * @param run_id Backtest run identifier
-     * @param timestamp Timestamp of signals
-     * @param table_name Name of the table to insert into
-     * @return Result indicating success or failure
-     */
-    Result<void> store_backtest_signals(
-        const std::unordered_map<std::string, double>& signals, const std::string& strategy_id,
-        const std::string& run_id, const Timestamp& timestamp,
-        const std::string& portfolio_id = "BASE_PORTFOLIO",
-        const std::string& table_name = "backtest.signals") override;
 
     // Multi-strategy version: store metadata with portfolio_run_id, strategy_allocation,
     // portfolio_config
@@ -455,15 +440,16 @@ public:
                                                 const std::string& book = kDefaultBook);
 
     /**
-     * @brief T-ROLLX-FIX commits 5 and 6 (LOOP_SPEC v6.2 section 6.5): the executions of every
-     *        sleeve that books ROLL legs on a run, replaced in ONE transaction: per sleeve, the
-     *        sweep of its ROLL rows dated `date` (delete_roll_executions' predicate), the delete of
-     *        the rows carrying this run's order ids (delete_stale_executions' predicate) and the
-     *        insert (store_executions' columns). The live runners store a run's legs BEFORE they
-     *        re-write the Day T-1 positions rows, and a re-run reads the contract its stored legs
-     *        rolled out of; a sweep committed apart from the insert left, on a re-run stopped
-     *        between the two, a re-written T-1 row and no leg. Committed whole or not at all: a
-     *        failure leaves no row of any of these sleeves. `sleeves`: (sleeve name, its rows).
+     * @brief The executions of a day replaced in ONE transaction (T-ROLLX-FIX commits 5 and 6,
+     *        LOOP_SPEC v6.2 section 6.5; T-DATED R3, HD 2026-10-10): per sleeve, the sweep of its
+     *        rows dated `date` of every type, the delete of the rows carrying this run's order ids
+     *        (delete_stale_executions' predicate) and the insert (store_executions' columns); the
+     *        steps and their order are data/day_execution_replace.hpp. The live runners call it
+     *        once for every sleeve that books ROLL legs, BEFORE they re-write the Day T-1
+     *        positions rows (a re-run reads the contract its stored legs rolled out of), and once
+     *        for each other sleeve, also when the run makes no order for it. Committed whole or
+     *        not at all: a failure leaves the rows of these sleeves as they were stored before
+     *        the call. `sleeves`: (sleeve name, its rows).
      */
     virtual Result<void> replace_roll_day_executions(
         const std::vector<std::pair<std::string, std::vector<ExecutionReport>>>& sleeves,
@@ -517,26 +503,35 @@ public:
      * @param end_date End date of backtest
      * @param metrics Map of metric name to value
      * @param table_name Name of the results table
+     * @param cells The typed cells of the row (migration 037: a date, a text, a jsonb object,
+     *        an integer or a number that may have no value). A cell is named only when it has a
+     *        value, so one without stays NULL; a number is stored at the precision of its text,
+     *        not through std::to_string's six decimals.
      * @return Result indicating success or failure
      */
     virtual Result<void> store_backtest_summary(
         const std::string& run_id, const Timestamp& start_date, const Timestamp& end_date,
         const std::unordered_map<std::string, double>& metrics,
         const std::string& portfolio_id = "BASE_PORTFOLIO",
-        const std::string& table_name = "backtest.results");
+        const std::string& table_name = "backtest.results",
+        const std::vector<LiveResultsCell>& cells = {});
 
     /**
      * @brief Store backtest equity curve batch (replaces raw SQL INSERT)
      * @param run_id Backtest run identifier
      * @param equity_points Vector of timestamp-equity pairs
      * @param table_name Name of the equity curve table
+     * @param risk_detail Per point, the row's risk_detail object as text (empty: NULL), or none
+     * @param cells Per point, the row's typed cells (migration 037: the six overlay columns),
+     *        or none at all; a cell with no value is written NULL (backtest_curve_cells.hpp)
      * @return Result indicating success or failure
      */
     virtual Result<void> store_backtest_equity_curve_batch(
         const std::string& run_id, const std::vector<std::pair<Timestamp, double>>& equity_points,
         const std::string& portfolio_id = "BASE_PORTFOLIO",
         const std::string& table_name = "backtest.equity_curve",
-        const std::vector<std::string>& risk_detail = {});
+        const std::vector<std::string>& risk_detail = {},
+        const BacktestCurveCells& cells = {});
 
     /**
      * @brief Store backtest final positions (replaces raw SQL INSERT)
@@ -551,18 +546,17 @@ public:
      *        pass true so a position closed to zero keeps the row carrying that bar's
      *        realized flow -- the live is_dead_row rule. Futures backtests leave it false
      *        and store exactly the rows they always did.
+     * @param no_bar_symbols Migration 038. The symbols of `positions` that printed no bar on
+     *        the rows' date (a futures book's; the coordinator names them): their stored rows
+     *        carry row_mark = 'NO_BAR', every other row NULL. The statement names the column
+     *        on every call, so the table needs migration 038.
      */
     virtual Result<void> store_backtest_positions(
         const std::vector<Position>& positions, const std::string& run_id,
         const std::string& portfolio_id = "BASE_PORTFOLIO",
         const std::string& table_name = "backtest.final_positions",
-        bool keep_closed_rows = false);
-
-    // Multi-strategy version: store positions with strategy_id
-    virtual Result<void> store_backtest_positions_with_strategy(
-        const std::vector<Position>& positions, const std::string& run_id,
-        const std::string& strategy_id, const std::string& portfolio_id = "BASE_PORTFOLIO",
-        const std::string& table_name = "backtest.final_positions");
+        bool keep_closed_rows = false,
+        const std::unordered_set<std::string>& no_bar_symbols = {});
 
     /**
      * @brief Update live results for previous day finalization (replaces raw SQL UPDATE)
@@ -571,6 +565,8 @@ public:
      * @param updates Map of column name to new value
      * @param portfolio_id Portfolio identifier
      * @param table_name Name of the live results table
+     * @param rows_affected When given, receives the number of rows the UPDATE changed
+     * @param cells Typed cells assigned by the same UPDATE; a cell with no value is set NULL
      * @return Result indicating success or failure
      */
     virtual Result<void> update_live_results(
@@ -578,6 +574,8 @@ public:
         const std::unordered_map<std::string, double>& updates,
         const std::string& portfolio_id,
         const std::string& table_name = "trading.live_results",
+        size_t* rows_affected = nullptr,
+        const std::vector<LiveResultsCell>& cells = {},
         const std::string& book = kDefaultBook);
 
     /**
@@ -629,6 +627,7 @@ public:
      * @param date Trading date
      * @param metrics Complete set of metrics as key-value pairs
      * @param table_name Name of the live results table
+     * @param cells Typed cells of the row; a cell with no value is left out and stays NULL
      * @return Result indicating success or failure
      */
     virtual Result<void> store_live_results_complete(
@@ -638,6 +637,7 @@ public:
         const std::string& portfolio_id = "BASE_PORTFOLIO",
         const std::string& table_name = "trading.live_results",
         const nlohmann::json& risk_detail = nlohmann::json(),
+        const std::vector<LiveResultsCell>& cells = {},
         const std::string& book = kDefaultBook);
 
     /**
@@ -1065,6 +1065,8 @@ public:
      *        identifiers). For values, prefer `pqxx::params` / `exec_params`.
      */
     Result<void> validate_identifier(const std::string& identifier) const;
+    /// Every cell's column is an identifier and its type one of the known cell types.
+    Result<void> validate_live_results_cells(const std::vector<LiveResultsCell>& cells) const;
 
 private:
     std::string connection_string_;
@@ -1189,12 +1191,17 @@ private:
      */
     Result<void> validate_symbols(const std::vector<std::string>& symbols) const;
 
+public:
     /**
-     * @brief Validate execution report data
+     * @brief Validate execution report data. Every execution writer calls it on every row before
+     *        it stores anything. It reads the row only (no connection is needed), and is public so
+     *        that it can be tested without a database.
      * @param exec Execution report to validate
      * @return Result indicating success or failure
      */
     Result<void> validate_execution_report(const ExecutionReport& exec) const;
+
+private:
 
     /**
      * @brief Validate position data

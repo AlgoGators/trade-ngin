@@ -362,6 +362,22 @@ TEST_F(DeliveredCutPmTest, FinalGrossMeasuresTheStoredBookAfterTheRunnersHold) {
     EXPECT_EQ(same.lap1_gross, pm_->last_delivered_cut().lap1_gross);
 }
 
+// T-8c (1), T-8D-2 R69: a runner that stores one sleeve as a flat list of rows (the equity runner) hands those
+// rows over the same way. The PM's final book is 5 lots (495); the runner stores 7 and a closed row.
+TEST_F(DeliveredCutPmTest, AFlatListOfStoredRowsIsMeasuredAsTheStoredBook) {
+    make_pm({{{"ZZA", make_pos("ZZA", 10.0, 100.0)}}},
+            {std::make_shared<ConstantScaleRiskModule>("cut", 0.5)});
+    ASSERT_TRUE(pm_->process_market_data({make_bar("ZZA", 1, 100.0), make_bar("ZZA", 2, 102.0),
+                                          make_bar("ZZA", 3, 99.0), make_bar("ZZB", 3, 20.0)})
+                    .is_ok());
+    const std::vector<Position> stored = {make_pos("ZZA", 7.0, 100.0), make_pos("ZZB", 0.0, 0.0)};
+    const DeliveredCut d = pm_->delivered_cut_for_book(account_book_of_rows(stored));
+    EXPECT_EQ(d.lap1_gross, 990.0);
+    EXPECT_EQ(d.final_gross, 693.0) << "the stored rows, not the PM's own final book (495)";
+    EXPECT_EQ(d.unpriced, 0);
+    EXPECT_NE(d.final_gross, pm_->last_delivered_cut().final_gross);
+}
+
 // No measurement (no process_market_data call reached its end): the stored book changes nothing, every figure na.
 TEST_F(DeliveredCutPmTest, NoMeasurementStaysNaWhateverTheStoredBook) {
     make_pm({{{"ZZA", make_pos("ZZA", 10.0, 100.0)}}},

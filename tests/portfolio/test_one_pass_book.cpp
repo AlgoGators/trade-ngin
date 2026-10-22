@@ -35,6 +35,7 @@
 #include "../core/test_base.hpp"
 #include "../data/test_db_utils.hpp"
 #include "one_pass_test_fixture.hpp"
+#include "trade_ngin/backtest/backtest_coordinator.hpp"
 #include "trade_ngin/core/logger.hpp"
 #include "trade_ngin/live/run_metadata_marks.hpp"
 #include "trade_ngin/risk/risk_detail.hpp"
@@ -949,6 +950,201 @@ TEST_F(OnePassBookTest, TheDeliveredScaleIsMeasuredOnTheStoredBook) {
     ASSERT_TRUE(rebalance(1, {"AAA"}).is_ok());
     ASSERT_EQ(pm_->last_one_pass().capped_target_gross, 0.0);
     EXPECT_DOUBLE_EQ(pm_->delivered_scale_for_book({}), 1.0) << "as a day with no rebalance stores";
+}
+
+// The overlay columns (migration 036; HD 2026-10-10): the pass copies the overlay's readings of its
+// stored book and the window's bars a year into its record, and the accessor reads the book the
+// runner STORES with the overlay's own code on the pass's window. On a day the runner changed no
+// row the accessor's five readings are the pass's to the bit; with a row rolled back they are that
+// smaller book's.
+TEST_F(OnePassBookTest, TheOverlaysReadingsOfTheStoredBookAreThePassesToTheBit) {
+    make_pm();
+    for (const char* s : {"AAA", "BBB", "CCC"}) {
+        a_->rows[s] = row(5.0);
+        OverlayStubStrategy::fill_window(a_->rows[s], 150);
+    }
+    ASSERT_TRUE(rebalance(1, {"AAA", "BBB", "CCC"}).is_ok());
+    const OnePassDay day = pm_->last_one_pass();
+    ASSERT_TRUE(day.stores_detail());
+    ASSERT_TRUE(day.covariance_readings);
+    EXPECT_GT(day.overlay_risk, 0.0);
+    EXPECT_GT(day.overlay_risk_shock, 0.0);
+    EXPECT_GT(day.overlay_gross_leverage, 0.0);
+    EXPECT_GT(day.window_bars_per_year, 0.0);
+    EXPECT_NEAR(day.overlay_gross_leverage * day.sizing_capital, day.stored_gross, 1e-6)
+        << "the gross leverage reading is the stored book's gross notional on the sizing capital";
+
+    std::map<std::string, double> stored;
+    int held = 0;
+    std::string first_held;
+    for (const char* s : {"AAA", "BBB", "CCC"}) {
+        stored[s] = quantity("A", s);
+        if (stored[s] != 0.0) {
+            ++held;
+            if (first_held.empty()) first_held = s;
+        }
+    }
+    ASSERT_GT(held, 0);
+    const StoredBookReadings same = pm_->overlay_readings_for_book(stored);
+    EXPECT_EQ(same.readings.covariance_readings, day.covariance_readings);
+    EXPECT_EQ(same.readings.risk, day.overlay_risk);  // exact: the same code on the same weights
+    EXPECT_EQ(same.readings.jump, day.overlay_risk_jump);
+    EXPECT_EQ(same.readings.shock, day.overlay_risk_shock);
+    EXPECT_EQ(same.readings.gross, day.overlay_gross_leverage);
+    EXPECT_EQ(same.readings.net, day.overlay_net_leverage);
+    EXPECT_EQ(same.contracts_held, held);
+    EXPECT_EQ(same.contracts_in_risk, held);
+
+    // One contract of a held row rolled back: every reading is that smaller book's.
+    const double full = stored[first_held];
+    ASSERT_GT(full, 1.0);
+    stored[first_held] = full - 1.0;
+    const StoredBookReadings rolled = pm_->overlay_readings_for_book(stored);
+    EXPECT_LT(rolled.readings.gross, day.overlay_gross_leverage);
+    EXPECT_LT(rolled.readings.net, day.overlay_net_leverage);
+    EXPECT_LT(rolled.readings.shock, day.overlay_risk_shock);
+    EXPECT_LT(rolled.readings.risk, day.overlay_risk);
+    if (held == 1) {
+        // One row: every reading is linear in its quantity.
+        EXPECT_NEAR(rolled.readings.gross, day.overlay_gross_leverage * (full - 1.0) / full, 1e-12);
+        EXPECT_NEAR(rolled.readings.risk, day.overlay_risk * (full - 1.0) / full, 1e-12);
+    }
+    EXPECT_EQ(rolled.contracts_held, held);
+    // The row rolled back to flat leaves the book; a symbol the pass did not weigh is held and
+    // is in no reading.
+    stored[first_held] = 0.0;
+    stored["ZZZ"] = 3.0;
+    const StoredBookReadings outside = pm_->overlay_readings_for_book(stored);
+    EXPECT_LT(outside.readings.gross, rolled.readings.gross);
+    EXPECT_EQ(outside.contracts_held, held);  // one left, one outside the pass came in
+    EXPECT_EQ(outside.contracts_in_risk, held - 1);
+
+    // A short book: the net reading is signed.
+    make_pm();
+    a_->rows["AAA"] = row(-5.0, -10.0);
+    OverlayStubStrategy::fill_window(a_->rows["AAA"], 150);
+    ASSERT_TRUE(rebalance(1, {"AAA"}).is_ok());
+    const OnePassDay short_day = pm_->last_one_pass();
+    ASSERT_LT(quantity("A", "AAA"), 0.0);
+    EXPECT_LT(short_day.overlay_net_leverage, 0.0);
+    EXPECT_EQ(short_day.overlay_net_leverage, -short_day.overlay_gross_leverage);
+    const OverlayColumns short_columns = overlay_columns_of(
+        short_day.stores_detail(),
+        pm_->overlay_readings_for_book({{"AAA", quantity("A", "AAA")}}).readings,
+        short_day.window_bars_per_year, short_day.sizing_capital);
+    ASSERT_TRUE(short_columns.overlay_net_leverage.has_value());
+    EXPECT_EQ(*short_columns.overlay_net_leverage, short_day.overlay_net_leverage);
+}
+
+// R-C point 3: on a BLIND window the three risk readings are not computed: the record says so and
+// the leverage readings are still read; a refused rebalance has no record of readings at all.
+TEST_F(OnePassBookTest, ABlindWindowHasNoCovarianceReadingAndARefusalHasNone) {
+    make_pm();
+    a_->rows["AAA"] = row(5.0);  // the stub gives no window: BLIND
+    ASSERT_TRUE(rebalance(1, {"AAA"}).is_ok());
+    const OnePassDay blind = pm_->last_one_pass();
+    ASSERT_TRUE(blind.stores_detail());
+    ASSERT_TRUE(blind.overlay_blind);
+    EXPECT_FALSE(blind.covariance_readings);
+    EXPECT_EQ(blind.window_bars_per_year, 0.0);
+    EXPECT_GT(blind.overlay_gross_leverage, 0.0);
+    const StoredBookReadings read = pm_->overlay_readings_for_book({{"AAA", quantity("A", "AAA")}});
+    EXPECT_FALSE(read.readings.covariance_readings);
+    EXPECT_EQ(read.readings.gross, blind.overlay_gross_leverage);
+    EXPECT_EQ(read.contracts_in_risk, 0);
+    const OverlayColumns columns = overlay_columns_of(blind.stores_detail(), read.readings,
+                                                      blind.window_bars_per_year,
+                                                      blind.sizing_capital);
+    EXPECT_FALSE(columns.overlay_risk.has_value());
+    EXPECT_FALSE(columns.overlay_risk_jump.has_value());
+    EXPECT_FALSE(columns.overlay_risk_shock.has_value());
+    EXPECT_FALSE(columns.var_95_1d.has_value());
+    ASSERT_TRUE(columns.overlay_gross_leverage.has_value());
+    EXPECT_EQ(*columns.overlay_gross_leverage, blind.overlay_gross_leverage);
+    ASSERT_TRUE(columns.overlay_net_leverage.has_value());
+
+    a_->rows["AAA"].optimal = std::numeric_limits<double>::quiet_NaN();
+    ASSERT_TRUE(rebalance(2, {"AAA"}).is_ok());
+    const OnePassDay refused = pm_->last_one_pass();
+    ASSERT_TRUE(refused.refused);
+    EXPECT_FALSE(refused.covariance_readings);
+    EXPECT_EQ(refused.overlay_gross_leverage, 0.0);
+}
+
+// Migration 037, the backtest twin: a backtest row's six cells are the accessor's readings of
+// the book the sleeves hold when the row is written (the book the run stores), through
+// overlay_columns_of. With no step after the pass they are the pass's own to the bit; a row
+// whose rebalance stores no risk_detail has none; a blind window keeps the two leverages alone.
+TEST_F(OnePassBookTest, ABacktestRowsOverlayCellsAreTheOverlaysReadingsOfTheBookTheSleevesHold) {
+    make_pm();
+    for (const char* s : {"AAA", "BBB", "CCC"}) {
+        a_->rows[s] = row(5.0);
+        OverlayStubStrategy::fill_window(a_->rows[s], 150);
+    }
+    ASSERT_TRUE(rebalance(1, {"AAA", "BBB", "CCC"}).is_ok());
+    const OnePassDay day = pm_->last_one_pass();
+    ASSERT_TRUE(day.stores_detail());
+    ASSERT_TRUE(day.covariance_readings);
+    bool equal = false;
+    const OverlayColumns cells =
+        backtest::BacktestCoordinator::stored_book_overlay_columns(*pm_, day, &equal);
+    EXPECT_TRUE(equal) << "nothing changed the book after the pass";
+    ASSERT_TRUE(cells.overlay_risk && cells.overlay_risk_jump && cells.overlay_risk_shock &&
+                cells.overlay_gross_leverage && cells.overlay_net_leverage && cells.var_95_1d);
+    EXPECT_EQ(*cells.overlay_risk, day.overlay_risk);
+    EXPECT_EQ(*cells.overlay_risk_jump, day.overlay_risk_jump);
+    EXPECT_EQ(*cells.overlay_risk_shock, day.overlay_risk_shock);
+    EXPECT_EQ(*cells.overlay_gross_leverage, day.overlay_gross_leverage);
+    EXPECT_EQ(*cells.overlay_net_leverage, day.overlay_net_leverage);
+    // The VaR by hand: 1.645 x R / sqrt(the window's bars a year) x E_t, dollars.
+    EXPECT_NEAR(*cells.var_95_1d,
+                1.645 * day.overlay_risk / std::sqrt(day.window_bars_per_year) * day.sizing_capital,
+                1e-9);
+    EXPECT_GT(*cells.var_95_1d, 0.0);
+    // The gross leverage by hand from the sleeves' own rows: the stored gross on the capital.
+    EXPECT_NEAR(*cells.overlay_gross_leverage * day.sizing_capital, day.stored_gross, 1e-6);
+
+    // A row whose book differs from the pass's (a contract taken off after the pass) reads the
+    // book it stores, not the pass's record: the cells follow the positions.
+    Position less = pm_->get_strategy_positions().at("A").at("AAA");
+    ASSERT_GT(static_cast<double>(less.quantity), 1.0);
+    less.quantity = Quantity(static_cast<double>(less.quantity) - 1.0);
+    ASSERT_TRUE(pm_->update_strategy_position("A", "AAA", less).is_ok());
+    const OverlayColumns changed =
+        backtest::BacktestCoordinator::stored_book_overlay_columns(*pm_, day, &equal);
+    EXPECT_FALSE(equal);
+    EXPECT_LT(*changed.overlay_gross_leverage, day.overlay_gross_leverage);
+    EXPECT_LT(*changed.overlay_risk, day.overlay_risk);
+
+    // A blind window: no covariance reading, so R, R_jump, R_shock and the VaR are NULL (never
+    // the record's 0.0); the two leverage readings are stored.
+    make_pm();
+    a_->rows["AAA"] = row(5.0);  // the stub gives no window: BLIND
+    ASSERT_TRUE(rebalance(1, {"AAA"}).is_ok());
+    const OnePassDay blind = pm_->last_one_pass();
+    ASSERT_TRUE(blind.stores_detail());
+    ASSERT_TRUE(blind.overlay_blind);
+    const OverlayColumns blind_cells =
+        backtest::BacktestCoordinator::stored_book_overlay_columns(*pm_, blind, &equal);
+    EXPECT_TRUE(equal);
+    EXPECT_FALSE(blind_cells.overlay_risk);
+    EXPECT_FALSE(blind_cells.overlay_risk_jump);
+    EXPECT_FALSE(blind_cells.overlay_risk_shock);
+    EXPECT_FALSE(blind_cells.var_95_1d);
+    ASSERT_TRUE(blind_cells.overlay_gross_leverage);
+    EXPECT_EQ(*blind_cells.overlay_gross_leverage, blind.overlay_gross_leverage);
+    ASSERT_TRUE(blind_cells.overlay_net_leverage);
+
+    // A refused rebalance stores no risk_detail: all six NULL.
+    a_->rows["AAA"].optimal = std::numeric_limits<double>::quiet_NaN();
+    ASSERT_TRUE(rebalance(2, {"AAA"}).is_ok());
+    const OnePassDay refused = pm_->last_one_pass();
+    ASSERT_TRUE(refused.refused);
+    const OverlayColumns none =
+        backtest::BacktestCoordinator::stored_book_overlay_columns(*pm_, refused, &equal);
+    EXPECT_FALSE(equal);
+    EXPECT_FALSE(none.overlay_risk || none.overlay_risk_jump || none.overlay_risk_shock ||
+                 none.overlay_gross_leverage || none.overlay_net_leverage || none.var_95_1d);
 }
 
 // The sizing capital the pass reads is the one the runner set today (section 3.1): the same

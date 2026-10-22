@@ -379,6 +379,32 @@ double CorporateActionsAuditLog::total_cumulative_dividend_income() const {
     return sum;
 }
 
+double CorporateActionsAuditLog::dividend_income_through(
+    const std::string& row_date, const SharesOnExDateRow& shares_on_ex_date_row,
+    std::vector<std::string>* recorded_quantity_used) const {
+    std::vector<const DividendEvent*> counted;
+    for (const auto& de : dividend_events_) {
+        if (de.ex_date <= row_date) counted.push_back(&de);
+    }
+    std::sort(counted.begin(), counted.end(), [](const DividendEvent* a, const DividendEvent* b) {
+        return std::tie(a->ex_date, a->symbol) < std::tie(b->ex_date, b->symbol);
+    });
+
+    double sum = 0.0;
+    for (const DividendEvent* de : counted) {
+        std::optional<double> shares;
+        if (shares_on_ex_date_row) shares = shares_on_ex_date_row(de->symbol, de->ex_date);
+        if (!shares) {
+            shares = de->qty_held;
+            if (recorded_quantity_used) {
+                recorded_quantity_used->push_back(de->symbol + " " + de->ex_date);
+            }
+        }
+        sum += *shares * de->dividend_per_share;
+    }
+    return sum;
+}
+
 Result<void> CorporateActionsAuditLog::save_in(DbTransaction& txn) const {
     if (!db_backed()) {
         return make_error<void>(

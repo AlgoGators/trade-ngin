@@ -408,7 +408,7 @@ TEST_F(QtDeskDb, TheFallbacksResetDiscardsADeskSave) {
     const std::unordered_map<std::string, double> m{{"current_portfolio_value", 500000.0}};
     for (const char* book : {"system", "qt"}) {
         ASSERT_TRUE(db_->store_live_results_complete(kSid, day_at(), m, {}, nlohmann::json(), pid_,
-                                                     "trading.live_results", nlohmann::json(), book)
+                                                     "trading.live_results", nlohmann::json(), {}, book)
                         .is_ok());
     }
     scalar("UPDATE trading.live_results SET book_source = 'desk' WHERE portfolio_id = " + lit(pid_) +
@@ -448,7 +448,7 @@ TEST_F(QtDeskDb, ClearDeskDayTakesOnlyTheQtDaysNonRollExecutions) {
                     .is_ok());
     const std::unordered_map<std::string, double> m{{"current_portfolio_value", 500000.0}};
     ASSERT_TRUE(db_->store_live_results_complete(kSid, d, m, {}, nlohmann::json(), pid_,
-                                                 "trading.live_results", nlohmann::json(), "qt")
+                                                 "trading.live_results", nlohmann::json(), {}, "qt")
                     .is_ok());
     scalar("UPDATE trading.live_results SET book_source = 'model' WHERE portfolio_id = " + lit(pid_) +
            " RETURNING 1");
@@ -471,7 +471,7 @@ TEST_F(QtDeskDb, PublishNeedsTheMarkerAndAFinishedLastDeskCommand) {
 
     const std::unordered_map<std::string, double> m{{"current_portfolio_value", 500000.0}};
     ASSERT_TRUE(db_->store_live_results_complete(kSid, day_at(), m, {}, nlohmann::json(), pid_,
-                                                 "trading.live_results", nlohmann::json(), "qt")
+                                                 "trading.live_results", nlohmann::json(), {}, "qt")
                     .is_ok());
     blocked = qt::publish_blocker(*db_, pid_, kSid, kDate);
     ASSERT_TRUE(blocked.is_ok());

@@ -31,8 +31,11 @@ What it reads, per book (T-5 W5 / WATCHDOG-frames, fixed in T-7a C4):
      refusal mark. A day whose portfolio risk step refused the book (a REFUSE, or a
      risk module that could not answer: the runner exits 3) stores its results and
      positions, so 1-3 read it as healthy; the mark `risk_refusal` says the book was
-     held, not measured. `strict_assertion` marks a run whose STRICT assertion fired
-     after the row was written (it stored no book). Either mark is reported.
+     held, not measured. The same mark with scope "sleeve" says one sleeve was held
+     while the others traded, and with scope "sizing" that the account's equity could
+     not be read; each is reported in its own words. `strict_assertion` marks a run
+     whose STRICT assertion fired after the row was written (it stored no book).
+     Either mark is reported.
 
 The run clock is compared with `today` in one frame (R12): created_at is a
 timestamp without time zone written in the writer session's zone, so it is read
@@ -94,8 +97,29 @@ RUN_MARKS = {
 }
 
 
+def risk_refusal_text(scope=None, scope_id=None):
+    """What a `risk_refusal` mark says happened, by the mark's own "scope".
+
+    The runners write three kinds (run_metadata_marks.hpp, risk_module_failure.hpp,
+    live_sizing_read.hpp): a portfolio refusal carries no "scope"; a sleeve whose risk module
+    could not answer carries "sleeve" and the sleeve's id in "scope_id"; a sizing hold carries
+    "sizing".
+    """
+    if scope is None:
+        return RUN_MARKS["risk_refusal"]
+    if scope == "sleeve":
+        return (f"held sleeve {scope_id or '(not named)'} at the previous day's positions: that "
+                "sleeve's risk module could not evaluate it, so the sleeve sent no orders and "
+                "was not measured; any other sleeve traded")
+    if scope == "sizing":
+        return ("held every strategy at the previous day's positions: the account's equity "
+                "could not be read to size the book")
+    return f"carries a risk refusal of scope {scope}"
+
+
 def evaluate(book, last_run_at, last_book_date, last_position_date, last_active_positions,
-             today, threshold, latest_mark_date=None, latest_marks=()):
+             today, threshold, latest_mark_date=None, latest_marks=(), refusal_scope=None,
+             refusal_scope_id=None):
     """Pure decision function for one book: returns (is_stale, list_of_reasons).
 
     last_run_at            max(live_results.created_at), in UTC -- the run clock
@@ -104,12 +128,16 @@ def evaluate(book, last_run_at, last_book_date, last_position_date, last_active_
     last_active_positions  active_positions on the book's latest results row
     latest_mark_date       the latest live_run_metadata.date <= today
     latest_marks           the refusal marks that row carries (RUN_MARKS keys)
+    refusal_scope          the "scope" of that row's risk_refusal mark (None: the portfolio)
+    refusal_scope_id       its "scope_id" (the sleeve's id on a sleeve mark)
     """
     reasons = []
 
     for mark in latest_marks or ():
+        said = (risk_refusal_text(refusal_scope, refusal_scope_id) if mark == "risk_refusal"
+                else RUN_MARKS.get(mark, 'carries a refusal mark'))
         reasons.append(f"{book}: the latest run ({latest_mark_date}) "
-                       f"{RUN_MARKS.get(mark, 'carries a refusal mark')} ({mark} in "
+                       f"{said} ({mark} in "
                        "trading.live_run_metadata)")
 
     if last_run_at is None:
@@ -169,6 +197,22 @@ def _fetch_run_marks(conn, book, today):
     marks = [name for name, flag in (("risk_refusal", row[1]), ("strict_assertion", row[2]))
              if flag]
     return row[0], marks
+
+
+def _fetch_refusal_scope(conn, book, mark_date):
+    """("scope", "scope_id") of the risk_refusal mark on the book's rows of `mark_date`;
+    (None, None) when the mark carries no scope (a portfolio refusal) or there is no mark."""
+    with conn.cursor() as cur:
+        cur.execute("SELECT portfolio_config->'risk_refusal'->>'scope', "
+                    "portfolio_config->'risk_refusal'->>'scope_id' "
+                    "FROM trading.live_run_metadata WHERE portfolio_id = %s AND date = %s "
+                    "AND portfolio_config ? 'risk_refusal' "
+                    "ORDER BY portfolio_config->'risk_refusal'->>'scope' NULLS FIRST LIMIT 1",
+                    (book, mark_date))
+        row = cur.fetchone()
+    if not row or row[0] is None:
+        return None, None
+    return row[0], row[1]
 
 
 def _file_issue(reasons, repo, token):
@@ -312,12 +356,15 @@ def main():
         for book in books:
             last_run, last_book_date, last_pos, last_active = _fetch(conn, book, today)
             mark_date, marks = _fetch_run_marks(conn, book, today)
+            scope, scope_id = (_fetch_refusal_scope(conn, book, mark_date)
+                               if "risk_refusal" in marks else (None, None))
             print(f"{book}: last completed run {last_run} UTC; book run through {last_book_date}; "
                   f"system positions through {last_pos}; active positions {last_active}; "
                   f"latest run {mark_date} marks {marks or 'none'}")
             _, book_reasons = evaluate(book, last_run, last_book_date, last_pos, last_active,
                                        today, MAX_CALENDAR_DAYS_SILENT,
-                                       latest_mark_date=mark_date, latest_marks=marks)
+                                       latest_mark_date=mark_date, latest_marks=marks,
+                                       refusal_scope=scope, refusal_scope_id=scope_id)
             reasons.extend(book_reasons)
     finally:
         conn.close()

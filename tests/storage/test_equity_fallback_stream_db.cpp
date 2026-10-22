@@ -1,36 +1,30 @@
-// DB-equity-curve-fallback-stream.
+// The invalid equity-curve value, against the real table (T-8D-2 R47).
 //
-// LiveResultsManager::save_equity_curve has a rescue path: when the equity it
-// was handed is unusable (zero, negative, NaN, inf, or under $1000) it does not
-// write garbage -- it reaches into trading.equity_curve for the most recent
-// valid equity and writes that instead.
+// LiveResultsManager::save_equity_curve used to have a rescue path: handed an equity it could
+// not store (zero, negative, NaN, inf, or under $1000) it read the most recent stored equity of
+// at least 1,000 from trading.equity_curve and wrote THAT for the day: a number with no run
+// behind it, taken with no bound on the row's date (in a replay, a later day's), in the table
+// the statistics read. This file first pinned which stream that rescue read
+// (DB-equity-curve-fallback-stream); R47 removed the rescue, and the file now pins the refusal
+// on the same seeded rows:
+//   * with a valid 'system' row stored, an invalid value writes NO row for its date, returns an
+//     error, and leaves the stored row as it was;
+//   * the same with a NEWER row on another stream ('qt') beside it: nothing of either stream is
+//     copied onto the day.
 //
-// The SELECT behind that rescue filtered on strategy_id and portfolio_id only.
-// trading.equity_curve is keyed (portfolio_id, strategy_id, timestamp,
-// portfolio_type), so as soon as a second stream shares a portfolio and
-// strategy, "most recent by timestamp" can be a row belonging to the other
-// stream. The rescue would then copy that stream's equity onto our row: a
-// number with no run behind it, written by the very code whose job is to stop
-// unfounded values reaching the table.
-//
-// One stream exists today, so the predicate changes nothing that is stored --
-// which is the claim this test has to make good on in BOTH directions:
-//   * with only 'system' rows present the rescue picks exactly what it picked
-//     before (byte-identical);
-//   * with a 'qt' row that is NEWER and carries a different equity, the rescue
-//     must still pick the 'system' row. Without the predicate it picks the qt
-//     one, and the test fails.
-//
-// This is exercised through the real SQL, not a mock, because the defect is in
-// the SELECT's WHERE clause and a mock has no WHERE clause to get wrong.
+// It runs against the real table, not a mock: the claim is about the rows the table holds after
+// the call.
 
 #include <gtest/gtest.h>
 #include <pqxx/pqxx>
 
 #include <chrono>
+#include <cmath>
 #include <cstdlib>
+#include <limits>
 #include <memory>
 #include <string>
+#include <vector>
 
 #include "trade_ngin/core/types.hpp"
 #include "trade_ngin/data/postgres_database.hpp"
@@ -108,45 +102,78 @@ protected:
         w.commit();
     }
 
-    // What the runner wrote for the day it was asked to save, on the system stream.
-    double stored_system_equity(const std::string& ts) {
+    // The rows of the probe portfolio dated `ts`, on any stream.
+    size_t rows_at(const std::string& ts) {
         pqxx::connection c(conn_);
         pqxx::work w(c);
-        auto r = w.exec("SELECT equity FROM trading.equity_curve WHERE portfolio_id = " +
-                        w.quote(kPortfolio) + " AND portfolio_type = 'system' AND timestamp = " +
-                        w.quote(ts));
-        EXPECT_EQ(r.size(), 1u);
-        return r.empty() ? -1.0 : r[0][0].as<double>();
+        auto r = w.exec("SELECT count(*) FROM trading.equity_curve WHERE portfolio_id = " +
+                        w.quote(kPortfolio) + " AND timestamp = " + w.quote(ts));
+        return r[0][0].as<size_t>();
     }
 
-    // Drive the rescue path: hand the manager an equity it must refuse.
-    void save_with_invalid_equity(Timestamp date) {
+    // Every stored row of the probe portfolio: "stream timestamp-epoch equity", ordered.
+    std::vector<std::string> stored_rows() {
+        pqxx::connection c(conn_);
+        pqxx::work w(c);
+        auto r = w.exec("SELECT portfolio_type || ' ' || extract(epoch from timestamp)::bigint || "
+                        "' ' || equity FROM trading.equity_curve WHERE portfolio_id = " +
+                        w.quote(kPortfolio) + " ORDER BY 1");
+        std::vector<std::string> out;
+        for (const auto& row : r) out.push_back(row[0].as<std::string>());
+        return out;
+    }
+
+    // Hand the manager an equity it must refuse.
+    Result<void> save_with_invalid_equity(Timestamp date, double equity = 0.0) {
         LiveResultsManager mgr(db_, /*store_enabled=*/true, kStrategy, kPortfolio);
-        mgr.set_equity(0.0);  // zero -> "invalid", so the fallback SELECT runs
-        ASSERT_TRUE(mgr.save_equity_curve(date).is_ok());
+        mgr.set_equity(equity);
+        return mgr.save_equity_curve(date);
     }
 
     std::string conn_;
     std::shared_ptr<PostgresDatabase> db_;
 };
 
-// Byte-identical half: with only system rows, the rescue picks what it always did.
-TEST_F(EquityFallbackStreamTest, PicksTheSystemRowWhenItIsTheOnlyStream) {
+// With a valid system row stored, the invalid value is refused: no row for the day.
+TEST_F(EquityFallbackStreamTest, RefusesAnInvalidValueAndWritesNoRowBesideAStoredSystemRow) {
     seed("system", "2026-05-01 05:00:00+00", kSystemEquity);
-    save_with_invalid_equity(at_utc(2026, 5, 4, 5));
-    EXPECT_DOUBLE_EQ(stored_system_equity("2026-05-04 05:00:00+00"), kSystemEquity);
+    const auto before = stored_rows();
+    ASSERT_EQ(before.size(), 1u);
+
+    for (double equity : {0.0, -1.0, 999.0, std::numeric_limits<double>::quiet_NaN()}) {
+        auto r = save_with_invalid_equity(at_utc(2026, 5, 4, 5), equity);
+        ASSERT_TRUE(r.is_error()) << equity;
+        EXPECT_NE(std::string(r.error()->what()).find("2026-05-04"), std::string::npos)
+            << r.error()->what();
+        EXPECT_EQ(rows_at("2026-05-04 05:00:00+00"), 0u)
+            << "a row was written for the day of the invalid value " << equity;
+    }
+    EXPECT_EQ(stored_rows(), before) << "the stored row was touched";
 }
 
-// The defect: a NEWER row on another stream must not be picked up.
-TEST_F(EquityFallbackStreamTest, IgnoresANewerRowBelongingToAnotherStream) {
+// A NEWER row on another stream changes nothing: neither stream's equity is carried to the day.
+TEST_F(EquityFallbackStreamTest, RefusesAnInvalidValueWithANewerRowOnAnotherStream) {
     seed("system", "2026-05-01 05:00:00+00", kSystemEquity);
     seed("qt", "2026-05-03 05:00:00+00", kQtEquity);  // newer, different stream
+    const auto before = stored_rows();
+    ASSERT_EQ(before.size(), 2u);
 
-    save_with_invalid_equity(at_utc(2026, 5, 4, 5));
+    auto r = save_with_invalid_equity(at_utc(2026, 5, 4, 5));
+    ASSERT_TRUE(r.is_error());
+    EXPECT_EQ(rows_at("2026-05-04 05:00:00+00"), 0u);
+    EXPECT_EQ(stored_rows(), before);
+}
 
-    const double got = stored_system_equity("2026-05-04 05:00:00+00");
-    EXPECT_DOUBLE_EQ(got, kSystemEquity)
-        << "the fallback carried the qt stream's equity (" << kQtEquity
-        << ") onto a system row; ORDER BY timestamp DESC crossed the stream boundary";
-    EXPECT_NE(got, kQtEquity);
+// The valid path is as it was: the value handed in is the value stored.
+TEST_F(EquityFallbackStreamTest, AValidValueIsStoredAsHandedIn) {
+    seed("system", "2026-05-01 05:00:00+00", kSystemEquity);
+    LiveResultsManager mgr(db_, /*store_enabled=*/true, kStrategy, kPortfolio);
+    mgr.set_equity(234567.5);
+    ASSERT_TRUE(mgr.save_equity_curve(at_utc(2026, 5, 4, 5)).is_ok());
+    pqxx::connection c(conn_);
+    pqxx::work w(c);
+    auto row = w.exec("SELECT equity FROM trading.equity_curve WHERE portfolio_id = " +
+                      w.quote(kPortfolio) + " AND timestamp = '2026-05-04 05:00:00+00'");
+    ASSERT_EQ(row.size(), 1u);
+    EXPECT_DOUBLE_EQ(row[0][0].as<double>(), 234567.5);
 }

@@ -179,26 +179,6 @@ public:
     // ========== Risk Metrics Calculations ==========
 
     /**
-     * @brief Calculate Sharpe ratio
-     * @param returns Vector of daily returns
-     * @param risk_free_rate Risk-free rate (annual)
-     * @return Sharpe ratio
-     */
-    double calculate_sharpe_ratio(
-        const std::vector<double>& returns,
-        double risk_free_rate = 0.0) const;
-
-    /**
-     * @brief Calculate Sortino ratio
-     * @param returns Vector of daily returns
-     * @param minimum_acceptable_return Minimum acceptable return
-     * @return Sortino ratio
-     */
-    double calculate_sortino_ratio(
-        const std::vector<double>& returns,
-        double minimum_acceptable_return = 0.0) const;
-
-    /**
      * @brief Calculate maximum drawdown
      * @param portfolio_values Vector of portfolio values over time
      * @return Maximum drawdown as percentage
@@ -317,16 +297,6 @@ private:
     double calculate_std_dev(
         const std::vector<double>& values,
         double mean = 0.0) const;
-
-    /**
-     * @brief Calculate downside deviation for Sortino ratio
-     * @param returns Vector of returns
-     * @param target Target return
-     * @return Downside deviation
-     */
-    double calculate_downside_deviation(
-        const std::vector<double>& returns,
-        double target) const;
 };
 
 } // namespace trade_ngin

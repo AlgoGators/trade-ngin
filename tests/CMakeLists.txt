@@ -1,8 +1,17 @@
 # Set test source files
 set(TEST_SOURCES
+    core/test_chart_series.cpp
     core/test_decimal.cpp
     core/test_email_chart_strategy_id.cpp
+    core/test_email_fixtures.cpp
+    core/test_report_settled_marks.cpp
     core/test_time_utils_parse.cpp
+    core/test_timed_process.cpp
+    core/test_gnuplot_run.cpp
+    core/test_report_charts.cpp
+    core/test_report_day_before.cpp
+    core/test_report_equity_day.cpp
+    core/test_report_held_symbols.cpp
     core/test_result.cpp
     core/test_state_manager.cpp
     core/test_logger.cpp
@@ -14,6 +23,10 @@ set(TEST_SOURCES
     core/test_logger_retention.cpp
     core/test_email_positions_table.cpp
     core/test_email_strategy_tables.cpp
+    core/test_report_risk_lines.cpp
+    core/test_report_leverage_console.cpp
+    core/test_report_over_limit.cpp
+    core/test_stat_quality.cpp
     core/test_run_id_generator.cpp
     core/test_config_loader.cpp
     core/test_config_loader_db_overlay.cpp
@@ -24,6 +37,8 @@ set(TEST_SOURCES
     data/test_db_utils.cpp
     data/test_utc_date_contract.cpp
     data/test_postgres_param_safety.cpp
+    data/test_finite_statement.cpp
+    data/test_finite_statement_db.cpp
     instruments/test_equity_market_hours_exchange.cpp
     data/test_postgres_database.cpp
     data/test_database_pooling.cpp
@@ -33,7 +48,9 @@ set(TEST_SOURCES
     data/test_qt_desk_db.cpp
     data/test_contract_metadata_fee_column_db.cpp
     data/test_executions_netting_column_db.cpp
+    data/test_execution_report_validation.cpp
     data/test_load_positions_identifier_db.cpp
+    data/test_session_time_zone_db.cpp
     data/test_equity_curve_stream_db.cpp
     data/test_store_positions_error_db.cpp
     data/test_strategy_id_length_db.cpp
@@ -45,6 +62,7 @@ set(TEST_SOURCES
     data/test_market_data_utils.cpp
     data/test_futures_bar_dedup_db.cpp
     data/test_session_classifier.cpp
+    strategy/test_listing_dates.cpp
     data/test_session_classifier_instrument_id.cpp
     data/test_roll_series.cpp
     data/test_roll_legs.cpp
@@ -53,6 +71,8 @@ set(TEST_SOURCES
     data/test_futures_bar_instrument_id_db.cpp
     data/test_positions_instrument_id_db.cpp
     data/test_roll_state_db.cpp
+    data/test_day_execution_replace.cpp
+    data/test_day_signal_replace.cpp
     data/test_contract_metadata_fixes_db.cpp
     order/test_order_manager.cpp
     order/test_utils.cpp
@@ -67,10 +87,13 @@ set(TEST_SOURCES
     portfolio/test_one_pass_book.cpp
     portfolio/test_desk_book.cpp
     live/test_qt_runner_modes.cpp
+    portfolio/test_listing_switch_pass.cpp
+    backtest/test_listing_loader.cpp
     portfolio/test_loop_fixups.cpp
     portfolio/test_worked_days.cpp
     portfolio/test_portfolio_config_keys.cpp
     risk/test_overlay_wiring.cpp
+    risk/test_overlay_columns.cpp
     risk/test_risk_adjusted_returns.cpp
     risk/test_risk_modules.cpp
     risk/test_risk_module_config.cpp
@@ -131,7 +154,10 @@ set(TEST_SOURCES
     backtest/test_consumed_series_record.cpp
     backtest/test_backtest_equity_cost_retier.cpp
     backtest/test_backtest_futures_cost_feed.cpp
+    backtest/test_backtest_statistics_columns.cpp
+    backtest/test_backtest_statistics_grid.cpp
     backtest/test_backtest_netting_one_model.cpp
+    backtest/test_backtest_stored_run_refusal.cpp
     backtest/test_backtest_roll_legs_once.cpp
     execution/test_execution_engine.cpp
     portfolio/test_portfolio_manager.cpp
@@ -144,6 +170,12 @@ set(TEST_SOURCES
     live/test_feed_freshness_universe.cpp
     live/test_feed_ingestion_assertion.cpp
     live/test_day_t_write_ordering.cpp
+    live/test_settled_statistics_block.cpp
+    live/test_settled_stamp.cpp
+    live/test_stored_config_runners.cpp
+    core/test_resolved_sleeves.cpp
+    live/test_margin_columns.cpp
+    live/test_margin_columns_runners.cpp
     live/test_finalized_books_read.cpp
     live/test_late_bar_warning.cpp
     live/test_live_run_refusal_arms.cpp
@@ -179,6 +211,8 @@ set(TEST_SOURCES
     storage/test_live_results_key_roundtrip_db.cpp
     live/test_live_historical_metrics.cpp
     live/test_live_historical_metrics_columns.cpp
+    live/test_statistics_grid.cpp
+    live/test_live_statistics_columns.cpp
     live/test_live_price_manager.cpp
     live/test_live_trading_coordinator_keying.cpp
     live/test_execution_manager.cpp
@@ -187,6 +221,12 @@ set(TEST_SOURCES
     live/test_base_bus_off_and_carried_day.cpp
     live/test_session_book_gate.cpp
     live/test_live_runner_small_fixes.cpp
+    live/test_email_body_file.cpp
+    live/test_email_delivery.cpp
+    live/test_run_args.cpp
+    live/test_equity_cash_available.cpp
+    live/test_held_feed_ruling.cpp
+    live/test_mode_branch_guard.cpp
     live/test_cost_model_feed.cpp
     live/test_futures_cost_feed.cpp
     live/test_cost_feed_adjusted_returns.cpp
@@ -194,6 +234,7 @@ set(TEST_SOURCES
     live/test_live_roll_legs.cpp
     live/test_live_k01_history.cpp
     live/test_live_roll_write_order.cpp
+    live/test_live_listing_guard.cpp
     live/test_execution_price_integrity.cpp
     live/test_margin_manager.cpp
     live/test_live_metrics_calculator.cpp
@@ -206,6 +247,9 @@ set(TEST_SOURCES
     live/test_live_data_loader.cpp
     live/test_live_results_roll_cost_columns.cpp
     live/test_csv_exporter.cpp
+    live/test_live_csv_files.cpp
+    live/test_console_labels.cpp
+    live/test_report_queries.cpp
     strategy/test_base_strategy.cpp
     strategy/test_trend_following.cpp
     strategy/test_regime_detector.cpp
@@ -308,3 +352,7 @@ add_test(NAME MigrateRiskJson.ScriptSuite
 add_test(NAME CheckLiveTrading.ScriptSuite
          COMMAND "${MIGRATION_PYTHON}"
                  "${CMAKE_CURRENT_SOURCE_DIR}/scripts/test_check_live_trading.py")
+# The two entries import modules from scripts/: without this the interpreter leaves an untracked
+# scripts/__pycache__/ in the source tree on every ctest run.
+set_tests_properties(MigrateRiskJson.ScriptSuite CheckLiveTrading.ScriptSuite
+                     PROPERTIES ENVIRONMENT "PYTHONDONTWRITEBYTECODE=1")

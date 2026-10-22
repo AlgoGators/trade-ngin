@@ -10,11 +10,18 @@
 // XA (M = 50) is held at 2 contracts; the sleeve's own target row carries a realized figure of
 // 552.62, as a trend sleeve's does. XB is another symbol's bar, so a day XA does not print is still
 // a cycle.
+//
+// Migration 038 (T-8D-2 R50): the row of such a day is stored with row_mark = 'NO_BAR' ("no bar:
+// held, marked at last close") and every other row with NULL. The mark is set where the row is
+// zeroed, travels to the writer beside the day's rows, and is read back here from the writer's
+// arguments (no database) and from backtest.final_positions (TRADE_NGIN_TEST_DSN).
 
 #include <gtest/gtest.h>
+#include <pqxx/pqxx>
 #include "../risk/risk_module_test_helpers.hpp"
 
 #include <chrono>
+#include <cstdlib>
 #include <memory>
 #include <string>
 #include <thread>
@@ -23,6 +30,8 @@
 #include "../core/test_base.hpp"
 #include "../data/test_db_utils.hpp"
 #include "trade_ngin/core/logger.hpp"
+#include "trade_ngin/data/backtest_position_row.hpp"
+#include "trade_ngin/data/postgres_database.hpp"
 #include "trade_ngin/instruments/futures.hpp"
 #include "trade_ngin/strategy/base_strategy.hpp"
 
@@ -196,4 +205,141 @@ TEST_F(BacktestNoBarRowTest, ARowOfADayTheSymbolPrintsNoBarBooksZeroAndKeepsItsQ
     const Day after = run(5, {bar("XA", 5, 104.0), bar("XB", 5, 10.0)});
     EXPECT_NEAR(static_cast<double>(after.row.realized_pnl), 2.0 * (104.0 - 103.0) * 50.0, 1e-9);
     EXPECT_NEAR(after.equity_move, 2.0 * (104.0 - 103.0) * 50.0, 1e-6);
+}
+
+// ===== migration 038: the mark of a no-bar row =====
+
+// [the mark at the writer's door]
+TEST_F(BacktestNoBarRowTest, TheWriterIsHandedTheMarkOfANoBarRowAndOfNoOtherRow) {
+    const auto saved = [&](int d, const std::vector<Bar>& bars) {
+        run(d, bars);
+        EXPECT_TRUE(coord_->save_daily_positions(pm_, "NO_BAR_RUN", wday(d)).is_ok());
+        return db_->last_backtest_no_bar_symbols;
+    };
+    // The first bar has no previous close to book against: the row books 0, and the symbol
+    // printed a bar, so the row is not a no-bar row.
+    EXPECT_TRUE(saved(0, {bar("XA", 0, 100.0), bar("XB", 0, 10.0)}).empty());
+    EXPECT_TRUE(saved(1, {bar("XA", 1, 101.0), bar("XB", 1, 10.0)}).empty());
+    EXPECT_TRUE(saved(2, {bar("XA", 2, 103.0), bar("XB", 2, 10.0)}).empty());
+
+    for (int d : {3, 4}) {
+        const auto marked = saved(d, {bar("XB", d, 10.0)});
+        EXPECT_EQ(marked, std::unordered_set<std::string>({"XA"}))
+            << "day " << d << ": XA printed no bar, its row is the marked one";
+        ASSERT_EQ(db_->last_backtest_positions.size(), 1u);
+        const Position& row = db_->last_backtest_positions.front();
+        EXPECT_EQ(row.symbol, "XA");
+        EXPECT_EQ(static_cast<double>(row.realized_pnl), 0.0) << "the marked row books nothing";
+        EXPECT_EQ(static_cast<double>(row.quantity), 2.0);
+        EXPECT_EQ(static_cast<double>(row.average_price), 100.0);
+    }
+
+    // The mark is the day's, not the symbol's: the next bar day's row carries none.
+    EXPECT_TRUE(saved(5, {bar("XA", 5, 104.0), bar("XB", 5, 10.0)}).empty());
+    ASSERT_EQ(db_->last_backtest_positions.size(), 1u);
+    EXPECT_NEAR(static_cast<double>(db_->last_backtest_positions.front().realized_pnl),
+                2.0 * (104.0 - 103.0) * 50.0, 1e-9);
+}
+
+// A cash book's row on a day its symbol prints no bar is not written here (its realised flow waits
+// for the next written row, E2-F59), so it is not zeroed and carries no mark: the mark says "this
+// row books 0 because no bar printed", which is true of a futures row only.
+TEST_F(BacktestNoBarRowTest, ACashBooksRowOfANoBarDayCarriesNoMark) {
+    for (const auto& s : pm_->get_strategies()) {
+        std::dynamic_pointer_cast<BaseStrategy>(s)->set_pnl_accounting_method(
+            PnLAccountingMethod::MIXED);
+    }
+    run(0, {bar("XA", 0, 100.0), bar("XB", 0, 10.0)});
+    run(1, {bar("XA", 1, 101.0), bar("XB", 1, 10.0)});
+    run(2, {bar("XB", 2, 10.0)});
+    ASSERT_TRUE(coord_->save_daily_positions(pm_, "NO_BAR_RUN", wday(2)).is_ok());
+    ASSERT_EQ(db_->last_backtest_positions.size(), 1u) << "the held row is handed to the writer";
+    EXPECT_TRUE(db_->last_backtest_no_bar_symbols.empty());
+}
+
+TEST(BacktestPositionRowMark, TheCellIsTheQuotedMarkOnANoBarRowAndNullOnEveryOtherRow) {
+    EXPECT_EQ(backtest_position_row_mark_value(true), "'NO_BAR'");
+    EXPECT_EQ(backtest_position_row_mark_value(false), "NULL");
+    EXPECT_STREQ(kRowMarkNoBar, "NO_BAR") << "the one value migration 038's CHECK admits";
+}
+// [end of the mark at the writer's door]
+
+// The same days through the REAL writer into backtest.final_positions: the no-bar rows read
+// realized_pnl 0 with row_mark 'NO_BAR', quantity and average price kept; the bar rows read their
+// day's P&L with row_mark NULL. Database-backed: runs only with TRADE_NGIN_TEST_DSN (a database
+// with migration 038), on a probe run id it deletes before and after.
+class BacktestNoBarRowDbTest : public BacktestNoBarRowTest {
+protected:
+    static constexpr const char* kRun = "T8B_R50_PROBE_RUN";
+
+    void SetUp() override {
+        BacktestNoBarRowTest::SetUp();
+        const char* dsn = std::getenv("TRADE_NGIN_TEST_DSN");
+        conn_ = dsn ? std::string(dsn) : std::string();
+        if (conn_.empty()) GTEST_SKIP() << "TRADE_NGIN_TEST_DSN not set; no database to exercise";
+        real_ = std::make_shared<PostgresDatabase>(conn_);
+        if (real_->connect().is_error() || !real_->is_connected()) {
+            conn_.clear();
+            GTEST_SKIP() << "database unreachable; skipping";
+        }
+        purge();
+        coord_->db_ = real_;  // the daily save writes through the real writer
+    }
+    void TearDown() override {
+        if (!conn_.empty()) purge();
+        if (real_ && real_->is_connected()) real_->disconnect();
+        real_.reset();
+        BacktestNoBarRowTest::TearDown();
+    }
+    void purge() {
+        pqxx::connection c(conn_);
+        pqxx::work w(c);
+        w.exec("DELETE FROM backtest.final_positions WHERE run_id = " + w.quote(kRun));
+        w.commit();
+    }
+    void run_and_save(int d, const std::vector<Bar>& bars) {
+        run(d, bars);
+        ASSERT_TRUE(coord_->save_daily_positions(pm_, kRun, wday(d)).is_ok());
+    }
+
+    std::string conn_;
+    std::shared_ptr<PostgresDatabase> real_;
+};
+
+TEST_F(BacktestNoBarRowDbTest, AStoredNoBarRowReadsZeroWithTheMarkAndABarRowItsPnlWithNone) {
+    run_and_save(0, {bar("XA", 0, 100.0), bar("XB", 0, 10.0)});
+    run_and_save(1, {bar("XA", 1, 101.0), bar("XB", 1, 10.0)});
+    run_and_save(2, {bar("XA", 2, 103.0), bar("XB", 2, 10.0)});
+    run_and_save(3, {bar("XB", 3, 10.0)});
+    run_and_save(4, {bar("XB", 4, 10.0)});
+    run_and_save(5, {bar("XA", 5, 104.0), bar("XB", 5, 10.0)});
+
+    pqxx::connection c(conn_);
+    pqxx::work w(c);
+    const auto rows = w.exec(
+        "SELECT date::text, symbol, quantity, average_price, realized_pnl, "
+        "coalesce(row_mark, '(null)') FROM backtest.final_positions WHERE run_id = " +
+        w.quote(kRun) + " ORDER BY date");
+    // wday(0) is 2026-01-05; the book holds XA from the first fed cycle, wday(1), on. That first
+    // held bar has no earlier close to book against: it books 0 and, the symbol having printed,
+    // carries no mark (a 0 is not what the mark says; no bar is).
+    struct Want {
+        const char* date;
+        double realized;
+        const char* mark;
+    };
+    const std::vector<Want> want = {{"2026-01-06", 0.0, "(null)"},   {"2026-01-07", 200.0, "(null)"},
+                                    {"2026-01-08", 0.0, "NO_BAR"},   {"2026-01-09", 0.0, "NO_BAR"},
+                                    {"2026-01-10", 100.0, "(null)"}};
+    ASSERT_EQ(rows.size(), want.size()) << "one stored row of XA a day from the first held day";
+    for (size_t i = 0; i < want.size(); ++i) {
+        SCOPED_TRACE(want[i].date);
+        EXPECT_EQ(rows[i][0].as<std::string>(), want[i].date);
+        EXPECT_EQ(rows[i][1].as<std::string>(), "XA");
+        EXPECT_EQ(rows[i][2].as<double>(), 2.0) << "the quantity is kept";
+        EXPECT_EQ(rows[i][3].as<double>(), 100.0) << "the average price is kept";
+        EXPECT_NEAR(rows[i][4].as<double>(), want[i].realized, 1e-9);
+        EXPECT_EQ(rows[i][5].as<std::string>(), want[i].mark)
+            << "row_mark: 'NO_BAR' on a row whose symbol printed no bar that date, NULL elsewhere";
+    }
 }

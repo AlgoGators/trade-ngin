@@ -2,489 +2,160 @@
 
 ## Overview
 
-The statistics module provides quantitative analysis capabilities for the trading engine, including data transformers, stationarity tests, cointegration analysis, volatility modeling, and state estimation.
+The statistics module is a library of quantitative analysis classes: data transformers,
+pre-processing, stationarity and cointegration tests, regressions, volatility models and state
+estimators. Every class is in the `trade_ngin::statistics` namespace; the helper functions are in
+`trade_ngin::statistics::utils`.
 
-> **Note**: This module is documented in detail in [statistics_module_deliverable.md](../docs/statistics_module_deliverable.md).
+It is a standalone library. No strategy, portfolio, risk, backtest or live source includes these
+headers, so nothing here takes part in sizing, the rebalance or the stored results. The statistics
+the runners store with a run (Sharpe ratio, volatility, drawdown and the rest) are computed in
+`src/backtest/backtest_metrics_calculator.cpp`, `src/live/live_metrics_calculator.cpp` and
+`src/live/live_historical_metrics.cpp`, not here.
 
 ---
 
-## Architecture
+## File layout
 
 ```
 include/trade_ngin/statistics/
-├── statistics_common.hpp              # Config structs + result types
-├── statistics_utils.hpp               # Helper function declarations
-├── critical_values.hpp                # ADF/KPSS/Johansen critical value tables
-├── validation.hpp                     # Input validation utilities
+├── statistics.hpp                     # convenience header: includes everything below
+├── statistics_tools.hpp               # deprecated redirect to statistics.hpp
+├── statistics_common.hpp              # every config struct and result type
+├── statistics_utils.hpp               # helper function declarations (namespace utils)
+├── critical_values.hpp                # critical value tables
+├── validation.hpp                     # input validation
+├── hurst_exponent.hpp
 ├── base/
-│   ├── data_transformer.hpp           # DataTransformer ABC
-│   ├── statistical_test.hpp           # StatisticalTest ABC
-│   ├── volatility_model.hpp           # VolatilityModel ABC
-│   └── state_estimator.hpp            # StateEstimator ABC
-├── transformers/
-│   ├── normalizer.hpp                 # Normalizer class
-│   └── pca.hpp                        # PCA class
-├── tests/                             # Statistical test classes
-│   ├── adf_test.hpp
-│   ├── kpss_test.hpp
-│   ├── johansen_test.hpp
-│   └── engle_granger_test.hpp
-├── volatility/
-│   └── garch.hpp
-├── state_estimation/
-│   ├── kalman_filter.hpp
-│   └── hmm.hpp
-├── statistics.hpp                     # Convenience header (includes all)
-└── statistics_tools.hpp               # Deprecated redirect to statistics.hpp
+│   ├── data_transformer.hpp           # DataTransformer
+│   ├── statistical_test.hpp           # StatisticalTest
+│   ├── volatility_model.hpp           # VolatilityModel
+│   └── state_estimator.hpp            # StateEstimator
+├── transformers/                      # normalizer.hpp, pca.hpp
+├── preprocessing/                     # outlier_handler.hpp, missing_data_handler.hpp
+├── tests/                             # adf_test.hpp, kpss_test.hpp, phillips_perron_test.hpp,
+│                                      #   variance_ratio_test.hpp, johansen_test.hpp,
+│                                      #   engle_granger_test.hpp
+├── regression/                        # ols_regression.hpp, ridge_regression.hpp, lasso_regression.hpp
+├── volatility/                        # garch.hpp, egarch.hpp, gjr_garch.hpp, dcc_garch.hpp
+└── state_estimation/                  # kalman_filter.hpp, extended_kalman_filter.hpp, hmm.hpp,
+                                       #   markov_switching.hpp
 
 src/statistics/
+├── hurst_exponent.cpp
 ├── utils/statistics_utils.cpp
-├── transformers/normalizer.cpp, pca.cpp
-├── tests/adf_test.cpp, kpss_test.cpp, johansen_test.cpp, engle_granger_test.cpp
-├── volatility/garch.cpp
-└── state_estimation/kalman_filter.cpp, hmm.cpp
+├── transformers/, preprocessing/, tests/, regression/, volatility/, state_estimation/
+└──   one .cpp per class above
 ```
 
-All classes are in the `trade_ngin::statistics` namespace.
-Helper functions are in `trade_ngin::statistics::utils`.
+---
+
+## Implemented classes
+
+### Transformers and pre-processing
+
+| Class | Header | Purpose |
+|---|---|---|
+| `Normalizer` | `transformers/normalizer.hpp` | normalisation; a `DataTransformer` |
+| `PCA` | `transformers/pca.hpp` | principal component analysis; a `DataTransformer` |
+| `OutlierHandler` | `preprocessing/outlier_handler.hpp` | `detect` and `handle` outliers in a series |
+| `MissingDataHandler` | `preprocessing/missing_data_handler.hpp` | handles missing values in a series or a matrix |
+
+### Statistical tests
+
+| Class | Header | Purpose |
+|---|---|---|
+| `ADFTest` | `tests/adf_test.hpp` | augmented Dickey-Fuller unit root test; a `StatisticalTest` |
+| `KPSSTest` | `tests/kpss_test.hpp` | KPSS stationarity test; a `StatisticalTest` |
+| `PhillipsPerronTest` | `tests/phillips_perron_test.hpp` | Phillips-Perron unit root test; a `StatisticalTest` |
+| `VarianceRatioTest` | `tests/variance_ratio_test.hpp` | variance ratio test; a `StatisticalTest` |
+| `JohansenTest` | `tests/johansen_test.hpp` | cointegration of several series; returns a `CointegrationResult` |
+| `EngleGrangerTest` | `tests/engle_granger_test.hpp` | two-step cointegration of a pair |
+| `HurstExponent` | `hurst_exponent.hpp` | Hurst exponent; returns a `HurstResult` |
+
+### Regression
+
+| Class | Header | Purpose |
+|---|---|---|
+| `OLSRegression` | `regression/ols_regression.hpp` | ordinary least squares |
+| `RidgeRegression` | `regression/ridge_regression.hpp` | ridge (L2) regression |
+| `LassoRegression` | `regression/lasso_regression.hpp` | lasso (L1) regression |
+
+### Volatility models
+
+| Class | Header | Purpose |
+|---|---|---|
+| `GARCH` | `volatility/garch.hpp` | GARCH; a `VolatilityModel` |
+| `EGARCH` | `volatility/egarch.hpp` | exponential GARCH; a `VolatilityModel` |
+| `GJRGARCH` | `volatility/gjr_garch.hpp` | GJR-GARCH; a `VolatilityModel` |
+| `DCCGARCH` | `volatility/dcc_garch.hpp` | dynamic conditional correlation GARCH over several series |
+
+### State estimation
+
+| Class | Header | Purpose |
+|---|---|---|
+| `KalmanFilter` | `state_estimation/kalman_filter.hpp` | linear Kalman filter; a `StateEstimator` |
+| `ExtendedKalmanFilter` | `state_estimation/extended_kalman_filter.hpp` | extended Kalman filter; a `StateEstimator` |
+| `HMM` | `state_estimation/hmm.hpp` | hidden Markov model; a `StateEstimator` |
+| `MarkovSwitching` | `state_estimation/markov_switching.hpp` | Markov switching model; a `StateEstimator` |
+
+Each class takes its config struct from `statistics_common.hpp` (for example `ADFTestConfig`,
+`GARCHConfig`, `KalmanFilterConfig`). Read the struct there for the fields and defaults.
 
 ---
 
-## Available Models
+## The four base interfaces
 
-### Data Transformers
+| Interface | Methods |
+|---|---|
+| `DataTransformer` | `fit(matrix)`, `transform(matrix)`, `fit_transform(matrix)`, `inverse_transform(matrix)`, `is_fitted()` |
+| `StatisticalTest` | `test(const std::vector<double>&)` returning `Result<TestResult>`, `get_name()` |
+| `VolatilityModel` | `fit(returns)`, `forecast(n_periods)`, `get_current_volatility()`, `update(new_return)`, `is_fitted()` |
+| `StateEstimator` | `initialize(initial_state)`, `predict()`, `update(observation)`, `get_state()`, `is_initialized()` |
 
-| Model | Class | Purpose |
-|-------|-------|---------|
-| **Normalizer** | `Normalizer` | Z-Score, Min-Max, Robust normalization |
-| **PCA** | `PCA` | Principal Component Analysis with variance threshold |
-
-### Statistical Tests
-
-| Model | Class | Purpose |
-|-------|-------|---------|
-| **ADF Test** | `ADFTest` | Augmented Dickey-Fuller stationarity test |
-| **KPSS Test** | `KPSSTest` | Kwiatkowski-Phillips-Schmidt-Shin test |
-| **Johansen Test** | `JohansenTest` | Multi-series cointegration test |
-| **Engle-Granger** | `EngleGrangerTest` | Two-step cointegration test |
-
-### Volatility Models
-
-| Model | Class | Purpose |
-|-------|-------|---------|
-| **GARCH(1,1)** | `GARCH` | Generalized Autoregressive Conditional Heteroskedasticity |
-
-### State Estimation
-
-| Model | Class | Purpose |
-|-------|-------|---------|
-| **Kalman Filter** | `KalmanFilter` | Linear state estimation |
-| **HMM** | `HMM` | Hidden Markov Model for regime detection |
-
----
-
-## Usage Examples
-
-### Normalizer
+Every method except `is_fitted()`, `is_initialized()` and `get_name()` returns `Result<T>`; check it before reading the value.
 
 ```cpp
 #include "trade_ngin/statistics/statistics.hpp"
 
 using namespace trade_ngin::statistics;
 
-// Configure normalization
-NormalizationConfig config;
-config.method = NormalizationMethod::Z_SCORE;  // or MIN_MAX, ROBUST
-
-Normalizer normalizer(config);
-
-// Fit to data
-Eigen::MatrixXd data(100, 5);  // 100 samples, 5 features
-auto fit_result = normalizer.fit(data);
-if (fit_result.is_error()) {
-    // Handle error
-}
-
-// Transform new data
-auto transformed = normalizer.transform(new_data);
-if (transformed.is_ok()) {
-    Eigen::MatrixXd normalized = transformed.value();
-}
-
-// Inverse transform back to original scale
-auto original = normalizer.inverse_transform(normalized);
-```
-
-### PCA
-
-```cpp
-// Configure PCA
-PCAConfig pca_config;
-pca_config.n_components = 0;           // Auto-select based on variance
-pca_config.variance_threshold = 0.95;  // Keep 95% of variance
-pca_config.whiten = false;
-
-PCA pca(pca_config);
-
-// Fit and transform
-auto fit_result = pca.fit(data);
-auto transformed = pca.transform(data);
-
-// Access components
-Eigen::MatrixXd components = pca.get_components();
-Eigen::VectorXd explained_variance = pca.get_explained_variance_ratio();
-```
-
-### ADF Test (Stationarity)
-
-```cpp
-// Configure test
-ADFTestConfig adf_config;
-adf_config.regression = ADFRegression::CONSTANT;  // Include constant term
-adf_config.max_lags = 0;  // Auto-select via AIC
-
-ADFTest adf(adf_config);
-
-// Run test
-std::vector<double> prices = {...};  // Time series
-auto result = adf.test(prices);
-
-if (result.is_ok()) {
-    TestResult test = result.value();
-    std::cout << "ADF Statistic: " << test.statistic << std::endl;
-    std::cout << "Reject H0 (stationary): " << (test.reject_null ? "Yes" : "No") << std::endl;
-    
-    // test.reject_null == true means series is stationary
-}
-```
-
-### KPSS Test
-
-```cpp
-KPSSTestConfig kpss_config;
-kpss_config.regression = KPSSRegression::LEVEL;  // Level stationarity
-
-KPSSTest kpss(kpss_config);
-auto result = kpss.test(prices);
-
-// Note: KPSS null hypothesis is opposite of ADF
-// test.reject_null == true means series is NOT stationary
-```
-
-### Johansen Cointegration Test
-
-```cpp
-JohansenTestConfig johansen_config;
-johansen_config.max_lags = 2;
-johansen_config.significance_level = 0.05;
-
-JohansenTest johansen(johansen_config);
-
-// Test for cointegration between multiple series
-std::vector<std::vector<double>> series = {
-    prices_ES,  // E-mini S&P
-    prices_NQ,  // Nasdaq
-    prices_YM   // Dow
-};
-
-auto result = johansen.test(series);
-if (result.is_ok()) {
-    JohansenResult jr = result.value();
-    std::cout << "Cointegration rank: " << jr.rank << std::endl;
-    // rank = 0: no cointegration
-    // rank = 1: one cointegrating relationship
-    // etc.
-}
-```
-
-### Engle-Granger Cointegration Test
-
-```cpp
-EngleGrangerTestConfig eg_config;
-eg_config.significance_level = 0.05;
-
-EngleGrangerTest eg(eg_config);
-
-// Two-step approach for pair cointegration
-std::vector<double> series_y = {...};  // Dependent
-std::vector<double> series_x = {...};  // Independent
-
-auto result = eg.test(series_y, series_x);
-if (result.is_ok()) {
-    EngleGrangerResult egr = result.value();
-    std::cout << "Cointegrated: " << (egr.cointegrated ? "Yes" : "No") << std::endl;
-    std::cout << "Hedge ratio: " << egr.hedge_ratio << std::endl;
-}
-```
-
-### GARCH(1,1) Volatility
-
-```cpp
-GARCHConfig garch_config;
-garch_config.p = 1;  // ARCH order
-garch_config.q = 1;  // GARCH order
-
-GARCH garch(garch_config);
-
-// Fit to return series
-std::vector<double> returns = {...};
-auto fit_result = garch.fit(returns);
-
-if (fit_result.is_ok()) {
-    // Get estimated parameters
-    double omega = garch.get_omega();
-    double alpha = garch.get_alpha();
-    double beta = garch.get_beta();
-    
-    // Get current conditional volatility
-    double current_vol = garch.get_conditional_volatility();
-    
-    // Forecast future volatility
-    std::vector<double> forecasts = garch.forecast(5);  // 5 steps ahead
-}
-
-// Update with new data
-garch.update(new_return);
-double updated_vol = garch.get_conditional_volatility();
-```
-
-### Kalman Filter
-
-```cpp
-KalmanFilterConfig kf_config;
-kf_config.state_dim = 2;   // Number of state variables
-kf_config.obs_dim = 1;     // Number of observations
-
-KalmanFilter kf(kf_config);
-
-// Set state transition matrix (A) — returns Result<void>
-Eigen::MatrixXd A(2, 2);
-A << 1, 1,
-     0, 1;
-auto set_F = kf.set_transition_matrix(A);
-if (set_F.is_error()) { /* handle dimension/NaN/Inf error */ }
-
-// Set observation matrix (H)
-Eigen::MatrixXd H(1, 2);
-H << 1, 0;
-auto set_H = kf.set_observation_matrix(H);
-if (set_H.is_error()) { /* handle error */ }
-
-// Set noise covariances (must be positive-definite)
-Eigen::MatrixXd Q(2, 2);  // Process noise
-Q << 0.1, 0,
-     0, 0.1;
-auto set_Q = kf.set_process_noise(Q);
-if (set_Q.is_error()) { /* handle error */ }
-
-Eigen::MatrixXd R(1, 1);  // Measurement noise
-R << 1.0;
-auto set_R = kf.set_measurement_noise(R);
-if (set_R.is_error()) { /* handle error */ }
-
-// Initialize state
-Eigen::VectorXd x0(2);
-x0 << 0, 0;
-Eigen::MatrixXd P0 = Eigen::MatrixXd::Identity(2, 2);
-kf.initialize(x0, P0);
-
-// Predict-update cycle
-for (const auto& observation : observations) {
-    kf.predict();
-    
-    Eigen::VectorXd z(1);
-    z << observation;
-    kf.update(z);
-    
-    Eigen::VectorXd state = kf.get_state();
-    Eigen::MatrixXd covariance = kf.get_covariance();
-}
-```
-
-### Hidden Markov Model
-
-```cpp
-HMMConfig hmm_config;
-hmm_config.n_states = 2;      // e.g., Bull/Bear regimes
-hmm_config.obs_dim = 1;       // 1D observations (returns)
-hmm_config.max_iterations = 100;
-hmm_config.convergence_threshold = 1e-4;
-
-HMM hmm(hmm_config);
-
-// Prepare observations as matrix (T x obs_dim)
-Eigen::MatrixXd observations(returns.size(), 1);
-for (size_t i = 0; i < returns.size(); ++i) {
-    observations(i, 0) = returns[i];
-}
-
-// Fit model using Baum-Welch (EM algorithm)
-auto fit_result = hmm.fit(observations);
-
-if (fit_result.is_ok()) {
-    // Get state means and covariances
-    std::vector<Eigen::VectorXd> means = hmm.get_means();
-    std::vector<Eigen::MatrixXd> covs = hmm.get_covariances();
-    
-    // Get transition matrix
-    Eigen::MatrixXd transitions = hmm.get_transition_matrix();
-    
-    // Decode most likely state sequence (Viterbi)
-    std::vector<int> states = hmm.decode(observations);
-    
-    // Get current regime probability
-    Eigen::VectorXd regime_probs = hmm.predict_proba(observations);
-}
-```
-
----
-
-## Configuration Structures
-
-### NormalizationConfig
-
-```cpp
-struct NormalizationConfig {
-    NormalizationMethod method = NormalizationMethod::Z_SCORE;
-    // Z_SCORE: (x - mean) / std
-    // MIN_MAX: (x - min) / (max - min)
-    // ROBUST: (x - median) / IQR
-};
-```
-
-### PCAConfig
-
-```cpp
-struct PCAConfig {
-    int n_components = 0;             // 0 = auto-select
-    double variance_threshold = 0.95; // For auto-selection
-    bool whiten = false;              // Decorrelate and scale
-};
-```
-
-### ADFTestConfig
-
-```cpp
-struct ADFTestConfig {
-    ADFRegression regression = ADFRegression::CONSTANT;
-    // NONE: No constant or trend
-    // CONSTANT: Include constant
-    // CONSTANT_TREND: Include constant and linear trend
-    
-    int max_lags = 0;  // 0 = auto-select via AIC
-};
-```
-
-### GARCHConfig
-
-```cpp
-struct GARCHConfig {
-    int p = 1;                  // ARCH order
-    int q = 1;                  // GARCH order
-    int max_iterations = 1000;  // Max optimization iterations
-    double convergence_threshold = 1e-6;
-};
-```
-
-### KalmanFilterConfig
-
-```cpp
-struct KalmanFilterConfig {
-    int state_dim = 1;   // Dimension of state vector
-    int obs_dim = 1;     // Dimension of observation vector
-};
-```
-
-### HMMConfig
-
-```cpp
-struct HMMConfig {
-    int n_states = 2;                   // Number of hidden states
-    int obs_dim = 1;                    // Observation dimension
-    int max_iterations = 100;           // Baum-Welch iterations
-    double convergence_threshold = 1e-4;
-};
-```
-
----
-
-## Error Handling
-
-All methods return `Result<T>` for error handling:
-
-```cpp
-auto result = model.fit(data);
-
+ADFTestConfig config;                       // regression CONSTANT, max_lags -1 (automatic)
+ADFTest adf(config);
+
+std::vector<double> series = /* ... */;
+auto result = adf.test(series);
 if (result.is_error()) {
-    std::cerr << "Error: " << result.error()->what() << std::endl;
-    std::cerr << "Code: " << static_cast<int>(result.error()->code()) << std::endl;
-    return;
+    // result.error()->what()
+} else {
+    const TestResult& t = result.value();   // statistic, p_value, critical_value, reject_null
 }
-
-// Use result.value()
 ```
-
-Common error scenarios:
-- Empty or insufficient data
-- NaN/Inf values in data
-- Non-convergence (GARCH, HMM)
-- Dimension mismatches (Kalman Filter)
 
 ---
 
-## Helper Functions
+## Helper functions
 
-The module includes utility functions (in anonymous namespace):
-
-```cpp
-// Basic statistics
-double calculate_mean(const std::vector<double>& data);
-double calculate_variance(const std::vector<double>& data, double mean);
-double calculate_std(const std::vector<double>& data, double mean);
-double calculate_median(std::vector<double> data);
-double calculate_iqr(std::vector<double> data);
-
-// Time series operations
-std::vector<double> autocorrelation(const std::vector<double>& data, int max_lag);
-std::vector<double> difference(const std::vector<double>& data, int order = 1);
-```
+`statistics_utils.hpp` declares, in `trade_ngin::statistics::utils`: `calculate_mean`,
+`calculate_variance`, `calculate_std`, `calculate_median`, `calculate_iqr`, `autocorrelation` and
+`difference`.
 
 ---
 
 ## Testing
 
+Every test is built into one binary, `trade_ngin_tests`, and `ctest` lists each case by its suite
+name. The statistics tests are in `tests/statistics/`, one file per class, plus
+`test_statistics_integration.cpp`, `test_convergence_monitoring.cpp` and `test_critical_values.cpp`:
+
 ```bash
-# Run statistics tests
 cd build
-ctest -R statistics --output-on-failure
+ctest -R "GARCH|Kalman|HMM|ADF|KPSS|Johansen|Regression" --output-on-failure
 ```
-
-Test files: `tests/statistics/test_*.cpp` (one per class + integration)
-
----
-
-## Known Issues & Roadmap
-
-See [statistics_module_deliverable.md](../docs/statistics_module_deliverable.md) for:
-- Numerical stability issues (`.inverse()` usage)
-- HMM log-space implementation needs
-- Critical value table improvements
-- Planned new models (EGARCH, Hurst, Markov Switching)
 
 ---
 
 ## Dependencies
 
-- **Eigen3**: Linear algebra operations
-- **trade_ngin::core**: Error handling (`Result<T>`)
-
----
-
-## References
-
-- [Strategy Module](../strategy/README.md) - Uses statistics for indicators
-- MacKinnon (1996) - ADF critical values
-- Kwiatkowski et al. (1992) - KPSS critical values  
-- Hamilton (1989) - Markov Switching
-- Bollerslev (1986) - GARCH
-- Rabiner (1989) - HMM tutorial
+- Eigen3 for linear algebra
+- `trade_ngin` core for `Result<T>` (`include/trade_ngin/core/error.hpp`)

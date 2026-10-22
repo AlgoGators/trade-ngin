@@ -2,9 +2,17 @@
 // Manages storage of live trading results to database
 #pragma once
 
+#include <cmath>
 #include "trade_ngin/storage/results_manager_base.hpp"
 
 namespace trade_ngin {
+
+/// An equity value trading.equity_curve may hold: finite and at least 1,000. Zero, a negative
+/// value, NaN, an infinity and a positive value under 1,000 (garbage or an uninitialised figure)
+/// are not; LiveResultsManager::save_equity_curve refuses them (T-8D-2 R47).
+inline bool storable_equity_curve_value(double equity) {
+    return std::isfinite(equity) && equity >= 1000.0;
+}
 
 /**
  * @brief Manages storage of live trading results to database
@@ -26,6 +34,7 @@ private:
     // Configuration
     nlohmann::json config_;
     nlohmann::json risk_detail_;  // null: the row's risk_detail cell is left NULL
+    std::vector<LiveResultsCell> cells_;  // the row's typed cells (migration 036)
 
     // Equity tracking
     double current_equity_;
@@ -71,6 +80,11 @@ public:
         risk_detail_ = risk_detail;
     }
 
+    /// The row's typed cells (live_results_cell.hpp): a cell with no value stays NULL.
+    void set_cells(const std::vector<LiveResultsCell>& cells) {
+        cells_ = cells;
+    }
+
     void set_equity(double equity) {
         current_equity_ = equity;
         has_equity_update_ = true;
@@ -85,8 +99,13 @@ public:
     Result<void> save_equity_curve(const Timestamp& date);
 
     // Update operations for existing data
+    // `rows_affected`, when given, receives the number of rows the UPDATE changed (0 when
+    // nothing was stored or the date has no row).
+    // `cells` are assigned by the same UPDATE, NULL where a cell has no value.
     Result<void> update_live_results(const Timestamp& date,
-                                     const std::unordered_map<std::string, double>& updates);
+                                     const std::unordered_map<std::string, double>& updates,
+                                     size_t* rows_affected = nullptr,
+                                     const std::vector<LiveResultsCell>& cells = {});
 
     Result<void> update_equity_curve(const Timestamp& date, double equity);
 

@@ -134,6 +134,21 @@ public:
     }
 
     /**
+     * @brief The log line that closes a Day T-1 finalization (T-8D R24). Its last figure is the
+     *        value finalize_previous_day was handed plus the day's net P&L. Every live runner
+     *        hands its CONFIGURED capital (the futures runners a sleeve's share of it), so the
+     *        figure is not the account value and the line says what it is. Nothing reads it.
+     */
+    static std::string finalization_complete_line(double gross_pnl, double net_pnl,
+                                                  double handed_value_plus_net_pnl) {
+        return "Day T-1 finalization complete: Total PnL (Gross)=" + std::to_string(gross_pnl) +
+               ", Net PnL=" + std::to_string(net_pnl) +
+               ", Portfolio Value (the value this call was handed plus Net PnL: the configured "
+               "capital on the live runners, not the account value)=" +
+               std::to_string(handed_value_plus_net_pnl);
+    }
+
+    /**
      * Finalization result structure for Day T-1
      */
     struct FinalizationResult {

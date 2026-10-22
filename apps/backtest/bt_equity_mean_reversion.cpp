@@ -4,8 +4,10 @@
 #include <unordered_set>
 #include <nlohmann/json.hpp>
 #include "trade_ngin/backtest/backtest_coordinator.hpp"
+#include "trade_ngin/backtest/backtest_metrics_calculator.hpp"
 #include "trade_ngin/backtest/equity_cost_warmup.hpp"
 #include "trade_ngin/core/config_loader.hpp"
+#include "trade_ngin/core/resolved_sleeves.hpp"
 #include "trade_ngin/core/logger.hpp"
 #include "trade_ngin/core/time_utils.hpp"
 #include "trade_ngin/data/database_pooling.hpp"
@@ -226,6 +228,9 @@ int main() {
         coord_config.use_optimization = app_config.use_optimization;
         coord_config.store_trade_details = app_config.backtest.store_trade_details;
         coord_config.portfolio_id = app_config.portfolio_id;
+        // T-8D R2, T-8D-2 R76: K of the equity statistics grid (NYSE sessions), the one factor
+        // the run's annualised statistics use.
+        coord_config.statistics_sessions_per_year = app_config.statistics.equity_sessions_per_year;
 
         auto coordinator = std::make_unique<BacktestCoordinator>(db, &registry, coord_config);
 
@@ -365,17 +370,18 @@ int main() {
         std::cout << "\n======= Equity Mean Reversion Backtest Results =======" << std::endl;
         std::cout << "Total Return: " << std::fixed << std::setprecision(2)
                   << (backtest_results.total_return * 100.0) << "%" << std::endl;
-        std::cout << "Sharpe Ratio: " << std::setprecision(3) << backtest_results.sharpe_ratio
+        std::cout << "Sharpe Ratio: " << std::setprecision(3) << ratio_or_na(backtest_results.sharpe_ratio)
                   << std::endl;
-        std::cout << "Sortino Ratio: " << backtest_results.sortino_ratio << std::endl;
+        std::cout << "Sortino Ratio: " << ratio_or_na(backtest_results.sortino_ratio) << std::endl;
         std::cout << "Max Drawdown: " << std::setprecision(2)
                   << (backtest_results.max_drawdown * 100.0) << "%" << std::endl;
-        std::cout << "Calmar Ratio: " << std::setprecision(3) << backtest_results.calmar_ratio
+        std::cout << "Calmar Ratio: " << std::setprecision(3) << ratio_or_na(backtest_results.calmar_ratio)
                   << std::endl;
-        std::cout << "Volatility: " << std::setprecision(2)
+        std::cout << "Volatility (annualised): " << std::setprecision(2)
                   << (backtest_results.volatility * 100.0) << "%" << std::endl;
-        std::cout << "Win Rate: " << (backtest_results.win_rate * 100.0) << "%" << std::endl;
-        std::cout << "Total Trades: " << backtest_results.total_trades << std::endl;
+        std::cout << "Trade win rate (closing fills): " << (backtest_results.win_rate * 100.0)
+                  << "%" << std::endl;
+        std::cout << "Closing fills: " << backtest_results.total_trades << std::endl;
         std::cout << "====================================================" << std::endl;
 
         // Save results
@@ -402,6 +408,21 @@ int main() {
                     {"position_size", mr.position_size},
                     {"vol_lookback", mr.vol_lookback},
                     {"allow_fractional_shares", mr.allow_fractional_shares}};
+                // T-8D-2 R53: the sleeve's resolved risk_target is mean_reversion's above; the
+                // window rule, the warm-up and the sessions a year the calculator applied to
+                // the statistics are added.
+                trade_ngin::add_backtest_run_keys(
+                    config_json, app_config.backtest.lookback_years,
+                    app_config.backtest.frozen_end_date, backtest_results.warmup_days,
+                    backtest_results.statistics_sessions_per_year);
+                std::vector<trade_ngin::ResolvedSleeve> resolved_sleeves;
+                for (const auto& entry : strat_entries) {
+                    resolved_sleeves.push_back(
+                        {entry.id, std::nullopt,
+                         trade_ngin::apps::build_mean_reversion_config(entry.def["config"]).risk_target,
+                         entry.allocation / total_allocation});
+                }
+                INFO(trade_ngin::resolved_sleeves_log_line(app_config.portfolio_id, resolved_sleeves));
             }
 
             auto save_result = coordinator->save_portfolio_results_to_db(

@@ -440,14 +440,15 @@ TEST(RiskModuleErrorPathSource, BothTwinsExitNonZeroAfterStoringTheDay) {
         SCOPED_TRACE(runner);
         const std::string src = read_source(runner);
         if (src.empty()) GTEST_SKIP() << "runner source not found from the test working directory";
-        const auto ret = src.find("return live_run_exit_code(risk_module_failure);");
+        const auto ret =
+            src.find("return live::futures_run_exit_code(risk_module_failure, email_failed);");
         ASSERT_NE(ret, npos) << "main() still ends with a bare exit 0 on a held day";
         EXPECT_EQ(src.find("\n        return 0;\n"), npos)
             << "a bare `return 0;` is left at the end of main()";
         // After everything a REFUSE day stores: positions, live_results, the email.
         const auto positions = src.find("store_positions");
         const auto results_insert = src.find("INSERT INTO trading.live_results");
-        const auto send = src.find("email_sender->send_email(subject, email_body");
+        const auto send = src.find("email_sender->send_email(mail_subject, mail_body,");
         ASSERT_NE(send, npos);
         EXPECT_LT(send, ret);
         if (positions != npos) EXPECT_LT(positions, ret);
@@ -506,23 +507,25 @@ TEST(RiskModuleErrorPathEmail, TheFlagEscapesTheErrorText) {
     EXPECT_EQ(flag_email_body_for_risk_module_failure("<p>plain</p>", failure).find(banner), 0u);
 }
 
+// The flags are put on the subject and the body inside deliver_email_report, which both twins call
+// with the day's risk_module_failure, after the body is built and before the one send; the flags
+// themselves are executed by EmailDelivery.* (tests/live/test_email_delivery.cpp).
 TEST(RiskModuleErrorPathSource, BothTwinsFlagTheEmailBeforeSendingIt) {
     for (const char* runner : kFuturesRunners) {
         SCOPED_TRACE(runner);
         const std::string src = read_source(runner);
         if (src.empty()) GTEST_SKIP() << "runner source not found from the test working directory";
         const auto body = src.find("std::string email_body = email_sender->generate_trading_report_body(");
-        const auto subject_flag = src.find("subject = risk_module_failure_email_subject(subject);");
-        const auto body_flag = src.find("email_body = flag_email_body_for_risk_module_failure(");
-        const auto send = src.find("email_sender->send_email(subject, email_body");
+        const auto deliver = src.find("live::deliver_email_report(");
+        const auto send = src.find("email_sender->send_email(mail_subject, mail_body,");
         ASSERT_NE(body, npos);
+        ASSERT_NE(deliver, npos);
         ASSERT_NE(send, npos);
-        ASSERT_NE(subject_flag, npos) << "the subject is never flagged";
-        ASSERT_NE(body_flag, npos) << "the body is never flagged";
-        EXPECT_LT(body, subject_flag);
-        EXPECT_LT(body, body_flag);
-        EXPECT_LT(subject_flag, send);
-        EXPECT_LT(body_flag, send);
+        EXPECT_LT(body, deliver);
+        EXPECT_LT(deliver, send) << "the send is the sender handed to deliver_email_report";
+        EXPECT_NE(src.find("risk_module_failure, skip_strategy_processing, carried_day_note,", deliver),
+                  npos)
+            << "the day's flags are not handed to the delivery";
     }
 }
 
@@ -536,7 +539,8 @@ TEST(RiskModuleErrorPathSource, TheTwinsCarryTheSameErrorPathBlocks) {
          "        // NORMAL TRADING DAY PROCESSING"},
         {"            // T-7a C5 (HD 2026-09-21, option b)",
          "            if (port_process_result.is_error())"},
-        {"                    // T-7a C5: a day the portfolio risk module", "auto send_result"},
+        {"                    // The day's flags, then the body file or the one send",
+         "                    if (!delivery.ok) {"},
         {"        if (risk_module_failure) {\n            ERROR(\"RISK_MODULE_FAILURE the day",
          "    } catch (const std::exception& e) {"},
     };

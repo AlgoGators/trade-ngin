@@ -2,6 +2,7 @@
 
 #pragma once
 
+#include <map>
 #include <filesystem>
 #include <nlohmann/json.hpp>
 #include <string>
@@ -11,6 +12,7 @@
 #include "trade_ngin/optimization/dynamic_optimizer.hpp"
 #include "trade_ngin/risk/risk_manager.hpp"
 #include "trade_ngin/risk/risk_module_config.hpp"
+#include "trade_ngin/data/listing_dates.hpp"
 
 namespace trade_ngin {
 
@@ -25,7 +27,6 @@ struct EmailConfig {
     std::string from_email;
     bool use_tls{true};
     std::vector<std::string> to_emails;
-    std::vector<std::string> to_emails_production;
 
     nlohmann::json to_json() const {
         nlohmann::json j;
@@ -36,7 +37,6 @@ struct EmailConfig {
         j["from_email"] = from_email;
         j["use_tls"] = use_tls;
         j["to_emails"] = to_emails;
-        j["to_emails_production"] = to_emails_production;
         return j;
     }
 
@@ -55,8 +55,6 @@ struct EmailConfig {
             use_tls = j.at("use_tls").get<bool>();
         if (j.contains("to_emails"))
             to_emails = j.at("to_emails").get<std::vector<std::string>>();
-        if (j.contains("to_emails_production"))
-            to_emails_production = j.at("to_emails_production").get<std::vector<std::string>>();
     }
 };
 
@@ -237,6 +235,35 @@ struct LiveSpecificConfig {
 };
 
 /**
+ * @brief The statistics convention (defaults.json `statistics`): the sessions a year K each
+ * stored statistic is annualised with, per series (T-8D R2 and R3, T-8D-2 R76).
+ *
+ * K is the row frequency of the grid the statistic is taken on, frozen per series, not measured
+ * per run. Futures: 311.0574 = 3,111 grid dates / (3,653 days / 365.25) over 2016-01-01 to
+ * 2025-12-31, a grid date being a Sunday-to-Friday UTC date on which at least 9 distinct symbols
+ * of the 36 printed a bar. Equities: 252 NYSE sessions. Re-measure only when the universe
+ * changes.
+ */
+struct StatisticsConfig {
+    double futures_sessions_per_year{311.0574};
+    double equity_sessions_per_year{252.0};
+
+    nlohmann::json to_json() const {
+        nlohmann::json j;
+        j["sessions_per_year"] = {{"futures", futures_sessions_per_year},
+                                  {"equities", equity_sessions_per_year}};
+        return j;
+    }
+
+    void from_json(const nlohmann::json& j) {
+        if (!j.contains("sessions_per_year")) return;
+        const auto& k = j.at("sessions_per_year");
+        if (k.contains("futures")) futures_sessions_per_year = k.at("futures").get<double>();
+        if (k.contains("equities")) equity_sessions_per_year = k.at("equities").get<double>();
+    }
+};
+
+/**
  * @brief Strategy defaults configuration
  */
 struct StrategyDefaultsConfig {
@@ -350,6 +377,25 @@ struct AppConfig {
     // portfolio.json's top-level equity_slow_rule; required on a futures book.
     EquitySlowRule equity_slow_rule;
 
+    // portfolio.json's optional top-level listing_dates (data/listing_dates.hpp):
+    //   "listing_dates": {"contracts": [{"symbol": "MES", "listed": "2019-05-06", "before": "ES", "ratio": 10}]}
+    // Absent means empty, and an empty list changes nothing anywhere.
+    std::vector<ListedContract> listing_dates;
+    // portfolio.json's optional top-level instrument_id_relabels (data/listing_dates.hpp): vendor id
+    // changes that are not rolls. Absent means empty, and an empty list changes nothing.
+    std::vector<InstrumentIdRelabel> instrument_id_relabels;
+    // listing_dates' optional "switch_rule": "open_at_target" (the default), "close_reenter", "convert" or "carry_to_target".
+    ListingSwitchRule listing_switch_rule{ListingSwitchRule::kOpenAtTarget};
+
+    // portfolio.json's optional top-level trading_rule_removals: symbol (base name) to the EMA
+    // pairs that contract does not run, removed by cost (Carver, strategy nine, "Removing
+    // expensive trading rules"; the list is the output of scripts/trading_rule_costs.py and is
+    // never edited by hand):
+    //   "trading_rule_removals": {"ZR": [[2, 8], [4, 16]], "ZC": [[2, 8]]}
+    // Absent means empty, and an empty map changes nothing anywhere. A book of more than one
+    // enabled sleeve, or whose sleeve is not a TrendFollowingStrategy, is refused with the block.
+    std::map<std::string, std::vector<std::pair<int, int>>> trading_rule_removals;
+
     // portfolio.json's top-level sizing_mode and starting_capital (LOOP_SPEC sections 3.1 and 7.7,
     // D19); both required on a futures book. The one mode is "half_compounding": the book is sized
     // on the starting capital less the drawdown of its cumulative settled net P&L from its running
@@ -375,6 +421,9 @@ struct AppConfig {
 
     // Live settings
     LiveSpecificConfig live;
+
+    // The statistics convention: the sessions a year per series (defaults when absent)
+    StatisticsConfig statistics;
 
     // Strategy defaults
     StrategyDefaultsConfig strategy_defaults;
@@ -407,6 +456,7 @@ struct AppConfig {
         j["covariance_stale_dates"] = covariance_stale_dates;
         j["backtest"] = backtest.to_json();
         j["live"] = live.to_json();
+        j["statistics"] = statistics.to_json();
         j["strategy_defaults"] = strategy_defaults.to_json();
         j["email"] = email.to_json();
         j["strategies"] = strategies_config;

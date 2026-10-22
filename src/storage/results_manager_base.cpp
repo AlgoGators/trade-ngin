@@ -83,9 +83,7 @@ Result<void> ResultsManagerBase::save_positions(const std::vector<Position>& pos
         for (auto& pos : positions_with_date) {
             pos.last_update = date;  // Set timestamp to the date being processed
         }
-        // Note: portfolio_id not available in base class, will be passed as empty string
-        // BacktestResultsManager should override this method to pass portfolio_id
-        return db_->store_backtest_positions(positions_with_date, run_id, "BASE_PORTFOLIO",
+        return db_->store_backtest_positions(positions_with_date, run_id, portfolio_id_,
                                              table_name);
     } else {
         // For live trading, use regular store_positions
@@ -118,15 +116,11 @@ Result<void> ResultsManagerBase::save_executions(const std::vector<ExecutionRepo
 
     INFO("Storing " + std::to_string(executions.size()) + " executions to " + table_name);
 
-    // Use appropriate storage method based on schema
-    if (schema_ == "backtest") {
-        // Note: portfolio_id not available in base class, will default to BASE_PORTFOLIO
-        // BacktestResultsManager should override this method to pass portfolio_id
-        return db_->store_backtest_executions(executions, run_id, "BASE_PORTFOLIO", table_name);
-    } else {
-        return db_->store_executions(executions, strategy_id_, strategy_name_, portfolio_id_,
-                                     table_name, book_);
-    }
+    // The live writer: a backtest stores its executions per strategy
+    // (BacktestResultsManager::save_strategy_executions) and never comes here. The book is the
+    // writer's (migration 021).
+    return db_->store_executions(executions, strategy_id_, strategy_name_, portfolio_id_,
+                                 table_name, book_);
 }
 
 Result<void> ResultsManagerBase::save_signals(
@@ -153,16 +147,9 @@ Result<void> ResultsManagerBase::save_signals(
 
     INFO("Storing " + std::to_string(signals.size()) + " signals to " + table_name);
 
-    // Use appropriate storage method based on schema
-    if (schema_ == "backtest") {
-        // Note: portfolio_id not available in base class, will default to BASE_PORTFOLIO
-        // BacktestResultsManager should override this method to pass portfolio_id
-        return db_->store_backtest_signals(signals, strategy_id_, run_id, date, "BASE_PORTFOLIO",
-                                           table_name);
-    } else {
-        return db_->store_signals(signals, strategy_id_, strategy_name_, portfolio_id_, date,
-                                  table_name);
-    }
+    // The live writer: a backtest stores no signals (backtest.signals has no writer).
+    return db_->store_signals(signals, strategy_id_, strategy_name_, portfolio_id_, date,
+                              table_name);
 }
 
 }  // namespace trade_ngin

@@ -13,7 +13,8 @@
 // reachable from a runner:
 //
 //   1. an identifier too long for the column -> the caller is told "value too
-//      long", not "current transaction is aborted";
+//      long", not "current transaction is aborted" (on a TEMP table of width 50,
+//      so it runs whatever width the real column has);
 //   2. a duplicate key inside one batch -> the caller is told "duplicate key",
 //      not "current transaction is aborted";
 //
@@ -43,11 +44,9 @@ using namespace trade_ngin;
 
 namespace {
 
-// 62 characters: exactly what a third enabled trend strategy joins to, and wider
-// than trading.positions.strategy_id at varchar(50). If migration 012 has been
-// applied the column is varchar(100) and this id fits, so the test picks its
-// probe from the column's ACTUAL width rather than assuming either state.
 constexpr const char* kPortfolio = "T2_STORE_ERR_PROBE_PORTFOLIO";
+// The overlong-id pin's own table: a TEMP copy of trading.positions, strategy_id varchar(50).
+constexpr const char* kNarrowTable = "t2_store_err_probe_narrow_positions";
 constexpr const char* kStrategyName = "TREND_FOLLOWING";
 constexpr const char* kGoodId = "LIVE_TREND_FOLLOWING";
 
@@ -155,35 +154,42 @@ protected:
 
 // 1. Too long for the column: the caller is told what the server said.
 TEST_F(StorePositionsErrorTest, AnOverlongIdReportsValueTooLongNotAnAbortedTransaction) {
-    const int width = column_width("positions");
-    ASSERT_GT(width, 0) << "trading.positions.strategy_id has no character_maximum_length";
+    // Migration 012 widened trading.positions.strategy_id to validate_strategy_id's cap of 100,
+    // so on the real table no id that passes the validator is too long any more. The error text
+    // is still the store's to carry, so the pin runs on a table of its own: a TEMP copy of
+    // trading.positions on the store's own session with strategy_id at the old width of 50. It
+    // is visible to that session only and goes with it, so nothing is left in the database.
+    const int real_width = column_width("positions");
+    ASSERT_GT(real_width, 0) << "trading.positions.strategy_id has no character_maximum_length";
+    EXPECT_LE(real_width, 100)
+        << "trading.positions.strategy_id is wider than validate_strategy_id's cap; "
+           "the validator and the schema have drifted apart again, the other way";
 
-    // One character past whatever the column currently is, built from a valid
-    // identifier alphabet so validate_strategy_id lets it reach the server. The
-    // validator's own cap is 100 (T-1 item 11), so an id can only be BOTH valid and
-    // too long while the column is narrower than that.
-    //
-    // Migration 012 widens this column to 100, which closes the gap deliberately: no
-    // id that passes the validator can then be too long for the column, and this
-    // particular server error becomes unreachable through store_positions. That is
-    // the end state E2-F36 aimed at, so it is asserted as an invariant rather than
-    // treated as a failure, and the duplicate-key case below carries the claim about
-    // the error text on its own.
-    if (width >= 100) {
-        EXPECT_EQ(width, 100)
-            << "trading.positions.strategy_id is wider than validate_strategy_id's cap; "
-               "the validator and the schema have drifted apart again, the other way";
-        GTEST_SKIP() << "migration 012 is applied (varchar(" << width << ")), so no valid "
-                        "identifier can be too long for the column";
-    }
+    constexpr int kWidth = 50;
+    const std::string table = std::string("pg_temp.") + kNarrowTable;
+    struct DropOnExit {
+        PostgresDatabase& db;
+        ~DropOnExit() {
+            db.execute_direct_query(std::string("DROP TABLE IF EXISTS pg_temp.") + kNarrowTable);
+        }
+    } drop_on_exit{*db_};
+    auto made = db_->execute_direct_query("CREATE TEMP TABLE " + std::string(kNarrowTable) +
+                                          " (LIKE trading.positions INCLUDING DEFAULTS)");
+    ASSERT_TRUE(made.is_ok()) << made.error()->what();
+    auto narrowed = db_->execute_direct_query("ALTER TABLE " + table +
+                                              " ALTER COLUMN strategy_id TYPE varchar(" +
+                                              std::to_string(kWidth) + ")");
+    ASSERT_TRUE(narrowed.is_ok()) << narrowed.error()->what();
+
+    // One character past the column, built from a valid identifier alphabet so
+    // validate_strategy_id lets it reach the server.
     std::string too_long = "LIVE_";
-    while (static_cast<int>(too_long.size()) <= width) too_long += "X";
-    ASSERT_EQ(static_cast<int>(too_long.size()), width + 1);
+    while (static_cast<int>(too_long.size()) <= kWidth) too_long += "X";
+    ASSERT_EQ(static_cast<int>(too_long.size()), kWidth + 1);
 
-    auto r = db_->store_positions({a_position()}, too_long, kStrategyName, kPortfolio,
-                                  "trading.positions");
+    auto r = db_->store_positions({a_position()}, too_long, kStrategyName, kPortfolio, table);
     ASSERT_TRUE(r.is_error()) << "a " << too_long.size() << "-character id was accepted by a "
-                              << "varchar(" << width << ") column";
+                              << "varchar(" << kWidth << ") column";
     EXPECT_EQ(r.error()->code(), ErrorCode::DATABASE_ERROR);
 
     const std::string what = r.error()->what();
@@ -193,6 +199,11 @@ TEST_F(StorePositionsErrorTest, AnOverlongIdReportsValueTooLongNotAnAbortedTrans
         << "the retry fallback is back: the first error has been replaced by the "
            "aborted-transaction message. " << what;
 
+    // Nothing was written: not to the narrow table (a DELETE reports the rows it held), and not
+    // to the real one under either shape.
+    auto held = db_->execute_direct_query("DELETE FROM " + table);
+    ASSERT_TRUE(held.is_ok()) << held.error()->what();
+    EXPECT_EQ(held.value(), 0u) << "the failed transaction committed something";
     EXPECT_EQ(rows_for(kPortfolio), 0);
     EXPECT_EQ(unattributed_rows(), 0)
         << "rows were written with no strategy attribution -- the deleted fallback's shape";

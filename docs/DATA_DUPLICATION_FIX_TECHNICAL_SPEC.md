@@ -61,7 +61,7 @@ Incorrect price_history size corrupts all technical calculations:
 
 ### 1. MarketDataBus Auto-Publishing
 
-**Location**: `src/data/postgres_database.cpp:156`
+**Location**: `src/data/postgres_database.cpp`
 
 ```cpp
 // Inside get_market_data() loop
@@ -74,7 +74,7 @@ MarketDataBus::instance().publish(event);  // Publishes each bar as loaded
 
 ### 2. Pre-warm Call Necessity
 
-**Location**: `apps/strategies/live_portfolio_conservative.cpp:866`
+**Location**: `apps/strategies/live_portfolio_conservative.cpp`
 
 ```cpp
 auto strat_prewarm = tf_strategy->on_data(all_bars);
@@ -98,19 +98,19 @@ auto strat_prewarm = tf_strategy->on_data(all_bars);
 **Lines**: 649-653, 876-880
 
 ```cpp
-// Around line 649: Disable during database load
+// Disable during database load
 MarketDataBus::instance().set_publish_enabled(false);
 auto market_data_result = db->get_market_data(...);
 MarketDataBus::instance().set_publish_enabled(true);
 
-// Around line 876: Disable during portfolio processing
+// Disable during portfolio processing
 MarketDataBus::instance().set_publish_enabled(false);
 auto port_process_result = portfolio->process_market_data(all_bars);
 MarketDataBus::instance().set_publish_enabled(true);
 ```
 
 **How it works**:
-- `MarketDataBus::publish()` checks `publish_enabled_` flag (market_data_bus.cpp:56)
+- `MarketDataBus::publish()` checks `publish_enabled_` flag (market_data_bus.cpp)
 - When disabled, `publish()` returns early without calling subscribers
 - Prevents 20,775 individual bar events from triggering callbacks
 - Still allows normal portfolio processing through explicit function calls
@@ -344,20 +344,20 @@ This phenomenon is well-documented in other analysis files. The key insight is t
 ### Core Changes
 
 1. **apps/strategies/live_portfolio_conservative.cpp**
-   - Added MarketDataBus disable/enable around data loading (lines 649-653)
-   - Added MarketDataBus disable/enable around portfolio processing (lines 876-880)
+   - Added MarketDataBus disable/enable around data loading
+   - Added MarketDataBus disable/enable around portfolio processing
    - Added INFO logging for debugging
 
 2. **src/strategy/trend_following.cpp**
-   - Added conditional price_history clear (lines 201-206)
+   - Added conditional price_history clear
    - Heuristic: Clear only when symbol_bars.size() > 100 (bulk mode)
 
 3. **src/portfolio/portfolio_manager.cpp**
-   - Removed data_symbols filter from update_historical_returns (lines 707-715)
+   - Removed data_symbols filter from update_historical_returns
    - Now always updates all symbols for consistent correlation data
 
 4. **src/backtest/backtest_coordinator.cpp**
-   - Added early return on first day (lines 462-468)
+   - Added early return on first day
    - Prevents day-1 duplicate processing
 
 ---

@@ -3,13 +3,16 @@
 #include <iostream>
 #include <nlohmann/json.hpp>
 #include "trade_ngin/backtest/backtest_coordinator.hpp"
+#include "trade_ngin/backtest/backtest_metrics_calculator.hpp"
 #include "trade_ngin/backtest/transaction_cost_analysis.hpp"
 #include "trade_ngin/core/config_loader.hpp"
 #include "trade_ngin/portfolio/loop_config.hpp"
 #include "trade_ngin/core/logger.hpp"
+#include "trade_ngin/core/resolved_sleeves.hpp"
 #include "trade_ngin/core/run_id_generator.hpp"
 #include "trade_ngin/core/time_utils.hpp"
 #include "trade_ngin/data/database_pooling.hpp"
+#include "trade_ngin/data/listing_dates.hpp"
 #include "trade_ngin/data/postgres_database.hpp"
 #include "trade_ngin/instruments/instrument_registry.hpp"
 #include "trade_ngin/portfolio/portfolio_manager.hpp"
@@ -160,6 +163,51 @@ int main() {
                                s == "ES.v.0";
                     }),
                 symbols.end());
+            // Declared vendor id relabellings (nothing happens without instrument_id_relabels).
+            if (!app_config.instrument_id_relabels.empty()) {
+                ListingDates::instance().set_relabels(app_config.instrument_id_relabels);
+                std::string line = "INSTRUMENT_ID_RELABELS in force (not rolls):";
+                for (const auto& r : app_config.instrument_id_relabels) {
+                    line += " " + r.symbol + " from " + r.date + " id " + r.to + " is read as " + r.from + ";";
+                }
+                WARN(line);
+            }
+            // Listing dates (nothing happens without portfolio.json's listing_dates):
+            // a window that starts before a contract's listing date also runs the contract traded
+            // before it, on the rows stored under the listed contract's symbol.
+            if (!app_config.listing_dates.empty()) {
+                ListingDates::instance().set(app_config.listing_dates);
+                ListingDates::instance().set_switch_rule(app_config.listing_switch_rule);
+                InstrumentRegistry::instance().set_full_size_remap(false);
+                // the ratio is the two contracts' sizes, wherever both have a metadata row
+                for (const auto& c : app_config.listing_dates) {
+                    auto& registry = InstrumentRegistry::instance();
+                    if (!registry.has_instrument(c.before) || !registry.has_instrument(c.symbol)) continue;
+                    const auto before = registry.get_instrument(c.before);
+                    const auto listed = registry.get_instrument(c.symbol);
+                    const std::string wrong = ListingDates::ratio_error(
+                        c, before ? before->get_multiplier() : 0.0, listed ? listed->get_multiplier() : 0.0);
+                    if (!wrong.empty()) throw std::runtime_error(wrong);
+                }
+                const auto predecessors = ListingDates::instance().predecessor_symbols(
+                    symbols, config.strategy_config.start_date);
+                std::string line = std::string("LISTING_DATES in force, switch rule ") +
+                                   to_string(app_config.listing_switch_rule) + ":";
+                for (const auto& c : app_config.listing_dates) {
+                    line += " " + c.symbol + " from " + c.listed + " (before it " + c.before + ", 1 = " + std::to_string(c.ratio) + ")";
+                }
+                line += "; symbols added to this run:";
+                for (const auto& p : predecessors) {
+                    if (!InstrumentRegistry::instance().has_instrument(p)) {
+                        throw std::runtime_error("listing_dates: " + p +
+                                                 " has no metadata.contract_metadata row");
+                    }
+                    line += " " + p;
+                    symbols.push_back(p);
+                }
+                if (predecessors.empty()) line += " none";
+                WARN(line);
+            }
             config.strategy_config.symbols = symbols;
         } else {
             ERROR("Failed to get symbols: " + std::string(symbols_result.error()->what()));
@@ -213,6 +261,9 @@ int main() {
         coord_config.store_trade_details = config.store_trade_details;
         coord_config.portfolio_id = config.portfolio_id;
         coord_config.csv_output_path = config.csv_output_path;
+        // T-8D R2, T-8D-2 R76: K of the futures statistics grid, the one factor the run's
+        // annualised statistics use.
+        coord_config.statistics_sessions_per_year = app_config.statistics.futures_sessions_per_year;
 
         auto coordinator = std::make_unique<trade_ngin::backtest::BacktestCoordinator>(
             db, &registry, coord_config);
@@ -243,6 +294,9 @@ int main() {
         std::vector<std::string> strategy_names;
         std::unordered_map<std::string, double> strategy_allocations;
         std::unordered_map<std::string, nlohmann::json> strategy_configs_map;
+        // Each sleeve's values as resolved here and handed to its strategy: logged once and
+        // recorded with the run (core/resolved_sleeves.hpp).
+        std::vector<trade_ngin::ResolvedSleeve> resolved_sleeves;
 
         // Use strategies from loaded config
         auto& strategies_config = app_config.strategies_config;
@@ -355,11 +409,15 @@ int main() {
                 if (strategy_id == strategy_names.front()) {
                     trend_config.equity_slow_symbols = app_config.equity_slow_rule.symbols;
                     trend_config.equity_slow_pairs = app_config.equity_slow_rule.pairs;
+                    // Trading rules removed by cost (no value changes without the block).
+                    trade_ngin::hand_over_trading_rule_removals(app_config, trend_config);
                     // The first sleeve's own series and its risk target feed the risk overlay
                     // (LOOP_SPEC section 4: the three risk limits are ratios to this tau).
                     portfolio_config.overlay_sleeve = strategy_id;
                     portfolio_config.overlay_tau = trend_config.risk_target;
                 }
+                resolved_sleeves.push_back(
+                    {strategy_id, trend_config.idm, trend_config.risk_target, allocation});
                 strategy = std::make_shared<trade_ngin::TrendFollowingStrategy>(
                     strategy_id, base_strategy_config, trend_config, db, registry_ptr);
 
@@ -405,6 +463,8 @@ int main() {
                     portfolio_config.overlay_sleeve = strategy_id;
                     portfolio_config.overlay_tau = trend_config.risk_target;
                 }
+                resolved_sleeves.push_back(
+                    {strategy_id, trend_config.idm, trend_config.risk_target, allocation});
                 strategy = std::make_shared<trade_ngin::TrendFollowingStrategy>(
                     strategy_id, base_strategy_config, trend_config, db, registry_ptr);
 
@@ -436,6 +496,7 @@ int main() {
         // ========================================
         // CREATE PORTFOLIO AND RUN BACKTEST
         // ========================================
+        INFO(trade_ngin::resolved_sleeves_log_line(app_config.portfolio_id, resolved_sleeves));
         INFO("Creating portfolio manager with " + std::to_string(strategies.size()) +
              " strategies...");
         auto portfolio = std::make_shared<trade_ngin::PortfolioManager>(portfolio_config);
@@ -487,14 +548,16 @@ int main() {
         std::cout << "======= Backtest Results =======" << std::endl;
         std::cout << "Total Return: " << (backtest_results.total_return * 100.0) << "%"
                   << std::endl;
-        std::cout << "Sharpe Ratio: " << backtest_results.sharpe_ratio << std::endl;
-        std::cout << "Sortino Ratio: " << backtest_results.sortino_ratio << std::endl;
+        std::cout << "Sharpe Ratio: " << ratio_or_na(backtest_results.sharpe_ratio) << std::endl;
+        std::cout << "Sortino Ratio: " << ratio_or_na(backtest_results.sortino_ratio) << std::endl;
         std::cout << "Max Drawdown: " << (backtest_results.max_drawdown * 100.0) << "%"
                   << std::endl;
-        std::cout << "Calmar Ratio: " << backtest_results.calmar_ratio << std::endl;
-        std::cout << "Volatility: " << (backtest_results.volatility * 100.0) << "%" << std::endl;
-        std::cout << "Win Rate: " << (backtest_results.win_rate * 100.0) << "%" << std::endl;
-        std::cout << "Total Trades: " << backtest_results.total_trades << std::endl;
+        std::cout << "Calmar Ratio: " << ratio_or_na(backtest_results.calmar_ratio) << std::endl;
+        std::cout << "Volatility (annualised): " << (backtest_results.volatility * 100.0) << "%"
+                  << std::endl;
+        std::cout << "Trade win rate (closing fills): " << (backtest_results.win_rate * 100.0)
+                  << "%" << std::endl;
+        std::cout << "Closing fills: " << backtest_results.total_trades << std::endl;
         std::cout << "Transaction Costs: " << backtest_results.transaction_costs << std::endl;
         std::cout << "Roll Costs (upper bound): " << backtest_results.roll_costs << std::endl;
         std::cout << "Roll Fills: " << backtest_results.total_roll_fills << std::endl;
@@ -505,6 +568,31 @@ int main() {
             nlohmann::json portfolio_config_json = portfolio_config.to_json();
             portfolio_config_json["strategy_allocations"] = strategy_allocations;
             portfolio_config_json["strategy_names"] = strategy_names;
+            // T-8D-2 R53: each sleeve's resolved idm and risk_target (its allocation is
+            // strategy_allocations above), the window rule, the warm-up and the sessions a year
+            // the statistics are annualised with: statistics_K is the factor the calculator
+            // applied, as the results carry it.
+            portfolio_config_json[trade_ngin::kSleevesKey] =
+                trade_ngin::resolved_sleeves_json(resolved_sleeves, false);
+            trade_ngin::add_backtest_run_keys(
+                portfolio_config_json, app_config.backtest.lookback_years,
+                app_config.backtest.frozen_end_date, backtest_results.warmup_days,
+                backtest_results.statistics_sessions_per_year);
+            if (!app_config.instrument_id_relabels.empty()) {
+                auto relabels = nlohmann::json::array();
+                for (const auto& r : app_config.instrument_id_relabels) {
+                    relabels.push_back({{"symbol", r.symbol}, {"date", r.date}, {"from", r.from}, {"to", r.to}});
+                }
+                portfolio_config_json["instrument_id_relabels"] = relabels;
+            }
+            if (!app_config.listing_dates.empty()) {
+                auto contracts = nlohmann::json::array();
+                for (const auto& c : app_config.listing_dates) {
+                    contracts.push_back({{"symbol", c.symbol}, {"listed", c.listed}, {"before", c.before}, {"ratio", c.ratio}});
+                }
+                portfolio_config_json["listing_dates"] = {
+                    {"switch_rule", to_string(app_config.listing_switch_rule)}, {"contracts", contracts}};
+            }
 
             auto save_result = coordinator->save_portfolio_results_to_db(
                 backtest_results, strategy_names, strategy_allocations, portfolio,

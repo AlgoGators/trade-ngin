@@ -91,6 +91,44 @@ bool pairs_supported(const std::vector<std::pair<int, int>>& pairs, std::string*
     return true;
 }
 
+std::vector<std::pair<int, int>> pairs_after_removal(const std::vector<std::pair<int, int>>& pairs,
+                                                     const std::vector<std::pair<int, int>>& removed,
+                                                     std::string* refusal) {
+    auto refuse = [&](const std::string& why) {
+        if (refusal != nullptr) *refusal = why;
+        return std::vector<std::pair<int, int>>{};
+    };
+    auto name = [](const std::pair<int, int>& pair) {
+        return "(" + std::to_string(pair.first) + ", " + std::to_string(pair.second) + ")";
+    };
+    for (std::size_t k = 0; k < pairs.size(); ++k) {
+        if (k > 0 && pairs[k].first <= pairs[k - 1].first) {
+            return refuse("the sleeve's pairs are not in order of speed, fastest first");
+        }
+    }
+    for (std::size_t k = 0; k < removed.size(); ++k) {
+        if (std::find(pairs.begin(), pairs.end(), removed[k]) == pairs.end()) {
+            return refuse("the pair " + name(removed[k]) + " is not one of the sleeve's pairs");
+        }
+        if (std::find(removed.begin(), removed.begin() + static_cast<long>(k), removed[k]) !=
+            removed.begin() + static_cast<long>(k)) {
+            return refuse("the pair " + name(removed[k]) + " is named twice");
+        }
+    }
+    if (removed.size() >= pairs.size()) {
+        return refuse("no pair is left (a contract with no rule left is taken out of the "
+                      "universe, not listed here)");
+    }
+    for (std::size_t k = 0; k < removed.size(); ++k) {
+        if (std::find(removed.begin(), removed.end(), pairs[k]) == removed.end()) {
+            return refuse("the pairs removed are not the fastest " + std::to_string(removed.size()) +
+                          ": " + name(pairs[k]) + " is kept while a slower pair is removed");
+        }
+    }
+    return std::vector<std::pair<int, int>>(pairs.begin() + static_cast<long>(removed.size()),
+                                            pairs.end());
+}
+
 Estimate estimate(const Window& window, int vol_span, const std::vector<std::pair<int, int>>& pairs,
                   double fdm, bool attenuate) {
     Estimate out;

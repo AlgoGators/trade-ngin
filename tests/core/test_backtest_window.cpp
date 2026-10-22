@@ -294,15 +294,41 @@ struct TempConfigTree {
     }
 };
 
+// Holds gtest's stdout capture for a scope and releases it on every way out, a throw included.
+class ScopedStdoutCapture {
+public:
+    ScopedStdoutCapture() { ::testing::internal::CaptureStdout(); }
+    ~ScopedStdoutCapture() {
+        if (!taken_) ::testing::internal::GetCapturedStdout();
+    }
+    ScopedStdoutCapture(const ScopedStdoutCapture&) = delete;
+    ScopedStdoutCapture& operator=(const ScopedStdoutCapture&) = delete;
+    std::string take() {
+        taken_ = true;
+        return ::testing::internal::GetCapturedStdout();
+    }
+
+private:
+    bool taken_ = false;
+};
+
+// Runs `body` with stdout captured and returns what it printed.
+template <typename Body>
+std::string capture_stdout_of(Body&& body) {
+    ScopedStdoutCapture capture;
+    body();
+    return capture.take();
+}
+
 std::string load_and_capture(const TempConfigTree& tree, bool* ok) {
     LoggerConfig lc;
     lc.destination = LogDestination::CONSOLE;
     lc.min_level = LogLevel::WARNING;
     Logger::instance().initialize(lc);
-    ::testing::internal::CaptureStdout();
-    auto r = ConfigLoader::load(tree.root, "probe");
-    if (ok) *ok = r.is_ok();
-    return ::testing::internal::GetCapturedStdout();
+    return capture_stdout_of([&] {
+        auto r = ConfigLoader::load(tree.root, "probe");
+        if (ok) *ok = r.is_ok();
+    });
 }
 
 const nlohmann::json kTrendOnly = {
@@ -324,6 +350,17 @@ const nlohmann::json kSlowDisabled = {
       {"config", {{"ema_windows", {{128, 512}}}}}}}};
 
 }  // namespace
+
+// The capture helper itself: a body that throws must leave no capture open. gtest allows one
+// stdout capturer at a time and ABORTS the binary on a second, so a capture left open by a
+// throwing load would take every later test down with it instead of failing this one.
+TEST(LookbackValidationG03, AThrowingBodyReleasesTheStdoutCapture) {
+    EXPECT_THROW(capture_stdout_of([] { throw std::runtime_error("the load threw"); }),
+                 std::runtime_error);
+    ::testing::internal::CaptureStdout();
+    std::cout << "captured again";
+    EXPECT_EQ(::testing::internal::GetCapturedStdout(), "captured again");
+}
 
 TEST(LookbackValidationG03, AShortWindowWarnsThroughValidateConfig) {
     bool ok = false;
