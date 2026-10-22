@@ -869,3 +869,13 @@ def test_handoff_off_still_sends_with_the_engine(env):
     env.clock.t = at(FRI, 9, 30)
     env.make(portfolios=(DESK,)).run_pass()
     assert env.engine.mails == [(DESK_PID, FRI)]
+
+
+def test_handoff_grace_runs_from_the_approval_when_it_is_after_0930(env):
+    model_done(env, FRI)
+    env.days.published[(DESK_PID, FRI)] = (at(FRI, 10, 0), "fallback", "fallback")
+    sched = handoff(env)
+    env.clock.t = at(FRI, 10, 45)
+    assert dict(sched.run_pass())[DESK].reason == "awaiting_algolens"
+    env.clock.t = at(FRI, 11, 1)
+    assert dict(sched.run_pass())[DESK].reason == "algolens_not_sent"
