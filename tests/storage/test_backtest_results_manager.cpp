@@ -2,6 +2,7 @@
 #include <chrono>
 #include <memory>
 #include <thread>
+#include <tuple>
 #include "../core/test_base.hpp"
 #include "../data/test_db_utils.hpp"
 #include "trade_ngin/storage/backtest_results_manager.hpp"
@@ -41,6 +42,54 @@ Position make_pos(const std::string& sym, double qty, double avg_price = 100.0) 
                     Timestamp{});
 }
 
+class CapturingBacktestDatabase : public MockPostgresDatabase {
+public:
+    using MockPostgresDatabase::MockPostgresDatabase;
+    using Call = std::tuple<std::string, std::string, std::string, std::string>;
+    std::vector<Call> writes;
+
+    Result<void> store_backtest_summary(
+        const std::string& run_id, const Timestamp&, const Timestamp&,
+        const std::unordered_map<std::string, double>&, const std::string& portfolio_id,
+        const std::string& table_name) override {
+        writes.emplace_back("summary", run_id, portfolio_id, table_name);
+        return Result<void>();
+    }
+
+    Result<void> store_backtest_equity_curve_batch(
+        const std::string& run_id, const std::vector<std::pair<Timestamp, double>>&,
+        const std::string& portfolio_id, const std::string& table_name,
+        const std::vector<std::string>&) override {
+        writes.emplace_back("equity", run_id, portfolio_id, table_name);
+        return Result<void>();
+    }
+
+    Result<void> store_backtest_positions(const std::vector<Position>&,
+                                          const std::string& run_id,
+                                          const std::string& portfolio_id,
+                                          const std::string& table_name,
+                                          bool) override {
+        writes.emplace_back("positions", run_id, portfolio_id, table_name);
+        return Result<void>();
+    }
+
+    Result<void> store_backtest_executions(const std::vector<ExecutionReport>&,
+                                           const std::string& run_id,
+                                           const std::string& portfolio_id,
+                                           const std::string& table_name) override {
+        writes.emplace_back("executions", run_id, portfolio_id, table_name);
+        return Result<void>();
+    }
+
+    Result<void> store_backtest_signals(const std::unordered_map<std::string, double>&,
+                                        const std::string&, const std::string& run_id,
+                                        const Timestamp&, const std::string& portfolio_id,
+                                        const std::string& table_name) override {
+        writes.emplace_back("signals", run_id, portfolio_id, table_name);
+        return Result<void>();
+    }
+};
+
 }  // namespace
 
 class BacktestResultsManagerTest : public TestBase {
@@ -77,13 +126,33 @@ TEST_F(BacktestResultsManagerTest, ConstructorSetsAccessors) {
     EXPECT_TRUE(mgr_->is_storage_enabled());
     EXPECT_EQ(mgr_->get_schema(), "backtest");
     EXPECT_EQ(mgr_->get_strategy_id(), "TEST_STRAT");
-    // FIXME: production bug — BacktestResultsManager declares its own
-    // `portfolio_id_` member that shadows the one on ResultsManagerBase. The
-    // constructor stores the supplied portfolio_id into the derived class's
-    // shadow, while get_portfolio_id() (defined on the base) reads the base's
-    // member, which keeps its default "BASE_PORTFOLIO". Capture observed
-    // behavior so this test fires if/when the shadow is removed.
-    EXPECT_EQ(mgr_->get_portfolio_id(), "BASE_PORTFOLIO");
+    EXPECT_EQ(mgr_->get_portfolio_id(), "TEST_PORTFOLIO");
+}
+
+TEST_F(BacktestResultsManagerTest, EmptyPortfolioIdUsesBaseDefault) {
+    BacktestResultsManager empty_id(db_, true, "TEST_STRAT", "");
+    EXPECT_EQ(empty_id.get_portfolio_id(), "BASE_PORTFOLIO");
+}
+
+TEST(BacktestResultsManagerWrites, CallerPortfolioIdReachesEveryDatabaseWrite) {
+    auto db = std::make_shared<CapturingBacktestDatabase>("mock://testdb");
+    ASSERT_TRUE(db->connect().is_ok());
+    BacktestResultsManager mgr(db, true, "TEST_STRAT", "TEST_PORTFOLIO");
+    mgr.set_metadata(date_at(2026, 1, 1), date_at(2026, 1, 5), nlohmann::json{});
+    mgr.set_performance_metrics({{"return", 0.05}});
+    mgr.set_equity_curve({{date_at(2026, 1, 5), 1'000'000.0}});
+    mgr.set_final_positions({make_pos("ES", 2.0)});
+    mgr.set_executions({make_exec("ES", 2.0, 4000.0)});
+    mgr.add_signals(date_at(2026, 1, 5), {{"ES", 0.5}});
+
+    ASSERT_TRUE(mgr.save_all_results("RUN_1", date_at(2026, 1, 5)).is_ok());
+    using Call = CapturingBacktestDatabase::Call;
+    EXPECT_EQ(db->writes,
+              (std::vector<Call>{{"summary", "RUN_1", "TEST_PORTFOLIO", "backtest.results"},
+                                 {"equity", "RUN_1", "TEST_PORTFOLIO", "backtest.equity_curve"},
+                                 {"positions", "RUN_1", "TEST_PORTFOLIO", "backtest.final_positions"},
+                                 {"executions", "RUN_1", "TEST_PORTFOLIO", "backtest.executions"},
+                                 {"signals", "RUN_1", "TEST_PORTFOLIO", "backtest.signals"}}));
 }
 
 TEST_F(BacktestResultsManagerTest, SetStorageEnabledFlipsFlag) {
