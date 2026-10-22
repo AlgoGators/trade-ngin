@@ -189,6 +189,65 @@ TEST_F(RollStateDbTest, AReplaceStoresTheRunsRowsAndSweepsTheDaysOtherRollRows) 
     EXPECT_EQ(got, want);
 }
 
+// T-DATED R3 (HD 2026-10-10; executes against the database): a re-run of a date re-decides the
+// day's orders. An order the first run of the date made and the re-run does not make must not
+// stay (it did: only ROLL rows and the re-run's own order ids were removed, and the row inflated
+// total_strategy_fills on every later day).
+TEST_F(RollStateDbTest, AReplaceRemovesTheDaysOrdersTheRerunNoLongerMakes) {
+    leg("2026-04-29", "EXEC_MBT.v.0_20260501_SC", "MBT.v.0", "STRATEGY", "", 3.0);  // first run only
+    leg("2026-04-29", "EXEC_6A.v.0_20260501", "6A.v.0", "STRATEGY", "", 2.0);
+    leg("2026-04-29", "EXEC_ZC.v.0_20260430_RC", "ZC.v.0", "ROLL", "K", 5.0);
+    leg("2026-04-29", "EXEC_ZF.v.0_20260501", "ZF.v.0", "STRATEGY", "", 2.0, "TREND_FOLLOWING_FAST");
+    leg("2026-04-28", "EXEC_MBT.v.0_20260430", "MBT.v.0", "STRATEGY", "", 3.0);
+    const std::vector<ExecutionReport> rerun = {
+        report("EXEC_6A.v.0_20260501", "6A.v.0", Side::BUY, 0.71, ExecutionType::STRATEGY, "", 2.0),
+        report("EXEC_ZC.v.0_20260430_RC", "ZC.v.0", Side::SELL, 452.0, ExecutionType::ROLL, "K", 5.0)};
+    auto replaced = db_->replace_roll_day_executions({{"TREND_FOLLOWING", rerun}}, kId, kPortfolio,
+                                                     utc(2026, 4, 29), "trading.executions");
+    ASSERT_TRUE(replaced.is_ok()) << replaced.error()->what();
+    pqxx::connection conn(conn_);
+    pqxx::work w(conn);
+    std::vector<std::string> got;
+    for (const auto& r : w.exec("SELECT exec_id, strategy_name, date::text FROM trading.executions "
+                                "WHERE strategy_id = $1 ORDER BY date, strategy_name, exec_id",
+                                pqxx::params{kId})) {
+        got.push_back(r[2].as<std::string>() + " " + r[1].as<std::string>() + " " + r[0].as<std::string>());
+    }
+    const std::vector<std::string> want = {
+        "2026-04-28 TREND_FOLLOWING EXEC_MBT.v.0_20260430",
+        "2026-04-29 TREND_FOLLOWING EXEC_6A.v.0_20260501",
+        "2026-04-29 TREND_FOLLOWING EXEC_ZC.v.0_20260430_RC",
+        "2026-04-29 TREND_FOLLOWING_FAST EXEC_ZF.v.0_20260501"};
+    EXPECT_EQ(got, want) << "the first run's MBT order of 2026-04-29 is still stored";
+}
+
+// The same replace for a sleeve the re-run makes no order for at all (the runners call it for
+// every sleeve): the sleeve's rows of the day, of every type, are removed; another sleeve, another
+// day and another portfolio are not touched.
+TEST_F(RollStateDbTest, TheDaySweepRemovesTheSleevesRowsOfTheDayAndNothingElse) {
+    leg("2026-05-01", "EXEC_MBT.v.0_20260501_SC", "MBT.v.0", "STRATEGY", "", 3.0);
+    leg("2026-05-01", "EXEC_ZC.v.0_20260430_RC", "ZC.v.0", "ROLL", "K", 5.0);
+    leg("2026-05-01", "EXEC_ZF.v.0_20260501", "ZF.v.0", "STRATEGY", "", 2.0, "TREND_FOLLOWING_FAST");
+    leg("2026-04-30", "EXEC_MBT.v.0_20260430", "MBT.v.0", "STRATEGY", "", 3.0);
+    ASSERT_TRUE(db_->replace_roll_day_executions({{"TREND_FOLLOWING", {}}}, kId, kPortfolio,
+                                                 utc(2026, 5, 1), "trading.executions")
+                    .is_ok());
+    ASSERT_TRUE(db_->replace_roll_day_executions({{"TREND_FOLLOWING", {}}}, kId,
+                                                 "ANOTHER_PORTFOLIO", utc(2026, 5, 1),
+                                                 "trading.executions")
+                    .is_ok());
+    pqxx::connection conn(conn_);
+    pqxx::work w(conn);
+    std::vector<std::string> got;
+    for (const auto& r : w.exec("SELECT exec_id FROM trading.executions WHERE strategy_id = $1 "
+                                "ORDER BY exec_id",
+                                pqxx::params{kId})) {
+        got.push_back(r[0].as<std::string>());
+    }
+    const std::vector<std::string> want = {"EXEC_MBT.v.0_20260430", "EXEC_ZF.v.0_20260501"};
+    EXPECT_EQ(got, want);
+}
+
 // C5 (finding 1): a re-run whose store fails (here its third row is refused) leaves the first
 // run's legs. The Day T-1 row was re-written by the first run, so those legs are the only record
 // of the contract the book held before them (get_stored_roll_contracts); with the sweep committed

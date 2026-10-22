@@ -531,7 +531,7 @@ TEST(SessionBookGateSource, TheGateHoldsOnTheVerdictBeforeStrictExecutions) {
         const auto finalize = src.find("pnl_manager->finalize_previous_day(");
         const auto strict = src.find("execute_strategy_day_strict(*execution_manager,");
         const auto assertion = src.find("unpriced_book_changes(");
-        const auto store_exec = src.find("db->store_executions(");
+        const auto store_exec = src.find("db->replace_roll_day_executions(");
         const auto persisted = src.find("report_config_json[\"t1_classification\"]");
         for (auto at : {classify, upsert, feed, extract, gate, finalize, strict, assertion,
                         store_exec, persisted}) {
