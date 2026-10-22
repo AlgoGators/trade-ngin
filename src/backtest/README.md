@@ -2,586 +2,189 @@
 
 ## Overview
 
-The backtest module (`src/backtest/`) provides realistic historical backtesting capabilities with:
-- **Transaction cost modeling** with spread and market impact
-- **Slippage simulation** based on volume and volatility
-- **Comprehensive metrics calculation** (Sharpe, Sortino, Calmar, etc.)
-- **Multi-strategy portfolio support** via PortfolioManager
-- **Database persistence** of results for analysis
+`src/backtest/` replays stored daily bars through the same `PortfolioManager` the live runners use,
+books the fills and their costs, builds the equity curve, computes the run's metrics and stores the
+results. `BacktestCoordinator` (`include/trade_ngin/backtest/backtest_coordinator.hpp`) owns the
+run; the four runners that run a book (`bt_portfolio`,
+`bt_portfolio_conservative`, `bt_equity_mr`, `bt_equity_validation`) call `BacktestCoordinator::run_portfolio`
+(`src/backtest/backtest_coordinator.cpp:184`).
 
-> **Interconnections**: This module integrates with `strategy/`, `portfolio/`, `transaction_cost/`, `risk/`, `optimization/`, and `data/` modules.
-
----
-
-## Architecture & Module Interconnections
-
-```
-backtest/
-├── backtest_coordinator.cpp           # Main orchestrator
-├── backtest_data_loader.cpp           # Historical data loading (uses data/)
-├── backtest_execution_manager.cpp     # Execution simulation
-├── backtest_metrics_calculator.cpp    # Performance metrics
-├── backtest_pnl_manager.cpp           # PnL calculations
-├── backtest_price_manager.cpp         # Price handling
-├── slippage_model.cpp                 # Slippage simulation
-└── transaction_cost_analysis.cpp      # Cost analysis
-```
-
-### Complete System Data Flow
-
-```mermaid
-flowchart TB
-    subgraph Input["Input Layer"]
-        Config[config.json]
-        DB[(PostgreSQL<br/>Market Data)]
-    end
-    
-    subgraph Backtest["Backtest Module"]
-        BTC[BacktestCoordinator]
-        BDL[BacktestDataLoader]
-        BPnL[BacktestPnLManager]
-        BPM[BacktestPriceManager]
-        BMC[BacktestMetricsCalculator]
-    end
-    
-    subgraph Strategy["Strategy Module"]
-        Strat[YourStrategy]
-        BaseStrat[BaseStrategy]
-    end
-    
-    subgraph Portfolio["Portfolio Module"]
-        PM[PortfolioManager]
-    end
-    
-    subgraph Optimization["Optimization Module"]
-        Opt[DynamicOptimizer]
-    end
-    
-    subgraph Risk["Risk Module"]
-        RM[RiskManager]
-    end
-    
-    subgraph Cost["Transaction Cost Module"]
-        TCM[TransactionCostManager]
-        SM[SpreadModel]
-        IM[ImpactModel]
-    end
-    
-    subgraph Output["Output"]
-        Results[BacktestResults]
-        DBOut[(Database<br/>Results)]
-        Logs[Log Files]
-    end
-    
-    Config --> BTC
-    DB --> BDL
-    BDL --> BTC
-    
-    BTC --> PM
-    PM --> Strat
-    PM --> Opt
-    PM --> RM
-    PM --> TCM
-    
-    Strat --> BaseStrat
-    
-    TCM --> SM
-    TCM --> IM
-    
-    PM --> BTC
-    BTC --> BPnL
-    BTC --> BPM
-    BTC --> BMC
-    
-    BMC --> Results
-    BTC --> DBOut
-    BTC --> Logs
-```
+How a rebalance works is described in
+[docs/OPTIMIZER_AND_RISK_DESIGN.md](../../docs/OPTIMIZER_AND_RISK_DESIGN.md); what a fill costs in
+[docs/COST_MODEL.md](../../docs/COST_MODEL.md); rolls in
+[docs/FUTURES_ROLLS.md](../../docs/FUTURES_ROLLS.md); the stored tables in
+[docs/LIVE_RUN_CYCLE.md](../../docs/LIVE_RUN_CYCLE.md).
 
 ---
 
-## Running Backtests
+## File layout
+
+```
+src/backtest/
+├── backtest_coordinator.cpp          # the run: load, cycle by cycle, metrics, storage
+├── backtest_data_loader.cpp          # bars from the database
+├── backtest_execution_manager.cpp    # fills and their costs
+├── backtest_pnl_manager.cpp          # daily P&L
+├── backtest_price_manager.cpp        # price history per symbol
+├── backtest_metrics_calculator.cpp   # the metrics below
+├── backtest_csv_exporter.cpp         # CSV output under apps/backtest/results
+├── equity_cost_warmup.cpp            # equity cost model warm-up
+├── slippage_model.cpp                # the slippage model classes
+└── transaction_cost_analysis.cpp     # cost analysis helpers
+
+include/trade_ngin/backtest/
+├── backtest_coordinator.hpp, backtest_data_loader.hpp, backtest_execution_manager.hpp,
+│   backtest_pnl_manager.hpp, backtest_price_manager.hpp, backtest_metrics_calculator.hpp,
+│   backtest_csv_exporter.hpp, backtest_types.hpp
+├── junk_signal_feed.hpp              # which bars a cycle feeds and which it withholds
+├── consumed_series_record.hpp        # optional record of the consumed series
+├── equity_cost_retier.hpp, equity_cost_warmup.hpp
+└── slippage_models.hpp, transaction_cost_analysis.hpp
+```
+
+The runners are in `apps/backtest/`:
+
+| Binary | Source | Book |
+|---|---|---|
+| `bt_portfolio` | `bt_portfolio.cpp` | BASE (config `base`) |
+| `bt_portfolio_conservative` | `bt_portfolio_conservative.cpp` | CONSERVATIVE (config `conservative`) |
+| `bt_equity_mr` | `bt_equity_mean_reversion.cpp` | the equity book (config `equity_mr`) |
+| `bt_equity_validation` | `bt_equity_validation.cpp` | equity validation runs |
+| `bt_transaction_cost_report` | `bt_transaction_cost_report.cpp` | a cost report |
+
+Each loads `./config` through `ConfigLoader::load`, so it is run from the repository root. Run one
+runner at a time: the runners share tables and process-wide singletons.
 
 ```bash
-# Build
-cd build && cmake .. && cmake --build . --config Release && cd ..
-
-# Run portfolio backtest
-./build/bin/Release/bt_portfolio
-
-# Run conservative variant
 ./build/bin/Release/bt_portfolio_conservative
 ```
 
 ---
 
-## Complete End-to-End Walkthrough
+## The window and the warm-up
 
-### 1. Initialization Phase
-
-```cpp
-// bt_portfolio.cpp loads config and initializes all components
-
-// 1. Load configuration
-std::ifstream config_file("config.json");
-nlohmann::json config;
-config_file >> config;
-
-// 2. Connect to database (uses data/postgres_database.cpp)
-auto db = std::make_shared<PostgresDatabase>(connection_string);
-db->connect();
-
-// 3. Initialize instrument registry (uses instruments/)
-auto& registry = InstrumentRegistry::instance();
-registry.initialize(db.get());
-registry.load_instruments();  // Loads contract specs from DB
-
-// 4. Create transaction cost manager (uses transaction_cost/)
-transaction_cost::TransactionCostManager::Config tc_config;
-tc_config.explicit_fee_per_contract = 1.75;
-auto cost_manager = std::make_unique<TransactionCostManager>(tc_config);
-
-// 5. Create strategies (uses strategy/)
-auto trend_strategy = std::make_shared<TrendFollowingStrategy>(...);
-
-// 6. Create portfolio manager (uses portfolio/)
-PortfolioConfig pm_config;
-pm_config.total_capital = 500000.0;
-auto portfolio = std::make_shared<PortfolioManager>(pm_config, db, &registry);
-portfolio->add_strategy(trend_strategy, 0.7, true, true);
-
-// 7. Create backtest coordinator
-BacktestCoordinatorConfig bt_config;
-bt_config.initial_capital = 500000.0;
-BacktestCoordinator coordinator(db, &registry, bt_config, cost_manager);
-```
-
-### 2. Data Loading Phase
-
-```cpp
-// BacktestDataLoader queries PostgresDatabase for historical bars
-
-auto bars = db->get_market_data(
-    symbols,                    // ["ES", "NQ", "CL", "GC"]
-    start_date,                 // 2024-01-01
-    end_date,                   // 2024-12-31
-    AssetClass::FUTURES,
-    DataFrequency::DAILY,
-    "continuous"                // Use continuous contracts
-);
-
-// Data is returned as Apache Arrow table, converted to vector<Bar>
-std::vector<Bar> bar_history = convert_table_to_bars(bars.value());
-```
-
-### 3. Warmup Period Calculation
-
-Strategies need historical data to calculate indicators. The warmup period is calculated as:
-
-```cpp
-int calculate_warmup_days(const PortfolioManager& portfolio) {
-    int max_lookback = 0;
-    
-    for (const auto& strategy : portfolio.get_strategies()) {
-        // Each strategy has different lookback requirements
-        // TrendFollowingStrategy: max EMA window (256) + vol lookback (252)
-        int strategy_lookback = strategy->get_required_warmup();
-        max_lookback = std::max(max_lookback, strategy_lookback);
-    }
-    
-    return max_lookback + 10;  // Buffer for safety
-}
-```
-
-**Example**: For TrendFollowingStrategy with:
-- EMA windows: [[2,8], [4,16], [8,32], [16,64], [32,128], [64,256]]
-- Vol lookback long: 252 days
-
-Warmup = max(256, 252) + 10 = **266 days**
+- **Window.** The window is `backtest.lookback_years` (in `config/defaults.json`) ending at the end
+  date: `start = end - lookback_years`. The end date is the wall-clock time of the run, so the
+  window slides with the clock, unless `backtest.frozen_end_date` is set, a test-only key that pins
+  the end date and logs a warning (`ConfigLoader::resolve_backtest_window`,
+  `src/core/config_loader.cpp:807`; the key's comment is at
+  `include/trade_ngin/core/config_loader.hpp:149`). An end that is not frozen is the wall-clock
+  instant; a frozen end is local midnight of the key's date on the host; the start is
+  `lookback_years` earlier on the host's local calendar (`src/core/config_loader.cpp:807-866`).
+- **Warm-up.** The first rows of the window are warm-up: the sleeves are fed and no fill is
+  generated. The length is the longest EMA window of the book's trend sleeves, 256 rows with the
+  shipped configuration (`BacktestCoordinator::calculate_warmup_days`,
+  `src/backtest/backtest_coordinator.cpp:1788`). A window of `lookback_years = 3` therefore trades
+  about two years. A book with no trend sleeve has no warm-up.
+- **Rows.** The equity curve has one row for the start and one per bar date. A futures book has a
+  bar date for every session the data carries, Sunday sessions included, which is about 312 rows a
+  year.
 
 ---
 
-### 4. Daily Processing Loop
+## Metrics calculation
 
-For each trading day after warmup:
+`BacktestMetricsCalculator::calculate_all_metrics`
+(`src/backtest/backtest_metrics_calculator.cpp:670`) computes everything below. It first drops the
+first warm-up rows of the equity curve (`filter_warmup_period`, `:777`): the curve it keeps starts at
+the last flat warm-up row, so every return it measures, the monthly returns apart, is a post-warm-up
+return. A curve with no more rows than the warm-up is not filtered (`:780-782`). Daily returns are
+the row-to-row changes of that curve (`calculate_returns_from_equity`, `:36`).
 
-```cpp
-for (size_t day = warmup_days; day < bar_history.size(); ++day) {
-    Timestamp current_date = bar_history[day].timestamp;
-    
-    // Get bars for this day
-    std::vector<Bar> day_bars;
-    for (const auto& bar : bar_history) {
-        if (bar.timestamp == current_date) {
-            day_bars.push_back(bar);
-        }
-    }
-    
-    // ===== STEP 4A: Strategy Processing =====
-    // PortfolioManager dispatches to each strategy
-    portfolio->on_data(day_bars);
-    
-    // Inside on_data:
-    // 1. Each strategy updates indicators
-    // 2. Each strategy generates signals (forecasts)
-    // 3. Each strategy calculates target positions
-    
-    // ===== STEP 4B: Position Aggregation =====
-    auto aggregated_positions = portfolio->get_aggregated_positions();
-    // Multiple strategies' positions are weighted and summed
-    
-    // ===== STEP 4C: Optimization =====
-    // DynamicOptimizer minimizes tracking error with cost penalty
-    auto optimized = optimizer->optimize(
-        current_positions,
-        aggregated_positions,
-        costs,              // From TransactionCostManager
-        weights_per_contract,
-        covariance_matrix
-    );
-    
-    // ===== STEP 4D: Risk Constraints =====
-    // RiskManager applies VaR limits, leverage limits
-    auto risk_result = risk_manager->process_positions(
-        optimized_positions,
-        market_data,
-        current_prices
-    );
-    
-    // Scale positions by risk multiplier
-    for (auto& pos : optimized_positions) {
-        pos *= risk_result.combined_multiplier;
-    }
-    
-    // ===== STEP 4E: Execution Generation =====
-    auto executions = generate_executions(
-        previous_positions,
-        optimized_positions,
-        current_prices
-    );
-    
-    // ===== STEP 4F: Transaction Cost Calculation =====
-    for (auto& exec : executions) {
-        auto cost_result = cost_manager->calculate_costs(
-            exec.symbol,
-            exec.quantity,
-            exec.price
-        );
-        exec.commissions_fees = cost_result.commissions_fees;
-        exec.total_transaction_costs = cost_result.total_transaction_costs;
-    }
-    
-    // ===== STEP 4G: PnL Calculation =====
-    double daily_pnl = pnl_manager->calculate_daily_pnl(
-        previous_positions,
-        current_positions,
-        previous_prices,
-        current_prices
-    );
-    
-    // Subtract transaction costs
-    // each fill at its cost after netting: total_transaction_costs - netting_adjustment
-    double net_pnl = daily_pnl - sum(net_cost(exec));
-    equity_curve.push_back({current_date, equity + net_pnl});
-    equity = equity + net_pnl;
-    
-    // ===== STEP 4H: Store Results =====
-    db->store_positions(current_positions, ...);
-    db->store_executions(executions, ...);
-}
-```
+The annualisation constant is `K = 252`, written as a literal in each formula, for every book.
+
+| Metric | Formula as computed | Code |
+|---|---|---|
+| Total return | `last / first - 1` of the post-warm-up curve | `:18` |
+| Volatility | population standard deviation of daily returns (divide by `n`) `x sqrt(252)` | `:111`, `:765` |
+| Sharpe ratio | `(mean daily return x 252 - risk-free rate) / volatility`, risk-free rate 0; 0 when volatility is 0 | `:58` |
+| Downside volatility | `sqrt(sum of squared returns below 0 / count of returns below 0) x sqrt(252)` | `:140` |
+| Sortino ratio | `mean daily return x 252 / downside volatility`; 999 when there is no return below 0 and the mean is not negative | `:81` |
+| Max drawdown | the largest `(peak - equity) / peak`, the peak being the running maximum | `:174`, `:194` |
+| Calmar ratio | `mean daily return x 252 / max drawdown`; 999 when the drawdown is 0 and the return is not negative | `:102`, `:715` |
+| VaR 95 | minus the return at index `floor(n x 0.05)` of the sorted daily returns | `:208` |
+| CVaR 95 | minus the mean of the `floor(n x 0.05)` worst daily returns (at least one) | `:224` |
+| Beta, correlation | lag-1 autocorrelation of the book's own daily returns: `beta` is the slope of today's return on yesterday's, `correlation` the lag-1 correlation. Neither is measured against a market benchmark | `:636` |
+| Monthly returns | the sum of daily returns per calendar month (the month of the row's timestamp in the host's local time, `:612-614`), over the whole curve (warm-up rows are flat) | `:599` |
+
+The annualised return used by the Sharpe, Sortino and Calmar ratios is arithmetic, `mean x 252`. It
+is not a compounded figure.
+
+Because `K` is 252 and a futures curve has about 312 rows a year, a futures book's annualised
+figures from this calculator are on the 252 convention and not on the curve's own row frequency.
+
+### Trade statistics
+
+`calculate_trade_statistics` (`:414`) walks the executions in order and tracks one net position per
+symbol, summed over every sleeve.
+
+- **A trade** is an execution that reduces or closes the tracked position of its symbol. An
+  execution that opens or adds is not a trade. `total_trades` is the count of those closing
+  executions (`:514`), so one position closed in three steps counts as three trades, and two sleeves'
+  fills on one symbol net together.
+- **Its P&L** is `closed quantity x (fill price - average entry price)`, signed by the side of the
+  position, less the fill's cost after netting (`transaction_cost::net_cost`, `:428`). The price
+  move is not multiplied by the contract multiplier (`:476-477`), so it is in price points while the
+  cost taken off it is in currency.
+- **Win rate** is `winning trades / total trades`, a winning trade being one with P&L above 0
+  (`:517`). It is not a count of positive days.
+- **Profit factor** is total profit over total loss; 999 when there is profit and no loss.
+- **Average holding period** is the mean number of days from the position's open (or its last
+  closing fill) to each closing fill.
+- **Rolls.** A `ROLL` leg moves no tracked position and scores no trade; the open trade's entry
+  price is carried across the roll by the gap between the two legs, and the leg's cost goes to the
+  roll total (`:448`). A `BORROW` row is a cost and not a trade (`:457`).
+
+The run's cost totals are computed separately, after netting, by
+`transaction_cost::run_cost_totals` (`src/backtest/backtest_coordinator.cpp:460`).
 
 ---
 
-## PnL Calculation Details
+## Data loading
 
-### Position PnL (Mark-to-Market)
-
-```cpp
-double calculate_position_pnl(
-    const Position& position,
-    double current_price,
-    double prev_price,
-    double contract_multiplier) 
-{
-    // PnL = quantity × (current_price - prev_price) × multiplier
-    return position.quantity * (current_price - prev_price) * contract_multiplier;
-}
-```
-
-**Worked Example**:
-- Symbol: ES (E-mini S&P 500)
-- Position: 10 contracts long
-- Previous close: 4,950.00
-- Current close: 5,000.00
-- Contract multiplier: $50 per point
-
-```
-PnL = 10 × (5000.00 - 4950.00) × 50
-    = 10 × 50.00 × 50
-    = $25,000
-```
-
-### Transaction Cost Deduction (Approach B)
-
-Transaction costs are NOT embedded in execution prices. They are calculated separately and deducted:
-
-```cpp
-double daily_equity = prev_equity 
-    + gross_position_pnl           // From price changes
-    - daily_transaction_costs;     // Sum of all execution costs
-```
-
-**Worked Example**:
-- Previous equity: $500,000
-- Gross position PnL: $25,000
-- Transaction costs (5 trades): $457.50
-
-```
-Daily equity = $500,000 + $25,000 - $457.50 = $524,542.50
-```
+`BacktestDataLoader` reads daily bars for the run's symbols and window from the database. A futures
+run also loads history before the window to seed the trend estimators
+(`trend_estimator::kHistoryCalendarDays`, `include/trade_ngin/strategy/trend_estimator.hpp:59`), so
+the estimators do not start cold at the window's first row; the warm-up above still applies. Which
+bars a cycle consumes and which it withholds is stated in
+`include/trade_ngin/backtest/junk_signal_feed.hpp`. Where each table comes from and how it must be
+read is in [docs/DATA_SOURCES_OF_TRUTH.md](../../docs/DATA_SOURCES_OF_TRUTH.md).
 
 ---
 
-## Transaction Cost Integration
+## What is stored
 
-The backtest uses `TransactionCostManager` from the transaction_cost module:
-
-```cpp
-// For each execution
-auto cost = cost_manager->calculate_costs(symbol, quantity, price);
-
-// Result contains:
-// - commissions_fees:        Explicit costs ($1.75 per contract)
-// - spread_price_impact:     Half-spread in price units
-// - market_impact_price_impact: Square-root impact in price units
-// - total_transaction_costs: All costs in dollars
-```
-
-**Cost Breakdown Example** (ES, 10 contracts at $5,000):
-| Component | Calculation | Amount |
-|-----------|-------------|--------|
-| Commissions | 10 × $1.75 | $17.50 |
-| Spread | 0.5 × 1 × 0.25 × 10 × 50 | $62.50 |
-| Market Impact | √(10/500000) × 10 × 5000 × 50 / 10000 | $11.18 |
-| **Total** | | **$91.18** |
-
----
-
-## Metrics Calculation (with Formulas)
-
-The `BacktestMetricsCalculator` computes:
-
-### Sharpe Ratio
-
-```
-Sharpe = (μ_daily - rf_daily) / σ_daily × √252
-
-Where:
-- μ_daily = mean of daily returns
-- rf_daily = risk-free rate / 252 (typically 0)
-- σ_daily = standard deviation of daily returns
-```
-
-**Worked Example**:
-- Mean daily return: 0.0005 (0.05%)
-- Daily std dev: 0.01 (1%)
-- Risk-free rate: 0
-
-```
-Sharpe = (0.0005 - 0) / 0.01 × √252 = 0.05 × 15.87 = 0.79
-```
-
-### Sortino Ratio
-
-```
-Sortino = (μ_daily - rf_daily) / σ_downside × √252
-
-Where:
-- σ_downside = std dev of NEGATIVE daily returns only
-```
-
-### Max Drawdown
-
-```
-MaxDD = max(peak - trough) / peak
-
-Where:
-- peak = running maximum of equity curve
-- trough = subsequent minimum before new peak
-```
-
-**Worked Example**:
-- Peak equity: $550,000
-- Subsequent low: $495,000
-
-```
-MaxDD = ($550,000 - $495,000) / $550,000 = 10%
-```
-
-### Calmar Ratio
-
-```
-Calmar = Annualized Return / Max Drawdown
-```
-
-### Win Rate
-
-```
-WinRate = (Days with positive return) / (Total trading days)
-```
-
----
-
-## Slippage Models
-
-### Volume Slippage Model
-
-```cpp
-slippage = price_impact_coefficient × quantity × price / volume × volatility_multiplier
-
-// Example: 
-// price_impact = 1e-6
-// quantity = 10, price = 5000, volume = 500000, vol_mult = 1.5
-// slippage = 1e-6 × 10 × 5000 / 500000 × 1.5 = 0.00015 (1.5 bps)
-```
-
-### Fixed Slippage
-
-```cpp
-slippage_bps = 5;  // 5 basis points
-slippage_per_contract = price × (slippage_bps / 10000.0);
-```
-
----
-
-## Database Schema
-
-Results are persisted to PostgreSQL:
-
-```sql
--- Backtest run metadata
-CREATE TABLE backtest.runs (
-    run_id VARCHAR(100) PRIMARY KEY,
-    portfolio_id VARCHAR(100),
-    start_date TIMESTAMPTZ,
-    end_date TIMESTAMPTZ,
-    initial_capital DOUBLE PRECISION,
-    final_capital DOUBLE PRECISION,
-    total_return DOUBLE PRECISION,
-    annualized_return DOUBLE PRECISION,
-    sharpe_ratio DOUBLE PRECISION,
-    sortino_ratio DOUBLE PRECISION,
-    max_drawdown DOUBLE PRECISION,
-    calmar_ratio DOUBLE PRECISION,
-    total_trades INTEGER,
-    total_transaction_costs DOUBLE PRECISION,
-    created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
-);
-
--- Daily equity curve
-CREATE TABLE backtest.equity_curve (
-    id SERIAL PRIMARY KEY,
-    run_id VARCHAR(100) REFERENCES backtest.runs(run_id),
-    date DATE NOT NULL,
-    equity DOUBLE PRECISION,
-    daily_pnl DOUBLE PRECISION,
-    daily_return DOUBLE PRECISION
-);
-
--- Daily positions
-CREATE TABLE backtest.positions (
-    id SERIAL PRIMARY KEY,
-    run_id VARCHAR(100),
-    date DATE NOT NULL,
-    symbol VARCHAR(10),
-    strategy_id VARCHAR(100),
-    quantity DOUBLE PRECISION,
-    notional_value DOUBLE PRECISION
-);
-
--- Trade executions
-CREATE TABLE backtest.executions (
-    id SERIAL PRIMARY KEY,
-    run_id VARCHAR(100),
-    timestamp TIMESTAMPTZ,
-    symbol VARCHAR(10),
-    side VARCHAR(4),
-    quantity DOUBLE PRECISION,
-    price DOUBLE PRECISION,
-    commissions_fees DOUBLE PRECISION,
-    spread_cost DOUBLE PRECISION,
-    market_impact DOUBLE PRECISION,
-    total_transaction_costs DOUBLE PRECISION
-);
-```
-
----
-
-## Configuration Reference
-
-### BacktestCoordinatorConfig
-
-```cpp
-struct BacktestCoordinatorConfig {
-    double initial_capital = 500000.0;
-    std::string schema = "backtest";       // DB schema for results
-    
-    // Persistence flags
-    bool save_daily_positions = true;
-    bool save_executions = true;
-    bool save_equity_curve = true;
-    bool save_to_database = true;
-    
-    // Logging
-    LogLevel log_level = LogLevel::INFO;
-};
-```
-
+A run is stored in the `backtest` schema: `results`, `equity_curve`, `executions` and `run_metadata`
+at the end of the run (`BacktestResultsManager`, `src/storage/backtest_results_manager.cpp`, called
+from `BacktestCoordinator::save_portfolio_results_to_db`), and `final_positions` during the run, once
+per bar date after the warm-up (`BacktestCoordinator::save_daily_positions`,
+`src/backtest/backtest_coordinator.cpp:407-416`). `backtest.signals` exists and no run writes it: the
+manager's `add_signals` has no caller. What one row of each table is, its key and who writes it are in
+[docs/LIVE_RUN_CYCLE.md](../../docs/LIVE_RUN_CYCLE.md).
 
 ---
 
 ## Testing
 
+Every test is built into one binary, `trade_ngin_tests`, and `ctest` lists each case by its suite
+name, so filter on suite names:
+
 ```bash
 cd build
-ctest -R backtest --output-on-failure
-```
-
-Test coverage includes:
-- Single strategy backtest
-- Multi-strategy portfolio backtest
-- Transaction cost calculations
-- Metrics accuracy
-- Edge cases (no data, single day, etc.)
-
----
-
-## Troubleshooting
-
-### Common Issues
-
-| Issue | Cause | Solution |
-|-------|-------|----------|
-| "No market data" | Date range has no data | Check database for available dates |
-| NaN in Sharpe | Zero variance | Ensure enough trading days |
-| Zero positions | Warmup not complete | Extend backtest date range |
-| High transaction costs | Too frequent trading | Enable position buffering |
-
-### Debug Logging
-
-```cpp
-// Enable verbose logging
-log_config.min_level = LogLevel::DEBUG;  // Or TRACE for max detail
+ctest -R "^Backtest" --output-on-failure
 ```
 
 ---
 
 ## References
 
-- [Strategy Development Guide](../strategy/README.md) - How to create strategies
-- [Transaction Cost Module](../transaction_cost/README.md) - Cost calculation details
-- [Portfolio Module](../portfolio/README.md) - Multi-strategy coordination
-- [Risk Module](../optimization/README.md) - Risk constraints
-- [Data Module](../data/README.md) - Database operations
-
+- [docs/OPTIMIZER_AND_RISK_DESIGN.md](../../docs/OPTIMIZER_AND_RISK_DESIGN.md)
+- [docs/COST_MODEL.md](../../docs/COST_MODEL.md)
+- [docs/FUTURES_ROLLS.md](../../docs/FUTURES_ROLLS.md)
+- [docs/LIVE_RUN_CYCLE.md](../../docs/LIVE_RUN_CYCLE.md)
+- [docs/CONFIG_GUIDE.md](../../docs/CONFIG_GUIDE.md)
+- [Strategy Module](../strategy/README.md)
+- [Portfolio Module](../portfolio/README.md)
+- [Optimization Module](../optimization/README.md)
+- [Transaction Cost Module](../transaction_cost/README.md)
+- [Data Module](../data/README.md)

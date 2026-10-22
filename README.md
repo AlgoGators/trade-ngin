@@ -2,7 +2,6 @@
 [![Build Status](https://img.shields.io/badge/build-passing-brightgreen)]()
 [![C++](https://img.shields.io/badge/C++-20-blue.svg)]()
 [![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](https://www.gnu.org/licenses/gpl-3.0)
-[![Code Coverage](https://img.shields.io/badge/coverage-75%25-yellow)]()
 
 ## 📖 Project Overview
 
@@ -13,13 +12,13 @@ trade-ngin is a high-performance, modular quantitative trading system built in C
 | Capability | Description |
 |------------|-------------|
 | **Multi-Strategy Portfolio Management** | Dynamic capital allocation across multiple strategies (e.g., TREND_FOLLOWING, TREND_FOLLOWING_FAST) |
-| **Comprehensive Risk Management** | VaR constraints, position limits, leverage controls, correlation monitoring |
+| **Risk Management** | Configurable risk modules and, on futures books, a risk overlay with five readings (risk, jump risk, shock risk, gross leverage, net leverage) and a per-name cap |
 | **High-Performance Backtesting** | Realistic execution simulation with tick-based spread and square-root market impact models |
-| **Live Trading Support** | Full production live trading with position persistence, email reports, and CSV exports |
+| **Live Trading Support** | A daily live cycle on paper (no broker connection), with position persistence, email reports and CSV exports |
 | **Fixed-Point Arithmetic** | Custom Decimal class for financial precision (no floating-point errors) |
 | **PostgreSQL Integration** | Apache Arrow for efficient data processing with connection pooling |
 | **Transaction Cost Modeling** | Explicit (commissions) + Implicit (spread, market impact) cost decomposition |
-| **Statistical Analysis** | PCA, stationarity tests (ADF, KPSS), cointegration, GARCH, Kalman Filter, HMM |
+| **Statistical Analysis** | A standalone library: PCA, stationarity and cointegration tests, regressions, GARCH-family models, Kalman filters, HMM, Markov switching |
 
 ---
 
@@ -36,59 +35,25 @@ cd trade-ngin
 
 ### Step 2: Install System Dependencies
 
-**Option A: Use the automated setup script (Recommended)**
+The scripts under `requirements/` install the system libraries the build uses (CMake, pkg-config,
+GoogleTest, nlohmann_json, Apache Arrow, libpq and libpqxx, Eigen, NLopt, and on Ubuntu libcurl).
+The Ubuntu script adds the Apache Arrow apt source, which `libarrow-dev` needs. The `Dockerfile`
+installs `libnlopt-cxx-dev` as well, which the Ubuntu script does not.
 
-```bash
-# Make script executable
-chmod +x scripts/setup-dev-environment.sh
-
-# Run setup (detects OS automatically)
-./scripts/setup-dev-environment.sh
-```
-
-**Option B: Manual installation**
-
-<details>
-<summary><strong>Ubuntu/Debian</strong></summary>
+**Ubuntu/Debian**
 
 ```bash
 sudo bash requirements/install_ubuntu.sh
-
-# Or manually:
-sudo apt-get update
-sudo apt-get install -y \
-    build-essential \
-    cmake \
-    clang-format \
-    cpplint \
-    libgtest-dev \
-    nlohmann-json3-dev \
-    libarrow-dev \
-    libpqxx-dev \
-    lcov \
-    gcovr
 ```
-</details>
 
-<details>
-<summary><strong>macOS (Homebrew)</strong></summary>
+**macOS (Homebrew)**
 
 ```bash
 bash requirements/install_macos.sh
-
-# Or manually:
-brew install \
-    cmake \
-    clang-format \
-    nlohmann-json \
-    apache-arrow \
-    libpqxx \
-    lcov \
-    googletest
-
-pip3 install cpplint
 ```
-</details>
+
+The lint and coverage tools (`clang-format`, `cpplint`, `lcov`, `gcovr`) are not installed by these
+scripts; install them separately if you need them (see [docs/CI_CD_README.md](docs/CI_CD_README.md)).
 
 ### Step 3: Configure Database Connection
 
@@ -100,10 +65,10 @@ Configuration uses a **template + local override** setup:
    ```
 
 2. **Fill in placeholders** in `config/`:
-   - `config/defaults.json` — database: `YOUR_DB_HOST`, `YOUR_DB_USERNAME`, `YOUR_DB_PASSWORD`, `YOUR_DB_NAME`
-   - `config/portfolios/base/email.json` and `config/portfolios/conservative/email.json` — SMTP credentials and recipients
+   - `config/defaults.json`: the database placeholders `YOUR_DB_HOST`, `YOUR_DB_USERNAME`, `YOUR_DB_PASSWORD`, `YOUR_DB_NAME`
+   - `config/portfolios/<name>/email.json` (for `base`, `conservative` and `equity_mr`): SMTP credentials and recipients
 
-The `config/` directory is gitignored so credentials and local overrides are never committed. See [Configuration](#-configuration) for details.
+The `config/` directory is gitignored so credentials and local overrides are never committed. See [Configuration](#configuration) for details.
 
 ### Step 4: Build the Project
 
@@ -111,11 +76,11 @@ The `config/` directory is gitignored so credentials and local overrides are nev
 # Create build directory
 mkdir -p build && cd build
 
-# Configure CMake
-cmake ..
+# Configure CMake (Release)
+cmake .. -DCMAKE_BUILD_TYPE=Release
 
-# Build (Release mode)
-cmake --build . --config Release
+# Build
+cmake --build . -j
 
 # Return to project root
 cd ..
@@ -127,49 +92,64 @@ cd ..
 # Check executables exist
 ls -la build/bin/Release/
 
-# Expected outputs:
-# bt_portfolio           - Main portfolio backtest
-# bt_portfolio_conservative - Conservative portfolio backtest
-# live_portfolio         - Main live trading application
-# live_portfolio_conservative - Conservative live trading
+# Expected outputs, among others (bt_equity_validation, bt_transaction_cost_report,
+# trade_ngin_tests):
+# bt_portfolio_conservative    - CONSERVATIVE futures backtest
+# bt_portfolio                 - BASE futures backtest
+# bt_equity_mr                 - equity backtest
+# live_portfolio_conservative  - CONSERVATIVE futures live run
+# live_portfolio               - BASE futures live run
+# live_equity_mr               - equity live run
 ```
 
 ### Step 6: Run Your First Backtest
 
+A backtest needs a database with market data and the migrations in `migrations/` applied. Run it
+from the repository root (the runners read `./config`):
+
 ```bash
-./build/bin/Release/bt_portfolio
+./build/bin/Release/bt_portfolio_conservative
 ```
+
+Run one runner at a time. The backtest and live runners share tables and process-wide state, so two
+runners must never run against the same database at once.
 
 ---
 
 ## 🚦 Quick Reference
 
-| Document | Purpose | Location |
-|----------|---------|----------|
-| [Config Template](config_template/README.md) | Setup config from templates, placeholder list | `config_template/` |
-| [Config Guide](docs/CONFIG_GUIDE.md) | Full configuration walkthrough | `docs/` |
-| [Performance & Upkeep](docs/performance_upkeep.md) | CI/CD, testing, cron jobs | `docs/` |
-| [Live Pipeline Spec](docs/live_pipeline_spec.md) | Live trading pipeline details | `docs/` |
-| [Strategy Creation Tutorial](docs/strategy_creation_tutorial.md) | How to build your own strategy | `docs/` |
-| [Transaction Cost Model](docs/transaction_cost_refactor.md) | Comprehensive cost model documentation | `docs/` |
-| [Statistics Module](docs/statistics_module_deliverable.md) | Statistical analysis capabilities | `docs/` |
-| [CI/CD Pipeline](docs/CI_CD_README.md) | GitHub Actions workflows, linting, coverage | `docs/` |
-| [Docker Guide](docs/README.Docker.md) | Container deployment | `docs/` |
+| Document | Purpose |
+|----------|---------|
+| [Config Template](config_template/README.md) | Setting up `config/` from the templates, the placeholder list |
+| [Config Guide](docs/CONFIG_GUIDE.md) | Every configuration file and key |
+| [System Architecture](docs/SYSTEM_ARCHITECTURE.md) | The module map, the runners, what reads and writes what |
+| [Trend Following System](docs/TREND_FOLLOWING_SYSTEM.md) | The futures strategy end to end, with every setting in force |
+| [Optimizer and Risk Design](docs/OPTIMIZER_AND_RISK_DESIGN.md) | How a futures rebalance turns targets into the stored book |
+| [Risk Modules](docs/RISK_MODULES.md) | The risk modules, the overlay and `risk.json` |
+| [Cost Model](docs/COST_MODEL.md) | What a fill costs, fees, netting between sleeves |
+| [Futures Rolls](docs/FUTURES_ROLLS.md) | The adjusted series, change bars, roll fills |
+| [Live Run Cycle](docs/LIVE_RUN_CYCLE.md) | What a live run does on a date, the P&L frame, the stored tables |
+| [Performance & Upkeep](docs/performance_upkeep.md) | Operations: the schedule, the wrapper, the watchdog, migrations |
+| [Data Sources of Truth](docs/DATA_SOURCES_OF_TRUTH.md) | Which table is the source of each fact and how to read it |
+| [Equity Strategy Guide](docs/EQUITY_STRATEGY_GUIDE.md) | The equity mean-reversion book |
+| [Corporate Actions Data Boundary](docs/CORP_ACTIONS_DATA_BOUNDARY.md) | How corporate actions are applied |
+| [Average Price Lifecycle](docs/AVERAGE_PRICE_LIFECYCLE.md) | What `average_price` means on a stored position |
+| [Broker Basis Reconciliation](docs/BROKER_BASIS_RECONCILIATION.md) | Reconciling stored positions with a broker statement |
+| [CI/CD Pipeline](docs/CI_CD_README.md) | GitHub Actions workflows, linting, coverage |
+| [Docker Guide](docs/README.Docker.md) | Container deployment |
 
 ### Module-Specific Documentation
-
-Each source module has its own detailed README:
 
 | Module | README | Purpose |
 |--------|--------|---------|
 | Data | [src/data/README.md](src/data/README.md) | PostgreSQL, Arrow, connection pooling |
-| Transaction Cost | [src/transaction_cost/README.md](src/transaction_cost/README.md) | Spread/impact models with worked examples |
-| Statistics | [src/statistics/README.md](src/statistics/README.md) | All 9 statistical models |
-| Optimization | [src/optimization/README.md](src/optimization/README.md) | Dynamic optimizer + RiskManager |
-| Live Trading | [src/live/README.md](src/live/README.md) | Live coordinator, email, CSV export |
-| Backtest | [src/backtest/README.md](src/backtest/README.md) | BacktestCoordinator, metrics |
-| Strategy | [src/strategy/README.md](src/strategy/README.md) | Complete strategy development guide |
-| Portfolio | [src/portfolio/README.md](src/portfolio/README.md) | Multi-strategy coordination |
+| Transaction Cost | [src/transaction_cost/README.md](src/transaction_cost/README.md) | Spread and impact models, netting |
+| Statistics | [src/statistics/README.md](src/statistics/README.md) | The statistical analysis library |
+| Optimization | [src/optimization/README.md](src/optimization/README.md) | The one pass (futures) and the generic optimiser step |
+| Live Trading | [src/live/README.md](src/live/README.md) | The live run |
+| Backtest | [src/backtest/README.md](src/backtest/README.md) | BacktestCoordinator, the window, the metrics |
+| Strategy | [src/strategy/README.md](src/strategy/README.md) | The strategy interface and the trend sleeve |
+| Portfolio | [src/portfolio/README.md](src/portfolio/README.md) | Sleeves, sizing capital, the rebalance |
 
 ---
 
@@ -177,20 +157,20 @@ Each source module has its own detailed README:
 
 ### Implemented Features
 
-- ✅ **Multi-timeframe trend following strategy** with EMA crossovers across 6 timeframes
-- ✅ **Multi-strategy portfolio support** (TREND_FOLLOWING + TREND_FOLLOWING_FAST)
-- ✅ **28 futures contracts** support (ES, NQ, GC, CL, ZN, etc.)
-- ✅ **Fixed-point arithmetic** with custom Decimal class for financial precision
+- ✅ **Trend following on futures** with EWMAC forecasts, in two sleeves: TREND (six EMA pairs) and FAST (the four fast pairs)
+- ✅ **Two futures books**: CONSERVATIVE (one sleeve) and BASE (two sleeves)
+- ✅ **36 futures contracts**, with the four equity index micros traded from their listing date and the E-mini contracts before it
+- ✅ **Equity mean-reversion book** with corporate action handling
+- ✅ **Whole-contract rebalance** from the held book with a cost penalty, a no-trade buffer and a per-name cap
+- ✅ **Risk overlay and risk modules** configured per book in `risk.json`
+- ✅ **Sizing on half-compounded capital**
+- ✅ **Roll handling** on a back-adjusted series, with roll fills and their costs booked apart
+- ✅ **Transaction cost model** (per-contract fees, tick-based spread, square-root impact), with netting between sleeves
+- ✅ **Fixed-point arithmetic** with a custom Decimal class
 - ✅ **PostgreSQL integration** with Apache Arrow and connection pooling
-- ✅ **Comprehensive risk management** with VaR constraints and leverage limits
-- ✅ **Dynamic portfolio optimization** with transaction cost consideration
-- ✅ **Realistic transaction cost modeling** (tick-based spread + square-root impact)
-- ✅ **Live trading coordinator** with position loading and persistence
-- ✅ **Email reporting system** with embedded charts
-- ✅ **CSV export functionality** for positions and trades
-- ✅ **Non-trading day detection** (weekends + holidays)
-- ✅ **Margin validation** for futures instruments
-- ✅ **Extensive logging and debugging** capabilities
+- ✅ **Live runs** with position persistence, email reports and CSV exports
+- ✅ **Closed-day and holiday handling**
+- ✅ **Logging** to console and rotating files
 
 ### Configuration
 
@@ -203,55 +183,56 @@ Configuration uses a **template + local override** model:
 
 **Setup flow:**
 1. Copy: `cp -r config_template config`
-2. Edit `config/defaults.json` — replace `YOUR_DB_HOST`, `YOUR_DB_USERNAME`, `YOUR_DB_PASSWORD`, `YOUR_DB_NAME`
-3. Edit `config/portfolios/base/email.json` and `config/portfolios/conservative/email.json` — replace SMTP credentials and recipient emails
+2. Edit `config/defaults.json`: replace `YOUR_DB_HOST`, `YOUR_DB_USERNAME`, `YOUR_DB_PASSWORD`, `YOUR_DB_NAME`
+3. Edit `config/portfolios/<name>/email.json` for each book: replace the SMTP credentials and recipient emails
 
 **Structure:**
 ```
 config/
-├── defaults.json           # Database, execution, optimization (shared)
+├── defaults.json           # Database, execution, optimization, backtest, live, strategy_defaults (shared)
 └── portfolios/
-    ├── base/               # BASE_PORTFOLIO → bt_portfolio, live_portfolio
-    │   ├── portfolio.json  # Strategies, capital, allocations
-    │   ├── risk.json       # Risk limits
+    ├── base/               # BASE_PORTFOLIO: bt_portfolio, live_portfolio
+    │   ├── portfolio.json  # Strategies, capital, allocations, sizing mode
+    │   ├── risk.json       # Risk modules and the overlay's limits
     │   └── email.json      # Email notifications
-    └── conservative/       # CONSERVATIVE_PORTFOLIO → bt_portfolio_conservative, live_portfolio_conservative
+    ├── conservative/       # CONSERVATIVE_PORTFOLIO: bt_portfolio_conservative, live_portfolio_conservative
+    │   ├── portfolio.json
+    │   ├── risk.json
+    │   └── email.json
+    └── equity_mr/          # the equity book: bt_equity_mr, live_equity_mr
         ├── portfolio.json
         ├── risk.json
         └── email.json
 ```
 
-**Loading:** Applications load from `config/` via `ConfigLoader::load("./config", "base")` or `ConfigLoader::load("./config", "conservative")`. Defaults are merged with portfolio-specific files.
+**Loading:** Each runner loads its own book from `./config`, for example `ConfigLoader::load("./config", "conservative")`. Defaults are merged with the book's files.
 
-For full placeholder list and examples, see `config_template/README.md`.
+For the full placeholder list see `config_template/README.md`; for every key see [docs/CONFIG_GUIDE.md](docs/CONFIG_GUIDE.md).
 
 ### Example Configuration
 
-Example `config/defaults.json` (after replacing placeholders):
+Example `config/defaults.json` database block (after replacing placeholders):
 
 ```json
 {
   "database": {
     "host": "your-database-host",
-    "port": "5432",
+    "port": "your-database-port",
     "username": "your-username",
     "password": "your-password",
     "name": "your-database-name",
     "num_connections": 5
-  },
-  "strategy_defaults": {
-    "max_strategy_allocation": 1.0,
-    "min_strategy_allocation": 0.1
   }
 }
 ```
 
-Example `config/portfolios/base/portfolio.json` (strategies):
+Example `config/portfolios/base/portfolio.json` (the strategies block; the template carries the
+other required keys):
 
 ```json
 {
   "portfolio_id": "BASE_PORTFOLIO",
-  "initial_capital": 500000.0,
+  "initial_capital": 500000,
   "strategies": {
     "TREND_FOLLOWING": {
       "enabled_backtest": true,
@@ -259,10 +240,11 @@ Example `config/portfolios/base/portfolio.json` (strategies):
       "default_allocation": 0.7,
       "type": "TrendFollowingStrategy",
       "config": {
-        "weight": 0.03,
         "risk_target": 0.2,
         "idm": 2.5,
-        "ema_windows": [[2,8], [4,16], [8,32], [16,64], [32,128], [64,256]]
+        "ema_windows": [[2, 8], [4, 16], [8, 32], [16, 64], [32, 128], [64, 256]],
+        "vol_lookback_short": 32,
+        "vol_lookback_long": 252
       }
     },
     "TREND_FOLLOWING_FAST": {
@@ -270,60 +252,54 @@ Example `config/portfolios/base/portfolio.json` (strategies):
       "enabled_live": true,
       "default_allocation": 0.3,
       "type": "TrendFollowingFastStrategy",
-      "config": { "..." }
+      "config": {
+        "risk_target": 0.25,
+        "idm": 2.5,
+        "ema_windows": [[2, 8], [4, 16], [8, 32], [16, 64]],
+        "vol_lookback_short": 16,
+        "vol_lookback_long": 252
+      }
     }
   }
 }
 ```
 
-> **Note**: The system fully supports multiple strategies and portfolios. Each strategy can have different allocations (must sum to 1.0), parameters, and can be independently enabled/disabled for backtest vs. live trading.
+> **Note**: `vol_lookback_long` is in the template and is not read by anything that computes: the estimator's long-run window is a constant of the code (see [docs/CONFIG_GUIDE.md](docs/CONFIG_GUIDE.md), "Keys that are present and not read").
+>
+> **Note**: Each strategy can be enabled or disabled independently for backtest and for live. The runners normalise the `default_allocation` values to sum to 1.0 and log a warning when the configured values do not; they are not required to sum to 1.0 in the file.
 
 ### Running Multiple Portfolios
 
-The trade-ngin system supports running **multiple independent portfolios** simultaneously. Each portfolio:
-- Has its own unique `portfolio_id`
-- Can contain different strategies with different allocations
-- Stores positions and results separately in the database
-- Generates separate CSV exports and email reports
+The repository carries three books, each with its own `portfolio_id`, its own directory under
+`config/portfolios/` and its own runners:
 
-**Example: Portfolio A (Aggressive)**
-```json
-{
-  "portfolio_id": "PORTFOLIO_A",
-  "portfolio": {
-    "strategies": {
-      "TREND_FOLLOWING": { "default_allocation": 0.7 },
-      "MEAN_REVERSION": { "default_allocation": 0.3 }
-    }
-  }
-}
-```
+| Book | Config directory | Backtest | Live |
+|------|------------------|----------|------|
+| CONSERVATIVE (futures, one sleeve) | `conservative` | `bt_portfolio_conservative` | `live_portfolio_conservative` |
+| BASE (futures, two sleeves) | `base` | `bt_portfolio` | `live_portfolio` |
+| Equity mean reversion | `equity_mr` | `bt_equity_mr` | `live_equity_mr` |
 
-**Example: Portfolio B (Conservative)**
-```json
-{
-  "portfolio_id": "PORTFOLIO_B",
-  "portfolio": {
-    "strategies": {
-      "TREND_FOLLOWING": { "default_allocation": 1.0 }
-    }
-  }
-}
-```
-
-To run different portfolios, use the built-in `base` and `conservative` configs under `config/portfolios/`, or add a new portfolio directory (e.g., `config/portfolios/aggressive/`) and a corresponding executable. All portfolio data is isolated by `portfolio_id` in the database.
+Stored rows are separated by `portfolio_id` and each book has its own email report. The two futures
+books each write their position CSV files under `apps/strategies/results/<portfolio_id>/`; the
+equity book writes no CSV. The books are independent, but the runners are run one at a time, never
+in parallel.
 
 ### Key Parameters Explained
 
-| Parameter | Value | Description |
-|-----------|-------|-------------|
-| **Initial Capital** | $500,000 | Starting portfolio capital |
-| **IDM** | 2.5 | Instrument Diversification Multiplier |
-| **Weight per Symbol** | 0.03 (3%) | Maximum allocation per instrument |
-| **Risk Target** | 0.20-0.25 | Annualized volatility target |
-| **Max Gross Leverage** | 4.0x | Maximum total exposure |
-| **Max Net Leverage** | 2.0x | Maximum directional exposure |
-| **VaR Limit** | 0.15 (15%) | Maximum 99% daily VaR |
+The values below are the ones in `config_template/` for the CONSERVATIVE book. The full list, with
+the file and key of each, is in [docs/CONFIG_GUIDE.md](docs/CONFIG_GUIDE.md).
+
+| Parameter | Value | Where |
+|-----------|-------|-------|
+| **Initial capital** | 500,000 | `portfolio.json` `initial_capital` |
+| **Sizing mode** | `half_compounding` | `portfolio.json` `sizing_mode` |
+| **Risk target** | 0.20 | `portfolio.json` sleeve `risk_target` |
+| **IDM** | 2.5 | `portfolio.json` sleeve `idm` |
+| **Gross leverage limit** | 8.0 | `risk.json` carver module `max_gross_leverage` |
+| **Net leverage limit** | 6.0 | `risk.json` carver module `max_net_leverage` |
+| **Risk limits (ratios to the risk target)** | 2.25, 4.5, 4.0 | `risk.json` `R_max`, `R_jump_max`, `R_shock_max` |
+| **Per-name cap** | 2 | `risk.json` `per_name_cap` |
+| **Cost multiplier of the rebalance** | 100 | `defaults.json` `optimization.cost_penalty_scalar` |
 
 ---
 
@@ -331,328 +307,79 @@ To run different portfolios, use the built-in `base` and `conservative` configs 
 
 ```
 trade-ngin/
-├── apps/                           # Application executables
-│   ├── backtest/                   # Backtesting applications
-│   │   ├── bt_portfolio.cpp        # Main portfolio backtest runner
-│   │   ├── bt_portfolio_conservative.cpp  # Conservative variant
-│   │   └── CMakeLists.txt
-│   ├── strategies/                 # Live trading applications
-│   │   ├── live_portfolio.cpp      # Main live trading application
-│   │   ├── live_portfolio_conservative.cpp
-│   │   └── results/                # Live trading CSV outputs
-│   │       └── PORTFOLIO_A/        # Portfolio-specific results
-│   └── CMakeLists.txt
+├── apps/
+│   ├── backtest/                   # bt_portfolio.cpp, bt_portfolio_conservative.cpp,
+│   │                               #   bt_equity_mean_reversion.cpp, bt_equity_validation.cpp,
+│   │                               #   bt_transaction_cost_report.cpp
+│   └── strategies/                 # live_portfolio.cpp, live_portfolio_conservative.cpp,
+│                                   #   live_equity_mean_reversion.cpp
 │
-├── include/trade_ngin/             # Public header files (65 total)
-│   ├── backtest/                   # Backtest components (10 headers)
-│   │   ├── backtest_coordinator.hpp
-│   │   ├── backtest_data_loader.hpp
-│   │   ├── backtest_execution_manager.hpp
-│   │   ├── backtest_metrics_calculator.hpp
-│   │   ├── backtest_pnl_manager.hpp
-│   │   ├── backtest_portfolio_constraints.hpp
-│   │   ├── backtest_price_manager.hpp
-│   │   ├── backtest_types.hpp
-│   │   ├── slippage_models.hpp
-│   │   └── transaction_cost_analysis.hpp
-│   ├── core/                       # Core system components (14 headers)
-│   │   ├── chart_generator.hpp     # Chart generation for emails
-│   │   ├── config_base.hpp
-│   │   ├── config_manager.hpp
-│   │   ├── email_sender.hpp        # Email report system
-│   │   ├── error.hpp               # Error types and Result<T>
-│   │   ├── holiday_checker.hpp     # Holiday detection
-│   │   ├── holidays.json           # CME holiday calendar
-│   │   ├── logger.hpp              # Logging framework
-│   │   ├── run_id_generator.hpp
-│   │   ├── state_manager.hpp
-│   │   ├── time_utils.hpp
-│   │   └── types.hpp               # Core types (Decimal, Bar, Position, etc.)
-│   ├── data/                       # Data management (6 headers)
-│   │   ├── conversion_utils.hpp    # Arrow ↔ domain conversion
-│   │   ├── credential_store.hpp    # Secure credential access
-│   │   ├── database_interface.hpp  # Abstract database interface
-│   │   ├── database_pooling.hpp    # Connection pool
-│   │   ├── market_data_bus.hpp     # Pub-sub for market data
-│   │   └── postgres_database.hpp   # PostgreSQL implementation
-│   ├── execution/                  # Order execution
-│   │   └── execution_engine.hpp
-│   ├── instruments/                # Financial instruments (5 headers)
-│   │   ├── equity.hpp
-│   │   ├── futures.hpp             # Futures with margin requirements
-│   │   ├── instrument.hpp          # Base instrument interface
-│   │   ├── instrument_registry.hpp # Singleton registry
-│   │   └── option.hpp
-│   ├── live/                       # Live trading components (10 headers)
-│   │   ├── csv_exporter.hpp        # CSV output generation
-│   │   ├── execution_manager.hpp
-│   │   ├── live_data_loader.hpp
-│   │   ├── live_metrics_calculator.hpp
-│   │   ├── live_pnl_manager.hpp
-│   │   ├── live_price_manager.hpp  # T-1/T-2 price tracking
-│   │   ├── live_trading_coordinator.hpp  # Main orchestrator
-│   │   ├── margin_manager.hpp      # Margin requirement validation
-│   │   ├── pnl_manager_base.hpp
-│   │   └── price_manager_base.hpp
-│   ├── optimization/               # Portfolio optimization
-│   │   └── dynamic_optimizer.hpp   # Cost-aware optimization
-│   ├── order/                      # Order management
-│   │   └── order_manager.hpp
-│   ├── portfolio/                  # Portfolio management
-│   │   └── portfolio_manager.hpp   # Multi-strategy coordination
-│   ├── risk/                       # Risk management
-│   │   └── risk_manager.hpp        # VaR, leverage limits
-│   ├── statistics/                 # Statistical analysis
-│   │   └── statistics_tools.hpp    # PCA, GARCH, Kalman, HMM
-│   ├── storage/                    # Results persistence (3 headers)
-│   │   ├── backtest_results_manager.hpp
-│   │   ├── live_results_manager.hpp
-│   │   └── results_manager_base.hpp
-│   ├── strategy/                   # Strategy components (7 headers)
-│   │   ├── base_strategy.hpp       # Common strategy functionality
-│   │   ├── regime_detector.hpp     # Market regime classification
-│   │   ├── strategy_interface.hpp  # Abstract interface
-│   │   ├── trend_following.hpp     # Main trend strategy
-│   │   ├── trend_following_fast.hpp
-│   │   ├── trend_following_slow.hpp
-│   │   └── types.hpp               # Strategy-specific types
-│   └── transaction_cost/           # Transaction cost modeling (4 headers)
-│       ├── asset_cost_config.hpp   # Per-symbol configurations
-│       ├── impact_model.hpp        # Square-root market impact
-│       ├── spread_model.hpp        # Tick-based spread with vol widening
-│       └── transaction_cost_manager.hpp  # Main orchestrator
+├── include/trade_ngin/             # Public headers, one directory per module
+│   ├── backtest/                   # coordinator, data loader, execution, P&L, metrics, CSV export
+│   ├── core/                       # types (Decimal, Bar, Position, ExecutionReport), error, logger,
+│   │                               #   config_loader, email_sender, chart_generator, holiday_checker,
+│   │                               #   time_utils
+│   ├── data/                       # postgres_database, database_pooling, market_data_bus,
+│   │                               #   market_data_utils, session_classifier, roll_series, listing_dates
+│   ├── execution/                  # execution_engine
+│   ├── instruments/                # instrument, futures, equity, option, instrument_registry
+│   ├── live/                       # the live run: daily cycle, data loader, P&L, prices, margin,
+│   │                               #   corporate actions, CSV export, roll legs, sizing reads
+│   ├── optimization/               # one_pass (futures rebalance), dynamic_optimizer
+│   ├── order/                      # order_manager
+│   ├── portfolio/                  # portfolio_manager, sizing_capital, allocation_split, loop_config
+│   ├── risk/                       # risk_module, carver_risk_module, basic_risk_modules, overlay,
+│   │                               #   risk_module_config, risk_detail, risk_manager
+│   ├── statistics/                 # the statistical analysis library
+│   ├── storage/                    # backtest_results_manager, live_results_manager
+│   ├── strategy/                   # strategy_interface, base_strategy, trend_following,
+│   │                               #   trend_estimator, mean_reversion
+│   └── transaction_cost/           # transaction_cost_manager, spread_model, impact_model,
+│                                   #   asset_cost_config, netting
 │
-├── src/                            # Implementation files (61 files)
-│   ├── backtest/                   # Backtest implementations (9 files)
-│   │   ├── backtest_coordinator.cpp      # Main orchestrator
-│   │   ├── backtest_data_loader.cpp
-│   │   ├── backtest_execution_manager.cpp
-│   │   ├── backtest_metrics_calculator.cpp
-│   │   ├── backtest_pnl_manager.cpp
-│   │   ├── backtest_portfolio_constraints.cpp
-│   │   ├── backtest_price_manager.cpp
-│   │   ├── slippage_model.cpp
-│   │   └── transaction_cost_analysis.cpp
-│   ├── core/                       # Core implementations (8 files)
-│   │   ├── chart_generator.cpp           # Gnuplot chart generation
-│   │   ├── config_base.cpp
-│   │   ├── config_manager.cpp
-│   │   ├── config_version.cpp
-│   │   ├── email_sender.cpp              # SMTP with HTML/charts
-│   │   ├── logger.cpp                    # File rotation, log levels
-│   │   ├── run_id_generator.cpp
-│   │   └── state_manager.cpp
-│   ├── data/                       # Data implementations (6 files)
-│   │   ├── conversion_utils.cpp
-│   │   ├── credential_store.cpp
-│   │   ├── database_pooling.cpp         # Connection pool with retry
-│   │   ├── market_data_bus.cpp
-│   │   ├── postgres_database.cpp        # All data operations
-│   │   └── postgres_database_extensions.cpp
-│   ├── execution/
-│   │   └── execution_engine.cpp
-│   ├── instruments/                # Instrument implementations (4 files)
-│   │   ├── equity.cpp
-│   │   ├── futures.cpp                  # Margin, multiplier, expiry
-│   │   ├── instrument_registry.cpp
-│   │   └── option.cpp
-│   ├── live/                       # Live trading implementations (8 files)
-│   │   ├── csv_exporter.cpp
-│   │   ├── execution_manager.cpp
-│   │   ├── live_data_loader.cpp
-│   │   ├── live_metrics_calculator.cpp
-│   │   ├── live_pnl_manager.cpp
-│   │   ├── live_price_manager.cpp
-│   │   ├── live_trading_coordinator.cpp
-│   │   └── margin_manager.cpp
-│   ├── optimization/
-│   │   └── dynamic_optimizer.cpp        # Cost-aware optimization
-│   ├── order/
-│   │   └── order_manager.cpp
-│   ├── portfolio/
-│   │   └── portfolio_manager.cpp
-│   ├── risk/
-│   │   └── risk_manager.cpp             # VaR, leverage, correlation
-│   ├── statistics/
-│   │   └── statistics_tools.cpp         # All statistical models
-│   ├── storage/                    # Results persistence (3 files)
-│   │   ├── backtest_results_manager.cpp
-│   │   ├── live_results_manager.cpp
-│   │   └── results_manager_base.cpp
-│   ├── strategy/                   # Strategy implementations (5 files)
-│   │   ├── base_strategy.cpp
-│   │   ├── regime_detector.cpp
-│   │   ├── trend_following.cpp          # Main trend strategy
-│   │   ├── trend_following_fast.cpp
-│   │   └── trend_following_slow.cpp
-│   └── transaction_cost/           # Transaction cost implementations (4 files)
-│       ├── asset_cost_config.cpp
-│       ├── impact_model.cpp
-│       ├── spread_model.cpp
-│       └── transaction_cost_manager.cpp
-│
-├── tests/                          # Unit and integration tests (27 test files)
-│   ├── backtesting/                # Backtest engine tests
-│   ├── core/                       # Logger, config tests
-│   ├── data/                       # Database, conversion tests
-│   ├── execution/                  # Execution engine tests
-│   ├── optimization/               # Optimizer tests
-│   ├── order/                      # Order manager tests
-│   ├── portfolio/                  # Portfolio manager tests
-│   ├── risk/                       # Risk manager tests
-│   ├── statistics/                 # Statistics tools tests
-│   └── strategy/                   # Strategy tests
-│
-├── docs/                           # Documentation (27 files)
-│   ├── CI_CD_README.md             # CI/CD pipeline documentation
-│   ├── CI_CD_IMPLEMENTATION_SUMMARY.md
-│   ├── LIBRARY_API_ARCHITECTURE.md # API design guide
-│   ├── README.Docker.md            # Docker deployment
-│   ├── TYPE_CONVERSION_GUIDE.md    # Type system guide
-│   ├── commission_CHANGES.md       # Commission model changes
-│   ├── commission_MIGRATION.md     # Migration guide
-│   ├── config_deliverable.md       # Configuration specification
-│   ├── futures_enhancements_transaction_costs.md
-│   ├── live_pipeline_spec.md       # Live trading specification
-│   ├── live_portfolio_multi_strategy_migration.md
-│   ├── live_portfolio_refactoring_analysis.md
-│   ├── multi_portfolio_email_csv_analysis.md
-│   ├── non_trading_day_fix.md      # Holiday handling
-│   ├── performance_upkeep.md       # Cron jobs, monitoring
-│   ├── statistics.md               # Statistics overview
-│   ├── statistics_model_improvement.md
-│   ├── statistics_module_deliverable.md
-│   ├── strategy_creation_tutorial.md
-│   ├── strategy_level_metrics.md
-│   ├── transaction_cost_config_fixes.md
-│   ├── transaction_cost_migration_guide.md
-│   └── transaction_cost_refactor.md
-│
-├── scripts/                        # Development scripts
-│   ├── dev_build_run.sh            # Quick build and run
-│   ├── pre-commit-hook.sh          # Pre-commit checks
-│   ├── run_live_trend.sh           # Live trading launcher
-│   └── setup-dev-environment.sh    # Environment setup
-│
-├── linting/                        # Code quality tools
-│   ├── lint_runner.sh              # Linting runner
-│   └── auto_fix_lint.sh            # Auto-fix formatting
-│
-├── requirements/                   # Dependency installation
-│   ├── README.md                   # Installation guide
-│   ├── install_ubuntu.sh           # Ubuntu dependencies
-│   └── install_macos.sh            # macOS dependencies
-│
+├── src/                            # Implementations, the same module directories as include/
+├── tests/                          # Unit tests, one directory per module, plus tests/scripts/
+├── benchmarks/                     # Benchmark harness
+├── migrations/                     # Numbered SQL migrations, each with a rollback
+├── docs/                           # Reference documents (see Quick Reference)
+├── scripts/                        # run_live_portfolio.sh (the scheduled wrapper),
+│                                   #   docker-entrypoint.sh, check_live_trading.py (the watchdog),
+│                                   #   migrate_risk_json.py, trading_rule_costs.py,
+│                                   #   generate_market_holidays.py, pre-commit-hook.sh,
+│                                   #   setup-dev-environment.sh, dev_build_run.sh, and two SQL files
+├── requirements/                   # install_ubuntu.sh, install_macos.sh
 ├── config_template/                # Config templates (committed, no secrets)
-│   ├── README.md                   # Setup instructions
-│   ├── defaults.json               # Placeholders: YOUR_DB_HOST, etc.
-│   └── portfolios/
-│       ├── base/                   # portfolio.json, risk.json, email.json
-│       └── conservative/
+│   ├── defaults.json
+│   └── portfolios/                 # base/, conservative/, equity_mr/
 ├── config/                         # Local config (gitignored; copy from config_template)
-│   ├── defaults.json               # Fill in database credentials
-│   └── portfolios/base/, portfolios/conservative/
-├── CMakeLists.txt                  # Main build configuration
-├── Dockerfile                      # Docker container definition
-├── build_docker.sh                 # Docker build script
-└── live_trend.cron                 # Cron job definition
+├── cmake/                          # CMake modules
+├── CMakeLists.txt
+├── Makefile
+├── Dockerfile
+├── build_docker.sh
+└── live_portfolio.cron             # the scheduled job
 ```
 
 ---
 
 ## ⚙️ System Architecture
 
-trade-ngin follows a modular, component-based architecture with well-defined interfaces between system components.
+The module map, the runners and what each reads and writes are in
+[docs/SYSTEM_ARCHITECTURE.md](docs/SYSTEM_ARCHITECTURE.md). In brief:
 
-### High-Level Architecture
+| Layer | Modules | Role |
+|-------|---------|------|
+| Core | `core/` | types, errors, logging, configuration loading, email, charts |
+| Data | `data/`, `instruments/` | database access, bar loading, session classification, roll series, contract metadata |
+| Strategy | `strategy/` | forecasts and unrounded targets per sleeve |
+| Portfolio | `portfolio/`, `optimization/`, `risk/` | sizing capital, the rebalance, the risk overlay and modules |
+| Costs | `transaction_cost/` | what a fill costs, netting between sleeves |
+| Backtest | `backtest/`, `storage/` | replaying stored bars, metrics, stored results |
+| Live | `live/`, `storage/` | the daily live run, P&L, reports, stored results |
 
-```mermaid
-flowchart TB
-    subgraph External["External Systems"]
-        DB[(PostgreSQL<br/>Database)]
-        SMTP[Email Server]
-    end
-
-    subgraph Core["Core Infrastructure"]
-        Logger[Logger]
-        Config[ConfigManager]
-        State[StateManager]
-        Creds[CredentialStore]
-    end
-
-    subgraph Data["Data Layer"]
-        PgDB[PostgresDatabase]
-        Pool[DatabasePool]
-        MDB[MarketDataBus]
-        Conv[ConversionUtils]
-    end
-
-    subgraph Instruments["Instrument Layer"]
-        Registry[InstrumentRegistry]
-        Futures[FuturesInstrument]
-        Equity[EquityInstrument]
-    end
-
-    subgraph Strategy["Strategy Layer"]
-        BaseStrat[BaseStrategy]
-        TrendFollow[TrendFollowingStrategy]
-        TrendFast[TrendFollowingFastStrategy]
-        Regime[RegimeDetector]
-    end
-
-    subgraph Portfolio["Portfolio Layer"]
-        PM[PortfolioManager]
-        Opt[DynamicOptimizer]
-        Risk[RiskManager]
-    end
-
-    subgraph TransactionCost["Transaction Cost"]
-        TCM[TransactionCostManager]
-        Spread[SpreadModel]
-        Impact[ImpactModel]
-        ACfg[AssetCostConfig]
-    end
-
-    subgraph Backtest["Backtest Engine"]
-        BTC[BacktestCoordinator]
-        BTData[BacktestDataLoader]
-        BTPnL[BacktestPnLManager]
-        BTMetrics[BacktestMetricsCalculator]
-    end
-
-    subgraph Live["Live Trading"]
-        LTC[LiveTradingCoordinator]
-        LData[LiveDataLoader]
-        LPnL[LivePnLManager]
-        Email[EmailSender]
-        CSV[CSVExporter]
-        Margin[MarginManager]
-    end
-
-    DB --> PgDB
-    PgDB <--> Pool
-    Pool --> Data
-    Config --> Core
-    Creds --> PgDB
-    
-    Data --> Instruments
-    Instruments --> Strategy
-    Strategy --> Portfolio
-    
-    TCM --> Spread
-    TCM --> Impact
-    ACfg --> TCM
-    
-    Portfolio --> Backtest
-    Portfolio --> Live
-    TCM --> Portfolio
-    
-    Live --> Email
-    Live --> CSV
-    Email --> SMTP
-```
-
-> **Tip**: For detailed component documentation, see the module-specific READMEs listed in [Quick Reference](#-quick-reference).
+Bars flow from the data layer to the sleeves; the `PortfolioManager` turns the sleeves' targets into
+one whole-contract book; the backtest coordinator or a live runner books the fills, the costs and
+the P&L and stores them.
 
 ---
 
@@ -703,6 +430,7 @@ struct Bar {
     Price open, high, low, close;
     double volume;
     std::string symbol;
+    std::string instrument_id;         // the vendor's contract id behind a futures bar
 };
 
 // Position tracking
@@ -713,25 +441,34 @@ struct Position {
     Decimal unrealized_pnl;
     Decimal realized_pnl;
     Timestamp last_update;
+    std::string instrument_id;         // the contract a futures position is held in
 };
 
-// Execution report with cost breakdown
+// Execution report with cost breakdown (the main fields)
 struct ExecutionReport {
     std::string order_id;
+    std::string exec_id;
     std::string symbol;
     Side side;
     Quantity filled_quantity;
-    Price fill_price;
-    Decimal commissions_fees;          // Explicit costs
-    Decimal implicit_price_impact;     // Spread + impact
-    Decimal slippage_market_impact;    // Implicit costs in $
-    Decimal total_transaction_costs;   // Total
+    Price fill_price;                  // reference fill price, no costs embedded
+    Timestamp fill_time;
+    Decimal commissions_fees;          // explicit costs
+    Decimal implicit_price_impact;     // spread + impact, in price units
+    Decimal slippage_market_impact;    // implicit costs in dollars
+    Decimal total_transaction_costs;   // commissions_fees + slippage_market_impact
+    Decimal netting_adjustment;        // see docs/COST_MODEL.md
+    ExecutionType execution_type;      // STRATEGY, ROLL or BORROW
+    std::string instrument_id;
 };
 ```
 
+A cost total is always taken after netting, through `transaction_cost::net_cost`; see
+[docs/COST_MODEL.md](docs/COST_MODEL.md).
+
 ---
 
-## � Logging System
+## Logging System
 
 trade-ngin includes a comprehensive, thread-safe logging system for debugging, monitoring, and auditing.
 
@@ -743,7 +480,7 @@ trade-ngin includes a comprehensive, thread-safe logging system for debugging, m
 | `DEBUG` | `DEBUG(msg)` | General debug information |
 | `INFO` | `INFO(msg)` | General operational information |
 | `WARNING` | `WARN(msg)` | Warnings that don't affect operation |
-| `ERROR` | `ERROR(msg)` | Errors that affect operation but don't stop system |
+| `ERR` | `ERROR(msg)` | Errors that affect operation but don't stop system |
 | `FATAL` | `FATAL(msg)` | Critical errors requiring system shutdown |
 
 ### Using the Logger
@@ -772,55 +509,30 @@ ERROR("Database connection failed: " << error_msg);
 ### Log Output Format
 
 ```
-[2025-01-15 09:30:45.123] [INFO] Portfolio initialized with capital: $500000
-[2025-01-15 09:30:45.456] [DEBUG] Loading 28 instruments from registry
-[2025-01-15 09:30:46.789] [INFO] Strategy TREND_FOLLOWING generating signals
+2025-01-15 09:30:45 [INFO] Portfolio initialized with capital: $500000
+2025-01-15 09:30:45 [DEBUG] Loading instruments from registry
+2025-01-15 09:30:46 [INFO] [TrendFollowingStrategy] Generating signals
 ```
 
-### Database Logging
+### What Is Stored in the Database
 
-Both backtest and live trading log key operations to the database for auditing:
-
-#### Backtest Logging
-
-During backtests, the following is recorded:
-- **Daily equity snapshots** stored in `trading.backtest_equity_curve`
-- **Trade executions** with full cost breakdown
-- **Metrics calculated** at backtest completion
-
-```cpp
-// Logged during backtest
-INFO("Processing date: " << date << " | Equity: $" << equity);
-DEBUG("Symbol: " << symbol << " | Signal: " << signal << " | Position: " << position);
-```
-
-#### Live Trading Logging
-
-During live runs, extensive logging captures:
-
-```cpp
-// Position loading
-INFO("Loading positions for date: " << date << " | Portfolio: " << portfolio_id);
-
-// Strategy signals
-INFO("Strategy " << strategy_id << " signal for " << symbol << ": " << signal);
-
-// Position changes
-INFO("Position change: " << symbol << " | Old: " << old_qty << " | New: " << new_qty);
-
-// Database operations
-DEBUG("Storing position: " << symbol << " | Qty: " << qty << " | Price: " << price);
-
-// Risk validation
-INFO("Risk check: Gross=" << gross_lev << " | Net=" << net_lev << " | VaR=" << var);
-```
+The runs' results are stored in the database, not their log lines. A backtest writes to the
+`backtest` schema and a live run to the `trading` schema; what each table holds is in
+[docs/LIVE_RUN_CYCLE.md](docs/LIVE_RUN_CYCLE.md).
 
 ### Log File Location
 
-| Mode | Log Location | Filename Pattern |
-|------|--------------|------------------|
-| Backtest | `logs/` | `bt_portfolio_YYYYMMDD_HHMMSS.log` |
-| Live | `logs/` | `live_trend_YYYYMMDD.log` |
+Log files are written under `logs/` as `<prefix>_YYYYMMDD_HHMMSS_partN.log`. The prefix is set by
+each runner. A dated `live_equity_mr` run writes under `logs/<YYYY-MM-DD>/`.
+
+| Runner | Prefix |
+|--------|--------|
+| `bt_portfolio` | `bt_portfolio` |
+| `bt_portfolio_conservative` | `bt_portfolio_conservative` |
+| `bt_equity_mr` | `bt_equity_mr` |
+| `live_portfolio` | `live_trend` |
+| `live_portfolio_conservative` | `live_trend_conservative` |
+| `live_equity_mr` | `live_equity_mr` |
 
 ### Changing Log Level at Runtime
 
@@ -834,96 +546,27 @@ LogLevel current = Logger::instance().get_min_level();
 
 ---
 
-## �💰 Transaction Cost Model
+## 💰 Transaction Cost Model
 
-trade-ngin implements a comprehensive transaction cost model based on Robert Carver's methodology. See [transaction_cost_refactor.md](docs/transaction_cost_refactor.md) for full specification or [src/transaction_cost/README.md](src/transaction_cost/README.md) for implementation details.
+A fill's cost is an explicit per-contract (or per-share) fee plus an implicit cost made of a
+tick-based spread and a square-root market impact. Futures fees are read per contract from the
+contract metadata. On a book with more than one sleeve, the fills of one symbol on one day are
+netted, and every cost total is taken after that netting.
 
-### Cost Components
-
-```
-total_transaction_costs = explicit_costs + implicit_costs
-
-explicit_costs = |quantity| × $1.75 per contract
-implicit_costs = (spread_cost + market_impact) × |quantity| × point_value
-```
-
-### Spread Model (Tick-Based)
-
-```cpp
-spread_price_impact = 0.5 × spread_ticks × tick_size × volatility_multiplier
-```
-
-Where:
-- `spread_ticks` = baseline spread in ticks (per instrument)
-- `tick_size` = minimum price increment (e.g., 0.25 for ES)
-- `volatility_multiplier` = 1.0 ± λ × z_σ (widens in high volatility)
-
-### Market Impact (Square-Root Law)
-
-```cpp
-impact_bps = k_bps × √(|quantity| / ADV)
-market_impact_price_impact = (impact_bps / 10000) × reference_price
-```
-
-Where `k_bps` is selected based on ADV buckets:
-| ADV | k_bps | Category |
-|-----|-------|----------|
-| > 1,000,000 | 10 | Ultra liquid |
-| > 200,000 | 20 | Liquid |
-| > 50,000 | 40 | Medium |
-| > 20,000 | 60 | Thin |
-| ≤ 20,000 | 80 | Very thin |
-
-### Worked Example (ES Futures)
-
-```
-Given:
-  - Reference Price: $5,000
-  - Quantity: 10 contracts
-  - Tick Size: 0.25 points
-  - Point Value: $50
-  - ADV: 500,000 contracts
-
-Calculations:
-  Explicit:     10 × $1.75 = $17.50
-  Spread:       0.5 × 1 × 0.25 = 0.125 points
-  Impact:       10 × √(10/500000) × 5000/10000 = 0.02235 points
-  Implicit:     (0.125 + 0.02235) × 10 × 50 = $73.68
-  
-  Total:        $17.50 + $73.68 = $91.18
-```
+The formulas, the inputs, the values in force and worked examples are in
+[docs/COST_MODEL.md](docs/COST_MODEL.md). The code is in `src/transaction_cost/`
+([README](src/transaction_cost/README.md)).
 
 ---
 
 ## 📊 Statistics Module
 
-The statistics module provides quantitative analysis capabilities. See [src/statistics/README.md](src/statistics/README.md) for detailed usage.
-
-### Available Models
-
-| Category | Model | Status | Usage |
-|----------|-------|--------|-------|
-| **Transformers** | Normalizer (Z-Score, Min-Max, Robust) | ✅ Complete | Data preprocessing |
-| **Transformers** | PCA (variance threshold, whitening) | ✅ Complete | Dimensionality reduction |
-| **Stationarity** | ADF Test | ✅ Complete | Unit root testing |
-| **Stationarity** | KPSS Test | ✅ Complete | Stationarity confirmation |
-| **Cointegration** | Johansen Test | ✅ Complete | Multi-series cointegration |
-| **Cointegration** | Engle-Granger Test | ✅ Complete | Pairwise cointegration |
-| **Volatility** | GARCH(1,1) | ✅ Complete | Volatility forecasting |
-| **State Estimation** | Kalman Filter | ✅ Complete | Signal extraction |
-| **State Estimation** | Hidden Markov Model | ✅ Complete | Regime detection |
-
-### Example: Running ADF Test
-
-```cpp
-#include "trade_ngin/statistics/statistics_tools.hpp"
-
-// Test for stationarity
-auto result = statistics::adf_test(price_series, 5);  // 5 lags
-if (result.p_value < 0.05) {
-    // Series is stationary
-}
-```
+The statistics module is a standalone analysis library: transformers (normalisation, PCA),
+pre-processing (outliers, missing data), stationarity and cointegration tests (ADF, KPSS,
+Phillips-Perron, variance ratio, Johansen, Engle-Granger), the Hurst exponent, regressions (OLS,
+ridge, lasso), volatility models (GARCH, EGARCH, GJR-GARCH, DCC-GARCH) and state estimators (Kalman
+filter, extended Kalman filter, HMM, Markov switching). The trading path does not use it. The class
+list and a usage example are in [src/statistics/README.md](src/statistics/README.md).
 
 ---
 
@@ -931,83 +574,28 @@ if (result.p_value < 0.05) {
 
 ### Backtesting Workflow
 
-```mermaid
-sequenceDiagram
-    participant User
-    participant BTC as BacktestCoordinator
-    participant DB as PostgresDatabase
-    participant PM as PortfolioManager
-    participant Strat as Strategies
-    participant TCM as TransactionCostManager
-    participant RM as RiskManager
-
-    User->>BTC: run_portfolio()
-    BTC->>DB: load_market_data(symbols, dates)
-    DB-->>BTC: historical bars
-
-    loop For each trading day
-        BTC->>PM: process_market_data(bars)
-        PM->>Strat: on_data(bars)
-        Strat-->>PM: target_positions
-        
-        PM->>TCM: calculate_trading_costs(symbols)
-        TCM-->>PM: cost_vector
-        
-        PM->>RM: process_positions(positions)
-        RM-->>PM: risk_result (multipliers)
-        
-        PM-->>BTC: executions, positions
-        BTC->>BTC: update_equity_curve()
-    end
-
-    BTC->>BTC: calculate_metrics()
-    BTC->>DB: save_results()
-    BTC-->>User: BacktestResults
-```
+1. The runner loads its book from `./config`, connects to the database and loads the instruments.
+2. `BacktestCoordinator::run_portfolio` loads the bars of the window. The window is
+   `backtest.lookback_years` ending at the end date, and its first 256 rows are warm-up for a trend
+   book (see [src/backtest/README.md](src/backtest/README.md)).
+3. For each bar date: the sleeves are fed and publish their targets; the `PortfolioManager`
+   rebalances the book (see [docs/OPTIMIZER_AND_RISK_DESIGN.md](docs/OPTIMIZER_AND_RISK_DESIGN.md));
+   the fills, their costs and the day's P&L are booked and a row is added to the equity curve.
+4. The metrics are computed over the rows after the warm-up and the run is stored in the `backtest`
+   schema.
 
 ### Live Trading Workflow
 
-```mermaid
-sequenceDiagram
-    participant Cron as Cron Job
-    participant LTC as LiveTradingCoordinator
-    participant DB as PostgresDatabase
-    participant PM as PortfolioManager
-    participant Holiday as HolidayChecker
-    participant Email as EmailSender
-    participant CSV as CSVExporter
+A live run is for one date. In production the scheduled wrapper `scripts/run_live_portfolio.sh`
+runs `live_portfolio_conservative <date> --send-email` once a day. The run loads the stored book
+and the bars up to the day before its date, sizes and rebalances the book, books the previous day's
+P&L, stores positions, executions and results, exports the position CSV files (futures books) and,
+with `--send-email`, mails the report.
 
-    Cron->>LTC: main(date, --send-email)
-    LTC->>Holiday: is_holiday(yesterday)?
-    
-    alt Non-trading day
-        Holiday-->>LTC: true (weekend/holiday)
-        LTC->>DB: load_previous_positions()
-        LTC-->>Cron: Positions unchanged
-    else Trading day
-        Holiday-->>LTC: false
-        LTC->>DB: load_positions_by_date(prev_date)
-        DB-->>LTC: existing_positions
-        
-        LTC->>DB: load_market_data(today)
-        DB-->>LTC: today_bars
-        
-        LTC->>PM: process_market_data(bars)
-        PM-->>LTC: new_positions, executions
-        
-        LTC->>DB: store_positions()
-        LTC->>DB: store_executions()
-    end
-    
-    alt --send-email flag
-        LTC->>Email: prepare_report(positions, metrics)
-        Email->>Email: generate_charts()
-        Email-->>LTC: send_email()
-    end
-    
-    LTC->>CSV: export_positions()
-    LTC-->>Cron: Exit(0)
-```
+What a run does step by step, the P&L frame and what each table holds are in
+[docs/LIVE_RUN_CYCLE.md](docs/LIVE_RUN_CYCLE.md). The schedule, the wrapper's exit codes, the
+watchdog and the rules for manual and catch-up runs are in
+[docs/performance_upkeep.md](docs/performance_upkeep.md).
 
 ---
 
@@ -1023,11 +611,12 @@ sequenceDiagram
 | CMake | 3.17+ | Build configuration |
 | PostgreSQL | 12+ | Market data storage |
 | nlohmann_json | Latest | JSON configuration |
+| NLopt | Latest | Required by the build |
 | Apache Arrow C++ | Latest | Efficient data processing |
 | libpqxx | Latest | PostgreSQL C++ client |
 | Eigen3 | Latest | Linear algebra for optimization |
 | libcurl | Latest | Email functionality |
-| GoogleTest | Bundled | Unit testing |
+| GoogleTest | Latest | Unit testing |
 
 ### System Requirements
 
@@ -1044,7 +633,7 @@ cmake .. \
     -DCMAKE_BUILD_TYPE=Debug \
     -DCMAKE_CXX_FLAGS="-g -O0 -fprofile-arcs -ftest-coverage"
 
-cmake --build . -j$(nproc)
+cmake --build . -j
 cd ..
 ```
 
@@ -1059,40 +648,82 @@ ctest --output-on-failure --verbose
 
 ## 🚀 Running the System
 
+Run every runner from the repository root, and run one at a time: never start two runners (backtest
+or live) in parallel against the same database.
+
 ### Running Backtests
 
 ```bash
-# Run main backtest
+# CONSERVATIVE futures book
+./build/bin/Release/bt_portfolio_conservative
+
+# BASE futures book
 ./build/bin/Release/bt_portfolio
 
-# Run conservative portfolio backtest
-./build/bin/Release/bt_portfolio_conservative
+# Equity book
+./build/bin/Release/bt_equity_mr
 ```
 
 ### Running Live Trading
 
-Live trading requires a date argument in `YYYY-MM-DD` format:
+A live run takes an optional date, `YYYY-MM-DD`, and an optional `--send-email`. Always pass the
+date:
 
 ```bash
-# Run for a specific date (no email)
-./build/bin/Release/live_portfolio 2025-01-15
+# A run for a date, no email
+./build/bin/Release/live_portfolio_conservative 2025-01-15
 
-# Run for a specific date WITH email report
-./build/bin/Release/live_portfolio 2025-01-15 --send-email
-
-# Conservative portfolio variant
+# The production form: a date and the email report
 ./build/bin/Release/live_portfolio_conservative 2025-01-15 --send-email
+
+# The same run, writing the report body to a file instead of mailing it
+TRADE_NGIN_EMAIL_BODY_DIR=/path/to/dir ./build/bin/Release/live_portfolio_conservative 2025-01-15
 ```
 
-> **Note**: The date-less execution mode is deprecated. Always specify the date.
+- **Run modes.** A live run is in one of three modes, by its arguments and by the host's date: no
+  date; a date equal to the host's date (the scheduled run); a past date (a replay or a catch-up).
+  With a date, the run clock is midnight of that date, the bar window ends the day before, a stale
+  or incomplete feed is a warning, and the email is sent only with `--send-email`. With no date the
+  run clock is the wall clock with its time of day, a bar dated the run day is read if the feed has
+  already loaded it, a stale or incomplete feed stops the run with exit 1, and the email is always
+  sent. A held symbol with no bar for more than `live.data_staleness_tolerance_days` stops a futures
+  run for the host's date or with no date, and is a warning on a past date. No code refuses a run
+  with no date; the scheduled run always passes one. The full table is in
+  [docs/LIVE_RUN_CYCLE.md](docs/LIVE_RUN_CYCLE.md).
+- **The date and the host.** The two futures runners read the date as midnight in the host's local
+  time and the equity runner as midnight UTC; every stored key is rendered in UTC. On a host
+  whose clock is UTC the two are the same instant. The image in this repository sets
+  `TZ=America/New_York` (`Dockerfile:85`); [docs/LIVE_RUN_CYCLE.md](docs/LIVE_RUN_CYCLE.md) says what
+  that changes.
+- **The report body file.** `TRADE_NGIN_EMAIL_BODY_DIR` applies only to a futures run that does not
+  send: with the variable set to a directory, the run builds the report body exactly as for a send,
+  writes it there as `email_body_<portfolio>_<date>.html` and mails nothing. With `--send-email` the
+  variable is ignored with one warning line in the log, and the report is mailed as usual. A run
+  with no date sends, so it ignores the variable in the same way. The equity runner does not read
+  the variable.
+- **Exit codes.** A futures live run exits 0 when it reaches the end of the run with the book not
+  refused, 3 when it reaches the end with the book held because the risk step refused it or the
+  sizing read failed, and 1 when it stops early. Exit 0 covers a completed day, a carried day, and
+  a run in which a store failed, was logged and was passed over; the evidence of a completed day is
+  the date's `trading.live_results` row, not the exit code. The wrapper also returns 0, without
+  starting the binary, when it finds its lock held (nothing stored). A refusal by the risk step never ends at 0: the
+  `live_run_metadata` row is marked `risk_refusal` and the run ends at 3, whether a module could not
+  answer or a sleeve module decided to refuse, or at 1 when the refused book has no stored previous
+  positions to be held at. Exit 1 stores nothing when the run refuses before its `live_run_metadata`
+  row is written, and can leave that row, the signals or a half-written day when it stops later. The
+  equity runner and the backtest runners return only 0 or 1.
+- **Re-runs.** A lone re-run of an older date is not supported and is not refused: the runner
+  accepts it, rewrites that day and the day before, and leaves every later day as it was. A replay
+  runs every date forward in order. See [docs/performance_upkeep.md](docs/performance_upkeep.md).
 
 ### Output Locations
 
 | Output Type | Location | Description |
 |-------------|----------|-------------|
-| Logs | `logs/live_trend_YYYYMMDD.log` | Daily log files |
-| CSV Exports | `apps/strategies/results/<portfolio_id>/` | Position files |
-| Database | `trading.positions` | Persisted positions |
+| Logs | `logs/<prefix>_YYYYMMDD_HHMMSS_partN.log` | One set of files per run |
+| CSV Exports | `apps/strategies/results/<portfolio_id>/` | Live position files of the futures books (the day's positions and the finalized positions of the day before) |
+| Backtest CSV | `apps/backtest/results/` | Backtest output |
+| Database | `trading` and `backtest` schemas | See [docs/LIVE_RUN_CYCLE.md](docs/LIVE_RUN_CYCLE.md) |
 
 ---
 
@@ -1100,27 +731,22 @@ Live trading requires a date argument in `YYYY-MM-DD` format:
 
 ### Strategy Types
 
-| Type | Class | Description |
-|------|-------|-------------|
-| `TrendFollowingStrategy` | `TrendFollowingStrategy` | Standard 6-window trend following |
-| `TrendFollowingFastStrategy` | `TrendFollowingFastStrategy` | Faster-reacting (shorter windows) |
-| `TrendFollowingSlowStrategy` | `TrendFollowingSlowStrategy` | Slower-reacting (longer windows) |
+The `type` string of a sleeve in `portfolio.json` selects what the futures runners build:
+
+| Type | Built as | Description |
+|------|----------|-------------|
+| `TrendFollowingStrategy` | `TrendFollowingStrategy` with the sleeve's configuration | The TREND sleeve: six EMA pairs |
+| `TrendFollowingFastStrategy` | `TrendFollowingStrategy` with `fast_trend_following_config()` | The FAST sleeve: the four fast EMA pairs |
+
+The equity book's strategies are built by `equity_strategy_builder.hpp`.
 
 ### Email Configuration
 
-```json
-{
-  "email": {
-    "smtp_host": "smtp.gmail.com",
-    "smtp_port": 587,
-    "username": "your-email@gmail.com",
-    "password": "your-app-password",
-    "from_email": "your-email@gmail.com",
-    "to_emails": ["recipient1@example.com", "recipient2@example.com"],
-    "use_tls": true
-  }
-}
-```
+`config/portfolios/<name>/email.json` is a flat object with the keys `smtp_host`, `smtp_port` (a
+number), `username`, `password`, `from_email`, `to_emails`, `to_emails_production` and `use_tls`.
+Copy it from `config_template/portfolios/<name>/email.json` and replace the placeholders. The last
+two keys are present and not read: every report goes to `to_emails`, and the sender always asks for
+TLS.
 
 > **Gmail Setup**: Use an [App Password](https://support.google.com/accounts/answer/185833) rather than your account password.
 
@@ -1128,156 +754,37 @@ Live trading requires a date argument in `YYYY-MM-DD` format:
 
 ## 🗄️ Database Schema
 
-### Core Tables
+The engine reads market data and contract metadata and writes its own results:
 
-| Schema | Table | Purpose |
-|--------|-------|---------|
-| `trading` | `positions` | Current and historical positions |
-| `trading` | `executions` | Trade execution records |
-| `trading` | `live_run_metadata` | Daily run configuration |
-| `trading` | `strategy_trading_days_metadata` | Strategy configuration history |
-| `futures_data` | `ohlcv_1d` | Daily OHLCV data |
-| `futures_data` | `instruments` | Contract specifications |
+| Schema | Tables the runners use | Purpose |
+|--------|------------------------|---------|
+| `trading` | `positions`, `executions`, `signals`, `live_results`, `equity_curve`, `live_run_metadata`, `strategy_trading_days_metadata`, `corp_action_applied` | Live results |
+| `backtest` | `results`, `equity_curve`, `executions`, `final_positions`, `run_metadata`; `signals` (present, never written) | Backtest results |
+| `metadata` | `contract_metadata` | Contract size, tick size, fee per contract |
+| `futures_data` | `ohlcv_1d`, `ohlcv_1d_raw` | Daily futures bars (read only) |
+| `equities_data` | `ohlcv_1d`, `corporate_action`, `ticker_aliases` | Equity data (read only) |
 
-### Position Table Structure
-
-```sql
-CREATE TABLE trading.positions (
-    id SERIAL PRIMARY KEY,
-    date DATE NOT NULL,
-    portfolio_id VARCHAR(255) NOT NULL,
-    strategy_id VARCHAR(255) NOT NULL,
-    symbol VARCHAR(50) NOT NULL,
-    quantity DECIMAL(18,8),
-    average_price DECIMAL(18,8),
-    unrealized_pnl DECIMAL(18,8),
-    realized_pnl DECIMAL(18,8),
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-);
-```
-
-### Execution Table Structure
-
-```sql
-CREATE TABLE trading.executions (
-    id SERIAL PRIMARY KEY,
-    date DATE NOT NULL,
-    portfolio_id VARCHAR(255) NOT NULL,
-    strategy_id VARCHAR(255) NOT NULL,
-    symbol VARCHAR(50) NOT NULL,
-    side VARCHAR(10),
-    quantity DECIMAL(18,8),
-    price DECIMAL(18,8),
-    commission DECIMAL(18,8),
-    slippage DECIMAL(18,8),
-    total_cost DECIMAL(18,8),
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-);
-```
+What one row of each `trading` and `backtest` table is, its key, who writes it and when it is final
+are in [docs/LIVE_RUN_CYCLE.md](docs/LIVE_RUN_CYCLE.md). Which table is the source of each fact is
+in [docs/DATA_SOURCES_OF_TRUTH.md](docs/DATA_SOURCES_OF_TRUTH.md). Schema changes are the numbered
+files in `migrations/`.
 
 ---
 
 ## 🏗️ Creating a New Strategy
 
-For comprehensive strategy development instructions, see [src/strategy/README.md](src/strategy/README.md).
+The interface, the base class and the steps are in [src/strategy/README.md](src/strategy/README.md).
+In short:
 
-### Quick Start
-
-1. **Create header** in `include/trade_ngin/strategy/your_strategy.hpp`
-2. **Implement** in `src/strategy/your_strategy.cpp`
-3. **Inherit from** `BaseStrategy`
-4. **Override required methods**: `initialize()`, `on_data()`, `validate_config()`
-5. **Register** in `CMakeLists.txt` (add to `TRADE_NGIN_SOURCES`)
-6. **Add to factory** in `live_portfolio.cpp` and `bt_portfolio.cpp`
-7. **Configure** in `config/portfolios/<name>/portfolio.json` under `strategies`
-
-### Minimal Example
-
-```cpp
-// include/trade_ngin/strategy/my_strategy.hpp
-#pragma once
-
-#include "trade_ngin/strategy/base_strategy.hpp"
-
-namespace trade_ngin {
-
-struct MyStrategyConfig {
-    double parameter1 = 0.5;
-    int lookback_window = 20;
-};
-
-class MyStrategy : public BaseStrategy {
-public:
-    MyStrategy(std::string id, 
-               StrategyConfig config,
-               MyStrategyConfig my_config,
-               std::shared_ptr<PostgresDatabase> db,
-               std::shared_ptr<InstrumentRegistry> registry);
-
-    Result<void> initialize() override;
-    Result<void> on_data(const std::vector<Bar>& data) override;
-
-protected:
-    Result<void> validate_config() const override;
-
-private:
-    MyStrategyConfig my_config_;
-};
-
-}  // namespace trade_ngin
-```
-
-```cpp
-// src/strategy/my_strategy.cpp
-#include "trade_ngin/strategy/my_strategy.hpp"
-
-namespace trade_ngin {
-
-MyStrategy::MyStrategy(std::string id,
-                       StrategyConfig config,
-                       MyStrategyConfig my_config,
-                       std::shared_ptr<PostgresDatabase> db,
-                       std::shared_ptr<InstrumentRegistry> registry)
-    : BaseStrategy(std::move(id), std::move(config), db, registry),
-      my_config_(my_config) {}
-
-Result<void> MyStrategy::initialize() {
-    auto validate_result = validate_config();
-    if (validate_result.is_error()) {
-        return validate_result;
-    }
-    
-    INFO("MyStrategy initialized with parameter1=" + 
-         std::to_string(my_config_.parameter1));
-    return Result<void>();
-}
-
-Result<void> MyStrategy::on_data(const std::vector<Bar>& data) {
-    // Your trading logic here
-    for (const auto& bar : data) {
-        // Calculate signal
-        double signal = calculate_signal(bar);
-        
-        // Size position
-        double position = signal * get_position_size(bar.symbol);
-        
-        // Update target
-        update_target_position(bar.symbol, position);
-    }
-    return Result<void>();
-}
-
-Result<void> MyStrategy::validate_config() const {
-    if (my_config_.parameter1 <= 0 || my_config_.parameter1 > 1.0) {
-        return make_error<void>(ErrorCode::INVALID_ARGUMENT,
-                                "parameter1 must be in (0, 1]",
-                                "MyStrategy");
-    }
-    return Result<void>();
-}
-
-}  // namespace trade_ngin
-```
+1. **Create the header** in `include/trade_ngin/strategy/your_strategy.hpp` and the implementation
+   in `src/strategy/your_strategy.cpp`
+2. **Inherit from** `BaseStrategy`, whose constructor is
+   `BaseStrategy(std::string id, StrategyConfig config, std::shared_ptr<PostgresDatabase> db)`
+3. **Override** `initialize()` and `on_data()`, and `validate_config()` for parameter checks
+4. **Register** the `.cpp` in the root `CMakeLists.txt` (add it to `TRADE_NGIN_SOURCES`)
+5. **Add a branch** for its `type` string where the runners build their sleeves (for example in
+   `live_portfolio.cpp` and `bt_portfolio.cpp`)
+6. **Configure** it in `config/portfolios/<name>/portfolio.json` under `strategies`
 
 ---
 
@@ -1314,30 +821,35 @@ if (result.is_error()) {
 | `NOT_INITIALIZED` | Component not initialized |
 | `DATABASE_ERROR` | Database operation failed |
 | `DATA_NOT_FOUND` | Requested data not found |
+| `INVALID_DATA` | Data failed a validity check |
 | `STRATEGY_ERROR` | Strategy logic error |
 | `RISK_LIMIT_EXCEEDED` | Risk constraint violated |
-| `MARGIN_VALIDATION_FAILED` | Margin requirements not met |
 
 ---
 
 ## 📊 Performance Considerations
 
 ### Data Processing
+
 - Apache Arrow for zero-copy data sharing
 - Columnar memory layout for vectorized operations
 - Connection pooling for database efficiency (5 connections by default)
 
 ### Memory Management
+
 - RAII pattern throughout
 - Smart pointers (`std::shared_ptr`, `std::unique_ptr`) for automatic resource management
 - Preallocated buffers for performance-critical operations
 
 ### Concurrency
-- Thread-safe component designs with mutex protection
+
+- Components guard their own state with mutexes, and the connection pool hands out connections safely
 - Pub-sub pattern for market data distribution
-- Connection pool with thread-safe acquisition
+- Runners are not concurrent with each other: they share database tables and process-wide
+  singletons, so run one runner at a time, never two in parallel
 
 ### Optimization Tips
+
 - Use `reserve()` on vectors when size is known
 - Avoid unnecessary copies (use `const&` or move semantics)
 - Profile with `perf` or `valgrind` for bottlenecks
@@ -1346,16 +858,11 @@ if (result.is_error()) {
 
 ## 🐳 Docker Deployment
 
-The system includes Docker support for containerized deployment:
+The container image is built from the `Dockerfile`:
 
 ```bash
-# Build Docker image
-./build_docker.sh
-
-# Or manually:
 docker build -t trade-ngin -f Dockerfile .
 
-# Run container
 docker run -d \
     --name trade-ngin \
     -v $(pwd)/config:/app/config \
@@ -1367,11 +874,13 @@ docker run -d \
 
 The container includes:
 - All system dependencies
-- Cron job for scheduled runs (`live_trend.cron`)
+- The scheduled job (`live_portfolio.cron`), which calls `scripts/run_live_portfolio.sh`
 - Gnuplot for chart generation
 - Timezone set to America/New_York
 
-Mount your local `config/` directory (created from `config_template/`) into the container so it has database and email credentials.
+Mount your local `config/` directory (created from `config_template/`) into the container so it has
+database and email credentials. See [docs/README.Docker.md](docs/README.Docker.md) and
+[docs/performance_upkeep.md](docs/performance_upkeep.md).
 
 ---
 
@@ -1383,8 +892,10 @@ The project uses GitHub Actions for continuous integration. See [docs/CI_CD_READ
 
 | Workflow | Trigger | Purpose |
 |----------|---------|---------|
-| `ci-cd-pipeline.yml` | Push, PR | Lint, build, test |
-| `code-coverage.yml` | Push, PR | Coverage reports |
+| `ci-cd-pipeline.yml` | Push to `main`, `develop`, `main-hd`, `prod` or `staging`; every pull request | Lint, build (Debug and Release), test, coverage, security scan, image |
+| `live-trading-watchdog.yml` | Daily schedule, manual, pull requests that touch the watchdog | Checks that the live run wrote its rows |
+| `dependency-review.yml` | Pull requests onto `main` | Dependency review |
+| `sbom.yml`, `scorecard.yml`, `branch-protection.yml` | Push to `main`, schedules | Supply-chain and repository settings |
 
 ### Local Pre-commit Checks
 
@@ -1392,18 +903,18 @@ The project uses GitHub Actions for continuous integration. See [docs/CI_CD_READ
 # Run before each commit
 ./scripts/pre-commit-hook.sh
 
-# Run linting
-./linting/lint_runner.sh
+# Check formatting
+find src include -name "*.cpp" -o -name "*.hpp" | xargs clang-format --dry-run --Werror
 
-# Auto-fix formatting
-./linting/auto_fix_lint.sh
+# Fix formatting in place
+find src include -name "*.cpp" -o -name "*.hpp" | xargs clang-format -i
 ```
 
 ### Coverage Requirements
 
-- **Minimum Coverage**: 75%
+- **Threshold enforced by CI**: 10 percent line coverage (`COVERAGE_THRESHOLD` in `ci-cd-pipeline.yml`), checked in the Debug build
 - **Tools**: lcov, gcovr
-- **Reports**: HTML, XML (Cobertura)
+- **Reports**: lcov, XML (Cobertura), text
 
 ---
 
@@ -1417,8 +928,8 @@ cd build
 # Run all tests
 ctest --output-on-failure
 
-# Run specific test
-./tests/test_portfolio_manager
+# Run the suites whose names match a pattern
+ctest -R "OnePass|HalfCompounding" --output-on-failure
 
 # Run with verbose output
 ctest -V
@@ -1426,7 +937,7 @@ ctest -V
 # Run with coverage
 cmake .. -DCMAKE_BUILD_TYPE=Debug \
     -DCMAKE_CXX_FLAGS="-g -O0 -fprofile-arcs -ftest-coverage"
-make -j$(nproc)
+cmake --build . -j
 ctest
 lcov --capture --directory . --output-file coverage.info
 genhtml coverage.info --output-directory coverage_html
@@ -1434,18 +945,26 @@ genhtml coverage.info --output-directory coverage_html
 
 ### Test Structure
 
+Every C++ test is built into one binary, `trade_ngin_tests`; the Python script tests under
+`tests/scripts/` run as two ctest entries of their own.
+
 ```
 tests/
-├── backtesting/          # BacktestCoordinator tests
-├── core/                 # Logger, config tests
-├── data/                 # Database tests
-├── execution/            # Execution engine tests
-├── optimization/         # Optimizer tests
-├── order/                # Order manager tests
-├── portfolio/            # Portfolio manager tests
-├── risk/                 # Risk manager tests
-├── statistics/           # Statistics tools tests
-└── strategy/             # Strategy tests
+├── backtest/             # Backtest coordinator, metrics, P&L
+├── core/                 # Logger, config
+├── data/                 # Database, bar loading, session classifier
+├── execution/            # Execution engine
+├── instruments/          # Instrument registry
+├── live/                 # Live run components
+├── optimization/         # The one pass, the generic optimiser
+├── order/                # Order manager
+├── portfolio/            # Portfolio manager, sizing capital
+├── risk/                 # Risk modules, the overlay
+├── scripts/              # Tests of the Python scripts
+├── statistics/           # Statistics library
+├── storage/              # Results managers
+├── strategy/             # Strategies, the trend estimators
+└── transaction_cost/     # Cost model, netting
 ```
 
 ---
@@ -1456,13 +975,13 @@ tests/
 
 #### Build Failures
 
-**Missing dependencies:**
+**Missing dependencies:** run the install script for your system again.
 ```bash
 # Ubuntu
-sudo apt-get install libarrow-dev nlohmann-json3-dev libpqxx-dev
+sudo bash requirements/install_ubuntu.sh
 
 # macOS
-brew install apache-arrow nlohmann-json libpqxx
+bash requirements/install_macos.sh
 ```
 
 **libpqxx not found:**
@@ -1478,12 +997,12 @@ export PKG_CONFIG_PATH="/opt/homebrew/lib/pkgconfig:$PKG_CONFIG_PATH"
 
 **Connection refused:**
 - Check database host is accessible
-- Verify port 5432 is open
+- Verify the database port is reachable
 - Confirm credentials in `config/defaults.json` (copy from `config_template/` and fill placeholders)
 
 **Missing tables:**
-- Ensure required schemas exist (`trading`, `futures_data`)
-- Run database migrations if available
+- Ensure required schemas exist (`trading`, `backtest`, `metadata`, `futures_data`)
+- Apply the migrations in `migrations/` in number order
 
 #### Live Trading Issues
 
@@ -1539,10 +1058,10 @@ config.min_level = LogLevel::DEBUG;  // or TRACE for maximum detail
 
 ### Git Workflow
 
-1. Create feature branch from `develop`
+1. Create a feature branch from the branch the work targets
 2. Make changes with meaningful commits
 3. Run pre-commit checks
-4. Create PR to `develop`
+4. Create a pull request onto that branch
 5. Address code review feedback
 6. Merge after approval
 
@@ -1550,7 +1069,7 @@ config.min_level = LogLevel::DEBUG;  // or TRACE for maximum detail
 
 ## 📄 License
 
-This project is licensed under the GNU General Public License v3.0 - see the [LICENSE](LICENSE) file for details.
+This project is licensed under the [GNU General Public License v3.0](https://www.gnu.org/licenses/gpl-3.0). The licence text is at that link; the repository holds no licence file.
 
 ---
 
@@ -1560,6 +1079,3 @@ This project is licensed under the GNU General Public License v3.0 - see the [LI
 - AlgoGators team for contributions
 - Open source community for tooling
 
----
-
-*Last updated: January 2026*
