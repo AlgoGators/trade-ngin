@@ -2,6 +2,7 @@
 
 #pragma once
 
+#include <map>
 #include <filesystem>
 #include <nlohmann/json.hpp>
 #include <string>
@@ -360,6 +361,15 @@ struct AppConfig {
     std::vector<InstrumentIdRelabel> instrument_id_relabels;
     // listing_dates' optional "switch_rule": "open_at_target" (the default), "close_reenter", "convert" or "carry_to_target".
     ListingSwitchRule listing_switch_rule{ListingSwitchRule::kOpenAtTarget};
+
+    // portfolio.json's optional top-level trading_rule_removals: symbol (base name) to the EMA
+    // pairs that contract does not run, removed by cost (Carver, strategy nine, "Removing
+    // expensive trading rules"; the list is the output of scripts/trading_rule_costs.py and is
+    // never edited by hand):
+    //   "trading_rule_removals": {"ZR": [[2, 8], [4, 16]], "ZC": [[2, 8]]}
+    // Absent means empty, and an empty map changes nothing anywhere. A book of more than one
+    // enabled sleeve, or whose sleeve is not a TrendFollowingStrategy, is refused with the block.
+    std::map<std::string, std::vector<std::pair<int, int>>> trading_rule_removals;
 
     // portfolio.json's top-level sizing_mode and starting_capital (LOOP_SPEC sections 3.1 and 7.7,
     // D19); both required on a futures book. The one mode is "half_compounding": the book is sized

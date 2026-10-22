@@ -403,6 +403,8 @@ int main() {
                 if (strategy_id == strategy_names.front()) {
                     trend_config.equity_slow_symbols = app_config.equity_slow_rule.symbols;
                     trend_config.equity_slow_pairs = app_config.equity_slow_rule.pairs;
+                    // Trading rules removed by cost (no value changes without the block).
+                    trade_ngin::hand_over_trading_rule_removals(app_config, trend_config);
                     // The first sleeve's own series and its risk target feed the risk overlay
                     // (LOOP_SPEC section 4: the three risk limits are ratios to this tau).
                     portfolio_config.overlay_sleeve = strategy_id;
@@ -559,6 +561,9 @@ int main() {
                     relabels.push_back({{"symbol", r.symbol}, {"date", r.date}, {"from", r.from}, {"to", r.to}});
                 }
                 portfolio_config_json["instrument_id_relabels"] = relabels;
+            }
+            if (!app_config.trading_rule_removals.empty()) {
+                portfolio_config_json["trading_rule_removals"] = app_config.trading_rule_removals;
             }
             if (!app_config.listing_dates.empty()) {
                 auto contracts = nlohmann::json::array();

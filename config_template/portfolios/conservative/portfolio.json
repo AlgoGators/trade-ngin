@@ -40,6 +40,21 @@
     {"symbol": "M2K", "date": "2026-02-22", "from": "42005017", "to": "42002147"}
   ],
   "_instrument_id_relabels_note": "optional; vendor instrument-id changes that are NOT rolls: from date the vendor labels the same contract of symbol with id to where it had used from. Backtest and live read a bar, an id row or a stored contract carrying to as carrying from, so no change bar is held, no ROLL legs or roll costs are booked and that day's move is booked as on any day; the stored instrument_id stays from until the next real roll",
+  "trading_rule_removals": {
+    "6L": [[2, 8], [4, 16]],
+    "6M": [[2, 8]],
+    "GF": [[2, 8]],
+    "HE": [[2, 8]],
+    "KE": [[2, 8], [4, 16]],
+    "LE": [[2, 8]],
+    "NG": [[2, 8]],
+    "ZC": [[2, 8], [4, 16]],
+    "ZL": [[2, 8]],
+    "ZR": [[2, 8], [4, 16], [8, 32]],
+    "ZS": [[2, 8]],
+    "ZW": [[2, 8], [4, 16]]
+  },
+  "_trading_rule_removals_note": "optional; symbol to the EMA pairs that contract does not run, removed because the rule's yearly cost on it is over 0.15 Sharpe-ratio units (Carver, Advanced Futures Trading Strategies, strategy nine, Removing expensive trading rules; turnovers of table 35). A listed contract runs the pairs left at equal weight with the multiplier for their number; every other contract runs all six. Only a contract's fastest pairs can be listed, at least one is left, and the two contracts of a listing-date pair carry the same entry. This list is the owner's decision and the authority: scripts/trading_rule_costs.py shows how it follows from the recipe and with --check reports whether re-measured costs still give it, and a list that comes out different is decided by the owner, never edited to match",
   "use_optimization": true,
   "covariance_history_prices": 756,
   "_covariance_history_prices_note": "daily closes per symbol the PortfolioManager keeps for the optimiser covariance, one per date, oldest dropped first; absent means 756 (the trend sleeve own cap); at least 2",
