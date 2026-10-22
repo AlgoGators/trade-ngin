@@ -496,3 +496,33 @@ TEST_F(StrategyConfigOverlay, TheSaveCheckRefusesARowForABookThatIsNotDeskEditab
     EXPECT_TRUE(
         check_live_settings_overlay(desk_tmpl(), "qt_conservative", Json::object()).is_ok());
 }
+
+// Rejoin R-17: the three per-contract blocks are engine data, not desk settings: an override of
+// any of them is refused, on a book whose files hold them (ours and the desk's) and by the save
+// check, even when the value is the files' own.
+TEST_F(StrategyConfigOverlay, ThePerContractBlocksAreRefused) {
+    for (const char* block : {"listing_dates", "instrument_id_relabels", "trading_rule_removals"}) {
+        for (const char* book : {"conservative", "qt_conservative"}) {
+            const Json files = file_json(book, "portfolio.json");
+            ASSERT_TRUE(files.contains(block)) << book << " " << block;
+            const Json overlay = {{block, files.at(block)}};
+            Json snap;
+            auto loaded = ConfigLoader::load(desk_tmpl(), book, &overlay, &snap);
+            ASSERT_TRUE(loaded.is_error()) << book << ": " << block << " was applied";
+            const std::string why = loaded.error()->what();
+            EXPECT_NE(why.find(std::string(block) + " (the engine's per-contract data)"),
+                      std::string::npos)
+                << book << ": " << why;
+        }
+        const Json files = file_json("qt_conservative", "portfolio.json");
+        auto checked = check_live_settings_overlay(desk_tmpl(), "qt_conservative",
+                                                   Json{{block, files.at(block)}});
+        ASSERT_TRUE(checked.is_error()) << block << " passed the save check";
+        EXPECT_NE(std::string(checked.error()->what()).find("per-contract data"), std::string::npos)
+            << checked.error()->what();
+    }
+    // A neighbouring key of portfolio.json still overrides on the desk's book.
+    EXPECT_TRUE(check_live_settings_overlay(desk_tmpl(), "qt_conservative",
+                                            Json{{"covariance_stale_dates", 3}})
+                    .is_ok());
+}

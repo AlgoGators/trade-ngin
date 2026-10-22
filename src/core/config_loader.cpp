@@ -1107,6 +1107,20 @@ Result<void> ConfigLoader::check_overlay(const nlohmann::json& overlay,
                                 "portfolio.json only",
                                 "ConfigLoader");
     }
+    // Rejoin R-17: the per-contract blocks are the engine's data about the contracts (when each
+    // micro listed, its renamed ids, the rules each contract drops), not desk settings. The
+    // settings check (D-17) does not run their meaning checks, so a changed block would pass it
+    // and then stop every later run of the portfolio.
+    for (const char* engine_data :
+         {"listing_dates", "instrument_id_relabels", "trading_rule_removals"}) {
+        if (overlay.contains(engine_data)) {
+            return make_error<void>(ErrorCode::INVALID_DATA,
+                                    std::string(engine_data) +
+                                        " (the engine's per-contract data) cannot be overridden "
+                                        "from the database: it stays in portfolio.json",
+                                    "ConfigLoader");
+        }
+    }
     if (find_secret_key(overlay, "", &where)) {
         return make_error<void>(ErrorCode::INVALID_DATA,
                                 where + " looks like a credential and cannot be overridden",
