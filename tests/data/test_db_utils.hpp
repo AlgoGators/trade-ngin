@@ -377,16 +377,16 @@ public:
     // The risk_detail arguments of the last calls (migration 020).
     nlohmann::json last_live_risk_detail;
     std::vector<std::string> last_equity_risk_detail;
-    /// The typed cells of the last equity-curve batch (migration 031), one list a point.
+    /// The typed cells of the last equity-curve batch (migration 037), one list a point.
     BacktestCurveCells last_equity_curve_cells;
     /// The last daily position write of a backtest: the rows handed in and the symbols named as
-    /// having printed no bar that date (migration 032).
+    /// having printed no bar that date (migration 038).
     std::vector<Position> last_backtest_positions;
     std::unordered_set<std::string> last_backtest_no_bar_symbols;
-    /// What the last store_backtest_summary was handed (migration 031's typed cells among it).
+    /// What the last store_backtest_summary was handed (migration 037's typed cells among it).
     std::unordered_map<std::string, double> last_backtest_summary_metrics;
     std::vector<LiveResultsCell> last_backtest_summary_cells;
-    // The typed cells of the last INSERT and of the last UPDATE (migration 030).
+    // The typed cells of the last INSERT and of the last UPDATE (migration 036).
     std::vector<LiveResultsCell> last_live_cells;
     std::vector<LiveResultsCell> last_update_cells;
     // The double columns of the last INSERT and of the last UPDATE.

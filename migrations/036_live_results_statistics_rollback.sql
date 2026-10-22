@@ -1,4 +1,6 @@
--- 030_live_results_statistics_rollback.sql
+-- 036_live_results_statistics_rollback.sql
+-- Numbered 030 until 2026-10-21; renumbered 036 when main-nonQT joined main (main has its own 028 and 029).
+-- The text below is unchanged, so it still calls its migration 030.
 --
 -- Drops the twenty columns migration 030 added to trading.live_results (their comments go with
 -- them). Refuses while any row carries a value in one of them unless the session sets

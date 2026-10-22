@@ -1,4 +1,7 @@
--- 032_final_positions_row_mark.sql
+-- 038_final_positions_row_mark.sql
+-- Numbered 032 until 2026-10-21; renumbered 038 when main-nonQT joined main (main has its own 028 and 029).
+-- The migration was applied to new_algo_data as 032 on 2026-10-12: do not re-apply it there. The text below is
+-- exactly as applied, so its comments and stored COMMENT texts still call it 032.
 --
 -- row_mark on backtest.final_positions (T-8D-2 R50, admitted into T-8b by HD; LOOP_SPEC v6.2
 -- section 7.5 and COLUMN_PLAN section 2, where this migration is numbered 026; T-8b commit (5)).

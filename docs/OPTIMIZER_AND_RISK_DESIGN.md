@@ -760,8 +760,8 @@ The nine keys of `risk_detail` (`kRiskDetailKeys`, `risk_detail.hpp`):
 
 The overlay's five readings of the stored book and its one-day 95 percent value at risk are
 stored as columns on futures rows: `overlay_risk`, `overlay_risk_jump`, `overlay_risk_shock`,
-`overlay_gross_leverage`, `overlay_net_leverage` and `var_95_1d` (migration 030 on
-`trading.live_results`, 031 on `backtest.equity_curve`; `overlay_columns_of`, `overlay_columns.hpp`).
+`overlay_gross_leverage`, `overlay_net_leverage` and `var_95_1d` (migration 036 on
+`trading.live_results`, 037 on `backtest.equity_curve`; `overlay_columns_of`, `overlay_columns.hpp`).
 They are written on the rows that carry `risk_detail`; on a blind window the three risk readings and
 `var_95_1d` are NULL. The limits and the multipliers are not stored: they are on the OVERLAY line.
 The sizing capital has no column of its own.

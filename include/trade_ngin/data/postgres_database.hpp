@@ -493,7 +493,7 @@ public:
      * @param end_date End date of backtest
      * @param metrics Map of metric name to value
      * @param table_name Name of the results table
-     * @param cells The typed cells of the row (migration 031: a date, a text, a jsonb object,
+     * @param cells The typed cells of the row (migration 037: a date, a text, a jsonb object,
      *        an integer or a number that may have no value). A cell is named only when it has a
      *        value, so one without stays NULL; a number is stored at the precision of its text,
      *        not through std::to_string's six decimals.
@@ -512,7 +512,7 @@ public:
      * @param equity_points Vector of timestamp-equity pairs
      * @param table_name Name of the equity curve table
      * @param risk_detail Per point, the row's risk_detail object as text (empty: NULL), or none
-     * @param cells Per point, the row's typed cells (migration 031: the six overlay columns),
+     * @param cells Per point, the row's typed cells (migration 037: the six overlay columns),
      *        or none at all; a cell with no value is written NULL (backtest_curve_cells.hpp)
      * @return Result indicating success or failure
      */
@@ -536,10 +536,10 @@ public:
      *        pass true so a position closed to zero keeps the row carrying that bar's
      *        realized flow -- the live is_dead_row rule. Futures backtests leave it false
      *        and store exactly the rows they always did.
-     * @param no_bar_symbols Migration 032. The symbols of `positions` that printed no bar on
+     * @param no_bar_symbols Migration 038. The symbols of `positions` that printed no bar on
      *        the rows' date (a futures book's; the coordinator names them): their stored rows
      *        carry row_mark = 'NO_BAR', every other row NULL. The statement names the column
-     *        on every call, so the table needs migration 032.
+     *        on every call, so the table needs migration 038.
      */
     virtual Result<void> store_backtest_positions(
         const std::vector<Position>& positions, const std::string& run_id,

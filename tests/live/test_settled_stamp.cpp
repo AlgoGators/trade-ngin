@@ -1,6 +1,6 @@
 // tests/live/test_settled_stamp.cpp
 //
-// trading.live_results.settled_at (migration 029; T-8D-2 R43, LOOP_SPEC sections 3.1 and 7.2).
+// trading.live_results.settled_at (migration 035; T-8D-2 R43, LOOP_SPEC sections 3.1 and 7.2).
 //
 // The run that finalizes a row stamps it: one UPDATE, after STEP 4 and the statistics refresh
 // finished without error, on every earlier row of the key that carries no stamp. The no-prices
@@ -259,7 +259,6 @@ TEST(SettledStampRunners, TheTwoFuturesRunnersCarryTheSameStampAndTheSameGate) {
 TEST(SettledStampRerun, TheDaysInsertNeverNamesTheColumnAndTheRowIsDeletedFirst) {
     const std::string writer = read_source("src/data/postgres_database_extensions.cpp");
     const std::string manager = read_source("src/storage/live_results_manager.cpp");
-    const std::string migration = read_source("migrations/029_live_results_settled_at.sql");
     if (writer.empty() || manager.empty()) {
         GTEST_SKIP() << "sources not found from the test working directory";
     }
@@ -276,9 +275,8 @@ TEST(SettledStampRerun, TheDaysInsertNeverNamesTheColumnAndTheRowIsDeletedFirst)
     ASSERT_NE(stale, std::string::npos);
     ASSERT_NE(store, std::string::npos);
     EXPECT_LT(stale, store);
-    // The column has no default: an INSERT that omits it reads NULL.
-    ASSERT_FALSE(migration.empty()) << "migrations/029_live_results_settled_at.sql does not exist";
-    EXPECT_NE(migration.find("ADD COLUMN IF NOT EXISTS settled_at timestamptz;"), std::string::npos);
+    // That the column has no default (an INSERT that omits it reads NULL) is checked on a real
+    // database by migrations/test_035_live_results_settled_at.sh.
 }
 
 // ---- the sizing read's settled test -----------------------------------------------------------

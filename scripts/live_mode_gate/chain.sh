@@ -122,16 +122,16 @@ SQL
     fi
     echo "trading.$t: deleted $del, restored $(q "SELECT count(*) FROM trading.$t WHERE portfolio_id='$PID'")"
   done
-  # T-8a commit (12): after migration 029 a restored row reads settled_at NULL and the sizing read would see no
-  # settled history. The restored book is put in the state the migration leaves it: the migration's OWN backfill
-  # statement (the lines between its two markers, sourced from the file, never retyped), scoped to this portfolio by
-  # the session setting the statement reads. s0_project.py proves the result row by row.
+  # T-8a commit (12): after migration 035 (settled_at) a restored row reads settled_at NULL and the sizing read would see
+  # no settled history. The restored book is put in the state the migration leaves it: the migration's backfill
+  # statement, kept verbatim in the gate's own settled_at_backfill.sql, scoped to this portfolio by the session setting
+  # the statement reads. s0_project.py proves the result row by row.
   if [ "$(q "select count(*) from information_schema.columns where table_schema='trading' and table_name='live_results' and column_name='settled_at'")" = 1 ]; then
-    MIG="$W/migrations/029_live_results_settled_at.sql"
-    STMT=$(awk '/^-- 029 BACKFILL BEGIN/{f=1;next} /^-- 029 BACKFILL END/{f=0} f' "$MIG")
-    [[ "$STMT" == UPDATE* ]] || { echo "the 029 backfill statement was not found in $MIG"; false }
+    BF="$W/scripts/live_mode_gate/settled_at_backfill.sql"
+    STMT=$(grep -v '^--' "$BF")
+    [[ "$STMT" == UPDATE* ]] || { echo "the settled_at backfill statement was not found in $BF"; false }
     $PSQL -h 127.0.0.1 -p 5433 -U postgres -d "$DB" -q -v ON_ERROR_STOP=1 -c "BEGIN; SET LOCAL migration.settled_at_backfill = 'portfolio:$PID'; $STMT COMMIT;"
-    echo "trading.live_results settled_at after the 029 backfill statement (sha256 of $MIG: $(shasum -a 256 "$MIG" | cut -c1-64)): $(q "select count(*) filter (where settled_at is not null)||' stamped, '||count(*) filter (where settled_at is null)||' NULL' from trading.live_results where portfolio_id='$PID'")"
+    echo "trading.live_results settled_at after the backfill statement (sha256 of $BF: $(shasum -a 256 "$BF" | cut -c1-64)): $(q "select count(*) filter (where settled_at is not null)||' stamped, '||count(*) filter (where settled_at is null)||' NULL' from trading.live_results where portfolio_id='$PID'")"
   fi
   A="$S0/trading_strategy_trading_days_metadata.csv"
   if [ -f "$A" ]; then

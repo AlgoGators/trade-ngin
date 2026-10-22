@@ -1,4 +1,7 @@
--- 030_live_results_statistics.sql
+-- 036_live_results_statistics.sql
+-- Numbered 030 until 2026-10-21; renumbered 036 when main-nonQT joined main (main has its own 028 and 029).
+-- The migration was applied to new_algo_data as 030 on 2026-10-10: do not re-apply it there. The text below is
+-- exactly as applied, so its comments and stored COMMENT texts still call it 030.
 --
 -- The live statistics of LOOP_SPEC v6.2 section 7.4 on trading.live_results (T-8a commit (12b);
 -- COLUMN_PLAN section 2.6, where this migration is numbered 024), and the six overlay columns HD

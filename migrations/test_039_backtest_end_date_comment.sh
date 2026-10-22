@@ -35,7 +35,7 @@ INSERT INTO backtest.results VALUES ('R1', '2023-10-07 04:00:00+00', '2026-10-07
 INSERT INTO backtest.run_metadata VALUES ('R1', '2023-10-07', '2026-10-07');
 SQL
 # the four comments as the real 028 file sets them
-LINES028="$(grep -E '^COMMENT ON COLUMN backtest\.(results|run_metadata)\."(start_date|end_date)" IS ' "$HERE/028_column_comments.sql")"
+LINES028="$(grep -E '^COMMENT ON COLUMN backtest\.(results|run_metadata)\."(start_date|end_date)" IS ' "$HERE/034_column_comments.sql")"
 [[ "$(printf '%s\n' "$LINES028" | wc -l | tr -d ' ')" == "4" ]] || fail "028 does not hold the four comment lines"
 printf '%s\n' "$LINES028" | $PSQL
 
@@ -46,7 +46,7 @@ RS028="$(cmt backtest results start_date)"; MS028="$(cmt backtest run_metadata s
 S0="$(state)"
 pass "fixture carries 028's four comments"
 
-apply 033_backtest_end_date_comment.sql
+apply 039_backtest_end_date_comment.sql
 R033="$(cmt backtest results end_date)"; M033="$(cmt backtest run_metadata end_date)"
 [[ "$R033" != "$R028" && "$M033" != "$M028" ]] || fail "an end_date comment did not change"
 [[ "$R033" == *"last bar the run consumed"* && "$M033" == *"last bar the run consumed"* ]] || fail "the new comments do not name the last bar"
@@ -56,28 +56,28 @@ R033="$(cmt backtest results end_date)"; M033="$(cmt backtest run_metadata end_d
 [[ "$(state)" == "$S0" ]] || fail "rows or columns moved"
 pass "033 rewrites the two end_date comments and nothing else"
 
-apply 033_backtest_end_date_comment.sql
+apply 039_backtest_end_date_comment.sql
 [[ "$(cmt backtest results end_date)" == "$R033" && "$(cmt backtest run_metadata end_date)" == "$M033" && "$(state)" == "$S0" ]] || fail "033 is not idempotent"
 pass "033 is idempotent"
 
 $PSQL -c 'ALTER TABLE backtest.run_metadata RENAME COLUMN "end_date" TO "end_date_x"'
-$PSQL -f "$HERE/033_backtest_end_date_comment_rollback.sql" 2>/dev/null && fail "the rollback ran with a column missing"
+$PSQL -f "$HERE/039_backtest_end_date_comment_rollback.sql" 2>/dev/null && fail "the rollback ran with a column missing"
 $PSQL -c "COMMENT ON COLUMN backtest.results.\"end_date\" IS 'probe'"
-$PSQL -f "$HERE/033_backtest_end_date_comment.sql" 2>/dev/null && fail "033 ran with a column missing"
+$PSQL -f "$HERE/039_backtest_end_date_comment.sql" 2>/dev/null && fail "033 ran with a column missing"
 [[ "$(cmt backtest results end_date)" == "probe" ]] || fail "a refused 033 changed a comment"
 $PSQL -c 'ALTER TABLE backtest.run_metadata RENAME COLUMN "end_date_x" TO "end_date"'
-apply 033_backtest_end_date_comment.sql
+apply 039_backtest_end_date_comment.sql
 [[ "$(cmt backtest results end_date)" == "$R033" ]] || fail "033 did not apply after the column came back"
 pass "033 and its rollback refuse, changing nothing, when a column is missing"
 
-apply 033_backtest_end_date_comment_rollback.sql
+apply 039_backtest_end_date_comment_rollback.sql
 [[ "$(cmt backtest results end_date)" == "$R028" && "$(cmt backtest run_metadata end_date)" == "$M028" ]] || fail "the rollback did not restore 028's texts byte for byte"
 [[ "$(cmt backtest results start_date)" == "$RS028" && "$(cmt backtest run_metadata start_date)" == "$MS028" && "$(state)" == "$S0" ]] || fail "the rollback moved something else"
-apply 033_backtest_end_date_comment_rollback.sql
+apply 039_backtest_end_date_comment_rollback.sql
 [[ "$(cmt backtest results end_date)" == "$R028" && "$(cmt backtest run_metadata end_date)" == "$M028" ]] || fail "the rollback is not idempotent"
 pass "the rollback restores 028's two texts byte for byte and is idempotent"
 
-apply 033_backtest_end_date_comment.sql
+apply 039_backtest_end_date_comment.sql
 [[ "$(cmt backtest results end_date)" == "$R033" && "$(cmt backtest run_metadata end_date)" == "$M033" ]] || fail "033 did not apply again after the rollback"
 pass "033 applies again after the rollback"
 $PSQL -c 'DROP SCHEMA backtest CASCADE'

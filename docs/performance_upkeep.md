@@ -228,12 +228,17 @@ database migration (section 9).
 
 ## 9. Migrations
 
-The files are in `migrations/`. The numbers present are 001 to 006, 012 to 020, 026 and 028 to 033. They are
+The files are in `migrations/`. The numbers present are 001 to 006, 012 to 020, 026 and 034 to 039. They are
 applied to the database in number order, by hand, before the binary runs (the one column read with a fallback is
 the fee of 014: without it the registry warns and prices every fill at the code default,
-`src/instruments/instrument_registry.cpp`). A backtest against a database missing 031 or 032 still exits 0 and
+`src/instruments/instrument_registry.cpp`). A backtest against a database missing 037 or 038 still exits 0 and
 stores nothing or only part of the run. Nothing in the release path applies them and no table records which are
 applied.
+
+034 to 039 were numbered 028 to 033 until 2026-10-21 and were applied to `new_algo_data` under those numbers (028
+to 030 on 2026-10-10, 031 and 032 on 2026-10-12, 033 on 2026-10-13). Each file's header says so; none is applied
+there again. Their SQL is unchanged, so the comments they stored still name the old numbers. 028 and 029 are `main`'s
+QT migrations; 030 to 033 are unused.
 
 | Number | File | What it does |
 |---|---|---|
@@ -253,12 +258,12 @@ applied.
 | 019 | `019_contract_metadata_fixes.sql` | corrections to nine contract metadata rows (data only) |
 | 020 | `020_risk_detail.sql` | `risk_detail` on `trading.live_results` and `backtest.equity_curve` (see [RISK_MODULES.md](RISK_MODULES.md)) |
 | 026 | `026_contract_metadata_ibkr_fees.sql` | the per-contract IBKR fee in each `"Fee Per Contract"` cell, with a CHECK that the fee is a positive number; needs 014 |
-| 028 | `028_column_comments.sql` | comments on columns and tables of `trading` and `backtest`; no data change |
-| 029 | `029_live_results_settled_at.sql` | `settled_at` on `trading.live_results`; each existing row that has a later row of its book is stamped `1970-01-01 00:00:00+00` |
-| 030 | `030_live_results_statistics.sql` | twenty statistics and overlay columns on `trading.live_results` |
-| 031 | `031_backtest_statistics.sql` | thirteen statistics columns on `backtest.results` and six overlay columns on `backtest.equity_curve`; needs 018 and 020 |
-| 032 | `032_final_positions_row_mark.sql` | `row_mark` (`NO_BAR` or NULL) on `backtest.final_positions`; needs 016 |
-| 033 | `033_backtest_end_date_comment.sql` | comments on `end_date` of `backtest.results` and `backtest.run_metadata`; no data change |
+| 034 | `034_column_comments.sql` | comments on columns and tables of `trading` and `backtest`; no data change |
+| 035 | `035_live_results_settled_at.sql` | `settled_at` on `trading.live_results`; each existing row that has a later row of its book is stamped `1970-01-01 00:00:00+00` |
+| 036 | `036_live_results_statistics.sql` | twenty statistics and overlay columns on `trading.live_results` |
+| 037 | `037_backtest_statistics.sql` | thirteen statistics columns on `backtest.results` and six overlay columns on `backtest.equity_curve`; needs 018 and 020 |
+| 038 | `038_final_positions_row_mark.sql` | `row_mark` (`NO_BAR` or NULL) on `backtest.final_positions`; needs 016 |
+| 039 | `039_backtest_end_date_comment.sql` | comments on `end_date` of `backtest.results` and `backtest.run_metadata`; no data change |
 
 Each file's header is its specification: what it adds, why, what it leaves untouched, its guards (for example
 whether a second apply is a no-op, or which earlier migration it needs) and how it is undone. Read the header before
@@ -279,12 +284,12 @@ Shell tests in the same folder apply a migration and its rollback to a real Post
 | `test_019_contract_metadata_fixes.sh` | 019 |
 | `test_020_risk_detail.sh` | 020 |
 | `test_026_contract_metadata_ibkr_fees.sh` | 026 |
-| `test_028_column_comments.sh` | 028 |
-| `test_029_live_results_settled_at.sh` | 029 |
-| `test_030_live_results_statistics.sh` | 030 |
-| `test_031_backtest_statistics.sh` | 031 |
-| `test_032_final_positions_row_mark.sh` | 032 |
-| `test_033_backtest_end_date_comment.sh` | 033 |
+| `test_034_column_comments.sh` | 034 |
+| `test_035_live_results_settled_at.sh` | 035 |
+| `test_036_live_results_statistics.sh` | 036 |
+| `test_037_backtest_statistics.sh` | 037 |
+| `test_038_final_positions_row_mark.sh` | 038 |
+| `test_039_backtest_end_date_comment.sh` | 039 |
 
 Migrations 002 to 006 have no shell test. A test's own header says how to run it; the full form is destructive and is
 pointed at a throwaway database made for the purpose, never at a database that holds data.

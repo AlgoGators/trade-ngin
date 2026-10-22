@@ -1,4 +1,6 @@
--- 032_final_positions_row_mark_rollback.sql
+-- 038_final_positions_row_mark_rollback.sql
+-- Numbered 032 until 2026-10-21; renumbered 038 when main-nonQT joined main (main has its own 028 and 029).
+-- The text below is unchanged, so it still calls its migration 032.
 --
 -- Drops row_mark from backtest.final_positions (its CHECK and its comment go with it) and
 -- restores the six comments 032 restated to the texts they carried before it, byte for byte:

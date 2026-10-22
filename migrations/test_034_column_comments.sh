@@ -105,7 +105,7 @@ done
 [[ "$nulls" == "73" ]] || fail "$nulls objects have no comment before 028, expected 73"
 pass "1. the fixture: 87 objects, 73 with no comment before 028, the others with their earlier texts (snapshot $S0)"
 # 2
-apply 028_column_comments.sql
+apply 034_column_comments.sql
 i=0
 for o in $TARGETS; do IFS=. read -r s t c <<<"$o"
   if [[ -z "$c" ]]; then a=$(cmt "$s" "$t"); else a=$(cmt "$s" "$t" "$c"); fi
@@ -163,21 +163,21 @@ pass "3. risk_scale is 020's text in full plus the one sentence; the ruled texts
 [[ "$(q "$CON_SQL")" == "$K1" ]] || fail "constraints changed"
 pass "4. rows byte-identical; columns, types, defaults, indexes and constraints unchanged"
 # 5
-apply 028_column_comments.sql
+apply 034_column_comments.sql
 [[ "$(snap)" == "$S1" ]] || fail "028 is not idempotent"
 $PSQL -c "ALTER TABLE trading.positions RENAME COLUMN average_price TO average_price_x; COMMENT ON COLUMN trading.live_results.volatility IS 'probe'"
-if psql -X -q -v ON_ERROR_STOP=1 -f "$HERE/028_column_comments.sql" >/dev/null 2>&1; then fail "028 did not refuse a missing column"; fi
+if psql -X -q -v ON_ERROR_STOP=1 -f "$HERE/034_column_comments.sql" >/dev/null 2>&1; then fail "028 did not refuse a missing column"; fi
 [[ "$(cmt trading live_results volatility)" == "probe" ]] || fail "a refused 028 changed a comment"
 $PSQL -c "ALTER TABLE trading.positions RENAME COLUMN average_price_x TO average_price"
 $PSQL -c "ALTER TABLE backtest.final_positions RENAME TO final_positions_x"
-if psql -X -q -v ON_ERROR_STOP=1 -f "$HERE/028_column_comments.sql" >/dev/null 2>&1; then fail "028 did not refuse a missing table"; fi
+if psql -X -q -v ON_ERROR_STOP=1 -f "$HERE/034_column_comments.sql" >/dev/null 2>&1; then fail "028 did not refuse a missing table"; fi
 [[ "$(cmt trading live_results volatility)" == "probe" ]] || fail "a refused 028 changed a comment"
 $PSQL -c "ALTER TABLE backtest.final_positions_x RENAME TO final_positions"
-apply 028_column_comments.sql
+apply 034_column_comments.sql
 [[ "$(snap)" == "$S1" ]] || fail "028 does not restore its own texts"
 pass "5. idempotent; a missing column and a missing table each make 028 refuse and change nothing"
 # 6
-apply 028_column_comments_rollback.sql
+apply 034_column_comments_rollback.sql
 [[ "$(snap)" == "$S0" ]] || fail "the comment set after the rollback differs from the set before 028: $(snap) vs $S0"
 i=0
 for o in $TARGETS; do IFS=. read -r s t c <<<"$o"
@@ -190,10 +190,10 @@ done
 [[ "$(cmt trading live_results risk_detail)" == "$D020" ]] || fail "the rollback moved the risk_detail comment"
 [[ "$(fp trading.live_results)" == "$B1" && "$(fp backtest.results)" == "$B2" && "$(fp trading.signals)" == "$B3" ]] || fail "rows moved in the rollback"
 [[ "$(q "$COLS_SQL")" == "$C1" ]] || fail "columns changed in the rollback"
-apply 028_column_comments_rollback.sql
+apply 034_column_comments_rollback.sql
 [[ "$(snap)" == "$S0" ]] || fail "the rollback is not idempotent"
 pass "6a. the rollback restores every comment byte for byte (snapshot $S0); risk_scale carries 020's text exactly (md5 and length $M020); rows and columns unchanged; idempotent"
-apply 028_column_comments.sql
+apply 034_column_comments.sql
 [[ "$(snap)" == "$S1" ]] || fail "028 after its rollback differs"
 pass "6b. 028 applies again after its rollback (snapshot $S1)"
 echo "ALL OK"

@@ -236,7 +236,7 @@ TEST_F(LiveDataLoaderTest, StatisticsHistoryBoundNamesTheSamePortfolioAsTheRowFi
 }
 
 // The sizing history is a sizing input: its query is the text T-LOOP landed, to the byte, plus
-// the one column migration 029 adds to it: whether the row's settled_at is set (the sizing read's
+// the one column migration 035 adds to it: whether the row's settled_at is set (the sizing read's
 // settled test, live/live_sizing_read.hpp). The rows read and their order are unchanged.
 TEST_F(LiveDataLoaderTest, SizingPnlHistoryQueryIsUnchangedByTheStatisticsBound) {
     auto db = std::make_shared<QueryCapturingDb>();
@@ -403,7 +403,7 @@ TEST_F(LiveDataLoaderTest, FuturesStatisticsGridOfNoUniverseIsEmptyAndAsksNothin
     EXPECT_TRUE(db->last_query.empty());
 }
 
-// Migration 030: what the statistics read beside the series, each from the book's start (the
+// Migration 036: what the statistics read beside the series, each from the book's start (the
 // bound the three statistics histories use) through the last settled date.
 TEST_F(LiveDataLoaderTest, TheSymbolPnlHistoryIsThePositionsCellsSummedOverTheSleeves) {
     auto db = std::make_shared<QueryCapturingDb>();
@@ -484,7 +484,7 @@ TEST_F(LiveDataLoaderTest, TheStoredDividendIncomeIsTheCellOfTheKeysRowOfTheDate
     ASSERT_DB_ERROR(disconnected.load_stored_dividend_income("S", "P", now()));
 }
 
-TEST_F(LiveDataLoaderTest, TheMigration030HistoriesLoadDisconnectedError) {
+TEST_F(LiveDataLoaderTest, TheMigration036HistoriesLoadDisconnectedError) {
     LiveDataLoader l(make_disconnected_db(), "trading");
     ASSERT_DB_ERROR(l.load_symbol_pnl_history("S", "P", now()));
     ASSERT_DB_ERROR(l.load_sizing_capital_history("S", "P", now()));

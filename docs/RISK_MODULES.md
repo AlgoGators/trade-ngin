@@ -615,7 +615,7 @@ rebalance.
 
 Migration `020_risk_detail.sql` adds `risk_detail` (jsonb, NULL) to `trading.live_results` and to
 `backtest.equity_curve`, and sets the comment of `trading.live_results.risk_scale` to the
-delivered scale (`migrations/020_risk_detail.sql`). Migrations 030 and 031 add the overlay's
+delivered scale (`migrations/020_risk_detail.sql`). Migrations 036 and 037 add the overlay's
 readings of the stored book to the same two tables (section 7.2).
 
 ### 7.1 `trading.live_results.risk_scale`: the delivered scale
@@ -669,8 +669,8 @@ the backtest's seed row, on a refused rebalance, and on a cycle that ran no reba
 
 The overlay's five readings of the stored book and its one-day 95 percent value at risk are
 stored as columns on futures rows: `overlay_risk`, `overlay_risk_jump`, `overlay_risk_shock`,
-`overlay_gross_leverage`, `overlay_net_leverage` and `var_95_1d` (migration 030 on
-`trading.live_results`, 031 on `backtest.equity_curve`; `overlay_columns_of`,
+`overlay_gross_leverage`, `overlay_net_leverage` and `var_95_1d` (migration 036 on
+`trading.live_results`, 037 on `backtest.equity_curve`; `overlay_columns_of`,
 `include/trade_ngin/risk/overlay_columns.hpp`). They are written on the same rows as
 `risk_detail` and are NULL on every other row; on a blind window the three risk readings and
 `var_95_1d` are NULL and the two leverage readings are stored. The limits and the five

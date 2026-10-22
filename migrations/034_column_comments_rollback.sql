@@ -1,4 +1,6 @@
--- 028_column_comments_rollback.sql
+-- 034_column_comments_rollback.sql
+-- Numbered 028 until 2026-10-21; renumbered 034 when main-nonQT joined main (main has its own 028 and 029).
+-- The text below is unchanged, so it still calls its migration 028.
 --
 -- Restores, for every table and column migration 028 comments, the comment it had before 028:
 -- NULL where it had none (73 objects), the earlier text where it had one (14 objects: the texts

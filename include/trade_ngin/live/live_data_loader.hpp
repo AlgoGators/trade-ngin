@@ -200,7 +200,7 @@ public:
         std::string date;         ///< YYYY-MM-DD
         double daily_pnl{0.0};    ///< the row's stored net P&L
         int active_positions{0};  ///< the positions the day's stored book held
-        bool settled_at_set{false};  ///< the row carries a settled_at stamp (migration 029)
+        bool settled_at_set{false};  ///< the row carries a settled_at stamp (migration 035)
     };
 
     /**
@@ -209,7 +209,7 @@ public:
      *        live_start_date of trading.strategy_trading_days_metadata for the key; no lower bound
      *        when the key has no such row) and strictly before `before_date`.
      *
-     * Each row says whether its settled_at is set, so the read needs migration 029 applied.
+     * Each row says whether its settled_at is set, so the read needs migration 035 applied.
      * No row is an empty list, not an error; a failed query is a DATABASE_ERROR.
      */
     Result<std::vector<PnlHistoryRow>> load_sizing_pnl_history(const std::string& strategy_id,
@@ -234,7 +234,7 @@ public:
                                                               const Timestamp& date);
 
     /**
-     * @brief The book's stored per-symbol P&L cells for the worst day's symbol (migration 030):
+     * @brief The book's stored per-symbol P&L cells for the worst day's symbol (migration 036):
      *        per date and symbol, SUM(daily_realized_pnl) and SUM(daily_unrealized_pnl) of
      *        <schema>.positions over the book's sleeves, from the book's start through
      *        `through_date`, ascending. A futures row books its daily move as realised and
@@ -245,7 +245,7 @@ public:
                                                               const Timestamp& through_date);
 
     /**
-     * @brief The sizing capital each stored row was sized on (migration 030): (date,
+     * @brief The sizing capital each stored row was sized on (migration 036): (date,
      *        risk_detail.sizing_capital) of every live_results row of the key that carries one,
      *        from the book's start through `through_date`, ascending.
      */
@@ -254,7 +254,7 @@ public:
                                                                   const Timestamp& through_date);
 
     /**
-     * @brief The book's stored executions for its fill counts (migration 030): every row of
+     * @brief The book's stored executions for its fill counts (migration 036): every row of
      *        <schema>.executions of the key whose stored date is from the book's start through
      *        `through_date`. Each row's fill time is its stored DATE (midnight UTC), the day the
      *        sleeves' rows are netted on; the price, the quantity, the cost, the netting
