@@ -94,7 +94,7 @@ TEST(FiniteStatement, ANumberThatIsNotFiniteIsNoValue) {
     EXPECT_FALSE(live_results_number(-kInf).has_value());
 }
 
-// The typed cells of migrations 030 and 031 carry the same text: it reads back as the same
+// The typed cells of migrations 036 and 037 carry the same text: it reads back as the same
 // double (it was ten significant digits).
 TEST(FiniteStatement, ATypedCellsNumberReadsBackAsTheSameDoubleBitForBit) {
     for (const double value : kRoundTripTable) {

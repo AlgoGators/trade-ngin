@@ -68,9 +68,9 @@ INSERT INTO backtest.equity_curve (run_id, "timestamp", equity, portfolio_id, ri
 SQL
 # the texts the lane leaves on the fourteen objects before 031: migration 028's own statements
 for obj in "TABLE backtest.results" "COLUMN trading.live_results.\"total_dividend_income\""; do
-  grep -F "COMMENT ON $obj IS " "$HERE/028_column_comments.sql" | $PSQL
+  grep -F "COMMENT ON $obj IS " "$HERE/034_column_comments.sql" | $PSQL
 done
-for c in $RESTATED; do grep -F "COMMENT ON COLUMN backtest.results.\"$c\" IS " "$HERE/028_column_comments.sql" | $PSQL; done
+for c in $RESTATED; do grep -F "COMMENT ON COLUMN backtest.results.\"$c\" IS " "$HERE/034_column_comments.sql" | $PSQL; done
 $PSQL -c "COMMENT ON COLUMN backtest.equity_curve.risk_detail IS 'the 020 text'; COMMENT ON COLUMN backtest.results.total_roll_fills IS 'the 018 text'"
 fp_r() { q "select count(*)||' '||md5(coalesce(string_agg(x, ';' order by x), '')) from (select (to_jsonb(t) $RMINUS)::text x from backtest.results t) s"; }
 fp_c() { q "select count(*)||' '||md5(coalesce(string_agg(x, ';' order by x), '')) from (select (to_jsonb(t) $CMINUS)::text x from backtest.equity_curve t) s"; }
@@ -90,7 +90,7 @@ refuses "INSERT INTO backtest.results (run_id, total_strategy_fills) VALUES ('X'
 refuses "INSERT INTO backtest.equity_curve (run_id, \"timestamp\", overlay_risk) VALUES ('OLD_RUN', now(), 0.1)" || fail "overlay_risk exists before 031"
 pass "1. the nineteen columns are absent before the migration"
 # 2
-apply 031_backtest_statistics.sql
+apply 037_backtest_statistics.sql
 GOT=$(q "select string_agg(column_name||':'||data_type||':'||is_nullable||':'||coalesce(column_default,'-'), ' ' order by ordinal_position) from information_schema.columns where table_schema='backtest' and table_name='results' and column_name in ('${RCOLS// /','}')")
 WANT="worst_day:double precision:YES:- worst_day_date:date:YES:- worst_day_symbol:text:YES:- max_drawdown_sizing:double precision:YES:- volatility_sizing:double precision:YES:- worst_day_sizing:double precision:YES:- worst_day_sizing_date:date:YES:- worst_day_sizing_symbol:text:YES:- monthly_skew:double precision:YES:- monthly_tail_ratio:double precision:YES:- calendar_year_returns:jsonb:YES:- losing_years:integer:YES:- total_strategy_fills:integer:YES:-"
 [[ "$GOT" == "$WANT" ]] || fail "backtest.results does not carry the thirteen with their types: $GOT"
@@ -120,17 +120,17 @@ GOT=$(q "select overlay_risk||'|'||overlay_risk_jump||'|'||overlay_risk_shock||'
 refuses "INSERT INTO backtest.results (run_id, losing_years) VALUES ('BAD', '1.5x')" || fail "losing_years took a non-integer"
 pass "4. a date, a symbol, the years object, the integers, ten significant digits and a signed net leverage are stored as sent; the two monthly cells left out read NULL; a blind row keeps its two leverage readings alone"
 # 5
-apply 031_backtest_statistics.sql
+apply 037_backtest_statistics.sql
 [[ "$(q "select worst_day||'|'||total_strategy_fills from backtest.results where run_id='NEW_RUN'")" == "-0.03812345678|668" ]] || fail "a second apply changed a results value"
 [[ "$(q "select overlay_risk from backtest.equity_curve where \"timestamp\"='2025-04-06'")" == "0.1234567891" ]] || fail "a second apply changed a curve value"
 $PSQL -c "ALTER TABLE backtest.results ALTER COLUMN losing_years TYPE text USING losing_years::text"
-if psql -X -q -v ON_ERROR_STOP=1 -f "$HERE/031_backtest_statistics.sql" >/dev/null 2>&1; then fail "031 type guard did not refuse on backtest.results"; fi
+if psql -X -q -v ON_ERROR_STOP=1 -f "$HERE/037_backtest_statistics.sql" >/dev/null 2>&1; then fail "031 type guard did not refuse on backtest.results"; fi
 $PSQL -c "ALTER TABLE backtest.results ALTER COLUMN losing_years TYPE integer USING losing_years::integer"
 $PSQL -c "ALTER TABLE backtest.equity_curve ALTER COLUMN var_95_1d TYPE numeric"
-if psql -X -q -v ON_ERROR_STOP=1 -f "$HERE/031_backtest_statistics.sql" >/dev/null 2>&1; then fail "031 type guard did not refuse on backtest.equity_curve"; fi
+if psql -X -q -v ON_ERROR_STOP=1 -f "$HERE/037_backtest_statistics.sql" >/dev/null 2>&1; then fail "031 type guard did not refuse on backtest.equity_curve"; fi
 $PSQL -c "ALTER TABLE backtest.equity_curve ALTER COLUMN var_95_1d TYPE double precision"
 $PSQL -c "ALTER TABLE trading.live_results RENAME COLUMN total_dividend_income TO tdi"
-if psql -X -q -v ON_ERROR_STOP=1 -f "$HERE/031_backtest_statistics.sql" >/dev/null 2>&1; then fail "031 did not refuse without a column it comments"; fi
+if psql -X -q -v ON_ERROR_STOP=1 -f "$HERE/037_backtest_statistics.sql" >/dev/null 2>&1; then fail "031 did not refuse without a column it comments"; fi
 $PSQL -c "ALTER TABLE trading.live_results RENAME COLUMN tdi TO total_dividend_income"
 pass "5. a second apply keeps every value; a column of another type on either table makes 031 refuse; a missing commented column makes it refuse"
 # 6
@@ -177,10 +177,10 @@ ADDED=" With nothing to carry (no Day T-1 row, a NULL cell on it, or the read of
 [[ "$(comments)" == *" 35" ]] || fail "the three tables do not carry 35 comments after 031 (16 before + 19 new): $(comments)"
 pass "6. all nineteen comments say rows written before migration 031 hold NULL; fractions, the sizing-capital, month, year and fill rules, the limits, the coverage and the signed net are stated; the fourteen restated texts say the grid, K, the sample deviation, the CAGR, the VaR observation and ROUND TRIPS; total_dividend_income is 028's text plus the one sentence; risk_detail's and total_roll_fills' comments untouched"
 # 7
-if psql -X -q -v ON_ERROR_STOP=1 -f "$HERE/031_backtest_statistics_rollback.sql" >/dev/null 2>&1; then fail "the rollback did not refuse while a cell carries a value"; fi
+if psql -X -q -v ON_ERROR_STOP=1 -f "$HERE/037_backtest_statistics_rollback.sql" >/dev/null 2>&1; then fail "the rollback did not refuse while a cell carries a value"; fi
 [[ "$(present)" == "19" ]] || fail "a refused rollback dropped a column"
 [[ "$(cmt backtest results volatility)" == *"sample standard deviation"* ]] || fail "a refused rollback restored a comment"
-psql -X -q -v ON_ERROR_STOP=1 -c "SET migration.force_rollback = 'yes'" -f "$HERE/031_backtest_statistics_rollback.sql"
+psql -X -q -v ON_ERROR_STOP=1 -c "SET migration.force_rollback = 'yes'" -f "$HERE/037_backtest_statistics_rollback.sql"
 [[ "$(present)" == "0" ]] || fail "the forced rollback left a column"
 $PSQL -c "DELETE FROM backtest.results WHERE run_id IN ('EQ_RUN','NEW_RUN')"
 [[ "$(fp_r)" == "$B1" && "$(fp_c)" == "$B2" && "$(fp_l)" == "$B3" ]] || fail "rows differ after the rollback"
@@ -188,10 +188,10 @@ $PSQL -c "DELETE FROM backtest.results WHERE run_id IN ('EQ_RUN','NEW_RUN')"
 [[ "$(schema)" == "$S1" ]] || fail "the column lists of the three tables are not exactly as before 031"
 [[ "$(cmt trading live_results total_dividend_income)" == "$DIV028" ]] || fail "total_dividend_income's comment is not 028's byte for byte"
 [[ "$(q "select string_agg(indexdef, ' | ' order by indexdef) from pg_indexes where schemaname in ('trading','backtest')")" == "$I1" ]] || fail "indexes changed in the rollback"
-apply 031_backtest_statistics.sql
-apply 031_backtest_statistics_rollback.sql
+apply 037_backtest_statistics.sql
+apply 037_backtest_statistics_rollback.sql
 [[ "$(present)" == "0" ]] || fail "the rollback of a column set with no value needed the setting"
-apply 031_backtest_statistics_rollback.sql
+apply 037_backtest_statistics_rollback.sql
 [[ "$(comments)" == "$D1" && "$(schema)" == "$S1" ]] || fail "a second rollback changed the comments or the columns"
 pass "7. the rollback refuses while a cell carries a value; forced, it drops the nineteen, rows byte-identical, every comment of the three tables (pg_description: $D1) and the column lists exactly as before 031; with no value it drops without the setting; idempotent"
 echo "ALL OK"

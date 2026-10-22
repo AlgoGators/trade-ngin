@@ -11,7 +11,7 @@
 // 552.62, as a trend sleeve's does. XB is another symbol's bar, so a day XA does not print is still
 // a cycle.
 //
-// Migration 032 (T-8D-2 R50): the row of such a day is stored with row_mark = 'NO_BAR' ("no bar:
+// Migration 038 (T-8D-2 R50): the row of such a day is stored with row_mark = 'NO_BAR' ("no bar:
 // held, marked at last close") and every other row with NULL. The mark is set where the row is
 // zeroed, travels to the writer beside the day's rows, and is read back here from the writer's
 // arguments (no database) and from backtest.final_positions (TRADE_NGIN_TEST_DSN).
@@ -207,7 +207,7 @@ TEST_F(BacktestNoBarRowTest, ARowOfADayTheSymbolPrintsNoBarBooksZeroAndKeepsItsQ
     EXPECT_NEAR(after.equity_move, 2.0 * (104.0 - 103.0) * 50.0, 1e-6);
 }
 
-// ===== migration 032: the mark of a no-bar row =====
+// ===== migration 038: the mark of a no-bar row =====
 
 // [the mark at the writer's door]
 TEST_F(BacktestNoBarRowTest, TheWriterIsHandedTheMarkOfANoBarRowAndOfNoOtherRow) {
@@ -260,14 +260,14 @@ TEST_F(BacktestNoBarRowTest, ACashBooksRowOfANoBarDayCarriesNoMark) {
 TEST(BacktestPositionRowMark, TheCellIsTheQuotedMarkOnANoBarRowAndNullOnEveryOtherRow) {
     EXPECT_EQ(backtest_position_row_mark_value(true), "'NO_BAR'");
     EXPECT_EQ(backtest_position_row_mark_value(false), "NULL");
-    EXPECT_STREQ(kRowMarkNoBar, "NO_BAR") << "the one value migration 032's CHECK admits";
+    EXPECT_STREQ(kRowMarkNoBar, "NO_BAR") << "the one value migration 038's CHECK admits";
 }
 // [end of the mark at the writer's door]
 
 // The same days through the REAL writer into backtest.final_positions: the no-bar rows read
 // realized_pnl 0 with row_mark 'NO_BAR', quantity and average price kept; the bar rows read their
 // day's P&L with row_mark NULL. Database-backed: runs only with TRADE_NGIN_TEST_DSN (a database
-// with migration 032), on a probe run id it deletes before and after.
+// with migration 038), on a probe run id it deletes before and after.
 class BacktestNoBarRowDbTest : public BacktestNoBarRowTest {
 protected:
     static constexpr const char* kRun = "T8B_R50_PROBE_RUN";

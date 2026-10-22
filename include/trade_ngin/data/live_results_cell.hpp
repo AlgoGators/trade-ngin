@@ -1,5 +1,5 @@
 // One typed cell of a trading.live_results row that is not a plain double or integer: a date, a
-// text, a jsonb object, or a number that may have no value (migration 030).
+// text, a jsonb object, or a number that may have no value (migration 036).
 //
 // The day's INSERT names a cell only when it has a value, so a cell without one stays NULL; the
 // Day T-1 refresh assigns every cell and writes NULL where there is no value. The value travels

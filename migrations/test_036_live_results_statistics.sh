@@ -59,7 +59,7 @@ refuses "INSERT INTO trading.live_results (strategy_id, portfolio_id, date, over
 refuses "INSERT INTO trading.live_results (strategy_id, portfolio_id, date, total_strategy_fills) VALUES ('S','P',current_date,1)" || fail "total_strategy_fills exists before 030"
 pass "1. the twenty columns are absent before the migration"
 # 2
-apply 030_live_results_statistics.sql
+apply 036_live_results_statistics.sql
 GOT=$(q "select string_agg(column_name||':'||data_type||':'||is_nullable||':'||coalesce(column_default,'-'), ' ' order by ordinal_position) from information_schema.columns where table_schema='trading' and table_name='live_results' and column_name in ('${COLS// /','}')")
 WANT="worst_day_date:date:YES:- worst_day_symbol:text:YES:- max_drawdown_sizing:numeric:YES:- volatility_sizing:numeric:YES:- worst_day_sizing:numeric:YES:- worst_day_sizing_date:date:YES:- worst_day_sizing_symbol:text:YES:- monthly_skew:numeric:YES:- monthly_tail_ratio:numeric:YES:- calendar_year_returns:jsonb:YES:- losing_years:integer:YES:- total_trades:integer:YES:- total_strategy_fills:integer:YES:- total_roll_fills:integer:YES:- overlay_risk:numeric:YES:- overlay_risk_jump:numeric:YES:- overlay_risk_shock:numeric:YES:- overlay_gross_leverage:numeric:YES:- overlay_net_leverage:numeric:YES:- var_95_1d:numeric:YES:-"
 [[ "$GOT" == "$WANT" ]] || fail "the columns are not the twenty with their types: $GOT"
@@ -80,10 +80,10 @@ GOT=$(q "select worst_day_date||'|'||worst_day_symbol||'|'||max_drawdown_sizing|
 refuses "INSERT INTO trading.live_results (strategy_id, portfolio_id, date, losing_years) VALUES ('S','P','2026-04-27','1.5x')" || fail "losing_years took a non-integer"
 pass "4. a date, a symbol, the years object, the integers, ten significant digits and a signed net leverage are stored as sent; the two monthly cells left out read NULL"
 # 5
-apply 030_live_results_statistics.sql
+apply 036_live_results_statistics.sql
 [[ "$(q "select overlay_risk||'|'||total_strategy_fills from trading.live_results where date='2026-04-25'")" == "0.1234567891|159" ]] || fail "a second apply changed a value"
 $PSQL -c "ALTER TABLE trading.live_results ALTER COLUMN losing_years TYPE text USING losing_years::text"
-if psql -X -q -v ON_ERROR_STOP=1 -f "$HERE/030_live_results_statistics.sql" >/dev/null 2>&1; then fail "030 type guard did not refuse"; fi
+if psql -X -q -v ON_ERROR_STOP=1 -f "$HERE/036_live_results_statistics.sql" >/dev/null 2>&1; then fail "030 type guard did not refuse"; fi
 $PSQL -c "ALTER TABLE trading.live_results ALTER COLUMN losing_years TYPE integer USING losing_years::integer"
 pass "5. a second apply keeps every value; a column of another type makes 030 refuse"
 # 6
@@ -106,16 +106,16 @@ done
 [[ "$(cmt var_95_1d)" == *"Dollars, positive"*"1.645 x overlay_risk / sqrt(the gate window's bars a year) x E_t"*"understates the book on a day when a held contract is left out of it"*"a held row fixed at its last usable close"*"is not in the pass and is in no reading"*"NOT portfolio_var"* ]] || fail "the var_95_1d comment"
 pass "6. all twenty comments say rows written before migration 030 hold NULL; the fill counts, the sizing-capital units, the skew formula, the limits, the coverage, the signed net and the namesakes are stated"
 # 7
-if psql -X -q -v ON_ERROR_STOP=1 -f "$HERE/030_live_results_statistics_rollback.sql" >/dev/null 2>&1; then fail "the rollback did not refuse while a cell carries a value"; fi
+if psql -X -q -v ON_ERROR_STOP=1 -f "$HERE/036_live_results_statistics_rollback.sql" >/dev/null 2>&1; then fail "the rollback did not refuse while a cell carries a value"; fi
 [[ "$(present)" == "20" ]] || fail "a refused rollback dropped a column"
-psql -X -q -v ON_ERROR_STOP=1 -c "SET migration.force_rollback = 'yes'" -f "$HERE/030_live_results_statistics_rollback.sql"
+psql -X -q -v ON_ERROR_STOP=1 -c "SET migration.force_rollback = 'yes'" -f "$HERE/036_live_results_statistics_rollback.sql"
 [[ "$(present)" == "0" ]] || fail "the forced rollback left a column"
 $PSQL -c "DELETE FROM trading.live_results WHERE date IN ('2026-06-16','2026-04-25')"
 [[ "$(fp)" == "$B1" ]] || fail "rows differ after the rollback"
 [[ "$(q "select string_agg(indexdef, ' | ' order by indexdef) from pg_indexes where schemaname = 'trading'")" == "$I1" ]] || fail "indexes changed in the rollback"
-apply 030_live_results_statistics.sql
-apply 030_live_results_statistics_rollback.sql
+apply 036_live_results_statistics.sql
+apply 036_live_results_statistics_rollback.sql
 [[ "$(present)" == "0" ]] || fail "the rollback of a column set with no value needed the setting"
-apply 030_live_results_statistics_rollback.sql
+apply 036_live_results_statistics_rollback.sql
 pass "7. the rollback refuses while a cell carries a value; forced, it drops the twenty, rows byte-identical; with no value it drops without the setting; idempotent"
 echo "ALL OK"

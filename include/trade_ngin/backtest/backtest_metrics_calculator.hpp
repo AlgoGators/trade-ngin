@@ -363,7 +363,7 @@ public:
      *        fold)
      *
      * `curve` as for statistics_grid_curve: its first row is the base. With `grid.own_rows`
-     * every later row of the curve is a return row. The series the statistics of migration 031
+     * every later row of the curve is a return row. The series the statistics of migration 037
      * are taken on (backtest_statistics_columns). Empty for an empty curve.
      */
     StatisticsSeries statistics_series(const std::vector<std::pair<Timestamp, double>>& curve,
@@ -383,7 +383,7 @@ public:
      * correlation are taken on the statistics grid (statistics_grid_curve) and annualised with
      * its sessions a year, which the result records (statistics_sessions_per_year,
      * statistics_days, annualized_return). The trade statistics read the executions,
-     * the drawdown curve and the monthly returns every row. The statistics of migration 031
+     * the drawdown curve and the monthly returns every row. The statistics of migration 037
      * (statistics_columns) are taken on the same grid series (statistics_series) with the same
      * sessions a year, and total_strategy_fills is the trade statistics' own count of the
      * account's fills.

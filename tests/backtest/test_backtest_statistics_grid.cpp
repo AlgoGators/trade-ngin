@@ -498,10 +498,10 @@ TEST_F(BacktestStatisticsGridRun, ARunWithEveryHeldSymbolPrintingLogsTheStatQual
     EXPECT_EQ(log.substr(first, expected.size()), expected);
 }
 
-// Migration 031 through a whole run and its save: the statistics are taken on the same grid
+// Migration 037 through a whole run and its save: the statistics are taken on the same grid
 // series as the others (the Saturday point and the thin date folded), in fractions, and reach
 // the summary writer as typed cells.
-TEST_F(BacktestStatisticsGridRun, AFuturesRunTakesTheStatisticsOfMigration031OnItsGridAndStoresThem) {
+TEST_F(BacktestStatisticsGridRun, AFuturesRunTakesTheStatisticsOfMigration037OnItsGridAndStoresThem) {
     auto result = run(AssetClass::FUTURES, kFuturesK, /*store=*/true);
     ASSERT_TRUE(result.is_ok()) << result.error()->what();
     const BacktestResults& r = result.value();
@@ -574,7 +574,7 @@ TEST_F(BacktestStatisticsGridRun, AFuturesRunTakesTheStatisticsOfMigration031OnI
     EXPECT_EQ(db_->last_backtest_summary_metrics.count("worst_day"), 0u);
 }
 
-// ===== migration 031: the six overlay cells of a whole run's curve rows =====
+// ===== migration 037: the six overlay cells of a whole run's curve rows =====
 
 // A book that names an overlay sleeve, run through the coordinator's own cycle: the cells of a
 // curve row are the ones the CYCLE stores for it (process_portfolio_day), carried into the

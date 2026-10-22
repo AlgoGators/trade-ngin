@@ -228,7 +228,7 @@ struct BacktestResults {
     // Per equity point, the row's risk_detail object as text (LOOP_SPEC section 7.3; empty for
     // a NULL cell); empty altogether on a book that stores none.
     std::vector<std::string> equity_risk_detail;
-    // Per equity point, the six overlay cells of the row (migration 031): the overlay's readings
+    // Per equity point, the six overlay cells of the row (migration 037): the overlay's readings
     // of the book the run stores for the row's date and the one-day VaR; every field without a
     // value on a row that carries no risk_detail. Empty altogether on a book that stores none.
     std::vector<OverlayColumns> equity_overlay;
@@ -243,7 +243,7 @@ struct BacktestResults {
     // (1 + R)^(K / n) - 1, R from the base to the last grid level (T-8D R36). Logged with the
     // run's statistics convention; no column.
     double annualized_return{0.0};
-    // The statistics of migration 031 (LOOP_SPEC sections 7.4 and 10): the worst day with its
+    // The statistics of migration 037 (LOOP_SPEC sections 7.4 and 10): the worst day with its
     // date and symbol, the three statistics on the sizing capital, the monthly skew and tail
     // ratio, the calendar-year returns with the losing years, the account's STRATEGY fills. In
     // fractions, on the grid above; a field with no value is a NULL cell of backtest.results.

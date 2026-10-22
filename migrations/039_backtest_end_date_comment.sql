@@ -1,4 +1,7 @@
--- 033_backtest_end_date_comment.sql
+-- 039_backtest_end_date_comment.sql
+-- Numbered 033 until 2026-10-21; renumbered 039 when main-nonQT joined main (main has its own 028 and 029).
+-- The migration was applied to new_algo_data as 033 on 2026-10-13: do not re-apply it there. The text below is
+-- exactly as applied, so its comments and stored COMMENT texts still call it 033.
 --
 -- COMMENT ON only: the two end_date columns of a backtest run. Migration 028 said each holds the
 -- end of the configured window. Since the run stores the data boundary instead (the last bar it

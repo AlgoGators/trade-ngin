@@ -1,4 +1,6 @@
--- 031_backtest_statistics_rollback.sql
+-- 037_backtest_statistics_rollback.sql
+-- Numbered 031 until 2026-10-21; renumbered 037 when main-nonQT joined main (main has its own 028 and 029).
+-- The text below is unchanged, so it still calls its migration 031.
 --
 -- Drops the thirteen columns migration 031 added to backtest.results and the six it added to
 -- backtest.equity_curve (their comments go with them), and restores the fourteen comments 031

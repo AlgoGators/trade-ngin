@@ -129,7 +129,7 @@ TEST(PostgresParamSafety, UpdateLiveResultsRejectsHostileColumnName) {
     EXPECT_EQ(r.error()->code(), ErrorCode::INVALID_ARGUMENT);
 }
 
-// Migration 030: a typed cell's column and type are concatenated too (the value is quoted), so
+// Migration 036: a typed cell's column and type are concatenated too (the value is quoted), so
 // both are checked before the connection is looked at.
 TEST(PostgresParamSafety, TheLiveResultsWritersRejectAHostileCellColumnOrType) {
     PostgresDatabase db = make_offline_db();

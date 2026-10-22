@@ -1,5 +1,5 @@
 // The typed cells a backtest.equity_curve row carries beside its level and risk_detail (migration
-// 031: the six overlay columns), and the two pieces of the batch INSERT built from them.
+// 037: the six overlay columns), and the two pieces of the batch INSERT built from them.
 //
 // The curve is written as ONE multi-row INSERT, so every row names the same columns: a run that
 // carries cells carries one list a point, the same columns and types in the same order on every

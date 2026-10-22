@@ -1,4 +1,7 @@
--- 031_backtest_statistics.sql
+-- 037_backtest_statistics.sql
+-- Numbered 031 until 2026-10-21; renumbered 037 when main-nonQT joined main (main has its own 028 and 029).
+-- The migration was applied to new_algo_data as 031 on 2026-10-12: do not re-apply it there. The text below is
+-- exactly as applied, so its comments and stored COMMENT texts still call it 031.
 --
 -- The backtest statistics of LOOP_SPEC v6.2 section 7.4 (T-8b commit (1b); COLUMN_PLAN section
 -- 2.6, where this migration is numbered 025) and the backtest twin of the six overlay columns HD

@@ -459,7 +459,7 @@ Result<BacktestResults> BacktestCoordinator::run_portfolio(
             }
         }
 
-        // Migration 031: the per-symbol P&L cells of the rows this date stores (the same dates
+        // Migration 037: the per-symbol P&L cells of the rows this date stores (the same dates
         // as the daily save: after the warm-up, once a date), kept for the worst day's symbol.
         if (!is_warmup && !bars.empty()) {
             const std::string stored_date = core::format_utc_date(timestamp);
@@ -528,7 +528,7 @@ Result<BacktestResults> BacktestCoordinator::run_portfolio(
     INFO("Calculating portfolio backtest metrics");
     const auto grid =
         statistics_grid(grouped_bars, asset_class, config_.statistics_sessions_per_year);
-    // Migration 031 reads the rows the run stores: the per-symbol P&L of its position rows and
+    // Migration 037 reads the rows the run stores: the per-symbol P&L of its position rows and
     // the sizing capital of each equity-curve row's risk_detail.
     BacktestStatisticsInputs statistics_inputs;
     statistics_inputs.symbol_pnl = symbol_day_pnl_;
@@ -1467,7 +1467,7 @@ Result<void> BacktestCoordinator::process_portfolio_day(
                 auto curr_it = current_close_prices.find(symbol);
                 if (curr_it == current_close_prices.end()) {
                     // The symbol printed no bar in this group: held, marked at its last close.
-                    // Migration 032: the stored row says so (row_mark = 'NO_BAR').
+                    // Migration 038: the stored row says so (row_mark = 'NO_BAR').
                     if (write_unbooked_row()) row_no_bar_[strategy_id].insert(symbol);
                     held_no_bar_[strategy_id].insert(symbol);
                     continue;
@@ -1655,7 +1655,7 @@ Result<void> BacktestCoordinator::process_portfolio_day(
             if (one_pass.stores_detail()) {
                 equity_risk_detail_[equity_curve.size() - 1] =
                     risk_detail_json(one_pass, cycle_account_value_).dump();
-                // Migration 031: beside it, the overlay's readings of the book this row's date
+                // Migration 037: beside it, the overlay's readings of the book this row's date
                 // stores (the sleeves' positions as they stand now: nothing after this point
                 // changes a quantity before the daily save).
                 bool equal_to_pass = false;
@@ -2378,7 +2378,7 @@ Result<void> BacktestCoordinator::save_portfolio_results_to_db(
         {"roll_costs", results.roll_costs},
         {"total_roll_fills", static_cast<double>(results.total_roll_fills)}};
     results_manager->set_performance_metrics(metrics);
-    // Migration 031: the statistics that are no plain double (a date, a symbol, the years
+    // Migration 037: the statistics that are no plain double (a date, a symbol, the years
     // object, a count, a number that may have no value) travel as typed cells, at ten
     // significant digits.
     results_manager->set_summary_cells(backtest_statistics_cells(results.statistics_columns));
@@ -2390,7 +2390,7 @@ Result<void> BacktestCoordinator::save_portfolio_results_to_db(
     }
     results_manager->set_equity_curve(equity_points);
     results_manager->set_equity_risk_detail(results.equity_risk_detail);
-    // Migration 031: the six overlay cells of each row, as round-trip text; a row with
+    // Migration 037: the six overlay cells of each row, as round-trip text; a row with
     // no reading writes NULL in all six. A book that stores none names no such column.
     BacktestCurveCells curve_cells;
     curve_cells.reserve(results.equity_overlay.size());

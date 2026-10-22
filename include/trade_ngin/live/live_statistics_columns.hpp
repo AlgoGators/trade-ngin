@@ -1,4 +1,4 @@
-// The live statistics of migration 030 (LOOP_SPEC v6.2 sections 7.4 and 10; T-8a commit (12b)):
+// The live statistics of migration 036 (LOOP_SPEC v6.2 sections 7.4 and 10; T-8a commit (12b)):
 // the worst day's date and symbol, the three statistics on the sizing capital, the monthly skew
 // and tail ratio, the calendar-year returns with the losing years, and the three fill counts.
 //
@@ -120,7 +120,7 @@ std::optional<double> tail_ratio(const std::vector<double>& values);
 nlohmann::json calendar_year_returns(const StatisticsSeries& series, const std::string& book_start,
                                      const std::string& through, int* losing_years);
 
-/// The cells of migration 030's statistics. A field with no value is a NULL cell.
+/// The cells of migration 036's statistics. A field with no value is a NULL cell.
 struct LiveStatisticsColumns {
     std::optional<std::string> worst_day_date;
     std::optional<std::string> worst_day_symbol;
@@ -145,7 +145,7 @@ struct LiveStatisticsColumns {
 inline constexpr int kMonthlyStatisticsMinMonths = 12;
 
 /**
- * @brief The statistics of migration 030 on a series, but for the three fill counts, which the
+ * @brief The statistics of migration 036 on a series, but for the three fill counts, which the
  *        caller sets from the book's executions.
  *
  * @param series            the statistics series through the last settled row
@@ -196,7 +196,7 @@ std::optional<std::string> live_results_number(double value);
 /// The fourteen statistics as typed cells, in the migration's order.
 std::vector<LiveResultsCell> live_statistics_cells(const LiveStatisticsColumns& columns);
 
-/// One of the history reads that only the statistics of migration 030 use (the per-symbol P&L,
+/// One of the history reads that only the statistics of migration 036 use (the per-symbol P&L,
 /// the sizing capitals, the book's executions): its name and, when it failed, why.
 struct StatisticsHistoryRead {
     std::string name;
@@ -215,10 +215,10 @@ StatisticsHistoryRead statistics_history_read(const std::string& name, const Res
 std::string failed_statistics_history_reads(const std::vector<StatisticsHistoryRead>& reads);
 
 /**
- * @brief The fourteen cells of a run whose migration 030 histories could not all be read: every
+ * @brief The fourteen cells of a run whose migration 036 histories could not all be read: every
  *        one NULL, in the migration's order.
  *
- * A failed read of those histories costs the run its 030 statistics and nothing else: the
+ * A failed read of those histories costs the run its 036 statistics and nothing else: the
  * statistics taken on the series alone, the Day T-1 refresh and the settled_at stamp are as on a
  * good day. The day's INSERT leaves the fourteen columns out and the Day T-1 refresh writes NULL,
  * so no row shows a figure through an earlier date as if it were through this one.

@@ -1,9 +1,9 @@
 // tests/backtest/test_backtest_statistics_columns.cpp
 //
-// Migration 031, the statistics of LOOP_SPEC v6.2 sections 7.4 and 10 on backtest.results: the
+// Migration 037, the statistics of LOOP_SPEC v6.2 sections 7.4 and 10 on backtest.results: the
 // worst day with its date and symbol, the three statistics on the sizing capital, the monthly
 // skew and tail ratio, the calendar-year returns with the losing years, the account's STRATEGY
-// fills. One implementation with the live columns of migration 030 (live_statistics_columns),
+// fills. One implementation with the live columns of migration 036 (live_statistics_columns),
 // in FRACTIONS, on the run's statistics series after the warm-up.
 //
 // Every test here calls the function it names; the figures it expects are written out by hand.
@@ -357,7 +357,7 @@ TEST(BacktestStatisticsColumns, TheSizingCapitalsAreTheStoredRiskDetailCells) {
 }
 
 // The cells: the migration's thirteen in its order; a number as the text that reads back as the
-// same double (the 030 cells' format), never std::to_string's six decimals; a field with no value
+// same double (the 036 cells' format), never std::to_string's six decimals; a field with no value
 // is a NULL cell.
 TEST(BacktestStatisticsColumns, TheCellsCarryTheRoundTripTextAndNullWhereThereIsNoValue) {
     BacktestStatisticsColumns c;
@@ -510,7 +510,7 @@ TEST(BacktestStatisticsColumns, CalculateAllMetricsTakesThemAfterTheWarmUpWithTh
     EXPECT_EQ(series.dates.back(), "2025-03-07");
 }
 
-// ===== migration 031: the six overlay cells of a backtest.equity_curve row =====
+// ===== migration 037: the six overlay cells of a backtest.equity_curve row =====
 
 namespace {
 

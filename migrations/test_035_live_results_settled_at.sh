@@ -59,7 +59,7 @@ C1=$(q "select count(*) from pg_constraint c join pg_namespace n on n.oid = c.co
 refuses "INSERT INTO trading.live_results (strategy_id, portfolio_id, date, settled_at) VALUES ('S','P',current_date,now())" || fail "settled_at exists before 029"
 pass "1. the column is absent before the migration"
 # 2
-apply 029_live_results_settled_at.sql
+apply 035_live_results_settled_at.sql
 [[ "$(q "select data_type||' '||is_nullable||' '||coalesce(column_default,'-') from information_schema.columns where table_schema='trading' and table_name='live_results' and column_name='settled_at'")" == "timestamp with time zone YES -" ]] || fail "settled_at is not timestamptz NULL with no default"
 pass "2. timestamptz, NULL-able, no default"
 # 3
@@ -76,14 +76,14 @@ pass "4. every pre-existing row byte-identical apart from the new key; indexes a
 # 5
 $PSQL -c "INSERT INTO trading.live_results (strategy_id, portfolio_id, date, daily_pnl) VALUES ('S','P','2026-04-26',-39.975496)"
 [[ "$(q "select count(*) from trading.live_results where date='2026-04-26' and strategy_id='S' and settled_at is null")" == "1" ]] || fail "an omitting INSERT is not NULL"
-apply 029_live_results_settled_at.sql
+apply 035_live_results_settled_at.sql
 [[ "$(q "select coalesce(settled_at::text,'NULL') from trading.live_results where portfolio_id='P' and strategy_id='S' and date='2026-04-25'")" == "NULL" ]] || fail "a second apply stamped a row that gained a later row"
 $PSQL -c "ALTER TABLE trading.live_results ALTER COLUMN settled_at TYPE text USING NULL"
-if psql -X -q -v ON_ERROR_STOP=1 -f "$HERE/029_live_results_settled_at.sql" >/dev/null 2>&1; then fail "029 type guard did not refuse"; fi
+if psql -X -q -v ON_ERROR_STOP=1 -f "$HERE/035_live_results_settled_at.sql" >/dev/null 2>&1; then fail "029 type guard did not refuse"; fi
 $PSQL -c "ALTER TABLE trading.live_results ALTER COLUMN settled_at TYPE timestamptz USING NULL"
 pass "5. an omitting INSERT reads NULL; a second apply stamps nothing; a settled_at of another type makes 029 refuse"
 # 6 (the type round trip above emptied the column: every row is NULL here)
-STMT=$(awk '/^-- 029 BACKFILL BEGIN/{f=1;next} /^-- 029 BACKFILL END/{f=0} f' "$HERE/029_live_results_settled_at.sql")
+STMT=$(awk '/^-- 029 BACKFILL BEGIN/{f=1;next} /^-- 029 BACKFILL END/{f=0} f' "$HERE/035_live_results_settled_at.sql")
 [[ "$STMT" == UPDATE* ]] || fail "the backfill statement is not between the two marker lines"
 $PSQL -c "$STMT"
 [[ "$(q "select count(*) from trading.live_results where settled_at is not null")" == "0" ]] || fail "the statement stamped rows with no setting"
@@ -96,17 +96,17 @@ CMT=$(q "select col_description('trading.live_results'::regclass,(select ordinal
 [[ "$CMT" == *"NULL until then"*"stamps now() on every earlier row"*"while the Day T-1 book holds a position"*"the equity runner has no Day T-2 test"*"a run that finds no Day T-1 row"*"a flat Day T-1 book has no move to measure and stamps"*"The stamp is written by the run that finalises the row; a held day on which no bar printed (a Saturday) is counted by the sizing capital from the first run that loads a later bar, which can be one run before its stamp."*"1970-01-01 00:00:00+00 is not an instant"*"backfilled at migration, settlement not observed"*"the equity book included"*"migration 029." ]] || fail "the settled_at comment"
 pass "7. the comment names the stamp, each runner's no-prices test, the run with no Day T-1 row, the held no-bar day counted one run before its stamp, the marker and 'backfilled at migration, settlement not observed'"
 # 8
-apply 029_live_results_settled_at_rollback.sql
+apply 035_live_results_settled_at_rollback.sql
 [[ "$(q "select count(*) from information_schema.columns where table_schema='trading' and column_name='settled_at'")" == "0" ]] || fail "the rollback left the column (markers and NULLs only)"
-apply 029_live_results_settled_at.sql
+apply 035_live_results_settled_at.sql
 $PSQL -c "UPDATE trading.live_results SET settled_at = now() WHERE portfolio_id='P' AND strategy_id='S' AND date='2026-04-25'"
-if psql -X -q -v ON_ERROR_STOP=1 -f "$HERE/029_live_results_settled_at_rollback.sql" >/dev/null 2>&1; then fail "the rollback did not refuse while an observed stamp exists"; fi
+if psql -X -q -v ON_ERROR_STOP=1 -f "$HERE/035_live_results_settled_at_rollback.sql" >/dev/null 2>&1; then fail "the rollback did not refuse while an observed stamp exists"; fi
 [[ "$(q "select count(*) from information_schema.columns where table_schema='trading' and column_name='settled_at'")" == "1" ]] || fail "a refused rollback dropped the column"
-psql -X -q -v ON_ERROR_STOP=1 -c "SET migration.force_rollback = 'yes'" -f "$HERE/029_live_results_settled_at_rollback.sql"
+psql -X -q -v ON_ERROR_STOP=1 -c "SET migration.force_rollback = 'yes'" -f "$HERE/035_live_results_settled_at_rollback.sql"
 [[ "$(q "select count(*) from information_schema.columns where table_schema='trading' and column_name='settled_at'")" == "0" ]] || fail "the forced rollback left the column"
 $PSQL -c "DELETE FROM trading.live_results WHERE strategy_id='S' AND portfolio_id='P' AND date='2026-04-26'"
 [[ "$(fp)" == "$B1" ]] || fail "rows differ after the rollback"
 [[ "$(q "select string_agg(indexdef, ' | ' order by indexdef) from pg_indexes where schemaname = 'trading'")" == "$I1" ]] || fail "indexes changed in the rollback"
-apply 029_live_results_settled_at_rollback.sql
+apply 035_live_results_settled_at_rollback.sql
 pass "8. the rollback drops a column of markers and NULLs; refuses while an observed stamp exists; forced, it drops the column, rows byte-identical; idempotent"
 echo "ALL OK"

@@ -34,7 +34,7 @@ private:
     // Configuration
     nlohmann::json config_;
     nlohmann::json risk_detail_;  // null: the row's risk_detail cell is left NULL
-    std::vector<LiveResultsCell> cells_;  // the row's typed cells (migration 030)
+    std::vector<LiveResultsCell> cells_;  // the row's typed cells (migration 036)
 
     // Equity tracking
     double current_equity_;
