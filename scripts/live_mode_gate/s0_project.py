@@ -3,19 +3,19 @@ The restored S0 book is pre-migration history: every column a later migration ad
 every restored row (netting_adjustment NULL (013), instrument_id NULL (016), execution_type STRATEGY (015),
 daily_roll_costs and total_roll_costs 0 (017), risk_detail NULL (020)). Writes a copy without those columns for the
 comparison against S0. Exit 1 on any other value.
-T-8a commit (12), migration 029: trading.live_results.settled_at on a restored book must hold what the migration's
+T-8a commit (12), migration 035: trading.live_results.settled_at on a restored book must hold what the migration's
 backfill gives: the marker 1970-01-01 00:00:00+00 on every row that has a later row of its key (portfolio_id,
 strategy_id), NULL on the last row of each key. Checked per key, then projected away like the others.
-T-8a commit (12b), migration 030: the twenty statistic and overlay columns of trading.live_results hold NULL on every
+T-8a commit (12b), migration 036: the twenty statistic and overlay columns of trading.live_results hold NULL on every
 restored row (R32: history is never rewritten; the columns have no backfill). Checked and projected away like the others."""
 import csv, os, shutil, sys
 EXPECTED = {"netting_adjustment": "", "instrument_id": "", "execution_type": "STRATEGY", "daily_roll_costs": "0",
             "total_roll_costs": "0", "risk_detail": ""}
-M030 = ("worst_day_date worst_day_symbol max_drawdown_sizing volatility_sizing worst_day_sizing worst_day_sizing_date "
+M036 = ("worst_day_date worst_day_symbol max_drawdown_sizing volatility_sizing worst_day_sizing worst_day_sizing_date "
         "worst_day_sizing_symbol monthly_skew monthly_tail_ratio calendar_year_returns losing_years total_trades "
         "total_strategy_fills total_roll_fills overlay_risk overlay_risk_jump overlay_risk_shock overlay_gross_leverage "
         "overlay_net_leverage var_95_1d").split()
-EXPECTED.update({c: "" for c in M030})
+EXPECTED.update({c: "" for c in M036})
 NUMERIC = {"daily_roll_costs", "total_roll_costs"}
 def hist(c, v):
     if c in NUMERIC:

@@ -122,7 +122,7 @@ TEST_F(LiveResultsManagerTest, SaveLiveResultsInvokesStoreLiveResultsComplete) {
     EXPECT_EQ(db_->call_count("store_live_results_complete"), 1);
 }
 
-// Migration 030: the typed cells reach both writes; a cell with no value travels as none.
+// Migration 036: the typed cells reach both writes; a cell with no value travels as none.
 TEST_F(LiveResultsManagerTest, TheTypedCellsReachTheInsertAndTheUpdate) {
     const std::vector<LiveResultsCell> cells = {
         {"worst_day_date", "date", std::string("2025-10-10")},

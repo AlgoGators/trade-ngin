@@ -932,7 +932,7 @@ TEST_F(OnePassBookTest, TheDeliveredScaleIsMeasuredOnTheStoredBook) {
     EXPECT_DOUBLE_EQ(pm_->delivered_scale_for_book({}), 1.0) << "as a day with no rebalance stores";
 }
 
-// The overlay columns (migration 030; HD 2026-10-10): the pass copies the overlay's readings of its
+// The overlay columns (migration 036; HD 2026-10-10): the pass copies the overlay's readings of its
 // stored book and the window's bars a year into its record, and the accessor reads the book the
 // runner STORES with the overlay's own code on the pass's window. On a day the runner changed no
 // row the accessor's five readings are the pass's to the bit; with a row rolled back they are that
@@ -1051,7 +1051,7 @@ TEST_F(OnePassBookTest, ABlindWindowHasNoCovarianceReadingAndARefusalHasNone) {
     EXPECT_EQ(refused.overlay_gross_leverage, 0.0);
 }
 
-// Migration 031, the backtest twin: a backtest row's six cells are the accessor's readings of
+// Migration 037, the backtest twin: a backtest row's six cells are the accessor's readings of
 // the book the sleeves hold when the row is written (the book the run stores), through
 // overlay_columns_of. With no step after the pass they are the pass's own to the bit; a row
 // whose rebalance stores no risk_detail has none; a blind window keeps the two leverages alone.

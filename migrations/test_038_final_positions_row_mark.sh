@@ -40,7 +40,7 @@ pass() { echo "ok: $*"; }
 apply() { $PSQL -f "$HERE/$1"; }
 refuses() { if psql -X -q -v ON_ERROR_STOP=1 -c "$1" >/dev/null 2>&1; then return 1; else return 0; fi; }
 refuses_file() { if psql -X -q -v ON_ERROR_STOP=1 -f "$HERE/$1" >/dev/null 2>&1; then return 1; else return 0; fi; }
-FWD=032_final_positions_row_mark.sql; RB=032_final_positions_row_mark_rollback.sql
+FWD=038_final_positions_row_mark.sql; RB=038_final_positions_row_mark_rollback.sql
 present() { q "select count(*) from information_schema.columns where table_schema='backtest' and table_name='final_positions' and column_name='row_mark'"; }
 checkdef() { q "select coalesce((select pg_get_constraintdef(oid) from pg_constraint where conrelid='backtest.final_positions'::regclass and conname='final_positions_row_mark_check'), 'none')"; }
 
@@ -76,8 +76,8 @@ COMMENT ON COLUMN backtest.final_positions.instrument_id IS 'the 016 text';
 COMMENT ON COLUMN backtest.results.volatility IS 'the 031 text of another column';
 SQL
 # the texts the lane leaves on the five ratio columns before 032: 028's and 031's own statements
-for c in 'trading.live_results."profit_factor"' 'backtest.results."profit_factor"'; do grep -F "COMMENT ON COLUMN $c IS " "$HERE/028_column_comments.sql" | $PSQL; done
-for c in sharpe_ratio sortino_ratio calmar_ratio; do grep -F "COMMENT ON COLUMN backtest.results.\"$c\" IS " "$HERE/031_backtest_statistics.sql" | $PSQL; done
+for c in 'trading.live_results."profit_factor"' 'backtest.results."profit_factor"'; do grep -F "COMMENT ON COLUMN $c IS " "$HERE/034_column_comments.sql" | $PSQL; done
+for c in sharpe_ratio sortino_ratio calmar_ratio; do grep -F "COMMENT ON COLUMN backtest.results.\"$c\" IS " "$HERE/037_backtest_statistics.sql" | $PSQL; done
 fp() { q "select count(*)||' '||md5(coalesce(string_agg(x, ';' order by x), '')) from (select (to_jsonb(t) - 'row_mark')::text x from $1 t) s"; }
 # every comment of the four tables, their column lists with type, null-ness and default, their constraints
 comments() { q "select md5(coalesce(string_agg(n.nspname||'.'||c.relname||'|'||d.objsubid||'|'||coalesce(a.attname,'')||'|'||d.description, E'\n' order by n.nspname, c.relname, d.objsubid), '')) || ' ' || count(*) from pg_description d join pg_class c on c.oid = d.objoid and d.classoid = 'pg_class'::regclass join pg_namespace n on n.oid = c.relnamespace left join pg_attribute a on a.attrelid = c.oid and a.attnum = d.objsubid and d.objsubid > 0 where (n.nspname, c.relname) in (('trading','live_results'),('backtest','results'),('backtest','final_positions'),('backtest','signals'))"; }

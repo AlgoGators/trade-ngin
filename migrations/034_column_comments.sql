@@ -1,4 +1,7 @@
--- 028_column_comments.sql
+-- 034_column_comments.sql
+-- Numbered 028 until 2026-10-21; renumbered 034 when main-nonQT joined main (main has its own 028 and 029).
+-- The migration was applied to new_algo_data as 028 on 2026-10-10: do not re-apply it there. The text below is
+-- exactly as applied, so its comments and stored COMMENT texts still call it 028.
 --
 -- The comment migration of the statistics lane (LOOP_SPEC v6.2 section 7.1; T-8a commit (9)).
 -- COMMENT ON only: 83 column comments and 4 table comments on trading.* and backtest.*. No

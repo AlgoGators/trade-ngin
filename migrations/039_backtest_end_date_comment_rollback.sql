@@ -1,4 +1,6 @@
--- 033_backtest_end_date_comment_rollback.sql
+-- 039_backtest_end_date_comment_rollback.sql
+-- Numbered 033 until 2026-10-21; renumbered 039 when main-nonQT joined main (main has its own 028 and 029).
+-- The text below is unchanged, so it still calls its migration 033.
 --
 -- Restores, byte for byte, the comments migration 028 set on backtest.results.end_date and
 -- backtest.run_metadata.end_date. COMMENT ON only: no value moves. Transactional and idempotent.

@@ -222,7 +222,7 @@ Result<void> PostgresDatabase::store_backtest_summary(
 
         std::string actual_portfolio_id = portfolio_id.empty() ? "BASE_PORTFOLIO" : portfolio_id;
 
-        // The typed cells (migration 031): named only when they have a value, so a cell without
+        // The typed cells (migration 037): named only when they have a value, so a cell without
         // one stays NULL. The value travels quoted, at the precision its text carries, and is
         // cast by the statement.
         std::string cell_columns;
@@ -305,7 +305,7 @@ Result<void> PostgresDatabase::store_backtest_equity_curve_batch(
     const std::vector<std::string>& risk_detail, const BacktestCurveCells& cells) {
     std::lock_guard<std::mutex> lock(mutex_);
 
-    // The typed cells (migration 031) carry one list per point or none at all, every list the
+    // The typed cells (migration 037) carry one list per point or none at all, every list the
     // same columns: refused otherwise, as a risk_detail of another length is. A cell's column
     // is concatenated into the statement, so it is allow-listed before anything else happens.
     if (const std::string refusal = backtest_curve_cells_refusal(cells, equity_points.size());
@@ -529,7 +529,7 @@ Result<void> PostgresDatabase::store_backtest_positions(const std::vector<Positi
                      << (pos.instrument_id.empty() ? std::string("NULL") : txn.quote(pos.instrument_id))
                      << ", "  // instrument_id (016)
                      << backtest_position_row_mark_value(no_bar_symbols.count(pos.symbol) > 0)
-                     << ")";  // row_mark (032)
+                     << ")";  // row_mark (038)
 
             position_values.push_back(value_ss.str());
         }
@@ -679,7 +679,7 @@ Result<void> PostgresDatabase::update_live_results(
                  ": " + std::to_string(without_value.size()) +
                  " value(s) not finite, stored NULL: " + joined_columns(without_value));
         }
-        // The typed cells (migration 030): every one is assigned, NULL where it has no value.
+        // The typed cells (migration 036): every one is assigned, NULL where it has no value.
         for (const auto& cell : cells) {
             if (!first)
                 query += ", ";
@@ -957,7 +957,7 @@ Result<void> PostgresDatabase::store_live_results_complete(
             values += ", " + txn.quote(risk_detail.dump()) + "::jsonb";
         }
 
-        // The typed cells (migration 030): named only when they have a value, so a cell
+        // The typed cells (migration 036): named only when they have a value, so a cell
         // without one stays NULL.
         for (const auto& cell : cells) {
             if (!cell.value) continue;

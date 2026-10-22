@@ -5,7 +5,7 @@
 // the book is the PortfolioManager's, recorded row by row in last_risk_decisions(). On a futures
 // row the stored live_results.risk_scale is the DELIVERED scale (migration 020), not the
 // reporter's; on an equity row, whose book runs no portfolio-risk overlay, it is
-// kRiskScaleNoOverlay (T-8D R14; migration 028's comment still describes the reporter's scale
+// kRiskScaleNoOverlay (T-8D R14; migration 034's comment still describes the reporter's scale
 // there). The per-lap half is the PM's RISK_APPLIED line; this is the per-rebalance half, one
 // log line:
 //

@@ -1,4 +1,6 @@
--- 029_live_results_settled_at_rollback.sql
+-- 035_live_results_settled_at_rollback.sql
+-- Numbered 029 until 2026-10-21; renumbered 035 when main-nonQT joined main (main has its own 028 and 029).
+-- The text below is unchanged, so it still calls its migration 029.
 --
 -- Drops settled_at from trading.live_results (its comment goes with it). Refuses while any row
 -- carries an OBSERVED stamp (a value other than the backfill marker 1970-01-01 00:00:00+00)

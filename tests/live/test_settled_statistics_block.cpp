@@ -324,10 +324,10 @@ TEST(SettledStatisticsBlock, NoRunnerLoadsAStoredReturnOrPnlHistoryForAStatistic
     }
 }
 
-// Migration 030 (LOOP_SPEC sections 7.4 and 10): the new statistics are taken in the same block,
+// Migration 036 (LOOP_SPEC sections 7.4 and 10): the new statistics are taken in the same block,
 // on the same series and K, once, and the same cells feed the Day T-1 refresh and the row the
 // run writes. The sizing-capital history is read on the futures books only.
-TEST(SettledStatisticsBlock, TheMigration030StatisticsAreTakenOnTheBlocksSeriesAndFeedBothWrites) {
+TEST(SettledStatisticsBlock, TheMigration036StatisticsAreTakenOnTheBlocksSeriesAndFeedBothWrites) {
     for (const auto& runner : kRunners) {
         const std::string src = read_source(runner);
         if (src.empty()) GTEST_SKIP() << "runner source not found from the test working directory";
@@ -360,14 +360,14 @@ TEST(SettledStatisticsBlock, TheMigration030StatisticsAreTakenOnTheBlocksSeriesA
     }
 }
 
-// The three histories only the migration 030 statistics read (the per-symbol P&L, the sizing
+// The three histories only the migration 036 statistics read (the per-symbol P&L, the sizing
 // capitals, the book's executions) cannot take the rest of the block with them. A failed read
 // throws nothing: the seventeen statistics are computed on the series as on a good day, the Day
 // T-1 refresh runs (so the stamp is not withheld), and the fourteen cells are NULL under an ERROR
 // line that names the read. This reads the runners' text: a runner is one main() with no seam to
 // run the block against a failing loader; the helpers the branch calls are tested on their
 // behaviour in test_live_statistics_columns.cpp.
-TEST(SettledStatisticsBlock, AFailedReadOfTheMigration030HistoriesLeavesTheRestOfTheBlock) {
+TEST(SettledStatisticsBlock, AFailedReadOfTheMigration036HistoriesLeavesTheRestOfTheBlock) {
     for (const auto& runner : kRunners) {
         const std::string src = read_source(runner);
         if (src.empty()) GTEST_SKIP() << "runner source not found from the test working directory";
@@ -375,9 +375,9 @@ TEST(SettledStatisticsBlock, AFailedReadOfTheMigration030HistoriesLeavesTheRestO
         ASSERT_FALSE(block.empty()) << runner;
         const bool equity = runner.find("equity") != std::string::npos;
 
-        EXPECT_EQ(block.find("the histories of the migration 030 statistics could not be loaded"),
+        EXPECT_EQ(block.find("the histories of the migration 036 statistics could not be loaded"),
                   std::string::npos)
-            << runner << ": a failed read of a 030 history throws out of the block, before the "
+            << runner << ": a failed read of a 036 history throws out of the block, before the "
             << "seventeen statistics are computed: the day's row is written with them at 0, the "
             << "Day T-1 row is not refreshed and the settled_at stamp is withheld";
         // The only throw left is the grid's: without the series no statistic can be taken.
@@ -390,7 +390,7 @@ TEST(SettledStatisticsBlock, AFailedReadOfTheMigration030HistoriesLeavesTheRestO
         // The reads are gathered into one description of what failed, each by name.
         const auto failed = block.find("const std::string failed_histories = "
                                        "failed_statistics_history_reads(");
-        ASSERT_NE(failed, std::string::npos) << runner << ": the 030 reads are not caught apart";
+        ASSERT_NE(failed, std::string::npos) << runner << ": the 036 reads are not caught apart";
         EXPECT_EQ(count_of(block, "statistics_history_read(\"the per-symbol P&L history\", "
                                   "symbol_pnl_res)"),
                   1u)

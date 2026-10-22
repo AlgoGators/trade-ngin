@@ -1,4 +1,7 @@
--- 029_live_results_settled_at.sql
+-- 035_live_results_settled_at.sql
+-- Numbered 029 until 2026-10-21; renumbered 035 when main-nonQT joined main (main has its own 028 and 029).
+-- The migration was applied to new_algo_data as 029 on 2026-10-10: do not re-apply it there. The text below is
+-- exactly as applied, so its comments and stored COMMENT texts still call it 029.
 --
 -- Add settled_at (timestamptz, NULL) to trading.live_results: how a reader knows a row is settled
 -- (T-8D-2 R43 and section 5.6; LOOP_SPEC v6.2 sections 3.1 and 7.2; T-8a commit (12)). The run of

@@ -124,7 +124,7 @@ private:
     std::unordered_set<std::string> mark_withheld_;
     std::unordered_set<std::string> mark_change_;
     std::unordered_map<std::string, std::string> row_held_id_;
-    /// Migration 032 (T-8D-2 R50): per futures sleeve, the held symbols that printed no bar in
+    /// Migration 038 (T-8D-2 R50): per futures sleeve, the held symbols that printed no bar in
     /// this cycle's group. Their row books nothing (realized_pnl 0, quantity and average price
     /// kept) and is stored with row_mark = 'NO_BAR'; filled where the row is zeroed.
     std::unordered_map<std::string, std::unordered_set<std::string>> row_no_bar_;
@@ -165,12 +165,12 @@ private:
     // its equity curve row, and the account value V_t the cycle's sizing capital was read with.
     std::map<size_t, std::string> equity_risk_detail_;
     double cycle_account_value_ = 0.0;
-    /// Migration 031: the six overlay cells of each sized rebalance, by the index of its equity
+    /// Migration 037: the six overlay cells of each sized rebalance, by the index of its equity
     /// curve row (the rows equity_risk_detail_ names), and on how many of them the readings of
     /// the stored book equal the pass's own to the bit.
     std::map<size_t, OverlayColumns> equity_overlay_;
     size_t overlay_rows_equal_to_pass_ = 0;
-    /// Migration 031: the per-symbol P&L cells of the position rows the run stores, one entry
+    /// Migration 037: the per-symbol P&L cells of the position rows the run stores, one entry
     /// per symbol and stored date (summed over the sleeves), and the last date collected.
     std::vector<SymbolDayPnl> symbol_day_pnl_;
     std::string symbol_day_pnl_date_;
@@ -423,7 +423,7 @@ public:
 
     /**
      * @brief The per-symbol P&L cells of the position rows a run stores for one date (the
-     *        worst day's symbol, migration 031)
+     *        worst day's symbol, migration 037)
      *
      * One entry per symbol: the realised P&L and the unrealised level of its rows, summed over
      * the sleeves, of the rows backtest.final_positions takes
@@ -437,7 +437,7 @@ public:
      * @param date The stored date, "YYYY-MM-DD"
      */
     /**
-     * @brief The six overlay cells of a backtest row (migration 031; HD 2026-10-10): the
+     * @brief The six overlay cells of a backtest row (migration 037; HD 2026-10-10): the
      *        overlay's own readings of the book the run STORES for the row's date
      *
      * PortfolioManager::overlay_readings_for_book (the accessor the live runners call) on the

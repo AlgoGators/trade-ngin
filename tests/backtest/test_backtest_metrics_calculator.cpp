@@ -1097,7 +1097,7 @@ TEST_F(BacktestMetricsCalculatorTest, ARunEndingOnAnOffGridRowEndsEveryGridStati
     EXPECT_NEAR(sat.max_drawdown, 2.0 / 104.0, 1e-12) << "the Saturday trough (8/104) is no grid level";
     EXPECT_NEAR(sat.annualized_return, std::pow(1.02, kFuturesK / 5.0) - 1.0, 1e-9)
         << "the CAGR ends on the Friday level 102, not on the Saturday's 96";
-    // The statistics of migration 031 read the same series.
+    // The statistics of migration 037 read the same series.
     ASSERT_TRUE(sat.statistics_columns.worst_day.has_value());
     EXPECT_DOUBLE_EQ(*sat.statistics_columns.worst_day, *fri.statistics_columns.worst_day);
     EXPECT_NEAR(*sat.statistics_columns.worst_day, 102.0 / 104.0 - 1.0, 1e-12);
@@ -1114,7 +1114,7 @@ TEST_F(BacktestMetricsCalculatorTest, ARunEndingOnAnOffGridRowEndsEveryGridStati
     EXPECT_NEAR(sat.drawdown_curve.back().second, 8.0 / 104.0, 1e-12);
 }
 
-// The same as-of date decides which calendar months and years are complete (migration 031: "a
+// The same as-of date decides which calendar months and years are complete (migration 037: "a
 // month is complete when its last calendar day is on or before the run's last curve date"). A run
 // ending on Saturday 2026-01-31, an off-grid row, counts January: every grid date of the month is
 // in its series, and the month's return is the product of its grid returns, the last one dated

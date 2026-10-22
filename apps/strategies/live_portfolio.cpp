@@ -2947,7 +2947,7 @@ int main(int argc, char* argv[]) {
         auto market_data_snapshot = snapshot_rm.create_market_data(strategy_feed_bars);
         auto risk_eval = snapshot_rm.process_positions(positions, market_data_snapshot);
 
-        // The six overlay columns of today's row (migration 030; HD 2026-10-10): the overlay's
+        // The six overlay columns of today's row (migration 036; HD 2026-10-10): the overlay's
         // own readings of the book this runner STORES (after its STRICT step), on the pass's gate
         // window and the sizing capital, and the one-day VaR from the same covariance. A row
         // with no risk_detail has none; on a blind window only the two leverage readings have a
@@ -3045,7 +3045,7 @@ int main(int argc, char* argv[]) {
              std::all_of(previous_positions.begin(), previous_positions.end(),
                          [](const auto& p) { return p.second.quantity.as_double() == 0.0; }));
 
-        // settled_at (migration 029): the stamp below is written only when the finalize of Day T-1
+        // settled_at (migration 035): the stamp below is written only when the finalize of Day T-1
         // finished without error. The no-prices skip withholds it here, on the sizing read's two
         // tests (no Day T-1 closes with a book held; no Day T-2 closes); a finalize warning
         // withholds it where it is logged.
@@ -3650,7 +3650,7 @@ int main(int argc, char* argv[]) {
         // not STEP 4 finalized its levels (a Day T-1 whose book did not move keeps levels that
         // were already settled). Statistic columns only: no level column is written here.
         HistoricalMetrics settled_statistics;
-        // Migration 030: the statistics that are not plain numbers (dates, symbols, the
+        // Migration 036: the statistics that are not plain numbers (dates, symbols, the
         // calendar years) or may have no value, as typed cells; the same two writes.
         std::vector<LiveResultsCell> settled_statistics_cells;
         bool t1_statistics_refreshed = false;
@@ -3679,7 +3679,7 @@ int main(int argc, char* argv[]) {
                 if (book_start_res.is_error() || levels_res.is_error() || grid_res.is_error()) {
                     throw std::runtime_error("the statistics grid could not be loaded");
                 }
-                // What the statistics of migration 030 read beside the series (LOOP_SPEC sections
+                // What the statistics of migration 036 read beside the series (LOOP_SPEC sections
                 // 7.4 and 10): each symbol's stored P&L (the worst day's symbol), the sizing
                 // capital each row was sized on (risk_detail.sizing_capital), and the book's
                 // executions (the fill counts), all from the book's start through Day T-1.
@@ -3689,7 +3689,7 @@ int main(int argc, char* argv[]) {
                     combined_strategy_id, coordinator_config.portfolio_id, previous_date);
                 auto book_executions_res = data_loader->load_book_executions(
                     combined_strategy_id, coordinator_config.portfolio_id, previous_date);
-                // A failed read of these costs this run its 030 statistics and nothing else:
+                // A failed read of these costs this run its 036 statistics and nothing else:
                 // the statistics on the series, the Day T-1 refresh and the stamp go on.
                 const std::string failed_histories = failed_statistics_history_reads(
                     {statistics_history_read("the per-symbol P&L history", symbol_pnl_res),
@@ -3720,13 +3720,13 @@ int main(int argc, char* argv[]) {
                     WARN("STATISTICS_DAYS through " + t1_date_str + ": " + days_warning);
                 }
 
-                // Migration 030, on the same series and the same K: the worst day's date and
+                // Migration 036, on the same series and the same K: the worst day's date and
                 // symbol, the three statistics on the sizing capital, the monthly skew and tail
                 // ratio, the calendar years, and the account's fill counts.
                 if (!failed_histories.empty()) {
                     ERROR("STATISTICS_COLUMNS through Day T-1 " + t1_date_str +
                           ": could not be loaded: " + failed_histories +
-                          ". The statistics of migration 030 are NULL on the Day T-1 row and on "
+                          ". The statistics of migration 036 are NULL on the Day T-1 row and on "
                           "the row this run writes; every other statistic, the Day T-1 refresh "
                           "and the settled_at stamp are as on a good day");
                     settled_statistics_cells = null_live_statistics_cells();
@@ -3805,7 +3805,7 @@ int main(int argc, char* argv[]) {
         }
 
         // ========================================
-        // STEP 4c: SETTLED_AT (migration 029; T-8D-2 R43, LOOP_SPEC sections 3.1 and 7.2)
+        // STEP 4c: SETTLED_AT (migration 035; T-8D-2 R43, LOOP_SPEC sections 3.1 and 7.2)
         // ========================================
         // STEP 4 and the statistics refresh finished without error: every earlier row of the book
         // that carries no stamp is settled, in one UPDATE (the Day T-1 row this run finalized, a
@@ -4122,7 +4122,7 @@ int main(int argc, char* argv[]) {
             // Set all metrics at once
             results_manager->set_metrics(double_metrics, int_metrics);
 
-            // Migration 030: the typed cells of the same statistics, and the six overlay cells
+            // Migration 036: the typed cells of the same statistics, and the six overlay cells
             // of the book this row stores; a cell with no value is left out of the INSERT and
             // stays NULL. The overlay cells are the row's own: the Day T-1 refresh never
             // writes them.

@@ -713,7 +713,7 @@ public:
     std::vector<std::tuple<std::string, double, int>> history;
     bool history_error = false;
     int history_reads = 0;
-    // The dates of `history` whose row carries a settled_at stamp (migration 029). Empty: no row
+    // The dates of `history` whose row carries a settled_at stamp (migration 035). Empty: no row
     // is stamped, so a read settles its history on the no-bar-day rule alone.
     std::set<std::string> stamped;
 
@@ -1511,7 +1511,7 @@ TEST_F(LiveHalfCompounding, TheFailurePathsWithholdOnlyDayT1) {
 }
 
 // ------------------------------------------------------------------------------------------------
-// Migration 029 (T-8a commit (12)): a stored day counts in the sizing capital when its settled_at
+// Migration 035 (T-8a commit (12)): a stored day counts in the sizing capital when its settled_at
 // is set OR the no-bar-day rule calls it settled. The stamp is written after STEP 4, so the run
 // after a no-prices day sizes before its own stamp exists.
 // ------------------------------------------------------------------------------------------------

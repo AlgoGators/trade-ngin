@@ -1,9 +1,9 @@
-// The backtest statistics of migration 031 (LOOP_SPEC v6.2 sections 7.4 and 10; T-8b commit
+// The backtest statistics of migration 037 (LOOP_SPEC v6.2 sections 7.4 and 10; T-8b commit
 // (1b)): on backtest.results, the worst day with its date and symbol, the three statistics on
 // the sizing capital, the monthly skew and tail ratio, the calendar-year returns with the losing
 // years, and the count of the account's STRATEGY fills.
 //
-// ONE IMPLEMENTATION with the live columns of migration 030: every figure is
+// ONE IMPLEMENTATION with the live columns of migration 036: every figure is
 // live_statistics_columns() on the run's statistics series (the grid, the sessions a year K and
 // the sample deviation of BacktestMetricsCalculator), and the fill count is the trade
 // statistics' own account_fills. The live cells are in PERCENT; a backtest stores FRACTIONS, so
@@ -25,7 +25,7 @@
 
 namespace trade_ngin {
 
-/// The thirteen cells of migration 031 on backtest.results. A field with no value is a NULL cell.
+/// The thirteen cells of migration 037 on backtest.results. A field with no value is a NULL cell.
 struct BacktestStatisticsColumns {
     std::optional<double> worst_day;  ///< the smallest grid return, a fraction
     std::optional<std::string> worst_day_date;
@@ -46,7 +46,7 @@ struct BacktestStatisticsColumns {
     int complete_months = 0;  ///< the count of complete months (not a column)
 };
 
-/// What the statistics of migration 031 read beside the equity curve and the executions: the
+/// What the statistics of migration 037 read beside the equity curve and the executions: the
 /// run's stored per-symbol P&L cells and its stored sizing capitals. Both empty: the worst day's
 /// symbol and the three sizing-capital statistics are NULL.
 struct BacktestStatisticsInputs {
@@ -58,7 +58,7 @@ struct BacktestStatisticsInputs {
 };
 
 /**
- * @brief The statistics of migration 031 on a run's statistics series, but for
+ * @brief The statistics of migration 037 on a run's statistics series, but for
  *        total_strategy_fills, which the caller sets from the run's account fills.
  *
  * @param series            the run's statistics series: the grid returns after the warm-up
@@ -79,7 +79,7 @@ BacktestStatisticsColumns backtest_statistics_columns(const StatisticsSeries& se
                                                       const BacktestStatisticsInputs& inputs);
 
 /// The thirteen as typed cells, in the migration's order. A number is written as the text that
-/// reads back as the same double (live_results_number, the format of the 030 cells).
+/// reads back as the same double (live_results_number, the format of the 036 cells).
 std::vector<LiveResultsCell> backtest_statistics_cells(const BacktestStatisticsColumns& columns);
 
 /// The columns as one log line (a NULL cell prints "null").

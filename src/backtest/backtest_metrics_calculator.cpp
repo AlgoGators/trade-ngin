@@ -959,7 +959,7 @@ backtest::BacktestResults BacktestMetricsCalculator::calculate_all_metrics(
     results.avg_holding_period = trade_stats.avg_holding_period;
     results.actual_trades = trade_stats.actual_trades;
 
-    // The statistics of migration 031 (LOOP_SPEC sections 7.4 and 10), on the same rows as the
+    // The statistics of migration 037 (LOOP_SPEC sections 7.4 and 10), on the same rows as the
     // statistics above: the grid series of the rows after the warm-up, whose first row is the
     // base. The fill count is the trade statistics' own count of the account's fills.
     results.statistics_columns = backtest_statistics_columns(

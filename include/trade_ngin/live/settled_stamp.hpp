@@ -1,6 +1,6 @@
 // include/trade_ngin/live/settled_stamp.hpp
 //
-// trading.live_results.settled_at (migration 029; T-8D-2 R43, LOOP_SPEC sections 3.1 and 7.2):
+// trading.live_results.settled_at (migration 035; T-8D-2 R43, LOOP_SPEC sections 3.1 and 7.2):
 // the stamp a live run writes on the rows of its book it has settled, and the test of whether
 // the run's finalize of Day T-1 earned it.
 //

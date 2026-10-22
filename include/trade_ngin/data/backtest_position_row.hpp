@@ -6,7 +6,7 @@
 
 namespace trade_ngin {
 
-/// The one value backtest.final_positions.row_mark takes (migration 032; its CHECK admits no
+/// The one value backtest.final_positions.row_mark takes (migration 038; its CHECK admits no
 /// other): the row of a futures symbol that printed no bar on the row's date. The position is
 /// held and marked at its last close, so the row books nothing: realized_pnl 0, quantity and
 /// average_price kept.
@@ -24,7 +24,7 @@ inline std::string backtest_position_row_mark_value(bool no_bar) {
  *        book, E2-F54) and only when it carries a realised flow (the live is_dead_row rule).
  *
  * The writer's own predicate, shared with the reader of the same rows in memory: the per-symbol
- * P&L of the statistics of migration 031 is taken on the rows the run stores, no others.
+ * P&L of the statistics of migration 037 is taken on the rows the run stores, no others.
  */
 inline bool backtest_position_row_is_stored(double quantity, double realized_pnl,
                                             bool keep_closed_rows) {

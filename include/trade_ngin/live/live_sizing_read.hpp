@@ -119,7 +119,7 @@ struct LiveSizingRead {
  * A run settles row D on the run of D + 1, unless that run was on the no-prices path: it had no
  * close dated D while the book held positions. This is the test read from what is stored, the
  * row's own book (`active_positions`) and the dates the run loaded a bar on; it is the calendar
- * limb of sizing_history_row_settled below, beside the row's settled_at (migration 029).
+ * limb of sizing_history_row_settled below, beside the row's settled_at (migration 035).
  *
  * The no-bar-day rule: a held day on which no symbol prints (a Saturday) is never finalized, so
  * its stored daily_pnl, the costs of that day's fills, is final. It counts at that stored value,
@@ -141,7 +141,7 @@ inline bool sizing_history_day_unsettled(const LiveDataLoader::PnlHistoryRow& ro
 /**
  * @brief Whether a stored day of the history before Day T-1 counts in the sizing capital.
  *
- * A row counts when its settled_at is set (migration 029: the stamp of the run that settled it,
+ * A row counts when its settled_at is set (migration 035: the stamp of the run that settled it,
  * or the migration's backfill, which LOOP_SPEC section 15 erratum 1 counts as settled whatever
  * the calendar says), OR when the no-bar-day rule above calls it settled.
  */

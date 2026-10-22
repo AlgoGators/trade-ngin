@@ -1,6 +1,6 @@
 #pragma once
 
-// The six overlay columns of trading.live_results (migration 030; HD 2026-10-10): the overlay's
+// The six overlay columns of trading.live_results (migration 036; HD 2026-10-10): the overlay's
 // own readings of the STORED book on the sizing capital, and a one-day VaR from the same
 // covariance. Nothing here computes a reading: the readings come from overlay::readings, run by
 // the pass on its stored book (OnePassDay) or by the PortfolioManager on the book a live runner

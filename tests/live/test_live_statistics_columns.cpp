@@ -1,6 +1,6 @@
 // tests/live/test_live_statistics_columns.cpp
 //
-// The live statistics of migration 030 (LOOP_SPEC v6.2 sections 7.4 and 10; T-8a commit (12b)):
+// The live statistics of migration 036 (LOOP_SPEC v6.2 sections 7.4 and 10; T-8a commit (12b)):
 // the worst day's symbol, the three statistics on the sizing capital, the monthly skew and tail
 // ratio, the calendar years, the fill counts, and the NULL rules, as values on small fixtures
 // whose arithmetic is written beside each expectation.
@@ -367,7 +367,7 @@ TEST(LiveStatisticsColumns, ACellWithNoValueIsNullAndTheFourteenAreInTheMigratio
     EXPECT_FALSE(live_results_cell_type_known("numeric); DROP TABLE t; --"));
 }
 
-// A failed read of a history that only the migration 030 statistics use is named with its
+// A failed read of a history that only the migration 036 statistics use is named with its
 // reason, and what the run then writes for the fourteen is NULL in every cell: the same columns,
 // types and order as on a good day, so the Day T-1 refresh assigns NULL to each and the day's
 // INSERT leaves each out. Nothing else of the run depends on these reads.
