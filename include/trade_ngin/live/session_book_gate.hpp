@@ -33,8 +33,7 @@ namespace trade_ngin {
  *
  *   1. classify every symbol's T-1 (classify_t1) and log it (log_t1_classification);
  *   2. above the live_run_metadata upsert: a held symbol whose feed hole is older than
- *      live.data_staleness_tolerance_days REFUSES the run when the run date is the host's date
- *      or later (a build ahead of today; run_date_is_live),
+ *      live.data_staleness_tolerance_days REFUSES the run when the run date is the host's date,
  *      and is a WARN on a replay of a past date (held_feed_holes_past_tolerance,
  *      run_date_is_host_date);
  *   3. the book-level rule stays the T-1 price map's `.empty()`: carry the whole book when no
