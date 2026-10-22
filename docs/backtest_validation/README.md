@@ -19,6 +19,17 @@ The currently pinned source snapshot (`52c17b6be39b9a98ff3f9f793f238c33236ec1fd`
 
 Use `curve_export.sql` on the scratch copy with a role that has `SELECT` only. Export one run at a time to CSV with header `run_id,portfolio_id,timestamp,equity`. The SQL's `timestamp AT TIME ZONE 'UTC'` must be checked against the stored column type at handoff; preserve the UTC instant in the CSV. If a `phase` column has landed, export it too and update the validator before using that schema. The current writer inserts `run_id`, `portfolio_id`, `timestamp`, `equity` in `src/data/postgres_database_extensions.cpp`; the older schema example in `src/backtest/README.md` is stale.
 
+With the scratch connection in normal `PG*` environment variables, export through a `SELECT`-only role (replace the example IDs):
+
+```sh
+psql --csv -X -v ON_ERROR_STOP=1 -v run_id=RUN_A -v portfolio_id=CONSERVATIVE_PORTFOLIO -f docs/backtest_validation/curve_export.sql > run_a.csv
+psql --csv -X -v ON_ERROR_STOP=1 -v run_id=RUN_B -v portfolio_id=CONSERVATIVE_PORTFOLIO -f docs/backtest_validation/curve_export.sql > run_b.csv
+sha256sum run_a.csv run_b.csv
+python3 -m scripts.backtest_validation compare --short run_a.csv --long run_b.csv --short-run RUN_A --long-run RUN_B --portfolio CONSERVATIVE_PORTFOLIO --end 2025-12-31
+```
+
+The comparison prints JSON and exits 2 on an invalid export or a failed prefix. Archive that JSON beside the two exports. Do not infer the scored boundary from the equality check.
+
 Manifest fields per run: `trial_id`, `run_id`, `portfolio_id`, `engine_sha`, `snapshot_utc`, `database`, `config_sha256`, `config_path`, `runner_sha256`, `window_protocol`, `window_start`, `window_end`, `scored_start`, `scored_end`, `warmup_last_timestamp`, `costs`, `curve_csv`, `curve_sha256`, `curve_rows`, `seed`, and `notes`. Keep local database addresses and credentials outside the tracked file. A trial with no comparable export remains in the ledger with a `missing_reason`; it still counts in the search count.
 
 ## Predeclared analysis settings

@@ -33,6 +33,8 @@ config/**/*risk.json*
 daily_positions_*.csv
 
 .idea/
+__pycache__/
+*.pyc
 
 cmake-build-debug/
 
