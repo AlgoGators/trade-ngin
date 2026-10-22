@@ -42,6 +42,7 @@ set(TEST_SOURCES
     data/test_market_data_utils.cpp
     data/test_futures_bar_dedup_db.cpp
     data/test_session_classifier.cpp
+    strategy/test_listing_dates.cpp
     data/test_session_classifier_instrument_id.cpp
     data/test_roll_series.cpp
     data/test_roll_legs.cpp
@@ -60,6 +61,8 @@ set(TEST_SOURCES
     risk/test_overlay.cpp
     optimization/test_one_pass.cpp
     portfolio/test_one_pass_book.cpp
+    portfolio/test_listing_switch_pass.cpp
+    backtest/test_listing_loader.cpp
     portfolio/test_loop_fixups.cpp
     portfolio/test_worked_days.cpp
     portfolio/test_portfolio_config_keys.cpp
@@ -185,6 +188,7 @@ set(TEST_SOURCES
     live/test_live_roll_legs.cpp
     live/test_live_k01_history.cpp
     live/test_live_roll_write_order.cpp
+    live/test_live_listing_guard.cpp
     live/test_execution_price_integrity.cpp
     live/test_margin_manager.cpp
     live/test_live_metrics_calculator.cpp

@@ -1369,3 +1369,192 @@ TEST_F(ConfigLoaderTest, EveryRetiredKeyIsRefusedOnAFuturesBook) {
     EXPECT_DOUBLE_EQ(plain.value().risk_config.var_limit, 0.15);
     EXPECT_DOUBLE_EQ(plain.value().max_leverage, 4.0);
 }
+
+// portfolio.json's optional "listing_dates" block (data/listing_dates.hpp): absent means no
+// contract; present it is parsed strictly, and a block that names no rule takes open_at_target.
+TEST_F(ConfigLoaderTest, ListingDatesAbsentMeansNoContract) {
+    write_full_set("base");
+    auto r = ConfigLoader::load(base_, "base");
+    ASSERT_TRUE(r.is_ok()) << (r.error() ? r.error()->what() : "no error");
+    EXPECT_TRUE(r.value().listing_dates.empty());
+    EXPECT_EQ(r.value().listing_switch_rule, ListingSwitchRule::kOpenAtTarget);
+}
+
+TEST_F(ConfigLoaderTest, ListingDatesWithNoRuleTakesOpenAtTarget) {
+    const nlohmann::json contracts = nlohmann::json::array(
+        {{{"symbol", "MES"}, {"listed", "2019-05-06"}, {"before", "ES"}, {"ratio", 10}}});
+    write_full_set("base", nlohmann::json::object(), {{"listing_dates", {{"contracts", contracts}}}});
+    auto r = ConfigLoader::load(base_, "base");
+    ASSERT_TRUE(r.is_ok()) << (r.error() ? r.error()->what() : "no error");
+    ASSERT_EQ(r.value().listing_dates.size(), 1u);
+    EXPECT_EQ(r.value().listing_dates[0].symbol, "MES");
+    EXPECT_EQ(r.value().listing_dates[0].before, "ES");
+    EXPECT_EQ(r.value().listing_dates[0].listed, "2019-05-06");
+    EXPECT_DOUBLE_EQ(r.value().listing_dates[0].ratio, 10.0);
+    EXPECT_EQ(r.value().listing_switch_rule, ListingSwitchRule::kOpenAtTarget);
+
+    for (const auto& [name, rule] : std::vector<std::pair<std::string, ListingSwitchRule>>{
+             {"close_reenter", ListingSwitchRule::kCloseReenter},
+             {"convert", ListingSwitchRule::kConvert},
+             {"open_at_target", ListingSwitchRule::kOpenAtTarget},
+             {"carry_to_target", ListingSwitchRule::kCarryToTarget}}) {
+        write_full_set("base", nlohmann::json::object(),
+                       {{"listing_dates", {{"contracts", contracts}, {"switch_rule", name}}}});
+        auto named = ConfigLoader::load(base_, "base");
+        ASSERT_TRUE(named.is_ok()) << name;
+        EXPECT_EQ(named.value().listing_switch_rule, rule) << name;
+    }
+}
+
+TEST_F(ConfigLoaderTest, AnUnusableListingDatesBlockRefusesTheConfig) {
+    const nlohmann::json good = {{"symbol", "MES"}, {"listed", "2019-05-06"}, {"before", "ES"}, {"ratio", 10}};
+    std::vector<nlohmann::json> bad_blocks;
+    bad_blocks.push_back(nlohmann::json::array({good}));                                   // not an object
+    bad_blocks.push_back({{"contracts", nlohmann::json::array({good})}, {"switch_rule", "carry"}});
+    bad_blocks.push_back({{"contracts", nlohmann::json::array({good})}, {"switch_rule", 3}});
+    for (const char* key : {"symbol", "listed", "before", "ratio"}) {
+        nlohmann::json entry = good;
+        entry.erase(key);
+        bad_blocks.push_back({{"contracts", nlohmann::json::array({entry})}});
+    }
+    {
+        nlohmann::json entry = good;
+        entry["listed"] = "2019-5-6";
+        bad_blocks.push_back({{"contracts", nlohmann::json::array({entry})}});
+        entry = good;
+        entry["ratio"] = 0;
+        bad_blocks.push_back({{"contracts", nlohmann::json::array({entry})}});
+        entry = good;
+        entry["ratio"] = 2.5;  // a ratio is a whole number of contracts
+        bad_blocks.push_back({{"contracts", nlohmann::json::array({entry})}});
+    }
+    for (const auto& block : bad_blocks) {
+        write_full_set("base", nlohmann::json::object(), {{"listing_dates", block}});
+        auto r = ConfigLoader::load(base_, "base");
+        ASSERT_TRUE(r.is_error()) << block.dump();
+        EXPECT_NE(std::string(r.error()->what()).find("\"listing_dates\""), std::string::npos)
+            << r.error()->what();
+    }
+}
+
+// portfolio.json's optional "instrument_id_relabels" list (data/listing_dates.hpp): absent means
+// none; present it is parsed strictly.
+TEST_F(ConfigLoaderTest, InstrumentIdRelabelsAreParsedAndAbsentMeansNone) {
+    write_full_set("base");
+    auto none = ConfigLoader::load(base_, "base");
+    ASSERT_TRUE(none.is_ok()) << (none.error() ? none.error()->what() : "no error");
+    EXPECT_TRUE(none.value().instrument_id_relabels.empty());
+
+    const nlohmann::json good = {{"symbol", "MES"}, {"date", "2026-02-22"}, {"from", "42140878"}, {"to", "42003800"}};
+    write_full_set("base", nlohmann::json::object(),
+                   {{"instrument_id_relabels", nlohmann::json::array({good})}});
+    auto r = ConfigLoader::load(base_, "base");
+    ASSERT_TRUE(r.is_ok()) << (r.error() ? r.error()->what() : "no error");
+    ASSERT_EQ(r.value().instrument_id_relabels.size(), 1u);
+    EXPECT_EQ(r.value().instrument_id_relabels[0].symbol, "MES");
+    EXPECT_EQ(r.value().instrument_id_relabels[0].date, "2026-02-22");
+    EXPECT_EQ(r.value().instrument_id_relabels[0].from, "42140878");
+    EXPECT_EQ(r.value().instrument_id_relabels[0].to, "42003800");
+    EXPECT_TRUE(r.value().listing_dates.empty()) << "the two blocks are independent";
+
+    std::vector<nlohmann::json> bad;
+    bad.push_back(good);  // an object, not a list
+    for (const char* key : {"symbol", "date", "from", "to"}) {
+        nlohmann::json entry = good;
+        entry.erase(key);
+        bad.push_back(nlohmann::json::array({entry}));
+    }
+    {
+        nlohmann::json entry = good;
+        entry["from"] = 42140878;  // an id is text
+        bad.push_back(nlohmann::json::array({entry}));
+        entry = good;
+        entry["date"] = "2026-2-22";
+        bad.push_back(nlohmann::json::array({entry}));
+        entry = good;
+        entry["to"] = entry["from"];
+        bad.push_back(nlohmann::json::array({entry}));
+        entry = good;
+        entry["symbol"] = "MES.v.0";
+        bad.push_back(nlohmann::json::array({entry}));
+    }
+    for (const auto& block : bad) {
+        write_full_set("base", nlohmann::json::object(), {{"instrument_id_relabels", block}});
+        auto refused = ConfigLoader::load(base_, "base");
+        ASSERT_TRUE(refused.is_error()) << block.dump();
+        EXPECT_NE(std::string(refused.error()->what()).find("\"instrument_id_relabels\""), std::string::npos)
+            << refused.error()->what();
+    }
+}
+
+// The shipped CONSERVATIVE template declares the four equity index pairs with the default rule
+// written out and the four relabels of 2026-02-22; BASE declares neither block.
+TEST_F(ConfigLoaderTest, TheConservativeTemplateDeclaresThePairsAndTheRelabels) {
+    const auto tmpl = tracked_config_template();
+    ASSERT_FALSE(tmpl.empty()) << "config_template/ not found; this test must not skip";
+    auto conservative = ConfigLoader::load(tmpl, "conservative");
+    ASSERT_TRUE(conservative.is_ok()) << (conservative.is_error() ? conservative.error()->what() : "");
+    const AppConfig& c = conservative.value();
+    EXPECT_EQ(c.listing_switch_rule, ListingSwitchRule::kOpenAtTarget);
+    std::vector<std::string> pairs;
+    for (const auto& contract : c.listing_dates) {
+        pairs.push_back(contract.symbol + " " + contract.before + " " + contract.listed + " " +
+                        std::to_string(static_cast<int>(contract.ratio)));
+    }
+    EXPECT_EQ(pairs, (std::vector<std::string>{"MES ES 2019-05-06 10", "MNQ NQ 2019-05-06 10",
+                                               "MYM YM 2019-05-06 10", "M2K RTY 2019-05-06 10"}));
+    std::vector<std::string> relabels;
+    for (const auto& r : c.instrument_id_relabels) {
+        relabels.push_back(r.symbol + " " + r.date + " " + r.from + " " + r.to);
+    }
+    EXPECT_EQ(relabels,
+              (std::vector<std::string>{"MES 2026-02-22 42140878 42003800", "MNQ 2026-02-22 42002475 42004946",
+                                        "MYM 2026-02-22 42005850 42001953", "M2K 2026-02-22 42005017 42002147"}));
+    // every listed contract is one of the book's equity slow rule symbols: the pair is ruled as one
+    for (const auto& contract : c.listing_dates) {
+        EXPECT_NE(std::find(c.equity_slow_rule.symbols.begin(), c.equity_slow_rule.symbols.end(),
+                            contract.symbol),
+                  c.equity_slow_rule.symbols.end())
+            << contract.symbol;
+    }
+    auto base = ConfigLoader::load(tmpl, "base");
+    ASSERT_TRUE(base.is_ok()) << (base.is_error() ? base.error()->what() : "");
+    EXPECT_TRUE(base.value().listing_dates.empty());
+    EXPECT_TRUE(base.value().instrument_id_relabels.empty());
+}
+
+// A key that is not one of the block's own is refused: a misspelt key would be read as absent and a
+// default would apply. A key starting with an underscore is a note. A misspelt block name is refused
+// too, and so is a relabel named twice.
+TEST_F(ConfigLoaderTest, UnknownKeysInsideTheListingAndRelabelBlocksAreRefused) {
+    const nlohmann::json contract = {{"symbol", "MES"}, {"listed", "2019-05-06"}, {"before", "ES"}, {"ratio", 10}};
+    const nlohmann::json relabel = {{"symbol", "MES"}, {"date", "2026-02-22"}, {"from", "42140878"}, {"to", "42003800"}};
+    auto refused = [&](const nlohmann::json& portfolio, const std::string& named) {
+        write_full_set("base", nlohmann::json::object(), portfolio);
+        auto r = ConfigLoader::load(base_, "base");
+        ASSERT_TRUE(r.is_error()) << portfolio.dump();
+        EXPECT_NE(std::string(r.error()->what()).find(named), std::string::npos) << r.error()->what();
+    };
+    // the misspelt rule key: without the check the default rule would apply silently
+    refused({{"listing_dates", {{"contracts", nlohmann::json::array({contract})}, {"switch_rules", "convert"}}}},
+            "unknown key \"switch_rules\"");
+    nlohmann::json bad_contract = contract;
+    bad_contract["listed_on"] = "2019-05-06";
+    refused({{"listing_dates", {{"contracts", nlohmann::json::array({bad_contract})}}}}, "unknown key \"listed_on\"");
+    nlohmann::json bad_relabel = relabel;
+    bad_relabel["form"] = "x";
+    refused({{"instrument_id_relabels", nlohmann::json::array({bad_relabel})}}, "unknown key \"form\"");
+    refused({{"instrument_id_relabels", nlohmann::json::array({relabel, relabel})}}, "named twice");
+    refused({{"listing_date", {{"contracts", nlohmann::json::array({contract})}}}}, "\"listing_date\"");
+    refused({{"instrument_id_relabel", nlohmann::json::array({relabel})}}, "\"instrument_id_relabel\"");
+
+    // notes are allowed, and the blocks still parse
+    nlohmann::json noted = contract;
+    noted["_note"] = "CME listed the micros on this date";
+    write_full_set("base", nlohmann::json::object(),
+                   {{"listing_dates", {{"contracts", nlohmann::json::array({noted})}, {"_note", "x"}}},
+                    {"_listing_dates_note", "a note beside the block is not a misspelt block"}});
+    auto ok = ConfigLoader::load(base_, "base");
+    ASSERT_TRUE(ok.is_ok()) << (ok.error() ? ok.error()->what() : "");
+    EXPECT_EQ(ok.value().listing_dates.size(), 1u);
+}

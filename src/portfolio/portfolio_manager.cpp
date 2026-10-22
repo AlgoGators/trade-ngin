@@ -1,4 +1,5 @@
 // src/portfolio/portfolio_manager.cpp
+#include "trade_ngin/data/listing_dates.hpp"
 #include "trade_ngin/optimization/one_pass_record.hpp"
 #include "trade_ngin/data/roll_series.hpp"
 #include "trade_ngin/portfolio/portfolio_manager.hpp"
@@ -2306,6 +2307,264 @@ Result<void> PortfolioManager::rebalance_one_pass(
             }
         }
 
+        // Listing dates (nothing is ever due without portfolio.json's listing_dates, and rule
+        // close_reenter leaves the switch to the close-out and the pass below). Once per pair, on
+        // the first sized rebalance whose signal feed holds the listed contract's bar dated on or
+        // after its listing date with both contracts free to trade (a non-session bar or a pending
+        // roll holds both: they read one series) and the listed contract signalling: the held
+        // predecessor is closed and the listed contract's held quantity is set by the rule, BEFORE
+        // the pass, which then starts from that held book (the block sits after the pass's inputs are
+        // built and before the pass: nothing between reads the held book). Each move is a fill at the signal close,
+        // priced by this manager's cost model on its own contract's terms (ids LC- and LO-). A pair
+        // whose predecessor never signalled on a sized rebalance of this run (the run starts
+        // trading after the listing date) has no switch: the listed contract is an ordinary symbol.
+        if (is_backtest_ && !is_warmup && scope_refusal.empty() && ListingDates::instance().enabled()) {
+            for (size_t i = 0; i < n; ++i) {
+                // signalling on a bar fed today: a stale answer on a day its bar is withheld is not one
+                if (in.signalling[i] && in.has_bar[i] &&
+                    ListingDates::instance().is_predecessor(symbols[i])) {
+                    listing_predecessor_traded_.insert(symbols[i]);
+                }
+            }
+        }
+        // The switch's fills and ledger entries are PENDING until the pass has run: a pass that is
+        // refused sends no order, so a refused day undoes the switch and it is made on a later pass.
+        struct PendingListingSwitch {
+            std::string sid, from, to;
+            double new_to;
+            std::vector<ExecutionReport> legs;
+            std::vector<std::string> lines;
+        };
+        std::vector<PendingListingSwitch> pending_switches;
+        std::vector<std::string> switched_this_pass;
+        std::vector<double> held_before_switch;
+        std::vector<std::vector<double>> sleeve_held_before_switch;
+        if (is_backtest_ && !is_warmup && scope_refusal.empty() && !sleeve_pinned &&
+            ListingDates::instance().enabled() &&
+            ListingDates::instance().switch_rule() != ListingSwitchRule::kCloseReenter) {
+            held_before_switch = in.held;
+            sleeve_held_before_switch = sleeve_held;
+            // The pairs whose switch is made on this pass, with the band read on the book before any
+            // of them is switched.
+            struct DueSwitch {
+                ListingConversion c;
+                size_t i_from, i_to;
+                bool in_band;
+            };
+            std::vector<DueSwitch> due;
+            auto wait = [&](size_t i_from, size_t i_to) {
+                // waits for the next rebalance on which both can trade; a held predecessor is HELD
+                // meanwhile, never closed by the close-out, and the listed contract is not opened
+                // beside it by the pass
+                if (in.held[i_from] != 0.0) {
+                    in.hold[i_from] = 1;
+                    in.hold[i_to] = 1;
+                }
+            };
+            for (const auto& c : ListingDates::instance().conversions_due(data)) {
+                if (listing_switched_.count(c.to)) continue;
+                const auto at_from = std::find(symbols.begin(), symbols.end(), c.from);
+                const auto at_to = std::find(symbols.begin(), symbols.end(), c.to);
+                if (at_from == symbols.end()) continue;
+                const size_t i_from = static_cast<size_t>(at_from - symbols.begin());
+                if (at_to == symbols.end()) {
+                    if (in.held[i_from] != 0.0) in.hold[i_from] = 1;  // held, never closed out, while it waits
+                    continue;
+                }
+                const size_t i_to = static_cast<size_t>(at_to - symbols.begin());
+                if (!listing_predecessor_traded_.count(c.from) && in.held[i_from] == 0.0) {
+                    listing_switched_.insert(c.to);
+                    INFO("LISTING_SWITCH " + c.from + " -> " + c.to +
+                         ": none, the predecessor never traded in this run");
+                    continue;
+                }
+                if (in.hold[i_from] || in.hold[i_to] || !in.has_bar[i_from] || !in.has_bar[i_to] ||
+                    !in.signalling[i_to] || !std::isfinite(in.target[i_to])) {
+                    wait(i_from, i_to);
+                    continue;
+                }
+                // the deferral band (section 5.2) on the predecessor's holding: the listed
+                // contract's first-sleeve forecast is weaker than the band and against the holding
+                const bool in_band = in.first_signalling[i_to] &&
+                                     in.held[i_from] * in.first_forecast[i_to] < 0.0 &&
+                                     std::abs(in.first_forecast[i_to]) < in.sign_band;
+                due.push_back({c, i_from, i_to, in_band});
+            }
+            // The target the listed contract is entered at is the pass's own SCALED target, the
+            // capped target times the overlay's scalar m (section 4), so that on a day the overlay
+            // cuts the book the switch lands on the cut target and nothing is left to trim. m is a
+            // reading of the target book with every due predecessor exited (a free row enters at
+            // its target whatever is held), so it is taken from the pass itself, run once on that
+            // book: the same m, cap and target the pass below computes.
+            std::vector<double> scaled_target(n, 0.0);
+            const ListingSwitchRule rule = ListingDates::instance().switch_rule();
+            const bool target_rule =
+                rule == ListingSwitchRule::kOpenAtTarget || rule == ListingSwitchRule::kCarryToTarget;
+            if (target_rule && std::any_of(due.begin(), due.end(),
+                                           [](const DueSwitch& d) { return !d.in_band; })) {
+                // A pair the dry run sends to wait stays held in the real pass, so the pass is
+                // run again without it: the pairs that switch read the m of the very book the
+                // real pass below is given.
+                for (bool settled = false; !settled && !due.empty();) {
+                    one_pass::DayInputs probe = in;
+                    for (const auto& d : due) {
+                        if (d.in_band) probe.held[d.i_to] += d.c.ratio * probe.held[d.i_from];
+                        probe.held[d.i_from] = 0.0;
+                    }
+                    one_pass::DayResult dry;
+                    std::string dry_refusal;
+                    try {
+                        dry = one_pass::rebalance(probe);
+                        dry_refusal = dry.refusal;
+                    } catch (const std::exception& e) {
+                        dry_refusal = e.what();
+                    }
+                    settled = true;
+                    std::vector<DueSwitch> kept;
+                    for (const auto& d : due) {
+                        // a pass that cannot be run, or a listed contract the pass would not treat
+                        // as a free row, makes no switch today
+                        if (!dry_refusal.empty() || (!d.in_band && !dry.free[d.i_to])) {
+                            wait(d.i_from, d.i_to);
+                            settled = false;
+                            continue;
+                        }
+                        scaled_target[d.i_to] = dry.scaled_target[d.i_to];
+                        kept.push_back(d);
+                    }
+                    due = std::move(kept);
+                }
+            }
+            for (const auto& d : due) {
+                const ListingConversion& c = d.c;
+                const size_t i_from = d.i_from;
+                const size_t i_to = d.i_to;
+                const bool in_band = d.in_band;
+                const double u_to = in.multiplier[i_to] * in.close[i_to] / in.capital;
+                // The BOOK's move (section 5.4: one pass on the portfolio book): the book's net
+                // predecessor holding is exited and the listed contract entered at the book's
+                // scaled target, whole contracts for the book.
+                const double book_from = in.held[i_from];
+                const double book_to = in.held[i_to];
+                const ListingSwitch book = plan_listing_switch(
+                    rule, c.ratio, book_from, book_to, scaled_target[i_to],
+                    u_to > 0.0 ? in.cap / u_to : 0.0, in_band);
+                listing_switched_.insert(c.to);
+                switched_this_pass.push_back(c.to);
+                const bool carried = rule == ListingSwitchRule::kConvert ||
+                                     (target_rule && in_band && book_from != 0.0);
+                // carry_to_target on a pair the book holds none of leaves the listed contract to
+                // the pass. Sleeves that hold opposed legs of the predecessor on a flat book still
+                // close them against each other (a full cross, no order and no cost).
+                const bool left_to_pass =
+                    rule == ListingSwitchRule::kCarryToTarget && book_from == 0.0 && !carried;
+                if (left_to_pass) {
+                    bool any_leg = false;
+                    for (size_t s = 0; s < sids.size(); ++s) any_leg |= sleeve_held[s][i_from] != 0.0;
+                    if (!any_leg) continue;
+                }
+                // The split to the sleeves, by the book's own rule: a carried holding is each
+                // sleeve's own leg, ratio for one; otherwise the book's whole number is split in
+                // proportion to the sleeves' unrounded contributions by largest remainder
+                // (distribute_optimizer_contracts, the function the pass's own split calls), and
+                // a row no sleeve contributes to that the book takes to flat leaves every sleeve
+                // flat. Every sleeve's predecessor leg goes to flat.
+                std::vector<double> sleeve_to(sids.size(), 0.0);
+                if (carried) {
+                    for (size_t s = 0; s < sids.size(); ++s) {
+                        sleeve_to[s] = sleeve_held[s][i_to] + c.ratio * sleeve_held[s][i_from];
+                    }
+                } else if (left_to_pass) {
+                    for (size_t s = 0; s < sids.size(); ++s) sleeve_to[s] = sleeve_held[s][i_to];
+                } else {
+                    double total_contribution = 0.0;
+                    for (size_t s = 0; s < sids.size(); ++s) total_contribution += contribution[s][i_to];
+                    const bool any_contribution = std::abs(total_contribution) > 1e-8;
+                    if (any_contribution || book.new_to != 0.0) {
+                        std::vector<SleeveContribution> parts;
+                        for (size_t s = 0; s < sids.size(); ++s) {
+                            parts.push_back({sids[s], any_contribution ? contribution[s][i_to]
+                                                                       : sleeve_held[s][i_to]});
+                        }
+                        const SleeveDistribution split = distribute_optimizer_contracts(book.new_to, parts);
+                        for (size_t s = 0; s < sids.size(); ++s) {
+                            sleeve_to[s] = static_cast<double>(split.stored[s]);
+                        }
+                    }
+                }
+                // The rows as stored: one per sleeve and contract, each priced as if that sleeve
+                // traded alone (ids LC- the predecessor's leg to flat, LO- the listed contract's
+                // move), then netted as every bar's rows are (transaction_cost/netting.hpp): the
+                // account sends ONE order per symbol, the signed sum of the sleeves' rows, and
+                // each row's netting_adjustment is its share of what the account did not pay.
+                const size_t first_pending = pending_switches.size();
+                for (size_t s = 0; s < sids.size(); ++s) {
+                    ListingSwitch plan;
+                    plan.close_from = -sleeve_held[s][i_from];
+                    plan.trade_to = sleeve_to[s] - sleeve_held[s][i_to];
+                    plan.new_to = sleeve_to[s];
+                    if (plan.close_from == 0.0 && plan.trade_to == 0.0) continue;
+                    const std::string& sid = sids[s];
+                    size_t seq = listing_leg_seq_[sid];
+                    for (const auto& p : pending_switches) seq += p.sid == sid ? 1 : 0;
+                    ListingConversion priced = c;
+                    priced.from_close = in.close[i_from];
+                    priced.to_close = in.close[i_to];
+                    PendingListingSwitch pending{sid, c.from, c.to, plan.new_to, {}, {}};
+                    pending.legs = make_listing_switch_fills(
+                        priced, plan, as_of ? *as_of : data[0].timestamp,
+                        "LC-" + sid + "-" + std::to_string(seq), "LO-" + sid + "-" + std::to_string(seq),
+                        [this](const std::string& sym, double q, double px) {
+                            const auto cost = cost_manager_.calculate_costs(sym, q, px);
+                            return ListingLegCost{cost.commissions_fees, cost.implicit_price_impact,
+                                                  cost.slippage_market_impact,
+                                                  cost.total_transaction_costs};
+                        });
+                    for (const auto& leg : pending.legs) {
+                        pending.lines.push_back(
+                            "LISTING_LEG " + sid + " " + leg.symbol + " " +
+                            (leg.side == Side::BUY ? "BUY" : "SELL") + " qty=" +
+                            std::to_string(static_cast<double>(leg.filled_quantity)) + " px=" +
+                            std::to_string(static_cast<double>(leg.fill_price)) + " cost=" +
+                            std::to_string(static_cast<double>(leg.total_transaction_costs)) +
+                            " id=" + leg.exec_id + " rule=" + to_string(rule) +
+                            (in_band ? " (deferral band: carried)" : "") + " target=" +
+                            std::to_string(in.target[i_to]) + " scaled=" +
+                            std::to_string(scaled_target[i_to]) + " book " + c.from + " " +
+                            std::to_string(book_from) + " -> 0, " + c.to + " " +
+                            std::to_string(book_to) + " -> " + std::to_string(book.new_to) +
+                            " (sleeve " + c.from + " " + std::to_string(sleeve_held[s][i_from]) +
+                            " -> 0; " + c.to + " " + std::to_string(sleeve_held[s][i_to]) + " -> " +
+                            std::to_string(plan.new_to) + ")");
+                    }
+                    pending_switches.push_back(std::move(pending));
+                }
+                {
+                    std::vector<transaction_cost::SleeveExecution> rows;
+                    for (size_t k = first_pending; k < pending_switches.size(); ++k) {
+                        for (auto& leg : pending_switches[k].legs) rows.push_back({pending_switches[k].sid, &leg});
+                    }
+                    const auto netting = transaction_cost::apply_netting_adjustments(
+                        rows, [this](const std::string& sym, double q, double px) {
+                            return cost_manager_.calculate_costs(sym, q, px).total_transaction_costs;
+                        });
+                    if (first_pending < pending_switches.size()) {
+                        for (const auto& line : netting.info_lines) {
+                            pending_switches[first_pending].lines.push_back(line);
+                        }
+                    }
+                    for (const auto& line : netting.warn_lines) WARN(line);
+                }
+                in.held[i_from] = 0.0;
+                in.held[i_to] = 0.0;
+                for (size_t s = 0; s < sids.size(); ++s) {
+                    sleeve_held[s][i_from] = 0.0;
+                    sleeve_held[s][i_to] = sleeve_to[s];
+                    in.held[i_to] += sleeve_to[s];
+                }
+            }
+        }
+
         // The pass. A sleeve its own risk module refused cannot be held apart from one search on
         // the summed book, so its refusal refuses the book; anything the arithmetic throws does too.
         auto held_book = [&](const std::string& why) {
@@ -2339,6 +2598,26 @@ Result<void> PortfolioManager::rebalance_one_pass(
             } catch (const std::exception& e) {
                 result = held_book(std::string("the one pass failed: ") + e.what());
             }
+        }
+        if (!result.refusal.empty() && !switched_this_pass.empty()) {
+            // a refused pass sends no order: the switch is undone and waits for a later pass
+            const bool on_reread = result.refusal_on_reread;
+            const std::string why = result.refusal;
+            in.held = held_before_switch;
+            sleeve_held = sleeve_held_before_switch;
+            for (const auto& to : switched_this_pass) listing_switched_.erase(to);
+            pending_switches.clear();
+            result = held_book(why);
+            result.refusal_on_reread = on_reread;
+            WARN("LISTING_SWITCH undone: the pass was refused (" + why + "); no switch fill is written");
+        }
+        for (auto& pending : pending_switches) {
+            ++listing_leg_seq_[pending.sid];
+            for (auto& leg : pending.legs) strategy_executions_[pending.sid].push_back(std::move(leg));
+            for (const auto& line : pending.lines) INFO(line);
+            auto& ledger = filled_positions_[pending.sid];
+            ledger[pending.from] = 0.0;
+            ledger[pending.to] = pending.new_to;
         }
         const bool refused = !result.refusal.empty();
         for (size_t i = 0; i < n; ++i) {

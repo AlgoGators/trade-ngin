@@ -165,6 +165,7 @@ set(TRADE_NGIN_SOURCES
     src/data/database_pooling.cpp
     src/data/market_data_utils.cpp
     src/data/session_classifier.cpp
+    src/data/listing_dates.cpp
     src/data/roll_series.cpp
     src/instruments/futures.cpp
     src/instruments/equity.cpp

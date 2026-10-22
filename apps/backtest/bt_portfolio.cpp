@@ -10,6 +10,7 @@
 #include "trade_ngin/core/run_id_generator.hpp"
 #include "trade_ngin/core/time_utils.hpp"
 #include "trade_ngin/data/database_pooling.hpp"
+#include "trade_ngin/data/listing_dates.hpp"
 #include "trade_ngin/data/postgres_database.hpp"
 #include "trade_ngin/instruments/instrument_registry.hpp"
 #include "trade_ngin/portfolio/portfolio_manager.hpp"
@@ -160,6 +161,51 @@ int main() {
                                s == "ES.v.0";
                     }),
                 symbols.end());
+            // Declared vendor id relabellings (nothing happens without instrument_id_relabels).
+            if (!app_config.instrument_id_relabels.empty()) {
+                ListingDates::instance().set_relabels(app_config.instrument_id_relabels);
+                std::string line = "INSTRUMENT_ID_RELABELS in force (not rolls):";
+                for (const auto& r : app_config.instrument_id_relabels) {
+                    line += " " + r.symbol + " from " + r.date + " id " + r.to + " is read as " + r.from + ";";
+                }
+                WARN(line);
+            }
+            // Listing dates (nothing happens without portfolio.json's listing_dates):
+            // a window that starts before a contract's listing date also runs the contract traded
+            // before it, on the rows stored under the listed contract's symbol.
+            if (!app_config.listing_dates.empty()) {
+                ListingDates::instance().set(app_config.listing_dates);
+                ListingDates::instance().set_switch_rule(app_config.listing_switch_rule);
+                InstrumentRegistry::instance().set_full_size_remap(false);
+                // the ratio is the two contracts' sizes, wherever both have a metadata row
+                for (const auto& c : app_config.listing_dates) {
+                    auto& registry = InstrumentRegistry::instance();
+                    if (!registry.has_instrument(c.before) || !registry.has_instrument(c.symbol)) continue;
+                    const auto before = registry.get_instrument(c.before);
+                    const auto listed = registry.get_instrument(c.symbol);
+                    const std::string wrong = ListingDates::ratio_error(
+                        c, before ? before->get_multiplier() : 0.0, listed ? listed->get_multiplier() : 0.0);
+                    if (!wrong.empty()) throw std::runtime_error(wrong);
+                }
+                const auto predecessors = ListingDates::instance().predecessor_symbols(
+                    symbols, config.strategy_config.start_date);
+                std::string line = std::string("LISTING_DATES in force, switch rule ") +
+                                   to_string(app_config.listing_switch_rule) + ":";
+                for (const auto& c : app_config.listing_dates) {
+                    line += " " + c.symbol + " from " + c.listed + " (before it " + c.before + ", 1 = " + std::to_string(c.ratio) + ")";
+                }
+                line += "; symbols added to this run:";
+                for (const auto& p : predecessors) {
+                    if (!InstrumentRegistry::instance().has_instrument(p)) {
+                        throw std::runtime_error("listing_dates: " + p +
+                                                 " has no metadata.contract_metadata row");
+                    }
+                    line += " " + p;
+                    symbols.push_back(p);
+                }
+                if (predecessors.empty()) line += " none";
+                WARN(line);
+            }
             config.strategy_config.symbols = symbols;
         } else {
             ERROR("Failed to get symbols: " + std::string(symbols_result.error()->what()));
@@ -505,6 +551,21 @@ int main() {
             nlohmann::json portfolio_config_json = portfolio_config.to_json();
             portfolio_config_json["strategy_allocations"] = strategy_allocations;
             portfolio_config_json["strategy_names"] = strategy_names;
+            if (!app_config.instrument_id_relabels.empty()) {
+                auto relabels = nlohmann::json::array();
+                for (const auto& r : app_config.instrument_id_relabels) {
+                    relabels.push_back({{"symbol", r.symbol}, {"date", r.date}, {"from", r.from}, {"to", r.to}});
+                }
+                portfolio_config_json["instrument_id_relabels"] = relabels;
+            }
+            if (!app_config.listing_dates.empty()) {
+                auto contracts = nlohmann::json::array();
+                for (const auto& c : app_config.listing_dates) {
+                    contracts.push_back({{"symbol", c.symbol}, {"listed", c.listed}, {"before", c.before}, {"ratio", c.ratio}});
+                }
+                portfolio_config_json["listing_dates"] = {
+                    {"switch_rule", to_string(app_config.listing_switch_rule)}, {"contracts", contracts}};
+            }
 
             auto save_result = coordinator->save_portfolio_results_to_db(
                 backtest_results, strategy_names, strategy_allocations, portfolio,
