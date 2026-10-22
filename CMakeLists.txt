@@ -186,6 +186,7 @@ set(TRADE_NGIN_SOURCES
     src/backtest/backtest_pnl_manager.cpp
     src/backtest/backtest_price_manager.cpp
     src/backtest/backtest_metrics_calculator.cpp
+    src/backtest/backtest_statistics_columns.cpp
     src/backtest/backtest_execution_manager.cpp
     src/backtest/backtest_data_loader.cpp
     src/backtest/backtest_coordinator.cpp

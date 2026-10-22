@@ -175,6 +175,37 @@ public:
     }
 };
 
+/// ServingDb that also answers the two counts a storing run asks before its first cycle
+/// (T-8D-2 R49: the rows backtest.results and backtest.final_positions hold of its run id) and
+/// keeps the statements it was asked.
+class StoredRunDb : public ServingDb {
+public:
+    using ServingDb::ServingDb;
+
+    int64_t results_rows{0};
+    int64_t final_positions_rows{0};
+    bool counts_fail{false};
+    std::vector<std::string> count_queries;
+
+    Result<std::shared_ptr<arrow::Table>> execute_query(const std::string& query) override {
+        const bool results = query.find("COUNT(*) FROM backtest.results") != std::string::npos;
+        const bool positions =
+            query.find("COUNT(*) FROM backtest.final_positions") != std::string::npos;
+        if (!results && !positions) return ServingDb::execute_query(query);
+        count_queries.push_back(query);
+        if (counts_fail) {
+            return make_error<std::shared_ptr<arrow::Table>>(ErrorCode::DATABASE_ERROR,
+                                                             "the count could not be read");
+        }
+        arrow::Int64Builder builder;
+        ARROW_CHECK_OK(builder.Append(results ? results_rows : final_positions_rows));
+        std::shared_ptr<arrow::Array> array;
+        ARROW_CHECK_OK(builder.Finish(&array));
+        return Result<std::shared_ptr<arrow::Table>>(
+            arrow::Table::Make(arrow::schema({arrow::field("count", arrow::int64())}), {array}));
+    }
+};
+
 /// Holds, per symbol, the quantity scheduled for the latest signal bar it has been fed
 /// (targets[symbol][day] applies from that trading day's signal bar on).
 class ScheduledStrategy : public BaseStrategy {

@@ -1,7 +1,9 @@
 #include "trade_ngin/live/live_pnl_manager.hpp"
 #include "trade_ngin/core/logger.hpp"
+#include "trade_ngin/core/stat_quality.hpp"
 #include <cmath>
 #include <mutex>
+#include <set>
 #include <unordered_set>
 
 namespace trade_ngin {
@@ -31,6 +33,7 @@ Result<LivePnLManager::FinalizationResult> LivePnLManager::finalize_previous_day
 
     if (previous_positions.empty()) {
         INFO("No positions to finalize for Day T-1");
+        INFO(stat_quality::finalize_line(0, {}));
         result.success = true;
         return Result<FinalizationResult>(result);
     }
@@ -41,6 +44,10 @@ Result<LivePnLManager::FinalizationResult> LivePnLManager::finalize_previous_day
     }
 
     double total_finalized_pnl = 0.0;
+    // STAT_QUALITY (T-8D F10, T-8D-2 R82): the held symbols of the settled book and, of them, the
+    // ones with no close on the settled date. A log line only: nothing below reads the two.
+    std::set<std::string> held_symbols;
+    std::set<std::string> held_no_bar;
 
     INFO("Finalizing " + std::to_string(previous_positions.size()) + " positions for Day T-1");
     INFO("DEBUG FINALIZATION: Starting finalize_previous_day()");
@@ -52,6 +59,10 @@ Result<LivePnLManager::FinalizationResult> LivePnLManager::finalize_previous_day
         // Get Day T-1 close (current close for Day T-1)
         // T-1 data is REQUIRED - if missing, add position with 0 PnL to maintain continuity
         auto t1_it = t1_close_prices.find(symbol);
+        if (quantity != 0.0) {
+            held_symbols.insert(symbol);
+            if (t1_it == t1_close_prices.end()) held_no_bar.insert(symbol);
+        }
         if (t1_it == t1_close_prices.end()) {
             Position finalized_pos = position;
             result.position_realized_pnl[symbol] = 0.0;
@@ -188,6 +199,7 @@ Result<LivePnLManager::FinalizationResult> LivePnLManager::finalize_previous_day
     INFO("Day T-1 finalization complete: Total PnL (Gross)=" + std::to_string(total_finalized_pnl) +
          ", Net PnL=" + std::to_string(net_pnl) +
          ", Portfolio Value=" + std::to_string(result.finalized_portfolio_value));
+    INFO(stat_quality::finalize_line(held_symbols.size(), held_no_bar));
 
     result.success = true;
     return Result<FinalizationResult>(result);

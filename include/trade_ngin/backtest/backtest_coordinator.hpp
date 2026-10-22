@@ -1,5 +1,6 @@
 #pragma once
 
+#include <functional>
 #include <memory>
 #include <map>
 #include <optional>
@@ -8,6 +9,7 @@
 #include <vector>
 #include <nlohmann/json.hpp>
 #include "trade_ngin/core/error.hpp"
+#include "trade_ngin/core/stat_quality.hpp"
 #include "trade_ngin/core/types.hpp"
 #include "trade_ngin/data/postgres_database.hpp"
 #include "trade_ngin/data/session_classifier.hpp"
@@ -45,6 +47,11 @@ struct BacktestCoordinatorConfig {
     bool store_trade_details = true;
     std::string portfolio_id = "BASE_PORTFOLIO";
     std::string csv_output_path = "apps/backtest/results";
+    /// K, the sessions a year of the grid the run's statistics are taken on (T-8D R2, T-8D-2
+    /// R76): the app hands the configured statistics.sessions_per_year of the run's series
+    /// (futures or equities). The one source of the factor: there is no default, and a run
+    /// without a positive value is refused before it loads a bar.
+    double statistics_sessions_per_year = 0.0;
 };
 
 /**
@@ -117,6 +124,24 @@ private:
     std::unordered_set<std::string> mark_withheld_;
     std::unordered_set<std::string> mark_change_;
     std::unordered_map<std::string, std::string> row_held_id_;
+    /// Migration 032 (T-8D-2 R50): per futures sleeve, the held symbols that printed no bar in
+    /// this cycle's group. Their row books nothing (realized_pnl 0, quantity and average price
+    /// kept) and is stored with row_mark = 'NO_BAR'; filled where the row is zeroed.
+    std::unordered_map<std::string, std::unordered_set<std::string>> row_no_bar_;
+    /// STAT_QUALITY (T-8D F10, T-8D-2 R82): per sleeve of any book, the held symbols that printed
+    /// no bar in this cycle's group (a futures sleeve's are row_no_bar_'s), and the run's record
+    /// of the stored dates with one. Read by the summary's log lines only.
+    std::unordered_map<std::string, std::unordered_set<std::string>> held_no_bar_;
+    stat_quality::RunRecord stat_quality_;
+    /// Notes one stored date in stat_quality_: the book's distinct held symbols and, of them,
+    /// held_no_bar_'s.
+    void note_stat_quality_day(
+        const std::unordered_map<std::string, std::unordered_map<std::string, Position>>&
+            strategy_positions,
+        const std::string& date);
+    /// The summary's STAT_QUALITY lines: the run line, then one line a stored date with a held
+    /// symbol that printed no bar, each saying whether the date is on `grid`.
+    std::vector<std::string> stat_quality_lines(const BacktestStatisticsGrid& grid) const;
     /// T-ROLLX-FIX (LOOP_SPEC v6.1 section 6.5): the ROLL legs booked so far per sleeve (the RL-
     /// ids' sequence numbers); a ROLL_LEG STOP fails the run (code review X-3).
     std::unordered_map<std::string, size_t> roll_leg_seq_;
@@ -140,6 +165,18 @@ private:
     // its equity curve row, and the account value V_t the cycle's sizing capital was read with.
     std::map<size_t, std::string> equity_risk_detail_;
     double cycle_account_value_ = 0.0;
+    /// Migration 031: the six overlay cells of each sized rebalance, by the index of its equity
+    /// curve row (the rows equity_risk_detail_ names), and on how many of them the readings of
+    /// the stored book equal the pass's own to the bit.
+    std::map<size_t, OverlayColumns> equity_overlay_;
+    size_t overlay_rows_equal_to_pass_ = 0;
+    /// Migration 031: the per-symbol P&L cells of the position rows the run stores, one entry
+    /// per symbol and stored date (summed over the sleeves), and the last date collected.
+    std::vector<SymbolDayPnl> symbol_day_pnl_;
+    std::string symbol_day_pnl_date_;
+    /// The risk_detail text of each equity-curve row (empty: a NULL cell), `rows` entries; empty
+    /// altogether on a run that stored none.
+    std::vector<std::string> equity_risk_detail_rows(size_t rows) const;
     /// T-7b-2 9c (HD 2026-09-25, compounding): every cycle sizes the book on the equity curve's
     /// last row (PortfolioManager::set_sizing_capital). Futures only (run_portfolio with
     /// AssetClass::FUTURES), like the session hold; the equity backtest sizes as before.
@@ -350,6 +387,71 @@ private:
      */
     BacktestMetricsCalculator::PointValueSource trade_point_value_source() const;
 
+public:
+    /**
+     * @brief The statistics grid of a run over these bars (T-8D R1, R3)
+     *
+     * A futures run: the Sunday-to-Friday UTC dates on which at least kStatisticsGridMinSymbols
+     * distinct STORED symbols printed a bar (futures_statistics_grid_dates). A predecessor
+     * contract a listing date adds to the run (ES for MES before 2019-05-06) is not counted: its
+     * bars are copies of its listed contract's rows, so the count is over the stored universe,
+     * the one the sessions a year were measured on. Any other run: its own rows.
+     *
+     * @param grouped_bars The run's bars by timestamp
+     * @param asset_class The run's asset class
+     * @param sessions_per_year K of the grid
+     */
+    static BacktestStatisticsGrid statistics_grid(
+        const std::map<Timestamp, std::vector<Bar>>& grouped_bars, AssetClass asset_class,
+        double sessions_per_year);
+
+    /**
+     * @brief The per-symbol P&L cells of the position rows a run stores for one date (the
+     *        worst day's symbol, migration 031)
+     *
+     * One entry per symbol: the realised P&L and the unrealised level of its rows, summed over
+     * the sleeves, of the rows backtest.final_positions takes
+     * (backtest_position_row_is_stored: a futures sleeve's zero-quantity row is not stored and
+     * not read). A futures row's realised P&L is the symbol's whole P&L of the day (LOOP_SPEC
+     * section 6.6); an equity row carries the realised flow and the open position's unrealised
+     * level.
+     *
+     * @param strategy_positions The sleeves' position rows after the day's P&L was booked
+     * @param keeps_closed_rows Whether a sleeve stores its rows closed to zero (a cash book)
+     * @param date The stored date, "YYYY-MM-DD"
+     */
+    /**
+     * @brief The six overlay cells of a backtest row (migration 031; HD 2026-10-10): the
+     *        overlay's own readings of the book the run STORES for the row's date
+     *
+     * PortfolioManager::overlay_readings_for_book (the accessor the live runners call) on the
+     * sum of the sleeves' positions as they stand when the row is written, then
+     * overlay_columns_of: no second implementation of a reading. A day whose rebalance stores no
+     * risk_detail (`day.stores_detail()` false: a warm-up cycle, a refusal) has no cell; on a
+     * blind window only the two leverage readings have a value.
+     *
+     * @param portfolio The run's portfolio, after the cycle's rebalance
+     * @param day That rebalance's record (PortfolioManager::last_one_pass)
+     * @param equal_to_pass Set to whether the five readings of the stored book equal the pass's
+     *        own readings of its stored book to the bit (they do unless a step after the pass
+     *        changed a quantity; the backtest cycle has none)
+     */
+    static OverlayColumns stored_book_overlay_columns(const PortfolioManager& portfolio,
+                                                      const OnePassDay& day,
+                                                      bool* equal_to_pass = nullptr);
+
+    static std::vector<SymbolDayPnl> stored_symbol_day_pnl(
+        const std::unordered_map<std::string, std::unordered_map<std::string, Position>>&
+            strategy_positions,
+        const std::function<bool(const std::string&)>& keeps_closed_rows, const std::string& date);
+
+private:
+    /// The refusal of a run that was handed no sessions a year; ok otherwise.
+    Result<void> require_statistics_sessions_per_year() const;
+    /// The run's one line on its statistics convention (T-8D R31).
+    void log_statistics_convention(const BacktestStatisticsGrid& grid, AssetClass asset_class,
+                                   const BacktestResults& results, size_t curve_rows) const;
+
     /**
      * @brief Calculate warmup days from strategy lookbacks
      */
@@ -375,6 +477,11 @@ private:
      */
     void load_equity_cost_retier(const std::vector<std::string>& symbols,
                                  const Timestamp& start_date, const Timestamp& end_date);
+
+    /// Whether a sleeve's rows closed to zero are stored (E2-F54): its accounting is not the
+    /// futures REALIZED_ONLY.
+    static bool keeps_closed_rows(const std::shared_ptr<PortfolioManager>& portfolio,
+                                  const std::string& strategy_id);
 
     /**
      * @brief Save daily positions to database

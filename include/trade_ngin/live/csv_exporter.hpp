@@ -46,29 +46,6 @@ public:
     explicit CSVExporter(const std::string& output_directory = ".");
 
     /**
-     * @brief Export current day positions to CSV (forward-looking, no PnL)
-     *
-     * Creates a file named: YYYY-MM-DD_positions.csv
-     * Contains: symbol, quantity, market_price, notional, percentages, forecast, volatility, EMAs
-     *
-     * @param date Current trading date
-     * @param positions Current positions map
-     * @param market_prices Market prices for positions (Day T-1 close)
-     * @param portfolio_value Current portfolio value
-     * @param gross_notional Gross notional value
-     * @param net_notional Net notional value
-     * @param strategy Strategy instance for forecasts and EMAs
-     * @param symbol_commissions Optional commission data by symbol
-     * @return Result containing filename on success, or error
-     */
-    Result<std::string> export_current_positions(
-        const std::chrono::system_clock::time_point& date,
-        const std::unordered_map<std::string, Position>& positions,
-        const std::unordered_map<std::string, double>& market_prices, double portfolio_value,
-        double gross_notional, double net_notional, ITrendFollowingStrategy* strategy,
-        const std::unordered_map<std::string, double>& symbol_commissions = {});
-
-    /**
      * @brief Export current day positions to CSV with per-strategy breakdown
      *
      * Creates a file named: YYYY-MM-DD_positions.csv
@@ -118,28 +95,6 @@ public:
         const std::unordered_map<std::string, CarriedForecasts>& last_forecasts,
         double portfolio_value, double gross_notional, double net_notional,
         const std::string& no_session_reason);
-
-    /**
-     * @brief Export yesterday's finalized positions to CSV (with PnL)
-     *
-     * Creates a file named: YYYY-MM-DD_positions_asof_YYYY-MM-DD.csv
-     * Contains: symbol, quantity, entry_price, exit_price, realized_pnl
-     *
-     * @param date Current trading date (for filename)
-     * @param yesterday_date Yesterday's date
-     * @param db Database connection for querying finalized positions
-     * @param fallback_positions Fallback positions if database query fails
-     * @param entry_prices Day T-2 close prices (entry)
-     * @param exit_prices Day T-1 close prices (exit)
-     * @return Result containing filename on success, or error
-     */
-    Result<std::string> export_finalized_positions(
-        const std::chrono::system_clock::time_point& date,
-        const std::chrono::system_clock::time_point& yesterday_date, std::shared_ptr<IDatabase> db,
-        const std::unordered_map<std::string, Position>& fallback_positions,
-        const std::unordered_map<std::string, double>& entry_prices,  // T-2 prices
-        const std::unordered_map<std::string, double>& exit_prices    // T-1 prices
-    );
 
     /**
      * @brief Export yesterday's finalized positions to CSV with per-strategy breakdown

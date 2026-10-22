@@ -217,11 +217,14 @@ TEST_F(LiveHistoricalMetricsTest, CalculatePopulatesAllAggregateStats) {
     EXPECT_NEAR(m.worst_day, -1500.0 / 102500.0 * 100.0, 1e-9);
 }
 
-TEST_F(LiveHistoricalMetricsTest, CalculateProfitFactorIsLargeWhenNoLosses) {
+// T-8D R12: with no losing session the profit factor has no denominator and no value (it was
+// 999.99).
+TEST_F(LiveHistoricalMetricsTest, CalculateProfitFactorHasNoValueWhenNoLosses) {
     LiveHistoricalMetricsCalculator c;
     auto m = c.calculate(grid_of_returns({1.0, 2.0}), 252.0, 2);
     EXPECT_DOUBLE_EQ(m.gross_loss, 0.0);
-    EXPECT_GT(m.profit_factor, 100.0);
+    EXPECT_GT(m.gross_profit, 0.0);
+    EXPECT_TRUE(std::isnan(m.profit_factor));
 }
 
 TEST_F(LiveHistoricalMetricsTest, CalculateZeroVolatilityKeepsRatiosAtZero) {

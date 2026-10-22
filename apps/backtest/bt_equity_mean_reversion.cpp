@@ -228,6 +228,9 @@ int main() {
         coord_config.use_optimization = app_config.use_optimization;
         coord_config.store_trade_details = app_config.backtest.store_trade_details;
         coord_config.portfolio_id = app_config.portfolio_id;
+        // T-8D R2, T-8D-2 R76: K of the equity statistics grid (NYSE sessions), the one factor
+        // the run's annualised statistics use.
+        coord_config.statistics_sessions_per_year = app_config.statistics.equity_sessions_per_year;
 
         auto coordinator = std::make_unique<BacktestCoordinator>(db, &registry, coord_config);
 
@@ -367,12 +370,12 @@ int main() {
         std::cout << "\n======= Equity Mean Reversion Backtest Results =======" << std::endl;
         std::cout << "Total Return: " << std::fixed << std::setprecision(2)
                   << (backtest_results.total_return * 100.0) << "%" << std::endl;
-        std::cout << "Sharpe Ratio: " << std::setprecision(3) << backtest_results.sharpe_ratio
+        std::cout << "Sharpe Ratio: " << std::setprecision(3) << ratio_or_na(backtest_results.sharpe_ratio)
                   << std::endl;
-        std::cout << "Sortino Ratio: " << backtest_results.sortino_ratio << std::endl;
+        std::cout << "Sortino Ratio: " << ratio_or_na(backtest_results.sortino_ratio) << std::endl;
         std::cout << "Max Drawdown: " << std::setprecision(2)
                   << (backtest_results.max_drawdown * 100.0) << "%" << std::endl;
-        std::cout << "Calmar Ratio: " << std::setprecision(3) << backtest_results.calmar_ratio
+        std::cout << "Calmar Ratio: " << std::setprecision(3) << ratio_or_na(backtest_results.calmar_ratio)
                   << std::endl;
         std::cout << "Volatility: " << std::setprecision(2)
                   << (backtest_results.volatility * 100.0) << "%" << std::endl;
@@ -405,12 +408,12 @@ int main() {
                     {"vol_lookback", mr.vol_lookback},
                     {"allow_fractional_shares", mr.allow_fractional_shares}};
                 // T-8D-2 R53: the sleeve's resolved risk_target is mean_reversion's above; the
-                // window rule, the warm-up and the sessions a year of the statistics are added.
+                // window rule, the warm-up and the sessions a year the calculator applied to
+                // the statistics are added.
                 trade_ngin::add_backtest_run_keys(
                     config_json, app_config.backtest.lookback_years,
                     app_config.backtest.frozen_end_date, backtest_results.warmup_days,
-                    trade_ngin::kBacktestAnnualisationApplied,
-                    app_config.statistics.equity_sessions_per_year);
+                    backtest_results.statistics_sessions_per_year);
                 std::vector<trade_ngin::ResolvedSleeve> resolved_sleeves;
                 for (const auto& entry : strat_entries) {
                     resolved_sleeves.push_back(

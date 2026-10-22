@@ -5,7 +5,10 @@
 #include <string>
 #include <unordered_map>
 #include <map>
+#include "trade_ngin/backtest/backtest_statistics_columns.hpp"
+#include "trade_ngin/core/no_value.hpp"
 #include "trade_ngin/core/types.hpp"
+#include "trade_ngin/live/live_historical_metrics.hpp"
 
 namespace trade_ngin {
 
@@ -14,13 +17,31 @@ namespace backtest {
 struct BacktestResults;
 }
 
-/// The sessions a year every annualised figure of this calculator applies TODAY: volatility,
-/// Sharpe, Sortino, downside volatility and the annualised return multiply by 252 or sqrt(252),
-/// on every book, whatever the run's own grid is. A futures run has about 312 rows a year and its
-/// ruled factor is 311.0574 (T-8D R2); aligning the calculator to it is T-8b's commit (1). Until
-/// then this is the factor a backtest records as the one its figures use
-/// (backtest.run_metadata.portfolio_config.statistics_K), with the ruled factor beside it.
-inline constexpr double kBacktestAnnualisationApplied = 252.0;
+/**
+ * @brief The grid a run's statistics are taken on and its sessions a year (T-8D R1, R2, R3;
+ *        T-8D-2 R76). The calculator holds no factor of its own: every annualised figure uses
+ *        `sessions_per_year`, which must be the row frequency of this grid.
+ *
+ * A statistics construct only: every row of the equity curve stays. A futures run's grid is the
+ * Sunday-to-Friday dates on which enough of its universe printed a bar
+ * (futures_statistics_grid_dates), an equity run's its own rows (NYSE sessions). A curve row
+ * dated off the grid (a Saturday point, a thin date) is no observation: returns are taken on
+ * the grid's LEVELS, so its P&L lands in the next grid return and nothing is dropped.
+ */
+struct BacktestStatisticsGrid {
+    double sessions_per_year{0.0};   ///< K of the grid
+    bool own_rows{false};            ///< the grid is every row of the curve; `dates` is not read
+    std::vector<std::string> dates;  ///< the grid dates "YYYY-MM-DD", any order
+
+    /// The grid of a run whose every curve row is a session (an equity run).
+    static BacktestStatisticsGrid of_own_rows(double sessions_per_year) {
+        return {sessions_per_year, true, {}};
+    }
+    /// The grid of a run with `dates` as its sessions (a futures run).
+    static BacktestStatisticsGrid of_dates(double sessions_per_year, std::vector<std::string> dates) {
+        return {sessions_per_year, false, std::move(dates)};
+    }
+};
 
 /**
  * @brief Pure stateless calculation component for backtest metrics
@@ -58,12 +79,15 @@ public:
     double calculate_total_return(double start_value, double end_value) const;
 
     /**
-     * @brief Calculate annualized return
-     * @param total_return Total return as decimal
-     * @param trading_days Number of trading days
-     * @return Annualized return as decimal
+     * @brief Calculate annualized return: the CAGR, (1 + R)^(K / n) - 1 (grid_annualized_return)
+     * @param total_return R, from the base to the last grid level, as decimal
+     * @param trading_days n, the number of returns of the statistics grid
+     * @param sessions_per_year K, the grid's sessions a year
+     * @return Annualized return as decimal; 0 without a return or a positive K, -1 when the
+     *         book lost everything
      */
-    double calculate_annualized_return(double total_return, int trading_days) const;
+    double calculate_annualized_return(double total_return, int trading_days,
+                                       double sessions_per_year) const;
 
     /**
      * @brief Calculate daily returns from equity curve
@@ -76,55 +100,63 @@ public:
     // ========== Risk-Adjusted Return Metrics ==========
 
     /**
-     * @brief Calculate Sharpe ratio
-     * @param returns Vector of daily returns
-     * @param trading_days Number of trading days (for annualization)
+     * @brief Calculate Sharpe ratio: mean x K over the sample standard deviation x sqrt(K)
+     * @param returns Vector of grid returns
+     * @param sessions_per_year K, the sessions a year of the grid the returns are taken on
      * @param risk_free_rate Annual risk-free rate (default 0)
-     * @return Sharpe ratio
+     * @return Sharpe ratio; kNoRatio (no value) for an empty series, without a positive K or
+     *         with no volatility
      */
     double calculate_sharpe_ratio(
         const std::vector<double>& returns,
-        int trading_days,
+        double sessions_per_year,
         double risk_free_rate = 0.0) const;
 
     /**
-     * @brief Calculate Sortino ratio
-     * @param returns Vector of daily returns
-     * @param trading_days Number of trading days (for annualization)
+     * @brief Calculate Sortino ratio: mean x K over the downside volatility
+     * @param returns Vector of grid returns
+     * @param sessions_per_year K, the sessions a year of the grid the returns are taken on
      * @param minimum_acceptable_return Minimum acceptable return (default 0)
-     * @return Sortino ratio
+     * @return Sortino ratio; kNoRatio (no value) for an empty series, without a positive K or
+     *         with no return under the target
      */
     double calculate_sortino_ratio(
         const std::vector<double>& returns,
-        int trading_days,
+        double sessions_per_year,
         double minimum_acceptable_return = 0.0) const;
 
     /**
      * @brief Calculate Calmar ratio (annualized return / max drawdown)
-     * @param annualized_return Annualized return as decimal
+     * @param annualized_return Annualized return as decimal (calculate_annualized_return)
      * @param max_drawdown Maximum drawdown as decimal
-     * @return Calmar ratio
+     * @return Calmar ratio; kNoRatio (no value) with no drawdown
      */
     double calculate_calmar_ratio(double annualized_return, double max_drawdown) const;
 
     // ========== Volatility Metrics ==========
 
     /**
-     * @brief Calculate annualized volatility
-     * @param returns Vector of daily returns
-     * @return Annualized volatility (using sqrt(252))
+     * @brief Calculate annualized volatility: the SAMPLE standard deviation (n - 1) x sqrt(K),
+     *        the live statistics' own function (LiveHistoricalMetricsCalculator)
+     * @param returns Vector of grid returns
+     * @param sessions_per_year K, the sessions a year of the grid the returns are taken on
+     * @return Annualized volatility; 0 under two returns or without a positive K
      */
-    double calculate_volatility(const std::vector<double>& returns) const;
+    double calculate_volatility(const std::vector<double>& returns,
+                                double sessions_per_year) const;
 
     /**
-     * @brief Calculate downside volatility (for Sortino)
-     * @param returns Vector of daily returns
+     * @brief Calculate downside volatility (for Sortino): sqrt(sum of the squared shortfalls
+     *        below target over EVERY return / n) x sqrt(K), the live statistics' own function
+     * @param returns Vector of grid returns
+     * @param sessions_per_year K, the sessions a year of the grid the returns are taken on
      * @param target Target return (typically 0)
-     * @return Annualized downside volatility
+     * @return Annualized downside volatility; 0 under two returns or without a positive K
      */
     double calculate_downside_volatility(
         const std::vector<double>& returns,
-        double target = 0.0) const;
+        double sessions_per_year,
+        double target) const;
 
     // ========== Drawdown Metrics ==========
 
@@ -154,7 +186,8 @@ public:
     double calculate_var_95(const std::vector<double>& returns) const;
 
     /**
-     * @brief Calculate Conditional VaR (Expected Shortfall) at 95%
+     * @brief Calculate Conditional VaR (Expected Shortfall) at 95%: the mean of the worst
+     *        floor(0.05 n) + 1 returns, the VaR observation included
      * @param returns Vector of daily returns
      * @return CVaR as positive decimal
      */
@@ -162,13 +195,13 @@ public:
 
     /**
      * @brief Calculate all risk metrics at once
-     * @param returns Vector of daily returns
-     * @param trading_days Number of trading days
+     * @param returns Vector of grid returns
+     * @param sessions_per_year K, the sessions a year of the grid the returns are taken on
      * @return Map of metric name to value
      */
     std::unordered_map<std::string, double> calculate_risk_metrics(
         const std::vector<double>& returns,
-        int trading_days) const;
+        double sessions_per_year) const;
 
     // ========== Trade Statistics ==========
 
@@ -179,7 +212,7 @@ public:
         int total_trades = 0;
         int winning_trades = 0;
         double win_rate = 0.0;
-        double profit_factor = 0.0;
+        double profit_factor = 0.0;  ///< total_profit / total_loss; kNoRatio with no loss
         double total_profit = 0.0;
         double total_loss = 0.0;
         double avg_win = 0.0;
@@ -304,6 +337,38 @@ public:
     std::pair<double, double> calculate_beta_correlation(
         const std::vector<double>& returns) const;
 
+    // ========== The Statistics Grid ==========
+
+    /**
+     * @brief The levels the statistics are taken on: the curve folded onto the grid
+     *
+     * `curve` is the run's rows after the warm-up, one per UTC date, ascending; its first row
+     * is the base (the level the first return is taken on) and never a return row. Every later
+     * grid date through the curve's last date is one point, at the last curve level on or before
+     * it (build_statistics_series, the live statistics' own fold): the P&L of a row dated off
+     * the grid lands in the next grid point, a grid date with no row of its own repeats the
+     * level before it, and a curve whose last rows are off the grid ends at its last grid date.
+     * With `grid.own_rows` the curve is returned as it is.
+     *
+     * @return (timestamp, level) points, the base first; a point's timestamp is its curve row's,
+     *         or midnight UTC of a grid date that has no row
+     */
+    std::vector<std::pair<Timestamp, double>> statistics_grid_curve(
+        const std::vector<std::pair<Timestamp, double>>& curve,
+        const BacktestStatisticsGrid& grid) const;
+
+    /**
+     * @brief The statistics series of a run: the grid returns statistics_grid_curve's levels
+     *        give, with their dates and P&L (build_statistics_series, the live statistics' own
+     *        fold)
+     *
+     * `curve` as for statistics_grid_curve: its first row is the base. With `grid.own_rows`
+     * every later row of the curve is a return row. The series the statistics of migration 031
+     * are taken on (backtest_statistics_columns). Empty for an empty curve.
+     */
+    StatisticsSeries statistics_series(const std::vector<std::pair<Timestamp, double>>& curve,
+                                       const BacktestStatisticsGrid& grid) const;
+
     // ========== Composite Calculation ==========
 
     /**
@@ -312,17 +377,33 @@ public:
      * This is the main entry point that computes all metrics at once. A UTC date the curve
      * carries more than once counts once, by its last row, before the warmup is cut.
      *
+     * total_return is the level of the last row over the first row after the warm-up, every row
+     * counted. Volatility, Sharpe, Sortino, the downside volatility, the Calmar ratio (the
+     * grid's CAGR over the maximum drawdown), the maximum drawdown, VaR, CVaR, beta and
+     * correlation are taken on the statistics grid (statistics_grid_curve) and annualised with
+     * its sessions a year, which the result records (statistics_sessions_per_year,
+     * statistics_days, annualized_return). The trade statistics read the executions,
+     * the drawdown curve and the monthly returns every row. The statistics of migration 031
+     * (statistics_columns) are taken on the same grid series (statistics_series) with the same
+     * sessions a year, and total_strategy_fills is the trade statistics' own count of the
+     * account's fills.
+     *
      * @param equity_curve Full equity curve including warmup period
      * @param executions All execution reports
      * @param warmup_days Number of days to exclude from metric calculations
      * @param point_value Dollars per price point of each symbol (the trade statistics)
+     * @param grid The statistics grid of the run and its sessions a year
+     * @param statistics_inputs The run's stored per-symbol P&L and sizing capitals (the worst
+     *        day's symbol and the three sizing-capital statistics; NULL without them)
      * @return Populated BacktestResults structure
      */
     backtest::BacktestResults calculate_all_metrics(
         const std::vector<std::pair<Timestamp, double>>& equity_curve,
         const std::vector<ExecutionReport>& executions,
         int warmup_days,
-        const PointValueSource& point_value) const;
+        const PointValueSource& point_value,
+        const BacktestStatisticsGrid& grid,
+        const BacktestStatisticsInputs& statistics_inputs = BacktestStatisticsInputs()) const;
 
 private:
     // ========== Helper Methods ==========
@@ -331,11 +412,6 @@ private:
      * @brief Calculate mean of a vector
      */
     double calculate_mean(const std::vector<double>& values) const;
-
-    /**
-     * @brief Calculate standard deviation
-     */
-    double calculate_std_dev(const std::vector<double>& values, double mean) const;
 
     /**
      * @brief Filter equity curve to exclude warmup period

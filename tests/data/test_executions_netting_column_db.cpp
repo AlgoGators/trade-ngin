@@ -1,8 +1,7 @@
 // K3 storage (T-7b-2 8b, migration 013): every executions writer stores netting_adjustment.
 //
-// store_executions (every live runner), store_backtest_executions and
-// store_backtest_executions_with_strategy (both backtest paths, the single-row statement and the
-// batched one above 100 rows) must name the column and bind the report's value, so a netted row
+// store_executions (every live runner) and store_backtest_executions_with_strategy (the backtest
+// path: the single-row statement and the batched one above 100 rows) must name the column and bind the report's value, so a netted row
 // reads back its 8-decimal adjustment (negative included) and an un-netted row reads 0, never
 // NULL (NULL means "written before migration 013"). The value is bound as a double, exactly as
 // the four cost columns beside it are, so the column reads like them (-0.50653208999999999 in
@@ -175,9 +174,6 @@ TEST_F(ExecutionsNettingColumnTest, BacktestRowsStoreTheirAdjustmentOnEveryWrite
     ASSERT_EQ(vb.size(), 120u);
     EXPECT_EQ(vb[7], "-0.50653208");
     EXPECT_EQ(vb[8], "0");
-    // store_backtest_executions (no strategy id) names no strategy_id, which backtest.executions
-    // requires (NOT NULL), so it cannot insert into this table at all; it gets the column for
-    // symmetry and is not exercised here.
 }
 
 // T-NETTING fix round: a ROLL leg and a BORROW row are never netted. A row of either kind that

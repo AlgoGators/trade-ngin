@@ -355,7 +355,7 @@ TEST(LiveStatisticsColumns, ACellWithNoValueIsNullAndTheFourteenAreInTheMigratio
     EXPECT_EQ(*cells[0].value, "2025-10-10");
     EXPECT_EQ(*cells[1].value, "MES.v.0");
     EXPECT_FALSE(cells[2].value.has_value());             // max_drawdown_sizing: NULL
-    EXPECT_EQ(*cells[4].value, "-1.027401213");           // ten significant digits
+    EXPECT_EQ(*cells[4].value, "-1.0274012134567");        // reads back as the same double
     EXPECT_FALSE(cells[7].value.has_value());             // monthly_skew: NULL
     EXPECT_EQ(cells[9].type, "jsonb");
     EXPECT_EQ(*cells[9].value, "{\"2025\":{\"partial\":true,\"return\":-4.5}}");

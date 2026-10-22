@@ -139,58 +139,6 @@ double LiveMetricsCalculator::calculate_net_pnl(
 
 // ========== Risk Metrics Calculations ==========
 
-double LiveMetricsCalculator::calculate_sharpe_ratio(
-    const std::vector<double>& returns,
-    double risk_free_rate) const {
-
-    if (returns.empty() || returns.size() < 2) {
-        // LOG_DEBUG << "Insufficient returns data for Sharpe ratio";
-        return 0.0;
-    }
-
-    double mean_return = calculate_mean(returns);
-    double std_dev = calculate_std_dev(returns, mean_return);
-
-    if (std_dev <= 0.0) {
-        // LOG_DEBUG << "Zero standard deviation, cannot calculate Sharpe ratio";
-        return 0.0;
-    }
-
-    // Convert risk-free rate from annual to daily
-    double daily_rf_rate = risk_free_rate / 252.0;
-
-    // Sharpe ratio = (mean_return - risk_free_rate) / std_dev
-    // Annualize by multiplying by sqrt(252)
-    double sharpe = (mean_return - daily_rf_rate) / std_dev;
-    return sharpe * std::sqrt(252.0);
-}
-
-double LiveMetricsCalculator::calculate_sortino_ratio(
-    const std::vector<double>& returns,
-    double minimum_acceptable_return) const {
-
-    if (returns.empty() || returns.size() < 2) {
-        // LOG_DEBUG << "Insufficient returns data for Sortino ratio";
-        return 0.0;
-    }
-
-    double mean_return = calculate_mean(returns);
-    double downside_dev = calculate_downside_deviation(returns, minimum_acceptable_return);
-
-    if (downside_dev <= 0.0) {
-        // LOG_DEBUG << "Zero downside deviation, cannot calculate Sortino ratio";
-        return 0.0;
-    }
-
-    // Convert MAR from annual to daily
-    double daily_mar = minimum_acceptable_return / 252.0;
-
-    // Sortino ratio = (mean_return - MAR) / downside_deviation
-    // Annualize by multiplying by sqrt(252)
-    double sortino = (mean_return - daily_mar) / downside_dev;
-    return sortino * std::sqrt(252.0);
-}
-
 double LiveMetricsCalculator::calculate_max_drawdown(
     const std::vector<double>& portfolio_values) const {
 
@@ -438,36 +386,6 @@ double LiveMetricsCalculator::calculate_std_dev(
 
     // Use sample standard deviation (divide by n-1)
     double variance = sum_squared_diff / (values.size() - 1);
-    return std::sqrt(variance);
-}
-
-double LiveMetricsCalculator::calculate_downside_deviation(
-    const std::vector<double>& returns,
-    double target) const {
-
-    if (returns.empty() || returns.size() < 2) {
-        return 0.0;
-    }
-
-    // Calculate sum of squared negative deviations from target
-    double sum_squared_negative_diff = 0.0;
-    int count = 0;
-
-    for (const auto& ret : returns) {
-        if (ret < target) {
-            double diff = ret - target;
-            sum_squared_negative_diff += diff * diff;
-            count++;
-        }
-    }
-
-    if (count < 2) {
-        // Not enough downside observations
-        return 0.0;
-    }
-
-    // Use sample downside deviation
-    double variance = sum_squared_negative_diff / (count - 1);
     return std::sqrt(variance);
 }
 
