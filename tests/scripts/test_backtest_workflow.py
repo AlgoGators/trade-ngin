@@ -46,7 +46,15 @@ class WorkflowTest(unittest.TestCase):
                               "warmup_last_timestamp": "2020-11-30T00:00:00.000000Z",
                               "scored_start": "2020-12-01", "scored_end": "2021-01-20",
                               "window_start": "2019-01-20", "window_end": "2021-01-20",
-                              "lookback_years": 2})
+                              "lookback_years": 2,
+                              "config_sha256": ("d" if trial == "A" else "e") * 64,
+                              "non_window_config_sha256": "b" * 64,
+                              "runner_sha256": "c" * 64})
+            log = self.root / (trial + ".log")
+            log.write_text("Calculated warmup days from strategies: 0, total available days: 40\n",
+                           encoding="utf-8")
+            self.runs[-1].update({"warmup_days": 0, "warmup_log": log.name,
+                                  "warmup_log_sha256": hashlib.sha256(log.read_bytes()).hexdigest()})
         gate_path = self.root / "C.csv"
         gate_path.write_text((self.root / "A.csv").read_text(encoding="utf-8").replace(
             "A,P,", "C,P,") + "C,P,2022-01-20T00:00:00.000000Z,110\n", encoding="utf-8")
@@ -54,9 +62,13 @@ class WorkflowTest(unittest.TestCase):
                           "run_id": "C", "portfolio_id": "P", "curve_csv": "C.csv",
                           "curve_sha256": hashlib.sha256(gate_path.read_bytes()).hexdigest(),
                           "window_start": "2019-01-20", "window_end": "2022-01-20",
-                          "lookback_years": 3})
+                          "lookback_years": 3,
+                          "config_sha256": "f" * 64,
+                          "non_window_config_sha256": "b" * 64,
+                          "runner_sha256": "c" * 64})
         self.manifest = {"issue": 113, "snapshot_utc": "2026-10-22T00:00:00Z",
                          "engine_sha": "a" * 40, "trial_ledger_complete": True,
+                         "portfolio_id": "P",
                          "window_protocol": "frozen_end_date_plus_lookback_years",
                          "analysis": {"periods_per_year": 252, "confidence": 0.95,
                                       "resamples": 100, "seed": 42,
@@ -88,6 +100,27 @@ class WorkflowTest(unittest.TestCase):
         with self.assertRaisesRegex(WorkflowError, "date index"):
             load_matrix(self.manifest, self.root)
 
+    def test_other_portfolio_is_not_a_conservative_trial(self):
+        self.runs[1]["portfolio_id"] = "OTHER"
+        path = self.root / "B.csv"
+        path.write_text(path.read_text(encoding="utf-8").replace("B,P,", "B,OTHER,"),
+                        encoding="utf-8")
+        self.runs[1]["curve_sha256"] = hashlib.sha256(path.read_bytes()).hexdigest()
+        with self.assertRaisesRegex(WorkflowError, "portfolio"):
+            analyze(self.manifest, self.root, self.gate, fixed_trial="A")
+
+    def test_string_false_cannot_unlock_dsr(self):
+        self.manifest["trial_ledger_complete"] = "false"
+        with self.assertRaisesRegex(WorkflowError, "trial_ledger_complete"):
+            analyze(self.manifest, self.root, self.gate, fixed_trial="A")
+
+    def test_late_self_declared_warmup_base_is_rejected_by_runner_count(self):
+        for run in self.runs[:2]:
+            run["warmup_last_timestamp"] = "2020-12-05T00:00:00.000000Z"
+            run["scored_start"] = "2020-12-06"
+        with self.assertRaisesRegex(WorkflowError, "warm-up"):
+            load_matrix(self.manifest, self.root)
+
     def test_analysis_refuses_failed_causality(self):
         self.gate["status"] = "fail"
         with self.assertRaisesRegex(WorkflowError, "causality"):
@@ -104,6 +137,45 @@ class WorkflowTest(unittest.TestCase):
         with self.assertRaisesRegex(WorkflowError, "window"):
             analyze(self.manifest, self.root, self.gate, fixed_trial="A")
 
+    def test_analysis_rejects_same_run_on_both_sides_of_gate(self):
+        self.gate["long_run"] = "A"
+        self.gate["long_sha256"] = self.gate["short_sha256"]
+        with self.assertRaisesRegex(WorkflowError, "causality"):
+            analyze(self.manifest, self.root, self.gate, fixed_trial="A")
+
+    def test_analysis_rejects_changed_non_window_config(self):
+        self.runs[2]["non_window_config_sha256"] = "d" * 64
+        with self.assertRaisesRegex(WorkflowError, "config"):
+            analyze(self.manifest, self.root, self.gate, fixed_trial="A")
+
+    def test_analysis_rejects_truncated_long_run(self):
+        path = self.root / "C.csv"
+        lines = path.read_text(encoding="utf-8").splitlines()
+        lines[-1] = "C,P,2021-01-21T00:00:00.000000Z,110"
+        path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        new_hash = hashlib.sha256(path.read_bytes()).hexdigest()
+        self.runs[2]["curve_sha256"] = self.gate["long_sha256"] = new_hash
+        with self.assertRaisesRegex(WorkflowError, "coverage"):
+            analyze(self.manifest, self.root, self.gate, fixed_trial="A")
+
+    def test_duplicate_run_id_with_distinct_config_and_export_is_valid(self):
+        self.runs[1]["run_id"] = "A"
+        path = self.root / "B.csv"
+        path.write_text(path.read_text(encoding="utf-8").replace("B,P,", "A,P,"),
+                        encoding="utf-8")
+        self.runs[1]["curve_sha256"] = hashlib.sha256(path.read_bytes()).hexdigest()
+        dates, matrix, missing = load_matrix(self.manifest, self.root)
+        self.assertEqual(len(dates), 40)
+        self.assertEqual(sorted(matrix), ["A", "B"])
+        self.assertEqual(missing, [])
+        # The gate still selects the fixed export by hash, despite the shared run ID.
+        self.assertEqual(analyze(self.manifest, self.root, self.gate, "A")["scored_rows"], 40)
+
+    def test_same_config_cannot_be_counted_as_two_trials(self):
+        self.runs[1]["config_sha256"] = self.runs[0]["config_sha256"]
+        with self.assertRaisesRegex(WorkflowError, "duplicate config"):
+            load_matrix(self.manifest, self.root)
+
     def test_analysis_marks_incomplete_ledger_without_dsr(self):
         self.manifest["trial_ledger_complete"] = False
         result = analyze(self.manifest, self.root, self.gate, fixed_trial="A")
@@ -111,6 +183,17 @@ class WorkflowTest(unittest.TestCase):
         self.assertEqual(result["selection_risk"]["trial_count"], 2)
         self.assertIn("2020", result["calendar_years"])
         self.assertIn("2021", result["calendar_years"])
+
+    def test_historical_trial_without_export_is_counted(self):
+        self.manifest["runs"].append({"trial_id": "OLD_SWEEP",
+                                      "role": "trial", "portfolio_id": "P",
+                                      "missing_reason": "historical output was not archived"})
+        self.manifest["trial_ledger_complete"] = False
+        result = analyze(self.manifest, self.root, self.gate, fixed_trial="A")
+        self.assertEqual(result["selection_risk"]["trial_count"], 3)
+        self.assertIsNone(result["selection_risk"]["dsr"])
+        self.assertEqual(result["selection_risk"]["pbo"]["scope"],
+                         "two_trial_demonstration")
 
     def test_offline_selection_uses_prior_year_only(self):
         dates = [dt.date(2020, 1, 1), dt.date(2020, 1, 2),
@@ -135,6 +218,10 @@ class WorkflowTest(unittest.TestCase):
         report = json.loads(proc.stdout)
         self.assertEqual(report["scored_rows"], 40)
         self.assertEqual(report["selection_risk"]["pbo"]["combinations"], 252)
+        self.assertEqual(report["selection_risk"]["pbo"]["scope"],
+                         "two_trial_demonstration")
+        self.assertEqual(report["selection_risk"]["dsr_scope"],
+                         "two_trial_demonstration")
 
 
 if __name__ == "__main__":

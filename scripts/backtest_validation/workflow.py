@@ -30,15 +30,44 @@ def _verified_file(run, base_dir):
     return path
 
 
+def _verify_warmup(run, base_dir, curve):
+    days = run.get("warmup_days")
+    if type(days) is not int or days < 0 or days >= len(curve):
+        raise WorkflowError("warm-up day count is absent or outside the curve")
+    log = pathlib.Path(run["warmup_log"])
+    if not log.is_absolute():
+        log = pathlib.Path(base_dir) / log
+    actual_hash = hashlib.sha256(log.read_bytes()).hexdigest()
+    if actual_hash != run.get("warmup_log_sha256"):
+        raise WorkflowError("warm-up runner log checksum differs")
+    counts = re.findall(r"Calculated warmup days from strategies: (\d+)",
+                        log.read_text(encoding="utf-8"))
+    if len(counts) != 1 or int(counts[0]) != days:
+        raise WorkflowError("warm-up day count differs from runner log")
+    if (curve[days].timestamp.strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+            != run.get("warmup_last_timestamp")):
+        raise WorkflowError("warm-up base is not the runner's last warm-up row")
+    if any(row.equity != curve[0].equity for row in curve[:days + 1]):
+        raise WorkflowError("warm-up equity is not flat at initial capital")
+    return days + 1  # one-based curve row ordinal, including initial sentinel
+
+
 def load_matrix(manifest, base_dir):
     """Produce one shared daily date index and genuine tried-config columns."""
     dates = None
+    expected_portfolio = manifest.get("portfolio_id")
+    if not isinstance(expected_portfolio, str) or not expected_portfolio:
+        raise WorkflowError("manifest portfolio_id is required")
     matrix = {}
     missing = []
     seen_trials = set()
+    seen_configs = set()
+    seen_exports = set()
     for run in manifest["runs"]:
         if run.get("role", "trial") == "causality_only":
             continue
+        if run.get("portfolio_id") != expected_portfolio:
+            raise WorkflowError("trial portfolio differs from the gated book")
         trial = run["trial_id"]
         if trial in seen_trials:
             raise WorkflowError("duplicate trial_id: " + trial)
@@ -46,12 +75,23 @@ def load_matrix(manifest, base_dir):
         if run.get("missing_reason"):
             missing.append({"trial_id": trial, "reason": run["missing_reason"]})
             continue
+        config_hash = run.get("config_sha256")
+        if not isinstance(config_hash, str) or not re.fullmatch(r"[0-9a-f]{64}", config_hash):
+            raise WorkflowError("trial lacks a full config_sha256: " + trial)
+        if config_hash in seen_configs:
+            raise WorkflowError("duplicate config counted as another trial")
+        seen_configs.add(config_hash)
+        if run.get("curve_sha256") in seen_exports:
+            raise WorkflowError("duplicate curve export counted as another trial")
+        seen_exports.add(run.get("curve_sha256"))
         try:
             path = _verified_file(run, base_dir)
             curve = read_curve(path, run["run_id"], run["portfolio_id"])
+            base_row = _verify_warmup(run, base_dir, curve)
             returns = scored_returns(curve, run["warmup_last_timestamp"],
-                                     run["scored_start"], run["scored_end"])
-        except (KeyError, OSError, CurveError) as exc:
+                                     run["scored_start"], run["scored_end"],
+                                     warmup_last_row=base_row)
+        except (KeyError, OSError, CurveError, WorkflowError) as exc:
             raise WorkflowError("invalid export for " + trial + ": " + str(exc)) from exc
         current_dates = [timestamp.date() for timestamp, _ in returns]
         if len(set(current_dates)) != len(current_dates):
@@ -69,11 +109,16 @@ def load_matrix(manifest, base_dir):
 def _check_causality(manifest, base_dir, gate):
     if gate.get("status") != "pass" or gate.get("matched_rows", 0) < 1 or gate.get("first_difference"):
         raise WorkflowError("causality gate did not pass")
+    if gate.get("short_run") == gate.get("long_run"):
+        raise WorkflowError("causality gate requires two distinct run IDs")
+    if gate.get("portfolio_id") != manifest.get("portfolio_id"):
+        raise WorkflowError("causality portfolio differs from manifest")
     curves = {}
     run_metadata = {}
     for label in ("short", "long"):
         run_id = gate.get(label + "_run")
-        matching = [run for run in manifest["runs"] if run["run_id"] == run_id]
+        matching = [run for run in manifest["runs"] if run.get("run_id") == run_id
+                    and run.get("curve_sha256") == gate.get(label + "_sha256")]
         if len(matching) != 1:
             raise WorkflowError("causality " + label + " run is absent or ambiguous")
         run_metadata[label] = matching[0]
@@ -93,6 +138,13 @@ def _check_causality(manifest, base_dir, gate):
             or curves["short"][-1].timestamp.date() > end
             or curves["long"][-1].timestamp.date() <= end):
         raise WorkflowError("causality window metadata or actual extension is invalid")
+    if ((end - curves["short"][-1].timestamp.date()).days > 7
+            or (next_year - curves["long"][-1].timestamp.date()).days > 7):
+        raise WorkflowError("causality curve coverage stops too far before the configured end")
+    for field in ("non_window_config_sha256", "runner_sha256"):
+        a, b = short.get(field), long.get(field)
+        if (not isinstance(a, str) or not re.fullmatch(r"[0-9a-f]{64}", a) or a != b):
+            raise WorkflowError("causality config or runner hash differs: " + field)
     protocol = manifest.get("window_protocol")
     if protocol == "frozen_end_date_plus_lookback_years":
         if (not isinstance(short.get("lookback_years"), int)
@@ -151,7 +203,7 @@ def _intervals(values, settings, full_drawdown=False):
             observations.sort()
             report["intervals"][key] = (
                 [_percentile(observations, lower), _percentile(observations, 1 - lower)]
-                if observations else None)
+                if len(observations) == settings["resamples"] else None)
             report["intervals"][key + "_valid_resamples"] = len(observations)
         if full_drawdown and length == settings["block_lengths"][1]:
             report["drawdown_distribution"] = samples["max_drawdown"]
@@ -193,6 +245,8 @@ def analyze(manifest, base_dir, gate, fixed_trial):
     if manifest.get("issue") != 113 or not re.fullmatch(r"[0-9a-f]{40}",
                                                        manifest.get("engine_sha", "")):
         raise WorkflowError("manifest lacks issue 113 and a full engine SHA")
+    if type(manifest.get("trial_ledger_complete")) is not bool:
+        raise WorkflowError("trial_ledger_complete must be a JSON boolean")
     try:
         snapshot = dt.datetime.fromisoformat(manifest["snapshot_utc"].replace("Z", "+00:00"))
         if snapshot.utcoffset() != dt.timedelta(0):
@@ -201,7 +255,7 @@ def analyze(manifest, base_dir, gate, fixed_trial):
         _validate_settings(settings)
         _check_causality(manifest, base_dir, gate)
         dates, matrix, missing = load_matrix(manifest, base_dir)
-    except (KeyError, OSError, ValueError) as exc:
+    except (KeyError, OSError, TypeError, ValueError) as exc:
         if isinstance(exc, WorkflowError):
             raise
         raise WorkflowError("manifest or evidence invalid: " + str(exc)) from exc
@@ -225,7 +279,8 @@ def analyze(manifest, base_dir, gate, fixed_trial):
     complete = bool(manifest.get("trial_ledger_complete") and not missing
                     and trial_count == len(matrix))
     selection = {"trial_count": trial_count, "ledger_complete": complete,
-                 "missing_trials": missing, "pbo": None, "dsr": None}
+                 "missing_trials": missing, "pbo": None, "dsr": None,
+                 "dsr_scope": None}
     if len(matrix) >= 2:
         groups = settings["cscv_groups"]
         trimmed = len(dates) % groups
@@ -234,10 +289,14 @@ def analyze(manifest, base_dir, gate, fixed_trial):
         if usable // groups >= 2:
             selection["pbo"] = cscv_pbo(
                 {trial: column[:usable] for trial, column in matrix.items()}, groups)
-            selection["pbo"]["scope"] = "full_trial_ledger" if complete else "demonstration_only"
+            selection["pbo"]["scope"] = (
+                "two_trial_demonstration" if len(matrix) == 2 else
+                "full_trial_ledger" if complete else "incomplete_trial_demonstration")
     if complete:
         trial_sharpes = [sharpe(column) for column in matrix.values()]
         selection["dsr"] = deflated_sharpe(values, trial_sharpes)
+        selection["dsr_scope"] = (
+            "two_trial_demonstration" if trial_count == 2 else "full_trial_ledger")
     return {"issue": 113, "engine_sha": manifest["engine_sha"],
             "snapshot_utc": manifest["snapshot_utc"],
             "causality": gate, "fixed_trial": fixed_trial,

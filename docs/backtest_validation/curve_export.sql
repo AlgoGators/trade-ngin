@@ -3,7 +3,7 @@
 -- and redirect stdout to a run-specific CSV. The :'name' form quotes psql
 -- variables as SQL literals. Never run this against production. The role
 -- should have SELECT and no write grants.
-SELECT run_id, portfolio_id,
+SELECT id, run_id, portfolio_id,
        to_char("timestamp" AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS timestamp,
        equity
 FROM backtest.equity_curve

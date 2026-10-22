@@ -18,6 +18,7 @@ from scripts.backtest_validation.statistics import (  # noqa: E402
     probabilistic_sharpe,
     sharpe,
 )
+from scripts.backtest_validation.workflow import _intervals  # noqa: E402
 
 
 class StatisticsTest(unittest.TestCase):
@@ -38,6 +39,14 @@ class StatisticsTest(unittest.TestCase):
         psr = probabilistic_sharpe(returns, 0.0)
         self.assertGreater(psr, 0.95)
         self.assertAlmostEqual(deflated_sharpe(returns, [sharpe(returns)]), psr)
+
+    def test_hand_calculated_skew_symmetric_psr_and_two_trial_dsr(self):
+        # Four observations: per-period SR = sqrt(0.15), skew = 0,
+        # raw kurtosis = 1.64. Bailey-Lopez de Prado PSR then gives 0.7463067.
+        returns = [-0.5, 0.0, 0.5, 1.0]
+        self.assertAlmostEqual(probabilistic_sharpe(returns, 0), 0.7463067366, places=8)
+        self.assertAlmostEqual(deflated_sharpe(returns, [0.0, 0.5]),
+                               0.6362228769, places=8)
 
     def test_more_raw_trials_raise_dsr_hurdle(self):
         returns = [0.003 + 0.01 * math.sin(i * 1.7) for i in range(200)]
@@ -62,6 +71,13 @@ class StatisticsTest(unittest.TestCase):
         b = bootstrap_interval(values, drawdown, block_length=4, resamples=200, seed=42)
         self.assertEqual(a, b)
         self.assertLessEqual(a[0], a[1])
+
+    def test_undefined_bootstrap_sharpe_never_produces_interval(self):
+        settings = {"periods_per_year": 252, "confidence": 0.95,
+                    "resamples": 1000, "seed": 42, "block_lengths": [10, 20, 40]}
+        result = _intervals([0.0] * 99 + [0.01], settings)
+        self.assertLess(result["20"]["intervals"]["sharpe_valid_resamples"], 1000)
+        self.assertIsNone(result["20"]["intervals"]["sharpe"])
 
     def test_cscv_detects_planted_selection_reversal(self):
         # Each selected in-sample winner becomes the lower-ranked OOS variant.

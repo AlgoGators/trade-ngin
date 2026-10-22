@@ -1,5 +1,6 @@
 {
   "issue": 113,
+  "portfolio_id": "CONSERVATIVE_PORTFOLIO",
   "snapshot_utc": "PENDING_HD_SCRATCH_SNAPSHOT",
   "engine_sha": "PENDING_LATEST_MERGED_MAIN_AT_HANDOFF",
   "window_protocol": "frozen_end_date_plus_lookback_years",
@@ -27,6 +28,11 @@
       "window_end": "REPLACE_SHORT_END_YYYY-MM-DD",
       "lookback_years": 2,
       "config_sha256": "REPLACE_SHA256",
+      "non_window_config_sha256": "REPLACE_SHA256",
+      "runner_sha256": "REPLACE_SHA256",
+      "warmup_days": 256,
+      "warmup_log": "run_a.log",
+      "warmup_log_sha256": "REPLACE_SHA256",
       "notes": "Record frozen_end_date, lookback_years, costs and data caveats"
     },
     {
@@ -38,7 +44,10 @@
       "curve_sha256": "REPLACE_SHA256",
       "window_start": "REPLACE_SAME_START_YYYY-MM-DD",
       "window_end": "REPLACE_END_PLUS_ONE_YEAR_YYYY-MM-DD",
-      "lookback_years": 3
+      "lookback_years": 3,
+      "config_sha256": "REPLACE_SHA256",
+      "non_window_config_sha256": "SAME_AS_SHORT_RUN",
+      "runner_sha256": "SAME_AS_SHORT_RUN"
     }
   ],
   "trial_ledger_complete": false
