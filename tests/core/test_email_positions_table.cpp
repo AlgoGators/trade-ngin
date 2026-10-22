@@ -82,6 +82,7 @@ Position held(const std::string& symbol, double qty, double average_price) {
 class EmailPositionsTableTest : public ::testing::Test {
 protected:
     void SetUp() override {
+        EmailSender::reset_footnotes();
         auto& registry = InstrumentRegistry::instance();
         registry.register_instrument(
             "ZBASIS", std::make_shared<EquityInstrument>("ZBASIS", equity_spec()));
@@ -163,4 +164,97 @@ TEST_F(EmailPositionsTableTest, AClosedRowIsNotReportedAsAPosition) {
     ASSERT_NO_THROW({ html = sender_.format_positions_table(positions, true, {}, {}); });
     EXPECT_EQ(html.find("ZBASIS"), std::string::npos)
         << "a zero-quantity row is not an open position";
+}
+
+// T-8D D3 (a): the margin line is priced at the cost basis, the price MarginManager stores
+// margin_posted at, so the email and the database agree. 50 shares bought at 200, closing at
+// 210, Reg T long: 0.5 x 50 x 200 = 5,000 (at the close it read 5,250). The notional is the
+// other way round (T-8D-2 R60): at the close.
+TEST_F(EmailPositionsTableTest, TheMarginLineIsPricedAtTheCostBasis) {
+    const std::unordered_map<std::string, Position> positions{
+        {"ZPRICED", held("ZPRICED", 50.0, 200.0)}};
+    const std::unordered_map<std::string, double> prices{{"ZPRICED", 210.0}};
+
+    std::string html;
+    ASSERT_NO_THROW({ html = sender_.format_positions_table(positions, true, prices, {}); });
+    EXPECT_NE(html.find("<strong>Total Margin Posted:</strong> $5,000"), std::string::npos)
+        << html.substr(html.find("Total Notional") == std::string::npos
+                           ? 0
+                           : html.find("Total Notional"));
+    EXPECT_EQ(html.find("<strong>Total Margin Posted:</strong> $5,250"), std::string::npos);
+    // T-8D-2 R60 (T-8D D9): the notional is at the Day T-1 close, 50 x 210 = 10,500 (at the basis
+    // it read 10,000), and so is the row: its notional is its quantity at the price it prints.
+    EXPECT_NE(html.find("<strong>Total Notional:</strong> $10,500.00"), std::string::npos) << html;
+    EXPECT_EQ(html.find("$10,000"), std::string::npos) << html;
+    EXPECT_NE(html.find("<td>$210.0000</td>\n<td>$10,500.00</td>\n<td>100.00%</td>"),
+              std::string::npos)
+        << html;
+}
+
+// A held row with no close in the map is priced at its basis, in the price cell and the notional.
+TEST_F(EmailPositionsTableTest, ARowWithNoCloseIsPricedAtItsBasisInBothCells) {
+    const std::unordered_map<std::string, Position> positions{
+        {"ZPRICED", held("ZPRICED", 50.0, 200.0)}};
+    std::string html;
+    ASSERT_NO_THROW({ html = sender_.format_positions_table(positions, true, {}, {}); });
+    EXPECT_NE(html.find("<td>$200.0000<sup style=\"font-size: 9px; color: #000;\">1</sup></td>\n<td>$10,000.00</td>"), std::string::npos) << html;
+    EXPECT_NE(html.find("<strong>Total Notional:</strong> $10,000.00"), std::string::npos) << html;
+}
+
+// With no basis the close is the fallback: 0.5 x 100 x 150 = 7,500.
+TEST_F(EmailPositionsTableTest, TheMarginLineFallsBackToTheCloseWithoutABasis) {
+    const std::unordered_map<std::string, Position> positions{
+        {"ZBASIS", held("ZBASIS", 100.0, 0.0)}};
+    const std::unordered_map<std::string, double> prices{{"ZBASIS", 150.0}};
+
+    std::string html;
+    ASSERT_NO_THROW({ html = sender_.format_positions_table(positions, true, prices, {}); });
+    EXPECT_NE(html.find("<strong>Total Margin Posted:</strong> $7,500"), std::string::npos);
+}
+
+// HD 2026-10-10: the summary under the single positions table prints the overlay's expected risk
+// beside the risk target and the one-day 95 percent VaR in dollars, in place of "Portfolio VaR".
+// HD 10-13: neither the expected risk, nor the VaR, nor a portfolio VaR is in the summary any more
+// (the first two are in the account detail file).
+TEST_F(EmailPositionsTableTest, TheSummaryCarriesNoExpectedRiskAndNoVar) {
+    const std::unordered_map<std::string, Position> positions{
+        {"ZPRICED", held("ZPRICED", 50.0, 200.0)}};
+    const std::unordered_map<std::string, double> prices{{"ZPRICED", 210.0}};
+    const std::map<std::string, double> metrics{{"Portfolio VaR", 7.12}, {"Expected Risk", 12.3449},
+                                                {"Risk Target", 20.0}, {"VaR 95 1-Day", 1234567.891}};
+    const std::string html = sender_.format_positions_table(positions, true, prices, metrics);
+    for (const char* absent : {"Portfolio VaR", "Expected Risk", "95% VaR"})
+        EXPECT_EQ(html.find(absent), std::string::npos) << absent;
+}
+
+// T-EMAIL P2-3: the rows are in symbol order, whatever order the map hands them out in. The same
+// twelve positions are put in a map built two ways (different bucket counts, reversed insertion),
+// which iterate differently, and the table must be the same text with the symbols ascending.
+TEST_F(EmailPositionsTableTest, RowsAreInSymbolOrderWhateverTheMapIterationOrderIs) {
+    std::vector<std::string> symbols;
+    for (int i = 1; i <= 12; ++i) {
+        std::string s = "ZORD" + std::string(i < 10 ? "0" : "") + std::to_string(i);
+        InstrumentRegistry::instance().register_instrument(
+            s, std::make_shared<EquityInstrument>(s, equity_spec()));
+        symbols.push_back(s);
+    }
+    std::unordered_map<std::string, Position> forward;
+    forward.reserve(8);
+    for (const auto& s : symbols)
+        forward.emplace(s, held(s, 10.0, 100.0));
+    std::unordered_map<std::string, Position> backward;
+    backward.reserve(1000);
+    for (auto it = symbols.rbegin(); it != symbols.rend(); ++it) {
+        backward.emplace(*it, held(*it, 10.0, 100.0));
+    }
+
+    const std::string a = sender_.format_positions_table(forward, true, {}, {});
+    const std::string b = sender_.format_positions_table(backward, true, {}, {});
+    EXPECT_EQ(a, b);
+    std::size_t at = 0;
+    for (const auto& s : symbols) {
+        const std::size_t found = a.find(s, at);
+        ASSERT_NE(found, std::string::npos) << s << " is missing or out of order";
+        at = found;
+    }
 }

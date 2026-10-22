@@ -165,6 +165,7 @@ protected:
         cc.store_results = false;
         cc.store_trade_details = false;
         cc.portfolio_id = "K1_TEST";
+        cc.statistics_sessions_per_year = 252.0;  // a run is refused without one
         cc.csv_output_path = temp_csv_dir("k1_" + std::to_string(n));
         coord_ = std::make_unique<BacktestCoordinator>(db_, &InstrumentRegistry::instance(), cc);
         ASSERT_TRUE(coord_->initialize().is_ok());

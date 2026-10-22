@@ -36,6 +36,7 @@
 #include "trade_ngin/strategy/equity_strategy_builder.hpp"
 #include "trade_ngin/portfolio/portfolio_manager.hpp"
 #include "trade_ngin/strategy/mean_reversion.hpp"
+#include "trade_ngin/transaction_cost/netting.hpp"
 
 using namespace trade_ngin;
 using namespace trade_ngin::backtest;
@@ -577,6 +578,9 @@ int main() {
         coord_config.use_optimization = false;
         coord_config.store_trade_details = true;
         coord_config.portfolio_id = "equity_validation";
+        // K of the equity statistics grid, the factor the calculator applies and the mirror in
+        // section D reads back from the results.
+        coord_config.statistics_sessions_per_year = app_config.statistics.equity_sessions_per_year;
 
         auto coordinator = std::make_unique<BacktestCoordinator>(db, &registry, coord_config);
         auto coord_init = coordinator->initialize();
@@ -872,7 +876,7 @@ int main() {
                         double qty = exec.filled_quantity.as_double();
                         if (exec.side == Side::SELL) qty = -qty;
                         positions[exec.symbol] += qty;
-                        day_txn_costs += exec.total_transaction_costs.as_double();
+                        day_txn_costs += transaction_cost::net_cost(exec).as_double();
                     }
                 }
 
@@ -954,7 +958,11 @@ int main() {
         std::cout << "------------------------------------------------------\n" << std::endl;
 
         {
-            const auto& equity_curve = backtest_results.equity_curve;
+            // One row per UTC date, the last one (matching calculate_all_metrics)
+            const auto equity_curve = core::last_row_per_utc_date(
+                backtest_results.equity_curve, [](const std::pair<Timestamp, double>& row) {
+                    return core::format_utc_date(row.first);
+                });
             int warmup_days = backtest_results.warmup_days;
 
             // Filter warmup (matching filter_warmup_period)
@@ -988,15 +996,24 @@ int main() {
             // Total return
             double manual_total_return = (filtered.back().second - filtered.front().second) / filtered.front().second;
 
-            // Volatility (matching calculate_volatility: E[r^2] - E[r]^2)
-            double mean_return = std::accumulate(returns.begin(), returns.end(), 0.0) / returns.size();
-            double sq_sum = std::inner_product(returns.begin(), returns.end(), returns.begin(), 0.0);
-            double variance = sq_sum / returns.size() - mean_return * mean_return;
-            double manual_vol = std::sqrt(variance) * std::sqrt(252.0);
+            // The equity run's statistics grid is its own rows (NYSE sessions), so the returns
+            // above are the grid's; K is the sessions a year the calculator applied.
+            const double sessions_per_year = backtest_results.statistics_sessions_per_year;
 
-            // Sharpe ratio (matching calculate_sharpe_ratio: annualize daily mean return by *252)
-            double ann_return = mean_return * 252.0;
-            double manual_sharpe = (manual_vol > 0.0) ? ann_return / manual_vol : 0.0;
+            // Volatility (matching calculate_volatility: the SAMPLE standard deviation, n - 1,
+            // x sqrt(K))
+            double mean_return = std::accumulate(returns.begin(), returns.end(), 0.0) / returns.size();
+            double dev_sq_sum = 0.0;
+            for (double r : returns) {
+                dev_sq_sum += (r - mean_return) * (r - mean_return);
+            }
+            double variance =
+                returns.size() > 1 ? dev_sq_sum / static_cast<double>(returns.size() - 1) : 0.0;
+            double manual_vol = std::sqrt(variance) * std::sqrt(sessions_per_year);
+
+            // Sharpe ratio (matching calculate_sharpe_ratio: the mean grid return x K)
+            double ann_return = mean_return * sessions_per_year;
+            double manual_sharpe = (manual_vol > 0.0) ? ann_return / manual_vol : kNoRatio;
 
             // Sortino ratio (matching calculate_downside_volatility + calculate_sortino_ratio)
             double downside_sum = 0.0;
@@ -1007,14 +1024,13 @@ int main() {
                     downside_count++;
                 }
             }
+            // averaged over every return of the series, as the calculator does
             double downside_vol = (downside_count > 0)
-                ? std::sqrt(downside_sum / downside_count) * std::sqrt(252.0) : 0.0;
-            double manual_sortino = 0.0;
-            if (downside_vol > 0.0) {
-                manual_sortino = ann_return / downside_vol;
-            } else {
-                manual_sortino = (ann_return >= 0) ? 999.0 : 0.0;
-            }
+                ? std::sqrt(downside_sum / static_cast<double>(returns.size())) *
+                      std::sqrt(sessions_per_year)
+                : 0.0;
+            // no downside: no value, as the calculator returns (T-8D R12)
+            double manual_sortino = (downside_vol > 0.0) ? ann_return / downside_vol : kNoRatio;
 
             // Max drawdown (matching calculate_drawdowns)
             double peak = filtered[0].second;
@@ -1025,9 +1041,15 @@ int main() {
                 manual_max_dd = std::max(manual_max_dd, dd);
             }
 
-            // Calmar ratio (matching calculate_calmar_ratio: annualized return / max drawdown)
-            double manual_calmar = (manual_max_dd > 0) ? ann_return / manual_max_dd
-                                                        : ((ann_return >= 0) ? 999.0 : 0.0);
+            // Calmar ratio (matching calculate_calmar_ratio: the CAGR, (1 + R)^(K / n) - 1 with
+            // n the returns above, over the max drawdown)
+            const double growth = filtered.back().second / filtered.front().second;
+            double manual_cagr =
+                growth > 0.0
+                    ? std::pow(growth, sessions_per_year / static_cast<double>(returns.size())) - 1.0
+                    : -1.0;
+            // no drawdown: no value, as the calculator returns (T-8D R12)
+            double manual_calmar = (manual_max_dd > 0) ? manual_cagr / manual_max_dd : kNoRatio;
 
             // Print comparison
             std::cout << "\n" << std::setw(20) << "Metric" << " | "
@@ -1037,7 +1059,8 @@ int main() {
             std::cout << std::string(62, '-') << std::endl;
 
             auto print_metric = [&](const std::string& name, double manual, double bt) {
-                bool match = approx_eq(manual, bt, 1e-3);
+                // a ratio with no value on both sides is a match
+                bool match = (!has_value(manual) && !has_value(bt)) || approx_eq(manual, bt, 1e-3);
                 std::cout << std::setw(20) << name << " | "
                           << std::fixed << std::setprecision(6)
                           << std::setw(14) << manual << " | "
@@ -1057,7 +1080,7 @@ int main() {
             std::cout << "  Total trades: " << backtest_results.total_trades << std::endl;
             std::cout << "  Win rate: " << std::fixed << std::setprecision(2)
                       << (backtest_results.win_rate * 100) << "%" << std::endl;
-            std::cout << "  Profit factor: " << std::setprecision(3) << backtest_results.profit_factor << std::endl;
+            std::cout << "  Profit factor: " << std::setprecision(3) << ratio_or_na(backtest_results.profit_factor) << std::endl;
             std::cout << std::endl;
         }
 

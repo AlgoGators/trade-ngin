@@ -7,10 +7,12 @@
 #include <sstream>
 #include <unordered_map>
 #include <vector>
+#include "trade_ngin/backtest/backtest_statistics_columns.hpp"
 #include "trade_ngin/core/config_base.hpp"
 #include "trade_ngin/core/time_utils.hpp"
 #include "trade_ngin/core/types.hpp"
 #include "trade_ngin/optimization/dynamic_optimizer.hpp"
+#include "trade_ngin/risk/overlay_columns.hpp"
 #include "trade_ngin/risk/risk_manager.hpp"
 
 namespace trade_ngin {
@@ -190,22 +192,22 @@ struct BacktestResults {
     // Performance metrics
     double total_return{0.0};
     double volatility{0.0};
-    double sharpe_ratio{0.0};
-    double sortino_ratio{0.0};
+    double sharpe_ratio{0.0};   ///< kNoRatio (no value, stored NULL) with no volatility
+    double sortino_ratio{0.0};  ///< kNoRatio with no return under the target
     double max_drawdown{0.0};
-    double calmar_ratio{0.0};
+    double calmar_ratio{0.0};   ///< kNoRatio with no drawdown
 
     // Trading metrics
     int total_trades{0};
     double win_rate{0.0};
-    double profit_factor{0.0};
+    double profit_factor{0.0};  ///< kNoRatio with no losing trade
     double avg_win{0.0};
     double avg_loss{0.0};
     double max_win{0.0};
     double max_loss{0.0};
     double avg_holding_period{0.0};
-    // T-ROLLX (migration 018): the run's cost totals. transaction_costs = every fill's cost (the
-    // sum the equity curve charged: STRATEGY + ROLL + BORROW), roll_costs the ROLL subset,
+    // T-ROLLX (migration 018): the run's cost totals. transaction_costs = every fill's cost after
+    // netting (the sum the equity curve charged: STRATEGY + ROLL + BORROW), roll_costs the ROLL subset,
     // total_roll_fills the count of ROLL rows (two per held contract per sleeve per roll).
     double transaction_costs{0.0};
     double roll_costs{0.0};
@@ -226,8 +228,26 @@ struct BacktestResults {
     // Per equity point, the row's risk_detail object as text (LOOP_SPEC section 7.3; empty for
     // a NULL cell); empty altogether on a book that stores none.
     std::vector<std::string> equity_risk_detail;
+    // Per equity point, the six overlay cells of the row (migration 037): the overlay's readings
+    // of the book the run stores for the row's date and the one-day VaR; every field without a
+    // value on a row that carries no risk_detail. Empty altogether on a book that stores none.
+    std::vector<OverlayColumns> equity_overlay;
     std::vector<std::pair<Timestamp, double>> drawdown_curve;
     int warmup_days{0};  // Number of warmup days (calculated dynamically from strategy lookbacks)
+    // The convention the statistics above were taken with (T-8D R1, R2): K, the sessions a year
+    // of the statistics grid, which every annualised figure uses and the run metadata records as
+    // statistics_K; and n, the returns of that grid after the warm-up.
+    double statistics_sessions_per_year{0.0};
+    int statistics_days{0};
+    // The annualised return on that grid, the Calmar ratio's numerator: the CAGR
+    // (1 + R)^(K / n) - 1, R from the base to the last grid level (T-8D R36). Logged with the
+    // run's statistics convention; no column.
+    double annualized_return{0.0};
+    // The statistics of migration 037 (LOOP_SPEC sections 7.4 and 10): the worst day with its
+    // date and symbol, the three statistics on the sizing capital, the monthly skew and tail
+    // ratio, the calendar-year returns with the losing years, the account's STRATEGY fills. In
+    // fractions, on the grid above; a field with no value is a NULL cell of backtest.results.
+    BacktestStatisticsColumns statistics_columns;
 
     // Additional analysis
     std::unordered_map<std::string, double> monthly_returns;

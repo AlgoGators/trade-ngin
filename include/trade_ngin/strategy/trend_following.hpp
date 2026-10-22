@@ -38,6 +38,15 @@ struct TrendFollowingConfig {
     // named must be one of the sleeve's ema_windows.
     std::vector<std::string> equity_slow_symbols;
     std::vector<std::pair<int, int>> equity_slow_pairs;
+    // Trading rules removed from a contract by cost (Carver, strategy nine, "Removing expensive
+    // trading rules"): symbol (base name, the contract's own: "ZR" for "ZR.v.0") to the pairs it
+    // does not run. Such a contract's combined forecast is the equal-weight mean of the pairs left
+    // times the multiplier for that number of pairs; each pair left is scaled and capped as on any
+    // contract. The pairs removed are the contract's fastest (trend_estimator::pairs_after_removal),
+    // the multiplier table names the number left, and a pair the equity slow rule reads is never
+    // removed from a ruled symbol: anything else is refused when the sleeve is built. Empty: every
+    // contract runs every pair. The runner sets it from portfolio.json's trading_rule_removals.
+    std::map<std::string, std::vector<std::pair<int, int>>> rule_removals;
 };
 
 /**
@@ -259,10 +268,13 @@ public:
 
     /**
      * @brief The trend sleeve's own checks of its config (risk target, IDM, EMA pairs, the
-     *        equity slow rule), the part of validate_config a sleeve's settings decide. Static so
-     *        a settings change can be checked before it is saved (HD D-17), with no strategy built.
+     *        equity slow rule, the trading-rule removals), the part of validate_config a sleeve's
+     *        settings decide; a contract name is checked against `registry` when one is given.
+     *        Static so a settings change can be checked before it is saved (HD D-17), with no
+     *        strategy built.
      */
-    static Result<void> validate_trend_config(const TrendFollowingConfig& trend_config);
+    static Result<void> validate_trend_config(const TrendFollowingConfig& trend_config,
+                                              const InstrumentRegistry* registry = nullptr);
 
 protected:
     /**

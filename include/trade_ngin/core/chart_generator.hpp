@@ -1,8 +1,13 @@
 #pragma once
 
+#include <cstdint>
+#include <functional>
+#include <optional>
 #include <string>
+#include <utility>
 #include <vector>
 #include <memory>
+#include "trade_ngin/core/gnuplot_run.hpp"
 #include "trade_ngin/data/database_interface.hpp"
 
 namespace trade_ngin {
@@ -39,11 +44,141 @@ struct ChartData {
     std::string title;                    ///< Chart title
     std::string x_label;                  ///< X-axis label
     std::string y_label;                  ///< Y-axis label
+    std::string series_name;              ///< legend of the first series (two-series line charts)
+    std::string series2_name;             ///< legend of values2
+    std::string y_format;                 ///< gnuplot format of the value axis; empty: dollars
     double reference_line;                ///< Reference line value (e.g., 0 or starting value)
     bool has_reference_line = false;      ///< Whether to draw reference line
+    bool reference_line_on_axis = false;  ///< Line charts: widen the value axis to hold the line
 
     ChartData() : reference_line(0.0) {}
 };
+
+/// One row of a chart query: a date or a symbol, and its number.
+using ChartPoint = std::pair<std::string, double>;
+
+/**
+ * @brief The words of a chart's heading in the report and of its title in the image.
+ */
+namespace ChartTitles {
+/// "Yesterday's PnL by Symbol". On an equity book the bars are the day's REALIZED P&L only (a
+/// futures row's daily figure is its whole settled P&L), and the heading says so (T-8D-2 R64).
+inline std::string pnl_by_symbol_heading(bool equities) {
+    return equities ? "Day's PnL by Symbol" : "Yesterday's PnL by Symbol";
+}
+/// The daily PnL chart holds the last `stored_days` STORED days before the run date, which on a
+/// book with missing days is a longer span than that many calendar days (T-8D-2 R62).
+inline std::string daily_pnl_heading(int stored_days) {
+    return "Daily PnL (last " + std::to_string(stored_days) + " days)";
+}
+/// The cumulative chart sums each symbol's stored daily realized P&L; no cost is taken off
+/// (T-8D-2 R62).
+inline std::string cumulative_pnl_heading() {
+    return "Cumulative PnL by Symbol";
+}
+/// The cumulative chart's title in the image: the heading and the day the sums run through.
+inline std::string cumulative_pnl_title(const std::string& date) {
+    return "Cumulative PnL by Symbol, all-time as of " + date;
+}
+/// The contracts chart (HD 2026-10-14): contracts traded each day, strategy fills and roll legs.
+inline std::string contracts_per_day_heading() {
+    return "Contracts Traded per Day";
+}
+inline std::string contracts_per_day_title(int days) {
+    return "Contracts Traded per Day, Last " + std::to_string(days) + " Days";
+}
+}  // namespace ChartTitles
+
+/**
+ * @brief The text of each database chart's query, from the book's ids and the run date.
+ *
+ * A fetcher sends exactly this text; a test calls these to read what a chart asks for.
+ */
+namespace ChartQueries {
+/// The newest `lookback_days` stored rows BEFORE the run date `date` (T-8D-2 R63).
+std::string equity_curve(const std::string& strategy_id, const std::string& portfolio_id,
+                         const std::string& date, int lookback_days);
+/// The book's starting capital (total_capital of its latest live_run_metadata row on or before
+/// the run date): the equity curve's reference line.
+std::string book_capital(const std::string& strategy_id, const std::string& portfolio_id,
+                         const std::string& date);
+std::string pnl_by_symbol(const std::string& strategy_id, const std::string& portfolio_id,
+                          const std::string& date);
+std::string daily_pnl(const std::string& strategy_id, const std::string& portfolio_id,
+                      const std::string& date, int lookback_days);
+std::string cost_per_million(const std::string& strategy_id, const std::string& portfolio_id,
+                             const std::string& date);
+std::string margin_posted(const std::string& strategy_id, const std::string& portfolio_id,
+                          const std::string& date);
+std::string cumulative_pnl_by_symbol(const std::string& strategy_id,
+                                     const std::string& portfolio_id, const std::string& date,
+                                     bool equities = false);
+/// Every calendar day of the `days` ending on the run date, with the contracts the book's fills
+/// traded that day: the STRATEGY fills and the ROLL legs apart (0 on a day without a fill). The
+/// fills of every sleeve of the book (by portfolio_id), the run date's own included.
+std::string contracts_per_day(const std::string& portfolio_id, const std::string& date, int days);
+}  // namespace ChartQueries
+
+/**
+ * @brief From a chart query's rows to the points the chart plots (no database, no gnuplot).
+ *
+ * A series with no label is a chart that is not drawn.
+ */
+namespace ChartSeries {
+/// One row of the cost chart's query: a stored day of the book, its cost, and ONE fill the book
+/// made that day (a day of several fills is several rows; a day without a fill is one row whose
+/// symbol is empty).
+struct CostFillRow {
+    std::string date;
+    double daily_cost = 0.0;  ///< the day's stored cost total (charged after netting)
+    std::string symbol;       ///< empty: the day's row with no fill
+    double quantity = 0.0;
+    double price = 0.0;
+};
+
+/// A symbol's contract multiplier (a futures root's contract size, 1 for a share), or none when
+/// it is not on record.
+using MultiplierLookup = std::function<std::optional<double>(const std::string& symbol)>;
+
+/// rows: (date, equity) of the days before the run date, in any order. The points are those rows
+/// and no other; the title names the last day as settled; the reference line is the book's
+/// starting capital, or there is none when `book_capital` holds no positive number.
+ChartData equity_curve(std::vector<ChartPoint> rows, std::optional<double> book_capital);
+/// The first and last day of a line chart's time axis. A chart of ONE day gets the day before and
+/// the day after, because an axis from a day to itself is empty and cannot be drawn. An empty
+/// pair: no label, or a single label that is not a "YYYY-MM-DD" date.
+std::pair<std::string, std::string> line_chart_x_range(const std::vector<std::string>& labels);
+/// The value axis of a line chart whose reference line must be ON the chart (the equity curve's
+/// capital line: a book that sits wholly below or above its capital would otherwise leave it off
+/// the picture): from the lowest of the points and the line to the highest, with a margin. None
+/// for every other chart, which the renderer scales to its points.
+std::optional<std::pair<double, double>> line_chart_y_range(const ChartData& data);
+/// rows: (symbol, realized PnL); date: the run date; equities: the book is an equity book. One
+/// bar per symbol: rows of the same symbol are summed.
+ChartData pnl_by_symbol(std::vector<ChartPoint> rows, const std::string& date,
+                        bool equities = false);
+/// rows: (date, daily PnL), newest first as the query returns them.
+ChartData daily_pnl(std::vector<ChartPoint> rows);
+/// rows: grouped by day, oldest first. A day's point is its cost / the notional TRADED that day
+/// (the sum of quantity x price x multiplier over the day's fills) x 1,000,000 (T-8D-2 R64). A
+/// day without a fill has no point; neither has a day with a fill whose multiplier is not on
+/// record.
+ChartData cost_per_million(const std::vector<CostFillRow>& rows,
+                           const MultiplierLookup& multiplier_of);
+/// rows: (date, margin posted), oldest first.
+ChartData margin_posted(std::vector<ChartPoint> rows);
+/// rows: (symbol, cumulative realized PnL); date: the run date.
+ChartData cumulative_pnl_by_symbol(std::vector<ChartPoint> rows, const std::string& date);
+/// One day of the contracts chart's query.
+struct ContractsDayRow {
+    std::string date;          ///< YYYY-MM-DD
+    double strategy = 0.0;     ///< contracts of the day's STRATEGY fills (sum of |quantity|)
+    double roll = 0.0;         ///< contracts of the day's ROLL legs
+};
+/// rows: every day of the window, oldest first. One stacked bar per day, labelled MM-DD:
+/// `values` the strategy contracts, `values2` the roll contracts. No row is no chart.
+ChartData contracts_per_day(const std::vector<ContractsDayRow>& rows, int days);
+}  // namespace ChartSeries
 
 /**
  * @brief Configuration for chart appearance
@@ -90,15 +225,14 @@ public:
      * @brief Fetch equity curve data from database
      * @param db Database interface
      * @param strategy_id Strategy identifier
+     * @param date The run date (YYYY-MM-DD): the chart holds the stored days before it
      * @param lookback_days Number of days to fetch
      * @return ChartData with dates and equity values
      */
-    static ChartData fetch_equity_curve_data(
-        std::shared_ptr<DatabaseInterface> db,
-        const std::string& strategy_id,
-        const std::string& portfolio_id,
-        int lookback_days = 30
-    );
+    static ChartData fetch_equity_curve_data(std::shared_ptr<DatabaseInterface> db,
+                                             const std::string& strategy_id,
+                                             const std::string& portfolio_id,
+                                             const std::string& date, int lookback_days = 30);
 
     /**
      * @brief Fetch PnL by symbol data from database
@@ -107,12 +241,10 @@ public:
      * @param date Date to query
      * @return ChartData with symbols and PnL values
      */
-    static ChartData fetch_pnl_by_symbol_data(
-        std::shared_ptr<DatabaseInterface> db,
-        const std::string& strategy_id,
-        const std::string& portfolio_id,
-        const std::string& date
-    );
+    static ChartData fetch_pnl_by_symbol_data(std::shared_ptr<DatabaseInterface> db,
+                                              const std::string& strategy_id,
+                                              const std::string& portfolio_id,
+                                              const std::string& date, bool equities = false);
 
     /**
      * @brief Fetch daily PnL data from database
@@ -130,17 +262,22 @@ public:
         int lookback_days = 30
     );
 
+    /// Cost per $1M traded. `multiplier_of` empty: the instrument registry's contract multiplier.
     static ChartData fetch_cumulative_transaction_costs_data(
-        std::shared_ptr<DatabaseInterface> db,
-        const std::string& strategy_id,
-        const std::string& portfolio_id,
-        const std::string& date /* today, YYYY-MM-DD */);
-    
+        std::shared_ptr<DatabaseInterface> db, const std::string& strategy_id,
+        const std::string& portfolio_id, const std::string& date /* today, YYYY-MM-DD */,
+        const ChartSeries::MultiplierLookup& multiplier_of = {});
+
     static ChartData fetch_margin_posted_data(
         std::shared_ptr<DatabaseInterface> db,
         const std::string& strategy_id,
         const std::string& portfolio_id,
         const std::string& date /* today, YYYY-MM-DD */);
+
+    /// Contracts traded per day over the `days` ending on the run date (ChartQueries::contracts_per_day).
+    static ChartData fetch_contracts_per_day_data(std::shared_ptr<DatabaseInterface> db,
+                                                  const std::string& portfolio_id,
+                                                  const std::string& date, int days = 30);
     
     /**
      * @brief Fetch cumulative realized PnL by symbol (all-time)
@@ -153,7 +290,8 @@ public:
         std::shared_ptr<DatabaseInterface> db,
         const std::string& strategy_id,
         const std::string& portfolio_id,
-        const std::string& date
+        const std::string& date,
+        bool equities = false
     );
 
     /**
@@ -217,6 +355,21 @@ public:
         const ChartConfig& config = ChartConfig()
     );
 
+    /**
+     * @brief Render a stacked vertical bar chart of two series
+     * @param data labels = categories, values = the lower series, values2 = the upper series;
+     *             series_name and series2_name are the legend
+     * @param config Chart configuration (line_color is the lower series)
+     * @return Base64-encoded PNG chart data, or empty string on error
+     */
+    static std::string render_stacked_bar_chart(
+        const ChartData& data,
+        const ChartConfig& config = ChartConfig()
+    );
+
+    /// The gnuplot script of a stacked bar chart (no drawing), for render_stacked_bar_chart and its tests.
+    static std::string stacked_bar_chart_script(const ChartData& data, const ChartConfig& config);
+
     // ========================================================================
     // HIGH-LEVEL CONVENIENCE FUNCTIONS - Backward compatible
     // ========================================================================
@@ -226,22 +379,21 @@ public:
      *
      * Creates a time-series chart showing portfolio value over time using gnuplot.
      * The chart includes:
-     * - Line plot with data points
-     * - Reference line at starting value ($500k)
+     * - Line plot with data points: the stored days before the run date, through the last
+     *   settled day
+     * - Reference line at the book's starting capital (from its run metadata), or none
      * - Formatted axes with dates and currency
-     * - Performance metrics in the subtitle
      *
      * @param db Database interface to query equity curve data
      * @param strategy_id Strategy identifier to filter data
+     * @param date The run date (YYYY-MM-DD)
      * @param lookback_days Number of days to include in the chart
      * @return Base64-encoded PNG chart data, or empty string on error
      */
-    static std::string generate_equity_curve_chart(
-        std::shared_ptr<DatabaseInterface> db,
-        const std::string& strategy_id,
-        const std::string& portfolio_id,
-        int lookback_days = 30
-    );
+    static std::string generate_equity_curve_chart(std::shared_ptr<DatabaseInterface> db,
+                                                   const std::string& strategy_id,
+                                                   const std::string& portfolio_id,
+                                                   const std::string& date, int lookback_days = 30);
 
     /**
      * @brief Generate PnL by symbol chart for previous day
@@ -254,12 +406,10 @@ public:
      * @param date Date to query (will show previous day's PnL)
      * @return Base64-encoded PNG chart data, or empty string on error
      */
-    static std::string generate_pnl_by_symbol_chart(
-        std::shared_ptr<DatabaseInterface> db,
-        const std::string& strategy_id,
-        const std::string& portfolio_id,
-        const std::string& date
-    );
+    static std::string generate_pnl_by_symbol_chart(std::shared_ptr<DatabaseInterface> db,
+                                                    const std::string& strategy_id,
+                                                    const std::string& portfolio_id,
+                                                    const std::string& date, bool equities = false);
 
     /**
      * @brief Generate daily PnL chart
@@ -283,17 +433,21 @@ public:
     );
 
     static std::string generate_total_transaction_costs_chart(
-        std::shared_ptr<DatabaseInterface> db,
-        const std::string& strategy_id,
-        const std::string& portfolio_id,
-        const std::string& end_date /* today, YYYY-MM-DD */);
-    
-    
+        std::shared_ptr<DatabaseInterface> db, const std::string& strategy_id,
+        const std::string& portfolio_id, const std::string& end_date /* today, YYYY-MM-DD */,
+        const ChartSeries::MultiplierLookup& multiplier_of = {});
+
     static std::string generate_margin_posted_chart(
         std::shared_ptr<DatabaseInterface> db,
         const std::string& strategy_id,
         const std::string& portfolio_id,
         const std::string& date);
+
+    /// Contracts traded per day, strategy fills and roll legs stacked, over the `days` ending on
+    /// the run date (HD 2026-10-14).
+    static std::string generate_contracts_per_day_chart(std::shared_ptr<DatabaseInterface> db,
+                                                        const std::string& portfolio_id,
+                                                        const std::string& date, int days = 30);
     
     /**
      * @brief Generate portfolio composition pie chart
@@ -329,9 +483,34 @@ public:
         std::shared_ptr<DatabaseInterface> db,
         const std::string& strategy_id,
         const std::string& portfolio_id,
-        const std::string& date
+        const std::string& date,
+        bool equities = false  ///< realized plus unrealized per symbol, from the stored rows
     );
 
+    /// An equity book's Day's PnL by Symbol: one bar per symbol of the settled table's Day's PnL column
+    /// (shares held over the move x (latest - previous)); `date` is the run date.
+    static std::string generate_days_pnl_chart(const std::vector<ChartPoint>& rows,
+                                               const std::string& date);
+
+
+    /// The drawdown from the running peak of the stored equity curve, in percent (HD 10-13).
+    static std::string generate_drawdown_chart(std::shared_ptr<DatabaseInterface> db,
+                                               const std::string& strategy_id,
+                                               const std::string& portfolio_id,
+                                               const std::string& date, int lookback_days = 30);
+
+    /// The stored gross and net leverage on the sizing capital over the last days (HD 10-13).
+    static std::string generate_gross_leverage_chart(std::shared_ptr<DatabaseInterface> db,
+                                                     const std::string& strategy_id,
+                                                     const std::string& portfolio_id,
+                                                     const std::string& date,
+                                                     int lookback_days = 30);
+
+    /// How the chart most recently asked for on this thread ended: Drawn, NothingToPlot (no data,
+    /// no process started) or Failed (the data could not be read, or the chart program hung twice,
+    /// errored or left no image). `last_chart_reason` says why in plain words when it Failed.
+    static core::ChartStatus last_chart_status();
+    static std::string last_chart_reason();
 
     // Future chart types can be added here as new static methods:
     // static std::string generate_drawdown_chart(...);

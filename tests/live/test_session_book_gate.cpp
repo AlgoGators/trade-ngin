@@ -21,6 +21,8 @@
 #include <gtest/gtest.h>
 
 #include <chrono>
+#include <cstdlib>
+#include <ctime>
 #include <filesystem>
 #include <fstream>
 #include <map>
@@ -30,6 +32,7 @@
 #include <unordered_map>
 #include <vector>
 
+#include "trade_ngin/core/time_utils.hpp"
 #include "trade_ngin/data/session_classifier.hpp"
 #include "trade_ngin/live/execution_manager.hpp"
 #include "trade_ngin/live/session_book_gate.hpp"
@@ -540,7 +543,7 @@ TEST(SessionBookGateSource, TheGateHoldsOnTheVerdictBeforeStrictExecutions) {
         const auto finalize = src.find("pnl_manager->finalize_previous_day(");
         const auto strict = src.find("execute_strategy_day_strict(*execution_manager,");
         const auto assertion = src.find("unpriced_book_changes(");
-        const auto store_exec = src.find("db->store_executions(");
+        const auto store_exec = src.find("db->replace_roll_day_executions(");
         const auto persisted = src.find("report_config_json[\"t1_classification\"]");
         for (auto at : {classify, upsert, feed, extract, gate, finalize, strict, assertion,
                         store_exec, persisted}) {
@@ -578,5 +581,77 @@ TEST(SessionBookGateSource, TheTwinsCarryTheSameClassifierGateAndStrictBlocks) {
         const std::string b = between(base, from, to);
         ASSERT_FALSE(a.empty());
         EXPECT_EQ(a, b) << "live_portfolio_conservative.cpp and live_portfolio.cpp are twins";
+    }
+}
+
+// ---- DATE-frame option (a): the frame of an explicit run date (E2-F42 / M-08) -------------------
+//
+// The futures twins stamp the date they are given through run_date_at_local_midnight, which is
+// their own parse (std::get_time "%Y-%m-%d", then std::mktime). The tests below EXECUTE it with
+// the host's time zone pinned, in both frames. tm_isdst is left 0 by the parse, so std::mktime
+// reads the date in the host's STANDARD time: a New York host stamps 05:00Z in April as in
+// January (not 04:00Z under daylight time). That is what the stored rows carry
+// (trading.equity_curve of 2026-04-24 is stamped 05:00:00+00).
+
+namespace {
+
+// The host's time zone for the life of the object, then back to what it was.
+struct PinnedTimeZone {
+    std::string previous;
+    bool had_previous = false;
+    explicit PinnedTimeZone(const char* tz) {
+        if (const char* p = std::getenv("TZ")) {
+            previous = p;
+            had_previous = true;
+        }
+        setenv("TZ", tz, 1);
+        tzset();
+    }
+    ~PinnedTimeZone() {
+        if (had_previous) {
+            setenv("TZ", previous.c_str(), 1);
+        } else {
+            unsetenv("TZ");
+        }
+        tzset();
+    }
+};
+
+std::string stamped(const std::string& arg) {
+    const auto run_date = run_date_at_local_midnight(arg);
+    return run_date ? core::format_utc_datetime(*run_date) : "not a date";
+}
+
+}  // namespace
+
+TEST(RunDateFrame, OnANewYorkHostAnExplicitRunDateIsStampedFiveHoursAfterUtcMidnightAllYear) {
+    PinnedTimeZone tz("America/New_York");
+    EXPECT_EQ(stamped("2026-04-24"), "2026-04-24 05:00:00") << "a date under daylight time";
+    EXPECT_EQ(stamped("2026-01-15"), "2026-01-15 05:00:00") << "a date under standard time";
+}
+
+TEST(RunDateFrame, OnAUtcHostAnExplicitRunDateIsStampedAtUtcMidnight) {
+    PinnedTimeZone tz("UTC");
+    EXPECT_EQ(stamped("2026-04-24"), "2026-04-24 00:00:00");
+    EXPECT_EQ(stamped("2026-01-15"), "2026-01-15 00:00:00");
+}
+
+TEST(RunDateFrame, AnArgumentThatIsNotADateGivesNoRunDate) {
+    PinnedTimeZone tz("America/New_York");
+    EXPECT_FALSE(run_date_at_local_midnight("--send-email").has_value());
+    EXPECT_FALSE(run_date_at_local_midnight("").has_value());
+}
+
+// READS SOURCE (a twin guard, not an executing test): both runners stamp the date through the
+// function the tests above execute, and neither keeps a parse of its own beside it.
+TEST(RunDateFrame, BothFuturesRunnersStampTheDateThroughTheTestedFunction) {
+    for (const char* runner : kFuturesRunners) {
+        SCOPED_TRACE(runner);
+        const std::string src = read_source(runner);
+        if (src.empty())
+            GTEST_SKIP() << "runner source not found";
+        EXPECT_NE(src.find("if (const auto run_date = run_date_at_local_midnight(arg)) {"),
+                  std::string::npos);
+        EXPECT_EQ(src.find("std::mktime(&tm)"), std::string::npos);
     }
 }

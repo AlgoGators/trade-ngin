@@ -139,4 +139,72 @@ inline FeedFreshness assess_feed_freshness(
     return f;
 }
 
+/**
+ * @brief What a live run does with the feed-freshness assessment (T-DATED R2; HD 2026-10-10).
+ *
+ *   no usable bar date for ANY symbol   every run refuses: there is nothing to carry a book on;
+ *   a requested symbol with no bar      a run with no date refuses; a dated run goes on and says
+ *                                       nothing here (the book stops only for what it HOLDS, and
+ *                                       the held-symbol check names the symbol: held, a refusal
+ *                                       or a warning; not held, its one WARN line);
+ *   the stalest symbol past tolerance   a run with no date refuses; a dated run goes on with one
+ *                                       INFO line, true in every dated mode, and the held-symbol
+ *                                       check names the symbols the same way.
+ *
+ * `feed` is the word the lines open with ("Futures", "Equity"). The texts are the runners' own.
+ */
+struct FeedFreshnessRuling {
+    bool refuse{false};
+    std::vector<std::string> errors;
+    std::vector<std::string> warnings;
+    std::string info;
+};
+
+inline FeedFreshnessRuling rule_feed_freshness(const FeedFreshness& freshness, int tolerance_days,
+                                               const std::string& as_of_ymd, bool dated_run,
+                                               const std::string& feed) {
+    FeedFreshnessRuling ruling;
+    if (freshness.absent > 0) {
+        const std::string msg =
+            feed + " feed is missing " + std::to_string(freshness.absent) + " of " +
+            std::to_string(freshness.symbols) + " requested symbol(s) entirely, first: " +
+            freshness.absent_symbol + " (no bar of any date as of " + as_of_ymd + ").";
+        if (!dated_run) {
+            ruling.errors.push_back(msg + " Refusing to run live with an incomplete universe. "
+                                          "Refresh the OHLCV feed or remove the symbol from config.");
+            ruling.refuse = true;
+            return ruling;
+        }
+    }
+    if (!freshness.any_data) {
+        ruling.errors.push_back(feed + " data freshness cannot be established: none of the " +
+                                std::to_string(freshness.symbols) +
+                                " loaded symbols carries a usable bar date as of " + as_of_ymd +
+                                ". Refusing to run live without a feed. Refresh the OHLCV feed.");
+        ruling.refuse = true;
+        return ruling;
+    }
+    if (freshness.days_behind > tolerance_days) {
+        const std::string msg =
+            feed + " data is stale: the stalest of " + std::to_string(freshness.symbols) +
+            " symbols (" + freshness.stalest_symbol + ") last printed " + freshness.stalest_date +
+            ", " + std::to_string(freshness.days_behind) + " calendar days before " + as_of_ymd +
+            " (tolerance " + std::to_string(tolerance_days) + " days).";
+        if (dated_run) {
+            ruling.info = msg + " A dated run stops only for a symbol the book holds: the "
+                                "held-symbol check names each one.";
+        } else {
+            ruling.errors.push_back(msg + " Refusing to run live on stale data. Refresh the OHLCV "
+                                          "feed or raise live.data_staleness_tolerance_days.");
+            ruling.refuse = true;
+        }
+        return ruling;
+    }
+    ruling.info = feed + " feed freshness: stalest of " + std::to_string(freshness.symbols) +
+                  " symbols (" + freshness.stalest_symbol + ") at " + freshness.stalest_date + ", " +
+                  std::to_string(freshness.days_behind) + " days behind " + as_of_ymd +
+                  " (tolerance " + std::to_string(tolerance_days) + ").";
+    return ruling;
+}
+
 }  // namespace trade_ngin

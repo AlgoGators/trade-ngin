@@ -8,11 +8,10 @@ There is no migrations table (master document ruling 26). **Applied state is tra
 this file**: when you apply a migration to a database, fill in the date in its column in the
 same PR or straight after. A blank cell means "not recorded", not "not applied".
 
-007 to 011 are unused on main: they were taken on unmerged branches (#55, config-from-database,
+007 to 011 are unused: they were taken on unmerged branches (#55, config-from-database,
 qt-platform-preview) and are retired, so the numbers are never reused (see the header of 012).
-026 is taken by the open PR #172 (`026_contract_metadata_ibkr_fees.sql`, stage 3 fees) and 031
-by #151, so the daily cutoff took 027, the next number free across main and the open PRs on
-2026-10-09.
+030 to 033 are unused: main-nonQT's 028 to 033 became 034 to 039 when it joined main
+(2026-10-21), because main had its own 028 and 029.
 
 | # | File | What it does | Test | new_algo_data | algo_data |
 |---|---|---|---|---|---|
@@ -36,14 +35,22 @@ by #151, so the daily cutoff took 027, the next number free across main and the 
 | 023 | `023_qt_command_log.sql` | `trading.position_overrides` rebuilt as the desk command log; `live_results.book_source`; `strategy_registry.portfolio_group` and `desk_editable`, and the two QT portfolios | `test_023_qt_command_log.sh` | 2026-10-09 | |
 | 024 | `024_drop_retired_qt_tables.sql` | Drops `risk_limits`, `portfolios`, `strategy_book_memberships` and `portfolio_assignments` (ruling 28). Irreversible; no rollback file | `test_023_qt_command_log.sh` | | not applied (checked 2026-10-16) | |
 | 025 | `025_qt_command_log_hardening.sql` | QT contract C2 and C4 on `trading.position_overrides`: one live decision per request, one open publish and one open override request per day (unique partial indexes); inserts must be `pending` with the engine columns NULL; status moves pending -> running -> done/refused/failed, running -> pending only under `algogators.recovery = 'on'`; terminal rows final; TRUNCATE refused. Grants: PUBLIC loses everything on `trading.live_run_metadata` and its sequence (explicit grants kept or added first); `svc_algolens` loses UPDATE, DELETE, TRUNCATE on `position_overrides` | `test_025_qt_command_log_hardening.sh` (postgres:16, throwaway server only; CI `rpc.yml`) | 2026-10-09 | |
+| 026 | `026_contract_metadata_ibkr_fees.sql` | The per-contract IBKR fee in each `"Fee Per Contract"` cell, with a CHECK that the fee is a positive number; needs 014 | `test_026_contract_metadata_ibkr_fees.sh` | 2026-10-10 | |
 | 027 | `027_qt_daily_cutoff.sql` | QT contract C7 (the daily cutoff, rulings 18 and 29 amended): `publish_source` (CHECK desk/fallback/model-only) and `sent_at` on `trading.live_run_metadata`, NULL for days published before it. Grants: svc_trade_ngin reads and writes them; svc_algolens' table-wide INSERT and UPDATE become column grants on every other column, so it reads the two columns only | `test_027_qt_daily_cutoff.sh` (postgres:16, throwaway server only; CI `rpc.yml`) | 2026-10-09 | |
 | 028 | `028_ops_data_ready.sql` | Schema `ops` and `ops.data_ready` (dataset, bar_date, expected, loaded, missing, status complete/partial/failed, run_id, finished_at; key dataset+bar_date): data-ngin's "the pull for this bar date is done", the input of the QT data-driven run (issue #191; data-ngin pulls at 04:30 ET). Grants: `qt_engine_app` and `svc_trade_ngin` USAGE on `ops` and SELECT; `postgres` (data-ngin's login today) SELECT, INSERT, UPDATE | `test_028_ops_data_ready.sh` (postgres:16, throwaway server only; CI `rpc.yml`) | about 2026-10-12 (inferred from its rows, 2026-10-16) | |
 | 029 | `029_qt_rescind.sql` | QT contract C8 (Rescind): kind `rescind` on `trading.position_overrides`, one open rescind per day, and the one-done-publish index dropped (a rescinded approval leaves its row done) | (rpc.yml: 029 on postgres 16) | about 2026-10-14 (inferred from its rows, 2026-10-16) | |
+| 034 | `034_column_comments.sql` | Comments on columns and tables of `trading` and `backtest`; no data change | `test_034_column_comments.sh` | 2026-10-10 (as 028) | |
+| 035 | `035_live_results_settled_at.sql` | `settled_at` on `trading.live_results`; each existing row that has a later row of its book is stamped `1970-01-01 00:00:00+00` | `test_035_live_results_settled_at.sh` | 2026-10-10 (as 029) | |
+| 036 | `036_live_results_statistics.sql` | Twenty statistics and overlay columns on `trading.live_results` | `test_036_live_results_statistics.sh` | 2026-10-10 (as 030) | |
+| 037 | `037_backtest_statistics.sql` | Thirteen statistics columns on `backtest.results` and six overlay columns on `backtest.equity_curve`; needs 018 and 020 | `test_037_backtest_statistics.sh` | 2026-10-12 (as 031) | |
+| 038 | `038_final_positions_row_mark.sql` | `row_mark` (`NO_BAR` or NULL) on `backtest.final_positions`; needs 016 | `test_038_final_positions_row_mark.sh` | 2026-10-12 (as 032) | |
+| 039 | `039_backtest_end_date_comment.sql` | Comments on `end_date` of `backtest.results` and `backtest.run_metadata`; no data change | `test_039_backtest_end_date_comment.sh` | 2026-10-13 (as 033) | |
 
-**Two lines, one database (D-50, D-5).** new_algo_data also carries main-nonQT's own 028 and 029,
-applied there before QT's. QT's 028 and 029 above keep their file names until the main /
-main-nonQT merge, which renumbers them (034 and 035 in HD's plan of 2026-10-16) and merges this
-table with main-nonQT's into one README by full file name.
+**Two lines, one database (D-50, D-5).** main-nonQT's migrations 028 to 033 were applied to
+new_algo_data under those numbers before main-nonQT joined main; they are 034 to 039 above (HD
+2026-10-21: ours moved, QT's 028 and 029 kept their numbers). Each of the six files' headers says
+so, and none is applied there again. Their SQL is unchanged, so the comments they stored still
+name the old numbers.
 
 ## Deploy notes
 

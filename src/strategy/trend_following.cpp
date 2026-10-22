@@ -1,6 +1,7 @@
 // src/strategy/trend_following.cpp
 #include "trade_ngin/strategy/trend_following.hpp"
 #include "trade_ngin/core/time_utils.hpp"
+#include "trade_ngin/data/listing_dates.hpp"
 #include "trade_ngin/strategy/trend_estimator.hpp"
 #include "trade_ngin/strategy/trend_estimator_record.hpp"
 #include <algorithm>
@@ -42,11 +43,11 @@ Result<void> TrendFollowingStrategy::validate_config() const {
     auto result = BaseStrategy::validate_config();
     if (result.is_error())
         return result;
-    return validate_trend_config(trend_config_);
+    return validate_trend_config(trend_config_, registry_.get());
 }
 
 Result<void> TrendFollowingStrategy::validate_trend_config(
-    const TrendFollowingConfig& trend_config) {
+    const TrendFollowingConfig& trend_config, const InstrumentRegistry* registry) {
     // Validate trend-specific config
     if (trend_config.risk_target <= 0.0 || trend_config.risk_target > 1.0) {
         return make_error<void>(ErrorCode::INVALID_ARGUMENT, "Risk target must be between 0 and 1",
@@ -96,6 +97,77 @@ Result<void> TrendFollowingStrategy::validate_trend_config(
         }
     }
 
+    // Trading rules removed from a contract by cost: the pairs removed are the contract's fastest
+    // and leave at least one (trend_estimator::pairs_after_removal), the multiplier table names
+    // the number left (a missing row would otherwise read as a multiplier of 1), and on a symbol
+    // the equity slow rule names, every pair the rule reads is left.
+    for (const auto& [removal_symbol, removed] : trend_config.rule_removals) {
+        auto refuse = [&](const std::string& why) {
+            return make_error<void>(ErrorCode::INVALID_ARGUMENT,
+                                    "Trading rule removals for " + removal_symbol + ": " + why,
+                                    "TrendFollowingStrategy");
+        };
+        if (removal_symbol.empty() || removal_symbol.find('.') != std::string::npos) {
+            return refuse("a contract is named by its base symbol (\"ZR\", not \"ZR.v.0\")");
+        }
+        if (removed.empty()) {
+            return refuse("no pair is named (a contract that keeps every rule is not listed)");
+        }
+        // A name the metadata does not hold is a mistyped contract, which would remove nothing
+        // (checked when a registry is given: a strategy's own check; a settings check has none).
+        if (registry && !registry->has_instrument(removal_symbol)) {
+            return refuse("the instrument registry holds no contract of that name");
+        }
+        std::string why;
+        const auto left =
+            trend_estimator::pairs_after_removal(trend_config.ema_windows, removed, &why);
+        if (left.empty()) return refuse(why);
+        const bool has_multiplier =
+            std::any_of(trend_config.fdm.begin(), trend_config.fdm.end(), [&](const auto& row) {
+                return row.first == static_cast<int>(left.size());
+            });
+        if (!has_multiplier) {
+            return refuse("the multiplier table has no row for " + std::to_string(left.size()) +
+                          " rules");
+        }
+        const std::string root = ListingDates::instance().pair_root(removal_symbol);
+        const bool ruled = std::find(trend_config.equity_slow_symbols.begin(),
+                                     trend_config.equity_slow_symbols.end(),
+                                     root) != trend_config.equity_slow_symbols.end();
+        if (ruled) {
+            for (const auto& rule_pair : trend_config.equity_slow_pairs) {
+                if (std::find(left.begin(), left.end(), rule_pair) == left.end()) {
+                    return refuse("the pair (" + std::to_string(rule_pair.first) + ", " +
+                                  std::to_string(rule_pair.second) +
+                                  ") is read by the equity slow rule on this symbol and cannot "
+                                  "be removed");
+                }
+            }
+        }
+    }
+
+    // The two contracts of a listing-date pair run one price history as one instrument: the same
+    // rules are removed from both, or from neither.
+    for (const auto& contract : ListingDates::instance().contracts()) {
+        const auto listed = trend_config.rule_removals.find(contract.symbol);
+        const auto before = trend_config.rule_removals.find(contract.before);
+        const bool has_listed = listed != trend_config.rule_removals.end();
+        const bool has_before = before != trend_config.rule_removals.end();
+        auto same = [](std::vector<std::pair<int, int>> a, std::vector<std::pair<int, int>> b) {
+            std::sort(a.begin(), a.end());
+            std::sort(b.begin(), b.end());
+            return a == b;
+        };
+        if (has_listed != has_before || (has_listed && !same(listed->second, before->second))) {
+            return make_error<void>(ErrorCode::INVALID_ARGUMENT,
+                                    "Trading rule removals for " + contract.symbol + " and " +
+                                        contract.before +
+                                        ": the two contracts of a listing-date pair must lose "
+                                        "the same rules",
+                                    "TrendFollowingStrategy");
+        }
+    }
+
     return Result<void>();
 }
 
@@ -108,9 +180,35 @@ Result<void> TrendFollowingStrategy::initialize() {
         return base_result;
     }
 
+    // The instrument weights get_weights() keeps are read from two database tables (the contract
+    // metadata's sector of each symbol, and the futures symbols that have bars) and from nothing
+    // else. They are kept for one initialised life of the strategy: dropped here, read again on
+    // the next get_weights().
+    weight_cache_.clear();
+
     // Set PnL accounting method for futures (marked-to-market daily)
     set_pnl_accounting_method(PnLAccountingMethod::REALIZED_ONLY);
     INFO("Trend following strategy initialized with REALIZED_ONLY PnL accounting for futures");
+
+    // The trading rules removed by cost, one line a contract (nothing without the list).
+    for (const auto& [removal_symbol, removed] : trend_config_.rule_removals) {
+        const auto left = trend_estimator::pairs_after_removal(trend_config_.ema_windows, removed);
+        double fdm = 1.0;
+        for (const auto& row : trend_config_.fdm) {
+            if (row.first == static_cast<int>(left.size())) {
+                fdm = row.second;
+                break;
+            }
+        }
+        std::string fast;
+        for (const auto& pair : removed) {
+            fast += (fast.empty() ? "" : " ") + std::to_string(pair.first) + "/" +
+                    std::to_string(pair.second);
+        }
+        INFO("TRADING_RULE_REMOVALS " + id_ + " " + removal_symbol + ": does not run " + fast +
+             "; runs " + std::to_string(left.size()) + " pairs at equal weight, multiplier " +
+             std::to_string(fdm));
+    }
 
     try {
         // Initialize positions for each symbol
@@ -308,6 +406,17 @@ Result<void> TrendFollowingStrategy::on_data(const std::vector<Bar>& data) {
         for (const auto& [symbol, symbol_bars] : bars_by_symbol) {
             auto& instrument_data = instrument_data_[symbol];
 
+            // Listing dates (always true without portfolio.json's listing_dates): a contract outside
+            // its tradeable window keeps its history and its estimators (a predecessor still held
+            // while its switch waits is weighed on a current series) and publishes no target.
+            const bool tradeable =
+                ListingDates::instance().tradeable(symbol, symbol_bars.back().timestamp);
+            if (!tradeable) {
+                instrument_data.raw_position = 0.0;
+                instrument_data.final_position = 0.0;
+                instrument_data.optimal_position = 0.0;
+            }
+
             // Wait for enough data before processing
             if (instrument_data.price_history.size() < static_cast<size_t>(max_window)) {
                 if (instrument_data.price_history.size() % 50 == 0) {
@@ -357,16 +466,40 @@ Result<void> TrendFollowingStrategy::on_data(const std::vector<Bar>& data) {
                 window.day.push_back(static_cast<double>(
                     std::chrono::floor<std::chrono::days>(ts).time_since_epoch().count()));
             }
+            // The contract's own pairs: the sleeve's, less the trading rules removed from this
+            // contract by cost (without portfolio.json's trading_rule_removals nothing is removed
+            // and no value changes). The pairs left weigh equally and the
+            // multiplier is the table's for their number; validate_config refused any list that
+            // does not leave the slowest pairs.
+            std::vector<std::pair<int, int>> own_pairs;
+            if (!trend_config_.rule_removals.empty()) {
+                const auto removal =
+                    trend_config_.rule_removals.find(symbol.substr(0, symbol.find('.')));
+                if (removal != trend_config_.rule_removals.end()) {
+                    own_pairs = trend_estimator::pairs_after_removal(trend_config_.ema_windows,
+                                                                     removal->second);
+                    if (own_pairs.empty()) {
+                        // validate_config refused such a list; never run a listed contract on
+                        // every pair because the list could not be read.
+                        return make_error<void>(ErrorCode::INVALID_ARGUMENT,
+                                                "Trading rule removals for " + symbol +
+                                                    " cannot be applied",
+                                                "TrendFollowingStrategy");
+                    }
+                }
+            }
+            const std::vector<std::pair<int, int>>& symbol_pairs =
+                own_pairs.empty() ? trend_config_.ema_windows : own_pairs;
             double fdm = 1.0;  // the diversification multiplier for this number of pairs
             for (const auto& fdm_pair : trend_config_.fdm) {
-                if (fdm_pair.first == static_cast<int>(trend_config_.ema_windows.size())) {
+                if (fdm_pair.first == static_cast<int>(symbol_pairs.size())) {
                     fdm = fdm_pair.second;
                     break;
                 }
             }
             const trend_estimator::Estimate estimate =
                 trend_estimator::estimate(window, trend_config_.vol_lookback_short,
-                                          trend_config_.ema_windows, fdm);
+                                          symbol_pairs, fdm);
             if (!estimate.valid) {
                 WARN("Using default volatility for " + symbol + " due to calculation issues");
             }
@@ -400,7 +533,7 @@ Result<void> TrendFollowingStrategy::on_data(const std::vector<Bar>& data) {
             // The attenuation the forecasts were multiplied by, once per pair, where the window
             // holds a year of bars
             if (prices.size() >= trend_estimator::kAttenuationMinValues) {
-                for (size_t pair = 0; pair < trend_config_.ema_windows.size(); ++pair) {
+                for (size_t pair = 0; pair < symbol_pairs.size(); ++pair) {
                     INFO("EWMA volatility multiplier: " + std::to_string(estimate.attenuation) +
                          " with quantile: " + std::to_string(estimate.smoothed_quantile));
                 }
@@ -419,12 +552,13 @@ Result<void> TrendFollowingStrategy::on_data(const std::vector<Bar>& data) {
             // forecast is THE forecast from here on: the sizing, its sign and the stored signal.
             double ruled_forecast = estimate.combined;
             {
-                const std::string base_symbol = symbol.substr(0, symbol.find('.'));
+                const std::string base_symbol =
+                    ListingDates::instance().pair_root(symbol.substr(0, symbol.find('.')));
                 if (std::find(trend_config_.equity_slow_symbols.begin(),
                               trend_config_.equity_slow_symbols.end(),
                               base_symbol) != trend_config_.equity_slow_symbols.end()) {
                     ruled_forecast = trend_estimator::equity_slow_ruled(
-                        estimate.combined, estimate.scaled, trend_config_.ema_windows,
+                        estimate.combined, estimate.scaled, symbol_pairs,
                         trend_config_.equity_slow_pairs);
                 }
             }
@@ -448,6 +582,7 @@ Result<void> TrendFollowingStrategy::on_data(const std::vector<Bar>& data) {
                         WARN("Instrument not found in registry for " + symbol);
                     }
 
+                    lookup_symbol = ListingDates::instance().pair_root(lookup_symbol);
                     if (lookup_symbol == "ES") {
                         lookup_symbol = "MES";
                     } else if (lookup_symbol == "NQ") {
@@ -501,10 +636,14 @@ Result<void> TrendFollowingStrategy::on_data(const std::vector<Bar>& data) {
                 raw_position = 0.0;
             }
 
+            if (!tradeable) {
+                raw_position = 0.0;
+                instrument_data.optimal_position = 0.0;
+            }
             instrument_data.raw_position = raw_position;
-            append_trend_estimator_record(id_, core::format_utc_date(symbol_bars.back().timestamp),
+            if (tradeable) append_trend_estimator_record(id_, core::format_utc_date(symbol_bars.back().timestamp),
                                           symbol, instrument_data.estimate,
-                                          trend_config_.ema_windows,
+                                          trend_config_.ema_windows, symbol_pairs,
                                           instrument_data.current_forecast,
                                           std::max(1000.0, config_.capital_allocation),
                                           instrument_data.weight, instrument_data.contract_size,
@@ -520,8 +659,9 @@ Result<void> TrendFollowingStrategy::on_data(const std::vector<Bar>& data) {
 
             instrument_data.final_position = final_position;
 
-            // Save forecast with error handling
-            auto signal_result = on_signal(symbol, instrument_data.current_forecast);
+            // Save forecast with error handling (a contract outside its tradeable window has none)
+            auto signal_result =
+                tradeable ? on_signal(symbol, instrument_data.current_forecast) : Result<void>();
             if (signal_result.is_error()) {
                 WARN("Failed to save signal for " + symbol + ": " + signal_result.error()->what());
                 // Continue processing despite signal save failure
@@ -725,8 +865,14 @@ bool TrendFollowingStrategy::is_signalling(const std::string& symbol) const {
         max_window = std::max(max_window, window_pair.second);
     }
     auto it = instrument_data_.find(symbol);
-    return it != instrument_data_.end() &&
-           !(it->second.price_history.size() < static_cast<size_t>(max_window));
+    if (it == instrument_data_.end() ||
+        it->second.price_history.size() < static_cast<size_t>(max_window)) {
+        return false;
+    }
+    // Listing dates (always true without portfolio.json's listing_dates): the symbol
+    // signals only while its last consumed bar is inside its tradeable window.
+    return it->second.bar_timestamps.empty() ||
+           ListingDates::instance().tradeable(symbol, it->second.bar_timestamps.back());
 }
 
 std::unordered_map<std::string, Position> TrendFollowingStrategy::get_target_positions() const {

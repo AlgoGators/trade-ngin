@@ -35,6 +35,8 @@ struct LiveSettings {
  * - an active row: merged over the files (ConfigLoader::load with the overlay); a row that
  *   cannot be applied is refused, never dropped (ruling 24).
  * - the row's portfolio must be the files' portfolio.
+ * - an active row for a portfolio that is not desk-editable (portfolio.json qt.desk_editable) is
+ *   refused (rejoin R-6): such a book runs on its files, as its backtests do.
  *
  * Backtests never call this (ruling 4): they load their files with the two-argument
  * ConfigLoader::load and nothing else.

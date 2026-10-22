@@ -472,9 +472,9 @@ Sharpe Ratio: X.XXX
 Sortino Ratio: X.XXX
 Max Drawdown: X.XX%
 Calmar Ratio: X.XXX
-Volatility: X.XX%
-Win Rate: X.XX%
-Total Trades: N
+Volatility (annualised): X.XX%
+Trade win rate (closing fills): X.XX%
+Closing fills: N
 ===============================================
 ```
 

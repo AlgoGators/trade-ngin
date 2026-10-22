@@ -254,6 +254,17 @@ TEST_F(RiskModuleLoopTest, ANoneBookRunsNoGateAndLogsItsRuling) {
                               "ruled_on=2026-09-19: this book runs no risk module"),
               1u)
         << built;
+    // The line says what the day's row holds: the equity runner stores risk_scale 1.0 (no
+    // portfolio-risk overlay ran this run), not the snapshot reporter's reading.
+    EXPECT_EQ(count_of(built, "reporter's reading, not a cut"), 0u) << built;
+    EXPECT_EQ(count_of(built,
+                       "this book runs no risk module, so nothing cuts it for portfolio "
+                       "risk; a live equity run stores risk_scale 1.0 on the day's "
+                       "live_results row (no portfolio-risk overlay ran this run), and "
+                       "the reporter's reading is on the RISK_SCALE_REPORT line, not in "
+                       "that column"),
+              1u)
+        << built;
     strategy_ = make_strategy("RML_S", {{{"ZZA", make_pos("ZZA", 5.0, 100.0)}}});
     ASSERT_TRUE(pm_->add_strategy(strategy_, 1.0, false).is_ok());
 

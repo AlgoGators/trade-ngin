@@ -343,10 +343,10 @@ TEST_F(QtBooksDb, LiveResultsAndEquityBooksNeverTouchEachOther) {
 
     for (const char* book : {"qt_proposal", "qt"}) {
         auto r = db_->store_live_results_complete(kSid, d, qt_m, {}, nlohmann::json(), kPid, kLive,
-                                                  nlohmann::json{{"binding_term", "R"}}, book);
+                                                  nlohmann::json{{"binding_term", "R"}}, {}, book);
         ASSERT_TRUE(r.is_ok()) << book << ": " << r.error()->what();
         ASSERT_TRUE(db_->store_trading_equity_curve(kSid, d, 499900.0, kPid, kCurve, book).is_ok());
-        ASSERT_TRUE(db_->update_live_results(kSid, d, {{"total_pnl", -50.0}}, kPid, kLive, book).is_ok());
+        ASSERT_TRUE(db_->update_live_results(kSid, d, {{"total_pnl", -50.0}}, kPid, kLive, nullptr, {}, book).is_ok());
         ASSERT_TRUE(db_->update_live_equity_curve(kSid, d, 499950.0, kPid, kCurve, book).is_ok());
         EXPECT_EQ(fp(kLive, "system"), sys_live) << book;
         EXPECT_EQ(fp(kCurve, "system"), sys_curve) << book;
@@ -400,9 +400,9 @@ TEST_F(QtBooksDb, InvalidBookIsRefusedEverywhere) {
         EXPECT_TRUE(db_->get_stored_roll_contracts(kSid, kPid, d, kExecs, bad).is_error());
         EXPECT_TRUE(db_->get_stored_realised_rows(kSid, kPid, "2026-04-23", "2026-04-25", kPos, bad).is_error());
         EXPECT_TRUE(db_->get_previous_total_roll_costs(kSid, kPid, d, kLive, kExecs, bad).is_error());
-        EXPECT_TRUE(db_->store_live_results_complete(kSid, d, {{"total_pnl", 2.0}}, {}, nlohmann::json(), kPid, kLive, nlohmann::json(), bad).is_error());
+        EXPECT_TRUE(db_->store_live_results_complete(kSid, d, {{"total_pnl", 2.0}}, {}, nlohmann::json(), kPid, kLive, nlohmann::json(), {}, bad).is_error());
         EXPECT_TRUE(db_->delete_live_results(kSid, d, kPid, kLive, bad).is_error());
-        EXPECT_TRUE(db_->update_live_results(kSid, d, {{"total_pnl", 3.0}}, kPid, kLive, bad).is_error());
+        EXPECT_TRUE(db_->update_live_results(kSid, d, {{"total_pnl", 3.0}}, kPid, kLive, nullptr, {}, bad).is_error());
         EXPECT_TRUE(db_->get_previous_live_aggregates(kSid, kPid, d, kLive, bad).is_error());
         EXPECT_TRUE(db_->store_trading_equity_curve(kSid, d, 1.0e6, kPid, kCurve, bad).is_error());
         EXPECT_TRUE(db_->delete_live_equity_curve(kSid, d, kPid, kCurve, bad).is_error());
@@ -448,14 +448,21 @@ TEST_F(QtBooksDb, LiveResultsManagerWritesItsBookOnly) {
     EXPECT_EQ(fp(kPos, "qt") + fp(kExecs, "qt") + fp(kLive, "qt") + fp(kCurve, "qt"), qt)
         << "a system save moved qt rows";
 
-    // The invalid-equity fallback reads the last good equity of its own book: qt's 04-23 row,
-    // not system's later 04-24 row a book-blind read would take.
+    // An invalid equity is refused (T-8D-2 R47; no fallback to an older stored equity): the save
+    // fails, the qt book's curve has no row of the date (its stale row was deleted first), and
+    // neither qt's other rows nor the system book move.
     ASSERT_TRUE(db_->store_trading_equity_curve(kSid, at(2026, 4, 23), 499700.0, kPid, kCurve, "qt").is_ok());
-    ASSERT_TRUE(save("qt", 6, 0.0).is_ok());
-    EXPECT_EQ(scalar("SELECT equity::text FROM trading.equity_curve WHERE strategy_id = "
+    const auto system_curve = fp(kCurve, "system");
+    EXPECT_TRUE(save("qt", 6, 0.0).is_error());
+    EXPECT_EQ(scalar("SELECT count(*)::text FROM trading.equity_curve WHERE strategy_id = "
                      "'QTBOOKS_PROBE_ID' AND portfolio_type = 'qt' AND timestamp = "
                      "'2026-04-24 21:00:00+00'"),
+              "0");
+    EXPECT_EQ(scalar("SELECT equity::text FROM trading.equity_curve WHERE strategy_id = "
+                     "'QTBOOKS_PROBE_ID' AND portfolio_type = 'qt' AND DATE(timestamp) = "
+                     "'2026-04-23'"),
               "499700");
+    EXPECT_EQ(fp(kCurve, "system"), system_curve) << "a refused qt save moved system rows";
 
     LiveResultsManager bad(db_, true, kSid, kPid, kSleeve);
     EXPECT_TRUE(bad.set_book("desk").is_error());
