@@ -41,6 +41,36 @@ TEST(PostgresParamSafety, ValidIdentifiersAccepted) {
     EXPECT_TRUE(db.validate_identifier("col_with_digits_123").is_ok());
 }
 
+TEST(PostgresParamSafety, TableNameAcceptsQualifiedNameAndRejectsSqlKeyword) {
+    PostgresDatabase db = make_offline_db();
+    EXPECT_TRUE(db.validate_table_name("backtest.final_positions").is_ok());
+    auto rejected = db.validate_table_name("backtest.drop_table");
+    ASSERT_TRUE(rejected.is_error());
+    EXPECT_EQ(rejected.error()->code(), ErrorCode::INVALID_ARGUMENT);
+}
+
+TEST(PostgresParamSafety, StrategyIdAcceptsCurrentBoundaryAndRejectsCommentOpener) {
+    PostgresDatabase db = make_offline_db();
+    EXPECT_TRUE(db.validate_strategy_id(std::string(100, 'A')).is_ok());
+    auto too_long = db.validate_strategy_id(std::string(101, 'A'));
+    ASSERT_TRUE(too_long.is_error());
+    EXPECT_EQ(too_long.error()->code(), ErrorCode::INVALID_ARGUMENT);
+    auto comment = db.validate_strategy_id("alpha--beta");
+    ASSERT_TRUE(comment.is_error());
+    EXPECT_EQ(comment.error()->code(), ErrorCode::INVALID_ARGUMENT);
+}
+
+TEST(PostgresParamSafety, IdentifierAcceptsCurrentBoundaryAndRejectsLeadingDigit) {
+    PostgresDatabase db = make_offline_db();
+    EXPECT_TRUE(db.validate_identifier(std::string(64, 'a')).is_ok());
+    auto too_long = db.validate_identifier(std::string(65, 'a'));
+    ASSERT_TRUE(too_long.is_error());
+    EXPECT_EQ(too_long.error()->code(), ErrorCode::INVALID_ARGUMENT);
+    auto leading_digit = db.validate_identifier("1column");
+    ASSERT_TRUE(leading_digit.is_error());
+    EXPECT_EQ(leading_digit.error()->code(), ErrorCode::INVALID_ARGUMENT);
+}
+
 TEST(PostgresParamSafety, EmptyIdentifierRejected) {
     PostgresDatabase db = make_offline_db();
     auto r = db.validate_identifier("");
@@ -89,7 +119,7 @@ TEST(PostgresParamSafety, OversizeRejected) {
 }
 
 // Existing validate_strategy_id has slightly different rules (allows dash,
-// 50-char cap). Pin those to ensure Phase 5's new helper doesn't accidentally
+// 100-char cap). Pin those to ensure Phase 5's new helper doesn't accidentally
 // converge them (they intentionally differ -- strategy_id is a value, not
 // an identifier).
 TEST(PostgresParamSafety, ValidateStrategyIdAcceptsDash) {
