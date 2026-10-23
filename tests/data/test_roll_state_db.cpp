@@ -105,21 +105,28 @@ TEST_F(RollStateDbTest, TheStoredClosingLegsOfTheDateNameTheContractRolledOutOf)
     EXPECT_TRUE(none.value().empty()) << "a first run of a date has no stored leg";
 }
 
-// Issue #188 (executes against the database): per symbol, the contract the LATEST closing leg dated
-// before the date rolled out of. The case B state before the 04-30 re-run: the 04-29 re-run stored
-// ZS's legs (ids dated 04-28) and the first pass's stale legs are still dated 04-30 (ids dated
-// 04-29). The read for 04-30 gives 42009683 from the 04-29 legs, never the 04-30 rows; of two rolls
-// on one earlier date the later one's (the ids sort by confirming date); of two dates the later
-// one's; STRATEGY rows, opening legs, another portfolio and another book are not read.
-TEST_F(RollStateDbTest, TheLatestEarlierClosingLegNamesTheContractLastRolledOutOf) {
-    leg("2026-04-30", "EXEC_ZS.v.0_20260429_RC", "ZS.v.0", "ROLL", "42009683", 15.18);
-    leg("2026-04-30", "EXEC_ZS.v.0_20260429_RO", "ZS.v.0", "ROLL", "194904", 15.20);
-    leg("2026-04-29", "EXEC_ZS.v.0_20260428_RC", "ZS.v.0", "ROLL", "42009683", 15.13);
-    leg("2026-04-29", "EXEC_ZS.v.0_20260428_RO", "ZS.v.0", "ROLL", "194904", 15.15);
-    leg("2026-01-29", "EXEC_ZS.v.0_20260128_RC", "ZS.v.0", "ROLL", "41000001", 15.0);
-    leg("2026-04-28", "EXEC_ZC.v.0_20260423_RC", "ZC.v.0", "ROLL", "H", 5.0);
+// Issue #188 (executes against the database): per symbol, the rolls stored for the dates in
+// [from, date), oldest first, each closing leg with the opening leg of the same roll. Audit A's P1
+// state before the 04-30 re-run: the repair stored ZW's A to B (04-25) and B to C (04-29); the first
+// pass's stale A to C legs are still dated 04-30 and are not read. A roll stored for two sleeves is
+// one entry; two rolls on one date come in confirming-date order; an opening leg not stored reads
+// ""; rows before `from`, STRATEGY rows, another portfolio and another book are not read.
+TEST_F(RollStateDbTest, TheEarlierRollsAreReadOldestFirstWithTheContractRolledInto) {
+    leg("2026-04-30", "EXEC_ZW.v.0_20260429_RC", "ZW.v.0", "ROLL", "A", 9.0);
+    leg("2026-04-30", "EXEC_ZW.v.0_20260429_RO", "ZW.v.0", "ROLL", "C", 9.0);
+    leg("2026-04-29", "EXEC_ZW.v.0_20260428_RC", "ZW.v.0", "ROLL", "B", 9.0);
+    leg("2026-04-29", "EXEC_ZW.v.0_20260428_RO", "ZW.v.0", "ROLL", "C", 9.0);
+    leg("2026-04-25", "EXEC_ZW.v.0_20260424_RC", "ZW.v.0", "ROLL", "A", 9.0);
+    leg("2026-04-25", "EXEC_ZW.v.0_20260424_RO", "ZW.v.0", "ROLL", "B", 9.0);
+    leg("2026-04-25", "EXEC_ZW.v.0_20260424_RC", "ZW.v.0", "ROLL", "A", 9.0, "TREND_FOLLOWING_FAST");
+    leg("2026-04-25", "EXEC_ZW.v.0_20260424_RO", "ZW.v.0", "ROLL", "B", 9.0, "TREND_FOLLOWING_FAST");
+    leg("2026-01-29", "EXEC_ZW.v.0_20260128_RC", "ZW.v.0", "ROLL", "Z", 9.0);
+    leg("2026-01-29", "EXEC_ZW.v.0_20260128_RO", "ZW.v.0", "ROLL", "A", 9.0);
     leg("2026-04-28", "EXEC_ZC.v.0_20260427_RC", "ZC.v.0", "ROLL", "K", 5.0);
     leg("2026-04-28", "EXEC_ZC.v.0_20260427_RO", "ZC.v.0", "ROLL", "N", 5.0);
+    leg("2026-04-28", "EXEC_ZC.v.0_20260423_RC", "ZC.v.0", "ROLL", "H", 5.0);
+    leg("2026-04-28", "EXEC_ZC.v.0_20260423_RO", "ZC.v.0", "ROLL", "K", 5.0);
+    leg("2026-04-27", "EXEC_ZS.v.0_20260426_RC", "ZS.v.0", "ROLL", "S1", 4.0);  // no opening leg stored
     leg("2026-04-27", "EXEC_6A.v.0_20260427", "6A.v.0", "STRATEGY", "", 2.0);
     {
         pqxx::connection conn(conn_);
@@ -133,23 +140,32 @@ TEST_F(RollStateDbTest, TheLatestEarlierClosingLegNamesTheContractLastRolledOutO
                pqxx::params{kId});
         w.commit();
     }
-    auto got = db_->get_previous_roll_contracts(kId, kPortfolio, utc(2026, 4, 30), "trading.executions");
+    using Rolls = std::vector<StoredRoll>;
+    auto pairs = [](const Rolls& rolls) {
+        std::vector<std::string> out;
+        for (const auto& r : rolls) out.push_back(r.outgoing + ">" + r.incoming);
+        return out;
+    };
+    auto got = db_->get_previous_rolls(kId, kPortfolio, utc(2026, 2, 1), utc(2026, 4, 30), "trading.executions");
     ASSERT_TRUE(got.is_ok()) << got.error()->what();
-    ASSERT_EQ(got.value().size(), 2u);
-    EXPECT_EQ(got.value().at("ZS.v.0"), "42009683") << "the 04-29 legs, not the 04-30 rows";
-    EXPECT_EQ(got.value().at("ZC.v.0"), "K") << "the later of two rolls on one date";
-    auto before = db_->get_previous_roll_contracts(kId, kPortfolio, utc(2026, 4, 29), "trading.executions");
-    ASSERT_TRUE(before.is_ok());
-    EXPECT_EQ(before.value().at("ZS.v.0"), "41000001") << "the date's own legs are not earlier";
-    auto none = db_->get_previous_roll_contracts(kId, kPortfolio, utc(2026, 1, 29), "trading.executions");
+    ASSERT_EQ(got.value().size(), 3u);
+    EXPECT_EQ(pairs(got.value().at("ZW.v.0")), (std::vector<std::string>{"A>B", "B>C"}))
+        << "oldest first, one entry for two sleeves, nothing dated 04-30 or before the window";
+    EXPECT_EQ(pairs(got.value().at("ZC.v.0")), (std::vector<std::string>{"H>K", "K>N"}));
+    EXPECT_EQ(pairs(got.value().at("ZS.v.0")), (std::vector<std::string>{"S1>"}));
+    auto wide = db_->get_previous_rolls(kId, kPortfolio, utc(2026, 1, 1), utc(2026, 4, 26), "trading.executions");
+    ASSERT_TRUE(wide.is_ok());
+    EXPECT_EQ(pairs(wide.value().at("ZW.v.0")), (std::vector<std::string>{"Z>A", "A>B"}));
+    EXPECT_EQ(wide.value().count("ZC.v.0"), 0u) << "the date's own legs and later ones are not earlier";
+    auto none = db_->get_previous_rolls(kId, kPortfolio, utc(2026, 1, 1), utc(2026, 1, 29), "trading.executions");
     ASSERT_TRUE(none.is_ok());
     EXPECT_TRUE(none.value().empty());
-    auto qt = db_->get_previous_roll_contracts(kId, kPortfolio, utc(2026, 4, 30), "trading.executions", "qt");
+    auto qt = db_->get_previous_rolls(kId, kPortfolio, utc(2026, 1, 1), utc(2026, 4, 30), "trading.executions", "qt");
     ASSERT_TRUE(qt.is_ok()) << qt.error()->what();
     EXPECT_TRUE(qt.value().empty()) << "the rows are the system book's";
-    EXPECT_TRUE(db_->get_previous_roll_contracts(kId, kPortfolio, utc(2026, 4, 30), "trading.executions; DROP")
+    EXPECT_TRUE(db_->get_previous_rolls(kId, kPortfolio, utc(2026, 1, 1), utc(2026, 4, 30), "trading.executions; DROP")
                     .is_error());
-    EXPECT_TRUE(db_->get_previous_roll_contracts(kId, kPortfolio, utc(2026, 4, 30), "trading.executions", "nope")
+    EXPECT_TRUE(db_->get_previous_rolls(kId, kPortfolio, utc(2026, 1, 1), utc(2026, 4, 30), "trading.executions", "nope")
                     .is_error());
 }
 

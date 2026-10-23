@@ -1873,39 +1873,51 @@ int main(int argc, char* argv[]) {
                       "); refusing to run: the rolls to book cannot be told");
                 return 1;
             }
-            // Issue #188: the day's own legs are the state coming in unless an earlier date already
-            // booked the same roll (a re-run in a repair after late bars: the first pass booked it
-            // here, late; the re-run of its own date has since booked it there). The T-1 row is then
-            // the state (contract_held_coming_into).
-            std::unordered_map<std::string, std::string> todays_legs, earlier_legs;
+            // Issue #188: the day's own legs are the state coming in unless the rolls stored for
+            // earlier dates of the window rolled out of their contract since they last rolled into
+            // it (a re-run in a repair after late bars: the first pass booked the roll here, late;
+            // the re-runs of the earlier dates have since booked it, or the several rolls it stood
+            // for, there). The T-1 row is then the state (contract_held_coming_into).
+            std::unordered_map<std::string, std::string> todays_legs;
+            std::unordered_map<std::string, std::vector<StoredRoll>> earlier_rolls;
             for (const auto& [symbol, contract] : stored_legs.value()) {
                 if (contract.empty()) continue;
                 const auto held = todays_legs.try_emplace(symbol).first;
                 held->second = ListingDates::instance().read_id(symbol, now, contract);
             }
             if (!todays_legs.empty()) {
-                auto previous_legs = db->get_previous_roll_contracts(
-                    combined_strategy_id, portfolio_id, now, "trading.executions", qt_write_book);
-                if (previous_legs.is_error()) {
+                Timestamp window_from = now;
+                for (const auto& bar : strategy_feed_bars) {
+                    if (bar.timestamp < window_from) window_from = bar.timestamp;
+                }
+                auto previous_rolls = db->get_previous_rolls(combined_strategy_id, portfolio_id,
+                                                             window_from, now, "trading.executions",
+                                                             qt_write_book);
+                if (previous_rolls.is_error()) {
                     ERROR("ROLL_LEG STOP: the ROLL legs stored before today are unreadable (" +
-                          std::string(previous_legs.error()->what()) +
+                          std::string(previous_rolls.error()->what()) +
                           "); refusing to run: the rolls to book cannot be told");
                     return 1;
                 }
-                for (const auto& [symbol, contract] : previous_legs.value()) {
-                    if (!contract.empty()) {
-                        earlier_legs[symbol] = ListingDates::instance().read_id(symbol, now, contract);
+                for (const auto& [symbol, rolls] : previous_rolls.value()) {
+                    auto& read = earlier_rolls[symbol];
+                    for (const auto& roll : rolls) {
+                        read.push_back(
+                            {roll.outgoing.empty() ? std::string()
+                                                   : ListingDates::instance().read_id(symbol, now, roll.outgoing),
+                             roll.incoming.empty() ? std::string()
+                                                   : ListingDates::instance().read_id(symbol, now, roll.incoming)});
                     }
                 }
             }
             HeldComingIn held_in =
-                contract_held_coming_into(recorded_contract, todays_legs, earlier_legs);
+                contract_held_coming_into(recorded_contract, todays_legs, earlier_rolls);
             for (const auto& symbol : held_in.stale) {
                 INFO("ROLL_LEG re-run " + symbol + ": the day's stored legs roll out of " +
                      todays_legs[symbol] + ", which the legs of an earlier date already rolled out "
-                     "of: they are stale (a roll booked late and since booked on its own date). "
-                     "The contract held coming in is the stored T-1 row's, " +
-                     held_in.contract[symbol]);
+                     "of since it was last rolled into: they are stale (a roll booked late and "
+                     "since booked on its own date). The contract held coming in is the stored T-1 "
+                     "row's, " + held_in.contract[symbol]);
             }
             recorded_contract = std::move(held_in.contract);
             roll_state = live_rolls_by_state(strategy_feed_bars, recorded_contract,

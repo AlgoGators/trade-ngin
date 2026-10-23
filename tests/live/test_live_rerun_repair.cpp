@@ -137,18 +137,38 @@ struct Book {
     std::vector<std::string> stale_seen;       // "date symbol": legs the decision set aside
 };
 
+using EarlierRolls = std::unordered_map<std::string, std::vector<StoredRoll>>;
 using Decision = std::function<HeldComingIn(const std::unordered_map<std::string, std::string>&,
                                             const std::unordered_map<std::string, std::string>&,
-                                            const std::unordered_map<std::string, std::string>&)>;
+                                            const EarlierRolls&)>;
 
 // The rule before #188: the day's own legs always win.
 HeldComingIn old_rule(const std::unordered_map<std::string, std::string>& t1_row,
                       const std::unordered_map<std::string, std::string>& todays_legs,
-                      const std::unordered_map<std::string, std::string>&) {
+                      const EarlierRolls&) {
     HeldComingIn out{t1_row, {}};
     for (const auto& [symbol, contract] : todays_legs) {
         const auto held = out.contract.find(symbol);
         if (held != out.contract.end() && !contract.empty()) held->second = contract;
+    }
+    return out;
+}
+
+// The rule of cfbf7dd5 (audit A, SHOULD-FIX 1): stale only when the LATEST earlier roll rolls out of
+// the day's contract. It misses a symbol whose repair re-booked two rolls before the stale date.
+HeldComingIn latest_only_rule(const std::unordered_map<std::string, std::string>& t1_row,
+                              const std::unordered_map<std::string, std::string>& todays_legs,
+                              const EarlierRolls& earlier) {
+    HeldComingIn out{t1_row, {}};
+    for (const auto& [symbol, contract] : todays_legs) {
+        const auto held = out.contract.find(symbol);
+        if (held == out.contract.end() || contract.empty()) continue;
+        const auto e = earlier.find(symbol);
+        if (e != earlier.end() && !e->second.empty() && e->second.back().outgoing == contract) {
+            out.stale.push_back(symbol);
+            continue;
+        }
+        held->second = contract;
     }
     return out;
 }
@@ -164,8 +184,11 @@ void run(Book& book, const std::vector<Bar>& available, const std::string& run_d
          const Decision& decide) {
     const std::string t1 = plus(run_date, -1);
     std::vector<Bar> consumed;
+    std::string window_from = run_date;
     for (const auto& b : available) {
-        if (core::format_utc_date(b.timestamp) < run_date) consumed.push_back(b);
+        const std::string d = core::format_utc_date(b.timestamp);
+        if (d < run_date) consumed.push_back(b);
+        if (d < window_from) window_from = d;
     }
     // The stored T-1 book (load_positions_by_date): the latest row on or before T-1 is not read;
     // the row dated T-1 is, as in the runner.
@@ -174,21 +197,30 @@ void run(Book& book, const std::vector<Bar>& available, const std::string& run_d
         for (const auto& [symbol, row] : r->second) t1_row[symbol] = row.contract;
     }
     // get_stored_roll_contracts: the earliest closing leg of the date, per symbol.
-    // get_previous_roll_contracts: the latest date before the run's, then the latest confirming date.
-    std::map<std::string, std::pair<std::string, std::string>> first_today, latest_before;  // symbol -> (key, contract)
+    // get_previous_rolls: every roll dated from the window's first bar to the day before the run,
+    // oldest first (date, then id), each closing leg with the opening leg of the same id stem.
+    std::map<std::string, std::pair<std::string, std::string>> first_today;  // symbol -> (id, contract)
+    std::map<std::string, std::map<std::string, StoredRoll>> stored_before;  // symbol -> date|stem -> roll
     for (const auto& leg : book.legs) {
-        if (leg.exec_id.size() < 3 || leg.exec_id.substr(leg.exec_id.size() - 3) != "_RC") continue;
+        if (leg.exec_id.size() < 3) continue;
+        const std::string end = leg.exec_id.substr(leg.exec_id.size() - 3);
         const std::string s = symbol_of(leg.exec_id);
-        if (leg.date == run_date) {
+        const std::string stem = leg.exec_id.substr(0, leg.exec_id.size() - 3);
+        if (end == "_RC" && leg.date == run_date) {
             if (!first_today.count(s) || leg.exec_id < first_today[s].first) first_today[s] = {leg.exec_id, leg.contract};
-        } else if (leg.date < run_date) {
-            const std::string key = leg.date + "|" + leg.exec_id;
-            if (!latest_before.count(s) || key > latest_before[s].first) latest_before[s] = {key, leg.contract};
+        } else if (leg.date < run_date && leg.date >= window_from) {
+            auto& roll = stored_before[s][leg.date + "|" + stem];
+            (end == "_RC" ? roll.outgoing : roll.incoming) = leg.contract;
         }
     }
-    std::unordered_map<std::string, std::string> todays, earlier;
+    std::unordered_map<std::string, std::string> todays;
+    EarlierRolls earlier;
     for (const auto& [s, v] : first_today) todays[s] = v.second;
-    for (const auto& [s, v] : latest_before) earlier[s] = v.second;
+    for (const auto& [s, rolls] : stored_before) {
+        for (const auto& [key, roll] : rolls) {
+            if (!roll.outgoing.empty()) earlier[s].push_back(roll);  // a closing leg starts a roll
+        }
+    }
     const HeldComingIn held_in = decide(t1_row, todays, earlier);
     if (todays.empty()) {
         EXPECT_TRUE(held_in.stale.empty()) << run_date << ": a run with no leg of its own sets none aside";
@@ -335,54 +367,75 @@ const std::string kFirst = "2026-04-21", kLast = "2026-05-05";
 
 // ---- the decision itself ------------------------------------------------------------------------
 
-// A first run of a date has no leg of its own: the T-1 row is the state, whatever earlier legs say.
+// A first run of a date has no leg of its own: the T-1 row is the state, whatever earlier rolls say.
 TEST(ContractHeldComingInto, AFirstRunTakesTheT1Row) {
-    const auto held = contract_held_coming_into({{"ZS.v.0", B}, {"6A.v.0", "1419"}}, {}, {{"ZS.v.0", A}});
+    const auto held = contract_held_coming_into({{"ZS.v.0", B}, {"6A.v.0", "1419"}}, {}, {{"ZS.v.0", {{A, B}}}});
     EXPECT_EQ(held.contract.at("ZS.v.0"), B);
     EXPECT_EQ(held.contract.at("6A.v.0"), "1419");
     EXPECT_TRUE(held.stale.empty());
 }
 
 // A re-run of a roll day whose bars were on time: the first run re-wrote the T-1 row with the
-// incoming contract; the day's legs carry the outgoing one, and the latest earlier legs are the
-// symbol's previous roll (another contract). The legs win, as before #188.
+// incoming contract; the day's legs carry the outgoing one, and the earlier rolls are the symbol's
+// previous roll, INTO that contract. The legs win, as before #188.
 TEST(ContractHeldComingInto, AReRunOfARollDayTakesItsOwnLegs) {
     const auto held = contract_held_coming_into({{"ZS.v.0", B}, {"6A.v.0", "1419"}}, {{"ZS.v.0", A}},
-                                                {{"ZS.v.0", "41000001"}, {"6A.v.0", "1300"}});
+                                                {{"ZS.v.0", {{"41000001", A}}}, {"6A.v.0", {{"1300", "1419"}}}});
     EXPECT_EQ(held.contract.at("ZS.v.0"), A);
     EXPECT_EQ(held.contract.at("6A.v.0"), "1419");
     EXPECT_TRUE(held.stale.empty());
-    // No earlier leg at all (the symbol's first roll in the book): the same.
+    // No earlier roll at all (the symbol's first roll in the window): the same.
     EXPECT_EQ(contract_held_coming_into({{"ZS.v.0", B}}, {{"ZS.v.0", A}}, {}).contract.at("ZS.v.0"), A);
 }
 
-// The repair after late bars: the day's legs roll out of the contract the latest earlier legs
-// already rolled out of. They are stale; the T-1 row (written by the earlier date's re-run) is
-// kept, and the symbol is named. Another symbol of the same day with fresh legs takes its legs.
+// The repair after late bars: the day's legs roll out of a contract an earlier roll already rolled
+// out of. They are stale; the T-1 row (written by the earlier date's re-run) is kept, and the
+// symbol is named. Another symbol of the same day with fresh legs takes its legs.
 TEST(ContractHeldComingInto, LegsOfARollAnEarlierDateBookedAreStale) {
     const auto held = contract_held_coming_into(
         {{"ZS.v.0", B}, {"ZM.v.0", "748931"}, {"ZL.v.0", "608206"}},
         {{"ZS.v.0", A}, {"ZM.v.0", "42282755"}, {"ZL.v.0", "42281352"}},
-        {{"ZS.v.0", A}, {"ZM.v.0", "42282755"}, {"ZL.v.0", "41999999"}});
+        {{"ZS.v.0", {{A, B}}}, {"ZM.v.0", {{"42282755", "748931"}}}, {"ZL.v.0", {{"41999999", "42281352"}}}});
     EXPECT_EQ(held.contract.at("ZS.v.0"), B);
     EXPECT_EQ(held.contract.at("ZM.v.0"), "748931");
     EXPECT_EQ(held.contract.at("ZL.v.0"), "42281352");
     EXPECT_EQ(held.stale, (std::vector<std::string>{"ZM.v.0", "ZS.v.0"}));
 }
 
+// Audit A's P1 at the decision: the repair re-booked TWO rolls before the stale date (A to B, then
+// B to C) where the first pass legged one A to C here. The latest earlier roll rolls out of B, not
+// A, but A was rolled out of since it was last rolled into: stale. (cfbf7dd5 took A and booked both
+// rolls again.)
+TEST(ContractHeldComingInto, LegsOfTwoRollsTheEarlierDatesBookedAreStale) {
+    const auto held = contract_held_coming_into({{"ZW.v.0", "C"}}, {{"ZW.v.0", "A"}},
+                                                {{"ZW.v.0", {{"Z", "A"}, {"A", "B"}, {"B", "C"}}}});
+    EXPECT_EQ(held.contract.at("ZW.v.0"), "C");
+    EXPECT_EQ(held.stale, (std::vector<std::string>{"ZW.v.0"}));
+    EXPECT_TRUE(latest_only_rule({{"ZW.v.0", "C"}}, {{"ZW.v.0", "A"}}, {{"ZW.v.0", {{"A", "B"}, {"B", "C"}}}})
+                    .stale.empty())
+        << "the cfbf7dd5 rule misses it";
+}
+
 // A contract that recurs: A to B, then B back to A (a confirmed return is a new roll), then A to C on
-// the re-run date. Only the LATEST earlier legs are compared: they roll out of B, so the day's legs
-// out of A are not stale.
-TEST(ContractHeldComingInto, ARecurringContractIsToldApartByTheLatestEarlierLegs) {
-    const auto held = contract_held_coming_into({{"ZS.v.0", "C"}}, {{"ZS.v.0", "A"}}, {{"ZS.v.0", "B"}});
+// the re-run date. The roll back into A comes after the roll out of it: A is held again, the day's
+// legs out of A are fresh. With the return missing, A was rolled out of and never re-entered: stale.
+TEST(ContractHeldComingInto, ARecurringContractIsHeldAgainAfterTheRollBackIntoIt) {
+    const auto held = contract_held_coming_into({{"ZS.v.0", "C"}}, {{"ZS.v.0", "A"}},
+                                                {{"ZS.v.0", {{"A", "B"}, {"B", "A"}}}});
     EXPECT_EQ(held.contract.at("ZS.v.0"), "A");
     EXPECT_TRUE(held.stale.empty());
+    EXPECT_FALSE(rolled_out_of_since_entered({{"A", "B"}, {"B", "A"}}, "A"));
+    EXPECT_TRUE(rolled_out_of_since_entered({{"B", "A"}, {"A", "B"}}, "A"));
+    EXPECT_TRUE(rolled_out_of_since_entered({{"A", "B"}}, "A"));
+    EXPECT_FALSE(rolled_out_of_since_entered({{"A", "B"}}, "B")) << "B was rolled into, not out of";
+    EXPECT_FALSE(rolled_out_of_since_entered({}, "A"));
+    EXPECT_TRUE(rolled_out_of_since_entered({{"A", ""}}, "A")) << "an opening leg not stored";
 }
 
 // Legs of a symbol the T-1 book does not hold, and an empty stored contract, change nothing.
 TEST(ContractHeldComingInto, LegsOfAnUnheldSymbolOrWithoutAContractChangeNothing) {
     const auto held = contract_held_coming_into({{"ZS.v.0", B}}, {{"ZM.v.0", "42282755"}, {"ZS.v.0", ""}},
-                                                {{"ZM.v.0", "42282755"}});
+                                                {{"ZM.v.0", {{"42282755", "748931"}}}});
     EXPECT_EQ(held.contract.size(), 1u);
     EXPECT_EQ(held.contract.at("ZS.v.0"), B);
     EXPECT_TRUE(held.stale.empty());
@@ -490,4 +543,158 @@ TEST(LiveRerunRepair, AFlipThatResolvesLateEndsIdenticalToTheCleanChain) {
     ASSERT_EQ(first_pass.roll_fills.at("2026-04-30"), 2u) << "the first pass legs a roll the flip undoes";
     EXPECT_TRUE(differences(clean, repaired).empty()) << listing(differences(clean, repaired));
     EXPECT_TRUE(repaired.stale_seen.empty()) << listing(repaired.stale_seen);
+}
+
+// ---- fix round 1: audit A's probes, kept as tests ------------------------------------------------
+
+namespace {
+// One symbol's bars with the given contract per weekday (the eleven dates of series()).
+std::vector<Bar> contracts(const std::string& symbol, const std::vector<std::string>& ids) {
+    return series(symbol, ids, 500.0);
+}
+}  // namespace
+
+// P1 (audit A, SHOULD-FIX 1): ZW holds A, A to B confirmed 04-24, B to C confirmed 04-28. The two
+// confirming bars are late for the runs 04-25 .. 04-30. The first pass legs ONE roll, A to C, on
+// the 04-30 run; the repair books A to B on 04-25 and B to C on 04-29; the 04-30 re-run's own legs
+// roll out of A, which the earlier rolls rolled out of since they last rolled into it: stale.
+// Identical to the clean chain. Both earlier rules book both rolls again on 04-30 (4 roll fills,
+// the legs moved there).
+TEST(LiveRerunRepair, TwoRollsConfirmedLateBeforeTheStaleDateEndIdenticalToTheCleanChain) {
+    const auto all = join({contracts("ZW.v.0", {"A", "A", "A", "B", "B", "C", "C", "C", "C", "C", "C"}), six_a()});
+    const Book clean = chain(all, kFirst, kLast, kFixed);
+    const LateBars late{{{"ZW.v.0", "2026-04-24"}, {"ZW.v.0", "2026-04-28"}}, "2026-04-25", "2026-04-30"};
+    Book first_pass;
+    const Book repaired = chain(all, kFirst, kLast, kFixed, &late, &first_pass);
+    ASSERT_EQ(first_pass.roll_fills.at("2026-04-30"), 2u) << "the first pass legs one A to C roll";
+    EXPECT_TRUE(differences(clean, repaired).empty()) << listing(differences(clean, repaired));
+    EXPECT_EQ(repaired.stale_seen, (std::vector<std::string>{"2026-04-30 ZW.v.0"}));
+    for (const Decision& rule : {Decision(old_rule), Decision(latest_only_rule)}) {
+        const Book wrong = chain(all, kFirst, kLast, rule, &late);
+        EXPECT_FALSE(differences(clean, wrong).empty());
+        EXPECT_EQ(wrong.roll_fills.at("2026-04-30"), 4u) << "both rolls legged again on 04-30";
+    }
+}
+
+// The same with three rolls (A to B to C to D, each confirmed on the bar after its change): every
+// confirming bar late, the first pass legs fewer, longer rolls, the repair books the three.
+TEST(LiveRerunRepair, ThreeRollsConfirmedLateBeforeTheStaleDateEndIdenticalToTheCleanChain) {
+    const auto all = join({contracts("ZW.v.0", {"A", "A", "B", "B", "C", "C", "D", "D", "D", "D", "D"}), six_a()});
+    const Book clean = chain(all, kFirst, kLast, kFixed);
+    const LateBars late{{{"ZW.v.0", "2026-04-23"}, {"ZW.v.0", "2026-04-27"}, {"ZW.v.0", "2026-04-29"}},
+                        "2026-04-24", "2026-05-01"};
+    const Book repaired = chain(all, kFirst, kLast, kFixed, &late);
+    EXPECT_TRUE(differences(clean, repaired).empty()) << listing(differences(clean, repaired));
+    EXPECT_FALSE(repaired.stale_seen.empty());
+    EXPECT_FALSE(differences(clean, chain(all, kFirst, kLast, latest_only_rule, &late)).empty());
+}
+
+// P2: a late roll, then a second roll confirmed on the stale date itself (A to B late, B to C on
+// time on the 04-30 run's T-1); P3: a recurrence A to B to A with each single day late; P4: the
+// repair run twice in full, and an on-time roll day re-run alone and in a shuffled order.
+TEST(LiveRerunRepair, ASecondRollOnTheStaleDateARecurrenceAndRepeatedReRunsEndIdenticalToTheCleanChain) {
+    {
+        const auto all = join({contracts("ZW.v.0", {"A", "A", "A", "A", "A", "B", "B", "C", "C", "C", "C"}), six_a()});
+        const Book clean = chain(all, kFirst, kLast, kFixed);
+        const LateBars late = whole_days(all, {"2026-04-28"}, "2026-04-29", "2026-04-30");
+        const Book repaired = chain(all, kFirst, kLast, kFixed, &late);
+        EXPECT_TRUE(differences(clean, repaired).empty()) << "P2" << listing(differences(clean, repaired));
+    }
+    {
+        const auto all = join({contracts("ZW.v.0", {"A", "A", "A", "B", "B", "A", "A", "A", "A", "A", "A"}), six_a()});
+        const Book clean = chain(all, kFirst, kLast, kFixed);
+        for (const std::string day : {"2026-04-23", "2026-04-24", "2026-04-27", "2026-04-28"}) {
+            const LateBars late = whole_days(all, {day}, plus(day, 1), plus(day, 3));
+            const Book repaired = chain(all, kFirst, kLast, kFixed, &late);
+            EXPECT_TRUE(differences(clean, repaired).empty()) << "P3 " << day << listing(differences(clean, repaired));
+        }
+    }
+    {
+        const auto all = join({zs(), six_a()});
+        const Book clean = chain(all, kFirst, kLast, kFixed);
+        const LateBars late = whole_days(all, {"2026-04-28"}, "2026-04-29", "2026-05-01");
+        Book twice = chain(all, kFirst, kLast, kFixed, &late);
+        for (std::string d = "2026-04-29"; d <= kLast; d = plus(d, 1)) run(twice, all, d, kFixed);
+        EXPECT_TRUE(differences(clean, twice).empty()) << "P4 the repair twice" << listing(differences(clean, twice));
+        Book shuffled = clean;
+        for (const char* d : {"2026-04-29", "2026-04-29", "2026-04-30", "2026-04-29"}) run(shuffled, all, d, kFixed);
+        for (const char* l : {"2026-04-29", "2026-04-30"}) {
+            EXPECT_EQ(shuffled.roll_fills.at(l), clean.roll_fills.at(l)) << "P4 " << l;
+        }
+        std::vector<Leg> a = clean.legs, b = shuffled.legs;
+        std::sort(a.begin(), a.end());
+        std::sort(b.begin(), b.end());
+        EXPECT_EQ(a, b) << "P4: an on-time roll day re-run alone and out of order keeps its legs";
+        EXPECT_TRUE(shuffled.stale_seen.empty());
+    }
+}
+
+// A late FLIP the old rule fails (audit A, note 1): zs_flip's confirming bar (04-30) late for the
+// runs 05-01 .. 05-02. The first pass legs the roll on 05-02 (ids dated 05-01); the 05-01 re-run
+// books it where it belongs; the 05-02 re-run's legs are stale. Identical to the clean chain; the
+// old rule books the roll a second time.
+TEST(LiveRerunRepair, AFlipWhoseConfirmingBarIsLateEndsIdenticalToTheCleanChain) {
+    const auto all = join({zs_flip(), six_a()});
+    const Book clean = chain(all, kFirst, kLast, kFixed);
+    const LateBars late = whole_days(all, {"2026-04-30"}, "2026-05-01", "2026-05-02");
+    Book first_pass;
+    const Book repaired = chain(all, kFirst, kLast, kFixed, &late, &first_pass);
+    ASSERT_EQ(first_pass.roll_fills.at("2026-05-02"), 2u);
+    EXPECT_TRUE(differences(clean, repaired).empty()) << listing(differences(clean, repaired));
+    EXPECT_EQ(repaired.stale_seen, (std::vector<std::string>{"2026-05-02 ZS.v.0"}));
+    EXPECT_FALSE(differences(clean, chain(all, kFirst, kLast, old_rule, &late)).empty())
+        << "the old rule must fail this shape";
+}
+
+// The sweep (audit A, P5): for each bar shape, every one or two late days among 04-22 .. 04-30, the
+// first pass lasting two to four days past the last of them, then the repair in order. Every case
+// ends identical to the clean chain. Each earlier rule fails some case of the shapes it was wrong
+// on (the old rule every shape, cfbf7dd5's the two-roll shapes), so the sweep has teeth.
+TEST(LiveRerunRepair, EveryLateDayPairOnEveryShapeEndsIdenticalToTheCleanChain) {
+    struct Shape {
+        std::string name;
+        std::vector<Bar> bars;
+        bool latest_only_fails;
+    };
+    const std::vector<Shape> shapes = {
+        {"zs", join({zs(), six_a()}), false},
+        {"zs+zm+zl", join({zs(), zm(), zl(), six_a()}), false},
+        {"flip", join({zs_flip(), six_a()}), false},
+        {"ABC", join({contracts("ZW.v.0", {"A", "A", "A", "B", "B", "C", "C", "C", "C", "C", "C"}), six_a()}), true},
+        {"AB_C_late", join({contracts("ZW.v.0", {"A", "A", "A", "A", "A", "B", "B", "C", "C", "C", "C"}), six_a()}), true},
+        {"ABCD", join({contracts("ZW.v.0", {"A", "A", "B", "B", "C", "C", "D", "D", "D", "D", "D"}), six_a()}), true},
+        {"ABA", join({contracts("ZW.v.0", {"A", "A", "A", "B", "B", "A", "A", "A", "A", "A", "A"}), six_a()}), false},
+        {"ABAB", join({contracts("ZW.v.0", {"A", "A", "B", "B", "A", "A", "B", "B", "B", "B", "B"}), six_a()}), false},
+    };
+    const std::vector<std::string> days = {"2026-04-22", "2026-04-23", "2026-04-24", "2026-04-27",
+                                           "2026-04-28", "2026-04-29", "2026-04-30"};
+    for (const auto& shape : shapes) {
+        const Book clean = chain(shape.bars, kFirst, kLast, kFixed);
+        int cases = 0, fixed_bad = 0, old_bad = 0, latest_bad = 0;
+        std::string bad;
+        for (size_t i = 0; i < days.size(); ++i) {
+            for (size_t j = i; j < days.size(); ++j) {
+                for (int span : {2, 3, 4}) {
+                    const LateBars late = whole_days(shape.bars, {days[i], days[j]}, plus(days[i], 1), plus(days[j], span));
+                    ++cases;
+                    if (!differences(clean, chain(shape.bars, kFirst, kLast, kFixed, &late)).empty()) {
+                        ++fixed_bad;
+                        bad += " {" + days[i] + "," + days[j] + " +" + std::to_string(span) + "}";
+                    }
+                    old_bad += !differences(clean, chain(shape.bars, kFirst, kLast, old_rule, &late)).empty();
+                    latest_bad += !differences(clean, chain(shape.bars, kFirst, kLast, latest_only_rule, &late)).empty();
+                }
+            }
+        }
+        EXPECT_EQ(cases, 84) << shape.name;
+        EXPECT_EQ(fixed_bad, 0) << shape.name << ":" << bad;
+        EXPECT_GT(old_bad, 0) << shape.name << ": the old rule fails no case";
+        if (shape.latest_only_fails) {
+            EXPECT_GT(latest_bad, 0) << shape.name << ": the cfbf7dd5 rule fails no case";
+        } else {
+            EXPECT_EQ(latest_bad, 0) << shape.name;
+        }
+        std::printf("[sweep] %-10s cases=%d head=%d old_rule=%d cfbf7dd5_rule=%d\n", shape.name.c_str(), cases,
+                    fixed_bad, old_bad, latest_bad);
+    }
 }

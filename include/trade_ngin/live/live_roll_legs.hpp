@@ -149,19 +149,22 @@ inline LateBooked late_booked_points(const std::string& symbol, const std::strin
  *
  * `t1_row`: per held symbol, the contract on its stored T-1 positions row. `todays_legs`: per
  * symbol, the contract the ROLL legs already stored for the run date rolled out of (a re-run;
- * PostgresDatabase::get_stored_roll_contracts). `earlier_legs`: per symbol, the contract the
- * latest ROLL legs stored for an EARLIER date rolled out of (get_previous_roll_contracts). Every
- * id is read as the bars are (through the declared relabels).
+ * PostgresDatabase::get_stored_roll_contracts). `earlier_rolls`: per symbol, the rolls stored for
+ * EARLIER dates of the run's bar window, oldest first, each the contract its closing leg rolled
+ * out of and the one its opening leg rolled into (get_previous_rolls). Every id is read as the
+ * bars are (through the declared relabels).
  *
  * A re-run of a roll day: the first run re-wrote the T-1 row with the contract held after the T-1
  * bar, so the contract held coming in is on the day's own legs, and it is taken from them.
  *
  * A re-run in a repair after late bars: the first pass booked the roll late, on this date, and the
- * re-run of an earlier date has since booked it where it belongs. The day's own legs are then
- * stale: the latest earlier legs roll out of the same contract, and a contract is rolled out of
- * once. The T-1 row, written by that earlier re-run, carries the state before this date, and it is
- * kept (taking the stale legs booked the roll a second time). A contract that recurs (A to B, B to
- * A, then A to C) is told apart because only the LATEST earlier legs are compared.
+ * re-runs of earlier dates have since booked it where it belongs (one roll, or several: A to B and
+ * B to C re-booked where the first pass legged one A to C here). The day's own legs are then
+ * stale: the earlier rolls rolled out of the same contract AFTER they last rolled into it, and a
+ * held contract is rolled out of once each time it is entered. The T-1 row, written by the
+ * earlier date's re-run, carries the state before this date, and it is kept (taking the stale
+ * legs booked the rolls a second time). A contract that recurs (A to B, B to A, then A to C) is
+ * told apart: the roll back into A comes after the roll out of it, so A is held again.
  *
  * `stale`: the symbols whose day's own legs were set aside, in name order.
  */
@@ -170,16 +173,28 @@ struct HeldComingIn {
     std::vector<std::string> stale;
 };
 
+/// True when `rolls` (oldest first) roll out of `contract` after they last roll into it.
+inline bool rolled_out_of_since_entered(const std::vector<StoredRoll>& rolls,
+                                        const std::string& contract) {
+    bool out_since = false;
+    for (const auto& roll : rolls) {
+        if (roll.incoming == contract) out_since = false;
+        if (roll.outgoing == contract) out_since = true;
+    }
+    return out_since;
+}
+
 inline HeldComingIn contract_held_coming_into(
     const std::unordered_map<std::string, std::string>& t1_row,
     const std::unordered_map<std::string, std::string>& todays_legs,
-    const std::unordered_map<std::string, std::string>& earlier_legs) {
+    const std::unordered_map<std::string, std::vector<StoredRoll>>& earlier_rolls) {
     HeldComingIn out{t1_row, {}};
     for (const auto& [symbol, rolled_out_of] : todays_legs) {
         const auto held = out.contract.find(symbol);
         if (held == out.contract.end() || rolled_out_of.empty()) continue;
-        const auto earlier = earlier_legs.find(symbol);
-        if (earlier != earlier_legs.end() && earlier->second == rolled_out_of) {
+        const auto earlier = earlier_rolls.find(symbol);
+        if (earlier != earlier_rolls.end() &&
+            rolled_out_of_since_entered(earlier->second, rolled_out_of)) {
             out.stale.push_back(symbol);
             continue;
         }
