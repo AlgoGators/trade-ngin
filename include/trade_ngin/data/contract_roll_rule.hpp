@@ -158,6 +158,22 @@ struct HeldSeries {
     RuleReport report;
 };
 
+/**
+ * @brief The micros' full-size contracts before the vendor's 2026-02-22 change (ROLLS_STEP1_PLAN 10b
+ *        point 5): until then MES.v.0, MNQ.v.0, MYM.v.0 and M2K.v.0 are the ES, NQ, YM and RTY
+ *        contracts (same index price and expiries, another multiplier and volume). Before `change`
+ *        the series reads the full-size root's contracts and the vendor's id names one of them; from
+ *        it, the micro's own. The change is one roll (trigger ALIAS) between the two contracts of the
+ *        same expiry, on the first trading-day bar on or after `change` where both print.
+ */
+struct MicroAlias {
+    std::string full_root;  ///< "ES"
+    Day change{};           ///< the first date the vendor names the micro's own contract
+};
+
+/// The micro alias of `root` ("MES" -> ES, 2026-02-22), or nullopt.
+std::optional<MicroAlias> micro_alias(const std::string& root);
+
 /// The inputs of one root's series.
 struct RuleInputs {
     std::string root;
@@ -165,6 +181,7 @@ struct RuleInputs {
     const ContractBook* book{nullptr};
     const TradingCalendar* cal{nullptr};
     std::string cycle;  ///< the root's cycle (roll_cycle_table)
+    std::optional<MicroAlias> alias;  ///< the micros only
 };
 
 /**

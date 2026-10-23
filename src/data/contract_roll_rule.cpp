@@ -20,6 +20,11 @@ class Rule {
 public:
     explicit Rule(const RuleInputs& in) : in_(in), book_(*in.book), cal_(*in.cal) {}
 
+    /// The root whose contracts the series reads on `day`: the full-size root before a micro's change.
+    const std::string& root_on(Day day) const {
+        return in_.alias && day < in_.alias->change ? in_.alias->full_root : in_.root;
+    }
+
     HeldSeries run();
 
 private:
@@ -54,7 +59,7 @@ private:
     const Contract* target_on(const Contract& held, Day day, bool* skipped_front) {
         const ContractKey& hk = key_of(held);
         const Contract* best = nullptr;
-        for (const Contract* c : book_.printing_on(held.root, day)) {
+        for (const Contract* c : book_.printing_on(root_on(day), day)) {
             if (!month_in_cycle(*c)) continue;
             const ContractKey& ck = key_of(*c);
             if (!(hk.expiration < ck.expiration)) continue;
@@ -69,7 +74,8 @@ private:
 
     const Contract* vendor_on(size_t i) {
         if (i >= in_.grid.size()) return nullptr;
-        return book_.named_by_id(in_.root, in_.grid[i].instrument_id, in_.grid[i].date);
+        return book_.named_by_id(root_on(in_.grid[i].date), in_.grid[i].instrument_id,
+                                 in_.grid[i].date);
     }
 
     const Contract* start_contract(Day d0, const Contract* vendor) {
@@ -77,7 +83,7 @@ private:
             return vendor;
         }
         const Contract* best = nullptr;
-        for (const Contract* c : book_.printing_on(in_.root, d0)) {
+        for (const Contract* c : book_.printing_on(root_on(d0), d0)) {
             if (!month_in_cycle(*c)) continue;
             const ContractKey& ck = key_of(*c);
             if (d0 > dates_of(ck).last_actionable) continue;
@@ -183,7 +189,38 @@ HeldSeries Rule::run() {
                 vendor_since = d;
                 vendor_contract = vendor;
             }
-            if (cal_.is_trading_day(d)) {
+            if (in_.alias && d >= in_.alias->change && held->root == in_.alias->full_root) {
+                // The micro's change: one roll from the full-size contract into the micro's own of
+                // the same expiry, on a trading-day bar where both print. Nothing else rolls first.
+                if (cal_.is_trading_day(d)) {
+                    const ContractKey& hk = key_of(*held);
+                    const Contract* micro = nullptr;
+                    for (const Contract* c : book_.printing_on(in_.root, d)) {
+                        if (key_of(*c).expiration == hk.expiration &&
+                            key_of(*c).delivery_month == hk.delivery_month) {
+                            micro = c;
+                        }
+                    }
+                    if (micro && held->bar_on(d)) {
+                        day.roll = true;
+                        day.old = hk;
+                        day.old_close = held->bar_on(d)->close;
+                        day.trigger = RollTrigger::ALIAS;
+                        day.trigger_date = in_.alias->change;
+                        day.deferred = d > in_.alias->change;
+                        ++out_.report.rolls;
+                        ++out_.report.rolls_by_trigger[to_string(RollTrigger::ALIAS)];
+                        if (day.deferred) ++out_.report.deferred;
+                        held = micro;
+                        pending = RollTrigger::NONE;
+                        vendor_pending = false;
+                        vendor_contract = nullptr;
+                    } else {
+                        warn(in_.root + " " + ymd(d) + ": the change from " + hk.raw_symbol +
+                             " to the micro's own contract waits for a bar where both print");
+                    }
+                }
+            } else if (cal_.is_trading_day(d)) {
                 const ContractKey& hk = key_of(*held);
                 const ContractDates& hd = dates_of(hk);
                 if (pending == RollTrigger::NONE) {
@@ -265,6 +302,14 @@ HeldSeries Rule::run() {
 }
 
 }  // namespace
+
+std::optional<MicroAlias> micro_alias(const std::string& root) {
+    static const std::map<std::string, std::string> full = {
+        {"MES", "ES"}, {"MNQ", "NQ"}, {"MYM", "YM"}, {"M2K", "RTY"}};
+    auto it = full.find(root);
+    if (it == full.end()) return std::nullopt;
+    return MicroAlias{it->second, parse_ymd("2026-02-22")};
+}
 
 const char* to_string(RollTrigger trigger) {
     switch (trigger) {
