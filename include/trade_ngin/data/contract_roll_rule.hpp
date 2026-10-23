@@ -67,7 +67,8 @@ namespace trade_ngin::contract_rolls {
  *     the fallback (the new contract's move with the gap on the previous grid date when the new
  *     contract printed there, else 0).
  *   - The target on a bar is the earliest-expiring contract printing that bar whose month is in
- *     the cycle and which expires after the held one; flagged when it is not the cycle front.
+ *     the cycle and which expires after the held one; flagged when it is not the cycle front, the
+ *     front being the first cycle month after the held one that is listed in the table.
  *
  * The rule reads only the vendor's grid (dates and ids), the contract bars and the calendar: it
  * never reads a price to name a contract.
@@ -112,6 +113,13 @@ ContractDates contract_dates(const ContractKey& key, const TradingCalendar& cal)
 /// prints. An error naming a candidate with no expiration.
 Result<const Contract*> cycle_target(const ContractBook& book, const std::string& root,
                                      const std::string& cycle, const ContractKey& held, Day day);
+
+/// The cycle front after the held contract among LISTED contracts (R2 fix round 1, audit B 6): the
+/// first cycle delivery month after the held one, at or before `up_to` (a delivery index), for which
+/// the book has a contract of `root`; -1 when none. A month never listed (6LF1 in 2010) is passed
+/// over, so a target is flagged as skipping the front only when a listed front exists.
+int listed_cycle_front(const ContractBook& book, const std::string& root, const std::string& cycle,
+                       const ContractKey& held, int up_to);
 
 /// One grid date of the held series.
 struct HeldDay {

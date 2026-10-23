@@ -169,7 +169,7 @@ protected:
 
 TEST_F(ContractRollsApiDbTest, BuildsTheGcSeriesAndItsOutlook) {
     pqxx::read_transaction t(*conn_);
-    const TradingCalendar cal = contract_rolls_test::shipped_calendar();
+    const FuturesCalendar& cal = contract_rolls_test::shipped_calendars();
     auto s = build_held_series(t, "GC", d("2026-07-01"), d("2026-08-14"), cal);
     ASSERT_TRUE(s.is_ok()) << s.error()->what();
     int rolls = 0;
@@ -195,7 +195,7 @@ TEST_F(ContractRollsApiDbTest, BuildsTheGcSeriesAndItsOutlook) {
 
 TEST_F(ContractRollsApiDbTest, TheMicrosBeforeTheChangeAreWaitingOnData) {
     pqxx::read_transaction t(*conn_);
-    const TradingCalendar cal = contract_rolls_test::shipped_calendar();
+    const FuturesCalendar& cal = contract_rolls_test::shipped_calendars();
     auto before = build_held_series(t, "MES", d("2026-01-05"), d("2026-03-06"), cal);
     if (before.is_ok()) GTEST_SKIP() << "ES contracts are loaded on this database";
     EXPECT_EQ(before.error()->code(), ErrorCode::DATA_NOT_FOUND);

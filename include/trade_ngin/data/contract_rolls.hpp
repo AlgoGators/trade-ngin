@@ -70,12 +70,14 @@ Result<Day> series_start(pqxx::transaction_base& txn, const std::string& root);
  * @brief Reads the vendor's grid and the contract bars of `root` over [start, end] and applies the
  *        rule. Read only.
  *
- * Errors: a root with no cycle; a contract the rule needs with no expiration (named); a date
+ * The trading days are the root's own exchange calendar (`calendars.for_root(root)`).
+ *
+ * Errors: a root with no cycle or no futures calendar; a contract the rule needs with no expiration (named); a date
  * outside the calendar; for a micro whose range starts before 2026-02-22, no full-size contract
  * bars before the change ("waiting on data": ES, NQ, YM and RTY are not loaded yet); a database
  * error.
  */
 Result<ContractRollSeries> build_held_series(pqxx::transaction_base& txn, const std::string& root,
-                                             Day start, Day end, const TradingCalendar& cal);
+                                             Day start, Day end, const FuturesCalendar& calendars);
 
 }  // namespace trade_ngin::contract_rolls

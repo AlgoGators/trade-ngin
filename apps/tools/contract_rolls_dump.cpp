@@ -6,8 +6,9 @@
 //       contract_rolls_dump <out.csv> [end YYYY-MM-DD] [root ...]
 //
 // The range per root runs from the first grid date on which the root has a contract row to `end`
-// (default: the last contract row). The calendar is the shipped holidays.json (found from the
-// working directory, or TRADE_NGIN_HOLIDAYS_JSON).
+// (default: the last contract row). The trading days are each root's futures exchange calendar,
+// include/trade_ngin/core/futures_holidays.json (found from the working directory, or
+// TRADE_NGIN_FUTURES_HOLIDAYS_JSON).
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -17,7 +18,6 @@
 
 #include <pqxx/pqxx>
 
-#include "trade_ngin/core/holiday_checker.hpp"
 #include "trade_ngin/data/contract_rolls.hpp"
 
 using namespace trade_ngin;
@@ -47,12 +47,12 @@ int main(int argc, char** argv) {
         std::cerr << "usage: CONTRACT_ROLLS_DSN=<dsn> contract_rolls_dump <out.csv> [end] [root ...]\n";
         return 2;
     }
-    HolidayChecker checker(HolidayChecker::resolve_holidays_path());
-    if (!checker.loaded()) {
-        std::cerr << "holiday calendar not loaded\n";
+    auto loaded = FuturesCalendar::load(FuturesCalendar::resolve_path());
+    if (loaded.is_error()) {
+        std::cerr << loaded.error()->what() << "\n";
         return 3;
     }
-    const TradingCalendar cal = TradingCalendar::from_checker(checker);
+    const FuturesCalendar& cal = loaded.value();
     pqxx::connection conn(dsn);
     pqxx::read_transaction t(conn);
     Day end{};

@@ -50,7 +50,9 @@ Result<RollOutlook> ContractRollSeries::outlook(Day date) const {
                                std::to_string((front / 12) % 10);
         if (target.value()) {
             o.target = *target.value()->key;
-            o.target_is_cycle_front = o.target->delivery_index() == front;
+            o.target_is_cycle_front =
+                o.target->delivery_index() ==
+                listed_cycle_front(*book_, root, cycle_, on->held, o.target->delivery_index());
         }
         return o;
     } catch (const CalendarCoverageError& e) {
@@ -81,12 +83,18 @@ Result<Day> series_start(pqxx::transaction_base& txn, const std::string& root) {
 }
 
 Result<ContractRollSeries> build_held_series(pqxx::transaction_base& txn, const std::string& root,
-                                             Day start, Day end, const TradingCalendar& cal) {
+                                             Day start, Day end, const FuturesCalendar& calendars) {
     auto cycle = roll_cycle(root);
     if (cycle.is_error()) {
         return make_error<ContractRollSeries>(cycle.error()->code(), cycle.error()->what(),
                                               "contract_rolls");
     }
+    auto root_cal = calendars.for_root(root);
+    if (root_cal.is_error()) {
+        return make_error<ContractRollSeries>(root_cal.error()->code(), root_cal.error()->what(),
+                                              "contract_rolls");
+    }
+    const TradingCalendar& cal = root_cal.value();
     const auto alias = micro_alias(root);
     std::vector<std::string> roots{root};
     if (alias && start < alias->change) roots.push_back(alias->full_root);

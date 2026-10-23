@@ -2,7 +2,12 @@
 #include "trade_ngin/data/roll_calendar.hpp"
 
 #include <cstdio>
+#include <cstdlib>
+#include <filesystem>
+#include <fstream>
 #include <set>
+
+#include <nlohmann/json.hpp>
 
 namespace trade_ngin::contract_rolls {
 
@@ -80,9 +85,104 @@ TradingCalendar::TradingCalendar(std::function<bool(const std::string&)> is_holi
                                  std::function<bool(const std::string&)> covers)
     : is_holiday_(std::move(is_holiday)), covers_(std::move(covers)) {}
 
-TradingCalendar TradingCalendar::from_checker(const HolidayChecker& checker) {
-    return TradingCalendar([&checker](const std::string& d) { return checker.is_holiday(d); },
-                           [&checker](const std::string& d) { return checker.covers_date(d); });
+std::string FuturesCalendar::resolve_path() {
+    namespace fs = std::filesystem;
+    if (const char* env = std::getenv("TRADE_NGIN_FUTURES_HOLIDAYS_JSON")) return env;
+    const std::string candidates[] = {"include/trade_ngin/core/futures_holidays.json",
+                                      "futures_holidays.json",
+                                      "/etc/trade_ngin/futures_holidays.json"};
+    for (const auto& path : candidates) {
+        std::error_code ec;
+        if (fs::exists(path, ec)) return path;
+    }
+    return candidates[0];
+}
+
+Result<FuturesCalendar> FuturesCalendar::load(const std::string& path) {
+    auto bad = [&](const std::string& why) {
+        return make_error<FuturesCalendar>(ErrorCode::INVALID_DATA,
+                                           "futures calendar " + path + ": " + why, "contract_rolls");
+    };
+    std::ifstream in(path);
+    if (!in.is_open()) return bad("cannot be opened");
+    auto exchanges = std::make_shared<std::map<std::string, Exchange>>();
+    std::set<std::string> roots_seen;
+    try {
+        const nlohmann::json j = nlohmann::json::parse(in);
+        for (const auto& [name, ex] : j.at("exchanges").items()) {
+            Exchange e;
+            e.first_year = ex.at("covers").at("first_year").get<int>();
+            e.last_year = ex.at("covers").at("last_year").get<int>();
+            if (e.first_year > e.last_year) return bad(name + ": coverage is empty");
+            for (const auto& [group, roots] : ex.at("groups").items()) {
+                e.closed_by_group[group];
+                for (const auto& r : roots) {
+                    const std::string root = r.get<std::string>();
+                    if (!roots_seen.insert(root).second) return bad("root " + root + " is listed twice");
+                    e.group_of_root[root] = group;
+                }
+            }
+            for (const auto& c : ex.at("closures")) {
+                const std::string date = c.at("date").get<std::string>();
+                const int year = static_cast<int>(year_month_day{parse_ymd(date)}.year());
+                if (year < e.first_year || year > e.last_year) {
+                    return bad(name + ": closure " + date + " is outside the coverage");
+                }
+                for (const auto& g : c.at("closes")) {
+                    const std::string group = g.get<std::string>();
+                    if (group == "all") {
+                        for (auto& [k, days] : e.closed_by_group) days.insert(date);
+                    } else if (!e.closed_by_group.count(group)) {
+                        return bad(name + ": closure " + date + " names unknown group " + group);
+                    } else {
+                        e.closed_by_group[group].insert(date);
+                    }
+                }
+            }
+            (*exchanges)[name] = std::move(e);
+        }
+    } catch (const std::exception& e) {
+        return bad(e.what());
+    }
+    FuturesCalendar cal;
+    cal.exchanges_ = std::move(exchanges);
+    return cal;
+}
+
+std::string FuturesCalendar::exchange_of(const std::string& root) const {
+    if (!exchanges_) return "";
+    for (const auto& [name, ex] : *exchanges_) {
+        if (ex.group_of_root.count(root)) return name;
+    }
+    return "";
+}
+
+std::string FuturesCalendar::group_of(const std::string& root) const {
+    if (!exchanges_) return "";
+    for (const auto& [name, ex] : *exchanges_) {
+        auto it = ex.group_of_root.find(root);
+        if (it != ex.group_of_root.end()) return it->second;
+    }
+    return "";
+}
+
+Result<TradingCalendar> FuturesCalendar::for_root(const std::string& root) const {
+    const std::string name = exchange_of(root);
+    if (name.empty()) {
+        return make_error<TradingCalendar>(ErrorCode::INVALID_ARGUMENT,
+                                           "no futures calendar lists root " + root,
+                                           "contract_rolls");
+    }
+    const auto keep = exchanges_;  // the lambdas share the loaded data
+    const Exchange* ex = &exchanges_->at(name);
+    const std::set<std::string>* closed = &ex->closed_by_group.at(ex->group_of_root.at(root));
+    return TradingCalendar(
+        [keep, closed](const std::string& d) { return closed->count(d) > 0; },
+        [keep, ex](const std::string& d) {
+            if (d.size() < 4) return false;
+            const int y = std::stoi(d.substr(0, 4));
+            return y >= ex->first_year && y <= ex->last_year;
+        });
 }
 
 void TradingCalendar::require_covered(Day day) const {

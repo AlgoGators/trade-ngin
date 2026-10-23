@@ -6,7 +6,6 @@
 #include <memory>
 #include <string>
 
-#include "trade_ngin/core/holiday_checker.hpp"
 #include "trade_ngin/data/contract_bars.hpp"
 #include "trade_ngin/data/roll_calendar.hpp"
 
@@ -15,27 +14,29 @@ namespace contract_rolls_test {
 using trade_ngin::contract_rolls::Day;
 using trade_ngin::contract_rolls::parse_ymd;
 
-/// The shipped holidays.json, found by walking up from the working directory (ctest runs in the
-/// build tree). Empty when not found.
-inline std::string shipped_holidays_path() {
+/// The shipped futures calendar (futures_holidays.json), found by walking up from the working
+/// directory (ctest runs in the build tree). Empty when not found.
+inline std::string shipped_futures_calendar_path() {
     namespace fs = std::filesystem;
     fs::path dir = fs::current_path();
     for (int i = 0; i < 8 && !dir.empty(); ++i) {
-        const fs::path p = dir / "include/trade_ngin/core/holidays.json";
+        const fs::path p = dir / "include/trade_ngin/core/futures_holidays.json";
         if (fs::exists(p)) return p.string();
         dir = dir.parent_path();
     }
     return "";
 }
 
-/// One checker for the whole test binary (HolidayChecker is not copyable).
-inline const trade_ngin::HolidayChecker& shipped_checker() {
-    static const auto checker = std::make_unique<trade_ngin::HolidayChecker>(shipped_holidays_path());
-    return *checker;
+/// The shipped futures calendars, loaded once for the test binary.
+inline const trade_ngin::contract_rolls::FuturesCalendar& shipped_calendars() {
+    static const auto cals = std::make_unique<trade_ngin::contract_rolls::FuturesCalendar>(
+        trade_ngin::contract_rolls::FuturesCalendar::load(shipped_futures_calendar_path()).value());
+    return *cals;
 }
 
-inline trade_ngin::contract_rolls::TradingCalendar shipped_calendar() {
-    return trade_ngin::contract_rolls::TradingCalendar::from_checker(shipped_checker());
+/// One root's trading-day calendar (GC's by default).
+inline trade_ngin::contract_rolls::TradingCalendar shipped_calendar(const std::string& root = "GC") {
+    return shipped_calendars().for_root(root).value();
 }
 
 inline Day d(const std::string& s) {

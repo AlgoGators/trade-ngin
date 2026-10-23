@@ -48,7 +48,7 @@ public:
     }
     Result<HeldSeries> run() {
         book_ = std::make_unique<ContractBook>(ContractBook::build(rows_).value());
-        cal_ = std::make_unique<TradingCalendar>(contract_rolls_test::shipped_calendar());
+        cal_ = std::make_unique<TradingCalendar>(contract_rolls_test::shipped_calendar(root_));
         RuleInputs in;
         in.root = root_;
         in.grid = grid_;
@@ -125,8 +125,8 @@ TEST(ContractRollRule, ContractDatesFridayAndMondayFirstNotice) {
     EXPECT_EQ(ymd(j5.last_actionable), "2025-03-28");
     EXPECT_EQ(ymd(j5.window_first), "2025-03-24");
     // No notice day before the last trade: D* is the last trading day (MBTQ6, Friday 08-28).
-    const ContractDates mbt =
-        contract_dates(ContractKey::make("MBT", "MBTQ6", d("2026-08-28")).value(), cal);
+    const ContractDates mbt = contract_dates(ContractKey::make("MBT", "MBTQ6", d("2026-08-28")).value(),
+                                             contract_rolls_test::shipped_calendar("MBT"));
     EXPECT_FALSE(mbt.first_notice_day.has_value());
     EXPECT_EQ(ymd(mbt.deadline), "2026-08-28");
     EXPECT_EQ(ymd(mbt.last_actionable), "2026-08-26");
@@ -348,6 +348,20 @@ TEST(ContractRollRule, TheTargetSkipsAMissingCycleFrontWithAWarn) {
     EXPECT_EQ(roll.held.raw_symbol, "GCG7");
     EXPECT_TRUE(roll.target_skipped_front);
     EXPECT_EQ(r.value().report.target_skipped_front, 1);
+}
+
+TEST(ContractRollRule, ANeverListedFrontIsNotCountedAsSkipped) {
+    // Audit B 6: the cycle front after GCQ6 is GCZ6; when the table never lists it, rolling to GCG7
+    // does not skip a listed front and is not flagged.
+    World w({{"GCQ6", "q", "2026-08-27"}, {"GCZ6", "z", "2026-12-29"}, {"GCG7", "g", "2027-02-24"}});
+    for (const auto& dt : kDates) w.print("GCQ6", dt, 80000).print("GCG7", dt, 400).vendor(dt, "GCQ6");
+    auto r = w.run();
+    ASSERT_TRUE(r.is_ok()) << r.error()->what();
+    const HeldDay& roll = on(r.value(), "2026-07-29");
+    ASSERT_TRUE(roll.roll);
+    EXPECT_EQ(roll.held.raw_symbol, "GCG7");
+    EXPECT_FALSE(roll.target_skipped_front);
+    EXPECT_EQ(r.value().report.target_skipped_front, 0);
 }
 
 TEST(ContractRollRule, NoTargetPrintingHoldsTheRollPending) {

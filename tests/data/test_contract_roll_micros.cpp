@@ -54,7 +54,7 @@ TEST(ContractRollMicros, ReadsTheFullSizeContractsBeforeTheChangeAndRollsOnceAcr
     }
     auto book = ContractBook::build(rows);
     ASSERT_TRUE(book.is_ok()) << book.error()->what();
-    const TradingCalendar cal = contract_rolls_test::shipped_calendar();
+    const TradingCalendar cal = contract_rolls_test::shipped_calendar("MES");
     RuleInputs in;
     in.root = "MES";
     in.grid = grid;

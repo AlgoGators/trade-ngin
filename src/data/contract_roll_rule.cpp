@@ -2,6 +2,7 @@
 #include "trade_ngin/data/contract_roll_rule.hpp"
 
 #include <algorithm>
+#include <set>
 #include <stdexcept>
 
 #include "trade_ngin/core/logger.hpp"
@@ -63,7 +64,8 @@ private:
         const Contract* best = found.value();
         if (best && skipped_front) {
             *skipped_front = best->key->delivery_index() !=
-                             next_cycle_delivery(in_.cycle, hk.delivery_year, hk.delivery_month);
+                             listed_cycle_front(book_, root_on(day), in_.cycle, hk,
+                                                best->key->delivery_index());
         }
         return best;
     }
@@ -347,6 +349,20 @@ const char* to_string(RollFallback fallback) {
             return "zero";
     }
     return "";
+}
+
+int listed_cycle_front(const ContractBook& book, const std::string& root, const std::string& cycle,
+                       const ContractKey& held, int up_to) {
+    std::set<int> listed;
+    for (const auto& c : book.contracts()) {
+        if (c.root == root && c.key) listed.insert(c.key->delivery_index());
+    }
+    for (int m = next_cycle_delivery(cycle, held.delivery_year, held.delivery_month);
+         m >= 0 && m <= up_to;
+         m = next_cycle_delivery(cycle, m / 12, static_cast<unsigned>(m % 12) + 1)) {
+        if (listed.count(m)) return m;
+    }
+    return -1;
 }
 
 Result<const Contract*> cycle_target(const ContractBook& book, const std::string& root,
