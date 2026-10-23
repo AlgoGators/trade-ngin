@@ -181,7 +181,8 @@ Result<std::shared_ptr<arrow::Table>> PostgresDatabase::get_market_data(
             contract_rolls::PerContractSource::instance().enabled()) {
             // Rolls step 3 (portfolio.json per_contract_rolls on): the held contract's own bars.
             const std::string full_table_name = build_table_name(asset_class, data_type, freq);
-            if (full_table_name != "futures_data.ohlcv_1d") {
+            if (full_table_name !=
+                build_table_name(AssetClass::FUTURES, "ohlcv", DataFrequency::DAILY)) {
                 return make_error<std::shared_ptr<arrow::Table>>(
                     ErrorCode::INVALID_ARGUMENT,
                     "per_contract_rolls reads only futures_data.ohlcv_1d's grid, not " +
@@ -1598,12 +1599,13 @@ Result<std::vector<contract_rolls::SourceBar>> PostgresDatabase::per_contract_so
     pqxx::transaction_base& txn, const std::vector<std::string>& symbols,
     const std::string& start_ts, const std::string& end_ts) const {
     using Bars = std::vector<contract_rolls::SourceBar>;
-    const std::string full_table_name = "futures_data.ohlcv_1d";
+    const std::string full_table_name =
+        build_table_name(AssetClass::FUTURES, "ohlcv", DataFrequency::DAILY);
     std::vector<std::string> wanted = symbols;
     try {
         if (wanted.empty()) {
-            for (const auto& row : txn.exec("SELECT DISTINCT symbol FROM futures_data.ohlcv_1d"
-                                            " WHERE time BETWEEN $1 AND $2 ORDER BY 1",
+            for (const auto& row : txn.exec("SELECT DISTINCT symbol FROM " + full_table_name +
+                                                " WHERE time BETWEEN $1 AND $2 ORDER BY 1",
                                             pqxx::params{start_ts, end_ts})) {
                 wanted.push_back(row[0].as<std::string>());
             }
