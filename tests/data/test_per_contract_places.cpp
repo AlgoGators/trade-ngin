@@ -8,21 +8,32 @@
 // the backtest and live suites.
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <cstddef>
+#include <deque>
+#include <functional>
 #include <map>
 #include <memory>
+#include <mutex>
+#include <optional>
 #include <string>
 #include <thread>
+#include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 #include "../core/test_base.hpp"
 #include "../data/test_db_utils.hpp"
 #include "trade_ngin/data/roll_series.hpp"
-#include "trade_ngin/live/futures_cost_feed.hpp"
-#include "trade_ngin/transaction_cost/transaction_cost_manager.hpp"
+#include "trade_ngin/strategy/base_strategy.hpp"
 
+// Private members read: the cost model's window, the optimizer's covariance.
 #define private public
+#include "trade_ngin/transaction_cost/spread_model.hpp"
+#include "trade_ngin/transaction_cost/transaction_cost_manager.hpp"
+#include "trade_ngin/live/futures_cost_feed.hpp"
 #include "../risk/risk_module_test_helpers.hpp"
 #include "trade_ngin/risk/risk_manager.hpp"
 #include "trade_ngin/portfolio/portfolio_manager.hpp"
@@ -53,7 +64,8 @@ struct Series {
     roll_series::RollFields rf;
 };
 
-Series per_contract(const std::string& symbol, bool rolls) {
+/// `unconfirmed`: the day of the vendor switch the next bar does not confirm (8 by default).
+Series per_contract(const std::string& symbol, bool rolls, int unconfirmed = 8) {
     Series s;
     char held = 'A';
     for (int d = 1; d <= kDays; ++d) {
@@ -62,9 +74,11 @@ Series per_contract(const std::string& symbol, bool rolls) {
         b.timestamp = at(d);
         b.volume = 1000.0;
         char shown = held;
-        if (rolls && d == 8) {
-            // a vendor switch to B that day 9 does not confirm: A's own bar, the field naming B
-            b.roll_from = RollFrom{own('B', d), "B", RollFromKind::AWAITS_NEXT};
+        if (rolls && d == unconfirmed) {
+            // a vendor switch to the next contract that the next day does not confirm: the held
+            // contract's own bar, the field naming the target
+            const char target = static_cast<char>(held + 1);
+            b.roll_from = RollFrom{own(target, d), std::string(1, target), RollFromKind::AWAITS_NEXT};
         } else if (rolls && d == 15) {
             // a crossover: known on its bar
             shown = held = 'B';
@@ -273,4 +287,145 @@ TEST(PerContractPlaces, TheCostModelsVolatilityWindowIsTheLibrarysLogReturns) {
                       expected.get_volatility_multiplier("NG.v.0"));
         }
     }
+}
+
+// The cost model's own window, return by return, with an unconfirmed switch (day 33) and a confirmed
+// one (day 27, confirmed by day 28) inside its last 20 returns: the held contract's own moves, the
+// bar that confirms the switch read from the target's close on the switch bar, nothing changed by
+// the switch the next bar did not confirm. Both forms of the feed (the live window, the backtest's
+// cycle by cycle).
+TEST(PerContractPlaces, TheCostModelsWindowReturnsAreTheHeldContractsMovesAroundEverySwitch) {
+    using transaction_cost::TransactionCostManager;
+    const Series ng = per_contract("NG.v.0", true, 33);
+    ASSERT_EQ(ng.ids[32], "C") << "day 33's bar is C's own";
+    ASSERT_EQ(ng.rf[32]->instrument_id, "D");
+    ASSERT_EQ(ng.ids[33], "C") << "day 34 stays in C: not confirmed";
+    // By hand: bar t's log return, t = 1 .. 39 (day t + 1).
+    std::vector<double> want;
+    for (size_t t = 1; t < ng.raw.size(); ++t) {
+        const int day = static_cast<int>(t) + 1;
+        double to = ng.raw[t];
+        double from = ng.raw[t - 1];
+        if (day == 15) to = own('A', 15);  // the crossover bar: A's own move
+        if (day == 28) from = own('C', 27);  // confirms day 27: from C's close on the switch bar
+        want.push_back(std::log(to / from));
+    }
+    ASSERT_EQ(want.size(), 39u);
+    // the two bars inside the window that read another close than their own previous bar's
+    EXPECT_NE(want[26], std::log(ng.raw[27] / ng.raw[26])) << "day 28";
+    EXPECT_EQ(want[32], std::log(ng.raw[33] / ng.raw[32])) << "day 34: C's own move";
+    const std::deque<double> tail(want.end() - 20, want.end());
+    TransactionCostManager window, stepped;
+    feed_futures_cost_model(window, ng.bars, ng.bars.back().timestamp + std::chrono::hours(24));
+    FuturesCostFeedCarry carry;
+    for (const auto& b : ng.bars) {
+        feed_futures_cost_model_step(stepped, {b}, b.timestamp + std::chrono::hours(24), carry);
+    }
+    for (const TransactionCostManager* m : {&window, &stepped}) {
+        SCOPED_TRACE(m == &window ? "the live window" : "cycle by cycle");
+        const std::deque<double>& got = m->spread_model_.symbol_log_returns_.at("NG.v.0");
+        ASSERT_EQ(got.size(), 20u);
+        for (size_t i = 0; i < 20; ++i) {
+            EXPECT_EQ(got[i], tail[i]) << "return of day " << (40 - 20 + 1 + i);
+        }
+    }
+}
+
+namespace {
+
+/// A sleeve that holds a fixed book from its first bar on and signals every symbol.
+class PerContractFixedBook : public BaseStrategy {
+public:
+    PerContractFixedBook(std::string id, StrategyConfig config,
+                         std::shared_ptr<DatabaseInterface> db,
+                         std::unordered_map<std::string, Position> book)
+        : BaseStrategy(std::move(id), std::move(config),
+                       std::static_pointer_cast<trade_ngin::PostgresDatabase>(db)),
+          book_(std::move(book)) {
+        metadata_.name = "Per-contract Fixed Book Strategy";
+    }
+    Result<void> on_data(const std::vector<Bar>& data) override {
+        (void)data;
+        ++calls_;
+        return Result<void>();
+    }
+    std::unordered_map<std::string, Position> get_target_positions() const override {
+        return calls_ == 0 ? std::unordered_map<std::string, Position>{} : book_;
+    }
+
+private:
+    std::unordered_map<std::string, Position> book_;
+    size_t calls_{0};
+};
+
+}  // namespace
+
+// The optimizer's covariance (optimize_positions, through process_market_data) on a book holding a
+// per-contract NG with every roll shape: built on the library's returns, not on returns divided by
+// the bars' own closes.
+TEST_F(PerContractPmTest, TheOptimizersCovarianceIsBuiltOnTheLibrarysReturns) {
+    PortfolioConfig pc{1'000'000.0, 1.0, 0.0, true};
+    pc.allow_fractional_positions = false;
+    pc.opt_config.tau = 1.0;
+    pc.opt_config.capital = 1'000'000.0;
+    pc.opt_config.cost_penalty_scalar = 50.0;
+    pc.opt_config.max_iterations = 100;
+    pc.opt_config.convergence_threshold = 1e-6;
+    pc.opt_config.use_buffering = false;
+    pc.risk_config = risk_config();
+    pc.risk_config.var_limit = 1e6;
+    pc.risk_config.jump_risk_limit = 1e6;
+    pc.risk_config.max_correlation = 1.0;
+    pc.risk_config.max_gross_leverage = 1e6;
+    pc.risk_config.max_net_leverage = 1e6;
+    pc.risk_modules = {test_none_module()};
+    auto db = std::make_shared<MockPostgresDatabase>("mock://testdb");
+    ASSERT_TRUE(db->connect().is_ok());
+    const Series ng = per_contract("NG", true, 33);
+    const auto lib = library(ng);
+    std::unordered_map<std::string, Position> book;
+    for (const char* symbol : {"NG", "ES"}) {
+        Position p;
+        p.symbol = symbol;
+        p.quantity = Decimal(1.0);
+        p.average_price = Decimal(100.0);
+        p.last_update = at(0);
+        book[symbol] = p;
+    }
+    StrategyConfig sc;
+    sc.capital_allocation = 1'000'000.0;
+    sc.max_leverage = 10.0;
+    sc.asset_classes = {AssetClass::FUTURES};
+    sc.frequencies = {DataFrequency::DAILY};
+    auto strategy = std::make_shared<PerContractFixedBook>("TREND_FOLLOWING_PC", sc, db, book);
+    ASSERT_TRUE(strategy->initialize().is_ok());
+    ASSERT_TRUE(strategy->start().is_ok());
+    PortfolioManager pm(pc, "PM_PC_OPT");
+    ASSERT_TRUE(pm.add_strategy(strategy, 1.0, true).is_ok());
+    ASSERT_TRUE(pm.process_market_data(with_es(ng), false, at(kDays + 1)).is_ok());
+    ASSERT_TRUE(pm.covariance_cache_valid_) << "the optimizer did not build a covariance";
+    // The library's returns of NG and ES's own returns, every date shared: the covariance.
+    std::vector<double> es;
+    const auto all = with_es(ng);
+    for (size_t i = 3; i < all.size(); i += 2) {
+        es.push_back((static_cast<double>(all[i].close) - static_cast<double>(all[i - 2].close)) /
+                     static_cast<double>(all[i - 2].close));
+    }
+    const auto want = pm.calculate_covariance_matrix({{"ES", es}, {"NG", lib.returns}});
+    ASSERT_EQ(pm.cached_covariance_.size(), 2u);
+    for (size_t i = 0; i < 2; ++i) {
+        for (size_t j = 0; j < 2; ++j) {
+            EXPECT_NEAR(pm.cached_covariance_[i][j], want[i][j], 1e-12 * std::abs(want[i][j]))
+                << "cell (" << i << "," << j << ") (0 = ES, 1 = NG)";
+        }
+    }
+    // the switch the next bar confirmed is inside the covariance's returns: a covariance built on
+    // the bars' own closes is another matrix
+    std::vector<double> own_closes;
+    for (size_t t = 1; t < ng.raw.size(); ++t) {
+        own_closes.push_back(lib.returns[t - 1]);
+    }
+    own_closes[26] = (ng.raw[27] - ng.raw[26]) / ng.raw[26];
+    const auto blind = pm.calculate_covariance_matrix({{"ES", es}, {"NG", own_closes}});
+    EXPECT_GT(std::abs(blind[1][1] - want[1][1]), 1e-6 * want[1][1]);
 }

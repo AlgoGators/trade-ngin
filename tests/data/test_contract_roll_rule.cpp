@@ -474,6 +474,31 @@ TEST(ContractRollRule, AVendorSwitchOnACrossoverBarIsKnownOnTheBar) {
     EXPECT_FALSE(roll.awaits_next_bar);
 }
 
+TEST(ContractRollRule, AVendorSwitchOnTheLastActionableBarIsKnownOnTheBar) {
+    // GCQ6's LAB is Wed 07-29. The vendor switches to Z there with Q still the volume leader (no
+    // crossover): the deadline rolls on the bar whatever the next bar says, so the roll is known on
+    // it, not handed out awaiting 07-30 (which would leg it a bar late). Held on 07-30, and the
+    // vendor's switch back to Q on 07-30 changes nothing.
+    for (const bool back_on_next : {false, true}) {
+        SCOPED_TRACE(back_on_next ? "the vendor names Q again on 07-30" : "the vendor keeps Z");
+        World w = base_world();
+        for (const auto& dt : kDates) {
+            std::string v = dt >= "2026-07-29" ? "GCZ6" : "GCQ6";
+            if (back_on_next && dt == "2026-07-30") v = "GCQ6";
+            w.vendor(dt, v);
+        }
+        auto r = w.run();
+        ASSERT_TRUE(r.is_ok()) << r.error()->what();
+        EXPECT_EQ(roll_dates(r.value()), std::vector<std::string>{"2026-07-29"});
+        const HeldDay& roll = on(r.value(), "2026-07-29");
+        EXPECT_EQ(roll.held.raw_symbol, "GCZ6");
+        EXPECT_FALSE(roll.awaits_next_bar) << "the deadline makes the roll known on its own bar";
+        EXPECT_FALSE(roll.tentative.has_value());
+        EXPECT_FALSE(roll.late);
+        EXPECT_EQ(on(r.value(), "2026-07-30").held.raw_symbol, "GCZ6");
+    }
+}
+
 TEST(ContractRollRule, AnUnconfirmedSwitchIsTentativeAndRollsNothing) {
     World w = base_world();
     for (const auto& dt : kDates) {
