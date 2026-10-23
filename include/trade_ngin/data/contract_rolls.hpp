@@ -70,7 +70,8 @@ Result<Day> series_start(pqxx::transaction_base& txn, const std::string& root);
  * @brief Reads the vendor's grid and the contract bars of `root` over [start, end] and applies the
  *        rule. Read only.
  *
- * The trading days are the root's own exchange calendar (`calendars.for_root(root)`).
+ * The trading days are the root's own exchange calendar (`calendars.for_root(root)`). The rule's
+ * warnings dated before `log_from` are kept in the report but not logged (RuleInputs::log_from).
  *
  * Errors: a root with no cycle or no futures calendar; a contract the rule needs with no expiration (named); a date
  * outside the calendar; for a micro whose range starts before 2026-02-22, no full-size contract
@@ -78,6 +79,7 @@ Result<Day> series_start(pqxx::transaction_base& txn, const std::string& root);
  * error.
  */
 Result<ContractRollSeries> build_held_series(pqxx::transaction_base& txn, const std::string& root,
-                                             Day start, Day end, const FuturesCalendar& calendars);
+                                             Day start, Day end, const FuturesCalendar& calendars,
+                                             Day log_from = Day{});
 
 }  // namespace trade_ngin::contract_rolls

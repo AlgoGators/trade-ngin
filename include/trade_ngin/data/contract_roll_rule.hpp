@@ -23,7 +23,9 @@ namespace trade_ngin::contract_rolls {
  *   For the held contract:
  *   - Deadline D*: its first notice day, or its last trading day where that comes first or where it
  *     has no notice day.
- *   - Window: the last five trading days before D*.
+ *   - Window: from the fifth trading day before D* to the last actionable bar (HD 2026-10-23,
+ *     ruling 11: the window ends at the last actionable bar, so a crossover after it does not
+ *     roll; the trading days between the last actionable bar and D* are outside the window).
  *   - Last actionable bar: the last trading-day bar B before D* whose next calendar day is still
  *     before D*. The live runners run seven days a week and the run dated R trades the bar of R-1
  *     (a Saturday run trades Friday's bar at Friday's settle), so this is the last bar whose trade
@@ -55,8 +57,9 @@ namespace trade_ngin::contract_rolls {
  *   - Class d: the vendor's contract by symbol and instant (contract_bars.hpp).
  *
  * Where the ruling is silent, this code decides as follows (R2 report, "Interpretations"):
- *   - The window's first day is the 5th trading day strictly before D*; the last actionable bar
- *     (LAB) is the latest trading day t with t + 1 day < D*, a calendar date (the grid may lack it).
+ *   - The window's first day is the 5th trading day strictly before D*; its last day is the last
+ *     actionable bar (LAB), the latest trading day t with t + 1 day < D*, a calendar date (the grid
+ *     may lack it).
  *   - A vendor switch is a bar whose vendor contract differs from the last KNOWN vendor contract
  *     before it, expires later than the held one, and is the vendor's contract on the next grid
  *     bar too. A switch to a contract later than the target still rolls only to the target.
@@ -100,8 +103,8 @@ struct ContractDates {
     Day last_trading_day{};                ///< the expiration column
     std::optional<Day> first_notice_day;   ///< the exchange rule (roll_calendar.hpp)
     Day deadline{};                        ///< D*
-    Day window_first{};                    ///< the 5th trading day before D*
-    Day last_actionable{};                 ///< the LAB
+    Day window_first{};                    ///< the window's first day: the 5th trading day before D*
+    Day last_actionable{};                 ///< the LAB, the window's last day (ruling 11)
     std::optional<Day> rule_last_trading_day;  ///< the exchange rule's, for the cross-check
 };
 
@@ -120,6 +123,21 @@ Result<const Contract*> cycle_target(const ContractBook& book, const std::string
 /// over, so a target is flagged as skipping the front only when a listed front exists.
 int listed_cycle_front(const ContractBook& book, const std::string& root, const std::string& cycle,
                        const ContractKey& held, int up_to);
+
+/**
+ * @brief Rolls step 3: a vendor switch on a trading-day bar that only the next bar could confirm,
+ *        where the next bar did not (or the range ends on the bar), and that would have rolled the
+ *        held contract on this bar into `target` had it been confirmed. Nothing rolled: the held
+ *        contract stays. The bar source hands the bar out as it hands out a confirmed switch bar
+ *        (the held contract's own bar, the field naming the target), because a run whose bars end
+ *        here cannot tell the two apart (per_contract_source.hpp); the next consumed bar shows it.
+ */
+struct TentativeRoll {
+    ContractKey target;
+    ContractBar bar;       ///< the target's own bar on the date
+    double old_close{0.0};  ///< the held contract's close on the date
+    std::string old_id;    ///< the held contract's id on the date
+};
 
 /// One grid date of the held series.
 struct HeldDay {
@@ -146,6 +164,22 @@ struct HeldDay {
     bool target_skipped_front{false};  ///< the target is not the cycle front (WARN)
     bool vendor_off_cycle{false};      ///< a vendor switch into a month outside the cycle timed it
     bool late{false};                  ///< a deadline roll after the LAB (no grid bar on the LAB)
+
+    // Rolls step 3 (the bar source's inputs; the dump tool prints none of them):
+    std::string old_id;      ///< roll bars: the old contract's id on this date (empty on a fallback)
+    /// Roll bars: the old contract's own bar on this date (none on a fallback). A vendor roll that
+    /// awaits the next bar is handed out as this bar: until it is confirmed the book holds it.
+    std::optional<ContractBar> old_bar;
+    std::string carried_id;  ///< carry days: the id of the held contract's row whose close is carried
+    /// A vendor roll whose switch is on this bar and which neither the crossover nor the deadline
+    /// would have rolled here: only the next grid bar's vendor id confirms it (rule (a)).
+    bool awaits_next_bar{false};
+    std::optional<TentativeRoll> tentative;  ///< see TentativeRoll
+    /// Every grid day after a roll, up to the next roll: the contract left, its close and id on this
+    /// date (none when it printed nothing here). For a consumer that withheld the roll bar and the
+    /// bars after it (RollFromKind::AFTER_ROLL): it books the roll on its first consumed bar.
+    std::optional<double> left_close;
+    std::string left_id;
 };
 
 /// Counts and messages of one series, for the report and the measures.
@@ -162,6 +196,7 @@ struct RuleReport {
     int unknown_vendor_days{0};
     int no_target_bars{0};      ///< trading-day bars a pending roll found no target printing
     int ltd_mismatches{0};      ///< contracts whose expiration differs from the exchange rule
+    int warnings_not_logged{0};  ///< warnings dated before RuleInputs::log_from (kept, not logged)
     std::vector<std::string> fallback_cases;  ///< every fallback roll, listed
     std::vector<std::string> warnings;
 };
@@ -196,6 +231,9 @@ struct RuleInputs {
     const TradingCalendar* cal{nullptr};
     std::string cycle;  ///< the root's cycle (roll_cycle_table)
     std::optional<MicroAlias> alias;  ///< the micros only
+    /// Warnings dated before this day are kept in RuleReport::warnings but not logged (the bar
+    /// source runs the rule from the series start on every load and logs its own window's only).
+    Day log_from{};
 };
 
 /**

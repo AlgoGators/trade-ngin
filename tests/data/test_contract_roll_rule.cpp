@@ -55,7 +55,13 @@ public:
         in.book = book_.get();
         in.cal = cal_.get();
         in.cycle = roll_cycle(root_).value();
+        in.log_from = log_from_;
         return apply_roll_rule(in);
+    }
+    /// Warnings dated before `date` are kept, not logged (RuleInputs::log_from).
+    World& log_from(const std::string& date) {
+        log_from_ = d(date);
+        return *this;
     }
 
 private:
@@ -65,6 +71,7 @@ private:
     std::vector<VendorBar> grid_;
     std::unique_ptr<ContractBook> book_;
     std::unique_ptr<TradingCalendar> cal_;
+    Day log_from_{};
 };
 
 const std::vector<Spec> kAug2026 = {{"GCQ6", "q", "2026-08-27"},
@@ -410,4 +417,177 @@ TEST(ContractRollRule, AContractTheRuleNeedsWithNoExpirationIsRefused) {
     auto r = w.run();
     ASSERT_TRUE(r.is_error());
     EXPECT_NE(std::string(r.error()->what()).find("GCZ6"), std::string::npos);
+}
+
+// Rolls step 3: what a run whose bars end on a vendor switch can know (HeldDay::awaits_next_bar,
+// TentativeRoll). The bar source hands the switch bar out the same way whatever the next bar says.
+
+TEST(ContractRollRule, AVendorSwitchOnItsOwnBarAwaitsTheNextBar) {
+    World w = base_world();
+    for (const auto& dt : kDates) w.vendor(dt, dt >= "2026-07-21" ? "GCZ6" : "GCQ6");
+    auto r = w.run();
+    ASSERT_TRUE(r.is_ok()) << r.error()->what();
+    const HeldDay& roll = on(r.value(), "2026-07-21");
+    ASSERT_TRUE(roll.roll);
+    EXPECT_TRUE(roll.awaits_next_bar);
+    EXPECT_EQ(roll.old_id, "q");
+    EXPECT_EQ(*roll.old_close, 1000.0 + 80000 % 97);
+    EXPECT_FALSE(roll.tentative.has_value());
+    ASSERT_TRUE(roll.old_bar.has_value()) << "the bar a run reads on it: the old contract's own";
+    EXPECT_EQ(roll.old_bar->instrument_id, "q");
+    EXPECT_EQ(roll.old_bar->close, *roll.old_close);
+    // The days after it: no roll, nothing tentative, and the contract left on every one of them.
+    EXPECT_FALSE(on(r.value(), "2026-07-22").awaits_next_bar);
+    EXPECT_FALSE(on(r.value(), "2026-07-22").tentative.has_value());
+    for (const char* dt : {"2026-07-22", "2026-07-23", "2026-08-05"}) {
+        ASSERT_TRUE(on(r.value(), dt).left_close.has_value()) << dt;
+        EXPECT_EQ(on(r.value(), dt).left_id, "q") << dt;
+    }
+    EXPECT_FALSE(on(r.value(), "2026-07-21").left_close.has_value()) << "not on the roll bar itself";
+}
+
+TEST(ContractRollRule, ASundaySwitchRolledOnMondayIsKnownOnMonday) {
+    World w = base_world();
+    for (const auto& dt : kDates) w.vendor(dt, dt >= "2026-07-19" ? "GCZ6" : "GCQ6");
+    auto r = w.run();
+    ASSERT_TRUE(r.is_ok()) << r.error()->what();
+    const HeldDay& roll = on(r.value(), "2026-07-20");
+    ASSERT_TRUE(roll.roll);
+    EXPECT_FALSE(roll.awaits_next_bar);  // Monday's own vendor id confirmed Sunday's switch
+    EXPECT_FALSE(on(r.value(), "2026-07-19").tentative.has_value());  // no roll on a Sunday
+}
+
+TEST(ContractRollRule, AVendorSwitchOnACrossoverBarIsKnownOnTheBar) {
+    // GCQ6's window opens Fri 07-24. On Mon 07-27 the vendor switches to Z and Z out-trades Q: the
+    // crossover rolls on the bar whatever the next bar says.
+    World w(kAug2026);
+    for (const auto& dt : kDates) {
+        const bool z_leads = dt >= "2026-07-27";
+        w.print("GCQ6", dt, z_leads ? 9000 : 80000).print("GCZ6", dt, z_leads ? 80000 : 9000);
+        w.vendor(dt, dt >= "2026-07-27" ? "GCZ6" : "GCQ6");
+    }
+    auto r = w.run();
+    ASSERT_TRUE(r.is_ok()) << r.error()->what();
+    const HeldDay& roll = on(r.value(), "2026-07-27");
+    ASSERT_TRUE(roll.roll);
+    EXPECT_EQ(roll.trigger, RollTrigger::VENDOR);
+    EXPECT_FALSE(roll.awaits_next_bar);
+}
+
+TEST(ContractRollRule, AVendorSwitchOnTheLastActionableBarIsKnownOnTheBar) {
+    // GCQ6's LAB is Wed 07-29. The vendor switches to Z there with Q still the volume leader (no
+    // crossover): the deadline rolls on the bar whatever the next bar says, so the roll is known on
+    // it, not handed out awaiting 07-30 (which would leg it a bar late). Held on 07-30, and the
+    // vendor's switch back to Q on 07-30 changes nothing.
+    for (const bool back_on_next : {false, true}) {
+        SCOPED_TRACE(back_on_next ? "the vendor names Q again on 07-30" : "the vendor keeps Z");
+        World w = base_world();
+        for (const auto& dt : kDates) {
+            std::string v = dt >= "2026-07-29" ? "GCZ6" : "GCQ6";
+            if (back_on_next && dt == "2026-07-30") v = "GCQ6";
+            w.vendor(dt, v);
+        }
+        auto r = w.run();
+        ASSERT_TRUE(r.is_ok()) << r.error()->what();
+        EXPECT_EQ(roll_dates(r.value()), std::vector<std::string>{"2026-07-29"});
+        const HeldDay& roll = on(r.value(), "2026-07-29");
+        EXPECT_EQ(roll.held.raw_symbol, "GCZ6");
+        EXPECT_FALSE(roll.awaits_next_bar) << "the deadline makes the roll known on its own bar";
+        EXPECT_FALSE(roll.tentative.has_value());
+        EXPECT_FALSE(roll.late);
+        EXPECT_EQ(on(r.value(), "2026-07-30").held.raw_symbol, "GCZ6");
+    }
+}
+
+TEST(ContractRollRule, AnUnconfirmedSwitchIsTentativeAndRollsNothing) {
+    World w = base_world();
+    for (const auto& dt : kDates) {
+        // a one-bar forward stray on Thu 07-16; the vendor's last grid bar 08-05 names G7, which no
+        // later bar can confirm
+        std::string v = dt == "2026-07-16" ? "GCZ6" : "GCQ6";
+        if (dt >= "2026-07-20") v = "GCZ6";
+        if (dt == "2026-08-05") v = "GCG7";
+        w.vendor(dt, v);
+    }
+    auto r = w.run();
+    ASSERT_TRUE(r.is_ok()) << r.error()->what();
+    const HeldSeries& s = r.value();
+    const HeldDay& stray = on(s, "2026-07-16");
+    EXPECT_FALSE(stray.roll);
+    EXPECT_EQ(stray.held.raw_symbol, "GCQ6");
+    ASSERT_TRUE(stray.tentative.has_value());
+    EXPECT_EQ(stray.tentative->target.raw_symbol, "GCZ6");
+    EXPECT_EQ(stray.tentative->bar.instrument_id, "z");
+    EXPECT_EQ(stray.tentative->bar.close, 1000.0 + 9000 % 97);
+    EXPECT_EQ(stray.tentative->old_id, "q");
+    EXPECT_EQ(stray.tentative->old_close, 1000.0 + 80000 % 97);
+    // The switch of 07-20 is confirmed: a roll, awaiting the next bar.
+    EXPECT_TRUE(on(s, "2026-07-20").roll);
+    EXPECT_TRUE(on(s, "2026-07-20").awaits_next_bar);
+    // The last bar's switch to G7 (later than the held Z): unconfirmable, tentative into the
+    // cycle front after Z, G7.
+    const HeldDay& last = on(s, "2026-08-05");
+    EXPECT_FALSE(last.roll);
+    ASSERT_TRUE(last.tentative.has_value());
+    EXPECT_EQ(last.tentative->target.raw_symbol, "GCG7");
+    EXPECT_EQ(last.tentative->old_id, "z");
+    EXPECT_EQ(s.report.rolls, 1);
+}
+
+TEST(ContractRollRule, ACarriedCloseKeepsTheCarriedRowsId) {
+    // GCQ6 has no row on Fri 07-17 while the vendor names Z: carried (class c)
+    World w2(kAug2026);
+    for (const auto& dt : kDates) {
+        if (dt != "2026-07-17") w2.print("GCQ6", dt, 80000);
+        w2.print("GCZ6", dt, 9000);
+        w2.vendor(dt, dt == "2026-07-17" ? "GCZ6" : "GCQ6");
+    }
+    auto r = w2.run();
+    ASSERT_TRUE(r.is_ok()) << r.error()->what();
+    const HeldDay& carry = on(r.value(), "2026-07-17");
+    EXPECT_EQ(carry.source, BarSource::CARRY);
+    EXPECT_TRUE(carry.bar_id.empty());
+    EXPECT_EQ(carry.carried_id, "q");
+    // no tentative on a carry day: the held contract has no bar to roll from
+    EXPECT_FALSE(carry.tentative.has_value());
+}
+
+// Ruling 11 (plan 11b): the window ends at the last actionable bar. GCQ6: LAB Wed 07-29, D* Fri 07-31.
+// With a bar on the LAB the deadline rolls there first, so the window's end shows only when the
+// vendor's grid lacks the LAB's bar: Z out-trades Q on Thu 07-30, after the LAB, and the roll there
+// is the deadline's (late), not a crossover. The roll's date is the same either way.
+TEST(ContractRollRule, TheWindowEndsAtTheLastActionableBar) {
+    World w(kAug2026);
+    for (const auto& dt : kDates) {
+        const bool z_leads = dt == "2026-07-30";
+        w.print("GCQ6", dt, z_leads ? 9000 : 80000).print("GCZ6", dt, z_leads ? 80000 : 9000);
+        if (dt != "2026-07-29") w.vendor(dt, "GCQ6");
+    }
+    auto r = w.run();
+    ASSERT_TRUE(r.is_ok()) << r.error()->what();
+    EXPECT_EQ(roll_dates(r.value()), std::vector<std::string>{"2026-07-30"});
+    EXPECT_EQ(on(r.value(), "2026-07-30").trigger, RollTrigger::DEADLINE);
+    EXPECT_TRUE(on(r.value(), "2026-07-30").late);
+    const ContractDates q6 = contract_dates(on(r.value(), "2026-07-15").held,
+                                            contract_rolls_test::shipped_calendar());
+    EXPECT_EQ(ymd(q6.window_first), "2026-07-24");
+    EXPECT_EQ(ymd(q6.last_actionable), "2026-07-29") << "the window's last day";
+}
+
+// The bar source runs the rule from the series start on every load: warnings dated before the
+// window are kept in the report, not logged.
+TEST(ContractRollRule, WarningsBeforeLogFromAreKeptNotLogged) {
+    for (const char* from : {"2026-07-01", "2026-07-30"}) {
+        World w(kAug2026);
+        for (const auto& dt : kDates) {
+            w.print("GCQ6", dt, 80000).print("GCU6", dt, 30000).print("GCG7", dt, 400);
+            if (dt != "2026-07-29") w.print("GCZ6", dt, 9000);
+            w.vendor(dt, "GCQ6");
+        }
+        w.log_from(from);
+        auto r = w.run();
+        ASSERT_TRUE(r.is_ok()) << r.error()->what();
+        ASSERT_EQ(r.value().report.warnings.size(), 1u) << "the skipped front of 07-29";
+        EXPECT_EQ(r.value().report.warnings_not_logged, std::string(from) == "2026-07-30" ? 1 : 0);
+    }
 }

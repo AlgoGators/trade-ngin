@@ -123,6 +123,11 @@ private:
     /// this cycle's bar (final_positions.instrument_id, every row of a futures symbol).
     std::unordered_set<std::string> mark_withheld_;
     std::unordered_set<std::string> mark_change_;
+    /// Rolls step 3: this cycle's marked bars whose move is to the old contract's close (a roll
+    /// bar of the per-contract source), and from the old contract's close (the bar after a vendor
+    /// switch it did not confirm): RollTracker::Status::mark_close and previous_close.
+    std::unordered_map<std::string, double> mark_close_;
+    std::unordered_map<std::string, double> mark_previous_close_;
     std::unordered_map<std::string, std::string> row_held_id_;
     /// Migration 038 (T-8D-2 R50): per futures sleeve, the held symbols that printed no bar in
     /// this cycle's group. Their row books nothing (realized_pnl 0, quantity and average price

@@ -128,6 +128,22 @@ Result<std::vector<Bar>> DataConversionUtils::arrow_table_to_bars(
         if (auto id_column = table->GetColumnByName("instrument_id"); id_column != nullptr) {
             instrument_id_array = id_column->chunk(0);
         }
+        // Rolls step 3: the per-contract source's roll field (Bar::roll_from), three columns that
+        // only its table carries, NULL where the field is absent.
+        std::shared_ptr<arrow::Array> roll_close_array, roll_id_array, roll_kind_array;
+        if (auto c = table->GetColumnByName("roll_from_close"); c != nullptr) {
+            roll_close_array = c->chunk(0);
+            auto i = table->GetColumnByName("roll_from_id");
+            auto k = table->GetColumnByName("roll_from_kind");
+            if (i == nullptr || k == nullptr) {
+                return make_error<std::vector<Bar>>(
+                    ErrorCode::INVALID_DATA,
+                    "roll_from_close without roll_from_id and roll_from_kind",
+                    "DataConversionUtils");
+            }
+            roll_id_array = i->chunk(0);
+            roll_kind_array = k->chunk(0);
+        }
 
         // Prepare result vector
         std::vector<Bar> bars;
@@ -177,6 +193,26 @@ Result<std::vector<Bar>> DataConversionUtils::arrow_table_to_bars(
                                                         "DataConversionUtils");
                 }
                 bar.instrument_id = id_result.value();
+            }
+            if (roll_close_array && !roll_close_array->IsNull(i)) {
+                auto close_from = extract_double(roll_close_array, i);
+                auto id_from = extract_string(roll_id_array, i);
+                if (close_from.is_error() || id_from.is_error() || roll_kind_array->IsNull(i)) {
+                    return make_error<std::vector<Bar>>(
+                        ErrorCode::CONVERSION_ERROR,
+                        "Error extracting the roll field at row " + std::to_string(i),
+                        "DataConversionUtils");
+                }
+                const int8_t kind = std::static_pointer_cast<arrow::Int8Array>(roll_kind_array)->Value(i);
+                if (kind < 0 || kind > static_cast<int8_t>(RollFromKind::AFTER_ROLL)) {
+                    return make_error<std::vector<Bar>>(
+                        ErrorCode::CONVERSION_ERROR,
+                        "Unknown roll_from_kind " + std::to_string(kind) + " at row " +
+                            std::to_string(i),
+                        "DataConversionUtils");
+                }
+                bar.roll_from =
+                    RollFrom{close_from.value(), id_from.value(), static_cast<RollFromKind>(kind)};
             }
 
             bars.push_back(bar);

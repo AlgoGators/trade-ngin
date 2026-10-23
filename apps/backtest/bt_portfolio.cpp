@@ -149,6 +149,15 @@ int main() {
         config.strategy_config.data_freq = trade_ngin::DataFrequency::DAILY;
         config.store_trade_details = app_config.backtest.store_trade_details;
 
+        // Rolls step 3: portfolio.json's per_contract_rolls turns the futures bar source onto the
+        // held contract's own bars (data/per_contract_source.hpp); off, every path is today's.
+        if (auto source = contract_rolls::configure_per_contract_source(app_config.per_contract_rolls);
+            source.is_error()) {
+            std::cerr << source.error()->what() << std::endl;
+            ERROR(source.error()->what());
+            return 1;
+        }
+
         // Load symbols from database
         auto symbols_result = db->get_symbols(trade_ngin::AssetClass::FUTURES);
         auto symbols = symbols_result.value();

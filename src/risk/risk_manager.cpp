@@ -571,22 +571,27 @@ RiskManager::AdjustedLevels RiskManager::adjusted_levels_of(const std::vector<Ba
     // timestamp, the last fed copy kept) are its consumed sequence here; a bar whose contract id
     // differs from the previous one's is a change bar, and the adjusted level is the raw close
     // plus the later steps, anchored on the symbol's latest bar.
-    std::map<std::string, std::map<Timestamp, std::pair<double, std::string>>> by_symbol;
-    for (const auto& bar : data) {
-        by_symbol[bar.symbol][bar.timestamp] = {static_cast<double>(bar.close), bar.instrument_id};
-    }
+    std::map<std::string, std::map<Timestamp, const Bar*>> by_symbol;
+    for (const auto& bar : data) by_symbol[bar.symbol][bar.timestamp] = &bar;
     AdjustedLevels out;
     for (const auto& [symbol, bars] : by_symbol) {
         std::vector<double> raw;
         std::vector<std::string> ids;
+        roll_series::RollFields roll_from;
         raw.reserve(bars.size());
         ids.reserve(bars.size());
+        bool any_field = false;
         for (const auto& [ts, bar] : bars) {
-            raw.push_back(bar.first);
-            ids.push_back(bar.second);
+            raw.push_back(static_cast<double>(bar->close));
+            ids.push_back(bar->instrument_id);
+            any_field = any_field || bar->roll_from.has_value();
+        }
+        // rolls step 3: the roll fields, when a bar carries one
+        if (any_field) {
+            for (const auto& [ts, bar] : bars) roll_from.push_back(bar->roll_from);
         }
         const std::vector<double> adjusted = roll_series::adjusted_levels(
-            raw, roll_series::classify_instrument_changes(ids).change);
+            raw, roll_series::classify_instrument_changes(ids, roll_from));
         auto& levels = out[symbol];
         size_t i = 0;
         for (const auto& [ts, bar] : bars) levels[ts] = adjusted[i++];
@@ -594,8 +599,50 @@ RiskManager::AdjustedLevels RiskManager::adjusted_levels_of(const std::vector<Ba
     return out;
 }
 
+RiskManager::AdjustedLevels RiskManager::base_closes_of(const std::vector<Bar>& data) {
+    std::map<std::string, std::map<Timestamp, const Bar*>> by_symbol;
+    for (const auto& bar : data) by_symbol[bar.symbol][bar.timestamp] = &bar;
+    AdjustedLevels out;
+    for (const auto& [symbol, bars] : by_symbol) {
+        std::vector<std::string> ids;
+        roll_series::RollFields roll_from;
+        bool any_field = false;
+        for (const auto& [ts, bar] : bars) {
+            ids.push_back(bar->instrument_id);
+            roll_from.push_back(bar->roll_from);
+            any_field = any_field || bar->roll_from.has_value();
+        }
+        if (!any_field) continue;
+        const auto flags = roll_series::classify_instrument_changes(ids, roll_from);
+        size_t i = 0;
+        for (const auto& [ts, bar] : bars) {
+            if (flags.base_close[i]) out[symbol][ts] = *flags.base_close[i];
+            ++i;
+        }
+    }
+    return out;
+}
+
+namespace {
+
+/// Rolls step 3: a vendor switch bar the next bar confirms divides as the target's close.
+void apply_bases(std::map<std::string, std::map<Timestamp, double>>& prices_by_symbol,
+                    const RiskManager::AdjustedLevels& resolved) {
+    for (const auto& [symbol, closes] : resolved) {
+        auto prices = prices_by_symbol.find(symbol);
+        if (prices == prices_by_symbol.end()) continue;
+        for (const auto& [ts, close] : closes) {
+            auto p = prices->second.find(ts);
+            if (p != prices->second.end()) p->second = close;
+        }
+    }
+}
+
+}  // namespace
+
 MarketData RiskManager::create_market_data(const std::vector<Bar>& data,
-                                           const AdjustedLevels* adjusted) {
+                                           const AdjustedLevels* adjusted,
+                                           const AdjustedLevels* resolved) {
     const AdjustedLevels own_levels = adjusted ? AdjustedLevels{} : adjusted_levels_of(data);
     const AdjustedLevels& levels = adjusted ? *adjusted : own_levels;
     auto adjusted_level = [&levels](const std::string& symbol, const Timestamp& ts, double raw) {
@@ -625,6 +672,7 @@ MarketData RiskManager::create_market_data(const std::vector<Bar>& data,
     for (const auto& bar : data) {
         prices_by_symbol[bar.symbol][bar.timestamp] = static_cast<double>(bar.close);
     }
+    apply_bases(prices_by_symbol, resolved ? *resolved : base_closes_of(data));
 
     // Calculate Returns
     std::map<Timestamp, std::map<std::string, double>> prices_by_time;
@@ -699,6 +747,7 @@ std::vector<std::vector<double>> RiskManager::calculate_returns(
     for (const auto& bar : data) {
         prices_by_symbol[bar.symbol][bar.timestamp] = static_cast<double>(bar.close);
     }
+    apply_bases(prices_by_symbol, base_closes_of(data));
 
     // Convert to chronologically ordered timeseries
     std::map<Timestamp, std::map<std::string, double>> prices_by_time;
