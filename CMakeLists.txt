@@ -171,6 +171,7 @@ set(TRADE_NGIN_SOURCES
     src/data/roll_calendar.cpp
     src/data/contract_bars.cpp
     src/data/roll_cycle.cpp
+    src/data/contract_roll_rule.cpp
     src/instruments/futures.cpp
     src/instruments/equity.cpp
     src/instruments/option.cpp
