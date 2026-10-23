@@ -1542,7 +1542,11 @@ Result<void> BacktestCoordinator::process_portfolio_day(
                         }
                         // DELIBERATELY NOT WRITTEN BACK: `updated_pos.average_price` keeps
                         // whatever the target position carried. The basis is used ONLY to
-                        // measure unrealized, just above.
+                        // measure unrealized, just above. So the stored
+                        // backtest.final_positions.average_price is a MARK: for mean
+                        // reversion, the close the strategy last saw, which in the backtest
+                        // is also the price the day's fill was struck at. No consumer reads
+                        // the stored column (docs/AVERAGE_PRICE_LIFECYCLE.md section 1).
                         //
                         // Writing the basis into average_price looks right -- it would make
                         // the stored row self-consistent, so a reader recomputing
