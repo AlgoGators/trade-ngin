@@ -760,6 +760,8 @@ Result<void> BacktestCoordinator::process_portfolio_day(
         // no later bar, so it is the verdict the next cycle's signal feed acts on.
         mark_withheld_.clear();
         mark_change_.clear();
+        mark_close_.clear();
+        mark_previous_close_.clear();
         row_no_bar_.clear();
         held_no_bar_.clear();
         if (session_hold_enabled_) {
@@ -941,8 +943,8 @@ Result<void> BacktestCoordinator::process_portfolio_day(
             // covers them); the confirming bar ends it. Warm-up included, as the session hold is.
             std::set<std::string> fed_now;
             for (const auto& b : *signal_feed) {
-                signal_roll_status_[b.symbol] =
-                    roll_trackers_[b.symbol].add(b.instrument_id, static_cast<double>(b.close));
+                signal_roll_status_[b.symbol] = roll_trackers_[b.symbol].add(
+                    b.instrument_id, static_cast<double>(b.close), b.roll_from);
                 fed_now.insert(b.symbol);
                 if (signal_roll_status_[b.symbol].confirm) {
                     confirmed_now[b.symbol] =
@@ -1132,7 +1134,9 @@ Result<void> BacktestCoordinator::process_portfolio_day(
                      "->" + st.held_id + " closing_px=" + std::to_string(st.last_close_before_change) +
                      " opening_px=" + std::to_string(st.change_bar_close) +
                      " change_bars=" + std::to_string(st.bars_pending) +
-                     ": the next consumed bar kept the new id; the legs are booked on this cycle");
+                     (st.change ? ": a per-contract roll known on its bar"
+                                : ": the next consumed bar kept the new id") +
+                     "; the legs are booked on this cycle");
                 for (const auto& [strategy_id, book] : start_of_bar_book) {
                     const auto held = book.find(symbol);
                     if (held == book.end()) continue;
@@ -1302,8 +1306,13 @@ Result<void> BacktestCoordinator::process_portfolio_day(
             for (const auto& bar : bars) {
                 if (mark_withheld_.count(bar.symbol)) continue;
                 roll_series::RollTracker probe = roll_trackers_[bar.symbol];
-                const auto st = probe.add(bar.instrument_id, static_cast<double>(bar.close));
-                if (st.change) mark_change_.insert(bar.symbol);
+                const auto st =
+                    probe.add(bar.instrument_id, static_cast<double>(bar.close), bar.roll_from);
+                // Rolls step 3: a per-contract roll bar books the old contract's own move over
+                // it (to its close on the bar); only a change bar with no old close books 0.
+                if (st.change && !st.mark_close) mark_change_.insert(bar.symbol);
+                if (st.mark_close) mark_close_[bar.symbol] = *st.mark_close;
+                if (st.previous_close) mark_previous_close_[bar.symbol] = *st.previous_close;
                 row_held_id_[bar.symbol] = st.held_id;
             }
             if (consumed_record_.enabled()) {
@@ -1482,10 +1491,17 @@ Result<void> BacktestCoordinator::process_portfolio_day(
                 }
 
                 double prev_close = pnl_manager_->get_previous_close(symbol);
+                // Rolls step 3: a roll bar's move is to the old contract's close on it; the bar
+                // after a vendor switch it did not confirm moves from the old contract's close.
+                double move_to = current_close;
+                if (auto m = mark_close_.find(symbol); m != mark_close_.end()) move_to = m->second;
+                if (auto m = mark_previous_close_.find(symbol); m != mark_previous_close_.end()) {
+                    prev_close = m->second;
+                }
 
                 // Calculate PnL using BacktestPnLManager
                 auto pnl_result =
-                    pnl_manager_->calculate_position_pnl(symbol, qty, prev_close, current_close);
+                    pnl_manager_->calculate_position_pnl(symbol, qty, prev_close, move_to);
                 // T-ROLLX-FIX (sections 2.1, 6.6): no P&L on a withheld bar (never consumed) or on a
                 // change bar (the splice's gap).
                 if (pnl_result.valid &&

@@ -182,3 +182,36 @@ TEST_F(BacktestChangeBarHoldTest, AWithheldPrintNeverStartsAHold) {
     EXPECT_EQ(f, (std::vector<double>{1, 1, 0, 1}))
         << "only the cycle whose signal bar is the withheld print is held; day 3 is no flip";
 }
+
+// Rolls step 3 (per_contract_rolls on): a roll the source knows on its bar (crossover, deadline) is
+// not held: the cycle consuming it trades. A vendor switch only the next bar confirms is held on the
+// cycle consuming it, like today's change bar, kept or not by the next bar.
+namespace {
+Bar with_roll(Bar b, double old_close, const char* old_id, RollFromKind kind) {
+    b.roll_from = RollFrom{old_close, old_id, kind};
+    return b;
+}
+}  // namespace
+
+TEST_F(BacktestChangeBarHoldTest, PerContractAKnownRollIsNotHeldAndAVendorSwitchIs) {
+    const auto known = run({bar("XX", 0, 100, "A"), bar("XX", 1, 101, "A"),
+                            with_roll(bar("XX", 2, 120, "B"), 102, "A", RollFromKind::KNOWN),
+                            with_roll(bar("XX", 3, 121, "B"), 103, "A", RollFromKind::AFTER_ROLL),
+                            bar("XX", 4, 122, "B")});
+    EXPECT_EQ(known, (std::vector<double>{1, 1, 1, 1})) << "known on its bar: no cycle held";
+}
+
+TEST_F(BacktestChangeBarHoldTest, PerContractAVendorSwitchIsHeldUntilTheNextBarDecides) {
+    const auto kept = run({bar("XX", 0, 100, "A"), bar("XX", 1, 101, "A"),
+                           with_roll(bar("XX", 2, 120, "B"), 102, "A", RollFromKind::AWAITS_NEXT),
+                           with_roll(bar("XX", 3, 121, "B"), 103, "A", RollFromKind::AFTER_ROLL),
+                           bar("XX", 4, 122, "B")});
+    EXPECT_EQ(kept, (std::vector<double>{1, 1, 0, 1})) << "the switch bar's cycle held";
+}
+
+TEST_F(BacktestChangeBarHoldTest, PerContractAnUnconfirmedVendorSwitchIsHeldOnItsOwnCycleOnly) {
+    const auto stray = run({bar("XX", 0, 100, "A"), bar("XX", 1, 101, "A"),
+                            with_roll(bar("XX", 2, 120, "B"), 102, "A", RollFromKind::AWAITS_NEXT),
+                            bar("XX", 3, 103, "A"), bar("XX", 4, 104, "A")});
+    EXPECT_EQ(stray, (std::vector<double>{1, 1, 0, 1})) << "not a flip: the next bar trades";
+}
