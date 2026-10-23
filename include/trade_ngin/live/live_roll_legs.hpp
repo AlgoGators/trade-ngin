@@ -32,7 +32,8 @@ namespace trade_ngin {
  *                       and legs it, with ids dated the confirming bar. A calendar span never did.
  *   a re-run            the first run re-wrote the T-1 row with the contract held after the T-1 bar,
  *                       so the caller passes the contract its stored legs rolled out of
- *                       (PostgresDatabase::get_stored_roll_contracts) as the recorded one.
+ *                       (PostgresDatabase::get_stored_roll_contracts) as the recorded one, unless an
+ *                       earlier date already booked that roll (contract_held_coming_into, #188).
  *   a replay after a    the runner stores a run's legs BEFORE it re-writes the T-1 row (commit 5), so a
  *   stopped run         stopped run leaves either the row as it was (the roll is still owed) or the
  *                       legs (the re-run case). A row re-written with no leg stored (a run of an older
@@ -139,6 +140,52 @@ inline LateBooked late_booked_points(const std::string& symbol, const std::strin
             out.dates.push_back(date);
         }
     }
+    return out;
+}
+
+/**
+ * @brief The contract each held symbol's book held coming into the run date (issue #188): what
+ *        live_rolls_by_state takes as recorded.
+ *
+ * `t1_row`: per held symbol, the contract on its stored T-1 positions row. `todays_legs`: per
+ * symbol, the contract the ROLL legs already stored for the run date rolled out of (a re-run;
+ * PostgresDatabase::get_stored_roll_contracts). `earlier_legs`: per symbol, the contract the
+ * latest ROLL legs stored for an EARLIER date rolled out of (get_previous_roll_contracts). Every
+ * id is read as the bars are (through the declared relabels).
+ *
+ * A re-run of a roll day: the first run re-wrote the T-1 row with the contract held after the T-1
+ * bar, so the contract held coming in is on the day's own legs, and it is taken from them.
+ *
+ * A re-run in a repair after late bars: the first pass booked the roll late, on this date, and the
+ * re-run of an earlier date has since booked it where it belongs. The day's own legs are then
+ * stale: the latest earlier legs roll out of the same contract, and a contract is rolled out of
+ * once. The T-1 row, written by that earlier re-run, carries the state before this date, and it is
+ * kept (taking the stale legs booked the roll a second time). A contract that recurs (A to B, B to
+ * A, then A to C) is told apart because only the LATEST earlier legs are compared.
+ *
+ * `stale`: the symbols whose day's own legs were set aside, in name order.
+ */
+struct HeldComingIn {
+    std::unordered_map<std::string, std::string> contract;
+    std::vector<std::string> stale;
+};
+
+inline HeldComingIn contract_held_coming_into(
+    const std::unordered_map<std::string, std::string>& t1_row,
+    const std::unordered_map<std::string, std::string>& todays_legs,
+    const std::unordered_map<std::string, std::string>& earlier_legs) {
+    HeldComingIn out{t1_row, {}};
+    for (const auto& [symbol, rolled_out_of] : todays_legs) {
+        const auto held = out.contract.find(symbol);
+        if (held == out.contract.end() || rolled_out_of.empty()) continue;
+        const auto earlier = earlier_legs.find(symbol);
+        if (earlier != earlier_legs.end() && earlier->second == rolled_out_of) {
+            out.stale.push_back(symbol);
+            continue;
+        }
+        held->second = rolled_out_of;
+    }
+    std::sort(out.stale.begin(), out.stale.end());
     return out;
 }
 

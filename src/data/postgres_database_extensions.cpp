@@ -198,6 +198,45 @@ Result<std::unordered_map<std::string, std::string>> PostgresDatabase::get_store
     }
 }
 
+Result<std::unordered_map<std::string, std::string>> PostgresDatabase::get_previous_roll_contracts(
+    const std::string& strategy_id, const std::string& portfolio_id, const Timestamp& date,
+    const std::string& table_name, const std::string& book) {
+    using Contracts = std::unordered_map<std::string, std::string>;
+    auto validation = validate_connection();
+    if (validation.is_error()) {
+        return make_error<Contracts>(validation.error()->code(), validation.error()->what());
+    }
+    if (auto bv = validate_book(book); bv.is_error()) {
+        return make_error<Contracts>(bv.error()->code(), bv.error()->what(), "PostgresDatabase");
+    }
+    try {
+        pqxx::work txn(*connection_);
+        auto table_validation = validate_table_name(table_name);
+        if (table_validation.is_error()) {
+            return make_error<Contracts>(table_validation.error()->code(),
+                                         table_validation.error()->what());
+        }
+        const std::string actual_portfolio_id = portfolio_id.empty() ? "BASE_PORTFOLIO" : portfolio_id;
+        // The latest date first, and on it the latest confirming date (the exec id carries it).
+        auto result = txn.exec(
+            "SELECT DISTINCT ON (symbol) symbol, COALESCE(instrument_id, '') FROM " + table_name +
+                " WHERE strategy_id = $1 AND portfolio_id = $2 AND date < $3::date"
+                " AND portfolio_type = $4"
+                " AND execution_type = 'ROLL' AND exec_id LIKE '%\\_RC'"
+                " ORDER BY symbol, date DESC, exec_id DESC",
+            pqxx::params{strategy_id, actual_portfolio_id, trade_ngin::core::format_utc_date(date),
+                         book});
+        txn.commit();
+        Contracts out;
+        for (const auto& row : result) out[row[0].as<std::string>()] = row[1].as<std::string>();
+        return Result<Contracts>(out);
+    } catch (const std::exception& e) {
+        return make_error<Contracts>(ErrorCode::DATABASE_ERROR,
+                                     "Failed to read the earlier stored ROLL legs: " + std::string(e.what()),
+                                     "PostgresDatabase");
+    }
+}
+
 Result<void> PostgresDatabase::store_backtest_summary(
     const std::string& run_id, const Timestamp& start_date, const Timestamp& end_date,
     const std::unordered_map<std::string, double>& metrics, const std::string& portfolio_id,

@@ -497,6 +497,18 @@ public:
         const std::string& book = kDefaultBook);
 
     /**
+     * @brief Issue #188: per symbol, the contract the symbol's LATEST ROLL closing leg dated
+     *        strictly before `date` rolled out of (of that date's legs, the latest roll's: the ids
+     *        sort by confirming date); no entry for a symbol with no earlier ROLL row. A re-run
+     *        whose day's own legs roll out of the same contract finds them stale: an earlier date
+     *        already booked that roll (contract_held_coming_into).
+     */
+    virtual Result<std::unordered_map<std::string, std::string>> get_previous_roll_contracts(
+        const std::string& strategy_id, const std::string& portfolio_id, const Timestamp& date,
+        const std::string& table_name = "trading.executions",
+        const std::string& book = kDefaultBook);
+
+    /**
      * @brief Store backtest summary results (replaces raw SQL INSERT)
      * @param run_id Backtest run identifier
      * @param start_date Start date of backtest
