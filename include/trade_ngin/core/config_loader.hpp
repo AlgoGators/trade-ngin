@@ -376,9 +376,17 @@ struct AppConfig {
 
     // portfolio.json's optional top-level per_contract_rolls (ROLLS_STEP1_PLAN step 2): the futures
     // bars from the per-contract roll rule (data/contract_rolls.hpp) instead of the vendor's .v.0
-    // series. Absent means false. NOTHING READS IT YET (steps 3 and 4 will), and it is deliberately
-    // not in to_json(), so the stored run metadata does not change while it is off.
+    // series. Absent means false. The four futures runners read it (rolls step 3,
+    // contract_rolls::configure_per_contract_source); it is deliberately not in to_json(), so the
+    // stored run metadata does not change while it is off.
     bool per_contract_rolls{false};
+
+    // portfolio.json's optional top-level per_contract_switch_bar (rolls step 4, HD 2026-10-23
+    // ruling 19): the bar the per-contract source hands out on an unconfirmed vendor switch bar,
+    // "held" (the held contract's own bar, the default) or "vendor" (the bar of the contract the
+    // vendor switched to, a one-bar stray included). Absent means "held"; read only with
+    // per_contract_rolls on; not in to_json().
+    std::string per_contract_switch_bar{"held"};
 
     // portfolio.json's top-level equity_slow_rule; required on a futures book.
     EquitySlowRule equity_slow_rule;

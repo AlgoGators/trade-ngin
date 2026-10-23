@@ -305,6 +305,21 @@ Result<AppConfig> ConfigLoader::extract_config(const nlohmann::json& merged) {
             }
             config.per_contract_rolls = v.get<bool>();
         }
+        // Rolls step 4, ruling 19: the switch-bar setting, "held" (absent) or "vendor".
+        if (merged.contains("per_contract_switch_bar")) {
+            const auto& v = merged.at("per_contract_switch_bar");
+            if (!v.is_string() ||
+                (v.get<std::string>() != "held" && v.get<std::string>() != "vendor")) {
+                return make_error<AppConfig>(
+                    ErrorCode::INVALID_DATA,
+                    "config for " + config.portfolio_id +
+                        ": portfolio.json \"per_contract_switch_bar\" must be \"held\" or "
+                        "\"vendor\" (absent means \"held\"), got " +
+                        v.dump(),
+                    "ConfigLoader");
+            }
+            config.per_contract_switch_bar = v.get<std::string>();
+        }
 
         // LOOP_SPEC sections 2.5 and 7.7 (D40): the equity slow rule. Parsed strictly when present;
         // the futures runners require it (require_loop_keys).

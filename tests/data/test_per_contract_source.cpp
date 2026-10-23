@@ -8,6 +8,7 @@
 #include <cstdlib>
 #include <map>
 #include <optional>
+#include <tuple>
 
 #include "contract_rolls_test_util.hpp"
 #include "trade_ngin/core/time_utils.hpp"
@@ -15,6 +16,7 @@
 #include "trade_ngin/data/market_data_bus.hpp"
 #include "trade_ngin/data/per_contract_source.hpp"
 #include "trade_ngin/data/postgres_database.hpp"
+#include "trade_ngin/data/roll_series.hpp"
 
 using namespace trade_ngin;
 using namespace trade_ngin::contract_rolls;
@@ -81,11 +83,12 @@ public:
         EXPECT_TRUE(r.is_ok()) << r.error()->what();
         return r.value();
     }
-    std::map<Day, SourceBar> bars_until(const std::string& last) {
+    std::map<Day, SourceBar> bars_until(const std::string& last,
+                                        SwitchBar switch_bar = SwitchBar::HELD) {
         const HeldSeries s = run_until(last);
         std::map<Day, std::string> window;
         for (const auto& day : s.days) window[day.date] = ymd(day.date) + " 00:00:00+00";
-        auto bars = bars_of_series(s, window);
+        auto bars = bars_of_series(s, window, switch_bar);
         EXPECT_TRUE(bars.is_ok()) << bars.error()->what();
         std::map<Day, SourceBar> out;
         for (const auto& b : bars.value()) out[b.date] = b;
@@ -311,6 +314,16 @@ TEST(PerContractSource, TheSwitchTurnsTheSourceOnAndOffAndTheMicrosStayOnTheVend
     EXPECT_FALSE(source.enabled());
     EXPECT_TRUE(configure_per_contract_source(false).is_ok());
     EXPECT_FALSE(source.enabled());
+    // Rolls step 4, ruling 19: the switch-bar setting rides with the switch; off reads "held".
+    source.enable(contract_rolls_test::shipped_calendars(), SwitchBar::VENDOR);
+    EXPECT_EQ(source.switch_bar(), SwitchBar::VENDOR);
+    source.disable();
+    EXPECT_EQ(source.switch_bar(), SwitchBar::HELD);
+    EXPECT_EQ(switch_bar_from("held"), SwitchBar::HELD);
+    EXPECT_EQ(switch_bar_from("vendor"), SwitchBar::VENDOR);
+    EXPECT_FALSE(switch_bar_from("Vendor").has_value());
+    EXPECT_STREQ(to_string(SwitchBar::VENDOR), "vendor");
+    EXPECT_STREQ(to_string(SwitchBar::HELD), "held");
     for (const char* micro : {"MES", "MNQ", "MYM", "M2K"}) {
         EXPECT_TRUE(reads_vendor_series(micro));
         EXPECT_NE(micros_warning_line().find(micro), std::string::npos) << "the WARN names " << micro;
@@ -456,7 +469,8 @@ TEST(PerContractSourceLoader, AMalformedRollFieldIsRefusedNotReadAsAnotherKind) 
         arrow::Int8Builder kinds;
         for (int64_t i = 0; i < table->num_rows(); ++i) {
             if (i == 2) {
-                ASSERT_TRUE((null_kind ? kinds.AppendNull() : kinds.Append(3)).ok());
+                // 4: past AWAITS_NEXT_VENDOR (3), the last kind (rolls step 4)
+                ASSERT_TRUE((null_kind ? kinds.AppendNull() : kinds.Append(4)).ok());
             } else {
                 ASSERT_TRUE(kinds.Append(0).ok());
             }
@@ -465,7 +479,7 @@ TEST(PerContractSourceLoader, AMalformedRollFieldIsRefusedNotReadAsAnotherKind) 
         ASSERT_TRUE(kinds.Finish(&column).ok());
         auto r =
             DataConversionUtils::arrow_table_to_bars(with_column(table, "roll_from_kind", column));
-        ASSERT_TRUE(r.is_error()) << (null_kind ? "NULL kind" : "kind 3");
+        ASSERT_TRUE(r.is_error()) << (null_kind ? "NULL kind" : "kind 4");
     }
 }
 
@@ -514,6 +528,13 @@ TEST(PerContractSourceLoader, TheSwitchOnLoadsTheCalendarAndRefusesWithoutOne) {
     EXPECT_TRUE(configure_per_contract_source(true).is_ok());
     EXPECT_TRUE(PerContractSource::instance().enabled());
     EXPECT_TRUE(PerContractSource::instance().calendar().for_root("GC").is_ok());
+    EXPECT_EQ(PerContractSource::instance().switch_bar(), SwitchBar::HELD);
+    EXPECT_TRUE(configure_per_contract_source(true, "vendor").is_ok());
+    EXPECT_EQ(PerContractSource::instance().switch_bar(), SwitchBar::VENDOR);
+    auto bad = configure_per_contract_source(true, "target");
+    ASSERT_TRUE(bad.is_error());
+    EXPECT_NE(std::string(bad.error()->what()).find("per_contract_switch_bar"), std::string::npos);
+    EXPECT_FALSE(PerContractSource::instance().enabled());
     setenv("TRADE_NGIN_FUTURES_HOLIDAYS_JSON", "/nonexistent/futures_holidays.json", 1);
     PerContractSource::instance().disable();
     auto r = configure_per_contract_source(true);
@@ -638,4 +659,100 @@ TEST_F(PerContractSourceDbTest, TheGcExampleOnTheLoadersOwnCall) {
         }
         EXPECT_TRUE(found) << row.date;
     }
+}
+
+// Rolls step 4, ruling 19: with per_contract_switch_bar "vendor" each switch bar (the one-bar stray of
+// 07-16, the confirmed switch of 07-20, the unconfirmable switch of 08-05) is the TARGET's own bar,
+// its close, id and volume, the field naming the held contract; every other bar is the "held" one.
+TEST(PerContractSource, TheVendorSettingHandsOutTheTargetsBarOnEverySwitchBarAndNothingElse) {
+    auto held = shapes_world().bars_until("2026-08-05");
+    auto vendor = shapes_world().bars_until("2026-08-05", SwitchBar::VENDOR);
+    ASSERT_EQ(held.size(), vendor.size());
+    const std::map<std::string, std::pair<std::string, std::string>> switches = {
+        {"2026-07-16", {"GCZ6", "z"}}, {"2026-07-20", {"GCZ6", "z"}}, {"2026-08-05", {"GCG7", "g"}}};
+    for (const auto& [day, h] : held) {
+        const SourceBar& v = vendor.at(day);
+        const auto sw = switches.find(ymd(day));
+        if (sw == switches.end()) {
+            EXPECT_EQ(v.close, h.close) << ymd(day);
+            EXPECT_EQ(v.instrument_id, h.instrument_id) << ymd(day);
+            EXPECT_EQ(v.volume, h.volume) << ymd(day);
+            EXPECT_EQ(v.roll_from, h.roll_from) << ymd(day);
+            continue;
+        }
+        SCOPED_TRACE(ymd(day));
+        const auto& [target, target_id] = sw->second;
+        EXPECT_EQ(v.close, close_of(target, ymd(day)));
+        EXPECT_EQ(v.instrument_id, target_id);
+        EXPECT_EQ(v.volume, target == "GCZ6" ? 9000.0 : 500.0);
+        ASSERT_TRUE(v.roll_from.has_value());
+        EXPECT_EQ(v.roll_from->kind, RollFromKind::AWAITS_NEXT_VENDOR);
+        EXPECT_EQ(v.roll_from->close, h.close) << "the field names the held contract's close";
+        EXPECT_EQ(v.roll_from->instrument_id, h.instrument_id);
+        EXPECT_EQ(v.roll_from->date, ymd(day));
+        // the "held" bar is the mirror image: the held contract's bar, the field naming the target
+        EXPECT_EQ(h.roll_from->kind, RollFromKind::AWAITS_NEXT);
+        EXPECT_EQ(h.roll_from->close, v.close);
+        EXPECT_EQ(h.roll_from->instrument_id, v.instrument_id);
+    }
+    // The Arrow table carries the new kind as itself.
+    std::vector<SourceBar> rows;
+    for (const auto& [day, b] : vendor) rows.push_back(b);
+    auto table = source_bars_to_arrow(rows);
+    ASSERT_TRUE(table.is_ok());
+    auto bars = DataConversionUtils::arrow_table_to_bars(table.value());
+    ASSERT_TRUE(bars.is_ok()) << bars.error()->what();
+    size_t i = 0;
+    for (const auto& [day, b] : vendor) EXPECT_EQ(bars.value()[i++].roll_from, b.roll_from) << ymd(day);
+}
+
+// The library reads the two settings' bars to the same booked moves, legs, held contracts, returns and
+// adjusted level differences; only the raw close of each switch bar differs (the level readers' price).
+TEST(PerContractSource, BothSwitchBarSettingsBookTheSameMovesAndLegs) {
+    auto held = shapes_world().bars_until("2026-08-05");
+    auto vendor = shapes_world().bars_until("2026-08-05", SwitchBar::VENDOR);
+    auto walk = [](const std::map<Day, SourceBar>& bars) {
+        std::vector<double> raw;
+        std::vector<std::string> ids;
+        roll_series::RollFields fields;
+        for (const auto& [day, b] : bars) {
+            raw.push_back(b.close);
+            ids.push_back(b.instrument_id);
+            fields.push_back(b.roll_from);
+        }
+        return std::make_tuple(raw, ids, fields);
+    };
+    const auto [raw_h, ids_h, f_h] = walk(held);
+    const auto [raw_v, ids_v, f_v] = walk(vendor);
+    const auto sh = roll_series::build_series(raw_h, ids_h, f_h);
+    const auto sv = roll_series::build_series(raw_v, ids_v, f_v);
+    ASSERT_EQ(sh.returns.size(), sv.returns.size());
+    for (size_t t = 0; t < sh.returns.size(); ++t) EXPECT_NEAR(sh.returns[t], sv.returns[t], 1e-15) << t;
+    // The levels differ by one constant: a series ending on an unconfirmed switch bar (08-05) is
+    // anchored on that bar's raw close, the target's under "vendor". Every difference (what the EMAs
+    // and the returns read) is the same.
+    for (size_t t = 1; t < sh.adjusted.size(); ++t) {
+        EXPECT_NEAR(sh.adjusted[t] - sh.adjusted[t - 1], sv.adjusted[t] - sv.adjusted[t - 1], 1e-9) << t;
+    }
+    EXPECT_EQ(sh.flags.held_id, sv.flags.held_id);
+    EXPECT_EQ(sh.flags.confirm, sv.flags.confirm);
+    EXPECT_EQ(sh.flags.pending, sv.flags.pending);
+    roll_series::RollTracker th, tv;
+    int differing_raw = 0;
+    for (size_t t = 0; t < raw_h.size(); ++t) {
+        SCOPED_TRACE(t);
+        const auto a = th.add(ids_h[t], raw_h[t], f_h[t]);
+        const auto b = tv.add(ids_v[t], raw_v[t], f_v[t]);
+        if (t > 0) EXPECT_DOUBLE_EQ(a.move(raw_h[t], raw_h[t - 1]), b.move(raw_v[t], raw_v[t - 1]));
+        EXPECT_EQ(a.holds(), b.holds());
+        EXPECT_EQ(a.confirm, b.confirm);
+        EXPECT_EQ(a.held_id, b.held_id);
+        if (a.confirm) {
+            EXPECT_EQ(a.last_close_before_change, b.last_close_before_change) << "the closing leg";
+            EXPECT_EQ(a.change_bar_close, b.change_bar_close) << "the opening leg";
+            EXPECT_EQ(a.previous_held_id, b.previous_held_id);
+        }
+        differing_raw += raw_h[t] != raw_v[t];
+    }
+    EXPECT_EQ(differing_raw, 3) << "only the three switch bars' closes";
 }

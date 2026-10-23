@@ -39,11 +39,11 @@ namespace trade_ngin::roll_series {
  *               change is pending extends the sequence, and a later return to an older id after a
  *               confirmation is a new roll: the series did switch twice).
  *
- * The adjusted level is the raw close PLUS the sum of the LATER steps (new minus old on every change
- * bar), re-anchored on the latest bar (Panama, additive per segment). It can be at or below zero and
- * is used only for differences (the EMAs). The adjusted return is the adjusted change over the RAW
- * previous close, r_t = (A_t - A_t-1) / P_t-1, exactly 0 on a change bar; on every other bar it equals
- * the raw simple return, so a series with no change bar is untouched.
+ * The adjusted level is the raw close PLUS the sum of the LATER steps (new minus old on every
+ * change bar), re-anchored on the latest bar (Panama, additive per segment). It can be at or below
+ * zero and is used only for differences (the EMAs). The adjusted return is the adjusted change over
+ * the RAW previous close, r_t = (A_t - A_t-1) / P_t-1, exactly 0 on a change bar; on every other
+ * bar it equals the raw simple return, so a series with no change bar is untouched.
  *
  * Rolls step 3 (portfolio.json per_contract_rolls on; per_contract_source.hpp): the bars are the
  * held contract's own and a roll bar carries the contract left (Bar::roll_from, passed alongside
@@ -65,6 +65,14 @@ namespace trade_ngin::roll_series {
  * switch only when it follows that switch, its date being the switch bar's. A field dated later
  * names a later roll into the same target that the consumer withheld: the awaited switch was not
  * confirmed, and the later roll is booked on this bar as a withheld roll is.
+ *
+ * Rolls step 4, ruling 19 (per_contract_switch_bar "vendor"): an AWAITS_NEXT_VENDOR switch bar is
+ * the TARGET's own bar and the field names the held contract. The bar is pending (held); its move
+ * ends at the held contract's close (old_close, mark_close). Confirmed by the next consumed bar,
+ * the legs are the switch bar's two closes (closing the field's, opening its own) and the next move
+ * starts from its own close; not confirmed, the next move starts from the held contract's close
+ * (base_close, previous_close). The booked moves and the legs are AWAITS_NEXT's; the raw levels on
+ * the switch bar are the target's.
  */
 struct ChangeFlags {
     std::vector<bool> change;
@@ -199,6 +207,7 @@ private:
     double awaiting_old_close_{0.0};
     std::string awaiting_old_id_;
     std::string awaiting_date_;  ///< rolls step 4: the switch bar's date (RollFrom::date)
+    bool awaiting_on_target_{false};  ///< rolls step 4, ruling 19: the switch bar was the target's
 };
 
 /**

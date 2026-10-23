@@ -1650,7 +1650,9 @@ Result<std::vector<contract_rolls::SourceBar>> PostgresDatabase::per_contract_so
         const contract_rolls::FuturesCalendar calendars =
             contract_rolls::PerContractSource::instance().calendar();
         for (const auto& root : roots) {
-            auto bars = contract_rolls::per_contract_bars(txn, root, start_ts, end_ts, calendars);
+            auto bars = contract_rolls::per_contract_bars(
+                txn, root, start_ts, end_ts, calendars,
+                contract_rolls::PerContractSource::instance().switch_bar());
             if (bars.is_error()) {
                 return make_error<Bars>(bars.error()->code(), bars.error()->what(),
                                         "PostgresDatabase");

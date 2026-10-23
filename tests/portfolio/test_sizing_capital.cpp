@@ -635,6 +635,21 @@ TEST_F(LiveSizingCapital, APerContractRollDayIsSizedAndFinalisedOnTheRealMove) {
           bar("MES.v.0", 3, 7230.00, "A", RollFrom{7290.00, "B", RollFromKind::AWAITS_NEXT}),
           bar("MES.v.0", 4, 7240.00, "A")},
          2.0, 100.0},
+        // Ruling 19 "vendor": the switch bar is the target's own bar; the same moves are booked.
+        {"vendor setting: switch bar on T-1",
+         {bar("MES.v.0", 3, 7230.00, "A"),
+          bar("MES.v.0", 4, 7300.00, "B", RollFrom{7240.00, "A", RollFromKind::AWAITS_NEXT_VENDOR})},
+         2.0, 100.0},
+        {"vendor setting: switch confirmed by T-1",
+         {bar("ZN.v.0", 2, 110.80, "Z1"),
+          bar("ZN.v.0", 3, 111.00, "Z2", RollFrom{110.90625, "Z1", RollFromKind::AWAITS_NEXT_VENDOR}),
+          bar("ZN.v.0", 4, 111.25, "Z2", RollFrom{110.95, "Z1", RollFromKind::AFTER_ROLL})},
+         1.0, 250.0},
+        {"vendor setting: switch on T-2 the T-1 bar reverts",
+         {bar("MES.v.0", 2, 7215.00, "A"),
+          bar("MES.v.0", 3, 7290.00, "B", RollFrom{7230.00, "A", RollFromKind::AWAITS_NEXT_VENDOR}),
+          bar("MES.v.0", 4, 7240.00, "A")},
+         2.0, 100.0},
     };
     for (const auto& c : cases) {
         const std::string symbol = c.consumed.front().symbol;
