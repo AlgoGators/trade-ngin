@@ -1,0 +1,140 @@
+// include/trade_ngin/data/per_contract_source.hpp
+#pragma once
+
+#include <map>
+#include <mutex>
+#include <optional>
+#include <string>
+#include <vector>
+
+#include <pqxx/pqxx>
+
+#include "trade_ngin/core/error.hpp"
+#include "trade_ngin/core/types.hpp"
+#include "trade_ngin/data/contract_rolls.hpp"
+
+namespace trade_ngin::contract_rolls {
+
+/**
+ * @brief The futures bar source with portfolio.json's per_contract_rolls on (rolls step 3,
+ *        ROLLS_STEP1_PLAN sections 2 and 5 step 3, HD's rulings of 2026-10-23 in sections 11 and
+ *        11b).
+ *
+ * The one futures bar query underneath every loader (PostgresDatabase::get_market_data for
+ * futures, and the instrument-id rows of get_futures_instrument_ids) hands out OUR series instead
+ * of the vendor's `.v.0` bars: on each date of the vendor's grid, the bar of the contract HD's rule
+ * holds (contract_roll_rule.hpp), its own OHLCV, `instrument_id` the held contract's id string. A
+ * roll bar is the NEW contract's bar and carries the old contract's close and id in Bar::roll_from,
+ * so it flows through every store untouched. The grid stays the vendor's (plan 10b point 1): the
+ * same dates, the same instants, as the query returns today. Every loader, history store and
+ * window above the query stays as it is.
+ *
+ * No look-ahead: what a run is handed for a bar depends only on that bar and the bars before it,
+ * so every window that contains the bar (a live run's window, its estimator history, a backtest's
+ * whole range) reads the same bar, and a backtest is a chain of dated live runs.
+ *   - The rule runs from the root's series start (series_start), not from the window's start, so
+ *     the held contract on a date never depends on where a caller's window begins.
+ *   - It runs on the grid up to the window's last instant only: no bar after it is read.
+ *   - The rule's one look-ahead is the vendor's confirmation (rule (a): the switch is a roll only
+ *     if the next bar keeps the vendor's contract). On the switch bar itself a run cannot know it,
+ *     so the source hands the switch bar out the same way whether or not the next bar confirms it,
+ *     and whether or not the window ends on it: the target's own bar with the old contract's close,
+ *     RollFromKind::AWAITS_NEXT (HeldDay::awaits_next_bar on a confirmed switch, TentativeRoll on
+ *     one the next bar did not confirm or the range ends on). The library (roll_series.hpp) reads the
+ *     next consumed bar: it keeps the target (confirmed, the legs are booked on it at the switch
+ *     bar's two closes) or it is the old contract's bar (nothing rolled: the switch bar is read as
+ *     the old contract's own close). A run whose consumed bars end on the switch bar holds the
+ *     symbol, as today.
+ *   - A crossover and a deadline roll are known on the roll bar itself (RollFromKind::KNOWN), and
+ *     so is a vendor switch dated on a bar where the crossover or the deadline also rolls, or
+ *     confirmed by an earlier bar (a Sunday switch rolled on Monday).
+ *   - The bar after a roll bar carries the old contract's close on that date (AFTER_ROLL), so a
+ *     consumer that withheld the roll bar (the consumed-bar rule) books the roll on its next
+ *     consumed bar, the old contract's move up to it and both legs at its closes (HD 10-23). A
+ *     consumer that consumed the roll bar reads nothing from it.
+ *
+ * The micros (MES, MNQ, MYM, M2K) stay on the vendor's `.v.0` bars and today's handling of the
+ * 2026-02-22 change until ES, NQ, YM and RTY contract bars are loaded (waiting on data), with one
+ * WARN per run (reads_vendor_series).
+ */
+class PerContractSource {
+public:
+    static PerContractSource& instance();
+
+    /// Turns the source on with the futures calendar the rule counts trading days on.
+    void enable(FuturesCalendar calendar);
+    /// Back to the vendor's series (the default).
+    void disable();
+    bool enabled() const;
+    /// The calendar given to enable(); an empty calendar when off.
+    FuturesCalendar calendar() const;
+    /// True on the first call after enable(): the micros' WARN is logged once per run.
+    bool first_micros_warning();
+
+private:
+    PerContractSource() = default;
+    mutable std::mutex mutex_;
+    bool enabled_{false};
+    bool micros_warned_{false};
+    std::optional<FuturesCalendar> calendar_;
+};
+
+/**
+ * @brief The runners' one call: the source on when `per_contract_rolls` is true (loading the
+ *        futures calendar, FuturesCalendar::resolve_path), off otherwise. An error when the
+ *        calendar cannot be loaded; the runner refuses to run.
+ */
+Result<void> configure_per_contract_source(bool per_contract_rolls);
+
+/// The roots the source leaves on the vendor's series with the switch on: the four micros, whose
+/// history before 2026-02-22 is the full-size contracts', not loaded yet (waiting on data).
+bool reads_vendor_series(const std::string& root);
+
+/// The WARN the source logs once per run for the micros.
+std::string micros_warning_line();
+
+/// One bar the source hands out, before the loader's Arrow conversion.
+struct SourceBar {
+    std::string time_text;  ///< the vendor grid bar's own `time`, as the database prints it
+    Day date{};
+    std::string symbol;  ///< "GC.v.0"
+    double open{0.0};
+    double high{0.0};
+    double low{0.0};
+    double close{0.0};
+    double volume{0.0};
+    std::string instrument_id;  ///< the held contract's id (the target's on a roll bar)
+    std::optional<RollFrom> roll_from;
+};
+
+/**
+ * @brief One root's bars on the given grid instants, from its held series (pure: the unit tests
+ *        call it on fixtures).
+ *
+ * `series` runs from the root's series start to the window's last date at least; `window` maps
+ * each grid date the caller asks for to its instant's text. Per day: a roll bar is the new
+ * contract's bar with RollFrom (the old contract's close and id; KNOWN, or AWAITS_NEXT for
+ * HeldDay::awaits_next_bar); a TentativeRoll is its target's bar with RollFrom (AWAITS_NEXT); any
+ * other day the held contract's bar (a carried close keeps the carried row's id), with an
+ * AFTER_ROLL RollFrom on the day after a roll when the contract left printed that day. A fallback
+ * roll (the old contract with no bar up to its last actionable bar, plan 5c) reads as the roll it
+ * stands for: RollFrom::close is the previous day's close times the new contract's move (or that
+ * close, for a zero fallback), with a WARN. Errors: a window date the series lacks, a day with no
+ * close.
+ */
+Result<std::vector<SourceBar>> bars_of_series(const HeldSeries& series,
+                                              const std::map<Day, std::string>& window);
+
+/**
+ * @brief Reads and builds `root`'s bars over the vendor grid's instants in [start_ts, end_ts]
+ *        (the loader's predicate `time BETWEEN $1 AND $2`, timestamps as the loader formats them),
+ *        the rule run from the root's series start to the window's last date. Read only. An empty
+ *        vector when the grid has no bar in the window.
+ */
+Result<std::vector<SourceBar>> per_contract_bars(pqxx::transaction_base& txn,
+                                                 const std::string& root,
+                                                 const std::string& start_ts,
+                                                 const std::string& end_ts,
+                                                 const FuturesCalendar& calendars);
+
+}  // namespace trade_ngin::contract_rolls

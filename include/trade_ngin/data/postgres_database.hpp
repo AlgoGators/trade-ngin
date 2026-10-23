@@ -35,6 +35,7 @@
 #include "trade_ngin/data/backtest_curve_cells.hpp"
 #include "trade_ngin/data/live_results_cell.hpp"
 #include "trade_ngin/data/market_data_utils.hpp"
+#include "trade_ngin/data/per_contract_source.hpp"
 #include "trade_ngin/data/strategy_config_row.hpp"
 
 namespace trade_ngin {
@@ -1224,6 +1225,21 @@ private:
      * @return Result containing the Arrow table
      */
     Result<std::shared_ptr<arrow::Table>> convert_to_arrow_table(const pqxx::result& result) const;
+
+    /**
+     * @brief Rolls step 3: the futures bars with portfolio.json's per_contract_rolls on
+     *        (contract_rolls/per_contract_source.hpp): the held contract's own bar on each grid
+     *        date, a roll bar carrying the old contract's close; the micros on the vendor's
+     *        series. Sorted as the futures query sorts (time, then symbol).
+     */
+    Result<std::vector<contract_rolls::SourceBar>> per_contract_source_bars(
+        pqxx::transaction_base& txn, const std::vector<std::string>& symbols,
+        const std::string& start_ts, const std::string& end_ts) const;
+
+    /// The loader's table of `bars`: the futures query's eight columns plus Bar::roll_from's
+    /// three (roll_from_close, roll_from_id, roll_from_kind; NULL where it is absent).
+    Result<std::shared_ptr<arrow::Table>> source_bars_to_arrow(
+        const std::vector<contract_rolls::SourceBar>& bars) const;
 
     /**
      * @brief Convert contract metadata result to Arrow table

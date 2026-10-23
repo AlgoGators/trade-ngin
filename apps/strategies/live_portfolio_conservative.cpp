@@ -1084,6 +1084,15 @@ int main(int argc, char* argv[]) {
             }
         }
 
+        // Rolls step 3: portfolio.json's per_contract_rolls turns the futures bar source onto the
+        // held contract's own bars (data/per_contract_source.hpp); off, every path is today's.
+        if (auto source = contract_rolls::configure_per_contract_source(app_config.per_contract_rolls);
+            source.is_error()) {
+            std::cerr << source.error()->what() << std::endl;
+            ERROR(source.error()->what());
+            return 1;
+        }
+
         double initial_capital = app_config.initial_capital;
 
         auto symbols_result = db->get_symbols(trade_ngin::AssetClass::FUTURES);

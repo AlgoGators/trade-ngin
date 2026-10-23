@@ -177,6 +177,46 @@ Result<std::shared_ptr<arrow::Table>> PostgresDatabase::get_market_data(
 
     try {
         pqxx::work txn(*connection_);
+        if (asset_class == AssetClass::FUTURES &&
+            contract_rolls::PerContractSource::instance().enabled()) {
+            // Rolls step 3 (portfolio.json per_contract_rolls on): the held contract's own bars.
+            const std::string full_table_name = build_table_name(asset_class, data_type, freq);
+            if (full_table_name != "futures_data.ohlcv_1d") {
+                return make_error<std::shared_ptr<arrow::Table>>(
+                    ErrorCode::INVALID_ARGUMENT,
+                    "per_contract_rolls reads only futures_data.ohlcv_1d's grid, not " +
+                        full_table_name,
+                    "PostgresDatabase");
+            }
+            auto source = per_contract_source_bars(txn, symbols, format_timestamp(start_date),
+                                                   format_timestamp(end_date));
+            if (source.is_error()) {
+                return make_error<std::shared_ptr<arrow::Table>>(source.error()->code(),
+                                                                 source.error()->what(),
+                                                                 "PostgresDatabase");
+            }
+            txn.commit();
+            auto table_result = source_bars_to_arrow(source.value());
+            if (table_result.is_error()) return table_result;
+            for (const auto& bar : source.value()) {
+                MarketDataEvent event;
+                event.type = MarketDataEventType::BAR;
+                event.symbol = bar.symbol;
+                std::tm time_info = {};
+                std::istringstream ss(bar.time_text);
+                ss >> std::get_time(&time_info, "%Y-%m-%d %H:%M:%S");
+                time_t time_val = std::mktime(&time_info);
+                trade_ngin::core::safe_gmtime(&time_val, &time_info);
+                event.timestamp = std::chrono::system_clock::from_time_t(std::mktime(&time_info));
+                event.numeric_fields["open"] = bar.open;
+                event.numeric_fields["high"] = bar.high;
+                event.numeric_fields["low"] = bar.low;
+                event.numeric_fields["close"] = bar.close;
+                event.numeric_fields["volume"] = bar.volume;
+                MarketDataBus::instance().publish(event);
+            }
+            return table_result;
+        }
         auto query_result = execute_market_data_query(symbols, start_date, end_date, asset_class,
                                                       freq, data_type, txn);
 
@@ -963,6 +1003,31 @@ PostgresDatabase::get_futures_instrument_ids(const std::vector<std::string>& sym
     const std::string end_ts = format_timestamp(end_date);
     try {
         pqxx::work txn(*connection_);
+        if (contract_rolls::PerContractSource::instance().enabled()) {
+            // Rolls step 3: the ids of the bars the source hands out (the held contract's), so the
+            // classifier's id limb reads the series the strategies read.
+            auto source = per_contract_source_bars(txn, symbols, start_ts, end_ts);
+            if (source.is_error()) {
+                return make_error<Rows>(source.error()->code(), source.error()->what(),
+                                        "PostgresDatabase");
+            }
+            txn.commit();
+            std::vector<const contract_rolls::SourceBar*> keyed;
+            for (const auto& bar : source.value()) {
+                if (!bar.instrument_id.empty()) keyed.push_back(&bar);
+            }
+            std::stable_sort(keyed.begin(), keyed.end(),
+                             [](const contract_rolls::SourceBar* a, const contract_rolls::SourceBar* b) {
+                                 if (a->symbol != b->symbol) return a->symbol < b->symbol;
+                                 return a->time_text < b->time_text;
+                             });
+            Rows rows;
+            rows.reserve(keyed.size());
+            for (const auto* bar : keyed) {
+                rows.push_back({bar->symbol, bar->time_text.substr(0, 10), bar->instrument_id});
+            }
+            return Result<Rows>(std::move(rows));
+        }
         pqxx::result result;
         if (symbols.empty()) {
             result = txn.exec(market_data_utils::build_futures_instrument_id_query(full_table_name,
@@ -1554,6 +1619,188 @@ Result<std::shared_ptr<arrow::Table>> PostgresDatabase::convert_to_arrow_table(
         return make_error<std::shared_ptr<arrow::Table>>(
             ErrorCode::CONVERSION_ERROR,
             "Exception during Arrow table conversion: " + std::string(e.what()));
+    }
+}
+
+Result<std::vector<contract_rolls::SourceBar>> PostgresDatabase::per_contract_source_bars(
+    pqxx::transaction_base& txn, const std::vector<std::string>& symbols,
+    const std::string& start_ts, const std::string& end_ts) const {
+    using Bars = std::vector<contract_rolls::SourceBar>;
+    const std::string full_table_name = "futures_data.ohlcv_1d";
+    std::vector<std::string> wanted = symbols;
+    try {
+        if (wanted.empty()) {
+            for (const auto& row : txn.exec("SELECT DISTINCT symbol FROM futures_data.ohlcv_1d"
+                                            " WHERE time BETWEEN $1 AND $2 ORDER BY 1",
+                                            pqxx::params{start_ts, end_ts})) {
+                wanted.push_back(row[0].as<std::string>());
+            }
+        } else {
+            auto symbol_validation = validate_symbols(wanted);
+            if (symbol_validation.is_error()) {
+                return make_error<Bars>(symbol_validation.error()->code(),
+                                        symbol_validation.error()->what(), "PostgresDatabase");
+            }
+        }
+        std::vector<std::string> vendor_symbols;
+        std::vector<std::string> roots;
+        const std::string suffix = ".v.0";
+        for (const auto& symbol : wanted) {
+            if (symbol.size() <= suffix.size() ||
+                symbol.compare(symbol.size() - suffix.size(), suffix.size(), suffix) != 0) {
+                return make_error<Bars>(ErrorCode::INVALID_ARGUMENT,
+                                        "per_contract_rolls: " + symbol +
+                                            " is not a continuous futures symbol (<root>.v.0)",
+                                        "PostgresDatabase");
+            }
+            const std::string root = symbol.substr(0, symbol.size() - suffix.size());
+            if (contract_rolls::reads_vendor_series(root)) {
+                vendor_symbols.push_back(symbol);
+            } else {
+                roots.push_back(root);
+            }
+        }
+        Bars out;
+        if (!vendor_symbols.empty()) {
+            if (contract_rolls::PerContractSource::instance().first_micros_warning()) {
+                WARN(contract_rolls::micros_warning_line());
+            }
+            const pqxx::result vendor =
+                txn.exec(market_data_utils::build_futures_bar_query(full_table_name, true),
+                         pqxx::params{start_ts, end_ts, vendor_symbols});
+            for (const auto& row : vendor) {
+                contract_rolls::SourceBar b;
+                b.time_text = row["time"].as<std::string>();
+                b.date = contract_rolls::parse_ymd(b.time_text.substr(0, 10));
+                b.symbol = row["symbol"].as<std::string>();
+                b.open = row["open"].as<double>();
+                b.high = row["high"].as<double>();
+                b.low = row["low"].as<double>();
+                b.close = row["close"].as<double>();
+                b.volume = row["volume"].as<double>();
+                if (!row["instrument_id"].is_null()) {
+                    b.instrument_id = row["instrument_id"].as<std::string>();
+                }
+                out.push_back(std::move(b));
+            }
+        }
+        const contract_rolls::FuturesCalendar calendars =
+            contract_rolls::PerContractSource::instance().calendar();
+        for (const auto& root : roots) {
+            auto bars = contract_rolls::per_contract_bars(txn, root, start_ts, end_ts, calendars);
+            if (bars.is_error()) {
+                return make_error<Bars>(bars.error()->code(), bars.error()->what(),
+                                        "PostgresDatabase");
+            }
+            out.insert(out.end(), std::make_move_iterator(bars.value().begin()),
+                       std::make_move_iterator(bars.value().end()));
+        }
+        log_futures_bar_duplicates(
+            out.size(),
+            txn.exec(market_data_utils::build_futures_duplicate_copies_query(full_table_name, true),
+                     pqxx::params{start_ts, end_ts, wanted}));
+        std::stable_sort(out.begin(), out.end(),
+                         [](const contract_rolls::SourceBar& a, const contract_rolls::SourceBar& b) {
+                             if (a.time_text != b.time_text) return a.time_text < b.time_text;
+                             return a.symbol < b.symbol;
+                         });
+        return Result<Bars>(std::move(out));
+    } catch (const std::exception& e) {
+        return make_error<Bars>(ErrorCode::DATABASE_ERROR,
+                                "per_contract_rolls: failed to read the futures bars: " +
+                                    std::string(e.what()),
+                                "PostgresDatabase");
+    }
+}
+
+Result<std::shared_ptr<arrow::Table>> PostgresDatabase::source_bars_to_arrow(
+    const std::vector<contract_rolls::SourceBar>& bars) const {
+    using Table = std::shared_ptr<arrow::Table>;
+    arrow::MemoryPool* pool = arrow::default_memory_pool();
+    arrow::TimestampBuilder timestamp_builder(arrow::timestamp(arrow::TimeUnit::SECOND), pool);
+    arrow::StringBuilder symbol_builder(pool);
+    arrow::DoubleBuilder open_builder(pool);
+    arrow::DoubleBuilder high_builder(pool);
+    arrow::DoubleBuilder low_builder(pool);
+    arrow::DoubleBuilder close_builder(pool);
+    arrow::DoubleBuilder volume_builder(pool);
+    arrow::StringBuilder instrument_id_builder(pool);
+    arrow::DoubleBuilder roll_close_builder(pool);
+    arrow::StringBuilder roll_id_builder(pool);
+    arrow::Int8Builder roll_kind_builder(pool);
+    auto failed = [](const std::string& operation) {
+        return make_error<Table>(ErrorCode::CONVERSION_ERROR,
+                                 "Arrow builder error during " + operation + " (per_contract_rolls)",
+                                 "PostgresDatabase");
+    };
+    try {
+        for (const auto& bar : bars) {
+            // The loader's own conversion of the instant's text (convert_to_arrow_table).
+            std::tm time_info = {};
+            std::istringstream ss(bar.time_text);
+            ss >> std::get_time(&time_info, "%Y-%m-%d %H:%M:%S");
+            time_t time_val = std::mktime(&time_info);
+            trade_ngin::core::safe_gmtime(&time_val, &time_info);
+            auto tp = std::chrono::system_clock::from_time_t(std::mktime(&time_info));
+            auto timestamp =
+                std::chrono::duration_cast<std::chrono::seconds>(tp.time_since_epoch()).count();
+            if (timestamp_builder.Append(timestamp) != arrow::Status::OK() ||
+                symbol_builder.Append(bar.symbol) != arrow::Status::OK() ||
+                open_builder.Append(bar.open) != arrow::Status::OK() ||
+                high_builder.Append(bar.high) != arrow::Status::OK() ||
+                low_builder.Append(bar.low) != arrow::Status::OK() ||
+                close_builder.Append(bar.close) != arrow::Status::OK() ||
+                volume_builder.Append(bar.volume) != arrow::Status::OK()) {
+                return failed("append");
+            }
+            const arrow::Status id_status = bar.instrument_id.empty()
+                                                ? instrument_id_builder.AppendNull()
+                                                : instrument_id_builder.Append(bar.instrument_id);
+            if (id_status != arrow::Status::OK()) return failed("append");
+            if (bar.roll_from) {
+                if (roll_close_builder.Append(bar.roll_from->close) != arrow::Status::OK() ||
+                    roll_id_builder.Append(bar.roll_from->instrument_id) != arrow::Status::OK() ||
+                    roll_kind_builder.Append(static_cast<int8_t>(bar.roll_from->kind)) !=
+                        arrow::Status::OK()) {
+                    return failed("append");
+                }
+            } else if (roll_close_builder.AppendNull() != arrow::Status::OK() ||
+                       roll_id_builder.AppendNull() != arrow::Status::OK() ||
+                       roll_kind_builder.AppendNull() != arrow::Status::OK()) {
+                return failed("append");
+            }
+        }
+        std::vector<std::shared_ptr<arrow::Array>> arrays(11);
+        if (timestamp_builder.Finish(&arrays[0]) != arrow::Status::OK() ||
+            symbol_builder.Finish(&arrays[1]) != arrow::Status::OK() ||
+            open_builder.Finish(&arrays[2]) != arrow::Status::OK() ||
+            high_builder.Finish(&arrays[3]) != arrow::Status::OK() ||
+            low_builder.Finish(&arrays[4]) != arrow::Status::OK() ||
+            close_builder.Finish(&arrays[5]) != arrow::Status::OK() ||
+            volume_builder.Finish(&arrays[6]) != arrow::Status::OK() ||
+            instrument_id_builder.Finish(&arrays[7]) != arrow::Status::OK() ||
+            roll_close_builder.Finish(&arrays[8]) != arrow::Status::OK() ||
+            roll_id_builder.Finish(&arrays[9]) != arrow::Status::OK() ||
+            roll_kind_builder.Finish(&arrays[10]) != arrow::Status::OK()) {
+            return failed("finish");
+        }
+        auto schema = arrow::schema({arrow::field("time", arrow::timestamp(arrow::TimeUnit::SECOND)),
+                                     arrow::field("symbol", arrow::utf8()),
+                                     arrow::field("open", arrow::float64()),
+                                     arrow::field("high", arrow::float64()),
+                                     arrow::field("low", arrow::float64()),
+                                     arrow::field("close", arrow::float64()),
+                                     arrow::field("volume", arrow::float64()),
+                                     arrow::field("instrument_id", arrow::utf8()),
+                                     arrow::field("roll_from_close", arrow::float64()),
+                                     arrow::field("roll_from_id", arrow::utf8()),
+                                     arrow::field("roll_from_kind", arrow::int8())});
+        return Result<Table>(arrow::Table::Make(schema, arrays));
+    } catch (const std::exception& e) {
+        return make_error<Table>(ErrorCode::CONVERSION_ERROR,
+                                 "Exception during Arrow table conversion (per_contract_rolls): " +
+                                     std::string(e.what()),
+                                 "PostgresDatabase");
     }
 }
 

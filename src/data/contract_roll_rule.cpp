@@ -137,6 +137,7 @@ private:
         }
         --it;
         day.open = day.high = day.low = day.close = it->second.close;
+        day.carried_id = it->second.instrument_id;
     }
 
     const RuleInputs& in_;
@@ -163,12 +164,21 @@ HeldSeries Rule::run() {
     Day pending_since{};
     bool pending_off_cycle = false;
 
+    // Rolls step 3: the contract the previous grid day's roll left.
+    const Contract* just_left = nullptr;
     for (size_t i = 0; i < grid.size(); ++i) {
         const VendorBar& vb = grid[i];
         const Day d = vb.date;
         const Contract* vendor = vendor_on(i);
         HeldDay day;
         day.date = d;
+        if (just_left) {
+            if (const ContractBar* lb = just_left->bar_on(d)) {
+                day.left_close = lb->close;
+                day.left_id = lb->instrument_id;
+            }
+            just_left = nullptr;
+        }
         if (vendor) {
             day.vendor = key_of(*vendor);
         } else {
@@ -181,8 +191,11 @@ HeldSeries Rule::run() {
         } else {
             // (a) The vendor's confirmed forward switch: a new vendor contract, later than the held
             // one, kept by the next bar. Detected on any bar; it rolls on a trading-day bar.
-            if (vendor && vendor != last_known_vendor && !vendor_pending &&
-                key_of(*held).expiration < key_of(*vendor).expiration && vendor_on(i + 1) == vendor) {
+            // `vendor_candidate` is the switch as this bar alone shows it, before the next bar's
+            // confirmation (rolls step 3: a run whose bars end here sees only that).
+            const bool vendor_candidate = vendor && vendor != last_known_vendor && !vendor_pending &&
+                                          key_of(*held).expiration < key_of(*vendor).expiration;
+            if (vendor_candidate && vendor_on(i + 1) == vendor) {
                 vendor_pending = true;
                 vendor_since = d;
                 vendor_contract = vendor;
@@ -203,12 +216,14 @@ HeldSeries Rule::run() {
                         day.roll = true;
                         day.old = hk;
                         day.old_close = held->bar_on(d)->close;
+                        day.old_id = held->bar_on(d)->instrument_id;
                         day.trigger = RollTrigger::ALIAS;
                         day.trigger_date = in_.alias->change;
                         day.deferred = d > in_.alias->change;
                         ++out_.report.rolls;
                         ++out_.report.rolls_by_trigger[to_string(RollTrigger::ALIAS)];
                         if (day.deferred) ++out_.report.deferred;
+                        just_left = held;
                         held = micro;
                         pending = RollTrigger::NONE;
                         vendor_pending = false;
@@ -221,23 +236,38 @@ HeldSeries Rule::run() {
             } else if (cal_.is_trading_day(d)) {
                 const ContractKey& hk = key_of(*held);
                 const ContractDates& hd = dates_of(hk);
-                if (pending == RollTrigger::NONE) {
+                // Rolls step 3: whether (b) or (c) rolls on this bar on its own, whatever (a) says.
+                // Only a vendor switch on this very bar that neither would roll here needs the next
+                // bar to be known (awaits_next_bar, TentativeRoll).
+                bool own_bar_trigger = false;
+                const bool fresh = pending == RollTrigger::NONE;
+                if (fresh) {
+                    const Contract* t = target_on(*held, d, nullptr);
+                    const ContractBar* hb = held->bar_on(d);
+                    const ContractBar* tb = t ? t->bar_on(d) : nullptr;
+                    const bool crossover = hd.window_first <= d && d <= hd.last_actionable && hb &&
+                                           tb && tb->volume > hb->volume;
+                    own_bar_trigger = crossover || d >= hd.last_actionable;
                     if (vendor_pending) {
                         pending = RollTrigger::VENDOR;
                         pending_since = vendor_since;
                         pending_off_cycle = !month_in_cycle(*vendor_contract);
-                    } else {
-                        const Contract* t = target_on(*held, d, nullptr);
-                        const ContractBar* hb = held->bar_on(d);
-                        const ContractBar* tb = t ? t->bar_on(d) : nullptr;
-                        if (hd.window_first <= d && d <= hd.last_actionable && hb && tb &&
-                            tb->volume > hb->volume) {
-                            pending = RollTrigger::CROSSOVER;
-                            pending_since = d;
-                        } else if (d >= hd.last_actionable) {
-                            pending = RollTrigger::DEADLINE;
-                            pending_since = d;
-                        }
+                    } else if (crossover) {
+                        pending = RollTrigger::CROSSOVER;
+                        pending_since = d;
+                    } else if (d >= hd.last_actionable) {
+                        pending = RollTrigger::DEADLINE;
+                        pending_since = d;
+                    }
+                }
+                if (fresh && vendor_candidate && !vendor_pending && !own_bar_trigger) {
+                    // The next bar did not confirm the switch (or the range ends here): nothing
+                    // rolls, and the bar is what a run ending on it saw, the roll it would have been.
+                    const Contract* t = target_on(*held, d, nullptr);
+                    const ContractBar* hb = held->bar_on(d);
+                    if (t && hb) {
+                        day.tentative = TentativeRoll{*t->key, *t->bar_on(d), hb->close,
+                                                      hb->instrument_id};
                     }
                 }
                 if (pending != RollTrigger::NONE) {
@@ -258,8 +288,11 @@ HeldSeries Rule::run() {
                         day.vendor_off_cycle = pending == RollTrigger::VENDOR && pending_off_cycle;
                         day.late = pending == RollTrigger::DEADLINE && d > hd.last_actionable;
                         day.target_skipped_front = skipped;
+                        day.awaits_next_bar = fresh && pending == RollTrigger::VENDOR &&
+                                              pending_since == d && !own_bar_trigger;
                         if (hb) {
                             day.old_close = hb->close;
+                            day.old_id = hb->instrument_id;
                         } else {
                             const ContractBar* prev = target->bar_on(grid[i - 1].date);
                             day.fallback = prev ? RollFallback::NEW_CONTRACT_MOVE : RollFallback::ZERO;
@@ -283,6 +316,7 @@ HeldSeries Rule::run() {
                         if (day.deferred) ++out_.report.deferred;
                         if (day.vendor_off_cycle) ++out_.report.vendor_off_cycle;
                         if (day.late) ++out_.report.late;
+                        just_left = held;
                         held = target;
                         pending = RollTrigger::NONE;
                         vendor_pending = false;

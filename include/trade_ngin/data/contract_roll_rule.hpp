@@ -121,6 +121,21 @@ Result<const Contract*> cycle_target(const ContractBook& book, const std::string
 int listed_cycle_front(const ContractBook& book, const std::string& root, const std::string& cycle,
                        const ContractKey& held, int up_to);
 
+/**
+ * @brief Rolls step 3: a vendor switch on a trading-day bar that only the next bar could confirm,
+ *        where the next bar did not (or the range ends on the bar), and that would have rolled the
+ *        held contract on this bar into `target` had it been confirmed. Nothing rolled: the held
+ *        contract stays. The bar source hands the bar out as the roll it would have been (the
+ *        target's bar, the old contract's close), because a run whose bars end here cannot tell it
+ *        from a confirmed switch (per_contract_source.hpp); the next consumed bar shows it reverted.
+ */
+struct TentativeRoll {
+    ContractKey target;
+    ContractBar bar;       ///< the target's own bar on the date
+    double old_close{0.0};  ///< the held contract's close on the date
+    std::string old_id;    ///< the held contract's id on the date
+};
+
 /// One grid date of the held series.
 struct HeldDay {
     Day date{};
@@ -146,6 +161,18 @@ struct HeldDay {
     bool target_skipped_front{false};  ///< the target is not the cycle front (WARN)
     bool vendor_off_cycle{false};      ///< a vendor switch into a month outside the cycle timed it
     bool late{false};                  ///< a deadline roll after the LAB (no grid bar on the LAB)
+
+    // Rolls step 3 (the bar source's inputs; the dump tool prints none of them):
+    std::string old_id;      ///< roll bars: the old contract's id on this date (empty on a fallback)
+    std::string carried_id;  ///< carry days: the id of the held contract's row whose close is carried
+    /// A vendor roll whose switch is on this bar and which neither the crossover nor the deadline
+    /// would have rolled here: only the next grid bar's vendor id confirms it (rule (a)).
+    bool awaits_next_bar{false};
+    std::optional<TentativeRoll> tentative;  ///< see TentativeRoll
+    /// The grid day after a roll: the contract left, its close and id on this date (none when it
+    /// printed nothing here). For a consumer that withheld the roll bar (RollFromKind::AFTER_ROLL).
+    std::optional<double> left_close;
+    std::string left_id;
 };
 
 /// Counts and messages of one series, for the report and the measures.
