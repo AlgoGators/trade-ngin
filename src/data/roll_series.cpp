@@ -372,7 +372,7 @@ std::unordered_map<std::string, RollTracker::Status> roll_status_of(const std::v
         RollTracker tracker;
         RollTracker::Status last;
         for (const auto& [ts, bar] : series) {
-            last = tracker.add(bar->instrument_id, static_cast<double>(bar->close));
+            last = tracker.add(bar->instrument_id, static_cast<double>(bar->close), bar->roll_from);
         }
         out[symbol] = last;
     }

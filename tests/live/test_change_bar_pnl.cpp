@@ -264,3 +264,37 @@ TEST_F(ChangeBarPnlTest, TheSettledTablePricesAreThePairTheFinalizeBookedEachRow
     EXPECT_FALSE(cells("6B.v.0").no_bar);
     EXPECT_DOUBLE_EQ(booked.at("6B.v.0"), 0.0);
 }
+
+// Rolls step 3 (per_contract_rolls on): NG's T-1 bar (day 4) is a roll bar of the per-contract
+// source, the new contract's 3.965 with the old contract's 3.41; the finalize books the old
+// contract's own move, 2 x (3.41 - 3.33) x 10,000, not 0 and not the splice step. ES's T-1 bar
+// follows a vendor switch on day 3 it did not confirm: it books from the old contract's day-3 close.
+TEST_F(ChangeBarPnlTest, APerContractRollBarBooksTheOldContractsMove) {
+    const std::string t1 = SessionClassifier::ymd(SessionClassifier::day_of(bar("ES.v.0", 4, 0, "").timestamp));
+    std::vector<Bar> consumed;
+    for (int d = 1; d <= 4; ++d) {
+        Bar ng = bar("NG.v.0", d, d == 4 ? 3.965 : 3.3 + 0.01 * d, d == 4 ? "863" : "864");
+        if (d == 4) ng.roll_from = RollFrom{3.41, "864", RollFromKind::KNOWN};
+        consumed.push_back(ng);
+        Bar es = bar("ES.v.0", d, d == 3 ? 5100.0 : 5000.0 + 10 * d, d == 3 ? "2" : "1");
+        if (d == 3) es.roll_from = RollFrom{5030.0, "1", RollFromKind::AWAITS_NEXT};
+        consumed.push_back(es);
+    }
+    const auto status = roll_series::roll_status_of(consumed);
+    EXPECT_TRUE(status.at("NG.v.0").confirm);
+    EXPECT_FALSE(status.at("NG.v.0").holds()) << "known on its bar";
+    const std::unordered_map<std::string, double> raw_t2{{"NG.v.0", 3.33}, {"ES.v.0", 5100.0}};
+    const std::unordered_map<std::string, double> raw_t1{{"NG.v.0", 3.965}, {"ES.v.0", 5040.0}};
+    const auto s = consumed_t1_settlement(consumed, t1, status, {}, raw_t2, raw_t1, {});
+    EXPECT_TRUE(s.zero_pnl_symbols.empty());
+    EXPECT_DOUBLE_EQ(s.t1_close_prices.at("NG.v.0"), 3.41);
+    EXPECT_DOUBLE_EQ(s.t2_close_prices.at("NG.v.0"), 3.33);
+    EXPECT_DOUBLE_EQ(s.t2_close_prices.at("ES.v.0"), 5030.0) << "the old contract's close, not 5100";
+    LivePnLManager pm(500000.0, InstrumentRegistry::instance());
+    const std::vector<Position> book{held("NG.v.0", 2, 0), held("ES.v.0", 1, 0)};
+    auto r = pm.finalize_previous_day(book, s.t1_close_prices, s.t2_close_prices, 500000.0, 0.0,
+                                      LivePnLManager::UnrealizedPolicy::SETTLED, s.zero_pnl_symbols);
+    ASSERT_TRUE(r.is_ok());
+    EXPECT_NEAR(r.value().position_realized_pnl.at("NG.v.0"), 2 * (3.41 - 3.33) * 10000.0, 1e-6);
+    EXPECT_NEAR(r.value().position_realized_pnl.at("ES.v.0"), 1 * (5040.0 - 5030.0) * 50.0, 1e-6);
+}

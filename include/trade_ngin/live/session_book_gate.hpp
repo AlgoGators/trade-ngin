@@ -353,7 +353,8 @@ struct ConsumedT1Settlement {
     std::unordered_map<std::string, double> t2_close_prices;
     /// The close each symbol's T-1 move is booked to: the raw T-1 map, except a symbol whose roll
     /// this run legs LATE (section 6.5), which books every unbooked consumed bar's move on the T-1
-    /// row (its last consumed close against LateRollSettlement::settle_from).
+    /// row (its last consumed close against LateRollSettlement::settle_from), and a per-contract
+    /// roll bar (rolls step 3), which books to the old contract's close on it.
     std::unordered_map<std::string, double> t1_close_prices;
     /// For a symbol whose last consumed bar is NOT dated T-1 (it printed no bar on T-1, or its
     /// T-1 print was withheld): the close of that last consumed bar, its last known close and the
@@ -393,9 +394,18 @@ inline ConsumedT1Settlement consumed_t1_settlement(
         }
         if (seq.size() >= 2) out.t2_close_prices[symbol] = static_cast<double>(seq[seq.size() - 2]->close);
         const auto rs = roll_status.find(symbol);
-        if (rs != roll_status.end() && rs->second.change) {
+        if (rs != roll_status.end() && rs->second.change && !rs->second.mark_close) {
             out.zero_pnl_symbols.insert(symbol);
             if (!out.withheld_zero_symbols.count(symbol)) out.roll_zero_symbols.insert(symbol);
+        }
+        // Rolls step 3 (per_contract_rolls on): a roll bar books the old contract's own move over
+        // it, to the old contract's close on the bar; the bar after a vendor switch it did not
+        // confirm books from the old contract's close on the switch bar.
+        if (rs != roll_status.end() && rs->second.mark_close) {
+            out.t1_close_prices[symbol] = *rs->second.mark_close;
+        }
+        if (rs != roll_status.end() && rs->second.previous_close) {
+            out.t2_close_prices[symbol] = *rs->second.previous_close;
         }
     }
     // A late roll's symbol books its unbooked consumed bars on this run, whether or not it has a

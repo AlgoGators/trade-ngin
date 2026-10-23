@@ -42,7 +42,9 @@ namespace trade_ngin {
  *   contract            its T-1 bar confirms, as before.
  *
  * The closing leg's price is the close of the last consumed bar before the first change bar and the
- * opening leg's the change bar's close.
+ * opening leg's the change bar's close. With the per-contract source (rolls step 3) both are the
+ * roll bar's own: the old contract's close on it and the new contract's; a roll known on its bar is
+ * confirmed by that bar, a vendor switch by the next one (roll_series.hpp).
  */
 struct ConfirmedRoll {
     std::string symbol;
@@ -171,7 +173,8 @@ inline LiveRollState live_rolls_by_state(
             const std::string d = core::format_utc_date(ts);
             if (d > t1_date) break;
             steps.push_back({d, static_cast<double>(bar->close),
-                             tracker.add(bar->instrument_id, static_cast<double>(bar->close))});
+                             tracker.add(bar->instrument_id, static_cast<double>(bar->close),
+                                         bar->roll_from)});
         }
         const auto rec = recorded_contract.find(symbol);
         const bool recorded = rec != recorded_contract.end() && !rec->second.empty();
@@ -215,7 +218,9 @@ inline LiveRollState live_rolls_by_state(
             // dated after it already booked (see LateRollSettlement).
             double moves = 0.0;
             for (int i = stands + 1; i < static_cast<int>(steps.size()); ++i) {
-                if (!steps[i].status.change) moves += steps[i].close - steps[i - 1].close;
+                // 0 on a change bar; a per-contract roll bar moves to the old contract's close
+                // (rolls step 3, RollTracker::Status::move)
+                moves += steps[i].status.move(steps[i].close, steps[i - 1].close);
             }
             out.late[symbol] = {steps.back().close, steps.back().close - moves, steps[stands].date};
         }
