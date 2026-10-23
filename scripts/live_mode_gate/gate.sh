@@ -16,7 +16,25 @@
 #      identical; and one refused run (a date whose previous day never ran) must store NOTHING, the
 #      run-metadata row included.
 #   4. THE RE-RUN REPAIR: a day's bars arrive late, two runs are made without them, then those dates and
-#      every later one are re-run in date order: every stored table identical to the reference chain.
+#      every later one are re-run in date order: every stored table identical to the reference chain. The
+#      late day is the bar that books a held roll (issue #188's shape: the roll is legged late by the first
+#      pass, and the re-run must not book it twice): 2026-04-27 (ZS and MBT confirm their vendor switch on
+#      it) with GATE_SWITCH off, 2026-04-28 (6L's roll bar) with it on.
+#   5. GATE_SWITCH=on only (rolls step 4, ROLLS_STEP1_PLAN section 7), on the conservative book's chain: a
+#      held roll priced at its two contracts' own closes of one bar (the contract table), an ignored one-bar
+#      backward stray and an ignored backward switch (both identical to the reference chain), a run killed
+#      while it writes and run again, and a run whose ROLL legs fail to store, replayed (both identical to
+#      the reference chain).
+#
+# THE FEED HOLE. Production mode must refuse a run whose HELD symbol has had no bar past
+# live.data_staleness_tolerance_days (4). The 2026-10-21 copy of the data has no such hole in the window, so
+# the gate makes one in the database it is given (rolls step 4): 6M.v.0, held by both futures books' S0, loses
+# its bars dated 2026-04-21 .. 04-25 in both bar tables for the whole gate and gets them back at the end. Its
+# last bar is then 04-20: 4 days old for the 04-25 run (T-1 04-24, not past the tolerance) and 5 for the 04-26
+# run (past it). Every chain of the gate runs on the same bars, so the comparisons are unchanged.
+#
+# GATE_SWITCH=on|off (default off): "on" runs every futures chain with per_contract_rolls true (the
+# per-contract bar source) and adds section 5.
 #
 # HOW PRODUCTION MODE IS RUN. hostclock_shim.c shifts the wall clock of the runner's own process
 # (clock_gettime, gettimeofday, time), so the UNPATCHED binary sees the run date as the host's date.
@@ -34,7 +52,7 @@
 # than its own log has timeout lines. Any other difference fails. The verdict of every pair is kept in
 # $GATE_OUT/proofs/bodies.txt.
 #
-#   usage: GATE_WORKTREE=<built linked worktree> GATE_OUT=<empty dir> GATE_S0_DIR=... GATE_CONFIG_SRC=... \
+#   usage: [GATE_SWITCH=on] GATE_WORKTREE=<built linked worktree> GATE_OUT=<empty dir> GATE_S0_DIR=... GATE_CONFIG_SRC=... \
 #          GATE_RUN_LOCK=... GATE_PG_ENV=... \
 #          scripts/live_mode_gate/gate.sh <scratch database> [conservative-arm base-arm equity-arm]
 #   GATE_WORKTREE is required and may not be the main checkout: the gate writes its run config into that
@@ -49,6 +67,11 @@ WT="${GATE_WORKTREE:?set GATE_WORKTREE to the built linked worktree}"; export GA
 DB="${1:?usage: gate.sh <scratch database>}"; ARM_C="${2:-TPL}"; ARM_B="${3:-ABSENT}"; ARM_E="${4:-ABSENT}"
 [ "$(cd "$WT" 2>/dev/null && git rev-parse --is-inside-work-tree 2>/dev/null)" = true ] && [ "$(cd "$WT" && git rev-parse --absolute-git-dir 2>/dev/null)" != "$(cd "$WT" && cd "$(git rev-parse --git-common-dir 2>/dev/null)" 2>/dev/null && pwd -P)" ] || { echo "REFUSING worktree $WT: it is the main checkout (or not a git worktree); the gate rewrites config/ and deletes logs/ in its worktree"; exit 2 }
 OUT="${GATE_OUT:?set GATE_OUT}"
+SW="${GATE_SWITCH:-off}"; case "$SW" in on|off) ;; *) echo "REFUSING GATE_SWITCH $SW"; exit 2;; esac; export GATE_SWITCH="$SW"
+case "$DB" in *scratch*) ;; *) echo "REFUSING database $DB"; exit 2;; esac
+set -a; . "${GATE_PG_ENV:?set GATE_PG_ENV}" > /dev/null 2>&1; set +a; export PGPASSWORD="$SCRATCH_PGPASSWORD"
+PSQL="${GATE_PSQL:-/opt/homebrew/opt/postgresql@16/bin/psql}"
+q() { $PSQL -h 127.0.0.1 -p 5433 -U postgres -d "$DB" -At -v ON_ERROR_STOP=1 -c "$1" }
 # A gate that makes runs starts from an empty output folder: runs left by an earlier gate would be evaluated as its own.
 if [ -z "${GATE_EVALUATE_ONLY:-}" ]; then leftover=("$OUT"/runs/*(N)); [ ${#leftover} -eq 0 ] || { echo "REFUSING output folder $OUT: runs/ is not empty (use an empty folder, or GATE_EVALUATE_ONLY=1 to evaluate the runs already there)"; exit 2 }; fi
 mkdir -p "$OUT/runs" "$OUT/proofs"
@@ -80,7 +103,25 @@ run() {
   [ $rc -eq 0 ] || { say "FAIL  the driver of $PF $MODE $2 stopped with exit $rc: $(tail -1 "$drv")"; fails=$((fails+1)) }
 }
 
-say "live mode gate: database $DB, tree $(git -C "$WT" rev-parse HEAD) ($(git -C "$WT" status --porcelain --untracked-files=no | wc -l | tr -d ' ') modified tracked file(s)), gate script sha256 $(shasum -a 256 "$0" | cut -c1-16), ${GATE_EVALUATE_ONLY:+EVALUATE ONLY, }$(date -u +%FT%TZ)"
+say "live mode gate: database $DB, tree $(git -C "$WT" rev-parse HEAD) ($(git -C "$WT" status --porcelain --untracked-files=no | wc -l | tr -d ' ') modified tracked file(s)), gate script sha256 $(shasum -a 256 "$0" | cut -c1-16), GATE_SWITCH $SW, ${GATE_EVALUATE_ONLY:+EVALUATE ONLY, }$(date -u +%FT%TZ)"
+
+# ---- the feed hole (see the header) ----------------------------------------------------------------------
+HOLE_B="symbol = '6M.v.0' AND time::date BETWEEN '2026-04-21' AND '2026-04-25'"
+HOLE_R="symbol = '6M.v.0' AND ts_event::date BETWEEN '2026-04-21' AND '2026-04-25'"
+if [ -z "${GATE_EVALUATE_ONLY:-}" ]; then
+  { q "CREATE SCHEMA IF NOT EXISTS gate_hole; DROP TABLE IF EXISTS gate_hole.b, gate_hole.r"
+    q "CREATE TABLE gate_hole.b AS SELECT * FROM futures_data.ohlcv_1d WHERE $HOLE_B"
+    q "CREATE TABLE gate_hole.r AS SELECT * FROM futures_data.ohlcv_1d_raw WHERE $HOLE_R"
+    q "DELETE FROM futures_data.ohlcv_1d WHERE $HOLE_B"; q "DELETE FROM futures_data.ohlcv_1d_raw WHERE $HOLE_R"
+    echo "6M.v.0 bars 2026-04-21 .. 04-25 moved aside: $(q "select count(*) from gate_hole.b") / $(q "select count(*) from gate_hole.r"); left $(q "select count(*) from futures_data.ohlcv_1d where $HOLE_B") / $(q "select count(*) from futures_data.ohlcv_1d_raw where $HOLE_R"); last bar before: $(q "select max(time)::date from futures_data.ohlcv_1d where symbol = '6M.v.0' and time < '2026-04-26'")"
+  } > "$OUT/proofs/feed_hole.txt" 2>&1 || { say "FAIL  the feed hole could not be made: $(tail -1 "$OUT/proofs/feed_hole.txt")"; exit 1 }
+fi
+put_hole_back() {
+  [ -n "${GATE_EVALUATE_ONLY:-}" ] && return 0
+  { q "INSERT INTO futures_data.ohlcv_1d SELECT * FROM gate_hole.b"; q "INSERT INTO futures_data.ohlcv_1d_raw SELECT * FROM gate_hole.r"
+    echo "put back: $(q "select count(*) from futures_data.ohlcv_1d where $HOLE_B") / $(q "select count(*) from futures_data.ohlcv_1d_raw where $HOLE_R")"
+    q "DROP SCHEMA gate_hole CASCADE"; } >> "$OUT/proofs/feed_hole.txt" 2>&1
+}
 
 # ---- 1. CONSERVATIVE -------------------------------------------------------------------------------
 export RANGE_START=2026-04-24 RANGE_END=2026-05-03
@@ -100,8 +141,9 @@ check "CONSERVATIVE the restart: eight missed dates run in order on a later day,
 check "CONSERVATIVE after the restart every stored table is identical to the past-date chain" 'same "$C3/snap" "$C2/snap" conservative_restart_vs_past_date'
 
 # ---- 4. the re-run repair (on the conservative book, against the chain of 1) --------------------------
-LATE_DATE=2026-04-29 MODE=M3 PF=conservative run $ARM_C latebars;  LB=$(dir "" $ARM_C latebars M3)
-check "RE-RUN REPAIR the bar tables are whole again after the late-bar run" 'grep -aq "put back: now dated 2026-04-29: 36 / " "$LB/bars_proof.txt"'
+LATE="${GATE_LATE_DATE:-$([ "$SW" = on ] && echo 2026-04-28 || echo 2026-04-27)}"
+LATE_DATE=$LATE MODE=M3 PF=conservative run $ARM_C latebars;  LB=$(dir "" $ARM_C latebars M3)
+check "RE-RUN REPAIR the late bars ($LATE) book a held roll the first pass legged late, and the bar tables are whole again" 'python3 "$HERE/late_roll_check.py" "$C3/snap" "$LB/snap_late_before_repair" "$LATE" "$LB/bars_proof.txt" > "$OUT/proofs/late_roll.txt" 2>&1'
 check "RE-RUN REPAIR late bars, then the dates re-run in order: every stored table identical to the clean chain" 'same "$C3/snap" "$LB/snap" rerun_repair_vs_clean'
 
 # ---- 2. BASE ---------------------------------------------------------------------------------------
@@ -123,5 +165,27 @@ REFUSED_DATE=2026-06-24 MODE=M3 PF=equity_mr run $ARM_E refused;  ER=$(dir equit
 check "EQUITY a run whose previous day never ran is refused (exit 1)" 'grep -aq ": 1$" "$ER/exit_code.txt" && log "$ER" 2026-06-24 | grep -aq "A run was missed"'
 check "EQUITY the refused run stored nothing, the run-metadata row included" 'same "$ER/snap_before" "$ER/snap" equity_refused_run_stored_nothing'
 
+# ---- 5. the per-contract shapes (GATE_SWITCH=on only; rolls step 4, ROLLS_STEP1_PLAN section 7) ------------
+if [ "$SW" = on ]; then
+  export RANGE_START=2026-04-24 RANGE_END=2026-05-03
+  [ -z "${GATE_EVALUATE_ONLY:-}" ] && $PSQL -h 127.0.0.1 -p 5433 -U postgres -d "$DB" -q -c "\\copy (select root, instrument_id, date, close from futures_data.contract_ohlcv_1d where date between '2026-04-01' and '2026-05-03' order by 1, 2, 3) to '$OUT/proofs/contract_closes.csv' with (format csv, header)"
+  check "SWITCH ON a held roll: every ROLL pair of the past-date chain is priced at its two contracts' own closes of one bar (the contract table), each roll stored once" 'python3 "$HERE/roll_legs_check.py" "$C3/snap/trading_executions.csv" "$OUT/proofs/contract_closes.csv" > "$OUT/proofs/held_roll_legs.txt" 2>&1'
+  # ZS rolls ZSK6 (42009683) -> ZSN6 (194904) on 2026-04-23; afterwards the vendor naming ZSK6 is a switch back.
+  STRAY_SHOW="SELECT string_agg(ts_event::date||'='||instrument_id, ' ' ORDER BY ts_event) FROM futures_data.ohlcv_1d_raw WHERE symbol = 'ZS.v.0' AND ts_event BETWEEN '2026-04-29' AND '2026-05-02'"
+  PREP_SQL="UPDATE futures_data.ohlcv_1d_raw SET instrument_id = '42009683' WHERE symbol = 'ZS.v.0' AND ts_event = '2026-04-30 00:00:00+00' AND instrument_id = '194904'" \
+  UNDO_SQL="UPDATE futures_data.ohlcv_1d_raw SET instrument_id = '194904' WHERE symbol = 'ZS.v.0' AND ts_event = '2026-04-30 00:00:00+00' AND instrument_id = '42009683'" \
+  PREP_SHOW="$STRAY_SHOW" MODE=M3 PF=conservative run $ARM_C chain stray;  CS=$(dir "" $ARM_C chain M3 stray)
+  check "SWITCH ON an ignored one-bar backward stray (the vendor names ZSK6 on 04-30): every stored table identical to the past-date chain" 'grep -aq "after:  .*2026-04-30=42009683" "$CS/prep_proof.txt" && same "$C3/snap" "$CS/snap" switch_on_stray_vs_clean'
+  PREP_SQL="UPDATE futures_data.ohlcv_1d_raw SET instrument_id = '42009683' WHERE symbol = 'ZS.v.0' AND ts_event IN ('2026-04-30 00:00:00+00', '2026-05-01 00:00:00+00') AND instrument_id = '194904'" \
+  UNDO_SQL="UPDATE futures_data.ohlcv_1d_raw SET instrument_id = '194904' WHERE symbol = 'ZS.v.0' AND ts_event IN ('2026-04-30 00:00:00+00', '2026-05-01 00:00:00+00') AND instrument_id = '42009683'" \
+  PREP_SHOW="$STRAY_SHOW" MODE=M3 PF=conservative run $ARM_C chain backward;  CW=$(dir "" $ARM_C chain M3 backward)
+  check "SWITCH ON an ignored backward switch (the vendor names ZSK6 on 04-30 and 05-01): every stored table identical to the past-date chain" 'grep -aq "after:  .*2026-04-30=42009683 2026-05-01=42009683" "$CW/prep_proof.txt" && same "$C3/snap" "$CW/snap" switch_on_backward_vs_clean'
+  INTERRUPT_DATE=2026-04-29 INTERRUPT_KIND=kill MODE=M3 PF=conservative run $ARM_C interrupt kill;  IK=$(dir "" $ARM_C interrupt M3 kill)
+  check "SWITCH ON a run killed (SIGKILL) while it writes, after storing its ROLL legs, then run again: every stored table identical to the past-date chain" 'grep -aq "parked=1" "$IK/interrupt_proof.txt" && gzip -dc "$IK/logs/2026-04-29_killed.log.gz" | grep -aq "ROLL_LEG store" && same "$C3/snap" "$IK/snap" switch_on_kill_vs_clean'
+  INTERRUPT_DATE=2026-04-29 INTERRUPT_KIND=failwrite MODE=M3 PF=conservative run $ARM_C interrupt failwrite;  IF=$(dir "" $ARM_C interrupt M3 failwrite)
+  check "SWITCH ON a run whose ROLL legs fail to store refuses (exit 1) and its replay ends identical to the past-date chain" 'grep -aq ": 1$" "$IF/exit_code.txt" && log "$IF" 2026-04-29_failed_write | grep -aq "ROLL_LEG STOP: the day.s executions could not be stored" && same "$C3/snap" "$IF/snap" switch_on_failwrite_vs_clean'
+fi
+
+put_hole_back
 say "$( [ $fails -eq 0 ] && echo "LIVE MODE GATE PASSED" || echo "LIVE MODE GATE FAILED: $fails check(s)" )"
 exit $(( fails > 0 ))
