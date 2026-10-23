@@ -275,6 +275,22 @@ TEST(PerContractSource, AFallbackRollReadsThePreviousCloseTimesTheNewContractsMo
     window.erase(d("2026-07-30"));
     s.days[0].has_close = false;
     EXPECT_TRUE(bars_of_series(s, window).is_error());
+    s.days[0].has_close = true;
+    // Refused: a fallback roll on the series' first day (no previous close to read the old
+    // contract's from), and a vendor roll awaiting the next bar with no old bar to hand out.
+    HeldSeries first;
+    first.root = "GC";
+    first.days = {s.days[1]};
+    auto r = bars_of_series(first, {{b.date, "2026-07-29 00:00:00+00"}});
+    ASSERT_TRUE(r.is_error());
+    EXPECT_NE(std::string(r.error()->what()).find("first day"), std::string::npos);
+    s.days[1].fallback = RollFallback::NONE;
+    s.days[1].old_close = 2005.0;
+    s.days[1].old_id = "q";
+    s.days[1].awaits_next_bar = true;
+    r = bars_of_series(s, window);
+    ASSERT_TRUE(r.is_error());
+    EXPECT_NE(std::string(r.error()->what()).find("no old bar"), std::string::npos);
 }
 
 TEST(PerContractSource, TheSwitchTurnsTheSourceOnAndOffAndTheMicrosStayOnTheVendorsSeries) {
@@ -290,7 +306,10 @@ TEST(PerContractSource, TheSwitchTurnsTheSourceOnAndOffAndTheMicrosStayOnTheVend
     EXPECT_FALSE(source.enabled());
     EXPECT_TRUE(configure_per_contract_source(false).is_ok());
     EXPECT_FALSE(source.enabled());
-    for (const char* micro : {"MES", "MNQ", "MYM", "M2K"}) EXPECT_TRUE(reads_vendor_series(micro));
+    for (const char* micro : {"MES", "MNQ", "MYM", "M2K"}) {
+        EXPECT_TRUE(reads_vendor_series(micro));
+        EXPECT_NE(micros_warning_line().find(micro), std::string::npos) << "the WARN names " << micro;
+    }
     for (const char* root : {"GC", "ES", "ZN", "MBT"}) EXPECT_FALSE(reads_vendor_series(root));
 }
 

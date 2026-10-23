@@ -306,11 +306,8 @@ RollTracker::Status RollTracker::add(const std::string& id, double close,
     const bool after_roll_acts = rf && rf->kind == RollFromKind::AFTER_ROLL &&
                                  rf->instrument_id == last_known_ && id != last_known_;
     if (rf && (rf->kind == RollFromKind::KNOWN || after_roll_acts)) {
-        if (st.confirm) {
-            throw std::runtime_error(
-                "roll_series::RollTracker: a vendor switch confirmed by a bar that is itself a "
-                "roll (" + held_ + " to " + id + "): two rolls on one bar");
-        }
+        // (a switch confirmed on this bar never reaches here: a KNOWN field threw above, an
+        // AFTER_ROLL field or none returned)
         st.change = true;
         st.mark_close = rf->close;
         st.confirm = true;

@@ -175,6 +175,12 @@ TEST(RollSeries, MisalignedInputsAreRefused) {
     EXPECT_THROW(adjusted_levels({1.0, 2.0}, bits({0})), std::invalid_argument);
     EXPECT_THROW(adjusted_returns({1.0, 2.0}, bits({0})), std::invalid_argument);
     EXPECT_TRUE(adjusted_returns({1.0}, bits({0})).empty());
+    // the per-contract forms (ChangeFlags with the roll fields' closes)
+    const ChangeFlags three = classify_instrument_changes(ids({"A", "A", "B"}), RollFields(3));
+    EXPECT_THROW(return_bases({1.0, 2.0}, three), std::invalid_argument);
+    EXPECT_THROW(adjusted_levels({1.0, 2.0}, three), std::invalid_argument);
+    EXPECT_THROW(adjusted_returns({1.0, 2.0}, three), std::invalid_argument);
+    EXPECT_EQ(return_bases({1.0, 2.0, 3.0}, three), (std::vector<double>{1.0, 2.0, 3.0}));
 }
 
 TEST(RollSeries, TheTrackerReproducesTheBatchClassifierBarByBar) {
