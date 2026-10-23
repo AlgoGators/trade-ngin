@@ -58,13 +58,9 @@ private:
     /// whose month is in the cycle and which expires after the held one.
     const Contract* target_on(const Contract& held, Day day, bool* skipped_front) {
         const ContractKey& hk = key_of(held);
-        const Contract* best = nullptr;
-        for (const Contract* c : book_.printing_on(root_on(day), day)) {
-            if (!month_in_cycle(*c)) continue;
-            const ContractKey& ck = key_of(*c);
-            if (!(hk.expiration < ck.expiration)) continue;
-            if (!best || ck < *best->key) best = c;
-        }
+        auto found = cycle_target(book_, root_on(day), in_.cycle, hk, day);
+        if (found.is_error()) throw RuleRefusal(found.error()->what());
+        const Contract* best = found.value();
         if (best && skipped_front) {
             *skipped_front = best->key->delivery_index() !=
                              next_cycle_delivery(in_.cycle, hk.delivery_year, hk.delivery_month);
@@ -351,6 +347,25 @@ const char* to_string(RollFallback fallback) {
             return "zero";
     }
     return "";
+}
+
+Result<const Contract*> cycle_target(const ContractBook& book, const std::string& root,
+                                     const std::string& cycle, const ContractKey& held, Day day) {
+    const Contract* best = nullptr;
+    for (const Contract* c : book.printing_on(root, day)) {
+        if (c->raw_symbol.size() <= root.size() ||
+            !in_cycle(cycle, ContractKey::month_of_code(c->raw_symbol[root.size()]))) {
+            continue;
+        }
+        auto ck = ContractBook::require(*c);
+        if (ck.is_error()) {
+            return make_error<const Contract*>(ck.error()->code(), ck.error()->what(),
+                                               "contract_rolls");
+        }
+        if (!(held.expiration < ck.value().expiration)) continue;
+        if (!best || ck.value() < *best->key) best = c;
+    }
+    return best;
 }
 
 ContractDates contract_dates(const ContractKey& key, const TradingCalendar& cal) {

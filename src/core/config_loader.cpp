@@ -291,6 +291,21 @@ Result<AppConfig> ConfigLoader::extract_config(const nlohmann::json& merged) {
             config.covariance_stale_dates = v.get<size_t>();
         }
 
+        // Rolls step 2: the per-contract roll switch. Optional, boolean, off when absent; read by
+        // nothing yet (steps 3 and 4 wire it).
+        if (merged.contains("per_contract_rolls")) {
+            const auto& v = merged.at("per_contract_rolls");
+            if (!v.is_boolean()) {
+                return make_error<AppConfig>(
+                    ErrorCode::INVALID_DATA,
+                    "config for " + config.portfolio_id +
+                        ": portfolio.json \"per_contract_rolls\" must be true or false (absent "
+                        "means false), got " + v.dump(),
+                    "ConfigLoader");
+            }
+            config.per_contract_rolls = v.get<bool>();
+        }
+
         // LOOP_SPEC sections 2.5 and 7.7 (D40): the equity slow rule. Parsed strictly when present;
         // the futures runners require it (require_loop_keys).
         if (merged.contains("equity_slow_rule")) {

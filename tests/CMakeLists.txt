@@ -73,6 +73,7 @@ set(TEST_SOURCES
     data/test_contract_roll_rule.cpp
     data/test_contract_roll_rule_db.cpp
     data/test_contract_roll_micros.cpp
+    data/test_contract_rolls_api.cpp
     data/test_roll_legs.cpp
     data/test_executions_execution_type_db.cpp
     data/test_strategy_config_db.cpp

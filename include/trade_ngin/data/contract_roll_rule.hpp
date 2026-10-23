@@ -107,6 +107,12 @@ struct ContractDates {
 /// The contract's dates. Throws CalendarCoverageError outside the calendar.
 ContractDates contract_dates(const ContractKey& key, const TradingCalendar& cal);
 
+/// The rule's target on `day` for the held contract: the earliest-expiring contract of `root` with a
+/// row that day whose month is in `cycle` and which expires after the held one; nullptr when none
+/// prints. An error naming a candidate with no expiration.
+Result<const Contract*> cycle_target(const ContractBook& book, const std::string& root,
+                                     const std::string& cycle, const ContractKey& held, Day day);
+
 /// One grid date of the held series.
 struct HeldDay {
     Day date{};
