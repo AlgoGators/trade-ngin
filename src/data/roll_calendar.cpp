@@ -109,12 +109,14 @@ Result<FuturesCalendar> FuturesCalendar::load(const std::string& path) {
     std::set<std::string> roots_seen;
     try {
         const nlohmann::json j = nlohmann::json::parse(in);
-        for (const auto& [name, ex] : j.at("exchanges").items()) {
+        const nlohmann::json& all = j.at("exchanges");
+        for (const auto& [name, ex] : all.items()) {
             Exchange e;
             e.first_year = ex.at("covers").at("first_year").get<int>();
             e.last_year = ex.at("covers").at("last_year").get<int>();
             if (e.first_year > e.last_year) return bad(name + ": coverage is empty");
-            for (const auto& [group, roots] : ex.at("groups").items()) {
+            const nlohmann::json& groups = ex.at("groups");
+            for (const auto& [group, roots] : groups.items()) {
                 e.closed_by_group[group];
                 for (const auto& r : roots) {
                     const std::string root = r.get<std::string>();
