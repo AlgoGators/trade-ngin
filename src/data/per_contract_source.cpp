@@ -221,7 +221,9 @@ Result<std::vector<SourceBar>> per_contract_bars(pqxx::transaction_base& txn,
              " (no contract row) are not handed out");
     }
     if (window.empty()) return Bars{};
-    auto series = build_held_series(txn, root, start.value(), window.rbegin()->first, calendars);
+    // The rule runs from the series start; only the window's own warnings are logged.
+    auto series = build_held_series(txn, root, start.value(), window.rbegin()->first, calendars,
+                                    window.begin()->first);
     if (series.is_error()) {
         return make_error<Bars>(series.error()->code(), series.error()->what(), "contract_rolls");
     }

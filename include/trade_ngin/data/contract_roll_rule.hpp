@@ -23,7 +23,9 @@ namespace trade_ngin::contract_rolls {
  *   For the held contract:
  *   - Deadline D*: its first notice day, or its last trading day where that comes first or where it
  *     has no notice day.
- *   - Window: the last five trading days before D*.
+ *   - Window: from the fifth trading day before D* to the last actionable bar (HD 2026-10-23,
+ *     ruling 11: the window ends at the last actionable bar, so a crossover after it does not
+ *     roll; the trading days between the last actionable bar and D* are outside the window).
  *   - Last actionable bar: the last trading-day bar B before D* whose next calendar day is still
  *     before D*. The live runners run seven days a week and the run dated R trades the bar of R-1
  *     (a Saturday run trades Friday's bar at Friday's settle), so this is the last bar whose trade
@@ -55,8 +57,9 @@ namespace trade_ngin::contract_rolls {
  *   - Class d: the vendor's contract by symbol and instant (contract_bars.hpp).
  *
  * Where the ruling is silent, this code decides as follows (R2 report, "Interpretations"):
- *   - The window's first day is the 5th trading day strictly before D*; the last actionable bar
- *     (LAB) is the latest trading day t with t + 1 day < D*, a calendar date (the grid may lack it).
+ *   - The window's first day is the 5th trading day strictly before D*; its last day is the last
+ *     actionable bar (LAB), the latest trading day t with t + 1 day < D*, a calendar date (the grid
+ *     may lack it).
  *   - A vendor switch is a bar whose vendor contract differs from the last KNOWN vendor contract
  *     before it, expires later than the held one, and is the vendor's contract on the next grid
  *     bar too. A switch to a contract later than the target still rolls only to the target.
@@ -100,8 +103,8 @@ struct ContractDates {
     Day last_trading_day{};                ///< the expiration column
     std::optional<Day> first_notice_day;   ///< the exchange rule (roll_calendar.hpp)
     Day deadline{};                        ///< D*
-    Day window_first{};                    ///< the 5th trading day before D*
-    Day last_actionable{};                 ///< the LAB
+    Day window_first{};                    ///< the window's first day: the 5th trading day before D*
+    Day last_actionable{};                 ///< the LAB, the window's last day (ruling 11)
     std::optional<Day> rule_last_trading_day;  ///< the exchange rule's, for the cross-check
 };
 
@@ -189,6 +192,7 @@ struct RuleReport {
     int unknown_vendor_days{0};
     int no_target_bars{0};      ///< trading-day bars a pending roll found no target printing
     int ltd_mismatches{0};      ///< contracts whose expiration differs from the exchange rule
+    int warnings_not_logged{0};  ///< warnings dated before RuleInputs::log_from (kept, not logged)
     std::vector<std::string> fallback_cases;  ///< every fallback roll, listed
     std::vector<std::string> warnings;
 };
@@ -223,6 +227,9 @@ struct RuleInputs {
     const TradingCalendar* cal{nullptr};
     std::string cycle;  ///< the root's cycle (roll_cycle_table)
     std::optional<MicroAlias> alias;  ///< the micros only
+    /// Warnings dated before this day are kept in RuleReport::warnings but not logged (the bar
+    /// source runs the rule from the series start on every load and logs its own window's only).
+    Day log_from{};
 };
 
 /**

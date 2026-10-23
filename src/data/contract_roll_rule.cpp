@@ -96,7 +96,11 @@ private:
     }
 
     void warn(const std::string& msg) {
-        WARN("contract_rolls: " + msg);
+        if (day_ >= in_.log_from) {
+            WARN("contract_rolls: " + msg);
+        } else {
+            ++out_.report.warnings_not_logged;
+        }
         out_.report.warnings.push_back(msg);
     }
 
@@ -145,6 +149,7 @@ private:
     const TradingCalendar& cal_;
     std::map<ContractKey, ContractDates> dates_;
     HeldSeries out_;
+    Day day_{};  // the grid date being read (warn)
 };
 
 HeldSeries Rule::run() {
@@ -169,6 +174,7 @@ HeldSeries Rule::run() {
     for (size_t i = 0; i < grid.size(); ++i) {
         const VendorBar& vb = grid[i];
         const Day d = vb.date;
+        day_ = d;
         const Contract* vendor = vendor_on(i);
         HeldDay day;
         day.date = d;
