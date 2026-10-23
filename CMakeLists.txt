@@ -168,6 +168,8 @@ set(TRADE_NGIN_SOURCES
     src/data/session_classifier.cpp
     src/data/listing_dates.cpp
     src/data/roll_series.cpp
+    src/data/roll_calendar.cpp
+    src/data/contract_bars.cpp
     src/instruments/futures.cpp
     src/instruments/equity.cpp
     src/instruments/option.cpp
