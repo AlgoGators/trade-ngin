@@ -46,8 +46,11 @@ design of https://github.com/AlgoGators/trade-ngin/issues/191, to be event-drive
 https://github.com/AlgoGators/trade-ngin/issues/192. data-ngin pulls at 04:30 ET once the
 vendor's ~8 h delayed historical data has bar D (the UTC day that ended before the pull: on day T,
 bar T-1) and writes ops.data_ready (migration 028) around 04:35-05:00: one row per
-(dataset, bar_date) with its status. Each pass reads the newest row of QT_DATA_READY_DATASET
-(futures_ohlcv_1d) for bar date D and builds the books of T = the next trading day after D
+(dataset, bar_date) with its status. Each pass reads the newest row of each dataset of
+QT_DATA_READY_DATASET (futures_ohlcv_1d; a comma-separated list), plus the per-contract pull's
+futures_contract_ohlcv_1d for a portfolio whose portfolio.json turns per_contract_rolls on (rolls
+step 4: a late per-contract row delays the run like a late continuous row, with the same alert;
+combine_ready), for bar date D and builds the books of T = the next trading day after D
 (trading_days.py, the engine's holiday calendar: Friday's, Saturday's and Sunday's bars all build
 Monday, a holiday is skipped). Normally T is today, and today's model run is the primary run:
 
@@ -111,14 +114,14 @@ from pathlib import Path
 from typing import (Any, Callable, Dict, Iterator, List, Optional, Protocol, Sequence, Tuple)
 
 from . import cutoff
-from .config import (CONNECT_TIMEOUT_S, CatchupSettings, CommandSettings, ConfigError, DbConfig,
-                     load_settings)
+from .config import (CONNECT_TIMEOUT_S, CONTRACT_DATA_READY_DATASET, CatchupSettings,
+                     CommandSettings, ConfigError, DbConfig, load_settings)
 from .jobs import Runner, RunResult, SubprocessRunner, tail
 from .override_mail import ApproverError, Sender, load_smtp, parse_approvers, send_smtp
 from .portfolios import portfolios_root
 from . import activity_mail, review_mail
-from .trading_days import (TradingCalendar, load_calendar, resolve_holidays_path,
-                           staleness_tolerance_days)
+from .trading_days import (TradingCalendar, load_calendar, per_contract_rolls,
+                           resolve_holidays_path, staleness_tolerance_days)
 
 log = logging.getLogger("desk.catchup")
 
@@ -163,6 +166,34 @@ class DataReady:
     status: str                 # complete | partial | failed
     run_id: Optional[str]
     finished_at: dt.datetime
+    # Rolls step 4: the rows this one combines (combine_ready), each dataset's own; () on a row
+    # read from the table.
+    parts: Tuple["DataReady", ...] = ()
+
+
+STATUS_ORDER = ("complete", "partial")
+
+
+def combine_ready(rows: Sequence[DataReady]) -> DataReady:
+    """The data every dataset a run waits for has (rolls step 4, ROLLS_STEP1_PLAN section 5a): one
+    row standing for the newest row of each dataset. Its bar date is the OLDEST of theirs, so a
+    late dataset holds the run back as a late continuous row does; the rows on that date decide
+    the status (the worst: failed, any other, partial, complete), the counts, the missing symbols
+    and finished_at (the latest of theirs: the data was in once the last of them finished). A
+    dataset already on a later date is in for this one. One row is returned as it is."""
+    if len(rows) == 1:
+        return rows[0]
+    bar_date = min(r.bar_date for r in rows)
+    on = [r for r in rows if r.bar_date == bar_date]
+    worst = max(on, key=lambda r: (STATUS_ORDER.index(r.status) if r.status in STATUS_ORDER
+                                   else len(STATUS_ORDER) + (r.status == "failed")))
+    missing: List[str] = []
+    for r in on:
+        missing.extend(m for m in r.missing if m not in missing)
+    return DataReady("+".join(r.dataset for r in rows), bar_date,
+                     sum(r.expected for r in on), sum(r.loaded for r in on), tuple(missing),
+                     worst.status, ",".join(r.run_id or "-" for r in on),
+                     max(r.finished_at for r in on), tuple(on))
 
 
 class DayStore(Protocol):
@@ -195,6 +226,11 @@ class DayStore(Protocol):
 
     def last_bar_dates(self, symbols: Sequence[str], since: dt.date) -> Dict[str, dt.date]:
         """The newest futures_data.ohlcv_1d bar date of each symbol, from `since` on."""
+
+    def last_contract_bar_dates(self, roots: Sequence[str],
+                                since: dt.date) -> Dict[str, dt.date]:
+        """The newest futures_data.contract_ohlcv_1d bar date of each root (the per-contract
+        row's missing names roots), from `since` on."""
 
     def desk_edited(self, portfolio_id: str, date: dt.date) -> bool:
         """The desk saved the day (a done save, or an approved override): what the engine's
@@ -341,6 +377,17 @@ class PostgresDayStore:
                         "WHERE symbol = ANY(%s) AND time >= %s GROUP BY symbol",
                         (list(symbols), since))
             return {sym: d for sym, d in cur.fetchall() if d is not None}
+        return self._run(q)
+
+    def last_contract_bar_dates(self, roots, since):
+        if not roots:
+            return {}
+
+        def q(cur):
+            cur.execute("SELECT root, max(date) FROM futures_data.contract_ohlcv_1d "
+                        "WHERE root = ANY(%s) AND date >= %s GROUP BY root",
+                        (list(roots), since))
+            return {root: d for root, d in cur.fetchall() if d is not None}
         return self._run(q)
 
     def desk_edited(self, portfolio_id, date):
@@ -759,7 +806,8 @@ class CatchupScheduler:
                     log.error("the data-ready check failed", exc_info=True,
                               extra={"error": type(exc).__name__})
                     self.alerter.alert(self._catchup.portfolios[0],
-                                       self._catchup.data_ready_dataset, None, "scheduler_error",
+                                       self._catchup.data_ready_datasets[0], None,
+                                       "scheduler_error",
                                        f"the data-ready check failed: {type(exc).__name__}: {exc}")
             try:
                 self._activity_mail()
@@ -902,8 +950,24 @@ class CatchupScheduler:
     # Interim: Postgres polling of ops.data_ready once a pass. #191 makes strategy runs
     # event-driven on declared inputs; #192 replaces this polling with NATS JetStream.
 
-    def _ready(self) -> Optional[DataReady]:
-        return self._store.latest_data_ready(self._catchup.data_ready_dataset)
+    def _datasets(self, portfolio_dir: str) -> Tuple[str, ...]:
+        """The ops.data_ready datasets the portfolio's run waits for: QT_DATA_READY_DATASET's, and
+        the per-contract pull's when its portfolio.json turns per_contract_rolls on (rolls step 4,
+        ROLLS_STEP1_PLAN section 5a: a late per-contract row delays the run like a late
+        continuous row)."""
+        out = tuple(self._catchup.data_ready_datasets)
+        if per_contract_rolls(self._settings.config_dir, portfolio_dir) \
+                and CONTRACT_DATA_READY_DATASET not in out:
+            out += (CONTRACT_DATA_READY_DATASET,)
+        return out
+
+    def _ready(self, info: PortfolioInfo) -> Optional[DataReady]:
+        """The newest data every dataset of the portfolio has (combine_ready); None while one of
+        them has no row at all."""
+        rows = [self._store.latest_data_ready(d) for d in self._datasets(info.dir)]
+        if any(r is None for r in rows):
+            return None
+        return combine_ready(rows)
 
     def _data_verdict(self, info: PortfolioInfo, ready: DataReady,
                       target: dt.date) -> Tuple[Optional[Step], Dict[str, dt.date]]:
@@ -913,30 +977,38 @@ class CatchupScheduler:
         (target - 1, the engine's end_date): the check the engine's freshness and FEED_HOLE
         guards make, done here first so a stale feed builds nothing. The engine still decides
         inside the run; its refusal is an alert like any refused run."""
-        if ready.status == "failed":
-            return Step(ALERT, target, "data_failed",
-                        f"data-ngin's {ready.dataset} pull for {ready.bar_date} failed (run "
-                        f"{ready.run_id or '-'}, {ready.loaded} of {ready.expected} loaded): the "
-                        f"books of {target} are not built"), {}
-        if ready.status not in ("complete", "partial"):
-            return Step(ALERT, target, "data_failed",
-                        f"ops.data_ready {ready.dataset} {ready.bar_date} has status "
-                        f"{ready.status!r}: the books of {target} are not built"), {}
-        if not ready.missing:
-            return None, {}
+        parts = ready.parts or (ready,)
+        for part in parts:
+            if part.status == "failed":
+                return Step(ALERT, target, "data_failed",
+                            f"data-ngin's {part.dataset} pull for {part.bar_date} failed (run "
+                            f"{part.run_id or '-'}, {part.loaded} of {part.expected} loaded): the "
+                            f"books of {target} are not built"), {}
+            if part.status not in ("complete", "partial"):
+                return Step(ALERT, target, "data_failed",
+                            f"ops.data_ready {part.dataset} {part.bar_date} has status "
+                            f"{part.status!r}: the books of {target} are not built"), {}
         tolerance = staleness_tolerance_days(self._settings.config_dir, info.dir)
         as_of = target - dt.timedelta(days=1)
-        last = self._store.last_bar_dates(
-            ready.missing, ready.bar_date - dt.timedelta(days=MISSING_LOOKBACK_DAYS))
-        stale = [f"{sym} (last bar {last.get(sym) or 'none'})" for sym in ready.missing
-                 if last.get(sym) is None or (as_of - last[sym]).days > tolerance]
-        if stale:
-            return Step(ALERT, target, "data_stale",
-                        f"{ready.dataset} {ready.bar_date} is {ready.status} ({ready.loaded} of "
-                        f"{ready.expected}); {len(stale)} missing symbol(s) are past "
-                        f"live.data_staleness_tolerance_days={tolerance} as of {as_of}: "
-                        f"{', '.join(stale)}. The books of {target} are not built"), {}
-        return None, last
+        last_all: Dict[str, dt.date] = {}
+        for part in parts:
+            if not part.missing:
+                continue
+            # The per-contract row names roots: their last contract bar (rolls step 4).
+            lookup = (self._store.last_contract_bar_dates
+                      if part.dataset == CONTRACT_DATA_READY_DATASET else self._store.last_bar_dates)
+            last = lookup(part.missing,
+                          part.bar_date - dt.timedelta(days=MISSING_LOOKBACK_DAYS))
+            stale = [f"{sym} (last bar {last.get(sym) or 'none'})" for sym in part.missing
+                     if last.get(sym) is None or (as_of - last[sym]).days > tolerance]
+            if stale:
+                return Step(ALERT, target, "data_stale",
+                            f"{part.dataset} {part.bar_date} is {part.status} ({part.loaded} of "
+                            f"{part.expected}); {len(stale)} missing symbol(s) are past "
+                            f"live.data_staleness_tolerance_days={tolerance} as of {as_of}: "
+                            f"{', '.join(stale)}. The books of {target} are not built"), {}
+            last_all.update(last)
+        return None, last_all
 
     def _morning_gate(self, info: PortfolioInfo, today: dt.date) -> Optional[Step]:
         """None when today's model run may go: data for the previous trading day is ready and
@@ -944,19 +1016,24 @@ class CatchupScheduler:
         pull may still be running), an alert from then on. A failed or stale row is final: an
         alert at once. The next pass looks again either way."""
         prev = self.calendar.previous_trading_day(today)
-        ready = self._ready()
-        dataset = self._catchup.data_ready_dataset
-        if ready is None or ready.bar_date < prev:
+        datasets = self._datasets(info.dir)
+        rows = {d: self._store.latest_data_ready(d) for d in datasets}
+        late = [d for d in datasets if rows[d] is None or rows[d].bar_date < prev]
+        if late:
+            names = ", ".join(late)
             now_local = self.local_now()
             if now_local.time() < self._catchup.data_alert_at:
                 return Step(WAIT_TIME, today, "before_data",
-                            f"today's run waits for data-ngin's {dataset} row for {prev}")
-            newest = f"newest {ready.bar_date} ({ready.status})" if ready else "no row at all"
+                            f"today's run waits for data-ngin's {names} row for {prev}")
+            newest = "; ".join(
+                (f"{d}: " if len(late) > 1 else "")
+                + (f"newest {rows[d].bar_date} ({rows[d].status})" if rows[d] else "no row at all")
+                for d in late)
             return Step(ALERT, today, "data_not_ready",
-                        f"no book for {today}, and ops.data_ready has no {dataset} row for "
+                        f"no book for {today}, and ops.data_ready has no {names} row for "
                         f"{prev} at {now_local:%H:%M} New York ({newest}): today's model run "
                         "waits for the data")
-        bad, _ = self._data_verdict(info, ready, today)
+        bad, _ = self._data_verdict(info, combine_ready([rows[d] for d in datasets]), today)
         return bad
 
     def _evening_step(self, info: PortfolioInfo, now_local: dt.datetime,
@@ -965,7 +1042,7 @@ class CatchupScheduler:
         or the chain up to a later T), or None. Today has its book (last >= today)."""
         today = now_local.date()
         pid = info.portfolio_id
-        ready = self._ready()
+        ready = self._ready(info)
         if ready is None:
             return None
         target = self.calendar.next_trading_day(ready.bar_date)
@@ -1084,16 +1161,22 @@ class CatchupScheduler:
             return
         today = now_local.date()
         expected = self.calendar.previous_trading_day(today)
-        ready = self._ready()
-        if ready is not None and ready.bar_date >= expected and ready.status != "failed":
-            return
-        what = (f"its row is {ready.status}" if ready is not None and ready.bar_date >= expected
-                else f"the newest row is for {ready.bar_date}" if ready is not None
-                else "the table has no row")
-        dataset = self._catchup.data_ready_dataset
-        self.alerter.alert(self._catchup.portfolios[0], dataset, expected, "data_not_ready",
-                           f"no ready {dataset} data for {expected} at {now_local:%H:%M} New "
-                           f"York ({what}): today's model run waits for the data")
+        # Every dataset any portfolio waits for (rolls step 4: the per-contract row too when a
+        # portfolio turns per_contract_rolls on), each with its own alert.
+        datasets: List[str] = []
+        for pdir in self._catchup.portfolios:
+            datasets.extend(d for d in self._datasets(pdir) if d not in datasets)
+        for dataset in datasets:
+            ready = self._store.latest_data_ready(dataset)
+            if ready is not None and ready.bar_date >= expected and ready.status != "failed":
+                continue
+            what = (f"its row is {ready.status}"
+                    if ready is not None and ready.bar_date >= expected
+                    else f"the newest row is for {ready.bar_date}" if ready is not None
+                    else "the table has no row")
+            self.alerter.alert(self._catchup.portfolios[0], dataset, expected, "data_not_ready",
+                               f"no ready {dataset} data for {expected} at {now_local:%H:%M} New "
+                               f"York ({what}): today's model run waits for the data")
 
     # -- the steps ------------------------------------------------------------------------------
 
