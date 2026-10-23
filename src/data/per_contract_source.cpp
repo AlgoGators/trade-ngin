@@ -1,7 +1,17 @@
 // src/data/per_contract_source.cpp
 #include "trade_ngin/data/per_contract_source.hpp"
 
+#include <arrow/api.h>
+
+#include <algorithm>
+#include <chrono>
+#include <ctime>
+#include <iomanip>
+#include <sstream>
+
 #include "trade_ngin/core/logger.hpp"
+#include "trade_ngin/core/time_utils.hpp"
+#include "trade_ngin/data/market_data_bus.hpp"
 
 namespace trade_ngin::contract_rolls {
 
@@ -196,6 +206,188 @@ Result<std::vector<SourceBar>> bars_of_series(const HeldSeries& series,
     return out;
 }
 
+Result<SourceSymbols> split_source_symbols(const std::vector<std::string>& symbols) {
+    SourceSymbols out;
+    const std::string suffix = ".v.0";
+    for (const auto& symbol : symbols) {
+        if (symbol.size() <= suffix.size() ||
+            symbol.compare(symbol.size() - suffix.size(), suffix.size(), suffix) != 0) {
+            return make_error<SourceSymbols>(ErrorCode::INVALID_ARGUMENT,
+                                             "per_contract_rolls: " + symbol +
+                                                 " is not a continuous futures symbol (<root>.v.0)",
+                                             "PostgresDatabase");
+        }
+        const std::string root = symbol.substr(0, symbol.size() - suffix.size());
+        if (reads_vendor_series(root)) {
+            out.vendor_symbols.push_back(symbol);
+        } else {
+            out.roots.push_back(root);
+        }
+    }
+    return out;
+}
+
+void sort_source_bars(std::vector<SourceBar>& bars) {
+    std::stable_sort(bars.begin(), bars.end(), [](const SourceBar& a, const SourceBar& b) {
+        if (a.time_text != b.time_text) return a.time_text < b.time_text;
+        return a.symbol < b.symbol;
+    });
+}
+
+std::vector<market_data_utils::FuturesInstrumentId> instrument_id_rows(
+    const std::vector<SourceBar>& bars) {
+    std::vector<const SourceBar*> keyed;
+    for (const auto& bar : bars) {
+        if (!bar.instrument_id.empty()) keyed.push_back(&bar);
+    }
+    std::stable_sort(keyed.begin(), keyed.end(), [](const SourceBar* a, const SourceBar* b) {
+        if (a->symbol != b->symbol) return a->symbol < b->symbol;
+        return a->time_text < b->time_text;
+    });
+    std::vector<market_data_utils::FuturesInstrumentId> rows;
+    rows.reserve(keyed.size());
+    for (const auto* bar : keyed) {
+        rows.push_back({bar->symbol, bar->time_text.substr(0, 10), bar->instrument_id});
+    }
+    return rows;
+}
+
+Timestamp source_bar_time(const std::string& time_text) {
+    std::tm time_info = {};
+    std::istringstream ss(time_text);
+    ss >> std::get_time(&time_info, "%Y-%m-%d %H:%M:%S");
+    time_t time_val = std::mktime(&time_info);
+    trade_ngin::core::safe_gmtime(&time_val, &time_info);
+    return std::chrono::system_clock::from_time_t(std::mktime(&time_info));
+}
+
+MarketDataEvent source_bar_event(const SourceBar& bar) {
+    MarketDataEvent event;
+    event.type = MarketDataEventType::BAR;
+    event.symbol = bar.symbol;
+    event.timestamp = source_bar_time(bar.time_text);
+    event.numeric_fields["open"] = bar.open;
+    event.numeric_fields["high"] = bar.high;
+    event.numeric_fields["low"] = bar.low;
+    event.numeric_fields["close"] = bar.close;
+    event.numeric_fields["volume"] = bar.volume;
+    return event;
+}
+
+Result<std::shared_ptr<arrow::Table>> source_bars_to_arrow(const std::vector<SourceBar>& bars) {
+    using Table = std::shared_ptr<arrow::Table>;
+    arrow::MemoryPool* pool = arrow::default_memory_pool();
+    arrow::TimestampBuilder timestamp_builder(arrow::timestamp(arrow::TimeUnit::SECOND), pool);
+    arrow::StringBuilder symbol_builder(pool);
+    arrow::DoubleBuilder open_builder(pool);
+    arrow::DoubleBuilder high_builder(pool);
+    arrow::DoubleBuilder low_builder(pool);
+    arrow::DoubleBuilder close_builder(pool);
+    arrow::DoubleBuilder volume_builder(pool);
+    arrow::StringBuilder instrument_id_builder(pool);
+    arrow::DoubleBuilder roll_close_builder(pool);
+    arrow::StringBuilder roll_id_builder(pool);
+    arrow::Int8Builder roll_kind_builder(pool);
+    auto failed = [](const std::string& operation) {
+        return make_error<Table>(ErrorCode::CONVERSION_ERROR,
+                                 "Arrow builder error during " + operation + " (per_contract_rolls)",
+                                 "PostgresDatabase");
+    };
+    try {
+        for (const auto& bar : bars) {
+            const auto timestamp = std::chrono::duration_cast<std::chrono::seconds>(
+                                       source_bar_time(bar.time_text).time_since_epoch())
+                                       .count();
+            if (timestamp_builder.Append(timestamp) != arrow::Status::OK() ||
+                symbol_builder.Append(bar.symbol) != arrow::Status::OK() ||
+                open_builder.Append(bar.open) != arrow::Status::OK() ||
+                high_builder.Append(bar.high) != arrow::Status::OK() ||
+                low_builder.Append(bar.low) != arrow::Status::OK() ||
+                close_builder.Append(bar.close) != arrow::Status::OK() ||
+                volume_builder.Append(bar.volume) != arrow::Status::OK()) {
+                return failed("append");
+            }
+            const arrow::Status id_status = bar.instrument_id.empty()
+                                                ? instrument_id_builder.AppendNull()
+                                                : instrument_id_builder.Append(bar.instrument_id);
+            if (id_status != arrow::Status::OK()) return failed("append");
+            if (bar.roll_from) {
+                if (roll_close_builder.Append(bar.roll_from->close) != arrow::Status::OK() ||
+                    roll_id_builder.Append(bar.roll_from->instrument_id) != arrow::Status::OK() ||
+                    roll_kind_builder.Append(static_cast<int8_t>(bar.roll_from->kind)) !=
+                        arrow::Status::OK()) {
+                    return failed("append");
+                }
+            } else if (roll_close_builder.AppendNull() != arrow::Status::OK() ||
+                       roll_id_builder.AppendNull() != arrow::Status::OK() ||
+                       roll_kind_builder.AppendNull() != arrow::Status::OK()) {
+                return failed("append");
+            }
+        }
+        std::vector<std::shared_ptr<arrow::Array>> arrays(11);
+        if (timestamp_builder.Finish(&arrays[0]) != arrow::Status::OK() ||
+            symbol_builder.Finish(&arrays[1]) != arrow::Status::OK() ||
+            open_builder.Finish(&arrays[2]) != arrow::Status::OK() ||
+            high_builder.Finish(&arrays[3]) != arrow::Status::OK() ||
+            low_builder.Finish(&arrays[4]) != arrow::Status::OK() ||
+            close_builder.Finish(&arrays[5]) != arrow::Status::OK() ||
+            volume_builder.Finish(&arrays[6]) != arrow::Status::OK() ||
+            instrument_id_builder.Finish(&arrays[7]) != arrow::Status::OK() ||
+            roll_close_builder.Finish(&arrays[8]) != arrow::Status::OK() ||
+            roll_id_builder.Finish(&arrays[9]) != arrow::Status::OK() ||
+            roll_kind_builder.Finish(&arrays[10]) != arrow::Status::OK()) {
+            return failed("finish");
+        }
+        auto schema = arrow::schema({arrow::field("time", arrow::timestamp(arrow::TimeUnit::SECOND)),
+                                     arrow::field("symbol", arrow::utf8()),
+                                     arrow::field("open", arrow::float64()),
+                                     arrow::field("high", arrow::float64()),
+                                     arrow::field("low", arrow::float64()),
+                                     arrow::field("close", arrow::float64()),
+                                     arrow::field("volume", arrow::float64()),
+                                     arrow::field("instrument_id", arrow::utf8()),
+                                     arrow::field("roll_from_close", arrow::float64()),
+                                     arrow::field("roll_from_id", arrow::utf8()),
+                                     arrow::field("roll_from_kind", arrow::int8())});
+        return Result<Table>(arrow::Table::Make(schema, arrays));
+    } catch (const std::exception& e) {
+        return make_error<Table>(ErrorCode::CONVERSION_ERROR,
+                                 "Exception during Arrow table conversion (per_contract_rolls): " +
+                                     std::string(e.what()),
+                                 "PostgresDatabase");
+    }
+}
+
+Result<std::map<Day, std::string>> grid_window(
+    const std::string& root, const std::vector<std::pair<std::string, std::string>>& instants) {
+    std::map<Day, std::string> window;
+    for (const auto& [time_text, date_text] : instants) {
+        const Day date = parse_ymd(date_text);
+        if (!window.emplace(date, time_text).second) {
+            return make_error<std::map<Day, std::string>>(
+                ErrorCode::INVALID_DATA,
+                "per_contract_rolls: " + root + ".v.0 has two instants on " + ymd(date),
+                "contract_rolls");
+        }
+    }
+    return window;
+}
+
+size_t drop_before_series_start(const std::string& root, std::map<Day, std::string>& window,
+                                Day start) {
+    size_t before_start = 0;
+    for (auto it = window.begin(); it != window.end() && it->first < start;) {
+        it = window.erase(it);
+        ++before_start;
+    }
+    if (before_start > 0) {
+        WARN("PER_CONTRACT_ROLLS " + root + ".v.0: " + std::to_string(before_start) +
+             " grid bars before the series start " + ymd(start) +
+             " (no contract row) are not handed out");
+    }
+    return before_start;
+}
+
 Result<std::vector<SourceBar>> per_contract_bars(pqxx::transaction_base& txn,
                                                  const std::string& root,
                                                  const std::string& start_ts,
@@ -210,15 +402,16 @@ Result<std::vector<SourceBar>> per_contract_bars(pqxx::transaction_base& txn,
             "SELECT DISTINCT time FROM futures_data.ohlcv_1d"
             " WHERE symbol = $1 AND time BETWEEN $2 AND $3) AS t ORDER BY t.time",
             pqxx::params{root + ".v.0", start_ts, end_ts});
+        std::vector<std::pair<std::string, std::string>> instants;
+        instants.reserve(rows.size());
         for (const auto& row : rows) {
-            const Day date = parse_ymd(row[1].as<std::string>());
-            if (!window.emplace(date, row[0].as<std::string>()).second) {
-                return make_error<Bars>(ErrorCode::INVALID_DATA,
-                                        "per_contract_rolls: " + root + ".v.0 has two instants on " +
-                                            ymd(date),
-                                        "contract_rolls");
-            }
+            instants.emplace_back(row[0].as<std::string>(), row[1].as<std::string>());
         }
+        auto w = grid_window(root, instants);
+        if (w.is_error()) {
+            return make_error<Bars>(w.error()->code(), w.error()->what(), "contract_rolls");
+        }
+        window = std::move(w.value());
     } catch (const std::exception& e) {
         return make_error<Bars>(ErrorCode::DATABASE_ERROR,
                                 "per_contract_rolls: " + root + ": " + std::string(e.what()),
@@ -229,16 +422,7 @@ Result<std::vector<SourceBar>> per_contract_bars(pqxx::transaction_base& txn,
     if (start.is_error()) {
         return make_error<Bars>(start.error()->code(), start.error()->what(), "contract_rolls");
     }
-    size_t before_start = 0;
-    for (auto it = window.begin(); it != window.end() && it->first < start.value();) {
-        it = window.erase(it);
-        ++before_start;
-    }
-    if (before_start > 0) {
-        WARN("PER_CONTRACT_ROLLS " + root + ".v.0: " + std::to_string(before_start) +
-             " grid bars before the series start " + ymd(start.value()) +
-             " (no contract row) are not handed out");
-    }
+    drop_before_series_start(root, window, start.value());
     if (window.empty()) return Bars{};
     // The rule runs from the series start; only the window's own warnings are logged.
     auto series = build_held_series(txn, root, start.value(), window.rbegin()->first, calendars,

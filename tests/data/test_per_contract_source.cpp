@@ -2,13 +2,17 @@
 // out, and that no bar depends on a later bar, on hand-built GC fixtures (the shipped calendar), then
 // on the clone (TRADE_NGIN_TEST_DSN, read only): the loader's own call with the switch on and off.
 // GCQ6: D* = Fri 2026-07-31, window Fri 07-24 to the LAB Wed 07-29.
+#include <arrow/api.h>
 #include <gtest/gtest.h>
 
+#include <cstdlib>
 #include <map>
+#include <optional>
 
 #include "contract_rolls_test_util.hpp"
 #include "trade_ngin/core/time_utils.hpp"
 #include "trade_ngin/data/conversion_utils.hpp"
+#include "trade_ngin/data/market_data_bus.hpp"
 #include "trade_ngin/data/per_contract_source.hpp"
 #include "trade_ngin/data/postgres_database.hpp"
 
@@ -288,6 +292,207 @@ TEST(PerContractSource, TheSwitchTurnsTheSourceOnAndOffAndTheMicrosStayOnTheVend
     EXPECT_FALSE(source.enabled());
     for (const char* micro : {"MES", "MNQ", "MYM", "M2K"}) EXPECT_TRUE(reads_vendor_series(micro));
     for (const char* root : {"GC", "ES", "ZN", "MBT"}) EXPECT_FALSE(reads_vendor_series(root));
+}
+
+// ------------------------------------------------------------------------------------------------
+// The loader's pieces around the database reads (per_contract_source_bars, source_bars_to_arrow,
+// get_futures_instrument_ids, per_contract_bars), without a database.
+// ------------------------------------------------------------------------------------------------
+
+namespace {
+
+SourceBar source_bar(const std::string& symbol, const std::string& time_text, double close,
+                     const std::string& id, std::optional<RollFrom> roll_from = std::nullopt) {
+    SourceBar b;
+    b.time_text = time_text;
+    b.date = d(time_text.substr(0, 10));
+    b.symbol = symbol;
+    b.open = close - 1.0;
+    b.high = close + 2.0;
+    b.low = close - 3.0;
+    b.close = close;
+    b.volume = 100.0 + close;
+    b.instrument_id = id;
+    b.roll_from = std::move(roll_from);
+    return b;
+}
+
+/// One bar of every shape the source hands out: no field, each of the three kinds, no id.
+std::vector<SourceBar> every_kind() {
+    return {source_bar("GC.v.0", "2026-07-15 00:00:00+00", 2015.0, "q"),
+            source_bar("GC.v.0", "2026-07-20 00:00:00+00", 2020.0, "q",
+                       RollFrom{2220.0, "z", RollFromKind::AWAITS_NEXT}),
+            source_bar("GC.v.0", "2026-07-27 00:00:00+00", 2227.0, "z",
+                       RollFrom{2027.0, "q", RollFromKind::KNOWN}),
+            source_bar("GC.v.0", "2026-07-28 00:00:00+00", 2228.0, "z",
+                       RollFrom{2028.0, "q", RollFromKind::AFTER_ROLL}),
+            source_bar("MES.v.0", "2026-07-28 00:00:00+00", 6000.0, "")};
+}
+
+/// `table` with column `name` replaced by `column`.
+std::shared_ptr<arrow::Table> with_column(const std::shared_ptr<arrow::Table>& table,
+                                          const std::string& name,
+                                          const std::shared_ptr<arrow::Array>& column) {
+    const int i = table->schema()->GetFieldIndex(name);
+    return table
+        ->SetColumn(i, arrow::field(name, column->type()),
+                    std::make_shared<arrow::ChunkedArray>(column))
+        .ValueOrDie();
+}
+
+}  // namespace
+
+TEST(PerContractSourceLoader, TheSymbolsSplitIntoTheRuleAndTheVendorsSeriesAndAnyOtherIsRefused) {
+    auto split = split_source_symbols({"GC.v.0", "MES.v.0", "ZN.v.0", "M2K.v.0"});
+    ASSERT_TRUE(split.is_ok()) << split.error()->what();
+    EXPECT_EQ(split.value().roots, (std::vector<std::string>{"GC", "ZN"}));
+    EXPECT_EQ(split.value().vendor_symbols, (std::vector<std::string>{"MES.v.0", "M2K.v.0"}));
+    EXPECT_TRUE(split_source_symbols({}).value().roots.empty());
+    for (const char* bad : {"GC", "GC.v.1", ".v.0", "GCQ6"}) {
+        auto r = split_source_symbols({"GC.v.0", bad});
+        ASSERT_TRUE(r.is_error()) << bad;
+        EXPECT_NE(std::string(r.error()->what()).find(bad), std::string::npos) << bad;
+    }
+}
+
+TEST(PerContractSourceLoader, TheBarsSortAsTheQueryAndTheIdRowsBySymbolThenDate) {
+    std::vector<SourceBar> bars = {source_bar("ZN.v.0", "2026-07-16 00:00:00+00", 1.0, "n2"),
+                                   source_bar("GC.v.0", "2026-07-16 00:00:00+00", 2.0, "q2"),
+                                   source_bar("ZN.v.0", "2026-07-15 00:00:00+00", 3.0, "n1"),
+                                   source_bar("MES.v.0", "2026-07-15 00:00:00+00", 4.0, ""),
+                                   source_bar("GC.v.0", "2026-07-15 00:00:00+00", 5.0, "q1")};
+    sort_source_bars(bars);
+    std::vector<std::string> order;
+    for (const auto& b : bars) order.push_back(b.time_text.substr(8, 2) + " " + b.symbol);
+    EXPECT_EQ(order, (std::vector<std::string>{"15 GC.v.0", "15 MES.v.0", "15 ZN.v.0", "16 GC.v.0",
+                                               "16 ZN.v.0"}));
+    const auto rows = instrument_id_rows(bars);
+    ASSERT_EQ(rows.size(), 4u) << "a bar with no id has no row, as the inner join drops it";
+    EXPECT_EQ(rows[0].symbol, "GC.v.0");
+    EXPECT_EQ(rows[0].date, "2026-07-15");
+    EXPECT_EQ(rows[0].instrument_id, "q1");
+    EXPECT_EQ(rows[1].instrument_id, "q2");
+    EXPECT_EQ(rows[2].symbol, "ZN.v.0");
+    EXPECT_EQ(rows[2].instrument_id, "n1");
+    EXPECT_EQ(rows[3].date, "2026-07-16");
+}
+
+// The loader's table carries the field through the conversion every reader uses
+// (DataConversionUtils::arrow_table_to_bars): each kind arrives as itself.
+TEST(PerContractSourceLoader, TheArrowTableRoundTripsEveryKindOfTheField) {
+    const std::vector<SourceBar> source = every_kind();
+    auto table = source_bars_to_arrow(source);
+    ASSERT_TRUE(table.is_ok()) << table.error()->what();
+    EXPECT_EQ(table.value()->num_columns(), 11);
+    EXPECT_EQ(table.value()->num_rows(), static_cast<int64_t>(source.size()));
+    auto bars = DataConversionUtils::arrow_table_to_bars(table.value());
+    ASSERT_TRUE(bars.is_ok()) << bars.error()->what();
+    ASSERT_EQ(bars.value().size(), source.size());
+    for (size_t i = 0; i < source.size(); ++i) {
+        const Bar& b = bars.value()[i];
+        const SourceBar& s = source[i];
+        SCOPED_TRACE(s.time_text + " " + s.symbol);
+        EXPECT_EQ(b.symbol, s.symbol);
+        EXPECT_EQ(b.timestamp, source_bar_time(s.time_text));
+        EXPECT_EQ(core::format_utc_date(b.timestamp), s.time_text.substr(0, 10));
+        EXPECT_EQ(static_cast<double>(b.open), s.open);
+        EXPECT_EQ(static_cast<double>(b.high), s.high);
+        EXPECT_EQ(static_cast<double>(b.low), s.low);
+        EXPECT_EQ(static_cast<double>(b.close), s.close);
+        EXPECT_EQ(b.volume, s.volume);
+        EXPECT_EQ(b.instrument_id, s.instrument_id);
+        EXPECT_EQ(b.roll_from, s.roll_from);
+    }
+    EXPECT_EQ(bars.value()[1].roll_from->kind, RollFromKind::AWAITS_NEXT);
+    EXPECT_EQ(bars.value()[2].roll_from->kind, RollFromKind::KNOWN);
+    EXPECT_EQ(bars.value()[3].roll_from->kind, RollFromKind::AFTER_ROLL);
+    // An empty source is an empty table of the same eleven columns.
+    auto empty = source_bars_to_arrow({});
+    ASSERT_TRUE(empty.is_ok());
+    EXPECT_EQ(empty.value()->num_columns(), 11);
+    EXPECT_EQ(empty.value()->num_rows(), 0);
+}
+
+TEST(PerContractSourceLoader, AMalformedRollFieldIsRefusedNotReadAsAnotherKind) {
+    const auto table = source_bars_to_arrow(every_kind()).value();
+    // the close without the id and kind columns
+    auto no_id = table->RemoveColumn(table->schema()->GetFieldIndex("roll_from_id")).ValueOrDie();
+    EXPECT_TRUE(DataConversionUtils::arrow_table_to_bars(no_id).is_error());
+    // a kind past the last one, and a NULL kind beside a close
+    for (const bool null_kind : {false, true}) {
+        arrow::Int8Builder kinds;
+        for (int64_t i = 0; i < table->num_rows(); ++i) {
+            if (i == 2) {
+                ASSERT_TRUE((null_kind ? kinds.AppendNull() : kinds.Append(3)).ok());
+            } else {
+                ASSERT_TRUE(kinds.Append(0).ok());
+            }
+        }
+        std::shared_ptr<arrow::Array> column;
+        ASSERT_TRUE(kinds.Finish(&column).ok());
+        auto r =
+            DataConversionUtils::arrow_table_to_bars(with_column(table, "roll_from_kind", column));
+        ASSERT_TRUE(r.is_error()) << (null_kind ? "NULL kind" : "kind 3");
+    }
+}
+
+TEST(PerContractSourceLoader, TheBusEventIsTheBarsOhlcvAtItsInstant) {
+    const SourceBar b = every_kind()[2];
+    const MarketDataEvent e = source_bar_event(b);
+    EXPECT_EQ(e.type, MarketDataEventType::BAR);
+    EXPECT_EQ(e.symbol, "GC.v.0");
+    EXPECT_EQ(e.timestamp, source_bar_time(b.time_text));
+    EXPECT_EQ(core::format_utc_date(e.timestamp), "2026-07-27");
+    EXPECT_EQ(e.numeric_fields.at("open"), b.open);
+    EXPECT_EQ(e.numeric_fields.at("high"), b.high);
+    EXPECT_EQ(e.numeric_fields.at("low"), b.low);
+    EXPECT_EQ(e.numeric_fields.at("close"), b.close);
+    EXPECT_EQ(e.numeric_fields.at("volume"), b.volume);
+}
+
+TEST(PerContractSourceLoader, TheGridWindowKeysEachDateOnceAndDropsTheDaysBeforeTheSeriesStart) {
+    auto w = grid_window("GC", {{"2026-07-15 00:00:00+00", "2026-07-15"},
+                                {"2026-07-16 00:00:00+00", "2026-07-16"},
+                                {"2026-07-17 00:00:00+00", "2026-07-17"}});
+    ASSERT_TRUE(w.is_ok()) << w.error()->what();
+    ASSERT_EQ(w.value().size(), 3u);
+    EXPECT_EQ(w.value().at(d("2026-07-16")), "2026-07-16 00:00:00+00");
+    std::map<Day, std::string> window = w.value();
+    EXPECT_EQ(drop_before_series_start("GC", window, d("2026-07-15")), 0u);
+    EXPECT_EQ(window.size(), 3u);
+    EXPECT_EQ(drop_before_series_start("GC", window, d("2026-07-17")), 2u);
+    ASSERT_EQ(window.size(), 1u);
+    EXPECT_EQ(window.begin()->first, d("2026-07-17"));
+    EXPECT_EQ(drop_before_series_start("GC", window, d("2026-08-01")), 1u);
+    EXPECT_TRUE(window.empty());
+    EXPECT_TRUE(grid_window("GC", {}).value().empty());
+    auto twice = grid_window("GC", {{"2026-07-15 00:00:00+00", "2026-07-15"},
+                                    {"2026-07-15 17:00:00+00", "2026-07-15"}});
+    ASSERT_TRUE(twice.is_error());
+    EXPECT_NE(std::string(twice.error()->what()).find("two instants on 2026-07-15"),
+              std::string::npos);
+}
+
+TEST(PerContractSourceLoader, TheSwitchOnLoadsTheCalendarAndRefusesWithoutOne) {
+    const char* before = std::getenv("TRADE_NGIN_FUTURES_HOLIDAYS_JSON");
+    const std::string saved = before ? before : "";
+    setenv("TRADE_NGIN_FUTURES_HOLIDAYS_JSON",
+           contract_rolls_test::shipped_futures_calendar_path().c_str(), 1);
+    EXPECT_TRUE(configure_per_contract_source(true).is_ok());
+    EXPECT_TRUE(PerContractSource::instance().enabled());
+    EXPECT_TRUE(PerContractSource::instance().calendar().for_root("GC").is_ok());
+    setenv("TRADE_NGIN_FUTURES_HOLIDAYS_JSON", "/nonexistent/futures_holidays.json", 1);
+    PerContractSource::instance().disable();
+    auto r = configure_per_contract_source(true);
+    ASSERT_TRUE(r.is_error());
+    EXPECT_NE(std::string(r.error()->what()).find("cannot be loaded"), std::string::npos);
+    EXPECT_FALSE(PerContractSource::instance().enabled());
+    if (before) {
+        setenv("TRADE_NGIN_FUTURES_HOLIDAYS_JSON", saved.c_str(), 1);
+    } else {
+        unsetenv("TRADE_NGIN_FUTURES_HOLIDAYS_JSON");
+    }
+    PerContractSource::instance().disable();
 }
 
 // ------------------------------------------------------------------------------------------------

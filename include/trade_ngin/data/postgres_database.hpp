@@ -1236,11 +1236,6 @@ private:
         pqxx::transaction_base& txn, const std::vector<std::string>& symbols,
         const std::string& start_ts, const std::string& end_ts) const;
 
-    /// The loader's table of `bars`: the futures query's eight columns plus Bar::roll_from's
-    /// three (roll_from_close, roll_from_id, roll_from_kind; NULL where it is absent).
-    Result<std::shared_ptr<arrow::Table>> source_bars_to_arrow(
-        const std::vector<contract_rolls::SourceBar>& bars) const;
-
     /**
      * @brief Convert contract metadata result to Arrow table
      * @param result pqxx result to convert

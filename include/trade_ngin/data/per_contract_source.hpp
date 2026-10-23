@@ -2,9 +2,11 @@
 #pragma once
 
 #include <map>
+#include <memory>
 #include <mutex>
 #include <optional>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include <pqxx/pqxx>
@@ -12,6 +14,15 @@
 #include "trade_ngin/core/error.hpp"
 #include "trade_ngin/core/types.hpp"
 #include "trade_ngin/data/contract_rolls.hpp"
+#include "trade_ngin/data/market_data_utils.hpp"
+
+namespace arrow {
+class Table;
+}
+
+namespace trade_ngin {
+struct MarketDataEvent;
+}
 
 namespace trade_ngin::contract_rolls {
 
@@ -126,6 +137,43 @@ struct SourceBar {
  */
 Result<std::vector<SourceBar>> bars_of_series(const HeldSeries& series,
                                               const std::map<Day, std::string>& window);
+
+/// The loader's split of the symbols asked for: the roots the rule serves and the micros' `.v.0`
+/// symbols, left on the vendor's series (reads_vendor_series), both in the order asked.
+struct SourceSymbols {
+    std::vector<std::string> vendor_symbols;
+    std::vector<std::string> roots;
+};
+
+/// An error for a symbol that is not a continuous futures symbol (`<root>.v.0`).
+Result<SourceSymbols> split_source_symbols(const std::vector<std::string>& symbols);
+
+/// Sorts the bars as the futures query sorts them: time, then symbol (stable).
+void sort_source_bars(std::vector<SourceBar>& bars);
+
+/// get_futures_instrument_ids' rows of the bars: one per bar with an id, ORDER BY symbol, date.
+std::vector<market_data_utils::FuturesInstrumentId> instrument_id_rows(
+    const std::vector<SourceBar>& bars);
+
+/// The instant of a grid bar's `time` text, by the loader's own conversion (convert_to_arrow_table).
+Timestamp source_bar_time(const std::string& time_text);
+
+/// The bus event the loader publishes for a bar (BAR, its OHLCV), as for the vendor's bars.
+MarketDataEvent source_bar_event(const SourceBar& bar);
+
+/// The loader's table of `bars`: the futures query's eight columns plus Bar::roll_from's three
+/// (roll_from_close, roll_from_id, roll_from_kind; NULL where it is absent).
+Result<std::shared_ptr<arrow::Table>> source_bars_to_arrow(const std::vector<SourceBar>& bars);
+
+/// A root's grid window from its instants' rows (the instant's text, its UTC date's text), oldest
+/// first. An error for two instants on one date.
+Result<std::map<Day, std::string>> grid_window(
+    const std::string& root, const std::vector<std::pair<std::string, std::string>>& instants);
+
+/// Drops the window's dates before the root's series start (no contract row yet), with a WARN
+/// naming how many; returns that count.
+size_t drop_before_series_start(const std::string& root, std::map<Day, std::string>& window,
+                                Day start);
 
 /**
  * @brief Reads and builds `root`'s bars over the vendor grid's instants in [start_ts, end_ts]
