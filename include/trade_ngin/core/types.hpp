@@ -488,6 +488,13 @@ struct StoredRealisedRow {
     double realised{0.0};
 };
 
+/// One roll stored for an earlier date, as PostgresDatabase::get_previous_rolls reads it (issue
+/// #188: whether a re-run's own legs are stale, live_roll_legs.hpp contract_held_coming_into).
+struct StoredRoll {
+    std::string outgoing;  ///< the contract the closing leg rolled out of
+    std::string incoming;  ///< the contract the opening leg rolled into ("" when not stored)
+};
+
 /**
  * @brief Market state enumeration for regime detection
  */
