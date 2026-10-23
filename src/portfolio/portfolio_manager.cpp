@@ -1104,10 +1104,8 @@ void PortfolioManager::update_historical_returns(const std::vector<Bar>& data) {
         stored_ids_of(symbol, series, ids, roll_from);
         const roll_series::ChangeFlags flags =
             roll_series::classify_instrument_changes(ids, roll_from);
-        // Rolls step 3: a switch bar the next bar did not confirm reads the old contract's close.
-        for (size_t i = 0; i < prices.size(); ++i) {
-            if (flags.resolved_close[i]) prices[i] = *flags.resolved_close[i];
-        }
+        // Rolls step 3: the bar after a confirmed vendor switch moves from the target's close.
+        const std::vector<double> bases = roll_series::return_bases(prices, flags);
 
         // Clear previous returns for this symbol BEFORE the two-price guard, so a symbol
         // whose history dropped below two prices loses its stale returns instead of keeping
@@ -1128,14 +1126,14 @@ void PortfolioManager::update_historical_returns(const std::vector<Bar>& data) {
 
         // Calculate returns - use all available history
         for (size_t i = 1; i < prices.size(); ++i) {
-            double prev_price = prices[i - 1];
+            double prev_price = bases[i - 1];
             // a per-contract roll bar's return is the old contract's own (rolls step 3)
             double curr_price = flags.old_close[i] ? *flags.old_close[i] : prices[i];
 
             if (prev_price <= 0.0)
                 continue;
 
-            double ret = flags.change[i] && !flags.old_close[i]
+            double ret = flags.change[i] && !flags.old_close[i] && !flags.base_close[i - 1]
                              ? 0.0
                              : (curr_price - prev_price) / prev_price;
 
@@ -1250,7 +1248,7 @@ std::unordered_map<std::string, std::map<int64_t, double>> PortfolioManager::adj
 }
 
 std::unordered_map<std::string, std::map<int64_t, double>>
-PortfolioManager::resolved_closes_by_symbol(
+PortfolioManager::base_closes_by_symbol(
     const std::unordered_map<std::string, std::map<int64_t, double>>& closes_by_symbol) const {
     std::unordered_map<std::string, std::map<int64_t, double>> out = closes_by_symbol;
     for (auto& [symbol, closes] : out) {
@@ -1263,7 +1261,7 @@ PortfolioManager::resolved_closes_by_symbol(
             roll_series::classify_instrument_changes(ids, roll_from);
         size_t i = 0;
         for (auto& [day, close] : closes) {
-            if (flags.resolved_close[i]) close = *flags.resolved_close[i];
+            if (flags.base_close[i]) close = *flags.base_close[i];
             ++i;
         }
     }
@@ -1949,7 +1947,7 @@ Result<void> PortfolioManager::optimize_positions() {
         } else {
             // Compute covariance matrix (first iteration or symbols changed)
             covariance = calculate_covariance_matrix(
-                date_aligned_returns(resolved_closes_by_symbol(closes_by_symbol),
+                date_aligned_returns(base_closes_by_symbol(closes_by_symbol),
                                      adjusted_closes_by_symbol(closes_by_symbol)));
             // Cache for subsequent iterations
             cached_symbols_ = symbols;

@@ -169,7 +169,7 @@ HeldSeries Rule::run() {
     Day pending_since{};
     bool pending_off_cycle = false;
 
-    // Rolls step 3: the contract the previous grid day's roll left.
+    // Rolls step 3: the contract the last roll left (until the next roll).
     const Contract* just_left = nullptr;
     for (size_t i = 0; i < grid.size(); ++i) {
         const VendorBar& vb = grid[i];
@@ -183,7 +183,6 @@ HeldSeries Rule::run() {
                 day.left_close = lb->close;
                 day.left_id = lb->instrument_id;
             }
-            just_left = nullptr;
         }
         if (vendor) {
             day.vendor = key_of(*vendor);
@@ -223,6 +222,7 @@ HeldSeries Rule::run() {
                         day.old = hk;
                         day.old_close = held->bar_on(d)->close;
                         day.old_id = held->bar_on(d)->instrument_id;
+                        day.old_bar = *held->bar_on(d);
                         day.trigger = RollTrigger::ALIAS;
                         day.trigger_date = in_.alias->change;
                         day.deferred = d > in_.alias->change;
@@ -299,6 +299,7 @@ HeldSeries Rule::run() {
                         if (hb) {
                             day.old_close = hb->close;
                             day.old_id = hb->instrument_id;
+                            day.old_bar = *hb;
                         } else {
                             const ContractBar* prev = target->bar_on(grid[i - 1].date);
                             day.fallback = prev ? RollFallback::NEW_CONTRACT_MOVE : RollFallback::ZERO;

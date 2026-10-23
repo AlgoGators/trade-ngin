@@ -63,9 +63,8 @@ Series per_contract(const std::string& symbol, bool rolls) {
         b.volume = 1000.0;
         char shown = held;
         if (rolls && d == 8) {
-            // a vendor switch to B that day 9 does not confirm: B's bar, A's close
-            shown = 'B';
-            b.roll_from = RollFrom{own('A', d), "A", RollFromKind::AWAITS_NEXT};
+            // a vendor switch to B that day 9 does not confirm: A's own bar, the field naming B
+            b.roll_from = RollFrom{own('B', d), "B", RollFromKind::AWAITS_NEXT};
         } else if (rolls && d == 15) {
             // a crossover: known on its bar
             shown = held = 'B';
@@ -73,15 +72,15 @@ Series per_contract(const std::string& symbol, bool rolls) {
         } else if (rolls && d == 16) {
             b.roll_from = RollFrom{own('A', d), "A", RollFromKind::AFTER_ROLL};
         } else if (rolls && d == 27) {
-            // a vendor switch to C that day 28 confirms
-            shown = held = 'C';
-            b.roll_from = RollFrom{own('B', d), "B", RollFromKind::AWAITS_NEXT};
+            // a vendor switch to C that day 28 confirms: B's own bar, the field naming C
+            b.roll_from = RollFrom{own('C', d), "C", RollFromKind::AWAITS_NEXT};
         } else if (rolls && d == 28) {
             b.roll_from = RollFrom{own('B', d), "B", RollFromKind::AFTER_ROLL};
         }
         const double c = own(shown, d);
         b.open = b.high = b.low = b.close = Decimal(c);
         b.instrument_id = std::string(1, shown);
+        if (rolls && d == 27) held = 'C';  // the switch is confirmed by day 28
         s.raw.push_back(static_cast<double>(b.close));
         s.ids.push_back(b.instrument_id);
         s.rf.push_back(b.roll_from);
@@ -141,15 +140,20 @@ TEST(PerContractPlaces, TheSeriesHasEveryRollShape) {
     const Series ng = per_contract("NG", true);
     const auto s = library(ng);
     // bar t is day t + 1; returns[t - 1] is bar t's
-    EXPECT_TRUE(s.flags.resolved_close[7].has_value()) << "day 8: the unconfirmed switch";
+    EXPECT_TRUE(s.flags.pending[7]) << "day 8: the unconfirmed switch, held";
+    EXPECT_FALSE(s.flags.base_close[7].has_value());
     EXPECT_TRUE(s.flags.confirm[14]) << "day 15: known on its bar";
     EXPECT_TRUE(s.flags.confirm[27]) << "day 28 confirms day 27";
+    EXPECT_EQ(*s.flags.base_close[26], ng.rf[26]->close);
+    EXPECT_EQ(ng.ids[7], "A") << "day 8's bar, and so its level, is A's own";
+    EXPECT_EQ(ng.ids[26], "B") << "day 27's bar is B's own";
     EXPECT_DOUBLE_EQ(s.returns[13], (ng.rf[14]->close - ng.raw[13]) / ng.raw[13])
         << "day 15: A's own move";
-    EXPECT_DOUBLE_EQ(s.returns[25], (ng.rf[26]->close - ng.raw[25]) / ng.raw[25])
+    EXPECT_DOUBLE_EQ(s.returns[25], (ng.raw[26] - ng.raw[25]) / ng.raw[25])
         << "day 27: B's own move";
-    EXPECT_DOUBLE_EQ(s.returns[7], (ng.raw[8] - ng.rf[7]->close) / ng.rf[7]->close)
-        << "day 9 reads from A's close on day 8";
+    EXPECT_DOUBLE_EQ(s.returns[26], (ng.raw[27] - ng.rf[26]->close) / ng.rf[26]->close)
+        << "day 28 reads from C's close on day 27";
+    EXPECT_DOUBLE_EQ(s.returns[7], (ng.raw[8] - ng.raw[7]) / ng.raw[7]) << "day 9: A's own move";
 }
 
 class PerContractPmTest : public TestBase {
@@ -181,7 +185,7 @@ protected:
         for (const auto& [day, level] : adjusted.at("NG")) levels.push_back(level);
         EXPECT_EQ(levels, lib.adjusted);
         // The date-aligned returns (every date shared): the library's returns.
-        const auto r = manager_->date_aligned_returns(manager_->resolved_closes_by_symbol(closes),
+        const auto r = manager_->date_aligned_returns(manager_->base_closes_by_symbol(closes),
                                                       adjusted);
         ASSERT_EQ(r.at("NG").size(), lib.returns.size());
         for (size_t t = 0; t < lib.returns.size(); ++t) {
@@ -213,7 +217,7 @@ TEST(PerContractPlaces, TheRiskReadersReturnsAreTheLibrarys) {
         }
         // The gate's form: the levels and divisors of a whole pool handed in.
         const auto adjusted = RiskManager::adjusted_levels_of(bars);
-        const auto resolved = RiskManager::resolved_closes_of(bars);
+        const auto resolved = RiskManager::base_closes_of(bars);
         EXPECT_EQ(resolved.count("NG"), rolls ? 1u : 0u);
         const auto md2 = rm.create_market_data(bars, &adjusted, &resolved);
         for (size_t t = 0; t < lib.returns.size(); ++t) {
@@ -240,12 +244,13 @@ TEST(PerContractPlaces, TheCostModelsVolatilityWindowIsTheLibrarysLogReturns) {
         const auto lib = library(ng);
         // By hand from the library: the log of each bar's move, 0 on a change bar with no old close.
         TransactionCostManager expected;
-        const std::vector<double> c = roll_series::resolved_closes(ng.raw, lib.flags);
-        expected.record_log_return("NG.v.0", c[0], 0.0);
-        for (size_t t = 1; t < c.size(); ++t) {
-            const double to = lib.flags.old_close[t] ? *lib.flags.old_close[t] : c[t];
-            expected.record_log_return("NG.v.0", to, c[t - 1],
-                                       lib.flags.change[t] && !lib.flags.old_close[t]);
+        const std::vector<double> base = roll_series::return_bases(ng.raw, lib.flags);
+        expected.record_log_return("NG.v.0", ng.raw[0], 0.0);
+        for (size_t t = 1; t < ng.raw.size(); ++t) {
+            const double to = lib.flags.old_close[t] ? *lib.flags.old_close[t] : ng.raw[t];
+            expected.record_log_return(
+                "NG.v.0", to, base[t - 1],
+                lib.flags.change[t] && !lib.flags.old_close[t] && !lib.flags.base_close[t - 1]);
         }
         expected.set_own_day_volume("NG.v.0", ng.bars.back().volume);
         TransactionCostManager window, stepped;

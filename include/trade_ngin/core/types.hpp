@@ -307,11 +307,15 @@ enum class RollFromKind {
     /// A roll known on this bar: a crossover, a deadline, a vendor switch an earlier bar confirmed.
     KNOWN,
     /// A vendor-triggered roll (rule (a)) whose switch is on this bar: only the next bar confirms
-    /// it. The bar is the roll's target as if it rolled; the next consumed bar decides.
+    /// it. The bar is the HELD (old) contract's own bar, and this field names the TARGET: its close
+    /// and id on this date. When the next consumed bar is in the target, the roll happened here: both
+    /// legs at this bar's two closes, the next bar's move measured from the target's close. When it
+    /// is not, nothing rolled. Every level reader reads the held contract's close either way.
     AWAITS_NEXT,
-    /// NOT a roll bar: the bar after one, carrying the old contract's close on THIS date. Read only
-    /// by a consumer that withheld the roll bar (the consumed-bar rule): it books the roll on this
-    /// bar, the old contract's move up to it and both legs at this bar's closes (HD 2026-10-23).
+    /// NOT a roll bar: a bar after one (up to the next), carrying the old contract's close on THIS
+    /// date. Read only by a consumer that withheld the roll bar and every bar since (the
+    /// consumed-bar rule): it books the roll on this bar, the old contract's move up to it and both
+    /// legs at this bar's closes (HD 2026-10-23).
     AFTER_ROLL,
 };
 
@@ -323,12 +327,14 @@ enum class RollFromKind {
  * the vendor's grid (data/per_contract_source.hpp). On a roll bar that is the NEW contract's bar,
  * and this names the contract left, with its close on the same date, so the bar's return is the
  * old contract's own and the adjusted step is the new close minus the old close (roll_series.hpp).
- * On the bar after a roll bar it is the same contract's close on that date (AFTER_ROLL). Absent on
- * every other bar, on every bar of the vendor's series (the switch off) and on every equity bar.
+ * On a bar after a roll it is the same contract's close on that date (AFTER_ROLL). On a vendor switch
+ * only the next bar confirms (AWAITS_NEXT) the bar is the held contract's and this names the target
+ * instead. Absent on every other bar, on every bar of the vendor's series (the switch off) and on
+ * every equity bar.
  */
 struct RollFrom {
-    double close{0.0};          ///< the old contract's close on this bar
-    std::string instrument_id;  ///< the old contract's id string
+    double close{0.0};          ///< the old contract's close on this bar (AWAITS_NEXT: the target's)
+    std::string instrument_id;  ///< the old contract's id string (AWAITS_NEXT: the target's)
     RollFromKind kind{RollFromKind::KNOWN};
 
     bool operator==(const RollFrom& o) const {

@@ -229,7 +229,7 @@ void CarverRiskModule::on_bars(const std::vector<Bar>& bars, const RiskContext& 
     // the filter drops is removed from the level and the return across that gap is a real move.
     const RiskManager::AdjustedLevels adjusted = RiskManager::adjusted_levels_of(pool);
     // rolls step 3: the divisors on the same whole pool
-    const RiskManager::AdjustedLevels resolved = RiskManager::resolved_closes_of(pool);
+    const RiskManager::AdjustedLevels resolved = RiskManager::base_closes_of(pool);
     if (f5_engaged_) {
         std::vector<Bar> filtered;
         filtered.reserve(pool.size());

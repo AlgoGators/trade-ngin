@@ -474,15 +474,18 @@ namespace {
 // OLD 04-14 330.00, 04-15 331.00, 04-16 332.20; the roll bar 04-17 (NEW 321.10, OLD 333.00);
 // 04-20 NEW 322.00 (OLD 334.00 that day); 04-21 NEW 323.00. `kind` is the roll bar's.
 std::vector<Bar> pc_bars(RollFromKind kind, bool confirmed = true) {
-    auto with = [](Bar b, double old_close, RollFromKind k) {
-        b.roll_from = RollFrom{old_close, "OLD", k};
+    auto with = [](Bar b, double close, const char* id, RollFromKind k) {
+        b.roll_from = RollFrom{close, id, k};
         return b;
     };
     std::vector<Bar> out{bar(kZm, "2026-04-14", 330.00, "OLD"), bar(kZm, "2026-04-15", 331.00, "OLD"),
-                         bar(kZm, "2026-04-16", 332.20, "OLD"),
-                         with(bar(kZm, "2026-04-17", 321.10, "NEW"), 333.00, kind)};
+                         bar(kZm, "2026-04-16", 332.20, "OLD")};
+    // a known roll is NEW's bar naming OLD; a vendor switch is OLD's own bar naming the target NEW
+    out.push_back(kind == RollFromKind::AWAITS_NEXT
+                      ? with(bar(kZm, "2026-04-17", 333.00, "OLD"), 321.10, "NEW", kind)
+                      : with(bar(kZm, "2026-04-17", 321.10, "NEW"), 333.00, "OLD", kind));
     if (confirmed) {
-        out.push_back(with(bar(kZm, "2026-04-20", 322.00, "NEW"), 334.00, RollFromKind::AFTER_ROLL));
+        out.push_back(with(bar(kZm, "2026-04-20", 322.00, "NEW"), 334.00, "OLD", RollFromKind::AFTER_ROLL));
         out.push_back(bar(kZm, "2026-04-21", 323.00, "NEW"));
     } else {
         out.push_back(bar(kZm, "2026-04-20", 334.00, "OLD"));

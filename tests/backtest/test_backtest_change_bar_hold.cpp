@@ -203,7 +203,7 @@ TEST_F(BacktestChangeBarHoldTest, PerContractAKnownRollIsNotHeldAndAVendorSwitch
 
 TEST_F(BacktestChangeBarHoldTest, PerContractAVendorSwitchIsHeldUntilTheNextBarDecides) {
     const auto kept = run({bar("XX", 0, 100, "A"), bar("XX", 1, 101, "A"),
-                           with_roll(bar("XX", 2, 120, "B"), 102, "A", RollFromKind::AWAITS_NEXT),
+                           with_roll(bar("XX", 2, 102, "A"), 120, "B", RollFromKind::AWAITS_NEXT),
                            with_roll(bar("XX", 3, 121, "B"), 103, "A", RollFromKind::AFTER_ROLL),
                            bar("XX", 4, 122, "B")});
     EXPECT_EQ(kept, (std::vector<double>{1, 1, 0, 1})) << "the switch bar's cycle held";
@@ -211,7 +211,7 @@ TEST_F(BacktestChangeBarHoldTest, PerContractAVendorSwitchIsHeldUntilTheNextBarD
 
 TEST_F(BacktestChangeBarHoldTest, PerContractAnUnconfirmedVendorSwitchIsHeldOnItsOwnCycleOnly) {
     const auto stray = run({bar("XX", 0, 100, "A"), bar("XX", 1, 101, "A"),
-                            with_roll(bar("XX", 2, 120, "B"), 102, "A", RollFromKind::AWAITS_NEXT),
+                            with_roll(bar("XX", 2, 102, "A"), 120, "B", RollFromKind::AWAITS_NEXT),
                             bar("XX", 3, 103, "A"), bar("XX", 4, 104, "A")});
     EXPECT_EQ(stray, (std::vector<double>{1, 1, 0, 1})) << "not a flip: the next bar trades";
 }

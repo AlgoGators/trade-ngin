@@ -128,9 +128,9 @@ int listed_cycle_front(const ContractBook& book, const std::string& root, const 
  * @brief Rolls step 3: a vendor switch on a trading-day bar that only the next bar could confirm,
  *        where the next bar did not (or the range ends on the bar), and that would have rolled the
  *        held contract on this bar into `target` had it been confirmed. Nothing rolled: the held
- *        contract stays. The bar source hands the bar out as the roll it would have been (the
- *        target's bar, the old contract's close), because a run whose bars end here cannot tell it
- *        from a confirmed switch (per_contract_source.hpp); the next consumed bar shows it reverted.
+ *        contract stays. The bar source hands the bar out as it hands out a confirmed switch bar
+ *        (the held contract's own bar, the field naming the target), because a run whose bars end
+ *        here cannot tell the two apart (per_contract_source.hpp); the next consumed bar shows it.
  */
 struct TentativeRoll {
     ContractKey target;
@@ -167,13 +167,17 @@ struct HeldDay {
 
     // Rolls step 3 (the bar source's inputs; the dump tool prints none of them):
     std::string old_id;      ///< roll bars: the old contract's id on this date (empty on a fallback)
+    /// Roll bars: the old contract's own bar on this date (none on a fallback). A vendor roll that
+    /// awaits the next bar is handed out as this bar: until it is confirmed the book holds it.
+    std::optional<ContractBar> old_bar;
     std::string carried_id;  ///< carry days: the id of the held contract's row whose close is carried
     /// A vendor roll whose switch is on this bar and which neither the crossover nor the deadline
     /// would have rolled here: only the next grid bar's vendor id confirms it (rule (a)).
     bool awaits_next_bar{false};
     std::optional<TentativeRoll> tentative;  ///< see TentativeRoll
-    /// The grid day after a roll: the contract left, its close and id on this date (none when it
-    /// printed nothing here). For a consumer that withheld the roll bar (RollFromKind::AFTER_ROLL).
+    /// Every grid day after a roll, up to the next roll: the contract left, its close and id on this
+    /// date (none when it printed nothing here). For a consumer that withheld the roll bar and the
+    /// bars after it (RollFromKind::AFTER_ROLL): it books the roll on its first consumed bar.
     std::optional<double> left_close;
     std::string left_id;
 };

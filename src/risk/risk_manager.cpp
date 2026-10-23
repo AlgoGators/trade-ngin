@@ -599,7 +599,7 @@ RiskManager::AdjustedLevels RiskManager::adjusted_levels_of(const std::vector<Ba
     return out;
 }
 
-RiskManager::AdjustedLevels RiskManager::resolved_closes_of(const std::vector<Bar>& data) {
+RiskManager::AdjustedLevels RiskManager::base_closes_of(const std::vector<Bar>& data) {
     std::map<std::string, std::map<Timestamp, const Bar*>> by_symbol;
     for (const auto& bar : data) by_symbol[bar.symbol][bar.timestamp] = &bar;
     AdjustedLevels out;
@@ -616,7 +616,7 @@ RiskManager::AdjustedLevels RiskManager::resolved_closes_of(const std::vector<Ba
         const auto flags = roll_series::classify_instrument_changes(ids, roll_from);
         size_t i = 0;
         for (const auto& [ts, bar] : bars) {
-            if (flags.resolved_close[i]) out[symbol][ts] = *flags.resolved_close[i];
+            if (flags.base_close[i]) out[symbol][ts] = *flags.base_close[i];
             ++i;
         }
     }
@@ -625,8 +625,8 @@ RiskManager::AdjustedLevels RiskManager::resolved_closes_of(const std::vector<Ba
 
 namespace {
 
-/// Rolls step 3: a vendor switch the next bar did not confirm divides as the old contract's close.
-void apply_resolved(std::map<std::string, std::map<Timestamp, double>>& prices_by_symbol,
+/// Rolls step 3: a vendor switch bar the next bar confirms divides as the target's close.
+void apply_bases(std::map<std::string, std::map<Timestamp, double>>& prices_by_symbol,
                     const RiskManager::AdjustedLevels& resolved) {
     for (const auto& [symbol, closes] : resolved) {
         auto prices = prices_by_symbol.find(symbol);
@@ -672,7 +672,7 @@ MarketData RiskManager::create_market_data(const std::vector<Bar>& data,
     for (const auto& bar : data) {
         prices_by_symbol[bar.symbol][bar.timestamp] = static_cast<double>(bar.close);
     }
-    apply_resolved(prices_by_symbol, resolved ? *resolved : resolved_closes_of(data));
+    apply_bases(prices_by_symbol, resolved ? *resolved : base_closes_of(data));
 
     // Calculate Returns
     std::map<Timestamp, std::map<std::string, double>> prices_by_time;
@@ -747,7 +747,7 @@ std::vector<std::vector<double>> RiskManager::calculate_returns(
     for (const auto& bar : data) {
         prices_by_symbol[bar.symbol][bar.timestamp] = static_cast<double>(bar.close);
     }
-    apply_resolved(prices_by_symbol, resolved_closes_of(data));
+    apply_bases(prices_by_symbol, base_closes_of(data));
 
     // Convert to chronologically ordered timeseries
     std::map<Timestamp, std::map<std::string, double>> prices_by_time;

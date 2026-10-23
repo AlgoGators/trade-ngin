@@ -394,13 +394,14 @@ inline ConsumedT1Settlement consumed_t1_settlement(
         }
         if (seq.size() >= 2) out.t2_close_prices[symbol] = static_cast<double>(seq[seq.size() - 2]->close);
         const auto rs = roll_status.find(symbol);
-        if (rs != roll_status.end() && rs->second.change && !rs->second.mark_close) {
+        if (rs != roll_status.end() && rs->second.change && !rs->second.mark_close &&
+            !rs->second.previous_close) {
             out.zero_pnl_symbols.insert(symbol);
             if (!out.withheld_zero_symbols.count(symbol)) out.roll_zero_symbols.insert(symbol);
         }
         // Rolls step 3 (per_contract_rolls on): a roll bar books the old contract's own move over
-        // it, to the old contract's close on the bar; the bar after a vendor switch it did not
-        // confirm books from the old contract's close on the switch bar.
+        // it, to the old contract's close on the bar; the bar that confirms a vendor switch books
+        // from the target's close on the switch bar.
         if (rs != roll_status.end() && rs->second.mark_close) {
             out.t1_close_prices[symbol] = *rs->second.mark_close;
         }

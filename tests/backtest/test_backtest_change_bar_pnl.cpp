@@ -243,7 +243,7 @@ TEST_F(BacktestPerContractPnlTest, AKnownRollBooksTheOldContractsMoveAndBothLegs
 
 TEST_F(BacktestPerContractPnlTest, AVendorSwitchIsLeggedOnTheConfirmingBarAtTheSwitchBarsCloses) {
     const auto b = book({bar(0, 100, "A"), bar(1, 101, "A"), bar(2, 103, "A"),
-                         rolled(bar(3, 110, "B"), 104, "A", RollFromKind::AWAITS_NEXT),
+                         rolled(bar(3, 104, "A"), 110, "B", RollFromKind::AWAITS_NEXT),
                          rolled(bar(4, 111, "B"), 105, "A", RollFromKind::AFTER_ROLL),
                          bar(5, 112, "B")});
     // the switch bar books A's own move once; the confirming bar B's
@@ -255,7 +255,7 @@ TEST_F(BacktestPerContractPnlTest, AVendorSwitchIsLeggedOnTheConfirmingBarAtTheS
 
 TEST_F(BacktestPerContractPnlTest, AnUnconfirmedVendorSwitchBooksTheOldContractsBarsAndNoLegs) {
     const auto b = book({bar(0, 100, "A"), bar(1, 101, "A"), bar(2, 103, "A"),
-                         rolled(bar(3, 110, "B"), 104, "A", RollFromKind::AWAITS_NEXT),
+                         rolled(bar(3, 104, "A"), 110, "B", RollFromKind::AWAITS_NEXT),
                          bar(4, 105, "A"), bar(5, 106, "A")});
     // d4 moves from A's 104 on d3, not from B's 110
     expect_moves(b.move, {200.0, 100.0, 100.0, 100.0});

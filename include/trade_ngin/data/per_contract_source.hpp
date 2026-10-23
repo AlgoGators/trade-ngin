@@ -38,20 +38,21 @@ namespace trade_ngin::contract_rolls {
  *   - The rule's one look-ahead is the vendor's confirmation (rule (a): the switch is a roll only
  *     if the next bar keeps the vendor's contract). On the switch bar itself a run cannot know it,
  *     so the source hands the switch bar out the same way whether or not the next bar confirms it,
- *     and whether or not the window ends on it: the target's own bar with the old contract's close,
- *     RollFromKind::AWAITS_NEXT (HeldDay::awaits_next_bar on a confirmed switch, TentativeRoll on
- *     one the next bar did not confirm or the range ends on). The library (roll_series.hpp) reads the
- *     next consumed bar: it keeps the target (confirmed, the legs are booked on it at the switch
- *     bar's two closes) or it is the old contract's bar (nothing rolled: the switch bar is read as
- *     the old contract's own close). A run whose consumed bars end on the switch bar holds the
- *     symbol, as today.
+ *     and whether or not the window ends on it: the HELD contract's own bar, the field naming the
+ *     target (its close and id), RollFromKind::AWAITS_NEXT (HeldDay::awaits_next_bar on a confirmed
+ *     switch, TentativeRoll on one the next bar did not confirm or the range ends on). Every level
+ *     reader (sizing, the optimiser, the overlay, the marks) reads the held contract's close on it.
+ *     The library (roll_series.hpp) reads the next consumed bar: held going into it in the target
+ *     confirms the roll on the switch bar (the legs booked on it at the switch bar's two closes, its
+ *     move measured from the target's close); otherwise nothing rolled and nothing changes. A run
+ *     whose consumed bars end on the switch bar holds the symbol, as today.
  *   - A crossover and a deadline roll are known on the roll bar itself (RollFromKind::KNOWN), and
  *     so is a vendor switch dated on a bar where the crossover or the deadline also rolls, or
  *     confirmed by an earlier bar (a Sunday switch rolled on Monday).
- *   - The bar after a roll bar carries the old contract's close on that date (AFTER_ROLL), so a
- *     consumer that withheld the roll bar (the consumed-bar rule) books the roll on its next
- *     consumed bar, the old contract's move up to it and both legs at its closes (HD 10-23). A
- *     consumer that consumed the roll bar reads nothing from it.
+ *   - Every bar after a roll, up to the next one, carries the old contract's close on that date
+ *     (AFTER_ROLL), so a consumer that withheld the roll bar and any bars after it (the consumed-bar
+ *     rule) books the roll on its first consumed bar, the old contract's move up to it and both
+ *     legs at its closes (HD 10-23). A consumer that consumed the roll bar reads nothing from it.
  *
  * The micros (MES, MNQ, MYM, M2K) stay on the vendor's `.v.0` bars and today's handling of the
  * 2026-02-22 change until ES, NQ, YM and RTY contract bars are loaded (waiting on data), with one
@@ -113,10 +114,11 @@ struct SourceBar {
  *
  * `series` runs from the root's series start to the window's last date at least; `window` maps
  * each grid date the caller asks for to its instant's text. Per day: a roll bar is the new
- * contract's bar with RollFrom (the old contract's close and id; KNOWN, or AWAITS_NEXT for
- * HeldDay::awaits_next_bar); a TentativeRoll is its target's bar with RollFrom (AWAITS_NEXT); any
- * other day the held contract's bar (a carried close keeps the carried row's id), with an
- * AFTER_ROLL RollFrom on the day after a roll when the contract left printed that day. A fallback
+ * contract's bar with RollFrom (the old contract's close and id, KNOWN); a vendor roll awaiting the
+ * next bar (HeldDay::awaits_next_bar) and a TentativeRoll are the held (old) contract's own bar with
+ * RollFrom naming the target (AWAITS_NEXT); any other day the held contract's bar (a carried close
+ * keeps the carried row's id), with an AFTER_ROLL RollFrom on every day after a roll, up to the
+ * next, when the contract left printed that day. A fallback
  * roll (the old contract with no bar up to its last actionable bar, plan 5c) reads as the roll it
  * stands for: RollFrom::close is the previous day's close times the new contract's move (or that
  * close, for a zero fallback), with a WARN. Errors: a window date the series lacks, a day with no

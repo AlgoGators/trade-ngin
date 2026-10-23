@@ -1310,7 +1310,7 @@ Result<void> BacktestCoordinator::process_portfolio_day(
                     probe.add(bar.instrument_id, static_cast<double>(bar.close), bar.roll_from);
                 // Rolls step 3: a per-contract roll bar books the old contract's own move over
                 // it (to its close on the bar); only a change bar with no old close books 0.
-                if (st.change && !st.mark_close) mark_change_.insert(bar.symbol);
+                if (st.change && !st.mark_close && !st.previous_close) mark_change_.insert(bar.symbol);
                 if (st.mark_close) mark_close_[bar.symbol] = *st.mark_close;
                 if (st.previous_close) mark_previous_close_[bar.symbol] = *st.previous_close;
                 row_held_id_[bar.symbol] = st.held_id;
@@ -1492,7 +1492,7 @@ Result<void> BacktestCoordinator::process_portfolio_day(
 
                 double prev_close = pnl_manager_->get_previous_close(symbol);
                 // Rolls step 3: a roll bar's move is to the old contract's close on it; the bar
-                // after a vendor switch it did not confirm moves from the old contract's close.
+                // that confirms a vendor switch moves from the target's close on the switch bar.
                 double move_to = current_close;
                 if (auto m = mark_close_.find(symbol); m != mark_close_.end()) move_to = m->second;
                 if (auto m = mark_previous_close_.find(symbol); m != mark_previous_close_.end()) {

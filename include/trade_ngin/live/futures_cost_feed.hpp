@@ -187,8 +187,8 @@ struct FuturesCostFeedResult {
  * @brief One bar's return into the spread model's volatility window, on the library's rule
  *        (roll_series::RollTracker; this was the feed's own hand copy of it): a change bar's return
  *        enters as 0 (LOOP_SPEC v6.1 section 2.3, L-08); with the per-contract source (rolls step 3)
- *        a roll bar's log return is the old contract's own over the bar, and the bar after a vendor
- *        switch it did not confirm is read from the old contract's close. 0.0 = no previous close.
+ *        a roll bar's log return is the old contract's own over the bar, and the bar that confirms a
+ *        vendor switch is read from the target's close on the switch bar. 0.0 = no previous close.
  */
 inline void record_bar_log_return(transaction_cost::TransactionCostManager& tcm,
                                   const std::string& symbol, roll_series::RollTracker& tracker,
@@ -197,7 +197,7 @@ inline void record_bar_log_return(transaction_cost::TransactionCostManager& tcm,
     const roll_series::RollTracker::Status st = tracker.add(bar.instrument_id, close, bar.roll_from);
     const double to = st.mark_close ? *st.mark_close : close;
     const double from = st.previous_close ? *st.previous_close : prev_close;
-    tcm.record_log_return(symbol, to, from, st.change && !st.mark_close);
+    tcm.record_log_return(symbol, to, from, st.change && !st.mark_close && !st.previous_close);
     if (from > 0.0 && to > 0.0) ++entry.returns;
 }
 

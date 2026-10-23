@@ -433,9 +433,17 @@ TEST(ContractRollRule, AVendorSwitchOnItsOwnBarAwaitsTheNextBar) {
     EXPECT_EQ(roll.old_id, "q");
     EXPECT_EQ(*roll.old_close, 1000.0 + 80000 % 97);
     EXPECT_FALSE(roll.tentative.has_value());
-    // The days after it: no roll, nothing tentative.
+    ASSERT_TRUE(roll.old_bar.has_value()) << "the bar a run reads on it: the old contract's own";
+    EXPECT_EQ(roll.old_bar->instrument_id, "q");
+    EXPECT_EQ(roll.old_bar->close, *roll.old_close);
+    // The days after it: no roll, nothing tentative, and the contract left on every one of them.
     EXPECT_FALSE(on(r.value(), "2026-07-22").awaits_next_bar);
     EXPECT_FALSE(on(r.value(), "2026-07-22").tentative.has_value());
+    for (const char* dt : {"2026-07-22", "2026-07-23", "2026-08-05"}) {
+        ASSERT_TRUE(on(r.value(), dt).left_close.has_value()) << dt;
+        EXPECT_EQ(on(r.value(), dt).left_id, "q") << dt;
+    }
+    EXPECT_FALSE(on(r.value(), "2026-07-21").left_close.has_value()) << "not on the roll bar itself";
 }
 
 TEST(ContractRollRule, ASundaySwitchRolledOnMondayIsKnownOnMonday) {

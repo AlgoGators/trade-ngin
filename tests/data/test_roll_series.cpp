@@ -335,24 +335,32 @@ TEST(RollSeriesPerContract, ARollKnownOnItsBarIsConfirmedThereAndItsReturnIsTheO
 }
 
 TEST(RollSeriesPerContract, AVendorSwitchTheNextBarConfirmsIsHeldThenLeggedAtTheSwitchBarsCloses) {
-    const std::vector<double> raw{100, 101, 110, 111};
-    const RollFields rf{std::nullopt, std::nullopt, from(102, "A", RollFromKind::AWAITS_NEXT),
+    // The switch bar is A's own (102), the field naming the target B (110); the next bar is B's.
+    const std::vector<double> raw{100, 101, 102, 111};
+    const RollFields rf{std::nullopt, std::nullopt, from(110, "B", RollFromKind::AWAITS_NEXT),
                         from(104, "A", RollFromKind::AFTER_ROLL)};
-    const auto s = build_series(raw, ids({"A", "A", "B", "B"}), rf);
-    EXPECT_EQ(s.flags.change, bits({0, 0, 1, 0}));
+    const auto s = build_series(raw, ids({"A", "A", "A", "B"}), rf);
+    EXPECT_EQ(s.flags.change, bits({0, 0, 0, 1}));
     EXPECT_EQ(s.flags.pending, bits({0, 0, 1, 0}));
     EXPECT_EQ(s.flags.confirm, bits({0, 0, 0, 1}));
     EXPECT_EQ(s.flags.rolled, bits({0, 0, 1, 0}));
-    EXPECT_EQ(s.flags.leg_to[3], 2);
+    EXPECT_EQ(s.flags.leg_from[3], 2) << "the closing leg: the switch bar's own close, A's 102";
+    EXPECT_EQ(*s.flags.leg_opening_price[3], 110.0) << "the opening leg: B's close on the switch bar";
+    EXPECT_EQ(*s.flags.base_close[2], 110.0);
+    EXPECT_EQ(s.raw, raw) << "every level is the held contract's close";
+    // The step is B's 110 less A's 102 = 8, taken between the switch bar and the next one.
     EXPECT_EQ(s.adjusted, (std::vector<double>{108, 109, 110, 111}));
-    EXPECT_DOUBLE_EQ(s.returns[1], (102.0 - 101.0) / 101.0);
+    EXPECT_DOUBLE_EQ(s.returns[1], (102.0 - 101.0) / 101.0) << "the switch bar: A's own move";
+    EXPECT_DOUBLE_EQ(s.returns[2], (111.0 - 110.0) / 110.0) << "the next bar: B's move from 110";
     RollTracker t;
     t.add("A", 100);
     t.add("A", 101);
-    const auto sw = t.add("B", 110, rf[2]);
+    const auto sw = t.add("A", 102, rf[2]);
     EXPECT_TRUE(sw.holds()) << "a run whose bars end on the switch bar holds the symbol";
+    EXPECT_FALSE(sw.change);
     EXPECT_EQ(sw.held_id, "A");
-    EXPECT_EQ(*sw.mark_close, 102.0);
+    EXPECT_FALSE(sw.mark_close.has_value());
+    EXPECT_EQ(sw.move(102, 101), 1.0);
     const auto c = t.add("B", 111, rf[3]);
     EXPECT_TRUE(c.confirm);
     EXPECT_FALSE(c.holds());
@@ -360,34 +368,35 @@ TEST(RollSeriesPerContract, AVendorSwitchTheNextBarConfirmsIsHeldThenLeggedAtThe
     EXPECT_EQ(c.last_close_before_change, 102.0);
     EXPECT_EQ(c.change_bar_close, 110.0);
     EXPECT_EQ(c.held_id, "B");
-    EXPECT_EQ(c.move(111, 110), 1.0);
+    EXPECT_EQ(*c.previous_close, 110.0);
+    EXPECT_EQ(c.move(111, 102), 1.0) << "from B's close on the switch bar, not A's";
 }
 
-TEST(RollSeriesPerContract, AVendorSwitchTheNextBarDoesNotConfirmReadsAsTheOldContractsBar) {
-    // A stray: the switch bar is handed out as B's bar (110) with A's close (102); the next bar is A.
-    const std::vector<double> raw{100, 101, 110, 103, 104};
-    const RollFields rf{std::nullopt, std::nullopt, from(102, "A", RollFromKind::AWAITS_NEXT),
+TEST(RollSeriesPerContract, AVendorSwitchTheNextBarDoesNotConfirmChangesNothing) {
+    // A stray: the switch bar is A's own bar (102), the field naming B; the next bar is A's again.
+    const std::vector<double> raw{100, 101, 102, 103, 104};
+    const RollFields rf{std::nullopt, std::nullopt, from(110, "B", RollFromKind::AWAITS_NEXT),
                         std::nullopt, std::nullopt};
-    const auto s = build_series(raw, ids({"A", "A", "B", "A", "A"}), rf);
+    const auto s = build_series(raw, ids({"A", "A", "A", "A", "A"}), rf);
     EXPECT_EQ(s.flags.change, bits({0, 0, 0, 0, 0}));
     EXPECT_EQ(s.flags.confirm, bits({0, 0, 0, 0, 0}));
     EXPECT_EQ(s.flags.flip, bits({0, 0, 0, 0, 0})) << "not a flip: nothing rolled";
-    EXPECT_EQ(*s.flags.resolved_close[2], 102.0);
-    EXPECT_EQ(s.raw, (std::vector<double>{100, 101, 102, 103, 104}));
-    // Exactly the series of A's own bars.
-    const auto own = build_series({100, 101, 102, 103, 104}, ids({"A", "A", "A", "A", "A"}));
+    EXPECT_FALSE(s.flags.base_close[2].has_value());
+    // Exactly the series of A's own bars, the levels included.
+    const auto own = build_series(raw, ids({"A", "A", "A", "A", "A"}));
+    EXPECT_EQ(s.raw, own.raw);
     EXPECT_EQ(s.adjusted, own.adjusted);
     EXPECT_EQ(s.returns, own.returns);
     RollTracker t;
     t.add("A", 100);
     t.add("A", 101);
-    EXPECT_TRUE(t.add("B", 110, rf[2]).holds());
+    EXPECT_TRUE(t.add("A", 102, rf[2]).holds());
     const auto back = t.add("A", 103);
     EXPECT_FALSE(back.change);
     EXPECT_FALSE(back.flip);
     EXPECT_FALSE(back.holds());
-    EXPECT_EQ(*back.previous_close, 102.0);
-    EXPECT_EQ(back.move(103, 110), 1.0) << "from A's close on the switch bar, not B's";
+    EXPECT_FALSE(back.previous_close.has_value());
+    EXPECT_EQ(back.move(103, 102), 1.0);
     EXPECT_EQ(back.held_id, "A");
 }
 
@@ -433,7 +442,7 @@ TEST(RollSeriesPerContract, WithNoFieldTheFlagsAndTheSeriesAreTodays) {
 TEST(RollSeriesPerContract, TwoRollsResolvedOnOneBarStopTheTracker) {
     RollTracker t;
     t.add("A", 100);
-    t.add("B", 110, from(102, "A", RollFromKind::AWAITS_NEXT));
+    t.add("A", 102, from(110, "B", RollFromKind::AWAITS_NEXT));
     EXPECT_THROW(t.add("C", 120, from(111, "B")), std::runtime_error);
 }
 
@@ -463,10 +472,9 @@ TEST(RollSeriesPerContract, TheTrackerReproducesTheBatchClassifierOnPerContractS
                 id = "c" + std::to_string(held);
                 close = base + 10.0;
                 after = true;
-            } else if (r == 1 && t > 0) {  // a vendor switch, kept by the next bar or not
-                f = RollFrom{base - 3.0, h, RollFromKind::AWAITS_NEXT};
-                id = "c" + std::to_string(held + 1);
-                close = base + 10.0;
+            } else if (r == 1 && t > 0) {  // a vendor switch, kept by the next bar or not: the
+                // held contract's own bar, the field naming the next contract
+                f = RollFrom{base + 10.0, "c" + std::to_string(held + 1), RollFromKind::AWAITS_NEXT};
                 if (rng() % 2) {
                     left = held++;
                     after = true;
@@ -494,20 +502,33 @@ TEST(RollSeriesPerContract, TheTrackerReproducesTheBatchClassifierOnPerContractS
             } catch (const std::runtime_error&) {
                 break;  // two rolls on one bar: refused (TwoRollsResolvedOnOneBarStopTheTracker)
             }
-            // A switch the next bar did not confirm is a change on its own bar, retroactively none.
-            EXPECT_EQ(st.change, batch.change[t] || batch.resolved_close[t].has_value());
+            EXPECT_EQ(st.change, batch.change[t]);
             EXPECT_EQ(st.confirm, batch.confirm[t]);
             EXPECT_EQ(st.pending, batch.pending[t]);
             EXPECT_EQ(st.held_id, batch.held_id[t]);
-            EXPECT_EQ(st.mark_close.has_value(),
-                      batch.old_close[t].has_value() || batch.resolved_close[t].has_value());
+            EXPECT_EQ(st.mark_close.has_value(), batch.old_close[t].has_value());
+            EXPECT_EQ(st.previous_close.has_value(), t > 0 && batch.base_close[t - 1].has_value());
             if (st.confirm) {
                 const size_t to = static_cast<size_t>(batch.leg_to[t]);
-                EXPECT_EQ(st.change_bar_close, closes[to]);
+                EXPECT_EQ(st.change_bar_close,
+                          batch.leg_opening_price[t] ? *batch.leg_opening_price[t] : closes[to]);
                 EXPECT_EQ(st.last_close_before_change,
                           batch.old_close[to] ? *batch.old_close[to]
                                               : closes[static_cast<size_t>(batch.leg_from[t])]);
             }
         }
     }
+}
+
+TEST(RollSeriesPerContract, ARollBarAndTheBarAfterItBothWithheldAreBookedOnTheFirstConsumedBar) {
+    // Audit B-2: the consumer withheld the roll bar and the bar after it; the source carries the
+    // old contract's close on every bar after a roll, so the first consumed bar books the roll, the
+    // old contract's own move up to it (101 -> 105) and both legs at its closes.
+    const std::vector<double> raw{100, 101, 112, 113};
+    const RollFields rf{std::nullopt, std::nullopt, from(105, "A", RollFromKind::AFTER_ROLL),
+                        from(106, "A", RollFromKind::AFTER_ROLL)};
+    const auto s = build_series(raw, ids({"A", "A", "B", "B"}), rf);
+    EXPECT_EQ(s.flags.confirm, bits({0, 0, 1, 0}));
+    EXPECT_DOUBLE_EQ(s.returns[1], (105.0 - 101.0) / 101.0) << "not 0: the old contract moved";
+    EXPECT_DOUBLE_EQ(s.returns[2], (113.0 - 112.0) / 112.0) << "the second field is not read";
 }

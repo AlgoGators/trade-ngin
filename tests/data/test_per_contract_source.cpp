@@ -154,42 +154,44 @@ TEST(PerContractSource, EachGridDateIsTheHeldContractsBarAndARollBarNamesTheCont
     EXPECT_EQ(b15.close, close_of("GCQ6", "2026-07-15"));
     EXPECT_EQ(b15.volume, 80000.0);
     EXPECT_FALSE(b15.roll_from.has_value());
-    // The one-bar stray: handed out as the switch it would have been (Z's bar, Q's close, awaiting).
+    // The one-bar stray: the held contract's own bar (Q's), the field naming the target Z.
     const SourceBar& b16 = bars.at(d("2026-07-16"));
-    EXPECT_EQ(b16.instrument_id, "z");
-    EXPECT_EQ(b16.close, close_of("GCZ6", "2026-07-16"));
+    EXPECT_EQ(b16.instrument_id, "q");
+    EXPECT_EQ(b16.close, close_of("GCQ6", "2026-07-16")) << "every level reads the held contract";
     ASSERT_TRUE(b16.roll_from.has_value());
-    EXPECT_EQ(b16.roll_from->close, close_of("GCQ6", "2026-07-16"));
-    EXPECT_EQ(b16.roll_from->instrument_id, "q");
+    EXPECT_EQ(b16.roll_from->close, close_of("GCZ6", "2026-07-16"));
+    EXPECT_EQ(b16.roll_from->instrument_id, "z");
     EXPECT_EQ(b16.roll_from->kind, RollFromKind::AWAITS_NEXT);
-    // The next bar shows it reverted: Q's own bar.
+    // The next bar shows it was not confirmed: Q's own bar.
     EXPECT_EQ(bars.at(d("2026-07-17")).instrument_id, "q");
     EXPECT_FALSE(bars.at(d("2026-07-17")).roll_from.has_value());
     // The confirmed switch of Mon 07-20: the same shape as the stray, the next bar keeps Z.
     const SourceBar& b20 = bars.at(d("2026-07-20"));
-    EXPECT_EQ(b20.instrument_id, "z");
+    EXPECT_EQ(b20.instrument_id, "q");
+    EXPECT_EQ(b20.close, close_of("GCQ6", "2026-07-20"));
+    EXPECT_EQ(b20.volume, 80000.0);
     ASSERT_TRUE(b20.roll_from.has_value());
-    EXPECT_EQ(b20.roll_from->close, close_of("GCQ6", "2026-07-20"));
+    EXPECT_EQ(b20.roll_from->close, close_of("GCZ6", "2026-07-20"));
+    EXPECT_EQ(b20.roll_from->instrument_id, "z");
     EXPECT_EQ(b20.roll_from->kind, RollFromKind::AWAITS_NEXT);
-    // The bar after it is Z's own, carrying Q's close of that date for a consumer that withheld the
-    // roll bar.
-    const SourceBar& b21 = bars.at(d("2026-07-21"));
-    EXPECT_EQ(b21.instrument_id, "z");
-    EXPECT_EQ(b21.close, close_of("GCZ6", "2026-07-21"));
-    ASSERT_TRUE(b21.roll_from.has_value());
-    EXPECT_EQ(b21.roll_from->kind, RollFromKind::AFTER_ROLL);
-    EXPECT_EQ(b21.roll_from->close, close_of("GCQ6", "2026-07-21"));
-    EXPECT_EQ(b21.roll_from->instrument_id, "q");
-    EXPECT_FALSE(bars.at(d("2026-07-22")).roll_from.has_value());
-    // The vendor's backward visit to Q: ignored, Z's own bar.
-    EXPECT_EQ(bars.at(d("2026-07-23")).instrument_id, "z");
-    EXPECT_EQ(bars.at(d("2026-07-23")).close, close_of("GCZ6", "2026-07-23"));
-    EXPECT_FALSE(bars.at(d("2026-07-23")).roll_from.has_value());
-    // The last bar names G7: unconfirmable, handed out as the switch.
+    // Every bar after it, up to the next roll, is Z's own, carrying Q's close of that date for a
+    // consumer that withheld the roll bar (and the bars since).
+    for (const char* dt : {"2026-07-21", "2026-07-22", "2026-07-23", "2026-08-04"}) {
+        const SourceBar& b = bars.at(d(dt));
+        EXPECT_EQ(b.instrument_id, "z") << dt;
+        EXPECT_EQ(b.close, close_of("GCZ6", dt)) << dt << " (07-23: the vendor's backward visit ignored)";
+        ASSERT_TRUE(b.roll_from.has_value()) << dt;
+        EXPECT_EQ(b.roll_from->kind, RollFromKind::AFTER_ROLL) << dt;
+        EXPECT_EQ(b.roll_from->close, close_of("GCQ6", dt)) << dt;
+        EXPECT_EQ(b.roll_from->instrument_id, "q") << dt;
+    }
+    // The last bar names G7: unconfirmable, handed out as the switch: Z's own bar, the field G7.
     const SourceBar& last = bars.at(d("2026-08-05"));
-    EXPECT_EQ(last.instrument_id, "g");
+    EXPECT_EQ(last.instrument_id, "z");
+    EXPECT_EQ(last.close, close_of("GCZ6", "2026-08-05"));
     ASSERT_TRUE(last.roll_from.has_value());
-    EXPECT_EQ(last.roll_from->instrument_id, "z");
+    EXPECT_EQ(last.roll_from->instrument_id, "g");
+    EXPECT_EQ(last.roll_from->close, close_of("GCG7", "2026-08-05"));
     EXPECT_EQ(last.roll_from->kind, RollFromKind::AWAITS_NEXT);
 }
 

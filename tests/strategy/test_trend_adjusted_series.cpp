@@ -300,16 +300,15 @@ std::vector<Bar> per_contract_walk(bool rolls) {
         const double a = static_cast<double>(b.close);  // the old contract's own close that day
         const double lift = (k >= 60 ? gap1 : 0.0) + (k >= 90 ? gap2 : 0.0);
         double close = a + lift;
-        if (k == 40) {
-            close = a + gap1;
-            b.instrument_id = "B";
-            b.roll_from = RollFrom{a, "A", RollFromKind::AWAITS_NEXT};
-        } else {
-            b.instrument_id = k >= 90 ? "C" : k >= 60 ? "B" : "A";
-        }
+        b.instrument_id = k >= 91 ? "C" : k >= 60 ? "B" : "A";
+        // a vendor switch: the held contract's own bar, the field naming the target
+        if (k == 40) b.roll_from = RollFrom{a + gap1, "B", RollFromKind::AWAITS_NEXT};
         if (k == 60) b.roll_from = RollFrom{a, "A", RollFromKind::KNOWN};
         if (k == 61) b.roll_from = RollFrom{a, "A", RollFromKind::AFTER_ROLL};
-        if (k == 90) b.roll_from = RollFrom{a + gap1, "B", RollFromKind::AWAITS_NEXT};
+        if (k == 90) {
+            close = a + gap1;  // B's own close; C's is the target's
+            b.roll_from = RollFrom{a + gap1 + gap2, "C", RollFromKind::AWAITS_NEXT};
+        }
         if (k == 91) b.roll_from = RollFrom{a + gap1, "B", RollFromKind::AFTER_ROLL};
         b.open = b.close = Decimal(close);
         b.high = Decimal(close * 1.001);
@@ -337,7 +336,10 @@ TEST(TrendAdjustedSeries, PerContractBarsGiveTheLibrarysVolAndEmas) {
         }
         const auto series = roll_series::build_series(raw, ids, rf);
         if (rolls) {
-            ASSERT_TRUE(series.flags.resolved_close[40].has_value());
+            ASSERT_TRUE(series.flags.pending[40]);
+            ASSERT_FALSE(series.flags.change[40]);
+            ASSERT_EQ(series.raw[40], raw[40]) << "the switch bar's level is the held contract's";
+            ASSERT_TRUE(series.flags.base_close[90].has_value());
             ASSERT_TRUE(series.flags.confirm[60]);
             ASSERT_TRUE(series.flags.confirm[91]);
             // the roll bars' returns are the old contracts' own moves

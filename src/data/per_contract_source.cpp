@@ -89,16 +89,34 @@ Result<std::vector<SourceBar>> bars_of_series(const HeldSeries& series,
         double held_close = d.close;
         std::string held_id = d.bar_id.empty() ? d.carried_id : d.bar_id;
         if (d.tentative) {
+            // A vendor switch the next bar did not confirm (or the range ends on it): the held
+            // contract's own bar, the field naming the target it would have rolled into.
             const TentativeRoll& t = *d.tentative;
-            b.open = t.bar.open;
-            b.high = t.bar.high;
-            b.low = t.bar.low;
-            b.close = t.bar.close;
-            b.volume = static_cast<double>(t.bar.volume);
-            b.instrument_id = t.bar.instrument_id;
-            b.roll_from = RollFrom{t.old_close, t.old_id, RollFromKind::AWAITS_NEXT};
-            held_close = t.old_close;
-            held_id = t.old_id;
+            b.open = d.open;
+            b.high = d.high;
+            b.low = d.low;
+            b.close = d.close;
+            b.volume = static_cast<double>(d.volume);
+            b.instrument_id = held_id;
+            b.roll_from = RollFrom{t.bar.close, t.bar.instrument_id, RollFromKind::AWAITS_NEXT};
+        } else if (d.roll && d.awaits_next_bar) {
+            // A vendor switch the next bar confirms: handed out exactly as above, because a run
+            // whose bars end here cannot tell the two apart. The old contract is still held on it.
+            if (!d.old_bar) {
+                return make_error<Bars>(ErrorCode::INVALID_DATA,
+                                        "per_contract_rolls: " + symbol + " " + ymd(d.date) +
+                                            ": a vendor roll awaiting the next bar has no old bar",
+                                        "contract_rolls");
+            }
+            b.open = d.old_bar->open;
+            b.high = d.old_bar->high;
+            b.low = d.old_bar->low;
+            b.close = d.old_bar->close;
+            b.volume = static_cast<double>(d.old_bar->volume);
+            b.instrument_id = d.old_bar->instrument_id;
+            b.roll_from = RollFrom{d.close, d.bar_id, RollFromKind::AWAITS_NEXT};
+            held_close = d.old_bar->close;
+            held_id = d.old_bar->instrument_id;
         } else {
             if (!d.has_close) {
                 return make_error<Bars>(ErrorCode::INVALID_DATA,
@@ -115,7 +133,7 @@ Result<std::vector<SourceBar>> bars_of_series(const HeldSeries& series,
             b.instrument_id = held_id;
             if (d.roll) {
                 RollFrom from;
-                from.kind = d.awaits_next_bar ? RollFromKind::AWAITS_NEXT : RollFromKind::KNOWN;
+                from.kind = RollFromKind::KNOWN;
                 if (d.old_close) {
                     from.close = *d.old_close;
                     from.instrument_id = d.old_id;
@@ -142,8 +160,9 @@ Result<std::vector<SourceBar>> bars_of_series(const HeldSeries& series,
                 }
                 b.roll_from = from;
             } else if (d.left_close) {
-                // The bar after a roll: the old contract's close here, for a consumer that withheld
-                // the roll bar (it books the roll on this bar, HD 10-23).
+                // A bar after a roll, up to the next one: the old contract's close here, for a
+                // consumer that withheld the roll bar and the bars since (it books the roll on its
+                // first consumed bar, HD 10-23).
                 b.roll_from = RollFrom{*d.left_close, d.left_id, RollFromKind::AFTER_ROLL};
             }
         }

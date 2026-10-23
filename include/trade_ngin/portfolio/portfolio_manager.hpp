@@ -709,11 +709,11 @@ private:
         const std::unordered_map<std::string, std::map<int64_t, double>>& closes_by_symbol) const;
 
     /**
-     * @brief Rolls step 3: the given closes with every vendor switch the next stored bar did not
-     *        confirm read as the old contract's close (roll_series::resolved_closes), the
-     *        divisors of the date-aligned returns. The closes themselves with no roll field stored.
+     * @brief Rolls step 3: the given closes with every vendor switch bar the next stored bar confirms
+     *        read as the target's close (roll_series::return_bases): the divisors of the
+     *        date-aligned returns. The closes themselves with no roll field stored.
      */
-    std::unordered_map<std::string, std::map<int64_t, double>> resolved_closes_by_symbol(
+    std::unordered_map<std::string, std::map<int64_t, double>> base_closes_by_symbol(
         const std::unordered_map<std::string, std::map<int64_t, double>>& closes_by_symbol) const;
 
     /// The stored ids and roll fields of `symbol` on the dates of `closes`, in date order.

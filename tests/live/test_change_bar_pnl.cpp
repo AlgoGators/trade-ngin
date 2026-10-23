@@ -268,7 +268,7 @@ TEST_F(ChangeBarPnlTest, TheSettledTablePricesAreThePairTheFinalizeBookedEachRow
 // Rolls step 3 (per_contract_rolls on): NG's T-1 bar (day 4) is a roll bar of the per-contract
 // source, the new contract's 3.965 with the old contract's 3.41; the finalize books the old
 // contract's own move, 2 x (3.41 - 3.33) x 10,000, not 0 and not the splice step. ES's T-1 bar
-// follows a vendor switch on day 3 it did not confirm: it books from the old contract's day-3 close.
+// follows a vendor switch on day 3 it did not confirm: it books from the held contract's day-3 close.
 TEST_F(ChangeBarPnlTest, APerContractRollBarBooksTheOldContractsMove) {
     const std::string t1 = SessionClassifier::ymd(SessionClassifier::day_of(bar("ES.v.0", 4, 0, "").timestamp));
     std::vector<Bar> consumed;
@@ -276,8 +276,10 @@ TEST_F(ChangeBarPnlTest, APerContractRollBarBooksTheOldContractsMove) {
         Bar ng = bar("NG.v.0", d, d == 4 ? 3.965 : 3.3 + 0.01 * d, d == 4 ? "863" : "864");
         if (d == 4) ng.roll_from = RollFrom{3.41, "864", RollFromKind::KNOWN};
         consumed.push_back(ng);
-        Bar es = bar("ES.v.0", d, d == 3 ? 5100.0 : 5000.0 + 10 * d, d == 3 ? "2" : "1");
-        if (d == 3) es.roll_from = RollFrom{5030.0, "1", RollFromKind::AWAITS_NEXT};
+        // ES day 3: a vendor switch the next bar does not confirm: the held contract's own bar
+        // (5030), the field naming the target (5100)
+        Bar es = bar("ES.v.0", d, 5000.0 + 10 * d, "1");
+        if (d == 3) es.roll_from = RollFrom{5100.0, "2", RollFromKind::AWAITS_NEXT};
         consumed.push_back(es);
     }
     const auto status = roll_series::roll_status_of(consumed);
@@ -289,7 +291,7 @@ TEST_F(ChangeBarPnlTest, APerContractRollBarBooksTheOldContractsMove) {
     EXPECT_TRUE(s.zero_pnl_symbols.empty());
     EXPECT_DOUBLE_EQ(s.t1_close_prices.at("NG.v.0"), 3.41);
     EXPECT_DOUBLE_EQ(s.t2_close_prices.at("NG.v.0"), 3.33);
-    EXPECT_DOUBLE_EQ(s.t2_close_prices.at("ES.v.0"), 5030.0) << "the old contract's close, not 5100";
+    EXPECT_DOUBLE_EQ(s.t2_close_prices.at("ES.v.0"), 5030.0) << "the held contract's close, not the target's 5100";
     LivePnLManager pm(500000.0, InstrumentRegistry::instance());
     const std::vector<Position> book{held("NG.v.0", 2, 0), held("ES.v.0", 1, 0)};
     auto r = pm.finalize_previous_day(book, s.t1_close_prices, s.t2_close_prices, 500000.0, 0.0,
