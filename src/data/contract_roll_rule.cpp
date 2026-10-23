@@ -2,7 +2,9 @@
 #include "trade_ngin/data/contract_roll_rule.hpp"
 
 #include <algorithm>
+#include <iomanip>
 #include <set>
+#include <sstream>
 #include <stdexcept>
 
 #include "trade_ngin/core/logger.hpp"
@@ -104,6 +106,21 @@ private:
         out_.report.warnings.push_back(msg);
     }
 
+    /// Rolls step 4 (plan 5c): every bar a fallback stands in for, one WARN in the run's log naming
+    /// the symbol, the grid date and the fallback used: "<root>.v.0 <date> fallback <kind>: ...".
+    std::string fallback(const std::string& kind, const std::string& detail) {
+        const std::string msg =
+            in_.root + ".v.0 " + ymd(day_) + " fallback " + kind + ": " + detail;
+        warn(msg);
+        return msg;
+    }
+
+    static std::string price(double v) {
+        std::ostringstream o;
+        o << std::setprecision(12) << v;
+        return o.str();
+    }
+
     void fill_bar(HeldDay& day, const Contract& held, const Contract* vendor, const VendorBar& vb) {
         if (const ContractBar* b = held.bar_on(day.date)) {
             day.source = BarSource::OWN;
@@ -125,8 +142,10 @@ private:
             day.close = vb.close;
             day.volume = vb.volume;
             ++out_.report.vendor_bar_days;
-            warn(in_.root + " " + ymd(day.date) + ": " + held.raw_symbol +
-                 " has no contract row; the vendor names it, so its bar is the vendor's");
+            fallback("vendor_bar", held.raw_symbol +
+                                       " has no contract row and the vendor names it: the bar is "
+                                       "the vendor's own print (close " +
+                                       price(vb.close) + ")");
             return;
         }
         // Class c, the vendor names another contract: the held contract's last close, carried.
@@ -134,14 +153,21 @@ private:
         day.bar_id.clear();
         day.volume = 0;
         ++out_.report.carry_days;
+        const std::string named = vendor ? "the vendor names " + vendor->raw_symbol
+                                         : std::string("the vendor's id names no contract");
         auto it = held.bars.lower_bound(day.date);
         if (it == held.bars.begin()) {
             day.has_close = false;
+            fallback("carry", held.raw_symbol + " has no contract row and " + named +
+                                  "; it has no earlier row: no close to carry");
             return;
         }
         --it;
         day.open = day.high = day.low = day.close = it->second.close;
         day.carried_id = it->second.instrument_id;
+        fallback("carry", held.raw_symbol + " has no contract row and " + named +
+                              ": its last close " + price(it->second.close) + " (" +
+                              ymd(it->first) + ") is carried");
     }
 
     const RuleInputs& in_;
@@ -235,8 +261,9 @@ HeldSeries Rule::run() {
                         vendor_pending = false;
                         vendor_contract = nullptr;
                     } else {
-                        warn(in_.root + " " + ymd(d) + ": the change from " + hk.raw_symbol +
-                             " to the micro's own contract waits for a bar where both print");
+                        fallback("deferred", "the change from " + hk.raw_symbol +
+                                                 " to the micro's own contract waits for a bar "
+                                                 "where both print");
                     }
                 }
             } else if (cal_.is_trading_day(d)) {
@@ -283,8 +310,17 @@ HeldSeries Rule::run() {
                     const bool fallback = target && !hb && d >= hd.last_actionable;
                     if (!target) {
                         ++out_.report.no_target_bars;
-                        warn(in_.root + " " + ymd(d) + ": a roll from " + hk.raw_symbol +
-                             " is due and no cycle contract after it prints");
+                        this->fallback("no_target", "a roll from " + hk.raw_symbol +
+                                                        " is due and no cycle contract after it "
+                                                        "prints: it is held and the roll waits");
+                    } else if (!hb && !fallback) {
+                        // Ruling 3: the held contract has no bar here; the roll waits for the next
+                        // trading-day bar where both print (never later than the LAB).
+                        this->fallback("deferred", "a roll from " + hk.raw_symbol + " to " +
+                                                       target->raw_symbol + " is due and " +
+                                                       hk.raw_symbol +
+                                                       " has no bar: it waits for a bar where "
+                                                       "both print");
                     } else if (hb || fallback) {
                         day.roll = true;
                         day.old = hk;
@@ -304,19 +340,36 @@ HeldSeries Rule::run() {
                             const ContractBar* prev = target->bar_on(grid[i - 1].date);
                             day.fallback = prev ? RollFallback::NEW_CONTRACT_MOVE : RollFallback::ZERO;
                             if (prev) day.fallback_new_previous_close = prev->close;
-                            const std::string c = in_.root + " " + ymd(d) + ": " + hk.raw_symbol +
-                                                  " has no bar up to its last actionable bar " +
-                                                  ymd(hd.last_actionable) + "; rolled to " +
-                                                  target->raw_symbol + " with the fallback (" +
-                                                  to_string(day.fallback) + ")";
+                            const std::string c = this->fallback(
+                                std::string("roll_") + to_string(day.fallback),
+                                hk.raw_symbol + " has no bar up to its last actionable bar " +
+                                    ymd(hd.last_actionable) + "; rolled to " + target->raw_symbol +
+                                    (day.fallback == RollFallback::NEW_CONTRACT_MOVE
+                                         ? ", the old contract's move read as the new one's"
+                                         : ", the old contract's move read as 0"));
                             out_.report.fallback_cases.push_back(c);
                             ++out_.report.fallbacks;
-                            warn(c);
                         }
                         if (skipped) {
                             ++out_.report.target_skipped_front;
-                            warn(in_.root + " " + ymd(d) + ": the cycle front after " +
-                                 hk.raw_symbol + " has no bar; rolled to " + target->raw_symbol);
+                            this->fallback("target_not_front",
+                                           "the cycle front after " + hk.raw_symbol +
+                                               " has no bar; rolled to " + target->raw_symbol);
+                        }
+                        if (day.late) {
+                            // Ruling 12: the LAB is not on the vendor's grid, so the deadline rolls
+                            // on the next grid bar; or no target printed until this bar.
+                            const bool lab_on_grid = std::any_of(
+                                grid.begin(), grid.end(),
+                                [&](const VendorBar& g) { return g.date == hd.last_actionable; });
+                            this->fallback(
+                                "late_deadline",
+                                "the deadline roll out of " + hk.raw_symbol + " into " +
+                                    target->raw_symbol + " falls after its last actionable bar " +
+                                    ymd(hd.last_actionable) +
+                                    (lab_on_grid ? ": no target printed until this bar"
+                                                 : ", which is not on the vendor's grid: rolled "
+                                                   "on the next grid bar"));
                         }
                         ++out_.report.rolls;
                         ++out_.report.rolls_by_trigger[to_string(pending)];
