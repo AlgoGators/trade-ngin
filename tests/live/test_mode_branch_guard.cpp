@@ -249,6 +249,8 @@ const std::map<std::string, std::vector<std::string>> kOtherAppSites = {
     {"apps/backtest/bt_portfolio.cpp", {"auto now = std::chrono::system_clock::now();"}},
     {"apps/backtest/bt_portfolio_conservative.cpp", {"auto now = std::chrono::system_clock::now();"}},
     {"apps/test_database_extensions.cpp", {"auto now = std::chrono::system_clock::now();", "std::chrono::system_clock::now().time_since_epoch())"}},
+    // Rolls step 2: the read-only dump tool takes its scratch database from the environment.
+    {"apps/tools/contract_rolls_dump.cpp", {"const char* dsn = std::getenv(\"CONTRACT_ROLLS_DSN\");"}},
 };
 
 // --- the library: the lines of each file, and what they are ------------------------------------
@@ -344,6 +346,9 @@ const std::map<std::string, std::pair<const char*, std::vector<std::string>>> kL
       {"std::chrono::system_clock::now(),",
        "last_update = std::chrono::system_clock::now();",
        "last_update = std::chrono::system_clock::now();"}}},
+    {"src/data/roll_calendar.cpp",
+     {"where the futures calendar file is (rolls step 2); the same in every mode",
+      {"if (const char* env = std::getenv(\"TRADE_NGIN_FUTURES_HOLIDAYS_JSON\")) return env;"}}},
     {"src/execution/execution_engine.cpp",
      {"the execution engine; no live runner uses it",
       {"std::chrono::system_clock::now(),",

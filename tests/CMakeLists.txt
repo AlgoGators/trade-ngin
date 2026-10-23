@@ -65,6 +65,15 @@ set(TEST_SOURCES
     strategy/test_listing_dates.cpp
     data/test_session_classifier_instrument_id.cpp
     data/test_roll_series.cpp
+    data/test_roll_calendar.cpp
+    data/test_contract_bars.cpp
+    data/test_contract_bars_db.cpp
+    data/test_roll_cycle.cpp
+    data/test_roll_cycle_db.cpp
+    data/test_contract_roll_rule.cpp
+    data/test_contract_roll_rule_db.cpp
+    data/test_contract_roll_micros.cpp
+    data/test_contract_rolls_api.cpp
     data/test_roll_legs.cpp
     data/test_executions_execution_type_db.cpp
     data/test_strategy_config_db.cpp
