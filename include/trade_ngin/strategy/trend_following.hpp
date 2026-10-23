@@ -83,6 +83,7 @@ struct InstrumentData {
     std::deque<double> price_history;
     std::deque<Timestamp> bar_timestamps;  // each price_history bar's date (vol annualisation)
     std::deque<std::string> bar_instrument_ids;  // each bar's vendor contract id (T-ROLLX, roll_series.hpp)
+    std::deque<std::optional<RollFrom>> bar_roll_from;  // each bar's roll field (rolls step 3)
     std::deque<double> volatility_history;
     double current_volatility = 0.01;
 
@@ -91,6 +92,7 @@ struct InstrumentData {
     std::deque<double> seeded_prices;
     std::deque<Timestamp> seeded_timestamps;
     std::deque<std::string> seeded_instrument_ids;
+    std::deque<std::optional<RollFrom>> seeded_roll_from;
 
     // The estimators at the last signal bar (trend_estimator.hpp), and the position they size
     // before any limit: (forecast / 10) x capital x IDM x weight x tau / (multiplier x price x

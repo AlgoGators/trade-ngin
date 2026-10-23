@@ -87,7 +87,7 @@ TEST(CostFeedAdjustedReturns, ThePerCycleFeedCarriesTheLastIdAcrossCycles) {
     for (size_t i = 0; i < r.size(); ++i) {
         feed_futures_cost_model_step(rolled, {r[i]}, r[i].timestamp + std::chrono::hours(24), carry);
     }
-    EXPECT_EQ(carry.last_id.at(kNg), "863");
+    EXPECT_EQ(carry.trackers.at(kNg).held_id(), "863");
     EXPECT_EQ(rolled.get_volatility_multiplier(kNg), expected.get_volatility_multiplier(kNg));
 }
 

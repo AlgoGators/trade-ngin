@@ -2,6 +2,7 @@
 #pragma once
 
 #include <functional>
+#include <optional>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -43,6 +44,20 @@ namespace trade_ngin::roll_series {
  * is used only for differences (the EMAs). The adjusted return is the adjusted change over the RAW
  * previous close, r_t = (A_t - A_t-1) / P_t-1, exactly 0 on a change bar; on every other bar it equals
  * the raw simple return, so a series with no change bar is untouched.
+ *
+ * Rolls step 3 (portfolio.json per_contract_rolls on; per_contract_source.hpp): the bars are the
+ * held contract's own and a roll bar carries the contract left (Bar::roll_from, passed alongside
+ * the ids). On such a bar the step is the new close minus the OLD contract's close on the same bar,
+ * and the return is the old contract's own over the bar, (old close - previous close) / previous
+ * close; the date is a change bar but its return is not 0. A roll known on its bar (KNOWN) is
+ * confirmed on that bar: no hold, the legs booked on it, priced at its two closes. A vendor switch
+ * only the next bar confirms (AWAITS_NEXT) is a pending change bar; the next consumed bar decides:
+ * held going into it in the new contract (its id, or its own roll field's old id) confirms the roll
+ * there, the legs at the switch bar's two closes; otherwise nothing rolled and the switch bar reads
+ * as the old contract's own bar (its close is the field's: `resolved_close`). An AFTER_ROLL field
+ * acts only when the last consumed contract is the one it names: the consumer withheld the roll
+ * bar, so this bar is the roll, KNOWN, at this bar's two closes. With no field passed (the switch
+ * off, the micros) every rule above is today's, bit for bit.
  */
 struct ChangeFlags {
     std::vector<bool> change;
@@ -55,14 +70,26 @@ struct ChangeFlags {
     /// The id the position is held in at each bar (the confirmed id; the first known id before
     /// any change). Empty while no id is known.
     std::vector<std::string> held_id;
+    /// Rolls step 3: on a roll bar the old contract's close (its step is close minus it, its return
+    /// is to it); nullopt elsewhere and on every bar when no field is passed. On a confirming bar,
+    /// the closing leg's price is old_close[leg_to] and the opening leg's the close of leg_to.
+    std::vector<std::optional<double>> old_close;
+    /// Rolls step 3: a vendor switch the next consumed bar did not confirm is the old contract's
+    /// own bar, at this close; nullopt elsewhere.
+    std::vector<std::optional<double>> resolved_close;
 
     size_t size() const { return change.size(); }
     /// True when the last bar leaves a change pending (the symbol is held on the next cycle).
     bool pending_at_end() const { return !pending.empty() && pending.back(); }
 };
 
-/// The flags of one symbol's consumed bars, oldest first. An empty id is "unknown".
-ChangeFlags classify_instrument_changes(const std::vector<std::string>& instrument_ids);
+/// Each consumed bar's roll field (Bar::roll_from), aligned with the ids; empty = none passed.
+using RollFields = std::vector<std::optional<RollFrom>>;
+
+/// The flags of one symbol's consumed bars, oldest first. An empty id is "unknown". `roll_from`,
+/// when not empty, is aligned with the ids (rolls step 3).
+ChangeFlags classify_instrument_changes(const std::vector<std::string>& instrument_ids,
+                                        const RollFields& roll_from = {});
 
 /// The adjusted levels: raw[t] + the sum over change bars j > t of (raw[j] - raw[j - 1]).
 std::vector<double> adjusted_levels(const std::vector<double>& raw_closes,
@@ -73,17 +100,30 @@ std::vector<double> adjusted_levels(const std::vector<double>& raw_closes,
 std::vector<double> adjusted_returns(const std::vector<double>& raw_closes,
                                      const std::vector<bool>& change);
 
+/// The closes the returns read: raw, with every switch bar the next bar did not confirm read as the
+/// old contract's close (ChangeFlags::resolved_close). `raw` itself when no field was passed.
+std::vector<double> resolved_closes(const std::vector<double>& raw_closes, const ChangeFlags& flags);
+
+/// The same two on the flags, rolls step 3: over the resolved closes, a roll bar's step is the
+/// close minus old_close and its return is (old_close - previous) / previous. With no field passed
+/// they equal the two above exactly.
+std::vector<double> adjusted_levels(const std::vector<double>& raw_closes, const ChangeFlags& flags);
+std::vector<double> adjusted_returns(const std::vector<double>& raw_closes,
+                                     const ChangeFlags& flags);
+
 /// The series a signal consumer reads: raw levels, adjusted levels, adjusted returns, the flags.
 struct Series {
-    std::vector<double> raw;
+    std::vector<double> raw;  ///< the resolved closes (the raw closes when no field is passed)
     std::vector<double> adjusted;
     std::vector<double> returns;  ///< raw.size() - 1 entries (empty for fewer than two bars)
     ChangeFlags flags;
 };
 
-/// Builds the series of one symbol's consumed bars (closes and ids aligned, oldest first).
+/// Builds the series of one symbol's consumed bars (closes, ids and roll fields aligned, oldest
+/// first).
 Series build_series(const std::vector<double>& raw_closes,
-                    const std::vector<std::string>& instrument_ids);
+                    const std::vector<std::string>& instrument_ids,
+                    const RollFields& roll_from = {});
 
 /**
  * @brief The same rule, one bar at a time (the engines mark and hold as the bars arrive): the
@@ -106,12 +146,27 @@ public:
         double last_close_before_change{0.0};  ///< confirm bars: the closing leg's price
         double change_bar_close{0.0};          ///< confirm bars: the opening leg's price
         int bars_pending{0};             ///< confirm or flip bars: the change bars resolved
+        /// Rolls step 3: on a roll bar, the old contract's close: the bar's move (P&L, return) is
+        /// to it, not to `close`.
+        std::optional<double> mark_close;
+        /// Rolls step 3: the bar after a vendor switch it did not confirm: its move is from this
+        /// close (the old contract's on the switch bar), not from the previous bar's close.
+        std::optional<double> previous_close;
         /// LOOP_SPEC v6.1 sections 2.1, 2.2 (D37): the symbol is HELD while its last consumed bar is
         /// a change bar (a pending roll, a third id, either bar of a flip) or an id-less bar inside a
         /// pending roll (code review D2: `change` alone missed that bar).
-        bool holds() const { return change || pending; }
+        bool holds() const { return (change && !confirm) || pending; }
+        /// The bar's move in price points: (mark_close or close) - (previous_close or `prev`), 0
+        /// on a change bar with no old close (today's rule). `prev` is the previous consumed close.
+        double move(double close, double prev) const {
+            if (change && !mark_close) return 0.0;
+            return (mark_close ? *mark_close : close) - (previous_close ? *previous_close : prev);
+        }
     };
-    Status add(const std::string& instrument_id, double close);
+    /// `roll_from` is the bar's roll field (rolls step 3). Two rolls resolved on one bar (a switch
+    /// confirmed by a bar that is itself a roll) throw std::runtime_error.
+    Status add(const std::string& instrument_id, double close,
+               const std::optional<RollFrom>& roll_from = std::nullopt);
     const std::string& held_id() const { return held_; }
     bool pending() const { return !pending_.empty(); }
     size_t bars() const { return n_; }
@@ -127,6 +182,12 @@ private:
     };
     std::vector<Pending> pending_;
     double close_before_pending_{0.0};
+    // Rolls step 3: a vendor switch (AWAITS_NEXT) the next bar decides.
+    bool awaiting_{false};
+    std::string awaiting_id_;
+    double awaiting_close_{0.0};
+    double awaiting_old_close_{0.0};
+    std::string awaiting_old_id_;
 };
 
 /**

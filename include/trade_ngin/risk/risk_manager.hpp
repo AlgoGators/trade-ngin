@@ -155,11 +155,18 @@ public:
      * @return MarketData object
      */
     MarketData create_market_data(const std::vector<Bar>& data,
-                                  const AdjustedLevels* adjusted = nullptr);
+                                  const AdjustedLevels* adjusted = nullptr,
+                                  const AdjustedLevels* resolved = nullptr);
 
     /// The adjusted levels of every symbol's bars in `data` (one level per (symbol, timestamp);
     /// a repeated timestamp keeps the last bar, as create_market_data's price map does).
     static AdjustedLevels adjusted_levels_of(const std::vector<Bar>& data);
+
+    /// Rolls step 3: the bars of `data` whose close the returns read as another one: a vendor
+    /// switch the next bar did not confirm reads the old contract's close
+    /// (roll_series::resolved_closes). Only those bars; empty when no bar carries a roll field.
+    /// create_market_data's `resolved` (built from `data` itself when null) divides by them.
+    static AdjustedLevels resolved_closes_of(const std::vector<Bar>& data);
 
     /// Gross and net leverage of a book and the leverage multiplier the gate would give it,
     /// valued exactly as process_positions values it (average price x contract multiplier, over

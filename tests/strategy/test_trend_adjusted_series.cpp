@@ -283,3 +283,82 @@ TEST(TrendAdjustedSeries, TheWindowIsRecomputedOnEveryBarAndNothingPersists) {
                 lambda * static_cast<double>(next.close) + (1 - lambda) * (ema_before.at(8) + 20.0),
                 1e-9);
 }
+
+// Rolls step 3 (plan section 6): given the per-contract source's bars (a roll bar carries the old
+// contract's close, Bar::roll_from), the strategy's vol estimate and EMAs are the library's
+// (roll_series::build_series on the same bars), on a series with no roll and on one with every
+// shape: a vendor switch the next bar does not confirm (bar 40), a roll known on its bar (60), a
+// vendor switch the next bar confirms (90), the AFTER_ROLL field after each roll.
+namespace {
+
+std::vector<Bar> per_contract_walk(bool rolls) {
+    std::vector<Bar> bars = walk(120, -1, 0.0);
+    if (!rolls) return bars;
+    const double gap1 = 6.0, gap2 = 4.5;
+    for (int k = 0; k < 120; ++k) {
+        Bar& b = bars[static_cast<size_t>(k)];
+        const double a = static_cast<double>(b.close);  // the old contract's own close that day
+        const double lift = (k >= 60 ? gap1 : 0.0) + (k >= 90 ? gap2 : 0.0);
+        double close = a + lift;
+        if (k == 40) {
+            close = a + gap1;
+            b.instrument_id = "B";
+            b.roll_from = RollFrom{a, "A", RollFromKind::AWAITS_NEXT};
+        } else {
+            b.instrument_id = k >= 90 ? "C" : k >= 60 ? "B" : "A";
+        }
+        if (k == 60) b.roll_from = RollFrom{a, "A", RollFromKind::KNOWN};
+        if (k == 61) b.roll_from = RollFrom{a, "A", RollFromKind::AFTER_ROLL};
+        if (k == 90) b.roll_from = RollFrom{a + gap1, "B", RollFromKind::AWAITS_NEXT};
+        if (k == 91) b.roll_from = RollFrom{a + gap1, "B", RollFromKind::AFTER_ROLL};
+        b.open = b.close = Decimal(close);
+        b.high = Decimal(close * 1.001);
+        b.low = Decimal(close * 0.999);
+    }
+    return bars;
+}
+
+}  // namespace
+
+TEST(TrendAdjustedSeries, PerContractBarsGiveTheLibrarysVolAndEmas) {
+    for (bool rolls : {false, true}) {
+        SCOPED_TRACE(rolls ? "per-contract rolls" : "no roll");
+        StateManager::reset_instance();
+        static int n = 0;
+        Fixture<TrendFollowingStrategy, TrendFollowingConfig> f("TREND_pc_" + std::to_string(++n));
+        const auto bars = per_contract_walk(rolls);
+        std::vector<double> raw;
+        std::vector<std::string> ids;
+        roll_series::RollFields rf;
+        for (const auto& b : bars) {
+            raw.push_back(static_cast<double>(b.close));
+            ids.push_back(b.instrument_id);
+            rf.push_back(b.roll_from);
+        }
+        const auto series = roll_series::build_series(raw, ids, rf);
+        if (rolls) {
+            ASSERT_TRUE(series.flags.resolved_close[40].has_value());
+            ASSERT_TRUE(series.flags.confirm[60]);
+            ASSERT_TRUE(series.flags.confirm[91]);
+            // the roll bars' returns are the old contracts' own moves
+            EXPECT_DOUBLE_EQ(series.returns[59], (rf[60]->close - raw[59]) / raw[59]);
+        }
+        ASSERT_TRUE(f.strategy->on_data(bars).is_ok());
+        ASSERT_EQ(f.data().bar_roll_from.size(), 120u);
+        const double lambda = 2.0 / (f.strategy->trend_config_.vol_lookback_short + 1.0);
+        double mean = series.returns[0];
+        double var = std::max(1e-6, series.returns[0] * series.returns[0] * 0.1);
+        for (size_t t = 1; t < series.returns.size(); ++t) {
+            mean = lambda * series.returns[t] + (1 - lambda) * mean;
+            const double d = series.returns[t] - mean;
+            var = std::max(1e-6, lambda * d * d + (1 - lambda) * var);
+        }
+        const auto& estimate = f.data().estimate;
+        ASSERT_TRUE(estimate.valid);
+        EXPECT_NEAR(estimate.sigma_short, std::clamp(std::sqrt(var) * estimate.factor, 0.005, 5.0),
+                    1e-12);
+        const auto ema = f.strategy->get_ema_values(kSym, {8, 32});
+        EXPECT_NEAR(ema.at(8), f.strategy->calculate_ewma(series.adjusted, 8).back(), 1e-9);
+        EXPECT_NEAR(ema.at(32), f.strategy->calculate_ewma(series.adjusted, 32).back(), 1e-9);
+    }
+}

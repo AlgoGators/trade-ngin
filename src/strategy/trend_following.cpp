@@ -268,6 +268,7 @@ Result<void> TrendFollowingStrategy::seed_history(const std::vector<Bar>& bars) 
         instrument_data.seeded_prices.clear();
         instrument_data.seeded_timestamps.clear();
         instrument_data.seeded_instrument_ids.clear();
+        instrument_data.seeded_roll_from.clear();
         const size_t first = symbol_bars.size() > trend_config_.max_history_size
                                  ? symbol_bars.size() - trend_config_.max_history_size
                                  : 0;
@@ -275,11 +276,13 @@ Result<void> TrendFollowingStrategy::seed_history(const std::vector<Bar>& bars) 
             instrument_data.seeded_prices.push_back(static_cast<double>(symbol_bars[i]->close));
             instrument_data.seeded_timestamps.push_back(symbol_bars[i]->timestamp);
             instrument_data.seeded_instrument_ids.push_back(symbol_bars[i]->instrument_id);
+            instrument_data.seeded_roll_from.push_back(symbol_bars[i]->roll_from);
         }
         // The seed is the history until bars are fed.
         instrument_data.price_history = instrument_data.seeded_prices;
         instrument_data.bar_timestamps = instrument_data.seeded_timestamps;
         instrument_data.bar_instrument_ids = instrument_data.seeded_instrument_ids;
+        instrument_data.bar_roll_from = instrument_data.seeded_roll_from;
     }
     return Result<void>();
 }
@@ -349,6 +352,7 @@ Result<void> TrendFollowingStrategy::on_data(const std::vector<Bar>& data) {
                 instrument_data.price_history.clear();
                 instrument_data.bar_timestamps.clear();
                 instrument_data.bar_instrument_ids.clear();
+                instrument_data.bar_roll_from.clear();
                 // The history seeded before the feed (seed_history) stays in front of it: the
                 // bars dated before the feed's first bar.
                 const Timestamp feed_start = symbol_bars.front().timestamp;
@@ -357,6 +361,7 @@ Result<void> TrendFollowingStrategy::on_data(const std::vector<Bar>& data) {
                     instrument_data.price_history.push_back(instrument_data.seeded_prices[i]);
                     instrument_data.bar_timestamps.push_back(instrument_data.seeded_timestamps[i]);
                     instrument_data.bar_instrument_ids.push_back(instrument_data.seeded_instrument_ids[i]);
+                    instrument_data.bar_roll_from.push_back(instrument_data.seeded_roll_from[i]);
                 }
             }
 
@@ -365,12 +370,14 @@ Result<void> TrendFollowingStrategy::on_data(const std::vector<Bar>& data) {
                 instrument_data.price_history.push_back(static_cast<double>(bar.close));
                 instrument_data.bar_timestamps.push_back(bar.timestamp);
                 instrument_data.bar_instrument_ids.push_back(bar.instrument_id);
+                instrument_data.bar_roll_from.push_back(bar.roll_from);
 
                 // MEMORY FIX: Limit price history to maximum needed lookback
                 if (instrument_data.price_history.size() > trend_config_.max_history_size) {
                     instrument_data.price_history.pop_front();
                     instrument_data.bar_timestamps.pop_front();
                     instrument_data.bar_instrument_ids.pop_front();
+                    instrument_data.bar_roll_from.pop_front();
                 }
             }
         }
@@ -436,7 +443,10 @@ Result<void> TrendFollowingStrategy::on_data(const std::vector<Bar>& data) {
             const std::vector<double> prices(full_prices.begin(), full_prices.end());
             const std::vector<std::string> instrument_ids(
                 instrument_data.bar_instrument_ids.begin(), instrument_data.bar_instrument_ids.end());
-            const roll_series::Series series = roll_series::build_series(prices, instrument_ids);
+            const roll_series::RollFields roll_from(instrument_data.bar_roll_from.begin(),
+                                                    instrument_data.bar_roll_from.end());
+            const roll_series::Series series =
+                roll_series::build_series(prices, instrument_ids, roll_from);
 
             // The annualisation: sqrt(bars a year) counted over the trailing 256 bars the estimator
             // has, or all of them when it has fewer (a series with a Sunday session row has about
@@ -1195,7 +1205,10 @@ std::unordered_map<int, double> TrendFollowingStrategy::get_ema_values(
     // T-ROLLX: the EMAs read the adjusted level (LOOP_SPEC v6.1 section 2.3), as the forecast's do.
     const auto& id_deque = it->second.bar_instrument_ids;
     const std::vector<std::string> instrument_ids(id_deque.begin(), id_deque.end());
-    const roll_series::Series series = roll_series::build_series(price_history, instrument_ids);
+    const roll_series::RollFields roll_from(it->second.bar_roll_from.begin(),
+                                            it->second.bar_roll_from.end());
+    const roll_series::Series series =
+        roll_series::build_series(price_history, instrument_ids, roll_from);
 
     // Calculate EMA for each requested window
     for (int window : windows) {
