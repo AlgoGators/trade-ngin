@@ -108,7 +108,8 @@ Result<std::vector<SourceBar>> bars_of_series(const HeldSeries& series,
             b.close = d.close;
             b.volume = static_cast<double>(d.volume);
             b.instrument_id = held_id;
-            b.roll_from = RollFrom{t.bar.close, t.bar.instrument_id, RollFromKind::AWAITS_NEXT};
+            b.roll_from =
+                RollFrom{t.bar.close, t.bar.instrument_id, RollFromKind::AWAITS_NEXT, ymd(d.date)};
         } else if (d.roll && d.awaits_next_bar) {
             // A vendor switch the next bar confirms: handed out exactly as above, because a run
             // whose bars end here cannot tell the two apart. The old contract is still held on it.
@@ -124,7 +125,7 @@ Result<std::vector<SourceBar>> bars_of_series(const HeldSeries& series,
             b.close = d.old_bar->close;
             b.volume = static_cast<double>(d.old_bar->volume);
             b.instrument_id = d.old_bar->instrument_id;
-            b.roll_from = RollFrom{d.close, d.bar_id, RollFromKind::AWAITS_NEXT};
+            b.roll_from = RollFrom{d.close, d.bar_id, RollFromKind::AWAITS_NEXT, ymd(d.date)};
             held_close = d.old_bar->close;
             held_id = d.old_bar->instrument_id;
         } else {
@@ -144,6 +145,7 @@ Result<std::vector<SourceBar>> bars_of_series(const HeldSeries& series,
             if (d.roll) {
                 RollFrom from;
                 from.kind = RollFromKind::KNOWN;
+                from.date = ymd(d.date);
                 if (d.old_close) {
                     from.close = *d.old_close;
                     from.instrument_id = d.old_id;
@@ -173,7 +175,8 @@ Result<std::vector<SourceBar>> bars_of_series(const HeldSeries& series,
                 // A bar after a roll, up to the next one: the old contract's close here, for a
                 // consumer that withheld the roll bar and the bars since (it books the roll on its
                 // first consumed bar, HD 10-23).
-                b.roll_from = RollFrom{*d.left_close, d.left_id, RollFromKind::AFTER_ROLL};
+                b.roll_from = RollFrom{*d.left_close, d.left_id, RollFromKind::AFTER_ROLL,
+                                       ymd(d.left_roll_date)};
             }
         }
         auto w = window.find(d.date);
@@ -288,6 +291,7 @@ Result<std::shared_ptr<arrow::Table>> source_bars_to_arrow(const std::vector<Sou
     arrow::DoubleBuilder roll_close_builder(pool);
     arrow::StringBuilder roll_id_builder(pool);
     arrow::Int8Builder roll_kind_builder(pool);
+    arrow::StringBuilder roll_date_builder(pool);
     auto failed = [](const std::string& operation) {
         return make_error<Table>(ErrorCode::CONVERSION_ERROR,
                                  "Arrow builder error during " + operation + " (per_contract_rolls)",
@@ -315,16 +319,18 @@ Result<std::shared_ptr<arrow::Table>> source_bars_to_arrow(const std::vector<Sou
                 if (roll_close_builder.Append(bar.roll_from->close) != arrow::Status::OK() ||
                     roll_id_builder.Append(bar.roll_from->instrument_id) != arrow::Status::OK() ||
                     roll_kind_builder.Append(static_cast<int8_t>(bar.roll_from->kind)) !=
-                        arrow::Status::OK()) {
+                        arrow::Status::OK() ||
+                    roll_date_builder.Append(bar.roll_from->date) != arrow::Status::OK()) {
                     return failed("append");
                 }
             } else if (roll_close_builder.AppendNull() != arrow::Status::OK() ||
                        roll_id_builder.AppendNull() != arrow::Status::OK() ||
-                       roll_kind_builder.AppendNull() != arrow::Status::OK()) {
+                       roll_kind_builder.AppendNull() != arrow::Status::OK() ||
+                       roll_date_builder.AppendNull() != arrow::Status::OK()) {
                 return failed("append");
             }
         }
-        std::vector<std::shared_ptr<arrow::Array>> arrays(11);
+        std::vector<std::shared_ptr<arrow::Array>> arrays(12);
         if (timestamp_builder.Finish(&arrays[0]) != arrow::Status::OK() ||
             symbol_builder.Finish(&arrays[1]) != arrow::Status::OK() ||
             open_builder.Finish(&arrays[2]) != arrow::Status::OK() ||
@@ -335,7 +341,8 @@ Result<std::shared_ptr<arrow::Table>> source_bars_to_arrow(const std::vector<Sou
             instrument_id_builder.Finish(&arrays[7]) != arrow::Status::OK() ||
             roll_close_builder.Finish(&arrays[8]) != arrow::Status::OK() ||
             roll_id_builder.Finish(&arrays[9]) != arrow::Status::OK() ||
-            roll_kind_builder.Finish(&arrays[10]) != arrow::Status::OK()) {
+            roll_kind_builder.Finish(&arrays[10]) != arrow::Status::OK() ||
+            roll_date_builder.Finish(&arrays[11]) != arrow::Status::OK()) {
             return failed("finish");
         }
         auto schema = arrow::schema({arrow::field("time", arrow::timestamp(arrow::TimeUnit::SECOND)),
@@ -348,7 +355,8 @@ Result<std::shared_ptr<arrow::Table>> source_bars_to_arrow(const std::vector<Sou
                                      arrow::field("instrument_id", arrow::utf8()),
                                      arrow::field("roll_from_close", arrow::float64()),
                                      arrow::field("roll_from_id", arrow::utf8()),
-                                     arrow::field("roll_from_kind", arrow::int8())});
+                                     arrow::field("roll_from_kind", arrow::int8()),
+                                     arrow::field("roll_from_date", arrow::utf8())});
         return Result<Table>(arrow::Table::Make(schema, arrays));
     } catch (const std::exception& e) {
         return make_error<Table>(ErrorCode::CONVERSION_ERROR,

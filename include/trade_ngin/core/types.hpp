@@ -336,9 +336,15 @@ struct RollFrom {
     double close{0.0};          ///< the old contract's close on this bar (AWAITS_NEXT: the target's)
     std::string instrument_id;  ///< the old contract's id string (AWAITS_NEXT: the target's)
     RollFromKind kind{RollFromKind::KNOWN};
+    /// Rolls step 4 (R3 audit A, the 6L 2013-09-11 case): the roll's date, YYYY-MM-DD. KNOWN: this
+    /// bar's; AFTER_ROLL: the roll bar this bar follows; AWAITS_NEXT: the switch bar's (this bar's).
+    /// A bar after a withheld roll then tells the vendor switch a consumer awaits (its own date)
+    /// from a later roll into the same target (another date). Empty when unknown.
+    std::string date;
 
     bool operator==(const RollFrom& o) const {
-        return close == o.close && instrument_id == o.instrument_id && kind == o.kind;
+        return close == o.close && instrument_id == o.instrument_id && kind == o.kind &&
+               date == o.date;
     }
 };
 

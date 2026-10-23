@@ -60,6 +60,11 @@ namespace trade_ngin::roll_series {
  * contract is the one it names: the consumer withheld the roll bar (and the bars since), so this
  * bar is the roll, KNOWN, at this bar's two closes. With no field passed (the switch
  * off, the micros) every rule above is today's, bit for bit.
+ *
+ * Rolls step 4 (R3 audit A, the 6L 2013-09-11 case): an AFTER_ROLL field confirms an awaited vendor
+ * switch only when it follows that switch, its date being the switch bar's. A field dated later
+ * names a later roll into the same target that the consumer withheld: the awaited switch was not
+ * confirmed, and the later roll is booked on this bar as a withheld roll is.
  */
 struct ChangeFlags {
     std::vector<bool> change;
@@ -193,6 +198,7 @@ private:
     double awaiting_close_{0.0};
     double awaiting_old_close_{0.0};
     std::string awaiting_old_id_;
+    std::string awaiting_date_;  ///< rolls step 4: the switch bar's date (RollFrom::date)
 };
 
 /**

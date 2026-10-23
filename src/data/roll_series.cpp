@@ -38,6 +38,7 @@ ChangeFlags classify_instrument_changes(const std::vector<std::string>& ids,
     // Rolls step 3: a vendor switch (AWAITS_NEXT) the next bar decides: its bar, the target's id.
     int awaiting = -1;
     std::string awaiting_target;
+    std::string awaiting_date;  // rolls step 4: the switch bar's date (RollFrom::date)
     for (size_t t = 0; t < n; ++t) {
         const std::string& id = ids[t];
         if (id.empty()) {
@@ -60,7 +61,11 @@ ChangeFlags classify_instrument_changes(const std::vector<std::string>& ids,
             const size_t a = static_cast<size_t>(awaiting);
             pending.clear();
             awaiting = -1;
-            if (before == awaiting_target) {
+            // Rolls step 4: a field following a later roll into the target does not confirm it.
+            const bool later_roll = rf && rf->kind == RollFromKind::AFTER_ROLL &&
+                                    !rf->date.empty() && !awaiting_date.empty() &&
+                                    rf->date != awaiting_date;
+            if (before == awaiting_target && !later_roll) {
                 // The roll happened on the switch bar: both legs at its two closes (the old
                 // contract's own close, the target's in the field), this bar's move from the target.
                 f.confirm[t] = true;
@@ -86,6 +91,7 @@ ChangeFlags classify_instrument_changes(const std::vector<std::string>& ids,
             pending.assign(1, t);
             awaiting = static_cast<int>(t);
             awaiting_target = rf->instrument_id;
+            awaiting_date = rf->date;
             last_known = id;
             f.held_id[t] = held;
             continue;
@@ -265,7 +271,10 @@ RollTracker::Status RollTracker::add(const std::string& id, double close,
         const std::string& before = rf && rf->kind == RollFromKind::KNOWN ? rf->instrument_id : id;
         pending_.clear();
         awaiting_ = false;
-        if (before == awaiting_id_) {
+        // Rolls step 4: a field following a later roll into the target does not confirm it.
+        const bool later_roll = rf && rf->kind == RollFromKind::AFTER_ROLL && !rf->date.empty() &&
+                                !awaiting_date_.empty() && rf->date != awaiting_date_;
+        if (before == awaiting_id_ && !later_roll) {
             // The roll happened on the switch bar: both legs at its two closes; this bar moves from
             // the target's close.
             st.confirm = true;
@@ -298,6 +307,7 @@ RollTracker::Status RollTracker::add(const std::string& id, double close,
         awaiting_close_ = rf->close;
         awaiting_old_close_ = close;
         awaiting_old_id_ = id;
+        awaiting_date_ = rf->date;
         last_known_ = id;
         st.held_id = held_;
         last_close_ = close;

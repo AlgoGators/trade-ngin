@@ -166,6 +166,7 @@ TEST(PerContractSource, EachGridDateIsTheHeldContractsBarAndARollBarNamesTheCont
     EXPECT_EQ(b16.roll_from->close, close_of("GCZ6", "2026-07-16"));
     EXPECT_EQ(b16.roll_from->instrument_id, "z");
     EXPECT_EQ(b16.roll_from->kind, RollFromKind::AWAITS_NEXT);
+    EXPECT_EQ(b16.roll_from->date, "2026-07-16") << "rolls step 4: the switch bar's own date";
     // The next bar shows it was not confirmed: Q's own bar.
     EXPECT_EQ(bars.at(d("2026-07-17")).instrument_id, "q");
     EXPECT_FALSE(bars.at(d("2026-07-17")).roll_from.has_value());
@@ -178,6 +179,7 @@ TEST(PerContractSource, EachGridDateIsTheHeldContractsBarAndARollBarNamesTheCont
     EXPECT_EQ(b20.roll_from->close, close_of("GCZ6", "2026-07-20"));
     EXPECT_EQ(b20.roll_from->instrument_id, "z");
     EXPECT_EQ(b20.roll_from->kind, RollFromKind::AWAITS_NEXT);
+    EXPECT_EQ(b20.roll_from->date, "2026-07-20");
     // Every bar after it, up to the next roll, is Z's own, carrying Q's close of that date for a
     // consumer that withheld the roll bar (and the bars since).
     for (const char* dt : {"2026-07-21", "2026-07-22", "2026-07-23", "2026-08-04"}) {
@@ -188,6 +190,7 @@ TEST(PerContractSource, EachGridDateIsTheHeldContractsBarAndARollBarNamesTheCont
         EXPECT_EQ(b.roll_from->kind, RollFromKind::AFTER_ROLL) << dt;
         EXPECT_EQ(b.roll_from->close, close_of("GCQ6", dt)) << dt;
         EXPECT_EQ(b.roll_from->instrument_id, "q") << dt;
+        EXPECT_EQ(b.roll_from->date, "2026-07-20") << dt << ": the roll's date, not the bar's (step 4)";
     }
     // The last bar names G7: unconfirmable, handed out as the switch: Z's own bar, the field G7.
     const SourceBar& last = bars.at(d("2026-08-05"));
@@ -208,11 +211,13 @@ TEST(PerContractSource, ACrossoverRollIsKnownOnItsOwnBar) {
     EXPECT_EQ(roll.roll_from->close, close_of("GCQ6", "2026-07-27"));
     EXPECT_EQ(roll.roll_from->instrument_id, "q");
     EXPECT_EQ(roll.roll_from->kind, RollFromKind::KNOWN);
+    EXPECT_EQ(roll.roll_from->date, "2026-07-27");
     EXPECT_EQ(bars.at(d("2026-07-24")).instrument_id, "q");
     EXPECT_EQ(bars.at(d("2026-07-28")).instrument_id, "z");
     ASSERT_TRUE(bars.at(d("2026-07-28")).roll_from.has_value());
     EXPECT_EQ(bars.at(d("2026-07-28")).roll_from->kind, RollFromKind::AFTER_ROLL);
     EXPECT_EQ(bars.at(d("2026-07-28")).roll_from->close, close_of("GCQ6", "2026-07-28"));
+    EXPECT_EQ(bars.at(d("2026-07-28")).roll_from->date, "2026-07-27") << "the roll's date (step 4)";
 }
 
 // The no-look-ahead property: the bar handed out for a date is the same whatever window ends at or
@@ -340,11 +345,11 @@ SourceBar source_bar(const std::string& symbol, const std::string& time_text, do
 std::vector<SourceBar> every_kind() {
     return {source_bar("GC.v.0", "2026-07-15 00:00:00+00", 2015.0, "q"),
             source_bar("GC.v.0", "2026-07-20 00:00:00+00", 2020.0, "q",
-                       RollFrom{2220.0, "z", RollFromKind::AWAITS_NEXT}),
+                       RollFrom{2220.0, "z", RollFromKind::AWAITS_NEXT, "2026-07-20"}),
             source_bar("GC.v.0", "2026-07-27 00:00:00+00", 2227.0, "z",
-                       RollFrom{2027.0, "q", RollFromKind::KNOWN}),
+                       RollFrom{2027.0, "q", RollFromKind::KNOWN, "2026-07-27"}),
             source_bar("GC.v.0", "2026-07-28 00:00:00+00", 2228.0, "z",
-                       RollFrom{2028.0, "q", RollFromKind::AFTER_ROLL}),
+                       RollFrom{2028.0, "q", RollFromKind::AFTER_ROLL, "2026-07-27"}),
             source_bar("MES.v.0", "2026-07-28 00:00:00+00", 6000.0, "")};
 }
 
@@ -402,7 +407,7 @@ TEST(PerContractSourceLoader, TheArrowTableRoundTripsEveryKindOfTheField) {
     const std::vector<SourceBar> source = every_kind();
     auto table = source_bars_to_arrow(source);
     ASSERT_TRUE(table.is_ok()) << table.error()->what();
-    EXPECT_EQ(table.value()->num_columns(), 11);
+    EXPECT_EQ(table.value()->num_columns(), 12);
     EXPECT_EQ(table.value()->num_rows(), static_cast<int64_t>(source.size()));
     auto bars = DataConversionUtils::arrow_table_to_bars(table.value());
     ASSERT_TRUE(bars.is_ok()) << bars.error()->what();
@@ -425,10 +430,19 @@ TEST(PerContractSourceLoader, TheArrowTableRoundTripsEveryKindOfTheField) {
     EXPECT_EQ(bars.value()[1].roll_from->kind, RollFromKind::AWAITS_NEXT);
     EXPECT_EQ(bars.value()[2].roll_from->kind, RollFromKind::KNOWN);
     EXPECT_EQ(bars.value()[3].roll_from->kind, RollFromKind::AFTER_ROLL);
-    // An empty source is an empty table of the same eleven columns.
+    EXPECT_EQ(bars.value()[3].roll_from->date, "2026-07-27") << "rolls step 4: the roll's date";
+    // An empty source is an empty table of the same twelve columns.
     auto empty = source_bars_to_arrow({});
     ASSERT_TRUE(empty.is_ok());
-    EXPECT_EQ(empty.value()->num_columns(), 11);
+    EXPECT_EQ(empty.value()->num_columns(), 12);
+    // A table without the date column (a field of step 3) reads every field with no date.
+    auto no_date = table.value()
+                       ->RemoveColumn(table.value()->schema()->GetFieldIndex("roll_from_date"))
+                       .ValueOrDie();
+    auto undated = DataConversionUtils::arrow_table_to_bars(no_date);
+    ASSERT_TRUE(undated.is_ok()) << undated.error()->what();
+    EXPECT_EQ(undated.value()[3].roll_from->date, "");
+    EXPECT_EQ(undated.value()[3].roll_from->close, 2028.0);
     EXPECT_EQ(empty.value()->num_rows(), 0);
 }
 

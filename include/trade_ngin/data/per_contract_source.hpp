@@ -161,8 +161,8 @@ Timestamp source_bar_time(const std::string& time_text);
 /// The bus event the loader publishes for a bar (BAR, its OHLCV), as for the vendor's bars.
 MarketDataEvent source_bar_event(const SourceBar& bar);
 
-/// The loader's table of `bars`: the futures query's eight columns plus Bar::roll_from's three
-/// (roll_from_close, roll_from_id, roll_from_kind; NULL where it is absent).
+/// The loader's table of `bars`: the futures query's eight columns plus Bar::roll_from's four
+/// (roll_from_close, roll_from_id, roll_from_kind, roll_from_date; NULL where it is absent).
 Result<std::shared_ptr<arrow::Table>> source_bars_to_arrow(const std::vector<SourceBar>& bars);
 
 /// A root's grid window from its instants' rows (the instant's text, its UTC date's text), oldest

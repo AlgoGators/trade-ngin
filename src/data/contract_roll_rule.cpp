@@ -195,8 +195,9 @@ HeldSeries Rule::run() {
     Day pending_since{};
     bool pending_off_cycle = false;
 
-    // Rolls step 3: the contract the last roll left (until the next roll).
+    // Rolls step 3: the contract the last roll left (until the next roll), and (step 4) its date.
     const Contract* just_left = nullptr;
+    Day just_left_on{};
     for (size_t i = 0; i < grid.size(); ++i) {
         const VendorBar& vb = grid[i];
         const Day d = vb.date;
@@ -208,6 +209,7 @@ HeldSeries Rule::run() {
             if (const ContractBar* lb = just_left->bar_on(d)) {
                 day.left_close = lb->close;
                 day.left_id = lb->instrument_id;
+                day.left_roll_date = just_left_on;
             }
         }
         if (vendor) {
@@ -256,6 +258,7 @@ HeldSeries Rule::run() {
                         ++out_.report.rolls_by_trigger[to_string(RollTrigger::ALIAS)];
                         if (day.deferred) ++out_.report.deferred;
                         just_left = held;
+                        just_left_on = d;
                         held = micro;
                         pending = RollTrigger::NONE;
                         vendor_pending = false;
@@ -377,6 +380,7 @@ HeldSeries Rule::run() {
                         if (day.vendor_off_cycle) ++out_.report.vendor_off_cycle;
                         if (day.late) ++out_.report.late;
                         just_left = held;
+                        just_left_on = d;
                         held = target;
                         pending = RollTrigger::NONE;
                         vendor_pending = false;
