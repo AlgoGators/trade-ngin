@@ -106,14 +106,22 @@ config/
     │   ├── risk.json
     │   └── email.json
     │
-    └── equity_mr/                   # EQUITY_MR_PORTFOLIO
-        ├── portfolio.json
-        ├── risk.json
-        └── email.json
+    ├── equity_mr/                   # EQUITY_MR_PORTFOLIO
+    │   ├── portfolio.json
+    │   ├── risk.json
+    │   └── email.json
+    │
+    └── bpgv_rotation/               # BPGV_ROTATION_PORTFOLIO (bt_bpgv_rotation; backtest only)
+        ├── portfolio.json           # includes a per-portfolio "backtest" override and a
+        ├── risk.json                #   strategies.<ID>.backtest_data bar-source block
+        └── email.json               # required by the loader; no live run sends from it
 ```
 
 `config/` is not tracked. Create it with `cp -r config_template config` and replace the
 placeholders.
+
+A portfolio may override any `defaults.json` section, e.g. `"backtest": {"lookback_years": 15}`
+in `bpgv_rotation/portfolio.json` (the template default of 2 is for smoke runs).
 
 ---
 
@@ -770,6 +778,12 @@ the run proceeds on a rule that never warms up (`ConfigLoader::validate_config`,
 | `TrendFollowingStrategy` | Trend following over the configured EMA pairs |
 | `TrendFollowingFastStrategy` | The same sleeve class with a faster configuration (BASE's second sleeve) |
 | `MeanReversionStrategy` | The equity mean-reversion sleeve |
+| `BPGVRotationStrategy` | Equity ETF rotation on the building-permit-growth-volatility macro regime, monthly rebalance with tolerance bands, NAV-sized and capped at NAV (`bt_bpgv_rotation`; backtest only) |
+
+Equity strategy types are validated by `equity_strategy_builder.hpp`; an unknown `type` is an error,
+not a silent skip. Equity strategy blocks may carry `backtest_data` (backtest-only bar source:
+`{"bar_source": "db"|"csv", "bar_dir": "data/equity_bars", "require_all_symbols": true,
+"require_aligned_calendar": true}`).
 
 ---
 

@@ -52,6 +52,12 @@ struct BacktestCoordinatorConfig {
     /// (futures or equities). The one source of the factor: there is no default, and a run
     /// without a positive value is refused before it loads a bar.
     double statistics_sessions_per_year = 0.0;
+    // Backtest-only data-load options, copied into DataLoadConfig by run_portfolio.
+    // Both default off, so every existing runner loads exactly as before.
+    bool require_all_symbols = false;      // abort when any requested symbol has zero bars
+    bool require_aligned_calendar = false; // abort on per-symbol calendar gaps / duplicate days
+    DataSource data_source = DataSource::REAL;
+    std::string csv_bar_dir;               // {dir}/{SYMBOL}.csv when data_source is CSV
 };
 
 /**
@@ -468,11 +474,18 @@ private:
     void log_statistics_convention(const BacktestStatisticsGrid& grid, AssetClass asset_class,
                                    const BacktestResults& results, size_t curve_rows) const;
 
+public:
     /**
      * @brief Calculate warmup days from strategy lookbacks
+     *
+     * TrendFollowingStrategy resolves through its own accessor; every other strategy
+     * answers through StrategyInterface::required_warmup_days (default 0).
+     * Public and static so the resolution order can be pinned by a unit test.
      */
     static int calculate_warmup_days(
         const std::vector<std::shared_ptr<StrategyInterface>>& strategies);
+
+private:
 
     /**
      * @brief Generate run_id for portfolio backtest

@@ -53,6 +53,23 @@ EquityCostWarmupSummary register_equity_cost_warmup(
     const std::vector<std::string>& symbols, const Timestamp& start_date,
     const EquityCostWarmupLoader& load,
     transaction_cost::TransactionCostManager& execution_costs, PortfolioManager& portfolio) {
+    return register_equity_cost_warmup_from_bars(
+        symbols, start_date,
+        [&load](const Timestamp& from, const Timestamp& to) -> Result<std::vector<Bar>> {
+            auto table = load(from, to);
+            if (table.is_error()) {
+                return make_error<std::vector<Bar>>(table.error()->code(), table.error()->what(),
+                                                    "EquityCostWarmup");
+            }
+            return DataConversionUtils::arrow_table_to_bars(table.value());
+        },
+        execution_costs, portfolio);
+}
+
+EquityCostWarmupSummary register_equity_cost_warmup_from_bars(
+    const std::vector<std::string>& symbols, const Timestamp& start_date,
+    const EquityCostWarmupBarLoader& load,
+    transaction_cost::TransactionCostManager& execution_costs, PortfolioManager& portfolio) {
     EquityCostWarmupSummary summary;
     summary.window = equity_cost_warmup_window(start_date);
 
@@ -63,7 +80,7 @@ EquityCostWarmupSummary register_equity_cost_warmup(
          " calendar days before the backtest, loaded with MarketDataBus publishing DISABLED, so "
          "the bars reach only the two equity cost registrations");
 
-    Result<std::shared_ptr<arrow::Table>> warmup_result = [&]() {
+    Result<std::vector<Bar>> warmup_result = [&]() {
         BusPublishingOff bus_off;
         return load(summary.window.start, summary.window.end);
     }();
@@ -75,15 +92,7 @@ EquityCostWarmupSummary register_equity_cost_warmup(
         return summary;
     }
 
-    auto warmup_bars_result = DataConversionUtils::arrow_table_to_bars(warmup_result.value());
-    if (warmup_bars_result.is_error()) {
-        WARN("Failed to convert warmup bars: " +
-             std::string(warmup_bars_result.error()->what()) +
-             " -- equity cost configs may use unconfigured-symbol fallback");
-        return summary;
-    }
-
-    const auto& warmup_bars = warmup_bars_result.value();
+    const auto& warmup_bars = warmup_result.value();
     summary.loaded = true;
     summary.bars = warmup_bars.size();
     for (const auto& bar : warmup_bars) {

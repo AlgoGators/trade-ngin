@@ -260,6 +260,10 @@ Result<BacktestResults> BacktestCoordinator::run_portfolio(
     load_config.end_date = end_date;
     load_config.asset_class = asset_class;
     load_config.data_freq = data_freq;
+    load_config.require_all_symbols = config_.require_all_symbols;
+    load_config.require_aligned_calendar = config_.require_aligned_calendar;
+    load_config.data_source = config_.data_source;
+    load_config.csv_bar_dir = config_.csv_bar_dir;
 
     auto data_result = data_loader_->load_market_data(load_config);
 
@@ -1046,6 +1050,19 @@ Result<void> BacktestCoordinator::process_portfolio_day(
                                            : core::format_utc_date(equity_curve.back().first)) +
                      " source=equity_curve");
             }
+        }
+
+        // Hand every strategy the NAV at the close of the PREVIOUS bar. equity_curve.back()
+        // is T-1 here only because today's point is not pushed until after the PnL step
+        // below -- that ordering is load-bearing: moving this call later would let a
+        // NAV-sized strategy see today's close. Default no-op on StrategyInterface, so
+        // MeanReversion and the trend followers are unaffected (the futures book's sizing
+        // input is the half-compounded capital above). Warmup bars get the flat initial
+        // capital, which is what they would have seen anyway.
+        const double prior_close_nav =
+            equity_curve.empty() ? initial_capital : equity_curve.back().second;
+        for (const auto& strategy_ptr : portfolio->get_strategies()) {
+            if (strategy_ptr) strategy_ptr->on_portfolio_value(prior_close_nav);
         }
 
         // Section 6.5: the held book at the START of the bar, per sleeve, the quantity the roll legs
@@ -1910,7 +1927,8 @@ int BacktestCoordinator::calculate_warmup_days(
             continue;
         }
 
-        // For other strategy types, assume 0 (no warmup required)
+        // Every other type answers through the StrategyInterface hook (default 0).
+        max_lookback = std::max(max_lookback, strat->required_warmup_days());
     }
 
     return max_lookback;

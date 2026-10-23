@@ -152,3 +152,44 @@ TEST_F(BacktestCoordinatorTest, IsInitializedFlagFlipsAfterInitialize) {
     ASSERT_TRUE(coord.initialize().is_ok());
     EXPECT_TRUE(coord.is_initialized());
 }
+
+// ---- required_warmup_days hook (StrategyInterface) ----------------------------------
+namespace {
+class WarmupHookStrategy : public MockStrategy {
+public:
+    WarmupHookStrategy(std::string id, StrategyConfig cfg, std::shared_ptr<MockPostgresDatabase> db,
+                       int days)
+        : MockStrategy(std::move(id), std::move(cfg), db), days_(days) {}
+    int required_warmup_days() const override { return days_; }
+private:
+    int days_;
+};
+}  // namespace
+
+TEST_F(BacktestCoordinatorTest, CalculateWarmupDaysUsesTheInterfaceHookForNonTrendStrategies) {
+    StrategyConfig sc;
+    sc.capital_allocation = 1'000'000.0;
+    sc.asset_classes = {AssetClass::EQUITIES};
+    sc.frequencies = {DataFrequency::DAILY};
+    sc.trading_params["AAPL"] = 1.0;
+
+    std::vector<std::shared_ptr<StrategyInterface>> strategies;
+    strategies.push_back(std::make_shared<MockStrategy>("NO_HOOK", sc, db_));  // default 0
+    EXPECT_EQ(BacktestCoordinator::calculate_warmup_days(strategies), 0);
+
+    strategies.push_back(std::make_shared<WarmupHookStrategy>("HOOK_37", sc, db_, 37));
+    EXPECT_EQ(BacktestCoordinator::calculate_warmup_days(strategies), 37);
+
+    strategies.push_back(std::make_shared<WarmupHookStrategy>("HOOK_12", sc, db_, 12));
+    EXPECT_EQ(BacktestCoordinator::calculate_warmup_days(strategies), 37)
+        << "the maximum across strategies wins";
+
+    strategies.push_back(nullptr);  // null entries are skipped, as before
+    EXPECT_EQ(BacktestCoordinator::calculate_warmup_days(strategies), 37);
+}
+
+TEST_F(BacktestCoordinatorTest, DataLoadStrictnessFlagsDefaultOff) {
+    BacktestCoordinatorConfig cfg;
+    EXPECT_FALSE(cfg.require_all_symbols);
+    EXPECT_FALSE(cfg.require_aligned_calendar);
+}

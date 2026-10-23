@@ -202,7 +202,9 @@ Result<void> YourStrategy::on_data(const std::vector<Bar>& data) {
 | `REALIZED_ONLY`   | Futures  | Marked-to-market, daily settlement |
 | `MIXED`           | Complex  | Both realized and unrealized tracked |
 
-For equities, always use `UNREALIZED_ONLY` — set this in `initialize()`.
+Both shipped equity strategies (`MeanReversionStrategy`, `BPGVRotationStrategy`) use `MIXED`: realized
+P&L is booked by `BaseStrategy::on_execution` on actual closes and the coordinator marks the open
+book against the fill-maintained cost basis (E2-F8/F54). Set it in `initialize()`.
 
 ---
 
@@ -210,15 +212,28 @@ For equities, always use `UNREALIZED_ONLY` — set this in `initialize()`.
 
 ### Library Sources
 
-Add your `.cpp` to the main library in the root `CMakeLists.txt` or `src/CMakeLists.txt` (wherever strategy sources are listed):
+Add your `.cpp` to `TRADE_NGIN_SOURCES` in the root `CMakeLists.txt` (the strategy block sits
+next to `src/strategy/mean_reversion.cpp`; there is no `src/CMakeLists.txt` and no glob):
 
 ```cmake
-set(STRATEGY_SOURCES
-    src/strategy/base_strategy.cpp
+set(TRADE_NGIN_SOURCES
+    ...
     src/strategy/mean_reversion.cpp
+    src/strategy/bpgv_rotation.cpp
     src/strategy/your_strategy.cpp       # <-- add
+    ...
 )
 ```
+
+### Strategy type registration
+
+The equity runners never hardcode a strategy key. They call
+`trade_ngin::apps::collect_enabled_equity_strategies(strategies_config, "enabled_backtest")`
+(`include/trade_ngin/strategy/equity_strategy_builder.hpp`), which ERRORs on a `type` it does not
+know. Add your type string to `known_equity_strategy_types()`, add a `build_<yours>_config(json)`
+next to `build_mean_reversion_config` / `build_bpgv_rotation_config` (backed by a
+`YourConfig::from_json` so every runner and test parses the block identically), and add the
+construction arm in your runner's type dispatch.
 
 ### Backtest Executable
 
@@ -515,9 +530,26 @@ ORDER BY timestamp;
 
 ---
 
+## Step 6b: Warmup, NAV sizing and the backtest-only bar source
+
+Three hooks added for the BPGV port; all default off / no-op so existing strategies are untouched.
+
+| Hook | Where | What it does |
+|------|-------|--------------|
+| `virtual int required_warmup_days() const` | `StrategyInterface` (default 0) | Leading bars the coordinator treats as warmup: `on_data` runs, executions are discarded, equity stays flat, metrics exclude them. Override with your longest lookback. The runner extends the load window backwards by that many bars so indicators fill from ONE continuously adjusted series (a separate pre-load window has a different adjustment anchor and splices a level jump into every long lookback). |
+| `virtual void on_portfolio_value(double prior_close_nav)` | `StrategyInterface` (default no-op) | Called before `process_market_data` with the previous close's NAV; size to it if your strategy compounds. |
+| `risk.json` schema 2 | portfolio config | A NAV-sized book needs no risk capital to follow its NAV when it runs the `none` assignment (BPGV does: see its `_reason`). A book that gates with a `carver` module and sizes to NAV must also keep that module's capital on NAV (`PortfolioManager::set_sizing_capital` moves every module's capital); the equity backtest does not do that today. |
+| `BacktestCoordinatorConfig::require_all_symbols` / `require_aligned_calendar` | runner sets from `backtest_data` | Refuse a partial universe or a calendar with gaps instead of running on stale marks. |
+| `strategies.<ID>.backtest_data` | portfolio config | `{"bar_source": "db"|"csv", "bar_dir", "require_all_symbols", "require_aligned_calendar"}`. `csv` reads `{bar_dir}/{SYMBOL}.csv` (raw OHLCV + `div_cash` + `split_factor`, see `scripts/seed_etfs_yfinance.py`) adjusted with the same recurrence as the database path (`include/trade_ngin/backtest/csv_bar_source.hpp`). Backtest only: the live apps cannot name it. |
+
+`apps/backtest/bt_bpgv_rotation.cpp` is the worked example (warmup window, and the cost warm-up
+through `register_equity_cost_warmup_from_bars` so a CSV bar source is tiered too).
+
+---
+
 ## Step 9: Live Trading App (Optional)
 
-To run your strategy live, create `apps/strategies/live_your_strategy.cpp`. The pattern mirrors the backtest app but uses `LiveTradingCoordinator` instead of `BacktestCoordinator`. See `live_equity_mean_reversion.cpp` as reference.
+To run your strategy live, create `apps/strategies/live_your_strategy.cpp`. The pattern mirrors the backtest app but uses `LiveTradingCoordinator` instead of `BacktestCoordinator`. See `live_equity_mean_reversion.cpp` as reference. BPGV has no live app: it is backtest-only.
 
 Register it in `apps/strategies/CMakeLists.txt` the same way.
 
@@ -527,13 +559,16 @@ Register it in `apps/strategies/CMakeLists.txt` the same way.
 
 - [ ] Strategy config struct in header (`include/trade_ngin/strategy/`)
 - [ ] Strategy class extending `BaseStrategy` (header + cpp)
-- [ ] Set `PnLAccountingMethod::UNREALIZED_ONLY` in `initialize()`
+- [ ] Set `PnLAccountingMethod::MIXED` in `initialize()`
+- [ ] Override `required_warmup_days()` (and `on_portfolio_value()` if you size to NAV)
+- [ ] Add the type string to `known_equity_strategy_types()` and a `build_<yours>_config()` helper
 - [ ] Implement `on_data()` with your signal logic
 - [ ] Implement `validate_config()` for parameter bounds checking
 - [ ] Implement `get_price_history()` override
 - [ ] Add `.cpp` to library sources in CMakeLists.txt
 - [ ] Create portfolio config directory under `config/portfolios/`
-- [ ] Write `portfolio.json` with symbols and strategy params
+- [ ] Write `portfolio.json`, `risk.json` and `email.json` (all three are required by `ConfigLoader::load`)
+- [ ] Register the unit test in `tests/CMakeLists.txt`
 - [ ] Create backtest app (`apps/backtest/bt_*.cpp`)
 - [ ] Register backtest executable in `apps/backtest/CMakeLists.txt`
 - [ ] Build and run: `make bt_your_strategy && ./build/bin/bt_your_strategy`
@@ -541,6 +576,17 @@ Register it in `apps/strategies/CMakeLists.txt` the same way.
 - [ ] (Optional) Create live app in `apps/strategies/`
 
 ---
+
+## Reference: BPGV Rotation (second worked example)
+
+| Component | File |
+|-----------|------|
+| Strategy header / impl | `include/trade_ngin/strategy/bpgv_rotation.hpp`, `src/strategy/bpgv_rotation.cpp` |
+| Backtest app | `apps/backtest/bt_bpgv_rotation.cpp` |
+| Portfolio config | `config_template/portfolios/bpgv_rotation/` |
+| Macro inputs | `data/macro/bpgv_regime.csv` (`scripts/generate_bpgv_macro.py`) |
+| Bar CSVs | `data/equity_bars/{SYMBOL}.csv` (`scripts/seed_etfs_yfinance.py`) |
+| Unit tests | `tests/strategy/test_bpgv_rotation.cpp`, `tests/data/test_macro_csv_loader.cpp`, `tests/backtest/test_csv_bar_source.cpp` |
 
 ## Reference: Existing Mean Reversion Implementation
 

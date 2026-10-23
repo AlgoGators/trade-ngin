@@ -198,7 +198,11 @@ config/
     │   ├── portfolio.json
     │   ├── risk.json
     │   └── email.json
-    └── equity_mr/          # the equity book: bt_equity_mr, live_equity_mr
+    ├── equity_mr/          # the equity book: bt_equity_mr, live_equity_mr
+    │   ├── portfolio.json
+    │   ├── risk.json
+    │   └── email.json
+    └── bpgv_rotation/      # BPGV_ROTATION_PORTFOLIO: bt_bpgv_rotation (backtest only, no live app)
         ├── portfolio.json
         ├── risk.json
         └── email.json

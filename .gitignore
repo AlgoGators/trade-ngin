@@ -41,3 +41,7 @@ config/portfolios/conservative/portfolio.json
 config/portfolios/conservative/risk.json
 email.json
 /AGENTS.md
+# BPGV trading data, not committed. data/macro/bpgv_*.csv is built by scripts/generate_bpgv_macro.py;
+# data/equity_bars/ holds local CSVs for the backtest-only csv bar source until the ETFs are in the DB (DO-17)
+data/equity_bars/
+data/macro/bpgv_*.csv

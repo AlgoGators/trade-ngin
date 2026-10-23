@@ -139,6 +139,31 @@ public:
      *       cannot shorten every other symbol's covariance window to its own history.
      */
     virtual bool is_signalling(const std::string& /*symbol*/) const { return true; }
+
+    /**
+     * @brief Backtest-only NAV feed.
+     *
+     * BacktestCoordinator::process_portfolio_day calls this once per bar for every
+     * strategy in the portfolio, BEFORE PortfolioManager::process_market_data, with the
+     * portfolio NAV at the close of the PREVIOUS bar (equity_curve.back()). Today's point
+     * is not on the curve yet, so a strategy that sizes to NAV never sees today's close.
+     * Default no-op: MeanReversion and the trend followers size from
+     * StrategyConfig::capital_allocation (the futures book moves it through
+     * set_capital_allocation / PortfolioManager::set_sizing_capital) and ignore it. No live
+     * runner calls it yet: the only NAV-sized strategy (BPGV) is backtest-only.
+     */
+    virtual void on_portfolio_value(double /*prior_close_nav*/) {}
+
+    /**
+     * @brief Leading bars the backtest coordinator treats as warmup for this strategy.
+     *
+     * During warmup the strategy still receives every bar through on_data (indicators
+     * fill), but executions are discarded, the equity curve stays flat and the metrics
+     * exclude those bars. Default 0. TrendFollowingStrategy keeps its existing cast-based
+     * resolution in BacktestCoordinator::calculate_warmup_days; a new strategy overrides
+     * this instead of adding another cast to the engine.
+     */
+    virtual int required_warmup_days() const { return 0; }
 };
 
 }  // namespace trade_ngin

@@ -340,10 +340,10 @@ TEST(ConsoleCurrentForecastsTwinSourceGuard, TheRunnersPrintEverySleeveAndTheSto
 // READS SOURCE (a labelled twin guard: the three labels are bare literals inside each app's
 // main, shown by the summary block of a backtest run's log). The win rate and the trade count
 // are figures of CLOSING fills (T-8D R11) and the volatility is annualised (R8); each app says so.
-TEST(BacktestConsoleLabelsTwinSourceGuard, TheThreeAppsNameTheClosingFillFiguresAndTheVolatility) {
+TEST(BacktestConsoleLabelsTwinSourceGuard, TheBacktestAppsNameTheClosingFillFiguresAndTheVolatility) {
     for (const char* app :
          {"apps/backtest/bt_portfolio_conservative.cpp", "apps/backtest/bt_portfolio.cpp",
-          "apps/backtest/bt_equity_mean_reversion.cpp"}) {
+          "apps/backtest/bt_equity_mean_reversion.cpp", "apps/backtest/bt_bpgv_rotation.cpp"}) {
         SCOPED_TRACE(app);
         const std::string src = read_source(app);
         if (src.empty())

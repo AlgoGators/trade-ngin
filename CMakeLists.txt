@@ -168,6 +168,8 @@ set(TRADE_NGIN_SOURCES
     src/data/session_classifier.cpp
     src/data/listing_dates.cpp
     src/data/roll_series.cpp
+    src/data/macro_csv_loader.cpp
+    src/backtest/csv_bar_source.cpp
     src/instruments/futures.cpp
     src/instruments/equity.cpp
     src/instruments/option.cpp
@@ -204,6 +206,7 @@ set(TRADE_NGIN_SOURCES
     src/strategy/trend_following.cpp
     src/strategy/trend_estimator.cpp
     src/strategy/mean_reversion.cpp
+    src/strategy/bpgv_rotation.cpp
     src/strategy/regime_detector.cpp
     src/storage/results_manager_base.cpp
     src/storage/backtest_results_manager.cpp

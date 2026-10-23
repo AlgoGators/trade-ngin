@@ -270,7 +270,8 @@ TEST(ReserveCapitalDeletedSource, NoRunnerOrBacktestAppWritesTheKey) {
                             "apps/backtest/bt_portfolio_conservative.cpp",
                             "apps/backtest/bt_portfolio.cpp",
                             "apps/backtest/bt_equity_mean_reversion.cpp",
-                            "apps/backtest/bt_equity_validation.cpp"}) {
+                            "apps/backtest/bt_equity_validation.cpp",
+                            "apps/backtest/bt_bpgv_rotation.cpp"}) {
         SCOPED_TRACE(app);
         const std::string src = read_repo_text(app);
         if (src.empty()) GTEST_SKIP() << "app source not found from the test working directory";
@@ -284,6 +285,7 @@ TEST(ReserveCapitalDeletedSource, NoTemplatePortfolioCarriesTheKey) {
     for (const char* file : {"config_template/portfolios/base/portfolio.json",
                              "config_template/portfolios/conservative/portfolio.json",
                              "config_template/portfolios/equity_mr/portfolio.json",
+                             "config_template/portfolios/bpgv_rotation/portfolio.json",
                              "config_template/examples/risk_modules/sleeve_assignment.portfolio.json"}) {
         SCOPED_TRACE(file);
         const std::string text = read_repo_text(file);

@@ -36,6 +36,7 @@ set(TEST_SOURCES
     core/test_to_json_temporary_hazard.cpp
     data/test_db_utils.cpp
     data/test_utc_date_contract.cpp
+    data/test_macro_csv_loader.cpp
     data/test_postgres_param_safety.cpp
     data/test_finite_statement.cpp
     data/test_finite_statement_db.cpp
@@ -140,6 +141,7 @@ set(TEST_SOURCES
     backtest/test_backtest_metrics_calculator.cpp
     backtest/test_trade_statistics_roll_legs.cpp
     backtest/test_backtest_data_loader.cpp
+    backtest/test_csv_bar_source.cpp
     backtest/test_backtest_csv_exporter.cpp
     backtest/test_backtest_coordinator.cpp
     backtest/test_bt_equity_validation_config.cpp
@@ -153,6 +155,7 @@ set(TEST_SOURCES
     backtest/test_backtest_no_bar_row.cpp
     backtest/test_consumed_series_record.cpp
     backtest/test_backtest_equity_cost_retier.cpp
+    backtest/test_backtest_nav_hook.cpp
     backtest/test_backtest_futures_cost_feed.cpp
     backtest/test_backtest_statistics_columns.cpp
     backtest/test_backtest_statistics_grid.cpp
@@ -263,6 +266,8 @@ set(TEST_SOURCES
     strategy/test_equity_pnl_accounting.cpp
     strategy/test_live_bt_signal_consistency.cpp
     strategy/test_signals_publication.cpp
+    strategy/test_bpgv_rotation.cpp
+    strategy/test_strategy_interface_hooks.cpp
     strategy/test_volatility_size_1_nan_guard.cpp
     strategy/test_vol_annualisation.cpp
     strategy/test_trend_adjusted_series.cpp

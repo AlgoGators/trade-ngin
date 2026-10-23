@@ -1,0 +1,28 @@
+{
+  "_description": "Risk configuration for BPGV_ROTATION_PORTFOLIO",
+  "_var_limit_rationale": "0.25 matches equity_mr and CONSERVATIVE_PORTFOLIO. At 0.10 the gate is unsatisfiable for an equity book: portfolio_var is scale-invariant (E2 finding 02), so any held name with annualized sigma above the limit binds it regardless of leverage -- SMH and QQQ alone run well above 0.10 -- and risk_scale would throttle the book on most days. The old branch validated 0.10; results on main re-baseline at 0.25.",
+  "schema": 2,
+  "modules": [
+    {
+      "id": "no_portfolio_risk",
+      "type": "none",
+      "_reason": "The schema-1 gate this book ran (var 0.25) bound on most days and re-traded the whole book daily: a 2-year smoke run made 4,299 executions and $3.0k of commissions with it against 475 and $0.5k without it. Its leverage term is the strategy's own job now: the target weights are long-only and sum to at most 1 (normalize_weights, then a vol-target scalar clipped to [scalar_floor, 1]), and because the halfway band can still ask for more than NAV on a rebalance (trimmed names move halfway, new names enter in full), BPGVRotationStrategy funds the exposure-adding legs from cash so the held book never exceeds NAV (exposure_increment_scale; test_bpgv_rotation BPGVExposureCap). The same reasoning as equity_mr's ruling (HD 2026-09-18) applies: Carver's gate is a futures construction. The book is still MEASURED: risk_reporting below keeps every risk column of live_results and the email reporting.",
+      "_ruled_by": "gannonstoner",
+      "_ruled_on": "2026-10-22"
+    }
+  ],
+  "risk_reporting": {
+    "type": "carver",
+    "window": "all_bars",
+    "var_limit": 0.25,
+    "jump_risk_limit": 0.08,
+    "max_correlation": 0.7,
+    "max_gross_leverage": 1,
+    "max_net_leverage": 1,
+    "confidence_level": 0.99,
+    "lookback_period": 252,
+    "_note": "The limits the schema-1 gate used, kept for measurement only (RA-01: the live runners' snapshot RiskManager reads this block through AppConfig::risk_config)."
+  },
+  "max_drawdown": 0.3,
+  "max_leverage": 1
+}

@@ -32,10 +32,14 @@ config/
     │   ├── portfolio.json     # Strategies, capital, allocations
     │   ├── risk.json          # Risk limits
     │   └── email.json         # Email notifications
-    └── conservative/          # CONSERVATIVE_PORTFOLIO (bt_portfolio_conservative, live_portfolio_conservative)
-        ├── portfolio.json
-        ├── risk.json
-        └── email.json
+    ├── conservative/          # CONSERVATIVE_PORTFOLIO (bt_portfolio_conservative, live_portfolio_conservative)
+    │   ├── portfolio.json
+    │   ├── risk.json
+    │   └── email.json
+    ├── equity_mr/             # EQUITY_MR_PORTFOLIO (bt_equity_mr, live_equity_mr)
+    │   └── ...
+    └── bpgv_rotation/         # BPGV_ROTATION_PORTFOLIO (bt_bpgv_rotation; backtest only); backtest.lookback_years 15,
+        └── ...                #   strategies.BPGV_ROTATION.backtest_data selects the bar source
 ```
 
 ## Risk schema 2 (T-6 commit 7)

@@ -14,16 +14,27 @@
 #include <nlohmann/json.hpp>
 
 #include "trade_ngin/core/error.hpp"
+#include "trade_ngin/risk/risk_module_config.hpp"
+#include "trade_ngin/strategy/bpgv_rotation.hpp"
 #include "trade_ngin/strategy/mean_reversion.hpp"
 
 namespace trade_ngin {
 namespace apps {
 
 // Strategy type strings recognized by the equity runners. Extend this (and the
-// per-runner construction dispatch) when a second equity strategy is authored.
+// per-runner construction dispatch) when a further equity strategy is authored.
 inline const std::vector<std::string>& known_equity_strategy_types() {
-    static const std::vector<std::string> kTypes = {"MeanReversionStrategy"};
+    static const std::vector<std::string> kTypes = {"MeanReversionStrategy",
+                                                    "BPGVRotationStrategy"};
     return kTypes;
+}
+
+// "A, B" rendering of known_equity_strategy_types() for error messages, so the list
+// in the text can never drift from the list in the code.
+inline std::string join_known_equity_strategy_types() {
+    std::string out;
+    for (const auto& t : known_equity_strategy_types()) out += (out.empty() ? "" : ", ") + t;
+    return out;
 }
 
 // Parse a MeanReversionConfig from a strategy's "config" JSON block. Any absent
@@ -43,6 +54,13 @@ inline MeanReversionConfig build_mean_reversion_config(const nlohmann::json& cfg
     mr.fractional_min_price    = cfg.value("fractional_min_price", mr.fractional_min_price);
     mr.fractional_min_adv      = cfg.value("fractional_min_adv", mr.fractional_min_adv);
     return mr;
+}
+
+// Parse a BPGVRotationConfig from a strategy's "config" JSON block. Delegates to
+// BPGVRotationConfig::from_json so the backtest runner, the unit tests and any live
+// runner construct the strategy from one parser (review T-OR.5).
+inline BPGVRotationConfig build_bpgv_rotation_config(const nlohmann::json& cfg) {
+    return BPGVRotationConfig::from_json(cfg);
 }
 
 // One enabled strategy definition resolved from a portfolio's strategies_config.
@@ -80,7 +98,8 @@ inline Result<std::vector<EquityStrategyEntry>> collect_enabled_equity_strategie
             return make_error<std::vector<EquityStrategyEntry>>(
                 ErrorCode::INVALID_ARGUMENT,
                 "Unknown equity strategy type '" + type + "' for strategy '" + id +
-                    "' (known types: MeanReversionStrategy). Refusing to silently skip it.",
+                    "' (known types: " + join_known_equity_strategy_types() +
+                    "). Refusing to silently skip it.",
                 "equity_strategy_builder");
         }
         if (!def.contains("config")) {
@@ -121,6 +140,38 @@ inline Result<void> refuse_if_optimizer_requested(bool config_use_optimization) 
         ErrorCode::INVALID_DATA,
         "Refusing to start: portfolio.json sets use_optimization=true, but the equity runners "
         "do not run the optimizer (HD 2026-09-01; see the comment at the hard-code).",
+        "equity_strategy_builder");
+}
+
+/**
+ * @brief Refuse to start a book that sizes on its prior-close NAV while a Carver module gates it.
+ *
+ * A NAV-sized equity book (StrategyInterface::on_portfolio_value; BPGV) compounds its targets,
+ * but nothing on the equity paths moves a risk module's capital with it: the futures book keeps
+ * the two together through PortfolioManager::set_sizing_capital, the equity backtest and live
+ * runner do not. Of the schema-2 modules only `carver` reads a capital base (its leverage term
+ * divides by RiskConfig::capital); `none`, `constant_scale`, `warn` and `refuse` read the
+ * rebalance phase only. So a Carver module on such a book would gate on leverage against the
+ * configured capital while the book trades on NAV -- refused here, whether it came from the
+ * files or from a desk overlay, rather than run half-wired. BPGV's ruled assignment is `none`
+ * (config_template/portfolios/bpgv_rotation/risk.json).
+ *
+ * @return an error carrying the refusal message, or OK when no portfolio or sleeve module is a
+ *         Carver gate.
+ */
+inline Result<void> refuse_if_nav_sized_book_has_a_capital_gate(const RiskSchema& schema) {
+    auto is_carver = [](const RiskModuleConfig& m) { return m.type == "carver"; };
+    bool gated = std::any_of(schema.portfolio.begin(), schema.portfolio.end(), is_carver);
+    for (const auto& [sleeve, modules] : schema.sleeves) {
+        gated = gated || std::any_of(modules.begin(), modules.end(), is_carver);
+    }
+    if (!gated) return Result<void>();
+    return make_error<void>(
+        ErrorCode::INVALID_DATA,
+        "Refusing to start: this book sizes on its prior-close NAV, but its risk config assigns a "
+        "`carver` module, whose leverage gate would divide by the configured capital while the "
+        "book compounds. Assign `none` (the ruled assignment; see risk.json's _reason) or wire "
+        "the module's capital to NAV (PortfolioManager::set_sizing_capital) first.",
         "equity_strategy_builder");
 }
 

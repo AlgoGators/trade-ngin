@@ -1,0 +1,198 @@
+{
+  "_description": "BPGV_ROTATION_PORTFOLIO - Macro regime rotation strategy using building permit growth volatility",
+  "portfolio_id": "BPGV_ROTATION_PORTFOLIO",
+  "initial_capital": 100000,
+  "use_optimization": false,
+  "_use_optimization_note": "false: the equity runners hard-code the optimizer off (bt_bpgv_rotation.cpp; HD 2026-09-01) and refuse to start if this says true.",
+  "_backtest_note": "lookback_years 15 is the window every BPGV report and run-id refers to (~40 min). config_template/defaults.json ships 2 for smoke runs; this per-portfolio block overrides it.",
+  "backtest": {
+    "lookback_years": 15
+  },
+  "strategies": {
+    "BPGV_ROTATION": {
+      "enabled_backtest": true,
+      "enabled_live": false,
+      "_live_note": "BPGV is backtest-only in this repository: there is no live runner for it, so enabled_live stays false. A live path needs its own change (a runner, a storage identity and a go-live gate).",
+      "default_allocation": 1.0,
+      "backtest_data": {
+        "_comment": "Backtest-only bar source; one source per run. db = equities_data.ohlcv_1d; csv = {bar_dir}/{TICKER}.csv with raw OHLCV + div_cash + split_factor (scripts/seed_etfs_yfinance.py), adjusted with the same recurrence as db. The database does not yet carry SMH XHB IYR BIL DBMF; switch to db once they are ingested and re-baseline.",
+        "bar_source": "csv",
+        "bar_dir": "data/equity_bars",
+        "require_all_symbols": true,
+        "require_aligned_calendar": true
+      },
+      "type": "BPGVRotationStrategy",
+      "_symbols_note": "12-ETF universe: 8 risk-on, TLT/GLD risk-off, BIL/DBMF cash sleeve. DBMF has no bars before 2019-05; the strategy sizes a symbol without a price to zero.",
+      "symbols": [
+        "SPY",
+        "QQQ",
+        "XLK",
+        "SMH",
+        "IWM",
+        "XHB",
+        "IYR",
+        "EQR",
+        "TLT",
+        "GLD",
+        "BIL",
+        "DBMF"
+      ],
+      "config": {
+        "macro_csv_path": "data/macro/bpgv_regime.csv",
+        "rebalance_day_of_month": 22,
+        "homebuilder_tilt_scale": 0.2,
+        "allow_fractional_shares": true,
+        "risk_on_symbols": [
+          "SPY",
+          "QQQ",
+          "XLK",
+          "SMH",
+          "IWM",
+          "XHB",
+          "IYR",
+          "EQR"
+        ],
+        "risk_off_symbols": [
+          "TLT",
+          "GLD"
+        ],
+        "_comment_cash": "BIL and DBMF form the cash sleeve: no base weight; BIL takes the weight the overlays splice out.",
+        "cash_symbols": [
+          "BIL",
+          "DBMF"
+        ],
+        "rebalance": {
+          "_comment": "Tolerance bands: a held name is re-sized only outside the band, and then halfway back.",
+          "drift_abs_trigger": 0.025,
+          "drift_rel_trigger": 0.5,
+          "halfway_rule": true,
+          "exit_fully_on_zero_target": true,
+          "enter_fully_on_zero_current": true
+        },
+        "momentum": {
+          "tsm_gate_enabled": true,
+          "tsm_lookback_days": 252,
+          "tsm_risk_free_symbol": "BIL",
+          "tsm_fail_open_on_short_history": true,
+          "tsm_tolerance": 0.05,
+          "xsec_lookback_days": 126,
+          "xsec_use_vol_scaling": true,
+          "xsec_vol_window_days": 126,
+          "xsec_sigma_floor": 0.05,
+          "xsec_tau": 0.4,
+          "xsec_weight_floor": 0.5
+        },
+        "breakout": {
+          "sma_window": 200,
+          "atr_window": 14,
+          "atr_k": 2.0,
+          "confirmation_days": 3,
+          "graded_weighting": true,
+          "fail_open_on_short_history": true
+        },
+        "market_stress": {
+          "enabled": true,
+          "stress_symbol": "SPY",
+          "drawdown_lookback_days": 21,
+          "drawdown_trigger": -0.08,
+          "sma_window": 200,
+          "risk_on_scale": 0.5,
+          "min_history_days": 220
+        },
+        "breadth_risk": {
+          "enabled": true,
+          "symbols": [
+            "SPY",
+            "QQQ",
+            "XLK",
+            "SMH",
+            "IWM",
+            "XHB",
+            "IYR",
+            "EQR"
+          ],
+          "momentum_lookback_days": 252,
+          "sma_window": 200,
+          "risk_free_symbol": "BIL",
+          "require_positive_excess": true,
+          "require_above_sma": true,
+          "full_risk_breadth": 0.5,
+          "stress_breadth": 0.5,
+          "risk_on_floor": 0.25,
+          "splice_symbol": "BIL",
+          "min_history_days": 252,
+          "fail_open_on_short_history": true
+        },
+        "bpg_growth_signal": {
+          "enabled": true,
+          "lookback_months": 3,
+          "min_history_months": 2,
+          "use_sfh_bpg": true,
+          "growth_scale": 0.05,
+          "max_risk_off_shift": 0.1
+        },
+        "housing_exposure": {
+          "enabled": true,
+          "symbols": [
+            "XHB",
+            "IYR",
+            "EQR"
+          ],
+          "garch_percentile_trigger": 75.0,
+          "growth_signal_trigger": 0.0,
+          "cap_scale": 0.6,
+          "splice_symbol": "BIL"
+        },
+        "duration_defense": {
+          "enabled": true,
+          "duration_symbol": "TLT",
+          "splice_symbol": "BIL",
+          "trend_lookback_days": 126,
+          "sma_window": 200,
+          "guard_scale": 0.5,
+          "require_negative_return": true,
+          "require_below_sma": true
+        },
+        "vol_target": {
+          "enabled": true,
+          "target_annualized": 0.1,
+          "window_days": 60,
+          "scalar_floor": 0.2,
+          "min_history_days": 60,
+          "enable_dynamic_target": true,
+          "target_annualized_min": 0.06,
+          "target_annualized_max": 0.12,
+          "pctile_high": 75.0,
+          "pctile_low": 25.0,
+          "use_garch_natural_vol": true,
+          "garch_natural_vol_multiplier": 1.0,
+          "use_max_risk_sigma": true,
+          "conditional_max_risk_sigma": true,
+          "max_risk_on_market_stress": true,
+          "max_risk_on_breadth_stress": true,
+          "include_garch_sigma": true,
+          "include_realized_portfolio_sigma": true,
+          "include_stress_symbol_sigma": true,
+          "include_defensive_pair_sigma": true,
+          "stress_vol_symbol": "SPY",
+          "stress_vol_window_days": 21,
+          "defensive_pair_vol_window_days": 60
+        },
+        "defensive_sleeve": {
+          "vol_aware_enabled": true,
+          "pair_vol_target_annualized": 0.1,
+          "vol_window_days": 60,
+          "use_inverse_vol_pair": true,
+          "splice_symbol": "BIL",
+          "max_splice_fraction": 0.8,
+          "min_history_days": 60,
+          "garch_aware_enabled": true,
+          "pair_vol_target_high_sigma": 0.06,
+          "pair_vol_target_low_sigma": 0.12,
+          "garch_pctile_high": 75.0,
+          "garch_pctile_low": 25.0
+        }
+      }
+    }
+  }
+}

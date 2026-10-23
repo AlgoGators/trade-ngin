@@ -48,6 +48,7 @@ const char* const kEquityLive = "apps/strategies/live_equity_mean_reversion.cpp"
 const std::vector<std::string> kFuturesBacktests = {"apps/backtest/bt_portfolio_conservative.cpp",
                                                     "apps/backtest/bt_portfolio.cpp"};
 const char* const kEquityBacktest = "apps/backtest/bt_equity_mean_reversion.cpp";
+const char* const kBpgvBacktest = "apps/backtest/bt_bpgv_rotation.cpp";
 
 }  // namespace
 
@@ -150,6 +151,11 @@ TEST(StoredConfigRunners, BothRunMetadataTablesRecordTheSessionsAYearOfTheRunsSe
     writers.push_back({kEquityBacktest,
                        "app_config.backtest.frozen_end_date, backtest_results.warmup_days,\n"
                        "                    backtest_results.statistics_sessions_per_year);"});
+    writers.push_back({kBpgvBacktest, "coord_config.statistics_sessions_per_year = "
+                                      "app_config.statistics.equity_sessions_per_year;"});
+    writers.push_back({kBpgvBacktest,
+                       "app_config.backtest.frozen_end_date, backtest_results.warmup_days,\n"
+                       "                backtest_results.statistics_sessions_per_year);"});
     for (const auto& [runner, needle] : writers) {
         const std::string src = read_source(runner);
         if (src.empty()) GTEST_SKIP() << "runner source not found from the test working directory";

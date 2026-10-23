@@ -244,6 +244,7 @@ const std::vector<Site> kEquitySites = {
 
 // --- every other file under apps/ (none is a live runner) --------------------------------------
 const std::map<std::string, std::vector<std::string>> kOtherAppSites = {
+    {"apps/backtest/bt_bpgv_rotation.cpp", {"auto now = std::chrono::system_clock::now();"}},
     {"apps/backtest/bt_equity_mean_reversion.cpp", {"auto now = std::chrono::system_clock::now();"}},
     {"apps/backtest/bt_equity_validation.cpp", {"auto now = std::chrono::system_clock::now();"}},
     {"apps/backtest/bt_portfolio.cpp", {"auto now = std::chrono::system_clock::now();"}},
@@ -404,6 +405,10 @@ const std::map<std::string, std::pair<const char*, std::vector<std::string>>> kL
      {"in-memory component stamps",
       {"id_ + \"_\" + std::to_string(std::chrono::system_clock::now().time_since_epoch().count());",
        "std::chrono::system_clock::now(),"}}},
+    {"src/strategy/bpgv_rotation.cpp",
+     {"the initial last_update of a position, overwritten with the bar time on its first "
+      "bar; backtest only (BPGV has no live runner)",
+      {"pos.last_update = std::chrono::system_clock::now();"}}},
     {"src/strategy/mean_reversion.cpp",
      {"the initial last_update of a position, overwritten with the run date before a "
       "store",

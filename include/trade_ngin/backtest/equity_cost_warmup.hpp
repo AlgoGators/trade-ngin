@@ -66,6 +66,11 @@ EquityCostWarmupWindow equity_cost_warmup_window(const Timestamp& start_date);
 using EquityCostWarmupLoader = std::function<Result<std::shared_ptr<arrow::Table>>(
     const Timestamp& from, const Timestamp& to)>;
 
+// The same, for a runner that loads bars rather than a table: bt_bpgv_rotation reads them through
+// BacktestDataLoader so its backtest-only CSV source is tiered too.
+using EquityCostWarmupBarLoader =
+    std::function<Result<std::vector<Bar>>(const Timestamp& from, const Timestamp& to)>;
+
 struct EquityCostWarmupSummary {
     EquityCostWarmupWindow window{};
     bool loaded = false;  // the load and the conversion both succeeded
@@ -83,6 +88,12 @@ struct EquityCostWarmupSummary {
 EquityCostWarmupSummary register_equity_cost_warmup(
     const std::vector<std::string>& symbols, const Timestamp& start_date,
     const EquityCostWarmupLoader& load,
+    transaction_cost::TransactionCostManager& execution_costs, PortfolioManager& portfolio);
+
+// register_equity_cost_warmup with a bar loader: the same window, bus guard and registrations.
+EquityCostWarmupSummary register_equity_cost_warmup_from_bars(
+    const std::vector<std::string>& symbols, const Timestamp& start_date,
+    const EquityCostWarmupBarLoader& load,
     transaction_cost::TransactionCostManager& execution_costs, PortfolioManager& portfolio);
 
 }  // namespace backtest

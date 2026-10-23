@@ -103,6 +103,21 @@ std::shared_ptr<arrow::Table> to_table(const std::vector<DayBar>& rows) {
     return arrow::Table::Make(schema, {ta, sa, oa, ha, la, ca, va});
 }
 
+std::vector<Bar> to_bars(const std::vector<DayBar>& rows) {
+    std::vector<Bar> bars;
+    for (const auto& r : rows) {
+        Bar b;
+        b.symbol = r.symbol;
+        b.timestamp = Timestamp(std::chrono::seconds(r.epoch));
+        b.open = b.close = Decimal(r.close);
+        b.high = Decimal(r.close + 1.0);
+        b.low = Decimal(r.close - 1.0);
+        b.volume = r.volume;
+        bars.push_back(b);
+    }
+    return bars;
+}
+
 MarketDataEvent bar_event(const DayBar& r) {
     MarketDataEvent e;
     e.type = MarketDataEventType::BAR;
@@ -297,6 +312,35 @@ TEST_F(EquityCostWarmupTest, TheBusIsReEnabledWhenTheLoadFailsOrThrows) {
         << "an exception in the load left bus publishing disabled";
 }
 
+// bt_bpgv_rotation's entry point: a loader that returns bars (its backtest-only CSV source reads
+// them through BacktestDataLoader). The same window and bus guard, and both cost managers.
+TEST_F(EquityCostWarmupTest, ABarLoaderGetsTheSameWindowBusGuardAndBothRegistrations) {
+    const auto rows = warmup_rows(volumes_);
+    std::vector<std::pair<Timestamp, Timestamp>> calls;
+    bool bus_on_during_load = true;
+    auto loader = [&](const Timestamp& from, const Timestamp& to) -> Result<std::vector<Bar>> {
+        calls.emplace_back(from, to);
+        bus_on_during_load = MarketDataBus::instance().is_publish_enabled();
+        return Result<std::vector<Bar>>(to_bars(rows));
+    };
+
+    transaction_cost::TransactionCostManager execution_costs;
+    const auto summary = backtest::register_equity_cost_warmup_from_bars(
+        symbols_, kStart, loader, execution_costs, *pm_);
+
+    ASSERT_EQ(calls.size(), 1u);
+    EXPECT_EQ(calls[0].first, kStart - std::chrono::hours(24 * 30));
+    EXPECT_EQ(calls[0].second, kStart - std::chrono::seconds(1));
+    EXPECT_FALSE(bus_on_during_load) << "the bar loader ran with bus publishing on";
+    EXPECT_TRUE(MarketDataBus::instance().is_publish_enabled());
+    EXPECT_TRUE(summary.loaded);
+    EXPECT_EQ(summary.bars, rows.size());
+    EXPECT_EQ(summary.registered_execution_costs, 2);
+    EXPECT_EQ(summary.registered_portfolio_costs, 2);
+    EXPECT_DOUBLE_EQ(execution_costs.get_asset_config("BBB").baseline_spread_ticks, 3.0);
+    EXPECT_DOUBLE_EQ(pm_->cost_manager_.get_asset_config("BBB").baseline_spread_ticks, 3.0);
+}
+
 // bt_equity_mr registers its cost configs only through the guarded seam, before the run, and
 // reads no other bars ahead of run_portfolio. The parent loaded [start_date, start_date + 30 d]
 // directly, with the bus on, and called both registrations itself.
@@ -321,4 +365,20 @@ TEST(BtEquityMrCostWarmupSource, TheRunnerRegistersCostsOnlyThroughTheGuardedWin
     const auto load = src.find("db->get_market_data(");
     EXPECT_GT(load, seam);
     EXPECT_LT(load, run);
+}
+
+// bt_bpgv_rotation goes through the same seam with a bar loader on the run's own source, so the
+// ETFs only its CSV source carries are tiered too; it registers and toggles the bus nowhere else.
+TEST(BtBpgvRotationCostWarmupSource, TheRunnerRegistersCostsOnlyThroughTheGuardedWindowBeforeStart) {
+    const std::string src = read_source("apps/backtest/bt_bpgv_rotation.cpp");
+    if (src.empty()) GTEST_SKIP() << "runner source not found";
+
+    const auto seam = src.find("backtest::register_equity_cost_warmup_from_bars(");
+    const auto run = src.find("coordinator->run_portfolio(");
+    ASSERT_NE(run, npos);
+    ASSERT_NE(seam, npos) << "the runner does not load its cost warm-up through the guarded seam";
+    EXPECT_LT(seam, run) << "the cost warm-up must be registered before the run";
+    EXPECT_EQ(count_of(src, "register_equity_costs_from_bars("), 0u);
+    EXPECT_EQ(count_of(src, "register_equity_cost_configs("), 0u);
+    EXPECT_EQ(count_of(src, "set_publish_enabled("), 0u) << "the runner toggles the bus itself";
 }

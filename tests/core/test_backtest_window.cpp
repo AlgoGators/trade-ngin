@@ -445,19 +445,20 @@ TEST(LookbackValidationG03, TheShippedTemplateSatisfiesTheEnabledBooksRequiremen
 // ===== M-12: the APP half. =====
 //
 // Everything above tests ConfigLoader::resolve_backtest_window. None of it
-// touches the three runners, so reverting only apps/backtest/*.cpp -- putting
+// touches the runners, so reverting only apps/backtest/*.cpp -- putting
 // the inline now()/mktime block back and losing the escape hatch entirely --
 // left every one of those tests green. The helper existing is not the point;
 // the runners USING it is.
 //
 // Source-scanned, like the F-5 tripwire, because what is being asserted is that
 // a call site exists in a file this test does not link.
-TEST(BacktestWindowM12, AllThreeBacktestRunnersGoThroughTheSharedHelper) {
+TEST(BacktestWindowM12, AllBacktestRunnersGoThroughTheSharedHelper) {
     namespace fs = std::filesystem;
     const char* runners[] = {
         "apps/backtest/bt_portfolio.cpp",
         "apps/backtest/bt_portfolio_conservative.cpp",
         "apps/backtest/bt_equity_mean_reversion.cpp",
+        "apps/backtest/bt_bpgv_rotation.cpp",
     };
     int checked = 0;
     for (const char* rel : runners) {
@@ -481,5 +482,5 @@ TEST(BacktestWindowM12, AllThreeBacktestRunnersGoThroughTheSharedHelper) {
             << rel << " still computes the window inline as well as calling the helper";
         ++checked;
     }
-    EXPECT_EQ(checked, 3);
+    EXPECT_EQ(checked, 4);
 }
