@@ -38,6 +38,26 @@ Result<std::vector<market_data_utils::FuturesInstrumentId>> with_predecessor_ids
     Result<std::vector<market_data_utils::FuturesInstrumentId>> ids) {
     return ListingDates::instance().read_ids(symbols, std::move(ids));
 }
+
+// The vendor ids a run without a database reads from the bars it was given (a MarketDataSource's
+// Bar::instrument_id), in the rows PostgresDatabase::get_futures_instrument_ids returns: one per
+// bar, its UTC date. The session classifier's id-continuity limb then judges the bars of a source
+// as it judges the same bars read from the database. A source whose bars carry no id gives the
+// error the run always gave, so the limb is reported as unavailable.
+Result<std::vector<market_data_utils::FuturesInstrumentId>> instrument_ids_from_bars(
+    const std::vector<Bar>& bars) {
+    std::vector<market_data_utils::FuturesInstrumentId> rows;
+    for (const auto& bar : bars) {
+        if (bar.instrument_id.empty()) continue;
+        rows.push_back({bar.symbol, core::format_utc_date(bar.timestamp), bar.instrument_id});
+    }
+    if (rows.empty()) {
+        return make_error<std::vector<market_data_utils::FuturesInstrumentId>>(
+            ErrorCode::NOT_INITIALIZED, "the backtest has no database and its bars carry no id",
+            "BacktestCoordinator");
+    }
+    return Result<std::vector<market_data_utils::FuturesInstrumentId>>(std::move(rows));
+}
 }  // namespace
 
 BacktestCoordinator::BacktestCoordinator(std::shared_ptr<PostgresDatabase> db,
@@ -308,9 +328,7 @@ Result<BacktestResults> BacktestCoordinator::run_portfolio(
                      symbols,
                      pg->get_futures_instrument_ids(symbols, k01_classifier_history_start(start_date),
                                                     end_date))
-               : make_error<std::vector<market_data_utils::FuturesInstrumentId>>(
-                     ErrorCode::NOT_INITIALIZED, "the backtest's database is not a PostgresDatabase",
-                     "BacktestCoordinator"));
+               : with_predecessor_ids(symbols, instrument_ids_from_bars(all_bars)));
         if (feed.fed) {
             INFO(feed.line);
         } else {
@@ -1829,6 +1847,13 @@ Result<void> BacktestCoordinator::seed_estimator_history(
     // it is by a longer run and by live. The prefix's bars are not cycles and are consumed by
     // nothing else; the window's roll status still starts at the window.
     session_classifier_.add_bars(k01_classifier_history(loaded.value(), start_date));
+    // Without a database the window's first feed saw only the window's bars: the prefix's ids
+    // come from the prefix's bars (with a database that feed's query already covered them).
+    if (!std::dynamic_pointer_cast<PostgresDatabase>(db_)) {
+        const auto prefix_ids = with_predecessor_ids(
+            symbols, instrument_ids_from_bars(k01_classifier_history(loaded.value(), start_date)));
+        if (prefix_ids.is_ok()) session_classifier_.add_instrument_ids(prefix_ids.value());
+    }
     // The same rule as the live runners' (live/live_estimator_history.hpp): the history's bars are
     // judged in date order by their own classifier, with their vendor ids, each against the bars
     // before it; the withheld ones (K-01) are never consumed.
@@ -1839,9 +1864,7 @@ Result<void> BacktestCoordinator::seed_estimator_history(
         pg ? with_predecessor_ids(symbols,
                                   pg->get_futures_instrument_ids(
                                       symbols, estimator_history_start(start_date), start_date))
-           : make_error<std::vector<market_data_utils::FuturesInstrumentId>>(
-                 ErrorCode::NOT_INITIALIZED, "the backtest's database is not a PostgresDatabase",
-                 "BacktestCoordinator"),
+           : with_predecessor_ids(symbols, instrument_ids_from_bars(loaded.value())),
         &withheld);
     consumed_record_.add_history(withheld, history);
     return portfolio->seed_strategy_history(history);

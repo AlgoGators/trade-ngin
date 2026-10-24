@@ -30,6 +30,47 @@ void init_logging(const std::string& portfolio_name) {
     logger.initialize(logger_config);
 }
 
+/// A trend sleeve of a book, built as bt_portfolio builds it from the book's own files: the
+/// required keys, the EMA pairs, the FDM table of strategy_defaults, and on the book's first
+/// sleeve the equity slow rule and the trading rule removals.
+StrategyFactory make_book_trend_factory(std::string strategy_id, std::string type,
+                                        std::shared_ptr<const AppConfig> app, bool first_sleeve) {
+    return [strategy_id = std::move(strategy_id), type = std::move(type), app = std::move(app),
+            first_sleeve](const StrategyContext& ctx,
+                          const nlohmann::json& strategy_def) -> std::shared_ptr<BaseStrategy> {
+        TrendFollowingConfig trend_config = (type == "TrendFollowingFastStrategy")
+                                                ? fast_trend_following_config()
+                                                : TrendFollowingConfig{};
+        if (auto keys = read_required_sleeve_keys(strategy_id, strategy_def, trend_config);
+            keys.is_error()) {
+            throw std::runtime_error(std::string(keys.error()->what()));
+        }
+        if (strategy_def.contains("config")) {
+            const auto& cfg = strategy_def["config"];
+            if (cfg.contains("ema_windows")) {
+                trend_config.ema_windows.clear();
+                for (const auto& window : cfg["ema_windows"]) {
+                    trend_config.ema_windows.push_back({window[0].get<int>(), window[1].get<int>()});
+                }
+            }
+            trend_config.vol_lookback_long = cfg.value("vol_lookback_long", 252);
+        }
+        if (trend_config.fdm.empty()) trend_config.fdm = app->strategy_defaults.fdm;
+        if (first_sleeve) {
+            trend_config.equity_slow_symbols = app->equity_slow_rule.symbols;
+            trend_config.equity_slow_pairs = app->equity_slow_rule.pairs;
+            // Trading rules removed by cost: the standard sleeve's, not the FAST sleeve's.
+            if (type != "TrendFollowingFastStrategy") {
+                hand_over_trading_rule_removals(*app, trend_config);
+            }
+        }
+        auto strategy = std::make_shared<TrendFollowingStrategy>(
+            strategy_id, ctx.base_strategy_config, trend_config, ctx.db, ctx.registry);
+        strategy->set_data_source(ctx.data_source);
+        return strategy;
+    };
+}
+
 }  // namespace
 
 void BacktestRunner::initialize(std::string portfolio_name) {
@@ -651,14 +692,66 @@ Result<backtest::BacktestResults> BacktestRunner::run_backtest_from_config() {
     try {
         StateManager::reset_instance();
 
-        const auto& cfg = *run_config_;
+        BacktestRunConfig cfg = *run_config_;
 
         if (!Logger::instance().is_initialized()) {
             return make_error<backtest::BacktestResults>(
                 ErrorCode::NOT_INITIALIZED, "Logger initialization failed", "BacktestAPI");
         }
 
-        INFO("Running argument-driven backtest (no config files, no database)");
+        INFO("Running argument-driven backtest (no database)");
+
+        // A book's own files decide what bt_portfolio takes from them; the sleeves are built the
+        // way bt_portfolio builds them. Everything below then assembles as for any argument-driven
+        // run, with the book's values in place of the config's.
+        std::shared_ptr<const AppConfig> book;
+        if (!cfg.config_base_path.empty()) {
+            auto loaded = ConfigLoader::load(cfg.config_base_path, portfolio_name_);
+            if (loaded.is_error()) {
+                return make_error<backtest::BacktestResults>(
+                    loaded.error()->code(),
+                    "Failed to load configuration: " + std::string(loaded.error()->what()),
+                    "BacktestAPI");
+            }
+            if (auto loop_keys = ConfigLoader::require_loop_keys(loaded.value());
+                loop_keys.is_error()) {
+                return make_error<backtest::BacktestResults>(
+                    loop_keys.error()->code(),
+                    "Failed to load configuration: " + std::string(loop_keys.error()->what()),
+                    "BacktestAPI");
+            }
+            book = std::make_shared<const AppConfig>(loaded.value());
+            cfg.initial_capital = book->initial_capital;
+            cfg.use_optimization = book->use_optimization;
+            cfg.max_drawdown = book->max_drawdown;
+            cfg.max_leverage = loop_gross_leverage_limit(*book);
+            cfg.position_limit = book->execution.position_limit_backtest;
+            cfg.statistics_sessions_per_year = book->statistics.futures_sessions_per_year;
+            cfg.max_strategy_allocation = book->strategy_defaults.max_strategy_allocation;
+            cfg.min_strategy_allocation = book->strategy_defaults.min_strategy_allocation;
+            cfg.risk_modules = book->risk_schema.portfolio;
+            cfg.risk_config = book->risk_config;
+            cfg.opt_config = book->opt_config;
+            cfg.portfolio_id = book->portfolio_id;
+            cfg.strategies.clear();
+            for (const auto& [strategy_id, strategy_def] : book->strategies_config.items()) {
+                if (!(strategy_def.contains("enabled_backtest") &&
+                      strategy_def["enabled_backtest"].get<bool>())) {
+                    continue;
+                }
+                const std::string type = strategy_def.value("type", "");
+                if (type != "TrendFollowingStrategy" && type != "TrendFollowingFastStrategy") {
+                    return make_error<backtest::BacktestResults>(
+                        ErrorCode::INVALID_DATA,
+                        "Unknown strategy type: " + type + " for strategy: " + strategy_id,
+                        "BacktestAPI");
+                }
+                registered_strategies_[strategy_id] =
+                    make_book_trend_factory(strategy_id, type, book, cfg.strategies.empty());
+                cfg.strategies.push_back(
+                    {strategy_id, strategy_def.value("default_allocation", 0.5), strategy_def});
+            }
+        }
 
         // ========================================
         // VALIDATE INPUTS
@@ -756,6 +849,22 @@ Result<backtest::BacktestResults> BacktestRunner::run_backtest_from_config() {
         portfolio_config.use_optimization = cfg.use_optimization;
         portfolio_config.opt_config = opt_config;
         portfolio_config.risk_config = risk_config;
+        if (book) {
+            portfolio_config.covariance_history_prices = book->covariance_history_prices;
+            portfolio_config.covariance_stale_dates = book->covariance_stale_dates;
+            portfolio_config.sleeve_risk_modules = book->risk_schema.sleeves;
+            apply_loop_config(*book, portfolio_config);
+            // The first sleeve's own series and its risk target feed the risk overlay
+            // (LOOP_SPEC section 4: the three risk limits are ratios to this tau).
+            TrendFollowingConfig first_keys;
+            if (!cfg.strategies.empty() &&
+                read_required_sleeve_keys(cfg.strategies.front().strategy_id,
+                                          cfg.strategies.front().config, first_keys)
+                    .is_ok()) {
+                portfolio_config.overlay_sleeve = cfg.strategies.front().strategy_id;
+                portfolio_config.overlay_tau = first_keys.risk_target;
+            }
+        }
 
         StrategyConfig base_strategy_config;
         base_strategy_config.asset_classes = {cfg.asset_class};
@@ -785,7 +894,7 @@ Result<backtest::BacktestResults> BacktestRunner::execute(
     const std::vector<std::string>& symbols, const Timestamp& start_date, const Timestamp& end_date,
     AssetClass asset_class, DataFrequency data_freq,
     const std::vector<StrategySpec>& strategy_specs, const StrategyConfig& base_strategy_config,
-    const PortfolioConfig& portfolio_config,
+    PortfolioConfig portfolio_config,
     const backtest::BacktestCoordinatorConfig& coord_config, std::shared_ptr<PostgresDatabase> db,
     std::shared_ptr<MarketDataSource> data_source, std::shared_ptr<InstrumentRegistry> registry) {
     // ========================================
@@ -832,7 +941,7 @@ Result<backtest::BacktestResults> BacktestRunner::execute(
              " (allocation: " + std::to_string(allocation * 100.0) + "%)");
 
         auto factory = registered_strategies_[spec.strategy_id];
-        StrategyContext strategy_ctx{strategy_config, db, registry};
+        StrategyContext strategy_ctx{strategy_config, db, registry, data_source};
         auto strategy = factory(strategy_ctx, spec.config);
 
         if (!strategy) {
@@ -866,6 +975,22 @@ Result<backtest::BacktestResults> BacktestRunner::execute(
     // ========================================
     // CREATE PORTFOLIO
     // ========================================
+    // A book with a trend sleeve is sized by the one-pass step on an overlay sleeve: the first
+    // trend sleeve and its risk target, as the engine's runners name them. Without it every
+    // day's portfolio step is refused.
+    if (portfolio_config.overlay_sleeve.empty()) {
+        for (size_t i = 0; i < strategies.size(); ++i) {
+            if (!std::dynamic_pointer_cast<TrendFollowingStrategy>(strategies[i])) continue;
+            TrendFollowingConfig keys;
+            if (read_required_sleeve_keys(strategy_specs[i].strategy_id, strategy_specs[i].config,
+                                          keys)
+                    .is_ok()) {
+                portfolio_config.overlay_sleeve = strategy_specs[i].strategy_id;
+                portfolio_config.overlay_tau = keys.risk_target;
+            }
+            break;
+        }
+    }
     auto portfolio = std::make_shared<PortfolioManager>(portfolio_config);
 
     for (size_t i = 0; i < strategies.size(); ++i) {
@@ -931,6 +1056,56 @@ Result<backtest::BacktestResults> BacktestRunner::execute(
     INFO("Backtest completed successfully");
 
     return backtest_results;
+}
+
+StrategyFactory make_trend_following_factory(std::string strategy_id, bool fast) {
+    return [strategy_id = std::move(strategy_id), fast](
+               const StrategyContext& ctx,
+               const nlohmann::json& strategy_def) -> std::shared_ptr<BaseStrategy> {
+        TrendFollowingConfig trend_config =
+            fast ? fast_trend_following_config() : TrendFollowingConfig{};
+        // LOOP_SPEC section 7.7: risk_target, idm and vol_lookback_short are required, with no
+        // in-code default, so a Python run reads them the way the engine's own runners do.
+        if (auto keys = read_required_sleeve_keys(strategy_id, strategy_def, trend_config);
+            keys.is_error()) {
+            throw std::runtime_error(std::string(keys.error()->what()));
+        }
+        if (strategy_def.contains("config")) {
+            const auto& cfg = strategy_def["config"];
+            if (cfg.contains("ema_windows")) {
+                trend_config.ema_windows.clear();
+                for (const auto& window : cfg["ema_windows"]) {
+                    trend_config.ema_windows.push_back({window[0].get<int>(), window[1].get<int>()});
+                }
+            }
+            trend_config.vol_lookback_long = cfg.value("vol_lookback_long", 252);
+            if (cfg.contains("equity_slow")) {
+                const auto& rule = cfg["equity_slow"];
+                trend_config.equity_slow_symbols = rule.value("symbols", std::vector<std::string>{});
+                for (const auto& pair : rule.value("pairs", nlohmann::json::array())) {
+                    trend_config.equity_slow_pairs.push_back(
+                        {pair[0].get<int>(), pair[1].get<int>()});
+                }
+            }
+            if (cfg.contains("rule_removals")) {
+                for (const auto& [symbol, pairs] : cfg["rule_removals"].items()) {
+                    for (const auto& pair : pairs) {
+                        trend_config.rule_removals[symbol].push_back(
+                            {pair[0].get<int>(), pair[1].get<int>()});
+                    }
+                }
+            }
+        }
+        // strategy_defaults.fdm fills an empty table; the struct's own table is not empty, so this
+        // changes nothing unless a caller cleared it.
+        if (trend_config.fdm.empty()) {
+            trend_config.fdm = {{1, 1.0}, {2, 1.03}, {3, 1.08}, {4, 1.13}, {5, 1.19}, {6, 1.26}};
+        }
+        auto strategy = std::make_shared<TrendFollowingStrategy>(
+            strategy_id, ctx.base_strategy_config, trend_config, ctx.db, ctx.registry);
+        strategy->set_data_source(ctx.data_source);
+        return strategy;
+    };
 }
 
 Result<void> BacktestRunner::register_strategy(const std::string& strategy_id,

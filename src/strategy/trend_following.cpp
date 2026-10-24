@@ -927,7 +927,40 @@ std::unordered_map<std::string, double> TrendFollowingStrategy::get_weights() co
     if (!weight_cache_.empty()) {
         return weight_cache_;
     }
-    auto metadata_result = db_->get_contract_metadata();
+    // The contract metadata (sector of each contract) and the symbols that have bars: the
+    // database's, or, on a run without one, the data source's, given in the same two shapes.
+    Result<std::shared_ptr<arrow::Table>> metadata_result =
+        make_error<std::shared_ptr<arrow::Table>>(
+            ErrorCode::NOT_INITIALIZED,
+            "the sleeve has neither a database nor a data source for its instrument weights",
+            "TrendFollowingStrategy");
+    Result<std::vector<std::string>> hlcv_symbols_result = make_error<std::vector<std::string>>(
+        ErrorCode::NOT_INITIALIZED, "no source of the symbols that have bars",
+        "TrendFollowingStrategy");
+    if (db_) {
+        metadata_result = db_->get_contract_metadata();
+        hlcv_symbols_result = db_->get_symbols(AssetClass::FUTURES);
+    } else if (weight_source_) {
+        auto sectors = weight_source_->get_contract_sectors();
+        if (sectors.is_ok()) {
+            arrow::StringBuilder sector_builder, symbol_builder;
+            for (const auto& [symbol, sector] : sectors.value()) {
+                (void)symbol_builder.Append(symbol);
+                (void)sector_builder.Append(sector);
+            }
+            std::shared_ptr<arrow::Array> sector_array, symbol_array;
+            (void)sector_builder.Finish(&sector_array);
+            (void)symbol_builder.Finish(&symbol_array);
+            metadata_result = Result<std::shared_ptr<arrow::Table>>(arrow::Table::Make(
+                arrow::schema({arrow::field("Sector", arrow::utf8()),
+                               arrow::field("Databento Symbol", arrow::utf8())}),
+                {sector_array, symbol_array}));
+        } else {
+            metadata_result = make_error<std::shared_ptr<arrow::Table>>(
+                sectors.error()->code(), sectors.error()->what(), "TrendFollowingStrategy");
+        }
+        hlcv_symbols_result = weight_source_->get_symbols(AssetClass::FUTURES);
+    }
     if (!metadata_result.is_ok()) {
         ERROR(std::string("Failed to get contract metadata: ")
                   .append(metadata_result.error()->what()));
@@ -936,7 +969,6 @@ std::unordered_map<std::string, double> TrendFollowingStrategy::get_weights() co
 
     // Get actually-traded symbols from HLCV table to filter phantom instruments
     std::unordered_set<std::string> traded_base_symbols;
-    auto hlcv_symbols_result = db_->get_symbols(AssetClass::FUTURES);
     if (hlcv_symbols_result.is_ok()) {
         for (const auto& sym : hlcv_symbols_result.value()) {
             // Strip .v.0 / .c.0 suffix to get base symbol
