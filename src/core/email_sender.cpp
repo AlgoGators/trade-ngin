@@ -1161,14 +1161,15 @@ static std::string format_roll_legs_block(const std::vector<ExecutionReport>& ex
         html << "</table>\n";
     }
     if (legs > 0 && rolls_on()) {
-        // Rolls step 4 (ruling 18): one plain line per roll, from its closing leg's split.
+        // Rolls step 4 (ruling 18): one plain line per roll, from its closing leg: the split, or for a
+        // roll of the vendor's series (no split, the micros) the cost only (R4B fix round 1).
         for (const auto& closing : executions) {
-            if (closing.execution_type != ExecutionType::ROLL || !closing.roll_bar_move) continue;
+            const bool is_closing = closing.exec_id.size() >= 3 &&
+                                    closing.exec_id.compare(closing.exec_id.size() - 3, 3, "_RC") == 0;
+            if (closing.execution_type != ExecutionType::ROLL || (!is_closing && !closing.roll_bar_move)) continue;
             double cost = closing.total_transaction_costs.as_double();
-            const std::string opening_id = closing.exec_id.size() >= 3 &&
-                                                   closing.exec_id.compare(closing.exec_id.size() - 3, 3, "_RC") == 0
-                                               ? closing.exec_id.substr(0, closing.exec_id.size() - 3) + "_RO"
-                                               : std::string();
+            const std::string opening_id =
+                is_closing ? closing.exec_id.substr(0, closing.exec_id.size() - 3) + "_RO" : std::string();
             for (const auto& opening : executions) {
                 if (opening.execution_type == ExecutionType::ROLL && !opening_id.empty() &&
                     opening.exec_id == opening_id && opening.symbol == closing.symbol) {

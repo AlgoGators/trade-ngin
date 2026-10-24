@@ -1110,8 +1110,11 @@ TEST_F(EmailFixture, WithTheSwitchOnTheBodyPrintsTheRollLineTheBoxTheFootnoteAnd
     rc.roll_bar_move = 1.0 * (77960.0 - 78500.0) * 0.1;
     rc.roll_gap_points = 79070.0 - 77960.0;
     rc.roll_gap_value = (79070.0 - 77960.0) * 1.0 * 0.1;
+    // QMES's roll is on the vendor's series (no split, the micros): its line names the cost only.
     const StrategyExecutionsMap executions = {
-        {"TREND_FOLLOWING", {rc, roll_leg("QMBT.v.0", false, Side::BUY, 79070.0, 2.45, "42013708")}}};
+        {"TREND_FOLLOWING", {rc, roll_leg("QMBT.v.0", false, Side::BUY, 79070.0, 2.45, "42013708"),
+                             roll_leg("QMES.v.0", true, Side::SELL, 7217.25, 1.30, "42140878"),
+                             roll_leg("QMES.v.0", false, Side::BUY, 7262.50, 1.32, "42003800")}}};
     const StrategyPositionsMap settled = {
         {"TREND_FOLLOWING",
          {{"QZT.v.0", row("QZT.v.0", -1.0, 103.73828125, -46.88)}, {"QKE.v.0", row("QKE.v.0", 1.0, 677.0, 425.0)}}}};
@@ -1121,6 +1124,7 @@ TEST_F(EmailFixture, WithTheSwitchOnTheBodyPrintsTheRollLineTheBoxTheFootnoteAnd
     context.settled_zero_kinds.per_contract_roll.insert("QKE.v.0");
     context.rolls.per_contract_rolls = true;
     context.rolls.names["ROLL_QMBT.v.0_RC"] = ReportRollNames{"Micro Bitcoin Futures", "April", "May", 1};
+    context.rolls.names["ROLL_QMES.v.0_RC"] = ReportRollNames{"Micro E-mini S&P500 Index", "September", "December", 2};
     ReportRollOutlook zt;
     zt.root = "QZT";
     zt.held = "QZTM6";
@@ -1142,6 +1146,11 @@ TEST_F(EmailFixture, WithTheSwitchOnTheBodyPrintsTheRollLineTheBoxTheFootnoteAnd
               std::string::npos)
         << body;
     EXPECT_LT(body.find("<th>Roll Leg</th>"), body.find("Micro Bitcoin Futures, April to May")) << "under the legs";
+    EXPECT_NE(body.find("<p style=\"margin: 4px 0; font-size: 13px;\">Micro E-mini S&P500 Index, September to December: "
+                        "roll cost $2.62 (market move and contract price difference shown once the full-size contracts "
+                        "are loaded).</p>"),
+              std::string::npos)
+        << "a roll of the vendor's series gets its cost-only line (R4B fix round 1)";
     EXPECT_NE(body.find("<li><strong>QZT:</strong> Currently holding <strong>QZTM6</strong> \xE2\x86\x92 Switch to "
                         "<strong>QZTU6</strong> by 05-28, first notice 05-29</li>"),
               std::string::npos)
@@ -1160,7 +1169,7 @@ TEST_F(EmailFixture, WithTheSwitchOnTheBodyPrintsTheRollLineTheBoxTheFootnoteAnd
         {}, nullptr, settled, t1, t2, {}, "LIVE_TREND_FOLLOWING",
         over_limit_of(kConservativeCapital.sizing_capital, 0.8678286, 0.2445012), off);
     for (const char* absent : {"Micro Bitcoin Futures, April", "Rollover Notice", "rolled to the next one before",
-                               "The old contract's move that day is booked"}) {
+                               "The old contract's move that day is booked", "shown once the full-size"}) {
         EXPECT_EQ(off_body.find(absent), std::string::npos) << absent;
     }
     EXPECT_NE(off_body.find("We currently only provide data for the front-month contract"), std::string::npos);
