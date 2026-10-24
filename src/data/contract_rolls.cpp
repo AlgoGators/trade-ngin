@@ -84,7 +84,8 @@ Result<Day> series_start(pqxx::transaction_base& txn, const std::string& root) {
 
 Result<ContractRollSeries> build_held_series(pqxx::transaction_base& txn, const std::string& root,
                                              Day start, Day end, const FuturesCalendar& calendars,
-                                             Day log_from) {
+                                             Day log_from,
+                                             std::function<bool(const std::string&)> log_once) {
     auto cycle = roll_cycle(root);
     if (cycle.is_error()) {
         return make_error<ContractRollSeries>(cycle.error()->code(), cycle.error()->what(),
@@ -128,6 +129,7 @@ Result<ContractRollSeries> build_held_series(pqxx::transaction_base& txn, const 
     in.cycle = cycle.value();
     in.alias = alias;
     in.log_from = log_from;
+    in.log_once = std::move(log_once);
     auto held = apply_roll_rule(in);
     if (held.is_error()) {
         return make_error<ContractRollSeries>(held.error()->code(), held.error()->what(),

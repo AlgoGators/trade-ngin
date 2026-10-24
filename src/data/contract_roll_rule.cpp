@@ -98,7 +98,7 @@ private:
     }
 
     void warn(const std::string& msg) {
-        if (day_ >= in_.log_from) {
+        if (day_ >= in_.log_from && (!in_.log_once || in_.log_once(msg))) {
             WARN("contract_rolls: " + msg);
         } else {
             ++out_.report.warnings_not_logged;

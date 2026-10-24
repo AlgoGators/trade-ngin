@@ -301,6 +301,56 @@ TEST(PerContractSource, AFallbackRollReadsThePreviousCloseTimesTheNewContractsMo
     EXPECT_NE(std::string(r.error()->what()).find("no old bar"), std::string::npos);
 }
 
+// R4a open question 4: a fallback roll's WARN is logged from the load's log floor on, once per run: the
+// log_once callback is asked only for a roll on or after log_from, and a false keeps the line out.
+TEST(PerContractSource, AFallbackRollsWarnIsLoggedFromTheFloorAndOnce) {
+    HeldSeries s;
+    s.root = "GC";
+    HeldDay a;
+    a.date = d("2026-07-28");
+    a.held = ContractKey::make("GC", "GCQ6", d("2026-08-27")).value();
+    a.bar_id = "q";
+    a.open = a.high = a.low = a.close = 2000.0;
+    HeldDay b = a;
+    b.date = d("2026-07-29");
+    b.held = ContractKey::make("GC", "GCZ6", d("2026-12-29")).value();
+    b.bar_id = "z";
+    b.roll = true;
+    b.old = a.held;
+    b.fallback = RollFallback::ZERO;
+    s.days = {a, b};
+    const std::map<Day, std::string> window{{a.date, "2026-07-28 00:00:00+00"},
+                                            {b.date, "2026-07-29 00:00:00+00"}};
+    std::vector<std::string> asked;
+    const auto never = [&](const std::string& m) {
+        asked.push_back(m);
+        return false;
+    };
+    ASSERT_TRUE(bars_of_series(s, window, SwitchBar::HELD, d("2026-07-30"), never).is_ok());
+    EXPECT_TRUE(asked.empty()) << "a roll before the floor is not logged";
+    ASSERT_TRUE(bars_of_series(s, window, SwitchBar::HELD, d("2026-07-29"), never).is_ok());
+    ASSERT_EQ(asked.size(), 1u);
+    EXPECT_EQ(asked[0].rfind("PER_CONTRACT_ROLLS fallback roll GC.v.0 2026-07-29 GCQ6->GCZ6 (zero)", 0), 0u)
+        << asked[0];
+    // The source's own: the floor and the once-per-run set, both reset by enable() and disable().
+    auto& source = PerContractSource::instance();
+    source.enable(FuturesCalendar{});
+    EXPECT_EQ(source.log_floor(), Day{});
+    source.set_log_floor(d("2026-09-14"));
+    EXPECT_EQ(source.log_floor(), d("2026-09-14"));
+    EXPECT_TRUE(source.first_log("a line"));
+    EXPECT_FALSE(source.first_log("a line"));
+    EXPECT_TRUE(source.first_log("another line"));
+    source.enable(FuturesCalendar{});
+    EXPECT_EQ(source.log_floor(), Day{});
+    EXPECT_TRUE(source.first_log("a line")) << "a new run logs again";
+    source.set_log_floor(d("2026-09-14"));
+    source.disable();
+    EXPECT_EQ(source.log_floor(), Day{});
+    EXPECT_TRUE(source.first_log("another line"));
+    source.disable();
+}
+
 TEST(PerContractSource, TheSwitchTurnsTheSourceOnAndOffAndTheMicrosStayOnTheVendorsSeries) {
     auto& source = PerContractSource::instance();
     source.disable();

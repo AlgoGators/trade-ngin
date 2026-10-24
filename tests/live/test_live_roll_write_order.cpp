@@ -390,3 +390,21 @@ TEST(LiveRollWriteOrder, EachRunnerAttachesTheRollSplitToTheLegsItMakes) {
         EXPECT_NE(block.find("INFO(\"ROLL_SPLIT \" + strategy_name", attach), npos) << runner;
     }
 }
+
+// R4a open question 4: with the source on, each runner sets the rule's log floor to its T-1 (the bar a
+// run consumes for the first time; runs go on consecutive days) right after configuring the source.
+TEST(LiveRollWriteOrder, EachRunnerLogsTheRulesFallbacksFromItsT1) {
+    for (const char* runner : kRunners) {
+        const std::string src = read_source(runner);
+        ASSERT_FALSE(src.empty()) << runner;
+        const auto configured = src.find("contract_rolls::configure_per_contract_source(");
+        ASSERT_NE(configured, npos) << runner;
+        const auto floor = src.find("const std::string log_floor = core::format_utc_date(now - std::chrono::hours(24));",
+                                    configured);
+        ASSERT_NE(floor, npos) << runner;
+        EXPECT_NE(src.find("PerContractSource::instance().set_log_floor(contract_rolls::parse_ymd(log_floor));", floor),
+                  npos)
+            << runner;
+        EXPECT_LT(floor, src.find("auto symbols_result = db->get_symbols(")) << runner << ": before any bar is loaded";
+    }
+}

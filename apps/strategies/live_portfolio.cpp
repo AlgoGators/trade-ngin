@@ -1093,6 +1093,15 @@ int main(int argc, char* argv[]) {
             ERROR(source.error()->what());
             return 1;
         }
+        if (contract_rolls::PerContractSource::instance().enabled()) {
+            // R4a open question 4: a run consumes its T-1 bar for the first time (runs go on
+            // consecutive days), so the rule's fallbacks are logged from it, each once.
+            const std::string log_floor = core::format_utc_date(now - std::chrono::hours(24));
+            contract_rolls::PerContractSource::instance().set_log_floor(contract_rolls::parse_ymd(log_floor));
+            INFO("PER_CONTRACT_ROLLS fallbacks are logged for bars from " + log_floor +
+                 " (the bar this run consumes for the first time), each once; earlier ones were logged by "
+                 "the run that consumed them");
+        }
 
         double initial_capital = app_config.initial_capital;
 
