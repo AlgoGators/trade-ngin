@@ -23,6 +23,8 @@
 #include "trade_ngin/core/time_utils.hpp"
 #include "trade_ngin/data/roll_series.hpp"
 #include "trade_ngin/data/roll_split_sql.hpp"
+#include "trade_ngin/data/per_contract_source.hpp"
+#include "trade_ngin/data/postgres_database.hpp"
 #include "trade_ngin/live/live_roll_legs.hpp"
 #include "trade_ngin/live/session_book_gate.hpp"
 
@@ -283,4 +285,23 @@ TEST(RollSplit, TheWritersNameTheColumnsOnlyForASplit) {
     roll_split_sql::append(p, legs[0]);
     roll_split_sql::append(p, legs[1]);
     EXPECT_EQ(p.size(), 6);
+}
+
+// The database's roll view with nothing to read: the switch off gives an empty view (nothing new printed);
+// the switch on with no connection gives the switch-on view with no line, box or cell (the roll sentences
+// only), with a WARN.
+TEST(RollSplit, TheDatabasesRollViewWithNothingToRead) {
+    PostgresDatabase db("postgresql://nobody@127.0.0.1:1/none");  // never connected
+    contract_rolls::ReportRollQuery q;
+    q.date = "2025-11-21";
+    q.held_symbols = {"SI.v.0"};
+    contract_rolls::PerContractSource::instance().disable();
+    const auto off = db.report_roll_view(q, {});
+    EXPECT_FALSE(off.per_contract_rolls);
+    contract_rolls::PerContractSource::instance().enable(contract_rolls::FuturesCalendar{});
+    const auto on = db.report_roll_view(q, {});
+    contract_rolls::PerContractSource::instance().disable();
+    EXPECT_TRUE(on.per_contract_rolls);
+    EXPECT_TRUE(on.outlook.empty());
+    EXPECT_TRUE(on.names.empty());
 }
