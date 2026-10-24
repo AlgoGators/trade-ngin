@@ -368,3 +368,25 @@ TEST(NoSilentDefaults, TheSettlementSizingAndHoldInputsAreRequired) {
                               const Timestamp&, double, Closes, Closes, PointValue, Symbols,
                               const LiveSizingCalendar&>));
 }
+
+// Rolls step 4 (ruling 18, migration 040): each runner attaches a per-contract roll's split to the legs
+// it just made, from the roll's points and the contract's multiplier (the one the P&L reads), before the
+// legs are logged and inserted, so the stored closing leg carries it; a roll with no points (the vendor's
+// series) attaches nothing.
+TEST(LiveRollWriteOrder, EachRunnerAttachesTheRollSplitToTheLegsItMakes) {
+    for (const char* runner : kRunners) {
+        const std::string src = read_source(runner);
+        ASSERT_FALSE(src.empty()) << runner;
+        const std::string block = between(src, "legs = roll_series::make_roll_legs(",
+                                          "roll_legs.insert(roll_legs.end(), legs.begin(), legs.end());");
+        ASSERT_FALSE(block.empty()) << runner;
+        const auto gate = block.find("if (r.roll_bar_points) {");
+        ASSERT_NE(gate, npos) << runner;
+        const auto pv = block.find("const double point_value = pnl_manager->get_point_value(r.symbol);", gate);
+        ASSERT_NE(pv, npos) << runner;
+        const auto attach = block.find("roll_series::attach_roll_split(legs, q, *r.roll_bar_points, point_value);", pv);
+        ASSERT_NE(attach, npos) << runner;
+        EXPECT_LT(attach, block.find("for (const auto& leg : legs) {")) << runner << ": before the legs are logged";
+        EXPECT_NE(block.find("INFO(\"ROLL_SPLIT \" + strategy_name", attach), npos) << runner;
+    }
+}

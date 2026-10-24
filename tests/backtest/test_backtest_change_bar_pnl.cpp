@@ -275,3 +275,66 @@ TEST_F(BacktestPerContractPnlTest, AWithheldRollBarIsBookedOnTheNextConsumedBarA
     EXPECT_EQ(b.legs.at(5), (std::vector<double>{105.0, 111.0}));
     EXPECT_EQ(b.held, (std::vector<std::string>{"A", "A", "B", "B"}));
 }
+
+// Rolls step 4 (ruling 18, migration 040): the roll's split on its closing leg, as the cycle booked it.
+// roll_bar_move is exactly the move the cycle consuming the roll bar booked (cycle 3's 100 for the
+// crossover and the vendor switch, whose roll bar is the switch bar; cycle 4's 200 when the roll bar
+// was withheld), the gap the two legs' difference and its value 2 x gap x 50; the opening leg none.
+namespace {
+void expect_split(const std::vector<ExecutionReport>& execs, const Booked& b, size_t roll_cycle_index,
+                  double move, double gap) {
+    std::vector<ExecutionReport> legs;
+    for (const auto& e : execs) if (e.execution_type == ExecutionType::ROLL) legs.push_back(e);
+    ASSERT_EQ(legs.size(), 2u);
+    ASSERT_TRUE(legs[0].roll_bar_move.has_value());
+    EXPECT_NEAR(*legs[0].roll_bar_move, move, 1e-9);
+    EXPECT_NEAR(*legs[0].roll_bar_move, b.move.at(roll_cycle_index), 1e-6) << "the move the roll bar booked";
+    EXPECT_NEAR(*legs[0].roll_gap_points, gap, 1e-9);
+    EXPECT_NEAR(*legs[0].roll_gap_points,
+                static_cast<double>(legs[1].fill_price) - static_cast<double>(legs[0].fill_price), 1e-12);
+    EXPECT_NEAR(*legs[0].roll_gap_value, 2.0 * gap * 50.0, 1e-9);
+    EXPECT_FALSE(legs[1].roll_bar_move.has_value());
+    EXPECT_FALSE(legs[1].roll_gap_points.has_value());
+    EXPECT_FALSE(legs[1].roll_gap_value.has_value());
+}
+}  // namespace
+
+TEST_F(BacktestPerContractPnlTest, ACrossoverRollsClosingLegCarriesItsBarsMoveAndTheGap) {
+    const auto b = book({bar(0, 100, "A"), bar(1, 101, "A"), bar(2, 103, "A"),
+                         rolled(bar(3, 110, "B"), 104, "A", RollFromKind::KNOWN),
+                         rolled(bar(4, 111, "B"), 105, "A", RollFromKind::AFTER_ROLL), bar(5, 112, "B")});
+    expect_split(execs_, b, 1, 100.0, 6.0);
+}
+
+TEST_F(BacktestPerContractPnlTest, AVendorSwitchsClosingLegCarriesTheSwitchBarsMoveAndTheGap) {
+    const auto b = book({bar(0, 100, "A"), bar(1, 101, "A"), bar(2, 103, "A"),
+                         rolled(bar(3, 104, "A"), 110, "B", RollFromKind::AWAITS_NEXT),
+                         rolled(bar(4, 111, "B"), 105, "A", RollFromKind::AFTER_ROLL), bar(5, 112, "B")});
+    expect_split(execs_, b, 1, 100.0, 6.0);
+}
+
+TEST_F(BacktestPerContractPnlTest, AWithheldRollBarsClosingLegCarriesTheMoveBookedOnTheNextBar) {
+    const auto b = book({bar(0, 100, "A"), bar(1, 101, "A"), bar(2, 103, "A"),
+                         rolled(bar(3, 110, "B", true), 104, "A", RollFromKind::KNOWN),
+                         rolled(bar(4, 111, "B"), 105, "A", RollFromKind::AFTER_ROLL), bar(5, 112, "B")});
+    expect_split(execs_, b, 2, 200.0, 6.0);
+}
+
+// The vendor's series (today's change bar, the micros with the switch on): no split on any row.
+TEST_F(BacktestChangeBarPnlTest, ARollOfTheVendorsSeriesCarriesNoSplit) {
+    const std::vector<Bar> xa = {bar(0, 100, "A"), bar(1, 101, "A"), bar(2, 103, "A"), bar(3, 110, "B"),
+                                 bar(4, 111, "B"), bar(5, 112, "B")};
+    for (int d = 0; d < static_cast<int>(xa.size()); ++d) {
+        ASSERT_TRUE(coord_->process_portfolio_day(wday(d), {xa[d]}, pm_, execs_, equity_, risk_, false,
+                                                  1'000'000.0)
+                        .is_ok());
+    }
+    int rolls = 0;
+    for (const auto& e : execs_) {
+        if (e.execution_type == ExecutionType::ROLL) ++rolls;
+        EXPECT_FALSE(e.roll_bar_move.has_value());
+        EXPECT_FALSE(e.roll_gap_points.has_value());
+        EXPECT_FALSE(e.roll_gap_value.has_value());
+    }
+    EXPECT_EQ(rolls, 2);
+}

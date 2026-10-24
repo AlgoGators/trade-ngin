@@ -6,6 +6,7 @@
 #include <cmath>
 #include <ctime>
 #include <map>
+#include <optional>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -59,6 +60,9 @@ struct ConfirmedRoll {
     /// deadline, a confirmed vendor switch dated earlier); false for a switch the next consumed bar
     /// confirmed (every roll of the vendor's series; a vendor switch bar with the source on).
     bool known_on_bar{false};
+    /// Rolls step 4 (ruling 18, migration 040): the held contract's move booked on the roll bar, in
+    /// price points (RollTracker::Status::roll_bar_points); nullopt on a roll of the vendor's series.
+    std::optional<double> roll_bar_points;
 };
 
 /**
@@ -278,7 +282,7 @@ inline LiveRollState live_rolls_by_state(
             if (since_state && steps[i].date != t1_date) late = true;
             out.rolls.push_back({symbol, steps[i].date, st.previous_held_id, st.held_id,
                                  st.last_close_before_change, st.change_bar_close, st.bars_pending,
-                                 st.mark_close.has_value()});
+                                 st.mark_close.has_value(), st.roll_bar_points});
         }
         if (late) {
             // The whole sum after the stored state; the caller takes off what the stored rows

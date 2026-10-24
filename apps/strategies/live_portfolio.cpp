@@ -3133,6 +3133,20 @@ int main(int argc, char* argv[]) {
                             std::cerr << "ROLL_LEG STOP " << r.symbol << ": " << e.what() << std::endl;
                             return 1;
                         }
+                        // Ruling 18 (migration 040): a per-contract roll's split, on its closing leg.
+                        if (r.roll_bar_points) {
+                            const double point_value = pnl_manager->get_point_value(r.symbol);
+                            roll_series::attach_roll_split(legs, q, *r.roll_bar_points, point_value);
+                            if (!legs.empty()) {
+                                INFO("ROLL_SPLIT " + strategy_name + " " + r.symbol + " date=" +
+                                     run_date + " confirmed=" + r.confirm_date + " qty=" +
+                                     model_input(q) + " points=" + model_input(*r.roll_bar_points) +
+                                     " multiplier=" + model_input(point_value) + " roll_bar_move=" +
+                                     model_input(*legs.front().roll_bar_move) + " roll_gap_points=" +
+                                     model_input(*legs.front().roll_gap_points) + " roll_gap_value=" +
+                                     model_input(*legs.front().roll_gap_value) + " (the gap is not P&L)");
+                            }
+                        }
                         for (const auto& leg : legs) {
                             const bool closing = leg.exec_id == "EXEC_" + tag + "_RC";
                             INFO("ROLL_LEG " + strategy_name + " " + r.symbol + " " +

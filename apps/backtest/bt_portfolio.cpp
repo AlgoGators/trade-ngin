@@ -571,6 +571,13 @@ int main() {
         std::cout << "Transaction Costs: " << backtest_results.transaction_costs << std::endl;
         std::cout << "Roll Costs (upper bound): " << backtest_results.roll_costs << std::endl;
         std::cout << "Roll Fills: " << backtest_results.total_roll_fills << std::endl;
+        if (backtest_results.roll_bar_moves) {
+            // Rolls step 4 (ruling 18, migration 040): the split's totals, with the switch on.
+            std::cout << "Roll-bar moves booked (in the P&L): " << *backtest_results.roll_bar_moves
+                      << std::endl;
+            std::cout << "Roll price differences (not profit or loss): "
+                      << backtest_results.roll_gap_values.value_or(0.0) << std::endl;
+        }
 
         // Save portfolio results to database
         INFO("Saving portfolio backtest results to database...");

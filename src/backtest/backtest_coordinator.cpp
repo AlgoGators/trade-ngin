@@ -17,6 +17,7 @@
 #include "trade_ngin/core/time_utils.hpp"
 #include "trade_ngin/data/conversion_utils.hpp"
 #include "trade_ngin/data/listing_dates.hpp"
+#include "trade_ngin/data/per_contract_source.hpp"
 #include "trade_ngin/data/market_data_bus.hpp"
 #include "trade_ngin/live/live_historical_metrics.hpp"
 #include "trade_ngin/portfolio/sizing_capital.hpp"
@@ -543,6 +544,16 @@ Result<BacktestResults> BacktestCoordinator::run_portfolio(
     results.transaction_costs = cost_totals.transaction_costs;
     results.roll_costs = cost_totals.roll_costs;
     results.total_roll_fills = cost_totals.roll_fills;
+    // Rolls step 4 (ruling 18, migration 040): the split's totals, with the switch on only.
+    if (contract_rolls::PerContractSource::instance().enabled()) {
+        const auto split = roll_series::roll_split_totals(all_executions);
+        results.roll_bar_moves = split.roll_bar_moves;
+        results.roll_gap_values = split.roll_gap_values;
+        INFO("ROLL_SPLIT_TOTALS rolls=" + std::to_string(split.rolls) + " roll_bar_moves=" +
+             std::to_string(split.roll_bar_moves) + " roll_gap_values=" +
+             std::to_string(split.roll_gap_values) + " roll_costs=" +
+             std::to_string(cost_totals.roll_costs) + " (the gaps are not P&L)");
+    }
 
     // Add executions and equity curve to results
     results.executions = std::move(all_executions);
@@ -1166,6 +1177,21 @@ Result<void> BacktestCoordinator::process_portfolio_day(
                                                 "BacktestCoordinator");
                     }
                     seq += 2;
+                    // Ruling 18 (migration 040): a per-contract roll's split, on its closing leg.
+                    if (st.roll_bar_points) {
+                        const double point_value =
+                            pnl_manager_ ? pnl_manager_->get_point_value(symbol) : 1.0;
+                        roll_series::attach_roll_split(legs, q, *st.roll_bar_points, point_value);
+                        INFO("ROLL_SPLIT " + strategy_id + " " + symbol + " date=" +
+                             core::format_utc_date(timestamp) + " confirmed=" + confirm_date +
+                             " qty=" + model_input(q) + " points=" +
+                             model_input(*st.roll_bar_points) + " multiplier=" +
+                             model_input(point_value) + " roll_bar_move=" +
+                             model_input(*legs.front().roll_bar_move) + " roll_gap_points=" +
+                             model_input(*legs.front().roll_gap_points) + " roll_gap_value=" +
+                             model_input(*legs.front().roll_gap_value) +
+                             " (the gap is not P&L)");
+                    }
                     const size_t at = strategy_exec_counts_before.count(strategy_id)
                                           ? strategy_exec_counts_before.at(strategy_id)
                                           : 0;
@@ -2397,7 +2423,12 @@ Result<void> BacktestCoordinator::save_portfolio_results_to_db(
     // Migration 037: the statistics that are no plain double (a date, a symbol, the years
     // object, a count, a number that may have no value) travel as typed cells, at ten
     // significant digits.
-    results_manager->set_summary_cells(backtest_statistics_cells(results.statistics_columns));
+    auto summary_cells = backtest_statistics_cells(results.statistics_columns);
+    // Migration 040: the roll split's totals, named only with the switch on.
+    for (auto& cell : roll_split_summary_cells(results.roll_bar_moves, results.roll_gap_values)) {
+        summary_cells.push_back(std::move(cell));
+    }
+    results_manager->set_summary_cells(summary_cells);
 
     // Set portfolio-level equity curve
     std::vector<std::pair<Timestamp, double>> equity_points;
