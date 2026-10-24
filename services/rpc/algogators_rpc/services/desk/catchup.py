@@ -61,8 +61,10 @@ Monday, a holiday is skipped). Normally T is today, and today's model run is the
     bar within the engine's live.data_staleness_tolerance_days of T - 1 (the engine's own
     FEED_HOLE guard decides again inside the run; a refusal is an alert, nothing is built);
     failed, or a stale partial, is an alert and nothing is built; the per-contract row (rolls
-    step 4) is also held when it misses more roots than QT_CONTRACT_DATA_READY_MAX_MISSING (2),
-    and runs with an alert when it misses 1 or 2 within the tolerance
+    step 4, HD 2026-10-24 ruling 21) has its own rule: held only when more than
+    QT_CONTRACT_DATA_READY_MAX_MISSING (N, 2) roots have each had no contract bar for more than
+    QT_CONTRACT_DATA_READY_STALE_DAYS (X, the tolerance, 4) days, a failed pull included; otherwise
+    the run goes and every missing root is alerted (the engine carries it or reads the vendor's bar)
     when T is after today (data that reaches past today, e.g. Saturday's run after its 10:00
     fallback with Friday's or Sunday's bars in), the engine's day chain is every calendar day, so
     the days between today and T are built in order. On the desk portfolio (D-63, decision 6)
@@ -234,6 +236,10 @@ class DayStore(Protocol):
         """The newest futures_data.contract_ohlcv_1d bar date of each root (the per-contract
         row's missing names roots), from `since` on."""
 
+    def every_contract_root_last_bar(self, since: dt.date) -> Dict[str, dt.date]:
+        """The newest futures_data.contract_ohlcv_1d bar date of every root with a bar from
+        `since` on (the roots a per-contract row misses without naming them)."""
+
     def desk_edited(self, portfolio_id: str, date: dt.date) -> bool:
         """The desk saved the day (a done save, or an approved override): what the engine's
         qt::desk_edit_done reads to keep qt_proposal and qt on a model re-run."""
@@ -389,6 +395,13 @@ class PostgresDayStore:
             cur.execute("SELECT root, max(date) FROM futures_data.contract_ohlcv_1d "
                         "WHERE root = ANY(%s) AND date >= %s GROUP BY root",
                         (list(roots), since))
+            return {root: d for root, d in cur.fetchall() if d is not None}
+        return self._run(q)
+
+    def every_contract_root_last_bar(self, since):
+        def q(cur):
+            cur.execute("SELECT root, max(date) FROM futures_data.contract_ohlcv_1d "
+                        "WHERE date >= %s GROUP BY root", (since,))
             return {root: d for root, d in cur.fetchall() if d is not None}
         return self._run(q)
 
@@ -980,7 +993,10 @@ class CatchupScheduler:
         guards make, done here first so a stale feed builds nothing. The engine still decides
         inside the run; its refusal is an alert like any refused run."""
         parts = ready.parts or (ready,)
+        contract_part = next((p for p in parts if p.dataset == CONTRACT_DATA_READY_DATASET), None)
         for part in parts:
+            if part is contract_part and part.status in ("complete", "partial", "failed"):
+                continue  # judged below by its own rule (ruling 21), a failed pull included
             if part.status == "failed":
                 return Step(ALERT, target, "data_failed",
                             f"data-ngin's {part.dataset} pull for {part.bar_date} failed (run "
@@ -990,29 +1006,14 @@ class CatchupScheduler:
                 return Step(ALERT, target, "data_failed",
                             f"ops.data_ready {part.dataset} {part.bar_date} has status "
                             f"{part.status!r}: the books of {target} are not built"), {}
-            if part.dataset == CONTRACT_DATA_READY_DATASET:
-                # Rolls step 4 (HD on R4A's open question 3): more missing roots than the setting is
-                # a failed per-contract pull ("partial, 0 of 36"): held, as a late row is.
-                limit = self._catchup.contract_data_ready_max_missing
-                missing_n = max(len(part.missing), part.expected - part.loaded)
-                if missing_n > limit:
-                    return Step(ALERT, target, "data_stale",
-                                f"{part.dataset} {part.bar_date} is {part.status} ({part.loaded} of "
-                                f"{part.expected}): {missing_n} root(s) missing, more than "
-                                f"QT_CONTRACT_DATA_READY_MAX_MISSING={limit}, so the per-contract "
-                                f"pull counts as failed. The books of {target} are not built"), {}
         tolerance = staleness_tolerance_days(self._settings.config_dir, info.dir)
         as_of = target - dt.timedelta(days=1)
         last_all: Dict[str, dt.date] = {}
         for part in parts:
-            contract = part.dataset == CONTRACT_DATA_READY_DATASET
-            if not part.missing and not (contract and part.expected > part.loaded):
+            if part is contract_part or not part.missing:
                 continue
-            # The per-contract row names roots: their last contract bar (rolls step 4).
-            lookup = (self._store.last_contract_bar_dates
-                      if part.dataset == CONTRACT_DATA_READY_DATASET else self._store.last_bar_dates)
-            last = lookup(part.missing,
-                          part.bar_date - dt.timedelta(days=MISSING_LOOKBACK_DAYS))
+            last = self._store.last_bar_dates(part.missing,
+                                              part.bar_date - dt.timedelta(days=MISSING_LOOKBACK_DAYS))
             stale = [f"{sym} (last bar {last.get(sym) or 'none'})" for sym in part.missing
                      if last.get(sym) is None or (as_of - last[sym]).days > tolerance]
             if stale:
@@ -1022,15 +1023,61 @@ class CatchupScheduler:
                             f"live.data_staleness_tolerance_days={tolerance} as of {as_of}: "
                             f"{', '.join(stale)}. The books of {target} are not built"), {}
             last_all.update(last)
-            if contract:
-                # Up to the setting, within the tolerance: the run goes, with an alert. The engine
-                # reads those roots' vendor bar (or carries their close) with a WARN in its log.
-                self.alerter.alert(info.dir, info.portfolio_id, target, "contract_data_partial",
-                                   f"{part.dataset} {part.bar_date} is {part.status} ({part.loaded} "
-                                   f"of {part.expected}); missing: {', '.join(part.missing) or 'not named'}. The "
-                                   f"books of {target} are built: the run reads those roots' vendor "
-                                   "bar, or carries their last close, with a WARN in its log")
+        if contract_part is not None:
+            held = self._contract_verdict(info, contract_part, target, as_of, tolerance, last_all)
+            if held is not None:
+                return held, {}
         return None, last_all
+
+    def _contract_verdict(self, info: PortfolioInfo, part: DataReady, target: dt.date,
+                          as_of: dt.date, tolerance: int,
+                          last_all: Dict[str, dt.date]) -> Optional[Step]:
+        """The per-contract row's rule (rolls step 4; HD 2026-10-24, plan 11c ruling 21, an AND
+        condition): the run is held, with the data_stale alert, only when MORE than
+        QT_CONTRACT_DATA_READY_MAX_MISSING (N, 2) roots have EACH had no contract bar for more than
+        QT_CONTRACT_DATA_READY_STALE_DAYS (X; unset, the portfolio's
+        live.data_staleness_tolerance_days, 4) days as of the run's last bar date. Otherwise the run
+        goes, and every missing root is alerted once (contract_data_partial): the engine prices it by
+        its rule (the vendor's bar of the held contract, else the held contract's last close carried),
+        with a WARN. The missing roots are the row's names; when it names fewer than it misses
+        (expected - loaded, a failed pull every root), every root whose newest contract bar is before
+        the row's bar date, and a missing root the table cannot name counts as stale."""
+        named = list(part.missing)
+        missing_n = part.expected if part.status == "failed" else part.expected - part.loaded
+        unnamed = max(missing_n - len(named), 0)
+        if not named and unnamed == 0:
+            return None
+        since = part.bar_date - dt.timedelta(days=MISSING_LOOKBACK_DAYS)
+        if unnamed > 0:
+            found = sorted(r for r, d in self._store.every_contract_root_last_bar(since).items()
+                           if d < part.bar_date and r not in named)[:unnamed]
+            named += found
+            unnamed -= len(found)
+        last = self._store.last_contract_bar_dates(named, since) if named else {}
+        stale_days = self._catchup.contract_data_ready_stale_days
+        if stale_days is None:
+            stale_days = tolerance
+        limit = self._catchup.contract_data_ready_max_missing
+        described = [f"{r} (last bar {last.get(r) or 'none'})" for r in named]
+        stale = [d for r, d in zip(named, described)
+                 if last.get(r) is None or (as_of - last[r]).days > stale_days]
+        if unnamed > 0:
+            described.append(f"{unnamed} root(s) not named, with no contract bar in the table")
+            stale.append(described[-1])
+        stale_n = len(stale) - (1 if unnamed > 0 else 0) + unnamed
+        if stale_n > limit:
+            return Step(ALERT, target, "data_stale",
+                        f"{part.dataset} {part.bar_date} is {part.status} ({part.loaded} of "
+                        f"{part.expected}); {stale_n} root(s) have had no contract bar for more than "
+                        f"{stale_days} day(s) as of {as_of}, more than QT_CONTRACT_DATA_READY_MAX_MISSING="
+                        f"{limit}: {', '.join(stale)}. The books of {target} are not built")
+        last_all.update(last)
+        self.alerter.alert(info.dir, info.portfolio_id, target, "contract_data_partial",
+                           f"{part.dataset} {part.bar_date} is {part.status} ({part.loaded} of "
+                           f"{part.expected}); missing: {', '.join(described)}. The books of {target} "
+                           "are built: the run reads those roots' vendor bar, or carries their last "
+                           "close, with a WARN in its log")
+        return None
 
     def _morning_gate(self, info: PortfolioInfo, today: dt.date) -> Optional[Step]:
         """None when today's model run may go: data for the previous trading day is ready and
