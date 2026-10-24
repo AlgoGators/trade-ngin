@@ -1,5 +1,7 @@
 # Phase 3 — Unit Test Coverage Report and Forward Plan
 
+For the current unit-testing process and weekly hand-off rules, see [issue #123](https://github.com/AlgoGators/trade-ngin/issues/123).
+
 Branch: `main`
 Last commit at time of writing: `4fb01c4` (`docs(unit_testing): Phase 3 wrap-up report — coverage numbers, per-file status, FIXMEs, forward plan`)
 
