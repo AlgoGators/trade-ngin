@@ -90,8 +90,8 @@ TEST(ReportRolls, TheRollLineWordsAShortABackwardatedGapAndUnknownNames) {
     no_split.roll_gap_value.reset();
     EXPECT_EQ(report_roll_line(ReportRollNames{"Micro E-Mini Russell-2000 Index", "September", "December", 1},
                                "M2K.v.0", no_split, 5.88),
-              "Micro E-Mini Russell-2000 Index, September to December: roll cost $5.88 (market move and contract "
-              "price difference shown once the full-size contracts are loaded).");
+              "Micro E-Mini Russell-2000 Index, September to December: roll cost $5.88 (the market move and the "
+              "price difference between the two contracts are not shown for this contract yet).");
 }
 
 TEST(ReportRolls, TheRolloverWarningIsTheOldBoxWithTheRunDateAndTheDeadline) {
@@ -126,8 +126,8 @@ TEST(ReportRolls, TheRolloverWarningIsTheOldBoxWithTheRunDateAndTheDeadline) {
         << box;
     EXPECT_LT(box.find("6L:"), box.find("SI:")) << "root order";
     EXPECT_EQ(box.find("GCZ5"), std::string::npos) << "outside its window";
-    EXPECT_NE(box.find("<li><strong>MES:</strong> Currently holding <strong>MESZ5</strong>, rolls with the vendor's "
-                       "series, last trading day 12-19</li>"),
+    EXPECT_NE(box.find("<li><strong>MES:</strong> Currently holding <strong>MESZ5</strong>, moves to the next "
+                       "contract when trading does, before the contract ends on 12-19</li>"),
               std::string::npos)
         << box;
     EXPECT_NE(box.find("<li><strong>JPY:</strong> Currently holding <strong>JPYZ5</strong> \xE2\x86\x92 Switch to "
@@ -344,8 +344,9 @@ TEST(ReportRolls, TheViewNamesTheContractTheBookHolds) {
     EXPECT_FALSE(o.rule_rolls);
     EXPECT_EQ(o.deadline, "2026-09-18");
     EXPECT_TRUE(o.in_window) << "five CME trading days before 09-18 is 09-11";
-    EXPECT_NE(report_rollover_warning_html(view).find("M2K:</strong> Currently holding <strong>M2KU6</strong>, rolls "
-                                                      "with the vendor's series, last trading day 09-18"),
+    EXPECT_NE(report_rollover_warning_html(view).find("M2K:</strong> Currently holding <strong>M2KU6</strong>, moves "
+                                                      "to the next contract when trading does, before the "
+                                                      "contract ends on 09-18"),
               std::string::npos);
     // Without the book's id the vendor's contract is the fallback.
     q.held_ids.clear();

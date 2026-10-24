@@ -156,9 +156,11 @@ inline std::string report_roll_line(const ReportRollNames& names, const std::str
         text += ", " + names.from_month + " to " + names.to_month;
     if (!closing.roll_bar_move || !closing.roll_gap_points || !closing.roll_gap_value) {
         // A roll of the vendor's series (the micros until their full-size contracts are loaded): no two
-        // closes on one bar, so no move or difference to show (lead, R4b fix round 1).
+        // closes on one bar, so no move or difference to show (lead, R4b fix round 1); plain words for the
+        // reader (R4b audit B recheck R-1).
         return text + ": roll cost " + report_cents(roll_cost) +
-               " (market move and contract price difference shown once the full-size contracts are loaded).";
+               " (the market move and the price difference between the two contracts are not shown for this "
+               "contract yet).";
     }
     // The difference is not profit or loss: printed without a sign (lead, R4b fix round 1); stored signed.
     char points[64];
@@ -198,10 +200,11 @@ inline std::string report_rollover_warning_html(const ReportRolls& rolls) {
     for (const auto* o : due) {
         const std::string label = o->label.empty() ? o->root : o->label;
         if (!o->rule_rolls) {
-            // The micros: they roll when the vendor's series does; the line names the last trading day.
+            // The micros: they roll when the vendor's series does; the line names the last trading day, in
+            // plain words for the reader (R4b audit B recheck R-1).
             html += "<li><strong>" + label + ":</strong> Currently holding <strong>" + o->held +
-                    "</strong>, rolls with the vendor's series, last trading day " + report_month_day(o->deadline) +
-                    "</li>\n";
+                    "</strong>, moves to the next contract when trading does, before the contract ends on " +
+                    report_month_day(o->deadline) + "</li>\n";
             continue;
         }
         html += "<li><strong>" + label + ":</strong> Currently holding <strong>" + o->held +
