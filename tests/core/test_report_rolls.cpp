@@ -387,15 +387,21 @@ TEST(ReportRolls, ARuledRootPendingItsLegsShowsTheOldContractAndNoLine) {
     src.contracts_around = [&](const std::string&, Day) -> Result<ContractBook> { return *book; };
     src.vendor_grid = [](const std::string&, Day, Day) { return std::vector<VendorBar>{}; };
     src.calendar = [](const std::string& root) { return contract_rolls_test::shipped_calendars().for_root(root); };
-    src.names = [] { return std::map<std::string, ReportContractName>{}; };
+    src.names = [] { return std::map<std::string, ReportContractName>{{"GC", {"Gold", "XGC"}}}; };
     ReportRollQuery q;
     q.date = "2026-07-24";
     q.held_symbols = {"GC.v.0"};
     q.held_ids = {{"GC.v.0", "q"}};  // the book's and the rule's contract agree
-    EXPECT_TRUE(report_roll_view(q, src, {}).outlook.at("GC").in_window);
+    const auto agree = report_roll_view(q, src, {}).outlook.at("GC");
+    EXPECT_TRUE(agree.in_window);
+    // S6: an IB symbol other than the Databento one labels the line and prints the contracts.
+    EXPECT_EQ(agree.label, "XGC");
+    EXPECT_EQ(agree.held, "XGCQ6");
+    EXPECT_EQ(agree.held_symbol, "GCQ6");
+    EXPECT_EQ(agree.target, "XGCZ6");
     q.held_ids = {{"GC.v.0", "z"}};  // stands in for a book that differs from the rule's contract
     const auto o = report_roll_view(q, src, {}).outlook.at("GC");
-    EXPECT_EQ(o.held, "GCZ6");
+    EXPECT_EQ(o.held, "XGCZ6");
     EXPECT_FALSE(o.in_window) << "no line while the book and the rule differ";
 }
 
