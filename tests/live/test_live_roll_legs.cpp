@@ -507,6 +507,7 @@ TEST(LiveRollLegsPerContract, AKnownRollIsLeggedByTheRunWhoseT1ItIsAtItsTwoClose
     EXPECT_EQ(r18.rolls[0].incoming_id, "NEW");
     EXPECT_NEAR(r18.rolls[0].closing_price, 333.00, 1e-9) << "the old contract's close on the roll bar";
     EXPECT_NEAR(r18.rolls[0].opening_price, 321.10, 1e-9);
+    EXPECT_TRUE(r18.rolls[0].known_on_bar) << "the log names the trigger (R4A fix round 1)";
     EXPECT_NEAR(r18.pnl, 100.0 * (333.00 - 332.20), 1e-9) << "the old contract's own move (today: 0)";
     EXPECT_EQ(r18.stored_after, "NEW");
     const LegRun r21 = run_on(all, {}, "2026-04-21", r18.stored_after);
@@ -524,6 +525,7 @@ TEST(LiveRollLegsPerContract, AVendorSwitchIsLeggedByTheRunWhoseT1ConfirmsIt) {
     ASSERT_EQ(r21.rolls.size(), 1u);
     EXPECT_EQ(r21.rolls[0].confirm_date, "2026-04-20");
     EXPECT_NEAR(r21.rolls[0].closing_price, 333.00, 1e-9) << "priced at the switch bar's two closes";
+    EXPECT_FALSE(r21.rolls[0].known_on_bar) << "the next consumed bar confirmed it";
     EXPECT_NEAR(r21.rolls[0].opening_price, 321.10, 1e-9);
     EXPECT_NEAR(r21.pnl, 100.0 * (322.00 - 321.10), 1e-9);
     EXPECT_EQ(r21.stored_after, "NEW");

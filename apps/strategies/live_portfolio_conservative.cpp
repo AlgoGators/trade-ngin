@@ -2269,7 +2269,9 @@ int main(int argc, char* argv[]) {
                  "->" + r.incoming_id + " closing_px=" + std::to_string(r.closing_price) +
                  " opening_px=" + std::to_string(r.opening_price) +
                  " change_bars=" + std::to_string(r.change_bars) +
-                 ": the next consumed bar kept the new id; the legs are booked on this run");
+                 (r.known_on_bar ? ": a per-contract roll known on its bar"
+                                 : ": the next consumed bar kept the new id") +
+                 "; the legs are booked on this run");
         }
 
         // ========================================
