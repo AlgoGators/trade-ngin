@@ -4,11 +4,21 @@
 #include <chrono>
 #include <string>
 
+#ifdef _WIN32
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#else
 #include <fcntl.h>
 #include <poll.h>
 #include <signal.h>
 #include <sys/wait.h>
 #include <unistd.h>
+#endif
 
 namespace trade_ngin {
 namespace core {
@@ -30,6 +40,80 @@ struct TimedProcessResult {
     std::string output;   ///< what the child wrote to stdout (and stderr when the command joins them)
 };
 
+#ifdef _WIN32
+// Windows: the command runs under cmd.exe in a job object, so a command that outlives the limit is
+// killed with everything it started. `status` is the exit code of a child that finished.
+inline TimedProcessResult run_with_timeout(const std::string& command,
+                                           std::chrono::milliseconds timeout) {
+    TimedProcessResult result;
+    SECURITY_ATTRIBUTES sa{sizeof(SECURITY_ATTRIBUTES), nullptr, TRUE};
+    HANDLE read_end = nullptr;
+    HANDLE write_end = nullptr;
+    if (!CreatePipe(&read_end, &write_end, &sa, 0)) return result;
+    SetHandleInformation(read_end, HANDLE_FLAG_INHERIT, 0);
+
+    STARTUPINFOA si{};
+    si.cb = sizeof(si);
+    si.dwFlags = STARTF_USESTDHANDLES;
+    si.hStdOutput = write_end;
+    si.hStdError = write_end;
+    si.hStdInput = GetStdHandle(STD_INPUT_HANDLE);
+    PROCESS_INFORMATION pi{};
+    std::string line = "cmd.exe /c " + command;
+    if (!CreateProcessA(nullptr, line.data(), nullptr, nullptr, TRUE, CREATE_SUSPENDED, nullptr,
+                        nullptr, &si, &pi)) {
+        CloseHandle(read_end);
+        CloseHandle(write_end);
+        return result;
+    }
+    HANDLE job = CreateJobObjectA(nullptr, nullptr);
+    if (job != nullptr) AssignProcessToJobObject(job, pi.hProcess);
+    ResumeThread(pi.hThread);
+    CloseHandle(pi.hThread);
+    CloseHandle(write_end);
+    result.started = true;
+
+    const auto deadline = std::chrono::steady_clock::now() + timeout;
+    char buffer[256];
+    bool finished = false;
+    while (std::chrono::steady_clock::now() < deadline) {
+        DWORD available = 0;
+        if (PeekNamedPipe(read_end, nullptr, 0, nullptr, &available, nullptr) && available > 0) {
+            DWORD got = 0;
+            if (ReadFile(read_end, buffer, sizeof(buffer), &got, nullptr) && got > 0) {
+                result.output.append(buffer, static_cast<std::size_t>(got));
+            }
+            continue;
+        }
+        if (WaitForSingleObject(pi.hProcess, 10) == WAIT_OBJECT_0) {
+            finished = true;
+            break;
+        }
+    }
+    if (finished) {
+        DWORD available = 0;
+        while (PeekNamedPipe(read_end, nullptr, 0, nullptr, &available, nullptr) && available > 0) {
+            DWORD got = 0;
+            if (!ReadFile(read_end, buffer, sizeof(buffer), &got, nullptr) || got == 0) break;
+            result.output.append(buffer, static_cast<std::size_t>(got));
+        }
+        DWORD code = 0;
+        GetExitCodeProcess(pi.hProcess, &code);
+        result.status = static_cast<int>(code);
+    } else {
+        result.timed_out = true;
+        if (job != nullptr) {
+            TerminateJobObject(job, 1);
+        } else {
+            TerminateProcess(pi.hProcess, 1);
+        }
+    }
+    if (job != nullptr) CloseHandle(job);
+    CloseHandle(pi.hProcess);
+    CloseHandle(read_end);
+    return result;
+}
+#else
 inline TimedProcessResult run_with_timeout(const std::string& command,
                                            std::chrono::milliseconds timeout) {
     TimedProcessResult result;
@@ -97,6 +181,7 @@ inline TimedProcessResult run_with_timeout(const std::string& command,
     close(fds[0]);
     return result;
 }
+#endif  // _WIN32
 
 }  // namespace core
 }  // namespace trade_ngin
