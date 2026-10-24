@@ -2,6 +2,7 @@
 #pragma once
 
 #include <functional>
+#include <map>
 #include <string>
 #include <vector>
 
@@ -44,6 +45,23 @@ struct ReportRollQuery {
     };
     std::vector<Roll> rolls;
 };
+
+/// Where report_roll_view reads from (the database, or a test's fixtures). Each may throw; a root or a
+/// roll whose read throws gets no outlook or no months, with a WARN.
+struct ReportRollSources {
+    /// The rule's series of `root` from its series start to `date` (warnings not logged).
+    std::function<Result<ContractRollSeries>(const std::string& root, Day date)> series;
+    /// The vendor's grid of `root`'s continuous series over [from, to].
+    std::function<std::vector<VendorBar>(const std::string& root, Day from, Day to)> vendor_grid;
+    /// The contracts of `root` with bars in the year before `day`.
+    std::function<Result<ContractBook>(const std::string& root, Day day)> contracts_around;
+    /// The contract metadata's names by Databento symbol.
+    std::function<std::map<std::string, std::string>()> names;
+};
+
+/// The view from `sources` (pure; the database version below builds the sources).
+ReportRolls report_roll_view(const ReportRollQuery& query, const ReportRollSources& sources,
+                             const std::function<double(const std::string&)>& tick_of);
 
 ReportRolls report_roll_view(pqxx::transaction_base& txn, const ReportRollQuery& query,
                              const FuturesCalendar& calendars,

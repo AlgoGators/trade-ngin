@@ -51,8 +51,7 @@ Result<ReportRollOutlook> report_outlook_of(const ContractRollSeries& series, co
     return out;
 }
 
-ReportRolls report_roll_view(pqxx::transaction_base& txn, const ReportRollQuery& query,
-                             const FuturesCalendar& calendars,
+ReportRolls report_roll_view(const ReportRollQuery& query, const ReportRollSources& sources,
                              const std::function<double(const std::string&)>& tick_of) {
     ReportRolls out;
     out.per_contract_rolls = true;
@@ -74,8 +73,8 @@ ReportRolls report_roll_view(pqxx::transaction_base& txn, const ReportRollQuery&
         try {
             if (reads_vendor_series(root)) {
                 // The micros: the vendor's contract on its latest grid bar, no window.
-                const auto grid = read_vendor_grid(txn, root + ".v.0", date - std::chrono::days{14}, date);
-                auto book = book_around(txn, root, date);
+                const auto grid = sources.vendor_grid(root, date - std::chrono::days{14}, date);
+                auto book = sources.contracts_around(root, date);
                 ReportRollOutlook o;
                 o.root = root;
                 o.cycle = cycle.value();
@@ -86,12 +85,7 @@ ReportRolls report_roll_view(pqxx::transaction_base& txn, const ReportRollQuery&
                 out.outlook[root] = o;
                 continue;
             }
-            auto start = series_start(txn, root);
-            if (start.is_error()) {
-                WARN("report_roll_view " + root + ": " + start.error()->what() + "; no outlook");
-                continue;
-            }
-            auto series = build_held_series(txn, root, start.value(), date, calendars, date + std::chrono::days{1});
+            auto series = sources.series(root, date);
             if (series.is_error()) {
                 WARN("report_roll_view " + root + ": " + series.error()->what() + "; no outlook");
                 continue;
@@ -109,9 +103,7 @@ ReportRolls report_roll_view(pqxx::transaction_base& txn, const ReportRollQuery&
     if (query.rolls.empty()) return out;
     std::map<std::string, std::string> names;
     try {
-        for (const auto& row : txn.exec("SELECT \"Databento Symbol\", \"Name\" FROM metadata.contract_metadata")) {
-            if (!row[0].is_null() && !row[1].is_null()) names[row[0].as<std::string>()] = trimmed(row[1].as<std::string>());
-        }
+        for (const auto& [symbol, name] : sources.names()) names[symbol] = trimmed(name);
     } catch (const std::exception& e) {
         WARN(std::string("report_roll_view: the contract names could not be read (") + e.what() +
              "): the roll lines name the symbol");
@@ -127,7 +119,7 @@ ReportRolls report_roll_view(pqxx::transaction_base& txn, const ReportRollQuery&
             const Day day = parse_ymd(roll.date);
             auto& book = books[root + "|" + roll.date];
             if (!book) {
-                auto built = book_around(txn, root, day);
+                auto built = sources.contracts_around(root, day);
                 if (built.is_ok()) book = std::make_shared<ContractBook>(built.value());
             }
             if (book) {
@@ -142,6 +134,31 @@ ReportRolls report_roll_view(pqxx::transaction_base& txn, const ReportRollQuery&
         out.names[roll.closing_exec_id] = n;
     }
     return out;
+}
+
+ReportRolls report_roll_view(pqxx::transaction_base& txn, const ReportRollQuery& query,
+                             const FuturesCalendar& calendars,
+                             const std::function<double(const std::string&)>& tick_of) {
+    ReportRollSources sources;
+    sources.series = [&](const std::string& root, Day date) -> Result<ContractRollSeries> {
+        auto start = series_start(txn, root);
+        if (start.is_error()) {
+            return make_error<ContractRollSeries>(start.error()->code(), start.error()->what(), "report_roll_view");
+        }
+        return build_held_series(txn, root, start.value(), date, calendars, date + std::chrono::days{1});
+    };
+    sources.vendor_grid = [&](const std::string& root, Day from, Day to) {
+        return read_vendor_grid(txn, root + ".v.0", from, to);
+    };
+    sources.contracts_around = [&](const std::string& root, Day day) { return book_around(txn, root, day); };
+    sources.names = [&]() {
+        std::map<std::string, std::string> names;
+        for (const auto& row : txn.exec("SELECT \"Databento Symbol\", \"Name\" FROM metadata.contract_metadata")) {
+            if (!row[0].is_null() && !row[1].is_null()) names[row[0].as<std::string>()] = row[1].as<std::string>();
+        }
+        return names;
+    };
+    return report_roll_view(query, sources, tick_of);
 }
 
 }  // namespace trade_ngin::contract_rolls

@@ -178,3 +178,93 @@ TEST(ReportRolls, TheSymbolsReferenceCellsTheMonthsAndTheTicks) {
     EXPECT_EQ(report_cents(45.2916), "$45.29");
     EXPECT_EQ(report_cents(-1234.5), "-$1,234.50");
 }
+
+// The view from its sources, no database (report_roll_view's pure core): a root the rule rolls gets its
+// outlook from its series; a micro the vendor's contract on its latest grid bar and no window; a root with
+// no cycle, a series that fails and a read that throws get no outlook; each roll's months come from its two
+// contracts by id, the name is the metadata's trimmed, the decimals the tick's; a roll whose contracts
+// cannot be read names no months; names that cannot be read leave the symbol; a settled day that is not a
+// date gives an empty view, still marked as the switch on.
+TEST(ReportRolls, TheViewIsBuiltFromItsSources) {
+    std::vector<ContractBar> rows;
+    std::vector<VendorBar> grid;
+    for (const char* dt : {"2026-07-22", "2026-07-23", "2026-07-24", "2026-07-27"}) {
+        rows.push_back(contract_rolls_test::bar("GC", "GCQ6", "q", dt, "2026-08-27", 3300, 80000));
+        rows.push_back(contract_rolls_test::bar("GC", "GCZ6", "z", dt, "2026-12-29", 3350, 9000));
+        VendorBar v;
+        v.date = d(dt);
+        v.symbol = "GC.v.0";
+        v.instrument_id = "q";
+        grid.push_back(v);
+    }
+    auto book = std::make_shared<ContractBook>(ContractBook::build(rows).value());
+    const TradingCalendar cal = contract_rolls_test::shipped_calendar();
+    RuleInputs in;
+    in.root = "GC";
+    in.grid = grid;
+    in.book = book.get();
+    in.cal = &cal;
+    in.cycle = "GJMQZ";
+    const ContractRollSeries series(apply_roll_rule(in).value(), book, "GJMQZ", std::nullopt, cal);
+    const auto micro_book = ContractBook::build(
+        {contract_rolls_test::bar("MES", "MESU6", "m1", "2026-07-24", "2026-09-18", 6400, 100)}).value();
+
+    ReportRollSources src;
+    src.series = [&](const std::string& root, Day) -> Result<ContractRollSeries> {
+        if (root == "GC") return series;
+        return make_error<ContractRollSeries>(ErrorCode::DATA_NOT_FOUND, "no contract bars", "test");
+    };
+    src.vendor_grid = [&](const std::string& root, Day, Day) {
+        VendorBar v;
+        v.date = d("2026-07-24");
+        v.symbol = root + ".v.0";
+        v.instrument_id = "m1";
+        return std::vector<VendorBar>{v};
+    };
+    src.contracts_around = [&](const std::string& root, Day) -> Result<ContractBook> {
+        if (root == "GC") return *book;
+        if (root == "MES") return micro_book;
+        throw std::runtime_error("unreadable");
+    };
+    src.names = [] { return std::map<std::string, std::string>{{"GC", "Gold "}}; };
+
+    ReportRollQuery q;
+    q.date = "2026-07-24";
+    q.held_symbols = {"GC.v.0", "MES.v.0", "ZN.v.0", "XX.v.0"};
+    q.rolls = {{"EXEC_GC.v.0_20260727_RC", "GC.v.0", "q", "z", "2026-07-27"},
+               {"EXEC_ZN.v.0_20260727_RC", "ZN.v.0", "a", "b", "2026-07-27"}};
+    const auto view = report_roll_view(q, src, [](const std::string& s) { return s == "GC.v.0" ? 0.1 : 0.0; });
+    EXPECT_TRUE(view.per_contract_rolls);
+    ASSERT_EQ(view.outlook.count("GC"), 1u);
+    EXPECT_EQ(view.outlook.at("GC").held, "GCQ6");
+    EXPECT_TRUE(view.outlook.at("GC").in_window);
+    EXPECT_EQ(view.outlook.at("GC").roll_by, "2026-07-30");
+    ASSERT_EQ(view.outlook.count("MES"), 1u);
+    EXPECT_EQ(view.outlook.at("MES").held, "MESU6");
+    EXPECT_FALSE(view.outlook.at("MES").rule_rolls);
+    EXPECT_EQ(view.outlook.at("MES").cycle, "HMUZ");
+    EXPECT_EQ(view.outlook.count("ZN"), 0u) << "its series failed";
+    EXPECT_EQ(view.outlook.count("XX"), 0u) << "no cycle";
+    const auto& gc = view.names.at("EXEC_GC.v.0_20260727_RC");
+    EXPECT_EQ(gc.name, "Gold");
+    EXPECT_EQ(gc.from_month, "August");
+    EXPECT_EQ(gc.to_month, "December");
+    EXPECT_EQ(gc.gap_places, 1);
+    const auto& zn = view.names.at("EXEC_ZN.v.0_20260727_RC");
+    EXPECT_EQ(zn.name, "");
+    EXPECT_EQ(zn.from_month, "") << "its contracts could not be read";
+    EXPECT_EQ(zn.gap_places, 4);
+
+    ReportRollSources broken = src;
+    broken.names = []() -> std::map<std::string, std::string> { throw std::runtime_error("no metadata"); };
+    EXPECT_EQ(report_roll_view(q, broken, {}).names.at("EXEC_GC.v.0_20260727_RC").name, "");
+    ReportRollQuery none = q;
+    none.rolls.clear();
+    EXPECT_TRUE(report_roll_view(none, src, {}).names.empty());
+    ReportRollQuery bad = q;
+    bad.date = "24 July";
+    const auto empty = report_roll_view(bad, src, {});
+    EXPECT_TRUE(empty.per_contract_rolls);
+    EXPECT_TRUE(empty.outlook.empty());
+    EXPECT_TRUE(empty.names.empty());
+}

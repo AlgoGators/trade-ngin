@@ -1,6 +1,7 @@
 // src/data/postgres_database.cpp
 
 #include "trade_ngin/data/postgres_database.hpp"
+#include "trade_ngin/data/roll_split_sql.hpp"
 #include "trade_ngin/data/day_execution_replace.hpp"
 #include <algorithm>
 #include <optional>
@@ -389,18 +390,18 @@ Result<void> PostgresDatabase::insert_executions_in(pqxx::work& txn,
         // The 4 cost breakdown fields and the K3 netting adjustment (migration 013). Migration
         // 040: a row carrying a roll split (a per-contract roll's closing leg) names its three
         // columns; every other row is the statement before 040.
-        const bool split = exec.roll_bar_move.has_value();
+        const bool split = roll_split_sql::has_split(exec);
         std::string query = "INSERT INTO " + table_name +
                             " (exec_id, order_id, symbol, side, quantity, price, "
                             "execution_time, commissions_fees, implicit_price_impact, "
                             "slippage_market_impact, total_transaction_costs, is_partial, "
                             "strategy_id, strategy_name, date, portfolio_id, "
                             "netting_adjustment, execution_type, instrument_id, portfolio_type" +
-                            std::string(split ? ", roll_bar_move, roll_gap_points, roll_gap_value" : "") +
+                            roll_split_sql::columns(split) +
                             ") "
                             "VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, "
                             "$15, $16, $17, $18, $19, $20" +
-                            std::string(split ? ", $21, $22, $23" : "") + ")";
+                            roll_split_sql::placeholders(split, 21) + ")";
 
         std::cout << "DEBUG: About to execute SQL query" << std::endl;
         std::cout << "DEBUG: Query: " << query << std::endl;
@@ -424,11 +425,7 @@ Result<void> PostgresDatabase::insert_executions_in(pqxx::work& txn,
             exec.instrument_id.empty() ? std::optional<std::string>{}
                                        : std::optional<std::string>{exec.instrument_id},  // $19
             book};  // $20 - the book (migration 021)
-        if (split) {
-            params.append(exec.roll_bar_move);    // $21 - migration 040
-            params.append(exec.roll_gap_points);  // $22
-            params.append(exec.roll_gap_value);   // $23
-        }
+        if (split) roll_split_sql::append(params, exec);  // $21 to $23 - migration 040
         txn.exec(query, params);
 
         std::cout << "DEBUG: SQL executed successfully for " << exec.symbol << std::endl;
@@ -2564,9 +2561,8 @@ Result<void> PostgresDatabase::store_backtest_executions_with_strategy(
         // Migration 040: a run that carries a roll split (per_contract_rolls on, a roll legged)
         // names its three columns on every row (NULL on all but the closing legs); any other run's
         // statements are the ones before 040.
-        const bool split = std::any_of(executions.begin(), executions.end(),
-                                       [](const ExecutionReport& e) { return e.roll_bar_move.has_value(); });
-        const std::string split_columns = split ? ", roll_bar_move, roll_gap_points, roll_gap_value" : "";
+        const bool split = roll_split_sql::any_split(executions);
+        const std::string split_columns = roll_split_sql::columns(split);
 
         // Use batch insert for better performance with large execution sets
         if (executions.size() > 100) {
@@ -2617,11 +2613,7 @@ Result<void> PostgresDatabase::store_backtest_executions_with_strategy(
                     batch.append(std::string(to_string(exec.execution_type)));  // 015 (T-ROLLX)
                     batch.append(exec.instrument_id.empty() ? std::optional<std::string>{}
                                                             : std::optional<std::string>{exec.instrument_id});
-                    if (split) {
-                        batch.append(exec.roll_bar_move);  // 040
-                        batch.append(exec.roll_gap_points);
-                        batch.append(exec.roll_gap_value);
-                    }
+                    if (split) roll_split_sql::append(batch, exec);  // 040
                 }
                 txn.exec(query, batch);
             }
@@ -2635,7 +2627,7 @@ Result<void> PostgresDatabase::store_backtest_executions_with_strategy(
                     "slippage_market_impact, total_transaction_costs, is_partial, "
                     "netting_adjustment, execution_type, instrument_id" + split_columns + ") "
                     "VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, "
-                    "$16, $17, $18" + std::string(split ? ", $19, $20, $21" : "") + ")";
+                    "$16, $17, $18" + roll_split_sql::placeholders(split, 19) + ")";
 
                 pqxx::params params{
                     run_id, actual_portfolio_id, strategy_id, exec.exec_id, exec.order_id,
@@ -2649,11 +2641,7 @@ Result<void> PostgresDatabase::store_backtest_executions_with_strategy(
                     std::string(to_string(exec.execution_type)),  // 015 (T-ROLLX)
                     exec.instrument_id.empty() ? std::optional<std::string>{}
                                                : std::optional<std::string>{exec.instrument_id}};
-                if (split) {
-                    params.append(exec.roll_bar_move);  // 040
-                    params.append(exec.roll_gap_points);
-                    params.append(exec.roll_gap_value);
-                }
+                if (split) roll_split_sql::append(params, exec);  // 040
                 txn.exec(query, params);
             }
         }

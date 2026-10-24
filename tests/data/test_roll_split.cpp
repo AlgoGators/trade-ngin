@@ -22,6 +22,7 @@
 #include "trade_ngin/backtest/backtest_statistics_columns.hpp"
 #include "trade_ngin/core/time_utils.hpp"
 #include "trade_ngin/data/roll_series.hpp"
+#include "trade_ngin/data/roll_split_sql.hpp"
 #include "trade_ngin/live/live_roll_legs.hpp"
 #include "trade_ngin/live/session_book_gate.hpp"
 
@@ -260,4 +261,26 @@ TEST(RollSplit, TheSettlementNamesThePerContractRollBarsForTheFootnote) {
     const auto late = consumed_t1_settlement(consumed, "2025-11-25", roll_status_of(consumed), {}, {}, {},
                                              {{"SI.v.0", LateRollSettlement{51.630, 49.660, "2025-11-21"}}});
     EXPECT_TRUE(late.per_contract_roll_symbols.empty());
+}
+
+// The writers' statements (roll_split_sql.hpp): with no split in the call they name none of 040's columns
+// (the statements before 040); with one, the three columns, their placeholders from the given number, and
+// the three values in order (NULL where a row has none).
+TEST(RollSplit, TheWritersNameTheColumnsOnlyForASplit) {
+    auto legs = legs_of(1.0, 50.960, 51.630);
+    attach_roll_split(legs, 1.0, -0.215, 5000.0);
+    EXPECT_TRUE(roll_split_sql::has_split(legs[0]));
+    EXPECT_FALSE(roll_split_sql::has_split(legs[1]));
+    EXPECT_TRUE(roll_split_sql::any_split(legs));
+    EXPECT_FALSE(roll_split_sql::any_split({legs[1]}));
+    EXPECT_FALSE(roll_split_sql::any_split({}));
+    EXPECT_EQ(roll_split_sql::columns(false), "");
+    EXPECT_EQ(roll_split_sql::columns(true), ", roll_bar_move, roll_gap_points, roll_gap_value");
+    EXPECT_EQ(roll_split_sql::placeholders(false, 21), "");
+    EXPECT_EQ(roll_split_sql::placeholders(true, 21), ", $21, $22, $23");
+    EXPECT_EQ(roll_split_sql::placeholders(true, 19), ", $19, $20, $21");
+    pqxx::params p;
+    roll_split_sql::append(p, legs[0]);
+    roll_split_sql::append(p, legs[1]);
+    EXPECT_EQ(p.size(), 6);
 }
