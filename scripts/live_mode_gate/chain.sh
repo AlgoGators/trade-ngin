@@ -14,7 +14,9 @@
 #                             first, on the host day after RANGE_END (each is then a past-date run)
 #               latebars      the bars of LATE_DATE are moved aside for the two runs after it, put back, and those
 #                             dates and every later one are re-run in date order (the re-run repair). The two runs
-#                             made without the bars keep their own log and body, named <date>_without_late_bars
+#                             made without the bars keep their own log and body, named <date>_without_late_bars;
+#                             LATE_TABLES=contract moves the per-contract rows of LATE_DATE instead (the vendor's
+#                             bars stay): the per-contract pull landing after the vendor's
 #               refused       S0 restored, ONE run dated REFUSED_DATE that must be refused; snapshots before and after
 #               interrupt     S0 restored, the chain to the day before INTERRUPT_DATE, then the run of INTERRUPT_DATE
 #                             is interrupted (INTERRUPT_KIND): "kill", the runner is parked by a trigger on its
@@ -274,17 +276,32 @@ trap 'unlock_run; exit 130' INT TERM
       LATE="${LATE_DATE:?}"; L1=$(python3 -c "import datetime as t,sys;print((t.date.fromisoformat(sys.argv[1])+t.timedelta(1)).isoformat())" "$LATE"); L2=$(python3 -c "import datetime as t,sys;print((t.date.fromisoformat(sys.argv[1])+t.timedelta(2)).isoformat())" "$LATE")
       restore_s0 lb
       chain "${RANGE_START:?}" "$LATE"
+      if [ "${LATE_TABLES:-vendor}" = contract ]; then
+        # rolls step 4 (R4A fix round 1, audit B B-1): the per-contract pull lands late, the vendor's bars are in
+        { q "CREATE SCHEMA IF NOT EXISTS tdated_late; DROP TABLE IF EXISTS tdated_late.c"
+          q "CREATE TABLE tdated_late.c AS SELECT * FROM futures_data.contract_ohlcv_1d WHERE date='$LATE'"
+          echo "moved aside: contract_ohlcv_1d $(q "select count(*) from tdated_late.c") rows (the vendor's bars stay: ohlcv_1d $(q "select count(*) from futures_data.ohlcv_1d where time::date='$LATE'") rows)"
+          q "DELETE FROM futures_data.contract_ohlcv_1d WHERE date='$LATE'"
+          echo "left dated $LATE: $(q "select count(*) from futures_data.contract_ohlcv_1d where date='$LATE'")"; } > "$OUT/bars_proof.txt" 2>&1
+      else
       { q "CREATE SCHEMA IF NOT EXISTS tdated_late; DROP TABLE IF EXISTS tdated_late.b, tdated_late.r"
         q "CREATE TABLE tdated_late.b AS SELECT * FROM futures_data.ohlcv_1d WHERE time::date='$LATE'"
         q "CREATE TABLE tdated_late.r AS SELECT * FROM futures_data.ohlcv_1d_raw WHERE ts_event::date='$LATE'"
         echo "moved aside: ohlcv_1d $(q "select count(*) from tdated_late.b") rows, ohlcv_1d_raw $(q "select count(*) from tdated_late.r") rows"
         q "DELETE FROM futures_data.ohlcv_1d WHERE time::date='$LATE'"; q "DELETE FROM futures_data.ohlcv_1d_raw WHERE ts_event::date='$LATE'"
         echo "left dated $LATE: $(q "select count(*) from futures_data.ohlcv_1d where time::date='$LATE'") / $(q "select count(*) from futures_data.ohlcv_1d_raw where ts_event::date='$LATE'")"; } > "$OUT/bars_proof.txt" 2>&1
+      fi
       chain "$L1" "$L2" _without_late_bars
       snap_live "$OUT/snap_late_before_repair" > /dev/null
+      if [ "${LATE_TABLES:-vendor}" = contract ]; then
+        { q "INSERT INTO futures_data.contract_ohlcv_1d SELECT * FROM tdated_late.c"
+          echo "put back: now dated $LATE: $(q "select count(*) from futures_data.contract_ohlcv_1d where date='$LATE'") contract rows"
+          q "DROP SCHEMA tdated_late CASCADE"; } >> "$OUT/bars_proof.txt" 2>&1
+      else
       { q "INSERT INTO futures_data.ohlcv_1d SELECT * FROM tdated_late.b"; q "INSERT INTO futures_data.ohlcv_1d_raw SELECT * FROM tdated_late.r"
         echo "put back: now dated $LATE: $(q "select count(*) from futures_data.ohlcv_1d where time::date='$LATE'") / $(q "select count(*) from futures_data.ohlcv_1d_raw where ts_event::date='$LATE'")"
         q "DROP SCHEMA tdated_late CASCADE"; } >> "$OUT/bars_proof.txt" 2>&1
+      fi
       echo "--- re-run of ONE date alone ($L1)" >> "$OUT/progress.txt"
       chain "$L1" "$L1"
       snap_live "$OUT/snap_after_rerun_of_one_date" > /dev/null

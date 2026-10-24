@@ -18,13 +18,14 @@
 #   4. THE RE-RUN REPAIR: a day's bars arrive late, two runs are made without them, then those dates and
 #      every later one are re-run in date order: every stored table identical to the reference chain. The
 #      late day is the bar that books a held roll (issue #188's shape: the roll is legged late by the first
-#      pass, and the re-run must not book it twice): 2026-04-27 (ZS and MBT confirm their vendor switch on
-#      it) with GATE_SWITCH off, 2026-04-28 (6L's roll bar) with it on.
+#      pass, and the re-run must not book it twice): 2026-04-27 (MBT confirms its vendor switch on it in the
+#      gate's chain) with GATE_SWITCH off, 2026-04-28 (6L's roll bar) with it on.
 #   5. GATE_SWITCH=on only (rolls step 4, ROLLS_STEP1_PLAN section 7), on the conservative book's chain: a
 #      held roll priced at its two contracts' own closes of one bar (the contract table), an ignored one-bar
 #      backward stray and an ignored backward switch (both identical to the reference chain), a run killed
-#      while it writes and run again, and a run whose ROLL legs fail to store, replayed (both identical to
-#      the reference chain).
+#      while it writes and run again, a run whose ROLL legs fail to store, replayed (both identical to the
+#      reference chain), and a crossover day's per-contract rows arriving late with the vendor's bars in,
+#      then the dates re-run in order (identical to the reference chain).
 #
 # THE FEED HOLE. Production mode must refuse a run whose HELD symbol has had no bar past
 # live.data_staleness_tolerance_days (4). The 2026-10-21 copy of the data has no such hole in the window, so
@@ -180,6 +181,10 @@ if [ "$SW" = on ]; then
   UNDO_SQL="UPDATE futures_data.ohlcv_1d_raw SET instrument_id = '194904' WHERE symbol = 'ZS.v.0' AND ts_event IN ('2026-04-30 00:00:00+00', '2026-05-01 00:00:00+00') AND instrument_id = '42009683'" \
   PREP_SHOW="$STRAY_SHOW" MODE=M3 PF=conservative run $ARM_C chain backward;  CW=$(dir "" $ARM_C chain M3 backward)
   check "SWITCH ON an ignored backward switch (the vendor names ZSK6 on 04-30 and 05-01): every stored table identical to the past-date chain" 'grep -aq "after:  .*2026-04-30=42009683 2026-05-01=42009683" "$CW/prep_proof.txt" && same "$C3/snap" "$CW/snap" switch_on_backward_vs_clean'
+  # R4A fix round 1 (audit B B-1): ZS rolls on the crossover of 04-23. That day's per-contract rows (every root) arrive
+  # late, the vendor's bars are in, for the runs of 04-24 and 04-25; then the rows come and the dates re-run in order.
+  LATE_DATE=2026-04-23 LATE_TABLES=contract MODE=M3 PF=conservative run $ARM_C latebars contract;  LC=$(dir "" $ARM_C latebars M3 contract)
+  check "SWITCH ON a crossover day's per-contract bars (04-23) arrive late with the vendor's bars in: the first pass legs ZS's roll late, the rows are put back, and the dates re-run in order end with every stored table identical to the past-date chain" 'python3 "$HERE/late_roll_check.py" "$C3/snap" "$LC/snap_late_before_repair" 2026-04-23 "$LC/bars_proof.txt" > "$OUT/proofs/late_contract_rows.txt" 2>&1 && grep -aq "the vendor.s bars stay: ohlcv_1d [1-9]" "$LC/bars_proof.txt" && same "$C3/snap" "$LC/snap" switch_on_late_contract_rows_vs_clean'
   INTERRUPT_DATE=2026-04-29 INTERRUPT_KIND=kill MODE=M3 PF=conservative run $ARM_C interrupt kill;  IK=$(dir "" $ARM_C interrupt M3 kill)
   check "SWITCH ON a run killed (SIGKILL) while it writes, after storing its ROLL legs, then run again: every stored table identical to the past-date chain" 'grep -aq "parked=1" "$IK/interrupt_proof.txt" && gzip -dc "$IK/logs/2026-04-29_killed.log.gz" | grep -aq "ROLL_LEG store" && same "$C3/snap" "$IK/snap" switch_on_kill_vs_clean'
   INTERRUPT_DATE=2026-04-29 INTERRUPT_KIND=failwrite MODE=M3 PF=conservative run $ARM_C interrupt failwrite;  IF=$(dir "" $ARM_C interrupt M3 failwrite)
