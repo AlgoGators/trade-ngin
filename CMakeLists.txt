@@ -52,7 +52,14 @@ set(CMAKE_BUILD_WITH_INSTALL_RPATH OFF)
 
 # Find packages
 #set(GTest_DIR "C:/vcpkg/installed/x64-windows/share/gtest")
-find_package(GTest CONFIG REQUIRED)
+# What a build produces. All on by default, so every existing build is unchanged; the Python
+# wheel turns the tests, apps and benchmarks off and builds the library static.
+option(TRADE_NGIN_BUILD_TESTS "Build the unit tests" ON)
+option(TRADE_NGIN_BUILD_APPS "Build the runners and tools" ON)
+option(TRADE_NGIN_STATIC_LIB "Build the engine library static (the Python wheel)" OFF)
+if(TRADE_NGIN_BUILD_TESTS)
+    find_package(GTest CONFIG REQUIRED)
+endif()
 #set(nlohmann_json_DIR "C:/vcpkg/installed/x64-windows/share/nlohmann_json")
 find_package(nlohmann_json CONFIG REQUIRED)
 #set(Arrow_DIR "C:/vcpkg/installed/x64-windows/share/arrow")
@@ -254,7 +261,11 @@ set(TRADE_NGIN_SOURCES
 )
 
 # Add library target
-add_library(trade_ngin SHARED ${TRADE_NGIN_SOURCES})
+if(TRADE_NGIN_STATIC_LIB)
+    add_library(trade_ngin STATIC ${TRADE_NGIN_SOURCES})
+else()
+    add_library(trade_ngin SHARED ${TRADE_NGIN_SOURCES})
+endif()
 
  # Add test-specific compile definitions when building tests
 if(BUILD_TESTING)
@@ -295,7 +306,9 @@ endif()
 enable_testing()
 
 # Add tests subdirectory
-add_subdirectory(tests)
+if(TRADE_NGIN_BUILD_TESTS)
+    add_subdirectory(tests)
+endif()
 
 # The Python wrapper (pybind11, python/): off by default, so the engine image and the cron
 # runner build exactly as before. pybind11 is a git submodule (extern/pybind11).
@@ -311,7 +324,11 @@ if(BUILD_PYTHON_WRAPPER)
 endif()
 
 # Add apps subdirectory
-add_subdirectory(apps)
+if(TRADE_NGIN_BUILD_APPS)
+    add_subdirectory(apps)
+endif()
 
 # Add benchmarks subdirectory (separate from tests; not in default test run)
-add_subdirectory(benchmarks)
+if(TRADE_NGIN_BUILD_APPS)
+    add_subdirectory(benchmarks)
+endif()
