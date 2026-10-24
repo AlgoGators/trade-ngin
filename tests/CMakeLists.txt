@@ -5,6 +5,7 @@ set(TEST_SOURCES
     core/test_email_chart_strategy_id.cpp
     core/test_email_fixtures.cpp
     core/test_report_settled_marks.cpp
+    core/test_report_rolls.cpp
     core/test_time_utils_parse.cpp
     core/test_timed_process.cpp
     core/test_gnuplot_run.cpp

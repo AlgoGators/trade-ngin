@@ -43,10 +43,23 @@ inline constexpr const char* kSettledNoBar = "\xE2\x80\x93";  // an en dash; the
 struct SettledZeroKinds {
     std::unordered_set<std::string> roll;
     std::unordered_set<std::string> withheld;
+    /// Rolls step 4 (R4b): with per_contract_rolls on, the symbols whose settled bar was a
+    /// per-contract roll bar: the row books the old contract's move to its close on that bar (not
+    /// $0.00) and carries the roll footnote (kSettledNoteRollBar). Empty with the switch off.
+    std::unordered_set<std::string> per_contract_roll;
 };
 /// Footnote numbers of a settled row booked at zero (the report's footnote lines, HD 10-13).
 inline constexpr int kSettledNoteRoll = 2;
 inline constexpr int kSettledNoteNotAccepted = 3;
+/// Rolls step 4 (R4b): the footnote of a settled row whose bar was a per-contract roll bar.
+inline constexpr int kSettledNoteRollBar = 6;
+
+/// kSettledNoteRollBar for a futures row with a quantity whose symbol's settled bar was a
+/// per-contract roll bar, 0 otherwise (whatever its figure: the move is booked).
+inline int settled_roll_bar_note(bool equities, const std::string& symbol, double quantity,
+                                 const SettledZeroKinds& kinds) {
+    return !equities && quantity != 0.0 && kinds.per_contract_roll.count(symbol) ? kSettledNoteRollBar : 0;
+}
 
 /// The footnote number of a futures row's $0.00: 2 (contract roll), 3 (price not accepted) or 0
 /// (none). A row carries it when its symbol is in one of the two sets, the quantity is not zero,

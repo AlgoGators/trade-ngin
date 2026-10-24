@@ -5620,6 +5620,53 @@ int main(int argc, char* argv[]) {
                     report_context.prior_day_no_session = skip_strategy_processing;
                     report_context.settled_zero_kinds.roll = t1_settlement.roll_zero_symbols;
                     report_context.settled_zero_kinds.withheld = t1_settlement.withheld_zero_symbols;
+                    // Rolls step 4 (R4b, per_contract_rolls on): the roll footnote's rows, the roll
+                    // outlook of the held roots and the words of each roll's line.
+                    if (contract_rolls::PerContractSource::instance().enabled()) {
+                        report_context.settled_zero_kinds.per_contract_roll =
+                            t1_settlement.per_contract_roll_symbols;
+                        contract_rolls::ReportRollQuery roll_query;
+                        roll_query.date = yesterday_date_for_email;
+                        std::set<std::string> held_futures;
+                        for (const auto& [symbol, position] : positions) {
+                            if (position.quantity.as_double() != 0.0) held_futures.insert(symbol);
+                        }
+                        for (const auto& [sleeve, sleeve_positions] : strategy_positions_map) {
+                            (void)sleeve;
+                            for (const auto& [symbol, position] : sleeve_positions) {
+                                if (position.quantity.as_double() != 0.0) held_futures.insert(symbol);
+                            }
+                        }
+                        roll_query.held_symbols.assign(held_futures.begin(), held_futures.end());
+                        for (const auto& [sleeve, sleeve_execs] : all_strategy_executions) {
+                            (void)sleeve;
+                            std::map<std::string, std::string> incoming;  // RO exec id -> contract
+                            for (const auto& e : sleeve_execs) {
+                                if (e.execution_type == ExecutionType::ROLL) incoming[e.exec_id] = e.instrument_id;
+                            }
+                            for (const auto& e : sleeve_execs) {
+                                if (e.execution_type != ExecutionType::ROLL || !e.roll_bar_move) continue;
+                                const std::string stem = e.exec_id.substr(0, e.exec_id.size() - 3);
+                                const auto in = incoming.find(stem + "_RO");
+                                roll_query.rolls.push_back(
+                                    {e.exec_id, e.symbol, e.instrument_id,
+                                     in == incoming.end() ? std::string() : in->second,
+                                     stem.size() >= 8 ? stem.substr(stem.size() - 8, 4) + "-" +
+                                                            stem.substr(stem.size() - 4, 2) + "-" +
+                                                            stem.substr(stem.size() - 2)
+                                                      : yesterday_date_for_email});
+                            }
+                        }
+                        report_context.rolls = db->report_roll_view(roll_query, [](const std::string& s) {
+                            try {
+                                auto instrument = InstrumentRegistry::instance().get_instrument(
+                                    s.substr(0, s.find(".v.")));
+                                return instrument ? instrument->get_tick_size() : 0.0;
+                            } catch (const std::exception&) {
+                                return 0.0;  // the price difference prints with four decimals
+                            }
+                        });
+                    }
                     // The two capital keys of the day's risk_detail, when the row carries one
                     // (the condition and the values of the set_risk_detail call above).
                     if (one_pass_day.stores_detail()) {

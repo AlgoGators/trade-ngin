@@ -501,6 +501,26 @@ Result<void> PostgresDatabase::replace_roll_day_executions(
     }
 }
 
+ReportRolls PostgresDatabase::report_roll_view(const contract_rolls::ReportRollQuery& query,
+                                               const std::function<double(const std::string&)>& tick_of) {
+    if (!contract_rolls::PerContractSource::instance().enabled()) return ReportRolls{};
+    ReportRolls none;  // the switch on, nothing read: the roll sentences, no line, box or cell
+    none.per_contract_rolls = true;
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (validate_connection().is_error()) {
+        WARN("report_roll_view: no database connection: the report prints no roll view");
+        return none;
+    }
+    try {
+        pqxx::read_transaction txn(*connection_);
+        return contract_rolls::report_roll_view(
+            txn, query, contract_rolls::PerContractSource::instance().calendar(), tick_of);
+    } catch (const std::exception& e) {
+        WARN(std::string("report_roll_view: ") + e.what() + ": the report prints no roll view");
+        return none;
+    }
+}
+
 Result<std::vector<StoredRealisedRow>> PostgresDatabase::get_stored_realised_rows(
     const std::string& strategy_id, const std::string& portfolio_id, const std::string& after_date,
     const std::string& before_date, const std::string& table_name, const std::string& book) {

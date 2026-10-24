@@ -4,6 +4,7 @@
 #include <cstdio>
 #include <string>
 
+#include "trade_ngin/core/report_rolls.hpp"
 #include "trade_ngin/core/report_settled_marks.hpp"
 
 namespace trade_ngin {
@@ -55,6 +56,12 @@ struct EmailReportContext {
     /// trading.strategy_trading_days_metadata row, as the runner read it. Empty: the footer
     /// prints no start date.
     std::string live_start_date;
+
+    /// Rolls step 4 (R4b): with per_contract_rolls on, the roll outlook of the held roots and the
+    /// words of each roll's line (report_rolls.hpp): the roll line, the Rollover Warning box, the
+    /// Symbols Reference's Front Month and Contract Months columns, the footer's roll sentence. Empty
+    /// with the switch off: none of them is printed.
+    ReportRolls rolls;
 };
 
 /// "2025-10-05" as the footer prints a date: "October 5th, 2025". A text that is not a date of

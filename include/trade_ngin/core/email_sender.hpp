@@ -219,7 +219,8 @@ private:
      * @param date Current date for front month calculation
      * @return Formatted symbols table HTML
      */
-    std::string format_symbols_table_for_positions(const std::unordered_map<std::string, Position>& positions,std::shared_ptr<DatabaseInterface> db, const std::string& date);
+    std::string format_symbols_table_for_positions(const std::unordered_map<std::string, Position>& positions,std::shared_ptr<DatabaseInterface> db, const std::string& date,
+                                                   const ReportRolls* rolls = nullptr);
 
     /**
      * @brief Format yesterday's finalized positions table with actual PnL
