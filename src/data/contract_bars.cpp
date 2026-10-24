@@ -230,7 +230,8 @@ const Contract* ContractBook::named_by_id(const std::string& root,
         const Contract& c = contracts_[i];
         const ContractBar* b = c.bar_on(day);
         if (b && b->instrument_id == instrument_id) return &c;
-        if (c.first_bar <= day && day <= c.last_bar) {
+        // rolls step 4: to the expiration, never to the last bar read (no look-ahead)
+        if (c.first_bar <= day && day <= (c.key ? c.key->expiration : c.last_bar)) {
             spanning = &c;
             ++spans;
         }

@@ -157,8 +157,13 @@ public:
      * @brief The contract the vendor's id names on `day` (class d: by id and date, never by price).
      *
      * The contract of `root` whose row on `day` carries the id; else the one contract of `root`
-     * that carries the id on its rows and whose first and last bars span `day` (the vendor names a
-     * contract on a date the table has no row for it: R0's 16 Sunday no-row days); else nullptr.
+     * that carries the id on its rows and whose life spans `day`, from its first bar to its
+     * expiration (the vendor names a contract on a date the table has no row for it: R0's 16 Sunday
+     * no-row days, and a contract whose latest bar the table does not have yet); else nullptr.
+     * Rolls step 4 (R3 audit A note 1): the span ends at the expiration, not at the last bar read,
+     * so the answer for a day never depends on how far the rows read reach (a live run whose
+     * per-contract bars of its last day are missing reads what a later backtest reads). A contract
+     * with no expiration spans to its last bar.
      */
     const Contract* named_by_id(const std::string& root, const std::string& instrument_id,
                                 Day day) const;

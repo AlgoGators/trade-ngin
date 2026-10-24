@@ -641,3 +641,42 @@ TEST(ContractRollRule, WarningsBeforeLogFromAreKeptNotLogged) {
         EXPECT_EQ(r.value().report.warnings_not_logged, std::string(from) == "2026-07-30" ? 1 : 0);
     }
 }
+
+// Rolls step 4 (R3 audit A note 1; ruling 4): the held contract's rows end on 07-29 (its bars of 07-30 and
+// 07-31 are not loaded yet) while the vendor's grid goes on naming it. Each of those days is the vendor's own
+// print with a WARN, as it is when the same days are read from a table that has rows after them: the bar
+// does not depend on how far the contract rows reach. Before: no contract was named, and the held close was
+// carried.
+TEST(ContractRollRule, TheVendorsBarStandsInForTheHeldContractsBarsNotLoadedYet) {
+    auto world = [](bool later_rows) {
+        World w(kAug2026);
+        for (const auto& dt : kDates) {
+            if (dt > "2026-07-29" && !(later_rows && dt >= "2026-08-03")) continue;
+            if (dt == "2026-07-30" || dt == "2026-07-31") continue;  // never loaded on either side
+            w.print("GCZ6", dt, 9000, 3400.0 + dt[9]);
+        }
+        for (const auto& dt : kDates) {
+            if (dt > "2026-07-31") break;
+            w.vendor(dt, "GCZ6", 5000.0 + dt[9]);
+        }
+        return w;
+    };
+    // GCZ6 is held from the start (the vendor names it and it is in the cycle).
+    auto only = world(false).run();
+    auto later = world(true).run();
+    ASSERT_TRUE(only.is_ok()) << only.error()->what();
+    ASSERT_TRUE(later.is_ok()) << later.error()->what();
+    for (const char* dt : {"2026-07-30", "2026-07-31"}) {
+        SCOPED_TRACE(dt);
+        const HeldDay& a = on(only.value(), dt);
+        const HeldDay& b = on(later.value(), dt);
+        EXPECT_EQ(a.held.raw_symbol, "GCZ6");
+        EXPECT_EQ(a.source, BarSource::VENDOR) << "the vendor's own print, not a carried close";
+        EXPECT_EQ(a.close, 5000.0 + dt[9]);
+        EXPECT_EQ(b.source, a.source);
+        EXPECT_EQ(b.close, a.close);
+        EXPECT_EQ(warned(only.value(), std::string("GC.v.0 ") + dt + " fallback vendor_bar: GCZ6 has no contract "
+                                                                     "row and the vendor names it"),
+                  1u);
+    }
+}
