@@ -18,6 +18,7 @@
 
 #include "../data/contract_rolls_test_util.hpp"
 #include "trade_ngin/core/report_rolls.hpp"
+#include "trade_ngin/core/report_settled_marks.hpp"
 #include "trade_ngin/data/report_roll_view.hpp"
 
 using namespace trade_ngin;
@@ -65,18 +66,30 @@ TEST(ReportRolls, TheRollLineIsTheWorkedExamples) {
 }
 
 TEST(ReportRolls, TheRollLineWordsAShortABackwardatedGapAndUnknownNames) {
-    // Short 2 contracts of a Treasury, the new contract cheaper by 0.5 (a long would receive it).
+    // Short 2 contracts of a Treasury, the new contract cheaper by 0.5: the difference prints without a
+    // sign (lead, R4b fix round 1: it is not profit or loss); the stored values keep theirs.
     const auto leg = closing_leg(2343.75, -0.5, 1000.0, 5.0);
     const ReportRollNames names{"10-Year-T-Note", "June", "September", report_tick_places(0.015625)};
     EXPECT_EQ(report_roll_line(names, "ZN.v.0", leg, 10.0),
               "10-Year-T-Note, June to September: market move booked $2,344; contract price difference "
-              "-0.500000 ($1,000, not profit or loss); roll cost $10.00.");
+              "0.500000 ($1,000, not profit or loss); roll cost $10.00.");
     EXPECT_EQ(report_roll_line(ReportRollNames{}, "ZN.v.0", leg, 10.0),
-              "ZN.v.0: market move booked $2,344; contract price difference -0.5000 ($1,000, not profit or "
+              "ZN.v.0: market move booked $2,344; contract price difference 0.5000 ($1,000, not profit or "
               "loss); roll cost $10.00.");
+    // A short in contango: positive points, a negative stored value, printed as $1,420.
+    const auto ng = closing_leg(-2040.0, 0.142, -1420.0, 31.69);
+    EXPECT_EQ(report_roll_line(ReportRollNames{"Natural Gas Futures", "October", "November", 3}, "NG.v.0", ng, 31.69),
+              "Natural Gas Futures, October to November: market move booked -$2,040; contract price difference "
+              "0.142 ($1,420, not profit or loss); roll cost $31.69.");
+    // A roll of the vendor's series (no split): the cost only, with the reason.
     ExecutionReport no_split = leg;
     no_split.roll_bar_move.reset();
-    EXPECT_EQ(report_roll_line(names, "ZN.v.0", no_split, 10.0), "") << "a leg with no split has no line";
+    no_split.roll_gap_points.reset();
+    no_split.roll_gap_value.reset();
+    EXPECT_EQ(report_roll_line(ReportRollNames{"Micro E-Mini Russell-2000 Index", "September", "December", 1},
+                               "M2K.v.0", no_split, 5.88),
+              "Micro E-Mini Russell-2000 Index, September to December: roll cost $5.88 (market move and contract "
+              "price difference shown once the full-size contracts are loaded).");
 }
 
 TEST(ReportRolls, TheRolloverWarningIsTheOldBoxWithTheRunDateAndTheDeadline) {
@@ -84,7 +97,15 @@ TEST(ReportRolls, TheRolloverWarningIsTheOldBoxWithTheRunDateAndTheDeadline) {
     rolls.per_contract_rolls = true;
     rolls.outlook["SI"] = outlook("SI", "SIZ5", true);
     rolls.outlook["GC"] = outlook("GC", "GCZ5", false);           // window not open
-    rolls.outlook["MES"] = outlook("MES", "MESZ5", true, false);  // the vendor's series: not the rule's
+    auto micro = outlook("MES", "MESZ5", true, false);  // the vendor's series: its last trading day only
+    micro.deadline = "2025-12-19";
+    micro.roll_by.clear();
+    micro.target.clear();
+    rolls.outlook["MES"] = micro;
+    auto jpy = outlook("6J", "JPYZ5", true);  // the IB symbol labels the line, as the removed box did
+    jpy.label = "JPY";
+    jpy.target = "JPYH6";
+    rolls.outlook["6J"] = jpy;
     auto ltd = outlook("6L", "6LX5", true);
     ltd.first_notice = false;
     ltd.deadline = "2025-11-28";
@@ -103,9 +124,18 @@ TEST(ReportRolls, TheRolloverWarningIsTheOldBoxWithTheRunDateAndTheDeadline) {
         << box;
     EXPECT_LT(box.find("6L:"), box.find("SI:")) << "root order";
     EXPECT_EQ(box.find("GCZ5"), std::string::npos) << "outside its window";
-    EXPECT_EQ(box.find("MESZ5"), std::string::npos) << "not rolled by the rule";
+    EXPECT_NE(box.find("<li><strong>MES:</strong> Currently holding <strong>MESZ5</strong>, rolls with the vendor's "
+                       "series, last trading day 12-19</li>"),
+              std::string::npos)
+        << box;
+    EXPECT_NE(box.find("<li><strong>JPY:</strong> Currently holding <strong>JPYZ5</strong> \xE2\x86\x92 Switch to "
+                       "<strong>JPYH6</strong>"),
+              std::string::npos)
+        << box;
     rolls.outlook.erase("SI");
     rolls.outlook.erase("6L");
+    rolls.outlook.erase("6J");
+    rolls.outlook["MES"].in_window = false;
     EXPECT_EQ(report_rollover_warning_html(rolls), "") << "no held contract inside its window: no box";
     EXPECT_EQ(report_rollover_warning_html(ReportRolls{}), "");
 }
@@ -226,7 +256,10 @@ TEST(ReportRolls, TheViewIsBuiltFromItsSources) {
         if (root == "MES") return micro_book;
         throw std::runtime_error("unreadable");
     };
-    src.names = [] { return std::map<std::string, std::string>{{"GC", "Gold "}}; };
+    src.names = [] {
+        return std::map<std::string, ReportContractName>{{"GC", {"Gold ", "GC"}}, {"MES", {"Micro S&P", "MES"}}};
+    };
+    src.calendar = [](const std::string& root) { return contract_rolls_test::shipped_calendars().for_root(root); };
 
     ReportRollQuery q;
     q.date = "2026-07-24";
@@ -256,7 +289,7 @@ TEST(ReportRolls, TheViewIsBuiltFromItsSources) {
     EXPECT_EQ(zn.gap_places, 4);
 
     ReportRollSources broken = src;
-    broken.names = []() -> std::map<std::string, std::string> { throw std::runtime_error("no metadata"); };
+    broken.names = []() -> std::map<std::string, ReportContractName> { throw std::runtime_error("no metadata"); };
     EXPECT_EQ(report_roll_view(q, broken, {}).names.at("EXEC_GC.v.0_20260727_RC").name, "");
     ReportRollQuery none = q;
     none.rolls.clear();
@@ -267,4 +300,121 @@ TEST(ReportRolls, TheViewIsBuiltFromItsSources) {
     EXPECT_TRUE(empty.per_contract_rolls);
     EXPECT_TRUE(empty.outlook.empty());
     EXPECT_TRUE(empty.names.empty());
+}
+
+// M-1 (R4B audit B): the Front Month and the box name the contract the BOOK holds (the roll tracker's id),
+// so the old contract until its legs are booked, for every root. A micro whose vendor already names the
+// December contract while the book still holds September shows September, with its last trading day while
+// its window is open; a ruled root whose rule has rolled on the settled bar while the book holds the old
+// contract shows the old one and no line. S6: the cells print the IB symbol with the month code.
+TEST(ReportRolls, TheViewNamesTheContractTheBookHolds) {
+    const auto micro = ContractBook::build({contract_rolls_test::bar("M2K", "M2KU6", "u", "2026-09-16", "2026-09-18", 2877, 100),
+                                            contract_rolls_test::bar("M2K", "M2KZ6", "z", "2026-09-16", "2026-12-18", 2900, 900),
+                                            contract_rolls_test::bar("6J", "6JZ6", "jz", "2026-09-16", "2026-12-14", 0.0068, 900),
+                                            contract_rolls_test::bar("6J", "6JU6", "ju", "2026-09-16", "2026-09-14", 0.0067, 10)})
+                           .value();
+    ReportRollSources src;
+    src.vendor_grid = [](const std::string& root, Day, Day) {
+        VendorBar v;
+        v.date = d("2026-09-16");
+        v.symbol = root + ".v.0";
+        v.instrument_id = "z";  // the vendor already names December
+        return std::vector<VendorBar>{v};
+    };
+    src.contracts_around = [&](const std::string&, Day) -> Result<ContractBook> { return micro; };
+    src.calendar = [](const std::string& root) { return contract_rolls_test::shipped_calendars().for_root(root); };
+    src.names = [] {
+        return std::map<std::string, ReportContractName>{{"M2K", {"Micro E-Mini Russell-2000 Index", "M2K"}},
+                                                         {"6J", {"JPY/USD", "JPY"}}};
+    };
+    src.series = [](const std::string&, Day) -> Result<ContractRollSeries> {
+        return make_error<ContractRollSeries>(ErrorCode::DATA_NOT_FOUND, "not used", "test");
+    };
+    ReportRollQuery q;
+    q.date = "2026-09-16";
+    q.held_symbols = {"M2K.v.0"};
+    q.held_ids = {{"M2K.v.0", "u"}};
+    const auto view = report_roll_view(q, src, {});
+    const auto& o = view.outlook.at("M2K");
+    EXPECT_EQ(o.held, "M2KU6") << "the book's September, not the vendor's December";
+    EXPECT_EQ(o.held_symbol, "M2KU6");
+    EXPECT_EQ(o.label, "M2K");
+    EXPECT_FALSE(o.rule_rolls);
+    EXPECT_EQ(o.deadline, "2026-09-18");
+    EXPECT_TRUE(o.in_window) << "five CME trading days before 09-18 is 09-11";
+    EXPECT_NE(report_rollover_warning_html(view).find("M2K:</strong> Currently holding <strong>M2KU6</strong>, rolls "
+                                                      "with the vendor's series, last trading day 09-18"),
+              std::string::npos);
+    // Without the book's id the vendor's contract is the fallback.
+    q.held_ids.clear();
+    EXPECT_EQ(report_roll_view(q, src, {}).outlook.at("M2K").held, "M2KZ6");
+    // After the last trading day: no line.
+    q.held_ids = {{"M2K.v.0", "u"}};
+    q.date = "2026-09-19";
+    EXPECT_FALSE(report_roll_view(q, src, {}).outlook.at("M2K").in_window);
+    // S6: the IB format, the IB symbol, the month code, the year's last digit.
+    EXPECT_EQ(report_ib_contract("JPY", "6J", "6JZ5"), "JPYZ5");
+    EXPECT_EQ(report_ib_contract("NG", "NG", "NGV26"), "NGV6");
+    EXPECT_EQ(report_ib_contract("", "SI", "SIZ5"), "SIZ5");
+    EXPECT_EQ(report_ib_contract("GC", "GC", "SIZ5"), "SIZ5") << "not the root's code: as it is";
+}
+
+// M-1, a ruled root: the rule has rolled GC on the settled bar (a vendor switch the next bar confirms) and
+// the book still holds the old contract: the cell names the old one and the box has no line for it yet.
+TEST(ReportRolls, ARuledRootPendingItsLegsShowsTheOldContractAndNoLine) {
+    std::vector<ContractBar> rows;
+    std::vector<VendorBar> grid;
+    for (const char* dt : {"2026-07-22", "2026-07-23", "2026-07-24", "2026-07-27"}) {
+        rows.push_back(contract_rolls_test::bar("GC", "GCQ6", "q", dt, "2026-08-27", 3300, 80000));
+        rows.push_back(contract_rolls_test::bar("GC", "GCZ6", "z", dt, "2026-12-29", 3350, 9000));
+        VendorBar v;
+        v.date = d(dt);
+        v.symbol = "GC.v.0";
+        v.instrument_id = "q";
+        grid.push_back(v);
+    }
+    auto book = std::make_shared<ContractBook>(ContractBook::build(rows).value());
+    const TradingCalendar cal = contract_rolls_test::shipped_calendar();
+    RuleInputs in;
+    in.root = "GC";
+    in.grid = grid;
+    in.book = book.get();
+    in.cal = &cal;
+    in.cycle = "GJMQZ";
+    const ContractRollSeries series(apply_roll_rule(in).value(), book, "GJMQZ", std::nullopt, cal);
+    ReportRollSources src;
+    src.series = [&](const std::string&, Day) -> Result<ContractRollSeries> { return series; };
+    src.contracts_around = [&](const std::string&, Day) -> Result<ContractBook> { return *book; };
+    src.vendor_grid = [](const std::string&, Day, Day) { return std::vector<VendorBar>{}; };
+    src.calendar = [](const std::string& root) { return contract_rolls_test::shipped_calendars().for_root(root); };
+    src.names = [] { return std::map<std::string, ReportContractName>{}; };
+    ReportRollQuery q;
+    q.date = "2026-07-24";
+    q.held_symbols = {"GC.v.0"};
+    q.held_ids = {{"GC.v.0", "q"}};  // the book's and the rule's contract agree
+    EXPECT_TRUE(report_roll_view(q, src, {}).outlook.at("GC").in_window);
+    q.held_ids = {{"GC.v.0", "z"}};  // stands in for a book that differs from the rule's contract
+    const auto o = report_roll_view(q, src, {}).outlook.at("GC");
+    EXPECT_EQ(o.held, "GCZ6");
+    EXPECT_FALSE(o.in_window) << "no line while the book and the rule differ";
+}
+
+// S7 (R4B audit A): m06, "first notice" only when the notice day is the deadline; m10, no roll footnote
+// on a row with no quantity (nor on an equity row, nor on a symbol whose bar was no roll bar).
+TEST(ReportRolls, FirstNoticeOnlyWhenTheNoticeDayIsTheDeadlineAndNoFootnoteOnAnEmptyRow) {
+    ContractDates dates;
+    dates.last_trading_day = d("2026-09-14");
+    dates.deadline = d("2026-09-14");
+    EXPECT_FALSE(report_deadline_is_first_notice(dates)) << "no notice day";
+    dates.first_notice_day = d("2026-09-16");
+    EXPECT_FALSE(report_deadline_is_first_notice(dates)) << "the notice day after the last trading day";
+    dates.first_notice_day = d("2026-09-14");
+    EXPECT_TRUE(report_deadline_is_first_notice(dates));
+    SettledZeroKinds kinds;
+    kinds.per_contract_roll = {"SI.v.0"};
+    EXPECT_EQ(settled_roll_bar_note(false, "SI.v.0", 1.0, kinds), kSettledNoteRollBar);
+    EXPECT_EQ(settled_roll_bar_note(false, "SI.v.0", -2.0, kinds), kSettledNoteRollBar);
+    EXPECT_EQ(settled_roll_bar_note(false, "SI.v.0", 0.0, kinds), 0) << "no quantity: no footnote";
+    EXPECT_EQ(settled_roll_bar_note(true, "SI.v.0", 1.0, kinds), 0) << "an equity row";
+    EXPECT_EQ(settled_roll_bar_note(false, "GC.v.0", 1.0, kinds), 0) << "no roll bar";
 }

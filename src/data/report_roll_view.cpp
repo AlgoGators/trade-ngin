@@ -3,6 +3,7 @@
 
 #include <chrono>
 #include <map>
+#include <optional>
 #include <set>
 
 #include "trade_ngin/core/logger.hpp"
@@ -31,6 +32,10 @@ Result<ContractBook> book_around(pqxx::transaction_base& txn, const std::string&
 
 }  // namespace
 
+bool report_deadline_is_first_notice(const ContractDates& dates) {
+    return dates.first_notice_day.has_value() && *dates.first_notice_day == dates.deadline;
+}
+
 Result<ReportRollOutlook> report_outlook_of(const ContractRollSeries& series, const std::string& root,
                                             const std::string& cycle, Day date) {
     auto outlook = series.outlook(date);
@@ -41,12 +46,13 @@ Result<ReportRollOutlook> report_outlook_of(const ContractRollSeries& series, co
     ReportRollOutlook out;
     out.root = root;
     out.held = o.held.raw_symbol;
+    out.held_symbol = o.held.raw_symbol;
     out.cycle = cycle;
     out.rule_rolls = true;
     out.in_window = date >= o.dates.window_first;
     out.roll_by = ymd(o.dates.last_actionable + std::chrono::days{1});
     out.deadline = ymd(o.dates.deadline);
-    out.first_notice = o.dates.first_notice_day && *o.dates.first_notice_day == o.dates.deadline;
+    out.first_notice = report_deadline_is_first_notice(o.dates);
     out.target = o.target ? o.target->raw_symbol : o.cycle_front_symbol;
     return out;
 }
@@ -62,8 +68,21 @@ ReportRolls report_roll_view(const ReportRollQuery& query, const ReportRollSourc
         WARN(std::string("report_roll_view: the settled day is not a date (") + e.what() + "): no roll lines");
         return out;
     }
+    std::map<std::string, ReportContractName> names;
+    try {
+        for (const auto& [symbol, name] : sources.names()) names[symbol] = {trimmed(name.name), trimmed(name.ib)};
+    } catch (const std::exception& e) {
+        WARN(std::string("report_roll_view: the contract names could not be read (") + e.what() +
+             "): the roll lines name the symbol");
+    }
+    const auto ib_of = [&](const std::string& root) {
+        const auto it = names.find(root);
+        return it == names.end() || it->second.ib.empty() ? root : it->second.ib;
+    };
     std::set<std::string> roots;
+    std::map<std::string, std::string> held_id;  // root -> the id the book holds
     for (const auto& s : query.held_symbols) roots.insert(root_of(s));
+    for (const auto& [symbol, id] : query.held_ids) held_id[root_of(symbol)] = id;
     for (const auto& root : roots) {
         auto cycle = roll_cycle(root);
         if (cycle.is_error()) {
@@ -71,60 +90,88 @@ ReportRolls report_roll_view(const ReportRollQuery& query, const ReportRollSourc
             continue;
         }
         try {
+            // The contract the book holds after the settled day's bar (the roll tracker's: the old one
+            // until its legs are booked), named by its id on that day.
+            const Contract* book_held = nullptr;
+            std::optional<ContractBook> book;
+            const auto id = held_id.find(root);
+            if (id != held_id.end() && !id->second.empty()) {
+                auto built = sources.contracts_around(root, date);
+                if (built.is_ok()) {
+                    book = std::move(built.value());
+                    book_held = book->named_by_id(root, id->second, date);
+                }
+            }
+            ReportRollOutlook o;
             if (reads_vendor_series(root)) {
-                // The micros: the vendor's contract on its latest grid bar, no window.
-                const auto grid = sources.vendor_grid(root, date - std::chrono::days{14}, date);
-                auto book = sources.contracts_around(root, date);
-                ReportRollOutlook o;
+                // The micros roll with the vendor's series: the contract held, its last trading day and
+                // the five CME trading days before it.
                 o.root = root;
                 o.cycle = cycle.value();
-                if (!grid.empty() && book.is_ok()) {
-                    const auto* c = book.value().named_by_id(root, grid.back().instrument_id, grid.back().date);
-                    if (c) o.held = c->raw_symbol;
+                if (!book_held) {
+                    const auto grid = sources.vendor_grid(root, date - std::chrono::days{14}, date);
+                    if (!book) {
+                        auto built = sources.contracts_around(root, date);
+                        if (built.is_ok()) book = std::move(built.value());
+                    }
+                    if (!grid.empty() && book) book_held = book->named_by_id(root, grid.back().instrument_id, grid.back().date);
                 }
-                out.outlook[root] = o;
-                continue;
+                if (book_held) {
+                    o.held_symbol = book_held->raw_symbol;
+                    if (book_held->key) {
+                        auto cal = sources.calendar(root);
+                        const Day last_trade = book_held->key->expiration;
+                        o.deadline = ymd(last_trade);
+                        if (cal.is_ok()) {
+                            o.in_window = date >= cal.value().trading_day_before(last_trade, 5) && date <= last_trade;
+                        }
+                    }
+                }
+            } else {
+                auto series = sources.series(root, date);
+                if (series.is_error()) {
+                    WARN("report_roll_view " + root + ": " + series.error()->what() + "; no outlook");
+                    continue;
+                }
+                auto made = report_outlook_of(series.value(), root, cycle.value(), date);
+                if (made.is_error()) {
+                    WARN("report_roll_view " + root + ": " + made.error()->what() + "; no outlook");
+                    continue;
+                }
+                o = made.value();
+                if (book_held && book_held->raw_symbol != o.held_symbol) {
+                    // The rule has rolled on this bar and the legs are booked by the next run (a vendor
+                    // switch the next bar confirms): the book still holds the old contract; no line yet.
+                    o.held_symbol = book_held->raw_symbol;
+                    o.in_window = false;
+                }
             }
-            auto series = sources.series(root, date);
-            if (series.is_error()) {
-                WARN("report_roll_view " + root + ": " + series.error()->what() + "; no outlook");
-                continue;
-            }
-            auto o = report_outlook_of(series.value(), root, cycle.value(), date);
-            if (o.is_error()) {
-                WARN("report_roll_view " + root + ": " + o.error()->what() + "; no outlook");
-                continue;
-            }
-            out.outlook[root] = o.value();
+            o.label = ib_of(root);
+            o.held = o.held_symbol.empty() ? std::string() : report_ib_contract(o.label, root, o.held_symbol);
+            if (!o.target.empty()) o.target = report_ib_contract(o.label, root, o.target);
+            out.outlook[root] = o;
         } catch (const std::exception& e) {
             WARN("report_roll_view " + root + ": " + e.what() + "; no outlook");
         }
     }
     if (query.rolls.empty()) return out;
-    std::map<std::string, std::string> names;
-    try {
-        for (const auto& [symbol, name] : sources.names()) names[symbol] = trimmed(name);
-    } catch (const std::exception& e) {
-        WARN(std::string("report_roll_view: the contract names could not be read (") + e.what() +
-             "): the roll lines name the symbol");
-    }
     std::map<std::string, std::shared_ptr<ContractBook>> books;
     for (const auto& roll : query.rolls) {
         const std::string root = root_of(roll.symbol);
         ReportRollNames n;
         const auto name = names.find(root);
-        n.name = name == names.end() ? std::string() : name->second;
+        n.name = name == names.end() ? std::string() : name->second.name;
         n.gap_places = report_tick_places(tick_of ? tick_of(roll.symbol) : 0.0);
         try {
             const Day day = parse_ymd(roll.date);
-            auto& book = books[root + "|" + roll.date];
-            if (!book) {
+            auto& contracts = books[root + "|" + roll.date];
+            if (!contracts) {
                 auto built = sources.contracts_around(root, day);
-                if (built.is_ok()) book = std::make_shared<ContractBook>(built.value());
+                if (built.is_ok()) contracts = std::make_shared<ContractBook>(built.value());
             }
-            if (book) {
-                const auto* from = book->named_by_id(root, roll.outgoing_id, day);
-                const auto* to = book->named_by_id(root, roll.incoming_id, day);
+            if (contracts) {
+                const auto* from = contracts->named_by_id(root, roll.outgoing_id, day);
+                const auto* to = contracts->named_by_id(root, roll.incoming_id, day);
                 if (from) n.from_month = report_month_name(report_contract_month(root, from->raw_symbol));
                 if (to) n.to_month = report_month_name(report_contract_month(root, to->raw_symbol));
             }
@@ -151,10 +198,13 @@ ReportRolls report_roll_view(pqxx::transaction_base& txn, const ReportRollQuery&
         return read_vendor_grid(txn, root + ".v.0", from, to);
     };
     sources.contracts_around = [&](const std::string& root, Day day) { return book_around(txn, root, day); };
+    sources.calendar = [&](const std::string& root) { return calendars.for_root(root); };
     sources.names = [&]() {
-        std::map<std::string, std::string> names;
-        for (const auto& row : txn.exec("SELECT \"Databento Symbol\", \"Name\" FROM metadata.contract_metadata")) {
-            if (!row[0].is_null() && !row[1].is_null()) names[row[0].as<std::string>()] = row[1].as<std::string>();
+        std::map<std::string, ReportContractName> names;
+        for (const auto& row : txn.exec("SELECT \"Databento Symbol\", \"Name\", \"IB Symbol\" FROM metadata.contract_metadata")) {
+            if (row[0].is_null()) continue;
+            names[row[0].as<std::string>()] = {row[1].is_null() ? std::string() : row[1].as<std::string>(),
+                                               row[2].is_null() ? std::string() : row[2].as<std::string>()};
         }
         return names;
     };

@@ -36,6 +36,9 @@ namespace trade_ngin::contract_rolls {
 struct ReportRollQuery {
     std::string date;                       ///< YYYY-MM-DD: the settled day
     std::vector<std::string> held_symbols;  ///< "SI.v.0"
+    /// "SI.v.0" -> the id of the contract the book holds after the settled day's bar (the runner's roll
+    /// tracker, RollTracker::Status::held_id: the old contract until its roll legs are booked).
+    std::map<std::string, std::string> held_ids;
     struct Roll {
         std::string closing_exec_id;
         std::string symbol;
@@ -44,6 +47,12 @@ struct ReportRollQuery {
         std::string date;  ///< YYYY-MM-DD: the confirming bar's date (the legs' id date)
     };
     std::vector<Roll> rolls;
+};
+
+/// A contract metadata row's two names.
+struct ReportContractName {
+    std::string name;  ///< "Silver" (the Name column, trimmed by the view)
+    std::string ib;    ///< "SI" (the IB Symbol column)
 };
 
 /// Where report_roll_view reads from (the database, or a test's fixtures). Each may throw; a root or a
@@ -55,8 +64,10 @@ struct ReportRollSources {
     std::function<std::vector<VendorBar>(const std::string& root, Day from, Day to)> vendor_grid;
     /// The contracts of `root` with bars in the year before `day`.
     std::function<Result<ContractBook>(const std::string& root, Day day)> contracts_around;
+    /// The root's CME trading-day calendar (the micros' window).
+    std::function<Result<TradingCalendar>(const std::string& root)> calendar;
     /// The contract metadata's names by Databento symbol.
-    std::function<std::map<std::string, std::string>()> names;
+    std::function<std::map<std::string, ReportContractName>()> names;
 };
 
 /// The view from `sources` (pure; the database version below builds the sources).
@@ -66,6 +77,10 @@ ReportRolls report_roll_view(const ReportRollQuery& query, const ReportRollSourc
 ReportRolls report_roll_view(pqxx::transaction_base& txn, const ReportRollQuery& query,
                              const FuturesCalendar& calendars,
                              const std::function<double(const std::string&)>& tick_of);
+
+/// Whether the contract's deadline is its first notice day ("first notice" in the box), not its last
+/// trading day (a notice day after the last trading day leaves the deadline the last trading day).
+bool report_deadline_is_first_notice(const ContractDates& dates);
 
 /// The outlook of one root from its built series (pure: the unit tests call it on fixtures).
 /// `in_window` is `date` on or after the window's first day; `roll_by` the day after the last

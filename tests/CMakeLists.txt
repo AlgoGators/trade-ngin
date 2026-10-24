@@ -247,6 +247,7 @@ set(TEST_SOURCES
     live/test_cost_feed_adjusted_returns.cpp
     live/test_change_bar_pnl.cpp
     live/test_live_roll_legs.cpp
+    live/test_report_roll_query.cpp
     live/test_live_rerun_repair.cpp
     live/test_live_k01_history.cpp
     live/test_live_roll_write_order.cpp

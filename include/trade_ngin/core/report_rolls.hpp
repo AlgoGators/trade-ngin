@@ -32,19 +32,34 @@
 namespace trade_ngin {
 
 /// One held futures root's roll outlook on the settled day (contract_rolls::ContractRollSeries::outlook).
+/// The contracts print as the removed box printed them (git show c00dd1d6^:src/core/email_sender.cpp,
+/// get_front_month_symbol): the IB symbol, the month code and the year's last digit ("JPYZ5").
 struct ReportRollOutlook {
-    std::string root;            ///< "SI"
-    std::string held;            ///< "SIZ5": the contract the book holds after the settled day's bar
-    std::string cycle;           ///< "HKNUZ": the root's cycle (contract_rolls::roll_cycle_table)
+    std::string root;            ///< "6J": the Databento symbol (the Symbols Reference's key)
+    std::string label;           ///< "JPY": the IB symbol the box prints (the root when not known)
+    /// "JPYZ5": the contract the book holds after the settled day's bar (the roll tracker's, so the
+    /// old contract until its roll legs are booked), in the IB format
+    std::string held;
+    std::string held_symbol;     ///< "6JZ5": the same contract's own code (contract_ohlcv_1d.raw_symbol)
+    std::string cycle;           ///< "HMUZ": the root's cycle (contract_rolls::roll_cycle_table)
     /// False for a root the rule does not roll (the micros stay on the vendor's series until their
-    /// full-size contracts' bars are loaded): its Front Month cell is shown, no warning line.
+    /// full-size contracts' bars are loaded): its warning line names the last trading day only.
     bool rule_rolls{false};
-    bool in_window{false};       ///< the settled day is on or after the window's first day
-    std::string roll_by;         ///< YYYY-MM-DD: the run date of the last actionable bar
+    /// The settled day is inside the held contract's window (from the fifth CME trading day before its
+    /// deadline). False while the rule has rolled and the book still holds the old contract.
+    bool in_window{false};
+    std::string roll_by;         ///< YYYY-MM-DD: the run date of the last actionable bar (empty: micros)
     std::string deadline;        ///< YYYY-MM-DD: the deadline (first notice or last trading day)
     bool first_notice{false};    ///< the deadline is the first notice day
-    std::string target;          ///< "SIH6": the cycle's front month after the held contract
+    std::string target;          ///< "JPYH6": the cycle's front month after the held contract (IB format)
 };
+
+/// "JPYZ5" from the IB symbol "JPY", the root "6J" and the contract code "6JZ5" (or "NGV26"): the IB
+/// symbol, the month code, the year's last digit. The code itself when it is not the root's.
+inline std::string report_ib_contract(const std::string& ib, const std::string& root, const std::string& code) {
+    if (code.size() < root.size() + 2 || code.compare(0, root.size(), root) != 0) return code;
+    return (ib.empty() ? root : ib) + code[root.size()] + code.back();
+}
 
 /// The words of one roll's line (keyed by its closing leg's exec id).
 struct ReportRollNames {
@@ -131,19 +146,27 @@ inline std::string report_cents(double value) {
  *        difference 0.670 ($3,350, not profit or loss); roll cost $45.29."
  *
  * `closing` is the roll's closing leg (its split, migration 040), `roll_cost` both legs' costs. A
- * roll whose names were not found reads its symbol and no months. Empty when the leg has no split.
+ * roll whose names were not found reads its symbol and no months. The difference prints unsigned. A
+ * leg with no split (a roll of the vendor's series) gets the roll cost only, with the reason.
  */
 inline std::string report_roll_line(const ReportRollNames& names, const std::string& symbol,
                                     const ExecutionReport& closing, double roll_cost) {
-    if (!closing.roll_bar_move || !closing.roll_gap_points || !closing.roll_gap_value) return std::string();
     std::string text = names.name.empty() ? symbol : names.name;
     if (!names.from_month.empty() && !names.to_month.empty())
         text += ", " + names.from_month + " to " + names.to_month;
+    if (!closing.roll_bar_move || !closing.roll_gap_points || !closing.roll_gap_value) {
+        // A roll of the vendor's series (the micros until their full-size contracts are loaded): no two
+        // closes on one bar, so no move or difference to show (lead, R4b fix round 1).
+        return text + ": roll cost " + report_cents(roll_cost) +
+               " (market move and contract price difference shown once the full-size contracts are loaded).";
+    }
+    // The difference is not profit or loss: printed without a sign (lead, R4b fix round 1); stored signed.
     char points[64];
-    std::snprintf(points, sizeof(points), "%.*f", names.gap_places, *closing.roll_gap_points);
+    std::snprintf(points, sizeof(points), "%.*f", names.gap_places, std::abs(*closing.roll_gap_points));
     text += ": market move booked " + report_whole_dollars(*closing.roll_bar_move) +
-            "; contract price difference " + points + " (" + report_whole_dollars(*closing.roll_gap_value) +
-            ", not profit or loss); roll cost " + report_cents(roll_cost) + ".";
+            "; contract price difference " + points + " (" +
+            report_whole_dollars(std::abs(*closing.roll_gap_value)) + ", not profit or loss); roll cost " +
+            report_cents(roll_cost) + ".";
     return text;
 }
 
@@ -154,15 +177,15 @@ inline std::string report_month_day(const std::string& ymd) {
 
 /**
  * @brief The Rollover Warning box (the 2026-10-13 design: the red box, "Currently holding X -> Switch
- *        to Y"), one line per held root the rule rolls whose window is open, in root order, with the
- *        latest run date of the roll and the deadline: "by 07-29, first notice 07-31". Empty when no
- *        held contract is inside its window.
+ *        to Y"), one line per held root whose window is open, in root order, with the latest run date
+ *        of the roll and the deadline: "by 07-30, first notice 07-31". A micro (the vendor's series)
+ *        names its last trading day only. Empty when no held contract is inside its window.
  */
 inline std::string report_rollover_warning_html(const ReportRolls& rolls) {
     std::vector<const ReportRollOutlook*> due;
     for (const auto& [root, o] : rolls.outlook) {
         (void)root;
-        if (o.rule_rolls && o.in_window && !o.held.empty()) due.push_back(&o);
+        if (o.in_window && !o.held.empty()) due.push_back(&o);
     }
     if (due.empty()) return std::string();
     std::string html =
@@ -173,7 +196,15 @@ inline std::string report_rollover_warning_html(const ReportRolls& rolls) {
         "shown.</p>\n"
         "<ul style=\"color: #991b1b; margin: 5px 0 0 20px; padding: 0;\">\n";
     for (const auto* o : due) {
-        html += "<li><strong>" + o->root + ":</strong> Currently holding <strong>" + o->held +
+        const std::string label = o->label.empty() ? o->root : o->label;
+        if (!o->rule_rolls) {
+            // The micros: they roll when the vendor's series does; the line names the last trading day.
+            html += "<li><strong>" + label + ":</strong> Currently holding <strong>" + o->held +
+                    "</strong>, rolls with the vendor's series, last trading day " + report_month_day(o->deadline) +
+                    "</li>\n";
+            continue;
+        }
+        html += "<li><strong>" + label + ":</strong> Currently holding <strong>" + o->held +
                 "</strong> \xE2\x86\x92 Switch to <strong>" + (o->target.empty() ? std::string("the next contract") : o->target) +
                 "</strong> by " + report_month_day(o->roll_by) + ", " +
                 (o->first_notice ? "first notice " : "last trading day ") + report_month_day(o->deadline) +
