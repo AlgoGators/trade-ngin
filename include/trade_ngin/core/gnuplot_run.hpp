@@ -2,11 +2,13 @@
 #pragma once
 
 #include <chrono>
+#include <cstdio>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <functional>
 #include <iterator>
+#include <random>
 #include <string>
 #include <stdlib.h>
 #include <system_error>
@@ -50,11 +52,23 @@ inline std::filesystem::path make_chart_dir() {
     std::error_code ec;
     std::filesystem::path base = std::filesystem::temp_directory_path(ec);
     if (ec) base = ".";
+#ifdef _WIN32
+    // No mkdtemp on Windows: make the folder under a random name, retrying on a clash.
+    std::random_device entropy;
+    for (int attempt = 0; attempt < 16; ++attempt) {
+        char name[40];
+        std::snprintf(name, sizeof(name), "trade_ngin_chart_%08x%08x", entropy(), entropy());
+        const std::filesystem::path dir = base / name;
+        if (std::filesystem::create_directory(dir, ec) && !ec) return dir;
+    }
+    return {};
+#else
     std::string pattern = (base / "trade_ngin_chart_XXXXXX").string();
     std::vector<char> buffer(pattern.begin(), pattern.end());
     buffer.push_back('\0');
     if (mkdtemp(buffer.data()) == nullptr) return {};
     return std::filesystem::path(buffer.data());
+#endif
 }
 
 }  // namespace gnuplot_detail

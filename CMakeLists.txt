@@ -133,13 +133,19 @@ if(APPLE AND TARGET NLopt::nlopt)
     unset(_nlopt_fixed)
 endif()
 
-# Try to find libpqxx via pkg-config (works with Homebrew)
-find_package(PkgConfig REQUIRED)
-pkg_check_modules(PQXX REQUIRED libpqxx)
+if(WIN32)
+    # vcpkg ships libpqxx's CMake config; there is no pkg-config on Windows.
+    find_package(libpqxx CONFIG REQUIRED)
+else()
+    # Try to find libpqxx via pkg-config (works with Homebrew)
+    find_package(PkgConfig REQUIRED)
+    pkg_check_modules(PQXX REQUIRED libpqxx)
+endif()
 
 # Find curl for email functionality
 find_package(CURL REQUIRED)
 
+if(NOT WIN32)
 add_library(libpqxx::pqxx UNKNOWN IMPORTED)
 set_target_properties(libpqxx::pqxx PROPERTIES
     IMPORTED_LOCATION "${PQXX_LINK_LIBRARIES}"
@@ -148,6 +154,7 @@ set_target_properties(libpqxx::pqxx PROPERTIES
 )
 
 link_directories(${PQXX_LIBRARY_DIRS})
+endif()
 
 
 # Include code coverage module if enabled
@@ -261,6 +268,11 @@ set(TRADE_NGIN_SOURCES
 )
 
 # Add library target
+if(WIN32)
+    # The QT desk spawns the engine with fork/exec and reads /proc/self/exe; it is a Linux
+    # service and is not part of a Windows build.
+    list(REMOVE_ITEM TRADE_NGIN_SOURCES src/live/qt_desk.cpp)
+endif()
 if(TRADE_NGIN_STATIC_LIB)
     add_library(trade_ngin STATIC ${TRADE_NGIN_SOURCES})
 else()
@@ -288,6 +300,16 @@ if(WIN32)
     set_target_properties(trade_ngin PROPERTIES
         WINDOWS_EXPORT_ALL_SYMBOLS ON
     )
+endif()
+
+if(MSVC)
+    # POSIX time functions for MSVC (core/portability_win.hpp), UTF-8 sources, and the usual
+    # Windows header hygiene.
+    target_compile_options(trade_ngin PUBLIC
+        /FI${CMAKE_CURRENT_SOURCE_DIR}/include/trade_ngin/core/portability_win.hpp
+        /utf-8 /bigobj /permissive- /EHsc /Zc:__cplusplus)
+    target_compile_definitions(trade_ngin PUBLIC NOMINMAX WIN32_LEAN_AND_MEAN _USE_MATH_DEFINES
+        _CRT_SECURE_NO_WARNINGS)
 endif()
 
 # Set up include directories for the library

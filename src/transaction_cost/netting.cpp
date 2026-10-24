@@ -1,5 +1,8 @@
 // K3, the netting adjustment (T-7b-2 8b). See include/trade_ngin/transaction_cost/netting.hpp.
 
+#ifdef _MSC_VER
+#include <intrin.h>
+#endif
 #include "trade_ngin/transaction_cost/netting.hpp"
 
 #include <algorithm>
@@ -11,6 +14,30 @@
 #include <stdexcept>
 
 namespace trade_ngin {
+
+namespace {
+struct MulDiv {
+    uint64_t quotient;
+    uint64_t remainder;
+};
+
+/// floor(a * b / d) and a * b mod d, with a * b held exactly in 128 bits. The quotient must fit
+/// in 64 bits (here b <= d, so it is at most a).
+MulDiv mul_div(uint64_t a, uint64_t b, uint64_t d) {
+#ifdef _MSC_VER
+    uint64_t high = 0;
+    const uint64_t low = _umul128(a, b, &high);
+    uint64_t rem = 0;
+    const uint64_t quotient = _udiv128(high, low, d, &rem);
+    return {quotient, rem};
+#else
+    using u128 = unsigned __int128;
+    const u128 product = static_cast<u128>(a) * b;
+    return {static_cast<uint64_t>(product / d), static_cast<uint64_t>(product % d)};
+#endif
+}
+}  // namespace
+
 namespace transaction_cost {
 
 namespace {
@@ -85,19 +112,21 @@ NettingOutcome net_symbol_day(const std::vector<NettingLeg>& legs, const Account
     // credit_total split pro rata to C(q_i) in whole 1e-8 units: the floor of each exact quota,
     // then one unit to each of the largest remainders (a tie to the smaller sleeve name) until the
     // parts sum to |credit_total|; the sign is applied after, as S2's split does for a short book.
-    using u128 = unsigned __int128;
-    const u128 magnitude = static_cast<u128>(credit < 0 ? -static_cast<__int128>(credit)
-                                                        : static_cast<__int128>(credit));
-    const u128 total = static_cast<u128>(weight_total);
+    // magnitude * w is exact in 128 bits (mul_div below); the quota never exceeds magnitude
+    // because w <= weight_total, so it fits in 64.
+    const uint64_t magnitude = credit < 0 ? 0 - static_cast<uint64_t>(credit)
+                                           : static_cast<uint64_t>(credit);
+    const uint64_t total = static_cast<uint64_t>(weight_total);
     std::vector<int64_t> part(legs.size(), 0);
-    std::vector<u128> remainder(legs.size(), 0);
-    u128 assigned = 0;
+    std::vector<uint64_t> remainder(legs.size(), 0);
+    uint64_t assigned = 0;
     for (size_t i = 0; i < legs.size(); ++i) {
-        const u128 w = static_cast<u128>(std::max<int64_t>(legs[i].own_cost.raw_value(), 0));
-        const u128 exact = magnitude * w;
-        part[i] = static_cast<int64_t>(exact / total);
-        remainder[i] = exact % total;
-        assigned += exact / total;
+        const uint64_t w =
+            static_cast<uint64_t>(std::max<int64_t>(legs[i].own_cost.raw_value(), 0));
+        const MulDiv split = mul_div(magnitude, w, total);
+        part[i] = static_cast<int64_t>(split.quotient);
+        remainder[i] = split.remainder;
+        assigned += split.quotient;
     }
     std::vector<size_t> order(legs.size());
     std::iota(order.begin(), order.end(), size_t{0});

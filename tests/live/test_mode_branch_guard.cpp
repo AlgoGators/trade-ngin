@@ -261,6 +261,9 @@ const std::map<std::string, std::pair<const char*, std::vector<std::string>>> kL
     {"include/trade_ngin/core/holiday_checker.hpp",
      {"where the holiday calendar file is; the same in every mode",
       {"if (const char* env = std::getenv(\"TRADE_NGIN_HOLIDAYS_JSON\")) {"}}},
+    {"include/trade_ngin/core/portability_win.hpp",
+     {"Windows only: defines localtime_r over localtime_s so the sources compile; reads no clock",
+      {"inline struct tm* localtime_r(const time_t* time, struct tm* result) {"}}},
     {"include/trade_ngin/core/time_utils.hpp",
      {"safe_localtime itself (localtime_r), and a formatting helper's default "
       "argument",
@@ -270,8 +273,10 @@ const std::map<std::string, std::pair<const char*, std::vector<std::string>>> kL
        "safe_localtime(&now_c, &result);"}}},
     {"include/trade_ngin/core/timed_process.hpp",
      {"the chart process's time limit (a steady clock, a duration). Executed by "
-      "TimedProcess.*",
+      "TimedProcess.*. The first two lines are the Windows branch of the same limit",
       {"const auto deadline = std::chrono::steady_clock::now() + timeout;",
+       "while (std::chrono::steady_clock::now() < deadline) {",
+       "const auto deadline = std::chrono::steady_clock::now() + timeout;",
        "deadline - std::chrono::steady_clock::now());",
        "if (std::chrono::steady_clock::now() >= until) return false;",
        "reap_until(std::chrono::steady_clock::now() + std::chrono::seconds(2));"}}},
