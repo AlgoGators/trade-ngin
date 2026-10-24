@@ -756,3 +756,43 @@ TEST(PerContractSource, BothSwitchBarSettingsBookTheSameMovesAndLegs) {
     }
     EXPECT_EQ(differing_raw, 3) << "only the three switch bars' closes";
 }
+
+// R4A fix round 1 (audit A S1): the setting reaches the bar query. CL's vendor switch of 2025-01-15 (CLG5, id 615689,
+// to CLH5, id 37014) through get_market_data, the loader's own call: "held" hands out CLG5's bar with the field naming
+// CLH5; "vendor" hands out CLH5's bar with the field naming CLG5. Every other bar of the window is the same.
+TEST_F(PerContractSourceDbTest, TheSwitchBarSettingReachesTheBarQuery) {
+    PerContractSource::instance().enable(contract_rolls_test::shipped_calendars(), SwitchBar::HELD);
+    const auto held = load({"CL.v.0"}, "2025-01-08", "2025-01-22");
+    PerContractSource::instance().enable(contract_rolls_test::shipped_calendars(), SwitchBar::VENDOR);
+    const auto vendor = load({"CL.v.0"}, "2025-01-08", "2025-01-22");
+    ASSERT_EQ(held.size(), vendor.size());
+    ASSERT_FALSE(held.empty());
+    int switch_bars = 0;
+    for (size_t i = 0; i < held.size(); ++i) {
+        const Bar& h = held[i];
+        const Bar& v = vendor[i];
+        const std::string day = core::format_utc_date(h.timestamp);
+        ASSERT_EQ(day, core::format_utc_date(v.timestamp));
+        if (day != "2025-01-15") {
+            EXPECT_EQ(h.close, v.close) << day;
+            EXPECT_EQ(h.instrument_id, v.instrument_id) << day;
+            EXPECT_EQ(h.roll_from, v.roll_from) << day;
+            continue;
+        }
+        ++switch_bars;
+        ASSERT_TRUE(h.roll_from.has_value());
+        ASSERT_TRUE(v.roll_from.has_value());
+        EXPECT_EQ(h.instrument_id, "615689") << "held: CLG5's own bar";
+        EXPECT_NEAR(static_cast<double>(h.close), 80.38, 1e-9);
+        EXPECT_EQ(h.roll_from->kind, RollFromKind::AWAITS_NEXT);
+        EXPECT_EQ(h.roll_from->instrument_id, "37014");
+        EXPECT_NEAR(h.roll_from->close, 79.06, 1e-9);
+        EXPECT_EQ(v.instrument_id, "37014") << "vendor: CLH5's own bar";
+        EXPECT_NEAR(static_cast<double>(v.close), 79.06, 1e-9);
+        EXPECT_EQ(v.roll_from->kind, RollFromKind::AWAITS_NEXT_VENDOR);
+        EXPECT_EQ(v.roll_from->instrument_id, "615689");
+        EXPECT_NEAR(v.roll_from->close, 80.38, 1e-9);
+        EXPECT_EQ(v.roll_from->date, "2025-01-15");
+    }
+    EXPECT_EQ(switch_bars, 1);
+}
