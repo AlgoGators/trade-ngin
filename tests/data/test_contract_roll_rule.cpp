@@ -105,6 +105,14 @@ const HeldDay& on(const HeldSeries& s, const std::string& date) {
     throw std::out_of_range("no grid date " + date);
 }
 
+/// The rule's warnings that contain `text` (rolls step 4: each fallback's WARN in the run's log).
+size_t warned(const HeldSeries& s, const std::string& text) {
+    size_t n = 0;
+    for (const auto& w : s.report.warnings)
+        n += w.find(text) != std::string::npos;
+    return n;
+}
+
 std::vector<std::string> roll_dates(const HeldSeries& s) {
     std::vector<std::string> out;
     for (const auto& day : s.days) {
@@ -301,6 +309,18 @@ TEST(ContractRollRule, ClassCCarriesOrReadsTheVendorsBar) {
     EXPECT_EQ(c.bar_id, "");
     EXPECT_EQ(r.value().report.carry_days, 1);
     EXPECT_EQ(r.value().report.vendor_bar_days, 1);
+    // Rolls step 4: each in the log, naming the symbol, the date and the fallback.
+    EXPECT_EQ(warned(r.value(),
+                     "GC.v.0 2026-07-16 fallback vendor_bar: GCQ6 has no contract row and "
+                     "the vendor names it: the bar is the vendor's own print (close "
+                     "4444)"),
+              1u);
+    EXPECT_EQ(warned(r.value(),
+                     "GC.v.0 2026-07-17 fallback carry: GCQ6 has no contract row and the "
+                     "vendor names GCZ6: its last close 3353 (2026-07-15) is carried"),
+              1u);
+    EXPECT_EQ(r.value().report.warnings.size(), 2u);
+    EXPECT_EQ(r.value().report.warnings_not_logged, 0);
 }
 
 TEST(ContractRollRule, OldContractWithNoBarMovesToTheNextBarWhereBothPrint) {
@@ -320,6 +340,12 @@ TEST(ContractRollRule, OldContractWithNoBarMovesToTheNextBarWhereBothPrint) {
     // The waiting day: Q held, carried (the vendor names Z).
     EXPECT_EQ(on(r.value(), "2026-07-21").held.raw_symbol, "GCQ6");
     EXPECT_EQ(on(r.value(), "2026-07-21").source, BarSource::CARRY);
+    EXPECT_EQ(warned(r.value(),
+                     "GC.v.0 2026-07-21 fallback deferred: a roll from GCQ6 to GCZ6 is "
+                     "due and GCQ6 has no bar: it waits for a bar where both print"),
+              1u);
+    EXPECT_EQ(warned(r.value(), "GC.v.0 2026-07-21 fallback carry: GCQ6"), 1u);
+    EXPECT_EQ(r.value().report.warnings.size(), 2u);
 }
 
 TEST(ContractRollRule, OldContractWithNoBarUpToTheLastActionableBarFallsBack) {
@@ -339,6 +365,11 @@ TEST(ContractRollRule, OldContractWithNoBarUpToTheLastActionableBarFallsBack) {
     EXPECT_EQ(*roll.fallback_new_previous_close, 3500.0);
     ASSERT_EQ(r.value().report.fallback_cases.size(), 1u);
     EXPECT_NE(r.value().report.fallback_cases[0].find("GCQ6"), std::string::npos);
+    EXPECT_EQ(warned(r.value(),
+                     "GC.v.0 2026-07-29 fallback roll_new_move: GCQ6 has no bar up to its "
+                     "last actionable bar 2026-07-29; rolled to GCZ6, the old contract's "
+                     "move read as the new one's"),
+              1u);
 }
 
 TEST(ContractRollRule, TheTargetSkipsAMissingCycleFrontWithAWarn) {
@@ -355,6 +386,10 @@ TEST(ContractRollRule, TheTargetSkipsAMissingCycleFrontWithAWarn) {
     EXPECT_EQ(roll.held.raw_symbol, "GCG7");
     EXPECT_TRUE(roll.target_skipped_front);
     EXPECT_EQ(r.value().report.target_skipped_front, 1);
+    EXPECT_EQ(warned(r.value(),
+                     "GC.v.0 2026-07-29 fallback target_not_front: the cycle front after "
+                     "GCQ6 has no bar; rolled to GCG7"),
+              1u);
 }
 
 TEST(ContractRollRule, ANeverListedFrontIsNotCountedAsSkipped) {
@@ -384,6 +419,16 @@ TEST(ContractRollRule, NoTargetPrintingHoldsTheRollPending) {
     EXPECT_EQ(roll_dates(r.value()), std::vector<std::string>{"2026-07-31"});
     EXPECT_TRUE(on(r.value(), "2026-07-31").deferred);
     EXPECT_GE(r.value().report.no_target_bars, 2);
+    EXPECT_EQ(warned(r.value(),
+                     "GC.v.0 2026-07-29 fallback no_target: a roll from GCQ6 is due and "
+                     "no cycle contract after it prints"),
+              1u);
+    EXPECT_EQ(warned(r.value(), "GC.v.0 2026-07-30 fallback no_target"), 1u);
+    EXPECT_EQ(warned(r.value(),
+                     "GC.v.0 2026-07-31 fallback late_deadline: the deadline roll out of "
+                     "GCQ6 into GCZ6 falls after its last actionable bar 2026-07-29: no "
+                     "target printed until this bar"),
+              1u);
 }
 
 TEST(ContractRollRule, SeriesStartHoldsTheVendorsCycleContractElseTheCycleFront) {
@@ -568,6 +613,11 @@ TEST(ContractRollRule, TheWindowEndsAtTheLastActionableBar) {
     EXPECT_EQ(roll_dates(r.value()), std::vector<std::string>{"2026-07-30"});
     EXPECT_EQ(on(r.value(), "2026-07-30").trigger, RollTrigger::DEADLINE);
     EXPECT_TRUE(on(r.value(), "2026-07-30").late);
+    EXPECT_EQ(warned(r.value(),
+                     "GC.v.0 2026-07-30 fallback late_deadline: the deadline roll out of "
+                     "GCQ6 into GCZ6 falls after its last actionable bar 2026-07-29, which "
+                     "is not on the vendor's grid: rolled on the next grid bar"),
+              1u);
     const ContractDates q6 = contract_dates(on(r.value(), "2026-07-15").held,
                                             contract_rolls_test::shipped_calendar());
     EXPECT_EQ(ymd(q6.window_first), "2026-07-24");
@@ -589,5 +639,44 @@ TEST(ContractRollRule, WarningsBeforeLogFromAreKeptNotLogged) {
         ASSERT_TRUE(r.is_ok()) << r.error()->what();
         ASSERT_EQ(r.value().report.warnings.size(), 1u) << "the skipped front of 07-29";
         EXPECT_EQ(r.value().report.warnings_not_logged, std::string(from) == "2026-07-30" ? 1 : 0);
+    }
+}
+
+// Rolls step 4 (R3 audit A note 1; ruling 4): the held contract's rows end on 07-29 (its bars of 07-30 and
+// 07-31 are not loaded yet) while the vendor's grid goes on naming it. Each of those days is the vendor's own
+// print with a WARN, as it is when the same days are read from a table that has rows after them: the bar
+// does not depend on how far the contract rows reach. Before: no contract was named, and the held close was
+// carried.
+TEST(ContractRollRule, TheVendorsBarStandsInForTheHeldContractsBarsNotLoadedYet) {
+    auto world = [](bool later_rows) {
+        World w(kAug2026);
+        for (const auto& dt : kDates) {
+            if (dt > "2026-07-29" && !(later_rows && dt >= "2026-08-03")) continue;
+            if (dt == "2026-07-30" || dt == "2026-07-31") continue;  // never loaded on either side
+            w.print("GCZ6", dt, 9000, 3400.0 + dt[9]);
+        }
+        for (const auto& dt : kDates) {
+            if (dt > "2026-07-31") break;
+            w.vendor(dt, "GCZ6", 5000.0 + dt[9]);
+        }
+        return w;
+    };
+    // GCZ6 is held from the start (the vendor names it and it is in the cycle).
+    auto only = world(false).run();
+    auto later = world(true).run();
+    ASSERT_TRUE(only.is_ok()) << only.error()->what();
+    ASSERT_TRUE(later.is_ok()) << later.error()->what();
+    for (const char* dt : {"2026-07-30", "2026-07-31"}) {
+        SCOPED_TRACE(dt);
+        const HeldDay& a = on(only.value(), dt);
+        const HeldDay& b = on(later.value(), dt);
+        EXPECT_EQ(a.held.raw_symbol, "GCZ6");
+        EXPECT_EQ(a.source, BarSource::VENDOR) << "the vendor's own print, not a carried close";
+        EXPECT_EQ(a.close, 5000.0 + dt[9]);
+        EXPECT_EQ(b.source, a.source);
+        EXPECT_EQ(b.close, a.close);
+        EXPECT_EQ(warned(only.value(), std::string("GC.v.0 ") + dt + " fallback vendor_bar: GCZ6 has no contract "
+                                                                     "row and the vendor names it"),
+                  1u);
     }
 }

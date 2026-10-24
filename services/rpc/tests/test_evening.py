@@ -15,12 +15,13 @@ import pytest
 from algogators_rpc.services.desk import catchup as cu
 from algogators_rpc.services.desk import review_mail
 from algogators_rpc.services.desk.catchup import (ALERT, UP_TO_DATE, WAIT_PUBLISH, WAIT_TIME,
-                                                  CatchupScheduler, DataReady)
+                                                  CatchupScheduler, DataReady, combine_ready)
 from algogators_rpc.services.desk.config import (CatchupSettings, CommandSettings, ConfigError,
                                                  catchup_settings)
 from algogators_rpc.services.desk.jobs import RunResult
 from algogators_rpc.services.desk.trading_days import (CalendarError, calendar_from_dates,
                                                        load_calendar, parse_holidays,
+                                                       per_contract_rolls,
                                                        resolve_holidays_path,
                                                        staleness_tolerance_days)
 from test_catchup import (BINARY, DESK, DESK_PID, FRI, MODEL_PID, MON, SAT, SMTP, SUN, THU, TUE,
@@ -29,6 +30,7 @@ from test_catchup import (BINARY, DESK, DESK_PID, FRI, MODEL_PID, MON, SAT, SMTP
 HOLIDAYS = Path(__file__).resolve().parents[3] / "include" / "trade_ngin" / "core" / \
     "holidays.json"
 DATASET = "futures_ohlcv_1d"
+CONTRACTS = "futures_contract_ohlcv_1d"
 WED = dt.date(2026, 10, 7)
 REVIEWER = "dominickdupuy@ufl.edu"
 
@@ -40,6 +42,7 @@ class EveningDays(Days):
         super().__init__()
         self.ready = []            # DataReady rows
         self.bars = {}             # symbol -> last bar date
+        self.contract_bars = {}    # root -> last contract bar date (contract_ohlcv_1d)
         self.desk_edits = set()    # (pid, date) with a done save
         self.positions = {}        # (pid, book, date) -> {symbol: Line}
 
@@ -50,6 +53,9 @@ class EveningDays(Days):
 
     def last_bar_dates(self, symbols, since):
         return {s: d for s, d in self.bars.items() if s in symbols and d >= since}
+
+    def last_contract_bar_dates(self, roots, since):
+        return {r: d for r, d in self.contract_bars.items() if r in roots and d >= since}
 
     def desk_edited(self, pid, day):
         return (pid, day) in self.desk_edits
@@ -93,9 +99,20 @@ class EveningEngine(Engine):
         return res
 
 
-def ready(bar_date, finished, status="complete", missing=(), loaded=36):
-    return DataReady(DATASET, bar_date, 36, loaded, tuple(missing), status, "run-1",
+def ready(bar_date, finished, status="complete", missing=(), loaded=36, dataset=DATASET):
+    return DataReady(dataset, bar_date, 36, loaded, tuple(missing), status, "run-1",
                      finished.astimezone(UTC))
+
+
+def contract_ready(bar_date, finished, status="complete", missing=(), loaded=36):
+    """The per-contract pull's row (algogators PR #78): expected = the roots, missing = roots."""
+    return ready(bar_date, finished, status, missing, loaded, dataset=CONTRACTS)
+
+
+def switch_on(env, d=DESK, pid=DESK_PID, editable=True):
+    """portfolio.json of `d` turns per_contract_rolls on (rolls step 3)."""
+    (env.config / "portfolios" / d / "portfolio.json").write_text(json.dumps(
+        {"portfolio_id": pid, "qt": {"desk_editable": editable}, "per_contract_rolls": True}))
 
 
 def published_day(env, day):
@@ -719,7 +736,7 @@ def test_no_review_email_for_the_model_twin_or_after_the_cutoff(env):
 def test_evening_settings_from_the_environment():
     s = catchup_settings({})
     assert s.evening_run is True and s.review_recipients == (REVIEWER,)
-    assert s.data_alert_at == dt.time(6, 0) and s.data_ready_dataset == DATASET
+    assert s.data_alert_at == dt.time(6, 0) and s.data_ready_datasets == (DATASET,)
     assert s.today_not_before == dt.time(6, 45)       # the host .env sets 04:30
     assert s.desk_url == "https://algolens.algogators.com/"
     s = catchup_settings({"QT_EVENING_RUN": "0", "QT_REVIEW_RECIPIENTS": "a@x, b@y",
@@ -818,3 +835,210 @@ def test_every_desk_action_and_settings_change_e_mails_the_vp_and_president_once
     env.clock.t = at(SAT, 11, 35)
     sched.run_pass()
     assert log()[-1][1] == f"QT log: desk@x saved edits to {DESK_PID} 2026-10-12 (done)"
+
+
+# -- the per-contract data (rolls step 4, ROLLS_STEP1_PLAN section 5a) ------------------------------
+
+def test_the_datasets_are_a_list():
+    s = catchup_settings({"QT_DATA_READY_DATASET": f" {DATASET}, {CONTRACTS},{DATASET} "})
+    assert s.data_ready_datasets == (DATASET, CONTRACTS)
+    assert catchup_settings({"QT_DATA_READY_DATASET": " , "}).data_ready_datasets == (DATASET,)
+    with pytest.raises(ConfigError):
+        catchup_settings({"QT_DATA_READY_DATASET": "futures_ohlcv_1d;drop"})
+
+
+def test_per_contract_rolls_is_read_as_the_engine_reads_it(tmp_path):
+    (tmp_path / "portfolios" / "p").mkdir(parents=True)
+    assert per_contract_rolls(str(tmp_path), "p") is False                    # absent: off
+    (tmp_path / "defaults.json").write_text(json.dumps({"per_contract_rolls": True}))
+    assert per_contract_rolls(str(tmp_path), "p") is True
+    pj = tmp_path / "portfolios" / "p" / "portfolio.json"
+    pj.write_text(json.dumps({"per_contract_rolls": False}))                  # the portfolio's wins
+    assert per_contract_rolls(str(tmp_path), "p") is False
+    pj.write_text(json.dumps({"per_contract_rolls": "yes"}))                  # the engine refuses it
+    assert per_contract_rolls(str(tmp_path), "p") is True
+
+
+def test_combine_ready_is_the_oldest_date_every_dataset_has():
+    a = ready(SUN, at(MON, 4, 35), "partial", ("ZN",), loaded=35)
+    b = contract_ready(SAT, at(MON, 4, 50), "complete")
+    c = combine_ready([a, b])
+    assert c.bar_date == SAT and c.parts == (b,) and c.status == "complete"   # a is newer: in
+    assert c.finished_at == b.finished_at and c.missing == ()
+    d = contract_ready(SUN, at(MON, 4, 40), "partial", ("GC", "ZN"), loaded=34)
+    c = combine_ready([a, d])
+    assert c.bar_date == SUN and c.status == "partial" and c.parts == (a, d)
+    assert c.missing == ("ZN", "GC") and c.loaded == 69 and c.expected == 72
+    assert c.finished_at == d.finished_at                                     # the later of the two
+    assert combine_ready([d, contract_ready(SUN, at(MON, 4, 1), "failed")]).status == "failed"
+    assert combine_ready([a]) is a
+
+
+def test_switch_on_monday_waits_for_the_per_contract_row_with_the_same_alert(env):
+    """A late per-contract row delays the run like a late continuous row: a quiet wait before
+    06:00, then the run's alert and the daily check's, named for the per-contract dataset. The
+    switch-off twin never waits for it."""
+    weekend_done(env)
+    switch_on(env)
+    sched = env.make()
+    env.days.ready.append(ready(SUN, at(MON, 4, 35), loaded=26))
+    env.clock.t = at(MON, 4, 40)
+    out = dict(sched.run_pass())
+    assert calls(env) == [("model", TWIN, "2026-10-12")]
+    assert out[DESK].action == WAIT_TIME
+    assert out[DESK].message == f"today's run waits for data-ngin's {CONTRACTS} row for 2026-10-09"
+    env.clock.t = at(MON, 6, 0)
+    out = dict(sched.run_pass())
+    assert out[DESK].action == ALERT and out[DESK].reason == "data_not_ready"
+    assert f"has no {CONTRACTS} row for 2026-10-09 at 06:00 New York (no row at all)" in \
+        out[DESK].message
+    assert alerts(env) == [f"QT alert: {DESK_PID} 2026-10-12 data_not_ready",
+                           f"QT alert: {CONTRACTS} 2026-10-09 data_not_ready"]
+    env.days.ready.append(contract_ready(THU, at(MON, 6, 3)))   # an older bar date: still late
+    env.clock.t = at(MON, 6, 5)
+    out = dict(sched.run_pass())
+    assert out[DESK].action == ALERT and "(newest 2026-10-08 (complete))" in out[DESK].message
+    assert len(calls(env)) == 1
+    env.days.ready.append(contract_ready(SUN, at(MON, 6, 7)))
+    env.clock.t = at(MON, 6, 10)
+    sched.run_pass()
+    assert calls(env)[1:] == [("model", DESK, "2026-10-12")]
+    assert len(alerts(env)) == 2                                 # once a day each
+
+
+def test_two_late_datasets_are_both_named(env):
+    weekend_done(env)
+    switch_on(env)
+    env.days.ready.append(ready(THU, at(FRI, 4, 40)))
+    env.clock.t = at(MON, 6, 0)
+    out = dict(env.make(portfolios=(DESK,)).run_pass())
+    assert out[DESK].reason == "data_not_ready"
+    assert (f"no {DATASET}, {CONTRACTS} row for 2026-10-09 at 06:00 New York ({DATASET}: newest "
+            f"2026-10-08 (complete); {CONTRACTS}: no row at all)") in out[DESK].message
+    assert sorted(alerts(env)) == sorted([f"QT alert: {DESK_PID} 2026-10-12 data_not_ready",
+                                          f"QT alert: {DATASET} 2026-10-09 data_not_ready",
+                                          f"QT alert: {CONTRACTS} 2026-10-09 data_not_ready"])
+
+
+def test_switch_off_never_reads_the_per_contract_row(env):
+    weekend_done(env)
+    env.days.ready.append(ready(SUN, at(MON, 4, 35), loaded=26))
+    env.days.ready.append(contract_ready(SUN, at(MON, 4, 36), "failed", loaded=0))
+    env.clock.t = at(MON, 6, 30)
+    env.make().run_pass()
+    assert calls(env) == [("model", DESK, "2026-10-12"), ("model", TWIN, "2026-10-12")]
+    assert alerts(env) == []
+
+
+def test_a_late_per_contract_row_holds_the_evening_build_and_its_rebuild(env):
+    switch_on(env)
+    published_day(env, MON)
+    env.days.ready.append(ready(MON, at(MON, 20, 5)))
+    env.clock.t = at(MON, 20, 30)
+    sched = env.make(portfolios=(DESK,))
+    sched.run_pass()
+    assert calls(env) == []                                      # Monday's contract bars not in
+    env.days.ready.append(contract_ready(MON, at(MON, 20, 40)))
+    env.clock.t = at(MON, 20, 45)
+    sched.run_pass()
+    assert calls(env) == [("model", DESK, "2026-10-13")]
+    env.clock.t = at(MON, 21, 0)
+    sched.run_pass()
+    assert len(calls(env)) == 1                                  # the same finished_at: nothing
+    env.days.ready.append(contract_ready(MON, at(MON, 21, 10)))    # a re-pull of the contract bars
+    env.clock.t = at(MON, 21, 15)
+    sched.run_pass()
+    assert calls(env)[1:] == [("model", DESK, "2026-10-13")]
+    assert reviews(env)[-1][0].endswith("- updated")
+
+
+def test_a_partial_per_contract_row_is_judged_on_the_contract_bars(env):
+    switch_on(env)
+    weekend_done(env)
+    env.days.ready.append(ready(SUN, at(MON, 4, 35), loaded=26))
+    env.days.ready.append(contract_ready(SUN, at(MON, 4, 36), "partial", ("GC",), loaded=35))
+    env.days.bars = {"GC.v.0": SUN}                              # the continuous bars are no help
+    env.days.contract_bars = {"GC": dt.date(2026, 10, 2)}        # 9 days before Sunday
+    env.clock.t = at(MON, 4, 40)
+    sched = env.make(portfolios=(DESK,))
+    out = dict(sched.run_pass())
+    assert out[DESK].action == ALERT and out[DESK].reason == "data_stale"
+    assert out[DESK].message.startswith(f"{CONTRACTS} 2026-10-11 is partial (35 of 36); 1 missing")
+    assert "GC (last bar 2026-10-02)" in out[DESK].message and calls(env) == []
+    env.days.contract_bars = {"GC": FRI}                         # within the tolerance
+    env.days.ready.append(contract_ready(SUN, at(MON, 4, 50), "partial", ("GC",), loaded=35))
+    env.clock.t = at(MON, 4, 55)
+    sched.run_pass()
+    assert calls(env) == [("model", DESK, "2026-10-12")]
+    (_, body), = reviews(env, MON)
+    assert "GC: last bar 2026-10-09" in body
+
+
+def test_a_failed_per_contract_row_alerts_and_builds_nothing(env):
+    switch_on(env)
+    weekend_done(env)
+    env.days.ready.append(ready(SUN, at(MON, 4, 35), loaded=26))
+    env.days.ready.append(contract_ready(SUN, at(MON, 4, 36), "failed", loaded=0))
+    env.clock.t = at(MON, 4, 40)
+    out = dict(env.make(portfolios=(DESK,)).run_pass())
+    assert env.engine.calls == []
+    assert out[DESK].reason == "data_failed"
+    assert out[DESK].message.startswith(f"data-ngin's {CONTRACTS} pull for 2026-10-11 failed")
+
+
+# -- the per-contract row's missing roots (HD on R4A's open question 3; R4A fix round 1) --------------
+
+def _monday_contract(env, status, missing, loaded, **catchup):
+    switch_on(env)
+    weekend_done(env)
+    env.days.ready.append(ready(SUN, at(MON, 4, 35), loaded=26))
+    env.days.ready.append(contract_ready(SUN, at(MON, 4, 36), status, missing, loaded=loaded))
+    env.days.contract_bars = {r: FRI for r in ("GC", "ZN", "CL", "SI")}   # within the tolerance
+    env.clock.t = at(MON, 4, 40)
+    return dict(env.make(portfolios=(DESK,), **catchup).run_pass())
+
+
+def test_one_or_two_missing_roots_run_with_an_alert(env):
+    out = _monday_contract(env, "partial", ("GC", "ZN"), 34)
+    assert calls(env) == [("model", DESK, "2026-10-12")]
+    assert out[DESK].action != ALERT
+    assert alerts(env) == [f"QT alert: {DESK_PID} 2026-10-12 contract_data_partial"]
+
+
+def test_a_per_contract_row_missing_more_roots_than_the_setting_holds_the_run(env):
+    out = _monday_contract(env, "partial", ("GC", "ZN", "CL"), 33)
+    assert env.engine.calls == []
+    assert out[DESK].action == ALERT and out[DESK].reason == "data_stale"
+    assert "3 root(s) missing, more than QT_CONTRACT_DATA_READY_MAX_MISSING=2" in out[DESK].message
+
+
+def test_a_partial_zero_of_36_per_contract_row_is_a_failed_pull(env):
+    """No names in `missing`, 0 of 36 loaded: the count is expected - loaded."""
+    out = _monday_contract(env, "partial", (), 0)
+    assert env.engine.calls == []
+    assert out[DESK].reason == "data_stale"
+    assert "36 root(s) missing" in out[DESK].message
+
+
+def test_the_missing_root_setting_raises_the_limit(env):
+    out = _monday_contract(env, "partial", ("GC", "ZN", "CL"), 33, contract_data_ready_max_missing=3)
+    assert calls(env) == [("model", DESK, "2026-10-12")]
+    assert alerts(env) == [f"QT alert: {DESK_PID} 2026-10-12 contract_data_partial"]
+    s = catchup_settings({"QT_CONTRACT_DATA_READY_MAX_MISSING": "5"})
+    assert s.contract_data_ready_max_missing == 5
+    assert catchup_settings({}).contract_data_ready_max_missing == 2
+    with pytest.raises(ConfigError):
+        catchup_settings({"QT_CONTRACT_DATA_READY_MAX_MISSING": "-1"})
+
+
+def test_the_continuous_rows_rule_is_unchanged(env):
+    """Switch off: a "partial, 0 of 36" continuous row with every last bar within the tolerance runs, as
+    before (the count rule is the per-contract row's only; an open question for HD)."""
+    weekend_done(env)
+    names = ("ES", "ZN", "GC")
+    env.days.bars = {s: FRI for s in names}
+    env.days.ready.append(ready(SUN, at(MON, 4, 35), "partial", names, loaded=0))
+    env.clock.t = at(MON, 4, 40)
+    env.make(portfolios=(DESK,)).run_pass()
+    assert calls(env) == [("model", DESK, "2026-10-12")]
+    assert alerts(env) == []

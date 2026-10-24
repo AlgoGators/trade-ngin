@@ -581,6 +581,98 @@ TEST_F(LiveSizingCapital, TheBookIsSizedOnTheConsumedSettlementPhase5Finalises) 
     EXPECT_EQ(sized.priced, 2);
 }
 
+// Rolls step 4 (the live account-value rebuild, plan section 5 step 4): with per_contract_rolls on, a stored roll
+// day is not 0. Day T-1's net, which the sizing read rebuilds and PHASE 5 finalises, books the old contract's own move
+// on a roll bar, from the target's close on the bar that confirms a vendor switch, the old contract's move up to the
+// first consumed bar after a withheld roll bar, and the held contract's own move on a switch bar and on a switch the
+// next bar reverts. T-1 = Fri 2026-05-01 (day 4); each case is one symbol's consumed bars:
+//   KNOWN roll bar on T-1        MES 2 x (7,231.25 old - 7,230.00) x 5          =  12.50  (raw: 2 x 22.50 x 5 = 225)
+//   vendor switch confirmed T-1  ZN  1 x (111.25 - 111.00 target's close) x 1,000 = 250.00 (raw: 343.75)
+//   roll bar withheld (T-2)      ZN  1 x (110.10 old - 110.00) x 1,000           = 100.00 (raw: 1,250)
+//   switch bar on T-1            MES 2 x (7,240 - 7,230) x 5 (the held contract) = 100.00
+//   switch reverted on T-1       MES 2 x (7,240 - 7,230) x 5                     = 100.00
+TEST_F(LiveSizingCapital, APerContractRollDayIsSizedAndFinalisedOnTheRealMove) {
+    LivePnLManager pnl(500'000.0, InstrumentRegistry::instance());
+    const auto point = [&](const std::string& s) { return pnl.get_point_value(s); };
+    auto bar = [](const std::string& symbol, int day, double close, const std::string& id,
+                  std::optional<RollFrom> from = std::nullopt) {
+        Bar b;
+        b.symbol = symbol;
+        b.timestamp = std::chrono::sys_days{std::chrono::year{2026} / std::chrono::month{4} / std::chrono::day{27}} +
+                      std::chrono::hours(24 * day);
+        b.open = b.high = b.low = b.close = Decimal(close);
+        b.volume = 100000.0;
+        b.instrument_id = id;
+        b.roll_from = std::move(from);
+        return b;
+    };
+    struct Case {
+        const char* name;
+        std::vector<Bar> consumed;
+        double quantity;
+        double expected;
+    };
+    const std::vector<Case> cases = {
+        {"KNOWN roll bar on T-1",
+         {bar("MES.v.0", 2, 7215.00, "A"), bar("MES.v.0", 3, 7230.00, "A"),
+          bar("MES.v.0", 4, 7252.50, "B", RollFrom{7231.25, "A", RollFromKind::KNOWN, ""})},
+         2.0, 12.5},
+        {"vendor switch confirmed by T-1",
+         {bar("ZN.v.0", 2, 110.80, "Z1"),
+          bar("ZN.v.0", 3, 110.90625, "Z1", RollFrom{111.00, "Z2", RollFromKind::AWAITS_NEXT, ""}),
+          bar("ZN.v.0", 4, 111.25, "Z2", RollFrom{110.95, "Z1", RollFromKind::AFTER_ROLL, ""})},
+         1.0, 250.0},
+        {"roll bar withheld, T-1 the first consumed bar after it",
+         {bar("ZN.v.0", 2, 110.00, "Z1"),
+          bar("ZN.v.0", 4, 111.25, "Z2", RollFrom{110.10, "Z1", RollFromKind::AFTER_ROLL, ""})},
+         1.0, 100.0},
+        {"switch bar on T-1",
+         {bar("MES.v.0", 3, 7230.00, "A"),
+          bar("MES.v.0", 4, 7240.00, "A", RollFrom{7300.00, "B", RollFromKind::AWAITS_NEXT, ""})},
+         2.0, 100.0},
+        {"switch on T-2 the T-1 bar reverts",
+         {bar("MES.v.0", 2, 7215.00, "A"),
+          bar("MES.v.0", 3, 7230.00, "A", RollFrom{7290.00, "B", RollFromKind::AWAITS_NEXT, ""}),
+          bar("MES.v.0", 4, 7240.00, "A")},
+         2.0, 100.0},
+        // Ruling 19 "vendor": the switch bar is the target's own bar; the same moves are booked.
+        {"vendor setting: switch bar on T-1",
+         {bar("MES.v.0", 3, 7230.00, "A"),
+          bar("MES.v.0", 4, 7300.00, "B", RollFrom{7240.00, "A", RollFromKind::AWAITS_NEXT_VENDOR, ""})},
+         2.0, 100.0},
+        {"vendor setting: switch confirmed by T-1",
+         {bar("ZN.v.0", 2, 110.80, "Z1"),
+          bar("ZN.v.0", 3, 111.00, "Z2", RollFrom{110.90625, "Z1", RollFromKind::AWAITS_NEXT_VENDOR, ""}),
+          bar("ZN.v.0", 4, 111.25, "Z2", RollFrom{110.95, "Z1", RollFromKind::AFTER_ROLL, ""})},
+         1.0, 250.0},
+        {"vendor setting: switch on T-2 the T-1 bar reverts",
+         {bar("MES.v.0", 2, 7215.00, "A"),
+          bar("MES.v.0", 3, 7290.00, "B", RollFrom{7230.00, "A", RollFromKind::AWAITS_NEXT_VENDOR, ""}),
+          bar("MES.v.0", 4, 7240.00, "A")},
+         2.0, 100.0},
+    };
+    for (const auto& c : cases) {
+        const std::string symbol = c.consumed.front().symbol;
+        const std::unordered_map<std::string, double> raw_t1{
+            {symbol, static_cast<double>(c.consumed.back().close)}};
+        const std::unordered_map<std::string, double> raw_t2{
+            {symbol, static_cast<double>(c.consumed[c.consumed.size() - 2].close)}};
+        const auto status = roll_series::roll_status_of(c.consumed);
+        const auto settlement = consumed_t1_settlement(c.consumed, "2026-05-01", status, {}, raw_t2, raw_t1, {});
+        EXPECT_FALSE(settlement.zero_pnl_symbols.count(symbol)) << c.name << ": not a zero day";
+        const std::vector<std::unordered_map<std::string, Position>> books = {{{symbol, held(symbol, c.quantity)}}};
+        const auto sized = live_sizing_equity(true, 500'000.0, 0.0, books, settlement.t1_close_prices,
+                                              settlement.t2_close_prices, point, settlement.zero_pnl_symbols);
+        auto f = pnl.finalize_previous_day({held(symbol, c.quantity)}, settlement.t1_close_prices,
+                                           settlement.t2_close_prices, 500'000.0, 0.0,
+                                           LivePnLManager::UnrealizedPolicy::SETTLED, settlement.zero_pnl_symbols);
+        ASSERT_TRUE(f.is_ok()) << f.error()->what();
+        EXPECT_NEAR(f.value().finalized_daily_pnl, c.expected, 1e-9) << c.name;
+        EXPECT_NEAR(sized.t1_settlement, c.expected, 1e-9) << c.name << ": the sizing rebuild reads the real move";
+        EXPECT_NEAR(sized.equity, 500'000.0 + c.expected, 1e-9) << c.name;
+    }
+}
+
 // Without a Day T-1 row STEP 4 updates nothing and STEP 5 reads the latest stored row before the run date: the
 // figure is that value, whatever the books say.
 TEST_F(LiveSizingCapital, WithoutADayT1RowTheLatestStoredValueIsTheFigure) {

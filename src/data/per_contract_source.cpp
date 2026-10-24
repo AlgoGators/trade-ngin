@@ -20,9 +20,22 @@ PerContractSource& PerContractSource::instance() {
     return source;
 }
 
-void PerContractSource::enable(FuturesCalendar calendar) {
+const char* to_string(SwitchBar switch_bar) {
+    return switch_bar == SwitchBar::VENDOR ? "vendor" : "held";
+}
+
+std::optional<SwitchBar> switch_bar_from(const std::string& name) {
+    if (name == "held")
+        return SwitchBar::HELD;
+    if (name == "vendor")
+        return SwitchBar::VENDOR;
+    return std::nullopt;
+}
+
+void PerContractSource::enable(FuturesCalendar calendar, SwitchBar switch_bar) {
     std::lock_guard<std::mutex> lock(mutex_);
     calendar_ = std::move(calendar);
+    switch_bar_ = switch_bar;
     enabled_ = true;
     micros_warned_ = false;
 }
@@ -30,8 +43,14 @@ void PerContractSource::enable(FuturesCalendar calendar) {
 void PerContractSource::disable() {
     std::lock_guard<std::mutex> lock(mutex_);
     calendar_.reset();
+    switch_bar_ = SwitchBar::HELD;
     enabled_ = false;
     micros_warned_ = false;
+}
+
+SwitchBar PerContractSource::switch_bar() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return switch_bar_;
 }
 
 bool PerContractSource::enabled() const {
@@ -51,10 +70,18 @@ bool PerContractSource::first_micros_warning() {
     return first;
 }
 
-Result<void> configure_per_contract_source(bool per_contract_rolls) {
+Result<void> configure_per_contract_source(bool per_contract_rolls, const std::string& switch_bar) {
     if (!per_contract_rolls) {
         PerContractSource::instance().disable();
         return Result<void>();
+    }
+    const std::optional<SwitchBar> setting = switch_bar_from(switch_bar);
+    if (!setting) {
+        PerContractSource::instance().disable();
+        return make_error<void>(
+            ErrorCode::INVALID_ARGUMENT,
+            "per_contract_switch_bar must be \"held\" or \"vendor\", got \"" + switch_bar + "\"",
+            "contract_rolls");
     }
     const std::string path = FuturesCalendar::resolve_path();
     auto calendar = FuturesCalendar::load(path);
@@ -64,10 +91,16 @@ Result<void> configure_per_contract_source(bool per_contract_rolls) {
                                 "loaded: " + std::string(calendar.error()->what()),
                                 "contract_rolls");
     }
-    PerContractSource::instance().enable(calendar.value());
-    INFO("PER_CONTRACT_ROLLS on: the futures bar source hands out the held contract's own bars "
-         "(HD's roll rule, contract_roll_rule.hpp), roll bars carrying the old contract's close; "
-         "futures calendar " + path);
+    PerContractSource::instance().enable(calendar.value(), *setting);
+    INFO(
+        "PER_CONTRACT_ROLLS on: the futures bar source hands out the held contract's own bars "
+        "(HD's roll rule, contract_roll_rule.hpp), roll bars carrying the old contract's close; "
+        "futures calendar " +
+        path + "; per_contract_switch_bar " + to_string(*setting) +
+        " (an unconfirmed vendor switch bar is " +
+        (*setting == SwitchBar::VENDOR ? "the vendor's contract's own bar"
+                                       : "the held contract's own bar") +
+        ")");
     return Result<void>();
 }
 
@@ -83,7 +116,8 @@ std::string micros_warning_line() {
 }
 
 Result<std::vector<SourceBar>> bars_of_series(const HeldSeries& series,
-                                              const std::map<Day, std::string>& window) {
+                                              const std::map<Day, std::string>& window,
+                                              SwitchBar switch_bar) {
     using Bars = std::vector<SourceBar>;
     Bars out;
     out.reserve(window.size());
@@ -102,13 +136,27 @@ Result<std::vector<SourceBar>> bars_of_series(const HeldSeries& series,
             // A vendor switch the next bar did not confirm (or the range ends on it): the held
             // contract's own bar, the field naming the target it would have rolled into.
             const TentativeRoll& t = *d.tentative;
-            b.open = d.open;
-            b.high = d.high;
-            b.low = d.low;
-            b.close = d.close;
-            b.volume = static_cast<double>(d.volume);
-            b.instrument_id = held_id;
-            b.roll_from = RollFrom{t.bar.close, t.bar.instrument_id, RollFromKind::AWAITS_NEXT};
+            if (switch_bar == SwitchBar::VENDOR) {
+                // Ruling 19 "vendor": the bar of the contract the vendor switched to, the field
+                // naming the held contract (its close and id here).
+                b.open = t.bar.open;
+                b.high = t.bar.high;
+                b.low = t.bar.low;
+                b.close = t.bar.close;
+                b.volume = static_cast<double>(t.bar.volume);
+                b.instrument_id = t.bar.instrument_id;
+                b.roll_from =
+                    RollFrom{d.close, held_id, RollFromKind::AWAITS_NEXT_VENDOR, ymd(d.date)};
+            } else {
+                b.open = d.open;
+                b.high = d.high;
+                b.low = d.low;
+                b.close = d.close;
+                b.volume = static_cast<double>(d.volume);
+                b.instrument_id = held_id;
+                b.roll_from = RollFrom{t.bar.close, t.bar.instrument_id, RollFromKind::AWAITS_NEXT,
+                                       ymd(d.date)};
+            }
         } else if (d.roll && d.awaits_next_bar) {
             // A vendor switch the next bar confirms: handed out exactly as above, because a run
             // whose bars end here cannot tell the two apart. The old contract is still held on it.
@@ -118,13 +166,25 @@ Result<std::vector<SourceBar>> bars_of_series(const HeldSeries& series,
                                             ": a vendor roll awaiting the next bar has no old bar",
                                         "contract_rolls");
             }
-            b.open = d.old_bar->open;
-            b.high = d.old_bar->high;
-            b.low = d.old_bar->low;
-            b.close = d.old_bar->close;
-            b.volume = static_cast<double>(d.old_bar->volume);
-            b.instrument_id = d.old_bar->instrument_id;
-            b.roll_from = RollFrom{d.close, d.bar_id, RollFromKind::AWAITS_NEXT};
+            if (switch_bar == SwitchBar::VENDOR) {
+                // Ruling 19 "vendor": the target's own bar, the field naming the old contract.
+                b.open = d.open;
+                b.high = d.high;
+                b.low = d.low;
+                b.close = d.close;
+                b.volume = static_cast<double>(d.volume);
+                b.instrument_id = d.bar_id;
+                b.roll_from = RollFrom{d.old_bar->close, d.old_bar->instrument_id,
+                                       RollFromKind::AWAITS_NEXT_VENDOR, ymd(d.date)};
+            } else {
+                b.open = d.old_bar->open;
+                b.high = d.old_bar->high;
+                b.low = d.old_bar->low;
+                b.close = d.old_bar->close;
+                b.volume = static_cast<double>(d.old_bar->volume);
+                b.instrument_id = d.old_bar->instrument_id;
+                b.roll_from = RollFrom{d.close, d.bar_id, RollFromKind::AWAITS_NEXT, ymd(d.date)};
+            }
             held_close = d.old_bar->close;
             held_id = d.old_bar->instrument_id;
         } else {
@@ -144,6 +204,7 @@ Result<std::vector<SourceBar>> bars_of_series(const HeldSeries& series,
             if (d.roll) {
                 RollFrom from;
                 from.kind = RollFromKind::KNOWN;
+                from.date = ymd(d.date);
                 if (d.old_close) {
                     from.close = *d.old_close;
                     from.instrument_id = d.old_id;
@@ -173,7 +234,8 @@ Result<std::vector<SourceBar>> bars_of_series(const HeldSeries& series,
                 // A bar after a roll, up to the next one: the old contract's close here, for a
                 // consumer that withheld the roll bar and the bars since (it books the roll on its
                 // first consumed bar, HD 10-23).
-                b.roll_from = RollFrom{*d.left_close, d.left_id, RollFromKind::AFTER_ROLL};
+                b.roll_from = RollFrom{*d.left_close, d.left_id, RollFromKind::AFTER_ROLL,
+                                       ymd(d.left_roll_date)};
             }
         }
         auto w = window.find(d.date);
@@ -288,6 +350,7 @@ Result<std::shared_ptr<arrow::Table>> source_bars_to_arrow(const std::vector<Sou
     arrow::DoubleBuilder roll_close_builder(pool);
     arrow::StringBuilder roll_id_builder(pool);
     arrow::Int8Builder roll_kind_builder(pool);
+    arrow::StringBuilder roll_date_builder(pool);
     auto failed = [](const std::string& operation) {
         return make_error<Table>(ErrorCode::CONVERSION_ERROR,
                                  "Arrow builder error during " + operation + " (per_contract_rolls)",
@@ -315,16 +378,18 @@ Result<std::shared_ptr<arrow::Table>> source_bars_to_arrow(const std::vector<Sou
                 if (roll_close_builder.Append(bar.roll_from->close) != arrow::Status::OK() ||
                     roll_id_builder.Append(bar.roll_from->instrument_id) != arrow::Status::OK() ||
                     roll_kind_builder.Append(static_cast<int8_t>(bar.roll_from->kind)) !=
-                        arrow::Status::OK()) {
+                        arrow::Status::OK() ||
+                    roll_date_builder.Append(bar.roll_from->date) != arrow::Status::OK()) {
                     return failed("append");
                 }
             } else if (roll_close_builder.AppendNull() != arrow::Status::OK() ||
                        roll_id_builder.AppendNull() != arrow::Status::OK() ||
-                       roll_kind_builder.AppendNull() != arrow::Status::OK()) {
+                       roll_kind_builder.AppendNull() != arrow::Status::OK() ||
+                       roll_date_builder.AppendNull() != arrow::Status::OK()) {
                 return failed("append");
             }
         }
-        std::vector<std::shared_ptr<arrow::Array>> arrays(11);
+        std::vector<std::shared_ptr<arrow::Array>> arrays(12);
         if (timestamp_builder.Finish(&arrays[0]) != arrow::Status::OK() ||
             symbol_builder.Finish(&arrays[1]) != arrow::Status::OK() ||
             open_builder.Finish(&arrays[2]) != arrow::Status::OK() ||
@@ -335,7 +400,8 @@ Result<std::shared_ptr<arrow::Table>> source_bars_to_arrow(const std::vector<Sou
             instrument_id_builder.Finish(&arrays[7]) != arrow::Status::OK() ||
             roll_close_builder.Finish(&arrays[8]) != arrow::Status::OK() ||
             roll_id_builder.Finish(&arrays[9]) != arrow::Status::OK() ||
-            roll_kind_builder.Finish(&arrays[10]) != arrow::Status::OK()) {
+            roll_kind_builder.Finish(&arrays[10]) != arrow::Status::OK() ||
+            roll_date_builder.Finish(&arrays[11]) != arrow::Status::OK()) {
             return failed("finish");
         }
         auto schema = arrow::schema({arrow::field("time", arrow::timestamp(arrow::TimeUnit::SECOND)),
@@ -348,7 +414,8 @@ Result<std::shared_ptr<arrow::Table>> source_bars_to_arrow(const std::vector<Sou
                                      arrow::field("instrument_id", arrow::utf8()),
                                      arrow::field("roll_from_close", arrow::float64()),
                                      arrow::field("roll_from_id", arrow::utf8()),
-                                     arrow::field("roll_from_kind", arrow::int8())});
+                                     arrow::field("roll_from_kind", arrow::int8()),
+                                     arrow::field("roll_from_date", arrow::utf8())});
         return Result<Table>(arrow::Table::Make(schema, arrays));
     } catch (const std::exception& e) {
         return make_error<Table>(ErrorCode::CONVERSION_ERROR,
@@ -388,11 +455,9 @@ size_t drop_before_series_start(const std::string& root, std::map<Day, std::stri
     return before_start;
 }
 
-Result<std::vector<SourceBar>> per_contract_bars(pqxx::transaction_base& txn,
-                                                 const std::string& root,
-                                                 const std::string& start_ts,
-                                                 const std::string& end_ts,
-                                                 const FuturesCalendar& calendars) {
+Result<std::vector<SourceBar>> per_contract_bars(
+    pqxx::transaction_base& txn, const std::string& root, const std::string& start_ts,
+    const std::string& end_ts, const FuturesCalendar& calendars, SwitchBar switch_bar) {
     using Bars = std::vector<SourceBar>;
     std::map<Day, std::string> window;
     try {
@@ -430,7 +495,7 @@ Result<std::vector<SourceBar>> per_contract_bars(pqxx::transaction_base& txn,
     if (series.is_error()) {
         return make_error<Bars>(series.error()->code(), series.error()->what(), "contract_rolls");
     }
-    return bars_of_series(series.value().series(), window);
+    return bars_of_series(series.value().series(), window, switch_bar);
 }
 
 }  // namespace trade_ngin::contract_rolls

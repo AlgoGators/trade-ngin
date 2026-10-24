@@ -50,7 +50,56 @@ std::filesystem::path template_with_switch(const std::string& value) {
     return dst;
 }
 
+/// A copy of config_template with the conservative portfolio.json's `key` set to `value` (raw JSON
+/// text; empty removes the key).
+std::filesystem::path template_with(const std::string& key, const std::string& value) {
+    namespace fs = std::filesystem;
+    const fs::path src = template_dir();
+    const fs::path dst = fs::temp_directory_path() / ("r4a_setting_" + std::to_string(::getpid()));
+    fs::remove_all(dst);
+    fs::copy(src, dst, fs::copy_options::recursive);
+    const fs::path pj = dst / "portfolios/conservative/portfolio.json";
+    nlohmann::json j = nlohmann::json::parse(std::ifstream(pj));
+    if (value.empty()) {
+        j.erase(key);
+    } else {
+        j[key] = nlohmann::json::parse(value);
+    }
+    std::ofstream(pj) << j.dump(2);
+    return dst;
+}
+
 }  // namespace
+
+// Rolls step 4, ruling 19: per_contract_switch_bar is "held" in both templates, "held" when absent,
+// "vendor" when set so, refused otherwise, and not written to the stored run metadata.
+TEST(PerContractRollsSwitch, TheSwitchBarSettingIsHeldInBothTemplatesAndParsedStrictly) {
+    const auto dir = template_dir();
+    ASSERT_FALSE(dir.empty()) << "config_template/ not found; this test must not skip";
+    for (const char* book : {"base", "conservative"}) {
+        std::ifstream in(dir / "portfolios" / book / "portfolio.json");
+        const nlohmann::json j = nlohmann::json::parse(in);
+        ASSERT_TRUE(j.contains("per_contract_switch_bar")) << book;
+        EXPECT_EQ(j.at("per_contract_switch_bar"), "held") << book;
+    }
+    for (const auto& [value, expected] : std::vector<std::pair<std::string, std::string>>{
+             {"\"vendor\"", "vendor"}, {"\"held\"", "held"}, {"", "held"}}) {
+        const auto d = template_with("per_contract_switch_bar", value);
+        auto loaded = ConfigLoader::load(d, "conservative");
+        ASSERT_TRUE(loaded.is_ok()) << loaded.error()->what();
+        EXPECT_EQ(loaded.value().per_contract_switch_bar, expected) << value;
+        EXPECT_FALSE(loaded.value().to_json().contains("per_contract_switch_bar"));
+        std::filesystem::remove_all(d);
+    }
+    for (const char* bad : {"\"target\"", "true", "1"}) {
+        const auto d = template_with("per_contract_switch_bar", bad);
+        auto loaded = ConfigLoader::load(d, "conservative");
+        ASSERT_TRUE(loaded.is_error()) << bad;
+        EXPECT_NE(std::string(loaded.error()->what()).find("per_contract_switch_bar"),
+                  std::string::npos);
+        std::filesystem::remove_all(d);
+    }
+}
 
 TEST(PerContractRollsSwitch, OffInBothTemplatesAndNotInTheStoredConfig) {
     const auto dir = template_dir();

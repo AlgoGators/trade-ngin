@@ -1086,7 +1086,8 @@ int main(int argc, char* argv[]) {
 
         // Rolls step 3: portfolio.json's per_contract_rolls turns the futures bar source onto the
         // held contract's own bars (data/per_contract_source.hpp); off, every path is today's.
-        if (auto source = contract_rolls::configure_per_contract_source(app_config.per_contract_rolls);
+        if (auto source = contract_rolls::configure_per_contract_source(
+                app_config.per_contract_rolls, app_config.per_contract_switch_bar);
             source.is_error()) {
             std::cerr << source.error()->what() << std::endl;
             ERROR(source.error()->what());
@@ -2268,7 +2269,9 @@ int main(int argc, char* argv[]) {
                  "->" + r.incoming_id + " closing_px=" + std::to_string(r.closing_price) +
                  " opening_px=" + std::to_string(r.opening_price) +
                  " change_bars=" + std::to_string(r.change_bars) +
-                 ": the next consumed bar kept the new id; the legs are booked on this run");
+                 (r.known_on_bar ? ": a per-contract roll known on its bar"
+                                 : ": the next consumed bar kept the new id") +
+                 "; the legs are booked on this run");
         }
 
         // ========================================

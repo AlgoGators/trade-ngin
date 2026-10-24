@@ -1134,8 +1134,8 @@ Result<void> BacktestCoordinator::process_portfolio_day(
                      "->" + st.held_id + " closing_px=" + std::to_string(st.last_close_before_change) +
                      " opening_px=" + std::to_string(st.change_bar_close) +
                      " change_bars=" + std::to_string(st.bars_pending) +
-                     (st.change ? ": a per-contract roll known on its bar"
-                                : ": the next consumed bar kept the new id") +
+                     (st.mark_close ? ": a per-contract roll known on its bar"
+                                    : ": the next consumed bar kept the new id") +
                      "; the legs are booked on this cycle");
                 for (const auto& [strategy_id, book] : start_of_bar_book) {
                     const auto held = book.find(symbol);

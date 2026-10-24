@@ -129,8 +129,9 @@ Result<std::vector<Bar>> DataConversionUtils::arrow_table_to_bars(
             instrument_id_array = id_column->chunk(0);
         }
         // Rolls step 3: the per-contract source's roll field (Bar::roll_from), three columns that
-        // only its table carries, NULL where the field is absent.
-        std::shared_ptr<arrow::Array> roll_close_array, roll_id_array, roll_kind_array;
+        // only its table carries, NULL where the field is absent; step 4 adds roll_from_date.
+        std::shared_ptr<arrow::Array> roll_close_array, roll_id_array, roll_kind_array,
+            roll_date_array;
         if (auto c = table->GetColumnByName("roll_from_close"); c != nullptr) {
             roll_close_array = c->chunk(0);
             auto i = table->GetColumnByName("roll_from_id");
@@ -143,6 +144,9 @@ Result<std::vector<Bar>> DataConversionUtils::arrow_table_to_bars(
             }
             roll_id_array = i->chunk(0);
             roll_kind_array = k->chunk(0);
+            if (auto dc = table->GetColumnByName("roll_from_date"); dc != nullptr) {
+                roll_date_array = dc->chunk(0);
+            }
         }
 
         // Prepare result vector
@@ -204,15 +208,25 @@ Result<std::vector<Bar>> DataConversionUtils::arrow_table_to_bars(
                         "DataConversionUtils");
                 }
                 const int8_t kind = std::static_pointer_cast<arrow::Int8Array>(roll_kind_array)->Value(i);
-                if (kind < 0 || kind > static_cast<int8_t>(RollFromKind::AFTER_ROLL)) {
+                if (kind < 0 || kind > static_cast<int8_t>(RollFromKind::AWAITS_NEXT_VENDOR)) {
                     return make_error<std::vector<Bar>>(
                         ErrorCode::CONVERSION_ERROR,
                         "Unknown roll_from_kind " + std::to_string(kind) + " at row " +
                             std::to_string(i),
                         "DataConversionUtils");
                 }
-                bar.roll_from =
-                    RollFrom{close_from.value(), id_from.value(), static_cast<RollFromKind>(kind)};
+                bar.roll_from = RollFrom{
+                    close_from.value(), id_from.value(), static_cast<RollFromKind>(kind), {}};
+                if (roll_date_array && !roll_date_array->IsNull(i)) {
+                    auto date_from = extract_string(roll_date_array, i);
+                    if (date_from.is_error()) {
+                        return make_error<std::vector<Bar>>(
+                            ErrorCode::CONVERSION_ERROR,
+                            "Error extracting the roll field's date at row " + std::to_string(i),
+                            "DataConversionUtils");
+                    }
+                    bar.roll_from->date = date_from.value();
+                }
             }
 
             bars.push_back(bar);

@@ -151,7 +151,8 @@ int main() {
 
         // Rolls step 3: portfolio.json's per_contract_rolls turns the futures bar source onto the
         // held contract's own bars (data/per_contract_source.hpp); off, every path is today's.
-        if (auto source = contract_rolls::configure_per_contract_source(app_config.per_contract_rolls);
+        if (auto source = contract_rolls::configure_per_contract_source(
+                app_config.per_contract_rolls, app_config.per_contract_switch_bar);
             source.is_error()) {
             std::cerr << source.error()->what() << std::endl;
             ERROR(source.error()->what());

@@ -95,6 +95,27 @@ TEST(ContractBook, AnIdInsideTheContractsSpanNamesItOnADateWithNoRow) {
     EXPECT_EQ(c->key->raw_symbol, "UBU4");
 }
 
+// Rolls step 4 (R3 audit A note 1): past the contract's last row read, up to its expiration, the id still
+// names it, so the answer for a day does not depend on how far the rows read reach: a live run whose
+// contract bars of its last day are not loaded yet reads what a later backtest reads. After the
+// expiration nothing is named.
+TEST(ContractBook, AnIdNamesItsContractPastItsLastRowUpToItsExpiration) {
+    const std::vector<ContractBar> rows = {
+        bar("GC", "GCZ6", "41271", "2026-10-01", "2026-12-29", 4170.0, 150000),
+        bar("GC", "GCZ6", "41271", "2026-10-02", "2026-12-29", 4172.1, 153044),
+    };
+    auto book = ContractBook::build(rows);
+    ASSERT_TRUE(book.is_ok());
+    for (const char* day : {"2026-10-05", "2026-12-29"}) {
+        const Contract* c = book.value().named_by_id("GC", "41271", d(day));
+        ASSERT_NE(c, nullptr) << day;
+        EXPECT_EQ(c->key->raw_symbol, "GCZ6") << day;
+        EXPECT_EQ(c->bar_on(d(day)), nullptr) << day;
+    }
+    EXPECT_EQ(book.value().named_by_id("GC", "41271", d("2026-12-30")), nullptr) << "past its expiration";
+    EXPECT_EQ(book.value().named_by_id("GC", "41271", d("2026-09-30")), nullptr) << "before its first row";
+}
+
 TEST(ContractBook, ANullExpirationIsRefusedByName) {
     const std::vector<ContractBar> rows = {
         bar("GC", "GCZ6", "41271", "2026-10-01", "", 4170.0, 150000),

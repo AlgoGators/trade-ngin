@@ -187,7 +187,7 @@ TEST_F(BacktestChangeBarPnlTest, ChangeAndWithheldBarsBookNothingAndRowsCarryThe
 namespace {
 
 Bar rolled(Bar b, double old_close, const char* old_id, RollFromKind kind) {
-    b.roll_from = RollFrom{old_close, old_id, kind};
+    b.roll_from = RollFrom{old_close, old_id, kind, ""};
     return b;
 }
 
