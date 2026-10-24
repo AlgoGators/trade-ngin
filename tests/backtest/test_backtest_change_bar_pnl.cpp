@@ -70,6 +70,17 @@ public:
     }
 };
 
+// R4B audit A, S3: the same book short 2.
+class HoldMinusTwo : public HoldTwo {
+public:
+    using HoldTwo::HoldTwo;
+    std::unordered_map<std::string, Position> get_target_positions() const override {
+        auto book = HoldTwo::get_target_positions();
+        book["XA"].quantity = Decimal(-2.0);
+        return book;
+    }
+};
+
 PortfolioConfig plain_config() {
     PortfolioConfig c{1'000'000.0, 1.0, 0.0, false};
     c.opt_config.capital = 1'000'000.0;
@@ -337,4 +348,41 @@ TEST_F(BacktestChangeBarPnlTest, ARollOfTheVendorsSeriesCarriesNoSplit) {
         EXPECT_FALSE(e.roll_gap_value.has_value());
     }
     EXPECT_EQ(rolls, 2);
+}
+
+// R4B audit A, S3: short 2, the closing leg's split is signed with the position, as the coordinator books
+// it: a crossover from 103 to A's 104 is -2 x 1 x 50 = -100 (the cycle's own P&L), the gap 6 points, its
+// value -2 x 6 x 50 = -600.
+class BacktestPerContractShortTest : public BacktestPerContractPnlTest {
+protected:
+    void SetUp() override {
+        BacktestPerContractPnlTest::SetUp();
+        static int n = 0;
+        pm_ = std::make_shared<PortfolioManager>(plain_config(), "PM_PNL_SHORT_" + std::to_string(++n));
+        StrategyConfig sc;
+        sc.capital_allocation = 1'000'000.0;
+        sc.max_leverage = 10.0;
+        sc.asset_classes = {AssetClass::FUTURES};
+        sc.frequencies = {DataFrequency::DAILY};
+        auto s = std::make_shared<HoldMinusTwo>("PNL_SHORT_" + std::to_string(n), sc, db_);
+        ASSERT_TRUE(s->initialize().is_ok());
+        ASSERT_TRUE(s->start().is_ok());
+        ASSERT_TRUE(pm_->add_strategy(s, 1.0, false).is_ok());
+    }
+};
+
+TEST_F(BacktestPerContractShortTest, AShortsClosingLegCarriesItsSignedSplit) {
+    const auto b = book({bar(0, 100, "A"), bar(1, 101, "A"), bar(2, 103, "A"),
+                         rolled(bar(3, 110, "B"), 104, "A", RollFromKind::KNOWN),
+                         rolled(bar(4, 111, "B"), 105, "A", RollFromKind::AFTER_ROLL), bar(5, 112, "B")});
+    std::vector<ExecutionReport> legs;
+    for (const auto& e : execs_) if (e.execution_type == ExecutionType::ROLL) legs.push_back(e);
+    ASSERT_EQ(legs.size(), 2u);
+    ASSERT_TRUE(legs[0].roll_bar_move.has_value());
+    EXPECT_EQ(legs[0].side, Side::BUY) << "the closing leg of a short buys";
+    EXPECT_NEAR(*legs[0].roll_bar_move, -100.0, 1e-9);
+    EXPECT_NEAR(*legs[0].roll_bar_move, b.move.at(1), 1e-6) << "the move the roll bar booked";
+    EXPECT_NEAR(*legs[0].roll_gap_points, 6.0, 1e-9);
+    EXPECT_NEAR(*legs[0].roll_gap_value, -600.0, 1e-9);
+    EXPECT_FALSE(legs[1].roll_bar_move.has_value());
 }

@@ -305,3 +305,33 @@ TEST(RollSplit, TheDatabasesRollViewWithNothingToRead) {
     EXPECT_TRUE(on.outlook.empty());
     EXPECT_TRUE(on.names.empty());
 }
+
+// S4 (R4B audit A): the results row's cells are the statistics' cells then the two totals, only with a value.
+TEST(RollSplit, TheResultsRowStoresTheStatisticsCellsThenTheTotals) {
+    BacktestStatisticsColumns columns;
+    const auto stats = backtest_statistics_cells(columns);
+    const auto off = backtest_summary_cells(columns, std::nullopt, std::nullopt);
+    ASSERT_EQ(off.size(), stats.size()) << "switch off: the statement before 040";
+    const auto on = backtest_summary_cells(columns, -43678.1375, -38805.5);
+    ASSERT_EQ(on.size(), stats.size() + 2);
+    EXPECT_EQ(on[on.size() - 2].column, "roll_bar_moves");
+    EXPECT_EQ(*on[on.size() - 2].value, "-43678.1375");
+    EXPECT_EQ(on.back().column, "roll_gap_values");
+    EXPECT_EQ(*on.back().value, "-38805.5");
+    for (size_t i = 0; i < stats.size(); ++i) EXPECT_EQ(on[i].column, stats[i].column);
+}
+
+// S7 m13 (R4B audit A): a "vendor" switch bar (per_contract_switch_bar vendor: the target's own bar, the
+// field naming the held contract) carries the held contract's close as its mark but is no roll: nothing
+// rolled yet (or ever, for a stray), so the settled row gets no "Contract rolled that day" footnote.
+TEST(RollSplit, AVendorSettingSwitchBarIsNoRollBarForTheFootnote) {
+    const std::vector<Bar> consumed = {bar("2025-11-21", 49.660, "SIZ5"), bar("2025-11-24", 51.175, "SIZ5"),
+                                       bar("2025-11-25", 51.630, "SIH6",
+                                           from(50.960, "SIZ5", RollFromKind::AWAITS_NEXT_VENDOR, "2025-11-25"))};
+    const auto status = roll_status_of(consumed);
+    ASSERT_TRUE(status.at("SI.v.0").mark_close.has_value());
+    ASSERT_FALSE(status.at("SI.v.0").confirm);
+    const auto st = consumed_t1_settlement(consumed, "2025-11-25", status, {}, {}, {}, {});
+    EXPECT_TRUE(st.per_contract_roll_symbols.empty());
+    EXPECT_DOUBLE_EQ(st.t1_close_prices.at("SI.v.0"), 50.960) << "the held contract's close";
+}

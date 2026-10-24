@@ -2423,12 +2423,9 @@ Result<void> BacktestCoordinator::save_portfolio_results_to_db(
     // Migration 037: the statistics that are no plain double (a date, a symbol, the years
     // object, a count, a number that may have no value) travel as typed cells, at ten
     // significant digits.
-    auto summary_cells = backtest_statistics_cells(results.statistics_columns);
     // Migration 040: the roll split's totals, named only with the switch on.
-    for (auto& cell : roll_split_summary_cells(results.roll_bar_moves, results.roll_gap_values)) {
-        summary_cells.push_back(std::move(cell));
-    }
-    results_manager->set_summary_cells(summary_cells);
+    results_manager->set_summary_cells(
+        backtest_summary_cells(results.statistics_columns, results.roll_bar_moves, results.roll_gap_values));
 
     // Set portfolio-level equity curve
     std::vector<std::pair<Timestamp, double>> equity_points;

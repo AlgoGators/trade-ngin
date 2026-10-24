@@ -86,6 +86,14 @@ std::vector<LiveResultsCell> roll_split_summary_cells(const std::optional<double
     return cells;
 }
 
+std::vector<LiveResultsCell> backtest_summary_cells(const BacktestStatisticsColumns& columns,
+                                                    const std::optional<double>& roll_bar_moves,
+                                                    const std::optional<double>& roll_gap_values) {
+    auto cells = backtest_statistics_cells(columns);
+    for (auto& cell : roll_split_summary_cells(roll_bar_moves, roll_gap_values)) cells.push_back(std::move(cell));
+    return cells;
+}
+
 std::string backtest_statistics_log_line(const BacktestStatisticsColumns& c) {
     auto number = [](const std::optional<double>& v) {
         const auto text = v ? live_results_number(*v) : std::optional<std::string>();

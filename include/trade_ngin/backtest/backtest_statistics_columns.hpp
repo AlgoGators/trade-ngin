@@ -91,6 +91,12 @@ std::string backtest_statistics_log_line(const BacktestStatisticsColumns& column
 std::vector<LiveResultsCell> roll_split_summary_cells(const std::optional<double>& roll_bar_moves,
                                                       const std::optional<double>& roll_gap_values);
 
+/// The results row's typed cells: the statistics' (migration 037) then the roll split's totals (040),
+/// the latter only when they have a value. What the coordinator stores (R4B audit A, S4).
+std::vector<LiveResultsCell> backtest_summary_cells(const BacktestStatisticsColumns& columns,
+                                                    const std::optional<double>& roll_bar_moves,
+                                                    const std::optional<double>& roll_gap_values);
+
 /**
  * @brief The sizing capitals a run stores: risk_detail.sizing_capital of each equity-curve row
  *        that carries a risk_detail, dated by the row's UTC date.
