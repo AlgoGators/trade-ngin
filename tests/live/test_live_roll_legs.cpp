@@ -475,7 +475,7 @@ namespace {
 // 04-20 NEW 322.00 (OLD 334.00 that day); 04-21 NEW 323.00. `kind` is the roll bar's.
 std::vector<Bar> pc_bars(RollFromKind kind, bool confirmed = true) {
     auto with = [](Bar b, double close, const char* id, RollFromKind k) {
-        b.roll_from = RollFrom{close, id, k};
+        b.roll_from = RollFrom{close, id, k, ""};
         return b;
     };
     std::vector<Bar> out{bar(kZm, "2026-04-14", 330.00, "OLD"), bar(kZm, "2026-04-15", 331.00, "OLD"),

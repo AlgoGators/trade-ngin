@@ -302,14 +302,14 @@ std::vector<Bar> per_contract_walk(bool rolls) {
         double close = a + lift;
         b.instrument_id = k >= 91 ? "C" : k >= 60 ? "B" : "A";
         // a vendor switch: the held contract's own bar, the field naming the target
-        if (k == 40) b.roll_from = RollFrom{a + gap1, "B", RollFromKind::AWAITS_NEXT};
-        if (k == 60) b.roll_from = RollFrom{a, "A", RollFromKind::KNOWN};
-        if (k == 61) b.roll_from = RollFrom{a, "A", RollFromKind::AFTER_ROLL};
+        if (k == 40) b.roll_from = RollFrom{a + gap1, "B", RollFromKind::AWAITS_NEXT, ""};
+        if (k == 60) b.roll_from = RollFrom{a, "A", RollFromKind::KNOWN, ""};
+        if (k == 61) b.roll_from = RollFrom{a, "A", RollFromKind::AFTER_ROLL, ""};
         if (k == 90) {
             close = a + gap1;  // B's own close; C's is the target's
-            b.roll_from = RollFrom{a + gap1 + gap2, "C", RollFromKind::AWAITS_NEXT};
+            b.roll_from = RollFrom{a + gap1 + gap2, "C", RollFromKind::AWAITS_NEXT, ""};
         }
-        if (k == 91) b.roll_from = RollFrom{a + gap1, "B", RollFromKind::AFTER_ROLL};
+        if (k == 91) b.roll_from = RollFrom{a + gap1, "B", RollFromKind::AFTER_ROLL, ""};
         b.open = b.close = Decimal(close);
         b.high = Decimal(close * 1.001);
         b.low = Decimal(close * 0.999);

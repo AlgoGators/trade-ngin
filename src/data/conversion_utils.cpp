@@ -215,8 +215,8 @@ Result<std::vector<Bar>> DataConversionUtils::arrow_table_to_bars(
                             std::to_string(i),
                         "DataConversionUtils");
                 }
-                bar.roll_from =
-                    RollFrom{close_from.value(), id_from.value(), static_cast<RollFromKind>(kind)};
+                bar.roll_from = RollFrom{
+                    close_from.value(), id_from.value(), static_cast<RollFromKind>(kind), {}};
                 if (roll_date_array && !roll_date_array->IsNull(i)) {
                     auto date_from = extract_string(roll_date_array, i);
                     if (date_from.is_error()) {
