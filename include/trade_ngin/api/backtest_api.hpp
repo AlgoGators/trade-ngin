@@ -24,6 +24,9 @@ struct StrategyContext {
     StrategyConfig base_strategy_config;
     std::shared_ptr<PostgresDatabase> db;
     std::shared_ptr<InstrumentRegistry> registry;
+    /// The run's market data source (null on a database run). A trend sleeve takes its
+    /// instrument weights from it when it has no database.
+    std::shared_ptr<MarketDataSource> data_source;
 };
 
 using StrategyFactory =
@@ -89,6 +92,18 @@ struct BacktestRunConfig {
     /// Strategies to run. Allocations are normalized to sum to 1.0.
     std::vector<StrategySpec> strategies;
 
+    // ---- A book's own configuration ----
+    /// A config directory in the layout the engine's runners read (<base>/defaults.json and
+    /// <base>/portfolios/<portfolio_name>/portfolio.json, risk.json, ...), the portfolio being the
+    /// name given to initialize_with_config. When set, the book decides everything its files
+    /// decide in apps/backtest/bt_portfolio.cpp (capital, sleeves and their allocations and keys,
+    /// risk modules and the overlay's limits, the loop's keys, the equity slow rule, the trading
+    /// rule removals, the statistics' K, the position limit), loaded by the same ConfigLoader and
+    /// assembled by the same steps, so the run equals the engine's own on the same bars. The
+    /// fields above that the book decides are then ignored; symbols, dates and the data source
+    /// are still the caller's.
+    std::string config_base_path;
+
     // ---- Output ----
     std::string portfolio_id{"BASE_PORTFOLIO"};
     /// Persist results to the database. Forced off without a connection.
@@ -97,6 +112,20 @@ struct BacktestRunConfig {
     bool export_csv{false};
     std::string csv_output_path{"apps/backtest/results"};
 };
+
+/**
+ * @brief The engine's own trend-following sleeve as a strategy factory
+ *
+ * Builds TrendFollowingStrategy exactly as the engine's runners do (apps/backtest/bt_portfolio.cpp),
+ * from the same `config` keys: risk_target, idm and vol_lookback_short are required (no default),
+ * ema_windows and vol_lookback_long (252) are optional. `fast` starts from the FAST sleeve's
+ * configuration. The run's capital, symbols and limits come from the StrategyContext.
+ *
+ * Two further optional keys carry what the runners take from portfolio.json for the book's first
+ * sleeve: "equity_slow": {"symbols": [...], "pairs": [[a, b], ...]} and
+ * "rule_removals": {"ZR": [[a, b], ...]} (the pairs a contract does not run).
+ */
+StrategyFactory make_trend_following_factory(std::string strategy_id, bool fast = false);
 
 class BacktestRunner {
 public:
@@ -137,7 +166,7 @@ private:
         const std::vector<std::string>& symbols, const Timestamp& start_date,
         const Timestamp& end_date, AssetClass asset_class, DataFrequency data_freq,
         const std::vector<StrategySpec>& strategies, const StrategyConfig& base_strategy_config,
-        const PortfolioConfig& portfolio_config,
+        PortfolioConfig portfolio_config,
         const backtest::BacktestCoordinatorConfig& coord_config,
         std::shared_ptr<PostgresDatabase> db, std::shared_ptr<MarketDataSource> data_source,
         std::shared_ptr<InstrumentRegistry> registry);

@@ -9,6 +9,7 @@
 #include "trade_ngin/data/roll_series.hpp"
 #include "trade_ngin/core/error.hpp"
 #include "trade_ngin/core/types.hpp"
+#include "trade_ngin/data/market_data_source.hpp"
 #include "trade_ngin/instruments/instrument_registry.hpp"
 #include "trade_ngin/strategy/base_strategy.hpp"
 #include "trade_ngin/strategy/trend_estimator.hpp"
@@ -267,6 +268,15 @@ public:
     std::unordered_map<std::string, double> get_weights() const;
 
     /**
+     * @brief Give a run without a database the contract sectors and the symbols that
+     *        have bars, which get_weights() otherwise reads from the database
+     */
+    void set_data_source(std::shared_ptr<MarketDataSource> source) {
+        weight_source_ = std::move(source);
+        weight_cache_.clear();
+    }
+
+    /**
      * @brief The trend sleeve's own checks of its config (risk target, IDM, EMA pairs, the
      *        equity slow rule, the trading-rule removals), the part of validate_config a sleeve's
      *        settings decide; a contract name is checked against `registry` when one is given.
@@ -290,6 +300,8 @@ private:
 
     std::unordered_map<std::string, double> contract_size_cache_;
     mutable std::unordered_map<std::string, double> weight_cache_;
+    /// Where the instrument weights come from on a run without a database.
+    std::shared_ptr<MarketDataSource> weight_source_;
 
     std::unordered_map<std::string, InstrumentData> instrument_data_;
     /// Per symbol, the bars of this run sized on an estimator window shorter than
