@@ -81,6 +81,7 @@ set(TEST_SOURCES
     data/test_roll_legs.cpp
     data/test_executions_execution_type_db.cpp
     data/test_roll_split_db.cpp
+    data/test_report_roll_view_db.cpp
     data/test_strategy_config_db.cpp
     data/test_futures_bar_instrument_id_db.cpp
     data/test_positions_instrument_id_db.cpp

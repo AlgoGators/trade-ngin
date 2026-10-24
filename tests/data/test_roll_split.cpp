@@ -23,6 +23,7 @@
 #include "trade_ngin/core/time_utils.hpp"
 #include "trade_ngin/data/roll_series.hpp"
 #include "trade_ngin/live/live_roll_legs.hpp"
+#include "trade_ngin/live/session_book_gate.hpp"
 
 using namespace trade_ngin;
 using namespace trade_ngin::roll_series;
@@ -236,4 +237,27 @@ TEST(RollSplit, TheResultsRowNamesTheTotalsOnlyWithTheSwitchOn) {
     const auto zero = roll_split_summary_cells(0.0, 0.0);
     ASSERT_EQ(zero.size(), 2u) << "a switch-on run with no roll stores 0, not NULL";
     EXPECT_EQ(*zero[0].value, "0");
+}
+
+// R4b (the report's roll footnote): the T-1 settlement names the symbols whose T-1 bar is a per-contract
+// roll bar (the row books the old contract's move to its close on it), none on an ordinary bar, none on a
+// roll of the vendor's series, and none for a symbol whose roll the run legs late.
+TEST(RollSplit, TheSettlementNamesThePerContractRollBarsForTheFootnote) {
+    const std::vector<Bar> consumed = {bar("2025-11-21", 49.660, "SIZ5"), bar("2025-11-24", 51.175, "SIZ5"),
+                                       bar("2025-11-25", 51.630, "SIH6",
+                                           from(50.960, "SIZ5", RollFromKind::KNOWN, "2025-11-25"))};
+    const auto on_roll = consumed_t1_settlement(consumed, "2025-11-25", roll_status_of(consumed), {}, {}, {}, {});
+    EXPECT_EQ(on_roll.per_contract_roll_symbols, (std::unordered_set<std::string>{"SI.v.0"}));
+    EXPECT_TRUE(on_roll.roll_zero_symbols.empty()) << "the roll bar books a move";
+    EXPECT_DOUBLE_EQ(on_roll.t1_close_prices.at("SI.v.0"), 50.960);
+    const std::vector<Bar> before(consumed.begin(), consumed.begin() + 2);
+    EXPECT_TRUE(consumed_t1_settlement(before, "2025-11-24", roll_status_of(before), {}, {}, {}, {})
+                    .per_contract_roll_symbols.empty());
+    const std::vector<Bar> vendor = {bar("2025-11-21", 49.660, "SIZ5"), bar("2025-11-24", 51.840, "SIH6")};
+    const auto change = consumed_t1_settlement(vendor, "2025-11-24", roll_status_of(vendor), {}, {}, {}, {});
+    EXPECT_TRUE(change.per_contract_roll_symbols.empty());
+    EXPECT_EQ(change.roll_zero_symbols, (std::unordered_set<std::string>{"SI.v.0"})) << "today's change bar";
+    const auto late = consumed_t1_settlement(consumed, "2025-11-25", roll_status_of(consumed), {}, {}, {},
+                                             {{"SI.v.0", LateRollSettlement{51.630, 49.660, "2025-11-21"}}});
+    EXPECT_TRUE(late.per_contract_roll_symbols.empty());
 }

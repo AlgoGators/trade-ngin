@@ -408,3 +408,22 @@ TEST(LiveRollWriteOrder, EachRunnerLogsTheRulesFallbacksFromItsT1) {
         EXPECT_LT(floor, src.find("auto symbols_result = db->get_symbols(")) << runner << ": before any bar is loaded";
     }
 }
+
+// R4b: with the source on, each runner hands the report the roll footnote's symbols and the roll view
+// (PostgresDatabase::report_roll_view) for the settled day, the held futures of every sleeve, and each
+// roll it legged with a split (its closing leg, its two contracts, the confirming bar's date).
+TEST(LiveRollWriteOrder, EachRunnerHandsTheReportItsRollView) {
+    for (const char* runner : kRunners) {
+        const std::string src = read_source(runner);
+        ASSERT_FALSE(src.empty()) << runner;
+        const std::string block = between(src, "report_context.settled_zero_kinds.withheld = t1_settlement.withheld_zero_symbols;",
+                                          "if (one_pass_day.stores_detail()) {");
+        ASSERT_FALSE(block.empty()) << runner;
+        EXPECT_NE(block.find("if (contract_rolls::PerContractSource::instance().enabled()) {"), npos) << runner;
+        EXPECT_NE(block.find("report_context.settled_zero_kinds.per_contract_roll =\n"
+                             "                            t1_settlement.per_contract_roll_symbols;"), npos) << runner;
+        EXPECT_NE(block.find("roll_query.date = yesterday_date_for_email;"), npos) << runner;
+        EXPECT_NE(block.find("if (e.execution_type != ExecutionType::ROLL || !e.roll_bar_move) continue;"), npos) << runner;
+        EXPECT_NE(block.find("report_context.rolls = db->report_roll_view(roll_query,"), npos) << runner;
+    }
+}

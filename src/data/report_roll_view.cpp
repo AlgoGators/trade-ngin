@@ -17,6 +17,13 @@ std::string root_of(const std::string& symbol) {
     return dot == std::string::npos ? symbol : symbol.substr(0, dot);
 }
 
+// The metadata's name without its surrounding blanks ("Silver " is stored with one).
+std::string trimmed(const std::string& s) {
+    const auto first = s.find_first_not_of(" \t");
+    if (first == std::string::npos) return std::string();
+    return s.substr(first, s.find_last_not_of(" \t") - first + 1);
+}
+
 // The contracts of `root` around `day` (a year before it, for the ids of a contract still held).
 Result<ContractBook> book_around(pqxx::transaction_base& txn, const std::string& root, Day day) {
     return ContractBook::build(read_contract_bars(txn, {root}, day - std::chrono::days{400}, day));
@@ -103,7 +110,7 @@ ReportRolls report_roll_view(pqxx::transaction_base& txn, const ReportRollQuery&
     std::map<std::string, std::string> names;
     try {
         for (const auto& row : txn.exec("SELECT \"Databento Symbol\", \"Name\" FROM metadata.contract_metadata")) {
-            if (!row[0].is_null() && !row[1].is_null()) names[row[0].as<std::string>()] = row[1].as<std::string>();
+            if (!row[0].is_null() && !row[1].is_null()) names[row[0].as<std::string>()] = trimmed(row[1].as<std::string>());
         }
     } catch (const std::exception& e) {
         WARN(std::string("report_roll_view: the contract names could not be read (") + e.what() +
