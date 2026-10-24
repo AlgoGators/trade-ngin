@@ -1,0 +1,239 @@
+name: Python wheels
+
+# Builds the `tradengin` wheels for Linux and Windows, tests each in a clean interpreter, and on a
+# version tag uploads them to PyPI. See python/packaging/README.md.
+#
+#   push a tag vX.Y.Z   build, test, publish (the tag must match pyproject.toml)
+#   pull request        build and test only, when packaging changes
+#   workflow_dispatch   build and test only
+
+on:
+  push:
+    tags: ["v*"]
+  pull_request:
+    paths:
+      - ".github/workflows/python-wheels.yml"
+      - "python/packaging/**"
+      - "pyproject.toml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: python-wheels-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  PY_TAGS: "cp310-cp310 cp311-cp311 cp312-cp312 cp313-cp313"
+
+jobs:
+  linux:
+    name: Linux wheels
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          submodules: true
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+      - name: Build the manylinux image
+        uses: docker/build-push-action@v6
+        with:
+          context: python/packaging/manylinux
+          load: true
+          tags: tn-wheel:ci
+          cache-from: type=gha,scope=tn-wheel
+          cache-to: type=gha,mode=max,scope=tn-wheel
+      - name: Build and repair the wheels
+        run: |
+          mkdir -p out
+          docker run --rm -v "$PWD":/src -v "$PWD/out":/out -e PYTAGS="$PY_TAGS" \
+            tn-wheel:ci bash /src/python/packaging/manylinux/build_wheels.sh
+      - name: Upload
+        uses: actions/upload-artifact@v4
+        with:
+          name: wheels-linux
+          path: out/*.whl
+          if-no-files-found: error
+
+  examples:
+    name: Examples
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout (the examples only)
+        uses: actions/checkout@v7
+        with:
+          sparse-checkout: examples
+      - uses: actions/upload-artifact@v4
+        with:
+          name: examples
+          path: examples
+
+  windows-deps:
+    name: Windows dependencies
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+      - name: Restore the vcpkg binary cache
+        uses: actions/cache@v4
+        with:
+          path: ~\AppData\Local\vcpkg\archives
+          key: vcpkg-win-${{ hashFiles('python/packaging/windows/vcpkg-packages.txt') }}
+      - name: Install the libraries
+        shell: pwsh
+        run: |
+          $pkgs = Get-Content python/packaging/windows/vcpkg-packages.txt | Where-Object { $_ } | ForEach-Object { "${_}:x64-windows" }
+          & "$env:VCPKG_INSTALLATION_ROOT\vcpkg.exe" install @pkgs --clean-after-build
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+  windows:
+    name: Windows wheel (Python ${{ matrix.python }})
+    needs: windows-deps
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.10", "3.11", "3.12", "3.13"]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          submodules: true
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - name: Restore the vcpkg binary cache
+        uses: actions/cache/restore@v4
+        with:
+          path: ~\AppData\Local\vcpkg\archives
+          key: vcpkg-win-${{ hashFiles('python/packaging/windows/vcpkg-packages.txt') }}
+      - name: Install the libraries (from the cache)
+        shell: pwsh
+        run: |
+          $pkgs = Get-Content python/packaging/windows/vcpkg-packages.txt | Where-Object { $_ } | ForEach-Object { "${_}:x64-windows" }
+          & "$env:VCPKG_INSTALLATION_ROOT\vcpkg.exe" install @pkgs --clean-after-build
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Build the wheel
+        shell: pwsh
+        run: |
+          python -m pip install --upgrade pip wheel delvewheel
+          $include = python -c "import sysconfig; print(sysconfig.get_paths()['include'])"
+          $base = python -c "import sys; print(sys.base_prefix)"
+          $v = python -c "import sys; print('%d%d' % sys.version_info[:2])"
+          $env:CMAKE_GENERATOR = "Visual Studio 17 2022"
+          $env:CMAKE_GENERATOR_PLATFORM = "x64"
+          $toolchain = "$($env:VCPKG_INSTALLATION_ROOT -replace '\\','/')/scripts/buildsystems/vcpkg.cmake"
+          $env:CMAKE_ARGS = "-DCMAKE_TOOLCHAIN_FILE=$toolchain -DVCPKG_TARGET_TRIPLET=x64-windows -DVCPKG_MANIFEST_MODE=OFF -DPython_FIND_REGISTRY=NEVER -DPython_INCLUDE_DIR=$($include -replace '\\','/') -DPython_LIBRARY=$($base -replace '\\','/')/libs/python$v.lib"
+          python -m pip wheel . --no-deps -w raw -v
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          Get-ChildItem raw\*.whl | ForEach-Object {
+            python -m delvewheel repair --add-path "$env:VCPKG_INSTALLATION_ROOT\installed\x64-windows\bin" -w out $_.FullName
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          }
+      - name: Upload
+        uses: actions/upload-artifact@v4
+        with:
+          name: wheels-windows-${{ matrix.python }}
+          path: out/*.whl
+          if-no-files-found: error
+
+  test-linux:
+    name: Test on Linux (Python ${{ matrix.python }})
+    needs: [linux, examples]
+    runs-on: ubuntu-latest
+    # a bare interpreter: the wheel must bring every library it needs
+    container: python:${{ matrix.python }}-slim
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.10", "3.11", "3.12", "3.13"]
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: examples
+          path: examples
+      - uses: actions/download-artifact@v4
+        with:
+          name: wheels-linux
+          path: wheels
+      - name: Install into the clean interpreter and run the example
+        run: |
+          tag="cp$(echo '${{ matrix.python }}' | tr -d .)"
+          pip install pandas "wheels/tradengin-"*"-${tag}-${tag}-"*.whl
+          cd /tmp
+          python -c "import tradengin; print('import ok', tradengin.__file__)"
+          python "$GITHUB_WORKSPACE/examples/yfinance_backtest.py" --synthetic | tee run.txt
+          grep -q "Total trades: 4" run.txt
+          grep -q "Total return: 13.76%" run.txt
+
+  test-windows:
+    name: Test on Windows (Python ${{ matrix.python }})
+    needs: [windows, examples]
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.10", "3.11", "3.12", "3.13"]
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: examples
+          path: examples
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - uses: actions/download-artifact@v4
+        with:
+          name: wheels-windows-${{ matrix.python }}
+          path: wheels
+      - name: Install into a clean environment and run the example
+        shell: pwsh
+        run: |
+          python -m venv "$env:RUNNER_TEMP\clean"
+          $py = "$env:RUNNER_TEMP\clean\Scripts\python.exe"
+          & $py -m pip install pandas (Get-ChildItem wheels\*.whl).FullName
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          Set-Location $env:RUNNER_TEMP
+          & $py -c "import tradengin; print('import ok', tradengin.__file__)"
+          $out = & $py "$env:GITHUB_WORKSPACE\examples\yfinance_backtest.py" --synthetic
+          $out
+          if (-not ($out -match "Total trades: 4")) { throw "unexpected trade count" }
+          if (-not ($out -match "Total return: 13.76%")) { throw "unexpected return" }
+
+  publish:
+    name: Publish to PyPI
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [test-linux, test-windows]
+    runs-on: ubuntu-latest
+    environment: pypi
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          sparse-checkout: pyproject.toml
+          sparse-checkout-cone-mode: false
+      - name: The tag must match pyproject.toml
+        run: |
+          version="$(python3 - <<'PY'
+          import tomllib
+          print(tomllib.load(open("pyproject.toml", "rb"))["project"]["version"])
+          PY
+          )"
+          test "v${version}" = "${GITHUB_REF_NAME}" || { echo "tag ${GITHUB_REF_NAME} != pyproject version v${version}"; exit 1; }
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: wheels-*
+          merge-multiple: true
+          path: dist
+      - name: List
+        run: ls -l dist
+      - name: Upload
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: dist
+          skip-existing: true
+          password: ${{ secrets.PYPI_API_TOKEN }}
