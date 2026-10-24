@@ -60,7 +60,9 @@ Monday, a holiday is skipped). Normally T is today, and today's model run is the
     the data is usable when its status is complete, or partial with every missing symbol's last
     bar within the engine's live.data_staleness_tolerance_days of T - 1 (the engine's own
     FEED_HOLE guard decides again inside the run; a refusal is an alert, nothing is built);
-    failed, or a stale partial, is an alert and nothing is built
+    failed, or a stale partial, is an alert and nothing is built; the per-contract row (rolls
+    step 4) is also held when it misses more roots than QT_CONTRACT_DATA_READY_MAX_MISSING (2),
+    and runs with an alert when it misses 1 or 2 within the tolerance
     when T is after today (data that reaches past today, e.g. Saturday's run after its 10:00
     fallback with Friday's or Sunday's bars in), the engine's day chain is every calendar day, so
     the days between today and T are built in order. On the desk portfolio (D-63, decision 6)
@@ -988,11 +990,23 @@ class CatchupScheduler:
                 return Step(ALERT, target, "data_failed",
                             f"ops.data_ready {part.dataset} {part.bar_date} has status "
                             f"{part.status!r}: the books of {target} are not built"), {}
+            if part.dataset == CONTRACT_DATA_READY_DATASET:
+                # Rolls step 4 (HD on R4A's open question 3): more missing roots than the setting is
+                # a failed per-contract pull ("partial, 0 of 36"): held, as a late row is.
+                limit = self._catchup.contract_data_ready_max_missing
+                missing_n = max(len(part.missing), part.expected - part.loaded)
+                if missing_n > limit:
+                    return Step(ALERT, target, "data_stale",
+                                f"{part.dataset} {part.bar_date} is {part.status} ({part.loaded} of "
+                                f"{part.expected}): {missing_n} root(s) missing, more than "
+                                f"QT_CONTRACT_DATA_READY_MAX_MISSING={limit}, so the per-contract "
+                                f"pull counts as failed. The books of {target} are not built"), {}
         tolerance = staleness_tolerance_days(self._settings.config_dir, info.dir)
         as_of = target - dt.timedelta(days=1)
         last_all: Dict[str, dt.date] = {}
         for part in parts:
-            if not part.missing:
+            contract = part.dataset == CONTRACT_DATA_READY_DATASET
+            if not part.missing and not (contract and part.expected > part.loaded):
                 continue
             # The per-contract row names roots: their last contract bar (rolls step 4).
             lookup = (self._store.last_contract_bar_dates
@@ -1008,6 +1022,14 @@ class CatchupScheduler:
                             f"live.data_staleness_tolerance_days={tolerance} as of {as_of}: "
                             f"{', '.join(stale)}. The books of {target} are not built"), {}
             last_all.update(last)
+            if contract:
+                # Up to the setting, within the tolerance: the run goes, with an alert. The engine
+                # reads those roots' vendor bar (or carries their close) with a WARN in its log.
+                self.alerter.alert(info.dir, info.portfolio_id, target, "contract_data_partial",
+                                   f"{part.dataset} {part.bar_date} is {part.status} ({part.loaded} "
+                                   f"of {part.expected}); missing: {', '.join(part.missing) or 'not named'}. The "
+                                   f"books of {target} are built: the run reads those roots' vendor "
+                                   "bar, or carries their last close, with a WARN in its log")
         return None, last_all
 
     def _morning_gate(self, info: PortfolioInfo, today: dt.date) -> Optional[Step]:

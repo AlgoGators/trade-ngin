@@ -984,3 +984,61 @@ def test_a_failed_per_contract_row_alerts_and_builds_nothing(env):
     assert env.engine.calls == []
     assert out[DESK].reason == "data_failed"
     assert out[DESK].message.startswith(f"data-ngin's {CONTRACTS} pull for 2026-10-11 failed")
+
+
+# -- the per-contract row's missing roots (HD on R4A's open question 3; R4A fix round 1) --------------
+
+def _monday_contract(env, status, missing, loaded, **catchup):
+    switch_on(env)
+    weekend_done(env)
+    env.days.ready.append(ready(SUN, at(MON, 4, 35), loaded=26))
+    env.days.ready.append(contract_ready(SUN, at(MON, 4, 36), status, missing, loaded=loaded))
+    env.days.contract_bars = {r: FRI for r in ("GC", "ZN", "CL", "SI")}   # within the tolerance
+    env.clock.t = at(MON, 4, 40)
+    return dict(env.make(portfolios=(DESK,), **catchup).run_pass())
+
+
+def test_one_or_two_missing_roots_run_with_an_alert(env):
+    out = _monday_contract(env, "partial", ("GC", "ZN"), 34)
+    assert calls(env) == [("model", DESK, "2026-10-12")]
+    assert out[DESK].action != ALERT
+    assert alerts(env) == [f"QT alert: {DESK_PID} 2026-10-12 contract_data_partial"]
+
+
+def test_a_per_contract_row_missing_more_roots_than_the_setting_holds_the_run(env):
+    out = _monday_contract(env, "partial", ("GC", "ZN", "CL"), 33)
+    assert env.engine.calls == []
+    assert out[DESK].action == ALERT and out[DESK].reason == "data_stale"
+    assert "3 root(s) missing, more than QT_CONTRACT_DATA_READY_MAX_MISSING=2" in out[DESK].message
+
+
+def test_a_partial_zero_of_36_per_contract_row_is_a_failed_pull(env):
+    """No names in `missing`, 0 of 36 loaded: the count is expected - loaded."""
+    out = _monday_contract(env, "partial", (), 0)
+    assert env.engine.calls == []
+    assert out[DESK].reason == "data_stale"
+    assert "36 root(s) missing" in out[DESK].message
+
+
+def test_the_missing_root_setting_raises_the_limit(env):
+    out = _monday_contract(env, "partial", ("GC", "ZN", "CL"), 33, contract_data_ready_max_missing=3)
+    assert calls(env) == [("model", DESK, "2026-10-12")]
+    assert alerts(env) == [f"QT alert: {DESK_PID} 2026-10-12 contract_data_partial"]
+    s = catchup_settings({"QT_CONTRACT_DATA_READY_MAX_MISSING": "5"})
+    assert s.contract_data_ready_max_missing == 5
+    assert catchup_settings({}).contract_data_ready_max_missing == 2
+    with pytest.raises(ConfigError):
+        catchup_settings({"QT_CONTRACT_DATA_READY_MAX_MISSING": "-1"})
+
+
+def test_the_continuous_rows_rule_is_unchanged(env):
+    """Switch off: a "partial, 0 of 36" continuous row with every last bar within the tolerance runs, as
+    before (the count rule is the per-contract row's only; an open question for HD)."""
+    weekend_done(env)
+    names = ("ES", "ZN", "GC")
+    env.days.bars = {s: FRI for s in names}
+    env.days.ready.append(ready(SUN, at(MON, 4, 35), "partial", names, loaded=0))
+    env.clock.t = at(MON, 4, 40)
+    env.make(portfolios=(DESK,)).run_pass()
+    assert calls(env) == [("model", DESK, "2026-10-12")]
+    assert alerts(env) == []

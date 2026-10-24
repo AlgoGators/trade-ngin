@@ -145,6 +145,11 @@ class CatchupSettings:
     # Every dataset a run waits for (QT_DATA_READY_DATASET, comma-separated); a portfolio with
     # per_contract_rolls on also waits for CONTRACT_DATA_READY_DATASET.
     data_ready_datasets: Tuple[str, ...] = (DEFAULT_DATA_READY_DATASET,)
+    # Rolls step 4 (HD on R4A's open question 3): how many roots the per-contract row (only that row; the
+    # continuous row's rule is unchanged) may miss. Up to this many, within the age tolerance, the run goes
+    # with an alert (the engine carries those roots or reads the vendor's bar, with a WARN); more is a failed
+    # pull: the run is held with the data_stale alert (QT_CONTRACT_DATA_READY_MAX_MISSING).
+    contract_data_ready_max_missing: int = 2
     # No usable row for the previous trading day by then: today's run alerts instead of waiting,
     # and the daily data-ready check alerts the President (once a day).
     data_alert_at: dt.time = dt.time(6, 0)
@@ -201,6 +206,16 @@ def load_settings(env: Optional[Mapping[str, str]] = None) -> Settings:
         raise ConfigError("no database credentials: set DB_HOST/DB_USER/DB_PASSWORD/DB_NAME or "
                           "mount defaults.json under TRADING_CONFIG_DIR")
     return Settings(db=db, commands=command_settings(env), catchup=catchup_settings(env))
+
+
+def _count(env: Mapping[str, str], name: str, default: int) -> int:
+    """A whole number of at least 0."""
+    raw = (env.get(name) or "").strip()
+    if not raw:
+        return default
+    if not raw.isdigit():
+        raise ConfigError(f"{name} must be a whole number of at least 0")
+    return int(raw)
 
 
 def _positive(env: Mapping[str, str], name: str, default: float) -> float:
@@ -272,7 +287,9 @@ def catchup_settings(env: Optional[Mapping[str, str]] = None) -> CatchupSettings
     QT_MODEL_RETRY_MIN (15), QT_MODEL_ALERT_AT ("08:30"), QT_CATCHUP_LOCK_WAIT_S (600).
     The data-driven run (issues #191, #192): QT_EVENING_RUN (default 1; 0 restores the 06:45-only
     schedule), QT_DATA_READY_DATASET ("futures_ohlcv_1d"; a comma-separated list, every one
-    waited for), QT_DATA_READY_ALERT_AT ("06:00"),
+    waited for), QT_CONTRACT_DATA_READY_MAX_MISSING (2: the roots the per-contract row of a
+    per_contract_rolls portfolio may miss before its pull counts as failed), QT_DATA_READY_ALERT_AT
+    ("06:00"),
     QT_REVIEW_RECIPIENTS (comma-separated; default dominickdupuy@ufl.edu), QT_DESK_URL,
     TRADE_NGIN_HOLIDAYS_JSON (the engine's own variable).
     QT_UNPUBLISHED_REMINDER_H is no longer read (the 10:00 fallback replaced the reminder)."""
@@ -298,6 +315,7 @@ def catchup_settings(env: Optional[Mapping[str, str]] = None) -> CatchupSettings
         evening_run=(env.get("QT_EVENING_RUN") or "1").strip() != "0",
         data_ready_datasets=_datasets(env, "QT_DATA_READY_DATASET",
                                       (DEFAULT_DATA_READY_DATASET,)),
+        contract_data_ready_max_missing=_count(env, "QT_CONTRACT_DATA_READY_MAX_MISSING", 2),
         data_alert_at=_clock(env, "QT_DATA_READY_ALERT_AT", dt.time(6, 0)),
         review_recipients=_emails(env, "QT_REVIEW_RECIPIENTS", DEFAULT_REVIEW_RECIPIENTS),
         desk_url=(env.get("QT_DESK_URL") or "").strip() or DEFAULT_DESK_URL,
