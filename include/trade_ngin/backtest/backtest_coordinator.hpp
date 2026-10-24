@@ -47,6 +47,7 @@ struct BacktestCoordinatorConfig {
     bool store_trade_details = true;
     std::string portfolio_id = "BASE_PORTFOLIO";
     std::string csv_output_path = "apps/backtest/results";
+    bool export_csv = true;  // Disable for runs started from an arbitrary working directory
     /// K, the sessions a year of the grid the run's statistics are taken on (T-8D R2, T-8D-2
     /// R76): the app hands the configured statistics.sessions_per_year of the run's series
     /// (futures or equities). The one source of the factor: there is no default, and a run
@@ -75,7 +76,10 @@ private:
     BacktestCoordinatorConfig config_;
 
     // Shared database connection
-    std::shared_ptr<PostgresDatabase> db_;
+    std::shared_ptr<PostgresDatabase> db_;  // null for a database-free run
+
+    // Set only when a market data source was injected (a database-free run).
+    std::shared_ptr<MarketDataSource> data_source_;
 
     // Reference to instrument registry
     InstrumentRegistry* registry_;
@@ -230,6 +234,20 @@ public:
     /**
      * @brief Destructor
      */
+    /**
+     * @brief Constructor for a database-free backtest
+     *
+     * No database connection is used, so results are not persisted and instruments must
+     * have been registered on the registry beforehand.
+     */
+    BacktestCoordinator(std::shared_ptr<MarketDataSource> source, InstrumentRegistry* registry,
+                        const BacktestCoordinatorConfig& config = {});
+
+    /// Disambiguates BacktestCoordinator(nullptr, ...) between the two shared_ptr overloads.
+    BacktestCoordinator(std::nullptr_t, InstrumentRegistry* registry,
+                        const BacktestCoordinatorConfig& config = {})
+        : BacktestCoordinator(std::shared_ptr<PostgresDatabase>{}, registry, config) {}
+
     ~BacktestCoordinator();
 
     // ========== Component Access ==========

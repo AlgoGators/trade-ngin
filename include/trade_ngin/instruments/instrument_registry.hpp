@@ -23,16 +23,30 @@ public:
     /**
      * @brief Get singleton instance of the registry
      */
-    static InstrumentRegistry& instance() {
-        static InstrumentRegistry instance;
-        return instance;
-    }
+    // Defined in the library, not here: the Python module is built with hidden symbol visibility,
+    // and an inline function-local static would give it a registry of its own.
+    static InstrumentRegistry& instance();
 
     /**
      * @brief Initialize the registry with a database connection
      * @param db Postgres database to use for loading instruments
      */
     Result<void> initialize(std::shared_ptr<PostgresDatabase> db);
+
+    /**
+     * @brief Initialize without a database, for a run whose instruments are registered
+     *        directly with register_instrument()
+     * Calling load_instruments() afterwards is an error.
+     */
+    Result<void> initialize_without_database();
+
+    /**
+     * @brief Drop all registered instruments and reset the initialization state
+     *
+     * The registry is a process-wide singleton, so this is called between runs to avoid
+     * silently reusing a previous run's instruments.
+     */
+    void clear();
 
     /**
      * @brief Get instrument by symbol

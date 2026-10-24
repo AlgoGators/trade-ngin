@@ -1,0 +1,68 @@
+name: Python wrapper
+
+# Builds the pybind11 module (BUILD_PYTHON_WRAPPER=ON, off in every other build) and runs the
+# database-free example on synthetic data, so a change to the engine that breaks the wrapper is
+# caught here. Needs no database and no config tree.
+
+on:
+  push:
+    branches: [main, prod, staging]
+    paths:
+      - "python/**"
+      - "src/api/**"
+      - "include/trade_ngin/api/**"
+      - "src/data/market_data_source.cpp"
+      - "include/trade_ngin/data/market_data_source.hpp"
+      - "examples/**"
+      - "CMakeLists.txt"
+      - ".github/workflows/python-wrapper.yml"
+  pull_request:
+    paths:
+      - "python/**"
+      - "src/api/**"
+      - "include/trade_ngin/api/**"
+      - "src/data/market_data_source.cpp"
+      - "include/trade_ngin/data/market_data_source.hpp"
+      - "src/backtest/**"
+      - "include/trade_ngin/backtest/**"
+      - "examples/**"
+      - "CMakeLists.txt"
+      - ".github/workflows/python-wrapper.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  wrapper:
+    name: Build module and run the synthetic example
+    runs-on: ubuntu-latest
+    container:
+      image: ghcr.io/algogators/trade-ngin-ci:latest
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - name: Install Python development headers
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends python3-dev python3-pip
+      - name: Checkout Repository
+        uses: actions/checkout@v7
+        with:
+          submodules: true
+      - name: Configure
+        run: |
+          cmake -S . -B build/wrapper \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_POSITION_INDEPENDENT_CODE=ON \
+            -DBUILD_PYTHON_WRAPPER=ON \
+            -DNLopt_DIR=/usr/lib/x86_64-linux-gnu/cmake/nlopt
+      - name: Build the module
+        run: cmake --build build/wrapper --target trade_ngin_py -j"$(nproc)"
+      - name: Run the synthetic example
+        run: |
+          pip install --break-system-packages pandas
+          MODULE_DIR=$(dirname "$(find build/wrapper -name 'tradengin*.so' | head -1)")
+          cd "$RUNNER_TEMP"
+          PYTHONPATH="$GITHUB_WORKSPACE/$MODULE_DIR:$GITHUB_WORKSPACE/examples" \
+            python3 "$GITHUB_WORKSPACE/examples/yfinance_backtest.py" --synthetic

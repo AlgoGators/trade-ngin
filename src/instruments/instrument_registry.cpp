@@ -114,6 +114,26 @@ std::shared_ptr<OptionInstrument> InstrumentRegistry::get_option_instrument(
     return std::dynamic_pointer_cast<OptionInstrument>(instrument);
 }
 
+InstrumentRegistry& InstrumentRegistry::instance() {
+    static InstrumentRegistry instance;
+    return instance;
+}
+
+Result<void> InstrumentRegistry::initialize_without_database() {
+    std::lock_guard<std::mutex> lock(mutex_);
+    db_ = nullptr;
+    initialized_ = true;
+    return Result<void>();
+}
+
+void InstrumentRegistry::clear() {
+    std::lock_guard<std::mutex> lock(mutex_);
+    instruments_.clear();
+    db_ = nullptr;
+    initialized_ = false;
+    full_size_remap_ = true;
+}
+
 Result<void> InstrumentRegistry::load_instruments() {
     if (!initialized_) {
         return make_error<void>(ErrorCode::NOT_INITIALIZED, "InstrumentRegistry not initialized",

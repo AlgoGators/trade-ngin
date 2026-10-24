@@ -6,6 +6,7 @@
 #include <unordered_map>
 #include "trade_ngin/core/types.hpp"
 #include "trade_ngin/core/error.hpp"
+#include "trade_ngin/data/market_data_source.hpp"
 #include "trade_ngin/data/postgres_database.hpp"
 
 namespace trade_ngin {
@@ -45,6 +46,18 @@ public:
      * @param db Database connection
      */
     explicit BacktestDataLoader(std::shared_ptr<PostgresDatabase> db);
+
+    /**
+     * @brief Constructor for a database-free run: bars come from the given source
+     *
+     * Listing dates and vendor relabels are a property of the stored database rows and
+     * apply only to the database path; a custom source supplies the bars it means to use.
+     */
+    explicit BacktestDataLoader(std::shared_ptr<MarketDataSource> source);
+
+    /// Disambiguates BacktestDataLoader(nullptr) between the two shared_ptr overloads.
+    explicit BacktestDataLoader(std::nullptr_t)
+        : BacktestDataLoader(std::shared_ptr<PostgresDatabase>{}) {}
 
     ~BacktestDataLoader() = default;
 
@@ -104,6 +117,8 @@ public:
 
 private:
     std::shared_ptr<PostgresDatabase> db_;
+    std::shared_ptr<MarketDataSource> source_;  // set only for a database-free run
+    bool use_source_{false};                    // built from a source (which may have been null)
 
     /**
      * @brief Load a batch of symbols

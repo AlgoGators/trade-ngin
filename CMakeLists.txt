@@ -167,6 +167,7 @@ set(TRADE_NGIN_SOURCES
     src/data/market_data_utils.cpp
     src/data/session_classifier.cpp
     src/data/listing_dates.cpp
+    src/data/market_data_source.cpp
     src/data/roll_series.cpp
     src/instruments/futures.cpp
     src/instruments/equity.cpp
@@ -191,6 +192,7 @@ set(TRADE_NGIN_SOURCES
     src/backtest/backtest_statistics_columns.cpp
     src/backtest/backtest_execution_manager.cpp
     src/backtest/backtest_data_loader.cpp
+    src/api/backtest_api.cpp
     src/backtest/backtest_coordinator.cpp
     src/backtest/backtest_csv_exporter.cpp
     src/backtest/slippage_model.cpp
@@ -294,6 +296,19 @@ enable_testing()
 
 # Add tests subdirectory
 add_subdirectory(tests)
+
+# The Python wrapper (pybind11, python/): off by default, so the engine image and the cron
+# runner build exactly as before. pybind11 is a git submodule (extern/pybind11).
+option(BUILD_PYTHON_WRAPPER "Build the Python wrapper using pybind11" OFF)
+if(BUILD_PYTHON_WRAPPER)
+    if(NOT EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/extern/pybind11/CMakeLists.txt")
+        message(FATAL_ERROR
+            "BUILD_PYTHON_WRAPPER=ON but extern/pybind11 is empty. Run "
+            "git submodule update --init extern/pybind11, or build without the wrapper.")
+    endif()
+    add_subdirectory(extern/pybind11)
+    add_subdirectory(python)
+endif()
 
 # Add apps subdirectory
 add_subdirectory(apps)

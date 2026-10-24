@@ -48,6 +48,15 @@ BacktestCoordinator::BacktestCoordinator(std::shared_ptr<PostgresDatabase> db,
       registry_(registry),
       current_portfolio_value_(config.initial_capital) {}
 
+BacktestCoordinator::BacktestCoordinator(std::shared_ptr<MarketDataSource> source,
+                                         InstrumentRegistry* registry,
+                                         const BacktestCoordinatorConfig& config)
+    : config_(config),
+      db_(nullptr),
+      data_source_(std::move(source)),
+      registry_(registry),
+      current_portfolio_value_(config.initial_capital) {}
+
 BacktestCoordinator::~BacktestCoordinator() = default;
 
 Result<void> BacktestCoordinator::initialize() {
@@ -74,7 +83,8 @@ Result<void> BacktestCoordinator::initialize() {
 
 Result<void> BacktestCoordinator::create_components() {
     // Create data loader
-    data_loader_ = std::make_unique<BacktestDataLoader>(db_);
+    data_loader_ = data_source_ ? std::make_unique<BacktestDataLoader>(data_source_)
+                                : std::make_unique<BacktestDataLoader>(db_);
 
     // Create metrics calculator (stateless)
     metrics_calculator_ = std::make_unique<BacktestMetricsCalculator>();
@@ -94,6 +104,11 @@ Result<void> BacktestCoordinator::create_components() {
 
 Result<void> BacktestCoordinator::validate_connection() const {
     if (!db_) {
+        // A database is optional when a market data source was injected: results are simply
+        // not persisted.
+        if (data_source_) {
+            return Result<void>();
+        }
         return make_error<void>(ErrorCode::CONNECTION_ERROR, "Database interface is null",
                                 "BacktestCoordinator");
     }
@@ -377,17 +392,23 @@ Result<BacktestResults> BacktestCoordinator::run_portfolio(
     INFO("Calculated warmup days from strategies: " + std::to_string(calculated_warmup_days) +
          ", total available days: " + std::to_string(grouped_bars.size()));
 
-    // Initialize CSV exporter
+    // Initialize CSV exporter, unless export is off (a run started from an arbitrary working
+    // directory, as the Python wrapper's can be).
     // Each portfolio's run writes into its own directory under the configured path.
     const std::string csv_directory =
         BacktestCSVExporter::portfolio_directory(config_.csv_output_path, config_.portfolio_id);
-    csv_exporter_ = std::make_unique<BacktestCSVExporter>(csv_directory);
-    auto csv_init_result = csv_exporter_->initialize_files();
-    if (csv_init_result.is_error()) {
-        WARN("Failed to initialize CSV exporter: " + std::string(csv_init_result.error()->what()));
-        csv_exporter_.reset();
+    if (config_.export_csv) {
+        csv_exporter_ = std::make_unique<BacktestCSVExporter>(csv_directory);
+        auto csv_init_result = csv_exporter_->initialize_files();
+        if (csv_init_result.is_error()) {
+            WARN("Failed to initialize CSV exporter: " +
+                 std::string(csv_init_result.error()->what()));
+            csv_exporter_.reset();
+        } else {
+            INFO("CSV exporter initialized, output: " + csv_directory);
+        }
     } else {
-        INFO("CSV exporter initialized, output: " + csv_directory);
+        INFO("CSV export disabled");
     }
 
     // Track last saved date
@@ -1972,6 +1993,11 @@ void BacktestCoordinator::load_equity_cost_retier(const std::vector<std::string>
 
     // The split events that put a bar's volume in the window-end share unit: every ex-date from
     // the first window's first day to end_date (the adjusted prices' frame).
+    if (!db_) {
+        WARN("EQUITY_COST_RETIER needs the database for the split events and the earlier bars; "
+             "this run has none, so no tier is changed");
+        return;
+    }
     auto actions = db_->get_per_bar_corporate_actions(symbols, from, to);
     if (actions.is_error()) {
         WARN("EQUITY_COST_RETIER the split events " + from + ".." + to +
@@ -2312,6 +2338,11 @@ Result<void> BacktestCoordinator::save_portfolio_results_to_db(
     const std::unordered_map<std::string, double>& strategy_allocations,
     std::shared_ptr<PortfolioManager> portfolio, const nlohmann::json& portfolio_config) const {
     if (!config_.store_trade_details) {
+        return Result<void>();
+    }
+
+    if (!db_) {
+        INFO("No database connection configured; skipping portfolio results storage");
         return Result<void>();
     }
 

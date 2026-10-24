@@ -34,6 +34,25 @@ public:
     constexpr Decimal() : value_(0) {}
     constexpr explicit Decimal(int64_t raw_value) : value_(raw_value) {}
 
+    Decimal(std::string str) : value_(0) {
+        size_t dot_pos = str.find('.');
+        if (dot_pos == std::string::npos) {
+            // No decimal point, treat as integer
+            value_ = std::stoll(str) * SCALE;
+        } else {
+            std::string int_part = str.substr(0, dot_pos);
+            std::string frac_part = str.substr(dot_pos + 1);
+            if (frac_part.length() > 8) {
+                throw std::overflow_error("Too many decimal places in string");
+            }
+            // Pad fractional part with zeros
+            while (frac_part.length() < 8) {
+                frac_part += "0";
+            }
+            value_ = std::stoll(int_part) * SCALE + std::stoll(frac_part);
+        }
+    }
+
     Decimal(double d) {
         if (std::isnan(d) || std::isinf(d)) {
             throw std::invalid_argument("Cannot create Decimal from NaN or infinity");
@@ -46,10 +65,10 @@ public:
     }
 
     Decimal(int i) : value_(static_cast<int64_t>(i) * SCALE) {}
-    
+
     // Only define long constructor if long is different from int64_t
-    template<typename T = long>
-    Decimal(T l, typename std::enable_if<!std::is_same<T, int64_t>::value>::type* = nullptr) 
+    template <typename T = long>
+    Decimal(T l, typename std::enable_if<!std::is_same<T, int64_t>::value>::type* = nullptr)
         : value_(static_cast<int64_t>(l) * SCALE) {}
 
     // Conversion operators
