@@ -1,0 +1,37 @@
+[build-system]
+requires = ["scikit-build-core>=0.10"]
+build-backend = "scikit_build_core.build"
+
+[project]
+name = "tradengin"
+version = "0.1.0"
+description = "Python bindings for the AlgoGators trade-ngin backtest engine"
+readme = "python/README.md"
+requires-python = ">=3.10"
+license = "GPL-3.0-only"
+license-files = ["LICENSE"]
+authors = [{ name = "AlgoGators" }]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Financial and Insurance Industry",
+    "Programming Language :: C++",
+    "Programming Language :: Python :: 3",
+    "Topic :: Office/Business :: Financial :: Investment",
+]
+
+[project.urls]
+Source = "https://github.com/AlgoGators/trade-ngin"
+
+[tool.scikit-build]
+cmake.version = ">=3.17"
+cmake.build-type = "Release"
+# Build only the module: the engine's tests, runners and benchmarks are not part of the wheel.
+build.targets = ["trade_ngin_py"]
+wheel.packages = []
+
+[tool.scikit-build.cmake.define]
+BUILD_PYTHON_WRAPPER = "ON"
+TRADE_NGIN_BUILD_TESTS = "OFF"
+TRADE_NGIN_BUILD_APPS = "OFF"
+TRADE_NGIN_STATIC_LIB = "ON"
+CMAKE_POSITION_INDEPENDENT_CODE = "ON"

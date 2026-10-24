@@ -268,7 +268,7 @@ struct StatisticsConfig {
  */
 struct StrategyDefaultsConfig {
     std::vector<std::pair<int, double>> fdm{{1, 1.0},  {2, 1.03}, {3, 1.08},
-                                             {4, 1.13}, {5, 1.19}, {6, 1.26}};
+                                            {4, 1.13}, {5, 1.19}, {6, 1.26}};
     double max_strategy_allocation{1.0};
     double min_strategy_allocation{0.1};
     // use_optimization moved to portfolio.json's top level in schema 2 (AppConfig::
@@ -434,6 +434,9 @@ struct AppConfig {
     // Raw strategies JSON for strategy factory
     nlohmann::json strategies_config;
 
+    // Asset class
+    AssetClass asset_class;
+
     /**
      * @brief Convert config to JSON for serialization
      */
@@ -460,6 +463,7 @@ struct AppConfig {
         j["strategy_defaults"] = strategy_defaults.to_json();
         j["email"] = email.to_json();
         j["strategies"] = strategies_config;
+        // j["asset_class"] = TODO implement this
         return j;
     }
 };

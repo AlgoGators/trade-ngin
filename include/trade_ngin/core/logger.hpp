@@ -235,9 +235,9 @@ public:
         return initialized_.load(std::memory_order_acquire);
     }
 
-    static void register_component(const std::string& component) {
-        current_component() = component;
-    }
+    // Defined in the library for the same reason as InstrumentRegistry::instance(): the Python
+    // module has hidden symbol visibility and must set the library's component, not its own.
+    static void register_component(const std::string& component);
 
 private:
     Logger() = default;

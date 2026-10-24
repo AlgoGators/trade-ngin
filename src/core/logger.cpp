@@ -301,4 +301,8 @@ void Logger::rotate_log_files() {
     log_file_.open(new_filename, std::ios::app);
 }
 
+void Logger::register_component(const std::string& component) {
+    current_component() = component;
+}
+
 }  // namespace trade_ngin

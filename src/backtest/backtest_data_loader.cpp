@@ -11,6 +11,9 @@ namespace backtest {
 BacktestDataLoader::BacktestDataLoader(std::shared_ptr<PostgresDatabase> db)
     : db_(std::move(db)) {}
 
+BacktestDataLoader::BacktestDataLoader(std::shared_ptr<MarketDataSource> source)
+    : source_(std::move(source)), use_source_(true) {}
+
 Result<std::vector<Bar>> BacktestDataLoader::load_market_data(const DataLoadConfig& config) {
     // Reject options upfront: data-ngin has zero options ingestion (no fetcher, no schema).
     // The options_data schema does not exist and will not for the foreseeable future.
@@ -24,13 +27,20 @@ Result<std::vector<Bar>> BacktestDataLoader::load_market_data(const DataLoadConf
             "BacktestDataLoader");
     }
 
-    // Ensure database connection
-    auto conn_result = ensure_connection();
-    if (conn_result.is_error()) {
-        return make_error<std::vector<Bar>>(
-            conn_result.error()->code(),
-            conn_result.error()->what(),
-            "BacktestDataLoader");
+    if (use_source_ && !source_) {
+        return make_error<std::vector<Bar>>(ErrorCode::NOT_INITIALIZED,
+                                            "No market data source configured", "BacktestDataLoader");
+    }
+
+    // Ensure database connection (a database-free run has none)
+    if (!source_) {
+        auto conn_result = ensure_connection();
+        if (conn_result.is_error()) {
+            return make_error<std::vector<Bar>>(
+                conn_result.error()->code(),
+                conn_result.error()->what(),
+                "BacktestDataLoader");
+        }
     }
 
     // Validate symbols list
@@ -47,7 +57,21 @@ Result<std::vector<Bar>> BacktestDataLoader::load_market_data(const DataLoadConf
     std::vector<Bar> all_bars;
     size_t batch_size = config.batch_size > 0 ? config.batch_size : 5;
     const std::vector<std::string> stored_symbols =
-        ListingDates::instance().stored_symbols(config.symbols);
+        source_ ? std::vector<std::string>{}
+                : ListingDates::instance().stored_symbols(config.symbols);
+
+    if (source_) {
+        // The source does its own batching and conversion.
+        auto from_source = source_->load_bars(config.symbols, config.start_date,
+                                              config.end_date, config.asset_class,
+                                              config.data_freq);
+        if (from_source.is_error()) {
+            return make_error<std::vector<Bar>>(from_source.error()->code(),
+                                                from_source.error()->what(),
+                                                "BacktestDataLoader");
+        }
+        all_bars = std::move(from_source.value());
+    }
 
     for (size_t i = 0; i < stored_symbols.size(); i += batch_size) {
         // Create a batch of symbols
@@ -71,9 +95,11 @@ Result<std::vector<Bar>> BacktestDataLoader::load_market_data(const DataLoadConf
 
     // Declared vendor relabellings (portfolio.json instrument_id_relabels; a no-op when absent) are
     // read first, so a predecessor's copy carries the same ids.
-    for (const auto& line : ListingDates::instance().relabel_findings(all_bars)) WARN(line);
-    ListingDates::instance().apply_relabels(all_bars);
-    ListingDates::instance().add_predecessor_bars(config.symbols, all_bars);
+    if (!source_) {
+        for (const auto& line : ListingDates::instance().relabel_findings(all_bars)) WARN(line);
+        ListingDates::instance().apply_relabels(all_bars);
+        ListingDates::instance().add_predecessor_bars(config.symbols, all_bars);
+    }
 
     // Check for empty data
     if (all_bars.empty()) {

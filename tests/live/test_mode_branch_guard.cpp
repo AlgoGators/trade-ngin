@@ -305,6 +305,10 @@ const std::map<std::string, std::pair<const char*, std::vector<std::string>>> kL
     {"include/trade_ngin/strategy/trend_estimator_record.hpp",
      {"TRADE_NGIN_SERIES_DUMP_DIR: a diagnostic dump, no decision",
       {"const char* dir = std::getenv(\"TRADE_NGIN_SERIES_DUMP_DIR\");"}}},
+    {"src/api/backtest_api.cpp",
+     {"the end of the backtest window, as the bt_portfolio runners take it; no live runner "
+      "calls the API",
+      {"auto now = std::chrono::system_clock::now();"}}},
     {"src/backtest/backtest_coordinator.cpp",
      {"backtest only",
       {"if (const char* dir = std::getenv(\"TRADE_NGIN_SERIES_DUMP_DIR\"); dir != nullptr && *dir) {",
